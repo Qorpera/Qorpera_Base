@@ -60,6 +60,8 @@ begin
 	perform public.qorpera_configure_coding_machine_lifecycle('30000000-0000-4000-8000-000000000020','exec-test',600,86400);
 	begin perform public.qorpera_configure_coding_machine_lifecycle('30000000-0000-4000-8000-000000000020','exec-test',10,86400);
 		raise exception 'A ten second sleep delay was accepted'; exception when check_violation then null; end;
+	perform pg_temp.wake_assert(public.qorpera_suspend_coding_machine(pg_temp.vm(),'exec-test',current_setting('qorpera_test.coding_binding'),repeat('c',64))
+		->> 'reason' = 'MACHINE_USED_SINCE_STOP','No suspension without a stop custody first');
 	perform pg_temp.wake_assert(pg_temp.custody(pg_temp.vm(),current_setting('qorpera_test.coding_binding'),'stop') ->> 'intent' = 'stop'
 		and pg_temp.custody(pg_temp.vm(),current_setting('qorpera_test.coding_binding'),'delete') ->> 'reason' = 'MACHINE_AWAKE',
 		'An idle machine may be stopped; an awake one is never deleted');
@@ -72,6 +74,9 @@ begin
 		'Asleep, the machine holds no node capacity and keeps its placement');
 	begin perform public.qorpera_suspend_coding_machine(pg_temp.vm(),'someone-else',current_setting('qorpera_test.coding_binding'),repeat('c',64));
 		raise exception 'A foreign executor put the machine to sleep'; exception when insufficient_privilege then null; end;
+	perform pg_temp.wake_assert(pg_temp.custody(pg_temp.vm(),current_setting('qorpera_test.coding_binding'),'delete') ->> 'reason' = 'MACHINE_NOT_DUE'
+		and (pg_temp.machine(pg_temp.vm())).removing_at is null,
+		'A current machine that just fell asleep is not removed before the removal delay');
 end $$;
 
 -- 2. The owner's answer wakes it: the next turn is planned on the same machine and re-reserves the node.
@@ -146,7 +151,13 @@ begin
 		'A turn that cannot have its machine waits in the queue; it has not failed');
 	begin perform public.qorpera_defer_coding_session(v_worker.id,(v_claim ->> 'leaseToken')::uuid,'NODE_CAPACITY_EXHAUSTED');
 		raise exception 'A lost lease deferred the turn'; exception when insufficient_privilege then null; end;
-	-- Everyone idle: the machine sleeps; then the node has no room for it.
+	-- Everyone idle: the machine sleeps; then the node has no room for it. A use after the stop
+	-- custody (here a detach) needs a new stop before the machine may count as asleep.
+	perform pg_temp.custody(pg_temp.vm(),current_setting('qorpera_test.coding_binding'),'stop');
+	perform pg_temp.custody(pg_temp.vm(),current_setting('qorpera_test.coding_binding'),'detach',v_worker.id);
+	perform pg_temp.wake_assert(public.qorpera_suspend_coding_machine(pg_temp.vm(),'exec-test',current_setting('qorpera_test.coding_binding'),repeat('c',64))
+		->> 'reason' = 'MACHINE_USED_SINCE_STOP' and (pg_temp.demand(pg_temp.vm())).suspended_at is null,
+		'A machine used after its stop was authorized does not count as asleep');
 	perform pg_temp.custody(pg_temp.vm(),current_setting('qorpera_test.coding_binding'),'stop');
 	perform public.qorpera_suspend_coding_machine(pg_temp.vm(),'exec-test',current_setting('qorpera_test.coding_binding'),repeat('c',64));
 	update public.qorpera_runtime_nodes set headroom_cpu_millis = 5000, standard_cpu_millis = 1000 where id = '30000000-0000-4000-8000-000000000310';
@@ -204,9 +215,9 @@ begin
 	perform pg_temp.wake_assert(v_release ->> 'state' = 'released' and v_release ->> 'machineId' = v_old::text
 		and (select released_at from public.qorpera_runtime_machine_allocations where id = v_old) is not null
 		and (pg_temp.demand(v_old)).released_at is not null and (pg_temp.machine(v_old)).removed_at is not null
-		and (pg_temp.session_row('fix-send')).vm_allocation_id is null and (pg_temp.session_row('fix-send-3')).vm_allocation_id is null
+		and (pg_temp.session_row('fix-send')).vm_allocation_id = v_old and not public.qorpera_coding_machine_live(pg_temp.machine(v_old))
 		and pg_temp.listed(v_old) is null and pg_temp.node_cpu() = 0,
-		'The deletion proof releases the allocation and the node demand; no session points at the machine any more');
+		'The deletion proof releases the allocation and the node demand; the sessions only remember where they last ran');
 	perform pg_temp.wake_assert(public.qorpera_release_coding_machine(v_old,'exec-test',v_binding,repeat('c',64)) = v_release,
 		'A repeated release answers the same');
 	begin perform pg_temp.custody(v_old,v_binding,'stop');
@@ -232,10 +243,11 @@ begin
 end $$;
 
 -- 6. A kept per-session VM from before (the migration made it a machine of kind 'session') is retired
---    through the same custody as soon as its session has no leased turn.
+--    through the same custody as soon as its session has no leased turn. Its session moves to the
+--    member's machine only after that: its folders may still be attached to the old VM.
 do $$
 declare v_worker public.qorpera_runtime_workers := pg_temp.worker_row('fix-send-2'); v_legacy uuid := '30000000-0000-4000-8000-000000000320';
-	v_binding text; v_digest text; v_reserved jsonb;
+	v_binding text; v_digest text; v_reserved jsonb; v_claim jsonb; v_run jsonb;
 begin
 	v_binding := jsonb_build_object('schema','qorpera.lxd-coding-vm/v2','workerId',v_worker.id,'allocationId',v_legacy,
 		'companyId',v_worker.profile_id,'environmentId',v_worker.environment_id,'providerId','coding-fixture','providerPolicySha256',repeat('f',64),
@@ -243,6 +255,7 @@ begin
 		'imageFingerprint',repeat('a',64),'bootstrapSha256',repeat('b',64),'storagePool','coding','network','coding','cpus',2,
 		'memoryBytes',2147483648,'rootDiskBytes',4294967296)::text;
 	v_digest := encode(extensions.digest(convert_to(v_binding,'utf8'),'sha256'),'hex');
+	perform pg_temp.observe();
 	insert into public.qorpera_runtime_machine_allocations(id, profile_id, coding_worker_id, provider_adapter, instance_sha256)
 	values (v_legacy, v_worker.profile_id, v_worker.id, 'coding-fixture', v_digest);
 	v_reserved := public.qorpera_reserve_runtime_node_machine(v_legacy,'coding','coding-fixture',repeat('f',64),v_digest,repeat('c',64),2000,2147483648);
@@ -255,6 +268,16 @@ begin
 		and pg_temp.listed(v_legacy) ->> 'superseded' = 'true' and pg_temp.listed(v_legacy) ->> 'removeDue' = 'true'
 		and pg_temp.listed(v_legacy) ->> 'sleepDue' = 'false' and pg_temp.node_cpu() = 4000,
 		'A kept per-session VM is due for removal at once and never sleeps');
+	-- Its owner follows up before housekeeping has retired it: the turn waits.
+	perform pg_temp.as_user('30000000-0000-4000-8000-000000000001');
+	perform public.qorpera_answer_coding_session(v_worker.id,'Pick this up again.','30000000-0000-4000-8000-000000000204');
+	perform pg_temp.path_claims('service_role');
+	v_claim := public.qorpera_claim_coding_session('exec-test',60);
+	perform pg_temp.wake_assert(v_claim ->> 'workerId' = v_worker.id::text
+		and pg_temp.run(v_worker.id,(v_claim ->> 'leaseToken')::uuid,current_setting('qorpera_test.coding_binding')) ->> 'reason' = 'PREVIOUS_MACHINE_AWAKE'
+		and pg_temp.custody(v_legacy,v_binding,'stop') ->> 'reason' = 'MACHINE_IN_USE',
+		'The session does not move while its old VM is awake, and the old VM keeps its leased turn');
+	perform public.qorpera_defer_coding_session(v_worker.id,(v_claim ->> 'leaseToken')::uuid,'PREVIOUS_MACHINE_AWAKE');
 	perform pg_temp.custody(v_legacy,v_binding,'stop');
 	perform public.qorpera_suspend_coding_machine(v_legacy,'exec-test',v_binding,repeat('c',64));
 	perform pg_temp.custody(v_legacy,v_binding,'delete');
@@ -264,9 +287,37 @@ begin
 		and (pg_temp.demand(v_legacy)).released_at is not null and pg_temp.node_cpu() = 2000
 		and exists (select 1 from public.qorpera_coding_storage_volumes where worker_id = (pg_temp.worker_row('fix-send')).id),
 		'Its capacity comes back through the same deletion proof; the NAS folders stay on record');
+	update public.qorpera_coding_sessions set claim_after = clock_timestamp() - interval '1 second' where worker_id = v_worker.id;
+	perform pg_temp.observe();
+	v_claim := public.qorpera_claim_coding_session('exec-test',60);
+	v_run := pg_temp.run(v_worker.id,(v_claim ->> 'leaseToken')::uuid,current_setting('qorpera_test.coding_binding'));
+	perform pg_temp.wake_assert(v_run ->> 'intent' = 'run' and (v_run ->> 'guestUid')::int = 200002
+		and (pg_temp.session_row('fix-send-2')).vm_allocation_id = pg_temp.vm(),
+		'Once the old VM is gone the session runs on the member''s machine as a new guest user');
+	perform public.qorpera_complete_coding_turn(v_worker.id,(v_claim ->> 'leaseToken')::uuid,'failed','Stopped for the test.');
 end $$;
 
--- 7. A failed step stays visible on the machine until the same step succeeds.
+-- 7. A machine released through the general machine release (an operator's deletion proof) is closed
+--    by the executor without an LXD effect, and the member's next turn plans a new one.
+do $$
+declare v_machine public.qorpera_coding_machines := pg_temp.machine(pg_temp.vm()); v_claim jsonb; v_plan jsonb;
+begin
+	perform public.qorpera_release_runtime_machine(v_machine.id,'coding-fixture',v_machine.instance_sha256);
+	perform pg_temp.wake_assert(pg_temp.listed(v_machine.id) ->> 'released' = 'true' and pg_temp.listed(v_machine.id) ->> 'removeDue' = 'true',
+		'The executor sees the machine released elsewhere');
+	perform pg_temp.wake_assert(public.qorpera_release_coding_machine(v_machine.id,'exec-test',current_setting('qorpera_test.coding_binding'),repeat('c',64))
+		->> 'state' = 'released' and (pg_temp.machine(v_machine.id)).removed_at is not null,'It closes without delete custody');
+	perform pg_temp.as_user('30000000-0000-4000-8000-000000000001');
+	perform public.qorpera_answer_coding_session((pg_temp.worker_row('fix-send')).id,'Once more.','30000000-0000-4000-8000-000000000205');
+	perform pg_temp.path_claims('service_role');
+	v_claim := public.qorpera_claim_coding_session('exec-test',60);
+	v_plan := pg_temp.plan((pg_temp.worker_row('fix-send')).id,(v_claim ->> 'leaseToken')::uuid);
+	perform pg_temp.wake_assert(v_plan ->> 'state' = 'planned' and v_plan ->> 'machineId' <> v_machine.id::text,'The next turn plans a new machine');
+	perform set_config('qorpera_test.coding_vm',v_plan ->> 'machineId',true);
+	perform public.qorpera_complete_coding_turn((pg_temp.worker_row('fix-send')).id,(v_claim ->> 'leaseToken')::uuid,'failed','Stopped for the test.');
+end $$;
+
+-- 8. A failed step stays visible on the machine until the same step succeeds.
 do $$
 begin
 	perform public.qorpera_record_coding_machine_error(pg_temp.vm(),'exec-test',repeat('c',64),'sleep','CODING_VM_RECOVERY_REQUIRED');
@@ -282,7 +333,7 @@ begin
 		raise exception 'A free-text error was recorded'; exception when sqlstate '22023' then null; end;
 end $$;
 
--- 8. Control plane only.
+-- 9. Control plane only.
 select pg_temp.as_user('30000000-0000-4000-8000-000000000001');
 select pg_temp.wake_error($q$select public.qorpera_list_coding_machines('exec-test',repeat('c',64))$q$,'42501');
 select pg_temp.wake_error($q$select public.qorpera_release_coding_machine(pg_temp.vm(),'exec-test',current_setting('qorpera_test.coding_binding'),repeat('c',64))$q$,'42501');

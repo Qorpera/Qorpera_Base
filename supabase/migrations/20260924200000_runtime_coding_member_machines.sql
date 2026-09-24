@@ -57,6 +57,8 @@ create table public.qorpera_coding_machines (
 	last_used_at timestamptz not null default clock_timestamp(),
 	-- No new turn starts here: the deployment policy moved on, or a kept per-session VM.
 	retire_requested_at timestamptz,
+	-- The last stop custody: a suspension needs no run authority since then.
+	stop_authorized_at timestamptz,
 	-- Delete custody was granted; nothing runs here again.
 	removing_at timestamptz,
 	removed_at timestamptz,
@@ -201,6 +203,16 @@ select pg_temp.member_machine_patch('public.qorpera_assert_coding_storage(uuid,t
 			(select coalesce(max(volume.guest_uid), 199999) + 1 from public.qorpera_coding_storage_volumes volume
 			 where volume.environment_id = v_worker.environment_id and volume.member_user_id = v_worker.owner_user_id));$new$);
 
+-- Only run authority places a session on a machine; progress may echo it, never set it.
+select pg_temp.member_machine_patch('public.qorpera_record_coding_progress(uuid,uuid,text,text,integer,jsonb,text,text,uuid,uuid,text)',
+	$old$		or (p_files_changed is not null and p_files_changed < 0) then
+		raise exception 'Coding progress is invalid' using errcode = '22023'; end if;$old$,
+	$new$		or (p_files_changed is not null and p_files_changed < 0)
+		or (p_vm_allocation_id is not null and p_vm_allocation_id is distinct from v_session.vm_allocation_id) then
+		raise exception 'Coding progress is invalid' using errcode = '22023'; end if;$new$);
+select pg_temp.member_machine_patch('public.qorpera_record_coding_progress(uuid,uuid,text,text,integer,jsonb,text,text,uuid,uuid,text)',
+	$old$ vm_allocation_id = coalesce(vm_allocation_id, p_vm_allocation_id),$old$, '');
+
 -- The per-session VM authority is replaced by the machine functions below.
 drop function public.qorpera_authorize_coding_machine(uuid, uuid, text, text, text);
 drop function public.qorpera_authorize_coding_cleanup(uuid, text, text, text);
@@ -235,6 +247,13 @@ begin
 	select * into v_machine from public.qorpera_coding_machines where profile_id = v_worker.profile_id
 		and environment_id = v_worker.environment_id and member_user_id = v_worker.owner_user_id and kind = 'member' and removed_at is null
 	for update;
+	-- Released through the general machine release (an operator's deletion proof): closed here too.
+	if v_machine.id is not null and exists (select 1 from public.qorpera_runtime_machine_allocations
+		where id = v_machine.id and released_at is not null) then
+		update public.qorpera_coding_machines set removing_at = coalesce(removing_at, clock_timestamp()), removed_at = clock_timestamp()
+		where id = v_machine.id;
+		v_machine := null;
+	end if;
 	if v_machine.id is null then
 		v_machine.id := extensions.gen_random_uuid();
 		insert into public.qorpera_coding_machines(id, kind, profile_id, environment_id, member_user_id, owner, machine_id_sha256, binding)
@@ -299,6 +318,13 @@ begin
 		where other.vm_allocation_id = v_machine.id and other.worker_id <> v_worker.id and other_volume.guest_uid is null
 			and other.phase in ('preparing','running','publishing') and other.lease_until > clock_timestamp()) then
 		return '{"state":"refused","reason":"LEGACY_SESSION_BUSY"}'::jsonb; end if;
+	-- A session moves to this machine only once the machine it ran on before sleeps or is gone: its
+	-- folders may still be attached there (a kept per-session VM, or a turn whose executor died).
+	if v_session.vm_allocation_id is distinct from v_machine.id and exists (select 1 from public.qorpera_coding_machines previous
+		join public.qorpera_runtime_node_demands demand on demand.allocation_id = previous.id
+		where previous.id = v_session.vm_allocation_id and previous.removed_at is null
+			and demand.reserved_at is not null and demand.released_at is null and demand.suspended_at is null) then
+		return '{"state":"refused","reason":"PREVIOUS_MACHINE_AWAKE"}'::jsonb; end if;
 	if v_machine.instance_sha256 is null then
 		update public.qorpera_coding_machines set instance_sha256 = v_digest where id = v_machine.id returning * into v_machine; end if;
 	select * into v_allocation from public.qorpera_runtime_machine_allocations where id = v_machine.id for update;
@@ -354,6 +380,7 @@ create function public.qorpera_authorize_coding_machine_custody(p_machine_id uui
 returns jsonb language plpgsql security definer set search_path = '' as $$
 declare v_machine public.qorpera_coding_machines%rowtype; v_allocation public.qorpera_runtime_machine_allocations%rowtype;
 	v_demand public.qorpera_runtime_node_demands%rowtype; v_node public.qorpera_runtime_nodes%rowtype; v_session public.qorpera_coding_sessions%rowtype;
+	v_executor public.qorpera_coding_executors%rowtype;
 begin
 	if p_intent is null or p_intent not in ('stop','detach','delete') or ((p_intent = 'detach') <> (p_worker_id is not null))
 		or (p_intent <> 'detach' and p_lease_token is not null) then
@@ -379,9 +406,17 @@ begin
 		update public.qorpera_coding_machines set last_used_at = clock_timestamp() where id = v_machine.id;
 	elsif public.qorpera_coding_machine_live(v_machine) then
 		return '{"state":"refused","reason":"MACHINE_IN_USE"}'::jsonb;
-	elsif p_intent = 'delete' then
+	elsif p_intent = 'stop' then
+		update public.qorpera_coding_machines set stop_authorized_at = clock_timestamp() where id = v_machine.id;
+	else
 		if v_demand.reserved_at is not null and v_demand.suspended_at is null then
 			return '{"state":"refused","reason":"MACHINE_AWAKE"}'::jsonb; end if;
+		-- A current member machine is removed only after the environment's removal delay asleep.
+		select * into v_executor from public.qorpera_coding_executors where environment_id = v_machine.environment_id and owner = v_machine.owner;
+		if v_machine.kind = 'member' and v_machine.retire_requested_at is null and v_executor.vm_policy is not null
+			and v_machine.binding - array['schema','machineId','companyId','environmentId','memberUserId'] = v_executor.vm_policy
+			and coalesce(v_demand.suspended_at, v_machine.last_used_at) > clock_timestamp() - make_interval(secs => v_executor.machine_remove_after_seconds) then
+			return '{"state":"refused","reason":"MACHINE_NOT_DUE"}'::jsonb; end if;
 		update public.qorpera_coding_machines set removing_at = coalesce(removing_at, clock_timestamp()) where id = v_machine.id;
 	end if;
 	return jsonb_build_object('schema','qorpera.coding-machine-admission/v1','machineId',v_machine.id,'workerId',p_worker_id,
@@ -399,6 +434,9 @@ begin
 	v_machine := public.qorpera_coding_machine_custody(p_machine_id, p_owner, p_binding_text, p_machine_id_sha256);
 	if v_machine.removed_at is not null then raise exception 'Coding machine was removed' using errcode = '42501'; end if;
 	if public.qorpera_coding_machine_live(v_machine) then return '{"state":"kept","reason":"MACHINE_IN_USE"}'::jsonb; end if;
+	-- The stop that preceded this was authorized with no turn on the machine, and none has used it since.
+	if v_machine.stop_authorized_at is null or v_machine.last_used_at > v_machine.stop_authorized_at then
+		return '{"state":"kept","reason":"MACHINE_USED_SINCE_STOP"}'::jsonb; end if;
 	-- Lock order as in reservation: profile fence -> company allocation -> node -> demand.
 	perform public.qorpera_lock_profile_gc_fence(v_machine.profile_id);
 	perform 1 from public.qorpera_runtime_machine_allocations where id = v_machine.id and released_at is null for update;
@@ -420,8 +458,9 @@ $$;
 -- LXD reports no such instance) releases the allocation; the node demand
 -- follows through the existing trigger. A machine whose node demand was never
 -- reserved never got a run receipt, so no VM can exist: it closes without
--- delete custody, as does a plan never admitted at all. Repeating a release
--- answers the same.
+-- delete custody, as does a plan never admitted at all, and one whose
+-- allocation the general machine release already released. Repeating a
+-- release answers the same.
 create function public.qorpera_release_coding_machine(p_machine_id uuid, p_owner text, p_binding_text text, p_machine_id_sha256 text)
 returns jsonb language plpgsql security definer set search_path = '' as $$
 declare v_machine public.qorpera_coding_machines%rowtype; v_allocation public.qorpera_runtime_machine_allocations%rowtype;
@@ -437,9 +476,13 @@ begin
 		raise exception 'Coding machine custody differs' using errcode = '42501'; end if;
 	if v_machine.removed_at is null then
 		v_reserved := exists (select 1 from public.qorpera_runtime_node_demands where allocation_id = v_machine.id and reserved_at is not null);
+		select * into v_allocation from public.qorpera_runtime_machine_allocations where id = v_machine.id;
 		if v_machine.instance_sha256 is null then
-			if exists (select 1 from public.qorpera_runtime_machine_allocations where id = v_machine.id) then
+			if v_allocation.id is not null then
 				raise exception 'Coding machine allocation differs' using errcode = '42501'; end if;
+		elsif v_allocation.released_at is not null then
+			-- Already released through the general machine release with its own deletion proof.
+			null;
 		elsif v_machine.removing_at is null and v_reserved then
 			raise exception 'Coding machine deletion was not authorized' using errcode = '42501';
 		else
@@ -452,10 +495,10 @@ begin
 				raise exception 'Coding machine allocation differs' using errcode = '42501'; end if;
 			update public.qorpera_runtime_machine_allocations set released_at = coalesce(released_at, clock_timestamp()) where id = v_machine.id;
 		end if;
+		-- Sessions keep pointing at it as the machine they last ran on; a removed machine holds nothing.
 		update public.qorpera_coding_machines set removing_at = coalesce(removing_at, clock_timestamp()), removed_at = clock_timestamp(),
 			last_error = null, last_error_at = null
 		where id = v_machine.id returning * into v_machine;
-		update public.qorpera_coding_sessions set vm_allocation_id = null, updated_at = clock_timestamp() where vm_allocation_id = v_machine.id;
 	end if;
 	return jsonb_build_object('schema','qorpera.coding-machine-release/v1','state','released','machineId',v_machine.id,
 		'instanceSha256',v_machine.instance_sha256,'removedAt',v_machine.removed_at);
@@ -477,8 +520,10 @@ begin
 end
 $$;
 
--- The executor's housekeeping list: its machines on this node that exist, with
--- what is due. The executor acts on it; every effect re-checks its own custody.
+-- The executor's housekeeping list: all its machines on this node that exist,
+-- with what is due. The executor acts on it; every effect re-checks its own
+-- custody (the removal delay is enforced there too; the sleep delay is the
+-- executor's to keep, since sleeping early only costs a boot).
 create function public.qorpera_list_coding_machines(p_owner text, p_machine_id_sha256 text)
 returns jsonb language plpgsql stable security definer set search_path = '' as $$
 begin
@@ -489,23 +534,24 @@ begin
 		select jsonb_build_object('schema','qorpera.coding-machine-state/v1','machineId',machine.id,'kind',machine.kind,
 			'workerId',machine.worker_id,'binding',machine.binding,'instanceSha256',machine.instance_sha256,'live',state.live,
 			'reserved',state.reserved,'asleepSince',demand.suspended_at,'removing',machine.removing_at is not null,
-			'superseded',state.superseded,'lastUsedAt',machine.last_used_at,'createdAt',machine.created_at,
+			'superseded',state.superseded,'released',state.released,'lastUsedAt',machine.last_used_at,'createdAt',machine.created_at,
 			'lastError',machine.last_error,'lastErrorAt',machine.last_error_at,
 			'sleepDue',machine.kind = 'member' and not state.live and state.reserved and not state.superseded
 				and machine.last_used_at <= clock_timestamp() - make_interval(secs => executor.machine_sleep_after_seconds),
-			'removeDue',not state.live and (machine.removing_at is not null or state.superseded
+			'removeDue',not state.live and (machine.removing_at is not null or state.superseded or state.released
 				or (demand.suspended_at is not null and demand.suspended_at <= clock_timestamp() - make_interval(secs => executor.machine_remove_after_seconds))
 				or (not state.reserved and demand.suspended_at is null
 					and machine.last_used_at <= clock_timestamp() - make_interval(secs => executor.machine_remove_after_seconds)))) entry
 		from public.qorpera_coding_machines machine
 		left join public.qorpera_coding_executors executor on executor.environment_id = machine.environment_id and executor.owner = machine.owner
 		left join public.qorpera_runtime_node_demands demand on demand.allocation_id = machine.id and demand.released_at is null
+		left join public.qorpera_runtime_machine_allocations allocation on allocation.id = machine.id
 		cross join lateral (select public.qorpera_coding_machine_live(machine) as live,
+			allocation.released_at is not null as released,
 			demand.reserved_at is not null and demand.suspended_at is null as reserved,
 			machine.kind = 'session' or machine.retire_requested_at is not null or executor.vm_policy is null
 				or machine.binding - array['schema','machineId','companyId','environmentId','memberUserId'] <> executor.vm_policy as superseded) state
-		where machine.owner = p_owner and machine.machine_id_sha256 = p_machine_id_sha256 and machine.removed_at is null
-		order by machine.created_at, machine.id limit 64) listed), '[]'::jsonb);
+		where machine.owner = p_owner and machine.machine_id_sha256 = p_machine_id_sha256 and machine.removed_at is null) listed), '[]'::jsonb);
 end
 $$;
 
@@ -514,20 +560,20 @@ $$;
 create function public.qorpera_defer_coding_session(p_worker_id uuid, p_lease_token uuid, p_reason text)
 returns jsonb language plpgsql security definer set search_path = '' as $$
 declare v_session public.qorpera_coding_sessions%rowtype; v_worker public.qorpera_runtime_workers%rowtype;
-	v_step constant text := 'Waiting for a coding machine';
+	v_step constant text := 'Waiting for a coding machine'; v_waiting boolean;
 begin
 	if coalesce(p_reason,'') !~ '^[A-Z][A-Z0-9_]{0,63}$' then raise exception 'Coding deferral invalid' using errcode = '22023'; end if;
 	v_session := public.qorpera_coding_leased_session(p_worker_id, p_lease_token);
 	select * into strict v_worker from public.qorpera_runtime_workers where id = v_session.worker_id;
 	if v_session.phase <> 'preparing' or v_worker.occurrence_id is not null then
 		raise exception 'Only a turn that has not begun can wait for its machine' using errcode = '55000'; end if;
+	v_waiting := v_session.last_step is not distinct from v_step;
 	update public.qorpera_coding_sessions set phase = case when v_worker.sequence = 1 then 'queued' else 'input_ready' end,
 		lease_owner = null, lease_token = null, lease_until = null, claim_after = clock_timestamp() + interval '15 seconds',
 		last_step = v_step, updated_at = clock_timestamp()
 	where worker_id = v_worker.id returning * into v_session;
-	if not exists (select 1 from public.qorpera_coding_session_events event where event.worker_id = v_worker.id
-		and event.id = (select max(latest.id) from public.qorpera_coding_session_events latest where latest.worker_id = v_worker.id)
-		and event.kind = 'step' and event.body ->> 'text' = v_step) then
+	-- One step in the thread for the whole wait, not one per retry.
+	if not v_waiting then
 		perform public.qorpera_coding_event(v_worker.id, v_worker.sequence, 'step', 'executor', jsonb_build_object('text', v_step, 'reason', p_reason));
 	end if;
 	return public.qorpera_coding_session_view(v_session, v_worker);
