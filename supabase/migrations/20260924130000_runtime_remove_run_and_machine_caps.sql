@@ -213,6 +213,20 @@ alter table public.qorpera_runner_usage_observations drop constraint qorpera_run
 alter table public.qorpera_runner_usage_observations add constraint qorpera_runner_usage_observations_wall_time_limit_ms_check
 	check (wall_time_limit_ms >= 10);
 
+-- ---------------------------------------------------------------------------
+-- A native run may carry up to 120 tools
+-- ---------------------------------------------------------------------------
+-- The kernel refused more than 32 while the guest allowed 48, so an agent with
+-- a computer and a few connected services could not start. OpenAI accepts 128
+-- functions per request and the cloud Codex keeps almost none of its own, so
+-- both now allow 120, and the catalog may take 1 MiB.
+select pg_temp.cap_patch('public.qorpera_begin_native_company_execution_v2(jsonb,text,text,text,text,text,integer)'::regprocedure,
+	$old$	if jsonb_array_length(v_catalog -> 'tools') not between 1 and 32$old$,
+	$new$	if jsonb_array_length(v_catalog -> 'tools') not between 1 and 120$new$);
+select pg_temp.cap_patch('public.qorpera_begin_native_company_execution_v2(jsonb,text,text,text,text,text,integer)'::regprocedure,
+	$old$	if p_tool_catalog_text is null or octet_length(p_tool_catalog_text) not between 1 and 262144$old$,
+	$new$	if p_tool_catalog_text is null or octet_length(p_tool_catalog_text) not between 1 and 1048576$new$);
+
 -- Nothing that runs may still name the machine limit.
 do $$
 declare v_name text;

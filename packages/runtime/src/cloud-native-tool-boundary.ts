@@ -31,9 +31,12 @@ const MAX_ARGUMENT_BYTES = 64 * 1024;
 const MAX_CONTENT_BYTES = 32 * 1024;
 const MAX_SOURCE_BYTES = 1024 * 1024;
 /** Company File, runtime, computer and connector tools together. Connector
- * grants add one tool per authorized operation, so the boundary allows more
- * than the runtime's own catalog. */
-export const CLOUD_NATIVE_TOOL_COUNT_LIMIT = 48;
+ * grants add one tool per authorized operation. OpenAI accepts 128 functions
+ * per request and the cloud Codex keeps almost none of its own, so a run may
+ * carry 120 (the kernel checks the same number at start). */
+export const CLOUD_NATIVE_TOOL_COUNT_LIMIT = 120;
+/** The serialized tool catalog a run starts with (the kernel checks the same). */
+export const CLOUD_NATIVE_TOOL_CATALOG_BYTES = 1024 * 1024;
 /** No run is capped by a number of tool calls (founder, 2026-09-22 and
  * 2026-09-24). Result bodies are kept for exact replay only in a rolling window:
  * past it the oldest are forgotten, never a denial or a failure. Codex re-sends
