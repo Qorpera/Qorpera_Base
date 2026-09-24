@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseCodingExecutorConfiguration } from "../../../deploy/coding-worker/executor.ts";
+import { errorCode, parseCodingExecutorConfiguration } from "../../../deploy/coding-worker/executor.ts";
 
 function fixture() {
 	return {
@@ -161,5 +161,15 @@ describe("coding executor service configuration", () => {
 		expect(() =>
 			parseCodingExecutorConfiguration({ ...config, guest: { ...config.guest, watchdogHelperSha256: "" } }),
 		).toThrow();
+	});
+});
+
+describe("executor error codes", () => {
+	it("logs only the fixed CODING_* and LXD codes, never other text", () => {
+		expect(errorCode(new Error("CODING_HOST_GUEST_NOT_READY"))).toBe("CODING_HOST_GUEST_NOT_READY");
+		expect(errorCode(new Error("LXD instance command failed"))).toBe("LXD instance command failed");
+		expect(errorCode(new Error("token ghp_abcdefghijklmnopqrstuvwxyz0123 refused"))).toBe("UNCLASSIFIED");
+		expect(errorCode(new Error("LXD request failed: https://x/?token=abc"))).toBe("UNCLASSIFIED");
+		expect(errorCode("CODING_X")).toBe("UNCLASSIFIED");
 	});
 });

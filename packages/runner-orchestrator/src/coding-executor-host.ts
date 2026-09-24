@@ -102,6 +102,9 @@ export interface LxdCodingExecutorHostOptions {
 	repositoryCredentials: CodingRepositoryCredentials;
 	fetch?: typeof fetch;
 	runGit?: CodingBrokerGitRunner;
+	/** How long a freshly started guest may take to bring up its agent and
+	 * watchdog timer (default 120 s). */
+	guestReadyTimeoutMs?: number;
 }
 interface Prepared {
 	claim: CodingSessionClaim;
@@ -376,6 +379,25 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		if (!instance || instance.status !== "Running" || instance.statusCode !== 103)
 			throw new Error("CODING_HOST_VM_NOT_RUNNING");
 		assertLxdCodingVmInstance(vm, instance);
+		// A VM that has just started answers before its agent and systemd are up:
+		// the watchdog timer turns active a few seconds after the agent. Wait,
+		// bounded, for both before trusting the boot; anything else still fails.
+		const ready = AbortSignal.any([signal, AbortSignal.timeout(this.#options.guestReadyTimeoutMs ?? 120_000)]);
+		for (;;) {
+			try {
+				await client.execInstance(
+					vm.project,
+					request.name,
+					["/usr/bin/systemctl", "is-active", "--quiet", "qorpera-coding-watchdog.timer"],
+					ready,
+				);
+				break;
+			} catch (error) {
+				signal.throwIfAborted();
+				if (ready.aborted) throw new Error("CODING_HOST_GUEST_NOT_READY", { cause: error });
+				await setTimeout(1000, undefined, { signal: ready }).catch(() => undefined);
+			}
+		}
 		const boot = await client.readInstanceFile(
 			vm.project,
 			request.name,

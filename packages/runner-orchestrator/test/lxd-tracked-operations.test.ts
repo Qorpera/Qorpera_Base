@@ -94,6 +94,19 @@ describe("journalable LXD operations over a real Unix HTTP socket", () => {
 				expect(calls[0].body).toEqual({ action, timeout: 30, force: false, stateful: false });
 		},
 	);
+	it("powers a VM off only when the stop asks for force (coding VMs)", async () => {
+		const calls: unknown[] = [];
+		const client = await fixture((_request, response, body) => {
+			calls.push(body);
+			send(response, accepted(), 202);
+		});
+		await client.submitInstanceOperation("offices", { action: "stop", name: "office-test", force: true }, signal());
+		await client.submitInstanceOperation("offices", { action: "stop", name: "office-test" }, signal());
+		expect(calls).toEqual([
+			{ action: "stop", timeout: 30, force: true, stateful: false },
+			{ action: "stop", timeout: 30, force: false, stateful: false },
+		]);
+	});
 	it.each([
 		[100, "Operation created", "pending"],
 		[103, "Running", "pending"],

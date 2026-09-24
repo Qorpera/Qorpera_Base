@@ -485,7 +485,14 @@ export async function reconcileLxdCodingVm(options: CodingVmReconcileOptions): P
 		signal.throwIfAborted();
 		const reference = await options.client.submitInstanceOperation(
 			binding.project,
-			action === "create" ? { action, request } : { action, name: request.name },
+			// A coding VM holds no state of its own (the workspace is on the NAS):
+			// power it off; a guest that ignores the shutdown request would
+			// otherwise keep its reservation until an operator stepped in.
+			action === "create"
+				? { action, request }
+				: action === "stop"
+					? { action, name: request.name, force: true }
+					: { action, name: request.name },
 			signal,
 		);
 		if (

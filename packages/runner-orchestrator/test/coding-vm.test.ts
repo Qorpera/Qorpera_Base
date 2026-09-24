@@ -163,6 +163,9 @@ describe("retained coding VM lifecycle", () => {
 			"start",
 			"stop",
 		]);
+		// A coding VM is powered off, never asked to shut down (live 2026-09-24:
+		// the guest ignored the request and kept its reservation).
+		expect(f.client.submitInstanceOperation.mock.calls.at(-1)?.[1]).toMatchObject({ action: "stop", force: true });
 	});
 	it("permits exact stop from a legacy full start journal then rolls over without recreating the VM", async () => {
 		const f = await fixture();

@@ -99,6 +99,15 @@ export function parseCodingExecutorConfiguration(value: unknown): Config {
 	};
 }
 
+/** A loggable code for an executor error: the fixed CODING_* / LXD messages
+ * only (they carry no credential or repository content), else UNCLASSIFIED. */
+export function errorCode(error: unknown): string {
+	const message = error instanceof Error ? error.message : "";
+	if (/^[A-Z][A-Z0-9_]{2,80}$/.test(message)) return message;
+	if (/^LXD [A-Za-z ]{1,60}$/.test(message)) return message;
+	return "UNCLASSIFIED";
+}
+
 /** Independent Linux service: the identity host runs the model turn, this
  * service runs the repository VM, the command gateway and the Git broker. No
  * member client participates in this loop. */
@@ -156,7 +165,12 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 	});
 	try {
 		await commands.start(stop.signal);
-		const executor = new CloudCodingExecutor({ control, host, owner: config.owner });
+		const executor = new CloudCodingExecutor({
+			control,
+			host,
+			owner: config.owner,
+			report: (stage, error) => console.error(JSON.stringify({ event: "coding-turn-error", stage, code: errorCode(error) })),
+		});
 		while (!stop.signal.aborted) {
 			try {
 				const status = await executor.runOnce(stop.signal);

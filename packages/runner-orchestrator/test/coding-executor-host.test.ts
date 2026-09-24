@@ -318,6 +318,7 @@ describe("concrete coding executor host composition", () => {
 		});
 		expect(vi.mocked(f.client.execInstance).mock.calls.map((call) => call[2].at(-1))).toEqual([
 			"qorpera-coding-watchdog.timer",
+			"qorpera-coding-watchdog.timer",
 			"install",
 			"initialize",
 		]);
@@ -495,7 +496,23 @@ describe("concrete coding executor host composition", () => {
 		await expect(f.host.prepareWorkspace(f.claim, f.turn(), f.signal)).rejects.toThrow("ARTIFACT_CHANGED");
 		const g = await fixture();
 		vi.mocked(g.client.execInstance).mockRejectedValue(new Error("timer stopped"));
-		await expect(g.host.prepareWorkspace(g.claim, g.turn(), g.signal)).rejects.toThrow("timer stopped");
+		const impatient = new LxdCodingExecutorHost({ ...g.options, guestReadyTimeoutMs: 50 });
+		await expect(impatient.prepareWorkspace(g.claim, g.turn(), g.signal)).rejects.toThrow(
+			"CODING_HOST_GUEST_NOT_READY",
+		);
+	});
+	it("waits for a freshly booted guest's watchdog timer instead of failing the session", async () => {
+		const f = await fixture();
+		const fallback = vi.mocked(f.client.execInstance).getMockImplementation()!;
+		let checks = 0;
+		vi.mocked(f.client.execInstance).mockImplementation(async (project, name, command, signal) => {
+			if (command.at(-1) === "qorpera-coding-watchdog.timer" && ++checks <= 2)
+				throw new Error("LXD instance command failed");
+			return fallback(project, name, command, signal);
+		});
+		const workspace = await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
+		expect(workspace.baseSha).toBe(f.baseSha);
+		expect(checks).toBeGreaterThanOrEqual(3);
 	});
 	it("does not publish or push a no-change original head", async () => {
 		const f = await fixture();

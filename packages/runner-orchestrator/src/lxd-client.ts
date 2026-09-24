@@ -155,7 +155,11 @@ export interface LxdInspectableClient extends LxdClient {
 
 export type LxdTrackedInstanceAction =
 	| { action: "create"; request: LxdCreateInstanceRequest }
-	| { action: "start" | "stop" | "delete"; name: string };
+	| { action: "start" | "delete"; name: string }
+	/** `force` powers the VM off instead of asking the guest to shut down. Only
+	 * for machines whose state lives outside the VM (coding VMs keep all work on
+	 * the NAS); offices and login machines keep the graceful stop. */
+	| { action: "stop"; name: string; force?: true };
 
 export interface LxdOperationReference {
 	project: string;
@@ -1501,7 +1505,12 @@ export class LxdUnixClient
 				result = await this.#request(
 					"PUT",
 					projectPath(`/1.0/instances/${name}/state`, project),
-					{ action: action.action, timeout: this.#operationTimeoutSeconds, force: false, stateful: false },
+					{
+						action: action.action,
+						timeout: this.#operationTimeoutSeconds,
+						force: action.action === "stop" && action.force === true,
+						stateful: false,
+					},
 					checked,
 				);
 			} else throw new Error("invalid action");

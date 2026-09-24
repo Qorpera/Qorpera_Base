@@ -245,18 +245,23 @@ export class CloudCodingExecutor {
 	readonly #host: CodingExecutorHost;
 	readonly #owner: string;
 	readonly #turnPollMs: number;
+	readonly #report: ((stage: "turn" | "stop", error: unknown) => void) | undefined;
 	#active = false;
 	constructor(options: {
 		control: CodingExecutorControl;
 		host: CodingExecutorHost;
 		owner: string;
 		turnPollMs?: number;
+		/** Observability only: which stage failed and with what error, before
+		 * recovery. Never decides anything; the kernel receipts do. */
+		report?: (stage: "turn" | "stop", error: unknown) => void;
 	}) {
 		if (!/^[A-Za-z0-9_.:-]{1,120}$/.test(options.owner)) throw new Error("Invalid coding executor owner");
 		this.#control = options.control;
 		this.#host = options.host;
 		this.#owner = options.owner;
 		this.#turnPollMs = options.turnPollMs ?? 2000;
+		this.#report = options.report;
 	}
 	async runOnce(signal: AbortSignal): Promise<"idle" | "completed" | "blocked" | "failed" | "recovery-required"> {
 		if (this.#active) throw new Error("Coding executor already active");
@@ -410,12 +415,14 @@ export class CloudCodingExecutor {
 			stop.abort();
 			await leaseRefresh.catch(() => undefined);
 			if (!claim) throw error;
+			this.#report?.("turn", error);
 			// A separate cleanup custody must permit physical stop after work
 			// authority disappears. Never claim capacity released or completion.
 			try {
 				await this.#host.stopWorkspace(claim, AbortSignal.timeout(30000));
-			} catch {
+			} catch (stopError) {
 				/* recovery still required */
+				this.#report?.("stop", stopError);
 			}
 			return "recovery-required";
 		} finally {
