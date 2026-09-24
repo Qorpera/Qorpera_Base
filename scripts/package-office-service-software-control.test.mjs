@@ -37,6 +37,13 @@ test("packages both pinned temporary software tools with independent digests and
 				assert.equal(refused.stderr, artifact.purpose === "install" ? "OFFICE_SOFTWARE_CONTROL_UNCONFIRMED\n" : "OFFICE_SOFTWARE_MEASUREMENT_UNCONFIRMED\n");
 			}
 		}
+		// The install tool masks the office image's apt self-update units before any
+		// service lands; the measure tool changes nothing.
+		const install = await readFile(join(output, "software-control.mjs"), "utf8");
+		for (const unit of ["apt-daily.timer", "apt-daily-upgrade.timer", "apt-daily.service", "apt-daily-upgrade.service", "unattended-upgrades.service"])
+			assert.ok(install.includes(`"${unit}"`), unit);
+		assert.ok(install.includes('"mask"'));
+		assert.ok(!(await readFile(join(output, "software-measurement-control.mjs"), "utf8")).includes('"mask"'));
 		const again = spawnSync(process.execPath, ["scripts/package-office-service-software-control.mjs", "--out", output], { cwd: root, timeout: 120000, encoding: "utf8" });
 		assert.notEqual(again.status, 0);
 	} finally {

@@ -40,6 +40,8 @@ on:
       - 'packages/runtime/test/cloud-company-computer-preparation-main.test.ts'
       - 'packages/runtime/test/cloud-company-computer-diagnostics.test.ts'
       - 'scripts/office-image-self-update.test.mjs'
+      - 'deploy/lxd-company-computer-guest/office-*.ts'
+      - 'scripts/package-office-service-software-control*.mjs'
       - 'deploy/coding-worker/**'
       - 'packages/runtime/src/cloud-secret-*.ts'
       - 'packages/shell/test/cloud-connector-*.test.ts'
@@ -123,6 +125,8 @@ jobs:
           test/coding-git-transfer.test.ts
           test/lxd-office-image-installation.test.ts
           test/lxd-office-image-self-update.test.ts
+          test/office-self-update-mask.test.ts
+          test/office-service-software-control.test.ts
 
       - name: Test coding session runtime contracts
         working-directory: packages/runtime
@@ -203,6 +207,7 @@ jobs:
           scripts/package-runtime-node-updater.test.mjs
           scripts/package-shared-execution-service.test.mjs
           scripts/office-image-self-update.test.mjs
+          scripts/package-office-service-software-control.test.mjs
 
       - name: Test node tidy-up
         run: node --test deploy/node-tidy/qorpera-node-tidy.test.mjs
