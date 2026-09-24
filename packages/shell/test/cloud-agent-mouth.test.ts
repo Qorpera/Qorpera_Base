@@ -113,7 +113,7 @@ describe("cloud agent public mouth", () => {
 		expect(await initialized.json()).toMatchObject({
 			result: {
 				protocolVersion: "2025-06-18",
-				instructions: expect.stringContaining("one public voice"),
+				instructions: expect.stringContaining("only public voice"),
 			},
 		});
 		const listed = await rpc(connection, "tools/list");

@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { COMPANY_COMPUTER_PREPARATION_MAX_BYTES } from "@qorpera/contracts";
 import { assertCompanyComputerImageArtifact } from "./cloud-company-computer-linux-host.ts";
 import { prepareCompanyComputerGuest } from "./cloud-company-computer-preparation.ts";
+import { assertGuestImageSelfUpdateMasked, GUEST_IMAGE_SELF_UPDATE_ENABLED } from "./lxd-guest-image-updates.ts";
 
 const requestPath = "/etc/qorpera-office/preparation.json";
 async function readRequest(signal: AbortSignal): Promise<Buffer> {
@@ -64,6 +65,8 @@ export async function runCompanyComputerPreparationMain(): Promise<
 	process.on("SIGTERM", shutdown);
 	const signal = AbortSignal.any([stop.signal, AbortSignal.timeout(300000)]);
 	try {
+		// No company state is copied into an image that can update itself.
+		await assertGuestImageSelfUpdateMasked();
 		const bytes = await readRequest(signal);
 		const result = await prepareCompanyComputerGuest(
 			JSON.parse(new TextDecoder("utf8", { fatal: true }).decode(bytes)),
@@ -96,8 +99,12 @@ if (
 	} else
 		runCompanyComputerPreparationMain()
 			.then((result) => console.log(JSON.stringify(result)))
-			.catch(() => {
-				console.error("Office preparation could not verify the configured boot and copied state.");
+			.catch((error: unknown) => {
+				console.error(
+					error instanceof Error && error.message.startsWith(`${GUEST_IMAGE_SELF_UPDATE_ENABLED}:`)
+						? error.message
+						: "Office preparation could not verify the configured boot and copied state.",
+				);
 				process.exitCode = 1;
 			});
 }

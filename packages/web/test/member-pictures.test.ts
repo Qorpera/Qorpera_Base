@@ -12,8 +12,15 @@ import {
 } from "../src/cloud/member-pictures.ts";
 import { personAvatar } from "../src/ui/dom.ts";
 import { PERSON_PICTURE_EVENT, personPicturesEpoch, setPersonPictures } from "../src/ui/person-pictures.ts";
+import { choosePictureCrop } from "../src/ui/picture-cropper.ts";
 import { PictureFileError } from "../src/ui/picture-file.ts";
 import { deferred, fixture, id, settle as settleMicrotasks, userA } from "./fixtures.ts";
+
+// The member fits every picked photo to the circle first; the dialog has its own tests.
+const fitted = vi.hoisted(() => ({
+	crop: { x: 12, y: 34, side: 56 } as { x: number; y: number; side: number } | undefined,
+}));
+vi.mock("../src/ui/picture-cropper.ts", () => ({ choosePictureCrop: vi.fn(async () => fitted.crop) }));
 
 const me = userA.id;
 const colleague = id(21);
@@ -36,6 +43,8 @@ async function settle(): Promise<void> {
 let urls = 0;
 let revoked: string[] = [];
 beforeEach(() => {
+	fitted.crop = { x: 12, y: 34, side: 56 };
+	vi.mocked(choosePictureCrop).mockClear();
 	// jsdom's Blob cannot hand back its bytes; the browser's can.
 	vi.stubGlobal("Blob", NodeBlob);
 	vi.stubGlobal("File", NodeFile);
@@ -55,7 +64,10 @@ afterEach(() => {
  * account and the objects in each folder (four at most). */
 function setup(
 	options: {
-		prepare?: (file: File) => Promise<{ blob: Blob; extension: "webp" | "jpg" }>;
+		prepare?: (
+			file: File,
+			crop?: { x: number; y: number; side: number },
+		) => Promise<{ blob: Blob; extension: "webp" | "jpg" }>;
 		pictures?: Record<string, string>;
 		tidyWaitMs?: number;
 	} = {},
@@ -406,6 +418,41 @@ describe("choosing the account's picture", () => {
 		await expect(Promise.race([store.choose(me, photo()), blocked])).resolves.toBeUndefined();
 	});
 
+	it("never lets a tidy that read the folder late delete the picture being saved", async () => {
+		const { store, current, objects, own, folder, set } = setup({
+			pictures: { [me]: "mine" },
+			tidyWaitMs: 20,
+			prepare: async (file) => ({ blob: blob(file.name), extension: "webp" }),
+		});
+		for (const text of ["a", "b", "c"])
+			objects.set(nameOf(me, text), { bytes: text, createdAt: new Date(NOW).toISOString() });
+		personAvatar("Account A", me);
+		await settle();
+		// The folder is full; the tidy that should make room reads the folder, and that read
+		// stalls. Meanwhile another tab frees a place, so the retried upload goes through.
+		const listing = deferred<ReturnType<typeof folder>>();
+		own.mockImplementationOnce(() => {
+			objects.delete(nameOf(me, "a"));
+			return listing.promise;
+		});
+		const saving = deferred<void>();
+		const save = set.getMockImplementation()!;
+		set.mockImplementationOnce(async (name) => {
+			await saving.promise;
+			return save(name);
+		});
+		const choosing = store.choose(me, photo());
+		await settle();
+		await vi.waitFor(() => expect(objects.has(nameOf(me, "photo.png"))).toBe(true), { timeout: 10_000 });
+		// Only now does the late read answer, listing the new upload too.
+		listing.resolve(folder());
+		await settle();
+		saving.resolve();
+		await choosing;
+		expect(current.get(me)).toBe(nameOf(me, "photo.png"));
+		expect(objects.has(nameOf(me, "photo.png"))).toBe(true);
+	});
+
 	it("goes back to initials and deletes the removed picture", async () => {
 		const { store, objects } = setup({ pictures: { [me]: "mine" } });
 		const disc = personAvatar("Account A", me);
@@ -469,6 +516,105 @@ describe("the account card's picture control", () => {
 		const choosing = store.choose(me, photo());
 		expect(error.hidden).toBe(true);
 		await choosing;
+	});
+
+	it("uploads the square the member fitted, and nothing when they cancel", async () => {
+		const prepare = vi.fn(async (_file: File, _crop?: { x: number; y: number; side: number }) => ({
+			blob: blob("fitted"),
+			extension: "webp" as const,
+		}));
+		const { upload, current } = setup({ prepare });
+		const { picture: control, error } = accountPicture(userA);
+		document.body.append(control, error);
+		await settle();
+		const input = control.querySelector<HTMLInputElement>("input[type=file]")!;
+		const pick = async () => {
+			Object.defineProperty(input, "files", { configurable: true, value: [photo()] });
+			input.dispatchEvent(new Event("change"));
+			await settle();
+		};
+		fitted.crop = undefined;
+		await pick();
+		expect(prepare).not.toHaveBeenCalled();
+		expect(upload).not.toHaveBeenCalled();
+		expect(error.hidden).toBe(true);
+		fitted.crop = { x: 100, y: 20, side: 640 };
+		await pick();
+		expect(prepare).toHaveBeenCalledWith(expect.any(File), { x: 100, y: 20, side: 640 });
+		expect(current.get(me)).toBe(nameOf(me, "fitted"));
+	});
+
+	it("opens one photo at a time, and ends the fitting when the account changes", async () => {
+		const { store, upload } = setup({ pictures: { [me]: "mine" } });
+		const { picture: control } = accountPicture(userA);
+		document.body.append(control);
+		await settle();
+		const fitting = deferred<{ x: number; y: number; side: number } | undefined>();
+		let lifetime: AbortSignal | undefined;
+		vi.mocked(choosePictureCrop).mockImplementationOnce((_file, signal) => {
+			lifetime = signal;
+			return fitting.promise;
+		});
+		const input = control.querySelector<HTMLInputElement>("input[type=file]")!;
+		const chooser = vi.spyOn(input, "click").mockImplementation(() => {});
+		Object.defineProperty(input, "files", { configurable: true, value: [photo()] });
+		input.dispatchEvent(new Event("change"));
+		// The photo is still opening: the picture says so, and keeps its focus (it stays enabled).
+		const trigger = control.querySelector<HTMLButtonElement>(".account-picture-button")!;
+		expect(trigger.getAttribute("aria-busy")).toBe("true");
+		expect(trigger.getAttribute("aria-label")).toBe("Opening your picture");
+		expect(trigger.disabled).toBe(false);
+		// A second pick is refused all the same, and so is the menu.
+		input.dispatchEvent(new Event("change"));
+		trigger.click();
+		trigger.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true }));
+		expect(control.querySelector<HTMLElement>("[role=menu]")!.hidden).toBe(true);
+		expect(choosePictureCrop).toHaveBeenCalledTimes(1);
+		expect(chooser).not.toHaveBeenCalled();
+		store.reset();
+		expect(lifetime?.aborted).toBe(true);
+		fitting.resolve({ x: 0, y: 0, side: 10 });
+		await settle();
+		expect(upload).not.toHaveBeenCalled();
+	});
+
+	it("stops looking busy once the fitting dialog is open", async () => {
+		setup();
+		const { picture: control } = accountPicture(userA);
+		document.body.append(control);
+		await settle();
+		const fitting = deferred<{ x: number; y: number; side: number } | undefined>();
+		vi.mocked(choosePictureCrop).mockImplementationOnce((_file, _signal, opened) => {
+			opened?.();
+			return fitting.promise;
+		});
+		const input = control.querySelector<HTMLInputElement>("input[type=file]")!;
+		Object.defineProperty(input, "files", { configurable: true, value: [photo()] });
+		input.dispatchEvent(new Event("change"));
+		const trigger = control.querySelector<HTMLButtonElement>(".account-picture-button")!;
+		expect(trigger.hasAttribute("aria-busy")).toBe(false);
+		fitting.resolve(undefined);
+		await settle();
+		expect(trigger.disabled).toBe(false);
+	});
+
+	it("shows why a photo could not be opened for fitting", async () => {
+		vi.mocked(choosePictureCrop).mockRejectedValueOnce(
+			new PictureFileError("This browser could not read that picture. Try a JPEG or PNG."),
+		);
+		const { upload } = setup();
+		const { picture: control, error } = accountPicture(userA);
+		document.body.append(control, error);
+		await settle();
+		const input = control.querySelector<HTMLInputElement>("input[type=file]")!;
+		Object.defineProperty(input, "files", { configurable: true, value: [photo()] });
+		input.dispatchEvent(new Event("change"));
+		await settle();
+		expect(upload).not.toHaveBeenCalled();
+		expect(error.textContent).toBe("This browser could not read that picture. Try a JPEG or PNG.");
+		const trigger = control.querySelector<HTMLButtonElement>(".account-picture-button")!;
+		expect(trigger.hasAttribute("aria-busy")).toBe(false);
+		expect(trigger.disabled).toBe(false);
 	});
 
 	it("offers another picture or initials from a menu once there is a picture; Escape closes only the menu", async () => {

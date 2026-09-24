@@ -718,7 +718,7 @@ it.each([
 		);
 		const prompt = JSON.parse(evidence.turnParameters.input[0].text);
 		expect(prompt.hireOverlay).toEqual({
-			schema: "qorpera.hire-overlay/v1",
+			schema: "qorpera.hire-overlay/v2",
 			trust: "job_specification_not_authority",
 			kind: agentKind,
 			agentId: f.context.identity.staffAgentId,
@@ -988,7 +988,8 @@ it("raises a card in reply to a member's post in the agent's own thread", async 
 	const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
 	const names = evidence.threadParameters.dynamicTools[0].tools.map((tool: { name: string }) => tool.name);
 	expect(names).toContain("ask_member");
-	expect(evidence.threadParameters.developerInstructions).toContain("Room wakes:");
+	expect(evidence.threadParameters.developerInstructions).toContain("# This wake: a post in a conversation");
+	expect(evidence.threadParameters.developerInstructions).toContain("a card from ask_member counts as one");
 });
 
 it("offers no card in a group chat, where the kernel lets the agent stay silent", async () => {
@@ -1016,8 +1017,10 @@ it("runs a background worker blank: reading tools and its report, no mouth, no c
 		"recall_memory",
 		"report_work",
 	]);
-	expect(evidence.threadParameters.developerInstructions).toContain("Agent wakes with source.kind worker-dispatch");
-	expect(evidence.threadParameters.developerInstructions).not.toContain("Agent wakes with source.kind coworker:");
+	expect(evidence.threadParameters.developerInstructions).toContain("# This wake: you are a background worker");
+	expect(evidence.threadParameters.developerInstructions).toContain("# Before you stop\nCall report_work once");
+	expect(evidence.threadParameters.developerInstructions).not.toContain("# Standing work");
+	expect(evidence.threadParameters.developerInstructions).not.toContain("# This wake: a message from a coworker");
 });
 
 it("does not fall back to local context or another harness when cloud context is unavailable", async () => {

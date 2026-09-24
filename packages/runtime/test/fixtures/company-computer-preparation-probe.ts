@@ -20,6 +20,7 @@ import { type CompanyComputerPreparationRequest, parseCompanyComputerPreparation
 import { prepareCompanyComputerGuest } from "../../src/cloud-company-computer-preparation.ts";
 import { runCompanyComputerPreparationMain } from "../../src/cloud-company-computer-preparation-main.ts";
 import { parseRecoveryDirectoryMount } from "../../src/cloud-identity-recovery-filesystems.ts";
+import { GUEST_IMAGE_SELF_UPDATE_UNITS } from "../../src/lxd-guest-image-updates.ts";
 
 const mode = process.argv[2],
 	scenario = process.argv[3];
@@ -43,6 +44,11 @@ if (mode === "--child") {
 } else if (mode === "--parent") {
 	assert.equal(process.platform, "linux");
 	assert.equal(process.getuid!(), 0);
+	// The image build masks the apt self-update units; "unmasked" leaves one out
+	// so every other failure case fails for its own reason, not the image's.
+	for (const unit of GUEST_IMAGE_SELF_UPDATE_UNITS)
+		if (scenario !== "unmasked" || unit !== "apt-daily-upgrade.timer")
+			await symlink("/dev/null", `/etc/systemd/system/${unit}`);
 	const paths = [".", "desktop", "profiles", "profiles/profile", "screens", "screens/screen", "workbench"];
 	const content =
 		scenario === "empty"
@@ -172,6 +178,10 @@ if (mode === "--child") {
 	} else if (scenario === "cancelled") {
 		assert.equal(result.status, 0, result.stderr);
 		assert.deepEqual(JSON.parse(result.stdout), { state: "cancelled" });
+	} else if (scenario === "unmasked") {
+		assert.notEqual(result.status, 0, result.stdout);
+		assert(result.stderr.includes("RUNNER_IMAGE_SELF_UPDATE_ENABLED:APT_DAILY_UPGRADE_TIMER"), result.stderr);
+		assert(!result.stdout.includes('"state":"prepared"'));
 	} else {
 		assert.notEqual(result.status, 0, result.stdout);
 		assert.equal(result.signal, null, result.stderr);

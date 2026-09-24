@@ -573,6 +573,8 @@ The `--boundary` probe uses a unique persistent Docker volume, a synthetic root 
 
 ## Governed service-only software revisions (temporary provider-pinned tools)
 
+**Re-image before updating an office's code (from bundle v98).** The office service and preparation refuse to run unless the image masks the five apt self-update units (`RUNNER_IMAGE_SELF_UPDATE_ENABLED:<UNIT>`, see [INSTALLATION.md](INSTALLATION.md)). A service-only or code-only revision built from v98 onward therefore needs an office whose image the v98 installer produced. Installed into an office on an older, unmasked image, the new service refuses on every start (three failed starts, then systemd gives up) and preparation refuses too, so the office stays down. The signed statement and the install receipt do not record the masks, so nothing catches this beforehand: re-image such an office first.
+
 The historical office image is never rebuilt for a service-only update. Instead the provider stages two standalone, independently pinned root tools into the root-only `/run/qorpera-office-preparation` inbox and runs them under the existing preparation flock:
 
 | Tool | Entry point | Staged path | Purpose |
