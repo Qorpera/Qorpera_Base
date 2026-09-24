@@ -76,7 +76,8 @@ export function accountPicture(user: User | null): { picture: HTMLElement; error
 		else if (!root.contains(event.target as Node)) setOpen(false);
 	};
 	function setOpen(next: boolean, focusTrigger = false): void {
-		if (next === open) return;
+		// While a photo opens, nothing else starts: no menu, no second pick.
+		if (next === open || (next && picking)) return;
 		open = next;
 		menu.hidden = !next;
 		trigger.setAttribute("aria-expanded", String(next));

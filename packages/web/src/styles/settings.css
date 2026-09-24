@@ -45,7 +45,8 @@
 .account-picture-button { position: relative; display: grid; padding: 0; border: 0; border-radius: 50%; background: none; color: inherit; cursor: pointer; }
 .account-picture-button:disabled { cursor: default; }
 .account-picture-button::after { content: ""; position: absolute; inset: 0; border-radius: 50%; background: transparent; transition: background 120ms ease; pointer-events: none; }
-.account-picture.is-changeable .account-picture-button:not(:disabled):is(:hover, [aria-expanded="true"])::after { background: rgba(0, 0, 0, 0.16); }
+.account-picture.is-changeable .account-picture-button:not(:disabled, [aria-busy]):is(:hover, [aria-expanded="true"])::after { background: rgba(0, 0, 0, 0.16); }
+.account-picture.is-busy .account-picture-button { cursor: progress; }
 .account-picture-badge { position: absolute; right: -4px; bottom: -4px; display: grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; background: var(--overlay); color: var(--text); box-shadow: 0 0 0 2px #f1f1ef, 0 1px 3px rgba(0, 0, 0, 0.2); pointer-events: none; }
 .account-picture-badge[hidden] { display: none; }
 .account-picture-badge .icon { width: 13px; height: 13px; stroke-width: 2; }

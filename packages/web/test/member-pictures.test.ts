@@ -545,7 +545,7 @@ describe("the account card's picture control", () => {
 	});
 
 	it("opens one photo at a time, and ends the fitting when the account changes", async () => {
-		const { store, upload } = setup();
+		const { store, upload } = setup({ pictures: { [me]: "mine" } });
 		const { picture: control } = accountPicture(userA);
 		document.body.append(control);
 		await settle();
@@ -564,9 +564,11 @@ describe("the account card's picture control", () => {
 		expect(trigger.getAttribute("aria-busy")).toBe("true");
 		expect(trigger.getAttribute("aria-label")).toBe("Opening your picture");
 		expect(trigger.disabled).toBe(false);
-		// A second pick is refused all the same.
+		// A second pick is refused all the same, and so is the menu.
 		input.dispatchEvent(new Event("change"));
 		trigger.click();
+		trigger.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true }));
+		expect(control.querySelector<HTMLElement>("[role=menu]")!.hidden).toBe(true);
 		expect(choosePictureCrop).toHaveBeenCalledTimes(1);
 		expect(chooser).not.toHaveBeenCalled();
 		store.reset();
