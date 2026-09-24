@@ -99,6 +99,34 @@ describe("agent sidebar tool", () => {
 			f.run.close();
 		}
 	});
+	it("hands a refusal to the model as a result, and rejects a refusal that claims a change", async () => {
+		const f = await fixture((request, runId) => ({
+			schema: "qorpera.agent-sidebar/v1",
+			runId,
+			action: request.action,
+			changed: request.action === "rename_section",
+			refused: "No section is called that",
+			sections: [],
+			unassigned: [],
+		}));
+		try {
+			const refused = await f.boundary.invoke("sidebar_5", "qorpera", "organize_sidebar", {
+				action: "move_agent",
+				agentId: bob,
+				section: "Nowhere",
+			});
+			expect(refused.success, JSON.stringify(refused)).toBe(true);
+			expect(refused.contentItems[0].text).toContain("No section is called that");
+			const contradictory = await f.boundary.invoke("sidebar_6", "qorpera", "organize_sidebar", {
+				action: "rename_section",
+				section: "Sales",
+				name: "Growth",
+			});
+			expect(contradictory.success).toBe(false);
+		} finally {
+			f.run.close();
+		}
+	});
 	it("rejects a receipt for another run or action", async () => {
 		const f = await fixture((request) => ({
 			schema: "qorpera.agent-sidebar/v1",

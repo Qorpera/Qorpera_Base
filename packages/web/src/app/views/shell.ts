@@ -277,7 +277,7 @@ function sectionParts(zone: string, sectionId?: string): SectionParts {
 	const title = h("div", {
 		class: "rail-section-title",
 		id: titleId,
-		...(sectionId ? { tabindex: "0", "data-section-id": sectionId } : {}),
+		...(sectionId ? { "data-section-id": sectionId } : {}),
 	});
 	const list = h("div", { class: "rail-section-list" });
 	return {
@@ -364,6 +364,18 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 			signal: company.signal,
 		});
 		pressToOpenMenu(list, company, created);
+		// Dragging has a keyboard twin: Alt with an arrow moves the focused agent one place.
+		list.addEventListener(
+			"keydown",
+			(event) => {
+				const delta = matchesKey(event, "previous") ? -1 : matchesKey(event, "next") ? 1 : 0;
+				const agentId = (event.target as HTMLElement).dataset?.agentId;
+				if (!event.altKey || !delta || !agentId) return;
+				event.preventDefault();
+				nudgeAgent(company, agentId, delta);
+			},
+			{ signal: company.signal },
+		);
 		// Every keystroke filters, composed text included; redrawing never moves the field.
 		// Results start at the top of the list.
 		quietScroll(created.list);
@@ -687,12 +699,32 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	zone(parts.pinnedGroup, Boolean(sidebar));
 	parts.pinnedGroup.classList.toggle("is-empty", !pinnedElements.length);
 	reconcile(parts.pinnedGroup, [...pinnedElements, parts.pinnedGroup.querySelector<HTMLElement>(".rail-drop-slot")!]);
+	// A section title opens its menu from the keyboard only for members who can change it;
+	// for everyone else it is just a label, never a tab stop.
+	const organize = canOrganize(company);
 	for (const { group, rows: sectionRows } of sectionGroups) {
 		zone(group.el, true);
 		reconcile(group.list, sectionRows);
+		if (organize) {
+			group.title.tabIndex = 0;
+			group.title.setAttribute("role", "button");
+			group.title.setAttribute("aria-haspopup", "menu");
+		} else {
+			group.title.removeAttribute("tabindex");
+			group.title.removeAttribute("role");
+			group.title.removeAttribute("aria-haspopup");
+		}
 	}
 	zone(parts.unassigned.el, Boolean(sidebar));
 	parts.unassigned.title.hidden = !sectioned;
+	// Without sections the list is not a group: nothing would name it but a hidden title.
+	if (sectioned) {
+		parts.unassigned.el.setAttribute("role", "group");
+		parts.unassigned.el.setAttribute("aria-labelledby", parts.unassigned.title.id);
+	} else {
+		parts.unassigned.el.removeAttribute("role");
+		parts.unassigned.el.removeAttribute("aria-labelledby");
+	}
 	reconcile(parts.unassigned.list, unassignedRows);
 	reconcile(parts.cofounderGroup, cofounderElement ? [cofounderElement] : []);
 	reconcile(
@@ -815,6 +847,11 @@ function agentMenu(company: CompanyController, parts: RailParts, agent: HostedSt
 	const groups: MenuEntry[][] = [];
 	if (sidebar && !isCofounder) {
 		const pinned = sidebar.pinned.includes(agent.id);
+		// A pin list can still name an agent deleted since it was read; the cloud refuses those.
+		const livePins = () => {
+			const roster = company.sidebarRoster();
+			return sidebar.pinned.filter((agentId) => roster.includes(agentId));
+		};
 		const first: MenuEntry[] = [];
 		if (pinned)
 			first.push({
@@ -823,14 +860,14 @@ function agentMenu(company: CompanyController, parts: RailParts, agent: HostedSt
 				select: () =>
 					void company.changeSidebar({
 						action: "set_pins",
-						order: sidebar.pinned.filter((agentId) => agentId !== agent.id),
+						order: livePins().filter((agentId) => agentId !== agent.id),
 					}),
 			});
 		else if (sidebar.pinned.length < PIN_LIMIT)
 			first.push({
 				label: "Pin",
 				icon: "pin",
-				select: () => void company.changeSidebar({ action: "set_pins", order: [...sidebar.pinned, agent.id] }),
+				select: () => void company.changeSidebar({ action: "set_pins", order: [...livePins(), agent.id] }),
 			});
 		if (canOrganize(company)) {
 			const known = new Set(sidebar.sections.map((section) => section.sectionId));
@@ -876,10 +913,11 @@ function agentMenu(company: CompanyController, parts: RailParts, agent: HostedSt
 			{
 				label: "Copy conversation ID",
 				icon: "copy",
-				select: () =>
-					void navigator.clipboard
-						?.writeText(sessionId)
-						.catch(() => company.reportRailError("The conversation ID could not be copied.")),
+				select: () => {
+					const failed = () => company.reportRailError("The conversation ID could not be copied.");
+					if (!navigator.clipboard) failed();
+					else void navigator.clipboard.writeText(sessionId).catch(failed);
+				},
 			},
 		]);
 	const last: MenuEntry[] = [];
@@ -944,8 +982,8 @@ async function deleteAgent(company: CompanyController, parts: RailParts, agent: 
 				(route.section === "chat" && route.id === company.primarySessionFor(agent.id)?.sessionId))
 		)
 			location.hash = `#/c/${company.profile.profileId}`;
-		// The cloud closes the agent's conversations with it.
-		await Promise.all([company.refreshStaff(), company.refreshSessions()]);
+		// The cloud closes the agent's conversations with it and drops it from every sidebar.
+		await Promise.all([company.refreshStaff(), company.refreshSessions(), company.refreshSidebar()]);
 	} catch (error) {
 		if (company.signal.aborted) return;
 		const reason =
@@ -1007,22 +1045,31 @@ function openRailMenu(company: CompanyController, parts: RailParts, event: Mouse
 		event.preventDefault();
 		return;
 	}
+	// Shift with a mouse right-click keeps the browser's own menu (Open in new tab, Copy link).
+	// A menu opened from the keyboard carries no pointer position.
+	if (event.shiftKey && (event.clientX || event.clientY)) return;
 	const agentElement = target.closest<HTMLElement>("[data-agent-id], [data-cofounder-id]");
 	const titleElement = target.closest<HTMLElement>(".rail-section-title[data-section-id]");
 	let items: MenuEntry[] = [];
 	let label = "Sidebar";
 	let opener: HTMLElement = parts.list;
+	let findOpener: (() => HTMLElement | null) | undefined;
 	if (agentElement) {
 		const agent = company.staffById(agentElement.dataset.agentId ?? agentElement.dataset.cofounderId);
 		if (agent) {
 			items = agentMenu(company, parts, agent);
 			label = `${agent.displayName} actions`;
 			opener = agentElement;
+			// The row is rebuilt when the agent's state changes; focus goes back to the new one.
+			findOpener = () =>
+				parts.list.querySelector<HTMLElement>(`[data-agent-id="${agent.id}"], [data-cofounder-id="${agent.id}"]`);
 		}
 	} else if (titleElement?.dataset.sectionId) {
-		items = sectionMenu(company, titleElement.dataset.sectionId);
+		const sectionId = titleElement.dataset.sectionId;
+		items = sectionMenu(company, sectionId);
 		label = `${titleElement.textContent ?? "Section"} actions`;
 		opener = titleElement;
+		findOpener = () => parts.list.querySelector<HTMLElement>(`.rail-section-title[data-section-id="${sectionId}"]`);
 	} else if (!target.closest("a[href], button, input") && canOrganize(company)) {
 		items = [{ label: "New section", icon: "folder_plus", select: () => void askSectionName(company) }];
 	}
@@ -1030,7 +1077,7 @@ function openRailMenu(company: CompanyController, parts: RailParts, event: Mouse
 	if (!items.length) return;
 	event.preventDefault();
 	const point = menuPoint(event, opener);
-	openContextMenu({ label, x: point.x, y: point.y, items, opener });
+	openContextMenu({ label, x: point.x, y: point.y, items, opener, ...(findOpener ? { findOpener } : {}) });
 }
 
 /** A long press is the right-click of a touch screen (iOS Safari sends no contextmenu event). */
@@ -1103,8 +1150,11 @@ function dragHooks(company: CompanyController, parts: RailParts) {
 		return state.sidebarUnavailable ? undefined : state.sidebar;
 	};
 	return {
+		// The collapsed rail hides the search field and ignores its text.
 		canDrag: (agentId: string) =>
-			Boolean(sidebarOf()) && !parts.input.value.trim() && company.sidebarRoster().includes(agentId),
+			Boolean(sidebarOf()) &&
+			(parts.collapsed || !parts.input.value.trim()) &&
+			company.sidebarRoster().includes(agentId),
 		accepts: (zone: string, agentId: string) => {
 			const sidebar = sidebarOf();
 			if (!sidebar) return false;
@@ -1137,4 +1187,35 @@ function dragHooks(company: CompanyController, parts: RailParts) {
 			});
 		},
 	};
+}
+
+/** Moves an agent one place up or down among what the member sees: in the pinned row
+ * (the member's own order) or in its section (the company's; hidden and pinned agents
+ * keep their places). */
+function nudgeAgent(company: CompanyController, agentId: string, delta: number): void {
+	const state = company.store.get();
+	const sidebar = state.sidebarUnavailable ? undefined : state.sidebar;
+	if (!sidebar) return;
+	const roster = company.sidebarRoster();
+	if (sidebar.pinned.includes(agentId)) {
+		const order = sidebar.pinned.filter((pinned) => roster.includes(pinned));
+		const from = order.indexOf(agentId);
+		const to = from + delta;
+		if (from < 0 || to < 0 || to >= order.length) return;
+		order.splice(from, 1);
+		order.splice(to, 0, agentId);
+		void company.changeSidebar({ action: "set_pins", order });
+		return;
+	}
+	if (!canOrganize(company)) return;
+	const known = new Set(sidebar.sections.map((section) => section.sectionId));
+	const placed = sidebar.placements[agentId]?.sectionId;
+	const sectionId = placed && known.has(placed) ? placed : undefined;
+	const order = containerOrder(sidebar, sectionId, roster);
+	const visible = order.filter((member) => !sidebar.pinned.includes(member) && !sidebar.hidden.includes(member));
+	const neighbour = visible[visible.indexOf(agentId) + delta];
+	if (!neighbour) return;
+	order.splice(order.indexOf(agentId), 1);
+	order.splice(order.indexOf(neighbour) + (delta > 0 ? 1 : 0), 0, agentId);
+	void company.changeSidebar({ action: "move_agent", staffAgentId: agentId, sectionId: sectionId ?? null, order });
 }

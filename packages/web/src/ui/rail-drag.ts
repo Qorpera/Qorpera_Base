@@ -48,8 +48,15 @@ export class RailDrag {
 		this.#marker = document.createElement("div");
 		this.#marker.className = "rail-drop-marker";
 		this.#marker.setAttribute("aria-hidden", "true");
-		// Links and figures are natively draggable; the rail does its own dragging.
-		list.addEventListener("dragstart", (event) => event.preventDefault(), { signal });
+		// Agent links and their figures are natively draggable; the rail drags those itself.
+		// Other links (group chats) keep the browser's own dragging.
+		list.addEventListener(
+			"dragstart",
+			(event) => {
+				if ((event.target as Element).closest?.("[data-agent-id], [data-cofounder-id]")) event.preventDefault();
+			},
+			{ signal },
+		);
 		list.addEventListener("pointerdown", (event) => this.#press(event), { signal });
 		document.addEventListener("pointermove", (event) => this.#move(event), { signal });
 		document.addEventListener("pointerup", (event) => this.#release(event), { signal });
@@ -104,6 +111,10 @@ export class RailDrag {
 		document.documentElement.classList.remove("rail-drag-active");
 	}
 
+	#compact(): boolean {
+		return this.#list.closest(".rail-compact") !== null;
+	}
+
 	#row(agentId: string, near: HTMLElement): HTMLElement | undefined {
 		// The same agent can stand in the list and nowhere else; prefer the zone it was in.
 		const zone = near.closest("[data-drop-zone]");
@@ -130,9 +141,20 @@ export class RailDrag {
 	}
 
 	#begin(active: Active): void {
+		// A redraw between the press and the first move may have rebuilt the row.
+		if (!active.source.isConnected) {
+			const source = this.#row(active.agentId, active.source);
+			if (!source) {
+				this.#active = undefined;
+				return;
+			}
+			active.source = source;
+		}
 		const rect = active.source.getBoundingClientRect();
 		const ghost = active.source.cloneNode(true) as HTMLElement;
 		ghost.classList.add("rail-drag-ghost");
+		// Outside the rail the ghost would lose the collapsed rail's layout.
+		ghost.classList.toggle("compact", this.#compact());
 		ghost.classList.remove("active", "menu-open", "is-drag-source");
 		ghost.removeAttribute("href");
 		ghost.removeAttribute("id");
@@ -160,6 +182,7 @@ export class RailDrag {
 		if (!active.ghost) {
 			if (Math.hypot(event.clientX - active.start.x, event.clientY - active.start.y) < THRESHOLD) return;
 			this.#begin(active);
+			if (!active.ghost) return;
 		}
 		event.preventDefault();
 		active.lastX = event.clientX;
@@ -190,7 +213,8 @@ export class RailDrag {
 		const items = [...zone.querySelectorAll<HTMLElement>("[data-agent-id]")].filter(
 			(item) => item.dataset.agentId !== active.agentId,
 		);
-		const grid = zone.dataset.dropZone === "pinned";
+		// The collapsed rail stacks pinned figures in a column: they order like rows there.
+		const grid = zone.dataset.dropZone === "pinned" && !this.#compact();
 		let index = items.length;
 		for (const [position, item] of items.entries()) {
 			const rect = item.getBoundingClientRect();

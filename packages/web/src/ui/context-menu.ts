@@ -27,6 +27,8 @@ export interface ContextMenuOptions {
 	items: MenuEntry[];
 	/** Gets focus back when the menu closes, and a class while it is open. */
 	opener?: HTMLElement;
+	/** Finds the opener again when a redraw replaced it while the menu was open. */
+	findOpener?: () => HTMLElement | null;
 	onClose?: () => void;
 }
 
@@ -202,8 +204,9 @@ export function openContextMenu(options: ContextMenuOptions): ContextMenu {
 			opener?.classList.remove("menu-open");
 			if (active === handle) active = undefined;
 			// Focus returns only when it was in the menu; a press elsewhere keeps its own target.
-			if (opener?.isConnected && (!document.activeElement || document.activeElement === document.body))
-				opener.focus({ preventScroll: true });
+			const target = opener?.isConnected ? opener : options.findOpener?.();
+			if (target?.isConnected && (!document.activeElement || document.activeElement === document.body))
+				target.focus({ preventScroll: true });
 			options.onClose?.();
 		},
 	};

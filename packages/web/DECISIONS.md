@@ -200,6 +200,9 @@ containers that light up, and agents moving each other into sections.
   machinery that does not exist (runtime contract §14.5). It is its own feature.
 - **Moving a pinned agent to a section unpins it**, from the menu as from a drag,
   so the move is visible; choosing the section an agent is already in does nothing.
+- **Dragging has keyboard twins.** Alt+Up / Alt+Down move the focused agent one
+  place in its section or in the pinned row; Move to covers sections. Shift with a
+  mouse right-click keeps the browser's own link menu.
 - **Delete is permanent**, as in Grok Bot: it deletes the agent's document
   (owner or admin; the Co-Founder never), after a confirmation that says so.
 

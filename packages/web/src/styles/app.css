@@ -284,6 +284,7 @@ label > input, label > select { font-weight: 400; }
 .rail-section-title {
 	padding: 12px 8px 5px; font-size: 12px; font-weight: 600; line-height: 16px; color: var(--rail-small);
 	overflow: hidden; text-overflow: ellipsis; white-space: nowrap; border-radius: 6px;
+	user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
 }
 .rail-section-title[hidden] { display: none; }
 .rail-section-title:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; }
@@ -313,6 +314,9 @@ label > input, label > select { font-weight: 400; }
 }
 .rail-drop-marker { position: absolute; z-index: 5; height: 2px; border-radius: 1px; background: var(--rail-selection); pointer-events: none; }
 .rail-drop-marker.vertical { width: 2px; }
+/* Dragged from the collapsed rail, the image is the figure alone, as the row shows it there. */
+.rail-drag-ghost.compact :is(.rail-row-copy, .rail-pin-name) { display: none; }
+.rail-drag-ghost.compact.rail-row { grid-template-columns: 1fr; justify-items: center; padding: 5px; }
 .rail-drag-active, .rail-drag-active * { cursor: grabbing !important; user-select: none; -webkit-user-select: none; }
 .rail-row {
 	--rail-row-figure: 40px;
@@ -340,7 +344,7 @@ label > input, label > select { font-weight: 400; }
  * the caption rebuilds its letters when shown (conversation.css pauses it while hidden). */
 .status-wave-word { display: inline-block; max-width: 100%; }
 .status-wave-letter { display: inline-block; color: inherit; animation: status-ink-wave 1400ms ease-in-out infinite; animation-delay: var(--wave-delay, 0ms); }
-.rail-row.active, .cofounder-home.active { --status-crest: #fff; }
+.rail-row.active, .rail-pin.active, .cofounder-home.active { --status-crest: #fff; }
 @keyframes status-ink-wave {
 	0%, 10%, 50%, 100% { color: inherit; text-shadow: 0 0 0 transparent; }
 	30% { color: var(--status-crest, var(--text)); text-shadow: -.18px 0 0 currentColor, .18px 0 0 currentColor; }
@@ -361,6 +365,7 @@ label > input, label > select { font-weight: 400; }
 .rail-compact .rail-pin { width: auto; height: auto; padding: 5px; }
 .rail-compact .rail-pin-name, .rail-compact .rail-section-title { display: none; }
 .rail-compact .rail-pin-stand, .rail-compact .rail-pin .figure { width: 50px; height: 50px; }
+.rail-compact .rail-dragging .rail-pinned.is-empty .rail-drop-slot { height: 44px; font-size: 0; }
 .rail-compact .rail-section:not(:first-child) { margin-top: 4px; padding-top: 4px; border-top: 1px solid var(--rail-line); border-radius: 0; }
 .rail-compact .account-menu-rail .account-trigger { justify-content: center; }
 .rail-compact .account-menu-rail .account-popover { position: fixed; left: 8px; right: auto; bottom: 66px; width: 260px; z-index: 50; }
@@ -382,7 +387,7 @@ label > input, label > select { font-weight: 400; }
 .figure-canvas, .figure-fallback { position: absolute; inset: -6%; display: block; width: 112%; height: 112%; max-width: none; object-fit: contain; pointer-events: none; user-select: none; }
 .figure-canvas[hidden], .figure-fallback[hidden] { display: none; }
 @media (forced-colors: active) {
-	.cofounder-home.active, .rail-row.active { outline: 2px solid Highlight; }
+	.cofounder-home.active, .rail-row.active, .rail-pin.active { outline: 2px solid Highlight; }
 	/* Forced colours empty both discs into rings; the failed one stays filled. */
 	/* Under .rail so it outranks the hover and selected ring colours. */
 	.rail :is(.cofounder-status, .rail-row-status).failed { forced-color-adjust: none; background: CanvasText; border-color: Canvas; }

@@ -128,7 +128,8 @@ select public.qorpera_request_session_turn_v2('${company.session}','${client}','
  'sponsorship_request',null,null,'${company.owner}',null,null,'managed_sandbox','agent_turn','agent_turn',
  'review','queue-review',array['${company.staff}'::uuid]);`;
 	const remove = (company) => `${auth(company.owner)} select public.qorpera_remove_profile_member('${company.profile}','${company.member}');`;
-	const pause = (company, paused) => `${auth(company.owner)} select public.qorpera_set_company_execution_pause('${company.profile}',${paused},'Queue concurrency');`;
+	// The pause is an operator brake: the operator session acts with the owner's claims.
+	const pause = (company, paused) => `${auth(company.owner)} reset role; select public.qorpera_set_company_execution_pause('${company.profile}',${paused},'Queue concurrency');`;
 	const materialize = `${service} select public.qorpera_materialize_session_execution_runs(32);`;
 	const sponsored = `${service} select public.qorpera_materialize_session_turn_requests(32);`;
 	const check = (query) => assert.equal(sql(query), "t", query);

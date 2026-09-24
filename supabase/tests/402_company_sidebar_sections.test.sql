@@ -156,11 +156,42 @@ begin
 		'Members see what agents changed');
 end $$;
 
--- Agent requests are closed and name real sections and agents.
-select pg_temp.wake_error($q$select pg_temp.agent_sidebar('{"action":"move_agent","agentId":"30000000-0000-4000-8000-000000000031","section":"Nowhere"}')$q$,'P0002');
+-- A refusal the agent can act on comes back as data with nothing changed; a malformed
+-- request is still an error.
+do $$
+declare v_result jsonb;
+begin
+	v_result := pg_temp.agent_sidebar('{"action":"move_agent","agentId":"30000000-0000-4000-8000-000000000031","section":"Nowhere"}');
+	perform pg_temp.wake_assert(v_result ->> 'refused' = 'No section is called that' and not (v_result ->> 'changed')::boolean,
+		'A missing section is a refusal the agent reads');
+	v_result := pg_temp.agent_sidebar('{"action":"create_section","name":"   "}');
+	perform pg_temp.wake_assert(v_result ? 'refused','An empty name is refused as data');
+	v_result := pg_temp.agent_sidebar('{"action":"create_section","name":"Growth"}');
+	perform pg_temp.wake_assert(not (v_result ->> 'changed')::boolean and not v_result ? 'refused','Growth exists already');
+	-- A rename retried after it applied finds the section under its new name.
+	v_result := pg_temp.agent_sidebar('{"action":"rename_section","section":"Sales","name":"Growth"}');
+	perform pg_temp.wake_assert(not (v_result ->> 'changed')::boolean and not v_result ? 'refused','A retried rename is done');
+	-- Names are found the way they are written, inner spaces collapsed.
+	v_result := pg_temp.agent_sidebar('{"action":"rename_section","section":"  platform   team ","name":"Platform"}');
+	perform pg_temp.wake_assert(v_result ? 'refused','Unknown section by collapsed name is refused');
+	v_result := pg_temp.agent_sidebar('{"action":"move_agent","agentId":"30000000-0000-4000-8000-000000000031","section":"  growth  "}');
+	perform pg_temp.wake_assert(not v_result ? 'refused','A name with extra spaces finds its section');
+end $$;
 select pg_temp.wake_error($q$select pg_temp.agent_sidebar('{"action":"move_agent","agentId":"30000000-0000-4000-8000-000000000031"}')$q$,'22023');
 select pg_temp.wake_error($q$select pg_temp.agent_sidebar('{"action":"list","extra":true}')$q$,'22023');
-select pg_temp.wake_error($q$select pg_temp.agent_sidebar('{"action":"create_section","name":"   "}')$q$,'22023');
+select pg_temp.member_error('30000000-0000-4000-8000-000000000001',
+	'{"action":"move_agent","staffAgentId":"30000000-0000-4000-8000-000000000031","sectionId":null,"unpin":"yes"}','22023');
+-- Only members call the member RPCs and only the runner calls the agent RPC.
+do $$
+begin
+	perform pg_temp.wake_assert(not has_function_privilege('anon','public.qorpera_read_company_sidebar(uuid)','execute')
+		and not has_function_privilege('anon','public.qorpera_manage_company_sidebar(uuid,jsonb)','execute')
+		and not has_function_privilege('authenticated','public.qorpera_manage_agent_sidebar(jsonb,jsonb)','execute')
+		and not has_function_privilege('qorpera_secret_broker','public.qorpera_manage_agent_sidebar(jsonb,jsonb)','execute')
+		and not has_function_privilege('qorpera_secret_broker','public.qorpera_manage_company_sidebar(uuid,jsonb)','execute')
+		and has_function_privilege('service_role','public.qorpera_manage_agent_sidebar(jsonb,jsonb)','execute'),
+		'Sidebar RPC grants');
+end $$;
 -- The agent RPC is the runner's; a member cannot call it, and an agent cannot call the member RPC.
 select pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001');
 select pg_temp.wake_error($q$select public.qorpera_manage_agent_sidebar(current_setting('qorpera_test.sidebar_binding')::jsonb,'{"action":"list"}')$q$,'42501');

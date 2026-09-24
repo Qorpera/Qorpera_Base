@@ -12,7 +12,7 @@ import {
 	parseCompanySidebar,
 	type SidebarRequest,
 } from "../src/cloud/sidebar.ts";
-import type { HostedStaffAgent } from "../src/cloud/types.ts";
+import type { HostedStaffAgent, HostedStaffExecutionActivity } from "../src/cloud/types.ts";
 import { openMenu } from "../src/ui/context-menu.ts";
 import { h } from "../src/ui/dom.ts";
 import { deferred, fixture, id, profileA, session, settle, staff, stubFigureMotion, team, userA } from "./fixtures.ts";
@@ -37,6 +37,15 @@ const demo = (): CompanySidebar => ({
 	pinned: [dee.id],
 	hidden: [],
 });
+
+const activityRow: HostedStaffExecutionActivity = {
+	staffAgentId: "",
+	runId: id(80),
+	sourceKind: "session_turn",
+	activity: "working",
+	jobStatus: "leased",
+	updatedAt: "2026-09-05T10:00:00Z",
+};
 
 const cleanup: (() => void)[] = [];
 beforeEach(() => {
@@ -266,6 +275,67 @@ describe("rail right-click menus", () => {
 		});
 		expect(names(rail.querySelectorAll(".rail-pin"))).toEqual([]);
 		expect(groups(rail)[1]).toEqual(["Ops", "Dee"]);
+	});
+	it("never shows a network error's text, and leaves Shift+right-click to the browser", async () => {
+		const { rail, manage, ready } = companyWith(demo());
+		await ready;
+		await settle();
+		manage.mockRejectedValueOnce(
+			new CloudRpcError("qorpera_manage_company_sidebar", { message: "TypeError: Failed to fetch" }, 0),
+		);
+		rightClick(rowOf(rail, "Cy"));
+		choose("Pin");
+		await settle();
+		expect(rail.querySelector(".notice")?.textContent).toContain("The sidebar could not be changed. Try again.");
+		expect(rail.querySelector(".notice")?.textContent).not.toContain("fetch");
+		const shifted = new MouseEvent("contextmenu", {
+			bubbles: true,
+			cancelable: true,
+			shiftKey: true,
+			clientX: 30,
+			clientY: 30,
+		});
+		rowOf(rail, "Cy").dispatchEvent(shifted);
+		expect(shifted.defaultPrevented).toBe(false);
+		expect(openMenu()).toBeUndefined();
+	});
+	it("leaves a deleted agent out of the pins it sends", async () => {
+		const { rail, manage, company, ready } = companyWith({ ...demo(), pinned: [dee.id, id(99)] });
+		await ready;
+		await settle();
+		rightClick(rowOf(rail, "Cy"));
+		choose("Pin");
+		await settle();
+		expect(manage).toHaveBeenLastCalledWith(profileA.profileId, { action: "set_pins", order: [dee.id, cy.id] });
+		expect(company.store.get().railError).toBeUndefined();
+	});
+	it("moves the focused agent with Alt and an arrow, and returns focus to a rebuilt row", async () => {
+		const { rail, manage, company, ready } = companyWith(demo());
+		await ready;
+		await settle();
+		const ada2 = rowOf(rail, "Ada");
+		ada2.focus();
+		ada2.dispatchEvent(
+			new KeyboardEvent("keydown", { key: "ArrowUp", altKey: true, bubbles: true, cancelable: true }),
+		);
+		await settle();
+		expect(manage).toHaveBeenLastCalledWith(profileA.profileId, {
+			action: "move_agent",
+			staffAgentId: ada.id,
+			sectionId: research,
+			order: [ada.id, bo.id],
+		});
+		expect(groups(rail)[0]).toEqual(["Research", "Ada", "Bo"]);
+		// The menu's row is rebuilt while it is open (the agent starts working): Escape still lands on the row.
+		rightClick(rowOf(rail, "Bo"));
+		company.store.set({
+			activity: [{ ...activityRow, staffAgentId: bo.id }],
+		});
+		await settle();
+		document
+			.querySelector(".context-menu")!
+			.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+		expect(document.activeElement).toBe(rowOf(rail, "Bo"));
 	});
 	it("gives the Co-Founder no pin, move, hide or delete", async () => {
 		const { rail, company, ready } = companyWith(demo(), { updateAgent: vi.fn(), deleteAgent: vi.fn() });

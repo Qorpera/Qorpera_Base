@@ -151,7 +151,7 @@ profile RPCs; RLS is the second read boundary.
 - `qorpera_list_profile_staff`
 - `qorpera_put_staff_provider_model`
 
-### Company sidebar (2) — bundle v92 (slot pending)
+### Company sidebar (2) — bundle v90
 
 - `qorpera_read_company_sidebar(p_profile_id)` → `qorpera.company-sidebar/v1`:
   `sections` (`sectionId`, `name`, in order), `placements` (`staffAgentId`,
@@ -664,3 +664,27 @@ above.
 
     Follow-up: PR #129 restores member execution notices in the web workspace;
     the resolution recorded under request 12 above also addresses request 13.
+
+### 2026-09-24 — from the runtime (bundle v89, `20260924080000_runtime_remove_company_ceilings.sql`)
+
+14. **Company execution ceilings are gone; the pause is operator-only.** At the
+    founder's request ("get rid of this … not just in settings, but as policy
+    configurations/settings") there are no per-company monthly spend, monthly
+    token or hourly wake ceilings. Removed, with no `_v2`:
+    - `qorpera_company_execution_ceiling_json(p_profile_id)` and
+      `qorpera_set_company_execution_ceiling(uuid,bigint,bigint,bigint,bigint)`
+      (request 8), plus the private helpers, the ceiling table and the trip
+      records. The only client, the web Settings panel, was removed first
+      (web PR #247, no bundle), so the cut must follow that deploy.
+    - `qorpera_set_company_execution_pause` is no longer granted to
+      `authenticated`. It stays as the operator brake of every runtime cut
+      (an operator session with a founder's claims), and it no longer writes
+      member notifications.
+    - Notification kinds `company_execution_paused` and
+      `company_execution_resumed` are removed, together with the open and
+      acknowledged rows of both and every `company-ceiling-tripped/v1` row.
+      `company_ceiling_tripped` remains, carrying only the machine-capacity
+      subject (`qorpera.member-notification.machine-capacity/v1`).
+
+    Per-connection provider quotas, the provider's own usage limits and the
+    running-machine limit are unchanged.

@@ -23,7 +23,7 @@ const FIELDS: Record<SidebarAction, { required: readonly string[]; optional: rea
 export const CLOUD_SIDEBAR_TOOL_DESCRIPTION =
 	"Organize the company's sidebar sections, the groups agents appear under in every member's rail (the Co-Founder always stays on top, outside any section). Use it to keep the team findable as it grows: group agents who work together, and move yourself or a coworker when work shifts. No member approval is needed and everyone sees the change at once. " +
 	"action list shows every section with its agents in order, then the Unassigned agents. create_section makes a section (a name that already exists is that section). rename_section and delete_section name the section by its id or name; deleting a section keeps its agents, they become Unassigned. move_agent moves agentId (yourself or a coworker id from your context) into section, or out of any section when section is null; it goes last in that section. " +
-	"Sections are shared structure, not a place for notes: short plain names such as Research or Customer support. Tell the member what you changed. Pins and hidden agents are each member's own and not yours to change.";
+	"Sections are shared structure, not a place for notes: short plain names such as Research or Customer support. Tell the member what you changed. When the result has refused, nothing changed and it says why (no such section, the name is taken, the Co-Founder stays on top): correct the request or tell the member. Pins and hidden agents are each member's own and not yours to change.";
 
 function sectionName(value: unknown): string {
 	if (typeof value !== "string") throw new Error("Invalid sidebar section name");
@@ -120,7 +120,8 @@ export function cloudSidebarTools(
 				r.action !== request.action ||
 				typeof r.changed !== "boolean" ||
 				!Array.isArray(r.sections) ||
-				!Array.isArray(r.unassigned)
+				!Array.isArray(r.unassigned) ||
+				(r.refused !== undefined && (typeof r.refused !== "string" || r.changed))
 			)
 				throw new Error("Sidebar receipt differs");
 			return { kind: "text", value: cloudToolJsonText(r) };

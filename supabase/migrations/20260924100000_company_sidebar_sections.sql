@@ -159,7 +159,8 @@ begin
 	end if;
 	if v_id is null then
 		select id into v_id from public.qorpera_company_sidebar_sections
-		where profile_id = p_profile_id and lower(name) = lower(pg_catalog.btrim(coalesce(p_ref, '')));
+		where profile_id = p_profile_id
+			and lower(name) = lower(pg_catalog.regexp_replace(pg_catalog.btrim(coalesce(p_ref, '')), '\s+', ' ', 'g'));
 	end if;
 	if v_id is null then raise exception 'No section is called that' using errcode = 'P0002'; end if;
 	return v_id;
@@ -367,6 +368,8 @@ begin
 	if jsonb_typeof(p_request) is distinct from 'object' or jsonb_typeof(p_request -> 'action') is distinct from 'string'
 		or p_request - array['action','sectionId','name','staffAgentId','order','unpin','hidden'] <> '{}'::jsonb then
 		raise exception 'Sidebar request is invalid' using errcode = '22023'; end if;
+	if p_request ? 'unpin' and jsonb_typeof(p_request -> 'unpin') is distinct from 'boolean' then
+		raise exception 'Sidebar request is invalid' using errcode = '22023'; end if;
 	if v_action in ('create_section','rename_section','delete_section','move_agent')
 		and not public.qorpera_can_write_profile(p_profile_id) then
 		raise exception 'Only owners, admins and contributors can change the company''s sections' using errcode = '42501'; end if;
@@ -479,7 +482,7 @@ create function public.qorpera_manage_agent_sidebar(p_binding jsonb, p_request j
 returns jsonb language plpgsql security definer set search_path = '' as $$
 declare
 	v_run public.qorpera_execution_runs%rowtype; v_actor jsonb; v_action text; v_section uuid; v_agent uuid;
-	v_changed boolean := false; v_name text;
+	v_changed boolean := false; v_name text; v_refusal text;
 begin
 	v_run := public.qorpera_native_tool_locked_run(p_binding);
 	v_actor := public.qorpera_company_path_actor(v_run.environment_id, p_binding);
@@ -491,6 +494,9 @@ begin
 		or p_request - array['action','section','name','agentId'] <> '{}'::jsonb then
 		raise exception 'Sidebar request is invalid' using errcode = '22023'; end if;
 	v_action := p_request ->> 'action';
+	-- A refusal the agent can act on (no such section, name taken, the Co-Founder, the
+	-- section limit) comes back as data with nothing changed, never as an unknown outcome.
+	begin
 	if v_action = 'list' then
 		if p_request - array['action'] <> '{}'::jsonb then
 			raise exception 'Sidebar request is invalid' using errcode = '22023'; end if;
@@ -511,9 +517,14 @@ begin
 		if p_request - array['action','section','name'] <> '{}'::jsonb
 			or jsonb_typeof(p_request -> 'section') is distinct from 'string' then
 			raise exception 'Sidebar request is invalid' using errcode = '22023'; end if;
-		v_section := public.qorpera_sidebar_section_ref(v_run.profile_id, p_request ->> 'section');
-		v_changed := public.qorpera_sidebar_rename_section(v_run.profile_id, v_section,
-			public.qorpera_sidebar_section_name(p_request -> 'name'), null, v_run.staff_agent_id);
+		v_name := public.qorpera_sidebar_section_name(p_request -> 'name');
+		begin
+			v_section := public.qorpera_sidebar_section_ref(v_run.profile_id, p_request ->> 'section');
+		exception when no_data_found then
+			-- A retried rename finds the section under its new name: already done.
+			v_section := public.qorpera_sidebar_section_ref(v_run.profile_id, v_name);
+		end;
+		v_changed := public.qorpera_sidebar_rename_section(v_run.profile_id, v_section, v_name, null, v_run.staff_agent_id);
 	elsif v_action = 'delete_section' then
 		if p_request - array['action','section'] <> '{}'::jsonb
 			or jsonb_typeof(p_request -> 'section') is distinct from 'string' then
@@ -537,8 +548,14 @@ begin
 	else
 		raise exception 'Sidebar request is invalid' using errcode = '22023';
 	end if;
+	exception when sqlstate 'P0002' or sqlstate '23505' or sqlstate '54000' or sqlstate '22023' then
+		if sqlerrm = 'Sidebar request is invalid' then raise; end if;
+		v_refusal := sqlerrm;
+		v_changed := false;
+	end;
 	return jsonb_build_object('schema', 'qorpera.agent-sidebar/v1', 'runId', v_run.id, 'action', v_action,
-		'changed', v_changed) || public.qorpera_sidebar_agent_view(v_run.profile_id);
+		'changed', v_changed) || case when v_refusal is null then '{}'::jsonb else jsonb_build_object('refused', v_refusal) end
+		|| public.qorpera_sidebar_agent_view(v_run.profile_id);
 end $$;
 
 revoke all on function public.qorpera_sidebar_lock(uuid),

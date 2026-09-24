@@ -70,12 +70,16 @@ function stillFailed(
 const RECOVERY_RECHECK_MS = 25_000;
 const RECOVERY_RETRY_MS = 5_000;
 
-/** Why the cloud refused a sidebar change, in the member's words. The cloud's own
- * refusals are already sentences ("A section called … already exists"). */
-function sidebarRefusal(error: unknown): string {
+/** Why the cloud refused a sidebar change, in the member's words. Only the sidebar
+ * RPC's own refusals are shown as they are: they are written for members ("A section
+ * called … already exists"). A network or server failure never shows its text. */
+function sidebarRefusal(error: unknown, request: SidebarRequest): string {
 	if (error instanceof CloudRpcError) {
-		if (error.denied) return "Only owners, admins and contributors can change the company's sections.";
-		if (error.message.trim() && !/request is invalid/i.test(error.message)) return error.message.trim();
+		const shared = ["create_section", "rename_section", "delete_section", "move_agent"].includes(request.action);
+		if (error.code === "42501" && shared)
+			return "Only owners, admins and contributors can change the company's sections.";
+		const own = ["23505", "P0002", "54000", "22023"].includes(error.code ?? "");
+		if (own && error.message.trim() && !/request is invalid/i.test(error.message)) return error.message.trim();
 	}
 	return "The sidebar could not be changed. Try again.";
 }
@@ -477,7 +481,7 @@ export class CompanyController {
 		} catch (error) {
 			this.#sidebarPending--;
 			if (this.#stopped) return false;
-			this.store.set({ railError: sidebarRefusal(error) });
+			this.store.set({ railError: sidebarRefusal(error, request) });
 			if (!this.#sidebarPending) await this.refreshSidebar();
 			return false;
 		}
