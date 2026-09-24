@@ -359,15 +359,23 @@ describe("cloud-owned native tool boundary", () => {
 		await expect(boundary.fenceNativeResults([])).rejects.toThrow();
 	});
 
-	it("fails closed on repeated native ids and bounds retained result fingerprints", async () => {
+	it("fails closed on repeated native ids and fences any number of outputs in one request", async () => {
 		const { boundary } = fixture();
 		const input = { kind: "function_call_output" as const, callId: "native", output: "data" };
 		await expect(boundary.fenceNativeResults([input, input])).rejects.toThrow("Invalid native result identity");
+		// Runtime v102: no count of outputs per model request. One request past the
+		// retention window is fenced whole; its oldest outputs are then forgotten.
 		const flood = Array.from({ length: CLOUD_NATIVE_RESULT_RETENTION_LIMIT + 1 }, (_, index) => ({
 			...input,
 			callId: `native_${index}`,
 		}));
-		await expect(boundary.fenceNativeResults(flood)).rejects.toThrow("Native result budget exceeded");
+		const fenced = await boundary.fenceNativeResults(flood);
+		expect(fenced.map((item) => item.callId)).toEqual(flood.map((item) => item.callId));
+		expect(fenced.every((item) => item.output.includes("unconfirmed"))).toBe(true);
+		// Presented again, a forgotten output is still only unconfirmed data, never a failure.
+		const [again] = await boundary.fenceNativeResults([flood[0]]);
+		expect(again.callId).toBe("native_0");
+		expect(again.output).toContain("unconfirmed");
 	});
 
 	it("withholds invalid or oversized adapter results", async () => {

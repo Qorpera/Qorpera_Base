@@ -35,10 +35,11 @@ const MAX_SOURCE_BYTES = 1024 * 1024;
  * as storage for the kernel's start record (the kernel checks the same). */
 export const CLOUD_NATIVE_TOOL_CATALOG_BYTES = 1024 * 1024;
 /** No run is capped by a number of tool calls (founder, 2026-09-22 and
- * 2026-09-24). Result bodies are kept for exact replay only in a rolling window:
- * past it the oldest are forgotten, never a denial or a failure. Codex re-sends
- * only recent outputs (at most 128 per request), so a forgotten one is at worst
- * shown to the model as unconfirmed. */
+ * 2026-09-24), and no model request by its number of tool outputs (runtime
+ * v102; the pinned Codex refused 128). Result bodies are kept for exact replay
+ * only in a rolling window: past it the oldest are forgotten, never a denial or
+ * a failure. A forgotten output, even within one request, is at worst shown to
+ * the model as unconfirmed; the 64 MiB fence frame bounds a request's memory. */
 export const CLOUD_NATIVE_RESULT_RETENTION_LIMIT = 8_192;
 
 /** Keeps a key in insertion order and forgets the oldest past the window. */
@@ -277,7 +278,6 @@ export class CloudNativeToolBoundary {
 
 	/** Only the patched native request boundary can release these bodies to the model. */
 	async fenceNativeResults(inputs: readonly CloudNativeResultInput[]): Promise<CloudNativeFencedResult[]> {
-		if (inputs.length > CLOUD_NATIVE_RESULT_RETENTION_LIMIT) throw new Error("Native result budget exceeded");
 		this.#signal.throwIfAborted();
 		await untilStopped(() => this.#assertActive(this.#signal), this.#signal);
 		this.#signal.throwIfAborted();
