@@ -15,9 +15,11 @@
 -- positioned ones in roster order (created_at, id), the order
 -- qorpera_list_profile_staff returns, so a client draws the same order.
 --
--- The sections and placements tables are in the realtime publication, readable
--- by company members, so a move by anyone (an agent included) reaches every
--- open rail at once.
+-- Every change to the shared sidebar bumps one row per company in
+-- qorpera_company_sidebar_revisions, the only sidebar table in the realtime
+-- publication and the only one members read directly: a move by anyone (an agent
+-- included) reaches every open rail as one hint, however many rows it renumbered,
+-- and no DELETE event (which Realtime delivers unfiltered) ever leaves it.
 begin;
 
 create table public.qorpera_company_sidebar_sections (
@@ -29,6 +31,8 @@ create table public.qorpera_company_sidebar_sections (
 	updated_at timestamptz not null default clock_timestamp(),
 	created_by_user_id uuid references auth.users(id) on delete set null,
 	created_by_staff_agent_id uuid,
+	updated_by_user_id uuid references auth.users(id) on delete set null,
+	updated_by_staff_agent_id uuid,
 	unique (profile_id, id)
 );
 create unique index qorpera_company_sidebar_sections_name
@@ -63,29 +67,31 @@ create table public.qorpera_member_sidebar_agents (
 		references public.qorpera_profile_staff(profile_id, staff_agent_id) on delete cascade
 );
 
+create table public.qorpera_company_sidebar_revisions (
+	profile_id uuid primary key references public.qorpera_profiles(id) on delete cascade,
+	revision bigint not null default 1 check (revision > 0),
+	updated_at timestamptz not null default clock_timestamp()
+);
+
+alter table public.qorpera_company_sidebar_revisions enable row level security;
 alter table public.qorpera_company_sidebar_sections enable row level security;
 alter table public.qorpera_company_sidebar_placements enable row level security;
 alter table public.qorpera_member_sidebar_agents enable row level security;
 revoke all on public.qorpera_company_sidebar_sections from public, anon, authenticated, service_role;
 revoke all on public.qorpera_company_sidebar_placements from public, anon, authenticated, service_role;
 revoke all on public.qorpera_member_sidebar_agents from public, anon, authenticated, service_role;
--- Read access exists for Realtime change hints; every write goes through the functions below.
-grant select on public.qorpera_company_sidebar_sections to authenticated;
-grant select on public.qorpera_company_sidebar_placements to authenticated;
-create policy qorpera_company_sidebar_sections_member_read on public.qorpera_company_sidebar_sections
-	for select to authenticated using (public.qorpera_can_read_profile(profile_id));
-create policy qorpera_company_sidebar_placements_member_read on public.qorpera_company_sidebar_placements
+revoke all on public.qorpera_company_sidebar_revisions from public, anon, authenticated, service_role;
+-- Read access exists for Realtime change hints only; every write goes through the functions below.
+grant select on public.qorpera_company_sidebar_revisions to authenticated;
+create policy qorpera_company_sidebar_revisions_member_read on public.qorpera_company_sidebar_revisions
 	for select to authenticated using (public.qorpera_can_read_profile(profile_id));
 
 do $$
-declare v_table text;
 begin
-	foreach v_table in array array['qorpera_company_sidebar_sections', 'qorpera_company_sidebar_placements'] loop
-		if not exists (select 1 from pg_catalog.pg_publication_tables
-			where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = v_table) then
-			execute format('alter publication supabase_realtime add table public.%I', v_table);
-		end if;
-	end loop;
+	if not exists (select 1 from pg_catalog.pg_publication_tables
+		where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'qorpera_company_sidebar_revisions') then
+		alter publication supabase_realtime add table public.qorpera_company_sidebar_revisions;
+	end if;
 end
 $$;
 
@@ -93,6 +99,13 @@ $$;
 create function public.qorpera_sidebar_lock(p_profile_id uuid)
 returns void language sql security definer set search_path = '' as $$
 	select pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended('qorpera.company-sidebar:' || p_profile_id::text, 0))
+$$;
+
+/** One hint for every open rail: the shared sidebar changed. */
+create function public.qorpera_sidebar_touch(p_profile_id uuid)
+returns void language sql security definer set search_path = '' as $$
+	insert into public.qorpera_company_sidebar_revisions as revision(profile_id) values (p_profile_id)
+	on conflict (profile_id) do update set revision = revision.revision + 1, updated_at = clock_timestamp()
 $$;
 
 create function public.qorpera_sidebar_is_cofounder(p_profile_id uuid, p_staff_agent_id uuid)
@@ -174,9 +187,10 @@ returns void language sql security definer set search_path = '' as $$
 	select p_profile_id, item.staff_agent_id, p_section_id, (item.ordinality - 1)::integer, p_user_id, p_staff_agent_id
 	from unnest(p_order) with ordinality as item(staff_agent_id, ordinality)
 	on conflict (profile_id, staff_agent_id) do update set
-		section_id = excluded.section_id, position = excluded.position,
-		updated_at = case when placement.section_id is distinct from excluded.section_id
-			or placement.position is distinct from excluded.position then clock_timestamp() else placement.updated_at end
+		section_id = excluded.section_id, position = excluded.position, updated_at = clock_timestamp(),
+		updated_by_user_id = excluded.updated_by_user_id, updated_by_staff_agent_id = excluded.updated_by_staff_agent_id
+	-- A row that keeps its place is not written, so it keeps its last editor.
+	where (placement.section_id, placement.position) is distinct from (excluded.section_id, excluded.position)
 $$;
 
 /** Moves an agent into a section (null: Unassigned). With p_order, the section's
@@ -216,9 +230,7 @@ begin
 				and section_id is not distinct from p_section_id) then return false; end if;
 	end if;
 	perform public.qorpera_sidebar_write_order(p_profile_id, p_section_id, v_final, p_user_id, p_actor_staff_id);
-	update public.qorpera_company_sidebar_placements
-	set updated_by_user_id = p_user_id, updated_by_staff_agent_id = p_actor_staff_id, updated_at = clock_timestamp()
-	where profile_id = p_profile_id and staff_agent_id = p_staff_agent_id;
+	perform public.qorpera_sidebar_touch(p_profile_id);
 	return true;
 end $$;
 
@@ -245,19 +257,24 @@ begin
 	values (p_section_id, p_profile_id, p_name,
 		coalesce((select max(position) + 1 from public.qorpera_company_sidebar_sections where profile_id = p_profile_id), 0),
 		p_user_id, p_actor_staff_id);
+	perform public.qorpera_sidebar_touch(p_profile_id);
 	return p_section_id;
 end $$;
 
-create function public.qorpera_sidebar_rename_section(p_profile_id uuid, p_section_id uuid, p_name text)
+create function public.qorpera_sidebar_rename_section(p_profile_id uuid, p_section_id uuid, p_name text,
+	p_user_id uuid, p_actor_staff_id uuid)
 returns boolean language plpgsql security definer set search_path = '' as $$
 begin
 	perform public.qorpera_sidebar_lock(p_profile_id);
 	if exists (select 1 from public.qorpera_company_sidebar_sections
 		where profile_id = p_profile_id and id <> p_section_id and lower(name) = lower(p_name)) then
 		raise exception 'A section called "%" already exists', p_name using errcode = '23505'; end if;
-	update public.qorpera_company_sidebar_sections set name = p_name, updated_at = clock_timestamp()
+	update public.qorpera_company_sidebar_sections set name = p_name, updated_at = clock_timestamp(),
+		updated_by_user_id = p_user_id, updated_by_staff_agent_id = p_actor_staff_id
 	where profile_id = p_profile_id and id = p_section_id and name is distinct from p_name;
-	return found;
+	if not found then return false; end if;
+	perform public.qorpera_sidebar_touch(p_profile_id);
+	return true;
 end $$;
 
 /** Deleting a section keeps its agents: they go to the end of Unassigned. */
@@ -273,6 +290,7 @@ begin
 	v_members := public.qorpera_sidebar_container(p_profile_id, p_section_id);
 	delete from public.qorpera_company_sidebar_sections where profile_id = p_profile_id and id = p_section_id;
 	perform public.qorpera_sidebar_write_order(p_profile_id, null, v_unassigned || v_members, p_user_id, p_actor_staff_id);
+	perform public.qorpera_sidebar_touch(p_profile_id);
 	return true;
 end $$;
 
@@ -369,7 +387,7 @@ begin
 		if not exists (select 1 from public.qorpera_company_sidebar_sections where profile_id = p_profile_id and id = v_section) then
 			raise exception 'No section is called that' using errcode = 'P0002'; end if;
 		perform public.qorpera_sidebar_rename_section(p_profile_id, v_section,
-			public.qorpera_sidebar_section_name(p_request -> 'name'));
+			public.qorpera_sidebar_section_name(p_request -> 'name'), v_user, null);
 	elsif v_action = 'delete_section' then
 		if p_request - array['action','sectionId'] <> '{}'::jsonb then
 			raise exception 'Sidebar request is invalid' using errcode = '22023'; end if;
@@ -495,7 +513,7 @@ begin
 			raise exception 'Sidebar request is invalid' using errcode = '22023'; end if;
 		v_section := public.qorpera_sidebar_section_ref(v_run.profile_id, p_request ->> 'section');
 		v_changed := public.qorpera_sidebar_rename_section(v_run.profile_id, v_section,
-			public.qorpera_sidebar_section_name(p_request -> 'name'));
+			public.qorpera_sidebar_section_name(p_request -> 'name'), null, v_run.staff_agent_id);
 	elsif v_action = 'delete_section' then
 		if p_request - array['action','section'] <> '{}'::jsonb
 			or jsonb_typeof(p_request -> 'section') is distinct from 'string' then
@@ -524,6 +542,7 @@ begin
 end $$;
 
 revoke all on function public.qorpera_sidebar_lock(uuid),
+	public.qorpera_sidebar_touch(uuid),
 	public.qorpera_sidebar_is_cofounder(uuid, uuid),
 	public.qorpera_sidebar_placeable(uuid, uuid),
 	public.qorpera_sidebar_assert_agent(uuid, uuid),
@@ -533,7 +552,7 @@ revoke all on function public.qorpera_sidebar_lock(uuid),
 	public.qorpera_sidebar_write_order(uuid, uuid, uuid[], uuid, uuid),
 	public.qorpera_sidebar_place(uuid, uuid, uuid, uuid[], uuid, uuid),
 	public.qorpera_sidebar_create_section(uuid, uuid, text, uuid, uuid),
-	public.qorpera_sidebar_rename_section(uuid, uuid, text),
+	public.qorpera_sidebar_rename_section(uuid, uuid, text, uuid, uuid),
 	public.qorpera_sidebar_delete_section(uuid, uuid, uuid, uuid),
 	public.qorpera_sidebar_state(uuid, uuid),
 	public.qorpera_sidebar_member(uuid),

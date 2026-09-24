@@ -50,18 +50,23 @@ export function subscribeProfileRealtime(
 	};
 }
 
-/** The company sidebar's sections and placements. A separate channel: a cloud that
- * has no sidebar tables yet fails only this one, and the rail's poll still reads
- * the sidebar. Its health is not the company's live-updates badge. */
+/** The company sidebar's revision row: one hint per change, however many rows it
+ * moved. A separate channel: a cloud that has no sidebar tables yet fails only this
+ * one, and the rail's poll still reads the sidebar. Its health is not the company's
+ * live-updates badge. */
 export function subscribeSidebarRealtime(cloud: Cloud, profileId: string, onChange: () => void): RealtimeSubscription {
-	let channel: RealtimeChannel = cloud.supabase.channel(`qorpera-sidebar-${profileId}-${crypto.randomUUID()}`);
-	for (const table of ["qorpera_company_sidebar_sections", "qorpera_company_sidebar_placements"]) {
-		channel = channel.on(
+	const channel: RealtimeChannel = cloud.supabase
+		.channel(`qorpera-sidebar-${profileId}-${crypto.randomUUID()}`)
+		.on(
 			"postgres_changes",
-			{ event: "*", schema: "public", table, filter: `profile_id=eq.${profileId}` },
+			{
+				event: "*",
+				schema: "public",
+				table: "qorpera_company_sidebar_revisions",
+				filter: `profile_id=eq.${profileId}`,
+			},
 			onChange,
 		);
-	}
 	channel.subscribe();
 	return {
 		stop() {

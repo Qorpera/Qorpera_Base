@@ -157,7 +157,8 @@ containers that light up, and agents moving each other into sections.
 
 - **Sections are the company's; pins and hiding are the member's.** Agents
   organize sections (the `organize_sidebar` tool), so sections must be shared
-  cloud state (`qorpera_company_sidebar_*`, in the Realtime publication). A pin
+  cloud state (`qorpera_company_sidebar_*`; one revision row per company is the
+  only published, member-readable table, so a move is one hint). A pin
   or a hidden agent only changes one member's view, so it lives per member
   (`qorpera_member_sidebar_agents`) and follows the member across devices.
   Nothing is kept in `localStorage`.
@@ -175,6 +176,8 @@ containers that light up, and agents moving each other into sections.
 - **Not built: Mark as Unread.** The rail has no unread state at all yet (no
   per-member read cursor in the cloud); a menu item for it would render
   machinery that does not exist (runtime contract §14.5). It is its own feature.
+- **Moving a pinned agent to a section unpins it**, from the menu as from a drag,
+  so the move is visible; choosing the section an agent is already in does nothing.
 - **Delete is permanent**, as in Grok Bot: it deletes the agent's document
   (owner or admin; the Co-Founder never), after a confirmation that says so.
 

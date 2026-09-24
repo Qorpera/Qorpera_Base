@@ -51,7 +51,7 @@ select pg_temp.wake_error($q$select pg_temp.agent_sidebar('{"action":"list"}')$q
 select pg_temp.wake_public_send(current_setting('qorpera_test.sidebar_binding')::jsonb,'progress','sidebar-ack');
 
 do $$
-declare v_state jsonb; v_list jsonb; v_owner uuid := '30000000-0000-4000-8000-000000000001';
+declare v_state jsonb; v_list jsonb; v_owner uuid := '30000000-0000-4000-8000-000000000001'; v_revision bigint;
 	v_research uuid := '51000000-0000-4000-8000-000000000001'; v_ops uuid := '51000000-0000-4000-8000-000000000002';
 	v_agent text := '30000000-0000-4000-8000-000000000030'; v_bob text := '30000000-0000-4000-8000-000000000031';
 	v_carol text := '30000000-0000-4000-8000-000000000032';
@@ -119,14 +119,27 @@ begin
 		'An agent moves a coworker into a section by name, last in it');
 	perform pg_temp.wake_assert((select updated_by_staff_agent_id = v_agent::uuid and updated_by_user_id is null
 		from public.qorpera_company_sidebar_placements where staff_agent_id = v_bob::uuid),'The move is the agent''s');
+	-- Agents that kept their place were not rewritten: they keep their last editor.
+	perform pg_temp.wake_assert((select updated_by_user_id = v_owner and updated_by_staff_agent_id is null
+		from public.qorpera_company_sidebar_placements where staff_agent_id = v_carol::uuid),'An unmoved row keeps its editor');
+	v_revision := (select revision from public.qorpera_company_sidebar_revisions
+		where profile_id = '30000000-0000-4000-8000-000000000010');
 	v_list := pg_temp.agent_sidebar(jsonb_build_object('action','move_agent','agentId',v_bob,'section','Operations'));
 	perform pg_temp.wake_assert(not (v_list ->> 'changed')::boolean,'Moving again changes nothing');
+	perform pg_temp.wake_assert((select revision from public.qorpera_company_sidebar_revisions
+		where profile_id = '30000000-0000-4000-8000-000000000010') = v_revision,'A no-op sends no hint');
 	v_list := pg_temp.agent_sidebar('{"action":"create_section","name":"Sales"}');
 	v_list := pg_temp.agent_sidebar('{"action":"create_section","name":"sales"}');
 	perform pg_temp.wake_assert(not (v_list ->> 'changed')::boolean and jsonb_array_length(v_list -> 'sections') = 3,
 		'Creating an existing section is the same section');
+	v_revision := (select revision from public.qorpera_company_sidebar_revisions
+		where profile_id = '30000000-0000-4000-8000-000000000010');
 	v_list := pg_temp.agent_sidebar('{"action":"rename_section","section":"Sales","name":"Growth"}');
 	perform pg_temp.wake_assert(v_list #>> '{sections,2,name}' = 'Growth','An agent renames a section');
+	perform pg_temp.wake_assert((select revision from public.qorpera_company_sidebar_revisions
+		where profile_id = '30000000-0000-4000-8000-000000000010') = v_revision + 1
+		and (select updated_by_staff_agent_id = v_agent::uuid from public.qorpera_company_sidebar_sections where name = 'Growth'),
+		'One change is one hint, attributed to the agent');
 	-- Deleting a section keeps its agents: they go to the end of Unassigned.
 	v_list := pg_temp.agent_sidebar(jsonb_build_object('action','delete_section','section','Operations'));
 	perform pg_temp.wake_assert(jsonb_array_length(v_list -> 'sections') = 2
@@ -169,16 +182,21 @@ begin
 		where agent ->> 'id' = '30000000-0000-4000-8000-000000000031'),'An archived agent is not listed');
 end $$;
 
--- Members read the shared tables for Realtime hints, only for their own companies.
+-- Members read only the revision row, for Realtime hints, and only for their own companies.
 do $$
 begin
 	perform pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000003');
 	set local role authenticated;
-	if (select count(*) from public.qorpera_company_sidebar_sections) <> 2 then
-		raise exception 'a member could not read the company''s sections'; end if;
+	if (select count(*) from public.qorpera_company_sidebar_revisions) <> 1 then
+		raise exception 'a member could not read the company''s sidebar revision'; end if;
 	begin
 		perform 1 from public.qorpera_member_sidebar_agents;
 		raise exception 'member sidebar rows were readable directly';
+	exception when insufficient_privilege then null;
+	end;
+	begin
+		perform 1 from public.qorpera_company_sidebar_placements;
+		raise exception 'placements were readable directly';
 	exception when insufficient_privilege then null;
 	end;
 	begin
@@ -188,8 +206,8 @@ begin
 	exception when insufficient_privilege then null;
 	end;
 	perform pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000077');
-	if (select count(*) from public.qorpera_company_sidebar_sections) <> 0 then
-		raise exception 'an outsider read the company''s sections'; end if;
+	if (select count(*) from public.qorpera_company_sidebar_revisions) <> 0 then
+		raise exception 'an outsider read the company''s sidebar revision'; end if;
 	reset role;
 	perform pg_temp.path_claims('service_role');
 end $$;

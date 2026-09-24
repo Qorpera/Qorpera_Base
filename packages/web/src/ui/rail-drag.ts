@@ -31,6 +31,7 @@ interface Active {
 	ghost?: HTMLElement;
 	zone?: HTMLElement;
 	index?: number;
+	lastX: number;
 	lastY: number;
 }
 
@@ -73,7 +74,8 @@ export class RailDrag {
 		return this.#active?.ghost ? this.#active.agentId : undefined;
 	}
 
-	/** After the rail redraws: the dragged row may be a new element. */
+	/** After the rail redraws: the dragged row may be a new element, the redraw took
+	 * the marker away, and rows may have come or gone under the pointer. */
 	refresh(): void {
 		const active = this.#active;
 		if (!active?.ghost) return;
@@ -84,6 +86,9 @@ export class RailDrag {
 		}
 		active.source.classList.add("is-drag-source");
 		this.#list.classList.add("rail-dragging");
+		// A zone element that was rebuilt is a new target, so the old one is let go first.
+		if (active.zone && !active.zone.isConnected) active.zone = undefined;
+		this.#target(active.lastX, active.lastY);
 	}
 
 	cancel(): void {
@@ -119,6 +124,7 @@ export class RailDrag {
 			start: { x: event.clientX, y: event.clientY },
 			offset: { x: event.clientX - rect.left, y: event.clientY - rect.top },
 			source,
+			lastX: event.clientX,
 			lastY: event.clientY,
 		};
 	}
@@ -156,6 +162,7 @@ export class RailDrag {
 			this.#begin(active);
 		}
 		event.preventDefault();
+		active.lastX = event.clientX;
 		active.lastY = event.clientY;
 		active.ghost!.style.transform = `translate(${event.clientX - active.offset.x}px, ${event.clientY - active.offset.y}px)`;
 		this.#target(event.clientX, event.clientY);
@@ -248,8 +255,7 @@ export class RailDrag {
 				const before = this.#list.scrollTop;
 				this.#list.scrollTop += speed;
 				if (this.#list.scrollTop !== before) {
-					const ghost = active.ghost.getBoundingClientRect();
-					this.#target(ghost.left + active.offset.x, active.lastY);
+					this.#target(active.lastX, active.lastY);
 				}
 			}
 			this.#frame = requestAnimationFrame(step);

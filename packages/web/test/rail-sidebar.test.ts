@@ -240,6 +240,33 @@ describe("rail right-click menus", () => {
 		expect(manage).toHaveBeenLastCalledWith(profileA.profileId, { action: "set_pins", order: [] });
 		expect(rail.querySelector(".rail-pinned")!.classList.contains("is-empty")).toBe(true);
 	});
+	it("moves a pinned agent out of the pinned row, and leaves an agent where it already is", async () => {
+		const { rail, manage, ready } = companyWith(demo());
+		await ready;
+		await settle();
+		const openMoveTo = (name: string) => {
+			rightClick(rowOf(rail, name));
+			document
+				.querySelector<HTMLElement>(".context-menu [aria-haspopup=menu]")!
+				.dispatchEvent(new PointerEvent("pointerenter"));
+		};
+		openMoveTo("Bo");
+		choose("Research");
+		await settle();
+		expect(manage).not.toHaveBeenCalled();
+		expect(groups(rail)[0]).toEqual(["Research", "Bo", "Ada"]);
+		openMoveTo("Dee");
+		choose("Ops");
+		await settle();
+		expect(manage).toHaveBeenLastCalledWith(profileA.profileId, {
+			action: "move_agent",
+			staffAgentId: dee.id,
+			sectionId: ops,
+			unpin: true,
+		});
+		expect(names(rail.querySelectorAll(".rail-pin"))).toEqual([]);
+		expect(groups(rail)[1]).toEqual(["Ops", "Dee"]);
+	});
 	it("gives the Co-Founder no pin, move, hide or delete", async () => {
 		const { rail, company, ready } = companyWith(demo(), { updateAgent: vi.fn(), deleteAgent: vi.fn() });
 		company.store.set({
@@ -466,6 +493,31 @@ describe("dragging agents in the rail", () => {
 			unpin: true,
 		});
 		expect(names(rail.querySelectorAll(".rail-pin"))).toEqual(["Dee"]);
+	});
+	it("keeps the drop spot when the rail redraws mid-drag", async () => {
+		const { rail, manage, company, ready } = companyWith(demo());
+		await ready;
+		await settle();
+		const boxes = layout(rail);
+		const row = rowOf(rail, "Cy");
+		const target = boxes.get(rowOf(rail, "Ada"))!;
+		row.dispatchEvent(pointer("pointerdown", 20, boxes.get(row)!.top + 20));
+		document.dispatchEvent(pointer("pointermove", 20, boxes.get(row)!.top + 34));
+		document.dispatchEvent(pointer("pointermove", 20, target.top + 5));
+		expect(rail.querySelector(".rail-drop-marker")).not.toBeNull();
+		// An activity poll redraws the rail while the pointer holds still.
+		company.store.set({ activity: [] });
+		await settle();
+		expect(rail.querySelector(".rail-drop-marker")).not.toBeNull();
+		expect(rail.querySelector(".is-drop-target")?.getAttribute("data-drop-zone")).toBe(`section:${research}`);
+		document.dispatchEvent(pointer("pointerup", 20, target.top + 5));
+		await settle();
+		expect(manage).toHaveBeenLastCalledWith(profileA.profileId, {
+			action: "move_agent",
+			staffAgentId: cy.id,
+			sectionId: research,
+			order: [bo.id, cy.id, ada.id],
+		});
 	});
 	it("does not pick an agent up while searching, and Escape puts a drag back", async () => {
 		const { rail, manage, draw, ready } = companyWith(demo());

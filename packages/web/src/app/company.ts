@@ -1274,6 +1274,9 @@ export class CompanyController {
 		}, wait);
 	}
 
+	/** Hints about one change arrive together (a move, then another member's echo). */
+	readonly #refreshSidebarSoon = debounce(() => void this.refreshSidebar(), 250);
+
 	readonly #refreshOpenConversation = debounce(() => {
 		if (this.#openSessionId) void this.loadConversation(this.#openSessionId);
 		void this.refreshActivity();
@@ -1291,7 +1294,7 @@ export class CompanyController {
 		} else if (resource === "access") {
 			void this.refreshTeam();
 		} else if (resource === "sidebar") {
-			void this.refreshSidebar();
+			this.#refreshSidebarSoon();
 		} else if (resource === "company-file") {
 			void this.refreshGroups();
 			// Accepting a proposal moves the Company File head: runs waiting on one are read again.

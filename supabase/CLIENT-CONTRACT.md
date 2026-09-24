@@ -275,12 +275,14 @@ profile RPCs; RLS is the second read boundary.
   (sub-channels seen in the shell: `sessions`, `staff`, `trail`,
   `company-tree`, `company-projection`, `workspace-inbox`). Hints only: the
   client re-reads through RPCs; large bodies never travel on this channel.
-- `postgres_changes` on `qorpera_company_sidebar_sections` and
-  `qorpera_company_sidebar_placements` (filter `profile_id=eq.{profileId}`,
-  member-readable) — a sidebar change by a member or an agent; re-read with
-  `qorpera_read_company_sidebar`. The web subscribes on its own channel, only
-  after the read RPC answered, so a cloud without these tables never degrades
-  the company channel. Pins and hidden agents are not published.
+- `postgres_changes` on `qorpera_company_sidebar_revisions` (filter
+  `profile_id=eq.{profileId}`, member-readable, one row per company) — the
+  shared sidebar changed, by a member or an agent: one hint per change however
+  many agents it renumbered; re-read with `qorpera_read_company_sidebar`. The
+  section and placement tables themselves are not readable or published. The web
+  subscribes on its own channel, only after the read RPC answered, so a cloud
+  without the table never degrades the company channel. Pins and hidden agents
+  are not published.
 - `qorpera-presence-{profileId}` — lossy presence (typing, who-is-viewing).
   Private channel authorized by membership through RLS on
   `realtime.messages`; never stored; must never carry durable content.

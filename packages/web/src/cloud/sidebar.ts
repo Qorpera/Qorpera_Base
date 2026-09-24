@@ -119,7 +119,10 @@ export function applySidebarRequest(
 		hidden: [...sidebar.hidden],
 	};
 	const place = (agentId: string, sectionId: string | undefined, order?: readonly string[]) => {
-		const members = containerOrder(next, sectionId, roster).filter((member) => member !== agentId);
+		const current = containerOrder(next, sectionId, roster);
+		// Moving an agent where it already is changes nothing, as in the cloud.
+		if (!order && current.includes(agentId)) return;
+		const members = current.filter((member) => member !== agentId);
 		let final: string[];
 		if (order) {
 			final = [];

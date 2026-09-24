@@ -776,10 +776,17 @@ async function askSectionName(company: CompanyController, agentId?: string): Pro
 	});
 	const sidebar = company.store.get().sidebar;
 	if (!name || !sidebar) return;
+	// A pinned agent leaves the pinned row for its section, as when it is dragged there.
+	const unpin = agentId && sidebar.pinned.includes(agentId) ? { unpin: true } : {};
 	const existing = sameName(sidebar, name);
 	if (existing && agentId) {
 		// Naming a section that exists moves the agent there.
-		void company.changeSidebar({ action: "move_agent", staffAgentId: agentId, sectionId: existing.sectionId });
+		void company.changeSidebar({
+			action: "move_agent",
+			staffAgentId: agentId,
+			sectionId: existing.sectionId,
+			...unpin,
+		});
 		return;
 	}
 	if (existing) {
@@ -790,7 +797,7 @@ async function askSectionName(company: CompanyController, agentId?: string): Pro
 		action: "create_section",
 		sectionId: newSectionId(),
 		name,
-		...(agentId ? { staffAgentId: agentId } : {}),
+		...(agentId ? { staffAgentId: agentId, ...unpin } : {}),
 	});
 }
 
@@ -829,8 +836,17 @@ function agentMenu(company: CompanyController, parts: RailParts, agent: HostedSt
 			const known = new Set(sidebar.sections.map((section) => section.sectionId));
 			const placed = sidebar.placements[agent.id]?.sectionId;
 			const current = placed && known.has(placed) ? placed : undefined;
-			const move = (sectionId: string | null) => () =>
-				void company.changeSidebar({ action: "move_agent", staffAgentId: agent.id, sectionId });
+			// Choosing the section it is in keeps a row where it is; a pinned agent moves out
+			// of the pinned row into the section it is given, as when it is dragged there.
+			const move = (sectionId: string | null) => () => {
+				if (!pinned && (sectionId ?? undefined) === current) return;
+				void company.changeSidebar({
+					action: "move_agent",
+					staffAgentId: agent.id,
+					sectionId,
+					...(pinned ? { unpin: true } : {}),
+				});
+			};
 			first.push({
 				kind: "submenu",
 				label: "Move to",
