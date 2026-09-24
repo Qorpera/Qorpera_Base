@@ -27,11 +27,11 @@ const TABS = [
 		keywords: "account appearance theme composer color colour blue green grey gray language region",
 	},
 	{
-		id: "plan",
-		label: "Plan & usage",
-		icon: "plan",
+		id: "company",
+		label: "Company",
+		icon: "company",
 		keywords:
-			"plan billing subscription usage storage trial upgrade price payment card invoices computer hours basis standard dedicated",
+			"people team members invitations staff file organization approvals execution pause resume ceilings limits",
 	},
 	{
 		id: "friends",
@@ -40,11 +40,11 @@ const TABS = [
 		keywords: "people contacts requests add email invitations invites join accept decline",
 	},
 	{
-		id: "company",
-		label: "Company",
-		icon: "company",
+		id: "plan",
+		label: "Plan & usage",
+		icon: "plan",
 		keywords:
-			"people team members invitations staff file organization approvals execution pause resume ceilings limits",
+			"plan billing subscription usage storage trial upgrade price payment card invoices computer hours basis standard dedicated",
 	},
 	{
 		id: "connections",

@@ -3,15 +3,16 @@
 .settings-nav { display: flex; flex-direction: column; gap: 3px; padding: 16px 12px; border-right: 1px solid #dededb; background: #f1f1ef; min-width: 0; }
 .settings-nav input { width: 100%; min-width: 0; height: 36px; margin-bottom: 10px; padding: 0 11px; border: 1px solid #d8d8d5; border-radius: 9px; background: #e6e6e3; font-size: 13px; }
 .settings-nav input::placeholder { color: #7c7c78; }
-.settings-nav [role=tablist] { display: flex; flex-direction: column; gap: 3px; }
+.settings-nav [role=tablist] { display: flex; flex-direction: column; gap: 4px; }
 /* Whole-pixel, medium-weight labels in near-black ink: at the old 12.5px
-   regular grey the labels read soft against the grey rail. */
-.settings-nav [role=tab] { display: flex; align-items: center; gap: 10px; min-height: 36px; padding: 6px 10px; border: 0; border-radius: 8px; background: transparent; color: #262624; font: inherit; font-size: 13px; font-weight: 500; text-align: left; cursor: pointer; }
-.settings-nav [role=tab] > .icon { width: 17px; height: 17px; flex: none; color: #6f6f6b; }
+   regular grey the labels read soft against the grey rail. The tabs are
+   half again the 13px/36px size they had; phones keep that size (below). */
+.settings-nav [role=tab] { display: flex; align-items: center; gap: 15px; min-height: 54px; padding: 9px 15px; border: 0; border-radius: 12px; background: transparent; color: #262624; font: inherit; font-size: 20px; font-weight: 500; text-align: left; cursor: pointer; }
+.settings-nav [role=tab] > .icon { width: 26px; height: 26px; flex: none; color: #6f6f6b; }
 .settings-nav [role=tab]:hover { background: #e8e8e5; }
 .settings-nav [aria-selected=true] { background: #dededb; color: #121211; }
 .settings-nav [aria-selected=true] > .icon { color: #262624; }
-.settings-tab-count { display: grid; place-items: center; min-width: 19px; height: 19px; margin-left: auto; padding: 0 6px; border-radius: 999px; background: #1d1d1b; color: #fff; font-size: 11px; font-weight: 700; }
+.settings-tab-count { display: grid; place-items: center; min-width: 28px; height: 28px; margin-left: auto; padding: 0 9px; border-radius: 999px; background: #1d1d1b; color: #fff; font-size: 16px; font-weight: 700; }
 .settings-company-label { margin-top: auto; min-width: 0; font-size: 11.5px; color: #6c6c68; }
 .settings-company-picker { width: 100%; min-width: 0; margin-top: 6px; font-size: 13px; }
 .settings-close { position: absolute; top: 13px; right: 15px; width: 30px; height: 30px; padding: 0; border: 0; border-radius: 7px; background: transparent; color: var(--text-muted); font-size: 20px; cursor: pointer; }
@@ -200,8 +201,10 @@
  .settings-nav { padding: 12px; border-right: 0; border-bottom: 1px solid #dededb; }
  .settings-nav input { width: calc(100% - 44px); }
  .settings-nav [role=tablist] { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
- .settings-nav [role=tab] { justify-content: center; padding: 6px; }
- .settings-tab-count { margin-left: 0; }
+ .settings-nav [role=tablist] { gap: 3px; }
+ .settings-nav [role=tab] { justify-content: center; gap: 10px; min-height: 36px; padding: 6px; border-radius: 8px; font-size: 13px; }
+ .settings-nav [role=tab] > .icon { width: 17px; height: 17px; }
+ .settings-tab-count { min-width: 19px; height: 19px; margin-left: 0; padding: 0 6px; font-size: 11px; }
  .settings-company-label { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
  .settings-company-picker { margin-top: 0; }
  .settings-content { padding: 24px 20px; }

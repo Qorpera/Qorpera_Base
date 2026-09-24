@@ -191,9 +191,9 @@ describe("settings session lifecycle", () => {
 		await draw();
 		expect([...f.root.querySelectorAll('[role="tab"]')].map((tab) => tab.textContent)).toEqual([
 			"General",
-			"Plan & usage",
-			"Friends",
 			"Company",
+			"Friends",
+			"Plan & usage",
 			"Connections",
 		]);
 		for (const tab of f.root.querySelectorAll('[role="tab"]')) expect(tab.querySelector("svg.icon")).not.toBeNull();
@@ -232,7 +232,7 @@ describe("settings session lifecycle", () => {
 		f.root
 			.querySelector("#settings-tab-general")!
 			.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
-		expect(document.activeElement).toBe(f.root.querySelector("#settings-tab-plan"));
+		expect(document.activeElement).toBe(f.root.querySelector("#settings-tab-company"));
 	});
 	it("accepts a company invitation from the Friends tab and opens that company", async () => {
 		const fixtureState = fixture();
