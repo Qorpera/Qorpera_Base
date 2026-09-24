@@ -330,6 +330,20 @@ label > input, label > select { font-weight: 400; }
 .rail-section-title[hidden] { display: none; }
 .rail-section-title:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; }
 .rail-section-list { display: grid; gap: 0; }
+/* Grok Bot's "Hidden Bots": a quiet row at the foot of the list, the count on the right;
+ * open, it lists the hidden agents, and a chevron takes the count's place. */
+.rail-hidden { margin-top: 10px; }
+.rail-hidden-toggle {
+	display: flex; align-items: center; gap: 8px; width: 100%; padding: 9px 8px; border: 0; border-radius: 8px;
+	background: transparent; color: var(--rail-small); font: inherit; font-size: 12px; font-weight: 600; line-height: 16px;
+	text-align: left; cursor: pointer;
+}
+.rail-hidden-toggle:hover { background: var(--rail-hover); }
+.rail-hidden-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rail-hidden-count { font-weight: 500; font-variant-numeric: tabular-nums; }
+.rail-hidden-chevron { display: grid; }
+.rail-hidden-chevron .icon { width: 14px; height: 14px; }
+:is(.rail-hidden-count, .rail-hidden-chevron, .rail-hidden-list)[hidden] { display: none; }
 .rail-scroll > :is(.rail-section, .rail-pinned):first-child { margin-top: 14px; }
 .rail-row, .rail-pin, .cofounder-home { -webkit-touch-callout: none; }
 .rail-row.menu-open, .rail-pin.menu-open, .cofounder-home.menu-open { background: var(--rail-hover); }
@@ -406,6 +420,8 @@ label > input, label > select { font-weight: 400; }
 .rail-compact .rail-pinned { flex-direction: column; align-items: center; padding-bottom: 4px; }
 .rail-compact .rail-pin { width: auto; height: auto; padding: 5px; }
 .rail-compact .rail-pin-name, .rail-compact .rail-section-title { display: none; }
+/* Collapsed, hidden agents stay out of the figure column; widen the rail to reach them. */
+.rail-compact .rail-hidden { display: none; }
 .rail-compact .rail-pin-stand, .rail-compact .rail-pin .figure { width: 50px; height: 50px; }
 .rail-compact .rail-dragging .rail-pinned.is-empty .rail-drop-slot { height: 44px; font-size: 0; }
 .rail-compact .rail-divided::before { content: ""; display: block; height: 1px; margin: 4px 8px; background: var(--border-strong); }

@@ -286,6 +286,8 @@ export const WORKSPACE: Record<string, string> = {
 	"Copy conversation ID": "Kopiér samtale-id",
 	"The conversation ID could not be copied.": "Samtale-id’et kunne ikke kopieres.",
 	"Show in sidebar": "Vis i sidepanelet",
+	"Hidden agents": "Skjulte agenter",
+	"Hidden agents: {count}": "Skjulte agenter: {count}",
 	"Hide from sidebar": "Skjul fra sidepanelet",
 	Delete: "Slet",
 	"Rename agent": "Omdøb agent",
