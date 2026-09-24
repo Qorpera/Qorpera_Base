@@ -8,6 +8,7 @@ import { badge, button, confirmDialog, h, icon, initials, notice, replace } from
 import { groupChatAvatar, isGroupChat } from "../../ui/group-chat.ts";
 import { matchesKey } from "../../ui/keys.ts";
 import { nameDialog } from "../../ui/name-dialog.ts";
+import { attachPersonPicture, personPicturesEpoch } from "../../ui/person-pictures.ts";
 import { phrase, presentationLocale, t, uiText } from "../../ui/preferences.ts";
 import { quietScroll } from "../../ui/quiet-scroll.ts";
 import { RailDrag, type RailDrop } from "../../ui/rail-drag.ts";
@@ -120,7 +121,14 @@ function accountMenuElement(context: ShellContext, company?: CompanyController):
 	accountMenu.classList.toggle("account-menu-rail", Boolean(company));
 	accountContext = context;
 	const name = displayName(context.user);
-	const shown = JSON.stringify([name, context.invitations, Boolean(company), presentationLocale()]);
+	const shown = JSON.stringify([
+		name,
+		context.user?.id,
+		personPicturesEpoch(),
+		context.invitations,
+		Boolean(company),
+		presentationLocale(),
+	]);
 	if (shown === accountShown) return accountMenu;
 	accountTrigger!.setAttribute("aria-label", t("Profile: {name}", { name }));
 	accountTrigger!.title = name;
@@ -142,9 +150,11 @@ function accountMenuElement(context: ShellContext, company?: CompanyController):
 			h("span", { class: "account-item-label" }, uiText(label)),
 			count > 0 ? h("span", { class: "account-count" }, String(count)) : null,
 		);
+	const chip = h("span", { class: "account-chip", "aria-hidden": "true" }, initials(name));
+	if (context.user) attachPersonPicture(chip, context.user.id);
 	replace(
 		accountTrigger!,
-		h("span", { class: "account-chip", "aria-hidden": "true" }, initials(name)),
+		chip,
 		h("span", { class: "account-trigger-name" }, name),
 		company ? null : h("span", { class: "account-chevron", "aria-hidden": "true" }),
 	);

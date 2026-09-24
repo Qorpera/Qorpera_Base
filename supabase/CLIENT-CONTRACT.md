@@ -39,18 +39,51 @@ profile RPCs; RLS is the second read boundary.
 
 ## 2. Member-callable RPCs (security-definer, granted to `authenticated`)
 
-155 functions, grouped for navigation. Signatures: see the migration that defines each.
+163 functions, grouped for navigation. Signatures: see the migration that defines each.
 
 
-### Members, presence, friends, feedback (9)
+### Members, presence, friends, feedback (17)
 
+- `qorpera_can_read_member_picture(p_object_name)` — the picture bucket's
+  read policy: anything in your own folder, and another account's current
+  picture when `qorpera_can_see_member_picture` allows it.
+- `qorpera_can_see_member_picture(p_user_id)` — yourself, company colleagues,
+  accepted friends, and accounts that sent you a friend request (a request you
+  sent reveals nothing until it is accepted).
+- `qorpera_clear_member_picture` — back to initials; returns
+  `previous_object_name`, which the caller deletes from storage.
+- `qorpera_is_current_member_picture(p_object_name)` — whether an object is
+  the caller's current picture; the bucket's delete policy refuses it until
+  another picture (or none) has replaced it. It shares a per-folder lock with
+  `qorpera_set_member_picture`, so a delete and a choice of one object happen
+  one after the other.
 - `qorpera_list_friends`
 - `qorpera_list_presence_devices`
+- `qorpera_member_picture_objects()` — how many objects the caller's own
+  picture folder holds; the upload policy refuses a fifth in Storage's
+  preflight. The limit itself is enforced by a `before insert` trigger on
+  `storage.objects` (`qorpera_guard_member_picture_insert`, also on a move of
+  `bucket_id`/`name`), which covers the storage service's final write and counts
+  parallel uploads into one folder one after another.
+- `qorpera_member_pictures(p_user_ids uuid[])` — at most 200 accounts; returns
+  `[{user_id, object_name, updated_at}]` only for pictures the caller may see
+  (`qorpera_can_see_member_picture`). Migration
+  `20260924150000_member_pictures`.
+- `qorpera_own_member_picture_objects()` — the caller's own picture folder
+  (`[{object_name, created_at, age_seconds}]`, the age by the cloud's clock),
+  for tidying uploads that never became the picture; use it instead of a
+  storage `list()`, which runs the read policy over the whole bucket.
 - `qorpera_presence_topic_profile`
 - `qorpera_register_presence_device`
 - `qorpera_remove_friend`
 - `qorpera_respond_friend_request`
 - `qorpera_send_friend_request`
+- `qorpera_set_member_picture(p_object_name)` — makes an object the caller
+  uploaded to the private bucket `qorpera-member-pictures` as
+  `<own user UUID>/<sha256>.<webp|jpg|png>` (512 KiB, image types only; RLS lets
+  members write (four objects at most) and delete only in their own folder, and
+  read per `qorpera_can_read_member_picture`) their picture; returns
+  `previous_object_name` for the caller to delete.
 - `qorpera_submit_product_feedback`
 - `qorpera_unregister_presence_device`
 
