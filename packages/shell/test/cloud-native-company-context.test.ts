@@ -27,7 +27,7 @@ it("derives the agent, requester and company from closed cloud context, not a su
 		id: f.authority.identity.runtimeBundleId,
 		sha256: f.authority.identity.runtimeBundleSha256,
 	});
-	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toMatch(/multiplayer cloud company/);
+	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toMatch(/its human members and its AI agents/);
 	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toMatch(/one live Company File/);
 	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toMatch(/not a second platform prompt/);
 });
@@ -160,28 +160,31 @@ it.each([
 				// Contract 9: a run receives its own wake's reply rules, not every wake's.
 				const instructions = compileCloudNativeCompanyInstructions(context, wake);
 				const own = {
-					human: "Human and first-run wakes:",
-					"first-run": "Human and first-run wakes:",
-					routine: "Routine wakes:",
-					room: "Room wakes:",
-					agent: "Agent wakes with source.kind coworker:",
+					human: "# This wake: a member's message",
+					"first-run": "# This wake: your first run",
+					routine: "# This wake: your routine",
+					room: "# This wake: a post in a conversation",
+					agent: "# This wake: a message from a coworker",
 				}[kind];
 				for (const heading of [
-					"Human and first-run wakes:",
-					"Routine wakes:",
-					"Room wakes:",
-					"Agent wakes with source.kind coworker:",
-					"Agent wakes with source.kind office-activation",
-					"Agent wakes with source.kind worker-dispatch",
-					"Agent wakes with source.kind worker-completion",
+					"# This wake: a member's message",
+					"# This wake: your first run",
+					"# This wake: your routine",
+					"# This wake: a post in a conversation",
+					"# This wake: a message from a coworker",
+					"# This wake: the Company Computer is ready",
+					"# This wake: you are a background worker",
+					"# This wake: your workers reported",
 				])
 					expect(instructions.includes(heading)).toBe(heading === own);
 				expect(instructions.includes("qorpera.run-continuation/v1")).toBe(continued);
 				for (const always of [
 					"# Qorpera runtime constitution",
-					"Qorpera has one public voice",
+					"send_message is your only public voice",
 					"# Writing to people",
 					"Do what was asked",
+					"# How a turn works",
+					"# Your role: Co-Founder",
 				])
 					expect(instructions).toContain(always);
 				expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toContain(own);
@@ -191,8 +194,8 @@ it.each([
 );
 
 it.each([
-	["worker-dispatch", "Agent wakes with source.kind worker-dispatch", false],
-	["worker-completion", "Agent wakes with source.kind worker-completion", true],
+	["worker-dispatch", "# This wake: you are a background worker", false],
+	["worker-completion", "# This wake: your workers reported", true],
 ] as const)("gives a %s wake its own protocol and no coworker reply rule", (kind, heading, continues) => {
 	const f = nativeCompanyContextFixture();
 	const instructions = cloudCompanyRuntimeInstructions(
@@ -200,11 +203,13 @@ it.each([
 		false,
 	);
 	expect(instructions).toContain(heading);
-	expect(instructions).not.toContain("Agent wakes with source.kind coworker:");
-	expect(instructions).not.toContain("Human and first-run wakes:");
+	expect(instructions).not.toContain("# This wake: a message from a coworker");
+	expect(instructions).not.toContain("# This wake: a member's message");
 	// A revived parent always reads its continuation; a first dispatch has none.
 	expect(instructions.includes("qorpera.worker-completion-continuation/v1")).toBe(continues);
-	expect(instructions).toContain("you are a dispatcher, not a hero");
+	// A worker speaks to no one and keeps no standing work: staff judgement is the parent's.
+	for (const staff of ["you are a dispatcher, not a hero", "# Standing work", "# Writing to people"])
+		expect(instructions.includes(staff)).toBe(continues);
 });
 
 it.each(["human", "office-activation"] as const)("does not restart a prior startup assignment on a %s wake", (kind) => {
@@ -327,8 +332,8 @@ it.each(["cofounder", "employee"] as const)(
 		const context = parseCloudNativeCompanyContext(f.context, f.binding);
 		const instructions = compileCloudNativeCompanyInstructions(context);
 		expect(instructions).not.toContain(hostile);
-		expect(instructions.includes("Hold the company-level responsibilities")).toBe(kind === "cofounder");
-		expect(instructions.includes("Own the outcomes written in your description")).toBe(kind === "employee");
+		expect(instructions.includes("# Your role: Co-Founder")).toBe(kind === "cofounder");
+		expect(instructions.includes("# Your role: employee")).toBe(kind === "employee");
 		for (const id of [context.identity.companyId, context.agent.id, context.runtimeBundle.sha256])
 			expect(instructions).toContain(id);
 		const encoded = composeCloudNativeCompanyPrompt(context);
@@ -390,6 +395,52 @@ it("keeps a large hire charter pageable with its admitted hash rather than silen
 	).resolves.toEqual({ kind: "text", value: JSON.stringify(page) });
 });
 
+it("accepts whole sources and pages up to the 16 KiB the context function ships", async () => {
+	const f = nativeCompanyContextFixture();
+	// Migration 20260922185000 ships current inputs and the charter whole up to 16 KiB.
+	const request = "r".repeat(16384);
+	f.context.currentInputs = [f.source("input", f.context.currentInputs[0].id, request)];
+	f.context.jobSpecification = f.source("job_spec", f.context.agent.id, "c".repeat(9000));
+	const context = parseCloudNativeCompanyContext(f.context, f.binding);
+	expect(context.currentInputs[0].content.text).toBe(request);
+	const tooLarge = nativeCompanyContextFixture();
+	tooLarge.context.currentInputs = [tooLarge.source("input", tooLarge.context.currentInputs[0].id, "r".repeat(16385))];
+	expect(() => parseCloudNativeCompanyContext(tooLarge.context, tooLarge.binding)).toThrow(
+		"Invalid cloud context source",
+	);
+	// A full 16 KiB read_context page comes back through the same parser.
+	const text = "p".repeat(40000);
+	const source = f.source("job_spec", f.context.agent.id, text);
+	f.context.jobSpecification = {
+		...source,
+		content: { ...source.content, text: text.slice(0, 16384), truncated: true, nextOffset: 16384 },
+	};
+	const paged = parseCloudNativeCompanyContext(f.context, f.binding);
+	const page = {
+		...source,
+		content: { ...source.content, text: text.slice(16384, 32768), offset: 16384, nextOffset: 32768, truncated: true },
+	};
+	const tool = cloudCompanyContextTool(paged, f.binding, {
+		call: vi.fn<CloudCompanyPathControl["call"]>(async () => page),
+	});
+	const args = tool.parseArguments({
+		sourceKind: "job_spec",
+		id: source.id,
+		sha256: source.content.sha256,
+		offset: 16384,
+		limit: 16384,
+	});
+	await expect(
+		tool.execute(args, {
+			companyId: paged.identity.companyId,
+			runId: f.binding.runId,
+			callId: "full-page",
+			argumentSha256: "a".repeat(64),
+			signal: new AbortController().signal,
+		}),
+	).resolves.toEqual({ kind: "text", value: JSON.stringify(page) });
+});
+
 it("preserves the latest instruction and source bindings when admitted inputs exceed the pagination budget", () => {
 	const f = nativeCompanyContextFixture();
 	// 1 MiB each: with 16 KiB pages the three logs still need more read_context calls than the tool budget.
@@ -428,7 +479,9 @@ it("preserves the latest instruction and source bindings when admitted inputs ex
 	// Three admitted inputs of 1 MiB, 1 KiB shipped inline by this fixture, 64 pages of 16 KiB left each.
 	expect(missingPages).toBe(192);
 	const instructions = compileCloudNativeCompanyInstructions(context);
-	expect(instructions).toContain("There is no fixed limit on tool calls or time in an attempt");
+	expect(instructions).toContain("There is no limit on tool calls or time.");
+	expect(instructions).toContain("a limit of up to 16384 bytes");
+	expect((tool.inputSchema.properties as { limit: { maximum: number } }).limit.maximum).toBe(16384);
 	expect(instructions).not.toMatch(/at most \d+ Qorpera tool calls/);
 	for (const source of logs) {
 		expect(
@@ -703,7 +756,7 @@ it("projects and pages prior completed work only for this admitted run", async (
 	};
 	const context = parseCloudNativeCompanyContext(f.context, f.binding);
 	expect(JSON.parse(composeCloudNativeCompanyPrompt(context)).continuation.kind).toBe("completed_work");
-	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toContain("Never repeat a completed effect under a new key");
+	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toContain("Never repeat a completed action under a new key");
 	const page = { ...source, content: { ...source.content, text: text.slice(4096), offset: 4096, truncated: true } };
 	const call = vi.fn<CloudCompanyPathControl["call"]>(async () => page);
 	const tool = cloudCompanyContextTool(context, f.binding, { call });
