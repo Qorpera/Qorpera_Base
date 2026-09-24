@@ -559,9 +559,12 @@ describe("the account card's picture control", () => {
 		const chooser = vi.spyOn(input, "click").mockImplementation(() => {});
 		Object.defineProperty(input, "files", { configurable: true, value: [photo()] });
 		input.dispatchEvent(new Event("change"));
-		// The photo is still opening: the picture says so.
+		// The photo is still opening: the picture says so, and keeps its focus (it stays enabled).
 		const trigger = control.querySelector<HTMLButtonElement>(".account-picture-button")!;
 		expect(trigger.getAttribute("aria-busy")).toBe("true");
+		expect(trigger.getAttribute("aria-label")).toBe("Opening your picture");
+		expect(trigger.disabled).toBe(false);
+		// A second pick is refused all the same.
 		input.dispatchEvent(new Event("change"));
 		trigger.click();
 		expect(choosePictureCrop).toHaveBeenCalledTimes(1);
@@ -607,6 +610,9 @@ describe("the account card's picture control", () => {
 		await settle();
 		expect(upload).not.toHaveBeenCalled();
 		expect(error.textContent).toBe("This browser could not read that picture. Try a JPEG or PNG.");
+		const trigger = control.querySelector<HTMLButtonElement>(".account-picture-button")!;
+		expect(trigger.hasAttribute("aria-busy")).toBe(false);
+		expect(trigger.disabled).toBe(false);
 	});
 
 	it("offers another picture or initials from a menu once there is a picture; Escape closes only the menu", async () => {

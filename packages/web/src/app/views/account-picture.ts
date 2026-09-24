@@ -100,24 +100,30 @@ export function accountPicture(user: User | null): { picture: HTMLElement; error
 	function update(): void {
 		if (picking && picking.epoch !== personPicturesEpoch()) picking.lifetime.abort();
 		const status = store!.status(userId);
-		// A big photo takes a moment to open before it can be fitted.
-		const busy = store!.busy(userId) || Boolean(picking?.loading);
+		const saving = store!.busy(userId);
+		// A big photo takes a moment to open before it can be fitted. The button stays
+		// enabled meanwhile, so it keeps focus for the dialog to hand back; a second
+		// pick is refused by `picking` instead.
+		const opening = Boolean(picking?.loading);
+		const busy = saving || opening;
 		// A picture that could not be read may still exist: offer both choices.
 		const menu = status === "picture" || status === "failed";
 		const changeable = menu || status === "none";
-		trigger.disabled = busy || !changeable;
+		trigger.disabled = saving || !changeable;
 		root.classList.toggle("is-busy", busy);
 		root.classList.toggle("is-changeable", changeable);
 		badge.hidden = !changeable;
 		if (busy) trigger.setAttribute("aria-busy", "true");
 		else trigger.removeAttribute("aria-busy");
-		const label = busy
+		const label = saving
 			? t("Saving your profile picture")
-			: menu
-				? t("Change profile picture")
-				: status === "none"
-					? t("Add a profile picture")
-					: t("Profile picture");
+			: opening
+				? t("Opening your picture")
+				: menu
+					? t("Change profile picture")
+					: status === "none"
+						? t("Add a profile picture")
+						: t("Profile picture");
 		trigger.setAttribute("aria-label", label);
 		trigger.title = changeable ? label : "";
 		if (menu) {

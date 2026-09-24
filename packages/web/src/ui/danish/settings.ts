@@ -18,6 +18,7 @@ export const SETTINGS: Record<string, string> = {
 	"Add a profile picture": "Tilføj et profilbillede",
 	"Change profile picture": "Skift profilbillede",
 	"Saving your profile picture": "Gemmer dit profilbillede",
+	"Opening your picture": "Åbner dit billede",
 	"Choose a new picture": "Vælg et nyt billede",
 	"Remove picture": "Fjern billede",
 	"Fit your picture": "Tilpas dit billede",
