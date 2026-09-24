@@ -219,7 +219,7 @@ export class ConnectionsView {
 				);
 				if (!this.#lifetime.signal.aborted) void this.#refresh();
 			} catch {
-				// Shown as "Connected"; the conversation says so if it still cannot send.
+				// The card still lists the account; the conversation says so if it still cannot send.
 			}
 		}
 	}
