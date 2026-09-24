@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { GUEST_IMAGE_SELF_UPDATE_UNITS } from "../packages/runtime/src/lxd-guest-image-updates.ts";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -223,6 +224,17 @@ test("packages the complete pinned LXD runner guest contract", async () => {
 		assert.match(installer, /apt-get install --yes[^\n]*\bcrun\b/);
 		assert.match(installer, /apt-get install --yes[^\n]*\bbubblewrap\b/);
 		assert.ok(installer.includes("/usr/bin/podman info >/dev/null"));
+		// The published image never updates itself (run d1f454e2, 2026-09-24): the
+		// units the guest bootstraps check are masked before anything is installed,
+		// with no apt job left running, and proven masked at the end.
+		assert.ok(installer.includes(`SELF_UPDATE_UNITS=(${GUEST_IMAGE_SELF_UPDATE_UNITS.join(" ")})`));
+		const masking = installer.indexOf('systemctl mask "${SELF_UPDATE_UNITS[@]}"');
+		assert.ok(masking > 0 && masking < installer.indexOf("apt-get update"));
+		assert.ok(installer.indexOf("systemctl show --property=ActiveState --value") > masking);
+		const proof = installer.indexOf('[[ $(readlink "/etc/systemd/system/${unit}") != /dev/null ]]');
+		assert.ok(proof > installer.indexOf("systemctl enable qorpera-lxd-runner-bootstrap.service"));
+		assert.ok(installer.includes('[[ $(systemctl is-enabled "${unit}" 2>/dev/null) != masked ]]'));
+		assert.ok(proof < installer.indexOf("LXD_RUNNER_IMAGE_CONTRACT_INSTALLED"));
 		assert.ok(acceptance.includes("install -d -o qorpera-runner -g qorpera-runner -m 0700 /run/qorpera-runner"));
 		assert.ok(acceptance.includes("XDG_RUNTIME_DIR=/run/qorpera-runner"));
 		assert.ok(!acceptance.includes("XDG_RUNTIME_DIR=/var/lib/qorpera-runner/tmp"));

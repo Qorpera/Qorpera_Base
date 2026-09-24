@@ -148,6 +148,18 @@ the coding user in this VM. Arbitrary apt/root installation, host package tools,
 LXD access and privilege escalation are unavailable to the model. A new system
 package needs an image revision or separately authorized installer design.
 
+The image must never update itself. Mask `apt-daily.timer`,
+`apt-daily-upgrade.timer`, `apt-daily.service`, `apt-daily-upgrade.service` and
+`unattended-upgrades.service` in the image build (`systemctl mask`, which links
+each under `/etc/systemd/system` to `/dev/null`). Unmasked, the timers catch up
+on every fresh boot from the build's stamps; unattended-upgrades then restarts
+the session's units through needrestart, and its shutdown inhibitor refuses the
+VM's stop, so the session's node slot is never released. The storage helper
+checks all five links at every action and refuses with
+`RUNNER_IMAGE_SELF_UPDATE_ENABLED:<UNIT>`; the executor runs its `image` check
+after verifying the helpers and fails the session with
+`RUNNER_IMAGE_SELF_UPDATE_ENABLED` before delivering any configuration.
+
 Retain task downloads and mutable app/tool state on NAS; reproducible OS images
 are a different promise from preserving arbitrary installed root state. Private
 registry access requires an approved scoped broker; do not put tokens in home,

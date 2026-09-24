@@ -1,10 +1,11 @@
 import { createHash, generateKeyPairSync } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { recoveryPublicKeyText } from "@qorpera/runtime/cloud-identity-recovery-crypto";
 import type { IdentityRecoveryRuntimeState } from "@qorpera/runtime/cloud-identity-recovery-guest";
+import { GUEST_IMAGE_SELF_UPDATE_UNITS } from "@qorpera/runtime/lxd-guest-image-updates";
 import {
 	type LxdNativeLoginBootstrapPaths,
 	type LxdRunnerBootstrapPaths,
@@ -43,6 +44,13 @@ afterEach(async () => {
 	for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
 });
 
+/** The image's unit directory as its build leaves it: the five apt
+ * self-update units masked. */
+async function maskedUnits(directory: string): Promise<void> {
+	await mkdir(directory, { mode: 0o755 });
+	for (const unit of GUEST_IMAGE_SELF_UPDATE_UNITS) await symlink("/dev/null", join(directory, unit));
+}
+
 async function fixture(): Promise<{
 	root: string;
 	paths: LxdRunnerBootstrapPaths;
@@ -64,7 +72,9 @@ async function fixture(): Promise<{
 		runnerTemporaryDirectory: join(root, "native-workspace"),
 		nativeProviderTemporaryDirectory: join(root, "native", "tmp"),
 		mountInfo: join(root, "mountinfo"),
+		systemUnitDirectory: join(root, "systemd-system"),
 	};
+	await maskedUnits(paths.systemUnitDirectory);
 	const currentGid = process.getgid?.() ?? 1;
 	const sharedGid = currentGid > 0 ? currentGid : 1;
 	await mkdir(paths.credentialSource, { recursive: true, mode: 0o700 });
@@ -160,7 +170,9 @@ async function loginFixture(): Promise<{ root: string; paths: LxdNativeLoginBoot
 		identityMasterKey: join(root, "identity", "qorpera-native-provider-master-key"),
 		nativeProviderTemporaryDirectory: join(root, "native", "tmp"),
 		mountInfo: join(root, "mountinfo"),
+		systemUnitDirectory: join(root, "systemd-system"),
 	};
+	await maskedUnits(paths.systemUnitDirectory);
 	await mkdir(paths.credentialSource, { recursive: true, mode: 0o700 });
 	await mkdir(paths.identityVolume, { recursive: true, mode: 0o700 });
 	await writeFile(
@@ -308,6 +320,41 @@ describe("LXD runner guest bootstrap", () => {
 		}
 	});
 
+	it.each(GUEST_IMAGE_SELF_UPDATE_UNITS.map((unit) => [unit]))(
+		"refuses an image that can update itself (%s not masked) before reading any run authority",
+		async (unit) => {
+			const { paths, sharedGid } = await fixture();
+			const uid = process.getuid?.() ?? 0;
+			const gid = process.getgid?.() ?? 0;
+			await unlink(join(paths.systemUnitDirectory, unit));
+			// Unreadable authority would fail next: the image refusal comes first.
+			await writeFile(paths.bootstrapConfig, "not json\n", { mode: 0o600 });
+			const started: string[] = [];
+			let identityConsulted = false;
+
+			await expect(
+				runLxdRunnerBootstrap({
+					paths,
+					identityRuntimeState: async () => {
+						identityConsulted = true;
+						return fixtureState;
+					},
+					expectedRootUid: uid,
+					expectedRootGid: gid,
+					serviceIdentity: { uid, gid },
+					nativeServiceIdentity: { uid, gid: sharedGid },
+					runnerSupplementaryGids: [sharedGid],
+					startService: async (service) => {
+						started.push(service);
+					},
+				}),
+			).rejects.toThrow(`RUNNER_IMAGE_SELF_UPDATE_ENABLED:${unit.toUpperCase().replace(/[.-]/g, "_")}`);
+			expect(started).toEqual([]);
+			expect(identityConsulted).toBe(false);
+			await expect(stat(paths.runnerConfigDestination)).rejects.toMatchObject({ code: "ENOENT" });
+		},
+	);
+
 	it("refuses a runner temporary root outside the dedicated native workspace", async () => {
 		const { root, paths, sharedGid } = await fixture();
 		const config = JSON.parse(await readFile(paths.runnerConfig, "utf-8")) as Record<string, unknown>;
@@ -399,6 +446,28 @@ describe("LXD native login guest bootstrap", () => {
 		});
 		expect((await readFile(paths.identityMasterKey, "utf-8")).trim()).toMatch(/^[A-Za-z0-9_-]{43}$/);
 		expect((await stat(join(root, "native"))).mode & 0o777).toBe(0o700);
+	});
+
+	it("refuses an image that can update itself before key initialization or provider sign-in", async () => {
+		const { paths } = await loginFixture();
+		const uid = process.getuid?.() ?? 0;
+		const gid = process.getgid?.() ?? 0;
+		await unlink(join(paths.systemUnitDirectory, "apt-daily-upgrade.timer"));
+		const started: string[] = [];
+		await expect(
+			runLxdNativeLoginBootstrap({
+				paths,
+				identityRuntimeState: async () => ({ ...fixtureState, keySha256: null, canInitialize: true }),
+				expectedRootUid: uid,
+				expectedRootGid: gid,
+				nativeServiceIdentity: { uid, gid },
+				startService: async (service) => {
+					started.push(service);
+				},
+			}),
+		).rejects.toThrow("RUNNER_IMAGE_SELF_UPDATE_ENABLED:APT_DAILY_UPGRADE_TIMER");
+		expect(started).toEqual([]);
+		await expect(readFile(paths.identityMasterKey)).rejects.toMatchObject({ code: "ENOENT" });
 	});
 
 	it("stops before key initialization or provider sign-in when recovery is not configured", async () => {
@@ -547,6 +616,19 @@ describe("governed native company guest bootstrap", () => {
 		await startCompanyFixture(paths, started);
 		expect(await readFile(outcome, "utf-8")).toBe("private retained outcome");
 		expect((await stat(marker)).mode & 0o777).toBe(0o600);
+	});
+
+	it("refuses an image that can update itself before binding the recovery volume", async () => {
+		const paths = await companyFixture();
+		await unlink(join(paths.systemUnitDirectory, "unattended-upgrades.service"));
+		const started: string[] = [];
+		await expect(startCompanyFixture(paths, started)).rejects.toThrow(
+			"RUNNER_IMAGE_SELF_UPDATE_ENABLED:UNATTENDED_UPGRADES_SERVICE",
+		);
+		expect(started).toEqual([]);
+		await expect(
+			stat(join(paths.runnerHomeDirectory, ".qorpera-native-company-recovery.json")),
+		).rejects.toMatchObject({ code: "ENOENT" });
 	});
 
 	it.each(["missing", "same-device", "shared", "nested"])(

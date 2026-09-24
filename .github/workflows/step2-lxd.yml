@@ -31,6 +31,8 @@ on:
       - 'packages/runtime/src/cloud-connector-*.ts'
       - 'packages/runtime/src/cloud-coding-*.ts'
       - 'packages/runtime/test/cloud-coding-*.test.ts'
+      - 'packages/runtime/src/lxd-*.ts'
+      - 'packages/runtime/test/lxd-*.test.ts'
       - 'deploy/coding-worker/**'
       - 'packages/runtime/src/cloud-secret-*.ts'
       - 'packages/shell/test/cloud-connector-*.test.ts'
@@ -131,6 +133,7 @@ jobs:
           test/cloud-coding-watchdog.test.ts
           test/cloud-coding-storage-guest.test.ts
           test/cloud-coding-command-guest-execute.test.ts
+          test/lxd-guest-image-updates.test.ts
 
       - name: Test the coding command supervisor
         # Its fixtures chown each command log to the coding gid, which must be
