@@ -973,6 +973,8 @@ it("runs a background worker blank: reading tools and its report, no mouth, no c
 		"report_work",
 	]);
 	expect(evidence.threadParameters.developerInstructions).toContain("# This wake: you are a background worker");
+	expect(evidence.threadParameters.developerInstructions).toContain("# Before you stop\nCall report_work once");
+	expect(evidence.threadParameters.developerInstructions).not.toContain("# Standing work");
 	expect(evidence.threadParameters.developerInstructions).not.toContain("# This wake: a message from a coworker");
 });
 

@@ -178,6 +178,7 @@ it.each([
 				])
 					expect(instructions.includes(heading)).toBe(heading === own);
 				expect(instructions.includes("qorpera.run-continuation/v1")).toBe(continued);
+				expect(instructions.includes("# Before you end your turn")).toBe(final === "required");
 				for (const always of [
 					"# Qorpera runtime constitution",
 					"send_message is your only public voice",
@@ -408,37 +409,58 @@ it("accepts whole sources and pages up to the 16 KiB the context function ships"
 	expect(() => parseCloudNativeCompanyContext(tooLarge.context, tooLarge.binding)).toThrow(
 		"Invalid cloud context source",
 	);
-	// A full 16 KiB read_context page comes back through the same parser.
-	const text = "p".repeat(40000);
-	const source = f.source("job_spec", f.context.agent.id, text);
-	f.context.jobSpecification = {
-		...source,
-		content: { ...source.content, text: text.slice(0, 16384), truncated: true, nextOffset: 16384 },
-	};
-	const paged = parseCloudNativeCompanyContext(f.context, f.binding);
-	const page = {
-		...source,
-		content: { ...source.content, text: text.slice(16384, 32768), offset: 16384, nextOffset: 32768, truncated: true },
-	};
-	const tool = cloudCompanyContextTool(paged, f.binding, {
-		call: vi.fn<CloudCompanyPathControl["call"]>(async () => page),
-	});
-	const args = tool.parseArguments({
-		sourceKind: "job_spec",
-		id: source.id,
-		sha256: source.content.sha256,
-		offset: 16384,
-		limit: 16384,
-	});
-	await expect(
-		tool.execute(args, {
+	// A 16 KiB page is fitted to the result fence: the model always receives nextOffset.
+	for (const character of ["p", '<"\\']) {
+		const text = character.repeat(40000 / character.length);
+		const source = f.source("job_spec", f.context.agent.id, text);
+		f.context.jobSpecification = {
+			...source,
+			content: { ...source.content, text: text.slice(0, 16384), truncated: true, nextOffset: 16384 },
+		};
+		const paged = parseCloudNativeCompanyContext(f.context, f.binding);
+		const page = {
+			...source,
+			content: {
+				...source.content,
+				text: text.slice(16384, 32768),
+				offset: 16384,
+				nextOffset: 32768,
+				truncated: true,
+			},
+		};
+		const boundary = new CloudNativeToolBoundary({
 			companyId: paged.identity.companyId,
 			runId: f.binding.runId,
-			callId: "full-page",
-			argumentSha256: "a".repeat(64),
+			identity: paged.identity,
+			tools: [
+				cloudCompanyContextTool(paged, f.binding, {
+					call: vi.fn<CloudCompanyPathControl["call"]>(async () => page),
+				}),
+			],
+			assertActive: async () => undefined,
 			signal: new AbortController().signal,
-		}),
-	).resolves.toEqual({ kind: "text", value: JSON.stringify(page) });
+		});
+		const result = await boundary.invoke(`full-page-${character.length}`, "qorpera", "read_context", {
+			sourceKind: "job_spec",
+			id: source.id,
+			sha256: source.content.sha256,
+			offset: 16384,
+			limit: 16384,
+		});
+		boundary.close();
+		const fenced = JSON.parse(result.contentItems[0].text);
+		expect(fenced).toMatchObject({ status: "ok", content: { truncated: false } });
+		const returned = JSON.parse(fenced.content.text);
+		const length = [...returned.content.text].length;
+		expect(length).toBeGreaterThan(512);
+		expect(returned.content).toMatchObject({
+			sha256: source.content.sha256,
+			offset: 16384,
+			nextOffset: 16384 + length,
+			truncated: true,
+		});
+		expect(returned.content.text).toBe(text.slice(16384, 16384 + length));
+	}
 });
 
 it("preserves the latest instruction and source bindings when admitted inputs exceed the pagination budget", () => {

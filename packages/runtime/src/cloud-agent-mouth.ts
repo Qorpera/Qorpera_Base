@@ -8,7 +8,7 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3
 export const CLOUD_AGENT_SEND_SCHEMA = "qorpera.agent-send/v1";
 export const CLOUD_AGENT_SEND_INSTRUCTIONS =
 	"send_message sends a message to this conversation. It is your only public voice: ordinary assistant text, reasoning, tool calls and tool results stay private. " +
-	"phase progress keeps people informed and does not end your turn; when delivery asks for an acknowledgement, send one progress message first, and never a second one in the same run. " +
+	"phase progress keeps people informed and does not end your turn. When the reply policy asks you to acknowledge a request, do it with one short progress message before you start work, and never acknowledge twice in the same run. " +
 	"phase final delivers this turn's result, a concrete blocker or a decision request, even if the underlying task continues later, and it ends the turn at once: " +
 	"nothing after it runs, so finish every Company File change, check and coworker message before it. " +
 	"If a send's result was lost, retry with the same idempotencyKey and exactly the same arguments. Never include private reasoning or credentials.";

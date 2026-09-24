@@ -26,15 +26,23 @@ canonical Co-Founder mapping).
 | Weakest guidance where most traffic is | A member's post in an agent's own thread is a `room` wake (final required, migration `20260918000000`), not a `human` wake. The room paragraph only covered coworker overlap and silence, not "do the work and end with the result". |
 | No overview of the context message | Fields such as `delivery.beforeWork`, `hireOverlay` and `heldMessages` were explained in scattered sentences; nothing said what the JSON message contains. |
 
-## Runtime defect found on the way
+## Runtime defects found on the way
 
-`parseCloudNativeCompanyContext` still rejected any source excerpt over 4,096
-bytes. Since migration `20260922185000` the context function ships current
-inputs and the hire charter whole up to 16 KiB, and `read_context` pages up to
-16 KiB. A member message or job description between 4 and 16 KiB therefore
-failed the run at the context stage ("Invalid cloud context source"), and a
-16 KiB page failed the same way. The bound is now 16,384 bytes, with a
-regression test for both paths. No SQL changes.
+1. `parseCloudNativeCompanyContext` still rejected any source excerpt over
+   4,096 bytes. Since migration `20260922185000` the context function ships
+   current inputs and the hire charter whole up to 16 KiB, and `read_context`
+   pages up to 16 KiB. A member message or job description between 4 and
+   16 KiB therefore failed the run at the context stage ("Invalid cloud
+   context source"). The bound is now 16,384 bytes. No SQL changes.
+2. Found by the independent review: every tool result is fenced at 8 KiB
+   (`MAX_CLOUD_TOOL_RESULT_BYTES`) together with its provenance, and the
+   fence cuts from the end, where a page's `nextOffset` sits. A `read_context`
+   page larger than roughly 5 KiB of prose came back cut, without its
+   continuation handle. The old prompt's "at most 1024 bytes" hid this; the
+   16 KiB schema maximum made it reachable. `read_context` now shortens a page
+   at a code point until the fenced result fits and recomputes `nextOffset`,
+   and the model is told a page can be shorter than the limit. A test sends
+   16 KiB pages of plain and escape-heavy text through the real boundary.
 
 ## Changes
 
@@ -79,25 +87,27 @@ label). Harness changes for the current product: send budgets are `null`
 thread, scenario 11 allows its coworker reply. It is a screen, not
 installed-release acceptance; one trial per scenario unless noted.
 
-Mechanical checks, same 58 scenarios, same model and harness:
+Mechanical checks, same 58 scenarios, same model and harness. "Rewrite"
+is the final text (label `final`); a first and second draft were screened
+the same way (`candidate`, `candidate2`) and are in the evidence folder.
 
 | | Today's prompt (v95) | Rewrite |
 | --- | --- | --- |
-| Scenarios passing | 52 / 58 | 54 / 58 in the full run; 55 after the room sentence below was tightened (3 of 3 repeats) |
-| Words members saw (all scenarios) | 2,663 | 2,535, of which 160 are the answer the old prompt failed to send |
-| Instruction size, member message to an employee | 20,409 bytes | 16,353 bytes |
-| Instruction size, post in an agent's own thread | 20,165 bytes | 16,978 bytes |
-| Instruction size, background worker | 20,660 bytes | 14,712 bytes |
+| Scenarios passing, full run | 52 / 58 | 54 / 58 |
+| Words members saw (all scenarios) | 2,663 | 2,592, of which 216 are the answer the old prompt failed to send |
+| Instruction size, member message to an employee | 20,409 bytes | about 16,900 bytes |
+| Instruction size, post in an agent's own thread | 20,165 bytes | about 17,500 bytes |
+| Instruction size, background worker | 20,660 bytes | about 15,100 bytes |
 
 Where the two differ:
 
 | Scenario | Today's prompt | Rewrite |
 | --- | --- | --- |
-| Co-Founder asked to read the founder's notes and give an opinion (`q-cf-prior-work`) | Read both files, then ended the turn with no final send in 2 of 5 runs: the member saw only "I'll read your notes". The last model call produced 4 tokens. | Final sent in 6 of 6 runs: a position, the evidence, one proposed test and one question (160 words). |
-| Direction write-up (`q-cf-direction-proposal`) | Tried to write a path it may not write, then pasted the whole 273-word direction into chat | Saved it as a proposal and gave a 72-word summary |
-| Employee first run with responsibilities (`o-first-run-from-responsibilities`) | 11 calls, three routines, a write outside its remit, 151 words | 7 calls, two routines, 86 words |
-| Employee first run, support (`r-first-run-responsibility`) | 80 words | 50 words, ends with the one question it needs |
-| One-sentence answer in an agent thread (`07-required-room-current-evidence`) | One send | After tightening the progress-send sentence: one send in 3 of 3 runs (first rewrite sent a "Checking…" note first) |
+| Co-Founder asked to read the founder's notes and give an opinion (`q-cf-prior-work`) | Read both files, then ended the turn with no final send in 2 of 5 runs: the member saw only "I'll read your notes". The last model call produced 4 tokens and no reasoning. | Final sent in every run of the second draft and the final text (11 of 11): a position, the evidence, one proposed test and one question. |
+| Direction write-up (`q-cf-direction-proposal`) | Tried to write a path it may not write, then pasted the whole 273-word direction into chat | Saved it as a proposal and gave a 65–83 word summary (3 of 3 drafts) |
+| Employee first run with responsibilities (`o-first-run-from-responsibilities`) | 11 calls, three routines, a refused write, 151 words | 7–10 calls, two or three routines, 86–121 words; the refused write to `founder/pricing-evidence.md` happened in 1 of 3 runs. The job description asks the agent to keep that view, so the refusal is the fixture's, not a conduct failure. |
+| Employee first run, support (`r-first-run-responsibility`) | 80 words | about 50 words, ends with the one question it needs |
+| One-sentence answer in an agent thread (`07-required-room-current-evidence`) | One send | First draft sent a "Checking…" note before the answer. After the room section said "skip it when a few reads will give you the answer": one send in 6 of 6 runs. |
 
 Unchanged failures, the same under both prompts: `o-group-chat` (the
 Co-Founder opens the chat and then briefs each coworker; the harness only
@@ -114,6 +124,30 @@ instead of only asking what to start with.
 What this screen does not show: repeatability beyond the few repeated
 scenarios, behavior on Sol or Luna, workers and todos under load (no
 scenario dispatches a worker), or the installed release.
+
+## Independent review
+
+A separate reviewer read the diff against the contract and the code. Besides
+defect 2 above it asked for: the closing reminder to count an `ask_member`
+card as the final send; the first-run cue not to be called a platform
+instruction (its text comes from whoever created the agent); the tool-result
+note's "safer way" sentence to be limited to safety blocks, as in contract
+11.3; `heldMessages` to name `send_coworker_message`; law 10 to say "never
+wait or poll inside a run"; and continuation history to be "recorded in the
+continuation" so a restarted run still owes its member a reply. All applied.
+It found no lost rule and confirmed field names, wake kinds, tool names and
+the thread reply policy against the code.
+
+## Found outside this change
+
+`ask_member` is withheld on every `room` wake
+(`cloud-native-company-runtime.ts`, `wake.kind !== "room"`), and the web
+client posts every message in an agent's own thread through
+`qorpera_post_company_room_message`. So an agent can raise a question,
+approval, secret or sign-in card only on a `human` or first-run wake, never
+in reply to an ordinary post in its own thread. The thread-widgets design
+meant "no cards in group rooms"; agent threads are rooms internally. Not
+changed here; the prompt does not promise a card in that section.
 
 ## Verification
 
