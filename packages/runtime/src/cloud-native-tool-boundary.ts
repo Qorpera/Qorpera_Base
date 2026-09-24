@@ -121,16 +121,18 @@ export interface CloudNativeFencedResult {
 	capture?: CompanyComputerScreenshotAsset;
 }
 
-/** Canonicalization is for exact in-process retries, not an authorization grant or durable receipt. */
 /** A refusal of a tool's arguments that says what to fix, so the model can retry.
- * Its message is fixed, model-safe wording from the parser: never an argument value. */
+ * Its message is fixed, model-safe wording from the parser: never an argument value.
+ * The boundary relays at most 1 KiB of plain text and drops anything else. */
 export class CloudToolArgumentRefusal extends Error {
 	constructor(message: string) {
 		super(message);
 		this.name = "CloudToolArgumentRefusal";
 	}
 }
+const REFUSAL_UNSAFE = /[\u0000-\u001f\u007f-\u009f\u200e\u200f\u202a-\u202e\u2028\u2029\u2066-\u2069]/;
 
+/** Canonicalization is for exact in-process retries, not an authorization grant or durable receipt. */
 export function cloudToolJsonText(value: unknown, limit = MAX_ARGUMENT_BYTES): string {
 	let nodes = 0;
 	let remainingBytes = limit;
@@ -501,7 +503,12 @@ export class CloudNativeToolBoundary {
 				throw new Error("Oversized parsed arguments");
 			if (tool.source !== "company_file") observation?.update({ inputBytes: Buffer.byteLength(argumentsText) });
 		} catch (error) {
-			const reason = error instanceof CloudToolArgumentRefusal ? `: ${error.message}` : "";
+			const reason =
+				error instanceof CloudToolArgumentRefusal &&
+				Buffer.byteLength(error.message) <= 1024 &&
+				!REFUSAL_UNSAFE.test(error.message)
+					? `: ${error.message}`
+					: "";
 			return this.#result(callId, tool, digest, "denied", { kind: "text", value: `INVALID_ARGUMENTS${reason}` });
 		}
 		try {

@@ -140,7 +140,7 @@ const PAYLOAD_SCHEMAS: Record<CloudInteractionSurface, Schema> = {
 			to: { type: "array", minItems: 1, maxItems: 32, items: chars(1, 320) },
 			cc: { type: "array", maxItems: 32, items: chars(1, 320) },
 			subject: chars(0, 500),
-			body: chars(1, 65536),
+			body: chars(1, 65536, "The whole ask_member call must stay under 64 KiB."),
 			replyTo: chars(1, 256),
 			threadRef: chars(1, 256),
 		},
@@ -177,15 +177,15 @@ function payloadRefusal(surface: CloudInteractionSurface): string {
 		surface === "question"
 			? " Each option is an object with a label, never a plain string."
 			: surface === "form"
-				? " A secret field (secret: true, type password or otp) needs a target; options only and always for type select; submitAfterFill only with exactly one field, which has a target."
+				? " Field ids are unique; a secret field (secret: true, type password or otp) needs a target; options only and always for type select; submitAfterFill only with exactly one field, which has a target."
 				: "";
-	return `the ${surface} payload must be ${sketch(PAYLOAD_SCHEMAS[surface])}.${extra}`;
+	return `the ${surface} payload must be ${sketch(PAYLOAD_SCHEMAS[surface])}.${extra} Text limits count UTF-8 bytes (æ, ø and å take 2, an emoji 4), control characters are refused, and ids, names and hosts must match their schema patterns.`;
 }
 
 export const CLOUD_ASK_MEMBER_INSTRUCTIONS =
 	"ask_member puts one typed card in this conversation for the member to answer: a question with options, a secret they enter into the company vault, a form the host fills into the page on your computer, a takeover of your computer for a sign-in or code, a draft message they send or discard, or a credential sign-in the computer performs from the vault. " +
 	"Calling it ends this turn like a final send (text is the sentence shown above the card), so finish every Company File change and coworker message first. " +
-	"payload is the closed object its schema gives for the surface you name; for a question it is {options: [{label, value?, description?, style?}], multiSelect?, allowCustom?}, where each option is an object, never a plain string. A refused card says what to fix: fix it and call again. " +
+	"payload is the closed object its schema gives for the surface you name; for a question it is {options: [{label, value?, description?, style?}], multiSelect?, allowCustom?}, where each option is an object, never a plain string. Text limits count UTF-8 bytes. A refused card says what to fix: fix it and call again. " +
 	"In your own shared thread, only the member you are answering can answer the card. " +
 	"The answer wakes you again in this conversation as qorpera.interaction-answer/v1: an input of your next wake, or in your own thread the newest thread entry, which wake.payload.inputIds names. It carries an outcome and, for a question or form, the chosen values; a secret answer never contains the value, only the vault secret's id and version under the connector you named (connectorId, default vault), for a connector operation to use. " +
 	"Never ask the member to paste a password, token or code into ordinary chat; raise a secret card, a form or a takeover instead. A declined, dismissed or expired card is the answer: do not raise the same card again at once. " +
@@ -423,12 +423,13 @@ function interactionRequestIssue(data: Record<string, unknown>): string | undefi
 	const unknown = Object.keys(data).find(
 		(key) => !["schema", "surface", "title", "body", "expiresAt", "payload"].includes(key),
 	);
-	if (unknown !== undefined) return `unknown argument ${JSON.stringify(unknown.slice(0, 64))}`;
+	if (unknown !== undefined)
+		return "unknown argument; a card has only surface, title, body, expiresAt and payload besides idempotencyKey and text";
 	if (data.schema !== CLOUD_INTERACTION_SCHEMA) return `schema must be ${CLOUD_INTERACTION_SCHEMA}`;
 	if (typeof data.surface !== "string" || !(CLOUD_INTERACTION_SURFACES as readonly string[]).includes(data.surface))
 		return `surface must be one of ${CLOUD_INTERACTION_SURFACES.join(", ")}`;
-	if (!text(data.title, 1, 200)) return "title must be 1 to 200 characters";
-	if (!optionalText(data, "body", 0, 2000)) return "body must be at most 2000 characters";
+	if (!text(data.title, 1, 200)) return "title must be 1 to 200 UTF-8 bytes";
+	if (!optionalText(data, "body", 0, 2000)) return "body must be at most 2000 UTF-8 bytes";
 	if (
 		"expiresAt" in data &&
 		(typeof data.expiresAt !== "string" ||
@@ -466,7 +467,7 @@ export function parseCloudAskMemberInput(value: unknown): CloudAskMemberInput {
 			"idempotencyKey must be 1 to 128 letters, digits or ._:- starting alphanumeric",
 		);
 	if (!text(sentence, 1, 4096) || !sentence.trim())
-		throw new CloudToolArgumentRefusal("text must be the 1 to 4096 character sentence shown above the card");
+		throw new CloudToolArgumentRefusal("text must be the sentence shown above the card, 1 to 4096 UTF-8 bytes");
 	const issue = interactionRequestIssue({ schema: CLOUD_INTERACTION_SCHEMA, ...card });
 	if (issue) throw new CloudToolArgumentRefusal(issue);
 	return {
