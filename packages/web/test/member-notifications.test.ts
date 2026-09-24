@@ -147,6 +147,30 @@ describe("company notices member read", () => {
 		await expect(f.client.acknowledgeNotification(id(100))).rejects.toThrow("Refresh notifications");
 		expect(f.fetch).toHaveBeenCalledTimes(1);
 	});
+	it("fails the read for a retired notice from another company, under another kind or envelope", async () => {
+		const pause = {
+			...full,
+			notification_id: id(100),
+			kind: "company_execution_paused",
+			subject: {
+				schema: "qorpera.member-notification.company-execution-stop/v1",
+				paused: true,
+				byUserId: userA.id,
+				reason: null,
+				at: timestamp,
+			},
+		};
+		for (const bad of [
+			{ ...pause, profile_id: id(99) },
+			{ ...pause, kind: "sponsor_handoff" },
+			{ ...pause, kind: "company_ceiling_tripped" },
+			{ ...pause, schema: "qorpera.member-notification/v2" },
+		]) {
+			const f = setup();
+			f.fetch.mockResolvedValueOnce(Response.json([bad, full]));
+			await expect(f.client.listNotifications()).rejects.toThrow("invalid response");
+		}
+	});
 	it("rejects cross-profile notifications, duplicate identities, unknown kinds and mismatched receipts", async () => {
 		const f = setup();
 		f.fetch.mockResolvedValueOnce(Response.json([{ ...full, profile_id: id(99) }]));

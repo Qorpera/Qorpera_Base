@@ -42,7 +42,6 @@
 
 - Record the source commit and runtime bundle identity in web deployment artifacts; require clean source for release builds.
 
-- Add company pause/resume and observed-version execution ceilings through the documented member control plane.
 - Add provider sign-in through the exported native login SDK when an accepted public gateway is configured; keep login capability handling outside the UI and require explicit recovery after uncertainty.
 - Submit conversation work through the shared sponsored-turn API with explicit member account selection, exact retry identity, execution history and observed-run stop controls.
 - Discover, enable and revoke existing member model accounts through the shared client SDK, with refresh recovery after uncertain changes.

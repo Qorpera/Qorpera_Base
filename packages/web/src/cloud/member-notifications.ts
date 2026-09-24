@@ -39,10 +39,12 @@ export interface WebMemberNotifications {
 
 /* Company spend, token and wake limits and the member pause are gone. Rows
  * written before that (a tripped limit, a pause or resume) can still be in a
- * member's list; they are skipped, never shown and never a failed read. */
-const RETIRED = new Set([
-	"qorpera.member-notification.company-ceiling-tripped/v1",
-	"qorpera.member-notification.company-execution-stop/v1",
+ * member's list; they are skipped, never shown and never a failed read. Runtime
+ * bundle v89 deletes those rows and stops writing them; remove this once it is
+ * live. Each retired schema maps to the kinds it was written with. */
+const RETIRED = new Map([
+	["qorpera.member-notification.company-ceiling-tripped/v1", ["company_ceiling_tripped"]],
+	["qorpera.member-notification.company-execution-stop/v1", ["company_execution_paused", "company_execution_resumed"]],
 ]);
 
 const invalid = () => new Error("Company notices returned an invalid response.");
@@ -69,9 +71,18 @@ function date(value: unknown): string {
 		throw invalid();
 	return value;
 }
-function retired(value: unknown): boolean {
-	const v = record(value);
-	return RETIRED.has(record(v.subject).schema as string);
+/** A retired record is skipped only when its envelope is otherwise sound; anything
+ * else falls through to full validation and fails the read like any bad record. */
+function retired(value: unknown, profileId: string): boolean {
+	const v = record(value),
+		kinds = RETIRED.get(record(v.subject).schema as string);
+	return (
+		kinds !== undefined &&
+		v.schema === "qorpera.member-notification/v1" &&
+		v.profile_id === profileId &&
+		typeof v.kind === "string" &&
+		kinds.includes(v.kind)
+	);
 }
 function notification(value: unknown, profileId: string): MemberNotification {
 	const v = record(value),
@@ -215,7 +226,7 @@ export function createWebMemberNotifications(
 			const value = await rpc("qorpera_list_member_notifications", { p_profile_id: profileId, p_limit: 50 }, signal);
 			if (!Array.isArray(value) || value.length > 50) throw invalid();
 			const notifications = value
-				.filter((v: unknown) => !retired(v))
+				.filter((v: unknown) => !retired(v, profileId))
 				.map((v: unknown) => notification(v, profileId));
 			const ids = new Set(notifications.map((v) => v.notificationId));
 			if (ids.size !== notifications.length) throw invalid();
