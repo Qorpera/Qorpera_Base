@@ -190,22 +190,24 @@ export class MemberPictures implements PersonPictureStore {
 		} catch (error) {
 			const refused = error as { statusCode?: unknown; message?: unknown };
 			if (refused.statusCode !== "403" && !/row-level security/i.test(String(refused.message))) throw error;
-			await this.#tidy(userId, [], generation, true);
+			// Not queued behind a tidy that may never answer: wait for it a while, then tidy now.
+			await this.#afterTidy();
+			await this.#within(this.#tidyNow(userId, [], generation, true));
 			this.#current(generation);
 			return this.#api.uploadMemberPicture(objectName, blob);
 		}
 	}
 
-	/** Deletes what in the member's folder is not their current picture: the named
-	 * objects at once, anything else once it is too old to be another tab's upload
-	 * on its way (`everything`: all of it, for a full folder). The cloud names the
-	 * current picture first and refuses to delete it anyway; if anything here fails,
-	 * only storage is at stake. */
 	/** The running tidy, or a while if it never answers. */
-	async #afterTidy(): Promise<void> {
+	#afterTidy(): Promise<void> {
+		return this.#within(this.#tidying);
+	}
+
+	/** `work`, or a while if it never answers (the web client has no request timeout). */
+	async #within(work: Promise<void>): Promise<void> {
 		let timer: ReturnType<typeof setTimeout> | undefined;
 		await Promise.race([
-			this.#tidying,
+			work,
 			new Promise<void>((resolve) => {
 				timer = setTimeout(resolve, this.#tidyWaitMs);
 			}),
@@ -213,6 +215,11 @@ export class MemberPictures implements PersonPictureStore {
 		clearTimeout(timer);
 	}
 
+	/** Deletes what in the member's folder is not their current picture: the named
+	 * objects at once, anything else once it is too old to be another tab's upload
+	 * on its way (`everything`: all of it, for a full folder). The cloud names the
+	 * current picture first and refuses to delete it anyway; if anything here fails,
+	 * only storage is at stake. */
 	#tidy(userId: string, named: string[], generation: number, everything = false): Promise<void> {
 		this.#tidying = this.#tidying.then(() => this.#tidyNow(userId, named, generation, everything));
 		return this.#tidying;

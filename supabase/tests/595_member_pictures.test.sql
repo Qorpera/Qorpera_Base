@@ -477,6 +477,16 @@ begin
 		('qorpera-member-pictures', v_me || '/' || repeat('c', 64) || '.webp', '{}'),
 		('qorpera-member-pictures', v_me || '/' || repeat('d', 64) || '.webp', '{}'),
 		('qorpera-member-pictures', '95000000-0000-4000-8000-00000000000b/' || repeat('e', 64) || '.webp', '{}');
+	-- The folder is full. Names that are no picture names (which the policies
+	-- refuse members) are not the trigger's to count or lock: the storage service
+	-- may still write them.
+	insert into storage.objects (bucket_id, name, metadata)
+	values
+		('qorpera-member-pictures', '%/' || repeat('5', 64) || '.webp', '{}'),
+		('qorpera-member-pictures', v_me || '/portrait.webp', '{}');
+	delete from storage.objects
+	where bucket_id = 'qorpera-member-pictures'
+		and name in ('%/' || repeat('5', 64) || '.webp', v_me || '/portrait.webp');
 	begin
 		update storage.objects
 		set name = v_me || '/' || repeat('e', 64) || '.webp'

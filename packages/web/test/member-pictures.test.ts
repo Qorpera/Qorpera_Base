@@ -354,16 +354,42 @@ describe("choosing the account's picture", () => {
 	});
 
 	it("does not wait forever for a tidy that never answers", async () => {
-		const { store, current, own } = setup({ pictures: { [me]: "mine" }, tidyWaitMs: 20 });
+		const { store, current, own } = setup({
+			pictures: { [me]: "mine" },
+			tidyWaitMs: 20,
+			prepare: async (file) => ({ blob: blob(file.name), extension: "webp" }),
+		});
 		personAvatar("Account A", me);
 		await settle();
 		own.mockReturnValue(new Promise(() => {}));
 		await store.choose(me, photo());
 		await settle();
+		expect(current.get(me)).toBe(nameOf(me, "photo.png"));
 		// The tidy after that choice hangs; the next choice still goes through.
 		await store.choose(me, new File(["other"], "other.png", { type: "image/png" }));
-		expect(current.get(me)).toBe(nameOf(me, "new"));
+		expect(current.get(me)).toBe(nameOf(me, "other.png"));
 		expect(store.busy(me)).toBe(false);
+	});
+
+	it("tidies a full folder even while an earlier tidy hangs", async () => {
+		const { store, current, objects, own, folder } = setup({
+			pictures: { [me]: "mine" },
+			tidyWaitMs: 20,
+			prepare: async (file) => ({ blob: blob(file.name), extension: "webp" }),
+		});
+		personAvatar("Account A", me);
+		await settle();
+		own.mockReturnValueOnce(new Promise(() => {})).mockImplementation(async () => folder());
+		await store.choose(me, photo());
+		await settle();
+		// That choice's tidy hangs, so "mine" stays; two more leftovers fill the folder.
+		for (const text of ["a", "b"])
+			objects.set(nameOf(me, text), { bytes: text, createdAt: new Date(NOW).toISOString() });
+		expect([...objects.keys()].filter((name) => name.startsWith(`${me}/`))).toHaveLength(4);
+		const blocked = new Promise((_resolve, reject) => setTimeout(() => reject(new Error("blocked")), 2_000));
+		await Promise.race([store.choose(me, new File(["other"], "other.png", { type: "image/png" })), blocked]);
+		expect(current.get(me)).toBe(nameOf(me, "other.png"));
+		expect(objects.has(nameOf(me, "mine"))).toBe(false);
 	});
 
 	it("does not wait for a tidy from before the account changed", async () => {
