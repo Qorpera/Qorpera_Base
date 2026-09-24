@@ -28,11 +28,8 @@ begin
   (v_ticket->>'ticketId')::uuid,v_cap,v_envelope,v_sha);
  execute 'reset session authorization';
  perform pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001');
- -- Bundle v88: sealing a company connection already granted it to every agent.
- select jsonb_build_object('grantId',grant_row.id) into strict v_grant
- from public.qorpera_cloud_secret_operation_grants grant_row
- where grant_row.secret_id=(v_descriptor->>'secretId')::uuid and grant_row.staff_agent_id=v_run.staff_agent_id
-  and grant_row.status='active';
+ v_grant:=public.qorpera_grant_cloud_secret_operation(v_run.profile_id,v_run.environment_id,
+  (v_descriptor->>'secretId')::uuid,v_run.staff_agent_id,'review_three','probe',1);
  perform pg_temp.path_claims('service_role');
  perform public.qorpera_assert_native_connector_operation(b,(v_grant->>'grantId')::uuid,
   'review_three','probe',1,repeat('b',64),'https://review-effect.example.test');
