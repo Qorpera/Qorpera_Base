@@ -90,9 +90,10 @@ as $$
 		)
 $$;
 
--- How many objects the caller's own folder holds; uploads stop at four, so the
--- bucket holds pictures and not files. The lock makes parallel uploads into one
--- folder count one after another (volatile: each count sees what the uploads
+-- How many objects the caller's own folder holds; the upload policy refuses a
+-- fifth early, in Storage's preflight, before any bytes are sent. The trigger
+-- below is what enforces the limit on the final write. The lock makes parallel
+-- checks count one after another (volatile: each count sees what the uploads
 -- before it committed).
 create function public.qorpera_member_picture_objects()
 returns integer
@@ -118,18 +119,28 @@ end
 $$;
 
 -- Whether an object is the caller's current picture, which they cannot delete
--- until another picture (or none) has taken its place.
+-- until another picture (or none) has taken its place. It takes the folder lock
+-- qorpera_set_member_picture takes, so a delete and a choice of the same object
+-- happen one after the other, never across each other.
 create function public.qorpera_is_current_member_picture(p_object_name text)
 returns boolean
-language sql
-stable
+language plpgsql
+volatile
 security definer
 set search_path = ''
 as $$
-	select exists (
+declare
+	v_actor uuid := auth.uid();
+begin
+	if v_actor is null then
+		return false;
+	end if;
+	perform pg_advisory_xact_lock(hashtextextended('qorpera-member-pictures:' || v_actor::text, 0));
+	return exists (
 		select 1 from public.qorpera_member_pictures
-		where user_id = auth.uid() and object_name = p_object_name
-	)
+		where user_id = v_actor and object_name = p_object_name
+	);
+end
 $$;
 
 -- The caller's own folder, for tidying uploads that never became the picture.
@@ -149,9 +160,11 @@ begin
 	if v_actor is null then
 		raise exception 'authentication required' using errcode = '42501';
 	end if;
+	-- The age is the cloud's, so no device clock decides what is old.
 	select coalesce(jsonb_agg(jsonb_build_object(
 		'object_name', object.name,
-		'created_at', object.created_at
+		'created_at', object.created_at,
+		'age_seconds', greatest(0, floor(extract(epoch from statement_timestamp() - object.created_at)))::bigint
 	) order by object.created_at, object.name), '[]'::jsonb)
 	into v_result
 	from storage.objects object
@@ -203,6 +216,40 @@ create policy qorpera_member_pictures_delete
 			else false
 		end
 	);
+
+-- The four-object limit where Storage writes the row. The upload policy above
+-- only runs in Storage's permission preflight (inserted and rolled back); the
+-- final row is written later by the storage service, past row security. Here
+-- both are counted, and parallel uploads into one folder wait for each other.
+create function public.qorpera_guard_member_picture_insert()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+	v_folder text := split_part(new.name, '/', 1);
+	v_count integer;
+begin
+	if new.bucket_id <> 'qorpera-member-pictures' then
+		return new;
+	end if;
+	perform pg_advisory_xact_lock(hashtextextended('qorpera-member-pictures:' || v_folder, 0));
+	select count(*)::integer into v_count
+	from storage.objects
+	where bucket_id = 'qorpera-member-pictures'
+		and name like v_folder || '/%'
+		and name <> new.name;
+	if v_count >= 4 then
+		raise exception 'a member picture folder holds four objects at most' using errcode = '42501';
+	end if;
+	return new;
+end
+$$;
+
+create trigger qorpera_guard_member_picture_insert
+before insert on storage.objects
+for each row execute function public.qorpera_guard_member_picture_insert();
 
 -- The pictures the caller may see among the given accounts. Accounts without a
 -- picture, or whose picture the caller may not see, are simply absent.
@@ -260,6 +307,9 @@ begin
 	if split_part(p_object_name, '/', 1) <> v_actor::text then
 		raise exception 'a picture must be uploaded into your own folder' using errcode = '42501';
 	end if;
+	-- The folder lock the delete policy takes: the object cannot vanish between
+	-- this check and the commit.
+	perform pg_advisory_xact_lock(hashtextextended('qorpera-member-pictures:' || v_actor::text, 0));
 	if not exists (
 		select 1 from storage.objects
 		where bucket_id = 'qorpera-member-pictures' and name = p_object_name
@@ -310,6 +360,7 @@ revoke all on function public.qorpera_can_read_member_picture(text) from public,
 revoke all on function public.qorpera_member_picture_objects() from public, anon;
 revoke all on function public.qorpera_is_current_member_picture(text) from public, anon;
 revoke all on function public.qorpera_own_member_picture_objects() from public, anon;
+revoke all on function public.qorpera_guard_member_picture_insert() from public, anon, authenticated, service_role;
 revoke all on function public.qorpera_member_pictures(uuid[]) from public, anon;
 revoke all on function public.qorpera_set_member_picture(text) from public, anon;
 revoke all on function public.qorpera_clear_member_picture() from public, anon;

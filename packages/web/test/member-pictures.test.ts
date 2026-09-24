@@ -102,16 +102,20 @@ function setup(
 		current.delete(me);
 		return previous ? { previousObjectName: previous } : {};
 	});
-	vi.spyOn(api, "ownMemberPictureObjects").mockImplementation(async () =>
+	const folder = () =>
 		[...objects.entries()]
 			.filter(([name]) => name.startsWith(`${me}/`))
-			.map(([objectName, object]) => ({ objectName, createdAt: object.createdAt })),
-	);
+			.map(([objectName, object]) => ({
+				objectName,
+				createdAt: object.createdAt,
+				ageSeconds: Math.max(0, Math.floor((NOW - Date.parse(object.createdAt)) / 1000)),
+			}));
+	const own = vi.spyOn(api, "ownMemberPictureObjects").mockImplementation(async () => folder());
 	// Like the bucket's delete policy: a current picture is not deleted (and not reported).
 	vi.spyOn(api, "deleteMemberPicture").mockImplementation(async (name) => {
 		if (![...current.values()].includes(name)) objects.delete(name);
 	});
-	return { api, store, current, objects, list, download, upload, set, clear };
+	return { api, store, current, objects, list, download, upload, set, clear, own, folder };
 }
 
 describe("member picture parsing", () => {
@@ -124,8 +128,15 @@ describe("member picture parsing", () => {
 		expect(() => parseMemberPictures([{ ...good, object_name: `${me}/../${"a".repeat(64)}.webp` }])).toThrow();
 		expect(() => parseMemberPictures([{ ...good, object_name: `${me}/${"a".repeat(64)}.svg` }])).toThrow();
 		expect(
-			parseMemberPictureObjects([{ object_name: good.object_name, created_at: "2026-09-24T05:00:00Z" }]),
-		).toEqual([{ objectName: good.object_name, createdAt: "2026-09-24T05:00:00Z" }]);
+			parseMemberPictureObjects([
+				{ object_name: good.object_name, created_at: "2026-09-24T05:00:00Z", age_seconds: 42 },
+			]),
+		).toEqual([{ objectName: good.object_name, createdAt: "2026-09-24T05:00:00Z", ageSeconds: 42 }]);
+		expect(() =>
+			parseMemberPictureObjects([
+				{ object_name: good.object_name, created_at: "2026-09-24T05:00:00Z", age_seconds: -1 },
+			]),
+		).toThrow();
 		expect(() => parseMemberPictureObjects([{ object_name: `${me}/notes.txt`, created_at: "2026-09-24" }])).toThrow();
 		expect(parseMemberPictureChange({ previous_object_name: null })).toEqual({});
 		expect(parseMemberPictureChange({ previous_object_name: good.object_name })).toEqual({
@@ -306,6 +317,38 @@ describe("choosing the account's picture", () => {
 		expect(objects.has(old)).toBe(false);
 		expect(objects.has(nameOf(me, "mine"))).toBe(false);
 		expect(objects.has(nameOf(me, "new"))).toBe(true);
+	});
+
+	it("keeps the old picture when it is chosen again while the tidy after a change is still running", async () => {
+		const texts = ["new", "mine"];
+		const { store, objects, current, own, folder, set } = setup({
+			pictures: { [me]: "mine" },
+			prepare: async () => ({ blob: blob(texts.shift()!), extension: "webp" }),
+		});
+		personAvatar("Account A", me);
+		await settle();
+		const listing = deferred<ReturnType<typeof folder>>();
+		own.mockReturnValueOnce(listing.promise);
+		await store.choose(me, photo());
+		await settle();
+		// The tidy has read that "mine" is no longer current and waits for the folder.
+		const saving = deferred<void>();
+		const save = set.getMockImplementation()!;
+		set.mockImplementationOnce(async (name) => {
+			await saving.promise;
+			return save(name);
+		});
+		const again = store.choose(me, photo());
+		await settle();
+		// The tidy deletes "mine" now; the choice must upload it again before saving.
+		listing.resolve(folder());
+		await settle();
+		saving.resolve();
+		await again;
+		await settle();
+		expect(current.get(me)).toBe(nameOf(me, "mine"));
+		expect(objects.has(nameOf(me, "mine"))).toBe(true);
+		expect(store.failure(me)).toBeUndefined();
 	});
 
 	it("goes back to initials and deletes the removed picture", async () => {

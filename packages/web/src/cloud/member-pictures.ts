@@ -1,4 +1,4 @@
-import { array, record, timestamp, uuid } from "./parse.ts";
+import { array, boundedInteger, record, timestamp, uuid } from "./parse.ts";
 
 /* A member's picture is a private storage object named after its content:
  * <account UUID>/<sha256>.<webp|jpg|png> (migration 20260924150000). The cloud
@@ -21,6 +21,8 @@ export interface MemberPicture {
 export interface MemberPictureObject {
 	objectName: string;
 	createdAt: string;
+	/** Seconds since it was stored, by the cloud's clock. */
+	ageSeconds: number;
 }
 
 export interface MemberPictureChange {
@@ -69,6 +71,7 @@ export function parseMemberPictureObjects(value: unknown): MemberPictureObject[]
 		return {
 			objectName: objectName(input.object_name, "picture object name"),
 			createdAt: timestamp(input.created_at, "picture object time"),
+			ageSeconds: boundedInteger(input.age_seconds, "picture object age", 0, Number.MAX_SAFE_INTEGER),
 		};
 	});
 }

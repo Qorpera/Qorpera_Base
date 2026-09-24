@@ -29,7 +29,7 @@ const RETRY_MS = 60_000;
 /** The cloud answers at most 200 accounts per read. */
 const BATCH = 100;
 /** An upload younger than this may be another tab's, about to become the picture. */
-const TIDY_GRACE_MS = 120_000;
+const TIDY_GRACE_SECONDS = 120;
 
 export interface MemberPicturesOptions {
 	prepare?: (file: File) => Promise<PreparedPicture>;
@@ -50,6 +50,8 @@ export class MemberPictures implements PersonPictureStore {
 	#available: boolean | undefined;
 	#busy: string | undefined;
 	#failure: { userId: string; error: unknown } | undefined;
+	/** Tidies run one after another; a choice waits for the one running. */
+	#tidying: Promise<void> = Promise.resolve();
 
 	constructor(api: CloudApi, options: MemberPicturesOptions = {}) {
 		this.#api = api;
@@ -94,6 +96,9 @@ export class MemberPictures implements PersonPictureStore {
 		try {
 			const picture = await this.#prepare(file);
 			const objectName = memberPictureName(userId, await pictureSha256(picture.blob), picture.extension);
+			// A tidy already running read "current" before this choice and may still
+			// delete these very bytes (a picture chosen again); let it finish first.
+			await this.#tidying;
 			this.#current(generation);
 			if (await this.#upload(userId, objectName, picture.blob, generation)) created = objectName;
 			this.#current(generation);
@@ -189,7 +194,12 @@ export class MemberPictures implements PersonPictureStore {
 	 * on its way (`everything`: all of it, for a full folder). The cloud names the
 	 * current picture first and refuses to delete it anyway; if anything here fails,
 	 * only storage is at stake. */
-	async #tidy(userId: string, named: string[], generation: number, everything = false): Promise<void> {
+	#tidy(userId: string, named: string[], generation: number, everything = false): Promise<void> {
+		this.#tidying = this.#tidying.then(() => this.#tidyNow(userId, named, generation, everything));
+		return this.#tidying;
+	}
+
+	async #tidyNow(userId: string, named: string[], generation: number, everything: boolean): Promise<void> {
 		try {
 			const current = (await this.#api.listMemberPictures([userId])).find(
 				(picture) => picture.userId === userId,
@@ -199,11 +209,10 @@ export class MemberPictures implements PersonPictureStore {
 				object.objectName.startsWith(`${userId}/`),
 			);
 			if (generation !== this.#generation) return;
-			const cutoff = this.#now() - TIDY_GRACE_MS;
 			const stale = objects.filter(
 				(object) =>
 					object.objectName !== current &&
-					(everything || named.includes(object.objectName) || Date.parse(object.createdAt) <= cutoff),
+					(everything || named.includes(object.objectName) || object.ageSeconds >= TIDY_GRACE_SECONDS),
 			);
 			await Promise.all(stale.map((object) => this.#api.deleteMemberPicture(object.objectName).catch(() => {})));
 		} catch {

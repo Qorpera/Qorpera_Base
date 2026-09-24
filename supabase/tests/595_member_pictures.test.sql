@@ -291,14 +291,16 @@ end
 $$;
 reset role;
 
--- Parallel uploads into one folder count one after another: the second waits
--- for the first to commit, then sees its objects and is refused.
+-- Storage writes the final row as the storage service, past row security; the
+-- limit holds there too, and parallel uploads into one folder count one after
+-- another: the second waits for the first to commit, then sees its objects and
+-- is refused.
 select dblink_connect('picture_a', 'dbname=qorpera_test');
 select dblink_connect('picture_b', 'dbname=qorpera_test');
-select dblink_exec('picture_a', $$set request.jwt.claims = '{"sub":"95000000-0000-4000-8000-00000000000a","role":"authenticated"}'$$);
-select dblink_exec('picture_b', $$set request.jwt.claims = '{"sub":"95000000-0000-4000-8000-00000000000a","role":"authenticated"}'$$);
-select dblink_exec('picture_a', 'set role authenticated');
-select dblink_exec('picture_b', 'set role authenticated');
+select dblink_exec('picture_a', $$set request.jwt.claims = '{"role":"service_role"}'$$);
+select dblink_exec('picture_b', $$set request.jwt.claims = '{"role":"service_role"}'$$);
+select dblink_exec('picture_a', 'set role service_role');
+select dblink_exec('picture_b', 'set role service_role');
 select dblink_exec('picture_a', 'begin');
 select dblink_exec('picture_a', $$insert into storage.objects (bucket_id, name, metadata)
 	values ('qorpera-member-pictures', '95000000-0000-4000-8000-00000000000a/' || repeat('9', 64) || '.webp', '{}')$$);
@@ -343,6 +345,64 @@ begin
 		);
 end
 $$;
+
+-- Choosing an object and deleting it wait for each other: a delete that comes
+-- while the object is being chosen finds it current and leaves it.
+select dblink_connect('picture_a', 'dbname=qorpera_test');
+select dblink_connect('picture_b', 'dbname=qorpera_test');
+select dblink_exec('picture_a', $$set request.jwt.claims = '{"sub":"95000000-0000-4000-8000-00000000000a","role":"authenticated"}'$$);
+select dblink_exec('picture_b', $$set request.jwt.claims = '{"sub":"95000000-0000-4000-8000-00000000000a","role":"authenticated"}'$$);
+select dblink_exec('picture_a', 'set role authenticated');
+select dblink_exec('picture_b', 'set role authenticated');
+select dblink_exec('picture_a', 'begin');
+select * from dblink('picture_a', $$select public.qorpera_set_member_picture(
+	'95000000-0000-4000-8000-00000000000a/' || repeat('3', 64) || '.png')::text$$) as chosen(result text);
+select dblink_send_query('picture_b', $$delete from storage.objects
+	where bucket_id = 'qorpera-member-pictures'
+		and name = '95000000-0000-4000-8000-00000000000a/' || repeat('3', 64) || '.png'
+	returning name$$);
+select pg_sleep(0.2);
+
+do $$
+begin
+	if dblink_is_busy('picture_b') <> 1 then
+		raise exception 'a delete did not wait for the picture being chosen';
+	end if;
+end
+$$;
+
+select dblink_exec('picture_a', 'commit');
+
+do $$
+declare v_deleted integer;
+begin
+	select count(*) into v_deleted from dblink_get_result('picture_b') as deleted(name text);
+	if v_deleted <> 0 then raise exception 'a delete removed the picture being chosen'; end if;
+end
+$$;
+
+select dblink_disconnect('picture_b');
+select dblink_disconnect('picture_a');
+
+-- Back to the earlier picture for the checks below.
+select set_config('request.jwt.claims', '{"sub":"95000000-0000-4000-8000-00000000000a","email":"picture-owner@example.test","role":"authenticated","user_metadata":{}}', false);
+set role authenticated;
+do $$
+declare
+	v_result jsonb := public.qorpera_set_member_picture(
+		'95000000-0000-4000-8000-00000000000a/' || repeat('2', 64) || '.jpg'
+	);
+	v_objects jsonb := public.qorpera_own_member_picture_objects();
+begin
+	if v_result ->> 'previous_object_name' <> '95000000-0000-4000-8000-00000000000a/' || repeat('3', 64) || '.png' then
+		raise exception 'the chosen picture did not stay chosen: %', v_result;
+	end if;
+	if (v_objects -> 0 ->> 'age_seconds') is null or (v_objects -> 0 ->> 'age_seconds')::bigint < 0 then
+		raise exception 'the own-folder listing has no cloud-side age: %', v_objects;
+	end if;
+end
+$$;
+reset role;
 
 -- The owner goes back to initials.
 select set_config('request.jwt.claims', '{"sub":"95000000-0000-4000-8000-00000000000a","email":"picture-owner@example.test","role":"authenticated","user_metadata":{}}', false);
