@@ -464,6 +464,8 @@ export class HttpCloudSecretBrokerService {
 					return;
 				}
 				const confirm = parseOAuthConfirm(await readRequest(request));
+				// Worst case 20 s (exchange and account label) + 15 s (seal) = 35 s,
+				// inside the web app's 45 s confirm deadline and nginx's 60 s read timeout.
 				let completion: Awaited<ReturnType<CloudConnectorOAuthFlows["confirm"]>>;
 				try {
 					completion = await this.#oauth.confirm(

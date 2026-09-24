@@ -181,9 +181,11 @@ function digestsMatch(left: string, right: string): boolean {
 	return a.byteLength === b.byteLength && timingSafeEqual(a, b);
 }
 
-/** A return page is accepted only on an allow-listed web origin, over HTTPS
- * (or loopback for local development) and without credentials. The web app is
- * hash-routed, so a fragment is allowed; the outcome is appended after it. */
+/** A return page is accepted only as the root page of an allow-listed web
+ * origin (path `/`, no query), over HTTPS (or loopback for local development)
+ * and without credentials. The web app is hash-routed, so a fragment is
+ * allowed; the outcome is appended after it. Any other path would leave the
+ * confirmation id visible on a page the app does not load. */
 export function parseConnectorReturnUrl(value: unknown, allowedOrigins: readonly string[]): string {
 	if (typeof value !== "string" || value.length > MAX_RETURN_URL) throw new Error("Connector return URL is invalid");
 	let url: URL;
@@ -195,6 +197,8 @@ export function parseConnectorReturnUrl(value: unknown, allowedOrigins: readonly
 	if (
 		url.username ||
 		url.password ||
+		url.pathname !== "/" ||
+		url.search ||
 		!allowedOrigins.includes(url.origin) ||
 		(url.protocol !== "https:" && !["localhost", "127.0.0.1"].includes(url.hostname))
 	)
@@ -410,10 +414,11 @@ export class CloudConnectorOAuthFlows {
 			throw new CloudConnectorOAuthError("state_unknown");
 		const key = sha256(input.confirmation);
 		const parked = this.#confirmations.get(key);
-		if (!parked || !digestsMatch(parked.confirmationSha256, key) || parked.ticketId !== input.ticketId.toLowerCase())
-			throw new CloudConnectorOAuthError("state_unknown");
+		if (!parked || !digestsMatch(parked.confirmationSha256, key)) throw new CloudConnectorOAuthError("state_unknown");
+		// Any confirm naming this confirmation id burns it, a wrong ticket included.
 		this.#confirmations.delete(key);
 		this.#sweep();
+		if (parked.ticketId !== input.ticketId.toLowerCase()) throw new CloudConnectorOAuthError("state_unknown");
 		if (
 			typeof input.browserProof !== "string" ||
 			!PROOF.test(input.browserProof) ||

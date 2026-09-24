@@ -101,6 +101,7 @@ export interface HostedConnectorReturn {
 
 const SIGN_IN_KEY = "qorpera.connector-sign-in.v1";
 const SIGN_IN_TTL_MS = 15 * 60_000;
+const CONFIRM_DEADLINE_MS = 45_000;
 
 function readSignIn(): HostedConnectorSignIn | undefined {
 	try {
@@ -295,6 +296,7 @@ export function createWebConnectors(
 		url: string,
 		body: unknown,
 		signal: AbortSignal | undefined,
+		deadlineMs = 30_000,
 	): Promise<{ status: number; value: unknown }> {
 		return withCloudDeadline(
 			async (deadline) => {
@@ -316,7 +318,7 @@ export function createWebConnectors(
 				}
 				return { status: response.status, value };
 			},
-			30_000,
+			deadlineMs,
 			signal,
 		);
 	}
@@ -346,7 +348,8 @@ export function createWebConnectors(
 					{
 						schema: "qorpera.cloud-connector-oauth-start/v2",
 						captureCapability: issued.captureCapability,
-						returnTo: location.href,
+						// The broker returns only to the app's root page; the route is in the hash.
+						returnTo: `${location.origin}/${location.hash}`,
 						browserProofSha256: await sha256Hex(browserProof),
 					},
 					signal,
@@ -384,6 +387,9 @@ export function createWebConnectors(
 					browserProof: signIn.browserProof,
 				},
 				signal,
+				// Longer than the broker's worst case for a confirm: 20 s for the
+				// provider exchange and account label, then 15 s to seal.
+				CONFIRM_DEADLINE_MS,
 			);
 			const value =
 				answer.value && typeof answer.value === "object" ? (answer.value as Record<string, unknown>) : {};

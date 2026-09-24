@@ -6,6 +6,7 @@ import {
 	clipText,
 	connectorRequest,
 	decodeUtf8,
+	fitItems,
 	jsonArray,
 	jsonBoolean,
 	jsonInteger,
@@ -32,6 +33,9 @@ const FILE_CHARS = 6000;
 const BODY_BYTES = 12 * 1024;
 const COMMENT_BYTES = 4 * 1024;
 const FILE_BYTES = 16 * 1024;
+const LIST_BYTES = 24 * 1024;
+// A pull request's changed-file list shares the result with a body of up to BODY_BYTES.
+const PULL_FILES_BYTES = 12 * 1024;
 const MAX_FILE_BYTES = 96 * 1024;
 const OWNER = /^[A-Za-z0-9][A-Za-z0-9_-]{0,38}$/;
 const REPOSITORY = /^[A-Za-z0-9_.-]{1,100}$/;
@@ -156,7 +160,12 @@ export function createGitHubConnectorAdapters(
 						updated_at: jsonString(repository.updated_at, 40),
 						url: jsonString(repository.html_url, 512),
 					}));
-				return { repositories, filtered_by: query ?? null };
+				const fitted = fitItems(repositories, LIST_BYTES);
+				return {
+					repositories: fitted.items,
+					filtered_by: query ?? null,
+					...(fitted.omitted > 0 ? { repositories_omitted: fitted.omitted } : {}),
+				};
 			},
 			async search_issues(args, context) {
 				const payload = jsonRecord(
@@ -164,9 +173,11 @@ export function createGitHubConnectorAdapters(
 						query: { q: String(args.query), per_page: limit(args.limit, 20) },
 					}),
 				);
+				const fitted = fitItems(jsonArray(payload.items).map(issueSummary), LIST_BYTES);
 				return {
 					total_count: jsonInteger(payload.total_count),
-					items: jsonArray(payload.items).map(issueSummary),
+					items: fitted.items,
+					...(fitted.omitted > 0 ? { items_omitted: fitted.omitted } : {}),
 				};
 			},
 			async get_issue(args, context) {
@@ -282,6 +293,18 @@ export function createGitHubConnectorAdapters(
 				const pull = jsonRecord(await github(context, base));
 				const files = jsonArray(await github(context, `${base}/files`, { query: { per_page: "50" } }));
 				const body = clipText(jsonString(pull.body, 100_000) ?? "", BODY_CHARS, BODY_BYTES);
+				const changedFiles = fitItems(
+					files.map((item) => {
+						const file = jsonRecord(item);
+						return {
+							filename: jsonString(file.filename, 1024),
+							status: jsonString(file.status, 16),
+							additions: jsonInteger(file.additions),
+							deletions: jsonInteger(file.deletions),
+						};
+					}),
+					PULL_FILES_BYTES,
+				);
 				return {
 					number: jsonInteger(pull.number),
 					title: jsonString(pull.title, 256),
@@ -301,15 +324,8 @@ export function createGitHubConnectorAdapters(
 					created_at: jsonString(pull.created_at, 40),
 					updated_at: jsonString(pull.updated_at, 40),
 					url: jsonString(pull.html_url, 512),
-					files: files.map((item) => {
-						const file = jsonRecord(item);
-						return {
-							filename: jsonString(file.filename, 1024),
-							status: jsonString(file.status, 16),
-							additions: jsonInteger(file.additions),
-							deletions: jsonInteger(file.deletions),
-						};
-					}),
+					files: changedFiles.items,
+					...(changedFiles.omitted > 0 ? { files_omitted: changedFiles.omitted } : {}),
 				};
 			},
 		},

@@ -219,3 +219,57 @@ it("reads text files, marks binaries and large files, and lists directories", as
 		},
 	});
 });
+
+it("keeps repository, issue and pull request file lists under the broker's result limit and says how many were left out", async () => {
+	const wide = "😀".repeat(250);
+	const fetchImplementation = server({
+		"GET /user/repos": () =>
+			Response.json(
+				Array.from({ length: 50 }, (_, index) => ({
+					full_name: `acme/${"r".repeat(150)}${index}`,
+					description: wide,
+					html_url: `https://github.com/acme/${"r".repeat(400)}${index}`,
+				})),
+			),
+		"GET /search/issues": () =>
+			Response.json({
+				total_count: 50,
+				items: Array.from({ length: 50 }, (_, index) => ({
+					number: index + 1,
+					title: `${"😀".repeat(200)}`,
+					repository_url: "https://api.github.com/repos/acme/app",
+					html_url: `https://github.com/acme/app/issues/${index + 1}/${"x".repeat(400)}`,
+				})),
+			}),
+		"GET /repos/acme/app/pulls/7": () =>
+			Response.json({
+				number: 7,
+				title: "Big change",
+				body: wide.repeat(20),
+				html_url: "https://github.com/acme/app/pull/7",
+			}),
+		"GET /repos/acme/app/pulls/7/files": () =>
+			Response.json(
+				Array.from({ length: 50 }, (_, index) => ({
+					filename: `src/${"f".repeat(900)}${index}.ts`,
+					status: "modified",
+				})),
+			),
+	});
+	const bytes = (value: unknown) => Buffer.byteLength(JSON.stringify(value));
+	const repositories = await adapter("list_repositories", fetchImplementation).execute(input({ limit: 50 }));
+	expect(repositories).toMatchObject({ status: "completed" });
+	expect((repositories as { result: { repositories_omitted: number } }).result.repositories_omitted).toBeGreaterThan(
+		0,
+	);
+	expect(bytes(repositories)).toBeLessThanOrEqual(30 * 1024);
+	const issues = await adapter("search_issues", fetchImplementation).execute(input({ query: "is:open", limit: 50 }));
+	expect((issues as { result: { items_omitted: number } }).result.items_omitted).toBeGreaterThan(0);
+	expect(bytes(issues)).toBeLessThanOrEqual(30 * 1024);
+	const pull = await adapter("get_pull_request", fetchImplementation).execute(
+		input({ owner: "acme", repository: "app", number: 7 }),
+	);
+	expect(pull).toMatchObject({ status: "completed", result: { body_truncated: true } });
+	expect((pull as { result: { files_omitted: number } }).result.files_omitted).toBeGreaterThan(0);
+	expect(bytes(pull)).toBeLessThanOrEqual(30 * 1024);
+});

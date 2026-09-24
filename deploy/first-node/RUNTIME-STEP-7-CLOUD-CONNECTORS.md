@@ -200,8 +200,12 @@ map $args $qorpera_operations_broker {
 ```nginx
 # Inside the :10000 server block, beside the /v1/captures/ location.
 # The callback's query carries the provider's code and the state: never log it.
+# Upstream failures (broker down, timeout) are logged at level "error" with the
+# full request line, so this location logs only "crit" and above; use the
+# error log path the server block already uses.
 location = /v1/oauth/callback {
     access_log off;
+    error_log /var/log/nginx/error.log crit;
     limit_except GET { deny all; }
     if ($qorpera_oauth_broker = "") { return 404; }
     proxy_pass http://$qorpera_oauth_broker;
@@ -221,7 +225,12 @@ location = /v1/operations {
 ```
 
 All of these pass `nginx -t` (nginx 1.28.3, node 2's build, in a scratch
-prefix with a stand-in capture map); a regex with `{}` must stay quoted. They were
+prefix with a stand-in capture map); a regex with `{}` must stay quoted. The callback's
+`error_log … crit` was chosen over accepting the leak: with the broker down,
+nginx's default "error" level would record `request: "GET
+/v1/oauth/callback?code=…&state=…"`; at "crit" a scratch run with a refused
+upstream recorded nothing for the callback, while the other locations still
+log such failures. They were
 also run in a scratch nginx on node 2 with `return` in place of
 `proxy_pass`: operations with no query or the acceptance company went to
 18448, company Qorpera to 18547, an unknown company 404, GET 403; the

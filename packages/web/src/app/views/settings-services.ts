@@ -33,6 +33,13 @@ export interface ServicesAccess {
 
 const FULL_ACCESS: ServicesAccess = { canManage: () => true, memberName: () => undefined };
 
+/** Shared means marked for all agents AND holding live grants. The list counts
+ * only live grants (issuer still an owner or admin), so a share whose issuer
+ * left reads as not shared and Share with all agents repairs it. */
+function sharedWithAgents(connection: HostedConnectorConnection): boolean {
+	return connection.availableToAllAgents && connection.activeGrantCount > 0;
+}
+
 const RETURN_REASONS: Readonly<Record<string, string>> = {
 	declined: "The sign-in was cancelled before access was granted.",
 	expired: "The sign-in took too long. Try again.",
@@ -154,7 +161,7 @@ export class ServicesView {
 			// A connection that just arrived from a provider sign-in has no agent
 			// grants yet: hand it to every agent now, once.
 			const fresh = grantAfter ? this.#current(grantAfter) : undefined;
-			if (fresh && !fresh.availableToAllAgents && fresh.activeGrantCount === 0 && this.#access.canManage()) {
+			if (fresh && !sharedWithAgents(fresh) && this.#access.canManage()) {
 				try {
 					await this.#client.grantAllAgents(fresh.secretId, this.#lifetime.signal);
 					if (!this.#lifetime.signal.aborted) this.#connections = await this.#client.list(this.#lifetime.signal);
@@ -308,7 +315,7 @@ export class ServicesView {
 		// Members who are not owners or admins see the card read-only.
 		const actions: HTMLElement[] = [];
 		if (manage && current) {
-			if (!current.availableToAllAgents) {
+			if (!sharedWithAgents(current)) {
 				const share = button("Share with all agents", () => void this.#share(current), {
 					disabled: Boolean(this.#working),
 				});
@@ -353,7 +360,7 @@ export class ServicesView {
 					h(
 						"small",
 						{ class: "service-agents" },
-						current.availableToAllAgents
+						sharedWithAgents(current)
 							? "Available to every agent in the company, including new hires."
 							: current.activeGrantCount > 0
 								? `Available to ${current.activeGrantCount} agent operation${current.activeGrantCount === 1 ? "" : "s"}.`

@@ -120,6 +120,20 @@ begin
 	return v_count;
 end
 $$;
+create function pg_temp.routing_drive_live()
+returns integer language plpgsql as $$
+declare v_count integer;
+begin
+	perform pg_temp.path_claims('authenticated','29000000-0000-4000-8000-000000000001');
+	set local role authenticated;
+	select (item ->> 'activeGrantCount')::integer into v_count
+	from jsonb_array_elements(public.qorpera_list_cloud_secret_connections(
+		'29000000-0000-4000-8000-000000000010','29000000-0000-4000-8000-000000000020')) as item
+	where item ->> 'secretId' = '39800000-0000-4000-8000-000000000051';
+	reset role;
+	return v_count;
+end
+$$;
 create function pg_temp.routing_share(p_user uuid)
 returns jsonb language plpgsql as $$
 declare v_result jsonb;
@@ -144,6 +158,10 @@ begin
 	where profile_id = '29000000-0000-4000-8000-000000000010' and user_id = '39800000-0000-4000-8000-000000000004';
 	v_count := pg_temp.routing_drive_tools();
 	if v_count <> 0 then raise exception 'A demoted issuer''s grants still gave % tools',v_count; end if;
+	-- The page counts live grants only, so the dead share reads as not shared.
+	if pg_temp.routing_drive_live() <> 0 then
+		raise exception 'The connection list still counts the demoted issuer''s grants';
+	end if;
 	-- Another admin (the owner) shares it again: the dead grants are re-issued.
 	v_result := pg_temp.routing_share('29000000-0000-4000-8000-000000000001');
 	if (v_result ->> 'grantsIssued')::integer < 4 then
@@ -151,6 +169,9 @@ begin
 	end if;
 	v_count := pg_temp.routing_drive_tools();
 	if v_count <> 4 then raise exception 'The re-share restored % tools, not 4',v_count; end if;
+	if pg_temp.routing_drive_live() < 4 then
+		raise exception 'The connection list does not count the re-issued grants';
+	end if;
 	if exists (select 1 from public.qorpera_cloud_secret_operation_grants
 		where secret_id = '39800000-0000-4000-8000-000000000051' and status = 'active'
 			and issued_by_user_id <> '29000000-0000-4000-8000-000000000001') then

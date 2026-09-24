@@ -477,9 +477,18 @@ language sql stable security definer set search_path = '' as $$
 			'accountLabel',secret.account_label,
 			'connectedByUserId',case when secret.owner_kind = 'company' then secret.created_by_user_id else null end,
 			'availableToAllAgents',secret.available_to_all_agents,
+			-- Live grants only: a company grant whose issuer is no longer an owner
+			-- or admin gives no tool, so a dead share reads as not shared and the
+			-- page offers Share again (which re-issues it).
 			'activeGrantCount',(
 				select count(*) from public.qorpera_cloud_secret_operation_grants as grant_row
 				where grant_row.secret_id = secret.id and grant_row.status = 'active'
+					and (grant_row.expires_at is null or grant_row.expires_at > statement_timestamp())
+					and (secret.owner_kind <> 'company' or exists (
+						select 1 from public.qorpera_profile_members as issuer
+						where issuer.profile_id = grant_row.profile_id and issuer.user_id = grant_row.issued_by_user_id
+							and issuer.role in ('owner','admin')
+					))
 			),
 			'createdAt',secret.created_at,
 			'updatedAt',secret.updated_at

@@ -204,6 +204,13 @@ it("binds the sign-in to the browser that started it: a consent link finished el
 			signal,
 		),
 	).rejects.toMatchObject({ reason: "state_unknown" });
+	// The wrong ticket burned the confirmation: the right ticket cannot use it now.
+	await expect(
+		oauth.confirm(
+			{ ticketId: other.ticketId, confirmation: otherReceipt.confirmation, browserProof: other.browserProof },
+			signal,
+		),
+	).rejects.toMatchObject({ reason: "state_unknown" });
 	expect(() =>
 		oauth.begin({
 			ticketId: randomUUID(),
@@ -281,6 +288,10 @@ it("accepts return pages only on allow-listed origins and places the outcome in 
 	expect(() => parseConnectorReturnUrl("https://evil.example/#/c/1", returnOrigins)).toThrow("invalid");
 	expect(() => parseConnectorReturnUrl("https://app.qorpera.test.evil/", returnOrigins)).toThrow("invalid");
 	expect(() => parseConnectorReturnUrl("javascript:alert(1)", returnOrigins)).toThrow("invalid");
+	// Only the app's root page: another path or a query would leave the
+	// confirmation id visible on a page the app does not load.
+	expect(() => parseConnectorReturnUrl("https://app.qorpera.test/other/#/c/1", returnOrigins)).toThrow("invalid");
+	expect(() => parseConnectorReturnUrl("https://app.qorpera.test/?next=x#/c/1", returnOrigins)).toThrow("invalid");
 	expect(
 		connectorReturnLocation("https://app.qorpera.test/#/c/1", "gmail", "confirm", { confirmation: "c".repeat(43) }),
 	).toBe(`https://app.qorpera.test/#/c/1?connector=gmail&connection=confirm&confirmation=${"c".repeat(43)}`);

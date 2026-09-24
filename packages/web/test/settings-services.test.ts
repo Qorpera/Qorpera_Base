@@ -219,6 +219,20 @@ describe("services", () => {
 		expect(client.grantAllAgents).not.toHaveBeenCalled();
 	});
 
+	it("shows a share whose grants died with their issuer as not shared and offers Share again", async () => {
+		// Marked for all agents, but the list counts no live grant: the admin who
+		// shared it left, so the agents hold no tool.
+		const { client } = setup([{ ...gmail, availableToAllAgents: true, activeGrantCount: 0 }]);
+		await settle();
+		expect(card(0).textContent).toContain("Not yet available to the company's agents.");
+		const share = buttons(card(0)).find((button) => button.textContent === "Share with all agents");
+		expect(share).toBeDefined();
+		share!.click();
+		await settle();
+		expect(client.grantAllAgents).toHaveBeenCalledWith(gmail.secretId, expect.any(AbortSignal));
+		expect(card(0).textContent).toContain("Available to every agent in the company");
+	});
+
 	it("stops sharing a company connection with the agents", async () => {
 		const { client } = setup([gmail]);
 		await settle();
