@@ -126,6 +126,66 @@ describe("complete host inventory reconciliation", () => {
 		if (fault === "configuration") i.expandedDevices.extra = { type: "disk", source: "/changed" };
 		expect(reconcileRuntimeNodeInventory(f.inventory, f.context).state).toBe("unavailable");
 	});
+	it("matches a member's coding machine, and its sessions' folders coming and going do not change its enrollment", () => {
+		const f = fixture(),
+			i = f.inventory.instances[3];
+		i.config["user.qorpera.schema"] = i.expandedConfig["user.qorpera.schema"] = "qorpera.lxd-coding-machine/v1";
+		f.context.allocations[3].physical = {
+			project: i.project,
+			name: i.name,
+			physicalId: i.config["volatile.uuid"],
+			configurationSha256: runtimeNodeInstanceConfigurationSha256(i),
+		};
+		expect(reconcileRuntimeNodeInventory(f.inventory, f.context).state).toBe("ready");
+		const workerId = randomUUID(),
+			worker = workerId.replaceAll("-", ""),
+			folder = `/srv/qorpera-coding/executor/workers/${randomUUID()}/${randomUUID()}/${workerId}`;
+		for (const devices of [i.devices, i.expandedDevices]) {
+			devices[`data-${worker}`] = {
+				type: "disk",
+				source: `${folder}/data`,
+				path: `/workspace/${workerId}`,
+				required: "true",
+			};
+			devices[`custody-${worker}`] = {
+				type: "disk",
+				source: `${folder}/guest-state`,
+				path: `/var/lib/qorpera-coding/${workerId}`,
+				required: "true",
+			};
+		}
+		expect(reconcileRuntimeNodeInventory(f.inventory, f.context).entries[3].allocation?.providerKind).toBe("coding");
+		expect(reconcileRuntimeNodeInventory(f.inventory, f.context).state).toBe("ready");
+		// A device under a session's name that is not exactly its folder is a change of enrollment.
+		const changes: Record<string, string>[] = [
+			{ type: "disk", source: "/", path: "/host", required: "true" },
+			{ type: "disk", source: `${folder}/data`, path: `/workspace/${workerId}` },
+			{ type: "disk", source: `${folder}/../../../data`, path: `/workspace/${workerId}`, required: "true" },
+			{
+				type: "disk",
+				source: `${folder}/data`,
+				path: `/workspace/${workerId}`,
+				required: "true",
+				readonly: "false",
+			},
+		];
+		for (const changed of changes) {
+			const kept = i.devices[`data-${worker}`];
+			i.devices[`data-${worker}`] = i.expandedDevices[`data-${worker}`] = changed;
+			expect(reconcileRuntimeNodeInventory(f.inventory, f.context).state).toBe("unavailable");
+			i.devices[`data-${worker}`] = i.expandedDevices[`data-${worker}`] = kept;
+		}
+		expect(reconcileRuntimeNodeInventory(f.inventory, f.context).state).toBe("ready");
+		// Any other device is still a change of enrollment, as for every machine.
+		i.expandedDevices.extra = { type: "disk", source: "/changed" };
+		expect(reconcileRuntimeNodeInventory(f.inventory, f.context).state).toBe("unavailable");
+		// A per-session VM keeps its devices in its enrollment.
+		const g = fixture(),
+			legacy = g.inventory.instances[3];
+		const before = runtimeNodeInstanceConfigurationSha256(legacy);
+		legacy.devices[`data-${worker}`] = { type: "disk", source: "/srv/coding/data", path: "/workspace/x" };
+		expect(runtimeNodeInstanceConfigurationSha256(legacy)).not.toBe(before);
+	});
 	it("matches all three physical provider types with exact ledger costs across projects", () => {
 		const f = fixture(),
 			result = reconcileRuntimeNodeInventory(f.inventory, f.context);

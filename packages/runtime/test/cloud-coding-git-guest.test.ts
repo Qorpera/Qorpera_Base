@@ -15,7 +15,9 @@ import {
 } from "../src/cloud-coding-git-guest.ts";
 
 const exec = promisify(execFile),
-	id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
+	id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`,
+	// Every command unit of session id(1) on its member's machine.
+	prefix = `qorpera-coding-${id(1).replaceAll("-", "")}-`;
 const roots: string[] = [];
 afterEach(async () => {
 	await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
@@ -25,17 +27,21 @@ async function fixture() {
 	roots.push(root);
 	await mkdir(join(root, "inbox"), { mode: 0o755 });
 	await mkdir(join(root, "workspace"), { mode: 0o755 });
+	// The session's folders, moved under the test's temporary custody root.
+	const folders = {
+		workspacePath: join(root, "workspace"),
+		homePath: join(root, "home"),
+		cachePath: join(root, "cache"),
+		outputRoot: join(root, "output"),
+	};
 	const guest: CodingGitGuestConfiguration = {
-		schema: "qorpera.coding-command-guest/v2",
+		schema: "qorpera.coding-command-guest/v3",
 		workerId: id(1),
 		vmId: id(2),
 		bootId: id(3),
 		uid: 1000,
 		gid: 1000,
-		workspacePath: join(root, "workspace"),
-		homePath: join(root, "home"),
-		cachePath: join(root, "cache"),
-		outputRoot: join(root, "output"),
+		...folders,
 		resourceProfile: {
 			maxTimeoutMs: 1800000,
 			memoryBytes: 2147483648,
@@ -93,6 +99,7 @@ async function fixture() {
 		assertStorage: async () => undefined,
 		root,
 		configurationPath: config,
+		folders,
 		protectedUid: process.getuid?.(),
 		protectedDirectoryRoot: root,
 		inspectMachine: async () => guest.bootId,
@@ -101,7 +108,7 @@ async function fixture() {
 	};
 	const stage = async (input = request) => {
 		await writeFile(join(root, "inbox", `${input.transferId}.git.json`), JSON.stringify(input), { mode: 0o444 });
-		await runCodingGitGuest("prepare", input.transferId, ports);
+		await runCodingGitGuest("prepare", id(1), input.transferId, ports);
 	};
 	const seed = async () => {
 		await stage();
@@ -111,7 +118,7 @@ async function fixture() {
 				bundle.subarray(index * CODING_GIT_CHUNK_BYTES, (index + 1) * CODING_GIT_CHUNK_BYTES).toString("base64"),
 				{ mode: 0o444 },
 			);
-		return runCodingGitGuest("seed", request.transferId, ports);
+		return runCodingGitGuest("seed", id(1), request.transferId, ports);
 	};
 	return { root, guest, request, bundle, ports, stage, seed, config };
 }
@@ -132,10 +139,10 @@ describe("protected credential-free guest Git transfer", () => {
 			bundleBytes: 0,
 		};
 		await f.stage(request);
-		const receipt = await runCodingGitGuest("export", request.transferId, f.ports);
+		const receipt = await runCodingGitGuest("export", id(1), request.transferId, f.ports);
 		const output = await readFile(join(f.root, "git", request.transferId, "000000.bundle"));
 		expect(createHash("sha256").update(output).digest("hex")).toBe(receipt?.bundleSha256);
-		expect(await runCodingGitGuest("export", request.transferId, f.ports)).toEqual(receipt);
+		expect(await runCodingGitGuest("export", id(1), request.transferId, f.ports)).toEqual(receipt);
 	});
 	it("ignores malicious workspace Git config during export", async () => {
 		const f = await fixture();
@@ -152,19 +159,21 @@ describe("protected credential-free guest Git transfer", () => {
 			bundleBytes: 0,
 		};
 		await f.stage(request);
-		expect((await runCodingGitGuest("export", request.transferId, f.ports))?.headSha).toBe(request.headSha);
+		expect((await runCodingGitGuest("export", id(1), request.transferId, f.ports))?.headSha).toBe(request.headSha);
 	});
 	it("cannot reseed a modified workspace with a fresh transfer identity", async () => {
 		const f = await fixture();
 		await f.seed();
 		await writeFile(join(f.guest.workspacePath, "README.md"), "keep my edits\n");
-		await expect(runCodingGitGuest("seed", f.request.transferId, f.ports)).resolves.toMatchObject({ action: "seed" });
+		await expect(runCodingGitGuest("seed", id(1), f.request.transferId, f.ports)).resolves.toMatchObject({
+			action: "seed",
+		});
 		const changed = { ...f.request, transferId: id(8) };
 		await f.stage(changed);
 		await writeFile(join(f.root, "git", changed.transferId, "000000.base64"), f.bundle.toString("base64"), {
 			mode: 0o444,
 		});
-		await expect(runCodingGitGuest("seed", changed.transferId, f.ports)).rejects.toThrow();
+		await expect(runCodingGitGuest("seed", id(1), changed.transferId, f.ports)).rejects.toThrow();
 		expect(await readFile(join(f.guest.workspacePath, "README.md"), "utf8")).toBe("keep my edits\n");
 	});
 	it("rejects a digest mismatch before initializing any Git repository", async () => {
@@ -185,13 +194,13 @@ describe("protected credential-free guest Git transfer", () => {
 			repository: { ...f.request.repository, name: "elsewhere" },
 		};
 		await f.stage(request);
-		await expect(runCodingGitGuest("export", request.transferId, f.ports)).rejects.toThrow(
+		await expect(runCodingGitGuest("export", id(1), request.transferId, f.ports)).rejects.toThrow(
 			"CODING_GIT_GUEST_REPOSITORY_CHANGED",
 		);
 		const normal = { ...request, transferId: id(6), repository: f.request.repository };
 		await f.stage(normal);
 		await writeFile(join(f.guest.workspacePath, ".git", "HEAD"), "ref: refs/heads/other\n");
-		await expect(runCodingGitGuest("export", normal.transferId, f.ports)).rejects.toThrow(
+		await expect(runCodingGitGuest("export", id(1), normal.transferId, f.ports)).rejects.toThrow(
 			"CODING_GIT_BRANCH_CHANGED",
 		);
 	});
@@ -211,20 +220,20 @@ describe("protected credential-free guest Git transfer", () => {
 			bundleBytes: 0,
 		};
 		await f.stage(request);
-		await expect(runCodingGitGuest("export", request.transferId, f.ports)).rejects.toThrow();
-		await expect(runCodingGitGuest("export", request.transferId, f.ports)).rejects.toThrow();
+		await expect(runCodingGitGuest("export", id(1), request.transferId, f.ports)).rejects.toThrow();
+		await expect(runCodingGitGuest("export", id(1), request.transferId, f.ports)).rejects.toThrow();
 		expect(attempts).toBe(1);
 	});
 	it("rejects writable guest configuration and a reboot", async () => {
 		const f = await fixture();
 		await f.stage();
 		await chmod(f.config, 0o644);
-		await expect(runCodingGitGuest("seed", f.request.transferId, f.ports)).rejects.toThrow(
+		await expect(runCodingGitGuest("seed", id(1), f.request.transferId, f.ports)).rejects.toThrow(
 			"CODING_GIT_GUEST_CONFIG_MODE",
 		);
 		await chmod(f.config, 0o444);
 		f.ports.inspectMachine = async () => id(9);
-		await expect(runCodingGitGuest("seed", f.request.transferId, f.ports)).rejects.toThrow(
+		await expect(runCodingGitGuest("seed", id(1), f.request.transferId, f.ports)).rejects.toThrow(
 			"CODING_GIT_GUEST_BOOT_CHANGED",
 		);
 	});
@@ -238,8 +247,8 @@ describe("protected credential-free guest Git transfer", () => {
 		};
 		f.ports.system = async (_executable, args) =>
 			args[0] === "list-units"
-				? `qorpera-coding-${id(9)}.service loaded active running build\n`
-				: `LoadState=loaded\nActiveState=active\nSubState=running\nControlGroup=/system.slice/qorpera-coding-${id(9)}.service\nTasksCurrent=2\n`;
+				? `${prefix}${id(9)}.service loaded active running build\n`
+				: `LoadState=loaded\nActiveState=active\nSubState=running\nControlGroup=/qorpera.slice/qorpera-coding.slice/${prefix}${id(9)}.service\nTasksCurrent=2\n`;
 		const request = {
 			...f.request,
 			action: "export" as const,
@@ -248,20 +257,26 @@ describe("protected credential-free guest Git transfer", () => {
 			bundleBytes: 0,
 		};
 		await f.stage(request);
-		await expect(runCodingGitGuest("export", request.transferId, f.ports)).rejects.toThrow(
+		await expect(runCodingGitGuest("export", id(1), request.transferId, f.ports)).rejects.toThrow(
 			"WORKSPACE_COMMANDS_ACTIVE",
 		);
 		expect(executions).toBe(0);
 	});
-	it("exports beside the guest's own watchdog service, but not an unknown unit", async () => {
+	it("looks only at this session's units, and refuses an unknown one under its prefix", async () => {
 		const f = await fixture();
 		await f.seed();
-		// The listing a real coding VM returns: the watchdog service is always
-		// loaded behind its one-second timer.
+		// Another session of the member's machine is building, and the watchdog is
+		// loaded behind its timer: neither is listed under this session's prefix.
+		const patterns: string[] = [];
 		f.ports.system = async (_executable, args) => {
-			if (args[0] === "list-units")
-				return "qorpera-coding-watchdog.service loaded inactive dead Expire the coding guest execution lease\n";
-			throw new Error("the watchdog must not be inspected as a command");
+			if (args[0] !== "list-units") throw new Error("nothing of this session is running to inspect");
+			patterns.push(args.at(-1) as string);
+			const units = [
+				"qorpera-coding-watchdog.service loaded inactive dead Expire the coding guest execution lease",
+				`qorpera-coding-${id(8).replaceAll("-", "")}-${id(9)}.service loaded active running other session`,
+			];
+			const pattern = args.at(-1) as string;
+			return units.filter((unit) => unit.startsWith(pattern.slice(0, -"*.service".length))).join("\n");
 		};
 		const request = {
 			...f.request,
@@ -271,12 +286,13 @@ describe("protected credential-free guest Git transfer", () => {
 			bundleBytes: 0,
 		};
 		await f.stage(request);
-		expect((await runCodingGitGuest("export", request.transferId, f.ports))?.headSha).toBe(request.headSha);
+		expect((await runCodingGitGuest("export", id(1), request.transferId, f.ports))?.headSha).toBe(request.headSha);
+		expect(new Set(patterns)).toEqual(new Set([`${prefix}*.service`]));
 		const g = await fixture();
 		await g.seed();
-		g.ports.system = async () => "qorpera-coding-other.service loaded inactive dead unknown\n";
+		g.ports.system = async () => `${prefix}other.service loaded inactive dead unknown\n`;
 		await g.stage(request);
-		await expect(runCodingGitGuest("export", request.transferId, g.ports)).rejects.toThrow(
+		await expect(runCodingGitGuest("export", id(1), request.transferId, g.ports)).rejects.toThrow(
 			"CODING_GIT_COMMAND_STATE_UNCONFIRMED",
 		);
 	});
@@ -285,7 +301,7 @@ describe("protected credential-free guest Git transfer", () => {
 		await f.seed();
 		f.ports.system = async (_executable, args) =>
 			args[0] === "list-units"
-				? `qorpera-coding-${id(9)}.service loaded active exited completed\n`
+				? `${prefix}${id(9)}.service loaded active exited completed\n`
 				: "LoadState=loaded\nActiveState=active\nSubState=exited\nControlGroup=\nTasksCurrent=[not set]\n";
 		const request = {
 			...f.request,
@@ -295,6 +311,31 @@ describe("protected credential-free guest Git transfer", () => {
 			bundleBytes: 0,
 		};
 		await f.stage(request);
-		expect((await runCodingGitGuest("export", request.transferId, f.ports))?.headSha).toBe(request.headSha);
+		expect((await runCodingGitGuest("export", id(1), request.transferId, f.ports))?.headSha).toBe(request.headSha);
+	});
+	it("exports from a volume seeded on an earlier machine of the member", async () => {
+		const f = await fixture();
+		await f.seed();
+		// The session's folders outlived the machine that seeded them; this turn runs on another.
+		await chmod(f.config, 0o644);
+		await writeFile(f.config, JSON.stringify({ ...f.guest, vmId: id(7) }));
+		await chmod(f.config, 0o444);
+		const request = {
+			...f.request,
+			vmId: id(7),
+			action: "export" as const,
+			transferId: id(5),
+			bundleSha256: null,
+			bundleBytes: 0,
+		};
+		await f.stage(request);
+		expect(await runCodingGitGuest("export", id(1), request.transferId, f.ports)).toMatchObject({
+			vmId: id(7),
+			headSha: request.headSha,
+		});
+	});
+	it("refuses a transfer for another session", async () => {
+		const f = await fixture();
+		await expect(runCodingGitGuest("prepare", id(8), f.request.transferId, f.ports)).rejects.toThrow("SCOPE_CHANGED");
 	});
 });

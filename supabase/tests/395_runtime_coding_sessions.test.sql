@@ -95,10 +95,18 @@ begin
 	perform pg_temp.worker('{"action":"cancel","operationKey":"c2-cancel","todoKey":"composer-latency","workerKey":"notes"}');
 	perform pg_temp.wake_assert((pg_temp.worker_row('notes')).state = 'cancelled','The in-house helper leaves the queue');
 end $$;
-select pg_temp.wake_error($q$select pg_temp.worker('{"action":"dispatch","operationKey":"c3","todoKey":"composer-latency","workerKey":"fix-send-2",
-	"title":"Second","goal":"g","definitionOfDone":"d","access":"read","species":"coding","harness":"codex",
-	"repository":{"host":"github.com","owner":"Qorpera","name":"Qorpera_Base","baseBranch":"master"}}')$q$,'54000',
-	'The owner already has a coding session running in codex; wait for it or follow it up');
+-- A member's sessions run side by side on their coding machine: a second one in the same harness is not refused.
+do $$
+begin
+	perform pg_temp.worker('{"action":"dispatch","operationKey":"c3","todoKey":"composer-latency","workerKey":"fix-send-2",
+		"title":"Second","goal":"g","definitionOfDone":"d","access":"read","species":"coding","harness":"codex",
+		"repository":{"host":"github.com","owner":"Qorpera","name":"Qorpera_Base","baseBranch":"master"}}');
+	perform pg_temp.wake_assert((pg_temp.session_row('fix-send-2')).phase = 'queued'
+		and (pg_temp.worker_row('fix-send-2')).owner_user_id = (pg_temp.worker_row('fix-send')).owner_user_id,
+		'The owner may start a second coding session in the same harness while the first runs');
+	perform pg_temp.worker('{"action":"cancel","operationKey":"c3-cancel","todoKey":"composer-latency","workerKey":"fix-send-2"}');
+	perform pg_temp.wake_assert((pg_temp.session_row('fix-send-2')).phase = 'cancelled','The second session leaves the queue');
+end $$;
 
 -- 2. The executor claims the session, prepares, admits the turn under the owner's sponsor, and the
 --    finished run is not mistaken for the worker's report.
@@ -192,10 +200,12 @@ begin
 	perform pg_temp.wake_assert(v_read ->> 'isOwner' = 'true' and v_read #>> '{session,phase}' = 'input_ready'
 		and jsonb_array_length(v_read -> 'events') >= 5 and v_read #>> '{events,0,kind}' = 'phase','The thread reads the session and its stream');
 	v_read := public.qorpera_list_coding_sessions('30000000-0000-4000-8000-000000000040');
-	perform pg_temp.wake_assert(jsonb_array_length(v_read -> 'sessions') = 1 and v_read #>> '{sessions,0,workerId}' = v_worker.id::text
-		and v_read #>> '{sessions,0,isOwner}' = 'true' and v_read #>> '{sessions,0,sessionId}' = '30000000-0000-4000-8000-000000000040'
-		and v_read #>> '{sessions,0,agentId}' = '30000000-0000-4000-8000-000000000030',
-		'The conversation lists the coding session its agent dispatched from it');
+	-- Both sessions the agent dispatched here, the cancelled second one included.
+	perform pg_temp.wake_assert(jsonb_array_length(v_read -> 'sessions') = 2 and exists (select 1 from jsonb_array_elements(v_read -> 'sessions') listed
+		where listed.value ->> 'workerId' = v_worker.id::text and listed.value ->> 'isOwner' = 'true'
+			and listed.value ->> 'sessionId' = '30000000-0000-4000-8000-000000000040'
+			and listed.value ->> 'agentId' = '30000000-0000-4000-8000-000000000030'),
+		'The conversation lists the coding sessions its agent dispatched from it');
 end $$;
 select pg_temp.wake_error($q$select public.qorpera_answer_coding_session((pg_temp.worker_row('fix-send')).id,'Again','30000000-0000-4000-8000-000000000102')$q$,
 	'55000','The session is still working; wait for its question or its result');
@@ -206,8 +216,9 @@ declare v_read jsonb := public.qorpera_read_coding_session((pg_temp.worker_row('
 begin
 	perform pg_temp.wake_assert(v_read ->> 'isOwner' = 'false' and v_read #>> '{session,harness}' = 'codex','Other members read the session and are told they are not the owner');
 	v_read := public.qorpera_list_coding_sessions('30000000-0000-4000-8000-000000000040');
-	perform pg_temp.wake_assert(jsonb_array_length(v_read -> 'sessions') = 1 and v_read #>> '{sessions,0,isOwner}' = 'false',
-		'Other members see the session in the thread too');
+	perform pg_temp.wake_assert(jsonb_array_length(v_read -> 'sessions') = 2
+		and not exists (select 1 from jsonb_array_elements(v_read -> 'sessions') listed where listed.value ->> 'isOwner' <> 'false'),
+		'Other members see the sessions in the thread too');
 end $$;
 select pg_temp.path_claims('anon');
 select pg_temp.wake_error($q$select public.qorpera_list_coding_sessions('30000000-0000-4000-8000-000000000040')$q$,'22023');
