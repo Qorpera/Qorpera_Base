@@ -726,6 +726,38 @@ begin
 end
 $$;
 
+-- Runtime v92: a run has no deadline, but one that waits a day in the queue
+-- (counted from when it was last queued, so a retry too) fails instead of
+-- waiting forever. Checked in a subtransaction, so the queued job stays for the
+-- rest of this test.
+do $$
+declare v_job uuid;
+begin
+	select job.id into strict v_job from public.qorpera_runner_jobs as job
+	where job.status = 'queued' and job.attempt_count = 0 order by job.created_at, job.id limit 1;
+	begin
+		perform public.qorpera_reconcile_runner_orchestrator('15000000-0000-4000-8000-000000000100');
+		if (select status from public.qorpera_runner_jobs where id = v_job) <> 'queued' then
+			raise exception 'a fresh queued run was failed'; end if;
+		-- A retried run first queued long ago but queued again just now keeps waiting.
+		update public.qorpera_runner_jobs set created_at = statement_timestamp() - interval '3 days', attempt_count = 2
+		where id = v_job;
+		perform public.qorpera_reconcile_runner_orchestrator('15000000-0000-4000-8000-000000000100');
+		if (select status from public.qorpera_runner_jobs where id = v_job) <> 'queued' then
+			raise exception 'a freshly requeued retry was failed'; end if;
+		-- The same retry after a day in the queue fails.
+		update public.qorpera_runner_jobs set queued_at = statement_timestamp() - interval '25 hours' where id = v_job;
+		perform public.qorpera_reconcile_runner_orchestrator('15000000-0000-4000-8000-000000000100');
+		if (select status || ':' || last_error from public.qorpera_runner_jobs where id = v_job)
+			is distinct from 'failed:No computer could start the run within a day' then
+			raise exception 'a retried run waiting a day in the queue was not failed'; end if;
+		raise exception 'rollback-start-wait-probe';
+	exception when raise_exception then
+		if sqlerrm <> 'rollback-start-wait-probe' then raise; end if;
+	end;
+end
+$$;
+
 select set_config(
 	'qorpera_test.orchestrator_claim',
 	public.qorpera_claim_runner_job_for_orchestrator(
@@ -1058,7 +1090,8 @@ begin
 		or v_model_reservation -> 'authority' ->> 'provider_connection_id' is distinct from
 			(current_setting('qorpera_test.provider_connection')::jsonb ->> 'connection_id')
 		or v_model_reservation -> 'authority' ->> 'native_harness' is distinct from 'openai-responses'
-		or (v_model_reservation -> 'authority' ->> 'max_cost_microusd')::bigint <> 100000
+		-- No per-run cost cap for API-key runs (runtime v92): the gateway meters but never refuses on cost.
+		or (v_model_reservation -> 'authority' ->> 'max_cost_microusd')::bigint <> 9007199254740991
 		or v_model_reservation -> 'authority' ? 'secret_reference' then
 		raise exception 'model gateway did not receive the safe sponsor and cost authority: %', v_model_reservation;
 	end if;

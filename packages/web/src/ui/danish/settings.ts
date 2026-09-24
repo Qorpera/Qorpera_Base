@@ -38,10 +38,7 @@ export const SETTINGS: Record<string, string> = {
 	"Signed in with email": "Logget ind med e-mail",
 	"Signed in with {provider}": "Logget ind med {provider}",
 	System: "System",
-	"System follows your device’s appearance.": "System følger din enheds udseende.",
 	"Composer color": "Skrivefeltets farve",
-	"Send button, your message bubbles, and selected agent cards.":
-		"Send-knappen, dine beskedbobler og valgte agentkort.",
 	Blue: "Blå",
 	Green: "Grøn",
 	Grey: "Grå",
@@ -168,7 +165,6 @@ export const SETTINGS: Record<string, string> = {
 	Invite: "Inviter",
 	"Invitation created.": "Invitationen er oprettet.",
 	"Add a friend": "Tilføj en ven",
-	"Manage company": "Administrer virksomhed",
 	"Delete company": "Slet virksomhed",
 	"Leave company": "Forlad virksomhed",
 	"Delete {company} for every member? Type the company name to confirm.":

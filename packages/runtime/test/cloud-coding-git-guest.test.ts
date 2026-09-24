@@ -253,6 +253,33 @@ describe("protected credential-free guest Git transfer", () => {
 		);
 		expect(executions).toBe(0);
 	});
+	it("exports beside the guest's own watchdog service, but not an unknown unit", async () => {
+		const f = await fixture();
+		await f.seed();
+		// The listing a real coding VM returns: the watchdog service is always
+		// loaded behind its one-second timer.
+		f.ports.system = async (_executable, args) => {
+			if (args[0] === "list-units")
+				return "qorpera-coding-watchdog.service loaded inactive dead Expire the coding guest execution lease\n";
+			throw new Error("the watchdog must not be inspected as a command");
+		};
+		const request = {
+			...f.request,
+			action: "export" as const,
+			transferId: id(5),
+			bundleSha256: null,
+			bundleBytes: 0,
+		};
+		await f.stage(request);
+		expect((await runCodingGitGuest("export", request.transferId, f.ports))?.headSha).toBe(request.headSha);
+		const g = await fixture();
+		await g.seed();
+		g.ports.system = async () => "qorpera-coding-other.service loaded inactive dead unknown\n";
+		await g.stage(request);
+		await expect(runCodingGitGuest("export", request.transferId, g.ports)).rejects.toThrow(
+			"CODING_GIT_COMMAND_STATE_UNCONFIRMED",
+		);
+	});
 	it("allows a retained exited command only when systemd confirms no processes", async () => {
 		const f = await fixture();
 		await f.seed();

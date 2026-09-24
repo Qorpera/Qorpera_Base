@@ -47,6 +47,7 @@ import {
 const LOGIN_SCHEMA = "qorpera.native-provider-login/v1";
 const EXECUTION_SCHEMA = "qorpera.native-provider-execution/v1";
 const CANCEL_SCHEMA = "qorpera.native-provider-cancel/v1";
+const EXECUTE_KEEPALIVE_MS = 60_000;
 const RESULT_SCHEMA = "qorpera.native-provider-result/v1";
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
@@ -824,6 +825,15 @@ export class HttpNativeProviderHostService {
 					if (!response.writableFinished) controller.abort(new Error("Native runner connection closed"));
 				};
 				response.once("close", disconnected);
+				// A run has no deadline (founder, 2026-09-24). Headers go out now and a
+				// newline every minute keeps the runner's HTTP client (whose header and
+				// idle-body timeouts are five minutes) and anything between from giving up.
+				response.writeHead(200, { "content-type": "application/json" });
+				response.flushHeaders();
+				const keepalive = setInterval(() => {
+					if (!response.destroyed && !response.writableEnded) response.write("\n");
+				}, EXECUTE_KEEPALIVE_MS);
+				keepalive.unref();
 				try {
 					value = {
 						schema: RESULT_SCHEMA,
@@ -831,6 +841,7 @@ export class HttpNativeProviderHostService {
 						result: await this.#host.execute(parsed, controller.signal),
 					};
 				} finally {
+					clearInterval(keepalive);
 					response.off("close", disconnected);
 					this.#executions.delete(parsed.authority.leaseId);
 				}
@@ -853,10 +864,13 @@ export class HttpNativeProviderHostService {
 				active?.controller.abort(new Error("Native execution cancelled"));
 				value = { cancelled: active !== undefined };
 			}
-			response.writeHead(200, { "content-type": "application/json" }).end(`${JSON.stringify(value)}\n`);
+			if (!response.headersSent) response.writeHead(200, { "content-type": "application/json" });
+			response.end(`${JSON.stringify(value)}\n`);
 		} catch (error) {
 			console.error(`Native provider request rejected: ${safeRequestDiagnostic(error)}`);
-			if (!response.destroyed)
+			// An execution already answered 200 with its keepalive; its failure is in the body.
+			if (!response.destroyed && response.headersSent) response.end('{"error":"request rejected"}\n');
+			else if (!response.destroyed)
 				response
 					.writeHead(422, { "content-type": "application/json", connection: "close" })
 					.end('{"error":"request rejected"}\n');

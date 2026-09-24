@@ -123,7 +123,7 @@ describe("agent hiring tool", () => {
 			f.run.close();
 		}
 	});
-	it("falls back to a waiting proposal when the cloud declines policy approval, and surfaces a limit", async () => {
+	it("falls back to a waiting proposal when the cloud declines policy approval", async () => {
 		const f = await fixture();
 		try {
 			f.apply.mockRejectedValueOnce(new Error("Organization approval authority is unavailable"));
@@ -132,9 +132,6 @@ describe("agent hiring tool", () => {
 				state: "proposed",
 				awaiting: "member_approval",
 			});
-			f.apply.mockRejectedValueOnce(new Error("This run reached its limit for new agents"));
-			const limited = await f.boundary.invoke("hire_l", "qorpera", "hire_agent", { ...hire, operationKey: "x2" });
-			expect(limited.success).toBe(false);
 		} finally {
 			f.run.close();
 		}

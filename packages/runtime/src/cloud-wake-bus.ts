@@ -18,7 +18,8 @@ export interface CloudWakePolicy {
 	readonly initial: "required" | "optional" | "forbidden";
 	readonly final: "required" | "optional" | "forbidden";
 	readonly silenceAllowed: boolean;
-	readonly maxPublicSends: number;
+	/** 0 when the wake may not speak publicly at all; null means no limit (founder, 2026-09-24). */
+	readonly maxPublicSends: 0 | null;
 }
 
 export const REQUIRED_CLOUD_WAKE_POLICY: CloudWakePolicy = Object.freeze({
@@ -27,7 +28,7 @@ export const REQUIRED_CLOUD_WAKE_POLICY: CloudWakePolicy = Object.freeze({
 	initial: "required",
 	final: "required",
 	silenceAllowed: false,
-	maxPublicSends: 64,
+	maxPublicSends: null,
 });
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -92,7 +93,7 @@ export function parseCloudWakePolicy(value: unknown): CloudWakePolicy {
 		if (policy.schema !== CLOUD_WAKE_POLICY_SCHEMA) return REQUIRED_CLOUD_WAKE_POLICY;
 		let initial: CloudWakePolicy["initial"] = "required";
 		let final: CloudWakePolicy["final"] = "required";
-		let maxPublicSends = 64;
+		let maxPublicSends: CloudWakePolicy["maxPublicSends"] = null;
 		switch (policy.kind) {
 			case "human":
 			case "first-run":
@@ -110,18 +111,16 @@ export function parseCloudWakePolicy(value: unknown): CloudWakePolicy {
 			case "agent":
 				// A coworker's message delivered into the agent's own thread (the kernel
 				// says pair: initial forbidden, final optional) lets the agent tell its
-				// thread something when the member should know, twice at most; it answers
-				// the coworker through the peer channel. A worker completion continues the
-				// agent's own work in its conversation (final optional): brief, or silent.
-				// Every other agent wake, a worker included, has no public mouth.
+				// thread something when the member should know; it answers the coworker
+				// through the peer channel. A worker completion continues the agent's own
+				// work in its conversation (final optional). Neither counts sends. Every
+				// other agent wake, a worker included, has no public mouth.
 				if (policy.final === "optional" && policy.initial === "forbidden") {
 					initial = "forbidden";
 					final = "optional";
-					maxPublicSends = 2;
 				} else if (policy.final === "optional") {
 					initial = "optional";
 					final = "optional";
-					maxPublicSends = 3;
 				} else {
 					initial = "forbidden";
 					final = "forbidden";
@@ -130,10 +129,9 @@ export function parseCloudWakePolicy(value: unknown): CloudWakePolicy {
 				break;
 			case "room":
 				// A team room may stay silent; an agent's shared thread (the kernel
-				// says final required) answers every post. Both keep three sends.
+				// says final required) answers every post. Neither counts sends.
 				initial = "optional";
 				final = policy.final === "required" ? "required" : "optional";
-				maxPublicSends = 3;
 				break;
 			default:
 				return REQUIRED_CLOUD_WAKE_POLICY;
@@ -269,7 +267,6 @@ export function parseCloudWakeEnvelope(value: unknown, identity: CloudNativeTool
 		time.timeZone.length > 128 ||
 		!Array.isArray(causal.agentIds) ||
 		causal.agentIds.length < 1 ||
-		causal.agentIds.length > 16 ||
 		new Set(causal.agentIds.map(uuid)).size !== causal.agentIds.length ||
 		causal.agentIds.at(-1) !== identity.staffAgentId
 	)
@@ -424,7 +421,6 @@ export function parseCloudWakeEnvelope(value: unknown, identity: CloudNativeTool
 			(coding && (work.access !== "read" || !codingScope(work.coding, work.sequence))) ||
 			!Number.isSafeInteger(work.sequence) ||
 			(work.sequence as number) < 1 ||
-			(work.sequence as number) > (coding ? 64 : 12) ||
 			source.occurrenceKey !== `worker-dispatch:${source.id}:${work.sequence}` ||
 			parentRunId === null ||
 			parentRunId === identity.runId ||
@@ -669,8 +665,8 @@ function makeCoworkerTool(
 			"already have committed and requires receipt reconciliation. Text must be nonblank and at most 4096 UTF-8 bytes. " +
 			"priority false (for status, an FYI or anything that needs no answer now) writes the message the same way but " +
 			"does not wake the coworker: it reads it at its next turn, whatever causes that turn; a held receipt confirms " +
-			"that. A queued receipt confirms durable delivery, not completed work. A causal-fence receipt means the exchange " +
-			"has reached its limit and no wake was created: say what is still needed in your own thread, or stop. There is " +
+			"that. A queued receipt confirms durable delivery, not completed work. A causal-fence receipt means no wake " +
+			"was created for this message: say what is still needed in your own thread, or stop. There is " +
 			"no room, private-member or cross-company destination. The result is data under the existing tool-result fence.",
 		inputSchema: {
 			type: "object",

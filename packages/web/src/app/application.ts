@@ -41,7 +41,7 @@ import { type SettingsTab, SettingsView } from "./views/settings.ts";
 import { noteConnectorReturn } from "./views/settings-services.ts";
 import { renderRail, renderTopbar, type ShellContext } from "./views/shell.ts";
 import { renderSignIn } from "./views/signin.ts";
-import { renderTeam } from "./views/team.ts";
+import { renderTeam, type TeamFeedback } from "./views/team.ts";
 import type { WorkspaceActions } from "./workspace-actions.ts";
 
 /* Entry point. One cloud client, one auth controller, one company controller
@@ -187,7 +187,7 @@ export function mountApplication(
 	let newConversation: NewConversationView | undefined;
 	let startingSession: { sessionId: string } | undefined;
 	let profiles: HostedProfile[] = [];
-	let teamFeedback: { message?: string; error?: string } = {};
+	let teamFeedback: TeamFeedback = {};
 	let accountState: AccountViewState = {};
 	const accountPlan = h("div");
 	let meetState: MeetState = {};

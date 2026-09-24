@@ -323,14 +323,22 @@ it("bounds a stalled startup and preserves no raw diagnostics", async () => {
 	expect(Date.now() - started).toBeLessThan(2500);
 });
 
-it.each(["duplicate-id", "callback-budget"])("rejects native callback replay or floods: %s", async (mode) => {
-	const { result, execute } = run(mode);
+it("rejects a replayed native callback", async () => {
+	const { result, execute } = run("duplicate-id");
 	await expect(result).rejects.toThrow("Invalid native boundary protocol");
 	expect(execute).not.toHaveBeenCalled();
 });
 
-it("bounds total private diagnostics independently of individual protocol messages", async () => {
-	await expect(run("wire-budget").result).rejects.toThrow("Native boundary output limit exceeded");
+it("answers native callbacks far past the removed request cap without failing the run", async () => {
+	// No run is capped by its number of tool calls or requests (founder, 2026-09-24).
+	const { result, execute } = run("callback-flood");
+	await expect(result).resolves.toMatchObject({ toolCalls: 0 });
+	expect(execute).not.toHaveBeenCalled();
+});
+
+it("keeps no cap on total private diagnostics", async () => {
+	// The old 16 MiB output cap is gone; each protocol message stays bounded on its own.
+	await expect(run("wire-flood").result).resolves.toMatchObject({ toolCalls: 0 });
 });
 
 it("kills the process group, including a descendant that ignores graceful shutdown", async () => {

@@ -11,7 +11,11 @@ import {
 	cloudToolRequest,
 	parseCloudNativeToolAuthority,
 } from "./cloud-native-tool-authority.ts";
-import { type CloudNativeTool, cloudToolJsonText } from "./cloud-native-tool-boundary.ts";
+import {
+	CLOUD_NATIVE_TOOL_CATALOG_BYTES,
+	type CloudNativeTool,
+	cloudToolJsonText,
+} from "./cloud-native-tool-boundary.ts";
 import type { CloudNativeToolOperationControlPlane } from "./cloud-native-tool-operations.ts";
 import { assertCloudRuntimeBundle } from "./cloud-runtime-bundle.ts";
 import type { CloudRuntimeObservability, CloudRuntimeToolOperation } from "./cloud-runtime-observability.ts";
@@ -311,7 +315,7 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 			timeoutMs: this.#timeoutMs,
 			observability: context.observability,
 			beginExecution: async (specification, checked) => {
-				const text = cloudToolJsonText(specification, 256 * 1024);
+				const text = cloudToolJsonText(specification, CLOUD_NATIVE_TOOL_CATALOG_BYTES);
 				const started = await this.#control.call(
 					"qorpera_begin_native_coding_execution",
 					{
@@ -402,7 +406,7 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 							!SHA.test(receipt.sha256) ||
 							!Number.isSafeInteger(receipt.ordinal) ||
 							Number(receipt.ordinal) < 1 ||
-							Number(receipt.ordinal) > 256
+							Number(receipt.ordinal) > 2_147_483_647
 						)
 							throw new Error("Coding context receipt unconfirmed");
 					},
