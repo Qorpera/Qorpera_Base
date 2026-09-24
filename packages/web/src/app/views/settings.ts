@@ -81,6 +81,8 @@ export class SettingsView {
 	readonly #panels = new Map<SettingsTab, HTMLElement>();
 	readonly #tabs = new Map<SettingsTab, HTMLButtonElement>();
 	readonly #borrowedCompany: CompanyController | undefined;
+	/** Opened on a company's page, even one whose company is not available. */
+	readonly #overCompany: boolean;
 	#profiles: HostedProfile[] = [];
 	#tab: SettingsTab = "general";
 	#account: AccountViewState = { loading: true };
@@ -112,6 +114,8 @@ export class SettingsView {
 		this.#close = close;
 		this.#companyRemoved = companyRemoved;
 		this.#borrowedCompany = company;
+		const route = currentRoute();
+		this.#overCompany = Boolean(company) || route.name === "company";
 		const search = this.#search;
 		const empty = h("p", { class: "muted small", hidden: true }, t("No settings found."));
 		const nav = h("nav", { class: "settings-nav", "aria-label": t("Settings sections") }, search);
@@ -167,7 +171,7 @@ export class SettingsView {
 		// following the link closes Settings like any other in-app link.
 		const back = h(
 			"a",
-			{ class: "settings-back", href: "#/", hidden: currentRoute().name === "hub" },
+			{ class: "settings-back", href: "#/", hidden: route.name === "hub" },
 			icon("back"),
 			uiText("Back to companies"),
 		);
@@ -226,15 +230,15 @@ export class SettingsView {
 		this.#tabs.get(this.#tab)?.focus();
 	}
 
-	/** Settings opened over a company show that company and no other, while
-	 * the account lists it. Opened elsewhere, they keep the company they show
-	 * while it is listed, else show the account's only company, and none when
-	 * it has several. */
+	/** Settings opened on a company's page show the company that page has open
+	 * and no other, while the account lists it; none when the page has no
+	 * company to lend (access lost, not available). Opened elsewhere, they keep
+	 * the company they show while it is listed, else show the account's only
+	 * company, and none when it has several. */
 	updateProfiles(profiles: HostedProfile[]): void {
 		if (this.#lifetime.signal.aborted || profiles === this.#profiles) return;
-		const open = this.#borrowedCompany?.profile.profileId;
-		const profile = open
-			? profiles.find((item) => item.profileId === open)
+		const profile = this.#overCompany
+			? profiles.find((item) => item.profileId === this.#borrowedCompany?.profile.profileId)
 			: (profiles.find((item) => item.profileId === this.#company?.profile.profileId) ??
 				(profiles.length === 1 ? profiles[0] : undefined));
 		this.#profiles = profiles;

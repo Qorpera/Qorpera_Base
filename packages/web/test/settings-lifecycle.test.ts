@@ -180,6 +180,7 @@ describe("settings session lifecycle", () => {
 		expect(company.signal.aborted).toBe(false);
 	});
 	it("shows the account's only company when Settings are not over a company", async () => {
+		history.replaceState(null, "", "/#/");
 		const f = fixture(),
 			auth = new AuthController(f.cloud);
 		await auth.start();
@@ -206,10 +207,44 @@ describe("settings session lifecycle", () => {
 		view.updateProfiles([profileB]);
 		await settle();
 		expect(view.el.querySelector("#settings-content h1")?.textContent).toBe(profileB.profileName);
+		// A company joins: the one shown stays.
+		view.updateProfiles([profileA, profileB]);
+		await settle();
+		expect(view.el.querySelector("#settings-content h1")?.textContent).toBe(profileB.profileName);
 		// The company shown is removed: the one left is shown.
 		view.updateProfiles([profileA]);
 		await settle();
 		expect(view.el.querySelector("#settings-content h1")?.textContent).toBe(profileA.profileName);
+	});
+	it("shows no other company on a company page that has none to lend", async () => {
+		// A company page without its company: access lost, or not available.
+		const f = fixture(),
+			auth = new AuthController(f.cloud);
+		await auth.start();
+		const hub = new HubController(f.api);
+		const view = new SettingsView(
+			f.api,
+			auth,
+			hub,
+			[profileB],
+			undefined,
+			() => {},
+			() => {},
+			"company",
+		);
+		document.body.append(view.el);
+		dispose = () => {
+			view.dispose();
+			hub.dispose();
+			auth.dispose();
+		};
+		view.updateProfiles([{ ...profileB }]);
+		await settle();
+		expect(view.el.querySelector("#settings-content")!.textContent).toContain(
+			"Open a company to see these settings.",
+		);
+		expect(view.el.querySelector<HTMLElement>(".settings-back")!.hidden).toBe(false);
+		expect(f.api.getTeam).not.toHaveBeenCalled();
 	});
 	it("ends the rail with a way back to the company list, not a company picker", async () => {
 		const f = await setup();
