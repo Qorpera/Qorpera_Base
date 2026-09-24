@@ -168,3 +168,19 @@ describe("composer color preference", () => {
 		expect(document.documentElement.dataset.composerColor).toBe("blue");
 	});
 });
+
+describe("General settings", () => {
+	it("ends with Language & region and offers no company link or cloud endpoint override", () => {
+		const view = account();
+		expect([...view.container.querySelectorAll("h2")].map((heading) => heading.textContent)).toEqual([
+			"Account",
+			"Appearance",
+			"Language & region",
+		]);
+		expect(view.container.querySelector("a")).toBeNull();
+		expect(view.container.textContent).not.toContain("All companies");
+		expect(view.container.querySelector("details")).toBeNull();
+		expect(view.container.querySelector('input[type="url"], input[type="text"]')).toBeNull();
+		expect(view.container.textContent).not.toContain("Cloud endpoint");
+	});
+});
