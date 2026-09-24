@@ -66,9 +66,9 @@ profile RPCs; RLS is the second read boundary.
 - `qorpera_member_picture_objects()` — how many objects the caller's own
   picture folder holds; the upload policy refuses a fifth in Storage's
   preflight. The limit itself is enforced by a `before insert` trigger on
-  `storage.objects` (`qorpera_guard_member_picture_insert`), which also covers
-  the storage service's final write and counts parallel uploads into one folder
-  one after another.
+  `storage.objects` (`qorpera_guard_member_picture_insert`, also on a move of
+  `bucket_id`/`name`), which covers the storage service's final write and counts
+  parallel uploads into one folder one after another.
 - `qorpera_own_member_picture_objects()` — the caller's own picture folder
   (`[{object_name, created_at, age_seconds}]`, the age by the cloud's clock),
   for tidying uploads that never became the picture; use it instead of a

@@ -30,16 +30,21 @@ const RETRY_MS = 60_000;
 const BATCH = 100;
 /** An upload younger than this may be another tab's, about to become the picture. */
 const TIDY_GRACE_SECONDS = 120;
+/** A choice waits this long at most for a tidy that never answers; the cloud's
+ * folder lock keeps it safe either way. */
+const TIDY_WAIT_MS = 10_000;
 
 export interface MemberPicturesOptions {
 	prepare?: (file: File) => Promise<PreparedPicture>;
 	now?: () => number;
+	tidyWaitMs?: number;
 }
 
 export class MemberPictures implements PersonPictureStore {
 	readonly #api: CloudApi;
 	readonly #prepare: (file: File) => Promise<PreparedPicture>;
 	readonly #now: () => number;
+	readonly #tidyWaitMs: number;
 	readonly #entries = new Map<string, Entry>();
 	/** Weakly held: a disc that left the page is forgotten with it. */
 	readonly #elements = new Map<string, Set<WeakRef<HTMLElement>>>();
@@ -57,6 +62,7 @@ export class MemberPictures implements PersonPictureStore {
 		this.#api = api;
 		this.#prepare = options.prepare ?? preparePicture;
 		this.#now = options.now ?? Date.now;
+		this.#tidyWaitMs = options.tidyWaitMs ?? TIDY_WAIT_MS;
 	}
 
 	attach(element: HTMLElement, rawUserId: string): void {
@@ -98,7 +104,7 @@ export class MemberPictures implements PersonPictureStore {
 			const objectName = memberPictureName(userId, await pictureSha256(picture.blob), picture.extension);
 			// A tidy already running read "current" before this choice and may still
 			// delete these very bytes (a picture chosen again); let it finish first.
-			await this.#tidying;
+			await this.#afterTidy();
 			this.#current(generation);
 			if (await this.#upload(userId, objectName, picture.blob, generation)) created = objectName;
 			this.#current(generation);
@@ -146,6 +152,7 @@ export class MemberPictures implements PersonPictureStore {
 		this.#available = undefined;
 		this.#busy = undefined;
 		this.#failure = undefined;
+		this.#tidying = Promise.resolve();
 		forgetPersonPictures();
 		for (const set of elements)
 			for (const ref of set) {
@@ -194,12 +201,25 @@ export class MemberPictures implements PersonPictureStore {
 	 * on its way (`everything`: all of it, for a full folder). The cloud names the
 	 * current picture first and refuses to delete it anyway; if anything here fails,
 	 * only storage is at stake. */
+	/** The running tidy, or a while if it never answers. */
+	async #afterTidy(): Promise<void> {
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		await Promise.race([
+			this.#tidying,
+			new Promise<void>((resolve) => {
+				timer = setTimeout(resolve, this.#tidyWaitMs);
+			}),
+		]);
+		clearTimeout(timer);
+	}
+
 	#tidy(userId: string, named: string[], generation: number, everything = false): Promise<void> {
 		this.#tidying = this.#tidying.then(() => this.#tidyNow(userId, named, generation, everything));
 		return this.#tidying;
 	}
 
 	async #tidyNow(userId: string, named: string[], generation: number, everything: boolean): Promise<void> {
+		if (generation !== this.#generation) return;
 		try {
 			const current = (await this.#api.listMemberPictures([userId])).find(
 				(picture) => picture.userId === userId,

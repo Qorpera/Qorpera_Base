@@ -57,6 +57,7 @@ function setup(
 	options: {
 		prepare?: (file: File) => Promise<{ blob: Blob; extension: "webp" | "jpg" }>;
 		pictures?: Record<string, string>;
+		tidyWaitMs?: number;
 	} = {},
 ) {
 	const { api } = fixture();
@@ -69,6 +70,7 @@ function setup(
 	const store = new MemberPictures(api, {
 		prepare: options.prepare ?? (async () => ({ blob: blob("new"), extension: "webp" })),
 		now: () => NOW,
+		...(options.tidyWaitMs === undefined ? {} : { tidyWaitMs: options.tidyWaitMs }),
 	});
 	setPersonPictures(store);
 	const list = vi
@@ -349,6 +351,33 @@ describe("choosing the account's picture", () => {
 		expect(current.get(me)).toBe(nameOf(me, "mine"));
 		expect(objects.has(nameOf(me, "mine"))).toBe(true);
 		expect(store.failure(me)).toBeUndefined();
+	});
+
+	it("does not wait forever for a tidy that never answers", async () => {
+		const { store, current, own } = setup({ pictures: { [me]: "mine" }, tidyWaitMs: 20 });
+		personAvatar("Account A", me);
+		await settle();
+		own.mockReturnValue(new Promise(() => {}));
+		await store.choose(me, photo());
+		await settle();
+		// The tidy after that choice hangs; the next choice still goes through.
+		await store.choose(me, new File(["other"], "other.png", { type: "image/png" }));
+		expect(current.get(me)).toBe(nameOf(me, "new"));
+		expect(store.busy(me)).toBe(false);
+	});
+
+	it("does not wait for a tidy from before the account changed", async () => {
+		const { store, own } = setup({ pictures: { [me]: "mine" }, tidyWaitMs: 60_000 });
+		personAvatar("Account A", me);
+		await settle();
+		own.mockReturnValue(new Promise(() => {}));
+		await store.choose(me, photo());
+		await settle();
+		store.reset();
+		personAvatar("Account A", me);
+		await settle();
+		const blocked = new Promise((_resolve, reject) => setTimeout(() => reject(new Error("blocked")), 2_000));
+		await expect(Promise.race([store.choose(me, photo()), blocked])).resolves.toBeUndefined();
 	});
 
 	it("goes back to initials and deletes the removed picture", async () => {

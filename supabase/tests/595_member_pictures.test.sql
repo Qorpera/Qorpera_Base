@@ -384,6 +384,121 @@ $$;
 select dblink_disconnect('picture_b');
 select dblink_disconnect('picture_a');
 
+-- The other order: a delete that holds the folder first leaves nothing to
+-- choose, and the choice says so instead of pointing at a missing object.
+select dblink_connect('picture_a', 'dbname=qorpera_test');
+select dblink_connect('picture_b', 'dbname=qorpera_test');
+select dblink_exec('picture_a', $$set request.jwt.claims = '{"sub":"95000000-0000-4000-8000-00000000000a","role":"authenticated"}'$$);
+select dblink_exec('picture_b', $$set request.jwt.claims = '{"sub":"95000000-0000-4000-8000-00000000000a","role":"authenticated"}'$$);
+select dblink_exec('picture_a', 'set role authenticated');
+select dblink_exec('picture_b', 'set role authenticated');
+-- First make the spare object stop being the picture again.
+select * from dblink('picture_a', $$select public.qorpera_set_member_picture(
+	'95000000-0000-4000-8000-00000000000a/' || repeat('2', 64) || '.jpg')::text$$) as chosen(result text);
+select dblink_exec('picture_a', 'begin');
+select * from dblink('picture_a', $$delete from storage.objects
+	where bucket_id = 'qorpera-member-pictures'
+		and name = '95000000-0000-4000-8000-00000000000a/' || repeat('3', 64) || '.png'
+	returning name$$) as deleted(name text);
+select dblink_send_query('picture_b', $$select public.qorpera_set_member_picture(
+	'95000000-0000-4000-8000-00000000000a/' || repeat('3', 64) || '.png')::text$$);
+select pg_sleep(0.2);
+
+do $$
+begin
+	if dblink_is_busy('picture_b') <> 1 then
+		raise exception 'a choice did not wait for the delete holding the folder';
+	end if;
+end
+$$;
+
+select dblink_exec('picture_a', 'commit');
+
+do $$
+begin
+	perform * from dblink_get_result('picture_b') as chosen(result text);
+	raise exception 'a deleted object was chosen as the picture';
+exception when no_data_found then null;
+end
+$$;
+
+select dblink_disconnect('picture_b');
+select dblink_disconnect('picture_a');
+
+-- Put the spare object back, and one stored ten minutes ago, for the age check.
+insert into storage.objects (bucket_id, name, metadata)
+values ('qorpera-member-pictures', '95000000-0000-4000-8000-00000000000a/' || repeat('3', 64) || '.png', '{"size":"700"}');
+insert into storage.objects (bucket_id, name, metadata, created_at)
+values (
+	'qorpera-member-pictures',
+	'95000000-0000-4000-8000-00000000000a/' || repeat('4', 64) || '.png',
+	'{"size":"700"}',
+	statement_timestamp() - interval '10 minutes'
+);
+
+select set_config('request.jwt.claims', '{"sub":"95000000-0000-4000-8000-00000000000a","email":"picture-owner@example.test","role":"authenticated","user_metadata":{}}', false);
+set role authenticated;
+do $$
+declare
+	v_objects jsonb := public.qorpera_own_member_picture_objects();
+	v_old jsonb;
+begin
+	select value into v_old from jsonb_array_elements(v_objects)
+	where value ->> 'object_name' = '95000000-0000-4000-8000-00000000000a/' || repeat('4', 64) || '.png';
+	if v_old is null or (v_old ->> 'age_seconds')::bigint < 600 then
+		raise exception 'the own-folder listing does not age objects by the cloud''s clock: %', v_objects;
+	end if;
+end
+$$;
+reset role;
+delete from storage.objects
+where bucket_id = 'qorpera-member-pictures'
+	and name = '95000000-0000-4000-8000-00000000000a/' || repeat('4', 64) || '.png';
+
+-- A name that is no picture name is refused by the policy, not counted.
+select set_config('request.jwt.claims', '{"sub":"95000000-0000-4000-8000-00000000000a","email":"picture-owner@example.test","role":"authenticated","user_metadata":{}}', false);
+set role authenticated;
+do $$
+begin
+	insert into storage.objects (bucket_id, name, metadata)
+	values ('qorpera-member-pictures', '%/' || repeat('5', 64) || '.webp', '{}');
+	raise exception 'a malformed picture name was stored';
+exception when insufficient_privilege then null;
+end
+$$;
+reset role;
+
+-- A move into a full folder counts like an upload.
+do $$
+declare v_me text := '95000000-0000-4000-8000-00000000000a';
+begin
+	insert into storage.objects (bucket_id, name, metadata)
+	values
+		('qorpera-member-pictures', v_me || '/' || repeat('c', 64) || '.webp', '{}'),
+		('qorpera-member-pictures', v_me || '/' || repeat('d', 64) || '.webp', '{}'),
+		('qorpera-member-pictures', '95000000-0000-4000-8000-00000000000b/' || repeat('e', 64) || '.webp', '{}');
+	begin
+		update storage.objects
+		set name = v_me || '/' || repeat('e', 64) || '.webp'
+		where bucket_id = 'qorpera-member-pictures'
+			and name = '95000000-0000-4000-8000-00000000000b/' || repeat('e', 64) || '.webp';
+		raise exception 'a move into a full folder was allowed';
+	exception when insufficient_privilege then null;
+	end;
+	-- Renaming within the folder does not count the object twice.
+	update storage.objects
+	set name = v_me || '/' || repeat('f', 64) || '.webp'
+	where bucket_id = 'qorpera-member-pictures' and name = v_me || '/' || repeat('d', 64) || '.webp';
+	delete from storage.objects
+	where bucket_id = 'qorpera-member-pictures'
+		and name in (
+			v_me || '/' || repeat('c', 64) || '.webp',
+			v_me || '/' || repeat('f', 64) || '.webp',
+			'95000000-0000-4000-8000-00000000000b/' || repeat('e', 64) || '.webp'
+		);
+end
+$$;
+
 -- Back to the earlier picture for the checks below.
 select set_config('request.jwt.claims', '{"sub":"95000000-0000-4000-8000-00000000000a","email":"picture-owner@example.test","role":"authenticated","user_metadata":{}}', false);
 set role authenticated;
@@ -394,8 +509,8 @@ declare
 	);
 	v_objects jsonb := public.qorpera_own_member_picture_objects();
 begin
-	if v_result ->> 'previous_object_name' <> '95000000-0000-4000-8000-00000000000a/' || repeat('3', 64) || '.png' then
-		raise exception 'the chosen picture did not stay chosen: %', v_result;
+	if v_result -> 'previous_object_name' <> 'null'::jsonb then
+		raise exception 'the earlier picture was not current again: %', v_result;
 	end if;
 	if (v_objects -> 0 ->> 'age_seconds') is null or (v_objects -> 0 ->> 'age_seconds')::bigint < 0 then
 		raise exception 'the own-folder listing has no cloud-side age: %', v_objects;

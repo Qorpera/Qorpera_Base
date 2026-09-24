@@ -221,6 +221,8 @@ create policy qorpera_member_pictures_delete
 -- only runs in Storage's permission preflight (inserted and rolled back); the
 -- final row is written later by the storage service, past row security. Here
 -- both are counted, and parallel uploads into one folder wait for each other.
+-- A move into a folder is an update of bucket_id or name and counts the same.
+-- A name that is no picture name is left to the policies, which refuse it.
 create function public.qorpera_guard_member_picture_insert()
 returns trigger
 language plpgsql
@@ -231,15 +233,18 @@ declare
 	v_folder text := split_part(new.name, '/', 1);
 	v_count integer;
 begin
-	if new.bucket_id <> 'qorpera-member-pictures' then
+	if new.bucket_id <> 'qorpera-member-pictures'
+		or new.name !~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/[0-9a-f]{64}\.(webp|jpg|png)$'
+	then
 		return new;
 	end if;
 	perform pg_advisory_xact_lock(hashtextextended('qorpera-member-pictures:' || v_folder, 0));
 	select count(*)::integer into v_count
 	from storage.objects
 	where bucket_id = 'qorpera-member-pictures'
-		and name like v_folder || '/%'
-		and name <> new.name;
+		and left(name, 37) = v_folder || '/'
+		and name <> new.name
+		and not (tg_op = 'UPDATE' and old.bucket_id = 'qorpera-member-pictures' and name = old.name);
 	if v_count >= 4 then
 		raise exception 'a member picture folder holds four objects at most' using errcode = '42501';
 	end if;
@@ -248,7 +253,7 @@ end
 $$;
 
 create trigger qorpera_guard_member_picture_insert
-before insert on storage.objects
+before insert or update of bucket_id, name on storage.objects
 for each row execute function public.qorpera_guard_member_picture_insert();
 
 -- The pictures the caller may see among the given accounts. Accounts without a
