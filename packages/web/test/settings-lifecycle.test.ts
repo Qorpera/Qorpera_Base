@@ -140,6 +140,70 @@ describe("settings session lifecycle", () => {
 		expect(f.api.getTeam).not.toHaveBeenCalled();
 		expect(company.signal.aborted).toBe(false);
 	});
+	it("returns to the open company, unstarted, when it comes back to the company list", async () => {
+		const f = fixture(),
+			auth = new AuthController(f.cloud);
+		await auth.start();
+		const company = new CompanyController(f.api, profileA, userA.id);
+		const hub = new HubController(f.api);
+		const view = new SettingsView(
+			f.api,
+			auth,
+			hub,
+			[profileA],
+			company,
+			() => {},
+			() => {},
+			"company",
+		);
+		document.body.append(view.el);
+		dispose = () => {
+			view.dispose();
+			hub.dispose();
+			company.stop();
+			auth.dispose();
+		};
+		const heading = () => view.el.querySelector("#settings-content h1")?.textContent;
+		expect(heading()).toBe(profileA.profileName);
+		view.updateProfiles([]);
+		expect(view.el.querySelector("#settings-content")!.textContent).toContain(
+			"Open a company to see these settings.",
+		);
+		view.updateProfiles([profileA]);
+		await settle();
+		expect(heading()).toBe(profileA.profileName);
+		// The open company is borrowed again: Settings neither start nor stop it.
+		expect(f.api.getTeam).not.toHaveBeenCalled();
+		expect(company.signal.aborted).toBe(false);
+	});
+	it("shows the only company once the company list shrinks to one", async () => {
+		const f = fixture(),
+			auth = new AuthController(f.cloud);
+		await auth.start();
+		const hub = new HubController(f.api);
+		const view = new SettingsView(
+			f.api,
+			auth,
+			hub,
+			[profileA, profileB],
+			undefined,
+			() => {},
+			() => {},
+			"company",
+		);
+		document.body.append(view.el);
+		dispose = () => {
+			view.dispose();
+			hub.dispose();
+			auth.dispose();
+		};
+		expect(view.el.querySelector("#settings-content")!.textContent).toContain(
+			"Open a company to see these settings.",
+		);
+		view.updateProfiles([profileB]);
+		await settle();
+		expect(view.el.querySelector("#settings-content h1")?.textContent).toBe(profileB.profileName);
+	});
 	it("ends the rail with a way back to the company list, not a company picker", async () => {
 		const f = await setup();
 		open(f.root);
@@ -368,7 +432,7 @@ describe("settings session lifecycle", () => {
 		expect(document.querySelector('[role="alertdialog"]')).toBeNull();
 		expect(document.querySelector(".settings-overlay")).toBeNull();
 	});
-	it("shows the plan and the chosen company's storage on the Plan & usage tab", async () => {
+	it("shows the plan and the open company's storage on the Plan & usage tab", async () => {
 		const f = await setup();
 		const loading = deferred<Awaited<ReturnType<typeof f.api.getCompanyFile>>>();
 		vi.mocked(f.api.getCompanyFile).mockReturnValueOnce(loading.promise);

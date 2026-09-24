@@ -107,7 +107,7 @@ function dateText(iso: string): string {
 /** Ids must stay unique while the account page and the dialog both show a plan panel. */
 let renders = 0;
 
-/** Storage of the company chosen in the settings menu, as the Company tab loads it. */
+/** Storage of the company Settings show, as the Company tab loads it. */
 export interface PlanUsage {
 	companyName: string;
 	file?: HostedCompanyFile;
@@ -137,7 +137,7 @@ function billingRow(label: string, value: Node | string, action?: Node | null): 
 }
 
 /** The account's plan and what it is using. Nothing here is per browser: the
- * plan comes from the account, the storage from the chosen company. */
+ * plan comes from the account, the storage from the company Settings show. */
 export function renderPlan(
 	container: HTMLElement,
 	account: AccountViewState,

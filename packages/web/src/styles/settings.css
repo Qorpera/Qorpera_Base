@@ -206,7 +206,7 @@
  .settings-nav [role=tablist] { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
  .settings-nav [role=tab] { justify-content: center; padding: .45em; }
  .settings-tab-count { margin-left: 0; }
- .settings-nav .settings-back { margin-top: 8px; }
+ .settings-nav .settings-back { justify-content: center; margin-top: 8px; }
  .settings-content { padding: 24px 20px; }
  .settings-choices { gap: 10px; }
  .settings-plan-grid { grid-template-columns: minmax(0, 1fr); }

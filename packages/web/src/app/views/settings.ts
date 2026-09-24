@@ -209,13 +209,13 @@ export class SettingsView {
 		this.#tabs.get(this.#tab)?.focus();
 	}
 
-	/** Settings show the open company. On the company list they show the
-	 * account's only company, and none when it has several. */
+	/** Settings show the open company. With none open they show the account's
+	 * only company, and none when it has several. */
 	updateProfiles(profiles: HostedProfile[]): void {
 		if (this.#lifetime.signal.aborted || profiles === this.#profiles) return;
 		const profile =
 			profiles.find((item) => item.profileId === this.#company?.profile.profileId) ??
-			(!this.#company && this.#profiles.length === 0 && profiles.length === 1 ? profiles[0] : undefined);
+			(!this.#company && profiles.length === 1 ? profiles[0] : undefined);
 		this.#profiles = profiles;
 		if (profile?.profileId === this.#company?.profile.profileId) return;
 		if (
@@ -373,7 +373,7 @@ export class SettingsView {
 		});
 	}
 
-	/** The plan is the account's; the usage shown is the chosen company's storage. */
+	/** The plan is the account's; the usage shown is the open company's storage. */
 	#plan(): void {
 		if (this.#lifetime.signal.aborted) return;
 		let panel = this.#panels.get("plan");
