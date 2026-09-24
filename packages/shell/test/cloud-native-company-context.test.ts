@@ -179,10 +179,11 @@ it.each([
 					expect(instructions.includes(heading)).toBe(heading === own);
 				expect(instructions.includes("qorpera.run-continuation/v1")).toBe(continued);
 				expect(instructions.includes("# Before you end your turn")).toBe(final === "required");
-				// ask_member is never offered on a room wake, so the reminder does not name it there.
-				expect(instructions.includes("a card from ask_member counts as one")).toBe(
-					final === "required" && kind !== "room",
-				);
+				// ask_member is offered wherever a final is required (a room wake then is the agent's
+				// own thread), so the reminder names it wherever it appears.
+				expect(instructions.includes("a card from ask_member counts as one")).toBe(final === "required");
+				// A group chat never names the card tool it is not offered.
+				if (kind === "room" && final !== "required") expect(instructions).not.toContain("ask_member");
 				for (const always of [
 					"# Qorpera runtime constitution",
 					"send_message is your only public voice",

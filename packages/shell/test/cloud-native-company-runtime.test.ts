@@ -959,6 +959,51 @@ it("raises one typed card for the member, appended before the final sentence, an
 	expect(JSON.stringify(f.observations)).not.toContain("digest");
 });
 
+/** A member's post in a room, as the kernel admits it: final required only in the agent's own thread. */
+function roomWake(f: Awaited<ReturnType<typeof fixture>>, final: "required" | "optional") {
+	const inputId = randomUUID();
+	const roomId = randomUUID();
+	Object.assign(f.wake, {
+		kind: "room",
+		actorUserId: f.wake.requesterUserId,
+		source: { kind: "room", id: inputId, occurrenceKey: `room:${roomId}:${inputId}:${f.wake.staffAgentId}` },
+		policy: {
+			schema: "qorpera.wake-policy/v1",
+			kind: "room",
+			initial: "optional",
+			final,
+			silenceAllowed: final !== "required",
+			maxPublicSends: null,
+		},
+		payload: { roomId, inputIds: [inputId], recipientStaffId: f.wake.staffAgentId },
+	});
+}
+
+it("raises a card in reply to a member's post in the agent's own thread", async () => {
+	const f = await fixture("company-cards");
+	roomWake(f, "required");
+	const result = await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+	expect(result.delivery).toEqual({ messageCount: 2, finalMessageId: f.deliveries.get("channel:final")?.messageId });
+	expect(f.control.appendInteractionRequest).toHaveBeenCalledTimes(2);
+	const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
+	const names = evidence.threadParameters.dynamicTools[0].tools.map((tool: { name: string }) => tool.name);
+	expect(names).toContain("ask_member");
+	expect(evidence.threadParameters.developerInstructions).toContain("# This wake: a post in a conversation");
+	expect(evidence.threadParameters.developerInstructions).toContain("a card from ask_member counts as one");
+});
+
+it("offers no card in a group chat, where the kernel lets the agent stay silent", async () => {
+	const f = await fixture("company-runtime");
+	roomWake(f, "optional");
+	const result = await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+	expect(result.delivery).toEqual({ messageCount: 2, finalMessageId: f.deliveries.get("final")?.messageId });
+	const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
+	const names = evidence.threadParameters.dynamicTools[0].tools.map((tool: { name: string }) => tool.name);
+	expect(names).toContain("send_message");
+	expect(names).not.toContain("ask_member");
+	expect(f.control.appendInteractionRequest).not.toHaveBeenCalled();
+});
+
 it("runs a background worker blank: reading tools and its report, no mouth, no coworkers, no delegation", async () => {
 	const f = await fixture("company-worker");
 	const result = await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);

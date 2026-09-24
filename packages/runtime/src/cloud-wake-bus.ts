@@ -156,6 +156,16 @@ export function parseCloudWakePolicy(value: unknown): CloudWakePolicy {
 	}
 }
 
+/**
+ * A room wake in the agent's own shared thread (contract 19), from the admitted
+ * policy alone: the kernel reports a required final for a room wake only when
+ * the room is bound to the woken agent (qorpera_runtime_wake_policy_internal,
+ * 20260918000000); a group chat's is optional. Never from model input.
+ */
+export function cloudWakeIsOwnThread(wake: Pick<CloudWakeEnvelope, "kind" | "policy">): boolean {
+	return wake.kind === "room" && wake.policy.kind === "room" && wake.policy.final === "required";
+}
+
 export interface CloudWakeEnvelope {
 	readonly schema: typeof CLOUD_WAKE_SCHEMA;
 	readonly id: string;

@@ -517,13 +517,16 @@ export class CloudApi {
 
 	/** Answer a typed card the agent raised (kernel bundle v70): queued like a
 	 * prompt, so the agent wakes in its own thread with the answer. Never a secret
-	 * value: a secret card answers with its outcome only. */
+	 * value: a secret card answers with its outcome only. In an agent's shared
+	 * thread (bundle v100) the answer is delivered like a post and runs on the
+	 * member's own model account, which `sponsor` names. */
 	answerInteraction(
 		sessionId: string,
 		clientInputId: string,
 		interactionId: string,
 		outcome: string,
 		answer: Record<string, JsonValue> = {},
+		sponsor?: { sponsorBindingId: string; sponsorVersion: number },
 	): Promise<SessionInputReceipt> {
 		return this.cloud
 			.rpc("qorpera_answer_interaction", {
@@ -532,6 +535,12 @@ export class CloudApi {
 				p_interaction_id: requiredUuid(interactionId, "Interaction id"),
 				p_outcome: outcome,
 				p_answer: answer,
+				...(sponsor
+					? {
+							p_sponsor_binding_id: requiredUuid(sponsor.sponsorBindingId, "Sponsor binding id"),
+							p_sponsor_version: sponsor.sponsorVersion,
+						}
+					: {}),
 			})
 			.then(parseSessionInputReceipt);
 	}

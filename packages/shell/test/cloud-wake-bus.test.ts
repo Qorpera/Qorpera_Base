@@ -15,6 +15,7 @@ import {
 	type CloudWakeEnvelope,
 	type CloudWakePolicy,
 	cloudCoworkerMessageTool,
+	cloudWakeIsOwnThread,
 	HttpCloudWakeControl,
 	parseCloudWakeEnvelope,
 	parseCloudWakePolicy,
@@ -342,6 +343,14 @@ describe("immutable cloud wake policies", () => {
 		{ ...policies[5].policy, fromJob: true },
 	])("keeps both human obligations for absent, malformed, or unknown policy %#", (value) => {
 		expect(parseCloudWakePolicy(value)).toEqual(REQUIRED_CLOUD_WAKE_POLICY);
+	});
+	it("reads the agent's own thread only from a room policy with a required final", () => {
+		// The SQL/TypeScript parity fixture: the kernel requires a final for a room wake
+		// only in a room bound to the woken agent; every other wake is not a room at all.
+		const own = policies.filter(({ policy }) => cloudWakeIsOwnThread({ kind: policy.kind!, policy }));
+		expect(own.map(({ scenario }) => scenario)).toEqual(["room-required"]);
+		const room = policies.find(({ scenario }) => scenario === "room")!.policy;
+		expect(cloudWakeIsOwnThread({ kind: "human", policy: { ...room, final: "required" } })).toBe(false);
 	});
 	it("allows a successful silent routine through the existing mouth component", async () => {
 		const send = vi.fn();

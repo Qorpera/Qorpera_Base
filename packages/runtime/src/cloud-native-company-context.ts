@@ -18,7 +18,7 @@ import {
 	cloudRuntimeHireBehavior,
 } from "./cloud-runtime-hire-overlays.ts";
 import type { CloudRuntimeToolOperation } from "./cloud-runtime-observability.ts";
-import type { CloudWakeEnvelope } from "./cloud-wake-bus.ts";
+import { type CloudWakeEnvelope, cloudWakeIsOwnThread } from "./cloud-wake-bus.ts";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SHA256 = /^[0-9a-f]{64}$/;
@@ -441,8 +441,9 @@ function closingReminder(context: CloudNativeCompanyContext, wake: CloudWakeEnve
 			"\n# Before you stop\nCall report_work once, with your outcome and summary. A worker run that ends without a report counts as failed.",
 		];
 	if (!(wake ? wake.policy.final === "required" : context.identity.sessionId !== null)) return [];
-	// ask_member is offered with a required final everywhere but a room (cloud-native-company-runtime.ts).
-	const card = wake?.kind === "room" ? "" : "; a card from ask_member counts as one";
+	// ask_member is offered with a required final everywhere but a group chat; a room wake with a
+	// required final is the agent's own thread (cloud-native-company-runtime.ts).
+	const card = wake?.kind === "room" && !cloudWakeIsOwnThread(wake) ? "" : "; a card from ask_member counts as one";
 	return [
 		`\n# Before you end your turn\nThis turn must end with a final send${card}. If you have not sent it, send it now: the result, what you have found so far, or what blocks you. A turn that ends without it fails, and the member hears nothing.`,
 	];
