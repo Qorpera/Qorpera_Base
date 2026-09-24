@@ -106,6 +106,7 @@ export class MemberPictures implements PersonPictureStore {
 		try {
 			const picture = await this.#prepare(file, crop);
 			objectName = memberPictureName(userId, await pictureSha256(picture.blob), picture.extension);
+			this.#current(generation);
 			this.#choosing = objectName;
 			// A tidy already running read "current" before this choice and may still
 			// delete these very bytes (a picture chosen again); let it finish first.

@@ -79,6 +79,7 @@ export class CropFrame {
 export function cropPicture(
 	picture: Pick<LoadedPicture, "url" | "width" | "height">,
 	signal?: AbortSignal,
+	opened?: () => void,
 ): Promise<PictureCrop | undefined> {
 	return new Promise((resolve) => {
 		if (signal?.aborted) {
@@ -187,7 +188,8 @@ export function cropPicture(
 			// Only the main button drags; a right click keeps the browser's menu.
 			if (event.pointerType === "mouse" && event.button !== 0) return;
 			event.preventDefault();
-			stage.focus();
+			// Without scrolling: on a short window the member may have scrolled to reach Save.
+			stage.focus({ preventScroll: true });
 			try {
 				stage.setPointerCapture(event.pointerId);
 			} catch {
@@ -290,14 +292,19 @@ export function cropPicture(
 			});
 		});
 		// A press and its release both outside the dialog cancel it, on the click, so the
-		// tap does not go on to whatever lies beneath; a drag that ends outside does not.
+		// tap does not go on to whatever lies beneath; a drag into or out of the dialog does not.
 		let pressedOutside = false;
+		let releasedOutside = false;
 		backdrop.addEventListener("pointerdown", (event) => {
 			pressedOutside = event.target === backdrop;
+			releasedOutside = false;
+		});
+		backdrop.addEventListener("pointerup", (event) => {
+			releasedOutside = event.target === backdrop;
 		});
 		backdrop.addEventListener("click", (event) => {
-			if (event.target === backdrop && pressedOutside) close(undefined);
-			pressedOutside = false;
+			if (event.target === backdrop && pressedOutside && releasedOutside) close(undefined);
+			pressedOutside = releasedOutside = false;
 		});
 		const onRoute = () => close(undefined);
 		const onAbort = () => close(undefined);
@@ -322,15 +329,20 @@ export function cropPicture(
 		fitStage();
 		draw();
 		stage.focus();
+		opened?.();
 	});
 }
 
-/** Loads the photo the member picked and lets them fit it. Throws a
- * PictureFileError when the browser cannot read it. */
-export async function choosePictureCrop(file: File, signal?: AbortSignal): Promise<PictureCrop | undefined> {
+/** Loads the photo the member picked and lets them fit it; `opened` runs once
+ * the dialog shows. Throws a PictureFileError when the browser cannot read it. */
+export async function choosePictureCrop(
+	file: File,
+	signal?: AbortSignal,
+	opened?: () => void,
+): Promise<PictureCrop | undefined> {
 	const picture = await loadPicture(file);
 	try {
-		return signal?.aborted ? undefined : await cropPicture(picture, signal);
+		return signal?.aborted ? undefined : await cropPicture(picture, signal, opened);
 	} finally {
 		picture.release();
 	}

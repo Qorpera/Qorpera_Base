@@ -559,8 +559,11 @@ describe("the account card's picture control", () => {
 		const chooser = vi.spyOn(input, "click").mockImplementation(() => {});
 		Object.defineProperty(input, "files", { configurable: true, value: [photo()] });
 		input.dispatchEvent(new Event("change"));
+		// The photo is still opening: the picture says so.
+		const trigger = control.querySelector<HTMLButtonElement>(".account-picture-button")!;
+		expect(trigger.getAttribute("aria-busy")).toBe("true");
 		input.dispatchEvent(new Event("change"));
-		control.querySelector<HTMLButtonElement>(".account-picture-button")!.click();
+		trigger.click();
 		expect(choosePictureCrop).toHaveBeenCalledTimes(1);
 		expect(chooser).not.toHaveBeenCalled();
 		store.reset();
@@ -568,6 +571,26 @@ describe("the account card's picture control", () => {
 		fitting.resolve({ x: 0, y: 0, side: 10 });
 		await settle();
 		expect(upload).not.toHaveBeenCalled();
+	});
+
+	it("stops looking busy once the fitting dialog is open", async () => {
+		setup();
+		const { picture: control } = accountPicture(userA);
+		document.body.append(control);
+		await settle();
+		const fitting = deferred<{ x: number; y: number; side: number } | undefined>();
+		vi.mocked(choosePictureCrop).mockImplementationOnce((_file, _signal, opened) => {
+			opened?.();
+			return fitting.promise;
+		});
+		const input = control.querySelector<HTMLInputElement>("input[type=file]")!;
+		Object.defineProperty(input, "files", { configurable: true, value: [photo()] });
+		input.dispatchEvent(new Event("change"));
+		const trigger = control.querySelector<HTMLButtonElement>(".account-picture-button")!;
+		expect(trigger.hasAttribute("aria-busy")).toBe(false);
+		fitting.resolve(undefined);
+		await settle();
+		expect(trigger.disabled).toBe(false);
 	});
 
 	it("shows why a photo could not be opened for fitting", async () => {

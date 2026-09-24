@@ -69,7 +69,7 @@ export function accountPicture(user: User | null): { picture: HTMLElement; error
 	const root = h("div", { class: "account-picture" }, trigger, menu, input);
 	let open = false;
 	/** A photo being opened or fitted; ends if the account changes meanwhile. */
-	let picking: { lifetime: AbortController; epoch: number } | undefined;
+	let picking: { lifetime: AbortController; epoch: number; loading: boolean } | undefined;
 
 	const onOutside = (event: Event) => {
 		if (!root.isConnected) document.removeEventListener("pointerdown", onOutside, true);
@@ -100,7 +100,8 @@ export function accountPicture(user: User | null): { picture: HTMLElement; error
 	function update(): void {
 		if (picking && picking.epoch !== personPicturesEpoch()) picking.lifetime.abort();
 		const status = store!.status(userId);
-		const busy = store!.busy(userId);
+		// A big photo takes a moment to open before it can be fitted.
+		const busy = store!.busy(userId) || Boolean(picking?.loading);
 		// A picture that could not be read may still exist: offer both choices.
 		const menu = status === "picture" || status === "failed";
 		const changeable = menu || status === "none";
@@ -173,18 +174,24 @@ export function accountPicture(user: User | null): { picture: HTMLElement; error
 		const file = input.files?.[0];
 		input.value = "";
 		if (!file || picking) return;
-		const pick = { lifetime: new AbortController(), epoch: personPicturesEpoch() };
+		const pick = { lifetime: new AbortController(), epoch: personPicturesEpoch(), loading: true };
 		picking = pick;
+		update();
+		const opened = () => {
+			pick.loading = false;
+			update();
+		};
 		void (async () => {
 			let crop: PictureCrop | undefined;
 			try {
-				crop = await choosePictureCrop(file, pick.lifetime.signal);
+				crop = await choosePictureCrop(file, pick.lifetime.signal, opened);
 			} catch (error) {
 				// A photo the browser cannot open never reaches the store; its reason is kept there all the same.
 				if (!pick.lifetime.signal.aborted) store.fail(userId, error);
 				return;
 			} finally {
 				picking = undefined;
+				update();
 			}
 			if (crop && !pick.lifetime.signal.aborted) await run(() => store.choose(userId, file, crop));
 		})();

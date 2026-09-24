@@ -119,8 +119,14 @@ describe("fitting a picture", () => {
 		second.stage.dispatchEvent(new PointerEvent("pointerup", { pointerId: 2, bubbles: true }));
 		backdrop.dispatchEvent(new MouseEvent("click", { bubbles: true }));
 		expect(document.querySelector(".picture-crop")).not.toBeNull();
-		// A press only closes it on its click, which stays on the backdrop.
+		// A press outside released inside the dialog keeps it too.
 		backdrop.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+		second.dialog.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
+		backdrop.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+		expect(document.querySelector(".picture-crop")).not.toBeNull();
+		// A press and release outside close it, on the click.
+		backdrop.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+		backdrop.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
 		expect(document.querySelector(".picture-crop")).not.toBeNull();
 		backdrop.dispatchEvent(new MouseEvent("click", { bubbles: true }));
 		expect(await second.result).toBeUndefined();
@@ -141,9 +147,16 @@ describe("fitting a picture", () => {
 		expect(document.activeElement).toBe(stage);
 		stage.blur();
 		key(document.body, "Escape");
-		document.removeEventListener("keydown", behind);
 		expect(behind).not.toHaveBeenCalled();
 		expect(await result).toBeUndefined();
+		// Closed, it lets the page have its keys again.
+		const escape = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
+		const tab = new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true });
+		document.body.dispatchEvent(escape);
+		document.body.dispatchEvent(tab);
+		document.removeEventListener("keydown", behind);
+		expect(behind).toHaveBeenCalledTimes(2);
+		expect(escape.defaultPrevented || tab.defaultPrevented).toBe(false);
 	});
 
 	it("closes when its lifetime ends, and never opens after it ended", async () => {
