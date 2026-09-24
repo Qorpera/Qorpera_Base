@@ -5,7 +5,7 @@ import { t } from "./preferences.ts";
 import { uiScale } from "./scale.ts";
 
 /* Widths here are design pixels (ui/scale.ts): the member's choice keeps its look whatever the
- * app's scale, and a width stored before the app was drawn at 125% grows with everything else. */
+ * app's scale. */
 const COMPACT = 80;
 const MIN = 240;
 /** A tenth narrower than the earlier 456px (half again the desktop's 304px rail), once the app was drawn at 125%. */
