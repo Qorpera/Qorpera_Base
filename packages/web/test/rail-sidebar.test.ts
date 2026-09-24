@@ -218,6 +218,8 @@ describe("rail sections and pins", () => {
 		const cases: [CompanySidebar | "missing", string[]][] = [
 			[demo(), ["Research", "Unassigned"]],
 			[{ ...demo(), pinned: [] }, ["Unassigned"]],
+			// A pinned agent that is hidden leaves no pinned row to part from.
+			[{ ...demo(), hidden: [dee.id] }, ["Unassigned"]],
 			[{ ...none, pinned: [dee.id] }, ["Unassigned"]],
 			[none, []],
 			["missing", []],
