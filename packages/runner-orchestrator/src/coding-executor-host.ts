@@ -127,10 +127,13 @@ export interface LxdCodingExecutorHostOptions {
 	/** How long LXD's agent may take to mount a hot-plugged session (default 30 s). */
 	attachTimeoutMs?: number;
 }
-interface Prepared {
+/** A session this process attached (or began attaching) to its member's machine. */
+interface Attached {
 	claim: CodingSessionClaim;
 	machine: Readonly<LxdCodingMachineBinding>;
 	storage: Readonly<CloudCodingStorageBinding>;
+}
+interface Prepared extends Attached {
 	scope: CloudCodingCommandScope;
 	bootId: string;
 	guestConfigSha256: string;
@@ -151,6 +154,8 @@ interface ListedMachine {
 	lastError: string | null;
 }
 const SHA = /^[0-9a-f]{64}$/;
+/** Guest uids from here on belong to one session each (SQL assigns them). */
+const CODING_SESSION_UID_BASE = 200000;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 /** Budget for one physical stop or delete, journal I/O included. Callers that
  * bound a whole step (lookup + effect) allow more than this. */
@@ -199,6 +204,18 @@ function errorCodeOf(error: unknown): string {
 	const message = error instanceof Error ? error.message : "";
 	return /^[A-Z][A-Z0-9_:]{0,119}$/.test(message) ? message : "UNCLASSIFIED";
 }
+/** Resolves with the work, or rejects with the caller's abort reason as soon as
+ * the caller gives up; the work itself runs on. */
+function abortable<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+	if (signal.aborted) return Promise.reject(signal.reason);
+	return new Promise<T>((resolve, reject) => {
+		const abort = () => reject(signal.reason);
+		signal.addEventListener("abort", abort, { once: true });
+		work.then(resolve, reject).finally(() => signal.removeEventListener("abort", abort));
+	});
+}
+/** A release that failed after its machine was deleted: recorded as `release`. */
+class CodingReleaseFailed extends Error {}
 /** A custody refusal: not now (a turn uses the machine, it is awake, or not due). */
 class CodingCustodyRefused extends Error {
 	readonly reason: string;
@@ -222,6 +239,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 	#storageWork: Promise<unknown> = Promise.resolve();
 	readonly #machineWork = new Map<string, Promise<unknown>>();
 	readonly #prepared = new Map<string, Prepared>();
+	readonly #attached = new Map<string, Attached>();
 	constructor(options: LxdCodingExecutorHostOptions) {
 		if (
 			!/^[A-Za-z0-9_.:-]{1,120}$/.test(options.owner) ||
@@ -234,7 +252,9 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 				options.guest.watchdogHelperSha256,
 				options.guest.storageHelperSha256,
 			].every((hash) => SHA.test(hash)) ||
-			![options.guest.uid, options.guest.gid].every((value) => Number.isSafeInteger(value) && value >= 1000) ||
+			![options.guest.uid, options.guest.gid].every(
+				(value) => Number.isSafeInteger(value) && value >= 1000 && value < CODING_SESSION_UID_BASE,
+			) ||
 			options.guest.resourceProfile.memoryBytes > options.vmPolicy.memoryBytes ||
 			options.guest.resourceProfile.cpuQuotaPercent > options.vmPolicy.cpus * 100
 		)
@@ -268,16 +288,24 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 	}
 	/** One lifecycle step at a time per machine: create, start, attach, detach,
 	 * stop, delete and release never overlap on one machine. Commands of its
-	 * sessions run in parallel between them. */
-	async #exclusive<T>(machineId: string, use: () => Promise<T>): Promise<T> {
+	 * sessions run in parallel between them. A caller that gives up while
+	 * waiting (its signal aborts) leaves at once and its step never starts; a
+	 * step that has started holds the machine until it settles. */
+	#exclusive<T>(machineId: string, signal: AbortSignal, use: () => Promise<T>): Promise<T> {
 		const previous = this.#machineWork.get(machineId) ?? Promise.resolve();
-		const work = previous.catch(() => undefined).then(use);
+		const work = previous
+			.catch(() => undefined)
+			.then(() => {
+				signal.throwIfAborted();
+				return use();
+			});
 		this.#machineWork.set(machineId, work);
-		try {
-			return await work;
-		} finally {
-			if (this.#machineWork.get(machineId) === work) this.#machineWork.delete(machineId);
-		}
+		void work
+			.catch(() => undefined)
+			.finally(() => {
+				if (this.#machineWork.get(machineId) === work) this.#machineWork.delete(machineId);
+			});
+		return abortable(work, signal);
 	}
 	async #storageTask<T>(use: (signal: AbortSignal) => Promise<T>, signal?: AbortSignal): Promise<T> {
 		const checked = AbortSignal.any([...(signal ? [signal] : []), AbortSignal.timeout(5000)]);
@@ -349,7 +377,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			if (WAITABLE.has(reason)) throw new CodingMachineUnavailable(reason);
 			throw new Error(`CODING_HOST_MACHINE_REFUSED:${/^[A-Z_]{1,64}$/.test(reason) ? reason : "UNKNOWN"}`);
 		}
-		const remaining = checkCodingMachineReceipt(
+		checkCodingMachineReceipt(
 			value,
 			{
 				machineId: plan.binding.machineId,
@@ -359,8 +387,11 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			},
 			performance.now() - started,
 		);
+		// Counted from before the request: the receipt's seconds include the NAS checks below.
+		const deadline = started + Number(value.validForMs);
 		const guestUid = value.guestUid as number | null;
-		if (guestUid !== null && guestUid < 200000) throw new Error("CODING_MACHINE_ADMISSION_UNCONFIRMED");
+		if (guestUid !== null && guestUid < CODING_SESSION_UID_BASE)
+			throw new Error("CODING_MACHINE_ADMISSION_UNCONFIRMED");
 		await this.#storageTask(async (checked) => {
 			if (prepareStorage) {
 				await this.#storage.prepareControl(checked);
@@ -370,7 +401,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 				await this.#storage.assert(storage, checked);
 			}
 		}, signal);
-		if (performance.now() - started >= remaining) throw new Error("CODING_MACHINE_ADMISSION_EXPIRED");
+		if (performance.now() >= deadline) throw new Error("CODING_MACHINE_ADMISSION_EXPIRED");
 		signal.throwIfAborted();
 		return value as unknown as CodingMachineAdmissionReceipt;
 	}
@@ -531,23 +562,18 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			}
 		}
 	}
-	/** Installs the attached session inside the guest: its configuration for
-	 * this boot, its storage binding, its user and folders. */
-	async #guest(
-		claim: CodingSessionClaim,
-		machine: Readonly<LxdCodingMachineBinding>,
-		storage: Readonly<CloudCodingStorageBinding>,
-		signal: AbortSignal,
-	): Promise<{ bootId: string; guestConfigSha256: string }> {
+	/** The machine's guest is up and trustworthy for this boot: its agent and
+	 * watchdog timer answer, its helpers are the pinned ones, and its image
+	 * cannot update itself. Runs before any session folder is hot-plugged, so a
+	 * machine that has just started is never asked to mount anything first.
+	 * Returns the boot id. */
+	async #ready(machine: Readonly<LxdCodingMachineBinding>, signal: AbortSignal): Promise<string> {
 		const client = this.#options.client,
-			name = lxdCodingMachineName(machine.machineId),
-			layout = cloudCodingSessionLayout(claim.workerId);
-		const receipt = await this.#run(claim, machine, storage, signal);
+			name = lxdCodingMachineName(machine.machineId);
 		const instance = await client.getInstance(machine.project, name, signal);
 		if (!instance || instance.status !== "Running" || instance.statusCode !== 103)
 			throw new Error("CODING_HOST_VM_NOT_RUNNING");
-		if (!assertLxdCodingMachineInstance(machine, this.#placement, instance).includes(claim.workerId))
-			throw new Error("CODING_SESSION_DETACHED");
+		assertLxdCodingMachineInstance(machine, this.#placement, instance);
 		// A machine that has just started answers before its agent and systemd are
 		// up: the watchdog timer turns active a few seconds after the agent. Wait,
 		// bounded, for both before trusting the boot; anything else still fails.
@@ -631,6 +657,29 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			["/usr/bin/systemctl", "is-active", "--quiet", "qorpera-coding-watchdog.timer"],
 			signal,
 		);
+		return bootId;
+	}
+	/** Installs the attached session inside the guest: its configuration for
+	 * this boot, its storage binding, its user and folders. */
+	async #install(
+		claim: CodingSessionClaim,
+		machine: Readonly<LxdCodingMachineBinding>,
+		storage: Readonly<CloudCodingStorageBinding>,
+		bootId: string,
+		signal: AbortSignal,
+	): Promise<{ bootId: string; guestConfigSha256: string }> {
+		const client = this.#options.client,
+			name = lxdCodingMachineName(machine.machineId),
+			layout = cloudCodingSessionLayout(claim.workerId);
+		const receipt = await this.#run(claim, machine, storage, signal);
+		const instance = await client.getInstance(machine.project, name, signal);
+		if (!instance || instance.status !== "Running" || instance.statusCode !== 103)
+			throw new Error("CODING_HOST_VM_NOT_RUNNING");
+		if (!assertLxdCodingMachineInstance(machine, this.#placement, instance).includes(claim.workerId))
+			throw new Error("CODING_SESSION_DETACHED");
+		// The configuration names the boot the readiness checks saw.
+		const boot = await client.readInstanceFile(machine.project, name, "/proc/sys/kernel/random/boot_id", 64, signal);
+		if (boot.content.toString("utf8").trim() !== bootId) throw new Error("CODING_MACHINE_BOOT_CHANGED");
 		const configuration = {
 			schema: "qorpera.coding-command-guest/v3",
 			workerId: claim.workerId,
@@ -717,6 +766,10 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		const credentials = this.#options.repositoryCredentials;
 		return (repository, use, signal) => credentials.withRepositoryToken(scope, repository, use, signal);
 	}
+	/** The turn is still prepared: once its detach begins, nothing new starts. */
+	#current(ready: Prepared): void {
+		if (this.#prepared.get(ready.claim.workerId) !== ready) throw new Error("CODING_HOST_TURN_NOT_PREPARED");
+	}
 	#active(claim: CodingSessionClaim): Prepared {
 		const ready = this.#prepared.get(claim.workerId);
 		if (!ready || ready.claim.leaseToken !== claim.leaseToken || ready.scope.turn !== claim.sequence)
@@ -735,6 +788,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			client: this.#options.client,
 			authorize: async (_action, scope, _transfer, _digest, signal) => {
 				if (!isDeepStrictEqual(scope, ready.scope)) throw new Error("CODING_HOST_TRANSFER_SCOPE_CHANGED");
+				this.#current(ready);
 				await this.#run(ready.claim, ready.machine, ready.storage, signal);
 			},
 		});
@@ -749,7 +803,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		const machine = await this.#plan(claim, signal);
 		const storage = lxdCodingSessionStorage(machine, this.#placement, claim.workerId);
 		const journal = lxdCodingMachineJournalPlan(machine, this.#placement);
-		await this.#exclusive(machine.machineId, async () => {
+		const bootId = await this.#exclusive(machine.machineId, signal, async () => {
 			await this.#run(claim, machine, storage, signal, true);
 			await this.#reconcile(
 				journal,
@@ -757,9 +811,15 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 				async (_intent, checked) => this.#run(claim, machine, storage, checked),
 				signal,
 			);
+			await this.#run(claim, machine, storage, signal);
+			const boot = await this.#ready(machine, signal);
+			// From here on the session may be attached: detachSession unplugs it
+			// whatever happens next, a deferral or a failure included.
+			this.#attached.set(claim.workerId, { claim, machine, storage });
 			await this.#attach(claim, machine, storage, signal);
+			return boot;
 		});
-		const guest = await this.#guest(claim, machine, storage, signal),
+		const guest = await this.#install(claim, machine, storage, bootId, signal),
 			root = await this.#directory("git");
 		const authorize = async () => {
 			await this.#run(claim, machine, storage, signal);
@@ -863,6 +923,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 					ttl > Date.parse(claim.leaseUntil) - Date.now()
 				)
 					throw new Error("CODING_HOST_LEASE_REFRESH_EXPIRED");
+				this.#current(ready);
 				await this.#run(ready.claim, ready.machine, ready.storage, checked);
 			},
 		});
@@ -929,19 +990,25 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 	 * prepared is left to housekeeping, which unplugs everything when the
 	 * machine sleeps. Works with or without the lease. */
 	async detachSession(claim: CodingSessionClaim, signal: AbortSignal): Promise<void> {
-		const ready = this.#prepared.get(claim.workerId);
-		if (!ready || ready.claim.leaseToken !== claim.leaseToken) return;
-		const machine = ready.machine,
+		const attached = this.#attached.get(claim.workerId);
+		if (!attached || attached.claim.leaseToken !== claim.leaseToken) return;
+		// No new command, lease refresh or publication for this turn from here on.
+		if (this.#prepared.get(claim.workerId)?.claim.leaseToken === claim.leaseToken)
+			this.#prepared.delete(claim.workerId);
+		const forget = () => {
+			if (this.#attached.get(claim.workerId) === attached) this.#attached.delete(claim.workerId);
+		};
+		const machine = attached.machine,
 			journal = lxdCodingMachineJournalPlan(machine, this.#placement),
 			text = lxdCodingMachinePlan(machine).text,
 			name = lxdCodingMachineName(machine.machineId),
 			client = this.#options.client,
 			session = { workerId: claim.workerId, leaseToken: claim.leaseToken };
-		await this.#exclusive(machine.machineId, async () => {
+		await this.#exclusive(machine.machineId, signal, async () => {
 			await this.#custody(journal, text, "detach", signal, session);
 			const instance = await client.getInstance(machine.project, name, signal);
 			if (!instance) {
-				this.#prepared.delete(claim.workerId);
+				forget();
 				return;
 			}
 			const sessions = assertLxdCodingMachineInstance(machine, this.#placement, instance);
@@ -962,7 +1029,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			if (sessions.includes(claim.workerId)) {
 				const devices = Object.fromEntries(
 					Object.entries(instance.devices).filter(
-						([deviceName]) => !Object.hasOwn(lxdCodingSessionDevices(ready.storage), deviceName),
+						([deviceName]) => !Object.hasOwn(lxdCodingSessionDevices(attached.storage), deviceName),
 					),
 				);
 				await this.#custody(journal, text, "detach", signal, session);
@@ -975,7 +1042,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 				if (after && assertLxdCodingMachineInstance(machine, this.#placement, after).includes(claim.workerId))
 					throw new Error("CODING_SESSION_DETACH_UNCONFIRMED");
 			}
-			this.#prepared.delete(claim.workerId);
+			forget();
 			if (guestFailure) throw guestFailure;
 		});
 	}
@@ -1027,6 +1094,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			helperSha256: this.#options.guest.commandHelperSha256,
 			client: this.#options.client,
 			authorize: async (action, checkedScope, commandId, inputSha256, checked) => {
+				this.#current(ready);
 				await this.#run(ready.claim, ready.machine, ready.storage, checked);
 				await authorize(action, checkedScope, commandId, inputSha256, checked);
 			},
@@ -1052,11 +1120,11 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		for (const value of listed) {
 			signal.throwIfAborted();
 			const entry = this.#listed(value);
-			const step: CodingHousekeepingOutcome["step"] | null =
+			const step: "sleep" | "delete" | null =
 				entry.released || entry.removeDue ? "delete" : entry.sleepDue ? "sleep" : null;
 			if (!step) continue;
 			try {
-				await this.#exclusive(entry.machineId, async () => {
+				await this.#exclusive(entry.machineId, signal, async () => {
 					if (step === "sleep") await this.#sleep(entry, signal);
 					else await this.#remove(entry, signal);
 				});
@@ -1068,9 +1136,11 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 					continue;
 				}
 				signal.throwIfAborted();
+				// A release that failed after the delete is its own step: the machine is gone, its capacity is not.
+				const failed = error instanceof CodingReleaseFailed ? "release" : step;
 				const failure = errorCodeOf(error);
-				outcomes.push({ machineId: entry.machineId, step, state: "failed", code: failure });
-				await this.#recordError(entry.machineId, step, failure, signal).catch(() => undefined);
+				outcomes.push({ machineId: entry.machineId, step: failed, state: "failed", code: failure });
+				await this.#recordError(entry.machineId, failed, failure, signal).catch(() => undefined);
 			}
 		}
 		return outcomes;
@@ -1191,20 +1261,25 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 	 * never reserved, or already released elsewhere has nothing to delete. */
 	async #remove(entry: ListedMachine, signal: AbortSignal): Promise<void> {
 		const release = async (text: string) => {
-			const released = record(
-				await this.#call(
-					"qorpera_release_coding_machine",
-					{
-						p_machine_id: entry.machineId,
-						p_owner: this.#options.owner,
-						p_binding_text: text,
-						p_machine_id_sha256: this.#options.machineIdSha256,
-					},
-					signal,
-				),
-			);
+			let released: Record<string, unknown>;
+			try {
+				released = record(
+					await this.#call(
+						"qorpera_release_coding_machine",
+						{
+							p_machine_id: entry.machineId,
+							p_owner: this.#options.owner,
+							p_binding_text: text,
+							p_machine_id_sha256: this.#options.machineIdSha256,
+						},
+						signal,
+					),
+				);
+			} catch (error) {
+				throw new CodingReleaseFailed(errorCodeOf(error), { cause: error });
+			}
 			if (released.state !== "released" || released.machineId !== entry.machineId)
-				throw new Error("CODING_MACHINE_RELEASE_UNCONFIRMED");
+				throw new CodingReleaseFailed("CODING_MACHINE_RELEASE_UNCONFIRMED");
 		};
 		if (!entry.instanceSha256) {
 			await release(JSON.stringify(entry.binding));

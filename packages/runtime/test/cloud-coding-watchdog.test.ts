@@ -229,6 +229,21 @@ describe("coding guest watchdog over a member's sessions", () => {
 		expect(m.system.mock.calls).toHaveLength(2);
 		expect(m.system.mock.calls.flat(2)).not.toContain(m.slice(preparing)[1]);
 	});
+	it("stops sessions whose leases ended together at once, not one after another", async () => {
+		const m = await machine();
+		const sessions = [await m.session(false), await m.session(false), await m.session(false)];
+		let running = 0,
+			most = 0;
+		m.system.mockImplementation(async () => {
+			most = Math.max(most, ++running);
+			await new Promise((resolve) => setTimeout(resolve, 20));
+			running--;
+			return "";
+		});
+		await runCodingGuestWatchdog(m.ports);
+		expect(m.system.mock.calls).toHaveLength(sessions.length);
+		expect(most).toBe(sessions.length);
+	});
 	it("stops a session with a foreign or malformed configuration, not its neighbours", async () => {
 		const m = await machine();
 		const live = await m.session(true),

@@ -34,8 +34,13 @@ Each session runs as its own uid/gid (200000-524287, assigned in SQL per member
 and environment when its NAS volume is first used, never reused within them). The
 storage initializer registers it as a boot-local userdb record under
 `/run/userdb` (read by nss-systemd), named `qorpera-coding-<uid>`, with no login
-shell; `detach` removes it. Sessions therefore cannot read or signal each
-other's processes (`ProtectProc=invisible`) or write each other's files. A
+shell; `detach` removes it. Sessions therefore cannot see or signal each
+other's processes (`ProtectProc=invisible`), read or write each other's files,
+or share System V and POSIX IPC (`PrivateIPC=yes`). They do share the machine's
+network, loopback included: a server one session listens with on 127.0.0.1, or
+an abstract Unix socket, is reachable from the member's other sessions on that
+machine. All of them are the same member's sessions in the same company; a
+per-session network namespace is a later hardening, not built. A
 session whose NAS volume predates member machines keeps the image's own coding
 user (the executor's configured `guest.uid`, below 200000), whose files it
 already holds; while such a session is on a machine, no second legacy session

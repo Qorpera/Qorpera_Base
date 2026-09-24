@@ -104,17 +104,32 @@ describe("detaching a session inside its member's machine", () => {
 		await registerCodingSessionUser(g, f.ports);
 		return g;
 	}
-	it("stops and sees stopped the session's slice, flushes, and removes its boot-local state and user", async () => {
+	it("stops and sees stopped the session's slice, flushes, removes its boot-local state and user, then stops it again", async () => {
 		const f = await fixture();
 		const g = await attached(f);
 		const slice = `qorpera-coding-${g.workerId.replaceAll("-", "")}.slice`;
-		await detachCloudCodingGuestSession(g.workerId, f.ports);
-		expect(f.system.mock.calls).toEqual([
+		const stopped = [
 			["/usr/bin/systemctl", ["show", slice, "--property=LoadState", "--value"]],
 			["/usr/bin/systemctl", ["stop", slice]],
 			["/usr/bin/systemctl", ["show", slice, "--property=ActiveState", "--value"]],
-			["/usr/bin/sync", []],
-		]);
+		];
+		let removedBeforeSecondStop = false;
+		f.system.mockImplementation(async (_executable, args) => {
+			if (f.system.mock.calls.length === 5)
+				removedBeforeSecondStop = await lstat(f.runtimeRoot).then(
+					() => false,
+					() => true,
+				);
+			return args.includes("--property=LoadState")
+				? "loaded\n"
+				: args.includes("--property=ActiveState")
+					? "inactive\n"
+					: "";
+		});
+		await detachCloudCodingGuestSession(g.workerId, f.ports);
+		// A command started between the first stop and the removal stops with the second.
+		expect(f.system.mock.calls).toEqual([...stopped, ["/usr/bin/sync", []], ...stopped]);
+		expect(removedBeforeSecondStop).toBe(true);
 		await expect(lstat(f.runtimeRoot)).rejects.toMatchObject({ code: "ENOENT" });
 		await expect(lstat(join(f.userdbRoot, "200000.user"))).rejects.toMatchObject({ code: "ENOENT" });
 	});
@@ -127,6 +142,7 @@ describe("detaching a session inside its member's machine", () => {
 		expect(f.system.mock.calls.map(([executable, args]) => [executable, args[0]])).toEqual([
 			["/usr/bin/systemctl", "show"],
 			["/usr/bin/sync", undefined],
+			["/usr/bin/systemctl", "show"],
 		]);
 	});
 	it("refuses to call a slice that did not stop detached, and keeps its state", async () => {

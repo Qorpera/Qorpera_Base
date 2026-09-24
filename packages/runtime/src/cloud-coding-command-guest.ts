@@ -412,6 +412,9 @@ export async function runCodingGuestCommand(
 				"--property=CapabilityBoundingSet=",
 				"--property=AmbientCapabilities=",
 				"--property=RestrictNamespaces=yes",
+				// Sessions share the machine's network (loopback included); System V
+				// and POSIX IPC stay the session's own.
+				"--property=PrivateIPC=yes",
 				// Only this session under the machine's guest roots, also against
 				// sessions attached while the command runs.
 				`--property=TemporaryFileSystem=${CLOUD_CODING_GUEST_ROOTS.data} ${CLOUD_CODING_GUEST_ROOTS.custody}`,

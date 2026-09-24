@@ -189,7 +189,7 @@ end $$;
 --    sleep and deleted; the deletion proof releases its capacity; the next turn gets a new machine.
 do $$
 declare v_worker public.qorpera_runtime_workers := pg_temp.worker_row('fix-send'); v_claim jsonb; v_old uuid := pg_temp.vm();
-	v_binding text := current_setting('qorpera_test.coding_binding'); v_release jsonb; v_plan jsonb; v_next jsonb; v_run jsonb;
+	v_binding text := current_setting('qorpera_test.coding_binding'); v_release jsonb; v_plan jsonb; v_next jsonb; v_run jsonb; v_steps bigint;
 begin
 	perform public.qorpera_configure_coding_vm_policy('30000000-0000-4000-8000-000000000020','exec-test',
 		(v_binding::jsonb - array['schema','machineId','companyId','environmentId','memberUserId']) || jsonb_build_object('imageFingerprint',repeat('e',64)));
@@ -204,13 +204,26 @@ begin
 	perform pg_temp.wake_assert(v_plan ->> 'reason' = 'MACHINE_RETIRING' and (pg_temp.machine(v_old)).retire_requested_at is not null
 		and pg_temp.run(v_worker.id,(v_claim ->> 'leaseToken')::uuid,v_binding) ->> 'reason' = 'MACHINE_RETIRING',
 		'A new turn is not started on the superseded machine');
+	-- The turn before may have ended while waiting: this turn's wait still gets its own step.
+	update public.qorpera_coding_sessions set last_step = 'Waiting for a coding machine' where worker_id = v_worker.id;
+	v_steps := pg_temp.events('fix-send','step');
 	perform public.qorpera_defer_coding_session(v_worker.id,(v_claim ->> 'leaseToken')::uuid,'MACHINE_RETIRING');
+	perform pg_temp.wake_assert(pg_temp.events('fix-send','step') = v_steps + 1,'Every turn that waits shows its wait once');
 	begin perform public.qorpera_release_coding_machine(v_old,'exec-test',v_binding,repeat('c',64));
 		raise exception 'Capacity released without a deletion'; exception when insufficient_privilege then null; end;
 	perform pg_temp.custody(v_old,v_binding,'stop');
 	perform public.qorpera_suspend_coding_machine(v_old,'exec-test',v_binding,repeat('c',64));
 	perform pg_temp.wake_assert(pg_temp.custody(v_old,v_binding,'delete') ->> 'intent' = 'delete' and (pg_temp.machine(v_old)).removing_at is not null
 		and pg_temp.listed(v_old) ->> 'removing' = 'true','Delete custody is granted for the idle, asleep machine and cannot be taken back');
+	-- Had no turn planned (so nothing marked it retiring), the policy going back does not stop the removal.
+	update public.qorpera_coding_machines set retire_requested_at = null where id = v_old;
+	perform public.qorpera_configure_coding_vm_policy('30000000-0000-4000-8000-000000000020','exec-test',
+		v_binding::jsonb - array['schema','machineId','companyId','environmentId','memberUserId']);
+	perform pg_temp.wake_assert(pg_temp.custody(v_old,v_binding,'delete') ->> 'intent' = 'delete'
+		and pg_temp.listed(v_old) ->> 'removeDue' = 'true','A removal once begun continues after the policy goes back');
+	perform public.qorpera_configure_coding_vm_policy('30000000-0000-4000-8000-000000000020','exec-test',
+		(v_binding::jsonb - array['schema','machineId','companyId','environmentId','memberUserId']) || jsonb_build_object('imageFingerprint',repeat('e',64)));
+	update public.qorpera_coding_machines set retire_requested_at = clock_timestamp() where id = v_old;
 	v_release := public.qorpera_release_coding_machine(v_old,'exec-test',v_binding,repeat('c',64));
 	perform pg_temp.wake_assert(v_release ->> 'state' = 'released' and v_release ->> 'machineId' = v_old::text
 		and (select released_at from public.qorpera_runtime_machine_allocations where id = v_old) is not null
@@ -229,6 +242,16 @@ begin
 	perform pg_temp.wake_assert(v_plan ->> 'state' = 'planned' and v_plan ->> 'machineId' <> v_old::text
 		and v_plan #>> '{binding,imageFingerprint}' = repeat('e',64) and (pg_temp.machine((v_plan ->> 'machineId')::uuid)).instance_sha256 is null,
 		'After the removal the member gets a new machine on the new policy');
+	-- A plan never admitted follows another policy change; a turn holding the old plan waits and plans again.
+	perform public.qorpera_configure_coding_vm_policy('30000000-0000-4000-8000-000000000020','exec-test',
+		(v_plan -> 'binding') - array['schema','machineId','companyId','environmentId','memberUserId'] || jsonb_build_object('bootstrapSha256',repeat('f',64)));
+	perform pg_temp.wake_assert(pg_temp.plan(v_worker.id,(v_claim ->> 'leaseToken')::uuid) #>> '{binding,bootstrapSha256}' = repeat('f',64)
+		and pg_temp.run(v_worker.id,(v_claim ->> 'leaseToken')::uuid,(v_plan -> 'binding')::text) ->> 'reason' = 'MACHINE_PLAN_CHANGED'
+		and (pg_temp.machine((v_plan ->> 'machineId')::uuid)).instance_sha256 is null,
+		'A turn whose plan was replaced before admission waits instead of failing');
+	perform public.qorpera_configure_coding_vm_policy('30000000-0000-4000-8000-000000000020','exec-test',
+		(v_plan -> 'binding') - array['schema','machineId','companyId','environmentId','memberUserId']);
+	v_plan := pg_temp.plan(v_worker.id,(v_claim ->> 'leaseToken')::uuid);
 	perform pg_temp.wake_assert(public.qorpera_release_coding_machine((v_plan ->> 'machineId')::uuid,'exec-test',(v_plan -> 'binding')::text,repeat('c',64)) ->> 'state' = 'released'
 		and (pg_temp.machine((v_plan ->> 'machineId')::uuid)).removed_at is not null,'A plan never admitted closes at once');
 	v_next := pg_temp.plan(v_worker.id,(v_claim ->> 'leaseToken')::uuid);

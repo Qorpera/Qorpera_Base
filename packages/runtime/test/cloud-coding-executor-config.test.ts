@@ -134,9 +134,14 @@ describe("coding executor service configuration", () => {
 		expect(() =>
 			parseCodingExecutorConfiguration({ ...config, guest: { ...config.guest, workspacePath: "/tmp/repo" } }),
 		).toThrow("CONFIG_INVALID");
-		expect(() =>
-			parseCodingExecutorConfiguration({ ...config, guest: { ...config.guest, uid: 200000, gid: 200000 } }),
-		).toThrow("RESOURCE_POLICY_INVALID");
+		// The image's coding user and group stay below the uids SQL gives sessions.
+		for (const ids of [
+			{ uid: 200000, gid: 200000 },
+			{ uid: 1100, gid: 200000 },
+		])
+			expect(() => parseCodingExecutorConfiguration({ ...config, guest: { ...config.guest, ...ids } })).toThrow(
+				"RESOURCE_POLICY_INVALID",
+			);
 		expect(() =>
 			parseCodingExecutorConfiguration({
 				...config,

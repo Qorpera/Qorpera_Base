@@ -14,7 +14,7 @@ const SHA = /^[0-9a-f]{64}$/;
 const NAME = /^[a-z][a-z0-9-]{0,62}$/;
 
 /** The binding of a kept per-session VM from before per-member machines
- * (bundle v93 and earlier): one VM per session, with the session's NAS mounts
+ * (before bundle v101): one VM per session, with the session's NAS mounts
  * as fixed devices. New turns never create one; the executor only retires them
  * (lxdLegacyCodingMachineJournalPlan). */
 export interface LxdCodingVmBinding {

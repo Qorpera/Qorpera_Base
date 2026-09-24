@@ -169,13 +169,6 @@ export interface LxdOperationReference {
 
 export type LxdOperationState = "pending" | "succeeded" | "failed";
 
-/** Submission and observation are separate so an office provider can persist
- * the operation ID before polling. A rejected submission has an UNKNOWN
- * physical outcome; neither a timeout nor a 404 authorizes a retry/release.
- * Observation reports LXD's own 404 as LXD_OPERATION_UNKNOWN (LXD keeps a
- * finished operation only briefly): still no outcome. Only a caller whose
- * effect is idempotent may act on it, and then only from the instance's own
- * physical state (a coding VM's forced stop). */
 /** A coding machine's session folders are its only devices that change after
  * creation (lxd-client replaceInstanceDevices). */
 export interface LxdInstanceDeviceClient {
@@ -187,6 +180,13 @@ export interface LxdInstanceDeviceClient {
 	): Promise<void>;
 }
 
+/** Submission and observation are separate so an office provider can persist
+ * the operation ID before polling. A rejected submission has an UNKNOWN
+ * physical outcome; neither a timeout nor a 404 authorizes a retry/release.
+ * Observation reports LXD's own 404 as LXD_OPERATION_UNKNOWN (LXD keeps a
+ * finished operation only briefly): still no outcome. Only a caller whose
+ * effect is idempotent may act on it, and then only from the instance's own
+ * physical state (a coding VM's forced stop). */
 export interface LxdTrackedClient extends LxdInspectableClient {
 	submitInstanceOperation(
 		project: string,
@@ -1457,10 +1457,13 @@ export class LxdUnixClient
 	}
 
 	/** Replaces the instance's own devices and nothing else: the rest of its
-	 * configuration is written back exactly as read, under its ETag, so a change
-	 * made in between fails instead of being overwritten. On a running VM LXD
-	 * hot-plugs and hot-unplugs the difference. Any failure leaves the outcome to
-	 * be observed again from the instance. */
+	 * configuration is written back exactly as read, under that read's ETag, so
+	 * a change between this method's read and its write fails instead of being
+	 * overwritten. The caller builds `devices` from an earlier read: callers
+	 * must serialize their device changes (the coding host holds the machine's
+	 * lifecycle lock). On a running VM LXD hot-plugs and hot-unplugs the
+	 * difference. Any failure leaves the outcome to be observed again from the
+	 * instance. */
 	async replaceInstanceDevices(
 		project: string,
 		name: string,

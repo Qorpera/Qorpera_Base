@@ -93,7 +93,7 @@ export function parseCodingExecutorConfiguration(value: unknown): Config {
 	const parsedGuest = parseCodingGuestConfiguration({ schema: "qorpera.coding-command-guest/v3", workerId: id, vmId: id, bootId: id,
 		uid: guest.uid, gid: guest.gid, workspacePath: layout.workspacePath, homePath: layout.homePath, cachePath: layout.cachePath,
 		outputRoot: layout.outputRoot, resourceProfile: guest.resourceProfile });
-	if (parsedGuest.uid >= 200000 || parsedGuest.resourceProfile.memoryBytes > Number(vmPolicy.memoryBytes) ||
+	if (parsedGuest.uid >= 200000 || parsedGuest.gid >= 200000 || parsedGuest.resourceProfile.memoryBytes > Number(vmPolicy.memoryBytes) ||
 		parsedGuest.resourceProfile.cpuQuotaPercent > Number(vmPolicy.cpus) * 100)
 		throw new Error("CODING_EXECUTOR_RESOURCE_POLICY_INVALID");
 	return {
@@ -168,37 +168,45 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 	let executor: CloudCodingExecutor | undefined;
 	try {
 		await commands.start(stop.signal);
-		executor = new CloudCodingExecutor({
+		const running = new CloudCodingExecutor({
 			control,
 			host,
 			owner: config.owner,
 			report: (stage, error) => console.error(JSON.stringify({ event: "coding-turn-error", stage, code: errorCode(error) })),
 		});
+		executor = running;
 		// Every claimable turn runs at once; the member machines and the node's
-		// capacity are the only bound. Housekeeping (sleep, removal, release)
-		// runs at start and every 30 s; each failed step is logged and recorded.
-		let housekeepAt = 0;
-		while (!stop.signal.aborted) {
-			let claimed = false;
-			try {
-				const result = await executor.claim(stop.signal);
-				claimed = result.state === "claimed";
-				if (result.state === "claimed")
-					void result.turn.then((status) => console.log(JSON.stringify({ event: "coding-turn", status })));
-			} catch {
-				if (!stop.signal.aborted) console.error("CODING_EXECUTOR_TICK_UNCONFIRMED");
-			}
-			if (Date.now() >= housekeepAt && !stop.signal.aborted) {
-				housekeepAt = Date.now() + 30_000;
+		// capacity are the only bound.
+		const claiming = (async () => {
+			while (!stop.signal.aborted) {
+				let claimed = false;
 				try {
-					for (const outcome of await executor.housekeep(stop.signal))
-						(outcome.state === "failed" ? console.error : console.log)(JSON.stringify({ event: "coding-machine", ...outcome }));
+					const result = await running.claim(stop.signal);
+					claimed = result.state === "claimed";
+					if (result.state === "claimed")
+						void result.turn.then((status) => console.log(JSON.stringify({ event: "coding-turn", status })));
+				} catch {
+					if (!stop.signal.aborted) console.error("CODING_EXECUTOR_TICK_UNCONFIRMED");
+				}
+				if (!claimed) await setTimeout(2000, undefined, { signal: stop.signal }).catch(() => undefined);
+			}
+		})();
+		// Housekeeping (sleep, removal, release) runs beside claiming, at start and
+		// every 30 s after a pass: a long pass never holds up a turn. Every step is
+		// logged; a failed one as coding-machine-error, and recorded on the machine.
+		const housekeeping = (async () => {
+			while (!stop.signal.aborted) {
+				try {
+					for (const outcome of await running.housekeep(stop.signal))
+						if (outcome.state === "failed") console.error(JSON.stringify({ event: "coding-machine-error", ...outcome }));
+						else console.log(JSON.stringify({ event: "coding-machine", ...outcome }));
 				} catch (error) {
 					if (!stop.signal.aborted) console.error(JSON.stringify({ event: "coding-machine-error", code: errorCode(error) }));
 				}
+				await setTimeout(30_000, undefined, { signal: stop.signal }).catch(() => undefined);
 			}
-			if (!claimed) await setTimeout(2000, undefined, { signal: stop.signal }).catch(() => undefined);
-		}
+		})();
+		await Promise.all([claiming, housekeeping]);
 	} finally {
 		stop.abort();
 		await executor?.drain();

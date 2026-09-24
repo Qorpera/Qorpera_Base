@@ -172,15 +172,22 @@ export async function detachCloudCodingGuestSession(
 	} catch (error) {
 		if (!missing(error)) throw error;
 	}
-	const load = (await call("/usr/bin/systemctl", ["show", layout.slice, "--property=LoadState", "--value"])).trim();
-	if (load === "loaded") {
-		await call("/usr/bin/systemctl", ["stop", layout.slice]);
-		const state = (
-			await call("/usr/bin/systemctl", ["show", layout.slice, "--property=ActiveState", "--value"])
-		).trim();
-		if (state !== "inactive" && state !== "failed") throw new Error("CODING_GUEST_SESSION_STOP_UNCONFIRMED");
-	} else if (load !== "not-found") throw new Error("CODING_GUEST_SESSION_STOP_UNCONFIRMED");
+	const quiesce = async () => {
+		const load = (await call("/usr/bin/systemctl", ["show", layout.slice, "--property=LoadState", "--value"])).trim();
+		if (load === "loaded") {
+			await call("/usr/bin/systemctl", ["stop", layout.slice]);
+			const state = (
+				await call("/usr/bin/systemctl", ["show", layout.slice, "--property=ActiveState", "--value"])
+			).trim();
+			if (state !== "inactive" && state !== "failed") throw new Error("CODING_GUEST_SESSION_STOP_UNCONFIRMED");
+		} else if (load !== "not-found") throw new Error("CODING_GUEST_SESSION_STOP_UNCONFIRMED");
+	};
+	await quiesce();
 	await call("/usr/bin/sync", []);
 	if (uid !== undefined) await removeCodingSessionUser(uid, ports);
 	await rm(runtimeRoot, { recursive: true, force: true });
+	// Without its configuration no command of the session can start any more;
+	// one that started between the first stop and the removal (so the watchdog,
+	// which lists sessions by that folder, would never see it) stops now.
+	await quiesce();
 }

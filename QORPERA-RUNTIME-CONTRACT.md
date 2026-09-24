@@ -898,8 +898,9 @@ Worker species have separate lifecycle contracts:
 - **Coding worker:** owns an isolated repository workspace (its own NAS
   folders and guest user), worker identity, and branch, and runs on its
   member's coding machine (amended 2026-09-24: one machine per member and
-  environment carries all that member's sessions; it sleeps when idle and is
-  removed later, releasing its node capacity only on a proven delete).
+  environment carries all that member's sessions; asleep when idle, it holds
+  no node capacity, and it is removed later, its allocation released only on a
+  proven delete).
   Follow-up MUST address the same worker and branch; it may run on a later
   machine of the same member. If the coding
   provider lacks a completion callback, Qorpera uses an explicit durable
@@ -1444,7 +1445,7 @@ Company File, rather than chat or a machine disk, is what that brain operates.
 | 6 | Agent memory (amended 2026-09-22, company first 2026-09-24) | An agent's profile, monthly log, and notes are its own Company File objects in the Grok Bot layout; `update_memory` write/forget and `recall_memory` work through the versioned mutation gateway with dedupe, exact-text forget, and head-conflict retry; every turn composes the profile and the recent log slice through the trusted read lane; a worker of the same agent recalls but writes only with write access; notebooks are company-owned and there is no member memory; a Grok Bot export imports unchanged. |
 | 7 | Connectors | Install, authenticate out of band, call through scoped RPC, and apply the connector-to-browser escalation path. |
 | 8 | Scheduler and listeners | Company File intent plus one compiled trigger wakes the same agent; deterministic deduplication, timezone, expiry, quiet policy, auth suspension, and projection consistency pass. |
-| 9 | Isolated coding VMs and PRs | Worker, repository workspace, branch, follow-up identity, publication, and completion listener retain continuity; a member's sessions share one coding machine that sleeps when idle and is removed later, and its node capacity is released only on a proven delete (amended 2026-09-24). |
+| 9 | Isolated coding VMs and PRs | Worker, repository workspace, branch, follow-up identity, publication, and completion listener retain continuity; a member's sessions share one coding machine that holds no node capacity while asleep and is removed later, its allocation released only on a proven delete (amended 2026-09-24). |
 | 10 | Constitution and hire overlays | Compile a short constitution over the proven loop; add a name and job spec last, without creating a second brain. |
 | Post-build (deferred) | Azure backup/overflow compute | After Orders 0–10 are built, separately approve and prove the optional capacity integration and its placement, failover, isolation, recovery, release, and usage records before enabling it for users. This is not a gate on the preceding orders or initial launch. |
 

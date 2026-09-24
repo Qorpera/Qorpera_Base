@@ -191,6 +191,8 @@ describe("coding VM command supervisor", () => {
 		expect(command[1]).toContain("--property=RemainAfterExit=yes");
 		expect(command[1]).toContain("--property=ExitType=cgroup");
 		expect(command[1]).toContain("--property=ProtectProc=invisible");
+		// Another session's shared memory and message queues stay out of reach.
+		expect(command[1]).toContain("--property=PrivateIPC=yes");
 		// The helper's own refusal line stays in the guest's journal.
 		expect(command[1]).toContain("--property=StandardError=journal");
 		expect(command[1]).not.toContain("--property=StandardError=null");

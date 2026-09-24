@@ -23,9 +23,9 @@ LoadCredential=qorpera-coding-broker-executor:/etc/qorpera/coding-broker-executo
 # LoadCredential=qorpera-coding-repository-NAME:<file> in a reviewed drop-in.
 Restart=on-failure
 RestartSec=5s
-# A SIGTERM mid-turn still runs the VM's cleanup stop (45 s budget,
-# CLEANUP_STOP_BUDGET_MS); a kill between its dispatch and acceptance would
-# leave that stop recovery-required. Keep this well above the budget.
+# A SIGTERM mid-turn still detaches each running session from its member's
+# machine (45 s budget, CLEANUP_STOP_BUDGET_MS); a kill during a machine's
+# lifecycle step would leave it recovery-required. Keep this well above the budget.
 TimeoutStopSec=75s
 KillMode=control-group
 NoNewPrivileges=yes

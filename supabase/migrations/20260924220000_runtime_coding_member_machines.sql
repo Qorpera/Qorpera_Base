@@ -301,8 +301,11 @@ begin
 	select * into v_machine from public.qorpera_coding_machines where id = v_machine_id for update;
 	if v_machine.id is null or v_machine.kind <> 'member' or v_machine.profile_id <> v_worker.profile_id
 		or v_machine.environment_id <> v_worker.environment_id or v_machine.member_user_id <> v_worker.owner_user_id
-		or v_machine.owner <> v_session.lease_owner or v_machine.machine_id_sha256 <> p_machine_id_sha256
-		or v_machine.binding <> v_binding or coalesce(v_machine.instance_sha256, v_digest) <> v_digest then
+		or v_machine.owner <> v_session.lease_owner or v_machine.machine_id_sha256 <> p_machine_id_sha256 then
+		raise exception 'Coding machine scope differs' using errcode = '42501'; end if;
+	if v_machine.binding <> v_binding or coalesce(v_machine.instance_sha256, v_digest) <> v_digest then
+		-- Never admitted, its plan followed a policy change after this turn planned: the turn plans again.
+		if v_machine.instance_sha256 is null then return '{"state":"refused","reason":"MACHINE_PLAN_CHANGED"}'::jsonb; end if;
 		raise exception 'Coding machine scope differs' using errcode = '42501'; end if;
 	if v_machine.removing_at is not null then return '{"state":"refused","reason":"MACHINE_RETIRING"}'::jsonb; end if;
 	-- A turn not yet begun waits for a machine whose policy moved on; a turn already running there finishes there.
@@ -411,9 +414,10 @@ begin
 	else
 		if v_demand.reserved_at is not null and v_demand.suspended_at is null then
 			return '{"state":"refused","reason":"MACHINE_AWAKE"}'::jsonb; end if;
-		-- A current member machine is removed only after the environment's removal delay asleep.
+		-- A current member machine is removed only after the environment's removal delay asleep. A removal
+		-- already granted is not judged again: the policy going back, or a longer delay, does not undo it.
 		select * into v_executor from public.qorpera_coding_executors where environment_id = v_machine.environment_id and owner = v_machine.owner;
-		if v_machine.kind = 'member' and v_machine.retire_requested_at is null and v_executor.vm_policy is not null
+		if v_machine.kind = 'member' and v_machine.removing_at is null and v_machine.retire_requested_at is null and v_executor.vm_policy is not null
 			and v_machine.binding - array['schema','machineId','companyId','environmentId','memberUserId'] = v_executor.vm_policy
 			and coalesce(v_demand.suspended_at, v_machine.last_used_at) > clock_timestamp() - make_interval(secs => v_executor.machine_remove_after_seconds) then
 			return '{"state":"refused","reason":"MACHINE_NOT_DUE"}'::jsonb; end if;
@@ -567,7 +571,8 @@ begin
 	select * into strict v_worker from public.qorpera_runtime_workers where id = v_session.worker_id;
 	if v_session.phase <> 'preparing' or v_worker.occurrence_id is not null then
 		raise exception 'Only a turn that has not begun can wait for its machine' using errcode = '55000'; end if;
-	v_waiting := v_session.last_step is not distinct from v_step;
+	-- Set by this turn's first deferral; the queue, an answer and the turn's begin clear it.
+	v_waiting := v_session.claim_after is not null;
 	update public.qorpera_coding_sessions set phase = case when v_worker.sequence = 1 then 'queued' else 'input_ready' end,
 		lease_owner = null, lease_token = null, lease_until = null, claim_after = clock_timestamp() + interval '15 seconds',
 		last_step = v_step, updated_at = clock_timestamp()

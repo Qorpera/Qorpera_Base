@@ -326,7 +326,9 @@ export async function runCodingGuestWatchdog(
 		}
 		const failures: unknown[] = [];
 		listed = true;
-		for (const workerId of names.filter((name) => UUID.test(name))) {
+		// All sessions at once: many leases expiring together (an executor gone)
+		// must not queue their stops behind one another.
+		const judge = async (workerId: string) => {
 			const session = { ...ports, root: ports.sessionsRoot ? join(root, workerId) : undefined };
 			try {
 				let c: CodingGuestLeaseConfiguration;
@@ -337,7 +339,7 @@ export async function runCodingGuestWatchdog(
 					)) as CodingGuestLeaseConfiguration;
 				} catch (error) {
 					// A session still being prepared has no configuration yet, and no commands.
-					if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+					if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
 					throw error;
 				}
 				if (
@@ -351,7 +353,8 @@ export async function runCodingGuestWatchdog(
 				failures.push(error);
 				await stop(session, workerId).catch((stopError) => failures.push(stopError));
 			}
-		}
+		};
+		await Promise.all(names.filter((name) => UUID.test(name)).map(judge));
 		if (failures.length) throw failures[0];
 	} catch (error) {
 		// Each failed session was stopped on its own; only an unlisted machine stops every session.

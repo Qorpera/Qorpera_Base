@@ -33,7 +33,8 @@ export class CodingMachineUnavailable extends Error {
 /** One housekeeping step on one machine, for the executor's log. */
 export interface CodingHousekeepingOutcome {
 	machineId: string;
-	step: "sleep" | "delete";
+	/** release: the machine was deleted but its capacity release failed. */
+	step: "sleep" | "delete" | "release";
 	state: "done" | "not-now" | "failed";
 	code?: string;
 }
