@@ -175,7 +175,7 @@ label > input, label > select { font-weight: 400; }
 	/* The trailer's rail: 15px insets, a darker edge line than the other dividers. */
 	padding: 0 15px 11px; background: var(--rail); border-right: 1px solid var(--rail-line);
 	/* One figure size and one lift; every card measure below derives from them. */
-	--figure: 82px; --lift: 27px;
+	--figure: 82px; --lift: 37px;
 	font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
 }
 .rail[hidden] { display: none; }
@@ -209,8 +209,9 @@ label > input, label > select { font-weight: 400; }
 .rail-empty { padding: 14px 8px; color: var(--rail-small); font-size: 12.5px; }
 
 /* The Co-Founder occupies its own tier above the rest of the staff. Geometry
- * is the trailer's card at 1x: an 82px figure standing 27px proud of a low
- * card, a 13px name with no line under it, a soft shadow under the figure. */
+ * is the trailer's card at 1x, its top lowered 10px: an 82px figure standing
+ * 37px proud of a low card, a 13px name with no line under it, a soft shadow
+ * under the figure. The figure and the name keep their place in the rail. */
 .rail-cofounder { padding: calc(var(--lift) + 16px) 9px 18.5px; }
 .cofounder-home {
 	position: relative; display: flex; flex-direction: column; align-items: center; gap: 1px;
