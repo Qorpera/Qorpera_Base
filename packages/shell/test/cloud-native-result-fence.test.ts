@@ -235,7 +235,7 @@ it("bounds frame allocation before accepting the body", async () => {
 });
 
 it("fences one request of any length: 1,200 outputs, past the old 8 MiB frame", async () => {
-	// Runtime v102: no count of outputs per model request (the pinned Codex refused 128).
+	// Runtime v104: no count of outputs per model request (the pinned Codex refused 128).
 	const f = await fixture();
 	const outputs = Array.from({ length: 1_200 }, (_, index) => ({
 		kind: "function_call_output",

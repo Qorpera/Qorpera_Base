@@ -363,7 +363,7 @@ describe("cloud-owned native tool boundary", () => {
 		const { boundary } = fixture();
 		const input = { kind: "function_call_output" as const, callId: "native", output: "data" };
 		await expect(boundary.fenceNativeResults([input, input])).rejects.toThrow("Invalid native result identity");
-		// Runtime v102: no count of outputs per model request. One request past the
+		// Runtime v104: no count of outputs per model request. One request past the
 		// retention window is fenced whole; its oldest outputs are then forgotten.
 		const flood = Array.from({ length: CLOUD_NATIVE_RESULT_RETENTION_LIMIT + 1 }, (_, index) => ({
 			...input,

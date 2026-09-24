@@ -36,7 +36,7 @@ const MAX_SOURCE_BYTES = 1024 * 1024;
 export const CLOUD_NATIVE_TOOL_CATALOG_BYTES = 1024 * 1024;
 /** No run is capped by a number of tool calls (founder, 2026-09-22 and
  * 2026-09-24), and no model request by its number of tool outputs (runtime
- * v102; the pinned Codex refused 128). Result bodies are kept for exact replay
+ * v104; the pinned Codex refused 128). Result bodies are kept for exact replay
  * only in a rolling window: past it the oldest are forgotten, never a denial or
  * a failure. A forgotten output, even within one request, is at worst shown to
  * the model as unconfirmed; the 64 MiB fence frame bounds a request's memory. */

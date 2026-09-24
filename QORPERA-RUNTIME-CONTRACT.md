@@ -524,7 +524,7 @@ subscriptions, which self-limit.
 > its causal chain (it moves to the end of the chain, like a coworker message).
 > An agent's own write still never wakes its own watch routine.
 >
-> The last count went with bundle v102 and its Codex rebuild: the pinned Codex
+> The last count went with bundle v104 and its Codex rebuild: the pinned Codex
 > build refused a model request carrying 128 or more tool outputs or over 1 MiB
 > of result text, and the kernel refused a context view with more than 128
 > outputs or over 128 KiB. A request now carries any number of outputs within a
