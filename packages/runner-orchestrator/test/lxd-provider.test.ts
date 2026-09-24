@@ -2004,6 +2004,39 @@ describe("LXD cloud runner provider", () => {
 		},
 	);
 
+	it.each([
+		["retired", "added"],
+		["retired", "removed"],
+		["retired", "moved"],
+		["live", "added"],
+	])("keeps a %s journal %s-coding-route readable only when retired", async (scope, change) => {
+		const settings = governedConfig(join(await root(), "state"));
+		const gateway = { origin: "https://coding.example.test:8789", token: "c".repeat(43) };
+		if (change !== "added") settings.nativeCompanyRuntime!.codingCommand = gateway;
+		const lxd = new FakeLxd(),
+			guest = new FakeGuest();
+		const backend = new LxdCloudRunnerProviderBackend(settings, lxd, guest, fetchProvisioner([]));
+		const runner = await backend.acquire(runId, work(), new AbortController().signal);
+		if (scope === "retired") {
+			await backend.stop(runner, "idle");
+			await backend.reconcile();
+		}
+		const path = join(settings.stateRoot, runId, "journal.json");
+		const before = await readFile(path, "utf-8");
+		const later = governedConfig(settings.stateRoot);
+		if (change === "added") later.nativeCompanyRuntime!.codingCommand = gateway;
+		if (change === "moved")
+			later.nativeCompanyRuntime!.codingCommand = {
+				origin: "https://coding-2.example.test:8789",
+				token: "d".repeat(43),
+			};
+		const restarted = new LxdCloudRunnerProviderBackend(later, lxd, guest, fetchProvisioner([]));
+		// A node turning coding on (or off, or moving its gateway) must not strand the journals it kept.
+		if (scope === "retired") await expect(restarted.reconcile()).resolves.toBeUndefined();
+		else await expect(restarted.reconcile()).rejects.toThrow("journal");
+		expect(await readFile(path, "utf-8")).toBe(before);
+	});
+
 	it.each(["environmentId", "url", "tokenSha256", "unknown"])(
 		"refuses altered journal office authority (%s)",
 		async (kind) => {
