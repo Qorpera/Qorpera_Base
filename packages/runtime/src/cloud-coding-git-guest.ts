@@ -78,11 +78,14 @@ async function assertCommandQuiescence(ports: CodingGitGuestPorts): Promise<void
 		"--type=service",
 		"qorpera-coding-*.service",
 	]);
+	// The guest's own lease watchdog shares the prefix and is always loaded
+	// behind its timer; it is not a workspace command.
 	const units = output.trim()
 		? output
 				.trim()
 				.split("\n")
 				.map((line) => line.trim().split(/\s+/)[0])
+				.filter((unit) => unit !== "qorpera-coding-watchdog.service")
 		: [];
 	if (units.length > 1024 || new Set(units).size !== units.length)
 		throw new Error("CODING_GIT_COMMAND_STATE_UNCONFIRMED");
