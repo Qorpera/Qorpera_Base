@@ -157,7 +157,10 @@ export class ConnectionsView {
 		this.#usageError = undefined;
 		// A read the member did not ask for ends an "Updated" still showing.
 		clearTimeout(this.#updatedClock);
-		this.#updated = false;
+		if (this.#updated) {
+			this.#updated = false;
+			this.#draw();
+		}
 		try {
 			// Show existing account identities while their isolated host refreshes
 			// allowances. No sign-in or model message is started by this read.

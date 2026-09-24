@@ -176,7 +176,15 @@ describe("member model account settings", () => {
 		expect(refresh().textContent).toBe("Updated");
 		await vi.advanceTimersByTimeAsync(1);
 		expect(refresh().textContent).toBe("Refresh");
-		// A read the member did not ask for ends "Updated" and is not credited to them.
+		// A read the member did not ask for ends "Updated" at once and is not credited to them.
+		refresh().click();
+		await settle();
+		expect(refresh().textContent).toBe("Updated");
+		window.dispatchEvent(new Event("focus"));
+		expect(refresh().textContent).toBe("Refreshing…");
+		await settle();
+		expect(refresh().textContent).toBe("Refresh");
+		expect(refreshAccountMetadata.mock.calls.at(-1)![1]).toBe(false);
 		refresh().click();
 		await settle();
 		expect(refresh().textContent).toBe("Updated");
