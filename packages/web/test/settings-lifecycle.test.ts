@@ -191,15 +191,24 @@ describe("settings session lifecycle", () => {
 		await draw();
 		expect([...f.root.querySelectorAll('[role="tab"]')].map((tab) => tab.textContent)).toEqual([
 			"General",
-			"Plan & usage",
-			"Friends",
 			"Company",
+			"Friends",
+			"Plan & usage",
 			"Connections",
 		]);
 		for (const tab of f.root.querySelectorAll('[role="tab"]')) expect(tab.querySelector("svg.icon")).not.toBeNull();
 		expect(f.root.querySelector<HTMLElement>(".frame")!.inert).toBe(true);
 		click(f.root, "#settings-tab-company");
 		expect(f.root.querySelector('.settings-dialog a[href$="/file"]')).not.toBeNull();
+		// No company execution controls, and no Organization or Approvals pages to link to.
+		expect(
+			f.root.querySelector(
+				'.settings-dialog :is(.company-execution, .settings-execution, a[href$="/organization"], a[href$="/approvals"])',
+			),
+		).toBeNull();
+		expect(f.root.querySelector(".settings-dialog")?.textContent).not.toMatch(
+			/Company execution|Organization|Approvals/,
+		);
 		expect(f.root.querySelector('.account-popover a[href$="/file"]')).toBeNull();
 		click(f.root, ".settings-close");
 		expect(f.root.querySelector(".settings-dialog")).toBeNull();
@@ -213,6 +222,12 @@ describe("settings session lifecycle", () => {
 		open(f.root);
 		await draw();
 		const search = f.root.querySelector<HTMLInputElement>(".settings-nav input")!;
+		search.value = "time zone";
+		search.dispatchEvent(new Event("input"));
+		const shownTabs = [...f.root.querySelectorAll<HTMLElement>(".settings-nav [role=tab]")].filter(
+			(tab) => !tab.hidden,
+		);
+		expect(shownTabs.map((tab) => tab.id)).toEqual(["settings-tab-general"]);
 		search.value = "team";
 		search.dispatchEvent(new Event("input"));
 		expect(f.root.querySelector("#settings-tab-company")?.getAttribute("aria-selected")).toBe("true");
@@ -232,7 +247,19 @@ describe("settings session lifecycle", () => {
 		f.root
 			.querySelector("#settings-tab-general")!
 			.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
-		expect(document.activeElement).toBe(f.root.querySelector("#settings-tab-plan"));
+		expect(document.activeElement).toBe(f.root.querySelector("#settings-tab-company"));
+	});
+	it("selects the top matching tab when a search hides the open one", async () => {
+		const f = await setup();
+		open(f.root);
+		await draw();
+		const search = f.root.querySelector<HTMLInputElement>(".settings-nav input")!;
+		// Company lists the invitations it sent, Friends the ones waiting for this account.
+		search.value = "invitations";
+		search.dispatchEvent(new Event("input"));
+		const shown = [...f.root.querySelectorAll<HTMLElement>('[role="tab"]')].filter((tab) => !tab.hidden);
+		expect(shown.map((tab) => tab.id)).toEqual(["settings-tab-company", "settings-tab-friends"]);
+		expect(f.root.querySelector("#settings-tab-company")?.getAttribute("aria-selected")).toBe("true");
 	});
 	it("accepts a company invitation from the Friends tab and opens that company", async () => {
 		const fixtureState = fixture();
@@ -417,6 +444,35 @@ describe("settings session lifecycle", () => {
 		await draw();
 		expect(content().textContent).toContain("Choose a company to see its storage.");
 		expect(content().querySelector(".settings-usage:not(.settings-hours)")).toBeNull();
+	});
+	it("keeps focus in General when the account plan arrives", async () => {
+		const f = await setup(),
+			pending = deferred<HostedAccountEntitlement>();
+		vi.mocked(f.api.getAccountEntitlement).mockReturnValueOnce(pending.promise);
+		open(f.root);
+		await draw();
+		const language = f.root.querySelector<HTMLButtonElement>(".preference-picker-button")!;
+		language.focus();
+		pending.resolve({
+			planKey: "free",
+			billingMode: "fixture",
+			featureSet: "fixture",
+			storageAllocation: "fixture",
+			source: "fixture",
+		});
+		await draw();
+		expect(language.isConnected).toBe(true);
+		expect(document.activeElement).toBe(language);
+	});
+	it("shows an account failure in General", async () => {
+		const f = await setup(),
+			pending = deferred<HostedAccountEntitlement>();
+		vi.mocked(f.api.getAccountEntitlement).mockReturnValueOnce(pending.promise);
+		open(f.root);
+		await draw();
+		pending.reject(new Error("Account temporarily unavailable"));
+		await draw();
+		expect(f.root.querySelector(".settings-content")!.textContent).toContain("Account temporarily unavailable");
 	});
 	it("discards a late account response after closing settings or changing account", async () => {
 		const f = await setup(),

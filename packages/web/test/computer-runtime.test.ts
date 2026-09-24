@@ -6,7 +6,7 @@ import type {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ComputerPanel, ComputerPanels } from "../src/app/views/computer.ts";
 import { WebCompanyComputer } from "../src/cloud/computer.ts";
-import { DEFAULT_CLOUD_CONFIG, readCloudConfigOverride, writeCloudConfigOverride } from "../src/cloud/config.ts";
+import { DEFAULT_CLOUD_CONFIG, parseCloudConfig } from "../src/cloud/deployment-config.ts";
 import * as viewer from "../src/ui/computer-viewer.ts";
 import { deferred, fixture, id, profileA, settle, staff, userA, userB } from "./fixtures.ts";
 
@@ -1000,11 +1000,11 @@ describe("trusted viewer configuration", () => {
 		"wss://viewer.invalid/?ticket=secret",
 		"wss://viewer.invalid/#secret",
 	])("rejects %s", (officeViewerOrigin) => {
-		writeCloudConfigOverride({ ...DEFAULT_CLOUD_CONFIG, officeViewerOrigin });
-		expect(readCloudConfigOverride()).toBeUndefined();
+		expect(() => parseCloudConfig({ ...DEFAULT_CLOUD_CONFIG, officeViewerOrigin })).toThrow("exact secure origin");
 	});
 	it("preserves a configured secure origin", () => {
-		writeCloudConfigOverride({ ...DEFAULT_CLOUD_CONFIG, officeViewerOrigin: "wss://viewer.invalid/" });
-		expect(readCloudConfigOverride()?.officeViewerOrigin).toBe("wss://viewer.invalid");
+		expect(
+			parseCloudConfig({ ...DEFAULT_CLOUD_CONFIG, officeViewerOrigin: "wss://viewer.invalid/" }).officeViewerOrigin,
+		).toBe("wss://viewer.invalid");
 	});
 });

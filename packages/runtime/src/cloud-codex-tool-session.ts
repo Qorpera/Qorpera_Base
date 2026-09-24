@@ -42,15 +42,22 @@ export const CLOUD_CODEX_BOUNDARY_VERSION = "0.155.1";
 const CLIENT_NAME = "qorpera_cloud_boundary";
 const DIRECT_TOOLS_CAPABILITY = "qorpera.native-direct-tools/v1";
 const MESSAGE_COMPOSITION_CAPABILITY = "qorpera.native-message-composition/v1";
-const MAX_WIRE_BYTES = 16 * 1024 * 1024;
 const MAX_MESSAGE_BYTES = 1024 * 1024;
 const MAX_CAPTURE_MESSAGE_BYTES = 12 * 1024 * 1024;
-const MAX_CAPTURE_WIRE_BYTES = 256 * 1024 * 1024;
-// Protocol flood bound, not a turn cap: every tool call is one server request.
-const MAX_REQUESTS = 16_384;
-// A stalled provider or process is a fence, not a cap: with no wall clock on a
-// turn, silence this long ends the attempt so a run cannot sit for its whole deadline.
-const DEFAULT_IDLE_TIMEOUT_MS = 30 * 60_000;
+// No run is capped by its output, its number of tool calls or its silence
+// (founder, 2026-09-24): OpenAI, Anthropic and xAI publish no such caps. Single
+// messages stay bounded, and request ids, fence observations and message
+// compositions are tracked only in a rolling window of this size (the oldest
+// settled entries are forgotten).
+const TRACKED_REQUESTS = 16_384;
+
+/** Forgets the oldest settled entries past the window; open ones are kept. */
+function forgetSettled<V extends { finished: boolean }>(entries: Map<string, V>): void {
+	for (const [key, value] of entries) {
+		if (entries.size <= TRACKED_REQUESTS) return;
+		if (value.finished) entries.delete(key);
+	}
+}
 const MAX_PROMPT_BYTES = 1024 * 1024;
 const TOKEN_COUNTERS = [
 	"inputTokens",
@@ -234,8 +241,6 @@ class CodexBoundaryRpc {
 	#failure?: Error;
 	#sequence = 0;
 	#buffer = "";
-	#bytes = 0;
-	#serverRequests = 0;
 	#lastActivityAt = Date.now();
 
 	get lastActivityAt(): number {
@@ -249,6 +254,7 @@ class CodexBoundaryRpc {
 	#startingThread = false;
 	#startingTurn = false;
 	readonly #modelRequests = new Set<string>();
+	#modelRequestCount = 0;
 	/** Call ids whose fenced result closes the turn (a confirmed final public send). */
 	readonly #turnEndCallIds = new Set<string>();
 	#turnEndRequested = false;
@@ -273,10 +279,10 @@ class CodexBoundaryRpc {
 		child.on("close", () => {
 			if (!this.#closed) this.fail("Native boundary process ended unexpectedly", "transport_unavailable");
 		});
-		child.stderr.on("data", (chunk: Buffer) => this.#accountBytes(chunk.length));
+		// Diagnostics are never kept; draining them keeps the pipe from filling.
+		child.stderr.resume();
 		child.stdout.on("data", (chunk: Buffer) => {
 			try {
-				this.#accountBytes(chunk.length);
 				if (this.#failure || this.#closed) return;
 				this.#buffer += this.#decoder.write(chunk);
 				let end = this.#buffer.indexOf("\n");
@@ -306,7 +312,7 @@ class CodexBoundaryRpc {
 		return this.#toolCalls;
 	}
 	get fencedRequests(): number {
-		return this.#modelRequests.size;
+		return this.#modelRequestCount;
 	}
 	get failureCategory(): CloudRuntimeErrorCategory {
 		return this.#failureCategory;
@@ -316,7 +322,7 @@ class CodexBoundaryRpc {
 	}
 	assertCompleted(): void {
 		if (this.#failure) throw this.#failure;
-		if (!this.#finished || this.#activeCalls > 0 || this.#modelRequests.size === 0) {
+		if (!this.#finished || this.#activeCalls > 0 || this.#modelRequestCount === 0) {
 			this.#failureCategory = "invalid_response";
 			throw new Error("Native boundary turn is incomplete");
 		}
@@ -373,6 +379,7 @@ class CodexBoundaryRpc {
 		if (!observation) {
 			observation = { contextRecorded: false, finished: false };
 			this.#fenceObservations.set(request.requestId, observation);
+			forgetSettled(this.#fenceObservations);
 			try {
 				observation.span = this.#observability.start("native_result_fence", {
 					logicalOperationSha256: createHash("sha256")
@@ -417,7 +424,12 @@ class CodexBoundaryRpc {
 		)
 			throw new Error("Native result binding failed");
 		this.confirmTurn(request.turnId);
-		this.#modelRequests.add(request.requestId);
+		if (!this.#modelRequests.has(request.requestId)) {
+			this.#modelRequests.add(request.requestId);
+			this.#modelRequestCount++;
+			if (this.#modelRequests.size > TRACKED_REQUESTS)
+				this.#modelRequests.delete(this.#modelRequests.values().next().value as string);
+		}
 		this.#observeFence(request);
 		// Contract 7.1: the final send closes the turn. Once its result has been
 		// fenced, stop the provider instead of paying for a closing model round
@@ -484,12 +496,6 @@ class CodexBoundaryRpc {
 		this.#child.stdin.end();
 	}
 
-	#accountBytes(count: number): void {
-		this.#bytes += count;
-		if (this.#bytes > (this.#boundary.captureImagesEnabled ? MAX_CAPTURE_WIRE_BYTES : MAX_WIRE_BYTES))
-			this.fail("Native boundary output limit exceeded", "budget_exhausted");
-	}
-
 	#write(message: unknown): void {
 		if (this.#closed || this.#failure) return;
 		const text = JSON.stringify(message);
@@ -499,9 +505,6 @@ class CodexBoundaryRpc {
 			this.fail("Native boundary input limit exceeded", "budget_exhausted");
 			return;
 		}
-		// Replaying the same cached image must not bypass the aggregate wire cap.
-		if (this.#boundary.captureImagesEnabled) this.#accountBytes(Buffer.byteLength(text) + 1);
-		if (this.#failure) return;
 		this.#child.stdin.write(`${text}\n`);
 	}
 
@@ -531,18 +534,21 @@ class CodexBoundaryRpc {
 			const callId = identifier(params.callId);
 			if (params.phase === "finish") {
 				// Remember early finishes too: replayed starts must not revive a completed item.
-				if (!this.#compositions.has(callId) && this.#compositions.size < MAX_REQUESTS)
+				if (!this.#compositions.has(callId)) {
 					this.#compositions.set(callId, { finished: true });
+					forgetSettled(this.#compositions);
+				}
 				this.#finishComposition(callId, "succeeded");
 				return;
 			}
-			if (this.#compositions.has(callId) || this.#compositions.size >= MAX_REQUESTS) return;
+			if (this.#compositions.has(callId)) return;
 			const composition: {
 				span?: CloudRuntimeObservationSpan;
 				timer?: ReturnType<typeof setTimeout>;
 				finished: boolean;
 			} = { finished: false };
 			this.#compositions.set(callId, composition);
+			forgetSettled(this.#compositions);
 			const renew = () => {
 				if (composition.finished || this.#failure || this.#closed || this.#finished) return;
 				try {
@@ -633,14 +639,13 @@ class CodexBoundaryRpc {
 		}
 		if (typeof message.method !== "string") throw new Error("Invalid native method");
 		if (message.id !== undefined) {
-			if (
-				(typeof message.id !== "string" && !Number.isSafeInteger(message.id)) ||
-				++this.#serverRequests > MAX_REQUESTS
-			)
+			if (typeof message.id !== "string" && !Number.isSafeInteger(message.id))
 				throw new Error("Invalid native request");
 			const requestId = `${typeof message.id}:${message.id}`;
 			if (this.#requestIds.has(requestId)) throw new Error("Duplicate native request");
 			this.#requestIds.add(requestId);
+			if (this.#requestIds.size > TRACKED_REQUESTS)
+				this.#requestIds.delete(this.#requestIds.values().next().value as string);
 			if (message.method !== "item/tool/call") {
 				// No approval, process, credential-refresh or UI callback may become a second effect channel.
 				this.#write({
@@ -785,16 +790,16 @@ export async function runCloudCodexToolSession(options: {
 	timeoutMs?: number;
 	idleTimeoutMs?: number;
 }): Promise<{ providerSessionId: string; toolCalls: number; codexVersion: string; fencedRequests: number }> {
-	// A turn has no wall-clock cap (founder, 2026-09-22); a timeout is a test
-	// or operator choice, never a default. The run lease and deadline still bound it.
+	// A run has no wall-clock or silence cap (founder, 2026-09-22 and 2026-09-24);
+	// either timeout is a test or operator choice, never a default. A lapsed job
+	// lease still ends a run whose host is gone.
 	const timeoutMs = options.timeoutMs;
-	const idleTimeoutMs = options.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS;
+	const idleTimeoutMs = options.idleTimeoutMs;
 	const effort = options.reasoningEffort ?? CLOUD_RUNTIME_MODEL_POLICY.effort;
 	if (
 		process.platform === "win32" ||
 		(timeoutMs !== undefined && (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1)) ||
-		!Number.isSafeInteger(idleTimeoutMs) ||
-		idleTimeoutMs < 1
+		(idleTimeoutMs !== undefined && (!Number.isSafeInteger(idleTimeoutMs) || idleTimeoutMs < 1))
 	)
 		throw new Error("Unsupported native boundary execution");
 	if (
@@ -916,13 +921,16 @@ export async function runCloudCodexToolSession(options: {
 			});
 		rpc = new CodexBoundaryRpc(child, options.boundary, options.observability);
 		const watched = rpc;
-		idleWatch = setInterval(
-			() => {
-				if (Date.now() - watched.lastActivityAt > idleTimeoutMs) watched.fail("Native boundary execution stalled");
-			},
-			Math.min(idleTimeoutMs, 15_000),
-		);
-		idleWatch.unref();
+		if (idleTimeoutMs !== undefined) {
+			idleWatch = setInterval(
+				() => {
+					if (Date.now() - watched.lastActivityAt > idleTimeoutMs)
+						watched.fail("Native boundary execution stalled");
+				},
+				Math.min(idleTimeoutMs, 15_000),
+			);
+			idleWatch.unref();
+		}
 		if (fenceFailed) rpc.fail("Native result boundary unavailable", "authority_unavailable");
 		signal.addEventListener("abort", abort, { once: true });
 		if (signal.aborted) abort();

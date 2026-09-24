@@ -19,10 +19,11 @@
 
 /* ---- account menu ---------------------------------------------------------- */
 :root[data-theme="dark"] .account-chip { background: #5c5b58; }
-:root[data-theme="dark"] .account-popover { box-shadow: 0 22px 48px rgba(0, 0, 0, 0.5), 0 2px 8px rgba(0, 0, 0, 0.3); }
+:root[data-theme="dark"] :is(.account-popover, .context-menu, .rail-drag-ghost) { box-shadow: 0 22px 48px rgba(0, 0, 0, 0.5), 0 2px 8px rgba(0, 0, 0, 0.3); }
 
 /* ---- rail ------------------------------------------------------------------ */
 :root[data-theme="dark"] .rail { --rail-line: #121211; --rail-search-ink: #8f8e89; --rail-small: #adaca7; --rail-status-failed: #ff453a; }
+:root[data-theme="dark"] .rail-drag-ghost { --rail-status-failed: #ff453a; }
 :root[data-theme="dark"] .rail-add { color: #a9a8a3; }
 :root[data-theme="dark"] .rail-search {
 	box-shadow: inset 0 0 0 0.5px rgba(255, 255, 255, 0.06);
@@ -138,7 +139,6 @@
 :root[data-theme="dark"] .settings-nav [aria-selected=true] > .icon { color: var(--text); }
 :root[data-theme="dark"] .settings-tab-count { background: var(--primary); color: var(--on-primary); }
 :root[data-theme="dark"] .settings-company-label { color: #9d9c97; }
-:root[data-theme="dark"] .settings-close { background: #3a3a38; color: #b7b6b1; }
 :root[data-theme="dark"] .settings-content h2 { color: #9d9c97; }
 :root[data-theme="dark"] .settings-content .btn { border-color: rgba(255, 255, 255, 0.12); background: #3a3a38; }
 :root[data-theme="dark"] .settings-content .btn:hover:not(:disabled) { background: #444442; }
@@ -158,6 +158,17 @@
 :root[data-theme="dark"] .settings-choice:hover .settings-swatch { box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.1), 0 0 0 2px #5c5b58; }
 :root[data-theme="dark"] .settings-choice > input:checked ~ .settings-swatch { box-shadow: 0 0 0 2px #f4f3f0; }
 :root[data-theme="dark"] .settings-choice > input:focus-visible ~ .settings-swatch { outline-color: #6f9be0; }
+:root[data-theme="dark"] .settings-rows { background: #333332; }
+:root[data-theme="dark"] .settings-rows > .settings-preference-row + .settings-preference-row { border-color: rgba(255, 255, 255, 0.08); }
+:root[data-theme="dark"] .preference-picker-button { border-color: rgba(255, 255, 255, 0.12); background: #3a3a38; }
+:root[data-theme="dark"] :is(.preference-picker-button:hover, .preference-picker-button[aria-expanded=true]) { background: #444442; }
+:root[data-theme="dark"] .preference-picker-button > .icon { color: #a3a29d; }
+:root[data-theme="dark"] .preference-picker-popover { border-color: rgba(255, 255, 255, 0.1); background: #242423; color: var(--text); box-shadow: 0 22px 48px rgb(0 0 0 / 55%), 0 2px 8px rgb(0 0 0 / 30%); }
+:root[data-theme="dark"] .preference-picker-search { border-color: rgba(255, 255, 255, 0.08); }
+:root[data-theme="dark"] :is(.preference-picker-search > .icon, .preference-picker-clear, .preference-picker-detail, .preference-picker-empty) { color: #a3a29d; }
+:root[data-theme="dark"] .preference-picker-search-input::placeholder { color: #8f8e89; }
+:root[data-theme="dark"] .preference-picker-clear:hover { background: rgba(255, 255, 255, 0.07); color: var(--text); }
+:root[data-theme="dark"] .preference-picker-option.is-active { background: rgba(255, 255, 255, 0.07); }
 :root[data-theme="dark"] .settings-plan-offer { border-color: rgba(255, 255, 255, 0.1); background: #333332; }
 :root[data-theme="dark"] .settings-plan-current { background: var(--primary); color: var(--on-primary); }
 :root[data-theme="dark"] :is(.settings-plan-price, .settings-plan-tagline, .settings-plan-includes-label, .billing-label, .settings-period) { color: #a3a29d; }
@@ -178,7 +189,7 @@
 :root[data-theme="dark"] .panel-group-title { color: #8f8e89; }
 :root[data-theme="dark"] .person-row + .person-row { border-top-color: rgba(255, 255, 255, 0.06); }
 :root[data-theme="dark"] .connection-list { background: #333332; }
-:root[data-theme="dark"] :is(.connection-usage-heading, .connection-usage-checked) { color: #a3a29d; }
+:root[data-theme="dark"] .connection-usage-heading { color: #a3a29d; }
 :root[data-theme="dark"] .connection-usage-meter { background: #494948; }
 :root[data-theme="dark"] .connection-usage-meter > span { background: #81b29c; }
 :root[data-theme="dark"] .connection-usage-meter.is-low > span { background: #ff6b21; }
@@ -189,7 +200,6 @@
 /* ---- feedback ---------------------------------------------------------------- */
 :root[data-theme="dark"] .feedback-dialog { border-color: rgba(255, 255, 255, 0.1); box-shadow: 0 24px 72px rgba(0, 0, 0, 0.6); }
 :root[data-theme="dark"] .feedback-dialog::backdrop { background: rgba(0, 0, 0, 0.5); }
-:root[data-theme="dark"] :is(.feedback-close:hover:not(:disabled), .feedback-close:focus-visible) { background: #3a3a38; }
 :root[data-theme="dark"] .feedback-category { border-color: rgba(255, 255, 255, 0.16); background: transparent; color: #d6d5d1; }
 :root[data-theme="dark"] :is(.feedback-category:hover:not(:disabled), .feedback-category:focus-visible) { border-color: rgba(255, 255, 255, 0.3); background: rgba(255, 255, 255, 0.05); }
 :root[data-theme="dark"] .feedback-category[aria-pressed="true"] { border-color: var(--text); background: var(--text); color: var(--bg); }
@@ -199,11 +209,6 @@
 :root[data-theme="dark"] .feedback-status { color: #ff9084; }
 :root[data-theme="dark"] .feedback-status[data-state="success"] { color: #5ed6a9; }
 :root[data-theme="dark"] .feedback-submit:disabled { border-color: #3a3a38; background: #3a3a38; color: #7f7e7a; }
-
-/* ---- organization ------------------------------------------------------------ */
-:root[data-theme="dark"] :is(.organization-home:hover, .organization-person:hover) { background: #2e2e2d; }
-:root[data-theme="dark"] .project-node { border-color: var(--border); background: #232322; }
-:root[data-theme="dark"] .project-node:hover { border-color: rgba(255, 255, 255, 0.18); background: #292928; }
 
 /* ---- coding session in the thread ------------------------------------------ */
 :root[data-theme="dark"] .coding-tone-attention .coding-status-label, :root[data-theme="dark"] .coding-tone-attention .coding-caption, :root[data-theme="dark"] .coding-step-status.coding-tone-attention { color: #f2c35d; }

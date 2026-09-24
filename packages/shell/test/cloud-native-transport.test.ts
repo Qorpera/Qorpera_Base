@@ -99,7 +99,30 @@ it.each([403, 503])("cancels a stalled %s bridge error body without exposing it"
 	expect(cancel).toHaveBeenCalledOnce();
 });
 
-it.each(["PRIVATE_MALFORMED_JSON", "x".repeat(64 * 1024 + 1)])(
+it("reads a result or a failure that arrives after the execution's keepalive newlines", async () => {
+	// A run has no deadline: the host answers 200 at once and writes a newline a minute until the result.
+	const f = fixture();
+	const failing = new HttpNativeProviderComputerBridge(
+		"https://native.example/",
+		"a".repeat(43),
+		async () => new Response(`\n\n\n${JSON.stringify({ error: "request rejected" })}\n`),
+	);
+	await expect((await failing.startCompany(f.authority, f.job)).result).rejects.toThrow(
+		"Native provider bridge request failed (422)",
+	);
+	const other = new HttpNativeProviderComputerBridge(
+		"https://native.example/",
+		"a".repeat(43),
+		async () =>
+			new Response(
+				`\n\n${JSON.stringify({ schema: "qorpera.native-provider-result/v1", lease_id: randomUUID(), result: {} })}\n`,
+			),
+	);
+	// The envelope is parsed after the keepalive whitespace (and then checked against the lease).
+	await expect((await other.startCompany(f.authority, f.job)).result).rejects.toThrow("returned another execution");
+});
+
+it.each(["PRIVATE_MALFORMED_JSON", "x".repeat(1024 * 1024 + 1)])(
 	"does not retain or echo invalid bridge response bytes",
 	async (body) => {
 		const f = fixture();
@@ -109,7 +132,7 @@ it.each(["PRIVATE_MALFORMED_JSON", "x".repeat(64 * 1024 + 1)])(
 			async () => new Response(body),
 		);
 		const process = await bridge.startCompany(f.authority, f.job);
-		await expect(process.result).rejects.toThrow(body.length > 64 * 1024 ? "byte limit" : "returned invalid JSON");
+		await expect(process.result).rejects.toThrow(body.length > 1024 * 1024 ? "byte limit" : "returned invalid JSON");
 	},
 );
 

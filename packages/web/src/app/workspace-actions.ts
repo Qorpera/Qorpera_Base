@@ -23,7 +23,7 @@ export interface WorkspaceActions {
 		draft: GroupChatDraft,
 		signal: AbortSignal,
 	) => Promise<void>;
-	/** Company notices (paused, limit reached). The conversation shows them above its composer. */
+	/** Company notices (all company computers in use). The conversation shows them above its composer. */
 	notificationHost?: HTMLElement;
 	computer?: WebCompanyComputer;
 	/** The company's open computers, kept across the threads a member moves between. */
@@ -41,4 +41,6 @@ export interface WorkspaceActions {
 	/** Returns the exact applied agent document revision, also projected as roster version. */
 	updateAgent?: (agent: HostedStaffAgent, draft: AgentDraft, signal: AbortSignal) => Promise<number>;
 	createAgent?: (profileId: string, draft: AgentDraft, signal: AbortSignal) => Promise<string>;
+	/** Removes the agent for good: its document leaves the Company File. */
+	deleteAgent?: (agent: HostedStaffAgent, signal: AbortSignal) => Promise<void>;
 }

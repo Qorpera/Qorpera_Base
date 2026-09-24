@@ -91,10 +91,9 @@ select pg_temp.denied(format('select public.qorpera_record_node_update_phase(%L,
 select pg_temp.denied('select pg_temp.phase(''install'')');
 select pg_temp.denied(format('select public.qorpera_drain_node_update(%L,1,%L,%L,1,%L)','32100000-0000-4000-8000-000000000020',current_setting('t.node_cap'),current_setting('t.node_release_sha'),pg_temp.node_state()#>>'{observation,policySha256}'));
 reset role;
+-- The pause is an operator brake: the operator session acts with a founder's claims.
 select set_config('request.jwt.claims','{"role":"authenticated","sub":"32100000-0000-4000-8000-000000000001"}',true);
-set local role authenticated;
 select public.qorpera_set_company_execution_pause('32100000-0000-4000-8000-000000000010',true,'node update fixture');
-reset role;
 select public.qorpera_authorize_node_update_drain('32100000-0000-4000-8000-000000000020',current_setting('t.node_release_sha'),repeat('3',64));
 set local role anon;
 select set_config('t.before_transition',(pg_temp.node_state()->'observation')::text,true);

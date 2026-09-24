@@ -1,20 +1,28 @@
 .settings-overlay { position: fixed; z-index: 400; inset: 0; display: grid; place-items: center; padding: 36px; background: rgb(20 20 19 / 48%); backdrop-filter: blur(1.5px); font-family: var(--font-sans); font-optical-sizing: auto; font-synthesis: none; text-rendering: geometricPrecision; }
-.settings-dialog { position: relative; display: grid; grid-template-columns: 228px minmax(0, 1fr); width: min(1200px, calc(100vw - 72px)); height: min(816px, calc(100dvh - 72px)); overflow: hidden; border: 1px solid #d9d9d6; border-radius: 16px; background: var(--overlay); color: #1d1d1b; box-shadow: 0 24px 80px rgb(0 0 0 / 24%); }
-.settings-nav { display: flex; flex-direction: column; gap: 3px; padding: 16px 12px; border-right: 1px solid #dededb; background: #f1f1ef; min-width: 0; }
-.settings-nav input { width: 100%; min-width: 0; height: 36px; margin-bottom: 10px; padding: 0 11px; border: 1px solid #d8d8d5; border-radius: 9px; background: #e6e6e3; font-size: 13px; }
+.settings-dialog { position: relative; display: grid; grid-template-columns: 320px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); width: min(1200px, calc(100vw - 72px)); height: min(816px, calc(100dvh - 72px)); overflow: hidden; border: 1px solid #d9d9d6; border-radius: 16px; background: var(--overlay); color: #1d1d1b; box-shadow: 0 24px 80px rgb(0 0 0 / 24%); }
+/* The rail's font size sets the whole rail: search, tabs, count and company
+   picker are sized in em from it. 20px is half again the old 13px; windows
+   up to 1100px wide keep 13px (below). A window too short for the rail
+   scrolls it, and the 320px width fits the longest label, Danish
+   "Abonnement og forbrug". */
+.settings-nav { display: flex; flex-direction: column; gap: 3px; overflow-y: auto; padding: 16px 12px; border-right: 1px solid #dededb; background: #f1f1ef; min-width: 0; font-size: 20px; }
+.settings-nav > * { flex-shrink: 0; }
+.settings-nav input { width: 100%; min-width: 0; height: 2.7em; margin-bottom: .75em; padding: 0 .85em; border: 1px solid #d8d8d5; border-radius: .7em; background: #e6e6e3; font-size: 1em; }
 .settings-nav input::placeholder { color: #7c7c78; }
-.settings-nav [role=tablist] { display: flex; flex-direction: column; gap: 3px; }
+.settings-nav [role=tablist] { display: flex; flex-direction: column; gap: .2em; }
 /* Whole-pixel, medium-weight labels in near-black ink: at the old 12.5px
    regular grey the labels read soft against the grey rail. */
-.settings-nav [role=tab] { display: flex; align-items: center; gap: 10px; min-height: 36px; padding: 6px 10px; border: 0; border-radius: 8px; background: transparent; color: #262624; font: inherit; font-size: 13px; font-weight: 500; text-align: left; cursor: pointer; }
-.settings-nav [role=tab] > .icon { width: 17px; height: 17px; flex: none; color: #6f6f6b; }
+.settings-nav [role=tab] { display: flex; align-items: center; gap: .75em; min-height: 2.7em; padding: .45em .75em; border: 0; border-radius: .6em; background: transparent; color: #262624; font: inherit; font-weight: 500; text-align: left; cursor: pointer; }
+.settings-nav [role=tab] > .icon { width: 1.3em; height: 1.3em; flex: none; color: #6f6f6b; }
 .settings-nav [role=tab]:hover { background: #e8e8e5; }
 .settings-nav [aria-selected=true] { background: #dededb; color: #121211; }
 .settings-nav [aria-selected=true] > .icon { color: #262624; }
-.settings-tab-count { display: grid; place-items: center; min-width: 19px; height: 19px; margin-left: auto; padding: 0 6px; border-radius: 999px; background: #1d1d1b; color: #fff; font-size: 11px; font-weight: 700; }
-.settings-company-label { margin-top: auto; min-width: 0; font-size: 11.5px; color: #6c6c68; }
-.settings-company-picker { width: 100%; min-width: 0; margin-top: 6px; font-size: 13px; }
-.settings-close { position: absolute; top: 13px; right: 15px; width: 30px; height: 30px; padding: 0; border: 0; border-radius: 7px; background: #efefed; color: #686865; font-size: 20px; cursor: pointer; }
+.settings-tab-count { display: grid; place-items: center; min-width: 1.65em; height: 1.65em; margin-left: auto; padding: 0 .5em; border-radius: 999px; background: #1d1d1b; color: #fff; font-size: .85em; font-weight: 700; }
+.settings-company-label { margin-top: auto; min-width: 0; font-size: .875em; color: #6c6c68; }
+/* Back to the rail's own size from inside the smaller label. */
+.settings-company-picker { width: 100%; min-width: 0; margin-top: .35em; font-size: calc(1em / .875); }
+.settings-close { position: absolute; top: 13px; right: 15px; width: 30px; height: 30px; padding: 0; border: 0; border-radius: 7px; background: transparent; color: var(--text-muted); font-size: 20px; cursor: pointer; }
+.settings-close:is(:hover, :focus-visible) { color: var(--text); }
 .settings-content { min-width: 0; overflow-y: auto; padding: 30px 40px 40px; }
 .settings-content .page { max-width: none; padding: 0; margin: 0; }
 .settings-content h1 { font-size: 18px; margin: 0 30px 22px 0; }
@@ -32,15 +40,8 @@
 .settings-copy { display: grid; gap: 2px; min-width: 0; overflow-wrap: anywhere; }
 .settings-copy strong { font-size: 13px; font-weight: 600; }
 .settings-copy small { font-size: 11.5px; color: #797975; }
-.company-execution { border-top: 1px solid var(--border); padding-top: 20px; }
-.company-execution label { margin: 12px 0; font-size: 12px; }
-.company-execution input { min-width: 0; width: 100%; }
-.company-execution .row { margin: 12px 0; }
-.company-execution .row > input { flex: 1 1 180px; }
-.company-execution .muted { font-size: 12px; }
 .settings-plan { min-height: 82px; }
 .settings-preference-row { display: flex; flex-direction: row; align-items: center; justify-content: space-between; gap: 16px; min-height: 46px; padding: 5px 12px; font-size: 12.5px; font-weight: 500; }
-.settings-preference-row > select { border: 0; background: transparent; font-size: 12.5px; max-width: 45%; }
 .settings-help { color: #797975; font-size: 11.5px; margin: 4px 12px; }
 /* Appearance: each choice is a picture of the result under a native radio.
    The theme pictures keep their own colours in both themes (they show a
@@ -157,7 +158,7 @@
 .panel-group + .panel-group { border-top: 1px solid #ececea; }
 .panel-group-title { padding: 12px 16px 2px; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .09em; color: #85857f; }
 .panel-empty { margin: 0; padding: 16px; font-size: 12.5px; }
-.panel .spinner { padding: 16px; }
+.panel .skeleton-group { padding-inline: 16px; }
 .person-row { display: flex; align-items: center; gap: 12px; min-height: 58px; padding: 8px 16px; }
 .person-row + .person-row { border-top: 1px solid #f0f0ee; }
 .person-row .person-avatar { width: 34px; height: 34px; font-size: 12px; }
@@ -178,9 +179,7 @@
 .connection-section-heading h2 { margin: 0; }
 .connection-usage { grid-column: 2 / -1; display: grid; gap: 14px; min-width: 0; font-size: 11.5px; }
 .connection-usage-window { display: grid; gap: 7px; }
-.connection-usage-label { font-weight: 500; }
 .connection-usage-heading { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 4px 16px; color: #73736f; }
-.connection-usage-checked { color: #797975; font-size: 10.5px; }
 .connection-usage-limit { color: #af4b16; }
 .connection-usage-meter { height: 6px; overflow: hidden; border-radius: 999px; background: #dededb; }
 .connection-usage-meter > span { display: block; height: 100%; background: #608878; }
@@ -202,13 +201,18 @@
 .settings-dialog :focus-visible:not(:where(input, textarea)) { outline: 2px solid #5b84c4; outline-offset: 2px; }
 .settings-dialog [hidden] { display: none; }
 @media (hover: none) { .company-person .person-actions { opacity: 1; } }
+/* Tablets and small laptops keep the earlier rail, so the content keeps its width. */
+@media (max-width: 1100px) {
+ .settings-dialog { grid-template-columns: 228px minmax(0, 1fr); }
+ .settings-nav { font-size: 13px; }
+}
 @media (max-width: 720px) {
  .settings-overlay { padding: 12px; }
  .settings-dialog { width: 100%; height: 100%; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
  .settings-nav { padding: 12px; border-right: 0; border-bottom: 1px solid #dededb; }
  .settings-nav input { width: calc(100% - 44px); }
  .settings-nav [role=tablist] { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
- .settings-nav [role=tab] { justify-content: center; padding: 6px; }
+ .settings-nav [role=tab] { justify-content: center; padding: .45em; }
  .settings-tab-count { margin-left: 0; }
  .settings-company-label { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
  .settings-company-picker { margin-top: 0; }
@@ -253,3 +257,35 @@
 .service-token-row { display: flex; gap: 8px; }
 .service-token-row .service-token { flex: 1; min-width: 0; }
 .service-error { margin: 0 0 8px; }
+/* Language & region: rows in one card, each value a small button that opens
+   a searchable list (preference-picker.ts), as the desktop reference does. */
+.settings-rows { border-radius: 13px; background: #f1f1ef; }
+.settings-rows > .settings-preference-row { min-height: 58px; padding: 9px 13px; }
+.settings-rows > .settings-preference-row + .settings-preference-row { border-top: 1px solid #e3e3e0; }
+.settings-rows .settings-copy small { font-weight: 400; }
+/* The row's name is the picker's <label>: clicking it opens the list. */
+.settings-rows label.settings-copy { font-weight: inherit; cursor: pointer; }
+.preference-picker { display: flex; flex: none; min-width: 0; max-width: 55%; }
+.preference-picker-button { display: inline-flex; align-items: center; gap: 6px; min-width: 0; max-width: 100%; height: 30px; padding: 0 8px 0 11px; border: 1px solid #d7d7d3; border-radius: 9px; background: #e7e7e4; color: inherit; font: inherit; font-size: 12.5px; font-weight: 400; white-space: nowrap; cursor: pointer; }
+.preference-picker-button:hover, .preference-picker-button[aria-expanded=true] { background: #dededb; }
+.preference-picker-value { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.preference-picker-button > .icon { width: 14px; height: 14px; flex: none; color: #73736f; }
+.preference-picker-popover { position: fixed; z-index: 20; display: flex; flex-direction: column; overflow: hidden; border: 1px solid #d9d9d6; border-radius: 12px; background: var(--overlay); color: #1d1d1b; box-shadow: 0 16px 44px rgb(0 0 0 / 16%), 0 2px 8px rgb(0 0 0 / 6%); font-size: 13px; font-weight: 400; }
+.preference-picker-popover[hidden] { display: none; }
+.preference-picker-search { display: flex; flex: none; align-items: center; gap: 8px; height: 42px; padding: 0 7px 0 12px; border-bottom: 1px solid #e6e6e3; }
+.preference-picker-search > .icon { width: 15px; height: 15px; flex: none; color: #797975; }
+.preference-picker-search-input { flex: 1; min-width: 0; height: 100%; padding: 0; border: 0; border-radius: 0; outline: 0; background: transparent; box-shadow: none; color: inherit; font: inherit; font-size: 13px; }
+.preference-picker-search-input::placeholder { color: #8a8a86; }
+.preference-picker-search-input:focus-visible { outline: none; }
+.preference-picker-clear { display: grid; place-items: center; width: 26px; height: 26px; flex: none; padding: 0; border: 0; border-radius: 7px; background: transparent; color: #797975; cursor: pointer; }
+.preference-picker-clear:hover { background: #efefed; color: #1d1d1b; }
+.preference-picker-clear > .icon { width: 14px; height: 14px; }
+.preference-picker-list { position: relative; flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 5px; }
+.preference-picker-option { display: flex; align-items: center; gap: 12px; min-height: 32px; padding: 0 10px; border-radius: 7px; cursor: pointer; user-select: none; }
+.preference-picker-option[hidden] { display: none; }
+.preference-picker-option.is-active { background: #efefed; }
+.preference-picker-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.preference-picker-detail { flex: none; color: #797975; font-size: 12.5px; white-space: nowrap; }
+.preference-picker-option > .icon { width: 15px; height: 15px; flex: none; margin-right: -2px; }
+.preference-picker-empty { margin: 0; padding: 12px 15px 14px; color: #797975; font-size: 12.5px; }
+.preference-picker-empty[hidden] { display: none; }

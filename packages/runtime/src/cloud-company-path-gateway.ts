@@ -44,10 +44,10 @@ const FILE_MEDIA = "application/vnd.qorpera.file-manifest+json";
 const TREE_MEDIA = "application/vnd.qorpera.company-tree+json";
 const MAX_WRITE_BYTES = 32 * 1024;
 const MAX_READ_BYTES = 4096;
-const MAX_READ_PATHS = 128;
 
 export type CloudCompanyPathRpc =
 	| "qorpera_manage_agent_routine"
+	| "qorpera_manage_agent_sidebar"
 	// Workers and durable todos (runtime Step 5).
 	| "qorpera_manage_agent_todo"
 	| "qorpera_confirm_agent_todo_publication"
@@ -278,8 +278,6 @@ export class CloudCompanyPathGateway {
 	}
 
 	#remember(path: string): void {
-		if (!this.#reads.has(path) && this.#reads.size >= MAX_READ_PATHS)
-			throw new Error("Company File context path budget exceeded");
 		this.#reads.add(path);
 	}
 
@@ -437,7 +435,7 @@ export class CloudCompanyPathGateway {
 		)
 			throw new Error("Native context provenance was not confirmed");
 		version(receipt.viewId);
-		integer(receipt.ordinal, 1, 256);
+		integer(receipt.ordinal, 1, 2_147_483_647);
 	}
 
 	async read(
@@ -569,7 +567,7 @@ export class CloudCompanyPathGateway {
 
 	/** Trusted whole-file read for context assembly and runtime-owned notebooks.
 	 * It uses the plain path read (authority and read memory, no model-read
-	 * observation, no wake-work gate), so it never spends the run's read budget
+	 * observation, no wake-work gate), so it is not recorded as a model read
 	 * and may run before the first acknowledgement. Returns null for an absent
 	 * path. Bounded to MAX_WRITE_BYTES so a notebook file can be rewritten. */
 	async readTrusted(

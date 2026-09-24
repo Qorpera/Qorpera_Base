@@ -132,7 +132,7 @@ try {
 	console.log("PASS: member object authority OID/owner/ACL/proconfig preserved through 19971 in pristine and admitted-run databases");
 	for (const name of ["290_company_file_path_gateway.test.sql", "320_runtime_operational_observability.test.sql",
 		"306_governed_company_computer_privileges.test.sql", "321_member_object_observation_identity.test.sql",
-		"330_company_execution_ceilings.test.sql"]) {
+		"330_company_execution_no_ceilings.test.sql"]) {
 		sql(readFileSync(join(root, "supabase/tests", name), "utf8"));
 		console.log(`PASS: ${name}`);
 	}

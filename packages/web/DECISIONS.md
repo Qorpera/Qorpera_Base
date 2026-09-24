@@ -80,6 +80,11 @@ production migration" per `deploy/first-node/RUNTIME-STEP-0-ORGANIZATION.md`).
 The contract list is derived from migrations, not the deployed schema, and
 says so; the app must not assume parity.
 
+**Superseded in part (2026-09-24).** The Cloud check page, its RPC probe and
+the browser endpoint override in Settings were removed. Features still gate
+on `PGRST202` where they call the RPC; every build uses the endpoints compiled
+into it.
+
 ## 2026-09-02 — Transcript projection rules (what the web app renders)
 
 Per §6 and launch acceptance item 8, from `qorpera_read_session_events`:
@@ -127,3 +132,132 @@ dropped the same day for the handoff-line shape.)
   (2.5 s while working, 6 s while it waits, 30 s after it settled, 20 s while
   the tab is hidden). A missing list RPC means no sessions; the thread renders
   as before.
+
+## 2026-09-24 — No company execution controls, no Organization or Approvals pages
+
+**Decision (Jonas).** Settings → Company no longer carries Company execution
+(pause/resume, monthly spend and token limits, hourly wake limit, the usage
+line) or the Organization and Approvals cards, and the client has no pages or
+routes for them. The limits go as policy, not just as settings: the runtime
+removes the spend, token and wake ceilings themselves in its own change.
+
+**Why.** Jonas asked for all of it to go, the limits as policy and not only
+as settings. A provider's own usage limits still bound subscription work. The
+Approvals list only gathered `authorization_request` events, which the cloud
+runtime never emits (its harness runs with approvals set to never); approval
+cards an agent raises in its thread are a different thing and stay.
+
+**Rules out.** Re-adding a pause, limit or approvals surface in the client
+without a new decision. Notices of a tripped company limit or a pause/resume
+that already exist in a member's list are skipped, never shown and never a
+failed read; the machine-capacity notice, which shares the
+`company_ceiling_tripped` kind, still shows.
+
+## 2026-09-24 — The Co-Founder's colour can be changed
+
+**Decision (Jonas).** The Co-Founder's figure picker offers the colours and
+Reset like every other agent's, and the Co-Founder is drawn in the colour it
+was given. This replaces the 2026-09-12 rule (PR #115) that the Co-Founder
+always wears its figure's own shade, as in the trailer.
+
+**Why.** Jonas reported that the Co-Founder's colour could not be changed. The
+desktop client and the cloud never had the rule; it was a web rendering rule.
+
+**How.** The cloud seeds every Co-Founder with the token `qorpera-blue`, which
+nobody chose, and a colour picked in a client is saved as a palette hex, never
+as that token. A Co-Founder that still carries the seed token keeps its
+figure's own shade (`agentColor` in `ui/avatar.ts`), so no Co-Founder changes
+colour just because this shipped. The first-run meet page still offers figures
+only; each figure brings its own shade there.
+
+**Follow-up after review (same day).** Production held six Co-Founders: four on
+the seed token, one planet in `#5ec0b5` and one crown in `#fcb51b`, all drawn as
+before. A Co-Founder saved as `#2047bd` without anybody choosing blue (the meet
+page of 2 to 12 September, or the desktop picker on a figure change) would now
+be drawn blue; none existed.
+
+A figure in its own shade has no colour of its own to keep. So when the
+details picker opens on an agent in its own shade, changing the figure brings
+the new figure's own shade until a colour is clicked; Reset returns to that.
+The rule is decided when the picker opens or the look changes elsewhere, never
+on the member's own changes, so a colour chosen in the session survives passing
+through a figure whose own shade it is.
+Saved data cannot tell a chosen Gold on a crown from the crown's own shade, so
+such an agent follows its figure. This deliberately differs from the desktop
+picker, which always keeps the current colour. The meet page keeps the stored
+colour until a different figure is picked there, so returning to it never
+replaces a colour chosen in the details.
+
+## 2026-09-24 — Rail menu, pinned cards and sections (Grok Bot's rail)
+
+Jonas asked for Grok Bot's right-click menu on agents, pinned agents as square
+centered cards right below the Co-Founder card, sections created from the rail
+or from Move to, drag between sections and into the pinned row with invisible
+containers that light up, and agents moving each other into sections.
+
+- **Sections are the company's; pins and hiding are the member's.** Agents
+  organize sections (the `organize_sidebar` tool), so sections must be shared
+  cloud state (`qorpera_company_sidebar_*`; one revision row per company is the
+  only published, member-readable table, so a move is one hint). A pin
+  or a hidden agent only changes one member's view, so it lives per member
+  (`qorpera_member_sidebar_agents`) and follows the member across devices.
+  Nothing is kept in `localStorage`.
+- **One RPC answers the whole sidebar.** Every change returns the member's full
+  sidebar; the rail draws the change at once from the same rules
+  (`applySidebarRequest`) and replaces it with the answer. Changes go one at a
+  time; a refusal puts back what the cloud has and says why in the rail.
+- **Order is explicit, and hidden agents keep theirs.** A drag sends the whole
+  order of the container it lands in, computed from the full container, not the
+  visible rows, so hiding or pinning never reshuffles another member's view.
+- **Degrade, never lie.** A cloud without the sidebar RPCs (web deploys before
+  the bundle cut) shows the single list of before and a menu of Rename, Copy
+  conversation ID and Delete. The sidebar's Realtime channel is its own, so a
+  missing table cannot degrade the company's live updates.
+- **Not built: Mark as Unread.** The rail has no unread state at all yet (no
+  per-member read cursor in the cloud); a menu item for it would render
+  machinery that does not exist (runtime contract §14.5). It is its own feature.
+- **Moving a pinned agent to a section unpins it**, from the menu as from a drag,
+  so the move is visible; choosing the section an agent is already in does nothing.
+- **Dragging has keyboard twins.** Alt+Up / Alt+Down move the focused agent one
+  place in its section or in the pinned row; Move to covers sections. Shift with a
+  mouse right-click keeps the browser's own link menu.
+- **Delete is permanent**, as in Grok Bot: it deletes the agent's document
+  (owner or admin; the Co-Founder never), after a confirmation that says so.
+
+## 2026-09-24 — The web app is offered in English and Danish
+
+**Decision.** Every piece of interface text goes through `t(source, values)`
+(`src/ui/preferences.ts`) with the English as the key and the Danish in
+`src/ui/danish/<area>.ts`. English stays the source language. Values fill
+`{placeholders}` and are never translated: names, messages, file names, roles
+typed by members and server error text are company content. A sentence with a
+value is one key, never glued fragments, because Danish word order differs;
+plurals are two keys. Text kept in a table before it is drawn (labels by code,
+menu items) is marked with `phrase("…")`, which returns it unchanged. Choosing a
+language redraws the screens in place (application.ts `onLanguage` /
+`redrawScreens`): drafts, chosen images and edits live in the stores and
+survive; Settings reopens on the same tab. The data layer returns codes
+(`sessionAttachmentProblem`, `ObjectAccessError.reason`) and views translate
+them; never match English message text.
+
+**Checks.** `test/translations.test.ts` reads the source: every key written
+in `t()`/`uiText()`/`phrase()` has Danish, placeholders match, a key lives in
+one area file, no Danish is left that no code asks for, and no English literal
+sits unwrapped where interface text goes (aria-label, placeholder, title, text
+children of `h()`, `button()`, `notice()`, `badge()`, `spinner()`, `confirm()`).
+`test/setup.ts` fails any test file whose screens drew text without Danish
+(keys built at run time). So a new label needs `t()` and its Danish in the
+same change.
+
+**Wording.** Plain, short Danish in the du-form, matching qorpera.com and the
+desktop (`packages/shell/userland/localization.js`): Company File is
+"Virksomhedsfilen", Co-Founder stays a name, a thread is a "tråd", a run a
+"kørsel", a draft a "kladde".
+
+**Out of scope.** Error text written by the cloud layer (`src/cloud/*.ts`,
+`describeError`) stays English, as the server's own messages do. The computer
+screen viewer (`member-web/ui/screen-viewer.js`) is copied unchanged from the
+desktop, so `ui/computer-viewer.ts` translates its fixed text inside its own
+overlay. The live Company File panel (`member-web/src/file-panel.ts`) takes
+`t` as an option so member-web stays independent.
+

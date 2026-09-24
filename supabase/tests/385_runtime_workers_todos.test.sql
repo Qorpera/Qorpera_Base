@@ -271,8 +271,8 @@ begin
 	perform pg_temp.wake_assert(v_envelope #>> '{source,kind}' = 'worker-completion' and v_envelope ->> 'parentRunId' = v_parent::text
 		and v_envelope -> 'actorUserId' = 'null'::jsonb and v_envelope -> 'actorStaffId' = 'null'::jsonb
 		and v_envelope #>> '{policy,initial}' = 'optional' and v_envelope #>> '{policy,final}' = 'optional'
-		and (v_envelope #>> '{policy,maxPublicSends}')::int = 3 and v_envelope #>> '{audience,sessionId}' = '30000000-0000-4000-8000-000000000040',
-		'The revival is an internal continuation, never a human message, and may speak briefly in the parent''s conversation or stay silent');
+		and v_envelope -> 'policy' -> 'maxPublicSends' = 'null'::jsonb and v_envelope #>> '{audience,sessionId}' = '30000000-0000-4000-8000-000000000040',
+		'The revival is an internal continuation, never a human message, and may speak in the parent''s conversation (no send limit) or stay silent');
 	v_context := public.qorpera_describe_company_run_context(v_binding);
 	v_continuation := public.qorpera_run_continuation((select run from public.qorpera_execution_runs run where run.id = v_wake.run_id));
 	perform pg_temp.wake_assert(v_context -> 'continuation' <> 'null'::jsonb
@@ -280,6 +280,26 @@ begin
 		and v_continuation #>> '{completions,0,summary}' like 'Alfa 49%' and v_continuation #>> '{todos,0,todoKey}' = 'market-scan'
 		and jsonb_array_length(v_continuation -> 'priorSends') = 2 and jsonb_array_length(v_continuation -> 'parentInputs') = 1,
 		'The continuation carries the result, the todo and the parent''s own history');
+	-- Runtime v92: a parent that did a lot of work still hears back. Past the old 32 MiB the continuation
+	-- failed on every attempt; now it carries the newest results that fit and counts the rest.
+	-- Probed in a subtransaction.
+	begin
+		insert into public.qorpera_run_operation_receipts(id,run_id,job_id,assignment_id,logical_operation_key,operation_kind,
+			input_sha256,downstream_idempotency_sha256,status,result,completed_at)
+		select extensions.gen_random_uuid(),v_parent,run.job_id,
+			(select assignment_id from public.qorpera_run_operation_receipts where run_id = v_parent limit 1),
+			'bulk-' || n,'cloud_tool',repeat('a',64),repeat('b',64),'completed',
+			jsonb_build_object('content',(select string_agg(md5(n::text || ':' || g::text || random()::text),'') from generate_series(1,1400) g)),
+			clock_timestamp()
+		from public.qorpera_execution_runs run, generate_series(1,800) n where run.id = v_parent;
+		v_continuation := public.qorpera_run_continuation((select run from public.qorpera_execution_runs run where run.id = v_wake.run_id));
+		perform pg_temp.wake_assert(octet_length(v_continuation::text) <= 33554432 and (v_continuation ->> 'receiptsOmitted')::int > 600
+			and v_continuation #>> '{receipts,-1,logicalOperationKey}' = 'bulk-800' and jsonb_array_length(v_continuation -> 'priorSends') = 2,
+			'A parent with over 32 MiB of results is carried by its newest results, with the rest counted');
+		raise exception 'rollback-large-continuation-probe';
+	exception when raise_exception then
+		if sqlerrm <> 'rollback-large-continuation-probe' then raise; end if;
+	end;
 	v_decision := pg_temp.worker('{"action":"decide","operationKey":"a1","todoKey":"market-scan","workerKey":"prices","decision":"accept","note":"Verified."}',v_binding);
 	perform pg_temp.wake_assert(v_decision #>> '{worker,decision,decision}' = 'accepted'
 		and ((v_decision #>> '{publication,text}')::jsonb #>> '{workers,0,decision,decision}') = 'accepted'
@@ -291,8 +311,31 @@ end $$;
 -- 8. One worker per coherent stream: a follow-up continues the same worker with its own history.
 do $$
 declare v_binding jsonb := current_setting('qorpera_test.revived_binding')::jsonb; v_follow jsonb; v_worker public.qorpera_runtime_workers;
-	v_child jsonb; v_continuation jsonb; v_wake jsonb;
+	v_child jsonb; v_continuation jsonb; v_wake jsonb; v_index integer;
 begin
+	-- Runtime v92: no turn count and no hourly dispatch count. A worker past the old in-house
+	-- limit (12 turns) takes another turn, and an agent dispatches more than the old 24 an hour and
+	-- more than the old eight workers for one todo. Probed in a subtransaction, so the fixture keeps
+	-- its real state.
+	begin
+		update public.qorpera_runtime_workers set sequence = 12 where worker_key = 'prices';
+		v_follow := pg_temp.worker('{"action":"followup","operationKey":"f13","todoKey":"market-scan","workerKey":"prices","text":"Turn thirteen."}',v_binding);
+		perform pg_temp.wake_assert((pg_temp.worker_row('prices')).sequence = 13 and (pg_temp.worker_row('prices')).state = 'active',
+			'A worker takes a thirteenth turn');
+		perform pg_temp.worker('{"action":"cancel","operationKey":"f13-cancel","todoKey":"market-scan","workerKey":"prices"}',v_binding);
+		for v_index in 1..26 loop
+			perform pg_temp.worker(jsonb_build_object('action','dispatch','operationKey','many-' || v_index,'todoKey','market-scan',
+				'workerKey','many-' || v_index,'title','Many ' || v_index,'goal','Part ' || v_index,'definitionOfDone','A line.','access','read'),v_binding);
+			-- Four may run at once; cancelling keeps room for the next one.
+			perform pg_temp.worker(jsonb_build_object('action','cancel','operationKey','many-cancel-' || v_index,'todoKey','market-scan',
+				'workerKey','many-' || v_index),v_binding);
+		end loop;
+		perform pg_temp.wake_assert((select count(*) from public.qorpera_runtime_workers worker join public.qorpera_runtime_agent_todos todo
+			on todo.id = worker.todo_id where todo.todo_key = 'market-scan') = 27,'Twenty-six dispatches in an hour for one todo are admitted');
+		raise exception 'rollback-worker-count-probe';
+	exception when raise_exception then
+		if sqlerrm <> 'rollback-worker-count-probe' then raise; end if;
+	end;
 	v_follow := pg_temp.worker('{"action":"followup","operationKey":"f1","todoKey":"market-scan","workerKey":"prices","text":"Add Delta to the table."}',v_binding);
 	v_worker := pg_temp.worker_row('prices');
 	perform pg_temp.wake_assert(v_worker.sequence = 2 and v_worker.state = 'active' and v_worker.steering_run_id = (v_binding ->> 'runId')::uuid

@@ -33,7 +33,11 @@ import {
 	cloudToolRequest,
 	parseCloudNativeToolBinding,
 } from "./cloud-native-tool-authority.ts";
-import { type CloudNativeTool, cloudToolJsonText } from "./cloud-native-tool-boundary.ts";
+import {
+	CLOUD_NATIVE_TOOL_CATALOG_BYTES,
+	type CloudNativeTool,
+	cloudToolJsonText,
+} from "./cloud-native-tool-boundary.ts";
 import type { CloudNativeToolOperationControlPlane } from "./cloud-native-tool-operations.ts";
 import { cloudRoutineTools } from "./cloud-routine-tools.ts";
 import { assertCloudRuntimeBundle } from "./cloud-runtime-bundle.ts";
@@ -44,6 +48,7 @@ import {
 	cloudRuntimeErrorCategory,
 } from "./cloud-runtime-observability.ts";
 import { type CloudSecretOperationClient, cloudSecretTools, describeCloudSecretTools } from "./cloud-secret-tools.ts";
+import { cloudSidebarTools } from "./cloud-sidebar-tools.ts";
 import {
 	CLOUD_ASK_MEMBER_INSTRUCTIONS,
 	CLOUD_INTERACTION_SURFACES,
@@ -319,7 +324,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					binding,
 					controlPlane: this.#control,
 					beginExecution: async (specification, requestSignal) => {
-						const toolCatalogText = cloudToolJsonText(specification, 256 * 1024);
+						const toolCatalogText = cloudToolJsonText(specification, CLOUD_NATIVE_TOOL_CATALOG_BYTES);
 						const started = await this.#paths.call(
 							"qorpera_begin_native_company_execution_v2",
 							{
@@ -397,6 +402,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 									: [
 											cloudCoworkerMessageTool(binding, identity, wakeControl),
 											...cloudRoutineTools(binding, identity, this.#paths),
+											...cloudSidebarTools(binding, identity, this.#paths),
 										]),
 								// The notebook is the agent's own: a worker of the same agent recalls it,
 								// and writes to it only when its dispatch allows Company File writes.

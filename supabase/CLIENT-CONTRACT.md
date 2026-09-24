@@ -151,6 +151,24 @@ profile RPCs; RLS is the second read boundary.
 - `qorpera_list_profile_staff`
 - `qorpera_put_staff_provider_model`
 
+### Company sidebar (2) — bundle v90
+
+- `qorpera_read_company_sidebar(p_profile_id)` → `qorpera.company-sidebar/v1`:
+  `sections` (`sectionId`, `name`, in order), `placements` (`staffAgentId`,
+  `sectionId` or null for Unassigned, `position`), and the caller's own
+  `pinned` (ordered) and `hidden` agent ids. Any member.
+- `qorpera_manage_company_sidebar(p_profile_id, p_request)` answers the same
+  shape after the change. Shared, owner/admin/contributor:
+  `create_section {sectionId, name, staffAgentId?, unpin?}`,
+  `rename_section {sectionId, name}`, `delete_section {sectionId}` (its agents
+  go to the end of Unassigned), `move_agent {staffAgentId, sectionId|null,
+  order?, unpin?}`. The member's own, any member: `set_pins {order}` (at most
+  24; pinning unhides), `set_hidden {staffAgentId, hidden}` (hiding unpins).
+  Section names are 1-60 characters, unique per company ignoring case; at most
+  40 sections. The Co-Founder is never placed, pinned or hidden. Agents change
+  the same shared sections through the runtime tool `organize_sidebar`
+  (`qorpera_manage_agent_sidebar`, runner only).
+
 
 ### Conversations, turns, wakes (28)
 
@@ -257,6 +275,14 @@ profile RPCs; RLS is the second read boundary.
   (sub-channels seen in the shell: `sessions`, `staff`, `trail`,
   `company-tree`, `company-projection`, `workspace-inbox`). Hints only: the
   client re-reads through RPCs; large bodies never travel on this channel.
+- `postgres_changes` on `qorpera_company_sidebar_revisions` (filter
+  `profile_id=eq.{profileId}`, member-readable, one row per company) — the
+  shared sidebar changed, by a member or an agent: one hint per change however
+  many agents it renumbered; re-read with `qorpera_read_company_sidebar`. The
+  section and placement tables themselves are not readable or published. The web
+  subscribes on its own channel, only after the read RPC answered, so a cloud
+  without the table never degrades the company channel. Pins and hidden agents
+  are not published.
 - `qorpera-presence-{profileId}` — lossy presence (typing, who-is-viewing).
   Private channel authorized by membership through RLS on
   `realtime.messages`; never stored; must never carry durable content.
@@ -638,3 +664,57 @@ above.
 
     Follow-up: PR #129 restores member execution notices in the web workspace;
     the resolution recorded under request 12 above also addresses request 13.
+
+### 2026-09-24 — from the runtime (bundle v89, `20260924080000_runtime_remove_company_ceilings.sql`)
+
+14. **Company execution ceilings are gone; the pause is operator-only.** At the
+    founder's request ("get rid of this … not just in settings, but as policy
+    configurations/settings") there are no per-company monthly spend, monthly
+    token or hourly wake ceilings. Removed, with no `_v2`:
+    - `qorpera_company_execution_ceiling_json(p_profile_id)` and
+      `qorpera_set_company_execution_ceiling(uuid,bigint,bigint,bigint,bigint)`
+      (request 8), plus the private helpers, the ceiling table and the trip
+      records. The only client, the web Settings panel, was removed first
+      (web PR #247, no bundle), so the cut must follow that deploy.
+    - `qorpera_set_company_execution_pause` is no longer granted to
+      `authenticated`. It stays as the operator brake of every runtime cut
+      (an operator session with a founder's claims), and it no longer writes
+      member notifications.
+    - Notification kinds `company_execution_paused` and
+      `company_execution_resumed` are removed, together with the open and
+      acknowledged rows of both and every `company-ceiling-tripped/v1` row.
+      `company_ceiling_tripped` remains, carrying only the machine-capacity
+      subject (`qorpera.member-notification.machine-capacity/v1`).
+
+    Per-connection provider quotas, the provider's own usage limits and the
+    running-machine limit are unchanged.
+
+### 2026-09-24 — from the runtime (bundle v92, `20260924130000_runtime_remove_run_and_machine_caps.sql`)
+
+15. **No machine limit, no API-key budget, no run deadline.** Removed, with no
+    `_v2`: `qorpera_company_machine_capacity(p_profile_id)` and
+    `qorpera_set_company_machine_limit(uuid,integer,bigint)` (no client calls
+    them) and the machine-capacity notice. Its rows go, and so does the
+    `company_ceiling_tripped` kind, so a web build that still parses that
+    notice only ever sees none. Node capacity is the only bound on company
+    computers. API-key connections keep only their concurrency. A run's
+    `deadline_at` is set a century out, and usage records runs of any
+    length. A queued run that no computer starts within a day of being queued
+    (a retry counts from its requeue) still fails, with the job error "No
+    computer could start the run within a day".
+
+    A run's work has no count either (founder, 2026-09-24). What a client may
+    see change:
+    - A wake policy's `maxPublicSends` is `null` (no limit) or `0` (the wake may
+      not speak publicly); the numbers 64, 3 and 2 are gone.
+    - Coworker messages have no hop budget and no hourly pair budget, so a send
+      no longer returns `causal-fence` for those reasons and the pair transcript
+      gets no budget line. Nothing but a member's Stop (or the operator pause)
+      ends a loop between two agents.
+    - Hiring and group chats have no per-run count ("This run reached its limit
+      for new agents/rooms" is gone), and neither do Company File reads, model
+      requests, screenshots, tool calls, worker follow-up turns or workers per
+      todo ("This todo already has eight workers" is gone).
+    - What still refuses is listed in the runtime contract, section 7.4. It
+      includes four active workers per agent and one open limit, 128 tool
+      outputs per model request, which leaves with a Codex rebuild.

@@ -97,7 +97,7 @@ async function fixture(mode = "company-runtime", httpPathControl = false, presen
 						initial: "optional",
 						final: "optional",
 						silenceAllowed: true,
-						maxPublicSends: 64,
+						maxPublicSends: null,
 					},
 					time: {
 						utc: "2026-09-02T08:00:00.000000Z",
@@ -142,7 +142,7 @@ async function fixture(mode = "company-runtime", httpPathControl = false, presen
 						initial: "required",
 						final: "required",
 						silenceAllowed: false,
-						maxPublicSends: 64,
+						maxPublicSends: null,
 					},
 					time: {
 						utc: "2026-09-02T08:00:00.000000Z",
@@ -702,6 +702,7 @@ it.each([
 				"manage_routine",
 				"manage_todo",
 				"manage_worker",
+				"organize_sidebar",
 				"read_context",
 				"recall_memory",
 				"send_coworker_message",

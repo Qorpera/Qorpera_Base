@@ -467,6 +467,58 @@ usage limits and the usage-limit notification in section 17. Ratified
 2026-09-01 as a low-priority launch item: most members will run on
 subscriptions, which self-limit.
 
+> **Amended 2026-09-24.** The founder removed the company execution ceilings
+> as policy, not only from Settings: there is no per-company wake-rate, spend
+> or token ceiling, and no tripped-ceiling notice (bundle v89,
+> `20260924080000_runtime_remove_company_ceilings.sql`). What still bounds
+> work is the running-machine limit at machine start, each connection's own
+> quota at run admission, and the provider's usage limits (section 17). The
+> stop is no longer a member operation: it remains the operator brake that
+> pauses a company during a runtime cut (no new wakes, running work fenced),
+> and it notifies no one.
+>
+> **Amended again 2026-09-24 (bundle v92,
+> `20260924130000_runtime_remove_run_and_machine_caps.sql`).** The
+> running-machine limit is gone too: a company starts as many computers as
+> the nodes have room for. API-key connections have no monthly budget and no
+> per-run call, token or cost cap; like a subscription account (64 at once)
+> they keep only their concurrency. A run has no deadline and no silence or
+> output cap, because OpenAI, Anthropic and xAI publish none: it ends when it
+> completes, is stopped, or its host is lost (a lapsed lease). Idle company
+> computers still power off after 5 minutes.
+>
+> A run also has no count on its work: no cap on tools, tool calls, model
+> requests (company and coding), Company File reads, screenshots, follow-up
+> turns of a worker, worker dispatches per hour, workers per todo, hires or
+> group chats, and no count on a wake's public messages or on agent-to-agent
+> messages (no hop budget, no hourly pair budget, no chain length; see 14.6).
+> A provider that limits these enforces its own limit. **Nothing stops two
+> agents messaging each other in a loop except a member's Stop or the
+> operator pause.**
+>
+> What remains:
+> - crash detection (job, connection and session leases) and retry limits
+>   (8 dispatch failures; 8 attempts for a pristine retry or a sponsor
+>   handoff);
+> - one machine per run, four active workers per agent, one coding session
+>   per owner and harness, and account concurrency (64 per subscription);
+> - a queued run that no computer starts within a day of being queued fails;
+> - input validation and per-call size bounds (message, argument, result,
+>   batch, catalog text up to 1 MiB);
+> - standing counts of things that exist: 32 routines and 64 open todos per
+>   agent, 40 sidebar sections per company, 50,000 Company File entries;
+> - no stall detection: a run whose harness hangs without crashing keeps its
+>   machine until Stop, as in Codex CLI and Claude Code;
+> - a continuation (a worker report, a computer start, a sponsor handoff)
+>   carries the newest results and sends of the earlier run that fit, and
+>   counts the rest;
+> - the API-key sandbox runner (not company work) keeps its per-job totals:
+>   64 MiB transcript, 100 output artifacts and 64 MiB of output.
+>
+> One count is still open. The pinned Codex build refuses a model request
+> carrying 128 or more tool outputs, and the kernel refuses a context view with
+> more than 128 outputs or over 128 KiB. Both go with a Codex rebuild.
+
 ## 8. Wake bus
 
 Every activation enters through one durable, typed wake bus. A wake is admitted
@@ -497,7 +549,7 @@ Provider-native session IDs are resumability hints, not wake identity.
 | First run | Greet and learn when no assignment exists; otherwise begin the supplied startup assignment. |
 | Routine | Execute the stored intent. Silence is valid when policy permits and there is nothing useful to report. |
 | Agent | Treat the sender as a coworker. Answer through the peer channel when asked or useful; never acknowledge an acknowledgement; silence is valid. Speak in your own thread only when the member should know (pair policy, 14.6). |
-| Room | Act as yourself for the room audience. Keep sends bounded. Silence is allowed. Private member communication remains a separate authorized send. |
+| Room | Act as yourself for the room audience. Speak when the room needs it. Silence is allowed. Private member communication remains a separate authorized send. |
 
 Scheduled and listener-triggered jobs both use the routine entrypoint with a
 different trigger subtype. A worker revival targets the parent run or creates a
@@ -1091,22 +1143,23 @@ company-visible and answerable:
   B" in the sender's thread, "Message from A" in the receiver's) that opens the
   pair transcript. The chip carries no message text.
 - The receiver wakes **in its own shared thread** under the pair policy:
-  initial send forbidden, final send optional, silence allowed, at most two
-  public sends. It answers the coworker through the same peer channel, which
+  initial send forbidden, final send optional, silence allowed (no count on
+  public sends since bundle v92). It answers the coworker through the same peer channel, which
   puts the answer in the pair transcript and wakes the sender in the sender's
   thread under the same policy. A member post in either thread is a human wake
   and starts a new causal root.
-- The kernel bounds an exchange by **hops**, not by "agent already visited":
-  at most 6 peer messages per causal root and 20 per pair per rolling hour, on
-  top of the company wake ceiling and the founder stop. A tripped budget
-  refuses the wake (causal-fence receipt) and leaves one line in the pair
-  transcript. File-event and routine fences are unchanged.
+- An exchange is not bounded by "agent already visited". Until bundle v92 the
+  kernel bounded it by **hops** (at most 6 peer messages per causal root and 20
+  per pair per rolling hour). Since v92 (founder, 2026-09-24) there is no hop
+  or hourly budget: a chain records its root and the agents it reached, and
+  only a member's Stop or the operator pause ends a loop between two agents.
+  File-event and routine fences are unchanged.
 - Workers (13) are not messaging: they have no mouth and report to their parent.
   Group chats (14.7) remain the place for handoffs that need several agents.
 - A message may be sent **held** (`priority: false`): written and shown the
   same way, it wakes nobody; the recipient reads it, as data, at the start of
-  its next wake of any kind. Held messages extend no chain but count toward
-  the pair's hourly budget. Thanks, status and FYIs are sent held.
+  its next wake of any kind. Held messages extend no chain. Thanks, status
+  and FYIs are sent held.
 
 ### 14.7 Rooms
 
@@ -1290,12 +1343,24 @@ the routine version stores it. The bundle's model policy declares
 effort from its routine version when the run is created and pins it as before.
 Attended threads keep the bundle default.
 
+2026-09-24 amendment: thread model and effort. A member picks the model
+(GPT-6 Astra, Sol or Luna) and the effort (low, medium or high) for one
+conversation in its Model menu; the choice is stored per conversation, not in
+the agent document. A member's turn in that conversation (a session turn or a
+room delivery) runs with it: the model applies to native subscription sponsors,
+the effort to every sponsor. The bundle's model policy declares
+`overrides: routine-and-thread`; bundles that declare `routine` keep thread
+turns at the default. Routines, coworker wakes and other conversations are not
+affected. Superseded: "Attended threads keep the bundle default" above.
+
 2026-09-22 amendment: no turn caps. A turn is not capped by a number of tool
 calls, effectful operations, transcript events or wall-clock time. The agent
 works until the task is done or genuinely blocked. The remaining bounds are
 safety limits far outside any real turn: the run deadline (24 hours), the job
 lease that a live runner renews, the transcript byte bound and protocol flood
 bounds in the native boundary. The prompt no longer advertises a call budget.
+(Superseded by the second 2026-09-24 amendment in 7.4, bundle v92: there is no
+run deadline and no protocol flood bound; see that list of what remains.)
 
 Company-formation and other research projects MAY dispatch higher-effort
 workers under a bounded, attributed project policy while the attended
@@ -2109,6 +2174,27 @@ gate before Order 5 is closed; coding, media and listener workers remain in
 Orders 9, 7 and 8. See
 [Runtime Step 5 workers and todos](deploy/first-node/RUNTIME-STEP-5-WORKERS-TODOS.md).
 
+### 2026-09-24 amendment: sidebar sections are the company's, and agents organize them
+
+Founder decision, 2026-09-24 (Grok Bot's rail). Extends 14.1 and the
+2026-09-19/20 amendment, item 4.
+
+1. **Sections are company structure.** The rail groups agents under named
+   sections. Sections and which agent sits in which, in what order, belong to
+   the company: every member sees the same sections, and owners, admins and
+   contributors create, rename and delete them and move agents between them.
+   The Co-Founder stands above all sections and is never placed.
+2. **Agents organize themselves.** Any active company agent may list, create,
+   rename and delete sections and move itself or a coworker between them
+   through its run authority (`organize_sidebar`), with no member approval, so
+   agents can keep the team findable as it grows. Worker runs do not. The
+   change is attributed to the agent and reaches open rails at once.
+3. **Pins and hiding are a member's own.** A member's pinned agents (square
+   cards under the Co-Founder card) and the agents a member hides from their
+   rail are that member's view only. No agent and no other member changes them.
+4. **Arrangement is not authority.** A section grants nothing and carries no
+   content; deleting one moves its agents to Unassigned.
+
 ## 20. Enforcement matrix
 
 | Requirement | Code owner | Model law |
@@ -2246,7 +2332,8 @@ while Azure backup/overflow remains disabled.
 30. A company's ceilings hold without agent cooperation: a deliberately
     runaway loop is stopped at its wake-rate or spend ceiling, the founder
     stop operation pauses the company, and the founder is notified from the
-    control plane.
+    control plane. (Amended 2026-09-24, see 7.4: only the operator stop
+    remains; since bundle v92 there is no machine limit either.)
 31. **Deferred post-build enablement gate, not a launch prerequisite:** before
     Azure backup/overflow is enabled, demand beyond local capacity is attributable
     to Azure placements and rented allocation intervals. The view distinguishes

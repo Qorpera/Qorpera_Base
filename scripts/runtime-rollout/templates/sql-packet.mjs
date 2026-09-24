@@ -63,6 +63,7 @@ const finalInterfaces = `${activeBundle}=${q(F.bundle)}
   and to_regprocedure('public.qorpera_send_coworker_message(jsonb,uuid,text,text)') is not null
   and to_regprocedure('public.qorpera_escalate_responsibility(jsonb,jsonb)') is null
   and to_regprocedure('public.qorpera_manage_agent_routine(jsonb,jsonb)') is not null
+  and to_regprocedure('public.qorpera_manage_agent_sidebar(jsonb,jsonb)') is not null
   and to_regprocedure('public.qorpera_self_approve_organization_proposal(jsonb,uuid)') is not null
   and to_regprocedure('public.qorpera_runtime_wake_policy(uuid)') is not null
   and to_regprocedure('public.qorpera_assert_wake_work_allowed(uuid)') is not null
@@ -72,13 +73,17 @@ const finalInterfaces = `${activeBundle}=${q(F.bundle)}
   and to_regprocedure('public.qorpera_post_company_room_message(uuid,uuid,jsonb,uuid,bigint)') is not null
   and to_regprocedure('public.qorpera_list_company_rooms(uuid)') is not null
   and to_regprocedure('public.qorpera_set_company_execution_pause(uuid,boolean,text)') is not null
-  and to_regprocedure('public.qorpera_set_company_execution_ceiling(uuid,bigint,bigint,bigint,bigint)') is not null
+  and not has_function_privilege('authenticated','public.qorpera_set_company_execution_pause(uuid,boolean,text)','EXECUTE')
+  and to_regprocedure('public.qorpera_set_company_execution_ceiling(uuid,bigint,bigint,bigint,bigint)') is null
   and to_regprocedure('public.qorpera_set_company_execution_ceiling(uuid,bigint,bigint,bigint)') is null
+  and to_regclass('public.qorpera_company_execution_ceilings') is null
+  and to_regclass('public.qorpera_company_ceiling_trips') is null
+  and to_regclass('public.qorpera_company_machine_limits') is null
+  and to_regprocedure('public.qorpera_set_company_machine_limit(uuid,integer,bigint)') is null
   and to_regprocedure('public.qorpera_consent_provider_connection_autonomous(uuid,uuid,boolean)') is not null
   and to_regprocedure('public.qorpera_handoff_run_sponsor(uuid,text)') is not null
   and to_regprocedure('public.qorpera_ensure_default_agent_read_grants(uuid,uuid)') is not null
   and exists(select 1 from information_schema.columns where table_schema='public' and table_name='qorpera_company_path_grants' and column_name='origin')
-  and exists(select 1 from information_schema.columns where table_schema='public' and table_name='qorpera_company_execution_ceilings' and column_name='wakes_per_hour')
   and exists(select 1 from information_schema.columns where table_schema='public' and table_name='qorpera_wake_occurrences' and column_name='wake_kind')
   and not exists(select 1 from pg_indexes where schemaname='public' and indexname='qorpera_native_company_execution_start_once')
   and exists(select 1 from pg_trigger where tgname='qorpera_native_company_execution_start_once')

@@ -1,4 +1,5 @@
 import { h, replace } from "../../ui/dom.ts";
+import { t } from "../../ui/preferences.ts";
 import type { AuthController, OAuthProvider } from "../auth.ts";
 import { mountCrown } from "./crown.ts";
 
@@ -19,7 +20,7 @@ function providerButton(auth: AuthController, provider: OAuthProvider, label: st
 			onclick: () => void auth.signInWithOAuth(provider),
 		},
 		h("img", { src: `./assets/provider-${provider}.svg`, alt: "", width: 18, height: 18 }),
-		h("span", null, `Continue with ${label}`),
+		h("span", null, t("Continue with {provider}", { provider: label })),
 	);
 }
 
@@ -32,7 +33,7 @@ export function renderSignIn(auth: AuthController, container: HTMLElement): void
 		type: "email",
 		name: "email",
 		autocomplete: "email",
-		placeholder: "you@company.com",
+		placeholder: t("you@company.com"),
 		required: true,
 		value: state.pendingEmail ?? container.querySelector<HTMLInputElement>("#signinEmail")?.value ?? "",
 		disabled: state.busy,
@@ -43,7 +44,7 @@ export function renderSignIn(auth: AuthController, container: HTMLElement): void
 		name: "code",
 		inputmode: "numeric",
 		autocomplete: "one-time-code",
-		placeholder: "Code from your email",
+		placeholder: t("Code from your email"),
 		value: container.querySelector<HTMLInputElement>("#signinCode")?.value ?? "",
 		maxlength: 8,
 		required: true,
@@ -59,32 +60,34 @@ export function renderSignIn(auth: AuthController, container: HTMLElement): void
 				else void auth.sendEmailCode(email.value);
 			},
 		},
-		h("label", { for: pending ? "signinCode" : "signinEmail" }, pending ? "Verification code" : "Email"),
+		h("label", { for: pending ? "signinCode" : "signinEmail" }, pending ? t("Verification code") : t("Email")),
 		pending ? code : email,
 		pending
 			? h(
 					"p",
 					{ class: "auth-hint" },
-					`We sent a code to ${state.pendingEmail}. Enter it here; the link in the same email works only in this browser.`,
+					t("We sent a code to {email}. Enter it here; the link in the same email works only in this browser.", {
+						email: state.pendingEmail ?? "",
+					}),
 				)
 			: null,
 		h(
 			"button",
 			{ type: "submit", class: "auth-primary", disabled: state.busy },
-			pending ? "Verify and sign in" : "Continue with email",
+			pending ? t("Verify and sign in") : t("Continue with email"),
 		),
 		pending
 			? h(
 					"button",
 					{ type: "button", class: "auth-link", onclick: () => auth.resetEmail() },
-					"Use a different email",
+					t("Use a different email"),
 				)
 			: null,
 	);
 	const status = h(
 		"p",
 		{ class: ["auth-status", state.error ? "is-error" : ""].join(" "), role: "status", "aria-live": "polite" },
-		state.error ?? state.message ?? (state.busy ? "One moment…" : ""),
+		state.error ?? state.message ?? (state.busy ? t("One moment…") : ""),
 	);
 	container.className = "auth";
 	// The character persists across re-renders so its motion is never restarted
@@ -123,8 +126,8 @@ export function renderSignIn(auth: AuthController, container: HTMLElement): void
 			h(
 				"div",
 				{ class: "auth-body" },
-				h("h1", { id: "authTitle" }, "Sign in"),
-				h("p", { class: "auth-lead" }, "Your companies and agents, in one place."),
+				h("h1", { id: "authTitle" }, t("Sign in")),
+				h("p", { class: "auth-lead" }, t("Your companies and agents, in one place.")),
 				!pending && state.oauthProviders.length > 0
 					? h(
 							"div",
@@ -135,7 +138,7 @@ export function renderSignIn(auth: AuthController, container: HTMLElement): void
 						)
 					: null,
 				!pending && state.oauthProviders.length > 0
-					? h("div", { class: "auth-divider", "aria-hidden": "true" }, h("span", null, "or"))
+					? h("div", { class: "auth-divider", "aria-hidden": "true" }, h("span", null, t("or")))
 					: null,
 				form,
 				status,
@@ -143,7 +146,7 @@ export function renderSignIn(auth: AuthController, container: HTMLElement): void
 			h(
 				"footer",
 				{ class: "auth-foot" },
-				"Same account as the desktop app. Only your own session lives in this browser; agents run in the cloud.",
+				t("Same account as the desktop app. Only your own session lives in this browser; agents run in the cloud."),
 			),
 		),
 		art,

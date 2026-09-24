@@ -51,11 +51,11 @@ assert.throws(() => assertCloudRuntimeBundle(identity, different(expected.native
 
 // Public pure policy boundary: all five wake kinds and hostile/extra fields.
 const cases = [
-  ['human', 'required', 'required', false, 64],
-  ['first-run', 'required', 'required', false, 64],
+  ['human', 'required', 'required', false, null],
+  ['first-run', 'required', 'required', false, null],
   ['routine', 'forbidden', 'forbidden', true, 0],
   ['agent', 'forbidden', 'forbidden', true, 0],
-  ['room', 'optional', 'optional', true, 3],
+  ['room', 'optional', 'optional', true, null],
 ];
 for (const [kind, initial, final, silenceAllowed, maxPublicSends] of cases) {
   const input = { schema: CLOUD_WAKE_POLICY_SCHEMA, kind, initial, final, silenceAllowed, maxPublicSends };
