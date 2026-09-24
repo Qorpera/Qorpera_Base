@@ -30,10 +30,14 @@ PrivateTmp=yes
 PrivateDevices=yes
 ProtectSystem=strict
 ProtectHome=yes
-ProtectKernelTunables=yes
+# The Git broker's bubblewrap sandbox mounts a fresh /proc, which a masked
+# parent /proc (ProtectKernelTunables) forbids; the executor has no
+# capabilities, so /proc/sys stays unwritable anyway.
+ProtectKernelTunables=no
 ProtectKernelModules=yes
 ProtectControlGroups=yes
-RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+# AF_NETLINK: bubblewrap brings up the sandbox's loopback over NETLINK_ROUTE.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
 CapabilityBoundingSet=
 UMask=0077
 MemoryMax=2G
