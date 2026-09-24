@@ -8,8 +8,9 @@
 --   chain; that agent moves to the end of the chain, as a coworker message
 --   already does (was fenced). An agent's own write still never wakes its own
 --   watch routine: that is what the write was, not a count.
--- Worker reports are still handed back four at a time; each later pass takes
--- the next four, so a batch of any size is delivered in full.
+-- Worker reports are still handed back four at a time, one revival after
+-- another, so a batch of any size is delivered in full and never to two
+-- continuations at once.
 
 create function pg_temp.count_patch(p_target regprocedure, p_old text, p_new text)
 returns void language plpgsql as $$
@@ -46,6 +47,85 @@ select pg_temp.count_patch('public.qorpera_sidebar_create_section(uuid,uuid,text
 		raise exception 'A company can have at most 40 sections' using errcode = '54000'; end if;
 $old$,
 	'');
+
+-- With no count on active workers a batch can hold more than four. Reports are
+-- still handed back four per revival, but one revival at a time: the next four
+-- wait until the previous revival's run has ended, and stillActive counts the
+-- results that have not reached the agent yet. The status and todo listings are
+-- pages; what they leave out is counted (moreWorkers, moreTodos).
+select pg_temp.count_patch('public.qorpera_drain_worker_wakes(integer)'::regprocedure,
+	$old$			if public.qorpera_company_execution_paused(v_worker.profile_id) then continue; end if;
+$old$,
+	$new$			if public.qorpera_company_execution_paused(v_worker.profile_id) then continue; end if;
+			-- One revival at a time for a parent (runtime v95: a batch may exceed four): the next four reports
+			-- wait until the previous revival's run has ended, so two continuations never run side by side.
+			if exists (select 1 from public.qorpera_wake_occurrences pending
+				left join public.qorpera_execution_runs pending_run on pending_run.id = pending.run_id
+				left join public.qorpera_runner_jobs pending_job on pending_job.id = pending_run.job_id
+				where pending.parent_run_id = v_worker.steering_run_id and pending.source_kind = 'worker-completion'
+					and (pending.status = 'queued' or (pending.status = 'materialized'
+						and (pending_job.id is null or pending_job.status in ('queued','leased'))))) then continue; end if;
+$new$);
+select pg_temp.count_patch('public.qorpera_worker_completion_payload(uuid,uuid[])'::regprocedure,
+	$old$			where worker.steering_run_id = p_steering_run_id and worker.state = 'active'))$old$,
+	$new$			-- Results that have not reached the agent yet: still working, or waiting for this continuation to end.
+			where worker.steering_run_id = p_steering_run_id and (worker.state = 'active'
+				or (worker.completion_state = 'waiting' and not (worker.id = any(p_worker_ids))))))$new$);
+select pg_temp.count_patch('public.qorpera_manage_agent_worker(jsonb,jsonb)'::regprocedure,
+	$old$		return jsonb_build_object('schema','qorpera.agent-workers/v1','runId',v_run.id,'workers',coalesce((
+			-- One named worker is shown in full; a listing keeps summaries short so many fit one result.
+			select jsonb_agg(public.qorpera_worker_view(listed.worker, p_request ? 'workerKey') || jsonb_build_object('todoKey', listed.todo_key)
+				|| coalesce((select jsonb_build_object('coding', public.qorpera_coding_session_view(session, listed.worker))
+					from public.qorpera_coding_sessions session where session.worker_id = (listed.worker).id), '{}'::jsonb)
+				order by (listed.worker).updated_at desc, (listed.worker).id) from (
+				select worker, todo.todo_key from public.qorpera_runtime_workers worker
+				join public.qorpera_runtime_agent_todos todo on todo.id = worker.todo_id
+				where worker.profile_id = v_run.profile_id and worker.environment_id = v_run.environment_id
+					and worker.staff_agent_id = v_run.staff_agent_id
+					and (p_request ->> 'todoKey' is null or todo.todo_key = p_request ->> 'todoKey')
+					and (p_request ->> 'workerKey' is null or worker.worker_key = p_request ->> 'workerKey')
+					and (p_request ->> 'todoKey' is not null or todo.state in ('open','blocked')
+						or worker.updated_at > clock_timestamp() - interval '7 days')
+				order by worker.updated_at desc, worker.id limit 16) listed), '[]'::jsonb));$old$,
+	$new$		-- A page of sixteen, active workers first; the rest are counted in moreWorkers, never silently
+		-- dropped (runtime v95: an agent may run any number of workers).
+		return (select jsonb_build_object('schema','qorpera.agent-workers/v1','runId',v_run.id,'workers',coalesce(
+			-- One named worker is shown in full; a listing keeps summaries short so many fit one result.
+			jsonb_agg(public.qorpera_worker_view(listed.worker, p_request ? 'workerKey') || jsonb_build_object('todoKey', listed.todo_key)
+				|| coalesce((select jsonb_build_object('coding', public.qorpera_coding_session_view(session, listed.worker))
+					from public.qorpera_coding_sessions session where session.worker_id = (listed.worker).id), '{}'::jsonb)
+				order by (listed.worker).state = 'active' desc, (listed.worker).updated_at desc, (listed.worker).id), '[]'::jsonb),
+			'moreWorkers', coalesce(max(listed.total), 0) - count(*))
+		from (
+				select worker, todo.todo_key, count(*) over () as total from public.qorpera_runtime_workers worker
+				join public.qorpera_runtime_agent_todos todo on todo.id = worker.todo_id
+				where worker.profile_id = v_run.profile_id and worker.environment_id = v_run.environment_id
+					and worker.staff_agent_id = v_run.staff_agent_id
+					and (p_request ->> 'todoKey' is null or todo.todo_key = p_request ->> 'todoKey')
+					and (p_request ->> 'workerKey' is null or worker.worker_key = p_request ->> 'workerKey')
+					and (p_request ->> 'todoKey' is not null or todo.state in ('open','blocked')
+						or worker.updated_at > clock_timestamp() - interval '7 days')
+				order by worker.state = 'active' desc, worker.updated_at desc, worker.id limit 16) listed);$new$);
+select pg_temp.count_patch('public.qorpera_manage_agent_todo(jsonb,jsonb)'::regprocedure,
+	$old$		return jsonb_build_object('schema','qorpera.agent-todos/v1','runId',v_run.id,'todos',coalesce((
+			select jsonb_agg(public.qorpera_agent_todo_view(todo) order by todo.updated_at desc, todo.id) from (
+				select * from public.qorpera_runtime_agent_todos todo
+				where todo.profile_id = v_run.profile_id and todo.environment_id = v_run.environment_id
+					and todo.staff_agent_id = v_run.staff_agent_id
+					and (todo.state in ('open','blocked') or coalesce((p_request ->> 'includeClosed')::boolean, false))
+				order by todo.updated_at desc, todo.id limit 32) todo), '[]'::jsonb),$old$,
+	$new$		-- A page of thirty-two, open todos first; the rest are counted in moreTodos (runtime v95).
+		return jsonb_build_object('schema','qorpera.agent-todos/v1','runId',v_run.id,'todos',coalesce((
+			select jsonb_agg(public.qorpera_agent_todo_view(todo) order by todo.state in ('open','blocked') desc, todo.updated_at desc, todo.id) from (
+				select * from public.qorpera_runtime_agent_todos todo
+				where todo.profile_id = v_run.profile_id and todo.environment_id = v_run.environment_id
+					and todo.staff_agent_id = v_run.staff_agent_id
+					and (todo.state in ('open','blocked') or coalesce((p_request ->> 'includeClosed')::boolean, false))
+				order by todo.state in ('open','blocked') desc, todo.updated_at desc, todo.id limit 32) todo), '[]'::jsonb),
+			'moreTodos',greatest((select count(*) from public.qorpera_runtime_agent_todos todo
+				where todo.profile_id = v_run.profile_id and todo.environment_id = v_run.environment_id
+					and todo.staff_agent_id = v_run.staff_agent_id
+					and (todo.state in ('open','blocked') or coalesce((p_request ->> 'includeClosed')::boolean, false))) - 32, 0),$new$);
 
 -- A chain that already holds the recipient continues with it at the end. For
 -- every occurrence admitted before this migration the recipient was not in its

@@ -337,7 +337,10 @@ Every committed mutation emits a durable file-change event with canonical
 paths or object identities, prior and resulting versions, operation provenance,
 and causal ancestry. Exact-object, prefix, and semantic subscriptions enter the
 normal wake bus after current read authority is checked. The bus deduplicates,
-coalesces per policy, and fences self-trigger and multi-agent cycles. Agents do
+coalesces per policy, and fences self-trigger: an agent's own write never wakes
+its own subscription. (Since bundle v95 a change may wake an agent already
+earlier in its causal chain again, which moves it to the end of the chain; only
+a member's Stop or the operator pause ends a loop between agents.) Agents do
 not poll synchronized folders to observe their company.
 
 ### 5.4 Memory and transcript relationship
@@ -1429,7 +1432,7 @@ Company File, rather than chat or a machine disk, is what that brain operates.
 | 0 | Live Company File, path authority, and provenance | With all clients offline, one cloud company remains readable and mutable through atomic versioned path operations. Two members and one agent obey exact/private/subtree ACLs; protected paths propose; revocation and stale versions fence effects; receipts retain exact actor/requester/sponsor/approver attribution. |
 | 1 | Loop plus mouth | Model input and cloud tools work over an exact Company File read view; only send is visible; provider thinking and final assistant text never render; completion links a live operation, proposal, or explicit no-change result. |
 | 2 | Inbound fences, outbound effect check, and cloud secret custody | A fake instruction inside a tool or Company File result is ignored; an unauthorized, stale, protected, or ambiguous write is blocked independently; and a canary credential survives capture, use, rotation, revocation, response reflection, restart, and encrypted recovery without entering any model-visible or company-visible surface. |
-| 3 | Wake bus | One agent enters through all five wake kinds; each applies its silence rule; a routine finishes with no send; an authorized Company File event wakes once without creating a causal loop. |
+| 3 | Wake bus | One agent enters through all five wake kinds; each applies its silence rule; a routine finishes with no send; an authorized Company File event wakes once, and an agent's own write never wakes itself (amended v95: no multi-agent cycle fence). |
 | 4 | Shared office VM | Persistent cloud workbench, live Company File mount, shell, browser with sticky granted sessions, one company machine (additional machines are later capacity work), and several agent desktops work with every member device offline; resetting the VM leaves company state intact. |
 | 5 | Workers and todos | Parent remains interruptible; blank child receives a complete dispatch; durable completion reaches the parent; todos and accepted worker outputs become Company File state and survive restart. |
 | 6 | Agent memory (amended 2026-09-22, company first 2026-09-24) | An agent's profile, monthly log, and notes are its own Company File objects in the Grok Bot layout; `update_memory` write/forget and `recall_memory` work through the versioned mutation gateway with dedupe, exact-text forget, and head-conflict retry; every turn composes the profile and the recent log slice through the trusted read lane; a worker of the same agent recalls but writes only with write access; notebooks are company-owned and there is no member memory; a Grok Bot export imports unchanged. |
@@ -2263,8 +2266,9 @@ while Azure backup/overflow remains disabled.
 8. Provider reasoning, ordinary assistant output, tool logs, and wake envelopes
    never appear in the product; only idempotent send operations do.
 9. The same agent passes all five wake tests, including a silent routine. A
-   subscribed Company File change wakes exactly once and causal loop fencing
-   prevents recursive agent churn.
+   subscribed Company File change wakes exactly once, and an agent's own write
+   never wakes itself. (Amended for bundle v95: a chain may revisit an agent;
+   see 5.3.)
 10. Injected instructions inside connector, browser, Company File, worker, and
     coworker results do not gain authority.
 11. An agent can message a coworker, create a coworker with startup
