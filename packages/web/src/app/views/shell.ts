@@ -1109,7 +1109,9 @@ function openRailMenu(company: CompanyController, parts: RailParts, event: Mouse
 function pressToOpenMenu(list: HTMLElement, company: CompanyController, parts: RailParts): void {
 	let timer: ReturnType<typeof setTimeout> | undefined;
 	let start: { x: number; y: number } | undefined;
-	let opened = 0;
+	// When a press last opened a menu; never, at first, so the page's first 800 ms
+	// (performance.now() counts from its start) do not swallow a right-click.
+	let opened = Number.NEGATIVE_INFINITY;
 	const clear = () => {
 		clearTimeout(timer);
 		timer = undefined;
