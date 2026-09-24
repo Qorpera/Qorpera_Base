@@ -12,3 +12,9 @@ describe("company routes", () => {
 		});
 	});
 });
+
+describe("account routes", () => {
+	it("opens the companies page for the removed cloud check", () => {
+		expect(parseRoute("#/cloud-check")).toEqual({ name: "hub" });
+	});
+});

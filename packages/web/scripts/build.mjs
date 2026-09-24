@@ -95,11 +95,7 @@ const options = {
 	external: ["*.woff2", "*.png", "*.svg"],
 	minify: !serve,
 	logLevel: "info",
-	define: {
-		...deployment.define,
-		__QORPERA_WEB_VERSION__: JSON.stringify(version),
-		__QORPERA_WEB_MODE__: JSON.stringify(serve ? "development" : "production"),
-	},
+	define: deployment.define,
 };
 
 if (serve) {

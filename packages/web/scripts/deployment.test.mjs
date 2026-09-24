@@ -23,7 +23,6 @@ function fixture(t, value = config) {
 test("release configuration and CSP admit the same exact HTTPS/WSS origins", t => {
 	const deployment = prepareDeployment(fixture(t));
 	assert.deepEqual(deployment.config, config);
-	assert.equal(deployment.manifest.configOverrideAllowed, false);
 	const sources = deployment.headers.match(/; connect-src ([^;]+);/)[1].split(" ");
 	assert.deepEqual(sources, ["'self'", config.projectUrl, config.projectUrl.replace("https:", "wss:"), config.objectGatewayUrl, config.officeViewerOrigin]);
 	assert.equal(deployment.manifest.headersSha256, createHash("sha256").update(deployment.headers).digest("hex"));
@@ -39,7 +38,6 @@ test("release rejects an absent config, absent viewer, or development server", t
 test("preview retains default origins without inventing a viewer", () => {
 	const deployment = prepareDeployment({ headersTemplate });
 	assert.deepEqual(deployment.config, DEFAULT_CLOUD_CONFIG);
-	assert.equal(deployment.manifest.configOverrideAllowed, true);
 	assert.equal(deployment.manifest.release, false);
 	assert.ok(!deployment.headers.includes("office.example"));
 });
@@ -74,7 +72,6 @@ test("explicit login bridge base is locked into configuration and matching CSP",
 	const nativeProviderLoginUrl = "https://login.example.invalid/functions/v1/native-provider-login/";
 	const deployment = prepareDeployment(fixture(t, { ...config, nativeProviderLoginUrl }));
 	assert.equal(deployment.config.nativeProviderLoginUrl, nativeProviderLoginUrl);
-	assert.equal(deployment.manifest.configOverrideAllowed, false);
 	assert.ok(deployment.headers.includes("https://login.example.invalid"));
 	assert.ok(!deployment.headers.includes(nativeProviderLoginUrl));
 	assert.equal(parseCloudConfig(config).nativeProviderLoginUrl, undefined);
@@ -85,18 +82,24 @@ test("explicit login bridge base is locked into configuration and matching CSP",
 	]) assert.throws(() => parseCloudConfig({ ...config, nativeProviderLoginUrl: value }), undefined, value);
 });
 
-test("compiled deployment ignores stale browser overrides without reading local storage", async t => {
-	const deployment = prepareDeployment(fixture(t));
-	const result = await build({
-		entryPoints: [new URL("../src/cloud/config.ts", import.meta.url).pathname],
-		bundle: true, platform: "browser", format: "iife", globalName: "clientConfig", write: false,
-		define: deployment.define,
-	});
-	const context = { URL, localStorage: { getItem() { throw new Error("Must not read stored overrides"); } } };
-	runInNewContext(result.outputFiles[0].text, context);
-	assert.deepEqual(JSON.parse(JSON.stringify(context.clientConfig.resolveCloudConfig())), config);
-	assert.equal(context.clientConfig.readCloudConfigOverride(), undefined);
-	assert.throws(() => context.clientConfig.writeCloudConfigOverride(DEFAULT_CLOUD_CONFIG), /deployed cloud configuration/);
+test("compiled builds use their own endpoints and never read browser storage", async t => {
+	for (const [deployment, expected] of [
+		[prepareDeployment(fixture(t)), config],
+		[prepareDeployment({ headersTemplate }), DEFAULT_CLOUD_CONFIG],
+	]) {
+		const result = await build({
+			entryPoints: [new URL("../src/cloud/config.ts", import.meta.url).pathname],
+			bundle: true, platform: "browser", format: "iife", globalName: "clientConfig", write: false,
+			define: deployment.define,
+		});
+		// A value saved by the old Settings form must not steer the build.
+		const stale = JSON.stringify({ ...DEFAULT_CLOUD_CONFIG, projectUrl: "https://stale.example.invalid" });
+		let reads = 0;
+		const context = { URL, localStorage: { getItem() { reads++; return stale; } } };
+		runInNewContext(result.outputFiles[0].text, context);
+		assert.deepEqual(JSON.parse(JSON.stringify(context.clientConfig.resolveCloudConfig())), expected);
+		assert.equal(reads, 0);
+	}
 });
 
 
@@ -104,10 +107,8 @@ test("Pages environment configuration binds release CSP without writing source f
  const configJson = JSON.stringify({ projectUrl: "https://project.example.invalid", publishableKey: "sb_publishable_fixture123", objectGatewayUrl: "https://objects.example.invalid", officeViewerOrigin: "wss://viewer.example.invalid:8443", nativeProviderLoginUrl: "https://project.example.invalid/functions/v1/native-provider-login/" });
  const deployment = prepareDeployment({ configJson, release: true, headersTemplate });
  assert.equal(deployment.manifest.release, true);
- assert.equal(deployment.manifest.configOverrideAllowed, false);
  assert.deepEqual(deployment.config, JSON.parse(configJson));
  assert.ok(deployment.headers.includes("wss://viewer.example.invalid:8443"));
- assert.equal(JSON.parse(deployment.define.__QORPERA_WEB_CONFIG_LOCKED__), true);
  assert.throws(() => prepareDeployment({ configPath: "/missing/config.json", configJson, release: true, headersTemplate }), /not both/);
  for (const invalid of ["", "{", "null", JSON.stringify({ ...JSON.parse(configJson), serviceRoleKey: "forbidden" }), "é".repeat(4097)]) {
   assert.throws(() => prepareDeployment({ configJson: invalid, release: true, headersTemplate }));
