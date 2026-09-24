@@ -84,7 +84,7 @@ The fixed unit `qorpera-coding-<worker32>-<commandId>.service`, in the session's
 slice, runs the same helper's `execute` mode as the session's unprivileged
 uid/gid. Inside the unit, `/workspace` and `/var/lib/qorpera-coding` are empty
 temporary filesystems into which only this session's two folders are bound
-(TemporaryFileSystem, BindPaths), also against sessions attached while the
+(TemporaryFileSystem, BindReadOnlyPaths), also against sessions attached while the
 command runs. The two roots are bound read-only (BindReadOnlyPaths) and
 ReadWritePaths bind-mounts the workspace, home, cache and this command's log
 directory onto themselves, writable: a command cannot write anywhere else in

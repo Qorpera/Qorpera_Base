@@ -338,11 +338,20 @@ describe("coding guest NAS mount boundary inside the command unit", () => {
 			sandboxed(sandboxLines.filter((line) => !line.includes(` /var/lib/qorpera-coding/${W}/logs/${commandId} `))),
 		],
 		[
-			"a root left writable per mount",
+			"a custody root left writable per mount",
 			sandboxed(
 				replace(
 					`/var/lib/qorpera-coding/${W}`,
 					`821 811 0:46 / /var/lib/qorpera-coding/${W} rw,nosuid,nodev,relatime master:260 - virtiofs lxd_custody--${W} rw`,
+				),
+			),
+		],
+		[
+			"a data root left writable per mount",
+			sandboxed(
+				replace(
+					`/workspace/${W}`,
+					`820 810 0:45 / /workspace/${W} rw,nosuid,nodev,relatime master:250 - virtiofs lxd_data--${W} rw`,
 				),
 			),
 		],
