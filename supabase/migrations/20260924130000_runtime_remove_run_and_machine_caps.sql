@@ -191,9 +191,21 @@ select pg_temp.cap_replace_check('public.qorpera_execution_runs', 'qorpera_execu
 	'24:00:00', 'deadline_at > created_at');
 -- A run that no computer could start at all (no eligible node, identity home
 -- or placement; admission refusals keep it queued) used to fail at its 24 h
--- deadline. It now fails after a day without its first acceptance, so it does
--- not hold its conversation and its account's concurrency forever. This bounds
--- waiting to start, never a run's work: an accepted run has no deadline.
+-- deadline. It now fails after a day in the queue, counted from when it was
+-- last queued (a pristine retry or a sponsor handoff queues it again), so it
+-- does not hold its conversation, its account's concurrency or its computer's
+-- demand forever. This bounds waiting to start, never a run's work: a started
+-- run has no deadline.
+alter table public.qorpera_runner_jobs add column queued_at timestamptz not null default statement_timestamp();
+select pg_temp.cap_patch('public.qorpera_terminalize_runner_attempt_before_native_start(uuid,text,text,boolean)'::regprocedure,
+	$old$lease_expires_at = null, last_error = v_reason$old$,
+	$new$lease_expires_at = null, last_error = v_reason, queued_at = statement_timestamp()$new$);
+select pg_temp.cap_patch('public.qorpera_handoff_run_sponsor(uuid,text)'::regprocedure,
+	$old$lease_token_sha256 = null,lease_expires_at = null,$old$,
+	$new$lease_token_sha256 = null,lease_expires_at = null,queued_at = statement_timestamp(),$new$);
+select pg_temp.cap_patch('public.qorpera_release_runner_job_claim(uuid,uuid,uuid,text)'::regprocedure,
+	$old$and the run deadline still bounds the wait.$old$,
+	$new$and a day in the queue ends the wait.$new$);
 select pg_temp.cap_patch('public.qorpera_reconcile_runner_orchestrator_without_sponsored_turns(uuid)'::regprocedure,
 	$old$		last_error = 'Execution deadline expired before runner acceptance'
 	from public.qorpera_execution_runs as run
@@ -206,12 +218,11 @@ select pg_temp.cap_patch('public.qorpera_reconcile_runner_orchestrator_without_s
 	$new$		last_error = 'No computer could start the run within a day'
 	from public.qorpera_execution_runs as run
 	where job.id = run.job_id and job.status = 'queued'
-		and (run.deadline_at <= statement_timestamp()
-			or (job.attempt_count = 0 and job.created_at <= statement_timestamp() - interval '24 hours'))
+		and (run.deadline_at <= statement_timestamp() or job.queued_at <= statement_timestamp() - interval '24 hours')
 		and job.id in (select candidate.id from public.qorpera_runner_jobs as candidate
 			join public.qorpera_execution_runs as candidate_run on candidate_run.job_id = candidate.id
 			where candidate.status = 'queued' and (candidate_run.deadline_at <= statement_timestamp()
-				or (candidate.attempt_count = 0 and candidate.created_at <= statement_timestamp() - interval '24 hours'))
+				or candidate.queued_at <= statement_timestamp() - interval '24 hours')
 			order by candidate.id for update of candidate skip locked);$new$);
 
 -- A cut applies this with the runtime quiet (no queued or leased work), so no
@@ -267,6 +278,8 @@ select pg_temp.cap_patch('public.qorpera_begin_native_company_execution_v2(jsonb
 --   once; that bounds parallel work, not how much work is done.
 select pg_temp.cap_replace_check('public.qorpera_runtime_workers', 'qorpera_runtime_workers_sequence_check',
 	'64', 'sequence >= 1');
+select pg_temp.cap_replace_check('public.qorpera_runtime_worker_events', 'qorpera_runtime_worker_events_sequence_check',
+	'<= 12', 'sequence >= 1');
 select pg_temp.cap_patch('public.qorpera_manage_agent_worker(jsonb,jsonb)'::regprocedure,
 	$old$		if (select count(*) from public.qorpera_runtime_worker_events event join public.qorpera_runtime_workers worker on worker.id = event.worker_id
 			where worker.profile_id = v_run.profile_id and worker.staff_agent_id = v_run.staff_agent_id
@@ -278,6 +291,19 @@ select pg_temp.cap_patch('public.qorpera_manage_agent_worker(jsonb,jsonb)'::regp
 	$old$		if (v_worker.species = 'in-house' and (v_worker.state = 'cancelled' or v_worker.sequence >= 12))
 			or (v_worker.species = 'coding' and v_worker.sequence >= 64) then$old$,
 	$new$		if v_worker.species = 'in-house' and v_worker.state = 'cancelled' then$new$);
+-- A run may chain any number of computer starts: past eight, the older starts
+-- are left out of its continuation (like a worker's earlier history) instead
+-- of failing the run.
+select pg_temp.cap_patch('public.qorpera_office_run_continuation(public.qorpera_execution_runs,integer)'::regprocedure,
+	$old$ if p_depth not between 0 and 7 then raise exception 'Office continuation ancestry exceeds its bound' using errcode='54000'; end if;$old$,
+	$new$ if p_depth < 0 then raise exception 'Office continuation ancestry exceeds its bound' using errcode='54000'; end if;
+ if p_depth > 7 then return null; end if;$new$);
+-- A todo may be worked by any number of workers over its life (was eight).
+select pg_temp.cap_patch('public.qorpera_manage_agent_worker(jsonb,jsonb)'::regprocedure,
+	$old$		if (select count(*) from public.qorpera_runtime_workers worker where worker.todo_id = v_todo.id) >= 8 then
+			raise exception 'This todo already has eight workers' using errcode = '54000'; end if;
+$old$,
+	'');
 select pg_temp.cap_patch('public.qorpera_answer_coding_session(uuid,text,uuid)'::regprocedure,
 	$old$	if v_worker.sequence >= 64 then raise exception 'This session cannot continue; start a new one' using errcode = '55000'; end if;
 $old$,
@@ -387,6 +413,20 @@ select pg_temp.cap_patch('public.qorpera_send_coworker_message(jsonb,uuid,text,t
 $old$, '');
 select pg_temp.cap_patch('public.qorpera_send_coworker_message(jsonb,uuid,text,text,boolean)'::regprocedure,
 	$old$v_hops integer; v_hourly integer;$old$, $new$v_hops integer;$new$);
+-- The same 16-agent bound also sat where a chain is read back: the woken run's
+-- policy, the ancestry a worker or a computer start inherits, and a room or
+-- file-event fan-out. All now accept any length. A room fan-out still never
+-- wakes an agent already in the chain; that stops a post circling, not work.
+select pg_temp.cap_patch('public.qorpera_runtime_wake_policy_internal(uuid)'::regprocedure,
+	$old$cardinality(v_wake.causal_agent_ids) not between 1 and 16$old$, $new$cardinality(v_wake.causal_agent_ids) < 1$new$);
+select pg_temp.cap_patch('public.qorpera_worker_wake_ancestry(public.qorpera_wake_occurrences)'::regprocedure,
+	$old$cardinality(v_wake.causal_agent_ids) not between 1 and 16$old$, $new$cardinality(v_wake.causal_agent_ids) < 1$new$);
+select pg_temp.cap_patch('public.qorpera_office_activation_wake_ancestry(public.qorpera_wake_occurrences)'::regprocedure,
+	$old$cardinality(v_wake.causal_agent_ids) not between 1 and 16$old$, $new$cardinality(v_wake.causal_agent_ids) < 1$new$);
+select pg_temp.cap_patch('public.qorpera_wake_ancestry(uuid,uuid,uuid,uuid)'::regprocedure,
+	$old$cardinality(v_parent.causal_agent_ids) not between 1 and 16$old$, $new$cardinality(v_parent.causal_agent_ids) < 1$new$);
+select pg_temp.cap_patch('public.qorpera_wake_ancestry(uuid,uuid,uuid,uuid)'::regprocedure,
+	$old$p_recipient = any(v_agents) or cardinality(v_agents) >= 16 then$old$, $new$p_recipient = any(v_agents) then$new$);
 select pg_temp.cap_replace_check('public.qorpera_wake_occurrences', 'qorpera_wake_causal_bound',
 	'<= 16', 'public.qorpera_uuid_array_is_unique(causal_agent_ids)');
 select pg_temp.cap_replace_check('public.qorpera_wake_occurrences', 'qorpera_wake_occurrences_causal_hop_count_check',

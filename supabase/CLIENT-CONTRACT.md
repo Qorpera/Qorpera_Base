@@ -699,7 +699,9 @@ above.
     notice only ever sees none. Node capacity is the only bound on company
     computers. API-key connections keep only their concurrency. A run's
     `deadline_at` is set a century out, and usage records runs of any
-    length.
+    length. A queued run that no computer starts within a day of being queued
+    (a retry counts from its requeue) still fails, with the job error "No
+    computer could start the run within a day".
 
     A run's work has no count either (founder, 2026-09-24). What a client may
     see change:
@@ -711,4 +713,8 @@ above.
       ends a loop between two agents.
     - Hiring and group chats have no per-run count ("This run reached its limit
       for new agents/rooms" is gone), and neither do Company File reads, model
-      requests, tool calls or worker follow-up turns.
+      requests, screenshots, tool calls, worker follow-up turns or workers per
+      todo ("This todo already has eight workers" is gone).
+    - What still refuses is listed in the runtime contract, section 7.4. It
+      includes four active workers per agent and one open limit, 128 tool
+      outputs per model request, which leaves with a Codex rebuild.

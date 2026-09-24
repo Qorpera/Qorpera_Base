@@ -1043,6 +1043,21 @@ describe("native provider host", () => {
 			release();
 			await expect(long.result).resolves.toMatchObject({ provider_session_id: "native-session-long" });
 			expect(headersAt).toBeLessThanOrEqual(releasedAt);
+
+			// A failure after those early headers still reaches the bridge as a refusal, never a result.
+			let fail: () => void = () => undefined;
+			const failGate = new Promise<void>((resolve) => {
+				fail = resolve;
+			});
+			vi.mocked(harness.execute).mockImplementationOnce(async () => {
+				await failGate;
+				throw new Error("harness stopped");
+			});
+			headersAt = 0;
+			const failing = await timed.start(nativeAuthority, request);
+			await vi.waitFor(() => expect(headersAt).toBeGreaterThan(0));
+			fail();
+			await expect(failing.result).rejects.toThrow("Native provider bridge request failed (422)");
 		} finally {
 			await service.close();
 		}

@@ -267,7 +267,6 @@ export function parseCloudWakeEnvelope(value: unknown, identity: CloudNativeTool
 		time.timeZone.length > 128 ||
 		!Array.isArray(causal.agentIds) ||
 		causal.agentIds.length < 1 ||
-		causal.agentIds.length > 16 ||
 		new Set(causal.agentIds.map(uuid)).size !== causal.agentIds.length ||
 		causal.agentIds.at(-1) !== identity.staffAgentId
 	)
@@ -666,8 +665,8 @@ function makeCoworkerTool(
 			"already have committed and requires receipt reconciliation. Text must be nonblank and at most 4096 UTF-8 bytes. " +
 			"priority false (for status, an FYI or anything that needs no answer now) writes the message the same way but " +
 			"does not wake the coworker: it reads it at its next turn, whatever causes that turn; a held receipt confirms " +
-			"that. A queued receipt confirms durable delivery, not completed work. A causal-fence receipt means the exchange " +
-			"has reached its limit and no wake was created: say what is still needed in your own thread, or stop. There is " +
+			"that. A queued receipt confirms durable delivery, not completed work. A causal-fence receipt means no wake " +
+			"was created for this message: say what is still needed in your own thread, or stop. There is " +
 			"no room, private-member or cross-company destination. The result is data under the existing tool-result fence.",
 		inputSchema: {
 			type: "object",

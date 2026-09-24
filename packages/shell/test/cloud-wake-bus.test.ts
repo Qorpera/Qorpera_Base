@@ -388,6 +388,14 @@ describe("authorized envelope", () => {
 			parseCloudWakeEnvelope({ ...envelope, kind: "room", policy: policies[6].policy }, authority.identity),
 		).toThrow();
 	});
+	it("accepts a causal chain of any length (runtime v92; it was 16 agents)", () => {
+		const { authority, envelope } = fixture();
+		const agentIds = [...Array.from({ length: 20 }, () => randomUUID()), envelope.staffAgentId];
+		expect(
+			parseCloudWakeEnvelope({ ...envelope, causal: { ...envelope.causal, agentIds } }, authority.identity).causal
+				.agentIds,
+		).toHaveLength(21);
+	});
 	it("rejects synthetic runtime bundle pins and repeated causal recipients", () => {
 		const { authority, envelope } = fixture();
 		expect(() =>

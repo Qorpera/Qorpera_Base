@@ -726,9 +726,10 @@ begin
 end
 $$;
 
--- Runtime v92: a run has no deadline, but one that no computer accepts within a
--- day fails instead of waiting forever. Checked in a subtransaction, so the
--- queued job stays for the rest of this test.
+-- Runtime v92: a run has no deadline, but one that waits a day in the queue
+-- (counted from when it was last queued, so a retry too) fails instead of
+-- waiting forever. Checked in a subtransaction, so the queued job stays for the
+-- rest of this test.
 do $$
 declare v_job uuid;
 begin
@@ -738,11 +739,18 @@ begin
 		perform public.qorpera_reconcile_runner_orchestrator('15000000-0000-4000-8000-000000000100');
 		if (select status from public.qorpera_runner_jobs where id = v_job) <> 'queued' then
 			raise exception 'a fresh queued run was failed'; end if;
-		update public.qorpera_runner_jobs set created_at = statement_timestamp() - interval '25 hours' where id = v_job;
+		-- A retried run first queued long ago but queued again just now keeps waiting.
+		update public.qorpera_runner_jobs set created_at = statement_timestamp() - interval '3 days', attempt_count = 2
+		where id = v_job;
+		perform public.qorpera_reconcile_runner_orchestrator('15000000-0000-4000-8000-000000000100');
+		if (select status from public.qorpera_runner_jobs where id = v_job) <> 'queued' then
+			raise exception 'a freshly requeued retry was failed'; end if;
+		-- The same retry after a day in the queue fails.
+		update public.qorpera_runner_jobs set queued_at = statement_timestamp() - interval '25 hours' where id = v_job;
 		perform public.qorpera_reconcile_runner_orchestrator('15000000-0000-4000-8000-000000000100');
 		if (select status || ':' || last_error from public.qorpera_runner_jobs where id = v_job)
 			is distinct from 'failed:No computer could start the run within a day' then
-			raise exception 'a run no computer started within a day was not failed'; end if;
+			raise exception 'a retried run waiting a day in the queue was not failed'; end if;
 		raise exception 'rollback-start-wait-probe';
 	exception when raise_exception then
 		if sqlerrm <> 'rollback-start-wait-probe' then raise; end if;

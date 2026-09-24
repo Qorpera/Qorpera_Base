@@ -68,6 +68,24 @@ begin
 		or exists (select 1 from pg_constraint where conname = 'qorpera_native_context_views_ordinal_check'
 			and pg_get_constraintdef(oid) like '%256%') then
 		raise exception 'A per-run count on reads, model requests or hires remains'; end if;
+
+	-- No worker turn, dispatch or per-todo count; no 16-agent chain anywhere a chain is read back.
+	if exists (select 1 from pg_proc procedure join pg_namespace namespace on namespace.oid = procedure.pronamespace
+		where namespace.nspname = 'public'
+			and (procedure.prosrc like '%Worker dispatch limit for this hour%'
+				or procedure.prosrc like '%already has eight workers%'
+				or procedure.prosrc like '%v_worker.sequence >= 12%'
+				or procedure.prosrc like '%v_worker.sequence >= 64%'
+				or procedure.prosrc like '%causal_agent_ids) not between 1 and 16%'
+				or procedure.prosrc like '%cardinality(v_agents) >= 16%'
+				or procedure.prosrc like '%Office continuation ancestry exceeds its bound%between 0 and 7%'))
+		or exists (select 1 from pg_constraint where conname in ('qorpera_runtime_workers_sequence_check',
+			'qorpera_runtime_worker_events_sequence_check') and pg_get_constraintdef(oid) ~ '<=') then
+		raise exception 'A worker or chain count remains'; end if;
+	-- Waiting to start is bounded from the last time a job was queued, which every requeue records.
+	if (select count(*) from pg_proc where oid in ('public.qorpera_terminalize_runner_attempt_before_native_start(uuid,text,text,boolean)'::regprocedure,
+			'public.qorpera_handoff_run_sponsor(uuid,text)'::regprocedure) and prosrc like '%queued_at = statement_timestamp()%') <> 2 then
+		raise exception 'A requeue path does not record when the job was queued again'; end if;
 end
 $$;
 

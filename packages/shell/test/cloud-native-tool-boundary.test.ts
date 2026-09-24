@@ -383,20 +383,30 @@ describe("cloud-owned native tool boundary", () => {
 	it("forgets the oldest retained calls and results past the window instead of refusing more", async () => {
 		// No run is capped by its number of tool calls (founder, 2026-09-24).
 		const { tool, execute, boundary } = fixture();
-		const total = CLOUD_NATIVE_RESULT_RETENTION_LIMIT + 5;
+		// Issued results are remembered for twice the call window; go past both.
+		const total = CLOUD_NATIVE_RESULT_RETENTION_LIMIT * 2 + 5;
+		const outputs: string[] = [];
 		for (let index = 0; index < total; index++) {
 			const response = await boundary.invoke(`call_${index}`, "qorpera", tool.name, { path: "projects/roadmap.md" });
 			expect(response.success).toBe(true);
+			outputs.push(response.contentItems[0].text);
 		}
 		expect(execute).toHaveBeenCalledTimes(total);
-		for (let start = 0; start < total; start += 128) {
-			const batch = Array.from({ length: Math.min(128, total - start) }, (_, offset) => ({
-				kind: "function_call_output" as const,
-				callId: `native_${start + offset}`,
-				output: "data",
-			}));
-			await expect(boundary.fenceNativeResults(batch)).resolves.toHaveLength(batch.length);
-		}
+		// The most recent issued results still pass the fence byte for byte.
+		const recent = Array.from({ length: 128 }, (_, offset) => total - 128 + offset).map((index) => ({
+			kind: "function_call_output" as const,
+			callId: `call_${index}`,
+			output: outputs[index],
+		}));
+		const fenced = await boundary.fenceNativeResults(recent);
+		expect(fenced.map((item) => item.output)).toEqual(recent.map((item) => item.output));
+		// The oldest were forgotten: presented again, they are released only as unconfirmed data,
+		// never as a failure of the run.
+		const [oldest] = await boundary.fenceNativeResults([
+			{ kind: "function_call_output", callId: "call_0", output: outputs[0] },
+		]);
+		expect(oldest.output).not.toBe(outputs[0]);
+		expect(oldest.output).toContain("unconfirmed");
 	});
 
 	it("keeps accepting calls far past the old per-turn cap and never repeats an accepted effect", async () => {

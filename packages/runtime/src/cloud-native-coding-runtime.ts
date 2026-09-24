@@ -406,7 +406,7 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 							!SHA.test(receipt.sha256) ||
 							!Number.isSafeInteger(receipt.ordinal) ||
 							Number(receipt.ordinal) < 1 ||
-							Number(receipt.ordinal) > 256
+							Number(receipt.ordinal) > 2_147_483_647
 						)
 							throw new Error("Coding context receipt unconfirmed");
 					},

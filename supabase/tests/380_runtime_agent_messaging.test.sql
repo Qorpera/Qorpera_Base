@@ -192,7 +192,7 @@ rollback to messaging_chain_rule;
 
 savepoint messaging_cross_pair;
 do $$
-declare v_binding jsonb := current_setting('qorpera_test.alice_binding')::jsonb; v_send jsonb; v_hop integer;
+declare v_binding jsonb := current_setting('qorpera_test.alice_binding')::jsonb; v_send jsonb; v_hop integer; v_wake jsonb;
 	v_alice uuid := '30000000-0000-4000-8000-000000000030'; v_bob uuid := '30000000-0000-4000-8000-000000000031';
 	v_carol uuid := '30000000-0000-4000-8000-000000000032'; v_sender_thread uuid; v_sender uuid;
 begin
@@ -211,6 +211,22 @@ begin
 		and execution_scope ->> 'agentPairKey' = public.qorpera_agent_pair_key(v_sender,v_carol)),'The new pair has a transcript');
 	perform pg_temp.wake_assert((select causal_hop_count = 7 from public.qorpera_wake_occurrences
 		where id = (v_send ->> 'occurrenceId')::uuid and staff_agent_id = v_carol),'Carol wakes at hop seven');
+	-- A run at the end of a chain of more than sixteen agents still reads a valid wake and policy.
+	-- (Admitted identity is immutable, so the fixture puts twenty more agents at the front of both the
+	-- sender's and Carol's chains with triggers off; Carol's chain still derives from the sender's.)
+	v_binding := pg_temp.wake_run_binding((v_send ->> 'occurrenceId')::uuid);
+	reset role;
+	set local session_replication_role = replica;
+	update public.qorpera_wake_occurrences
+	set causal_agent_ids = array(select ('30000000-0000-4000-8000-0000000002' || lpad(n::text,2,'0'))::uuid from generate_series(1,20) n)
+		|| causal_agent_ids
+	where id = (v_send ->> 'occurrenceId')::uuid
+		or run_id = (select parent_run_id from public.qorpera_wake_occurrences where id = (v_send ->> 'occurrenceId')::uuid);
+	set local session_replication_role = origin;
+	set local role service_role;
+	v_wake := public.qorpera_read_native_wake(v_binding);
+	perform pg_temp.wake_assert(v_wake #>> '{policy,kind}' = 'agent' and jsonb_array_length(v_wake #> '{causal,agentIds}') > 20,
+		'A chain of more than twenty agents wakes its last agent with a valid policy');
 end
 $$;
 rollback to messaging_cross_pair;

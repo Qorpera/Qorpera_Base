@@ -291,8 +291,31 @@ end $$;
 -- 8. One worker per coherent stream: a follow-up continues the same worker with its own history.
 do $$
 declare v_binding jsonb := current_setting('qorpera_test.revived_binding')::jsonb; v_follow jsonb; v_worker public.qorpera_runtime_workers;
-	v_child jsonb; v_continuation jsonb; v_wake jsonb;
+	v_child jsonb; v_continuation jsonb; v_wake jsonb; v_index integer;
 begin
+	-- Runtime v92: no turn count and no hourly dispatch count. A worker past the old in-house
+	-- limit (12 turns) takes another turn, and an agent dispatches more than the old 24 an hour and
+	-- more than the old eight workers for one todo. Probed in a subtransaction, so the fixture keeps
+	-- its real state.
+	begin
+		update public.qorpera_runtime_workers set sequence = 12 where worker_key = 'prices';
+		v_follow := pg_temp.worker('{"action":"followup","operationKey":"f13","todoKey":"market-scan","workerKey":"prices","text":"Turn thirteen."}',v_binding);
+		perform pg_temp.wake_assert((pg_temp.worker_row('prices')).sequence = 13 and (pg_temp.worker_row('prices')).state = 'active',
+			'A worker takes a thirteenth turn');
+		perform pg_temp.worker('{"action":"cancel","operationKey":"f13-cancel","todoKey":"market-scan","workerKey":"prices"}',v_binding);
+		for v_index in 1..26 loop
+			perform pg_temp.worker(jsonb_build_object('action','dispatch','operationKey','many-' || v_index,'todoKey','market-scan',
+				'workerKey','many-' || v_index,'title','Many ' || v_index,'goal','Part ' || v_index,'definitionOfDone','A line.','access','read'),v_binding);
+			-- Four may run at once; cancelling keeps room for the next one.
+			perform pg_temp.worker(jsonb_build_object('action','cancel','operationKey','many-cancel-' || v_index,'todoKey','market-scan',
+				'workerKey','many-' || v_index),v_binding);
+		end loop;
+		perform pg_temp.wake_assert((select count(*) from public.qorpera_runtime_workers worker join public.qorpera_runtime_agent_todos todo
+			on todo.id = worker.todo_id where todo.todo_key = 'market-scan') = 27,'Twenty-six dispatches in an hour for one todo are admitted');
+		raise exception 'rollback-worker-count-probe';
+	exception when raise_exception then
+		if sqlerrm <> 'rollback-worker-count-probe' then raise; end if;
+	end;
 	v_follow := pg_temp.worker('{"action":"followup","operationKey":"f1","todoKey":"market-scan","workerKey":"prices","text":"Add Delta to the table."}',v_binding);
 	v_worker := pg_temp.worker_row('prices');
 	perform pg_temp.wake_assert(v_worker.sequence = 2 and v_worker.state = 'active' and v_worker.steering_run_id = (v_binding ->> 'runId')::uuid

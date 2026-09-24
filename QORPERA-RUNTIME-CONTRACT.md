@@ -488,15 +488,31 @@ subscriptions, which self-limit.
 > computers still power off after 5 minutes.
 >
 > A run also has no count on its work: no cap on tools, tool calls, model
-> requests, Company File reads, follow-up turns of a worker, worker dispatches
-> per hour, hires or group chats, and no count on a wake's public messages or
-> on agent-to-agent messages (no hop budget, no hourly pair budget; see 14.6).
-> A provider that limits these enforces its own limit. What remains is crash
-> detection (leases), one machine per run, four active workers per agent,
-> account concurrency and input validation. **Nothing stops two agents
-> messaging each other in a loop except a member's Stop or the operator
-> pause.** One bound is still open: the pinned Codex build refuses a model
-> request carrying 128 or more tool outputs, and it goes with a Codex rebuild.
+> requests (company and coding), Company File reads, screenshots, follow-up
+> turns of a worker, worker dispatches per hour, workers per todo, hires or
+> group chats, and no count on a wake's public messages or on agent-to-agent
+> messages (no hop budget, no hourly pair budget, no chain length; see 14.6).
+> A provider that limits these enforces its own limit. **Nothing stops two
+> agents messaging each other in a loop except a member's Stop or the
+> operator pause.**
+>
+> What remains:
+> - crash detection (job, connection and session leases) and retry limits
+>   (8 dispatch failures; 8 attempts for a pristine retry or a sponsor
+>   handoff);
+> - one machine per run, four active workers per agent, one coding session
+>   per owner and harness, and account concurrency (64 per subscription);
+> - a queued run that no computer starts within a day of being queued fails;
+> - input validation and per-call size bounds (message, argument, result,
+>   batch, catalog text up to 1 MiB);
+> - standing counts of things that exist: 32 routines and 64 open todos per
+>   agent, 40 sidebar sections per company, 50,000 Company File entries;
+> - no stall detection: a run whose harness hangs without crashing keeps its
+>   machine until Stop, as in Codex CLI and Claude Code.
+>
+> One count is still open. The pinned Codex build refuses a model request
+> carrying 128 or more tool outputs, and the kernel refuses a context view with
+> more than 128 outputs or over 128 KiB. Both go with a Codex rebuild.
 
 ## 8. Wake bus
 
@@ -1338,6 +1354,8 @@ works until the task is done or genuinely blocked. The remaining bounds are
 safety limits far outside any real turn: the run deadline (24 hours), the job
 lease that a live runner renews, the transcript byte bound and protocol flood
 bounds in the native boundary. The prompt no longer advertises a call budget.
+(Superseded by the second 2026-09-24 amendment in 7.4, bundle v92: there is no
+run deadline and no protocol flood bound; see that list of what remains.)
 
 Company-formation and other research projects MAY dispatch higher-effort
 workers under a bounded, attributed project policy while the attended
