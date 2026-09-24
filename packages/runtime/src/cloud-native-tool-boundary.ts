@@ -121,6 +121,18 @@ export interface CloudNativeFencedResult {
 	capture?: CompanyComputerScreenshotAsset;
 }
 
+/** A refusal of a tool's arguments that says what to fix, so the model can retry.
+ * Its message is fixed, model-safe wording from the parser: never an argument value.
+ * The boundary relays at most 1 KiB of plain text and drops anything else. */
+export class CloudToolArgumentRefusal extends Error {
+	constructor(message: string) {
+		super(message);
+		this.name = "CloudToolArgumentRefusal";
+	}
+}
+/** Printable ASCII and Latin-1 letters: no control, invisible, bidi or separator character. */
+const REFUSAL_PLAIN = /^[\u0020-\u007e\u00c0-\u00ff]*$/;
+
 /** Canonicalization is for exact in-process retries, not an authorization grant or durable receipt. */
 export function cloudToolJsonText(value: unknown, limit = MAX_ARGUMENT_BYTES): string {
 	let nodes = 0;
@@ -394,7 +406,7 @@ export class CloudNativeToolBoundary {
 				observation?.finish(envelope.status, {
 					errorCategory:
 						envelope.status === "denied"
-							? (categories[envelope.content.text as keyof typeof categories] ?? "unknown")
+							? (categories[envelope.content.text.split(":", 1)[0] as keyof typeof categories] ?? "unknown")
 							: "ambiguous_effect",
 				});
 			}
@@ -491,8 +503,14 @@ export class CloudNativeToolBoundary {
 			if (Buffer.byteLength(cloudToolJsonText(parsed)) > MAX_ARGUMENT_BYTES)
 				throw new Error("Oversized parsed arguments");
 			if (tool.source !== "company_file") observation?.update({ inputBytes: Buffer.byteLength(argumentsText) });
-		} catch {
-			return this.#result(callId, tool, digest, "denied", { kind: "text", value: "INVALID_ARGUMENTS" });
+		} catch (error) {
+			const reason =
+				error instanceof CloudToolArgumentRefusal &&
+				Buffer.byteLength(error.message) <= 1024 &&
+				REFUSAL_PLAIN.test(error.message)
+					? `: ${error.message}`
+					: "";
+			return this.#result(callId, tool, digest, "denied", { kind: "text", value: `INVALID_ARGUMENTS${reason}` });
 		}
 		try {
 			this.#signal.throwIfAborted();

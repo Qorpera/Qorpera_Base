@@ -51,6 +51,7 @@ import { type CloudSecretOperationClient, cloudSecretTools, describeCloudSecretT
 import { cloudSidebarTools } from "./cloud-sidebar-tools.ts";
 import {
 	CLOUD_ASK_MEMBER_INSTRUCTIONS,
+	CLOUD_ASK_MEMBER_PAYLOAD_SCHEMA,
 	CLOUD_INTERACTION_SURFACES,
 	cloudInteractionEventId,
 	parseCloudAskMemberInput,
@@ -283,7 +284,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 						title: { type: "string", minLength: 1, maxLength: 200 },
 						body: { type: "string", maxLength: 2000 },
 						expiresAt: { type: "string" },
-						payload: { type: "object" },
+						payload: CLOUD_ASK_MEMBER_PAYLOAD_SCHEMA,
 					},
 					required: ["idempotencyKey", "text", "surface", "title", "payload"],
 					additionalProperties: false,
