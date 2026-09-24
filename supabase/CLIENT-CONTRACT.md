@@ -674,3 +674,15 @@ above.
     computers. API-key connections keep only their concurrency. A run's
     `deadline_at` is set a century out, and usage records runs of any
     length.
+
+    A run's work has no count either (founder, 2026-09-24). What a client may
+    see change:
+    - A wake policy's `maxPublicSends` is `null` (no limit) or `0` (the wake may
+      not speak publicly); the numbers 64, 3 and 2 are gone.
+    - Coworker messages have no hop budget and no hourly pair budget, so a send
+      no longer returns `causal-fence` for those reasons and the pair transcript
+      gets no budget line. Nothing but a member's Stop (or the operator pause)
+      ends a loop between two agents.
+    - Hiring and group chats have no per-run count ("This run reached its limit
+      for new agents/rooms" is gone), and neither do Company File reads, model
+      requests, tool calls or worker follow-up turns.

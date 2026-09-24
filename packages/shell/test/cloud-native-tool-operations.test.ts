@@ -719,3 +719,52 @@ it("keeps effects and canonical replay independent of diagnostic exporter failur
 	expect(f.perform).toHaveBeenCalledTimes(1);
 	expect(f.authorize).toHaveBeenCalledTimes(4);
 });
+
+it("never refuses a run's operations by count; a forgotten one replays through its receipt", async () => {
+	// Runtime v92: the run used to fail after 65,536 operations. Past that the
+	// oldest are forgotten locally and the kernel receipt stays the authority.
+	const f = await fixture();
+	const receipts = new Map<string, Receipt>();
+	const control: CloudNativeToolOperationControlPlane = {
+		beginToolOperation: async (binding, input) => {
+			let receipt = receipts.get(input.logicalOperationKey);
+			if (receipt && receipt.input.inputSha256 !== input.inputSha256) throw new Error("other work");
+			if (!receipt) {
+				receipt = { input, state: "executing", result: null, outputSnapshotId: null, proposalId: null };
+				receipts.set(input.logicalOperationKey, receipt);
+			}
+			return {
+				run_id: binding.runId,
+				receipt_id: receipt.input.receiptId,
+				state: receipt.state,
+				result: receipt.result,
+				output_snapshot_id: null,
+				proposal_id: null,
+			};
+		},
+		completeToolOperation: async (binding, input) => {
+			const receipt = [...receipts.values()].at(-1)!;
+			expect(receipt.input.receiptId).toBe(input.receiptId);
+			receipt.state = "completed";
+			receipt.result = input.result;
+			return { run_id: binding.runId, receipt_id: input.receiptId, state: "completed", result: input.result };
+		},
+	};
+	const operations = new CloudNativeToolOperations(f.run, control);
+	const keyed = (index: number) => ({ ...f.operation, logicalOperationKey: `job-document-${index}` });
+	const total = 65_536 + 2;
+	for (let index = 0; index < total; index++)
+		await expect(f.execute({ operation: keyed(index) }, operations)).resolves.toEqual({
+			kind: "json",
+			value: { changed: true },
+		});
+	expect(f.perform).toHaveBeenCalledTimes(total);
+	// The first operation is no longer remembered locally: its replay reads the
+	// completed receipt and never performs the effect again.
+	await expect(f.execute({ operation: keyed(0) }, operations)).resolves.toEqual({
+		kind: "json",
+		value: { changed: true },
+	});
+	expect(f.perform).toHaveBeenCalledTimes(total);
+	expect(receipts.size).toBe(total);
+}, 300_000);

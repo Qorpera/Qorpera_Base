@@ -3,7 +3,8 @@
 -- connection has no monthly budget and no per-run call, token or cost cap
 -- (its concurrency stays; see SQL 330), and a run has no deadline: neither a
 -- run nor its native connection lease is bounded by 24 hours, and usage of a
--- run longer than a day is recorded as is.
+-- run longer than a day is recorded as is. A run reads, asks its model, hires
+-- and opens group chats without a count.
 begin;
 
 do $$
@@ -55,6 +56,18 @@ begin
 		or (select prosrc from pg_proc where oid = 'public.qorpera_complete_runner_job_v3(uuid,text,uuid,text,uuid,uuid,jsonb)'::regprocedure)
 			like '%86400000%' then
 		raise exception 'Usage of a run longer than a day would be refused'; end if;
+
+	-- No per-run count on reads, model requests, hires or group chats (SQL 334 and 375 run them).
+	if exists (select 1 from pg_proc procedure join pg_namespace namespace on namespace.oid = procedure.pronamespace
+		where namespace.nspname = 'public'
+			and (procedure.prosrc like '%Read observation budget exceeded%'
+				or procedure.prosrc like '%context read set is full%'
+				or procedure.prosrc like '%cardinality(p_paths) > 128%'
+				or procedure.prosrc like '%Context view budget exceeded%'
+				or procedure.prosrc like '%reached its limit for new%'))
+		or exists (select 1 from pg_constraint where conname = 'qorpera_native_context_views_ordinal_check'
+			and pg_get_constraintdef(oid) like '%256%') then
+		raise exception 'A per-run count on reads, model requests or hires remains'; end if;
 end
 $$;
 

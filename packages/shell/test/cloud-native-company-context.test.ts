@@ -118,7 +118,7 @@ it.each([
 							initial,
 							final,
 							silenceAllowed: final !== "required",
-							maxPublicSends: silent ? 0 : kind === "room" ? 3 : 64,
+							maxPublicSends: silent ? 0 : null,
 						},
 						time: { utc: "2026-09-19T08:00:00.000000Z", local: "2026-09-19T08:00:00.000000", timeZone: "UTC" },
 						pins: {
@@ -150,7 +150,7 @@ it.each([
 					initial,
 					final,
 					silenceAllowed: final !== "required",
-					maxPublicSends: silent ? 0 : kind === "room" ? 3 : 64,
+					maxPublicSends: silent ? 0 : null,
 				});
 				expect(prompt.hireOverlay.startupAssignment).toEqual(
 					kind === "first-run" && !continued ? context.currentInputs : [],
@@ -257,7 +257,7 @@ it.each(["human", "office-activation"] as const)("does not restart a prior start
 				initial: office ? "forbidden" : "required",
 				final: office ? "forbidden" : "required",
 				silenceAllowed: office,
-				maxPublicSends: office ? 0 : 64,
+				maxPublicSends: office ? 0 : null,
 			},
 			time: { utc: "2026-09-19T08:00:00.000000Z", local: "2026-09-19T08:00:00.000000", timeZone: "UTC" },
 			pins: {

@@ -46,9 +46,18 @@ const MAX_MESSAGE_BYTES = 1024 * 1024;
 const MAX_CAPTURE_MESSAGE_BYTES = 12 * 1024 * 1024;
 // No run is capped by its output, its number of tool calls or its silence
 // (founder, 2026-09-24): OpenAI, Anthropic and xAI publish no such caps. Single
-// messages stay bounded, and request ids and message compositions are tracked
-// only in a rolling window of this size.
+// messages stay bounded, and request ids, fence observations and message
+// compositions are tracked only in a rolling window of this size (the oldest
+// settled entries are forgotten).
 const TRACKED_REQUESTS = 16_384;
+
+/** Forgets the oldest settled entries past the window; open ones are kept. */
+function forgetSettled<V extends { finished: boolean }>(entries: Map<string, V>): void {
+	for (const [key, value] of entries) {
+		if (entries.size <= TRACKED_REQUESTS) return;
+		if (value.finished) entries.delete(key);
+	}
+}
 const MAX_PROMPT_BYTES = 1024 * 1024;
 const TOKEN_COUNTERS = [
 	"inputTokens",
@@ -245,6 +254,7 @@ class CodexBoundaryRpc {
 	#startingThread = false;
 	#startingTurn = false;
 	readonly #modelRequests = new Set<string>();
+	#modelRequestCount = 0;
 	/** Call ids whose fenced result closes the turn (a confirmed final public send). */
 	readonly #turnEndCallIds = new Set<string>();
 	#turnEndRequested = false;
@@ -302,7 +312,7 @@ class CodexBoundaryRpc {
 		return this.#toolCalls;
 	}
 	get fencedRequests(): number {
-		return this.#modelRequests.size;
+		return this.#modelRequestCount;
 	}
 	get failureCategory(): CloudRuntimeErrorCategory {
 		return this.#failureCategory;
@@ -312,7 +322,7 @@ class CodexBoundaryRpc {
 	}
 	assertCompleted(): void {
 		if (this.#failure) throw this.#failure;
-		if (!this.#finished || this.#activeCalls > 0 || this.#modelRequests.size === 0) {
+		if (!this.#finished || this.#activeCalls > 0 || this.#modelRequestCount === 0) {
 			this.#failureCategory = "invalid_response";
 			throw new Error("Native boundary turn is incomplete");
 		}
@@ -369,6 +379,7 @@ class CodexBoundaryRpc {
 		if (!observation) {
 			observation = { contextRecorded: false, finished: false };
 			this.#fenceObservations.set(request.requestId, observation);
+			forgetSettled(this.#fenceObservations);
 			try {
 				observation.span = this.#observability.start("native_result_fence", {
 					logicalOperationSha256: createHash("sha256")
@@ -413,7 +424,12 @@ class CodexBoundaryRpc {
 		)
 			throw new Error("Native result binding failed");
 		this.confirmTurn(request.turnId);
-		this.#modelRequests.add(request.requestId);
+		if (!this.#modelRequests.has(request.requestId)) {
+			this.#modelRequests.add(request.requestId);
+			this.#modelRequestCount++;
+			if (this.#modelRequests.size > TRACKED_REQUESTS)
+				this.#modelRequests.delete(this.#modelRequests.values().next().value as string);
+		}
 		this.#observeFence(request);
 		// Contract 7.1: the final send closes the turn. Once its result has been
 		// fenced, stop the provider instead of paying for a closing model round
@@ -518,18 +534,21 @@ class CodexBoundaryRpc {
 			const callId = identifier(params.callId);
 			if (params.phase === "finish") {
 				// Remember early finishes too: replayed starts must not revive a completed item.
-				if (!this.#compositions.has(callId) && this.#compositions.size < TRACKED_REQUESTS)
+				if (!this.#compositions.has(callId)) {
 					this.#compositions.set(callId, { finished: true });
+					forgetSettled(this.#compositions);
+				}
 				this.#finishComposition(callId, "succeeded");
 				return;
 			}
-			if (this.#compositions.has(callId) || this.#compositions.size >= TRACKED_REQUESTS) return;
+			if (this.#compositions.has(callId)) return;
 			const composition: {
 				span?: CloudRuntimeObservationSpan;
 				timer?: ReturnType<typeof setTimeout>;
 				finished: boolean;
 			} = { finished: false };
 			this.#compositions.set(callId, composition);
+			forgetSettled(this.#compositions);
 			const renew = () => {
 				if (composition.finished || this.#failure || this.#closed || this.#finished) return;
 				try {

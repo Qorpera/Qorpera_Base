@@ -486,6 +486,17 @@ subscriptions, which self-limit.
 > output cap, because OpenAI, Anthropic and xAI publish none: it ends when it
 > completes, is stopped, or its host is lost (a lapsed lease). Idle company
 > computers still power off after 5 minutes.
+>
+> A run also has no count on its work: no cap on tools, tool calls, model
+> requests, Company File reads, follow-up turns of a worker, worker dispatches
+> per hour, hires or group chats, and no count on a wake's public messages or
+> on agent-to-agent messages (no hop budget, no hourly pair budget; see 14.6).
+> A provider that limits these enforces its own limit. What remains is crash
+> detection (leases), one machine per run, four active workers per agent,
+> account concurrency and input validation. **Nothing stops two agents
+> messaging each other in a loop except a member's Stop or the operator
+> pause.** One bound is still open: the pinned Codex build refuses a model
+> request carrying 128 or more tool outputs, and it goes with a Codex rebuild.
 
 ## 8. Wake bus
 
@@ -517,7 +528,7 @@ Provider-native session IDs are resumability hints, not wake identity.
 | First run | Greet and learn when no assignment exists; otherwise begin the supplied startup assignment. |
 | Routine | Execute the stored intent. Silence is valid when policy permits and there is nothing useful to report. |
 | Agent | Treat the sender as a coworker. Answer through the peer channel when asked or useful; never acknowledge an acknowledgement; silence is valid. Speak in your own thread only when the member should know (pair policy, 14.6). |
-| Room | Act as yourself for the room audience. Keep sends bounded. Silence is allowed. Private member communication remains a separate authorized send. |
+| Room | Act as yourself for the room audience. Speak when the room needs it. Silence is allowed. Private member communication remains a separate authorized send. |
 
 Scheduled and listener-triggered jobs both use the routine entrypoint with a
 different trigger subtype. A worker revival targets the parent run or creates a
@@ -1111,22 +1122,23 @@ company-visible and answerable:
   B" in the sender's thread, "Message from A" in the receiver's) that opens the
   pair transcript. The chip carries no message text.
 - The receiver wakes **in its own shared thread** under the pair policy:
-  initial send forbidden, final send optional, silence allowed, at most two
-  public sends. It answers the coworker through the same peer channel, which
+  initial send forbidden, final send optional, silence allowed (no count on
+  public sends since bundle v92). It answers the coworker through the same peer channel, which
   puts the answer in the pair transcript and wakes the sender in the sender's
   thread under the same policy. A member post in either thread is a human wake
   and starts a new causal root.
-- The kernel bounds an exchange by **hops**, not by "agent already visited":
-  at most 6 peer messages per causal root and 20 per pair per rolling hour, on
-  top of the company wake ceiling and the founder stop. A tripped budget
-  refuses the wake (causal-fence receipt) and leaves one line in the pair
-  transcript. File-event and routine fences are unchanged.
+- An exchange is not bounded by "agent already visited". Until bundle v92 the
+  kernel bounded it by **hops** (at most 6 peer messages per causal root and 20
+  per pair per rolling hour). Since v92 (founder, 2026-09-24) there is no hop
+  or hourly budget: a chain records its root and the agents it reached, and
+  only a member's Stop or the operator pause ends a loop between two agents.
+  File-event and routine fences are unchanged.
 - Workers (13) are not messaging: they have no mouth and report to their parent.
   Group chats (14.7) remain the place for handoffs that need several agents.
 - A message may be sent **held** (`priority: false`): written and shown the
   same way, it wakes nobody; the recipient reads it, as data, at the start of
-  its next wake of any kind. Held messages extend no chain but count toward
-  the pair's hourly budget. Thanks, status and FYIs are sent held.
+  its next wake of any kind. Held messages extend no chain. Thanks, status
+  and FYIs are sent held.
 
 ### 14.7 Rooms
 
@@ -2266,8 +2278,8 @@ while Azure backup/overflow remains disabled.
 30. A company's ceilings hold without agent cooperation: a deliberately
     runaway loop is stopped at its wake-rate or spend ceiling, the founder
     stop operation pauses the company, and the founder is notified from the
-    control plane. (Amended 2026-09-24, see 7.4: only the machine limit and
-    the operator stop remain.)
+    control plane. (Amended 2026-09-24, see 7.4: only the operator stop
+    remains; since bundle v92 there is no machine limit either.)
 31. **Deferred post-build enablement gate, not a launch prerequisite:** before
     Azure backup/overflow is enabled, demand beyond local capacity is attributable
     to Azure placements and rented allocation intervals. The view distinguishes

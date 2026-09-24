@@ -271,8 +271,8 @@ begin
 	perform pg_temp.wake_assert(v_envelope #>> '{source,kind}' = 'worker-completion' and v_envelope ->> 'parentRunId' = v_parent::text
 		and v_envelope -> 'actorUserId' = 'null'::jsonb and v_envelope -> 'actorStaffId' = 'null'::jsonb
 		and v_envelope #>> '{policy,initial}' = 'optional' and v_envelope #>> '{policy,final}' = 'optional'
-		and (v_envelope #>> '{policy,maxPublicSends}')::int = 3 and v_envelope #>> '{audience,sessionId}' = '30000000-0000-4000-8000-000000000040',
-		'The revival is an internal continuation, never a human message, and may speak briefly in the parent''s conversation or stay silent');
+		and v_envelope -> 'policy' -> 'maxPublicSends' = 'null'::jsonb and v_envelope #>> '{audience,sessionId}' = '30000000-0000-4000-8000-000000000040',
+		'The revival is an internal continuation, never a human message, and may speak in the parent''s conversation (no send limit) or stay silent');
 	v_context := public.qorpera_describe_company_run_context(v_binding);
 	v_continuation := public.qorpera_run_continuation((select run from public.qorpera_execution_runs run where run.id = v_wake.run_id));
 	perform pg_temp.wake_assert(v_context -> 'continuation' <> 'null'::jsonb

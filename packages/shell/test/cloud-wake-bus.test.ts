@@ -245,10 +245,10 @@ describe("worker dispatch and completion envelopes", () => {
 		).toThrow();
 		expect(() => parseCloudWakeEnvelope({ ...wake, payload: { ...wake.payload, coding } }, identity)).toThrow();
 	});
-	it("admits a completion as an internal continuation that may speak briefly in its parent's conversation", () => {
+	it("admits a completion as an internal continuation that may speak in its parent's conversation", () => {
 		const { identity, wake } = workerWakeFixture("worker-completion");
 		const parsed = parseCloudWakeEnvelope(wake, identity);
-		expect(parsed.policy).toMatchObject({ initial: "optional", final: "optional", maxPublicSends: 3 });
+		expect(parsed.policy).toMatchObject({ initial: "optional", final: "optional", maxPublicSends: null });
 		expect([parsed.actorUserId, parsed.actorStaffId]).toEqual([null, null]);
 	});
 	it.each([
@@ -755,18 +755,23 @@ function pairWakeFixture() {
 }
 
 describe("coworker message in the agent's own thread (contract 14.6, 2026-09-22)", () => {
-	it("parses the pair policy exactly: no opening word, an optional final word, two sends at most", () => {
+	it("parses the pair policy exactly: no opening word, an optional final word, no send limit", () => {
 		const { pair } = pairWakeFixture();
 		expect(parseCloudWakePolicy(pair)).toEqual(pair);
-		expect(parseCloudWakePolicy({ ...pair, maxPublicSends: 3 })).toEqual(REQUIRED_CLOUD_WAKE_POLICY);
+		// A numeric send limit is no longer a policy the kernel issues (runtime v92).
+		expect(parseCloudWakePolicy({ ...pair, maxPublicSends: 2 })).toEqual(REQUIRED_CLOUD_WAKE_POLICY);
 		expect(parseCloudWakePolicy({ ...pair, silenceAllowed: false })).toEqual(REQUIRED_CLOUD_WAKE_POLICY);
-		expect(parseCloudWakePolicy({ ...pair, initial: "optional" })).toEqual(REQUIRED_CLOUD_WAKE_POLICY);
+		// With an opening word it is the worker continuation's policy, which a coworker's
+		// message in the thread may not carry (refused below).
+		expect(parseCloudWakePolicy({ ...pair, initial: "optional" })).toEqual(
+			policies.find((item) => item.scenario === "agent-continuation")!.policy,
+		);
 	});
 	it("accepts the wake with the agent's thread, the transcript identity and the exchange so far", () => {
 		const { identity, wake } = pairWakeFixture();
 		const parsed = parseCloudWakeEnvelope(wake, identity);
 		expect(parsed).toEqual(wake);
-		expect(parsed.policy.maxPublicSends).toBe(2);
+		expect(parsed.policy.maxPublicSends).toBeNull();
 		expect(parsed.audience.sessionId).toBe(identity.sessionId);
 		expect(Object.isFrozen(parsed.payload.transcript)).toBe(true);
 		// Without the exchange (a first message) the payload still parses.
@@ -785,6 +790,13 @@ describe("coworker message in the agent's own thread (contract 14.6, 2026-09-22)
 		[
 			"a thread without the pair policy",
 			(wake: CloudWakeEnvelope) => ({ ...wake, policy: policies.find((item) => item.scenario === "agent")!.policy }),
+		],
+		[
+			"a thread with the worker continuation's policy",
+			(wake: CloudWakeEnvelope) => ({
+				...wake,
+				policy: policies.find((item) => item.scenario === "agent-continuation")!.policy,
+			}),
 		],
 		[
 			"the pair policy without a thread",

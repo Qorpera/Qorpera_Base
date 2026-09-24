@@ -32,13 +32,13 @@ function agentIdFor(runId: string, operationKey: string): string {
 export const CLOUD_HIRE_TOOL_DESCRIPTION =
 	"Hire a new coworker for this company. No member approval is needed: when the result says applied, the agent exists and its first run is queued, so tell the member who you hired and why. If the result says proposed, it is waiting for a member instead; say that. " +
 	"Hire for a continuing responsibility that nobody owns, not for a one-off task. First see who already owns what: each coworker's responsibilities are written in its agent document under organization/agents. An existing coworker who can own it beats a new hire. Write jobDescription as the new agent's thin job specification: mission, the outcomes it owns, its voice, and when it should escalate and to whom. Write firstAssignment as the first concrete piece of work it should start on when it wakes. " +
-	"The new agent starts with the default read access to the shared Company File and no other grants; you cannot give it authority, and a member can widen it later. A run can hire at most three coworkers. figure picks its avatar. " +
+	"The new agent starts with the default read access to the shared Company File and no other grants; you cannot give it authority, and a member can widen it later. figure picks its avatar. " +
 	"Keep operationKey stable for one intended hire; an unconfirmed result needs the same key again, never a new one.";
 
 export const CLOUD_GROUP_CHAT_TOOL_DESCRIPTION =
 	"Open a group chat with coworkers when work needs several of you in one place; for a question to one coworker use send_coworker_message instead. No member approval is needed. " +
 	"coworkerIds are the ids of coworkers listed in your context; you are always a member, and the member who asked is included unless you set includeRequestingMember to false. Give it a short name people will recognise and a one-sentence purpose. " +
-	"When the result says applied the chat exists: tell the member its name. A run can open at most five. Keep operationKey stable for one intended chat.";
+	"When the result says applied the chat exists: tell the member its name. Keep operationKey stable for one intended chat.";
 
 /** The hire is an ordinary governed Company File write of the canonical agent
  * document (contract 14.1), so attribution, proposal, approval and the
@@ -65,7 +65,7 @@ export function cloudHiringTools(
 		context.signal.throwIfAborted();
 	};
 	// A new agent or room document is approved by policy and applied at once; if the cloud declines
-	// (a limit, a revoked authority) the document simply stays a proposal and the model is told so.
+	// (a revoked authority) the document simply stays a proposal and the model is told so.
 	const settle = async (
 		result: Awaited<ReturnType<CloudCompanyPathGateway["mutate"]>>,
 		document: string,
@@ -74,9 +74,8 @@ export function cloudHiringTools(
 		if (result.state !== "proposed" || !result.proposalId) return result.state;
 		try {
 			return (await gateway.applyOwnOrganizationDocument(result.proposalId, document, signal)).state;
-		} catch (error) {
+		} catch {
 			signal.throwIfAborted();
-			if (error instanceof Error && /limit/i.test(error.message)) throw error;
 			return "proposed";
 		}
 	};

@@ -680,6 +680,34 @@ describe("cloud Company File path gateway", () => {
 		await expect(f.gateway.read("note.md", 0, 64, f.signal)).rejects.toThrow("provenance was not confirmed");
 	});
 
+	it("holds any number of files in a run's context and records any number of model requests", async () => {
+		// Runtime v92: a run used to fail past 128 files in its context or 256 model requests.
+		const f = fixture();
+		for (let index = 0; index < 130; index++) await f.seed(`file-${index}.md`, `note ${index}`);
+		for (let index = 0; index < 130; index++) await f.gateway.read(`file-${index}.md`, 0, 64, f.signal);
+		await f.boundary.fenceNativeResults([]);
+		const checked = f.call.mock.calls.filter(([method]) => method === "qorpera_assert_company_path_reads").at(-1);
+		expect(checked?.[1].p_paths).toHaveLength(130);
+		f.overrides.set("qorpera_record_native_context_view", async (args) => ({
+			schema: "qorpera.native-context-view-receipt/v1",
+			viewId: randomUUID(),
+			requestId: (args.p_view as { requestId: string }).requestId,
+			sha256: "c".repeat(64),
+			ordinal: 300,
+		}));
+		await f.gateway.recordContextView(
+			{
+				schema: "qorpera.native-result-fence/v1",
+				requestId: "request-300",
+				threadId: "thread",
+				turnId: "turn",
+				purpose: "turn",
+				outputs: [],
+			},
+			[],
+			f.signal,
+		);
+	});
 	it("rechecks the context read set even when native result batches are empty", async () => {
 		const f = fixture();
 		await f.seed("note.md", "shared before revocation");
