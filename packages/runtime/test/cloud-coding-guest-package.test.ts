@@ -5,13 +5,15 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
 import { describe, expect, it } from "vitest";
+import { codingErrorCode } from "../src/cloud-coding-error-code.ts";
+import { assertGuestImageSelfUpdateMasked } from "../src/lxd-guest-image-updates.ts";
 
 async function bundled(name: string, args: string[]) {
 	const directory = await realpath(await mkdtemp(join(tmpdir(), "coding-package-")));
 	try {
 		const outfile = join(directory, "guest.mjs");
 		await build({
-			entryPoints: [fileURLToPath(new URL(`../src/cloud-coding-${name}-guest.ts`, import.meta.url))],
+			entryPoints: [fileURLToPath(new URL(`../src/cloud-coding-${name}.ts`, import.meta.url))],
 			outfile,
 			bundle: true,
 			platform: "node",
@@ -39,7 +41,7 @@ describe("coding guest packaged entrypoints", () => {
 		// Outside a coding VM there is no guest configuration: the refusal is an
 		// errno code, never the path, and the missing log is not created.
 		expect(
-			await bundled("command", [
+			await bundled("command-guest", [
 				"execute",
 				"00000000-0000-4000-8000-000000000002",
 				"00000000-0000-4000-8000-000000000001",
@@ -51,8 +53,8 @@ describe("coding guest packaged entrypoints", () => {
 		});
 	});
 	it.each([
-		["command", "get", "CODING_GUEST_COMMAND_REFUSED\n"],
-		["git", "export", "CODING_GIT_GUEST_REFUSED\n"],
+		["command-guest", "get", "CODING_GUEST_COMMAND_REFUSED\n"],
+		["git-guest", "export", "CODING_GIT_GUEST_REFUSED\n"],
 	])("the %s bundle has no imported storage CLI side effects", async (name, action, expected) => {
 		expect(
 			await bundled(name, [action, "00000000-0000-4000-8000-000000000002", "00000000-0000-4000-8000-000000000001"]),
@@ -61,5 +63,28 @@ describe("coding guest packaged entrypoints", () => {
 			stdout: "",
 			stderr: expected,
 		});
+	});
+	it("the storage bundle's image action, which the executor probes, reports what the image check finds here", async () => {
+		// The executor sees only the exit status; the line names the unit.
+		const found = await assertGuestImageSelfUpdateMasked().then(
+			() => undefined,
+			(error: unknown) => codingErrorCode(error),
+		);
+		expect(await bundled("storage-guest-main", ["image"])).toEqual(
+			found === undefined
+				? { code: undefined, stdout: "", stderr: "" }
+				: { code: 1, stdout: "", stderr: `CODING_GUEST_STORAGE_REFUSED ${found}\n` },
+		);
+		for (const args of [["upgrade"], ["image", "00000000-0000-4000-8000-000000000002"], ["install"]])
+			expect(await bundled("storage-guest-main", args)).toEqual({
+				code: 1,
+				stdout: "",
+				stderr: "CODING_GUEST_STORAGE_ARGUMENTS_INVALID\n",
+			});
+	});
+	it("the storage bundle's session actions refuse with only a fixed code", async () => {
+		const refused = await bundled("storage-guest-main", ["detach", "../../etc"]);
+		expect(refused).toMatchObject({ code: 1, stdout: "" });
+		expect(refused.stderr).toMatch(/^CODING_GUEST_STORAGE_REFUSED [A-Z][A-Z0-9_:]+\n$/);
 	});
 });

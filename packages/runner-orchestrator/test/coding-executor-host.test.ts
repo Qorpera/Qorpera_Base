@@ -446,6 +446,7 @@ describe("a coding turn on its member's machine", () => {
 			["/usr/bin/mountpoint", "--quiet", layout.dataRoot],
 			["/usr/bin/mountpoint", "--quiet", layout.custodyRoot],
 			["/usr/bin/systemctl", "is-active", "--quiet", "qorpera-coding-watchdog.timer"],
+			["/usr/bin/node", "/opt/qorpera-coding/cloud-coding-storage-guest.mjs", "image"],
 			["/usr/bin/systemctl", "is-active", "--quiet", "qorpera-coding-watchdog.timer"],
 			...["prepare", "install", "initialize"].map((action) => [
 				"/usr/bin/node",
@@ -877,6 +878,38 @@ describe("a freshly started member machine's guest", () => {
 		await expect(impatient.prepareWorkspace(g.claim, g.turn(), g.signal)).rejects.toThrow(
 			"CODING_HOST_GUEST_NOT_READY",
 		);
+	});
+	it("refuses an image that can update itself before delivering any configuration", async () => {
+		// Live 2026-09-24 (run d1f454e2): unattended-upgrades restarted the
+		// guest's services mid-turn and its inhibitor then refused the stop.
+		const f = await fixture();
+		const fallback = vi.mocked(f.client.execInstance).getMockImplementation()!;
+		vi.mocked(f.client.execInstance).mockImplementation(async (project, name, command, signal) => {
+			if (command.at(-1) === "image") throw new Error("LXD instance command failed");
+			return fallback(project, name, command, signal);
+		});
+		await expect(f.host.prepareWorkspace(f.claim, f.turn(), f.signal)).rejects.toThrow(
+			/^RUNNER_IMAGE_SELF_UPDATE_ENABLED$/,
+		);
+		expect(f.client.pushInstanceFile).not.toHaveBeenCalled();
+		expect(
+			vi
+				.mocked(f.client.execInstance)
+				.mock.calls.filter((call) => ["install", "initialize"].includes(call[2].at(-1)!)),
+		).toHaveLength(0);
+		expect(mocked.seedFetch).not.toHaveBeenCalled();
+	});
+	it("does not report a guest whose agent dropped out during the image check as self-updating", async () => {
+		const f = await fixture();
+		const fallback = vi.mocked(f.client.execInstance).getMockImplementation()!;
+		vi.mocked(f.client.execInstance).mockImplementation(async (project, name, command, signal) => {
+			if (command.at(-1) === "image") throw new Error("LXD instance agent not running");
+			return fallback(project, name, command, signal);
+		});
+		await expect(f.host.prepareWorkspace(f.claim, f.turn(), f.signal)).rejects.toThrow(
+			/^LXD instance agent not running$/,
+		);
+		expect(f.client.pushInstanceFile).not.toHaveBeenCalled();
 	});
 	it("retries only a guest that is still starting, and fails at once with any other cause", async () => {
 		const f = await fixture();

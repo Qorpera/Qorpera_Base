@@ -10,6 +10,7 @@ import {
 } from "@qorpera/contracts";
 import { type CodingGuestConfiguration, parseCodingGuestConfiguration } from "./cloud-coding-guest-configuration.ts";
 import { registerCodingSessionUser } from "./cloud-coding-session-guest.ts";
+import { assertGuestImageSelfUpdateMasked } from "./lxd-guest-image-updates.ts";
 
 const MARKER = ".qorpera-volume.json";
 const O_PATH = 0x200000;
@@ -268,6 +269,10 @@ async function inspect(
 	sandbox?: CodingGuestSandbox,
 ): Promise<{ binding: CloudCodingStorageBinding; roots: Root[]; layout: CloudCodingSessionLayout }> {
 	if (process.platform !== "linux") throw new Error("CODING_GUEST_STORAGE_LINUX_REQUIRED");
+	// Every action refuses on an image that can upgrade itself: needrestart
+	// would restart the sessions' units and the shutdown inhibitor would keep
+	// the machine, and its node slot, from stopping.
+	await assertGuestImageSelfUpdateMasked();
 	const layout = cloudCodingSessionLayout(guest.workerId);
 	if (
 		guest.workspacePath !== layout.workspacePath ||
