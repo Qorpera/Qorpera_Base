@@ -263,7 +263,8 @@ export async function testOfficeResetChain({stop,attestation,scope,binding,servi
  // phase challenge still requires an explicit subsequent unpause.
  const created=physical('root_created',plan.commands.createCommandId,{instanceSha256:predecessor.startup.instanceSha256});
  await refuse(prepare('root_created',fresh(),officeDigest(created)),/restart authority/);
- execute(`${owner}select public.qorpera_set_company_execution_pause('${scope.companyId}',false,'disposable continuation');`);
+ // The pause is an operator brake: the operator session acts with the owner's claims.
+ execute(`${owner}reset role;select public.qorpera_set_company_execution_pause('${scope.companyId}',false,'disposable continuation');`);
  const nc=fresh();call(prepare('root_created',nc,officeDigest(created)));call(ack(nc,created));
  assert.equal(reset().phase,'root_created');assert.equal(auditCount(),1);
  assert.deepEqual(call(dispose(),owner),received); // immutable historical replay only, no renewal

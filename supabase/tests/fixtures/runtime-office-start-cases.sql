@@ -90,17 +90,15 @@ select pg_temp.wake_error($q$select pg_temp.office_start_check()$q$,'42501');
 reset role;
 rollback to savepoint changed_start_bootstrap;
 select pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001');
-set local role authenticated;
 select public.qorpera_set_company_execution_pause('30000000-0000-4000-8000-000000000010',true,'start fixture');
-reset role;
 select pg_temp.path_claims('service_role');
 set local role service_role;
 select pg_temp.wake_error($q$select pg_temp.office_start_check()$q$,'42501');
 select pg_temp.wake_error($q$select pg_temp.office_start_reserve()$q$,'42501');
 reset role;
 select pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001');
-set local role authenticated;
 select public.qorpera_set_company_execution_pause('30000000-0000-4000-8000-000000000010',false,'start fixture');
+set local role authenticated;
 select pg_temp.wake_assert(public.qorpera_cancel_runtime_office_start(current_setting('qorpera_test.office_scope')::jsonb,1,
 	current_setting('qorpera_test.start_id')::uuid)->>'state'='cancelled','cancellation fences future preparation');
 select pg_temp.wake_assert(public.qorpera_cancel_runtime_office_start(current_setting('qorpera_test.office_scope')::jsonb,1,
