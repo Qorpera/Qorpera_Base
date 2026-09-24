@@ -67,6 +67,9 @@ function fixture(connectorId = "gmail", ownerKind: "company" | "member" = "compa
 		authorizeOperation: vi.fn(async () => {
 			throw new Error("not used");
 		}),
+		authorizeRepositoryCredential: vi.fn(async () => {
+			throw new Error("not used");
+		}),
 	};
 	const provider = vi.fn<typeof fetch>(async (target) => {
 		const url = new URL(String(target));

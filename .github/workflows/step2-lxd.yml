@@ -120,6 +120,7 @@ jobs:
           test/cloud-coding-command-authority.test.ts
           test/cloud-coding-executor-config.test.ts
           test/cloud-coding-executor-control.test.ts
+          test/cloud-coding-repository-credentials.test.ts
           test/cloud-coding-git-guest.test.ts
           test/cloud-coding-guest-configuration.test.ts
           test/cloud-coding-guest-package.test.ts
