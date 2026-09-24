@@ -242,7 +242,8 @@ describe("settings session lifecycle", () => {
 		expect(f.root.querySelector<HTMLDetailsElement>(".company-invite")!.open).toBe(true);
 		expect(f.root.querySelector<HTMLSelectElement>('[data-draft="invite-role"]')!.value).toBe("viewer");
 		expect(document.activeElement).toBe(f.root.querySelector('[data-draft="invite-role"]'));
-		search.value = "delete";
+		// Each word matches on its own, so the button's own label finds its tab.
+		search.value = "Delete company";
 		search.dispatchEvent(new Event("input"));
 		expect(
 			[...f.root.querySelectorAll<HTMLElement>(".settings-nav [role=tab]")]
@@ -608,7 +609,7 @@ describe("settings session lifecycle", () => {
 		await draw();
 		confirmCompanyRemoval(f.root, true);
 		await draw();
-		expect(f.root.querySelector(".settings-team")!.textContent).toContain("Deletion unavailable");
+		expect(f.root.querySelector(".settings-company-exit")!.textContent).toContain("Deletion unavailable");
 		expect(f.root.querySelector<HTMLElement>(".frame")!.inert).toBe(true);
 		expect(f.root.querySelector(".company-card[href]")!.textContent).toContain(profileA.profileName);
 		expect(f.api.listProfiles).toHaveBeenCalledTimes(1);
@@ -699,6 +700,25 @@ describe("settings session lifecycle", () => {
 		expect(f.api.listProfiles).toHaveBeenCalledTimes(2);
 		expect(f.cloud.supabase.removeChannel).toHaveBeenCalledTimes(1);
 		expect(f.cloud.rpc).not.toHaveBeenCalled();
+	});
+	it.each(["settings", "team page"])("shows a failed company deletion right under its button in %s", async (place) => {
+		history.replaceState(null, "", place === "settings" ? "/#/" : `/#/c/${profileA.profileId}/team`);
+		const fixtureState = fixture();
+		vi.spyOn(fixtureState.api, "deleteProfile").mockRejectedValue(new Error("Deleting is paused"));
+		const f = await setup(fixtureState);
+		if (place === "settings") {
+			open(f.root);
+			click(f.root, "#settings-tab-company");
+			await draw();
+		}
+		confirmCompanyRemoval(f.root, true);
+		await draw();
+		const exit = f.root.querySelector(".company-exit")!;
+		expect(exit.nextElementSibling?.matches(".notice-danger")).toBe(true);
+		expect(exit.nextElementSibling?.textContent).toContain("Deleting is paused");
+		// Not also at the top of the page, above the members.
+		expect(f.root.querySelectorAll(".notice-danger")).toHaveLength(1);
+		expect(location.hash).toBe(place === "settings" ? "#/" : `#/c/${profileA.profileId}/team`);
 	});
 	it("does not restore a removed company from an older company-list request", async () => {
 		history.replaceState(null, "", "/#/");

@@ -9,6 +9,9 @@ import type { CompanyController } from "../company.ts";
 
 const ROLES: Exclude<HostedProfileRole, "owner">[] = ["viewer", "contributor", "admin"];
 
+/** `exitError` is a failed Delete/Leave company, shown under that button rather than at the top. */
+export type TeamFeedback = { message?: string; error?: string; exitError?: string };
+
 /** A company role as the interface names it; the cloud sends the code. */
 export function roleLabel(role: HostedProfileRole): string {
 	switch (role) {
@@ -29,8 +32,8 @@ export function renderTeam(
 	api: CloudApi,
 	company: CompanyController,
 	container: HTMLElement,
-	feedback: { message?: string; error?: string },
-	setFeedback: (next: { message?: string; error?: string }) => void,
+	feedback: TeamFeedback,
+	setFeedback: (next: TeamFeedback) => void,
 	options: {
 		friends?: HostedFriend[];
 		signal?: AbortSignal;
@@ -344,7 +347,7 @@ export function renderTeam(
 						// Membership revocation may stop this company before the RPC returns.
 						options.onCompanyRemoved(profile.profileId);
 					} catch (error) {
-						if (current()) setFeedback({ error: describeError(error) });
+						if (current()) setFeedback({ exitError: describeError(error) });
 					}
 				})(),
 			{ danger: true },
@@ -354,8 +357,9 @@ export function renderTeam(
 	// The button is rebuilt on every company update; keep keyboard focus on it.
 	const previousExit = (options.exit ?? container).querySelector(".company-exit");
 	const exitFocused = previousExit !== null && previousExit === document.activeElement;
-	if (options.exit) replace(options.exit, exit);
-	else if (exit) content.append(exit);
+	const exitError = feedback.exitError ? notice("danger", feedback.exitError) : null;
+	if (options.exit) replace(options.exit, exit, exitError);
+	else for (const part of [exit, exitError]) if (part) content.append(part);
 	replace(container, content);
 	for (const details of container.querySelectorAll("details"))
 		details.open = openDetails.includes(details.querySelector("summary")?.textContent);
