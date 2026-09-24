@@ -4,6 +4,7 @@ import { SurfaceDialog } from "../../ui/dialog.ts";
 import { button, h, icon, replace } from "../../ui/dom.ts";
 import { type FigureChoice, FigurePicker } from "../../ui/figure-picker.ts";
 import { matchesKey } from "../../ui/keys.ts";
+import { phrase, t } from "../../ui/preferences.ts";
 import type { CompanyController } from "../company.ts";
 import type { AgentDraft, WorkspaceActions } from "../workspace-actions.ts";
 import { type AgentEdits, editsFor, savedAgentDraft } from "./agent-edits.ts";
@@ -13,10 +14,10 @@ type Page = "details" | "routines";
 type TextKey = "displayName" | "role" | "charter";
 
 const FIELDS: Record<TextKey, { label: string; empty: string }> = {
-	displayName: { label: "Agent name", empty: "An agent needs a name." },
-	role: { label: "Agent title", empty: "An agent needs a title." },
+	displayName: { label: phrase("Agent name"), empty: phrase("An agent needs a name.") },
+	role: { label: phrase("Agent title"), empty: phrase("An agent needs a title.") },
 	// The description is the agent's responsibilities in plain prose, and what the agent works from.
-	charter: { label: "Responsibilities", empty: "An agent needs its responsibilities written down." },
+	charter: { label: phrase("Responsibilities"), empty: phrase("An agent needs its responsibilities written down.") },
 };
 
 /** An agent's details, anchored under the conversation title. Name, title and
@@ -61,7 +62,7 @@ export class AgentDetails {
 		this.#actions = actions;
 		this.#edits = editsFor(company, agent, actions, scope);
 		this.dialog = new SurfaceDialog(
-			"Agent details",
+			t("Agent details"),
 			"agent-details staff-details",
 			() => this.#closed(onClose),
 			anchor,
@@ -79,7 +80,7 @@ export class AgentDetails {
 				},
 				icon(glyph),
 			);
-		this.#pageButtons = { routines: pageButton("routines", "Routines", "clock") };
+		this.#pageButtons = { routines: pageButton("routines", t("Routines"), "clock") };
 		this.dialog.tools.prepend(this.#pageButtons.routines);
 
 		this.#figures = new FigurePicker(savedAgentDraft(agent), (choice) => this.#choose(choice), { keepColor: true });
@@ -88,7 +89,7 @@ export class AgentDetails {
 			{
 				class: "agent-figure-picker",
 				role: "dialog",
-				"aria-label": "Choose a figure and color",
+				"aria-label": t("Choose a figure and color"),
 				hidden: true,
 				onkeydown: (event: KeyboardEvent) => {
 					if (!matchesKey(event, "dismiss")) return;
@@ -104,7 +105,7 @@ export class AgentDetails {
 					class: "agent-figure-reset",
 					onclick: () => this.#figures.reset(),
 				},
-				"Reset",
+				t("Reset"),
 			),
 			this.#figures.el,
 		);
@@ -113,14 +114,14 @@ export class AgentDetails {
 			{
 				type: "button",
 				class: "agent-figure-button",
-				"aria-label": "Edit figure",
+				"aria-label": t("Edit figure"),
 				"aria-haspopup": "dialog",
 				"aria-expanded": "false",
 				onclick: () => (this.#picker.hidden ? this.#openPicker() : this.#closePicker(true)),
 			},
 			this.#stage,
 			h("span", { class: "agent-figure-pencil", "aria-hidden": "true" }, icon("edit")),
-			h("span", { class: "agent-figure-tip", "aria-hidden": "true" }, "Edit figure"),
+			h("span", { class: "agent-figure-tip", "aria-hidden": "true" }, t("Edit figure")),
 		);
 		this.#details = h(
 			"div",
@@ -197,7 +198,7 @@ export class AgentDetails {
 	#field(key: TextKey): HTMLElement {
 		const multiline = key === "charter";
 		const events = {
-			"aria-label": FIELDS[key].label,
+			"aria-label": t(FIELDS[key].label),
 			oninput: () => this.#show(key, control.value),
 			onkeydown: (event: KeyboardEvent) => {
 				if (matchesKey(event, "dismiss")) {
@@ -261,7 +262,7 @@ export class AgentDetails {
 		}
 		if (!value) {
 			this.#show(key, current);
-			this.#say(FIELDS[key].empty);
+			this.#say(t(FIELDS[key].empty));
 			return;
 		}
 		this.#show(key, value);
@@ -282,8 +283,8 @@ export class AgentDetails {
 	#syncEdits(): void {
 		if (this.#lifetime.signal.aborted) return;
 		this.#sync();
-		const { status, failed } = this.#edits.store.get();
-		this.#say(status, status === "Saved", failed);
+		const { status, failed, saved } = this.#edits.store.get();
+		this.#say(status, saved, failed);
 	}
 
 	#say(text: string, fade = false, retry = false): void {
@@ -293,7 +294,7 @@ export class AgentDetails {
 			this.#status,
 			text,
 			retry
-				? button("Try again", () => void this.#edits.save(), { small: true, disabled: !this.#canWrite() })
+				? button(t("Try again"), () => void this.#edits.save(), { small: true, disabled: !this.#canWrite() })
 				: null,
 		);
 		if (fade) this.#statusTimer = setTimeout(() => replace(this.#status), 2400);

@@ -1,6 +1,6 @@
 import { h, icon } from "./dom.ts";
 import { matchesKey } from "./keys.ts";
-import { uiString } from "./preferences.ts";
+import { t } from "./preferences.ts";
 
 export interface PickerOption {
 	value: string;
@@ -125,8 +125,8 @@ export class PreferencePicker {
 			"aria-expanded": "true",
 			"aria-controls": listId,
 			"aria-autocomplete": "list",
-			"aria-label": uiString(this.#setup.searchLabel),
-			placeholder: uiString(this.#setup.searchLabel),
+			"aria-label": t(this.#setup.searchLabel),
+			placeholder: t(this.#setup.searchLabel),
 			autocomplete: "off",
 			spellcheck: false,
 			oninput: () => this.#filter(),
@@ -137,7 +137,7 @@ export class PreferencePicker {
 			{
 				type: "button",
 				class: "preference-picker-clear",
-				"aria-label": uiString("Close"),
+				"aria-label": t("Close"),
 				onclick: () => {
 					if (!search.value) return this.close(true);
 					search.value = "";
@@ -246,9 +246,9 @@ export class PreferencePicker {
 			row.el.hidden = !match;
 			if (match) this.#shown.push(row.el);
 		}
-		this.#clear.setAttribute("aria-label", uiString(search.value ? "Clear search" : "Close"));
+		this.#clear.setAttribute("aria-label", search.value ? t("Clear search") : t("Close"));
 		this.#empty.hidden = this.#shown.length > 0;
-		this.#empty.textContent = this.#shown.length ? "" : uiString("No matches");
+		this.#empty.textContent = this.#shown.length ? "" : t("No matches");
 		this.#activate(this.#shown[0], true);
 		this.#place();
 	}

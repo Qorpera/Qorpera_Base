@@ -7,6 +7,7 @@ import { fmtDate, fmtTime } from "../src/ui/dom.ts";
 import {
 	languagePreference,
 	previousDay,
+	setLanguagePreference,
 	setTimeZonePreference,
 	systemTimeZone,
 	timeZonePreference,
@@ -368,6 +369,41 @@ describe("changing the time zone with a conversation open", () => {
 			const redrawn = root.querySelector<HTMLTextAreaElement>("textarea.composer-input")!;
 			expect(redrawn).not.toBe(composer);
 			expect(redrawn.value).toBe("Half a thought");
+		} finally {
+			dispose();
+		}
+	});
+
+	it("redraws in the new language in place, keeps the draft, and reopens Settings where it was", async () => {
+		vi.useFakeTimers();
+		history.replaceState(null, "", `/#/c/${profileA.profileId}/chat/${session.sessionId}`);
+		const f = fixture();
+		const root = document.createElement("div");
+		document.body.append(root);
+		const dispose = mountApplication(root, f.cloud, f.api);
+		try {
+			const draw = async () => {
+				await settle();
+				await vi.advanceTimersByTimeAsync(60);
+			};
+			await draw();
+			const composer = root.querySelector<HTMLTextAreaElement>("textarea.composer-input")!;
+			expect(composer.placeholder).toBe("Message…");
+			composer.value = "Half a thought";
+			composer.dispatchEvent(new Event("input"));
+			root.querySelector<HTMLButtonElement>(".account-trigger")!.click();
+			root.querySelector<HTMLButtonElement>('[data-account-action="settings"]')!.click();
+			expect(setLanguagePreference("da")).toBe(true);
+			await draw();
+			const redrawn = root.querySelector<HTMLTextAreaElement>("textarea.composer-input")!;
+			expect(redrawn.placeholder).toBe("Besked…");
+			expect(redrawn.value).toBe("Half a thought");
+			expect(root.querySelectorAll(".settings-dialog")).toHaveLength(1);
+			expect(root.querySelector("#settings-content h1")?.textContent).toBe("Generelt");
+			expect(document.activeElement).toBe(root.querySelector(".preference-picker-button"));
+			expect(root.querySelector(".rail")?.getAttribute("aria-label")).toBe("Virksomhedsnavigation");
+			// The rail keeps its search field across redraws; its words follow the language.
+			expect(root.querySelector<HTMLInputElement>(".rail-search input")?.placeholder).toBe("Søg");
 		} finally {
 			dispose();
 		}

@@ -13,7 +13,7 @@ import {
 	subscribeProfileRealtime,
 	subscribeSidebarRealtime,
 } from "../cloud/realtime.ts";
-import { sessionAttachmentIssue } from "../cloud/session-attachments.ts";
+import { sessionAttachmentProblem } from "../cloud/session-attachments.ts";
 import {
 	type RoomMessageTarget,
 	type SessionExecutionSponsor,
@@ -33,6 +33,8 @@ import type {
 	JsonValue,
 	PendingSessionInput,
 } from "../cloud/types.ts";
+import { attachmentProblemText } from "../ui/attachments.ts";
+import { t } from "../ui/preferences.ts";
 import { debounce, Store } from "./state.ts";
 
 /* One controller per open company. It holds the canonical projections the
@@ -77,24 +79,24 @@ function sidebarRefusal(error: unknown, request: SidebarRequest): string {
 	if (error instanceof CloudRpcError) {
 		const shared = ["create_section", "rename_section", "delete_section", "move_agent"].includes(request.action);
 		if (error.code === "42501" && shared)
-			return "Only owners, admins and contributors can change the company's sections.";
+			return t("Only owners, admins and contributors can change the company's sections.");
 		const own = ["23505", "P0002", "54000", "22023"].includes(error.code ?? "");
 		if (own && error.message.trim() && !/request is invalid/i.test(error.message)) return error.message.trim();
 	}
-	return "The sidebar could not be changed. Try again.";
+	return t("The sidebar could not be changed. Try again.");
 }
 
 /** Why the cloud would not try a run again, in the member's words. */
 function retryRefusal(error: unknown): string {
 	const message = error instanceof Error ? error.message : "";
-	if (/author of the post/i.test(message)) return "Only the person who wrote the message can try it again.";
-	if (/sponsor|model account/i.test(message)) return "Select an active model account, then try again.";
+	if (/author of the post/i.test(message)) return t("Only the person who wrote the message can try it again.");
+	if (/sponsor|model account/i.test(message)) return t("Select an active model account, then try again.");
 	// Only an operator pauses a company, briefly, while the runtime is updated.
-	if (/paused/i.test(message)) return "Agents are paused for a moment while Qorpera updates. Try again shortly.";
-	if (/already resolved/i.test(message)) return "This run was already handled.";
+	if (/paused/i.test(message)) return t("Agents are paused for a moment while Qorpera updates. Try again shortly.");
+	if (/already resolved/i.test(message)) return t("This run was already handled.");
 	if (/already answered|durable operation|open proposal/i.test(message))
-		return "This run already did part of its work, so it cannot be repeated. Send the message again instead.";
-	return "It could not be tried again. Send the message again instead.";
+		return t("This run already did part of its work, so it cannot be repeated. Send the message again instead.");
+	return t("It could not be tried again. Send the message again instead.");
 }
 
 export interface CompanyState {
@@ -256,7 +258,7 @@ export class CompanyController {
 		this.#writeInput =
 			writeInput ??
 			(async () => {
-				throw new Error("Sponsored message transport is unavailable.");
+				throw new Error(t("Sponsored message transport is unavailable."));
 			});
 		this.store = new Store<CompanyState>({
 			profile,
@@ -574,13 +576,13 @@ export class CompanyController {
 				session.profileId !== this.profile.profileId ||
 				session.environmentId !== this.profile.environmentId
 			)
-				throw new Error("This group chat is no longer available.");
+				throw new Error(t("This group chat is no longer available."));
 			return session;
 		};
 		const session = current();
 		const details = await readGroupChatDetails(this.#api.cloud, session, signal);
 		if (current().executionScope?.roomId !== session.executionScope?.roomId)
-			throw new Error("This group chat has changed. Open its details again.");
+			throw new Error(t("This group chat has changed. Open its details again."));
 		const previous = this.store.get().groups?.[details.roomId];
 		const latest =
 			previous &&
@@ -693,9 +695,9 @@ export class CompanyController {
 	}
 
 	memberName(userId: string | undefined): string {
-		if (!userId) return "Member";
-		if (userId === this.#userId) return "You";
-		return this.store.get().team?.members.find((member) => member.userId === userId)?.displayName ?? "Member";
+		if (!userId) return t("Member");
+		if (userId === this.#userId) return t("You");
+		return this.store.get().team?.members.find((member) => member.userId === userId)?.displayName ?? t("Member");
 	}
 
 	activityFor(staffAgentId: string | undefined): HostedStaffExecutionActivity | undefined {
@@ -761,7 +763,10 @@ export class CompanyController {
 			if (failed.sourceKind === "session_turn") await this.#api.retryFailedRun(runId);
 			else {
 				const sponsor = this.conversation(sessionId, false).get().executionSponsor;
-				if (!sponsor) throw new Error("Select an active model account, then try again.");
+				if (!sponsor) {
+					mark({ pending: false, error: t("Select an active model account, then try again.") });
+					return;
+				}
 				await this.#api.retryRoomDelivery(runId, sponsor.sponsorBindingId, sponsor.sponsorVersion);
 			}
 			mark(undefined);
@@ -769,7 +774,7 @@ export class CompanyController {
 			if (this.#stopped) return;
 			if (error instanceof CloudRpcError && error.missing) {
 				// The web is ahead of the deployed cloud. Say so once and stop offering it.
-				mark({ pending: false, error: "Trying again is not available yet. Send the message again instead." });
+				mark({ pending: false, error: t("Trying again is not available yet. Send the message again instead.") });
 				this.store.set({ roomRetryUnavailable: true });
 			} else mark({ pending: false, error: retryRefusal(error) });
 		} finally {
@@ -838,7 +843,7 @@ export class CompanyController {
 	/** The agent's shared thread (2026-09-17 amendment): one conversation every
 	 * member sees, bound to the agent's room by the kernel. */
 	async openStaffConversation(agent: HostedStaffAgent): Promise<string> {
-		if (this.#stopped) throw new Error("This company is no longer open.");
+		if (this.#stopped) throw new Error(t("This company is no longer open."));
 		const existing = this.primarySessionFor(agent.id);
 		if (existing) return existing.sessionId;
 		const thread = await this.#api.agentThread(this.profile.environmentId, agent.id);
@@ -848,31 +853,32 @@ export class CompanyController {
 
 	/** The Co-Founder's shared thread; there is no member-private conversation. */
 	async openCofounderConversation(): Promise<{ sessionId?: string; reason?: string }> {
-		if (this.#stopped) return { reason: "This company is no longer open." };
+		if (this.#stopped) return { reason: t("This company is no longer open.") };
 		const { organization, organizationState, team, sessions } = this.store.get();
 		if (organizationState === "not-deployed") {
 			return {
-				reason:
+				reason: t(
 					"The organization kernel (Order 0) is not deployed on this cloud yet, so there is no Co-Founder home here.",
+				),
 			};
 		}
 		if (!organization)
 			return {
-				reason: "This company has no Co-Founder yet. The cloud seeds one when Order 0 bootstraps the company.",
+				reason: t("This company has no Co-Founder yet. The cloud seeds one when Order 0 bootstraps the company."),
 			};
 		if (organization.cofounder.memberSessionId) return { sessionId: organization.cofounder.memberSessionId };
 		const thread = sessions.find(
 			(session) => session.staffAgentId === organization.cofounder.staffAgentId && isAgentThreadSession(session),
 		);
 		if (thread) return { sessionId: thread.sessionId };
-		if (!team?.capabilities.read) return { reason: "This company is not readable." };
+		if (!team?.capabilities.read) return { reason: t("This company is not readable.") };
 		try {
 			const handle = await this.#api.agentThread(this.profile.environmentId, organization.cofounder.staffAgentId);
 			await this.refreshSessions();
 			return { sessionId: handle.sessionId };
 		} catch (error) {
 			if (error instanceof CloudRpcError && error.missing) {
-				return { reason: "Agent threads are not deployed on this cloud yet." };
+				return { reason: t("Agent threads are not deployed on this cloud yet.") };
 			}
 			return { reason: describeError(error) };
 		}
@@ -931,7 +937,7 @@ export class CompanyController {
 						if (!events.some((existing) => existing.sequence === event.sequence)) events.push(event);
 					if (page.length < EVENT_PAGE) break;
 					const next = page[page.length - 1]?.sequence ?? after;
-					if (next <= after) throw new Error("The transcript cursor did not advance.");
+					if (next <= after) throw new Error(t("The transcript cursor did not advance."));
 					after = next;
 					store.set({ events: [...events], projection: projectTranscript(events, store.get().pending) });
 				}
@@ -943,7 +949,7 @@ export class CompanyController {
 					pending.push(...page.items);
 					if (!page.hasMore) break;
 					if (page.nextAfterPosition <= position || !page.items.length)
-						throw new Error("The input cursor did not advance.");
+						throw new Error(t("The input cursor did not advance."));
 					position = page.nextAfterPosition;
 				}
 				const optimistic = reconcileOptimistic({ optimistic: store.get().optimistic, pending, events });
@@ -1020,7 +1026,7 @@ export class CompanyController {
 			session.profileId !== this.profile.profileId ||
 			session.environmentId !== this.profile.environmentId
 		)
-			throw new Error("This conversation is not available for sending.");
+			throw new Error(t("This conversation is not available for sending."));
 	}
 
 	setExecutionSponsor(sessionId: string, observed: NativeExecutionConnections, connectionId?: string): void {
@@ -1036,7 +1042,7 @@ export class CompanyController {
 		this.assertCanSend(sessionId);
 		const store = this.conversation(sessionId, false);
 		const state = store.get();
-		if (state.sending) throw new Error("Wait for message submission before starting a new request.");
+		if (state.sending) throw new Error(t("Wait for message submission before starting a new request."));
 		if (!state.retrySend) return;
 		const clientInputId = state.retrySend.clientInputId;
 		store.set({
@@ -1051,7 +1057,7 @@ export class CompanyController {
 		const scope = session?.executionScope;
 		if (!session || !scope || !("roomId" in scope)) return undefined;
 		if (typeof scope.roomId !== "string" || !UUID_PATTERN.test(scope.roomId))
-			throw new Error("The team room conversation is unavailable.");
+			throw new Error(t("The team room conversation is unavailable."));
 		// An agent thread is a room the kernel bound to one agent; a team room has no single agent.
 		return Object.freeze({
 			roomId: scope.roomId,
@@ -1151,9 +1157,9 @@ export class CompanyController {
 		const trimmed = text.trim();
 		const files = [...(store.get().attachments ?? [])];
 		if ((!trimmed && !files.length) || store.get().sending) return false;
-		const issue = sessionAttachmentIssue(files);
-		if (issue) {
-			store.set({ sendError: issue });
+		const problem = sessionAttachmentProblem(files);
+		if (problem) {
+			store.set({ sendError: attachmentProblemText(problem) });
 			return false;
 		}
 		const retry = store.get().retrySend;
@@ -1163,8 +1169,10 @@ export class CompanyController {
 		if (retry && !sameRequest) {
 			store.set({
 				draft: text,
-				sendError:
-					'The earlier message may already have been accepted. Choose "Start a new message request" before sending changed text or images.',
+				sendError: t(
+					"The earlier message may already have been accepted. Choose {action} before sending changed text or images.",
+					{ action: `"${t("Start a new message request")}"` },
+				),
 			});
 			return false;
 		}
@@ -1177,9 +1185,9 @@ export class CompanyController {
 				observed?.environmentId !== roomTarget?.environmentId ||
 				observed?.agentThread !== roomTarget?.agentThread
 			)
-				throw new Error("The conversation destination changed. Refresh before starting a new request.");
+				throw new Error(t("The conversation destination changed. Refresh before starting a new request."));
 			if (roomTarget && !roomTarget.agentThread && files.length)
-				throw new Error("Images are not supported in team rooms. Use Company File.");
+				throw new Error(t("Images are not supported in team rooms. Use Company File."));
 		} catch (error) {
 			store.set({ sendError: describeError(error), draft: text });
 			return false;
@@ -1188,7 +1196,7 @@ export class CompanyController {
 		// the current chooser has changed. SQL checks exact replay identity.
 		const executionSponsor = sameRequest ? retry.executionSponsor : store.get().executionSponsor;
 		if (!executionSponsor) {
-			store.set({ sendError: "Select an active model account before sending.", draft: text });
+			store.set({ sendError: t("Select an active model account before sending."), draft: text });
 			return false;
 		}
 		const clientInputId = sameRequest ? retry.clientInputId : crypto.randomUUID();

@@ -8,7 +8,7 @@ import { badge, button, confirmDialog, h, icon, initials, notice, replace } from
 import { groupChatAvatar, isGroupChat } from "../../ui/group-chat.ts";
 import { matchesKey } from "../../ui/keys.ts";
 import { nameDialog } from "../../ui/name-dialog.ts";
-import { presentationLocale, uiText } from "../../ui/preferences.ts";
+import { phrase, presentationLocale, t, uiText } from "../../ui/preferences.ts";
 import { quietScroll } from "../../ui/quiet-scroll.ts";
 import { RailDrag, type RailDrop } from "../../ui/rail-drag.ts";
 import { railListSkeleton } from "../../ui/skeleton.ts";
@@ -122,7 +122,7 @@ function accountMenuElement(context: ShellContext, company?: CompanyController):
 	const name = displayName(context.user);
 	const shown = JSON.stringify([name, context.invitations, Boolean(company), presentationLocale()]);
 	if (shown === accountShown) return accountMenu;
-	accountTrigger!.setAttribute("aria-label", `Profile: ${name}`);
+	accountTrigger!.setAttribute("aria-label", t("Profile: {name}", { name }));
 	accountTrigger!.title = name;
 	// Friends and the company invitations waiting for this account share one settings tab.
 	const settingsItem = (tab: SettingsTab, iconName: string, label: string, count = 0) =>
@@ -151,8 +151,8 @@ function accountMenuElement(context: ShellContext, company?: CompanyController):
 	replace(
 		accountPopover!,
 		h("div", { class: "account-identity" }, h("strong", null, name)),
-		settingsItem("general", "settings", "Account and settings"),
-		settingsItem("friends", "friends", "Friends", context.invitations),
+		settingsItem("general", "settings", phrase("Account and settings")),
+		settingsItem("friends", "friends", phrase("Friends"), context.invitations),
 		h(
 			"button",
 			{
@@ -200,7 +200,7 @@ export function renderTopbar(
 	container.classList.toggle("topbar-plain", !company);
 	container.classList.toggle("topbar-company", Boolean(company));
 	const lead =
-		company || context.route.name === "hub" ? null : h("a", { class: "topbar-home", href: "#/" }, "← Companies");
+		company || context.route.name === "hub" ? null : h("a", { class: "topbar-home", href: "#/" }, t("← Companies"));
 	replace(
 		container,
 		context.navigation
@@ -209,7 +209,7 @@ export function renderTopbar(
 					{
 						type: "button",
 						class: "icon-button mobile-navigation-toggle",
-						"aria-label": "Company navigation",
+						"aria-label": t("Company navigation"),
 						"aria-controls": "company-navigation",
 						"aria-expanded": String(context.navigation.open),
 						onclick: context.navigation.toggle,
@@ -259,6 +259,8 @@ interface RailParts {
 	rows: Map<string, { shown: string; element: HTMLElement }>;
 	/** The error notices by what they are about, each with the text it shows. */
 	notices: Map<string, { text: string; element: HTMLElement }>;
+	/** The interface language the parts were last labelled in. */
+	locale: string;
 	/** What the connection status last said. */
 	connectionShown: string;
 	/** Whether the last draw found the rail collapsed, where the search field is hidden. */
@@ -311,28 +313,9 @@ function reconcile(parent: HTMLElement, children: readonly HTMLElement[]): void 
 function partsFor(company: CompanyController, redraw: () => void): RailParts {
 	let parts = railParts.get(company);
 	if (!parts) {
-		const input = h("input", {
-			type: "search",
-			placeholder: "Search",
-			autocomplete: "off",
-			spellcheck: "false",
-			"aria-label": "Search agents",
-		});
-		const close = h(
-			"button",
-			{ type: "button", class: "icon-button rail-mobile-close", "aria-label": "Close company navigation" },
-			icon("close"),
-		);
-		const add = h(
-			"a",
-			{
-				class: "rail-add icon-button",
-				href: `#/c/${company.profile.profileId}/new`,
-				"aria-label": "New conversation or agent",
-				title: "New conversation or agent",
-			},
-			icon("plus"),
-		);
+		const input = h("input", { type: "search", autocomplete: "off", spellcheck: "false" });
+		const close = h("button", { type: "button", class: "icon-button rail-mobile-close" }, icon("close"));
+		const add = h("a", { class: "rail-add icon-button", href: `#/c/${company.profile.profileId}/new` }, icon("plus"));
 		const connection = h("div", { class: "rail-connection", role: "status", hidden: true });
 		const list = h("div", { class: "rail-scroll" });
 		const created: RailParts = {
@@ -346,8 +329,8 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 			cofounderGroup: h("div", { class: "rail-cofounder", role: "group", "aria-label": "Co-Founder" }),
 			pinnedGroup: h(
 				"div",
-				{ class: "rail-pinned", role: "group", "aria-label": "Pinned agents", "data-zone": "pinned" },
-				h("span", { class: "rail-drop-slot" }, "Drop here to pin"),
+				{ class: "rail-pinned", role: "group", "data-zone": "pinned" },
+				h("span", { class: "rail-drop-slot" }),
 			),
 			sections: new Map(),
 			unassigned: sectionParts("unassigned"),
@@ -355,13 +338,13 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 			empty: h("p", { class: "rail-empty" }),
 			rows: new Map(),
 			notices: new Map(),
+			locale: "",
 			connectionShown: "",
 			collapsed: false,
 			drag: undefined as unknown as RailDrag,
 			redraw,
 		};
 		(created as { drag: RailDrag }).drag = new RailDrag(list, () => dragHooks(company, created), company.signal);
-		created.unassigned.title.textContent = "Unassigned";
 		list.addEventListener("contextmenu", (event) => openRailMenu(company, created, event), {
 			signal: company.signal,
 		});
@@ -400,6 +383,25 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 		railParts.set(company, parts);
 	}
 	parts.redraw = redraw;
+	// The parts outlive a language change: give them their words again and
+	// build every row, notice and badge anew in the new language.
+	const locale = presentationLocale();
+	if (parts.locale !== locale) {
+		parts.locale = locale;
+		parts.input.placeholder = t("Search");
+		parts.pinnedGroup.setAttribute("aria-label", t("Pinned agents"));
+		const slot = parts.pinnedGroup.querySelector<HTMLElement>(".rail-drop-slot");
+		if (slot) slot.textContent = t("Drop here to pin");
+		parts.unassigned.title.textContent = t("Unassigned");
+		parts.input.setAttribute("aria-label", t("Search agents"));
+		parts.close.setAttribute("aria-label", t("Close company navigation"));
+		parts.add.setAttribute("aria-label", t("New conversation or agent"));
+		parts.add.title = t("New conversation or agent");
+		parts.loading = undefined;
+		parts.rows = new Map();
+		parts.notices = new Map();
+		parts.connectionShown = "";
+	}
 	return parts;
 }
 
@@ -414,7 +416,9 @@ function railLabel(
 	agent: Pick<HostedStaffAgent, "displayName" | "role">,
 	look: AgentLook,
 ): { title: string; "aria-label"?: string } {
-	const state = look.note ?? look.line;
+	// AGENT_LOOK keeps the English words; they are translated where they are drawn.
+	const words = look.note ?? look.line;
+	const state = words ? t(words) : undefined;
 	const label = [agent.displayName, agent.role, state].filter(Boolean).join(" · ");
 	return state ? { title: label, "aria-label": label } : { title: label };
 }
@@ -663,8 +667,8 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 					{
 						title: session.title,
 						subtitle: isGroupChat(session)
-							? (state.groups?.[String(session.executionScope?.roomId)]?.subtitle ?? "Group chat")
-							: "company",
+							? (state.groups?.[String(session.executionScope?.roomId)]?.subtitle ?? t("Group chat"))
+							: t("company"),
 						kind: isGroupChat(session) ? ("Group chat" as const) : ("company" as const),
 						agents: company.groupAgents(session.sessionId),
 						selected: activeSessionId === session.sessionId,
@@ -689,8 +693,8 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	const empty =
 		!state.loading && !cofounderElement && !anyRows
 			? railQuery
-				? "No matching conversations."
-				: "No agents yet."
+				? t("No matching conversations.")
+				: t("No agents yet.")
 			: null;
 	if (empty && parts.empty.textContent !== empty) parts.empty.textContent = empty;
 	// Drop zones exist only where the sidebar does; while searching, only rows that match show.
@@ -745,16 +749,16 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 		parts.list,
 		[
 			errorNotice("sessions", state.sessionsError, () =>
-				button("Retry conversations", () => void company.refreshSessions(), { small: true }),
+				button(t("Retry conversations"), () => void company.refreshSessions(), { small: true }),
 			),
 			// Group details are decoration (names and figures of a group chat) and are read
 			// again with every conversation refresh. A failure never shows in the rail: the
 			// text would name cloud machinery, and there is nothing for the member to do.
 			errorNotice("company", state.error, () =>
-				button("Retry company", () => void company.refreshAll(), { small: true }),
+				button(t("Retry company"), () => void company.refreshAll(), { small: true }),
 			),
 			errorNotice("rail", state.railError, () =>
-				button("Dismiss", () => company.reportRailError(undefined), { small: true }),
+				button(t("Dismiss"), () => company.reportRailError(undefined), { small: true }),
 			),
 			cofounderElement ? parts.cofounderGroup : null,
 			// The pinned row stays in place while empty, hidden, so a drag can still reach it.
@@ -786,7 +790,7 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 			parts.connection,
 			connection
 				? badge(
-						state.realtime === "connecting" ? "connecting" : "live updates degraded",
+						state.realtime === "connecting" ? t("connecting") : t("live updates degraded"),
 						state.realtime === "connecting" ? "neutral" : "warn",
 						state.realtimeError ?? "",
 					)
@@ -814,9 +818,9 @@ function sameName(sidebar: CompanySidebar, name: string, except?: string) {
  * (a name that already exists moves the agent there instead). */
 async function askSectionName(company: CompanyController, agentId?: string): Promise<void> {
 	const name = await nameDialog({
-		title: "New section",
-		label: "Section name",
-		confirm: "Create",
+		title: t("New section"),
+		label: t("Section name"),
+		confirm: t("Create"),
 		maxLength: SECTION_NAME_LIMIT,
 		signal: company.signal,
 	});
@@ -836,7 +840,7 @@ async function askSectionName(company: CompanyController, agentId?: string): Pro
 		return;
 	}
 	if (existing) {
-		company.reportRailError(`A section called "${existing.name}" already exists.`);
+		company.reportRailError(t("A section called {name} already exists.", { name: `"${existing.name}"` }));
 		return;
 	}
 	void company.changeSidebar({
@@ -869,7 +873,7 @@ function agentMenu(company: CompanyController, parts: RailParts, agent: HostedSt
 		const first: MenuEntry[] = [];
 		if (pinned)
 			first.push({
-				label: "Unpin",
+				label: t("Unpin"),
 				icon: "unpin",
 				select: () =>
 					void company.changeSidebar({
@@ -879,7 +883,7 @@ function agentMenu(company: CompanyController, parts: RailParts, agent: HostedSt
 			});
 		else if (sidebar.pinned.length < PIN_LIMIT)
 			first.push({
-				label: "Pin",
+				label: t("Pin"),
 				icon: "pin",
 				select: () => void company.changeSidebar({ action: "set_pins", order: [...livePins(), agent.id] }),
 			});
@@ -900,7 +904,7 @@ function agentMenu(company: CompanyController, parts: RailParts, agent: HostedSt
 			};
 			first.push({
 				kind: "submenu",
-				label: "Move to",
+				label: t("Move to"),
 				icon: "folder",
 				items: [
 					...sidebar.sections.map(
@@ -911,24 +915,24 @@ function agentMenu(company: CompanyController, parts: RailParts, agent: HostedSt
 							select: move(section.sectionId),
 						}),
 					),
-					{ label: "Unassigned", icon: "folder", checked: current === undefined, select: move(null) },
+					{ label: t("Unassigned"), icon: "folder", checked: current === undefined, select: move(null) },
 					{ kind: "separator" },
-					{ label: "New section", icon: "folder_plus", select: () => void askSectionName(company, agent.id) },
+					{ label: t("New section"), icon: "folder_plus", select: () => void askSectionName(company, agent.id) },
 				],
 			});
 		}
 		if (first.length) groups.push(first);
 	}
 	if (canAuthorize && actions?.updateAgent)
-		groups.push([{ label: "Rename", icon: "edit", select: () => void renameAgent(company, parts, agent) }]);
+		groups.push([{ label: t("Rename"), icon: "edit", select: () => void renameAgent(company, parts, agent) }]);
 	const sessionId = company.primarySessionFor(agent.id)?.sessionId;
 	if (sessionId)
 		groups.push([
 			{
-				label: "Copy conversation ID",
+				label: t("Copy conversation ID"),
 				icon: "copy",
 				select: () => {
-					const failed = () => company.reportRailError("The conversation ID could not be copied.");
+					const failed = () => company.reportRailError(t("The conversation ID could not be copied."));
 					if (!navigator.clipboard) failed();
 					else void navigator.clipboard.writeText(sessionId).catch(failed);
 				},
@@ -938,14 +942,14 @@ function agentMenu(company: CompanyController, parts: RailParts, agent: HostedSt
 	if (sidebar && !isCofounder) {
 		const isHidden = sidebar.hidden.includes(agent.id);
 		last.push({
-			label: isHidden ? "Show in sidebar" : "Hide from sidebar",
+			label: isHidden ? t("Show in sidebar") : t("Hide from sidebar"),
 			icon: isHidden ? "show" : "hide",
 			select: () => void company.changeSidebar({ action: "set_hidden", staffAgentId: agent.id, hidden: !isHidden }),
 		});
 	}
 	if (!isCofounder && canAuthorize && actions?.deleteAgent)
 		last.push({
-			label: "Delete",
+			label: t("Delete"),
 			icon: "trash",
 			danger: true,
 			select: () => void deleteAgent(company, parts, agent),
@@ -958,10 +962,10 @@ async function renameAgent(company: CompanyController, parts: RailParts, agent: 
 	const update = parts.context?.agentActions?.updateAgent;
 	if (!update) return;
 	const name = await nameDialog({
-		title: "Rename agent",
-		label: "Agent name",
+		title: t("Rename agent"),
+		label: t("Agent name"),
 		value: agent.displayName,
-		confirm: "Rename",
+		confirm: t("Rename"),
 		maxLength: 160,
 		signal: company.signal,
 	});
@@ -971,7 +975,8 @@ async function renameAgent(company: CompanyController, parts: RailParts, agent: 
 		await update(latest, { ...savedAgentDraft(latest), displayName: name }, company.signal);
 		await company.refreshStaff();
 	} catch {
-		if (!company.signal.aborted) company.reportRailError(`${latest.displayName} could not be renamed.`);
+		if (!company.signal.aborted)
+			company.reportRailError(t("{name} could not be renamed.", { name: latest.displayName }));
 	}
 }
 
@@ -979,8 +984,11 @@ async function deleteAgent(company: CompanyController, parts: RailParts, agent: 
 	const remove = parts.context?.agentActions?.deleteAgent;
 	if (!remove) return;
 	const confirmed = await confirmDialog(
-		`Delete ${agent.displayName}? The agent leaves the company for everyone, with its conversations and routines. This cannot be undone.`,
-		"Delete",
+		t(
+			"Delete {name}? The agent leaves the company for everyone, with its conversations and routines. This cannot be undone.",
+			{ name: agent.displayName },
+		),
+		t("Delete"),
 		true,
 		undefined,
 		company.signal,
@@ -1000,11 +1008,11 @@ async function deleteAgent(company: CompanyController, parts: RailParts, agent: 
 		await Promise.all([company.refreshStaff(), company.refreshSessions(), company.refreshSidebar()]);
 	} catch (error) {
 		if (company.signal.aborted) return;
-		const reason =
+		company.reportRailError(
 			error instanceof Error && /projects this agent leads/i.test(error.message)
-				? " Hand over the projects it leads first."
-				: "";
-		company.reportRailError(`${agent.displayName} could not be deleted.${reason}`);
+				? t("{name} could not be deleted. Hand over the projects it leads first.", { name: agent.displayName })
+				: t("{name} could not be deleted.", { name: agent.displayName }),
+		);
 	}
 }
 
@@ -1014,33 +1022,36 @@ function sectionMenu(company: CompanyController, sectionId: string): MenuEntry[]
 	if (!sidebar || !section || !canOrganize(company)) return [];
 	return [
 		{
-			label: "Rename section",
+			label: t("Rename section"),
 			icon: "edit",
 			select: async () => {
 				const name = await nameDialog({
-					title: "Rename section",
-					label: "Section name",
+					title: t("Rename section"),
+					label: t("Section name"),
 					value: section.name,
-					confirm: "Rename",
+					confirm: t("Rename"),
 					maxLength: SECTION_NAME_LIMIT,
 					signal: company.signal,
 				});
 				if (!name) return;
 				const clash = sameName(company.store.get().sidebar ?? sidebar, name, sectionId);
-				if (clash) company.reportRailError(`A section called "${clash.name}" already exists.`);
+				if (clash)
+					company.reportRailError(t("A section called {name} already exists.", { name: `"${clash.name}"` }));
 				else void company.changeSidebar({ action: "rename_section", sectionId, name });
 			},
 		},
 		{ kind: "separator" },
 		{
-			label: "Delete section",
+			label: t("Delete section"),
 			icon: "trash",
 			danger: true,
 			select: async () => {
 				if (
 					await confirmDialog(
-						`Delete the section "${section.name}"? Its agents move to Unassigned, for everyone in the company.`,
-						"Delete section",
+						t("Delete the section {name}? Its agents move to Unassigned, for everyone in the company.", {
+							name: `"${section.name}"`,
+						}),
+						t("Delete section"),
 						true,
 						undefined,
 						company.signal,
@@ -1065,14 +1076,14 @@ function openRailMenu(company: CompanyController, parts: RailParts, event: Mouse
 	const agentElement = target.closest<HTMLElement>("[data-agent-id], [data-cofounder-id]");
 	const titleElement = target.closest<HTMLElement>(".rail-section-title[data-section-id]");
 	let items: MenuEntry[] = [];
-	let label = "Sidebar";
+	let label = t("Sidebar");
 	let opener: HTMLElement = parts.list;
 	let findOpener: (() => HTMLElement | null) | undefined;
 	if (agentElement) {
 		const agent = company.staffById(agentElement.dataset.agentId ?? agentElement.dataset.cofounderId);
 		if (agent) {
 			items = agentMenu(company, parts, agent);
-			label = `${agent.displayName} actions`;
+			label = t("{name} actions", { name: agent.displayName });
 			opener = agentElement;
 			// The row is rebuilt when the agent's state changes; focus goes back to the new one.
 			findOpener = () =>
@@ -1081,11 +1092,11 @@ function openRailMenu(company: CompanyController, parts: RailParts, event: Mouse
 	} else if (titleElement?.dataset.sectionId) {
 		const sectionId = titleElement.dataset.sectionId;
 		items = sectionMenu(company, sectionId);
-		label = `${titleElement.textContent ?? "Section"} actions`;
+		label = t("{name} actions", { name: titleElement.textContent ?? t("Section") });
 		opener = titleElement;
 		findOpener = () => parts.list.querySelector<HTMLElement>(`.rail-section-title[data-section-id="${sectionId}"]`);
 	} else if (!target.closest("a[href], button, input") && canOrganize(company)) {
-		items = [{ label: "New section", icon: "folder_plus", select: () => void askSectionName(company) }];
+		items = [{ label: t("New section"), icon: "folder_plus", select: () => void askSectionName(company) }];
 	}
 	// Nothing to offer: the browser's own menu stays.
 	if (!items.length) return;

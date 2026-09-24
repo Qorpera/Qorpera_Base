@@ -315,26 +315,79 @@ export function parseCloudRoutineOccurrence(value: unknown): CloudRoutineOccurre
 	};
 }
 
-/** Plain words for a trigger, in the viewer's language of days and clocks. */
-export function describeCloudRoutineTrigger(trigger: CloudRoutineTrigger): string {
+/** Interface text in the caller's language: the key is the English sentence,
+ * `{name}` placeholders take the values. English when none is passed. */
+export type CloudRoutineText = (source: string, values?: Record<string, string | number>) => string;
+
+const english: CloudRoutineText = (source, values) =>
+	values
+		? source.replace(/\{(\w+)\}/g, (field, name: string) => (name in values ? String(values[name]) : field))
+		: source;
+
+/** A weekday's short name ("Mon"). */
+export function cloudRoutineWeekdayName(day: CloudRoutineWeekday, t: CloudRoutineText = english): string {
+	switch (day) {
+		case "sunday":
+			return t("Sun");
+		case "monday":
+			return t("Mon");
+		case "tuesday":
+			return t("Tue");
+		case "wednesday":
+			return t("Wed");
+		case "thursday":
+			return t("Thu");
+		case "friday":
+			return t("Fri");
+		default:
+			return t("Sat");
+	}
+}
+
+function intervalWords(minutes: number, t: CloudRoutineText): string {
+	if (minutes % 1440 === 0)
+		return minutes === 1440 ? t("Every 1 day") : t("Every {count} days", { count: minutes / 1440 });
+	if (minutes % 60 === 0)
+		return minutes === 60 ? t("Every 1 hour") : t("Every {count} hours", { count: minutes / 60 });
+	return t("Every {count} minutes", { count: minutes });
+}
+
+function weekdayWords(days: readonly CloudRoutineWeekday[], t: CloudRoutineText): string {
+	return days.length === 7
+		? t("every day")
+		: CLOUD_ROUTINE_WEEKDAYS.filter((day) => days.includes(day))
+				.map((day) => cloudRoutineWeekdayName(day, t))
+				.join(", ");
+}
+
+/** Plain words for a trigger, in the viewer's language of days and clocks;
+ * pass the interface's translation to have them in its language. */
+export function describeCloudRoutineTrigger(trigger: CloudRoutineTrigger, t: CloudRoutineText = english): string {
 	if (trigger.kind === "listener")
-		return `When ${trigger.path} ${trigger.match === "subtree" ? "or anything under it " : ""}changes`;
-	const every =
-		trigger.intervalMinutes % 1440 === 0
-			? `${trigger.intervalMinutes / 1440} day${trigger.intervalMinutes === 1440 ? "" : "s"}`
-			: trigger.intervalMinutes % 60 === 0
-				? `${trigger.intervalMinutes / 60} hour${trigger.intervalMinutes === 60 ? "" : "s"}`
-				: `${trigger.intervalMinutes} minutes`;
-	const days = (list: readonly CloudRoutineWeekday[]) =>
-		list.length === 7
-			? "every day"
-			: CLOUD_ROUTINE_WEEKDAYS.filter((day) => list.includes(day))
-					.map((day) => day[0]!.toUpperCase() + day.slice(1, 3))
-					.join(", ");
-	if ("localTime" in trigger) return `${days(trigger.weekdays)} at ${trigger.localTime} (${trigger.timeZone})`;
-	if ("windowStart" in trigger)
-		return `Every ${every} between ${trigger.windowStart} and ${trigger.windowEnd}${trigger.weekdays ? `, ${days(trigger.weekdays)}` : ""} (${trigger.timeZone})`;
-	return `Every ${every}`;
+		return trigger.match === "subtree"
+			? t("When {path} or anything under it changes", { path: trigger.path })
+			: t("When {path} changes", { path: trigger.path });
+	if ("localTime" in trigger)
+		return t("{days} at {time} ({zone})", {
+			days: weekdayWords(trigger.weekdays, t),
+			time: trigger.localTime,
+			zone: trigger.timeZone,
+		});
+	if ("windowStart" in trigger) {
+		const window = {
+			every: intervalWords(trigger.intervalMinutes, t),
+			start: trigger.windowStart,
+			end: trigger.windowEnd,
+			zone: trigger.timeZone,
+		};
+		return trigger.weekdays
+			? t("{every} between {start} and {end}, {days} ({zone})", {
+					...window,
+					days: weekdayWords(trigger.weekdays, t),
+				})
+			: t("{every} between {start} and {end} ({zone})", window);
+	}
+	return intervalWords(trigger.intervalMinutes, t);
 }
 
 export class CloudRoutineClient {

@@ -3,6 +3,7 @@ import { agentFigure, figureElement, nativeColorOf } from "../../ui/avatar.ts";
 import { button, h, icon, replace } from "../../ui/dom.ts";
 import { FigurePicker } from "../../ui/figure-picker.ts";
 import { matchesKey } from "../../ui/keys.ts";
+import { t } from "../../ui/preferences.ts";
 import type { CompanyController } from "../company.ts";
 import { navigate } from "../router.ts";
 import type { AgentDraft, WorkspaceActions } from "../workspace-actions.ts";
@@ -41,14 +42,14 @@ export class NewConversationView {
 	readonly #chips = h("span", {
 		class: "recipient-chips",
 		role: "group",
-		"aria-label": "Selected recipients",
+		"aria-label": t("Selected recipients"),
 		hidden: true,
 	});
 	readonly #list = h("div", {
 		id: `${this.#id}-list`,
 		class: "recipient-list",
 		role: "listbox",
-		"aria-label": "Agents",
+		"aria-label": t("Agents"),
 	});
 	readonly #empty = h("p", { class: "recipient-empty", hidden: true });
 	readonly #menu = h(
@@ -69,8 +70,8 @@ export class NewConversationView {
 	readonly #message = h("textarea", {
 		class: "composer-input",
 		rows: 1,
-		placeholder: "Message…",
-		"aria-label": "Message",
+		placeholder: t("Message…"),
+		"aria-label": t("Message"),
 		oninput: () => {
 			this.#message.style.height = "auto";
 			this.#message.style.height = `${Math.min(this.#message.scrollHeight, 112)}px`;
@@ -88,7 +89,7 @@ export class NewConversationView {
 		{
 			type: "button",
 			class: "composer-send",
-			"aria-label": "Send message",
+			"aria-label": t("Send message"),
 			onclick: () => void this.#submit(),
 		},
 		icon("send"),
@@ -127,7 +128,7 @@ export class NewConversationView {
 			{
 				type: "button",
 				class: "mobile-navigation-toggle icon-button",
-				"aria-label": "Company navigation",
+				"aria-label": t("Company navigation"),
 				"aria-controls": "company-navigation",
 				"aria-expanded": "false",
 				hidden: !toggleNavigation,
@@ -139,8 +140,8 @@ export class NewConversationView {
 			id: `${this.#id}-to`,
 			type: "text",
 			role: "combobox",
-			placeholder: "Search or create agents",
-			"aria-label": "Search conversation recipients",
+			placeholder: t("Search or create agents"),
+			"aria-label": t("Search conversation recipients"),
 			"aria-autocomplete": "list",
 			"aria-controls": this.#list.id,
 			"aria-expanded": "false",
@@ -160,7 +161,7 @@ export class NewConversationView {
 		this.#field = h(
 			"div",
 			{ class: "recipient-field" },
-			h("label", { class: "recipient-to", for: this.#search.id }, "To:"),
+			h("label", { class: "recipient-to", for: this.#search.id }, t("To:")),
 			h("div", { class: "recipient-entry" }, this.#chips, this.#search, this.#menu),
 		);
 		// A press anywhere else closes the list. Blur alone cannot: a tap on a
@@ -215,7 +216,12 @@ export class NewConversationView {
 				this.#field,
 				h(
 					"button",
-					{ type: "button", class: "icon-button", "aria-label": "Close new conversation", onclick: this.#close },
+					{
+						type: "button",
+						class: "icon-button",
+						"aria-label": t("Close new conversation"),
+						onclick: this.#close,
+					},
 					icon("close"),
 				),
 			),
@@ -264,7 +270,7 @@ export class NewConversationView {
 		const choices: Choice[] = [
 			{
 				key: "create",
-				label: query ? `New agent “${query}”` : "New agent",
+				label: query ? t("New agent “{name}”", { name: query }) : t("New agent"),
 				lead: mark("plus"),
 				disabled: !canCreate,
 				run: () => this.#configure(),
@@ -273,7 +279,7 @@ export class NewConversationView {
 		if (!this.#group)
 			choices.push({
 				key: "group",
-				label: "New group chat",
+				label: t("New group chat"),
 				lead: mark("friends"),
 				disabled: false,
 				run: () => this.#setGroup(true),
@@ -288,7 +294,7 @@ export class NewConversationView {
 				run: () => this.#toggle(agent.id),
 			});
 		this.#choices = choices;
-		this.#search.placeholder = this.#selected.size || this.#group ? "Add agents" : "Search or create agents";
+		this.#search.placeholder = this.#selected.size || this.#group ? t("Add agents") : t("Search or create agents");
 		this.#list.setAttribute("aria-multiselectable", "true");
 		replace(
 			this.#list,
@@ -337,7 +343,7 @@ export class NewConversationView {
 			),
 		);
 		this.#empty.hidden = agents.length > 0;
-		this.#empty.textContent = query ? "No agents match." : "No agents yet.";
+		this.#empty.textContent = query ? t("No agents match.") : t("No agents yet.");
 		const chipFocus = document.activeElement?.getAttribute("data-remove-recipient");
 		replace(
 			this.#chips,
@@ -347,7 +353,7 @@ export class NewConversationView {
 					{
 						type: "button",
 						class: "recipient-chip",
-						"aria-label": `Remove ${agent.displayName}`,
+						"aria-label": t("Remove {name}", { name: agent.displayName }),
 						"data-remove-recipient": agent.id,
 						onmousedown: (event: MouseEvent) => event.preventDefault(),
 						onclick: (event: MouseEvent) => {
@@ -454,7 +460,7 @@ export class NewConversationView {
 		this.#sending = true;
 		this.#setListOpen(false);
 		this.#syncComposer();
-		this.#status.textContent = "Starting conversation…";
+		this.#status.textContent = t("Starting conversation…");
 		try {
 			const sessionId = await this.#actions.startConversation(
 				[...this.#selected],
@@ -468,7 +474,7 @@ export class NewConversationView {
 				this.#status.textContent =
 					error instanceof Error
 						? error.message
-						: "The conversation could not be started. Your draft is still here.";
+						: t("The conversation could not be started. Your draft is still here.");
 		} finally {
 			this.#sending = false;
 			if (!this.#lifetime.signal.aborted) this.#syncComposer();
@@ -494,8 +500,8 @@ export class NewConversationView {
 			value: this.#draft.displayName,
 			maxlength: "64",
 			required: true,
-			placeholder: "Agent name",
-			"aria-label": "Agent name",
+			placeholder: t("Agent name"),
+			"aria-label": t("Agent name"),
 			autocomplete: "off",
 			oninput: () => {
 				this.#draft.displayName = name.value;
@@ -505,8 +511,8 @@ export class NewConversationView {
 			value: this.#draft.role,
 			maxlength: "160",
 			required: true,
-			placeholder: "For example, Research",
-			"aria-label": "Agent title",
+			placeholder: t("For example, Research"),
+			"aria-label": t("Agent title"),
 			oninput: () => {
 				this.#draft.role = role.value;
 			},
@@ -515,8 +521,8 @@ export class NewConversationView {
 			value: this.#draft.charter,
 			rows: 3,
 			maxlength: "10000",
-			placeholder: "What should this agent be responsible for?",
-			"aria-label": "Agent responsibilities",
+			placeholder: t("What should this agent be responsible for?"),
+			"aria-label": t("Agent responsibilities"),
 			oninput: () => {
 				this.#draft.charter = charter.value;
 			},
@@ -530,25 +536,25 @@ export class NewConversationView {
 			{ class: "new-agent-fields" },
 			stage,
 			picker.el,
-			h("label", null, "Name", name),
-			h("label", null, "Title", role),
-			h("label", null, "Responsibilities", charter),
+			h("label", null, t("Name"), name),
+			h("label", null, t("Title"), role),
+			h("label", null, t("Responsibilities"), charter),
 		);
 		const status = h(
 			"p",
 			{ class: "surface-status", role: "status" },
 			this.#createdAgentId
-				? "The agent was created. Retry adding it once the agent list is available."
+				? t("The agent was created. Retry adding it once the agent list is available.")
 				: this.#actions.createAgent
 					? ""
-					: "Agent creation is not available yet.",
+					: t("Agent creation is not available yet."),
 		);
 		const create = h(
 			"button",
 			{ class: "btn btn-primary", type: "submit", disabled: !this.#actions.createAgent },
-			this.#createdAgentId ? "Add created agent" : "Create agent",
+			this.#createdAgentId ? t("Add created agent") : t("Create agent"),
 		);
-		const back = button([icon("back"), "Back"], () => {
+		const back = button([icon("back"), t("Back")], () => {
 			if (!this.#pending) {
 				this.#picker();
 				this.focus();
@@ -557,13 +563,13 @@ export class NewConversationView {
 		const form = h(
 			"form",
 			{ class: "new-agent-form" },
-			h("h1", null, "Create an agent"),
+			h("h1", null, t("Create an agent")),
 			fields,
 			status,
 			h(
 				"div",
 				{ class: "surface-actions" },
-				button("Cancel", () => back.click()),
+				button(t("Cancel"), () => back.click()),
 				create,
 			),
 		);
@@ -583,14 +589,14 @@ export class NewConversationView {
 			)
 				return;
 			if (!name.value.trim() || !role.value.trim()) {
-				status.textContent = "Enter a name and title.";
+				status.textContent = t("Enter a name and title.");
 				return;
 			}
 			this.#pending = true;
 			fields.disabled = true;
 			create.disabled = true;
 			back.disabled = true;
-			status.textContent = "Creating agent…";
+			status.textContent = t("Creating agent…");
 			try {
 				this.#createdAgentId ??= await this.#actions.createAgent(
 					this.#company.profile.profileId,
@@ -624,9 +630,9 @@ export class NewConversationView {
 			} catch {
 				if (!this.#lifetime.signal.aborted) {
 					status.textContent = this.#createdAgentId
-						? "The agent was created. Retry adding it once the agent list is available."
-						: "The agent could not be created. Your draft is still here.";
-					if (this.#createdAgentId) create.textContent = "Add created agent";
+						? t("The agent was created. Retry adding it once the agent list is available.")
+						: t("The agent could not be created. Your draft is still here.");
+					if (this.#createdAgentId) create.textContent = t("Add created agent");
 				}
 			} finally {
 				this.#pending = false;
