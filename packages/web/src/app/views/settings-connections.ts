@@ -501,11 +501,17 @@ export class ConnectionsView {
 		const lookalikes = new Map<string, number>();
 		for (const key of accounts.map(lookalike)) lookalikes.set(key, (lookalikes.get(key) ?? 0) + 1);
 		const canConnect = Boolean(this.#client.onboardingAvailable && this.#begin);
+		// Greyed out, not disabled: a disabled button would drop keyboard focus
+		// to "Add account" at the read's first redraw.
+		const busy = this.#loading || this.#usageUpdating;
 		const refresh = button(
 			this.#usageUpdating ? "Refreshing…" : this.#updated ? "Updated" : "Refresh",
-			() => void this.#refreshNow(),
-			{ small: true, disabled: this.#loading || this.#usageUpdating },
+			() => {
+				if (!busy) void this.#refreshNow();
+			},
+			{ small: true },
 		);
+		if (busy) refresh.setAttribute("aria-disabled", "true");
 		refresh.dataset.focusKey = "refresh";
 		const add = button(
 			"Add account",

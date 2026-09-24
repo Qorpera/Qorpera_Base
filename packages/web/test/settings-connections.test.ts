@@ -234,6 +234,43 @@ describe("member model account settings", () => {
 		view.dispose();
 		expect(vi.getTimerCount()).toBe(0);
 	});
+	it("keeps keyboard focus on Refresh while it reads usage", async () => {
+		const { client, lifetime } = await setup(
+			true,
+			observed({ ...connected, sponsorBindingId: id(82), sponsorVersion: 1 }),
+		);
+		view.dispose();
+		const refreshAccountMetadata = vi.fn(async (_signal?: AbortSignal, _force?: boolean) => {});
+		view = new ConnectionsView({ ...client, refreshAccountMetadata }, lifetime.signal);
+		document.body.append(view.el);
+		await settle();
+		const refresh = () => view.el.querySelector<HTMLButtonElement>('[data-focus-key="refresh"]')!;
+		refresh().focus();
+		const pending = deferred<void>();
+		refreshAccountMetadata.mockReturnValueOnce(pending.promise);
+		refresh().click();
+		await settle();
+		expect(document.activeElement).toBe(refresh());
+		expect(refresh().textContent).toBe("Refreshing…");
+		expect(refresh().getAttribute("aria-disabled")).toBe("true");
+		pending.resolve();
+		await settle();
+		expect(refresh().textContent).toBe("Updated");
+		expect(refresh().hasAttribute("aria-disabled")).toBe(false);
+		expect(document.activeElement).toBe(refresh());
+		// A press while a background read greys it out does nothing: that read ends without "Updated".
+		const background = deferred<void>();
+		refreshAccountMetadata.mockReturnValueOnce(background.promise);
+		window.dispatchEvent(new Event("focus"));
+		await settle();
+		expect(refresh().getAttribute("aria-disabled")).toBe("true");
+		refresh().click();
+		background.resolve();
+		await settle();
+		expect(refresh().textContent).toBe("Refresh");
+		expect(refreshAccountMetadata.mock.calls.map((call) => call[1])).toEqual([false, true, false]);
+		expect(document.activeElement).toBe(refresh());
+	});
 	it("tells apart two cards for the same provider and email by when each was added", async () => {
 		const first = { ...connected, sponsorBindingId: id(82), sponsorVersion: 1 };
 		const second = {

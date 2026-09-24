@@ -9,6 +9,7 @@
 
 ### Fixed
 
+- Keep keyboard focus on Refresh in Settings → Connections while it reads usage. The button is greyed out and does nothing while a read runs, but stays focusable, so focus no longer drops to "Add account".
 - Show grey placeholder shapes while a screen loads instead of a line such as "Opening company" or "Loading conversation". Opening a company or a conversation shows the rail, the thread header, message bubbles and the composer as placeholders on their real sizes, and each part is replaced where it stands as it arrives; on a phone the placeholder header keeps the button that opens the rail. The company list, Team, Friends, group details and Company File do the same. Placeholders stand in only for a first read: a refresh keeps what the page already shows. The shapes breathe together and stay still with reduced motion; a screen reader still hears what is loading. The Company File page now says when membership could not be read instead of waiting forever, and a start-up that cannot reach the cloud shows the error with Try again.
 - Let the Co-Founder's colour be changed: its figure picker in the agent details offers the colours and Reset like any agent's, and the rail, header and group pictures draw the colour chosen. A Co-Founder whose colour nobody has picked keeps its figure's own shade.
 - Keep the "Manage company" disclosure in Settings → Company at its small size; removing the Cloud endpoint panel had dropped the rule it shares.
