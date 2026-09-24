@@ -13,8 +13,9 @@ import {
 	parseCloudCodingCommandReceipt,
 } from "@qorpera/contracts";
 import { collectCodingCommandOutput, readCodingCommandLog } from "./cloud-coding-command-log.ts";
+import { codingErrorCode } from "./cloud-coding-error-code.ts";
 import { type CodingGuestConfiguration, parseCodingGuestConfiguration } from "./cloud-coding-guest-configuration.ts";
-import { assertCloudCodingGuestStorage } from "./cloud-coding-storage-guest.ts";
+import { assertCloudCodingGuestStorage, type CodingGuestSandbox } from "./cloud-coding-storage-guest.ts";
 
 import { refreshCodingGuestLease, requireCodingGuestLease } from "./cloud-coding-watchdog.ts";
 
@@ -24,6 +25,9 @@ const HASH = /^[0-9a-f]{64}$/;
 const ROOT = "/var/lib/qorpera-coding";
 const ENTRYPOINT = "/opt/qorpera-coding/cloud-coding-command-guest.mjs";
 const ENV = Object.freeze({ PATH: "/usr/bin:/bin", LANG: "C.UTF-8" });
+/** Exit status of an execute step refused before the command started. Its
+ * output.log then holds one line with only the fixed refusal code. */
+export const CODING_GUEST_REFUSED_EXIT_CODE = 125;
 
 export interface CodingGuestCommandRequest {
 	readonly schema: "qorpera.coding-command-request/v1";
@@ -52,7 +56,7 @@ export interface CodingGuestCommandPorts {
 	inspectMachine?: () => Promise<string>;
 	nowMs?: () => Promise<number>;
 	system?: (executable: string, args: readonly string[]) => Promise<string>;
-	assertStorage?: (guest: CodingGuestConfiguration) => Promise<void>;
+	assertStorage?: (guest: CodingGuestConfiguration, sandbox?: CodingGuestSandbox) => Promise<void>;
 }
 
 function closed(value: unknown, keys: readonly string[]): Record<string, unknown> {
@@ -69,6 +73,11 @@ function uuid(value: unknown): string {
 	if (typeof value !== "string" || value.length !== 36 || !UUID.test(value))
 		throw new Error("INVALID_CODING_GUEST_ID");
 	return value;
+}
+/** The command unit's ReadWritePaths, in order. The execute step asserts its
+ * storage against exactly these, so the two cannot drift apart. */
+export function codingCommandWritablePaths(guest: CodingGuestConfiguration, commandId: string): string[] {
+	return [guest.workspacePath, guest.homePath, guest.cachePath, join(guest.outputRoot, uuid(commandId))];
 }
 export function parseCodingGuestCommandRequest(value: unknown): CodingGuestCommandRequest {
 	const input = closed(value, [
@@ -319,7 +328,8 @@ export async function runCodingGuestCommand(
 			bootId,
 		};
 		await retain(intentPath, intent, 0o444);
-		const logs = join(guest.outputRoot, commandId);
+		const writablePaths = codingCommandWritablePaths(guest, commandId),
+			logs = writablePaths[3];
 		await mkdir(logs, { mode: 0o755 });
 		const log = await open(
 			join(logs, "output.log"),
@@ -363,9 +373,11 @@ export async function runCodingGuestCommand(
 				"--property=CapabilityBoundingSet=",
 				"--property=AmbientCapabilities=",
 				"--property=RestrictNamespaces=yes",
-				`--property=ReadWritePaths=${guest.workspacePath} ${guest.homePath} ${guest.cachePath} ${logs}`,
+				`--property=ReadWritePaths=${writablePaths.join(" ")}`,
 				"--property=StandardOutput=null",
-				"--property=StandardError=null",
+				// Only the helper's own fixed refusal line reaches stderr (the
+				// command's output is piped to its log); the journal stays in the VM.
+				"--property=StandardError=journal",
 				"/usr/bin/env",
 				"-i",
 				"PATH=/usr/bin:/bin",
@@ -481,20 +493,29 @@ export async function runCodingGuestCommand(
 	return receipt;
 }
 
-/** Fixed unprivileged child. Drains both pipes with backpressure, retains the
- * admitted log budget and one overflow marker, and flushes each bounded write. */
-export async function executeCodingGuestCommand(commandId: string): Promise<number> {
+/** Everything the execute step checks before it starts the command. */
+async function prepareExecution(commandId: string, ports: CodingGuestCommandPorts) {
 	uuid(commandId);
-	const guest = await configuration({});
-	await assertCloudCodingGuestStorage(guest);
-	if (
-		process.getuid?.() !== guest.uid ||
-		process.getgid?.() !== guest.gid ||
-		(await inspectMachine()) !== guest.bootId
-	)
+	const guest = await configuration(ports);
+	// Inside the command unit: ProtectSystem=strict and ReadWritePaths change
+	// the mount view, so assert against exactly the paths the unit declares.
+	await (ports.assertStorage ?? assertCloudCodingGuestStorage)(guest, {
+		writablePaths: codingCommandWritablePaths(guest, commandId),
+	});
+	const inspect = ports.inspectMachine ?? inspectMachine;
+	if (process.getuid?.() !== guest.uid || process.getgid?.() !== guest.gid || (await inspect()) !== guest.bootId)
 		throw new Error("CODING_GUEST_EXECUTION_IDENTITY_CHANGED");
 	const retained = closed(
-		JSON.parse((await protectedRead(join(ROOT, "commands", commandId, "intent.json"), 0, 131072)).toString("utf8")),
+		JSON.parse(
+			(
+				await protectedRead(
+					join(ports.root ?? ROOT, "commands", commandId, "intent.json"),
+					ports.protectedUid ?? 0,
+					131072,
+					ports.protectedDirectoryRoot,
+				)
+			).toString("utf8"),
+		),
 		["schema", "request", "commandSha256", "bootId"],
 	);
 	const request = parseCodingGuestCommandRequest(retained.request);
@@ -514,15 +535,58 @@ export async function executeCodingGuestCommand(commandId: string): Promise<numb
 		throw new Error("CODING_GUEST_INTENT_CHANGED");
 	if (request.workerId !== guest.workerId || request.vmId !== guest.vmId || request.commandId !== commandId)
 		throw new Error("CODING_GUEST_COMMAND_SCOPE_CHANGED");
-	await requireCodingGuestLease(request, guest, {
-		inspectBoot: inspectMachine,
-	});
+	await requireCodingGuestLease(request, guest, { ...ports, inspectBoot: inspect });
+	await mkdir(join(guest.cachePath, "tmp"), { recursive: true, mode: 0o700 });
 	const handle = await open(
 		join(guest.outputRoot, commandId, "output.log"),
 		constants.O_WRONLY | constants.O_APPEND | constants.O_NOFOLLOW,
 	);
+	return { guest, request, handle };
+}
+
+/** The refusal line: only a fixed code, only into this command's own empty,
+ * singly linked log that the root supervisor pre-created for this uid. The
+ * path is the fixed custody layout, so it holds even when the configuration
+ * could not be read. Never creates, follows or appends to anything else. */
+async function recordRefusal(root: string, commandId: string, code: string): Promise<void> {
+	if (typeof commandId !== "string" || commandId.length !== 36 || !UUID.test(commandId)) return;
 	try {
-		await mkdir(join(guest.cachePath, "tmp"), { recursive: true, mode: 0o700 });
+		const handle = await open(
+			join(root, "logs", commandId, "output.log"),
+			constants.O_WRONLY | constants.O_APPEND | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+		);
+		try {
+			const stat = await handle.stat();
+			if (!stat.isFile() || stat.nlink !== 1 || stat.uid !== process.getuid?.() || stat.size !== 0) return;
+			await handle.write(`${code}\n`);
+			await handle.sync();
+		} finally {
+			await handle.close();
+		}
+	} catch {
+		/* The exit status alone still reports the refusal. */
+	}
+}
+
+/** Fixed unprivileged child. Drains both pipes with backpressure, retains the
+ * admitted log budget and one overflow marker, and flushes each bounded write.
+ * A refusal before the command starts exits CODING_GUEST_REFUSED_EXIT_CODE with
+ * its fixed code in the log, so the read receipt shows it as failed. */
+export async function executeCodingGuestCommand(
+	commandId: string,
+	ports: CodingGuestCommandPorts = {},
+): Promise<number> {
+	let prepared: Awaited<ReturnType<typeof prepareExecution>>;
+	try {
+		prepared = await prepareExecution(commandId, ports);
+	} catch (error) {
+		const code = codingErrorCode(error);
+		process.stderr.write(`CODING_GUEST_COMMAND_REFUSED ${code}\n`);
+		await recordRefusal(ports.root ?? ROOT, commandId, code);
+		return CODING_GUEST_REFUSED_EXIT_CODE;
+	}
+	const { guest, request, handle } = prepared;
+	try {
 		const child = spawn("/bin/bash", ["--noprofile", "--norc", "-c", request.command], {
 			cwd: guest.workspacePath,
 			env: {

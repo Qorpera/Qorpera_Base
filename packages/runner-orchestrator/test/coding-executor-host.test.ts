@@ -495,11 +495,45 @@ describe("concrete coding executor host composition", () => {
 		f.files.get("/opt/qorpera-coding/cloud-coding-watchdog.mjs")!.content = Buffer.from("changed");
 		await expect(f.host.prepareWorkspace(f.claim, f.turn(), f.signal)).rejects.toThrow("ARTIFACT_CHANGED");
 		const g = await fixture();
-		vi.mocked(g.client.execInstance).mockRejectedValue(new Error("timer stopped"));
+		vi.mocked(g.client.execInstance).mockRejectedValue(new Error("LXD instance command failed"));
 		const impatient = new LxdCodingExecutorHost({ ...g.options, guestReadyTimeoutMs: 50 });
 		await expect(impatient.prepareWorkspace(g.claim, g.turn(), g.signal)).rejects.toThrow(
 			"CODING_HOST_GUEST_NOT_READY",
 		);
+	});
+	it("retries only a guest that is still starting, and fails at once with any other cause", async () => {
+		const f = await fixture();
+		vi.mocked(f.client.execInstance).mockRejectedValue(new Error("LXD request failed (404)"));
+		const started = performance.now();
+		await expect(f.host.prepareWorkspace(f.claim, f.turn(), f.signal)).rejects.toThrow("LXD request failed (404)");
+		expect(vi.mocked(f.client.execInstance)).toHaveBeenCalledTimes(1);
+		expect(performance.now() - started).toBeLessThan(5000);
+	});
+	it("re-reads the VM between readiness checks: one stopped elsewhere fails without waiting out the window", async () => {
+		const f = await fixture();
+		vi.mocked(f.client.execInstance).mockRejectedValue(new Error("LXD: VM agent isn't currently running"));
+		const running = vi.mocked(f.client.getInstance).getMockImplementation()!;
+		let reads = 0;
+		vi.mocked(f.client.getInstance).mockImplementation(async (project, name, signal) => {
+			const instance = await running(project, name, signal);
+			return ++reads > 2 && instance ? { ...instance, status: "Stopped", statusCode: 102 } : instance;
+		});
+		const started = performance.now();
+		await expect(f.host.prepareWorkspace(f.claim, f.turn(), f.signal)).rejects.toThrow("CODING_HOST_VM_NOT_RUNNING");
+		expect(performance.now() - started).toBeLessThan(10000);
+		expect(vi.mocked(f.client.execInstance)).toHaveBeenCalledTimes(2);
+	});
+	it("the caller's abort during the readiness wait wins over NOT_READY", async () => {
+		const f = await fixture();
+		const controller = new AbortController();
+		vi.mocked(f.client.execInstance).mockImplementation(async () => {
+			globalThis.setTimeout(() => controller.abort(new Error("CODING_EXECUTOR_LEASE_LOST")), 100);
+			throw new Error("LXD instance command failed");
+		});
+		await expect(f.host.prepareWorkspace(f.claim, f.turn(), controller.signal)).rejects.toThrow(
+			"CODING_EXECUTOR_LEASE_LOST",
+		);
+		expect(vi.mocked(f.client.execInstance)).toHaveBeenCalledTimes(1);
 	});
 	it("waits for a freshly booted guest's watchdog timer instead of failing the session", async () => {
 		const f = await fixture();
@@ -576,6 +610,60 @@ describe("concrete coding executor host composition", () => {
 			release?.();
 		}
 	});
+	it("quiesces a running guest under stop-only authority before the forced power-off", async () => {
+		const f = await fixture();
+		await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
+		vi.mocked(f.client.execInstance).mockClear();
+		f.call.mockClear();
+		mocked.reconcile.mockClear();
+		await f.host.stopWorkspace(f.claim, f.signal);
+		expect(vi.mocked(f.client.execInstance).mock.calls.map((call) => call[2])).toEqual([
+			["/usr/bin/systemctl", "stop", "qorpera-coding.slice"],
+			["/usr/bin/sync"],
+		]);
+		const quiesced = vi.mocked(f.client.execInstance).mock.invocationCallOrder.at(-1)!;
+		expect(quiesced).toBeLessThan(mocked.reconcile.mock.invocationCallOrder[0]);
+		const cleanup = f.call.mock.calls.findIndex((call) => call[0] === "qorpera_authorize_coding_cleanup");
+		expect(f.call.mock.invocationCallOrder[cleanup]).toBeLessThan(
+			vi.mocked(f.client.execInstance).mock.invocationCallOrder[0],
+		);
+		expect(f.call.mock.calls.some((call) => call[0] === "qorpera_authorize_coding_machine")).toBe(false);
+	});
+	it("still powers off when the quiesce fails, and skips it for a VM that is not running", async () => {
+		const f = await fixture();
+		await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
+		vi.mocked(f.client.execInstance).mockClear();
+		vi.mocked(f.client.execInstance).mockRejectedValueOnce(new Error("LXD instance command failed"));
+		await f.host.stopWorkspace(f.claim, f.signal);
+		// sync still runs after a failed slice stop; the stop still reconciles.
+		expect(vi.mocked(f.client.execInstance).mock.calls.map((call) => call[2].at(-1))).toEqual([
+			"qorpera-coding.slice",
+			"/usr/bin/sync",
+		]);
+		expect((mocked.reconcile.mock.calls.at(-1)?.[0] as CodingVmReconcileOptions).desiredState).toBe("stopped");
+		const g = await fixture();
+		await g.host.prepareWorkspace(g.claim, g.turn(), g.signal);
+		vi.mocked(g.client.execInstance).mockClear();
+		const running = vi.mocked(g.client.getInstance).getMockImplementation()!;
+		vi.mocked(g.client.getInstance).mockImplementation(async (project, name, signal) => {
+			const instance = await running(project, name, signal);
+			return instance && { ...instance, status: "Stopped", statusCode: 102 };
+		});
+		await g.host.stopWorkspace(g.claim, g.signal);
+		expect(g.client.execInstance).not.toHaveBeenCalled();
+		expect((mocked.reconcile.mock.calls.at(-1)?.[0] as CodingVmReconcileOptions).desiredState).toBe("stopped");
+	});
+	it("gives a stop more than 5 s to settle", async () => {
+		const f = await fixture();
+		await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
+		const started = performance.now();
+		mocked.reconcile.mockImplementation(async (input: CodingVmReconcileOptions) => {
+			await input.admission.authorize(input.binding, "stop", input.signal);
+			return { state: performance.now() - started < 6000 ? "pending" : "stopped" };
+		});
+		await f.host.stopWorkspace(f.claim, f.signal);
+		expect(performance.now() - started).toBeGreaterThanOrEqual(6000);
+	}, 20000);
 	it("uses the retained SQL binding for cleanup after a deployment policy change", async () => {
 		const f = await fixture();
 		await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);

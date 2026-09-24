@@ -18,6 +18,9 @@ const MAX_EVENTS = 384;
 // Old journals could fill all 384 slots with a start. Keep three emergency
 // slots for that exact stop; new starts reserve stop space and rotate first.
 const MAX_RETAINED_EVENTS = MAX_EVENTS + 3;
+// A stop that failed (or that LXD forgot while the VM still ran) is re-issued
+// as a forced stop, at most this many failed stops in a row; then an operator.
+const MAX_FAILED_STOPS = 3;
 
 /** Trusted deployment policy and immutable worker authority. Image provenance,
  * node placement, network isolation and company admission are verified by the
@@ -232,6 +235,30 @@ export interface CodingVmReconcileResult {
 	instanceSha256: string;
 }
 
+/** Which triplet may follow a settled one: create first, then start and stop
+ * in turn. A failed stop leaves the VM's state to physical observation, so it
+ * may be followed by a re-issued stop (still running) or a start (stopped). A
+ * failed create or start is followed by nothing: an operator settles it. */
+function nextActions(settled: Event | undefined, segment: number): readonly Action[] {
+	if (!settled) return segment === 0 ? ["create"] : [];
+	if (settled.state === "succeeded") return [settled.action === "start" ? "stop" : "start"];
+	return settled.action === "stop" ? ["stop", "start"] : [];
+}
+function trailingFailedStops(events: readonly Event[]): number {
+	let count = 0;
+	for (let index = events.length - 1; index >= 2; index -= 3) {
+		const event = events[index];
+		if (event.kind !== "settled" || event.action !== "stop" || event.state !== "failed") break;
+		count++;
+	}
+	return count;
+}
+function physical(instance: LxdInstanceRecord): "running" | "stopped" | "other" {
+	if (instance.status === "Running" && instance.statusCode === 103) return "running";
+	if (instance.status === "Stopped" && instance.statusCode === 102) return "stopped";
+	return "other";
+}
+
 function encode(value: unknown): Buffer {
 	return Buffer.from(`${JSON.stringify(value)}\n`);
 }
@@ -297,22 +324,14 @@ async function readEvents(
 	const names = (await readdir(activeRoot)).filter((name) => /^\d{6}\.json$/.test(name)).sort();
 	if (names.length > MAX_RETAINED_EVENTS) throw new Error("CODING_VM_JOURNAL_INVALID");
 	const events: Event[] = [];
+	const carried = prior;
 	for (const [sequence, name] of names.entries()) {
 		if (name !== `${String(sequence).padStart(6, "0")}.json`) throw new Error("CODING_VM_JOURNAL_INVALID");
 		const record = await readRecord(join(activeRoot, name));
 		const event = record.value as Event;
 		const prior = events.at(-1);
 		const phase = sequence % 3;
-		const expectedAction =
-			segment === 0
-				? sequence < 3
-					? "create"
-					: Math.floor(sequence / 3) % 2
-						? "start"
-						: "stop"
-				: Math.floor(sequence / 3) % 2
-					? "stop"
-					: "start";
+		const expectedActions = phase === 0 ? nextActions(prior ?? carried, segment) : [events[sequence - phase].action];
 		if (
 			!event ||
 			typeof event !== "object" ||
@@ -321,14 +340,13 @@ async function readEvents(
 				["sequence", "previousSha256", "action", "kind", "operationId", "state"].sort().join() ||
 			event.sequence !== sequence ||
 			event.previousSha256 !== previousSha256 ||
-			event.action !== expectedAction ||
+			!expectedActions.includes(event.action) ||
 			event.kind !== ["dispatch", "accepted", "settled"][phase] ||
 			(phase === 0
 				? event.operationId !== null
 				: typeof event.operationId !== "string" || !UUID.test(event.operationId)) ||
 			(phase !== 2 ? event.state !== null : !["succeeded", "failed"].includes(event.state as string)) ||
-			(phase === 2 && event.operationId !== prior?.operationId) ||
-			(phase === 0 && prior && prior.state !== "succeeded")
+			(phase === 2 && event.operationId !== prior?.operationId)
 		)
 			throw new Error("CODING_VM_JOURNAL_INVALID");
 		events.push(event);
@@ -339,7 +357,9 @@ async function readEvents(
 
 /** One bounded physical reconciliation. Retains the same VM and root disk
  * across coding turns. Never deletes, releases admission or blindly retries
- * an uncertain mutation. Running is physical state, not guest/tool readiness.
+ * an uncertain mutation; only a forced stop is re-issued, and only while LXD
+ * shows the VM still running after a failed or forgotten stop. Running is
+ * physical state, not guest/tool readiness.
  * A supervision loop must keep renewing authority and use a separately
  * authorized stop after lease loss; this one-shot method is not a watchdog. */
 export async function reconcileLxdCodingVm(options: CodingVmReconcileOptions): Promise<CodingVmReconcileResult> {
@@ -418,8 +438,19 @@ export async function reconcileLxdCodingVm(options: CodingVmReconcileOptions): P
 				{ project: binding.project, instanceName: request.name, operationId: tail.operationId as string },
 				signal,
 			);
-		} catch {
-			return result("recovery-required");
+		} catch (error) {
+			// LXD keeps a finished operation only briefly. A stop it no longer
+			// knows is settled from the VM itself: stopped is the stop's effect,
+			// still running is its absence. Any other failure stays unknown.
+			if (tail.action !== "stop" || !(error instanceof Error) || error.message !== "LXD_OPERATION_UNKNOWN")
+				return result("recovery-required");
+			const observed = await options.client.getInstance(binding.project, request.name, signal);
+			signal.throwIfAborted();
+			if (!observed) return result("recovery-required");
+			assertLxdCodingVmInstance(binding, observed);
+			const seen = physical(observed);
+			if (seen === "other") return result("recovery-required");
+			state = seen === "stopped" ? "succeeded" : "failed";
 		}
 		signal.throwIfAborted();
 		if (state === "pending") return result("pending");
@@ -429,7 +460,7 @@ export async function reconcileLxdCodingVm(options: CodingVmReconcileOptions): P
 		tail = current.events.at(-1);
 		if (tail?.kind !== "settled" || tail.state !== state) return result("recovery-required");
 	}
-	if (tail?.state === "failed") return result("recovery-required");
+	if (tail?.state === "failed" && tail.action !== "stop") return result("recovery-required");
 	signal.throwIfAborted();
 	const instance = await options.client.getInstance(binding.project, request.name, signal);
 	signal.throwIfAborted();
@@ -442,12 +473,24 @@ export async function reconcileLxdCodingVm(options: CodingVmReconcileOptions): P
 	} else {
 		if (!instance) return result("recovery-required");
 		assertLxdCodingVmInstance(binding, instance);
-		const expected = tail.action === "start" ? "Running" : "Stopped";
-		if (instance.status !== expected || instance.statusCode !== (expected === "Running" ? 103 : 102))
-			return result("recovery-required");
-		if ((intent === "run") === (expected === "Running"))
-			return result(expected === "Running" ? "running" : "stopped");
-		action = intent === "run" ? "start" : "stop";
+		const seen = physical(instance);
+		if (tail.state === "failed") {
+			// A failed stop: the VM is whatever LXD shows. Stopped is stopped (a
+			// run then starts it); still running gets a fresh forced stop, which
+			// is safe to repeat because the VM keeps no state of its own. A run
+			// never reuses a VM whose stop failed without stopping it first.
+			if (seen === "stopped") {
+				if (intent === "stop") return result("stopped");
+				action = "start";
+			} else if (seen === "running" && intent === "stop" && trailingFailedStops(current.events) < MAX_FAILED_STOPS)
+				action = "stop";
+			else return result("recovery-required");
+		} else {
+			const expected = tail.action === "start" ? "running" : "stopped";
+			if (seen !== expected) return result("recovery-required");
+			if ((intent === "run") === (expected === "running")) return result(expected);
+			action = intent === "run" ? "start" : "stop";
+		}
 	}
 	if (action === "start" && current.events.length > MAX_EVENTS - 6) {
 		// Only a physically verified, settled stop can close a segment. No

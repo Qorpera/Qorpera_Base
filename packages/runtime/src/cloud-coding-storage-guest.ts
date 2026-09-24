@@ -11,6 +11,8 @@ const CUSTODY = "/var/lib/qorpera-coding";
 const O_PATH = 0x200000;
 interface Mount {
 	id: number;
+	/** major:minor of the superblock; a bind mount shares it with its source. */
+	device: string;
 	root: string;
 	target: string;
 	filesystem: string;
@@ -41,12 +43,14 @@ function mounts(input: string): Mount[] {
 				seen.has(id) ||
 				separator < 6 ||
 				fields.length !== separator + 4 ||
+				!/^(0|[1-9][0-9]{0,9}):(0|[1-9][0-9]{0,9})$/.test(fields[2]) ||
 				fields.some((field) => !field)
 			)
 				throw new Error("CODING_GUEST_STORAGE_MOUNT_INVALID");
 			seen.add(id);
 			return {
 				id,
+				device: fields[2],
 				root: decode(fields[3]),
 				target: decode(fields[4]),
 				filesystem: fields[separator + 1],
@@ -56,28 +60,90 @@ function mounts(input: string): Mount[] {
 			};
 		});
 }
-function mounted(entries: Mount[], target: string, filesystem: string, noDescendants = true): number {
+const writable = (options: string[]) =>
+	options.filter((option) => option === "rw").length === 1 && !options.includes("ro");
+/** `below`: "none" refuses any mount beneath the target, "any" ignores them,
+ * and a list admits exactly those paths as binds of the target's own
+ * filesystem (the command unit's ReadWritePaths). Inside that unit
+ * ProtectSystem=strict leaves the target itself read-only per mount. */
+function mounted(
+	entries: Mount[],
+	target: string,
+	filesystem: string,
+	below: "none" | "any" | readonly string[],
+): number {
 	const matches = entries.filter((entry) => entry.target === target);
-	if (matches.length !== 1 || (noDescendants && entries.some((entry) => entry.target.startsWith(`${target}/`))))
-		throw new Error("CODING_GUEST_STORAGE_MOUNT_INVALID");
-	const mount = matches[0];
+	if (matches.length !== 1) throw new Error("CODING_GUEST_STORAGE_MOUNT_INVALID");
+	const mount = matches[0],
+		sandboxed = typeof below !== "string";
 	if (
 		mount.root !== "/" ||
 		mount.filesystem !== filesystem ||
-		[mount.options, mount.superOptions].some(
-			(options) => options.filter((option) => option === "rw").length !== 1 || options.includes("ro"),
-		)
+		!writable(mount.superOptions) ||
+		!(sandboxed
+			? mount.options.filter((option) => option === "rw" || option === "ro").length === 1
+			: writable(mount.options))
 	)
 		throw new Error("CODING_GUEST_STORAGE_MOUNT_INVALID");
+	for (const entry of entries.filter((candidate) => candidate.target.startsWith(`${target}/`))) {
+		if (below === "any") continue;
+		if (
+			below === "none" ||
+			!below.includes(entry.target) ||
+			entries.filter((other) => other.target === entry.target).length !== 1 ||
+			entry.device !== mount.device ||
+			entry.filesystem !== mount.filesystem ||
+			entry.source !== mount.source ||
+			entry.root !== entry.target.slice(target.length) ||
+			!writable(entry.options) ||
+			!writable(entry.superOptions)
+		)
+			throw new Error("CODING_GUEST_STORAGE_MOUNT_INVALID");
+	}
 	return mount.id;
 }
+/** A systemd unit's view of the two roots: the exact ReadWritePaths it
+ * declares, each strictly inside DATA or CUSTODY. */
+export interface CodingGuestSandbox {
+	readonly writablePaths: readonly string[];
+}
+function sandboxPaths(sandbox: CodingGuestSandbox, root: string): string[] {
+	return sandbox.writablePaths.filter((path) => path.startsWith(`${root}/`));
+}
 /** Kernel observation only. Host admission separately pins NFS identity and
- * excludes every previous writer; virtiofs does not expose the NFS server. */
-export function assertCodingGuestMounts(mountInfo: string): Readonly<Record<string, number>> {
+ * excludes every previous writer; virtiofs does not expose the NFS server.
+ * Without `sandbox` (root, the host's view): each root is one whole rw mount
+ * with nothing mounted beneath it. With `sandbox` (inside the command unit):
+ * the same superblock, still rw, whose own mount may be read-only, and beneath
+ * it only the declared writable paths as rw binds of that same superblock. */
+export function assertCodingGuestMounts(
+	mountInfo: string,
+	sandbox?: CodingGuestSandbox,
+): Readonly<Record<string, number>> {
 	const entries = mounts(mountInfo);
+	if (sandbox) {
+		const paths = sandbox.writablePaths;
+		if (
+			!Array.isArray(paths) ||
+			paths.length < 1 ||
+			paths.length > 8 ||
+			new Set(paths).size !== paths.length ||
+			paths.some(
+				(path) =>
+					typeof path !== "string" ||
+					!/^\/[A-Za-z0-9._/-]{1,255}$/.test(path) ||
+					path
+						.split("/")
+						.slice(1)
+						.some((part) => !part || part === "." || part === "..") ||
+					![DATA, CUSTODY].some((root) => path.startsWith(`${root}/`)),
+			)
+		)
+			throw new Error("CODING_GUEST_STORAGE_SANDBOX_INVALID");
+	}
 	return Object.freeze({
-		[DATA]: mounted(entries, DATA, "virtiofs"),
-		[CUSTODY]: mounted(entries, CUSTODY, "virtiofs"),
+		[DATA]: mounted(entries, DATA, "virtiofs", sandbox ? sandboxPaths(sandbox, DATA) : "none"),
+		[CUSTODY]: mounted(entries, CUSTODY, "virtiofs", sandbox ? sandboxPaths(sandbox, CUSTODY) : "none"),
 	});
 }
 async function readBounded(handle: FileHandle, maximum: number): Promise<Buffer> {
@@ -143,8 +209,9 @@ async function checkRoot(
 	root: Root,
 	guest: CodingGuestConfiguration,
 	binding: CloudCodingStorageBinding,
+	sandbox?: CodingGuestSandbox,
 ): Promise<void> {
-	const expected = assertCodingGuestMounts(await metadata("/proc/self/mountinfo", 1048576));
+	const expected = assertCodingGuestMounts(await metadata("/proc/self/mountinfo", 1048576), sandbox);
 	const fdInfo = await metadata(`/proc/self/fdinfo/${root.handle.fd}`, 4096);
 	const ids = [...fdInfo.matchAll(/^mnt_id:\s+([1-9][0-9]*)$/gm)];
 	const stat = await root.handle.stat({ bigint: true }),
@@ -166,6 +233,7 @@ async function checkRoot(
 }
 async function inspect(
 	guest: CodingGuestConfiguration,
+	sandbox?: CodingGuestSandbox,
 ): Promise<{ binding: CloudCodingStorageBinding; roots: Root[] }> {
 	if (process.platform !== "linux") throw new Error("CODING_GUEST_STORAGE_LINUX_REQUIRED");
 	if (
@@ -182,7 +250,7 @@ async function inspect(
 	}
 	const binding = parseCloudCodingStorageBinding(await readConfiguration(CONFIG));
 	if (binding.workerId !== guest.workerId) throw new Error("CODING_GUEST_STORAGE_SCOPE_CHANGED");
-	const observed = assertCodingGuestMounts(await metadata("/proc/self/mountinfo", 1048576)),
+	const observed = assertCodingGuestMounts(await metadata("/proc/self/mountinfo", 1048576), sandbox),
 		roots: Root[] = [];
 	try {
 		for (const path of [DATA, CUSTODY]) {
@@ -196,7 +264,7 @@ async function inspect(
 			}
 			const root = { path, handle, identity, mountId: observed[path] };
 			roots.push(root);
-			await checkRoot(root, guest, binding);
+			await checkRoot(root, guest, binding, sandbox);
 		}
 		return { binding, roots };
 	} catch (error) {
@@ -204,8 +272,13 @@ async function inspect(
 		throw error;
 	}
 }
-export async function assertCloudCodingGuestStorage(guest: CodingGuestConfiguration): Promise<void> {
-	const { roots } = await inspect(guest);
+/** Root callers pass no sandbox. The command unit passes its exact
+ * ReadWritePaths; ownership and binding checks are the same either way. */
+export async function assertCloudCodingGuestStorage(
+	guest: CodingGuestConfiguration,
+	sandbox?: CodingGuestSandbox,
+): Promise<void> {
+	const { roots } = await inspect(guest, sandbox);
 	await Promise.all(roots.map((root) => root.handle.close()));
 }
 async function initializeChild(
@@ -273,7 +346,10 @@ export async function initializeCloudCodingGuestStorage(): Promise<void> {
 							["cache", guest.uid, guest.gid],
 						] as const)
 					: ([
-							["logs", guest.uid, guest.gid],
+							// Root-owned like every custody child: the root supervisor creates
+							// each command's log directory and reads its log through
+							// root-owned ancestors only (see COMMAND-GUEST.md).
+							["logs", 0, 0],
 							["inbox", 0, 0],
 							["commands", 0, 0],
 							["git", 0, 0],
@@ -285,7 +361,7 @@ export async function initializeCloudCodingGuestStorage(): Promise<void> {
 			const original = await run.stat({ bigint: true });
 			const check = async () => {
 				const entries = mounts(await metadata("/proc/self/mountinfo", 1048576));
-				const expected = mounted(entries, "/run", "tmpfs", false);
+				const expected = mounted(entries, "/run", "tmpfs", "any");
 				if (
 					entries.some(
 						(entry) => entry.target === "/run/qorpera-coding" || entry.target.startsWith("/run/qorpera-coding/"),

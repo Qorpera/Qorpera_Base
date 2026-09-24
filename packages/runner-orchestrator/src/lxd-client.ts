@@ -171,7 +171,11 @@ export type LxdOperationState = "pending" | "succeeded" | "failed";
 
 /** Submission and observation are separate so an office provider can persist
  * the operation ID before polling. A rejected submission has an UNKNOWN
- * physical outcome; neither a timeout nor a 404 authorizes a retry/release. */
+ * physical outcome; neither a timeout nor a 404 authorizes a retry/release.
+ * Observation reports LXD's own 404 as LXD_OPERATION_UNKNOWN (LXD keeps a
+ * finished operation only briefly): still no outcome. Only a caller whose
+ * effect is idempotent may act on it, and then only from the instance's own
+ * physical state (a coding VM's forced stop). */
 export interface LxdTrackedClient extends LxdInspectableClient {
 	submitInstanceOperation(
 		project: string,
@@ -1535,6 +1539,7 @@ export class LxdUnixClient
 	}
 
 	async inspectInstanceOperation(reference: LxdOperationReference, signal: AbortSignal): Promise<LxdOperationState> {
+		let unknown = false;
 		try {
 			if (
 				!INSTANCE_NAME.test(reference.project) ||
@@ -1552,11 +1557,12 @@ export class LxdUnixClient
 			);
 			checked.throwIfAborted();
 			const envelope = record(result.body, "LXD response");
+			if (result.status === 404 && envelope.type === "error" && envelope.error_code === 404) unknown = true;
 			if (result.status !== 200 || envelope.type !== "sync" || envelope.status_code !== 200)
 				throw new Error("operation unavailable");
 			return trackedOperation(envelope.metadata, reference);
 		} catch {
-			throw new Error("LXD_OPERATION_UNCONFIRMED");
+			throw new Error(unknown ? "LXD_OPERATION_UNKNOWN" : "LXD_OPERATION_UNCONFIRMED");
 		}
 	}
 

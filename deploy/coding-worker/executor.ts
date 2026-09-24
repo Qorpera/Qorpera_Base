@@ -11,6 +11,7 @@ import { createCodingNasStorage } from "../../packages/runner-orchestrator/src/c
 import { lxdCodingVmPlan } from "../../packages/runner-orchestrator/src/coding-vm.ts";
 import { LxdUnixClient } from "../../packages/runner-orchestrator/src/lxd-client.ts";
 import { HttpCloudCodingCommandService } from "../../packages/runtime/src/cloud-coding-command-http.ts";
+import { codingErrorCode } from "../../packages/runtime/src/cloud-coding-error-code.ts";
 import { parseCodingGuestConfiguration } from "../../packages/runtime/src/cloud-coding-guest-configuration.ts";
 import { authorizeCodingCommand } from "./command-authority.ts";
 import { CodingExecutorHttpControl } from "./control.ts";
@@ -99,13 +100,11 @@ export function parseCodingExecutorConfiguration(value: unknown): Config {
 	};
 }
 
-/** A loggable code for an executor error: the fixed CODING_* / LXD messages
- * only (they carry no credential or repository content), else UNCLASSIFIED. */
+/** A loggable code for an executor error: fixed identifiers only (they carry
+ * no credential or repository content), else UNCLASSIFIED. The guest's
+ * refusal line uses the same rule. */
 export function errorCode(error: unknown): string {
-	const message = error instanceof Error ? error.message : "";
-	if (/^[A-Z][A-Z0-9_]{2,80}$/.test(message)) return message;
-	if (/^LXD [A-Za-z ]{1,60}$/.test(message)) return message;
-	return "UNCLASSIFIED";
+	return codingErrorCode(error);
 }
 
 /** Independent Linux service: the identity host runs the model turn, this

@@ -357,6 +357,144 @@ describe("retained coding VM lifecycle", () => {
 		await expect(f.reconcile()).rejects.toThrow("JOURNAL_DIRECTORY_UNSAFE");
 		expect(f.client.getInstance).not.toHaveBeenCalled();
 	});
+	describe("a stop that failed or that LXD forgot", () => {
+		async function running() {
+			const f = await fixture();
+			for (const expected of ["pending", "pending", "running"]) expect((await f.reconcile()).state).toBe(expected);
+			return f;
+		}
+		const events = async (f: Awaited<ReturnType<typeof fixture>>) => {
+			const root = join(f.journalRoot, f.value.workerId);
+			const names = (await readdir(root)).filter((name) => /^\d{6}\.json$/.test(name)).sort();
+			return Promise.all(names.map(async (name) => JSON.parse(await readFile(join(root, name), "utf8"))));
+		};
+		const actions = (f: Awaited<ReturnType<typeof fixture>>) =>
+			f.client.submitInstanceOperation.mock.calls.map((call) => call[1]);
+		it("re-issues a forced stop while LXD still shows the VM running, then settles stopped", async () => {
+			const f = await running();
+			// Live 2026-09-24: "Failed shutting down instance", the VM kept running.
+			f.client.inspectInstanceOperation.mockResolvedValueOnce("failed");
+			expect((await f.reconcile("stopped")).state).toBe("pending");
+			expect((await f.reconcile("stopped")).state).toBe("pending");
+			expect((await f.reconcile("stopped")).state).toBe("stopped");
+			expect(actions(f).slice(2)).toEqual([
+				{ action: "stop", name: f.plan.request.name, force: true },
+				{ action: "stop", name: f.plan.request.name, force: true },
+			]);
+			expect((await events(f)).slice(6).map((event) => [event.action, event.kind, event.state])).toEqual([
+				["stop", "dispatch", null],
+				["stop", "accepted", null],
+				["stop", "settled", "failed"],
+				["stop", "dispatch", null],
+				["stop", "accepted", null],
+				["stop", "settled", "succeeded"],
+			]);
+			// The healed journal still reads, and the next turn starts the same VM.
+			expect((await f.reconcile()).state).toBe("pending");
+			expect((await f.reconcile()).state).toBe("running");
+			expect(actions(f).at(-1)).toEqual({ action: "start", name: f.plan.request.name });
+		});
+		it("heals a failed stop whose VM LXD shows stopped, without another dispatch", async () => {
+			const f = await running();
+			f.client.inspectInstanceOperation.mockImplementationOnce(async () => {
+				const instance = f.instance()!;
+				instance.status = "Stopped";
+				instance.statusCode = 102;
+				return "failed";
+			});
+			expect((await f.reconcile("stopped")).state).toBe("pending");
+			expect((await f.reconcile("stopped")).state).toBe("stopped");
+			expect((await f.reconcile("stopped")).state).toBe("stopped");
+			expect(actions(f).map((action) => action.action)).toEqual(["create", "start", "stop"]);
+			// A later turn may start it: the VM is physically stopped.
+			expect((await f.reconcile()).state).toBe("pending");
+			expect((await f.reconcile()).state).toBe("running");
+			expect(actions(f).map((action) => action.action)).toEqual(["create", "start", "stop", "start"]);
+		});
+		it("settles a stop LXD no longer knows from the VM itself", async () => {
+			const f = await running();
+			expect((await f.reconcile("stopped")).state).toBe("pending");
+			// LXD finished and pruned the operation before it was observed.
+			f.client.inspectInstanceOperation.mockImplementationOnce(async () => {
+				const instance = f.instance()!;
+				instance.status = "Stopped";
+				instance.statusCode = 102;
+				throw new Error("LXD_OPERATION_UNKNOWN");
+			});
+			expect((await f.reconcile("stopped")).state).toBe("stopped");
+			expect((await events(f)).at(-1)).toMatchObject({ action: "stop", kind: "settled", state: "succeeded" });
+			const g = await running();
+			expect((await g.reconcile("stopped")).state).toBe("pending");
+			g.client.inspectInstanceOperation.mockRejectedValueOnce(new Error("LXD_OPERATION_UNKNOWN"));
+			expect((await g.reconcile("stopped")).state).toBe("pending");
+			expect((await events(g)).slice(8, 10).map((event) => [event.kind, event.state])).toEqual([
+				["settled", "failed"],
+				["dispatch", null],
+			]);
+			expect(actions(g).map((action) => action.action)).toEqual(["create", "start", "stop", "stop"]);
+		});
+		it("keeps any other unobservable operation, and any failed start, for an operator", async () => {
+			const f = await running();
+			expect((await f.reconcile("stopped")).state).toBe("pending");
+			f.client.inspectInstanceOperation.mockRejectedValue(new Error("LXD_OPERATION_UNCONFIRMED"));
+			expect((await f.reconcile("stopped")).state).toBe("recovery-required");
+			expect((await events(f)).at(-1)).toMatchObject({ action: "stop", kind: "accepted" });
+			// A start LXD forgot, or one that failed, is never settled or retried here.
+			const g = await running();
+			expect((await g.reconcile("stopped")).state).toBe("pending");
+			expect((await g.reconcile("stopped")).state).toBe("stopped");
+			expect((await g.reconcile()).state).toBe("pending");
+			g.client.inspectInstanceOperation.mockRejectedValueOnce(new Error("LXD_OPERATION_UNKNOWN"));
+			expect((await g.reconcile("stopped")).state).toBe("recovery-required");
+			g.client.inspectInstanceOperation.mockResolvedValueOnce("failed");
+			expect((await g.reconcile()).state).toBe("recovery-required");
+			expect((await g.reconcile("stopped")).state).toBe("recovery-required");
+			expect((await events(g)).at(-1)).toMatchObject({ action: "start", kind: "settled", state: "failed" });
+			expect(actions(g).map((action) => action.action)).toEqual(["create", "start", "stop", "start"]);
+		});
+		it("never reuses a VM whose stop failed while it still runs", async () => {
+			const f = await running();
+			f.client.inspectInstanceOperation.mockResolvedValueOnce("failed");
+			expect((await f.reconcile("stopped")).state).toBe("pending");
+			expect((await f.reconcile()).state).toBe("recovery-required");
+			expect(actions(f).map((action) => action.action)).toEqual(["create", "start", "stop"]);
+		});
+		it("gives up after three failed stops in a row", async () => {
+			const f = await running();
+			f.client.inspectInstanceOperation.mockResolvedValue("failed");
+			const states: string[] = [];
+			for (let attempt = 0; attempt < 6; attempt++) states.push((await f.reconcile("stopped")).state);
+			expect(states).toEqual([
+				"pending",
+				"pending",
+				"pending",
+				"recovery-required",
+				"recovery-required",
+				"recovery-required",
+			]);
+			expect(actions(f).filter((action) => action.action === "stop")).toHaveLength(3);
+		});
+		it("refuses a journal that dispatches after a failed start", async () => {
+			const f = await running();
+			const root = join(f.journalRoot, f.value.workerId);
+			const settled = JSON.parse(await readFile(join(root, "000005.json"), "utf8"));
+			await writeFile(join(root, "000005.json"), `${JSON.stringify({ ...settled, state: "failed" })}\n`);
+			const bytes = await readFile(join(root, "000005.json"));
+			await writeFile(
+				join(root, "000006.json"),
+				`${JSON.stringify({
+					sequence: 6,
+					previousSha256: createHash("sha256").update(bytes).digest("hex"),
+					action: "stop",
+					kind: "dispatch",
+					operationId: null,
+					state: null,
+				})}\n`,
+				{ mode: 0o600 },
+			);
+			await expect(f.reconcile("stopped")).rejects.toThrow("CODING_VM_JOURNAL_INVALID");
+		});
+	});
 	it("keeps private immutable lifecycle records", async () => {
 		const f = await fixture();
 		await f.reconcile();

@@ -281,12 +281,39 @@ describe("the coding executor over a session turn", () => {
 				return w.control.call(method, args, signal);
 			},
 		};
-		const executor = new CloudCodingExecutor({ control, host: w.host, owner: "exec-test", turnPollMs: 50 });
+		const report = vi.fn();
+		const executor = new CloudCodingExecutor({ control, host: w.host, owner: "exec-test", turnPollMs: 50, report });
 		const run = executor.runOnce(new AbortController().signal);
 		await vi.advanceTimersByTimeAsync(16000);
 		expect(await run).toBe("recovery-required");
 		expect(w.host.stopWorkspace).toHaveBeenCalled();
 		expect(w.world.calls.some((c) => c.method === "qorpera_complete_coding_turn")).toBe(false);
+		// The log names the cause, not whichever await the abort interrupted.
+		expect(report.mock.calls.map(([stage, error]) => [stage, (error as Error).message])).toEqual([
+			["turn", "CODING_EXECUTOR_LEASE_LOST"],
+		]);
+	});
+
+	it("a reporter that throws never changes the outcome or skips the stop", async () => {
+		const w = world();
+		vi.mocked(w.host.prepareWorkspace).mockRejectedValueOnce(new Error("CODING_HOST_GUEST_NOT_READY"));
+		vi.mocked(w.host.stopWorkspace).mockRejectedValueOnce(new Error("CODING_HOST_VM_RECOVERY_REQUIRED"));
+		const report = vi.fn((_stage: "turn" | "stop", _error: unknown) => {
+			throw new Error("log sink down");
+		});
+		const executor = new CloudCodingExecutor({
+			control: w.control,
+			host: w.host,
+			owner: "exec-test",
+			turnPollMs: 1,
+			report,
+		});
+		expect(await executor.runOnce(new AbortController().signal)).toBe("recovery-required");
+		expect(w.host.stopWorkspace).toHaveBeenCalledTimes(1);
+		expect(report.mock.calls.map(([stage, error]) => [stage, (error as Error).message])).toEqual([
+			["turn", "CODING_HOST_GUEST_NOT_READY"],
+			["stop", "CODING_HOST_VM_RECOVERY_REQUIRED"],
+		]);
 	});
 
 	it("parses the kernel's claim and turn state strictly", () => {

@@ -164,6 +164,28 @@ describe("journalable LXD operations over a real Unix HTTP socket", () => {
 		const client = await fixture((_request, response) => send(response, envelope(), status));
 		await expect(client.inspectInstanceOperation(reference, signal())).rejects.toThrow(/^LXD_OPERATION_UNCONFIRMED$/);
 	});
+	it("names only LXD's own 404 for an operation it no longer knows", async () => {
+		const notFound = {
+			type: "error",
+			status: "",
+			status_code: 0,
+			operation: "",
+			error_code: 404,
+			error: "Operation not found",
+		};
+		const client = await fixture((_request, response) => send(response, notFound, 404));
+		await expect(client.inspectInstanceOperation(reference, signal())).rejects.toThrow(/^LXD_OPERATION_UNKNOWN$/);
+		for (const [body, status] of [
+			[{ ...notFound, error_code: 500 }, 404],
+			[{ ...notFound, error_code: 404 }, 500],
+			[{ ...notFound, type: "sync" }, 404],
+		] as const) {
+			const other = await fixture((_request, response) => send(response, body, status));
+			await expect(other.inspectInstanceOperation(reference, signal())).rejects.toThrow(
+				/^LXD_OPERATION_UNCONFIRMED$/,
+			);
+		}
+	});
 	it("accepts the older bare resource URL for the already project-scoped operation", async () => {
 		const client = await fixture((_request, response) =>
 			send(response, envelope(operation({ resources: { instances: ["/1.0/instances/office-test"] } }))),
