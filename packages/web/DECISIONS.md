@@ -221,6 +221,9 @@ containers that light up, and agents moving each other into sections.
 - **Dragging has keyboard twins.** Alt+Up / Alt+Down move the focused agent one
   place in its section or in the pinned row; Move to covers sections. Shift with a
   mouse right-click keeps the browser's own link menu.
+- **Hidden agents stay reachable** (Jonas, after the live test): a "Hidden agents"
+  group with the count folds at the foot of the list and opens to list them; showing
+  one again is the menu's Show in sidebar, a pin, a Move to, or a drag out of it.
 - **Delete is permanent**, as in Grok Bot: it deletes the agent's document
   (owner or admin; the Co-Founder never), after a confirmation that says so.
 
