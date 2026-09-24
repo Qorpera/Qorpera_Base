@@ -55,7 +55,12 @@ import {
 	cloudInteractionEventId,
 	parseCloudAskMemberInput,
 } from "./cloud-thread-interactions.ts";
-import { type CloudWakeControl, cloudCoworkerMessageTool, parseCloudWakeEnvelope } from "./cloud-wake-bus.ts";
+import {
+	type CloudWakeControl,
+	cloudCoworkerMessageTool,
+	cloudWakeIsOwnThread,
+	parseCloudWakeEnvelope,
+} from "./cloud-wake-bus.ts";
 import { cloudWorkerToolFilter, cloudWorkerTools } from "./cloud-worker-tools.ts";
 
 type NativeCompanyControl = CloudNativeToolAuthorityReader &
@@ -417,10 +422,11 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 										]
 									: []),
 								...(identity.sessionId && wake.policy.final !== "forbidden" ? [send] : []),
-								// Cards belong to a member's own thread: never a group chat, never a worker.
+								// Cards belong to a member's own conversation or the agent's own thread:
+								// never a group chat, never a worker. The kernel refuses the rest too.
 								...(identity.sessionId &&
 								wake.policy.final !== "forbidden" &&
-								wake.kind !== "room" &&
+								(wake.kind !== "room" || cloudWakeIsOwnThread(wake)) &&
 								!work.isWorker
 									? [ask]
 									: []),

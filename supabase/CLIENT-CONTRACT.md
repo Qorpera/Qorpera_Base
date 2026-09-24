@@ -402,8 +402,22 @@ member a private thread belongs to, or the creator of a company-visible one);
 idempotent on `p_client_input_id`; `22023` for a shape the surface does not
 allow; `42501` for authority. Expired means a client shows the card as
 expired; the kernel does not synthesize an event for it. Group chats never
-carry cards (the runtime withholds the tool in rooms). Design:
-`THREAD-WIDGETS-DESIGN-20260922.md` in the takeover workspace outputs.
+carry cards (the runtime withholds the tool there and the kernel refuses the
+card). Design: `THREAD-WIDGETS-DESIGN-20260922.md` in the takeover workspace
+outputs.
+
+*An agent's shared thread (bundle v101)* — a room bound to one agent
+(`executionScope.agentThread`). The agent raises cards there in reply to
+members' posts. Only the member the card was raised for answers it: the
+request event's `actor_user_id` (the member whose post, routine or first run
+the raising run serves), while still a member of the room; approvals still
+need owner or admin. The answer is delivered like a post: the input is
+complete at once, the `interaction_answer` event is in the transcript when the
+RPC returns (never in the pending list), and a room wake runs the thread's
+agent on the sponsor of the run that raised the card, which must be the
+answering member's own and active (`42501` "Room sponsor is unavailable"
+otherwise; the member can reply in a message instead). `55000` while company
+execution is paused. A client shows live card controls only to that member.
 
 ## 7. Desktop IPC channels → cloud equivalents
 

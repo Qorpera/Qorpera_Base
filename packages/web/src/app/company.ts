@@ -214,6 +214,17 @@ export function isAgentThreadSession(session: HostedSession): boolean {
 		scope.agentThread === true
 	);
 }
+/** Who answers a card, as the kernel's qorpera_answer_interaction checks it: the
+ * member a private conversation belongs to, the creator of a company one, and in
+ * an agent's shared thread the member the card was raised for, whom the card's
+ * event names as its actor. */
+export function answersInteraction(session: HostedSession, actorUserId: string, userId: string): boolean {
+	if (session.status !== "open") return false;
+	if (isAgentThreadSession(session)) return actorUserId === userId;
+	return session.audience.kind === "member_private"
+		? session.audience.userId === userId
+		: session.createdByUserId === userId;
+}
 /** The transcript of two agents' messages to each other (contract 14.6): a
  * company-audience session bound to the pair, view-only, opened from a chip. */
 export function isAgentPairSession(session: HostedSession | undefined): boolean {
@@ -1066,9 +1077,9 @@ export class CompanyController {
 		});
 	}
 
-	/** Answer a card the agent raised in this thread. The answer is queued like a
+	/** Answer a card the agent raised in this thread. The answer is sent like a
 	 * message and shows on the card at once; the kernel refuses a second answer,
-	 * an expired card, or a member the thread does not belong to. */
+	 * an expired card, or a member who does not answer it (answersInteraction). */
 	async answerInteraction(
 		sessionId: string,
 		interactionId: string,
@@ -1097,6 +1108,9 @@ export class CompanyController {
 			throw error;
 		}
 		void this.loadConversation(sessionId);
+		// The answer wakes the agent, as a message does; watch for its run.
+		void this.refreshActivity();
+		this.#watchWork(20_000);
 	}
 
 	/** Put a secret card's value into the company's cloud custody and answer the
