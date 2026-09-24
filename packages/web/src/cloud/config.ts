@@ -1,6 +1,6 @@
 import { type CloudConfig, DEFAULT_CLOUD_CONFIG, parseCloudConfig } from "./deployment-config.ts";
 
-export { type CloudConfig, DEFAULT_CLOUD_CONFIG } from "./deployment-config.ts";
+export type { CloudConfig } from "./deployment-config.ts";
 
 declare const __QORPERA_WEB_CLOUD_CONFIG__: CloudConfig;
 const builtConfig =

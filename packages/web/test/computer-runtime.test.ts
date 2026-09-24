@@ -1000,7 +1000,7 @@ describe("trusted viewer configuration", () => {
 		"wss://viewer.invalid/?ticket=secret",
 		"wss://viewer.invalid/#secret",
 	])("rejects %s", (officeViewerOrigin) => {
-		expect(() => parseCloudConfig({ ...DEFAULT_CLOUD_CONFIG, officeViewerOrigin })).toThrow();
+		expect(() => parseCloudConfig({ ...DEFAULT_CLOUD_CONFIG, officeViewerOrigin })).toThrow("exact secure origin");
 	});
 	it("preserves a configured secure origin", () => {
 		expect(

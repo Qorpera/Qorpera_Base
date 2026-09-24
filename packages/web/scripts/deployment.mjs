@@ -26,6 +26,8 @@ export function prepareDeployment({ configPath, configJson, release = false, ser
 			schema: "qorpera.web-deployment/v1",
 			release,
 			config,
+			// Kept for deploy checks that read it: no build takes endpoints from the browser.
+			configOverrideAllowed: false,
 			headersSha256: createHash("sha256").update(headers).digest("hex"),
 		},
 	};

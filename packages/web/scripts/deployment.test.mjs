@@ -23,6 +23,7 @@ function fixture(t, value = config) {
 test("release configuration and CSP admit the same exact HTTPS/WSS origins", t => {
 	const deployment = prepareDeployment(fixture(t));
 	assert.deepEqual(deployment.config, config);
+	assert.equal(deployment.manifest.configOverrideAllowed, false);
 	const sources = deployment.headers.match(/; connect-src ([^;]+);/)[1].split(" ");
 	assert.deepEqual(sources, ["'self'", config.projectUrl, config.projectUrl.replace("https:", "wss:"), config.objectGatewayUrl, config.officeViewerOrigin]);
 	assert.equal(deployment.manifest.headersSha256, createHash("sha256").update(deployment.headers).digest("hex"));
@@ -38,6 +39,7 @@ test("release rejects an absent config, absent viewer, or development server", t
 test("preview retains default origins without inventing a viewer", () => {
 	const deployment = prepareDeployment({ headersTemplate });
 	assert.deepEqual(deployment.config, DEFAULT_CLOUD_CONFIG);
+	assert.equal(deployment.manifest.configOverrideAllowed, false);
 	assert.equal(deployment.manifest.release, false);
 	assert.ok(!deployment.headers.includes("office.example"));
 });
