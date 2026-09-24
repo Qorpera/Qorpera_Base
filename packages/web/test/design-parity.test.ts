@@ -333,23 +333,25 @@ describe("shell presentation lifecycle", () => {
 			.mockResolvedValue({ ...file, storageUsedBytes: 40 });
 		const hub = new HubController(f.api);
 		cleanup.push(() => hub.dispose());
+		// On the company list, settings follow the account's only company.
 		const view = new SettingsView(
 			f.api,
 			auth,
 			hub,
-			[profileA, profileB],
-			f.company,
+			[],
+			undefined,
 			() => {},
 			() => {},
 		);
 		cleanup.push(() => view.dispose());
 		document.body.append(view.el);
 		view.el.querySelector<HTMLButtonElement>("#settings-tab-company")!.click();
+		view.updateProfiles([profileA]);
 		expect(view.el.querySelector(".settings-file")?.textContent).toContain("Loading storage");
 		expect(view.el.querySelector("progress")).toBeNull();
-		const picker = view.el.querySelector<HTMLSelectElement>(".settings-company-picker")!;
-		picker.value = profileB.profileId;
-		picker.dispatchEvent(new Event("change"));
+		// The company is removed and another one takes its place.
+		view.updateProfiles([]);
+		view.updateProfiles([profileB]);
 		await settle();
 		expect(view.el.querySelector(".settings-file")?.textContent).toContain("40 B used");
 		pending.resolve({ ...file, storageUsedBytes: 99 });

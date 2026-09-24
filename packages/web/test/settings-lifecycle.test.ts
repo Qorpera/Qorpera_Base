@@ -95,22 +95,18 @@ describe("settings session lifecycle", () => {
 			const f = await setup(fixtureState);
 			open(f.root);
 			click(f.root, "#settings-tab-company");
-			const picker = f.root.querySelector<HTMLSelectElement>(".settings-company-picker")!;
-			expect(picker.options).toHaveLength(1);
+			const content = () => f.root.querySelector("#settings-content")!;
+			expect(content().textContent).toContain("Open a company to see these settings.");
 			pending.resolve(profiles);
 			await draw();
-			expect(f.root.querySelector(".settings-company-picker")).toBe(picker);
-			expect(picker.options).toHaveLength(profiles.length + 1);
-			const selected = profiles.at(-1)!;
 			if (profiles.length > 1) {
-				expect(picker.value).toBe("");
-				picker.value = selected.profileId;
-				picker.dispatchEvent(new Event("change"));
-				await draw();
+				// Several companies: the member opens one from the list first.
+				expect(content().textContent).toContain("Open a company to see these settings.");
+				expect(f.api.getTeam).not.toHaveBeenCalled();
+			} else {
+				expect(content().querySelector("h1")?.textContent).toBe(profileA.profileName);
+				expect(content().querySelector(`a[href='#/c/${profileA.profileId}/file']`)).not.toBeNull();
 			}
-			expect(picker.value).toBe(selected.profileId);
-			expect(f.root.querySelector("#settings-content h1")?.textContent).toBe(selected.profileName);
-			expect(f.root.querySelector(`.settings-dialog a[href='#/c/${selected.profileId}/file']`)).not.toBeNull();
 			expect(f.cloud.rpc).not.toHaveBeenCalled();
 		},
 	);
@@ -141,46 +137,30 @@ describe("settings session lifecycle", () => {
 		view.updateProfiles([{ ...profileA }, profileB]);
 		expect(view.el.querySelector("#settings-content")).toBe(content);
 		expect(document.activeElement).toBe(content);
-		expect(view.el.querySelector<HTMLSelectElement>(".settings-company-picker")!.value).toBe(profileA.profileId);
-		expect(view.el.querySelector<HTMLElement>(".settings-company-label")!.hidden).toBe(false);
 		expect(f.api.getTeam).not.toHaveBeenCalled();
 		expect(company.signal.aborted).toBe(false);
 	});
-	it("borrows the open company again without removing its conversation subscription", async () => {
-		const f = await setup(realtimeFixture());
-		const composer = f.root.querySelector("textarea");
-		const originalChannel = vi.mocked(f.cloud.supabase.channel).mock.results[0]!.value;
+	it("ends the rail with a way back to the company list, not a company picker", async () => {
+		const f = await setup();
 		open(f.root);
-		const picker = f.root.querySelector<HTMLSelectElement>('[aria-label="Company for settings"]')!;
-		picker.value = profileB.profileId;
-		picker.dispatchEvent(new Event("change"));
 		await draw();
-		picker.value = profileA.profileId;
-		picker.dispatchEvent(new Event("change"));
+		const nav = f.root.querySelector(".settings-nav")!;
+		expect(nav.querySelector("select")).toBeNull();
+		const back = nav.querySelector<HTMLAnchorElement>(".settings-back")!;
+		expect(nav.lastElementChild).toBe(back);
+		expect(back.hidden).toBe(false);
+		expect(back.getAttribute("href")).toBe("#/");
+		expect(back.textContent).toBe("Back to companies");
+		expect(back.querySelector("svg.icon")).not.toBeNull();
+		back.click();
 		await draw();
-		click(f.root, ".settings-close");
-		expect(f.cloud.supabase.channel).toHaveBeenCalledTimes(2);
-		expect(f.cloud.supabase.removeChannel).toHaveBeenCalledTimes(1);
-		expect(f.cloud.supabase.removeChannel).not.toHaveBeenCalledWith(originalChannel);
-		expect(f.root.querySelector("textarea")).toBe(composer);
-	});
-	it("does not reuse a company subscription that is still closing during a quick switch back", async () => {
-		const f = await setup(realtimeFixture());
+		expect(location.hash).toBe("#/");
+		expect(f.root.querySelector(".settings-overlay")).toBeNull();
+		expect(f.root.querySelector<HTMLElement>(".frame")!.inert).toBe(false);
+		expect(f.root.querySelector(".company-card[href]")).not.toBeNull();
+		// The company list itself needs no way back.
 		open(f.root);
-		const picker = f.root.querySelector<HTMLSelectElement>('[aria-label="Company for settings"]')!;
-		for (const profile of [profileB, profileA, profileB]) {
-			picker.value = profile.profileId;
-			picker.dispatchEvent(new Event("change"));
-			await draw();
-		}
-		const channels = vi.mocked(f.cloud.supabase.channel).mock.results.map((result) => result.value);
-		expect(channels).toHaveLength(3);
-		expect(channels[2]).not.toBe(channels[1]);
-		expect(f.cloud.supabase.removeChannel).toHaveBeenCalledExactlyOnceWith(channels[1]);
-		click(f.root, ".settings-close");
-		expect(f.cloud.supabase.removeChannel).toHaveBeenCalledTimes(2);
-		expect(f.cloud.supabase.removeChannel).toHaveBeenLastCalledWith(channels[2]);
-		expect(f.cloud.supabase.removeChannel).not.toHaveBeenCalledWith(channels[0]);
+		expect(f.root.querySelector<HTMLElement>(".settings-back")!.hidden).toBe(true);
 	});
 	it("opens all five tabs over the same conversation and restores the profile button", async () => {
 		const f = await setup(),
@@ -415,9 +395,10 @@ describe("settings session lifecycle", () => {
 		await draw();
 		expect(f.api.getCompanyFile).toHaveBeenCalledTimes(1);
 	});
-	it("asks to choose a company for usage and retries a failed storage lookup", async () => {
-		const f = await setup();
-		vi.mocked(f.api.listProfiles).mockResolvedValue([profileA, profileB]);
+	it("asks to open a company for usage and retries a failed storage lookup", async () => {
+		const fixtureState = fixture();
+		vi.mocked(fixtureState.api.listProfiles).mockResolvedValue([profileA, profileB]);
+		const f = await setup(fixtureState);
 		vi.mocked(f.api.getCompanyFile).mockRejectedValueOnce(new Error("Storage offline"));
 		open(f.root);
 		click(f.root, "#settings-tab-plan");
@@ -432,11 +413,13 @@ describe("settings session lifecycle", () => {
 		expect(f.api.getCompanyFile).toHaveBeenCalledTimes(2);
 		expect(content().textContent).not.toContain("Storage information unavailable");
 		expect(content().querySelector(".settings-usage:not(.settings-hours) progress")).not.toBeNull();
-		const picker = f.root.querySelector<HTMLSelectElement>(".settings-company-picker")!;
-		picker.value = "";
-		picker.dispatchEvent(new Event("change"));
+		click(f.root, ".settings-close");
+		location.hash = "#/";
 		await draw();
-		expect(content().textContent).toContain("Choose a company to see its storage.");
+		open(f.root);
+		click(f.root, "#settings-tab-plan");
+		await draw();
+		expect(content().textContent).toContain("Open a company to see its storage.");
 		expect(content().querySelector(".settings-usage:not(.settings-hours)")).toBeNull();
 	});
 	it("keeps focus in General when the account plan arrives", async () => {
@@ -551,30 +534,6 @@ describe("settings session lifecycle", () => {
 		expect(f.cloud.supabase.removeChannel).toHaveBeenCalledTimes(1);
 		expect(f.cloud.rpc).not.toHaveBeenCalled();
 	});
-	it("keeps a different company's conversation and draft when settings deletes a company", async () => {
-		const f = await setup(realtimeFixture());
-		vi.spyOn(f.api, "deleteProfile").mockImplementation(async () => {
-			vi.mocked(f.api.listProfiles).mockResolvedValue([profileA]);
-		});
-		const composer = f.root.querySelector<HTMLTextAreaElement>("textarea")!;
-		composer.value = "Keep this conversation";
-		composer.dispatchEvent(new Event("input"));
-		open(f.root);
-		const picker = f.root.querySelector<HTMLSelectElement>(".settings-company-picker")!;
-		picker.value = profileB.profileId;
-		picker.dispatchEvent(new Event("change"));
-		click(f.root, "#settings-tab-company");
-		await draw();
-		confirmCompanyRemoval(f.root, true, profileB);
-		await draw();
-		expect(f.api.deleteProfile).toHaveBeenCalledExactlyOnceWith(profileB.profileId);
-		expect(location.hash).toBe(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
-		expect(f.root.querySelector(".settings-overlay")).toBeNull();
-		expect(f.root.querySelector("textarea")).toBe(composer);
-		expect(composer.value).toBe("Keep this conversation");
-		expect(f.cloud.supabase.removeChannel).toHaveBeenCalledTimes(1);
-		expect(f.cloud.rpc).not.toHaveBeenCalled();
-	});
 	it("keeps settings and company membership after a failed deletion", async () => {
 		history.replaceState(null, "", "/#/");
 		const f = await setup();
@@ -656,7 +615,7 @@ describe("settings session lifecycle", () => {
 		expect(f.root.querySelector(".settings-overlay")).toBe(settings);
 		expect(f.root.querySelector<HTMLElement>(".frame")!.inert).toBe(true);
 		click(f.root, "#settings-tab-company");
-		expect(settings!.textContent).toContain("Choose a company");
+		expect(settings!.textContent).toContain("Open a company to see these settings.");
 		expect(f.api.listProfiles).toHaveBeenCalledTimes(2);
 	});
 	it("returns the standalone Team page to an updated hub after leaving", async () => {
@@ -677,7 +636,6 @@ describe("settings session lifecycle", () => {
 		expect(f.cloud.rpc).not.toHaveBeenCalled();
 	});
 	it("does not restore a removed company from an older company-list request", async () => {
-		history.replaceState(null, "", "/#/");
 		const fixtureState = fixture(),
 			pending = deferred<(typeof profileA)[]>();
 		vi.mocked(fixtureState.api.listProfiles).mockResolvedValue([profileA, profileB]);
@@ -685,9 +643,6 @@ describe("settings session lifecycle", () => {
 		const f = await setup(fixtureState);
 		vi.mocked(f.api.listProfiles).mockReturnValueOnce(pending.promise).mockResolvedValue([]);
 		open(f.root);
-		const picker = f.root.querySelector<HTMLSelectElement>(".settings-company-picker")!;
-		picker.value = profileA.profileId;
-		picker.dispatchEvent(new Event("change"));
 		click(f.root, "#settings-tab-company");
 		await draw();
 		confirmCompanyRemoval(f.root, true);

@@ -306,7 +306,7 @@ export function renderPlan(
 							),
 							retry,
 						)
-					: h("p", { class: "settings-help" }, uiText("Choose a company to see its storage.")),
+					: h("p", { class: "settings-help" }, uiText("Open a company to see its storage.")),
 			),
 			h(
 				"section",

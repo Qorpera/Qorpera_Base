@@ -1,7 +1,7 @@
 .settings-overlay { position: fixed; z-index: 400; inset: 0; display: grid; place-items: center; padding: 36px; background: rgb(20 20 19 / 48%); backdrop-filter: blur(1.5px); font-family: var(--font-sans); font-optical-sizing: auto; font-synthesis: none; text-rendering: geometricPrecision; }
 .settings-dialog { position: relative; display: grid; grid-template-columns: 320px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); width: min(1200px, calc(100vw - 72px)); height: min(816px, calc(100dvh - 72px)); overflow: hidden; border: 1px solid #d9d9d6; border-radius: 16px; background: var(--overlay); color: #1d1d1b; box-shadow: 0 24px 80px rgb(0 0 0 / 24%); }
-/* The rail's font size sets the whole rail: search, tabs, count and company
-   picker are sized in em from it. 20px is half again the old 13px; windows
+/* The rail's font size sets the whole rail: search, tabs, count and the way
+   back to the companies are sized in em from it. 20px is half again the old 13px; windows
    up to 1100px wide keep 13px (below). A window too short for the rail
    scrolls it, and the 320px width fits the longest label, Danish
    "Abonnement og forbrug". */
@@ -12,15 +12,14 @@
 .settings-nav [role=tablist] { display: flex; flex-direction: column; gap: .2em; }
 /* Whole-pixel, medium-weight labels in near-black ink: at the old 12.5px
    regular grey the labels read soft against the grey rail. */
-.settings-nav [role=tab] { display: flex; align-items: center; gap: .75em; min-height: 2.7em; padding: .45em .75em; border: 0; border-radius: .6em; background: transparent; color: #262624; font: inherit; font-weight: 500; text-align: left; cursor: pointer; }
-.settings-nav [role=tab] > .icon { width: 1.3em; height: 1.3em; flex: none; color: #6f6f6b; }
-.settings-nav [role=tab]:hover { background: #e8e8e5; }
+.settings-nav :is([role=tab], .settings-back) { display: flex; align-items: center; gap: .75em; min-height: 2.7em; padding: .45em .75em; border: 0; border-radius: .6em; background: transparent; color: #262624; font: inherit; font-weight: 500; text-align: left; cursor: pointer; }
+.settings-nav :is([role=tab], .settings-back) > .icon { width: 1.3em; height: 1.3em; flex: none; color: #6f6f6b; }
+.settings-nav :is([role=tab], .settings-back):hover { background: #e8e8e5; }
 .settings-nav [aria-selected=true] { background: #dededb; color: #121211; }
 .settings-nav [aria-selected=true] > .icon { color: #262624; }
 .settings-tab-count { display: grid; place-items: center; min-width: 1.65em; height: 1.65em; margin-left: auto; padding: 0 .5em; border-radius: 999px; background: #1d1d1b; color: #fff; font-size: .85em; font-weight: 700; }
-.settings-company-label { margin-top: auto; min-width: 0; font-size: .875em; color: #6c6c68; }
-/* Back to the rail's own size from inside the smaller label. */
-.settings-company-picker { width: 100%; min-width: 0; margin-top: .35em; font-size: calc(1em / .875); }
+/* The way back to the company list: a rail row like the tabs, at the foot. */
+.settings-nav .settings-back { margin-top: auto; text-decoration: none; }
 .settings-close { position: absolute; top: 13px; right: 15px; width: 30px; height: 30px; padding: 0; border: 0; border-radius: 7px; background: transparent; color: var(--text-muted); font-size: 20px; cursor: pointer; }
 .settings-close:is(:hover, :focus-visible) { color: var(--text); }
 .settings-content { min-width: 0; overflow-y: auto; padding: 30px 40px 40px; }
@@ -207,8 +206,7 @@
  .settings-nav [role=tablist] { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
  .settings-nav [role=tab] { justify-content: center; padding: .45em; }
  .settings-tab-count { margin-left: 0; }
- .settings-company-label { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
- .settings-company-picker { margin-top: 0; }
+ .settings-nav .settings-back { margin-top: 8px; }
  .settings-content { padding: 24px 20px; }
  .settings-choices { gap: 10px; }
  .settings-plan-grid { grid-template-columns: minmax(0, 1fr); }

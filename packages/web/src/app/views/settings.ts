@@ -8,6 +8,7 @@ import { button, h, icon, notice, replace } from "../../ui/dom.ts";
 import { uiText } from "../../ui/preferences.ts";
 import type { AuthController } from "../auth.ts";
 import { CompanyController } from "../company.ts";
+import { currentRoute } from "../router.ts";
 import { type AccountViewState, renderAccount } from "./account.ts";
 import { FriendsController, renderFriends } from "./friends.ts";
 import type { HubController } from "./hub.ts";
@@ -72,8 +73,6 @@ export class SettingsView {
 	readonly #panels = new Map<SettingsTab, HTMLElement>();
 	readonly #tabs = new Map<SettingsTab, HTMLButtonElement>();
 	readonly #borrowedCompany: CompanyController | undefined;
-	readonly #companyPicker = h("select", { class: "settings-company-picker", "aria-label": "Company for settings" });
-	readonly #companyLabel = h("label", { class: "settings-company-label" }, "Company", this.#companyPicker);
 	#profiles: HostedProfile[] = [];
 	#tab: SettingsTab = "general";
 	#account: AccountViewState = { loading: true };
@@ -152,7 +151,15 @@ export class SettingsView {
 			empty.hidden = Boolean(first);
 			if (first && this.#tabs.get(this.#tab)?.hidden) this.#select(first[0]);
 		};
-		nav.append(tablist, empty);
+		// The rail's way out of a company. The company list itself needs none;
+		// following the link closes Settings like any other in-app link.
+		const back = h(
+			"a",
+			{ class: "settings-back", href: "#/", hidden: currentRoute().name === "hub" },
+			icon("back"),
+			uiText("Back to companies"),
+		);
+		nav.append(tablist, empty, back);
 		this.el = h(
 			"div",
 			{
@@ -175,8 +182,6 @@ export class SettingsView {
 			),
 		);
 		document.addEventListener("keydown", this.#onKey, { signal: this.#lifetime.signal });
-		this.#companyPicker.onchange = () => this.#chooseCompany();
-		nav.append(this.#companyLabel);
 		this.#setCompany(company, false);
 		this.updateProfiles(profiles);
 		void api
@@ -204,24 +209,14 @@ export class SettingsView {
 		this.#tabs.get(this.#tab)?.focus();
 	}
 
+	/** Settings show the open company. On the company list they show the
+	 * account's only company, and none when it has several. */
 	updateProfiles(profiles: HostedProfile[]): void {
 		if (this.#lifetime.signal.aborted || profiles === this.#profiles) return;
-		const selected =
-			profiles.find((profile) => profile.profileId === this.#company?.profile.profileId) ??
+		const profile =
+			profiles.find((item) => item.profileId === this.#company?.profile.profileId) ??
 			(!this.#company && this.#profiles.length === 0 && profiles.length === 1 ? profiles[0] : undefined);
 		this.#profiles = profiles;
-		replace(
-			this.#companyPicker,
-			h("option", { value: "" }, "Choose a company"),
-			...profiles.map((profile) => h("option", { value: profile.profileId }, profile.profileName)),
-		);
-		this.#companyPicker.value = selected?.profileId ?? "";
-		this.#companyLabel.hidden = profiles.length <= 1 && Boolean(this.#borrowedCompany) && Boolean(selected);
-		this.#chooseCompany();
-	}
-
-	#chooseCompany(): void {
-		const profile = this.#profiles.find((item) => item.profileId === this.#companyPicker.value);
 		if (profile?.profileId === this.#company?.profile.profileId) return;
 		if (
 			profile &&
@@ -235,6 +230,7 @@ export class SettingsView {
 				Boolean(profile),
 			);
 	}
+
 	dispose(): void {
 		this.#lifetime.abort();
 		this.#companyLifetime.abort();
@@ -348,7 +344,7 @@ export class SettingsView {
 				"div",
 				null,
 				h("h1", null, TABS.find((item) => item.id === tab)!.label),
-				notice("neutral", "Choose a company to view these settings."),
+				notice("neutral", uiText("Open a company to see these settings.")),
 			);
 		this.#content.setAttribute("aria-labelledby", `settings-tab-${tab}`);
 		replace(this.#content, panel);
