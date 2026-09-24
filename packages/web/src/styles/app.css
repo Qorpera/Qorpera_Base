@@ -401,13 +401,14 @@ label > input, label > select { font-weight: 400; }
 .rail-compact .cofounder-stand { top: 8px; }
 .rail-compact .cofounder-status { width: 16px; height: 16px; border-width: 2px; }
 .rail-compact .rail-row { grid-template-columns: 1fr; padding: 5px; justify-items: center; }
-/* Collapsed, the pinned cards are figures in the column and sections part with a hairline. */
+/* Collapsed, the pinned cards are figures in the column and groups of agents part with a
+ * short hairline, as wide as a figure (renderRail marks the groups that get one). */
 .rail-compact .rail-pinned { flex-direction: column; align-items: center; padding-bottom: 4px; }
 .rail-compact .rail-pin { width: auto; height: auto; padding: 5px; }
 .rail-compact .rail-pin-name, .rail-compact .rail-section-title { display: none; }
 .rail-compact .rail-pin-stand, .rail-compact .rail-pin .figure { width: 50px; height: 50px; }
 .rail-compact .rail-dragging .rail-pinned.is-empty .rail-drop-slot { height: 44px; font-size: 0; }
-.rail-compact .rail-section:not(:first-child) { margin-top: 4px; padding-top: 4px; border-top: 1px solid var(--rail-line); border-radius: 0; }
+.rail-compact .rail-divided::before { content: ""; display: block; height: 1px; margin: 4px 8px; background: var(--border-strong); }
 .rail-compact .account-menu-rail .account-trigger { justify-content: center; }
 .rail-compact .account-menu-rail .account-popover { position: fixed; left: 8px; right: auto; bottom: 66px; width: 260px; z-index: 50; }
 /* The rail's placeholder (ui/skeleton.ts) stands on the real rail's geometry: the

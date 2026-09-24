@@ -740,6 +740,16 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 		parts.unassigned.el.removeAttribute("aria-labelledby");
 	}
 	reconcile(parts.unassigned.list, unassignedRows);
+	// Collapsed, where section titles hide, a short line parts each group of agents from the
+	// group above it: never under the Co-Founder, never around a section with no one in it.
+	let above = pinnedElements.length > 0;
+	for (const [element, count] of [
+		...sectionGroups.map(({ group, rows: sectionRows }) => [group.el, sectionRows.length] as const),
+		[parts.unassigned.el, unassignedRows.length] as const,
+	]) {
+		element.classList.toggle("rail-divided", above && count > 0);
+		above ||= count > 0;
+	}
 	reconcile(parts.cofounderGroup, cofounderElement ? [cofounderElement] : []);
 	reconcile(
 		parts.list,
