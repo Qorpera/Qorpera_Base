@@ -140,7 +140,7 @@ describe("settings session lifecycle", () => {
 		expect(f.api.getTeam).not.toHaveBeenCalled();
 		expect(company.signal.aborted).toBe(false);
 	});
-	it("returns to the open company, unstarted, when it comes back to the company list", async () => {
+	it("shows only the open company, and returns to it unstarted when it is listed again", async () => {
 		const f = fixture(),
 			auth = new AuthController(f.cloud);
 		await auth.start();
@@ -150,7 +150,7 @@ describe("settings session lifecycle", () => {
 			f.api,
 			auth,
 			hub,
-			[profileA],
+			[profileA, profileB],
 			company,
 			() => {},
 			() => {},
@@ -165,18 +165,21 @@ describe("settings session lifecycle", () => {
 		};
 		const heading = () => view.el.querySelector("#settings-content h1")?.textContent;
 		expect(heading()).toBe(profileA.profileName);
-		view.updateProfiles([]);
+		// Settings over a company never show another one, however often the list repeats.
+		view.updateProfiles([profileB]);
+		view.updateProfiles([{ ...profileB }]);
 		expect(view.el.querySelector("#settings-content")!.textContent).toContain(
 			"Open a company to see these settings.",
 		);
-		view.updateProfiles([profileA]);
+		expect(f.api.getTeam).not.toHaveBeenCalled();
+		view.updateProfiles([profileA, profileB]);
 		await settle();
 		expect(heading()).toBe(profileA.profileName);
 		// The open company is borrowed again: Settings neither start nor stop it.
 		expect(f.api.getTeam).not.toHaveBeenCalled();
 		expect(company.signal.aborted).toBe(false);
 	});
-	it("shows the only company once the company list shrinks to one", async () => {
+	it("shows the account's only company when Settings are not over a company", async () => {
 		const f = fixture(),
 			auth = new AuthController(f.cloud);
 		await auth.start();
@@ -203,6 +206,10 @@ describe("settings session lifecycle", () => {
 		view.updateProfiles([profileB]);
 		await settle();
 		expect(view.el.querySelector("#settings-content h1")?.textContent).toBe(profileB.profileName);
+		// The company shown is removed: the one left is shown.
+		view.updateProfiles([profileA]);
+		await settle();
+		expect(view.el.querySelector("#settings-content h1")?.textContent).toBe(profileA.profileName);
 	});
 	it("ends the rail with a way back to the company list, not a company picker", async () => {
 		const f = await setup();

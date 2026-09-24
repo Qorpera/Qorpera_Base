@@ -210,13 +210,17 @@ export class SettingsView {
 		this.#tabs.get(this.#tab)?.focus();
 	}
 
-	/** Settings show the open company. With none open they show the account's
-	 * only company, and none when it has several. */
+	/** Settings opened over a company show that company and no other, while
+	 * the account lists it. Opened elsewhere, they keep the company they show
+	 * while it is listed, else show the account's only company, and none when
+	 * it has several. */
 	updateProfiles(profiles: HostedProfile[]): void {
 		if (this.#lifetime.signal.aborted || profiles === this.#profiles) return;
-		const profile =
-			profiles.find((item) => item.profileId === this.#company?.profile.profileId) ??
-			(!this.#company && profiles.length === 1 ? profiles[0] : undefined);
+		const open = this.#borrowedCompany?.profile.profileId;
+		const profile = open
+			? profiles.find((item) => item.profileId === open)
+			: (profiles.find((item) => item.profileId === this.#company?.profile.profileId) ??
+				(profiles.length === 1 ? profiles[0] : undefined));
 		this.#profiles = profiles;
 		if (profile?.profileId === this.#company?.profile.profileId) return;
 		if (
