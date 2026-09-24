@@ -1,4 +1,4 @@
-import { readlinkSync, symlinkSync } from "node:fs";
+import { readFileSync, readlinkSync, symlinkSync } from "node:fs";
 import { mkdtemp, rm, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -91,5 +91,18 @@ describe("office image self-update masking", () => {
 		await expect(assertOfficeImageSelfUpdateMasked(host.run, host.root)).rejects.toThrow(
 			"OFFICE_IMAGE_SELF_UPDATE_ENABLED",
 		);
+	});
+
+	it("the root install stage masks before it creates the account or publishes a file, and proves it last", () => {
+		// The stage needs root on Linux; pin its order in the source instead.
+		const source = readFileSync(new URL("../src/lxd-office-image-installation-host.ts", import.meta.url), "utf8");
+		const locked = source.slice(source.indexOf("export async function installOfficeImage("));
+		const mask = locked.indexOf("await maskOfficeImageSelfUpdate();");
+		expect(mask).toBeGreaterThan(locked.indexOf("await officeInstallLockFd(lock, 0);"));
+		expect(mask).toBeLessThan(locked.indexOf("account(loaded.spec.uid, loaded.spec.gid, true);"));
+		expect(mask).toBeLessThan(locked.indexOf("await publishOfficeInstallFile(target);"));
+		const proof = locked.lastIndexOf("await assertOfficeImageSelfUpdateMasked();");
+		expect(proof).toBeGreaterThan(locked.indexOf('"OFFICE_IMAGE_SERVICE_NOT_DISABLED"'));
+		expect(proof).toBeLessThan(locked.indexOf('"qorpera.office-image-installation-result/v1"'));
 	});
 });
