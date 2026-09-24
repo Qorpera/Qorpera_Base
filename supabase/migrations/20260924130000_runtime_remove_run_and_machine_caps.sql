@@ -502,6 +502,35 @@ begin
 	return jsonb_build_object('state','authorized','assets',p_assets);
 end
 $$;
+-- The same holds when a model request's view is recorded: each screenshot in it
+-- was checked by its own call that repeated the run-level checks. The view's
+-- screenshots are now checked together (at most 128, one per output).
+select pg_temp.cap_patch('public.qorpera_record_native_context_view(uuid,jsonb,jsonb)'::regprocedure,
+	$old$	v_output jsonb; v_read public.qorpera_company_read_confirmations%rowtype;$old$,
+	$new$	v_output jsonb; v_read public.qorpera_company_read_confirmations%rowtype;
+	v_captures jsonb := '[]'::jsonb; v_capture jsonb; v_authority jsonb; v_descriptor jsonb;$new$);
+select pg_temp.cap_patch('public.qorpera_record_native_context_view(uuid,jsonb,jsonb)'::regprocedure,
+	$old$			perform public.qorpera_assert_native_office_captures(p_binding,jsonb_build_array(v_output->'capture'));$old$,
+	$new$			v_captures := v_captures || jsonb_build_array(v_output->'capture');$new$);
+select pg_temp.cap_patch('public.qorpera_record_native_context_view(uuid,jsonb,jsonb)'::regprocedure,
+	$old$	end loop;
+	if (select count(distinct output ->> 'callId')$old$,
+	$new$	end loop;
+	if jsonb_array_length(v_captures) > 0 then
+		v_authority := public.qorpera_describe_native_tool_authority(p_binding);
+		perform public.qorpera_native_company_object_actor(p_binding,(v_authority#>>'{identity,companyId}')::uuid);
+		v_descriptor := public.qorpera_native_office_descriptor(p_binding);
+		for v_capture in select value from jsonb_array_elements(v_captures) loop
+			if jsonb_typeof(v_capture) is distinct from 'object'
+				or coalesce(v_capture->>'assetId','')!~'^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$' then
+				raise exception 'Native capture invalid' using errcode='22023'; end if;
+			if public.qorpera_native_office_capture_checked((v_capture->>'assetId')::uuid,p_binding,v_authority,v_descriptor)
+				is distinct from v_capture then
+				raise exception 'Native capture evidence changed' using errcode='42501'; end if;
+		end loop;
+		perform public.qorpera_describe_native_tool_authority(p_binding);
+	end if;
+	if (select count(distinct output ->> 'callId')$new$);
 -- A todo may be worked by any number of workers over its life (was eight).
 select pg_temp.cap_patch('public.qorpera_manage_agent_worker(jsonb,jsonb)'::regprocedure,
 	$old$		if (select count(*) from public.qorpera_runtime_workers worker where worker.todo_id = v_todo.id) >= 8 then
