@@ -75,6 +75,7 @@
 
 ### Removed
 
+- Remove three lines from each account card in Settings → Connections: the "Connected <date> · <id>" line, the usage bar's name ("Weekly"), and "Last checked <time>". The bar still dims and reads "at last check" when the reading is old, and screen readers still hear each bar's name.
 - Remove Company execution from Settings → Company: the pause and resume buttons, the spend, token and wake status line, and the monthly spend, monthly token and hourly wake limit fields. Notices about a reached company limit or a paused company no longer show above the composer, and older ones are skipped when notices load; the "all company computers are in use" notice stays.
 - Remove the Organization and Approvals cards from Settings → Company, and their pages: the Organization page with its project pages, and the read-only Approvals list (it only gathered the old authorization requests the cloud runtime never sends). Old links open the company home. Cards an agent raises in its own thread, such as an approval card, are unchanged.
 - Remove the member notification inbox: the rail's Notifications row and its unread-count polling, and the Notifications page and route (old links open the company home). Execution notices and explicit acknowledgment remain available inline in the workspace.

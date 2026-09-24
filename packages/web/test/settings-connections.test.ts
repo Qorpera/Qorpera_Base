@@ -222,7 +222,7 @@ describe("member model account settings", () => {
 		for (const account of accounts) expect(account.querySelector("button")!.textContent).toBe("Sign out");
 		expect(view.el.textContent).not.toContain("opaque-account");
 	});
-	it("distinguishes accounts with missing email without presenting references as identity", async () => {
+	it("shows accounts with missing email without presenting references or ids as identity", async () => {
 		await setup(
 			true,
 			observed(
@@ -235,9 +235,9 @@ describe("member model account settings", () => {
 			"Email unavailable",
 		]);
 		expect(view.el.textContent).not.toContain("unverified@example.com");
-		const identities = [...view.el.querySelectorAll(".connection-identity")];
-		expect(identities[0]!.textContent).toContain(id(81).slice(-8));
-		expect(identities[1]!.textContent).toContain(id(83).slice(-8));
+		expect(view.el.querySelectorAll(".connection-card")).toHaveLength(2);
+		expect(view.el.textContent).not.toContain(id(81).slice(-8));
+		expect(view.el.textContent).not.toContain(id(83).slice(-8));
 		expect(view.el.querySelectorAll("[role=meter]")).toHaveLength(0);
 		expect(view.el.textContent).toContain("Usage unavailable");
 	});
@@ -265,7 +265,18 @@ describe("member model account settings", () => {
 		expect(view.el.textContent).toContain("9% left");
 		expect(view.el.textContent).toContain("Resets in 3h 30m");
 		expect(view.el.querySelector('[role="slider"], input[type="range"]')).toBeNull();
-		expect(view.el.textContent).toContain("Last checked");
+		// Only the bars carry the window names, for screen readers.
+		expect(meters.map((meter) => meter.getAttribute("aria-label"))).toEqual([
+			"5-hour limit remaining usage",
+			"Weekly limit remaining usage",
+		]);
+		const card = view.el.querySelector(".connection-card")!;
+		expect(card.textContent).not.toContain("5-hour limit");
+		expect(card.textContent).not.toContain("Weekly limit");
+		expect(card.textContent).not.toContain("Last checked");
+		expect(card.textContent).not.toContain("Connected");
+		expect(card.textContent).not.toContain(id(81).slice(-8));
+		expect(card.querySelector("[title^='Connection ']")).toBeNull();
 	});
 	it("ages a snapshot, expires its meter, and preserves focus when time advances", async () => {
 		vi.useFakeTimers();
@@ -285,7 +296,8 @@ describe("member model account settings", () => {
 		action(OPENAI).focus();
 		await vi.advanceTimersByTimeAsync(6 * 60_000);
 		expect(view.el.textContent).toContain("0% at last check");
-		expect(view.el.textContent).toContain("may be out of date");
+		expect(view.el.querySelector(".connection-usage-meter")!.classList.contains("is-stale")).toBe(true);
+		expect(view.el.textContent).not.toContain("may be out of date");
 		expect(document.activeElement).toBe(action(OPENAI));
 		await vi.advanceTimersByTimeAsync(4 * 60_000);
 		expect(view.el.querySelector("[role=meter]")).toBeNull();
@@ -334,7 +346,7 @@ describe("member model account settings", () => {
 		await vi.advanceTimersByTimeAsync(60_000);
 		expect(client.listConnections).toHaveBeenCalledTimes(4);
 		expect(view.el.textContent).toContain("5% left");
-		expect(view.el.textContent).not.toContain("may be out of date");
+		expect(view.el.textContent).not.toContain("at last check");
 	});
 	it("shows an active provider usage wall without treating an earlier snapshot as available quota", async () => {
 		vi.useFakeTimers();
@@ -478,6 +490,7 @@ describe("member model account settings", () => {
 		expect(card(OPENAI).querySelector("small")!.textContent).toBe("member@example.com");
 		expect(action(OPENAI).textContent).toBe("Sign out");
 		expect(card(CLAUDE).textContent).toContain("Sign out and add this account again to reconnect.");
+		expect(card(CLAUDE).textContent).not.toContain("Added");
 		expect([...card(CLAUDE).querySelectorAll("button")].map((item) => item.textContent)).toEqual(["Sign out"]);
 		expect(action(CLAUDE).disabled).toBe(false);
 	});
