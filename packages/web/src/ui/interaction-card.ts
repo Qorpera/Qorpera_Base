@@ -37,6 +37,8 @@ export interface InteractionCardItem {
 	actorUserId: string;
 	request: InteractionRequest;
 	answer?: InteractionAnswer;
+	/** An answer was sent but never reached the agent; the card is open again. */
+	answerFailed?: boolean;
 	createdAt: string;
 }
 
@@ -145,6 +147,8 @@ export function renderInteractionCard(item: InteractionCardItem, context: Intera
 				t("This card is past its time. The agent will ask again if it still needs it."),
 			),
 		);
+	} else if (state === "waiting" && item.answerFailed) {
+		result.push(h("p", { class: "interaction-result" }, t("Your answer did not reach the agent. Answer again.")));
 	}
 
 	if (request.surface === "question") {

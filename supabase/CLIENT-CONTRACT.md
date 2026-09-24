@@ -420,11 +420,30 @@ with `42501` "Room sponsor is unavailable" otherwise, or `55000` while company
 execution is paused; a refused answer records nothing. An accepted answer's
 input is complete at once, its `interaction_answer` event is in the transcript
 when the RPC returns (never in the pending list), and a room wake runs the
-thread's agent. Elsewhere the two sponsor arguments are ignored. A client shows
-live card controls only to that member; against a cloud before bundle v100
-(`PGRST202` for the seven named arguments) it keeps the card open and says
-answering there is not available yet (the old function would queue an answer
-that never wakes the agent).
+thread's agent. A client shows live card controls only to that member; against
+a cloud before bundle v100 (`PGRST202` for the seven named arguments) it keeps
+the card open and says answering there is not available yet (the old function
+would queue an answer that never wakes the agent).
+
+*A plain conversation (bundle v105)* — a company conversation that is not a
+room. The answer is delivered the way a message there is: pass the same two
+sponsor arguments, and the kernel queues the answer with a session turn
+request on your own model account, checked as `qorpera_request_session_turn`
+checks a `member_connection` request (sponsor kind `member_connection`, your
+connection, active binding, connection and authorization, a native credential
+whose compute identity is yours and active). It refuses with `42501` "Session
+sponsor is unavailable" otherwise, or `55000` while company execution is
+paused; a refused answer records nothing. The answer shows in the pending list
+until its turn is admitted as a human wake whose current input is the answer.
+A conversation with its own execution binding (`qorpera_configure_session_
+execution`) still queues an answer that names no sponsor. Before bundle v105
+the kernel ignored the sponsor there and queued an answer that never woke the
+agent. If the turn request fails at admission, the input is listed as failed:
+that answer never reached the agent, no longer counts as the card's answer,
+and the member may answer again (a client shows the card open again).
+
+*A group chat* (a room bound to no agent) carries no cards; an answer there is
+refused with `22023` "cards are not answered in a group chat" (bundle v105).
 
 ## 7. Desktop IPC channels → cloud equivalents
 

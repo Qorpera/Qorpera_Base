@@ -92,6 +92,8 @@ export interface TranscriptInteraction {
 	actorUserId: string;
 	request: InteractionRequest;
 	answer?: InteractionAnswer;
+	/** An answer was sent and its delivery failed, so it never reached the agent: the card is open again. */
+	answerFailed?: boolean;
 	createdAt: string;
 }
 
@@ -308,6 +310,7 @@ export function projectTranscript(
 	const inputIds = new Set<string>();
 	const interactions = new Map<string, TranscriptInteraction>();
 	const answers = new Map<string, InteractionAnswer>();
+	const failedAnswers = new Set<string>();
 	const legacyParts = new Map<string, { count: number; parts: (string | null)[]; event: HostedSessionEvent }>();
 	for (const event of events) {
 		lastSequence = Math.max(lastSequence, event.sequence);
@@ -441,8 +444,10 @@ export function projectTranscript(
 		if (body?.schema === "qorpera.staff-intro-retry/v1") continue;
 		const queuedAnswer = parseInteractionAnswerInput(input.body);
 		if (queuedAnswer) {
-			// A queued answer shows on its card, never as a message bubble.
-			if (!answers.has(queuedAnswer.interactionId))
+			// A queued answer shows on its card, never as a message bubble. One whose
+			// delivery failed never reached the agent and settles nothing.
+			if (input.status === "failed") failedAnswers.add(queuedAnswer.interactionId);
+			else if (!answers.has(queuedAnswer.interactionId))
 				answers.set(queuedAnswer.interactionId, {
 					...queuedAnswer.answer,
 					answeredBy: input.authorUserId,
@@ -471,6 +476,10 @@ export function projectTranscript(
 	for (const [interactionId, answer] of answers) {
 		const interaction = interactions.get(interactionId);
 		if (interaction) interaction.answer = answer;
+	}
+	for (const interactionId of failedAnswers) {
+		const interaction = interactions.get(interactionId);
+		if (interaction && !interaction.answer) interaction.answerFailed = true;
 	}
 	items.sort((a, b) => (a.sequence === b.sequence ? a.createdAt.localeCompare(b.createdAt) : a.sequence - b.sequence));
 	return { items, hiddenCount, lastSequence };

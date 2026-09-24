@@ -185,16 +185,23 @@ export interface ConversationState {
 	interactionError?: string;
 }
 
-/** Drop optimistic card answers once the projection carries them. */
+/** Drop optimistic card answers once the projection carries them, or once their
+ * input failed: that answer never reached the agent, so the card is open again. */
 function reconcileInteractionAnswers(
 	answers: Record<string, InteractionAnswer> | undefined,
 	projection: TranscriptProjection,
+	pending: readonly PendingSessionInput[],
 ): Record<string, InteractionAnswer> | undefined {
 	if (!answers) return undefined;
 	const settled = new Set(
 		projection.items.flatMap((item) => (item.kind === "interaction" && item.answer ? [item.id.toLowerCase()] : [])),
 	);
-	const kept = Object.fromEntries(Object.entries(answers).filter(([id]) => !settled.has(id)));
+	const failed = new Set(pending.flatMap((input) => (input.status === "failed" ? [input.inputId] : [])));
+	const kept = Object.fromEntries(
+		Object.entries(answers).filter(
+			([id, answer]) => !settled.has(id) && !(answer.inputId && failed.has(answer.inputId)),
+		),
+	);
 	return Object.keys(kept).length ? kept : undefined;
 }
 
@@ -226,10 +233,12 @@ export function isAgentThreadSession(session: HostedSession): boolean {
 /** Who answers a card, as the kernel's qorpera_answer_interaction checks it: the
  * member a private conversation belongs to, the creator of a company one, and in
  * an agent's shared thread the member the card was raised for, whom the card's
- * event names as its actor. */
+ * event names as its actor. Nobody in a group chat: an answer there reaches no
+ * single agent (bundle v105). */
 export function answersInteraction(session: HostedSession, actorUserId: string, userId: string): boolean {
 	if (session.status !== "open") return false;
 	if (isAgentThreadSession(session)) return actorUserId === userId;
+	if (session.executionScope && "roomId" in session.executionScope) return false;
 	return session.audience.kind === "member_private"
 		? session.audience.userId === userId
 		: session.createdByUserId === userId;
@@ -991,7 +1000,7 @@ export class CompanyController {
 					complete: true,
 					error: undefined,
 					optimistic,
-					interactionAnswers: reconcileInteractionAnswers(store.get().interactionAnswers, projection),
+					interactionAnswers: reconcileInteractionAnswers(store.get().interactionAnswers, projection, pending),
 					codingSessions,
 				});
 			} catch (error) {
@@ -1108,14 +1117,20 @@ export class CompanyController {
 		});
 		try {
 			const sponsor = this.#answerSponsor(sessionId);
-			await this.#api
+			const receipt = await this.#api
 				.answerInteraction(sessionId, crypto.randomUUID(), interactionId, outcome, answer, sponsor)
 				.catch((error: unknown) => {
 					// A cloud before bundle v100 cannot deliver an answer in an agent's thread:
 					// it would queue one that never wakes the agent. Keep the card open.
-					if (sponsor && error instanceof CloudRpcError && error.missing)
+					if (error instanceof CloudRpcError && error.missing)
 						throw new Error(t("Answering cards here is not available yet. Reply in a message instead."));
 					throw error;
+				});
+			// Remembered so a delivery that fails later opens the card again (reconcileInteractionAnswers).
+			const sent = store.get().interactionAnswers?.[key];
+			if (sent)
+				store.set({
+					interactionAnswers: { ...store.get().interactionAnswers, [key]: { ...sent, inputId: receipt.inputId } },
 				});
 		} catch (error) {
 			const { [key]: _dropped, ...rest } = store.get().interactionAnswers ?? {};
@@ -1131,11 +1146,10 @@ export class CompanyController {
 		this.#watchWork(20_000);
 	}
 
-	/** In an agent's shared thread an answer runs the agent, like a post, on the
-	 * member's selected model account; elsewhere it names none. */
-	#answerSponsor(sessionId: string): { sponsorBindingId: string; sponsorVersion: number } | undefined {
-		const session = this.store.get().sessions.find((item) => item.sessionId === sessionId);
-		if (!session || !isAgentThreadSession(session)) return undefined;
+	/** An answer runs the agent the way a message there does, on the member's
+	 * selected model account: like a post in an agent's shared thread (bundle
+	 * v100), like a turn request in a plain conversation (bundle v105). */
+	#answerSponsor(sessionId: string): { sponsorBindingId: string; sponsorVersion: number } {
 		const sponsor = this.conversation(sessionId).get().executionSponsor;
 		if (!sponsor) throw new Error(t("Select an active model account, then try again."));
 		return { sponsorBindingId: sponsor.sponsorBindingId, sponsorVersion: sponsor.sponsorVersion };
