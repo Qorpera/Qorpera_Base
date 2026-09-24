@@ -1,6 +1,6 @@
 import type { HostedCompanyFile } from "../../cloud/types.ts";
 import { fmtBytes, h } from "../../ui/dom.ts";
-import { uiText } from "../../ui/preferences.ts";
+import { t, uiText } from "../../ui/preferences.ts";
 
 /** A bar of what is used against what is included. */
 export function meter(value: number, max: number, label: string): HTMLElement {
@@ -16,18 +16,17 @@ export function storageSummary(
 ): { text: HTMLElement; meter: HTMLElement | null } {
 	if (!file)
 		return {
-			text: uiText(error ? "Storage information unavailable" : "Loading storage…"),
+			text: error ? uiText("Storage information unavailable") : uiText("Loading storage…"),
 			meter: null,
 		};
 	const limited = file.storageLimitBytes > 0;
 	return {
-		text: h(
-			"span",
-			null,
-			`${fmtBytes(file.storageUsedBytes)} `,
-			uiText("used"),
-			limited ? [" ", uiText("of"), ` ${fmtBytes(file.storageLimitBytes)}`] : null,
-		),
-		meter: limited ? meter(file.storageUsedBytes, file.storageLimitBytes, "Company storage used") : null,
+		text: limited
+			? uiText("{used} used of {total}", {
+					used: fmtBytes(file.storageUsedBytes),
+					total: fmtBytes(file.storageLimitBytes),
+				})
+			: uiText("{used} used", { used: fmtBytes(file.storageUsedBytes) }),
+		meter: limited ? meter(file.storageUsedBytes, file.storageLimitBytes, t("Company storage used")) : null,
 	};
 }

@@ -1,7 +1,16 @@
 import { describeError } from "../../cloud/client.ts";
 import type { HostedStaffAgent } from "../../cloud/types.ts";
-import { FIGURE_IDS, type FigureId, figureElement, figureFor, nativeColorOf } from "../../ui/avatar.ts";
+import {
+	agentColor,
+	FIGURE_IDS,
+	type FigureId,
+	figureElement,
+	figureFor,
+	figureName,
+	nativeColorOf,
+} from "../../ui/avatar.ts";
 import { h, notice, replace } from "../../ui/dom.ts";
+import { t } from "../../ui/preferences.ts";
 import { pageSkeleton } from "../../ui/skeleton.ts";
 import type { CompanyController } from "../company.ts";
 import { navigate } from "../router.ts";
@@ -45,7 +54,7 @@ export function renderMeet(
 	const open = () => navigate({ name: "company", profileId, section: "home" });
 
 	if (!cofounder && companyState.loading) {
-		replace(container, h("section", { class: "page" }, pageSkeleton("Opening company")));
+		replace(container, h("section", { class: "page" }, pageSkeleton(t("Opening company"))));
 		return;
 	}
 	if (!cofounder) {
@@ -58,9 +67,11 @@ export function renderMeet(
 				h("h1", null, company.profile.profileName),
 				notice(
 					"neutral",
-					"This company has no Co-Founder yet. The cloud seeds one when Order 0 bootstraps the company; until then there is no agent to dress.",
+					t(
+						"This company has no Co-Founder yet. The cloud seeds one when Order 0 bootstraps the company; until then there is no agent to dress.",
+					),
 				),
-				h("p", null, h("a", { href: `#/c/${profileId}` }, "Open the company")),
+				h("p", null, h("a", { href: `#/c/${profileId}` }, t("Open the company"))),
 			),
 		);
 		return;
@@ -70,9 +81,11 @@ export function renderMeet(
 	// saved as a governed write of the agent's document. A refusal is reported
 	// without automatic retries, and opening the company never depends on it.
 	const figure = state.figure ?? figureFor(cofounder);
-	// The Co-Founder wears its figure's own colour, as in the trailer; there
-	// is no separate colour to choose here.
-	const color = nativeColorOf(figure);
+	// Each figure brings its own shade here, as in the trailer; the colour is
+	// chosen later in the agent's details. Until a figure is picked on this
+	// page, the Co-Founder keeps the colour it has, so returning here and
+	// saving never replaces a colour chosen in the details.
+	const color = state.figure ? nativeColorOf(figure) : agentColor(cofounder, figure);
 	const canWrite = companyState.team?.capabilities.authorize === true;
 	const save = () => {
 		if (!canWrite || state.saving) return;
@@ -94,13 +107,13 @@ export function renderMeet(
 			h(
 				"div",
 				{ class: "meet-inner" },
-				h("h1", null, "Your journey starts here"),
+				h("h1", null, t("Your journey starts here")),
 				h("div", { class: "meet-stage" }, figureElement(figure, color, { size: 190 })),
 				h("div", { class: "meet-name" }, cofounder.displayName),
 				state.error ? notice("danger", state.error) : null,
 				h(
 					"div",
-					{ class: "figure-grid", role: "radiogroup", "aria-label": "Choose a figure" },
+					{ class: "figure-grid", role: "radiogroup", "aria-label": t("Choose a figure") },
 					...FIGURE_IDS.map((id) => {
 						const chosen = id === figure;
 						const choice = h(
@@ -110,11 +123,12 @@ export function renderMeet(
 								class: "figure-choice",
 								role: "radio",
 								"aria-checked": String(chosen),
-								"aria-label": id,
+								"aria-label": figureName(id),
 								disabled: state.saving === true,
 								// Picking a figure brings its own shade with it, as the
 								// workspace's own picker does.
-								onclick: () => setState({ ...state, figure: id }),
+								// The figure already shown is no new choice: it keeps its colour.
+								onclick: () => (id === figure ? undefined : setState({ ...state, figure: id })),
 							},
 							// Unchosen figures wear their native shade; only the chosen
 							// one carries the selected colour.
@@ -127,11 +141,11 @@ export function renderMeet(
 					? h(
 							"button",
 							{ type: "button", class: "meet-start", disabled: state.saving === true, onclick: save },
-							state.saving ? "Saving…" : "Save appearance and continue",
+							state.saving ? t("Saving…") : t("Save appearance and continue"),
 						)
-					: h("button", { type: "button", class: "meet-start", onclick: open }, "Open the company"),
+					: h("button", { type: "button", class: "meet-start", onclick: open }, t("Open the company")),
 				canWrite
-					? h("p", null, h("a", { href: `#/c/${profileId}` }, "Open the company without changing appearance"))
+					? h("p", null, h("a", { href: `#/c/${profileId}` }, t("Open the company without changing appearance")))
 					: null,
 			),
 		),

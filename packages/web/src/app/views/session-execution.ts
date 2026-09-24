@@ -6,6 +6,7 @@ import type {
 import type { WebNativeSubscription } from "../../cloud/native-subscription.ts";
 import { selectSessionExecutionSponsor } from "../../cloud/session-input.ts";
 import { button, h, replace } from "../../ui/dom.ts";
+import { t } from "../../ui/preferences.ts";
 import type { CompanyController } from "../company.ts";
 
 /** Unknown windows sort after measured allowance. Expired windows no longer
@@ -169,12 +170,12 @@ export class SessionExecutionView {
 		if (connections.status === "fulfilled") this.#observed = connections.value;
 		else {
 			this.#observed = undefined;
-			this.#error = "Model accounts are unavailable. Refresh to try again.";
+			this.#error = t("Model accounts are unavailable. Refresh to try again.");
 		}
 		if (provenance.status === "fulfilled") this.#provenance = provenance.value;
 		else {
 			this.#provenance = [];
-			this.#historyError = "Execution history is unavailable.";
+			this.#historyError = t("Execution history is unavailable.");
 		}
 		this.#busy = false;
 		this.#request = undefined;
@@ -367,10 +368,12 @@ export class SessionExecutionView {
 						h(
 							"p",
 							{ class: "muted" },
-							"Retry keeps the original model account and message request. The earlier message may already have been accepted. Starting a new request can send it again.",
+							t(
+								"Retry keeps the original model account and message request. The earlier message may already have been accepted. Starting a new request can send it again.",
+							),
 						),
 						button(
-							"Start a new message request",
+							t("Start a new message request"),
 							() => {
 								if (this.#lifetime.signal.aborted) return;
 								try {
@@ -379,7 +382,7 @@ export class SessionExecutionView {
 									else this.#choose();
 									this.#error = undefined;
 								} catch {
-									this.#error = "This conversation is unavailable for a new request.";
+									this.#error = t("This conversation is unavailable for a new request.");
 								}
 								this.#render();
 								this.#changed();
@@ -392,8 +395,10 @@ export class SessionExecutionView {
 							"p",
 							{ class: "muted" },
 							this.#observed.connections.some((connection) => remainingAllowance(connection, Date.now()) === 0)
-								? "Your model accounts have reached their usage limits. Sending resumes when an account resets."
-								: "Connect a model account in Settings → Connections to send messages.",
+								? t(
+										"Your model accounts have reached their usage limits. Sending resumes when an account resets.",
+									)
+								: t("Connect a model account in Settings → Connections to send messages."),
 						)
 					: null,
 		);

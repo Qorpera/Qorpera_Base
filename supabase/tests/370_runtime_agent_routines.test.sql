@@ -109,7 +109,7 @@ begin
 	where run.source_kind = 'wake' and wake.routine_id = v_row.id order by run.created_at desc limit 1;
 	perform pg_temp.wake_assert(v_run.id is not null,'The routine occurrence materialized a run');
 	v_manifest := public.qorpera_execution_runtime_manifest(v_run);
-	v_expected := case when v_manifest #>> '{modelPolicy,overrides}' = 'routine' and (v_manifest #> '{modelPolicy,allowed}') ? 'high'
+	v_expected := case when v_manifest #>> '{modelPolicy,overrides}' in ('routine','routine-and-thread') and (v_manifest #> '{modelPolicy,allowed}') ? 'high'
 		then 'high' else v_manifest #>> '{modelPolicy,effort}' end;
 	perform pg_temp.wake_assert(v_run.reasoning_effort = v_expected
 		and public.qorpera_manifest_allows_reasoning_effort(v_manifest, v_run.reasoning_effort),

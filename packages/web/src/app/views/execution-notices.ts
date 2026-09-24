@@ -1,6 +1,7 @@
 import type { MemberNotification, WebMemberNotifications } from "../../cloud/member-notifications.ts";
 import { button, h } from "../../ui/dom.ts";
 import { matchesKey } from "../../ui/keys.ts";
+import { t } from "../../ui/preferences.ts";
 
 type Client = Pick<WebMemberNotifications, "listNotifications" | "acknowledgeNotification">;
 
@@ -14,7 +15,7 @@ function sentence(item: MemberNotification): string | undefined {
 		case "qorpera.member-notification.sponsor-handoff/v1":
 			return undefined;
 		case "qorpera.member-notification.machine-capacity/v1":
-			return `All ${subject.ceiling} company computers are in use. Close one to open another.`;
+			return t("All {count} company computers are in use. Close one to open another.", { count: subject.ceiling });
 	}
 }
 
@@ -28,7 +29,7 @@ function told(items: readonly MemberNotification[]): MemberNotification[] {
  * write or steals focus. A failed read or an unconfirmed dismissal shows nothing: the
  * line returns with the next good read if the notice still stands. */
 export class ExecutionNotices {
-	readonly el = h("section", { class: "execution-notices", "aria-label": "Company updates", hidden: true });
+	readonly el = h("section", { class: "execution-notices", "aria-label": t("Company updates"), hidden: true });
 	readonly #client: Client;
 	readonly #lifetime = new AbortController();
 	readonly #restoreFocus: (() => void) | undefined;
@@ -109,7 +110,9 @@ export class ExecutionNotices {
 		if (key === this.#drawn) return;
 		const focused = this.el.contains(document.activeElement);
 		if (text) {
-			const dismiss = button("Dismiss", (event) => event.detail < 2 && void this.#acknowledge(), { small: true });
+			const dismiss = button(t("Dismiss"), (event) => event.detail < 2 && void this.#acknowledge(), {
+				small: true,
+			});
 			dismiss.dataset.action = "dismiss-notification";
 			if (this.#acking) dismiss.setAttribute("aria-disabled", "true");
 			this.el.replaceChildren(

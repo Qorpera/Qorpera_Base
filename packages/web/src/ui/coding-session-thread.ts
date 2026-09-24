@@ -16,6 +16,7 @@ import {
 } from "./coding-session.ts";
 import { button, h } from "./dom.ts";
 import { matchesKey } from "./keys.ts";
+import { t } from "./preferences.ts";
 
 export interface CodingSessionThreadOptions {
 	agent: HostedStaffAgent | undefined;
@@ -71,8 +72,8 @@ export class CodingSessionThreadView {
 			{
 				type: "button",
 				class: "icon-button coding-thread-back",
-				"aria-label": "Back to the conversation",
-				title: "Back to the conversation",
+				"aria-label": t("Back to the conversation"),
+				title: t("Back to the conversation"),
 				onclick: () => this.close(),
 			},
 			glyph(BACK_GLYPH, 18, "icon"),
@@ -103,15 +104,18 @@ export class CodingSessionThreadView {
 				? h(
 						"span",
 						{ class: "coding-thread-note" },
-						`Your answers and follow-ups go to ${harness}. Uses your ${harness} plan.`,
+						t("Your answers and follow-ups go to {harness}. Uses your {harness} plan.", { harness }),
 					)
 				: h(
 						"span",
 						{ class: "coding-thread-note" },
 						glyph(LOCK_GLYPH, 12, "coding-glyph"),
-						`This session is view-only. Only ${names.owner} can type; steer it through ${names.agent}.`,
+						t("This session is view-only. Only {owner} can type; steer it through {agent}.", {
+							owner: names.owner,
+							agent: names.agent,
+						}),
 					),
-			button("Close", () => this.close(), { small: true }),
+			button(t("Close"), () => this.close(), { small: true }),
 		);
 		this.el = h(
 			"section",

@@ -2,7 +2,7 @@
  * Text always goes through textContent, never innerHTML. */
 
 import { figureElement } from "./avatar.ts";
-import { presentationLocale } from "./preferences.ts";
+import { presentationDay, presentationLocale, t, timeZoneOption } from "./preferences.ts";
 
 export type Child = Node | string | number | boolean | null | undefined | Child[];
 type Attrs = Record<string, unknown>;
@@ -51,26 +51,35 @@ export function replace(parent: Element, ...children: Child[]): void {
 	append(parent, children);
 }
 
+/** Times and days are the chosen zone's (Settings → General → Time zone). */
 export function fmtTime(iso: string): string {
 	const date = new Date(iso);
 	if (Number.isNaN(date.getTime())) return "";
-	const now = new Date();
-	const sameDay = date.toDateString() === now.toDateString();
-	const time = date.toLocaleTimeString(presentationLocale(), { hour: "2-digit", minute: "2-digit" });
-	if (sameDay) return time;
-	const sameYear = date.getFullYear() === now.getFullYear();
-	const day = date.toLocaleDateString(
+	const zone = timeZoneOption();
+	const day = presentationDay(date, zone.timeZone),
+		today = presentationDay(new Date(), zone.timeZone);
+	const time = date.toLocaleTimeString(presentationLocale(), { hour: "2-digit", minute: "2-digit", ...zone });
+	if (day === today) return time;
+	const sameYear = day.slice(0, 4) === today.slice(0, 4);
+	const shown = date.toLocaleDateString(
 		presentationLocale(),
-		sameYear ? { month: "short", day: "numeric" } : { year: "numeric", month: "short", day: "numeric" },
+		sameYear
+			? { month: "short", day: "numeric", ...zone }
+			: { year: "numeric", month: "short", day: "numeric", ...zone },
 	);
-	return `${day}, ${time}`;
+	return `${shown}, ${time}`;
 }
 
 export function fmtDate(iso: string): string {
 	const date = new Date(iso);
 	return Number.isNaN(date.getTime())
 		? ""
-		: date.toLocaleDateString(presentationLocale(), { year: "numeric", month: "short", day: "numeric" });
+		: date.toLocaleDateString(presentationLocale(), {
+				year: "numeric",
+				month: "short",
+				day: "numeric",
+				...timeZoneOption(),
+			});
 }
 
 export function fmtBytes(bytes: number): string {
@@ -147,6 +156,8 @@ const ICON_PATHS: Record<string, string[]> = {
 	close: ["m6 6 12 12M6 18 18 6"],
 	lock: ["M5 11h14v10H5Z", "M8 11V7a4 4 0 0 1 8 0v4"],
 	chevron: ["m9 5 7 7-7 7"],
+	"chevron-down": ["m6 9 6 6 6-6"],
+	search: ["M18 11a7 7 0 1 1-14 0 7 7 0 0 1 14 0Z", "m20 20-3.9-3.9"],
 	back: ["m14 5-7 7 7 7M7 12h14"],
 	computer: ["M4 3h16a1 1 0 0 1 1 1v12H3V4a1 1 0 0 1 1-1Z", "M8 21h8M12 16v5"],
 	attach: ["m8 12 6-6a3 3 0 0 1 4 4l-8 8a5 5 0 0 1-7-7l8-8", "m8 12 5-5"],
@@ -243,7 +254,7 @@ export function icon(name: keyof typeof ICON_PATHS | string): SVGSVGElement {
 	return svg;
 }
 
-export function spinner(label = "Loading"): HTMLElement {
+export function spinner(label = t("Loading")): HTMLElement {
 	return h(
 		"div",
 		{ class: "spinner", role: "status", "aria-label": label },
@@ -316,7 +327,7 @@ export function confirmDialog(
 		if (typed) {
 			input = h("input", {
 				type: "text",
-				placeholder: `Type ${typed} to confirm`,
+				placeholder: t("Type {name} to confirm", { name: typed }),
 				oninput: () => {
 					confirm.disabled = input?.value.trim() !== typed;
 				},
@@ -333,7 +344,7 @@ export function confirmDialog(
 				h(
 					"div",
 					{ class: "modal-actions" },
-					button("Cancel", () => close(false)),
+					button(t("Cancel"), () => close(false)),
 					confirm,
 				),
 			),
