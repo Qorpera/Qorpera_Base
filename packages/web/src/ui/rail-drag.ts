@@ -4,6 +4,8 @@
  * dragged, the zone under the pointer is shaded (no border) and a thin marker shows
  * where the row will land. A press that never moves stays an ordinary click. */
 
+import { uiScale } from "./scale.ts";
+
 export interface RailDrop {
 	agentId: string;
 	zone: string;
@@ -19,6 +21,7 @@ export interface RailDragHooks {
 	drop(drop: RailDrop): void;
 }
 
+/** Design pixels: how far a press moves before it drags, and the band at the list's edges that scrolls it. */
 const THRESHOLD = 6;
 const EDGE = 40;
 
@@ -180,7 +183,7 @@ export class RailDrag {
 		const active = this.#active;
 		if (!active || event.pointerId !== active.pointerId) return;
 		if (!active.ghost) {
-			if (Math.hypot(event.clientX - active.start.x, event.clientY - active.start.y) < THRESHOLD) return;
+			if (Math.hypot(event.clientX - active.start.x, event.clientY - active.start.y) < THRESHOLD * uiScale()) return;
 			this.#begin(active);
 			if (!active.ghost) return;
 		}
@@ -241,22 +244,24 @@ export class RailDrag {
 			marker.remove();
 			return;
 		}
+		// Insets are design pixels; the boxes are measured in screen pixels.
+		const scale = uiScale();
 		if (grid) {
 			const anchor = items[Math.min(index, items.length - 1)]!.getBoundingClientRect();
-			const x = index < items.length ? anchor.left - 4 : anchor.right + 4;
+			const x = index < items.length ? anchor.left - 4 * scale : anchor.right + 4 * scale;
 			Object.assign(marker.style, {
-				top: `${top(anchor.top + 8)}px`,
+				top: `${top(anchor.top + 8 * scale)}px`,
 				left: `${left(x) - 1}px`,
 				width: "",
-				height: `${anchor.height - 16}px`,
+				height: `${anchor.height - 16 * scale}px`,
 			});
 		} else {
 			const anchor = items[Math.min(index, items.length - 1)]!.getBoundingClientRect();
 			const y = index < items.length ? anchor.top : anchor.bottom;
 			Object.assign(marker.style, {
 				top: `${top(y) - 1}px`,
-				left: `${left(anchor.left + 8)}px`,
-				width: `${anchor.width - 16}px`,
+				left: `${left(anchor.left + 8 * scale)}px`,
+				width: `${anchor.width - 16 * scale}px`,
 				height: "",
 			});
 		}
@@ -269,11 +274,12 @@ export class RailDrag {
 			const active = this.#active;
 			if (!active?.ghost) return;
 			const rect = this.#list.getBoundingClientRect();
+			const edge = EDGE * uiScale();
 			const speed =
-				active.lastY < rect.top + EDGE
-					? -Math.ceil((rect.top + EDGE - active.lastY) / 4)
-					: active.lastY > rect.bottom - EDGE
-						? Math.ceil((active.lastY - (rect.bottom - EDGE)) / 4)
+				active.lastY < rect.top + edge
+					? -Math.ceil((rect.top + edge - active.lastY) / 4)
+					: active.lastY > rect.bottom - edge
+						? Math.ceil((active.lastY - (rect.bottom - edge)) / 4)
 						: 0;
 			if (speed) {
 				const before = this.#list.scrollTop;

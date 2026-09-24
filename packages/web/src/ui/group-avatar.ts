@@ -1,6 +1,7 @@
 import type { HostedStaffAgent } from "../cloud/types.ts";
 import { agentColor, type FigureId, figureArtwork, figureFor, nativeColorOf } from "./avatar.ts";
 import type { FigureArtwork } from "./figure-motion.ts";
+import { designPx } from "./scale.ts";
 
 export interface GroupAvatarOptions {
 	width?: number;
@@ -216,8 +217,8 @@ export function groupAvatar(agents: readonly HostedStaffAgent[], options: GroupA
 	canvas.setAttribute("aria-hidden", "true");
 	const width = options.width ?? 48,
 		height = options.height ?? 44;
-	canvas.style.width = `var(--group-avatar-width, ${width}px)`;
-	canvas.style.height = `var(--group-avatar-height, ${height}px)`;
+	canvas.style.width = `var(--group-avatar-width, ${designPx(width)})`;
+	canvas.style.height = `var(--group-avatar-height, ${designPx(height)})`;
 	canvas.width = Math.max(1, Math.round(width * 2));
 	canvas.height = Math.max(1, Math.round(height * 2));
 	const artwork = figureArtwork();

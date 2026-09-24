@@ -1,5 +1,6 @@
 import { h, icon } from "./dom.ts";
 import { matchesKey } from "./keys.ts";
+import { uiScale } from "./scale.ts";
 
 /* A right-click menu, Grok Bot's shape: icon rows, separators, a submenu that
  * opens beside its row, a destructive last row. One menu is open at a time; it
@@ -48,13 +49,14 @@ export function openMenu(): ContextMenu | undefined {
 /** Places a fixed element at (x, y), flipped or clamped to stay on screen. */
 function place(element: HTMLElement, x: number, y: number, flipX?: number): void {
 	const { width, height } = element.getBoundingClientRect();
+	const margin = MARGIN * uiScale();
 	let left = x;
-	if (left + width > window.innerWidth - MARGIN)
-		left = flipX !== undefined ? flipX - width : window.innerWidth - width - MARGIN;
+	if (left + width > window.innerWidth - margin)
+		left = flipX !== undefined ? flipX - width : window.innerWidth - width - margin;
 	let top = y;
-	if (top + height > window.innerHeight - MARGIN) top = Math.max(MARGIN, window.innerHeight - height - MARGIN);
-	element.style.left = `${Math.max(MARGIN, left)}px`;
-	element.style.top = `${Math.max(MARGIN, top)}px`;
+	if (top + height > window.innerHeight - margin) top = Math.max(margin, window.innerHeight - height - margin);
+	element.style.left = `${Math.max(margin, left)}px`;
+	element.style.top = `${Math.max(margin, top)}px`;
 }
 
 function menuItems(menu: HTMLElement): HTMLElement[] {
@@ -130,7 +132,8 @@ export function openContextMenu(options: ContextMenuOptions): ContextMenu {
 					document.body.append(child);
 					const row = trigger.getBoundingClientRect();
 					const parent = menu.getBoundingClientRect();
-					place(child, parent.right - 2, row.top - 5, parent.left + 2);
+					const scale = uiScale();
+					place(child, parent.right - 2 * scale, row.top - 5 * scale, parent.left + 2 * scale);
 					submenu = { el: child, trigger };
 					trigger.setAttribute("aria-expanded", "true");
 					trigger.classList.add("is-open");
@@ -250,5 +253,6 @@ export function openContextMenu(options: ContextMenuOptions): ContextMenu {
 export function menuPoint(event: MouseEvent, element: Element): { x: number; y: number } {
 	if (event.clientX || event.clientY) return { x: event.clientX, y: event.clientY };
 	const rect = element.getBoundingClientRect();
-	return { x: rect.left + Math.min(24, rect.width / 2), y: rect.bottom - 4 };
+	const scale = uiScale();
+	return { x: rect.left + Math.min(24 * scale, rect.width / 2), y: rect.bottom - 4 * scale };
 }
