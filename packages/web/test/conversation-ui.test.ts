@@ -1107,8 +1107,18 @@ describe("conversation loading placeholders", () => {
 		expect(placeholderLabel(view.el.querySelector(".messages"))).toBe("Loading conversation");
 		expect(view.el.querySelectorAll(".skeleton-composer")).toHaveLength(1);
 		expect(composer().hidden).toBe(true);
+		const messages = view.el.querySelector(".messages")!;
+		const placeholder = messages.querySelector(".skeleton-messages");
+		const records: MutationRecord[] = [];
+		const changes = new MutationObserver((batch) => records.push(...batch));
+		changes.observe(messages, { childList: true });
 		company.store.set({ team, staff: [staff], sessions: [{ ...session, staffAgentId: staff.id }], loading: false });
 		await settle();
+		// The live log keeps the same placeholder in place, so a screen reader does not hear it again.
+		expect(messages.querySelector(".skeleton-messages")).toBe(placeholder);
+		records.push(...changes.takeRecords());
+		expect(records).toHaveLength(0);
+		changes.disconnect();
 		// Header and composer arrive; the messages are still being read.
 		expect(header.querySelector(".skeleton")).toBeNull();
 		expect(header.querySelector("h1")?.textContent).toBe(staff.displayName);

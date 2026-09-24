@@ -10,22 +10,34 @@ import { h, icon } from "./dom.ts";
 
 let breathing = false;
 
+/** app.css's skeleton-breathe duration. */
+const BREATH_MS = 1800;
+
 /** Every shape breathes on the document's clock, so a shape that starts later
  * (built by a redraw, or shown when the phone's rail drawer opens) joins the
- * others mid-breath instead of starting over. */
+ * others mid-breath instead of starting over. A shape is built already in step
+ * (its delay), and set in step again when its breath actually starts (a hidden
+ * shape starts only when shown). */
 function breatheTogether(): void {
 	if (breathing) return;
 	breathing = true;
 	document.addEventListener("animationstart", (event) => {
 		if (event.animationName !== "skeleton-breathe" || !(event.target instanceof Element)) return;
 		for (const animation of event.target.getAnimations?.() ?? [])
-			if ("animationName" in animation && animation.animationName === "skeleton-breathe") animation.startTime = 0;
+			if ("animationName" in animation && animation.animationName === "skeleton-breathe") {
+				// Its own delay already carries the phase it was built with; the start undoes it.
+				const delay = Number(animation.effect?.getTiming().delay ?? 0);
+				animation.startTime = delay ? -delay : 0;
+			}
 	});
 }
 
 function shape(...kinds: string[]): HTMLElement {
 	breatheTogether();
-	return h("span", { class: ["skeleton", ...kinds.map((kind) => `skeleton-${kind}`)].join(" ") });
+	const element = h("span", { class: ["skeleton", ...kinds.map((kind) => `skeleton-${kind}`)].join(" ") });
+	const now = Number(document.timeline?.currentTime ?? performance.now());
+	element.style.animationDelay = `${-(now % BREATH_MS)}ms`;
+	return element;
 }
 
 function placeholder(label: string, className: string, ...children: HTMLElement[]): HTMLElement {

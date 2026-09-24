@@ -681,6 +681,21 @@ describe("account and route ownership", () => {
 		expect(rail.textContent).toContain(staff.displayName);
 	});
 
+	it("closes a drawer opened while a company opens when that company turns out to be unavailable", async () => {
+		const f = mounted(`#/c/${id(77)}`);
+		const profiles = deferred<HostedProfile[]>();
+		vi.mocked(f.api.listProfiles).mockReturnValue(profiles.promise);
+		await draw();
+		f.root.querySelector<HTMLButtonElement>("main > .thread-skeleton .mobile-navigation-toggle")!.click();
+		await draw();
+		expect(f.root.querySelector(".frame")?.classList.contains("navigation-open")).toBe(true);
+		profiles.resolve([profileA]);
+		await draw();
+		expect(f.root.querySelector("main")?.textContent).toContain("This company is not available to your account.");
+		expect(f.root.querySelector(".frame")?.classList.contains("navigation-open")).toBe(false);
+		expect(f.root.querySelector<HTMLElement>("main")?.inert).toBe(false);
+	});
+
 	it("says why the Company File cannot open when membership could not be read", async () => {
 		const f = mounted(`#/c/${profileA.profileId}/file`);
 		vi.mocked(f.api.getTeam).mockRejectedValue(new Error("Membership unavailable"));
@@ -706,6 +721,10 @@ describe("account and route ownership", () => {
 		expect(root.querySelector(".skeleton-group")).toBeNull();
 		expect(root.textContent).toContain("The cloud could not be reached. Network unavailable");
 		expect([...root.querySelectorAll("button")].some((button) => button.textContent === "Try again")).toBe(true);
+		// A redraw, such as a route change, keeps the error instead of blanking the page again.
+		location.hash = `#/c/${profileA.profileId}`;
+		await draw();
+		expect(root.textContent).toContain("The cloud could not be reached. Network unavailable");
 	});
 
 	it("keeps rail searches bound to the current company and current route", () => {

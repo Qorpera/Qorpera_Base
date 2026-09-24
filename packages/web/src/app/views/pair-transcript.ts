@@ -37,6 +37,8 @@ export class PairTranscriptView {
 	readonly #close: HTMLButtonElement;
 	readonly #lifetime = new AbortController();
 	readonly #timer: number;
+	/** The messages' placeholder, one per load, so the log does not read it out again on each redraw. */
+	#placeholder: HTMLElement | undefined;
 	#renderedKey = "";
 	#disposed = false;
 
@@ -191,11 +193,15 @@ export class PairTranscriptView {
 				);
 			}
 		}
-		if (conversation.loading && !items.length) nodes.push(messagesSkeleton());
+		if (conversation.loading && !items.length) nodes.push((this.#placeholder ??= messagesSkeleton()));
+		else this.#placeholder = undefined;
 		if (!conversation.loading && !items.length && !conversation.error)
 			nodes.push(h("div", { class: "empty" }, "No messages yet."));
 		if (conversation.error) nodes.push(h("div", { class: "empty" }, conversation.error));
-		replace(this.#messages, ...nodes);
+		// Nodes already in place stay put: a live log re-reads what is taken out and put back.
+		const kept = this.#messages.childNodes;
+		if (nodes.length !== kept.length || nodes.some((node, index) => node !== kept[index]))
+			replace(this.#messages, ...nodes);
 		this.#messages.scrollTop = this.#messages.scrollHeight;
 	}
 

@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
 	blankSkeleton,
 	companyCardsSkeleton,
@@ -52,11 +52,24 @@ describe("loading placeholders", () => {
 		expect(toggled).toBe(1);
 	});
 
-	it("puts every shape on the document's clock when its breath starts", () => {
+	it("builds every shape in step with the document's clock", () => {
+		const now = vi.spyOn(performance, "now");
+		now.mockReturnValue(4_000);
+		const early = messagesSkeleton().querySelector<HTMLElement>(".skeleton")!;
+		now.mockReturnValue(4_000 + 3 * 1_800);
+		const late = messagesSkeleton().querySelector<HTMLElement>(".skeleton")!;
+		// Built a whole number of breaths apart, the two shapes stand at the same point of a breath.
+		expect(early.style.animationDelay).toBe("-400ms");
+		expect(late.style.animationDelay).toBe(early.style.animationDelay);
+		now.mockRestore();
+	});
+
+	it("sets a shape in step again when its breath actually starts", () => {
 		const shape = messagesSkeleton().querySelector<HTMLElement>(".skeleton")!;
 		document.body.append(shape);
-		const breath = { animationName: "skeleton-breathe", startTime: 1234 as number | null };
-		const other = { animationName: "status-ink-wave", startTime: 1234 as number | null };
+		const timing = (delay: number) => ({ getTiming: () => ({ delay }) });
+		const breath = { animationName: "skeleton-breathe", startTime: 1234 as number | null, effect: timing(-400) };
+		const other = { animationName: "status-ink-wave", startTime: 1234 as number | null, effect: timing(0) };
 		shape.getAnimations = () => [breath, other] as unknown as Animation[];
 		const start = (animationName: string) => {
 			const event = new Event("animationstart", { bubbles: true });
@@ -65,10 +78,13 @@ describe("loading placeholders", () => {
 		};
 		start("status-ink-wave");
 		expect(breath.startTime).toBe(1234);
-		// A shape that starts late, built by a redraw or shown when a drawer opens, joins mid-breath.
+		// A shape shown late (the phone's rail drawer) joins mid-breath: start + delay lands on the clock's zero.
+		start("skeleton-breathe");
+		expect(breath.startTime).toBe(400);
+		expect(other.startTime).toBe(1234);
+		breath.effect = timing(0);
 		start("skeleton-breathe");
 		expect(breath.startTime).toBe(0);
-		expect(other.startTime).toBe(1234);
 		shape.remove();
 	});
 });

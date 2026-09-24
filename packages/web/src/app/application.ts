@@ -117,6 +117,8 @@ export function mountApplication(
 	let accountUserId: string | undefined;
 	let navigationOpen = false;
 	let navigationFocus: "rail" | "toggle" | undefined;
+	/** Why the app could not start, when reading the cloud session failed. */
+	let startError: HTMLElement | undefined;
 	let unsubscribeFile: (() => void) | undefined;
 	let pendingCompany:
 		| { profileId: string; revision: number; promise: Promise<CompanyController | undefined> }
@@ -420,7 +422,9 @@ export function mountApplication(
 		const current = captureRoute();
 		const authState = auth.store.get();
 		if (!authState.ready) {
-			replace(root!, blankSkeleton("Connecting to the cloud"));
+			// A start that failed keeps saying so; a redraw (a route change) never blanks it again.
+			if (startError) replace(root!, startError);
+			else replace(root!, blankSkeleton("Connecting to the cloud"));
 			return;
 		}
 		if (!authState.session) {
@@ -492,6 +496,11 @@ export function mountApplication(
 		const controller = await ensureCompany(route.profileId);
 		if (!current()) return;
 		if (!controller) {
+			// A drawer opened from the placeholder closes with the company it was opening.
+			navigationOpen = false;
+			navigationFocus = undefined;
+			syncNavigation();
+			frame.classList.remove("navigation-open");
 			rail.hidden = true;
 			renderTopbar(topbar, shellContext(authState.user, route), undefined);
 			replace(
@@ -953,15 +962,13 @@ export function mountApplication(
 		() => render(),
 		(error) => {
 			if (disposed) return;
-			replace(
-				root!,
-				h(
-					"section",
-					{ class: "page" },
-					notice("danger", `The cloud could not be reached. ${describeError(error)}`),
-					button("Try again", () => location.reload()),
-				),
+			startError = h(
+				"section",
+				{ class: "page" },
+				notice("danger", `The cloud could not be reached. ${describeError(error)}`),
+				button("Try again", () => location.reload()),
 			);
+			render();
 		},
 	);
 

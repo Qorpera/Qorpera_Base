@@ -61,6 +61,8 @@ export class ConversationView {
 	readonly #composerWrap: HTMLElement;
 	/** Where the composer will stand while the company still opens. */
 	#composerPlaceholder: HTMLElement | undefined;
+	/** The messages' placeholder, one per load, so the log does not read it out again on each redraw. */
+	#messagesPlaceholder: HTMLElement | undefined;
 	readonly #composerShell: HTMLElement;
 	readonly #attachments: AttachmentTray;
 	readonly #more: HTMLButtonElement;
@@ -1052,7 +1054,8 @@ export class ConversationView {
 				this.#codingElements.delete(workerId);
 			}
 		}
-		if (conversation.loading && !items.length) nodes.push(messagesSkeleton());
+		if (conversation.loading && !items.length) nodes.push((this.#messagesPlaceholder ??= messagesSkeleton()));
+		else this.#messagesPlaceholder = undefined;
 		if (!conversation.loading && !items.length && !codingSessions.length && !conversation.error && !this.#working) {
 			nodes.push(h("div", { class: "empty" }, "No messages yet."));
 		}
@@ -1079,7 +1082,10 @@ export class ConversationView {
 			nodes.push(row);
 		}
 		const rowFocus = document.activeElement?.classList.contains("thread-activity") ?? false;
-		replace(this.#messages, ...nodes);
+		// Nodes already in place stay put: a live log re-reads what is taken out and put back.
+		const kept = this.#messages.childNodes;
+		if (nodes.length !== kept.length || nodes.some((node, index) => node !== kept[index]))
+			replace(this.#messages, ...nodes);
 		// A keyboard user reading the row keeps it through a state change or a new message.
 		if (rowFocus) this.#messages.querySelector<HTMLElement>(".thread-activity")?.focus({ preventScroll: true });
 		this.#refreshTimestamps(false);
