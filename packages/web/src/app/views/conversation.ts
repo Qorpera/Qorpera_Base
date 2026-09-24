@@ -363,6 +363,7 @@ export class ConversationView {
 		this.#timestampTimer = window.setInterval(refreshTimestamps, 60_000);
 		window.addEventListener("focus", refreshTimestamps, { signal: this.#lifetime.signal });
 		window.addEventListener("qorpera-language-change", refreshTimestamps, { signal: this.#lifetime.signal });
+		window.addEventListener("qorpera-time-zone-change", refreshTimestamps, { signal: this.#lifetime.signal });
 		document.addEventListener("visibilitychange", refreshTimestamps, { signal: this.#lifetime.signal });
 		document.addEventListener(
 			"click",

@@ -347,6 +347,27 @@ describe("agent figure", () => {
 		expect(named("Teal").getAttribute("aria-checked")).toBe("true");
 		expect(drawnIn()).toBe("#00bfb3");
 	});
+	it("resets to the figure's own shade, which then follows the figure", async () => {
+		stubFigureMotion();
+		vi.stubGlobal("QORPERA_MOTION_MODEL", {
+			avatars: [
+				{ id: "crown", color: "#fcb51b" },
+				{ id: "heart", color: "#fb672a" },
+			],
+			faces: {},
+		});
+		vi.stubGlobal("QORPERA_AVATAR_APPEARANCE", { palette: [{ name: "Teal", color: "#00bfb3" }] });
+		const updateAgent = saving();
+		open({ updateAgent }, { ...staff, appearance: { color: "#00bfb3", shape: "round", creature: "crown" } });
+		named("Edit figure").click();
+		named("Reset").click();
+		expect(updateAgent.mock.calls.at(-1)![1]).toMatchObject({ figure: "crown", color: "#fcb51b" });
+		// Saves run one at a time; the next figure is written once this one lands.
+		await settle();
+		named("heart").click();
+		await settle();
+		expect(updateAgent.mock.calls.at(-1)![1]).toMatchObject({ figure: "heart", color: "#fb672a" });
+	});
 });
 
 describe("agent pages", () => {

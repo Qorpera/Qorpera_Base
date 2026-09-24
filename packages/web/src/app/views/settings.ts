@@ -23,7 +23,8 @@ const TABS = [
 		id: "general",
 		label: "General",
 		icon: "settings",
-		keywords: "account appearance theme composer color colour blue green grey gray language region",
+		keywords:
+			"account appearance theme composer color colour blue green grey gray language region time zone timezone",
 	},
 	{
 		id: "company",

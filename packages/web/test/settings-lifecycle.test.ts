@@ -266,6 +266,12 @@ describe("settings session lifecycle", () => {
 		open(f.root);
 		await draw();
 		const search = f.root.querySelector<HTMLInputElement>(".settings-nav input")!;
+		search.value = "time zone";
+		search.dispatchEvent(new Event("input"));
+		const shownTabs = [...f.root.querySelectorAll<HTMLElement>(".settings-nav [role=tab]")].filter(
+			(tab) => !tab.hidden,
+		);
+		expect(shownTabs.map((tab) => tab.id)).toEqual(["settings-tab-general"]);
 		search.value = "team";
 		search.dispatchEvent(new Event("input"));
 		expect(f.root.querySelector("#settings-tab-company")?.getAttribute("aria-selected")).toBe("true");
@@ -492,7 +498,7 @@ describe("settings session lifecycle", () => {
 		vi.mocked(f.api.getAccountEntitlement).mockReturnValueOnce(pending.promise);
 		open(f.root);
 		await draw();
-		const language = f.root.querySelector<HTMLSelectElement>('select[aria-label="Language"]')!;
+		const language = f.root.querySelector<HTMLButtonElement>(".preference-picker-button")!;
 		language.focus();
 		pending.resolve({
 			planKey: "free",
