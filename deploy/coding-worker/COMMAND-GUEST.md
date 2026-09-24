@@ -85,12 +85,18 @@ slice, runs the same helper's `execute` mode as the session's unprivileged
 uid/gid. Inside the unit, `/workspace` and `/var/lib/qorpera-coding` are empty
 temporary filesystems into which only this session's two folders are bound
 (TemporaryFileSystem, BindPaths), also against sessions attached while the
-command runs; ProtectSystem=strict leaves them read-only per mount and
-ReadWritePaths bind-mounts the workspace, home, cache and this command's log
-directory onto themselves. The execute step therefore asserts its
-storage against exactly those paths: the same virtiofs superblocks (still `rw`),
-and beneath them only those binds of the same superblock. Root callers keep the
-strict check (one whole `rw` mount, nothing beneath). A refusal before the command
+command runs; ReadWritePaths bind-mounts the workspace, home, cache and this
+command's log directory onto themselves. ProtectSystem=strict does not remount
+the unit's own BindPaths mounts, so the two session roots stay writable per
+mount; their owner and mode (never the session's user, 0755) keep the session
+from writing in them. The execute step therefore asserts its storage against
+exactly those paths: private covers over the guest roots holding only this
+session, the same virtiofs superblocks (still `rw`), and beneath them only
+those binds of the same superblock. Root callers keep the strict check (no
+cover at the guest roots, one whole `rw` mount per root, nothing beneath).
+Bundle v101 required the roots read-only per mount, which no real unit shows,
+and refused every command (`CODING_GUEST_STORAGE_MOUNT_INVALID`); v103 checks
+the table a real unit has (test fixture `coding-command-unit-mountinfo.txt`). A refusal before the command
 starts exits 125 and writes one line with only its fixed code into the command's
 empty `output.log` (never following, creating or appending to anything else), so
 `read` reports `failed` with that code instead of staying unconfirmed. The same
