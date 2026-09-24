@@ -1,7 +1,8 @@
--- Member pictures: a member uploads only into their own folder, chooses only an
--- object that exists there, and their picture is visible to themselves, to
--- people they share a company with and to their friends, never to strangers.
--- Every assertion runs as the real PostgREST role named just above it.
+-- Member pictures: a member uploads only into their own folder (four objects at
+-- most), chooses only an object that exists there, and their current picture is
+-- visible to themselves, to people they share a company with and to their
+-- friends, never to strangers, nor to someone who only sent them a friend
+-- request. Every assertion runs as the real PostgREST role named just above it.
 
 insert into auth.users (id, email, email_confirmed_at)
 values
@@ -15,7 +16,8 @@ set role authenticated;
 select set_config('qorpera_test.picture_profile', public.qorpera_create_hosted_profile('Pictures', 'main', 1) ->> 'profile_id', false);
 reset role;
 
--- The colleague shares the company; the friend has only a pending request.
+-- The colleague shares the company; the "friend" has only sent the owner a
+-- request, which the owner has not accepted yet.
 insert into public.qorpera_profile_members (profile_id, user_id, email, display_name, role)
 values (
 	current_setting('qorpera_test.picture_profile')::uuid,
@@ -114,6 +116,13 @@ begin
 	get diagnostics v_seen = row_count;
 	if v_seen <> 1 then raise exception 'the owner could not delete their replaced picture'; end if;
 
+	-- An upload that never became the picture stays the owner's alone.
+	insert into storage.objects (bucket_id, name, metadata)
+	values ('qorpera-member-pictures', v_me || '/' || repeat('3', 64) || '.png', '{"size":"700"}');
+	select count(*) into v_seen from storage.objects
+	where bucket_id = 'qorpera-member-pictures' and name like v_me || '/%';
+	if v_seen <> 2 then raise exception 'the owner does not see their whole folder (got %)', v_seen; end if;
+
 	v_result := public.qorpera_member_pictures(array[v_me::uuid]);
 	if jsonb_array_length(v_result) <> 1 or v_result -> 0 ->> 'object_name' <> v_second then
 		raise exception 'the owner does not see their own picture: %', v_result;
@@ -156,6 +165,9 @@ begin
 	end if;
 	select count(*) into v_seen from storage.objects where bucket_id = 'qorpera-member-pictures' and name = v_picture;
 	if v_seen <> 1 then raise exception 'a colleague cannot download the owner''s picture'; end if;
+	select count(*) into v_seen from storage.objects
+	where bucket_id = 'qorpera-member-pictures' and name like v_owner::text || '/%';
+	if v_seen <> 1 then raise exception 'a colleague sees more of the owner''s folder than the current picture (got %)', v_seen; end if;
 	delete from storage.objects where bucket_id = 'qorpera-member-pictures' and name = v_picture;
 	get diagnostics v_seen = row_count;
 	if v_seen <> 0 then raise exception 'a colleague deleted the owner''s picture'; end if;
@@ -170,13 +182,46 @@ set role authenticated;
 do $$
 declare
 	v_result jsonb := public.qorpera_member_pictures(array['95000000-0000-4000-8000-00000000000a'::uuid]);
+	v_seen integer;
 begin
-	if jsonb_array_length(v_result) <> 1 then
-		raise exception 'a friend (request pending) does not see the picture: %', v_result;
+	if jsonb_array_length(v_result) <> 0 then
+		raise exception 'sending a friend request revealed the picture: %', v_result;
 	end if;
+	select count(*) into v_seen from storage.objects
+	where bucket_id = 'qorpera-member-pictures' and name like '95000000-0000-4000-8000-00000000000a/%';
+	if v_seen <> 0 then raise exception 'sending a friend request opened the picture folder'; end if;
 end
 $$;
 
+reset role;
+
+-- The owner sees the picture of the member who asked them (the asker agreed to be seen)...
+select set_config('request.jwt.claims', '{"sub":"95000000-0000-4000-8000-00000000000a","email":"picture-owner@example.test","role":"authenticated","user_metadata":{}}', false);
+set role authenticated;
+do $$
+begin
+	if not public.qorpera_can_see_member_picture('95000000-0000-4000-8000-00000000000c') then
+		raise exception 'the member asked cannot see the asker';
+	end if;
+end
+$$;
+reset role;
+
+-- ...and once the owner accepts, the friend sees the owner's picture.
+update public.qorpera_friendships set status = 'accepted', responded_at = statement_timestamp()
+where user_low = '95000000-0000-4000-8000-00000000000a' and user_high = '95000000-0000-4000-8000-00000000000c';
+
+select set_config('request.jwt.claims', '{"sub":"95000000-0000-4000-8000-00000000000c","email":"picture-friend@example.test","role":"authenticated","user_metadata":{}}', false);
+set role authenticated;
+do $$
+declare
+	v_result jsonb := public.qorpera_member_pictures(array['95000000-0000-4000-8000-00000000000a'::uuid]);
+begin
+	if jsonb_array_length(v_result) <> 1 then
+		raise exception 'a friend does not see the picture: %', v_result;
+	end if;
+end
+$$;
 reset role;
 
 -- A stranger sees nothing, not even by guessing the object name.
@@ -231,6 +276,27 @@ reset role;
 -- The owner goes back to initials.
 select set_config('request.jwt.claims', '{"sub":"95000000-0000-4000-8000-00000000000a","email":"picture-owner@example.test","role":"authenticated","user_metadata":{}}', false);
 set role authenticated;
+
+do $$
+declare
+	v_me text := '95000000-0000-4000-8000-00000000000a';
+begin
+	-- The folder holds the current picture and the unused upload: two more fit.
+	insert into storage.objects (bucket_id, name, metadata)
+	values
+		('qorpera-member-pictures', v_me || '/' || repeat('6', 64) || '.webp', '{}'),
+		('qorpera-member-pictures', v_me || '/' || repeat('7', 64) || '.webp', '{}');
+	begin
+		insert into storage.objects (bucket_id, name, metadata)
+		values ('qorpera-member-pictures', v_me || '/' || repeat('8', 64) || '.webp', '{}');
+		raise exception 'a fifth object was stored in one member''s folder';
+	exception when insufficient_privilege then null;
+	end;
+	delete from storage.objects
+	where bucket_id = 'qorpera-member-pictures'
+		and name in (v_me || '/' || repeat('6', 64) || '.webp', v_me || '/' || repeat('7', 64) || '.webp');
+end
+$$;
 
 do $$
 declare

@@ -3,11 +3,12 @@
 -- A picture belongs to the account, not to a company membership, so it
 -- follows the member into every company and shows before they join one. The
 -- bytes live in a private bucket as <user UUID>/<sha256>.<ext>: the member
--- uploads into their own folder only, and a name is immutable, so a new
--- picture is a new object and the old one is removed by its owner. Who sees a
--- picture is decided here, never by the client: the member, anyone who shares
--- a company with them, and anyone on their friends list (a pending request
--- included, since both sides already see each other's name). The web app
+-- uploads into their own folder only (a few objects at most), and a name is
+-- immutable, so a new picture is a new object and the old one is removed by its
+-- owner. Who sees a picture is decided here, never by the client: the member,
+-- anyone who shares a company with them, their friends, and anyone they sent a
+-- friend request to (a request received is no consent to be seen). Others read
+-- only the current picture, never what else lies in the folder. The web app
 -- downloads pictures with the member's token; the page's image policy only
 -- admits blob: and data: sources, so no picture URL ever leaves this project.
 --
@@ -61,8 +62,46 @@ as $$
 				from public.qorpera_friendships friendship
 				where friendship.user_low = least(auth.uid(), p_user_id)
 					and friendship.user_high = greatest(auth.uid(), p_user_id)
+					and (friendship.status = 'accepted' or friendship.requested_by = p_user_id)
 			)
 		)
+$$;
+
+-- What a member may read in the bucket: anything in their own folder, and
+-- another member's current picture when they may see that member.
+create function public.qorpera_can_read_member_picture(p_object_name text)
+returns boolean
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+	select auth.uid() is not null
+		and (
+			split_part(p_object_name, '/', 1) = auth.uid()::text
+			or exists (
+				select 1
+				from public.qorpera_member_pictures picture
+				where picture.object_name = p_object_name
+					and public.qorpera_can_see_member_picture(picture.user_id)
+			)
+		)
+$$;
+
+-- How many objects the caller's own folder holds; uploads stop at four, so the
+-- bucket holds pictures and not files.
+create function public.qorpera_member_picture_objects()
+returns integer
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+	select count(*)::integer
+	from storage.objects
+	where bucket_id = 'qorpera-member-pictures'
+		and auth.uid() is not null
+		and name like auth.uid()::text || '/%'
 $$;
 
 -- The CASE keeps the UUID cast behind the name check: a policy's AND gives no
@@ -76,6 +115,7 @@ create policy qorpera_member_pictures_insert
 		and case
 			when name ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/[0-9a-f]{64}\.(webp|jpg|png)$'
 				then (storage.foldername(name))[1] = auth.uid()::text
+					and public.qorpera_member_picture_objects() < 4
 			else false
 		end
 	);
@@ -88,7 +128,7 @@ create policy qorpera_member_pictures_read
 		bucket_id = 'qorpera-member-pictures'
 		and case
 			when name ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/[0-9a-f]{64}\.(webp|jpg|png)$'
-				then public.qorpera_can_see_member_picture(((storage.foldername(name))[1])::uuid)
+				then public.qorpera_can_read_member_picture(name)
 			else false
 		end
 	);
@@ -208,10 +248,15 @@ end
 $$;
 
 revoke all on function public.qorpera_can_see_member_picture(uuid) from public, anon;
+revoke all on function public.qorpera_can_read_member_picture(text) from public, anon;
+revoke all on function public.qorpera_member_picture_objects() from public, anon;
 revoke all on function public.qorpera_member_pictures(uuid[]) from public, anon;
 revoke all on function public.qorpera_set_member_picture(text) from public, anon;
 revoke all on function public.qorpera_clear_member_picture() from public, anon;
 grant execute on function public.qorpera_can_see_member_picture(uuid) to authenticated;
+-- Both run inside the bucket's policies, which evaluate as the member.
+grant execute on function public.qorpera_can_read_member_picture(text) to authenticated;
+grant execute on function public.qorpera_member_picture_objects() to authenticated;
 grant execute on function public.qorpera_member_pictures(uuid[]) to authenticated;
 grant execute on function public.qorpera_set_member_picture(text) to authenticated;
 grant execute on function public.qorpera_clear_member_picture() to authenticated;

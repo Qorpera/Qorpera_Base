@@ -1,6 +1,6 @@
 import type { User } from "@supabase/supabase-js";
 import { describeError } from "../../cloud/client.ts";
-import { h, icon, personAvatar } from "../../ui/dom.ts";
+import { type Child, h, icon, notice, personAvatar } from "../../ui/dom.ts";
 import { PERSON_PICTURE_EVENT, personPictures } from "../../ui/person-pictures.ts";
 import { PictureFileError } from "../../ui/picture-file.ts";
 import { uiText } from "../../ui/preferences.ts";
@@ -9,12 +9,20 @@ import { displayName } from "../auth.ts";
 /* The account's picture at the head of Settings → General. Clicking it picks a
  * photo; once there is one, it opens a small menu to pick another or go back to
  * initials. Where the cloud has no member pictures yet it is the initials disc
- * alone, with nothing to click. */
+ * alone, with nothing to click. Why the last change failed is kept by the store
+ * and shown in `error` (placed under the card) until the next attempt, so a
+ * redrawn page still shows it and nothing else on the page clears it. */
 
-export function accountPicture(user: User | null, fail: (message: string) => void): HTMLElement {
+function failureText(error: unknown): Child[] {
+	if (error instanceof PictureFileError) return [uiText(error.message)];
+	return [uiText("Your picture could not be changed."), " ", describeError(error)];
+}
+
+export function accountPicture(user: User | null): { picture: HTMLElement; error: HTMLElement } {
 	const avatar = personAvatar(displayName(user), user?.id ?? "");
 	const store = personPictures();
-	if (!store || !user) return h("span", { class: "account-picture" }, avatar);
+	const error = h("div", { class: "account-picture-error", hidden: true });
+	if (!store || !user) return { picture: h("span", { class: "account-picture" }, avatar), error };
 	const userId = user.id;
 	const input = h("input", {
 		type: "file",
@@ -33,7 +41,7 @@ export function accountPicture(user: User | null, fail: (message: string) => voi
 			h("span", null, uiText(label)),
 		);
 	const choose = item("image", "Choose a new picture", () => {
-		setOpen(false);
+		setOpen(false, true);
 		input.click();
 	});
 	const remove = item(
@@ -47,7 +55,8 @@ export function accountPicture(user: User | null, fail: (message: string) => voi
 	);
 	const menu = h(
 		"div",
-		{ class: "account-picture-menu", role: "menu", "aria-label": "Profile picture", hidden: true },
+		// Focusable itself, so a click on its padding keeps Escape with the menu.
+		{ class: "account-picture-menu", role: "menu", "aria-label": "Profile picture", tabindex: "-1", hidden: true },
 		choose,
 		remove,
 	);
@@ -55,7 +64,8 @@ export function accountPicture(user: User | null, fail: (message: string) => voi
 	let open = false;
 
 	const onOutside = (event: Event) => {
-		if (!root.contains(event.target as Node)) setOpen(false);
+		if (!root.isConnected) document.removeEventListener("pointerdown", onOutside, true);
+		else if (!root.contains(event.target as Node)) setOpen(false);
 	};
 	function setOpen(next: boolean, focusTrigger = false): void {
 		if (next === open) return;
@@ -74,20 +84,17 @@ export function accountPicture(user: User | null, fail: (message: string) => voi
 	async function run(action: () => Promise<void>): Promise<void> {
 		try {
 			await action();
-		} catch (error) {
-			if (error instanceof Error && error.message === "The account changed.") return;
-			fail(
-				error instanceof PictureFileError
-					? error.message
-					: `Your picture could not be changed. ${describeError(error)}`,
-			);
+		} catch {
+			// The store keeps the failure; update() shows it.
 		}
 	}
 
 	function update(): void {
 		const status = store!.status(userId);
 		const busy = store!.busy(userId);
-		const changeable = status === "none" || status === "picture";
+		// A picture that could not be read may still exist: offer both choices.
+		const menu = status === "picture" || status === "failed";
+		const changeable = menu || status === "none";
 		trigger.disabled = busy || !changeable;
 		root.classList.toggle("is-busy", busy);
 		root.classList.toggle("is-changeable", changeable);
@@ -96,29 +103,34 @@ export function accountPicture(user: User | null, fail: (message: string) => voi
 		else trigger.removeAttribute("aria-busy");
 		const label = busy
 			? "Saving your profile picture"
-			: status === "picture"
+			: menu
 				? "Change profile picture"
 				: status === "none"
 					? "Add a profile picture"
 					: "Profile picture";
 		trigger.setAttribute("aria-label", label);
 		trigger.title = changeable ? label : "";
-		if (status === "picture") {
+		if (menu) {
 			trigger.setAttribute("aria-haspopup", "menu");
 			trigger.setAttribute("aria-expanded", String(open));
 		} else {
 			trigger.removeAttribute("aria-haspopup");
 			trigger.removeAttribute("aria-expanded");
 		}
-		if (open && (busy || status !== "picture")) setOpen(false);
+		if (open && (busy || !menu)) setOpen(false);
+		const failure = store!.failure(userId);
+		error.hidden = failure === undefined;
+		if (failure === undefined) error.replaceChildren();
+		else error.replaceChildren(notice("danger", ...failureText(failure)));
 	}
 
+	const hasMenu = () => ["picture", "failed"].includes(store.status(userId));
 	trigger.onclick = () => {
-		if (store.status(userId) === "picture") setOpen(!open);
+		if (hasMenu()) setOpen(!open);
 		else input.click();
 	};
 	trigger.onkeydown = (event: KeyboardEvent) => {
-		if (event.key === "ArrowDown" && store.status(userId) === "picture") {
+		if (event.key === "ArrowDown" && hasMenu()) {
 			event.preventDefault();
 			setOpen(true);
 		}
@@ -147,5 +159,5 @@ export function accountPicture(user: User | null, fail: (message: string) => voi
 	};
 	avatar.addEventListener(PERSON_PICTURE_EVENT, update);
 	update();
-	return root;
+	return { picture: root, error };
 }

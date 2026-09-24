@@ -154,7 +154,8 @@ export class CloudApi {
 			.then(parseMemberPictures);
 	}
 
-	async uploadMemberPicture(objectName: string, picture: Blob): Promise<void> {
+	/** Resolves true when this call stored the object, false when those bytes were already there. */
+	async uploadMemberPicture(objectName: string, picture: Blob): Promise<boolean> {
 		if (!isMemberPictureName(objectName)) throw new Error("Invalid picture name.");
 		const { error } = await this.cloud.supabase.storage.from(MEMBER_PICTURE_BUCKET).upload(objectName, picture, {
 			contentType: picture.type,
@@ -162,8 +163,25 @@ export class CloudApi {
 			cacheControl: "31536000",
 			upsert: false,
 		});
+		if (!error) return true;
 		// The same picture uploaded again already sits under its name.
-		if (error && !(error.statusCode === "409" || /already exists/i.test(error.message))) throw error;
+		if (error.statusCode === "409" || /already exists/i.test(error.message)) return false;
+		throw error;
+	}
+
+	/** Everything in the member's own folder: the current picture and uploads never chosen. */
+	async listOwnMemberPictureObjects(userId: string): Promise<{ objectName: string; createdAt?: string }[]> {
+		const folder = requiredUuid(userId, "Account id").toLowerCase();
+		const { data, error } = await this.cloud.supabase.storage
+			.from(MEMBER_PICTURE_BUCKET)
+			.list(folder, { limit: 100 });
+		if (error) throw error;
+		return (data ?? [])
+			.map((item) => ({
+				objectName: `${folder}/${item.name}`,
+				...(typeof item.created_at === "string" ? { createdAt: item.created_at } : {}),
+			}))
+			.filter((item) => isMemberPictureName(item.objectName, folder));
 	}
 
 	async downloadMemberPicture(objectName: string): Promise<Blob> {

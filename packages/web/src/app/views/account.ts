@@ -20,6 +20,7 @@ export function renderAccount(
 	setState: (next: AccountViewState) => void,
 ): void {
 	const user = auth.store.get().user;
+	const picture = accountPicture(user);
 	const language = h(
 		"select",
 		{ "aria-label": "Language" },
@@ -53,7 +54,7 @@ export function renderAccount(
 				h(
 					"div",
 					{ class: "settings-card settings-account" },
-					accountPicture(user, (error) => setState({ error })),
+					picture.picture,
 					h(
 						"div",
 						{ class: "settings-copy" },
@@ -62,6 +63,7 @@ export function renderAccount(
 					),
 					button(uiText("Sign out"), () => void auth.signOut()),
 				),
+				picture.error,
 			),
 			h(
 				"section",

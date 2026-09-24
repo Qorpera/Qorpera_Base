@@ -4,7 +4,8 @@
  * it in place when they change it. Without a store (tests, signed out) the disc
  * stays as it is. */
 
-export type PersonPictureStatus = "loading" | "none" | "picture" | "unavailable";
+/** "failed": the picture could not be read just now; there may be one. */
+export type PersonPictureStatus = "loading" | "none" | "picture" | "failed" | "unavailable";
 
 export interface PersonPictureStore {
 	/** Shows `userId`'s picture on `element`, now or once it has loaded, and keeps it current. */
@@ -12,6 +13,8 @@ export interface PersonPictureStore {
 	status(userId: string): PersonPictureStatus;
 	/** A change of this account's own picture is on its way. */
 	busy(userId: string): boolean;
+	/** Why the last change of this account's picture failed, until the next attempt. */
+	failure(userId: string): unknown;
 	choose(userId: string, file: File): Promise<void>;
 	remove(userId: string): Promise<void>;
 }
@@ -20,6 +23,7 @@ export interface PersonPictureStore {
 export const PERSON_PICTURE_EVENT = "qorpera-person-picture";
 
 let store: PersonPictureStore | undefined;
+let epoch = 0;
 
 export function setPersonPictures(next: PersonPictureStore | undefined): void {
 	store = next;
@@ -31,6 +35,16 @@ export function personPictures(): PersonPictureStore | undefined {
 
 export function attachPersonPicture(element: HTMLElement, userId: string): void {
 	store?.attach(element, userId);
+}
+
+/** Changes whenever the store forgets every picture; a view that keeps discs across
+ * renders compares it to know when to attach them again. */
+export function personPicturesEpoch(): number {
+	return epoch;
+}
+
+export function forgetPersonPictures(): void {
+	epoch++;
 }
 
 export function paintPersonPicture(element: HTMLElement, url: string | undefined): void {

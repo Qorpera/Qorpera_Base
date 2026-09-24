@@ -39,27 +39,33 @@ profile RPCs; RLS is the second read boundary.
 
 ## 2. Member-callable RPCs (security-definer, granted to `authenticated`)
 
-159 functions, grouped for navigation. Signatures: see the migration that defines each.
+161 functions, grouped for navigation. Signatures: see the migration that defines each.
 
 
-### Members, presence, friends, feedback (13)
+### Members, presence, friends, feedback (15)
 
-- `qorpera_can_see_member_picture(p_user_id)` — the rule behind the picture
-  bucket's read policy (yourself, company colleagues, friends).
+- `qorpera_can_read_member_picture(p_object_name)` — the picture bucket's
+  read policy: anything in your own folder, and another account's current
+  picture when `qorpera_can_see_member_picture` allows it.
+- `qorpera_can_see_member_picture(p_user_id)` — yourself, company colleagues,
+  accepted friends, and accounts that sent you a friend request (a request you
+  sent reveals nothing until it is accepted).
 - `qorpera_clear_member_picture` — back to initials; returns
   `previous_object_name`, which the caller deletes from storage.
 - `qorpera_list_friends`
 - `qorpera_list_presence_devices`
 - `qorpera_member_pictures(p_user_ids uuid[])` — at most 200 accounts; returns
-  `[{user_id, object_name, updated_at}]` only for pictures the caller may see:
-  their own, people they share a company with, and their friends (pending
-  requests included). Migration `20260924150000_member_pictures`.
+  `[{user_id, object_name, updated_at}]` only for pictures the caller may see
+  (`qorpera_can_see_member_picture`). Migration
+  `20260924150000_member_pictures`.
+- `qorpera_member_picture_objects()` — how many objects the caller's own
+  picture folder holds; the upload policy stops at four.
 - `qorpera_set_member_picture(p_object_name)` — makes an object the caller
   uploaded to the private bucket `qorpera-member-pictures` as
   `<own user UUID>/<sha256>.<webp|jpg|png>` (512 KiB, image types only; RLS lets
-  members write and delete only their own folder, and read what the function
-  above would show) their picture; returns `previous_object_name` for the
-  caller to delete.
+  members write (four objects at most) and delete only in their own folder, and
+  read per `qorpera_can_read_member_picture`) their picture; returns
+  `previous_object_name` for the caller to delete.
 - `qorpera_presence_topic_profile`
 - `qorpera_register_presence_device`
 - `qorpera_remove_friend`

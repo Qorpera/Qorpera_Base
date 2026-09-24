@@ -7,21 +7,19 @@ import { accountPicture } from "../src/app/views/account-picture.ts";
 import { CloudRpcError } from "../src/cloud/client.ts";
 import { parseMemberPictureChange, parseMemberPictures } from "../src/cloud/member-pictures.ts";
 import { personAvatar } from "../src/ui/dom.ts";
-import { PERSON_PICTURE_EVENT, setPersonPictures } from "../src/ui/person-pictures.ts";
+import { PERSON_PICTURE_EVENT, personPicturesEpoch, setPersonPictures } from "../src/ui/person-pictures.ts";
 import { PictureFileError } from "../src/ui/picture-file.ts";
 import { deferred, fixture, id, settle as settleMicrotasks, userA } from "./fixtures.ts";
 
 const me = userA.id;
 const colleague = id(21);
 const stranger = id(22);
+const NOW = Date.parse("2026-09-24T06:00:00Z");
 const sha = (text: string) => createHash("sha256").update(text).digest("hex");
-const pictureOf = (userId: string, text: string, extension = "webp") => ({
-	userId,
-	objectName: `${userId}/${sha(text)}.${extension}`,
-	updatedAt: "2026-09-24T05:00:00Z",
-});
+const nameOf = (userId: string, text: string, extension = "webp") => `${userId}/${sha(text)}.${extension}`;
 const blob = (text: string, type = "image/webp") => new Blob([text], { type });
 const picture = (element: Element) => element.querySelector<HTMLImageElement>(":scope > img.person-picture");
+const photo = () => new File(["photo"], "photo.png", { type: "image/png" });
 
 /** Hashing and reading a blob finish outside the microtask queue. */
 async function settle(): Promise<void> {
@@ -49,20 +47,66 @@ afterEach(() => {
 	vi.unstubAllGlobals();
 });
 
-function setup(options: { prepare?: (file: File) => Promise<{ blob: Blob; extension: "webp" | "jpg" }> } = {}) {
+/** The cloud as the member pictures migration defines it: a current picture per
+ * account and the objects in each folder (four at most). */
+function setup(
+	options: {
+		prepare?: (file: File) => Promise<{ blob: Blob; extension: "webp" | "jpg" }>;
+		pictures?: Record<string, string>;
+	} = {},
+) {
 	const { api } = fixture();
+	const current = new Map<string, string>();
+	const objects = new Map<string, { bytes: string; createdAt: string }>();
+	for (const [userId, text] of Object.entries(options.pictures ?? {})) {
+		current.set(userId, nameOf(userId, text));
+		objects.set(nameOf(userId, text), { bytes: text, createdAt: "2026-09-24T05:00:00Z" });
+	}
 	const store = new MemberPictures(api, {
 		prepare: options.prepare ?? (async () => ({ blob: blob("new"), extension: "webp" })),
+		now: () => NOW,
 	});
 	setPersonPictures(store);
-	const upload = vi.spyOn(api, "uploadMemberPicture").mockResolvedValue();
+	const list = vi
+		.spyOn(api, "listMemberPictures")
+		.mockImplementation(async (ids) =>
+			ids
+				.filter((userId) => current.has(userId))
+				.map((userId) => ({ userId, objectName: current.get(userId)!, updatedAt: "2026-09-24T05:00:00Z" })),
+		);
 	const download = vi.spyOn(api, "downloadMemberPicture").mockImplementation(async (name) => {
-		if (name.includes(sha("mine"))) return blob("mine");
-		if (name.includes(sha("theirs"))) return blob("theirs");
-		throw new Error("No such picture");
+		const object = objects.get(name);
+		if (!object) throw new Error("No such picture");
+		return blob(object.bytes);
 	});
-	const remove = vi.spyOn(api, "deleteMemberPicture").mockResolvedValue();
-	return { api, store, upload, download, remove };
+	const upload = vi.spyOn(api, "uploadMemberPicture").mockImplementation(async (name, bytes) => {
+		if (objects.has(name)) return false;
+		const folder = name.slice(0, name.indexOf("/") + 1);
+		if ([...objects.keys()].filter((key) => key.startsWith(folder)).length >= 4)
+			throw Object.assign(new Error("new row violates row-level security policy"), { statusCode: "403" });
+		objects.set(name, { bytes: await bytes.text(), createdAt: new Date(NOW).toISOString() });
+		return true;
+	});
+	const set = vi.spyOn(api, "setMemberPicture").mockImplementation(async (name) => {
+		if (!objects.has(name)) throw new Error("upload the picture before choosing it");
+		const previous = current.get(me);
+		current.set(me, name);
+		return previous && previous !== name ? { previousObjectName: previous } : {};
+	});
+	const clear = vi.spyOn(api, "clearMemberPicture").mockImplementation(async () => {
+		const previous = current.get(me);
+		current.delete(me);
+		return previous ? { previousObjectName: previous } : {};
+	});
+	vi.spyOn(api, "listOwnMemberPictureObjects").mockImplementation(async (userId) =>
+		[...objects.entries()]
+			.filter(([name]) => name.startsWith(`${userId}/`))
+			.map(([objectName, object]) => ({ objectName, createdAt: object.createdAt })),
+	);
+	vi.spyOn(api, "deleteMemberPicture").mockImplementation(async (name) => {
+		objects.delete(name);
+	});
+	return { api, store, current, objects, list, download, upload, set, clear };
 }
 
 describe("member picture parsing", () => {
@@ -89,10 +133,7 @@ describe("member pictures on initials discs", () => {
 	});
 
 	it("reads every disc of one moment in one call and lays each picture over its disc", async () => {
-		const { api, download } = setup();
-		const list = vi
-			.spyOn(api, "listMemberPictures")
-			.mockResolvedValue([pictureOf(me, "mine"), pictureOf(colleague, "theirs")]);
+		const { list, download } = setup({ pictures: { [me]: "mine", [colleague]: "theirs" } });
 		const discs = [
 			personAvatar("Account A", me),
 			personAvatar("Colleague", colleague),
@@ -117,8 +158,7 @@ describe("member pictures on initials discs", () => {
 	});
 
 	it("refuses bytes that do not match the picture's name", async () => {
-		const { api, download } = setup();
-		vi.spyOn(api, "listMemberPictures").mockResolvedValue([pictureOf(me, "mine")]);
+		const { download } = setup({ pictures: { [me]: "mine" } });
 		download.mockResolvedValue(blob("tampered"));
 		const disc = personAvatar("Account A", me);
 		await settle();
@@ -126,11 +166,11 @@ describe("member pictures on initials discs", () => {
 	});
 
 	it("shows no change control while the cloud has no member pictures", async () => {
-		const { api, store } = setup();
-		vi.spyOn(api, "listMemberPictures").mockRejectedValue(
+		const { store, list } = setup();
+		list.mockRejectedValue(
 			new CloudRpcError("qorpera_member_pictures", { message: "missing", code: "PGRST202" }, 404),
 		);
-		const control = accountPicture(userA, () => {});
+		const { picture: control } = accountPicture(userA);
 		expect(control.querySelector("button")?.disabled).toBe(true);
 		await settle();
 		expect(store.status(me)).toBe("unavailable");
@@ -139,20 +179,21 @@ describe("member pictures on initials discs", () => {
 		// Nothing else asks once the cloud said so.
 		personAvatar("Colleague", colleague);
 		await settle();
-		expect(api.listMemberPictures).toHaveBeenCalledTimes(1);
+		expect(list).toHaveBeenCalledTimes(1);
 	});
 
 	it("forgets every picture when the account changes, including reads still on their way", async () => {
-		const { api, store } = setup();
-		const read = deferred<ReturnType<typeof pictureOf>[]>();
-		const list = vi.spyOn(api, "listMemberPictures").mockReturnValueOnce(read.promise);
+		const { store, list } = setup({ pictures: { [me]: "mine" } });
+		const read = deferred<Awaited<ReturnType<typeof list>>>();
+		list.mockReturnValueOnce(read.promise);
 		const disc = personAvatar("Account A", me);
 		await settle();
+		const epoch = personPicturesEpoch();
 		store.reset();
-		read.resolve([pictureOf(me, "mine")]);
+		expect(personPicturesEpoch()).toBe(epoch + 1);
+		read.resolve([{ userId: me, objectName: nameOf(me, "mine"), updatedAt: "2026-09-24T05:00:00Z" }]);
 		await settle();
 		expect(picture(disc)).toBeNull();
-		list.mockResolvedValue([pictureOf(me, "mine")]);
 		const next = personAvatar("Account A", me);
 		await settle();
 		expect(picture(next)).not.toBeNull();
@@ -161,13 +202,9 @@ describe("member pictures on initials discs", () => {
 
 describe("choosing the account's picture", () => {
 	it("uploads the square under its hash, makes it the picture, repaints every disc and deletes the old one", async () => {
-		const { api, store, upload, remove } = setup();
-		vi.spyOn(api, "listMemberPictures").mockResolvedValue([pictureOf(me, "mine")]);
-		const set = vi
-			.spyOn(api, "setMemberPicture")
-			.mockResolvedValue({ previousObjectName: pictureOf(me, "mine").objectName });
+		const { store, objects, current, upload, set } = setup({ pictures: { [me]: "mine" } });
 		const chip = document.createElement("span");
-		const control = accountPicture(userA, () => {});
+		const { picture: control } = accountPicture(userA);
 		store.attach(chip, me);
 		document.body.append(control, chip);
 		await settle();
@@ -176,11 +213,13 @@ describe("choosing the account's picture", () => {
 		control.querySelector(".person-avatar")!.addEventListener(PERSON_PICTURE_EVENT, events);
 
 		await store.choose(me, new File(["photo"], "photo.heic", { type: "image/heic" }));
+		await settle();
 
-		const name = `${me}/${sha("new")}.webp`;
+		const name = nameOf(me, "new");
 		expect(upload).toHaveBeenCalledWith(name, expect.any(Blob));
 		expect(set).toHaveBeenCalledWith(name);
-		expect(remove).toHaveBeenCalledWith(pictureOf(me, "mine").objectName);
+		expect(current.get(me)).toBe(name);
+		expect([...objects.keys()]).toEqual([name]);
 		expect(picture(chip)!.getAttribute("src")).not.toBe(before);
 		expect(picture(control.querySelector(".person-avatar")!)!.getAttribute("src")).toBe(
 			picture(chip)!.getAttribute("src"),
@@ -188,43 +227,97 @@ describe("choosing the account's picture", () => {
 		expect(revoked).toContain(before);
 		expect(events).toHaveBeenCalled();
 		expect(store.busy(me)).toBe(false);
+		expect(store.failure(me)).toBeUndefined();
 	});
 
-	it("removes an upload that never became the picture", async () => {
-		const { api, store, remove } = setup();
-		vi.spyOn(api, "listMemberPictures").mockResolvedValue([]);
-		vi.spyOn(api, "setMemberPicture").mockRejectedValue(new Error("offline"));
+	it("removes an upload the cloud refused to make the picture, and keeps the reason", async () => {
+		const { store, objects, set } = setup({ pictures: { [me]: "mine" } });
+		const refusal = new CloudRpcError("qorpera_set_member_picture", { message: "denied", code: "42501" }, 403);
+		set.mockRejectedValue(refusal);
 		personAvatar("Account A", me);
 		await settle();
-		await expect(store.choose(me, new File(["photo"], "photo.png", { type: "image/png" }))).rejects.toThrow(
-			"offline",
-		);
-		expect(remove).toHaveBeenCalledWith(`${me}/${sha("new")}.webp`);
-		expect(store.status(me)).toBe("none");
+		await expect(store.choose(me, photo())).rejects.toBe(refusal);
+		await settle();
+		expect([...objects.keys()]).toEqual([nameOf(me, "mine")]);
+		expect(store.status(me)).toBe("picture");
+		expect(store.failure(me)).toBe(refusal);
+	});
+
+	it("keeps an upload that became the picture although the answer was lost", async () => {
+		const { store, objects, current, set } = setup({ pictures: { [me]: "mine" } });
+		set.mockImplementation(async (name) => {
+			current.set(me, name);
+			throw new Error("Failed to fetch");
+		});
+		personAvatar("Account A", me);
+		await settle();
+		await expect(store.choose(me, photo())).rejects.toThrow("Failed to fetch");
+		await settle();
+		expect(objects.has(nameOf(me, "new"))).toBe(true);
+	});
+
+	it("never deletes the current picture when the same bytes are chosen again and saving fails", async () => {
+		const { store, objects, set, download } = setup({ pictures: { [me]: "new" } });
+		// Its first read failed, so the store does not know this is the current picture.
+		download.mockRejectedValueOnce(new Error("offline"));
+		personAvatar("Account A", me);
+		await settle();
+		expect(store.status(me)).toBe("failed");
+		set.mockRejectedValue(new Error("offline"));
+		await expect(store.choose(me, photo())).rejects.toThrow("offline");
+		await settle();
+		expect(objects.has(nameOf(me, "new"))).toBe(true);
+	});
+
+	it("tidies a folder full of uploads never chosen, then stores the new picture", async () => {
+		const { store, objects, current, upload } = setup({ pictures: { [me]: "mine" } });
+		for (const text of ["a", "b", "c"])
+			objects.set(nameOf(me, text), { bytes: text, createdAt: new Date(NOW).toISOString() });
+		personAvatar("Account A", me);
+		await settle();
+		await store.choose(me, photo());
+		await settle();
+		expect(upload).toHaveBeenCalledTimes(2);
+		expect(current.get(me)).toBe(nameOf(me, "new"));
+		expect([...objects.keys()]).toEqual([nameOf(me, "new")]);
+	});
+
+	it("leaves a young upload of another tab alone when tidying after a change", async () => {
+		const { store, objects } = setup({ pictures: { [me]: "mine" } });
+		const otherTab = nameOf(me, "other tab");
+		objects.set(otherTab, { bytes: "other tab", createdAt: new Date(NOW - 10_000).toISOString() });
+		const old = nameOf(me, "old attempt");
+		objects.set(old, { bytes: "old attempt", createdAt: new Date(NOW - 600_000).toISOString() });
+		personAvatar("Account A", me);
+		await settle();
+		await store.choose(me, photo());
+		await settle();
+		expect(objects.has(otherTab)).toBe(true);
+		expect(objects.has(old)).toBe(false);
+		expect(objects.has(nameOf(me, "mine"))).toBe(false);
+		expect(objects.has(nameOf(me, "new"))).toBe(true);
 	});
 
 	it("goes back to initials and deletes the removed picture", async () => {
-		const { api, store, remove } = setup();
-		vi.spyOn(api, "listMemberPictures").mockResolvedValue([pictureOf(me, "mine")]);
-		vi.spyOn(api, "clearMemberPicture").mockResolvedValue({ previousObjectName: pictureOf(me, "mine").objectName });
+		const { store, objects } = setup({ pictures: { [me]: "mine" } });
 		const disc = personAvatar("Account A", me);
 		await settle();
 		expect(picture(disc)).not.toBeNull();
 		await store.remove(me);
+		await settle();
 		expect(picture(disc)).toBeNull();
 		expect(disc.classList.contains("has-picture")).toBe(false);
-		expect(remove).toHaveBeenCalledWith(pictureOf(me, "mine").objectName);
+		expect(objects.size).toBe(0);
 		expect(store.status(me)).toBe("none");
 	});
 
 	it("keeps a new picture when an older read of it arrives later", async () => {
-		const { api, store } = setup();
-		const read = deferred<ReturnType<typeof pictureOf>[]>();
-		vi.spyOn(api, "listMemberPictures").mockReturnValueOnce(read.promise);
-		vi.spyOn(api, "setMemberPicture").mockResolvedValue({});
+		const { store, list } = setup();
+		const read = deferred<Awaited<ReturnType<typeof list>>>();
+		list.mockReturnValueOnce(read.promise);
 		const disc = personAvatar("Account A", me);
 		await settle();
-		await store.choose(me, new File(["photo"], "photo.png", { type: "image/png" }));
+		await store.choose(me, photo());
 		const chosen = picture(disc)!.getAttribute("src");
 		read.resolve([]);
 		await settle();
@@ -233,16 +326,13 @@ describe("choosing the account's picture", () => {
 });
 
 describe("the account card's picture control", () => {
-	it("opens the file chooser when there is no picture, and reports a picture the browser cannot read", async () => {
-		const failed = vi.fn();
-		const { api } = setup({
-			prepare: async () => {
-				throw new PictureFileError("This browser could not read that picture. Try a JPEG or PNG.");
-			},
+	it("opens the file chooser when there is no picture, and shows why a picture failed until the next try", async () => {
+		const prepare = vi.fn(async (_file: File): Promise<{ blob: Blob; extension: "webp" | "jpg" }> => {
+			throw new PictureFileError("This browser could not read that picture. Try a JPEG or PNG.");
 		});
-		vi.spyOn(api, "listMemberPictures").mockResolvedValue([]);
-		const control = accountPicture(userA, failed);
-		document.body.append(control);
+		const { store } = setup({ prepare });
+		const { picture: control, error } = accountPicture(userA);
+		document.body.append(control, error);
 		await settle();
 		const trigger = control.querySelector<HTMLButtonElement>(".account-picture-button")!;
 		const input = control.querySelector<HTMLInputElement>("input[type=file]")!;
@@ -250,26 +340,38 @@ describe("the account card's picture control", () => {
 		expect(trigger.getAttribute("aria-label")).toBe("Add a profile picture");
 		expect(trigger.hasAttribute("aria-haspopup")).toBe(false);
 		expect(input.accept).toBe("image/*");
+		expect(error.hidden).toBe(true);
 		const chooser = vi.spyOn(input, "click").mockImplementation(() => {});
 		trigger.click();
 		expect(chooser).toHaveBeenCalledTimes(1);
 		expect(control.querySelector<HTMLElement>("[role=menu]")!.hidden).toBe(true);
 
-		Object.defineProperty(input, "files", { value: [new File(["x"], "x.tiff", { type: "image/tiff" })] });
+		Object.defineProperty(input, "files", {
+			configurable: true,
+			value: [new File(["x"], "x.tiff", { type: "image/tiff" })],
+		});
 		input.dispatchEvent(new Event("change"));
 		await settle();
-		expect(failed).toHaveBeenCalledWith("This browser could not read that picture. Try a JPEG or PNG.");
+		expect(error.hidden).toBe(false);
+		expect(error.textContent).toBe("This browser could not read that picture. Try a JPEG or PNG.");
+		// A page drawn again keeps showing it.
+		expect(accountPicture(userA).error.textContent).toBe(error.textContent);
+
+		prepare.mockResolvedValue({ blob: blob("new"), extension: "webp" });
+		const choosing = store.choose(me, photo());
+		expect(error.hidden).toBe(true);
+		await choosing;
 	});
 
 	it("offers another picture or initials from a menu once there is a picture; Escape closes only the menu", async () => {
-		const { api } = setup();
-		vi.spyOn(api, "listMemberPictures").mockResolvedValue([pictureOf(me, "mine")]);
-		const clear = vi.spyOn(api, "clearMemberPicture").mockResolvedValue({});
-		const control = accountPicture(userA, () => {});
+		const { clear } = setup({ pictures: { [me]: "mine" } });
+		const { picture: control } = accountPicture(userA);
 		document.body.append(control);
 		await settle();
 		const trigger = control.querySelector<HTMLButtonElement>(".account-picture-button")!;
 		const menu = control.querySelector<HTMLElement>("[role=menu]")!;
+		const input = control.querySelector<HTMLInputElement>("input[type=file]")!;
+		const chooser = vi.spyOn(input, "click").mockImplementation(() => {});
 		expect(trigger.getAttribute("aria-label")).toBe("Change profile picture");
 		expect(trigger.getAttribute("aria-haspopup")).toBe("menu");
 
@@ -291,6 +393,12 @@ describe("the account card's picture control", () => {
 		expect(document.activeElement).toBe(trigger);
 
 		trigger.click();
+		items[0]!.click();
+		expect(chooser).toHaveBeenCalledTimes(1);
+		expect(menu.hidden).toBe(true);
+		expect(document.activeElement).toBe(trigger);
+
+		trigger.click();
 		items[1]!.click();
 		await settle();
 		expect(clear).toHaveBeenCalledTimes(1);
@@ -298,14 +406,26 @@ describe("the account card's picture control", () => {
 		expect(trigger.getAttribute("aria-label")).toBe("Add a profile picture");
 	});
 
-	it("disables itself while a change is on its way", async () => {
-		const { api, store } = setup();
-		vi.spyOn(api, "listMemberPictures").mockResolvedValue([]);
-		const saved = deferred<{ previousObjectName?: string }>();
-		vi.spyOn(api, "setMemberPicture").mockReturnValue(saved.promise);
-		const control = accountPicture(userA, () => {});
+	it("offers both choices when the picture could not be read", async () => {
+		const { download } = setup({ pictures: { [me]: "mine" } });
+		download.mockRejectedValue(new Error("offline"));
+		const { picture: control } = accountPicture(userA);
+		document.body.append(control);
 		await settle();
-		const choosing = store.choose(me, new File(["photo"], "photo.png", { type: "image/png" }));
+		const trigger = control.querySelector<HTMLButtonElement>(".account-picture-button")!;
+		expect(trigger.disabled).toBe(false);
+		expect(trigger.getAttribute("aria-haspopup")).toBe("menu");
+		trigger.click();
+		expect(control.querySelector<HTMLElement>("[role=menu]")!.hidden).toBe(false);
+	});
+
+	it("disables itself while a change is on its way", async () => {
+		const { store, set } = setup();
+		const saved = deferred<{ previousObjectName?: string }>();
+		set.mockReturnValue(saved.promise);
+		const { picture: control } = accountPicture(userA);
+		await settle();
+		const choosing = store.choose(me, photo());
 		await settle();
 		const trigger = control.querySelector<HTMLButtonElement>(".account-picture-button")!;
 		expect(trigger.disabled).toBe(true);

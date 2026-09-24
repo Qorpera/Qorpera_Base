@@ -3,6 +3,7 @@ import { CloudRpcError } from "../cloud/client.ts";
 import { memberPictureName } from "../cloud/member-pictures.ts";
 import { UUID_PATTERN } from "../cloud/parse.ts";
 import {
+	forgetPersonPictures,
 	PERSON_PICTURE_EVENT,
 	type PersonPictureStatus,
 	type PersonPictureStore,
@@ -27,6 +28,8 @@ type Entry =
 const RETRY_MS = 60_000;
 /** The cloud answers at most 200 accounts per read. */
 const BATCH = 100;
+/** An upload younger than this may be another tab's, about to become the picture. */
+const TIDY_GRACE_MS = 120_000;
 
 export interface MemberPicturesOptions {
 	prepare?: (file: File) => Promise<PreparedPicture>;
@@ -46,6 +49,7 @@ export class MemberPictures implements PersonPictureStore {
 	/** False once the cloud has said it has no member pictures (not deployed there yet). */
 	#available: boolean | undefined;
 	#busy: string | undefined;
+	#failure: { userId: string; error: unknown } | undefined;
 
 	constructor(api: CloudApi, options: MemberPicturesOptions = {}) {
 		this.#api = api;
@@ -72,36 +76,39 @@ export class MemberPictures implements PersonPictureStore {
 		if (this.#available === false) return "unavailable";
 		const entry = this.#entries.get(rawUserId.toLowerCase());
 		if (!entry || entry.kind === "loading") return "loading";
-		// A picture that failed to load can still be replaced or removed.
-		return entry.kind === "failed" ? "none" : entry.kind;
+		return entry.kind;
 	}
 
 	busy(rawUserId: string): boolean {
 		return this.#busy === rawUserId.toLowerCase();
 	}
 
+	failure(rawUserId: string): unknown {
+		return this.#failure?.userId === rawUserId.toLowerCase() ? this.#failure.error : undefined;
+	}
+
 	async choose(rawUserId: string, file: File): Promise<void> {
 		const userId = this.#begin(rawUserId);
 		const generation = this.#generation;
-		let uploaded: string | undefined;
+		let created: string | undefined;
 		try {
 			const picture = await this.#prepare(file);
 			const objectName = memberPictureName(userId, await pictureSha256(picture.blob), picture.extension);
 			this.#current(generation);
-			await this.#api.uploadMemberPicture(objectName, picture.blob);
-			uploaded = objectName;
+			if (await this.#upload(userId, objectName, picture.blob, generation)) created = objectName;
 			this.#current(generation);
 			const change = await this.#api.setMemberPicture(objectName);
-			uploaded = undefined;
 			this.#current(generation);
 			this.#show(userId, { kind: "picture", objectName, url: URL.createObjectURL(picture.blob) });
 			if (change.previousObjectName && change.previousObjectName !== objectName)
-				this.#discard(change.previousObjectName);
+				void this.#tidy(userId, [change.previousObjectName], generation);
+		} catch (error) {
+			this.#fail(userId, generation, error);
+			// An upload this call stored goes again, unless the cloud says it became
+			// the picture after all (an answer lost on the way back).
+			if (created) void this.#tidy(userId, [created], generation);
+			throw error;
 		} finally {
-			// An upload that never became the picture is removed, unless it is the
-			// current picture uploaded again.
-			const entry = this.#entries.get(userId);
-			if (uploaded && !(entry?.kind === "picture" && entry.objectName === uploaded)) this.#discard(uploaded);
 			this.#end(userId, generation);
 		}
 	}
@@ -113,7 +120,10 @@ export class MemberPictures implements PersonPictureStore {
 			const change = await this.#api.clearMemberPicture();
 			this.#current(generation);
 			this.#show(userId, { kind: "none" });
-			if (change.previousObjectName) this.#discard(change.previousObjectName);
+			if (change.previousObjectName) void this.#tidy(userId, [change.previousObjectName], generation);
+		} catch (error) {
+			this.#fail(userId, generation, error);
+			throw error;
 		} finally {
 			this.#end(userId, generation);
 		}
@@ -130,6 +140,8 @@ export class MemberPictures implements PersonPictureStore {
 		this.#flushing = false;
 		this.#available = undefined;
 		this.#busy = undefined;
+		this.#failure = undefined;
+		forgetPersonPictures();
 		for (const set of elements)
 			for (const ref of set) {
 				const element = ref.deref();
@@ -144,6 +156,7 @@ export class MemberPictures implements PersonPictureStore {
 		if (this.#busy) throw new Error("Your picture is still being changed.");
 		const userId = rawUserId.toLowerCase();
 		this.#busy = userId;
+		this.#failure = undefined;
 		this.#announce(userId);
 		return userId;
 	}
@@ -152,6 +165,48 @@ export class MemberPictures implements PersonPictureStore {
 		if (generation !== this.#generation) return;
 		this.#busy = undefined;
 		this.#announce(userId);
+	}
+
+	#fail(userId: string, generation: number, error: unknown): void {
+		if (generation === this.#generation) this.#failure = { userId, error };
+	}
+
+	/** Stores the picture. A folder full of uploads never chosen is tidied once, then tried again. */
+	async #upload(userId: string, objectName: string, blob: Blob, generation: number): Promise<boolean> {
+		try {
+			return await this.#api.uploadMemberPicture(objectName, blob);
+		} catch (error) {
+			const refused = error as { statusCode?: unknown; message?: unknown };
+			if (refused.statusCode !== "403" && !/row-level security/i.test(String(refused.message))) throw error;
+			await this.#tidy(userId, [], generation, 0);
+			this.#current(generation);
+			return this.#api.uploadMemberPicture(objectName, blob);
+		}
+	}
+
+	/** Deletes what in the member's folder is not their current picture: the named
+	 * objects at once, anything else once it is too old to be another tab's upload
+	 * on its way. The cloud names the current picture first, so it is never deleted;
+	 * if anything here fails, only storage is at stake. */
+	async #tidy(userId: string, named: string[], generation: number, graceMs = TIDY_GRACE_MS): Promise<void> {
+		try {
+			const current = (await this.#api.listMemberPictures([userId])).find(
+				(picture) => picture.userId === userId,
+			)?.objectName;
+			if (generation !== this.#generation) return;
+			const objects = await this.#api.listOwnMemberPictureObjects(userId);
+			if (generation !== this.#generation) return;
+			const cutoff = this.#now() - graceMs;
+			const stale = objects.filter(
+				(object) =>
+					object.objectName !== current &&
+					(named.includes(object.objectName) ||
+						(object.createdAt !== undefined && Date.parse(object.createdAt) <= cutoff)),
+			);
+			await Promise.all(stale.map((object) => this.#api.deleteMemberPicture(object.objectName).catch(() => {})));
+		} catch {
+			// Left for the next tidy.
+		}
 	}
 
 	#current(generation: number): void {
@@ -247,10 +302,5 @@ export class MemberPictures implements PersonPictureStore {
 			element.dispatchEvent(new CustomEvent(PERSON_PICTURE_EVENT));
 		}
 		if (!elements.size) this.#elements.delete(userId);
-	}
-
-	/** A replaced picture is its owner's to delete; if that fails it only costs storage. */
-	#discard(objectName: string): void {
-		void this.#api.deleteMemberPicture(objectName).catch(() => {});
 	}
 }

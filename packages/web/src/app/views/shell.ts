@@ -8,7 +8,7 @@ import { badge, button, confirmDialog, h, icon, initials, notice, replace } from
 import { groupChatAvatar, isGroupChat } from "../../ui/group-chat.ts";
 import { matchesKey } from "../../ui/keys.ts";
 import { nameDialog } from "../../ui/name-dialog.ts";
-import { attachPersonPicture } from "../../ui/person-pictures.ts";
+import { attachPersonPicture, personPicturesEpoch } from "../../ui/person-pictures.ts";
 import { presentationLocale, uiText } from "../../ui/preferences.ts";
 import { quietScroll } from "../../ui/quiet-scroll.ts";
 import { RailDrag, type RailDrop } from "../../ui/rail-drag.ts";
@@ -121,7 +121,14 @@ function accountMenuElement(context: ShellContext, company?: CompanyController):
 	accountMenu.classList.toggle("account-menu-rail", Boolean(company));
 	accountContext = context;
 	const name = displayName(context.user);
-	const shown = JSON.stringify([name, context.user?.id, context.invitations, Boolean(company), presentationLocale()]);
+	const shown = JSON.stringify([
+		name,
+		context.user?.id,
+		personPicturesEpoch(),
+		context.invitations,
+		Boolean(company),
+		presentationLocale(),
+	]);
 	if (shown === accountShown) return accountMenu;
 	accountTrigger!.setAttribute("aria-label", `Profile: ${name}`);
 	accountTrigger!.title = name;

@@ -14,6 +14,13 @@ const DANISH: Record<string, string> = {
 	Account: "Konto",
 	"Choose a new picture": "Vælg et nyt billede",
 	"Remove picture": "Fjern billede",
+	"Your picture could not be changed.": "Dit billede kunne ikke ændres.",
+	"Choose a picture file, such as a JPEG, PNG or WebP.": "Vælg en billedfil, for eksempel JPEG, PNG eller WebP.",
+	"Choose a picture smaller than 25 MB.": "Vælg et billede, der er mindre end 25 MB.",
+	"This browser could not read that picture. Try a JPEG or PNG.":
+		"Browseren kunne ikke læse billedet. Prøv en JPEG eller PNG.",
+	"This browser cannot prepare pictures.": "Browseren kan ikke klargøre billeder.",
+	"That picture is too detailed to upload.": "Billedet er for detaljeret til at blive uploadet.",
 	"Plan & usage": "Abonnement og forbrug",
 	Plan: "Abonnement",
 	Usage: "Forbrug",
