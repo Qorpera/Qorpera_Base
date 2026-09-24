@@ -99,7 +99,8 @@ try {
 	const connection = parallelSetup.connection;
 	const auth = `set request.jwt.claims='{"role":"authenticated","sub":"${owner}"}'; set role authenticated;`;
 	const service = "set request.jwt.claims='{\"role\":\"service_role\"}';";
-	const companyStop = (paused) => `${auth} select public.qorpera_set_company_execution_pause('${profile}',${paused},'Review stop');`;
+	// The pause is an operator brake: the operator session acts with the founder's claims.
+	const companyStop = (paused) => `${auth} reset role; select public.qorpera_set_company_execution_pause('${profile}',${paused},'Review stop');`;
 	const stopEffect = (key) => parallelSetup.effect.replace("'review2-effect'", `'${key}'`);
 	const beforeStop = await begin(service + stopEffect("review3-before-stop"));
 	const oldSnapshot = await begin("set transaction isolation level repeatable read; select count(*) from public.qorpera_company_execution_pauses;");
@@ -142,12 +143,12 @@ try {
 	await commit(firstWake);
 	const secondAdmission = await secondWake.done;
 	assert.equal(secondAdmission.code, 0, secondAdmission.error);
-	assert.equal(JSON.parse(secondAdmission.output).status, "cancelled");
-	assert.equal(sql(`select public.qorpera_company_wakes_last_hour('${profile}')=(select wakes_per_hour from public.qorpera_company_execution_ceilings where profile_id='${profile}');`), "t");
-	report.concurrency.push("concurrent_schedule_admissions_share_one_company_wake_ceiling");
-	console.log("PASS concurrent schedule admissions serialize and reject the excess wake");
+	// There is no company wake ceiling (2026-09-24): the serialized second admission is queued too.
+	assert.equal(JSON.parse(secondAdmission.output).status, "queued");
+	report.concurrency.push("concurrent_schedule_admissions_serialize_without_a_company_wake_ceiling");
+	console.log("PASS concurrent schedule admissions serialize and both are admitted");
 	const staleWake = await begin("set transaction isolation level repeatable read; select count(*) from public.qorpera_company_wake_admission_fences;");
-	assert.equal(JSON.parse(sql(service + parallelSetup.schedule[2])).status, "cancelled");
+	assert.equal(JSON.parse(sql(service + parallelSetup.schedule[2])).status, "queued");
 	staleWake.child.stdin.end(`\\set VERBOSITY verbose\n${service} ${parallelSetup.schedule[3]}\ncommit;`);
 	const staleAdmission = await staleWake.done;
 	assert.notEqual(staleAdmission.code, 0); assert.match(staleAdmission.error, /40001/);

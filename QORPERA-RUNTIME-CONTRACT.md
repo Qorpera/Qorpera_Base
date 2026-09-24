@@ -467,6 +467,16 @@ usage limits and the usage-limit notification in section 17. Ratified
 2026-09-01 as a low-priority launch item: most members will run on
 subscriptions, which self-limit.
 
+> **Amended 2026-09-24.** The founder removed the company execution ceilings
+> as policy, not only from Settings: there is no per-company wake-rate, spend
+> or token ceiling, and no tripped-ceiling notice (bundle v89,
+> `20260924080000_runtime_remove_company_ceilings.sql`). What still bounds
+> work is the running-machine limit at machine start, each connection's own
+> quota at run admission, and the provider's usage limits (section 17). The
+> stop is no longer a member operation: it remains the operator brake that
+> pauses a company during a runtime cut (no new wakes, running work fenced),
+> and it notifies no one.
+
 ## 8. Wake bus
 
 Every activation enters through one durable, typed wake bus. A wake is admitted
@@ -2109,6 +2119,27 @@ gate before Order 5 is closed; coding, media and listener workers remain in
 Orders 9, 7 and 8. See
 [Runtime Step 5 workers and todos](deploy/first-node/RUNTIME-STEP-5-WORKERS-TODOS.md).
 
+### 2026-09-24 amendment: sidebar sections are the company's, and agents organize them
+
+Founder decision, 2026-09-24 (Grok Bot's rail). Extends 14.1 and the
+2026-09-19/20 amendment, item 4.
+
+1. **Sections are company structure.** The rail groups agents under named
+   sections. Sections and which agent sits in which, in what order, belong to
+   the company: every member sees the same sections, and owners, admins and
+   contributors create, rename and delete them and move agents between them.
+   The Co-Founder stands above all sections and is never placed.
+2. **Agents organize themselves.** Any active company agent may list, create,
+   rename and delete sections and move itself or a coworker between them
+   through its run authority (`organize_sidebar`), with no member approval, so
+   agents can keep the team findable as it grows. Worker runs do not. The
+   change is attributed to the agent and reaches open rails at once.
+3. **Pins and hiding are a member's own.** A member's pinned agents (square
+   cards under the Co-Founder card) and the agents a member hides from their
+   rail are that member's view only. No agent and no other member changes them.
+4. **Arrangement is not authority.** A section grants nothing and carries no
+   content; deleting one moves its agents to Unassigned.
+
 ## 20. Enforcement matrix
 
 | Requirement | Code owner | Model law |
@@ -2246,7 +2277,8 @@ while Azure backup/overflow remains disabled.
 30. A company's ceilings hold without agent cooperation: a deliberately
     runaway loop is stopped at its wake-rate or spend ceiling, the founder
     stop operation pauses the company, and the founder is notified from the
-    control plane.
+    control plane. (Amended 2026-09-24, see 7.4: only the machine limit and
+    the operator stop remain.)
 31. **Deferred post-build enablement gate, not a launch prerequisite:** before
     Azure backup/overflow is enabled, demand beyond local capacity is attributable
     to Azure placements and rented allocation intervals. The view distinguishes

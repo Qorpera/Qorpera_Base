@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mountApplication } from "../src/app/application.ts";
 import { LiveCompanyFileView } from "../src/app/views/live-company-file.ts";
 import { WebCompanyFiles } from "../src/cloud/company-files.ts";
-import { deferred, fixture, id, profileA, settle, team, userA, userB } from "./fixtures.ts";
+import { deferred, fixture, id, profileA, settle, team, userA, userB, visibleText } from "./fixtures.ts";
 
 const disposers: (() => void)[] = [];
 beforeEach(() => {
@@ -181,6 +181,19 @@ async function mount(f: Awaited<ReturnType<typeof setup>>) {
 	return view;
 }
 describe("product governed File boundary", () => {
+	it("says what is opening in its status line, outside the inert panel, until the panel has read the files", async () => {
+		const f = await setup();
+		const view = new LiveCompanyFileView(f.company, f.stop, profileA.profileId, "owner");
+		document.body.append(view.el);
+		disposers.push(() => view.dispose());
+		const status = view.el.querySelector("p[role=status]")!;
+		expect(status.querySelector(".visually-hidden")?.textContent).toBe("Opening Company File");
+		expect(visibleText(status)).toBe("");
+		expect(view.el.querySelector(".skeleton-list")).not.toBeNull();
+		await vi.waitFor(() => expect(button(view.el, "notes.txt")).toBeDefined());
+		await vi.waitFor(() => expect(status.textContent).toBe(""));
+		expect(view.el.querySelector(".skeleton")).toBeNull();
+	});
 	it("mounts the live File page, preserves a cancelled navigation draft, and drops edit controls on role downgrade", async () => {
 		const f = await setup(),
 			root = document.createElement("div");

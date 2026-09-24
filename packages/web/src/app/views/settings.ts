@@ -25,11 +25,10 @@ const TABS = [
 		keywords: "account appearance theme composer color colour blue green grey gray language region",
 	},
 	{
-		id: "plan",
-		label: "Plan & usage",
-		icon: "plan",
-		keywords:
-			"plan billing subscription usage storage trial upgrade price payment card invoices computer hours basis standard dedicated",
+		id: "company",
+		label: "Company",
+		icon: "company",
+		keywords: "people team members invitations staff file",
 	},
 	{
 		id: "friends",
@@ -38,10 +37,11 @@ const TABS = [
 		keywords: "people contacts requests add email invitations invites join accept decline",
 	},
 	{
-		id: "company",
-		label: "Company",
-		icon: "company",
-		keywords: "people team members invitations staff file",
+		id: "plan",
+		label: "Plan & usage",
+		icon: "plan",
+		keywords:
+			"plan billing subscription usage storage trial upgrade price payment card invoices computer hours basis standard dedicated",
 	},
 	{
 		id: "connections",
@@ -181,16 +181,8 @@ export class SettingsView {
 		this.updateProfiles(profiles);
 		void api
 			.getAccountEntitlement()
-			.then((entitlement) => {
-				this.#account = { loaded: true, entitlement };
-				this.#general();
-				if (this.#panels.has("plan")) this.#plan();
-			})
-			.catch((error) => {
-				this.#account = { loaded: true, error: describeError(error) };
-				this.#general();
-				if (this.#panels.has("plan")) this.#plan();
-			});
+			.then((entitlement) => this.#loadedAccount({ loaded: true, entitlement }))
+			.catch((error) => this.#loadedAccount({ loaded: true, error: describeError(error) }));
 		// The friends list also feeds the Company tab's invitation picker.
 		this.#friends.store.subscribe(() => {
 			if (this.#tab === "friends") this.#drawFriends();
@@ -360,6 +352,15 @@ export class SettingsView {
 			);
 		this.#content.setAttribute("aria-labelledby", `settings-tab-${tab}`);
 		replace(this.#content, panel);
+	}
+
+	/** General shows only the account's error and message, so it is redrawn only
+	 * when those change: a control in use keeps focus when the plan arrives. */
+	#loadedAccount(next: AccountViewState): void {
+		const redraw = next.error !== this.#account.error || next.message !== this.#account.message;
+		this.#account = next;
+		if (redraw) this.#general();
+		if (this.#panels.has("plan")) this.#plan();
 	}
 
 	#general(): void {

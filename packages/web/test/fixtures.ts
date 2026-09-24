@@ -1,7 +1,7 @@
 import type { AuthChangeEvent, Session, User } from "@supabase/supabase-js";
 import { vi } from "vitest";
 import { CloudApi } from "../src/cloud/api.ts";
-import type { Cloud } from "../src/cloud/client.ts";
+import { type Cloud, CloudRpcError } from "../src/cloud/client.ts";
 import type {
 	HostedCompanyFile,
 	HostedCompanyProposal,
@@ -226,6 +226,10 @@ export function fixture() {
 	vi.spyOn(api, "listSessions").mockResolvedValue([session]);
 	vi.spyOn(api, "getOrganization").mockResolvedValue(undefined);
 	vi.spyOn(api, "listStaffActivity").mockResolvedValue([]);
+	// A cloud without the sidebar RPCs: the rail shows one list, as before sections.
+	vi.spyOn(api, "readCompanySidebar").mockRejectedValue(
+		new CloudRpcError("qorpera_read_company_sidebar", { message: "missing", code: "PGRST202" }, 404),
+	);
 	vi.spyOn(api, "readSessionEvents").mockResolvedValue([]);
 	vi.spyOn(api, "listSessionInputs").mockResolvedValue({ items: [], hasMore: false, nextAfterPosition: 0 });
 	vi.spyOn(api, "listCodingSessions").mockResolvedValue([]);
@@ -250,4 +254,16 @@ export function fixture() {
 			authCallback?.(user ? "SIGNED_IN" : "SIGNED_OUT", getSession());
 		},
 	};
+}
+
+/** What the loading placeholder under `root` tells a screen reader. */
+export function placeholderLabel(root: ParentNode | null | undefined): string | undefined {
+	return root?.querySelector(".skeleton-group[role=status] > .visually-hidden")?.textContent ?? undefined;
+}
+
+/** The text a sighted member sees: everything except screen-reader-only text. */
+export function visibleText(element: Element | null | undefined): string {
+	const copy = element?.cloneNode(true) as Element | undefined;
+	for (const hidden of copy?.querySelectorAll(".visually-hidden") ?? []) hidden.remove();
+	return copy?.textContent ?? "";
 }

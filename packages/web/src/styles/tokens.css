@@ -54,6 +54,8 @@
 	--sidebar-hover: #dfdddc;
 	--sidebar-selection: #0e84ff;
 	--sidebar-selection-text: #ffffff;
+	/* loading placeholders: grey shapes where content will stand (ui/skeleton.ts) */
+	--skeleton: rgba(18, 18, 17, 0.07);
 
 	/* action color — send, links, focus, slider fill */
 	--primary: #171716;
@@ -141,6 +143,7 @@
 	--sidebar-divider: #333332;
 	--sidebar-vibrancy-tint: rgba(41, 41, 40, 0.32);
 	--sidebar-hover: #333332;
+	--skeleton: rgba(255, 255, 255, 0.07);
 
 	--primary: #edece9;
 	--primary-hover: #d7d6d2;

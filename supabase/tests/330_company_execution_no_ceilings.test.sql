@@ -1,9 +1,11 @@
--- Contract section 7.4: kernel-owned per-company spend and token ceilings for
--- sponsors without a provider-side usage wall, enforced at run admission by
--- the control plane, with trip evidence and founder notification. The company
--- fixture below reuses the real Company File, staff and session setup from
--- SQL320; the sponsor is a company API-billing connection, which has no
--- provider usage wall. No authority helper is replaced.
+-- No company execution ceilings (2026-09-24). A company has no monthly spend,
+-- monthly token or hourly wake ceiling: their tables, trip records and member
+-- RPCs are gone, and run admission holds only the sponsor's own quota. The
+-- company pause remains as an operator brake that members cannot call and
+-- that notifies no one. The company fixture reuses the real Company File,
+-- staff and session setup from SQL320; the sponsor is a company API-billing
+-- connection whose per-run reservation (300 USD) and token budget (110M) are
+-- both above the removed kernel defaults (250 USD, 100M tokens).
 begin;
 
 insert into auth.users(id,email) values
@@ -139,7 +141,7 @@ insert into public.qorpera_provider_connection_versions(connection_id,version,au
 	provider_account_reference,billing_source,consent_version,consented_by_user_id,allow_autonomous,quota_policy,created_by_user_id)
 values ('29000000-0000-4000-8000-000000000160',1,'api_key','api','secret://fixture/company-openai-api-key',null,
 	'company_api_billing','qorpera-company-api-consent/v1','29000000-0000-4000-8000-000000000001',false,
-	'{"monthly_microusd":100000000,"reservation_microusd":5000000,"max_calls_per_run":32,"max_input_tokens_per_run":2000000,"max_output_tokens_per_run":500000,"max_concurrent_runs":4}',
+	'{"monthly_microusd":1000000000,"reservation_microusd":300000000,"max_calls_per_run":32,"max_input_tokens_per_run":90000000,"max_output_tokens_per_run":20000000,"max_concurrent_runs":4}',
 	'29000000-0000-4000-8000-000000000001');
 insert into public.qorpera_execution_sponsor_bindings(id,profile_id,client_binding_id,status,created_by_user_id)
 values ('29000000-0000-4000-8000-000000000170','29000000-0000-4000-8000-000000000010','29000000-0000-4000-8000-000000000171',
@@ -149,7 +151,7 @@ insert into public.qorpera_execution_sponsor_versions(binding_id,version,sponsor
 values ('29000000-0000-4000-8000-000000000170',1,'company_api_billing','29000000-0000-4000-8000-000000000160',1,false,
 	'29000000-0000-4000-8000-000000000001');
 
-create function pg_temp.ceiling_turn(p_input uuid,p_request uuid)
+create function pg_temp.company_turn(p_input uuid,p_request uuid)
 returns jsonb language sql as $$
 	select public.qorpera_request_session_turn_v2(
 		'29000000-0000-4000-8000-000000000040',p_input,p_request,
@@ -159,142 +161,62 @@ returns jsonb language sql as $$
 		null,'managed_sandbox','agent_turn','agent_turn','automatic',null,'{}')
 $$;
 
--- Every company has ceilings: unconfigured companies report the kernel
--- default; only founders can change them, with exact version control.
-select pg_temp.path_claims('authenticated','29000000-0000-4000-8000-000000000001');
-set local role authenticated;
+-- The ceilings are gone as policy: no table, no trip record, no RPC, and no
+-- running function names them.
 do $$
-declare v_ceiling jsonb;
 begin
-	v_ceiling := public.qorpera_company_execution_ceiling_json('29000000-0000-4000-8000-000000000010');
-	if (v_ceiling ->> 'configured')::boolean or (v_ceiling ->> 'spend_microusd_per_period')::bigint <> 250000000
-		or (v_ceiling ->> 'tokens_per_period')::bigint <> 100000000 or (v_ceiling ->> 'version')::bigint <> 0
-		or (v_ceiling ->> 'spend_microusd_used')::bigint <> 0 or (v_ceiling ->> 'trips')::bigint <> 0 then
-		raise exception 'Unconfigured company did not report the kernel default ceiling'; end if;
-	begin
-		perform public.qorpera_set_company_execution_ceiling('29000000-0000-4000-8000-000000000010',1000000,100,7);
-		raise exception 'Stale ceiling version accepted';
-	exception when sqlstate 'PT412' then null; end;
-	v_ceiling := public.qorpera_set_company_execution_ceiling('29000000-0000-4000-8000-000000000010',1000000,100,0);
-	if not (v_ceiling ->> 'configured')::boolean or (v_ceiling ->> 'version')::bigint <> 1
-		or (v_ceiling ->> 'spend_microusd_per_period')::bigint <> 1000000 then
-		raise exception 'Founder ceiling was not recorded'; end if;
+	if to_regclass('public.qorpera_company_execution_ceilings') is not null
+		or to_regclass('public.qorpera_company_ceiling_trips') is not null
+		or to_regprocedure('public.qorpera_company_execution_ceiling(uuid)') is not null
+		or to_regprocedure('public.qorpera_company_execution_ceiling_json(uuid)') is not null
+		or to_regprocedure('public.qorpera_company_wakes_last_hour(uuid)') is not null
+		or to_regprocedure('public.qorpera_set_company_execution_ceiling(uuid,bigint,bigint,bigint,bigint)') is not null then
+		raise exception 'A company ceiling object still exists'; end if;
+	if exists (select 1 from pg_proc procedure join pg_namespace namespace on namespace.oid = procedure.pronamespace
+		where namespace.nspname = 'public' and (procedure.prosrc like '%ceiling_trips%'
+			or procedure.prosrc like '%qorpera_company_execution_ceiling%' or procedure.prosrc like '%wakes_last_hour%'
+			or procedure.prosrc like '%company-ceiling-tripped%')) then
+		raise exception 'A function still enforces or reports a company ceiling'; end if;
+	if exists (select 1 from pg_proc procedure join pg_namespace namespace on namespace.oid = procedure.pronamespace
+		where namespace.nspname = 'public'
+			and procedure.proname in ('qorpera_pin_wake_occurrence','qorpera_drain_worker_wakes')
+			and procedure.prosrc not like '%qorpera_company_execution_paused%') then
+		raise exception 'Wake admission lost the pause'; end if;
 end
 $$;
-select set_config('qorpera_test.ceiling_turn_1',pg_temp.ceiling_turn(
+
+-- A run whose reservation and token budget are both above the old kernel
+-- defaults is admitted with its exact reservation, and nobody is notified.
+select pg_temp.path_claims('authenticated','29000000-0000-4000-8000-000000000001');
+set local role authenticated;
+select set_config('qorpera_test.company_turn_1',pg_temp.company_turn(
 	'29000000-0000-4000-8000-000000000180','29000000-0000-4000-8000-000000000181')::text,true);
 reset role;
-select pg_temp.path_claims('authenticated','29000000-0000-4000-8000-000000000002');
-set local role authenticated;
-do $$
-begin
-	begin
-		perform public.qorpera_set_company_execution_ceiling('29000000-0000-4000-8000-000000000010',1,1,1);
-		raise exception 'Contributor changed the company ceiling';
-	exception when insufficient_privilege then null; end;
-end
-$$;
-reset role;
-
--- Admission refuses the run at the spend ceiling: no reservation, no run,
--- a durable trip record, and one notification to each founder from the
--- control plane. The contributor and viewer are not notified.
 select pg_temp.path_claims('service_role');
 set local role service_role;
 select public.qorpera_materialize_session_turn_requests(32);
 reset role;
 do $$
-declare v_request uuid := (current_setting('qorpera_test.ceiling_turn_1')::jsonb ->> 'turn_request_id')::uuid;
-begin
-	if not exists (select 1 from public.qorpera_session_turn_requests request
-		where request.id = v_request and request.status = 'failed' and request.failure_reason is not null)
-		or exists (select 1 from public.qorpera_execution_sponsor_reservations reservation
-			where reservation.profile_id = '29000000-0000-4000-8000-000000000010')
-		or exists (select 1 from public.qorpera_execution_runs run where run.source_id = v_request)
-		or (select count(*) from public.qorpera_company_ceiling_trips trip
-			where trip.profile_id = '29000000-0000-4000-8000-000000000010' and trip.dimension = 'spend'
-				and trip.attempted = 5000000 and trip.used = 0 and trip.ceiling = 1000000
-				and trip.period_start = date_trunc('month',statement_timestamp())) <> 1
-		or (select count(*) from public.qorpera_member_notifications notification
-			where notification.profile_id = '29000000-0000-4000-8000-000000000010'
-				and notification.kind = 'company_ceiling_tripped') <> 1
-		or not exists (select 1 from public.qorpera_member_notifications notification
-			where notification.user_id = '29000000-0000-4000-8000-000000000001'
-				and notification.kind = 'company_ceiling_tripped' and notification.acknowledged_at is null
-				and notification.subject ->> 'dimension' = 'spend'
-				and (notification.subject ->> 'connectionId')::uuid = '29000000-0000-4000-8000-000000000160'
-				and notification.subject::text !~ 'secret|api-key|token|prompt') then
-		raise exception 'Spend ceiling did not refuse admission with trip evidence and founder notification'; end if;
-end
-$$;
-
--- Raising the ceiling admits the next run; the reservation and its token
--- policy count against the period, and the ceiling view shows the use.
-select pg_temp.path_claims('authenticated','29000000-0000-4000-8000-000000000001');
-set local role authenticated;
-select public.qorpera_set_company_execution_ceiling('29000000-0000-4000-8000-000000000010',1000000000,100000000,1);
-select set_config('qorpera_test.ceiling_turn_2',pg_temp.ceiling_turn(
-	'29000000-0000-4000-8000-000000000182','29000000-0000-4000-8000-000000000183')::text,true);
-reset role;
-select pg_temp.path_claims('service_role');
-set local role service_role;
-select public.qorpera_materialize_session_turn_requests(32);
-reset role;
-do $$
-declare v_request uuid := (current_setting('qorpera_test.ceiling_turn_2')::jsonb ->> 'turn_request_id')::uuid;
+declare v_request uuid := (current_setting('qorpera_test.company_turn_1')::jsonb ->> 'turn_request_id')::uuid;
 begin
 	if not exists (select 1 from public.qorpera_execution_runs run
 		join public.qorpera_execution_sponsor_reservations reservation on reservation.run_id = run.id
-		where run.source_id = v_request and reservation.status = 'reserved' and reservation.reserved_microusd = 5000000
-			and reservation.provider_connection_id = '29000000-0000-4000-8000-000000000160')
-		or (select count(*) from public.qorpera_company_ceiling_trips trip
-			where trip.profile_id = '29000000-0000-4000-8000-000000000010') <> 1 then
-		raise exception 'Raised ceiling did not admit the run with an exact reservation'; end if;
+		join public.qorpera_runner_model_policies policy on policy.job_id = reservation.job_id
+		where run.source_id = v_request and reservation.status = 'reserved' and reservation.reserved_microusd = 300000000
+			and reservation.provider_connection_id = '29000000-0000-4000-8000-000000000160'
+			and policy.max_input_tokens + policy.max_output_tokens = 110000000)
+		or exists (select 1 from public.qorpera_member_notifications
+			where profile_id = '29000000-0000-4000-8000-000000000010') then
+		raise exception 'A run above the old company ceiling defaults was refused or notified'; end if;
 end
 $$;
-select pg_temp.path_claims('authenticated','29000000-0000-4000-8000-000000000001');
-set local role authenticated;
-do $$
-declare v_ceiling jsonb := public.qorpera_company_execution_ceiling_json('29000000-0000-4000-8000-000000000010');
-begin
-	if (v_ceiling ->> 'version')::bigint <> 2 or (v_ceiling ->> 'spend_microusd_used')::bigint <> 5000000
-		or (v_ceiling ->> 'tokens_used')::bigint <> 2500000 or (v_ceiling ->> 'trips')::bigint <> 1 then
-		raise exception 'Ceiling view did not reflect period use and trips'; end if;
-	if jsonb_array_length(public.qorpera_list_member_notifications('29000000-0000-4000-8000-000000000010')) <> 1 then
-		raise exception 'Founder did not receive exactly one ceiling notification'; end if;
-end
-$$;
-reset role;
--- Wake-rate trips are stamped with their hour, not with the month start; the founder's view counts them too,
--- and leaves out a trip from an earlier month.
-insert into public.qorpera_company_ceiling_trips(profile_id,run_id,period_start,dimension,attempted,used,ceiling) values
-	('29000000-0000-4000-8000-000000000010',extensions.gen_random_uuid(),date_trunc('hour',statement_timestamp()),'wakes',1,8,8),
-	('29000000-0000-4000-8000-000000000010',extensions.gen_random_uuid(),date_trunc('month',statement_timestamp()) - interval '3 days','wakes',1,8,8);
-select pg_temp.path_claims('authenticated','29000000-0000-4000-8000-000000000001');
-set local role authenticated;
-do $$
-begin
-	if (public.qorpera_company_execution_ceiling_json('29000000-0000-4000-8000-000000000010') ->> 'trips')::bigint <> 2 then
-		raise exception 'Ceiling view did not count the hourly wake trip inside the period'; end if;
-end
-$$;
-reset role;
-select pg_temp.path_claims('authenticated','29000000-0000-4000-8000-000000000002');
-set local role authenticated;
-do $$
-begin
-	if jsonb_array_length(public.qorpera_list_member_notifications('29000000-0000-4000-8000-000000000010')) <> 0 then
-		raise exception 'A non-founder member received a ceiling notification'; end if;
-end
-$$;
-reset role;
 
--- Native subscriptions bypass monetary sentinels, but API-billing connections
--- must still enforce their own monetary quota below a higher company ceiling.
--- The original run holds 5,000,000 units; concurrency still has three slots.
+-- Without company ceilings an API-billing connection still enforces its own
+-- monetary quota. The first run holds 300,000,000 units of a now 300,000,000
+-- monthly quota; concurrency still has three slots.
 insert into public.qorpera_provider_connection_versions
 select (jsonb_populate_record(null::public.qorpera_provider_connection_versions,
- to_jsonb(v)||jsonb_build_object('version',2,'quota_policy',v.quota_policy||'{"monthly_microusd":5000000}'::jsonb))).*
+ to_jsonb(v)||jsonb_build_object('version',2,'quota_policy',v.quota_policy||'{"monthly_microusd":300000000}'::jsonb))).*
 from public.qorpera_provider_connection_versions v
 where connection_id='29000000-0000-4000-8000-000000000160' and version=1;
 insert into public.qorpera_execution_sponsor_versions
@@ -331,21 +253,64 @@ begin
   or exists(select 1 from public.qorpera_execution_runs where source_id=v_request)
   or (select count(*) from public.qorpera_execution_sponsor_reservations
    where provider_connection_id='29000000-0000-4000-8000-000000000160' and status='reserved')<>1 then
-  raise exception 'API connection monetary quota was bypassed despite spare concurrency and company budget'; end if;
+  raise exception 'API connection monetary quota was bypassed despite spare concurrency'; end if;
 end $$;
 
+-- The pause is an operator brake. No API role may call it; an operator
+-- session acting with a founder's claims pauses and resumes as the runtime
+-- cut does, a contributor's claims are still refused, and no member is
+-- notified either way. The removed notice kinds are refused outright.
 do $$
 declare v_role text;
 begin
 	foreach v_role in array array['anon','authenticated','service_role'] loop
-		if has_table_privilege(v_role,'public.qorpera_company_execution_ceilings','SELECT,INSERT,UPDATE,DELETE')
-			or has_table_privilege(v_role,'public.qorpera_company_ceiling_trips','SELECT,INSERT,UPDATE,DELETE')
-			or has_function_privilege(v_role,'public.qorpera_company_execution_ceiling(uuid)','EXECUTE') then
-			raise exception 'Company ceiling table or helper exposed to %',v_role; end if;
+		if has_function_privilege(v_role,'public.qorpera_set_company_execution_pause(uuid,boolean,text)','EXECUTE') then
+			raise exception 'Company pause is callable by %',v_role; end if;
 	end loop;
-	if has_function_privilege('service_role','public.qorpera_set_company_execution_ceiling(uuid,bigint,bigint,bigint,bigint)','EXECUTE')
-		or not has_function_privilege('authenticated','public.qorpera_company_execution_ceiling_json(uuid)','EXECUTE') then
-		raise exception 'Company ceiling authority is exposed or unavailable'; end if;
+end
+$$;
+select pg_temp.path_claims('authenticated','29000000-0000-4000-8000-000000000001');
+set local role authenticated;
+do $$
+begin
+	perform public.qorpera_set_company_execution_pause('29000000-0000-4000-8000-000000000010',true,'member');
+	raise exception 'A member paused the company';
+exception when insufficient_privilege then null;
+end
+$$;
+reset role;
+do $$
+declare v_result jsonb;
+begin
+	v_result := public.qorpera_set_company_execution_pause('29000000-0000-4000-8000-000000000010',true,'runtime update');
+	if not (v_result ->> 'paused')::boolean or not (v_result ->> 'changed')::boolean
+		or not public.qorpera_company_execution_paused('29000000-0000-4000-8000-000000000010') then
+		raise exception 'Operator pause did not hold'; end if;
+	v_result := public.qorpera_set_company_execution_pause('29000000-0000-4000-8000-000000000010',false,'runtime update');
+	if (v_result ->> 'paused')::boolean or public.qorpera_company_execution_paused('29000000-0000-4000-8000-000000000010') then
+		raise exception 'Operator resume did not hold'; end if;
+	if exists (select 1 from public.qorpera_member_notifications where profile_id = '29000000-0000-4000-8000-000000000010') then
+		raise exception 'Pause or resume notified a member'; end if;
+end
+$$;
+select pg_temp.path_claims('authenticated','29000000-0000-4000-8000-000000000002');
+do $$
+begin
+	perform public.qorpera_set_company_execution_pause('29000000-0000-4000-8000-000000000010',true,'contributor');
+	raise exception 'A contributor paused the company';
+exception when insufficient_privilege then null;
+end
+$$;
+do $$
+declare v_kind text;
+begin
+	foreach v_kind in array array['company_execution_paused','company_execution_resumed'] loop
+		begin
+			insert into public.qorpera_member_notifications(profile_id,user_id,kind,subject,dedupe_key)
+			values ('29000000-0000-4000-8000-000000000010','29000000-0000-4000-8000-000000000001',v_kind,'{}','removed-kind');
+			raise exception 'Removed notice kind % was accepted',v_kind;
+		exception when check_violation then null; end;
+	end loop;
 end
 $$;
 set constraints all immediate;

@@ -98,6 +98,44 @@ label > input, label > select { font-weight: 400; }
 .spinner { display: flex; align-items: center; gap: 10px; color: var(--text-muted); padding: 16px 0; }
 .spinner-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--accent); animation: pulse 1s ease-in-out infinite; }
 @keyframes pulse { 0%, 100% { opacity: 0.25; transform: scale(0.8); } 50% { opacity: 1; transform: scale(1); } }
+
+/* Text for screen readers only, such as what a loading placeholder waits for. */
+.visually-hidden { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
+
+/* Loading placeholders (ui/skeleton.ts): grey shapes where content will stand,
+ * breathing on the document's clock (skeleton.ts aligns each shape as it starts). */
+.skeleton { display: block; flex: none; border-radius: 6px; background: var(--skeleton); animation: skeleton-breathe 1800ms ease-in-out infinite; }
+@keyframes skeleton-breathe { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
+@media (prefers-reduced-motion: reduce) { .skeleton { animation: none; } }
+.skeleton-disc { border-radius: 50%; }
+.skeleton-line { height: 12px; }
+.skeleton-line.skeleton-small { height: 10px; }
+.skeleton-stack { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.skeleton-w-28 { width: 28%; }
+.skeleton-w-34 { width: 34%; }
+.skeleton-w-40 { width: 40%; }
+.skeleton-w-46 { width: 46%; }
+.skeleton-w-52 { width: 52%; }
+.skeleton-w-58 { width: 58%; }
+.skeleton-w-62 { width: 62%; }
+.skeleton-w-84 { width: 84%; }
+.skeleton-w-92 { width: 92%; }
+.skeleton-title { width: min(38%, 280px); height: 26px; border-radius: 8px; }
+.skeleton-card { height: 64px; border-radius: 12px; }
+.skeleton-page { display: flex; flex-direction: column; gap: 18px; padding: 4px 0 16px; }
+.skeleton-page .skeleton-stack { gap: 10px; }
+.skeleton-lines { display: flex; flex-direction: column; gap: 10px; padding: 12px 0; }
+.skeleton-list { display: flex; flex-direction: column; gap: 4px; padding: 8px 0; }
+.skeleton-list-row { display: grid; grid-template-columns: 34px minmax(0, 1fr); align-items: center; gap: 12px; min-height: 52px; }
+.skeleton-list-figure { width: 34px; height: 34px; }
+/* The company list: cards of the real cards' size, a logo and two lines in each. */
+.skeleton-company-card {
+	display: flex; flex-direction: column; align-items: center; gap: 10px;
+	min-height: 286px; padding: 36px 20px 26px; border: 1px solid var(--border); border-radius: 26px;
+}
+.skeleton-company-logo { width: 104px; height: 104px; margin-bottom: 22px; }
+.skeleton-company-name { width: 55%; height: 20px; }
+.skeleton-company-meta { width: 40%; }
 .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
 .dot-ok { background: var(--ok); }
 .dot-warn { background: var(--warning); }
@@ -160,6 +198,30 @@ label > input, label > select { font-weight: 400; }
 .account-separator { height: 1px; flex: none; margin: 4px 6px; background: var(--border); }
 .account-signout { color: var(--text-muted); }
 
+/* Right-click menus (the rail's agents and sections), Grok Bot's shape. */
+.context-menu {
+	position: fixed; z-index: 700; min-width: 216px; max-width: 320px;
+	display: flex; flex-direction: column; gap: 1px; padding: 5px;
+	border: 1px solid var(--border); border-radius: 12px; background: var(--overlay);
+	box-shadow: 0 22px 48px rgba(11, 11, 11, 0.14), 0 2px 8px rgba(11, 11, 11, 0.06);
+	max-height: calc(100dvh - 16px); overflow-y: auto; overscroll-behavior: contain;
+}
+.context-menu:focus { outline: none; }
+.context-menu-item {
+	display: flex; flex: none; align-items: center; gap: 10px; width: 100%; padding: 7px 10px;
+	border: 0; border-radius: 8px; background: transparent; color: var(--text);
+	font: inherit; font-size: 13.5px; font-weight: 500; line-height: 18px; text-align: left; cursor: default;
+}
+.context-menu-item:hover, .context-menu-item:focus-visible, .context-menu-item.is-open { background: var(--hover); outline: none; }
+.context-menu-item .icon { width: 16px; height: 16px; flex: none; color: var(--text-soft); }
+.context-menu-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.context-menu-chevron { display: grid; margin-right: -3px; color: var(--text-soft); }
+.context-menu-chevron .icon { width: 14px; height: 14px; }
+.context-menu-item.danger, .context-menu-item.danger .icon { color: var(--danger); }
+.context-menu-separator { height: 1px; flex: none; margin: 4px 6px; background: var(--border); }
+.name-dialog-title { margin: 0; font-size: 16px; font-weight: 650; line-height: 22px; }
+.name-dialog-input { width: 100%; }
+
 /* rail */
 /* The V24 company rail. RailLayout sets its width on the rail and its edge, the only two
  * readers; not inheriting, a change never restyles what is inside the rail. */
@@ -174,7 +236,7 @@ label > input, label > select { font-weight: 400; }
 	/* The trailer's rail: 15px insets, a darker edge line than the other dividers. */
 	padding: 0 15px 11px; background: var(--rail); border-right: 1px solid var(--rail-line);
 	/* One figure size and one lift; every card measure below derives from them. */
-	--figure: 82px; --lift: 27px;
+	--figure: 82px; --lift: 37px;
 	font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
 }
 .rail[hidden] { display: none; }
@@ -208,8 +270,9 @@ label > input, label > select { font-weight: 400; }
 .rail-empty { padding: 14px 8px; color: var(--rail-small); font-size: 12.5px; }
 
 /* The Co-Founder occupies its own tier above the rest of the staff. Geometry
- * is the trailer's card at 1x: an 82px figure standing 27px proud of a low
- * card, a 13px name with no line under it, a soft shadow under the figure. */
+ * is the trailer's card at 1x, its top lowered 10px: an 82px figure standing
+ * 37px proud of a low card, a 13px name with no line under it, a soft shadow
+ * under the figure. The figure and the name keep their place in the rail. */
 .rail-cofounder { padding: calc(var(--lift) + 16px) 9px 18.5px; }
 .cofounder-home {
 	position: relative; display: flex; flex-direction: column; align-items: center; gap: 1px;
@@ -233,8 +296,66 @@ label > input, label > select { font-weight: 400; }
 .cofounder-home:hover .cofounder-status { border-color: var(--rail-hover); }
 .cofounder-home.active .cofounder-status { border-color: var(--rail-selection); }
 
-.rail-list { display: grid; gap: 0; }
-.rail-scroll > .rail-list:first-child { margin-top: 14px; }
+/* Pinned agents: this member's square cards right under the Co-Founder, centered as a
+ * group (Grok Bot's pinned row). */
+.rail-pinned {
+	display: flex; flex-wrap: wrap; justify-content: center; gap: 4px 6px;
+	padding: 0 0 10px; border-radius: 14px;
+}
+.rail-pinned.is-empty { display: none; }
+.rail-pin {
+	position: relative; flex: none; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 5px;
+	width: 86px; height: 86px; padding: 7px 5px 5px; border-radius: 12px; color: var(--text); text-align: center;
+	-webkit-touch-callout: none;
+}
+.rail-pin:hover { background: var(--rail-hover); text-decoration: none; }
+.rail-pin.active, .rail-pin.active:hover { background: var(--rail-selection); color: #fff; }
+.rail-pin-stand { position: relative; display: grid; place-items: center; width: 52px; height: 52px; }
+.rail-pin .figure { width: 52px; height: 52px; }
+.rail-pin-name { max-width: 100%; font-size: 11.5px; font-weight: 600; line-height: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rail-pin:hover .rail-row-status { border-color: var(--rail-hover); }
+.rail-pin.active .rail-row-status { border-color: var(--rail-selection); }
+.rail-drop-slot { display: none; }
+/* The company's sections: a quiet title over its agents. Unassigned carries the rest
+ * and the group chats; its title shows only once a section exists. */
+.rail-section { border-radius: 12px; }
+.rail-section-title {
+	padding: 12px 8px 5px; font-size: 12px; font-weight: 600; line-height: 16px; color: var(--rail-small);
+	overflow: hidden; text-overflow: ellipsis; white-space: nowrap; border-radius: 6px;
+	user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
+}
+.rail-section-title[hidden] { display: none; }
+.rail-section-title:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; }
+.rail-section-list { display: grid; gap: 0; }
+.rail-scroll > :is(.rail-section, .rail-pinned):first-child { margin-top: 14px; }
+.rail-row, .rail-pin, .cofounder-home { -webkit-touch-callout: none; }
+.rail-row.menu-open, .rail-pin.menu-open, .cofounder-home.menu-open { background: var(--rail-hover); }
+.rail-row.active.menu-open, .rail-pin.active.menu-open, .cofounder-home.active.menu-open { background: var(--rail-selection); }
+/* Dragging an agent: every place it can land is an invisible container; the one under
+ * the pointer lights up (no border) and a thin line shows where the agent lands. */
+.rail-scroll { position: relative; }
+.rail-dragging :is(.rail-section, .rail-pinned) { transition: background-color 120ms ease; }
+.rail-dragging [data-drop-zone].is-drop-target { background: var(--rail-hover); }
+.rail-dragging .rail-pinned.is-empty { display: flex; margin-bottom: 6px; padding: 0; }
+.rail-dragging .rail-pinned.is-empty .rail-drop-slot {
+	display: grid; flex: 1; place-items: center; height: 64px; color: var(--rail-small); font-size: 12px; font-weight: 550;
+}
+.rail-dragging .rail-section-list:empty { min-height: 44px; }
+.rail-dragging :is(.rail-row, .rail-pin):hover:not(.active) { background: transparent; }
+.is-drag-source { opacity: 0.28; }
+.rail-drag-ghost {
+	--rail: var(--sidebar-surface); --rail-hover: var(--sidebar-hover); --rail-selection: var(--composer-accent);
+	--rail-status: var(--agent-active); --rail-status-failed: #ff3b30;
+	position: fixed; left: 0; top: 0; z-index: 600; margin: 0; pointer-events: none;
+	background: var(--rail); border-radius: 12px; opacity: 0.96;
+	box-shadow: 0 14px 32px rgba(11, 11, 11, 0.18), 0 2px 8px rgba(11, 11, 11, 0.08);
+}
+.rail-drop-marker { position: absolute; z-index: 5; height: 2px; border-radius: 1px; background: var(--rail-selection); pointer-events: none; }
+.rail-drop-marker.vertical { width: 2px; }
+/* Dragged from the collapsed rail, the image is the figure alone, as the row shows it there. */
+.rail-drag-ghost.compact :is(.rail-row-copy, .rail-pin-name) { display: none; }
+.rail-drag-ghost.compact.rail-row { grid-template-columns: 1fr; justify-items: center; padding: 5px; }
+.rail-drag-active, .rail-drag-active * { cursor: grabbing !important; user-select: none; -webkit-user-select: none; }
 .rail-row {
 	--rail-row-figure: 40px;
 	display: grid; grid-template-columns: var(--rail-row-figure) minmax(0, 1fr); align-items: center; gap: 2px;
@@ -261,7 +382,7 @@ label > input, label > select { font-weight: 400; }
  * the caption rebuilds its letters when shown (conversation.css pauses it while hidden). */
 .status-wave-word { display: inline-block; max-width: 100%; }
 .status-wave-letter { display: inline-block; color: inherit; animation: status-ink-wave 1400ms ease-in-out infinite; animation-delay: var(--wave-delay, 0ms); }
-.rail-row.active, .cofounder-home.active { --status-crest: #fff; }
+.rail-row.active, .rail-pin.active, .cofounder-home.active { --status-crest: #fff; }
 @keyframes status-ink-wave {
 	0%, 10%, 50%, 100% { color: inherit; text-shadow: 0 0 0 transparent; }
 	30% { color: var(--status-crest, var(--text)); text-shadow: -.18px 0 0 currentColor, .18px 0 0 currentColor; }
@@ -277,8 +398,31 @@ label > input, label > select { font-weight: 400; }
 .rail-compact .cofounder-stand { top: 8px; }
 .rail-compact .cofounder-status { width: 16px; height: 16px; border-width: 2px; }
 .rail-compact .rail-row { grid-template-columns: 1fr; padding: 5px; justify-items: center; }
+/* Collapsed, the pinned cards are figures in the column and sections part with a hairline. */
+.rail-compact .rail-pinned { flex-direction: column; align-items: center; padding-bottom: 4px; }
+.rail-compact .rail-pin { width: auto; height: auto; padding: 5px; }
+.rail-compact .rail-pin-name, .rail-compact .rail-section-title { display: none; }
+.rail-compact .rail-pin-stand, .rail-compact .rail-pin .figure { width: 50px; height: 50px; }
+.rail-compact .rail-dragging .rail-pinned.is-empty .rail-drop-slot { height: 44px; font-size: 0; }
+.rail-compact .rail-section:not(:first-child) { margin-top: 4px; padding-top: 4px; border-top: 1px solid var(--rail-line); border-radius: 0; }
 .rail-compact .account-menu-rail .account-trigger { justify-content: center; }
 .rail-compact .account-menu-rail .account-popover { position: fixed; left: 8px; right: auto; bottom: 66px; width: 260px; z-index: 50; }
+/* The rail's placeholder (ui/skeleton.ts) stands on the real rail's geometry: the
+ * search field, the Co-Founder's tier, 63.75px agent rows and the account foot. */
+.skeleton-rail-search { flex: 1; height: var(--rail-control); margin: 0 calc(var(--rail-control) + 6px) 0 6px; border-radius: 9px; }
+.skeleton-rail-cofounder { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 19px 0 24.5px; }
+.skeleton-cofounder-figure { width: 76px; height: 76px; }
+.skeleton-cofounder-name { width: 72px; height: 13px; }
+.skeleton-rail-row { display: grid; grid-template-columns: 50px minmax(0, 1fr); align-items: center; gap: 10px; min-height: 63.75px; padding: 3px 8px 3px 12px; }
+.skeleton-rail-figure { width: 42px; height: 42px; justify-self: center; }
+.skeleton-rail-account { display: flex; align-items: center; gap: 10px; height: 53px; padding-inline: 8px; }
+.skeleton-account-chip { width: 30px; height: 30px; }
+.skeleton-account-name { width: 150px; max-width: 60%; }
+.rail-compact .skeleton-rail-search, .rail-compact .skeleton-cofounder-name, .rail-compact .skeleton-rail-row .skeleton-stack, .rail-compact .skeleton-account-name { display: none; }
+.rail-compact .skeleton-rail-cofounder { padding: 10px 0 9px; }
+.rail-compact .skeleton-cofounder-figure { width: 44px; height: 44px; }
+.rail-compact .skeleton-rail-row { grid-template-columns: 1fr; justify-items: center; padding: 5px; min-height: 0; }
+.rail-compact .skeleton-rail-account { justify-content: center; padding-inline: 0; }
 
 /* The profile menu opens upward from the foot of the rail. */
 .rail-footer { flex: none; padding-top: 5px; }
@@ -297,7 +441,7 @@ label > input, label > select { font-weight: 400; }
 .figure-canvas, .figure-fallback { position: absolute; inset: -6%; display: block; width: 112%; height: 112%; max-width: none; object-fit: contain; pointer-events: none; user-select: none; }
 .figure-canvas[hidden], .figure-fallback[hidden] { display: none; }
 @media (forced-colors: active) {
-	.cofounder-home.active, .rail-row.active { outline: 2px solid Highlight; }
+	.cofounder-home.active, .rail-row.active, .rail-pin.active { outline: 2px solid Highlight; }
 	/* Forced colours empty both discs into rings; the failed one stays filled. */
 	/* Under .rail so it outranks the hover and selected ring colours. */
 	.rail :is(.cofounder-status, .rail-row-status).failed { forced-color-adjust: none; background: CanvasText; border-color: Canvas; }
