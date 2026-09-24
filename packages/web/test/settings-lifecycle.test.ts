@@ -56,6 +56,7 @@ function open(root: Element) {
 }
 
 function confirmCompanyRemoval(root: Element, deleting: boolean, profile = profileA) {
+	expect(root.querySelector(".company-exit")?.textContent).toBe(deleting ? "Delete company" : "Leave company");
 	click(root, ".company-exit");
 	const dialog = document.querySelector('[role="alertdialog"]')!;
 	if (deleting) {
@@ -108,7 +109,7 @@ describe("settings session lifecycle", () => {
 				await draw();
 			}
 			expect(picker.value).toBe(selected.profileId);
-			// The picker names the company; the tab itself has no heading.
+			// The Company tab has no heading of its own.
 			expect(f.root.querySelector("#settings-content h1")).toBeNull();
 			expect(f.root.querySelector(`.settings-dialog a[href='#/c/${selected.profileId}/file']`)).not.toBeNull();
 			expect(f.cloud.rpc).not.toHaveBeenCalled();
@@ -241,6 +242,19 @@ describe("settings session lifecycle", () => {
 		expect(f.root.querySelector<HTMLDetailsElement>(".company-invite")!.open).toBe(true);
 		expect(f.root.querySelector<HTMLSelectElement>('[data-draft="invite-role"]')!.value).toBe("viewer");
 		expect(document.activeElement).toBe(f.root.querySelector('[data-draft="invite-role"]'));
+		search.value = "delete";
+		search.dispatchEvent(new Event("input"));
+		expect(
+			[...f.root.querySelectorAll<HTMLElement>(".settings-nav [role=tab]")]
+				.filter((tab) => !tab.hidden)
+				.map((tab) => tab.id),
+		).toEqual(["settings-tab-company"]);
+		const exit = f.root.querySelector<HTMLButtonElement>(".company-exit")!;
+		exit.focus();
+		f.hints.get("qorpera_profile_access_state")!();
+		await draw();
+		expect(f.root.querySelector(".company-exit")).not.toBe(exit);
+		expect(document.activeElement).toBe(f.root.querySelector(".company-exit"));
 		search.value = "";
 		search.dispatchEvent(new Event("input"));
 		click(f.root, "#settings-tab-general");
@@ -519,6 +533,8 @@ describe("settings session lifecycle", () => {
 		expect(f.api.getTeam).toHaveBeenCalledTimes(1);
 		expect(f.root.querySelector(".settings-team")!.textContent).toContain("Team temporarily unavailable");
 		expect(f.root.querySelector(".settings-team")!.textContent).not.toContain("Loading team");
+		// No Delete company while the team cannot be read; the empty slot hides.
+		expect(f.root.querySelector(".settings-company-exit")!.childElementCount).toBe(0);
 		[...f.root.querySelectorAll("button")].find((button) => button.textContent === "Retry company")!.click();
 		await draw();
 		expect(f.api.getTeam).toHaveBeenCalledTimes(2);

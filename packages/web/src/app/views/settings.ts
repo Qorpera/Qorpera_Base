@@ -30,7 +30,7 @@ const TABS = [
 		label: phrase("Company"),
 		icon: "company",
 		keywords:
-			"people team members invitations staff file virksomhed personer medlemmer invitationer agenter virksomhedsfilen roller",
+			"people team members invitations staff file delete leave virksomhed personer medlemmer invitationer agenter virksomhedsfilen roller slet forlad",
 	},
 	{
 		id: "friends",

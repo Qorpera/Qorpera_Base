@@ -351,10 +351,13 @@ export function renderTeam(
 		);
 		exit.classList.add("company-exit");
 	}
+	// The button is rebuilt on every company update; keep keyboard focus on it.
+	const exitFocused = (options.exit ?? container).querySelector(".company-exit") === document.activeElement;
 	if (options.exit) replace(options.exit, exit);
 	else if (exit) content.append(exit);
 	replace(container, content);
 	for (const details of container.querySelectorAll("details"))
 		details.open = openDetails.includes(details.querySelector("summary")?.textContent);
 	restore();
+	if (exitFocused) exit?.focus({ preventScroll: true });
 }
