@@ -417,9 +417,11 @@ export async function runCodingGuestCommand(
 				// and /dev/shm, which uid and file mode guard.
 				"--property=PrivateIPC=yes",
 				// Only this session under the machine's guest roots, also against
-				// sessions attached while the command runs.
+				// sessions attached while the command runs. Its roots are bound
+				// read-only: only the ReadWritePaths below are writable, so a command
+				// cannot rewrite an earlier command's log of the same session.
 				`--property=TemporaryFileSystem=${CLOUD_CODING_GUEST_ROOTS.data} ${CLOUD_CODING_GUEST_ROOTS.custody}`,
-				`--property=BindPaths=${layout.dataRoot} ${layout.custodyRoot}`,
+				`--property=BindReadOnlyPaths=${layout.dataRoot} ${layout.custodyRoot}`,
 				`--property=ReadWritePaths=${writablePaths.join(" ")}`,
 				"--property=StandardOutput=null",
 				// Only the helper's own fixed refusal line reaches stderr (the

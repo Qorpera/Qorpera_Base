@@ -193,6 +193,10 @@ describe("coding VM command supervisor", () => {
 		expect(command[1]).toContain("--property=ProtectProc=invisible");
 		// Another session's shared memory and message queues stay out of reach.
 		expect(command[1]).toContain("--property=PrivateIPC=yes");
+		// The session's roots are read-only; only its declared paths are writable.
+		expect(command[1].filter((argument) => /^--property=Bind/.test(argument))).toEqual([
+			`--property=BindReadOnlyPaths=/workspace/${f.request.workerId} /var/lib/qorpera-coding/${f.request.workerId}`,
+		]);
 		// The helper's own refusal line stays in the guest's journal.
 		expect(command[1]).toContain("--property=StandardError=journal");
 		expect(command[1]).not.toContain("--property=StandardError=null");
