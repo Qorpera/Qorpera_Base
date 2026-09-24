@@ -88,8 +88,13 @@ temporary filesystems into which only this session's two folders are bound
 command runs; ReadWritePaths bind-mounts the workspace, home, cache and this
 command's log directory onto themselves. ProtectSystem=strict does not remount
 the unit's own BindPaths mounts, so the two session roots stay writable per
-mount; their owner and mode (never the session's user, 0755) keep the session
-from writing in them. The execute step therefore asserts its storage against
+mount. Their owner and mode (never the session's user, 0755) keep the session
+from creating or removing entries in them, and root-owned folders (commands,
+inbox, git, the marker) stay out of its reach; but the session's own files
+deeper down stay writable, so a command can rewrite an earlier command's
+`output.log` of the same session. Binding the roots read-only
+(BindReadOnlyPaths, ReadWritePaths beneath) closes that; it is the next change,
+after a real unit's table is captured again. The execute step therefore asserts its storage against
 exactly those paths: private covers over the guest roots holding only this
 session, the same virtiofs superblocks (still `rw`), and beneath them only
 those binds of the same superblock. Root callers keep the strict check (no

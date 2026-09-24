@@ -116,7 +116,7 @@ describe("coding guest NAS mount boundary inside the command unit", () => {
 			[`/var/lib/qorpera-coding/${W}`]: 821,
 		});
 	});
-	it("accepts the real table of a v101 command unit on node 2 (systemd 255, two sessions attached)", () => {
+	it("accepts the real table of a v101 command unit on node 2 (systemd 255; another session was attached, hidden by the cover)", () => {
 		// Captured 2026-09-24 in a proof VM with the unit's exact systemd-run properties;
 		// the v101 check refused it (CODING_GUEST_STORAGE_MOUNT_INVALID) in every session.
 		const worker = "5a829c4d-dfe3-4abd-847c-39db67ace3c4",
@@ -134,6 +134,24 @@ describe("coding guest NAS mount boundary inside the command unit", () => {
 		).toEqual({ [`/workspace/${worker}`]: 477, [`/var/lib/qorpera-coding/${worker}`]: 478 });
 		// The same table is never the machine's own view.
 		expect(() => assertCodingGuestMounts(table, worker)).toThrow("MOUNT_INVALID");
+		// Nor is a table with either cover alone.
+		const lines = table.trim().split("\n");
+		for (const cover of ["/workspace", "/var/lib/qorpera-coding"]) {
+			const only = lines.filter(
+				(line) => line.split(" ")[4] === cover || !/ \/(workspace|var\/lib\/qorpera-coding)(\/| )/.test(line),
+			);
+			const host = [
+				...only,
+				`900 1 0:50 / /workspace/${worker} rw,relatime - virtiofs lxd_data rw`,
+				`901 1 0:51 / /var/lib/qorpera-coding/${worker} rw,relatime - virtiofs lxd_custody rw`,
+			];
+			expect(host.filter((line) => line.split(" ")[4] === cover)).toHaveLength(1);
+			expect(() => assertCodingGuestMounts(`${host.join("\n")}\n`, worker)).toThrow("MOUNT_INVALID");
+			// Without the cover the same machine view passes as the host's.
+			expect(
+				assertCodingGuestMounts(`${host.filter((line) => line.split(" ")[4] !== cover).join("\n")}\n`, worker),
+			).toEqual({ [`/workspace/${worker}`]: 900, [`/var/lib/qorpera-coding/${worker}`]: 901 });
+		}
 	});
 	it("ignores another session attached after the unit started: it lies under the cover", () => {
 		const later = [
