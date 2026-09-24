@@ -5,7 +5,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemberPictures } from "../src/app/member-pictures.ts";
 import { accountPicture } from "../src/app/views/account-picture.ts";
 import { CloudRpcError } from "../src/cloud/client.ts";
-import { parseMemberPictureChange, parseMemberPictures } from "../src/cloud/member-pictures.ts";
+import {
+	parseMemberPictureChange,
+	parseMemberPictureObjects,
+	parseMemberPictures,
+} from "../src/cloud/member-pictures.ts";
 import { personAvatar } from "../src/ui/dom.ts";
 import { PERSON_PICTURE_EVENT, personPicturesEpoch, setPersonPictures } from "../src/ui/person-pictures.ts";
 import { PictureFileError } from "../src/ui/picture-file.ts";
@@ -98,13 +102,14 @@ function setup(
 		current.delete(me);
 		return previous ? { previousObjectName: previous } : {};
 	});
-	vi.spyOn(api, "listOwnMemberPictureObjects").mockImplementation(async (userId) =>
+	vi.spyOn(api, "ownMemberPictureObjects").mockImplementation(async () =>
 		[...objects.entries()]
-			.filter(([name]) => name.startsWith(`${userId}/`))
+			.filter(([name]) => name.startsWith(`${me}/`))
 			.map(([objectName, object]) => ({ objectName, createdAt: object.createdAt })),
 	);
+	// Like the bucket's delete policy: a current picture is not deleted (and not reported).
 	vi.spyOn(api, "deleteMemberPicture").mockImplementation(async (name) => {
-		objects.delete(name);
+		if (![...current.values()].includes(name)) objects.delete(name);
 	});
 	return { api, store, current, objects, list, download, upload, set, clear };
 }
@@ -118,6 +123,10 @@ describe("member picture parsing", () => {
 		expect(() => parseMemberPictures([{ ...good, object_name: `${colleague}/${"a".repeat(64)}.webp` }])).toThrow();
 		expect(() => parseMemberPictures([{ ...good, object_name: `${me}/../${"a".repeat(64)}.webp` }])).toThrow();
 		expect(() => parseMemberPictures([{ ...good, object_name: `${me}/${"a".repeat(64)}.svg` }])).toThrow();
+		expect(
+			parseMemberPictureObjects([{ object_name: good.object_name, created_at: "2026-09-24T05:00:00Z" }]),
+		).toEqual([{ objectName: good.object_name, createdAt: "2026-09-24T05:00:00Z" }]);
+		expect(() => parseMemberPictureObjects([{ object_name: `${me}/notes.txt`, created_at: "2026-09-24" }])).toThrow();
 		expect(parseMemberPictureChange({ previous_object_name: null })).toEqual({});
 		expect(parseMemberPictureChange({ previous_object_name: good.object_name })).toEqual({
 			previousObjectName: good.object_name,
@@ -271,8 +280,9 @@ describe("choosing the account's picture", () => {
 
 	it("tidies a folder full of uploads never chosen, then stores the new picture", async () => {
 		const { store, objects, current, upload } = setup({ pictures: { [me]: "mine" } });
+		// Stored "in the future" by this device's clock, which is behind the cloud's.
 		for (const text of ["a", "b", "c"])
-			objects.set(nameOf(me, text), { bytes: text, createdAt: new Date(NOW).toISOString() });
+			objects.set(nameOf(me, text), { bytes: text, createdAt: new Date(NOW + 3_600_000).toISOString() });
 		personAvatar("Account A", me);
 		await settle();
 		await store.choose(me, photo());
@@ -417,6 +427,38 @@ describe("the account card's picture control", () => {
 		expect(trigger.getAttribute("aria-haspopup")).toBe("menu");
 		trigger.click();
 		expect(control.querySelector<HTMLElement>("[role=menu]")!.hidden).toBe(false);
+	});
+
+	it("says the picture could not be saved when storage keeps refusing, without the policy's words", async () => {
+		const { upload } = setup();
+		upload.mockRejectedValue(
+			Object.assign(new Error("new row violates row-level security policy"), { statusCode: "403" }),
+		);
+		const { picture: control, error } = accountPicture(userA);
+		document.body.append(control, error);
+		await settle();
+		const input = control.querySelector<HTMLInputElement>("input[type=file]")!;
+		Object.defineProperty(input, "files", { configurable: true, value: [photo()] });
+		input.dispatchEvent(new Event("change"));
+		await settle();
+		expect(upload).toHaveBeenCalledTimes(2);
+		expect(error.textContent).toBe("Your picture could not be saved. Try again in a moment.");
+	});
+
+	it("moves from the menu itself to its first or last item", async () => {
+		setup({ pictures: { [me]: "mine" } });
+		const { picture: control } = accountPicture(userA);
+		document.body.append(control);
+		await settle();
+		control.querySelector<HTMLButtonElement>(".account-picture-button")!.click();
+		const menu = control.querySelector<HTMLElement>("[role=menu]")!;
+		const items = [...menu.querySelectorAll<HTMLButtonElement>("[role=menuitem]")];
+		menu.focus();
+		menu.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowUp", bubbles: true }));
+		expect(document.activeElement).toBe(items[1]);
+		menu.focus();
+		menu.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+		expect(document.activeElement).toBe(items[0]);
 	});
 
 	it("disables itself while a change is on its way", async () => {

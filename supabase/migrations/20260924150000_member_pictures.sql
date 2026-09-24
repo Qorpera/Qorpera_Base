@@ -37,6 +37,8 @@ create table public.qorpera_member_pictures (
 	updated_at timestamptz not null default statement_timestamp()
 );
 
+create unique index qorpera_member_pictures_object_name on public.qorpera_member_pictures (object_name);
+
 alter table public.qorpera_member_pictures enable row level security;
 revoke all on public.qorpera_member_pictures from anon, authenticated;
 
@@ -89,19 +91,74 @@ as $$
 $$;
 
 -- How many objects the caller's own folder holds; uploads stop at four, so the
--- bucket holds pictures and not files.
+-- bucket holds pictures and not files. The lock makes parallel uploads into one
+-- folder count one after another (volatile: each count sees what the uploads
+-- before it committed).
 create function public.qorpera_member_picture_objects()
 returns integer
+language plpgsql
+volatile
+security definer
+set search_path = ''
+as $$
+declare
+	v_actor uuid := auth.uid();
+	v_count integer;
+begin
+	if v_actor is null then
+		return 0;
+	end if;
+	perform pg_advisory_xact_lock(hashtextextended('qorpera-member-pictures:' || v_actor::text, 0));
+	select count(*)::integer into v_count
+	from storage.objects
+	where bucket_id = 'qorpera-member-pictures'
+		and name like v_actor::text || '/%';
+	return v_count;
+end
+$$;
+
+-- Whether an object is the caller's current picture, which they cannot delete
+-- until another picture (or none) has taken its place.
+create function public.qorpera_is_current_member_picture(p_object_name text)
+returns boolean
 language sql
 stable
 security definer
 set search_path = ''
 as $$
-	select count(*)::integer
-	from storage.objects
-	where bucket_id = 'qorpera-member-pictures'
-		and auth.uid() is not null
-		and name like auth.uid()::text || '/%'
+	select exists (
+		select 1 from public.qorpera_member_pictures
+		where user_id = auth.uid() and object_name = p_object_name
+	)
+$$;
+
+-- The caller's own folder, for tidying uploads that never became the picture.
+-- A storage list() would run the bucket's read policy over every member's
+-- objects; this reads one folder.
+create function public.qorpera_own_member_picture_objects()
+returns jsonb
+language plpgsql
+stable
+security definer
+set search_path = ''
+as $$
+declare
+	v_actor uuid := auth.uid();
+	v_result jsonb;
+begin
+	if v_actor is null then
+		raise exception 'authentication required' using errcode = '42501';
+	end if;
+	select coalesce(jsonb_agg(jsonb_build_object(
+		'object_name', object.name,
+		'created_at', object.created_at
+	) order by object.created_at, object.name), '[]'::jsonb)
+	into v_result
+	from storage.objects object
+	where object.bucket_id = 'qorpera-member-pictures'
+		and object.name like v_actor::text || '/%';
+	return v_result;
+end
 $$;
 
 -- The CASE keeps the UUID cast behind the name check: a policy's AND gives no
@@ -142,6 +199,7 @@ create policy qorpera_member_pictures_delete
 		and case
 			when name ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/[0-9a-f]{64}\.(webp|jpg|png)$'
 				then (storage.foldername(name))[1] = auth.uid()::text
+					and not public.qorpera_is_current_member_picture(name)
 			else false
 		end
 	);
@@ -250,6 +308,8 @@ $$;
 revoke all on function public.qorpera_can_see_member_picture(uuid) from public, anon;
 revoke all on function public.qorpera_can_read_member_picture(text) from public, anon;
 revoke all on function public.qorpera_member_picture_objects() from public, anon;
+revoke all on function public.qorpera_is_current_member_picture(text) from public, anon;
+revoke all on function public.qorpera_own_member_picture_objects() from public, anon;
 revoke all on function public.qorpera_member_pictures(uuid[]) from public, anon;
 revoke all on function public.qorpera_set_member_picture(text) from public, anon;
 revoke all on function public.qorpera_clear_member_picture() from public, anon;
@@ -257,6 +317,8 @@ grant execute on function public.qorpera_can_see_member_picture(uuid) to authent
 -- Both run inside the bucket's policies, which evaluate as the member.
 grant execute on function public.qorpera_can_read_member_picture(text) to authenticated;
 grant execute on function public.qorpera_member_picture_objects() to authenticated;
+grant execute on function public.qorpera_is_current_member_picture(text) to authenticated;
+grant execute on function public.qorpera_own_member_picture_objects() to authenticated;
 grant execute on function public.qorpera_member_pictures(uuid[]) to authenticated;
 grant execute on function public.qorpera_set_member_picture(text) to authenticated;
 grant execute on function public.qorpera_clear_member_picture() to authenticated;

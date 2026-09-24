@@ -39,10 +39,10 @@ profile RPCs; RLS is the second read boundary.
 
 ## 2. Member-callable RPCs (security-definer, granted to `authenticated`)
 
-161 functions, grouped for navigation. Signatures: see the migration that defines each.
+163 functions, grouped for navigation. Signatures: see the migration that defines each.
 
 
-### Members, presence, friends, feedback (15)
+### Members, presence, friends, feedback (17)
 
 - `qorpera_can_read_member_picture(p_object_name)` — the picture bucket's
   read policy: anything in your own folder, and another account's current
@@ -58,8 +58,16 @@ profile RPCs; RLS is the second read boundary.
   `[{user_id, object_name, updated_at}]` only for pictures the caller may see
   (`qorpera_can_see_member_picture`). Migration
   `20260924150000_member_pictures`.
+- `qorpera_is_current_member_picture(p_object_name)` — whether an object is
+  the caller's current picture; the bucket's delete policy refuses it until
+  another picture (or none) has replaced it.
 - `qorpera_member_picture_objects()` — how many objects the caller's own
-  picture folder holds; the upload policy stops at four.
+  picture folder holds; the upload policy stops at four (parallel uploads into
+  one folder are counted one after another).
+- `qorpera_own_member_picture_objects()` — the caller's own picture folder
+  (`[{object_name, created_at}]`), for tidying uploads that never became the
+  picture; use it instead of a storage `list()`, which runs the read policy
+  over the whole bucket.
 - `qorpera_set_member_picture(p_object_name)` — makes an object the caller
   uploaded to the private bucket `qorpera-member-pictures` as
   `<own user UUID>/<sha256>.<webp|jpg|png>` (512 KiB, image types only; RLS lets

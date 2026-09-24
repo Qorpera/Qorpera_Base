@@ -11,7 +11,9 @@ import {
 	MEMBER_PICTURE_BUCKET,
 	type MemberPicture,
 	type MemberPictureChange,
+	type MemberPictureObject,
 	parseMemberPictureChange,
+	parseMemberPictureObjects,
 	parseMemberPictures,
 } from "./member-pictures.ts";
 import { type HostedCompanyOrganization, parseHostedCompanyOrganization } from "./organization.ts";
@@ -169,19 +171,9 @@ export class CloudApi {
 		throw error;
 	}
 
-	/** Everything in the member's own folder: the current picture and uploads never chosen. */
-	async listOwnMemberPictureObjects(userId: string): Promise<{ objectName: string; createdAt?: string }[]> {
-		const folder = requiredUuid(userId, "Account id").toLowerCase();
-		const { data, error } = await this.cloud.supabase.storage
-			.from(MEMBER_PICTURE_BUCKET)
-			.list(folder, { limit: 100 });
-		if (error) throw error;
-		return (data ?? [])
-			.map((item) => ({
-				objectName: `${folder}/${item.name}`,
-				...(typeof item.created_at === "string" ? { createdAt: item.created_at } : {}),
-			}))
-			.filter((item) => isMemberPictureName(item.objectName, folder));
+	/** Everything in the caller's own folder: the current picture and uploads never chosen. */
+	ownMemberPictureObjects(): Promise<MemberPictureObject[]> {
+		return this.cloud.rpc("qorpera_own_member_picture_objects").then(parseMemberPictureObjects);
 	}
 
 	async downloadMemberPicture(objectName: string): Promise<Blob> {

@@ -178,7 +178,7 @@ export class MemberPictures implements PersonPictureStore {
 		} catch (error) {
 			const refused = error as { statusCode?: unknown; message?: unknown };
 			if (refused.statusCode !== "403" && !/row-level security/i.test(String(refused.message))) throw error;
-			await this.#tidy(userId, [], generation, 0);
+			await this.#tidy(userId, [], generation, true);
 			this.#current(generation);
 			return this.#api.uploadMemberPicture(objectName, blob);
 		}
@@ -186,22 +186,24 @@ export class MemberPictures implements PersonPictureStore {
 
 	/** Deletes what in the member's folder is not their current picture: the named
 	 * objects at once, anything else once it is too old to be another tab's upload
-	 * on its way. The cloud names the current picture first, so it is never deleted;
-	 * if anything here fails, only storage is at stake. */
-	async #tidy(userId: string, named: string[], generation: number, graceMs = TIDY_GRACE_MS): Promise<void> {
+	 * on its way (`everything`: all of it, for a full folder). The cloud names the
+	 * current picture first and refuses to delete it anyway; if anything here fails,
+	 * only storage is at stake. */
+	async #tidy(userId: string, named: string[], generation: number, everything = false): Promise<void> {
 		try {
 			const current = (await this.#api.listMemberPictures([userId])).find(
 				(picture) => picture.userId === userId,
 			)?.objectName;
 			if (generation !== this.#generation) return;
-			const objects = await this.#api.listOwnMemberPictureObjects(userId);
+			const objects = (await this.#api.ownMemberPictureObjects()).filter((object) =>
+				object.objectName.startsWith(`${userId}/`),
+			);
 			if (generation !== this.#generation) return;
-			const cutoff = this.#now() - graceMs;
+			const cutoff = this.#now() - TIDY_GRACE_MS;
 			const stale = objects.filter(
 				(object) =>
 					object.objectName !== current &&
-					(named.includes(object.objectName) ||
-						(object.createdAt !== undefined && Date.parse(object.createdAt) <= cutoff)),
+					(everything || named.includes(object.objectName) || Date.parse(object.createdAt) <= cutoff),
 			);
 			await Promise.all(stale.map((object) => this.#api.deleteMemberPicture(object.objectName).catch(() => {})));
 		} catch {

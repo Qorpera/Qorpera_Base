@@ -150,7 +150,14 @@ export function accountPicture(user: User | null): { picture: HTMLElement; error
 		} else if (event.key === "Tab") setOpen(false);
 		else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
 			event.preventDefault();
-			items[(index + (event.key === "ArrowDown" ? 1 : items.length - 1)) % items.length]!.focus();
+			// From the menu itself (a click in its padding), down is the first item and up the last.
+			const next =
+				index < 0
+					? event.key === "ArrowDown"
+						? 0
+						: items.length - 1
+					: (index + (event.key === "ArrowDown" ? 1 : items.length - 1)) % items.length;
+			items[next]!.focus();
 		} else if (event.key === "Home" || event.key === "End") {
 			event.preventDefault();
 			items[event.key === "Home" ? 0 : items.length - 1]!.focus();

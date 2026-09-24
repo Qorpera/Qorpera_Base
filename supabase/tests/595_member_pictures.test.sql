@@ -122,6 +122,18 @@ begin
 	select count(*) into v_seen from storage.objects
 	where bucket_id = 'qorpera-member-pictures' and name like v_me || '/%';
 	if v_seen <> 2 then raise exception 'the owner does not see their whole folder (got %)', v_seen; end if;
+	v_result := public.qorpera_own_member_picture_objects();
+	if jsonb_array_length(v_result) <> 2
+		or not v_result @> jsonb_build_array(jsonb_build_object('object_name', v_second))
+		or v_result -> 0 ->> 'created_at' is null
+	then
+		raise exception 'the own-folder listing is wrong: %', v_result;
+	end if;
+
+	-- The current picture cannot be deleted while it is the picture.
+	delete from storage.objects where bucket_id = 'qorpera-member-pictures' and name = v_second;
+	get diagnostics v_seen = row_count;
+	if v_seen <> 0 then raise exception 'the owner deleted their current picture'; end if;
 
 	v_result := public.qorpera_member_pictures(array[v_me::uuid]);
 	if jsonb_array_length(v_result) <> 1 or v_result -> 0 ->> 'object_name' <> v_second then
@@ -239,6 +251,12 @@ begin
 	if jsonb_array_length(public.qorpera_member_pictures(array[v_owner])) <> 0 then
 		raise exception 'a stranger read the owner''s picture name';
 	end if;
+	if jsonb_array_length(public.qorpera_own_member_picture_objects()) <> 0 then
+		raise exception 'the own-folder listing showed a stranger someone else''s objects';
+	end if;
+	if public.qorpera_is_current_member_picture(v_owner::text || '/' || repeat('2', 64) || '.jpg') then
+		raise exception 'is_current_member_picture answered about another account';
+	end if;
 	if public.qorpera_can_see_member_picture(v_owner) then
 		raise exception 'can_see_member_picture is true for a stranger';
 	end if;
@@ -273,6 +291,59 @@ end
 $$;
 reset role;
 
+-- Parallel uploads into one folder count one after another: the second waits
+-- for the first to commit, then sees its objects and is refused.
+select dblink_connect('picture_a', 'dbname=qorpera_test');
+select dblink_connect('picture_b', 'dbname=qorpera_test');
+select dblink_exec('picture_a', $$set request.jwt.claims = '{"sub":"95000000-0000-4000-8000-00000000000a","role":"authenticated"}'$$);
+select dblink_exec('picture_b', $$set request.jwt.claims = '{"sub":"95000000-0000-4000-8000-00000000000a","role":"authenticated"}'$$);
+select dblink_exec('picture_a', 'set role authenticated');
+select dblink_exec('picture_b', 'set role authenticated');
+select dblink_exec('picture_a', 'begin');
+select dblink_exec('picture_a', $$insert into storage.objects (bucket_id, name, metadata)
+	values ('qorpera-member-pictures', '95000000-0000-4000-8000-00000000000a/' || repeat('9', 64) || '.webp', '{}')$$);
+select dblink_exec('picture_a', $$insert into storage.objects (bucket_id, name, metadata)
+	values ('qorpera-member-pictures', '95000000-0000-4000-8000-00000000000a/' || repeat('a', 64) || '.webp', '{}')$$);
+select dblink_send_query('picture_b', $$insert into storage.objects (bucket_id, name, metadata)
+	values ('qorpera-member-pictures', '95000000-0000-4000-8000-00000000000a/' || repeat('b', 64) || '.webp', '{}')$$);
+select pg_sleep(0.2);
+
+do $$
+begin
+	if dblink_is_busy('picture_b') <> 1 then
+		raise exception 'a parallel upload did not wait for the first one to be counted';
+	end if;
+end
+$$;
+
+select dblink_exec('picture_a', 'commit');
+
+do $$
+begin
+	perform * from dblink_get_result('picture_b') as result(status text);
+	raise exception 'a parallel upload passed the four-object limit';
+exception when insufficient_privilege then null;
+end
+$$;
+
+select dblink_disconnect('picture_b');
+select dblink_disconnect('picture_a');
+
+do $$
+declare v_seen integer;
+begin
+	select count(*) into v_seen from storage.objects
+	where bucket_id = 'qorpera-member-pictures' and name like '95000000-0000-4000-8000-00000000000a/%';
+	if v_seen <> 4 then raise exception 'the folder should hold four objects after the parallel uploads (got %)', v_seen; end if;
+	delete from storage.objects
+	where bucket_id = 'qorpera-member-pictures'
+		and name in (
+			'95000000-0000-4000-8000-00000000000a/' || repeat('9', 64) || '.webp',
+			'95000000-0000-4000-8000-00000000000a/' || repeat('a', 64) || '.webp'
+		);
+end
+$$;
+
 -- The owner goes back to initials.
 select set_config('request.jwt.claims', '{"sub":"95000000-0000-4000-8000-00000000000a","email":"picture-owner@example.test","role":"authenticated","user_metadata":{}}', false);
 set role authenticated;
@@ -302,6 +373,7 @@ do $$
 declare
 	v_owner uuid := '95000000-0000-4000-8000-00000000000a';
 	v_result jsonb := public.qorpera_clear_member_picture();
+	v_seen integer;
 begin
 	if v_result ->> 'previous_object_name' <> v_owner::text || '/' || repeat('2', 64) || '.jpg' then
 		raise exception 'clearing did not return the removed picture: %', v_result;
@@ -313,6 +385,11 @@ begin
 	if v_result -> 'previous_object_name' <> 'null'::jsonb then
 		raise exception 'clearing twice returned a picture: %', v_result;
 	end if;
+	-- Once it is no longer the picture, its owner can delete it.
+	delete from storage.objects
+	where bucket_id = 'qorpera-member-pictures' and name = v_owner::text || '/' || repeat('2', 64) || '.jpg';
+	get diagnostics v_seen = row_count;
+	if v_seen <> 1 then raise exception 'the owner could not delete a picture they cleared'; end if;
 end
 $$;
 

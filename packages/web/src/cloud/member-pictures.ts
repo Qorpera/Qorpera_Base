@@ -18,6 +18,11 @@ export interface MemberPicture {
 	updatedAt: string;
 }
 
+export interface MemberPictureObject {
+	objectName: string;
+	createdAt: string;
+}
+
 export interface MemberPictureChange {
 	/** The picture this change replaced or removed; its owner deletes it. */
 	previousObjectName?: string;
@@ -56,4 +61,14 @@ export function parseMemberPictureChange(value: unknown): MemberPictureChange {
 	const previous = input.previous_object_name;
 	if (previous === null || previous === undefined) return {};
 	return { previousObjectName: objectName(previous, "replaced picture name") };
+}
+
+export function parseMemberPictureObjects(value: unknown): MemberPictureObject[] {
+	return array(value, "picture folder").map((item) => {
+		const input = record(item, "picture object");
+		return {
+			objectName: objectName(input.object_name, "picture object name"),
+			createdAt: timestamp(input.created_at, "picture object time"),
+		};
+	});
 }
