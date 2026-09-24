@@ -1,5 +1,5 @@
 import type { HostedStaffAgent } from "../../cloud/types.ts";
-import { colorFor, figureFor, nativeColorOf } from "../../ui/avatar.ts";
+import { agentColor, figureFor } from "../../ui/avatar.ts";
 import type { CompanyController } from "../company.ts";
 import { Store } from "../state.ts";
 import type { AgentDraft, WorkspaceActions } from "../workspace-actions.ts";
@@ -12,7 +12,7 @@ export function savedAgentDraft(agent: HostedStaffAgent): AgentDraft {
 		role: agent.role,
 		charter: agent.charter,
 		figure,
-		color: agent.templateId === "co-founder" ? nativeColorOf(figure) : colorFor(agent, figure),
+		color: agentColor(agent, figure),
 	};
 }
 
