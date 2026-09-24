@@ -9,6 +9,7 @@
 
 ### Fixed
 
+- Let the Co-Founder's colour be changed: its figure picker in the agent details offers the colours and Reset like any agent's, and the rail, header and group pictures draw the colour chosen. A Co-Founder whose colour nobody has picked keeps its figure's own shade.
 - Keep the "Manage company" disclosure in Settings → Company at its small size; removing the Cloud endpoint panel had dropped the rule it shares.
 - Keep keyboard focus in Settings → General when the account plan finishes loading; the page is redrawn only when the error or message it shows changes.
 - Show a failed or stopped run as one line right above the composer, in the same band as the company notices, instead of at the end of the thread. The thread keeps only the conversation; the card keeps its reason, Try again and Dismiss. Opening a conversation while such a line, or the composer, appears no longer leaves the thread a little short of its last message.

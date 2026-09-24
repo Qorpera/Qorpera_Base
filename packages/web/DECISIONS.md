@@ -152,3 +152,20 @@ without a new decision. Notices of a tripped company limit or a pause/resume
 that already exist in a member's list are skipped, never shown and never a
 failed read; the machine-capacity notice, which shares the
 `company_ceiling_tripped` kind, still shows.
+
+## 2026-09-24 — The Co-Founder's colour can be changed
+
+**Decision (Jonas).** The Co-Founder's figure picker offers the colours and
+Reset like every other agent's, and the Co-Founder is drawn in the colour it
+was given. This replaces the 2026-09-12 rule (PR #115) that the Co-Founder
+always wears its figure's own shade, as in the trailer.
+
+**Why.** Jonas reported that the Co-Founder's colour could not be changed. The
+desktop client and the cloud never had the rule; it was a web rendering rule.
+
+**How.** The cloud seeds every Co-Founder with the token `qorpera-blue`, which
+nobody chose, and a colour picked in a client is saved as a palette hex, never
+as that token. A Co-Founder that still carries the seed token keeps its
+figure's own shade (`agentColor` in `ui/avatar.ts`), so no Co-Founder changes
+colour just because this shipped. The first-run meet page still offers figures
+only; each figure brings its own shade there.
