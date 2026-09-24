@@ -45,9 +45,9 @@ function fixture() {
 		contextSha256: sha,
 		headroomCpuMillis: 4000,
 		headroomMemoryBytes: 8 * 1024 ** 3,
-		allocations: ["native", "office", "login"].map((kind) => ({
+		allocations: ["native", "office", "login", "coding"].map((kind) => ({
 			allocationId: randomUUID(),
-			providerKind: kind as "native" | "office" | "login",
+			providerKind: kind as "native" | "office" | "login" | "coding",
 			providerId: kind === "office" ? randomUUID() : kind,
 			policySha256: sha,
 			instanceSha256: "b".repeat(64),
@@ -66,9 +66,12 @@ function fixture() {
 					? "qorpera.lxd-office-guest/v2"
 					: a.providerKind === "native"
 						? "qorpera.native-job-vm/v1"
-						: "qorpera.native-login-vm/v2",
+						: a.providerKind === "coding"
+							? "qorpera.lxd-coding-vm/v2"
+							: "qorpera.native-login-vm/v2",
 			[`user.qorpera.${a.providerKind === "native" ? "acquisition_id" : "allocation_id"}`]: a.allocationId,
-			[`user.qorpera.${a.providerKind === "office" ? "provider_id" : "provider_adapter"}`]: a.providerId,
+			[`user.qorpera.${a.providerKind === "office" || a.providerKind === "coding" ? "provider_id" : "provider_adapter"}`]:
+				a.providerId,
 			"user.qorpera.provider_policy_sha256": a.policySha256,
 			"user.qorpera.instance_sha256": a.instanceSha256,
 		};
@@ -127,7 +130,7 @@ describe("complete host inventory reconciliation", () => {
 		const f = fixture(),
 			result = reconcileRuntimeNodeInventory(f.inventory, f.context);
 		expect(result.state).toBe("ready");
-		expect(result.entries.map((i) => i.allocation?.providerKind)).toEqual(["native", "office", "login"]);
+		expect(result.entries.map((i) => i.allocation?.providerKind)).toEqual(["native", "office", "login", "coding"]);
 	});
 	it.each(["Stopped", "Frozen", "Starting", "Stopping", "Error"])(
 		"retains %s computers and their charge",
@@ -151,7 +154,7 @@ describe("complete host inventory reconciliation", () => {
 			entries: [],
 			headroomValid: true,
 		});
-		expect(f.context.allocations).toHaveLength(3);
+		expect(f.context.allocations).toHaveLength(4);
 	});
 	it.each([
 		"legacy",
@@ -221,7 +224,7 @@ describe("complete host inventory reconciliation", () => {
 		});
 		const result = reconcileRuntimeNodeInventory(f.inventory, f.context);
 		expect(result.state).toBe("ready");
-		expect(result.entries[3].category).toBe("infrastructure");
+		expect(result.entries[4].category).toBe("infrastructure");
 		expect(JSON.stringify(result)).not.toContain("PRIVATE_BYTES");
 		f.context.headroomCpuMillis = 2000;
 		expect(reconcileRuntimeNodeInventory(f.inventory, f.context).state).toBe("unavailable");
@@ -269,7 +272,7 @@ describe("trusted node inventory publisher composition", () => {
 		]);
 		expect(f.calls[1].args.p_inventory).toMatchObject({
 			bootId: f.host.bootId,
-			entries: Array(3).fill({ category: "managed" }),
+			entries: Array(4).fill({ category: "managed" }),
 		});
 	});
 	it.each(["socket", "boot", "hardware", "policy", "inventory"])(
@@ -299,7 +302,12 @@ describe("trusted node inventory publisher composition", () => {
 		delete f.inventory.instances[0].config["user.qorpera.schema"];
 		expect((await f.observer.observe(signal())).state).toBe("unavailable");
 		expect(f.calls.at(-1)?.args.p_inventory).toMatchObject({
-			entries: [{ category: "unmanaged" }, { category: "managed" }, { category: "managed" }],
+			entries: [
+				{ category: "unmanaged" },
+				{ category: "managed" },
+				{ category: "managed" },
+				{ category: "managed" },
+			],
 		});
 	});
 	it("does not rebind an uncertain publication or retry it with new bytes", async () => {

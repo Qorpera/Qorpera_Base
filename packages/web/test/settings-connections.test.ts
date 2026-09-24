@@ -182,9 +182,8 @@ describe("member model account settings", () => {
 		const labels = [...view.el.querySelectorAll("button")].map((item) => item.textContent);
 		for (const removed of ["Refresh model accounts", "Enable for my messages", "Revoke connection"])
 			expect(labels).not.toContain(removed);
-		expect(view.el.textContent).toContain("Connect your tools");
-		const service = [...view.el.querySelectorAll("button")].find((item) => item.textContent === "Add service")!;
-		expect(service.disabled).toBe(true);
+		// Services moved to their own view beside the model accounts (Step 7).
+		expect(view.el.textContent).not.toContain("Add service");
 	});
 	it("shows each connected account with its provider logo and email, hiding opaque references", async () => {
 		await setup(

@@ -165,10 +165,19 @@ it("requires the private runtime credential and fences reflected secret material
 		new AbortController().signal,
 		(input, init) => fetch(`http://127.0.0.1:${port}${new URL(String(input)).pathname}`, init),
 	);
+	// The client names its company in the query so the shared origin's router
+	// reaches this company's broker; the broker routes by path and ignores it.
+	const companyId = randomUUID();
+	const requested: string[] = [];
 	const client = new HttpCloudSecretBrokerClient({
 		origin: `http://127.0.0.1:${port}`,
 		runtimeToken: f.runtimeToken,
+		companyId: companyId.toUpperCase(),
 		allowLoopback: true,
+		fetch: (input, init) => {
+			requested.push(String(input));
+			return fetch(input, init);
+		},
 	});
 	await expect(client.execute(f.operation, new AbortController().signal)).resolves.toEqual({
 		kind: "json",
@@ -185,6 +194,39 @@ it("requires the private runtime credential and fences reflected secret material
 	});
 	expect(unauthorized.status).toBe(404);
 	expect(await unauthorized.json()).toEqual({ schema: "qorpera.cloud-secret-error/v1", error: "not_found" });
+	expect(f.authority.authorizeOperation).toHaveBeenCalledTimes(1);
+	expect(requested).toEqual([`http://127.0.0.1:${port}/v1/operations?company=${companyId}`]);
+	expect(
+		() =>
+			new HttpCloudSecretBrokerClient({
+				origin: `http://127.0.0.1:${port}`,
+				runtimeToken: f.runtimeToken,
+				companyId: "../other",
+				allowLoopback: true,
+			}),
+	).toThrow("company is invalid");
+	f.wrappingKey.fill(0);
+	f.keyring.close();
+});
+
+it("refuses an operation the database does not authorize for this broker, whatever company the query names", async () => {
+	// A request the router sends to another company's broker reaches a broker
+	// whose authority does not own the run's grant: the database refuses it
+	// ("cloud secret broker does not own this envelope"), so no adapter runs.
+	const f = fixture(true);
+	vi.mocked(f.authority.authorizeOperation).mockRejectedValue(
+		new Error("cloud secret broker does not own this envelope"),
+	);
+	const port = await f.service.start();
+	const client = new HttpCloudSecretBrokerClient({
+		origin: `http://127.0.0.1:${port}`,
+		runtimeToken: f.runtimeToken,
+		companyId: randomUUID(),
+		allowLoopback: true,
+	});
+	await expect(client.execute(f.operation, new AbortController().signal)).rejects.toThrow(
+		"Cloud secret broker rejected the operation",
+	);
 	expect(f.authority.authorizeOperation).toHaveBeenCalledTimes(1);
 	f.wrappingKey.fill(0);
 	f.keyring.close();

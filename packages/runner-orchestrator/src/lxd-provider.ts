@@ -6,7 +6,11 @@ import { setTimeout as delay } from "node:timers/promises";
 import { parseCompanyComputerNativeUrl } from "@qorpera/contracts";
 import type { ServiceHttpFetch } from "./http-transport.ts";
 import type { LxdClient, LxdCreateInstanceRequest, LxdInstanceRecord, LxdStorageVolumeRecord } from "./lxd-client.ts";
-import { type LxdNativeCompanyRuntimeConfig, validateLxdNativeCompanyRuntime } from "./lxd-company-runtime.ts";
+import {
+	exactHttpsOrigin,
+	type LxdNativeCompanyRuntimeConfig,
+	validateLxdNativeCompanyRuntime,
+} from "./lxd-company-runtime.ts";
 import { lxdGuestIpv4 } from "./lxd-guest-network.ts";
 import { lxdNativeNodePolicy } from "./lxd-native-node-policy.ts";
 import type { CloudRunnerAssignmentDelivery, CloudRunnerInstance, CloudRunnerWork } from "./orchestrator.ts";
@@ -152,6 +156,7 @@ interface LxdProviderJournal {
 			recoveryVolumeSize: string;
 			configurationSha256: string;
 			office?: { environmentId: string; url: string; tokenSha256: string };
+			codingCommand?: { url: string; tokenSha256: string };
 		};
 	};
 	credentials: {
@@ -225,6 +230,7 @@ function sameCompanyRuntimeAuthority(
 				...value,
 				configurationSha256: undefined,
 				office: value.office ? { environmentId: value.office.environmentId, url: value.office.url } : undefined,
+				codingCommand: value.codingCommand ? { url: value.codingCommand.url } : undefined,
 			}),
 		);
 	return route(recorded) === route(expected);
@@ -250,6 +256,9 @@ function companyRuntimeAuthority(
 		configurationSha256: sha256(JSON.stringify(canonical(runtime))),
 		...(office
 			? { office: { environmentId: office.environmentId, url: office.url, tokenSha256: sha256(office.token) } }
+			: {}),
+		...(runtime.codingCommand
+			? { codingCommand: { url: runtime.codingCommand.origin, tokenSha256: sha256(runtime.codingCommand.token) } }
 			: {}),
 	};
 }
@@ -422,6 +431,7 @@ function journalFromJson(value: unknown): LxdProviderJournal {
 					"recoveryVolumeSize",
 					"configurationSha256",
 					...(company.office !== undefined ? ["office"] : []),
+					...(company.codingCommand !== undefined ? ["codingCommand"] : []),
 				]
 					.sort()
 					.join() ||
@@ -455,6 +465,21 @@ function journalFromJson(value: unknown): LxdProviderJournal {
 				tokenSha256: route.tokenSha256,
 			};
 		}
+		let codingCommand: NonNullable<LxdProviderJournal["lxd"]["companyRuntime"]>["codingCommand"];
+		if (company.codingCommand !== undefined) {
+			const gateway = record(company.codingCommand, "Governed coding command route");
+			if (
+				Object.keys(gateway).sort().join() !== "tokenSha256,url" ||
+				typeof gateway.url !== "string" ||
+				typeof gateway.tokenSha256 !== "string" ||
+				!SHA256_PATTERN.test(gateway.tokenSha256)
+			)
+				throw new Error("Governed coding command route is invalid");
+			codingCommand = {
+				url: exactHttpsOrigin(gateway.url, "Coding command gateway"),
+				tokenSha256: gateway.tokenSha256,
+			};
+		}
 		companyRuntime = {
 			mode: "company-path-v1",
 			profileId: company.profileId,
@@ -462,6 +487,7 @@ function journalFromJson(value: unknown): LxdProviderJournal {
 			recoveryVolumeSize: company.recoveryVolumeSize,
 			configurationSha256: company.configurationSha256,
 			...(office ? { office } : {}),
+			...(codingCommand ? { codingCommand } : {}),
 		};
 	} else if (lxd.companyRuntime !== undefined) {
 		throw new Error("Legacy journal cannot carry governed runtime authority");
@@ -613,6 +639,7 @@ function validateConfig(config: LxdCloudRunnerProviderConfig): void {
 			service !== "qorpera-lxd-runner-bootstrap.service" ||
 			config.nativeCompanyRuntime.recoveryVolumePrefix === config.identityVolumePrefix ||
 			config.nativeCompanyRuntime.objectGatewayToken === config.supabaseServiceKey ||
+			config.nativeCompanyRuntime.codingCommand?.token === config.supabaseServiceKey ||
 			config.nativeCompanyRuntime.offices?.some((office) => office.token === config.supabaseServiceKey)
 		) {
 			throw new Error(
@@ -1296,6 +1323,9 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 		);
 		if (office && Object.values(credentials).includes(office.token))
 			throw new Error("Governed native office credential must be independent");
+		const coding = runtime?.codingCommand;
+		if (coding && (Object.values(credentials).includes(coding.token) || coding.token === office?.token))
+			throw new Error("Governed coding command credential must be independent");
 		if (
 			runtime &&
 			(runtime.objectGatewayToken === credentials.nativeBridgeToken ||
@@ -1363,6 +1393,9 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 											},
 										}
 									: {}),
+								...(coding
+									? { coding_command: { url: coding.origin, token_sha256: sha256(coding.token) } }
+									: {}),
 								recovery_volume_path: "/var/lib/qorpera-runner",
 							},
 						}
@@ -1397,6 +1430,7 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 						`QORPERA_NATIVE_OBJECT_GATEWAY_URL=${runtime.objectGatewayUrl}`,
 						`QORPERA_CLOUD_SECRET_BROKER_URL=${runtime.secretBroker.origin}`,
 						...(office ? [`QORPERA_COMPANY_COMPUTER_URL=${office.url}`] : []),
+						...(coding ? [`QORPERA_CODING_COMMAND_URL=${coding.origin}`] : []),
 					]
 				: []),
 			"",
@@ -1428,6 +1462,11 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 							// An unconfigured route has no authority. The fixed systemd
 							// credential source still exists and contains zero bytes.
 							content: office ? `${office.token}\n` : "",
+						},
+						{
+							path: "/var/lib/qorpera-bootstrap/credentials/qorpera-coding-command",
+							// Same shape as the office route: present, empty without a gateway.
+							content: coding ? `${coding.token}\n` : "",
 						},
 						{
 							path: "/var/lib/qorpera-bootstrap/credentials/qorpera-native-object-token",

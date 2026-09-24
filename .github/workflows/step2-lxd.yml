@@ -28,6 +28,10 @@ on:
       - 'packages/shell/test/cloud-runner-*.test.ts'
       - 'packages/shell/test/cloud-company-file-contract.test.ts'
       - 'packages/shell/test/lxd-runner-*.test.ts'
+      - 'packages/runtime/src/cloud-connector-*.ts'
+      - 'packages/runtime/src/cloud-secret-*.ts'
+      - 'packages/shell/test/cloud-connector-*.test.ts'
+      - 'packages/shell/test/cloud-secret-*.test.ts'
       - 'scripts/package-lxd-*.mjs'
       - 'scripts/package-lxd-*.test.mjs'
       - 'scripts/package-runtime-node-updater*.mjs'
@@ -86,6 +90,9 @@ jobs:
           test/lxd-image-provenance.test.ts
           test/lxd-login-gateway.test.ts
           test/lxd-provider.test.ts
+          test/lxd-company-runtime.test.ts
+          test/runtime-node-inventory.test.ts
+          test/shared-execution-backend.test.ts
           test/provider-service.test.ts
           test/service.test.ts
           test/runtime-node-update.test.ts
@@ -131,6 +138,19 @@ jobs:
           test/cloud-runner-worker.test.ts
           test/cloud-company-file-contract.test.ts
           test/lxd-runner-bootstrap.test.ts
+
+      - name: Test cloud connectors and the secret broker
+        working-directory: packages/shell
+        run: >-
+          node ../../node_modules/vitest/dist/cli.js --run
+          test/cloud-connector-catalog.test.ts
+          test/cloud-connector-github.test.ts
+          test/cloud-connector-google.test.ts
+          test/cloud-connector-oauth.test.ts
+          test/cloud-connector-oauth-http.test.ts
+          test/cloud-secret-broker.test.ts
+          test/cloud-secret-broker-http.test.ts
+          test/cloud-secret-tools.test.ts
 
       - name: Test deterministic packaging
         run: >-

@@ -2,13 +2,19 @@ import { timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { readBoundedCloudResponse, withCloudDeadline } from "@qorpera/cloud-client/cloud-request";
 import type { JsonValue } from "@qorpera/contracts";
+import {
+	CloudConnectorOAuthError,
+	type CloudConnectorOAuthFlows,
+	connectorReturnLocation,
+} from "./cloud-connector-oauth.ts";
 import { parseCloudNativeToolBinding } from "./cloud-native-tool-authority.ts";
 import { type CloudToolContent, cloudToolJsonText } from "./cloud-native-tool-boundary.ts";
-import type {
-	CloudSecretBroker,
-	CloudSecretCaptureRequest,
-	CloudSecretDescriptor,
-	CloudSecretOperationRequest,
+import {
+	type CloudSecretBroker,
+	type CloudSecretCaptureRequest,
+	type CloudSecretDescriptor,
+	type CloudSecretOperationRequest,
+	parseCloudSecretAccountLabel,
 } from "./cloud-secret-broker.ts";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -138,11 +144,19 @@ function parseContent(value: unknown): CloudToolContent {
 
 function parseDescriptor(value: unknown): CloudSecretDescriptor {
 	const input = record(value, "Cloud secret descriptor");
-	exact(
-		input,
-		["schema", "secretId", "version", "connectorId", "secretName", "purpose", "ownerKind", "ownerUserId", "status"],
-		"Cloud secret descriptor",
-	);
+	const keys = [
+		"schema",
+		"secretId",
+		"version",
+		"connectorId",
+		"secretName",
+		"purpose",
+		"ownerKind",
+		"ownerUserId",
+		"status",
+	];
+	exact(input, Object.hasOwn(input, "accountLabel") ? [...keys, "accountLabel"] : keys, "Cloud secret descriptor");
+	const accountLabel = parseCloudSecretAccountLabel(input.accountLabel);
 	if (
 		input.schema !== "qorpera.cloud-secret-descriptor/v1" ||
 		typeof input.secretId !== "string" ||
@@ -172,7 +186,42 @@ function parseDescriptor(value: unknown): CloudSecretDescriptor {
 		ownerKind: input.ownerKind,
 		ownerUserId: input.ownerUserId as string | null,
 		status: "active",
+		...(Object.hasOwn(input, "accountLabel") ? { accountLabel } : {}),
 	};
+}
+
+function parseOAuthStart(value: unknown): { captureCapability: string; returnTo: string; browserProofSha256: string } {
+	const input = record(value, "Connector authorization start");
+	exact(input, ["schema", "captureCapability", "returnTo", "browserProofSha256"], "Connector authorization start");
+	if (
+		input.schema !== "qorpera.cloud-connector-oauth-start/v2" ||
+		typeof input.captureCapability !== "string" ||
+		!/^[A-Za-z0-9_-]{32,256}$/.test(input.captureCapability) ||
+		typeof input.returnTo !== "string" ||
+		input.returnTo.length > 2048 ||
+		typeof input.browserProofSha256 !== "string" ||
+		!/^[0-9a-f]{64}$/.test(input.browserProofSha256)
+	)
+		throw new Error("Connector authorization start is invalid");
+	return {
+		captureCapability: input.captureCapability,
+		returnTo: input.returnTo,
+		browserProofSha256: input.browserProofSha256,
+	};
+}
+
+function parseOAuthConfirm(value: unknown): { confirmation: string; browserProof: string } {
+	const input = record(value, "Connector authorization confirmation");
+	exact(input, ["schema", "confirmation", "browserProof"], "Connector authorization confirmation");
+	if (
+		input.schema !== "qorpera.cloud-connector-oauth-confirm/v1" ||
+		typeof input.confirmation !== "string" ||
+		!/^[A-Za-z0-9_-]{43}$/.test(input.confirmation) ||
+		typeof input.browserProof !== "string" ||
+		!/^[A-Za-z0-9_-]{43}$/.test(input.browserProof)
+	)
+		throw new Error("Connector authorization confirmation is invalid");
+	return { confirmation: input.confirmation, browserProof: input.browserProof };
 }
 
 async function readRequest(request: IncomingMessage): Promise<unknown> {
@@ -208,6 +257,28 @@ function response(reply: ServerResponse, status: number, value: JsonValue, heade
 	reply.end(body);
 }
 
+function redirect(reply: ServerResponse, location: string): void {
+	reply.writeHead(303, {
+		location,
+		"cache-control": "no-store",
+		"content-length": 0,
+		"referrer-policy": "no-referrer",
+	});
+	reply.end();
+}
+
+function plainPage(reply: ServerResponse, status: number, text: string): void {
+	const body = `${text}\n`;
+	reply.writeHead(status, {
+		"content-type": "text/plain; charset=utf-8",
+		"content-length": Buffer.byteLength(body),
+		"cache-control": "no-store",
+		"x-content-type-options": "nosniff",
+		"referrer-policy": "no-referrer",
+	});
+	reply.end(body);
+}
+
 /** A member app origin the capture route answers to: https, origin only. */
 export function parseMemberOrigin(value: unknown): string {
 	if (typeof value !== "string") throw new Error("Cloud secret broker member origin is invalid");
@@ -217,9 +288,10 @@ export function parseMemberOrigin(value: unknown): string {
 	return url.origin;
 }
 
-/** The capture route is called from the member's browser on another origin. The
- * plaintext crosses only to this service, so the answer names the one origin
- * that asked, never a wildcard, and only when it is on the configured list. */
+/** The member routes (capture, connector sign-in start) are called from the
+ * member's browser on another origin. The plaintext crosses only to this
+ * service, so the answer names the one origin that asked, never a wildcard,
+ * and only when it is on the configured list. */
 function corsHeaders(origin: string): Record<string, string> {
 	return {
 		"access-control-allow-origin": origin,
@@ -228,6 +300,17 @@ function corsHeaders(origin: string): Record<string, string> {
 		"access-control-max-age": "600",
 		vary: "origin",
 	};
+}
+
+export interface HttpCloudSecretBrokerServiceOptions {
+	readonly host?: string;
+	readonly port?: number;
+	/** Member app origins allowed to call the member routes from a browser
+	 * (config v2 `memberOrigins`). The runtime operation route never receives
+	 * CORS headers. */
+	readonly memberOrigins?: readonly string[];
+	/** Connector OAuth flows (Step 7); absent means the OAuth routes answer 404. */
+	readonly oauth?: CloudConnectorOAuthFlows;
 }
 
 /**
@@ -241,30 +324,37 @@ export class HttpCloudSecretBrokerService {
 	readonly #host: string;
 	readonly #port: number;
 	readonly #memberOrigins: ReadonlySet<string>;
+	readonly #oauth: CloudConnectorOAuthFlows | undefined;
 	#server?: Server;
 
 	constructor(
 		broker: CloudSecretBroker,
 		runtimeToken: string,
-		host = "127.0.0.1",
+		hostOrOptions: string | HttpCloudSecretBrokerServiceOptions = "127.0.0.1",
 		port = 0,
 		memberOrigins: readonly string[] = [],
 	) {
+		const options: HttpCloudSecretBrokerServiceOptions =
+			typeof hostOrOptions === "string" ? { host: hostOrOptions, port, memberOrigins } : hostOrOptions;
+		const host = options.host ?? "127.0.0.1";
+		const listenPort = options.port ?? 0;
+		const origins = options.memberOrigins ?? [];
 		if (
 			!TOKEN.test(runtimeToken) ||
 			!["127.0.0.1", "::1"].includes(host) ||
-			!Number.isSafeInteger(port) ||
-			port < 0 ||
-			port > 65_535 ||
-			memberOrigins.length > 16
+			!Number.isSafeInteger(listenPort) ||
+			listenPort < 0 ||
+			listenPort > 65_535 ||
+			origins.length > 16
 		) {
 			throw new Error("Cloud secret broker service configuration is invalid");
 		}
 		this.#broker = broker;
 		this.#runtimeToken = runtimeToken;
 		this.#host = host;
-		this.#port = port;
-		this.#memberOrigins = new Set(memberOrigins.map(parseMemberOrigin));
+		this.#port = listenPort;
+		this.#memberOrigins = new Set(origins.map(parseMemberOrigin));
+		this.#oauth = options.oauth;
 	}
 
 	async start(): Promise<number> {
@@ -293,33 +383,131 @@ export class HttpCloudSecretBrokerService {
 	}
 
 	async #handle(request: IncomingMessage, reply: ServerResponse): Promise<void> {
+		const url = new URL(request.url ?? "/", "http://cloud-secret-broker.invalid");
+		const path = url.pathname;
+		const capture = /^\/v1\/captures\/([0-9a-f-]{36})$/i.exec(path);
+		const oauthStart = /^\/v1\/oauth\/([0-9a-f-]{36})\/start$/i.exec(path);
+		const oauthConfirm = /^\/v1\/oauth\/([0-9a-f-]{36})\/confirm$/i.exec(path);
+		const memberRoute = Boolean(
+			(capture && UUID.test(capture[1])) ||
+				(oauthStart && UUID.test(oauthStart[1])) ||
+				(oauthConfirm && UUID.test(oauthConfirm[1])),
+		);
+		const origin = typeof request.headers.origin === "string" ? request.headers.origin : undefined;
+		const allowedOrigin = origin !== undefined && this.#memberOrigins.has(origin) ? origin : undefined;
+		const cors = memberRoute && allowedOrigin ? corsHeaders(allowedOrigin) : {};
 		try {
-			const path = new URL(request.url ?? "/", "http://cloud-secret-broker.invalid").pathname;
-			const capture = /^\/v1\/captures\/([0-9a-f-]{36})$/i.exec(path);
-			const origin = typeof request.headers.origin === "string" ? request.headers.origin : undefined;
-			const allowedOrigin = origin !== undefined && this.#memberOrigins.has(origin) ? origin : undefined;
 			if (request.method === "OPTIONS") {
-				// A browser preflight for the capture route; every other route has no browser caller.
-				if (capture && UUID.test(capture[1]) && allowedOrigin) {
-					reply.writeHead(204, { ...corsHeaders(allowedOrigin), "cache-control": "no-store" });
+				// A browser preflight for a member route; every other route has no browser caller.
+				if (memberRoute && allowedOrigin) {
+					reply.writeHead(204, { ...cors, "cache-control": "no-store" });
 					reply.end();
 				} else response(reply, 404, { schema: "qorpera.cloud-secret-error/v1", error: "not_found" });
+				return;
+			}
+			if (request.method === "GET" && path === "/v1/oauth/callback") {
+				await this.#oauthCallback(url, reply);
 				return;
 			}
 			if (request.method !== "POST" || request.headers["content-type"]?.split(";", 1)[0] !== "application/json") {
 				response(reply, 404, { schema: "qorpera.cloud-secret-error/v1", error: "not_found" });
 				return;
 			}
+			if (memberRoute && origin !== undefined && !allowedOrigin) {
+				response(reply, 403, { schema: "qorpera.cloud-secret-error/v1", error: "unavailable" });
+				return;
+			}
 			if (capture && UUID.test(capture[1])) {
-				if (origin !== undefined && !allowedOrigin) {
-					response(reply, 403, { schema: "qorpera.cloud-secret-error/v1", error: "unavailable" });
-					return;
-				}
 				const descriptor = await this.#broker.capture(
 					parseCapture(await readRequest(request), capture[1]),
 					AbortSignal.timeout(15_000),
 				);
-				response(reply, 200, descriptor as unknown as JsonValue, allowedOrigin ? corsHeaders(allowedOrigin) : {});
+				response(reply, 200, descriptor as unknown as JsonValue, cors);
+				return;
+			}
+			if ((oauthStart && UUID.test(oauthStart[1])) || (oauthConfirm && UUID.test(oauthConfirm[1]))) {
+				if (!this.#oauth) {
+					response(reply, 404, { schema: "qorpera.cloud-secret-error/v1", error: "not_found" }, cors);
+					return;
+				}
+				if (oauthStart) {
+					const start = parseOAuthStart(await readRequest(request));
+					const ticketId = oauthStart[1].toLowerCase();
+					const summary = await this.#broker.describeCapture(
+						{ ticketId, captureCapability: start.captureCapability },
+						AbortSignal.timeout(10_000),
+					);
+					// Connectors are company first: a sign-in fills only a company-owned
+					// connection, never a member's own secret.
+					if (summary.ownerKind !== "company") throw new Error("Connector sign-in requires a company ticket");
+					// The state starts with the ticket's company so the one shared public
+					// origin can route the provider's callback to this company's broker.
+					const started = this.#oauth.begin({
+						ticketId,
+						captureCapability: start.captureCapability,
+						companyId: summary.companyId,
+						connectorId: summary.connectorId,
+						returnTo: start.returnTo,
+						browserProofSha256: start.browserProofSha256,
+					});
+					response(
+						reply,
+						200,
+						{
+							schema: "qorpera.cloud-connector-oauth-started/v1",
+							connectorId: summary.connectorId,
+							authorizationUrl: started.authorizationUrl,
+							expiresAt: started.expiresAt,
+						},
+						cors,
+					);
+					return;
+				}
+				const confirm = parseOAuthConfirm(await readRequest(request));
+				// Worst case 20 s (exchange and account label) + 15 s (seal) = 35 s,
+				// inside the web app's 45 s confirm deadline and nginx's 60 s read timeout.
+				let completion: Awaited<ReturnType<CloudConnectorOAuthFlows["confirm"]>>;
+				try {
+					completion = await this.#oauth.confirm(
+						{ ticketId: (oauthConfirm as RegExpExecArray)[1], ...confirm },
+						AbortSignal.timeout(20_000),
+					);
+				} catch (error) {
+					response(
+						reply,
+						403,
+						{
+							schema: "qorpera.cloud-connector-oauth-failed/v1",
+							reason: error instanceof CloudConnectorOAuthError ? error.reason : "provider_error",
+						},
+						cors,
+					);
+					return;
+				}
+				try {
+					await this.#broker.capture(
+						{
+							ticketId: completion.ticketId,
+							captureCapability: completion.captureCapability,
+							fields: completion.fields,
+						},
+						AbortSignal.timeout(15_000),
+						completion.accountLabel,
+					);
+				} catch {
+					response(reply, 403, { schema: "qorpera.cloud-connector-oauth-failed/v1", reason: "expired" }, cors);
+					return;
+				}
+				response(
+					reply,
+					200,
+					{
+						schema: "qorpera.cloud-connector-oauth-confirmed/v1",
+						connectorId: completion.connectorId,
+						accountLabel: completion.accountLabel,
+					},
+					cors,
+				);
 				return;
 			}
 			if (path === "/v1/operations" && tokenMatches(this.#runtimeToken, request.headers.authorization)) {
@@ -333,10 +521,48 @@ export class HttpCloudSecretBrokerService {
 			response(reply, 404, { schema: "qorpera.cloud-secret-error/v1", error: "not_found" });
 		} catch {
 			if (!reply.headersSent && !reply.destroyed) {
-				response(reply, 403, { schema: "qorpera.cloud-secret-error/v1", error: "unavailable" });
+				response(reply, 403, { schema: "qorpera.cloud-secret-error/v1", error: "unavailable" }, cors);
 			} else {
 				reply.destroy();
 			}
+		}
+	}
+
+	/** The provider's redirect target. Nothing is sealed here: the browser
+	 * leaves with a fragment naming the connector and a one-time confirmation
+	 * id (or the failure), never a code or token, and only the browser that
+	 * started the sign-in can confirm it. */
+	async #oauthCallback(url: URL, reply: ServerResponse): Promise<void> {
+		if (!this.#oauth) {
+			plainPage(reply, 404, "Not found.");
+			return;
+		}
+		const query = {
+			state: url.searchParams.get("state") ?? undefined,
+			code: url.searchParams.get("code") ?? undefined,
+			error: url.searchParams.get("error") ?? undefined,
+		};
+		try {
+			const receipt = this.#oauth.receive(query);
+			redirect(
+				reply,
+				connectorReturnLocation(receipt.returnTo, receipt.connectorId, "confirm", {
+					confirmation: receipt.confirmation,
+				}),
+			);
+		} catch (error) {
+			if (error instanceof CloudConnectorOAuthError && error.returnTo && error.connectorId) {
+				redirect(
+					reply,
+					connectorReturnLocation(error.returnTo, error.connectorId, "failed", { reason: error.reason }),
+				);
+				return;
+			}
+			plainPage(
+				reply,
+				400,
+				"This sign-in link is no longer valid. Go back to Qorpera and start the connection again.",
+			);
 		}
 	}
 }
@@ -356,22 +582,42 @@ function brokerOrigin(value: string, allowLoopback = false): string {
 	return url.origin;
 }
 
+/**
+ * The runner's operation client. Several companies' brokers share one origin
+ * (each its own process behind one router), so every request names the
+ * company it is for in the query, as member captures do:
+ * `/v1/operations?company=<profileId>`. The company is the provider host's own
+ * (its compute identity's company, fixed at startup), never model input; the
+ * router uses it only to pick a broker, and the broker ignores it and
+ * authorizes every operation against the run's database claims, so a request
+ * that reaches another company's broker is refused there.
+ */
 export class HttpCloudSecretBrokerClient {
 	readonly #origin: string;
 	readonly #runtimeToken: string;
+	readonly #companyId: string;
 	readonly #fetch: typeof fetch;
 
-	constructor(options: { origin: string; runtimeToken: string; allowLoopback?: boolean; fetch?: typeof fetch }) {
+	constructor(options: {
+		origin: string;
+		runtimeToken: string;
+		companyId: string;
+		allowLoopback?: boolean;
+		fetch?: typeof fetch;
+	}) {
 		this.#origin = brokerOrigin(options.origin, options.allowLoopback);
 		if (!TOKEN.test(options.runtimeToken)) throw new Error("Cloud secret broker client token is invalid");
+		if (typeof options.companyId !== "string" || !UUID.test(options.companyId))
+			throw new Error("Cloud secret broker client company is invalid");
 		this.#runtimeToken = options.runtimeToken;
+		this.#companyId = options.companyId.toLowerCase();
 		this.#fetch = options.fetch ?? fetch;
 	}
 
 	async execute(request: CloudSecretOperationRequest, signal: AbortSignal): Promise<CloudToolContent> {
 		return withCloudDeadline(
 			async (requestSignal) => {
-				const responseValue = await this.#fetch(`${this.#origin}/v1/operations`, {
+				const responseValue = await this.#fetch(`${this.#origin}/v1/operations?company=${this.#companyId}`, {
 					method: "POST",
 					redirect: "error",
 					headers: {

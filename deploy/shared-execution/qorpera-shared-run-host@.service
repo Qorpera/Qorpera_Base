@@ -21,6 +21,7 @@ LoadCredential=qorpera-supabase-service-key:/run/qorpera-shared-execution/slots/
 LoadCredential=qorpera-native-bridge:/run/qorpera-shared-execution/slots/%i/credentials/qorpera-native-bridge
 LoadCredential=qorpera-native-object-token:/run/qorpera-shared-execution/slots/%i/credentials/qorpera-native-object-token
 LoadCredential=qorpera-office-native:/run/qorpera-shared-execution/slots/%i/credentials/qorpera-office-native
+LoadCredential=qorpera-coding-command:/run/qorpera-shared-execution/slots/%i/credentials/qorpera-coding-command
 LoadCredential=qorpera-cloud-secret-runtime:/run/qorpera-shared-execution/slots/%i/credentials/qorpera-cloud-secret-runtime
 LoadCredential=qorpera-cloud-secret-ca:/run/qorpera-shared-execution/slots/%i/credentials/qorpera-cloud-secret-ca
 LoadCredential=qorpera-native-provider-master-key:/run/qorpera-shared-execution/slots/%i/credentials/qorpera-native-provider-master-key
