@@ -22,7 +22,6 @@
 - Render room replies with immutable server-projected staff identity and preserve accepted human messages even when no agent is eligible.
 
 - Use a length-neutral email code hint so sign-in instructions remain accurate with the configured eight-digit codes.
-- Accept valid Unicode pause reasons using the public SQL character limit.
 - Submit team-room messages through the public room-post contract, preserve room retry identity, and match room attachments/run displays to the supported interfaces.
 - Keep the rail's search field, keyboard focus and scroll position when the rail refreshes: dead-key, IME and phone-keyboard typing is no longer broken, and a collapsed rail stops filtering by a search it hides until it opens again. A refresh rebuilds only the rows that changed, so moving between agents keeps their figures and an error notice is not announced again, and figures repaint sharp when the window moves to a screen of another pixel density.
 - Make primary buttons inside Settings readable; they rendered white text on the light grey settings button.
@@ -45,7 +44,6 @@
 
 - Record the source commit and runtime bundle identity in web deployment artifacts; require clean source for release builds.
 
-- Add company pause/resume and observed-version execution ceilings through the documented member control plane.
 - Add provider sign-in through the exported native login SDK when an accepted public gateway is configured; keep login capability handling outside the UI and require explicit recovery after uncertainty.
 - Submit conversation work through the shared sponsored-turn API with explicit member account selection, exact retry identity, execution history and observed-run stop controls.
 - Discover, enable and revoke existing member model accounts through the shared client SDK, with refresh recovery after uncertain changes.
@@ -74,6 +72,8 @@
 
 ### Removed
 
+- Remove Company execution from Settings → Company: the pause and resume buttons, the spend, token and wake status line, and the monthly spend, monthly token and hourly wake limit fields. Notices about a reached company limit or a paused company no longer show above the composer, and older ones are skipped when notices load; the "all company computers are in use" notice stays.
+- Remove the Organization and Approvals cards from Settings → Company, and their pages: the Organization page with its project pages, and the read-only Approvals list (it only gathered the old authorization requests the cloud runtime never sends). Old links open the company home. Cards an agent raises in its own thread, such as an approval card, are unchanged.
 - Remove the member notification inbox: the rail's Notifications row and its unread-count polling, and the Notifications page and route (old links open the company home). Execution notices and explicit acknowledgment remain available inline in the workspace.
 - Remove the standalone Friends (`#/friends`) and Invitations (`#/invitations`) pages and the separate Invitations menu item; both live on the Settings Friends tab.
 - Remove Stop sharing with agents, Share with all agents and Reconnect from a connected service in Settings → Connections → Services. A company connection is always available to every agent, new hires included, so a connected service shows that line and one action, Disconnect; a connection not yet marked for all agents reads the same.

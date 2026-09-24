@@ -200,6 +200,15 @@ describe("settings session lifecycle", () => {
 		expect(f.root.querySelector<HTMLElement>(".frame")!.inert).toBe(true);
 		click(f.root, "#settings-tab-company");
 		expect(f.root.querySelector('.settings-dialog a[href$="/file"]')).not.toBeNull();
+		// No company execution controls, and no Organization or Approvals pages to link to.
+		expect(
+			f.root.querySelector(
+				'.settings-dialog :is(.company-execution, .settings-execution, a[href$="/organization"], a[href$="/approvals"])',
+			),
+		).toBeNull();
+		expect(f.root.querySelector(".settings-dialog")?.textContent).not.toMatch(
+			/Company execution|Organization|Approvals/,
+		);
 		expect(f.root.querySelector('.account-popover a[href$="/file"]')).toBeNull();
 		click(f.root, ".settings-close");
 		expect(f.root.querySelector(".settings-dialog")).toBeNull();

@@ -3,19 +3,7 @@
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-export type CompanySection =
-	| "home"
-	| "chat"
-	| "staff"
-	| "approvals"
-	| "file"
-	| "snapshot"
-	| "proposal"
-	| "organization"
-	| "project"
-	| "team"
-	| "new"
-	| "meet";
+export type CompanySection = "home" | "chat" | "staff" | "file" | "snapshot" | "proposal" | "team" | "new" | "meet";
 
 export type Route =
 	| { name: "hub" }
@@ -31,24 +19,10 @@ export function parseRoute(hash: string): Route {
 		const section = parts[2];
 		const id = parts[3];
 		if (!section) return { name: "company", profileId, section: "home" };
-		if (
-			(section === "chat" ||
-				section === "staff" ||
-				section === "snapshot" ||
-				section === "proposal" ||
-				section === "project") &&
-			id
-		) {
+		if ((section === "chat" || section === "staff" || section === "snapshot" || section === "proposal") && id) {
 			return { name: "company", profileId, section, id };
 		}
-		if (
-			section === "approvals" ||
-			section === "file" ||
-			section === "organization" ||
-			section === "team" ||
-			section === "new" ||
-			section === "meet"
-		) {
+		if (section === "file" || section === "team" || section === "new" || section === "meet") {
 			return { name: "company", profileId, section, ...(section === "file" && id === "history" ? { id } : {}) };
 		}
 		return { name: "company", profileId, section: "home" };

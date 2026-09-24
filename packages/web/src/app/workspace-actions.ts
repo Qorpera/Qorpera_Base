@@ -23,7 +23,7 @@ export interface WorkspaceActions {
 		draft: GroupChatDraft,
 		signal: AbortSignal,
 	) => Promise<void>;
-	/** Company notices (paused, limit reached). The conversation shows them above its composer. */
+	/** Company notices (all company computers in use). The conversation shows them above its composer. */
 	notificationHost?: HTMLElement;
 	computer?: WebCompanyComputer;
 	/** The company's open computers, kept across the threads a member moves between. */

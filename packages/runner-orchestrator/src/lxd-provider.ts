@@ -208,7 +208,10 @@ function liveCompanyAuthority(config: LxdCloudRunnerProviderConfig, jobType: str
  * match, but a later configuration or credential (an office credential is
  * replaced with every computer generation) does not make its journal
  * unreadable. Otherwise one rotation strands every kept journal, reconcile and
- * the capacity inventory refuse, and the node stops taking work. */
+ * the capacity inventory refuse, and the node stops taking work. The coding
+ * command route is node configuration, not company routing: a retired guest
+ * that was given none (every journal kept from before a node turned coding on)
+ * or another one stays readable. */
 function sameCompanyRuntimeAuthority(
 	config: LxdCloudRunnerProviderConfig,
 	journal: LxdProviderJournal,
@@ -230,7 +233,7 @@ function sameCompanyRuntimeAuthority(
 				...value,
 				configurationSha256: undefined,
 				office: value.office ? { environmentId: value.office.environmentId, url: value.office.url } : undefined,
-				codingCommand: value.codingCommand ? { url: value.codingCommand.url } : undefined,
+				codingCommand: undefined,
 			}),
 		);
 	return route(recorded) === route(expected);
