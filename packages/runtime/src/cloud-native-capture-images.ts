@@ -47,18 +47,20 @@ export class CloudNativeCaptureImages {
 		// Compaction can retain a summary after dropping the original image. Its
 		// source authority still belongs to this run's read set.
 		const assets = [...new Map([...this.#issued.values()].map((asset) => [asset.assetId, asset])).values()];
-		let batch: CompanyComputerScreenshotAsset[] = [];
+		const batches: CompanyComputerScreenshotAsset[][] = [];
 		let bytes = 0;
 		for (const asset of assets) {
-			if (batch.length === ASSERT_BATCH_COUNT || bytes + asset.bytes > ASSERT_BATCH_BYTES) {
-				await this.#reader.assertReadable(batch, signal);
-				batch = [];
-				bytes = 0;
+			const batch = batches.at(-1);
+			if (!batch || batch.length === ASSERT_BATCH_COUNT || bytes + asset.bytes > ASSERT_BATCH_BYTES) {
+				batches.push([asset]);
+				bytes = asset.bytes;
+			} else {
+				batch.push(asset);
+				bytes += asset.bytes;
 			}
-			batch.push(asset);
-			bytes += asset.bytes;
 		}
-		if (batch.length) await this.#reader.assertReadable(batch, signal);
+		// Independent read-only checks: run together so a long run does not pay one round trip per batch in turn.
+		await Promise.all(batches.map((batch) => this.#reader.assertReadable(batch, signal)));
 		signal.throwIfAborted();
 	}
 

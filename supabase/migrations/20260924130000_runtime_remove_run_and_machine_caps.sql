@@ -292,12 +292,56 @@ select pg_temp.cap_patch('public.qorpera_manage_agent_worker(jsonb,jsonb)'::regp
 			or (v_worker.species = 'coding' and v_worker.sequence >= 64) then$old$,
 	$new$		if v_worker.species = 'in-house' and v_worker.state = 'cancelled' then$new$);
 -- A run may chain any number of computer starts: past eight, the older starts
--- are left out of its continuation (like a worker's earlier history) instead
--- of failing the run.
+-- are left out of its continuation (marked, like a worker's earlier history)
+-- instead of failing the run.
 select pg_temp.cap_patch('public.qorpera_office_run_continuation(public.qorpera_execution_runs,integer)'::regprocedure,
 	$old$ if p_depth not between 0 and 7 then raise exception 'Office continuation ancestry exceeds its bound' using errcode='54000'; end if;$old$,
 	$new$ if p_depth < 0 then raise exception 'Office continuation ancestry exceeds its bound' using errcode='54000'; end if;
- if p_depth > 7 then return null; end if;$new$);
+ if p_depth > 7 then return jsonb_build_object('schema','qorpera.office-start-continuation/v1','omitted','earlier history'); end if;$new$);
+-- A continuation carried every completed result and send of the earlier run
+-- and failed the next run past 32 MiB, so a run that did a lot of work could
+-- never hear back from its workers or its computer. It now carries the newest
+-- results and sends that fit (per level: 6 MiB and 2 MiB for a worker report,
+-- 2 MiB and 1 MiB for each of up to eight computer starts) and counts the rest.
+create function public.qorpera_continuation_recent(p_items jsonb, p_bytes bigint)
+returns jsonb language sql immutable set search_path = '' as $$
+	select coalesce(jsonb_agg(kept.item order by kept.ordinal),'[]'::jsonb)
+	from (select item, ordinal, sum(octet_length(item::text)) over (order by ordinal desc) as tail
+		from jsonb_array_elements(coalesce(p_items,'[]'::jsonb)) with ordinality as listed(item, ordinal)) kept
+	where kept.tail <= p_bytes
+$$;
+revoke all on function public.qorpera_continuation_recent(jsonb,bigint) from public, anon, authenticated;
+select pg_temp.cap_patch('public.qorpera_worker_run_continuation(public.qorpera_execution_runs,integer)'::regprocedure,
+	$old$	v_inputs jsonb; v_receipts jsonb; v_sends jsonb; v_result jsonb;$old$,
+	$new$	v_inputs jsonb; v_receipts jsonb; v_sends jsonb; v_result jsonb; v_kept_receipts jsonb; v_kept_sends jsonb;$new$);
+select pg_temp.cap_patch('public.qorpera_worker_run_continuation(public.qorpera_execution_runs,integer)'::regprocedure,
+	$old$	v_result := jsonb_build_object('schema','qorpera.worker-completion-continuation/v1',$old$,
+	$new$	v_kept_receipts := public.qorpera_continuation_recent(v_receipts,6291456);
+	v_kept_sends := public.qorpera_continuation_recent(v_sends,2097152);
+	v_result := jsonb_build_object('schema','qorpera.worker-completion-continuation/v1',$new$);
+select pg_temp.cap_patch('public.qorpera_worker_run_continuation(public.qorpera_execution_runs,integer)'::regprocedure,
+	$old$		'receipts',v_receipts,'priorSends',v_sends,
+		'earlier',public.qorpera_worker_run_continuation(v_parent, p_depth + 1));$old$,
+	$new$		'receipts',v_kept_receipts,'priorSends',v_kept_sends,
+		'earlier',public.qorpera_worker_run_continuation(v_parent, p_depth + 1))
+		|| jsonb_strip_nulls(jsonb_build_object(
+			'receiptsOmitted',nullif(jsonb_array_length(v_receipts) - jsonb_array_length(v_kept_receipts),0),
+			'priorSendsOmitted',nullif(jsonb_array_length(v_sends) - jsonb_array_length(v_kept_sends),0)));$new$);
+select pg_temp.cap_patch('public.qorpera_office_run_continuation(public.qorpera_execution_runs,integer)'::regprocedure,
+	$old$ v_parent_wake public.qorpera_wake_occurrences%rowtype; v_inputs jsonb; v_receipts jsonb; v_sends jsonb; v_result jsonb;$old$,
+	$new$ v_parent_wake public.qorpera_wake_occurrences%rowtype; v_inputs jsonb; v_receipts jsonb; v_sends jsonb; v_result jsonb;
+ v_kept_receipts jsonb; v_kept_sends jsonb;$new$);
+select pg_temp.cap_patch('public.qorpera_office_run_continuation(public.qorpera_execution_runs,integer)'::regprocedure,
+	$old$ v_result:=jsonb_build_object('schema','qorpera.office-start-continuation/v1',$old$,
+	$new$ v_kept_receipts:=public.qorpera_continuation_recent(v_receipts,2097152);
+ v_kept_sends:=public.qorpera_continuation_recent(v_sends,1048576);
+ v_result:=jsonb_build_object('schema','qorpera.office-start-continuation/v1',$new$);
+select pg_temp.cap_patch('public.qorpera_office_run_continuation(public.qorpera_execution_runs,integer)'::regprocedure,
+	$old$  'receipts',v_receipts,'priorSends',v_sends,'earlierOfficeStart',public.qorpera_office_run_continuation(v_parent,p_depth+1));$old$,
+	$new$  'receipts',v_kept_receipts,'priorSends',v_kept_sends,'earlierOfficeStart',public.qorpera_office_run_continuation(v_parent,p_depth+1))
+  || jsonb_strip_nulls(jsonb_build_object(
+   'receiptsOmitted',nullif(jsonb_array_length(v_receipts)-jsonb_array_length(v_kept_receipts),0),
+   'priorSendsOmitted',nullif(jsonb_array_length(v_sends)-jsonb_array_length(v_kept_sends),0)));$new$);
 -- A todo may be worked by any number of workers over its life (was eight).
 select pg_temp.cap_patch('public.qorpera_manage_agent_worker(jsonb,jsonb)'::regprocedure,
 	$old$		if (select count(*) from public.qorpera_runtime_workers worker where worker.todo_id = v_todo.id) >= 8 then

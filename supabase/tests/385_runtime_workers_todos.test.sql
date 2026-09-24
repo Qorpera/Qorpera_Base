@@ -280,6 +280,26 @@ begin
 		and v_continuation #>> '{completions,0,summary}' like 'Alfa 49%' and v_continuation #>> '{todos,0,todoKey}' = 'market-scan'
 		and jsonb_array_length(v_continuation -> 'priorSends') = 2 and jsonb_array_length(v_continuation -> 'parentInputs') = 1,
 		'The continuation carries the result, the todo and the parent''s own history');
+	-- Runtime v92: a parent that did a lot of work still hears back. Past the old 32 MiB the continuation
+	-- failed on every attempt; now it carries the newest results that fit and counts the rest.
+	-- Probed in a subtransaction.
+	begin
+		insert into public.qorpera_run_operation_receipts(id,run_id,job_id,assignment_id,logical_operation_key,operation_kind,
+			input_sha256,downstream_idempotency_sha256,status,result,completed_at)
+		select extensions.gen_random_uuid(),v_parent,run.job_id,
+			(select assignment_id from public.qorpera_run_operation_receipts where run_id = v_parent limit 1),
+			'bulk-' || n,'cloud_tool',repeat('a',64),repeat('b',64),'completed',
+			jsonb_build_object('content',(select string_agg(md5(n::text || ':' || g::text || random()::text),'') from generate_series(1,1400) g)),
+			clock_timestamp()
+		from public.qorpera_execution_runs run, generate_series(1,800) n where run.id = v_parent;
+		v_continuation := public.qorpera_run_continuation((select run from public.qorpera_execution_runs run where run.id = v_wake.run_id));
+		perform pg_temp.wake_assert(octet_length(v_continuation::text) <= 33554432 and (v_continuation ->> 'receiptsOmitted')::int > 600
+			and v_continuation #>> '{receipts,-1,logicalOperationKey}' = 'bulk-800' and jsonb_array_length(v_continuation -> 'priorSends') = 2,
+			'A parent with over 32 MiB of results is carried by its newest results, with the rest counted');
+		raise exception 'rollback-large-continuation-probe';
+	exception when raise_exception then
+		if sqlerrm <> 'rollback-large-continuation-probe' then raise; end if;
+	end;
 	v_decision := pg_temp.worker('{"action":"decide","operationKey":"a1","todoKey":"market-scan","workerKey":"prices","decision":"accept","note":"Verified."}',v_binding);
 	perform pg_temp.wake_assert(v_decision #>> '{worker,decision,decision}' = 'accepted'
 		and ((v_decision #>> '{publication,text}')::jsonb #>> '{workers,0,decision,decision}') = 'accepted'
