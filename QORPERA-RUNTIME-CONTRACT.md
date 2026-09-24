@@ -467,6 +467,16 @@ usage limits and the usage-limit notification in section 17. Ratified
 2026-09-01 as a low-priority launch item: most members will run on
 subscriptions, which self-limit.
 
+> **Amended 2026-09-24.** The founder removed the company execution ceilings
+> as policy, not only from Settings: there is no per-company wake-rate, spend
+> or token ceiling, and no tripped-ceiling notice (bundle v89,
+> `20260924080000_runtime_remove_company_ceilings.sql`). What still bounds
+> work is the running-machine limit at machine start, each connection's own
+> quota at run admission, and the provider's usage limits (section 17). The
+> stop is no longer a member operation: it remains the operator brake that
+> pauses a company during a runtime cut (no new wakes, running work fenced),
+> and it notifies no one.
+
 ## 8. Wake bus
 
 Every activation enters through one durable, typed wake bus. A wake is admitted
@@ -2256,7 +2266,8 @@ while Azure backup/overflow remains disabled.
 30. A company's ceilings hold without agent cooperation: a deliberately
     runaway loop is stopped at its wake-rate or spend ceiling, the founder
     stop operation pauses the company, and the founder is notified from the
-    control plane.
+    control plane. (Amended 2026-09-24, see 7.4: only the machine limit and
+    the operator stop remain.)
 31. **Deferred post-build enablement gate, not a launch prerequisite:** before
     Azure backup/overflow is enabled, demand beyond local capacity is attributable
     to Azure placements and rented allocation intervals. The view distinguishes

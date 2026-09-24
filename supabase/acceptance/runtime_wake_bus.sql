@@ -339,32 +339,24 @@ begin
 end $$;
 $test$);
 
-select pg_temp.wake_acceptance_case('wake_rate_ceiling_and_founder_stop',$test$
+select pg_temp.wake_acceptance_case('no_wake_ceiling_and_operator_stop',$test$
 do $$
 declare v_binding jsonb := current_setting('qorpera_test.wake_binding')::jsonb; v_base public.qorpera_execution_runs%rowtype;
-	v_first jsonb; v_second jsonb; v_occurrence public.qorpera_wake_occurrences%rowtype; v_used bigint;
+	v_first jsonb; v_second jsonb; v_notifications bigint;
 begin
 	select * into strict v_base from public.qorpera_execution_runs where id = (v_binding ->> 'runId')::uuid;
 	perform public.qorpera_begin_native_company_execution(v_binding,repeat('7',64));
 	perform pg_temp.wake_public_send(v_binding,'progress');
-	-- The founder sets the wake ceiling to one more autonomous wake than this hour already holds.
-	v_used := public.qorpera_company_wakes_last_hour(v_base.profile_id);
-	perform pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001');
-	perform public.qorpera_set_company_execution_ceiling(v_base.profile_id,250000000,100000000,0,v_used + 1);
-	perform pg_temp.path_claims('service_role');
+	-- There is no company wake ceiling (2026-09-24): back-to-back delegations are both admitted.
 	v_first := public.qorpera_send_coworker_message(v_binding,'30000000-0000-4000-8000-000000000031','ceiling-1','First delegation.');
 	perform pg_temp.wake_assert(v_first ->> 'status' = 'queued' and (select status = 'queued' from public.qorpera_wake_occurrences
 		where id = (v_first ->> 'occurrenceId')::uuid),'First autonomous wake admitted');
 	v_second := public.qorpera_send_coworker_message(v_binding,'30000000-0000-4000-8000-000000000032','ceiling-2','Second delegation.');
-	select * into strict v_occurrence from public.qorpera_wake_occurrences where id = (v_second ->> 'occurrenceId')::uuid;
-	perform pg_temp.wake_assert(v_occurrence.status = 'cancelled' and v_occurrence.blocked_reason = 'Company wake ceiling tripped',
-		'Second wake stopped at the ceiling without agent cooperation');
-	perform pg_temp.wake_assert(exists(select 1 from public.qorpera_company_ceiling_trips where profile_id = v_base.profile_id
-		and dimension = 'wakes' and run_id = v_occurrence.id),'Ceiling trip recorded');
-	perform pg_temp.wake_assert(exists(select 1 from public.qorpera_member_notifications where profile_id = v_base.profile_id
-		and user_id = '30000000-0000-4000-8000-000000000001' and kind = 'company_ceiling_tripped' and subject ->> 'dimension' = 'wakes'),
-		'Founder notified from the control plane');
-	-- The founder stop: running work is fenced at its next effect, new turns and posts are refused.
+	perform pg_temp.wake_assert((select status = 'queued' from public.qorpera_wake_occurrences
+		where id = (v_second ->> 'occurrenceId')::uuid),'Second autonomous wake admitted without a company ceiling');
+	select count(*) into v_notifications from public.qorpera_member_notifications where profile_id = v_base.profile_id;
+	-- The operator stop (an operator session with a founder's claims): running work is fenced at its next
+	-- effect, new turns and posts are refused, and no member is notified.
 	perform pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001');
 	perform public.qorpera_set_company_execution_pause(v_base.profile_id,true,'Acceptance stop');
 	perform pg_temp.path_claims('service_role');
@@ -376,8 +368,8 @@ begin
 	perform pg_temp.wake_assert(v_second = '[]'::jsonb,'Nothing materializes while paused');
 	perform pg_temp.wake_assert((select blocked_reason = 'Company execution is paused' and status = 'queued'
 		from public.qorpera_wake_occurrences where id = (v_first ->> 'occurrenceId')::uuid),'Queued wakes wait while paused');
-	perform pg_temp.wake_assert(exists(select 1 from public.qorpera_member_notifications where profile_id = v_base.profile_id
-		and kind = 'company_execution_paused'),'Founders notified of the stop');
+	perform pg_temp.wake_assert((select count(*) from public.qorpera_member_notifications
+		where profile_id = v_base.profile_id) = v_notifications,'The stop notifies no member');
 	-- Resume: work continues.
 	perform pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001');
 	perform public.qorpera_set_company_execution_pause(v_base.profile_id,false,null);

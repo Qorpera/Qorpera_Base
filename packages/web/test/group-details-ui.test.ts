@@ -4,7 +4,20 @@ import { CompanyController } from "../src/app/company.ts";
 import { GroupUpdateNotWrittenError } from "../src/app/update-group.ts";
 import { ConversationView } from "../src/app/views/conversation.ts";
 import type { WorkspaceActions } from "../src/app/workspace-actions.ts";
-import { deferred, fixture, id, profileA, session, settle, staff, team, timestamp, userA } from "./fixtures.ts";
+import {
+	deferred,
+	fixture,
+	id,
+	placeholderLabel,
+	profileA,
+	session,
+	settle,
+	staff,
+	team,
+	timestamp,
+	userA,
+	visibleText,
+} from "./fixtures.ts";
 
 const cleanup: (() => void)[] = [];
 beforeEach(() => {
@@ -94,7 +107,8 @@ describe("group details from the conversation header", () => {
 		expect(f.header.getAttribute("aria-expanded")).toBe("false");
 		const panel = f.open();
 		expect(f.header.getAttribute("aria-expanded")).toBe("true");
-		expect(panel.textContent).toContain("Loading group details…");
+		expect(placeholderLabel(panel)).toBe("Loading group details");
+		expect(visibleText(panel)).not.toContain("Loading");
 		await settle();
 		expect(f.rpc).toHaveBeenCalledWith("qorpera_list_company_rooms", { p_profile_id: profileA.profileId });
 		expect(field("name").value).toBe("Planning");
@@ -118,7 +132,7 @@ describe("group details from the conversation header", () => {
 		const panel = f.open();
 		await settle();
 		expect(panel.textContent).not.toContain(staff.displayName);
-		expect(panel.textContent).not.toContain("Loading group details…");
+		expect(panel.querySelector(".skeleton-group")).toBeNull();
 		button("Retry").click();
 		await settle();
 		expect(f.rpc).toHaveBeenCalledTimes(2);

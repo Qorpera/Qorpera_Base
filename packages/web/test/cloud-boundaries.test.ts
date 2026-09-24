@@ -4,9 +4,8 @@ import { CloudApi } from "../src/cloud/api.ts";
 import { CloudRpcError } from "../src/cloud/client.ts";
 import { ObjectReader } from "../src/cloud/objects.ts";
 import { collectPages } from "../src/cloud/pagination.ts";
-import { probeRpcs } from "../src/cloud/probe.ts";
 import { figureElement } from "../src/ui/avatar.ts";
-import { deferred, fixture, id, profileA, session, settle, stubFigureMotion, timestamp, userA } from "./fixtures.ts";
+import { fixture, id, profileA, session, settle, stubFigureMotion, timestamp, userA } from "./fixtures.ts";
 
 afterEach(() => {
 	document.body.replaceChildren();
@@ -14,39 +13,6 @@ afterEach(() => {
 	vi.unstubAllGlobals();
 });
 describe("cloud boundary regressions", () => {
-	it.each([new TypeError("Failed to fetch"), new CloudRpcError("probe", { message: "Bad gateway" }, 502)])(
-		"does not mark unreachable RPCs present (%s)",
-		async (error) => {
-			const { cloud } = fixture();
-			vi.mocked(cloud.rpc).mockRejectedValue(error);
-			const results = await probeRpcs(cloud);
-			expect(results.length).toBeGreaterThan(30);
-			expect(results.every((result) => result.state === "unreachable")).toBe(true);
-		},
-	);
-
-	it("distinguishes permission refusal and missing signatures", async () => {
-		const { cloud } = fixture();
-		vi.mocked(cloud.rpc)
-			.mockRejectedValueOnce(new CloudRpcError("probe", { message: "Denied", code: "42501" }, 403))
-			.mockRejectedValue(new CloudRpcError("probe", { message: "Missing", code: "PGRST202" }, 404));
-		const results = await probeRpcs(cloud);
-		expect(results[0]?.state).toBe("denied");
-		expect(results[1]?.state).toBe("missing");
-	});
-
-	it("stops probing on account disposal before sending another request", async () => {
-		const { cloud } = fixture();
-		const response = deferred<unknown>();
-		vi.mocked(cloud.rpc).mockReturnValue(response.promise);
-		const abort = new AbortController();
-		const run = probeRpcs(cloud, undefined, abort.signal);
-		abort.abort();
-		response.resolve(null);
-		await run;
-		expect(cloud.rpc).toHaveBeenCalledTimes(1);
-	});
-
 	it("reads session continuation pages using the deployed cursor shape", async () => {
 		const { cloud } = fixture();
 		const wire = {
