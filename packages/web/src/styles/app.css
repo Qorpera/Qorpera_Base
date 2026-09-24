@@ -267,14 +267,14 @@ label > input, label > select { font-weight: 400; }
 .rail-pinned.is-empty { display: none; }
 .rail-pin {
 	position: relative; flex: none; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 5px;
-	width: 100px; height: 100px; padding: 8px 6px 6px; border-radius: 12px; color: var(--text); text-align: center;
+	width: 86px; height: 86px; padding: 7px 5px 5px; border-radius: 12px; color: var(--text); text-align: center;
 	-webkit-touch-callout: none;
 }
 .rail-pin:hover { background: var(--rail-hover); text-decoration: none; }
 .rail-pin.active, .rail-pin.active:hover { background: var(--rail-selection); color: #fff; }
-.rail-pin-stand { position: relative; display: grid; place-items: center; width: 64px; height: 64px; }
-.rail-pin .figure { width: 64px; height: 64px; }
-.rail-pin-name { max-width: 100%; font-size: 12px; font-weight: 600; line-height: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rail-pin-stand { position: relative; display: grid; place-items: center; width: 52px; height: 52px; }
+.rail-pin .figure { width: 52px; height: 52px; }
+.rail-pin-name { max-width: 100%; font-size: 11.5px; font-weight: 600; line-height: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rail-pin:hover .rail-row-status { border-color: var(--rail-hover); }
 .rail-pin.active .rail-row-status { border-color: var(--rail-selection); }
 .rail-drop-slot { display: none; }

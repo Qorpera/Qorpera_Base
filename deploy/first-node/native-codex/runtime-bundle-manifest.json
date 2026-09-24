@@ -18,7 +18,7 @@
     "wakeAndSilence": "1df801e59da549c7fa89b4f6a79325eb8c550d37c630ae16ec5ee69b7962b4c8",
     "contextComposer": "d444119bce396aab3e5f24a25bb71b1303cca1d8182f9f92f9818c63c9c97eaf",
     "providerBootstrap": "5800abe8aee05ef803157c6fea69944762f0066d0a4673c8d783415c2b977bd7",
-    "authorization": "e62dc4294649db9a016e39b02c1cd3e73ed9cba4e47d617ce883fecd7a6ae49a",
+    "authorization": "54e506253514af0168b77d1a76eb76f177b270d8baf5255b50ee6fda32df46a7",
     "inboundSafety": "71d6b9c43356ac0de69caa1877943f074d088fa34753d520256cba6b01c06924",
     "outboundSafety": "ae9e405140fdcc0dadee220adff67583dec5f89d2e4876b317ffe8c55ec8aa6b",
     "interactionSurfaces": "f311ad2b4f8a826d38205067119ce5c595b2d9ffc6da4dca810169326ab02a6a",
@@ -617,7 +617,7 @@
     "packages/runtime/src/native-provider-account.ts": "9dbb6d065639253c5584876adbeb70f2803de29575ae7de7d1e0f0bbe0442b2b",
     "packages/runtime/src/native-provider-usage.ts": "935086f12167064ae71e90b44af1cbfe28b0d64a59ec2ba685157f45d320297c",
     "packages/runtime/src/systemd-credential.ts": "1d3eb8038a369c58418cbd8248aecf457662cbb3430cc84847235c2222a82478",
-    "scripts/generate-cloud-runtime-bundle.mjs": "c4a5f3a6f54b00c6d0b133e4f606628ad4b25cbd4c255460c66c25917cd063cf",
+    "scripts/generate-cloud-runtime-bundle.mjs": "470bf548f6342c43ef724e33e935c9fdfcb574e2e3f585cbc1be840e2b02db6e",
     "scripts/native-company-artifact.mjs": "e394bc799104f188769de07cd3be14e6c732a1a672113ea45d349a29d8e0ca63",
     "scripts/package-coding-executor.mjs": "292c557c75728d08e2fd2574c75cc07634f36bca629981709373f62af90a9272",
     "scripts/package-coding-guest.mjs": "04b1d63699aef4f05a5b800b06adff366e1607b1eaac53da8694d1e7e5d84ad3",
@@ -987,6 +987,6 @@
     "supabase/migrations/20260924050000_runtime_bundle_activation_v87.sql": "10b6f5bad866c9a5736e868f10cae67194c97644786557b4c9ce028bd1bb970e",
     "supabase/migrations/20260924060000_coding_repository_connector.sql": "0c716a4b0ffe4c32862574996b63ea849a638ed3a7aea05cfe5327aa8fcd0a7c",
     "supabase/migrations/20260924070000_runtime_bundle_activation_v88.sql": "e7793931b4396799e6b664a3317b29a9848782ad32a873d2c586e3706ef8362d",
-    "supabase/migrations/20260924100000_company_sidebar_sections.sql": "56d69ecb26346be7074d02d0ae3e6bd3e506ee22b5c664226757d5bd02e3da4f"
+    "supabase/migrations/20260924130000_company_sidebar_sections.sql": "56d69ecb26346be7074d02d0ae3e6bd3e506ee22b5c664226757d5bd02e3da4f"
   }
 }

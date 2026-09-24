@@ -151,7 +151,7 @@ profile RPCs; RLS is the second read boundary.
 - `qorpera_list_profile_staff`
 - `qorpera_put_staff_provider_model`
 
-### Company sidebar (2) — bundle v90
+### Company sidebar (2) — bundle v92 (slot pending)
 
 - `qorpera_read_company_sidebar(p_profile_id)` → `qorpera.company-sidebar/v1`:
   `sections` (`sectionId`, `name`, in order), `placements` (`staffAgentId`,

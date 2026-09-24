@@ -55,18 +55,16 @@ export function subscribeProfileRealtime(
  * one, and the rail's poll still reads the sidebar. Its health is not the company's
  * live-updates badge. */
 export function subscribeSidebarRealtime(cloud: Cloud, profileId: string, onChange: () => void): RealtimeSubscription {
-	const channel: RealtimeChannel = cloud.supabase
-		.channel(`qorpera-sidebar-${profileId}-${crypto.randomUUID()}`)
-		.on(
-			"postgres_changes",
-			{
-				event: "*",
-				schema: "public",
-				table: "qorpera_company_sidebar_revisions",
-				filter: `profile_id=eq.${profileId}`,
-			},
-			onChange,
-		);
+	const channel: RealtimeChannel = cloud.supabase.channel(`qorpera-sidebar-${profileId}-${crypto.randomUUID()}`).on(
+		"postgres_changes",
+		{
+			event: "*",
+			schema: "public",
+			table: "qorpera_company_sidebar_revisions",
+			filter: `profile_id=eq.${profileId}`,
+		},
+		onChange,
+	);
 	channel.subscribe();
 	return {
 		stop() {

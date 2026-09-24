@@ -442,7 +442,7 @@ function pinCard(model: AgentModel, href: string): HTMLElement {
 		h(
 			"span",
 			{ class: "rail-pin-stand" },
-			agentFigure(model, model.displayName, { size: 64, activity: look.figure }),
+			agentFigure(model, model.displayName, { size: 52, activity: look.figure }),
 			statusDisc(look, "rail-row-status"),
 		),
 		h("strong", { class: "rail-pin-name" }, model.displayName),
