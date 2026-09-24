@@ -557,12 +557,37 @@ export function mountApplication(
 			);
 			return;
 		}
+		// Agents are Company File documents. Each write re-checks that this
+		// member still holds the authority the company showed when it began.
+		const agents = () => {
+			const team = controller.store.get().team;
+			if (!team?.capabilities.authorize) throw new Error(t("Only an owner or admin can change agents."));
+			return createWebCompanyAgents(
+				new WebCompanyFiles(cloud, controller.profile, controller.userId, team.role, controller.signal, () => {
+					const now = controller.store.get();
+					if (
+						disposed ||
+						company !== controller ||
+						auth.userId !== controller.userId ||
+						now.accessLost ||
+						!now.team?.capabilities.authorize
+					)
+						throw new Error(t("Company access changed."));
+				}),
+			);
+		};
+		const agentActions: WorkspaceActions = {
+			createAgent: (_profileId, draft, signal) => agents().create(draft, signal),
+			updateAgent: (agent, draft, signal) => agents().update(agent, draft, signal),
+			deleteAgent: (agent, signal) => agents().delete(agent, signal),
+		};
 		// First run is a moment, not a workspace: the rail stays away until the
 		// Co-Founder has a face.
 		rail.hidden = route.section === "meet" || controller.store.get().accessLost === true;
 		const context = shellContext(authState.user, route);
 		renderTopbar(topbar, context, rail.hidden ? undefined : controller);
-		if (!rail.hidden) renderRail(rail, controller, context);
+		if (!rail.hidden)
+			renderRail(rail, controller, { ...context, agentActions: { ...agentActions, ...workspaceActions } });
 		if (navigationFocus) {
 			const target =
 				navigationFocus === "rail"
@@ -636,29 +661,6 @@ export function mountApplication(
 			newConversation = undefined;
 		}
 		if (route.section !== "meet") meetState = {};
-		// Agents are Company File documents. Each write re-checks that this
-		// member still holds the authority the company showed when it began.
-		const agents = () => {
-			const team = controller.store.get().team;
-			if (!team?.capabilities.authorize) throw new Error(t("Only an owner or admin can change agents."));
-			return createWebCompanyAgents(
-				new WebCompanyFiles(cloud, controller.profile, controller.userId, team.role, controller.signal, () => {
-					const now = controller.store.get();
-					if (
-						disposed ||
-						company !== controller ||
-						auth.userId !== controller.userId ||
-						now.accessLost ||
-						!now.team?.capabilities.authorize
-					)
-						throw new Error(t("Company access changed."));
-				}),
-			);
-		};
-		const agentActions: WorkspaceActions = {
-			createAgent: (_profileId, draft, signal) => agents().create(draft, signal),
-			updateAgent: (agent, draft, signal) => agents().update(agent, draft, signal),
-		};
 		switch (route.section) {
 			case "new": {
 				if (!newConversation) {

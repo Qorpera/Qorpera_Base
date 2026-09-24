@@ -269,4 +269,37 @@ export const WORKSPACE: Record<string, string> = {
 	"Your membership in this company could not be read.": "Dit medlemskab af virksomheden kunne ikke læses.",
 	"The cloud could not be reached. {error}": "Skyen kunne ikke nås. {error}",
 	"Loading agents": "Henter agenter",
+	// app/views/shell.ts: sections, pins and the right-click menu
+	"Only owners, admins and contributors can change the company's sections.":
+		"Kun ejere, administratorer og bidragydere kan ændre virksomhedens sektioner.",
+	"The sidebar could not be changed. Try again.": "Sidepanelet kunne ikke ændres. Prøv igen.",
+	"Pinned agents": "Fastgjorte agenter",
+	"Drop here to pin": "Slip her for at fastgøre",
+	Unassigned: "Uden sektion",
+	"New section": "Ny sektion",
+	"Section name": "Sektionens navn",
+	"A section called {name} already exists.": "Der findes allerede en sektion, der hedder {name}.",
+	Unpin: "Frigør",
+	Pin: "Fastgør",
+	"Move to": "Flyt til",
+	Rename: "Omdøb",
+	"Copy conversation ID": "Kopiér samtale-id",
+	"The conversation ID could not be copied.": "Samtale-id’et kunne ikke kopieres.",
+	"Show in sidebar": "Vis i sidepanelet",
+	"Hide from sidebar": "Skjul fra sidepanelet",
+	Delete: "Slet",
+	"Rename agent": "Omdøb agent",
+	"{name} could not be renamed.": "{name} kunne ikke omdøbes.",
+	"Delete {name}? The agent leaves the company for everyone, with its conversations and routines. This cannot be undone.":
+		"Slet {name}? Agenten forlader virksomheden for alle, med sine samtaler og rutiner. Det kan ikke fortrydes.",
+	"{name} could not be deleted. Hand over the projects it leads first.":
+		"{name} kunne ikke slettes. Giv først de projekter, den leder, videre.",
+	"{name} could not be deleted.": "{name} kunne ikke slettes.",
+	"Rename section": "Omdøb sektion",
+	"Delete section": "Slet sektion",
+	"Delete the section {name}? Its agents move to Unassigned, for everyone in the company.":
+		"Slet sektionen {name}? Dens agenter flyttes til Uden sektion for alle i virksomheden.",
+	Sidebar: "Sidepanel",
+	"{name} actions": "Handlinger for {name}",
+	Section: "Sektion",
 };

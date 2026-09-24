@@ -1,4 +1,4 @@
-import { writeCloudCompanyAgent } from "@qorpera/cloud-client/cloud-company-agent";
+import { deleteCloudCompanyAgent, writeCloudCompanyAgent } from "@qorpera/cloud-client/cloud-company-agent";
 import type { StaffAgent } from "@qorpera/company/company-staff";
 import type { WebCompanyFiles } from "./company-files.ts";
 import type { HostedStaffAgent } from "./types.ts";
@@ -18,6 +18,8 @@ export interface WebCompanyAgentDraft {
 export interface WebCompanyAgents {
 	create(draft: WebCompanyAgentDraft, signal: AbortSignal): Promise<string>;
 	update(agent: HostedStaffAgent, draft: WebCompanyAgentDraft, signal: AbortSignal): Promise<number>;
+	/** Deleting the agent's document removes the agent for good (owner or admin; never the Co-Founder). */
+	delete(agent: HostedStaffAgent, signal: AbortSignal): Promise<void>;
 }
 
 // The description is the agent's responsibilities in plain prose (founder decision 2026-09-20) and the
@@ -90,6 +92,19 @@ export function createWebCompanyAgents(files: WebCompanyFiles): WebCompanyAgents
 		},
 		async update(agent, draft, signal) {
 			return write(staffAgent(agent, draft), "update", undefined, signal);
+		},
+		async delete(agent, signal) {
+			const lifetime = AbortSignal.any([files.signal, signal]);
+			files.current();
+			const editor = await files.files();
+			lifetime.throwIfAborted();
+			await deleteCloudCompanyAgent({
+				editor,
+				agentId: agent.id,
+				operationKey: `staff-delete:${agent.id}:${crypto.randomUUID()}`,
+				signal: lifetime,
+			});
+			files.current();
 		},
 	};
 }
