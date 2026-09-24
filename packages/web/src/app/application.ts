@@ -24,7 +24,6 @@ import { createConversationStarter } from "./start-conversation.ts";
 import { debounce } from "./state.ts";
 import { createGroupUpdater } from "./update-group.ts";
 import { type AccountViewState, renderAccount } from "./views/account.ts";
-import { CloudCheckView } from "./views/cloudcheck.ts";
 import { CompanyFileController, renderCompanyFile } from "./views/companyfile.ts";
 import { ComputerPanels } from "./views/computer.ts";
 import { ConversationView } from "./views/conversation.ts";
@@ -175,7 +174,6 @@ export function mountApplication(
 	let conversation: ConversationView | undefined;
 	let newConversation: NewConversationView | undefined;
 	let startingSession: { sessionId: string } | undefined;
-	let cloudCheck: CloudCheckView | undefined;
 	let profiles: HostedProfile[] = [];
 	let teamFeedback: { message?: string; error?: string } = {};
 	let accountState: AccountViewState = {};
@@ -206,8 +204,6 @@ export function mountApplication(
 			routeRevision++;
 			teardownCompany();
 			hub.dispose();
-			cloudCheck?.dispose();
-			cloudCheck = undefined;
 			profiles = [];
 			accountState = {};
 			meetState = {};
@@ -457,9 +453,6 @@ export function mountApplication(
 				// panel above already shows the account error.
 				renderPlan(accountPlan, accountState, undefined, {}, { showError: false });
 				main.append(accountPlan);
-			} else if (route.name === "cloud-check") {
-				cloudCheck ??= new CloudCheckView(cloud);
-				replace(main, cloudCheck.el);
 			}
 			return;
 		}
@@ -924,7 +917,6 @@ export function mountApplication(
 		auth.dispose();
 		hub.dispose();
 		teardownCompany();
-		cloudCheck?.dispose();
 		window.removeEventListener("hashchange", onRouteChange);
 		window.removeEventListener("keydown", onEscape);
 		window.removeEventListener("resize", syncNavigation);

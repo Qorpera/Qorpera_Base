@@ -26,6 +26,7 @@
 .settings-content .btn-primary:hover:not(:disabled) { background: #3a3a37; }
 .settings-content .btn-danger { color: #ac3934; }
 .settings-content .notice { font-size: 12px; overflow-wrap: anywhere; }
+.settings-content .advanced { font-size: 12px; margin-top: 24px; }
 .settings-content .row { flex-wrap: wrap; }
 .settings-group { margin: 28px 0; }
 .settings-card { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 11px; min-height: 72px; padding: 11px 13px; border-radius: 13px; background: #f1f1ef; }
