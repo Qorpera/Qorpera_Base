@@ -26,6 +26,7 @@ import {
 	spinner,
 } from "../../ui/dom.ts";
 import { preserveFormDrafts } from "../../ui/forms.ts";
+import { t } from "../../ui/preferences.ts";
 import type { CompanyController } from "../company.ts";
 import { Store } from "../state.ts";
 
@@ -231,7 +232,7 @@ export class CompanyFileController {
 			let entries: CloudCompanyTreeEntry[];
 			if (governed) {
 				const team = this.#company.store.get().team;
-				if (!team?.capabilities.read) throw new Error("Company File access changed.");
+				if (!team?.capabilities.read) throw new Error(t("Company File access changed."));
 				const files = new WebCompanyFiles(
 					this.#api.cloud,
 					this.#company.profile,
@@ -241,7 +242,7 @@ export class CompanyFileController {
 					() => {
 						const state = this.#company.store.get();
 						if (!currentRequest() || state.accessLost || !state.team?.capabilities.read)
-							throw new Error("Company File access changed.");
+							throw new Error(t("Company File access changed."));
 					},
 				);
 				const reader = files.snapshot(snapshotId);
@@ -272,7 +273,7 @@ export class CompanyFileController {
 			if (reader) {
 				const result = await reader.read(entry.path, this.#selectionAbort.signal, 32 * 1024 * 1024);
 				if (result.kind !== "file" || !result.bytes || result.version !== current.snapshot.snapshotId)
-					throw new Error("Selected snapshot file is unavailable.");
+					throw new Error(t("Selected snapshot file is unavailable."));
 				bytes = result.bytes;
 			} else bytes = await this.#reader.readFile(entry.file);
 			if (this.#disposed || version !== this.#fileVersion) return;
@@ -280,7 +281,7 @@ export class CompanyFileController {
 				entry.file.bytes <= 2 * 1024 * 1024 ? new TextDecoder("utf-8", { fatal: false }).decode(bytes) : undefined;
 			this.store.set((state) => ({
 				snapshot: state.snapshot
-					? { ...state.snapshot, content: text ?? `(binary, ${fmtBytes(bytes.byteLength)})` }
+					? { ...state.snapshot, content: text ?? t("(binary, {size})", { size: fmtBytes(bytes.byteLength) }) }
 					: undefined,
 			}));
 		} catch (error) {
@@ -332,9 +333,14 @@ export class CompanyFileController {
 		this.#confirming = true;
 		const confirmed = await confirmDialog(
 			accept
-				? `Accept “${current.proposal.title}” and publish snapshot ${shortId(current.proposal.proposalSnapshot.snapshotId)} as the new Company File head?`
-				: `Reject “${current.proposal.title}”? The proposed snapshot stays retained but never becomes the head.`,
-			accept ? "Accept and publish" : "Reject",
+				? t("Accept “{title}” and publish snapshot {snapshot} as the new Company File head?", {
+						title: current.proposal.title,
+						snapshot: shortId(current.proposal.proposalSnapshot.snapshotId),
+					})
+				: t("Reject “{title}”? The proposed snapshot stays retained but never becomes the head.", {
+						title: current.proposal.title,
+					}),
+			accept ? t("Accept and publish") : t("Reject"),
 			!accept,
 			undefined,
 			this.#company.signal,
@@ -400,9 +406,53 @@ export class CompanyFileController {
 	}
 }
 
+/** An object read the cloud client refused, in the member's language where the
+ * refusal is one of its fixed sentences; anything else stays as it came. */
 function describeAccess(error: unknown): string {
-	if (error instanceof ObjectAccessError) return error.message;
-	return describeError(error);
+	if (!(error instanceof ObjectAccessError)) return describeError(error);
+	if (error.reason === "denied" && error.message === "You do not have permission to read this object.")
+		return t("You do not have permission to read this object.");
+	if (
+		error.reason === "gateway-required" &&
+		error.message === "This object's storage backend is not supported by the browser client yet."
+	)
+		return t("This object's storage backend is not supported by the browser client yet.");
+	if (error.reason === "too-large" && error.message === "Object is too large to open in the browser")
+		return t("Object is too large to open in the browser");
+	if (error.reason === "too-large" && error.message === "File is too large to open in the browser")
+		return t("File is too large to open in the browser");
+	return error.message;
+}
+
+/** Labels for the cloud's fixed codes. English shows the code itself. */
+function proposalStatusLabel(status: string): string {
+	if (status === "open") return t("open");
+	if (status === "accepted") return t("accepted");
+	if (status === "rejected") return t("rejected");
+	return status;
+}
+
+function proposalReasonLabel(reason: string): string {
+	if (reason === "policy") return t("policy");
+	if (reason === "authority") return t("authority");
+	if (reason === "conflict") return t("conflict");
+	if (reason === "recovery") return t("recovery");
+	return reason;
+}
+
+function reviewStatusLabel(status: string): string {
+	if (status === "queued") return t("queued");
+	if (status === "running") return t("running");
+	if (status === "approved") return t("approved");
+	if (status === "changes_requested") return t("changes_requested");
+	if (status === "failed") return t("failed");
+	return status;
+}
+
+function noProposals(status: CompanyFileState["proposalStatus"]): string {
+	if (status === "accepted") return t("No accepted proposals.");
+	if (status === "rejected") return t("No rejected proposals.");
+	return t("No open proposals.");
 }
 
 export function renderCompanyFile(
@@ -417,33 +467,39 @@ export function renderCompanyFile(
 	const state = controller.store.get();
 	const profileId = company.profile.profileId;
 	const canAuthorize = company.store.get().team?.capabilities.authorize === true;
-	const children: (HTMLElement | null)[] = [h("h1", null, "Company File")];
+	const children: (HTMLElement | null)[] = [h("h1", null, t("Company File"))];
 	if (state.error) children.push(notice("danger", state.error));
 	if (state.fileState === "not-deployed")
-		children.push(notice("neutral", "The Company File service is not deployed on this cloud."));
+		children.push(notice("neutral", t("The Company File service is not deployed on this cloud.")));
 	if (state.file) {
 		const file = state.file;
 		children.push(
 			h(
 				"div",
 				{ class: "summary-grid" },
-				summary("State", file.state === "ready" ? badge("ready", "ok") : badge("provisioning", "warn")),
+				summary(t("State"), file.state === "ready" ? badge(t("ready"), "ok") : badge(t("provisioning"), "warn")),
 				summary(
-					"Head snapshot",
+					t("Head snapshot"),
 					file.headSnapshotId
 						? h("a", { href: `#/c/${profileId}/snapshot/${file.headSnapshotId}` }, shortId(file.headSnapshotId))
 						: "—",
 				),
-				summary("Logical size", fmtBytes(file.logicalBytes)),
-				summary("Storage", `${fmtBytes(file.storageUsedBytes)} of ${fmtBytes(file.storageLimitBytes)}`),
-				summary("Backends", file.objectBackends.join(", ") || "—"),
+				summary(t("Logical size"), fmtBytes(file.logicalBytes)),
 				summary(
-					"Live paths",
+					t("Storage"),
+					t("{used} of {limit}", {
+						used: fmtBytes(file.storageUsedBytes),
+						limit: fmtBytes(file.storageLimitBytes),
+					}),
+				),
+				summary(t("Backends"), file.objectBackends.join(", ") || "—"),
+				summary(
+					t("Live paths"),
 					state.usesPathGateway === true
-						? badge("object gateway", "accent")
+						? badge(t("object gateway"), "accent")
 						: state.usesPathGateway === false
-							? badge("cloud storage", "neutral")
-							: badge("unknown", "neutral", "qorpera_company_uses_path_gateway is not deployed here"),
+							? badge(t("cloud storage"), "neutral")
+							: badge(t("unknown"), "neutral", t("qorpera_company_uses_path_gateway is not deployed here")),
 				),
 			),
 		);
@@ -453,7 +509,7 @@ export function renderCompanyFile(
 			state.selectionError ? notice("danger", state.selectionError) : renderSnapshot(state, profileId, controller),
 		);
 		if (state.selectionError || state.snapshot?.error)
-			children.push(button("Retry snapshot", () => void controller.openSnapshot(view.snapshotId!)));
+			children.push(button(t("Retry snapshot"), () => void controller.openSnapshot(view.snapshotId!)));
 	} else if (view.proposalId) {
 		children.push(
 			state.selectionError
@@ -461,15 +517,15 @@ export function renderCompanyFile(
 				: renderProposal(state, profileId, controller, company, canAuthorize),
 		);
 		if (state.selectionError || state.proposal?.error)
-			children.push(button("Retry proposal", () => void controller.openProposal(view.proposalId!)));
+			children.push(button(t("Retry proposal"), () => void controller.openProposal(view.proposalId!)));
 	} else {
 		children.push(
-			h("h2", null, "Published snapshots"),
+			h("h2", null, t("Published snapshots")),
 			state.snapshots.length === 50
-				? h("p", { class: "muted small" }, "Showing the 50 most recent snapshots.")
+				? h("p", { class: "muted small" }, t("Showing the 50 most recent snapshots."))
 				: null,
 			state.loading && !state.snapshots.length
-				? spinner("Loading snapshots")
+				? spinner(t("Loading snapshots"))
 				: state.snapshots.length
 					? h(
 							"table",
@@ -480,11 +536,11 @@ export function renderCompanyFile(
 								h(
 									"tr",
 									null,
-									h("th", null, "Snapshot"),
-									h("th", null, "Files"),
-									h("th", null, "Size"),
-									h("th", null, "Published"),
-									h("th", null, "By"),
+									h("th", null, t("Snapshot")),
+									h("th", null, t("Files")),
+									h("th", null, t("Size")),
+									h("th", null, t("Published")),
+									h("th", null, t("By")),
 								),
 							),
 							h(
@@ -502,7 +558,9 @@ export function renderCompanyFile(
 												{ href: `#/c/${profileId}/snapshot/${snapshot.snapshotId}` },
 												shortId(snapshot.snapshotId),
 											),
-											snapshot.snapshotId === state.file?.headSnapshotId ? [" ", badge("head", "ok")] : null,
+											snapshot.snapshotId === state.file?.headSnapshotId
+												? [" ", badge(t("head"), "ok")]
+												: null,
 										),
 										h("td", null, String(snapshot.tree.fileCount)),
 										h("td", null, fmtBytes(snapshot.tree.totalBytes)),
@@ -512,16 +570,17 @@ export function renderCompanyFile(
 								),
 							),
 						)
-					: h("div", { class: "empty" }, "No published snapshots yet."),
+					: h("div", { class: "empty" }, t("No published snapshots yet.")),
 			h(
 				"h2",
 				null,
-				"Proposals ",
+				t("Proposals"),
+				" ",
 				h(
 					"span",
 					{ class: "tabs" },
 					...(["open", "accepted", "rejected"] as const).map((status) =>
-						button(status, () => controller.setProposalStatus(status), {
+						button(proposalStatusLabel(status), () => controller.setProposalStatus(status), {
 							small: true,
 							primary: state.proposalStatus === status,
 						}),
@@ -543,22 +602,26 @@ export function renderCompanyFile(
 									h(
 										"div",
 										{ class: "muted small" },
-										`${proposal.reason} · by ${proposal.createdByName} · ${fmtTime(proposal.createdAt)}`,
+										t("{reason} · by {name} · {time}", {
+											reason: proposalReasonLabel(proposal.reason),
+											name: proposal.createdByName,
+											time: fmtTime(proposal.createdAt),
+										}),
 									),
 								),
 								badge(
-									proposal.status,
+									proposalStatusLabel(proposal.status),
 									proposal.status === "open" ? "warn" : proposal.status === "accepted" ? "ok" : "neutral",
 								),
 							),
 						),
 					)
-				: h("div", { class: "empty" }, `No ${state.proposalStatus} proposals.`),
+				: h("div", { class: "empty" }, noProposals(state.proposalStatus)),
 			state.workspaces.length > 1
 				? h(
 						"details",
 						null,
-						h("summary", null, `${state.workspaces.length} workspaces`),
+						h("summary", null, t("{count} workspaces", { count: state.workspaces.length })),
 						h(
 							"ul",
 							null,
@@ -566,7 +629,11 @@ export function renderCompanyFile(
 								h(
 									"li",
 									null,
-									`${workspace.name} · head ${workspace.headSnapshotId ? shortId(workspace.headSnapshotId) : "—"} · ${fmtDate(workspace.updatedAt)}`,
+									t("{name} · head {snapshot} · {date}", {
+										name: workspace.name,
+										snapshot: workspace.headSnapshotId ? shortId(workspace.headSnapshotId) : "—",
+										date: fmtDate(workspace.updatedAt),
+									}),
 								),
 							),
 						),
@@ -589,21 +656,32 @@ function summary(label: string, value: HTMLElement | string): HTMLElement {
 
 function renderSnapshot(state: CompanyFileState, profileId: string, controller: CompanyFileController): HTMLElement {
 	const current = state.snapshot;
-	if (!current) return spinner("Loading snapshot");
+	if (!current) return spinner(t("Loading snapshot"));
 	const { snapshot } = current;
 	const entries = current.entries ?? [];
+	const snapshotFacts = {
+		count: snapshot.tree.fileCount,
+		size: fmtBytes(snapshot.tree.totalBytes),
+		version: snapshot.tree.contractVersion,
+		time: fmtTime(snapshot.createdAt),
+	};
 	return h(
 		"div",
 		{ class: "snapshot" },
-		h("p", null, h("a", { href: `#/c/${profileId}/file` }, "← All snapshots")),
-		h("h2", null, `Snapshot ${shortId(snapshot.snapshotId)}`),
+		h("p", null, h("a", { href: `#/c/${profileId}/file` }, t("← All snapshots"))),
+		h("h2", null, t("Snapshot {id}", { id: shortId(snapshot.snapshotId) })),
 		h(
 			"div",
 			{ class: "muted small" },
-			`${snapshot.tree.fileCount} files · ${fmtBytes(snapshot.tree.totalBytes)} · contract v${snapshot.tree.contractVersion} · ${fmtTime(snapshot.createdAt)}${snapshot.parentSnapshotId ? ` · parent ${shortId(snapshot.parentSnapshotId)}` : ""}`,
+			snapshot.parentSnapshotId
+				? t("{count} files · {size} · contract v{version} · {time} · parent {parent}", {
+						...snapshotFacts,
+						parent: shortId(snapshot.parentSnapshotId),
+					})
+				: t("{count} files · {size} · contract v{version} · {time}", snapshotFacts),
 		),
 		current.error ? notice("warn", current.error) : null,
-		current.loading ? spinner("Loading files") : null,
+		current.loading ? spinner(t("Loading files")) : null,
 		entries.length
 			? h(
 					"div",
@@ -641,7 +719,7 @@ function renderSnapshot(state: CompanyFileState, profileId: string, controller: 
 								current.contentError
 									? notice("warn", current.contentError)
 									: current.content === undefined
-										? spinner("Reading file")
+										? spinner(t("Reading file"))
 										: h("pre", null, current.content),
 							)
 						: null,
@@ -658,29 +736,37 @@ function renderProposal(
 	canAuthorize: boolean,
 ): HTMLElement {
 	const current = state.proposal;
-	if (!current) return spinner("Loading proposal");
+	if (!current) return spinner(t("Loading proposal"));
 	const { proposal } = current;
-	const commentInput = h("textarea", { rows: 2, placeholder: "Comment…", "data-draft": "proposal-comment" });
+	const commentInput = h("textarea", { rows: 2, placeholder: t("Comment…"), "data-draft": "proposal-comment" });
 	commentInput.value = controller.commentDraft(proposal.proposalId);
 	commentInput.oninput = () => controller.setCommentDraft(proposal.proposalId, commentInput.value);
 	return h(
 		"div",
 		{ class: "proposal" },
-		h("p", null, h("a", { href: `#/c/${profileId}/file` }, "← Company File")),
+		h("p", null, h("a", { href: `#/c/${profileId}/file` }, t("← Company File"))),
 		h(
 			"h2",
 			null,
 			proposal.title,
 			" ",
 			badge(
-				proposal.status,
+				proposalStatusLabel(proposal.status),
 				proposal.status === "open" ? "warn" : proposal.status === "accepted" ? "ok" : "neutral",
 			),
 		),
 		h(
 			"div",
 			{ class: "muted small" },
-			`${proposal.reason}${proposal.policyKey ? ` (${proposal.policyKey})` : ""} · proposed by ${proposal.createdByName} · ${fmtTime(proposal.createdAt)} · base ${shortId(proposal.baseSnapshotId)} → `,
+			t("{reason} · proposed by {name} · {time} · base {base} →", {
+				reason: proposal.policyKey
+					? `${proposalReasonLabel(proposal.reason)} (${proposal.policyKey})`
+					: proposalReasonLabel(proposal.reason),
+				name: proposal.createdByName,
+				time: fmtTime(proposal.createdAt),
+				base: shortId(proposal.baseSnapshotId),
+			}),
+			" ",
 			h(
 				"a",
 				{ href: `#/c/${profileId}/snapshot/${proposal.proposalSnapshot.snapshotId}` },
@@ -692,7 +778,7 @@ function renderProposal(
 			? h(
 					"div",
 					null,
-					h("h3", null, "Reviews"),
+					h("h3", null, t("Reviews")),
 					h(
 						"ul",
 						null,
@@ -702,7 +788,7 @@ function renderProposal(
 								null,
 								`${review.reviewerName}: `,
 								badge(
-									review.status,
+									reviewStatusLabel(review.status),
 									review.status === "approved"
 										? "ok"
 										: review.status === "failed" || review.status === "changes_requested"
@@ -721,26 +807,29 @@ function renderProposal(
 					{ class: "row" },
 					canAuthorize
 						? [
-								button("Reject", () => void controller.decideProposal(false), {
+								button(t("Reject"), () => void controller.decideProposal(false), {
 									danger: true,
 									disabled: current.busy,
 								}),
-								button("Accept and publish", () => void controller.decideProposal(true), {
+								button(t("Accept and publish"), () => void controller.decideProposal(true), {
 									primary: true,
 									disabled: current.busy,
 								}),
 							]
-						: notice("neutral", "Owners and admins decide proposals."),
+						: notice("neutral", t("Owners and admins decide proposals.")),
 				)
 			: proposal.resolvedAt
 				? h(
 						"div",
 						{ class: "muted small" },
-						`Resolved ${fmtTime(proposal.resolvedAt)} by ${company.memberName(proposal.resolvedByUserId)}`,
+						t("Resolved {time} by {name}", {
+							time: fmtTime(proposal.resolvedAt),
+							name: company.memberName(proposal.resolvedByUserId),
+						}),
 					)
 				: null,
-		h("h3", null, `Comments (${current.comments.length})`),
-		current.loading ? spinner("Loading comments") : null,
+		h("h3", null, t("Comments ({count})", { count: current.comments.length })),
+		current.loading ? spinner(t("Loading comments")) : null,
 		h(
 			"div",
 			{ class: "comments" },
@@ -770,7 +859,7 @@ function renderProposal(
 						},
 					},
 					commentInput,
-					h("button", { type: "submit", class: "btn", disabled: current.busy || current.loading }, "Comment"),
+					h("button", { type: "submit", class: "btn", disabled: current.busy || current.loading }, t("Comment")),
 				)
 			: null,
 	);

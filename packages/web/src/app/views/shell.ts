@@ -5,7 +5,7 @@ import { agentFigure } from "../../ui/avatar.ts";
 import { badge, button, h, icon, initials, notice, replace } from "../../ui/dom.ts";
 import { groupChatAvatar, isGroupChat } from "../../ui/group-chat.ts";
 import { matchesKey } from "../../ui/keys.ts";
-import { presentationLocale, uiText } from "../../ui/preferences.ts";
+import { presentationLocale, t, uiText } from "../../ui/preferences.ts";
 import { quietScroll } from "../../ui/quiet-scroll.ts";
 import { type AuthController, displayName } from "../auth.ts";
 import { type AgentState, type CompanyController, isAgentPairSession } from "../company.ts";
@@ -113,7 +113,7 @@ function accountMenuElement(context: ShellContext, company?: CompanyController):
 	const name = displayName(context.user);
 	const shown = JSON.stringify([name, context.invitations, Boolean(company), presentationLocale()]);
 	if (shown === accountShown) return accountMenu;
-	accountTrigger!.setAttribute("aria-label", `Profile: ${name}`);
+	accountTrigger!.setAttribute("aria-label", t("Profile: {name}", { name }));
 	accountTrigger!.title = name;
 	// Friends and the company invitations waiting for this account share one settings tab.
 	const settingsItem = (tab: SettingsTab, iconName: string, label: string, count = 0) =>
@@ -191,7 +191,7 @@ export function renderTopbar(
 	container.classList.toggle("topbar-plain", !company);
 	container.classList.toggle("topbar-company", Boolean(company));
 	const lead =
-		company || context.route.name === "hub" ? null : h("a", { class: "topbar-home", href: "#/" }, "← Companies");
+		company || context.route.name === "hub" ? null : h("a", { class: "topbar-home", href: "#/" }, t("← Companies"));
 	replace(
 		container,
 		context.navigation
@@ -200,7 +200,7 @@ export function renderTopbar(
 					{
 						type: "button",
 						class: "icon-button mobile-navigation-toggle",
-						"aria-label": "Company navigation",
+						"aria-label": t("Company navigation"),
 						"aria-controls": "company-navigation",
 						"aria-expanded": String(context.navigation.open),
 						onclick: context.navigation.toggle,
@@ -268,14 +268,14 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 	if (!parts) {
 		const input = h("input", {
 			type: "search",
-			placeholder: "Search",
+			placeholder: t("Search"),
 			autocomplete: "off",
 			spellcheck: "false",
-			"aria-label": "Search agents",
+			"aria-label": t("Search agents"),
 		});
 		const close = h(
 			"button",
-			{ type: "button", class: "icon-button rail-mobile-close", "aria-label": "Close company navigation" },
+			{ type: "button", class: "icon-button rail-mobile-close", "aria-label": t("Close company navigation") },
 			icon("close"),
 		);
 		const add = h(
@@ -283,8 +283,8 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 			{
 				class: "rail-add icon-button",
 				href: `#/c/${company.profile.profileId}/new`,
-				"aria-label": "New conversation or agent",
-				title: "New conversation or agent",
+				"aria-label": t("New conversation or agent"),
+				title: t("New conversation or agent"),
 			},
 			icon("plus"),
 		);
@@ -299,7 +299,7 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 			foot: h("div", { class: "rail-footer" }, connection),
 			cofounderGroup: h("div", { class: "rail-cofounder", role: "group", "aria-label": "Co-Founder" }),
 			rowList: h("div", { class: "rail-list" }),
-			loading: h("p", { class: "rail-empty" }, "Loading…"),
+			loading: h("p", { class: "rail-empty" }, t("Loading…")),
 			empty: h("p", { class: "rail-empty" }),
 			rows: new Map(),
 			notices: new Map(),
@@ -361,8 +361,18 @@ interface SessionModel {
 	agents: HostedStaffAgent[];
 	selected: boolean;
 }
+/** An agent state's look with its words in the chosen language; AGENT_LOOK keeps the English. */
+function lookOf(state: AgentState): AgentLook {
+	const look = AGENT_LOOK[state];
+	return {
+		...look,
+		...(look.line ? { line: t(look.line) } : {}),
+		...(look.note ? { note: t(look.note) } : {}),
+	};
+}
+
 function cofounderCard(model: AgentModel, href: string): HTMLElement {
-	const look = AGENT_LOOK[model.state];
+	const look = lookOf(model.state);
 	return h(
 		"a",
 		{ class: "cofounder-home", href, ...railLabel(model, look) },
@@ -377,7 +387,7 @@ function cofounderCard(model: AgentModel, href: string): HTMLElement {
 }
 
 function agentRow(model: AgentModel, href: string): HTMLElement {
-	const look = AGENT_LOOK[model.state];
+	const look = lookOf(model.state);
 	return h(
 		"a",
 		{ class: "rail-row rail-row-agent", href, ...railLabel(model, look) },
@@ -516,8 +526,8 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 					{
 						title: session.title,
 						subtitle: isGroupChat(session)
-							? (state.groups?.[String(session.executionScope?.roomId)]?.subtitle ?? "Group chat")
-							: "company",
+							? (state.groups?.[String(session.executionScope?.roomId)]?.subtitle ?? t("Group chat"))
+							: t("company"),
 						kind: isGroupChat(session) ? ("Group chat" as const) : ("company" as const),
 						agents: company.groupAgents(session.sessionId),
 						selected: activeSessionId === session.sessionId,
@@ -539,8 +549,8 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	const empty =
 		!state.loading && !cofounderElement && !rowElements.length
 			? railQuery
-				? "No matching conversations."
-				: "No agents yet."
+				? t("No matching conversations.")
+				: t("No agents yet.")
 			: null;
 	if (empty && parts.empty.textContent !== empty) parts.empty.textContent = empty;
 	reconcile(parts.cofounderGroup, cofounderElement ? [cofounderElement] : []);
@@ -549,13 +559,13 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 		parts.list,
 		[
 			errorNotice("sessions", state.sessionsError, () =>
-				button("Retry conversations", () => void company.refreshSessions(), { small: true }),
+				button(t("Retry conversations"), () => void company.refreshSessions(), { small: true }),
 			),
 			// Group details are decoration (names and figures of a group chat) and are read
 			// again with every conversation refresh. A failure never shows in the rail: the
 			// text would name cloud machinery, and there is nothing for the member to do.
 			errorNotice("company", state.error, () =>
-				button("Retry company", () => void company.refreshAll(), { small: true }),
+				button(t("Retry company"), () => void company.refreshAll(), { small: true }),
 			),
 			cofounderElement ? parts.cofounderGroup : null,
 			state.loading && !state.staff.length ? parts.loading : null,
@@ -582,7 +592,7 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 			parts.connection,
 			connection
 				? badge(
-						state.realtime === "connecting" ? "connecting" : "live updates degraded",
+						state.realtime === "connecting" ? t("connecting") : t("live updates degraded"),
 						state.realtime === "connecting" ? "neutral" : "warn",
 						state.realtimeError ?? "",
 					)

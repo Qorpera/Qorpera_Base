@@ -3,9 +3,26 @@ import { describeError } from "../../cloud/client.ts";
 import type { HostedFriend, HostedProfileRole } from "../../cloud/types.ts";
 import { button, confirmDialog, h, notice, personAvatar, replace, spinner } from "../../ui/dom.ts";
 import { preserveFormDrafts } from "../../ui/forms.ts";
+import { t } from "../../ui/preferences.ts";
 import type { CompanyController } from "../company.ts";
 
 const ROLES: Exclude<HostedProfileRole, "owner">[] = ["viewer", "contributor", "admin"];
+
+/** A company role as the interface names it; the cloud sends the code. */
+export function roleLabel(role: HostedProfileRole): string {
+	switch (role) {
+		case "owner":
+			return t("owner");
+		case "admin":
+			return t("admin");
+		case "contributor":
+			return t("contributor");
+		case "viewer":
+			return t("viewer");
+		default:
+			return role;
+	}
+}
 
 export function renderTeam(
 	api: CloudApi,
@@ -47,7 +64,7 @@ export function renderTeam(
 	const content = h(
 		"section",
 		{ class: "page team", "data-form-owner": owner },
-		options.embedded ? null : h("h1", null, "Team"),
+		options.embedded ? null : h("h1", null, t("Team")),
 		feedback.error ? notice("danger", feedback.error) : null,
 		feedback.message ? notice("ok", feedback.message) : null,
 		state.error && !state.accessLost
@@ -55,7 +72,7 @@ export function renderTeam(
 					"danger",
 					state.error,
 					button(
-						"Retry company",
+						t("Retry company"),
 						() => {
 							if (current() && !company.store.get().loading) void company.refreshAll();
 						},
@@ -65,10 +82,10 @@ export function renderTeam(
 			: null,
 	);
 	if (!team) {
-		if (state.accessLost) content.append(notice("danger", "Your access to this company was revoked."));
-		else if (!state.error) content.append(spinner("Loading team"));
+		if (state.accessLost) content.append(notice("danger", t("Your access to this company was revoked.")));
+		else if (!state.error) content.append(spinner(t("Loading team")));
 	} else {
-		const people = h("div", { class: "company-people", "aria-label": "Company members" });
+		const people = h("div", { class: "company-people", "aria-label": t("Company members") });
 		for (const member of team.members) {
 			const editable =
 				team.capabilities.manageMembers &&
@@ -77,9 +94,9 @@ export function renderTeam(
 				member.userId !== company.userId;
 			const select = h(
 				"select",
-				{ "aria-label": `Role for ${member.displayName}`, disabled: !editable },
+				{ "aria-label": t("Role for {name}", { name: member.displayName }), disabled: !editable },
 				...ROLES.filter((role) => role !== "admin" || team.role === "owner").map((role) =>
-					h("option", { value: role, selected: role === member.role }, role),
+					h("option", { value: role, selected: role === member.role }, roleLabel(role)),
 				),
 			);
 			select.onchange = () => {
@@ -87,19 +104,19 @@ export function renderTeam(
 				select.disabled = true;
 				void run(
 					() => api.updateMemberRole(profile.profileId, member.userId, role),
-					`${member.displayName} is now ${role}.`,
+					t("{name} is now {role}.", { name: member.displayName, role: roleLabel(role) }),
 				);
 			};
 			people.append(
 				h(
 					"div",
-					{ class: "company-person", title: `${member.email} · ${member.role}` },
+					{ class: "company-person", title: `${member.email} · ${roleLabel(member.role)}` },
 					personAvatar(member.displayName, member.userId),
 					h(
 						"div",
 						{ class: "settings-copy" },
 						h("strong", null, member.displayName),
-						h("small", null, member.role === "owner" ? "Started it" : "Building"),
+						h("small", null, member.role === "owner" ? t("Started it") : t("Building")),
 					),
 					editable
 						? h(
@@ -107,13 +124,16 @@ export function renderTeam(
 								{ class: "person-actions" },
 								select,
 								button(
-									"Remove",
+									t("Remove"),
 									() =>
 										void (async () => {
 											if (
 												await confirmDialog(
-													`Remove ${member.displayName} from ${profile.profileName}?`,
-													"Remove",
+													t("Remove {name} from {company}?", {
+														name: member.displayName,
+														company: profile.profileName,
+													}),
+													t("Remove"),
 													true,
 													undefined,
 													signal,
@@ -121,7 +141,7 @@ export function renderTeam(
 											)
 												await run(
 													() => api.removeMember(profile.profileId, member.userId),
-													`${member.displayName} was removed.`,
+													t("{name} was removed.", { name: member.displayName }),
 												);
 										})(),
 									{ small: true, danger: true },
@@ -135,13 +155,17 @@ export function renderTeam(
 			people.append(
 				h(
 					"div",
-					{ class: "company-person", title: invitation.delivery?.lastError ?? invitation.role },
+					{ class: "company-person", title: invitation.delivery?.lastError ?? roleLabel(invitation.role) },
 					personAvatar(invitation.email, invitation.email),
 					h(
 						"div",
 						{ class: "settings-copy" },
 						h("strong", null, invitation.email),
-						h("small", null, invitation.delivery?.status === "failed" ? "Invited · email failed" : "Invited"),
+						h(
+							"small",
+							null,
+							invitation.delivery?.status === "failed" ? t("Invited · email failed") : t("Invited"),
+						),
 					),
 					team.capabilities.manageMembers
 						? h(
@@ -149,21 +173,21 @@ export function renderTeam(
 								{ class: "person-actions" },
 								invitation.delivery?.status === "failed"
 									? button(
-											"Retry email",
+											t("Retry email"),
 											() =>
 												void run(
 													() => api.retryInvitationDelivery(profile.profileId, invitation.id),
-													"Delivery retry queued.",
+													t("Delivery retry queued."),
 												),
 											{ small: true },
 										)
 									: null,
 								button(
-									"Cancel",
+									t("Cancel"),
 									() =>
 										void run(
 											() => api.cancelInvitation(profile.profileId, invitation.id),
-											"Invitation cancelled.",
+											t("Invitation cancelled."),
 										),
 									{ small: true },
 								),
@@ -184,8 +208,8 @@ export function renderTeam(
 					h(
 						"span",
 						{ class: "settings-copy" },
-						h("strong", null, "Invite a friend"),
-						h("small", null, "Pick from your friends or add someone first"),
+						h("strong", null, t("Invite a friend")),
+						h("small", null, t("Pick from your friends or add someone first")),
 					),
 				),
 			);
@@ -197,18 +221,18 @@ export function renderTeam(
 			);
 			const invitee = h("input", {
 				type: "email",
-				placeholder: "Friend’s email",
-				"aria-label": "Friend’s email",
+				placeholder: t("Friend’s email"),
+				"aria-label": t("Friend’s email"),
 				required: true,
 				"data-draft": "invite-email",
 			});
 			const search = h("input", {
 				type: "search",
-				placeholder: "Search friends",
-				"aria-label": "Search friends to invite",
+				placeholder: t("Search friends"),
+				"aria-label": t("Search friends to invite"),
 				"data-draft": "invite-search",
 			});
-			const results = h("div", { class: "invite-results", "aria-label": "Friends to invite" });
+			const results = h("div", { class: "invite-results", "aria-label": t("Friends to invite") });
 			const drawFriends = () => {
 				const query = search.value.trim().toLowerCase();
 				const matching = choices?.filter((friend) =>
@@ -241,8 +265,8 @@ export function renderTeam(
 								"p",
 								{ class: "muted small" },
 								choices
-									? "No matching friends."
-									: "Your friends could not be loaded. Enter an existing friend’s email below.",
+									? t("No matching friends.")
+									: t("Your friends could not be loaded. Enter an existing friend’s email below."),
 							)
 						: null,
 				);
@@ -251,12 +275,12 @@ export function renderTeam(
 			queueMicrotask(drawFriends);
 			const role = h(
 				"select",
-				{ "aria-label": "Invitation role", "data-draft": "invite-role" },
+				{ "aria-label": t("Invitation role"), "data-draft": "invite-role" },
 				...ROLES.filter((value) => value !== "admin" || team.role === "owner").map((value) =>
-					h("option", { value, selected: value === "contributor" }, value),
+					h("option", { value, selected: value === "contributor" }, roleLabel(value)),
 				),
 			);
-			const submit = h("button", { type: "submit", class: "btn" }, "Invite");
+			const submit = h("button", { type: "submit", class: "btn" }, t("Invite"));
 			picker.append(
 				h(
 					"div",
@@ -278,7 +302,7 @@ export function renderTeam(
 											invitee.value,
 											role.value as Exclude<HostedProfileRole, "owner">,
 										),
-									"Invitation created.",
+									t("Invitation created."),
 								);
 							},
 						},
@@ -286,7 +310,7 @@ export function renderTeam(
 						role,
 						submit,
 					),
-					h("button", { type: "button", class: "link-button", onclick: options.addFriend }, "Add a friend"),
+					h("button", { type: "button", class: "link-button", onclick: options.addFriend }, t("Add a friend")),
 				),
 			);
 			content.append(picker);
@@ -295,17 +319,21 @@ export function renderTeam(
 			h(
 				"details",
 				{ class: "advanced company-danger" },
-				h("summary", null, "Manage company"),
+				h("summary", null, t("Manage company")),
 				button(
-					team.role === "owner" ? "Delete company" : "Leave company",
+					team.role === "owner" ? t("Delete company") : t("Leave company"),
 					() =>
 						void (async () => {
 							const deleting = team.role === "owner";
 							const confirmed = await confirmDialog(
 								deleting
-									? `Delete ${profile.profileName} for every member? Type the company name to confirm.`
-									: `Leave ${profile.profileName}? You lose access until someone invites you again.`,
-								deleting ? "Delete company" : "Leave",
+									? t("Delete {company} for every member? Type the company name to confirm.", {
+											company: profile.profileName,
+										})
+									: t("Leave {company}? You lose access until someone invites you again.", {
+											company: profile.profileName,
+										}),
+								deleting ? t("Delete company") : t("Leave"),
 								true,
 								deleting ? profile.profileName : undefined,
 								signal,

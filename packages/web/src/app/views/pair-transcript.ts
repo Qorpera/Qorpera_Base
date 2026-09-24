@@ -9,6 +9,7 @@ import {
 } from "../../ui/conversation-timestamps.ts";
 import { fmtTime, h, icon, replace, spinner } from "../../ui/dom.ts";
 import { markdownBubbles } from "../../ui/markdown.ts";
+import { t } from "../../ui/preferences.ts";
 import { quietScroll } from "../../ui/quiet-scroll.ts";
 import type { CompanyController } from "../company.ts";
 
@@ -47,7 +48,7 @@ export class PairTranscriptView {
 		this.#close = h(
 			"button",
 			{ type: "button", class: "pair-close", onclick: () => onClose() },
-			"Close Chat",
+			t("Close Chat"),
 		) as HTMLButtonElement;
 		this.el = h(
 			"section",
@@ -55,7 +56,7 @@ export class PairTranscriptView {
 				class: "pair-transcript",
 				role: "dialog",
 				"aria-modal": "false",
-				"aria-label": "Conversation between two agents",
+				"aria-label": t("Conversation between two agents"),
 				tabindex: "-1",
 			},
 			this.#header,
@@ -63,7 +64,7 @@ export class PairTranscriptView {
 			h(
 				"footer",
 				{ class: "pair-footer" },
-				h("span", { class: "pair-readonly" }, icon("lock"), h("span", null, "This chat is view-only")),
+				h("span", { class: "pair-readonly" }, icon("lock"), h("span", null, t("This chat is view-only"))),
 				this.#close,
 			),
 		);
@@ -102,7 +103,7 @@ export class PairTranscriptView {
 
 	#agent(id: string): { agent: HostedStaffAgent | undefined; name: string } {
 		const agent = this.#host.staffById(id);
-		return { agent, name: agent?.displayName ?? "Agent" };
+		return { agent, name: agent?.displayName ?? t("Agent") };
 	}
 
 	update(): void {
@@ -132,7 +133,7 @@ export class PairTranscriptView {
 				{ class: "pair-identity" },
 				agentFigure(second.agent, second.name, { size: 24 }),
 				h("span", { class: "pair-name" }, second.name),
-				h("span", { class: "pair-glyph", "aria-label": "and" }, "⇄"),
+				h("span", { class: "pair-glyph", "aria-label": t("and") }, "⇄"),
 				agentFigure(first.agent, first.name, { size: 24 }),
 				h("span", { class: "pair-name" }, first.name),
 			),
@@ -181,8 +182,8 @@ export class PairTranscriptView {
 							item.held
 								? h(
 										"div",
-										{ class: "message-caption", title: "Sent without waking the coworker" },
-										`Left for ${other.name}'s next turn`,
+										{ class: "message-caption", title: t("Sent without waking the coworker") },
+										t("Left for {name}'s next turn", { name: other.name }),
 									)
 								: null,
 						),
@@ -190,9 +191,9 @@ export class PairTranscriptView {
 				);
 			}
 		}
-		if (conversation.loading && !items.length) nodes.push(spinner("Loading conversation"));
+		if (conversation.loading && !items.length) nodes.push(spinner(t("Loading conversation")));
 		if (!conversation.loading && !items.length && !conversation.error)
-			nodes.push(h("div", { class: "empty" }, "No messages yet."));
+			nodes.push(h("div", { class: "empty" }, t("No messages yet.")));
 		if (conversation.error) nodes.push(h("div", { class: "empty" }, conversation.error));
 		replace(this.#messages, ...nodes);
 		this.#messages.scrollTop = this.#messages.scrollHeight;

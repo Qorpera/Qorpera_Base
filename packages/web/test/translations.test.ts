@@ -20,7 +20,12 @@ function sourceFiles(dir: string): string[] {
 	});
 }
 
-const sources = sourceFiles(SRC).map((path) => ({ path: path.slice(SRC.length), text: readFileSync(path, "utf8") }));
+// The live Company File panel is shared with member-web and takes t() as an option.
+const FILE_PANEL = fileURLToPath(new URL("../../member-web/src/file-panel.ts", import.meta.url));
+const sources = [...sourceFiles(SRC), FILE_PANEL].map((path) => ({
+	path: path.startsWith(SRC) ? path.slice(SRC.length) : "member-web/src/file-panel.ts",
+	text: readFileSync(path, "utf8"),
+}));
 const CALL = /(?<![\w.$])(?:t|uiText)\(\s*("(?:[^"\\\n]|\\.)*")/g;
 
 function placeholders(text: string): string[] {

@@ -74,6 +74,7 @@ export function renderAccount(
 	setState: (next: AccountViewState) => void,
 ): void {
 	const user = auth.store.get().user;
+	const provider: string = user?.app_metadata?.provider ?? "email";
 	const owner = `account:${user?.id}`;
 	const restoreDrafts = preserveFormDrafts(container, owner);
 	const override = readCloudConfigOverride();
@@ -103,7 +104,8 @@ export function renderAccount(
 		value: languagePreference,
 		display: (value) => LANGUAGES.find((candidate) => candidate.value === value)?.label ?? uiText("Follow system"),
 		choose: (value) => {
-			if (!setLanguagePreference(value)) setState({ error: "Your browser could not save the language preference." });
+			if (!setLanguagePreference(value))
+				setState({ error: t("Your browser could not save the language preference.") });
 		},
 	});
 	const timeZone = new PreferencePicker({
@@ -114,12 +116,12 @@ export function renderAccount(
 		display: (value) => (value === "system" ? uiText("Follow system") : timeZoneCity(value)),
 		choose: (value) => {
 			if (!setTimeZonePreference(value))
-				setState({ error: "Your browser could not save the time zone preference." });
+				setState({ error: t("Your browser could not save the time zone preference.") });
 		},
 	});
-	const theme = themeChoices(() => setState({ error: "Your browser could not save the theme preference." }));
+	const theme = themeChoices(() => setState({ error: t("Your browser could not save the theme preference.") }));
 	const composerColor = composerColorChoices(() =>
-		setState({ error: "Your browser could not save the composer color preference." }),
+		setState({ error: t("Your browser could not save the composer color preference.") }),
 	);
 	replace(
 		container,
@@ -140,7 +142,11 @@ export function renderAccount(
 						"div",
 						{ class: "settings-copy" },
 						h("strong", null, user?.email || displayName(user)),
-						h("small", null, `Signed in with ${user?.app_metadata?.provider ?? "email"}`),
+						h(
+							"small",
+							null,
+							provider === "email" ? t("Signed in with email") : t("Signed in with {provider}", { provider }),
+						),
 					),
 					button(uiText("Sign out"), () => void auth.signOut()),
 				),
@@ -186,7 +192,6 @@ export function renderAccount(
 							"span",
 							{ class: "settings-copy" },
 							h("span", { id: labels.language }, uiText("Language")),
-							h("small", null, uiText("Some screens are still shown in English.")),
 						),
 						language.el,
 					),

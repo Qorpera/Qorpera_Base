@@ -5,6 +5,7 @@ import {
 	setComposerColorPreference,
 	setThemePreference,
 	type ThemePreference,
+	t,
 	themePreference,
 	uiText,
 } from "../../ui/preferences.ts";
@@ -37,9 +38,9 @@ function choices<T extends string>(
 	const name = `${base}-${groups}`;
 	const group = h(
 		"fieldset",
-		{ class: "settings-choices", "aria-label": label },
+		{ class: "settings-choices", "aria-label": t(label) },
 		...items.map((item) => {
-			const input = h("input", { type: "radio", name, value: item.value, "aria-label": item.label });
+			const input = h("input", { type: "radio", name, value: item.value, "aria-label": t(item.label) });
 			input.checked = item.value === current();
 			input.onchange = () => {
 				if (!input.checked) return;

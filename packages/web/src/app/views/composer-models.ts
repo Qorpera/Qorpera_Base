@@ -1,5 +1,6 @@
 import { SESSION_MODELS, type SessionModel, type WebSessionModel } from "../../cloud/session-model.ts";
 import { h, icon } from "../../ui/dom.ts";
+import { t } from "../../ui/preferences.ts";
 import type { CompanyController } from "../company.ts";
 
 /** Conversation-scoped choices; the server pins them when admitting new runs. */
@@ -40,7 +41,7 @@ export class ComposerModels {
 			"button",
 			{ type: "button", role: "menuitem", "aria-haspopup": "menu", "aria-expanded": "false", onclick: open },
 			icon("brain"),
-			h("span", { class: "composer-model-label" }, "Model", this.#label),
+			h("span", { class: "composer-model-label" }, t("Model"), this.#label),
 			icon("chevron"),
 		);
 		this.#choices = SESSION_MODELS.map((model) =>
@@ -59,14 +60,14 @@ export class ComposerModels {
 		this.#refresh = h(
 			"button",
 			{ type: "button", role: "menuitem", hidden: true, onclick: () => void this.refresh() },
-			"Refresh model",
+			t("Refresh model"),
 		);
 		this.el = h(
 			"div",
-			{ class: "composer-models", role: "menu", "aria-label": "Model", hidden: true },
-			h("button", { type: "button", role: "menuitem", onclick: back }, icon("back"), "Model"),
+			{ class: "composer-models", role: "menu", "aria-label": t("Model"), hidden: true },
+			h("button", { type: "button", role: "menuitem", onclick: back }, icon("back"), t("Model")),
 			...this.#choices,
-			h("p", { class: "composer-model-scope" }, "Only this conversation. Applies to new Codex runs. Low effort."),
+			h("p", { class: "composer-model-scope" }, t("Only this conversation. Applies to new Codex runs. Low effort.")),
 			this.#status,
 			this.#refresh,
 		);
@@ -115,7 +116,7 @@ export class ComposerModels {
 			this.#observed = value;
 			this.#pendingModel = undefined;
 		} catch {
-			if (!signal.aborted) this.#error = "The model is unavailable. Refresh to try again.";
+			if (!signal.aborted) this.#error = t("The model is unavailable. Refresh to try again.");
 		} finally {
 			if (this.#request === request) {
 				this.#request = undefined;
@@ -160,7 +161,7 @@ export class ComposerModels {
 			this.#observed = value;
 			this.#pendingModel = undefined;
 		} catch {
-			if (!signal.aborted) this.#error = "The change could not be confirmed. Refresh the model before sending.";
+			if (!signal.aborted) this.#error = t("The change could not be confirmed. Refresh the model before sending.");
 		} finally {
 			if (this.#request === request) {
 				this.#request = undefined;
@@ -183,16 +184,16 @@ export class ComposerModels {
 		this.button.disabled = this.#locked || !this.#canRead();
 		this.#label.textContent = this.pending
 			? this.#error
-				? "Change unconfirmed"
-				: "Saving…"
-			: (name ?? (this.#error ? "Unavailable" : "Loading…"));
-		this.button.setAttribute("aria-label", name ? `Model: ${name}` : "Model");
+				? t("Change unconfirmed")
+				: t("Saving…")
+			: (name ?? (this.#error ? t("Unavailable") : t("Loading…")));
+		this.button.setAttribute("aria-label", name ? t("Model: {name}", { name }) : t("Model"));
 		for (const [index, choice] of this.#choices.entries()) {
 			choice.setAttribute("aria-checked", String(SESSION_MODELS[index]?.id === id));
 			choice.disabled = this.button.disabled || !this.#observed || Boolean(this.#request) || Boolean(this.#error);
 		}
 		this.#status.textContent =
-			this.#error || (this.#request ? (this.pending ? "Saving model…" : "Loading model…") : "");
+			this.#error || (this.#request ? (this.pending ? t("Saving model…") : t("Loading model…")) : "");
 		this.#refresh.hidden = !this.#error;
 		this.#refresh.disabled = this.button.disabled || Boolean(this.#request);
 		// Disabling a focused choice blurs it in browsers. Keep Escape and arrow

@@ -5,6 +5,7 @@ import type {
 import type { WebNativeSubscription } from "../cloud/native-subscription.ts";
 import { UUID_PATTERN } from "../cloud/parse.ts";
 import { type SessionExecutionSponsor, selectSessionExecutionSponsor } from "../cloud/session-input.ts";
+import { t } from "../ui/preferences.ts";
 import type { CompanyController } from "./company.ts";
 import type { WorkspaceActions } from "./workspace-actions.ts";
 
@@ -21,7 +22,7 @@ export function createConversationStarter(options: {
 	let busy = false;
 	let room: { recipients: string; id: string; text: string } | undefined;
 	return async (recipientIds, text, viewSignal) => {
-		if (busy) throw new Error("Wait for this conversation to finish opening.");
+		if (busy) throw new Error(t("Wait for this conversation to finish opening."));
 		const ids = [...new Set(recipientIds)];
 		const signal = AbortSignal.any([company.signal, viewSignal]);
 		const check = () => {
@@ -29,7 +30,7 @@ export function createConversationStarter(options: {
 			options.current();
 			const state = company.store.get();
 			if (state.accessLost || !state.team?.capabilities.write)
-				throw new Error("You do not have permission to send messages in this company.");
+				throw new Error(t("You do not have permission to send messages in this company."));
 			if (
 				!ids.length ||
 				ids.length > 255 ||
@@ -38,13 +39,13 @@ export function createConversationStarter(options: {
 					return !UUID_PATTERN.test(id) || !agent || agent.employmentStatus !== "active";
 				})
 			)
-				throw new Error("Choose active agents from this company before sending.");
+				throw new Error(t("Choose active agents from this company before sending."));
 			if (ids.length > 1 && !state.team.capabilities.authorize)
-				throw new Error("Only an owner or admin can create a group chat.");
+				throw new Error(t("Only an owner or admin can create a group chat."));
 		};
 		check();
 		if (!text.trim() || new TextEncoder().encode(text.trim()).length > 65536)
-			throw new Error("Enter a message of no more than 64 KiB.");
+			throw new Error(t("Enter a message of no more than 64 KiB."));
 		busy = true;
 		try {
 			if (options.native.refreshAccountMetadata) {
@@ -62,7 +63,7 @@ export function createConversationStarter(options: {
 					// Check account availability before creating a conversation.
 				}
 			}
-			if (!sponsor) throw new Error("Connect a model account in Settings → Connections to send messages.");
+			if (!sponsor) throw new Error(t("Connect a model account in Settings → Connections to send messages."));
 			let sessionId: string;
 			if (ids.length === 1) {
 				sessionId = await company.openStaffConversation(company.staffById(ids[0]!)!);
@@ -82,7 +83,7 @@ export function createConversationStarter(options: {
 								.map((id) => company.staffById(id)!.displayName)
 								.join(", ")
 								.slice(0, 256),
-							purpose: "A group conversation with the selected agents.",
+							purpose: t("A group conversation with the selected agents."),
 							status: "active",
 							projectId: null,
 							members: [
@@ -100,11 +101,11 @@ export function createConversationStarter(options: {
 					if (command.state === "review_required") {
 						const reviewed = await editor.review(command, "approve", signal);
 						check();
-						if (!("commandId" in reviewed)) throw new Error("Group chat review changed kind.");
+						if (!("commandId" in reviewed)) throw new Error(t("Group chat review changed kind."));
 						command = reviewed;
 					}
 					if (command.state !== "applied" || !command.result)
-						throw new Error("The group chat could not be created. Your message is still here.");
+						throw new Error(t("The group chat could not be created. Your message is still here."));
 				};
 				// Company bootstrap does not seed the rooms directory.
 				const directory = await editor.read("organization/rooms", signal);
@@ -121,14 +122,14 @@ export function createConversationStarter(options: {
 							signal,
 						),
 					);
-				} else if (directory.kind !== "directory") throw new Error("The group chat directory is unavailable.");
+				} else if (directory.kind !== "directory") throw new Error(t("The group chat directory is unavailable."));
 				const path = `organization/rooms/${room.id}.json`;
 				const current = await editor.read(path, signal);
 				check();
 				if (current.kind === "file") {
-					if (current.text !== room.text) throw new Error("The group chat changed. Start a new conversation.");
+					if (current.text !== room.text) throw new Error(t("The group chat changed. Start a new conversation."));
 				} else {
-					if (current.kind !== "absent") throw new Error("The group chat path is unavailable.");
+					if (current.kind !== "absent") throw new Error(t("The group chat path is unavailable."));
 					await apply(
 						await editor.edit(
 							{
@@ -146,14 +147,14 @@ export function createConversationStarter(options: {
 				check();
 				const session = company.store.get().sessions.find((item) => item.executionScope?.roomId === room!.id);
 				if (!session || session.staffAgentId || session.status !== "open")
-					throw new Error("The group chat is still opening. Send again to retry the same conversation.");
+					throw new Error(t("The group chat is still opening. Send again to retry the same conversation."));
 				sessionId = session.sessionId;
 			}
 			if (options.native.selectSessionAccount) {
 				const connectionId = await options.native.selectSessionAccount(sessionId, signal);
 				check();
 				if (!connectionId)
-					throw new Error("No model account is currently available. Try again after an account resets.");
+					throw new Error(t("No model account is currently available. Try again after an account resets."));
 				// Selection may have followed a runtime handoff, so read the current
 				// sponsor version after the server has chosen this room's account.
 				const currentAccounts = await options.native.listConnections(signal);
@@ -163,10 +164,12 @@ export function createConversationStarter(options: {
 			company.assertCanSend(sessionId);
 			const conversation = company.conversation(sessionId, false);
 			if (conversation.get().sending || conversation.get().retrySend)
-				throw new Error("Open the existing conversation to finish its pending message before sending another.");
+				throw new Error(t("Open the existing conversation to finish its pending message before sending another."));
 			if (conversation.get().draft?.trim() || conversation.get().attachments?.length)
 				throw new Error(
-					"This conversation has an unsent draft. Open it to finish or clear that draft before sending another.",
+					t(
+						"This conversation has an unsent draft. Open it to finish or clear that draft before sending another.",
+					),
 				);
 			conversation.set({ draft: text, executionSponsor: sponsor });
 			await options.send(sessionId, text, signal);

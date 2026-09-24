@@ -1,6 +1,7 @@
 import { h, icon } from "./dom.ts";
 import { matchesKey } from "./keys.ts";
 import { isPhoneLayout } from "./layout.ts";
+import { t } from "./preferences.ts";
 
 /** Anchored desktop details are nonmodal; mobile sheets and previews retain
  * native modal containment. Disposal never restores focus into another route. */
@@ -25,7 +26,7 @@ export class SurfaceDialog {
 			{
 				type: "button",
 				class: "surface-close icon-button",
-				"aria-label": `Close ${label.toLowerCase()}`,
+				"aria-label": t("Close {name}", { name: label.toLowerCase() }),
 				onclick: () => this.close(),
 			},
 			icon("close"),
@@ -124,7 +125,12 @@ export class SurfaceDialog {
 
 /** The heading of a page shown inside a dialog: the way back, a title and an
  * optional line under it. */
-export function dialogPageHeader(title: string, back?: () => void, backLabel = "Back", detail?: string): HTMLElement {
+export function dialogPageHeader(
+	title: string,
+	back?: () => void,
+	backLabel = t("Back"),
+	detail?: string,
+): HTMLElement {
 	return h(
 		"header",
 		{ class: "dialog-page-header" },

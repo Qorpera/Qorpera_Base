@@ -2,7 +2,7 @@ import type { CodingSession } from "../../cloud/coding-session.ts";
 import { sessionAttachmentIssue } from "../../cloud/session-attachments.ts";
 import type { TranscriptCard, TranscriptItem } from "../../cloud/transcript.ts";
 import type { HostedSession, HostedStaffAgent, JsonValue } from "../../cloud/types.ts";
-import { AGENT_LOOK, statusCaption, syncCaption } from "../../ui/agent-activity.ts";
+import { AGENT_LOOK, activityCaption, syncCaption } from "../../ui/agent-activity.ts";
 import { AttachmentTray } from "../../ui/attachments.ts";
 import { authorizationRequestId, renderAuthorizationCard } from "../../ui/authorization-card.ts";
 import { agentFigure } from "../../ui/avatar.ts";
@@ -19,6 +19,7 @@ import { groupChatAvatar, isGroupChat } from "../../ui/group-chat.ts";
 import { renderInteractionCard } from "../../ui/interaction-card.ts";
 import { matchesKey } from "../../ui/keys.ts";
 import { markdownBubbles } from "../../ui/markdown.ts";
+import { t } from "../../ui/preferences.ts";
 import { quietScroll } from "../../ui/quiet-scroll.ts";
 import { ReceivedAttachments } from "../../ui/received-attachments.ts";
 import { runFailureCard, runFailureInterrupted, runFailureReason } from "../../ui/run-failure.ts";
@@ -37,6 +38,20 @@ import { SessionRunView } from "./session-run.ts";
 const dismissedRunNotifications = new WeakMap<CompanyController, Set<string>>();
 
 export { renderAuthorizationCard } from "../../ui/authorization-card.ts";
+
+/** sessionAttachmentIssue's fixed sentences, in the member's language. */
+function attachmentIssueText(issue: string | undefined): string | undefined {
+	switch (issue) {
+		case "Messages support PNG, JPEG, GIF and WebP images. Upload other files through Company File.":
+			return t("Messages support PNG, JPEG, GIF and WebP images. Upload other files through Company File.");
+		case "Choose up to 5 images totaling no more than 8 MiB.":
+			return t("Choose up to 5 images totaling no more than 8 MiB.");
+		case "Choose nonempty image files.":
+			return t("Choose nonempty image files.");
+		default:
+			return issue;
+	}
+}
 
 /* One conversation over the canonical transcript. Rendering follows
  * DECISIONS.md "Transcript projection rules": member inputs and agent sends
@@ -147,8 +162,8 @@ export class ConversationView {
 		this.#composer = h("textarea", {
 			class: "composer-input",
 			rows: 1,
-			placeholder: "Message…",
-			"aria-label": "Message",
+			placeholder: t("Message…"),
+			"aria-label": t("Message"),
 			onkeydown: (event: KeyboardEvent) => {
 				if (matchesKey(event, "accept") && !event.shiftKey) {
 					event.preventDefault();
@@ -165,8 +180,8 @@ export class ConversationView {
 			{
 				type: "button",
 				class: "composer-send",
-				"aria-label": "Send message",
-				title: "Send message",
+				"aria-label": t("Send message"),
+				title: t("Send message"),
 				onclick: () => (this.#stopMode ? this.#run?.stop() : this.#submit()),
 			},
 			icon("send"),
@@ -178,7 +193,7 @@ export class ConversationView {
 			this.update();
 			if (hadFiles && !files.length && !this.#composer.disabled) this.#composer.focus();
 		});
-		const fileInput = h("input", { type: "file", multiple: true, hidden: true, "aria-label": "Attach files" });
+		const fileInput = h("input", { type: "file", multiple: true, hidden: true, "aria-label": t("Attach files") });
 		fileInput.onchange = () => {
 			if (!this.#composer.disabled && !this.#isRoom) this.#attachments.add([...(fileInput.files ?? [])]);
 			fileInput.value = "";
@@ -188,8 +203,8 @@ export class ConversationView {
 			{
 				type: "button",
 				class: "composer-more icon-button",
-				title: "Chat settings and more",
-				"aria-label": "Chat settings and more",
+				title: t("Chat settings and more"),
+				"aria-label": t("Chat settings and more"),
 				"aria-haspopup": "menu",
 				"aria-expanded": "false",
 				onclick: () => this.#setMenu(this.#menu.hidden),
@@ -207,7 +222,7 @@ export class ConversationView {
 				},
 			},
 			icon("attach"),
-			"Attach files",
+			t("Attach files"),
 		);
 		this.#models = new ComposerModels(
 			company,
@@ -221,12 +236,18 @@ export class ConversationView {
 		this.#attachNote = h(
 			"p",
 			{ class: "composer-menu-note", hidden: true },
-			"Images are not supported in group chats. Use Company File.",
+			t("Images are not supported in group chats. Use Company File."),
 		);
 		this.#menuMain = h("div", null, this.#attach, this.#attachNote, this.#models.button);
 		this.#menu = h(
 			"div",
-			{ class: "composer-menu", role: "menu", hidden: true, tabindex: "-1", "aria-label": "Chat settings and more" },
+			{
+				class: "composer-menu",
+				role: "menu",
+				hidden: true,
+				tabindex: "-1",
+				"aria-label": t("Chat settings and more"),
+			},
 			this.#menuMain,
 			this.#models.el,
 		);
@@ -292,7 +313,7 @@ export class ConversationView {
 		this.#identity = h("button", {
 			type: "button",
 			class: "thread-identity",
-			"aria-label": "Open agent details",
+			"aria-label": t("Open agent details"),
 			"aria-haspopup": "dialog",
 			"aria-expanded": "false",
 			onclick: () => this.#openDetails(),
@@ -302,8 +323,8 @@ export class ConversationView {
 			{
 				type: "button",
 				class: "icon-button thread-computer",
-				title: "Open agent computer",
-				"aria-label": "Open agent computer",
+				title: t("Open agent computer"),
+				"aria-label": t("Open agent computer"),
 				"aria-expanded": "false",
 				onclick: () => this.#toggleComputer(),
 			},
@@ -314,7 +335,7 @@ export class ConversationView {
 			{
 				type: "button",
 				class: "mobile-navigation-toggle icon-button",
-				"aria-label": "Company navigation",
+				"aria-label": t("Company navigation"),
 				"aria-controls": "company-navigation",
 				"aria-expanded": "false",
 				hidden: !toggleNavigation,
@@ -583,12 +604,12 @@ export class ConversationView {
 			this.#send.classList.toggle("stopping", stop);
 		}
 		const label = stop
-			? "Stop"
+			? t("Stop")
 			: this.#actions.sendMessage
-				? "Send message"
-				: "Sending messages is not available yet";
+				? t("Send message")
+				: t("Sending messages is not available yet");
 		this.#send.title = label;
-		this.#send.setAttribute("aria-label", stop ? "Stop" : "Send message");
+		this.#send.setAttribute("aria-label", stop ? t("Stop") : t("Send message"));
 		this.#send.disabled = stop ? this.#run?.stopping === true : this.#submitting || this.#cannotSend;
 	}
 
@@ -634,7 +655,7 @@ export class ConversationView {
 				if (!this.#disposed && !this.#notificationSignal.aborted)
 					this.#company
 						.conversation(this.#sessionId)
-						.set({ sendError: "The message could not be confirmed. Try again." });
+						.set({ sendError: t("The message could not be confirmed. Try again.") });
 			} finally {
 				this.#submitting = false;
 				if (!this.#disposed) this.update();
@@ -662,19 +683,19 @@ export class ConversationView {
 		);
 		const attachmentIssue =
 			room && conversation.attachments?.length
-				? "Images are not supported in group chats. Use Company File."
-				: sessionAttachmentIssue(conversation.attachments ?? []);
+				? t("Images are not supported in group chats. Use Company File.")
+				: attachmentIssueText(sessionAttachmentIssue(conversation.attachments ?? []));
 		this.#attachments.sync(
 			conversation.attachments ?? [],
 			!canWrite || conversation.sending,
 			room
-				? "Images are not supported in group chats. Use Company File."
+				? t("Images are not supported in group chats. Use Company File.")
 				: this.#actions.sendMessage
 					? attachmentIssue
-						? `Attachments stay on this device. ${attachmentIssue}`
+						? t("Attachments stay on this device. {issue}", { issue: attachmentIssue })
 						: conversation.sending
-							? "Uploading images and sending message…"
-							: "Images stay on this device until you send. Up to 5 images, 8 MiB total."
+							? t("Uploading images and sending message…")
+							: t("Images stay on this device until you send. Up to 5 images, 8 MiB total.")
 					: undefined,
 		);
 		// The agent's run is watched quietly; a change in who is working re-reads it.
@@ -689,7 +710,7 @@ export class ConversationView {
 		this.#renderHeader(session, agent);
 		this.#renderMessages(
 			conversation,
-			room ? "Agent reply" : (agent?.displayName ?? session?.title ?? "Agent"),
+			room ? t("Agent reply") : (agent?.displayName ?? session?.title ?? t("Agent")),
 			agent,
 		);
 		this.#renderStatus(conversation, canWrite, session);
@@ -715,7 +736,7 @@ export class ConversationView {
 	}
 
 	#renderHeader(session: HostedSession | undefined, agent: HostedStaffAgent | undefined): void {
-		const title = agent?.displayName ?? session?.title ?? "Conversation";
+		const title = agent?.displayName ?? session?.title ?? t("Conversation");
 		const group = isGroupChat(session);
 		const groupAgents = group ? this.#company.groupAgents(this.#sessionId) : [];
 		const key = JSON.stringify([title, group, agent?.id, agent?.appearance, groupAgents]);
@@ -727,7 +748,10 @@ export class ConversationView {
 			this.#company.signal.aborted;
 		this.#computer.hidden = !agent;
 		this.#identity.title = title;
-		this.#identity.setAttribute("aria-label", agent ? "Open agent details" : group ? "Open group details" : title);
+		this.#identity.setAttribute(
+			"aria-label",
+			agent ? t("Open agent details") : group ? t("Open group details") : title,
+		);
 		if (agent || group) {
 			this.#identity.setAttribute("aria-haspopup", "dialog");
 			this.#identity.setAttribute("aria-expanded", String(Boolean(this.#details)));
@@ -889,8 +913,8 @@ export class ConversationView {
 						? this.#isRoom
 							? (item.staffSpeaker?.displayName ??
 								(item.staffSpeaker
-									? `Agent ${item.staffSpeaker.staffAgentId}`
-									: "Agent reply · speaker unavailable"))
+									? t("Agent {id}", { id: item.staffSpeaker.staffAgentId })
+									: t("Agent reply · speaker unavailable")))
 							: agentName
 						: this.#company.memberName(item.authorUserId);
 				const attachments = item.attachmentCount
@@ -901,7 +925,7 @@ export class ConversationView {
 					item.kind === "agent"
 						? markdownBubbles(item.text)
 						: item.text || !item.attachmentCount
-							? [h("div", { class: "text" }, item.text || "(empty)")]
+							? [h("div", { class: "text" }, item.text || t("(empty)"))]
 							: [];
 				nodes.push(
 					h(
@@ -928,17 +952,23 @@ export class ConversationView {
 						...bodies.map((body) => h("div", { class: "bubble" }, body)),
 						attachments?.el,
 						item.phase === "progress"
-							? h("div", { class: "message-caption", title: "The agent's turn is not finished" }, "Progress")
+							? h(
+									"div",
+									{ class: "message-caption", title: t("The agent's turn is not finished") },
+									t("Progress"),
+								)
 							: null,
 						item.pending
 							? h(
 									"div",
 									{ class: "message-caption" },
 									item.pending === "failed"
-										? `Failed${item.failureReason ? ` · ${item.failureReason}` : ""}`
+										? item.failureReason
+											? t("Failed · {reason}", { reason: item.failureReason })
+											: t("Failed")
 										: item.pending === "processing"
-											? "Processing"
-											: "Queued",
+											? t("Processing")
+											: t("Queued"),
 								)
 							: null,
 					),
@@ -947,16 +977,20 @@ export class ConversationView {
 				// A message between this agent and a coworker: one centered line, the coworker's
 				// figure before its name, no text; the transcript is behind it.
 				const counterpart = this.#company.staffById(item.counterpartStaffId);
-				const name = counterpart?.displayName ?? "a coworker";
+				const name = counterpart?.displayName ?? t("a coworker");
 				// A held message was left for the coworker's next turn, so it is a note, not a message it has read.
-				const verb = item.held
-					? item.direction === "out"
-						? "Left a note for"
-						: "Note from"
-					: item.direction === "out"
-						? "Messaged"
-						: "Message from";
-				const label = `${verb} ${name}`;
+				// One sentence around the name; the chip sets the name apart, with the figure
+				// before it, wherever the language puts it.
+				const [verb = "", after = ""] = (
+					item.held
+						? item.direction === "out"
+							? t("Left a note for {name}")
+							: t("Note from {name}")
+						: item.direction === "out"
+							? t("Messaged {name}")
+							: t("Message from {name}")
+				).split("{name}");
+				const label = `${verb}${name}${after}`;
 				const own = agent?.id ?? "";
 				nodes.push(
 					h(
@@ -968,7 +1002,7 @@ export class ConversationView {
 								type: "button",
 								class: "peer-chip",
 								title: `${label} · ${fmtTime(item.createdAt)}`,
-								"aria-label": `${label}. Open the conversation`,
+								"aria-label": t("{label}. Open the conversation", { label }),
 								onclick: (event: MouseEvent) =>
 									this.#openPair(
 										item.pairSessionId,
@@ -976,9 +1010,10 @@ export class ConversationView {
 										event.currentTarget as HTMLElement,
 									),
 							},
-							h("span", null, verb),
+							verb.trim() ? h("span", null, verb.trim()) : null,
 							agentFigure(counterpart, name, { size: 16 }),
 							h("span", null, name),
+							after.trim() ? h("span", null, after.trim()) : null,
 						),
 					),
 				);
@@ -1035,23 +1070,22 @@ export class ConversationView {
 				this.#codingElements.delete(workerId);
 			}
 		}
-		if (conversation.loading && !items.length) nodes.push(spinner("Loading conversation"));
+		if (conversation.loading && !items.length) nodes.push(spinner(t("Loading conversation")));
 		if (!conversation.loading && !items.length && !codingSessions.length && !conversation.error && !this.#working) {
-			nodes.push(h("div", { class: "empty" }, "No messages yet."));
+			nodes.push(h("div", { class: "empty" }, t("No messages yet.")));
 		}
 		if (this.#working && !conversation.loading) {
 			// As on the desktop: the figure works or writes, and "Nova is writing"
 			// shows beside it on hover or focus, never as a bubble.
 			const look = AGENT_LOOK[this.#agentState];
-			const detail = look.detail ?? "";
-			const caption = statusCaption(agentName, detail);
+			const { label, caption } = activityCaption(look, agentName);
 			const row = h(
 				"div",
 				{
 					class: "message from-agent thread-activity",
 					role: "status",
 					tabindex: "0",
-					"aria-label": `${agentName}${detail}`,
+					"aria-label": label,
 				},
 				agentFigure(agent, agentName, { size: 40, activity: look.figure }),
 				caption,
@@ -1096,11 +1130,12 @@ export class ConversationView {
 				h(
 					"p",
 					{ class: "surface-status", role: "status" },
-					"Sending messages is not available yet. Your draft stays here.",
+					t("Sending messages is not available yet. Your draft stays here."),
 				),
 			);
 		if (this.#execution) children.push(this.#execution.el);
-		if (!canWrite && session?.status === "closed") children.push(notice("neutral", "This conversation is archived."));
+		if (!canWrite && session?.status === "closed")
+			children.push(notice("neutral", t("This conversation is archived.")));
 		else if (
 			!canWrite &&
 			session &&
@@ -1109,7 +1144,7 @@ export class ConversationView {
 			!company.accessLost &&
 			company.team?.capabilities.read === true
 		)
-			children.push(notice("neutral", "You can read this conversation. Contributors and above can write."));
+			children.push(notice("neutral", t("You can read this conversation. Contributors and above can write.")));
 		const refocus = this.#status.contains(document.activeElement)
 			? (document.activeElement as HTMLElement).dataset.action
 			: undefined;
@@ -1145,7 +1180,7 @@ export class ConversationView {
 				const ownerIsViewer = current.ownerUserId === company.userId;
 				return {
 					agent: company.staffById(current.agentId)?.displayName ?? agentName,
-					owner: ownerIsViewer ? "you" : company.memberName(current.ownerUserId),
+					owner: ownerIsViewer ? t("you") : company.memberName(current.ownerUserId),
 					ownerIsViewer,
 				};
 			},
@@ -1182,7 +1217,7 @@ export class ConversationView {
 		const thread = company.sessions.find((item) => item.sessionId === this.#sessionId);
 		const agent = this.#company.staffById(thread?.staffAgentId);
 		const view = new CodingSessionThreadView(session, {
-			...this.#codingOptions(agent, agent?.displayName ?? "Agent"),
+			...this.#codingOptions(agent, agent?.displayName ?? t("Agent")),
 			close: () => {
 				if (this.#codingThread?.view === view) this.#codingThread = undefined;
 				this.#codingElements.get(workerId)?.el.querySelector<HTMLButtonElement>(".coding-chip")?.focus();
@@ -1209,15 +1244,15 @@ export class ConversationView {
 		const hidden = !runId || dismissedRunNotifications.get(this.#company)?.has(runId);
 		const proposalId = failed?.recovery?.proposalId;
 		const review = failed?.activity.sourceKind === "proposal_review";
-		const agentName = this.#company.staffById(session?.staffAgentId ?? "")?.displayName ?? "The agent";
+		const agentName = this.#company.staffById(session?.staffAgentId ?? "")?.displayName ?? t("The agent");
 		const title = proposalId
-			? `${agentName} stopped with changes to review`
+			? t("{name} stopped with changes to review", { name: agentName })
 			: review
-				? "A review did not finish"
-				: `${agentName} did not finish this run`;
+				? t("A review did not finish")
+				: t("{name} did not finish this run", { name: agentName });
 		const recovery = failed?.recovery;
 		const reason = proposalId
-			? "Its changes wait for your decision."
+			? t("Its changes wait for your decision.")
 			: recovery
 				? runFailureReason(recovery.lastError, recovery.jobStatus)
 				: undefined;
@@ -1270,7 +1305,7 @@ export class ConversationView {
 							class: "btn btn-small",
 							href: `#/c/${profileId}/${proposalId ? `proposal/${proposalId}` : "file"}`,
 						},
-						"Review",
+						t("Review"),
 					)
 				: undefined;
 		const sessionId = this.#sessionId;

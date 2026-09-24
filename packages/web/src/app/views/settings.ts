@@ -6,7 +6,7 @@ import { createWebNativeSubscription } from "../../cloud/native-subscription.ts"
 import type { HostedCompanyFile, HostedProfile } from "../../cloud/types.ts";
 import { agentFigure } from "../../ui/avatar.ts";
 import { button, h, icon, notice, replace } from "../../ui/dom.ts";
-import { uiText } from "../../ui/preferences.ts";
+import { t, uiText } from "../../ui/preferences.ts";
 import type { AuthController } from "../auth.ts";
 import { CompanyController } from "../company.ts";
 import { type AccountViewState, renderAccount } from "./account.ts";
@@ -25,33 +25,35 @@ const TABS = [
 		label: "General",
 		icon: "settings",
 		keywords:
-			"account companies appearance theme composer color colour blue green grey gray language region time zone timezone",
+			"account companies appearance theme composer color colour blue green grey gray language region time zone timezone generelt konto virksomheder udseende tema lys mørk skrivefelt farve blå grøn grå sprog dansk engelsk område tidszone",
 	},
 	{
 		id: "plan",
 		label: "Plan & usage",
 		icon: "plan",
 		keywords:
-			"plan billing subscription usage storage trial upgrade price payment card invoices computer hours basis standard dedicated",
+			"plan billing subscription usage storage trial upgrade price payment card invoices computer hours basis standard dedicated abonnement forbrug betaling lager lagerplads prøveperiode opgrader pris kort fakturaer computertimer dedikeret",
 	},
 	{
 		id: "friends",
 		label: "Friends",
 		icon: "friends",
-		keywords: "people contacts requests add email invitations invites join accept decline",
+		keywords:
+			"people contacts requests add email invitations invites join accept decline venner personer kontakter anmodninger tilføj e-mail invitationer inviter accepter afvis",
 	},
 	{
 		id: "company",
 		label: "Company",
 		icon: "company",
 		keywords:
-			"people team members invitations staff file organization approvals execution pause resume ceilings limits",
+			"people team members invitations staff file organization approvals execution pause resume ceilings limits virksomhed personer medlemmer invitationer agenter virksomhedsfilen organisation godkendelser kørsel pause genoptag lofter grænser roller",
 	},
 	{
 		id: "connections",
 		label: "Connections",
 		icon: "connections",
-		keywords: "providers subscriptions openai codex anthropic claude secrets",
+		keywords:
+			"providers subscriptions openai codex anthropic claude secrets forbindelser udbydere modelkonti konti tjenester gmail google drive github hemmeligheder",
 	},
 ] as const;
 export type SettingsTab = (typeof TABS)[number]["id"];
@@ -72,12 +74,16 @@ export class SettingsView {
 	readonly #companyRemoved: (profileId: string) => void;
 	readonly #lifetime = new AbortController();
 	readonly #content = h("div", { class: "settings-content", id: "settings-content", role: "tabpanel", tabindex: "0" });
-	readonly #search = h("input", { type: "search", placeholder: "Search settings", "aria-label": "Search settings" });
+	readonly #search = h("input", {
+		type: "search",
+		placeholder: t("Search settings"),
+		"aria-label": t("Search settings"),
+	});
 	readonly #panels = new Map<SettingsTab, HTMLElement>();
 	readonly #tabs = new Map<SettingsTab, HTMLButtonElement>();
 	readonly #borrowedCompany: CompanyController | undefined;
-	readonly #companyPicker = h("select", { class: "settings-company-picker", "aria-label": "Company for settings" });
-	readonly #companyLabel = h("label", { class: "settings-company-label" }, "Company", this.#companyPicker);
+	readonly #companyPicker = h("select", { class: "settings-company-picker", "aria-label": t("Company for settings") });
+	readonly #companyLabel = h("label", { class: "settings-company-label" }, t("Company"), this.#companyPicker);
 	#profiles: HostedProfile[] = [];
 	#tab: SettingsTab = "general";
 	#account: AccountViewState = { loading: true };
@@ -111,9 +117,13 @@ export class SettingsView {
 		this.#companyRemoved = companyRemoved;
 		this.#borrowedCompany = company;
 		const search = this.#search;
-		const empty = h("p", { class: "muted small", hidden: true }, "No settings found.");
-		const nav = h("nav", { class: "settings-nav", "aria-label": "Settings sections" }, search);
-		const tablist = h("div", { role: "tablist", "aria-label": "Settings sections", "aria-orientation": "vertical" });
+		const empty = h("p", { class: "muted small", hidden: true }, t("No settings found."));
+		const nav = h("nav", { class: "settings-nav", "aria-label": t("Settings sections") }, search);
+		const tablist = h("div", {
+			role: "tablist",
+			"aria-label": t("Settings sections"),
+			"aria-orientation": "vertical",
+		});
 		for (const tab of TABS) {
 			const button = h(
 				"button",
@@ -169,12 +179,12 @@ export class SettingsView {
 			},
 			h(
 				"section",
-				{ class: "settings-dialog", role: "dialog", "aria-modal": "true", "aria-label": "Settings" },
+				{ class: "settings-dialog", role: "dialog", "aria-modal": "true", "aria-label": t("Settings") },
 				nav,
 				this.#content,
 				h(
 					"button",
-					{ type: "button", class: "settings-close", "aria-label": "Close settings", onclick: close },
+					{ type: "button", class: "settings-close", "aria-label": t("Close settings"), onclick: close },
 					"×",
 				),
 			),
@@ -225,7 +235,7 @@ export class SettingsView {
 		this.#profiles = profiles;
 		replace(
 			this.#companyPicker,
-			h("option", { value: "" }, "Choose a company"),
+			h("option", { value: "" }, t("Choose a company")),
 			...profiles.map((profile) => h("option", { value: profile.profileId }, profile.profileName)),
 		);
 		this.#companyPicker.value = selected?.profileId ?? "";
@@ -361,8 +371,8 @@ export class SettingsView {
 			h(
 				"div",
 				null,
-				h("h1", null, TABS.find((item) => item.id === tab)!.label),
-				notice("neutral", "Choose a company to view these settings."),
+				h("h1", null, t(TABS.find((item) => item.id === tab)!.label)),
+				notice("neutral", t("Choose a company to view these settings.")),
 			);
 		this.#content.setAttribute("aria-labelledby", `settings-tab-${tab}`);
 		replace(this.#content, panel);
@@ -482,8 +492,8 @@ export class SettingsView {
 				h("div", { class: "settings-execution" }),
 				...(
 					[
-						["organization", "Organization", "Agents and projects"],
-						["approvals", "Approvals", "Review requests that need your decision"],
+						["organization", "Organization", t("Agents and projects")],
+						["approvals", "Approvals", t("Review requests that need your decision")],
 					] as const
 				).map(([path, title, detail]) =>
 					h(

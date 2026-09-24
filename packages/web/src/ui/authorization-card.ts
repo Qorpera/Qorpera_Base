@@ -1,5 +1,6 @@
 import type { JsonValue } from "../cloud/types.ts";
 import { badge, fmtTime, h, icon } from "./dom.ts";
+import { t } from "./preferences.ts";
 
 /** A runner custom entry keeps its facts under `entry.data`; older desktop bodies keep them at the top. */
 export function authorizationData(body: JsonValue): Record<string, JsonValue> {
@@ -37,20 +38,20 @@ export function renderAuthorizationCard(
 	const approved = decision === "approved" || decision === "approve";
 	const declined = ["denied", "rejected", "declined", "deny", "reject"].includes(decision);
 	const label = !isDecision
-		? "Awaiting decision"
+		? t("Awaiting decision")
 		: approved
-			? "Approved"
+			? t("Approved")
 			: declined
-				? "Declined"
-				: "Decision recorded";
+				? t("Declined")
+				: t("Decision recorded");
 	const title =
 		typeof data.title === "string" && data.title.trim()
 			? data.title
 			: typeof data.operation === "string"
 				? data.operation.replaceAll(/[-_]/g, " ")
 				: kind === "authorization_request"
-					? "Approval requested"
-					: "Authorization decision";
+					? t("Approval requested")
+					: t("Authorization decision");
 	const summary =
 		typeof data.summary === "string"
 			? data.summary
@@ -68,7 +69,7 @@ export function renderAuthorizationCard(
 			"header",
 			{ class: "decision-heading" },
 			icon(approved && isDecision ? "check" : "info"),
-			h("span", null, "Approval"),
+			h("span", null, t("Approval")),
 			badge(label, !isDecision ? "warn" : approved ? "ok" : "neutral"),
 		),
 		h("h3", null, title),
@@ -86,7 +87,7 @@ export function renderAuthorizationCard(
 				] as const
 			).flatMap(([key, label]) =>
 				typeof data[key] === "string" || typeof data[key] === "number"
-					? [h("dt", null, label), h("dd", null, String(data[key]))]
+					? [h("dt", null, t(label)), h("dd", null, String(data[key]))]
 					: [],
 			),
 		),
@@ -95,11 +96,11 @@ export function renderAuthorizationCard(
 			? h(
 					"div",
 					{ class: "decision-actions" },
-					onDecide ? null : h("p", null, "Only an owner or admin of this company can decide."),
+					onDecide ? null : h("p", null, t("Only an owner or admin of this company can decide.")),
 					h(
 						"button",
 						{ type: "button", class: "btn", disabled: !onDecide, onclick: () => onDecide?.("declined") },
-						"Decline",
+						t("Decline"),
 					),
 					h(
 						"button",
@@ -109,7 +110,7 @@ export function renderAuthorizationCard(
 							disabled: !onDecide,
 							onclick: () => onDecide?.("approved"),
 						},
-						"Approve",
+						t("Approve"),
 					),
 				)
 			: null,
@@ -117,7 +118,7 @@ export function renderAuthorizationCard(
 			? h(
 					"details",
 					{ class: "decision-details" },
-					h("summary", null, "Event details"),
+					h("summary", null, t("Event details")),
 					h(
 						"dl",
 						{ class: "kv" },
@@ -131,6 +132,6 @@ export function renderAuthorizationCard(
 						]),
 					),
 				)
-			: h("p", { class: "muted" }, "No details provided."),
+			: h("p", { class: "muted" }, t("No details provided.")),
 	);
 }

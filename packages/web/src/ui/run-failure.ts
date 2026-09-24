@@ -1,5 +1,6 @@
 import { button, h } from "./dom.ts";
 import { matchesKey } from "./keys.ts";
+import { t } from "./preferences.ts";
 
 /** What stopped the run, from the cloud's own error text (which names machinery,
  * not causes) and the job status. One classification feeds both the sentence the
@@ -30,7 +31,7 @@ const REASONS: Record<RunFailureKind, string> = {
 
 /** Why a run stopped, in the member's words. */
 export function runFailureReason(lastError: string | undefined, jobStatus: "failed" | "cancelled"): string {
-	return REASONS[classifyRunFailure(lastError, jobStatus)];
+	return t(REASONS[classifyRunFailure(lastError, jobStatus)]);
 }
 
 /** Whether the run was interrupted rather than refused: it was stopped for time,
@@ -68,7 +69,7 @@ export function runFailureCard(card: RunFailureCard): HTMLElement {
 		card.action ??
 		(card.retry
 			? button(
-					busy ? "Trying again…" : "Try again",
+					busy ? t("Trying again…") : t("Try again"),
 					guarded(() => card.retry?.()),
 					{ small: true },
 				)
@@ -78,7 +79,7 @@ export function runFailureCard(card: RunFailureCard): HTMLElement {
 		primary.dataset.action = "retry-run";
 		if (busy) primary.setAttribute("aria-disabled", "true");
 	}
-	const dismiss = button("Dismiss", guarded(card.dismiss), { small: true });
+	const dismiss = button(t("Dismiss"), guarded(card.dismiss), { small: true });
 	dismiss.classList.add("run-failure-secondary");
 	dismiss.dataset.action = "dismiss-run";
 	if (busy) dismiss.setAttribute("aria-disabled", "true");

@@ -1,7 +1,36 @@
 import type { HostedOrganizationProject } from "../../cloud/organization.ts";
 import { agentFigure } from "../../ui/avatar.ts";
 import { badge, h, icon, notice, replace, spinner } from "../../ui/dom.ts";
+import { t } from "../../ui/preferences.ts";
 import type { CompanyController } from "../company.ts";
+
+/** Labels for the cloud's fixed codes. English shows the code itself. */
+function projectStatusLabel(status: string): string {
+	if (status === "proposed") return t("proposed");
+	if (status === "active") return t("active");
+	if (status === "blocked") return t("blocked");
+	if (status === "completed") return t("completed");
+	if (status === "cancelled") return t("cancelled");
+	return status;
+}
+
+function formationStateLabel(state: string): string {
+	if (state === "source_inventory") return t("source inventory");
+	if (state === "discovery") return t("discovery");
+	if (state === "research") return t("research");
+	if (state === "vision_proposal") return t("vision proposal");
+	if (state === "goals_ratified") return t("goals ratified");
+	if (state === "responsibility_map") return t("responsibility map");
+	if (state === "operating") return t("operating");
+	return state.replaceAll("_", " ");
+}
+
+function formationStatusLabel(status: string): string {
+	if (status === "active") return t("active");
+	if (status === "completed") return t("completed");
+	if (status === "paused") return t("paused");
+	return status;
+}
 
 function projectCard(company: CompanyController, project: HostedOrganizationProject): HTMLElement {
 	const lead = company.staffById(project.leadStaffAgentId);
@@ -12,14 +41,14 @@ function projectCard(company: CompanyController, project: HostedOrganizationProj
 			"div",
 			{ class: "organization-node-head" },
 			h("strong", null, project.name),
-			badge(project.status, project.status === "blocked" ? "warn" : "neutral"),
+			badge(projectStatusLabel(project.status), project.status === "blocked" ? "warn" : "neutral"),
 		),
 		project.objective ? h("p", null, project.objective) : null,
 		h(
 			"div",
 			{ class: "organization-node-owner" },
-			agentFigure(lead, lead?.displayName ?? "Project lead", { size: 28 }),
-			h("span", null, lead?.displayName ?? "Lead unavailable"),
+			agentFigure(lead, lead?.displayName ?? t("Project lead"), { size: 28 }),
+			h("span", null, lead?.displayName ?? t("Lead unavailable")),
 			icon("chevron"),
 		),
 	);
@@ -39,8 +68,8 @@ function projectDetail(company: CompanyController, item: HostedOrganizationProje
 		h(
 			"header",
 			{ class: "organization-heading" },
-			h("div", null, h("p", { class: "eyebrow" }, "Project"), h("h1", null, item.name)),
-			badge(item.status, item.status === "blocked" ? "warn" : "neutral"),
+			h("div", null, h("p", { class: "eyebrow" }, t("Project")), h("h1", null, item.name)),
+			badge(projectStatusLabel(item.status), item.status === "blocked" ? "warn" : "neutral"),
 		),
 		item.objective ? h("p", { class: "organization-lead" }, item.objective) : null,
 		h(
@@ -49,7 +78,7 @@ function projectDetail(company: CompanyController, item: HostedOrganizationProje
 			h(
 				"section",
 				null,
-				h("h2", null, "Accountable lead"),
+				h("h2", null, t("Accountable lead")),
 				lead
 					? h(
 							"a",
@@ -57,18 +86,18 @@ function projectDetail(company: CompanyController, item: HostedOrganizationProje
 							agentFigure(lead, lead.displayName, { size: 48 }),
 							h("span", null, h("strong", null, lead.displayName), h("small", null, lead.role)),
 						)
-					: h("p", null, "Lead unavailable"),
+					: h("p", null, t("Lead unavailable")),
 			),
 			h(
 				"section",
 				null,
-				h("h2", null, "Team room"),
+				h("h2", null, t("Team room")),
 				room
-					? h("a", { class: "btn", href: `${base}/chat/${room.sessionId}` }, "Open room")
-					: h("p", { class: "muted" }, item.roomId ? "Room conversation unavailable." : "No room attached."),
+					? h("a", { class: "btn", href: `${base}/chat/${room.sessionId}` }, t("Open room"))
+					: h("p", { class: "muted" }, item.roomId ? t("Room conversation unavailable.") : t("No room attached.")),
 			),
 		),
-		h("h2", null, "Project team"),
+		h("h2", null, t("Project team")),
 		h(
 			"div",
 			{ class: "organization-projects" },
@@ -81,16 +110,16 @@ function projectDetail(company: CompanyController, item: HostedOrganizationProje
 							agentFigure(agent, agent.displayName, { size: 48 }),
 							h("span", null, h("strong", null, agent.displayName), h("small", null, member.role)),
 						)
-					: h("p", { class: "muted" }, "Team member unavailable");
+					: h("p", { class: "muted" }, t("Team member unavailable"));
 			}),
-			members.length ? null : h("p", { class: "empty" }, "No team members assigned."),
+			members.length ? null : h("p", { class: "empty" }, t("No team members assigned.")),
 		),
 		h(
 			"details",
 			{ class: "advanced" },
-			h("summary", null, "Source details"),
-			h("p", null, `Version ${item.version}`),
-			h("code", null, item.sourcePath || "Source path unavailable"),
+			h("summary", null, t("Source details")),
+			h("p", null, t("Version {version}", { version: item.version })),
+			h("code", null, item.sourcePath || t("Source path unavailable")),
 		),
 	);
 }
@@ -107,15 +136,20 @@ export function renderOrganization(
 		base = `#/c/${company.profile.profileId}`;
 	const page = h("section", { class: "page organization" });
 	if (focus)
-		page.append(h("a", { class: "organization-back", href: `${base}/organization` }, icon("back"), "Organization"));
-	if (state.organizationState === "loading") page.append(spinner("Loading organization"));
+		page.append(
+			h("a", { class: "organization-back", href: `${base}/organization` }, icon("back"), t("Organization")),
+		);
+	if (state.organizationState === "loading") page.append(spinner(t("Loading organization")));
 	else if (state.organizationState === "error")
-		page.append(notice("danger", state.organizationError ?? "The organization could not be read."));
+		page.append(notice("danger", state.organizationError ?? t("The organization could not be read.")));
 	else if (!organization)
-		page.append(h("h1", null, "Organization"), notice("neutral", "The company organization is not available yet."));
+		page.append(
+			h("h1", null, t("Organization")),
+			notice("neutral", t("The company organization is not available yet.")),
+		);
 	if (focus && organization) {
 		const item = organization.projects.find((item) => item.projectId === focus.id);
-		page.append(item ? projectDetail(company, item) : notice("neutral", "This project is no longer available."));
+		page.append(item ? projectDetail(company, item) : notice("neutral", t("This project is no longer available.")));
 		replace(container, page);
 		return;
 	}
@@ -131,8 +165,8 @@ export function renderOrganization(
 				h(
 					"div",
 					null,
-					h("h1", null, "Organization"),
-					h("p", { class: "organization-lead" }, "Your agents and the projects they are moving forward."),
+					h("h1", null, t("Organization")),
+					h("p", { class: "organization-lead" }, t("Your agents and the projects they are moving forward.")),
 				),
 			),
 			h(
@@ -143,16 +177,16 @@ export function renderOrganization(
 					"span",
 					null,
 					h("strong", null, cofounder?.displayName ?? "Co-Founder"),
-					h("small", null, "Company direction"),
+					h("small", null, t("Company direction")),
 				),
 				icon("chevron"),
 			),
-			h("h2", null, "Active projects"),
+			h("h2", null, t("Active projects")),
 			h(
 				"div",
 				{ class: "organization-projects" },
 				...projects.map((item) => projectCard(company, item)),
-				projects.length ? null : h("p", { class: "empty" }, "No active projects."),
+				projects.length ? null : h("p", { class: "empty" }, t("No active projects.")),
 			),
 		);
 		const completed = organization.projects.filter(
@@ -163,7 +197,7 @@ export function renderOrganization(
 				h(
 					"details",
 					{ class: "organization-history" },
-					h("summary", null, "Completed projects"),
+					h("summary", null, t("Completed projects")),
 					h("div", { class: "organization-projects" }, ...completed.map((item) => projectCard(company, item))),
 				),
 			);
@@ -171,22 +205,22 @@ export function renderOrganization(
 			h(
 				"details",
 				{ class: "advanced" },
-				h("summary", null, "Formation details"),
+				h("summary", null, t("Formation details")),
 				h(
 					"p",
 					null,
-					organization.formation.state.replaceAll("_", " ") +
-						" · " +
-						organization.formation.status +
-						" · revision " +
-						organization.formation.revision,
+					t("{state} · {status} · revision {revision}", {
+						state: formationStateLabel(organization.formation.state),
+						status: formationStatusLabel(organization.formation.status),
+						revision: organization.formation.revision,
+					}),
 				),
 			),
 		);
 	}
 	const staff = state.staff.filter((agent) => agent.employmentStatus === "active");
 	page.append(
-		h("h2", null, "Staff"),
+		h("h2", null, t("Staff")),
 		h(
 			"div",
 			{ class: "staff-grid" },
@@ -198,7 +232,7 @@ export function renderOrganization(
 					h("span", null, h("strong", null, agent.displayName), h("small", null, agent.role)),
 				),
 			),
-			staff.length ? null : h("p", { class: "empty" }, "No staff yet."),
+			staff.length ? null : h("p", { class: "empty" }, t("No staff yet.")),
 		),
 	);
 	const archived = state.staff.filter((agent) => agent.employmentStatus !== "active");
@@ -207,7 +241,7 @@ export function renderOrganization(
 			h(
 				"details",
 				{ class: "organization-history" },
-				h("summary", null, "Archived staff"),
+				h("summary", null, t("Archived staff")),
 				h("ul", null, ...archived.map((agent) => h("li", null, `${agent.displayName} · ${agent.role}`))),
 			),
 		);

@@ -1,6 +1,7 @@
-import { FIGURE_IDS, type FigureId, figureElement, nativeColorOf, PALETTE } from "./avatar.ts";
+import { colorName, FIGURE_IDS, type FigureId, figureElement, figureName, nativeColorOf, PALETTE } from "./avatar.ts";
 import { h, replace } from "./dom.ts";
 import { matchesKey } from "./keys.ts";
+import { t } from "./preferences.ts";
 
 export interface FigureChoice {
 	figure: FigureId;
@@ -55,7 +56,7 @@ export class FigurePicker {
 			this.el,
 			h(
 				"div",
-				{ class: "figure-grid", role: "radiogroup", "aria-label": "Agent figure" },
+				{ class: "figure-grid", role: "radiogroup", "aria-label": t("Agent figure") },
 				...FIGURE_IDS.map((id) =>
 					h(
 						"button",
@@ -65,7 +66,7 @@ export class FigurePicker {
 							role: "radio",
 							tabindex: id === figure ? "0" : "-1",
 							"aria-checked": String(id === figure),
-							"aria-label": id,
+							"aria-label": figureName(id),
 							onclick: () => this.#choose({ figure: id, color: this.#keepColor ? color : nativeColorOf(id) }),
 						},
 						figureElement(id, id === figure || this.#keepColor ? color : undefined, { size: 32, still: true }),
@@ -75,7 +76,7 @@ export class FigurePicker {
 			this.#colors
 				? h(
 						"div",
-						{ class: "color-grid", role: "radiogroup", "aria-label": "Agent color" },
+						{ class: "color-grid", role: "radiogroup", "aria-label": t("Agent color") },
 						...PALETTE().map(({ name, color: hex }, index) =>
 							h("button", {
 								type: "button",
@@ -86,7 +87,7 @@ export class FigurePicker {
 										? "0"
 										: "-1",
 								"aria-checked": String(hex === color),
-								"aria-label": name,
+								"aria-label": colorName(name),
 								dataset: { color: hex },
 								onclick: () => this.#choose({ figure, color: hex }),
 							}),

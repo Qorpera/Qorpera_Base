@@ -1,6 +1,7 @@
 import type { CompanyExecutionNotification, WebCompanyExecution } from "../../cloud/company-execution.ts";
 import { button, h } from "../../ui/dom.ts";
 import { matchesKey } from "../../ui/keys.ts";
+import { t } from "../../ui/preferences.ts";
 
 type Client = Pick<WebCompanyExecution, "listNotifications" | "acknowledgeNotification">;
 const STOP = "qorpera.member-notification.company-execution-stop/v1";
@@ -16,13 +17,19 @@ function sentence(item: CompanyExecutionNotification): string | undefined {
 			return undefined;
 		case "qorpera.member-notification.company-ceiling-tripped/v1":
 			if (subject.dimension === "wakes")
-				return "Agents were started too often this hour. They answer again within the hour.";
-			return `This company reached its monthly ${subject.dimension === "spend" ? "spend" : "token"} limit. Agents answer again when an owner raises it in Settings, or when the month turns.`;
+				return t("Agents were started too often this hour. They answer again within the hour.");
+			return subject.dimension === "spend"
+				? t(
+						"This company reached its monthly spend limit. Agents answer again when an owner raises it in Settings, or when the month turns.",
+					)
+				: t(
+						"This company reached its monthly token limit. Agents answer again when an owner raises it in Settings, or when the month turns.",
+					);
 		case "qorpera.member-notification.machine-capacity/v1":
-			return `All ${subject.ceiling} company computers are in use. Close one to open another.`;
+			return t("All {count} company computers are in use. Close one to open another.", { count: subject.ceiling });
 		case STOP:
 			return subject.paused
-				? "Agents are paused for this company. They answer again when an owner resumes them in Settings."
+				? t("Agents are paused for this company. They answer again when an owner resumes them in Settings.")
 				: undefined;
 	}
 }
@@ -45,7 +52,7 @@ function told(items: readonly CompanyExecutionNotification[]): CompanyExecutionN
  * write or steals focus. A failed read or an unconfirmed dismissal shows nothing: the
  * line returns with the next good read if the notice still stands. */
 export class ExecutionNotices {
-	readonly el = h("section", { class: "execution-notices", "aria-label": "Company updates", hidden: true });
+	readonly el = h("section", { class: "execution-notices", "aria-label": t("Company updates"), hidden: true });
 	readonly #client: Client;
 	readonly #lifetime = new AbortController();
 	readonly #restoreFocus: (() => void) | undefined;
@@ -126,7 +133,9 @@ export class ExecutionNotices {
 		if (key === this.#drawn) return;
 		const focused = this.el.contains(document.activeElement);
 		if (text) {
-			const dismiss = button("Dismiss", (event) => event.detail < 2 && void this.#acknowledge(), { small: true });
+			const dismiss = button(t("Dismiss"), (event) => event.detail < 2 && void this.#acknowledge(), {
+				small: true,
+			});
 			dismiss.dataset.action = "dismiss-notification";
 			if (this.#acking) dismiss.setAttribute("aria-disabled", "true");
 			this.el.replaceChildren(

@@ -5,6 +5,7 @@ import { SurfaceDialog } from "../../ui/dialog.ts";
 import { button, h, icon, notice, personAvatar, replace, spinner } from "../../ui/dom.ts";
 import { groupChatAvatar, isGroupChat } from "../../ui/group-chat.ts";
 import { matchesKey } from "../../ui/keys.ts";
+import { t } from "../../ui/preferences.ts";
 import type { CompanyController } from "../company.ts";
 import type { WorkspaceActions } from "../workspace-actions.ts";
 import { type GroupEdits, groupEditsFor } from "./group-edits.ts";
@@ -28,7 +29,7 @@ export class GroupDetails {
 	readonly #unsubscribe: () => void;
 	readonly #fields = {} as Record<TextKey, HTMLInputElement | HTMLTextAreaElement>;
 	readonly #status = h("p", { class: "agent-details-status", role: "status" });
-	readonly #participants = h("section", { "aria-label": "Participants" });
+	readonly #participants = h("section", { "aria-label": t("Participants") });
 	readonly #stage = h("span", { class: "group-details-stage" });
 	#details: GroupChatDetails | undefined;
 	#edits: GroupEdits | undefined;
@@ -55,7 +56,7 @@ export class GroupDetails {
 		this.#scope = scope;
 		this.#roomId = company.store.get().sessions.find((item) => item.sessionId === sessionId)?.executionScope?.roomId;
 		this.dialog = new SurfaceDialog(
-			"Group details",
+			t("Group details"),
 			"agent-details group-details",
 			() => {
 				if (!this.#discarded && this.#open) this.#commit(this.#open);
@@ -108,7 +109,7 @@ export class GroupDetails {
 	}
 
 	async #load(): Promise<void> {
-		replace(this.dialog.content, spinner("Loading group details…"));
+		replace(this.dialog.content, spinner(t("Loading group details…")));
 		try {
 			const details = await this.#company.groupDetails(this.#sessionId, this.#lifetime.signal);
 			if (!this.#available()) return;
@@ -122,7 +123,7 @@ export class GroupDetails {
 				replace(
 					this.dialog.content,
 					notice("danger", describeError(error)),
-					button("Retry", () => void this.#load()),
+					button(t("Retry"), () => void this.#load()),
 				);
 		}
 	}
@@ -147,7 +148,7 @@ export class GroupDetails {
 		const multiline = key === "purpose";
 		const events = {
 			name: key,
-			"aria-label": LABELS[key],
+			"aria-label": t(LABELS[key]),
 			maxlength: multiline ? 32768 : 256,
 			oninput: () => this.#show(key, control.value),
 			onfocus: () => {
@@ -181,7 +182,7 @@ export class GroupDetails {
 	}
 
 	#value(key: TextKey): string {
-		return this.#edits?.current()[key] ?? (key === "subtitle" ? "Group chat" : "");
+		return this.#edits?.current()[key] ?? (key === "subtitle" ? t("Group chat") : "");
 	}
 
 	#show(key: TextKey, value: string): void {
@@ -201,7 +202,10 @@ export class GroupDetails {
 		if (!value && key !== "subtitle") {
 			this.#show(key, this.#value(key));
 			this.#statusKey = "";
-			replace(this.#status, `${LABELS[key]} cannot be empty.`);
+			replace(
+				this.#status,
+				key === "name" ? t("Group title cannot be empty.") : t("Group description cannot be empty."),
+			);
 			return;
 		}
 		this.#show(key, value);
@@ -229,9 +233,9 @@ export class GroupDetails {
 			replace(
 				this.#status,
 				status,
-				failed && canRecover ? button("Try again", () => void this.#edits?.save(), { small: true }) : null,
+				failed && canRecover ? button(t("Try again"), () => void this.#edits?.save(), { small: true }) : null,
 				failed && canRecover
-					? button("Discard changes", () => void this.#edits?.discardChanges(), { small: true })
+					? button(t("Discard changes"), () => void this.#edits?.discardChanges(), { small: true })
 					: null,
 			);
 		}
@@ -267,7 +271,7 @@ export class GroupDetails {
 			const name =
 				agent?.displayName ??
 				member?.displayName ??
-				(participant.kind === "staff_agent" ? "Unavailable agent" : "Unavailable member");
+				(participant.kind === "staff_agent" ? t("Unavailable agent") : t("Unavailable member"));
 			return h(
 				"li",
 				null,
@@ -278,10 +282,11 @@ export class GroupDetails {
 					h(
 						"strong",
 						null,
-						name,
-						participant.kind === "member" && participant.id === this.#company.userId ? " (You)" : "",
+						participant.kind === "member" && participant.id === this.#company.userId
+							? t("{name} (You)", { name })
+							: name,
 					),
-					h("span", null, agent?.role ?? (participant.kind === "staff_agent" ? "Agent" : "Member")),
+					h("span", null, agent?.role ?? (participant.kind === "staff_agent" ? t("Agent") : t("Member"))),
 				),
 			);
 		});
@@ -290,10 +295,10 @@ export class GroupDetails {
 			h(
 				"div",
 				{ class: "group-participants-heading" },
-				h("h3", null, `Participants (${members.length})`),
+				h("h3", null, t("Participants ({count})", { count: members.length })),
 				this.#edits!.canWrite()
 					? button(
-							"Edit participants",
+							t("Edit participants"),
 							() => {
 								this.#members = this.#edits!.current().members.map((member) => ({ ...member }));
 								replace(this.#participants, this.#memberEditor());
@@ -305,14 +310,14 @@ export class GroupDetails {
 			),
 			participants.length
 				? h("ul", { class: "group-details-participants" }, participants)
-				: h("p", null, "No participants to display."),
+				: h("p", null, t("No participants to display.")),
 			!this.#edits!.canWrite()
 				? h(
 						"p",
 						{ class: "muted" },
 						this.#details?.status === "archived"
-							? "Archived groups cannot be edited."
-							: "Only an owner or admin can edit group details.",
+							? t("Archived groups cannot be edited.")
+							: t("Only an owner or admin can edit group details."),
 					)
 				: null,
 		);
@@ -335,7 +340,7 @@ export class GroupDetails {
 			const agent = member.kind === "staff_agent" ? this.#company.staffById(member.id) : undefined;
 			const person =
 				member.kind === "member" ? state.team?.members.find((item) => item.userId === member.id) : undefined;
-			const label = agent?.displayName ?? person?.displayName ?? "Unavailable participant";
+			const label = agent?.displayName ?? person?.displayName ?? t("Unavailable participant");
 			return h(
 				"label",
 				{ class: "group-member-choice" },
@@ -355,7 +360,8 @@ export class GroupDetails {
 					h(
 						"small",
 						null,
-						agent?.role ?? (member.kind === "staff_agent" ? "Unavailable agent — remove to save" : "Member"),
+						agent?.role ??
+							(member.kind === "staff_agent" ? t("Unavailable agent — remove to save") : t("Member")),
 					),
 				),
 			);
@@ -370,7 +376,7 @@ export class GroupDetails {
 					if (!this.#edits?.canWrite()) return;
 					if (members.filter((member) => member.kind === "staff_agent").length < 2) {
 						this.#statusKey = "";
-						replace(this.#status, "Choose at least two agents.");
+						replace(this.#status, t("Choose at least two agents."));
 						return;
 					}
 					this.#members = undefined;
@@ -384,18 +390,18 @@ export class GroupDetails {
 				h(
 					"fieldset",
 					{ class: "group-member-options" },
-					h("legend", null, "Participants"),
-					h("p", null, "Choose at least two agents."),
+					h("legend", null, t("Participants")),
+					h("p", null, t("Choose at least two agents.")),
 					choices,
 				),
 				h(
 					"div",
 					{ class: "surface-actions" },
-					button("Cancel", () => {
+					button(t("Cancel"), () => {
 						this.#members = undefined;
 						this.#renderParticipants();
 					}),
-					h("button", { type: "submit", class: "btn btn-primary" }, "Save participants"),
+					h("button", { type: "submit", class: "btn btn-primary" }, t("Save participants")),
 				),
 			),
 		);

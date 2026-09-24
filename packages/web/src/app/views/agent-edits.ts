@@ -1,5 +1,6 @@
 import type { HostedStaffAgent } from "../../cloud/types.ts";
 import { colorFor, figureFor, nativeColorOf } from "../../ui/avatar.ts";
+import { t } from "../../ui/preferences.ts";
 import type { CompanyController } from "../company.ts";
 import { Store } from "../state.ts";
 import type { AgentDraft, WorkspaceActions } from "../workspace-actions.ts";
@@ -103,12 +104,12 @@ export class AgentEdits {
 		if (this.#saving || !this.#update || !this.canWrite() || this.#written === this.#revision) return;
 		this.#saving = true;
 		const signal = AbortSignal.any([this.signal, this.#attempt.signal]);
-		this.store.set({ status: "Saving…", failed: false });
+		this.store.set({ status: t("Saving…"), failed: false });
 		try {
 			do {
 				while (this.#written < this.#revision) {
 					signal.throwIfAborted();
-					if (!this.canWrite()) throw new Error("Only an owner or admin can change agents.");
+					if (!this.canWrite()) throw new Error(t("Only an owner or admin can change agents."));
 					const revision = this.#revision;
 					const changes = new Map(this.#changes);
 					const version = await this.#update(
@@ -125,9 +126,9 @@ export class AgentEdits {
 				signal.throwIfAborted();
 			} while (this.#written < this.#revision);
 			this.#reconcile();
-			this.store.set({ status: "Saved", failed: false });
+			this.store.set({ status: t("Saved"), failed: false });
 		} catch {
-			if (!signal.aborted) this.store.set({ status: "Your changes could not be saved.", failed: true });
+			if (!signal.aborted) this.store.set({ status: t("Your changes could not be saved."), failed: true });
 		} finally {
 			this.#saving = false;
 			// A newly authorized edit may arrive while an aborted request settles.

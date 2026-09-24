@@ -1,5 +1,6 @@
 import type { CompanyExecutionState, WebCompanyExecution } from "../../cloud/company-execution.ts";
 import { button, h, notice, replace } from "../../ui/dom.ts";
+import { t } from "../../ui/preferences.ts";
 
 function dollars(microusd: number): string {
 	const value = BigInt(microusd);
@@ -19,25 +20,25 @@ export class CompanyExecutionView {
 		type: "text",
 		maxlength: "30",
 		inputmode: "decimal",
-		"aria-label": "Monthly spend ceiling (USD)",
+		"aria-label": t("Monthly spend ceiling (USD)"),
 	});
 	readonly #tokens = h("input", {
 		type: "text",
 		maxlength: "16",
 		inputmode: "numeric",
-		"aria-label": "Monthly token ceiling",
+		"aria-label": t("Monthly token ceiling"),
 	});
 	readonly #wakes = h("input", {
 		type: "text",
 		maxlength: "7",
 		inputmode: "numeric",
-		"aria-label": "Autonomous wakes per hour",
+		"aria-label": t("Autonomous wakes per hour"),
 	});
 	readonly #reason = h("input", {
 		type: "text",
 		maxlength: "2048",
-		"aria-label": "Company pause or resume reason",
-		placeholder: "Reason (optional)",
+		"aria-label": t("Company pause or resume reason"),
+		placeholder: t("Reason (optional)"),
 	});
 	readonly #refresh: HTMLButtonElement;
 	readonly #pause: HTMLButtonElement;
@@ -57,29 +58,31 @@ export class CompanyExecutionView {
 	) {
 		this.#control = control;
 		this.#canManage = canManage;
-		this.#refresh = button("Refresh company execution", () => void this.refresh(), { small: true });
-		this.#pause = button("Pause company execution", () => void this.#setPause(), { danger: true });
-		this.#save = button("Save execution ceilings", () => void this.#saveCeilings(), { primary: true });
+		this.#refresh = button(t("Refresh company execution"), () => void this.refresh(), { small: true });
+		this.#pause = button(t("Pause company execution"), () => void this.#setPause(), { danger: true });
+		this.#save = button(t("Save execution ceilings"), () => void this.#saveCeilings(), { primary: true });
 		this.el.append(
-			h("h2", null, "Company execution"),
+			h("h2", null, t("Company execution")),
 			h(
 				"p",
 				{ class: "muted" },
-				"Pausing blocks new company work and fences running work. Resuming allows new work again.",
+				t("Pausing blocks new company work and fences running work. Resuming allows new work again."),
 			),
 			this.#status,
 			this.#feedback,
 			this.#role,
 			h("div", { class: "row" }, this.#pause, this.#reason),
-			h("h3", null, "Execution ceilings"),
+			h("h3", null, t("Execution ceilings")),
 			h(
 				"p",
 				{ class: "muted" },
-				"Monthly spend and token limits apply to API-billed execution. Subscription accounts also retain their provider limits.",
+				t(
+					"Monthly spend and token limits apply to API-billed execution. Subscription accounts also retain their provider limits.",
+				),
 			),
-			h("label", { class: "field" }, "Monthly spend ceiling (USD)", this.#spend),
-			h("label", { class: "field" }, "Monthly token ceiling", this.#tokens),
-			h("label", { class: "field" }, "Autonomous wakes per hour", this.#wakes),
+			h("label", { class: "field" }, t("Monthly spend ceiling (USD)"), this.#spend),
+			h("label", { class: "field" }, t("Monthly token ceiling"), this.#tokens),
+			h("label", { class: "field" }, t("Autonomous wakes per hour"), this.#wakes),
 			h("div", { class: "row" }, this.#save, this.#refresh),
 		);
 		if (signal.aborted) this.dispose();
@@ -98,24 +101,32 @@ export class CompanyExecutionView {
 			this.#busy = false;
 			this.#mutating = false;
 			this.#uncertain = true;
-			this.#message = "Your permissions changed. Refresh company execution to confirm its state.";
+			this.#message = t("Your permissions changed. Refresh company execution to confirm its state.");
 		}
 		const disabled = !canManage || this.#busy || this.#uncertain || !this.#state;
 		for (const input of [this.#spend, this.#tokens, this.#wakes, this.#reason]) input.disabled = disabled;
 		this.#pause.disabled = disabled;
 		this.#save.disabled = disabled;
 		this.#refresh.disabled = this.#busy;
-		this.#pause.textContent = this.#state?.paused ? "Resume company execution" : "Pause company execution";
+		this.#pause.textContent = this.#state?.paused ? t("Resume company execution") : t("Pause company execution");
 		this.#role.textContent = canManage
-			? "Owners and admins can change company execution."
-			: "Only owners and admins can change company execution.";
+			? t("Owners and admins can change company execution.")
+			: t("Only owners and admins can change company execution.");
 		replace(this.#feedback, this.#message ? notice("neutral", this.#message) : null);
 		const state = this.#state;
 		this.#status.textContent = state
-			? `${state.paused ? "Company execution is paused." : "Company execution is enabled."} This month: $${dollars(state.spendMicrousdUsed)} accounted spend (including reservations), ${state.tokensUsed} reserved token budget; ${state.wakesLastHour} autonomous wakes in the last hour. ${state.trips} ceiling trips this month.`
+			? `${state.paused ? t("Company execution is paused.") : t("Company execution is enabled.")} ${t(
+					"This month: {spend} accounted spend (including reservations), {tokens} reserved token budget; {wakes} autonomous wakes in the last hour. {trips} ceiling trips this month.",
+					{
+						spend: `$${dollars(state.spendMicrousdUsed)}`,
+						tokens: state.tokensUsed,
+						wakes: state.wakesLastHour,
+						trips: state.trips,
+					},
+				)}`
 			: this.#busy
-				? "Checking company execution…"
-				: "Company execution status is unavailable.";
+				? t("Checking company execution…")
+				: t("Company execution status is unavailable.");
 	}
 
 	async refresh(): Promise<void> {
@@ -138,8 +149,8 @@ export class CompanyExecutionView {
 		} catch {
 			if (signal.aborted) return;
 			this.#message = this.#uncertain
-				? "The change could not be confirmed. Refresh company execution before trying again."
-				: "Company execution status is unavailable. Refresh to try again.";
+				? t("The change could not be confirmed. Refresh company execution before trying again.")
+				: t("Company execution status is unavailable. Refresh to try again.");
 		} finally {
 			if (this.#request === request) {
 				this.#request = undefined;
@@ -155,7 +166,7 @@ export class CompanyExecutionView {
 		const paused = !state.paused;
 		const reason = this.#reason.value.trim() || undefined;
 		if (reason && [...reason].length > 1024) {
-			this.#message = "Keep the pause or resume reason within 1,024 characters.";
+			this.#message = t("Keep the pause or resume reason within 1,024 characters.");
 			this.update();
 			return;
 		}
@@ -176,7 +187,7 @@ export class CompanyExecutionView {
 			!/^\d+$/.test(tokens) ||
 			!/^\d+$/.test(wakes)
 		) {
-			this.#message = "Enter positive whole tokens and wakes, and a USD amount with at most six decimal places.";
+			this.#message = t("Enter positive whole tokens and wakes, and a USD amount with at most six decimal places.");
 			this.update();
 			return;
 		}
@@ -193,7 +204,7 @@ export class CompanyExecutionView {
 			wakesPerHour < 1 ||
 			wakesPerHour > 1_000_000
 		) {
-			this.#message = "Enter valid positive ceilings. Wakes must be between 1 and 1,000,000 per hour.";
+			this.#message = t("Enter valid positive ceilings. Wakes must be between 1 and 1,000,000 per hour.");
 			this.update();
 			return;
 		}
@@ -213,7 +224,7 @@ export class CompanyExecutionView {
 		this.#busy = true;
 		this.#mutating = true;
 		this.#uncertain = true;
-		this.#message = "Saving company execution…";
+		this.#message = t("Saving company execution…");
 		this.update();
 		let confirmed = false;
 		try {
@@ -221,7 +232,7 @@ export class CompanyExecutionView {
 			if (!signal.aborted) confirmed = true;
 		} catch {
 			if (!signal.aborted)
-				this.#message = "The change could not be confirmed. Refresh company execution before trying again.";
+				this.#message = t("The change could not be confirmed. Refresh company execution before trying again.");
 		} finally {
 			if (this.#request === request) {
 				this.#request = undefined;

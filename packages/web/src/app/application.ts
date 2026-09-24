@@ -15,7 +15,7 @@ import { createWebSessionRunControl } from "../cloud/session-run-control.ts";
 import type { HostedProfile } from "../cloud/types.ts";
 import { h, notice, replace, spinner } from "../ui/dom.ts";
 import { isPhoneLayout } from "../ui/layout.ts";
-import { applyLanguage, presentationLocale, watchTheme } from "../ui/preferences.ts";
+import { applyLanguage, presentationLocale, t, watchTheme } from "../ui/preferences.ts";
 import { RailLayout } from "../ui/rail-layout.ts";
 import { AuthController } from "./auth.ts";
 import { CompanyController } from "./company.ts";
@@ -61,14 +61,14 @@ export function mountApplication(
 	let hub = new HubController(api);
 
 	const topbar = h("header", { class: "topbar" });
-	const rail = h("aside", { id: "company-navigation", class: "rail", "aria-label": "Company navigation" });
+	const rail = h("aside", { id: "company-navigation", class: "rail", "aria-label": t("Company navigation") });
 	const main = h("main", { class: "main", tabindex: "-1" });
 	// Company notices are no popup: the open conversation places this above its composer.
 	const executionNotices = h("div", { class: "company-notices" });
 	const backdrop = h("button", {
 		type: "button",
 		class: "navigation-backdrop",
-		"aria-label": "Close company navigation",
+		"aria-label": t("Close company navigation"),
 		onclick: () => setNavigationOpen(false),
 	});
 	const frame = h("div", { class: "frame" }, topbar, h("div", { class: "body" }, backdrop, rail, main));
@@ -93,6 +93,14 @@ export function mountApplication(
 	const unwatchTheme = watchTheme();
 	let disposed = false;
 	let settings: SettingsView | undefined;
+	// Opened once the signed-in frame is on the page (draw), which replaces the root.
+	let reopenSettings: SettingsTab | undefined;
+	try {
+		if (sessionStorage.getItem(REOPEN_SETTINGS_KEY) === "general") reopenSettings = "general";
+		sessionStorage.removeItem(REOPEN_SETTINGS_KEY);
+	} catch {
+		// No stored tab: the reload simply lands where it was.
+	}
 	let feedback: FeedbackView | undefined;
 	function closeFeedback(restoreFocus = true): void {
 		if (!feedback) return;
@@ -341,14 +349,14 @@ export function mountApplication(
 									(route.section === "new" && startingSession?.sessionId === target)
 								)
 							)
-								throw new Error("Company access is unavailable.");
+								throw new Error(t("Company access is unavailable."));
 							controller.assertCanSend(target);
 							const observedRoom = controller.roomTargetFor(target);
 							if (
 								observedRoom?.roomId !== roomTarget?.roomId ||
 								observedRoom?.environmentId !== roomTarget?.environmentId
 							)
-								throw new Error("The conversation destination changed. Refresh before sending.");
+								throw new Error(t("The conversation destination changed. Refresh before sending."));
 						},
 						profile.profileId,
 					)(sessionId, clientInputId, text, signal, files, executionSponsor, roomTarget),
@@ -365,7 +373,7 @@ export function mountApplication(
 			}
 			computer = new WebCompanyComputer(cloud, profile, userId, controller.signal, () => {
 				if (disposed || company !== controller || auth.userId !== userId || controller.store.get().accessLost)
-					throw new Error("Company access is unavailable.");
+					throw new Error(t("Company access is unavailable."));
 			});
 			// Open computers outlive the thread they were opened in; leaving the company ends them.
 			computerPanels = new ComputerPanels(computer, controller.signal);
@@ -408,7 +416,7 @@ export function mountApplication(
 		resolvingRoute = revision;
 		try {
 			const agent = controller.staffById(staffId);
-			if (!agent) throw new Error("This agent is not available in the company.");
+			if (!agent) throw new Error(t("This agent is not available in the company."));
 			const sessionId = await controller.openStaffConversation(agent);
 			if (current() && company === controller)
 				navigate(
@@ -430,7 +438,7 @@ export function mountApplication(
 		const current = captureRoute();
 		const authState = auth.store.get();
 		if (!authState.ready) {
-			replace(root!, spinner("Connecting to the cloud"));
+			replace(root!, spinner(t("Connecting to the cloud")));
 			return;
 		}
 		if (!authState.session) {
@@ -441,6 +449,10 @@ export function mountApplication(
 			return;
 		}
 		if (!root!.contains(frame)) replace(root!, frame);
+		if (reopenSettings) {
+			openSettings(reopenSettings);
+			reopenSettings = undefined;
+		}
 		const route: Route = currentRoute();
 		frame.classList.toggle(
 			"has-thread",
@@ -495,8 +507,8 @@ export function mountApplication(
 				h(
 					"section",
 					{ class: "page" },
-					notice("danger", "This company is not available to your account."),
-					h("a", { href: "#/" }, "Back to companies"),
+					notice("danger", t("This company is not available to your account.")),
+					h("a", { href: "#/" }, t("Back to companies")),
 				),
 			);
 			return;
@@ -538,8 +550,8 @@ export function mountApplication(
 				h(
 					"section",
 					{ class: "page" },
-					notice("danger", "Your access to this company was revoked."),
-					h("a", { href: "#/" }, "Back to companies"),
+					notice("danger", t("Your access to this company was revoked.")),
+					h("a", { href: "#/" }, t("Back to companies")),
 				),
 			);
 			return;
@@ -565,7 +577,7 @@ export function mountApplication(
 						selected.name !== "company" ||
 						selected.profileId !== controller.profile.profileId
 					)
-						throw new Error("Company notification access changed.");
+						throw new Error(t("Company notification access changed."));
 				},
 			);
 			notices = new ExecutionNotices(client, controller.signal, () => main.focus({ preventScroll: true }));
@@ -589,7 +601,7 @@ export function mountApplication(
 		// member still holds the authority the company showed when it began.
 		const agents = () => {
 			const team = controller.store.get().team;
-			if (!team?.capabilities.authorize) throw new Error("Only an owner or admin can change agents.");
+			if (!team?.capabilities.authorize) throw new Error(t("Only an owner or admin can change agents."));
 			return createWebCompanyAgents(
 				new WebCompanyFiles(cloud, controller.profile, controller.userId, team.role, controller.signal, () => {
 					const now = controller.store.get();
@@ -600,7 +612,7 @@ export function mountApplication(
 						now.accessLost ||
 						!now.team?.capabilities.authorize
 					)
-						throw new Error("Company access changed.");
+						throw new Error(t("Company access changed."));
 				}),
 			);
 		};
@@ -614,7 +626,7 @@ export function mountApplication(
 					const current = captureRoute();
 					const check = () => {
 						if (!current() || company !== controller || controller.store.get().accessLost)
-							throw new Error("Conversation access changed.");
+							throw new Error(t("Conversation access changed."));
 					};
 					const startConversation = createConversationStarter({
 						company: controller,
@@ -630,11 +642,11 @@ export function mountApplication(
 							check();
 							const team = controller.store.get().team;
 							if (!team?.capabilities.authorize)
-								throw new Error("Only an owner or admin can create a group chat.");
+								throw new Error(t("Only an owner or admin can create a group chat."));
 							return new WebCompanyFiles(cloud, controller.profile, controller.userId, team.role, signal, () => {
 								check();
 								if (!controller.store.get().team?.capabilities.authorize)
-									throw new Error("Group chat creation access changed.");
+									throw new Error(t("Group chat creation access changed."));
 							}).files();
 						},
 						send: async (sessionId, text, signal) => {
@@ -664,15 +676,17 @@ export function mountApplication(
 			case "home": {
 				// Home needs organization, membership and sessions, not just staff.
 				if (state.loading) {
-					replace(main, spinner("Opening company"));
+					replace(main, spinner(t("Opening company")));
 					return;
 				}
 				if (!homeReason) {
-					replace(main, spinner("Opening the Co-Founder"));
+					replace(main, spinner(t("Opening the Co-Founder")));
 					void resolveHome(controller);
 					return;
 				}
 				const first = state.hierarchy.primary.find((node) => node.kind === "agent");
+				// One sentence around the agent's link, so Danish can order it its own way.
+				const [before, after] = t("Start with {agent} or pick a conversation in the rail.").split("{agent}");
 				replace(
 					main,
 					h(
@@ -684,15 +698,15 @@ export function mountApplication(
 							? h(
 									"p",
 									null,
-									"Start with ",
+									before,
 									h(
 										"a",
 										{ href: `#/c/${controller.profile.profileId}/staff/${first.canonicalId}` },
 										first.label,
 									),
-									" or pick a conversation in the rail.",
+									after,
 								)
-							: h("p", { class: "muted" }, "This company has no staff conversations yet."),
+							: h("p", { class: "muted" }, t("This company has no staff conversations yet.")),
 					),
 				);
 				return;
@@ -718,7 +732,7 @@ export function mountApplication(
 							selected.section !== "chat" ||
 							selected.id !== sessionId
 						)
-							throw new Error("Conversation access changed.");
+							throw new Error(t("Conversation access changed."));
 					};
 					conversation = new ConversationView(
 						controller,
@@ -738,7 +752,7 @@ export function mountApplication(
 									checkConversationAccess();
 									const team = controller.store.get().team;
 									if (!team?.capabilities.authorize)
-										throw new Error("Only an owner or admin can edit group chats.");
+										throw new Error(t("Only an owner or admin can edit group chats."));
 									return new WebCompanyFiles(
 										cloud,
 										controller.profile,
@@ -748,7 +762,7 @@ export function mountApplication(
 										() => {
 											checkConversationAccess();
 											if (!controller.store.get().team?.capabilities.authorize)
-												throw new Error("Group chat editing access changed.");
+												throw new Error(t("Group chat editing access changed."));
 										},
 									).files();
 								},
@@ -787,7 +801,7 @@ export function mountApplication(
 										selected.section !== "chat" ||
 										selected.id !== route.id
 									)
-										throw new Error("Attachment access changed.");
+										throw new Error(t("Attachment access changed."));
 								};
 								check();
 								const message = controller
@@ -798,7 +812,7 @@ export function mountApplication(
 									message?.kind === "member" && !message.pending && Number.isSafeInteger(index) && index >= 0
 										? message.attachments?.[index]?.reference
 										: undefined;
-								if (!ref) throw new Error("This attachment is not available for preview.");
+								if (!ref) throw new Error(t("This attachment is not available for preview."));
 								const bytes = await createWebSessionAttachments(cloud, controller.userId, signal, check).read(
 									route.id!,
 									messageId,
@@ -825,14 +839,14 @@ export function mountApplication(
 			}
 			case "staff": {
 				if (state.loading) {
-					replace(main, spinner("Opening company"));
+					replace(main, spinner(t("Opening company")));
 					return;
 				}
 				if (routeError) {
 					replace(main, notice("danger", routeError));
 					return;
 				}
-				replace(main, spinner("Opening conversation"));
+				replace(main, spinner(t("Opening conversation")));
 				void resolveStaff(controller, route.id ?? "");
 				return;
 			}
@@ -851,7 +865,7 @@ export function mountApplication(
 					return;
 				}
 				if (state.loading || !state.team) {
-					replace(main, spinner("Checking Company File access"));
+					replace(main, spinner(t("Checking Company File access")));
 					return;
 				}
 				const authorityKey = JSON.stringify([
@@ -883,7 +897,7 @@ export function mountApplication(
 								selected.section !== "file" ||
 								selected.id
 							)
-								throw new Error("Company File access changed.");
+								throw new Error(t("Company File access changed."));
 						},
 						state.team.capabilities.write,
 					);
@@ -952,14 +966,6 @@ export function mountApplication(
 
 	void auth.start().then(() => {
 		render();
-		let reopen: string | null = null;
-		try {
-			reopen = sessionStorage.getItem(REOPEN_SETTINGS_KEY);
-			sessionStorage.removeItem(REOPEN_SETTINGS_KEY);
-		} catch {
-			// No stored tab: the reload simply lands where it was.
-		}
-		if (reopen === "general") openSettings("general");
 	});
 
 	return () => {

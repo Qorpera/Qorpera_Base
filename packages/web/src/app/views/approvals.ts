@@ -3,6 +3,7 @@ import { projectTranscript } from "../../cloud/transcript.ts";
 import type { HostedSession, JsonValue } from "../../cloud/types.ts";
 import { authorizationRequestId, renderAuthorizationCard } from "../../ui/authorization-card.ts";
 import { button, fmtTime, h, notice, replace, spinner } from "../../ui/dom.ts";
+import { t } from "../../ui/preferences.ts";
 import type { CompanyController } from "../company.ts";
 
 /* Approvals inbox (runtime contract §16.2): gated decisions wait durably in
@@ -78,7 +79,7 @@ export class ApprovalsView {
 					this.#scanned.set(session.sessionId, signature);
 					const state = conversation.get();
 					if (state.error || !state.complete)
-						this.#errors.set(session.sessionId, state.error ?? "Conversation could not be read");
+						this.#errors.set(session.sessionId, state.error ?? t("Conversation could not be read"));
 					else this.#errors.delete(session.sessionId);
 					this.update();
 				}
@@ -138,8 +139,12 @@ export class ApprovalsView {
 			const error = this.#errors.get(session.sessionId);
 			return error ? [`${session.title}: ${error}`] : [];
 		});
-		const renderEntry = (entry: InboxEntry) =>
-			h(
+		const renderEntry = (entry: InboxEntry) => {
+			// One sentence around the conversation's link, so Danish can order it its own way.
+			const [before, after] = t("In {conversation} · {time}", { time: fmtTime(entry.card.createdAt) }).split(
+				"{conversation}",
+			);
+			return h(
 				"div",
 				{ class: "inbox-entry" },
 				renderAuthorizationCard(
@@ -152,49 +157,52 @@ export class ApprovalsView {
 				h(
 					"div",
 					{ class: "muted small" },
-					"In ",
+					before,
 					h(
 						"a",
 						{ href: `#/c/${this.#company.profile.profileId}/chat/${entry.session.sessionId}` },
 						entry.session.title,
 					),
-					` · ${fmtTime(entry.card.createdAt)}`,
+					after,
 				),
 			);
+		};
 		replace(
 			this.el,
-			h("h1", null, "Approvals"),
+			h("h1", null, t("Approvals")),
 			notice(
 				"neutral",
-				"Decisions wait in the cloud until an authorized member records one. Recording a decision from the web is not yet in the client contract, so this inbox is read-only; use the desktop for the decision itself for now.",
+				t(
+					"Decisions wait in the cloud until an authorized member records one. Recording a decision from the web is not yet in the client contract, so this inbox is read-only; use the desktop for the decision itself for now.",
+				),
 			),
-			loading ? spinner(`Reading conversations (${scannedCount}/${total})`) : null,
+			loading ? spinner(t("Reading conversations ({done}/{total})", { done: scannedCount, total })) : null,
 			discoveryError
 				? notice(
 						"danger",
-						`Approvals are incomplete. ${discoveryError}`,
-						button("Retry conversation discovery", () => void this.#company.refreshSessions()),
+						t("Approvals are incomplete. {error}", { error: discoveryError }),
+						button(t("Retry conversation discovery"), () => void this.#company.refreshSessions()),
 					)
 				: null,
 			errors.length
 				? notice(
 						"danger",
-						`Approvals are incomplete. ${errors.join("; ")}`,
-						button("Retry unread conversations", () => {
+						t("Approvals are incomplete. {error}", { error: errors.join("; ") }),
+						button(t("Retry unread conversations"), () => {
 							for (const id of this.#errors.keys()) this.#scanned.delete(id);
 							void this.#scan();
 						}),
 					)
 				: null,
-			h("h2", null, `Waiting for a decision (${pending.length})`),
+			h("h2", null, t("Waiting for a decision ({count})", { count: pending.length })),
 			pending.length
 				? h("div", { class: "card-list" }, ...pending.map(renderEntry))
 				: h(
 						"div",
 						{ class: "empty" },
-						loading || errors.length || discoveryError ? "" : "Nothing is waiting for you.",
+						loading || errors.length || discoveryError ? "" : t("Nothing is waiting for you."),
 					),
-			decided.length ? h("h2", null, `Decided (${decided.length})`) : null,
+			decided.length ? h("h2", null, t("Decided ({count})", { count: decided.length })) : null,
 			decided.length ? h("div", { class: "card-list" }, ...decided.slice(0, 50).map(renderEntry)) : null,
 		);
 	}

@@ -1,5 +1,6 @@
 import { SurfaceDialog } from "./dialog.ts";
 import { fmtBytes, h, icon, replace } from "./dom.ts";
+import { t } from "./preferences.ts";
 
 const IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
 const MAX_FILE_BYTES = 10 * 1024 * 1024;
@@ -7,7 +8,7 @@ const MAX_TOTAL_BYTES = 25 * 1024 * 1024;
 
 /** Selected bytes remain local. This component has no upload or send path. */
 export class AttachmentTray {
-	readonly el = h("div", { class: "attachment-tray", "aria-label": "Selected attachments" });
+	readonly el = h("div", { class: "attachment-tray", "aria-label": t("Selected attachments") });
 	readonly status = h("div", { class: "attachment-status", role: "status" });
 	readonly #change: (files: File[]) => void;
 	#files: File[];
@@ -28,15 +29,15 @@ export class AttachmentTray {
 		const next = [...this.#files];
 		for (const file of files) {
 			if (!file.size) {
-				error = "Empty files cannot be attached.";
+				error = t("Empty files cannot be attached.");
 				continue;
 			}
 			if (file.size > MAX_FILE_BYTES) {
-				error = "Each file must be 10 MB or smaller.";
+				error = t("Each file must be 10 MB or smaller.");
 				continue;
 			}
 			if (next.length >= 8 || next.reduce((total, item) => total + item.size, file.size) > MAX_TOTAL_BYTES) {
-				error = "Choose up to 8 files, totaling no more than 25 MB.";
+				error = t("Choose up to 8 files, totaling no more than 25 MB.");
 				continue;
 			}
 			next.push(file);
@@ -73,9 +74,9 @@ export class AttachmentTray {
 					{
 						type: "button",
 						class: "attachment-preview",
-						"aria-label": `Preview ${file.name}`,
+						"aria-label": t("Preview {name}", { name: file.name }),
 						onclick: () => {
-							this.#preview = new SurfaceDialog("File preview", "file-preview-dialog", () => {
+							this.#preview = new SurfaceDialog(t("File preview"), "file-preview-dialog", () => {
 								this.#preview = undefined;
 							});
 							this.#preview.content.append(
@@ -86,9 +87,13 @@ export class AttachmentTray {
 											"div",
 											{ class: "file-preview-placeholder" },
 											icon("file"),
-											h("p", null, "Preview is not available for this file type."),
+											h("p", null, t("Preview is not available for this file type.")),
 										),
-								h("p", { class: "muted" }, `${fmtBytes(file.size)} · Selected on this device`),
+								h(
+									"p",
+									{ class: "muted" },
+									t("{size} · Selected on this device", { size: fmtBytes(file.size) }),
+								),
 							);
 							this.#preview.open();
 						},
@@ -105,7 +110,7 @@ export class AttachmentTray {
 						{
 							type: "button",
 							class: "attachment-remove icon-button",
-							"aria-label": `Remove ${file.name}`,
+							"aria-label": t("Remove {name}", { name: file.name }),
 							onclick: () => {
 								if (this.#locked) return;
 								this.#files = this.#files.filter((_, itemIndex) => itemIndex !== index);
@@ -121,7 +126,7 @@ export class AttachmentTray {
 		);
 		this.el.hidden = this.#files.length === 0;
 		this.status.textContent = this.#files.length
-			? "Attachments stay on this device. Sending attachments is not available yet."
+			? t("Attachments stay on this device. Sending attachments is not available yet.")
 			: "";
 	}
 }

@@ -23,6 +23,7 @@ import {
 import type { HostedStaffAgent, JsonValue } from "../cloud/types.ts";
 import { agentFigure } from "./avatar.ts";
 import { button, h, replace } from "./dom.ts";
+import { t } from "./preferences.ts";
 
 export const HARNESS_NAMES: Record<CodingHarness, string> = { codex: "Codex", "claude-code": "Claude Code" };
 
@@ -54,26 +55,53 @@ function cap(text: string): string {
 /** One piece of the caption: plain words, the agent's name, or the harness (drawn with its mark). */
 export type CodingCaptionPart = { kind: "text" | "agent" | "harness"; text: string };
 
+/** The caption sentence for the phase, with {agent}, {owner} and {harness} marks.
+ * The viewer's own sessions say "you" (names.owner is "you" then). */
+function captionSentence(session: CodingSession, viewer: boolean): string {
+	switch (session.phase) {
+		case "awaiting_input":
+			return viewer
+				? t("{agent}'s coding session with you in {harness} needs your answer")
+				: t("{agent}'s coding session with {owner} in {harness} needs an answer from {owner}");
+		case "completed":
+			if (session.pullRequest)
+				return viewer
+					? t("{agent}'s coding session with you in {harness} opened a draft PR")
+					: t("{agent}'s coding session with {owner} in {harness} opened a draft PR");
+			return viewer
+				? t("{agent}'s coding session with you in {harness} finished")
+				: t("{agent}'s coding session with {owner} in {harness} finished");
+		case "failed":
+			return viewer
+				? t("{agent}'s coding session with you in {harness} failed")
+				: t("{agent}'s coding session with {owner} in {harness} failed");
+		case "cancelled":
+			return viewer
+				? t("{agent}'s coding session with you in {harness} was cancelled")
+				: t("{agent}'s coding session with {owner} in {harness} was cancelled");
+		default:
+			return viewer
+				? t("{agent} started a coding session with you in {harness}")
+				: t("{agent} started a coding session with {owner} in {harness}");
+	}
+}
+
 /** The caption, in pieces: who started what, with whom, where. Once the session
  * asked something or settled, the caption says so. The title is not part of it;
  * it stands in the status line and the head. */
 export function codingSessionCaptionParts(session: CodingSession, names: CodingSessionNames): CodingCaptionPart[] {
-	const harness: CodingCaptionPart = { kind: "harness", text: HARNESS_NAMES[session.harness] };
-	const agent: CodingCaptionPart = { kind: "agent", text: names.agent };
-	const text = (value: string): CodingCaptionPart => ({ kind: "text", text: value });
-	const head = [agent, text(`'s coding session with ${names.owner} in `), harness];
-	switch (session.phase) {
-		case "awaiting_input":
-			return [...head, text(` needs ${names.ownerIsViewer ? "your answer" : `an answer from ${names.owner}`}`)];
-		case "completed":
-			return [...head, text(session.pullRequest ? " opened a draft PR" : " finished")];
-		case "failed":
-			return [...head, text(" failed")];
-		case "cancelled":
-			return [...head, text(" was cancelled")];
-		default:
-			return [agent, text(` started a coding session with ${names.owner} in `), harness];
-	}
+	// The sentence is cut at its marks, so the agent and the harness are drawn on their own.
+	return captionSentence(session, names.ownerIsViewer)
+		.split(/(\{agent\}|\{harness\})/)
+		.filter(Boolean)
+		.map(
+			(piece): CodingCaptionPart =>
+				piece === "{agent}"
+					? { kind: "agent", text: names.agent }
+					: piece === "{harness}"
+						? { kind: "harness", text: HARNESS_NAMES[session.harness] }
+						: { kind: "text", text: piece.replaceAll("{owner}", names.owner) },
+		);
 }
 
 export function codingSessionCaption(session: CodingSession, names: CodingSessionNames): string {
@@ -84,11 +112,11 @@ export function codingSessionCaption(session: CodingSession, names: CodingSessio
 
 export function fmtDuration(ms: number): string {
 	const minutes = Math.max(0, Math.floor(ms / 60_000));
-	if (minutes < 1) return "less than a minute";
-	if (minutes < 60) return `${minutes} min`;
+	if (minutes < 1) return t("less than a minute");
+	if (minutes < 60) return t("{minutes} min", { minutes });
 	const hours = Math.floor(minutes / 60);
 	const rest = minutes % 60;
-	return rest ? `${hours} h ${rest} min` : `${hours} h`;
+	return rest ? t("{hours} h {minutes} min", { hours, minutes: rest }) : t("{hours} h", { hours });
 }
 
 /** The live status line: the state, how long, the last step, the diff size. */
@@ -100,43 +128,49 @@ export function codingSessionStatus(
 	const since = (iso: string | undefined) => (iso ? fmtDuration(now - Date.parse(iso)) : undefined);
 	const files =
 		session.filesChanged > 0
-			? `${session.filesChanged} file${session.filesChanged === 1 ? "" : "s"} changed`
+			? session.filesChanged === 1
+				? t("{count} file changed", { count: session.filesChanged })
+				: t("{count} files changed", { count: session.filesChanged })
 			: undefined;
 	switch (session.phase) {
 		case "queued":
-			return { text: "Waiting for a computer", tone: "idle" };
+			return { text: t("Waiting for a computer"), tone: "idle" };
 		case "preparing":
 			return {
-				text: ["Preparing the workspace", since(session.updatedAt)].filter(Boolean).join(" · "),
+				text: [t("Preparing the workspace"), since(session.updatedAt)].filter(Boolean).join(" · "),
 				tone: "working",
 			};
 		case "running":
 			return {
-				text: ["Working", since(session.startedAt), session.lastStep, files].filter(Boolean).join(" · "),
+				text: [t("Working"), since(session.startedAt), session.lastStep, files].filter(Boolean).join(" · "),
 				tone: "working",
 			};
-		case "awaiting_input":
+		case "awaiting_input": {
+			const paused = since(session.updatedAt);
 			return {
 				text: names.ownerIsViewer
-					? "Needs you · your answer is recorded in this thread"
-					: [`Needs ${names.owner}`, `paused ${since(session.updatedAt) ?? "now"}`].join(" · "),
+					? t("Needs you · your answer is recorded in this thread")
+					: paused
+						? t("Needs {name} · paused {duration}", { name: names.owner, duration: paused })
+						: t("Needs {name} · paused now", { name: names.owner }),
 				tone: "attention",
 			};
+		}
 		case "input_ready":
-			return { text: "Answer sent · waiting for the session", tone: "working" };
+			return { text: t("Answer sent · waiting for the session"), tone: "working" };
 		case "publishing":
-			return { text: ["Opening the pull request", files].filter(Boolean).join(" · "), tone: "working" };
+			return { text: [t("Opening the pull request"), files].filter(Boolean).join(" · "), tone: "working" };
 		case "completed":
 			return {
 				text: session.pullRequest
-					? "Draft PR ready · session kept for follow-ups"
-					: "Finished · session kept for follow-ups",
+					? t("Draft PR ready · session kept for follow-ups")
+					: t("Finished · session kept for follow-ups"),
 				tone: "done",
 			};
 		case "failed":
-			return { text: "Failed · workspace kept", tone: "failed" };
+			return { text: t("Failed · workspace kept"), tone: "failed" };
 		case "cancelled":
-			return { text: "Cancelled · workspace kept", tone: "idle" };
+			return { text: t("Cancelled · workspace kept"), tone: "idle" };
 	}
 }
 
@@ -251,7 +285,7 @@ export class CodingSessionElement {
 		this.el = h("section", {
 			class: "coding-session",
 			dataset: { workerId: session.workerId, phase: session.phase },
-			"aria-label": "Coding session",
+			"aria-label": t("Coding session"),
 		});
 		if (options.signal.aborted) this.dispose();
 		else
@@ -419,7 +453,7 @@ export class CodingSessionElement {
 		this.el.classList.toggle("coding-session-thread", this.#options.mode === "thread");
 		const caption = codingSessionCaption(session, names);
 		this.el.setAttribute("aria-label", caption);
-		const toggle = button(expanded ? "Hide" : "Show", () => this.#toggle(), { small: true });
+		const toggle = button(expanded ? t("Hide") : t("Show"), () => this.#toggle(), { small: true });
 		toggle.className = "coding-link";
 		toggle.setAttribute("aria-expanded", String(expanded));
 		const statusLine = (withTitle: boolean) =>
@@ -449,7 +483,7 @@ export class CodingSessionElement {
 			{
 				type: "button",
 				class: "coding-chip",
-				title: this.#options.open ? "Open the session as its own thread" : caption,
+				title: this.#options.open ? t("Open the session as its own thread") : caption,
 				"aria-label": caption,
 				onclick: () => (this.#options.open ? this.#options.open() : this.#toggle()),
 			},
@@ -487,7 +521,7 @@ export class CodingSessionElement {
 			session.repository.name,
 			shortBranch(session.branch),
 			session.model,
-			`managed by ${names.agent}`,
+			t("managed by {name}", { name: names.agent }),
 		].filter(Boolean);
 		return h(
 			"div",
@@ -519,7 +553,9 @@ export class CodingSessionElement {
 						"div",
 						{ class: "coding-row coding-row-fold" },
 						button(
-							`${folded} earlier step${folded === 1 ? "" : "s"}`,
+							folded === 1
+								? t("{count} earlier step", { count: folded })
+								: t("{count} earlier steps", { count: folded }),
 							() => {
 								this.#showAll = true;
 								this.#render();
@@ -535,8 +571,8 @@ export class CodingSessionElement {
 						"div",
 						{ class: "coding-row coding-row-quiet" },
 						this.#session.phase === "queued"
-							? "Waiting for a computer to start the session."
-							: "Nothing reported yet.",
+							? t("Waiting for a computer to start the session.")
+							: t("Nothing reported yet."),
 					)
 				: null,
 			this.#readError && !rows.length
@@ -549,7 +585,7 @@ export class CodingSessionElement {
 		const harness = HARNESS_NAMES[this.#session.harness];
 		switch (event.kind) {
 			case "step": {
-				const title = text(event.body, "text", "title", "command", "summary") ?? "Step";
+				const title = text(event.body, "text", "title", "command", "summary") ?? t("Step");
 				const status = text(event.body, "status");
 				return h(
 					"div",
@@ -581,20 +617,25 @@ export class CodingSessionElement {
 			}
 			case "needs_input": {
 				const question =
-					text(event.body, "needs", "question") ?? this.#session.needs ?? "The session has a question.";
+					text(event.body, "needs", "question") ?? this.#session.needs ?? t("The session has a question.");
 				return h(
 					"div",
 					{ class: "coding-row coding-row-question" },
 					h(
 						"div",
 						{ class: "coding-question" },
-						h("div", { class: "coding-question-from" }, harnessBadge(this.#session.harness), `${harness} asks`),
+						h(
+							"div",
+							{ class: "coding-question-from" },
+							harnessBadge(this.#session.harness),
+							t("{harness} asks", { harness }),
+						),
 						h("div", null, question),
 					),
 				);
 			}
 			case "input": {
-				const who = event.actor === "agent" ? names.agent : names.ownerIsViewer ? "You" : names.owner;
+				const who = event.actor === "agent" ? names.agent : names.ownerIsViewer ? t("You") : names.owner;
 				return h(
 					"div",
 					{ class: "coding-row coding-row-input" },
@@ -606,7 +647,9 @@ export class CodingSessionElement {
 				return h(
 					"div",
 					{ class: "coding-row coding-row-quiet" },
-					`${names.ownerIsViewer ? "You" : names.owner} left it to ${names.agent}`,
+					names.ownerIsViewer
+						? t("You left it to {agent}", { agent: names.agent })
+						: t("{owner} left it to {agent}", { owner: names.owner, agent: names.agent }),
 				);
 			case "published": {
 				const url = text(event.body, "url");
@@ -614,7 +657,8 @@ export class CodingSessionElement {
 					typeof event.body === "object" && event.body && !Array.isArray(event.body)
 						? event.body.number
 						: undefined;
-				const label = `Draft PR${typeof number === "number" ? ` #${number}` : ""} opened`;
+				const label =
+					typeof number === "number" ? t("Draft PR #{number} opened", { number }) : t("Draft PR opened");
 				return h(
 					"div",
 					{ class: "coding-row coding-row-step" },
@@ -639,8 +683,12 @@ export class CodingSessionElement {
 					"div",
 					{ class: "coding-row coding-row-error", role: "alert" },
 					reason === "executor-lease-expired"
-						? "The computer running this session stopped answering. The workspace is kept; a follow-up starts it again."
-						: `Failed${reason ? `: ${reason}` : ""}`,
+						? t(
+								"The computer running this session stopped answering. The workspace is kept; a follow-up starts it again.",
+							)
+						: reason
+							? t("Failed: {reason}", { reason })
+							: t("Failed"),
 				);
 			}
 			default:
@@ -652,9 +700,15 @@ export class CodingSessionElement {
 		const session = this.#session;
 		const pr = session.pullRequest!;
 		const files =
-			session.filesChanged > 0 ? `${session.filesChanged} file${session.filesChanged === 1 ? "" : "s"}` : undefined;
+			session.filesChanged > 0
+				? session.filesChanged === 1
+					? t("{count} file", { count: session.filesChanged })
+					: t("{count} files", { count: session.filesChanged })
+				: undefined;
 		const artifacts = session.artifacts.length
-			? `${session.artifacts.length} artifact${session.artifacts.length === 1 ? "" : "s"}`
+			? session.artifacts.length === 1
+				? t("{count} artifact", { count: session.artifacts.length })
+				: t("{count} artifacts", { count: session.artifacts.length })
 			: undefined;
 		const meta = [
 			`${session.repository.owner}/${session.repository.name}`,
@@ -676,7 +730,7 @@ export class CodingSessionElement {
 					h(
 						"div",
 						{ class: "coding-pr-title" },
-						pr.title ?? "Draft pull request",
+						pr.title ?? t("Draft pull request"),
 						h("span", { class: "coding-pr-number" }, ` #${pr.number}`),
 					),
 					h("div", { class: "coding-pr-meta" }, meta.join(" · ")),
@@ -710,19 +764,23 @@ export class CodingSessionElement {
 						target: "_blank",
 						rel: "noopener noreferrer",
 					},
-					"Review changes",
+					t("Review changes"),
 				),
 				h(
 					"a",
 					{ class: "btn btn-small", href: pr.url, target: "_blank", rel: "noopener noreferrer" },
-					"Open on GitHub",
+					t("Open on GitHub"),
 				),
 				ask
 					? button(
-							`Ask ${names.agent} to review`,
+							t("Ask {name} to review", { name: names.agent }),
 							() =>
 								ask(
-									`Please review the draft PR #${pr.number} from your coding session "${session.title}" and tell me what you think.`,
+									// The quotes travel with the title: a key is written in double quotes.
+									t(
+										"Please review the draft PR #{number} from your coding session {title} and tell me what you think.",
+										{ number: pr.number, title: `"${session.title}"` },
+									),
 								),
 							{ small: true },
 						)
@@ -741,14 +799,14 @@ export class CodingSessionElement {
 		const field = h("input", {
 			type: "text",
 			class: "coding-field-input",
-			"aria-label": asking ? "Answer the session" : "Follow up on the session",
+			"aria-label": asking ? t("Answer the session") : t("Follow up on the session"),
 			placeholder: asking
 				? choices.length
-					? "Or answer in your own words"
-					: "Answer the session"
+					? t("Or answer in your own words")
+					: t("Answer the session")
 				: takesInput
-					? "Follow up on this session"
-					: "The session is working",
+					? t("Follow up on this session")
+					: t("The session is working"),
 			value: this.#draft,
 			disabled: !takesInput || this.#busy,
 			oninput: (event: Event) => {
@@ -761,19 +819,26 @@ export class CodingSessionElement {
 				}
 			},
 		});
-		const send = button(this.#busy ? "Sending…" : asking ? "Answer" : "Send", () => void this.#send(this.#draft), {
-			small: true,
-			primary: true,
-			disabled: !takesInput || this.#busy,
-		});
+		const send = button(
+			this.#busy ? t("Sending…") : asking ? t("Answer") : t("Send"),
+			() => void this.#send(this.#draft),
+			{
+				small: true,
+				primary: true,
+				disabled: !takesInput || this.#busy,
+			},
+		);
 		send.classList.add("coding-send");
 		const hint = asking
-			? `Your answer goes to ${harness} and is recorded in this thread.`
+			? t("Your answer goes to {harness} and is recorded in this thread.", { harness })
 			: takesInput
-				? `A follow-up starts the session again on the same branch. Uses your ${harness} plan.`
+				? t("A follow-up starts the session again on the same branch. Uses your {harness} plan.", { harness })
 				: session.phase === "queued"
-					? `You can talk to the session once it starts. Uses your ${harness} plan.`
-					: `The session is working; you can answer when it asks or follow up when it is done. Uses your ${harness} plan.`;
+					? t("You can talk to the session once it starts. Uses your {harness} plan.", { harness })
+					: t(
+							"The session is working; you can answer when it asks or follow up when it is done. Uses your {harness} plan.",
+							{ harness },
+						);
 		return h(
 			"div",
 			{ class: "coding-talk" },
@@ -794,7 +859,7 @@ export class CodingSessionElement {
 				? h(
 						"div",
 						{ class: "coding-options" },
-						button(`Let ${names.agent} decide`, () => void this.#delegate(), {
+						button(t("Let {name} decide", { name: names.agent }), () => void this.#delegate(), {
 							small: true,
 							disabled: this.#busy,
 						}),
@@ -815,7 +880,12 @@ export class CodingSessionElement {
 				"div",
 				{ class: "coding-hint" },
 				svgEl(LOCK_GLYPH, 12, "coding-glyph"),
-				`Only ${names.owner} can type here. Everyone else steers through ${names.agent}. Uses ${cap(names.owner)}'s ${harness} plan.`,
+				t("Only {owner} can type here. Everyone else steers through {agent}. Uses {ownerName}'s {harness} plan.", {
+					owner: names.owner,
+					agent: names.agent,
+					ownerName: cap(names.owner),
+					harness,
+				}),
 			),
 		);
 	}

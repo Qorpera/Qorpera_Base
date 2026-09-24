@@ -2,7 +2,7 @@
  * Text always goes through textContent, never innerHTML. */
 
 import { figureElement } from "./avatar.ts";
-import { presentationDay, presentationLocale, timeZoneOption } from "./preferences.ts";
+import { presentationDay, presentationLocale, t, timeZoneOption } from "./preferences.ts";
 
 export type Child = Node | string | number | boolean | null | undefined | Child[];
 type Attrs = Record<string, unknown>;
@@ -221,7 +221,7 @@ export function icon(name: keyof typeof ICON_PATHS | string): SVGSVGElement {
 	return svg;
 }
 
-export function spinner(label = "Loading"): HTMLElement {
+export function spinner(label = t("Loading")): HTMLElement {
 	return h(
 		"div",
 		{ class: "spinner", role: "status", "aria-label": label },
@@ -294,7 +294,7 @@ export function confirmDialog(
 		if (typed) {
 			input = h("input", {
 				type: "text",
-				placeholder: `Type ${typed} to confirm`,
+				placeholder: t("Type {name} to confirm", { name: typed }),
 				oninput: () => {
 					confirm.disabled = input?.value.trim() !== typed;
 				},
@@ -311,7 +311,7 @@ export function confirmDialog(
 				h(
 					"div",
 					{ class: "modal-actions" },
-					button("Cancel", () => close(false)),
+					button(t("Cancel"), () => close(false)),
 					confirm,
 				),
 			),

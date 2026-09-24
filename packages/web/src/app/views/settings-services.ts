@@ -6,6 +6,7 @@ import {
 	type WebConnectors,
 } from "../../cloud/connectors.ts";
 import { button, fmtTime, h, replace } from "../../ui/dom.ts";
+import { t } from "../../ui/preferences.ts";
 
 /**
  * Settings → Connections → Services: the Runtime Step 7 connectors (Gmail,
@@ -41,6 +42,13 @@ const RETURN_REASONS: Readonly<Record<string, string>> = {
 	state_unknown: "This sign-in link is no longer valid. Try again.",
 	browser_mismatch: "The sign-in was finished in another browser. Start it again here.",
 };
+
+/** Why a sign-in failed, in the interface language. */
+function returnReason(reason: unknown): string {
+	const text =
+		typeof reason === "string" && Object.hasOwn(RETURN_REASONS, reason) ? RETURN_REASONS[reason] : undefined;
+	return text ? t(text) : t("Try again.");
+}
 
 /** A sign-in outcome the broker sent back in the page hash, kept until the
  * services panel is drawn once, even if that happens after a company loads. */
@@ -81,14 +89,14 @@ export class ServicesView {
 			this.#outcome = {
 				connector: outcome.connector,
 				tone: "error",
-				text: `${label(outcome.connector)} was not connected. ${RETURN_REASONS[outcome.reason ?? ""] ?? "Try again."}`,
+				text: `${t("{service} was not connected.", { service: label(outcome.connector) })} ${returnReason(outcome.reason)}`,
 			};
 		} else if (outcome?.connection === "confirm") {
 			this.#working = outcome.connector;
 			this.#outcome = {
 				connector: outcome.connector,
 				tone: "ok",
-				text: `Finishing the ${label(outcome.connector)} connection…`,
+				text: t("Finishing the {service} connection…", { service: label(outcome.connector) }),
 			};
 		}
 		this.#draw();
@@ -109,7 +117,7 @@ export class ServicesView {
 			this.#outcome = {
 				connector: outcome.connector,
 				tone: "ok",
-				text: `${name} is connected. The company's agents can use it from their next run.`,
+				text: t("{service} is connected. The company's agents can use it from their next run.", { service: name }),
 			};
 		} catch (error) {
 			if (this.#lifetime.signal.aborted) return;
@@ -117,7 +125,7 @@ export class ServicesView {
 			this.#outcome = {
 				connector: outcome.connector,
 				tone: "error",
-				text: `${name} was not connected. ${RETURN_REASONS[typeof reason === "string" ? reason : ""] ?? "Try again."}`,
+				text: `${t("{service} was not connected.", { service: name })} ${returnReason(reason)}`,
 			};
 		} finally {
 			this.#working = undefined;
@@ -167,13 +175,15 @@ export class ServicesView {
 						this.#outcome = {
 							connector: grantAfter,
 							tone: "error",
-							text: "The account is connected, but the company's agents could not get it yet. Disconnect it and connect it again.",
+							text: t(
+								"The account is connected, but the company's agents could not get it yet. Disconnect it and connect it again.",
+							),
 						};
 				}
 			}
 		} catch {
 			if (this.#lifetime.signal.aborted) return;
-			this.#error = "Your connected services could not be read.";
+			this.#error = t("Your connected services could not be read.");
 		} finally {
 			this.#loading = false;
 			if (!this.#lifetime.signal.aborted) this.#draw();
@@ -209,7 +219,7 @@ export class ServicesView {
 			this.#outcome = {
 				connector: connectorId,
 				tone: "error",
-				text: "The sign-in could not be started. Try again.",
+				text: t("The sign-in could not be started. Try again."),
 			};
 			this.#draw();
 		}
@@ -234,7 +244,7 @@ export class ServicesView {
 			this.#outcome = {
 				connector: connectorId,
 				tone: "ok",
-				text: `${label} is connected. The company's agents can use it from their next run.`,
+				text: t("{service} is connected. The company's agents can use it from their next run.", { service: label }),
 			};
 			await this.#refresh(connectorId);
 		} catch (error) {
@@ -243,7 +253,8 @@ export class ServicesView {
 			this.#outcome = {
 				connector: connectorId,
 				tone: "error",
-				text: error instanceof Error && error.message ? error.message : "The token could not be saved. Try again.",
+				text:
+					error instanceof Error && error.message ? error.message : t("The token could not be saved. Try again."),
 			};
 			this.#draw();
 		}
@@ -261,7 +272,7 @@ export class ServicesView {
 				this.#outcome = {
 					connector: connection.connectorId as HostedConnectorId,
 					tone: "error",
-					text: "The service could not be disconnected. Try again.",
+					text: t("The service could not be disconnected. Try again."),
 				};
 		} finally {
 			this.#working = undefined;
@@ -278,13 +289,13 @@ export class ServicesView {
 		if (manage && current) {
 			// A working connection has one action. The list carries no state for a
 			// connection that needs a new sign-in, so there is no Connect again yet.
-			const disconnect = button(busy ? "Working…" : "Disconnect", () => void this.#disconnect(current), {
+			const disconnect = button(busy ? t("Working…") : t("Disconnect"), () => void this.#disconnect(current), {
 				disabled: Boolean(this.#working),
 			});
 			disconnect.dataset.focusKey = `service-disconnect:${connector.id}`;
 			actions.push(disconnect);
 		} else if (manage) {
-			const connect = button(busy ? "Opening sign-in…" : "Connect", () => void this.#connect(connector.id), {
+			const connect = button(busy ? t("Opening sign-in…") : t("Connect"), () => void this.#connect(connector.id), {
 				primary: true,
 				disabled: Boolean(this.#working) || this.#loading,
 			});
@@ -298,15 +309,27 @@ export class ServicesView {
 					h(
 						"small",
 						null,
-						current.accountLabel ? `Connected as ${current.accountLabel}` : "Connected",
-						connectedBy ? ` by ${connectedBy}` : "",
+						current.accountLabel
+							? connectedBy
+								? t("Connected as {account} by {member}", {
+										account: current.accountLabel,
+										member: connectedBy,
+									})
+								: t("Connected as {account}", { account: current.accountLabel })
+							: connectedBy
+								? t("Connected by {member}", { member: connectedBy })
+								: t("Connected"),
 						current.createdAt ? ` · ${fmtTime(current.createdAt)}` : "",
 					),
 					// Always shared: a legacy row not yet marked for all agents reads the
 					// same (the backend repairs those rows).
-					h("small", { class: "service-agents" }, "Available to every agent in the company, including new hires."),
+					h(
+						"small",
+						{ class: "service-agents" },
+						t("Available to every agent in the company, including new hires."),
+					),
 				]
-			: [h("strong", null, connector.label), h("small", null, connector.summary)];
+			: [h("strong", null, connector.label), h("small", null, t(connector.summary))];
 		const children: (HTMLElement | string)[] = [
 			h("img", { class: "connection-logo", src: `./assets/${connector.logo}`, alt: "" }),
 			h("div", { class: "settings-copy" }, ...status),
@@ -328,11 +351,11 @@ export class ServicesView {
 					class: "service-token",
 					autocomplete: "off",
 					spellcheck: "false",
-					placeholder: "Paste the token",
-					"aria-label": `${connector.label} token`,
+					placeholder: t("Paste the token"),
+					"aria-label": t("{service} token", { service: connector.label }),
 				});
 				field.dataset.focusKey = `service-token:${connector.id}`;
-				const save = button("Save token", () => void this.#saveToken(connector.id, field.value), {
+				const save = button(t("Save token"), () => void this.#saveToken(connector.id, field.value), {
 					primary: true,
 					disabled: Boolean(this.#working),
 				});
@@ -347,13 +370,13 @@ export class ServicesView {
 								void this.#saveToken(connector.id, field.value);
 							},
 						},
-						h("small", null, connector.token.hint),
+						h("small", null, t(connector.token.hint)),
 						h("div", { class: "service-token-row" }, field, save),
 					),
 				);
 			} else {
 				const alternative = button(
-					connector.token.label,
+					t(connector.token.label),
 					() => {
 						this.#tokenFor = connector.id;
 						this.#draw(`service-token:${connector.id}`);
@@ -377,13 +400,15 @@ export class ServicesView {
 			h(
 				"div",
 				{ class: "connection-section-heading" },
-				h("h2", null, "Services"),
+				h("h2", null, t("Services")),
 				h(
 					"small",
 					null,
 					this.#access.canManage()
-						? "Connected for the company; its agents use them through the company's secret broker."
-						: "Connected for the company by an owner or admin; its agents use them through the company's secret broker.",
+						? t("Connected for the company; its agents use them through the company's secret broker.")
+						: t(
+								"Connected for the company by an owner or admin; its agents use them through the company's secret broker.",
+							),
 				),
 			),
 			this.#error ? h("p", { class: "connection-empty service-error", role: "alert" }, this.#error) : "",

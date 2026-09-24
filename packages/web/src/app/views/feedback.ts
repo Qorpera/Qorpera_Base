@@ -2,15 +2,15 @@ import type { CloudApi } from "../../cloud/api.ts";
 import { describeError } from "../../cloud/client.ts";
 import { h } from "../../ui/dom.ts";
 import { matchesKey } from "../../ui/keys.ts";
-import { uiText } from "../../ui/preferences.ts";
+import { t, uiText } from "../../ui/preferences.ts";
 
 const CATEGORIES = [
-	["bug", "Bug"],
-	["bad-result", "Bad result"],
-	["good-result", "Good result"],
-	["feature-request", "Feature request"],
-	["performance", "Performance"],
-	["other", "Other"],
+	["bug", "+ Bug"],
+	["bad-result", "+ Bad result"],
+	["good-result", "+ Good result"],
+	["feature-request", "+ Feature request"],
+	["performance", "+ Performance"],
+	["other", "+ Other"],
 ] as const;
 
 /** The app's feedback flow, using the existing account RPC. One dialog owns
@@ -21,14 +21,14 @@ export class FeedbackView {
 	readonly #close: () => void;
 	readonly #id = crypto.randomUUID();
 	readonly #details = h("textarea", {
-		"aria-label": "Feedback details",
+		"aria-label": t("Feedback details"),
 		maxlength: "10000",
-		placeholder: "Share details (required)",
+		placeholder: t("Share details (required)"),
 		required: true,
 	});
 	readonly #status = h("p", { class: "feedback-status", role: "status", "aria-live": "polite" });
-	readonly #submit = h("button", { class: "feedback-submit", type: "submit", disabled: true }, "Submit");
-	readonly #categories = h("fieldset", { class: "feedback-categories" }, h("legend", null, "Feedback category"));
+	readonly #submit = h("button", { class: "feedback-submit", type: "submit", disabled: true }, t("Submit"));
+	readonly #categories = h("fieldset", { class: "feedback-categories" }, h("legend", null, t("Feedback category")));
 	readonly #form: HTMLFormElement;
 	readonly #closeButton: HTMLButtonElement;
 	#category: string | undefined;
@@ -41,7 +41,7 @@ export class FeedbackView {
 		this.#close = close;
 		this.#closeButton = h(
 			"button",
-			{ class: "feedback-close", type: "button", "aria-label": "Close feedback", onclick: () => this.#dismiss() },
+			{ class: "feedback-close", type: "button", "aria-label": t("Close feedback"), onclick: () => this.#dismiss() },
 			"×",
 		);
 		for (const [value, label] of CATEGORIES) {
@@ -57,7 +57,7 @@ export class FeedbackView {
 							category.setAttribute("aria-pressed", String(category === button && this.#category === value));
 					},
 				},
-				`+ ${label}`,
+				t(label),
 			);
 			this.#categories.append(button);
 		}
@@ -81,7 +81,7 @@ export class FeedbackView {
 		);
 		this.el = h(
 			"dialog",
-			{ class: "feedback-dialog", "aria-label": "Share feedback", "aria-modal": "true" },
+			{ class: "feedback-dialog", "aria-label": t("Share feedback"), "aria-modal": "true" },
 			this.#form,
 		);
 		this.#details.addEventListener("input", () => {
@@ -118,13 +118,13 @@ export class FeedbackView {
 		this.#categories.disabled = this.#details.disabled = this.#closeButton.disabled = this.#submit.disabled = true;
 		this.#status.textContent = "";
 		this.#status.removeAttribute("data-state");
-		this.#submit.textContent = "Sending…";
+		this.#submit.textContent = t("Sending…");
 		try {
 			await this.#api.submitFeedback(this.#id, this.#category ?? "other", details);
 			if (this.#disposed) return;
 			this.#status.dataset.state = "success";
-			this.#status.textContent = "Feedback sent. Thank you.";
-			this.#submit.textContent = "Sent";
+			this.#status.textContent = t("Feedback sent. Thank you.");
+			this.#submit.textContent = t("Sent");
 			this.#timer = setTimeout(() => {
 				if (!this.#disposed) this.#close();
 			}, 900);
@@ -132,7 +132,7 @@ export class FeedbackView {
 			if (this.#disposed) return;
 			this.#submitting = false;
 			this.#status.textContent = describeError(error);
-			this.#submit.textContent = "Try again";
+			this.#submit.textContent = t("Try again");
 			this.#categories.disabled = this.#details.disabled = this.#closeButton.disabled = false;
 			this.#submit.disabled = !this.#details.value.trim();
 		} finally {

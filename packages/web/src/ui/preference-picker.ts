@@ -227,7 +227,7 @@ export class PreferencePicker {
 			row.el.hidden = !match;
 			if (match) this.#shown.push(row.el);
 		}
-		this.#clear.setAttribute("aria-label", t(search.value ? "Clear search" : "Close"));
+		this.#clear.setAttribute("aria-label", search.value ? t("Clear search") : t("Close"));
 		this.#empty.hidden = this.#shown.length > 0;
 		this.#empty.textContent = this.#shown.length ? "" : t("No matches");
 		this.#activate(0, true);
