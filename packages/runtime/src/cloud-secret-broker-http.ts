@@ -14,7 +14,9 @@ import {
 	type CloudSecretCaptureRequest,
 	type CloudSecretDescriptor,
 	type CloudSecretOperationRequest,
+	type CodingRepositoryCredentialRequest,
 	parseCloudSecretAccountLabel,
+	parseCodingRepositoryCredentialRequest,
 } from "./cloud-secret-broker.ts";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -131,6 +133,23 @@ function parseOperation(value: unknown): CloudSecretOperationRequest {
 		idempotencyKey: input.idempotencyKey,
 		arguments: structuredClone(input.arguments) as JsonValue,
 	};
+}
+
+function parseRepositoryCredentialRequest(value: unknown): CodingRepositoryCredentialRequest {
+	const input = record(value, "Coding repository credential request");
+	exact(
+		input,
+		["schema", "workerId", "leaseToken", "executorOwner", "repository"],
+		"Coding repository credential request",
+	);
+	if (input.schema !== "qorpera.coding-repository-credential-request/v1")
+		throw new Error("Coding repository credential request is invalid");
+	return parseCodingRepositoryCredentialRequest({
+		workerId: input.workerId,
+		leaseToken: input.leaseToken,
+		executorOwner: input.executorOwner,
+		repository: input.repository,
+	});
 }
 
 function parseContent(value: unknown): CloudToolContent {
@@ -316,7 +335,9 @@ export interface HttpCloudSecretBrokerServiceOptions {
 /**
  * Separate-process broker surface. Capture is authorized only by the one-time
  * member ticket; operation execution additionally requires a private service
- * token and the database's current run/grant/receipt authorization.
+ * token and the database's current run/grant/receipt authorization; a coding
+ * executor's repository token requires the same service token and the
+ * database's current session lease, repository grant and connection grant.
  */
 export class HttpCloudSecretBrokerService {
 	readonly #broker: CloudSecretBroker;
@@ -516,6 +537,18 @@ export class HttpCloudSecretBrokerService {
 					AbortSignal.timeout(35_000),
 				);
 				response(reply, 200, result as unknown as JsonValue);
+				return;
+			}
+			// The coding executor's repository token (bundle v88): the same private
+			// runtime credential as operations, the kernel's lease check behind it,
+			// and an answer that is never cached. Like operations, the router picks
+			// the company's broker by `?company=`; the broker ignores the query.
+			if (path === "/v1/repository-credentials" && tokenMatches(this.#runtimeToken, request.headers.authorization)) {
+				const credential = await this.#broker.repositoryCredential(
+					parseRepositoryCredentialRequest(await readRequest(request)),
+					AbortSignal.timeout(10_000),
+				);
+				response(reply, 200, { schema: credential.schema, token: credential.token });
 				return;
 			}
 			response(reply, 404, { schema: "qorpera.cloud-secret-error/v1", error: "not_found" });

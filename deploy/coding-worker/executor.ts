@@ -15,17 +15,27 @@ import { parseCodingGuestConfiguration } from "../../packages/runtime/src/cloud-
 import { authorizeCodingCommand } from "./command-authority.ts";
 import { CodingExecutorHttpControl } from "./control.ts";
 import { readCodingServiceCredential } from "./credentials.ts";
+import { BrokerRepositoryCredentials, REPOSITORY_TOKEN } from "./repository-credentials.ts";
 
 interface Config {
-	schema: "qorpera.coding-executor-service/v3";
+	schema: "qorpera.coding-executor-service/v4";
 	owner: string;
 	supabaseUrl: string;
 	commandPort: number;
 	vmPolicy: LxdCodingExecutorHostOptions["vmPolicy"];
 	storagePolicy: LxdCodingExecutorHostOptions["storagePolicy"];
 	guest: LxdCodingExecutorHostOptions["guest"];
-	repositories: { repository: CloudCodingRepository; credential: string }[];
+	/** The company secret brokers' shared origin and the systemd credential
+	 * holding their runtime token. Required unless every repository names a
+	 * static credential. */
+	broker: { origin: string; runtimeTokenCredential: string } | null;
+	/** `credential` null: the company's GitHub connection through its broker
+	 * (the product path). A named credential: a static token file for that
+	 * repository, proof-only plumbing that bypasses the company connection. */
+	repositories: { repository: CloudCodingRepository; credential: string | null }[];
 }
+const RESERVED_CREDENTIALS = new Set(["qorpera-coding-executor-config", "qorpera-coding-registry", "qorpera-coding-command"]);
+const CONFIG_KEYS = "commandPort,guest,owner,repositories,schema,storagePolicy,supabaseUrl,vmPolicy";
 function object(value: unknown): Record<string, unknown> {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("CODING_EXECUTOR_CONFIG_INVALID");
 	return value as Record<string, unknown>;
@@ -36,22 +46,37 @@ function origin(value: unknown): string {
 	if (url.protocol !== "https:" || url.username || url.password || url.pathname !== "/" || url.search || url.hash) throw new Error("CODING_EXECUTOR_CONFIG_INVALID");
 	return url.origin;
 }
-/** The reviewed JSON configuration (v3: sessions executor). The executor claims
- * coding sessions for `owner` (qorpera_coding_executors.owner) and serves the
- * command gateway on `commandPort` behind the node's HTTPS reverse proxy. */
+function broker(value: unknown): Config["broker"] {
+	if (value === undefined) return null;
+	const input = object(value);
+	if (Object.keys(input).sort().join() !== "origin,runtimeTokenCredential" || typeof input.runtimeTokenCredential !== "string" ||
+		!/^qorpera-coding-[a-z0-9-]{1,80}$/.test(input.runtimeTokenCredential) || RESERVED_CREDENTIALS.has(input.runtimeTokenCredential) ||
+		input.runtimeTokenCredential.startsWith("qorpera-coding-repository-")) throw new Error("CODING_EXECUTOR_CONFIG_INVALID");
+	return { origin: origin(input.origin), runtimeTokenCredential: input.runtimeTokenCredential };
+}
+/** The reviewed JSON configuration (v4: sessions executor with repository
+ * access through the company's GitHub connection). The executor claims coding
+ * sessions for `owner` (qorpera_coding_executors.owner) and serves the command
+ * gateway on `commandPort` behind the node's HTTPS reverse proxy. `repositories`
+ * is the executor's own allowlist; SQL repository grants stay the authority. */
 export function parseCodingExecutorConfiguration(value: unknown): Config {
 	const config = object(value);
-	if (Object.keys(config).sort().join() !== "commandPort,guest,owner,repositories,schema,storagePolicy,supabaseUrl,vmPolicy" ||
-		config.schema !== "qorpera.coding-executor-service/v3" || typeof config.owner !== "string" || !/^[A-Za-z0-9_.:-]{1,120}$/.test(config.owner) ||
+	const keys = Object.keys(config).sort().join();
+	if ((keys !== CONFIG_KEYS && keys !== `broker,${CONFIG_KEYS}`) ||
+		config.schema !== "qorpera.coding-executor-service/v4" || typeof config.owner !== "string" || !/^[A-Za-z0-9_.:-]{1,120}$/.test(config.owner) ||
 		!Number.isSafeInteger(config.commandPort) || Number(config.commandPort) < 1024 || Number(config.commandPort) > 65535 ||
 		!Array.isArray(config.repositories) || config.repositories.length < 1 || config.repositories.length > 100) throw new Error("CODING_EXECUTOR_CONFIG_INVALID");
+	const brokerConfig = broker(config.broker);
 	const repositories = config.repositories.map((value) => {
 		const entry = object(value);
-		if (Object.keys(entry).sort().join() !== "credential,repository" || typeof entry.credential !== "string" ||
+		const entryKeys = Object.keys(entry).sort().join();
+		if (entryKeys === "repository") return { repository: parseCloudCodingRepository(entry.repository), credential: null };
+		if (entryKeys !== "credential,repository" || typeof entry.credential !== "string" ||
 			!/^qorpera-coding-repository-[a-z0-9-]{1,60}$/.test(entry.credential)) throw new Error("CODING_EXECUTOR_CONFIG_INVALID");
 		return { repository: parseCloudCodingRepository(entry.repository), credential: entry.credential };
 	});
-	if (new Set(repositories.map((r) => JSON.stringify(r.repository))).size !== repositories.length) throw new Error("CODING_EXECUTOR_CONFIG_INVALID");
+	if (new Set(repositories.map((r) => JSON.stringify(r.repository))).size !== repositories.length ||
+		(!brokerConfig && repositories.some((r) => r.credential === null))) throw new Error("CODING_EXECUTOR_CONFIG_INVALID");
 	const storagePolicy = parseCloudCodingNasPolicy(config.storagePolicy);
 	const vmPolicy = object(config.vmPolicy);
 	if (Object.keys(vmPolicy).sort().join() !== "bootstrapSha256,cpus,imageFingerprint,memoryBytes,network,project,providerId,providerPolicySha256,rootDiskBytes,storagePool") throw new Error("CODING_EXECUTOR_CONFIG_INVALID");
@@ -68,9 +93,9 @@ export function parseCodingExecutorConfiguration(value: unknown): Config {
 		parsedGuest.resourceProfile.memoryBytes > Number(vmPolicy.memoryBytes) || parsedGuest.resourceProfile.cpuQuotaPercent > Number(vmPolicy.cpus) * 100)
 		throw new Error("CODING_EXECUTOR_RESOURCE_POLICY_INVALID");
 	return {
-		schema: "qorpera.coding-executor-service/v3", owner: config.owner, supabaseUrl: origin(config.supabaseUrl),
+		schema: "qorpera.coding-executor-service/v4", owner: config.owner, supabaseUrl: origin(config.supabaseUrl),
 		commandPort: Number(config.commandPort), storagePolicy, vmPolicy: vmPolicy as unknown as Config["vmPolicy"],
-		guest: guest as unknown as Config["guest"], repositories,
+		guest: guest as unknown as Config["guest"], broker: brokerConfig, repositories,
 	};
 }
 
@@ -86,17 +111,27 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 	const machine = (await readFile("/etc/machine-id", "utf8")).trim();
 	if (!/^[0-9a-f]{32}$/.test(machine)) throw new Error("CODING_NODE_IDENTITY_INVALID");
 	const control = new CodingExecutorHttpControl({ supabaseUrl: config.supabaseUrl, serviceRoleKey: await credential("qorpera-coding-registry") });
+	const brokered = config.broker ? new BrokerRepositoryCredentials({ origin: config.broker.origin,
+		runtimeToken: await credential(config.broker.runtimeTokenCredential), executorOwner: config.owner }) : null;
 	const journalRoot = await createCodingNasStorage(config.storagePolicy).prepareControl();
 	const host = new LxdCodingExecutorHost({
 		control, owner: config.owner, machineIdSha256: createHash("sha256").update(machine).digest("hex"),
 		vmPolicy: config.vmPolicy, storagePolicy: config.storagePolicy, client: new LxdUnixClient(), guest: config.guest, journalRoot,
 		repositoryCredentials: {
-			async withRepositoryToken(repository, use, signal) {
+			async withRepositoryToken(scope, repository, use, signal) {
 				signal.throwIfAborted();
 				const entry = config.repositories.find((r) => JSON.stringify(r.repository) === JSON.stringify(repository));
 				if (!entry) throw new Error("CODING_REPOSITORY_CREDENTIAL_UNAVAILABLE");
+				// The product path: the company's GitHub connection, released by the
+				// company's broker for this leased session only. A broker refusal is
+				// final; it never falls back to a static file.
+				if (entry.credential === null) {
+					if (!brokered) throw new Error("CODING_REPOSITORY_CREDENTIAL_UNAVAILABLE");
+					return brokered.withRepositoryToken(scope, repository, use, signal);
+				}
+				// Proof-only: a static token file explicitly configured for this repository.
 				const token = await credential(entry.credential);
-				if (!/^[A-Za-z0-9_]{20,512}$/.test(token)) throw new Error("CODING_REPOSITORY_CREDENTIAL_INVALID");
+				if (!REPOSITORY_TOKEN.test(token)) throw new Error("CODING_REPOSITORY_CREDENTIAL_INVALID");
 				signal.throwIfAborted();
 				return use(token);
 			},

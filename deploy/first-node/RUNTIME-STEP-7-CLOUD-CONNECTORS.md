@@ -166,8 +166,10 @@ request; the authority's `service_origin` stays that bare origin.
   (`qorpera-cloud-secret-runtime`). Every company broker is configured with
   that token; the per-company boundary is the database authorization above.
   This works only while every provider that runs connector work (node 1,
-  node 2, the node 2 exec host) carries the same token; a broker cannot hold
-  two.
+  node 2, the node 2 exec host) and, since bundle v88, the node 2 coding
+  executor carry the same token; a broker cannot hold two. Because every guest
+  holds this token, the repository credential route also requires the coding
+  session's lease token, which only the executor and the database know.
 - **Redirect URI** registered at Google and GitHub:
   `https://company41-node-01.tailbb15c7.ts.net:10000/v1/oauth/callback`
   (= `publicOrigin` + `/v1/oauth/callback`; Google compares it exactly).
@@ -222,7 +224,21 @@ location = /v1/operations {
     if ($qorpera_operations_broker = "") { return 404; }
     proxy_pass http://$qorpera_operations_broker;
 }
+# Bundle v88: the coding executor's repository token, routed by the same
+# ?company= map as operations. The answer carries a token (the broker marks it
+# Cache-Control: no-store); never add body logging or a proxy cache here.
+location = /v1/repository-credentials {
+    limit_except POST { deny all; }
+    if ($qorpera_operations_broker = "") { return 404; }
+    proxy_pass http://$qorpera_operations_broker;
+}
 ```
+
+The executor always sends `?company=<profileId>`. The operations map's empty
+query line (`"" 127.0.0.1:18448`, for pre-v87 guests) also routes a request
+without `company=` to the acceptance broker; that broker refuses any session
+outside its company in the database ("coding session is unavailable to this
+broker", SQL test 399), so the fallback releases nothing.
 
 All of these pass `nginx -t` (nginx 1.28.3, node 2's build, in a scratch
 prefix with a stand-in capture map); a regex with `{}` must stay quoted. The callback's
@@ -282,10 +298,13 @@ connection belongs to the company:
   kernel rechecks at every call), so a share re-issues, under the caller,
   every grant of the connection whose issuer left or was demoted; live grants
   are left alone.
-- `qorpera_unshare_cloud_connector(profile, environment, secret)` for owners
-  and admins ("Stop sharing with agents"): clears the all-agents mark and
-  revokes every active grant of the connection, audited per grant; the
-  connection stays connected.
+- Always shared (bundle v88, founder 2026-09-24): capture completion shares a
+  company-owned connection with every active agent as it seals it, first
+  capture and rotation alike (`qorpera_share_company_connection`, under the
+  owner or admin who captured it). `qorpera_unshare_cloud_connector` ("Stop
+  sharing with agents", v87) is dropped; `qorpera_grant_cloud_connector`
+  remains only as the idempotent repair. A single grant can still be revoked
+  and Disconnect still revokes the connection with all its grants.
 - Trigger `qorpera_cloud_connector_staff_grants`: a new active hire receives
   the grants of every shared company connection, issued by the hire's author
   if an owner or admin, else by the member who connected the account if still
@@ -307,8 +326,8 @@ connect, contributor refused, member-owned secret not shareable, hire issued
 by an owner, revoke fences) and `398_cloud_secret_broker_company_routing`
 (on a real admitted run: another company's broker refused; a demoted
 issuer's tools disappear and a re-share by another admin restores them; a
-later hire's grants come from a current owner; Stop sharing removes the tools
-and keeps new hires out); 306 compares the broker's exact function
+later hire's grants come from a current owner; since v88, Stop sharing no
+longer exists and a later hire still receives the connection); 306 compares the broker's exact function
 signatures (`oid::regprocedure`), which now include the two signatures of the
 capture completion.
 
@@ -316,14 +335,16 @@ capture completion.
 
 Settings → Connections gains a Services section (`settings-services.ts`,
 `cloud/connectors.ts`) under the model accounts: a card per connector with
-Connect, Reconnect (rotates the same connection), Disconnect, Share with all
-agents (when a connection is not shared yet), Stop sharing with agents (when
-it is), the account label and who connected it, and for GitHub a token
-alternative. Owners and admins get the actions; other members see the cards
-read-only. After the provider redirect the app reads the outcome from the
-hash, reopens Settings on Connections, confirms the sign-in with this tab's
-proof, and only then shares the fresh connection with all agents. Broker
-requests carry `?company=<profileId>`.
+Connect and, once connected, one action, Disconnect, plus the account label,
+who connected it and the line that it is available to every agent in the
+company, new hires included; for GitHub a token alternative. Connections are
+always shared (web #243, kernel v88): Share with all agents, Stop sharing with
+agents and Reconnect are gone. Owners and admins get the actions; other
+members see the cards read-only. After the provider redirect the app reads the
+outcome from the hash, reopens Settings on Connections and confirms the
+sign-in with this tab's proof; sealing the connection shares it (v88), and the
+page's follow-up `qorpera_grant_cloud_connector` call is an idempotent
+repair. Broker requests carry `?company=<profileId>`.
 
 ### Runtime
 
@@ -377,8 +398,8 @@ browser) was already in place; no prompt change.
 - If node 1, node 2 and the exec host ever carry different broker runtime
   tokens, a broker needs to accept a short list of tokens (a small broker
   change); today it accepts one.
-- Restricting a connection to chosen agents from the page (the RPC supports
-  it).
+- Company connections are always shared with every agent (founder,
+  2026-09-24); restricting one to chosen agents is not offered.
 - Drive scope: `drive` reads everything the member can; `drive.file` would
   see only files the app created. Kept `drive` for usefulness; verification
   cost noted above.

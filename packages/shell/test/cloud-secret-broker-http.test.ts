@@ -6,6 +6,7 @@ import {
 	type CloudSecretCaptureDescription,
 	type CloudSecretConnectorAdapter,
 	type CloudSecretOperationRequest,
+	type CodingRepositoryCredentialRequest,
 } from "@qorpera/runtime/cloud-secret-broker";
 import {
 	captureCloudSecret,
@@ -82,6 +83,26 @@ function fixture(reflectSecret = false) {
 			receiptId: request.receiptId,
 			inputSha256: request.inputSha256,
 		})),
+		authorizeRepositoryCredential: vi.fn(async (request: CodingRepositoryCredentialRequest) => {
+			// The kernel releases the sealed company connection for one leased session.
+			const sealed = Buffer.from(keyring.seal({ access_token: "gho_REPOSITORY_TOKEN_0123456789" }, identity));
+			return {
+				schema: "qorpera.coding-repository-credential-authorization/v1",
+				companyId: identity.companyId,
+				environmentId: identity.environmentId,
+				secretId: identity.secretId,
+				secretVersion: identity.version,
+				keyId: identity.keyId,
+				connectorId: "github",
+				credentialName: "access_token",
+				encryptedEnvelopeBase64: sealed.toString("base64"),
+				envelopeSha256: await crypto.subtle
+					.digest("SHA-256", sealed)
+					.then((value) => Buffer.from(value).toString("hex")),
+				workerId: request.workerId,
+				repository: request.repository,
+			};
+		}),
 	};
 	const adapter: CloudSecretConnectorAdapter = {
 		connectorId: "linear",
@@ -228,6 +249,45 @@ it("refuses an operation the database does not authorize for this broker, whatev
 		"Cloud secret broker rejected the operation",
 	);
 	expect(f.authority.authorizeOperation).toHaveBeenCalledTimes(1);
+	f.wrappingKey.fill(0);
+	f.keyring.close();
+});
+
+it("releases a coding repository token only to the runtime credential, uncached, and nothing on a kernel refusal", async () => {
+	const f = fixture();
+	const port = await f.service.start();
+	const post = (authorization: string) =>
+		fetch(`http://127.0.0.1:${port}/v1/repository-credentials?company=${randomUUID()}`, {
+			method: "POST",
+			headers: { authorization, "content-type": "application/json" },
+			body: JSON.stringify({
+				schema: "qorpera.coding-repository-credential-request/v1",
+				workerId: randomUUID(),
+				leaseToken: randomUUID(),
+				executorOwner: "coding-node-02",
+				repository: { host: "github.com", owner: "Qorpera", name: "Qorpera_Base", baseBranch: "master" },
+			}),
+		});
+	const released = await post(`Bearer ${f.runtimeToken}`);
+	expect(released.status).toBe(200);
+	expect(released.headers.get("cache-control")).toBe("no-store");
+	expect(released.headers.get("access-control-allow-origin")).toBeNull();
+	expect(await released.json()).toEqual({
+		schema: "qorpera.coding-repository-credential/v1",
+		token: "gho_REPOSITORY_TOKEN_0123456789",
+	});
+	const unauthorized = await post(`Bearer ${randomBytes(32).toString("base64url")}`);
+	expect(unauthorized.status).toBe(404);
+	expect(await unauthorized.json()).toEqual({ schema: "qorpera.cloud-secret-error/v1", error: "not_found" });
+	expect(f.authority.authorizeRepositoryCredential).toHaveBeenCalledTimes(1);
+	vi.mocked(f.authority.authorizeRepositoryCredential).mockRejectedValueOnce(
+		new Error("company GitHub connection is unavailable to this agent"),
+	);
+	const refused = await post(`Bearer ${f.runtimeToken}`);
+	expect(refused.status).toBe(403);
+	const text = await refused.text();
+	expect(JSON.parse(text)).toEqual({ schema: "qorpera.cloud-secret-error/v1", error: "unavailable" });
+	expect(text).not.toContain("gho_");
 	f.wrappingKey.fill(0);
 	f.keyring.close();
 });

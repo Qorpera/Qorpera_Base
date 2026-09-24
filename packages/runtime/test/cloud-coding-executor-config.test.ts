@@ -3,7 +3,7 @@ import { parseCodingExecutorConfiguration } from "../../../deploy/coding-worker/
 
 function fixture() {
 	return {
-		schema: "qorpera.coding-executor-service/v3",
+		schema: "qorpera.coding-executor-service/v4",
 		owner: "node-coding",
 		supabaseUrl: "https://project.supabase.co",
 		commandPort: 8789,
@@ -53,11 +53,75 @@ function fixture() {
 		],
 	};
 }
+const broker = { origin: "https://secrets.qorpera.test", runtimeTokenCredential: "qorpera-coding-broker-runtime" };
 describe("coding executor service configuration", () => {
 	it("accepts pinned VM policy with repository-specific systemd credentials", () => {
-		expect(parseCodingExecutorConfiguration(fixture()).repositories[0].credential).toBe(
+		const config = parseCodingExecutorConfiguration(fixture());
+		expect(config.repositories[0].credential).toBe("qorpera-coding-repository-test");
+		expect(config.broker).toBeNull();
+	});
+	it("serves a repository through the company's GitHub connection when it names no static credential", () => {
+		const config = fixture();
+		const parsed = parseCodingExecutorConfiguration({
+			...config,
+			broker,
+			repositories: [
+				{ repository: config.repositories[0].repository },
+				{
+					repository: { host: "github.com", owner: "Qorpera", name: "proof", baseBranch: "main" },
+					credential: "qorpera-coding-repository-proof",
+				},
+			],
+		});
+		expect(parsed.broker).toEqual(broker);
+		expect(parsed.repositories.map((entry) => entry.credential)).toEqual([null, "qorpera-coding-repository-proof"]);
+		// Without a broker there is no path for a repository without a static file.
+		expect(() =>
+			parseCodingExecutorConfiguration({
+				...config,
+				repositories: [{ repository: config.repositories[0].repository }],
+			}),
+		).toThrow("CONFIG_INVALID");
+	});
+	it("refuses a broker that is not an HTTPS origin or reuses another credential's name", () => {
+		const config = fixture();
+		for (const origin of [
+			"http://secrets.qorpera.test",
+			"https://user:secret@secrets.qorpera.test",
+			"https://secrets.qorpera.test/v1",
+			"https://secrets.qorpera.test/?company=x",
+		])
+			expect(() => parseCodingExecutorConfiguration({ ...config, broker: { ...broker, origin } })).toThrow();
+		for (const runtimeTokenCredential of [
+			"qorpera-coding-registry",
+			"qorpera-coding-command",
+			"qorpera-coding-executor-config",
 			"qorpera-coding-repository-test",
+			"../broker",
+			"broker-runtime",
+		])
+			expect(() =>
+				parseCodingExecutorConfiguration({ ...config, broker: { ...broker, runtimeTokenCredential } }),
+			).toThrow("CONFIG_INVALID");
+		expect(() =>
+			parseCodingExecutorConfiguration({ ...config, broker: { ...broker, token: "inline-secret" } }),
+		).toThrow("CONFIG_INVALID");
+	});
+	it("refuses the previous schema and unknown keys", () => {
+		expect(() =>
+			parseCodingExecutorConfiguration({ ...fixture(), schema: "qorpera.coding-executor-service/v3" }),
+		).toThrow("CONFIG_INVALID");
+		expect(() => parseCodingExecutorConfiguration({ ...fixture(), token: "inline-secret" })).toThrow(
+			"CONFIG_INVALID",
 		);
+		const config = fixture();
+		expect(() =>
+			parseCodingExecutorConfiguration({
+				...config,
+				broker,
+				repositories: [{ repository: config.repositories[0].repository, credential: null }],
+			}),
+		).toThrow("CONFIG_INVALID");
 	});
 	it.each(["supabaseUrl"])("rejects secret-bearing or non-origin %s", (key) => {
 		expect(() =>

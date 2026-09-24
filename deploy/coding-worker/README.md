@@ -31,7 +31,7 @@ Install `qorpera-coding-executor.service` with its persistent dedicated account 
 
 ```json
 {
-  "schema": "qorpera.coding-executor-service/v3",
+  "schema": "qorpera.coding-executor-service/v4",
   "owner": "coding-node-02",
   "supabaseUrl": "https://PROJECT.supabase.co",
   "commandPort": 8789,
@@ -67,14 +67,25 @@ Install `qorpera-coding-executor.service` with its persistent dedicated account 
     "gitHelperSha256": "PACKAGE_SHA256",
     "watchdogHelperSha256": "PACKAGE_SHA256"
   },
+  "broker": {
+    "origin": "https://BROKER_PUBLIC_ORIGIN",
+    "runtimeTokenCredential": "qorpera-coding-broker-runtime"
+  },
   "repositories": [{
-    "repository": {"host": "github.com", "owner": "OWNER", "name": "REPO", "baseBranch": "main"},
-    "credential": "qorpera-coding-repository-example"
+    "repository": {"host": "github.com", "owner": "OWNER", "name": "REPO", "baseBranch": "main"}
   }]
 }
 ```
 
-All privileged credentials use systemd `LoadCredential`: registry service key (`qorpera-coding-registry`), the distinct coding-command transport token (`qorpera-coding-command`), and one explicitly scoped repository credential for each configured repository. Add the repository `LoadCredential` entries to the reviewed service unit. Provision repository-limited contents and pull-request permissions; never put a credential into configuration JSON, a model prompt or the repository VM. Configuration allowlisting does not substitute for current SQL repository authority.
+All privileged credentials use systemd `LoadCredential`: registry service key (`qorpera-coding-registry`), the distinct coding-command transport token (`qorpera-coding-command`) and the company secret brokers' runtime token (`qorpera-coding-broker-runtime`, the name `broker.runtimeTokenCredential` gives). Never put a credential into configuration JSON, a model prompt or the repository VM. `repositories` is the executor's own allowlist; it does not substitute for current SQL repository authority.
+
+## Repository access (bundle v88)
+
+Members never hand-place repository tokens. A repository is reached through the GitHub connection of the session's company (Settings → Connections → Services, sealed in that company's secret broker, shared with every agent). For each step that touches the repository (resolving and seeding the base while the session is `preparing`, pushing the bundle and opening the draft PR while it is `publishing`) the executor posts `{workerId, leaseToken, executorOwner, repository}` to `POST <broker.origin>/v1/repository-credentials?company=<profileId>` with the broker runtime token. The public origin routes by `company=` to that company's broker, which asks the kernel (`qorpera_authorize_coding_repository_credential`). The kernel answers only when the session is leased to this executor owner with this lease token, the lease is live, the repository is the session's, the session's agent holds an enabled repository grant, and the company has an active company-owned GitHub connection sealed by that broker on which the agent holds a live grant; it audits every answer (`repository_credential_used`). The broker opens the envelope and returns `{schema, token}` with `Cache-Control: no-store`. The executor lends the token to the Git broker or GitHub API step and drops it; it is never cached, logged, stored or passed to the repository VM, and a refusal is never retried with another credential. Disconnecting the company's GitHub connection, revoking the agent's grants on it, withdrawing the repository grant or losing the lease stops the next step.
+
+The broker runtime token is the one every company broker accepts (`qorpera-cloud-secret-runtime`, see the Step 7 connectors runbook); the executor needs no per-company secret. The origin must present a certificate Node trusts (a public CA, or `NODE_EXTRA_CA_CERTS` in a reviewed drop-in) and be reachable from the executor's node.
+
+The OAuth connection carries the scopes the GitHub OAuth app grants (`repo`); what a session can push is bounded by that account's access and by the fixed session branch. A repository entry may still name a static `"credential": "qorpera-coding-repository-NAME"` (with its own `LoadCredential` in a reviewed drop-in). That is proof-only plumbing: it bypasses the company connection, so disconnecting the company's GitHub does not stop it. A configuration whose repositories all name static credentials may omit `broker`.
 
 The identity guest receives the gateway from its host: on the **LXD provider** (and the shared execution service) set `QORPERA_CODING_COMMAND_URL` to the executor's HTTPS origin and `QORPERA_LXD_CODING_COMMAND_TOKEN_FILE` to a private file holding the same distinct transport token; the provider writes `QORPERA_CODING_COMMAND_URL` into the guest's native provider environment and the token into the `qorpera-coding-command` systemd credential (empty when no gateway is configured), and the guest bootstrap verifies both against its immutable bootstrap authority. The gateway certificate must chain to the cloud secret broker CA the guest already trusts (`NODE_EXTRA_CA_CERTS`). The native provider service selects the coding composition only when that URL is present. The fenced Codex binary, existing native isolation and identity recovery configuration remain required. Rebuild/provision the native image through its existing reviewed deployment process; do not attach an existing identity volume to a repository VM.
 

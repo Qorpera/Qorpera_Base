@@ -119,6 +119,9 @@ async function brokerFixture(canary = "lin_api_CANARY_NEVER_EXPOSE") {
 			};
 		}),
 		authorizeOperation,
+		authorizeRepositoryCredential: vi.fn(async () => {
+			throw new Error("private repository refusal");
+		}),
 	};
 	const executeAdapter = vi.fn<CloudSecretConnectorAdapter["execute"]>(async (input) => {
 		expect(input.credentials.token).toBe(canary);
@@ -289,7 +292,7 @@ it("binds the downstream idempotency key to the database receipt authorization",
 	fixture.wrappingKey.fill(0);
 });
 
-it("uses only the three static broker-role SQL calls and binds downstream idempotency", async () => {
+it("uses only the static broker-role SQL calls and binds downstream idempotency", async () => {
 	const fixture = await brokerFixture();
 	const queries: Array<{ text: string; values: readonly unknown[] }> = [];
 	const authorityId = randomUUID();
@@ -313,10 +316,24 @@ it("uses only the three static broker-role SQL calls and binds downstream idempo
 		new AbortController().signal,
 	);
 	await authority.authorizeOperation(fixture.request, new AbortController().signal);
+	const repositoryRequest = {
+		workerId: randomUUID(),
+		leaseToken: randomUUID(),
+		executorOwner: "coding-node-02",
+		repository: { host: "github.com" as const, owner: "Qorpera", name: "Qorpera_Base", baseBranch: "master" },
+	};
+	await authority.authorizeRepositoryCredential(repositoryRequest, new AbortController().signal);
 	expect(queries.map((query) => query.text)).toEqual([
 		"select public.qorpera_describe_cloud_secret_capture($1::uuid,$2::text,$3::uuid,$4::text) as result",
 		"select public.qorpera_complete_cloud_secret_capture($1::uuid,$2::text,$3::uuid,$4::text,$5::text,$6::text,$7::text) as result",
 		"select public.qorpera_authorize_cloud_secret_operation($1::uuid,$2::text,$3::jsonb,$4::uuid,$5::text,$6::text,$7::uuid,$8::text,$9::text,$10::bigint,$11::text,$12::text) as result",
+		"select public.qorpera_authorize_coding_repository_credential($1::uuid,$2::text,$3::uuid,$4::uuid,$5::text,$6::jsonb) as result",
+	]);
+	expect(queries[3]?.values.slice(2)).toEqual([
+		repositoryRequest.workerId,
+		repositoryRequest.leaseToken,
+		"coding-node-02",
+		JSON.stringify(repositoryRequest.repository),
 	]);
 	expect(queries[2]?.values[5]).toBe(createHash("sha256").update(fixture.request.idempotencyKey).digest("hex"));
 	expect(JSON.stringify(queries)).not.toContain(fixture.request.idempotencyKey);
@@ -332,6 +349,7 @@ it("reopens persisted ciphertext after a broker restart without a plaintext fall
 		describeCapture: fixture.brokerAuthority.describeCapture,
 		completeCapture: fixture.brokerAuthority.completeCapture,
 		authorizeOperation: fixture.brokerAuthority.authorizeOperation,
+		authorizeRepositoryCredential: fixture.brokerAuthority.authorizeRepositoryCredential,
 	};
 	const recovered = new CloudSecretBroker({
 		authority: recoveredAuthority,
