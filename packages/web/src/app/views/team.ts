@@ -175,9 +175,7 @@ export function renderTeam(
 				),
 			);
 		}
-		// One wrapper so the member rows and the invite row can share a column.
-		const roster = h("div", { class: "company-roster" }, people);
-		content.append(roster);
+		content.append(people);
 		if (team.capabilities.manageMembers) {
 			const picker = h(
 				"details",
@@ -294,7 +292,7 @@ export function renderTeam(
 					h("button", { type: "button", class: "link-button", onclick: options.addFriend }, "Add a friend"),
 				),
 			);
-			roster.append(picker);
+			content.append(picker);
 		}
 		exit = button(
 			team.role === "owner" ? "Delete company" : "Leave company",
