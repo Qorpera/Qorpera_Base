@@ -63,6 +63,7 @@
 
 ### Changed
 
+- Make the Settings side panel half again as large (20px text, 26px icons, 54px tab rows, with the search field, invitation count and company picker to match) and order its tabs General, Company, Friends, Plan & usage, Connections. The panel is 320px wide so every label fits on one line in English and Danish, and it scrolls when the window is too short for it. Windows up to 1100px wide (tablets, small laptops, phones) keep the earlier, smaller panel, so the settings themselves keep their width. A search that hides the open tab selects the top matching tab, so "invitations" now opens Company.
 - Show the close × of the Settings window and the feedback window as a bare glyph in both themes: no grey square behind it, at rest, on hover or on keyboard focus. Hover and focus only darken the × (brighten it on dark), and keyboard focus still shows its ring.
 - Lower the top edge of the rail's Co-Founder card by 10px, so the card is thinner and the figure stands higher above it. The figure, the name and the rows below keep their place.
 - Show only the name on the rail's Co-Founder card, which makes the card a line thinner. Its role and any state ("Working", "Needs you") stay in the card's tooltip and link name, the status disc and the figure still show a run, and other agents' rows keep their second line.
