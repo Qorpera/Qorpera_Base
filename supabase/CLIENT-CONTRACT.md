@@ -438,9 +438,12 @@ until its turn is admitted as a human wake whose current input is the answer.
 A conversation with its own execution binding (`qorpera_configure_session_
 execution`) still queues an answer that names no sponsor. Before bundle v105
 the kernel ignored the sponsor there and queued an answer that never woke the
-agent. If the turn request fails at admission, the input is listed as failed:
-that answer never reached the agent, no longer counts as the card's answer,
-and the member may answer again (a client shows the card open again).
+agent; the v105 migration marks every answer queued where nothing admits it as
+failed. If the turn request fails at admission, the answer never reached the
+agent and no longer counts as the card's answer: the member may answer again.
+`qorpera_list_session_inputs` lists such a failed answer (`status: "failed"`,
+with its `failure_reason`) while its card has no other answer, so a client can
+show the card open again and say why; it lists no other failed input.
 
 *A group chat* (a room bound to no agent) carries no cards; an answer there is
 refused with `22023` "cards are not answered in a group chat" (bundle v105).

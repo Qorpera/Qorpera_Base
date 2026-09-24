@@ -81,6 +81,20 @@ begin
 end
 $$;
 
+-- The answers the member's input listing shows for the plain conversation, by status.
+create function pg_temp.plain_listed_answers() returns jsonb language plpgsql as $$
+declare v_page jsonb;
+begin
+	perform pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001');
+	v_page := public.qorpera_list_session_inputs(current_setting('qorpera_test.plain_session')::uuid,0,100);
+	perform pg_temp.path_claims('service_role');
+	return coalesce((select jsonb_agg(jsonb_build_object('input',item ->> 'input_id','status',item ->> 'status')
+		order by (item ->> 'position')::bigint)
+		from jsonb_array_elements(v_page -> 'items') as item
+		where item #>> '{body,schema}' = 'qorpera.interaction-answer/v1'),'[]');
+end
+$$;
+
 -- Who answers is unchanged: the creator of a company conversation.
 do $$
 declare v_client uuid := extensions.gen_random_uuid();
@@ -170,6 +184,9 @@ begin
 	select * into strict v_request from public.qorpera_session_turn_requests where input_id = (v_first ->> 'input_id')::uuid;
 	perform pg_temp.wake_assert(v_request.status = 'failed' and (select failed_at is not null
 		from public.qorpera_session_inputs where id = (v_first ->> 'input_id')::uuid),'The answer''s delivery failed');
+	perform pg_temp.wake_assert(pg_temp.plain_listed_answers() = jsonb_build_array(
+		jsonb_build_object('input',v_first ->> 'input_id','status','failed')),
+		'The member''s listing shows the failed answer, so the card can open again and say why');
 	update public.qorpera_provider_connections set status = 'active'
 	where id = current_setting('qorpera_test.plain_connection')::uuid;
 	update public.qorpera_execution_sponsor_bindings set status = 'active'
@@ -182,9 +199,55 @@ begin
 		and exists (select 1 from public.qorpera_session_turn_requests
 			where input_id = (v_second ->> 'input_id')::uuid and status = 'queued'),
 		'A failed answer does not settle the card; the new answer is delivered');
+	perform pg_temp.wake_assert(pg_temp.plain_listed_answers() = jsonb_build_array(
+		jsonb_build_object('input',v_second ->> 'input_id','status','queued')),
+		'Once answered again, the listing shows the live answer only');
 end
 $$;
 rollback to savepoint delivery_failed;
+
+-- Answers queued before bundle v105 where nothing admits them (the old plain
+-- path: no turn request, no binding) are failed once, so their cards open again.
+-- An answer on its way (a turn request, a binding's queue) is left alone.
+savepoint stranded;
+do $$
+declare v_session uuid := current_setting('qorpera_test.plain_session')::uuid;
+	v_stranded uuid; v_bound uuid; v_queued jsonb; v_again jsonb;
+begin
+	insert into public.qorpera_session_inputs (session_id, client_input_id, kind, author_user_id, body)
+	values (v_session, extensions.gen_random_uuid(), 'user_message', '30000000-0000-4000-8000-000000000001',
+		jsonb_build_object('schema','qorpera.interaction-answer/v1','interactionId','30000000-0000-4000-8000-0000000009b2',
+			'surface','question','outcome','answered','answer',jsonb_build_object('values',jsonb_build_array('finance'))))
+	returning id into v_stranded;
+	insert into public.qorpera_session_inputs (session_id, client_input_id, kind, author_user_id, body)
+	values ('30000000-0000-4000-8000-000000000042', extensions.gen_random_uuid(), 'user_message',
+		'30000000-0000-4000-8000-000000000001',
+		jsonb_build_object('schema','qorpera.interaction-answer/v1','interactionId','30000000-0000-4000-8000-0000000009b9',
+			'surface','question','outcome','answered','answer',jsonb_build_object('values',jsonb_build_array('finance'))))
+	returning id into v_bound;
+	perform pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001');
+	perform pg_temp.wake_error(format('select pg_temp.plain_answer(%L,%L)',extensions.gen_random_uuid(),
+		'30000000-0000-4000-8000-0000000009b2'),'55000','interaction request is already answered');
+	v_queued := pg_temp.plain_answer(extensions.gen_random_uuid(),'30000000-0000-4000-8000-0000000009b1');
+	perform pg_temp.path_claims('service_role');
+
+	perform pg_temp.wake_assert(public.qorpera_fail_stranded_interaction_answers() = 1,'Exactly the stranded answer is failed');
+	perform pg_temp.wake_assert((select failed_at is not null and failure_reason is not null
+		from public.qorpera_session_inputs where id = v_stranded)
+		and (select failed_at is null from public.qorpera_session_inputs where id = v_bound)
+		and (select failed_at is null from public.qorpera_session_inputs where id = (v_queued ->> 'input_id')::uuid),
+		'A stranded answer is failed; one on a binding''s queue or with a turn request is not');
+	perform pg_temp.wake_assert(public.qorpera_fail_stranded_interaction_answers() = 0,'Failing stranded answers is idempotent');
+
+	perform pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001');
+	v_again := pg_temp.plain_answer(extensions.gen_random_uuid(),'30000000-0000-4000-8000-0000000009b2');
+	perform pg_temp.path_claims('service_role');
+	perform pg_temp.wake_assert(exists (select 1 from public.qorpera_session_turn_requests
+		where input_id = (v_again ->> 'input_id')::uuid and status = 'queued'),
+		'The card of a stranded answer is answered again, and this answer is delivered');
+end
+$$;
+rollback to savepoint stranded;
 
 -- The member's answer: a turn request on their own account, admitted as a human
 -- wake whose current input is the answer.
@@ -272,6 +335,36 @@ begin
 	perform pg_temp.path_claims('service_role');
 	perform pg_temp.wake_assert(not exists (select 1 from public.qorpera_session_inputs where client_input_id = v_client),
 		'A refused answer in a group chat records nothing');
+	perform set_config('qorpera_test.group_chat',v_thread::text,false);
+end
+$$;
+-- A card raised there before bundle v100, and an answer queued to it then: a
+-- retry of that answer still returns its receipt.
+do $$
+declare v_chat uuid := current_setting('qorpera_test.group_chat')::uuid; v_client uuid := extensions.gen_random_uuid();
+	v_old uuid; v_retry jsonb;
+begin
+	insert into public.qorpera_session_events(session_id,sequence,event_id,event_type,actor_user_id,body,event_hash,created_at)
+	values (v_chat,coalesce((select max(sequence) from public.qorpera_session_events where session_id = v_chat),0) + 1,
+		'30000000-0000-4000-8000-0000000009c1','interaction_request','30000000-0000-4000-8000-000000000001',
+		jsonb_build_object('schema','qorpera.runner-transcript-entry/v1','entry',jsonb_build_object('type','custom',
+			'customType','interaction_request','id','30000000-0000-4000-8000-0000000009c1',
+			'data','{"schema":"qorpera.interaction/v1","surface":"question","title":"Which channel?",
+				"payload":{"options":[{"label":"#general","value":"general"}]}}'::jsonb)),
+		repeat('c',64),clock_timestamp());
+	insert into public.qorpera_session_inputs (session_id, client_input_id, kind, author_user_id, body)
+	values (v_chat, v_client, 'user_message', '30000000-0000-4000-8000-000000000001',
+		jsonb_build_object('schema','qorpera.interaction-answer/v1','interactionId','30000000-0000-4000-8000-0000000009c1',
+			'surface','question','outcome','answered','answer',jsonb_build_object('values',jsonb_build_array('general'))))
+	returning id into v_old;
+	perform pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001');
+	v_retry := public.qorpera_answer_interaction(v_chat,v_client,'30000000-0000-4000-8000-0000000009c1','answered',
+		'{"values":["general"]}');
+	perform pg_temp.wake_assert(v_retry ->> 'input_id' = v_old::text,'A retry of an old group chat answer returns its receipt');
+	perform pg_temp.wake_error(format('select public.qorpera_answer_interaction(%L,%L,%L,%L,%L)',v_chat,
+		extensions.gen_random_uuid(),'30000000-0000-4000-8000-0000000009c1','answered','{"values":["general"]}'),
+		'22023','cards are not answered in a group chat');
+	perform pg_temp.path_claims('service_role');
 end
 $$;
 rollback to savepoint group_chat;

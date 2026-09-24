@@ -147,7 +147,7 @@ export function renderInteractionCard(item: InteractionCardItem, context: Intera
 				t("This card is past its time. The agent will ask again if it still needs it."),
 			),
 		);
-	} else if (state === "waiting" && item.answerFailed) {
+	} else if (state === "waiting" && item.answerFailed && context.canAnswer) {
 		result.push(h("p", { class: "interaction-result" }, t("Your answer did not reach the agent. Answer again.")));
 	}
 

@@ -30,7 +30,12 @@
 --      older one there reaches no single agent, so it is refused.
 --   4. An answer whose delivery failed (its turn request refused at admission)
 --      never reached the agent, so it no longer counts as the card's answer:
---      the member may answer again.
+--      the member may answer again. The input listing shows such an answer
+--      (status failed) while its card has no other answer, so a client can
+--      show the card open again and say why.
+--   5. Answers queued before this migration where nothing admits them (no turn
+--      request, no session execution binding, not a room post) are marked
+--      failed, so their cards open again too.
 --
 -- An agent's shared thread is unchanged. Rollout: any time before or with the
 -- v105 activation; earlier runtimes raise the same cards.
@@ -74,8 +79,12 @@ $new$);
 $old$,
 		$new$	where room.session_id = p_session_id and room.bound_staff_agent_id is not null;
 	-- A group chat carries no cards (20260924210000); an older one there reaches no single agent.
+	-- A retry of an answer given there before still returns its receipt.
 	if v_room.id is null and exists (
 		select 1 from public.qorpera_company_rooms as room where room.session_id = p_session_id
+	) and not exists (
+		select 1 from public.qorpera_session_inputs as input
+		where input.session_id = p_session_id and input.client_input_id = p_client_input_id
 	) then
 		raise exception 'cards are not answered in a group chat' using errcode = '22023';
 	end if;
@@ -171,3 +180,67 @@ $new$);
 	execute v_definition;
 end
 $migration$;
+
+-- 4. The input listing (qorpera_list_session_inputs_profile_scope as of
+-- 20260828019000) also shows an answer whose delivery failed, while its card has
+-- no other answer, so a client can open the card again and say why.
+do $migration$
+declare
+	v_definition text := pg_get_functiondef(
+		'public.qorpera_list_session_inputs_profile_scope(uuid,bigint,integer)'::regprocedure);
+begin
+	v_definition := pg_temp.answer_outside_thread_replace(v_definition,
+		$old$			where input.session_id = p_session_id
+				and input.completed_at is null
+				and input.failed_at is null
+				and input.position > p_after_position
+$old$,
+		$new$			where input.session_id = p_session_id
+				and ((input.completed_at is null and input.failed_at is null)
+					or (input.failed_at is not null and input.kind = 'user_message'
+						and input.body ->> 'schema' = 'qorpera.interaction-answer/v1'
+						and not exists (
+							select 1 from public.qorpera_session_inputs as other
+							where other.session_id = input.session_id and other.kind = 'user_message'
+								and other.body ->> 'schema' = 'qorpera.interaction-answer/v1'
+								and other.body ->> 'interactionId' = input.body ->> 'interactionId'
+								and other.failed_at is null
+						)
+						and not exists (
+							select 1 from public.qorpera_session_events as answer
+							where answer.session_id = input.session_id
+								and answer.event_type in ('interaction_answer', 'authorization_decision')
+								and answer.body #>> '{entry,data,interactionId}' = input.body ->> 'interactionId'
+						)))
+				and input.position > p_after_position
+$new$);
+	execute v_definition;
+end
+$migration$;
+
+-- 5. Answers queued where nothing admits them: no turn request, no session
+-- execution binding, not completed as a room post, never claimed. Before this
+-- migration every answer outside an agent's thread was queued so, and before
+-- bundle v100 every answer in one. They never reached the agent; failing them
+-- opens their cards again (the one-answer rule counts live answers only).
+-- Internal: the migration runs it once; nothing after it queues such an answer.
+create function public.qorpera_fail_stranded_interaction_answers()
+returns integer language plpgsql security definer set search_path = '' as $$
+declare v_count integer;
+begin
+	update public.qorpera_session_inputs as input
+	set failed_at = clock_timestamp(),
+		failure_reason = 'The answer was queued where nothing delivers it to the agent. Answer the card again.'
+	where input.kind = 'user_message' and input.body ->> 'schema' = 'qorpera.interaction-answer/v1'
+		and input.completed_at is null and input.failed_at is null
+		and input.execution_run_id is null and input.turn_id is null and input.claimant_id is null
+		and not exists (select 1 from public.qorpera_session_turn_requests as request where request.input_id = input.id)
+		and not exists (
+			select 1 from public.qorpera_session_execution_bindings as binding where binding.session_id = input.session_id
+		);
+	get diagnostics v_count = row_count;
+	return v_count;
+end
+$$;
+revoke all on function public.qorpera_fail_stranded_interaction_answers() from public, anon, authenticated, service_role;
+select public.qorpera_fail_stranded_interaction_answers();

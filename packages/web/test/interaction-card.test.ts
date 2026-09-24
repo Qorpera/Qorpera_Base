@@ -168,6 +168,9 @@ describe("interaction cards", () => {
 		expect(card.querySelectorAll(".interaction-options .btn")).toHaveLength(2);
 		const plain = renderInteractionCard(item(question), context());
 		expect(plain.textContent).not.toContain("did not reach");
+		// Only the member who answers is asked to answer again.
+		const other = renderInteractionCard({ ...item(question), answerFailed: true }, context({ canAnswer: false }));
+		expect(other.textContent).not.toContain("did not reach");
 	});
 });
 
