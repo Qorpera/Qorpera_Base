@@ -531,6 +531,16 @@ describe("concrete coding executor host composition", () => {
 		expect(verbs).not.toContain("is-failed");
 		expect(verbs).not.toContain("is-enabled");
 	});
+	it("gives up with CODING_HOST_GUEST_NOT_READY when the guest's agent never comes up", async () => {
+		const f = await fixture();
+		vi.mocked(f.client.execInstance).mockRejectedValue(new Error("LXD instance agent not running"));
+		const impatient = new LxdCodingExecutorHost({ ...f.options, guestReadyTimeoutMs: 50 });
+		const started = performance.now();
+		await expect(impatient.prepareWorkspace(f.claim, f.turn(), f.signal)).rejects.toThrow(
+			"CODING_HOST_GUEST_NOT_READY",
+		);
+		expect(performance.now() - started).toBeLessThan(5000);
+	});
 	it("goes back to waiting when the agent drops out during the timer probes", async () => {
 		const f = await fixture();
 		const fallback = vi.mocked(f.client.execInstance).getMockImplementation()!;
