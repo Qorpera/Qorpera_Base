@@ -1,4 +1,7 @@
+import { GUEST_IMAGE_SELF_UPDATE_UNITS, guestImageSelfUpdateCode } from "./lxd-guest-image-updates.ts";
+
 const stages = [
+	"image",
 	"credentials",
 	"configuration",
 	"tls",
@@ -11,6 +14,8 @@ const stages = [
 export type CompanyComputerLifecycleStage = (typeof stages)[number];
 
 const codes = new Set([
+	// The unit an image that can update itself left unmasked (constants only).
+	...GUEST_IMAGE_SELF_UPDATE_UNITS.map(guestImageSelfUpdateCode),
 	"UNPRIVILEGED_LINUX_OFFICE_REQUIRED",
 	"OFFICE_SYSTEMD_CREDENTIALS_REQUIRED",
 	"OFFICE_SERVICE_CREDENTIALS_INVALID",
