@@ -1,11 +1,10 @@
 # Step 10 behavior screening: fourth pass (prompt rewrite)
 
-Date: 2026-09-24. Starting source: master `d2b1385db` (bundle v95), merged
-with master `3596b1058` (v97). Branch `fable/runtime-prompt-rewrite`. Slot
-**v100** in the coordinator's registry: activation
-`20260924200000_runtime_bundle_activation_v100.sql`, declared with previous 97
-and re-cut to previous 99 in slot order (after v98 #276 and v99 #282). No SQL
-of its own; the provider host bytes change, so the cut needs a runner image.
+Date: 2026-09-24. Starting source: master `d2b1385db` (bundle v95), re-cut on
+master `a229d5b1a` (v98). Branch `fable/runtime-prompt-rewrite`, PR #283. Slot
+**v99** in the coordinator's registry (order reset 20:05Z): activation
+`20260924200000_runtime_bundle_activation_v99.sql`, previous 98. No SQL of its
+own; the provider host bytes change, so the cut needs a runner image.
 
 The [third pass](RUNTIME-STEP-10-BEHAVIOR-PASS-3.md) tuned roles and writing.
 Since then the runtime gained workers, todos, routines, hiring, memory, held
@@ -141,7 +140,7 @@ continuation" so a restarted run still owes its member a reply. All applied.
 It found no lost rule and confirmed field names, wake kinds, tool names and
 the thread reply policy against the code.
 
-## Second review (PR #283, head 790d294c6)
+## Second review (PR #283, head 790d294c6, then declared v100)
 
 A fresh reviewer found nothing blocking and confirmed every earlier fix, the
 page fitting (emoji, U+2028, last pages, a 160-character call id and a hostile
@@ -175,6 +174,6 @@ changed here; the prompt does not promise a card in that section.
   also failed on untouched master; on an idle machine all pass.
 - Biome clean on the changed files; root `tsgo` shows no error in them (the
   existing shell test errors on master are unchanged).
-- Bundle v100 regenerated (`scripts/generate-cloud-runtime-bundle.mjs`,
+- Bundle v99 regenerated (`scripts/generate-cloud-runtime-bundle.mjs`,
   `--check` verified, generator tests pass). The Linux guest provider-host pin
   comes from CI's Linux packaging, as for v96 and v97.

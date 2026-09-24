@@ -3,6 +3,7 @@ import {
 	companyComputerFailureDiagnostic,
 	createCompanyComputerViewerRefusalReporter,
 } from "@qorpera/runtime/cloud-company-computer-diagnostics";
+import { GUEST_IMAGE_SELF_UPDATE_UNITS, guestImageSelfUpdateCode } from "@qorpera/runtime/lxd-guest-image-updates";
 import { describe, expect, it, vi } from "vitest";
 
 describe("closed office failure diagnostics", () => {
@@ -140,6 +141,14 @@ describe("closed office failure diagnostics", () => {
 			categories: ["timeout"],
 		});
 	});
+	it.each(GUEST_IMAGE_SELF_UPDATE_UNITS.map((unit) => [guestImageSelfUpdateCode(unit)]))(
+		"keeps the unit an image self-update refusal names (%s)",
+		(code) => {
+			expect(
+				companyComputerFailureDiagnostic(new CompanyComputerLifecycleFailure("image", new Error(code))),
+			).toMatchObject({ stages: ["image"], codes: [code] });
+		},
+	);
 });
 
 describe("viewer refusal journal lines (closed codes, rate limited, nothing about the member)", () => {
