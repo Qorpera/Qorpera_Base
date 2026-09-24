@@ -23,8 +23,8 @@ const HOUR_MS = 60 * 60_000;
  * - referenced: fingerprints named by files the live units read
  * - pins: [{ version, fingerprint, live }] from the node agent's releases (version = revision; `live` = the release the
  *   provider role runs) or, on a node without the agent, from the provider env files (`live` when a live unit reads it)
- * - held: [{ fingerprint, reason }] kept as they are, e.g. the pins of the old lane's env files, kept for its rollback
- *   units until those files are archived
+ * - held: [{ fingerprint, reason }] kept as they are: on a node agent node, the pins of the old lane's env files that
+ *   an installed but inactive unit still starts from (its rollback), until those units are archived
  * Keeps images of any instance, configured ones, the live runtime pin, every newer (staged) pin and the newest
  * older pin with another fingerprint (the rollback), images named by live configuration, base images and
  * recent uploads. Refuses to delete anything when the live pin cannot be found or names no local image. */
@@ -119,7 +119,10 @@ export async function agentPins(agentRoot) {
 		throw error;
 	});
 	if (current === null) return null;
-	const role = await readlink(join(agentRoot, "roles", "provider")).catch(() => `../${current}`);
+	const role = await readlink(join(agentRoot, "roles", "provider")).catch((error) => {
+		if (error.code === "ENOENT") return `../${current}`;
+		throw error;
+	});
 	const live = /^\.\.\/releases\/(0|[1-9][0-9]*)$/.exec(role)?.[1];
 	if (live === undefined) throw new Error(`the provider role link is unexpected: ${role}`);
 	const pins = [];
@@ -238,6 +241,14 @@ export const nodeSystemd = {
 			.filter(([name, , active]) => name && (active === "active" || active === "activating"))
 			.map(([name]) => name);
 	},
+	/** Every installed unit file matching the pattern, whatever its state (a disabled unit may not be loaded). */
+	async installedUnits(pattern) {
+		const { stdout } = await run("/usr/bin/systemctl", ["list-unit-files", "--no-legend", "--plain", pattern]);
+		return stdout
+			.split("\n")
+			.map((line) => line.trim().split(/\s+/)[0])
+			.filter((name) => name?.endsWith(".service"));
+	},
 	/** The files a live unit really starts from: its effective start commands, environment files and the
 	 * running process's command line. Overridden drop-ins are not followed, so their old pins are not live. */
 	async startPaths(unit) {
@@ -281,13 +292,22 @@ export async function tidy({ config, apply, lxd, systemd, now = Date.now(), remo
 		if (!version) continue;
 		const fingerprint = JSON.parse(await readFile(path, "utf8"))?.env?.QORPERA_LXD_IMAGE_FINGERPRINT;
 		if (typeof fingerprint === "string" && /^[0-9a-f]{64}$/.test(fingerprint))
-			envPins.push({ version: Number(version), fingerprint, live: livePins.has(path) });
+			envPins.push({ version: Number(version), fingerprint, live: livePins.has(path), path });
 	}
-	// On a node agent node the releases decide. The old lane's env files stay (with their disabled units) for its
-	// rollback until they are archived, so their pins are held until then.
+	// On a node agent node the releases decide. An old lane unit stays installed (disabled) for its rollback until it is
+	// archived, so the env file its launcher names is held until then; other old env files are not.
 	const released = config.agentRoot ? await agentPins(config.agentRoot) : null;
 	const pins = released ?? envPins;
-	const held = released ? envPins.map((pin) => ({ fingerprint: pin.fingerprint, reason: "old lane pin, until archived" })) : [];
+	let held = [];
+	if (released) {
+		const resting = (await systemd.installedUnits(config.unitPattern)).filter((unit) => !units.includes(unit));
+		const restingStarts = [];
+		for (const unit of resting) restingStarts.push(...(await systemd.startPaths(unit)));
+		const restingTexts = [...(await trace(restingStarts)).values()];
+		held = envPins
+			.filter((pin) => restingTexts.some((text) => text.includes(basename(pin.path))))
+			.map((pin) => ({ fingerprint: pin.fingerprint, reason: "old lane pin, until archived" }));
+	}
 	const images = await lxd.images();
 	const plan = planImages({ images, instances: await lxd.instances(), referenced, pins, held, now, config });
 	const stagingFiles = [];
