@@ -37,6 +37,18 @@ function searchable(text: string): string {
 	return text.normalize("NFD").replace(/\p{M}/gu, "").replace(/[_/]/g, " ").toLowerCase();
 }
 
+/** A term that ends in a number matches only a whole number: "gmt+1" finds
+ * GMT+1, not GMT+10 or GMT+1:30. Other terms match anywhere. */
+function contains(text: string, term: string): boolean {
+	if (!/\d$/.test(term)) return text.includes(term);
+	for (let at = text.indexOf(term); at !== -1; at = text.indexOf(term, at + 1)) {
+		const before = text.charAt(at - 1),
+			after = text.charAt(at + term.length);
+		if (!(/\d/.test(term.charAt(0)) && /\d/.test(before)) && !/[\d:]/.test(after)) return true;
+	}
+	return false;
+}
+
 /** A settings value as a small button that opens a searchable list: the name
  * on the left, a second name or offset on the right, a check on the current
  * one. Focus stays in the search field and the arrow keys move through the
@@ -46,6 +58,8 @@ export class PreferencePicker {
 	readonly el: HTMLElement;
 	readonly #setup: PreferencePickerSetup;
 	readonly #id = `preference-picker-${++pickers}`;
+	/** For the row's <label for>, so clicking the row's name opens the list too. */
+	readonly buttonId = `${this.#id}-button`;
 	readonly #value = h("span", { id: `${this.#id}-value`, class: "preference-picker-value" });
 	readonly #button: HTMLButtonElement;
 	readonly #popover = h("div", {
@@ -59,7 +73,9 @@ export class PreferencePicker {
 	#open: AbortController | undefined;
 	#rows: { option: PickerOption; el: HTMLElement; text: string }[] = [];
 	#shown: HTMLElement[] = [];
-	#active = -1;
+	/** The highlighted row itself, not its index: filtering replaces #shown. */
+	#active: HTMLElement | undefined;
+	#frame = 0;
 	#search: HTMLInputElement | undefined;
 	#clear: HTMLButtonElement | undefined;
 	#empty: HTMLElement | undefined;
@@ -70,6 +86,7 @@ export class PreferencePicker {
 			"button",
 			{
 				type: "button",
+				id: this.buttonId,
 				class: "preference-picker-button",
 				"aria-haspopup": "listbox",
 				"aria-expanded": "false",
@@ -88,10 +105,6 @@ export class PreferencePicker {
 		);
 		this.el = h("span", { class: "preference-picker" }, this.#button, this.#popover);
 		this.refresh();
-	}
-
-	get isOpen(): boolean {
-		return Boolean(this.#open);
 	}
 
 	/** Show the current value on the button. */
@@ -147,7 +160,7 @@ export class PreferencePicker {
 					"aria-selected": String(selected),
 					...(option.title ? { title: option.title } : {}),
 					onclick: () => this.#choose(option.value),
-					onmousemove: () => this.#activate(this.#shown.indexOf(el), false),
+					onmousemove: () => this.#activate(el, false),
 				},
 				h("span", { class: "preference-picker-label" }, option.label),
 				option.detail ? h("span", { class: "preference-picker-detail" }, option.detail) : null,
@@ -173,10 +186,9 @@ export class PreferencePicker {
 		this.#button.setAttribute("aria-expanded", "true");
 		this.#shown = this.#rows.map((row) => row.el);
 		this.#place();
-		const selected = this.#rows.findIndex((row) => row.option.value === current);
-		this.#activate(Math.max(0, selected), false);
+		this.#activate((this.#rows.find((row) => row.option.value === current) ?? this.#rows[0])?.el, false);
 		// Open on the current value, in the middle of the list when it is long.
-		const chosen = this.#shown[this.#active];
+		const chosen = this.#active;
 		if (chosen) list.scrollTop = chosen.offsetTop - (list.clientHeight - chosen.offsetHeight) / 2;
 		search.focus();
 		document.addEventListener(
@@ -187,9 +199,14 @@ export class PreferencePicker {
 			},
 			{ capture: true, signal: lifetime.signal },
 		);
+		// Follow the button while the page scrolls or resizes, once per frame.
 		const follow = (event: Event) => {
 			if (!this.el.isConnected) this.close(false);
-			else if (!(event.target instanceof Node && this.#popover.contains(event.target))) this.#place();
+			else if (!(event.target instanceof Node && this.#popover.contains(event.target)) && !this.#frame)
+				this.#frame = requestAnimationFrame(() => {
+					this.#frame = 0;
+					if (this.#open) this.#place();
+				});
 		};
 		window.addEventListener("resize", follow, { signal: lifetime.signal });
 		document.addEventListener("scroll", follow, { capture: true, passive: true, signal: lifetime.signal });
@@ -200,11 +217,13 @@ export class PreferencePicker {
 		if (!lifetime) return;
 		this.#open = undefined;
 		lifetime.abort();
+		if (this.#frame) cancelAnimationFrame(this.#frame);
+		this.#frame = 0;
 		this.#popover.hidden = true;
 		this.#popover.replaceChildren();
 		this.#rows = [];
 		this.#shown = [];
-		this.#active = -1;
+		this.#active = undefined;
 		this.#search = this.#clear = this.#empty = undefined;
 		this.#button.setAttribute("aria-expanded", "false");
 		if (returnFocus && this.#button.isConnected) this.#button.focus();
@@ -223,23 +242,21 @@ export class PreferencePicker {
 		const terms = searchable(search.value).split(/\s+/).filter(Boolean);
 		this.#shown = [];
 		for (const row of this.#rows) {
-			const match = terms.every((term) => row.text.includes(term));
+			const match = terms.every((term) => contains(row.text, term));
 			row.el.hidden = !match;
 			if (match) this.#shown.push(row.el);
 		}
 		this.#clear.setAttribute("aria-label", uiString(search.value ? "Clear search" : "Close"));
 		this.#empty.hidden = this.#shown.length > 0;
 		this.#empty.textContent = this.#shown.length ? "" : uiString("No matches");
-		this.#activate(0, true);
+		this.#activate(this.#shown[0], true);
 		this.#place();
 	}
 
-	#activate(index: number, scroll: boolean): void {
-		if (index === this.#active && this.#shown[index]?.classList.contains("is-active")) return;
-		const previous = this.#shown[this.#active];
-		previous?.classList.remove("is-active");
-		this.#active = this.#shown.length ? Math.min(Math.max(index, 0), this.#shown.length - 1) : -1;
-		const row = this.#shown[this.#active];
+	#activate(row: HTMLElement | undefined, scroll: boolean): void {
+		if (row === this.#active) return;
+		this.#active?.classList.remove("is-active");
+		this.#active = row;
 		if (row) {
 			row.classList.add("is-active");
 			this.#search?.setAttribute("aria-activedescendant", row.id);
@@ -255,10 +272,12 @@ export class PreferencePicker {
 			this.close(true);
 		} else if (matchesKey(event, "next") || matchesKey(event, "previous")) {
 			event.preventDefault();
-			this.#activate(this.#active + (matchesKey(event, "next") ? 1 : -1), true);
+			const at = this.#active ? this.#shown.indexOf(this.#active) : -1;
+			const next = at + (matchesKey(event, "next") ? 1 : -1);
+			this.#activate(this.#shown[Math.min(Math.max(next, 0), this.#shown.length - 1)], true);
 		} else if (matchesKey(event, "accept")) {
 			event.preventDefault();
-			const row = this.#rows.find((candidate) => candidate.el === this.#shown[this.#active]);
+			const row = this.#rows.find((candidate) => candidate.el === this.#active);
 			if (row) this.#choose(row.option.value);
 		} else if (matchesKey(event, "tab")) {
 			// Tab moves on from the button, as it would from a closed list.

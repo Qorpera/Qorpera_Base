@@ -214,11 +214,11 @@ export function timeZoneOption(): { timeZone?: string } {
 
 const dayFormats = new Map<string, Intl.DateTimeFormat>();
 
-/** The calendar day ("2026-09-24") a moment falls on in the shown zone.
+/** The calendar day ("2026-09-24") a moment falls on in the shown zone; pass
+ * the zone when formatting many dates so the preference is read once.
  * Following the device reads the local clock each time, so a device that
  * travels moves its midnights with it. */
-export function presentationDay(date: Date): string {
-	const zone = timeZoneOption().timeZone;
+export function presentationDay(date: Date, zone = timeZoneOption().timeZone): string {
 	if (!zone) {
 		const pad = (value: number) => String(value).padStart(2, "0");
 		return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;

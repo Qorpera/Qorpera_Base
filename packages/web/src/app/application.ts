@@ -73,6 +73,8 @@ export function mountApplication(
 	rail.after(railLayout.el);
 	applyLanguage();
 	window.addEventListener("languagechange", applyLanguage);
+	// Times are formatted when drawn: a new time zone redraws the screens.
+	window.addEventListener("qorpera-time-zone-change", redrawScreens);
 	const unwatchTheme = watchTheme();
 	let disposed = false;
 	let settings: SettingsView | undefined;
@@ -244,6 +246,29 @@ export function mountApplication(
 				? { navigation: { open: navigationOpen, toggle: () => setNavigationOpen(!navigationOpen) } }
 				: {}),
 		};
+	}
+
+	/** Rebuild the route's screens from the stores, which keep drafts,
+	 * attachments and edits. A new-conversation draft and unsaved Company File
+	 * text live only in their screens, so those stay until they are left. */
+	function redrawScreens(): void {
+		if (disposed) return;
+		notices?.dispose();
+		notices = undefined;
+		executionNotices.replaceChildren();
+		conversation?.dispose();
+		conversation = undefined;
+		approvals?.dispose();
+		approvals = undefined;
+		if (newConversation && !newConversation.hasInput) {
+			newConversation.dispose();
+			newConversation = undefined;
+		}
+		if (liveFile && !liveFile.leaveMessage()) {
+			liveFile.dispose();
+			liveFile = undefined;
+		}
+		render();
 	}
 
 	function teardownCompany(): void {
@@ -941,6 +966,7 @@ export function mountApplication(
 		disposed = true;
 		railLayout.dispose();
 		window.removeEventListener("languagechange", applyLanguage);
+		window.removeEventListener("qorpera-time-zone-change", redrawScreens);
 		unwatchTheme();
 		closeSettings(false);
 		closeFeedback(false);
