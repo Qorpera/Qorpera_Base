@@ -1,8 +1,11 @@
 # Step 10 behavior screening: fourth pass (prompt rewrite)
 
-Date: 2026-09-24. Starting source: master `d2b1385db` (bundle v95). Branch
-`fable/runtime-prompt-rewrite`. No bundle version is declared here; the change
-takes the next free slot from the coordinator's registry at merge time.
+Date: 2026-09-24. Starting source: master `d2b1385db` (bundle v95), merged
+with master `3596b1058` (v97). Branch `fable/runtime-prompt-rewrite`. Slot
+**v100** in the coordinator's registry: activation
+`20260924200000_runtime_bundle_activation_v100.sql`, declared with previous 97
+and re-cut to previous 99 in slot order (after v98 #276 and v99 #282). No SQL
+of its own; the provider host bytes change, so the cut needs a runner image.
 
 The [third pass](RUNTIME-STEP-10-BEHAVIOR-PASS-3.md) tuned roles and writing.
 Since then the runtime gained workers, todos, routines, hiring, memory, held
@@ -159,7 +162,6 @@ changed here; the prompt does not promise a card in that section.
   also failed on untouched master; on an idle machine all pass.
 - Biome clean on the changed files; root `tsgo` shows no error in them (the
   existing shell test errors on master are unchanged).
-- Not done here: `npm run generate:runtime-bundle`, the activation migration
-  and the Linux guest pin. Every changed file is a bundle input (constitution,
-  context composer, provider bootstrap, tool catalog), so the change needs the
-  next free slot in the coordinator's registry and the usual re-cut before merge.
+- Bundle v100 regenerated (`scripts/generate-cloud-runtime-bundle.mjs`,
+  `--check` verified, generator tests pass). The Linux guest provider-host pin
+  comes from CI's Linux packaging, as for v96 and v97.
