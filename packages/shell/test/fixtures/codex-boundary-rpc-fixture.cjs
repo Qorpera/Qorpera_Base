@@ -26,6 +26,12 @@ const companyCalls = mode === "company-office"
 			{ tool: "ask_member", arguments: { idempotencyKey: "channel", text: "One thing to decide first.", surface: "question", title: "Which channel should the digest go to?", payload: { options: [{ label: "#general", value: "general" }, { label: "#finance", value: "finance", style: "primary" }] } } },
 			{ tool: "ask_member", arguments: { idempotencyKey: "channel", text: "One thing to decide first.", surface: "question", title: "Which channel should the digest go to?", payload: { options: [{ label: "#general", value: "general" }, { label: "#finance", value: "finance", style: "primary" }] } } },
 		]
+	: mode === "company-cards-retry"
+	? [
+			// What the live model sent (options as plain strings), then the card its refusal asked for.
+			{ tool: "ask_member", arguments: { idempotencyKey: "fruit", text: "Pick one.", surface: "question", title: "Apples or pears?", payload: { options: ["Apples", "Pears"] } } },
+			{ tool: "ask_member", arguments: { idempotencyKey: "fruit", text: "Pick one.", surface: "question", title: "Apples or pears?", payload: { options: [{ label: "Apples" }, { label: "Pears" }] } } },
+		]
 	: mode === "company-silent" || mode === "company-no-send" || mode === "company-worker"
 	? [{ tool: "company_read", arguments: { path: "note.md", offset: 0, limit: 256 } }]
 	: mode === "company-secret"
