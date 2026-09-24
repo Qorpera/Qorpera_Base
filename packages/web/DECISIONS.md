@@ -127,3 +127,23 @@ dropped the same day for the handoff-line shape.)
   (2.5 s while working, 6 s while it waits, 30 s after it settled, 20 s while
   the tab is hidden). A missing list RPC means no sessions; the thread renders
   as before.
+
+## 2026-09-24 — No company execution controls, no Organization or Approvals pages
+
+**Decision (Jonas).** Settings → Company no longer carries Company execution
+(pause/resume, monthly spend and token limits, hourly wake limit, the usage
+line) or the Organization and Approvals cards, and the client has no pages or
+routes for them. The limits go as policy, not just as settings: the runtime
+removes the spend, token and wake ceilings themselves in its own change.
+
+**Why.** Jonas asked for all of it to go, the limits as policy and not only
+as settings. A provider's own usage limits still bound subscription work. The
+Approvals list only gathered `authorization_request` events, which the cloud
+runtime never emits (its harness runs with approvals set to never); approval
+cards an agent raises in its thread are a different thing and stay.
+
+**Rules out.** Re-adding a pause, limit or approvals surface in the client
+without a new decision. Notices of a tripped company limit or a pause/resume
+that already exist in a member's list are skipped, never shown and never a
+failed read; the machine-capacity notice, which shares the
+`company_ceiling_tripped` kind, still shows.

@@ -1,0 +1,237 @@
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { createWebMemberNotifications } from "../src/cloud/member-notifications.ts";
+import { deferred, fixture, id, profileA, settle, timestamp, userA, userB } from "./fixtures.ts";
+
+afterEach(() => {
+	vi.restoreAllMocks();
+	vi.unstubAllGlobals();
+	vi.useRealTimers();
+});
+const full = {
+	schema: "qorpera.member-notification/v1",
+	notification_id: id(90),
+	profile_id: profileA.profileId,
+	kind: "company_ceiling_tripped",
+	created_at: timestamp,
+	acknowledged_at: null,
+	subject: {
+		schema: "qorpera.member-notification.machine-capacity/v1",
+		dimension: "machines",
+		ceiling: 2,
+		used: 2,
+		allocationId: id(13),
+	},
+};
+function setup() {
+	const f = fixture(),
+		company = new AbortController(),
+		view = new AbortController(),
+		current = vi.fn();
+	const fetch = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) => Response.json([full]));
+	vi.stubGlobal("fetch", fetch);
+	return {
+		...f,
+		company,
+		view,
+		current,
+		fetch,
+		client: createWebMemberNotifications(f.cloud, profileA.profileId, userA.id, company.signal, current),
+	};
+}
+describe("company notices member read", () => {
+	it("binds notification lists to the member/company and acknowledges only an observed exact id", async () => {
+		const f = setup();
+		await expect(f.client.acknowledgeNotification(id(90))).rejects.toThrow("Refresh notifications");
+		expect(f.fetch).not.toHaveBeenCalled();
+		expect(await f.client.listNotifications()).toMatchObject([
+			{ notificationId: id(90), profileId: profileA.profileId, acknowledgedAt: null },
+		]);
+		const [url, request] = f.fetch.mock.calls[0]!;
+		expect(url).toBe("https://fixture.invalid/rest/v1/rpc/qorpera_list_member_notifications");
+		expect(JSON.parse(request!.body as string)).toEqual({ p_profile_id: profileA.profileId, p_limit: 50 });
+		expect(request).toMatchObject({ method: "POST", redirect: "error", cache: "no-store", credentials: "omit" });
+		expect(new Headers(request!.headers).get("authorization")).toBe("Bearer fixture-token");
+		f.fetch.mockResolvedValueOnce(Response.json({ ...full, acknowledged_at: timestamp }));
+		expect(await f.client.acknowledgeNotification(id(90))).toMatchObject({
+			notificationId: id(90),
+			acknowledgedAt: timestamp,
+		});
+		expect(JSON.parse(f.fetch.mock.calls[1]![1]!.body as string)).toEqual({ p_notification_id: id(90) });
+		f.fetch.mockResolvedValueOnce(Response.json([]));
+		await f.client.listNotifications();
+		await expect(f.client.acknowledgeNotification(id(90))).rejects.toThrow("Refresh notifications");
+	});
+	it("projects every published notification subject without exposing extra fields", async () => {
+		const f = setup();
+		const subjects = [
+			{
+				kind: "provider_usage_limit",
+				subject: {
+					schema: "qorpera.member-notification.provider-usage-limit/v1",
+					provider: "openai",
+					resetsAt: timestamp,
+					runId: id(11),
+					connectionId: id(12),
+					private: "hidden",
+				},
+			},
+			{ kind: "company_ceiling_tripped", subject: full.subject },
+			{
+				kind: "sponsor_handoff",
+				subject: {
+					schema: "qorpera.member-notification.sponsor-handoff/v1",
+					runId: id(11),
+					fromConnectionId: id(12),
+					toConnectionId: id(14),
+					reason: "usage_limit",
+					at: timestamp,
+				},
+			},
+		];
+		f.fetch.mockResolvedValueOnce(
+			Response.json(subjects.map((v, i) => ({ ...full, ...v, notification_id: id(100 + i) }))),
+		);
+		const result = await f.client.listNotifications();
+		expect(result).toHaveLength(3);
+		expect(result[0]!.subject).not.toHaveProperty("private");
+		expect(result[1]!.subject).toMatchObject({ dimension: "machines", used: 2, ceiling: 2 });
+	});
+	it("skips notices of the removed company limits and pause instead of failing the read", async () => {
+		const f = setup();
+		const retired = [
+			{
+				kind: "company_ceiling_tripped",
+				subject: {
+					schema: "qorpera.member-notification.company-ceiling-tripped/v1",
+					dimension: "spend",
+					ceiling: 100,
+					periodStart: timestamp,
+				},
+			},
+			{
+				kind: "company_ceiling_tripped",
+				subject: {
+					schema: "qorpera.member-notification.company-ceiling-tripped/v1",
+					dimension: "wakes",
+					ceiling: 20,
+					periodStart: timestamp,
+					used: 20,
+				},
+			},
+			{
+				kind: "company_execution_paused",
+				subject: {
+					schema: "qorpera.member-notification.company-execution-stop/v1",
+					paused: true,
+					byUserId: userA.id,
+					reason: "Runtime update",
+					at: timestamp,
+				},
+			},
+			{
+				kind: "company_execution_resumed",
+				subject: {
+					schema: "qorpera.member-notification.company-execution-stop/v1",
+					paused: false,
+					byUserId: userA.id,
+					reason: null,
+					at: timestamp,
+				},
+			},
+		];
+		f.fetch.mockResolvedValueOnce(
+			Response.json([...retired.map((v, i) => ({ ...full, ...v, notification_id: id(100 + i) })), full]),
+		);
+		expect(await f.client.listNotifications()).toMatchObject([{ notificationId: id(90) }]);
+		// A skipped notice was never observed, so it cannot be acknowledged from here.
+		await expect(f.client.acknowledgeNotification(id(100))).rejects.toThrow("Refresh notifications");
+		expect(f.fetch).toHaveBeenCalledTimes(1);
+	});
+	it("rejects cross-profile notifications, duplicate identities, unknown kinds and mismatched receipts", async () => {
+		const f = setup();
+		f.fetch.mockResolvedValueOnce(Response.json([{ ...full, profile_id: id(99) }]));
+		await expect(f.client.listNotifications()).rejects.toThrow("invalid response");
+		f.fetch.mockResolvedValueOnce(Response.json([full, full]));
+		await expect(f.client.listNotifications()).rejects.toThrow("invalid response");
+		f.fetch.mockResolvedValueOnce(Response.json([{ ...full, kind: "something_new" }]));
+		await expect(f.client.listNotifications()).rejects.toThrow("invalid response");
+		f.fetch.mockResolvedValueOnce(Response.json([full]));
+		await f.client.listNotifications();
+		f.fetch.mockResolvedValueOnce(Response.json({ ...full, notification_id: id(91), acknowledged_at: timestamp }));
+		await expect(f.client.acknowledgeNotification(id(90))).rejects.toThrow("invalid response");
+	});
+	it("refuses a refreshed account before dispatch and fences a company change after auth", async () => {
+		const f = setup();
+		f.auth(userB);
+		await expect(f.client.listNotifications()).rejects.toThrow("could not be confirmed");
+		expect(f.fetch).not.toHaveBeenCalled();
+		f.auth(userA);
+		f.current
+			.mockImplementationOnce(() => {})
+			.mockImplementation(() => {
+				throw new Error("Company changed");
+			});
+		await expect(f.client.listNotifications()).rejects.toThrow("could not be confirmed");
+		expect(f.fetch).not.toHaveBeenCalled();
+	});
+	it.each(["company", "view"] as const)("aborts %s during authentication without dispatch", async (scope) => {
+		const f = setup(),
+			original = await f.cloud.supabase.auth.getSession(),
+			token = deferred<typeof original>();
+		vi.mocked(f.cloud.supabase.auth.getSession).mockReturnValueOnce(token.promise);
+		const rejected = expect(f.client.listNotifications(f.view.signal)).rejects.toThrow();
+		await settle();
+		f[scope].abort();
+		await rejected;
+		token.resolve(original);
+		await settle();
+		expect(f.fetch).not.toHaveBeenCalled();
+	});
+	it("discards a late response after route authority changes", async () => {
+		const f = setup(),
+			response = deferred<Response>();
+		f.fetch.mockReturnValueOnce(response.promise);
+		const reading = f.client.listNotifications();
+		await settle();
+		f.current.mockImplementation(() => {
+			throw new Error("Company changed");
+		});
+		response.resolve(Response.json([full]));
+		await expect(reading).rejects.toThrow("could not be confirmed");
+	});
+	it("checks authority after parsing before returning a successful record", async () => {
+		const f = setup();
+		let checks = 0;
+		f.current.mockImplementation(() => {
+			if (++checks === 5) throw new Error("Company changed after response");
+		});
+		await expect(f.client.listNotifications()).rejects.toThrow("could not be confirmed");
+		expect(checks).toBe(5);
+	});
+	it("rejects oversized responses", async () => {
+		const f = setup();
+		f.fetch.mockResolvedValueOnce(new Response("x".repeat(1024 * 1024 + 1)));
+		await expect(f.client.listNotifications()).rejects.toThrow("could not be confirmed");
+		expect(f.fetch).toHaveBeenCalledTimes(1);
+	});
+	it.each([401, 403])("preserves safe status %s without leaking internal diagnostics or retrying", async (status) => {
+		const f = setup();
+		f.fetch.mockResolvedValueOnce(new Response("sensitive detail", { status }));
+		await expect(f.client.listNotifications()).rejects.toMatchObject({ status, code: "42501" });
+		expect(f.fetch).toHaveBeenCalledTimes(1);
+	});
+	it("does not retry an uncertain acknowledgment and bounds authentication time", async () => {
+		const f = setup();
+		await f.client.listNotifications();
+		f.fetch.mockResolvedValueOnce(new Response("sensitive detail", { status: 500 }));
+		await expect(f.client.acknowledgeNotification(id(90))).rejects.toThrow("Company notices could not be confirmed.");
+		expect(f.fetch).toHaveBeenCalledTimes(2);
+		vi.useFakeTimers();
+		const token = deferred<Awaited<ReturnType<typeof f.cloud.supabase.auth.getSession>>>();
+		vi.mocked(f.cloud.supabase.auth.getSession).mockReturnValueOnce(token.promise);
+		const rejected = expect(f.client.listNotifications()).rejects.toThrow("could not be confirmed");
+		await vi.advanceTimersByTimeAsync(10000);
+		await rejected;
+		expect(f.fetch).toHaveBeenCalledTimes(2);
+	});
+});
