@@ -242,6 +242,8 @@ interface RailParts {
 	rows: Map<string, { shown: string; element: HTMLElement }>;
 	/** The error notices by what they are about, each with the text it shows. */
 	notices: Map<string, { text: string; element: HTMLElement }>;
+	/** The interface language the parts were last labelled in. */
+	locale: string;
 	/** What the connection status last said. */
 	connectionShown: string;
 	/** Whether the last draw found the rail collapsed, where the search field is hidden. */
@@ -266,28 +268,9 @@ function reconcile(parent: HTMLElement, children: readonly HTMLElement[]): void 
 function partsFor(company: CompanyController, redraw: () => void): RailParts {
 	let parts = railParts.get(company);
 	if (!parts) {
-		const input = h("input", {
-			type: "search",
-			placeholder: t("Search"),
-			autocomplete: "off",
-			spellcheck: "false",
-			"aria-label": t("Search agents"),
-		});
-		const close = h(
-			"button",
-			{ type: "button", class: "icon-button rail-mobile-close", "aria-label": t("Close company navigation") },
-			icon("close"),
-		);
-		const add = h(
-			"a",
-			{
-				class: "rail-add icon-button",
-				href: `#/c/${company.profile.profileId}/new`,
-				"aria-label": t("New conversation or agent"),
-				title: t("New conversation or agent"),
-			},
-			icon("plus"),
-		);
+		const input = h("input", { type: "search", autocomplete: "off", spellcheck: "false" });
+		const close = h("button", { type: "button", class: "icon-button rail-mobile-close" }, icon("close"));
+		const add = h("a", { class: "rail-add icon-button", href: `#/c/${company.profile.profileId}/new` }, icon("plus"));
 		const connection = h("div", { class: "rail-connection", role: "status", hidden: true });
 		const created: RailParts = {
 			toolbar: h("div", { class: "rail-toolbar" }, close, h("label", { class: "rail-search" }, input), add),
@@ -299,10 +282,11 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 			foot: h("div", { class: "rail-footer" }, connection),
 			cofounderGroup: h("div", { class: "rail-cofounder", role: "group", "aria-label": "Co-Founder" }),
 			rowList: h("div", { class: "rail-list" }),
-			loading: h("p", { class: "rail-empty" }, t("Loading…")),
+			loading: h("p", { class: "rail-empty" }),
 			empty: h("p", { class: "rail-empty" }),
 			rows: new Map(),
 			notices: new Map(),
+			locale: "",
 			connectionShown: "",
 			collapsed: false,
 			redraw,
@@ -329,6 +313,21 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 		railParts.set(company, parts);
 	}
 	parts.redraw = redraw;
+	// The parts outlive a language change: give them their words again and
+	// build every row, notice and badge anew in the new language.
+	const locale = presentationLocale();
+	if (parts.locale !== locale) {
+		parts.locale = locale;
+		parts.input.placeholder = t("Search");
+		parts.input.setAttribute("aria-label", t("Search agents"));
+		parts.close.setAttribute("aria-label", t("Close company navigation"));
+		parts.add.setAttribute("aria-label", t("New conversation or agent"));
+		parts.add.title = t("New conversation or agent");
+		parts.loading.textContent = t("Loading…");
+		parts.rows = new Map();
+		parts.notices = new Map();
+		parts.connectionShown = "";
+	}
 	return parts;
 }
 
