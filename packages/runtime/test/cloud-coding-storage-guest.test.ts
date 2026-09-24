@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { assertCodingGuestMounts, initializeCloudCodingGuestStorage } from "../src/cloud-coding-storage-guest.ts";
 
@@ -69,8 +70,9 @@ describe("coding guest NAS mount boundary", () => {
 // the unit's ReadWritePaths, PrivateTmp, PrivateDevices, ProtectProc=invisible and
 // NoNewPrivileges' nosuid): systemd renumbers every mount in the unit's namespace,
 // covers /workspace and /var/lib/qorpera-coding with private tmpfs, binds the
-// session's two NAS roots beneath them read-only per mount (their virtiofs
-// superblocks stay rw) and bind-mounts each writable path onto itself.
+// session's two NAS roots beneath them (writable per mount: ProtectSystem=strict
+// does not remount the unit's own BindPaths mounts) and bind-mounts each
+// writable path onto itself. The real table of such a unit is the fixture below.
 const commandId = "6f1c1b7e-2d4a-4c3e-9a57-0b8f3c2d1e4f";
 const writablePaths = [
 	`/workspace/${W}/repository`,
@@ -86,8 +88,8 @@ const sandboxLines = [
 	"805 801 252:1 /tmp/systemd-private-0f3c-qorpera-coding.service-a1/tmp /tmp rw,nosuid,relatime master:1 - ext4 /dev/sda2 rw,discard,errors=remount-ro",
 	"810 801 0:70 / /workspace rw,nosuid,nodev - tmpfs tmpfs rw,size=393056k,nr_inodes=409600,mode=755,inode64",
 	"811 801 0:71 / /var/lib/qorpera-coding rw,nosuid,nodev - tmpfs tmpfs rw,size=393056k,nr_inodes=409600,mode=755,inode64",
-	`820 810 0:45 / /workspace/${W} ro,nosuid,nodev,relatime master:250 - virtiofs lxd_data--${W} rw`,
-	`821 811 0:46 / /var/lib/qorpera-coding/${W} ro,nosuid,nodev,relatime master:260 - virtiofs lxd_custody--${W} rw`,
+	`820 810 0:45 / /workspace/${W} rw,nosuid,nodev,relatime master:250 - virtiofs lxd_data--${W} rw`,
+	`821 811 0:46 / /var/lib/qorpera-coding/${W} rw,nosuid,nodev,relatime master:260 - virtiofs lxd_custody--${W} rw`,
 	`830 820 0:45 /repository /workspace/${W}/repository rw,nosuid,nodev,relatime master:250 - virtiofs lxd_data--${W} rw`,
 	`831 820 0:45 /home /workspace/${W}/home rw,nosuid,nodev,relatime master:250 - virtiofs lxd_data--${W} rw`,
 	`832 820 0:45 /cache /workspace/${W}/cache rw,nosuid,nodev,relatime master:250 - virtiofs lxd_data--${W} rw`,
@@ -97,11 +99,59 @@ const sandboxed = (lines: string[] = sandboxLines) => `${lines.join("\n")}\n`;
 const replace = (target: string, line: string) =>
 	sandboxLines.map((entry) => (entry.split(" ")[4] === target ? line : entry));
 describe("coding guest NAS mount boundary inside the command unit", () => {
-	it("accepts the unit's view: read-only roots with exactly its writable binds of the same superblocks", () => {
+	it("accepts the unit's view: its roots with exactly its writable binds of the same superblocks", () => {
 		expect(assertCodingGuestMounts(sandboxed(), W, { writablePaths })).toEqual({
 			[`/workspace/${W}`]: 820,
 			[`/var/lib/qorpera-coding/${W}`]: 821,
 		});
+		// Read-only roots per mount (a systemd that remounts BindPaths) pass too.
+		const readOnly = sandboxLines.map((line) =>
+			/ \/(workspace|var\/lib\/qorpera-coding)\/[0-9a-f-]{36} /.test(line)
+				? line.replace(" rw,nosuid", " ro,nosuid")
+				: line,
+		);
+		expect(readOnly.filter((line) => line.includes(" ro,nosuid,nodev,relatime master:"))).toHaveLength(2);
+		expect(assertCodingGuestMounts(sandboxed(readOnly), W, { writablePaths })).toEqual({
+			[`/workspace/${W}`]: 820,
+			[`/var/lib/qorpera-coding/${W}`]: 821,
+		});
+	});
+	it("accepts the real table of a v101 command unit on node 2 (systemd 255; another session was attached, hidden by the cover)", () => {
+		// Captured 2026-09-24 in a proof VM with the unit's exact systemd-run properties;
+		// the v101 check refused it (CODING_GUEST_STORAGE_MOUNT_INVALID) in every session.
+		const worker = "5a829c4d-dfe3-4abd-847c-39db67ace3c4",
+			command = "a06a68b5-49e1-4544-a741-cbad0d7e2371";
+		const table = readFileSync(new URL("./fixtures/coding-command-unit-mountinfo.txt", import.meta.url), "utf8");
+		expect(
+			assertCodingGuestMounts(table, worker, {
+				writablePaths: [
+					`/workspace/${worker}/repository`,
+					`/workspace/${worker}/home`,
+					`/workspace/${worker}/cache`,
+					`/var/lib/qorpera-coding/${worker}/logs/${command}`,
+				],
+			}),
+		).toEqual({ [`/workspace/${worker}`]: 477, [`/var/lib/qorpera-coding/${worker}`]: 478 });
+		// The same table is never the machine's own view.
+		expect(() => assertCodingGuestMounts(table, worker)).toThrow("MOUNT_INVALID");
+		// Nor is a table with either cover alone.
+		const lines = table.trim().split("\n");
+		for (const cover of ["/workspace", "/var/lib/qorpera-coding"]) {
+			const only = lines.filter(
+				(line) => line.split(" ")[4] === cover || !/ \/(workspace|var\/lib\/qorpera-coding)(\/| )/.test(line),
+			);
+			const host = [
+				...only,
+				`900 1 0:50 / /workspace/${worker} rw,relatime - virtiofs lxd_data rw`,
+				`901 1 0:51 / /var/lib/qorpera-coding/${worker} rw,relatime - virtiofs lxd_custody rw`,
+			];
+			expect(host.filter((line) => line.split(" ")[4] === cover)).toHaveLength(1);
+			expect(() => assertCodingGuestMounts(`${host.join("\n")}\n`, worker)).toThrow("MOUNT_INVALID");
+			// Without the cover the same machine view passes as the host's.
+			expect(
+				assertCodingGuestMounts(`${host.filter((line) => line.split(" ")[4] !== cover).join("\n")}\n`, worker),
+			).toEqual({ [`/workspace/${worker}`]: 900, [`/var/lib/qorpera-coding/${worker}`]: 901 });
+		}
 	});
 	it("ignores another session attached after the unit started: it lies under the cover", () => {
 		const later = [
@@ -274,15 +324,6 @@ describe("coding guest NAS mount boundary inside the command unit", () => {
 		[
 			"a missing log bind",
 			sandboxed(sandboxLines.filter((line) => !line.includes(` /var/lib/qorpera-coding/${W}/logs/${commandId} `))),
-		],
-		[
-			"a root left writable per mount",
-			sandboxed(
-				replace(
-					`/var/lib/qorpera-coding/${W}`,
-					`821 811 0:46 / /var/lib/qorpera-coding/${W} rw,nosuid,nodev,relatime master:260 - virtiofs lxd_custody--${W} rw`,
-				),
-			),
 		],
 		[
 			"a partial root bind",

@@ -1,0 +1,52 @@
+451 422 8:1 / / ro,nosuid,relatime shared:381 master:1 - ext4 /dev/sda1 rw,discard,errors=remount-ro,commit=30
+457 451 0:26 / /run rw,nosuid,nodev,noexec,relatime shared:382 master:5 - tmpfs tmpfs rw,size=393060k,mode=755,inode64
+458 457 0:29 / /run/lock rw,nosuid,nodev,noexec,relatime shared:383 master:6 - tmpfs tmpfs rw,size=5120k,inode64
+459 457 0:36 / /run/lxd_agent rw,nosuid,nodev,noatime shared:384 master:47 - tmpfs tmpfs rw,size=51200k,mode=700,inode64
+460 451 0:23 / /sys rw,nosuid,nodev,noexec,relatime shared:388 master:7 - sysfs sysfs rw
+461 460 0:27 / /sys/firmware/efi/efivars rw,nosuid,nodev,noexec,relatime shared:389 master:8 - efivarfs efivarfs rw
+462 460 0:6 / /sys/kernel/security rw,nosuid,nodev,noexec,relatime shared:390 master:9 - securityfs securityfs rw
+463 460 0:30 / /sys/fs/cgroup ro,nosuid,nodev,noexec,relatime shared:391 master:10 - cgroup2 cgroup2 rw,nsdelegate,memory_recursiveprot
+464 460 0:31 / /sys/fs/pstore rw,nosuid,nodev,noexec,relatime shared:393 master:11 - pstore pstore rw
+465 460 0:32 / /sys/fs/bpf ro,nosuid,nodev,noexec,relatime shared:394 master:12 - bpf bpf rw,mode=700
+466 460 0:7 / /sys/kernel/debug ro,nosuid,nodev,noexec,relatime shared:395 master:17 - debugfs debugfs rw
+467 460 0:12 / /sys/kernel/tracing ro,nosuid,nodev,noexec,relatime shared:396 master:18 - tracefs tracefs rw
+468 460 0:35 / /sys/fs/fuse/connections rw,nosuid,nodev,noexec,relatime shared:397 master:19 - fusectl fusectl rw
+469 460 0:21 / /sys/kernel/config rw,nosuid,nodev,noexec,relatime shared:398 master:20 - configfs configfs rw
+473 451 259:0 / /boot ro,nosuid,relatime shared:399 master:30 - ext4 /dev/sda16 rw
+474 473 8:15 / /boot/efi ro,nosuid,relatime shared:400 master:49 - vfat /dev/sda15 rw,fmask=0077,dmask=0077,codepage=437,iocharset=iso8859-1,shortname=mixed,errors=remount-ro
+479 451 0:53 / /dev ro,nosuid,noexec shared:401 - tmpfs tmpfs rw,size=4096k,nr_inodes=65536,mode=755,inode64
+480 479 0:25 / /dev/pts rw,nosuid,noexec,relatime shared:402 master:3 - devpts devpts rw,gid=5,mode=620,ptmxmode=000
+481 479 0:28 / /dev/shm rw,nosuid,nodev shared:403 master:4 - tmpfs tmpfs rw,inode64
+483 479 0:34 / /dev/hugepages rw,nosuid,nodev,relatime shared:404 master:15 - hugetlbfs hugetlbfs rw,pagesize=2M
+452 479 0:52 / /dev/mqueue rw,nosuid,nodev,noexec,relatime shared:405 - mqueue mqueue rw
+453 451 0:26 /systemd/inaccessible/dir /home ro,nosuid,nodev,noexec,relatime shared:406 master:5 - tmpfs tmpfs rw,size=393060k,mode=755,inode64
+454 451 0:54 / /proc rw,nosuid,nodev,noexec,relatime shared:407 - proc proc rw,hidepid=invisible
+455 454 0:41 / /proc/sys/fs/binfmt_misc rw,nosuid,nodev,noexec,relatime shared:408 master:45 - binfmt_misc binfmt_misc rw
+456 454 0:54 /acpi /proc/acpi ro,nosuid,nodev,noexec,relatime shared:409 - proc proc rw,hidepid=invisible
+470 454 0:54 /bus /proc/bus ro,nosuid,nodev,noexec,relatime shared:410 - proc proc rw,hidepid=invisible
+471 454 0:54 /fs /proc/fs ro,nosuid,nodev,noexec,relatime shared:411 - proc proc rw,hidepid=invisible
+472 454 0:54 /irq /proc/irq ro,nosuid,nodev,noexec,relatime shared:412 - proc proc rw,hidepid=invisible
+482 454 0:26 /systemd/inaccessible/reg /proc/kallsyms ro,nosuid,nodev,noexec,relatime shared:413 master:5 - tmpfs tmpfs rw,size=393060k,mode=755,inode64
+484 454 0:26 /systemd/inaccessible/reg /proc/kcore ro,nosuid,nodev,noexec,relatime shared:414 master:5 - tmpfs tmpfs rw,size=393060k,mode=755,inode64
+485 454 0:54 /latency_stats /proc/latency_stats ro,nosuid,nodev,noexec,relatime shared:415 - proc proc rw,hidepid=invisible
+486 454 0:54 /mtrr /proc/mtrr ro,nosuid,nodev,noexec,relatime shared:416 - proc proc rw,hidepid=invisible
+487 454 0:54 /scsi /proc/scsi ro,nosuid,nodev,noexec,relatime shared:417 - proc proc rw,hidepid=invisible
+488 454 0:54 /sys /proc/sys ro,nosuid,nodev,noexec,relatime shared:418 - proc proc rw,hidepid=invisible
+489 488 0:41 / /proc/sys/fs/binfmt_misc ro,nosuid,nodev,noexec,relatime shared:419 master:45 - binfmt_misc binfmt_misc rw
+490 454 0:54 /sysrq-trigger /proc/sysrq-trigger ro,nosuid,nodev,noexec,relatime shared:420 - proc proc rw,hidepid=invisible
+491 451 0:26 /systemd/inaccessible/dir /root ro,nosuid,nodev,noexec,relatime shared:421 master:5 - tmpfs tmpfs rw,size=393060k,mode=755,inode64
+492 457 0:26 /systemd/inaccessible/dir /run/credentials ro,nosuid,nodev,noexec,relatime shared:385 master:5 - tmpfs tmpfs rw,size=393060k,mode=755,inode64
+493 457 0:26 /systemd/propagate/qorpera-coding-5a829c4ddfe34abd847c39db67ace3c4-a06a68b5-49e1-4544-a741-cbad0d7e2371.service /run/systemd/incoming ro,nosuid,nodev,noexec,relatime master:5 - tmpfs tmpfs rw,size=393060k,mode=755,inode64
+494 457 0:26 /systemd/inaccessible/dir /run/user ro,nosuid,nodev,noexec,relatime shared:387 master:5 - tmpfs tmpfs rw,size=393060k,mode=755,inode64
+495 463 0:30 /qorpera.slice/qorpera-coding.slice/qorpera-coding-5a829c4ddfe34abd847c39db67ace3c4.slice/qorpera-coding-5a829c4ddfe34abd847c39db67ace3c4-a06a68b5-49e1-4544-a741-cbad0d7e2371.service/memory.pressure /sys/fs/cgroup/qorpera.slice/qorpera-coding.slice/qorpera-coding-5a829c4ddfe34abd847c39db67ace3c4.slice/qorpera-coding-5a829c4ddfe34abd847c39db67ace3c4-a06a68b5-49e1-4544-a741-cbad0d7e2371.service/memory.pressure rw,nosuid,nodev,noexec,relatime shared:392 master:10 - cgroup2 cgroup2 rw,nsdelegate,memory_recursiveprot
+496 451 8:1 /tmp/systemd-private-9732157165464a46b05c89ad4cc879e2-qorpera-coding-5a829c4ddfe34abd847c39db67ace3c4-a06a68b5-49e1-4544-a741-cbad0d7e2371.service-bBdPzP/tmp /tmp rw,nosuid,relatime shared:422 master:1 - ext4 /dev/sda1 rw,discard,errors=remount-ro,commit=30
+497 451 0:26 /systemd/inaccessible/dir /usr/lib/modules ro,nosuid,nodev,noexec,relatime shared:423 master:5 - tmpfs tmpfs rw,size=393060k,mode=755,inode64
+476 451 0:55 / /var/lib/qorpera-coding rw,nosuid,nodev shared:424 - tmpfs tmpfs rw,size=393060k,nr_inodes=409600,mode=755,inode64
+478 476 0:51 / /var/lib/qorpera-coding/5a829c4d-dfe3-4abd-847c-39db67ace3c4 rw,nosuid,relatime shared:425 master:372 - virtiofs lxd_0r90SECbLw1TWHsFGr6k1UitrNt rw
+498 478 0:51 /logs/a06a68b5-49e1-4544-a741-cbad0d7e2371 /var/lib/qorpera-coding/5a829c4d-dfe3-4abd-847c-39db67ace3c4/logs/a06a68b5-49e1-4544-a741-cbad0d7e2371 rw,nosuid,relatime shared:426 master:372 - virtiofs lxd_0r90SECbLw1TWHsFGr6k1UitrNt rw
+499 451 8:1 /var/tmp/systemd-private-9732157165464a46b05c89ad4cc879e2-qorpera-coding-5a829c4ddfe34abd847c39db67ace3c4-a06a68b5-49e1-4544-a741-cbad0d7e2371.service-cutNWo/tmp /var/tmp rw,nosuid,relatime shared:427 master:1 - ext4 /dev/sda1 rw,discard,errors=remount-ro,commit=30
+475 451 0:56 / /workspace rw,nosuid,nodev shared:428 - tmpfs tmpfs rw,size=393060k,nr_inodes=409600,mode=755,inode64
+477 475 0:50 / /workspace/5a829c4d-dfe3-4abd-847c-39db67ace3c4 rw,nosuid,relatime shared:429 master:363 - virtiofs lxd_w_AtVCQS1_2mICqPgSoMsd1YiF7 rw
+500 477 0:50 /cache /workspace/5a829c4d-dfe3-4abd-847c-39db67ace3c4/cache rw,nosuid,relatime shared:430 master:363 - virtiofs lxd_w_AtVCQS1_2mICqPgSoMsd1YiF7 rw
+501 477 0:50 /home /workspace/5a829c4d-dfe3-4abd-847c-39db67ace3c4/home rw,nosuid,relatime shared:431 master:363 - virtiofs lxd_w_AtVCQS1_2mICqPgSoMsd1YiF7 rw
+502 477 0:50 /repository /workspace/5a829c4d-dfe3-4abd-847c-39db67ace3c4/repository rw,nosuid,relatime shared:432 master:363 - virtiofs lxd_w_AtVCQS1_2mICqPgSoMsd1YiF7 rw
