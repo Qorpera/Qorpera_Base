@@ -254,8 +254,6 @@ export function mountApplication(
 		executionNotices.replaceChildren();
 		conversation?.dispose();
 		conversation = undefined;
-		approvals?.dispose();
-		approvals = undefined;
 		if (newConversation && !newConversation.hasInput) {
 			newConversation.dispose();
 			newConversation = undefined;

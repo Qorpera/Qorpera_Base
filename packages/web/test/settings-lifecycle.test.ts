@@ -451,7 +451,7 @@ describe("settings session lifecycle", () => {
 		vi.mocked(f.api.getAccountEntitlement).mockReturnValueOnce(pending.promise);
 		open(f.root);
 		await draw();
-		const language = f.root.querySelector<HTMLSelectElement>('select[aria-label="Language"]')!;
+		const language = f.root.querySelector<HTMLButtonElement>(".preference-picker-button")!;
 		language.focus();
 		pending.resolve({
 			planKey: "free",
