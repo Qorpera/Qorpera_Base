@@ -251,6 +251,109 @@ select pg_temp.wake_assert((current_setting('qorpera_test.repair')::jsonb->>'gra
 	'The share call did not repair exactly the seven revoked grants');
 select pg_temp.expect(pg_temp.own(),'authorized','Repaired grants');
 
+-- Only the Services connection is shared and only it serves. A company secret
+-- filed under github by another name (what a secret card used to create) and a
+-- vault secret are sealed without any grant; even holding one of the agent's
+-- GitHub tools and being the most recently updated, the other github secret is
+-- never picked.
+create function pg_temp.company_capture(p_connector text,p_name text) returns uuid language plpgsql as $$
+declare v_ticket jsonb; v_envelope text := encode(extensions.gen_random_bytes(128),'base64'); v_descriptor jsonb;
+	v_capability text; v_envelope_sha text;
+begin
+	perform pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001');
+	set local role authenticated;
+	v_ticket := public.qorpera_begin_cloud_secret_capture('30000000-0000-4000-8000-000000000010',
+		'30000000-0000-4000-8000-000000000020','company',null,p_connector,p_name,'Card secret');
+	reset role;
+	v_capability := encode(extensions.digest(v_ticket->>'captureCapability','sha256'),'hex');
+	v_envelope_sha := encode(extensions.digest(decode(v_envelope,'base64'),'sha256'),'hex');
+	set local session authorization qorpera_secret_broker;
+	v_descriptor := public.qorpera_complete_cloud_secret_capture('39900000-0000-4000-8000-000000000040',repeat('c',64),
+		(v_ticket->>'ticketId')::uuid,v_capability,v_envelope,v_envelope_sha,null);
+	reset session authorization;
+	return (v_descriptor->>'secretId')::uuid;
+end
+$$;
+select set_config('qorpera_test.deploy_key',pg_temp.company_capture('github','deploy_key')::text,true);
+select set_config('qorpera_test.vault_key',pg_temp.company_capture('vault','api_key')::text,true);
+select pg_temp.wake_assert(not exists (select 1 from public.qorpera_cloud_secret_operation_grants
+		where secret_id in (current_setting('qorpera_test.deploy_key')::uuid,current_setting('qorpera_test.vault_key')::uuid))
+	and not exists (select 1 from public.qorpera_cloud_secrets where available_to_all_agents
+		and id in (current_setting('qorpera_test.deploy_key')::uuid,current_setting('qorpera_test.vault_key')::uuid)),
+	'A company secret that is not a Services connection was shared on capture');
+select set_config('qorpera_test.list_grant',(select id::text from public.qorpera_cloud_secret_operation_grants
+	where secret_id = current_setting('qorpera_test.github_secret')::uuid
+		and staff_agent_id = '30000000-0000-4000-8000-000000000030' and status = 'active'
+		and operation_id = 'list_repositories'),true);
+select pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001');
+set local role authenticated;
+select public.qorpera_revoke_cloud_secret_grant('30000000-0000-4000-8000-000000000010',
+	current_setting('qorpera_test.list_grant')::uuid);
+reset role;
+insert into public.qorpera_cloud_secret_operation_grants(profile_id,environment_id,secret_id,staff_agent_id,
+	connector_id,operation_id,operation_version,tool_name,issued_by_user_id)
+select '30000000-0000-4000-8000-000000000010','30000000-0000-4000-8000-000000000020',
+	current_setting('qorpera_test.deploy_key')::uuid,'30000000-0000-4000-8000-000000000030',
+	operation.connector_id,operation.operation_id,operation.version,operation.tool_name,'30000000-0000-4000-8000-000000000001'
+from public.qorpera_cloud_connector_operations as operation
+where operation.connector_id = 'github' and operation.operation_id = 'list_repositories' and operation.status = 'active';
+update public.qorpera_cloud_secrets set updated_at = clock_timestamp() + interval '1 minute'
+where id = current_setting('qorpera_test.deploy_key')::uuid;
+select pg_temp.expect(pg_temp.own(),'authorized','Primary beside another github secret');
+select pg_temp.wake_assert((current_setting('qorpera_test.credential')::jsonb->>'secretId')::uuid
+	= current_setting('qorpera_test.github_secret')::uuid,'Another company github secret was picked over the Services connection');
+
+-- An agent can no longer raise a secret card for a catalog connector (it would
+-- file a company secret beside the connection or, named "primary", rotate it):
+-- the native card append refuses with a message, and the runner transcript
+-- validator refuses on every other append path. A vault card still passes.
+select pg_temp.path_claims('service_role');
+do $$
+declare
+	b jsonb := current_setting('qorpera_test.parent_binding')::jsonb;
+	v_card jsonb := jsonb_build_object('schema','qorpera.interaction/v1','surface','secret','title','Repository token',
+		'payload',jsonb_build_object('name','primary','label','GitHub token','purpose','Push the fix','connectorId','github'));
+	v_connector text;
+begin
+	foreach v_connector in array array['github','gmail','google_drive'] loop
+		begin
+			perform public.qorpera_append_native_interaction_request((b->>'leaseId')::uuid,(b->>'runId')::uuid,
+				(b->>'jobId')::uuid,(b->>'runnerId')::uuid,(b->>'assignmentId')::uuid,(b->>'credentialCapsuleId')::uuid,
+				(b->>'computeIdentityId')::uuid,'openai','codex-cli',extensions.gen_random_uuid(),
+				jsonb_set(v_card,'{payload,connectorId}',to_jsonb(v_connector)));
+			raise exception 'A secret card for % was accepted',v_connector;
+		exception when invalid_parameter_value then
+			if sqlerrm <> 'a secret card cannot name a company connection; the company connects it in Settings' then raise; end if;
+		end;
+		if public.qorpera_runner_transcript_entry_valid('interaction_request',jsonb_build_object('schema','qorpera.runner-transcript-entry/v1','entry',jsonb_build_object(
+			'type','custom','customType','interaction_request','id',extensions.gen_random_uuid(),
+			'parentId',null,'timestamp','2026-09-24T00:00:00.000Z',
+			'data',jsonb_set(v_card,'{payload,connectorId}',to_jsonb(v_connector))))) then
+			raise exception 'The runner transcript validator accepted a secret card for %',v_connector;
+		end if;
+	end loop;
+	if not public.qorpera_runner_transcript_entry_valid('interaction_request',jsonb_build_object('schema','qorpera.runner-transcript-entry/v1','entry',jsonb_build_object(
+		'type','custom','customType','interaction_request','id',extensions.gen_random_uuid(),
+		'parentId',null,'timestamp','2026-09-24T00:00:00.000Z',
+		'data',jsonb_set(v_card,'{payload,connectorId}','"vault"'))))
+		or not public.qorpera_runner_transcript_entry_valid('interaction_request',jsonb_build_object('schema','qorpera.runner-transcript-entry/v1','entry',jsonb_build_object(
+			'type','custom','customType','interaction_request','id',extensions.gen_random_uuid(),
+			'parentId',null,'timestamp','2026-09-24T00:00:00.000Z',
+			'data',v_card #- '{payload,connectorId}'))) then
+		raise exception 'A vault secret card is no longer valid';
+	end if;
+	begin
+		perform public.qorpera_append_native_interaction_request((b->>'leaseId')::uuid,(b->>'runId')::uuid,
+			(b->>'jobId')::uuid,(b->>'runnerId')::uuid,(b->>'assignmentId')::uuid,(b->>'credentialCapsuleId')::uuid,
+			(b->>'computeIdentityId')::uuid,'openai','codex-cli',extensions.gen_random_uuid(),
+			jsonb_set(v_card,'{payload,connectorId}','"vault"'));
+		raise exception 'rollback-card-probe';
+	exception when raise_exception then
+		if sqlerrm <> 'rollback-card-probe' then raise; end if;
+	end;
+end
+$$;
+
 -- Disconnecting the connection revokes it with every grant: refused.
 select pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001');
 set local role authenticated;
@@ -291,14 +394,15 @@ select '30000000-0000-4000-8000-000000000010','30000000-0000-4000-8000-000000000
 	(current_setting('qorpera_test.personal_descriptor')::jsonb->>'secretId')::uuid,'30000000-0000-4000-8000-000000000030',
 	operation.connector_id,operation.operation_id,operation.version,operation.tool_name,'30000000-0000-4000-8000-000000000001'
 from public.qorpera_cloud_connector_operations as operation
-where operation.connector_id = 'github' and operation.operation_id = 'list_repositories' and operation.status = 'active';
+where operation.connector_id = 'github' and operation.operation_id = 'search_issues' and operation.status = 'active';
+-- The other company github secret still holds a live grant too; neither serves.
 select pg_temp.expect(pg_temp.own(),'42501:company GitHub connection is unavailable to this agent','Member-owned secret only');
 
 -- Every release was audited once; no refusal was.
-select pg_temp.wake_assert(pg_temp.used_events() = 4
+select pg_temp.wake_assert(pg_temp.used_events() = 5
 	and (select count(distinct coding_worker_id) = 1 from public.qorpera_cloud_secret_audit_events
 		where event_type = 'repository_credential_used'),
-	'Repository credential audit differs from the four releases');
+	'Repository credential audit differs from the five releases');
 
 -- 8. Health receipt retention (bundle v88): each observation prunes its node's
 --    receipts observed more than seven days ago, at most 500 per call. Recent

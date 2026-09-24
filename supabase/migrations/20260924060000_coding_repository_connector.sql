@@ -6,13 +6,18 @@
 -- executor), connections belong to the company, and a company connection is
 -- shared with every agent with no toggle.
 --
---   1. Always shared. Capture completion shares a company-owned connection
---      with every active agent in the same transaction that seals it (v87 left
---      that to the web page, which called qorpera_grant_cloud_connector after
---      connecting). Stop sharing (qorpera_unshare_cloud_connector) is dropped.
+--   1. Always shared. A company connection is what Settings -> Services
+--      creates: company-owned, named "primary", for a connector in the connector
+--      catalog. Capture completion shares such a connection with every active
+--      agent in the same transaction that seals it (v87 left that to the web
+--      page, which called qorpera_grant_cloud_connector after connecting). Stop
+--      sharing (qorpera_unshare_cloud_connector) is dropped.
 --      qorpera_grant_cloud_connector stays as the idempotent repair: it issues
 --      only missing or dead grants. Existing company connections are shared
---      once here.
+--      once here. Other company-owned secrets (secret cards, typed vault
+--      entries) are never shared automatically, and an agent's secret card can
+--      no longer name a catalog connector, so it can neither take a
+--      connection's tools nor rotate the connection in place.
 --   2. The repository credential. The executor never holds a GitHub token at
 --      rest. For one leased coding session it asks the company's secret broker,
 --      which asks this kernel, which answers with the sealed envelope of the
@@ -41,12 +46,14 @@ $$;
 -- 1. Company connections are always shared
 -- ---------------------------------------------------------------------------
 
--- Marks one active company-owned connection shared and issues every missing or
--- dead grant of it to every active agent. Idempotent: live grants stay. The
--- issuer is the preferred member when an owner or admin, else the member who
--- connected it when still one, else a current owner (or admin); a company grant
--- holds only while its issuer is an owner or admin (the kernel rechecks at every
--- call). Returns the number of grants issued.
+-- Marks one active company connection (company-owned, "primary", a catalog
+-- connector: what Settings -> Services creates) shared and issues every missing
+-- or dead grant of it to every active agent. Anything else is left alone and
+-- returns 0. Idempotent: live grants stay. The issuer is the preferred member
+-- when an owner or admin, else the member who connected it when still one, else
+-- a current owner (or admin); a company grant holds only while its issuer is an
+-- owner or admin (the kernel rechecks at every call). Returns the number of
+-- grants issued.
 create function public.qorpera_share_company_connection(p_secret_id uuid, p_preferred_issuer uuid)
 returns integer
 language plpgsql security definer set search_path = '' as $$
@@ -57,7 +64,12 @@ declare
 begin
 	select secret.* into v_secret from public.qorpera_cloud_secrets as secret
 	where secret.id = p_secret_id for update;
-	if v_secret.id is null or v_secret.status <> 'active' or v_secret.owner_kind <> 'company' then
+	if v_secret.id is null or v_secret.status <> 'active' or v_secret.owner_kind <> 'company'
+		or v_secret.secret_name <> 'primary'
+		or not exists (
+			select 1 from public.qorpera_cloud_connector_operations as operation
+			where operation.connector_id = v_secret.connector_id and operation.status = 'active'
+		) then
 		return 0;
 	end if;
 	update public.qorpera_cloud_secrets set available_to_all_agents = true, updated_at = statement_timestamp()
@@ -82,9 +94,10 @@ end
 $$;
 
 -- Capture completion (the seven-argument body of 20260924040000; the
--- six-argument Step 2 signature delegates to it) shares a company-owned
--- connection as it seals it, first capture and rotation alike, under the
--- owner or admin who captured it. A member's own secret is never shared.
+-- six-argument Step 2 signature delegates to it) shares a company connection as
+-- it seals it, first capture and rotation alike, under the owner or admin who
+-- captured it. A member's own secret, and a company secret that is not a
+-- Services connection, is never shared.
 select pg_temp.coding_connector_patch(
 	'public.qorpera_complete_cloud_secret_capture(uuid,text,uuid,text,text,text,text)',
 	$old$		v_ticket.created_by_user_id,v_ticket.connector_id
@@ -104,20 +117,59 @@ $new$);
 -- connection with all its grants (qorpera_revoke_cloud_secret).
 drop function public.qorpera_unshare_cloud_connector(uuid,uuid,uuid);
 
--- Existing company connections are shared once, including any that were
--- stopped under v87. Idempotent for connections that are already shared.
+-- Existing company connections (company-owned, "primary", catalog connector)
+-- are shared once, including any that were stopped under v87. Idempotent for
+-- connections that are already shared; other secrets are skipped.
 do $$
 declare v_secret uuid;
 begin
 	for v_secret in
 		select secret.id from public.qorpera_cloud_secrets as secret
-		where secret.owner_kind = 'company' and secret.status = 'active'
+		where secret.owner_kind = 'company' and secret.status = 'active' and secret.secret_name = 'primary'
 		order by secret.id
 	loop
 		perform public.qorpera_share_company_connection(v_secret, null);
 	end loop;
 end
 $$;
+
+-- A secret card belongs to the company vault. Since v81 the agent names its
+-- connector (default "vault"); a card naming a connector of the connector
+-- catalog would become a company-owned secret beside the Services connection
+-- (taking its tools through the one-active-grant-per-tool index) or, named
+-- "primary", rotate that connection in place when the member answers. Both
+-- card paths refuse it: the runner transcript validator (every runner append)
+-- and the native card append (with its own message for the agent). The catalog
+-- table decides, so a new connector is covered without a code change.
+create function public.qorpera_interaction_secret_connector_allowed(p_data jsonb)
+returns boolean
+language sql stable security definer set search_path = '' as $$
+	select coalesce(p_data ->> 'surface', '') <> 'secret' or not exists (
+		select 1 from public.qorpera_cloud_connector_operations as operation
+		where operation.connector_id = coalesce(p_data #>> '{payload,connectorId}', 'vault')
+	)
+$$;
+
+-- qorpera_runner_transcript_entry_valid as of 20260923010000.
+select pg_temp.coding_connector_patch(
+	'public.qorpera_runner_transcript_entry_valid(text,jsonb)',
+	$old$			and public.qorpera_interaction_request_valid(v_entry -> 'data');$old$,
+	$new$			and public.qorpera_interaction_request_valid(v_entry -> 'data')
+			and public.qorpera_interaction_secret_connector_allowed(v_entry -> 'data');$new$);
+
+-- qorpera_append_native_interaction_request as of 20260923012000.
+select pg_temp.coding_connector_patch(
+	'public.qorpera_append_native_interaction_request(uuid,uuid,uuid,uuid,uuid,uuid,uuid,text,text,uuid,jsonb)',
+	$old$		raise exception 'interaction request is invalid' using errcode = '22023';
+	end if;
+$old$,
+	$new$		raise exception 'interaction request is invalid' using errcode = '22023';
+	end if;
+	if not public.qorpera_interaction_secret_connector_allowed(p_data) then
+		raise exception 'a secret card cannot name a company connection; the company connects it in Settings'
+			using errcode = '22023';
+	end if;
+$new$);
 
 -- ---------------------------------------------------------------------------
 -- 2. The coding executor's repository credential
@@ -151,9 +203,11 @@ comment on column public.qorpera_cloud_secret_audit_events.coding_worker_id is
 --     enabled coding executor;
 --   - the repository is the session's, and the session's agent is active and
 --     holds an enabled repository grant for it;
---   - the company has an active company-owned GitHub connection sealed by this
---     broker, on which the agent holds a live grant (active, unexpired, issued
---     by a current owner or admin). A member's own GitHub secret never serves.
+--   - the company has an active GitHub connection (company-owned, "primary",
+--     the one Settings -> Services creates) sealed by this broker, on which the
+--     agent holds a live grant (active, unexpired, issued by a current owner or
+--     admin). A member's own GitHub secret, and any other company secret filed
+--     under github, never serves.
 -- Returns the current envelope and what the broker needs to open it, and
 -- writes one audit event. The token itself never reaches this database.
 create function public.qorpera_authorize_coding_repository_credential(
@@ -227,14 +281,14 @@ begin
 	) then
 		raise exception 'coding repository grant is unavailable' using errcode = '42501';
 	end if;
-	-- One company GitHub connection per company in practice (the web page names
-	-- it "primary"); with several, the most recently connected or rotated one
-	-- the agent may use serves.
+	-- The Services connection only: the active-name index allows one "primary"
+	-- company GitHub secret per environment; the order keeps the pick
+	-- deterministic regardless.
 	select secret.* into v_secret
 	from public.qorpera_cloud_secrets as secret
 	where secret.profile_id = v_session.profile_id and secret.environment_id = v_session.environment_id
-		and secret.owner_kind = 'company' and secret.connector_id = 'github' and secret.status = 'active'
-		and secret.broker_authority_id = v_authority.id
+		and secret.owner_kind = 'company' and secret.connector_id = 'github' and secret.secret_name = 'primary'
+		and secret.status = 'active' and secret.broker_authority_id = v_authority.id
 		and exists (
 			select 1 from public.qorpera_cloud_secret_operation_grants as grant_row
 			where grant_row.secret_id = secret.id and grant_row.profile_id = secret.profile_id
@@ -319,6 +373,8 @@ alter table public.qorpera_runtime_bundles add constraint qorpera_runtime_bundle
 -- ---------------------------------------------------------------------------
 
 revoke all on function public.qorpera_share_company_connection(uuid,uuid)
+	from public, anon, authenticated, service_role, qorpera_secret_broker;
+revoke all on function public.qorpera_interaction_secret_connector_allowed(jsonb)
 	from public, anon, authenticated, service_role, qorpera_secret_broker;
 revoke all on function public.qorpera_authorize_coding_repository_credential(uuid,text,uuid,uuid,text,jsonb)
 	from public, anon, authenticated, service_role, qorpera_secret_broker;
