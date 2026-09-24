@@ -332,6 +332,37 @@ describe("interaction cards in the transcript", () => {
 		expect(card.answer).toMatchObject({ outcome: "answered", pending: true, answeredBy: USER });
 	});
 
+	it("opens a card again when its answer's delivery failed, and settles it with a later answer", () => {
+		const failed: PendingSessionInput = {
+			inputId: "55555555-5555-4555-8555-000000000004",
+			position: 4,
+			kind: "user_message",
+			authorUserId: USER,
+			authorDisplayName: "Jonas",
+			body: answerData,
+			createdAt: "2026-09-02T10:00:04Z",
+			status: "failed",
+			failureReason: "The selected sponsor quota or model authority is unavailable",
+		};
+		const card = [event(1, { eventId: CARD, eventType: "interaction_request", body: request })];
+		const reopened = projectTranscript(card, [failed]).items;
+		expect(reopened).toHaveLength(1);
+		if (reopened[0]?.kind !== "interaction") throw new Error("card expected");
+		expect(reopened[0].answer).toBeUndefined();
+		expect(reopened[0].answerFailed).toBe(true);
+
+		const again = {
+			...failed,
+			inputId: "55555555-5555-4555-8555-000000000005",
+			position: 5,
+			status: "queued" as const,
+		};
+		const settled = projectTranscript(card, [failed, again]).items;
+		if (settled[0]?.kind !== "interaction") throw new Error("card expected");
+		expect(settled[0].answer).toMatchObject({ outcome: "answered", pending: true });
+		expect(settled[0].answerFailed).toBeUndefined();
+	});
+
 	it("hides a card it cannot read and an answer whose card is not loaded", () => {
 		const projection = projectTranscript([
 			event(1, {

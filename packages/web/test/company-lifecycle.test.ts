@@ -160,6 +160,66 @@ describe("answering a card", () => {
 		expect(state.interactionAnswers).toBeUndefined();
 	});
 
+	it("in a plain conversation, answers on the member's selected model account, as a message there runs", async () => {
+		const f = company();
+		const answer = vi.spyOn(f.api, "answerInteraction").mockResolvedValue(answered);
+		await f.controller.answerInteraction(session.sessionId, id(593), "answered", { values: ["general"] });
+		expect(answer).toHaveBeenCalledOnce();
+		expect(answer.mock.calls[0]![5]).toEqual({ sponsorBindingId: id(81), sponsorVersion: 1 });
+	});
+
+	it("in a plain conversation without a selected account, sends nothing and says so", async () => {
+		const f = company();
+		f.controller.conversation(session.sessionId).set({ executionSponsor: undefined });
+		const answer = vi.spyOn(f.api, "answerInteraction");
+		await expect(
+			f.controller.answerInteraction(session.sessionId, id(593), "answered", { values: ["general"] }),
+		).rejects.toThrow();
+		expect(answer).not.toHaveBeenCalled();
+		expect(f.controller.conversation(session.sessionId).get().interactionError).toBe(
+			"Select an active model account, then try again.",
+		);
+	});
+
+	it("opens the card again when the answer's delivery fails after the cloud accepted it", async () => {
+		const f = company();
+		f.controller.store.set({ loading: false });
+		const request = card(1, userA.id);
+		vi.mocked(f.api.readSessionEvents).mockResolvedValue([{ ...request, eventId: id(593) }]);
+		vi.spyOn(f.api, "answerInteraction").mockResolvedValue(answered);
+		// The listing the answer's own reload reads has not caught up with the answer yet.
+		await f.controller.answerInteraction(session.sessionId, id(593), "answered", { values: ["general"] });
+		await settle();
+		expect(f.controller.conversation(session.sessionId).get().interactionAnswers?.[id(593)]).toMatchObject({
+			pending: true,
+			inputId: answered.inputId,
+		});
+		vi.mocked(f.api.listSessionInputs).mockResolvedValue({
+			items: [
+				{
+					...pending(7),
+					inputId: answered.inputId,
+					body: {
+						schema: "qorpera.interaction-answer/v1",
+						interactionId: id(593),
+						surface: "question",
+						outcome: "answered",
+						answer: { values: ["general"] },
+					},
+					status: "failed",
+					failureReason: "The selected sponsor quota or model authority is unavailable",
+				},
+			],
+			hasMore: false,
+			nextAfterPosition: 7,
+		});
+		await f.controller.loadConversation(session.sessionId);
+		const state = f.controller.conversation(session.sessionId).get();
+		expect(state.interactionAnswers).toBeUndefined();
+		const item = state.projection?.items.find((entry) => entry.kind === "interaction");
+		expect(item?.kind === "interaction" && item.answerFailed).toBe(true);
+	});
+
 	it("says in plain words when the cloud refuses the model account, and keeps the card open", async () => {
 		const f = company();
 		vi.spyOn(f.api, "answerInteraction").mockRejectedValue(

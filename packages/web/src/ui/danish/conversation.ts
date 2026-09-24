@@ -184,6 +184,7 @@ export const CONVERSATION: Record<string, string> = {
 	Sending: "Sender",
 	"This card is past its time. The agent will ask again if it still needs it.":
 		"Kortet er udløbet. Agenten spørger igen, hvis den stadig har brug for det.",
+	"Your answer did not reach the agent. Answer again.": "Dit svar nåede ikke frem til agenten. Svar igen.",
 	"Something else…": "Noget andet…",
 	"Your own answer": "Dit eget svar",
 	Skip: "Spring over",
