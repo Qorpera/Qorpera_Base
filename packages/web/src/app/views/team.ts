@@ -20,6 +20,8 @@ export function renderTeam(
 		onCompanyRemoved: (profileId: string) => void;
 		/** Opens the Friends tab: someone becomes a friend before they can be invited. */
 		addFriend: () => void;
+		/** Holds the Delete/Leave company button; without it the button ends the team page. */
+		exit?: HTMLElement;
 	},
 ): void {
 	const state = company.store.get();
@@ -64,6 +66,7 @@ export function renderTeam(
 				)
 			: null,
 	);
+	let exit: HTMLButtonElement | null = null;
 	if (!team) {
 		if (state.accessLost) content.append(notice("danger", "Your access to this company was revoked."));
 		else if (!state.error) content.append(spinner("Loading team"));
@@ -172,7 +175,9 @@ export function renderTeam(
 				),
 			);
 		}
-		content.append(people);
+		// One wrapper so the member rows and the invite row can share a column.
+		const roster = h("div", { class: "company-roster" }, people);
+		content.append(roster);
 		if (team.capabilities.manageMembers) {
 			const picker = h(
 				"details",
@@ -289,42 +294,38 @@ export function renderTeam(
 					h("button", { type: "button", class: "link-button", onclick: options.addFriend }, "Add a friend"),
 				),
 			);
-			content.append(picker);
+			roster.append(picker);
 		}
-		content.append(
-			h(
-				"details",
-				{ class: "advanced company-danger" },
-				h("summary", null, "Manage company"),
-				button(
-					team.role === "owner" ? "Delete company" : "Leave company",
-					() =>
-						void (async () => {
-							const deleting = team.role === "owner";
-							const confirmed = await confirmDialog(
-								deleting
-									? `Delete ${profile.profileName} for every member? Type the company name to confirm.`
-									: `Leave ${profile.profileName}? You lose access until someone invites you again.`,
-								deleting ? "Delete company" : "Leave",
-								true,
-								deleting ? profile.profileName : undefined,
-								signal,
-							);
-							if (!confirmed || !current()) return;
-							try {
-								if (deleting) await api.deleteProfile(profile.profileId);
-								else await api.leaveProfile(profile.profileId);
-								// Membership revocation may stop this company before the RPC returns.
-								options.onCompanyRemoved(profile.profileId);
-							} catch (error) {
-								if (current()) setFeedback({ error: describeError(error) });
-							}
-						})(),
-					{ danger: true },
-				),
-			),
+		exit = button(
+			team.role === "owner" ? "Delete company" : "Leave company",
+			() =>
+				void (async () => {
+					const deleting = team.role === "owner";
+					const confirmed = await confirmDialog(
+						deleting
+							? `Delete ${profile.profileName} for every member? Type the company name to confirm.`
+							: `Leave ${profile.profileName}? You lose access until someone invites you again.`,
+						deleting ? "Delete company" : "Leave",
+						true,
+						deleting ? profile.profileName : undefined,
+						signal,
+					);
+					if (!confirmed || !current()) return;
+					try {
+						if (deleting) await api.deleteProfile(profile.profileId);
+						else await api.leaveProfile(profile.profileId);
+						// Membership revocation may stop this company before the RPC returns.
+						options.onCompanyRemoved(profile.profileId);
+					} catch (error) {
+						if (current()) setFeedback({ error: describeError(error) });
+					}
+				})(),
+			{ danger: true },
 		);
+		exit.classList.add("company-exit");
 	}
+	if (options.exit) replace(options.exit, exit);
+	else if (exit) content.append(exit);
 	replace(container, content);
 	for (const details of container.querySelectorAll("details"))
 		details.open = openDetails.includes(details.querySelector("summary")?.textContent);

@@ -469,7 +469,6 @@ export class SettingsView {
 			team = h("div", { class: "settings-team" });
 			replace(
 				panel,
-				h("h1", null, company.profile.profileName),
 				team,
 				h(
 					"section",
@@ -478,6 +477,7 @@ export class SettingsView {
 					h("div", { class: "settings-staff" }),
 				),
 				h("div", { class: "settings-file" }),
+				h("div", { class: "settings-company-exit" }),
 				h("div", { class: "settings-execution" }),
 				...(
 					[
@@ -579,6 +579,7 @@ export class SettingsView {
 				friends: this.#friends.store.get().loaded ? this.#friends.store.get().friends : undefined,
 				signal: this.#companyLifetime.signal,
 				embedded: true,
+				exit: panel.querySelector<HTMLElement>(".settings-company-exit")!,
 				addFriend: () => {
 					// A settings search can hide the Friends tab; clear it so the open tab shows in the menu.
 					if (this.#tabs.get("friends")?.hidden) {

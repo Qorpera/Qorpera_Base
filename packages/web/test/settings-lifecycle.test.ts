@@ -56,8 +56,7 @@ function open(root: Element) {
 }
 
 function confirmCompanyRemoval(root: Element, deleting: boolean, profile = profileA) {
-	root.querySelector<HTMLDetailsElement>(".company-danger")!.open = true;
-	click(root, ".company-danger button");
+	click(root, ".company-exit");
 	const dialog = document.querySelector('[role="alertdialog"]')!;
 	if (deleting) {
 		const input = dialog.querySelector("input")!;
@@ -109,7 +108,8 @@ describe("settings session lifecycle", () => {
 				await draw();
 			}
 			expect(picker.value).toBe(selected.profileId);
-			expect(f.root.querySelector("#settings-content h1")?.textContent).toBe(selected.profileName);
+			// The picker names the company; the tab itself has no heading.
+			expect(f.root.querySelector("#settings-content h1")).toBeNull();
 			expect(f.root.querySelector(`.settings-dialog a[href='#/c/${selected.profileId}/file']`)).not.toBeNull();
 			expect(f.cloud.rpc).not.toHaveBeenCalled();
 		},
@@ -471,7 +471,9 @@ describe("settings session lifecycle", () => {
 		[...f.root.querySelectorAll("button")].find((button) => button.textContent === "Retry company")!.click();
 		await draw();
 		expect(f.root.querySelector(".settings-team")!.textContent).not.toContain("Team temporarily unavailable");
-		expect(f.root.querySelector(".company-danger")).not.toBeNull();
+		expect(f.root.querySelector(".settings-file + .settings-company-exit > .company-exit")?.textContent).toBe(
+			"Delete company",
+		);
 		expect(f.cloud.rpc).not.toHaveBeenCalled();
 	});
 	it.each(["delete", "leave"])("closes settings and refreshes the hub after %s", async (action) => {

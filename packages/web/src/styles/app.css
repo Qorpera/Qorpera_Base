@@ -335,6 +335,7 @@ a.card:hover { border-color: var(--border-strong); }
 .kv dt { color: var(--text-muted); font-family: var(--font-mono); font-size: 12px; }
 .kv dd { word-break: break-word; }
 details.advanced { margin-top: 24px; }
+.page.team > .company-exit { margin-top: 24px; }
 details > summary { cursor: pointer; font-weight: 600; margin: 8px 0; }
 
 /* hub */
