@@ -184,6 +184,24 @@ describe("member model account settings", () => {
 		view.dispose();
 		expect(vi.getTimerCount()).toBe(0);
 	});
+	it("asks again for a new observation when Refresh joins a background read", async () => {
+		const { client, lifetime } = await setup(
+			true,
+			observed({ ...connected, sponsorBindingId: id(82), sponsorVersion: 1 }),
+		);
+		view.dispose();
+		const refreshAccountMetadata = vi.fn(async (_signal?: AbortSignal, _force?: boolean) => {});
+		view = new ConnectionsView({ ...client, refreshAccountMetadata }, lifetime.signal);
+		document.body.append(view.el);
+		await settle();
+		// Returning to the window starts a background read; the button is not greyed out yet.
+		window.dispatchEvent(new Event("focus"));
+		view.el.querySelector<HTMLButtonElement>('[data-focus-key="refresh"]')!.click();
+		await vi.waitFor(() => expect(refreshAccountMetadata).toHaveBeenCalledTimes(3));
+		await settle();
+		expect(refreshAccountMetadata.mock.calls.map((call) => call[1])).toEqual([false, false, true]);
+		expect(view.el.querySelector('[data-focus-key="refresh"]')!.textContent).toBe("Updated");
+	});
 	it("keeps one Updated clock when Refresh is pressed twice during one read", async () => {
 		vi.useFakeTimers();
 		const { client } = await setup(true, observed({ ...connected, sponsorBindingId: id(82), sponsorVersion: 1 }));
@@ -333,10 +351,9 @@ describe("member model account settings", () => {
 		]);
 		// Two bars would look alike, so each carries its name.
 		const card = view.el.querySelector(".connection-card")!;
-		expect([...card.querySelectorAll(".connection-usage-label")].map((item) => item.textContent)).toEqual([
-			"5-hour limit",
-			"Weekly limit",
-		]);
+		const labels = [...card.querySelectorAll(".connection-usage-label")];
+		expect(labels.map((item) => item.textContent)).toEqual(["5-hour limit", "Weekly limit"]);
+		expect(labels.every((item) => item.getAttribute("aria-hidden") === "true")).toBe(true);
 		// The check time is on hover only; the card has no date line of its own.
 		expect(card.textContent).not.toContain("Last checked");
 		expect(card.querySelector(`[title="Last checked ${fmtTime(new Date().toISOString())}"]`)?.textContent).toBe(
@@ -365,7 +382,7 @@ describe("member model account settings", () => {
 		action(OPENAI).focus();
 		await vi.advanceTimersByTimeAsync(6 * 60_000);
 		// An old reading says when it was taken; one bar needs no name.
-		expect(view.el.textContent).toContain(`0% left as of ${fmtTime("2026-09-19T20:00:00.000Z")}`);
+		expect(view.el.textContent).toContain(`0% at last check · ${fmtTime("2026-09-19T20:00:00.000Z")}`);
 		expect(view.el.querySelector(".connection-usage-meter")!.classList.contains("is-stale")).toBe(true);
 		expect(view.el.querySelector(".connection-usage-label")).toBeNull();
 		expect(view.el.textContent).not.toContain("5-hour limit");
@@ -418,7 +435,7 @@ describe("member model account settings", () => {
 		await vi.advanceTimersByTimeAsync(60_000);
 		expect(client.listConnections).toHaveBeenCalledTimes(4);
 		expect(view.el.textContent).toContain("5% left");
-		expect(view.el.textContent).not.toContain("as of");
+		expect(view.el.textContent).not.toContain("at last check");
 	});
 	it("shows an active provider usage wall without treating an earlier snapshot as available quota", async () => {
 		vi.useFakeTimers();
@@ -436,9 +453,25 @@ describe("member model account settings", () => {
 		);
 		expect(view.el.textContent).toContain("Usage limit reached · resets in 1h 0m");
 		expect(view.el.querySelector("[role=meter]")!.getAttribute("aria-valuetext")).toBe(
-			`50% left as of ${fmtTime("2026-09-19T20:00:00.000Z")}`,
+			`50% at last check · ${fmtTime("2026-09-19T20:00:00.000Z")}`,
 		);
+		expect(view.el.textContent).not.toContain("50% left");
 		expect(view.el.querySelector(".connection-usage-meter")!.classList.contains("is-stale")).toBe(true);
+	});
+	it("never shows a reading time later than now when the host's clock runs ahead", async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(new Date("2026-09-19T20:00:00Z"));
+		await setup(
+			true,
+			observed({
+				...connected,
+				providerAccountUsage: {
+					observedAt: "2026-09-19T20:10:00.000Z",
+					windows: [{ id: "primary", label: "5-hour limit", usedPercent: 8 }],
+				},
+			}),
+		);
+		expect(view.el.querySelector("[role=meter]")!.getAttribute("aria-valuetext")).toBe("92% at last check");
 	});
 	it("refreshes usage from the account projection without losing keyboard focus", async () => {
 		const { client } = await setup(true, observed({ ...connected, sponsorBindingId: id(82), sponsorVersion: 1 }));

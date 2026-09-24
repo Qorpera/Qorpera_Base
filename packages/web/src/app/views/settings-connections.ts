@@ -73,6 +73,7 @@ export class ConnectionsView {
 	#refreshing: Promise<void> | undefined;
 	#refreshAgain = false;
 	#metadataRefresh: Promise<void> | undefined;
+	#metadataForced = false;
 	#usageUpdating = false;
 	#usageError: string | undefined;
 	/** `signIns` and `begin` come from the application when sign-ins should
@@ -129,7 +130,10 @@ export class ConnectionsView {
 	#refreshUsage(force = false): Promise<void> {
 		if (this.#lifetime.signal.aborted) return Promise.resolve();
 		if (!this.#client.refreshAccountMetadata) return this.#refresh();
-		this.#metadataRefresh ??= this.#readUsage(force);
+		if (!this.#metadataRefresh) {
+			this.#metadataForced = force;
+			this.#metadataRefresh = this.#readUsage(force);
+		}
 		return this.#metadataRefresh;
 	}
 	/** The member's Refresh reads "Updated" for a moment once the new reading is
@@ -137,7 +141,11 @@ export class ConnectionsView {
 	async #refreshNow(): Promise<void> {
 		clearTimeout(this.#updatedClock);
 		this.#updated = false;
+		// A background read already under way may skip the new observation the
+		// member asked for; ask again once it ends.
+		const joined = this.#metadataRefresh !== undefined && !this.#metadataForced;
 		await this.#refreshUsage(true);
+		if (joined && !this.#lifetime.signal.aborted && !this.#usageError) await this.#refreshUsage(true);
 		if (this.#lifetime.signal.aborted || this.#error || this.#usageError) return;
 		// A second click during the same read ends here too; keep one clock.
 		clearTimeout(this.#updatedClock);
@@ -307,8 +315,8 @@ export class ConnectionsView {
 			this.#draw();
 		}
 	}
-	/** `lookalike`: another card reads the same, so this one says when it was added. */
-	#account(connection: NativeMemberConnection, lookalike: boolean): HTMLElement {
+	/** `showAdded`: another card reads the same, so this one says when it was added. */
+	#account(connection: NativeMemberConnection, showAdded: boolean): HTMLElement {
 		const provider = PROVIDERS.find((item) => item.id === connection.provider)!;
 		const email = connection.providerAccountEmail;
 		const signOut = button(
@@ -326,7 +334,7 @@ export class ConnectionsView {
 				{ class: "settings-copy" },
 				h("strong", null, provider.label),
 				h("small", { class: "connection-email" }, email ?? "Email unavailable"),
-				lookalike
+				showAdded
 					? h(
 							"small",
 							{ class: "connection-identity", title: `Connection ${connection.connectionId}` },
@@ -358,6 +366,9 @@ export class ConnectionsView {
 		const stale =
 			limitReached || now - Date.parse(usage.observedAt) > USAGE_FRESH_MS || Date.parse(usage.observedAt) > now;
 		const checked = fmtTime(usage.observedAt);
+		// An old reading never says "left" (the limit may be reached since) but says
+		// when it was taken, unless the host's clock ran ahead of this one.
+		const asOf = Date.parse(usage.observedAt) <= now ? ` · ${checked}` : "";
 		// One bar needs no name; two (5 hours and Weekly) would look alike without one.
 		const named = usage.windows.length > 1;
 		return h(
@@ -368,14 +379,19 @@ export class ConnectionsView {
 				const resetIn = window.resetAt ? Date.parse(window.resetAt) - now : undefined;
 				const expired = resetIn !== undefined && resetIn <= 0;
 				const remaining = Math.round((100 - window.usedPercent) * 10) / 10;
-				const value = expired ? "Usage unavailable" : `${remaining}% left${stale ? ` as of ${checked}` : ""}`;
+				const value = expired
+					? "Usage unavailable"
+					: stale
+						? `${remaining}% at last check${asOf}`
+						: `${remaining}% left`;
 				const fill = h("span");
 				// CSSOM property updates work with the release CSP; style attributes do not.
 				fill.style.width = `${remaining}%`;
 				return h(
 					"div",
 					{ class: "connection-usage-window" },
-					named ? h("span", { class: "connection-usage-label" }, window.label) : null,
+					// The meter's own label names it for screen readers.
+					named ? h("span", { class: "connection-usage-label", "aria-hidden": "true" }, window.label) : null,
 					h(
 						"div",
 						{ class: "connection-usage-heading" },
@@ -481,8 +497,7 @@ export class ConnectionsView {
 				),
 		);
 		const lookalikes = new Map<string, number>();
-		for (const connection of accounts)
-			lookalikes.set(lookalike(connection), (lookalikes.get(lookalike(connection)) ?? 0) + 1);
+		for (const key of accounts.map(lookalike)) lookalikes.set(key, (lookalikes.get(key) ?? 0) + 1);
 		const canConnect = Boolean(this.#client.onboardingAvailable && this.#begin);
 		const refresh = button(
 			this.#usageUpdating ? "Refreshing…" : this.#updated ? "Updated" : "Refresh",
