@@ -234,6 +234,16 @@ describe("rail sections and pins", () => {
 });
 
 describe("rail right-click menus", () => {
+	it("opens the menu on a right-click in the page's first moments", async () => {
+		// The long-press guard swallows the browser's own menu for 800 ms after a
+		// press opened one; with no press yet, nothing is swallowed, however new the page.
+		vi.spyOn(performance, "now").mockReturnValue(100);
+		const { rail, ready } = companyWith(demo(), { updateAgent: vi.fn(), deleteAgent: vi.fn() });
+		await ready;
+		await settle();
+		rightClick(rowOf(rail, "Cy"));
+		expect(menuItems()).toContain("Rename");
+	});
 	it("offers Grok Bot's agent menu and sends what is chosen", async () => {
 		const { rail, manage, ready } = companyWith(demo(), { updateAgent: vi.fn(), deleteAgent: vi.fn() });
 		await ready;
