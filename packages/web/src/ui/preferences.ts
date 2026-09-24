@@ -12,6 +12,8 @@ const DANISH: Record<string, string> = {
 	Connections: "Forbindelser",
 	Policy: "Retningslinjer",
 	Account: "Konto",
+	"Choose a new picture": "Vælg et nyt billede",
+	"Remove picture": "Fjern billede",
 	"Plan & usage": "Abonnement og forbrug",
 	Plan: "Abonnement",
 	Usage: "Forbrug",

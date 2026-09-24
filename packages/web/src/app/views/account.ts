@@ -2,6 +2,7 @@ import type { HostedAccountEntitlement } from "../../cloud/types.ts";
 import { button, h, notice, replace } from "../../ui/dom.ts";
 import { languagePreference, setLanguagePreference, uiText } from "../../ui/preferences.ts";
 import { type AuthController, displayName } from "../auth.ts";
+import { accountPicture } from "./account-picture.ts";
 import { composerColorChoices, themeChoices } from "./appearance.ts";
 
 export interface AccountViewState {
@@ -51,7 +52,8 @@ export function renderAccount(
 				h("h2", null, uiText("Account")),
 				h(
 					"div",
-					{ class: "settings-card" },
+					{ class: "settings-card settings-account" },
+					accountPicture(user, (error) => setState({ error })),
 					h(
 						"div",
 						{ class: "settings-copy" },
