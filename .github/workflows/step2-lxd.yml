@@ -116,6 +116,7 @@ jobs:
           test/runtime-node-update-host.test.ts
           test/coding-executor.test.ts
           test/coding-executor-host.test.ts
+          test/coding-machine.test.ts
           test/coding-vm.test.ts
           test/coding-storage.test.ts
           test/coding-workspace.test.ts
@@ -146,6 +147,8 @@ jobs:
           test/cloud-coding-guest-package.test.ts
           test/cloud-coding-watchdog.test.ts
           test/cloud-coding-storage-guest.test.ts
+          test/cloud-coding-session-guest.test.ts
+          test/cloud-coding-configuration-install.test.ts
           test/cloud-coding-command-guest-execute.test.ts
           test/lxd-guest-image-updates.test.ts
 

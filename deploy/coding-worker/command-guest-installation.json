@@ -1,5 +1,5 @@
 {
-  "schema": "qorpera.coding-command-installation/v2",
+  "schema": "qorpera.coding-command-installation/v3",
   "state": "requires-reviewed-image-installation",
   "entrypoint": {
     "source": "packages/runtime/src/cloud-coding-command-guest.ts",
@@ -8,10 +8,10 @@
     "mode": "0444"
   },
   "configuration": {
-    "path": "/etc/qorpera-coding/guest.json",
+    "path": "/run/qorpera-coding/<workerId>/configuration/guest.json",
     "owner": "root:root",
     "mode": "0444",
-    "schema": "qorpera.coding-command-guest/v2",
+    "schema": "qorpera.coding-command-guest/v3",
     "requiredFields": [
       "workerId",
       "vmId",
@@ -26,24 +26,21 @@
     ]
   },
   "rootDirectories": [
-    "/etc/qorpera-coding",
     "/opt/qorpera-coding",
+    "/workspace",
     "/var/lib/qorpera-coding",
-    "/var/lib/qorpera-coding/inbox",
-    "/var/lib/qorpera-coding/commands",
-    "/var/lib/qorpera-coding/logs",
     "/run/qorpera-coding"
   ],
   "rootDirectoryMode": "0755",
   "requirements": [
     "Linux KVM/QEMU guest",
-    "systemd",
+    "systemd with nss-systemd for passwd and group (sessions' users are boot-local /run/userdb records)",
     "Node.js >=22.19",
     "bash",
-    "dedicated non-root coding uid/gid >=1000",
-    "coding-user-owned isolated repository workspace",
-    "Admitted NAS data mount at /workspace and separate protected NAS custody mount at /var/lib/qorpera-coding; no local directory fallback",
-    "Explicit resourceProfile compatible with the admitted VM",
+    "One image coding uid/gid, >=1000 and below 200000, with no privileged groups: only sessions whose NAS volume predates member machines run as it; every other session runs as its own uid/gid in 200000-524287, registered per boot",
+    "coding-user-owned isolated repository workspace per session",
+    "Each attached session's NAS data volume at /workspace/<workerId> and separate protected NAS custody volume at /var/lib/qorpera-coding/<workerId>, hot-plugged over virtiofs; no local directory fallback",
+    "Explicit resourceProfile compatible with the admitted machine",
     "Pinned Node/Python/native toolchain and browser dependencies selected in the signed image recipe",
     "No self-update: apt-daily.timer, apt-daily-upgrade.timer, apt-daily.service, apt-daily-upgrade.service and unattended-upgrades.service masked (links from /etc/systemd/system to /dev/null); every storage-checked action refuses otherwise with RUNNER_IMAGE_SELF_UPDATE_ENABLED"
   ],
@@ -70,25 +67,28 @@
     "service": "qorpera-coding-watchdog.service",
     "timer": "qorpera-coding-watchdog.timer",
     "slice": "qorpera-coding.slice",
-    "leaseFile": "/run/qorpera-coding/lease.json",
-    "refreshFile": "/var/lib/qorpera-coding/inbox/lease-refresh.json",
+    "sessionSlice": "qorpera-coding-<workerId without dashes>.slice",
+    "leaseFile": "/run/qorpera-coding/<workerId>/lease.json",
+    "refreshFile": "/var/lib/qorpera-coding/<workerId>/inbox/lease-refresh.json",
     "leaseMaxMs": 60000,
     "checkIntervalMs": 1000,
     "enableTimerBeforeFirstRefresh": true
   },
   "nasPaths": {
-    "workspacePath": "/workspace/repository",
-    "homePath": "/workspace/home",
-    "cachePath": "/workspace/cache",
-    "outputRoot": "/var/lib/qorpera-coding/logs"
+    "workspacePath": "/workspace/<workerId>/repository",
+    "homePath": "/workspace/<workerId>/home",
+    "cachePath": "/workspace/<workerId>/cache",
+    "outputRoot": "/var/lib/qorpera-coding/<workerId>/logs"
   },
   "provisioningOrder": [
     "Install and verify pinned OS/runtime/toolchains in image build, never from model/root command; mask the five apt self-update units",
-    "Install helper artifacts and systemd units with reviewed manifest digest; create root-owned0755 /run/qorpera-coding in image; do not enable ordinary coding admission",
-    "Attach exact admitted NAS data and custody devices",
-    "Install root-owned0444 guest/storage configuration bound to current volume generation and boot",
-    "Invoke fixed trusted storage initializer to verify mounts and markers, then initialize coding UID-owned data directories and root-protected custody only on verified mounts",
-    "Enable watchdog timer, refresh authorized queue lease, then admit commands"
+    "Install helper artifacts and systemd units with reviewed manifest digest; create root-owned0755 /workspace, /var/lib/qorpera-coding and /run/qorpera-coding in image; do not enable ordinary coding admission",
+    "Per session, while its turn runs: hot-plug its exact admitted NAS data and custody devices and wait until both are mounted",
+    "prepare <workerId>: create the session's root-owned boot-local runtime and configuration folders",
+    "install <workerId>: publish root-owned0444 guest/storage configuration bound to current volume generation and boot",
+    "initialize <workerId>: verify mounts and markers, register the session's user, then initialize its uid-owned data directories and root-protected custody only on verified mounts",
+    "Enable watchdog timer, refresh authorized queue lease, then admit commands",
+    "At the end of the turn, detach <workerId>: stop and see stopped the session's slice, sync, remove its boot-local state and user; then unplug its devices"
   ],
   "storage": {
     "entrypoint": {
@@ -98,11 +98,18 @@
       "mode": "0444"
     },
     "configuration": {
-      "path": "/etc/qorpera-coding/storage.json",
+      "path": "/run/qorpera-coding/<workerId>/configuration/storage.json",
       "owner": "root:root",
       "mode": "0444"
     },
     "initializeBeforeCommands": true,
-    "assertAtEveryAction": true
+    "assertAtEveryAction": true,
+    "actions": [
+      "prepare <workerId>",
+      "install <workerId>",
+      "initialize <workerId>",
+      "detach <workerId>",
+      "image"
+    ]
   }
 }

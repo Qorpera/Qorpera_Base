@@ -3,7 +3,7 @@ import { errorCode, parseCodingExecutorConfiguration } from "../../../deploy/cod
 
 function fixture() {
 	return {
-		schema: "qorpera.coding-executor-service/v4",
+		schema: "qorpera.coding-executor-service/v5",
 		owner: "node-coding",
 		supabaseUrl: "https://project.supabase.co",
 		commandPort: 8789,
@@ -29,10 +29,6 @@ function fixture() {
 		guest: {
 			uid: 1000,
 			gid: 1000,
-			workspacePath: "/workspace/repository",
-			homePath: "/workspace/home",
-			cachePath: "/workspace/cache",
-			outputRoot: "/var/lib/qorpera-coding/logs",
 			storageHelperSha256: "d".repeat(64),
 			resourceProfile: {
 				maxTimeoutMs: 1800000,
@@ -109,7 +105,7 @@ describe("coding executor service configuration", () => {
 	});
 	it("refuses the previous schema and unknown keys", () => {
 		expect(() =>
-			parseCodingExecutorConfiguration({ ...fixture(), schema: "qorpera.coding-executor-service/v3" }),
+			parseCodingExecutorConfiguration({ ...fixture(), schema: "qorpera.coding-executor-service/v4" }),
 		).toThrow("CONFIG_INVALID");
 		expect(() => parseCodingExecutorConfiguration({ ...fixture(), token: "inline-secret" })).toThrow(
 			"CONFIG_INVALID",
@@ -131,12 +127,21 @@ describe("coding executor service configuration", () => {
 			parseCodingExecutorConfiguration({ ...fixture(), [key]: "https://example.com/arbitrary" }),
 		).toThrow();
 	});
-	it("rejects local workspace paths, missing NAS policy and resources above the VM", () => {
+	it("rejects configured workspace paths, a session-range coding uid, missing NAS policy and resources above the VM", () => {
 		const config = fixture();
 		expect(() => parseCodingExecutorConfiguration({ ...config, storagePolicy: undefined })).toThrow();
+		// Every session's folders derive from the session; none is configured.
 		expect(() =>
 			parseCodingExecutorConfiguration({ ...config, guest: { ...config.guest, workspacePath: "/tmp/repo" } }),
-		).toThrow();
+		).toThrow("CONFIG_INVALID");
+		// The image's coding user and group stay below the uids SQL gives sessions.
+		for (const ids of [
+			{ uid: 200000, gid: 200000 },
+			{ uid: 1100, gid: 200000 },
+		])
+			expect(() => parseCodingExecutorConfiguration({ ...config, guest: { ...config.guest, ...ids } })).toThrow(
+				"RESOURCE_POLICY_INVALID",
+			);
 		expect(() =>
 			parseCodingExecutorConfiguration({
 				...config,

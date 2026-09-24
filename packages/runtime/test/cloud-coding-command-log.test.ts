@@ -20,6 +20,7 @@ async function fixture(bytes: Buffer) {
 		path,
 		owner: process.getuid?.() ?? 0,
 		protectedOwner: process.getuid?.() ?? 0,
+		mountRoot: root,
 		boundary: root,
 		maxBytes: 1048576,
 		terminal: true,

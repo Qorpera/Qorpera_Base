@@ -1,4 +1,4 @@
-import { resolve } from "node:path";
+import { type CloudCodingSessionLayout, cloudCodingSessionLayout } from "@qorpera/contracts";
 
 export interface CodingGuestResourceProfile {
 	maxTimeoutMs: number;
@@ -14,8 +14,11 @@ export const DEFAULT_CODING_GUEST_RESOURCES: Readonly<CodingGuestResourceProfile
 	cpuQuotaPercent: 200,
 	maxLogBytes: 67108864,
 });
+/** One session's configuration inside its member's coding machine. The vmId
+ * is the machine the session is attached to for this boot; the paths are the
+ * session's layout (cloudCodingSessionLayout) and nothing else. */
 export interface CodingGuestConfiguration {
-	schema: "qorpera.coding-command-guest/v2";
+	schema: "qorpera.coding-command-guest/v3";
 	workerId: string;
 	vmId: string;
 	bootId: string;
@@ -27,9 +30,15 @@ export interface CodingGuestConfiguration {
 	outputRoot: string;
 	resourceProfile: CodingGuestResourceProfile;
 }
-/** Closed deployment configuration. Paths are selected by the trusted storage
- * admission, not the model. This parser cannot prove their NAS backing. */
-export function parseCodingGuestConfiguration(value: unknown): CodingGuestConfiguration {
+/** The four folders a session's configuration names. */
+export type CodingGuestFolders = Pick<
+	CloudCodingSessionLayout,
+	"workspacePath" | "homePath" | "cachePath" | "outputRoot"
+>;
+/** Closed deployment configuration. Paths are the session's fixed layout, not
+ * a choice of the packet or the model; only trusted test composition passes
+ * other `folders`. This parser cannot prove their NAS backing. */
+export function parseCodingGuestConfiguration(value: unknown, folders?: CodingGuestFolders): CodingGuestConfiguration {
 	const input = value as Record<string, unknown>;
 	const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 	if (
@@ -38,17 +47,17 @@ export function parseCodingGuestConfiguration(value: unknown): CodingGuestConfig
 		Array.isArray(input) ||
 		Object.keys(input).sort().join() !==
 			"bootId,cachePath,gid,homePath,outputRoot,resourceProfile,schema,uid,vmId,workerId,workspacePath" ||
-		input.schema !== "qorpera.coding-command-guest/v2" ||
+		input.schema !== "qorpera.coding-command-guest/v3" ||
 		![input.workerId, input.vmId, input.bootId].every((id) => typeof id === "string" && uuid.test(id)) ||
 		![input.uid, input.gid].every((id) => Number.isSafeInteger(id) && Number(id) >= 1000 && Number(id) < 4294967295)
 	)
 		throw new Error("INVALID_CODING_GUEST_CONFIGURATION");
-	const paths = [input.workspacePath, input.homePath, input.cachePath, input.outputRoot];
+	const layout = folders ?? cloudCodingSessionLayout(input.workerId as string);
 	if (
-		!paths.every(
-			(p) => typeof p === "string" && p !== "/" && p.length <= 4096 && resolve(p) === p && !/[\s\0]/.test(p),
-		) ||
-		paths.some((p, i) => paths.some((q, j) => i !== j && (p === q || String(p).startsWith(`${q}/`))))
+		input.workspacePath !== layout.workspacePath ||
+		input.homePath !== layout.homePath ||
+		input.cachePath !== layout.cachePath ||
+		input.outputRoot !== layout.outputRoot
 	)
 		throw new Error("INVALID_CODING_GUEST_PATHS");
 	const profile = input.resourceProfile as Record<string, unknown>;
