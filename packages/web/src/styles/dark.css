@@ -138,7 +138,8 @@
 :root[data-theme="dark"] .settings-nav [aria-selected=true] > .icon { color: var(--text); }
 :root[data-theme="dark"] .settings-tab-count { background: var(--primary); color: var(--on-primary); }
 :root[data-theme="dark"] .settings-company-label { color: #9d9c97; }
-:root[data-theme="dark"] .settings-close { background: #3a3a38; color: #b7b6b1; }
+:root[data-theme="dark"] .settings-close { color: #b7b6b1; }
+:root[data-theme="dark"] .settings-close:hover { color: #fff; }
 :root[data-theme="dark"] .settings-content h2 { color: #9d9c97; }
 :root[data-theme="dark"] .settings-content .btn { border-color: rgba(255, 255, 255, 0.12); background: #3a3a38; }
 :root[data-theme="dark"] .settings-content .btn:hover:not(:disabled) { background: #444442; }
