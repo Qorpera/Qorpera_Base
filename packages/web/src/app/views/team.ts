@@ -352,7 +352,8 @@ export function renderTeam(
 		exit.classList.add("company-exit");
 	}
 	// The button is rebuilt on every company update; keep keyboard focus on it.
-	const exitFocused = (options.exit ?? container).querySelector(".company-exit") === document.activeElement;
+	const previousExit = (options.exit ?? container).querySelector(".company-exit");
+	const exitFocused = previousExit !== null && previousExit === document.activeElement;
 	if (options.exit) replace(options.exit, exit);
 	else if (exit) content.append(exit);
 	replace(container, content);
