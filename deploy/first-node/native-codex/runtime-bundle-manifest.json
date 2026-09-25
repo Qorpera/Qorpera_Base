@@ -28,7 +28,7 @@
   "implementation": {
     "deploy/coding-worker/command-authority.ts": "2efc2f278fb5e60f9211768faedef7e2d850755d714d7ac3d28d589496f0998d",
     "deploy/coding-worker/command-guest-installation.json": "5c0eedbf0514868d34082e675e891d07ce9645a8b4f1e847bdca661d9bb5c33d",
-    "deploy/coding-worker/control.ts": "a5260b89870d4d66ce96f7b5d1b1b6a6597fa70647df4ebb22f57175d6b08364",
+    "deploy/coding-worker/control.ts": "8e9bf43d93198c0a603138586763299e6ba5bc9805bbd100d1993e5331452ec4",
     "deploy/coding-worker/credentials.ts": "fbb946c956e46499dd02da8eac7738698c606b345191a8cb51738d3fe33f3687",
     "deploy/coding-worker/executor.ts": "6815bf4111fe22201326e93e7d4134d07cba4cd10124f8b91fa102565c9d70f9",
     "deploy/coding-worker/qorpera-coding-executor.service": "bf289943573848e781f92ef9c093670e912afaa6f28545c4d132ef5b67facd61",

@@ -46,7 +46,9 @@ export class CodingExecutorHttpControl {
 				headers: { ...supabaseServiceHeaders(this.#key), "content-type": "application/json" }, body,
 			});
 			if (response.status !== 200) {
-				if (response.status === 500) busy = lockNotAvailable(await readBoundedCloudResponse(response, 4096, checked));
+				// An error body that stalls is not worth waiting for: it stays unconfirmed.
+				if (response.status === 500)
+					busy = lockNotAvailable(await readBoundedCloudResponse(response, 4096, AbortSignal.any([checked, AbortSignal.timeout(1000)])));
 				else await response.body?.cancel().catch(() => undefined);
 				throw new Error("unconfirmed");
 			}

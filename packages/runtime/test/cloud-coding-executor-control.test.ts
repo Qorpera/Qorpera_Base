@@ -63,6 +63,21 @@ describe("dedicated coding executor control", () => {
 			expect(fetcher).toHaveBeenCalledTimes(1);
 		}
 	});
+	it("does not wait on an error body that stalls", async () => {
+		const fetcher = vi.fn<typeof fetch>(
+			async () => new Response(new ReadableStream({ start() {} }), { status: 500 }),
+		);
+		const control = new CodingExecutorHttpControl({
+			supabaseUrl: "https://project.supabase.co",
+			serviceRoleKey: "private",
+			fetch: fetcher,
+		});
+		const started = Date.now();
+		await expect(control.call("qorpera_begin_coding_turn", {}, new AbortController().signal)).rejects.toThrow(
+			"CODING_CONTROL_UNCONFIRMED",
+		);
+		expect(Date.now() - started).toBeLessThan(5000);
+	});
 	it("sanitizes failures and rejects credential-bearing destinations", async () => {
 		const fetcher = vi.fn<typeof fetch>(async () => {
 			throw new Error("secret-token");

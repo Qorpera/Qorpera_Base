@@ -17,14 +17,20 @@ import {
 import { CODING_VM_STOP_BUDGET_MS, codingHostId } from "../src/coding-executor-host.ts";
 
 // The executor's pauses (heartbeat, poll, busy retry) follow the fake clock too.
+// An abort rejects like Node's: an AbortError carrying the reason as its cause.
 vi.mock("node:timers/promises", () => ({
 	setTimeout: (ms: number, value?: unknown, options?: { signal?: AbortSignal }) =>
 		new Promise((resolve, reject) => {
 			const signal = options?.signal;
-			if (signal?.aborted) return reject(signal.reason);
+			const aborted = () =>
+				Object.assign(new Error("The operation was aborted", { cause: signal?.reason }), {
+					name: "AbortError",
+					code: "ABORT_ERR",
+				});
+			if (signal?.aborted) return reject(aborted());
 			const abort = () => {
 				globalThis.clearTimeout(timer);
-				reject(signal?.reason);
+				reject(aborted());
 			};
 			const timer = globalThis.setTimeout(() => {
 				signal?.removeEventListener("abort", abort);
