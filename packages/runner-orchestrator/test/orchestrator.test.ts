@@ -1043,7 +1043,7 @@ describe("cloud runner orchestrator", () => {
 		});
 	});
 
-	it("reports a failed first-slot advance without holding up other routines, and stops asking a control plane that does not know it", async () => {
+	it("reports a failed first-slot advance without holding up other routines, and pauses asking a control plane that does not know it", async () => {
 		const control = controlPlane(undefined);
 		const restarted: CloudRoutineScheduleHead = {
 			...scheduleHead(),
@@ -1068,7 +1068,8 @@ describe("cloud runner orchestrator", () => {
 		vi.mocked(control.listRoutineScheduleHeads).mockResolvedValue({ items: [restarted, due], hasMore: false });
 		const unavailable = new CloudRunnerOrchestratorRequestError(503);
 		vi.mocked(control.advanceRoutineNextDue).mockRejectedValue(unavailable);
-		const reconciler = new CloudRoutineScheduleReconciler({ now: () => new Date("2026-08-20T12:30:00.000Z") });
+		let now = new Date("2026-08-20T12:30:00.000Z");
+		const reconciler = new CloudRoutineScheduleReconciler({ now: () => now });
 
 		await expect(reconciler.reconcile(control)).rejects.toMatchObject({ errors: [unavailable] });
 		expect(control.advanceRoutineNextDue).toHaveBeenCalledWith(
@@ -1086,14 +1087,23 @@ describe("cloud runner orchestrator", () => {
 		await expect(reconciler.reconcile(control)).rejects.toMatchObject({ errors: [unavailable] });
 		expect(control.advanceRoutineNextDue).toHaveBeenCalledTimes(2);
 
-		// An edge function that predates the action answers 400: reported once, then the
-		// routine is listed as before, without an error on every poll.
+		// An edge function that predates the action answers 400: reported, then the routine
+		// is listed as before without an error on every poll, and asked again ten minutes
+		// later in case the edge function was deployed meanwhile.
 		const unknown = new CloudRunnerOrchestratorRequestError(400);
 		vi.mocked(control.advanceRoutineNextDue).mockRejectedValue(unknown);
 		await expect(reconciler.reconcile(control)).rejects.toMatchObject({ errors: [unknown] });
+		now = new Date("2026-08-20T12:39:59.999Z");
 		await expect(reconciler.reconcile(control)).resolves.toBeUndefined();
 		expect(control.advanceRoutineNextDue).toHaveBeenCalledTimes(3);
-		expect(control.enqueueRoutineWake).toHaveBeenCalledTimes(4);
+		vi.mocked(control.advanceRoutineNextDue).mockResolvedValue({
+			status: "advanced",
+			nextDueAt: "2026-08-20T13:00:00.000Z",
+		});
+		now = new Date("2026-08-20T12:40:00.000Z");
+		await expect(reconciler.reconcile(control)).resolves.toBeUndefined();
+		expect(control.advanceRoutineNextDue).toHaveBeenCalledTimes(4);
+		expect(control.enqueueRoutineWake).toHaveBeenCalledTimes(5);
 	});
 
 	it("raises a fresh window cursor to its first slot at or after the effective time when the database clock runs ahead", async () => {

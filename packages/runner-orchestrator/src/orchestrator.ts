@@ -1210,6 +1210,8 @@ function dueRoutineWakes(
 	});
 }
 
+const ROUTINE_ADVANCE_RETRY_MS = 10 * 60 * 1000;
+
 class RoutineWakeAdmissionErrors extends AggregateError {
 	readonly failures: readonly unknown[];
 
@@ -1226,9 +1228,10 @@ export class CloudRoutineScheduleReconciler implements CloudRunnerOccurrenceReco
 	readonly #pageSize: number;
 	readonly #catchUpLimit: number;
 	/** A control plane that answers the first-slot advance with 400 does not know
-	 * it yet (its edge function predates this orchestrator): report that once and
-	 * keep scheduling as before, instead of failing every poll. */
-	#advanceUnsupported = false;
+	 * it yet (its edge function predates this orchestrator): report that and keep
+	 * scheduling as before for a while, instead of failing every poll, then ask
+	 * again in case the edge function was deployed meanwhile. */
+	#advancePausedUntil = 0;
 
 	constructor(options: CloudRoutineScheduleReconcilerOptions = {}) {
 		this.#now = options.now ?? (() => new Date());
@@ -1257,7 +1260,9 @@ export class CloudRoutineScheduleReconciler implements CloudRunnerOccurrenceReco
 					const now = this.#now();
 					const wakes = dueRoutineWakes(head, trigger, now, this.#catchUpLimit);
 					const firstSlot =
-						wakes.length === 0 && !this.#advanceUnsupported ? routineFirstSlot(head, trigger, now) : undefined;
+						wakes.length === 0 && now.getTime() >= this.#advancePausedUntil
+							? routineFirstSlot(head, trigger, now)
+							: undefined;
 					if (firstSlot) {
 						const input: AdvanceCloudRoutineNextDueInput = {
 							routineId: head.routineId,
@@ -1272,7 +1277,7 @@ export class CloudRoutineScheduleReconciler implements CloudRunnerOccurrenceReco
 						} catch (error) {
 							if (signal?.aborted) throw error;
 							if (error instanceof CloudRunnerOrchestratorRequestError && error.status === 400) {
-								this.#advanceUnsupported = true;
+								this.#advancePausedUntil = now.getTime() + ROUTINE_ADVANCE_RETRY_MS;
 							}
 							failures.push(error);
 						}
@@ -2009,7 +2014,11 @@ export class SupabaseCloudRunnerOrchestratorControlPlane implements CloudRunnerO
 		signal?: AbortSignal,
 	): Promise<CloudRoutineNextDue> {
 		requiredUuid(input.routineId, "Routine id");
-		if (!Number.isSafeInteger(input.expectedVersion) || input.expectedVersion < 1) {
+		if (
+			!Number.isSafeInteger(input.expectedVersion) ||
+			input.expectedVersion < 1 ||
+			input.expectedVersion > 1_000_000
+		) {
 			throw new Error("Routine version is invalid");
 		}
 		if (
