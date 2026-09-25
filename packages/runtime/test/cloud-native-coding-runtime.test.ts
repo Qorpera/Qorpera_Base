@@ -47,14 +47,27 @@ function fixture() {
 		pullRequest: null,
 		submission: null as unknown,
 	};
+	// What qorpera_read_coding_turn_context says started this turn and what came before it.
+	const turnContext = {
+		input: { from: "dispatch", text: null, answers: null } as Record<string, unknown>,
+		earlierTurns: [] as unknown[],
+		omittedEarlierTurns: 0,
+	};
 	const call = vi.fn<CloudCodingNativeControl["call"]>(async (method, args) => {
 		if (method === "qorpera_authorize_coding_turn") return { ...authority, coding };
+		if (method === "qorpera_read_coding_turn_context")
+			return {
+				schema: "qorpera.coding-turn-context/v1",
+				workerId: coding.workerId,
+				sequence: coding.sequence,
+				...turnContext,
+			};
 		if (method === "qorpera_submit_coding_turn") {
 			const input = args.p_submission as Record<string, unknown>;
 			coding.submission = {
 				schema: "qorpera.coding-submission/v1",
 				workerId,
-				sequence: 1,
+				sequence: coding.sequence,
 				kind: input.kind,
 				state: "submitted",
 				summary: input.summary,
@@ -140,6 +153,7 @@ function fixture() {
 		binding,
 		authority,
 		coding,
+		turnContext,
 		call,
 		control,
 		gateway,
@@ -367,6 +381,160 @@ describe("the coding composition of a native turn", () => {
 			"already submitted",
 		);
 		expect(runCloudNativeRunToolSession).not.toHaveBeenCalled();
+	});
+	it("a one-letter answer is read against the exact question and choices of the turn before", async () => {
+		const f = fixture();
+		// The kernel side of two turns, as qorpera_read_coding_turn_context returns them: the
+		// submission of turn 1 is what the harness really submitted through coding_ask.
+		const question = "Should I use approach A or B?";
+		const choices = ["A: keep the in-memory cache", "B: drop the cache and read through"];
+		const prompts: Record<string, unknown>[] = [];
+		const decisions: string[] = [];
+		// A stand-in model that can only act on its prompt: turn 1 asks, turn 2 acts on the answer.
+		vi.mocked(runCloudNativeRunToolSession).mockImplementation(async (options) => {
+			const run = await CloudNativeToolRun.open(f.binding, f.control, options.signal);
+			try {
+				const adapters = await options.tools(
+					f.authority.identity,
+					new CloudNativeToolOperations(run, f.control),
+					run,
+				);
+				const context = JSON.parse(options.prompt) as Record<string, unknown>;
+				prompts.push(context);
+				const [, , , finish, ask] = adapters.tools;
+				const current = context.input as { text: string | null; answers: { options: string[] } | null } | undefined;
+				if (!current?.answers) {
+					await ask.execute(
+						ask.parseArguments({
+							operationKey: "approach",
+							summary: "Two ways to go.",
+							question,
+							options: choices,
+						}),
+						f.context,
+					);
+				} else {
+					const chosen = current.answers.options.find((option) => option.startsWith(`${current.text}:`));
+					if (!chosen) throw new Error("The answer does not name a choice");
+					decisions.push(chosen);
+					await finish.execute(
+						finish.parseArguments({
+							operationKey: "done",
+							summary: `Went with ${chosen}.`,
+							headSha: "c".repeat(40),
+						}),
+						f.context,
+					);
+				}
+				return { providerSessionId: "native-thread", toolCalls: 1, codexVersion: "pinned", fencedRequests: 1 };
+			} finally {
+				run.close();
+			}
+		});
+		await f.runtime.execute(f.request, "/private", f.context.signal, f.turn);
+		const asked = f.coding.submission as Record<string, unknown>;
+		expect(asked).toMatchObject({ kind: "ask", question, options: choices });
+
+		// The executor reported the question; the owner answered "B"; the kernel opened turn 2.
+		f.turnContext.earlierTurns.push({
+			sequence: 1,
+			input: { from: "dispatch", text: null },
+			submitted: { kind: "ask", summary: asked.summary, question, options: choices, headSha: null },
+			outcome: {
+				state: "blocked",
+				summary: asked.summary,
+				reason: null,
+				needs: question,
+				options: choices,
+				pullRequest: null,
+			},
+		});
+		f.turnContext.input = { from: "member", text: "B", answers: { question, options: choices } };
+		Object.assign(f.coding, { sequence: 2, turnId: randomUUID(), followUp: "B", submission: null });
+		const wake = structuredClone(f.turn.wake) as unknown as { payload: { sequence: number } };
+		wake.payload.sequence = 2;
+		await f.runtime.execute(f.request, "/private", f.context.signal, {
+			...f.turn,
+			wake: wake as unknown as CloudWakeEnvelope,
+		});
+
+		expect(prompts[1]).toMatchObject({
+			schema: "qorpera.coding-context/v2",
+			sequence: 2,
+			input: { from: "member", text: "B", answers: { question, options: choices } },
+			earlierTurns: [{ sequence: 1, submitted: { kind: "ask", question, options: choices } }],
+		});
+		expect(decisions).toEqual(["B: drop the cache and read through"]);
+		expect(f.gateway.start).not.toHaveBeenCalled();
+		expect(f.coding.submission).toMatchObject({
+			kind: "finish",
+			summary: "Went with B: drop the cache and read through.",
+		});
+	});
+	it("refuses a turn context that belongs to another turn or claims a question it cannot hold", async () => {
+		for (const drift of [
+			{ sequence: 2 },
+			{ workerId: randomUUID() },
+			{ input: { from: "stranger", text: "B", answers: null } },
+			{ input: { from: "member", text: "B", answers: { question: "", options: [] } } },
+			{ earlierTurns: [{ sequence: 1, input: { from: "dispatch", text: null }, submitted: null, outcome: null }] },
+		]) {
+			const f = fixture();
+			const original = f.call.getMockImplementation()!;
+			f.call.mockImplementation(async (method, args, signal) =>
+				method === "qorpera_read_coding_turn_context"
+					? {
+							schema: "qorpera.coding-turn-context/v1",
+							workerId: f.coding.workerId,
+							sequence: 1,
+							input: { from: "dispatch", text: null, answers: null },
+							earlierTurns: [],
+							omittedEarlierTurns: 0,
+							...drift,
+						}
+					: original(method, args, signal),
+			);
+			await expect(f.runtime.execute(f.request, "/private", f.context.signal, f.turn)).rejects.toThrow(
+				"Coding turn context",
+			);
+			expect(runCloudNativeRunToolSession).not.toHaveBeenCalled();
+		}
+	});
+	it("keeps the newest earlier turns when the whole history does not fit the prompt", async () => {
+		const f = fixture();
+		// Turn 43: the kernel already left turns 1-3 out of its answer; 4-42 still exceed the prompt.
+		Object.assign(f.coding, { sequence: 43 });
+		const wake = structuredClone(f.turn.wake) as unknown as { payload: { sequence: number } };
+		wake.payload.sequence = 43;
+		const long = "x".repeat(3900);
+		f.turnContext.earlierTurns = Array.from({ length: 39 }, (_, index) => ({
+			sequence: index + 4,
+			input: { from: "member", text: long },
+			submitted: null,
+			outcome: { state: "failed", summary: long, reason: null, needs: null, options: [], pullRequest: null },
+		}));
+		f.turnContext.input = { from: "member", text: "Go on.", answers: null };
+		f.turnContext.omittedEarlierTurns = 3;
+		let prompt = "";
+		vi.mocked(runCloudNativeRunToolSession).mockImplementation(async (options) => {
+			prompt = options.prompt;
+			throw new Error("stop after composing");
+		});
+		await expect(
+			f.runtime.execute(f.request, "/private", f.context.signal, {
+				...f.turn,
+				wake: wake as unknown as CloudWakeEnvelope,
+			}),
+		).rejects.toThrow("stop after composing");
+		const context = JSON.parse(prompt) as { earlierTurns: { sequence: number }[]; omittedEarlierTurns: number };
+		expect(Buffer.byteLength(prompt)).toBeLessThanOrEqual(64 * 1024);
+		expect(context.earlierTurns.at(-1)?.sequence).toBe(42);
+		expect(context.earlierTurns.length).toBeGreaterThan(0);
+		expect(context.earlierTurns.length).toBeLessThan(39);
+		expect(context.omittedEarlierTurns).toBe(3 + 39 - context.earlierTurns.length);
+		expect(context.earlierTurns.map((turn) => turn.sequence)).toEqual(
+			Array.from({ length: context.earlierTurns.length }, (_, index) => 43 - context.earlierTurns.length + index),
+		);
 	});
 	it("does not claim completion when the harness ends without a submission", async () => {
 		const f = fixture();
