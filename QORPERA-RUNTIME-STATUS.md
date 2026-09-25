@@ -48,6 +48,9 @@ V26–V30 records made before the promotion count as real-node proof, not deploy
 - **Coding.** Image cut106 `929e8d07…`, executor `926e97c2` (REG R1078). Member coding machines are 4 vCPU / 8 GiB since 2026-09-25 01:56:37Z; proof#10 was opened on one (REG R1114).
 - **Master matches live.** The runtime code on master equals the live v106 code. Every commit after `82b34214d` is web-only (#293–#298). The web client redeploys from master on merge (REG R176).
 - **Exact component identities are not held here.** The database, images, provider host, brokers and client build are recorded in the deployment manifest, in progress on branch `fable/deployment-manifest` (`deploy/deployment-manifest/README.md` once merged). This file links acceptance evidence; the manifest says which exact identity each piece of evidence ran on.
+  - The manifest's first pass (2026-09-25 03:05Z, staged in the coordinator workspace) lists these live components with no acceptance at their live identity: `node-02-release` (no run on node 2 since the cut), `secret-broker-qorpera`, `secret-broker-acceptance`, `object-gateway`, `office-image-test` and `web-client`.
+  - It has no recorded identity for `exec-host`, `node-01-observer`, `office-service-test` or `capture-proxy`.
+  - The office image and service count as accepted at their live identity because they are unchanged since their last accepted run. That is a different claim from an office journey run on v106.
 - **Supabase outage** 2026-09-25, about 01:20:30 to 01:30:04Z. The database was unreachable for every client. It was not caused by Qorpera's workload, and no Postgres restart happened (REG R1090).
 
 ## Decisions that are not gaps
