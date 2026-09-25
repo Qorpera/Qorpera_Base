@@ -53,6 +53,7 @@ import {
 	CLOUD_ASK_MEMBER_INSTRUCTIONS,
 	CLOUD_ASK_MEMBER_PAYLOAD_SCHEMA,
 	CLOUD_INTERACTION_SURFACES,
+	cloudAskMemberFinalKey,
 	cloudInteractionEventId,
 	parseCloudAskMemberInput,
 } from "./cloud-thread-interactions.ts";
@@ -296,6 +297,13 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				async execute(value, toolContext) {
 					const input = parseCloudAskMemberInput(value);
 					const eventId = cloudInteractionEventId(binding.runId, input.idempotencyKey);
+					// The sentence's send is derived and checked before the card exists: every accepted
+					// key can finish its turn, and a retry replays both the card and the same send.
+					const sentence = parseCloudAgentSendInput({
+						idempotencyKey: cloudAskMemberFinalKey(input.idempotencyKey),
+						text: input.text,
+						phase: "final",
+					});
 					const append = control.appendInteractionRequest;
 					if (!append) throw new Error("Cloud cards are unavailable on this control plane");
 					const card = await cloudToolRequest(
@@ -303,11 +311,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 						signal,
 					);
 					if (card.sessionId !== context.identity.sessionId) throw new Error("Cloud card audience changed");
-					const receipt = await mouth.send({
-						idempotencyKey: `${input.idempotencyKey}:final`,
-						text: input.text,
-						phase: "final",
-					});
+					const receipt = await mouth.send(sentence);
 					const replayed = deliveredMessageIds.has(receipt.messageId);
 					deliveredMessageIds.add(receipt.messageId);
 					const text = JSON.stringify({
