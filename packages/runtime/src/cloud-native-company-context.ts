@@ -567,7 +567,13 @@ export function composeCloudNativeCompanyPrompt(
 		// The whole profile is composed (15.1). A notebook another writer grew past this bound
 		// degrades memory to unavailable; memory never fails the run.
 		if (memory?.available)
-			return composeCloudNativeCompanyPrompt(context, wake, presence, unavailableCloudAgentMemory("too_large"), openWork);
+			return composeCloudNativeCompanyPrompt(
+				context,
+				wake,
+				presence,
+				unavailableCloudAgentMemory("too_large"),
+				openWork,
+			);
 		throw new Error("Cloud company context exceeds its bound");
 	}
 	return prompt;
