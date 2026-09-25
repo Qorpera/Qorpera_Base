@@ -76,7 +76,7 @@ create function pg_temp.machine_credential(p_key text) returns text language sql
 		'60300000-0000-4000-8000-000000000040', repeat('c', 64), (pg_temp.worker_row(p_key)).id, pg_temp.machine_lease(p_key),
 		'{"host":"github.com","owner":"Qorpera","name":"Qorpera_Base","baseBranch":"master"}')
 $$;
--- The secret broker's own login on one race connection.
+-- The secret broker's own login on one race connection: its calls check the session user, not the role.
 create function pg_temp.machine_broker(p_connection text, p_broker boolean) returns void language sql as $$
 	select dblink_exec(p_connection, case when p_broker then 'set session authorization qorpera_secret_broker'
 		else 'reset session authorization' end)::void
@@ -150,7 +150,7 @@ begin
 	perform pg_temp.machine_broker('lock_second', true);
 	v_outcome := pg_temp.lock_race(pg_temp.lock_row('qorpera_runtime_agent_todos', 'id', v_worker.todo_id),
 		pg_temp.machine_cancel('fix-send', 'machine-lock-cancel-2'), '{"role":"service_role"}',
-		pg_temp.machine_credential('fix-send'), '{}');
+		pg_temp.machine_credential('fix-send'), '{"role":"qorpera_secret_broker"}');
 	perform pg_temp.machine_broker('lock_second', false);
 	perform pg_temp.wake_assert(v_outcome #>> '{second,state}' = '42501' and v_outcome #>> '{second,error}' = 'coding session lease is unavailable',
 		'The credential is refused because the session was cancelled, not killed: ' || v_outcome::text);
@@ -170,7 +170,7 @@ declare v_worker public.qorpera_runtime_workers := pg_temp.worker_row('fix-send'
 begin
 	perform pg_temp.machine_broker('lock_first', true);
 	v_outcome := pg_temp.lock_race(pg_temp.lock_row('qorpera_coding_sessions', 'worker_id', v_worker.id),
-		pg_temp.machine_credential('fix-send'), '{}',
+		pg_temp.machine_credential('fix-send'), '{"role":"qorpera_secret_broker"}',
 		pg_temp.machine_admit('fix-send'), '{"role":"service_role"}');
 	perform pg_temp.machine_broker('lock_first', false);
 	perform pg_temp.lock_race_ok(v_outcome, 'repository credential against machine admission');

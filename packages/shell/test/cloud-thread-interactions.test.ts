@@ -1,7 +1,9 @@
+import { parseCloudAgentSendInput } from "@qorpera/runtime/cloud-agent-mouth";
 import { CloudToolArgumentRefusal } from "@qorpera/runtime/cloud-native-tool-boundary";
 import {
 	CLOUD_ASK_MEMBER_PAYLOAD_SCHEMA,
 	CLOUD_INTERACTION_SURFACES,
+	cloudAskMemberFinalKey,
 	cloudInteractionEventId,
 	parseCloudAskMemberInput,
 	parseCloudInteractionRequestData,
@@ -43,6 +45,42 @@ describe("thread interaction requests", () => {
 		expect(cloudInteractionEventId(RUN, "slack")).not.toBe(cloudInteractionEventId(RUN, "slack-2"));
 		expect(cloudInteractionEventId(RUN, "slack")).toMatch(
 			/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-a[0-9a-f]{3}-[0-9a-f]{12}$/,
+		);
+	});
+	it("derives a final-send key the send accepts for every key ask_member accepts", () => {
+		const card = {
+			text: "Pick one.",
+			surface: "question",
+			title: "Decision",
+			payload: { options: [{ label: "Yes" }] },
+		};
+		const keys = [1, 121, 122, 123, 127, 128].map((length) => "k".repeat(length));
+		for (const key of keys) {
+			const accepted = parseCloudAskMemberInput({ idempotencyKey: key, ...card }).idempotencyKey;
+			const finalKey = cloudAskMemberFinalKey(accepted);
+			expect(
+				parseCloudAgentSendInput({ idempotencyKey: finalKey, text: card.text, phase: "final" }).idempotencyKey,
+			).toBe(finalKey);
+			// Deterministic, so a retry of the same card replays the same send.
+			expect(cloudAskMemberFinalKey(accepted)).toBe(finalKey);
+		}
+		// Keys that fit keep the readable suffix; longer ones become their digest.
+		expect(cloudAskMemberFinalKey("channel")).toBe("channel:final");
+		expect(cloudAskMemberFinalKey("k".repeat(122))).toBe(`${"k".repeat(122)}:final`);
+		expect(cloudAskMemberFinalKey("k".repeat(123))).toMatch(/^ask-final\.[0-9a-f]{64}$/);
+		expect(new Set(keys.map(cloudAskMemberFinalKey)).size).toBe(keys.length);
+		expect(cloudAskMemberFinalKey(`${"k".repeat(127)}a`)).not.toBe(cloudAskMemberFinalKey(`${"k".repeat(127)}b`));
+	});
+	it("refuses a card sentence its final send could not carry, before anything is appended", () => {
+		const card = {
+			idempotencyKey: "k",
+			surface: "question",
+			title: "Decision",
+			payload: { options: [{ label: "Yes" }] },
+		};
+		expect(() => parseCloudAskMemberInput({ ...card, text: "Pick\u0000one." })).toThrow(CloudToolArgumentRefusal);
+		expect(() => parseCloudAskMemberInput({ ...card, text: "Pick one.", title: "Deci\u0000sion" })).toThrow(
+			CloudToolArgumentRefusal,
 		);
 	});
 });

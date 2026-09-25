@@ -19,10 +19,14 @@
 -- The order, everywhere: the company's profile fence and Company File (every
 -- agent tool call takes them first), todo, worker, coding session, then the
 -- session's turn or its machine. A call may start later in the list (a
--- heartbeat locks only the session), but it never goes back. Machine
--- admission starts at the worker: it never writes the todo, and its node
--- reservation takes the profile fence late (a known gap, see PR #318), so
--- holding the todo there would deadlock with every agent tool on that todo.
+-- heartbeat locks only the session, a delegation starts at the worker), but it
+-- never goes back, with one known exception: the machine calls. Machine
+-- planning and admission reach the profile and Company File rows again after
+-- the session or worker (the node reservation's profile fence, and the foreign
+-- keys of new machine, storage volume and allocation rows), which still
+-- deadlocks with an agent tool on the same worker. That needs its own design;
+-- until then admission starts at the worker and never holds the todo, so it
+-- cannot also deadlock with every agent tool on that todo.
 
 -- Internal: a worker, locked after its todo. A worker's todo never changes.
 create function public.qorpera_lock_coding_worker(p_worker_id uuid)
@@ -35,6 +39,8 @@ begin
 	return v_worker;
 end
 $$;
+revoke all on function public.qorpera_lock_coding_worker(uuid)
+	from public, anon, authenticated, service_role, qorpera_secret_broker;
 
 create function pg_temp.lock_order_patch(p_target regprocedure, p_old text, p_new text)
 returns void language plpgsql as $$
@@ -46,36 +52,44 @@ begin
 end
 $$;
 
--- The owner's answer and delegation: the authority check reads the worker
--- without a lock, so only its owner locks anything.
+-- The owner row checks authority on an unlocked read, so only the session's
+-- owner locks anything; its callers lock what they change.
 select pg_temp.lock_order_patch('public.qorpera_coding_session_owner_row(uuid)',
 	$old$	select * into v_worker from public.qorpera_runtime_workers where id = p_worker_id and species = 'coding' for update;$old$,
 	$new$	select * into v_worker from public.qorpera_runtime_workers where id = p_worker_id and species = 'coding';$new$);
-select pg_temp.lock_order_patch('public.qorpera_coding_session_owner_row(uuid)',
-	$old$	return v_worker;$old$,
-	$new$	return public.qorpera_lock_coding_worker(v_worker.id);$new$);
--- The answer's todo is locked with its worker now, before the session.
+-- The answer changes the worker and touches its todo: todo, then worker, then the session.
+select pg_temp.lock_order_patch('public.qorpera_answer_coding_session(uuid,text,uuid)',
+	$old$	v_worker := public.qorpera_coding_session_owner_row(p_worker_id);$old$,
+	$new$	v_worker := public.qorpera_coding_session_owner_row(p_worker_id);
+	v_worker := public.qorpera_lock_coding_worker(v_worker.id);$new$);
 select pg_temp.lock_order_patch('public.qorpera_answer_coding_session(uuid,text,uuid)',
 	$old$	perform 1 from public.qorpera_runtime_agent_todos where id = v_worker.todo_id for update;
 $old$,
 	$new$$new$);
+-- A delegation only records an event: it starts at the worker.
+select pg_temp.lock_order_patch('public.qorpera_delegate_coding_session(uuid,uuid)',
+	$old$	v_worker := public.qorpera_coding_session_owner_row(p_worker_id);$old$,
+	$new$	v_worker := public.qorpera_coding_session_owner_row(p_worker_id);
+	select * into v_worker from public.qorpera_runtime_workers where id = v_worker.id for update;$new$);
 
 -- The executor's begin and completion change the worker and touch its todo:
 -- they lock the todo and the worker before their leased session.
 select pg_temp.lock_order_patch('public.qorpera_complete_coding_turn(uuid,uuid,text,text,text,jsonb,jsonb,jsonb,text,integer,jsonb)',
 	$old$	v_session := public.qorpera_coding_leased_session(p_worker_id, p_lease_token);$old$,
-	$new$	perform public.qorpera_lock_coding_worker(p_worker_id);
+	$new$	v_worker := public.qorpera_lock_coding_worker(p_worker_id);
 	v_session := public.qorpera_coding_leased_session(p_worker_id, p_lease_token);$new$);
 select pg_temp.lock_order_patch('public.qorpera_complete_coding_turn(uuid,uuid,text,text,text,jsonb,jsonb,jsonb,text,integer,jsonb)',
 	$old$	perform 1 from public.qorpera_runtime_agent_todos where id = (select todo_id from public.qorpera_runtime_workers where id = v_session.worker_id) for update;
+	select * into v_worker from public.qorpera_runtime_workers where id = v_session.worker_id for update;
 $old$,
 	$new$$new$);
 select pg_temp.lock_order_patch('public.qorpera_begin_coding_turn(uuid,uuid,jsonb)',
 	$old$	v_session := public.qorpera_coding_leased_session(p_worker_id, p_lease_token);$old$,
-	$new$	perform public.qorpera_lock_coding_worker(p_worker_id);
+	$new$	v_worker := public.qorpera_lock_coding_worker(p_worker_id);
 	v_session := public.qorpera_coding_leased_session(p_worker_id, p_lease_token);$new$);
 select pg_temp.lock_order_patch('public.qorpera_begin_coding_turn(uuid,uuid,jsonb)',
 	$old$	perform 1 from public.qorpera_runtime_agent_todos where id = (select todo_id from public.qorpera_runtime_workers where id = v_session.worker_id) for update;
+	select * into v_worker from public.qorpera_runtime_workers where id = v_session.worker_id for update;
 $old$,
 	$new$$new$);
 -- Machine admission locks the worker, not its todo, before the leased session.
@@ -94,5 +108,6 @@ select pg_temp.lock_order_patch('public.qorpera_authorize_coding_machine_custody
 		perform 1 from public.qorpera_coding_sessions where worker_id = p_worker_id for update; end if;
 	v_machine := public.qorpera_coding_machine_custody(p_machine_id, p_owner, p_binding_text, p_machine_id_sha256);$new$);
 
-revoke all on function public.qorpera_lock_coding_worker(uuid)
-	from public, anon, authenticated, service_role, qorpera_secret_broker;
+comment on function public.qorpera_coding_leased_session(uuid, uuid) is
+	'Locks only the coding session. A caller that also locks or changes the worker or its todo locks them first (qorpera_lock_coding_worker, or the worker alone), never after this.';
+
