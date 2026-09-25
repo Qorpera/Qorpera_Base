@@ -2242,22 +2242,29 @@ review or retry" surfaces of 16.2 and the classification of section 10.
    access changes: ask; an action that plainly does not serve the request:
    deny), then company rules, then personal rules. Ask first wins; an Allow
    rule never undoes an Ask first rule, and lifts a built-in check only when
-   it covers the action. The kernel enforces the ordering on the recorded
-   verdict.
+   it covers the action. The kernel enforces this ordering over the rules and
+   checks the reviewer cites; which rules apply to an action is the reviewer's
+   judgement, so a reviewer that is itself misled can still let an action
+   through. The reviewer reads the whole call, never a cut of it.
 5. **Approval cards.** An ask raises a card in the conversation the agent
    works in (its own thread or a member's conversation; never a group chat or
    a worker, where the call is refused instead). A personal rule's card is
    answered only by that member; a company rule's or a built-in check's card
-   by any owner or admin. Allow once, Deny, and Always allow (a built-in
-   check's card only; saves a narrow company Allow rule). A card never
-   expires; dismissal is never consent.
+   by any owner or admin, who need write access to the conversation. Allow
+   once, Deny, and Always allow (a built-in check's card only; saves a narrow
+   company Allow rule). A card never expires; dismissal is never consent. These
+   cards are answered only through their own answer path, never the general
+   card answer. A card may quote the matched rules, a member's own included:
+   the thread shows why the action waits.
 6. **Waiting.** A call a member is likely watching holds on its card for about
    five minutes and runs at once when approved. After that, and at once for
    routines and coworker wakes, it parks: the agent is told, keeps working,
-   and the card keeps waiting. An answer to a parked card wakes the agent in
-   that conversation on the answering member's account; the agent repeats the
-   identical call (the card shows it exactly), which runs once without a
-   second review.
+   and the card keeps waiting. A holding call renews a short heartbeat; an
+   answer to a card no call is holding (parked, stopped, or its run ended)
+   wakes the agent in that conversation on the answering member's account.
+   The agent repeats the identical call (the card shows its exact arguments),
+   which runs once without a second review. A Deny, the member's or the
+   reviewer's, stands for that exact call.
 7. **Record.** Every reviewed call is recorded with its verdict, reason,
    matched rules, answer and use. Reviews are not a cap on work: no number of
    reviews, calls or approvals is limited.

@@ -235,11 +235,16 @@ profile RPCs; RLS is the second read boundary.
   `qorpera_answer_interaction` (42501 `Room sponsor is unavailable` /
   `Session sponsor is unavailable` otherwise; nothing is recorded). 55000 when
   already answered; a retry with the same `p_client_input_id` returns the
-  receipt `{reviewId, answer, inputId, savedRuleId, woke}`.
+  receipt `{reviewId, answer, inputId, savedRuleId, woke}`. The answerer needs
+  write access to the card's conversation; in an agent's thread, waking also
+  needs an active thread membership. An answer whose delivery failed (its turn
+  request refused) may be given again. `qorpera_answer_interaction` refuses
+  these cards (22023).
 
   Card facts (`entry.data`): `title`, `summary` (the reviewer's reason),
   `operation`, `effect` `external|destructive|delegation`, `target`,
-  `details` (a few short facts), `tool` + `arguments` (the exact call, text),
+  `details` (a few short facts), `tool` + `arguments` (the exact canonical call
+  arguments as text, up to 64 KiB),
   `builtIn` (`none|money|legal_terms|delete_outside|access_change|...`),
   `rules` (matched, `{id, scope, when, outcome}`), `approverScope`,
   `approverUserId`, `approverName`, `requesterUserId`, `alwaysAllow`,

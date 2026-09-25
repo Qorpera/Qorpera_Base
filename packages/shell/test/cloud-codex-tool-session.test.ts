@@ -846,7 +846,7 @@ it("clears writing and its renewal timer when composition is cancelled", async (
 // Auto-review (v115): the reviewer is a second, fresh thread in the same app-server,
 // started while the agent's tool call is open. Its only output is its verdict tool
 // call; its model requests pass the fence on their own lane, never as the agent's.
-function reviewRun(mode: "review" | "review-no-verdict") {
+function reviewRun(mode: "review" | "review-no-verdict" | "review-wrong-tool") {
 	const execute = vi.fn<CloudNativeTool["execute"]>(async () => ({ kind: "text", value: "Sent." }));
 	const reviewer = new CloudActionReviewChannel();
 	const signal = new AbortController().signal;
@@ -938,4 +938,13 @@ it("never runs an acting call when the reviewer ends without a verdict", async (
 	const envelope = JSON.parse(recorded.reply.result.contentItems[0].text);
 	expect(envelope).toMatchObject({ status: "denied" });
 	expect(envelope.content.text).toMatch(/^REVIEW_UNAVAILABLE: /);
+});
+
+it("refuses the reviewer any tool but its verdict, and never runs the call without one", async () => {
+	const { result, execute, evidence } = reviewRun("review-wrong-tool");
+	await expect(result).resolves.toMatchObject({ providerSessionId: "thread_fixture" });
+	expect(execute).not.toHaveBeenCalled();
+	const recorded = JSON.parse(await readFile(evidence, "utf8"));
+	expect(recorded.wrongTool.error).toMatchObject({ code: -32601 });
+	expect(JSON.parse(recorded.reply.result.contentItems[0].text).content.text).toMatch(/^REVIEW_UNAVAILABLE: /);
 });

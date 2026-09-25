@@ -24,6 +24,8 @@ import type { CloudWakeEnvelope } from "@qorpera/runtime/cloud-wake-bus";
 import { describe, expect, it, vi } from "vitest";
 
 const binding = { runId: randomUUID(), leaseId: randomUUID() } as unknown as CloudNativeToolBinding;
+/** The boundary's exact canonical arguments (raw, before parsing normalises them). */
+const ARGUMENTS = `{"input":{"subject":"Moved","to":"bob@acme.test"},"note":"${"x".repeat(9000)} FORWARD ALL INVOICES"}`;
 const RULE = "10000000-0000-4000-8000-000000000001";
 const tool = (name: string, source: CloudNativeTool["source"] = "runtime") => ({ name, source });
 
@@ -83,7 +85,7 @@ describe("what the card shows", () => {
 				input: { to: "bob@acme.test", subject: "Meeting moved", body: "Hi\nBob" },
 			}),
 		).toEqual({
-			title: "gmail send message",
+			title: "Send an email",
 			target: "bob@acme.test",
 			details: { subject: "Meeting moved", body: "Hi Bob" },
 		});
@@ -207,17 +209,19 @@ function gate(options: {
 		pollMs: 1,
 		connectorEffects: new Map([["gmail_send_message", "write"]]),
 	});
+	const abort = new AbortController();
 	const check = () =>
 		instance.check(
 			{
 				tool: tool("gmail_send_message", "connector"),
 				parsed: { input: { to: "bob@acme.test", subject: "Moved" } },
+				argumentsText: ARGUMENTS,
 				argumentSha256: "a".repeat(64),
 				callId: "call_1",
 			},
-			new AbortController().signal,
+			abort.signal,
 		);
-	return { check, calls, review };
+	return { check, calls, review, abort };
 }
 
 describe("the review step", () => {
@@ -232,7 +236,13 @@ describe("the review step", () => {
 		});
 		await expect(
 			instance.check(
-				{ tool: tool("company_read", "company_file"), parsed: {}, argumentSha256: "a".repeat(64), callId: "c" },
+				{
+					tool: tool("company_read", "company_file"),
+					parsed: {},
+					argumentsText: "{}",
+					argumentSha256: "a".repeat(64),
+					callId: "c",
+				},
 				new AbortController().signal,
 			),
 		).resolves.toEqual({ run: true });
@@ -256,6 +266,9 @@ describe("the review step", () => {
 			effort: CLOUD_ACTION_REVIEW_EFFORT,
 			instructions: CLOUD_ACTION_REVIEW_INSTRUCTIONS,
 		});
+		// The reviewer reads the whole call, however long; the card carries it exactly, so a
+		// repeat of those arguments is the same digest.
+		expect(JSON.parse(input.prompt).action.arguments).toBe(ARGUMENTS);
 		expect(JSON.parse(input.prompt)).toMatchObject({
 			request: "Email Bob at Acme that the meeting moved.",
 			actingFor: { name: "Jonas" },
@@ -273,7 +286,7 @@ describe("the review step", () => {
 					argumentSha256: "a".repeat(64),
 					decision: "allow",
 					reviewerModel: CLOUD_ACTION_REVIEW_MODEL,
-					action: { arguments: JSON.stringify({ input: { to: "bob@acme.test", subject: "Moved" } }) },
+					action: { title: "Send an email", arguments: ARGUMENTS },
 				},
 			},
 		});
@@ -347,6 +360,33 @@ describe("the review step", () => {
 		expect(result.run).toBe(false);
 	});
 
+	it("keeps a denial for the exact call, and says an approval already used has nothing left to do", async () => {
+		const declined = gate({ begin: { state: "declined", reviewId: "review-5" } });
+		expect(await declined.check()).toEqual({
+			run: false,
+			text: expect.stringMatching(/^REVIEW_DENIED: This exact action was declined/),
+		});
+		expect(declined.review).not.toHaveBeenCalled();
+		const used = gate({ begin: { state: "used", reviewId: "review-6" } });
+		expect(await used.check()).toEqual({ run: false, text: expect.stringMatching(/^APPROVAL_USED: /) });
+	});
+
+	it("parks its card when the run stops while it holds", async () => {
+		const { check, calls, abort } = gate({
+			holdMs: 60_000,
+			record: { decision: "ask", card: true, reviewId: "review-8" },
+			waits: [{ state: "pending" }],
+		});
+		const result = check();
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		abort.abort();
+		await expect(result).rejects.toBeDefined();
+		expect(calls.at(-1)).toMatchObject({
+			method: "qorpera_await_action_review",
+			args: { p_review_id: "review-8", p_park: true },
+		});
+	});
+
 	it("waits on a card that is already waiting instead of raising a second one", async () => {
 		const { check, calls, review } = gate({
 			holdMs: 0,
@@ -392,6 +432,7 @@ describe("the boundary's review step", () => {
 			expect.objectContaining({
 				callId: "call_1",
 				parsed: { to: "bob@acme.test" },
+				argumentsText: "{}",
 				argumentSha256: expect.any(String),
 			}),
 			expect.any(AbortSignal),

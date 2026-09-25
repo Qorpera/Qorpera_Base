@@ -74,6 +74,16 @@ const TOKEN_COUNTERS = [
 	"totalTokens",
 ] as const;
 
+/** Waits for a promise unless the signal stops the wait first. */
+function untilAborted<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+	if (signal.aborted) return Promise.reject(new Error("Native review cancelled"));
+	return new Promise<T>((resolve, reject) => {
+		const abort = () => reject(new Error("Native review cancelled"));
+		signal.addEventListener("abort", abort, { once: true });
+		promise.then(resolve, reject).finally(() => signal.removeEventListener("abort", abort));
+	});
+}
+
 /** What the reviewer's verdict call returns, and what an unknown reviewer output becomes. */
 const REVIEW_RECORDED_OUTPUT = JSON.stringify({ recorded: true });
 const REVIEW_UNAVAILABLE_OUTPUT = JSON.stringify({ recorded: false });
@@ -287,6 +297,8 @@ class CodexBoundaryRpc {
 	readonly #endedReviews = new Map<string, ReviewThread>();
 	#startingReview?: { prewarmThreadId?: string };
 	#reviewQueue: Promise<void> = Promise.resolve();
+	/** The latest reviewer thread start, settled or not: the next review waits for it. */
+	#reviewStarting: Promise<void> = Promise.resolve();
 	#turnEndRequested = false;
 	#finished = false;
 	#closed = false;
@@ -476,10 +488,12 @@ class CodexBoundaryRpc {
 		input: Parameters<CloudActionReviewer["review"]>[0] & { cwd: string },
 		signal: AbortSignal,
 	): Promise<unknown> {
-		const run = this.#reviewQueue.then(() => this.#review(input, signal));
+		// Reviews run one at a time, and never while an earlier reviewer thread is still
+		// starting; a review that waits longer than its caller does stops waiting.
+		const run = untilAborted(this.#reviewQueue, signal).then(() => this.#review(input, signal));
 		this.#reviewQueue = run.then(
-			() => undefined,
-			() => undefined,
+			() => this.#reviewStarting,
+			() => this.#reviewStarting,
 		);
 		return run;
 	}
@@ -487,33 +501,58 @@ class CodexBoundaryRpc {
 	async #review(input: Parameters<CodexBoundaryRpc["review"]>[0], signal: AbortSignal): Promise<unknown> {
 		signal.throwIfAborted();
 		if (this.#failure || this.#closed || this.#finished) throw new Error("Native review is unavailable");
-		this.#startingReview = {};
+		const starting = { prewarmThreadId: undefined as string | undefined };
+		this.#startingReview = starting;
+		// The start is followed to its end even when the caller stops waiting (its
+		// prewarm must stay on the reviewer's lane); a thread nobody waits for any
+		// more is ended at once, so its later messages are ignored.
+		const started = this.request("thread/start", {
+			model: input.model,
+			cwd: input.cwd,
+			runtimeWorkspaceRoots: [],
+			environments: [],
+			ephemeral: true,
+			approvalPolicy: "never",
+			approvalsReviewer: "user",
+			sandbox: "read-only",
+			developerInstructions: input.instructions,
+			dynamicTools: [CLOUD_ACTION_REVIEW_SPECIFICATION],
+		})
+			.then((result) => {
+				const id = identifier(object(object(result).thread).id);
+				if (
+					id === this.#threadId ||
+					this.#reviews.has(id) ||
+					this.#endedReviews.has(id) ||
+					(starting.prewarmThreadId !== undefined && starting.prewarmThreadId !== id)
+				)
+					throw new Error("Native review binding failed");
+				return id;
+			})
+			.finally(() => {
+				if (this.#startingReview === starting) this.#startingReview = undefined;
+			});
+		this.#reviewStarting = started.then(
+			() => undefined,
+			() => undefined,
+		);
 		let threadId: string;
 		try {
-			const started = object(
-				await this.request("thread/start", {
-					model: input.model,
-					cwd: input.cwd,
-					runtimeWorkspaceRoots: [],
-					environments: [],
-					ephemeral: true,
-					approvalPolicy: "never",
-					approvalsReviewer: "user",
-					sandbox: "read-only",
-					developerInstructions: input.instructions,
-					dynamicTools: [CLOUD_ACTION_REVIEW_SPECIFICATION],
-				}),
+			threadId = await untilAborted(started, signal);
+		} catch (error) {
+			void started.then(
+				(id) => {
+					this.#endedReviews.set(id, {
+						threadId: id,
+						issued: new Map(),
+						verdictReceived: true,
+						resolve: () => undefined,
+						reject: () => undefined,
+					});
+				},
+				() => undefined,
 			);
-			threadId = identifier(object(started.thread).id);
-			if (
-				threadId === this.#threadId ||
-				this.#reviews.has(threadId) ||
-				this.#endedReviews.has(threadId) ||
-				(this.#startingReview.prewarmThreadId !== undefined && this.#startingReview.prewarmThreadId !== threadId)
-			)
-				throw new Error("Native review binding failed");
-		} finally {
-			this.#startingReview = undefined;
+			throw error;
 		}
 		let resolveVerdict: (value: unknown) => void = () => undefined;
 		let rejectVerdict: (error: Error) => void = () => undefined;

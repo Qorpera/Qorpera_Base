@@ -25,6 +25,27 @@ takeover workspace.
 - **Activation** `20260925115900_runtime_bundle_activation_v115.sql`, which
   refuses to activate without the kernel migration.
 
+## Review round 1 (2026-09-25)
+
+An independent review of 0e5b25515 asked for changes; all fixed:
+- The general card answer (`qorpera_answer_interaction`) now refuses these
+  cards; before, today's web could approve one there, which the held call never
+  read and which took the card's only answer slot.
+- A holding call renews a heartbeat (`held_until`); an answer to a card no call
+  holds any more (parked, stopped, run ended) wakes the agent. A stopped hold
+  also parks its card on the way out (best effort).
+- The card and the reviewer get the boundary's exact canonical arguments (the
+  digest's own text, up to 64 KiB), not the parsed ones cut at 8 KiB, so the
+  woken agent's repeat matches and the reviewer reads the whole call.
+- A Deny (the member's or the reviewer's) stands for that exact call; a
+  redundant wake after the holder already ran the action finds it done.
+- The wake paths check what a post or message there checks: write access to
+  the conversation, the cleanup fence, the queue bound, and, in an agent's
+  thread, an active thread membership. An answer whose delivery failed may be
+  given again.
+- Approvals and denials are bound to the member the run works for.
+- An allow for an action "not asked for" is recorded as a deny.
+
 ## Rollout order
 
 1. Pause, record `20260925115000` (the observation function must accept

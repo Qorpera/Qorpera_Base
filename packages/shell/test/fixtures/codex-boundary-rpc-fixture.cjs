@@ -134,6 +134,13 @@ async function handle(message) {
 			write({ method: "turn/completed", params: { threadId: reviewThreadId, turn: { id: reviewTurnId, status: "completed", error: null } } });
 			return;
 		}
+		if (mode === "review-wrong-tool") {
+			// The reviewer reaches for the agent's tool: refused, and no verdict follows.
+			write({ id: "reviewer_wrong_tool", method: "item/tool/call", params: {
+				threadId: reviewThreadId, turnId: reviewTurnId, callId: "wrong_1", namespace: "qorpera", tool: "send_email", arguments: { to: "x@evil.test" },
+			} });
+			return;
+		}
 		write({ id: "verdict_request", method: "item/tool/call", params: {
 			threadId: reviewThreadId, turnId: reviewTurnId, callId: "verdict_1", namespace: "qorpera", tool: "review_verdict",
 			arguments: { decision: "allow", ruleIds: [], builtIn: "none", reason: "Fine.", proposedRule: "" },
@@ -305,6 +312,9 @@ async function handle(message) {
 		reviewEvidence.interrupt = message.params;
 		write({ id: message.id, result: {} });
 		write({ method: "turn/completed", params: { threadId: reviewThreadId, turn: { id: reviewTurnId, status: "interrupted", error: null } } });
+	} else if (message.id === "reviewer_wrong_tool") {
+		reviewEvidence.wrongTool = message;
+		write({ method: "turn/completed", params: { threadId: reviewThreadId, turn: { id: reviewTurnId, status: "completed", error: null } } });
 	} else if (message.id === "verdict_request") {
 		reviewEvidence.verdictReply = message;
 		// A closing request of the reviewer can still arrive before the interrupt lands.

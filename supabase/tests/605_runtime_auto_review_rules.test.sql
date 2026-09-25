@@ -154,10 +154,15 @@ begin
 	v_record := pg_temp.review_record(v_binding, 'call-5', repeat('5', 64), 'allow',
 		array['30000000-0000-4000-8000-000000000a03']::uuid[], 'money', 'paying for things');
 	perform pg_temp.wake_assert(v_record ->> 'decision' = 'allow', 'An allow rule covering a built-in check lets it run');
-	-- A deny stands, with no card.
+	-- A deny stands, with no card; an allow for an action nobody asked for is a deny.
 	v_record := pg_temp.review_record(v_binding, 'call-6', repeat('6', 64), 'deny', '{}', 'not_requested');
 	perform pg_temp.wake_assert(v_record ->> 'decision' = 'deny' and (v_record ->> 'card')::boolean = false,
 		'A denial raises no card');
+	perform pg_temp.wake_assert(pg_temp.review_record(v_binding, 'call-6b', repeat('b', 64), 'allow', '{}',
+		'not_requested') ->> 'decision' = 'deny', 'An action nobody asked for never runs on an allow');
+	-- A denial stands for that exact call: no second opinion.
+	perform pg_temp.wake_assert(public.qorpera_begin_action_review(v_binding, jsonb_build_object('tool', 'send_email',
+		'argumentSha256', repeat('6', 64))) ->> 'state' = 'declined', 'The reviewer''s denial stands for the exact call');
 end
 $$;
 
@@ -165,6 +170,14 @@ $$;
 do $$
 declare v_wait jsonb; v_answer jsonb; v_binding jsonb := current_setting('qorpera_test.review_binding')::jsonb;
 begin
+	-- The general card answer refuses these cards: the held call would never read it.
+	perform pg_temp.path_claims('authenticated', '30000000-0000-4000-8000-000000000001');
+	perform pg_temp.wake_error(format('select pg_temp.card_answer(%L,%L,%L,%L)', extensions.gen_random_uuid(),
+		current_setting('qorpera_test.review_company'), 'approved', '{}'), '22023',
+		'this approval is answered with qorpera_answer_action_review');
+	perform pg_temp.path_claims('service_role');
+	perform pg_temp.wake_error(format('select pg_temp.review_answer(%L,%L,%L)', '30000000-0000-4000-8000-000000000003',
+		current_setting('qorpera_test.review_company'), 'allow_once'), '42501');
 	perform pg_temp.wake_error(format('select pg_temp.review_answer(%L,%L,%L)', '30000000-0000-4000-8000-000000000002',
 		current_setting('qorpera_test.review_company'), 'allow_once'), '42501',
 		'Only the member this approval waits for can answer it');
@@ -202,6 +215,8 @@ begin
 		current_setting('qorpera_test.review_member')::uuid, 'deny');
 	perform pg_temp.wake_assert(public.qorpera_await_action_review(v_binding,
 		current_setting('qorpera_test.review_member')::uuid, false) ->> 'state' = 'declined', 'A denied card is declined');
+	perform pg_temp.wake_assert(public.qorpera_begin_action_review(v_binding, jsonb_build_object('tool', 'send_email',
+		'argumentSha256', repeat('3', 64))) ->> 'state' = 'declined', 'A member''s Deny stands for the exact call');
 	-- Always allow: saves the proposed rule, as edited, as a company allow rule.
 	v_answer := pg_temp.review_answer('30000000-0000-4000-8000-000000000001',
 		current_setting('qorpera_test.review_money')::uuid, 'always_allow', 'paying for domain renewals');
@@ -240,6 +255,56 @@ begin
 		'The repeated call uses the approval and runs without a second review');
 	perform pg_temp.wake_assert(public.qorpera_begin_action_review(v_binding, jsonb_build_object('tool', 'send_email',
 		'argumentSha256', repeat('7', 64))) ->> 'state' = 'review', 'And only once');
+end
+$$;
+
+-- A card no call holds any more (its run stopped without parking): the answer wakes the agent.
+-- If the holder was only slow and runs the action itself, the woken repeat has nothing left to do.
+do $$
+declare v_binding jsonb := current_setting('qorpera_test.review_binding')::jsonb; v_record jsonb; v_answer jsonb;
+begin
+	v_record := pg_temp.review_record(v_binding, 'call-8', repeat('c', 64), 'ask',
+		array['30000000-0000-4000-8000-000000000a02']::uuid[]);
+	perform pg_temp.wake_assert((select held_until > clock_timestamp() from public.qorpera_action_reviews
+		where id = (v_record ->> 'reviewId')::uuid), 'A card starts held by the call that raised it');
+	perform pg_temp.wake_assert(public.qorpera_await_action_review(v_binding, (v_record ->> 'reviewId')::uuid, false)
+		->> 'state' = 'pending', 'The holder renews its heartbeat');
+	update public.qorpera_action_reviews set held_until = clock_timestamp() - interval '1 second'
+	where id = (v_record ->> 'reviewId')::uuid;
+	v_answer := pg_temp.review_answer('30000000-0000-4000-8000-000000000001', (v_record ->> 'reviewId')::uuid, 'allow_once');
+	perform pg_temp.wake_assert((v_answer ->> 'woke')::boolean, 'An answer to a card no call holds wakes the agent');
+	-- The slow holder reads the approval and runs the action ...
+	perform pg_temp.wake_assert(public.qorpera_await_action_review(v_binding, (v_record ->> 'reviewId')::uuid, false)
+		->> 'state' = 'approved', 'A slow holder still uses the approval');
+	-- ... so the repeat the wake asks for, from another run, has nothing left to do.
+	update public.qorpera_action_reviews set consumed_run_id = extensions.gen_random_uuid()
+	where id = (v_record ->> 'reviewId')::uuid;
+	perform pg_temp.wake_assert(public.qorpera_begin_action_review(v_binding, jsonb_build_object('tool', 'send_email',
+		'argumentSha256', repeat('c', 64))) ->> 'state' = 'used', 'A redundant wake finds its action already done');
+end
+$$;
+
+-- A plain company conversation: the card lives there, and an answer to a parked card is a
+-- turn request on the answering member's own account. Viewers and contributors cannot answer it.
+do $$
+declare v_binding jsonb := current_setting('qorpera_test.wake_binding')::jsonb; v_record jsonb; v_answer jsonb;
+begin
+	v_record := pg_temp.review_record(v_binding, 'plain-1', repeat('d', 64), 'ask',
+		array['30000000-0000-4000-8000-000000000a01']::uuid[]);
+	perform pg_temp.wake_assert((v_record ->> 'card')::boolean and exists (select 1 from public.qorpera_session_events
+		where event_id = (v_record ->> 'reviewId')::uuid and event_type = 'authorization_request'
+			and session_id = '30000000-0000-4000-8000-000000000040'), 'A plain conversation carries the card');
+	perform public.qorpera_await_action_review(v_binding, (v_record ->> 'reviewId')::uuid, true);
+	perform pg_temp.wake_error(format('select pg_temp.review_answer(%L,%L,%L)', '30000000-0000-4000-8000-000000000003',
+		v_record ->> 'reviewId', 'allow_once'), '42501');
+	perform pg_temp.wake_error(format('select pg_temp.review_answer(%L,%L,%L)', '30000000-0000-4000-8000-000000000002',
+		v_record ->> 'reviewId', 'allow_once'), '42501');
+	v_answer := pg_temp.review_answer('30000000-0000-4000-8000-000000000001', (v_record ->> 'reviewId')::uuid, 'allow_once');
+	perform pg_temp.wake_assert((v_answer ->> 'woke')::boolean and exists (
+		select 1 from public.qorpera_session_turn_requests as request
+		where request.input_id = (v_answer ->> 'inputId')::uuid and request.status = 'queued'
+			and request.requested_by_user_id = '30000000-0000-4000-8000-000000000001'),
+		'The answer is a turn request on the member''s own account');
 end
 $$;
 

@@ -37,8 +37,18 @@ const POLL_MS = 2_000;
  * "review unavailable" (the call does not run), never an approval. */
 const REVIEW_DEADLINE_MS = 90_000;
 const REQUEST_BYTES = 4096;
-const ARGUMENT_BYTES = 8192;
 const DETAIL_BYTES = 600;
+/** A best-effort park when a hold ends early (the run stops): the kernel's heartbeat covers a crash. */
+const PARK_ON_EXIT_MS = 5_000;
+
+/** Plain titles for connector writes, by tool name; others show their tool name. */
+const CONNECTOR_TITLES: Readonly<Record<string, string>> = {
+	gmail_send_message: "Send an email",
+	google_drive_create_file: "Create a Google Drive file",
+	google_drive_update_file: "Change a Google Drive file",
+	github_create_issue: "Open a GitHub issue",
+	github_comment_on_issue: "Comment on a GitHub issue",
+};
 
 const BUILT_INS = ["none", "money", "legal_terms", "delete_outside", "access_change", "not_requested"] as const;
 export type CloudActionBuiltIn = (typeof BUILT_INS)[number];
@@ -274,6 +284,7 @@ export function describeCloudAction(
 		add("task", args.task ?? args.instructions ?? args.brief, 1200);
 		add("repository", record(args.repository ?? null).name ?? args.repository);
 	} else if (tool.source === "connector") {
+		title = CONNECTOR_TITLES[tool.name] ?? title;
 		const input = record(args.input ?? parsed);
 		target = text(input.to) || text(input.repository) || text(input.repo) || text(input.name) || null;
 		for (const key of ["subject", "title", "body", "text", "path", "name"]) add(key, input[key]);
@@ -341,13 +352,6 @@ function name(value: unknown, fallback: string): string {
 	return typeof value === "string" && value.trim() ? line(value, 120) : fallback;
 }
 
-/** Bounded canonical arguments for the reviewer. */
-function argumentText(parsed: JsonValue): string {
-	const text = JSON.stringify(parsed);
-	if (Buffer.byteLength(text) <= ARGUMENT_BYTES) return text;
-	return `${Buffer.from(text).subarray(0, ARGUMENT_BYTES).toString("utf8").replace(/�$/, "")} [...]`;
-}
-
 /**
  * The review step one acting call passes before it runs. Reads and internal
  * changes pass at once; everything else is reviewed. An ask holds the call on
@@ -388,6 +392,8 @@ export class CloudActionReviewGate {
 		call: {
 			tool: Pick<CloudNativeTool, "name" | "source">;
 			parsed: JsonValue;
+			/** The exact canonical arguments the digest covers (the boundary's, at most 64 KiB). */
+			argumentsText: string;
 			argumentSha256: string;
 			callId: string;
 		},
@@ -403,6 +409,16 @@ export class CloudActionReviewGate {
 			),
 		);
 		if (begin.state === "approved") return { run: true };
+		if (begin.state === "declined")
+			return {
+				run: false,
+				text: "REVIEW_DENIED: This exact action was declined before, so it did not happen. Do not retry it, reword it or reach it another way; take a genuinely safer path or tell the member.",
+			};
+		if (begin.state === "used")
+			return {
+				run: false,
+				text: "APPROVAL_USED: The approved action already ran, before you were woken. Do not run it again; carry on from its result.",
+			};
 		if (begin.state === "pending")
 			return this.#hold(String(begin.reviewId), name(begin.approverName, "an owner or admin"), signal);
 		if (begin.state !== "review") throw new Error("Action review response is invalid");
@@ -418,7 +434,8 @@ export class CloudActionReviewGate {
 				title: description.title,
 				target: description.target,
 				details: description.details,
-				arguments: argumentText(call.parsed),
+				// All of it: an instruction hidden past a cut would be one the reviewer never read.
+				arguments: call.argumentsText,
 			},
 			rules: begin.rules,
 		});
@@ -458,7 +475,7 @@ export class CloudActionReviewGate {
 						argumentSha256: call.argumentSha256,
 						// The card shows the exact arguments: after a parked approval the woken agent
 						// repeats the identical call, which only an identical digest matches.
-						action: { ...description, arguments: argumentText(call.parsed) } as unknown as JsonValue,
+						action: { ...description, arguments: call.argumentsText } as unknown as JsonValue,
 						decision: verdict.decision,
 						ruleIds: verdict.ruleIds,
 						builtIn: verdict.builtIn,
@@ -487,6 +504,23 @@ export class CloudActionReviewGate {
 	}
 
 	async #hold(reviewId: string, approver: string, signal: AbortSignal): Promise<CloudActionGateResult> {
+		try {
+			return await this.#poll(reviewId, approver, signal);
+		} catch (error) {
+			// The hold ended early (the run stopped, or the kernel could not be read): park the
+			// card so its answer wakes the agent. Best effort; the kernel's heartbeat covers the rest.
+			await this.#control
+				.call(
+					"qorpera_await_action_review",
+					{ p_binding: this.#binding, p_review_id: reviewId, p_park: true },
+					AbortSignal.timeout(PARK_ON_EXIT_MS),
+				)
+				.catch(() => undefined);
+			throw error;
+		}
+	}
+
+	async #poll(reviewId: string, approver: string, signal: AbortSignal): Promise<CloudActionGateResult> {
 		const until = Date.now() + this.#holdMs;
 		for (;;) {
 			const park = Date.now() >= until;
@@ -516,15 +550,19 @@ export class CloudActionReviewGate {
 			// A wait that asked to park is answered, used or parked, never still pending.
 			if (state.state !== "pending" || park) throw new Error("Action review response is invalid");
 			await new Promise<void>((resolve, reject) => {
-				const timer = setTimeout(resolve, Math.max(0, Math.min(this.#pollMs, until - Date.now())));
-				signal.addEventListener(
-					"abort",
+				signal.throwIfAborted();
+				const abort = () => {
+					clearTimeout(timer);
+					reject(signal.reason);
+				};
+				const timer = setTimeout(
 					() => {
-						clearTimeout(timer);
-						reject(signal.reason);
+						signal.removeEventListener("abort", abort);
+						resolve();
 					},
-					{ once: true },
+					Math.max(0, Math.min(this.#pollMs, until - Date.now())),
 				);
+				signal.addEventListener("abort", abort, { once: true });
 			});
 		}
 	}

@@ -84,7 +84,14 @@ export type CloudToolContent = ({ kind: "text"; value: string } | { kind: "json"
 /** The auto-review step (runtime v115) an acting call passes before it runs. */
 export interface CloudNativeActionReview {
 	check(
-		call: { tool: CloudNativeTool; parsed: JsonValue; argumentSha256: string; callId: string },
+		call: {
+			tool: CloudNativeTool;
+			parsed: JsonValue;
+			/** The exact canonical arguments the digest covers: repeating them repeats the call. */
+			argumentsText: string;
+			argumentSha256: string;
+			callId: string;
+		},
 		signal: AbortSignal,
 	): Promise<CloudActionGateResult>;
 }
@@ -556,7 +563,7 @@ export class CloudNativeToolBoundary {
 			let gate: CloudActionGateResult;
 			try {
 				gate = await untilStopped(
-					() => this.#review!.check({ tool, parsed, argumentSha256: digest, callId }, this.#signal),
+					() => this.#review!.check({ tool, parsed, argumentsText, argumentSha256: digest, callId }, this.#signal),
 					this.#signal,
 				);
 			} catch {

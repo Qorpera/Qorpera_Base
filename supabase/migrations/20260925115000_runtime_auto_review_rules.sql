@@ -31,10 +31,14 @@
 -- Who answers a card: a personal rule's card only that member; a company
 -- rule's or a built-in check's card any owner or admin. A card waits until
 -- someone answers (no expiry). The runtime holds an attended call open for a
--- while (the member is likely around) and then parks it; an answer to a parked
--- card wakes the agent in the card's conversation, on the answering member's
--- own model account, and the agent repeats the exact call, which then runs
--- without a second review (the approval is consumed by that call).
+-- while (the member is likely around), renewing a short heartbeat, and then
+-- parks it. An answer to a card no call is holding (parked, stopped, or its run
+-- ended) wakes the agent in the card's conversation, on the answering member's
+-- own model account; the agent repeats the exact call (the card shows its
+-- exact arguments), which then runs without a second review (the approval is
+-- consumed by that call). A member's Deny, or the reviewer's, stands for that
+-- exact call. The answer is refused by qorpera_answer_interaction: these cards
+-- are answered only here.
 --
 -- Cards are raised only where cards live (the agent's own thread or a plain
 -- conversation; never a group chat or a worker). Elsewhere an ask is recorded
@@ -75,7 +79,7 @@ create table public.qorpera_action_reviews (
 	tool_name text not null check (tool_name ~ '^[a-z][a-z0-9_]{0,63}$'),
 	effect text not null check (effect in ('external', 'destructive', 'delegation')),
 	argument_sha256 text not null check (argument_sha256 ~ '^[0-9a-f]{64}$'),
-	action jsonb not null check (jsonb_typeof(action) = 'object' and octet_length(action::text) <= 32768),
+	action jsonb not null check (jsonb_typeof(action) = 'object' and octet_length(action::text) <= 196608),
 	decision text not null check (decision in ('allow', 'ask', 'deny')),
 	rule_ids uuid[] not null default '{}',
 	built_in text not null check (built_in in
@@ -92,6 +96,10 @@ create table public.qorpera_action_reviews (
 	answered_at timestamptz,
 	saved_rule_id uuid references public.qorpera_review_rules(id) on delete set null,
 	parked_at timestamptz,
+	-- A holding call's heartbeat: while it lies ahead, a run is still polling this card
+	-- and reads its answer; once it has passed (the call parked, stopped or its run
+	-- ended), an answer wakes the agent instead.
+	held_until timestamptz,
 	woken_at timestamptz,
 	consumed_at timestamptz,
 	consumed_run_id uuid,
@@ -256,26 +264,35 @@ begin
 		or coalesce(p_call ->> 'tool', '') !~ '^[a-z][a-z0-9_]{0,63}$'
 		or coalesce(p_call ->> 'argumentSha256', '') !~ '^[0-9a-f]{64}$' then
 		raise exception 'Action review request is invalid' using errcode = '22023'; end if;
+	-- The latest review of exactly this action, by this agent, for the same member
+	-- (an approval or a denial given for one member's work never serves another's).
 	select review.* into v_review from public.qorpera_action_reviews as review
 	where review.profile_id = v_run.profile_id and review.staff_agent_id = v_run.staff_agent_id
 		and review.tool_name = p_call ->> 'tool' and review.argument_sha256 = p_call ->> 'argumentSha256'
-		and review.decision = 'ask' and review.consumed_at is null and review.answer in ('allow_once', 'always_allow')
-	order by review.answered_at, review.id limit 1 for update;
-	if found then
+		and review.requester_user_id is not distinct from v_run.requested_by_user_id
+		and (review.decision = 'deny' or (review.decision = 'ask' and (review.card_session_id is not null
+			or review.answer is not null)))
+	order by review.created_at desc, review.id desc limit 1 for update;
+	if found and (v_review.decision = 'deny' or v_review.answer = 'deny') then
+		-- A denial stands for this exact call: a second opinion is not asked for.
+		return jsonb_build_object('schema', 'qorpera.action-review-begin/v1', 'state', 'declined', 'reviewId', v_review.id,
+			'answeredBy', public.qorpera_review_member_name(v_run.profile_id, v_review.answered_by_user_id));
+	elsif found and v_review.answer is not null and v_review.consumed_at is null then
 		update public.qorpera_action_reviews set consumed_at = clock_timestamp(), consumed_run_id = v_run.id
 		where id = v_review.id;
 		return jsonb_build_object('schema', 'qorpera.action-review-begin/v1', 'state', 'approved', 'reviewId', v_review.id,
 			'answeredBy', public.qorpera_review_member_name(v_run.profile_id, v_review.answered_by_user_id));
-	end if;
-	select review.* into v_review from public.qorpera_action_reviews as review
-	where review.profile_id = v_run.profile_id and review.staff_agent_id = v_run.staff_agent_id
-		and review.tool_name = p_call ->> 'tool' and review.argument_sha256 = p_call ->> 'argumentSha256'
-		and review.decision = 'ask' and review.answer is null and review.card_session_id is not null
-	order by review.created_at desc, review.id limit 1;
-	if found then
+	elsif found and v_review.answer is null then
 		return jsonb_build_object('schema', 'qorpera.action-review-begin/v1', 'state', 'pending', 'reviewId', v_review.id,
 			'approverScope', v_review.approver_scope,
 			'approverName', public.qorpera_review_member_name(v_run.profile_id, v_review.approver_user_id));
+	elsif found and v_review.woken_at is not null and v_review.consumed_run_id is distinct from v_run.id
+		and v_review.consumed_at < v_review.woken_at + interval '30 seconds'
+		and clock_timestamp() < v_review.woken_at + interval '1 hour' then
+		-- The answer woke the agent, but the call that was still holding ran it: the
+		-- repeat the wake asks for has nothing left to do.
+		return jsonb_build_object('schema', 'qorpera.action-review-begin/v1', 'state', 'used', 'reviewId', v_review.id,
+			'answeredBy', public.qorpera_review_member_name(v_run.profile_id, v_review.answered_by_user_id));
 	end if;
 	select staff.* into v_agent from public.qorpera_profile_staff as staff
 	where staff.profile_id = v_run.profile_id and staff.staff_agent_id = v_run.staff_agent_id;
@@ -344,6 +361,8 @@ begin
 		or p_review ->> 'effect' not in ('external', 'destructive', 'delegation') then
 		raise exception 'Action review record is invalid' using errcode = '22023'; end if;
 	v_decision := p_review ->> 'decision';
+	-- An action the reviewer says was not asked for never runs on an allow.
+	if v_decision = 'allow' and v_built_in = 'not_requested' then v_decision := 'deny'; end if;
 	-- Ask first always wins over an allow; a built-in check asks unless an allow rule covers it.
 	if v_decision = 'allow' and (
 		exists (select 1 from unnest(v_rules) as rule where (rule).outcome = 'ask_first')
@@ -375,12 +394,13 @@ begin
 	v_id := pg_catalog.gen_random_uuid();
 	insert into public.qorpera_action_reviews (id, profile_id, run_id, call_id, staff_agent_id, session_id,
 		requester_user_id, tool_name, effect, argument_sha256, action, decision, rule_ids, built_in, reason,
-		proposed_rule, reviewer_model, approver_scope, approver_user_id, card_session_id)
+		proposed_rule, reviewer_model, approver_scope, approver_user_id, card_session_id, held_until)
 	values (v_id, v_run.profile_id, v_run.id, p_review ->> 'callId', v_run.staff_agent_id, v_run.session_id,
 		v_run.requested_by_user_id, p_review ->> 'tool', p_review ->> 'effect', p_review ->> 'argumentSha256',
 		p_review -> 'action', v_decision, v_rule_ids, v_built_in, left(btrim(p_review ->> 'reason'), 500),
 		case when v_always then left(btrim(p_review ->> 'proposedRule'), 280) end, p_review ->> 'reviewerModel',
-		v_scope, v_approver, case when v_card then v_run.session_id end)
+		v_scope, v_approver, case when v_card then v_run.session_id end,
+		case when v_card then clock_timestamp() + interval '10 seconds' end)
 	returning * into v_review;
 	if v_card then
 		select event.body #>> '{entry,id}' into v_parent from public.qorpera_session_events as event
@@ -419,7 +439,7 @@ returns jsonb language sql stable security definer set search_path = '' as $$
 		-- The exact call, so the agent woken by a parked approval can repeat it identically.
 		'tool', p_review.tool_name,
 		'arguments', case when jsonb_typeof(p_review.action -> 'arguments') = 'string'
-			then left(p_review.action ->> 'arguments', 8192) end,
+			then p_review.action ->> 'arguments' end,
 		'builtIn', p_review.built_in,
 		'rules', (select jsonb_agg(jsonb_build_object('id', rule.id, 'scope', rule.scope, 'when', rule.when_text,
 				'outcome', rule.outcome) order by rule.scope = 'company' desc, rule.created_at)
@@ -465,10 +485,13 @@ begin
 	elsif v_review.answer is not null then
 		v_state := case when v_review.consumed_run_id = v_run.id then 'approved' else 'used' end;
 	elsif p_park then
-		update public.qorpera_action_reviews set parked_at = coalesce(parked_at, clock_timestamp()) where id = v_review.id;
+		update public.qorpera_action_reviews set parked_at = coalesce(parked_at, clock_timestamp()), held_until = null
+		where id = v_review.id;
 		v_state := 'parked';
 	else
-		update public.qorpera_action_reviews set parked_at = null where id = v_review.id and parked_at is not null;
+		-- Still holding: renew the heartbeat, a few polls long.
+		update public.qorpera_action_reviews set parked_at = null, held_until = clock_timestamp() + interval '10 seconds'
+		where id = v_review.id;
 		v_state := 'pending';
 	end if;
 	return jsonb_build_object('schema', 'qorpera.action-review-wait/v1', 'reviewId', v_review.id, 'state', v_state,
@@ -479,10 +502,12 @@ $$;
 
 -- A member answers an approval card: Allow once, Always allow (a built-in check's
 -- card only; saves the proposed rule, as edited, as a company rule) or Deny. The
--- answer joins the card's conversation as its decision. If the agent stopped
--- waiting (the card is parked), the answer also wakes the agent there, on the
--- answering member's own model account, checked as a post there is: an answer
--- that could not wake the agent is refused and records nothing.
+-- answerer needs write access to the card's conversation. The answer joins the
+-- conversation as the card's decision. If no call is holding the card any more
+-- (it parked, was stopped, or its run ended), the answer also wakes the agent
+-- there, on the answering member's own model account, checked as a post or a
+-- message there is: an answer that could not wake the agent is refused and
+-- records nothing. An answer whose delivery failed may be given again.
 create function public.qorpera_answer_action_review(p_review_id uuid, p_client_input_id uuid, p_answer text,
 	p_rule_text text default null, p_sponsor_binding_id uuid default null, p_sponsor_version bigint default null)
 returns jsonb language plpgsql security definer set search_path = '' as $$
@@ -495,6 +520,7 @@ declare
 	v_connection_version public.qorpera_provider_connection_versions%rowtype;
 	v_capsule public.qorpera_native_credential_capsules%rowtype;
 	v_identity public.qorpera_member_compute_identities%rowtype;
+	v_pending_inputs integer; v_pending_body_bytes bigint;
 begin
 	if v_user is null then raise exception 'authentication required' using errcode = '42501'; end if;
 	if p_review_id is null or p_client_input_id is null or p_answer not in ('allow_once', 'always_allow', 'deny') then
@@ -503,6 +529,14 @@ begin
 	if not found or v_review.decision <> 'ask' or v_review.card_session_id is null
 		or public.qorpera_member_role(v_review.profile_id) is null then
 		raise exception 'Approval is unavailable' using errcode = '42501'; end if;
+	-- As any write into the conversation: write access, and not while the company's objects are cleaned up.
+	perform public.qorpera_session_profile_for_write(v_review.card_session_id);
+	perform public.qorpera_lock_profile_gc_fence(v_review.profile_id);
+	if public.qorpera_profile_gc_deletion_active(v_review.profile_id) then
+		raise sqlstate 'PGRST' using message = jsonb_build_object('code', 'QRC01', 'message',
+			'profile object cleanup is in progress', 'details', null, 'hint', null)::text,
+			detail = '{"status":409,"headers":{}}';
+	end if;
 	-- Lock order: the conversation, then the review.
 	select session.* into v_session from public.qorpera_shared_sessions as session
 	where session.id = v_review.card_session_id for update;
@@ -520,6 +554,23 @@ begin
 		return jsonb_build_object('reviewId', p_review_id, 'answer', v_review.answer, 'inputId', v_input.id,
 			'savedRuleId', v_review.saved_rule_id, 'woke', v_review.woken_at is not null);
 	end if;
+	-- An earlier answer whose delivery failed (its turn request refused at admission)
+	-- never reached the agent: the card may be answered again.
+	if v_review.answer is not null and v_review.consumed_at is null and exists (
+		select 1 from public.qorpera_session_inputs as input
+		where input.session_id = v_session.id and input.kind = 'user_message'
+			and input.body ->> 'schema' = 'qorpera.interaction-answer/v1'
+			and input.body ->> 'interactionId' = p_review_id::text and input.failed_at is not null
+	) and not exists (
+		select 1 from public.qorpera_session_inputs as input
+		where input.session_id = v_session.id and input.kind = 'user_message'
+			and input.body ->> 'schema' = 'qorpera.interaction-answer/v1'
+			and input.body ->> 'interactionId' = p_review_id::text and input.failed_at is null
+	) then
+		update public.qorpera_action_reviews set answer = null, answered_by_user_id = null, answered_at = null,
+			saved_rule_id = null, woken_at = null
+		where id = p_review_id returning * into v_review;
+	end if;
 	if v_review.answer is not null then
 		raise exception 'This approval is already answered' using errcode = '55000'; end if;
 	if v_session.status <> 'open' then raise exception 'conversation is closed' using errcode = '55000'; end if;
@@ -536,7 +587,8 @@ begin
 	elsif p_rule_text is not null then
 		raise exception 'Only Always allow saves a rule' using errcode = '22023';
 	end if;
-	v_wake := v_review.parked_at is not null;
+	-- Wake the agent unless a call is still holding the card (its heartbeat lies ahead).
+	v_wake := v_review.held_until is null or v_review.held_until < clock_timestamp();
 	select room.* into v_room from public.qorpera_company_rooms as room
 	where room.session_id = v_session.id and room.bound_staff_agent_id is not null;
 	v_body := jsonb_build_object('schema', 'qorpera.interaction-answer/v1', 'interactionId', p_review_id,
@@ -545,8 +597,20 @@ begin
 	if v_wake then
 		if public.qorpera_company_execution_paused(v_review.profile_id) then
 			raise exception 'Company execution is paused' using errcode = '55000'; end if;
+		select count(*), coalesce(sum(pg_column_size(input.body)), 0) into v_pending_inputs, v_pending_body_bytes
+		from public.qorpera_session_inputs as input
+		where input.session_id = v_session.id and input.completed_at is null and input.failed_at is null;
+		if v_pending_inputs >= 512 or v_pending_body_bytes + pg_column_size(v_body) > 16777216 then
+			raise exception 'session queue capacity is reached' using errcode = '54000'; end if;
 		if v_room.id is not null then
-			-- The agent's own thread: woken like a post there, on the member's own account.
+			-- The agent's own thread: woken like a post there, by an active member of the
+			-- thread, on the member's own account.
+			if not exists (
+				select 1 from public.qorpera_company_room_members as member
+				where member.room_id = v_room.id and member.principal_kind = 'member'
+					and member.principal_id = v_user and member.status = 'active'
+			) then
+				raise exception 'Only a member of this thread can wake its agent' using errcode = '42501'; end if;
 			if p_sponsor_binding_id is null or p_sponsor_version is null or v_room.status <> 'active' or not exists (
 				select 1 from public.qorpera_execution_sponsor_bindings as binding
 				join public.qorpera_execution_sponsor_versions as sponsor
@@ -671,6 +735,43 @@ grant execute on function public.qorpera_begin_action_review(jsonb, jsonb),
 	public.qorpera_await_action_review(jsonb, uuid, boolean)
 	to service_role;
 
+
+-- These approval cards are answered only by qorpera_answer_action_review, which
+-- knows who they wait for and whether a call still holds them. The general card
+-- answer (qorpera_answer_interaction as of 20260924232000) accepted any
+-- authorization_request from an owner or admin; answering one of these there
+-- would record a decision the held call never reads and take the card's one
+-- answer slot, so it refuses them. Earlier web clients show their Approve and
+-- Decline on these cards; those now report the refusal and change nothing.
+create function pg_temp.auto_review_replace(p_definition text, p_old text, p_new text)
+returns text language plpgsql as $$
+begin
+	if p_old = '' or (length(p_definition) - length(replace(p_definition, p_old, ''))) / length(p_old) <> 1 then
+		raise exception 'Auto-review card answer integration differs: %', left(p_old, 80); end if;
+	return replace(p_definition, p_old, p_new);
+end
+$$;
+do $migration$
+declare
+	v_definition text := pg_get_functiondef(
+		'public.qorpera_answer_interaction(uuid,uuid,uuid,text,jsonb,uuid,bigint)'::regprocedure);
+begin
+	v_definition := pg_temp.auto_review_replace(v_definition,
+		$old$	if not found then
+		raise exception 'interaction request is unavailable' using errcode = '22023';
+	end if;
+$old$,
+		$new$	if not found then
+		raise exception 'interaction request is unavailable' using errcode = '22023';
+	end if;
+	if v_request.body #>> '{entry,data,schema}' = 'qorpera.action-review/v1'
+		or exists (select 1 from public.qorpera_action_reviews as review where review.id = p_interaction_id) then
+		raise exception 'this approval is answered with qorpera_answer_action_review' using errcode = '22023';
+	end if;
+$new$);
+	execute v_definition;
+end
+$migration$;
 
 -- Runtime observation vocabulary: the reviewer's model turn is observed as
 -- action_review, and a call that did not run because of a review carries its
