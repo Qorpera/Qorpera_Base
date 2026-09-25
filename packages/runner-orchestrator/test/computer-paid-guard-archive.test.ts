@@ -4,11 +4,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+	assertPaidComputerTerminalPermit,
 	type PaidComputerArm,
 	PaidComputerGuard,
 	PaidComputerGuardJournal,
 	type PaidComputerGuardPhysical,
 	type PaidComputerHostClock,
+	type PaidComputerPermit,
 	type PaidComputerPrestartRecord,
 } from "../src/computer-paid-guard.ts";
 import { PaidComputerGuardClient, servePaidComputerGuard } from "../src/computer-paid-guard-ipc.ts";
@@ -154,6 +156,112 @@ function abandonment(entry: PaidComputerPrestartRecord) {
 }
 
 describe("paid guard terminal archival", () => {
+	it.each([false, true])(
+		"archives a lost SQL renewal without changing physical stop evidence (late commit: %s)",
+		async (late) => {
+			const f = await fixture(),
+				stopped = await f.stopped();
+			const renewed: PaidComputerPermit = {
+				...f.input.permit,
+				state: "bound",
+				generation: 2,
+				reservationId: randomUUID(),
+				physicalId: f.input.machine.physicalInstanceId,
+				guestBootId: randomUUID(),
+				issuedAt: late ? "2026-09-25T12:06:00.000Z" : "2026-09-25T12:04:00.000Z",
+				deadline: "2026-09-25T12:09:30.000Z",
+				validForMs: 0,
+			};
+			assertPaidComputerTerminalPermit(stopped, renewed);
+			await expect(f.guard.arm({ ...f.input, permit: renewed })).rejects.toThrow();
+			expect(await f.guard.status(renewed.permitId)).toEqual(stopped);
+			await expect(f.guard.archive(renewed.permitId, renewed)).rejects.toThrow();
+			const closed = { ...renewed, state: "closed" };
+			await f.guard.archive(renewed.permitId, closed);
+			const persisted = JSON.parse(await readFile(join(f.journalRoot, "archive", "0000000000000001.json"), "utf8"));
+			expect(persisted.guard).toEqual(stopped);
+			expect(persisted.closure).toEqual(closed);
+			const restarted = f.restart();
+			await restarted.initialize();
+			await restarted.archive(renewed.permitId, closed);
+			expect(await restarted.stop(renewed.permitId)).toEqual(stopped);
+			await expect(restarted.start(renewed.permitId, 2)).rejects.toThrow();
+			expect(f.physical.start).toHaveBeenCalledOnce();
+			expect(f.physical.stop).toHaveBeenCalledOnce();
+		},
+	);
+	it("rejects skipped windows and changed renewal lineage while retaining terminal custody", async () => {
+		const f = await fixture(),
+			stopped = await f.stopped();
+		const closed: PaidComputerPermit = {
+			...f.input.permit,
+			state: "closed",
+			generation: 2,
+			reservationId: randomUUID(),
+			physicalId: f.input.machine.physicalInstanceId,
+			guestBootId: randomUUID(),
+			issuedAt: "2026-09-25T12:04:00.000Z",
+			deadline: "2026-09-25T12:09:30.000Z",
+			validForMs: 0,
+		};
+		for (const altered of [
+			{ ...closed, generation: 3 },
+			{ ...closed, reservationId: f.input.permit.reservationId },
+			{ ...closed, epoch: randomUUID() },
+			{ ...closed, nodeId: randomUUID() },
+			{ ...closed, guestBootId: null },
+			{ ...closed, physicalId: null },
+			{ ...closed, physicalId: randomUUID() },
+			{ ...closed, tariffVersion: 2 },
+			{ ...closed, issuedAt: f.input.permit.issuedAt, deadline: f.input.permit.deadline },
+			{ ...closed, prestart: { ...closed.prestart!, prepareSha256: "c".repeat(64) } },
+		])
+			await expect(f.guard.archive(closed.permitId, altered)).rejects.toThrow();
+		expect(await f.guard.status(closed.permitId)).toEqual(stopped);
+		expect(await f.guard.list()).toHaveLength(1);
+	});
+	it("requires a successful settled start before reconciling a successor generation", async () => {
+		const f = await fixture();
+		f.physical.startSettled.mockResolvedValue("failed");
+		await f.stopped();
+		await expect(
+			f.guard.archive(f.input.permit.permitId, {
+				...f.closed(),
+				generation: 2,
+				reservationId: randomUUID(),
+				physicalId: f.input.machine.physicalInstanceId,
+				guestBootId: randomUUID(),
+				issuedAt: "2026-09-25T12:04:00.000Z",
+				deadline: "2026-09-25T12:09:30.000Z",
+			}),
+		).rejects.toThrow();
+		await f.guard.archive(f.input.permit.permitId, f.closed());
+	});
+	it("pins a previously bound guest and requires terminal custody before successor reconciliation", async () => {
+		const f = await fixture();
+		await f.guard.arm(f.input);
+		await f.guard.start(f.input.permit.permitId, 1);
+		const bound: PaidComputerPermit = {
+			...f.input.permit,
+			state: "bound",
+			physicalId: f.input.machine.physicalInstanceId,
+			guestBootId: randomUUID(),
+		};
+		const running = await f.guard.arm({ ...f.input, permit: bound });
+		const successor: PaidComputerPermit = {
+			...bound,
+			state: "closed",
+			generation: 2,
+			reservationId: randomUUID(),
+			issuedAt: "2026-09-25T12:04:00.000Z",
+			deadline: "2026-09-25T12:09:30.000Z",
+			validForMs: 0,
+		};
+		expect(() => assertPaidComputerTerminalPermit(running, successor)).toThrow();
+		await f.guard.stop(bound.permitId);
+		await expect(f.guard.archive(bound.permitId, { ...successor, guestBootId: randomUUID() })).rejects.toThrow();
+		await f.guard.archive(bound.permitId, successor);
+	});
 	it("exposes archival and retained ownership through the private guard IPC", async () => {
 		const f = await fixture(),
 			controller = new AbortController(),

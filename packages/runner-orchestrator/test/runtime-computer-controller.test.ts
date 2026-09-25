@@ -18,7 +18,7 @@ const roots: string[] = [];
 afterEach(async () => {
 	await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
-async function fixture() {
+async function fixture(providerKind: "native" | "office" = "native") {
 	const root = await realpath(await mkdtemp(join(tmpdir(), "runtime-permit-")));
 	roots.push(root);
 	await chmod(root, 0o700);
@@ -29,15 +29,15 @@ async function fixture() {
 	};
 	const context: RuntimeComputerContext = {
 		allocationId: randomUUID(),
-		providerKind: "native",
-		providerId: "native",
+		providerKind,
+		providerId: providerKind,
 		policySha256: "b".repeat(64),
 		instanceSha256: "c".repeat(64),
 		bootstrapSha256: "d".repeat(64),
-		runId: randomUUID(),
-		runnerId: randomUUID(),
-		officeId: null,
-		computerGeneration: null,
+		runId: providerKind === "native" ? randomUUID() : null,
+		runnerId: providerKind === "native" ? randomUUID() : null,
+		officeId: providerKind === "office" ? randomUUID() : null,
+		computerGeneration: providerKind === "office" ? 1 : null,
 	};
 	const target: RuntimePaidComputerMachine["physicalTarget"] = {
 		kind: "lxd",
@@ -161,6 +161,9 @@ async function fixture() {
 			}
 			if (!permit) throw new Error("permit missing");
 			const sample = request.sample as Record<string, unknown>;
+			if (request.generation !== permit.generation) throw new Error("SQL generation differs");
+			if (sample.previousObservationId !== (lastSample?.observationId ?? null))
+				throw new Error("SQL predecessor differs");
 			samples.push(structuredClone(sample));
 			lastSample = structuredClone(sample);
 			if (method.includes("bind"))
@@ -257,6 +260,70 @@ async function fixture() {
 }
 const signal = () => new AbortController().signal;
 describe("funded runtime physical custody", () => {
+	it.each(["native", "office"] as const)(
+		"recovers %s SQL closure after lost renewal and finish replies without another settlement",
+		async (kind) => {
+			const f = await fixture(kind);
+			await f.start();
+			f.clock.uptimeMs = 350000;
+			f.setGuestUptime(251);
+			f.loseRenew();
+			await expect(f.controller.observe(f.context.allocationId, signal())).rejects.toThrow("renew reply lost");
+			await f.controller.stop(f.context.allocationId, signal());
+			const stopped = await f.guard.latest(f.context.allocationId);
+			f.moveSource();
+			f.loseFinish();
+			await expect(f.controller.observe(f.context.allocationId, signal())).rejects.toThrow("finish reply lost");
+			expect(f.permit).toMatchObject({ generation: 2, state: "closed" });
+			await f.restart();
+			f.control.call.mockClear();
+			await f.controller.maintain(signal());
+			expect(await f.guard.list()).toEqual([]);
+			expect(await f.guard.latest(f.context.allocationId)).toEqual(stopped);
+			expect(
+				f.control.call.mock.calls.filter(([method]) => method.includes("finish") || method.includes("renew")),
+			).toHaveLength(0);
+			expect(f.client.submitInstanceOperation.mock.calls.map((call) => call[1].action)).toEqual(["start", "stop"]);
+		},
+	);
+	it.each(["epoch", "nodeId", "physicalId", "generation"])(
+		"refuses stopped recovery before settlement when historical %s differs",
+		async (field) => {
+			const f = await fixture();
+			await f.start();
+			await f.controller.stop(f.context.allocationId, signal());
+			const original = f.control.call.getMockImplementation()!;
+			f.control.call.mockImplementation(async (method, args) => {
+				const result = await original(method, args);
+				if (method !== "qorpera_describe_runtime_computer_prestart") return result;
+				return {
+					...(result as Record<string, unknown>),
+					permit: { ...f.permit, [field]: field === "generation" ? 3 : randomUUID() },
+				};
+			});
+			await expect(f.controller.observe(f.context.allocationId, signal())).rejects.toThrow();
+			expect(f.control.call.mock.calls.filter(([method]) => method.includes("finish"))).toHaveLength(0);
+			expect(f.controller.manages(f.context.allocationId)).toBe(true);
+			expect(await f.guard.list()).toHaveLength(1);
+		},
+	);
+	it("does not charge or renew while stopping, or advance SQL again before the recovered generation reaches the guard", async () => {
+		const f = await fixture();
+		await f.start();
+		f.clock.uptimeMs = 350000;
+		f.setGuestUptime(251);
+		vi.spyOn(f.guard, "arm").mockRejectedValueOnce(new Error("guard renewal unavailable"));
+		await expect(f.controller.observe(f.context.allocationId, signal())).rejects.toThrow("guard renewal unavailable");
+		expect(f.permit?.generation).toBe(2);
+		const calls = f.control.call.mock.calls.length;
+		await expect(f.controller.observe(f.context.allocationId, signal())).rejects.toThrow("GUARD_GENERATION_DIFFERS");
+		expect(f.control.call).toHaveBeenCalledTimes(calls);
+		f.client.submitInstanceOperation.mockRejectedValueOnce(new Error("stop unavailable"));
+		await expect(f.controller.stop(f.context.allocationId, signal())).rejects.toThrow("stop unavailable");
+		await expect(f.controller.observe(f.context.allocationId, signal())).rejects.toThrow("STOP_UNCONFIRMED");
+		expect(f.control.call).toHaveBeenCalledTimes(calls);
+		expect(f.permit?.generation).toBe(2);
+	});
 	it("retains an armed cancellation until exact physical stop proof can be archived", async () => {
 		const f = await fixture();
 		await f.controller.ensure(f.context, f.context.allocationId, signal());
@@ -336,21 +403,34 @@ describe("funded runtime physical custody", () => {
 		await f.controller.maintain(signal());
 		expect(f.controller.manages(f.context.allocationId)).toBe(false);
 	});
-	it("retains stopped custody when SQL renewed beyond the last generation installed in the guard", async () => {
-		const f = await fixture();
-		await f.start();
-		f.clock.uptimeMs = 350000;
-		f.setGuestUptime(251);
-		f.loseRenew();
-		await expect(f.controller.observe(f.context.allocationId, signal())).rejects.toThrow("renew reply lost");
-		await f.controller.stop(f.context.allocationId, signal());
-		await expect(f.controller.observe(f.context.allocationId, signal())).rejects.toThrow("CLOSURE_DIFFERS");
-		await expect(f.controller.maintain(signal())).rejects.toThrow("RECOVERY_UNCONFIRMED");
-		expect(f.controller.manages(f.context.allocationId)).toBe(true);
-		expect(await f.guard.list()).toHaveLength(1);
-		expect((await f.guard.latest(f.context.allocationId))?.permit.generation).toBe(1);
-		expect((await f.guard.latest(f.context.allocationId))?.phase).toBe("stopped");
-	});
+	it.each([false, true])(
+		"settles a lost renewal after expiry using immutable history (restart: %s)",
+		async (restart) => {
+			const f = await fixture();
+			await f.start();
+			f.clock.uptimeMs = 350000;
+			f.setGuestUptime(251);
+			f.loseRenew();
+			await expect(f.controller.observe(f.context.allocationId, signal())).rejects.toThrow("renew reply lost");
+			f.clock.uptimeMs = 400001;
+			await f.guard.sweep();
+			const stopped = await f.guard.latest(f.context.allocationId);
+			f.moveSource();
+			if (restart) await f.restart();
+			f.control.call.mockClear();
+			if (restart) await f.controller.maintain(signal());
+			else await f.controller.observe(f.context.allocationId, signal());
+			expect(f.controller.manages(f.context.allocationId)).toBe(false);
+			expect(await f.guard.list()).toEqual([]);
+			expect(await f.guard.latest(f.context.allocationId)).toEqual(stopped);
+			expect(f.permit).toMatchObject({ state: "closed", generation: 2 });
+			expect(f.control.call.mock.calls.filter(([method]) => method.includes("finish"))).toHaveLength(1);
+			expect(
+				f.control.call.mock.calls.filter(([method]) => method === "qorpera_describe_runtime_computer_permit"),
+			).toHaveLength(0);
+			expect(f.client.submitInstanceOperation.mock.calls.map((call) => call[1].action)).toEqual(["start", "stop"]);
+		},
+	);
 	it.each([false, true])(
 		"checks the exact durable abandonment closure after a lost reply (altered: %s)",
 		async (altered) => {

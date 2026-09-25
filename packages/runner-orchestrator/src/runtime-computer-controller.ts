@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import type { CodingPaidGuardPort } from "./coding-computer-controller.ts";
 import {
+	assertPaidComputerTerminalPermit,
 	isRuntimePaidComputerMachine,
 	PAID_COMPUTER_STOP_RESERVE_MS,
 	PAID_COMPUTER_WINDOW_MS,
@@ -213,6 +214,19 @@ export class RuntimeComputerController {
 		} = request;
 		return context as unknown as RuntimeComputerContext;
 	}
+	async #history(entry: PaidComputerPrestartRecord, signal: AbortSignal): Promise<Record<string, unknown>> {
+		return object(
+			await this.#call(
+				"qorpera_describe_runtime_computer_prestart",
+				{
+					...computerPrestartRequest(entry),
+					prepareRequestText: entry.intent.prepareRequestText,
+					prestart: { guardIncarnationId: entry.guardIncarnationId, prepareSha256: entry.intent.prepareSha256 },
+				},
+				signal,
+			),
+		);
+	}
 	async #abandon(entry: PaidComputerPrestartRecord, signal: AbortSignal): Promise<void> {
 		if (this.#abandoned.has(entry.intent.permitId)) return;
 		const terminal = await this.#options.guard.abandonPrestart(entry.intent, signal);
@@ -255,20 +269,7 @@ export class RuntimeComputerController {
 					this.#exclusive(entry.intent.allocationId, async () => {
 						if (this.#terminal.has(entry.intent.permitId)) return;
 						const started = await this.#clock();
-						const retained = object(
-							await this.#call(
-								"qorpera_describe_runtime_computer_prestart",
-								{
-									...computerPrestartRequest(entry),
-									prepareRequestText: entry.intent.prepareRequestText,
-									prestart: {
-										guardIncarnationId: entry.guardIncarnationId,
-										prepareSha256: entry.intent.prepareSha256,
-									},
-								},
-								signal,
-							),
-						);
+						const retained = await this.#history(entry, signal);
 						if (retained.state === "closed" || retained.state === "abandoned") {
 							if (retained.permit !== null || retained.state === "closed") {
 								const permit = this.#permit(retained.permit, this.#context(entry), started, true);
@@ -311,7 +312,6 @@ export class RuntimeComputerController {
 							await this.#abandon(entry, signal);
 							return;
 						}
-						if (this.#computers.has(entry.intent.allocationId)) return;
 						if (retained.state === "absent" && retained.permit === null) return;
 						if (retained.state !== "prepared" && retained.state !== "bound")
 							throw new Error("RUNTIME_COMPUTER_RECEIPT_INVALID");
@@ -321,13 +321,23 @@ export class RuntimeComputerController {
 						const sample = retained.lastSample === null ? null : object(retained.lastSample);
 						if (sample && (typeof sample.observationId !== "string" || !UUID.test(sample.observationId)))
 							throw new Error("RUNTIME_COMPUTER_RECEIPT_INVALID");
-						this.#computers.set(entry.intent.allocationId, {
+						const current: ManagedRuntimeComputer = {
 							context,
 							permit,
 							requestStartedUptimeMs: started.uptimeMs,
 							lastObservationId: (sample?.observationId as string | null) ?? null,
 							continuity: false,
+						};
+						const guarded = await this.#options.guard.status(permit.permitId, signal).catch((error: unknown) => {
+							if (error instanceof Error && error.message === "PAID_GUARD_PERMIT_MISSING") return null;
+							throw error;
 						});
+						if (guarded?.phase === "stopped") {
+							await this.#observe(current, signal, retained);
+							return;
+						}
+						if (!this.#computers.has(entry.intent.allocationId))
+							this.#computers.set(entry.intent.allocationId, current);
 					}),
 				),
 		]);
@@ -606,8 +616,14 @@ export class RuntimeComputerController {
 			state: "running",
 		};
 	}
-	async #observe(current: ManagedRuntimeComputer, signal: AbortSignal): Promise<void> {
-		let guarded = await this.#options.guard.latest(current.context.allocationId, signal);
+	async #observe(
+		current: ManagedRuntimeComputer,
+		signal: AbortSignal,
+		history?: Record<string, unknown>,
+	): Promise<void> {
+		let guarded = history
+			? await this.#options.guard.status(current.permit.permitId, signal)
+			: await this.#options.guard.latest(current.context.allocationId, signal);
 		if (!guarded || guarded.permit.permitId !== current.permit.permitId) return;
 		if (
 			guarded.phase !== "stopped" &&
@@ -620,6 +636,35 @@ export class RuntimeComputerController {
 			if (physical) assertRuntimePaidComputerInstance(guarded.machine, physical);
 			if (!physical || (physical.status === "Stopped" && physical.statusCode === 102))
 				guarded = await this.#options.guard.stop(guarded.permit.permitId, signal);
+		}
+		if (guarded.phase === "stopping") throw new Error("RUNTIME_COMPUTER_STOP_UNCONFIRMED");
+		if (guarded.phase === "stopped" && guarded.permit.schema === "qorpera.computer-usage-permit/v2") {
+			const entry = await this.#options.guard.prestartStatus(guarded.permit.permitId, signal);
+			if (!entry || !isDeepStrictEqual(this.#context(entry), current.context))
+				throw new Error("RUNTIME_COMPUTER_PRESTART_DIFFERS");
+			const retained = history ?? (await this.#history(entry, signal));
+			const permit = this.#permit(retained.permit, current.context, await this.#clock(), true);
+			if (retained.state !== permit.state || !["prepared", "bound", "closed"].includes(permit.state))
+				throw new Error("RUNTIME_COMPUTER_RECEIPT_INVALID");
+			assertPaidComputerTerminalPermit(guarded, permit);
+			if (permit.state === "closed") {
+				await this.#archive(current.context.allocationId, permit.permitId, retained.permit, signal);
+				return;
+			}
+			const lastSample = retained.lastSample === null ? null : object(retained.lastSample);
+			if (lastSample && (typeof lastSample.observationId !== "string" || !UUID.test(lastSample.observationId)))
+				throw new Error("RUNTIME_COMPUTER_RECEIPT_INVALID");
+			current = {
+				...current,
+				permit,
+				lastObservationId: (lastSample?.observationId as string | null) ?? null,
+				continuity: false,
+			};
+			const managed = this.#computers.get(current.context.allocationId);
+			if (!managed || managed.permit.permitId === current.permit.permitId)
+				this.#computers.set(current.context.allocationId, current);
+		} else if (guarded.phase !== "stopped" && current.permit.generation !== guarded.permit.generation) {
+			throw new Error("RUNTIME_COMPUTER_GUARD_GENERATION_DIFFERS");
 		}
 		const sample = await this.#sample(current, guarded, signal),
 			{ evidenceSha256: _evidence, ...facts } = sample;
@@ -651,7 +696,8 @@ export class RuntimeComputerController {
 				throw new Error("RUNTIME_COMPUTER_CLOSURE_DIFFERS");
 			if (closed.schema === "qorpera.computer-usage-permit/v2")
 				await this.#archive(current.context.allocationId, closed.permitId, receipt, signal);
-			this.#computers.delete(current.context.allocationId);
+			if (this.#computers.get(current.context.allocationId)?.permit.permitId === current.permit.permitId)
+				this.#computers.delete(current.context.allocationId);
 			this.#terminal.add(current.permit.permitId);
 			return;
 		}

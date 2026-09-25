@@ -172,6 +172,9 @@ async function fixture() {
 				return abandonmentClosure;
 			}
 			if (!permit) throw new Error("No permit");
+			if (request.generation !== permit.generation) throw new Error("SQL generation differs");
+			if ((request.sample as Record<string, unknown>).previousObservationId !== (lastSample?.observationId ?? null))
+				throw new Error("SQL predecessor differs");
 			lastSample = structuredClone(request.sample as Record<string, unknown>);
 			if (lastSample.state === "running")
 				permit = {
@@ -280,6 +283,74 @@ async function fixture() {
 }
 
 describe("paid coding computer controller", () => {
+	it.each([false, true])(
+		"settles the canonical successor after lost renewal and ownership change (lost finish: %s)",
+		async (lostFinish) => {
+			const f = await fixture();
+			await f.start();
+			await f.bind();
+			f.host.uptimeMs += 250000;
+			f.loseNextRenew();
+			await expect(f.controller.observe(f.machine.machineId, signal())).rejects.toThrow("renew reply lost");
+			f.host.uptimeMs += 50001;
+			await f.guard.sweep();
+			const stopped = await f.guard.latest(f.machine.machineId);
+			f.moveSource();
+			if (lostFinish) {
+				f.loseNextFinish();
+				await expect(f.controller.observe(f.machine.machineId, signal())).rejects.toThrow("finish reply lost");
+			}
+			const guard = await f.restartGuard();
+			const restarted = new CodingComputerController({ ...f.options, guard });
+			f.control.call.mockClear();
+			await restarted.initialize(signal());
+			await restarted.maintain(signal());
+			expect(f.getPermit()).toMatchObject({ generation: 2, state: "closed" });
+			expect(await guard.list()).toEqual([]);
+			expect(await guard.latest(f.machine.machineId)).toEqual(stopped);
+			expect(restarted.manages(f.machine.machineId)).toBe(false);
+			expect(f.calls("qorpera_finish_coding_computer_permit")).toHaveLength(lostFinish ? 0 : 1);
+			expect(f.calls("qorpera_describe_coding_computer_permit")).toHaveLength(0);
+			expect(f.client.submitInstanceOperation.mock.calls.map((call) => call[1].action)).toEqual(["start", "stop"]);
+		},
+	);
+	it("refuses a changed successor reservation before terminal settlement", async () => {
+		const f = await fixture();
+		await f.start();
+		await f.bind();
+		f.host.uptimeMs += 250000;
+		f.loseNextRenew();
+		await expect(f.controller.observe(f.machine.machineId, signal())).rejects.toThrow("renew reply lost");
+		await f.controller.stop(f.machine.machineId, signal());
+		const original = f.control.call.getMockImplementation()!;
+		const old = await f.guard.latest(f.machine.machineId);
+		f.control.call.mockImplementation(async (method, args) => {
+			const result = await original(method, args);
+			if (method !== "qorpera_describe_coding_computer_prestart") return result;
+			return {
+				...(result as Record<string, unknown>),
+				permit: { ...f.getPermit(), reservationId: old!.permit.reservationId },
+			};
+		});
+		await expect(f.controller.observe(f.machine.machineId, signal())).rejects.toThrow();
+		expect(f.calls("qorpera_finish_coding_computer_permit")).toHaveLength(0);
+		expect(await f.guard.list()).toHaveLength(1);
+	});
+	it("does not extend SQL while stopping or after a guard renewal installation failure", async () => {
+		const f = await fixture();
+		await f.start();
+		await f.bind();
+		f.host.uptimeMs += 250000;
+		vi.spyOn(f.guard, "arm").mockRejectedValueOnce(new Error("guard renewal unavailable"));
+		await expect(f.controller.observe(f.machine.machineId, signal())).rejects.toThrow("guard renewal unavailable");
+		const calls = f.control.call.mock.calls.length;
+		await expect(f.controller.observe(f.machine.machineId, signal())).rejects.toThrow("GUARD_GENERATION_DIFFERS");
+		f.client.submitInstanceOperation.mockRejectedValueOnce(new Error("stop unavailable"));
+		await expect(f.controller.stop(f.machine.machineId, signal())).rejects.toThrow("stop unavailable");
+		await expect(f.controller.observe(f.machine.machineId, signal())).rejects.toThrow("STOP_UNCONFIRMED");
+		expect(f.control.call).toHaveBeenCalledTimes(calls);
+		expect(f.getPermit()?.generation).toBe(2);
+	});
 	it("closes an armed but undispatched physical guard before archiving cancellation", async () => {
 		const f = await fixture();
 		await f.controller.ensure(f.claim, f.machine, signal());

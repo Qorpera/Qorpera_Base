@@ -11,6 +11,7 @@ import {
 	lxdCodingMachinePlan,
 } from "./coding-machine.ts";
 import {
+	assertPaidComputerTerminalPermit,
 	isRuntimePaidComputerMachine,
 	PAID_COMPUTER_STOP_RESERVE_MS,
 	PAID_COMPUTER_WINDOW_MS,
@@ -239,6 +240,19 @@ export class CodingComputerController implements CodingComputerUsage {
 			throw new Error("CODING_COMPUTER_PRESTART_DIFFERS");
 		return plan.binding;
 	}
+	async #history(entry: PaidComputerPrestartRecord, signal: AbortSignal): Promise<Record<string, unknown>> {
+		return object(
+			await this.#call(
+				"qorpera_describe_coding_computer_prestart",
+				{
+					...computerPrestartRequest(entry),
+					prepareRequestText: entry.intent.prepareRequestText,
+					prestart: { guardIncarnationId: entry.guardIncarnationId, prepareSha256: entry.intent.prepareSha256 },
+				},
+				signal,
+			),
+		);
+	}
 	async #abandon(entry: PaidComputerPrestartRecord, signal: AbortSignal): Promise<void> {
 		if (this.#abandoned.has(entry.intent.permitId)) return;
 		this.#prestartMachine(entry);
@@ -275,20 +289,7 @@ export class CodingComputerController implements CodingComputerUsage {
 						if (this.#terminal.has(entry.intent.permitId)) return;
 						const machine = this.#prestartMachine(entry);
 						const started = await this.#clock();
-						const retained = object(
-							await this.#call(
-								"qorpera_describe_coding_computer_prestart",
-								{
-									...computerPrestartRequest(entry),
-									prepareRequestText: entry.intent.prepareRequestText,
-									prestart: {
-										guardIncarnationId: entry.guardIncarnationId,
-										prepareSha256: entry.intent.prepareSha256,
-									},
-								},
-								signal,
-							),
-						);
+						const retained = await this.#history(entry, signal);
 						if (retained.state === "closed" || retained.state === "abandoned") {
 							if (retained.permit !== null || retained.state === "closed") {
 								const permit = this.#checkedPermit(retained.permit, machine, started, true);
@@ -331,7 +332,6 @@ export class CodingComputerController implements CodingComputerUsage {
 							await this.#abandon(entry, signal);
 							return;
 						}
-						if (this.#computers.has(machine.machineId)) return;
 						if (retained.state === "absent" && retained.permit === null) return;
 						if (retained.state !== "prepared" && retained.state !== "bound")
 							throw new Error("CODING_COMPUTER_RECEIPT_INVALID");
@@ -340,13 +340,22 @@ export class CodingComputerController implements CodingComputerUsage {
 						const sample = retained.lastSample === null ? null : object(retained.lastSample);
 						if (sample && (typeof sample.observationId !== "string" || !UUID.test(sample.observationId)))
 							throw new Error("CODING_COMPUTER_RECEIPT_INVALID");
-						this.#computers.set(machine.machineId, {
+						const current: ManagedComputer = {
 							machine,
 							permit,
 							requestStartedUptimeMs: started.uptimeMs,
 							lastObservationId: (sample?.observationId as string | null) ?? null,
 							continuity: false,
+						};
+						const guarded = await this.#options.guard.status(permit.permitId, signal).catch((error: unknown) => {
+							if (error instanceof Error && error.message === "PAID_GUARD_PERMIT_MISSING") return null;
+							throw error;
 						});
+						if (guarded?.phase === "stopped") {
+							await this.#observe(current, signal, retained);
+							return;
+						}
+						if (!this.#computers.has(machine.machineId)) this.#computers.set(machine.machineId, current);
 					}),
 				),
 		]);
@@ -648,9 +657,40 @@ export class CodingComputerController implements CodingComputerUsage {
 			throw new Error("CODING_COMPUTER_OBSERVATION_UNCONFIRMED");
 		return { ...sample, physicalId, guestBootId, guestUptimeMs, state: "running" };
 	}
-	async #observe(current: ManagedComputer, signal: AbortSignal): Promise<void> {
-		const guarded = await this.#options.guard.latest(current.machine.machineId, signal);
+	async #observe(current: ManagedComputer, signal: AbortSignal, history?: Record<string, unknown>): Promise<void> {
+		const guarded = history
+			? await this.#options.guard.status(current.permit.permitId, signal)
+			: await this.#options.guard.latest(current.machine.machineId, signal);
 		if (!guarded || guarded.permit.permitId !== current.permit.permitId) return;
+		if (guarded.phase === "stopping") throw new Error("CODING_COMPUTER_STOP_UNCONFIRMED");
+		if (guarded.phase === "stopped" && guarded.permit.schema === "qorpera.computer-usage-permit/v2") {
+			const entry = await this.#options.guard.prestartStatus(guarded.permit.permitId, signal);
+			if (!entry || !isDeepStrictEqual(this.#prestartMachine(entry), current.machine))
+				throw new Error("CODING_COMPUTER_PRESTART_DIFFERS");
+			const retained = history ?? (await this.#history(entry, signal));
+			const permit = this.#checkedPermit(retained.permit, current.machine, await this.#clock(), true);
+			if (retained.state !== permit.state || !["prepared", "bound", "closed"].includes(permit.state))
+				throw new Error("CODING_COMPUTER_RECEIPT_INVALID");
+			assertPaidComputerTerminalPermit(guarded, permit);
+			if (permit.state === "closed") {
+				await this.#archive(current.machine.machineId, permit.permitId, retained.permit, signal);
+				return;
+			}
+			const lastSample = retained.lastSample === null ? null : object(retained.lastSample);
+			if (lastSample && (typeof lastSample.observationId !== "string" || !UUID.test(lastSample.observationId)))
+				throw new Error("CODING_COMPUTER_RECEIPT_INVALID");
+			current = {
+				...current,
+				permit,
+				lastObservationId: (lastSample?.observationId as string | null) ?? null,
+				continuity: false,
+			};
+			const managed = this.#computers.get(current.machine.machineId);
+			if (!managed || managed.permit.permitId === current.permit.permitId)
+				this.#computers.set(current.machine.machineId, current);
+		} else if (guarded.phase !== "stopped" && current.permit.generation !== guarded.permit.generation) {
+			throw new Error("CODING_COMPUTER_GUARD_GENERATION_DIFFERS");
+		}
 		const sample = await this.#sample(current, signal, guarded.phase === "stopped" ? guarded : undefined);
 		const { evidenceSha256: _evidence, ...facts } = sample;
 		sample.evidenceSha256 = createHash("sha256")
@@ -681,7 +721,8 @@ export class CodingComputerController implements CodingComputerUsage {
 				throw new Error("CODING_COMPUTER_CLOSURE_DIFFERS");
 			if (closed.schema === "qorpera.computer-usage-permit/v2")
 				await this.#archive(current.machine.machineId, closed.permitId, receipt, signal);
-			this.#computers.delete(current.machine.machineId);
+			if (this.#computers.get(current.machine.machineId)?.permit.permitId === current.permit.permitId)
+				this.#computers.delete(current.machine.machineId);
 			this.#terminal.add(current.permit.permitId);
 			return;
 		}

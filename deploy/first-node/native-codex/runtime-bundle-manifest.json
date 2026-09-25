@@ -18,11 +18,11 @@
     "wakeAndSilence": "afcdd01831284c2d3dfb4586c4a2267193e26fe00cdddb50bfe8ee8dac6e2212",
     "contextComposer": "1796c8300b3e5395d11fe57b132a51bda1025a7bbdb260fcec3019a40336dc87",
     "providerBootstrap": "7e2e03d4e847a5b9db55d3eeb98c0ae7486013619c081d451a5fa4f8aa049554",
-    "authorization": "811224b1ef92cc21e334291ab95c6939c5e6df1f059ec175b20ec167cc67c1a3",
+    "authorization": "ed27484e1ff190aba90f0edfa64d7c5c56ad90a206af65ac79786c347ca9c493",
     "inboundSafety": "c0c404045bcacbddea79156d2d0d000b2d9caac77d53d1c92d64471ae01581d2",
     "outboundSafety": "7d0c9cb7c599fb0e6292e389204cf0ed8e1aae9e616bf471391a7861040f168a",
     "interactionSurfaces": "4d902f96c16b5998243dd3a1977921834832505674860c0adb96e303336c5a08",
-    "workerLifecycle": "29497313a7cf0660f95829bc73daf39265f5fa5e85404df5fc201d93e3128783",
+    "workerLifecycle": "50bc912b67bdf25a96a811bd7382169fd08b8ec26e5e6025b5b177f781877851",
     "memoryAndSkills": "26a02f8cc77c33617a918225827e795ae3fba3fa9aad1b07a31aea2ac8dfe71c"
   },
   "implementation": {
@@ -314,7 +314,7 @@
     "packages/contracts/src/company-computer-stop-history.ts": "a626bcaea89571b9b91d59afdb5658f63ae5d7758a352e4cc4769a8665e82026",
     "packages/contracts/src/index.ts": "fd37a0f9b895d5538dfecf558abae4ef3d06cc99f30129794439e66ba3d4c482",
     "packages/runner-orchestrator/src/coding-command-transport.ts": "fe4070f2d1c25220bcb2b9e0642f5978ca56ce0d532c78c8d9bdcb58b28a8bd8",
-    "packages/runner-orchestrator/src/coding-computer-controller.ts": "9edae33b6e8cd5fca3014ab7aa8e5912612d906deb6c16a5885f5287d332d530",
+    "packages/runner-orchestrator/src/coding-computer-controller.ts": "8a35d0298d0a7b052002ab13a2a687ae482b60bd2ba5edce6005a56949f236a3",
     "packages/runner-orchestrator/src/coding-computer-usage.ts": "a1210edb343fea916a74966d5c62e144e32c13e2d26a1b5bb7fb50cf91bd2ac9",
     "packages/runner-orchestrator/src/coding-executor-host.ts": "16dcc54517b00fa148d1b4cf8a9689236fee0f3caa3af839b701fff10dd2664a",
     "packages/runner-orchestrator/src/coding-executor.ts": "6b30a8a425c01adef626cbc459098357a5e1be2c385f71c5423e83ad40a277f5",
@@ -330,7 +330,7 @@
     "packages/runner-orchestrator/src/computer-paid-guard-ipc.ts": "8c7f4c9117b9e47424636c8fdf2a153a98e6484c85e231951386fa753893383a",
     "packages/runner-orchestrator/src/computer-paid-guard-lxd.ts": "1bdfe7014606c49bd7e3ffdc906e1a37be78754343324169afca55e64dee7629",
     "packages/runner-orchestrator/src/computer-paid-guard-service.ts": "db288ec5de977443029417a7bce44828597b1fc0f0c5002a8fc9d67d76a3fde4",
-    "packages/runner-orchestrator/src/computer-paid-guard.ts": "6dab90ce133e99790a1d69b20608a7f10ccb3a074b785ad97fe409fcb597ff3a",
+    "packages/runner-orchestrator/src/computer-paid-guard.ts": "1a06adef78ff21b627641f448635d0f9910fe7dcbd6684b972da4fa509e94d9b",
     "packages/runner-orchestrator/src/computer-prestart-control.ts": "4b705b9fae26c3b561d5a9712c549b975ede6b28f94bc63d74822fd850489e51",
     "packages/runner-orchestrator/src/computer-usage-observer.ts": "1fb608ab6c23915ecb71d471d44e1cd01d7527c784bb91a8771cfa8d3612a8c8",
     "packages/runner-orchestrator/src/computer-usage-outbox.ts": "504e70af2ea9074dde320b4826859245e638ff0ec95a5e5997a03d5a68b640f5",
@@ -470,7 +470,7 @@
     "packages/runner-orchestrator/src/provider-http.ts": "c5d16e1fe0f5a9e94b7929eb2414e5a011a0a85012c9618b91c5714c1bbdc1b0",
     "packages/runner-orchestrator/src/provider-service.ts": "3645e24d9c7a28063e92973dbb824e8bc70934067fc72869eccc93ab3bea443b",
     "packages/runner-orchestrator/src/provider-shared.ts": "4843f74a436394d1fc55e8e61f7a9df858100084dd09b8bf6d27d9fbe6dee523",
-    "packages/runner-orchestrator/src/runtime-computer-controller.ts": "ffe328865ec8a8bed34d065d21883990d8a59d2ee9d0f533fd9fb5c351efd5e9",
+    "packages/runner-orchestrator/src/runtime-computer-controller.ts": "88e344644055e1489233ee3f047ad2bb8246f3deba1b86d4dfcb4fa10b34c7e1",
     "packages/runner-orchestrator/src/runtime-computer-http-control.ts": "22339aac964c237f9383ea34914b49c90133ca2d1cc4d079a50934b308a264f6",
     "packages/runner-orchestrator/src/runtime-node-admission.ts": "8c2ccd2321bc046199956e8c47c6a617183360e3246b02cac07d8ce4223ca045",
     "packages/runner-orchestrator/src/runtime-node-health.ts": "ec6ed52315c270409492dc0e85254f91c8de3321463db1188d6dbaf34e7c526f",
@@ -1100,6 +1100,7 @@
     "supabase/migrations/20260925151000_paid_office_lifecycle.sql": "e7c5546ead6cd0d37487ec3f4f6236e1cd5a4dc9e2fb9c1471e350e52db42be7",
     "supabase/migrations/20260925152000_computer_application_conflicts.sql": "7525f990bf94efff912c847b5e7f4cd7dc7585c6814d645de163a22258548ecc",
     "supabase/migrations/20260925153000_company_path_caller_privileges.sql": "117257db9348f13674115c60aa7dfdfe002b69bb4453b7b5a0e1cdad090a68de",
-    "supabase/migrations/20260925154000_computer_prestart_abandonment.sql": "6641883780536fa3593db917bbc2560dc186c680a8e7cd5c43d16736f1768ef9"
+    "supabase/migrations/20260925154000_computer_prestart_abandonment.sql": "6641883780536fa3593db917bbc2560dc186c680a8e7cd5c43d16736f1768ef9",
+    "supabase/migrations/20260925155000_computer_terminal_recovery.sql": "d5e5b61d8c7fac6c5ea2890f2b747a413a2ccc0d28946a6ef215d7ef095343f3"
   }
 }

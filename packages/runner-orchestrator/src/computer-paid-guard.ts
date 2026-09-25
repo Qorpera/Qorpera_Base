@@ -413,6 +413,76 @@ export function parsePaidComputerGuardRecord(value: unknown): PaidComputerGuardR
 	};
 }
 
+/** Terminal reconciliation may observe the one SQL renewal whose reply never
+ * reached the guard. It grants no start authority and never changes the local
+ * permit, stop proof or deadline. The enrolled controller supplies SQL truth. */
+export function assertPaidComputerTerminalPermit(guard: PaidComputerGuardRecord, permit: PaidComputerPermit): void {
+	parsePaidComputerGuardRecord(guard);
+	parsePaidComputerArm({ machine: guard.machine, permit, requestStartedUptimeMs: 0 });
+	const previous = guard.permit;
+	if (
+		guard.phase !== "stopped" ||
+		!guard.stopReceipt ||
+		previous.schema !== "qorpera.computer-usage-permit/v2" ||
+		permit.schema !== previous.schema
+	)
+		throw new Error("PAID_GUARD_TERMINAL_DIFFERS");
+	const {
+		state: _state,
+		validForMs: _ttl,
+		guestBootId: _guest,
+		physicalId: _physical,
+		generation: _generation,
+		reservationId: _reservation,
+		issuedAt: _issued,
+		deadline: _deadline,
+		...identity
+	} = permit;
+	const {
+		state: _oldState,
+		validForMs: _oldTtl,
+		guestBootId,
+		physicalId,
+		generation: _oldGeneration,
+		reservationId: _oldReservation,
+		issuedAt: _oldIssued,
+		deadline: _oldDeadline,
+		...original
+	} = previous;
+	if (
+		!isDeepStrictEqual(identity, original) ||
+		(guestBootId !== null && permit.guestBootId !== guestBootId) ||
+		(physicalId !== null && permit.physicalId !== physicalId)
+	)
+		throw new Error("PAID_GUARD_TERMINAL_DIFFERS");
+	if (permit.generation === previous.generation) {
+		if (
+			permit.reservationId !== previous.reservationId ||
+			permit.issuedAt !== previous.issuedAt ||
+			permit.deadline !== previous.deadline
+		)
+			throw new Error("PAID_GUARD_TERMINAL_DIFFERS");
+		return;
+	}
+	// SQL renewal settles the old window and reserves its sole successor in one
+	// transaction. A skipped generation has no automatic recovery authority.
+	// Do not constrain issuedAt to the old cutoff: a valid renewal can commit
+	// after that cutoff while waiting for allowance locks, even after local stop.
+	if (
+		permit.generation !== previous.generation + 1 ||
+		!guard.startDispatched ||
+		!guard.startSettled ||
+		guard.startSucceeded !== true ||
+		permit.state === "prepared" ||
+		permit.reservationId === previous.reservationId ||
+		permit.guestBootId === null ||
+		permit.physicalId !== guard.machine.physicalInstanceId ||
+		Date.parse(permit.issuedAt) < Date.parse(previous.issuedAt) ||
+		Date.parse(permit.deadline) <= Date.parse(previous.deadline)
+	)
+		throw new Error("PAID_GUARD_TERMINAL_DIFFERS");
+}
+
 function archiveClosure(
 	value: unknown,
 	prestart: PaidComputerPrestartRecord,
@@ -453,16 +523,8 @@ function archiveClosure(
 	}
 	if (!guard) throw new Error("PAID_GUARD_ARCHIVE_UNCONFIRMED");
 	const closed = parsePaidComputerPermit(value);
-	parsePaidComputerArm({ machine: guard.machine, permit: closed, requestStartedUptimeMs: 0 });
-	const { state: _state, validForMs: _ttl, guestBootId: _guest, physicalId: _physical, ...identity } = closed;
-	const { state: _oldState, validForMs: _oldTtl, guestBootId, physicalId, ...original } = guard.permit;
-	if (
-		closed.state !== "closed" ||
-		!isDeepStrictEqual(identity, original) ||
-		(guestBootId !== null && closed.guestBootId !== guestBootId) ||
-		(physicalId !== null && closed.physicalId !== physicalId)
-	)
-		throw new Error("PAID_GUARD_ARCHIVE_UNCONFIRMED");
+	if (closed.state !== "closed") throw new Error("PAID_GUARD_ARCHIVE_UNCONFIRMED");
+	assertPaidComputerTerminalPermit(guard, closed);
 	// TTL is recomputed on every SQL read; it is not closure identity.
 	return { ...closed, validForMs: 0 };
 }
