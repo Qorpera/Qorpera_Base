@@ -243,6 +243,18 @@ function bridgeProjection(authority: CloudRunnerNativeAuthority, request: CloudR
 	};
 }
 
+/** The fixed code a provider's refusal carries (nativeProviderFailureCode), if well formed. */
+function bridgeRefusalCode(value: unknown): string | undefined {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+	const code = (value as { code?: unknown }).code;
+	return typeof code === "string" && /^[A-Z][A-Z0-9_]{0,41}(:[A-Z0-9][A-Z0-9_]{0,41})?$/.test(code) ? code : undefined;
+}
+/** The runner's report of a refused bridge request: its status and, when the
+ * provider named one, its fixed code (never provider text). */
+function bridgeRefusal(status: number, code: string | undefined): Error {
+	return new Error(`Native provider bridge request failed (${status})${code ? ` [code=${code}]` : ""}`);
+}
+
 export class HttpNativeProviderComputerBridge implements NativeProviderComputerBridge, NativeProviderIdentityBridge {
 	readonly executionGuarantees: Readonly<CloudRunnerSandboxGuarantees>;
 	readonly #executeUrl: string;
@@ -402,8 +414,28 @@ export class HttpNativeProviderComputerBridge implements NativeProviderComputerB
 						signal,
 					});
 					if (!response.ok) {
-						void response.body?.cancel().catch(() => undefined);
-						throw new Error(`Native provider bridge request failed (${response.status})`);
+						// A refusal names its fixed code; nothing else of the body is kept.
+						// Read for at most 5 s: a stalled body never holds the runner.
+						let code: string | undefined;
+						if (response.status === 422)
+							try {
+								code = bridgeRefusalCode(
+									JSON.parse(
+										new TextDecoder("utf-8", { fatal: true }).decode(
+											await readBoundedCloudResponse(
+												response,
+												4096,
+												AbortSignal.any([signal, AbortSignal.timeout(5000)]),
+											),
+										),
+									),
+								);
+							} catch {
+								/* The status alone is reported. */
+								void response.body?.cancel().catch(() => undefined);
+							}
+						else void response.body?.cancel().catch(() => undefined);
+						throw bridgeRefusal(response.status, code);
 					}
 					const bytes = await readBoundedCloudResponse(response, MAX_BRIDGE_RESPONSE_BYTES, signal);
 					let value: unknown;
@@ -414,8 +446,13 @@ export class HttpNativeProviderComputerBridge implements NativeProviderComputerB
 						throw new Error("Native provider bridge returned invalid JSON");
 					}
 					// A failure after the execution answered 200 arrives in the body.
-					if (value && typeof value === "object" && !Array.isArray(value) && Object.keys(value).join() === "error")
-						throw new Error("Native provider bridge request failed (422)");
+					if (
+						value &&
+						typeof value === "object" &&
+						!Array.isArray(value) &&
+						["error", "code,error"].includes(Object.keys(value).sort().join())
+					)
+						throw bridgeRefusal(422, bridgeRefusalCode(value));
 					return value;
 				}),
 			]);

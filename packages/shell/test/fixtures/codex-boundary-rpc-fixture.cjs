@@ -26,6 +26,12 @@ const companyCalls = mode === "company-office"
 			{ tool: "ask_member", arguments: { idempotencyKey: "channel", text: "One thing to decide first.", surface: "question", title: "Which channel should the digest go to?", payload: { options: [{ label: "#general", value: "general" }, { label: "#finance", value: "finance", style: "primary" }] } } },
 			{ tool: "ask_member", arguments: { idempotencyKey: "channel", text: "One thing to decide first.", surface: "question", title: "Which channel should the digest go to?", payload: { options: [{ label: "#general", value: "general" }, { label: "#finance", value: "finance", style: "primary" }] } } },
 		]
+	: mode === "company-cards-long-key"
+	? [
+			// The longest key ask_member accepts, then its retry: both must finish the turn.
+			{ tool: "ask_member", arguments: { idempotencyKey: `digest-channel-${"k".repeat(113)}`, text: "One thing to decide first.", surface: "question", title: "Which channel should the digest go to?", payload: { options: [{ label: "#general" }, { label: "#finance" }] } } },
+			{ tool: "ask_member", arguments: { idempotencyKey: `digest-channel-${"k".repeat(113)}`, text: "One thing to decide first.", surface: "question", title: "Which channel should the digest go to?", payload: { options: [{ label: "#general" }, { label: "#finance" }] } } },
+		]
 	: mode === "company-cards-retry"
 	? [
 			// What the live model sent (options as plain strings), then the card its refusal asked for.

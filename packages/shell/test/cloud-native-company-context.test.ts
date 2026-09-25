@@ -337,6 +337,34 @@ it("keeps hostile names, job specifications and history in a single escaped data
 	expect(JSON.parse(composeCloudNativeCompanyPrompt(f.context)).delivery.requireFinalSend).toBe(false);
 });
 
+it("composes the whole profile, and degrades memory instead of failing when a notebook outgrows the context", () => {
+	const f = nativeCompanyContextFixture();
+	const context = parseCloudNativeCompanyContext(f.context, f.binding);
+	const memory = (count: number): NonNullable<Parameters<typeof composeCloudNativeCompanyPrompt>[3]> => ({
+		schema: "qorpera.agent-memory/v1",
+		trust: "own_notebook_not_authority",
+		available: true,
+		tools: ["update_memory", "recall_memory"],
+		profile: {
+			path: `agents/${context.agent.id}/memory/profile.md`,
+			version: randomUUID(),
+			// Angle brackets are escaped six bytes each: the worst case another writer can leave.
+			facts: Array.from({ length: count }, (_, index) => ({
+				date: "2026-09-01",
+				tier: "profile" as const,
+				fact: `${index} ${"<".repeat(1000)}`,
+			})),
+		},
+		recentLog: { files: [], facts: [], moreFacts: 0 },
+	});
+	const whole = JSON.parse(composeCloudNativeCompanyPrompt(context, null, undefined, memory(20)));
+	expect(whole.memory).toMatchObject({ available: true });
+	expect(whole.memory.profile.facts).toHaveLength(20);
+	const degraded = JSON.parse(composeCloudNativeCompanyPrompt(context, null, undefined, memory(200)));
+	expect(degraded.memory).toMatchObject({ available: false, reason: "too_large", profile: { facts: [] } });
+	expect(degraded.hireOverlay.agentId).toBe(context.agent.id);
+});
+
 it.each(["cofounder", "employee"] as const)(
 	"compiles %s behavior from the canonical discriminator, keeping the hire text out of platform instructions",
 	(kind) => {
