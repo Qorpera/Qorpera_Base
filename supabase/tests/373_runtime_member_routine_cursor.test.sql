@@ -407,6 +407,8 @@ begin
 	perform pg_temp.wake_assert(v_row.status = 'active'
 		and (select count(*) from public.qorpera_wake_occurrences where routine_id = v_row.id) = 3,
 		'The slot offered again and its refused twin count once toward the limit');
+	perform pg_temp.wake_assert((public.qorpera_agent_routine_view(v_row) ->> 'occurrences')::int = 2,
+		'An agent sees the slots counted the same way');
 	perform pg_temp.member_ran(v_client,'brief',v_c,v_c + interval '1 day');
 	select * into v_row from public.qorpera_cloud_routines where client_routine_id = v_client;
 	perform pg_temp.wake_assert(v_row.status = 'expired' and v_row.expired_while_active,
@@ -437,6 +439,24 @@ begin
 	v_cursor := pg_temp.member_cursor(v_client,'brief');
 	perform pg_temp.wake_assert(v_cursor.routine_version = 2 and v_cursor.last_scheduled_for = v_second
 		and v_cursor.next_due_at = v_second + interval '1 day','A stale waiting slot is not offered again');
+
+	-- A later slot that was cancelled never ran, so it does not make the waiting one stale.
+	v_client := extensions.gen_random_uuid();
+	perform pg_temp.member_save(v_client,'Daily brief',v_brief);
+	update public.qorpera_cloud_routines set quiet_start = ((statement_timestamp() at time zone 'UTC') - interval '1 hour')::time,
+		quiet_end = ((statement_timestamp() at time zone 'UTC') + interval '2 hours')::time, quiet_time_zone = 'UTC'
+	where client_routine_id = v_client;
+	perform pg_temp.member_enqueued(v_client,'brief',v_first,v_second);
+	update public.qorpera_cloud_routines set quiet_start = null, quiet_end = null, quiet_time_zone = null
+	where client_routine_id = v_client;
+	v_stale := (pg_temp.member_enqueued(v_client,'brief',v_second,v_second + interval '1 day') ->> 'occurrence_id')::uuid;
+	update public.qorpera_wake_occurrences set status = 'cancelled', finished_at = statement_timestamp(),
+		blocked_reason = 'Test: cancelled before it ran'
+	where id = v_stale;
+	perform pg_temp.member_save(v_client,'Daily brief, renamed',v_brief);
+	v_cursor := pg_temp.member_cursor(v_client,'brief');
+	perform pg_temp.wake_assert(v_cursor.last_scheduled_for = v_first - interval '1 millisecond' and v_cursor.next_due_at = v_first,
+		'A cancelled later slot does not stop the waiting one being offered again');
 end $$;
 
 rollback;
