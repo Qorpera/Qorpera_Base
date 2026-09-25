@@ -1,4 +1,4 @@
-import { h } from "../../ui/dom.ts";
+import { h, notice, replace } from "../../ui/dom.ts";
 import {
 	type ComposerColorPreference,
 	composerColorPreference,
@@ -19,9 +19,32 @@ import {
  * colour. Each group is a native radio group, so keyboard and screen-reader
  * behaviour come for free. */
 
-/** Radios group by name across the whole document, and the standalone
- * account page and the settings dialog can both hold these groups at once. */
+/** Radios group by name across the whole document; each rendered group
+ * needs its own name. */
 let groups = 0;
+
+export function renderAppearance(): HTMLElement {
+	const feedback = h("div");
+	const theme = themeChoices(() =>
+		replace(feedback, notice("danger", t("Your browser could not save the theme preference."))),
+	);
+	const composerColor = composerColorChoices(() =>
+		replace(feedback, notice("danger", t("Your browser could not save the composer color preference."))),
+	);
+	const size = uiSizeChoices(() =>
+		replace(feedback, notice("danger", t("Your browser could not save the interface size preference."))),
+	);
+	return h(
+		"section",
+		{ class: "page" },
+		h("h1", null, uiText("Appearance")),
+		feedback,
+		// The pictures say what each group is; the groups keep their names for screen readers.
+		h("div", { class: "settings-preference" }, theme),
+		h("div", { class: "settings-preference" }, composerColor),
+		h("div", { class: "settings-preference" }, size),
+	);
+}
 
 interface Choice<T extends string> {
 	value: T;
