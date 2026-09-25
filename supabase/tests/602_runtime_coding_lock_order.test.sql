@@ -1,13 +1,16 @@
 -- @fixture 396_runtime_coding_executor.test.sql until "-- 2. The turn as the runner sees it"
 -- One lock order for a coding session's rows (v117): the company's profile fence
 -- and Company File, todo, worker, coding session, then the session's turn or
--- machine. Each race below makes two real calls meet on one session in the order
--- that deadlocked before: a third connection holds one row, the first call starts
--- and waits there, the second starts and waits too, and the holder lets go. With
--- one order the second call waits behind the first and both finish; before, one
--- of them was killed with "deadlock detected". Row locks show only across
--- connections, so the dispatch fixture above is committed here and removed again
--- at the end.
+-- machine. Each race makes two real calls meet on one session: a third
+-- connection holds one row, the first call starts and waits there, the second
+-- starts (and waits, unless it needs nothing the first holds), and the holder
+-- lets go. Races 1-5 each ended in "deadlock detected" on the previous function
+-- text; race 6 did with an admission that held the todo. With one order neither
+-- call is killed: both land, or one is refused for its own plain reason. Two
+-- single calls then show what a call no longer waits for. Row locks show only
+-- across connections, so the dispatch fixture above is committed here and
+-- removed again at the end; the test refuses to run beside other connections to
+-- this database, whose rows the cleanup could not tell from its own.
 
 -- What the races need outlives this transaction.
 reset role;
@@ -17,6 +20,19 @@ select set_config('qorpera_test.lock_order_first_xid', xid(pg_current_xact_id())
 select dblink_connect('lock_holder', 'dbname=qorpera_test');
 select dblink_connect('lock_first', 'dbname=qorpera_test');
 select dblink_connect('lock_second', 'dbname=qorpera_test');
+select set_config('qorpera_test.lock_' || name || '_pid', pid::text, false)
+from unnest(array['holder','first','second']) name, lateral dblink('lock_' || name, 'select pg_backend_pid()') as backend(pid integer);
+-- Only this connection and its three may use the database while the test runs.
+create function pg_temp.lock_alone_in_database() returns void language plpgsql as $$
+begin
+	if exists (select 1 from pg_catalog.pg_stat_activity activity where activity.datname = current_database()
+		and activity.backend_type = 'client backend' and activity.pid <> pg_backend_pid()
+		and activity.pid::text not in (current_setting('qorpera_test.lock_holder_pid'),
+			current_setting('qorpera_test.lock_first_pid'), current_setting('qorpera_test.lock_second_pid'))) then
+		raise exception 'Lock order test needs the database to itself: another connection is open'; end if;
+end
+$$;
+select pg_temp.lock_alone_in_database();
 -- Every table's rows as other connections see them, before the fixture is committed.
 create temporary table lock_order_counts as select * from dblink('lock_holder', $$
 	select format('%I.%I', namespace.nspname, class.relname),
@@ -39,21 +55,39 @@ begin
 end $$;
 commit;
 
-select set_config('qorpera_test.lock_' || name || '_pid', pid::text, false)
-from unnest(array['first','second']) name, lateral dblink('lock_' || name, 'select pg_backend_pid()') as backend(pid integer);
-
+-- A call runs as the role PostgREST would use, with that role's claims.
+create function pg_temp.lock_as(p_connection text, p_claims jsonb) returns void language plpgsql as $$
+begin
+	perform dblink_exec(p_connection, 'reset role');
+	perform dblink_exec(p_connection, format('set request.jwt.claims = %L', p_claims));
+	perform dblink_exec(p_connection, format('set role %I', p_claims ->> 'role'));
+end
+$$;
+-- A sent call's result, or its error; the connection is ready again afterwards.
+create function pg_temp.lock_collect(p_connection text) returns jsonb language plpgsql as $$
+declare v_value jsonb; v_outcome jsonb;
+begin
+	begin
+		select result into v_value from dblink_get_result(p_connection) as call(result jsonb);
+		v_outcome := jsonb_build_object('result', v_value);
+	exception when others then
+		v_outcome := jsonb_build_object('error', sqlerrm, 'state', sqlstate);
+	end;
+	perform * from dblink_get_result(p_connection, false) as call(result jsonb);
+	return v_outcome;
+end
+$$;
 -- The holder locks one row; the first call starts and must wait, then the second (which may instead
 -- finish at once when it needs nothing the first holds); the holder lets go. Each call's result, or its error.
 create function pg_temp.lock_race(p_hold text, p_first text, p_first_claims jsonb, p_second text, p_second_claims jsonb,
 	p_second_waits boolean default true)
 returns jsonb language plpgsql as $$
-declare v_name text; v_pid integer; v_value jsonb; v_outcome jsonb := '{}'::jsonb;
+declare v_name text; v_pid integer; v_early jsonb; v_outcome jsonb := '{}'::jsonb;
 begin
 	perform dblink_exec('lock_holder', 'begin');
 	perform * from dblink('lock_holder', p_hold) as held(held integer);
 	foreach v_name in array array['first','second'] loop
-		perform dblink_exec('lock_' || v_name, format('set request.jwt.claims = %L',
-			case v_name when 'first' then p_first_claims else p_second_claims end));
+		perform pg_temp.lock_as('lock_' || v_name, case v_name when 'first' then p_first_claims else p_second_claims end);
 		perform dblink_send_query('lock_' || v_name, case v_name when 'first' then p_first else p_second end);
 		v_pid := current_setting('qorpera_test.lock_' || v_name || '_pid')::integer;
 		for attempt in 1..200 loop
@@ -61,19 +95,33 @@ begin
 			perform pg_sleep(0.025);
 		end loop;
 		if cardinality(pg_blocking_pids(v_pid)) = 0 and (v_name = 'first' or p_second_waits) then
-			raise exception 'Lock race: the % call did not wait for the held row', v_name; end if;
+			perform dblink_exec('lock_holder', 'rollback');
+			v_early := pg_temp.lock_collect('lock_' || v_name);
+			if v_name = 'second' then v_early := jsonb_build_object('first', pg_temp.lock_collect('lock_first'), 'second', v_early); end if;
+			raise exception 'Lock race: the % call did not wait for the held row: %', v_name, v_early; end if;
 	end loop;
 	perform dblink_exec('lock_holder', 'rollback');
 	foreach v_name in array array['first','second'] loop
-		begin
-			select result into v_value from dblink_get_result('lock_' || v_name) as call(result jsonb);
-			v_outcome := v_outcome || jsonb_build_object(v_name, jsonb_build_object('result', v_value));
-		exception when others then
-			v_outcome := v_outcome || jsonb_build_object(v_name, jsonb_build_object('error', sqlerrm, 'state', sqlstate));
-		end;
-		perform * from dblink_get_result('lock_' || v_name, false) as call(result jsonb);
+		v_outcome := v_outcome || jsonb_build_object(v_name, pg_temp.lock_collect('lock_' || v_name));
 	end loop;
 	return v_outcome;
+end
+$$;
+-- The holder locks one row while a single call runs: its result, or its error, and whether it waited.
+create function pg_temp.lock_single(p_hold text, p_call text, p_claims jsonb) returns jsonb language plpgsql as $$
+declare v_pid integer := current_setting('qorpera_test.lock_first_pid')::integer; v_waited boolean := false;
+begin
+	perform dblink_exec('lock_holder', 'begin');
+	perform * from dblink('lock_holder', p_hold) as held(held integer);
+	perform pg_temp.lock_as('lock_first', p_claims);
+	perform dblink_send_query('lock_first', p_call);
+	for attempt in 1..200 loop
+		if cardinality(pg_blocking_pids(v_pid)) > 0 then v_waited := true; exit; end if;
+		exit when dblink_is_busy('lock_first') = 0;
+		perform pg_sleep(0.025);
+	end loop;
+	perform dblink_exec('lock_holder', 'rollback');
+	return pg_temp.lock_collect('lock_first') || jsonb_build_object('waited', v_waited);
 end
 $$;
 create function pg_temp.lock_race_ok(p_outcome jsonb, p_message text) returns void language plpgsql as $$
@@ -230,7 +278,40 @@ begin
 		'The todo edit and the admission both land: ' || v_outcome::text);
 end $$;
 
--- 7. The helper is internal.
+-- 7. A delegation only records an event, so it starts at the worker: the owner hands a question to the
+--    agent while an agent tool holds the todo, and does not wait for it.
+do $$
+begin
+	perform pg_temp.path_claims('service_role');
+	perform public.qorpera_complete_coding_turn((pg_temp.worker_row('fix-send')).id, current_setting('qorpera_test.lock_lease')::uuid,
+		'blocked', 'Both composers post first now.', 'Ship the direct chat first, or both together?');
+end $$;
+do $$
+declare v_worker public.qorpera_runtime_workers := pg_temp.worker_row('fix-send'); v_outcome jsonb;
+begin
+	v_outcome := pg_temp.lock_single(pg_temp.lock_row('qorpera_runtime_agent_todos', 'id', v_worker.todo_id),
+		format($q$select public.qorpera_delegate_coding_session(%L, '60200000-0000-4000-8000-000000000006')$q$, v_worker.id),
+		'{"role":"authenticated","sub":"30000000-0000-4000-8000-000000000001"}');
+	perform pg_temp.wake_assert(v_outcome ->> 'waited' = 'false' and v_outcome #>> '{result,phase}' = 'awaiting_input'
+		and exists (select 1 from public.qorpera_coding_session_events event where event.worker_id = v_worker.id and event.kind = 'delegated'
+			and event.body ->> 'clientRequestId' = '60200000-0000-4000-8000-000000000006'),
+		'The delegation lands without waiting for the todo: ' || v_outcome::text);
+end $$;
+
+-- 8. Someone who does not own the session locks nothing: a company member's answer is refused while
+--    another connection holds the worker, without waiting for it.
+do $$
+declare v_worker public.qorpera_runtime_workers := pg_temp.worker_row('fix-send'); v_outcome jsonb;
+begin
+	v_outcome := pg_temp.lock_single(pg_temp.lock_row('qorpera_runtime_workers', 'id', v_worker.id),
+		format($q$select public.qorpera_answer_coding_session(%L, 'Both together.', '60200000-0000-4000-8000-000000000007')$q$, v_worker.id),
+		'{"role":"authenticated","sub":"30000000-0000-4000-8000-000000000002"}');
+	perform pg_temp.wake_assert(v_outcome ->> 'waited' = 'false' and v_outcome ->> 'state' = '42501'
+		and v_outcome ->> 'error' like 'Only the owner of this coding session can talk to it%',
+		'A non-owner is refused without taking a lock: ' || v_outcome::text);
+end $$;
+
+-- 9. The helper is internal.
 select pg_temp.wake_assert(not has_function_privilege(role_name, 'public.qorpera_lock_coding_worker(uuid)', 'EXECUTE'),
 	'Only the kernel locks a coding worker: ' || role_name)
 from unnest(array['anon','authenticated','service_role','qorpera_secret_broker']) role_name;
@@ -238,6 +319,7 @@ from unnest(array['anon','authenticated','service_role','qorpera_secret_broker']
 -- Remove what this test committed: every row written since the fixture's first write, with triggers
 -- and foreign-key checks off, and put back the rows it changed. Every table must hold again exactly
 -- what other connections saw before.
+select pg_temp.lock_alone_in_database();
 select dblink_disconnect(name) from unnest(array['lock_holder','lock_first','lock_second']) name;
 do $$
 declare v_table text; v_columns text; v_expected bigint; v_count bigint; v_wrong text[] := '{}'; v_first xid := current_setting('qorpera_test.lock_order_first_xid')::xid;
@@ -255,6 +337,9 @@ begin
 		execute format('insert into %1$s (%2$s) overriding system value select %2$s from (select (jsonb_populate_record(null::%1$s, kept.row_value)).*
 			from pg_temp.lock_order_rows kept where kept.table_name = %3$L
 				and not exists (select 1 from %1$s present where to_jsonb(present) = kept.row_value)) restored', v_table, v_columns, v_table);
+		execute format('select count(*) from pg_temp.lock_order_rows kept where kept.table_name = %2$L
+			and not exists (select 1 from %1$s present where to_jsonb(present) = kept.row_value)', v_table, v_table) into v_count;
+		if v_count > 0 then v_wrong := v_wrong || format('%s: %s rows not restored as they were', v_table, v_count); end if;
 	end loop;
 	for v_table, v_expected in select table_name, row_count from pg_temp.lock_order_counts loop
 		execute format('select count(*) from %s', v_table) into v_count;
