@@ -204,7 +204,9 @@ describe("conversation UI boundaries", () => {
 		expect(messages[0]?.querySelectorAll(".bubble")).toHaveLength(2);
 		expect(messages[0]?.getAttribute("aria-label")).toContain(staff.displayName);
 		expect(messages[0]?.title).toContain(fmtTime(timestamp));
-		expect(messages[0]?.querySelector(".message-caption")?.textContent).toBe("Progress");
+		// A progress message is not labelled: its text is the whole message.
+		expect(messages[0]?.classList.contains("message-progress")).toBe(true);
+		expect(messages[0]?.querySelector(".message-caption")).toBeNull();
 		expect(messages[0]?.querySelectorAll(".received-file")).toHaveLength(1);
 		expect(messages[0]?.querySelector(".received-file")?.textContent).toContain("Preview unavailable");
 		expect(messages[1]?.querySelector(".message-author")?.textContent).toBe("Anna");
