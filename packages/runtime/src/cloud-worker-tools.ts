@@ -108,8 +108,10 @@ export const CLOUD_WORKER_REPORT_TOOL_DESCRIPTION =
  * from the run; the model chooses only the work. A todo or worker change is a
  * kernel row first, then its canonical document is published to the Company
  * File through the governed path gateway and confirmed against the revision
- * this run wrote. A failed publication never fails the change: the next list
- * publishes what is outstanding.
+ * this run wrote. The kernel takes a todo document only as the current
+ * revision's exact bytes, so a publication overtaken by a newer revision is
+ * refused rather than written over it. A failed publication never fails the
+ * change: the next list publishes what is outstanding.
  */
 export function cloudWorkerTools(
 	binding: CloudNativeToolBinding,
@@ -186,7 +188,9 @@ export function cloudWorkerTools(
 				"write",
 				{
 					path: publication.path,
-					operationKey: `todo-doc:${todoKey}:${publication.revision}`,
+					// One key per revision and per file version it replaces: a retry replays the same write,
+					// while a document the file has lost since (a member's edit, an older runner) is written again.
+					operationKey: `todo-doc:${todoKey}:${publication.revision}:${(current.version as string | null) ?? "absent"}`,
 					expectedVersion: (current.version as string | null) ?? null,
 					text: publication.text,
 				},
