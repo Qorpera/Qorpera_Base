@@ -1445,6 +1445,18 @@ never ran keeps its kickoff. A restart position is not a run time: the next
 run shown to agents and members is empty until the scheduler admits the first
 run after it.
 
+2026-09-25 amendment: a routine waiting for its first slot shows it. When the
+scheduler finds a routine with nothing due that waits for its first slot (a
+restart position, or a routine that never ran whose trigger names a later
+start or a window), it sets the routine's next due time to that slot, and only
+if the routine is still active, on the same version and at the exact position
+it read; nothing runs and the position does not move. The routine is then not
+offered to the scheduler again before that slot, and the next run shown to
+agents and members is that slot. A restart position shows no next run only
+until the scheduler's next poll. A routine that may still owe its kickoff is
+left as it is, and one that never ran stays never run, so the kickoff rules
+above do not change.
+
 ## 17. Model and reasoning policy
 
 An attended agent thread defaults to low reasoning effort. The resolved
