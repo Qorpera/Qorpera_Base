@@ -157,7 +157,11 @@ change to any migration needs a new activation, never an edit of this one.
   lock (their inserts only need the company to exist). Until runtime v123
   (`20260925123000_runtime_coding_machine_lock_order`) they took it last, so an
   agent cancelling a session deadlocked with its admission, plan or credential.
-  SQL test 603 races those and the pairs a partial fix would break.
+  SQL test 603 races those and the pairs a partial fix would break. Two late
+  touches remain: the executor's begin takes the profile row NOWAIT (it fails
+  fast, never waits), and `qorpera_prepare_company_file_revision` locks the
+  Company File row before the fence, so it can meet a session's first
+  admission as it meets every agent tool call.
 - A revival whose admission is refused when its run is created (the agent lost
   its model account or its conversation) is not retried: the result stays in
   the todo, which the agent lists the next time it continues that work.
