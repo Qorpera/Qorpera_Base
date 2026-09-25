@@ -1,7 +1,7 @@
 /* Danish interface text, keyed by the English source exactly as the code
  * passes it to t() / uiText(). One file per area of the app; a key lives in
  * one file only (test/translations.test.ts checks). Wording follows
- * qorpera.com and the desktop app (packages/shell/userland/localization.js). */
+ * qorpera.com. */
 /** Settings: General, Plan & usage, Friends, Company, Connections. */
 export const SETTINGS: Record<string, string> = {
 	// Settings dialog (app/views/settings.ts)

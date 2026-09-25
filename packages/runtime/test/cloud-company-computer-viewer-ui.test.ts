@@ -147,7 +147,7 @@ function viewerFixture() {
 		setTimeout: (handler, ms) => globalThis.setTimeout(handler, ms),
 		clearTimeout: (handle) => globalThis.clearTimeout(handle as ReturnType<typeof setTimeout>),
 	};
-	const source = readFileSync(new URL("../../shell/userland/screen-viewer.js", import.meta.url), "utf8");
+	const source = readFileSync(new URL("../../member-web/ui/screen-viewer.js", import.meta.url), "utf8");
 	// Execute the actual UI state machine; only the vendored browser transport and DOM are doubled.
 	runInNewContext(source.replace('import RFB from "./vendor/novnc-rfb.js";', ""), context);
 	const api = context.window.qorperaScreenViewer;
@@ -613,11 +613,9 @@ describe("viewer UI state machine (fake DOM/noVNC, not visual cloud acceptance)"
 		await viewer.close();
 	});
 
-	it("keeps the member web renderer identical to the tested desktop source and its checksum", () => {
-		const desktop = readFileSync(new URL("../../shell/userland/screen-viewer.js", import.meta.url), "utf8");
+	it("keeps the tested member web renderer at its checksum", () => {
 		const memberWeb = readFileSync(new URL("../../member-web/ui/screen-viewer.js", import.meta.url), "utf8");
 		const manifest = JSON.parse(readFileSync(new URL("../../member-web/ui/SOURCE.json", import.meta.url), "utf8"));
-		expect(memberWeb).toBe(desktop);
 		expect(createHash("sha256").update(memberWeb).digest("hex")).toBe(
 			manifest.sources.find((source: { file: string }) => source.file === "screen-viewer.js").sha256,
 		);
