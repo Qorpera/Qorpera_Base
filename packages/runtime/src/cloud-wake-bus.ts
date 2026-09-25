@@ -199,8 +199,15 @@ export interface CloudWakeEnvelope {
 		wakeSchema: typeof CLOUD_WAKE_SCHEMA;
 		runtimeBundleVersion: null;
 	}>;
-	/** dynamic: the routine has no cadence; this run decides its next run or concludes it. */
-	readonly routine: Readonly<{ id: string; version: number; intent: string; dynamic?: true }> | null;
+	/** dynamic: the routine has no cadence; this run decides its next run or concludes it.
+	 * routineKey names it, so the run's own routine tool can point at the decision. */
+	readonly routine: Readonly<{
+		id: string;
+		version: number;
+		intent: string;
+		dynamic?: true;
+		routineKey?: string;
+	}> | null;
 	readonly payload: Readonly<Record<string, unknown>>;
 	readonly parentRunId: string | null;
 	readonly causal: Readonly<{ rootId: string; agentIds: readonly string[] }>;
@@ -314,9 +321,12 @@ export function parseCloudWakeEnvelope(value: unknown, identity: CloudNativeTool
 	}
 	let routine: CloudWakeEnvelope["routine"] = null;
 	if (wake.kind === "routine") {
-		const stored = closedWithOptional(wake.routine, ["id", "version", "intent"], ["dynamic"]);
+		const stored = closedWithOptional(wake.routine, ["id", "version", "intent"], ["dynamic", "routineKey"]);
 		if (
 			(Object.hasOwn(stored, "dynamic") && stored.dynamic !== true) ||
+			Object.hasOwn(stored, "routineKey") !== (stored.dynamic === true) ||
+			(Object.hasOwn(stored, "routineKey") &&
+				(typeof stored.routineKey !== "string" || !/^[a-z0-9][a-z0-9._-]{0,95}$/.test(stored.routineKey))) ||
 			!Number.isSafeInteger(stored.version) ||
 			(stored.version as number) < 1 ||
 			typeof stored.intent !== "string" ||
@@ -328,7 +338,7 @@ export function parseCloudWakeEnvelope(value: unknown, identity: CloudNativeTool
 			id: uuid(stored.id),
 			version: stored.version as number,
 			intent: stored.intent,
-			...(stored.dynamic === true ? { dynamic: true as const } : {}),
+			...(stored.dynamic === true ? { dynamic: true as const, routineKey: stored.routineKey as string } : {}),
 		});
 		if (source.kind === "schedule") {
 			if (source.id !== routine.id || parentRunId !== null || actorStaffId !== null)

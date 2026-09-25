@@ -217,6 +217,8 @@ export function cloudRoutineTools(
 	binding: CloudNativeToolBinding,
 	identity: CloudNativeToolIdentity,
 	control: CloudCompanyPathControl,
+	/** In a dynamic routine's run: its key, and whether its decision is still owed. */
+	ownDynamicRoutine?: { readonly routineKey: string; readonly decisionOwed: () => boolean },
 ): readonly CloudNativeTool[] {
 	const { admitted, assertContext } = routineAuthority(binding, identity);
 	const reportSchema = { type: "string", enum: [...REPLY] };
@@ -361,6 +363,11 @@ export function cloudRoutineTools(
 				!ROUTINE_KEY.test(a.routineKey)
 			)
 				throw new Error("Invalid routine key");
+			// The kernel refuses it too; this says why in words the model can act on.
+			if (ownDynamicRoutine?.routineKey === a.routineKey && ownDynamicRoutine.decisionOwed())
+				throw new CloudToolArgumentRefusal(
+					"this is the routine you are running: use decide_routine (next sets the next run and can change its instructions; conclude ends it)",
+				);
 			if (!upsert) return { action, operationKey: a.operationKey, routineKey: a.routineKey } as never;
 			const request: Record<string, unknown> = {
 				action,

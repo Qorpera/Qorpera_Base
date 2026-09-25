@@ -988,16 +988,24 @@ describe("dynamic routine wakes", () => {
 			} as unknown as CloudWakeEnvelope,
 		};
 	}
-	it("carries the dynamic mark only for a dynamic routine", () => {
-		const dynamic = routineWake({ dynamic: true });
+	it("carries the dynamic mark and routine key only for a dynamic routine", () => {
+		const dynamic = routineWake({ dynamic: true, routineKey: "invoice-watch" });
 		expect(parseCloudWakeEnvelope(dynamic.wake, dynamic.identity).routine).toEqual({
 			...dynamic.wake.routine,
 			dynamic: true,
+			routineKey: "invoice-watch",
 		});
 		const fixed = routineWake({});
 		expect(parseCloudWakeEnvelope(fixed.wake, fixed.identity).routine).not.toHaveProperty("dynamic");
 	});
-	it.each([{ dynamic: false }, { dynamic: "yes" }, { schedule: "hourly" }])("rejects a routine marked %j", (extra) => {
+	it.each([
+		{ dynamic: false },
+		{ dynamic: "yes" },
+		{ schedule: "hourly" },
+		{ dynamic: true },
+		{ routineKey: "invoice-watch" },
+		{ dynamic: true, routineKey: "Not A Key" },
+	])("rejects a routine marked %j", (extra) => {
 		const { identity, wake } = routineWake(extra);
 		expect(() => parseCloudWakeEnvelope(wake, identity)).toThrow();
 	});

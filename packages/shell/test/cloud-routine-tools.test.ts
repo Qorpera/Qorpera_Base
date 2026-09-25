@@ -271,6 +271,74 @@ describe("agent routine tool", () => {
 	});
 });
 
+describe("a dynamic routine's own run", () => {
+	it("points the run at decide_routine instead of saving, pausing or removing its own routine", async () => {
+		const { binding, authority } = nativeToolAuthorityFixture();
+		const run = await CloudNativeToolRun.open(
+			binding,
+			{ describeToolAuthority: async () => authority },
+			new AbortController().signal,
+		);
+		let owed = true;
+		const call = vi.fn<CloudCompanyPathControl["call"]>(async (_method, args) => {
+			const request = (args as { p_request: Record<string, unknown> }).p_request;
+			return {
+				schema: "qorpera.agent-routine-receipt/v1",
+				runId: binding.runId,
+				receiptId: randomUUID(),
+				action: request.action,
+				routine: { routineKey: request.routineKey, status: "active" },
+			};
+		});
+		const boundary = new CloudNativeToolBoundary({
+			companyId: run.identity.companyId,
+			runId: run.identity.runId,
+			identity: run.identity,
+			tools: cloudRoutineTools(
+				binding,
+				run.identity,
+				{ call },
+				{ routineKey: "invoice-watch", decisionOwed: () => owed },
+			),
+			assertActive: (signal) => run.assertActive(signal),
+			signal: run.signal,
+		});
+		try {
+			for (const action of ["upsert", "pause", "resume", "remove"]) {
+				const own = await boundary.invoke(`own-${action}`, "qorpera", "manage_routine", {
+					...(action === "upsert" ? weekly : { action, operationKey: `own-${action}` }),
+					...(action === "upsert" ? { operationKey: "own-upsert" } : {}),
+					routineKey: "invoice-watch",
+				});
+				expect(own.success).toBe(false);
+				expect(own.contentItems[0].text).toContain("this is the routine you are running: use decide_routine");
+			}
+			// Other routines, and concluding its own, stay open; after the decision so does the rest.
+			expect((await boundary.invoke("other", "qorpera", "manage_routine", weekly)).success).toBe(true);
+			const done = await boundary.invoke("own-done", "qorpera", "manage_routine", {
+				action: "conclude",
+				operationKey: "own-done",
+				routineKey: "invoice-watch",
+				summary: "Done.",
+			});
+			expect(done.success).toBe(true);
+			owed = false;
+			expect(
+				(
+					await boundary.invoke("later", "qorpera", "manage_routine", {
+						action: "pause",
+						operationKey: "later",
+						routineKey: "invoice-watch",
+					})
+				).success,
+			).toBe(true);
+			expect(call).toHaveBeenCalledTimes(3);
+		} finally {
+			run.close();
+		}
+	});
+});
+
 describe("dynamic routine decision tool", () => {
 	async function decision(result: (request: Record<string, unknown>, runId: string) => unknown) {
 		const { binding, authority } = nativeToolAuthorityFixture();

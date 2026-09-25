@@ -422,7 +422,17 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 									? []
 									: [
 											cloudCoworkerMessageTool(binding, identity, wakeControl),
-											...cloudRoutineTools(binding, identity, this.#paths),
+											...cloudRoutineTools(
+												binding,
+												identity,
+												this.#paths,
+												dynamicRoutine && wake.routine?.routineKey
+													? {
+															routineKey: wake.routine.routineKey,
+															decisionOwed: () => routineDecisionOwed,
+														}
+													: undefined,
+											),
 											...(dynamicRoutine
 												? [
 														cloudRoutineDecisionTool(binding, identity, this.#paths, {

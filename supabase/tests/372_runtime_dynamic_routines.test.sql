@@ -113,7 +113,7 @@ begin
 	v_run := pg_temp.routine_run(v_wake.id);
 	perform pg_temp.wake_assert(v_run is not null,'The first run is admitted');
 	v_binding := pg_temp.dyn_start(v_run);
-	perform pg_temp.wake_assert(public.qorpera_read_native_wake(v_binding) -> 'routine' @> '{"dynamic":true,"version":1}'
+	perform pg_temp.wake_assert(public.qorpera_read_native_wake(v_binding) -> 'routine' @> '{"dynamic":true,"version":1,"routineKey":"invoice-watch"}'
 		and public.qorpera_read_native_wake(v_binding) #>> '{routine,intent}' = 'Check whether invoice 42 was paid.',
 		'The run learns that its routine is dynamic');
 	perform pg_temp.wake_public_send(v_binding,'progress','dyn-progress');
@@ -121,6 +121,13 @@ begin
 		'55000','Decide this routine''s next run or conclude it before the final message');
 	perform pg_temp.wake_error(format('select pg_temp.dyn_complete(%L::jsonb)',v_binding),
 		'55000','Dynamic routine run ended without deciding its next run');
+	-- Saving, pausing or removing its own routine here would drop the decision it owes.
+	perform pg_temp.wake_error(format('select public.qorpera_manage_agent_routine(%L::jsonb,%L::jsonb)',v_binding,
+		'{"action":"upsert","operationKey":"self-save","routineKey":"invoice-watch","title":"Invoice follow-up","intent":"Look again.",
+			"trigger":{"kind":"once","timeZone":"Europe/Copenhagen"}}'),'55000','This run decides its own routine through decide_routine');
+	perform pg_temp.wake_error(format('select public.qorpera_manage_agent_routine(%L::jsonb,%L::jsonb)',v_binding,
+		'{"action":"pause","operationKey":"self-pause","routineKey":"invoice-watch"}'),'55000','This run decides its own routine through decide_routine');
+	perform pg_temp.wake_assert((pg_temp.routine_row('invoice-watch')).current_version = 1,'Its own routine is unchanged');
 	v_next := pg_temp.dyn_decide(v_binding,jsonb_build_object('action','next','operationKey','next-1','at',v_at,
 		'intent','Invoice 42 is still open. Check again and remind finance if it is still open tomorrow.'));
 	v_row := pg_temp.routine_row('invoice-watch');
@@ -376,6 +383,12 @@ begin
 	v_row := pg_temp.routine_row('stopped-by-member');
 	perform pg_temp.wake_assert(v_row.status = 'paused' and v_row.pause_reason = 'member' and pg_temp.dyn_pending('stopped-by-member') is null,
 		'A member''s Stop pauses a dynamic routine instead of running it again');
+	-- The Stop acts once: the agent can resume the routine, and the receipt says what is true.
+	perform pg_temp.wake_assert(pg_temp.routine('{"action":"resume","operationKey":"stop-r","routineKey":"stopped-by-member"}')
+		#>> '{routine,status}' = 'active' and (pg_temp.routine_row('stopped-by-member')).status = 'active'
+		and (pg_temp.dyn_pending('stopped-by-member')).id is not null,'After a Stop the agent can resume it');
+	perform pg_temp.routine('{"action":"pause","operationKey":"stop-p","routineKey":"stopped-by-member"}');
+	v_row := pg_temp.routine_row('stopped-by-member');
 
 	-- While the company is paused, a member resumes the routine from the web.
 	perform pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001');
@@ -448,6 +461,43 @@ begin
 	perform pg_temp.wake_assert(pg_temp.dyn_decide(v_binding,'{"action":"next","operationKey":"late","at":"2030-01-01T00:00:00.000Z"}')
 		->> 'state' = 'settled','A routine past its end owes no decision');
 	perform pg_temp.wake_assert(pg_temp.dyn_complete(v_binding) ->> 'status' = 'completed','and its run completes');
+end $$;
+
+-- A replay of a decision after someone edited the routine is settled, and a stored
+-- effort the agent tool would refuse does not block the next decision.
+do $$
+declare v_wake public.qorpera_wake_occurrences; v_binding jsonb; v_first jsonb; v_row public.qorpera_cloud_routines;
+	v_version public.qorpera_cloud_routine_versions;
+begin
+	perform pg_temp.routine(jsonb_build_object('action','upsert','operationKey','replay-1','routineKey','replayed',
+		'title','Replayed','intent','Look.','trigger',jsonb_build_object('kind','once','at',pg_temp.iso(statement_timestamp()),
+			'timeZone','UTC','replyPolicy','silent')));
+	v_row := pg_temp.routine_row('replayed');
+	select * into strict v_version from public.qorpera_cloud_routine_versions where routine_id = v_row.id and version = v_row.current_version;
+	-- A member saved it with an effort the agent's tool does not offer.
+	perform pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001');
+	perform public.qorpera_upsert_cloud_routine('30000000-0000-4000-8000-000000000020',v_row.client_routine_id,
+		extensions.gen_random_uuid(),v_version.staff_agent_id,v_version.title,v_version.prompt,v_version.triggers,'max',
+		(current_setting('qorpera_test.wake_sponsor')::jsonb ->> 'binding_id')::uuid,1,null,'agent_turn','agent_turn',
+		true,'automatic',null,'{}');
+	perform pg_temp.path_claims('service_role');
+	perform public.qorpera_drain_company_file_wakes(8);
+	v_wake := pg_temp.dyn_pending('replayed');
+	perform public.qorpera_materialize_wake_execution_runs(8);
+	v_binding := pg_temp.dyn_start(pg_temp.routine_run(v_wake.id));
+	v_first := pg_temp.dyn_decide(v_binding,jsonb_build_object('action','next','operationKey','rep-1',
+		'at',pg_temp.iso(statement_timestamp() + interval '1 day')));
+	perform pg_temp.wake_assert(v_first ->> 'action' = 'upsert'
+		and (select effort from public.qorpera_cloud_routine_versions where routine_id = v_row.id
+			and version = (v_first #>> '{routine,version}')::bigint) = 'max','A stored effort is kept, not re-sent');
+	-- Someone edits the routine's quiet hours in a conversation; the run replays its decision.
+	perform pg_temp.routine(jsonb_build_object('action','upsert','operationKey','replay-2','routineKey','replayed',
+		'title','Replayed','intent','Look.','quietHours',jsonb_build_object('start','22:00','end','06:00','timeZone','UTC'),
+		'trigger',jsonb_build_object('kind','once','at',pg_temp.iso(statement_timestamp() + interval '1 day'),'timeZone','UTC',
+			'replyPolicy','silent')));
+	perform pg_temp.wake_assert(pg_temp.dyn_decide(v_binding,jsonb_build_object('action','next','operationKey','rep-1',
+		'at',pg_temp.iso(statement_timestamp() + interval '1 day'))) ->> 'state' = 'settled','A replay after an edit is settled');
+	perform pg_temp.wake_assert(pg_temp.dyn_complete(v_binding) ->> 'status' = 'completed','and the run completes');
 end $$;
 
 -- The observation vocabulary knows the new tool.

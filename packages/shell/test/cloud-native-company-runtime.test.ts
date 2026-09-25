@@ -121,7 +121,7 @@ async function fixture(mode = "company-runtime", httpPathControl = false, presen
 						id: wakeRoutineId,
 						version: 1,
 						intent: "Check the inbox and file anything new.",
-						...(dynamic ? { dynamic: true } : {}),
+						...(dynamic ? { dynamic: true, routineKey: "invoice-watch" } : {}),
 					},
 					payload: {
 						schema: "qorpera.routine-schedule-occurrence/v1",
@@ -953,7 +953,8 @@ it("has a dynamic routine run decide its next run before its final message", asy
 	const f = await fixture("company-dynamic");
 	const result = await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
 	expect(result.delivery).toEqual({ messageCount: 2, finalMessageId: f.deliveries.get("final")?.messageId });
-	// The early final never reached the kernel: the host showed the model why.
+	// The early final and the save of its own routine never reached the kernel: the host showed the model why.
+	expect(f.pathCall.mock.calls.some(([method]) => method === "qorpera_manage_agent_routine")).toBe(false);
 	const sends = f.control.sendMessage.mock.calls.map(([, input]) => input);
 	expect(sends.map((input) => input.idempotencyKey)).toEqual(["progress", "final"]);
 	expect(f.decisions).toEqual([
@@ -972,6 +973,10 @@ it("has a dynamic routine run decide its next run before its final message", asy
 		.map((output: { output: string }) => output.output)
 		.find((text: string) => text.includes("INVALID_ARGUMENTS"));
 	expect(early).toContain("decide this dynamic routine first");
+	const ownSave = evidence.fenced.outputs
+		.map((output: { output: string }) => output.output)
+		.find((text: string) => text.includes("this is the routine you are running"));
+	expect(ownSave).toContain("use decide_routine");
 	expect(evidence.threadParameters.developerInstructions).toContain("# This routine is dynamic");
 	// A fixed routine run is not offered the decision. A distinct private identity and
 	// company root keep the first fixture's state out of the second (as for the silent run).

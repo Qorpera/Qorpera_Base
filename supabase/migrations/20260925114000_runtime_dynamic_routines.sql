@@ -161,9 +161,13 @@ begin
 	select wake.* into v_last from public.qorpera_wake_occurrences wake
 	where wake.routine_id = v_routine.id and wake.routine_version = v_routine.current_version
 	order by wake.created_at desc, wake.id desc limit 1;
-	if v_last.run_id is not null and exists (select 1 from public.qorpera_execution_runs run
+	-- It acts once: the stopped occurrence is marked, so a resume runs the routine again.
+	if v_last.run_id is not null and v_last.blocked_reason is distinct from 'A member stopped this run; the routine paused'
+		and exists (select 1 from public.qorpera_execution_runs run
 		join public.qorpera_runner_jobs job on job.id = run.job_id
 		where run.id = v_last.run_id and job.status = 'cancelled' and job.cancelled_by_user_id is not null) then
+		update public.qorpera_wake_occurrences set blocked_reason = 'A member stopped this run; the routine paused'
+		where id = v_last.id;
 		update public.qorpera_cloud_routines set status = 'paused', pause_reason = 'member', updated_at = statement_timestamp()
 		where id = v_routine.id;
 		return null;
@@ -254,7 +258,8 @@ select pg_temp.dynamic_patch('public.qorpera_read_native_wake(jsonb)'::regproced
 	$new$		select jsonb_build_object('id',routine_id,'version',version,'intent',prompt)
 			|| case when triggers -> 0 ->> 'kind' = 'once' and jsonb_array_length(triggers) = 1 and exists (select 1
 			from public.qorpera_cloud_routines r where r.id = routine_id and r.origin = 'agent')
-			then '{"dynamic":true}'::jsonb else '{}'::jsonb end into v_routine$new$);
+			then jsonb_build_object('dynamic',true,'routineKey',(select r.routine_key from public.qorpera_cloud_routines r where r.id = routine_id))
+			else '{}'::jsonb end into v_routine$new$);
 
 select pg_temp.dynamic_patch('public.qorpera_record_runtime_observation(uuid,jsonb)'::regprocedure,
 	$old$'manage_routine','report_work'$old$,
@@ -267,8 +272,8 @@ select pg_temp.dynamic_patch('public.qorpera_manage_agent_routine(jsonb,jsonb)':
 	$old$		v_trigger := v_trigger || jsonb_build_object('id', 'agent');
 		v_triggers := jsonb_build_array(v_trigger);$old$,
 	$new$		v_trigger := v_trigger || jsonb_build_object('id', 'agent');
-		-- A dynamic save without a time keeps the next run the routine already has,
-		-- or runs now. The request (and its digest) stays the model's own.
+		-- A dynamic save without a time keeps the next run the routine already has
+		-- (a time still ahead), or runs now. The request and its digest stay the model's own.
 		if v_trigger ->> 'kind' = 'once' and not v_trigger ? 'at' then
 			v_trigger := v_trigger || jsonb_build_object('at', coalesce((select version.triggers -> 0 ->> 'at'
 				from public.qorpera_cloud_routines routine join public.qorpera_cloud_routine_versions version
@@ -276,7 +281,8 @@ select pg_temp.dynamic_patch('public.qorpera_manage_agent_routine(jsonb,jsonb)':
 				where routine.profile_id = v_run.profile_id and routine.environment_id = v_run.environment_id
 					and routine.origin = 'agent' and routine.owner_staff_agent_id = v_run.staff_agent_id
 					and routine.routine_key = v_key and routine.status = 'active'
-					and version.triggers -> 0 ->> 'kind' = 'once'),
+					and version.triggers -> 0 ->> 'kind' = 'once'
+					and (version.triggers -> 0 ->> 'at')::timestamptz > statement_timestamp()),
 				to_char(statement_timestamp() at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')));
 		end if;
 		v_triggers := jsonb_build_array(v_trigger);$new$,
@@ -300,6 +306,13 @@ select pg_temp.dynamic_patch('public.qorpera_manage_agent_routine(jsonb,jsonb)':
 	v_digest := encode(extensions.digest(convert_to(p_request::text,'utf8'),'sha256'),'hex');$new$,
 	$old$		and routine.routine_key = v_key for update;$old$,
 	$new$		and routine.routine_key = v_key for update;
+	-- A dynamic run decides its own routine through decide_routine (which passes
+	-- expectedVersion); saving, pausing or removing it here would drop that decision.
+	if v_action in ('upsert','pause','resume','remove') and not p_request ? 'expectedVersion' and v_routine.id is not null
+		and exists (select 1 from public.qorpera_wake_occurrences wake where wake.run_id = v_run.id
+			and wake.wake_kind = 'routine' and wake.routine_id = v_routine.id)
+		and public.qorpera_routine_decision_pending(v_run.id) then
+		raise exception 'This run decides its own routine through decide_routine' using errcode = '55000'; end if;
 	-- A run's decision applies only to the routine as that run found it.
 	if p_request ? 'expectedVersion' and (v_routine.id is null or v_routine.status <> 'active'
 		or v_routine.current_version <> (p_request ->> 'expectedVersion')::bigint) then
@@ -310,7 +323,8 @@ select pg_temp.dynamic_patch('public.qorpera_manage_agent_routine(jsonb,jsonb)':
 		where id = v_routine.id returning * into v_routine;$old$,
 	$new$			quiet_time_zone = v_quiet ->> 'timeZone', updated_at = statement_timestamp()
 		where id = v_routine.id returning * into v_routine;
-		perform public.qorpera_ensure_dynamic_routine_run(v_routine.id);$new$,
+		perform public.qorpera_ensure_dynamic_routine_run(v_routine.id);
+		select * into v_routine from public.qorpera_cloud_routines where id = v_routine.id;$new$,
 	$old$		if v_action = 'pause' then$old$,
 	$new$		if v_action = 'conclude' then
 			update public.qorpera_cloud_routines set status = 'concluded', pause_reason = null,
@@ -326,7 +340,8 @@ select pg_temp.dynamic_patch('public.qorpera_manage_agent_routine(jsonb,jsonb)':
 			where id = v_routine.id returning * into v_routine;$old$,
 	$new$				authorization_failures = 0, updated_at = statement_timestamp()
 			where id = v_routine.id returning * into v_routine;
-			perform public.qorpera_ensure_dynamic_routine_run(v_routine.id);$new$);
+			perform public.qorpera_ensure_dynamic_routine_run(v_routine.id);
+			select * into v_routine from public.qorpera_cloud_routines where id = v_routine.id;$new$);
 
 -- What an agent and a member see: the next run, and how a routine ended.
 create function public.qorpera_routine_next_run_at(p_routine_id uuid)
@@ -337,11 +352,14 @@ returns timestamptz language sql stable security definer set search_path = '' as
 		(select min(cursor.next_due_at) from public.qorpera_cloud_routine_schedule_cursors cursor
 			where cursor.routine_id = routine.id and cursor.routine_version = routine.current_version
 				and cursor.last_scheduled_for is not null and cursor.next_due_at > '-infinity'::timestamptz),
-		-- A dynamic routine's chosen time, before the tick inserts its run.
+		-- A dynamic routine's chosen time, before the tick inserts its run (not while
+		-- a run of this version works: then the next run is not chosen yet).
 		(select greatest((version.triggers -> 0 ->> 'at')::timestamptz, statement_timestamp())
 			from public.qorpera_cloud_routine_versions version
 			where version.routine_id = routine.id and version.version = routine.current_version
-				and version.triggers -> 0 ->> 'kind' = 'once' and routine.origin = 'agent')) end
+				and version.triggers -> 0 ->> 'kind' = 'once' and routine.origin = 'agent'
+				and not exists (select 1 from public.qorpera_wake_occurrences wake
+					where wake.routine_id = routine.id and wake.routine_version = routine.current_version))) end
 	from public.qorpera_cloud_routines routine where routine.id = p_routine_id
 $$;
 select pg_temp.dynamic_patch('public.qorpera_agent_routine_view(public.qorpera_cloud_routines)'::regprocedure,
