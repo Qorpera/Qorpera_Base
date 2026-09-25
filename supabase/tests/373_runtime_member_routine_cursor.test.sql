@@ -91,6 +91,10 @@ begin
 	perform pg_temp.wake_assert(pg_temp.member_head(v_client) #>> '{schedule_cursors,0,last_scheduled_for}' is null
 		and (pg_temp.member_head(v_client) ->> 'effective_at')::timestamptz = pg_temp.member_effective_at(v_client),
 		'The scheduler still sees the kickoff it owes, at the new version');
+	perform pg_temp.member_save(v_client,'New daily brief',jsonb_set(v_brief,'{0,weekdays}','["monday","friday"]'));
+	v_cursor := pg_temp.member_cursor(v_client,'brief');
+	perform pg_temp.wake_assert(v_cursor.routine_version = 3 and v_cursor.last_scheduled_for is null
+		and v_cursor.next_due_at = '-infinity'::timestamptz,'Changed timing on a never-run routine keeps the kickoff it owes');
 end $$;
 
 -- Changed timing under the same id restarts the schedule at the save: the cursor stands
@@ -135,7 +139,8 @@ end $$;
 
 -- Pausing and resuming. Resumed before its next slot, the routine keeps its exact
 -- position. Resumed after its next slot passed, the schedule restarts at the resume:
--- the Mondays it missed while paused are skipped, not run in a burst.
+-- the Mondays it missed while paused are skipped, not run in a burst. (Any save of a
+-- paused routine whose next slot passed restarts the same way.)
 do $$
 declare v_soon uuid := extensions.gen_random_uuid(); v_late uuid := extensions.gen_random_uuid();
 	v_ran timestamptz := date_trunc('milliseconds',statement_timestamp() - interval '1 day');
@@ -170,9 +175,46 @@ begin
 		'Resumed after missed slots, the schedule restarts at the resume');
 	perform set_config('qorpera_test.member_resumed',v_late::text,true);
 end $$;
-select pg_temp.wake_assert(pg_temp.member_head(current_setting('qorpera_test.member_resumed')::uuid)
-	#>> '{schedule_cursors,0,last_scheduled_for}' is not null,
-	'The scheduler sees the resume position, so it neither kicks off nor catches up the missed Mondays');
+do $$
+declare v_client uuid := current_setting('qorpera_test.member_resumed')::uuid; v_head jsonb := pg_temp.member_head(v_client);
+	v_cursor public.qorpera_cloud_routine_schedule_cursors := pg_temp.member_cursor(v_client,'brief'); v_expected timestamptz;
+begin
+	perform pg_temp.wake_assert(v_head #>> '{schedule_cursors,0,last_scheduled_for}' is not null,
+		'The scheduler sees the resume position, so it neither kicks off nor catches up the missed Mondays');
+	v_expected := to_char((v_head #>> '{schedule_cursors,0,last_scheduled_for}')::timestamptz at time zone 'UTC',
+		'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')::timestamptz;
+	perform pg_temp.wake_assert(public.qorpera_enqueue_routine_wake(v_cursor.routine_id,v_cursor.routine_version,
+		extensions.gen_random_uuid(),'member-cursor-first-after-resume',v_cursor.trigger_id,v_expected + interval '3 days',
+		v_expected,v_expected + interval '10 days','{}') ->> 'status' = 'queued',
+		'The first Monday after the resume is admitted against the position the orchestrator read');
+end $$;
+
+-- The order of the days is not timing: a rename that rewrites ["monday","sunday"] in
+-- the web editor's order keeps the exact position. A trigger that was a listener and
+-- becomes a schedule under the same id is a new schedule: fresh, with its kickoff.
+do $$
+declare v_client uuid := extensions.gen_random_uuid(); v_watch uuid := extensions.gen_random_uuid();
+	v_ran timestamptz := date_trunc('milliseconds',statement_timestamp() - interval '1 day');
+	v_cursor public.qorpera_cloud_routine_schedule_cursors;
+begin
+	perform pg_temp.member_save(v_client,'Weekend review','[{"id":"review","kind":"schedule","intervalMinutes":1440,
+		"weekdays":["monday","sunday"],"localTime":"18:00","timeZone":"Europe/Copenhagen"}]');
+	perform pg_temp.member_ran(v_client,'review',v_ran,v_ran + interval '6 days');
+	perform pg_temp.member_save(v_client,'Weekend wrap-up','[{"id":"review","kind":"schedule","intervalMinutes":1440,
+		"weekdays":["sunday","monday"],"localTime":"18:00","timeZone":"Europe/Copenhagen"}]');
+	v_cursor := pg_temp.member_cursor(v_client,'review');
+	perform pg_temp.wake_assert(v_cursor.routine_version = 2 and v_cursor.last_scheduled_for = v_ran
+		and v_cursor.next_due_at = v_ran + interval '6 days','Reordered weekdays keep the exact position');
+
+	perform pg_temp.member_save(v_watch,'Notes watch',
+		'[{"id":"watch","kind":"listener","source":"company-file","path":"notes","match":"subtree","timeZone":"UTC"}]');
+	perform pg_temp.wake_assert(pg_temp.member_cursor(v_watch,'watch') is null,'Fixture: a listener has no schedule cursor');
+	perform pg_temp.member_save(v_watch,'Notes digest','[{"id":"watch","kind":"schedule","intervalMinutes":1440,
+		"weekdays":["friday"],"localTime":"16:00","timeZone":"Europe/Copenhagen"}]');
+	v_cursor := pg_temp.member_cursor(v_watch,'watch');
+	perform pg_temp.wake_assert(v_cursor.routine_version = 2 and v_cursor.last_scheduled_for is null
+		and v_cursor.next_due_at = '-infinity'::timestamptz,'A listener that becomes a schedule starts fresh, with its kickoff');
+end $$;
 
 -- Each schedule trigger is decided on its own: a kept trigger keeps its position, a
 -- changed one restarts at the save, a new id starts fresh with its kickoff. A position

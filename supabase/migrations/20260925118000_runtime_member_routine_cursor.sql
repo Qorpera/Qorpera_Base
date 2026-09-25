@@ -13,10 +13,11 @@
 -- * A cursor that never scheduled anything stays fresh, so a kickoff the
 --   routine still owes is not lost (it runs at the new version's effective
 --   time unless the trigger names a later start).
--- * The same timing (the trigger is unchanged apart from replyPolicy) keeps the
---   exact position, like the agent path: the next run is the one already due,
---   on the same cadence. This holds while the routine is active, and for a
---   paused or ended routine whose next slot is still ahead.
+-- * The same timing (the trigger is unchanged apart from replyPolicy and the
+--   order of its weekdays or months) keeps the exact position, like the agent
+--   path: the next run is the one already due, on the same cadence. This holds
+--   while the routine is active, and for a paused or ended routine whose next
+--   slot is still ahead.
 -- * Changed timing under the same id (time, weekdays, time zone, interval,
 --   start) restarts the schedule at the save: nothing runs at once and nothing
 --   is caught up; the first run is the new schedule's first slot after the
@@ -24,9 +25,9 @@
 --   every slot of the new cadence since the last run, one run each (weekly to
 --   daily on a Thursday = three runs at once), and the old next-due time would
 --   hide a faster cadence until the old slot came round.
--- * A save that switches a paused or ended routine back on after its next slot
---   has passed restarts the same way: the slots it missed while it was off are
---   skipped, not run in a burst.
+-- * A save of a paused or ended routine whose next slot has passed (typically
+--   switching it back on) restarts the same way: the slots it missed while it
+--   was off are skipped, not run in a burst.
 --
 -- The restart position is the save's effective time truncated to the
 -- millisecond. The orchestrator reads the cursor into a JavaScript Date and
@@ -64,7 +65,13 @@ select pg_temp.member_cursor_patch(
 	from jsonb_array_elements(p_triggers) as trigger(value)
 	left join lateral (
 		select earlier_cursor.last_scheduled_for is not null
-				and (earlier.value - 'replyPolicy') = (trigger.value - 'replyPolicy')
+				-- The same timing: equal apart from the reply policy and the order of days or months.
+				and (earlier.value - array['replyPolicy', 'weekdays', 'months'])
+					= (trigger.value - array['replyPolicy', 'weekdays', 'months'])
+				and array(select day from jsonb_array_elements_text(earlier.value -> 'weekdays') as day order by day)
+					= array(select day from jsonb_array_elements_text(trigger.value -> 'weekdays') as day order by day)
+				and array(select month from jsonb_array_elements_text(earlier.value -> 'months') as month order by month)
+					= array(select month from jsonb_array_elements_text(trigger.value -> 'months') as month order by month)
 				and (v_routine.status = 'active' or earlier_cursor.next_due_at > v_version.created_at) as keeps,
 			earlier_cursor.last_scheduled_for, earlier_cursor.next_due_at,
 			case when earlier_cursor.last_scheduled_for is not null then greatest(
