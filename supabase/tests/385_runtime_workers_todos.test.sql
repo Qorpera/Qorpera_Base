@@ -457,7 +457,7 @@ begin
 		if sqlerrm <> 'rollback-stopped-revival-workers-probe' then raise; end if;
 	end;
 	-- The status listing is a page of sixteen, newest first, and counts the rest; a state filter
-	-- finds the active ones. Probed in a subtransaction (paging itself: 387).
+	-- finds the active ones. Probed in a subtransaction (paging itself: 388).
 	begin
 		for v_index in 7..18 loop
 			perform pg_temp.worker(jsonb_build_object('action','dispatch','operationKey','b' || v_index,'todoKey','market-scan','workerKey','batch-' || v_index,

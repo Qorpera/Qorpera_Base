@@ -180,7 +180,7 @@ Migration `*_runtime_todo_worker_pages.sql` makes both listings pages:
   with its `todoKey` pages through all of them.
 - `qorpera_describe_agent_open_work` gives the runtime the counts for
   `openWork`; a failure leaves it out and never blocks the run.
-- Proof: `supabase/tests/387_runtime_todo_worker_pages.test.sql` walks 60 and
+- Proof: `supabase/tests/388_runtime_todo_worker_pages.test.sql` walks 60 and
   70 todos and 26 workers to the end with exact counts, pages through todos
   created in one instant, and changes items between pages.
 - Company formation research and project teams (contract 14.2, 14.4) use this
