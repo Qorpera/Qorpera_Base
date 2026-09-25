@@ -485,6 +485,14 @@ export function cloudInteractionEventId(runId: string, idempotencyKey: string): 
 	return `${digest.slice(0, 8)}-${digest.slice(8, 12)}-4${digest.slice(13, 16)}-a${digest.slice(17, 20)}-${digest.slice(20, 32)}`;
 }
 
+/** The idempotency key of the final send that carries a card's sentence. It always fits the
+ * send's 128-character key, so every key ask_member accepts can finish its turn and a retry
+ * replays the same send. A key with no room for ":final" is replaced by its digest. */
+export function cloudAskMemberFinalKey(idempotencyKey: string): string {
+	const suffixed = `${idempotencyKey}:final`;
+	return suffixed.length <= 128 ? suffixed : `ask-final.${createHash("sha256").update(idempotencyKey).digest("hex")}`;
+}
+
 export function parseCloudInteractionRequestReceipt(value: unknown, eventId: string): CloudInteractionRequestReceipt {
 	const receipt = record(value);
 	if (

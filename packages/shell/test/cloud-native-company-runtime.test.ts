@@ -960,6 +960,23 @@ it("raises one typed card for the member, appended before the final sentence, an
 	expect(JSON.stringify(f.observations)).not.toContain("digest");
 });
 
+it("finishes the turn for the longest card key ask_member accepts, and its retry replays both effects", async () => {
+	const f = await fixture("company-cards-long-key");
+	const result = await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+	const sends = f.control.sendMessage.mock.calls.map(([, input]) => input);
+	expect(sends.map((input) => input.phase)).toEqual(["final", "final"]);
+	// A bounded key derived from the card's key: the send accepts it and the retry reuses it.
+	const finalKey = sends[0]!.idempotencyKey;
+	expect(finalKey).toMatch(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/);
+	expect(sends[1]!.idempotencyKey).toBe(finalKey);
+	expect(result.delivery).toEqual({ messageCount: 1, finalMessageId: f.deliveries.get(finalKey)?.messageId });
+	expect(f.control.appendInteractionRequest).toHaveBeenCalledTimes(2);
+	const [first, second] = f.control.appendInteractionRequest.mock.calls.map(([, card]) => card.eventId);
+	expect(second).toBe(first);
+	const asks = f.observations.filter((row) => row.operation === "ask_member" && row.phase === "finish");
+	expect(asks.map((row) => row.status)).toEqual(["succeeded", "replayed"]);
+});
+
 it("tells the model the card shape and why a card was refused, so it can fix the card and retry", async () => {
 	const f = await fixture("company-cards-retry");
 	const result = await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
