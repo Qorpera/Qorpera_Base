@@ -259,6 +259,66 @@ begin
 		'At its first slot the fresh cursor is admitted as before, without a position');
 end $$;
 
+-- A fresh cursor that may still owe its kickoff is never raised: no start, or a start
+-- already reached when the version was saved. The call refuses it, so a kickoff is not
+-- postponed even if an orchestrator asked.
+do $$
+declare v_cursor public.qorpera_cloud_routine_schedule_cursors;
+begin
+	perform pg_temp.agent_save('owes-kickoff','{"kind":"schedule","intervalMinutes":60}');
+	v_cursor := pg_temp.agent_cursor('owes-kickoff');
+	perform pg_temp.wake_assert(pg_temp.advance(v_cursor,null,date_trunc('hour',statement_timestamp()) + interval '1 hour')
+		->> 'status' = 'stale' and (pg_temp.agent_cursor('owes-kickoff')).next_due_at = '-infinity'::timestamptz,
+		'A fresh cursor without a later start keeps its kickoff');
+	perform pg_temp.agent_save('start-reached',jsonb_build_object('kind','schedule','intervalMinutes',60,'startAt',
+		to_char((statement_timestamp() - interval '1 day') at time zone 'UTC','YYYY-MM-DD"T"HH24:00:00.000"Z"')));
+	v_cursor := pg_temp.agent_cursor('start-reached');
+	perform pg_temp.wake_assert(pg_temp.advance(v_cursor,null,date_trunc('hour',statement_timestamp()) + interval '1 hour')
+		->> 'status' = 'stale' and (pg_temp.agent_cursor('start-reached')).next_due_at = '-infinity'::timestamptz,
+		'A fresh cursor whose start was reached at the save keeps its kickoff');
+end $$;
+
+-- A raised slot that passed is due again: the routine is listed, and a resume after it
+-- restarts the schedule at the resume (#320), so nothing is caught up.
+do $$
+declare v_long_ago timestamptz := date_trunc('milliseconds',statement_timestamp() - interval '3 days');
+	v_cursor public.qorpera_cloud_routine_schedule_cursors;
+begin
+	perform pg_temp.agent_save('passed','{"kind":"schedule","intervalMinutes":1440,"weekdays":["monday"],"localTime":"08:00",
+		"timeZone":"Europe/Copenhagen"}');
+	-- A restart position three days ago, raised to a slot one day later (both passed).
+	perform pg_temp.agent_ran('passed',v_long_ago,v_long_ago + interval '1 millisecond');
+	v_cursor := pg_temp.agent_cursor('passed');
+	perform pg_temp.wake_assert(pg_temp.advance(v_cursor,v_long_ago,v_long_ago + interval '1 day') ->> 'status' = 'advanced',
+		'Fixture: the scheduler raised the restart position to a slot that has passed');
+end $$;
+do $$
+declare v_row public.qorpera_cloud_routines := pg_temp.agent_row('passed'); v_cursor public.qorpera_cloud_routine_schedule_cursors;
+begin
+	perform pg_temp.wake_assert(pg_temp.head_of(v_row.id) is not null,'A raised slot that passed is listed again');
+	perform pg_temp.agent_routine('{"action":"pause","routineKey":"passed"}');
+	perform pg_temp.agent_routine('{"action":"resume","routineKey":"passed"}');
+	v_cursor := pg_temp.agent_cursor('passed');
+	perform pg_temp.wake_assert(v_cursor.last_scheduled_for = date_trunc('milliseconds',statement_timestamp())
+		and v_cursor.next_due_at = v_cursor.last_scheduled_for + interval '1 millisecond',
+		'A resume after the raised slot passed restarts the schedule at the resume');
+end $$;
+
+-- An ended routine is not raised.
+do $$
+declare v_long_ago timestamptz := date_trunc('milliseconds',statement_timestamp() - interval '15 days');
+	v_cursor public.qorpera_cloud_routine_schedule_cursors;
+begin
+	perform pg_temp.agent_routine('{"action":"upsert","routineKey":"ended","title":"Watch","intent":"Watch the orders.",
+		"maxOccurrences":1,"trigger":{"kind":"schedule","intervalMinutes":1440,"weekdays":["monday"],"localTime":"08:00",
+		"timeZone":"Europe/Copenhagen"}}');
+	perform pg_temp.agent_ran('ended',v_long_ago,v_long_ago + interval '7 days');
+	perform pg_temp.wake_assert((pg_temp.agent_row('ended')).status = 'expired','Fixture: the last permitted run ended the watch');
+	v_cursor := pg_temp.agent_cursor('ended');
+	perform pg_temp.wake_assert(pg_temp.advance(v_cursor,v_long_ago,v_long_ago + interval '14 days') ->> 'status' = 'stale'
+		and (pg_temp.agent_cursor('ended')).next_due_at = v_long_ago + interval '7 days','An ended routine is stale');
+end $$;
+
 -- A member's save restarts the same way (#317), and a member sees the raised slot.
 create function pg_temp.member_save(p_client uuid,p_triggers jsonb) returns jsonb language plpgsql as $$
 declare v_result jsonb; v_claims text := current_setting('request.jwt.claims');
@@ -307,6 +367,15 @@ begin
 		date_trunc('minute',v_cursor.last_scheduled_for) + interval '6 days') ->> 'status' = 'advanced'
 		and pg_temp.member_next_run(v_client) = date_trunc('minute',v_cursor.last_scheduled_for) + interval '6 days',
 		'The member sees the first slot the scheduler set');
+
+	-- A window bounds the run times, so a fresh window cursor owes no kickoff and is raised.
+	perform pg_temp.member_save('37700000-0000-4000-8000-000000000002','[{"id":"brief","kind":"schedule","intervalMinutes":30,
+		"weekdays":["monday","tuesday","wednesday","thursday","friday"],"windowStart":"09:00","windowEnd":"10:00","timeZone":"UTC"}]');
+	v_cursor := pg_temp.member_cursor('37700000-0000-4000-8000-000000000002');
+	perform pg_temp.wake_assert(pg_temp.advance(v_cursor,null,date_trunc('day',statement_timestamp()) + interval '1 day 9 hours')
+		->> 'status' = 'advanced' and (pg_temp.member_cursor('37700000-0000-4000-8000-000000000002')).last_scheduled_for is null
+		and pg_temp.member_next_run('37700000-0000-4000-8000-000000000002') = date_trunc('day',statement_timestamp()) + interval '1 day 9 hours',
+		'A fresh window cursor is raised to its first slot and shows it');
 end $$;
 
 rollback;

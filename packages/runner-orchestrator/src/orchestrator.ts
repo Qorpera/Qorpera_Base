@@ -1225,6 +1225,10 @@ export class CloudRoutineScheduleReconciler implements CloudRunnerOccurrenceReco
 	readonly #now: () => Date;
 	readonly #pageSize: number;
 	readonly #catchUpLimit: number;
+	/** A control plane that answers the first-slot advance with 400 does not know
+	 * it yet (its edge function predates this orchestrator): report that once and
+	 * keep scheduling as before, instead of failing every poll. */
+	#advanceUnsupported = false;
 
 	constructor(options: CloudRoutineScheduleReconcilerOptions = {}) {
 		this.#now = options.now ?? (() => new Date());
@@ -1252,7 +1256,8 @@ export class CloudRoutineScheduleReconciler implements CloudRunnerOccurrenceReco
 					if (!trigger) continue;
 					const now = this.#now();
 					const wakes = dueRoutineWakes(head, trigger, now, this.#catchUpLimit);
-					const firstSlot = wakes.length === 0 ? routineFirstSlot(head, trigger, now) : undefined;
+					const firstSlot =
+						wakes.length === 0 && !this.#advanceUnsupported ? routineFirstSlot(head, trigger, now) : undefined;
 					if (firstSlot) {
 						const input: AdvanceCloudRoutineNextDueInput = {
 							routineId: head.routineId,
@@ -1266,6 +1271,9 @@ export class CloudRoutineScheduleReconciler implements CloudRunnerOccurrenceReco
 							else await controlPlane.advanceRoutineNextDue(input);
 						} catch (error) {
 							if (signal?.aborted) throw error;
+							if (error instanceof CloudRunnerOrchestratorRequestError && error.status === 400) {
+								this.#advanceUnsupported = true;
+							}
 							failures.push(error);
 						}
 					}

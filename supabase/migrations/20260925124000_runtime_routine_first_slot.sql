@@ -29,8 +29,8 @@
 -- slot at or after its version's effective time and #317/#320 still treat it as
 -- never run. The orchestrator raises one only when its kickoff is forgone
 -- whatever the time: its trigger names a start after the version's effective
--- time, or a window bounds its run times. A fresh cursor that may still owe a
--- kickoff is never raised.
+-- time, or a window bounds its run times. The call refuses ('stale') any other
+-- fresh cursor, so a kickoff it may still owe is never postponed.
 --
 -- The next run shown to agents and members (qorpera_routine_next_run_at) now
 -- also shows a fresh cursor's raised first slot. A restart position is still
@@ -65,6 +65,20 @@ begin
 	if v_profile_id is null then
 		return jsonb_build_object('status', 'stale', 'next_due_at', null);
 	end if;
+	-- Already waiting for that slot or a later one (another orchestrator raised it, or
+	-- the routine is listed for another trigger): answer without the company's fence.
+	-- Nothing is written; a read that moved meanwhile is read again at the next poll.
+	select cursor.* into v_cursor
+	from public.qorpera_cloud_routine_schedule_cursors as cursor
+	join public.qorpera_cloud_routines as routine
+		on routine.id = cursor.routine_id and routine.current_version = cursor.routine_version
+	where cursor.routine_id = p_routine_id and cursor.routine_version = p_expected_version
+		and cursor.trigger_id = btrim(p_trigger_id) and routine.status = 'active'
+		and cursor.last_scheduled_for is not distinct from p_expected_last_scheduled_for
+		and cursor.next_due_at >= p_next_due_at;
+	if found then
+		return jsonb_build_object('status', 'unchanged', 'next_due_at', v_cursor.next_due_at);
+	end if;
 	-- The enqueue's lock order (profile fence, routine, cursor): the enqueue may
 	-- expire the routine while it holds the cursor.
 	perform public.qorpera_lock_profile_gc_fence(v_profile_id);
@@ -85,6 +99,11 @@ begin
 			cross join lateral jsonb_array_elements(version.triggers) as trigger(value)
 			where version.routine_id = p_routine_id and version.version = p_expected_version
 				and trigger.value ->> 'id' = btrim(p_trigger_id) and trigger.value ->> 'kind' = 'schedule'
+				-- A fresh cursor only when its kickoff is forgone whatever the time: a
+				-- window, or a start after the version's effective time (startAt is
+				-- millisecond-exact, so this agrees with the orchestrator's Date).
+				and (p_expected_last_scheduled_for is not null or trigger.value ? 'windowStart'
+					or (trigger.value ->> 'startAt')::timestamptz > version.created_at)
 		) then
 		return jsonb_build_object('status', 'stale', 'next_due_at', nullif(v_cursor.next_due_at, '-infinity'::timestamptz));
 	end if;
@@ -107,7 +126,21 @@ grant execute on function public.qorpera_advance_routine_next_due(uuid, bigint, 
 
 -- The next run shown to agents and members. Restated whole (it is small): the
 -- restart-position skip came from #320 and may also come from #317's re-cut,
--- in either wording, and this version replaces both.
+-- in either wording, and this version replaces both. Everything outside that one
+-- schedule-cursor arm must still be #314's text: with the arm cut out, the
+-- source's md5 is 7d2cabed… (the same with or without #320's skip). Anything else
+-- changed it since, and restating it here would silently undo that, so refuse.
+do $$
+begin
+	if (select md5(regexp_replace(function.prosrc,
+			'\(select min\(cursor\.next_due_at\) from public\.qorpera_cloud_routine_schedule_cursors cursor.*?\),\s*-- A dynamic routine',
+			'<cursor arm>-- A dynamic routine'))
+		from pg_proc as function where function.oid = 'public.qorpera_routine_next_run_at(uuid)'::regprocedure)
+		is distinct from '7d2cabed9071c9a72a38a9786af5d12f' then
+		raise exception 'qorpera_routine_next_run_at changed after #314; restate migration runtime_routine_first_slot on the new text';
+	end if;
+end
+$$;
 create or replace function public.qorpera_routine_next_run_at(p_routine_id uuid)
 returns timestamptz language sql stable security definer set search_path = '' as $$
 	select case when routine.status <> 'active' then null else coalesce(
