@@ -76,6 +76,10 @@ When closing issues via commit:
 
 - Include `fixes #<number>` or `closes #<number>` in the message so merging auto-closes the issue. For multiple issues, repeat the keyword per issue (`closes #1, closes #2`); a shared keyword (`closes #1, #2`) only closes the first.
 
+## Versions
+
+All packages share one version. `npm run version:patch` (or `version:minor`, `version:major`) bumps them together, syncs internal ranges and refreshes the lockfile.
+
 ## Changelog
 
 Location: `packages/*/CHANGELOG.md` (one per package).

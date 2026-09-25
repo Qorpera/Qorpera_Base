@@ -29,7 +29,7 @@ See [AGENTS.md](AGENTS.md) for project rules (for both humans and agents).
 
 ```bash
 npm install --ignore-scripts  # Install all dependencies without running lifecycle scripts
-npm run build         # Build all packages
+npm run build         # Build the shared libraries and services (web apps build per workspace)
 npm run check         # Lint, format, and type check
 ./test.sh             # Run tests in an isolated home without API keys
 ```

@@ -106,10 +106,10 @@ compatibility and cloud acceptance remain the previously agreed backlog item.
 
 ## Verification
 
-Run focused tests from `packages/shell`:
+Run focused tests from `packages/runtime`:
 
 ```sh
-node ../../node_modules/vitest/dist/cli.js --run test/cloud-agent-mouth.test.ts test/cloud-agent-mouth-delivery.test.ts test/cloud-native-provider-host.test.ts test/cloud-native-provider.test.ts test/cloud-trail-sync.test.ts test/cloud-runner-worker.test.ts test/cloud-runner-broker.test.ts test/cloud-runner-sandbox.test.ts test/official-codex-mouth.test.ts
+node ../../node_modules/vitest/dist/cli.js --run test/cloud-agent-mouth.test.ts test/cloud-native-provider-host.test.ts test/cloud-native-provider.test.ts test/cloud-runner-worker.test.ts test/cloud-runner-broker.test.ts test/cloud-runner-sandbox.test.ts test/official-codex-mouth.test.ts
 ```
 
 The v47 activation focused suite passed 89 tests across these nine files. They exercise

@@ -265,10 +265,10 @@ or actual company credentials. A scripted adversarial call proves denial even
 if a model follows the injected instructions; it does not measure real-model
 prompt-injection resistance.
 
-Run from `packages/shell`:
+Run from `packages/runtime`:
 
 ```sh
-node ../../node_modules/vitest/dist/cli.js --run test/cloud-native-tool-authority.test.ts test/cloud-native-tool-operations.test.ts test/cloud-native-tool-control-plane.test.ts test/cloud-native-run-tool-session.test.ts test/cloud-native-tool-boundary.test.ts test/cloud-codex-tool-session.test.ts test/official-codex-boundary.test.ts test/cloud-agent-mouth.test.ts test/cloud-native-provider-host.test.ts test/cloud-agent-mouth-delivery.test.ts test/official-codex-mouth.test.ts test/cloud-native-provider-service-main.test.ts
+node ../../node_modules/vitest/dist/cli.js --run test/cloud-native-tool-authority.test.ts test/cloud-native-tool-operations.test.ts test/cloud-native-tool-control-plane.test.ts test/cloud-native-run-tool-session.test.ts test/cloud-native-tool-boundary.test.ts test/cloud-codex-tool-session.test.ts test/official-codex-boundary.test.ts test/cloud-agent-mouth.test.ts test/cloud-native-provider-host.test.ts test/official-codex-mouth.test.ts test/cloud-native-provider-service-main.test.ts
 ```
 
 Run the same provider-default native proof on Linux without a test runner:

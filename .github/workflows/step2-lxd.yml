@@ -25,6 +25,7 @@ on:
       - 'packages/runtime/test/cloud-runner-*.test.ts'
       - 'packages/runtime/test/cloud-company-file-contract.test.ts'
       - 'packages/runtime/test/lxd-runner-*.test.ts'
+      - 'packages/runtime/test/fixtures/**'
       - 'packages/runtime/src/cloud-connector-*.ts'
       - 'packages/runtime/src/cloud-coding-*.ts'
       - 'packages/runtime/test/cloud-coding-*.test.ts'

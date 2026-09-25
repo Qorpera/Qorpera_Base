@@ -551,7 +551,7 @@ node scripts/test-runtime-wake-bus.mjs
 # Explicit integration acceptance; exits nonzero on this pinned baseline.
 node scripts/test-runtime-wake-bus.mjs --integration --report /tmp/qorpera-step3-v4-integration.json
 
-# packages/shell
+# packages/runtime
 node ../../node_modules/vitest/dist/cli.js --run test/cloud-wake-bus.test.ts
 node ../../node_modules/vitest/dist/cli.js --run test/cloud-native-tool-boundary.test.ts
 
