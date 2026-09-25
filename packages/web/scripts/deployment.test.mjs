@@ -7,7 +7,7 @@ import { test } from "node:test";
 import { runInNewContext } from "node:vm";
 import { build } from "esbuild";
 import { DEFAULT_CLOUD_CONFIG, parseCloudConfig } from "../src/cloud/deployment-config.ts";
-import { prepareDeployment } from "./deployment.mjs";
+import { longCachedDirectories, prepareDeployment } from "./deployment.mjs";
 
 const headersTemplate = readFileSync(new URL("../public/_headers", import.meta.url), "utf8");
 const config = { ...DEFAULT_CLOUD_CONFIG, officeViewerOrigin: "wss://office.example.invalid:8443" };
@@ -116,4 +116,18 @@ test("Pages environment configuration binds release CSP without writing source f
   assert.throws(() => prepareDeployment({ configJson: invalid, release: true, headersTemplate }));
  }
  assert.throws(() => prepareDeployment({ configJson: JSON.stringify({ ...JSON.parse(configJson), officeViewerOrigin: undefined }), release: true, headersTemplate }), /viewer/);
+});
+
+test("every long-cached directory gets a 404 page, so a missing file there is never kept as the app page", t => {
+	assert.deepEqual(prepareDeployment(fixture(t)).notFoundPages, ["assets/404.html", "build/404.html"]);
+	assert.deepEqual(prepareDeployment({ headersTemplate }).notFoundPages, ["assets/404.html", "build/404.html"]);
+	const rules = (path, value, name = "Cache-Control") => `/*\n  ${name}: public, max-age=0, must-revalidate\n${path}\n  ! ${name}\n  ${name}: ${value}\n`;
+	assert.deepEqual(longCachedDirectories(rules("/build/*", "public, max-age=31536000, immutable")), ["build"]);
+	assert.deepEqual(longCachedDirectories(rules("/assets/avatars/*", "s-maxage=60")), ["assets/avatars"]);
+	assert.deepEqual(longCachedDirectories(rules("/fonts/*", "max-age=600", "CDN-Cache-Control")), ["fonts"]);
+	assert.deepEqual(longCachedDirectories(rules("/build/*", "no-store")), []);
+	assert.deepEqual(longCachedDirectories(rules("/build/*", "public, max-age=00, must-revalidate")), []);
+	for (const path of ["/*", "/*.css", "/build/app.css", "/build/:name", "https://app.qorpera.com/build/*"])
+		assert.throws(() => longCachedDirectories(rules(path, "public, max-age=86400")), /must cover one directory/, path);
+	assert.throws(() => prepareDeployment({ headersTemplate: `${headersTemplate}/*.woff2\n  Cloudflare-CDN-Cache-Control: max-age=86400\n` }), /must cover one directory/);
 });

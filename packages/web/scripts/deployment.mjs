@@ -19,6 +19,7 @@ export function prepareDeployment({ configPath, configJson, release = false, ser
 	return {
 		config,
 		headers,
+		notFoundPages: longCachedDirectories(headers).map(directory => `${directory}/404.html`),
 		define: {
 			__QORPERA_WEB_CLOUD_CONFIG__: JSON.stringify(config),
 		},
@@ -31,4 +32,28 @@ export function prepareDeployment({ configPath, configJson, release = false, ser
 			headersSha256: createHash("sha256").update(headers).digest("hex"),
 		},
 	};
+}
+
+// Pages answers a missing file with the app's index.html (200, text/html) and
+// gives it the path's _headers, so a request that reached an edge before a new
+// file did was kept as HTML for the rule's whole max-age (2026-09-25: the
+// stylesheet under /build/*, an unstyled app). With a 404.html in the file's
+// directory, Pages answers 404 instead and replaces any Cache-Control with
+// no-store. Returns every directory a rule lets caches keep, for that page.
+export function longCachedDirectories(headers) {
+	const directories = new Set();
+	let rule;
+	for (const line of headers.split(/\r?\n/)) {
+		if (/^\s*(#|$)/.test(line)) continue;
+		if (!/^\s/.test(line)) {
+			rule = line.trim();
+			continue;
+		}
+		const cacheControl = line.match(/^\s+(?:cloudflare-)?(?:cdn-)?cache-control:(.*)$/i)?.[1];
+		if (!cacheControl || !/\b(?:max-age|s-maxage)=0*[1-9]/i.test(cacheControl)) continue;
+		const directory = rule?.match(/^\/((?:[\w.-]+\/)*[\w.-]+)\/\*$/)?.[1];
+		if (!directory) throw new Error(`A long-cached header rule must cover one directory, so a 404.html can guard it: ${rule}`);
+		directories.add(directory);
+	}
+	return [...directories];
 }
