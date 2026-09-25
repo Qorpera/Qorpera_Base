@@ -2,6 +2,7 @@
 import type { NativeMemberConnection } from "@qorpera/cloud-client/cloud-native-subscription-control";
 import {
 	type CloudRoutine,
+	CloudRoutineClient,
 	describeCloudRoutineTrigger,
 	parseCloudRoutine,
 	parseCloudRoutineTrigger,
@@ -144,6 +145,11 @@ describe("agent routines section", () => {
 			created_at: "2026-09-17T06:00:00.000Z",
 			updated_at: "2026-09-17T06:05:00.000Z",
 		};
+		const listed = await new CloudRoutineClient(async () => [
+			{ ...row, routine_id: "10000000-0000-4000-8000-00000000000e", status: "active", title: "Still on" },
+			row,
+		]).list("10000000-0000-4000-8000-00000000000f", new AbortController().signal);
+		expect(listed.map((item) => item.status)).toEqual(["active", "expired"]);
 		const ended = parseCloudRoutine(row);
 		expect(ended.status).toBe("expired");
 		expect(() => parseCloudRoutine({ ...row, status: "finished" })).toThrow();
@@ -152,8 +158,8 @@ describe("agent routines section", () => {
 		const rows = [...f.view.el.querySelectorAll(".routine-row")];
 		expect(rows.map((item) => item.querySelector("strong")?.textContent)).toEqual(["Morning brief", "One check"]);
 		expect(rows[1]!.textContent).toContain("Ended");
-		const labels = [...rows[1]!.querySelectorAll("button")].map((item) => item.textContent);
-		expect(labels).toEqual(["Edit"]);
+		// Read-only: a member save would keep its end, so there is nothing to edit or resume.
+		expect(rows[1]!.querySelectorAll("button")).toHaveLength(0);
 		expect([...rows[0]!.querySelectorAll("button")].map((item) => item.textContent)).toEqual(["Edit", "Pause"]);
 	});
 	it("saves a new weekday routine on the chosen account with one stable identity across a retry", async () => {

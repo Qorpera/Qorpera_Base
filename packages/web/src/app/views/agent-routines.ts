@@ -180,22 +180,17 @@ export class AgentRoutines {
 					: routine.status === "expired"
 						? badge(t("Ended"))
 						: badge(t("Paused"), "warn"),
-				manage
+				// An ended routine is read-only: a member save keeps its end (its expiry or run
+				// limit), so neither Edit nor Resume could start it again. Its agent can.
+				manage && routine.status !== "expired"
 					? h(
 							"div",
 							{ class: "routine-row-actions" },
 							button(t("Edit"), () => void this.#edit(routine), { small: true, disabled: this.#busy }),
-							// An ended routine has nothing to pause or resume; saving it again restarts it.
-							routine.status === "expired"
-								? null
-								: button(
-										routine.status === "active" ? t("Pause") : t("Resume"),
-										() => void this.#toggle(routine),
-										{
-											small: true,
-											disabled: this.#busy,
-										},
-									),
+							button(routine.status === "active" ? t("Pause") : t("Resume"), () => void this.#toggle(routine), {
+								small: true,
+								disabled: this.#busy,
+							}),
 						)
 					: null,
 			);
