@@ -14,11 +14,11 @@
   "components": {
     "kernel": "e0535ea1f7dcf056b40654d0d2e438f1fce2cf01312cb19dbf359c631dfb65a1",
     "constitution": "8641ce64101c52ec5f11f49fe42e70d7300548ecb30314bd59de91714c146d3d",
-    "toolCatalog": "6e82a0e3ff33811d867447d7de2b40325ba45a997e15fd3b239c4d94fc5ebc38",
+    "toolCatalog": "ae84230e810dcd26787f51f520a50efc652be1303134a94a4d0c118f124e3e5e",
     "wakeAndSilence": "afcdd01831284c2d3dfb4586c4a2267193e26fe00cdddb50bfe8ee8dac6e2212",
     "contextComposer": "1796c8300b3e5395d11fe57b132a51bda1025a7bbdb260fcec3019a40336dc87",
     "providerBootstrap": "7e2e03d4e847a5b9db55d3eeb98c0ae7486013619c081d451a5fa4f8aa049554",
-    "authorization": "34fc7e08b4f841b9d79a286a7cccb424c12a0653721ab5d3e981fa73269122ff",
+    "authorization": "f5fc51078ed51e2ffb5fbe1df950cbd084bca81483dbdfdf2e083041673e7879",
     "inboundSafety": "c0c404045bcacbddea79156d2d0d000b2d9caac77d53d1c92d64471ae01581d2",
     "outboundSafety": "7d0c9cb7c599fb0e6292e389204cf0ed8e1aae9e616bf471391a7861040f168a",
     "interactionSurfaces": "4d902f96c16b5998243dd3a1977921834832505674860c0adb96e303336c5a08",
@@ -570,7 +570,7 @@
     "packages/runtime/src/cloud-identity-recovery.ts": "ad12e1d71d90a78e4d87ffd09c6f9600fcd83c33ae4db95e44759946eceb41f4",
     "packages/runtime/src/cloud-memory-tools.ts": "fccc8ee5c49a094fbc954c41fdeec00b7bc23228d39ad219ecddab6ecf067ec2",
     "packages/runtime/src/cloud-native-capture-images.ts": "063fa3a75d4ac35298075795462abdbb0c3820e3ca3506749a278b8fb03cea21",
-    "packages/runtime/src/cloud-native-coding-runtime.ts": "d4818be966dca30ddf8d8e9f1bfa8610979e158847ef4a7799a0fdf2db166946",
+    "packages/runtime/src/cloud-native-coding-runtime.ts": "fe41de3a8f779d82bc6716f289bcea08a8fab1fee9f7929a81e40f0d99ef8eb8",
     "packages/runtime/src/cloud-native-company-context.ts": "87c4c1fb9c4b8db59643486f59cd1689b2bacdf891e0aa5f8685929c03ae2922",
     "packages/runtime/src/cloud-native-company-objects.ts": "46b7f525613dc1cea220fa31c26d635b48e0513d51729e0df87d77ee75c7740a",
     "packages/runtime/src/cloud-native-company-runner.ts": "75ac5ea4812da1784301e78fa61458a7c233278ec418eccd3d8bf3046be94c7c",
@@ -622,7 +622,7 @@
     "packages/runtime/src/native-provider-account.ts": "9dbb6d065639253c5584876adbeb70f2803de29575ae7de7d1e0f0bbe0442b2b",
     "packages/runtime/src/native-provider-usage.ts": "935086f12167064ae71e90b44af1cbfe28b0d64a59ec2ba685157f45d320297c",
     "packages/runtime/src/systemd-credential.ts": "1d3eb8038a369c58418cbd8248aecf457662cbb3430cc84847235c2222a82478",
-    "scripts/generate-cloud-runtime-bundle.mjs": "5f2e7aee368530f7734dc00ac4e3696994c4b4813356d47f816a4b3005140b02",
+    "scripts/generate-cloud-runtime-bundle.mjs": "6af940d45f957fbd971042623d911db041dd708e42fcc172aca04fdb285f7893",
     "scripts/native-company-artifact.mjs": "e394bc799104f188769de07cd3be14e6c732a1a672113ea45d349a29d8e0ca63",
     "scripts/package-coding-executor.mjs": "292c557c75728d08e2fd2574c75cc07634f36bca629981709373f62af90a9272",
     "scripts/package-coding-guest.mjs": "04b1d63699aef4f05a5b800b06adff366e1607b1eaac53da8694d1e7e5d84ad3",
@@ -1029,6 +1029,8 @@
     "supabase/migrations/20260925111000_runtime_todo_publication_binding.sql": "64d12f8347fe59e42e2e6347bcd747559f776445640c192f231f6b9657a6c38d",
     "supabase/migrations/20260925111900_runtime_bundle_activation_v111.sql": "05b04541626072051339e08908f3a015f2c79a49806bf429ade447006a943363",
     "supabase/migrations/20260925112000_runtime_todo_worker_pages.sql": "a2a307b82796da376273785330f7b4301eeceb92568b7a8862494f23f26988d3",
-    "supabase/migrations/20260925112900_runtime_bundle_activation_v112.sql": "b00c679970cfefd1a0970684d46ce812d0c4edd1f7af8a6d4454930c3ec456ec"
+    "supabase/migrations/20260925112900_runtime_bundle_activation_v112.sql": "b00c679970cfefd1a0970684d46ce812d0c4edd1f7af8a6d4454930c3ec456ec",
+    "supabase/migrations/20260925113000_runtime_coding_turn_continuity.sql": "2b0e32a49257b938d303922ea2c32abdcb07d82b8e192519f6f73b71468c14a6",
+    "supabase/migrations/20260925113900_runtime_bundle_activation_v113.sql": "cd80efd112d9a7d44c560f28e1c82aaf05fa706f7e0af04e8e512c79b2f314da"
   }
 }
