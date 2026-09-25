@@ -8,7 +8,10 @@ import { phrase, t } from "./preferences.ts";
 export type RunFailureKind = "usage_limit" | "credential" | "dispatch" | "timeout" | "bridge" | "cancelled" | "other";
 
 export function classifyRunFailure(lastError: string | undefined, jobStatus: "failed" | "cancelled"): RunFailureKind {
-	const error = lastError ?? "";
+	// A refused step carries the provider's fixed code (e.g. "[code=NATIVE_CREDENTIAL_SEALING:TIMEOUT]").
+	// It names Qorpera's own machinery, not a member's account or a time limit, so it
+	// never decides the class: the step stays "bridge", as it was before the code.
+	const error = (lastError ?? "").replace(/ \[code=[A-Z0-9_:]{1,85}\]/g, "");
 	if (/usage limit|quota|rate.?limit|insufficient|billing/i.test(error)) return "usage_limit";
 	if (/not signed in|sign.?in|unauthori[sz]ed|credential|token (is )?(expired|invalid)/i.test(error))
 		return "credential";
