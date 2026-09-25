@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	CLEANUP_STOP_BUDGET_MS,
 	CloudCodingExecutor,
+	CodingControlBusy,
 	type CodingExecutorControl,
 	type CodingExecutorHost,
 	CodingMachineUnavailable,
@@ -14,6 +15,24 @@ import {
 	parseCodingTurnState,
 } from "../src/coding-executor.ts";
 import { CODING_VM_STOP_BUDGET_MS, codingHostId } from "../src/coding-executor-host.ts";
+
+// The executor's pauses (heartbeat, poll, busy retry) follow the fake clock too.
+vi.mock("node:timers/promises", () => ({
+	setTimeout: (ms: number, value?: unknown, options?: { signal?: AbortSignal }) =>
+		new Promise((resolve, reject) => {
+			const signal = options?.signal;
+			if (signal?.aborted) return reject(signal.reason);
+			const abort = () => {
+				globalThis.clearTimeout(timer);
+				reject(signal?.reason);
+			};
+			const timer = globalThis.setTimeout(() => {
+				signal?.removeEventListener("abort", abort);
+				resolve(value);
+			}, ms);
+			signal?.addEventListener("abort", abort, { once: true });
+		}),
+}));
 
 const repository = { host: "github.com" as const, owner: "Qorpera", name: "app", baseBranch: "main" };
 const headSha = "b".repeat(40);
@@ -332,6 +351,124 @@ describe("the coding executor over a session turn", () => {
 		expect(report.mock.calls.map(([stage, error]) => [stage, (error as Error).message])).toEqual([
 			["turn", "CODING_EXECUTOR_SHUTDOWN"],
 		]);
+	});
+
+	it("begins the turn again after a busy refusal until it is admitted", async () => {
+		// Wake admission is fail-fast on the company row every agent tool call holds (55P03).
+		const w = world();
+		const finish = {
+			schema: "qorpera.coding-submission/v1",
+			workerId: w.world.claim.workerId,
+			sequence: 1,
+			kind: "finish",
+			state: "submitted",
+			summary: "Tests passed",
+			headSha,
+			operationKey: "done",
+		};
+		const inner = withHook(w.control, endTurnOnPoll(w.world, "completed", finish));
+		let busy = 3;
+		const control: CodingExecutorControl = {
+			call: (method, args, signal) => {
+				if (method === "qorpera_begin_coding_turn" && busy-- > 0) {
+					w.world.calls.push({ method, args });
+					return Promise.reject(new CodingControlBusy());
+				}
+				return inner.call(method, args, signal);
+			},
+		};
+		const report = vi.fn();
+		const executor = new CloudCodingExecutor({ control, host: w.host, owner: "exec-test", turnPollMs: 1, report });
+		const run = executor.runOnce(new AbortController().signal);
+		await vi.advanceTimersByTimeAsync(5000);
+		expect(await run).toBe("completed");
+		const begins = w.world.calls.filter((c) => c.method === "qorpera_begin_coding_turn");
+		expect(begins).toHaveLength(4);
+		for (const begin of begins) expect(begin.args).toEqual(begins[0]!.args);
+		expect(w.world.calls.filter((c) => c.method === "qorpera_complete_coding_turn")).toHaveLength(1);
+		expect(w.host.detachSession).toHaveBeenCalledTimes(1);
+		expect(report).not.toHaveBeenCalled();
+	});
+
+	it("begins again only after a busy refusal", async () => {
+		const w = world();
+		const control: CodingExecutorControl = {
+			call: (method, args, signal) => {
+				if (method !== "qorpera_begin_coding_turn") return w.control.call(method, args, signal);
+				w.world.calls.push({ method, args });
+				return Promise.reject(new Error("CODING_CONTROL_UNCONFIRMED"));
+			},
+		};
+		const report = vi.fn();
+		const executor = new CloudCodingExecutor({ control, host: w.host, owner: "exec-test", turnPollMs: 1, report });
+		const run = executor.runOnce(new AbortController().signal);
+		await vi.advanceTimersByTimeAsync(5000);
+		expect(await run).toBe("recovery-required");
+		expect(w.world.calls.filter((c) => c.method === "qorpera_begin_coding_turn")).toHaveLength(1);
+		expect(report.mock.calls.map(([stage, error]) => [stage, (error as Error).message])).toEqual([
+			["turn", "CODING_CONTROL_UNCONFIRMED"],
+		]);
+	});
+
+	it("stops beginning again when the lease held at the first busy refusal ends, though heartbeats extend it", async () => {
+		const w = world();
+		const leaseUntil = Date.parse(w.world.claim.leaseUntil);
+		const begins: number[] = [];
+		let heartbeats = 0;
+		const control: CodingExecutorControl = {
+			call: (method, args, signal) => {
+				if (method === "qorpera_heartbeat_coding_session") heartbeats++;
+				if (method !== "qorpera_begin_coding_turn") return w.control.call(method, args, signal);
+				begins.push(Date.now());
+				return Promise.reject(new CodingControlBusy());
+			},
+		};
+		const report = vi.fn();
+		const executor = new CloudCodingExecutor({ control, host: w.host, owner: "exec-test", turnPollMs: 1, report });
+		const run = executor.runOnce(new AbortController().signal);
+		await vi.advanceTimersByTimeAsync(70000);
+		expect(await run).toBe("recovery-required");
+		expect(heartbeats).toBeGreaterThanOrEqual(3);
+		expect(begins.length).toBeGreaterThan(20);
+		expect(begins.at(-1)!).toBeLessThan(leaseUntil);
+		// Short pauses: never back to back, never more than 2 s apart.
+		for (let i = 1; i < begins.length; i++) {
+			expect(begins[i]! - begins[i - 1]!).toBeGreaterThanOrEqual(125);
+			expect(begins[i]! - begins[i - 1]!).toBeLessThanOrEqual(2000);
+		}
+		expect(report.mock.calls.map(([stage, error]) => [stage, (error as Error).message])).toEqual([
+			["turn", "CODING_CONTROL_BUSY"],
+		]);
+		expect(w.host.detachSession).toHaveBeenCalledTimes(1);
+		expect(w.world.calls.some((c) => c.method === "qorpera_complete_coding_turn")).toBe(false);
+	});
+
+	it("stops beginning again when the lease is lost", async () => {
+		const w = world();
+		let lost = 0;
+		const begins: number[] = [];
+		const control: CodingExecutorControl = {
+			call: (method, args, signal) => {
+				if (method === "qorpera_heartbeat_coding_session") {
+					lost = Date.now();
+					return Promise.reject(new Error("Coding session lease unavailable"));
+				}
+				if (method !== "qorpera_begin_coding_turn") return w.control.call(method, args, signal);
+				begins.push(Date.now());
+				return Promise.reject(new CodingControlBusy());
+			},
+		};
+		const report = vi.fn();
+		const executor = new CloudCodingExecutor({ control, host: w.host, owner: "exec-test", turnPollMs: 1, report });
+		const run = executor.runOnce(new AbortController().signal);
+		await vi.advanceTimersByTimeAsync(20000);
+		expect(await run).toBe("recovery-required");
+		expect(lost).toBeGreaterThan(0);
+		expect(begins.every((at) => at <= lost)).toBe(true);
+		expect(report.mock.calls.map(([stage, error]) => [stage, (error as Error).message])).toEqual([
+			["turn", "CODING_EXECUTOR_LEASE_LOST"],
+		]);
+		expect(w.host.detachSession).toHaveBeenCalledTimes(1);
 	});
 
 	it("the executor unit outlives the cleanup detach it runs on SIGTERM", async () => {
