@@ -44,8 +44,8 @@
 -- after the authorization-failure suspension, or an agent save whose content is
 -- unchanged) restarts its cursor in place the same way once its next slot has
 -- passed. A member's pause keeps the position, so without this an agent's
--- resume after it would replay every slot the pause skipped. (PR #320 adds the
--- same trigger for the agent path and skips it when it exists.)
+-- resume after it would replay every slot the pause skipped. (The agent path,
+-- v121 #320, relies on this trigger and on the helpers below.)
 --
 -- The restart position is the effective time truncated to the millisecond,
 -- with next_due_at one millisecond later so the scheduler lists the routine at
@@ -227,7 +227,7 @@ revoke all on function public.qorpera_routine_resume_restarts_schedule()
 -- A restart position (next_due_at one millisecond after the position) only
 -- tells the scheduler to compute the first slot after it; it is not a run time.
 -- qorpera_routine_next_run_at arrives with v114 (#314), which merges first;
--- PR #320 checks for this same predicate and then leaves the function alone.
+-- v121 (#320) requires this exact predicate (last_scheduled_for + 1 ms).
 do $$
 begin
 	if to_regprocedure('public.qorpera_routine_next_run_at(uuid)') is null then

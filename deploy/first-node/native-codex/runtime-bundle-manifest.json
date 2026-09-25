@@ -18,7 +18,7 @@
     "wakeAndSilence": "dc32e2e5ca750c5a6447045a42d809b2d12c137545bd06946a2e6f0d7b73c547",
     "contextComposer": "18849d9b614da70d501d2bcbefbbd3611e5f04926c1c8336fc5a0c291114d399",
     "providerBootstrap": "2c9bbf01c52db73c4f7d14949f6ab3d0092571bf55f896b1d7429787757dee4d",
-    "authorization": "8af06390013aec3bf745f6aed3c376cdc1daf8a2bfda5b89021f812ab3f055d9",
+    "authorization": "ec8e5735db51e6f4dd117c3d8c9fadf9ee7ccce2df2daf70c2d2dd86e9d37db4",
     "inboundSafety": "c0c404045bcacbddea79156d2d0d000b2d9caac77d53d1c92d64471ae01581d2",
     "outboundSafety": "b4760c03c5f54f328821d15b21b6368f07d7af9b9cf9025c7ff6d1dd4f30c724",
     "interactionSurfaces": "7262f8b8fee8c3cd7ac5b2e5ef77a5866fbc73805d00fd5706aec268d80dc6e9",
@@ -1030,8 +1030,8 @@
     "supabase/migrations/20260925111900_runtime_bundle_activation_v111.sql": "05b04541626072051339e08908f3a015f2c79a49806bf429ade447006a943363",
     "supabase/migrations/20260925114000_runtime_dynamic_routines.sql": "b143abd388a61a479433955b9abcb97af6dd68f96d0dcee91a1b624758999116",
     "supabase/migrations/20260925114900_runtime_bundle_activation_v114.sql": "bae122c1c185d552305e20e8e2028fd2ba3969b5b371d9c0c594009dc4759465",
-    "supabase/migrations/20260925118000_runtime_member_routine_cursor.sql": "4d96e6c765d70328593ebb9d83c3e2a3a3f7afb5c9ee03393fcce9b6c1c7499e",
-    "supabase/migrations/20260925118900_runtime_bundle_activation_v118.sql": "82ffeac6c4c30b6e96654ba1c836d823d393e213b28109374d5d694953a69957",
+    "supabase/migrations/20260925118000_runtime_member_routine_cursor.sql": "18d7e77ad0caed31639895278bef78422016b837fe6aedba79a1e6f2878ca324",
+    "supabase/migrations/20260925118900_runtime_bundle_activation_v118.sql": "b23269b21e8f844d88f245dc474bd2950e3a595f3af23beb174f6f93a0cc93eb",
     "supabase/migrations/20260925121000_runtime_agent_routine_cursor.sql": "375940006ae0ed659d7a998df3bfad91c9c14e6242886b93ef17488605e2c7e7"
   }
 }
