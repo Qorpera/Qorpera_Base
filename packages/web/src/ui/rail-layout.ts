@@ -8,7 +8,7 @@ import { uiScale } from "./scale.ts";
  * app's scale. */
 const COMPACT = 80;
 const MIN = 240;
-/** Two tenths off the earlier 456px (half again the desktop's 304px rail), chosen as the app was drawn larger.
+/** The earlier 456px made a tenth narrower twice (half again the desktop's 304px rail), chosen as the app was drawn larger.
  * Three pinned cards fit a row at this width (four need about 393). */
 const DEFAULT = 369;
 /** The rail may take at most two fifths of the window, a touch wider than a Messages sidebar. */
