@@ -1368,16 +1368,18 @@ the order of its days or months, and an interval a wall-clock trigger does not
 use) keeps the exact position, while the routine is active or its next slot is
 still ahead. A run still waiting for its start when the routine is saved is
 offered again to the new version, so the edit applies to that run instead of
-losing it. Changed timing restarts the schedule at the save: nothing runs at
-once, the slots of the new cadence before the save are not caught up, a
-waiting run of the old schedule is replaced, and the first run is the new
-schedule's first slot after the save. A save of a paused or ended routine
-whose next slot passed (typically switching it back on) restarts it the same
-way, so the slots it missed while it was off are skipped; so does switching a
-routine back on without a new version (an agent's resume). A trigger that
-never scheduled anything, whose kickoff is still waiting, or a new trigger id,
-stays fresh and keeps its kickoff. A restart position is not a run time and is
-not shown as the next run.
+losing it (a slot counts once toward a finite routine's limit; a slot that
+waited while a later one ran is not run again). Changed timing restarts the
+schedule at the save: nothing runs at once, the slots of the new cadence
+before the save are not caught up, a waiting run of the old schedule is
+replaced, and the first run is the new schedule's first slot after the save. A
+save of a paused or ended routine whose next slot passed (typically switching
+it back on) restarts it the same way, so the slots it missed while it was off
+are skipped; so does switching a routine back on without a new version (an
+agent's resume). A trigger that never scheduled anything, whose kickoff is
+still waiting, or a new trigger id, stays fresh and keeps its kickoff. A
+restart position is not a run time and is not shown as the next run; the next
+run shows again once the scheduler has taken the first new slot.
 
 ## 17. Model and reasoning policy
 
