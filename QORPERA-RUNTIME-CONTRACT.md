@@ -1355,9 +1355,10 @@ agent, a member, the authorization-failure suspension or its agent's
 archiving) runs nothing more, and archiving an agent also stops its ended
 routines, so a restore does not revive them. A removal stops pending work
 too. A new version applies to the next run: a run that has started keeps the
-version it started with while its job is live (a routine run may save its own
-routine), while a queued occurrence of an older version, and work that
-continues after the job ended, follow the current version.
+version it started with while its job is live and the routine stays with its
+agent (a routine run may save its own routine), while a queued occurrence of
+an older version, work that continues after the job ended, and a run whose
+routine a member moved to another agent follow the current version.
 
 ## 17. Model and reasoning policy
 
