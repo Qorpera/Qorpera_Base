@@ -137,13 +137,21 @@ export function renderAuthorizationCard(
 	);
 }
 
-const BUILT_IN_LABELS: Readonly<Record<string, string>> = {
-	money: phrase("It moves money."),
-	legal_terms: phrase("It accepts terms or signs for the company."),
-	delete_outside: phrase("It deletes data outside Qorpera."),
-	access_change: phrase("It changes who can access something."),
-	not_requested: phrase("It does not match what was asked."),
-};
+const BUILT_IN_LABELS = new Map<string, string>([
+	["money", phrase("It moves money.")],
+	["legal_terms", phrase("It accepts terms or signs for the company.")],
+	["delete_outside", phrase("It deletes data outside Qorpera.")],
+	["access_change", phrase("It changes who can access something.")],
+	["not_requested", phrase("It does not match what was asked.")],
+	["unavailable", phrase("The safety check could not run.")],
+]);
+
+/** The Always allow editor of one card, kept by the thread across re-renders. */
+export interface ActionReviewDraft {
+	open: boolean;
+	text: string;
+	focused: boolean;
+}
 
 /**
  * An approval card of an agent's action (auto-review, kernel bundle v115): what
@@ -160,6 +168,10 @@ export function renderActionReviewCard(
 		/** Present only while this member may answer the card. */
 		answer?: (answer: ActionReviewAnswer, ruleText?: string) => void;
 		memberName: (userId: string) => string;
+		/** An earlier answer never reached the agent: the card is open again. */
+		answerFailed?: boolean;
+		draft?: ActionReviewDraft;
+		onDraft?: (draft: ActionReviewDraft) => void;
 	},
 ): HTMLElement {
 	const resolved = resolution === undefined ? undefined : authorizationData(resolution);
@@ -182,39 +194,55 @@ export function renderActionReviewCard(
 				? t("Company rule: {rule}", { rule: item.when })
 				: t("Personal rule: {rule}", { rule: item.when }),
 		);
-	const builtIn = BUILT_IN_LABELS[card.builtIn];
+	const builtIn = BUILT_IN_LABELS.get(card.builtIn);
+	const editorId = `review-always-${card.reviewId}`;
 	const ruleInput = h("input", {
 		type: "text",
 		class: "review-rule-input",
 		maxLength: 280,
-		value: card.proposedRule ?? "",
+		value: options.draft?.text ?? card.proposedRule ?? "",
+		"data-review-rule": card.reviewId,
 		"aria-label": t("Always allow when an agent wants to"),
 	}) as HTMLInputElement;
+	const draft = (patch: Partial<ActionReviewDraft>) =>
+		options.onDraft?.({
+			open: options.draft?.open ?? false,
+			text: ruleInput.value,
+			focused: document.activeElement === ruleInput,
+			...patch,
+		});
+	const saveRule = () => {
+		const text = ruleInput.value.trim();
+		if (text) options.answer?.("always_allow", text);
+		else ruleInput.focus();
+	};
+	ruleInput.oninput = () => draft({ open: true, text: ruleInput.value });
+	ruleInput.onfocus = () => draft({ open: true, focused: true });
+	ruleInput.onblur = () => draft({ open: true, focused: false });
+	ruleInput.onkeydown = (event: KeyboardEvent) => {
+		if (event.key === "Enter" && !event.isComposing) {
+			event.preventDefault();
+			saveRule();
+		}
+	};
 	const always = h(
 		"div",
-		{ class: "review-always", hidden: true },
+		{ class: "review-always", id: editorId, hidden: !options.draft?.open },
 		h("label", null, t("Always allow when an agent wants to"), ruleInput),
 		h(
 			"div",
 			{ class: "decision-actions" },
-			h(
-				"button",
-				{
-					type: "button",
-					class: "btn btn-primary",
-					onclick: () => {
-						const text = ruleInput.value.trim();
-						if (text) options.answer?.("always_allow", text);
-						else ruleInput.focus();
-					},
-				},
-				t("Save rule and allow"),
-			),
+			h("button", { type: "button", class: "btn btn-primary", onclick: saveRule }, t("Save rule and allow")),
 		),
 	);
 	return h(
 		"article",
-		{ class: "auth-card action-review-card", "data-decision-state": state },
+		{
+			class: "auth-card action-review-card",
+			"data-decision-state": state,
+			"data-review-id": card.reviewId,
+			tabindex: "-1",
+		},
 		h(
 			"header",
 			{ class: "decision-heading" },
@@ -247,6 +275,9 @@ export function renderActionReviewCard(
 				)
 			: null,
 		h("p", { class: "decision-attribution" }, fmtTime(createdAt)),
+		state === "pending" && options.answerFailed
+			? h("p", { class: "review-failed" }, t("That answer did not reach the agent. Answer again."))
+			: null,
 		state === "pending"
 			? options.answer
 				? h(
@@ -262,8 +293,12 @@ export function renderActionReviewCard(
 										{
 											type: "button",
 											class: "btn",
-											onclick: () => {
+											"aria-expanded": String(Boolean(options.draft?.open)),
+											"aria-controls": editorId,
+											onclick: (event: MouseEvent) => {
 												always.hidden = false;
+												(event.currentTarget as HTMLElement).setAttribute("aria-expanded", "true");
+												draft({ open: true });
 												ruleInput.focus();
 											},
 										},

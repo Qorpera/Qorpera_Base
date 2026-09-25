@@ -376,6 +376,7 @@ export class SettingsView {
 				this.#rules = new RulesView(
 					createWebReviewRules(this.#api.cloud, company.profile.profileId),
 					AbortSignal.any([this.#companyLifetime.signal, this.#lifetime.signal, company.signal]),
+					() => company.store.get().team?.role,
 				);
 				this.#panels.set(tab, this.#rules.el);
 			}
@@ -482,6 +483,7 @@ export class SettingsView {
 					return;
 				}
 				this.#services?.update();
+				this.#rules?.update();
 				this.#drawCompany();
 			});
 			if (owned) void company.start();

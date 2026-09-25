@@ -46,8 +46,13 @@ export class RulesView {
 		h("option", { value: "company" }, t("Everyone in the company")),
 	) as HTMLSelectElement;
 
-	constructor(client: WebReviewRules, signal: AbortSignal) {
+	readonly #role: () => string | undefined;
+	#listedRole: string | undefined;
+
+	/** `role` is the member's current role in the company: a change reloads the rules (who may edit changes). */
+	constructor(client: WebReviewRules, signal: AbortSignal, role: () => string | undefined = () => undefined) {
 		this.#client = client;
+		this.#role = role;
 		if (signal.aborted) this.#lifetime.abort();
 		else signal.addEventListener("abort", () => this.dispose(), { once: true, signal: this.#lifetime.signal });
 		this.#when.onkeydown = (event: KeyboardEvent) => {
@@ -64,7 +69,13 @@ export class RulesView {
 		this.#lifetime.abort();
 	}
 
+	/** The company changed: reload when the member's role did. */
+	update(): void {
+		if (!this.#loading && this.#role() !== this.#listedRole) void this.#refresh();
+	}
+
 	async #refresh(): Promise<void> {
+		this.#listedRole = this.#role();
 		try {
 			const listed = await this.#client.list();
 			if (this.#lifetime.signal.aborted) return;
@@ -100,7 +111,7 @@ export class RulesView {
 			this.#rules = [...this.#rules, rule];
 			this.#when.value = "";
 		});
-		if (!this.#error) this.#when.focus();
+		this.#when.focus();
 	}
 
 	async #remove(rule: HostedReviewRule): Promise<void> {
@@ -108,6 +119,8 @@ export class RulesView {
 			await this.#client.archive(rule.id);
 			this.#rules = this.#rules.filter((item) => item.id !== rule.id);
 		});
+		// The row and its button are gone: keep the keyboard in the form.
+		if (!this.el.contains(document.activeElement)) this.#when.focus();
 	}
 
 	async #change(work: () => Promise<void>): Promise<void> {
@@ -142,11 +155,14 @@ export class RulesView {
 				rule.outcome === "ask_first" ? "warn" : "ok",
 			),
 			editable
-				? button(t("Remove"), () => void this.#remove(rule), {
-						small: true,
-						disabled: this.#working,
-						title: t("Remove this rule"),
-					})
+				? Object.assign(
+						button(t("Remove"), () => void this.#remove(rule), {
+							small: true,
+							disabled: this.#working,
+							title: t("Remove this rule"),
+						}),
+						{ ariaLabel: t("Remove the rule: {rule}", { rule: rule.when }) },
+					)
 				: h(
 						"span",
 						{ class: "settings-rule-locked muted small", title: t("Owners and admins change company rules.") },

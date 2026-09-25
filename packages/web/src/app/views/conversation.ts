@@ -1,5 +1,6 @@
 import type { CodingSession } from "../../cloud/coding-session.ts";
 import {
+	ACTION_REVIEW_SCHEMA,
 	type ActionReviewAnswer,
 	type ActionReviewCard,
 	actionReviewCard,
@@ -11,6 +12,7 @@ import type { HostedSession, HostedStaffAgent, JsonValue } from "../../cloud/typ
 import { AGENT_LOOK, activityCaption, syncCaption } from "../../ui/agent-activity.ts";
 import { AttachmentTray, attachmentProblemText } from "../../ui/attachments.ts";
 import {
+	type ActionReviewDraft,
 	authorizationData,
 	authorizationRequestId,
 	renderActionReviewCard,
@@ -128,6 +130,10 @@ export class ConversationView {
 	/** The coding sessions shown in this thread, one element per session, kept
 	 * across renders so each keeps its stream, its cursor and its open state. */
 	readonly #codingElements = new Map<string, CodingSessionElement>();
+	/** An approval card's Always allow editor, by review id: kept across re-renders. */
+	readonly #reviewDrafts = new Map<string, ActionReviewDraft>();
+	/** The approval card to give focus after the thread redraws (it was just answered). */
+	#focusReview: string | undefined;
 	/** A coding session opened as its own thread over this one, from its chip. */
 	#codingThread: { workerId: string; view: CodingSessionThreadView } | undefined;
 	readonly #timestampTimer: number;
@@ -591,6 +597,8 @@ export class ConversationView {
 
 	/** Record an answer to an approval card of an agent's action; the card shows it at once. */
 	async #answerActionReview(reviewId: string, answer: ActionReviewAnswer, ruleText?: string): Promise<void> {
+		this.#focusReview = reviewId.toLowerCase();
+		this.#reviewDrafts.delete(reviewId.toLowerCase());
 		try {
 			await this.#company.answerActionReview(this.#sessionId, reviewId, answer, ruleText);
 		} catch {
@@ -906,6 +914,8 @@ export class ConversationView {
 			this.#isRoom,
 			answerable,
 			role,
+			session?.status,
+			canWrite,
 			conversation.interactionAnswers,
 			conversation.interactionError,
 			this.#company.store.get().team?.members,
@@ -1062,20 +1072,20 @@ export class ConversationView {
 				nodes.push(h("div", { class: "conversation-note", role: "note" }, item.text));
 			} else if (item.kind === "authorization_request" && reviews.has(item.id.toLowerCase())) {
 				const review = reviews.get(item.id.toLowerCase())!;
-				const optimistic = conversation.interactionAnswers?.[item.id.toLowerCase()];
+				// The decision in the transcript, or an answer on its way (this browser's, or queued).
+				const given = conversation.interactionAnswers?.[item.id.toLowerCase()] ?? item.answer;
 				nodes.push(
 					renderActionReviewCard(
 						review,
 						item.createdAt,
 						decisions.get(item.id.toLowerCase())?.body ??
-							(optimistic
-								? {
-										decision: optimistic.outcome,
-										answer: optimistic.answer,
-										answeredBy: optimistic.answeredBy ?? null,
-									}
+							(given
+								? { decision: given.outcome, answer: given.answer, answeredBy: given.answeredBy ?? null }
 								: undefined),
 						{
+							answerFailed: item.answerFailed === true && !given,
+							draft: this.#reviewDrafts.get(review.reviewId),
+							onDraft: (draft) => this.#reviewDrafts.set(review.reviewId, draft),
 							answer:
 								canWrite &&
 								session?.status === "open" &&
@@ -1087,7 +1097,8 @@ export class ConversationView {
 					),
 				);
 			} else if (item.kind === "authorization_decision" && reviews.has(authorizationRequestId(item.body) ?? "")) {
-				// Its approval card already shows this decision.
+				// Its approval card already shows this decision; it draws nothing, so it marks no time either.
+				continue;
 			} else if (item.kind === "authorization_request" || item.kind === "authorization_decision") {
 				const optimistic =
 					item.kind === "authorization_request"
@@ -1103,7 +1114,11 @@ export class ConversationView {
 							? (decisions.get(item.id.toLowerCase())?.body ??
 									(optimistic ? { decision: optimistic.outcome, requestEventId: item.id } : undefined))
 							: undefined,
-						item.kind === "authorization_request" && canDecide(item.actorUserId)
+						// A card of an agent's action the web cannot read is shown read-only: the general
+						// answer refuses those (kernel v115), so it offers no controls.
+						item.kind === "authorization_request" &&
+							canDecide(item.actorUserId) &&
+							authorizationData(item.body).schema !== ACTION_REVIEW_SCHEMA
 							? (decision) => void this.#answerInteraction(item.id, decision)
 							: undefined,
 					),
@@ -1174,6 +1189,21 @@ export class ConversationView {
 			replace(this.#messages, ...nodes);
 		// A keyboard user reading the row keeps it through a state change or a new message.
 		if (rowFocus) this.#messages.querySelector<HTMLElement>(".thread-activity")?.focus({ preventScroll: true });
+		// The editor of an Always allow a member is typing in, or the card just answered, keeps focus.
+		const reviewInput = [...this.#reviewDrafts].find(([, draft]) => draft.focused)?.[0];
+		if (reviewInput)
+			[...this.#messages.querySelectorAll<HTMLInputElement>("input[data-review-rule]")]
+				.find((input) => input.dataset.reviewRule === reviewInput)
+				?.focus({ preventScroll: true });
+		else if (this.#focusReview) {
+			const card = [...this.#messages.querySelectorAll<HTMLElement>("[data-review-id]")].find(
+				(element) => element.dataset.reviewId === this.#focusReview,
+			);
+			if (card) {
+				card.focus({ preventScroll: true });
+				this.#focusReview = undefined;
+			}
+		}
 		this.#refreshTimestamps(false);
 		this.#pinToBottom();
 	}

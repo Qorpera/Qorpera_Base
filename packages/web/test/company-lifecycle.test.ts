@@ -223,6 +223,82 @@ describe("answering an approval card of an agent's action (auto-review, v115)", 
 		});
 	});
 
+	it("takes the controls away when the conversation is closed, and keeps an Always allow draft across redraws", async () => {
+		const f = company();
+		f.controller.store.set({ loading: false });
+		const card = review(5, "owners_admins");
+		const data = (card.body as { entry: { data: Record<string, unknown> } }).entry.data;
+		data.builtIn = "money";
+		data.alwaysAllow = true;
+		data.proposedRule = "paying for anything";
+		vi.mocked(f.api.readSessionEvents).mockResolvedValue([card]);
+		void f.controller.loadConversation(session.sessionId);
+		const view = new ConversationView(f.controller, session.sessionId, {
+			sendMessage: (sessionId, text) => f.controller.sendPrompt(sessionId, text),
+		});
+		cleanup.push(() => view.dispose());
+		document.body.append(view.el);
+		await settle();
+		const open = () => view.el.querySelector<HTMLElement>(".action-review-card")!;
+		[...open().querySelectorAll("button")].find((button) => button.textContent === "Always allow…")!.click();
+		const input = open().querySelector<HTMLInputElement>(".review-rule-input")!;
+		input.focus();
+		input.value = "paying invoices under 100 EUR";
+		input.dispatchEvent(new Event("input"));
+		// Something else in the thread changes: the card is drawn again.
+		f.controller.store.set({ team: { ...team, members: [...team.members] } });
+		vi.mocked(f.api.readSessionEvents).mockResolvedValue([card, event(6)]);
+		await f.controller.loadConversation(session.sessionId);
+		await settle();
+		const redrawn = open().querySelector<HTMLInputElement>(".review-rule-input")!;
+		expect(redrawn.closest<HTMLElement>(".review-always")!.hidden).toBe(false);
+		expect(redrawn.value).toBe("paying invoices under 100 EUR");
+		expect(document.activeElement).toBe(redrawn);
+		// The conversation is closed: no controls the cloud would refuse.
+		f.controller.store.set({ sessions: [{ ...session, status: "closed" }] });
+		await settle();
+		expect(open().querySelector("button")).toBeNull();
+	});
+
+	it("shows an answer still on its way on the card, and opens it again when its delivery failed", async () => {
+		const f = company();
+		f.controller.store.set({ loading: false });
+		const card = review(7, "owners_admins");
+		vi.mocked(f.api.readSessionEvents).mockResolvedValue([card]);
+		vi.mocked(f.api.listSessionInputs).mockResolvedValue({
+			items: [
+				{
+					inputId: id(4201),
+					position: 9,
+					kind: "user_message",
+					authorUserId: userB.id,
+					authorDisplayName: "Bea",
+					body: {
+						schema: "qorpera.interaction-answer/v1",
+						interactionId: card.eventId,
+						surface: "approval",
+						outcome: "approved",
+						answer: { answer: "allow_once" },
+					},
+					createdAt: "2026-09-25T10:02:00.000Z",
+					status: "queued",
+				},
+			],
+			hasMore: false,
+			nextAfterPosition: 9,
+		});
+		void f.controller.loadConversation(session.sessionId);
+		const view = new ConversationView(f.controller, session.sessionId, {
+			sendMessage: (sessionId, text) => f.controller.sendPrompt(sessionId, text),
+		});
+		cleanup.push(() => view.dispose());
+		document.body.append(view.el);
+		await settle();
+		const shown = view.el.querySelector<HTMLElement>(".action-review-card")!;
+		expect(shown.dataset.decisionState).toBe("approved");
+		expect(shown.querySelector("button")).toBeNull();
+	});
+
 	it("keeps the card open, saying why, where the cloud has no approvals yet", async () => {
 		const f = company();
 		vi.spyOn(f.api, "answerActionReview").mockRejectedValue(

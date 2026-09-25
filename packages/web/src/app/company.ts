@@ -1158,10 +1158,16 @@ export class CompanyController {
 		answer: ActionReviewAnswer,
 		ruleText?: string,
 	): Promise<void> {
-		this.assertCanSend(sessionId);
 		const store = this.conversation(sessionId);
 		const key = reviewId.toLowerCase();
 		if (store.get().interactionAnswers?.[key]) return;
+		try {
+			this.assertCanSend(sessionId);
+		} catch (error) {
+			// Say why on the thread (an archived conversation, no write access), not silently.
+			store.set({ interactionError: answerRefusal(error) });
+			throw error;
+		}
 		store.set({
 			interactionAnswers: {
 				...store.get().interactionAnswers,
@@ -1203,6 +1209,8 @@ export class CompanyController {
 				interactionAnswers: Object.keys(rest).length ? rest : undefined,
 				interactionError: answerRefusal(error),
 			});
+			// Someone else may have answered first: show the card as it is now.
+			void this.loadConversation(sessionId);
 			throw error;
 		}
 		void this.loadConversation(sessionId);
