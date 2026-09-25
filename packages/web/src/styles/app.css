@@ -9,6 +9,8 @@
 /* Layout and components for the web client. Values derive from tokens.css
  * (shared with the desktop). Selectors are the contract with the views. */
 
+/*! Qorpera web stylesheet. Renamed 2026-09-25: an edge cached HTML under app-QUCAFXYX.css. */
+
 * { box-sizing: border-box; margin: 0; }
 html, body { height: 100%; }
 body {

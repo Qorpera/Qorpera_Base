@@ -17,6 +17,8 @@
 
 ### Fixed
 
+- A new stylesheet, script or picture that a Cloudflare edge did not have yet during a deploy is now answered with a "not found" that no cache keeps. Before, the edge kept the app page under that file's name, for up to a year under `/build/` (the app loaded without its styles on that edge until the file was renamed) and a day under `/assets/`. The build writes a small `404.html` into both folders, and fails if `_headers` lets caches keep files anywhere it cannot guard the same way. Every other path still opens the app.
+- The app loads styled again where Cloudflare's edge had cached the page's HTML under the stylesheet's address (`build/app-QUCAFXYX.css`, requested while the #296 deploy was still spreading); the stylesheet now ships under a new name.
 - Scrolling the rail or a thread no longer lays a tall fade over the Co-Founder card or the top message: the fade that marks more above is now 8 design px (about 10 on screen, was 36), close to the sidebar in the Claude app.
 - A profile picture being saved is never deleted by a cleanup of leftover uploads that answered late; saving a picture after a very slow connection no longer fails and needs another try.
 - Gmail and Google Drive in Settings → Connections → Services show their own logos instead of the Google "G".
