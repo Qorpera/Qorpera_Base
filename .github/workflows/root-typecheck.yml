@@ -43,8 +43,15 @@ jobs:
           mkdir packages/ai/src/providers/data
           cp .github/model-data/*.json .github/model-data/.manifest.json packages/ai/src/providers/data/
 
-      - name: Check the pinned model data matches the generator (refresh it if not; see .github/model-data)
-        run: npm run check:model-data
+      # Checks the provider list, schema version and file hashes, not whether
+      # the models are current. Its own hint says to hydrate; here the fix is
+      # refreshing the pinned copy.
+      - name: Check the pinned model data
+        run: |
+          npm run check:model-data || {
+            echo "::error::The pinned model data no longer fits packages/ai. Refresh .github/model-data as its README says."
+            exit 1
+          }
 
       - name: Typecheck
         run: npx tsgo --noEmit

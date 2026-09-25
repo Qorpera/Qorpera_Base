@@ -13,9 +13,14 @@ It was generated on 2026-08-26 (`generatedAt` in `.manifest.json`).
 
 ## Refreshing
 
-Refresh it when the workflow's model data check fails (a provider was added to
-or removed from `packages/ai/src/models.generated.ts`), or when a change needs
-newer models:
+Refresh it when the workflow's model data check fails, or when a change needs
+newer models. The check fails when a provider is added to or removed from
+`packages/ai/src/models.generated.ts`, or when `MODEL_DATA_SCHEMA_VERSION` in
+`packages/ai/scripts/model-data.ts` changes.
+
+As of 2026-09-25, `npm run hydrate:model-data` itself fails: models.dev renamed
+Kimi's coding provider. The generator needs that fix before this copy can be
+refreshed.
 
 ```bash
 npm run hydrate:model-data
