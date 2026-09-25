@@ -243,7 +243,7 @@ describe("the coding composition of a native turn", () => {
 				// After the submission nothing else may run in the VM.
 				await expect(
 					adapters.tools[0].execute({ operationKey: "later", command: "true", timeoutMs: 1000 }, f.context),
-				).rejects.toThrow("CODING_TURN_ALREADY_SUBMITTED");
+				).rejects.toThrow("CODING_COMMAND_AFTER_SUBMISSION");
 				return { providerSessionId: "native-thread", toolCalls: 1, codexVersion: "pinned", fencedRequests: 2 };
 			} finally {
 				run.close();
@@ -380,6 +380,66 @@ describe("the coding composition of a native turn", () => {
 			/^CODING_TURN_SCOPE_DIFFERS$/,
 		);
 		expect(runCloudNativeRunToolSession).not.toHaveBeenCalled();
+	});
+	it("names a timed-out turn check as a timeout, not a refusal, and submits nothing", async () => {
+		const f = fixture();
+		const rows: CloudRuntimeObservation[] = [];
+		vi.mocked(runCloudNativeRunToolSession).mockImplementation(async (options) => {
+			const run = await CloudNativeToolRun.open(f.binding, f.control, options.signal);
+			try {
+				const adapters = await options.tools(
+					f.authority.identity,
+					new CloudNativeToolOperations(run, f.control),
+					run,
+				);
+				await options.beginExecution(
+					{
+						type: "namespace",
+						name: "qorpera",
+						tools: adapters.tools.map((tool) => ({
+							type: "function",
+							name: tool.name,
+							description: tool.description,
+							inputSchema: tool.inputSchema,
+						})),
+					},
+					options.signal,
+				);
+				// The coding control's own request deadline (AbortSignal.timeout) ran out.
+				const original = f.call.getMockImplementation()!;
+				f.call.mockImplementation((method, args, signal) =>
+					method === "qorpera_authorize_coding_turn"
+						? Promise.reject(new DOMException("The operation was aborted due to timeout", "TimeoutError"))
+						: original(method, args, signal),
+				);
+				const observability = new CloudRuntimeObservability({
+					assignmentId: f.binding.assignmentId,
+					publish: async (row) => {
+						rows.push(structuredClone(row));
+					},
+				});
+				const span = observability.start("coding_finish");
+				const finish = adapters.tools[3];
+				const input = { operationKey: "done", summary: "Changes committed", headSha: "b".repeat(40) };
+				await expect(
+					finish.execute(finish.parseArguments(input), { ...f.context, observation: span }),
+				).rejects.toThrow();
+				span.finish("failed");
+				await observability.close();
+				expect(
+					rows
+						.filter((row) => row.parentAttemptId === span.attemptId && row.phase === "finish")
+						.map((row) => [row.operation, row.status, row.errorCategory]),
+				).toEqual([["context_authority", "unconfirmed", "timeout"]]);
+				throw new Error("session checked");
+			} finally {
+				run.close();
+			}
+		});
+		await expect(f.runtime.execute(f.request, "/private", f.context.signal, f.turn)).rejects.toThrow(
+			"session checked",
+		);
+		expect(f.call).not.toHaveBeenCalledWith("qorpera_submit_coding_turn", expect.anything(), expect.anything());
 	});
 	it("leaves an already-submitted turn to the executor instead of generating again", async () => {
 		const f = fixture();

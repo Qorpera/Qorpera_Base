@@ -353,7 +353,7 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 					authorize: async (target, admitted, checked) => {
 						const live = await authorize(checked);
 						if (submitted || (live.coding.submission !== null && live.coding.submission !== undefined))
-							throw new Error("CODING_TURN_ALREADY_SUBMITTED");
+							throw new Error("CODING_COMMAND_AFTER_SUBMISSION");
 						if (cloudToolJsonText(target) !== cloudToolJsonText(scope))
 							throw new Error("CODING_COMMAND_SCOPE_DIFFERS");
 						await gateway.authorize(target, admitted, checked);

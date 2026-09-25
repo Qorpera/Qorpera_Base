@@ -681,6 +681,21 @@ it("names a timeout in the permission check before the receipt as its own child 
 	);
 });
 
+it("names a timeout in the run's own recheck before the receipt, although the run then closes", async () => {
+	const f = await fixture();
+	const observed = observe(f.binding.assignmentId);
+	f.reader.describeToolAuthority.mockRejectedValueOnce(new CloudRuntimeDiagnosticError("timeout"));
+	const span = observed.observability.start("connector");
+	await expect(f.execute({ observation: span })).rejects.toThrow();
+	expect(f.control.beginToolOperation).not.toHaveBeenCalled();
+	await observed.observability.close();
+	expect(
+		observed.rows
+			.filter((row) => row.parentAttemptId === span.attemptId && row.phase === "finish")
+			.map((row) => [row.operation, row.status, row.errorCategory]),
+	).toEqual([["context_authority", "unconfirmed", "timeout"]]);
+});
+
 it("tells a timeout at the receipt apart: the permission check before it succeeded", async () => {
 	const f = await fixture();
 	const observed = observe(f.binding.assignmentId);
