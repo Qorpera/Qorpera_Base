@@ -175,7 +175,7 @@ Governing text: §5.3, §7, §8, §14.6–14.7, §17, the Order 3 row.
 | Capability | Source | Component tests | Real-node proof | Deployed acceptance |
 | --- | --- | --- | --- | --- |
 | Five wake kinds and silence | [#116] | SQL [300_runtime_wake_bus](supabase/tests/300_runtime_wake_bus.test.sql), [130](supabase/tests/130_wake_arbitration.test.sql): [CI][ci-db]. TS `cloud-wake-bus`, `scripts/test-runtime-wake-bus.mjs`: local only | `OUT/V26-SILENT-ROUTINE-ACCEPTANCE.json`, `OUT/V26-COMPANY-FILE-WAKE-ACCEPTANCE.json` (2026-09-14); `OUT/V26-ROOM-WAKE-ACCEPTANCE.json` (the room wake reached one staff member, not all); `OUT/V26-AGENT-WAKE-ACCEPTANCE.json` (2026-09-16). At v106: RESULTS J15 PASS, a chain of room, coworker and file-event wakes with no client open | Historical, earlier production: [Steps 0–3 ledger](deploy/first-node/RUNTIME-STEPS-0-3-ACCEPTANCE.md) (v9–v13, all five kinds on one staff identity); [silent file routine](deploy/first-node/acceptance/2026-09-06-runtime-v9/SILENT-FILE-ROUTINE-PROOF.json). Current backend: human, agent, room and routine wakes each seen live (rows below). All five on one agent with clients closed at a current bundle: **not established** |
-| File-change wake once; self-write fence; v95 chain revisit | [#116]; [#273] (v95) | SQL 300_runtime_wake_bus: [CI][ci-db] | `OUT/V26-COMPANY-FILE-WAKE-ACCEPTANCE.json`. At v106: RESULTS J15 PASS. A coworker's write woke the watching agent exactly once (run `b6bda805`, same causal root), and its own write outside the watch did not wake it | Historical v9 (above). Current bundle: **not established**. No live test of the v95 chain revisit is recorded |
+| File-change wake once; self-write fence; v95 chain revisit | [#116]; [#273] (v95) | SQL 300_runtime_wake_bus: [CI][ci-db] | `OUT/V26-COMPANY-FILE-WAKE-ACCEPTANCE.json`. At v106: RESULTS J15 PASS. A coworker's write woke the watching agent exactly once (run `b6bda805`, same causal root). The agent's own write went outside the watched path, so the self-write fence itself was not exercised | Historical v9 (above). Current bundle: **not established**. No live test of the v95 chain revisit is recorded |
 | Coworker messaging (pair transcript) | [#213] (v70), [#227] (v79) | SQL [380](supabase/tests/380_runtime_agent_messaging.test.sql), 376: [CI][ci-db] | not established | v70 test company, round trip A→B→A (REG R305–306). Company Qorpera: the first v70 attempts failed (no execution authority at hire, then a provider refusal). The chain passed on v70 at 02:25Z on 2026-09-23, after an operator granted authority and a provider hotfix (#225) was applied by hand (REG R335–344). Later chains: v80 (REG R350), v82 (REG R361), v84 (REG R390, R406). #227 (v79, live with the v80 cut) gives hires authority by default |
 | Held delivery (`priority: false`) | [#219] (v73) | SQL [381](supabase/tests/381_runtime_held_peer_messages.test.sql): [CI][ci-db] | not established | **not established**: a live proof was planned (REG R327), none recorded |
 | Sponsor handoff on a usage limit | [#116] | SQL 583, 163: [CI][ci-db] | RESULTS D08a PASS at v106: handoff `d1581ac1` moved run `55f862d4` to the same member's other connection (binding version 1→2, reason `usage_limit`). Attempt 2 completed (REG R1161) | Historical, earlier production: v11 [handoff](deploy/first-node/acceptance/2026-09-06-runtime-v11/NATIVE-V11-HANDOFF-PROOF.json); v13 autonomous handoff ([manifest](deploy/first-node/acceptance/2026-09-07-runtime-v13/MANIFEST.json)). Current backend, through the installed interfaces: **not established** |
@@ -301,7 +301,7 @@ Governing text: §16.3, §17, the Order 8 row, [Step 8 record](deploy/first-node
 
 Open:
 - REVIEW finding 7 (a lost apply response is reported as "awaiting approval"; a reused hire key returns a mismatched receipt) → [#299] (v110).
-- P-J15-1: twice, an agent turned a plain-language routine request into a `manage_routine` call that was refused as `INVALID_ARGUMENTS`, and the member heard only that code (RESULTS). Routed to the routines session.
+- P-J15-1: twice, an agent turned a plain-language routine request into a `manage_routine` call that was refused as `INVALID_ARGUMENTS`, and the member heard only that code. The owner named in RESULTS is the routines session.
 
 ### Order 9: coding workers and PRs
 
@@ -437,7 +437,6 @@ Results so far at v106 (RESULTS at `68ad54aed`, REG R1142, R1160–1164):
 - J10 failed with two agents working at once, and passed when run alone.
 - Two baselines failed as expected before their fixes: J01 (a one-time routine never runs; v107) and J05 (the agent sees 32 of 40 todos; v112).
 - The J04 read-only audit found no divergence in 22 live todos. That audit does not test the race itself.
-- J06 (sponsor disable, re-enable and revoke around a silent routine) was running at the time of writing.
 
 ## Out-of-date statements in historical records
 
