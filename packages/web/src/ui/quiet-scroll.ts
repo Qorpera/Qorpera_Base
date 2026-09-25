@@ -1,7 +1,5 @@
 /** How far a quiet scroller's top fade reaches, in design pixels; app.css draws it the same size. */
-export const QUIET_SCROLL_FADE = 28;
-/** The rail's shorter fade, set as --quiet-fade on .rail-scroll in app.css. */
-export const QUIET_SCROLL_RAIL_FADE = 8;
+export const QUIET_SCROLL_FADE = 8;
 
 /**
  * Marks a scroller that hides its bar, like Messages. The bar's job as the cue that content
