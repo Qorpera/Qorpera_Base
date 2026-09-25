@@ -445,7 +445,7 @@ export class ConversationView {
 		this.#composer.style.height = "auto";
 		// The sizes come from the stylesheet, so they follow the app's scale: one line is the field's
 		// min-height, the tallest draft its max-height. scrollHeight is a whole number, so one line
-		// at 42 × 1.4 = 58.8 reads 59; round the line up before comparing.
+		// at 42 × 1.3 = 54.6 reads 55; round the line up before comparing.
 		const field = getComputedStyle(this.#composer);
 		const oneLine = Math.ceil(Number.parseFloat(field.minHeight) || 0);
 		const tallest = Number.parseFloat(field.maxHeight) || Number.POSITIVE_INFINITY;

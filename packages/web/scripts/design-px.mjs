@@ -1,5 +1,5 @@
 // The web app is drawn larger than its stylesheets are written (tokens.css
-// --ui-scale, 140% today) on screens driven by a mouse or trackpad; phones
+// --ui-scale, 130% today) on screens driven by a mouse or trackpad; phones
 // and tablets keep the sizes the phone layout was drawn for. The stylesheets
 // keep writing design pixels ("14px"); this build step turns each one into
 // `calc(14 * var(--px))`, and tokens.css sets --px to --ui-scale pixels (1 on a

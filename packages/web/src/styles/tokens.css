@@ -89,13 +89,13 @@
 	--composer-on-accent: #ffffff;
 	--composer-accent-hover: color-mix(in srgb, var(--composer-accent) 88%, #000000);
 
-	/* scale: every design pixel is drawn as --ui-scale screen pixels, 140%
+	/* scale: every design pixel is drawn as --ui-scale screen pixels, 130%
 	   with a mouse or trackpad (phones and tablets keep 1, below). The build
 	   (scripts/design-px.mjs) writes each "14px" in these stylesheets as
 	   calc(14 * var(--px)) and each width breakpoint for both scales; a part
 	   that keeps its own size sets --px: 1px. Scripts read the same scale
 	   (ui/scale.ts). */
-	--ui-scale: 1.4;
+	--ui-scale: 1.3;
 	--px: calc(var(--ui-scale) * 1px);
 
 	/* geometry */
