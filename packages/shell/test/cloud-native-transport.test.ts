@@ -99,6 +99,39 @@ it.each([403, 503])("cancels a stalled %s bridge error body without exposing it"
 	expect(cancel).toHaveBeenCalledOnce();
 });
 
+it("names the provider's fixed code for a refusal, and nothing else of its body", async () => {
+	const f = fixture();
+	for (const [response, message] of [
+		[
+			() =>
+				new Response(JSON.stringify({ error: "request rejected", code: "CODING_TURN_ENDED_WITHOUT_SUBMISSION" }), {
+					status: 422,
+				}),
+			/^Native provider bridge request failed \(422\) \[code=CODING_TURN_ENDED_WITHOUT_SUBMISSION\]$/,
+		],
+		[
+			() =>
+				new Response(
+					`\n\n${JSON.stringify({ error: "request rejected", code: "NATIVE_WAKE_ENVELOPE:TIMEOUT" })}\n`,
+				),
+			/^Native provider bridge request failed \(422\) \[code=NATIVE_WAKE_ENVELOPE:TIMEOUT\]$/,
+		],
+		[
+			() => new Response(JSON.stringify({ error: "request rejected", code: "private /path text" }), { status: 422 }),
+			/^Native provider bridge request failed \(422\)$/,
+		],
+		[
+			() => new Response("PRIVATE_UPSTREAM_ERROR", { status: 422 }),
+			/^Native provider bridge request failed \(422\)$/,
+		],
+	] as const) {
+		const bridge = new HttpNativeProviderComputerBridge("https://native.example/", "a".repeat(43), async () =>
+			response(),
+		);
+		await expect((await bridge.startCompany(f.authority, f.job)).result).rejects.toThrow(message);
+	}
+});
+
 it("reads a result or a failure that arrives after the execution's keepalive newlines", async () => {
 	// A run has no deadline: the host answers 200 at once and writes a newline a minute until the result.
 	const f = fixture();

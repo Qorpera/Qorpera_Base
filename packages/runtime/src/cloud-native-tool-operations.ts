@@ -10,6 +10,28 @@ import { type CloudToolContent, cloudToolJsonText } from "./cloud-native-tool-bo
 import type { BeginCloudRunnerOperationInput, CompleteCloudRunnerOperationInput } from "./cloud-runner-broker.ts";
 import { type CloudRuntimeObservationSpan, cloudRuntimeErrorCategory } from "./cloud-runtime-observability.ts";
 
+/** A permission check as its own child observation of the tool call, so a
+ * refusal or a timeout there is told apart from the receipt, the effect and
+ * the completion (each capped separately). */
+export async function observedCloudToolAuthority(
+	observation: CloudRuntimeObservationSpan | undefined,
+	check: () => Promise<void>,
+	signal: AbortSignal,
+): Promise<void> {
+	const span = observation?.child("context_authority");
+	try {
+		await check();
+		span?.finish("succeeded");
+	} catch (error) {
+		// A request that ran out of time is named as such; any other failure
+		// (a refusal, a revoked run) is a denied authority, as before.
+		if (cloudRuntimeErrorCategory(error, signal) === "timeout")
+			span?.finish("unconfirmed", { errorCategory: "timeout" });
+		else span?.finish("denied", { errorCategory: "authority_unavailable" });
+		throw error;
+	}
+}
+
 const OPERATION_SCHEMA = "qorpera.cloud-tool-operation/v2";
 const RESULT_SCHEMA = "qorpera.cloud-tool-operation-result/v1";
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -164,8 +186,17 @@ export class CloudNativeToolOperations {
 		const result =
 			previous?.result ??
 			this.#pending.then(async (): Promise<ConfirmedOperationResult> => {
-				await this.#run.assertActive(signal);
-				await cloudToolRequest((requestSignal) => authorize(operation, this.#run.identity, requestSignal), signal);
+				await observedCloudToolAuthority(
+					options.observation,
+					async () => {
+						await this.#run.assertActive(signal);
+						await cloudToolRequest(
+							(requestSignal) => authorize(operation, this.#run.identity, requestSignal),
+							signal,
+						);
+					},
+					signal,
+				);
 				const receiptId = randomUUID();
 				const idempotencyKey = createHash("sha256")
 					.update(JSON.stringify([OPERATION_SCHEMA, this.#run.identity.runId, key]))
@@ -331,15 +362,17 @@ export class CloudNativeToolOperations {
 				),
 			});
 			// A denied release cannot undo a confirmed effect or turn a replay into another successful effect.
-			const release = options.observation?.child("context_authority");
-			try {
-				await this.#run.assertActive(signal);
-				await cloudToolRequest((requestSignal) => authorize(operation, this.#run.identity, requestSignal), signal);
-				release?.finish("succeeded");
-			} catch (error) {
-				release?.finish("denied", { errorCategory: "authority_unavailable" });
-				throw error;
-			}
+			await observedCloudToolAuthority(
+				options.observation,
+				async () => {
+					await this.#run.assertActive(signal);
+					await cloudToolRequest(
+						(requestSignal) => authorize(operation, this.#run.identity, requestSignal),
+						signal,
+					);
+				},
+				signal,
+			);
 			return structuredClone(confirmed.content);
 		} catch (error) {
 			options.observation?.finish("unconfirmed", {

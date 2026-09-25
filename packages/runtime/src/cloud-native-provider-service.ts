@@ -17,6 +17,7 @@ import {
 	parseCloudAgentSendInput,
 	parseCloudAgentSendReceipt,
 } from "./cloud-agent-mouth.ts";
+import { codingErrorCode } from "./cloud-coding-error-code.ts";
 import { nativeRuntimeFailureMetadata } from "./cloud-native-failure.ts";
 import type {
 	CompleteNativeProviderLoginInput,
@@ -118,6 +119,39 @@ function internalRejectionCategory(error: unknown): string {
 	return "unknown";
 }
 
+/** The fixed code a failed request carries back to the runner: the error's own
+ * code (e.g. CODING_TURN_ENDED_WITHOUT_SUBMISSION), else its native stage and
+ * category, else UNCLASSIFIED. Never free text. Each segment stays under 43
+ * characters, so the runner's token redaction never cuts it. */
+export function nativeProviderFailureCode(error: unknown): string {
+	const fits = (code: string) => /^[A-Z][A-Z0-9_]{0,41}(:[A-Z0-9][A-Z0-9_]{0,41})?$/.test(code);
+	const upper = (value: string) => value.toUpperCase().replace(/[^A-Z0-9]+/g, "_");
+	// Only the coding runtime's own codes pass; other upper-case text is not vetted.
+	const own = codingErrorCode(error);
+	if (own.startsWith("CODING_") && fits(own)) return own;
+	// The diagnostics this service already logs verbatim, as codes.
+	const message = (error instanceof Error ? error.message : "").replace(
+		/ \[mouth=(?:uninitialized|initialized|ready|send-unconfirmed|delivered)\]$/,
+		"",
+	);
+	const known =
+		/^Native provider execution ([a-z-]+) stage failed(?: \(([a-z-]+)\))?$/.exec(message) ??
+		/^Provider harness exited with [A-Za-z0-9_-]{1,32}(?: \(([a-z ]+) unavailable\))?$/.exec(message) ??
+		/^Codex did not complete its turn(?: \(([a-z ]+) unavailable\))?$/.exec(message);
+	if (known) {
+		const code = message.startsWith("Native provider execution")
+			? `NATIVE_${upper(known[1])}${known[2] ? `:${upper(known[2])}` : ""}`
+			: `${message.startsWith("Codex") ? "CODEX_TURN_INCOMPLETE" : "HARNESS_EXITED"}${known[1] ? `:${upper(known[1])}` : ""}`;
+		if (fits(code)) return code;
+	}
+	if (message === "Provider harness output exceeded its byte limit") return "HARNESS_OUTPUT_LIMIT";
+	const failure = nativeRuntimeFailureMetadata(error);
+	if (failure) {
+		const staged = `NATIVE_${failure.stage.toUpperCase().replaceAll("-", "_")}:${failure.category.toUpperCase()}`;
+		if (fits(staged)) return staged;
+	}
+	return "UNCLASSIFIED";
+}
 function safeRequestDiagnostic(error: unknown): string {
 	const failure = nativeRuntimeFailureMetadata(error);
 	if (failure) return `Native provider execution failed (stage=${failure.stage}, category=${failure.category})`;
@@ -867,13 +901,13 @@ export class HttpNativeProviderHostService {
 			if (!response.headersSent) response.writeHead(200, { "content-type": "application/json" });
 			response.end(`${JSON.stringify(value)}\n`);
 		} catch (error) {
-			console.error(`Native provider request rejected: ${safeRequestDiagnostic(error)}`);
+			const code = nativeProviderFailureCode(error);
+			console.error(`Native provider request rejected: ${safeRequestDiagnostic(error)} [code=${code}]`);
 			// An execution already answered 200 with its keepalive; its failure is in the body.
-			if (!response.destroyed && response.headersSent) response.end('{"error":"request rejected"}\n');
+			const rejected = `${JSON.stringify({ error: "request rejected", code })}\n`;
+			if (!response.destroyed && response.headersSent) response.end(rejected);
 			else if (!response.destroyed)
-				response
-					.writeHead(422, { "content-type": "application/json", connection: "close" })
-					.end('{"error":"request rejected"}\n');
+				response.writeHead(422, { "content-type": "application/json", connection: "close" }).end(rejected);
 		}
 	}
 }

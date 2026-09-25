@@ -8,7 +8,11 @@ import {
 	CloudNativeToolOperations,
 } from "@qorpera/runtime/cloud-native-tool-operations";
 import type { BeginCloudRunnerOperationInput } from "@qorpera/runtime/cloud-runner-broker";
-import { CloudRuntimeObservability, type CloudRuntimeObservation } from "@qorpera/runtime/cloud-runtime-observability";
+import {
+	CloudRuntimeDiagnosticError,
+	CloudRuntimeObservability,
+	type CloudRuntimeObservation,
+} from "@qorpera/runtime/cloud-runtime-observability";
 import { afterEach, expect, it, vi } from "vitest";
 import { nativeToolAuthorityFixture } from "./fixtures/native-tool-authority-fixture.ts";
 
@@ -463,10 +467,19 @@ it("links effect timing and a new-call replay to the same canonical receipt with
 	await observed.observability.close();
 	for (const span of [first, replay]) {
 		const finish = observed.rows.findIndex((row) => row.attemptId === span.attemptId && row.phase === "finish");
-		const release = observed.rows.findIndex((row) => row.parentAttemptId === span.attemptId && row.phase === "start");
+		const release = observed.rows.reduce(
+			(last, row, index) => (row.parentAttemptId === span.attemptId && row.phase === "start" ? index : last),
+			-1,
+		);
 		expect(release).toBeGreaterThan(finish);
 		expect(observed.rows[release]).toMatchObject({ operation: "context_authority" });
 	}
+	// The first call's own permission check, before its receipt, is its own child too.
+	const checks = observed.rows.filter(
+		(row) =>
+			row.parentAttemptId === first.attemptId && row.operation === "context_authority" && row.phase === "finish",
+	);
+	expect(checks.map((row) => row.status)).toEqual(["succeeded", "succeeded"]);
 	expect(JSON.stringify(observed.rows)).not.toMatch(/reviewed decision|decisions\/example|changed|job-document/);
 });
 
@@ -637,11 +650,51 @@ it.each(["executing", "ambiguous", "cancelled"] as const)(
 			errorCategory: "ambiguous_effect",
 		});
 		await observed.observability.close();
-		expect(observed.rows.some((row) => row.operation === "context_authority")).toBe(false);
+		// Only the permission check before the receipt; nothing is released.
+		expect(
+			observed.rows
+				.filter((row) => row.operation === "context_authority" && row.phase === "finish")
+				.map((row) => row.status),
+		).toEqual(["succeeded"]);
 		expect(f.perform).toHaveBeenCalledTimes(1);
 		expect(f.control.completeToolOperation).not.toHaveBeenCalled();
 	},
 );
+
+it("names a timeout in the permission check before the receipt as its own child observation", async () => {
+	const f = await fixture();
+	const observed = observe(f.binding.assignmentId);
+	f.authorize.mockRejectedValueOnce(new CloudRuntimeDiagnosticError("timeout"));
+	const span = observed.observability.start("connector");
+	await expect(f.execute({ observation: span })).rejects.toThrow("outcome unconfirmed");
+	expect(span.result).toMatchObject({ status: "unconfirmed", receiptId: null, errorCategory: "timeout" });
+	expect(f.control.beginToolOperation).not.toHaveBeenCalled();
+	await observed.observability.close();
+	expect(observed.rows).toContainEqual(
+		expect.objectContaining({
+			parentAttemptId: span.attemptId,
+			operation: "context_authority",
+			phase: "finish",
+			status: "unconfirmed",
+			errorCategory: "timeout",
+		}),
+	);
+});
+
+it("tells a timeout at the receipt apart: the permission check before it succeeded", async () => {
+	const f = await fixture();
+	const observed = observe(f.binding.assignmentId);
+	f.control.beginToolOperation.mockRejectedValueOnce(new CloudRuntimeDiagnosticError("timeout"));
+	const span = observed.observability.start("connector");
+	await expect(f.execute({ observation: span })).rejects.toThrow("outcome unconfirmed");
+	expect(span.result).toMatchObject({ status: "unconfirmed", receiptId: null, errorCategory: "timeout" });
+	await observed.observability.close();
+	expect(
+		observed.rows
+			.filter((row) => row.parentAttemptId === span.attemptId && row.phase === "finish")
+			.map((row) => [row.operation, row.status, row.errorCategory]),
+	).toEqual([["context_authority", "succeeded", null]]);
+});
 
 it("does not link a locally proposed receipt when the canonical begin response is lost", async () => {
 	const f = await fixture();
