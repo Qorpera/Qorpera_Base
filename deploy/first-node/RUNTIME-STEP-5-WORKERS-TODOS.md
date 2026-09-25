@@ -134,6 +134,50 @@ source that tries to redirect it.
 The migration and the runtime sources are bundle inputs: bundle v47 (its registry slot) at the time of writing (the next free version when it merges). A later
 change to any migration needs a new activation, never an edit of this one.
 
+## 2026-09-25: a late publication can no longer regress a todo document (bundle v111)
+
+Review of 2a5c8f67e, finding 2. A run that received revision n's document,
+paused, and then wrote it against the file version a newer revision had just
+published replaced the newer document, and confirmation kept counting the newer
+revision as published, so no list repaired it (reproduced after all 391
+migrations). `20260925111000_runtime_todo_publication_binding.sql` binds the
+revision, the exact bytes and the file state:
+
+- The document is the same bytes for the same revision: an active worker is
+  `active` (its queued/running lease state changes without a revision), and
+  timestamps are written in UTC whatever the session.
+- A run writes a todo's document path only with the current revision's exact
+  bytes. `qorpera_check_company_path_mutation` refuses anything else (42501)
+  before bytes are staged, so the agent gets a plain refusal, not "read it
+  again". A trigger on `qorpera_company_path_revisions` checks again after the
+  Company File head lock, holding the todo's row until the write commits, so
+  once a revision's document is written no later write brings back an older one.
+- Confirmation accepts only the current revision, only when the bytes the run
+  wrote are that revision's document, and only while the live file still holds
+  them; revision, version and sha256 are recorded together.
+- Anything else that lands on the path afterwards (a member's edit, an approved
+  delete) clears the recorded sha256 in the same trigger, so "published" is a
+  stored fact again and cheap to ask. The list repairs open and blocked todos
+  first, newest first; a finished todo is republished only when the kernel
+  changed it, so a member can still tidy away finished work.
+- At migration, a confirmed todo keeps its record only if its live file holds
+  exactly its current document; every other one is republished once (this also
+  heals any regression the race already caused).
+- The runtime's write key names the version it replaces
+  (`todo-doc:<todoKey>:<revision>:<version|absent>`), so a run can republish a
+  revision its file has lost since, while a retry still replays.
+
+Every publisher (todo and worker receipts, the worker's report, the list
+repair) goes through the same checks. Proof: `supabase/tests/387_runtime_todo_publication_race.test.sql`
+(two runs: the worker's report against the parent's newer change; the review's
+reproduction, including the replayed receipt; a writer the run checks do not
+stop, detected and repaired; byte-bound confirmation; the write-time check on
+its own; repair order and finished work; where the checks and locks sit). The
+lock itself is asserted from the function bodies: dblink sessions cannot see the
+test's uncommitted fixture. Still open: a revision the kernel makes on its own
+(a worker that ends without a report, coding session answers and claims) is
+published only by the agent's next list or change of that todo.
+
 ## Not built; what keeps Order 5 open
 
 - **Live acceptance on the nodes.** Nothing here is deployed. The gates: a real

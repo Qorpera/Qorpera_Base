@@ -2273,7 +2273,9 @@ returns at admission and the parent ends its run, so a new human message is
 admitted while the child works. Todos and worker handles are durable kernel
 objects; each change publishes the canonical todo document to the Company File
 under `work/todos/<agent>/`, and an accepted output is a Company File revision
-the worker's own run wrote. Disposable-database proofs, runtime tests and a
+the worker's own run wrote. A todo document is written only as the current
+revision's exact bytes and counts as published only while the file still holds
+them (bundle v111), so a late publication can never replace a newer one. Disposable-database proofs, runtime tests and a
 live-model behavior screen pass. Deployed acceptance on the nodes remains the
 gate before Order 5 is closed; coding, media and listener workers remain in
 Orders 9, 7 and 8. See
