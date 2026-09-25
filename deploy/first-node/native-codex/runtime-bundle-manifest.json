@@ -14,15 +14,15 @@
   "components": {
     "kernel": "abe7739b3095611367c92778c518f4de777fca53a2e951a7257cc36a97e90efe",
     "constitution": "8641ce64101c52ec5f11f49fe42e70d7300548ecb30314bd59de91714c146d3d",
-    "toolCatalog": "f423a2d765fbe6257f4abbc29be384354004bf1e90f82c03baca42162bc6382b",
+    "toolCatalog": "60e88f93f9a86a91da897fa3b31aca0646394fedf5d90e8adda399e83fbb0026",
     "wakeAndSilence": "f01a0759b5f75bda24cb41f1cbc08e3c3937f9e510a2e9e12e5d8dab47a406ad",
     "contextComposer": "031175583707c7d57c18743ebef1a631675a99d4f80e4dfb6e9ddf4f9ecee0ac",
     "providerBootstrap": "dd7f7ef08c0dc8eac8920d9329117e303b086335f056176624daf3d8f58e9960",
-    "authorization": "e249b4a1c991795524ef2c63075ca4ebc246b51a78f5a26a1d0d1dd4c56d33c0",
+    "authorization": "d09421289d95eb0aad004e0cdeb2a058f7614d42759f8c549fc9de90f19f4081",
     "inboundSafety": "c0c404045bcacbddea79156d2d0d000b2d9caac77d53d1c92d64471ae01581d2",
     "outboundSafety": "1ed0d456632db808ce66b9e301081a4a4bf558587ceaa52e3dc2d20c40e8c227",
     "interactionSurfaces": "9d0182ba7159741ddb0fc4faabe75ef31839a8c08540b685f3ba6e0bb539d57e",
-    "workerLifecycle": "d473a4cda8ecdeb7fdf986b802a962af2e396bdace7e811a0d5a71d8346e2b5a",
+    "workerLifecycle": "1982f1eca5c26e55b30099a5c1ae21bb9b0ef1ba41fcdb1fbb2dba7b47194310",
     "memoryAndSkills": "740db4e2ed7f0b1965a1412d085b6edb53cd381f547a0c0545711b7b400daa99"
   },
   "implementation": {
@@ -614,7 +614,7 @@
     "packages/runtime/src/cloud-sidebar-tools.ts": "c1c04da7de625ac23c91fe00dc14d2ceacf7642e8fb3601eed625127f35d042d",
     "packages/runtime/src/cloud-thread-interactions.ts": "7da6ec3745dbb9f3392712e07f97198104bcda21fe248d2b5ff43f4d736cb004",
     "packages/runtime/src/cloud-wake-bus.ts": "3bbe5e0317990b7f17e21e4c1eb466f83fcdc1c7fb3f8d101ed9b6f1a877eb7a",
-    "packages/runtime/src/cloud-worker-tools.ts": "5ff7850d6142d7dafe48747a2a3bd1e769d5c9636a58a21d8e600a5d1f2f3fb4",
+    "packages/runtime/src/cloud-worker-tools.ts": "040f2f7c7821bfcc99361fee89cbb8113d942217137c975fd03df43239e9fc70",
     "packages/runtime/src/lxd-guest-image-updates.ts": "e26ea2cf52158b08e28154fea0e75df1807113f7cdd42b17b951cdd62efe4947",
     "packages/runtime/src/lxd-native-login-bootstrap-main.ts": "2c818882521dc18e0bfa3a9618d92d7b90a09d25fed8053557ff8dca311a52e8",
     "packages/runtime/src/lxd-runner-bootstrap-main.ts": "94fb6c6d97ef2deae6284f88a3e33f46705a5dd0da426328364a98f9ad63fc6c",
@@ -622,7 +622,7 @@
     "packages/runtime/src/native-provider-account.ts": "9dbb6d065639253c5584876adbeb70f2803de29575ae7de7d1e0f0bbe0442b2b",
     "packages/runtime/src/native-provider-usage.ts": "935086f12167064ae71e90b44af1cbfe28b0d64a59ec2ba685157f45d320297c",
     "packages/runtime/src/systemd-credential.ts": "1d3eb8038a369c58418cbd8248aecf457662cbb3430cc84847235c2222a82478",
-    "scripts/generate-cloud-runtime-bundle.mjs": "d37c6e964bad46d710ad5cc1cab729f4401651cc8f55acefc2f5822ecc05121c",
+    "scripts/generate-cloud-runtime-bundle.mjs": "f9a199e35cadd21881fc850dd46ec2cb219731731ac5aa6cefc2177d4cdc8a29",
     "scripts/native-company-artifact.mjs": "e394bc799104f188769de07cd3be14e6c732a1a672113ea45d349a29d8e0ca63",
     "scripts/package-coding-executor.mjs": "292c557c75728d08e2fd2574c75cc07634f36bca629981709373f62af90a9272",
     "scripts/package-coding-guest.mjs": "04b1d63699aef4f05a5b800b06adff366e1607b1eaac53da8694d1e7e5d84ad3",
@@ -1024,6 +1024,8 @@
     "supabase/migrations/20260925107000_runtime_finite_routine_last_run.sql": "f08dc44eeecaf1acbb5140b8d2b3a8ead4087bb5b5656e2dc38b6a4eaa5c33c5",
     "supabase/migrations/20260925107900_runtime_bundle_activation_v107.sql": "5d2eb8bf02bb704cfc40940f749a78542d69ae8f10916e59ccea535e627822e4",
     "supabase/migrations/20260925108900_runtime_bundle_activation_v108.sql": "45a0ef162bffd3980a11572dc749c63ea088b804c40f47ade4272a6cac48fdaf",
-    "supabase/migrations/20260925109900_runtime_bundle_activation_v109.sql": "b865b546c4224fdf6044f5b89febfd669dc6d584c42752e4d299733b53115292"
+    "supabase/migrations/20260925109900_runtime_bundle_activation_v109.sql": "b865b546c4224fdf6044f5b89febfd669dc6d584c42752e4d299733b53115292",
+    "supabase/migrations/20260925110900_runtime_bundle_activation_v110.sql": "3bd77e050f3b70ce1facde9e7edd4d763bba7a6fefc925f2b74cbee91d13e53f",
+    "supabase/migrations/20260925111000_runtime_todo_publication_binding.sql": "64d12f8347fe59e42e2e6347bcd747559f776445640c192f231f6b9657a6c38d"
   }
 }
