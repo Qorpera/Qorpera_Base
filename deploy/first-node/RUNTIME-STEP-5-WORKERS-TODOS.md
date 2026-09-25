@@ -149,7 +149,15 @@ change to any migration needs a new activation, never an edit of this one.
   session, then the session's turn or machine. Five coding calls broke it until
   runtime v117 (`20260925117000_runtime_coding_lock_order`): the owner's answer,
   the executor's begin and completion, and machine admission and detach. SQL
-  test 602 races each of those pairs across two connections.
+  test 602 races each of those pairs across two connections. The company's
+  profile row comes before all of these, and after the machine come its storage
+  volume, allocation, node and demand. A call that needs the profile row at all
+  takes it first: machine admission, sleep and release take the fence; a
+  machine plan and the secret broker's repository credential take a key-share
+  lock (their inserts only need the company to exist). Until runtime v123
+  (`20260925123000_runtime_coding_machine_lock_order`) they took it last, so an
+  agent cancelling a session deadlocked with its admission, plan or credential.
+  SQL test 603 races those and the pairs a partial fix would break.
 - A revival whose admission is refused when its run is created (the agent lost
   its model account or its conversation) is not retried: the result stays in
   the todo, which the agent lists the next time it continues that work.
