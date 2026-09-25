@@ -197,9 +197,33 @@ export const CONVERSATION: Record<string, string> = {
 	"Filled on the computer at {domain} only": "Udfyldes kun på computeren på {domain}",
 	"Filling this form here needs a newer version of the app.":
 		"Du skal have en nyere version af appen for at udfylde formularen her.",
+	Discard: "Kassér",
 	"Sending this draft from here needs a newer version of the app.":
 		"Du skal have en nyere version af appen for at sende kladden herfra.",
-	Discard: "Kassér",
+	"Email draft from {name}": "Mailkladde fra {name}",
+	"The email draft could not be loaded.": "Mailkladden kunne ikke hentes.",
+	"The email action could not be confirmed.": "Mailhandlingen kunne ikke bekræftes.",
+	"Loading email…": "Henter mail…",
+	"Saving to Gmail…": "Gemmer i Gmail…",
+	"Discarding…": "Kasserer…",
+	"Send unconfirmed": "Afsendelse ikke bekræftet",
+	"Saved to Gmail": "Gemt i Gmail",
+	"Account unavailable": "Konto ikke tilgængelig",
+	"Ready to send": "Klar til afsendelse",
+	"Send email": "Send mail",
+	"Save to Gmail": "Gem i Gmail",
+	"Email body": "Mailtekst",
+	Cc: "Cc",
+	To: "Til",
+	From: "Fra",
+	Subject: "Emne",
+	"New email": "Ny mail",
+	"Checking connected account…": "Tjekker tilsluttet konto…",
+	"Your email action is complete. The agent has not been notified yet.":
+		"Din mailhandling er gennemført. Agenten har endnu ikke fået besked.",
+	"Retry notifying agent": "Prøv at give agenten besked igen",
+	"Check Gmail before sending again. Delivery has not been confirmed.":
+		"Tjek Gmail, før du sender igen. Leveringen er ikke bekræftet.",
 	"The computer signs in at {domain} with the company account. Nothing to do here.":
 		"Computeren logger ind på {domain} med virksomhedens konto. Du skal ikke gøre noget her.",
 	"The computer signs in with the company account. Nothing to do here.":

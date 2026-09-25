@@ -204,6 +204,133 @@ it("reports a revoked Google connection as authorization_required", async () => 
 	});
 });
 
+it("creates and replaces unsent Gmail drafts with the authenticated sender and Unicode MIME", async () => {
+	const requests: { method: string; message: { raw: string; threadId?: string } }[] = [];
+	const { fetchImplementation } = google({
+		[`GET ${GMAIL}/gmail/v1/users/me/profile`]: () => Response.json({ emailAddress: "sender@example.com" }),
+		[`GET ${GMAIL}/gmail/v1/users/me/messages/m1`]: () => Response.json(message("m1", "Offer", "Hello")),
+		[`POST ${GMAIL}/gmail/v1/users/me/drafts`]: (_url, init) => {
+			requests.push({ method: "POST", ...JSON.parse(String(init?.body)) });
+			return Response.json({ id: "r-draft1", message: { id: "m-draft1", threadId: "t-m1" } });
+		},
+		[`PUT ${GMAIL}/gmail/v1/users/me/drafts/r-draft1`]: (_url, init) => {
+			requests.push({ method: "PUT", ...JSON.parse(String(init?.body)) });
+			return Response.json({ id: "r-draft1", message: { id: "m-draft2", threadId: "t-m1" } });
+		},
+	});
+	const args = {
+		to: ["anna@example.com"],
+		cc: ["bo@example.com"],
+		subject: "Møde fredag æøå ".repeat(10),
+		body: "Hej æøå!\n".repeat(30),
+		reply_to_message_id: "m1",
+	};
+	await expect(gmail("get_profile", fetchImplementation).execute(input({}, GMAIL))).resolves.toMatchObject({
+		result: { email_address: "sender@example.com" },
+	});
+	await expect(gmail("create_draft", fetchImplementation).execute(input(args, GMAIL))).resolves.toMatchObject({
+		status: "completed",
+		result: { draft_id: "r-draft1", message_id: "m-draft1" },
+	});
+	await expect(
+		gmail("update_draft", fetchImplementation).execute(
+			input({ ...args, draft_id: "r-draft1", body: "Edited" }, GMAIL),
+		),
+	).resolves.toMatchObject({ status: "completed", result: { draft_id: "r-draft1", message_id: "m-draft2" } });
+	expect(requests.map((request) => request.method)).toEqual(["POST", "PUT"]);
+	const raw = Buffer.from(requests[0]!.message.raw, "base64url").toString("utf8");
+	expect(raw).toContain("From: sender@example.com\r\n");
+	expect(raw).toContain("To: anna@example.com\r\nCc: bo@example.com\r\n");
+	expect(raw).toContain("In-Reply-To: <m1@mail.example.com>\r\n");
+	expect(raw).toContain("References: <m1@mail.example.com>\r\n");
+	const subjectWords = raw.match(/=\?UTF-8\?B\?[^?]+\?=/g) ?? [];
+	expect(subjectWords.length).toBeGreaterThan(1);
+	expect(subjectWords.every((word) => word.length <= 75)).toBe(true);
+	expect(subjectWords.map((word) => Buffer.from(word.slice(10, -2), "base64").toString("utf8")).join("")).toBe(
+		args.subject,
+	);
+	expect(requests[0]!.message.threadId).toBe("t-m1");
+	const encoded = raw.split("\r\n\r\n")[1]!;
+	expect(encoded.split("\r\n").every((line) => line.length <= 76)).toBe(true);
+	expect(Buffer.from(encoded, "base64").toString("utf8")).toBe(args.body);
+	expect(
+		Buffer.from(
+			Buffer.from(requests[1]!.message.raw, "base64url").toString("utf8").split("\r\n\r\n")[1]!,
+			"base64",
+		).toString("utf8"),
+	).toBe("Edited");
+	expect(fetchImplementation.mock.calls.some(([target]) => String(target).includes("/send"))).toBe(false);
+});
+
+it("sends the exact edited draft in one provider mutation and discards without sending", async () => {
+	let sent: { id: string; message: { raw: string } } | undefined;
+	const { fetchImplementation } = google({
+		[`GET ${GMAIL}/gmail/v1/users/me/profile`]: () => Response.json({ emailAddress: "sender@example.com" }),
+		[`POST ${GMAIL}/gmail/v1/users/me/drafts/send`]: (_url, init) => {
+			sent = JSON.parse(String(init?.body));
+			return Response.json({ id: "sent1", threadId: "t1" });
+		},
+		[`DELETE ${GMAIL}/gmail/v1/users/me/drafts/discard1`]: () => new Response(null, { status: 204 }),
+	});
+	await expect(
+		gmail("send_draft", fetchImplementation).execute(
+			input({ draft_id: "draft1", to: ["new@example.com"], subject: "Changed", body: "Only this version" }, GMAIL),
+		),
+	).resolves.toMatchObject({ status: "completed", result: { message_id: "sent1", thread_id: "t1", recipients: 1 } });
+	expect(sent?.id).toBe("draft1");
+	const raw = Buffer.from(sent!.message.raw, "base64url").toString("utf8");
+	expect(raw).toContain("To: new@example.com\r\nSubject: Changed\r\n");
+	expect(Buffer.from(raw.split("\r\n\r\n")[1]!, "base64").toString("utf8")).toBe("Only this version");
+	await expect(
+		gmail("delete_draft", fetchImplementation).execute(input({ draft_id: "discard1" }, GMAIL)),
+	).resolves.toMatchObject({ status: "completed", result: { draft_id: "discard1", deleted: true } });
+	expect(
+		fetchImplementation.mock.calls
+			.filter(([target, init]) => new URL(String(target)).origin === GMAIL && init?.method !== "GET")
+			.map(([, init]) => init?.method),
+	).toEqual(["POST", "DELETE"]);
+});
+
+it("asks older Gmail connections to reconnect only for an actual missing scope", async () => {
+	const { fetchImplementation } = google({
+		[`GET ${GMAIL}/gmail/v1/users/me/profile`]: () => Response.json({ emailAddress: "sender@example.com" }),
+		[`POST ${GMAIL}/gmail/v1/users/me/drafts`]: () =>
+			Response.json({ error: { errors: [{ reason: "insufficientPermissions" }] } }, { status: 403 }),
+		[`DELETE ${GMAIL}/gmail/v1/users/me/drafts/forbidden`]: () =>
+			Response.json({ error: { errors: [{ reason: "domainPolicy" }] } }, { status: 403 }),
+	});
+	await expect(
+		gmail("create_draft", fetchImplementation).execute(
+			input({ to: ["a@example.com"], subject: "x", body: "y" }, GMAIL),
+		),
+	).resolves.toMatchObject({
+		status: "failed",
+		reason: "authorization_required",
+		detail: expect.stringContaining("Reconnect"),
+	});
+	await expect(
+		gmail("delete_draft", fetchImplementation).execute(input({ draft_id: "forbidden" }, GMAIL)),
+	).resolves.toMatchObject({ status: "failed", reason: "forbidden" });
+});
+
+it("refuses draft header injection and invalid ids without mutating Gmail", async () => {
+	const { fetchImplementation } = google({});
+	for (const args of [
+		{ to: ["a@example.com\r\nBcc: evil@example.com"], subject: "x", body: "y" },
+		{ to: ["a@example.com"], subject: "x\r\nBcc: evil@example.com", body: "y" },
+	])
+		await expect(gmail("create_draft", fetchImplementation).execute(input(args, GMAIL))).resolves.toMatchObject({
+			status: "failed",
+			reason: "invalid_request",
+		});
+	await expect(
+		gmail("delete_draft", fetchImplementation).execute(input({ draft_id: "../send" }, GMAIL)),
+	).resolves.toMatchObject({ status: "failed", reason: "invalid_request" });
+	expect(
+		fetchImplementation.mock.calls.every(([target]) => new URL(String(target)).origin === GOOGLE_TOKEN_ORIGIN),
+	).toBe(true);
+});
+
 it("searches Drive with an escaped query and exports Google Docs as text", async () => {
 	const { fetchImplementation } = google({
 		[`GET ${DRIVE}/drive/v3/files`]: (url) => {

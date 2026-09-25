@@ -124,7 +124,7 @@ export interface ConnectorRequestInput {
 	readonly origin: string;
 	readonly path: string;
 	readonly query?: Readonly<Record<string, string | undefined>>;
-	readonly method?: "GET" | "POST" | "PATCH";
+	readonly method?: "GET" | "POST" | "PATCH" | "PUT" | "DELETE";
 	readonly headers: Readonly<Record<string, string>>;
 	readonly body?: Uint8Array | string;
 	readonly signal: AbortSignal;

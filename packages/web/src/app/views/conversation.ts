@@ -1,4 +1,5 @@
 import type { CodingSession } from "../../cloud/coding-session.ts";
+import type { EmailDraftAction, EmailDraftContent } from "../../cloud/email-drafts.ts";
 import { sessionAttachmentProblem } from "../../cloud/session-attachments.ts";
 import type { TranscriptCard, TranscriptItem } from "../../cloud/transcript.ts";
 import type { HostedSession, HostedStaffAgent, JsonValue } from "../../cloud/types.ts";
@@ -117,6 +118,7 @@ export class ConversationView {
 	/** The coding sessions shown in this thread, one element per session, kept
 	 * across renders so each keeps its stream, its cursor and its open state. */
 	readonly #codingElements = new Map<string, CodingSessionElement>();
+	readonly #emailCards = new Map<string, { key: string; element: HTMLElement }>();
 	/** A coding session opened as its own thread over this one, from its chip. */
 	#codingThread: { workerId: string; view: CodingSessionThreadView } | undefined;
 	readonly #timestampTimer: number;
@@ -406,6 +408,7 @@ export class ConversationView {
 		this.#closeCodingSession();
 		for (const element of this.#codingElements.values()) element.dispose();
 		this.#codingElements.clear();
+		this.#emailCards.clear();
 		for (const unsubscribe of this.#unsubscribe) unsubscribe();
 		this.#company.setOpenSession(undefined);
 	}
@@ -885,6 +888,11 @@ export class ConversationView {
 			agentName,
 			this.#isRoom,
 			answerable,
+			items.flatMap((item) =>
+				item.kind === "interaction" && item.request.expiresAt
+					? [Date.parse(item.request.expiresAt) <= Date.now()]
+					: [],
+			),
 			role,
 			conversation.interactionAnswers,
 			conversation.interactionError,
@@ -1054,30 +1062,62 @@ export class ConversationView {
 					),
 				);
 			} else if (item.kind === "interaction") {
-				nodes.push(
-					renderInteractionCard(
-						{ ...item, answer: item.answer ?? conversation.interactionAnswers?.[item.id.toLowerCase()] },
-						{
-							agentName,
-							memberName: (userId) => this.#company.memberName(userId),
-							canAnswer: canAnswer(item.actorUserId),
-							answer: (outcome, answer) => this.#answerInteraction(item.id, outcome, answer),
-							...(agent && item.request.surface === "takeover" ? { takeOver: () => this.#takeOver(agent) } : {}),
-							...(item.request.surface === "secret" && canAnswer(item.actorUserId)
-								? {
-										provideSecret: (value: string) =>
-											this.#company.provideSecret(this.#sessionId, item.id, item.request, value),
-									}
-								: {}),
-						},
-					),
-				);
+				const email =
+					item.request.surface === "draft" &&
+					item.request.payload.platform === "email" &&
+					item.request.payload.connectorId === "gmail";
+				const answer = item.answer ?? conversation.interactionAnswers?.[item.id.toLowerCase()];
+				const cardKey = JSON.stringify([
+					item.request,
+					answer,
+					canAnswer(item.actorUserId),
+					item.answerFailed,
+					item.request.expiresAt ? Date.parse(item.request.expiresAt) <= Date.now() : false,
+				]);
+				const cached = email ? this.#emailCards.get(item.id) : undefined;
+				const element =
+					cached?.key === cardKey
+						? cached.element
+						: renderInteractionCard(
+								{ ...item, answer },
+								{
+									agentName,
+									memberName: (userId) => this.#company.memberName(userId),
+									canAnswer: canAnswer(item.actorUserId),
+									answer: (outcome, answer) => this.#answerInteraction(item.id, outcome, answer),
+									...(email
+										? {
+												emailDraft: this.#company.emailDraftEditor(item.id),
+												loadEmailDraft: () => this.#company.loadEmailDraft(this.#sessionId, item.id),
+											}
+										: {}),
+									...(email && canAnswer(item.actorUserId)
+										? {
+												actEmailDraft: (action: EmailDraftAction, content: EmailDraftContent) =>
+													this.#company.actEmailDraft(this.#sessionId, item.id, action, content),
+											}
+										: {}),
+									...(agent && item.request.surface === "takeover"
+										? { takeOver: () => this.#takeOver(agent) }
+										: {}),
+									...(item.request.surface === "secret" && canAnswer(item.actorUserId)
+										? {
+												provideSecret: (value: string) =>
+													this.#company.provideSecret(this.#sessionId, item.id, item.request, value),
+											}
+										: {}),
+								},
+							);
+				if (email) this.#emailCards.set(item.id, { key: cardKey, element });
+				nodes.push(element);
 			}
 			const date = parseConversationTimestamp(item.createdAt);
 			const node = nodes[nodes.length - 1];
 			if (date && node) this.#timestampRows.push({ date, node });
 		}
 		placeSessions(undefined);
+		for (const id of this.#emailCards.keys())
+			if (!items.some((item) => item.kind === "interaction" && item.id === id)) this.#emailCards.delete(id);
 		for (const [workerId, element] of this.#codingElements) {
 			if (!codingSessions.some((session) => session.workerId === workerId)) {
 				element.dispose();
@@ -1115,8 +1155,17 @@ export class ConversationView {
 		const rowFocus = document.activeElement?.classList.contains("thread-activity") ?? false;
 		// Nodes already in place stay put: a live log re-reads what is taken out and put back.
 		const kept = this.#messages.childNodes;
-		if (nodes.length !== kept.length || nodes.some((node, index) => node !== kept[index]))
-			replace(this.#messages, ...nodes);
+		if (nodes.length !== kept.length || nodes.some((node, index) => node !== kept[index])) {
+			// Keep existing editors attached: replaceChildren removes even retained
+			// nodes and loses keyboard focus, selection and an in-progress IME edit.
+			const desired = new Set(nodes);
+			for (const child of [...this.#messages.children]) if (!desired.has(child as HTMLElement)) child.remove();
+			let cursor = this.#messages.firstChild;
+			for (const node of nodes) {
+				if (node !== cursor) this.#messages.insertBefore(node, cursor);
+				cursor = node.nextSibling;
+			}
+		}
 		// A keyboard user reading the row keeps it through a state change or a new message.
 		if (rowFocus) this.#messages.querySelector<HTMLElement>(".thread-activity")?.focus({ preventScroll: true });
 		this.#refreshTimestamps(false);
