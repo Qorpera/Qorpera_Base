@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { nativeToolAuthorityFixture } from "../../shell/test/fixtures/native-tool-authority-fixture.ts";
 import type { CloudCodingCommandGateway } from "../src/cloud-coding-command-tools.ts";
@@ -6,6 +7,7 @@ import {
 	type CloudCodingNativeControl,
 	CloudNativeCodingRuntime,
 	type CloudNativeCodingTurnContext,
+	parseCloudCodingTurnContext,
 } from "../src/cloud-native-coding-runtime.ts";
 import type { NativeCompanyExecutionRequest } from "../src/cloud-native-provider-host.ts";
 import { runCloudNativeRunToolSession } from "../src/cloud-native-run-tool-session.ts";
@@ -472,33 +474,109 @@ describe("the coding composition of a native turn", () => {
 		});
 	});
 	it("refuses a turn context that belongs to another turn or claims a question it cannot hold", async () => {
-		for (const drift of [
-			{ sequence: 2 },
-			{ workerId: randomUUID() },
-			{ input: { from: "stranger", text: "B", answers: null } },
-			{ input: { from: "member", text: "B", answers: { question: "", options: [] } } },
-			{ earlierTurns: [{ sequence: 1, input: { from: "dispatch", text: null }, submitted: null, outcome: null }] },
-		]) {
+		// Turn 2 answering turn 1's question; each case breaks one rule of it.
+		const earlier = {
+			sequence: 1,
+			input: { from: "dispatch", text: null },
+			submitted: { kind: "ask", summary: "Two ways.", question: "A or B?", options: ["A", "B"], headSha: null },
+			outcome: {
+				state: "blocked",
+				summary: "Two ways.",
+				reason: null,
+				needs: "A or B?",
+				options: ["A", "B"],
+				pullRequest: null,
+			},
+		};
+		const valid = {
+			schema: "qorpera.coding-turn-context/v1",
+			sequence: 2,
+			input: { from: "member", text: "B", answers: { question: "A or B?", options: ["A", "B"] } },
+			earlierTurns: [earlier],
+			omittedEarlierTurns: 0,
+		};
+		const run = async (drift: Record<string, unknown>) => {
 			const f = fixture();
+			Object.assign(f.coding, { sequence: 2 });
+			const wake = structuredClone(f.turn.wake) as unknown as { payload: { sequence: number } };
+			wake.payload.sequence = 2;
 			const original = f.call.getMockImplementation()!;
 			f.call.mockImplementation(async (method, args, signal) =>
 				method === "qorpera_read_coding_turn_context"
-					? {
-							schema: "qorpera.coding-turn-context/v1",
-							workerId: f.coding.workerId,
-							sequence: 1,
-							input: { from: "dispatch", text: null, answers: null },
-							earlierTurns: [],
-							omittedEarlierTurns: 0,
-							...drift,
-						}
+					? { ...valid, workerId: f.coding.workerId, ...drift }
 					: original(method, args, signal),
 			);
-			await expect(f.runtime.execute(f.request, "/private", f.context.signal, f.turn)).rejects.toThrow(
-				"Coding turn context",
-			);
+			vi.mocked(runCloudNativeRunToolSession).mockReset();
+			vi.mocked(runCloudNativeRunToolSession).mockResolvedValue({
+				providerSessionId: "native-thread",
+				toolCalls: 0,
+				codexVersion: "pinned",
+				fencedRequests: 1,
+			});
+			return f.runtime.execute(f.request, "/private", f.context.signal, {
+				...f.turn,
+				wake: wake as unknown as CloudWakeEnvelope,
+			});
+		};
+		// The unbroken context is accepted: the turn runs and then ends without a submission.
+		await expect(run({})).rejects.toThrow("without a submission");
+		for (const drift of [
+			{ sequence: 3 },
+			{ workerId: randomUUID() },
+			{ omittedEarlierTurns: 1 },
+			{ input: { from: "stranger", text: "B", answers: null } },
+			{ input: { from: "dispatch", text: null, answers: null } },
+			{ input: { from: "member", text: "", answers: null } },
+			{ input: { from: "member", text: "B", answers: { question: "", options: [] } } },
+			{
+				input: {
+					from: "member",
+					text: "B",
+					answers: { question: "A or B?", options: ["1", "2", "3", "4", "5", "6", "7"] },
+				},
+			},
+			{ earlierTurns: [{ ...earlier, sequence: 2 }] },
+			{ earlierTurns: [{ ...earlier, submitted: { ...earlier.submitted, kind: "finish", headSha: "short" } }] },
+			{
+				earlierTurns: [
+					{
+						...earlier,
+						outcome: {
+							...earlier.outcome,
+							pullRequest: { url: "https://github.com/Other/repo/pull/1", number: 1, headSha: "c".repeat(40) },
+						},
+					},
+				],
+			},
+		]) {
+			await expect(run(drift)).rejects.toThrow(/Coding turn context|INVALID_CODING_PULL_REQUEST/);
 			expect(runCloudNativeRunToolSession).not.toHaveBeenCalled();
 		}
+	});
+	it("accepts the context the kernel really returns for a session stuck before the fix", () => {
+		// Captured from qorpera_read_coding_turn_context by scripts/test-coding-turn-backfill.mjs, which
+		// fails when the kernel's answer drifts from this file.
+		const sample: unknown = JSON.parse(
+			readFileSync(new URL("./fixtures/coding-turn-context-backfilled.json", import.meta.url), "utf8"),
+		);
+		const context = parseCloudCodingTurnContext(
+			sample,
+			{ workerId: "00000000-0000-4000-8000-000000000000", sequence: 4 },
+			{ host: "github.com", owner: "Qorpera", name: "Qorpera_Base", baseBranch: "master" },
+		);
+		expect(context.input).toEqual({
+			from: "member",
+			text: "Yes, back off.",
+			answers: { question: "Should the poll also back off after errors?", options: ["Yes", "No"] },
+		});
+		expect(
+			context.earlierTurns.map((turn) => [turn.sequence, turn.submitted?.kind ?? null, turn.outcome?.state]),
+		).toEqual([
+			[1, null, "succeeded"],
+			[2, null, "blocked"],
+			[3, "ask", "failed"],
+		]);
+		expect(context.earlierTurns[1].outcome?.needs).toBe("Keep 250 ms, or raise to 500 ms?");
 	});
 	it("keeps the newest earlier turns when the whole history does not fit the prompt", async () => {
 		const f = fixture();

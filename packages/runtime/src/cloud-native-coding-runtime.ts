@@ -115,9 +115,12 @@ function closedRecord(value: unknown, keys: readonly string[]): Record<string, u
 	if (Object.keys(item).sort().join() !== [...keys].sort().join()) throw new Error("Coding turn context invalid");
 	return item;
 }
+/** Non-empty and bounded. What counts as blank was decided by the kernel when the
+ * text was accepted (PostgreSQL btrim, not JavaScript trim); re-deciding it here
+ * would refuse every later turn of a session over one accepted reply. */
 function boundedText(value: unknown, maximum: number, nullable: boolean): string | null {
 	if (value === null && nullable) return null;
-	if (typeof value !== "string" || !value.trim() || Buffer.byteLength(value) > maximum)
+	if (typeof value !== "string" || !value || Buffer.byteLength(value) > maximum)
 		throw new Error("Coding turn context invalid");
 	return value;
 }

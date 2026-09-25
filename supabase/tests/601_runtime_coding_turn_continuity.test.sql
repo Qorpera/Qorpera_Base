@@ -173,7 +173,7 @@ begin
 	perform pg_temp.wake_error($q$select public.qorpera_read_coding_turn_context(current_setting('qorpera_test.parent_binding')::jsonb)$q$,'42501');
 end $$;
 
--- 4. After a lost ask, the retry is told which question it may be answering; the agent's own follow-up is a turn too.
+-- 4. The agent's own follow-up is a turn too. A turn that fails without submitting anything leaves the question open.
 do $$
 declare v_worker public.qorpera_runtime_workers := pg_temp.worker_row('fix-send'); v_turn5 jsonb := current_setting('qorpera_test.turn5')::jsonb;
 	v_turn public.qorpera_coding_session_turns; v_receipt jsonb;
@@ -192,10 +192,23 @@ declare v_worker public.qorpera_runtime_workers := pg_temp.worker_row('fix-send'
 begin
 	v_turn6 := pg_temp.next_turn('fix-send');
 	v_context := public.qorpera_read_coding_turn_context(v_turn6 -> 'binding');
-	perform pg_temp.wake_assert(v_context -> 'input' = '{"from":"agent","text":"Use five tries.","answers":null}'::jsonb
+	perform pg_temp.wake_assert(v_context -> 'input' = '{"from":"agent","text":"Use five tries.","answers":{"question":"Which retry cap?","options":["A: 3 tries","B: 5 tries"]}}'::jsonb
 		and jsonb_array_length(v_context -> 'earlierTurns') = 5,
-		'A turn after a failed one answers no question: '||(v_context -> 'input')::text);
-	perform public.qorpera_complete_coding_turn(v_worker.id,(v_turn6 #>> '{claim,leaseToken}')::uuid,'failed','Stopped for the test.');
+		'Turn 5 failed without submitting: the reply after it still answers turn 4''s question: '||(v_context -> 'input')::text);
+	perform public.qorpera_complete_coding_turn(v_worker.id,(v_turn6 #>> '{claim,leaseToken}')::uuid,'succeeded','Five tries it is.');
+end $$;
+-- Once a later turn has finished, the question is answered: the next reply answers nothing.
+do $$
+declare v_worker public.qorpera_runtime_workers := pg_temp.worker_row('fix-send'); v_turn7 jsonb; v_context jsonb;
+begin
+	perform pg_temp.as_user('30000000-0000-4000-8000-000000000001');
+	perform public.qorpera_answer_coding_session(v_worker.id,'Thanks, also log each retry.','30000000-0000-4000-8000-000000000304');
+	perform pg_temp.path_claims('service_role');
+	v_turn7 := pg_temp.next_turn('fix-send');
+	v_context := public.qorpera_read_coding_turn_context(v_turn7 -> 'binding');
+	perform pg_temp.wake_assert(v_context -> 'input' = '{"from":"member","text":"Thanks, also log each retry.","answers":null}'::jsonb
+		and v_context #>> '{earlierTurns,5,outcome,state}' = 'succeeded','A finished turn closes the question: '||(v_context -> 'input')::text);
+	perform public.qorpera_complete_coding_turn(v_worker.id,(v_turn7 #>> '{claim,leaseToken}')::uuid,'failed','Stopped for the test.');
 end $$;
 
 -- 5. A retry right after an ask the executor never delivered: the question is offered as what the reply may answer.
@@ -225,7 +238,46 @@ begin
 	perform public.qorpera_complete_coding_turn(v_worker.id,(v_turn #>> '{claim,leaseToken}')::uuid,'failed','Stopped for the test.');
 end $$;
 
--- 6. Only the turn's own runner reads its context.
+-- 6. A cancellation settles the turn and keeps its question; a lost executor names the commit it did not publish.
+do $$
+declare v_worker public.qorpera_runtime_workers; v_turn jsonb; v_context jsonb; v_settled public.qorpera_coding_session_turns;
+begin
+	perform pg_temp.worker('{"action":"dispatch","operationKey":"c8","todoKey":"composer-latency","workerKey":"fix-send-8",
+		"title":"Read receipts","goal":"Show read receipts.","definitionOfDone":"Its test passes.","access":"read",
+		"species":"coding","harness":"codex","repository":{"host":"github.com","owner":"Qorpera","name":"Qorpera_Base","baseBranch":"master"}}');
+	v_worker := pg_temp.worker_row('fix-send-8');
+	v_turn := pg_temp.next_turn('fix-send-8');
+	perform public.qorpera_submit_coding_turn(v_turn -> 'binding',jsonb_build_object('kind','ask','operationKey','ticks',
+		'summary','Receipts drafted.','question','One tick or two?','options',jsonb_build_array('One','Two')));
+	perform pg_temp.worker('{"action":"cancel","operationKey":"c8-cancel","todoKey":"composer-latency","workerKey":"fix-send-8"}');
+	select * into strict v_settled from public.qorpera_coding_session_turns where worker_id = v_worker.id and sequence = 1;
+	perform pg_temp.wake_assert(v_settled.outcome ->> 'state' = 'cancelled' and v_settled.outcome ->> 'reason' = 'parent_cancelled'
+		and v_settled.submission ->> 'question' = 'One tick or two?','A cancellation settles the turn with its submission: '||v_settled.outcome::text);
+	perform pg_temp.worker('{"action":"followup","operationKey":"c8-again","todoKey":"composer-latency","workerKey":"fix-send-8","text":"Two ticks."}');
+	v_turn := pg_temp.next_turn('fix-send-8');
+	v_context := public.qorpera_read_coding_turn_context(v_turn -> 'binding');
+	perform pg_temp.wake_assert(v_context -> 'input' = '{"from":"agent","text":"Two ticks.","answers":{"question":"One tick or two?","options":["One","Two"]}}'::jsonb,
+		'The follow-up after a cancelled question answers it: '||(v_context -> 'input')::text);
+	-- The harness finishes; the executor is lost before publishing, then again while publishing.
+	perform public.qorpera_submit_coding_turn(v_turn -> 'binding',jsonb_build_object('kind','finish','operationKey','two',
+		'summary','Two ticks.','headSha','d4d8f9f1c0b6e5a2d3c4b5a69788776655443322'));
+	update public.qorpera_coding_sessions set lease_until = clock_timestamp() - interval '1 second' where worker_id = v_worker.id;
+	perform public.qorpera_claim_coding_session('exec-test',60);
+	perform pg_temp.wake_assert((pg_temp.worker_row('fix-send-8')).result ->> 'summary'
+		= 'The coding executor stopped responding; the workspace is kept. Commit d4d8f9f1c0b6 was submitted but not published; a follow-up can publish it.',
+		'A lost executor names the unpublished commit: '||((pg_temp.worker_row('fix-send-8')).result ->> 'summary'));
+	perform pg_temp.worker('{"action":"followup","operationKey":"c8-publish","todoKey":"composer-latency","workerKey":"fix-send-8","text":"Publish it."}');
+	v_turn := pg_temp.next_turn('fix-send-8');
+	perform public.qorpera_submit_coding_turn(v_turn -> 'binding',jsonb_build_object('kind','finish','operationKey','two',
+		'summary','Two ticks.','headSha','d4d8f9f1c0b6e5a2d3c4b5a69788776655443322'));
+	perform public.qorpera_record_coding_progress(v_worker.id,(v_turn #>> '{claim,leaseToken}')::uuid,'publishing','Publishing the draft pull request');
+	update public.qorpera_coding_sessions set lease_until = clock_timestamp() - interval '1 second' where worker_id = v_worker.id;
+	perform public.qorpera_claim_coding_session('exec-test',60);
+	perform pg_temp.wake_assert((pg_temp.worker_row('fix-send-8')).result ->> 'summary' like '%Commit d4d8f9f1c0b6 was being published; the draft pull request may exist.%',
+		'An executor lost while publishing does not claim the PR is missing: '||((pg_temp.worker_row('fix-send-8')).result ->> 'summary'));
+end $$;
+
+-- 7. Only the turn's own runner reads its context.
 select pg_temp.as_user('30000000-0000-4000-8000-000000000001');
 select pg_temp.wake_error($q$select public.qorpera_read_coding_turn_context((current_setting('qorpera_test.turn5')::jsonb) -> 'binding')$q$,'42501');
 select pg_temp.path_claims('service_role');

@@ -106,33 +106,44 @@ left join lateral (select event.body, event.run_id, event.created_at from public
 		and event.kind = case when turn.sequence = 1 then 'dispatched' else 'followup' end
 	order by event.id desc limit 1) followup on true;
 
+-- The submission's time is the harness's own submission event.
 update public.qorpera_coding_session_turns turn set submission = session.submission, submission_receipt_id = session.submission_receipt_id,
-	submitted_at = session.updated_at
+	submitted_at = coalesce((select event.created_at from public.qorpera_coding_session_events event
+		where event.worker_id = turn.worker_id and event.sequence = turn.sequence and event.kind = 'text' and event.actor = 'harness'
+			and event.body ? 'submitted' order by event.id desc limit 1), session.updated_at)
 from public.qorpera_coding_sessions session
 where session.submission is not null and turn.worker_id = session.worker_id and turn.sequence::text = session.submission ->> 'sequence';
 
-update public.qorpera_coding_session_turns turn set outcome = settled.outcome, settled_at = settled.at
-from (
-	select turn.worker_id, turn.sequence,
-		coalesce(
-			(select public.qorpera_coding_turn_outcome(event.body ->> 'outcome', event.body) from public.qorpera_runtime_worker_events event
-				where event.worker_id = turn.worker_id and event.sequence = turn.sequence and event.kind = 'reported' order by event.id desc limit 1),
-			(select public.qorpera_coding_turn_outcome('cancelled', jsonb_build_object('summary','Cancelled before it reported.','reason',event.body ->> 'reason'))
-				from public.qorpera_runtime_worker_events event
-				where event.worker_id = turn.worker_id and event.sequence = turn.sequence and event.kind = 'cancelled' order by event.id desc limit 1),
-			case when turn.sequence = worker.sequence and worker.state <> 'active' then public.qorpera_coding_turn_outcome(worker.state, worker.result) end,
-			(select public.qorpera_coding_turn_outcome('failed', jsonb_build_object('summary','The coding executor stopped responding; the workspace is kept.',
-					'reason',event.body ->> 'reason'))
-				from public.qorpera_coding_session_events event
-				where event.worker_id = turn.worker_id and event.sequence = turn.sequence and event.kind = 'failed' and event.actor = 'kernel'
-				order by event.id desc limit 1),
-			case when turn.sequence < worker.sequence then public.qorpera_coding_turn_outcome('failed',
-				jsonb_build_object('summary','The turn ended without a recorded result.','reason','unrecorded')) end) as outcome,
-		coalesce(worker.reported_at, clock_timestamp()) as at
-	from public.qorpera_coding_session_turns turn
-	join public.qorpera_runtime_workers worker on worker.id = turn.worker_id
-) settled
-where turn.worker_id = settled.worker_id and turn.sequence = settled.sequence and settled.outcome is not null;
+-- Outcomes in order of evidence, each at the time it was recorded: the
+-- executor's report, a cancellation, the worker's own current result, a lost
+-- executor's lease expiry; an earlier turn with none of these ended before the
+-- next one started.
+update public.qorpera_coding_session_turns turn set outcome = public.qorpera_coding_turn_outcome(event.body ->> 'outcome', event.body),
+	settled_at = event.created_at
+from public.qorpera_runtime_worker_events event
+where event.id = (select latest.id from public.qorpera_runtime_worker_events latest where latest.worker_id = turn.worker_id
+	and latest.sequence = turn.sequence and latest.kind = 'reported' order by latest.id desc limit 1);
+update public.qorpera_coding_session_turns turn set outcome = public.qorpera_coding_turn_outcome('cancelled',
+		jsonb_build_object('summary','Cancelled before it reported.','reason',event.body ->> 'reason')),
+	settled_at = event.created_at
+from public.qorpera_runtime_worker_events event
+where turn.outcome is null and event.id = (select latest.id from public.qorpera_runtime_worker_events latest where latest.worker_id = turn.worker_id
+	and latest.sequence = turn.sequence and latest.kind = 'cancelled' order by latest.id desc limit 1);
+update public.qorpera_coding_session_turns turn set outcome = public.qorpera_coding_turn_outcome(worker.state, worker.result),
+	settled_at = coalesce(worker.reported_at, worker.updated_at)
+from public.qorpera_runtime_workers worker
+where turn.outcome is null and worker.id = turn.worker_id and turn.sequence = worker.sequence and worker.state <> 'active';
+update public.qorpera_coding_session_turns turn set outcome = public.qorpera_coding_turn_outcome('failed',
+		jsonb_build_object('summary','The coding executor stopped responding; the workspace is kept.','reason',event.body ->> 'reason')),
+	settled_at = event.created_at
+from public.qorpera_coding_session_events event
+where turn.outcome is null and event.id = (select latest.id from public.qorpera_coding_session_events latest where latest.worker_id = turn.worker_id
+	and latest.sequence = turn.sequence and latest.kind = 'failed' and latest.actor = 'kernel' order by latest.id desc limit 1);
+update public.qorpera_coding_session_turns turn set outcome = public.qorpera_coding_turn_outcome('failed',
+		jsonb_build_object('summary','The turn ended without a recorded result.','reason','unrecorded')),
+	settled_at = next.created_at
+from public.qorpera_coding_session_turns next
+where turn.outcome is null and next.worker_id = turn.worker_id and next.sequence = turn.sequence + 1;
 
 create trigger qorpera_coding_session_turns_guard before update or delete on public.qorpera_coding_session_turns
 	for each row execute function public.qorpera_coding_session_turn_guard();
@@ -146,6 +157,8 @@ create trigger qorpera_coding_session_turns_guard before update or delete on pub
 create function public.qorpera_settle_coding_turn()
 returns trigger language plpgsql security definer set search_path = '' as $$
 begin
+	-- The session before its turn, the order submit and complete take them in.
+	perform 1 from public.qorpera_coding_sessions where worker_id = new.id for update;
 	update public.qorpera_coding_session_turns set outcome = public.qorpera_coding_turn_outcome(new.state, new.result), settled_at = clock_timestamp()
 	where worker_id = new.id and sequence = old.sequence and outcome is null;
 	return null;
@@ -246,7 +259,9 @@ select pg_temp.turn_patch('public.qorpera_claim_coding_session(text,integer)',
 	$old$						'summary','The coding executor stopped responding; the workspace is kept.') where id = v_worker.id;$old$,
 	$new$						'summary','The coding executor stopped responding; the workspace is kept.' || coalesce((select case turn.submission ->> 'kind'
 							when 'ask' then ' Before it stopped, the session asked: ' || (turn.submission ->> 'question')
-							when 'finish' then ' Commit ' || left(turn.submission ->> 'headSha', 12) || ' was submitted but not published; a follow-up can publish it.' end
+							when 'finish' then ' Commit ' || left(turn.submission ->> 'headSha', 12) || case when v_session.phase = 'publishing'
+								then ' was being published; the draft pull request may exist. A follow-up publishes or confirms it.'
+								else ' was submitted but not published; a follow-up can publish it.' end end
 						from public.qorpera_coding_session_turns turn where turn.worker_id = v_worker.id and turn.sequence = v_worker.sequence), ''))
 					where id = v_worker.id;$new$);
 
@@ -256,8 +271,9 @@ alter table public.qorpera_coding_sessions drop column submission, drop column s
 -- 4. The next turn reads the session's own earlier turns
 -- ---------------------------------------------------------------------------
 -- Through the turn's run authority only. The input is what started this turn,
--- with the question it may answer: the one the previous turn ended with
--- (blocked), or one its lost executor never delivered. Earlier turns are the
+-- with the question it may answer: the latest one a turn ended with (blocked)
+-- or asked before its executor was lost, unless a later turn submitted
+-- something or ended otherwise than failed or cancelled. Earlier turns are the
 -- newest that fit 48 KiB, oldest first, with the number left out.
 create function public.qorpera_read_coding_turn_context(p_binding jsonb)
 returns jsonb language plpgsql security definer set search_path = '' as $$
@@ -268,12 +284,19 @@ begin
 	v_worker_id := (v_authority #>> '{coding,workerId}')::uuid;
 	v_sequence := (v_authority #>> '{coding,sequence}')::integer;
 	select * into strict v_turn from public.qorpera_coding_session_turns where worker_id = v_worker_id and sequence = v_sequence;
-	select * into v_previous from public.qorpera_coding_session_turns where worker_id = v_worker_id and sequence = v_sequence - 1;
-	v_answers := case when v_turn.input_from = 'dispatch' then null
+	-- Turns that failed or were cancelled without submitting anything (a retry that never
+	-- got going) do not answer the question: it stays open for the reply after them.
+	select turn.* into v_previous from public.qorpera_coding_session_turns turn
+	where turn.worker_id = v_worker_id and turn.sequence < v_sequence
+		and (turn.outcome ->> 'state' = 'blocked' or turn.submission ->> 'kind' = 'ask')
+		and not exists (select 1 from public.qorpera_coding_session_turns later where later.worker_id = turn.worker_id
+			and later.sequence > turn.sequence and later.sequence < v_sequence
+			and (later.submission is not null or later.outcome ->> 'state' is distinct from 'failed' and later.outcome ->> 'state' is distinct from 'cancelled'))
+	order by turn.sequence desc limit 1;
+	v_answers := case when v_turn.input_from = 'dispatch' or v_previous.worker_id is null then null
 		when v_previous.outcome ->> 'state' = 'blocked' then
 			jsonb_build_object('question', v_previous.outcome ->> 'needs', 'options', v_previous.outcome -> 'options')
-		when v_previous.submission ->> 'kind' = 'ask' then
-			jsonb_build_object('question', v_previous.submission ->> 'question', 'options', coalesce(v_previous.submission -> 'options', '[]'::jsonb))
+		else jsonb_build_object('question', v_previous.submission ->> 'question', 'options', coalesce(v_previous.submission -> 'options', '[]'::jsonb))
 		end;
 	with earlier as (
 		select turn.sequence, jsonb_build_object('sequence', turn.sequence,
