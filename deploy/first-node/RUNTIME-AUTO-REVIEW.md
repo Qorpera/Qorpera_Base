@@ -62,6 +62,26 @@ them, both fixed:
   member's private conversation, where they could not read it: that call is
   refused with APPROVAL_UNAVAILABLE_HERE, like a group chat's.
 
+## Review round 3 (2026-09-25)
+
+Round 3 (on b5fed634b, re-cut on master v107) confirmed the round-2 fixes, the
+merge and the pin (APPROVE WITH NITS); fixed:
+- `begin` matches a review the run's member answered only in the card's
+  conversation, where the wake lands: an owner's answer on a contributor's
+  card elsewhere neither ran nor blocked the owner's own identical call.
+- The observation vocabulary is patched into the live function, not re-stated:
+  v114's `decide_routine` (PR #314, migration 20260925114000) stays in either
+  merge order (checked with #314's migration applied first).
+- One index serves `begin`'s lookup of the latest review of an action (it was
+  a scan of the whole audit table on every acting call).
+
+Known limit (accepted for now): a card answered while its call still holds it,
+whose run then stops or crashes within the 10 s heartbeat, keeps an unused
+approval that nothing delivers: the card reads approved and the agent is not
+woken. The next time the agent repeats that exact call, the approval serves
+it. A later fix stores the answerer's model account on the review so a stopped
+hold can wake the agent.
+
 ## Rollout order
 
 1. Pause, record `20260925115000` (the observation function must accept

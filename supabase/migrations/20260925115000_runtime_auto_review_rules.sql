@@ -111,10 +111,10 @@ create table public.qorpera_action_reviews (
 	check (answer is null or decision = 'ask'),
 	check (consumed_at is null or answer in ('allow_once', 'always_allow'))
 );
--- An approval waiting for an answer, or given and not yet used, for one exact action of one agent.
-create index qorpera_action_reviews_open
-	on public.qorpera_action_reviews(profile_id, staff_agent_id, tool_name, argument_sha256)
-	where decision = 'ask' and consumed_at is null and answer is distinct from 'deny';
+-- The reviews of one exact action of one agent, latest first: every acting call
+-- looks up the latest (qorpera_begin_action_review), denials included.
+create index qorpera_action_reviews_action
+	on public.qorpera_action_reviews(profile_id, staff_agent_id, tool_name, argument_sha256, created_at desc, id desc);
 
 alter table public.qorpera_review_rules enable row level security;
 alter table public.qorpera_action_reviews enable row level security;
@@ -266,13 +266,14 @@ begin
 		raise exception 'Action review request is invalid' using errcode = '22023'; end if;
 	-- The latest review of exactly this action, by this agent, for the same member
 	-- (an approval or a denial given for one member's work never serves another's).
-	-- An answer to a parked card wakes the agent on the answering member's account,
-	-- so a run for the member who answered finds that card too.
+	-- An answer to a parked card wakes the agent on the answering member's account
+	-- in the card's conversation, so a run for the member who answered finds that
+	-- card there, and only there.
 	select review.* into v_review from public.qorpera_action_reviews as review
 	where review.profile_id = v_run.profile_id and review.staff_agent_id = v_run.staff_agent_id
 		and review.tool_name = p_call ->> 'tool' and review.argument_sha256 = p_call ->> 'argumentSha256'
 		and (review.requester_user_id is not distinct from v_run.requested_by_user_id
-			or (v_run.requested_by_user_id is not null and review.answered_by_user_id = v_run.requested_by_user_id))
+			or (review.answered_by_user_id = v_run.requested_by_user_id and review.card_session_id = v_run.session_id))
 		and (review.decision = 'deny' or (review.decision = 'ask' and (review.card_session_id is not null
 			or review.answer is not null)))
 	order by review.created_at desc, review.id desc limit 1 for update;
@@ -768,7 +769,7 @@ create function pg_temp.auto_review_replace(p_definition text, p_old text, p_new
 returns text language plpgsql as $$
 begin
 	if p_old = '' or (length(p_definition) - length(replace(p_definition, p_old, ''))) / length(p_old) <> 1 then
-		raise exception 'Auto-review card answer integration differs: %', left(p_old, 80); end if;
+		raise exception 'Auto-review integration differs: %', left(p_old, 80); end if;
 	return replace(p_definition, p_old, p_new);
 end
 $$;
@@ -797,126 +798,24 @@ $migration$;
 -- Runtime observation vocabulary: the reviewer's model turn is observed as
 -- action_review, and a call that did not run because of a review carries its
 -- reason (approval_pending, approval_declined, review_denied,
--- review_unavailable). Re-states master's latest definition (20260924100000)
--- with these names added; ACL restated because CREATE OR REPLACE keeps it.
--- Record this migration BEFORE activating the bundle that observes them, or
--- their observations are rejected (22023) and dropped.
-create or replace function public.qorpera_record_runtime_observation(p_run_id uuid,p_observation jsonb)
-returns jsonb language plpgsql security definer set search_path = '' as $$
+-- review_unavailable). Patched into the live definition, not re-stated, so
+-- names another migration added before this one (v114's decide_routine) stay.
+-- CREATE OR REPLACE keeps the ACL. Record this migration BEFORE activating the
+-- bundle that observes them, or their observations are rejected (22023) and
+-- dropped.
+do $migration$
 declare
-	v_keys text[] := array['schema','attemptId','parentAttemptId','assignmentId','phase','operation',
-		'logicalOperationSha256','observedAt','durationMs','status','errorCategory','receiptId','readId',
-		'inputBytes','outputBytes','inputTokens','outputTokens','cachedInputTokens','cacheWriteInputTokens',
-		'reasoningOutputTokens','totalTokens'];
-	v_key text; v_number numeric; v_observed timestamptz;
-	v_uuid_pattern text := '^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$';
-	v_run public.qorpera_execution_runs%rowtype;
-	v_existing public.qorpera_runtime_observations%rowtype;
-	v_other public.qorpera_runtime_observations%rowtype;
-	v_replayed boolean := false;
+	v_definition text := pg_get_functiondef('public.qorpera_record_runtime_observation(uuid,jsonb)'::regprocedure);
 begin
-	if auth.role() is distinct from 'service_role' then
-		raise exception 'Runtime diagnostics require operator service authority' using errcode = '42501'; end if;
-	if p_run_id is null or jsonb_typeof(p_observation) is distinct from 'object'
-		or octet_length(p_observation::text) > 8192 or not (p_observation ?& v_keys)
-		or p_observation - v_keys <> '{}'::jsonb
-		or p_observation ->> 'schema' is distinct from 'qorpera.runtime-observation/v1'
-		or jsonb_typeof(p_observation -> 'attemptId') is distinct from 'string'
-		or p_observation ->> 'attemptId' !~* v_uuid_pattern then
-		raise exception 'Runtime observation is invalid' using errcode = '22023'; end if;
-	foreach v_key in array array['parentAttemptId','assignmentId','receiptId','readId'] loop
-		if p_observation -> v_key <> 'null'::jsonb and
-			(jsonb_typeof(p_observation -> v_key) <> 'string' or p_observation ->> v_key !~* v_uuid_pattern) then
-			raise exception 'Runtime observation is invalid' using errcode = '22023'; end if;
-	end loop;
-	if p_observation ->> 'operation' not in ('model_turn','model_request','company_read','company_list',
-		'company_write','company_mkdir','company_delete','send_message','ask_member','read_context','send_coworker_message',
-		'computer_start','computer_screen','computer_browser','computer_desktop','computer_shell','computer_screenshot',
-		'computer_transfer','hire_agent','create_group_chat','manage_routine','report_work','manage_todo','manage_worker',
-		'coding_run_command','coding_read_command','coding_cancel_command','coding_finish','coding_ask',
-		'update_memory','recall_memory','organize_sidebar',
-		'company_context','message_composition','connector','unknown_tool','run_authority','context_authority',
-		'native_result_fence','diagnostic_export','action_review')
-		or jsonb_typeof(p_observation -> 'operation') <> 'string'
-		or (p_observation -> 'logicalOperationSha256' <> 'null'::jsonb and
-			(jsonb_typeof(p_observation -> 'logicalOperationSha256') <> 'string'
-			or p_observation ->> 'logicalOperationSha256' !~ '^[0-9a-f]{64}$'))
-		or (p_observation -> 'errorCategory' <> 'null'::jsonb and
-			(jsonb_typeof(p_observation -> 'errorCategory') <> 'string' or p_observation ->> 'errorCategory' not in (
-			'invalid_arguments','unavailable_tool','call_id_reused','budget_exhausted','authority_unavailable',
-			'stale_version','protected_path','ambiguous_effect','cancelled','timeout','provider_failed',
-			'transport_unavailable','invalid_response','unknown','export_unavailable',
-			'approval_pending','approval_declined','review_denied','review_unavailable')))
-		or not coalesce((p_observation ->> 'phase' = 'start' and p_observation ->> 'status' = 'started'
-			and p_observation -> 'durationMs' = 'null'::jsonb and p_observation -> 'errorCategory' = 'null'::jsonb)
-			or (p_observation ->> 'phase' = 'finish' and p_observation ->> 'status' in
-			('succeeded','failed','cancelled','denied','unconfirmed','proposed','replayed')),false) then
-		raise exception 'Runtime observation is invalid' using errcode = '22023'; end if;
-	foreach v_key in array array['durationMs','inputBytes','outputBytes','inputTokens','outputTokens',
-		'cachedInputTokens','cacheWriteInputTokens','reasoningOutputTokens','totalTokens'] loop
-		if p_observation -> v_key = 'null'::jsonb then continue; end if;
-		if jsonb_typeof(p_observation -> v_key) <> 'number' then
-			raise exception 'Runtime observation counter is invalid' using errcode = '22023'; end if;
-		v_number := (p_observation ->> v_key)::numeric;
-		if v_number < 0 or v_number > 9007199254740991 or v_number <> trunc(v_number) then
-			raise exception 'Runtime observation counter is invalid' using errcode = '22023'; end if;
-	end loop;
-	-- Exactly the emitter's finite UTC-millisecond representation, not PostgreSQL
-	-- special dates, local timezone guesses, calendar normalization, or year zero.
-	if jsonb_typeof(p_observation -> 'observedAt') <> 'string'
-		or p_observation ->> 'observedAt' !~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z$'
-		or p_observation ->> 'observedAt' like '0000-%' then
-		raise exception 'Runtime observation time is invalid' using errcode = '22023'; end if;
-	begin
-		v_observed := (p_observation ->> 'observedAt')::timestamptz;
-		if not isfinite(v_observed) or to_char(v_observed at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')
-			<> p_observation ->> 'observedAt' then raise invalid_datetime_format; end if;
-	exception when datetime_field_overflow or invalid_datetime_format then
-		raise exception 'Runtime observation time is invalid' using errcode = '22023';
-	end;
-	select * into v_run from public.qorpera_execution_runs where id = p_run_id;
-	if not found then raise exception 'Runtime observation run is unavailable' using errcode = '42501'; end if;
-	if (p_observation ->> 'assignmentId' is not null and not exists (
-		select 1 from public.qorpera_runner_assignments a where a.id = (p_observation ->> 'assignmentId')::uuid
-			and a.run_id = p_run_id and a.job_id = v_run.job_id))
-		or (p_observation ->> 'receiptId' is not null and not exists (
-			select 1 from public.qorpera_run_operation_receipts r where r.id = (p_observation ->> 'receiptId')::uuid
-				and r.run_id = p_run_id and r.job_id = v_run.job_id))
-		or (p_observation ->> 'readId' is not null and not exists (
-			select 1 from public.qorpera_company_read_observations r where r.id = (p_observation ->> 'readId')::uuid
-				and r.run_id = p_run_id and r.environment_id = v_run.environment_id)) then
-		raise exception 'Runtime observation reference is unavailable' using errcode = '42501'; end if;
-	-- Only the new diagnostic identity is locked; telemetry does not lock a
-	-- job, lease, file, or live authorization. A finish may arrive before start.
-	perform pg_advisory_xact_lock(hashtextextended('runtime-observation:' || p_run_id::text || ':' ||
-		(p_observation ->> 'attemptId')::uuid::text,19970));
-	select * into v_existing from public.qorpera_runtime_observations
-	where run_id = p_run_id and attempt_id = (p_observation ->> 'attemptId')::uuid and phase = p_observation ->> 'phase';
-	if found then
-		if v_existing.observation <> p_observation then
-			raise exception 'Runtime observation identity already records different metadata' using errcode = '23505'; end if;
-		v_replayed := true;
-	else
-		select * into v_other from public.qorpera_runtime_observations
-		where run_id = p_run_id and attempt_id = (p_observation ->> 'attemptId')::uuid;
-		if found and (v_other.observation -> 'operation',v_other.observation -> 'assignmentId',
-			v_other.observation -> 'parentAttemptId',v_other.observation -> 'logicalOperationSha256') is distinct from
-			(p_observation -> 'operation',p_observation -> 'assignmentId',p_observation -> 'parentAttemptId',
-			p_observation -> 'logicalOperationSha256') then
-			raise exception 'Runtime observation attempt metadata changed' using errcode = '23505'; end if;
-		insert into public.qorpera_runtime_observations(run_id,attempt_id,phase,assignment_id,parent_attempt_id,
-			operation,logical_operation_sha256,observed_at,observation)
-		values (p_run_id,(p_observation ->> 'attemptId')::uuid,p_observation ->> 'phase',
-			(p_observation ->> 'assignmentId')::uuid,(p_observation ->> 'parentAttemptId')::uuid,
-			p_observation ->> 'operation',p_observation ->> 'logicalOperationSha256',v_observed,p_observation)
-		returning * into v_existing;
-	end if;
-	return jsonb_build_object('schema','qorpera.runtime-observation-receipt/v1','runId',p_run_id,
-		'attemptId',v_existing.attempt_id,'phase',v_existing.phase,'ingestedAt',v_existing.ingested_at,'replayed',v_replayed);
+	v_definition := pg_temp.auto_review_replace(v_definition,
+		$old$'native_result_fence','diagnostic_export')$old$,
+		$new$'native_result_fence','diagnostic_export','action_review')$new$);
+	v_definition := pg_temp.auto_review_replace(v_definition,
+		$old$'transport_unavailable','invalid_response','unknown','export_unavailable')$old$,
+		$new$'transport_unavailable','invalid_response','unknown','export_unavailable',
+			'approval_pending','approval_declined','review_denied','review_unavailable')$new$);
+	execute v_definition;
 end
-$$;
-revoke all on function public.qorpera_record_runtime_observation(uuid,jsonb)
-	from public,anon,authenticated,service_role,qorpera_secret_broker;
-grant execute on function public.qorpera_record_runtime_observation(uuid,jsonb) to service_role;
+$migration$;
 
 commit;

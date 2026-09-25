@@ -368,6 +368,32 @@ begin
 end
 $$;
 
+-- An answer serves the answering member's own runs only in the card's conversation, where its
+-- wake lands: an owner's Allow once or Deny on a contributor's card in another conversation
+-- neither runs nor blocks the owner's own identical call here.
+do $$
+declare v_binding jsonb := current_setting('qorpera_test.review_binding')::jsonb; v_record jsonb; v_begin jsonb;
+	v_answer text; v_digest text;
+begin
+	foreach v_answer in array array['allow_once', 'deny'] loop
+		v_digest := repeat('0', 63) || case v_answer when 'deny' then '2' else '1' end;
+		v_record := pg_temp.review_record(v_binding, 'elsewhere-' || v_answer, v_digest, 'ask',
+			array['30000000-0000-4000-8000-000000000a01']::uuid[]);
+		update public.qorpera_action_reviews set requester_user_id = '30000000-0000-4000-8000-000000000002'
+		where id = (v_record ->> 'reviewId')::uuid;
+		perform public.qorpera_await_action_review(v_binding, (v_record ->> 'reviewId')::uuid, true);
+		perform pg_temp.review_answer('30000000-0000-4000-8000-000000000001', (v_record ->> 'reviewId')::uuid, v_answer);
+		update public.qorpera_action_reviews set session_id = '30000000-0000-4000-8000-000000000040',
+			card_session_id = '30000000-0000-4000-8000-000000000040' where id = (v_record ->> 'reviewId')::uuid;
+		v_begin := public.qorpera_begin_action_review(v_binding,
+			jsonb_build_object('tool', 'send_email', 'argumentSha256', v_digest));
+		perform pg_temp.wake_assert(v_begin ->> 'state' = 'review' and (select consumed_at is null
+			from public.qorpera_action_reviews where id = (v_record ->> 'reviewId')::uuid),
+			format('An owner''s %s on a card elsewhere is not the owner''s answer here', v_answer));
+	end loop;
+end
+$$;
+
 -- A group chat carries no card: the ask is recorded and the call is refused.
 savepoint review_group_chat;
 do $$
