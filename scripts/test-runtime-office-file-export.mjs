@@ -9,6 +9,7 @@ import { getCACertificates, setDefaultCACertificates } from "node:tls";
 import { pathToFileURL } from "node:url";
 import { build } from "esbuild";
 import { startDesktopSource } from "./test-runtime-office-desktop.mjs";
+import { testMemberFileExportGateway } from "./test-member-file-export-gateway.mjs";
 import { testMemberWebExportsSql } from "./test-member-web-exports-sql.mjs";
 import { createNativeBinaryReviewProposal, testMemberWebNativeReviewSql } from "./test-member-web-native-review-sql.mjs";
 
@@ -222,6 +223,7 @@ export async function testOfficeFileExport({ root, query, setup }) {
 			write:input=>writeTool.execute(writeTool.parseArguments(input),{...context,identity:run.identity}),
 		}) : null;
 		const nativeSignal=run.signal;run.close();run=undefined;assert(nativeSignal.aborted);
+		await testMemberFileExportGateway({root,query,store,replication,companyId:setup.scope.companyId,environmentId:setup.scope.environmentId,asset,bytes});
 		await testMemberWebExportsSql({root,query,store,replication,companyId:setup.scope.companyId,environmentId:setup.scope.environmentId,asset,bytes});
 		if(pendingReview)await testMemberWebNativeReviewSql({root,query,store,replication,companyId:setup.scope.companyId,environmentId:setup.scope.environmentId,asset,bytes,pendingReview});
 	} catch(error) {

@@ -112,7 +112,8 @@ Run focused tests from `packages/runtime`:
 node ../../node_modules/vitest/dist/cli.js --run test/cloud-agent-mouth.test.ts test/cloud-native-provider-host.test.ts test/cloud-native-provider.test.ts test/cloud-runner-worker.test.ts test/cloud-runner-broker.test.ts test/cloud-runner-sandbox.test.ts test/official-codex-mouth.test.ts
 ```
 
-The v47 activation focused suite passed 89 tests across these nine files. They exercise
+The v47 activation focused suite passed 89 tests across nine files, two of them desktop tests since
+removed with the desktop app. They exercise
 private-output canaries, immediate sends, lost-response
 replay, transport authentication, malformed arguments/receipts, cancellation,
 final-delivery obligations, silent no-audience jobs, provider process contracts,

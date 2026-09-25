@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
+import { staffRegistryPath } from "@qorpera/company/company-staff";
 
 /** A fresh company folder in the shape the retired desktop scaffold made
  * (pi-coding-agent's scaffoldCompany): manifest, staff registry, host
@@ -20,7 +21,7 @@ export function scaffoldCompany(dir: string): string {
 			createdAt: new Date().toISOString(),
 		}),
 	);
-	writeFileSync(join(root, ".qorpera", "staff.json"), json({ version: 1, agents: {} }));
+	writeFileSync(staffRegistryPath(root), json({ version: 1, agents: {} }));
 	writeFileSync(
 		join(root, ".qorpera", "settings.json"),
 		json({ sessionDir: "./trail", compaction: { enabled: false }, transport: "sse" }),
@@ -29,7 +30,9 @@ export function scaffoldCompany(dir: string): string {
 		mkdirSync(join(root, folder), { recursive: true });
 		writeFileSync(join(root, folder, ".gitkeep"), "");
 	}
-	const git = (...args: string[]) => execFileSync("git", ["-C", root, ...args], { stdio: "ignore" });
+	// A failure's message carries git's own stderr.
+	const git = (...args: string[]) =>
+		execFileSync("git", ["-C", root, ...args], { stdio: ["ignore", "ignore", "pipe"] });
 	git("init");
 	git("add", "--all");
 	git(
