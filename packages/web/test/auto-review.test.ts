@@ -11,7 +11,7 @@ import {
 	type HostedReviewRule,
 	type WebReviewRules,
 } from "../src/cloud/review-rules.ts";
-import { renderActionReviewCard } from "../src/ui/authorization-card.ts";
+import { renderActionReviewCard, renderAuthorizationCard } from "../src/ui/authorization-card.ts";
 import { id, settle, timestamp } from "./fixtures.ts";
 
 const data = {
@@ -107,6 +107,28 @@ describe("the approval card", () => {
 			{ memberName: names },
 		);
 		expect(personal.querySelector(".review-waiting")?.textContent).toBe("Waiting for Anna to approve.");
+		// A lost answer is news only to whoever answers the card.
+		const failed = renderActionReviewCard(card, timestamp, undefined, { memberName: names, answerFailed: true });
+		expect(failed.querySelector(".review-failed")).toBeNull();
+		const retry = renderActionReviewCard(card, timestamp, undefined, {
+			answer: vi.fn(),
+			memberName: names,
+			answerFailed: true,
+		});
+		expect(retry.querySelector(".review-failed")?.textContent).toBe(
+			"That answer did not reach the agent. Answer again.",
+		);
+	});
+
+	it("offers nothing on an approval of an action it cannot read", () => {
+		const el = renderAuthorizationCard(
+			"authorization_request",
+			{ entry: { data: { schema: "qorpera.action-review/v1", title: "Send an email" } } },
+			timestamp,
+			"Agent",
+		);
+		expect(el.querySelector("button")).toBeNull();
+		expect(el.textContent).not.toContain("Only an owner or admin");
 	});
 
 	it("shows the answer once given", () => {
@@ -255,10 +277,44 @@ describe("Settings → Rules", () => {
 		[...view.el.querySelectorAll("button")].find((button) => button.textContent === "Add rule")!.click();
 		await settle();
 		expect(client.save).toHaveBeenCalledWith(expect.objectContaining({ scope: "company", when: "hiring agents" }));
-		view.el.querySelector<HTMLButtonElement>(".settings-rule button")!.click();
+		const remove = view.el.querySelector<HTMLButtonElement>(".settings-rule button")!;
+		expect(remove.getAttribute("aria-label")).toBe("Remove the rule: deleting files");
+		remove.click();
 		await settle();
 		expect(client.archive).toHaveBeenCalledWith(id(903));
 		expect(view.el.textContent).not.toContain("deleting files");
+	});
+
+	it("drops a list that a newer load or a change overtook", async () => {
+		let role = "member";
+		const loads: Array<(value: { canManageCompanyRules: boolean; rules: HostedReviewRule[] }) => void> = [];
+		const client = rulesClient(false);
+		vi.mocked(client.list).mockImplementation(() => new Promise((resolve) => loads.push(resolve)));
+		view = new RulesView(client, new AbortController().signal, () => role);
+		loads.shift()!({ canManageCompanyRules: false, rules: [] });
+		await settle();
+		// Two role changes in a row: only the latest load counts, whatever order they answer in.
+		role = "admin";
+		view.update();
+		role = "owner";
+		view.update();
+		const [stale, latest] = [loads.shift()!, loads.shift()!];
+		latest({ canManageCompanyRules: true, rules: [rule(904, "company", "hiring agents")] });
+		await settle();
+		stale({ canManageCompanyRules: false, rules: [] });
+		await settle();
+		expect(view.el.textContent).toContain("hiring agents");
+		expect(view.el.querySelector('select[aria-label="Applies to:"]')).not.toBeNull();
+		// A save while a load is on its way: the rule shows once, and the old load does not hide it.
+		role = "member";
+		view.update();
+		view.el.querySelector<HTMLInputElement>('input[aria-label="When an agent wants to:"]')!.value = "posting";
+		[...view.el.querySelectorAll("button")].find((button) => button.textContent === "Add rule")!.click();
+		await settle();
+		loads.shift()!({ canManageCompanyRules: false, rules: [] });
+		await settle();
+		expect(view.el.textContent).toContain("posting");
+		expect(view.el.querySelectorAll(".settings-rule")).toHaveLength(2);
 	});
 
 	it("adds nothing for an empty rule, and says so when the cloud has no rules yet", async () => {

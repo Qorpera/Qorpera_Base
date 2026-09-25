@@ -598,11 +598,12 @@ export class ConversationView {
 	/** Record an answer to an approval card of an agent's action; the card shows it at once. */
 	async #answerActionReview(reviewId: string, answer: ActionReviewAnswer, ruleText?: string): Promise<void> {
 		this.#focusReview = reviewId.toLowerCase();
-		this.#reviewDrafts.delete(reviewId.toLowerCase());
 		try {
 			await this.#company.answerActionReview(this.#sessionId, reviewId, answer, ruleText);
+			this.#reviewDrafts.delete(reviewId.toLowerCase());
 		} catch {
-			// The controller keeps the reason in the conversation state.
+			// The controller keeps the reason in the conversation state; a refused
+			// Always allow keeps the rule as the member edited it.
 		}
 	}
 
@@ -1072,6 +1073,8 @@ export class ConversationView {
 				nodes.push(h("div", { class: "conversation-note", role: "note" }, item.text));
 			} else if (item.kind === "authorization_request" && reviews.has(item.id.toLowerCase())) {
 				const review = reviews.get(item.id.toLowerCase())!;
+				// A decided card needs no editor any more.
+				if (decisions.has(item.id.toLowerCase())) this.#reviewDrafts.delete(review.reviewId);
 				// The decision in the transcript, or an answer on its way (this browser's, or queued).
 				const given = conversation.interactionAnswers?.[item.id.toLowerCase()] ?? item.answer;
 				nodes.push(
@@ -1183,21 +1186,26 @@ export class ConversationView {
 			nodes.push(row);
 		}
 		const rowFocus = document.activeElement?.classList.contains("thread-activity") ?? false;
+		// Read before the redraw: a browser blurs an input as it leaves the page.
+		const reviewInput =
+			document.activeElement instanceof HTMLInputElement ? document.activeElement.dataset.reviewRule : undefined;
 		// Nodes already in place stay put: a live log re-reads what is taken out and put back.
 		const kept = this.#messages.childNodes;
 		if (nodes.length !== kept.length || nodes.some((node, index) => node !== kept[index]))
 			replace(this.#messages, ...nodes);
 		// A keyboard user reading the row keeps it through a state change or a new message.
 		if (rowFocus) this.#messages.querySelector<HTMLElement>(".thread-activity")?.focus({ preventScroll: true });
-		// The editor of an Always allow a member is typing in, or the card just answered, keeps focus.
-		const reviewInput = [...this.#reviewDrafts].find(([, draft]) => draft.focused)?.[0];
-		if (reviewInput)
-			[...this.#messages.querySelectorAll<HTMLInputElement>("input[data-review-rule]")]
-				.find((input) => input.dataset.reviewRule === reviewInput)
-				?.focus({ preventScroll: true });
-		else if (this.#focusReview) {
+		// The editor of an Always allow a member is typing in keeps focus; once its card is answered, the card has it.
+		const editor = reviewInput
+			? [...this.#messages.querySelectorAll<HTMLInputElement>("input[data-review-rule]")].find(
+					(input) => input.dataset.reviewRule === reviewInput,
+				)
+			: undefined;
+		if (editor) editor.focus({ preventScroll: true });
+		else if (reviewInput || this.#focusReview) {
+			const target = this.#focusReview ?? reviewInput;
 			const card = [...this.#messages.querySelectorAll<HTMLElement>("[data-review-id]")].find(
-				(element) => element.dataset.reviewId === this.#focusReview,
+				(element) => element.dataset.reviewId === target,
 			);
 			if (card) {
 				card.focus({ preventScroll: true });

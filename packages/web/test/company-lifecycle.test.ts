@@ -254,6 +254,16 @@ describe("answering an approval card of an agent's action (auto-review, v115)", 
 		expect(redrawn.closest<HTMLElement>(".review-always")!.hidden).toBe(false);
 		expect(redrawn.value).toBe("paying invoices under 100 EUR");
 		expect(document.activeElement).toBe(redrawn);
+		// A refused answer keeps the rule as the member narrowed it.
+		vi.spyOn(f.api, "answerActionReview").mockRejectedValue(
+			new Error("Select an active model account, then try again."),
+		);
+		[...open().querySelectorAll("button")].find((button) => button.textContent === "Save rule and allow")!.click();
+		await settle();
+		expect(open().dataset.decisionState).toBe("pending");
+		const kept = open().querySelector<HTMLInputElement>(".review-rule-input")!;
+		expect(kept.closest<HTMLElement>(".review-always")!.hidden).toBe(false);
+		expect(kept.value).toBe("paying invoices under 100 EUR");
 		// The conversation is closed: no controls the cloud would refuse.
 		f.controller.store.set({ sessions: [{ ...session, status: "closed" }] });
 		await settle();
@@ -294,9 +304,21 @@ describe("answering an approval card of an agent's action (auto-review, v115)", 
 		cleanup.push(() => view.dispose());
 		document.body.append(view.el);
 		await settle();
-		const shown = view.el.querySelector<HTMLElement>(".action-review-card")!;
-		expect(shown.dataset.decisionState).toBe("approved");
-		expect(shown.querySelector("button")).toBeNull();
+		const shown = () => view.el.querySelector<HTMLElement>(".action-review-card")!;
+		expect(shown().dataset.decisionState).toBe("approved");
+		expect(shown().querySelector("button")).toBeNull();
+		// The answer never reached the agent: the card is open again for whoever answers it.
+		const queued = (await f.api.listSessionInputs(session.sessionId, 0)).items[0]!;
+		vi.mocked(f.api.listSessionInputs).mockResolvedValue({
+			items: [{ ...queued, status: "failed", failureReason: "The selected sponsor quota is unavailable" }],
+			hasMore: false,
+			nextAfterPosition: 9,
+		});
+		await f.controller.loadConversation(session.sessionId);
+		await settle();
+		expect(shown().dataset.decisionState).toBe("pending");
+		expect(shown().textContent).toContain("That answer did not reach the agent. Answer again.");
+		expect([...shown().querySelectorAll("button")].map((button) => button.textContent)).toContain("Allow once");
 	});
 
 	it("keeps the card open, saying why, where the cloud has no approvals yet", async () => {

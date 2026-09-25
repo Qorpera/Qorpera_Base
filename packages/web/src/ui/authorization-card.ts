@@ -1,4 +1,4 @@
-import type { ActionReviewAnswer, ActionReviewCard } from "../cloud/review-rules.ts";
+import { ACTION_REVIEW_SCHEMA, type ActionReviewAnswer, type ActionReviewCard } from "../cloud/review-rules.ts";
 import type { JsonValue } from "../cloud/types.ts";
 import { badge, fmtTime, h, icon } from "./dom.ts";
 import { phrase, t } from "./preferences.ts";
@@ -93,7 +93,8 @@ export function renderAuthorizationCard(
 			),
 		),
 		h("p", { class: "decision-attribution" }, `${actor} · ${fmtTime(createdAt)}`),
-		!isDecision
+		// An approval of an agent's action is answered on its own card; one this client cannot read offers nothing.
+		!isDecision && data.schema !== ACTION_REVIEW_SCHEMA
 			? h(
 					"div",
 					{ class: "decision-actions" },
@@ -150,7 +151,6 @@ const BUILT_IN_LABELS = new Map<string, string>([
 export interface ActionReviewDraft {
 	open: boolean;
 	text: string;
-	focused: boolean;
 }
 
 /**
@@ -205,20 +205,13 @@ export function renderActionReviewCard(
 		"aria-label": t("Always allow when an agent wants to"),
 	}) as HTMLInputElement;
 	const draft = (patch: Partial<ActionReviewDraft>) =>
-		options.onDraft?.({
-			open: options.draft?.open ?? false,
-			text: ruleInput.value,
-			focused: document.activeElement === ruleInput,
-			...patch,
-		});
+		options.onDraft?.({ open: options.draft?.open ?? false, text: ruleInput.value, ...patch });
 	const saveRule = () => {
 		const text = ruleInput.value.trim();
 		if (text) options.answer?.("always_allow", text);
 		else ruleInput.focus();
 	};
 	ruleInput.oninput = () => draft({ open: true, text: ruleInput.value });
-	ruleInput.onfocus = () => draft({ open: true, focused: true });
-	ruleInput.onblur = () => draft({ open: true, focused: false });
 	ruleInput.onkeydown = (event: KeyboardEvent) => {
 		if (event.key === "Enter" && !event.isComposing) {
 			event.preventDefault();
@@ -275,7 +268,7 @@ export function renderActionReviewCard(
 				)
 			: null,
 		h("p", { class: "decision-attribution" }, fmtTime(createdAt)),
-		state === "pending" && options.answerFailed
+		state === "pending" && options.answerFailed && options.answer
 			? h("p", { class: "review-failed" }, t("That answer did not reach the agent. Answer again."))
 			: null,
 		state === "pending"

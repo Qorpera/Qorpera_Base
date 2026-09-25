@@ -48,6 +48,8 @@ export class RulesView {
 
 	readonly #role: () => string | undefined;
 	#listedRole: string | undefined;
+	/** Counts loads and changes: a load that a newer load or a change overtook is dropped. */
+	#generation = 0;
 
 	/** `role` is the member's current role in the company: a change reloads the rules (who may edit changes). */
 	constructor(client: WebReviewRules, signal: AbortSignal, role: () => string | undefined = () => undefined) {
@@ -75,19 +77,22 @@ export class RulesView {
 	}
 
 	async #refresh(): Promise<void> {
-		this.#listedRole = this.#role();
+		const generation = ++this.#generation;
+		const role = this.#role();
+		const current = () => !this.#lifetime.signal.aborted && generation === this.#generation;
 		try {
 			const listed = await this.#client.list();
-			if (this.#lifetime.signal.aborted) return;
+			if (!current()) return;
 			this.#rules = listed.rules;
 			this.#canManage = listed.canManageCompanyRules;
+			this.#listedRole = role;
 			this.#error = undefined;
 		} catch (error) {
-			if (this.#lifetime.signal.aborted) return;
+			if (!current()) return;
 			if (error instanceof CloudRpcError && error.missing) this.#missing = true;
 			else this.#error = describeError(error);
 		} finally {
-			if (!this.#lifetime.signal.aborted) {
+			if (current()) {
 				this.#loading = false;
 				this.#draw();
 			}
@@ -108,7 +113,7 @@ export class RulesView {
 				when,
 				outcome: this.#outcome.value as ReviewRuleOutcome,
 			});
-			this.#rules = [...this.#rules, rule];
+			this.#rules = [...this.#rules.filter((item) => item.id !== rule.id), rule];
 			this.#when.value = "";
 		});
 		this.#when.focus();
@@ -124,6 +129,8 @@ export class RulesView {
 	}
 
 	async #change(work: () => Promise<void>): Promise<void> {
+		// A load already on its way may not have this change: drop it, and load again after if the role moved.
+		this.#generation++;
 		this.#working = true;
 		this.#error = undefined;
 		this.#draw();
@@ -135,6 +142,7 @@ export class RulesView {
 			if (!this.#lifetime.signal.aborted) {
 				this.#working = false;
 				this.#draw();
+				this.update();
 			}
 		}
 	}
@@ -155,13 +163,17 @@ export class RulesView {
 				rule.outcome === "ask_first" ? "warn" : "ok",
 			),
 			editable
-				? Object.assign(
-						button(t("Remove"), () => void this.#remove(rule), {
-							small: true,
+				? h(
+						"button",
+						{
+							type: "button",
+							class: "btn btn-small",
 							disabled: this.#working,
 							title: t("Remove this rule"),
-						}),
-						{ ariaLabel: t("Remove the rule: {rule}", { rule: rule.when }) },
+							"aria-label": t("Remove the rule: {rule}", { rule: rule.when }),
+							onclick: () => void this.#remove(rule),
+						},
+						t("Remove"),
 					)
 				: h(
 						"span",
