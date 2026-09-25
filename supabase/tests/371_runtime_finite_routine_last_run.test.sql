@@ -240,6 +240,27 @@ begin
 		'A queued occurrence of the older version is not run');
 end $$;
 
+-- A member moving a routine to another agent stops the old agent's started run:
+-- the version rule spares a run only while the routine stays with its agent.
+do $$
+declare v_routine jsonb; v_client uuid := extensions.gen_random_uuid(); v_wake uuid; v_binding jsonb;
+begin
+	v_routine := pg_temp.wake_routine('30000000-0000-4000-8000-000000000031',
+		'{"id":"moved","kind":"schedule","intervalMinutes":60,"replyPolicy":"silent"}',v_client);
+	v_wake := pg_temp.wake_schedule(v_routine,'moved-a',statement_timestamp() - interval '70 minutes');
+	perform public.qorpera_materialize_wake_execution_runs(8);
+	v_binding := pg_temp.wake_start(pg_temp.routine_run(v_wake));
+	perform public.qorpera_read_native_wake(v_binding);
+	-- Same agent, new version: the started run keeps working.
+	perform pg_temp.wake_routine('30000000-0000-4000-8000-000000000031',
+		'{"id":"moved","kind":"schedule","intervalMinutes":120,"replyPolicy":"silent"}',v_client);
+	perform public.qorpera_read_native_wake(v_binding);
+	-- Another agent: the old agent's run stops.
+	perform pg_temp.wake_routine('30000000-0000-4000-8000-000000000030',
+		'{"id":"moved","kind":"schedule","intervalMinutes":120,"replyPolicy":"silent"}',v_client);
+	perform pg_temp.wake_error(format('select public.qorpera_read_native_wake(%L::jsonb)',v_binding),'42501');
+end $$;
+
 -- Removed after its last occurrence was admitted: the occurrence never runs.
 do $$
 declare v_row public.qorpera_cloud_routines; v_wake uuid;

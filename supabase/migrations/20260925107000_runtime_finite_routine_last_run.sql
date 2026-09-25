@@ -22,7 +22,9 @@
 --
 -- The same rule covers a new version. An edit applies to the next run: a queued
 -- occurrence of an older version is still refused, but a run that has started
--- keeps the version it started with while its job is live. Before this, a
+-- keeps the version it started with while its job is live and the routine
+-- still belongs to the same agent (a member may move a routine to another
+-- agent, which stops the old agent's run as before). Before this, a
 -- routine run that saved its own routine (the "start dense, then upsert the
 -- steady cadence" guidance) lost its authority inside that very call, whose
 -- receipt re-checks the run, so the save rolled back with "Admitted wake
@@ -87,7 +89,9 @@ $$;
 select pg_temp.finite_patch('public.qorpera_wake_authorized(public.qorpera_wake_occurrences)'::regprocedure,
 	$old$			on v.routine_id = r.id and v.version = r.current_version
 		where r.id = p_wake.routine_id and r.status = 'active' and v.version = p_wake.routine_version$old$,
-	$new$			on v.routine_id = r.id and (v.version = r.current_version or public.qorpera_wake_run_live(p_wake.run_id))
+	$new$			on v.routine_id = r.id and (v.version = r.current_version or (public.qorpera_wake_run_live(p_wake.run_id)
+				and exists (select 1 from public.qorpera_cloud_routine_versions cur where cur.routine_id = r.id
+					and cur.version = r.current_version and cur.staff_agent_id = v.staff_agent_id)))
 		where r.id = p_wake.routine_id and (r.status = 'active' or (r.status = 'expired' and r.expired_while_active))
 			and v.version = p_wake.routine_version$new$);
 
