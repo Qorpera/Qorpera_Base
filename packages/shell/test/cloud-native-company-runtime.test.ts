@@ -278,6 +278,15 @@ async function fixture(mode = "company-runtime", httpPathControl = false, presen
 		}
 		if (method === "qorpera_describe_company_run_context") return structuredClone(f.context);
 		if (method === "qorpera_read_native_wake") return structuredClone(mode === "company-worker" ? workerWake : wake);
+		if (method === "qorpera_describe_agent_open_work") {
+			if (mode === "company-worker") throw new Error("A worker keeps no todos");
+			return {
+				schema: "qorpera.agent-open-work/v1",
+				runId: f.binding.runId,
+				todos: { open: 40, blocked: 2 },
+				workers: { active: 5, blocked: 1 },
+			};
+		}
 		if (method === "qorpera_list_native_connector_tools") {
 			return mode === "company-secret" ? [structuredClone(connectorDescriptor)] : [];
 		}
@@ -730,6 +739,8 @@ it.each([
 			startupAssignment: [],
 		});
 		expect(Object.keys(prompt).at(-1)).toBe("hireOverlay");
+		// Open work is counted, not listed: the list stays behind manage_todo and manage_worker.
+		expect(prompt.openWork).toEqual({ todos: { open: 40, blocked: 2 }, workers: { active: 5, blocked: 1 } });
 		expect(prompt).not.toHaveProperty("jobSpecification");
 		expect(prompt.currentInputs[0].authorUserId).toBe(f.context.identity.requesterUserId);
 		expect(prompt.history[0].kind).toBe("historical_data");
@@ -1047,6 +1058,9 @@ it("runs a background worker blank: reading tools and its report, no mouth, no c
 	]);
 	expect(evidence.threadParameters.developerInstructions).toContain("# This wake: you are a background worker");
 	expect(evidence.threadParameters.developerInstructions).toContain("# Before you stop\nCall report_work once");
+	// A worker keeps no todos: its prompt carries no open-work count, and the kernel is not asked for one.
+	expect(JSON.parse(evidence.turnParameters.input[0].text)).not.toHaveProperty("openWork");
+	expect(f.pathCall.mock.calls.map(([method]) => method)).not.toContain("qorpera_describe_agent_open_work");
 	expect(evidence.threadParameters.developerInstructions).not.toContain("# Standing work");
 	expect(evidence.threadParameters.developerInstructions).not.toContain("# This wake: a message from a coworker");
 });

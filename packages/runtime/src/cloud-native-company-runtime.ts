@@ -62,7 +62,7 @@ import {
 	cloudWakeIsOwnThread,
 	parseCloudWakeEnvelope,
 } from "./cloud-wake-bus.ts";
-import { cloudWorkerToolFilter, cloudWorkerTools } from "./cloud-worker-tools.ts";
+import { cloudWorkerToolFilter, cloudWorkerTools, describeCloudAgentOpenWork } from "./cloud-worker-tools.ts";
 
 type NativeCompanyControl = CloudNativeToolAuthorityReader &
 	CloudNativeToolOperationControlPlane &
@@ -218,7 +218,16 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					return unavailableCloudAgentMemory(cloudRuntimeErrorCategory(error, signal));
 				},
 			);
-			const prompt = composeCloudNativeCompanyPrompt(context, wake, initialPresence, memory);
+			// How much open work the agent has (counts only), where it keeps todos and workers:
+			// a company run that is not itself a worker. Like memory, it never blocks the run.
+			const openWork =
+				context.identity.audienceKind === "company" && !cloudWorkerToolFilter(wake).isWorker
+					? await describeCloudAgentOpenWork(binding, this.#paths, signal).catch(() => {
+							signal.throwIfAborted();
+							return undefined;
+						})
+					: undefined;
+			const prompt = composeCloudNativeCompanyPrompt(context, wake, initialPresence, memory, openWork);
 			composition.finish("succeeded", { outputBytes: Buffer.byteLength(prompt) });
 			const contextSha256 = createHash("sha256").update(prompt).digest("hex");
 			const mouth = new CloudAgentMouth(

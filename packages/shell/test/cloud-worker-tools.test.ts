@@ -2,11 +2,16 @@ import { randomUUID } from "node:crypto";
 import type { CloudCompanyPathControl, CloudCompanyPathGateway } from "@qorpera/runtime/cloud-company-path-gateway";
 import { CloudNativeToolRun } from "@qorpera/runtime/cloud-native-tool-authority";
 import { CloudNativeToolBoundary } from "@qorpera/runtime/cloud-native-tool-boundary";
-import { cloudWorkerToolFilter, cloudWorkerTools } from "@qorpera/runtime/cloud-worker-tools";
+import {
+	cloudWorkerToolFilter,
+	cloudWorkerTools,
+	describeCloudAgentOpenWork,
+} from "@qorpera/runtime/cloud-worker-tools";
 import { describe, expect, it, vi } from "vitest";
 import { nativeToolAuthorityFixture } from "./fixtures/native-tool-authority-fixture.ts";
 
 const parentWake = { kind: "room", source: { kind: "room", id: randomUUID(), occurrenceKey: "k" } } as const;
+const cursor = "5f0c1a3e-8b7d-4c2a-9e61-0d4f2b8a7c19";
 const workerWake = {
 	kind: "agent",
 	source: { kind: "worker-dispatch", id: randomUUID(), occurrenceKey: "k" },
@@ -45,7 +50,13 @@ async function fixture(
 			};
 		if (method === "qorpera_manage_agent_worker")
 			return request.action === "status"
-				? { schema: "qorpera.agent-workers/v1", runId: binding.runId, workers: [] }
+				? {
+						schema: "qorpera.agent-workers/v1",
+						runId: binding.runId,
+						workers: [{ workerKey: "prices", todoKey: "market-scan", state: "queued" }],
+						moreWorkers: 3,
+						nextCursor: cursor,
+					}
 				: {
 						schema: "qorpera.agent-worker-receipt/v1",
 						runId: binding.runId,
@@ -61,6 +72,7 @@ async function fixture(
 					runId: binding.runId,
 					todos: [],
 					moreTodos: 7,
+					nextCursor: cursor,
 					unpublished: [publication("left-behind", 4)],
 				}
 			: {
@@ -191,12 +203,124 @@ describe("agent todo and worker tools", () => {
 			expect(JSON.parse(body(listed).content.text).documents).toEqual([
 				{ path: `work/todos/${f.agent}/left-behind.json`, published: true },
 			]);
-			// The list is a page; what it leaves out reaches the agent as a count (runtime v95).
-			expect(JSON.parse(body(listed).content.text).moreTodos).toBe(7);
+			// The list is a page; what it leaves out is counted and reached by its cursor.
+			expect(JSON.parse(body(listed).content.text)).toMatchObject({ moreTodos: 7, nextCursor: cursor });
 			expect(f.mutate.mock.calls.map((entry) => entry[0])).toEqual(["mkdir", "write"]);
 		} finally {
 			failing.run.close();
 			f.run.close();
+		}
+	});
+
+	it("pages both listings by cursor, with filters, and refuses a malformed filter before any cloud call", async () => {
+		const f = await fixture();
+		try {
+			const listed = await f.boundary.invoke("l1", "qorpera", "manage_todo", {
+				action: "list",
+				state: "done",
+				search: "  Invoice ",
+				cursor,
+			});
+			expect(body(listed).status).toBe("ok");
+			expect(f.call.mock.calls[0][1]).toEqual({
+				p_binding: f.binding,
+				p_request: { action: "list", state: "done", search: "Invoice", cursor },
+			});
+			const status = await f.boundary.invoke("s1", "qorpera", "manage_worker", {
+				action: "status",
+				todoKey: "market-scan",
+				state: "active",
+				search: "prices",
+				cursor,
+			});
+			expect(f.call.mock.calls.at(-1)?.[1]).toEqual({
+				p_binding: f.binding,
+				p_request: { action: "status", todoKey: "market-scan", state: "active", search: "prices", cursor },
+			});
+			expect(JSON.parse(body(status).content.text)).toEqual({
+				schema: "qorpera.agent-workers/v1",
+				runId: f.binding.runId,
+				workers: [{ workerKey: "prices", todoKey: "market-scan", state: "queued" }],
+				moreWorkers: 3,
+				nextCursor: cursor,
+			});
+			const calls = f.call.mock.calls.length;
+			for (const [index, [tool, hostile]] of (
+				[
+					["manage_todo", { action: "list", state: "archived" }],
+					["manage_todo", { action: "list", state: "active" }],
+					["manage_todo", { action: "list", cursor: "page-2" }],
+					["manage_todo", { action: "list", cursor: cursor.toUpperCase() }],
+					["manage_todo", { action: "list", search: "" }],
+					["manage_todo", { action: "list", search: "a\nb" }],
+					["manage_todo", { action: "list", search: "tab\there" }],
+					["manage_todo", { action: "list", search: "x".repeat(201) }],
+					["manage_todo", { action: "list", todoKey: "market-scan" }],
+					["manage_todo", { action: "upsert", operationKey: "u1", todoKey: "k", title: "t", state: "done" }],
+					["manage_worker", { action: "status", state: "running" }],
+					["manage_worker", { action: "status", state: "open" }],
+					["manage_worker", { action: "status", cursor: 42 }],
+					["manage_worker", { action: "status", offset: 16 }],
+				] as const
+			).entries()) {
+				const refused = await f.boundary.invoke(`bad_${index}`, "qorpera", tool, hostile);
+				expect(body(refused).status).toBe("denied");
+			}
+			expect(f.call.mock.calls.length).toBe(calls);
+		} finally {
+			f.run.close();
+		}
+	});
+
+	it("refuses a page whose count and cursor disagree", async () => {
+		for (const broken of [
+			{ moreTodos: 7, nextCursor: null },
+			{ moreTodos: 0, nextCursor: cursor },
+			{ moreTodos: -1, nextCursor: null },
+			{ moreTodos: 1, nextCursor: "not-a-cursor" },
+			{ moreTodos: 0 },
+		]) {
+			const f = await fixture();
+			try {
+				f.call.mockImplementationOnce(async () => ({
+					schema: "qorpera.agent-todos/v1",
+					runId: f.binding.runId,
+					todos: [],
+					unpublished: [],
+					...broken,
+				}));
+				const listed = await f.boundary.invoke("l1", "qorpera", "manage_todo", { action: "list" });
+				expect(body(listed).status).not.toBe("ok");
+			} finally {
+				f.run.close();
+			}
+		}
+	});
+
+	it("counts open work for the prompt and refuses a receipt for another run", async () => {
+		const { binding } = nativeToolAuthorityFixture();
+		const signal = new AbortController().signal;
+		const counts = { todos: { open: 40, blocked: 2 }, workers: { active: 5, blocked: 1 } };
+		const call = vi.fn<CloudCompanyPathControl["call"]>(async () => ({
+			schema: "qorpera.agent-open-work/v1",
+			runId: binding.runId,
+			...counts,
+		}));
+		expect(await describeCloudAgentOpenWork(binding, { call }, signal)).toEqual(counts);
+		expect(call.mock.calls[0].slice(0, 2)).toEqual(["qorpera_describe_agent_open_work", { p_binding: binding }]);
+		for (const broken of [
+			{ runId: randomUUID() },
+			{ todos: { open: -1, blocked: 0 } },
+			{ workers: { active: 1, blocked: 0, running: 1 } },
+			{ schema: "qorpera.agent-todos/v1" },
+		]) {
+			call.mockResolvedValueOnce({
+				schema: "qorpera.agent-open-work/v1",
+				runId: binding.runId,
+				...counts,
+				...broken,
+			});
+			await expect(describeCloudAgentOpenWork(binding, { call }, signal)).rejects.toThrow();
 		}
 	});
 
