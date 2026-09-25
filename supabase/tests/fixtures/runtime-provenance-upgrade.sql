@@ -29,6 +29,15 @@ begin
 		get stacked diagnostics v_message = message_text;
 		if v_message <> 'Run requires an executable runtime bundle' then raise; end if;
 	end;
+	-- Applying the entire upgrade chain can outlive the original short test
+	-- lease. Refresh only fixture lease clocks after proving immutable run and
+	-- input preservation, so this probe reaches the intended wake boundary.
+	update public.qorpera_runner_jobs set lease_expires_at=clock_timestamp()+interval '1 minute'
+		where id=v_run.job_id;
+	update public.qorpera_runner_assignments set expires_at=clock_timestamp()+interval '1 minute'
+		where id=(v_history.binding->>'assignmentId')::uuid;
+	update public.qorpera_native_provider_connection_leases set expires_at=clock_timestamp()+interval '1 minute'
+		where id=(v_history.binding->>'leaseId')::uuid;
 	-- Current native admission checks wake authority before the manifest. A
 	-- pre-wake-bus run must stay denied there too; never fabricate a wake to
 	-- reach the later executable-bundle check exercised independently above.
