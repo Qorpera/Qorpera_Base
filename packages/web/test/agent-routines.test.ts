@@ -7,7 +7,7 @@ import {
 	parseCloudRoutine,
 	parseCloudRoutineTrigger,
 } from "@qorpera/cloud-client/cloud-routines";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AgentRoutines } from "../src/app/views/agent-routines.ts";
 import type { Cloud } from "../src/cloud/client.ts";
 import { createWebRoutines, type WebRoutines } from "../src/cloud/routines.ts";
@@ -305,22 +305,53 @@ describe("agent routines section", () => {
 });
 
 describe("a member edit of an agent's routine", () => {
+	// Monday 5 October, 08:30 in Copenhagen: the first run the agent held the routine back to.
 	const firstRunAt = "2026-10-05T06:30:00.000Z";
+	const weekly = {
+		id: "agent",
+		kind: "schedule",
+		intervalMinutes: 1440,
+		startAt: firstRunAt,
+		weekdays: ["monday", "wednesday"],
+		localTime: "08:30",
+		timeZone: "Europe/Copenhagen",
+		replyPolicy: "optional",
+	} as const;
+	const every = {
+		id: "agent",
+		kind: "schedule",
+		intervalMinutes: 90,
+		startAt: firstRunAt,
+		replyPolicy: "silent",
+	} as const;
+	beforeEach(() => {
+		vi.useFakeTimers({ toFake: ["Date"] });
+		// Half a minute before the hour: a new interval start rounds up to 11:00 however long a test takes.
+		vi.setSystemTime(new Date("2026-09-25T09:59:30.000Z"));
+	});
+	afterEach(() => vi.useRealTimers());
+	const type = (form: Element, label: string, value: string) => {
+		const field = form.querySelector<HTMLInputElement>(`[aria-label="${label}"]`)!;
+		field.value = value;
+		field.dispatchEvent(new Event("input"));
+	};
+	const waiting = (form: Element) => form.querySelector<HTMLLabelElement>(".routine-wait")!;
+	/** Edits the one routine with this trigger and returns what the cloud received. */
+	async function saveEdited(trigger: unknown, change: (form: HTMLElement) => void) {
+		const f = mountSaving([routine({ triggers: [parseCloudRoutineTrigger(trigger)] })]);
+		await settle();
+		click(f.view.el, "Edit");
+		await settle();
+		change(f.view.el);
+		click(f.view.el, "Save routine");
+		await vi.waitFor(() => expect(f.upserts).toHaveLength(1), { timeout: 3000 });
+		f.stop.abort();
+		return f.upserts[0]!;
+	}
+
 	it.each([
-		[
-			"weekly",
-			{
-				id: "agent",
-				kind: "schedule",
-				intervalMinutes: 1440,
-				startAt: firstRunAt,
-				weekdays: ["monday", "wednesday"],
-				localTime: "08:30",
-				timeZone: "Europe/Copenhagen",
-				replyPolicy: "optional",
-			},
-		],
-		["every", { id: "agent", kind: "schedule", intervalMinutes: 90, startAt: firstRunAt, replyPolicy: "silent" }],
+		["weekly", weekly],
+		["every", every],
 		[
 			"file_change",
 			{
@@ -335,15 +366,53 @@ describe("a member edit of an agent's routine", () => {
 		],
 	] as const)("keeps a %s trigger as the agent set it when only the name changes", async (_, trigger) => {
 		// A weekly routine lost the first-run date the agent chose, so the edit ran it at once.
-		const f = mountSaving([routine({ triggers: [parseCloudRoutineTrigger(trigger)] })]);
-		await settle();
-		click(f.view.el, "Edit");
-		await settle();
-		f.view.el.querySelector<HTMLInputElement>('[aria-label="Routine name"]')!.value = "Morning brief, shorter";
-		click(f.view.el, "Save routine");
-		await vi.waitFor(() => expect(f.upserts).toHaveLength(1), { timeout: 3000 });
-		expect(f.upserts[0]!.p_title).toBe("Morning brief, shorter");
-		expect(f.upserts[0]!.p_triggers).toEqual([trigger]);
-		f.stop.abort();
+		const upsert = await saveEdited(trigger, (form) => type(form, "Routine name", "Morning brief, shorter"));
+		expect(upsert.p_title).toBe("Morning brief, shorter");
+		expect(upsert.p_triggers).toEqual([trigger]);
+	});
+	it("moves a held first run with the clock time, so an earlier time still runs on the chosen day", async () => {
+		const earlier = await saveEdited(weekly, (form) => {
+			expect(waiting(form).hidden).toBe(false);
+			const shown = waiting(form).textContent;
+			expect(shown).toContain("Wait until");
+			type(form, "Time", "08:00");
+			expect(waiting(form).textContent).not.toBe(shown);
+		});
+		// Monday 08:00 in Copenhagen; kept at 08:30, the first run would slip to Wednesday.
+		expect(earlier.p_triggers).toEqual([{ ...weekly, localTime: "08:00", startAt: "2026-10-05T06:00:00.000Z" }]);
+		const elsewhere = await saveEdited(weekly, (form) => type(form, "Time zone", "America/New_York"));
+		expect(elsewhere.p_triggers).toEqual([
+			{ ...weekly, timeZone: "America/New_York", startAt: "2026-10-05T12:30:00.000Z" },
+		]);
+	});
+	it("lets a member drop a held first run", async () => {
+		const drop = (form: HTMLElement) => {
+			waiting(form).querySelector("input")!.checked = false;
+		};
+		expect((await saveEdited(weekly, drop)).p_triggers).toEqual([{ ...weekly, startAt: undefined }]);
+		// One interval from now, as for a routine a member starts.
+		expect((await saveEdited(every, drop)).p_triggers).toEqual([{ ...every, startAt: "2026-09-25T11:30:00.000Z" }]);
+	});
+	it("offers no wait once the first run is reached, or for another kind of schedule", async () => {
+		const reached = { ...weekly, startAt: "2026-09-21T06:30:00.000Z" };
+		const past = await saveEdited(reached, (form) => expect(waiting(form).hidden).toBe(true));
+		// Kept as it is: the scheduler ignores a weekly start it has passed.
+		expect(past.p_triggers).toEqual([reached]);
+		const switched = await saveEdited(weekly, (form) => {
+			const when = form.querySelector<HTMLSelectElement>('[aria-label="When it runs"]')!;
+			when.value = "interval";
+			when.dispatchEvent(new Event("change"));
+			expect(waiting(form).hidden).toBe(true);
+		});
+		// The weekly date does not become the interval's anchor.
+		expect(switched.p_triggers).toEqual([
+			{
+				id: "agent",
+				kind: "schedule",
+				intervalMinutes: 60,
+				startAt: "2026-09-25T11:00:00.000Z",
+				replyPolicy: "optional",
+			},
+		]);
 	});
 });
