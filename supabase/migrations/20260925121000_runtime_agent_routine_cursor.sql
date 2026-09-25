@@ -83,16 +83,19 @@ select pg_temp.agent_cursor_patch('public.qorpera_manage_agent_routine(jsonb,jso
 			from public.qorpera_cloud_routine_versions saved
 			left join lateral (
 				-- The same timing: equal apart from the reply policy and the order of days or months.
-				select ((v_version.triggers -> 0) - array['replyPolicy', 'weekdays', 'months'])
+				select (earlier_trigger.value - array['replyPolicy', 'weekdays', 'months'])
 						= (v_trigger - array['replyPolicy', 'weekdays', 'months'])
-					and array(select day from jsonb_array_elements_text(v_version.triggers -> 0 -> 'weekdays') as day order by day)
+					and array(select day from jsonb_array_elements_text(earlier_trigger.value -> 'weekdays') as day order by day)
 						= array(select day from jsonb_array_elements_text(v_trigger -> 'weekdays') as day order by day)
-					and array(select month from jsonb_array_elements_text(v_version.triggers -> 0 -> 'months') as month order by month)
+					and array(select month from jsonb_array_elements_text(earlier_trigger.value -> 'months') as month order by month)
 						= array(select month from jsonb_array_elements_text(v_trigger -> 'months') as month order by month)
 					and (v_routine.status = 'active' or earlier.next_due_at > saved.created_at) as keeps,
 					earlier.last_scheduled_for, earlier.next_due_at,
 					greatest(earlier.last_scheduled_for, date_trunc('milliseconds', saved.created_at)) as restart
 				from public.qorpera_cloud_routine_schedule_cursors earlier
+				-- The previous trigger by its id: a member's save may have left others beside it.
+				join jsonb_array_elements(v_version.triggers) as earlier_trigger(value)
+					on earlier_trigger.value ->> 'id' = earlier.trigger_id and earlier_trigger.value ->> 'kind' = 'schedule'
 				where earlier.routine_id = v_routine.id and earlier.routine_version = v_routine.current_version
 					and earlier.trigger_id = 'agent' and earlier.last_scheduled_for is not null
 			) as previous on true
@@ -101,11 +104,12 @@ select pg_temp.agent_cursor_patch('public.qorpera_manage_agent_routine(jsonb,jso
 -- ---------------------------------------------------------------------------
 -- Switched back on at the same version: restart once the next slot passed
 -- ---------------------------------------------------------------------------
--- Every path that switches a routine back on without a new version lands here:
--- the agent's resume (including after the authorization-failure suspension) and
--- an agent save whose content is unchanged (which re-activates a paused or ended
--- routine). A new version decides its own cursor above (or in the member save),
--- so a change of version is not this trigger's case.
+-- Every path that switches a routine back on without a new version lands here,
+-- for any routine: today the agent's resume (including after the
+-- authorization-failure suspension) and an agent save whose content is unchanged
+-- (which re-activates a paused or ended routine). A new version decides its own
+-- cursor above (or in the member save), so a change of version is not this
+-- trigger's case.
 create function public.qorpera_routine_resume_restarts_schedule()
 returns trigger language plpgsql security definer set search_path = '' as $$
 declare v_at timestamptz := date_trunc('milliseconds', statement_timestamp());
@@ -133,10 +137,12 @@ revoke all on function public.qorpera_routine_resume_restarts_schedule()
 -- A restart position (next_due_at one millisecond after the position) only
 -- tells the scheduler to compute the first slot after it; it is not a run time.
 -- The member save (#317) restarts the same way and its re-cut may already have
--- made this function skip it; then there is nothing to change here.
+-- made this function skip it (a predicate on last_scheduled_for + 1 ms); then
+-- there is nothing to change here. Test 374 checks the behaviour either way.
 do $$
 begin
-	if pg_get_functiondef('public.qorpera_routine_next_run_at(uuid)'::regprocedure) like '%1 millisecond%' then
+	if pg_get_functiondef('public.qorpera_routine_next_run_at(uuid)'::regprocedure)
+		like '%cursor.last_scheduled_for + interval ''1 millisecond''%' then
 		raise notice 'qorpera_routine_next_run_at already skips a restart position';
 		return;
 	end if;

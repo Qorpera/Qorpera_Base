@@ -6,7 +6,10 @@
 -- missed slot, one run each. The agent path now follows the member path (#317):
 -- the same timing keeps the exact position; changed timing, or switching a
 -- routine back on after its next slot passed, restarts the schedule at the save
--- or the resume; a never-run cursor stays fresh and keeps its kickoff.
+-- or the resume; a never-run cursor stays fresh and keeps its kickoff. The
+-- same-timing, never-ran and member's-trigger groups pass on the previous code
+-- too (it always carried the position): they guard the carry that stays. Every
+-- other group fails on it.
 select pg_temp.path_claims('service_role');
 select pg_temp.wake_public_send(current_setting('qorpera_test.wake_binding')::jsonb,'progress','agent-cursor-ack');
 
@@ -272,6 +275,53 @@ begin
 		and v_cursor.last_scheduled_for = date_trunc('milliseconds',statement_timestamp())
 		and v_cursor.next_due_at = v_cursor.last_scheduled_for + interval '1 millisecond',
 		'A resume after the authorization suspension restarts the schedule at the resume');
+end $$;
+
+-- A finite watch that ended after its last permitted run and is extended by a save with
+-- unchanged content switches back on at the same version: the Mondays that passed while
+-- it was ended are skipped, not run in a burst.
+do $$
+declare v_long_ago timestamptz := date_trunc('milliseconds',statement_timestamp() - interval '15 days');
+	v_request jsonb := '{"action":"upsert","routineKey":"finite","title":"Brief","intent":"Write the brief.",
+		"trigger":{"kind":"schedule","intervalMinutes":1440,"weekdays":["monday"],"localTime":"08:00","timeZone":"Europe/Copenhagen"}}';
+	v_cursor public.qorpera_cloud_routine_schedule_cursors;
+begin
+	perform pg_temp.agent_routine(v_request || '{"maxOccurrences":1}');
+	perform pg_temp.agent_ran('finite',v_long_ago,v_long_ago + interval '7 days');
+	perform pg_temp.wake_assert((pg_temp.agent_row('finite')).status = 'expired','Fixture: the last permitted run ended the watch');
+	perform pg_temp.wake_assert(pg_temp.agent_routine(v_request || '{"maxOccurrences":5}') #>> '{routine,status}' = 'active'
+		and (pg_temp.agent_row('finite')).current_version = 1,'Fixture: the extension keeps the version');
+	v_cursor := pg_temp.agent_cursor('finite');
+	perform pg_temp.wake_assert(v_cursor.last_scheduled_for = date_trunc('milliseconds',statement_timestamp())
+		and v_cursor.next_due_at = v_cursor.last_scheduled_for + interval '1 millisecond',
+		'An ended routine switched back on after missed slots restarts the schedule');
+end $$;
+
+-- A member's save may leave other triggers beside the agent's. The agent's next save with
+-- the same timing compares against its own trigger (by id), not the first one, and keeps
+-- the exact position.
+do $$
+declare v_ran timestamptz := date_trunc('milliseconds',statement_timestamp() - interval '1 day');
+	v_row public.qorpera_cloud_routines; v_agent jsonb; v_claims text := current_setting('request.jwt.claims');
+	v_cursor public.qorpera_cloud_routine_schedule_cursors;
+begin
+	perform pg_temp.agent_save('shared','{"kind":"schedule","intervalMinutes":1440,"weekdays":["monday"],"localTime":"08:00",
+		"timeZone":"Europe/Copenhagen"}');
+	v_row := pg_temp.agent_row('shared');
+	select triggers -> 0 into v_agent from public.qorpera_cloud_routine_versions where routine_id = v_row.id and version = 1;
+	perform pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001');
+	perform public.qorpera_upsert_cloud_routine(v_row.environment_id,v_row.client_routine_id,extensions.gen_random_uuid(),
+		v_row.owner_staff_agent_id,'Brief','Write the brief.',jsonb_build_array('{"id":"pulse","kind":"schedule","intervalMinutes":60}'::jsonb,v_agent),
+		'medium',(current_setting('qorpera_test.wake_sponsor')::jsonb ->> 'binding_id')::uuid,1,null,'agent_turn','agent_turn',true,
+		'automatic',null,'{}');
+	perform set_config('request.jwt.claims',v_claims,true);
+	perform pg_temp.wake_assert((pg_temp.agent_row('shared')).current_version = 2,'Fixture: a member saved two triggers');
+	perform pg_temp.agent_ran('shared',v_ran,v_ran + interval '7 days');
+	perform pg_temp.agent_save('shared','{"kind":"schedule","intervalMinutes":1440,"weekdays":["monday"],"localTime":"08:00",
+		"timeZone":"Europe/Copenhagen"}','Write the brief for the board.');
+	v_cursor := pg_temp.agent_cursor('shared');
+	perform pg_temp.wake_assert(v_cursor.routine_version = 3 and v_cursor.last_scheduled_for = v_ran
+		and v_cursor.next_due_at = v_ran + interval '7 days','The agent''s same timing keeps its position beside a member''s trigger');
 end $$;
 
 rollback;
