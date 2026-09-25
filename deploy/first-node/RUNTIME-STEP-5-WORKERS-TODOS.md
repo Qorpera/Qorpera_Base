@@ -145,7 +145,11 @@ change to any migration needs a new activation, never an edit of this one.
   raced against a running child.
 - Locks are taken todo first, then worker, in every operation, and the drain
   never waits for either, so a parent cancelling while its worker reports cannot
-  deadlock. This is by construction; a concurrent-session race test is not built.
+  deadlock. A coding session (Step 9) extends the order: todo, worker, coding
+  session, then the session's turn or machine. Four coding calls broke it until
+  runtime v117 (`20260925117000_runtime_coding_lock_order`): the owner's answer,
+  the executor's begin and completion, and machine admission and detach. SQL
+  test 602 races each of those pairs across two connections.
 - A revival whose admission is refused when its run is created (the agent lost
   its model account or its conversation) is not retried: the result stays in
   the todo, which the agent lists the next time it continues that work.
