@@ -37,6 +37,8 @@ export const CLOUD_RUNTIME_TOOL_OPERATIONS = [
 	"recall_memory",
 	// Company sidebar sections, shared with members (2026-09-24).
 	"organize_sidebar",
+	// Auto-review (v115): an agent adds an Ask first rule for its member.
+	"add_review_rule",
 ] as const;
 /** Closed vocabulary; the SQL ingestion function checks the same list. */
 export const CLOUD_RUNTIME_OPERATIONS = [

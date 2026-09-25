@@ -153,7 +153,15 @@ begin
 	perform set_config('qorpera_test.review_money', v_record ->> 'reviewId', false);
 	v_record := pg_temp.review_record(v_binding, 'call-5', repeat('5', 64), 'allow',
 		array['30000000-0000-4000-8000-000000000a03']::uuid[], 'money', 'paying for things');
-	perform pg_temp.wake_assert(v_record ->> 'decision' = 'allow', 'An allow rule covering a built-in check lets it run');
+	perform pg_temp.wake_assert(v_record ->> 'decision' = 'allow', 'A company allow rule covering a built-in check lets it run');
+	-- A member's own allow rule never lifts a built-in check: the owners and admins answer it.
+	perform pg_temp.review_rule('30000000-0000-4000-8000-000000000001', '30000000-0000-4000-8000-000000000a05', 'member',
+		'buying software subscriptions', 'allow_automatically');
+	v_record := pg_temp.review_record(v_binding, 'call-5m', repeat('5', 63) || 'a', 'allow',
+		array['30000000-0000-4000-8000-000000000a05']::uuid[], 'money', 'buying software subscriptions');
+	perform pg_temp.wake_assert(v_record ->> 'decision' = 'ask' and v_record ->> 'approverScope' = 'owners_admins',
+		'A member''s own allow rule never lifts a built-in check');
+	update public.qorpera_review_rules set archived_at = clock_timestamp() where id = '30000000-0000-4000-8000-000000000a05';
 	-- A deny stands, with no card; an allow for an action nobody asked for is a deny.
 	v_record := pg_temp.review_record(v_binding, 'call-6', repeat('6', 64), 'deny', '{}', 'not_requested');
 	perform pg_temp.wake_assert(v_record ->> 'decision' = 'deny' and (v_record ->> 'card')::boolean = false,
@@ -394,6 +402,105 @@ begin
 end
 $$;
 
+-- A denial stands in its run, and in its conversation until a member writes there again: the
+-- agent gets no second opinion by retrying, but a member who asks again is heard and the
+-- action is reviewed afresh. A member's Deny on a card reads the same way. (An earlier run is
+-- stood in for by moving the review to another run of the fixture.)
+do $$
+declare v_binding jsonb := current_setting('qorpera_test.review_binding')::jsonb;
+	v_other uuid := (current_setting('qorpera_test.wake_binding')::jsonb ->> 'runId')::uuid;
+	v_record jsonb; v_digest text; v_answer text;
+begin
+	foreach v_answer in array array['reviewer', 'member'] loop
+		v_digest := repeat(case v_answer when 'reviewer' then '9a' else '9b' end, 32);
+		if v_answer = 'reviewer' then
+			v_record := pg_temp.review_record(v_binding, 'deny-' || v_answer, v_digest, 'deny', '{}', 'not_requested');
+		else
+			v_record := pg_temp.review_record(v_binding, 'deny-' || v_answer, v_digest, 'ask',
+				array['30000000-0000-4000-8000-000000000a01']::uuid[]);
+			perform public.qorpera_await_action_review(v_binding, (v_record ->> 'reviewId')::uuid, false);
+			perform pg_temp.review_answer('30000000-0000-4000-8000-000000000001', (v_record ->> 'reviewId')::uuid, 'deny');
+		end if;
+		perform pg_temp.wake_assert(public.qorpera_begin_action_review(v_binding, jsonb_build_object('tool', 'send_email',
+			'argumentSha256', v_digest)) ->> 'state' = 'declined', format('A %s denial stands in its run', v_answer));
+		update public.qorpera_action_reviews set run_id = v_other where id = (v_record ->> 'reviewId')::uuid;
+		perform pg_temp.wake_assert(public.qorpera_begin_action_review(v_binding, jsonb_build_object('tool', 'send_email',
+			'argumentSha256', v_digest)) ->> 'state' = 'declined',
+			format('A %s denial stands in its conversation for a later run', v_answer));
+		-- (Its own statement in real use; here the whole block is one statement, so its time is set.)
+		insert into public.qorpera_session_inputs (session_id, client_input_id, kind, author_user_id, body, completed_at,
+			created_at)
+		values (current_setting('qorpera_test.card_thread')::uuid, extensions.gen_random_uuid(), 'user_message',
+			'30000000-0000-4000-8000-000000000001', jsonb_build_object('text', 'Yes, send it to Acme anyway.'),
+			clock_timestamp(), clock_timestamp());
+		perform pg_temp.wake_assert(public.qorpera_begin_action_review(v_binding, jsonb_build_object('tool', 'send_email',
+			'argumentSha256', v_digest)) ->> 'state' = 'review',
+			format('After a %s denial, a member who writes again gets the action reviewed afresh', v_answer));
+	end loop;
+end
+$$;
+
+-- A card still waiting counts only in its own conversation: the same call in another
+-- conversation is reviewed there, where its own card can be seen. (The other conversation is
+-- stood in for by moving the card.)
+do $$
+declare v_binding jsonb := current_setting('qorpera_test.review_binding')::jsonb; v_record jsonb; v_begin jsonb;
+	v_call jsonb := jsonb_build_object('tool', 'send_email', 'argumentSha256', repeat('9c', 32));
+begin
+	v_record := pg_temp.review_record(v_binding, 'wait-here', repeat('9c', 32), 'ask',
+		array['30000000-0000-4000-8000-000000000a01']::uuid[]);
+	v_begin := public.qorpera_begin_action_review(v_binding, v_call);
+	perform pg_temp.wake_assert(v_begin ->> 'state' = 'pending' and v_begin ->> 'reviewId' = v_record ->> 'reviewId',
+		'In its own conversation the call waits on its card');
+	update public.qorpera_action_reviews set session_id = '30000000-0000-4000-8000-000000000040',
+		card_session_id = '30000000-0000-4000-8000-000000000040' where id = (v_record ->> 'reviewId')::uuid;
+	perform pg_temp.wake_assert(public.qorpera_begin_action_review(v_binding, v_call) ->> 'state' = 'review',
+		'A card waiting in another conversation is not waited on here');
+end
+$$;
+
+-- An agent adds an Ask first rule for the member its run works for (founder decision D4): the
+-- member's own rule, attributed to the agent. The same key is the same rule, the same sentence
+-- is that rule, and a key reused for another sentence is refused. A worker cannot add rules.
+do $$
+declare v_binding jsonb := current_setting('qorpera_test.review_binding')::jsonb; v_added jsonb; v_again jsonb;
+begin
+	perform pg_temp.wake_error(format('select public.qorpera_add_agent_review_rule(%L,%L)', v_binding,
+		'{"when":"emailing a customer"}'), '22023', 'Rule request is invalid');
+	perform pg_temp.wake_error(format('select public.qorpera_add_agent_review_rule(%L,%L)', v_binding,
+		'{"operationKey":"rule-0","when":"   "}'), '22023');
+	v_added := public.qorpera_add_agent_review_rule(v_binding,
+		'{"operationKey":"rule-1","when":"  emailing a customer  "}');
+	perform pg_temp.wake_assert((v_added ->> 'added')::boolean and v_added ->> 'schema' = 'qorpera.agent-review-rule/v1'
+		and v_added ->> 'runId' = v_binding ->> 'runId'
+		and v_added #>> '{rule,scope}' = 'member' and v_added #>> '{rule,outcome}' = 'ask_first'
+		and v_added #>> '{rule,when}' = 'emailing a customer'
+		and v_added #>> '{rule,memberUserId}' = '30000000-0000-4000-8000-000000000001'
+		and v_added #>> '{rule,createdVia}' = 'agent'
+		and v_added #>> '{rule,createdByStaffAgentId}' = '30000000-0000-4000-8000-000000000031'
+		and v_added #>> '{rule,createdByUserId}' is null,
+		'An agent adds an Ask first rule for its member');
+	v_again := public.qorpera_add_agent_review_rule(v_binding, '{"operationKey":"rule-1","when":"emailing a customer"}');
+	perform pg_temp.wake_assert(not (v_again ->> 'added')::boolean and v_again #>> '{rule,id}' = v_added #>> '{rule,id}',
+		'A retry with the same key is the same rule');
+	v_again := public.qorpera_add_agent_review_rule(v_binding, '{"operationKey":"rule-2","when":"Emailing a customer"}');
+	perform pg_temp.wake_assert(not (v_again ->> 'added')::boolean and v_again #>> '{rule,id}' = v_added #>> '{rule,id}',
+		'The same sentence is the rule the member already has');
+	perform pg_temp.wake_error(format('select public.qorpera_add_agent_review_rule(%L,%L)', v_binding,
+		'{"operationKey":"rule-1","when":"posting on LinkedIn"}'), '23505');
+	perform pg_temp.wake_assert(exists (select 1 from public.qorpera_review_rules_for(
+			'30000000-0000-4000-8000-000000000010', '30000000-0000-4000-8000-000000000001') as rule
+		where rule.id = (v_added #>> '{rule,id}')::uuid)
+		and not exists (select 1 from public.qorpera_review_rules_for(
+			'30000000-0000-4000-8000-000000000010', '30000000-0000-4000-8000-000000000002') as rule
+		where rule.id = (v_added #>> '{rule,id}')::uuid),
+		'The rule applies to its member''s runs only');
+	perform pg_temp.wake_assert(public.qorpera_begin_action_review(v_binding, jsonb_build_object('tool', 'send_email',
+		'argumentSha256', repeat('9e', 32))) -> 'rules' @> jsonb_build_array(jsonb_build_object('id', v_added #>> '{rule,id}',
+		'when', 'emailing a customer', 'outcome', 'ask_first')), 'The reviewer reads the rule the agent added');
+end
+$$;
+
 -- A group chat carries no card: the ask is recorded and the call is refused.
 savepoint review_group_chat;
 do $$
@@ -421,7 +528,9 @@ begin
 		and not has_function_privilege('authenticated', 'public.qorpera_begin_action_review(jsonb,jsonb)', 'execute')
 		and not has_function_privilege('anon', 'public.qorpera_answer_action_review(uuid,uuid,text,text,uuid,bigint)',
 			'execute')
-		and has_function_privilege('service_role', 'public.qorpera_await_action_review(jsonb,uuid,boolean,boolean)', 'execute'),
+		and has_function_privilege('service_role', 'public.qorpera_await_action_review(jsonb,uuid,boolean,boolean)', 'execute')
+		and has_function_privilege('service_role', 'public.qorpera_add_agent_review_rule(jsonb,jsonb)', 'execute')
+		and not has_function_privilege('authenticated', 'public.qorpera_add_agent_review_rule(jsonb,jsonb)', 'execute'),
 		'Execute grants follow the caller');
 end
 $$;

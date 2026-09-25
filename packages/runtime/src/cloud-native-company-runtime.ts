@@ -45,6 +45,7 @@ import {
 	cloudToolJsonText,
 } from "./cloud-native-tool-boundary.ts";
 import type { CloudNativeToolOperationControlPlane } from "./cloud-native-tool-operations.ts";
+import { cloudReviewRuleTools } from "./cloud-review-rule-tools.ts";
 import { cloudRoutineTools } from "./cloud-routine-tools.ts";
 import { assertCloudRuntimeBundle } from "./cloud-runtime-bundle.ts";
 import {
@@ -444,6 +445,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 											cloudCoworkerMessageTool(binding, identity, wakeControl),
 											...cloudRoutineTools(binding, identity, this.#paths),
 											...cloudSidebarTools(binding, identity, this.#paths),
+											...cloudReviewRuleTools(binding, identity, this.#paths),
 										]),
 								// The notebook is the agent's own: a worker of the same agent recalls it,
 								// and writes to it only when its dispatch allows Company File writes.

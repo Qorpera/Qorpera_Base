@@ -23,10 +23,13 @@
 --
 -- Layering (decided 2026-09-24): built-in checks, then company rules, then the
 -- personal rules of the member the run works for (requested_by_user_id, which
--- follows routines and coworker chains). Ask first wins everywhere. An Allow
--- automatically rule never overrides a built-in check's ask unless it covers
--- that action; the kernel records whatever the reviewer decided but never lets
--- an "allow" stand next to a matched Ask first rule.
+-- follows routines and coworker chains). Ask first wins everywhere. Only a
+-- company Allow automatically rule that covers the action lifts a built-in
+-- check's ask: those checks are the company's to answer, so a member's own
+-- Allow rule never does (as in Grok, a member's rules only add care). The
+-- kernel records whatever the reviewer decided but never lets an "allow" stand
+-- next to a matched Ask first rule, or next to a built-in check no company
+-- Allow rule covers.
 --
 -- Who answers a card: a personal rule's card only that member; a company
 -- rule's or a built-in check's card any owner or admin. A card waits until
@@ -37,8 +40,9 @@
 -- own model account; the agent repeats the exact call (the card shows its
 -- exact arguments), which then runs without a second review (the approval is
 -- consumed by that call). A member's Deny, or the reviewer's, stands for that
--- exact call. The answer is refused by qorpera_answer_interaction: these cards
--- are answered only here.
+-- exact call in its run and conversation until a member writes there again.
+-- The answer is refused by qorpera_answer_interaction: these cards are answered
+-- only here.
 --
 -- Cards are raised only where cards live (the agent's own thread or a plain
 -- conversation; never a group chat or a worker). Elsewhere an ask is recorded
@@ -268,14 +272,29 @@ begin
 	-- (an approval or a denial given for one member's work never serves another's).
 	-- An answer to a parked card wakes the agent on the answering member's account
 	-- in the card's conversation, so a run for the member who answered finds that
-	-- card there, and only there.
+	-- card there, and only there. What counts:
+	--   * a denial (the reviewer's, or a member's on the card) in the run it was
+	--     given in, and in its conversation until a member writes there again: the
+	--     agent gets no second opinion by retrying, but a member who asks again is
+	--     heard, and the action is reviewed afresh;
+	--   * an approval given, in any conversation of that member (used once);
+	--   * a card still waiting, in this conversation only: elsewhere the member
+	--     could not see it, so a new card is raised here.
 	select review.* into v_review from public.qorpera_action_reviews as review
 	where review.profile_id = v_run.profile_id and review.staff_agent_id = v_run.staff_agent_id
 		and review.tool_name = p_call ->> 'tool' and review.argument_sha256 = p_call ->> 'argumentSha256'
 		and (review.requester_user_id is not distinct from v_run.requested_by_user_id
 			or (review.answered_by_user_id = v_run.requested_by_user_id and review.card_session_id = v_run.session_id))
-		and (review.decision = 'deny' or (review.decision = 'ask' and (review.card_session_id is not null
-			or review.answer is not null)))
+		and (
+			((review.decision = 'deny' or review.answer = 'deny') and (review.run_id = v_run.id
+				or (review.session_id = v_run.session_id and not exists (
+					select 1 from public.qorpera_session_inputs as input
+					where input.session_id = v_run.session_id and input.kind = 'user_message'
+						and coalesce(input.body ->> 'schema', '')
+							not in ('qorpera.interaction-answer/v1', 'qorpera.staff-intro-retry/v1')
+						and input.created_at > coalesce(review.answered_at, review.created_at)))))
+			or (review.decision = 'ask' and review.answer in ('allow_once', 'always_allow'))
+			or (review.decision = 'ask' and review.answer is null and review.card_session_id = v_run.session_id))
 	order by review.created_at desc, review.id desc limit 1 for update;
 	if found and (v_review.decision = 'deny' or v_review.answer = 'deny') then
 		-- A denial stands for this exact call: a second opinion is not asked for.
@@ -367,11 +386,13 @@ begin
 	v_decision := p_review ->> 'decision';
 	-- An action the reviewer says was not asked for never runs on an allow.
 	if v_decision = 'allow' and v_built_in = 'not_requested' then v_decision := 'deny'; end if;
-	-- Ask first always wins over an allow; a built-in check asks unless an allow rule covers it.
+	-- Ask first always wins over an allow; a built-in check asks unless a company allow rule
+	-- covers it (a member's own Allow rule never lifts a check the owners and admins answer).
 	if v_decision = 'allow' and (
 		exists (select 1 from unnest(v_rules) as rule where (rule).outcome = 'ask_first')
 		or (v_built_in not in ('none', 'not_requested') and not exists (
-			select 1 from unnest(v_rules) as rule where (rule).outcome = 'allow_automatically'))) then
+			select 1 from unnest(v_rules) as rule
+			where (rule).outcome = 'allow_automatically' and (rule).scope = 'company'))) then
 		v_decision := 'ask';
 	end if;
 	if v_decision = 'ask' then
@@ -732,6 +753,66 @@ begin
 end
 $$;
 
+-- Runtime: the agent tool add_review_rule (founder decision D4, 2026-09-24). An
+-- agent adds an Ask first rule for the member its run works for: agents may only
+-- make themselves more careful, and an Allow rule stays the member's own choice
+-- (Settings, Rules). The rule is that member's own, listed and removable there,
+-- and attributed to the agent. The same operation key in the same run is the same
+-- rule; the same sentence already among the member's Ask first rules is that
+-- rule. A full rule list comes back as a refusal with nothing added.
+create function public.qorpera_add_agent_review_rule(p_binding jsonb, p_request jsonb)
+returns jsonb language plpgsql security definer set search_path = '' as $$
+declare
+	v_run public.qorpera_execution_runs%rowtype; v_actor jsonb; v_text text; v_id uuid;
+	v_rule public.qorpera_review_rules%rowtype; v_added boolean := false;
+begin
+	v_run := public.qorpera_native_tool_locked_run(p_binding);
+	v_actor := public.qorpera_company_path_actor(v_run.environment_id, p_binding);
+	perform public.qorpera_company_path_assert_context(v_actor);
+	perform public.qorpera_assert_wake_work_allowed(v_run.id);
+	if v_run.staff_agent_id is null or (public.qorpera_run_worker(v_run.id)).id is not null then
+		raise exception 'Only a company agent can add a rule' using errcode = '42501'; end if;
+	if jsonb_typeof(p_request) is distinct from 'object' or p_request - array['operationKey','when'] <> '{}'::jsonb
+		or jsonb_typeof(p_request -> 'when') is distinct from 'string'
+		or coalesce(p_request ->> 'operationKey', '') !~ '^[A-Za-z0-9_:.-]{1,128}$' then
+		raise exception 'Rule request is invalid' using errcode = '22023'; end if;
+	v_text := public.qorpera_review_rule_text(p_request ->> 'when');
+	if not exists (select 1 from public.qorpera_profile_members as member
+		where member.profile_id = v_run.profile_id and member.user_id = v_run.requested_by_user_id) then
+		raise exception 'The member this run works for is not in the company' using errcode = '42501'; end if;
+	v_id := md5('qorpera.agent-review-rule:' || v_run.id::text || ':' || (p_request ->> 'operationKey'))::uuid;
+	perform 1 from public.qorpera_profiles where id = v_run.profile_id for update;
+	select rule.* into v_rule from public.qorpera_review_rules as rule where rule.id = v_id;
+	if found then
+		if v_rule.when_text <> v_text then
+			raise exception 'This operation key already added another rule' using errcode = '23505'; end if;
+	else
+		select rule.* into v_rule from public.qorpera_review_rules as rule
+		where rule.profile_id = v_run.profile_id and rule.scope = 'member'
+			and rule.member_user_id = v_run.requested_by_user_id and rule.archived_at is null
+			and rule.outcome = 'ask_first' and lower(rule.when_text) = lower(v_text)
+		order by rule.created_at limit 1;
+		if not found then
+			begin
+				insert into public.qorpera_review_rules (id, profile_id, scope, member_user_id, when_text, outcome,
+					created_via, created_by_user_id, created_by_staff_agent_id)
+				values (v_id, v_run.profile_id, 'member', v_run.requested_by_user_id, v_text, 'ask_first',
+					'agent', null, v_run.staff_agent_id)
+				returning * into v_rule;
+				perform public.qorpera_review_rules_assert_room(v_run.profile_id, 'member', v_run.requested_by_user_id);
+				v_added := true;
+			exception when sqlstate '54000' then
+				return jsonb_build_object('schema', 'qorpera.agent-review-rule/v1', 'runId', v_run.id, 'added', false,
+					'rule', null,
+					'refused', 'The member has too many rules to add another; they can remove some in Settings, Rules.');
+			end;
+		end if;
+	end if;
+	return jsonb_build_object('schema', 'qorpera.agent-review-rule/v1', 'runId', v_run.id, 'added', v_added,
+		'rule', public.qorpera_review_rule_view(v_rule));
+end
+$$;
+
 revoke all on function public.qorpera_review_rule_view(public.qorpera_review_rules),
 	public.qorpera_review_rules_for(uuid, uuid),
 	public.qorpera_review_rule_text(text),
@@ -745,7 +826,8 @@ revoke all on function public.qorpera_review_rule_view(public.qorpera_review_rul
 	public.qorpera_action_review_card(public.qorpera_action_reviews),
 	public.qorpera_action_review_receipt(public.qorpera_action_reviews),
 	public.qorpera_await_action_review(jsonb, uuid, boolean, boolean),
-	public.qorpera_answer_action_review(uuid, uuid, text, text, uuid, bigint)
+	public.qorpera_answer_action_review(uuid, uuid, text, text, uuid, bigint),
+	public.qorpera_add_agent_review_rule(jsonb, jsonb)
 	from public, anon, authenticated, service_role;
 grant execute on function public.qorpera_list_review_rules(uuid),
 	public.qorpera_save_review_rule(uuid, uuid, text, text, text),
@@ -754,7 +836,8 @@ grant execute on function public.qorpera_list_review_rules(uuid),
 	to authenticated;
 grant execute on function public.qorpera_begin_action_review(jsonb, jsonb),
 	public.qorpera_record_action_review(jsonb, jsonb),
-	public.qorpera_await_action_review(jsonb, uuid, boolean, boolean)
+	public.qorpera_await_action_review(jsonb, uuid, boolean, boolean),
+	public.qorpera_add_agent_review_rule(jsonb, jsonb)
 	to service_role;
 
 
@@ -795,8 +878,9 @@ $new$);
 end
 $migration$;
 
--- Runtime observation vocabulary: the reviewer's model turn is observed as
--- action_review, and a call that did not run because of a review carries its
+-- Runtime observation vocabulary: the agent tool add_review_rule is observed under
+-- its own name, the reviewer's model turn as action_review, and a call that did
+-- not run because of a review carries its
 -- reason (approval_pending, approval_declined, review_denied,
 -- review_unavailable). Patched into the live definition, not re-stated, so
 -- names another migration added before this one (v114's decide_routine) stay.
@@ -807,6 +891,9 @@ do $migration$
 declare
 	v_definition text := pg_get_functiondef('public.qorpera_record_runtime_observation(uuid,jsonb)'::regprocedure);
 begin
+	v_definition := pg_temp.auto_review_replace(v_definition,
+		$old$'update_memory','recall_memory','organize_sidebar',$old$,
+		$new$'update_memory','recall_memory','organize_sidebar','add_review_rule',$new$);
 	v_definition := pg_temp.auto_review_replace(v_definition,
 		$old$'native_result_fence','diagnostic_export')$old$,
 		$new$'native_result_fence','diagnostic_export','action_review')$new$);

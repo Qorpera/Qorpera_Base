@@ -643,7 +643,7 @@ begin
 		'connector','unknown_tool','run_authority',
 		'context_authority','native_result_fence','diagnostic_export','action_review',
 		'coding_run_command','coding_read_command','coding_cancel_command','coding_finish','coding_ask',
-		'update_memory','recall_memory','organize_sidebar'] loop
+		'update_memory','recall_memory','organize_sidebar','add_review_rule'] loop
 		v_event := pg_temp.observation() || jsonb_build_object('operation',v_operation,'assignmentId',null,
 			'phase','finish','status','succeeded','logicalOperationSha256',null,'observedAt','0001-01-01T00:00:00.000Z',
 			'durationMs',9007199254740991,'inputBytes',9007199254740991,'outputBytes',0,'inputTokens',0,'outputTokens',1,

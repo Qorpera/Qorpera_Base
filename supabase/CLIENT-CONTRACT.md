@@ -209,7 +209,10 @@ profile RPCs; RLS is the second read boundary.
   rule plus the caller's own (`id`, `scope` `company|member`, `memberUserId`,
   `when`, `outcome` `ask_first|allow_automatically`, `createdVia`
   `settings|card|agent`, `createdByUserId`, `createdByStaffAgentId`,
-  `createdAt`, `updatedAt`). Any member, viewers included.
+  `createdAt`, `updatedAt`). Any member, viewers included. A rule with
+  `createdVia: agent` was added by an agent (`createdByStaffAgentId`) when the
+  member asked it to: always one of the member's own Ask first rules, which the
+  member removes like any other.
 - `qorpera_save_review_rule(p_profile_id, p_rule_id, p_scope, p_when,
   p_outcome)`: the client picks `p_rule_id` (a new uuid creates, an existing
   one changes its text or outcome; a retry is the same rule). `when` is one

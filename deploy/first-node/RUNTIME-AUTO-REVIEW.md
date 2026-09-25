@@ -12,8 +12,9 @@ takeover workspace.
   `qorpera_save_review_rule`, `qorpera_archive_review_rule`,
   `qorpera_answer_action_review`; runtime RPCs (service role, run lease)
   `qorpera_begin_action_review`, `qorpera_record_action_review`,
-  `qorpera_await_action_review`; the observation vocabulary gains
-  `action_review` and four error categories.
+  `qorpera_await_action_review`, `qorpera_add_agent_review_rule`; the
+  observation vocabulary gains `action_review`, the tool `add_review_rule` and
+  four error categories.
 - **Runtime** (guest bytes): `cloud-action-review.ts` (classification, card
   facts, reviewer instructions and verdict tool, the review gate),
   a review step in `CloudNativeToolBoundary.#execute` (after the authority
@@ -81,6 +82,29 @@ approval that nothing delivers: the card reads approved and the agent is not
 woken. The next time the agent repeats that exact call, the approval serves
 it. A later fix stores the answerer's model account on the review so a stopped
 hold can wake the agent.
+
+## Review round 5 (2026-09-25, own review of 47ef78dee)
+
+Found in my own review of the approved head and fixed:
+- `decide_routine` (v114, PR #314, merged before this) is internal. Unlisted it
+  would have been reviewed as an outside action, and a routine run parks at
+  once, so a dynamic routine's decision would wait on a card and its run count
+  as failed.
+- The reviewer reads a card answer in plain words, and, when members started
+  the run, their latest three earlier messages in the conversation (bounded,
+  members' own words only: never the agent's messages, data or tool results).
+  Before, a run woken by a card answer showed the reviewer only the answer's
+  raw data, so its next steps were judged against no request at all.
+- A denial (the reviewer's or a member's) stands in its run, and in its
+  conversation until a member writes there again; before, it stood forever
+  for that member and exact call, with no way to ask again.
+- A card still waiting holds the same call only in its own conversation;
+  elsewhere a new card is raised where the member can see it.
+- The agent tool `add_review_rule` (founder decision D4): an agent adds an Ask
+  first rule for the member it works for, when asked. Kernel
+  `qorpera_add_agent_review_rule` (run lease, company path lane), observed as
+  `add_review_rule`. The contract text said this existed; it did not.
+- Card titles for resuming and ending a routine.
 
 ## Rollout order
 

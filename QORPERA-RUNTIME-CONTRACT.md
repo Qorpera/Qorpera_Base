@@ -2260,27 +2260,36 @@ review or retry" surfaces of 16.2 and the classification of section 10.
 1. **Rules.** A rule is one plain-language sentence, "When an agent wants to
    ..., it should: Ask first | Allow automatically". A member writes rules for
    themself ("only me"); owners and admins write company rules, which every
-   member reads and no one else edits. Agents may add Ask first rules only;
-   an Allow rule an agent suggests becomes a card the member confirms (not
-   built in bundle v115).
+   member reads and no one else edits. An agent may add an Ask first rule for
+   the member it works for, when that member asks it to (the tool
+   add_review_rule; the rule is the member's own, listed and removable in
+   Settings); agents never add Allow rules or company rules. An Allow rule an
+   agent suggests becoming a card the member confirms is not built in bundle
+   v115.
 2. **What is reviewed.** Every call is classified: reads, and changes that
    stay inside the company (its versioned Company File, notes, messages,
-   todos, cards), run at once. Outside effects (connector writes, acting
-   computer steps, the computer shell), Company File deletion and delegation
-   (hiring, group chats, routines, starting workers or coding jobs) pass a
-   review first. Coding sessions themselves are not reviewed; starting one is.
+   todos, cards, a dynamic routine's own decision at the end of its run, an
+   Ask first rule an agent adds), run at once. Outside effects (connector
+   writes, acting computer steps, the computer shell), Company File deletion
+   and delegation (hiring, group chats, setting up or changing routines,
+   starting workers or coding jobs) pass a review first. Coding sessions
+   themselves are not reviewed; starting one is.
 3. **The reviewer.** A separate model (GPT-6 Luna at low effort) in a fresh,
    tool-less conversation on the run's own model account, inside the same
    harness process, never a separate credential path. It reads the action,
-   what the member or routine asked for, and the rules that apply (all company
-   rules and the personal rules of the member the run works for), never the
-   agent's transcript, and answers allow, ask or deny. A review that cannot
+   what the member or routine asked for (a card answer in plain words, and,
+   when members started the run, their latest earlier messages in the
+   conversation), and the rules that apply (all company rules and the
+   personal rules of the member the run works for), never the agent's own
+   words or any tool result, and answers allow, ask or deny. A review that cannot
    run is never an approval: the call does not run.
 4. **Layering.** Built-in checks (money, legal terms, deleting outside data,
    access changes: ask; an action that plainly does not serve the request:
    deny), then company rules, then personal rules. Ask first wins; an Allow
-   rule never undoes an Ask first rule, and lifts a built-in check only when
-   it covers the action. The kernel enforces this ordering over the rules and
+   rule never undoes an Ask first rule. Only a company Allow rule lifts a
+   built-in check, and only when it covers the action: the checks are the
+   company's to answer, so a member's own Allow rule never lifts one (a
+   member's rules only add care). The kernel enforces this ordering over the rules and
    checks the reviewer cites; which rules apply to an action is the reviewer's
    judgement, so a reviewer that is itself misled can still let an action
    through. The reviewer reads the whole call, never a cut of it.
@@ -2303,7 +2312,11 @@ review or retry" surfaces of 16.2 and the classification of section 10.
    wakes the agent in that conversation on the answering member's account.
    The agent repeats the identical call (the card shows its exact arguments),
    which runs once without a second review. A Deny, the member's or the
-   reviewer's, stands for that exact call.
+   reviewer's, stands for that exact call in the run it was given in, and in
+   its conversation until a member writes there again: retrying gets the agent
+   no second opinion, but a member who asks again has the action reviewed
+   afresh. A card still waiting holds the same call only in its own
+   conversation; elsewhere a new card is raised where it can be seen.
 7. **Record.** Every reviewed call is recorded with its verdict, reason,
    matched rules, answer and use. Reviews are not a cap on work: no number of
    reviews, calls or approvals is limited.
