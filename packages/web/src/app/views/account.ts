@@ -15,7 +15,7 @@ import {
 import { timeZoneCity, timeZoneEntries } from "../../ui/time-zones.ts";
 import { type AuthController, displayName } from "../auth.ts";
 import { accountPicture } from "./account-picture.ts";
-import { composerColorChoices, themeChoices } from "./appearance.ts";
+import { composerColorChoices, themeChoices, uiSizeChoices } from "./appearance.ts";
 
 /** Each language by its own name; the list shows it again in the interface's. */
 const LANGUAGES = [
@@ -127,6 +127,9 @@ export function renderAccount(
 	const composerColor = composerColorChoices(() =>
 		setState({ error: t("Your browser could not save the composer color preference.") }),
 	);
+	const size = uiSizeChoices(() =>
+		setState({ error: t("Your browser could not save the interface size preference.") }),
+	);
 	replace(
 		container,
 		h(
@@ -164,6 +167,7 @@ export function renderAccount(
 				// The pictures say what each group is; the groups keep their names for screen readers.
 				h("div", { class: "settings-preference" }, theme),
 				h("div", { class: "settings-preference" }, composerColor),
+				h("div", { class: "settings-preference" }, size),
 			),
 			h(
 				"section",

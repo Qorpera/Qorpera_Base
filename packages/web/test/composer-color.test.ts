@@ -184,16 +184,17 @@ describe("General settings", () => {
 		expect(view.container.textContent).not.toContain("Cloud endpoint");
 	});
 
-	it("shows Appearance as the two picture groups alone, named only for screen readers", () => {
+	it("shows theme, color and size as three card groups named for screen readers", () => {
 		const view = account();
 		const appearance = view.group().closest("section")!;
 		expect([...appearance.querySelectorAll("fieldset")].map((group) => group.getAttribute("aria-label"))).toEqual([
 			"Theme",
 			"Composer color",
+			"Interface size",
 		]);
 		expect([...appearance.querySelectorAll(".settings-preference")].map((row) => row.children.length)).toEqual([
-			1, 1,
+			1, 1, 1,
 		]);
-		expect(appearance.textContent).toBe("AppearanceSystemLightDarkBlueGreenGrey");
+		expect(appearance.textContent).toBe("AppearanceSystemLightDarkBlueGreenGreySmallBig");
 	});
 });
