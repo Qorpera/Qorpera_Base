@@ -2,7 +2,9 @@
 import type { NativeMemberConnection } from "@qorpera/cloud-client/cloud-native-subscription-control";
 import {
 	type CloudRoutine,
+	CloudRoutineClient,
 	describeCloudRoutineTrigger,
+	parseCloudRoutine,
 	parseCloudRoutineTrigger,
 } from "@qorpera/cloud-client/cloud-routines";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -119,6 +121,46 @@ describe("agent routines section", () => {
 		expect(f.view.el.textContent).toContain("Mon at 08:30");
 		expect(f.view.el.textContent).not.toContain("Other");
 		expect(f.view.el.textContent).not.toContain("Gone");
+	});
+	it("reads an ended routine and shows it as ended, next to the others", async () => {
+		// One expired routine (a finished finite watch) used to make the whole list unreadable.
+		const row = {
+			routine_id: "10000000-0000-4000-8000-00000000000c",
+			client_routine_id: "10000000-0000-4000-8000-00000000000d",
+			version: 1,
+			status: "expired",
+			staff_agent_id: staff.id,
+			title: "One check",
+			prompt: "Check once.",
+			triggers: [{ id: "agent", kind: "schedule", intervalMinutes: 5, replyPolicy: "silent" }],
+			effort: "medium",
+			sponsor_binding_id: "10000000-0000-4000-8000-000000000004",
+			sponsor_version: 1,
+			logical_computer_id: null,
+			required_capability: "agent_turn",
+			job_type: "agent_turn",
+			publication_mode: "automatic",
+			review_policy_key: null,
+			reviewer_staff_ids: [],
+			created_at: "2026-09-17T06:00:00.000Z",
+			updated_at: "2026-09-17T06:05:00.000Z",
+		};
+		const listed = await new CloudRoutineClient(async () => [
+			{ ...row, routine_id: "10000000-0000-4000-8000-00000000000e", status: "active", title: "Still on" },
+			row,
+		]).list("10000000-0000-4000-8000-00000000000f", new AbortController().signal);
+		expect(listed.map((item) => item.status)).toEqual(["active", "expired"]);
+		const ended = parseCloudRoutine(row);
+		expect(ended.status).toBe("expired");
+		expect(() => parseCloudRoutine({ ...row, status: "finished" })).toThrow();
+		const f = mount([routine(), ended]);
+		await settle();
+		const rows = [...f.view.el.querySelectorAll(".routine-row")];
+		expect(rows.map((item) => item.querySelector("strong")?.textContent)).toEqual(["Morning brief", "One check"]);
+		expect(rows[1]!.textContent).toContain("Ended");
+		// Read-only: a member save would keep its end, so there is nothing to edit or resume.
+		expect(rows[1]!.querySelectorAll("button")).toHaveLength(0);
+		expect([...rows[0]!.querySelectorAll("button")].map((item) => item.textContent)).toEqual(["Edit", "Pause"]);
 	});
 	it("saves a new weekday routine on the chosen account with one stable identity across a retry", async () => {
 		const f = mount([]);
