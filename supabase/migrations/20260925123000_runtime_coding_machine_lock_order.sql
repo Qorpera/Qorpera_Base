@@ -20,11 +20,16 @@
 -- call that needs the profile row at all takes it first, in the strongest mode it
 -- will take: the fence for admission, sleep and release (the node's slot changes
 -- under it), a key-share lock for a plan and the broker (their inserts only need
--- the company to exist). Calls that never need it keep starting later in the list
--- (stop, detach, delete, heartbeat, progress, begin, completion, the owner's answer).
--- Holding the fence while waiting for a worker, session or machine is what every
--- agent tool call already does; those rows are held only by executor calls that
--- never wait for the profile row, so the wait ends with one such call.
+-- the company to exist). Calls that never wait for it keep starting later in the
+-- list (stop, detach, delete, heartbeat, progress, completion, the owner's answer;
+-- begin takes it NOWAIT and fails fast). Holding the fence while waiting for a
+-- worker or session is what every agent tool call already does. Those rows, and
+-- the machine, volume, allocation, node and demand after them, are held only by
+-- calls that never wait for the profile row, so the wait ends with one such call.
+-- The exception is the Company File row, which a session's first admission reads
+-- for its new storage volume: a writer that locks it before the fence
+-- (qorpera_prepare_company_file_revision) can meet admission as it meets every
+-- agent tool call.
 
 create function pg_temp.machine_lock_patch(p_target regprocedure, p_old text, p_new text)
 returns void language plpgsql as $$
