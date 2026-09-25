@@ -360,6 +360,34 @@ describe("agent todo and worker tools", () => {
 		},
 	);
 
+	it("still shows a prefix of a page that would be too wide to render whole", async () => {
+		const f = await fixture();
+		try {
+			const cursors = Array.from({ length: 32 }, () => randomUUID());
+			f.call.mockImplementationOnce(async () => ({
+				schema: "qorpera.agent-todos/v1",
+				runId: f.binding.runId,
+				// Control characters escape to six bytes each: the whole page would pass 64 KiB.
+				todos: cursors.map((itemCursor, index) => ({
+					todoKey: `todo-${index}`,
+					title: "\u0001".repeat(200),
+					detail: "\u0001".repeat(200),
+					cursor: itemCursor,
+				})),
+				moreTodos: 0,
+				nextCursor: null,
+				unpublished: [],
+			}));
+			const envelope = body(await f.boundary.invoke("wide", "qorpera", "manage_todo", { action: "list" }));
+			expect(envelope.status).toBe("ok");
+			const page = JSON.parse(envelope.content.text);
+			expect(page.todos.length).toBeGreaterThan(0);
+			expect(page).toMatchObject({ moreTodos: 32 - page.todos.length, nextCursor: cursors[page.todos.length - 1] });
+		} finally {
+			f.run.close();
+		}
+	});
+
 	it("shows one item alone when even it does not fit, so a walk always moves on", async () => {
 		const f = await fixture();
 		try {

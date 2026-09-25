@@ -132,8 +132,9 @@ function fittedPage(
 			nextCursor: left === 0 ? null : (listed[count - 1].cursor as string),
 		});
 	};
-	let count = listed.length;
-	while (count > 1 && !fitsOneResult(render(count))) count--;
+	// Grown from one item, so a wide page is never rendered whole (cloudToolJsonText refuses 64 KiB).
+	let count = Math.min(listed.length, 1);
+	while (count < listed.length && fitsOneResult(render(count + 1))) count++;
 	return render(count);
 }
 function paths(value: unknown, max: number, maxBytes: number): string[] {

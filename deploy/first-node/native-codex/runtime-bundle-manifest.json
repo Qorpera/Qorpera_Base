@@ -14,7 +14,7 @@
   "components": {
     "kernel": "c81772ac54530542ed3f6d393e09b017ee8d6ae3be27f4b93f1651d03ab8f73f",
     "constitution": "8641ce64101c52ec5f11f49fe42e70d7300548ecb30314bd59de91714c146d3d",
-    "toolCatalog": "4edf8a82ffc1cc2560ea142ac9dd2c579f8e44f85080d0778ce4f43b0486834f",
+    "toolCatalog": "ed57e22bac1b23baaa75452ef097cdca66f1b51f9ee27dd712719edc1a0a06ed",
     "wakeAndSilence": "149a0d1d89c1d1d213141429b797b512a1c1b8d1e255d4428e1ff9c0d1a3e646",
     "contextComposer": "931e176214f9beeac220c075a553b1aa17207604c58bb601c8f58768f50d8583",
     "providerBootstrap": "978f31882ad908b5faaf54d3320f4295b76cfdd1fceec9ef7db47e7d718126c9",
@@ -22,7 +22,7 @@
     "inboundSafety": "6a1797894882b398478e87a1a2dce8193c737db10abce51e1fb70cf834af1542",
     "outboundSafety": "864a73950f8a6838a06635e4c72c23215e865f670775d53eb144951df2f9cb78",
     "interactionSurfaces": "c10d8ff2084f6cf246c429405688841cbe11929e78536cb05d95b297d8b8224a",
-    "workerLifecycle": "ffe5186267c673207d82d035dcde20e22c8cd6db79986c44ffd89c83e8f9901f",
+    "workerLifecycle": "4703a2f1c42124d1b71c96b5eea7716fe343a3b8a2720355ad4387d19364421e",
     "memoryAndSkills": "9066d2486294ca93d86c43094cdd49574f6b3a9f605bb21cd50045eb21d47fbb"
   },
   "implementation": {
@@ -614,7 +614,7 @@
     "packages/runtime/src/cloud-sidebar-tools.ts": "c1c04da7de625ac23c91fe00dc14d2ceacf7642e8fb3601eed625127f35d042d",
     "packages/runtime/src/cloud-thread-interactions.ts": "f575396c75db8bbadccc0c9f1dfb3807e2002e22cd085ac4401d24e2a6e8c9c9",
     "packages/runtime/src/cloud-wake-bus.ts": "3bbe5e0317990b7f17e21e4c1eb466f83fcdc1c7fb3f8d101ed9b6f1a877eb7a",
-    "packages/runtime/src/cloud-worker-tools.ts": "b1e4d19dbfe73ed3a24c76b85f3449ea3047bdd686f9fa048c57d9984625175f",
+    "packages/runtime/src/cloud-worker-tools.ts": "072bb73738701aa3d9f0d84e7c1d0905c2f7d0589895cc9b0d1f036f3ae16e51",
     "packages/runtime/src/lxd-guest-image-updates.ts": "e26ea2cf52158b08e28154fea0e75df1807113f7cdd42b17b951cdd62efe4947",
     "packages/runtime/src/lxd-native-login-bootstrap-main.ts": "2c818882521dc18e0bfa3a9618d92d7b90a09d25fed8053557ff8dca311a52e8",
     "packages/runtime/src/lxd-runner-bootstrap-main.ts": "94fb6c6d97ef2deae6284f88a3e33f46705a5dd0da426328364a98f9ad63fc6c",
@@ -622,7 +622,7 @@
     "packages/runtime/src/native-provider-account.ts": "9dbb6d065639253c5584876adbeb70f2803de29575ae7de7d1e0f0bbe0442b2b",
     "packages/runtime/src/native-provider-usage.ts": "935086f12167064ae71e90b44af1cbfe28b0d64a59ec2ba685157f45d320297c",
     "packages/runtime/src/systemd-credential.ts": "1d3eb8038a369c58418cbd8248aecf457662cbb3430cc84847235c2222a82478",
-    "scripts/generate-cloud-runtime-bundle.mjs": "d12414f210f3fd7ffbf84f230463d60b9c78f50fde722a27b1e94f50fe683b85",
+    "scripts/generate-cloud-runtime-bundle.mjs": "72e39d5261182cf27484c180f0df94a04ca91ad419ffafad5c31ca1e7fd70300",
     "scripts/native-company-artifact.mjs": "e394bc799104f188769de07cd3be14e6c732a1a672113ea45d349a29d8e0ca63",
     "scripts/package-coding-executor.mjs": "292c557c75728d08e2fd2574c75cc07634f36bca629981709373f62af90a9272",
     "scripts/package-coding-guest.mjs": "04b1d63699aef4f05a5b800b06adff366e1607b1eaac53da8694d1e7e5d84ad3",
