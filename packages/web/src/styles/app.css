@@ -28,7 +28,6 @@ body {
 	scrollbar-width: none;
 	-webkit-mask-image: linear-gradient(to bottom, transparent, #000 8px); mask-image: linear-gradient(to bottom, transparent, #000 8px);
 	-webkit-mask-size: 100% calc(100% + 8px); mask-size: 100% calc(100% + 8px);
-	-webkit-mask-repeat: no-repeat; mask-repeat: no-repeat;
 	-webkit-mask-position: 0 -8px; mask-position: 0 -8px;
 	transition: mask-position 160ms ease, -webkit-mask-position 160ms ease;
 }
