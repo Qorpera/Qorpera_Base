@@ -1,14 +1,12 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { AuthController } from "../src/app/auth.ts";
-import { renderAccount } from "../src/app/views/account.ts";
+import { renderAppearance } from "../src/app/views/appearance.ts";
 import tokens from "../src/styles/tokens.css?raw";
 import { h } from "../src/ui/dom.ts";
 import { isPhoneLayout } from "../src/ui/layout.ts";
 import { applyUiSize, setUiSizePreference, uiSizePreference, watchTheme } from "../src/ui/preferences.ts";
 import { RailLayout } from "../src/ui/rail-layout.ts";
 import { uiScale } from "../src/ui/scale.ts";
-import { fixture, userA } from "./fixtures.ts";
 
 const key = "qorpera.web.ui-size";
 let stop: (() => void) | undefined;
@@ -41,20 +39,17 @@ afterEach(() => {
 	localStorage.clear();
 });
 
-function account() {
-	const auth = new AuthController(fixture().cloud);
-	auth.store.set({ user: userA });
+function appearance() {
 	const container = h("div");
 	document.body.append(container);
-	const failed = vi.fn();
-	renderAccount(auth, container, {}, failed);
+	container.append(renderAppearance());
 	const group = container.querySelector<HTMLFieldSetElement>('fieldset[aria-label="Interface size"]')!;
 	const radios = [...group.querySelectorAll<HTMLInputElement>("input[type=radio]")];
 	const selected = () => radios.find((input) => input.checked)?.value;
 	const choose = (value: string) => {
 		radios.find((input) => input.value === value)!.click();
 	};
-	return { group, radios, selected, choose, failed };
+	return { group, radios, selected, choose, container };
 }
 
 describe("interface size", () => {
@@ -77,9 +72,9 @@ describe("interface size", () => {
 	});
 
 	it("offers both sizes in Appearance, persists changes and synchronizes mounted controls", () => {
-		const first = account();
-		const second = account();
-		expect(first.group.closest("section")?.querySelector("h2")?.textContent).toBe("Appearance");
+		const first = appearance();
+		const second = appearance();
+		expect(first.group.closest("section")?.querySelector("h1")?.textContent).toBe("Appearance");
 		expect(
 			first.group.parentElement?.previousElementSibling?.querySelector("fieldset")?.getAttribute("aria-label"),
 		).toBe("Composer color");
@@ -92,7 +87,7 @@ describe("interface size", () => {
 		expect(uiScale()).toBe(1);
 		expect(localStorage.getItem(key)).toBe("small");
 		expect(second.selected()).toBe("small");
-		expect(account().selected()).toBe("small");
+		expect(appearance().selected()).toBe("small");
 		second.choose("big");
 		expect(first.selected()).toBe("big");
 		expect(uiScale()).toBe(1.3);
@@ -100,19 +95,21 @@ describe("interface size", () => {
 
 	it("leaves the saved size and selected control intact if saving fails", () => {
 		setUiSizePreference("small");
-		const view = account();
+		const view = appearance();
 		vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
 			throw new Error("full");
 		});
 		view.choose("big");
 		expect(view.selected()).toBe("small");
 		expect(uiScale()).toBe(1);
-		expect(view.failed).toHaveBeenCalledWith({ error: "Your browser could not save the interface size preference." });
+		expect(view.container.querySelector("[role=alert]")?.textContent).toBe(
+			"Your browser could not save the interface size preference.",
+		);
 	});
 
 	it("follows storage changes and clearing in other tabs, then removes its listener", () => {
 		stop = watchTheme();
-		const view = account();
+		const view = appearance();
 		localStorage.setItem(key, "small");
 		window.dispatchEvent(new StorageEvent("storage", { key }));
 		expect(uiScale()).toBe(1);
