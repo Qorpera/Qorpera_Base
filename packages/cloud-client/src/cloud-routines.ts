@@ -66,7 +66,8 @@ export interface CloudRoutine {
 	routineId: string;
 	clientRoutineId: string;
 	version: number;
-	status: "active" | "paused" | "retired";
+	/** expired: a finite or time-bounded routine that has ended; it schedules nothing more. */
+	status: "active" | "paused" | "expired" | "retired";
 	staffAgentId: string;
 	title: string;
 	prompt: string;
@@ -268,7 +269,13 @@ export function parseCloudRoutineTrigger(value: unknown): CloudRoutineTrigger {
 
 export function parseCloudRoutine(value: unknown): CloudRoutine {
 	const input = record(value, "routine");
-	if (input.status !== "active" && input.status !== "paused" && input.status !== "retired") invalid("routine status");
+	if (
+		input.status !== "active" &&
+		input.status !== "paused" &&
+		input.status !== "expired" &&
+		input.status !== "retired"
+	)
+		invalid("routine status");
 	if (!["low", "medium", "high", "xhigh", "max"].includes(input.effort as string)) invalid("routine effort");
 	if (!["agent_turn", "git_worktree", "company_substrate"].includes(input.required_capability as string))
 		invalid("routine capability");
