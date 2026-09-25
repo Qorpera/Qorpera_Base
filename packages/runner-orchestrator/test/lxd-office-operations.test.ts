@@ -66,6 +66,67 @@ async function fixture(now?: () => Date) {
 }
 
 describe("durable office operation recovery", () => {
+	it("records paid cancellation without an accepted operation, and keeps replay inert without the paid adapter", async () => {
+		const f = await fixture();
+		const paid = {
+			submitStart: vi.fn(async () => ({ state: "abandoned_before_dispatch" as const, commandId: id(10) })),
+			recoverStart: vi.fn(async () => null),
+		};
+		const journal = await LxdOfficeOperationJournal.open(f.root, id(6), f.config, f.client, true, undefined, paid);
+		await expect(journal.reconcile(id(10), "start", signal())).resolves.toEqual({
+			state: "abandoned_before_dispatch",
+		});
+		expect((await f.events()).map((event) => event.kind)).toEqual(["dispatch", "abandoned"]);
+		expect((await f.events())[1]).toMatchObject({
+			schema: "qorpera.lxd-office-operation-event/v4",
+			operationId: null,
+		});
+		await expect((await f.reopen()).reconcile(id(10), "start", signal())).resolves.toEqual({
+			state: "abandoned_before_dispatch",
+		});
+		await expect((await f.reopen()).reconcile(id(11), "start", signal())).rejects.toThrow("UNSETTLED");
+		expect((await LxdOfficeOperationJournal.readHistory(f.root, id(5))).events.at(-1)).toMatchObject({
+			reason: "PAID_START_ABANDONED_BEFORE_DISPATCH",
+			physicalTransitionAt: null,
+		});
+		expect(f.client.submitInstanceOperation).not.toHaveBeenCalled();
+		expect(f.client.inspectInstanceOperation).not.toHaveBeenCalled();
+	});
+	it("rejects another command's cancellation instead of recording it or using raw start", async () => {
+		const f = await fixture();
+		const paid = {
+			submitStart: vi.fn(async () => ({ state: "abandoned_before_dispatch" as const, commandId: id(11) })),
+			recoverStart: vi.fn(async () => ({ state: "abandoned_before_dispatch" as const, commandId: id(11) })),
+		};
+		const journal = await LxdOfficeOperationJournal.open(f.root, id(6), f.config, f.client, true, undefined, paid);
+		await expect(journal.reconcile(id(10), "start", signal())).resolves.toEqual({ state: "unknown" });
+		await expect(journal.observe(id(10), "start", signal())).rejects.toThrow("PAID_RECOVERY_DIFFERS");
+		expect(await f.events()).toHaveLength(1);
+		expect(f.client.submitInstanceOperation).not.toHaveBeenCalled();
+	});
+	it.each(["create", "accepted"])("rejects abandonment after %s evidence", async (invalid) => {
+		const f = await fixture();
+		await f.journal.reconcile(id(10), invalid === "create" ? "create" : "start", signal());
+		const events = await f.events();
+		const index = invalid === "create" ? 1 : 2;
+		const previous = await readFile(join(f.path, `${String(index - 1).padStart(6, "0")}.json`));
+		await writeFile(
+			join(f.path, `${String(index).padStart(6, "0")}.json`),
+			JSON.stringify({
+				schema: "qorpera.lxd-office-operation-event/v4",
+				sequence: index,
+				previousSha256: createHash("sha256").update(previous).digest("hex"),
+				commandId: id(10),
+				action: invalid === "create" ? "create" : "start",
+				kind: "abandoned",
+				operationId: null,
+				state: "abandoned_before_dispatch",
+				recordedAt: events[0].recordedAt,
+			}),
+			{ mode: 0o600 },
+		);
+		await expect(f.reopen()).rejects.toThrow("JOURNAL_UNCONFIRMED");
+	});
 	it("recovers a paid start's exact retained guard reference without redispatch or raw fallback", async () => {
 		const f = await fixture();
 		const reference = { project: f.config.project, instanceName: f.plan.request.name, operationId: id(201) };

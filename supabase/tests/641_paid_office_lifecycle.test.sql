@@ -1,4 +1,17 @@
 -- @fixture 638_paid_computer_admission_boundaries.test.sql until "-- A new owner-authenticated coding turn"
+-- A real durable guard supplies this non-secret, byte-bound intent before prepare.
+create function pg_temp.prestart_request(p_request jsonb) returns jsonb language plpgsql as $$
+declare v_base jsonb; v_text text;
+begin
+    v_base:=(p_request-'prestart'-'prepareRequestText')||jsonb_build_object('schema','qorpera.runtime-computer-prepare/v2');
+    v_text:=(v_base-'leaseToken')::text;
+    return v_base||jsonb_build_object('prepareRequestText',v_text,'prestart',jsonb_build_object(
+        'guardIncarnationId','64200000-0000-4000-8000-000000000001',
+        'prepareSha256',encode(extensions.digest(convert_to(v_text,'UTF8'),'sha256'),'hex')));
+end $$;
+create function pg_temp.prepare_runtime(p_request jsonb,p_secret text) returns jsonb language sql as $$
+    select public.qorpera_prepare_runtime_computer_permit(pg_temp.prestart_request(p_request),p_secret)
+$$;
 -- Real founder demand/provider enrollment; no physical machine or live charge.
 select pg_temp.as_user('30000000-0000-4000-8000-000000000001');
 select set_config('qorpera_test.office_scope', (public.qorpera_register_runtime_office(
@@ -40,8 +53,8 @@ begin
         'windowMs',300000,'stopReserveMs',30000,'officeIntent',jsonb_build_object('kind','initial',
             'intentId','64100000-0000-4000-8000-000000000002','providerBindingSha256',repeat('e',64),'mappings','[]'::jsonb));
     perform set_config('qorpera_test.office_paid_request',request::text,true);
-    perform pg_temp.wake_error(format('select public.qorpera_prepare_runtime_computer_permit(%L,%L)',request-'officeIntent',repeat('O',64)),'42501');
-    perform pg_temp.wake_error(format('select public.qorpera_prepare_runtime_computer_permit(%L,%L)',request,repeat('O',64)),'P0001');
+    perform pg_temp.wake_error(format('select pg_temp.prepare_runtime(%L,%L)',request-'officeIntent',repeat('O',64)),'42501');
+    perform pg_temp.wake_error(format('select pg_temp.prepare_runtime(%L,%L)',request,repeat('O',64)),'P0001');
     perform pg_temp.wake_assert(not exists(select 1 from public.qorpera_computer_usage_streams where allocation_id='64100000-0000-4000-8000-000000000004'),'Unfunded boot left partial accounting');
 end $$;
 select public.qorpera_map_computer_billing_customer('30000000-0000-4000-8000-000000000001','cus_officepaid');
@@ -52,15 +65,15 @@ begin
     perform public.qorpera_fund_computer_invoice(jsonb_build_object('invoiceId','in_officepaid','subscriptionId','sub_officepaid','customerId','cus_officepaid',
         'planKey','basis','planVersion',1,'periodStart',t,'periodEnd',t+interval '1 month','amountPaid',18500,'billingReason','subscription_create','status','paid','currency','dkk'));
     -- Being the Computer Usage owner is not consent to spend a personal plan.
-    perform pg_temp.wake_error(format('select public.qorpera_prepare_runtime_computer_permit(%L,%L)',request,repeat('O',64)),'P0001');
+    perform pg_temp.wake_error(format('select pg_temp.prepare_runtime(%L,%L)',request,repeat('O',64)),'P0001');
     perform pg_temp.as_user('30000000-0000-4000-8000-000000000001');
     perform public.qorpera_set_company_computer_pool('30000000-0000-4000-8000-000000000010',true);
     perform pg_temp.path_claims('service_role');
-    receipt:=public.qorpera_prepare_runtime_computer_permit(request,repeat('O',64));
+    receipt:=pg_temp.prepare_runtime(request,repeat('O',64));
     perform pg_temp.wake_assert(receipt#>>'{runtimeContext,resourceKind}'='company_computer' and receipt->>'state'='prepared','Office funded receipt differs');
     perform pg_temp.wake_assert((select requested_by_user_id is null from public.qorpera_computer_allowance_reservations where id='64100000-0000-4000-8000-000000000005'),'Shared office attributed to an arbitrary member');
-    perform pg_temp.wake_assert((public.qorpera_prepare_runtime_computer_permit(request,repeat('O',64))->>'deadline')=receipt->>'deadline','Replay extended funded office lifetime');
-    perform pg_temp.wake_error(format('select public.qorpera_prepare_runtime_computer_permit(%L,%L)',request||jsonb_build_object('requestId',extensions.gen_random_uuid()),repeat('O',64)),'42501');
+    perform pg_temp.wake_assert((pg_temp.prepare_runtime(request,repeat('O',64))->>'deadline')=receipt->>'deadline','Replay extended funded office lifetime');
+    perform pg_temp.wake_error(format('select pg_temp.prepare_runtime(%L,%L)',request||jsonb_build_object('requestId',extensions.gen_random_uuid()),repeat('O',64)),'42501');
 end $$;
 -- Close the initial guard without inventing a physical boot. The lifecycle
 -- fixtures below seed already-verified guest activation/stop evidence, then
@@ -106,16 +119,16 @@ do $$ declare sample jsonb; renewal jsonb; boot jsonb; r jsonb:=current_setting(
     perform public.qorpera_prepare_runtime_office_boot_intent(boot);
     r:=r||jsonb_build_object('requestId',extensions.gen_random_uuid(),'officeIntent',jsonb_build_object('kind','resume','request',boot));
     select count(*) into before_count from public.qorpera_coding_computer_permits;
-    perform pg_temp.wake_error(format('select public.qorpera_prepare_runtime_computer_permit(%L,%L)',
+    perform pg_temp.wake_error(format('select pg_temp.prepare_runtime(%L,%L)',
         jsonb_set(r,'{officeIntent,request,stopHistorySha256}',to_jsonb(repeat('8',64))),repeat('O',64)),'42501');
     update public.qorpera_runtime_offices set revision=revision+1 where id=(current_setting('qorpera_test.office_scope')::jsonb->>'companyComputerId')::uuid;
-    perform pg_temp.wake_error(format('select public.qorpera_prepare_runtime_computer_permit(%L,%L)',r,repeat('O',64)),'42501');
+    perform pg_temp.wake_error(format('select pg_temp.prepare_runtime(%L,%L)',r,repeat('O',64)),'42501');
     update public.qorpera_runtime_offices set revision=revision-1 where id=(current_setting('qorpera_test.office_scope')::jsonb->>'companyComputerId')::uuid;
     perform pg_temp.wake_assert((select count(*)=before_count from public.qorpera_coding_computer_permits),'Refused resume created a funded window');
-    receipt:=public.qorpera_prepare_runtime_computer_permit(r,repeat('O',64));
+    receipt:=pg_temp.prepare_runtime(r,repeat('O',64));
     perform pg_temp.wake_assert(receipt->>'state'='prepared','Valid maintenance resume failed paid admission');
-    perform pg_temp.wake_assert(public.qorpera_prepare_runtime_computer_permit(r,repeat('O',64))->>'deadline'=receipt->>'deadline','Resume replay extended window');
-    perform pg_temp.wake_error(format('select public.qorpera_prepare_runtime_computer_permit(%L,%L)',r||jsonb_build_object('requestId',extensions.gen_random_uuid()),repeat('O',64)),'42501');
+    perform pg_temp.wake_assert(pg_temp.prepare_runtime(r,repeat('O',64))->>'deadline'=receipt->>'deadline','Resume replay extended window');
+    perform pg_temp.wake_error(format('select pg_temp.prepare_runtime(%L,%L)',r||jsonb_build_object('requestId',extensions.gen_random_uuid()),repeat('O',64)),'42501');
     insert into public.qorpera_runtime_node_instance_bindings(allocation_id,node_id,physical_id,binding)
         values('64100000-0000-4000-8000-000000000004','30000000-0000-4000-8000-000000000310','64100000-0000-4000-8000-000000000030','{}');
     sample:=jsonb_build_object('observationId',extensions.gen_random_uuid(),'previousObservationId',null,'hostBootId',r->'hostBootId',
@@ -179,18 +192,18 @@ do $$ declare v_plan jsonb; r jsonb:=current_setting('qorpera_test.office_paid_r
     r:=r||jsonb_build_object('requestId',v_plan#>'{commands,startCommandId}','officeIntent',jsonb_build_object('kind','reset','plan',v_plan));
     select count(*) into before_count from public.qorpera_coding_computer_permits;
     -- A fenced reset has no authority to power on its replacement root.
-    perform pg_temp.wake_error(format('select public.qorpera_prepare_runtime_computer_permit(%L,%L)',r,repeat('O',64)),'42501');
+    perform pg_temp.wake_error(format('select pg_temp.prepare_runtime(%L,%L)',r,repeat('O',64)),'42501');
     -- Seed verified prior physical stop/archive/delete/create outcomes; this
     -- test exercises paid start authorization, not the external archive reader.
     update public.qorpera_runtime_office_resets set phase='root_created',custody='{}',custody_sha256=repeat('9',64) where reset_id=(v_plan->>'resetId')::uuid;
-    perform pg_temp.wake_error(format('select public.qorpera_prepare_runtime_computer_permit(%L,%L)',r||jsonb_build_object('requestId',extensions.gen_random_uuid()),repeat('O',64)),'42501');
+    perform pg_temp.wake_error(format('select pg_temp.prepare_runtime(%L,%L)',r||jsonb_build_object('requestId',extensions.gen_random_uuid()),repeat('O',64)),'42501');
     update public.qorpera_runtime_offices set privacy_version=privacy_version+1 where id=(current_setting('qorpera_test.office_scope')::jsonb->>'companyComputerId')::uuid;
-    perform pg_temp.wake_error(format('select public.qorpera_prepare_runtime_computer_permit(%L,%L)',r,repeat('O',64)),'42501');
+    perform pg_temp.wake_error(format('select pg_temp.prepare_runtime(%L,%L)',r,repeat('O',64)),'42501');
     update public.qorpera_runtime_offices set privacy_version=privacy_version-1 where id=(current_setting('qorpera_test.office_scope')::jsonb->>'companyComputerId')::uuid;
     perform pg_temp.wake_assert((select count(*)=before_count from public.qorpera_coding_computer_permits),'Refused reset created a funded window');
-    receipt:=public.qorpera_prepare_runtime_computer_permit(r,repeat('O',64));
+    receipt:=pg_temp.prepare_runtime(r,repeat('O',64));
     perform pg_temp.wake_assert(receipt->>'state'='prepared','Valid reset start phase failed paid admission');
-    perform pg_temp.wake_assert(public.qorpera_prepare_runtime_computer_permit(r,repeat('O',64))->>'deadline'=receipt->>'deadline','Reset replay extended window');
+    perform pg_temp.wake_assert(pg_temp.prepare_runtime(r,repeat('O',64))->>'deadline'=receipt->>'deadline','Reset replay extended window');
 end $$;
 rollback to savepoint reset_case;
 

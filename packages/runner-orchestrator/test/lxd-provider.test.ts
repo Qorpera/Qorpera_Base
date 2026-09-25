@@ -882,6 +882,7 @@ describe("LXD cloud runner provider", () => {
 			updatedAt: stale,
 		};
 		delete reserving.nodeCapacity;
+		delete reserving.createDispatched;
 		if (!registered) delete reserving.capacityRegistered;
 		delete reserving.guestAddress;
 		delete reserving.assignmentId;

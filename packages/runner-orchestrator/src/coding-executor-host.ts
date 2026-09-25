@@ -480,8 +480,14 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 				client: {
 					getInstance: (...args) => this.#options.client.getInstance(...args),
 					inspectInstanceOperation: (...args) => this.#options.client.inspectInstanceOperation(...args),
-					submitInstanceOperation: (project, operation, operationSignal) => {
+					submitInstanceOperation: async (project, operation, operationSignal) => {
 						const usage = this.#options.computerUsage;
+						if (
+							operation.action === "start" &&
+							usage &&
+							(await usage.ownsStart(journal.machineId, operationSignal))
+						)
+							return usage.start(journal.machineId, operationSignal);
 						if (usage?.manages(journal.machineId)) {
 							if (operation.action === "start") return usage.start(journal.machineId, operationSignal);
 							if (operation.action === "stop") return usage.stop(journal.machineId, operationSignal);
@@ -849,6 +855,13 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			this.#attached.set(claim.workerId, { claim, machine, storage });
 			await this.#attach(claim, machine, storage, signal);
 			return boot;
+		}).catch(async (error: unknown) => {
+			try {
+				await this.#options.computerUsage?.abandonClaim(claim, machine, AbortSignal.timeout(15000));
+			} catch (recoveryError) {
+				throw new AggregateError([error, recoveryError], "CODING_PRESTART_RECOVERY_UNCONFIRMED");
+			}
+			throw error;
 		});
 		const guest = await this.#install(claim, machine, storage, bootId, signal),
 			root = await this.#directory("git");

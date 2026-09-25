@@ -135,6 +135,11 @@ interface LxdProviderJournal {
 	capacityReleased?: true;
 	/** Paid allocation may start/stop only through the independent host guard. */
 	paidComputer?: true;
+	/** Cancellation and financial closure are independent of physical create custody. */
+	paidStartCancellation?: true;
+	paidStartAbandoned?: true;
+	/** Explicit false proves this provider retained the no-autostart create protocol before dispatch. */
+	createDispatched?: boolean;
 	/** Exact node binding retained after the node reservation commits. */
 	nodeCapacity?: NativeNodePlacement;
 	guestAddress?: string;
@@ -384,6 +389,10 @@ function journalFromJson(value: unknown): LxdProviderJournal {
 		(input.capacityRegistered !== undefined && input.capacityRegistered !== true) ||
 		(input.capacityReleased !== undefined && input.capacityReleased !== true) ||
 		(input.paidComputer !== undefined && input.paidComputer !== true) ||
+		(input.paidStartCancellation !== undefined && input.paidStartCancellation !== true) ||
+		(input.paidStartAbandoned !== undefined &&
+			(input.paidStartAbandoned !== true || input.paidStartCancellation !== true)) ||
+		(input.createDispatched !== undefined && typeof input.createDispatched !== "boolean") ||
 		lxd.type !== "virtual-machine" ||
 		typeof lxd.project !== "string" ||
 		typeof lxd.imageServer !== "string" ||
@@ -512,6 +521,9 @@ function journalFromJson(value: unknown): LxdProviderJournal {
 		...(input.capacityRegistered === true ? { capacityRegistered: true } : {}),
 		...(input.capacityReleased === true ? { capacityReleased: true } : {}),
 		...(input.paidComputer === true ? { paidComputer: true } : {}),
+		...(input.paidStartCancellation === true ? { paidStartCancellation: true } : {}),
+		...(input.paidStartAbandoned === true ? { paidStartAbandoned: true } : {}),
+		...(typeof input.createDispatched === "boolean" ? { createDispatched: input.createDispatched } : {}),
 		...(input.nodeCapacity !== undefined ? { nodeCapacity: nodePlacement(input.nodeCapacity) } : {}),
 		...(typeof input.guestAddress === "string" ? { guestAddress: input.guestAddress } : {}),
 		...(typeof input.assignmentId === "string" ? { assignmentId: input.assignmentId } : {}),
@@ -793,7 +805,16 @@ const SETTLED_JOURNAL_RETENTION_MS = 24 * 60 * 60_000;
 export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderServiceBackend {
 	readonly #computerUsage?: Pick<
 		RuntimeComputerController,
-		"ensure" | "recover" | "manages" | "start" | "stop" | "observe" | "maintain" | "assertRunning"
+		| "ensure"
+		| "recover"
+		| "manages"
+		| "start"
+		| "stop"
+		| "observe"
+		| "maintain"
+		| "assertRunning"
+		| "prestartStatus"
+		| "abandonUndispatched"
 	>;
 	readonly #paidAllocations = new Set<string>();
 	readonly #registeredCapacity = new Set<string>();
@@ -817,7 +838,16 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 		fetchImplementation: ServiceHttpFetch = fetch,
 		computerUsage?: Pick<
 			RuntimeComputerController,
-			"ensure" | "recover" | "manages" | "start" | "stop" | "observe" | "maintain" | "assertRunning"
+			| "ensure"
+			| "recover"
+			| "manages"
+			| "start"
+			| "stop"
+			| "observe"
+			| "maintain"
+			| "assertRunning"
+			| "prestartStatus"
+			| "abandonUndispatched"
 		>,
 	) {
 		validateConfig(config);
@@ -1013,6 +1043,7 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 				instanceName: this.#instanceName(acquisitionId),
 				runner,
 				physicalState: "reserving",
+				createDispatched: false,
 				lxd: {
 					project: this.#config.project,
 					type: "virtual-machine",
@@ -1136,7 +1167,11 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 	 * and on the identity host, so the guest is deleted rather than left behind.
 	 * Retained custom volumes (identity, recovery) are devices and survive. */
 	async #retire(current: LxdProviderJournal, status: string, signal?: AbortSignal): Promise<void> {
-		if (current.paidComputer || this.#paidAllocations.has(current.acquisitionId)) {
+		const cancelled = await this.#cancelUnstarted(current, signal ?? AbortSignal.timeout(15000));
+		if (cancelled) {
+			if (status !== "Stopped")
+				throw new Error("Abandoned native start names a running machine; custody recovery required");
+		} else if (current.paidComputer || this.#paidAllocations.has(current.acquisitionId)) {
 			if (!this.#computerUsage) throw new Error("Paid native computer host is unavailable");
 			const checked = signal ?? AbortSignal.timeout(15000);
 			if (!this.#computerUsage.manages(current.acquisitionId))
@@ -1176,6 +1211,52 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 		credentials: ProviderCredentials,
 		signal?: AbortSignal,
 	): Promise<LxdProviderJournal> {
+		try {
+			if (current.paidStartCancellation) throw new Error("COMPUTER_START_ABANDONED");
+			return await this.#prepareReady(current, credentials, signal);
+		} catch (error) {
+			const retained = (await this.#readJournal(current.acquisitionId)) ?? current;
+			try {
+				await this.#cancelUnstarted(retained, AbortSignal.timeout(15000));
+			} catch (recoveryError) {
+				throw new AggregateError([error, recoveryError], "Native prestart recovery is unconfirmed");
+			}
+			throw error;
+		}
+	}
+	async #cancelUnstarted(current: LxdProviderJournal, signal: AbortSignal): Promise<boolean> {
+		if (!this.#computerUsage) {
+			if (current.paidStartCancellation) throw new Error("Paid native computer host is unavailable");
+			return false;
+		}
+		const intent = await this.#computerUsage.prestartStatus(current.acquisitionId, signal);
+		if (!intent || (intent.state !== "registered" && intent.state !== "abandoned")) return false;
+		if (
+			current.createDispatched === undefined &&
+			current.physicalState !== "reserving" &&
+			!current.paidStartCancellation
+		)
+			throw new Error("Legacy native create requires custody recovery before cancellation");
+		if (current.paidStartAbandoned && intent.state === "abandoned") return true;
+		await this.#writeJournal({ ...current, physicalState: "stopping", paidStartCancellation: true });
+		await this.#computerUsage.abandonUndispatched(
+			await this.#computerContext(current, signal),
+			current.acquisitionId,
+			signal,
+		);
+		await this.#writeJournal({
+			...current,
+			physicalState: "stopping",
+			paidStartCancellation: true,
+			paidStartAbandoned: true,
+		});
+		return true;
+	}
+	async #prepareReady(
+		current: LxdProviderJournal,
+		credentials: ProviderCredentials,
+		signal?: AbortSignal,
+	): Promise<LxdProviderJournal> {
 		const computeIdentityId = current.runner.computeIdentityId;
 		if (!computeIdentityId) throw new Error("Journaled LXD guest is missing Compute Identity authority");
 		await this.#reserveMachine(current, signal);
@@ -1188,18 +1269,25 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 		let instance = await this.#lxd.getInstance(current.lxd.project, current.instanceName, signal);
 		if (!instance) {
 			if (current.physicalState !== "creating") {
-				if (current.physicalState === "registered" || current.physicalState === "assigned")
+				if (current.physicalState === "registered" || current.physicalState === "assigned") {
+					// Registration proves the one create completed. This absence is
+					// unlike an absent VM whose create request is still unresolved.
+					await this.#writeJournal({ ...current, physicalState: "stopping", deletionConfirmed: true });
 					await this.#releaseMachine(current, signal);
+				}
 				const lost = { ...current, physicalState: "lost" as const };
 				await this.#writeJournal(lost);
 				throw new Error("Journaled LXD guest is missing");
 			}
+			if (current.createDispatched !== false) throw new Error("Native create custody remains unresolved");
 			const bootstrapFiles = this.#bootstrapFiles(this.#bootstrapAuthority(current), credentials);
 			if (bootstrapSha256(bootstrapFiles) !== current.lxd.bootstrapSha256) {
 				throw new Error("LXD guest bootstrap no longer matches its durable journal");
 			}
 			const admitted = await this.#reserveMachine(current, signal);
 			admitted.throwIfAborted();
+			current = { ...current, createDispatched: true };
+			await this.#writeJournal(current);
 			await this.#lxd.createInstance(current.lxd.project, this.#createRequest(current), signal, admitted);
 			instance = await this.#lxd.getInstance(current.lxd.project, current.instanceName, signal);
 			if (!instance) throw new Error("LXD did not persist the created guest");
@@ -1309,6 +1397,7 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 			profiles: current.lxd.profiles,
 			config: {
 				"boot.mode": "uefi-secureboot",
+				"boot.autostart": "false",
 				"limits.cpu": String(this.#config.cpuLimit),
 				"limits.memory": this.#config.memoryLimit,
 				"user.qorpera.acquisition_id": current.acquisitionId,
@@ -1633,6 +1722,8 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 			instance.type !== "virtual-machine" ||
 			JSON.stringify(instance.profiles) !== JSON.stringify(journal.lxd.profiles) ||
 			instance.config["boot.mode"] !== "uefi-secureboot" ||
+			(journal.createDispatched === true &&
+				(instance.config["boot.autostart"] !== "false" || instance.expandedConfig["boot.autostart"] !== "false")) ||
 			instance.config["limits.cpu"] !== String(this.#config.cpuLimit) ||
 			instance.expandedConfig["limits.cpu"] !== String(this.#config.cpuLimit) ||
 			instance.config["limits.memory"] !== this.#config.memoryLimit ||
@@ -1675,26 +1766,70 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 		if (!current.runner.computeIdentityId) {
 			throw new Error("Journaled LXD guest is missing Compute Identity authority");
 		}
+		if (current.paidStartCancellation) {
+			await this.#cancelUnstarted(current, signal ?? AbortSignal.timeout(15000));
+			current = (await this.#readJournal(current.acquisitionId)) ?? current;
+			const physical = await this.#lxd.getInstance(current.lxd.project, current.instanceName, signal);
+			if (!physical) {
+				if (
+					current.paidStartAbandoned &&
+					current.deletionConfirmed &&
+					this.#capacityReleased(current) &&
+					(current.physicalState === "lost" || current.physicalState === "stopped")
+				)
+					return;
+				if (!current.createDispatched || current.deletionConfirmed) {
+					await this.#writeJournal({ ...current, physicalState: "stopping", deletionConfirmed: true });
+					await this.#releaseMachine(current, signal);
+					await this.#writeJournal({ ...current, physicalState: "lost" });
+				}
+				return;
+			}
+			this.#assertInstanceAuthority(current, physical);
+			await this.#retire(current, physical.status, signal);
+			await this.#writeJournal({ ...current, physicalState: "stopped" });
+			return;
+		}
 		if (current.physicalState === "reserving") {
 			// Only the orchestrator's acquire advances a reserving journal. Reconcile no longer re-runs
 			// a reservation the ceiling or the chooser refused (16 Sep 2026: refused journals of
 			// terminal runs were re-tried on every pass); a stale one is retired.
 			if (Date.now() - Date.parse(current.updatedAt) < RESERVING_RETIREMENT_MS) return;
+			if (await this.#cancelUnstarted(current, signal ?? AbortSignal.timeout(15000))) {
+				// Prepare may have committed capacity before its response (and the
+				// local capacity flags) was lost. Complete cancellation custody from
+				// the retained marker before this journal can become settled.
+				const cancelled = await this.#readJournal(current.acquisitionId);
+				if (!cancelled) throw new Error("Native cancellation journal is missing");
+				await this.#reconcileJournal(cancelled, signal);
+				return;
+			}
 			if (current.capacityRegistered || current.nodeCapacity) await this.#releaseMachine(current, signal);
 			await this.#writeJournal({ ...current, physicalState: "lost", stopReason: "idle" });
 			return;
 		}
-		await this.#ensureIdentityVolume(current, current.runner.computeIdentityId, signal);
+		await this.#ensureIdentityVolume(current, current.runner.computeIdentityId!, signal);
 		const instance = await this.#lxd.getInstance(current.lxd.project, current.instanceName, signal);
 		// A lost run never restarts. When its guest is gone as well, a recovery volume that was never
 		// created (the run was lost before its first start) is not a fault; every other journal still
 		// has to name its retained recovery volume.
 		if (instance || current.physicalState !== "lost") await this.#ensureRecoveryVolume(current, signal);
 		if (!instance) {
+			await this.#cancelUnstarted(current, signal ?? AbortSignal.timeout(15000));
 			// A timed-out create/start may still be pending in LXD. Missing is
 			// deletion proof only after a fully registered or retired guest.
-			if (current.deletionConfirmed || ["registered", "assigned", "stopped"].includes(current.physicalState))
+			if (current.deletionConfirmed || ["registered", "assigned", "stopped"].includes(current.physicalState)) {
+				if (!current.deletionConfirmed)
+					await this.#writeJournal({
+						...current,
+						physicalState: current.physicalState === "stopped" ? "stopped" : "stopping",
+						deletionConfirmed: true,
+					});
 				await this.#releaseMachine(current, signal);
+				if (current.physicalState !== "stopped" && current.physicalState !== "lost")
+					await this.#writeJournal({ ...current, physicalState: "lost" });
+				return;
+			}
 			if (current.physicalState !== "stopped" && current.physicalState !== "lost") {
 				await this.#writeJournal({ ...current, physicalState: "lost" });
 			}
@@ -1704,8 +1839,8 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 		if (current.physicalState === "stopped") {
 			if (instance.status !== "Stopped") throw new Error("Stopped LXD journal names a running guest");
 			// A guest left behind by an earlier provider build is removed on sight.
-			await this.#lxd.deleteInstance(current.lxd.project, current.instanceName, signal);
-			await this.#releaseMachine(current, signal);
+			await this.#retire(current, "Stopped", signal);
+			await this.#writeJournal({ ...current, physicalState: "stopped" });
 			return;
 		}
 		if (current.physicalState === "stopping") {
@@ -1915,8 +2050,13 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 		const root = join(this.#config.stateRoot, journal.acquisitionId);
 		await mkdir(root, { recursive: true, mode: 0o700 });
 		await chmod(root, 0o700);
+		const prior = await this.#readJournal(journal.acquisitionId);
 		const updated: LxdProviderJournal = {
 			...journal,
+			...(prior?.paidStartCancellation ? { paidStartCancellation: true as const } : {}),
+			...(prior?.paidStartAbandoned ? { paidStartAbandoned: true as const } : {}),
+			...(prior?.createDispatched ? { createDispatched: true as const } : {}),
+			...(prior?.deletionConfirmed ? { deletionConfirmed: true as const } : {}),
 			...(this.#registeredCapacity.has(journal.acquisitionId) ? { capacityRegistered: true as const } : {}),
 			...(this.#releasedCapacity.has(journal.acquisitionId) ? { capacityReleased: true as const } : {}),
 			...(this.#paidAllocations.has(journal.acquisitionId) ? { paidComputer: true as const } : {}),
@@ -1949,6 +2089,8 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 	async #settledAt(acquisitionId: string, signal?: AbortSignal): Promise<number | undefined> {
 		const journal = await this.#readJournal(acquisitionId);
 		if (!journal || (journal.physicalState !== "stopped" && journal.physicalState !== "lost")) return undefined;
+		if (journal.paidStartCancellation && !journal.paidStartAbandoned) return undefined;
+		if (journal.createDispatched && !journal.deletionConfirmed) return undefined;
 		if ((journal.capacityRegistered || journal.nodeCapacity) && !this.#capacityReleased(journal)) return undefined;
 		if (await this.#lxd.getInstance(journal.lxd.project, journal.instanceName, signal)) return undefined;
 		return Date.parse(journal.updatedAt);
@@ -2157,6 +2299,10 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 		// Retained journals of finished runs are reconciled on every pass (19 Sep 2026: 79 stopped
 		// journals sent eight release calls a second). A confirmed release is sent exactly once.
 		if (this.#capacityReleased(current)) return;
+		const retained = (await this.#readJournal(current.acquisitionId)) ?? current;
+		if (retained.createDispatched && !retained.deletionConfirmed)
+			throw new Error("Native create custody remains unresolved");
+		await this.#cancelUnstarted(retained, signal ?? AbortSignal.timeout(15000));
 		if (current.paidComputer || this.#paidAllocations.has(current.acquisitionId)) {
 			if (!this.#computerUsage) throw new Error("Paid native computer host is unavailable");
 			const checked = signal ?? AbortSignal.timeout(15000);

@@ -9,6 +9,7 @@ import type { LxdOfficeStorageObservation } from "../src/lxd-office-inventory-wo
 import { publish } from "../src/lxd-office-journal-files.ts";
 import { LxdOfficeLifecycle, runLxdOfficeLifecycle } from "../src/lxd-office-lifecycle.ts";
 import { lxdOfficePhysicalPolicySha256 } from "../src/lxd-office-physical-policy.ts";
+import type { LxdOfficeResumeWorker } from "../src/lxd-office-resume-worker.ts";
 import { officePhysicalFixture } from "./fixtures/office-physical-policy.ts";
 
 const intentId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -220,7 +221,7 @@ async function fixture() {
 		})),
 	};
 	const resumeWorker = {
-		reconcileSettled: vi.fn(async (_intent: string, request: { bootIntentId: string; activationId: string }) => ({
+		reconcileSettled: vi.fn<LxdOfficeResumeWorker["reconcileSettled"]>(async (_intent, request) => ({
 			state: "awaiting_configuration" as const,
 			intentId,
 			allocationId,
@@ -376,6 +377,44 @@ async function fixture() {
 }
 
 describe("serialized office lifecycle", () => {
+	it.each(["boot", "resume"])("forwards paid cancellation diagnosis while retaining the %s phase", async (phase) => {
+		const f = await fixture();
+		const reason = "OFFICE_PAID_START_ABANDONED";
+		if (phase === "boot") {
+			await f.toPhase(4);
+			f.workers.boot.reconcileSettled.mockResolvedValue({ state: "failed", reason });
+		} else {
+			await f.toPhase(7);
+			await f.open().reconcile(signal());
+			const predecessor = { ...f.recovery, action: "reboot" };
+			f.state.recovery = { schema: "qorpera.lxd-office-recovery-plan/v1", request: predecessor };
+			f.state.resume = {
+				schema: "qorpera.lxd-office-resume-plan/v1",
+				request: {
+					schema: "qorpera.office-boot-intent-request/v1",
+					bootIntentId: intentId,
+					activationId: allocationId,
+					predecessor,
+					stopHistorySha256: "a".repeat(64),
+					powerOffCompletionSha256: "b".repeat(64),
+				},
+			};
+			await f.open().reconcile(signal());
+			await f.open().reconcile(signal());
+			f.resumeWorker.reconcileSettled.mockResolvedValue({
+				state: "failed",
+				reason,
+				intentId,
+				allocationId,
+				bootIntentId: intentId,
+				activationId: allocationId,
+				startCommandId: intentId,
+			});
+		}
+		for (let i = 0; i < 2; i++)
+			await expect(f.open().reconcile(signal())).resolves.toMatchObject({ state: "failed", phase, reason });
+		expect(f.bootConfigurationWorker.reconcileSettled).not.toHaveBeenCalled();
+	});
 	it("drives SQL-admitted idle through the real loop and existing stop workers", async () => {
 		const f = await fixture();
 		await f.toPhase(7);

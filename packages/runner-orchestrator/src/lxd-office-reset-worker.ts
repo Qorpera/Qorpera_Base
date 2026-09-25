@@ -825,9 +825,12 @@ export class LxdOfficeResetWorker {
 					throw new Error(`reset VM not ${expected.toLowerCase()}`);
 				assertLxdOfficeGuestInstance(binding, record);
 			};
-			const settled = (state: "pending" | "unknown" | "failed"): LxdOfficeResetResult => ({
+			const settled = (
+				state: "pending" | "unknown" | "failed" | "abandoned_before_dispatch",
+			): LxdOfficeResetResult => ({
 				...result,
-				state,
+				state: state === "abandoned_before_dispatch" ? "failed" : state,
+				...(state === "abandoned_before_dispatch" ? { reason: "OFFICE_PAID_START_ABANDONED" } : {}),
 				phase: current,
 			});
 			if (next === "powered_off") {

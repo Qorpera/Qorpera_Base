@@ -1,4 +1,17 @@
 -- @fixture 638_paid_computer_admission_boundaries.test.sql until "-- A new owner-authenticated coding turn"
+-- A real durable guard supplies this non-secret, byte-bound intent before prepare.
+create function pg_temp.prestart_request(p_request jsonb) returns jsonb language plpgsql as $$
+declare v_base jsonb; v_text text;
+begin
+    v_base:=(p_request-'prestart'-'prepareRequestText')||jsonb_build_object('schema','qorpera.runtime-computer-prepare/v2');
+    v_text:=(v_base-'leaseToken')::text;
+    return v_base||jsonb_build_object('prepareRequestText',v_text,'prestart',jsonb_build_object(
+        'guardIncarnationId','64200000-0000-4000-8000-000000000001',
+        'prepareSha256',encode(extensions.digest(convert_to(v_text,'UTF8'),'sha256'),'hex')));
+end $$;
+create function pg_temp.prepare_runtime(p_request jsonb,p_secret text) returns jsonb language sql as $$
+    select public.qorpera_prepare_runtime_computer_permit(pg_temp.prestart_request(p_request),p_secret)
+$$;
 -- Use real native run/runner authority and synthetic physical facts only.
 insert into public.qorpera_session_inputs(id,session_id,client_input_id,kind,author_user_id,body)
 values('64000000-0000-4000-8000-000000000001','30000000-0000-4000-8000-000000000042',extensions.gen_random_uuid(),
@@ -37,24 +50,24 @@ begin
     again:=public.qorpera_describe_runtime_computer_permit(request,repeat('R',64));
     perform pg_temp.wake_assert(again->>'mode'='paid' and again->'permit'='null','Missing permit cannot fall back to free execution');
     perform pg_temp.wake_assert(not public.qorpera_native_computer_permit_ready((b->>'runnerId')::uuid,(b->>'runId')::uuid),'Unfunded native launch admitted');
-    perform pg_temp.wake_error(format('select public.qorpera_prepare_runtime_computer_permit(%L,%L)',request,repeat('X',64)),'42501');
-    perform pg_temp.wake_error(format('select public.qorpera_prepare_runtime_computer_permit(%L,%L)',request||jsonb_build_object('bootstrapSha256',repeat('a',64)),repeat('R',64)),'42501');
+    perform pg_temp.wake_error(format('select pg_temp.prepare_runtime(%L,%L)',request,repeat('X',64)),'42501');
+    perform pg_temp.wake_error(format('select pg_temp.prepare_runtime(%L,%L)',request||jsonb_build_object('bootstrapSha256',repeat('a',64)),repeat('R',64)),'42501');
     -- Native generated bootstrap contains per-run credentials; its exact
     -- identity remains immutable even when enrollment delegates composition.
     update public.qorpera_runtime_computer_host_keys set bootstrap_sha256=null where provider_kind='native';
     update public.qorpera_runtime_node_providers set cpu_millis=1000 where provider_kind='native' and provider_id='process';
-    perform pg_temp.wake_error(format('select public.qorpera_prepare_runtime_computer_permit(%L,%L)',request,repeat('R',64)),'42501');
+    perform pg_temp.wake_error(format('select pg_temp.prepare_runtime(%L,%L)',request,repeat('R',64)),'42501');
     update public.qorpera_runtime_node_providers set cpu_millis=2000 where provider_kind='native' and provider_id='process';
     select issued_us into v_issued from public.qorpera_computer_allowance_buckets where invoice_id='in_runtime';
     update public.qorpera_computer_allowance_buckets set issued_us=1 where invoice_id='in_runtime';
-    perform pg_temp.wake_error(format('select public.qorpera_prepare_runtime_computer_permit(%L,%L)',request,repeat('R',64)),'P0001');
+    perform pg_temp.wake_error(format('select pg_temp.prepare_runtime(%L,%L)',request,repeat('R',64)),'P0001');
     perform pg_temp.wake_assert(not exists(select 1 from public.qorpera_runtime_machine_allocations where id=v_allocation),
         'Insufficient funding left a partially admitted allocation');
     update public.qorpera_computer_allowance_buckets set issued_us=v_issued where invoice_id='in_runtime';
-    receipt:=public.qorpera_prepare_runtime_computer_permit(request,repeat('R',64)); v_epoch:=(receipt->>'epoch')::uuid;
-    again:=public.qorpera_prepare_runtime_computer_permit(request,repeat('R',64));
+    receipt:=pg_temp.prepare_runtime(request,repeat('R',64)); v_epoch:=(receipt->>'epoch')::uuid;
+    again:=pg_temp.prepare_runtime(request,repeat('R',64));
     perform pg_temp.wake_error(format('select public.qorpera_describe_runtime_computer_permit(%L,%L)',request||jsonb_build_object('bootstrapSha256',repeat('a',64)),repeat('R',64)),'42501');
-    perform pg_temp.wake_assert(receipt->>'schema'='qorpera.computer-usage-permit/v1' and receipt#>>'{runtimeContext,resourceKind}'='agent_sandbox'
+    perform pg_temp.wake_assert(receipt->>'schema'='qorpera.computer-usage-permit/v2' and receipt#>>'{runtimeContext,resourceKind}'='agent_sandbox'
         and receipt#>>'{runtimeContext,runId}'=b->>'runId' and receipt->>'deadline'=again->>'deadline'
         and (again->>'validForMs')::bigint<=(receipt->>'validForMs')::bigint,'Runtime prestart authority or replay differs');
     perform pg_temp.wake_assert(not public.qorpera_native_computer_permit_ready((b->>'runnerId')::uuid,(b->>'runId')::uuid),'Prepared VM admitted a model before bind');

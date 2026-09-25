@@ -1,4 +1,17 @@
 -- @fixture 396_runtime_coding_executor.test.sql until "-- 4. Control plane only."
+-- A real durable guard supplies this non-secret, byte-bound intent before prepare.
+create function pg_temp.prestart_request(p_request jsonb) returns jsonb language plpgsql as $$
+declare v_base jsonb; v_text text;
+begin
+    v_base:=(p_request-'prestart'-'prepareRequestText')||jsonb_build_object('schema','qorpera.coding-computer-prepare/v2');
+    v_text:=(v_base-'leaseToken')::text;
+    return v_base||jsonb_build_object('prepareRequestText',v_text,'prestart',jsonb_build_object(
+        'guardIncarnationId','64200000-0000-4000-8000-000000000001',
+        'prepareSha256',encode(extensions.digest(convert_to(v_text,'UTF8'),'sha256'),'hex')));
+end $$;
+create function pg_temp.prepare_coding(p_request jsonb,p_secret text) returns jsonb language sql as $$
+    select public.qorpera_prepare_coding_computer_permit(pg_temp.prestart_request(p_request),p_secret)
+$$;
 -- Offline physical-permit tests. No guest or provider is started by this file.
 select pg_temp.path_claims('service_role');
 select public.qorpera_authorize_coding_machine_custody(current_setting('qorpera_test.coding_vm')::uuid,'exec-test',current_setting('qorpera_test.coding_binding'),repeat('c',64),'stop');
@@ -37,9 +50,9 @@ begin
     request:=jsonb_build_object('schema','qorpera.coding-computer-prepare/v1','requestId',id,'workerId',(pg_temp.worker_row('fix-send')).id,
         'leaseToken','63700000-0000-4000-8000-000000000001','machineId',machine,'owner','exec-test','bindingText',current_setting('qorpera_test.coding_binding'),
         'machineIdSha256',repeat('c',64),'hostBootId','63700000-0000-4000-8000-000000000003','windowMs',300000,'stopReserveMs',30000);
-    perform pg_temp.wake_error(format('select public.qorpera_prepare_coding_computer_permit(%L,%L)',request,repeat('X',64)),'42501');
-    perform pg_temp.wake_error(format('select public.qorpera_prepare_coding_computer_permit(%L,%L)',request||jsonb_build_object('leaseToken',extensions.gen_random_uuid()),repeat('K',64)),'42501');
-    receipt:=public.qorpera_prepare_coding_computer_permit(request,repeat('K',64)); e:=(receipt->>'epoch')::uuid;
+    perform pg_temp.wake_error(format('select pg_temp.prepare_coding(%L,%L)',request,repeat('X',64)),'42501');
+    perform pg_temp.wake_error(format('select pg_temp.prepare_coding(%L,%L)',request||jsonb_build_object('leaseToken',extensions.gen_random_uuid()),repeat('K',64)),'42501');
+    receipt:=pg_temp.prepare_coding(request,repeat('K',64)); e:=(receipt->>'epoch')::uuid;
     perform pg_temp.wake_assert(receipt->>'state'='prepared' and receipt->>'generation'='1' and receipt->'guestBootId'='null'::jsonb
         and (receipt->>'validForMs')::bigint between 1 and 330000,'Prestart hold has a bounded immutable permit with no invented boot');
     before_balance:=(select sum(reserved_us) from public.qorpera_computer_allowance_buckets);
@@ -51,12 +64,12 @@ begin
         raise exception 'Mode switch discarded an active paid hold';
     exception when object_not_in_prerequisite_state then null; end;
     perform pg_sleep(0.002);
-    again:=public.qorpera_prepare_coding_computer_permit(request,repeat('K',64));
+    again:=pg_temp.prepare_coding(request,repeat('K',64));
     perform pg_temp.wake_assert(again->>'issuedAt'=receipt->>'issuedAt' and again->>'deadline'=receipt->>'deadline'
         and (again->>'validForMs')::bigint<=(receipt->>'validForMs')::bigint
         and (select sum(reserved_us)=before_balance from public.qorpera_computer_allowance_buckets),'Prepare retry neither extends time nor duplicates funds');
-    perform pg_temp.wake_error(format('select public.qorpera_prepare_coding_computer_permit(%L,%L)',request||'{"windowMs":30000}',repeat('K',64)),'23505');
-    perform pg_temp.wake_error(format('select public.qorpera_prepare_coding_computer_permit(%L,%L)',request||jsonb_build_object('requestId',extensions.gen_random_uuid()),repeat('K',64)),'55000');
+    perform pg_temp.wake_error(format('select pg_temp.prepare_coding(%L,%L)',request||'{"windowMs":30000}',repeat('K',64)),'23505');
+    perform pg_temp.wake_error(format('select pg_temp.prepare_coding(%L,%L)',request||jsonb_build_object('requestId',extensions.gen_random_uuid()),repeat('K',64)),'55000');
     perform pg_temp.wake_error(format('select public.qorpera_settle_computer_allowance(%L,0)',id),'42501');
     perform pg_temp.wake_error(format('select public.qorpera_reserve_computer_allowance(%L,%L,%L,null,%L,%L,1,now()+interval ''1 minute'')',
         extensions.gen_random_uuid(),'30000000-0000-4000-8000-000000000010','30000000-0000-4000-8000-000000000001',machine,e),'42501');
@@ -113,7 +126,7 @@ begin
     -- can close its zero-usage reservation without manufacturing a measurement.
     request:=request||jsonb_build_object('requestId','63700000-0000-4000-8000-000000000050');
     update public.qorpera_runtime_node_demands set last_checked_at=clock_timestamp() where allocation_id=machine;
-    receipt:=public.qorpera_prepare_coding_computer_permit(request,repeat('K',64));
+    receipt:=pg_temp.prepare_coding(request,repeat('K',64));
     sample:=sample||jsonb_build_object('observationId',extensions.gen_random_uuid(),'previousObservationId',null,'physicalId',null,'guestBootId',null,
         'hostUptimeMs',1020300,'observedAt',clock_timestamp(),'state','absent');
     terminal:=jsonb_build_object('requestId',extensions.gen_random_uuid(),'permitId',receipt->'permitId','generation',1,'sample',sample,'guardClosed',true);

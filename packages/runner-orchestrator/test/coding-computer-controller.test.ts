@@ -104,20 +104,27 @@ async function fixture() {
 	let permit: PaidComputerPermit | null = null,
 		lastSample: Record<string, unknown> | null = null;
 	let losePrepare = false,
-		loseRenew = false;
+		loseRenew = false,
+		loseFinish = false,
+		sourceUnavailable = false;
 	const receipt = () => (permit ? { ...permit, validForMs: Math.max(0, Date.parse(permit.deadline) - now()) } : null);
 	const control = {
 		call: vi.fn(async (method: string, args: Record<string, unknown>): Promise<unknown> => {
 			const request = args.p_request as Record<string, unknown>;
-			if (method === "qorpera_describe_coding_computer_permit")
+			if (method === "qorpera_describe_coding_computer_prestart")
+				return { state: permit?.state ?? "absent", permit: receipt(), lastSample };
+			if (method === "qorpera_describe_coding_computer_permit") {
+				if (sourceUnavailable) throw new Error("machine owner moved");
 				return permit?.state === "closed" || !permit
 					? null
 					: { permit: receipt(), lastSample: structuredClone(lastSample) };
+			}
 			if (method === "qorpera_prepare_coding_computer_permit") {
 				permit = {
-					schema: "qorpera.computer-usage-permit/v1",
+					schema: "qorpera.computer-usage-permit/v2",
+					prestart: request.prestart as PaidComputerPermit["prestart"],
 					mode: "paid",
-					permitId: randomUUID(),
+					permitId: String(request.requestId),
 					allocationId: machine.machineId,
 					instanceSha256: plan.instanceSha256,
 					nodeId: randomUUID(),
@@ -143,6 +150,19 @@ async function fixture() {
 				}
 				return receipt();
 			}
+			if (method.includes("abandon")) {
+				const reservationReleased = permit !== null;
+				if (permit) permit = { ...permit, state: "closed" };
+				return {
+					schema: "qorpera.computer-abandonment-receipt/v1",
+					permitId: request.permitId,
+					state: "abandoned_before_dispatch",
+					abandonment: request.abandonment,
+					reservationReleased,
+					debitedUs: "0",
+					releasedUs: reservationReleased ? "330000000" : "0",
+				};
+			}
 			if (!permit) throw new Error("No permit");
 			lastSample = structuredClone(request.sample as Record<string, unknown>);
 			if (lastSample.state === "running")
@@ -165,7 +185,13 @@ async function fixture() {
 					throw new Error("renew reply lost");
 				}
 			}
-			if (method === "qorpera_finish_coding_computer_permit") permit = { ...permit, state: "closed" };
+			if (method === "qorpera_finish_coding_computer_permit") {
+				permit = { ...permit, state: "closed" };
+				if (loseFinish) {
+					loseFinish = false;
+					throw new Error("finish reply lost");
+				}
+			}
 			return receipt();
 		}),
 	};
@@ -220,6 +246,12 @@ async function fixture() {
 		loseNextRenew() {
 			loseRenew = true;
 		},
+		loseNextFinish() {
+			loseFinish = true;
+		},
+		moveSource() {
+			sourceUnavailable = true;
+		},
 		async start() {
 			await controller.ensure(claim, machine, signal());
 			return controller.start(machine.machineId, signal());
@@ -231,6 +263,145 @@ async function fixture() {
 }
 
 describe("paid coding computer controller", () => {
+	it.each([false, true])(
+		"checks the exact durable abandonment closure after a lost reply (altered: %s)",
+		async (altered) => {
+			const f = await fixture();
+			await f.controller.ensure(f.claim, f.machine, signal());
+			const original = f.control.call.getMockImplementation()!;
+			let closure: Record<string, unknown> | null = null;
+			f.control.call.mockImplementation(async (method, args) => {
+				if (method === "qorpera_abandon_coding_computer_permit") {
+					closure = (await original(method, args)) as Record<string, unknown>;
+					throw new Error("abandonment reply lost");
+				}
+				if (method === "qorpera_describe_coding_computer_prestart")
+					return {
+						state: "abandoned",
+						permit: f.getPermit(),
+						closure: altered ? { ...closure, permitId: randomUUID() } : closure,
+					};
+				return original(method, args);
+			});
+			await expect(f.controller.abandonClaim(f.claim, f.machine, signal())).rejects.toThrow("reply lost");
+			f.moveSource();
+			if (altered) {
+				await expect(f.controller.maintain(signal())).rejects.toThrow("RECOVERY_UNCONFIRMED");
+				expect(f.controller.manages(f.machine.machineId)).toBe(true);
+			} else {
+				await f.controller.maintain(signal());
+				expect(f.controller.manages(f.machine.machineId)).toBe(false);
+			}
+			expect((await f.guard.listPrestarts())[0].state).toBe("abandoned");
+			expect(f.client.submitInstanceOperation).not.toHaveBeenCalled();
+		},
+	);
+	it("clears a lost finish reply from exact history after the machine owner moves, including queued maintenance", async () => {
+		const f = await fixture();
+		await f.start();
+		await f.bind();
+		await f.controller.stop(f.machine.machineId, signal());
+		f.loseNextFinish();
+		await expect(f.controller.observe(f.machine.machineId, signal())).rejects.toThrow("finish reply lost");
+		expect(f.controller.manages(f.machine.machineId)).toBe(true);
+		const stopped = await f.guard.latest(f.machine.machineId);
+		f.moveSource();
+		f.control.call.mockClear();
+		await Promise.all([
+			f.controller.maintain(signal()),
+			f.controller.maintain(signal()),
+			f.controller.stop(f.machine.machineId, signal()),
+		]);
+		expect(f.controller.manages(f.machine.machineId)).toBe(false);
+		expect(f.calls("qorpera_describe_coding_computer_permit")).toHaveLength(0);
+		expect(f.calls("qorpera_finish_coding_computer_permit")).toHaveLength(0);
+		expect(await f.guard.latest(f.machine.machineId)).toEqual(stopped);
+		expect(await f.controller.ownsStart(f.machine.machineId, signal())).toBe(true);
+	});
+	it("initializes closed v2 history without reauthenticating its replaced live machine", async () => {
+		const f = await fixture();
+		await f.start();
+		await f.bind();
+		await f.controller.stop(f.machine.machineId, signal());
+		await f.controller.observe(f.machine.machineId, signal());
+		f.moveSource();
+		f.control.call.mockClear();
+		const restarted = new CodingComputerController(f.options);
+		await restarted.initialize(signal());
+		await restarted.maintain(signal());
+		expect(restarted.manages(f.machine.machineId)).toBe(false);
+		expect(f.calls("qorpera_describe_coding_computer_prestart")).toHaveLength(1);
+		expect(f.calls("qorpera_describe_coding_computer_permit")).toHaveLength(0);
+		expect((await f.guard.latest(f.machine.machineId))?.phase).toBe("stopped");
+	});
+	it.each(["permitId", "hostBootId", "prestart"])(
+		"refuses a terminal history receipt with different %s",
+		async (field) => {
+			const f = await fixture();
+			await f.start();
+			await f.bind();
+			const original = f.control.call.getMockImplementation()!;
+			f.control.call.mockImplementation(async (method, args) => {
+				if (method !== "qorpera_describe_coding_computer_prestart") return original(method, args);
+				return {
+					state: "closed",
+					permit: {
+						...f.getPermit(),
+						state: "closed",
+						[field]:
+							field === "prestart"
+								? { guardIncarnationId: randomUUID(), prepareSha256: "a".repeat(64) }
+								: randomUUID(),
+					},
+				};
+			});
+			await expect(f.controller.maintain(signal())).rejects.toThrow("RECOVERY_UNCONFIRMED");
+			expect(f.controller.manages(f.machine.machineId)).toBe(true);
+			expect((await f.guard.latest(f.machine.machineId))?.phase).toBe("running");
+		},
+	);
+	it("reclaims a prepare-only hold after expiry/restart and prevents the same claim minting a replacement", async () => {
+		const f = await fixture();
+		f.loseNextPrepare();
+		await expect(f.controller.ensure(f.claim, f.machine, signal())).rejects.toThrow("reply lost");
+		f.host.uptimeMs += 300001;
+		const restarted = new CodingComputerController(f.options);
+		await restarted.initialize(signal());
+		expect(f.getPermit()?.state).toBe("closed");
+		expect(f.calls("qorpera_abandon_coding_computer_permit")).toHaveLength(1);
+		await expect(restarted.ensure(f.claim, f.machine, signal())).rejects.toThrow("START_ABANDONED");
+		expect(f.calls("qorpera_prepare_coding_computer_permit")).toHaveLength(1);
+		expect(await restarted.ownsStart(f.machine.machineId, signal())).toBe(true);
+		expect(f.client.submitInstanceOperation).not.toHaveBeenCalled();
+	});
+	it("retains no lease credential and cancels an unused claim without an attached physical record", async () => {
+		const f = await fixture();
+		await f.controller.ensure(f.claim, f.machine, signal());
+		const entries = await f.guard.listPrestarts();
+		expect(JSON.stringify(entries)).not.toContain(f.claim.leaseToken);
+		expect(JSON.stringify(entries)).not.toContain("leaseToken");
+		expect(await f.guard.list()).toEqual([]);
+		await f.controller.abandonClaim(f.claim, f.machine, signal());
+		expect(f.getPermit()?.state).toBe("closed");
+		await expect(f.controller.ensure(f.claim, f.machine, signal())).rejects.toThrow("START_ABANDONED");
+	});
+	it("recovers a zero-use cancellation across host reboot without granting a new start deadline", async () => {
+		const f = await fixture();
+		await f.controller.ensure(f.claim, f.machine, signal());
+		f.host.hostBootId = randomUUID();
+		f.host.uptimeMs = 5;
+		const restarted = new CodingComputerController(f.options);
+		await restarted.initialize(signal());
+		expect(f.getPermit()?.state).toBe("closed");
+		expect(f.client.submitInstanceOperation).not.toHaveBeenCalled();
+	});
+	it("leaves a dispatched shared machine funded when one claim fails", async () => {
+		const f = await fixture();
+		await f.start();
+		await f.controller.abandonClaim(f.claim, f.machine, signal());
+		expect(f.calls("qorpera_abandon_coding_computer_permit")).toHaveLength(0);
+		expect(f.controller.manages(f.machine.machineId)).toBe(true);
+	});
 	it("reserves once before start, routes physical start through guard and recovers exact local reply", async () => {
 		const f = await fixture();
 		await f.controller.ensure(f.claim, f.machine, signal());
@@ -372,6 +543,7 @@ describe("paid coding computer controller", () => {
 		vi.spyOn(f.guard, "list").mockResolvedValue([entry, structuredClone(entry), structuredClone(entry)]);
 		f.control.call.mockClear();
 		await new CodingComputerController(f.options).initialize(signal());
-		expect(f.calls("qorpera_describe_coding_computer_permit")).toHaveLength(1);
+		expect(f.calls("qorpera_describe_coding_computer_prestart")).toHaveLength(1);
+		expect(f.calls("qorpera_describe_coding_computer_permit")).toHaveLength(0);
 	});
 });

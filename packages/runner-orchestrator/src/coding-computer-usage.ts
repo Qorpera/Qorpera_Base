@@ -7,6 +7,12 @@ import type { LxdOperationReference } from "./lxd-client.ts";
 export interface CodingComputerUsage {
 	ensure(claim: CodingSessionClaim, machine: Readonly<LxdCodingMachineBinding>, signal: AbortSignal): Promise<void>;
 	manages(machineId: string): boolean;
+	ownsStart(machineId: string, signal: AbortSignal): Promise<boolean>;
+	abandonClaim(
+		claim: CodingSessionClaim,
+		machine: Readonly<LxdCodingMachineBinding>,
+		signal: AbortSignal,
+	): Promise<void>;
 	start(machineId: string, signal: AbortSignal): Promise<LxdOperationReference>;
 	stop(machineId: string, signal: AbortSignal): Promise<LxdOperationReference>;
 	observe(machineId: string, signal: AbortSignal): Promise<void>;

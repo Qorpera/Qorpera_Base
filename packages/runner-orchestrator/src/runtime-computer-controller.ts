@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import type { CodingPaidGuardPort } from "./coding-computer-controller.ts";
 import {
 	isRuntimePaidComputerMachine,
@@ -7,8 +8,15 @@ import {
 	type PaidComputerGuardRecord,
 	type PaidComputerHostClock,
 	type PaidComputerPermit,
+	type PaidComputerPrestartRecord,
 	parsePaidComputerPermit,
 } from "./computer-paid-guard.ts";
+import {
+	assertComputerAbandonmentReceipt,
+	computerPrestartDigest,
+	computerPrestartExpired,
+	computerPrestartRequest,
+} from "./computer-prestart-control.ts";
 import type { LxdInspectableClient, LxdOperationReference, LxdTrackedClient } from "./lxd-client.ts";
 import { parseLxdProcUptime } from "./lxd-proc-uptime.ts";
 import { assertRuntimePaidComputerInstance, type RuntimePaidComputerMachine } from "./runtime-paid-machine.ts";
@@ -63,6 +71,8 @@ export const RUNTIME_COMPUTER_RPCS = [
 	"qorpera_checkpoint_runtime_computer_permit",
 	"qorpera_renew_runtime_computer_permit",
 	"qorpera_finish_runtime_computer_permit",
+	"qorpera_abandon_runtime_computer_permit",
+	"qorpera_describe_runtime_computer_prestart",
 ] as const;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 function object(value: unknown): Record<string, unknown> {
@@ -75,6 +85,8 @@ export class RuntimeComputerController {
 	readonly #options: RuntimeComputerControllerOptions;
 	readonly #computers = new Map<string, ManagedRuntimeComputer>();
 	readonly #work = new Map<string, Promise<unknown>>();
+	readonly #abandoned = new Set<string>();
+	readonly #terminal = new Set<string>();
 	constructor(options: RuntimeComputerControllerOptions) {
 		this.#options = options;
 	}
@@ -162,6 +174,133 @@ export class RuntimeComputerController {
 			},
 		};
 	}
+	prestartStatus(requestId: string, signal: AbortSignal): Promise<PaidComputerPrestartRecord | null> {
+		return this.#options.guard.prestartStatus(requestId, signal);
+	}
+	#context(entry: PaidComputerPrestartRecord): RuntimeComputerContext {
+		const request = computerPrestartRequest(entry);
+		if (request.schema !== "qorpera.runtime-computer-prepare/v2")
+			throw new Error("RUNTIME_COMPUTER_PRESTART_DIFFERS");
+		const {
+			schema: _schema,
+			requestId: _requestId,
+			machineIdSha256: _machine,
+			hostBootId: _boot,
+			windowMs: _window,
+			stopReserveMs: _reserve,
+			...context
+		} = request;
+		return context as unknown as RuntimeComputerContext;
+	}
+	async #abandon(entry: PaidComputerPrestartRecord, signal: AbortSignal): Promise<void> {
+		if (this.#abandoned.has(entry.intent.permitId)) return;
+		const terminal = await this.#options.guard.abandonPrestart(entry.intent, signal);
+		const receipt = await this.#call(
+			"qorpera_abandon_runtime_computer_permit",
+			{
+				schema: "qorpera.computer-abandon/v1",
+				requestId: entry.intent.permitId,
+				permitId: entry.intent.permitId,
+				generation: 1,
+				prepareRequestText: entry.intent.prepareRequestText,
+				abandonment: terminal.abandonment,
+			},
+			signal,
+		);
+		assertComputerAbandonmentReceipt(receipt, terminal);
+		this.#abandoned.add(entry.intent.permitId);
+		if (this.#computers.get(entry.intent.allocationId)?.permit.permitId === entry.intent.permitId)
+			this.#computers.delete(entry.intent.allocationId);
+	}
+	async abandonUndispatched(context: RuntimeComputerContext, requestId: string, signal: AbortSignal): Promise<void> {
+		await this.#exclusive(context.allocationId, async () => {
+			const entry = await this.#options.guard.prestartStatus(requestId, signal);
+			if (!entry || !isDeepStrictEqual(this.#context(entry), context))
+				throw new Error("RUNTIME_COMPUTER_PRESTART_DIFFERS");
+			await this.#abandon(entry, signal);
+		});
+	}
+	async #recoverPrestarts(entries: PaidComputerPrestartRecord[], signal: AbortSignal): Promise<void> {
+		const results = await Promise.allSettled(
+			entries
+				.filter((entry) => computerPrestartRequest(entry).schema === "qorpera.runtime-computer-prepare/v2")
+				.map((entry) =>
+					this.#exclusive(entry.intent.allocationId, async () => {
+						if (this.#terminal.has(entry.intent.permitId)) return;
+						const started = await this.#clock();
+						const retained = object(
+							await this.#call(
+								"qorpera_describe_runtime_computer_prestart",
+								{
+									...computerPrestartRequest(entry),
+									prepareRequestText: entry.intent.prepareRequestText,
+									prestart: {
+										guardIncarnationId: entry.guardIncarnationId,
+										prepareSha256: entry.intent.prepareSha256,
+									},
+								},
+								signal,
+							),
+						);
+						if (retained.state === "closed" || retained.state === "abandoned") {
+							if (retained.permit !== null || retained.state === "closed") {
+								const permit = this.#permit(retained.permit, this.#context(entry), started, true);
+								if (
+									permit.state !== "closed" ||
+									permit.permitId !== entry.intent.permitId ||
+									permit.hostBootId !== entry.intent.hostBootId ||
+									permit.schema !== "qorpera.computer-usage-permit/v2" ||
+									permit.prestart?.guardIncarnationId !== entry.guardIncarnationId ||
+									permit.prestart.prepareSha256 !== entry.intent.prepareSha256
+								)
+									throw new Error("RUNTIME_COMPUTER_PRESTART_DIFFERS");
+							}
+							if (retained.state === "abandoned") {
+								const tombstone = await this.#options.guard.prestartStatus(entry.intent.permitId, signal);
+								if (
+									!tombstone ||
+									tombstone.state !== "abandoned" ||
+									!isDeepStrictEqual(tombstone.intent, entry.intent) ||
+									tombstone.guardIncarnationId !== entry.guardIncarnationId
+								)
+									throw new Error("RUNTIME_COMPUTER_PRESTART_DIFFERS");
+								assertComputerAbandonmentReceipt(retained.closure, tombstone);
+							}
+							this.#terminal.add(entry.intent.permitId);
+							if (this.#computers.get(entry.intent.allocationId)?.permit.permitId === entry.intent.permitId)
+								this.#computers.delete(entry.intent.allocationId);
+							return;
+						}
+						if (
+							entry.state === "abandoned" ||
+							(entry.state === "registered" && computerPrestartExpired(entry, started))
+						) {
+							await this.#abandon(entry, signal);
+							return;
+						}
+						if (this.#computers.has(entry.intent.allocationId)) return;
+						if (retained.state === "absent" && retained.permit === null) return;
+						if (retained.state !== "prepared" && retained.state !== "bound")
+							throw new Error("RUNTIME_COMPUTER_RECEIPT_INVALID");
+						const context = this.#context(entry),
+							permit = this.#permit(retained.permit, context, started, true);
+						if (permit.permitId !== entry.intent.permitId) throw new Error("RUNTIME_COMPUTER_PRESTART_DIFFERS");
+						const sample = retained.lastSample === null ? null : object(retained.lastSample);
+						if (sample && (typeof sample.observationId !== "string" || !UUID.test(sample.observationId)))
+							throw new Error("RUNTIME_COMPUTER_RECEIPT_INVALID");
+						this.#computers.set(entry.intent.allocationId, {
+							context,
+							permit,
+							requestStartedUptimeMs: started.uptimeMs,
+							lastObservationId: (sample?.observationId as string | null) ?? null,
+							continuity: false,
+						});
+					}),
+				),
+		);
+		if (results.some((result) => result.status === "rejected"))
+			throw new Error("RUNTIME_COMPUTER_PRESTART_RECOVERY_UNCONFIRMED");
+	}
 	/** requestId is a durable launch/resume command identity, retained by the
 	 * provider. Recovery describes the committed hold before ever preparing. */
 	async ensure(
@@ -170,26 +309,59 @@ export class RuntimeComputerController {
 		signal: AbortSignal,
 	): Promise<RuntimeComputerFunding> {
 		return this.#exclusive(context.allocationId, async () => {
+			let intent = await this.#options.guard.prestartStatus(requestId, signal);
+			if (intent && !isDeepStrictEqual(this.#context(intent), context))
+				throw new Error("RUNTIME_COMPUTER_PRESTART_DIFFERS");
+			if (
+				intent?.state === "abandoned" ||
+				(intent?.state === "registered" && computerPrestartExpired(intent, await this.#clock()))
+			) {
+				await this.#abandon(intent, signal);
+				throw new Error("COMPUTER_START_ABANDONED");
+			}
 			const guarded = await this.#options.guard.latest(context.allocationId, signal);
 			const result = await this.#describe(context, signal, guarded?.phase === "stopped");
 			if (result.mode === "shadow") {
-				if (guarded && guarded.phase !== "stopped") throw new Error("RUNTIME_COMPUTER_MODE_DIFFERS");
+				if (intent || (guarded && guarded.phase !== "stopped")) throw new Error("RUNTIME_COMPUTER_MODE_DIFFERS");
 				return { mode: "shadow" };
 			}
 			let current = result.current;
 			if (!current) {
 				if (guarded && guarded.phase !== "stopped") throw new Error("RUNTIME_COMPUTER_GUARD_UNSETTLED");
 				const clock = await this.#clock();
-				const receipt = await this.#call(
-					"qorpera_prepare_runtime_computer_permit",
-					{
+				if (!intent) {
+					const prepareRequestText = JSON.stringify({
 						...context,
-						schema: "qorpera.runtime-computer-prepare/v1",
+						schema: "qorpera.runtime-computer-prepare/v2",
 						requestId,
 						machineIdSha256: clock.hostMachineIdSha256,
 						hostBootId: clock.hostBootId,
 						windowMs: PAID_COMPUTER_WINDOW_MS,
 						stopReserveMs: PAID_COMPUTER_STOP_RESERVE_MS,
+					});
+					intent = await this.#options.guard.registerPrestart(
+						{
+							schema: "qorpera.computer-prestart-intent/v1",
+							permitId: requestId,
+							allocationId: context.allocationId,
+							instanceSha256: context.instanceSha256,
+							hostMachineIdSha256: clock.hostMachineIdSha256,
+							hostBootId: clock.hostBootId,
+							prepareRequestText,
+							prepareSha256: computerPrestartDigest(prepareRequestText),
+						},
+						signal,
+					);
+				}
+				const receipt = await this.#call(
+					"qorpera_prepare_runtime_computer_permit",
+					{
+						...computerPrestartRequest(intent),
+						prepareRequestText: intent.intent.prepareRequestText,
+						prestart: {
+							guardIncarnationId: intent.guardIncarnationId,
+							prepareSha256: intent.intent.prepareSha256,
+						},
 					},
 					signal,
 				);
@@ -200,6 +372,9 @@ export class RuntimeComputerController {
 					lastObservationId: null,
 					continuity: false,
 				};
+			}
+			if (current.permit.state === "prepared") {
+				if (!intent || current.permit.permitId !== requestId) throw new Error("RUNTIME_COMPUTER_PRESTART_REQUIRED");
 			}
 			const old = this.#computers.get(context.allocationId);
 			current.continuity =
@@ -431,6 +606,7 @@ export class RuntimeComputerController {
 				signal,
 			);
 			this.#computers.delete(current.context.allocationId);
+			this.#terminal.add(current.permit.permitId);
 			return;
 		}
 		if (current.permit.state === "prepared" && sample.state !== "running") return;
@@ -478,12 +654,20 @@ export class RuntimeComputerController {
 		});
 	}
 	async maintain(signal: AbortSignal): Promise<void> {
+		// Queue history recovery before live-source reads for the same machine.
+		// Unrelated allocations still progress independently.
+		const recovery = this.#recoverPrestarts(await this.#options.guard.listPrestarts(signal), signal).then(
+			() => null,
+			(error: unknown) => error,
+		);
 		const results = await Promise.allSettled(
 			[...this.#computers.values()].map((entry) =>
 				this.#exclusive(entry.context.allocationId, async () => {
 					try {
+						const managed = this.#computers.get(entry.context.allocationId);
+						if (!managed || this.#terminal.has(managed.permit.permitId)) return;
 						const guarded = await this.#options.guard.latest(entry.context.allocationId, signal);
-						const current = (await this.#describe(entry.context, signal, guarded?.phase === "stopped")).current;
+						const current = (await this.#describe(managed.context, signal, guarded?.phase === "stopped")).current;
 						if (!current) {
 							this.#computers.delete(entry.context.allocationId);
 							return;
@@ -512,6 +696,8 @@ export class RuntimeComputerController {
 				}),
 			),
 		);
+		const recoveryError = await recovery;
+		if (recoveryError) throw recoveryError;
 		if (results.some((result) => result.status === "rejected")) throw new Error("RUNTIME_COMPUTER_USAGE_UNCONFIRMED");
 	}
 }

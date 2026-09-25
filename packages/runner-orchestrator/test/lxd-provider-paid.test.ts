@@ -3,7 +3,11 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { PaidComputerGuardRecord, PaidComputerPermit } from "../src/computer-paid-guard.ts";
+import type {
+	PaidComputerGuardRecord,
+	PaidComputerPermit,
+	PaidComputerPrestartRecord,
+} from "../src/computer-paid-guard.ts";
 import type {
 	LxdClient,
 	LxdCreateInstanceRequest,
@@ -152,7 +156,7 @@ async function fixture() {
 				expandedDevices: request.devices,
 			};
 		}),
-		setInstancePower: vi.fn(async () => {
+		setInstancePower: vi.fn(async (): Promise<void> => {
 			throw new Error("paid path bypassed guard");
 		}),
 		pushInstanceFile: vi.fn(async () => undefined),
@@ -164,8 +168,17 @@ async function fixture() {
 		}),
 	} satisfies LxdClient;
 	let permit: PaidComputerPermit | undefined;
+	let prestart: PaidComputerPrestartRecord | null = null;
 	const usage = {
+		prestartStatus: vi.fn(async () => prestart),
+		abandonUndispatched: vi.fn(async () => {
+			if (!prestart || prestart.state === "dispatched") throw new Error("cannot abandon");
+			prestart.state = "abandoned";
+			managed = false;
+			effects.push("abandon");
+		}),
 		ensure: vi.fn(async (context: RuntimeComputerContext): Promise<RuntimeComputerFunding> => {
+			if (prestart?.state === "abandoned") throw new Error("COMPUTER_START_ABANDONED");
 			effects.push("fund");
 			managed = true;
 			permit ??= {
@@ -191,15 +204,34 @@ async function fixture() {
 				memoryBytes: 8 * 1024 ** 3,
 				state: "prepared",
 			};
+			prestart ??= {
+				schema: "qorpera.computer-prestart-record/v1",
+				guardIncarnationId: randomUUID(),
+				requestStartedUptimeMs: 1000,
+				state: "registered",
+				abandonment: null,
+				intent: {
+					schema: "qorpera.computer-prestart-intent/v1",
+					permitId: context.allocationId,
+					allocationId: context.allocationId,
+					instanceSha256: context.instanceSha256,
+					hostMachineIdSha256: "e".repeat(64),
+					hostBootId: permit.hostBootId,
+					prepareSha256: "a".repeat(64),
+					prepareRequestText: JSON.stringify(context),
+				},
+			};
 			return { mode: "paid", permit };
 		}),
 		recover: vi.fn(async () => {
-			managed = true;
+			managed = prestart?.state !== "abandoned";
 			effects.push("recover");
 			return "paid" as const;
 		}),
 		manages: vi.fn(() => managed),
 		start: vi.fn(async () => {
+			if (!prestart || prestart.state === "abandoned") throw new Error("COMPUTER_START_ABANDONED");
+			prestart.state = "dispatched";
 			effects.push("guard-start");
 			instance!.status = "Running";
 			instance!.statusCode = 103;
@@ -222,7 +254,16 @@ async function fixture() {
 		maintain: vi.fn(async () => undefined),
 	} satisfies Pick<
 		RuntimeComputerController,
-		"ensure" | "recover" | "manages" | "start" | "stop" | "observe" | "maintain" | "assertRunning"
+		| "ensure"
+		| "recover"
+		| "manages"
+		| "start"
+		| "stop"
+		| "observe"
+		| "maintain"
+		| "assertRunning"
+		| "prestartStatus"
+		| "abandonUndispatched"
 	>;
 	const fetcher = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
 		const name = String(url),
@@ -266,6 +307,30 @@ async function fixture() {
 		get instance() {
 			return instance;
 		},
+		disappear() {
+			instance = undefined;
+		},
+		removeAutostart() {
+			if (!instance) throw new Error("fixture instance missing");
+			const config = { ...instance.config },
+				expandedConfig = { ...instance.expandedConfig };
+			delete config["boot.autostart"];
+			delete expandedConfig["boot.autostart"];
+			instance = { ...instance, config, expandedConfig };
+		},
+		appear(request: LxdCreateInstanceRequest) {
+			instance = {
+				name: request.name,
+				type: "virtual-machine",
+				status: "Stopped",
+				statusCode: 102,
+				profiles: [...request.profiles],
+				config: request.config,
+				expandedConfig: request.config,
+				devices: request.devices,
+				expandedDevices: request.devices,
+			};
+		},
 		restart() {
 			managed = false;
 			return new LxdCloudRunnerProviderBackend(config, lxd, guest, fetcher, usage);
@@ -273,6 +338,191 @@ async function fixture() {
 	};
 }
 describe("native provider funded lifecycle", () => {
+	it("allows legacy shadow cleanup without an explicit autostart setting", async () => {
+		const f = await fixture(),
+			signal = new AbortController().signal;
+		const runner = await f.backend.acquire(f.work.runId, f.work, signal);
+		const path = join(f.config.stateRoot, f.work.runId, "journal.json"),
+			journal = JSON.parse(await readFile(path, "utf8"));
+		delete journal.paidComputer;
+		delete journal.createDispatched;
+		await writeFile(path, JSON.stringify(journal));
+		f.removeAutostart();
+		f.lxd.setInstancePower.mockImplementation(async () => {
+			f.instance!.status = "Stopped";
+			f.instance!.statusCode = 102;
+		});
+		f.restart();
+		const legacy = new LxdCloudRunnerProviderBackend(f.config, f.lxd, f.guest, f.fetcher);
+		await legacy.stop(runner, "idle", signal);
+		expect(f.lxd.setInstancePower).toHaveBeenCalledOnce();
+		expect(f.lxd.deleteInstance).toHaveBeenCalledOnce();
+		expect(f.effects).toContain("release");
+		expect(f.usage.abandonUndispatched).not.toHaveBeenCalled();
+	});
+	it("holds legacy ambiguous creates without redispatch or automatic allowance cancellation", async () => {
+		const f = await fixture(),
+			signal = new AbortController().signal;
+		const path = join(f.config.stateRoot, f.work.runId, "journal.json");
+		let crashJournal: Record<string, unknown> | undefined;
+		f.lxd.createInstance.mockImplementationOnce(async () => {
+			crashJournal = JSON.parse(await readFile(path, "utf8"));
+			throw new Error("process died");
+		});
+		f.usage.abandonUndispatched.mockRejectedValueOnce(new Error("process gone"));
+		await expect(f.backend.acquire(f.work.runId, f.work, signal)).rejects.toThrow();
+		delete crashJournal!.createDispatched;
+		await writeFile(path, JSON.stringify(crashJournal));
+		f.usage.abandonUndispatched.mockClear();
+		const restarted = f.restart();
+		await expect(restarted.acquire(f.work.runId, f.work, signal)).rejects.toThrow("prestart recovery is unconfirmed");
+		await expect(restarted.reconcile(signal)).rejects.toThrow("Legacy native create requires custody recovery");
+		expect(f.lxd.createInstance).toHaveBeenCalledOnce();
+		expect(f.usage.abandonUndispatched).not.toHaveBeenCalled();
+		expect(f.usage.start).not.toHaveBeenCalled();
+		expect(f.effects).not.toContain("release");
+	});
+	it("never redispatches an unresolved create on direct acquire replay after process replacement", async () => {
+		const f = await fixture(),
+			signal = new AbortController().signal;
+		const path = join(f.config.stateRoot, f.work.runId, "journal.json");
+		let crashJournal: Buffer | undefined, delayed: LxdCreateInstanceRequest | undefined;
+		f.lxd.createInstance.mockImplementationOnce(async (_project, request) => {
+			crashJournal = await readFile(path);
+			delayed = request;
+			throw new Error("process died during create");
+		});
+		f.usage.abandonUndispatched.mockRejectedValueOnce(new Error("process gone before cancellation"));
+		await expect(f.backend.acquire(f.work.runId, f.work, signal)).rejects.toThrow("prestart recovery is unconfirmed");
+		// Restore exactly the durable boundary at process death, before cleanup
+		// could publish a cancellation marker or receive the delayed VM.
+		await writeFile(path, crashJournal!);
+		f.usage.abandonUndispatched.mockClear();
+		const restarted = f.restart();
+		await expect(restarted.acquire(f.work.runId, f.work, signal)).rejects.toThrow(
+			"create custody remains unresolved",
+		);
+		expect(f.lxd.createInstance).toHaveBeenCalledOnce();
+		expect(f.usage.start).not.toHaveBeenCalled();
+		await restarted.reconcile(signal);
+		expect(f.effects).not.toContain("release");
+		expect(JSON.parse(await readFile(path, "utf8"))).toMatchObject({
+			createDispatched: true,
+			paidStartAbandoned: true,
+		});
+		expect(JSON.parse(await readFile(path, "utf8")).deletionConfirmed).toBeUndefined();
+		f.appear(delayed!);
+		await f.restart().reconcile(signal);
+		expect(f.effects.indexOf("delete")).toBeLessThan(f.effects.indexOf("release"));
+		expect(f.effects).toContain("release");
+		expect(f.lxd.createInstance).toHaveBeenCalledOnce();
+		expect(f.usage.start).not.toHaveBeenCalled();
+	});
+	it.each(["acquire", "reconcile"])(
+		"releases known completed creation custody after a registered guest disappears during %s recovery",
+		async (action) => {
+			const f = await fixture(),
+				signal = new AbortController().signal;
+			await f.backend.acquire(f.work.runId, f.work, signal);
+			f.disappear();
+			const restarted = f.restart();
+			if (action === "acquire")
+				await expect(restarted.acquire(f.work.runId, f.work, signal)).rejects.toThrow(
+					"Journaled LXD guest is missing",
+				);
+			else await restarted.reconcile(signal);
+			expect(
+				JSON.parse(await readFile(join(f.config.stateRoot, f.work.runId, "journal.json"), "utf8")),
+			).toMatchObject({
+				physicalState: "lost",
+				createDispatched: true,
+				deletionConfirmed: true,
+				capacityReleased: true,
+			});
+			expect(f.effects.slice(-2)).toEqual(["settle", "release"]);
+			expect(f.lxd.createInstance).toHaveBeenCalledOnce();
+			expect(f.usage.start).toHaveBeenCalledOnce();
+			await restarted.reconcile(signal);
+			expect(f.effects.filter((effect) => effect === "release")).toHaveLength(1);
+		},
+	);
+	it("releases secretly committed capacity before settling a stale reserving journal with a lost prepare response", async () => {
+		const f = await fixture(),
+			signal = new AbortController().signal;
+		const path = join(f.config.stateRoot, f.work.runId, "journal.json");
+		const prepare = f.usage.ensure.getMockImplementation()!;
+		let crashJournal: Record<string, unknown> | undefined;
+		f.usage.ensure.mockImplementationOnce(async (context) => {
+			await prepare(context);
+			crashJournal = JSON.parse(await readFile(path, "utf8"));
+			throw new Error("process died after prepare committed");
+		});
+		f.usage.abandonUndispatched.mockRejectedValueOnce(new Error("process gone before cancellation"));
+		await expect(f.backend.acquire(f.work.runId, f.work, signal)).rejects.toThrow("prestart recovery is unconfirmed");
+		expect(crashJournal).toMatchObject({ physicalState: "reserving" });
+		expect(crashJournal?.capacityRegistered).toBeUndefined();
+		expect(crashJournal?.paidComputer).toBeUndefined();
+		await writeFile(
+			path,
+			JSON.stringify({ ...crashJournal, updatedAt: new Date(Date.now() - 11 * 60_000).toISOString() }),
+		);
+		await f.restart().reconcile(signal);
+		expect(JSON.parse(await readFile(path, "utf8"))).toMatchObject({
+			physicalState: "lost",
+			paidStartAbandoned: true,
+			deletionConfirmed: true,
+			capacityReleased: true,
+		});
+		expect(f.effects.slice(-2)).toEqual(["abandon", "release"]);
+		expect(f.lxd.createInstance).not.toHaveBeenCalled();
+		await f.restart().reconcile(signal);
+		expect(f.effects.filter((effect) => effect === "release")).toHaveLength(1);
+	});
+	it("cancels a lost prepare reply before any VM creation and keeps the acquisition unreplayable", async () => {
+		const f = await fixture(),
+			signal = new AbortController().signal;
+		const prepare = f.usage.ensure.getMockImplementation()!;
+		f.usage.ensure.mockImplementationOnce(async (context) => {
+			await prepare(context);
+			throw new Error("prepare reply lost");
+		});
+		await expect(f.backend.acquire(f.work.runId, f.work, signal)).rejects.toThrow("prepare reply lost");
+		expect(f.lxd.createInstance).not.toHaveBeenCalled();
+		expect(f.usage.abandonUndispatched).toHaveBeenCalledOnce();
+		const journal = JSON.parse(await readFile(join(f.config.stateRoot, f.work.runId, "journal.json"), "utf8"));
+		expect(journal).toMatchObject({
+			physicalState: "stopping",
+			paidStartCancellation: true,
+			paidStartAbandoned: true,
+		});
+		expect(journal.deletionConfirmed).toBeUndefined();
+		const restarted = f.restart();
+		await restarted.reconcile(signal);
+		await expect(restarted.acquire(f.work.runId, f.work, signal)).rejects.toThrow("cannot be replayed");
+		expect(f.effects).toContain("release");
+	});
+	it("returns an unused hold but retains unknown create custody until a late stopped VM is deleted", async () => {
+		const f = await fixture(),
+			signal = new AbortController().signal;
+		const create = f.lxd.createInstance.getMockImplementation()!;
+		let delayed: Parameters<typeof create> | undefined;
+		f.lxd.createInstance.mockImplementationOnce(async (...args) => {
+			delayed = args;
+			throw new Error("create reply lost");
+		});
+		await expect(f.backend.acquire(f.work.runId, f.work, signal)).rejects.toThrow("create reply lost");
+		expect(f.usage.abandonUndispatched).toHaveBeenCalledOnce();
+		await f.restart().reconcile(signal);
+		expect(f.effects).not.toContain("release");
+		expect(f.usage.start).not.toHaveBeenCalled();
+		// A request already dispatched before cancellation can appear later.
+		expect(delayed?.[1].config["boot.autostart"]).toBe("false");
+		f.appear(delayed![1]);
+		await f.restart().reconcile(signal);
+		expect(f.effects).toContain("delete");
+		expect(f.effects).toContain("release");
+		expect(f.usage.start).not.toHaveBeenCalled();
+	});
 	it("funds before creation, binds before work delivery, then guarded-stop/delete/settlement precede capacity release", async () => {
 		const f = await fixture(),
 			signal = new AbortController().signal;

@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { cloudCodingSessionLayout, parseCloudCodingNasPolicy } from "@qorpera/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { CodingComputerUsage } from "../src/coding-computer-usage.ts";
 import { CodingMachineUnavailable, type CodingSessionClaim, type CodingTurnState } from "../src/coding-executor.ts";
 import { codingHostId, LxdCodingExecutorHost, type LxdCodingExecutorHostOptions } from "../src/coding-executor-host.ts";
 import {
@@ -442,6 +443,28 @@ async function fixture() {
 	};
 }
 type Fixture = Awaited<ReturnType<typeof fixture>>;
+function paidUsage(f: Fixture) {
+	const call = f.call.getMockImplementation()!;
+	f.call.mockImplementation(async (method, args, signal) => {
+		const result = await call(method, args, signal);
+		return method === "qorpera_authorize_coding_machine_run"
+			? { ...(result as object), schema: "qorpera.coding-machine-admission/v2", fundingRequired: true }
+			: result;
+	});
+	const reference = { project: f.machine.project, instanceName: f.plan.request.name, operationId: randomUUID() };
+	return {
+		ensure: vi.fn<CodingComputerUsage["ensure"]>(async () => {}),
+		manages: vi.fn(() => true),
+		ownsStart: vi.fn<CodingComputerUsage["ownsStart"]>(async () => true),
+		abandonClaim: vi.fn<CodingComputerUsage["abandonClaim"]>(async () => {}),
+		start: vi.fn(async () => reference),
+		stop: vi.fn(async () => reference),
+		observe: vi.fn(async () => {}),
+		maintain: vi.fn(async () => {}),
+		externalStart: vi.fn(async () => null),
+		externalStop: vi.fn(async () => null),
+	} satisfies CodingComputerUsage;
+}
 const reconciled = () =>
 	mocked.reconcile.mock.calls.map((call) => (call[0] as CodingMachineReconcileOptions).desiredState);
 
@@ -464,24 +487,7 @@ describe("a coding turn on its member's machine", () => {
 	});
 	it("routes paid start through the guard after funding and observes before preparing session work", async () => {
 		const f = await fixture();
-		const call = f.call.getMockImplementation()!;
-		f.call.mockImplementation(async (method, args, signal) => {
-			const result = await call(method, args, signal);
-			return method === "qorpera_authorize_coding_machine_run"
-				? { ...(result as object), schema: "qorpera.coding-machine-admission/v2", fundingRequired: true }
-				: result;
-		});
-		const reference = { project: f.machine.project, instanceName: f.plan.request.name, operationId: randomUUID() };
-		const usage = {
-			ensure: vi.fn(async () => {}),
-			manages: () => true,
-			start: vi.fn(async () => reference),
-			stop: vi.fn(async () => reference),
-			observe: vi.fn(async () => {}),
-			maintain: vi.fn(async () => {}),
-			externalStart: vi.fn(async () => null),
-			externalStop: vi.fn(async () => null),
-		};
+		const usage = paidUsage(f);
 		const host = new LxdCodingExecutorHost({ ...f.options, computerUsage: usage });
 		const reconcile = mocked.reconcile.getMockImplementation()!;
 		mocked.reconcile.mockImplementation(async (input: CodingMachineReconcileOptions) => {
@@ -497,6 +503,52 @@ describe("a coding turn on its member's machine", () => {
 		expect(usage.start).toHaveBeenCalledTimes(1);
 		expect(usage.ensure.mock.invocationCallOrder[0]).toBeLessThan(usage.start.mock.invocationCallOrder[0]);
 		expect(usage.observe.mock.invocationCallOrder[0]).toBeLessThan(mocked.seedTransfer.mock.invocationCallOrder[0]);
+		expect(f.client.submitInstanceOperation).not.toHaveBeenCalled();
+	});
+	it("retains guard-only start ownership after in-memory paid management disappears", async () => {
+		const f = await fixture(),
+			usage = paidUsage(f);
+		usage.manages.mockReturnValue(false);
+		usage.start.mockRejectedValue(new Error("COMPUTER_PRESTART_ABANDONED"));
+		const host = new LxdCodingExecutorHost({ ...f.options, computerUsage: usage });
+		mocked.reconcile.mockImplementation(async (input: CodingMachineReconcileOptions) => {
+			await input.authorize("run", input.signal);
+			await input.client.submitInstanceOperation(
+				f.machine.project,
+				{ action: "start", name: f.plan.request.name },
+				input.signal,
+			);
+			return { state: "running" };
+		});
+		await expect(host.prepareWorkspace(f.claim, f.turn(), f.signal)).rejects.toThrow("COMPUTER_PRESTART_ABANDONED");
+		expect(usage.ownsStart).toHaveBeenCalledWith(f.machine.machineId, expect.any(AbortSignal));
+		expect(usage.start).toHaveBeenCalledOnce();
+		expect(f.client.submitInstanceOperation).not.toHaveBeenCalled();
+		expect(mocked.seedTransfer).not.toHaveBeenCalled();
+	});
+	it("reconciles a failed paid prepare through abandonment before returning its original failure", async () => {
+		const f = await fixture(),
+			usage = paidUsage(f);
+		const failure = new Error("PREPARE_REPLY_LOST");
+		usage.ensure.mockRejectedValueOnce(failure);
+		const host = new LxdCodingExecutorHost({ ...f.options, computerUsage: usage });
+		await expect(host.prepareWorkspace(f.claim, f.turn(), f.signal)).rejects.toBe(failure);
+		expect(usage.abandonClaim).toHaveBeenCalledWith(f.claim, f.machine, expect.any(AbortSignal));
+		expect(usage.abandonClaim.mock.calls[0][2].aborted).toBe(false);
+		expect(mocked.reconcile).not.toHaveBeenCalled();
+		expect(f.client.submitInstanceOperation).not.toHaveBeenCalled();
+	});
+	it("reports both prepare and unresolved abandonment failures without implying cancellation", async () => {
+		const f = await fixture(),
+			usage = paidUsage(f);
+		const failure = new Error("PREPARE_REPLY_LOST"),
+			recovery = new Error("GUARD_UNAVAILABLE");
+		usage.ensure.mockRejectedValueOnce(failure);
+		usage.abandonClaim.mockRejectedValueOnce(recovery);
+		const host = new LxdCodingExecutorHost({ ...f.options, computerUsage: usage });
+		const outcome = await host.prepareWorkspace(f.claim, f.turn(), f.signal).catch((error: unknown) => error);
+		expect(outcome).toBeInstanceOf(AggregateError);
+		expect((outcome as AggregateError).errors).toEqual([failure, recovery]);
 		expect(f.client.submitInstanceOperation).not.toHaveBeenCalled();
 	});
 	it("wakes the member's machine, attaches the session, and runs the pinned seed, push and draft PR", async () => {

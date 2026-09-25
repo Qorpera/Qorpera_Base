@@ -2,7 +2,7 @@ import { join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { type LxdOfficeGuestBinding, lxdOfficeGuestPlan } from "./lxd-office-guest.ts";
 import { publish, readRecord } from "./lxd-office-journal-files.ts";
-import type { LxdOfficeOperationPort } from "./lxd-office-operations.ts";
+import type { LxdOfficeAbandonedStart, LxdOfficeOperationPort } from "./lxd-office-operations.ts";
 import { assertLxdOfficePhysicalBinding, type LxdOfficePhysicalPolicy } from "./lxd-office-physical-policy.ts";
 import type { LxdOfficeAdoptionMapping, LxdOfficeStartRegistry } from "./lxd-office-start-control.ts";
 import { lxdOfficeProviderBindingSha256 } from "./lxd-office-start-control.ts";
@@ -10,7 +10,16 @@ import type { RuntimeComputerContext, RuntimeComputerController } from "./runtim
 
 type OfficeController = Pick<
 	RuntimeComputerController,
-	"ensure" | "recover" | "start" | "guardRecord" | "manages" | "settleStopped" | "maintain" | "assertRunning"
+	| "ensure"
+	| "recover"
+	| "start"
+	| "guardRecord"
+	| "manages"
+	| "settleStopped"
+	| "maintain"
+	| "assertRunning"
+	| "prestartStatus"
+	| "abandonUndispatched"
 >;
 
 export interface LxdOfficePaidComputerPort {
@@ -137,7 +146,20 @@ export class LxdOfficePaidComputer implements LxdOfficePaidComputerPort {
 		await publish(root, name, Buffer.from(`${JSON.stringify(value)}\n`));
 		if (!isDeepStrictEqual((await readRecord(join(root, name), 131072)).value, value))
 			throw new Error("OFFICE_PAID_START_IDENTITY_CHANGED");
-		return (await this.#controller.ensure(context, commandId, signal)).mode === "paid";
+		// A cancelled command still belongs to the protected paid path. Let the
+		// operation journal retain its explicit terminal outcome; never route it
+		// through the public admission or raw start fallback.
+		if ((await this.#controller.prestartStatus(commandId, signal))?.state === "abandoned") {
+			await this.#controller.abandonUndispatched(context, commandId, signal);
+			return true;
+		}
+		try {
+			return (await this.#controller.ensure(context, commandId, signal)).mode === "paid";
+		} catch (error) {
+			if ((await this.#controller.prestartStatus(commandId, signal))?.state !== "abandoned") throw error;
+			await this.#controller.abandonUndispatched(context, commandId, signal);
+			return true;
+		}
 	}
 	#name(allocationId: string, commandId: string): string {
 		if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(commandId))
@@ -168,10 +190,27 @@ export class LxdOfficePaidComputer implements LxdOfficePaidComputerPort {
 	}
 	operations(binding: LxdOfficeGuestBinding): LxdOfficeOperationPort {
 		const plan = lxdOfficeGuestPlan(binding);
+		const abandoned = async (
+			context: RuntimeComputerContext,
+			commandId: string,
+			signal: AbortSignal,
+		): Promise<LxdOfficeAbandonedStart> => {
+			await this.#controller.abandonUndispatched(context, commandId, signal);
+			return { state: "abandoned_before_dispatch", commandId };
+		};
 		return {
 			submitStart: async (commandId, signal) => {
 				const context = await this.#retained(binding, commandId);
-				const funded = await this.#controller.ensure(context, commandId, signal);
+				if ((await this.#controller.prestartStatus(commandId, signal))?.state === "abandoned")
+					return abandoned(context, commandId, signal);
+				let funded: Awaited<ReturnType<OfficeController["ensure"]>>;
+				try {
+					funded = await this.#controller.ensure(context, commandId, signal);
+				} catch (error) {
+					if ((await this.#controller.prestartStatus(commandId, signal))?.state === "abandoned")
+						return abandoned(context, commandId, signal);
+					throw error;
+				}
 				if (funded.mode === "shadow") return null;
 				if (funded.permit.permitId !== commandId) throw new Error("OFFICE_PAID_COMMAND_DIFFERS");
 				return this.#controller.start(
@@ -188,7 +227,14 @@ export class LxdOfficePaidComputer implements LxdOfficePaidComputerPort {
 				);
 			},
 			recoverStart: async (commandId, signal) => {
-				await this.#controller.recover(await this.#retained(binding, commandId), signal);
+				const context = await this.#retained(binding, commandId);
+				const prestart = await this.#controller.prestartStatus(commandId, signal);
+				// The operation journal has a dispatch intent, but the guard has not
+				// physically dispatched. Atomically race cancellation against start;
+				// a dispatched winner refuses cancellation and remains recoverable.
+				if (prestart?.state === "registered" || prestart?.state === "abandoned")
+					return abandoned(context, commandId, signal);
+				await this.#controller.recover(context, signal);
 				const guard = await this.#controller.guardRecord(binding.allocationId, signal);
 				if (!guard || guard.permit.permitId !== commandId) return null;
 				return guard.startReference;

@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import type { CodingComputerUsage } from "./coding-computer-usage.ts";
 import type { CodingSessionClaim } from "./coding-executor.ts";
 import {
@@ -17,8 +18,16 @@ import {
 	type PaidComputerGuardRecord,
 	type PaidComputerHostClock,
 	type PaidComputerPermit,
+	type PaidComputerPrestartIntent,
+	type PaidComputerPrestartRecord,
 	parsePaidComputerPermit,
 } from "./computer-paid-guard.ts";
+import {
+	assertComputerAbandonmentReceipt,
+	computerPrestartDigest,
+	computerPrestartExpired,
+	computerPrestartRequest,
+} from "./computer-prestart-control.ts";
 import type { LxdInspectableClient, LxdOperationReference, LxdTrackedClient } from "./lxd-client.ts";
 import { parseLxdProcUptime } from "./lxd-proc-uptime.ts";
 
@@ -29,9 +38,15 @@ export const CODING_COMPUTER_RPCS = [
 	"qorpera_checkpoint_coding_computer_permit",
 	"qorpera_renew_coding_computer_permit",
 	"qorpera_finish_coding_computer_permit",
+	"qorpera_abandon_coding_computer_permit",
+	"qorpera_describe_coding_computer_prestart",
 ] as const;
 
 export interface CodingPaidGuardPort {
+	registerPrestart(input: PaidComputerPrestartIntent, signal: AbortSignal): Promise<PaidComputerPrestartRecord>;
+	prestartStatus(permitId: string, signal: AbortSignal): Promise<PaidComputerPrestartRecord | null>;
+	listPrestarts(signal: AbortSignal): Promise<PaidComputerPrestartRecord[]>;
+	abandonPrestart(input: PaidComputerPrestartIntent, signal: AbortSignal): Promise<PaidComputerPrestartRecord>;
 	list(signal: AbortSignal): Promise<PaidComputerGuardRecord[]>;
 	latest(allocationId: string, signal: AbortSignal): Promise<PaidComputerGuardRecord | null>;
 	arm(input: PaidComputerArm, signal: AbortSignal): Promise<PaidComputerGuardRecord>;
@@ -81,6 +96,8 @@ export class CodingComputerController implements CodingComputerUsage {
 	readonly #options: CodingComputerControllerOptions;
 	readonly #computers = new Map<string, ManagedComputer>();
 	readonly #work = new Map<string, Promise<unknown>>();
+	readonly #abandoned = new Set<string>();
+	readonly #terminal = new Set<string>();
 	constructor(options: CodingComputerControllerOptions) {
 		this.#options = options;
 	}
@@ -169,6 +186,7 @@ export class CodingComputerController implements CodingComputerUsage {
 		};
 	}
 	async initialize(signal: AbortSignal): Promise<void> {
+		await this.#recoverPrestarts(await this.#options.guard.listPrestarts(signal), signal);
 		const latest = new Map<string, PaidComputerGuardRecord>();
 		for (const entry of await this.#options.guard.list(signal)) {
 			const prior = latest.get(entry.machine.allocationId);
@@ -177,14 +195,153 @@ export class CodingComputerController implements CodingComputerUsage {
 		}
 		for (const entry of latest.values()) {
 			if (isRuntimePaidComputerMachine(entry.machine)) continue;
+			if (this.#terminal.has(entry.permit.permitId)) continue;
+			if (this.#computers.has(entry.machine.allocationId)) continue;
 			if (entry.machine.hostMachineIdSha256 !== this.#options.storage.machineIdSha256)
 				throw new Error("CODING_COMPUTER_HOST_DIFFERS");
 			const current = await this.#describe(entry.machine.binding, signal, entry.phase === "stopped");
 			if (current) this.#computers.set(current.machine.machineId, current);
 		}
 	}
+	#prestartMachine(entry: PaidComputerPrestartRecord): Readonly<LxdCodingMachineBinding> {
+		const request = computerPrestartRequest(entry);
+		if (
+			request.schema !== "qorpera.coding-computer-prepare/v2" ||
+			request.owner !== this.#options.owner ||
+			typeof request.bindingText !== "string"
+		)
+			throw new Error("CODING_COMPUTER_PRESTART_DIFFERS");
+		const plan = lxdCodingMachinePlan(JSON.parse(request.bindingText) as LxdCodingMachineBinding);
+		if (plan.instanceSha256 !== entry.intent.instanceSha256 || plan.binding.machineId !== entry.intent.allocationId)
+			throw new Error("CODING_COMPUTER_PRESTART_DIFFERS");
+		return plan.binding;
+	}
+	async #abandon(entry: PaidComputerPrestartRecord, signal: AbortSignal): Promise<void> {
+		if (this.#abandoned.has(entry.intent.permitId)) return;
+		this.#prestartMachine(entry);
+		const terminal = await this.#options.guard.abandonPrestart(entry.intent, signal);
+		const receipt = await this.#call(
+			"qorpera_abandon_coding_computer_permit",
+			{
+				schema: "qorpera.computer-abandon/v1",
+				requestId: entry.intent.permitId,
+				permitId: entry.intent.permitId,
+				generation: 1,
+				prepareRequestText: entry.intent.prepareRequestText,
+				abandonment: terminal.abandonment,
+			},
+			signal,
+		);
+		assertComputerAbandonmentReceipt(receipt, terminal);
+		this.#abandoned.add(entry.intent.permitId);
+		if (this.#computers.get(entry.intent.allocationId)?.permit.permitId === entry.intent.permitId)
+			this.#computers.delete(entry.intent.allocationId);
+	}
+	async #recoverPrestarts(entries: PaidComputerPrestartRecord[], signal: AbortSignal): Promise<void> {
+		const results = await Promise.allSettled(
+			entries
+				.filter((entry) => computerPrestartRequest(entry).schema === "qorpera.coding-computer-prepare/v2")
+				.map((entry) =>
+					this.#exclusive(entry.intent.allocationId, async () => {
+						if (this.#terminal.has(entry.intent.permitId)) return;
+						const machine = this.#prestartMachine(entry);
+						const started = await this.#clock();
+						const retained = object(
+							await this.#call(
+								"qorpera_describe_coding_computer_prestart",
+								{
+									...computerPrestartRequest(entry),
+									prepareRequestText: entry.intent.prepareRequestText,
+									prestart: {
+										guardIncarnationId: entry.guardIncarnationId,
+										prepareSha256: entry.intent.prepareSha256,
+									},
+								},
+								signal,
+							),
+						);
+						if (retained.state === "closed" || retained.state === "abandoned") {
+							if (retained.permit !== null || retained.state === "closed") {
+								const permit = this.#checkedPermit(retained.permit, machine, started, true);
+								if (
+									permit.state !== "closed" ||
+									permit.permitId !== entry.intent.permitId ||
+									permit.hostBootId !== entry.intent.hostBootId ||
+									permit.schema !== "qorpera.computer-usage-permit/v2" ||
+									permit.prestart?.guardIncarnationId !== entry.guardIncarnationId ||
+									permit.prestart.prepareSha256 !== entry.intent.prepareSha256
+								)
+									throw new Error("CODING_COMPUTER_PRESTART_DIFFERS");
+							}
+							if (retained.state === "abandoned") {
+								const tombstone = await this.#options.guard.prestartStatus(entry.intent.permitId, signal);
+								if (
+									!tombstone ||
+									tombstone.state !== "abandoned" ||
+									!isDeepStrictEqual(tombstone.intent, entry.intent) ||
+									tombstone.guardIncarnationId !== entry.guardIncarnationId
+								)
+									throw new Error("CODING_COMPUTER_PRESTART_DIFFERS");
+								assertComputerAbandonmentReceipt(retained.closure, tombstone);
+							}
+							this.#terminal.add(entry.intent.permitId);
+							if (this.#computers.get(entry.intent.allocationId)?.permit.permitId === entry.intent.permitId)
+								this.#computers.delete(entry.intent.allocationId);
+							return;
+						}
+						if (
+							entry.state === "abandoned" ||
+							(entry.state === "registered" && computerPrestartExpired(entry, started))
+						) {
+							await this.#abandon(entry, signal);
+							return;
+						}
+						if (this.#computers.has(machine.machineId)) return;
+						if (retained.state === "absent" && retained.permit === null) return;
+						if (retained.state !== "prepared" && retained.state !== "bound")
+							throw new Error("CODING_COMPUTER_RECEIPT_INVALID");
+						const permit = this.#checkedPermit(retained.permit, machine, started, true);
+						if (permit.permitId !== entry.intent.permitId) throw new Error("CODING_COMPUTER_PRESTART_DIFFERS");
+						const sample = retained.lastSample === null ? null : object(retained.lastSample);
+						if (sample && (typeof sample.observationId !== "string" || !UUID.test(sample.observationId)))
+							throw new Error("CODING_COMPUTER_RECEIPT_INVALID");
+						this.#computers.set(machine.machineId, {
+							machine,
+							permit,
+							requestStartedUptimeMs: started.uptimeMs,
+							lastObservationId: (sample?.observationId as string | null) ?? null,
+							continuity: false,
+						});
+					}),
+				),
+		);
+		if (results.some((result) => result.status === "rejected"))
+			throw new Error("CODING_COMPUTER_PRESTART_RECOVERY_UNCONFIRMED");
+	}
 	manages(machineId: string): boolean {
 		return this.#computers.has(machineId);
+	}
+	async ownsStart(machineId: string, signal: AbortSignal): Promise<boolean> {
+		return (
+			this.manages(machineId) ||
+			(await this.#options.guard.listPrestarts(signal)).some((entry) => entry.intent.allocationId === machineId) ||
+			(await this.#options.guard.latest(machineId, signal)) !== null
+		);
+	}
+	#claimId(claim: CodingSessionClaim, machineId: string): string {
+		const hash = computerPrestartDigest(JSON.stringify([machineId, claim.workerId, claim.leaseToken]));
+		return `${hash.slice(0, 8)}-${hash.slice(8, 12)}-5${hash.slice(13, 16)}-a${hash.slice(17, 20)}-${hash.slice(20, 32)}`;
+	}
+	async abandonClaim(
+		claim: CodingSessionClaim,
+		machine: Readonly<LxdCodingMachineBinding>,
+		signal: AbortSignal,
+	): Promise<void> {
+		await this.#exclusive(machine.machineId, async () => {
+			const entry = await this.#options.guard.prestartStatus(this.#claimId(claim, machine.machineId), signal);
+			if (!entry || (entry.state !== "registered" && entry.state !== "abandoned")) return;
+			await this.#abandon(entry, signal);
+		});
 	}
 	async ensure(
 		claim: CodingSessionClaim,
@@ -193,6 +350,17 @@ export class CodingComputerController implements CodingComputerUsage {
 	): Promise<void> {
 		await this.#exclusive(machine.machineId, async () => {
 			signal.throwIfAborted();
+			// The same live claim cannot evade a cancelled attempt with a random ID.
+			// The high-entropy lease credential itself never enters retained state.
+			const requestId = this.#claimId(claim, machine.machineId);
+			let intent = await this.#options.guard.prestartStatus(requestId, signal);
+			if (
+				intent?.state === "abandoned" ||
+				(intent?.state === "registered" && computerPrestartExpired(intent, await this.#clock()))
+			) {
+				await this.#abandon(intent, signal);
+				throw new Error("COMPUTER_START_ABANDONED");
+			}
 			const existing = this.#computers.get(machine.machineId);
 			if (existing) {
 				const clock = await this.#clock(),
@@ -213,15 +381,11 @@ export class CodingComputerController implements CodingComputerUsage {
 			let current = await this.#describe(machine, signal);
 			if (!current) {
 				const clock = await this.#clock();
-				// Prepare is recovered through describe after a lost reply. One server
-				// allocation can have only one active permit, even across executors.
-				const value = await this.#call(
-					"qorpera_prepare_coding_computer_permit",
-					{
-						schema: "qorpera.coding-computer-prepare/v1",
-						requestId: randomUUID(),
+				if (!intent) {
+					const prepareRequestText = JSON.stringify({
+						schema: "qorpera.coding-computer-prepare/v2",
+						requestId,
 						workerId: claim.workerId,
-						leaseToken: claim.leaseToken,
 						machineId: machine.machineId,
 						owner: this.#options.owner,
 						bindingText: lxdCodingMachinePlan(machine).text,
@@ -229,6 +393,33 @@ export class CodingComputerController implements CodingComputerUsage {
 						hostBootId: clock.hostBootId,
 						windowMs: PAID_COMPUTER_WINDOW_MS,
 						stopReserveMs: PAID_COMPUTER_STOP_RESERVE_MS,
+					});
+					intent = await this.#options.guard.registerPrestart(
+						{
+							schema: "qorpera.computer-prestart-intent/v1",
+							permitId: requestId,
+							allocationId: machine.machineId,
+							instanceSha256: lxdCodingMachinePlan(machine).instanceSha256,
+							hostMachineIdSha256: clock.hostMachineIdSha256,
+							hostBootId: clock.hostBootId,
+							prepareRequestText,
+							prepareSha256: computerPrestartDigest(prepareRequestText),
+						},
+						signal,
+					);
+				}
+				// Prepare is recovered through describe after a lost reply. One server
+				// allocation can have only one active permit, even across executors.
+				const value = await this.#call(
+					"qorpera_prepare_coding_computer_permit",
+					{
+						...computerPrestartRequest(intent),
+						leaseToken: claim.leaseToken,
+						prepareRequestText: intent.intent.prepareRequestText,
+						prestart: {
+							guardIncarnationId: intent.guardIncarnationId,
+							prepareSha256: intent.intent.prepareSha256,
+						},
 					},
 					signal,
 				);
@@ -239,6 +430,14 @@ export class CodingComputerController implements CodingComputerUsage {
 					lastObservationId: null,
 					continuity: false,
 				};
+			}
+			if (current.permit.state === "prepared") {
+				const retained = await this.#options.guard.prestartStatus(current.permit.permitId, signal);
+				if (!retained || retained.state !== "registered") throw new Error("CODING_COMPUTER_PRESTART_REQUIRED");
+				if (computerPrestartExpired(retained, await this.#clock())) {
+					await this.#abandon(retained, signal);
+					throw new Error("COMPUTER_START_ABANDONED");
+				}
 			}
 			this.#computers.set(machine.machineId, current);
 		});
@@ -439,6 +638,7 @@ export class CodingComputerController implements CodingComputerUsage {
 				signal,
 			);
 			this.#computers.delete(current.machine.machineId);
+			this.#terminal.add(current.permit.permitId);
 			return;
 		}
 		if (current.permit.state === "prepared" && sample.state !== "running") return;
@@ -487,13 +687,21 @@ export class CodingComputerController implements CodingComputerUsage {
 		});
 	}
 	async maintain(signal: AbortSignal): Promise<void> {
+		// Queue history recovery before live-source reads for the same machine.
+		// Unrelated allocations still progress independently.
+		const recovery = this.#recoverPrestarts(await this.#options.guard.listPrestarts(signal), signal).then(
+			() => null,
+			(error: unknown) => error,
+		);
 		// Independent machines progress even when one has a failed observation.
 		const results = await Promise.allSettled(
 			[...this.#computers.values()].map((entry) =>
 				this.#exclusive(entry.machine.machineId, async () => {
 					try {
+						const managed = this.#computers.get(entry.machine.machineId);
+						if (!managed || this.#terminal.has(managed.permit.permitId)) return;
 						const guarded = await this.#options.guard.latest(entry.machine.machineId, signal);
-						const current = await this.#describe(entry.machine, signal, guarded?.phase === "stopped");
+						const current = await this.#describe(managed.machine, signal, guarded?.phase === "stopped");
 						if (!current) {
 							this.#computers.delete(entry.machine.machineId);
 							return;
@@ -521,6 +729,8 @@ export class CodingComputerController implements CodingComputerUsage {
 				}),
 			),
 		);
+		const recoveryError = await recovery;
+		if (recoveryError) throw recoveryError;
 		if (results.some((result) => result.status === "rejected")) throw new Error("CODING_COMPUTER_USAGE_UNCONFIRMED");
 	}
 }

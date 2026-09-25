@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { open, readdir, rename, statfs, unlink } from "node:fs/promises";
 import { join, resolve } from "node:path";
@@ -40,7 +40,8 @@ export function paidComputerTarget(machine: PaidComputerMachine): { project: str
 /** Projection of a confirmed kernel receipt, never authority supplied by a
  * member or guest. The trusted executor validates the originating RPC. */
 export interface PaidComputerPermit {
-	schema: "qorpera.computer-usage-permit/v1";
+	schema: "qorpera.computer-usage-permit/v1" | "qorpera.computer-usage-permit/v2";
+	prestart?: { guardIncarnationId: string; prepareSha256: string };
 	mode: "paid";
 	permitId: string;
 	allocationId: string;
@@ -61,6 +62,39 @@ export interface PaidComputerPermit {
 	tariffVersion: number;
 	cpuMillis: number;
 	memoryBytes: number;
+}
+export interface PaidComputerPrestartIntent {
+	schema: "qorpera.computer-prestart-intent/v1";
+	permitId: string;
+	allocationId: string;
+	instanceSha256: string;
+	hostMachineIdSha256: string;
+	hostBootId: string;
+	prepareSha256: string;
+	prepareRequestText: string;
+}
+export interface PaidComputerPrestartAbandonment {
+	schema: "qorpera.computer-prestart-abandonment/v1";
+	permitId: string;
+	allocationId: string;
+	instanceSha256: string;
+	hostMachineIdSha256: string;
+	hostBootId: string;
+	prepareSha256: string;
+	guardIncarnationId: string;
+}
+export interface PaidComputerPrestartRecord {
+	schema: "qorpera.computer-prestart-record/v1";
+	intent: PaidComputerPrestartIntent;
+	guardIncarnationId: string;
+	requestStartedUptimeMs: number;
+	state: "registered" | "dispatched" | "retired" | "abandoned";
+	abandonment: PaidComputerPrestartAbandonment | null;
+}
+interface PaidComputerPrestartJournal {
+	schema: "qorpera.computer-prestart-journal/v1";
+	guardIncarnationId: string;
+	records: PaidComputerPrestartRecord[];
 }
 export interface PaidComputerArm {
 	machine: PaidComputerMachine;
@@ -115,6 +149,93 @@ function id(value: unknown, pattern = UUID): string {
 	if (typeof value !== "string" || !pattern.test(value)) throw new Error("PAID_GUARD_INVALID");
 	return value;
 }
+export function parsePaidComputerPrestartIntent(value: unknown): PaidComputerPrestartIntent {
+	const raw = record(value);
+	if (
+		raw.schema !== "qorpera.computer-prestart-intent/v1" ||
+		Object.keys(raw).length !== 8 ||
+		typeof raw.prepareRequestText !== "string" ||
+		Buffer.byteLength(raw.prepareRequestText) > 20000 ||
+		createHash("sha256").update(raw.prepareRequestText).digest("hex") !== raw.prepareSha256
+	)
+		throw new Error("PAID_GUARD_PRESTART_INVALID");
+	const request = record(JSON.parse(raw.prepareRequestText));
+	const pending: { value: unknown; depth: number }[] = [{ value: request, depth: 0 }];
+	while (pending.length) {
+		const next = pending.pop()!;
+		if (next.depth > 32) throw new Error("PAID_GUARD_PRESTART_INVALID");
+		if (next.value && typeof next.value === "object")
+			for (const [key, child] of Object.entries(next.value)) {
+				if (/secret|token|password|credential|authorization|prestart|preparerequesttext/i.test(key))
+					throw new Error("PAID_GUARD_PRESTART_SECRET");
+				pending.push({ value: child, depth: next.depth + 1 });
+			}
+	}
+	if (
+		request.requestId !== raw.permitId ||
+		(request.allocationId ?? request.machineId) !== raw.allocationId ||
+		request.machineIdSha256 !== raw.hostMachineIdSha256 ||
+		request.hostBootId !== raw.hostBootId ||
+		(request.instanceSha256 !== undefined && request.instanceSha256 !== raw.instanceSha256)
+	)
+		throw new Error("PAID_GUARD_PRESTART_DIFFERS");
+	return {
+		schema: raw.schema,
+		permitId: id(raw.permitId),
+		allocationId: id(raw.allocationId),
+		instanceSha256: id(raw.instanceSha256, SHA),
+		hostMachineIdSha256: id(raw.hostMachineIdSha256, SHA),
+		hostBootId: id(raw.hostBootId),
+		prepareSha256: id(raw.prepareSha256, SHA),
+		prepareRequestText: raw.prepareRequestText,
+	};
+}
+export function parsePaidComputerPrestartAbandonment(value: unknown): PaidComputerPrestartAbandonment {
+	const raw = record(value);
+	if (raw.schema !== "qorpera.computer-prestart-abandonment/v1" || Object.keys(raw).length !== 8)
+		throw new Error("PAID_GUARD_PRESTART_INVALID");
+	return {
+		schema: raw.schema,
+		permitId: id(raw.permitId),
+		allocationId: id(raw.allocationId),
+		instanceSha256: id(raw.instanceSha256, SHA),
+		hostMachineIdSha256: id(raw.hostMachineIdSha256, SHA),
+		hostBootId: id(raw.hostBootId),
+		prepareSha256: id(raw.prepareSha256, SHA),
+		guardIncarnationId: id(raw.guardIncarnationId),
+	};
+}
+export function parsePaidComputerPrestartRecord(value: unknown): PaidComputerPrestartRecord {
+	const raw = record(value),
+		intent = parsePaidComputerPrestartIntent(raw.intent),
+		guardIncarnationId = id(raw.guardIncarnationId);
+	if (
+		raw.schema !== "qorpera.computer-prestart-record/v1" ||
+		Object.keys(raw).length !== 6 ||
+		!["registered", "dispatched", "retired", "abandoned"].includes(String(raw.state)) ||
+		(raw.state === "abandoned") !== (raw.abandonment !== null)
+	)
+		throw new Error("PAID_GUARD_PRESTART_INVALID");
+	const abandonment = raw.abandonment === null ? null : parsePaidComputerPrestartAbandonment(raw.abandonment);
+	const { schema: _schema, prepareRequestText: _text, ...identity } = intent;
+	if (
+		abandonment &&
+		!isDeepStrictEqual(abandonment, {
+			schema: "qorpera.computer-prestart-abandonment/v1",
+			...identity,
+			guardIncarnationId,
+		})
+	)
+		throw new Error("PAID_GUARD_PRESTART_DIFFERS");
+	return {
+		schema: raw.schema,
+		intent,
+		guardIncarnationId,
+		requestStartedUptimeMs: integer(raw.requestStartedUptimeMs),
+		state: raw.state as PaidComputerPrestartRecord["state"],
+		abandonment,
+	};
+}
 function parseMachine(value: unknown): PaidComputerMachine {
 	const m = record(value);
 	if (m.kind === "runtime") return parseRuntimePaidComputerMachine(m);
@@ -135,7 +256,7 @@ function parseMachine(value: unknown): PaidComputerMachine {
 export function parsePaidComputerPermit(value: unknown): PaidComputerPermit {
 	const p = record(value);
 	if (
-		p.schema !== "qorpera.computer-usage-permit/v1" ||
+		(p.schema !== "qorpera.computer-usage-permit/v1" && p.schema !== "qorpera.computer-usage-permit/v2") ||
 		p.mode !== "paid" ||
 		typeof p.deadline !== "string" ||
 		!Number.isFinite(Date.parse(p.deadline)) ||
@@ -149,8 +270,19 @@ export function parsePaidComputerPermit(value: unknown): PaidComputerPermit {
 		Date.parse(p.deadline) - Date.parse(p.issuedAt) > PAID_COMPUTER_WINDOW_MS + PAID_COMPUTER_STOP_RESERVE_MS
 	)
 		throw new Error("PAID_GUARD_PERMIT_INVALID");
+	const prestart = p.schema === "qorpera.computer-usage-permit/v2" ? record(p.prestart) : undefined;
+	if ((prestart && Object.keys(prestart).length !== 2) || (!prestart && p.prestart !== undefined))
+		throw new Error("PAID_GUARD_PERMIT_INVALID");
 	return {
 		schema: p.schema,
+		...(prestart
+			? {
+					prestart: {
+						guardIncarnationId: id(prestart.guardIncarnationId),
+						prepareSha256: id(prestart.prepareSha256, SHA),
+					},
+				}
+			: {}),
 		mode: p.mode,
 		permitId: id(p.permitId),
 		allocationId: id(p.allocationId),
@@ -287,7 +419,7 @@ export class PaidComputerGuardJournal {
 	}
 	async load(): Promise<PaidComputerGuardRecord[]> {
 		await this.#directory();
-		const names = (await readdir(this.root)).filter((name) => name.endsWith(".json"));
+		const names = (await readdir(this.root)).filter((name) => name.endsWith(".json") && name !== "prestarts.json");
 		if (names.length > MAX_RECORDS) throw new Error("PAID_GUARD_JOURNAL_FULL");
 		const values: PaidComputerGuardRecord[] = [];
 		for (const name of names) {
@@ -298,9 +430,49 @@ export class PaidComputerGuardJournal {
 		}
 		return values;
 	}
+	async loadPrestarts(): Promise<PaidComputerPrestartJournal | null> {
+		await this.#directory();
+		const loaded = await readRecord(join(this.root, "prestarts.json"), 16 * 1024 ** 2).catch((error) => {
+			if (!code(error, "ENOENT")) throw error;
+			return null;
+		});
+		if (!loaded) return null;
+		const raw = record(loaded.value),
+			guardIncarnationId = id(raw.guardIncarnationId);
+		if (
+			raw.schema !== "qorpera.computer-prestart-journal/v1" ||
+			Object.keys(raw).length !== 3 ||
+			!Array.isArray(raw.records) ||
+			raw.records.length > MAX_RECORDS
+		)
+			throw new Error("PAID_GUARD_PRESTART_INVALID");
+		const records = raw.records.map(parsePaidComputerPrestartRecord);
+		if (
+			new Set(records.map((entry) => entry.intent.permitId)).size !== records.length ||
+			records.some((entry) => entry.guardIncarnationId !== guardIncarnationId)
+		)
+			throw new Error("PAID_GUARD_PRESTART_DIFFERS");
+		return { schema: raw.schema, guardIncarnationId, records };
+	}
+	/** Permanent bounded replay fences. No TTL, deletion, or lossy compaction. */
+	async savePrestarts(value: PaidComputerPrestartJournal): Promise<void> {
+		if (
+			value.records.length > MAX_RECORDS ||
+			value.records.some(
+				(entry) => parsePaidComputerPrestartRecord(entry).guardIncarnationId !== value.guardIncarnationId,
+			)
+		)
+			throw new Error("PAID_GUARD_PRESTART_INVALID");
+		await this.#write("prestarts.json", value);
+	}
 	async save(value: PaidComputerGuardRecord): Promise<void> {
 		parsePaidComputerGuardRecord(value);
+		await this.#write(`${value.permit.permitId}.json`, value);
+	}
+	async #write(name: string, value: PaidComputerGuardRecord | PaidComputerPrestartJournal): Promise<void> {
 		await this.#directory();
+		const bytes = `${JSON.stringify(value)}\n`;
+		if (Buffer.byteLength(bytes) > 16 * 1024 ** 2) throw new Error("PAID_GUARD_JOURNAL_FULL");
 		const temporary = join(this.root, `.write-${randomUUID()}`);
 		const file = await open(
 			temporary,
@@ -308,13 +480,13 @@ export class PaidComputerGuardJournal {
 			0o600,
 		);
 		try {
-			await file.writeFile(`${JSON.stringify(value)}\n`);
+			await file.writeFile(bytes);
 			await file.sync();
 		} finally {
 			await file.close();
 		}
 		try {
-			await rename(temporary, join(this.root, `${value.permit.permitId}.json`));
+			await rename(temporary, join(this.root, name));
 			await syncDirectory(this.root);
 		} finally {
 			await unlink(temporary).catch((error) => {
@@ -334,6 +506,9 @@ export class PaidComputerGuard {
 	readonly #records = new Map<string, PaidComputerGuardRecord>();
 	readonly #stops = new Set<string>();
 	readonly #starts = new Map<string, AbortController>();
+	readonly #prestarts = new Map<string, PaidComputerPrestartRecord>();
+	#guardIncarnationId = "";
+	#prestartsUnconfirmed = false;
 	#serial: Promise<unknown> = Promise.resolve();
 	#loaded = false;
 	constructor(
@@ -348,7 +523,148 @@ export class PaidComputerGuard {
 	async initialize(): Promise<void> {
 		if (this.#loaded) throw new Error("PAID_GUARD_ALREADY_INITIALIZED");
 		for (const value of await this.#journal.load()) this.#records.set(value.permit.permitId, value);
+		const prestarts = await this.#journal.loadPrestarts();
+		if (
+			!prestarts &&
+			[...this.#records.values()].some((entry) => entry.permit.schema === "qorpera.computer-usage-permit/v2")
+		)
+			throw new Error("PAID_GUARD_PRESTART_MISSING");
+		this.#guardIncarnationId = prestarts?.guardIncarnationId ?? randomUUID();
+		for (const entry of prestarts?.records ?? []) this.#prestarts.set(entry.intent.permitId, entry);
+		for (const entry of this.#records.values()) {
+			const intent = this.#prestarts.get(entry.permit.permitId);
+			if (entry.permit.schema === "qorpera.computer-usage-permit/v2") {
+				this.#matchPrestart(entry.permit, entry.machine);
+				if (
+					(entry.startDispatched && intent?.state !== "dispatched") ||
+					(intent?.state === "abandoned" && entry.startDispatched)
+				)
+					throw new Error("PAID_GUARD_PRESTART_DIFFERS");
+				// Retirement was fsynced before the stopping record. A crash between
+				// those writes must resume stop custody, never reopen admission.
+				if (intent?.state === "retired" && entry.phase === "armed") {
+					const stopping = { ...entry, phase: "stopping" as const };
+					await this.#journal.save(stopping);
+					this.#records.set(entry.permit.permitId, stopping);
+				}
+			} else if (intent) throw new Error("PAID_GUARD_PRESTART_DIFFERS");
+		}
+		if (!prestarts) await this.#persistPrestarts();
 		this.#loaded = true;
+	}
+	async #persistPrestarts(): Promise<void> {
+		try {
+			await this.#journal.savePrestarts({
+				schema: "qorpera.computer-prestart-journal/v1",
+				guardIncarnationId: this.#guardIncarnationId,
+				records: [...this.#prestarts.values()],
+			});
+		} catch (error) {
+			// A rename may have committed. No admission or abandonment receipt can
+			// follow an uncertain snapshot; existing physical stop custody survives.
+			this.#prestartsUnconfirmed = true;
+			throw error;
+		}
+	}
+	#confirmedPrestarts(): void {
+		if (this.#prestartsUnconfirmed) throw new Error("PAID_GUARD_PRESTART_UNCONFIRMED");
+	}
+	#matchPrestart(permit: PaidComputerPermit, machine: PaidComputerMachine): PaidComputerPrestartRecord {
+		const intent = this.#prestarts.get(permit.permitId);
+		if (
+			!intent ||
+			!permit.prestart ||
+			permit.prestart.guardIncarnationId !== this.#guardIncarnationId ||
+			intent.guardIncarnationId !== this.#guardIncarnationId ||
+			permit.prestart.prepareSha256 !== intent.intent.prepareSha256 ||
+			intent.intent.allocationId !== permit.allocationId ||
+			intent.intent.instanceSha256 !== permit.instanceSha256 ||
+			intent.intent.hostBootId !== permit.hostBootId ||
+			intent.intent.hostMachineIdSha256 !== machine.hostMachineIdSha256
+		)
+			throw new Error("PAID_GUARD_PRESTART_DIFFERS");
+		return intent;
+	}
+	async registerPrestart(raw: PaidComputerPrestartIntent): Promise<PaidComputerPrestartRecord> {
+		const intent = parsePaidComputerPrestartIntent(raw);
+		return this.#exclusive(async () => {
+			this.#confirmedPrestarts();
+			const clock = await this.#clock();
+			if (clock.hostMachineIdSha256 !== intent.hostMachineIdSha256) throw new Error("PAID_GUARD_HOST_DIFFERS");
+			const old = this.#prestarts.get(intent.permitId);
+			if (old) {
+				if (!isDeepStrictEqual(old.intent, intent)) throw new Error("PAID_GUARD_PRESTART_DIFFERS");
+				return structuredClone(old);
+			}
+			if (this.#records.has(intent.permitId)) throw new Error("PAID_GUARD_PRESTART_LEGACY");
+			if (this.#prestarts.size >= MAX_RECORDS) throw new Error("PAID_GUARD_JOURNAL_FULL");
+			if (clock.hostMachineIdSha256 !== intent.hostMachineIdSha256 || clock.hostBootId !== intent.hostBootId)
+				throw new Error("PAID_GUARD_HOST_DIFFERS");
+			const value: PaidComputerPrestartRecord = {
+				schema: "qorpera.computer-prestart-record/v1",
+				intent,
+				guardIncarnationId: this.#guardIncarnationId,
+				requestStartedUptimeMs: integer(clock.uptimeMs),
+				state: "registered",
+				abandonment: null,
+			};
+			// Reserve room for every retained intent's future abandonment receipt.
+			// Capacity refusal must not strand an existing intent's terminal write.
+			if (
+				Buffer.byteLength(JSON.stringify([...this.#prestarts.values(), value])) +
+					1024 * (this.#prestarts.size + 1) >
+				16 * 1024 ** 2 - 4096
+			)
+				throw new Error("PAID_GUARD_JOURNAL_FULL");
+			this.#prestarts.set(intent.permitId, value);
+			await this.#persistPrestarts();
+			return structuredClone(value);
+		});
+	}
+	async prestartStatus(permitId: string): Promise<PaidComputerPrestartRecord | null> {
+		id(permitId);
+		return this.#exclusive(async () => {
+			this.#confirmedPrestarts();
+			return structuredClone(this.#prestarts.get(permitId) ?? null);
+		});
+	}
+	async listPrestarts(): Promise<PaidComputerPrestartRecord[]> {
+		return this.#exclusive(async () => {
+			this.#confirmedPrestarts();
+			return structuredClone([...this.#prestarts.values()]);
+		});
+	}
+	async abandonPrestart(raw: PaidComputerPrestartIntent): Promise<PaidComputerPrestartRecord> {
+		const intent = parsePaidComputerPrestartIntent(raw);
+		return this.#exclusive(async () => {
+			this.#confirmedPrestarts();
+			const old = this.#prestarts.get(intent.permitId),
+				guarded = this.#records.get(intent.permitId);
+			if (!old || !isDeepStrictEqual(intent, old.intent)) throw new Error("PAID_GUARD_PRESTART_MISSING");
+			if (old.state === "retired") throw new Error("PAID_GUARD_PRESTART_RETIRED");
+			if (
+				old.state === "dispatched" ||
+				guarded?.startDispatched ||
+				(guarded && (guarded.permit.state !== "prepared" || guarded.permit.generation !== 1))
+			)
+				throw new Error("PAID_GUARD_PRESTART_DISPATCHED");
+			if ((await this.#clock()).hostMachineIdSha256 !== intent.hostMachineIdSha256)
+				throw new Error("PAID_GUARD_HOST_DIFFERS");
+			if (old.state === "abandoned") return structuredClone(old);
+			const { schema: _schema, prepareRequestText: _text, ...identity } = intent;
+			const next: PaidComputerPrestartRecord = {
+				...old,
+				state: "abandoned",
+				abandonment: {
+					schema: "qorpera.computer-prestart-abandonment/v1",
+					...identity,
+					guardIncarnationId: old.guardIncarnationId,
+				},
+			};
+			this.#prestarts.set(intent.permitId, next);
+			await this.#persistPrestarts();
+			return structuredClone(next);
+		});
 	}
 	#exclusive<T>(use: () => Promise<T>): Promise<T> {
 		const work = this.#serial
@@ -377,6 +693,11 @@ export class PaidComputerGuard {
 		const next = { ...value, phase: "stopping" as const };
 		this.#records.set(value.permit.permitId, next);
 		this.#starts.get(value.permit.permitId)?.abort(new Error("PAID_GUARD_EXPIRED"));
+		const prestart = this.#prestarts.get(value.permit.permitId);
+		if (prestart?.state === "registered") {
+			this.#prestarts.set(value.permit.permitId, { ...prestart, state: "retired" });
+			await this.#persistPrestarts();
+		}
 		await this.#journal.save(next);
 	}
 	#get(permitId: string): PaidComputerGuardRecord {
@@ -389,6 +710,10 @@ export class PaidComputerGuard {
 		return this.#exclusive(async () => {
 			const { machine, permit } = input,
 				clock = await this.#clock();
+			this.#confirmedPrestarts();
+			const prestart = this.#prestarts.get(permit.permitId);
+			if (prestart?.state === "abandoned") throw new Error("PAID_GUARD_PRESTART_ABANDONED");
+			if (prestart?.state === "retired") throw new Error("PAID_GUARD_PRESTART_RETIRED");
 			if (
 				permit.state === "closed" ||
 				clock.hostMachineIdSha256 !== machine.hostMachineIdSha256 ||
@@ -397,6 +722,9 @@ export class PaidComputerGuard {
 			)
 				throw new Error("PAID_GUARD_HOST_DIFFERS");
 			const old = this.#records.get(permit.permitId);
+			if (permit.schema === "qorpera.computer-usage-permit/v2") this.#matchPrestart(permit, machine);
+			else if (!old || prestart) throw new Error("PAID_GUARD_PRESTART_REQUIRED");
+			if (!old && prestart?.state === "dispatched") throw new Error("PAID_GUARD_PRESTART_DISPATCHED");
 			if (old && permit.generation === old.permit.generation) {
 				const { validForMs: _a, state: _s1, guestBootId: _g1, physicalId: _p1, ...a } = permit,
 					{ validForMs: _b, state: _s2, guestBootId: _g2, physicalId: _p2, ...b } = old.permit;
@@ -447,7 +775,12 @@ export class PaidComputerGuard {
 				if ((await this.#physical.inspect(machine, AbortSignal.timeout(5000))) !== "stopped")
 					throw new Error("PAID_GUARD_STOPPED_MACHINE_REQUIRED");
 			}
-			const deadlineUptimeMs = input.requestStartedUptimeMs + permit.validForMs;
+			const deadlineUptimeMs = Math.min(
+				input.requestStartedUptimeMs + permit.validForMs,
+				permit.generation === 1 && prestart
+					? prestart.requestStartedUptimeMs + permit.windowMs + permit.stopReserveMs
+					: Number.MAX_SAFE_INTEGER,
+			);
 			const stopAtUptimeMs = deadlineUptimeMs - permit.stopReserveMs;
 			if (
 				!Number.isSafeInteger(deadlineUptimeMs) ||
@@ -476,8 +809,14 @@ export class PaidComputerGuard {
 	async start(permitId: string, generation: number): Promise<LxdOperationReference> {
 		const dispatch = new AbortController();
 		const selected = await this.#exclusive(async () => {
+			this.#confirmedPrestarts();
 			const current = this.#get(permitId),
 				clock = await this.#clock();
+			const prestart = this.#prestarts.get(permitId);
+			if (prestart?.state === "abandoned") throw new Error("PAID_GUARD_PRESTART_ABANDONED");
+			if (prestart?.state === "retired") throw new Error("PAID_GUARD_PRESTART_RETIRED");
+			if (prestart?.state === "dispatched" && !current.startDispatched)
+				throw new Error("PAID_GUARD_PRESTART_DISPATCHED");
 			if (current.permit.generation === integer(generation, 1) && current.startReference)
 				return { value: current, replay: true };
 			if (
@@ -490,6 +829,10 @@ export class PaidComputerGuard {
 			)
 				throw new Error("PAID_GUARD_START_REFUSED");
 			const next = { ...current, phase: "starting" as const, startDispatched: true };
+			if (prestart) {
+				this.#prestarts.set(permitId, { ...prestart, state: "dispatched" });
+				await this.#persistPrestarts();
+			}
 			await this.#save(next);
 			this.#starts.set(permitId, dispatch);
 			return { value: next, replay: false };

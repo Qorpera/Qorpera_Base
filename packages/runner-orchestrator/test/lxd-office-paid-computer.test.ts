@@ -3,7 +3,12 @@ import { mkdir, mkdtemp, readFile, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { PaidComputerGuard, PaidComputerGuardJournal, type PaidComputerPermit } from "../src/computer-paid-guard.ts";
+import {
+	PaidComputerGuard,
+	PaidComputerGuardJournal,
+	type PaidComputerPermit,
+	type PaidComputerPrestartRecord,
+} from "../src/computer-paid-guard.ts";
 import { LxdPaidComputerGuardPhysical } from "../src/computer-paid-guard-lxd.ts";
 import type { LxdInstanceRecord, LxdOperationReference, LxdTrackedClient } from "../src/lxd-client.ts";
 import { LxdOfficeBootWorker } from "../src/lxd-office-boot-worker.ts";
@@ -40,12 +45,129 @@ async function fixture() {
 		settleStopped: vi.fn<RuntimeComputerController["settleStopped"]>(),
 		maintain: vi.fn<RuntimeComputerController["maintain"]>(),
 		assertRunning: vi.fn<RuntimeComputerController["assertRunning"]>(),
+		prestartStatus: vi.fn<RuntimeComputerController["prestartStatus"]>().mockResolvedValue(null),
+		abandonUndispatched: vi.fn<RuntimeComputerController["abandonUndispatched"]>().mockResolvedValue(undefined),
 	};
 	const control = { call: vi.fn(async () => ({ mode: "shadow" })) };
 	const adapter = new LxdOfficePaidComputer(policy, controller, control);
 	return { root, policy, binding, controller, control, adapter };
 }
 describe("paid company computer lifecycle adapter", () => {
+	it.each(["initial", "resume", "reset"])(
+		"durably cancels an undispatched %s start after restart, without raw fallback or fabricated completion",
+		async (kind) => {
+			const f = await fixture(),
+				commandId = randomUUID(),
+				intentId = randomUUID();
+			const plan = lxdOfficeGuestPlan(f.binding);
+			const client = {
+				submitInstanceOperation: vi.fn(async () => ({
+					project: f.binding.project,
+					instanceName: plan.request.name,
+					operationId: randomUUID(),
+				})),
+				inspectInstanceOperation: vi.fn(async () => "succeeded" as const),
+			};
+			const open = () =>
+				LxdOfficeOperationJournal.open(
+					f.root,
+					intentId,
+					f.binding,
+					client,
+					false,
+					undefined,
+					f.adapter.operations(f.binding),
+				);
+			const journal = await open();
+			// Historical successful prefixes stay byte-for-byte intact. Abandonment
+			// is only the terminal attempted start, never a completed VM transition.
+			const prefix =
+				kind === "initial"
+					? (["create"] as const)
+					: kind === "resume"
+						? (["create", "start", "stop"] as const)
+						: (["create", "start", "stop", "stop", "delete", "create"] as const);
+			const rawJournal = await LxdOfficeOperationJournal.open(f.root, intentId, f.binding, client, true);
+			for (const action of prefix) await rawJournal.reconcile(randomUUID(), action, signal());
+			await f.adapter.prepareStart(f.binding, commandId, { kind }, signal());
+			const prestart: PaidComputerPrestartRecord = {
+				schema: "qorpera.computer-prestart-record/v1",
+				guardIncarnationId: randomUUID(),
+				requestStartedUptimeMs: 10,
+				state: "registered",
+				abandonment: null,
+				intent: {
+					schema: "qorpera.computer-prestart-intent/v1",
+					permitId: commandId,
+					allocationId: f.binding.allocationId,
+					instanceSha256: plan.instanceSha256,
+					hostMachineIdSha256: f.policy.host.machineIdSha256,
+					hostBootId: randomUUID(),
+					prepareSha256: "a".repeat(64),
+					prepareRequestText: "{}",
+				},
+			};
+			f.controller.prestartStatus.mockResolvedValue(prestart);
+			f.controller.ensure.mockRejectedValue(new Error("prepared reply lost"));
+			await expect(journal.reconcile(commandId, "start", signal())).resolves.toEqual({ state: "unknown" });
+			f.controller.abandonUndispatched.mockRejectedValueOnce(new Error("cancellation reply lost"));
+			await expect((await open()).observe(commandId, "start", signal())).rejects.toThrow("cancellation reply lost");
+			expect((await journal.history()).events.at(-1)?.kind).toBe("dispatch");
+			await expect((await open()).observe(commandId, "start", signal())).resolves.toEqual({
+				state: "abandoned_before_dispatch",
+			});
+			const terminal = (await journal.history()).events.at(-1);
+			expect(terminal).toMatchObject({
+				kind: "abandoned",
+				operationId: null,
+				state: "abandoned_before_dispatch",
+				reason: "PAID_START_ABANDONED_BEFORE_DISPATCH",
+			});
+			expect(client.submitInstanceOperation).toHaveBeenCalledTimes(prefix.length);
+			expect(client.inspectInstanceOperation).toHaveBeenCalledTimes(prefix.length);
+			expect(f.controller.start).not.toHaveBeenCalled();
+			expect(f.controller.abandonUndispatched).toHaveBeenCalledTimes(2);
+			f.controller.abandonUndispatched.mockRejectedValue(new Error("offline"));
+			await expect((await open()).reconcile(commandId, "start", signal())).resolves.toEqual({
+				state: "abandoned_before_dispatch",
+			});
+			await expect((await open()).reconcile(randomUUID(), "start", signal())).rejects.toThrow("UNSETTLED");
+			expect((await journal.history()).events.at(-1)).toEqual(terminal);
+		},
+	);
+	it("keeps an already abandoned command on the paid journal path before any local dispatch marker exists", async () => {
+		const f = await fixture(),
+			commandId = randomUUID();
+		const prestart: PaidComputerPrestartRecord = {
+			schema: "qorpera.computer-prestart-record/v1",
+			guardIncarnationId: randomUUID(),
+			requestStartedUptimeMs: 10,
+			state: "abandoned",
+			abandonment: null,
+			intent: {
+				schema: "qorpera.computer-prestart-intent/v1",
+				permitId: commandId,
+				allocationId: f.binding.allocationId,
+				instanceSha256: lxdOfficeGuestPlan(f.binding).instanceSha256,
+				hostMachineIdSha256: f.policy.host.machineIdSha256,
+				hostBootId: randomUUID(),
+				prepareSha256: "a".repeat(64),
+				prepareRequestText: "{}",
+			},
+		};
+		f.controller.prestartStatus.mockResolvedValue(prestart);
+		await expect(f.adapter.prepareStart(f.binding, commandId, { kind: "initial" }, signal())).resolves.toBe(true);
+		await expect(f.adapter.operations(f.binding).submitStart(commandId, signal())).resolves.toEqual({
+			state: "abandoned_before_dispatch",
+			commandId,
+		});
+		expect(f.controller.ensure).not.toHaveBeenCalled();
+		expect(f.controller.start).not.toHaveBeenCalled();
+		f.controller.abandonUndispatched.mockRejectedValue(new Error("SQL not confirmed"));
+		await expect(f.adapter.operations(f.binding).submitStart(commandId, signal())).rejects.toThrow(
+			"SQL not confirmed",
+		);
+	});
 	it("holds the real first-boot worker on funding failure, then recovers a guarded start without public node admission", async () => {
 		const f = await officeBootWorkerFixture(roots);
 		let reference: LxdOperationReference | null = null,
@@ -100,118 +222,202 @@ describe("paid company computer lifecycle adapter", () => {
 		expect(submitStart).toHaveBeenCalledOnce();
 		expect(f.call.mock.calls.some(([method]) => method === "qorpera_reserve_runtime_node_machine")).toBe(false);
 	});
-	it("integrates real durable guard and office journals across a lost paid start reply", async () => {
-		const f = await fixture(),
-			plan = lxdOfficeGuestPlan(f.binding),
-			commandId = randomUUID(),
-			intentId = randomUUID();
-		const clock = { hostMachineIdSha256: f.policy.host.machineIdSha256, hostBootId: randomUUID(), uptimeMs: 100000 };
-		const config = {
-			...plan.request.config,
-			"volatile.uuid": randomUUID(),
-			"volatile.base_image": f.binding.imageFingerprint,
-		};
-		const vm: LxdInstanceRecord = {
-			name: plan.request.name,
-			type: "virtual-machine",
-			status: "Stopped",
-			statusCode: 102,
-			profiles: [],
-			config,
-			expandedConfig: { ...config },
-			devices: plan.request.devices,
-			expandedDevices: plan.request.devices,
-		};
-		const client = {
-			getInstance: vi.fn(async () => structuredClone(vm)),
-			submitInstanceOperation: vi.fn(
-				async (project: string, action: Parameters<LxdTrackedClient["submitInstanceOperation"]>[1]) => {
-					if (action.action === "start") {
-						vm.status = "Running";
-						vm.statusCode = 103;
+	it.each(["guarded start", "prepare before office dispatch"])(
+		"integrates real durable guard and office journals across a lost %s reply",
+		async (lost) => {
+			const f = await fixture(),
+				plan = lxdOfficeGuestPlan(f.binding),
+				commandId = randomUUID(),
+				intentId = randomUUID();
+			const clock = {
+				hostMachineIdSha256: f.policy.host.machineIdSha256,
+				hostBootId: randomUUID(),
+				uptimeMs: 100000,
+			};
+			const config = {
+				...plan.request.config,
+				"volatile.uuid": randomUUID(),
+				"volatile.base_image": f.binding.imageFingerprint,
+			};
+			const vm: LxdInstanceRecord = {
+				name: plan.request.name,
+				type: "virtual-machine",
+				status: "Stopped",
+				statusCode: 102,
+				profiles: [],
+				config,
+				expandedConfig: { ...config },
+				devices: plan.request.devices,
+				expandedDevices: plan.request.devices,
+			};
+			const client = {
+				getInstance: vi.fn(async () => structuredClone(vm)),
+				submitInstanceOperation: vi.fn(
+					async (project: string, action: Parameters<LxdTrackedClient["submitInstanceOperation"]>[1]) => {
+						if (action.action === "start") {
+							vm.status = "Running";
+							vm.statusCode = 103;
+						}
+						return { project, instanceName: vm.name, operationId: randomUUID() };
+					},
+				),
+				inspectInstanceOperation: vi.fn(async () => "succeeded" as const),
+				readInstanceFile: vi.fn(),
+			};
+			const guardRoot = join(f.root, "guard");
+			await mkdir(guardRoot, { mode: 0o700 });
+			let guard = new PaidComputerGuard(
+				new PaidComputerGuardJournal(guardRoot),
+				new LxdPaidComputerGuardPhysical(client, async () => clock),
+				async () => clock,
+			);
+			await guard.initialize();
+			let permit: PaidComputerPermit | null = null,
+				refunded = 0,
+				loseCancellation = true;
+			const control = {
+				call: vi.fn(async (method: string, args: Record<string, unknown>) => {
+					const request = args.p_request as Record<string, unknown>;
+					if (method === "qorpera_describe_runtime_computer_prestart")
+						return { state: permit?.state ?? "absent", permit, lastSample: null };
+					if (method.includes("describe")) return { mode: "paid", permit, lastSample: null };
+					if (method.includes("abandon")) {
+						expect((await guard.prestartStatus(commandId))?.state).toBe("abandoned");
+						if (permit?.state !== "closed") {
+							refunded++;
+							if (permit) permit = { ...permit, state: "closed" };
+						}
+						if (loseCancellation) {
+							loseCancellation = false;
+							throw new Error("cancellation committed reply lost");
+						}
+						return {
+							schema: "qorpera.computer-abandonment-receipt/v1",
+							permitId: commandId,
+							state: "abandoned_before_dispatch",
+							debitedUs: "0",
+							releasedUs: "330000000",
+							reservationReleased: true,
+							abandonment: request.abandonment,
+						};
 					}
-					return { project, instanceName: vm.name, operationId: randomUUID() };
-				},
-			),
-			inspectInstanceOperation: vi.fn(async () => "succeeded" as const),
-			readInstanceFile: vi.fn(),
-		};
-		const guardRoot = join(f.root, "guard");
-		await mkdir(guardRoot, { mode: 0o700 });
-		const guard = new PaidComputerGuard(
-			new PaidComputerGuardJournal(guardRoot),
-			new LxdPaidComputerGuardPhysical(client, async () => clock),
-			async () => clock,
-		);
-		await guard.initialize();
-		let permit: PaidComputerPermit | null = null;
-		const control = {
-			call: vi.fn(async (method: string, args: Record<string, unknown>) => {
-				if (method.includes("describe")) return { mode: "paid", permit, lastSample: null };
-				if (!method.includes("prepare") || permit) throw new Error("unexpected accounting effect");
-				const request = args.p_request as Record<string, unknown>;
-				permit = {
-					schema: "qorpera.computer-usage-permit/v1",
-					mode: "paid",
-					permitId: String(request.requestId),
-					allocationId: f.binding.allocationId,
-					instanceSha256: plan.instanceSha256,
-					nodeId: randomUUID(),
-					epoch: randomUUID(),
-					generation: 1,
-					reservationId: commandId,
-					hostBootId: clock.hostBootId,
-					physicalId: null,
-					guestBootId: null,
-					issuedAt: "2026-09-25T12:00:00.000Z",
-					deadline: "2026-09-25T12:05:30.000Z",
-					validForMs: 330000,
-					windowMs: 300000,
-					stopReserveMs: 30000,
-					tariffVersion: 1,
-					cpuMillis: f.binding.cpus * 1000,
-					memoryBytes: f.binding.memoryBytes,
-					state: "prepared",
-				};
-				return permit;
-			}),
-		};
-		const controller = new RuntimeComputerController({ control, guard, client, clock: async () => clock });
-		const adapter = new LxdOfficePaidComputer(f.policy, controller, control);
-		const journal = await LxdOfficeOperationJournal.open(
-			f.root,
-			intentId,
-			f.binding,
-			client,
-			false,
-			undefined,
-			adapter.operations(f.binding),
-		);
-		await journal.reconcile(randomUUID(), "create", signal());
-		await adapter.prepareStart(f.binding, commandId, { kind: "initial", intentId, mappings: [] }, signal());
-		const start = controller.start.bind(controller);
-		vi.spyOn(controller, "start").mockImplementationOnce(async (...args) => {
-			await start(...args);
-			throw new Error("guard reply lost");
-		});
-		await expect(journal.reconcile(commandId, "start", signal())).resolves.toEqual({ state: "unknown" });
-		await guard.sweep();
-		client.inspectInstanceOperation.mockRejectedValue(new Error("LXD five-second operation retention elapsed"));
-		const resumed = await LxdOfficeOperationJournal.open(
-			f.root,
-			intentId,
-			f.binding,
-			client,
-			true,
-			undefined,
-			adapter.operations(f.binding),
-		);
-		await expect(resumed.observe(commandId, "start", signal())).resolves.toMatchObject({ state: "succeeded" });
-		await observeLxdOfficeOperationJournals(f.root, client, signal());
-		expect(client.submitInstanceOperation.mock.calls.map((call) => call[1].action)).toEqual(["create", "start"]);
-		expect(control.call.mock.calls.filter((call) => call[0].includes("prepare"))).toHaveLength(1);
-		expect((await journal.history()).events).toHaveLength(6);
-	});
+					if (!method.includes("prepare") || permit) throw new Error("unexpected accounting effect");
+					permit = {
+						schema: "qorpera.computer-usage-permit/v2",
+						prestart: request.prestart as PaidComputerPermit["prestart"],
+						mode: "paid",
+						permitId: String(request.requestId),
+						allocationId: f.binding.allocationId,
+						instanceSha256: plan.instanceSha256,
+						nodeId: randomUUID(),
+						epoch: randomUUID(),
+						generation: 1,
+						reservationId: commandId,
+						hostBootId: clock.hostBootId,
+						physicalId: null,
+						guestBootId: null,
+						issuedAt: "2026-09-25T12:00:00.000Z",
+						deadline: "2026-09-25T12:05:30.000Z",
+						validForMs: 330000,
+						windowMs: 300000,
+						stopReserveMs: 30000,
+						tariffVersion: 1,
+						cpuMillis: f.binding.cpus * 1000,
+						memoryBytes: f.binding.memoryBytes,
+						state: "prepared",
+					};
+					if (lost === "prepare before office dispatch") throw new Error("prepare committed reply lost");
+					return permit;
+				}),
+			};
+			const controller = new RuntimeComputerController({ control, guard, client, clock: async () => clock });
+			const adapter = new LxdOfficePaidComputer(f.policy, controller, control);
+			const journal = await LxdOfficeOperationJournal.open(
+				f.root,
+				intentId,
+				f.binding,
+				client,
+				false,
+				undefined,
+				adapter.operations(f.binding),
+			);
+			await journal.reconcile(randomUUID(), "create", signal());
+			if (lost === "prepare before office dispatch") {
+				const intent = { kind: "initial", intentId, mappings: [] };
+				await expect(adapter.prepareStart(f.binding, commandId, intent, signal())).rejects.toThrow(
+					"prepare committed reply lost",
+				);
+				expect(await guard.latest(f.binding.allocationId)).toBeNull();
+				const restartedGuard = new PaidComputerGuard(
+					new PaidComputerGuardJournal(guardRoot),
+					new LxdPaidComputerGuardPhysical(client, async () => clock),
+					async () => clock,
+				);
+				await restartedGuard.initialize();
+				guard = restartedGuard;
+				clock.uptimeMs += 300001;
+				const restarted = new RuntimeComputerController({
+					control,
+					guard: restartedGuard,
+					client,
+					clock: async () => clock,
+				});
+				const restartedAdapter = new LxdOfficePaidComputer(f.policy, restarted, control);
+				// Cancellation itself loses its first committed response. A retry uses
+				// the original intent and cannot issue another funding or start effect.
+				await expect(restarted.maintain(signal())).rejects.toThrow();
+				await restarted.maintain(signal());
+				await expect(restartedAdapter.prepareStart(f.binding, commandId, intent, signal())).resolves.toBe(true);
+				const reopened = await LxdOfficeOperationJournal.open(
+					f.root,
+					intentId,
+					f.binding,
+					client,
+					true,
+					undefined,
+					restartedAdapter.operations(f.binding),
+				);
+				await expect(reopened.reconcile(commandId, "start", signal())).resolves.toEqual({
+					state: "abandoned_before_dispatch",
+				});
+				await expect(reopened.reconcile(commandId, "start", signal())).resolves.toEqual({
+					state: "abandoned_before_dispatch",
+				});
+				expect(refunded).toBe(1);
+				expect((await restartedGuard.prestartStatus(commandId))?.state).toBe("abandoned");
+				expect(client.submitInstanceOperation.mock.calls.map((call) => call[1].action)).toEqual(["create"]);
+				expect(control.call.mock.calls.filter((call) => call[0].includes("prepare"))).toHaveLength(1);
+				expect((await reopened.history()).events.at(-1)).toMatchObject({
+					state: "abandoned_before_dispatch",
+					operationId: null,
+				});
+				return;
+			}
+			await adapter.prepareStart(f.binding, commandId, { kind: "initial", intentId, mappings: [] }, signal());
+			const start = controller.start.bind(controller);
+			vi.spyOn(controller, "start").mockImplementationOnce(async (...args) => {
+				await start(...args);
+				throw new Error("guard reply lost");
+			});
+			await expect(journal.reconcile(commandId, "start", signal())).resolves.toEqual({ state: "unknown" });
+			await guard.sweep();
+			client.inspectInstanceOperation.mockRejectedValue(new Error("LXD five-second operation retention elapsed"));
+			const resumed = await LxdOfficeOperationJournal.open(
+				f.root,
+				intentId,
+				f.binding,
+				client,
+				true,
+				undefined,
+				adapter.operations(f.binding),
+			);
+			await expect(resumed.observe(commandId, "start", signal())).resolves.toMatchObject({ state: "succeeded" });
+			await observeLxdOfficeOperationJournals(f.root, client, signal());
+			expect(client.submitInstanceOperation.mock.calls.map((call) => call[1].action)).toEqual(["create", "start"]);
+			expect(control.call.mock.calls.filter((call) => call[0].includes("prepare"))).toHaveLength(1);
+			expect((await journal.history()).events).toHaveLength(6);
+		},
+	);
 	it("retains exact authority before funding and refuses rebinding even when the first response was lost", async () => {
 		const f = await fixture(),
 			commandId = randomUUID(),
@@ -229,17 +435,39 @@ describe("paid company computer lifecycle adapter", () => {
 		expect(f.controller.ensure).toHaveBeenCalledOnce();
 		expect(f.controller.start).not.toHaveBeenCalled();
 	});
-	it("does not mint or start during exact journal recovery and never borrows another command's latest reference", async () => {
-		const f = await fixture(),
-			commandId = randomUUID();
-		await f.adapter.prepareStart(f.binding, commandId, { kind: "initial" }, signal());
-		f.controller.ensure.mockClear();
-		await expect(f.adapter.operations(f.binding).recoverStart(commandId, signal())).resolves.toBeNull();
-		expect(f.controller.recover).toHaveBeenCalledOnce();
-		expect(f.controller.ensure).not.toHaveBeenCalled();
-		expect(f.controller.start).not.toHaveBeenCalled();
-		await expect(f.adapter.operations(f.binding).recoverStart(randomUUID(), signal())).rejects.toThrow();
-	});
+	it.each(["missing", "retired"])(
+		"does not mint, cancel, or start during %s journal recovery and never borrows another command's latest reference",
+		async (state) => {
+			const f = await fixture(),
+				commandId = randomUUID();
+			await f.adapter.prepareStart(f.binding, commandId, { kind: "initial" }, signal());
+			if (state === "retired")
+				f.controller.prestartStatus.mockResolvedValue({
+					schema: "qorpera.computer-prestart-record/v1",
+					guardIncarnationId: randomUUID(),
+					requestStartedUptimeMs: 10,
+					state: "retired",
+					abandonment: null,
+					intent: {
+						schema: "qorpera.computer-prestart-intent/v1",
+						permitId: commandId,
+						allocationId: f.binding.allocationId,
+						instanceSha256: lxdOfficeGuestPlan(f.binding).instanceSha256,
+						hostMachineIdSha256: f.policy.host.machineIdSha256,
+						hostBootId: randomUUID(),
+						prepareSha256: "a".repeat(64),
+						prepareRequestText: "{}",
+					},
+				});
+			f.controller.ensure.mockClear();
+			await expect(f.adapter.operations(f.binding).recoverStart(commandId, signal())).resolves.toBeNull();
+			expect(f.controller.recover).toHaveBeenCalledOnce();
+			expect(f.controller.ensure).not.toHaveBeenCalled();
+			expect(f.controller.start).not.toHaveBeenCalled();
+			expect(f.controller.abandonUndispatched).not.toHaveBeenCalled();
+			await expect(f.adapter.operations(f.binding).recoverStart(randomUUID(), signal())).rejects.toThrow();
+		},
+	);
 	it("requires confirmed shadow mode before using the existing unmetered admission", async () => {
 		const f = await fixture(),
 			fallback = { call: vi.fn(async () => ({ state: "reserved" })) };

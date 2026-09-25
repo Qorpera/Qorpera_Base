@@ -250,6 +250,8 @@ export class LxdOfficeResumeWorker {
 			activationId: request.activationId,
 			startCommandId: command.commandId,
 		};
+		if (operation.state === "abandoned_before_dispatch")
+			return { ...result, state: "failed" as const, reason: "OFFICE_PAID_START_ABANDONED" };
 		if (operation.state !== "succeeded") return { ...result, state: operation.state };
 		const before = await physical(),
 			boot = await inspectLxdOfficeGuestBoot(this.#client, binding, before.checked);

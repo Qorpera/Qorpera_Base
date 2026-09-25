@@ -6,8 +6,12 @@ import {
 	type PaidComputerArm,
 	type PaidComputerGuard,
 	type PaidComputerGuardRecord,
+	type PaidComputerPrestartIntent,
+	type PaidComputerPrestartRecord,
 	parsePaidComputerArm,
 	parsePaidComputerGuardRecord,
+	parsePaidComputerPrestartIntent,
+	parsePaidComputerPrestartRecord,
 } from "./computer-paid-guard.ts";
 import type { LxdOperationReference } from "./lxd-client.ts";
 import { checkDirectory, code } from "./lxd-office-journal-files.ts";
@@ -19,7 +23,9 @@ export type PaidComputerGuardRequest =
 	| { action: "start"; permitId: string; generation: number }
 	| { action: "stop" | "status"; permitId: string }
 	| { action: "latest"; allocationId: string }
-	| { action: "list" };
+	| { action: "list" | "listPrestarts" }
+	| { action: "prestartStatus"; permitId: string }
+	| { action: "registerPrestart" | "abandonPrestart"; input: PaidComputerPrestartIntent };
 
 function packet(socket: Socket, maximum = MAX_PACKET): Promise<unknown> {
 	return new Promise((resolve, reject) => {
@@ -53,10 +59,14 @@ async function handle(guard: PaidComputerGuard, value: unknown): Promise<unknown
 	const input = value as Record<string, unknown>;
 	if (input.action === "arm") return guard.arm(parsePaidComputerArm(input.input));
 	if (input.action === "list") return guard.list();
+	if (input.action === "listPrestarts") return guard.listPrestarts();
+	if (input.action === "registerPrestart") return guard.registerPrestart(parsePaidComputerPrestartIntent(input.input));
+	if (input.action === "abandonPrestart") return guard.abandonPrestart(parsePaidComputerPrestartIntent(input.input));
 	if (input.action === "latest" && typeof input.allocationId === "string" && UUID.test(input.allocationId))
 		return guard.latest(input.allocationId);
 	if (typeof input.permitId !== "string" || !UUID.test(input.permitId)) throw new Error("PAID_GUARD_IPC_INVALID");
 	if (input.action === "status") return guard.status(input.permitId);
+	if (input.action === "prestartStatus") return guard.prestartStatus(input.permitId);
 	if (input.action === "stop") return guard.stop(input.permitId);
 	if (input.action === "start" && Number.isSafeInteger(input.generation) && Number(input.generation) > 0)
 		return guard.start(input.permitId, Number(input.generation));
@@ -200,6 +210,24 @@ export class PaidComputerGuardClient {
 	}
 	async arm(input: PaidComputerArm, signal?: AbortSignal): Promise<PaidComputerGuardRecord> {
 		return parsePaidComputerGuardRecord(await this.#call({ action: "arm", input }, signal));
+	}
+	async registerPrestart(
+		input: PaidComputerPrestartIntent,
+		signal?: AbortSignal,
+	): Promise<PaidComputerPrestartRecord> {
+		return parsePaidComputerPrestartRecord(await this.#call({ action: "registerPrestart", input }, signal));
+	}
+	async abandonPrestart(input: PaidComputerPrestartIntent, signal?: AbortSignal): Promise<PaidComputerPrestartRecord> {
+		return parsePaidComputerPrestartRecord(await this.#call({ action: "abandonPrestart", input }, signal));
+	}
+	async prestartStatus(permitId: string, signal?: AbortSignal): Promise<PaidComputerPrestartRecord | null> {
+		const value = await this.#call({ action: "prestartStatus", permitId }, signal);
+		return value === null ? null : parsePaidComputerPrestartRecord(value);
+	}
+	async listPrestarts(signal?: AbortSignal): Promise<PaidComputerPrestartRecord[]> {
+		const value = await this.#call({ action: "listPrestarts" }, signal);
+		if (!Array.isArray(value) || value.length > 4096) throw new Error("PAID_GUARD_IPC_INVALID");
+		return value.map(parsePaidComputerPrestartRecord);
 	}
 	async start(permitId: string, generation: number, signal?: AbortSignal): Promise<LxdOperationReference> {
 		const result = await this.#call({ action: "start", permitId, generation }, signal);

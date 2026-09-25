@@ -26,16 +26,36 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-
 const MAX_EVENTS = 384;
 type Action = LxdTrackedInstanceAction["action"];
 
-/** A protected physical-start adapter. Recovery is observation only and must
- * return a reference bound to this exact durable command, never a latest start. */
+/** A protected physical-start adapter. Recovery never dispatches a VM action;
+ * it may cancel an unused reservation or return the exact retained reference. */
 export interface LxdOfficeOperationPort {
-	submitStart(commandId: string, signal: AbortSignal): Promise<LxdOperationReference | null>;
-	recoverStart(commandId: string, signal: AbortSignal): Promise<LxdOperationReference | null>;
+	submitStart(commandId: string, signal: AbortSignal): Promise<LxdOfficeStartOutcome>;
+	recoverStart(commandId: string, signal: AbortSignal): Promise<LxdOfficeStartOutcome>;
 	inspectStart?(
 		commandId: string,
 		reference: LxdOperationReference,
 		signal: AbortSignal,
 	): Promise<LxdOperationState | null>;
+}
+
+/** Returned only after the guard's permanent deny decision AND the protected
+ * allowance cancellation have both been confirmed for this exact command. */
+export interface LxdOfficeAbandonedStart {
+	state: "abandoned_before_dispatch";
+	commandId: string;
+}
+export type LxdOfficeStartOutcome = LxdOperationReference | LxdOfficeAbandonedStart | null;
+
+interface AbandonedEvent {
+	schema: "qorpera.lxd-office-operation-event/v4";
+	sequence: number;
+	previousSha256: string;
+	commandId: string;
+	action: "start";
+	kind: "abandoned";
+	operationId: null;
+	state: "abandoned_before_dispatch";
+	recordedAt: string | null;
 }
 
 interface EventFields {
@@ -56,7 +76,8 @@ type Event =
 						recordedAt: string | null;
 				  }
 			))
-	| LxdOfficeAdministrativeDeleteMarker;
+	| LxdOfficeAdministrativeDeleteMarker
+	| AbandonedEvent;
 
 function timestamp(value: unknown): value is string {
 	if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value)) return false;
@@ -68,6 +89,9 @@ export interface LxdOfficeOperationResult {
 	state: LxdOperationState | "unknown";
 	operationId?: string;
 }
+export type LxdOfficeStartResult =
+	| LxdOfficeOperationResult
+	| { state: "abandoned_before_dispatch"; operationId?: never };
 
 function sha256(value: Buffer | string): string {
 	return createHash("sha256").update(value).digest("hex");
@@ -280,15 +304,17 @@ export class LxdOfficeOperationJournal {
 							? "clock_unavailable"
 							: "provider_journal_clock",
 				reason:
-					event.kind === "administrative_disposition"
-						? "ADMINISTRATIVE_DISPOSITION_ORIGINAL_OUTCOME_UNKNOWN"
-						: event.kind === "dispatch"
-							? "DISPATCH_RECORDED"
-							: event.kind === "accepted"
-								? "PROVIDER_OPERATION_ACCEPTED"
-								: event.state === "failed"
-									? "PROVIDER_OPERATION_FAILED"
-									: "PROVIDER_OPERATION_SUCCEEDED",
+					event.kind === "abandoned"
+						? "PAID_START_ABANDONED_BEFORE_DISPATCH"
+						: event.kind === "administrative_disposition"
+							? "ADMINISTRATIVE_DISPOSITION_ORIGINAL_OUTCOME_UNKNOWN"
+							: event.kind === "dispatch"
+								? "DISPATCH_RECORDED"
+								: event.kind === "accepted"
+									? "PROVIDER_OPERATION_ACCEPTED"
+									: event.state === "failed"
+										? "PROVIDER_OPERATION_FAILED"
+										: "PROVIDER_OPERATION_SUCCEEDED",
 				physicalTransitionAt: null,
 			})),
 			serviceReadinessInferred: false,
@@ -323,14 +349,17 @@ export class LxdOfficeOperationJournal {
 				if (
 					(event.schema !== "qorpera.lxd-office-operation-event/v1" &&
 						event.schema !== "qorpera.lxd-office-operation-event/v2" &&
-						event.schema !== "qorpera.lxd-office-operation-event/v3") ||
+						event.schema !== "qorpera.lxd-office-operation-event/v3" &&
+						event.schema !== "qorpera.lxd-office-operation-event/v4") ||
 					Object.keys(event).sort().join() !==
 						(event.schema === "qorpera.lxd-office-operation-event/v1"
 							? "action,commandId,kind,operationId,previousSha256,schema,sequence,state"
-							: event.schema === "qorpera.lxd-office-operation-event/v2"
+							: event.schema === "qorpera.lxd-office-operation-event/v2" ||
+									event.schema === "qorpera.lxd-office-operation-event/v4"
 								? "action,commandId,kind,operationId,previousSha256,recordedAt,schema,sequence,state"
 								: "action,auditId,commandId,dispositionSha256,kind,nextCreateCommandId,operationId,phaseEvidenceSha256,previousSha256,recordedAt,resetId,schema,sequence,sqlReceiptSha256,state") ||
-					(event.schema === "qorpera.lxd-office-operation-event/v2" &&
+					((event.schema === "qorpera.lxd-office-operation-event/v2" ||
+						event.schema === "qorpera.lxd-office-operation-event/v4") &&
 						event.recordedAt !== null &&
 						!timestamp(event.recordedAt)) ||
 					event.sequence !== index ||
@@ -345,6 +374,8 @@ export class LxdOfficeOperationJournal {
 					(event.schema === "qorpera.lxd-office-operation-event/v3")
 				)
 					throw new Error("invalid administrative schema");
+				if ((event.kind === "abandoned") !== (event.schema === "qorpera.lxd-office-operation-event/v4"))
+					throw new Error("invalid abandonment schema");
 				if (
 					event.schema === "qorpera.lxd-office-operation-event/v3" &&
 					(event.kind !== "administrative_disposition" ||
@@ -377,6 +408,17 @@ export class LxdOfficeOperationJournal {
 					)
 						throw new Error("conflicting dispatch");
 					commands.add(event.commandId);
+				} else if (event.kind === "abandoned") {
+					if (
+						!previous ||
+						previous.kind !== "dispatch" ||
+						previous.action !== "start" ||
+						event.action !== "start" ||
+						previous.commandId !== event.commandId ||
+						event.operationId !== null ||
+						event.state !== "abandoned_before_dispatch"
+					)
+						throw new Error("unconfirmed abandonment");
 				} else {
 					if (
 						!previous ||
@@ -421,6 +463,7 @@ export class LxdOfficeOperationJournal {
 		authoritySha256: string,
 		contexts: ReadonlyMap<string, LxdOfficeDeleteDispositionContext>,
 	) {
+		if (event?.kind === "abandoned") return undefined;
 		return lxdOfficeVmCompletion(
 			event,
 			event?.kind === "administrative_disposition" ? contexts.get(event.auditId) : undefined,
@@ -552,10 +595,50 @@ export class LxdOfficeOperationJournal {
 		);
 	}
 
+	async #abandon(commandId: string, outcome: LxdOfficeAbandonedStart): Promise<LxdOfficeStartResult> {
+		if (outcome.commandId !== commandId || outcome.state !== "abandoned_before_dispatch")
+			throw new Error("LXD_OFFICE_PAID_RECOVERY_DIFFERS");
+		const current = await this.#read(),
+			command = lastCommand(current.events, commandId);
+		if (command?.kind === "abandoned") return { state: "abandoned_before_dispatch" };
+		if (command?.kind !== "dispatch" || command.action !== "start" || current.events.at(-1) !== command)
+			throw new Error("LXD_OFFICE_PAID_RECOVERY_DIFFERS");
+		if (current.events.length >= MAX_EVENTS) throw new Error("LXD_OFFICE_JOURNAL_FULL");
+		let recordedAt: string | null = null;
+		try {
+			const value = this.#now().toISOString();
+			if (timestamp(value)) recordedAt = value;
+		} catch {
+			/* Optional clock metadata. */
+		}
+		const event: AbandonedEvent = {
+			schema: "qorpera.lxd-office-operation-event/v4",
+			sequence: current.events.length,
+			previousSha256: current.previousSha256,
+			commandId,
+			action: "start",
+			kind: "abandoned",
+			operationId: null,
+			state: "abandoned_before_dispatch",
+			recordedAt,
+		};
+		await publish(this.#root, `${String(event.sequence).padStart(6, "0")}.json`, encode(event));
+		const retained = (await this.#read()).events.at(-1);
+		if (retained?.kind !== "abandoned" || retained.commandId !== commandId)
+			throw new Error("LXD_OFFICE_PAID_RECOVERY_DIFFERS");
+		return { state: "abandoned_before_dispatch" };
+	}
+
 	/** One bounded reconciliation: submit at most once, then inspect at most
 	 * once. Call again with the SAME command ID to resume after a process crash.
 	 * The caller separately checks physical postconditions and admission fences. */
-	async reconcile(commandId: string, action: Action, signal: AbortSignal): Promise<LxdOfficeOperationResult> {
+	reconcile(
+		commandId: string,
+		action: Exclude<Action, "start">,
+		signal: AbortSignal,
+	): Promise<LxdOfficeOperationResult>;
+	reconcile(commandId: string, action: Action, signal: AbortSignal): Promise<LxdOfficeStartResult>;
+	async reconcile(commandId: string, action: Action, signal: AbortSignal): Promise<LxdOfficeStartResult> {
 		if (
 			typeof commandId !== "string" ||
 			!UUID.test(commandId) ||
@@ -594,8 +677,10 @@ export class LxdOfficeOperationJournal {
 			let operationId: string;
 			try {
 				signal.throwIfAborted();
+				const paid = action === "start" ? await this.#paid?.submitStart(commandId, signal) : null;
+				if (paid && "state" in paid) return await this.#abandon(commandId, paid);
 				const reference =
-					(action === "start" ? await this.#paid?.submitStart(commandId, signal) : null) ??
+					paid ??
 					(await this.#client.submitInstanceOperation(
 						binding.project,
 						action === "create" ? { action, request } : { action, name: request.name },
@@ -629,11 +714,21 @@ export class LxdOfficeOperationJournal {
 
 	/** Inspect an existing command without ever dispatching a missing command.
 	 * Settlement records may be persisted; no provider mutation is performed. */
+	observe(
+		commandId: string,
+		action: Exclude<Action, "start">,
+		signal: AbortSignal,
+	): Promise<LxdOfficeOperationResult | { state: "not_dispatched" }>;
+	observe(
+		commandId: string,
+		action: Action,
+		signal: AbortSignal,
+	): Promise<LxdOfficeStartResult | { state: "not_dispatched" }>;
 	async observe(
 		commandId: string,
 		action: Action,
 		signal: AbortSignal,
-	): Promise<LxdOfficeOperationResult | { state: "not_dispatched" }> {
+	): Promise<LxdOfficeStartResult | { state: "not_dispatched" }> {
 		if (
 			typeof commandId !== "string" ||
 			!UUID.test(commandId) ||
@@ -855,16 +950,18 @@ export class LxdOfficeOperationJournal {
 		};
 	}
 
-	async #observe(commandId: string, action: Action, signal: AbortSignal): Promise<LxdOfficeOperationResult> {
+	async #observe(commandId: string, action: Action, signal: AbortSignal): Promise<LxdOfficeStartResult> {
 		let current = await this.#read();
 		let command = lastCommand(current.events, commandId);
 		if (!command || command.action !== action) throw new Error("LXD_OFFICE_COMMAND_CONFLICT");
+		if (command.kind === "abandoned") return { state: "abandoned_before_dispatch" };
 		if (command.kind === "settled") {
 			return { state: command.state as "succeeded" | "failed", operationId: command.operationId as string };
 		}
 		if (command.kind === "dispatch") {
 			const recovered = action === "start" ? await this.#paid?.recoverStart(commandId, signal) : null;
 			if (!recovered) return { state: "unknown" };
+			if ("state" in recovered) return this.#abandon(commandId, recovered);
 			const plan = lxdOfficeGuestPlan(this.#authority.binding);
 			if (
 				recovered.project !== plan.binding.project ||

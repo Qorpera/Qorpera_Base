@@ -93,17 +93,24 @@ async function fixture() {
 		lastSample: Record<string, unknown> | null = null,
 		mode: "paid" | "shadow" = "paid";
 	let losePrepare = false,
-		loseRenew = false;
+		loseRenew = false,
+		loseFinish = false,
+		sourceUnavailable = false;
 	const samples: Record<string, unknown>[] = [];
 	const control = {
-		call: vi.fn(async (method: string, args: Record<string, unknown>) => {
+		call: vi.fn(async (method: string, args: Record<string, unknown>): Promise<unknown> => {
 			const request = args.p_request as Record<string, unknown>;
-			if (method.includes("describe"))
+			if (method === "qorpera_describe_runtime_computer_prestart")
+				return { state: permit?.state ?? "absent", permit, lastSample };
+			if (method.includes("describe")) {
+				if (sourceUnavailable) throw new Error("native run no longer exists");
 				return { mode, permit: permit?.state === "closed" ? null : permit, lastSample };
+			}
 			if (method.includes("prepare")) {
 				if (permit) throw new Error("duplicate reservation");
 				permit = {
-					schema: "qorpera.computer-usage-permit/v1",
+					schema: "qorpera.computer-usage-permit/v2",
+					prestart: request.prestart as PaidComputerPermit["prestart"],
 					mode: "paid",
 					permitId: String(request.requestId),
 					allocationId: context.allocationId,
@@ -131,6 +138,19 @@ async function fixture() {
 				}
 				return permit;
 			}
+			if (method.includes("abandon")) {
+				const reservationReleased = permit !== null;
+				if (permit) permit = { ...permit, state: "closed" };
+				return {
+					schema: "qorpera.computer-abandonment-receipt/v1",
+					permitId: request.permitId,
+					state: "abandoned_before_dispatch",
+					abandonment: request.abandonment,
+					reservationReleased,
+					debitedUs: "0",
+					releasedUs: reservationReleased ? "330000000" : "0",
+				};
+			}
 			if (!permit) throw new Error("permit missing");
 			const sample = request.sample as Record<string, unknown>;
 			samples.push(structuredClone(sample));
@@ -156,7 +176,13 @@ async function fixture() {
 					throw new Error("renew reply lost");
 				}
 			}
-			if (method.includes("finish")) permit = { ...permit, state: "closed" };
+			if (method.includes("finish")) {
+				permit = { ...permit, state: "closed" };
+				if (loseFinish) {
+					loseFinish = false;
+					throw new Error("finish reply lost");
+				}
+			}
 			return permit;
 		}),
 	};
@@ -199,6 +225,12 @@ async function fixture() {
 		loseRenew() {
 			loseRenew = true;
 		},
+		loseFinish() {
+			loseFinish = true;
+		},
+		moveSource() {
+			sourceUnavailable = true;
+		},
 		async restart() {
 			guard = new PaidComputerGuard(journal, new LxdPaidComputerGuardPhysical(client, hostClock), hostClock);
 			await guard.initialize();
@@ -217,6 +249,142 @@ async function fixture() {
 }
 const signal = () => new AbortController().signal;
 describe("funded runtime physical custody", () => {
+	it.each([false, true])(
+		"checks the exact durable abandonment closure after a lost reply (altered: %s)",
+		async (altered) => {
+			const f = await fixture();
+			await f.controller.ensure(f.context, f.context.allocationId, signal());
+			const original = f.control.call.getMockImplementation()!;
+			let closure: Record<string, unknown> | null = null;
+			f.control.call.mockImplementation(async (method, args) => {
+				if (method === "qorpera_abandon_runtime_computer_permit") {
+					closure = (await original(method, args)) as Record<string, unknown>;
+					throw new Error("abandonment reply lost");
+				}
+				if (method === "qorpera_describe_runtime_computer_prestart")
+					return {
+						state: "abandoned",
+						permit: f.permit,
+						closure: altered ? { ...closure, permitId: randomUUID() } : closure,
+					};
+				return original(method, args);
+			});
+			await expect(f.controller.abandonUndispatched(f.context, f.context.allocationId, signal())).rejects.toThrow(
+				"reply lost",
+			);
+			f.moveSource();
+			if (altered) {
+				await expect(f.controller.maintain(signal())).rejects.toThrow("RECOVERY_UNCONFIRMED");
+				expect(f.controller.manages(f.context.allocationId)).toBe(true);
+			} else {
+				await f.controller.maintain(signal());
+				expect(f.controller.manages(f.context.allocationId)).toBe(false);
+			}
+			expect((await f.guard.listPrestarts())[0].state).toBe("abandoned");
+			expect(f.client.submitInstanceOperation).not.toHaveBeenCalled();
+		},
+	);
+	it("clears a lost finish reply from exact history after source removal without queued live-source reads", async () => {
+		const f = await fixture();
+		await f.start();
+		await f.controller.stop(f.context.allocationId, signal());
+		f.loseFinish();
+		await expect(f.controller.observe(f.context.allocationId, signal())).rejects.toThrow("finish reply lost");
+		expect(f.controller.manages(f.context.allocationId)).toBe(true);
+		const stopped = await f.guard.latest(f.context.allocationId);
+		f.moveSource();
+		f.control.call.mockClear();
+		await Promise.all([
+			f.controller.maintain(signal()),
+			f.controller.maintain(signal()),
+			f.controller.stop(f.context.allocationId, signal()),
+		]);
+		expect(f.controller.manages(f.context.allocationId)).toBe(false);
+		expect(
+			f.control.call.mock.calls.filter(([method]) => method === "qorpera_describe_runtime_computer_permit"),
+		).toHaveLength(0);
+		expect(f.control.call.mock.calls.filter(([method]) => method.includes("finish"))).toHaveLength(0);
+		expect(await f.guard.latest(f.context.allocationId)).toEqual(stopped);
+		await f.restart();
+		await f.controller.maintain(signal());
+		expect(f.controller.manages(f.context.allocationId)).toBe(false);
+	});
+	it.each(["permitId", "hostBootId", "prestart"])(
+		"retains managed custody when terminal history has different %s",
+		async (field) => {
+			const f = await fixture();
+			await f.start();
+			const original = f.control.call.getMockImplementation()!;
+			f.control.call.mockImplementation(async (method, args) => {
+				if (method !== "qorpera_describe_runtime_computer_prestart") return original(method, args);
+				return {
+					state: "closed",
+					permit: {
+						...f.permit,
+						state: "closed",
+						[field]:
+							field === "prestart"
+								? { guardIncarnationId: randomUUID(), prepareSha256: "a".repeat(64) }
+								: randomUUID(),
+					},
+				};
+			});
+			await expect(f.controller.maintain(signal())).rejects.toThrow("RECOVERY_UNCONFIRMED");
+			expect(f.controller.manages(f.context.allocationId)).toBe(true);
+			expect((await f.guard.latest(f.context.allocationId))?.phase).toBe("running");
+		},
+	);
+	it("recovers an expired prepare-only hold after restart without looking for a VM or renewing its clock", async () => {
+		const f = await fixture();
+		f.losePrepare();
+		await expect(f.controller.ensure(f.context, f.context.allocationId, signal())).rejects.toThrow("reply lost");
+		f.removeInstance();
+		f.clock.uptimeMs += 300001;
+		await f.restart();
+		await f.controller.maintain(signal());
+		expect(f.permit?.state).toBe("closed");
+		expect((await f.guard.prestartStatus(f.context.allocationId))?.state).toBe("abandoned");
+		expect(f.client.submitInstanceOperation).not.toHaveBeenCalled();
+		await expect(f.controller.ensure(f.context, f.context.allocationId, signal())).rejects.toThrow("START_ABANDONED");
+		expect(f.control.call.mock.calls.filter(([method]) => method.includes("prepare"))).toHaveLength(1);
+	});
+	it("persists cancellation before SQL and recovers a lost closure reply after another restart", async () => {
+		const f = await fixture();
+		await f.controller.ensure(f.context, f.context.allocationId, signal());
+		const original = f.control.call.getMockImplementation()!;
+		f.control.call.mockImplementationOnce(async (method, args) => {
+			await original(method, args);
+			throw new Error("closure reply lost");
+		});
+		await expect(f.controller.abandonUndispatched(f.context, f.context.allocationId, signal())).rejects.toThrow(
+			"closure reply lost",
+		);
+		expect((await f.guard.prestartStatus(f.context.allocationId))?.state).toBe("abandoned");
+		await f.restart();
+		await f.controller.maintain(signal());
+		expect(f.permit?.state).toBe("closed");
+		await expect(f.controller.ensure(f.context, f.context.allocationId, signal())).rejects.toThrow("START_ABANDONED");
+		expect(f.client.submitInstanceOperation).not.toHaveBeenCalled();
+	});
+	it("never refunds an uncertain dispatched start even after reboot and physical disappearance", async () => {
+		const f = await fixture();
+		await f.controller.ensure(f.context, f.context.allocationId, signal());
+		f.client.submitInstanceOperation.mockRejectedValueOnce(new Error("lost start"));
+		await expect(f.controller.start(f.context.allocationId, f.target, signal())).rejects.toThrow("lost start");
+		f.removeInstance();
+		await expect(f.controller.abandonUndispatched(f.context, f.context.allocationId, signal())).rejects.toThrow();
+		expect(f.control.call.mock.calls.filter(([method]) => method.includes("abandon"))).toHaveLength(0);
+		expect(f.permit?.state).toBe("prepared");
+	});
+	it("keeps cancellation final even if company mode later reports shadow", async () => {
+		const f = await fixture();
+		await f.controller.ensure(f.context, f.context.allocationId, signal());
+		await f.controller.abandonUndispatched(f.context, f.context.allocationId, signal());
+		f.setMode("shadow");
+		await f.restart();
+		await expect(f.controller.ensure(f.context, f.context.allocationId, signal())).rejects.toThrow("START_ABANDONED");
+		expect(f.client.submitInstanceOperation).not.toHaveBeenCalled();
+	});
 	it("keeps known in-process sample continuity across active-state reads and refuses settlement of a running VM", async () => {
 		const f = await fixture();
 		await f.start();

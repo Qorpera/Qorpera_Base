@@ -1,5 +1,5 @@
-import { randomUUID } from "node:crypto";
-import { chmod, mkdir, mkdtemp, readFile, realpath, rm } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { chmod, mkdir, mkdtemp, readFile, realpath, rm, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseCloudCodingNasPolicy } from "@qorpera/contracts";
@@ -12,6 +12,8 @@ import {
 	PaidComputerGuardJournal,
 	type PaidComputerGuardPhysical,
 	type PaidComputerHostClock,
+	type PaidComputerPrestartIntent,
+	parsePaidComputerPrestartIntent,
 } from "../src/computer-paid-guard.ts";
 import { PaidComputerGuardClient, servePaidComputerGuard } from "../src/computer-paid-guard-ipc.ts";
 import { LxdPaidComputerGuardPhysical } from "../src/computer-paid-guard-lxd.ts";
@@ -116,7 +118,39 @@ async function fixture(initialize = true) {
 	const clock = vi.fn(async () => ({ ...host }));
 	const journal = new PaidComputerGuardJournal(journalRoot);
 	const guard = new PaidComputerGuard(journal, physical, clock);
-	if (initialize) await guard.initialize();
+	const register = async (arm = input) => {
+		const prepareRequestText = JSON.stringify({
+			schema: "qorpera.coding-computer-prepare/v2",
+			requestId: arm.permit.permitId,
+			machineId: arm.machine.allocationId,
+			machineIdSha256: arm.machine.hostMachineIdSha256,
+			hostBootId: arm.machine.hostBootId,
+		});
+		const intent: PaidComputerPrestartIntent = {
+			schema: "qorpera.computer-prestart-intent/v1",
+			permitId: arm.permit.permitId,
+			allocationId: arm.machine.allocationId,
+			instanceSha256: arm.permit.instanceSha256,
+			hostMachineIdSha256: arm.machine.hostMachineIdSha256,
+			hostBootId: arm.machine.hostBootId,
+			prepareSha256: createHash("sha256").update(prepareRequestText).digest("hex"),
+			prepareRequestText,
+		};
+		const retained = await guard.registerPrestart(intent);
+		arm.permit = {
+			...arm.permit,
+			schema: "qorpera.computer-usage-permit/v2",
+			prestart: {
+				guardIncarnationId: retained.guardIncarnationId,
+				prepareSha256: intent.prepareSha256,
+			},
+		};
+		return intent;
+	};
+	if (initialize) {
+		await guard.initialize();
+		await register();
+	}
 	return {
 		root,
 		journalRoot,
@@ -128,6 +162,7 @@ async function fixture(initialize = true) {
 		physical,
 		operation,
 		plan,
+		register,
 		setState(value: typeof state) {
 			state = value;
 		},
@@ -169,6 +204,7 @@ describe("independent host paid-computer custody", () => {
 			(await f.guard.arm({ ...f.input, permit: { ...f.input.permit, validForMs: 325000 } })).stopAtUptimeMs,
 		).toBe(395000);
 		const next = { ...f.input, permit: { ...f.input.permit, permitId: randomUUID(), validForMs: 30000 } };
+		await f.register(next);
 		await expect(f.guard.arm(next)).rejects.toThrow();
 	});
 	it("allows only committed next-generation renewal and never revives an expired generation", async () => {
@@ -201,9 +237,9 @@ describe("independent host paid-computer custody", () => {
 		await expect(f.guard.arm(f.input)).rejects.toThrow("STOPPED_MACHINE_REQUIRED");
 		f.setState("stopped");
 		await f.guard.arm(f.input);
-		await expect(f.guard.arm({ ...f.input, permit: { ...f.input.permit, permitId: randomUUID() } })).rejects.toThrow(
-			"MACHINE_BUSY",
-		);
+		const second = { ...f.input, permit: { ...f.input.permit, permitId: randomUUID() } };
+		await f.register(second);
+		await expect(f.guard.arm(second)).rejects.toThrow("MACHINE_BUSY");
 		const first = await f.guard.start(f.input.permit.permitId, 1);
 		expect(await f.guard.start(f.input.permit.permitId, 1)).toEqual(first);
 		expect(f.physical.start).toHaveBeenCalledOnce();
@@ -384,6 +420,7 @@ describe("independent host paid-computer custody", () => {
 		await vi.waitFor(() => expect(report).toHaveBeenCalledWith("ready"));
 		const client = new PaidComputerGuardClient(socketPath);
 		try {
+			await f.register();
 			await client.arm(f.input);
 			await client.start(f.input.permit.permitId, 1);
 			expect((await client.latest(f.input.machine.allocationId))?.phase).toBe("running");
@@ -393,5 +430,277 @@ describe("independent host paid-computer custody", () => {
 			await serving;
 		}
 		expect(f.physical.stop).toHaveBeenCalledOnce();
+	});
+});
+
+describe("durable prestart cancellation", () => {
+	it("retains the exact prepare identity and original clock through replay and reboot", async () => {
+		const f = await fixture(),
+			original = (await f.guard.listPrestarts())[0];
+		f.host.uptimeMs += 900000;
+		expect(await f.guard.registerPrestart(original.intent)).toEqual(original);
+		f.host.hostBootId = randomUUID();
+		f.host.uptimeMs = 10;
+		const restarted = f.restart();
+		await restarted.initialize();
+		expect(await restarted.prestartStatus(original.intent.permitId)).toEqual(original);
+		const abandoned = await restarted.abandonPrestart(original.intent);
+		expect(abandoned.state).toBe("abandoned");
+		expect(abandoned.abandonment?.hostBootId).toBe(original.intent.hostBootId);
+		expect(f.physical.inspect).not.toHaveBeenCalled();
+		expect(f.physical.start).not.toHaveBeenCalled();
+	});
+	it("permanently denies an abandoned absent machine and returns the same cancellation after restart", async () => {
+		const f = await fixture(),
+			intent = (await f.guard.listPrestarts())[0].intent;
+		f.setState("absent");
+		const cancelled = await f.guard.abandonPrestart(intent);
+		expect(await f.guard.abandonPrestart(intent)).toEqual(cancelled);
+		const restarted = f.restart();
+		await restarted.initialize();
+		expect(await restarted.abandonPrestart(intent)).toEqual(cancelled);
+		expect(await restarted.registerPrestart(intent)).toEqual(cancelled);
+		await expect(restarted.arm(f.input)).rejects.toThrow("PRESTART_ABANDONED");
+		await expect(restarted.start(intent.permitId, 1)).rejects.toThrow();
+		expect(f.physical.start).not.toHaveBeenCalled();
+	});
+	it("serializes abandonment before a delayed start of an already armed computer", async () => {
+		const f = await fixture(),
+			intent = (await f.guard.listPrestarts())[0].intent;
+		await f.guard.arm(f.input);
+		const result = await Promise.allSettled([f.guard.abandonPrestart(intent), f.guard.start(intent.permitId, 1)]);
+		expect(result.map((entry) => entry.status)).toEqual(["fulfilled", "rejected"]);
+		await expect(f.guard.arm(f.input)).rejects.toThrow("PRESTART_ABANDONED");
+		expect(f.physical.start).not.toHaveBeenCalled();
+	});
+	it("refuses cancellation once dispatch wins even while its physical reply is unresolved", async () => {
+		const f = await fixture(),
+			intent = (await f.guard.listPrestarts())[0].intent;
+		await f.guard.arm(f.input);
+		let finish!: (reference: LxdOperationReference) => void;
+		f.physical.start.mockImplementationOnce(
+			() =>
+				new Promise((resolve) => {
+					finish = resolve;
+				}),
+		);
+		const start = f.guard.start(intent.permitId, 1);
+		await vi.waitFor(() => expect(finish).toBeTypeOf("function"));
+		expect((await f.guard.prestartStatus(intent.permitId))?.state).toBe("dispatched");
+		await expect(f.guard.abandonPrestart(intent)).rejects.toThrow("PRESTART_DISPATCHED");
+		finish(f.operation());
+		await start;
+	});
+	it("does not infer unused execution if a dispatched physical guard record is missing", async () => {
+		const f = await fixture(),
+			intent = (await f.guard.listPrestarts())[0].intent;
+		await f.guard.arm(f.input);
+		await f.guard.start(intent.permitId, 1);
+		await unlink(join(f.journalRoot, `${intent.permitId}.json`));
+		const restarted = f.restart();
+		await restarted.initialize();
+		await expect(restarted.abandonPrestart(intent)).rejects.toThrow("PRESTART_DISPATCHED");
+		await expect(restarted.arm(f.input)).rejects.toThrow("PRESTART_DISPATCHED");
+		expect(f.physical.start).toHaveBeenCalledOnce();
+	});
+	it("retains a conservative dispatch fence if the physical guard write fails after the prestart write", async () => {
+		const f = await fixture(),
+			intent = (await f.guard.listPrestarts())[0].intent;
+		await f.guard.arm(f.input);
+		vi.spyOn(f.journal, "save").mockRejectedValueOnce(new Error("guard write failed"));
+		await expect(f.guard.start(intent.permitId, 1)).rejects.toThrow("guard write failed");
+		const restarted = f.restart();
+		await restarted.initialize();
+		await expect(restarted.abandonPrestart(intent)).rejects.toThrow("PRESTART_DISPATCHED");
+		await expect(restarted.start(intent.permitId, 1)).rejects.toThrow("PRESTART_DISPATCHED");
+		expect(f.physical.start).not.toHaveBeenCalled();
+	});
+	it("does not issue cancellation proof after ambiguous durability until a validated restart", async () => {
+		const f = await fixture(),
+			intent = (await f.guard.listPrestarts())[0].intent;
+		await f.guard.arm(f.input);
+		const save = f.journal.savePrestarts.bind(f.journal);
+		vi.spyOn(f.journal, "savePrestarts").mockImplementationOnce(async (value) => {
+			await save(value);
+			throw new Error("fsync uncertain");
+		});
+		await expect(f.guard.abandonPrestart(intent)).rejects.toThrow("fsync uncertain");
+		await expect(f.guard.prestartStatus(intent.permitId)).rejects.toThrow("PRESTART_UNCONFIRMED");
+		await expect(f.guard.start(intent.permitId, 1)).rejects.toThrow("PRESTART_UNCONFIRMED");
+		const restarted = f.restart();
+		await restarted.initialize();
+		expect((await restarted.abandonPrestart(intent)).state).toBe("abandoned");
+		expect(f.physical.start).not.toHaveBeenCalled();
+	});
+	it("rejects missing, mismatched, secret-bearing and corrupt prestart evidence", async () => {
+		const f = await fixture(),
+			intent = (await f.guard.listPrestarts())[0].intent;
+		const prepareRequestText = JSON.stringify({
+			...JSON.parse(intent.prepareRequestText),
+			leaseToken: "not-a-real-secret",
+		});
+		expect(() =>
+			parsePaidComputerPrestartIntent({
+				...intent,
+				prepareRequestText,
+				prepareSha256: createHash("sha256").update(prepareRequestText).digest("hex"),
+			}),
+		).toThrow("PRESTART_SECRET");
+		await expect(f.guard.registerPrestart({ ...intent, instanceSha256: "d".repeat(64) })).rejects.toThrow(
+			"PRESTART_DIFFERS",
+		);
+		const otherText = JSON.stringify({ ...JSON.parse(intent.prepareRequestText), requestId: randomUUID() });
+		await expect(
+			f.guard.abandonPrestart({
+				...intent,
+				permitId: JSON.parse(otherText).requestId,
+				prepareRequestText: otherText,
+				prepareSha256: createHash("sha256").update(otherText).digest("hex"),
+			}),
+		).rejects.toThrow("PRESTART_MISSING");
+		await writeFile(join(f.journalRoot, "prestarts.json"), "{corrupt", { mode: 0o600 });
+		await expect(f.restart().initialize()).rejects.toThrow();
+	});
+	it("cannot discard the intent journal while retaining v2 physical custody", async () => {
+		const f = await fixture();
+		await f.guard.arm(f.input);
+		await unlink(join(f.journalRoot, "prestarts.json"));
+		await expect(f.restart().initialize()).rejects.toThrow("PRESTART_MISSING");
+	});
+	it("rejects fresh legacy permits and mismatched journal incarnations", async () => {
+		const f = await fixture();
+		await expect(
+			f.guard.arm({
+				...f.input,
+				permit: { ...f.input.permit, schema: "qorpera.computer-usage-permit/v1", prestart: undefined },
+			}),
+		).rejects.toThrow("PRESTART_REQUIRED");
+		await expect(
+			f.guard.arm({
+				...f.input,
+				permit: {
+					...f.input.permit,
+					prestart: { prepareSha256: f.input.permit.prestart!.prepareSha256, guardIncarnationId: randomUUID() },
+				},
+			}),
+		).rejects.toThrow("PRESTART_DIFFERS");
+	});
+	it("refuses an expired first attachment without rebasing the retained registration clock", async () => {
+		const f = await fixture();
+		f.host.uptimeMs += 900000;
+		await expect(f.guard.arm({ ...f.input, requestStartedUptimeMs: f.host.uptimeMs })).rejects.toThrow(
+			"PERMIT_EXPIRED",
+		);
+		expect((await f.guard.abandonPrestart((await f.guard.listPrestarts())[0].intent)).state).toBe("abandoned");
+	});
+	it("uses remaining RPC TTL without subtracting elapsed prestart time twice", async () => {
+		const f = await fixture();
+		f.host.uptimeMs += 180000;
+		const restarted = f.restart();
+		await restarted.initialize();
+		const attached = await restarted.arm({
+			...f.input,
+			requestStartedUptimeMs: f.host.uptimeMs,
+			permit: { ...f.input.permit, validForMs: 150000 },
+		});
+		expect(attached.deadlineUptimeMs).toBe(430000);
+		expect(attached.stopAtUptimeMs).toBe(400000);
+	});
+	it("retires undispatched stop custody without later presenting it as abandonment", async () => {
+		const f = await fixture(),
+			intent = (await f.guard.listPrestarts())[0].intent;
+		await f.guard.arm(f.input);
+		expect((await f.guard.stop(intent.permitId)).phase).toBe("stopped");
+		expect((await f.guard.prestartStatus(intent.permitId))?.state).toBe("retired");
+		const restarted = f.restart();
+		await restarted.initialize();
+		await expect(restarted.abandonPrestart(intent)).rejects.toThrow("PRESTART_RETIRED");
+		await expect(restarted.arm(f.input)).rejects.toThrow("PRESTART_RETIRED");
+		await expect(restarted.start(intent.permitId, 1)).rejects.toThrow("PRESTART_RETIRED");
+		expect((await restarted.status(intent.permitId)).stopReceipt).not.toBeNull();
+	});
+	it("resumes stop custody if retirement persisted before its physical journal write", async () => {
+		const f = await fixture(),
+			intent = (await f.guard.listPrestarts())[0].intent;
+		await f.guard.arm(f.input);
+		const save = vi.spyOn(f.journal, "save").mockRejectedValue(new Error("stop disk unavailable"));
+		await expect(f.guard.stop(intent.permitId)).rejects.toThrow();
+		save.mockRestore();
+		const restarted = f.restart();
+		await restarted.initialize();
+		expect((await restarted.status(intent.permitId)).phase).toBe("stopping");
+		await restarted.sweep();
+		expect((await restarted.status(intent.permitId)).phase).toBe("stopped");
+		await expect(restarted.abandonPrestart(intent)).rejects.toThrow("PRESTART_RETIRED");
+		expect(f.physical.start).not.toHaveBeenCalled();
+	});
+	it("exposes the durable prestart lifecycle through the private IPC endpoint", async () => {
+		const f = await fixture(false),
+			controller = new AbortController(),
+			report = vi.fn();
+		const socketPath = join(f.root, "guard.sock");
+		const serving = servePaidComputerGuard({ guard: f.guard, socketPath, signal: controller.signal, report });
+		await vi.waitFor(() => expect(report).toHaveBeenCalledWith("ready"));
+		try {
+			const intent = await f.register(),
+				client = new PaidComputerGuardClient(socketPath);
+			const registered = await client.registerPrestart(intent);
+			expect(await client.prestartStatus(intent.permitId)).toEqual(registered);
+			expect(await client.listPrestarts()).toEqual([registered]);
+			const abandoned = await client.abandonPrestart(intent);
+			expect(abandoned.state).toBe("abandoned");
+			expect(await client.abandonPrestart(intent)).toEqual(abandoned);
+			await expect(client.arm(f.input)).rejects.toThrow("PRESTART_ABANDONED");
+		} finally {
+			controller.abort();
+			await serving;
+		}
+		expect(f.physical.start).not.toHaveBeenCalled();
+	});
+	it("retains permanent tombstones at capacity instead of pruning replay fences", async () => {
+		const f = await fixture(),
+			original = (await f.guard.listPrestarts())[0];
+		const abandoned = await f.guard.abandonPrestart(original.intent);
+		const records = [
+			abandoned,
+			...Array.from({ length: 4095 }, () => {
+				const permitId = randomUUID(),
+					prepareRequestText = JSON.stringify({
+						...JSON.parse(original.intent.prepareRequestText),
+						requestId: permitId,
+					});
+				return {
+					...original,
+					intent: {
+						...original.intent,
+						permitId,
+						prepareRequestText,
+						prepareSha256: createHash("sha256").update(prepareRequestText).digest("hex"),
+					},
+				};
+			}),
+		];
+		await f.journal.savePrestarts({
+			schema: "qorpera.computer-prestart-journal/v1",
+			guardIncarnationId: original.guardIncarnationId,
+			records,
+		});
+		const restarted = f.restart();
+		await restarted.initialize();
+		expect((await restarted.prestartStatus(original.intent.permitId))?.state).toBe("abandoned");
+		const permitId = randomUUID(),
+			prepareRequestText = JSON.stringify({
+				...JSON.parse(original.intent.prepareRequestText),
+				requestId: permitId,
+			});
+		await expect(
+			restarted.registerPrestart({
+				...original.intent,
+				permitId,
+				prepareRequestText,
+				prepareSha256: createHash("sha256").update(prepareRequestText).digest("hex"),
+			}),
+		).rejects.toThrow("JOURNAL_FULL");
+		expect(await restarted.abandonPrestart(original.intent)).toEqual(abandoned);
 	});
 });

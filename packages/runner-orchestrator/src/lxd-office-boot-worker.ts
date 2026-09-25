@@ -254,6 +254,8 @@ export class LxdOfficeBootWorker {
 			startCommandId,
 			...("operationId" in operation && operation.operationId ? { operationId: operation.operationId } : {}),
 		};
+		if (operation.state === "abandoned_before_dispatch")
+			return { ...result, state: "failed" as const, reason: "OFFICE_PAID_START_ABANDONED" };
 		if (operation.state !== "succeeded") return { ...result, state: operation.state };
 		checked = await authorizeBoot();
 		const boot = await inspectLxdOfficeGuestBoot(this.#client, binding, checked);

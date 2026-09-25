@@ -882,6 +882,7 @@ export class LxdOfficeLifecycle {
 							intentId,
 							transitionId: recovery.transitionId,
 							activationId: result.activationId,
+							...("reason" in result && typeof result.reason === "string" ? { reason: result.reason } : {}),
 						};
 					}
 					for (const prefix of ["resume-request", "resume-prepared", "resume-observation", "resume-completed"]) {
@@ -1119,7 +1120,11 @@ export class LxdOfficeLifecycle {
 			signal.throwIfAborted();
 			if (result.state === "awaiting_preparation" || result.state === "awaiting_activation") return advance();
 			if (result.state === "active") this.#activeIntent = intentId;
-			return { ...output, state: result.state === "not_dispatched" ? "unknown" : result.state };
+			return {
+				...output,
+				state: result.state === "not_dispatched" ? "unknown" : result.state,
+				...("reason" in result && typeof result.reason === "string" ? { reason: result.reason } : {}),
+			};
 		}
 		throw new Error("unknown phase");
 	}
