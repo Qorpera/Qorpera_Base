@@ -134,6 +134,50 @@ source that tries to redirect it.
 The migration and the runtime sources are bundle inputs: bundle v47 (its registry slot) at the time of writing (the next free version when it merges). A later
 change to any migration needs a new activation, never an edit of this one.
 
+## 2026-09-25: a late publication can no longer regress a todo document (bundle v111)
+
+Review of 2a5c8f67e, finding 2. A run that received revision n's document,
+paused, and then wrote it against the file version a newer revision had just
+published replaced the newer document, and confirmation kept counting the newer
+revision as published, so no list repaired it (reproduced after all 391
+migrations). `20260925111000_runtime_todo_publication_binding.sql` binds the
+revision, the exact bytes and the file state:
+
+- The document is the same bytes for the same revision: an active worker is
+  `active` (its queued/running lease state changes without a revision), and
+  timestamps are written in UTC whatever the session.
+- A run writes a todo's document path only with the current revision's exact
+  bytes. `qorpera_check_company_path_mutation` refuses anything else (42501)
+  before bytes are staged, so the agent gets a plain refusal, not "read it
+  again". A trigger on `qorpera_company_path_revisions` checks again after the
+  Company File head lock, holding the todo's row until the write commits, so
+  once a revision's document is written no later write brings back an older one.
+- Confirmation accepts only the current revision, only when the bytes the run
+  wrote are that revision's document, and only while the live file still holds
+  them; revision, version and sha256 are recorded together.
+- Anything else that lands on the path afterwards (a member's edit, an approved
+  delete) clears the recorded sha256 in the same trigger, so "published" is a
+  stored fact again and cheap to ask. The list repairs open and blocked todos
+  first, newest first; a finished todo is republished only when the kernel
+  changed it, so a member can still tidy away finished work.
+- At migration, a confirmed todo keeps its record only if its live file holds
+  exactly its current document; every other one is republished once (this also
+  heals any regression the race already caused).
+- The runtime's write key names the version it replaces
+  (`todo-doc:<todoKey>:<revision>:<version|absent>`), so a run can republish a
+  revision its file has lost since, while a retry still replays.
+
+Every publisher (todo and worker receipts, the worker's report, the list
+repair) goes through the same checks. Proof: `supabase/tests/387_runtime_todo_publication_race.test.sql`
+(two runs: the worker's report against the parent's newer change; the review's
+reproduction, including the replayed receipt; a writer the run checks do not
+stop, detected and repaired; byte-bound confirmation; the write-time check on
+its own; repair order and finished work; where the checks and locks sit). The
+lock itself is asserted from the function bodies: dblink sessions cannot see the
+test's uncommitted fixture. Still open: a revision the kernel makes on its own
+(a worker that ends without a report, coding session answers and claims) is
+published only by the agent's next list or change of that todo.
+
 ## Not built; what keeps Order 5 open
 
 - **Live acceptance on the nodes.** Nothing here is deployed. The gates: a real
@@ -158,7 +202,39 @@ change to any migration needs a new activation, never an edit of this one.
 - Todos and workers do not yet appear in the member clients. The documents are
   visible in the Company File.
 - The composed run context does not list open todos (contract 9.1); the agent
-  lists them when a run continues earlier work. A revived parent receives its
-  todos in the continuation.
+  lists them when a run continues earlier work. Since the listing pages
+  (2026-09-25) it carries `openWork`, the counts of open and blocked todos and
+  of active and blocked workers (on open todos), so the agent knows how much
+  there is. A revived parent receives the todos its workers belong to in the
+  continuation.
+
+## Listing pages (2026-09-25, runtime review of v106)
+
+With no standing counts (v95), `manage_todo list` showed 32 todos and
+`manage_worker status` 16 workers, and asking again returned the same page.
+Migration `*_runtime_todo_worker_pages.sql` makes both listings pages:
+
+- `cursor` in, `nextCursor` out (null at the end); `moreTodos` / `moreWorkers`
+  count exactly what the same filters still hold after the page. The page size
+  is a response size, not a limit: the kernel returns up to 32 todos or 16
+  workers, each with its own cursor, and the runtime shows the longest prefix
+  that reaches the model whole (a tool result is cut at 8 KiB), counting the
+  rest and continuing after the last item shown.
+- Keyset on creation order, newest first: `(created_at, id)`. Creation never
+  changes, so a todo or worker that changes between two pages keeps its place
+  and is neither skipped nor shown twice. The former order (most recently
+  changed first) moved an item on every change.
+- Filters: `todoKey`, `state` and `search` for todos (`includeClosed` stays);
+  `todoKey`, `workerKey`, `state` and `search` for workers. `search` is a
+  case-insensitive text match in titles and keys.
+- A listing keeps items short: the first 200 characters of a todo's detail and
+  its latest 4 workers (key and state, plus `moreWorkers`); the first 200
+  characters of a worker's summary, question and review note. A todo named with
+  `todoKey`, or a worker named with `todoKey` and `workerKey`, is shown in full.
+- `qorpera_describe_agent_open_work` gives the runtime the counts for
+  `openWork`; a failure leaves it out and never blocks the run.
+- Proof: `supabase/tests/388_runtime_todo_worker_pages.test.sql` walks 60 and
+  70 todos and 26 workers to the end with exact counts, pages through todos
+  created in one instant, and changes items between pages.
 - Company formation research and project teams (contract 14.2, 14.4) use this
   machinery but are not built here.

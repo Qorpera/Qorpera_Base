@@ -25,7 +25,8 @@ const VAULT_NAME_PATTERN = /^[a-z][a-z0-9_-]{0,63}$/;
 const FIELD_ID_PATTERN = /^[a-z][a-z0-9_]{0,31}$/;
 const HOST_PATTERN = /^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?)+$/;
 const TIMESTAMP_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z$/;
-const CONTROL_PATTERN = /[\x01-\x08\x0b\x0c\x0e-\x1f\x7f]/;
+// NUL too: PostgreSQL text cannot hold it, and the final send of a card's sentence refuses it.
+const CONTROL_PATTERN = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/;
 
 type Schema = { [key: string]: JsonValue };
 const chars = (minLength: number, maxLength: number, description?: string): Schema => ({
@@ -483,6 +484,14 @@ export function cloudInteractionEventId(runId: string, idempotencyKey: string): 
 	if (!UUID_PATTERN.test(runId)) throw new Error("Invalid run id");
 	const digest = createHash("sha256").update(`qorpera.interaction:${runId}:${idempotencyKey}`).digest("hex");
 	return `${digest.slice(0, 8)}-${digest.slice(8, 12)}-4${digest.slice(13, 16)}-a${digest.slice(17, 20)}-${digest.slice(20, 32)}`;
+}
+
+/** The idempotency key of the final send that carries a card's sentence. It always fits the
+ * send's 128-character key, so every key ask_member accepts can finish its turn and a retry
+ * replays the same send. A key with no room for ":final" is replaced by its digest. */
+export function cloudAskMemberFinalKey(idempotencyKey: string): string {
+	const suffixed = `${idempotencyKey}:final`;
+	return suffixed.length <= 128 ? suffixed : `ask-final.${createHash("sha256").update(idempotencyKey).digest("hex")}`;
 }
 
 export function parseCloudInteractionRequestReceipt(value: unknown, eventId: string): CloudInteractionRequestReceipt {
