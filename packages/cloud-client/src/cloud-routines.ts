@@ -435,7 +435,14 @@ export class CloudRoutineClient {
 			signal,
 		);
 		if (!Array.isArray(value) || value.length > 4096) invalid("routine list");
-		return (value as unknown[]).map(parseCloudRoutine);
+		// One row this client cannot read (a newer cloud's shape) must not hide the others.
+		return (value as unknown[]).flatMap((row) => {
+			try {
+				return [parseCloudRoutine(row)];
+			} catch {
+				return [];
+			}
+		});
 	}
 	async occurrences(environmentId: string, signal: AbortSignal, limit = 100): Promise<CloudRoutineOccurrence[]> {
 		if (!Number.isSafeInteger(limit) || limit < 1 || limit > 500) invalid("occurrence limit");

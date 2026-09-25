@@ -1360,30 +1360,39 @@ agent (a routine run may save its own routine), while a queued occurrence of
 an older version, work that continues after the job ended, and a run whose
 routine a member moved to another agent follow the current version.
 
-2026-09-25 amendment: dynamic routines (founder request). A routine may have
-no cadence: its trigger holds exactly one next run (kind `once`: an instant,
-a time zone and a reply policy), and the run it wakes decides what follows.
-Before its final message, and before it can complete, that run either sets the
-next run at a time it chooses, optionally with changed instructions, title,
-effort or reply policy, which is a new version of the same routine so its
-history stays, or concludes the routine with a one-sentence reason that members
-see (status `concluded`). The kernel refuses the final send and the completion
-of an undecided run; the host shows the model that reason first. A change made
-elsewhere during the run (a new version from another conversation) settles the
-decision; a pause or a conclusion by someone else stops the started run as a
-pause does. An active dynamic routine always has exactly one pending run: a
-save inserts it, a new version cancels the older one's queued run, and the
-control-plane tick restores a run that ended without deciding (failed, crashed
-or refused): three retries at once, then after 15 minutes, doubling to at most
-a day, never giving up by count. There is no minimum gap between runs and no
-cap on how often a routine reschedules. Quiet hours, expiry (a next run after
-the routine's end is refused with that reason), the unattended sponsor and
-the three-refusal authorization suspension apply as to every routine; a
-dynamic routine takes no occurrence limit. Fixed triggers (schedule, listener)
-stay; agents are told to prefer a dynamic routine when the right time for the
-next look depends on what they find (learning a responsibility, follow-ups,
-watches), and fixed times for work tied to the clock. The agent's own tool
-also concludes a fixed routine from inside its run.
+2026-09-25 amendment: dynamic routines (founder request). An agent's routine
+may have no cadence: its trigger holds exactly one next run (kind `once`: an
+instant, a time zone and a reply policy), and the run it wakes decides what
+follows. Before its final message (or a card), and before it can complete,
+that run either sets the next run at a time it chooses, optionally with
+changed instructions, title, effort or reply policy, which is a new version of
+the same routine so its history stays, or concludes the routine with a
+one-sentence reason that members see (status `concluded`). A run that hands
+work to workers or waits for the Company Computer decides before it ends; the
+continuation cannot. The kernel refuses the final send and the completion of
+an undecided run; the host shows the model that reason first. A change made
+in another conversation during the run, or the routine's end date passing,
+settles the decision; a pause or a conclusion by someone else stops the
+started run as a pause does, and a member's Stop of the run pauses the
+routine. An active dynamic routine always has exactly one pending run, and
+runs of one routine never overlap: an agent's save inserts it (a save without
+a time keeps the routine's next run, or runs now); a new version cancels the
+older one's queued run; a run already admitted before an edit still runs once
+with the instructions it was admitted with; the next run a run chose is
+inserted when that run ends; and the control-plane tick restores a run that
+ended without deciding (failed, crashed or refused), three times at once, then
+after 15 minutes, doubling to at most a day, never giving up by count. A
+member's save through the web (pause, resume) keeps the routine's one next
+run and cannot create a dynamic routine. There is no minimum gap between runs
+and no cap on how often a routine reschedules. Quiet hours, expiry (a next
+run after the routine's end is refused with that reason), the unattended
+sponsor and the three-refusal authorization suspension apply as to every
+routine; a dynamic routine takes no occurrence limit. Fixed triggers
+(schedule, listener) stay; agents are told to prefer a dynamic routine when
+the right time for the next look depends on what they find (learning a
+responsibility, follow-ups, watches), and fixed times for work tied to the
+clock. The agent's own tool also concludes a fixed routine from inside its
+run.
 
 ## 17. Model and reasoning policy
 

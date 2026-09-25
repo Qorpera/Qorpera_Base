@@ -226,6 +226,10 @@ describe("agent routine tool", () => {
 		["a dynamic routine without a time zone", { trigger: { kind: "dynamic" } }],
 		["a dynamic routine with a cadence", { trigger: { kind: "dynamic", timeZone: "UTC", minutes: 30 } }],
 		["an unreadable first run", { trigger: { kind: "dynamic", timeZone: "UTC", firstRunAt: "tomorrow" } }],
+		[
+			"a first run without an offset",
+			{ trigger: { kind: "dynamic", timeZone: "UTC", firstRunAt: "2026-10-01T09:00" } },
+		],
 	])("rejects %s before dispatch", async (_label, extra) => {
 		const f = await fixture();
 		try {
@@ -381,6 +385,8 @@ describe("dynamic routine decision tool", () => {
 	it.each([
 		["no time", { action: "next", operationKey: "k" }, "at must be"],
 		["an unreadable time", { action: "next", operationKey: "k", at: "soon" }, "at must be"],
+		// Without an offset the host would read it in its own zone, not the member's.
+		["a time without an offset", { action: "next", operationKey: "k", at: "2026-10-01T09:00:00" }, "at must be"],
 		["no summary", { action: "conclude", operationKey: "k" }, ""],
 		["a routine key", { action: "conclude", operationKey: "k", summary: "x", routineKey: "other" }, ""],
 		["another action", { action: "remove", operationKey: "k" }, "action must be next or conclude"],

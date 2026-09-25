@@ -152,6 +152,12 @@ describe("agent routines section", () => {
 			row,
 		]).list("10000000-0000-4000-8000-00000000000f", new AbortController().signal);
 		expect(listed.map((item) => item.status)).toEqual(["active", "expired"]);
+		// A row this client cannot read (a newer cloud's shape) is left out, not the whole list.
+		const tolerant = await new CloudRoutineClient(async () => [
+			row,
+			{ ...row, routine_id: "10000000-0000-4000-8000-000000000013", status: "archived-by-the-future" },
+		]).list("10000000-0000-4000-8000-00000000000f", new AbortController().signal);
+		expect(tolerant.map((item) => item.routineId)).toEqual([row.routine_id]);
 		const ended = parseCloudRoutine(row);
 		expect(ended.status).toBe("expired");
 		expect(() => parseCloudRoutine({ ...row, status: "finished" })).toThrow();

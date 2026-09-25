@@ -74,6 +74,24 @@ begin
 		'A dynamic routine is saved with exactly one next run, due at its chosen time');
 	perform pg_temp.wake_assert(not exists (select 1 from public.qorpera_cloud_routine_schedule_cursors where routine_id = v_row.id),
 		'A dynamic routine has no cadence for the orchestrator');
+	-- Without a time: a new dynamic routine runs now; a save of an existing one keeps its next run.
+	perform pg_temp.routine('{"action":"upsert","operationKey":"dyn-now","routineKey":"right-away","title":"Right away",
+		"intent":"Look now.","trigger":{"kind":"once","timeZone":"UTC","replyPolicy":"silent"}}');
+	perform pg_temp.wake_assert((pg_temp.dyn_pending('right-away')).not_before <= clock_timestamp()
+		and (select triggers -> 0 ->> 'at' from public.qorpera_cloud_routine_versions
+			where routine_id = (pg_temp.routine_row('right-away')).id and version = 1) is not null,
+		'A dynamic routine saved without a time runs now');
+	perform pg_temp.routine(jsonb_build_object('action','upsert','operationKey','dyn-later-1','routineKey','kept-time','title','Kept time',
+		'intent','Look on Monday.','trigger',jsonb_build_object('kind','once','at',pg_temp.iso(statement_timestamp() + interval '3 days'),
+			'timeZone','UTC','replyPolicy','silent')));
+	perform pg_temp.routine('{"action":"upsert","operationKey":"dyn-later-2","routineKey":"kept-time","title":"Kept time",
+		"intent":"Look on Monday, and check the invoices too.","trigger":{"kind":"once","timeZone":"UTC","replyPolicy":"silent"}}');
+	perform pg_temp.wake_assert((pg_temp.routine_row('kept-time')).current_version = 2
+		and (pg_temp.dyn_pending('kept-time')).routine_version = 2
+		and (pg_temp.dyn_pending('kept-time')).not_before > statement_timestamp() + interval '2 days',
+		'Changing the instructions without a time keeps the next run where it was');
+	perform pg_temp.routine('{"action":"remove","operationKey":"dyn-now-rm","routineKey":"right-away"}');
+	perform pg_temp.routine('{"action":"remove","operationKey":"dyn-later-rm","routineKey":"kept-time"}');
 	perform pg_temp.wake_error($q$select pg_temp.routine('{"action":"upsert","operationKey":"dyn-x","routineKey":"dyn-limited",
 		"title":"t","intent":"i","maxOccurrences":3,"trigger":{"kind":"once","at":"2026-10-01T08:00:00.000Z","timeZone":"UTC"}}')$q$,
 		'22023','A dynamic routine takes no occurrence limit');
@@ -109,9 +127,12 @@ begin
 	v_later := pg_temp.dyn_pending('invoice-watch');
 	perform pg_temp.wake_assert(v_next ->> 'schema' = 'qorpera.agent-routine-receipt/v1' and v_next ->> 'action' = 'upsert'
 		and (v_next #>> '{routine,version}')::int = 2 and v_row.current_version = 2 and v_row.status = 'active'
-		and v_later.routine_version = 2 and v_later.occurrence_key = 'once:2:1'
-		and v_later.not_before = v_at::timestamptz and (v_next #>> '{routine,nextRunAt}')::timestamptz = v_at::timestamptz,
+		and (v_next #>> '{routine,nextRunAt}')::timestamptz = v_at::timestamptz,
 		'Next: a new version whose one run is at the chosen time');
+	-- Runs of one routine never overlap: the next run is inserted once this one ends.
+	perform public.qorpera_drain_company_file_wakes(8);
+	perform pg_temp.wake_assert(v_later is null and pg_temp.dyn_pending('invoice-watch') is null,
+		'The next run waits for the deciding run to end');
 	perform pg_temp.wake_assert((select prompt from public.qorpera_cloud_routine_versions where routine_id = v_row.id and version = 1)
 		= 'Check whether invoice 42 was paid.' and (select prompt from public.qorpera_cloud_routine_versions
 			where routine_id = v_row.id and version = 2) like 'Invoice 42 is still open.%'
@@ -125,6 +146,10 @@ begin
 		'A second decision by the same run changes nothing');
 	perform pg_temp.wake_public_send(v_binding,'final','dyn-final');
 	perform pg_temp.wake_assert(pg_temp.dyn_complete(v_binding) ->> 'status' = 'completed','The deciding run completes');
+	perform public.qorpera_drain_company_file_wakes(8);
+	v_later := pg_temp.dyn_pending('invoice-watch');
+	perform pg_temp.wake_assert(v_later.routine_version = 2 and v_later.occurrence_key = 'once:2:1'
+		and v_later.not_before = v_at::timestamptz,'Then the tick inserts the one next run at the chosen time');
 end $$;
 
 -- Run 2 reads the new instructions and concludes the routine with its reason.
@@ -253,9 +278,13 @@ begin
 		'title','Moved elsewhere','intent','Look on Monday.','trigger',jsonb_build_object('kind','once',
 			'at',pg_temp.iso(statement_timestamp() + interval '3 days'),'timeZone','UTC','replyPolicy','silent')));
 	perform pg_temp.wake_assert(pg_temp.dyn_decide(v_binding,'{"action":"next","operationKey":"n","at":"2030-01-01T00:00:00.000Z"}')
-		->> 'state' = 'settled' and (pg_temp.dyn_pending('moved-elsewhere')).routine_version = 2,
-		'A routine moved on elsewhere owes no decision, and keeps the next run set there');
+		->> 'state' = 'settled' and (pg_temp.routine_row('moved-elsewhere')).current_version = 2,
+		'A routine moved on elsewhere owes no decision');
 	perform pg_temp.wake_assert(pg_temp.dyn_complete(v_binding) ->> 'status' = 'completed','The run completes without one');
+	perform public.qorpera_drain_company_file_wakes(8);
+	perform pg_temp.wake_assert((pg_temp.dyn_pending('moved-elsewhere')).routine_version = 2
+		and (pg_temp.dyn_pending('moved-elsewhere')).not_before > statement_timestamp() + interval '2 days',
+		'The next run set there follows');
 
 	perform pg_temp.routine(jsonb_build_object('action','upsert','operationKey','pause-d1','routineKey','paused-dynamic',
 		'title','Paused dynamic','intent','Look.','trigger',jsonb_build_object('kind','once','at',pg_temp.iso(statement_timestamp()),
@@ -313,6 +342,112 @@ begin
 	perform pg_temp.dyn_decide(v_binding,'{"action":"conclude","operationKey":"end-now","summary":"Nothing left before the end date."}');
 	perform pg_temp.wake_assert(pg_temp.dyn_complete(v_binding) ->> 'status' = 'completed'
 		and (pg_temp.routine_row('ending-dynamic')).status = 'concluded','The run concludes instead and completes');
+end $$;
+
+-- Stops that still stop: a conclusion by someone else ends a started run like a
+-- pause; a member's Stop pauses the routine instead of retrying it; a company
+-- pause inserts nothing until it lifts.
+do $$
+declare v_wake public.qorpera_wake_occurrences; v_binding jsonb; v_row public.qorpera_cloud_routines;
+	v_version public.qorpera_cloud_routine_versions;
+begin
+	perform pg_temp.routine(jsonb_build_object('action','upsert','operationKey','other-c1','routineKey','concluded-elsewhere',
+		'title','Concluded elsewhere','intent','Look.','trigger',jsonb_build_object('kind','once','at',pg_temp.iso(statement_timestamp()),
+			'timeZone','UTC','replyPolicy','silent')));
+	v_wake := pg_temp.dyn_pending('concluded-elsewhere');
+	perform public.qorpera_materialize_wake_execution_runs(8);
+	v_binding := pg_temp.dyn_start(pg_temp.routine_run(v_wake.id));
+	perform pg_temp.routine('{"action":"conclude","operationKey":"other-c2","routineKey":"concluded-elsewhere","summary":"Handled in the thread."}');
+	perform pg_temp.wake_assert((pg_temp.routine_row('concluded-elsewhere')).status = 'concluded','Concluded from a conversation');
+	perform pg_temp.wake_error(format('select pg_temp.dyn_decide(%L::jsonb,%L::jsonb)',v_binding,
+		'{"action":"next","operationKey":"n","at":"2030-01-01T00:00:00.000Z"}'),'42501');
+	perform public.qorpera_terminalize_runner_attempt((v_binding ->> 'jobId')::uuid,'failed','Concluded elsewhere',false);
+
+	perform pg_temp.routine(jsonb_build_object('action','upsert','operationKey','stop-1','routineKey','stopped-by-member',
+		'title','Stopped','intent','Look.','trigger',jsonb_build_object('kind','once','at',pg_temp.iso(statement_timestamp()),
+			'timeZone','UTC','replyPolicy','silent')));
+	v_wake := pg_temp.dyn_pending('stopped-by-member');
+	perform public.qorpera_materialize_wake_execution_runs(8);
+	v_binding := pg_temp.dyn_start(pg_temp.routine_run(v_wake.id));
+	perform pg_temp.path_claims('service_role','30000000-0000-4000-8000-000000000001');
+	perform public.qorpera_terminalize_runner_attempt((v_binding ->> 'jobId')::uuid,'cancelled','Stopped by a member',false);
+	perform pg_temp.path_claims('service_role');
+	perform public.qorpera_drain_company_file_wakes(8);
+	v_row := pg_temp.routine_row('stopped-by-member');
+	perform pg_temp.wake_assert(v_row.status = 'paused' and v_row.pause_reason = 'member' and pg_temp.dyn_pending('stopped-by-member') is null,
+		'A member''s Stop pauses a dynamic routine instead of running it again');
+
+	-- While the company is paused, a member resumes the routine from the web.
+	perform pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001');
+	perform public.qorpera_set_company_execution_pause(v_row.profile_id, true, 'test pause');
+	select * into strict v_version from public.qorpera_cloud_routine_versions where routine_id = v_row.id and version = v_row.current_version;
+	perform public.qorpera_upsert_cloud_routine('30000000-0000-4000-8000-000000000020',v_row.client_routine_id,
+		extensions.gen_random_uuid(),v_version.staff_agent_id,v_version.title,v_version.prompt,v_version.triggers,v_version.effort,
+		(current_setting('qorpera_test.wake_sponsor')::jsonb ->> 'binding_id')::uuid,1,null,'agent_turn','agent_turn',
+		true,'automatic',null,'{}');
+	perform pg_temp.path_claims('service_role');
+	perform pg_temp.wake_assert((pg_temp.routine_row('stopped-by-member')).status = 'active','Fixture: resumed');
+	perform public.qorpera_drain_company_file_wakes(8);
+	perform pg_temp.wake_assert(pg_temp.dyn_pending('stopped-by-member') is null,'Nothing is inserted while the company is paused');
+	perform pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001');
+	perform public.qorpera_set_company_execution_pause(v_row.profile_id, false, 'test resume');
+	perform pg_temp.path_claims('service_role');
+	perform public.qorpera_drain_company_file_wakes(8);
+	perform pg_temp.wake_assert((pg_temp.dyn_pending('stopped-by-member')).id is not null
+		and (pg_temp.routine_row('stopped-by-member')).pause_reason is null,'After the company resumes, the next run is back');
+	perform pg_temp.routine('{"action":"remove","operationKey":"stop-3","routineKey":"stopped-by-member"}');
+end $$;
+
+-- The web's pause and resume re-save an agent's dynamic routine through the
+-- member path, which keeps its one next run; a member cannot create one.
+do $$
+declare v_row public.qorpera_cloud_routines; v_version public.qorpera_cloud_routine_versions; v_at timestamptz;
+	v_save jsonb;
+begin
+	perform pg_temp.routine(jsonb_build_object('action','upsert','operationKey','web-1','routineKey','web-paused',
+		'title','Web paused','intent','Look on Thursday.','trigger',jsonb_build_object('kind','once',
+			'at',pg_temp.iso(statement_timestamp() + interval '2 days'),'timeZone','UTC','replyPolicy','silent')));
+	v_row := pg_temp.routine_row('web-paused');
+	select * into strict v_version from public.qorpera_cloud_routine_versions where routine_id = v_row.id and version = v_row.current_version;
+	v_at := (v_version.triggers -> 0 ->> 'at')::timestamptz;
+	perform pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001');
+	foreach v_save in array array['{"enabled":false}'::jsonb,'{"enabled":true}'::jsonb] loop
+		perform public.qorpera_upsert_cloud_routine('30000000-0000-4000-8000-000000000020',v_row.client_routine_id,
+			extensions.gen_random_uuid(),v_version.staff_agent_id,v_version.title,v_version.prompt,v_version.triggers,v_version.effort,
+			(current_setting('qorpera_test.wake_sponsor')::jsonb ->> 'binding_id')::uuid,1,null,'agent_turn','agent_turn',
+			(v_save ->> 'enabled')::boolean,'automatic',null,'{}');
+	end loop;
+	perform pg_temp.wake_error($q$select public.qorpera_upsert_cloud_routine('30000000-0000-4000-8000-000000000020',
+		extensions.gen_random_uuid(),extensions.gen_random_uuid(),'30000000-0000-4000-8000-000000000030','Member dynamic','Look.',
+		'[{"id":"t","kind":"once","at":"2030-01-01T00:00:00.000Z","timeZone":"UTC"}]','low',
+		(current_setting('qorpera_test.wake_sponsor')::jsonb ->> 'binding_id')::uuid,1,null,'agent_turn','agent_turn',true,'automatic',null,'{}')$q$,
+		'22023','cloud routine triggers are invalid');
+	perform pg_temp.path_claims('service_role');
+	perform public.qorpera_drain_company_file_wakes(8);
+	v_row := pg_temp.routine_row('web-paused');
+	perform pg_temp.wake_assert(v_row.status = 'active' and v_row.current_version = 3
+		and (pg_temp.dyn_pending('web-paused')).routine_version = 3 and (pg_temp.dyn_pending('web-paused')).not_before = v_at,
+		'After a web pause and resume the one next run keeps its time');
+end $$;
+
+-- An end date that passed during the run settles the decision.
+do $$
+declare v_wake public.qorpera_wake_occurrences;
+begin
+	perform pg_temp.routine(jsonb_build_object('action','upsert','operationKey','end-soon-1','routineKey','ending-now',
+		'title','Ending now','intent','Look.','expiresAt',to_char(clock_timestamp() + interval '1 second','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+		'trigger',jsonb_build_object('kind','once','at',pg_temp.iso(statement_timestamp()),'timeZone','UTC','replyPolicy','silent')));
+	v_wake := pg_temp.dyn_pending('ending-now');
+	perform public.qorpera_materialize_wake_execution_runs(8);
+	perform set_config('qorpera_test.ending_now',pg_temp.dyn_start(pg_temp.routine_run(v_wake.id))::text,true);
+	perform pg_sleep(1.2);
+end $$;
+do $$
+declare v_binding jsonb := current_setting('qorpera_test.ending_now')::jsonb;
+begin
+	perform pg_temp.wake_assert(pg_temp.dyn_decide(v_binding,'{"action":"next","operationKey":"late","at":"2030-01-01T00:00:00.000Z"}')
+		->> 'state' = 'settled','A routine past its end owes no decision');
+	perform pg_temp.wake_assert(pg_temp.dyn_complete(v_binding) ->> 'status' = 'completed','and its run completes');
 end $$;
 
 -- The observation vocabulary knows the new tool.

@@ -67,9 +67,13 @@ function reply(value: unknown): (typeof REPLY)[number] {
 	return value as (typeof REPLY)[number];
 }
 
+/** A time without an offset would be read in the host's zone, not the member's. */
+const WITH_OFFSET = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,9})?)?(?:Z|[+-]\d{2}:?\d{2})$/i;
 function instant(value: unknown, label: string): string {
-	if (typeof value !== "string" || !Number.isFinite(Date.parse(value)))
-		throw new CloudToolArgumentRefusal(`${label} must be an ISO 8601 date and time with its offset`);
+	if (typeof value !== "string" || !WITH_OFFSET.test(value) || !Number.isFinite(Date.parse(value)))
+		throw new CloudToolArgumentRefusal(
+			`${label} must be an ISO 8601 date and time with its offset, such as 2026-10-01T09:00:00+02:00`,
+		);
 	return new Date(value).toISOString();
 }
 
@@ -163,7 +167,7 @@ export const CLOUD_ROUTINE_TOOL_DESCRIPTION =
 	"Set up your own standing work. A routine wakes you, this same agent, with the stored intent, while no member is online. " +
 	"No member approval is needed; use it whenever a responsibility or a request calls for repeated attention, and tell the member what you set up. " +
 	"Actions: list, upsert, pause, resume, conclude, remove. A routine always belongs to you. Reuse one routineKey for the same standing work so a change becomes a new version instead of a duplicate; list first when unsure. " +
-	"trigger is exactly one of: dynamic (you choose each next run: optional firstRunAt, default now, and the member's IANA timeZone), every (minutes 5-10080, optional firstRunAt), weekly (localTime HH:MM, IANA timeZone, weekdays default Monday to Friday, optional firstRunAt), or file_change (a Company File path you can read, match exact or subtree). Use the member's time zone from the wake time context. " +
+	"trigger is exactly one of: dynamic (you choose each next run: optional firstRunAt with its offset, default now or, for an existing dynamic routine, its current next run; and the member's IANA timeZone), every (minutes 5-10080, optional firstRunAt), weekly (localTime HH:MM, IANA timeZone, weekdays default Monday to Friday, optional firstRunAt), or file_change (a Company File path you can read, match exact or subtree). Use the member's time zone from the wake time context. " +
 	"Prefer dynamic when the right time for the next look depends on what you find: learning a new responsibility, following something up, watching a situation. It runs once at firstRunAt; each run then sets the next run, with adjusted instructions if the work changed, or concludes the routine. Use every or weekly for work tied to the clock, such as a Monday report, and file_change to react to a file. " +
 	"A new every or weekly routine runs once right away as a kickoff, then on its schedule; give firstRunAt only when the first run really must wait. Start dense while a responsibility is new to you and use those early runs to learn what the work needs. Never leave new standing work idle for days waiting for its first slot. " +
 	"Write intent as a complete instruction to your future self: what to read, what to decide, when to tell someone and when to stay silent. report is optional (speak only when useful), required (always report) or silent (never speak). When you pick a threshold or cadence nobody gave you, tell the member it is your starting assumption so they can correct it. " +
@@ -178,7 +182,8 @@ export const CLOUD_ROUTINE_DECISION_DESCRIPTION =
 	"next: at is when the next run starts (ISO 8601 with offset; a time already passed means right away). Choose it from what you found: soon while things move or a reply is due, later when they are quiet. " +
 	"intent, when the work changed, is the complete new instruction for your future self: what to check, what you learned, when to speak; without it the next run keeps this run's intent. title, effort (low, medium, high) and report (optional, required, silent) likewise change only when given. " +
 	"conclude: summary is one sentence on why the routine is done (the goal was reached, the question answered, the watch no longer needed); the member sees it. " +
-	"state settled means a member or another conversation already paused, changed or removed the routine, so nothing is owed. state refused carries the reason, such as a next run after the routine's end date: choose again or conclude. " +
+	"If you hand work to workers or wait for the Company Computer, decide first: this run must decide before it ends, and the continuation cannot. " +
+	"state settled means the routine already moved on, changed in another conversation or past its end date, so nothing is owed. state refused carries the reason, such as a next run after the routine's end date: choose again or conclude. " +
 	"Keep operationKey stable for one decision; an unconfirmed result needs the same key and arguments again.";
 
 /** The cloud derives the agent, requester and model account from the run. The
