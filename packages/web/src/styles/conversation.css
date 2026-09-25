@@ -167,6 +167,14 @@
 .decision-facts dt, .decision-attribution { color: var(--text-muted); font-size: 11px; }
 .decision-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; padding-top: 8px; }
 .decision-actions p { flex-basis: 100%; color: var(--text-muted); font-size: 11px; }
+/* Approval cards of agents' actions (auto-review, v115). */
+.action-review-card .review-target { margin: 0 0 6px; font-weight: 600; }
+.review-reasons { margin: 8px 0; padding-left: 18px; color: var(--text-muted); }
+.review-reasons li + li { margin-top: 3px; }
+.review-call { max-height: 180px; margin: 8px 0 0; padding: 10px; overflow: auto; border-radius: 8px; background: #f1f1ef; font-size: 11px; white-space: pre-wrap; }
+.review-always label { display: grid; gap: 6px; margin-top: 10px; color: var(--text-muted); font-size: 11px; }
+.review-rule-input { width: 100%; padding: 8px 10px; border: 1px solid #dfdfdb; border-radius: 8px; background: #fff; color: var(--text); font: inherit; font-size: 13px; }
+.review-waiting, .review-outcome { margin: 10px 0 0; font-size: 12px; }
 .decision-details { border-top: 1px solid var(--border); margin-top: 14px; padding-top: 4px; font-size: 11px; }
 .decision-details > summary { color: var(--text-muted); font-weight: 400; }
 .decision-details .kv { grid-template-columns: minmax(0, 1fr); }

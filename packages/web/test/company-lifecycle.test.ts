@@ -86,6 +86,155 @@ function company() {
 	return { ...f, controller, write };
 }
 
+describe("answering an approval card of an agent's action (auto-review, v115)", () => {
+	const reviewed = {
+		reviewId: id(597),
+		answer: "allow_once" as const,
+		inputId: id(598),
+		savedRuleId: null,
+		woke: false,
+	};
+
+	it("answers on the member's selected model account and shows the answer at once", async () => {
+		const f = company();
+		const answer = vi.spyOn(f.api, "answerActionReview").mockResolvedValue(reviewed);
+		await f.controller.answerActionReview(session.sessionId, id(597), "allow_once");
+		expect(answer).toHaveBeenCalledOnce();
+		expect(answer.mock.calls[0]!.slice(2)).toEqual([
+			"allow_once",
+			undefined,
+			{ sponsorBindingId: id(81), sponsorVersion: 1 },
+		]);
+		const saved = f.controller.conversation(session.sessionId).get().interactionAnswers?.[id(597)];
+		expect(saved).toMatchObject({ outcome: "approved", answer: { answer: "allow_once" }, inputId: id(598) });
+	});
+
+	it("saves the edited rule with Always allow, and records Deny as declined", async () => {
+		const f = company();
+		const answer = vi.spyOn(f.api, "answerActionReview").mockResolvedValue({ ...reviewed, answer: "always_allow" });
+		await f.controller.answerActionReview(session.sessionId, id(597), "always_allow", "renewing our domains");
+		expect(answer.mock.calls[0]!.slice(2, 4)).toEqual(["always_allow", "renewing our domains"]);
+		answer.mockResolvedValue({ ...reviewed, reviewId: id(599), answer: "deny" });
+		await f.controller.answerActionReview(session.sessionId, id(599), "deny");
+		expect(f.controller.conversation(session.sessionId).get().interactionAnswers?.[id(599)]?.outcome).toBe(
+			"declined",
+		);
+	});
+
+	it("still answers a waiting card without a selected account; the kernel needs one only to wake the agent", async () => {
+		const f = company();
+		f.controller.conversation(session.sessionId).set({ executionSponsor: undefined });
+		const answer = vi.spyOn(f.api, "answerActionReview").mockResolvedValue(reviewed);
+		await f.controller.answerActionReview(session.sessionId, id(597), "allow_once");
+		expect(answer.mock.calls[0]![4]).toBeUndefined();
+	});
+
+	function review(sequence: number, approverScope: "member" | "owners_admins"): HostedSessionEvent {
+		const eventId = id(4000 + sequence);
+		return {
+			...event(sequence),
+			eventId,
+			actorUserId: userA.id,
+			sessionInputId: undefined,
+			eventType: "authorization_request",
+			body: {
+				schema: "qorpera.runner-transcript-entry/v1",
+				entry: {
+					type: "custom",
+					customType: "authorization_request",
+					id: eventId,
+					parentId: null,
+					timestamp: "2026-09-25T10:00:00.000Z",
+					data: {
+						schema: "qorpera.action-review/v1",
+						reviewId: eventId,
+						title: "Send an email",
+						summary: "The company asks first before emailing outside the company.",
+						target: "bob@acme.test",
+						rules: [
+							{ id: id(4999), scope: "company", when: "emailing outside the company", outcome: "ask_first" },
+						],
+						approverScope,
+						...(approverScope === "member" ? { approverUserId: userB.id, approverName: "Bea" } : {}),
+						alwaysAllow: false,
+					},
+				},
+			},
+		};
+	}
+
+	it("draws the approval card with its outcome, never a second card for its decision, and answers it", async () => {
+		const f = company();
+		f.controller.store.set({ loading: false });
+		const decided = review(1, "owners_admins");
+		const decision: HostedSessionEvent = {
+			...event(2),
+			eventId: id(4100),
+			actorUserId: userA.id,
+			sessionInputId: id(4101),
+			eventType: "authorization_decision",
+			body: {
+				schema: "qorpera.runner-transcript-entry/v1",
+				entry: {
+					type: "custom",
+					customType: "authorization_decision",
+					id: id(4101),
+					parentId: null,
+					timestamp: "2026-09-25T10:01:00.000Z",
+					data: {
+						schema: "qorpera.interaction-answer/v1",
+						interactionId: decided.eventId,
+						requestEventId: decided.eventId,
+						surface: "approval",
+						outcome: "approved",
+						decision: "approved",
+						answer: { answer: "allow_once" },
+						answeredBy: userA.id,
+					},
+				},
+			},
+		};
+		vi.mocked(f.api.readSessionEvents).mockResolvedValue([
+			decided,
+			decision,
+			review(3, "owners_admins"),
+			review(4, "member"),
+		]);
+		const answer = vi.spyOn(f.api, "answerActionReview").mockResolvedValue(reviewed);
+		void f.controller.loadConversation(session.sessionId);
+		const view = new ConversationView(f.controller, session.sessionId, {
+			sendMessage: (sessionId, text) => f.controller.sendPrompt(sessionId, text),
+		});
+		cleanup.push(() => view.dispose());
+		document.body.append(view.el);
+		await settle();
+		expect(view.el.querySelectorAll(".auth-card")).toHaveLength(3);
+		const cards = [...view.el.querySelectorAll<HTMLElement>(".action-review-card")];
+		expect(cards.map((card) => card.dataset.decisionState)).toEqual(["approved", "pending", "pending"]);
+		expect(cards[0]!.querySelector("button")).toBeNull();
+		// An owner answers a company rule's card; a personal rule's card waits for its member.
+		expect(cards[2]!.querySelector("button")).toBeNull();
+		expect(cards[2]!.textContent).toContain("Waiting for Bea to approve.");
+		[...cards[1]!.querySelectorAll("button")].find((button) => button.textContent === "Allow once")!.click();
+		await settle();
+		expect(answer).toHaveBeenCalledWith(id(4003), expect.any(String), "allow_once", undefined, {
+			sponsorBindingId: id(81),
+			sponsorVersion: 1,
+		});
+	});
+
+	it("keeps the card open, saying why, where the cloud has no approvals yet", async () => {
+		const f = company();
+		vi.spyOn(f.api, "answerActionReview").mockRejectedValue(
+			new CloudRpcError("qorpera_answer_action_review", { code: "PGRST202", message: "Could not find" }, 404),
+		);
+		await expect(f.controller.answerActionReview(session.sessionId, id(597), "allow_once")).rejects.toThrow();
+		const state = f.controller.conversation(session.sessionId).get();
+		expect(state.interactionError).toBe("Approvals are not available here yet. Reply in a message instead.");
+		expect(state.interactionAnswers).toBeUndefined();
+	});
+});
+
 describe("answering a card", () => {
 	const thread: HostedSession = {
 		...session,

@@ -2,6 +2,7 @@ import type { CloudApi } from "../../cloud/api.ts";
 import { describeError } from "../../cloud/client.ts";
 import { createWebConnectors } from "../../cloud/connectors.ts";
 import { createWebNativeSubscription } from "../../cloud/native-subscription.ts";
+import { createWebReviewRules } from "../../cloud/review-rules.ts";
 import type { HostedCompanyFile, HostedProfile } from "../../cloud/types.ts";
 import { agentFigure } from "../../ui/avatar.ts";
 import { button, h, icon, notice, replace } from "../../ui/dom.ts";
@@ -13,6 +14,7 @@ import { FriendsController, renderFriends } from "./friends.ts";
 import type { HubController } from "./hub.ts";
 import { renderPlan } from "./plan.ts";
 import { ConnectionsView, ProviderSignIns } from "./settings-connections.ts";
+import { RulesView } from "./settings-rules.ts";
 import { ServicesView } from "./settings-services.ts";
 import { storageSummary } from "./storage-summary.ts";
 import { renderTeam, type TeamFeedback } from "./team.ts";
@@ -53,6 +55,13 @@ const TABS = [
 		keywords:
 			"providers subscriptions openai codex anthropic claude secrets forbindelser udbydere modelkonti konti tjenester gmail google drive github hemmeligheder",
 	},
+	{
+		id: "rules",
+		label: phrase("Rules"),
+		icon: "lock",
+		keywords:
+			"auto-review review approval approve ask first allow automatically safety agents actions permissions regler godkendelse godkend spørg først tillad automatisk sikkerhed agenter handlinger tilladelser",
+	},
 ] as const;
 export type SettingsTab = (typeof TABS)[number]["id"];
 
@@ -91,6 +100,7 @@ export class SettingsView {
 	#companyLifetime = new AbortController();
 	#connections: ConnectionsView | undefined;
 	#services: ServicesView | undefined;
+	#rules: RulesView | undefined;
 	#feedback: TeamFeedback = {};
 	#file: HostedCompanyFile | undefined;
 	#fileLoading = false;
@@ -261,6 +271,7 @@ export class SettingsView {
 		this.#unsubscribe?.();
 		this.#connections?.dispose();
 		this.#services?.dispose();
+		this.#rules?.dispose();
 		this.#friends.dispose();
 		if (this.#ownsCompany) this.#company?.stop();
 		this.el.remove();
@@ -360,6 +371,13 @@ export class SettingsView {
 					);
 					this.#panels.set(tab, h("div", null, this.#connections.el, this.#services.el));
 				}
+			} else if (tab === "rules" && !this.#rules) {
+				const company = this.#company;
+				this.#rules = new RulesView(
+					createWebReviewRules(this.#api.cloud, company.profile.profileId),
+					AbortSignal.any([this.#companyLifetime.signal, this.#lifetime.signal, company.signal]),
+				);
+				this.#panels.set(tab, this.#rules.el);
 			}
 		}
 		const panel =
@@ -447,6 +465,8 @@ export class SettingsView {
 		this.#connections = undefined;
 		this.#services?.dispose();
 		this.#services = undefined;
+		this.#rules?.dispose();
+		this.#rules = undefined;
 		if (this.#ownsCompany) this.#company?.stop();
 		this.#company = company;
 		this.#ownsCompany = owned;
@@ -454,7 +474,7 @@ export class SettingsView {
 		this.#file = undefined;
 		this.#fileLoading = false;
 		this.#fileError = undefined;
-		for (const tab of ["company", "connections"] as const) this.#panels.delete(tab);
+		for (const tab of ["company", "connections", "rules"] as const) this.#panels.delete(tab);
 		if (company) {
 			this.#unsubscribe = company.store.subscribe(() => {
 				if (company.store.get().accessLost) {

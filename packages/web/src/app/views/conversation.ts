@@ -1,10 +1,21 @@
 import type { CodingSession } from "../../cloud/coding-session.ts";
+import {
+	type ActionReviewAnswer,
+	type ActionReviewCard,
+	actionReviewCard,
+	answersActionReview,
+} from "../../cloud/review-rules.ts";
 import { sessionAttachmentProblem } from "../../cloud/session-attachments.ts";
 import type { TranscriptCard, TranscriptItem } from "../../cloud/transcript.ts";
 import type { HostedSession, HostedStaffAgent, JsonValue } from "../../cloud/types.ts";
 import { AGENT_LOOK, activityCaption, syncCaption } from "../../ui/agent-activity.ts";
 import { AttachmentTray, attachmentProblemText } from "../../ui/attachments.ts";
-import { authorizationRequestId, renderAuthorizationCard } from "../../ui/authorization-card.ts";
+import {
+	authorizationData,
+	authorizationRequestId,
+	renderActionReviewCard,
+	renderAuthorizationCard,
+} from "../../ui/authorization-card.ts";
 import { agentFigure } from "../../ui/avatar.ts";
 import { CodingSessionElement } from "../../ui/coding-session.ts";
 import { CodingSessionThreadView } from "../../ui/coding-session-thread.ts";
@@ -578,6 +589,15 @@ export class ConversationView {
 		}
 	}
 
+	/** Record an answer to an approval card of an agent's action; the card shows it at once. */
+	async #answerActionReview(reviewId: string, answer: ActionReviewAnswer, ruleText?: string): Promise<void> {
+		try {
+			await this.#company.answerActionReview(this.#sessionId, reviewId, answer, ruleText);
+		} catch {
+			// The controller keeps the reason in the conversation state.
+		}
+	}
+
 	/** Take over the agent's computer for a card: open its screen here and give it the keyboard. */
 	#takeOver(agent: HostedStaffAgent): void {
 		const panel = this.#panel ?? this.#showPanel(agent);
@@ -907,6 +927,13 @@ export class ConversationView {
 				const request = authorizationRequestId(item.body);
 				if (request) decisions.set(request, item);
 			}
+		// Approval cards of agents' actions (auto-review, v115) show their own outcome.
+		const reviews = new Map<string, ActionReviewCard>();
+		for (const item of items)
+			if (item.kind === "authorization_request") {
+				const review = actionReviewCard(authorizationData(item.body));
+				if (review) reviews.set(item.id.toLowerCase(), review);
+			}
 		const nodes: HTMLElement[] = [];
 		this.#timestampRows = [];
 		// A coding session stands where the agent started it: before the first
@@ -1033,6 +1060,34 @@ export class ConversationView {
 				);
 			} else if (item.kind === "note") {
 				nodes.push(h("div", { class: "conversation-note", role: "note" }, item.text));
+			} else if (item.kind === "authorization_request" && reviews.has(item.id.toLowerCase())) {
+				const review = reviews.get(item.id.toLowerCase())!;
+				const optimistic = conversation.interactionAnswers?.[item.id.toLowerCase()];
+				nodes.push(
+					renderActionReviewCard(
+						review,
+						item.createdAt,
+						decisions.get(item.id.toLowerCase())?.body ??
+							(optimistic
+								? {
+										decision: optimistic.outcome,
+										answer: optimistic.answer,
+										answeredBy: optimistic.answeredBy ?? null,
+									}
+								: undefined),
+						{
+							answer:
+								canWrite &&
+								session?.status === "open" &&
+								answersActionReview(review, this.#company.userId, role)
+									? (answer, ruleText) => void this.#answerActionReview(item.id, answer, ruleText)
+									: undefined,
+							memberName: (userId) => this.#company.memberName(userId),
+						},
+					),
+				);
+			} else if (item.kind === "authorization_decision" && reviews.has(authorizationRequestId(item.body) ?? "")) {
+				// Its approval card already shows this decision.
 			} else if (item.kind === "authorization_request" || item.kind === "authorization_decision") {
 				const optimistic =
 					item.kind === "authorization_request"

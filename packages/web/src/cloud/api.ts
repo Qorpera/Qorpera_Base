@@ -48,6 +48,7 @@ import {
 	parseTeam,
 	UUID_PATTERN,
 } from "./parse.ts";
+import { type ActionReviewAnswer, type ActionReviewReceipt, parseActionReviewReceipt } from "./review-rules.ts";
 import { type CompanySidebar, parseCompanySidebar, type SidebarRequest } from "./sidebar.ts";
 import type {
 	CreatedCompanyResult,
@@ -543,6 +544,33 @@ export class CloudApi {
 					: {}),
 			})
 			.then(parseSessionInputReceipt);
+	}
+
+	/** Answer an approval card of an agent's action (kernel bundle v115). Allow once,
+	 * Always allow (a built-in check's card only; saves `ruleText` as a company
+	 * Allow rule) or Deny. When the agent stopped waiting, the answer wakes it on
+	 * the member's own model account, which `sponsor` names. */
+	answerActionReview(
+		reviewId: string,
+		clientInputId: string,
+		answer: ActionReviewAnswer,
+		ruleText: string | undefined,
+		sponsor?: { sponsorBindingId: string; sponsorVersion: number },
+	): Promise<ActionReviewReceipt> {
+		return this.cloud
+			.rpc("qorpera_answer_action_review", {
+				p_review_id: requiredUuid(reviewId, "Approval id"),
+				p_client_input_id: requiredUuid(clientInputId, "Client input id"),
+				p_answer: answer,
+				...(ruleText === undefined ? {} : { p_rule_text: ruleText }),
+				...(sponsor
+					? {
+							p_sponsor_binding_id: requiredUuid(sponsor.sponsorBindingId, "Sponsor binding id"),
+							p_sponsor_version: sponsor.sponsorVersion,
+						}
+					: {}),
+			})
+			.then(parseActionReviewReceipt);
 	}
 
 	/** The one member write into a conversation: a queued prompt. The mouth is

@@ -35,6 +35,16 @@
 .settings-content .notice { font-size: 12px; overflow-wrap: anywhere; }
 .settings-content .row { flex-wrap: wrap; }
 .settings-group { margin: 28px 0; }
+/* Settings → Rules (auto-review, v115): one row per rule, the form below. */
+.settings-rule-list { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.settings-rule { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 12px; padding: 11px 13px; border-radius: 13px; background: #f1f1ef; }
+.settings-rule .settings-copy { display: grid; gap: 2px; min-width: 0; overflow-wrap: anywhere; }
+.settings-rule .settings-copy small { color: var(--text-muted); }
+.settings-rule-form label { display: grid; gap: 6px; margin: 10px 0; color: var(--text-muted); font-size: 13px; }
+.settings-rule-form input, .settings-rule-form select { padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; background: transparent; color: var(--text); font: inherit; font-size: 14px; }
+.settings-rule-choices { display: flex; flex-wrap: wrap; align-items: end; gap: 12px; }
+.settings-rule-choices label { margin: 0; }
+.settings-rule-choices .btn { margin-left: auto; }
 .settings-card { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 11px; min-height: 72px; padding: 11px 13px; border-radius: 13px; background: #f1f1ef; }
 /* The account card leads with the member's picture: a camera badge says it can
  * be changed, a click picks a photo, and once there is one a small menu offers
