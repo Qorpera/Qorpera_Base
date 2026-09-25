@@ -1366,6 +1366,21 @@ admits the same occurrence. Agents are told to start a new responsibility on a
 dense cadence and loosen it under the same routine key once the work is
 understood.
 
+2026-09-25 amendment: expiry and edits close future scheduling only. A finite
+watch's last permitted occurrence expires the routine when it is queued, and
+that occurrence still starts and completes; so does an occurrence queued
+before a time expiry, including one that quiet hours, a company pause or
+missing capacity hold past the end (it is not dropped). This holds only for a
+routine that was running normally when it ended: one that was paused (by its
+agent, a member, the authorization-failure suspension or its agent's
+archiving) runs nothing more, and archiving an agent also stops its ended
+routines, so a restore does not revive them. A removal stops pending work
+too. A new version applies to the next run: a run that has started keeps the
+version it started with while its job is live and the routine stays with its
+agent (a routine run may save its own routine), while a queued occurrence of
+an older version, work that continues after the job ended, and a run whose
+routine a member moved to another agent follow the current version.
+
 ## 17. Model and reasoning policy
 
 An attended agent thread defaults to low reasoning effort. The resolved
