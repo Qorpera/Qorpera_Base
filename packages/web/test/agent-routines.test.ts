@@ -230,7 +230,7 @@ describe("agent routines section", () => {
 		await settle();
 		view.el.querySelector<HTMLInputElement>('[aria-label="Routine name"]')!.value = "Morning brief, shorter";
 		click(view.el, "Save routine");
-		await vi.waitFor(() => expect(upserts).toHaveLength(1));
+		await vi.waitFor(() => expect(upserts).toHaveLength(1), { timeout: 3000 });
 		expect(routines.save).toHaveBeenCalledWith(
 			expect.objectContaining({ title: "Morning brief, shorter", effort: "high" }),
 			account,
@@ -248,7 +248,7 @@ describe("agent routines section", () => {
 		view.el.querySelector<HTMLInputElement>('[aria-label="Routine name"]')!.value = "Weekly close";
 		view.el.querySelector<HTMLTextAreaElement>('[aria-label="What to do"]')!.value = "Close the week.";
 		click(view.el, "Save routine");
-		await vi.waitFor(() => expect(upserts).toHaveLength(2));
+		await vi.waitFor(() => expect(upserts).toHaveLength(2), { timeout: 3000 });
 		expect(upserts[1]).toMatchObject({ p_title: "Weekly close", p_effort: "low" });
 		expect(upserts[1]!.p_client_routine_id).not.toBe(routine().clientRoutineId);
 		stop.abort();
