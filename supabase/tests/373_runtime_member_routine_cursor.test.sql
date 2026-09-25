@@ -3,9 +3,10 @@
 -- gave the new version a fresh schedule cursor, and the scheduler kicks off a
 -- fresh cursor at once. Renaming a Monday 08:30 brief on a Thursday ran it that
 -- Thursday. A member's save now keeps the position its routine reached, per
--- schedule trigger id. Changed timing, or a resume after a missed slot,
--- restarts the schedule at the save: nothing runs at once and nothing is
--- caught up.
+-- schedule trigger id, and a run still waiting for its start is offered again
+-- to the new version. Changed timing, or a resume after a missed slot (with or
+-- without a new version), restarts the schedule at the save: nothing runs at
+-- once and nothing is caught up.
 
 -- Saves the routine as the owner; every call is a new version.
 create function pg_temp.member_save(p_client uuid,p_title text,p_triggers jsonb,p_enabled boolean default true)
@@ -33,13 +34,25 @@ create function pg_temp.member_effective_at(p_client uuid) returns timestamptz l
 	join public.qorpera_cloud_routines routine on routine.id = version.routine_id and routine.current_version = version.version
 	where routine.client_routine_id = p_client
 $$;
--- The scheduler records one occurrence the way the orchestrator does.
-create function pg_temp.member_ran(p_client uuid,p_trigger text,p_at timestamptz,p_next timestamptz)
+-- The scheduler offers one occurrence the way the orchestrator does; it waits until it
+-- becomes a run.
+create function pg_temp.member_enqueued(p_client uuid,p_trigger text,p_at timestamptz,p_next timestamptz)
 returns jsonb language plpgsql as $$
 declare v_cursor public.qorpera_cloud_routine_schedule_cursors := pg_temp.member_cursor(p_client,p_trigger);
 begin
 	return public.qorpera_enqueue_routine_wake(v_cursor.routine_id,v_cursor.routine_version,extensions.gen_random_uuid(),
 		'member-cursor:' || extensions.gen_random_uuid(),p_trigger,p_at,v_cursor.last_scheduled_for,p_next,'{}');
+end
+$$;
+-- The routine ran: its occurrence was offered and became a run.
+create function pg_temp.member_ran(p_client uuid,p_trigger text,p_at timestamptz,p_next timestamptz)
+returns jsonb language plpgsql as $$
+declare v_result jsonb := pg_temp.member_enqueued(p_client,p_trigger,p_at,p_next);
+begin
+	perform public.qorpera_materialize_wake_execution_runs(64);
+	perform pg_temp.wake_assert((select status from public.qorpera_wake_occurrences
+		where id = (v_result ->> 'occurrence_id')::uuid) = 'materialized','Fixture: the occurrence became a run');
+	return v_result;
 end
 $$;
 -- What the scheduler sees: the routine's schedule head, or null when nothing is due.
@@ -216,6 +229,133 @@ begin
 		and v_cursor.next_due_at = '-infinity'::timestamptz,'A listener that becomes a schedule starts fresh, with its kickoff');
 end $$;
 
+-- An interval a wall-clock trigger does not use is not timing either: a weekly trigger
+-- stored with intervalMinutes 10080 and rewritten by the web editor with 1440 keeps its
+-- exact position.
+do $$
+declare v_client uuid := extensions.gen_random_uuid(); v_cursor public.qorpera_cloud_routine_schedule_cursors;
+	v_ran timestamptz := date_trunc('milliseconds',statement_timestamp() - interval '2 days');
+begin
+	perform pg_temp.member_save(v_client,'Monday brief','[{"id":"brief","kind":"schedule","intervalMinutes":10080,
+		"weekdays":["monday"],"localTime":"08:30","timeZone":"Europe/Copenhagen"}]');
+	perform pg_temp.member_ran(v_client,'brief',v_ran,v_ran + interval '7 days');
+	perform pg_temp.member_save(v_client,'Weekly brief','[{"id":"brief","kind":"schedule","intervalMinutes":1440,
+		"weekdays":["monday"],"localTime":"08:30","timeZone":"Europe/Copenhagen"}]');
+	v_cursor := pg_temp.member_cursor(v_client,'brief');
+	perform pg_temp.wake_assert(v_cursor.routine_version = 2 and v_cursor.last_scheduled_for = v_ran
+		and v_cursor.next_due_at = v_ran + interval '7 days','An unused interval on a wall-clock trigger keeps the exact position');
+end $$;
+
+-- A run still waiting for its start (an occurrence not yet a run: quiet hours, admission)
+-- is refused once a newer version exists. With the same timing its slot is offered again
+-- to the new version, so the rename applies to that run instead of losing it. A waiting
+-- kickoff moves to the new version. With changed timing the new schedule replaces it.
+do $$
+declare v_client uuid := extensions.gen_random_uuid(); v_kickoff uuid := extensions.gen_random_uuid();
+	v_retimed uuid := extensions.gen_random_uuid(); v_cursor public.qorpera_cloud_routine_schedule_cursors;
+	v_slot timestamptz := date_trunc('milliseconds',statement_timestamp() - interval '2 minutes');
+	v_brief jsonb := '[{"id":"brief","kind":"schedule","intervalMinutes":1440,"weekdays":["monday"],"localTime":"08:30",
+		"timeZone":"Europe/Copenhagen"}]';
+begin
+	perform set_config('qorpera_test.member_waiting',v_client::text,true);
+	perform pg_temp.member_save(v_client,'Monday brief',v_brief);
+	perform set_config('qorpera_test.member_waiting_run',
+		pg_temp.member_enqueued(v_client,'brief',v_slot,v_slot + interval '7 days') ->> 'occurrence_id',true);
+	perform pg_temp.member_save(v_client,'Weekly brief',v_brief);
+	v_cursor := pg_temp.member_cursor(v_client,'brief');
+	perform pg_temp.wake_assert(v_cursor.routine_version = 2 and v_cursor.last_scheduled_for = v_slot - interval '1 millisecond'
+		and v_cursor.next_due_at = v_slot,'A slot still waiting for its run is offered again to the new version');
+
+	perform pg_temp.member_save(v_kickoff,'New brief',v_brief);
+	perform pg_temp.member_enqueued(v_kickoff,'brief',date_trunc('milliseconds',pg_temp.member_effective_at(v_kickoff)),
+		date_trunc('milliseconds',pg_temp.member_effective_at(v_kickoff)) + interval '7 days');
+	perform pg_temp.member_save(v_kickoff,'New weekly brief',jsonb_set(v_brief,'{0,localTime}','"09:00"'));
+	v_cursor := pg_temp.member_cursor(v_kickoff,'brief');
+	perform pg_temp.wake_assert(v_cursor.routine_version = 2 and v_cursor.last_scheduled_for is null
+		and v_cursor.next_due_at = '-infinity'::timestamptz,'A kickoff still waiting for its run moves to the new version');
+
+	perform pg_temp.member_save(v_retimed,'Monday brief',v_brief);
+	perform pg_temp.member_enqueued(v_retimed,'brief',v_slot,v_slot + interval '7 days');
+	perform pg_temp.member_save(v_retimed,'Friday brief',jsonb_set(v_brief,'{0,weekdays}','["friday"]'));
+	v_cursor := pg_temp.member_cursor(v_retimed,'brief');
+	perform pg_temp.wake_assert(v_cursor.last_scheduled_for = date_trunc('milliseconds',pg_temp.member_effective_at(v_retimed))
+		and v_cursor.next_due_at = v_cursor.last_scheduled_for + interval '1 millisecond',
+		'With changed timing the new schedule replaces a waiting run of the old one');
+end $$;
+-- The old version's waiting occurrence is refused; the scheduler offers the same slot to
+-- the new version against the position it read, and that one becomes the run.
+do $$
+declare v_client uuid := current_setting('qorpera_test.member_waiting')::uuid; v_head jsonb := pg_temp.member_head(v_client);
+	v_cursor public.qorpera_cloud_routine_schedule_cursors := pg_temp.member_cursor(v_client,'brief');
+	v_old uuid := current_setting('qorpera_test.member_waiting_run')::uuid; v_expected timestamptz; v_new jsonb;
+begin
+	perform public.qorpera_materialize_wake_execution_runs(8);
+	perform pg_temp.wake_assert((select status from public.qorpera_wake_occurrences where id = v_old) = 'cancelled',
+		'Fixture: the old version''s waiting occurrence is refused');
+	v_expected := to_char((v_head #>> '{schedule_cursors,0,last_scheduled_for}')::timestamptz at time zone 'UTC',
+		'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')::timestamptz;
+	v_new := public.qorpera_enqueue_routine_wake(v_cursor.routine_id,v_cursor.routine_version,extensions.gen_random_uuid(),
+		'member-cursor-waiting-again',v_cursor.trigger_id,v_cursor.next_due_at,v_expected,v_cursor.next_due_at + interval '7 days','{}');
+	perform public.qorpera_materialize_wake_execution_runs(8);
+	perform pg_temp.wake_assert(v_expected = v_cursor.last_scheduled_for
+		and (select status from public.qorpera_wake_occurrences where id = (v_new ->> 'occurrence_id')::uuid) = 'materialized',
+		'The waiting slot runs under the new version');
+end $$;
+
+-- A member's pause keeps the position. An agent's resume switches the routine back on
+-- without a new version; once the next slot has passed the cursor restarts in place, so
+-- the slots the pause skipped are not replayed. Resumed before its next slot, it is kept.
+do $$
+declare v_late uuid := extensions.gen_random_uuid(); v_soon uuid := extensions.gen_random_uuid();
+	v_long_ago timestamptz := date_trunc('milliseconds',statement_timestamp() - interval '15 days');
+	v_ran timestamptz := date_trunc('milliseconds',statement_timestamp() - interval '1 day');
+	v_brief jsonb := '[{"id":"brief","kind":"schedule","intervalMinutes":1440,"weekdays":["monday"],"localTime":"08:30",
+		"timeZone":"Europe/Copenhagen"}]';
+	v_cursor public.qorpera_cloud_routine_schedule_cursors;
+begin
+	perform pg_temp.member_save(v_late,'Monday brief',v_brief);
+	perform pg_temp.member_ran(v_late,'brief',v_long_ago,v_long_ago + interval '7 days');
+	perform pg_temp.member_save(v_late,'Monday brief',v_brief,false);
+	update public.qorpera_cloud_routines set status = 'active', pause_reason = null where client_routine_id = v_late;
+	v_cursor := pg_temp.member_cursor(v_late,'brief');
+	perform pg_temp.wake_assert(v_cursor.routine_version = 2
+		and v_cursor.last_scheduled_for = date_trunc('milliseconds',statement_timestamp())
+		and v_cursor.next_due_at = v_cursor.last_scheduled_for + interval '1 millisecond',
+		'A resume without a new version restarts an overdue cursor in place');
+
+	perform pg_temp.member_save(v_soon,'Monday brief',v_brief);
+	perform pg_temp.member_ran(v_soon,'brief',v_ran,v_ran + interval '7 days');
+	perform pg_temp.member_save(v_soon,'Monday brief',v_brief,false);
+	update public.qorpera_cloud_routines set status = 'active', pause_reason = null where client_routine_id = v_soon;
+	v_cursor := pg_temp.member_cursor(v_soon,'brief');
+	perform pg_temp.wake_assert(v_cursor.last_scheduled_for = v_ran and v_cursor.next_due_at = v_ran + interval '7 days',
+		'A resume without a new version keeps a cursor whose next slot is ahead');
+end $$;
+
+-- A restart position is not a run time: once qorpera_routine_next_run_at exists (v114),
+-- it does not show one as the next run.
+do $$
+declare v_client uuid := extensions.gen_random_uuid();
+	v_ran timestamptz := date_trunc('milliseconds',statement_timestamp() - interval '3 days');
+	v_brief jsonb := '[{"id":"brief","kind":"schedule","intervalMinutes":1440,"weekdays":["monday"],"localTime":"08:30",
+		"timeZone":"Europe/Copenhagen"}]';
+begin
+	if to_regprocedure('public.qorpera_routine_next_run_at(uuid)') is null then return; end if;
+	perform pg_temp.member_save(v_client,'Monday brief',v_brief);
+	-- Where the scheduler leaves a cursor after a run, without a waiting occurrence.
+	update public.qorpera_cloud_routine_schedule_cursors cursor set last_scheduled_for = v_ran,
+		next_due_at = v_ran + interval '7 days'
+	from public.qorpera_cloud_routines routine
+	where routine.client_routine_id = v_client and cursor.routine_id = routine.id;
+	perform pg_temp.wake_assert(public.qorpera_routine_next_run_at(
+		(select id from public.qorpera_cloud_routines where client_routine_id = v_client)) = v_ran + interval '7 days',
+		'Fixture: a carried position shows its next slot');
+	perform pg_temp.member_save(v_client,'Daily brief',jsonb_set(v_brief,'{0,weekdays}','["monday","tuesday","wednesday"]'));
+	perform pg_temp.wake_assert(public.qorpera_routine_next_run_at(
+		(select id from public.qorpera_cloud_routines where client_routine_id = v_client)) is null,
+		'A restart position is not shown as the next run');
+end $$;
+
 -- Each schedule trigger is decided on its own: a kept trigger keeps its position, a
 -- changed one restarts at the save, a new id starts fresh with its kickoff. A position
 -- never moves behind the one the routine reached, even when the scheduler's clock ran
@@ -232,7 +372,7 @@ declare v_client uuid := extensions.gen_random_uuid();
 begin
 	perform pg_temp.member_save(v_client,'Two schedules',v_first);
 	perform pg_temp.member_ran(v_client,'brief',v_ran,v_ran + interval '7 days');
-	perform pg_temp.member_ran(v_client,'pulse',v_ahead,v_ahead + interval '1 hour');
+	perform pg_temp.member_enqueued(v_client,'pulse',v_ahead,v_ahead + interval '1 hour');
 	v_second := jsonb_build_array(v_first -> 0,jsonb_set(v_first -> 1,'{intervalMinutes}','30'),
 		'{"id":"digest","kind":"schedule","intervalMinutes":1440,"weekdays":["friday"],"localTime":"16:00","timeZone":"Europe/Copenhagen"}'::jsonb);
 	perform pg_temp.member_save(v_client,'Two schedules and a digest',v_second);
