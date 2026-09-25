@@ -124,10 +124,14 @@ test("every long-cached directory gets a 404 page, so a missing file there is ne
 	const rules = (path, value, name = "Cache-Control") => `/*\n  ${name}: public, max-age=0, must-revalidate\n${path}\n  ! ${name}\n  ${name}: ${value}\n`;
 	assert.deepEqual(longCachedDirectories(rules("/build/*", "public, max-age=31536000, immutable")), ["build"]);
 	assert.deepEqual(longCachedDirectories(rules("/assets/avatars/*", "s-maxage=60")), ["assets/avatars"]);
-	assert.deepEqual(longCachedDirectories(rules("/fonts/*", "max-age=600", "CDN-Cache-Control")), ["fonts"]);
+	assert.deepEqual(longCachedDirectories(rules("/fonts/*", 'max-age="600"')), ["fonts"]);
+	assert.deepEqual(longCachedDirectories("/build/*\n\tCache-Control : max-age=60\r\n"), ["build"]);
 	assert.deepEqual(longCachedDirectories(rules("/build/*", "no-store")), []);
 	assert.deepEqual(longCachedDirectories(rules("/build/*", "public, max-age=00, must-revalidate")), []);
-	for (const path of ["/*", "/*.css", "/build/app.css", "/build/:name", "https://app.qorpera.com/build/*"])
+	for (const path of ["/*", "/*.css", "/build/app.css", "/build/:name", "https://app.qorpera.com/build/*", "/../*", "/./*", "/build/../*"])
 		assert.throws(() => longCachedDirectories(rules(path, "public, max-age=86400")), /must cover one directory/, path);
-	assert.throws(() => prepareDeployment({ headersTemplate: `${headersTemplate}/*.woff2\n  Cloudflare-CDN-Cache-Control: max-age=86400\n` }), /must cover one directory/);
+	// A 404 keeps these, and the edge obeys CDN-Cache-Control over the no-store Pages sets.
+	for (const name of ["CDN-Cache-Control", "Cloudflare-CDN-Cache-Control", "Surrogate-Control", "Expires"])
+		assert.throws(() => longCachedDirectories(`/build/*\n  ${name}: max-age=0\n`), /keeps .+ on a 404/, name);
+	assert.throws(() => prepareDeployment({ headersTemplate: `${headersTemplate}/build/*\n  CDN-Cache-Control: max-age=31536000\n` }), /keeps CDN-Cache-Control on a 404/);
 });

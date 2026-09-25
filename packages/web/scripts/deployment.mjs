@@ -40,6 +40,8 @@ export function prepareDeployment({ configPath, configJson, release = false, ser
 // stylesheet under /build/*, an unstyled app). With a 404.html in the file's
 // directory, Pages answers 404 instead and replaces any Cache-Control with
 // no-store. Returns every directory a rule lets caches keep, for that page.
+// Pages leaves other caching headers on a 404, and the edge obeys
+// CDN-Cache-Control over Cache-Control, so those are refused outright.
 export function longCachedDirectories(headers) {
 	const directories = new Set();
 	let rule;
@@ -49,10 +51,13 @@ export function longCachedDirectories(headers) {
 			rule = line.trim();
 			continue;
 		}
-		const cacheControl = line.match(/^\s+(?:cloudflare-)?(?:cdn-)?cache-control:(.*)$/i)?.[1];
-		if (!cacheControl || !/\b(?:max-age|s-maxage)=0*[1-9]/i.test(cacheControl)) continue;
+		const [, name = "", value = ""] = line.match(/^\s+([^:\s]+)\s*:(.*)$/) ?? [];
+		if (/^(?:(?:cloudflare-)?cdn-cache-control|surrogate-control|expires)$/i.test(name))
+			throw new Error(`Pages keeps ${name} on a 404, so set Cache-Control instead: ${rule}`);
+		if (!/^cache-control$/i.test(name) || !/\b(?:max-age|s-maxage)="?0*[1-9]/i.test(value)) continue;
 		const directory = rule?.match(/^\/((?:[\w.-]+\/)*[\w.-]+)\/\*$/)?.[1];
-		if (!directory) throw new Error(`A long-cached header rule must cover one directory, so a 404.html can guard it: ${rule}`);
+		if (!directory || directory.split("/").some(part => /^\.+$/.test(part)))
+			throw new Error(`A long-cached header rule must cover one directory, so a 404.html can guard it: ${rule}`);
 		directories.add(directory);
 	}
 	return [...directories];
