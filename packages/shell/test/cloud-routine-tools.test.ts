@@ -230,6 +230,16 @@ describe("agent routine tool", () => {
 			"a first run without an offset",
 			{ trigger: { kind: "dynamic", timeZone: "UTC", firstRunAt: "2026-10-01T09:00" } },
 		],
+		// Without an offset the host would read these in its own zone, not the member's.
+		[
+			"an every first run without an offset",
+			{ trigger: { kind: "every", minutes: 60, firstRunAt: "2026-10-01T09:00:00" } },
+		],
+		[
+			"a weekly first run without an offset",
+			{ trigger: { kind: "weekly", localTime: "09:00", timeZone: "UTC", firstRunAt: "2026-10-01T09:00:00" } },
+		],
+		["an expiry without an offset", { expiresAt: "2026-10-03T18:00" }],
 	])("rejects %s before dispatch", async (_label, extra) => {
 		const f = await fixture();
 		try {
@@ -280,6 +290,9 @@ describe("a dynamic routine's own run", () => {
 			new AbortController().signal,
 		);
 		let owed = true;
+		const settled = vi.fn(() => {
+			owed = false;
+		});
 		const call = vi.fn<CloudCompanyPathControl["call"]>(async (_method, args) => {
 			const request = (args as { p_request: Record<string, unknown> }).p_request;
 			return {
@@ -298,7 +311,7 @@ describe("a dynamic routine's own run", () => {
 				binding,
 				run.identity,
 				{ call },
-				{ routineKey: "invoice-watch", decisionOwed: () => owed },
+				{ routineKey: "invoice-watch", decisionOwed: () => owed, settled },
 			),
 			assertActive: (signal) => run.assertActive(signal),
 			signal: run.signal,
@@ -311,7 +324,11 @@ describe("a dynamic routine's own run", () => {
 					routineKey: "invoice-watch",
 				});
 				expect(own.success).toBe(false);
-				expect(own.contentItems[0].text).toContain("this is the routine you are running: use decide_routine");
+				expect(own.contentItems[0].text).toContain(
+					action === "pause" || action === "remove"
+						? "conclude it (manage_routine conclude, or decide_routine conclude) instead of pausing or removing it"
+						: "this is the routine you are running: use decide_routine",
+				);
 			}
 			// Other routines, and concluding its own, stay open; after the decision so does the rest.
 			expect((await boundary.invoke("other", "qorpera", "manage_routine", weekly)).success).toBe(true);
@@ -322,16 +339,25 @@ describe("a dynamic routine's own run", () => {
 				summary: "Done.",
 			});
 			expect(done.success).toBe(true);
-			owed = false;
+			// Concluding its own routine settles the decision the run owed.
+			expect(settled).toHaveBeenCalledTimes(1);
+			expect(owed).toBe(false);
+			// After the decision a save is fine, but pausing or removing it would still revoke this run.
 			expect(
 				(
 					await boundary.invoke("later", "qorpera", "manage_routine", {
-						action: "pause",
+						...weekly,
 						operationKey: "later",
 						routineKey: "invoice-watch",
 					})
 				).success,
 			).toBe(true);
+			const laterPause = await boundary.invoke("later-pause", "qorpera", "manage_routine", {
+				action: "pause",
+				operationKey: "later-pause",
+				routineKey: "invoice-watch",
+			});
+			expect(laterPause.success).toBe(false);
 			expect(call).toHaveBeenCalledTimes(3);
 		} finally {
 			run.close();

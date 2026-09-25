@@ -91,11 +91,7 @@ function compileTrigger(value: unknown): Record<string, unknown> {
 		if (!Number.isSafeInteger(t.minutes) || (t.minutes as number) < 5 || (t.minutes as number) > 10_080)
 			throw new Error("Invalid routine interval");
 		const trigger: Record<string, unknown> = { kind: "schedule", intervalMinutes: t.minutes };
-		if (t.firstRunAt !== undefined) {
-			if (typeof t.firstRunAt !== "string" || !Number.isFinite(Date.parse(t.firstRunAt)))
-				throw new Error("Invalid routine start");
-			trigger.startAt = new Date(t.firstRunAt).toISOString();
-		}
+		if (t.firstRunAt !== undefined) trigger.startAt = instant(t.firstRunAt, "firstRunAt");
 		return { ...trigger, replyPolicy: reply(t.report) };
 	}
 	if (kind === "weekly") {
@@ -104,12 +100,8 @@ function compileTrigger(value: unknown): Record<string, unknown> {
 			["kind", "weekdays", "localTime", "timeZone", "firstRunAt", "report"],
 			["kind", "localTime", "timeZone"],
 		);
-		const startAt: Record<string, unknown> = {};
-		if (t.firstRunAt !== undefined) {
-			if (typeof t.firstRunAt !== "string" || !Number.isFinite(Date.parse(t.firstRunAt)))
-				throw new Error("Invalid routine start");
-			startAt.startAt = new Date(t.firstRunAt).toISOString();
-		}
+		const startAt: Record<string, unknown> =
+			t.firstRunAt === undefined ? {} : { startAt: instant(t.firstRunAt, "firstRunAt") };
 		// Weekday default: a wall-clock routine runs on business days unless the agent says otherwise.
 		const days = t.weekdays === undefined ? [...BUSINESS_DAYS] : t.weekdays;
 		if (
@@ -167,7 +159,7 @@ export const CLOUD_ROUTINE_TOOL_DESCRIPTION =
 	"Set up your own standing work. A routine wakes you, this same agent, with the stored intent, while no member is online. " +
 	"No member approval is needed; use it whenever a responsibility or a request calls for repeated attention, and tell the member what you set up. " +
 	"Actions: list, upsert, pause, resume, conclude, remove. A routine always belongs to you. Reuse one routineKey for the same standing work so a change becomes a new version instead of a duplicate; list first when unsure. " +
-	"trigger is exactly one of: dynamic (you choose each next run: optional firstRunAt with its offset, default now or, for an existing dynamic routine, its current next run; and the member's IANA timeZone), every (minutes 5-10080, optional firstRunAt), weekly (localTime HH:MM, IANA timeZone, weekdays default Monday to Friday, optional firstRunAt), or file_change (a Company File path you can read, match exact or subtree). Use the member's time zone from the wake time context. " +
+	"trigger is exactly one of: dynamic (you choose each next run: optional firstRunAt with its offset, default now, or for an existing dynamic routine its next run if that is still ahead; and the member's IANA timeZone), every (minutes 5-10080, optional firstRunAt with its offset), weekly (localTime HH:MM, IANA timeZone, weekdays default Monday to Friday, optional firstRunAt with its offset), or file_change (a Company File path you can read, match exact or subtree). Use the member's time zone from the wake time context. " +
 	"Prefer dynamic when the right time for the next look depends on what you find: learning a new responsibility, following something up, watching a situation. It runs once at firstRunAt; each run then sets the next run, with adjusted instructions if the work changed, or concludes the routine. Use every or weekly for work tied to the clock, such as a Monday report, and file_change to react to a file. " +
 	"A new every or weekly routine runs once right away as a kickoff, then on its schedule; give firstRunAt only when the first run really must wait. Start dense while a responsibility is new to you and use those early runs to learn what the work needs. Never leave new standing work idle for days waiting for its first slot. " +
 	"Write intent as a complete instruction to your future self: what to read, what to decide, when to tell someone and when to stay silent. report is optional (speak only when useful), required (always report) or silent (never speak). When you pick a threshold or cadence nobody gave you, tell the member it is your starting assumption so they can correct it. " +
@@ -217,8 +209,13 @@ export function cloudRoutineTools(
 	binding: CloudNativeToolBinding,
 	identity: CloudNativeToolIdentity,
 	control: CloudCompanyPathControl,
-	/** In a dynamic routine's run: its key, and whether its decision is still owed. */
-	ownDynamicRoutine?: { readonly routineKey: string; readonly decisionOwed: () => boolean },
+	/** In a dynamic routine's run: its key, whether its decision is still owed, and a
+	 * callback for a conclusion made here (which settles that decision). */
+	ownDynamicRoutine?: {
+		readonly routineKey: string;
+		readonly decisionOwed: () => boolean;
+		readonly settled: () => void;
+	},
 ): readonly CloudNativeTool[] {
 	const { admitted, assertContext } = routineAuthority(binding, identity);
 	const reportSchema = { type: "string", enum: [...REPLY] };
@@ -363,11 +360,19 @@ export function cloudRoutineTools(
 				!ROUTINE_KEY.test(a.routineKey)
 			)
 				throw new Error("Invalid routine key");
-			// The kernel refuses it too; this says why in words the model can act on.
-			if (ownDynamicRoutine?.routineKey === a.routineKey && ownDynamicRoutine.decisionOwed())
-				throw new CloudToolArgumentRefusal(
-					"this is the routine you are running: use decide_routine (next sets the next run and can change its instructions; conclude ends it)",
-				);
+			// The kernel refuses these too; this says why in words the model can act on.
+			// Pausing or removing it would revoke this very run; saving or resuming it
+			// before the decision would drop that decision.
+			if (ownDynamicRoutine?.routineKey === a.routineKey) {
+				if (action === "pause" || action === "remove")
+					throw new CloudToolArgumentRefusal(
+						"this is the routine you are running: conclude it (manage_routine conclude, or decide_routine conclude) instead of pausing or removing it",
+					);
+				if (ownDynamicRoutine.decisionOwed())
+					throw new CloudToolArgumentRefusal(
+						"this is the routine you are running: use decide_routine (next sets the next run and can change its instructions; conclude ends it)",
+					);
+			}
 			if (!upsert) return { action, operationKey: a.operationKey, routineKey: a.routineKey } as never;
 			const request: Record<string, unknown> = {
 				action,
@@ -377,11 +382,7 @@ export function cloudRoutineTools(
 				intent: text(a.intent, 32768),
 				trigger: compileTrigger(a.trigger),
 			};
-			if (a.expiresAt !== undefined) {
-				if (typeof a.expiresAt !== "string" || !Number.isFinite(Date.parse(a.expiresAt)))
-					throw new Error("Invalid routine expiry");
-				request.expiresAt = new Date(a.expiresAt).toISOString();
-			}
+			if (a.expiresAt !== undefined) request.expiresAt = instant(a.expiresAt, "expiresAt");
 			if (a.maxOccurrences !== undefined && (request.trigger as { kind: string }).kind === "once")
 				throw new CloudToolArgumentRefusal(
 					"a dynamic routine takes no maxOccurrences: it ends when a run concludes it (expiresAt still applies)",
@@ -431,6 +432,9 @@ export function cloudRoutineTools(
 						(r.routine as { routineKey?: unknown }).routineKey !== request.routineKey)
 			)
 				throw new Error("Routine receipt differs");
+			// Concluding its own routine here is a decision too.
+			if (ownDynamicRoutine && request.action === "conclude" && request.routineKey === ownDynamicRoutine.routineKey)
+				ownDynamicRoutine.settled();
 			return { kind: "text", value: cloudToolJsonText(r) };
 		},
 	};

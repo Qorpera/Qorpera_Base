@@ -255,7 +255,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			const assertRoutineDecided = (): void => {
 				if (routineDecisionOwed)
 					throw new CloudToolArgumentRefusal(
-						"decide this dynamic routine first: call decide_routine with next or conclude, then send your final message",
+						"decide this dynamic routine first: call decide_routine with next or conclude (it answers settled if the routine already changed elsewhere), then send your final message",
 					);
 			};
 			const send: CloudNativeTool = {
@@ -443,6 +443,9 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 													? {
 															routineKey: wake.routine.routineKey,
 															decisionOwed: () => routineDecisionOwed,
+															settled: () => {
+																routineDecisionOwed = false;
+															},
 														}
 													: undefined,
 											),
