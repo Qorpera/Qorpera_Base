@@ -2248,7 +2248,8 @@ review or retry" surfaces of 16.2 and the classification of section 10.
    through. The reviewer reads the whole call, never a cut of it.
 5. **Approval cards.** An ask raises a card in the conversation the agent
    works in (its own thread or a member's conversation; never a group chat or
-   a worker, where the call is refused instead). A personal rule's card is
+   a worker, and never a card for owners and admins in one member's private
+   conversation, which they cannot read: there the call is refused instead). A personal rule's card is
    answered only by that member; a company rule's or a built-in check's card
    by any owner or admin, who need write access to the conversation. Allow
    once, Deny, and Always allow (a built-in check's card only; saves a narrow

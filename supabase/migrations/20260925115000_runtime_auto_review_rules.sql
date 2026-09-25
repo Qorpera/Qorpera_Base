@@ -389,11 +389,16 @@ begin
 	v_always := v_decision = 'ask' and v_built_in in ('money', 'legal_terms', 'delete_outside', 'access_change')
 		and not exists (select 1 from unnest(v_rules) as rule where (rule).outcome = 'ask_first')
 		and nullif(btrim(coalesce(p_review ->> 'proposedRule', '')), '') is not null;
-	-- Cards live in the agent's own thread or a plain conversation, never a group chat or a worker.
+	-- Cards live in the agent's own thread or a plain conversation, never a group chat or a worker,
+	-- and only where the member it waits for can read it: a card for the owners and admins is never
+	-- raised in one member's private conversation (they could not see it there).
 	v_card := v_decision = 'ask' and v_run.session_id is not null
 		and (public.qorpera_run_worker(v_run.id)).id is null
 		and not exists (select 1 from public.qorpera_company_rooms as room
-			where room.session_id = v_run.session_id and room.bound_staff_agent_id is distinct from v_run.staff_agent_id);
+			where room.session_id = v_run.session_id and room.bound_staff_agent_id is distinct from v_run.staff_agent_id)
+		and not (v_scope = 'owners_admins' and exists (select 1 from public.qorpera_shared_sessions as session
+			where session.id = v_run.session_id and session.audience_kind = 'member_private'
+				and session.audience_user_id is distinct from null));
 	v_id := pg_catalog.gen_random_uuid();
 	insert into public.qorpera_action_reviews (id, profile_id, run_id, call_id, staff_agent_id, session_id,
 		requester_user_id, tool_name, effect, argument_sha256, action, decision, rule_ids, built_in, reason,

@@ -498,7 +498,7 @@ export class CloudActionReviewGate {
 		if (recorded.card !== true)
 			return {
 				run: false,
-				text: `APPROVAL_UNAVAILABLE_HERE: ${reason} This action needs a member's approval, and approvals are only raised in your own thread or a member's conversation, not here. The action did not happen. Do not retry it here; tell the member, or do it from your own thread where they can approve it.`,
+				text: `APPROVAL_UNAVAILABLE_HERE: ${reason} This action needs approval, and approval cards are raised only where the member they wait for can see them (your own thread or a shared conversation), not here. The action did not happen. Do not retry it here; tell the member, or do it from your own thread where it can be approved.`,
 			};
 		return this.#hold(String(recorded.reviewId), name(recorded.approverName, "an owner or admin"), signal);
 	}

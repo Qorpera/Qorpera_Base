@@ -58,6 +58,9 @@ them, both fixed:
   the stopping call would never run).
 - Nits: a failed Always allow's reset archives the rule it saved; a retry with
   the failed answer's client id is refused (55000), not a success.
+- (From the web review) a card for the owners and admins is never raised in one
+  member's private conversation, where they could not read it: that call is
+  refused with APPROVAL_UNAVAILABLE_HERE, like a group chat's.
 
 ## Rollout order
 
