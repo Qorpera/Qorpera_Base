@@ -565,7 +565,13 @@ export function composeCloudNativeCompanyPrompt(
 		/[<>&\u2028\u2029\u202a-\u202e\u2066-\u2069]/g,
 		(character) => `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`,
 	);
-	if (Buffer.byteLength(prompt) > 768 * 1024) throw new Error("Cloud company context exceeds its bound");
+	if (Buffer.byteLength(prompt) > 768 * 1024) {
+		// The whole profile is composed (15.1). A notebook another writer grew past this bound
+		// degrades memory to unavailable; memory never fails the run.
+		if (memory?.available)
+			return composeCloudNativeCompanyPrompt(context, wake, presence, unavailableCloudAgentMemory("too_large"));
+		throw new Error("Cloud company context exceeds its bound");
+	}
 	return prompt;
 }
 

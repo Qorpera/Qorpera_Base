@@ -99,6 +99,79 @@ it.each([403, 503])("cancels a stalled %s bridge error body without exposing it"
 	expect(cancel).toHaveBeenCalledOnce();
 });
 
+it("names the provider's fixed code for a refusal, and nothing else of its body", async () => {
+	const f = fixture();
+	for (const [response, message] of [
+		[
+			() =>
+				new Response(JSON.stringify({ error: "request rejected", code: "CODING_TURN_ENDED_WITHOUT_SUBMISSION" }), {
+					status: 422,
+				}),
+			/^Native provider bridge request failed \(422\) \[code=CODING_TURN_ENDED_WITHOUT_SUBMISSION\]$/,
+		],
+		[
+			() =>
+				new Response(
+					`\n\n${JSON.stringify({ error: "request rejected", code: "NATIVE_WAKE_ENVELOPE:TIMEOUT" })}\n`,
+				),
+			/^Native provider bridge request failed \(422\) \[code=NATIVE_WAKE_ENVELOPE:TIMEOUT\]$/,
+		],
+		[
+			() => new Response(JSON.stringify({ error: "request rejected", code: "private /path text" }), { status: 422 }),
+			/^Native provider bridge request failed \(422\)$/,
+		],
+		[
+			() => new Response("PRIVATE_UPSTREAM_ERROR", { status: 422 }),
+			/^Native provider bridge request failed \(422\)$/,
+		],
+	] as const) {
+		const bridge = new HttpNativeProviderComputerBridge("https://native.example/", "a".repeat(43), async () =>
+			response(),
+		);
+		await expect((await bridge.startCompany(f.authority, f.job)).result).rejects.toThrow(message);
+	}
+});
+
+it("gives up on a refusal body that stalls or runs long, and cancels it", async () => {
+	const f = fixture();
+	const cancelled: string[] = [];
+	const bodies = {
+		// Never ends: the runner stops waiting after 5 s.
+		stalled: () =>
+			new ReadableStream<Uint8Array>({
+				start(controller) {
+					controller.enqueue(new TextEncoder().encode('{"error":"request rejected",'));
+				},
+				cancel() {
+					cancelled.push("stalled");
+				},
+			}),
+		// Past 4 KiB: the runner reads no further.
+		oversized: () =>
+			new ReadableStream<Uint8Array>({
+				pull(controller) {
+					controller.enqueue(new Uint8Array(1024).fill(32));
+				},
+				cancel() {
+					cancelled.push("oversized");
+				},
+			}),
+	};
+	for (const kind of ["stalled", "oversized"] as const) {
+		const bridge = new HttpNativeProviderComputerBridge(
+			"https://native.example/",
+			"a".repeat(43),
+			async () => new Response(bodies[kind](), { status: 422 }),
+		);
+		const started = performance.now();
+		await expect((await bridge.startCompany(f.authority, f.job)).result).rejects.toThrow(
+			/^Native provider bridge request failed \(422\)$/,
+		);
+		if (kind === "stalled") expect(performance.now() - started).toBeLessThan(10_000);
+	}
+	expect(cancelled).toEqual(["stalled", "oversized"]);
+}, 20_000);
+
 it("reads a result or a failure that arrives after the execution's keepalive newlines", async () => {
 	// A run has no deadline: the host answers 200 at once and writes a newline a minute until the result.
 	const f = fixture();

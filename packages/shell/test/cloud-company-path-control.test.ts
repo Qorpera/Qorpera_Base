@@ -1,6 +1,9 @@
 import { HttpCloudCompanyPathControl } from "@qorpera/runtime/cloud-company-path-control";
 import { CloudCompanyHeadConflict } from "@qorpera/runtime/cloud-company-path-gateway";
-import { CloudCompanyPathRpcRefusal } from "@qorpera/runtime/cloud-company-path-refusal";
+import {
+	CloudCompanyPathRpcPrecondition,
+	CloudCompanyPathRpcRefusal,
+} from "@qorpera/runtime/cloud-company-path-refusal";
 import { CloudRuntimeDiagnosticError } from "@qorpera/runtime/cloud-runtime-observability";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -134,6 +137,27 @@ describe("Company File bounded control transport", () => {
 		expect(error instanceof CloudCompanyHeadConflict).toBe(conflict);
 		expect(String(error)).not.toContain("PRIVATE_DIAGNOSTIC");
 		expect(transport).toHaveBeenCalledTimes(1);
+	});
+
+	it.each([
+		[412, { code: "PT412", message: "Company File path version changed", details: null, hint: null }, true],
+		[412, { code: "PT412", message: "PRIVATE_DIAGNOSTIC", details: "private", hint: "private" }, true],
+		[412, { code: "PT412", message: "PRIVATE_DIAGNOSTIC" }, false],
+		[412, { code: "PT412", message: "PRIVATE_DIAGNOSTIC", details: {}, hint: null }, false],
+		[412, { code: "PT412", message: "PRIVATE_DIAGNOSTIC", details: null, hint: null, extra: true }, false],
+		[412, { code: "40001", message: "PRIVATE_DIAGNOSTIC", details: null, hint: null }, false],
+		[409, { code: "PT412", message: "PRIVATE_DIAGNOSTIC", details: null, hint: null }, false],
+		[500, { code: "PT412", message: "PRIVATE_DIAGNOSTIC", details: null, hint: null }, false],
+	] as const)("brands only a complete request precondition refusal (%i, %j)", async (status, body, precondition) => {
+		const transport = vi.fn<typeof fetch>(async () => Response.json(body, { status }));
+		const error = await fixture(transport)
+			.call("qorpera_check_company_path_mutation", {}, new AbortController().signal)
+			.catch((error: unknown) => error);
+		expect(error instanceof CloudCompanyPathRpcPrecondition).toBe(precondition);
+		// Either way the diagnostic category stays what it was, and no database text leaks.
+		if (status === 412) expect((error as CloudRuntimeDiagnosticError).category).toBe("stale_version");
+		expect(String(error)).not.toContain("PRIVATE_DIAGNOSTIC");
+		expect(transport).toHaveBeenCalledOnce();
 	});
 
 	it.each([200, 403])("bounds stalled success and denial bodies (%i) and cancels the reader", async (status) => {
