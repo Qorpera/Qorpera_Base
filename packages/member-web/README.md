@@ -1,6 +1,6 @@
 # Qorpera member web client
 
-An independent static browser application for the governed Company File and shared Company Computer. Desktop and web use `@qorpera/cloud-client`; the headless runtime, cloud authority and object/view gateways own execution, grants, bytes and machine lifetime. This package contains no Electron bridge, native runner, provider credentials or service key.
+An independent static browser application for the governed Company File and shared Company Computer. It uses `@qorpera/cloud-client`; the headless runtime, cloud authority and object/view gateways own execution, grants, bytes and machine lifetime. This package contains no Electron bridge, native runner, provider credentials or service key.
 
 The app supplies public-project sign-in with PKCE, company selection, bounded File browsing and text edits, explicit browser uploads/downloads, protected binary review, shared exports, read-only agent activity, computer start/status/cancel, agent grants, browser profile consent, private sign-in and account-level cleanup after membership removal. File mode is checked independently of computer access. Screens require explicitly configured WSS transport. Closing the app preserves durable office and privacy state.
 
