@@ -1346,13 +1346,18 @@ dense cadence and loosen it under the same routine key once the work is
 understood.
 
 2026-09-25 amendment: expiry and edits close future scheduling only. A finite
-watch's last permitted occurrence expires the routine when it is admitted, and
-that occurrence still runs and completes; so does an occurrence admitted
-before a time expiry, including one that quiet hours hold past it. A new
-version applies to the next run: an admitted run keeps the version it started
-with (a routine run may save its own routine), while a queued occurrence of an
-older version is not run. A pause or a removal still stops pending work, and a
-routine that expires while paused does not run its pending occurrence.
+watch's last permitted occurrence expires the routine when it is queued, and
+that occurrence still starts and completes; so does an occurrence queued
+before a time expiry, including one that quiet hours, a company pause or
+missing capacity hold past the end (it is not dropped). This holds only for a
+routine that was running normally when it ended: one that was paused (by its
+agent, a member, the authorization-failure suspension or its agent's
+archiving) runs nothing more, and archiving an agent also stops its ended
+routines, so a restore does not revive them. A removal stops pending work
+too. A new version applies to the next run: a run that has started keeps the
+version it started with while its job is live (a routine run may save its own
+routine), while a queued occurrence of an older version, and work that
+continues after the job ended, follow the current version.
 
 ## 17. Model and reasoning policy
 

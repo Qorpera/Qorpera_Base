@@ -40,6 +40,15 @@ begin
 end
 $$;
 
+-- Stands in for the clock reaching a queued occurrence's time; not_before is otherwise immutable.
+create function pg_temp.dyn_due_371(p_wake uuid) returns void language plpgsql as $$
+begin
+	set local session_replication_role = replica;
+	update public.qorpera_wake_occurrences set not_before = clock_timestamp() - interval '1 second' where id = p_wake;
+	set local session_replication_role = origin;
+end
+$$;
+
 -- A one-time routine: its only occurrence expires the routine and still runs to completion.
 do $$
 declare v_row public.qorpera_cloud_routines; v_wake uuid; v_run uuid; v_done jsonb;
@@ -116,6 +125,24 @@ begin
 		'The deferred last run completes');
 end $$;
 
+-- A run already working when its routine is paused loses its authority, and the
+-- routine's later expiry (swept below) must not give it back.
+do $$
+declare v_row public.qorpera_cloud_routines;
+begin
+	perform pg_temp.routine(jsonb_build_object('action','upsert','operationKey','pm-1','routineKey','paused-mid-run','title','Pause mid',
+		'intent','Work.','expiresAt',to_char(clock_timestamp() + interval '1 second','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+		'trigger',jsonb_build_object('kind','schedule','intervalMinutes',5,'replyPolicy','silent')));
+	v_row := pg_temp.routine_row('paused-mid-run');
+	perform pg_temp.wake_schedule(jsonb_build_object('routine_id',v_row.id,'version',v_row.current_version),'pm-a');
+	perform public.qorpera_materialize_wake_execution_runs(8);
+	perform set_config('qorpera_test.paused_mid_run',pg_temp.wake_start(pg_temp.routine_run(
+		(select id from public.qorpera_wake_occurrences where occurrence_key = 'pm-a')))::text,true);
+	perform public.qorpera_read_native_wake(current_setting('qorpera_test.paused_mid_run')::jsonb);
+	perform pg_temp.routine('{"action":"pause","operationKey":"pm-2","routineKey":"paused-mid-run"}');
+	perform pg_temp.wake_error(format('select public.qorpera_read_native_wake(%L::jsonb)',current_setting('qorpera_test.paused_mid_run')),'42501');
+end $$;
+
 -- Expiry by time: an occurrence admitted before the expiry instant still runs.
 -- The expiry sweep compares with its own statement's time, so it runs as a
 -- separate statement after the sleep. A routine paused while its occurrence
@@ -145,7 +172,11 @@ declare v_run uuid; v_wake uuid := (select id from public.qorpera_wake_occurrenc
 	v_paused uuid := (select id from public.qorpera_wake_occurrences where occurrence_key = 'paused-expired-a');
 begin
 	perform pg_temp.wake_assert((pg_temp.routine_row('until-soon')).status = 'expired'
-		and (pg_temp.routine_row('paused-expired')).status = 'expired','Both routines expired by time');
+		and (pg_temp.routine_row('paused-expired')).status = 'expired'
+		and (pg_temp.routine_row('paused-mid-run')).status = 'expired','The routines expired by time');
+	perform pg_temp.wake_assert((pg_temp.routine_row('until-soon')).expired_while_active
+		and not (pg_temp.routine_row('paused-expired')).expired_while_active,'Each routine remembers how it ended');
+	perform pg_temp.wake_error(format('select public.qorpera_read_native_wake(%L::jsonb)',current_setting('qorpera_test.paused_mid_run')),'42501');
 	perform pg_temp.wake_assert((select status = 'cancelled' and run_id is null and blocked_reason = 'Routine expired while paused'
 		from public.qorpera_wake_occurrences where id = v_paused),
 		'A routine paused before it expired cancels its pending occurrence');
@@ -199,6 +230,8 @@ begin
 				"limits":{"wall_time_ms":1000,"memory_bytes":67108864,"cpu_millis":1000,"max_pids":16,
 					"max_input_bytes":1048576,"max_output_bytes":0,"max_result_bytes":4096}}'::jsonb));
 	perform pg_temp.wake_assert(v_done ->> 'status' = 'completed','The self-editing run completes');
+	perform pg_temp.wake_assert(not public.qorpera_wake_authorized((select wake from public.qorpera_wake_occurrences wake where id = v_wake)),
+		'Once its job ended, the run''s work follows the current version again (a later continuation is refused)');
 	set local session_replication_role = replica;
 	update public.qorpera_wake_occurrences set not_before = clock_timestamp() - interval '1 second' where id = v_stale;
 	set local session_replication_role = origin;
@@ -227,6 +260,38 @@ begin
 	perform public.qorpera_materialize_wake_execution_runs(8);
 	perform pg_temp.wake_assert((select status = 'cancelled' and run_id is null from public.qorpera_wake_occurrences where id = v_wake),
 		'A removed routine''s pending occurrence is cancelled');
+end $$;
+
+-- Archiving an agent stops its ended routines as it pauses its live ones: after a
+-- restore, neither a queued last run nor a started one regains authority.
+do $$
+declare v_row public.qorpera_cloud_routines; v_queued uuid; v_started uuid; v_binding jsonb; v_staff uuid;
+	v_start text := to_char((statement_timestamp() at time zone 'UTC') - interval '1 hour','HH24:MI');
+	v_end text := to_char((statement_timestamp() at time zone 'UTC') + interval '2 hours','HH24:MI');
+begin
+	perform pg_temp.routine(jsonb_build_object('action','upsert','operationKey','ar-1','routineKey','archive-queued','title','Queued',
+		'intent','Wait.','maxOccurrences',1,'quietHours',jsonb_build_object('start',v_start,'end',v_end,'timeZone','UTC'),
+		'trigger',jsonb_build_object('kind','schedule','intervalMinutes',5,'replyPolicy','silent')));
+	v_row := pg_temp.routine_row('archive-queued');
+	v_queued := pg_temp.wake_schedule(jsonb_build_object('routine_id',v_row.id,'version',v_row.current_version),'ar-q');
+	perform pg_temp.routine('{"action":"upsert","operationKey":"ar-2","routineKey":"archive-started","title":"Started","intent":"Work.",
+		"maxOccurrences":1,"trigger":{"kind":"schedule","intervalMinutes":5,"replyPolicy":"silent"}}');
+	v_row := pg_temp.routine_row('archive-started');
+	v_started := pg_temp.wake_schedule(jsonb_build_object('routine_id',v_row.id,'version',v_row.current_version),'ar-s');
+	perform public.qorpera_materialize_wake_execution_runs(8);
+	v_binding := pg_temp.wake_start(pg_temp.routine_run(v_started));
+	perform pg_temp.wake_assert((pg_temp.routine_row('archive-queued')).expired_while_active
+		and (pg_temp.routine_row('archive-started')).expired_while_active,'Fixture: both ended while active');
+	v_staff := v_row.owner_staff_agent_id;
+	update public.qorpera_profile_staff set employment_status = 'archived',version = version + 1 where staff_agent_id = v_staff;
+	update public.qorpera_profile_staff set employment_status = 'active',version = version + 1 where staff_agent_id = v_staff;
+	perform pg_temp.wake_assert(not (pg_temp.routine_row('archive-queued')).expired_while_active
+		and not (pg_temp.routine_row('archive-started')).expired_while_active,'Archiving stopped both');
+	perform pg_temp.wake_error(format('select public.qorpera_read_native_wake(%L::jsonb)',v_binding),'42501');
+	perform pg_temp.dyn_due_371(v_queued);
+	perform public.qorpera_materialize_wake_execution_runs(8);
+	perform pg_temp.wake_assert((select status = 'cancelled' and run_id is null from public.qorpera_wake_occurrences where id = v_queued),
+		'A restore does not revive an archived agent''s last run');
 end $$;
 
 rollback;
