@@ -1374,9 +1374,11 @@ an undecided run; the host shows the model that reason first. A change made
 in another conversation during the run, or the routine's end date passing,
 settles the decision; a pause or a conclusion by someone else stops the
 started run as a pause does, and a member's Stop of the run pauses the
-routine. An active dynamic routine always has exactly one pending run, and
+routine once (a resume runs it again). An active dynamic routine always has exactly one pending run, and
 runs of one routine never overlap: an agent's save inserts it (a save without
-a time keeps the routine's next run, or runs now); a new version cancels the
+a time keeps the routine's next run if it is still ahead, or runs now); while
+a run owes its decision it cannot save, pause or remove its own routine, only
+decide (conclude ends it); a new version cancels the
 older one's queued run; a run already admitted before an edit still runs once
 with the instructions it was admitted with; the next run a run chose is
 inserted when that run ends; and the control-plane tick restores a run that
