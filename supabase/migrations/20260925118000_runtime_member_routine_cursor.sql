@@ -24,7 +24,10 @@
 --   quiet hours or admission) is refused once a newer version exists. With the
 --   same timing its slot is offered again to the new version, so the edit
 --   applies to that run instead of losing it (only slots after the last one
---   already handed over; a slot counts once toward a finite routine's limit).
+--   that became a run; a slot counts once toward a finite routine's limit).
+--   Known limit: a waiting run that an edit replaces (a waiting kickoff moving
+--   to the new version, or changed timing) still counts toward a finite
+--   routine's limit, so such a routine can end one run early.
 -- * Changed timing under the same id (time, weekdays, time zone, interval,
 --   start) restarts the schedule at the save: nothing runs at once and nothing
 --   is caught up; the first run is the new schedule's first slot after the
@@ -106,7 +109,7 @@ begin
 	end if;
 	v_same := public.qorpera_routine_schedule_timing(v_earlier) = public.qorpera_routine_schedule_timing(p_trigger);
 	if v_same and p_was_active and p_stays_active then
-		-- Only slots after the last one already handed over: a stale slot that waited
+		-- Only slots after the last one that became a run: a stale slot that waited
 		-- while a later one ran is not run again.
 		select min(occurrence.scheduled_for) into v_waiting from public.qorpera_wake_occurrences occurrence
 		where occurrence.routine_id = p_routine_id and occurrence.routine_version = p_version
@@ -114,7 +117,7 @@ begin
 			and occurrence.scheduled_for > coalesce((select max(handed.scheduled_for)
 				from public.qorpera_wake_occurrences handed
 				where handed.routine_id = p_routine_id and handed.routine_version = p_version
-					and handed.trigger_id = p_trigger ->> 'id' and handed.status <> 'queued'), '-infinity'::timestamptz);
+					and handed.trigger_id = p_trigger ->> 'id' and handed.run_id is not null), '-infinity'::timestamptz);
 		if v_waiting is not null then
 			last_scheduled_for := v_waiting - interval '1 millisecond';
 			next_due_at := v_waiting;
@@ -181,6 +184,11 @@ select pg_temp.member_cursor_patch('public.qorpera_routine_occurrence_recorded()
 	$old$			and (select count(*) from public.qorpera_wake_occurrences wake where wake.routine_id = routine.id)
 				>= routine.max_occurrences;$old$,
 	$new$			and public.qorpera_routine_occurrence_count(routine.id) >= routine.max_occurrences;$new$);
+-- What an agent sees beside maxOccurrences counts the same way (v114 keeps this
+-- expression when it extends the view).
+select pg_temp.member_cursor_patch('public.qorpera_agent_routine_view(public.qorpera_cloud_routines)'::regprocedure,
+	$old$'occurrences', (select count(*) from public.qorpera_wake_occurrences wake where wake.routine_id = p_routine.id)$old$,
+	$new$'occurrences', public.qorpera_routine_occurrence_count(p_routine.id)$new$);
 
 -- ---------------------------------------------------------------------------
 -- Switched back on at the same version: restart once the next slot passed
