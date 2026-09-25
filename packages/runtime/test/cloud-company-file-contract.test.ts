@@ -4,9 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { captureCloudCompanyTreeWithReachability } from "@qorpera/cloud-client/node/cloud-company-snapshot";
 import { CloudContentAddressedStore, type CloudObjectTransport } from "@qorpera/cloud-client/node/cloud-object-store";
-import { scaffoldCompany } from "@qorpera/pi-coding-agent/company";
 import { afterEach, describe, expect, it } from "vitest";
 import { verifyCompanySnapshotClosure } from "../../../supabase/functions/company-file-verifier/company-file-verifier.ts";
+import { scaffoldCompany } from "./fixtures/scaffold-company.ts";
 
 const profileId = "9ec79fc8-a1a7-4eb6-a764-4bc704d4103f";
 const temporaryDirectories: string[] = [];

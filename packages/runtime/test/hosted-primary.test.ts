@@ -3,7 +3,7 @@ import {
 	type HostedSessionEventType,
 	QorperaHostedPrimary,
 } from "@qorpera/cloud-client/hosted-primary";
-import type { JsonValue } from "@qorpera/pi-protocol";
+import type { JsonValue } from "@qorpera/contracts";
 import { describe, expect, it, vi } from "vitest";
 
 const profileId = "9ec79fc8-a1a7-4eb6-a764-4bc704d4103f";

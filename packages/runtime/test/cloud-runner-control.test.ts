@@ -6,7 +6,7 @@ import {
 	createCloudRunnerPairingSecret,
 	parseCloudRunnerJob,
 } from "@qorpera/cloud-client/node/cloud-runner-protocol";
-import type { JsonValue } from "@qorpera/pi-protocol";
+import type { JsonValue } from "@qorpera/contracts";
 import type { CloudRunnerBrokerAuthority, CloudRunnerBrokerTransport } from "@qorpera/runtime/cloud-runner-broker";
 import { DisposableCloudRunner, SupabaseCloudRunnerControlTransport } from "@qorpera/runtime/cloud-runner-control";
 import { describe, expect, it, vi } from "vitest";

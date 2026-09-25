@@ -98,7 +98,7 @@ the full migration chain):
 
 The rest of the SQL suite is unchanged by this migration.
 
-Runtime (`packages/shell/test`): `cloud-worker-tools.test.ts` (tool surface per
+Runtime (`packages/runtime/test`): `cloud-worker-tools.test.ts` (tool surface per
 wake, publication and confirmation, retained change on a failed publication,
 closed parsers against widened or hostile requests, report rules),
 `cloud-wake-bus.test.ts` (closed envelopes and the speaking policy),

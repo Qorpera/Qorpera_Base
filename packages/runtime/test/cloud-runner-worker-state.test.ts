@@ -2,7 +2,7 @@ import { realpathSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { JsonValue } from "@qorpera/pi-protocol";
+import type { JsonValue } from "@qorpera/contracts";
 import { FileCloudRunnerAuthorityStore } from "@qorpera/runtime/cloud-runner-worker-state";
 import { afterEach, describe, expect, it } from "vitest";
 

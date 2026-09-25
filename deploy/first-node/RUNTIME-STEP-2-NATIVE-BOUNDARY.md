@@ -274,7 +274,7 @@ node ../../node_modules/vitest/dist/cli.js --run test/cloud-native-tool-authorit
 Run the same provider-default native proof on Linux without a test runner:
 
 ```sh
-node packages/shell/test/fixtures/run-official-codex-boundary-probe.ts /absolute/path/to/pinned/codex
+node packages/runtime/test/fixtures/run-official-codex-boundary-probe.ts /absolute/path/to/pinned/codex
 ```
 
 At the historical result-only checkpoint, the Linux x86_64 artifact was a release-profile build with debug sections

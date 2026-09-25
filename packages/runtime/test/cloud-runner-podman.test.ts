@@ -1,7 +1,7 @@
 import { mkdir, mkdtemp, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import type { JsonValue } from "@qorpera/pi-protocol";
+import type { JsonValue } from "@qorpera/contracts";
 import type { CloudRunnerModelSocketFactory } from "@qorpera/runtime/cloud-runner-model-socket";
 import {
 	NodePodmanCommandTransport,

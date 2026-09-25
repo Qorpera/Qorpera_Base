@@ -38,7 +38,7 @@ immutable_image="$local_image@$image_digest"
 podman image exists "$immutable_image"
 
 (
-	cd packages/shell
+	cd packages/runtime
 	node ../../node_modules/vitest/dist/cli.js --run \
 		test/cloud-runner-container.test.ts \
 		test/cloud-runner-podman.test.ts

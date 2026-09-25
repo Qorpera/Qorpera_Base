@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import { nativeToolAuthorityFixture } from "../../shell/test/fixtures/native-tool-authority-fixture.ts";
 import {
 	type CloudCodingCommandGateway,
 	cloudCodingCommandTools,
@@ -8,6 +7,7 @@ import {
 } from "../src/cloud-coding-command-tools.ts";
 import { CloudNativeToolBoundary } from "../src/cloud-native-tool-boundary.ts";
 import type { CloudNativeToolOperations } from "../src/cloud-native-tool-operations.ts";
+import { nativeToolAuthorityFixture } from "./fixtures/native-tool-authority-fixture.ts";
 
 function fixture() {
 	const { authority } = nativeToolAuthorityFixture();

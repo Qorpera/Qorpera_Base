@@ -170,7 +170,7 @@ dispatch has been deployed and accepted. The temporary NAS proof tree is
 removed after validation; no existing company files are modified.
 
 The reusable probe is
-`packages/shell/test/fixtures/run-cloud-mouth-probe.ts`. Cloud images run
+`packages/runtime/test/fixtures/run-cloud-mouth-probe.ts`. Cloud images run
 bundled JavaScript; bundle this entry with the repository's esbuild for
 Node 22.19 and place `cloud-mouth-harness.cjs` beside the resulting module.
 Pass the live company parent path as its first argument. Do not point a local
@@ -480,7 +480,7 @@ it. That empty-success result was rejected before signing or activation. The
 corrected verifier requires the exact proof fields, and the candidate was
 booted and verified again. The digest above refers to that second, valid
 acceptance record. Use the executable entry point
-`packages/shell/test/fixtures/run-official-codex-mouth-probe.ts`, not the library
+`packages/runtime/test/fixtures/run-official-codex-mouth-probe.ts`, not the library
 fixture alone, when bundling future probes. Pass the installed Codex command
 as its first argument; the cloud probe uses `/usr/local/bin/codex`. Its
 standalone regression requires a nonempty, exact proof object.

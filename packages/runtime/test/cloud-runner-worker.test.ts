@@ -3,7 +3,7 @@ import {
 	CloudRunnerControlRequestError,
 	type CloudRunnerControlTransport,
 } from "@qorpera/cloud-client/node/cloud-runner-protocol";
-import type { JsonValue } from "@qorpera/pi-protocol";
+import type { JsonValue } from "@qorpera/contracts";
 import type { CloudRunnerBrokerTransport } from "@qorpera/runtime/cloud-runner-broker";
 import { DisposableCloudRunner } from "@qorpera/runtime/cloud-runner-control";
 import type {

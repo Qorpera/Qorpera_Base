@@ -58,7 +58,7 @@ of company work.
 
 ## Verification
 
-- `packages/shell/test/cloud-memory-tools.test.ts`: layout, dedupe, no scope
+- `packages/runtime/test/cloud-memory-tools.test.ts`: layout, dedupe, no scope
   parameter (a `scope` argument is refused on both tools), exact-text forget
   with version, head-conflict retry, recall ranking and fallback, argument
   rejection, own-folder-only, composition and fading.

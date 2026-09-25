@@ -12,8 +12,7 @@ import { captureCloudCompanyTree } from "@qorpera/cloud-client/node/cloud-compan
 import type { ResolvedCompanySubstrateReference } from "@qorpera/cloud-client/node/cloud-company-substrate";
 import { CloudContentAddressedStore, type CloudObjectTransport } from "@qorpera/cloud-client/node/cloud-object-store";
 import type { CloudRunnerJob } from "@qorpera/cloud-client/node/cloud-runner-protocol";
-import { scaffoldCompany } from "@qorpera/pi-coding-agent/company";
-import type { JsonValue } from "@qorpera/pi-protocol";
+import type { JsonValue } from "@qorpera/contracts";
 import type {
 	CloudRunnerCanonicalTranscriptEvent,
 	CloudRunnerQueuedInput,
@@ -26,6 +25,7 @@ import type {
 } from "@qorpera/runtime/cloud-runner-sandbox";
 import { executeCloudRunnerJob } from "@qorpera/runtime/cloud-runner-sandbox";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { scaffoldCompany } from "./fixtures/scaffold-company.ts";
 
 const profileId = "9ec79fc8-a1a7-4eb6-a764-4bc704d4103f";
 const environmentId = "73dc6943-b71c-4ba4-a38d-78da0861e0dc";
