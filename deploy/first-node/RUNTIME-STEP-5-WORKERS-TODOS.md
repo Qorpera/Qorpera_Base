@@ -198,7 +198,39 @@ published only by the agent's next list or change of that todo.
 - Todos and workers do not yet appear in the member clients. The documents are
   visible in the Company File.
 - The composed run context does not list open todos (contract 9.1); the agent
-  lists them when a run continues earlier work. A revived parent receives its
-  todos in the continuation.
+  lists them when a run continues earlier work. Since the listing pages
+  (2026-09-25) it carries `openWork`, the counts of open and blocked todos and
+  of active and blocked workers (on open todos), so the agent knows how much
+  there is. A revived parent receives the todos its workers belong to in the
+  continuation.
+
+## Listing pages (2026-09-25, runtime review of v106)
+
+With no standing counts (v95), `manage_todo list` showed 32 todos and
+`manage_worker status` 16 workers, and asking again returned the same page.
+Migration `*_runtime_todo_worker_pages.sql` makes both listings pages:
+
+- `cursor` in, `nextCursor` out (null at the end); `moreTodos` / `moreWorkers`
+  count exactly what the same filters still hold after the page. The page size
+  is a response size, not a limit: the kernel returns up to 32 todos or 16
+  workers, each with its own cursor, and the runtime shows the longest prefix
+  that reaches the model whole (a tool result is cut at 8 KiB), counting the
+  rest and continuing after the last item shown.
+- Keyset on creation order, newest first: `(created_at, id)`. Creation never
+  changes, so a todo or worker that changes between two pages keeps its place
+  and is neither skipped nor shown twice. The former order (most recently
+  changed first) moved an item on every change.
+- Filters: `todoKey`, `state` and `search` for todos (`includeClosed` stays);
+  `todoKey`, `workerKey`, `state` and `search` for workers. `search` is a
+  case-insensitive text match in titles and keys.
+- A listing keeps items short: the first 200 characters of a todo's detail and
+  its latest 4 workers (key and state, plus `moreWorkers`); the first 200
+  characters of a worker's summary, question and review note. A todo named with
+  `todoKey`, or a worker named with `todoKey` and `workerKey`, is shown in full.
+- `qorpera_describe_agent_open_work` gives the runtime the counts for
+  `openWork`; a failure leaves it out and never blocks the run.
+- Proof: `supabase/tests/388_runtime_todo_worker_pages.test.sql` walks 60 and
+  70 todos and 26 workers to the end with exact counts, pages through todos
+  created in one instant, and changes items between pages.
 - Company formation research and project teams (contract 14.2, 14.4) use this
   machinery but are not built here.
