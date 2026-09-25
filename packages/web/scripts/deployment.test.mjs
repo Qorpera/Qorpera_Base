@@ -126,6 +126,9 @@ test("every long-cached directory gets a 404 page, so a missing file there is ne
 	assert.deepEqual(longCachedDirectories(rules("/assets/avatars/*", "s-maxage=60")), ["assets/avatars"]);
 	assert.deepEqual(longCachedDirectories(rules("/fonts/*", 'max-age="600"')), ["fonts"]);
 	assert.deepEqual(longCachedDirectories("/build/*\n\tCache-Control : max-age=60\r\n"), ["build"]);
+	// Pages ignores indentation: a header may start the line, and an indented path is still a rule.
+	assert.deepEqual(longCachedDirectories("/build/*\nCache-Control: max-age=31536000\n"), ["build"]);
+	assert.deepEqual(longCachedDirectories("/assets/*\n  Cache-Control: max-age=60\n  /build/*\n  Cache-Control: max-age=31536000\n"), ["assets", "build"]);
 	assert.deepEqual(longCachedDirectories(rules("/build/*", "no-store")), []);
 	assert.deepEqual(longCachedDirectories(rules("/build/*", "public, max-age=00, must-revalidate")), []);
 	for (const path of ["/*", "/*.css", "/build/app.css", "/build/:name", "https://app.qorpera.com/build/*", "/../*", "/./*", "/build/../*"])

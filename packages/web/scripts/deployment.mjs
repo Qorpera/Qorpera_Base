@@ -45,13 +45,16 @@ export function prepareDeployment({ configPath, configJson, release = false, ser
 export function longCachedDirectories(headers) {
 	const directories = new Set();
 	let rule;
-	for (const line of headers.split(/\r?\n/)) {
-		if (/^\s*(#|$)/.test(line)) continue;
-		if (!/^\s/.test(line)) {
-			rule = line.trim();
+	// Lines are sorted as Pages' own parser does (workers-shared parseHeaders.ts): indentation means nothing.
+	for (const line of headers.split("\n").map(text => text.trim())) {
+		if (line === "" || line.startsWith("#")) continue;
+		if (/^(?:\S+:\/\/|\/)/.test(line)) {
+			rule = line;
 			continue;
 		}
-		const [, name = "", value = ""] = line.match(/^\s+([^:\s]+)\s*:(.*)$/) ?? [];
+		if (!line.includes(":")) continue;
+		const name = line.slice(0, line.indexOf(":")).trim();
+		const value = line.slice(line.indexOf(":") + 1);
 		if (/^(?:(?:cloudflare-)?cdn-cache-control|surrogate-control|expires)$/i.test(name))
 			throw new Error(`Pages keeps ${name} on a 404, so set Cache-Control instead: ${rule}`);
 		if (!/^cache-control$/i.test(name) || !/\b(?:max-age|s-maxage)="?0*[1-9]/i.test(value)) continue;
