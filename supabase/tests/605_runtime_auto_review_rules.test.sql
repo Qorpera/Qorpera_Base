@@ -436,14 +436,21 @@ begin
 		perform pg_temp.wake_assert(public.qorpera_begin_action_review(v_binding, jsonb_build_object('tool', 'send_email',
 			'argumentSha256', v_digest)) ->> 'state' = 'review',
 			format('After a %s denial, a member who writes again gets the action reviewed afresh', v_answer));
-		-- As in Grok, the retried call runs only on the member's click: whether the fresh review
-		-- allows it or denies it again, it becomes a card for that member.
-		v_record := case v_answer when 'reviewer'
-			then pg_temp.review_record(v_binding, 'retry-' || v_answer, v_digest, 'deny', '{}', 'not_requested')
-			else pg_temp.review_record(v_binding, 'retry-' || v_answer, v_digest, 'allow', '{}') end;
-		perform pg_temp.wake_assert(v_record ->> 'decision' = 'ask' and v_record ->> 'approverScope' = 'member'
-			and (v_record ->> 'card')::boolean,
-			format('After a %s denial, the retried call waits for the member''s own click', v_answer));
+		-- As in Grok, the retried call runs only on a click, whatever the fresh review says. Who
+		-- clicks never goes down: the member when the review now lets it through, the owners and
+		-- admins when it is still not asked for, or when they answered this call before.
+		if v_answer = 'reviewer' then
+			v_record := pg_temp.review_record(v_binding, 'retry-allow', v_digest, 'allow', '{}');
+			perform pg_temp.wake_assert(v_record ->> 'decision' = 'ask' and v_record ->> 'approverScope' = 'member'
+				and (v_record ->> 'card')::boolean, 'A retry the review now lets through waits for the member''s click');
+			v_record := pg_temp.review_record(v_binding, 'retry-deny', v_digest, 'deny', '{}', 'not_requested');
+			perform pg_temp.wake_assert(v_record ->> 'decision' = 'ask' and v_record ->> 'approverScope' = 'owners_admins',
+				'A retry still not asked for waits for an owner or admin, never the member alone');
+		else
+			v_record := pg_temp.review_record(v_binding, 'retry-member', v_digest, 'allow', '{}');
+			perform pg_temp.wake_assert(v_record ->> 'decision' = 'ask' and v_record ->> 'approverScope' = 'owners_admins',
+				'A call the owners and admins answered before stays theirs');
+		end if;
 	end loop;
 end
 $$;
@@ -469,7 +476,7 @@ $$;
 
 -- An agent adds an Ask first rule for the member its run works for (founder decision D4): the
 -- member's own rule, attributed to the agent. The same key is the same rule, the same sentence
--- is that rule, and a key reused for another sentence is refused. A worker cannot add rules.
+-- is that rule, and a key reused for another sentence is refused. A full rule list is a refusal.
 do $$
 declare v_binding jsonb := current_setting('qorpera_test.review_binding')::jsonb; v_added jsonb; v_again jsonb;
 begin
@@ -506,6 +513,18 @@ begin
 	perform pg_temp.wake_assert(public.qorpera_begin_action_review(v_binding, jsonb_build_object('tool', 'send_email',
 		'argumentSha256', repeat('9e', 32))) -> 'rules' @> jsonb_build_array(jsonb_build_object('id', v_added #>> '{rule,id}',
 		'when', 'emailing a customer', 'outcome', 'ask_first')), 'The reviewer reads the rule the agent added');
+	-- The member's rules are full: nothing is added, and the refusal says so.
+	insert into public.qorpera_review_rules (id, profile_id, scope, member_user_id, when_text, outcome, created_via,
+		created_by_user_id)
+	select extensions.gen_random_uuid(), '30000000-0000-4000-8000-000000000010', 'member',
+		'30000000-0000-4000-8000-000000000001', 'filler rule ' || n || ' ' || repeat('x', 260), 'ask_first', 'settings',
+		'30000000-0000-4000-8000-000000000001'
+	from generate_series(1, 60) as n;
+	v_again := public.qorpera_add_agent_review_rule(v_binding, '{"operationKey":"rule-3","when":"posting on Instagram"}');
+	perform pg_temp.wake_assert(not (v_again ->> 'added')::boolean and v_again -> 'rule' = 'null'::jsonb
+		and v_again ->> 'refused' like 'The member has too many rules%'
+		and not exists (select 1 from public.qorpera_review_rules where when_text = 'posting on Instagram'),
+		'A full rule list is refused with nothing added');
 end
 $$;
 

@@ -98,7 +98,7 @@ Found in my own review of the approved head and fixed:
 - A denial (the reviewer's or a member's) stands in its run, and in its
   conversation until a member writes there again; before, it stood forever
   for that member and exact call, with no way to ask again. The retry then
-  waits for the member's click (see the parity section).
+  waits for a click on a card (see the parity section and round 6).
 - A card still waiting holds the same call only in its own conversation;
   elsewhere a new card is raised where the member can see it.
 - The agent tool `add_review_rule` (founder decision D4): an agent adds an Ask
@@ -128,8 +128,28 @@ to the human whatever the rules). Changes the parity run led to:
 - The reason is in English, or Danish when the request is Danish (Danish rules,
   domains and currencies had pulled English requests into Danish).
 - A call denied earlier in a conversation and retried after the member wrote
-  again always becomes a card for that member (Grok: a "yes" in chat is not
-  enough by itself; the retry puts a card in front of the member).
+  again always becomes a card (Grok: a "yes" in chat is not enough by itself;
+  the retry puts a card in front of the human); round 6 keeps it with the
+  owners and admins where the company held it.
+
+## Review round 6 (2026-09-25, on 31a9374e5)
+
+A fresh independent review asked for changes; fixed:
+- A retry after a denial never moves the answer down to a plain member: it
+  stays with the owners and admins when the fresh review still finds it not
+  asked for, or when they answered this call before (a company rule, a money,
+  terms, deletion or access check). Before, a retry judged "not asked for"
+  went to the member, so a contributor could approve what an owner denied.
+- `decide_routine` is internal only without `intent` or `title`; a decision
+  that rewrites the routine's instructions is reviewed like a routine change
+  (later runs read those instructions as their request, so an injected rewrite
+  could otherwise make an exfiltration look requested). A refused rewrite tells
+  the run to decide again without it, so its decision is still made.
+- A card answer's chosen option reads as an option the agent wrote, not the
+  member's own words; the reviewer is told so.
+- Nits: the reviewer's own-doubt ask excludes what a built-in check covers;
+  the retry hint says a new message is needed (a card answer does not count);
+  a full rule list refusal is tested.
 
 ## Rollout order
 

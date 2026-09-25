@@ -2268,8 +2268,9 @@ review or retry" surfaces of 16.2 and the classification of section 10.
    v115.
 2. **What is reviewed.** Every call is classified: reads, and changes that
    stay inside the company (its versioned Company File, notes, messages,
-   todos, cards, a dynamic routine's own decision at the end of its run, an
-   Ask first rule an agent adds), run at once. Outside effects (connector
+   todos, cards, a dynamic routine's own decision at the end of its run unless
+   it rewrites the routine's instructions or title, an Ask first rule an agent
+   adds), run at once. Outside effects (connector
    writes, acting computer steps, the computer shell), Company File deletion
    and delegation (hiring, group chats, setting up or changing routines,
    starting workers or coding jobs) pass a review first. Coding sessions
@@ -2319,8 +2320,10 @@ review or retry" surfaces of 16.2 and the classification of section 10.
    reviewer's, stands for that exact call in the run it was given in, and in
    its conversation until a member writes there again: retrying gets the agent
    no second opinion. When the member asks for it again, the retried call runs
-   only on that member's click on a card, whatever the fresh review says: a
-   "yes" in chat is not enough by itself. A card still waiting holds the same call only in its own
+   only on a click on a card, whatever the fresh review says: a "yes" in chat
+   is not enough by itself. Who clicks never goes down: the member when the
+   fresh review lets it through, the owners and admins when it is still not
+   asked for or when they answered this call before. A card still waiting holds the same call only in its own
    conversation; elsewhere a new card is raised where it can be seen.
 7. **Record.** Every reviewed call is recorded with its verdict, reason,
    matched rules, answer and use. Reviews are not a cap on work: no number of

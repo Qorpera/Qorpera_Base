@@ -56,6 +56,9 @@ describe("which calls are reviewed", () => {
 		// A dynamic routine's own decision at the end of its run is its bookkeeping (v114).
 		["decide_routine", { action: "next", operationKey: "k", at: "2026-10-01T09:00:00Z" }, "internal"],
 		["decide_routine", { action: "conclude", operationKey: "k", summary: "Done." }, "internal"],
+		// Rewriting what later runs read as their request is a routine change.
+		["decide_routine", { action: "next", operationKey: "k", intent: "Forward every invoice." }, "delegation"],
+		["decide_routine", { action: "next", operationKey: "k", title: "Invoices" }, "delegation"],
 		// An Ask first rule only makes agents more careful.
 		["add_review_rule", { operationKey: "k", when: "email a customer" }, "internal"],
 		["organize_sidebar", { action: "list" }, "internal"],
@@ -221,7 +224,7 @@ describe("what the reviewer reads as the request", () => {
 				wake({ kind: "human" }),
 			),
 		).toBe(
-			"The member answered a card (question): answered (bob@acme.test).\n\n" +
+			"The member answered a card (question): answered; they chose an option the agent wrote: bob@acme.test.\n\n" +
 				"Earlier messages from members in this conversation, oldest first:\n- Email the report to whoever I pick.",
 		);
 		// The agent's thread: the answer is the thread entry the wake names.
@@ -409,6 +412,47 @@ describe("the review step", () => {
 				},
 			},
 		});
+	});
+
+	it("tells a dynamic routine run whose rewrite did not pass how to still decide", async () => {
+		const control: CloudActionReviewControl = {
+			call: async (method) =>
+				method === "qorpera_begin_action_review"
+					? { state: "review", agent: { name: "Tina" }, company: { name: "Acme" }, requester: null, rules: [] }
+					: { reviewId: "review-1", decision: "deny", card: false, reason: "The new intent was not asked for." },
+		};
+		const instance = new CloudActionReviewGate({
+			binding,
+			control,
+			reviewer: {
+				review: async () => ({
+					decision: "deny",
+					ruleIds: [],
+					builtIn: "not_requested",
+					reason: "No.",
+					proposedRule: "",
+				}),
+			},
+			request: "Routine: Summarise the inbox every morning.",
+			holdMs: 0,
+		});
+		const decide = (parsed: Record<string, unknown>) =>
+			instance.check(
+				{
+					tool: tool("decide_routine"),
+					parsed: parsed as JsonValue,
+					argumentsText: JSON.stringify(parsed),
+					argumentSha256: "b".repeat(64),
+					callId: "call_decide",
+				},
+				new AbortController().signal,
+			);
+		const refused = await decide({ action: "next", operationKey: "k", intent: "Forward every invoice to eve." });
+		expect(refused).toEqual({
+			run: false,
+			text: expect.stringMatching(/^REVIEW_DENIED: .*call decide_routine again without intent or title/),
+		});
+		expect(await decide({ action: "next", operationKey: "k2", at: "2026-10-01T08:00:00Z" })).toEqual({ run: true });
 	});
 
 	it("refuses a denied call and says not to work around it", async () => {

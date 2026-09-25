@@ -343,7 +343,7 @@ declare
 	v_review public.qorpera_action_reviews%rowtype; v_rules public.qorpera_review_rules[];
 	v_rule_ids uuid[]; v_decision text; v_built_in text; v_scope text; v_approver uuid; v_card boolean;
 	v_parent text; v_body jsonb; v_session_token text; v_lease_token text; v_always boolean; v_id uuid;
-	v_retry boolean;
+	v_retry boolean; v_company_before boolean;
 	v_keys text[] := array['callId','tool','effect','argumentSha256','action','decision','ruleIds','builtIn',
 		'reason','proposedRule','reviewerModel'];
 begin
@@ -399,20 +399,25 @@ begin
 	-- The same call denied earlier in this conversation, tried again after a member wrote
 	-- there (qorpera_begin_action_review reviews it afresh only then), runs only on a click,
 	-- as in Grok: a "yes" in chat is not enough by itself, and a second denial is not final
-	-- either. Its card waits for that member, unless a company rule or a money, terms,
-	-- deletion or access check makes it the owners' and admins' to answer.
-	v_retry := v_run.requested_by_user_id is not null and exists (
-		select 1 from public.qorpera_action_reviews as prior
-		where prior.profile_id = v_run.profile_id and prior.staff_agent_id = v_run.staff_agent_id
-			and prior.tool_name = p_review ->> 'tool' and prior.argument_sha256 = p_review ->> 'argumentSha256'
-			and prior.requester_user_id = v_run.requested_by_user_id and prior.session_id = v_run.session_id
-			and (prior.decision = 'deny' or prior.answer = 'deny'));
+	-- either. Who clicks follows the fresh verdict as for any ask, and never goes down: a
+	-- call the owners and admins answered before here (a company rule, a money, terms,
+	-- deletion or access check) stays theirs, and one the reviewer still finds not asked
+	-- for is theirs too, so a member's own insistence never answers what the company holds.
+	select coalesce(bool_or(prior.decision = 'deny' or prior.answer = 'deny'), false),
+		coalesce(bool_or(prior.approver_scope = 'owners_admins'), false)
+	into v_retry, v_company_before
+	from public.qorpera_action_reviews as prior
+	where v_run.requested_by_user_id is not null
+		and prior.profile_id = v_run.profile_id and prior.staff_agent_id = v_run.staff_agent_id
+		and prior.tool_name = p_review ->> 'tool' and prior.argument_sha256 = p_review ->> 'argumentSha256'
+		and prior.requester_user_id = v_run.requested_by_user_id and prior.session_id = v_run.session_id;
 	if v_retry then v_decision := 'ask'; end if;
 	if v_decision = 'ask' then
-		-- A company rule or a built-in check is the company's to answer; a personal rule
-		-- (or a reviewer's own doubt, or a retry after a denial) is the member's the agent
-		-- works for.
-		if (v_built_in not in ('none', 'unavailable') and not (v_retry and v_built_in = 'not_requested'))
+		-- A company rule or a built-in check (not asked for included) is the company's to
+		-- answer; a personal rule or a reviewer's own doubt is the member's the agent works
+		-- for.
+		if v_built_in not in ('none', 'unavailable')
+			or (v_retry and v_company_before)
 			or exists (select 1 from unnest(v_rules) as rule where (rule).scope = 'company' and (rule).outcome = 'ask_first')
 			or v_run.requested_by_user_id is null then
 			v_scope := 'owners_admins';
