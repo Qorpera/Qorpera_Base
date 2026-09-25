@@ -3,7 +3,7 @@ import {
 	type CloudCompanyPathControl,
 	type CloudCompanyPathRpc,
 } from "./cloud-company-path-gateway.ts";
-import { CloudCompanyPathRpcRefusal } from "./cloud-company-path-refusal.ts";
+import { CloudCompanyPathRpcPrecondition, CloudCompanyPathRpcRefusal } from "./cloud-company-path-refusal.ts";
 import { cloudToolRequest } from "./cloud-native-tool-authority.ts";
 import { CloudRuntimeDiagnosticError } from "./cloud-runtime-observability.ts";
 
@@ -154,21 +154,21 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 					throw new CloudRuntimeDiagnosticError("invalid_response", "Company File authority unavailable");
 				}
 				if (!response.ok) {
-					if (
-						response.status === 403 &&
-						value &&
+					// A complete PostgREST error body with exactly this SQLSTATE.
+					const postgrestError = (code: string): boolean =>
+						!!value &&
 						typeof value === "object" &&
 						!Array.isArray(value) &&
 						Object.keys(value).sort().join() === "code,details,hint,message" &&
-						(value as Record<string, unknown>).code === "42501" &&
+						(value as Record<string, unknown>).code === code &&
 						typeof (value as Record<string, unknown>).message === "string" &&
 						["details", "hint"].every(
 							(key) =>
 								(value as Record<string, unknown>)[key] === null ||
 								typeof (value as Record<string, unknown>)[key] === "string",
-						)
-					)
-						throw new CloudCompanyPathRpcRefusal();
+						);
+					if (response.status === 403 && postgrestError("42501")) throw new CloudCompanyPathRpcRefusal();
+					if (response.status === 412 && postgrestError("PT412")) throw new CloudCompanyPathRpcPrecondition();
 					if (
 						response.status === 409 &&
 						value &&

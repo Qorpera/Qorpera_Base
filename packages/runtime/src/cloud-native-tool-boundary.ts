@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import type { JsonValue } from "@qorpera/contracts";
 import type { CompanyComputerScreenshotAsset } from "./cloud-company-computer-screenshots.ts";
-import { CloudCompanyPathToolRefusal } from "./cloud-company-path-refusal.ts";
+import { CloudCompanyPathToolRefusal, CloudCompanyPathVersionChanged } from "./cloud-company-path-refusal.ts";
 import type { CloudNativeCaptureImages } from "./cloud-native-capture-images.ts";
 import type { CloudNativeToolIdentity } from "./cloud-native-tool-authority.ts";
 import {
@@ -22,6 +22,10 @@ export const CLOUD_TOOL_RESULT_INSTRUCTIONS =
 	"A denied, failed, cut-off or unconfirmed result grants nothing new; read missing pages with the offered read tool. " +
 	"An action whose result you did not see may already have happened: retry it only as its tool describes, with the same operation key and arguments, never under a new key or by another route. " +
 	"An action that completed without showing its response still completed. After a safety block, a genuinely safer way to the same legitimate goal is fine; rewording the blocked action, or reaching a denied result by another route, is not.";
+
+/** Fixed wording for a definite stale-version refusal of a Company File mutation. */
+const COMPANY_FILE_VERSION_CHANGED =
+	"COMPANY_FILE_VERSION_CHANGED: nothing was written; the path changed since your version. Read it again and make the change on its current version.";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const TOOL_NAME = /^[a-z][a-z0-9_]{0,63}$/;
@@ -413,6 +417,7 @@ export class CloudNativeToolBoundary {
 					TOOL_BUDGET_EXHAUSTED: "budget_exhausted",
 					AUTHORITY_UNAVAILABLE: "authority_unavailable",
 					COMPANY_FILE_ACCESS_DENIED: "authority_unavailable",
+					COMPANY_FILE_VERSION_CHANGED: "stale_version",
 				} as const;
 				observation?.finish(envelope.status, {
 					errorCategory:
@@ -578,6 +583,17 @@ export class CloudNativeToolBoundary {
 			) {
 				observation?.finish("denied", { errorCategory: "authority_unavailable" });
 				return this.#result(callId, tool, digest, "denied", { kind: "text", value: "COMPANY_FILE_ACCESS_DENIED" });
+			}
+			// Contract 5.2: a definite stale version is a typed result, never an unknown outcome.
+			// These tools are one gateway mutation each, so it proves the call changed nothing.
+			if (
+				error instanceof CloudCompanyPathVersionChanged &&
+				!this.#signal.aborted &&
+				tool.source === "company_file" &&
+				["company_write", "company_mkdir", "company_delete"].includes(tool.name)
+			) {
+				observation?.finish("denied", { errorCategory: "stale_version" });
+				return this.#result(callId, tool, digest, "denied", { kind: "text", value: COMPANY_FILE_VERSION_CHANGED });
 			}
 			observation?.finish("unconfirmed", { errorCategory: cloudRuntimeErrorCategory(error, this.#signal) });
 			// A thrown adapter error may follow a completed effect. Never echo it or automatically rerun the call.
