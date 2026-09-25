@@ -1,6 +1,6 @@
 # Qorpera Runtime Status
 
-**As of:** 2026-09-25 04:30 UTC. Master `0e1ef1238`. Live runtime bundle **v106**.
+**As of:** 2026-09-25 04:10 UTC. Master `0e1ef1238`. Live runtime bundle **v106**.
 
 This file tracks the current status of [the runtime contract](QORPERA-RUNTIME-CONTRACT.md). It lists the requirements in force today for Orders 0–10 and the launch gate. For each requirement it links whatever evidence exists. The contract is still the source of the requirements. Its dated amendments override older text in it. This file changes no requirement and edits no historical record. Where a record is out of date, it is listed in [Out-of-date statements](#out-of-date-statements-in-historical-records) and left unchanged.
 
@@ -24,7 +24,7 @@ Cell vocabulary:
 - **withdrawn**: removed by a dated amendment or founder decision. Not a gap.
 - **—**: the stage does not apply, or nothing is built yet to prove.
 - A real-node cell reading "not established" beside deployed evidence means no separate node-tier record exists. Deployed runs themselves run on the real nodes.
-- `RESULTS <id>`: a row of `deploy/first-node/RUNTIME-PROOF-RESULTS.md` on branch `fable/runtime-proof-journeys` (tip `2149dc148`). Its "node tier" runs happen in test company A1, with member posts driven without the web client (REG R1160). They count here as real-node proof, not deployed acceptance.
+- `RESULTS <id>`: a row of `deploy/first-node/RUNTIME-PROOF-RESULTS.md` on branch `fable/runtime-proof-journeys` (tip `2149dc148`). Its "node tier" runs happen in test company A1, with member posts driven without the web client (REG R1160). They count here as real-node proof, not deployed acceptance. The exception is observed live events such as D09 (company Qorpera), which this file places in the deployed column.
 
 Evidence references:
 
@@ -227,14 +227,14 @@ Governing text: §13, §9.1, the Order 5 row.
 
 | Capability | Source | Component tests | Real-node proof | Deployed acceptance |
 | --- | --- | --- | --- | --- |
-| Dispatch, report, parent revival, durable todos | [#157] (v65, `a6e6616c8`); [#273] (v95) | SQL [385](supabase/tests/385_runtime_workers_todos.test.sql): [CI][ci-db]. TS `cloud-worker-tools`: local only. Live-model screen 9/9 with synthetic effects ([Step 5 record](deploy/first-node/RUNTIME-STEP-5-WORKERS-TODOS.md) lines 110–125) | RESULTS J10 at v106, test company A1. Run 1 FAIL: the parent answered a quick question while its two workers ran, both workers reported, but the batch revival `fe35148d` failed before any model turn when context authority checks timed out under concurrent load (finding P-J10-1). Run 2, alone, PASS: revival `d8746ab8` read both results and sent one combined answer. RESULTS J05 baseline FAIL: each `manage_todo` took 5–19 s, then authority checks timed out and run `05b0d505` failed (REG R1161–1163) | v67, test company on the exec host: first live worker `0a1308d5` (644 tool observations). Parent revival `f6129301` was lost (REG R270, R272). **Failure at v106 in company Qorpera:** after the 2026-09-25 database outage, the completion revival `5918e47b` (run `096ea4c6`) of coding worker `2d00aefd` failed for good at 01:30:37Z. The result reached the member only after they asked again. It was never retried and no member was told. This is finding P-D09-1 of the proof runs (REG R1142). An in-house worker completing in a real company, restart survival, and the v95 counts: **not established** |
+| Dispatch, report, parent revival, durable todos | [#157] (v65, `a6e6616c8`); [#273] (v95) | SQL [385](supabase/tests/385_runtime_workers_todos.test.sql): [CI][ci-db]. TS `cloud-worker-tools`: local only. Live-model screen 9/9 with synthetic effects ([Step 5 record](deploy/first-node/RUNTIME-STEP-5-WORKERS-TODOS.md) lines 110–125) | RESULTS J10 at v106, test company A1. Run 1 FAIL: a quick question was answered while the parent's first run was still running (the parent stayed interruptible), both workers reported, but the batch revival `fe35148d` failed before any model turn when context authority checks timed out under concurrent load (finding P-J10-1). Run 2, alone, PASS: revival `d8746ab8` read both results and sent one combined answer. RESULTS J05 baseline FAIL: each `manage_todo` took 5–19 s, then authority checks timed out and run `05b0d505` failed (REG R1161–1163) | v67, test company on the exec host: first live worker `0a1308d5` (644 tool observations). Parent revival `f6129301` was lost (REG R270, R272). **Failure at v106 in company Qorpera:** after the 2026-09-25 database outage, the completion revival `5918e47b` (run `096ea4c6`) of coding worker `2d00aefd` failed for good at 01:30:37Z. The result reached the member only after they asked again. It was never retried and no member was told. This is finding P-D09-1 of the proof runs (REG R1142). An in-house worker completing in a real company, restart survival, and the v95 counts: **not established** |
 | Open work in composed context (§9.1) | Not built ([Step 5 record](deploy/first-node/RUNTIME-STEP-5-WORKERS-TODOS.md) lines 156–158) | — | — | — |
 
 Open:
 - REVIEW finding 2 (a late todo publication overwrites a newer one) → [#303] (v111).
 - Listing pages for todos (32) and workers (16) → [#308] (v112).
 - A revival lost to a failed dispatch is never retried and nobody is told. This happened after the database outage (P-D09-1, REG R1142) and under concurrent load (P-J10-1, REG R1163). No fix is assigned yet. It also bears on Order 9's completion listener and on §23: an unavailable path must show as unavailable.
-- `manage_todo` takes 5–19 s per change because every change publishes a Company File document, and it slowed authority checks for other runs (RESULTS J05, P-J10-1).
+- `manage_todo` takes 5–19 s per change because every change publishes a Company File document, and it coincided with slower authority checks for other runs. Node logs were requested to find the cause (RESULTS J05, P-J10-1, REG R1163).
 
 ### Order 6: agent memory (and skills)
 
@@ -313,7 +313,7 @@ Governing text: §13.1, the Order 9 row, [coding worker README](deploy/coding-wo
 | Capability | Source | Component tests | Real-node proof | Deployed acceptance |
 | --- | --- | --- | --- | --- |
 | Coding sessions, executor, draft PR publication | [#211] (v71), [#218] (v72), [#241] (v87), [#244] (v88), [#259] (v93), [#290] (v103), [#292] (v106) | SQL [395](supabase/tests/395_runtime_coding_sessions.test.sql), [396](supabase/tests/396_runtime_coding_executor.test.sql), 399: [CI][ci-db]. TS `packages/runtime/test/cloud-coding-*`, `cloud-native-coding-runtime`, and 11 of 12 runner-orchestrator `coding-*`: [CI][ci-lxd] | Node 2 coding infrastructure (REG R325, R332–333). Pre-merge proof#2 (REG R667–720). Read-only session roots on node 2 ([command guest](deploy/coding-worker/COMMAND-GUEST.md) lines 88–92; REG R1056) | proof#3 at v95 (REG R871); proof#4 at v97 (REG R916–919); proof#5–7 at v103 (REG R1046–1049); proof#8 at v106, and a write to an earlier output.log was refused (REG R1083); proof#10 on a 4/8 machine, 2026-09-25 02:00Z (REG R1114) |
-| Follow-up continuity (question, answer, retry after executor loss) | Defects on master (REVIEW findings 4 and 8) | No two-turn test | — | **not established**. Fix: v113, no PR yet |
+| Follow-up continuity (question, answer, retry after executor loss) | Defects on master (REVIEW findings 4 and 8) | No two-turn test | — | **not established**. Fix: [#305] (v113) |
 | Member coding machine: sleep, wake, removal, proven release | [#284] (v101), [#290] (v103) | SQL [600](supabase/tests/600_runtime_coding_member_machines.test.sql): [CI][ci-db] | not established | v101: sleep and removal passed, commands failed (REG R1008–1015). v103: sleep, wake and removal seen (REG R1046–1049). Old machine removed when the policy moved at the v106 cut (REG R1083) |
 | Installed acceptance of ask, follow-up, cancel and revocation | — | — | — | **not established** ([README](deploy/coding-worker/README.md) lines 104–108) |
 | Completion reaching the parent | [#211], [#218] | SQL 395, 396: [CI][ci-db] | not established | At v106 a coding worker's completion revival was lost after the database outage and never retried (P-D09-1, REG R1142; see Order 5) |
@@ -403,7 +403,7 @@ All of this is based on master `31ebda4ad` or later. None of it is merged or liv
 | v115 | Auto-review rules: Ask first / Allow automatically, with a silent review before every acting step (REG R1138, R1140) | Rule behavior in Qorpera | none yet | New requirement; needs a contract amendment |
 | v116 | Drive uploads use a multipart boundary of at most 70 characters (REG R1145, confirmed R1165) | Shorten the Drive upload MIME boundary | [#310] (draft) | Order 7 |
 | — | Deployment manifest: exact live identities per component | Create one current deployment manifest | [#307] (draft) | "What is live now" |
-| — | Proof runs: journeys J01–J19, stress-test replays R01–R06 and degraded-operation drills D01–D10 (REG R1141–1144) | Run the runtime proof runs on the real nodes | branch `fable/runtime-proof-journeys` @ `c1d17e95e` (`deploy/first-node/RUNTIME-PROOF-JOURNEYS.md`, `RUNTIME-PROOF-RESULTS.md`) | Real-node proof and deployed acceptance columns |
+| — | Proof runs: journeys J01–J19, stress-test replays R01–R06 and degraded-operation drills D01–D10 (REG R1141–1144) | Run the runtime proof runs on the real nodes | branch `fable/runtime-proof-journeys` @ `2149dc148` (`deploy/first-node/RUNTIME-PROOF-JOURNEYS.md`, `RUNTIME-PROOF-RESULTS.md`) | Real-node proof and deployed acceptance columns |
 
 Proof journeys by Order (from the proof-runs session). One journey can cover several Orders:
 - O0: J04 J06 J07 J08 J13 D09
