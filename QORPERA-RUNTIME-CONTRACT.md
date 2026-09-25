@@ -1436,20 +1436,21 @@ never scheduled anything, whose kickoff is still waiting, or a new trigger id,
 stays fresh and keeps its kickoff. A restart position is not a run time and is
 not shown as the next run.
 
-2026-09-25 amendment: an agent's changed timing or resume restarts the
-schedule. An agent's save keeps the schedule position only when the timing is
-the same (the trigger unchanged apart from its reply policy and the order of
-its days or months) and the routine is active or its next slot is still ahead.
-Changed timing restarts the schedule at the save: nothing runs at once, the
-slots of the new cadence before the save are not caught up, and the new
-cadence applies from the save instead of after the old next slot. Any switch
-of a routine back on after its next slot passed restarts it the same way,
-with or without a new version (the agent's resume, also after the
-authorization-failure suspension, or a save), so the slots it missed while it
-was off are skipped; before that slot it keeps its position. A routine that
-never ran keeps its kickoff. A restart position is not a run time: the next
-run shown to agents and members is empty until the scheduler admits the first
-run after it.
+2026-09-25 amendment: an agent's changed timing restarts the schedule. An
+agent's save decides each new version's schedule position by the same rule as
+a member's save (above): the same timing keeps the position while the routine
+is active or its next slot is still ahead, and a run still waiting for its
+start is offered again; changed timing restarts the schedule at the save, so
+nothing runs at once, the slots of the new cadence before the save are not
+caught up, and the new cadence applies from the save instead of after the old
+next slot; a save that switches a routine back on after its next slot passed
+restarts it the same way; a routine that never ran keeps its kickoff. An
+agent's resume, also after the authorization-failure suspension, switches a
+routine back on as described above. For both saves, the start of a wall-clock
+trigger that the routine has already reached is not part of its timing: it
+only holds back the first run, so saving the routine again without it changes
+nothing. An interval trigger's start anchors its grid and stays part of its
+timing.
 
 ## 17. Model and reasoning policy
 

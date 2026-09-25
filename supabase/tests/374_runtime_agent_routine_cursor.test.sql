@@ -3,13 +3,18 @@
 -- carried the previous cursor forward even when the agent changed the timing,
 -- and the agent's resume only switched the status back. The scheduler then
 -- ignored a new cadence until the old next slot came round and replayed every
--- missed slot, one run each. The agent path now follows the member path (#317):
--- the same timing keeps the exact position; changed timing, or switching a
--- routine back on after its next slot passed, restarts the schedule at the save
--- or the resume; a never-run cursor stays fresh and keeps its kickoff. The
--- same-timing, never-ran and member's-trigger groups pass on the previous code
--- too (it always carried the position): they guard the carry that stays. Every
--- other group fails on it.
+-- missed slot, one run each. The agent path now uses the member path's rule
+-- (#317, qorpera_routine_version_schedule_position, and its resume trigger): the
+-- same timing keeps the exact position; changed timing, or switching a routine
+-- back on after its next slot passed, restarts the schedule at the save or the
+-- resume; a never-run cursor stays fresh and keeps its kickoff. A wall-clock
+-- trigger's start the routine has passed is not timing, on both paths.
+-- On #314 + #317 without this migration, the weekly-to-daily, slower, paused
+-- save, started and member-start groups fail (the last two also without only
+-- the start rule). The resume, suspension and ended-watch groups pass there
+-- too, because #317's trigger covers a switch back on at the same version; they
+-- hold it on the agent path. The same-timing, never-ran, member's-trigger and
+-- leave-alone groups guard the carry that stays.
 select pg_temp.path_claims('service_role');
 select pg_temp.wake_public_send(current_setting('qorpera_test.wake_binding')::jsonb,'progress','agent-cursor-ack');
 
@@ -322,6 +327,95 @@ begin
 	v_cursor := pg_temp.agent_cursor('shared');
 	perform pg_temp.wake_assert(v_cursor.routine_version = 3 and v_cursor.last_scheduled_for = v_ran
 		and v_cursor.next_due_at = v_ran + interval '7 days','The agent''s same timing keeps its position beside a member''s trigger');
+end $$;
+
+-- A wall-clock trigger's start only holds back its first run. An agent that set a
+-- routine up with firstRunAt and saves it again without one, once the routine has run
+-- past that start, keeps the exact position. A new start still ahead is a change. An
+-- interval trigger's start anchors its grid, so a change to it restarts the schedule.
+do $$
+declare v_ran timestamptz := date_trunc('milliseconds',statement_timestamp() - interval '3 days');
+	v_start text := to_char((statement_timestamp() - interval '10 days') at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"');
+	v_later text := to_char((statement_timestamp() + interval '5 days') at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"');
+	v_weekly jsonb := '{"kind":"schedule","intervalMinutes":1440,"weekdays":["monday"],"localTime":"08:00","timeZone":"Europe/Copenhagen"}';
+	v_cursor public.qorpera_cloud_routine_schedule_cursors;
+begin
+	perform pg_temp.agent_save('started',v_weekly || jsonb_build_object('startAt',v_start));
+	perform pg_temp.agent_ran('started',v_ran,v_ran + interval '7 days');
+	perform pg_temp.agent_save('started',v_weekly,'Write the brief for the board.');
+	v_cursor := pg_temp.agent_cursor('started');
+	perform pg_temp.wake_assert(v_cursor.routine_version = 2 and v_cursor.last_scheduled_for = v_ran
+		and v_cursor.next_due_at = v_ran + interval '7 days','A wall-clock start already passed is not timing');
+	perform pg_temp.agent_save('started',v_weekly || jsonb_build_object('startAt',v_later),'Write the brief for the board.');
+	v_cursor := pg_temp.agent_cursor('started');
+	perform pg_temp.wake_assert(v_cursor.routine_version = 3
+		and v_cursor.last_scheduled_for = date_trunc('milliseconds',pg_temp.agent_effective_at('started'))
+		and v_cursor.next_due_at = v_cursor.last_scheduled_for + interval '1 millisecond','A start still ahead is timing');
+
+	perform pg_temp.agent_save('anchored',jsonb_build_object('kind','schedule','intervalMinutes',60,'startAt',v_start));
+	perform pg_temp.agent_ran('anchored',v_ran,v_ran + interval '1 hour');
+	perform pg_temp.agent_save('anchored','{"kind":"schedule","intervalMinutes":60}','Write the brief for the board.');
+	v_cursor := pg_temp.agent_cursor('anchored');
+	perform pg_temp.wake_assert(v_cursor.last_scheduled_for = date_trunc('milliseconds',pg_temp.agent_effective_at('anchored'))
+		and v_cursor.next_due_at = v_cursor.last_scheduled_for + interval '1 millisecond',
+		'An interval trigger''s start anchors its grid, so dropping it restarts the schedule');
+end $$;
+
+-- A member's save follows the same rule (both saves use qorpera_routine_version_schedule_position).
+do $$
+declare v_client uuid := extensions.gen_random_uuid(); v_claims text := current_setting('request.jwt.claims');
+	v_ran timestamptz := date_trunc('milliseconds',statement_timestamp() - interval '3 days');
+	v_start text := to_char((statement_timestamp() - interval '10 days') at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"');
+	v_weekly jsonb := '{"id":"brief","kind":"schedule","intervalMinutes":1440,"weekdays":["monday"],"localTime":"08:00",
+		"timeZone":"Europe/Copenhagen"}';
+	v_routine uuid; v_ran_id uuid; v_cursor public.qorpera_cloud_routine_schedule_cursors;
+begin
+	perform pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001');
+	v_routine := (public.qorpera_upsert_cloud_routine('30000000-0000-4000-8000-000000000020',v_client,extensions.gen_random_uuid(),
+		'30000000-0000-4000-8000-000000000031','Monday brief','Write the brief.',jsonb_build_array(v_weekly || jsonb_build_object('startAt',v_start)),
+		'low',(current_setting('qorpera_test.wake_sponsor')::jsonb ->> 'binding_id')::uuid,1,null,'agent_turn','agent_turn',true,
+		'automatic',null,'{}') ->> 'routine_id')::uuid;
+	perform set_config('request.jwt.claims',v_claims,true);
+	select * into strict v_cursor from public.qorpera_cloud_routine_schedule_cursors where routine_id = v_routine and routine_version = 1;
+	-- The Monday run, recorded and finished (a run still waiting would be offered again).
+	v_ran_id := (public.qorpera_enqueue_routine_wake(v_routine,1,extensions.gen_random_uuid(),'member-start:' || v_routine,'brief',
+		v_ran,null,v_ran + interval '7 days','{}') ->> 'occurrence_id')::uuid;
+	update public.qorpera_wake_occurrences set status = 'cancelled', blocked_reason = 'Fixture: this slot ran',
+		finished_at = statement_timestamp() where id = v_ran_id;
+	perform pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001');
+	perform public.qorpera_upsert_cloud_routine('30000000-0000-4000-8000-000000000020',v_client,extensions.gen_random_uuid(),
+		'30000000-0000-4000-8000-000000000031','Monday brief','Write the brief.',jsonb_build_array(v_weekly),
+		'low',(current_setting('qorpera_test.wake_sponsor')::jsonb ->> 'binding_id')::uuid,1,null,'agent_turn','agent_turn',true,
+		'automatic',null,'{}');
+	perform set_config('request.jwt.claims',v_claims,true);
+	select * into strict v_cursor from public.qorpera_cloud_routine_schedule_cursors where routine_id = v_routine and routine_version = 2;
+	perform pg_temp.wake_assert(v_cursor.last_scheduled_for = v_ran and v_cursor.next_due_at = v_ran + interval '7 days',
+		'A member''s save without a start already passed keeps the exact position too');
+end $$;
+
+-- What a switch back on must leave alone: an unchanged save of a routine that is already
+-- active keeps even an overdue position (that slot is owed), and pausing and resuming a
+-- routine that never ran keeps its fresh cursor (and the kickoff it owes).
+do $$
+declare v_ran timestamptz := date_trunc('milliseconds',statement_timestamp() - interval '1 day');
+	v_overdue timestamptz := date_trunc('milliseconds',statement_timestamp() - interval '2 hours');
+	v_trigger jsonb := '{"kind":"schedule","intervalMinutes":1440,"weekdays":["monday"],"localTime":"08:00","timeZone":"Europe/Copenhagen"}';
+	v_cursor public.qorpera_cloud_routine_schedule_cursors;
+begin
+	perform pg_temp.agent_save('active-unchanged',v_trigger);
+	perform pg_temp.agent_ran('active-unchanged',v_ran,v_overdue);
+	perform pg_temp.wake_assert(pg_temp.agent_save('active-unchanged',v_trigger) #>> '{routine,version}' = '1',
+		'Fixture: an unchanged save of an active routine keeps the version');
+	v_cursor := pg_temp.agent_cursor('active-unchanged');
+	perform pg_temp.wake_assert(v_cursor.last_scheduled_for = v_ran and v_cursor.next_due_at = v_overdue,
+		'An unchanged save of an active routine keeps its overdue position');
+
+	perform pg_temp.agent_save('fresh-resume',v_trigger);
+	perform pg_temp.agent_routine('{"action":"pause","routineKey":"fresh-resume"}');
+	perform pg_temp.agent_routine('{"action":"resume","routineKey":"fresh-resume"}');
+	v_cursor := pg_temp.agent_cursor('fresh-resume');
+	perform pg_temp.wake_assert((pg_temp.agent_row('fresh-resume')).status = 'active' and v_cursor.last_scheduled_for is null
+		and v_cursor.next_due_at = '-infinity'::timestamptz,'A never-run routine resumed keeps its fresh cursor');
 end $$;
 
 rollback;
