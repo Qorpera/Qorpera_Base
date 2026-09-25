@@ -50,7 +50,7 @@ account at all.
 
 | Rule | Enforcement |
 | --- | --- |
-| Expiry, finite watches | `expires_at`, `max_occurrences`; status `expired`. The control-plane tick sweeps expiry; the occurrence that reaches the limit expires the routine; a later slot is refused. One status stops both trigger types, because the reconciler lists active routines only and a listener cursor is active only while its routine is. |
+| Expiry, finite watches | `expires_at`, `max_occurrences`; status `expired`. The control-plane tick sweeps expiry; the occurrence that reaches the limit expires the routine; a later slot is refused. One status stops both trigger types, because the reconciler lists active routines only and a listener cursor is active only while its routine is. Expiry closes future scheduling only (2026-09-25, `20260925107000`): an occurrence admitted before it still runs and completes, and an admitted run keeps its routine version when the routine is saved again (test `371`). |
 | Quiet hours | Per routine `quietHours {start, end, timeZone}`, including windows across midnight. An occurrence admitted inside the window keeps its identity and waits (`not_before`) for the window's end. |
 | Weekday default | A wall-clock routine runs Monday to Friday unless the agent names other days. |
 | Authorization suspension | Three occurrences in a row cancelled because the account can no longer run unattended pause the routine (`authorization_failed`) and create one durable notification for the account owner. A materialized occurrence resets the count. |

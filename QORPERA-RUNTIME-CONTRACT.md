@@ -1345,6 +1345,15 @@ admits the same occurrence. Agents are told to start a new responsibility on a
 dense cadence and loosen it under the same routine key once the work is
 understood.
 
+2026-09-25 amendment: expiry and edits close future scheduling only. A finite
+watch's last permitted occurrence expires the routine when it is admitted, and
+that occurrence still runs and completes; so does an occurrence admitted
+before a time expiry, including one that quiet hours hold past it. A new
+version applies to the next run: an admitted run keeps the version it started
+with (a routine run may save its own routine), while a queued occurrence of an
+older version is not run. A pause or a removal still stops pending work, and a
+routine that expires while paused does not run its pending occurrence.
+
 ## 17. Model and reasoning policy
 
 An attended agent thread defaults to low reasoning effort. The resolved
