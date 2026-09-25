@@ -19,6 +19,7 @@ export function prepareDeployment({ configPath, configJson, release = false, ser
 	return {
 		config,
 		headers,
+		notFoundPages: longCachedDirectories(headers).map(directory => `${directory}/404.html`),
 		define: {
 			__QORPERA_WEB_CLOUD_CONFIG__: JSON.stringify(config),
 		},
@@ -31,4 +32,36 @@ export function prepareDeployment({ configPath, configJson, release = false, ser
 			headersSha256: createHash("sha256").update(headers).digest("hex"),
 		},
 	};
+}
+
+// Pages answers a missing file with the app's index.html (200, text/html) and
+// gives it the path's _headers, so a request that reached an edge before a new
+// file did was kept as HTML for the rule's whole max-age (2026-09-25: the
+// stylesheet under /build/*, an unstyled app). With a 404.html in the file's
+// directory, Pages answers 404 instead and replaces any Cache-Control with
+// no-store. Returns every directory a rule lets caches keep, for that page.
+// Pages leaves other caching headers on a 404, and the edge obeys
+// CDN-Cache-Control over Cache-Control, so those are refused outright.
+export function longCachedDirectories(headers) {
+	const directories = new Set();
+	let rule;
+	// Lines are sorted as Pages' own parser does (workers-shared parseHeaders.ts): indentation means nothing.
+	for (const line of headers.split("\n").map(text => text.trim())) {
+		if (line === "" || line.startsWith("#")) continue;
+		if (/^(?:\S+:\/\/|\/)/.test(line)) {
+			rule = line;
+			continue;
+		}
+		if (!line.includes(":")) continue;
+		const name = line.slice(0, line.indexOf(":")).trim();
+		const value = line.slice(line.indexOf(":") + 1);
+		if (/^(?:(?:cloudflare-)?cdn-cache-control|surrogate-control|expires)$/i.test(name))
+			throw new Error(`Pages keeps ${name} on a 404, so set Cache-Control instead: ${rule}`);
+		if (!/^cache-control$/i.test(name) || !/\b(?:max-age|s-maxage)="?0*[1-9]/i.test(value)) continue;
+		const directory = rule?.match(/^\/((?:[\w.-]+\/)*[\w.-]+)\/\*$/)?.[1];
+		if (!directory || directory.split("/").some(part => /^\.+$/.test(part)))
+			throw new Error(`A long-cached header rule must cover one directory, so a 404.html can guard it: ${rule}`);
+		directories.add(directory);
+	}
+	return [...directories];
 }
