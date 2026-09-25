@@ -10,6 +10,16 @@ describe("why a run stopped, in the member's words", () => {
 		],
 		["Native provider bridge request failed (422)", "failed", /one of its steps was refused/],
 		[
+			"Native provider bridge request failed (422) [code=NATIVE_CREDENTIAL_SEALING:STORAGE_BUDGET]; durable attempt output requires review",
+			"failed",
+			/one of its steps was refused/,
+		],
+		[
+			"Native provider bridge request failed (422) [code=NATIVE_WAKE_ENVELOPE:TIMEOUT]",
+			"failed",
+			/one of its steps was refused/,
+		],
+		[
 			"Runner lease expired before durable completion; durable attempt output requires review",
 			"failed",
 			/took too long/,
@@ -38,6 +48,8 @@ describe("whether a stopped run is worth trying again as it is", () => {
 		["You have hit your usage limit. Try again later.", "failed", false],
 		["Provider credential is invalid", "failed", false],
 		["Native provider bridge request failed (422)", "failed", false],
+		["Native provider bridge request failed (422) [code=NATIVE_WAKE_ENVELOPE:TIMEOUT]", "failed", false],
+		["Native provider bridge request failed (422) [code=NATIVE_CREDENTIAL_DOWNLOAD]", "failed", false],
 		["something nobody has seen before", "failed", false],
 	] as const)("%s → %s", (error, status, expected) => {
 		expect(runFailureInterrupted(error, status)).toBe(expected);

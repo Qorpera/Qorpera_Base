@@ -12,6 +12,7 @@ import { CloudNativeToolRun } from "../src/cloud-native-tool-authority.ts";
 import { type CloudToolContext, cloudToolJsonText } from "../src/cloud-native-tool-boundary.ts";
 import { CloudNativeToolOperations } from "../src/cloud-native-tool-operations.ts";
 import { CLOUD_RUNTIME_NATIVE_BINARY_SHA256 } from "../src/cloud-runtime-bundle.generated.ts";
+import { CloudRuntimeObservability, type CloudRuntimeObservation } from "../src/cloud-runtime-observability.ts";
 import type { CloudWakeEnvelope } from "../src/cloud-wake-bus.ts";
 import { nativeToolAuthorityFixture } from "./fixtures/native-tool-authority-fixture.ts";
 
@@ -218,15 +219,31 @@ describe("the coding composition of a native turn", () => {
 					summary: "Changes committed; checks passed",
 					headSha: "b".repeat(40),
 				};
-				expect(await finish.execute(finish.parseArguments(input), f.context)).toEqual({
+				// The turn check before the submission is its own child observation.
+				const rows: CloudRuntimeObservation[] = [];
+				const observability = new CloudRuntimeObservability({
+					assignmentId: f.binding.assignmentId,
+					publish: async (row) => {
+						rows.push(structuredClone(row));
+					},
+				});
+				const span = observability.start("coding_finish");
+				expect(await finish.execute(finish.parseArguments(input), { ...f.context, observation: span })).toEqual({
 					kind: "text",
 					value: cloudToolJsonText(f.coding.submission),
 				});
+				span.finish("succeeded");
+				await observability.close();
+				expect(
+					rows
+						.filter((row) => row.parentAttemptId === span.attemptId && row.phase === "finish")
+						.map((row) => [row.operation, row.status]),
+				).toEqual([["context_authority", "succeeded"]]);
 				await adapters.assertContext(options.signal);
 				// After the submission nothing else may run in the VM.
 				await expect(
 					adapters.tools[0].execute({ operationKey: "later", command: "true", timeoutMs: 1000 }, f.context),
-				).rejects.toThrow("already submitted");
+				).rejects.toThrow("CODING_COMMAND_AFTER_SUBMISSION");
 				return { providerSessionId: "native-thread", toolCalls: 1, codexVersion: "pinned", fencedRequests: 2 };
 			} finally {
 				run.close();
@@ -344,27 +361,91 @@ describe("the coding composition of a native turn", () => {
 			payload: { schema: "qorpera.worker-dispatch/v1", species: "in-house" },
 		} as unknown as CloudWakeEnvelope;
 		await expect(f.runtime.execute(f.request, "/private", f.context.signal, { ...f.turn, wake })).rejects.toThrow(
-			"requires a coding worker-dispatch wake",
+			/^CODING_TURN_WAKE_DIFFERS$/,
 		);
 		expect(runCloudNativeRunToolSession).not.toHaveBeenCalled();
 	});
 	it("requires no conversation recipient on the admitted native run", async () => {
 		const f = fixture();
 		f.authority.identity.sessionId = randomUUID();
-		await expect(f.runtime.execute(f.request, "/private", f.context.signal, f.turn)).rejects.toThrow("scope differs");
+		await expect(f.runtime.execute(f.request, "/private", f.context.signal, f.turn)).rejects.toThrow(
+			/^CODING_TURN_SCOPE_DIFFERS$/,
+		);
 		expect(runCloudNativeRunToolSession).not.toHaveBeenCalled();
 	});
 	it("refuses another worker's scope before launching the harness", async () => {
 		const f = fixture();
 		f.coding.workerId = randomUUID();
-		await expect(f.runtime.execute(f.request, "/private", f.context.signal, f.turn)).rejects.toThrow("scope differs");
+		await expect(f.runtime.execute(f.request, "/private", f.context.signal, f.turn)).rejects.toThrow(
+			/^CODING_TURN_SCOPE_DIFFERS$/,
+		);
 		expect(runCloudNativeRunToolSession).not.toHaveBeenCalled();
+	});
+	it("names a timed-out turn check as a timeout, not a refusal, and submits nothing", async () => {
+		const f = fixture();
+		const rows: CloudRuntimeObservation[] = [];
+		vi.mocked(runCloudNativeRunToolSession).mockImplementation(async (options) => {
+			const run = await CloudNativeToolRun.open(f.binding, f.control, options.signal);
+			try {
+				const adapters = await options.tools(
+					f.authority.identity,
+					new CloudNativeToolOperations(run, f.control),
+					run,
+				);
+				await options.beginExecution(
+					{
+						type: "namespace",
+						name: "qorpera",
+						tools: adapters.tools.map((tool) => ({
+							type: "function",
+							name: tool.name,
+							description: tool.description,
+							inputSchema: tool.inputSchema,
+						})),
+					},
+					options.signal,
+				);
+				// The coding control's own request deadline (AbortSignal.timeout) ran out.
+				const original = f.call.getMockImplementation()!;
+				f.call.mockImplementation((method, args, signal) =>
+					method === "qorpera_authorize_coding_turn"
+						? Promise.reject(new DOMException("The operation was aborted due to timeout", "TimeoutError"))
+						: original(method, args, signal),
+				);
+				const observability = new CloudRuntimeObservability({
+					assignmentId: f.binding.assignmentId,
+					publish: async (row) => {
+						rows.push(structuredClone(row));
+					},
+				});
+				const span = observability.start("coding_finish");
+				const finish = adapters.tools[3];
+				const input = { operationKey: "done", summary: "Changes committed", headSha: "b".repeat(40) };
+				await expect(
+					finish.execute(finish.parseArguments(input), { ...f.context, observation: span }),
+				).rejects.toThrow();
+				span.finish("failed");
+				await observability.close();
+				expect(
+					rows
+						.filter((row) => row.parentAttemptId === span.attemptId && row.phase === "finish")
+						.map((row) => [row.operation, row.status, row.errorCategory]),
+				).toEqual([["context_authority", "unconfirmed", "timeout"]]);
+				throw new Error("session checked");
+			} finally {
+				run.close();
+			}
+		});
+		await expect(f.runtime.execute(f.request, "/private", f.context.signal, f.turn)).rejects.toThrow(
+			"session checked",
+		);
+		expect(f.call).not.toHaveBeenCalledWith("qorpera_submit_coding_turn", expect.anything(), expect.anything());
 	});
 	it("leaves an already-submitted turn to the executor instead of generating again", async () => {
 		const f = fixture();
 		f.coding.submission = { kind: "finish", headSha: "a".repeat(40) };
 		await expect(f.runtime.execute(f.request, "/private", f.context.signal, f.turn)).rejects.toThrow(
-			"already submitted",
+			/^CODING_TURN_ALREADY_SUBMITTED$/,
 		);
 		expect(runCloudNativeRunToolSession).not.toHaveBeenCalled();
 	});
@@ -377,7 +458,7 @@ describe("the coding composition of a native turn", () => {
 			fencedRequests: 1,
 		});
 		await expect(f.runtime.execute(f.request, "/private", f.context.signal, f.turn)).rejects.toThrow(
-			"without a submission",
+			/^CODING_TURN_ENDED_WITHOUT_SUBMISSION$/,
 		);
 	});
 });
