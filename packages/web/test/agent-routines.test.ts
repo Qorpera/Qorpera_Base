@@ -430,12 +430,14 @@ describe("a member edit of an agent's routine", () => {
 		// Kept as it is: the scheduler ignores a weekly start it has passed.
 		expect(past.p_triggers).toEqual([reached]);
 		const switched = await saveEdited(weekly, (form) => {
+			// Unchecked first: a hidden box no longer acts.
+			waiting(form).querySelector("input")!.checked = false;
 			const when = form.querySelector<HTMLSelectElement>('[aria-label="When it runs"]')!;
 			when.value = "interval";
 			when.dispatchEvent(new Event("change"));
 			expect(waiting(form).hidden).toBe(true);
 		});
-		// The weekly date does not become the interval's anchor.
+		// The weekly date does not become the interval's anchor, and the interval starts one interval from now.
 		expect(switched.p_triggers).toEqual([
 			{
 				id: "agent",
