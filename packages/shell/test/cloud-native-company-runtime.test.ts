@@ -289,6 +289,15 @@ async function fixture(mode = "company-runtime", httpPathControl = false, presen
 			return { schema: "qorpera.action-review-begin/v1", state: "approved", reviewId: randomUUID() };
 		}
 		if (method === "qorpera_read_native_wake") return structuredClone(mode === "company-worker" ? workerWake : wake);
+		if (method === "qorpera_describe_agent_open_work") {
+			if (mode === "company-worker") throw new Error("A worker keeps no todos");
+			return {
+				schema: "qorpera.agent-open-work/v1",
+				runId: f.binding.runId,
+				todos: { open: 40, blocked: 2 },
+				workers: { active: 5, blocked: 1 },
+			};
+		}
 		if (method === "qorpera_list_native_connector_tools") {
 			return mode === "company-secret" ? [structuredClone(connectorDescriptor)] : [];
 		}
@@ -744,6 +753,8 @@ it.each([
 			startupAssignment: [],
 		});
 		expect(Object.keys(prompt).at(-1)).toBe("hireOverlay");
+		// Open work is counted, not listed: the list stays behind manage_todo and manage_worker.
+		expect(prompt.openWork).toEqual({ todos: { open: 40, blocked: 2 }, workers: { active: 5, blocked: 1 } });
 		expect(prompt).not.toHaveProperty("jobSpecification");
 		expect(prompt.currentInputs[0].authorUserId).toBe(f.context.identity.requesterUserId);
 		expect(prompt.history[0].kind).toBe("historical_data");
@@ -976,6 +987,23 @@ it("raises one typed card for the member, appended before the final sentence, an
 	expect(JSON.stringify(f.observations)).not.toContain("digest");
 });
 
+it("finishes the turn for the longest card key ask_member accepts, and its retry replays both effects", async () => {
+	const f = await fixture("company-cards-long-key");
+	const result = await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+	const sends = f.control.sendMessage.mock.calls.map(([, input]) => input);
+	expect(sends.map((input) => input.phase)).toEqual(["final", "final"]);
+	// A bounded key derived from the card's key: the send accepts it and the retry reuses it.
+	const finalKey = sends[0]!.idempotencyKey;
+	expect(finalKey).toMatch(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/);
+	expect(sends[1]!.idempotencyKey).toBe(finalKey);
+	expect(result.delivery).toEqual({ messageCount: 1, finalMessageId: f.deliveries.get(finalKey)?.messageId });
+	expect(f.control.appendInteractionRequest).toHaveBeenCalledTimes(2);
+	const [first, second] = f.control.appendInteractionRequest.mock.calls.map(([, card]) => card.eventId);
+	expect(second).toBe(first);
+	const asks = f.observations.filter((row) => row.operation === "ask_member" && row.phase === "finish");
+	expect(asks.map((row) => row.status)).toEqual(["succeeded", "replayed"]);
+});
+
 it("tells the model the card shape and why a card was refused, so it can fix the card and retry", async () => {
 	const f = await fixture("company-cards-retry");
 	const result = await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
@@ -1063,8 +1091,24 @@ it("runs a background worker blank: reading tools and its report, no mouth, no c
 	]);
 	expect(evidence.threadParameters.developerInstructions).toContain("# This wake: you are a background worker");
 	expect(evidence.threadParameters.developerInstructions).toContain("# Before you stop\nCall report_work once");
+	// A worker keeps no todos: its prompt carries no open-work count, and the kernel is not asked for one.
+	expect(JSON.parse(evidence.turnParameters.input[0].text)).not.toHaveProperty("openWork");
+	expect(f.pathCall.mock.calls.map(([method]) => method)).not.toContain("qorpera_describe_agent_open_work");
 	expect(evidence.threadParameters.developerInstructions).not.toContain("# Standing work");
 	expect(evidence.threadParameters.developerInstructions).not.toContain("# This wake: a message from a coworker");
+});
+
+it("starts the run without the open-work count when the kernel cannot give it", async () => {
+	const f = await fixture("company-runtime");
+	const original = f.pathCall.getMockImplementation()!;
+	f.pathCall.mockImplementation(async (method, args, signal) => {
+		if (method === "qorpera_describe_agent_open_work") throw new Error("Open work unavailable");
+		return original(method, args, signal);
+	});
+	const result = await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+	expect(result.delivery.finalMessageId).toBe(f.deliveries.get("final")?.messageId);
+	const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
+	expect(JSON.parse(evidence.turnParameters.input[0].text)).not.toHaveProperty("openWork");
 });
 
 it("does not fall back to local context or another harness when cloud context is unavailable", async () => {

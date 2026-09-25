@@ -135,6 +135,7 @@ jobs:
         run: >-
           node ../../node_modules/vitest/dist/cli.js --run
           test/cloud-native-coding-runtime.test.ts
+          test/cloud-native-failure-code.test.ts
           test/cloud-coding-command-http.test.ts
           test/cloud-coding-command-tools.test.ts
           test/cloud-coding-command-log.test.ts
