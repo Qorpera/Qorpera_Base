@@ -7,7 +7,7 @@ import { CompanyController } from "../src/app/company.ts";
 import { ConversationView } from "../src/app/views/conversation.ts";
 import { renderRail } from "../src/app/views/shell.ts";
 import { h } from "../src/ui/dom.ts";
-import { QUIET_SCROLL_FADE, quietScroll } from "../src/ui/quiet-scroll.ts";
+import { QUIET_SCROLL_FADE, QUIET_SCROLL_RAIL_FADE, quietScroll } from "../src/ui/quiet-scroll.ts";
 import { fixture, profileA, session, staff, team, userA } from "./fixtures.ts";
 
 const cleanup: (() => void)[] = [];
@@ -46,12 +46,16 @@ describe("quiet scrollers", () => {
 		expect(scroller.hasAttribute("data-scrolled")).toBe(true);
 	});
 
-	it("hides the bar in the stylesheet and draws the fade at the helper's size", () => {
+	it("hides the bar in the stylesheet and draws the fade at the helper's sizes", () => {
 		const css = readFileSync(resolve("src/styles/app.css"), "utf8");
 		const rule = css.match(/\.scroll-quiet \{([^}]*)\}/)?.[1] ?? "";
+		const fade = `var(--quiet-fade, ${QUIET_SCROLL_FADE}px)`;
 		expect(rule).toContain("scrollbar-width: none");
-		expect(rule).toContain(`mask-image: linear-gradient(to bottom, transparent, #000 ${QUIET_SCROLL_FADE}px)`);
-		expect(rule).toContain(`mask-position: 0 -${QUIET_SCROLL_FADE}px`);
+		expect(rule).toContain(`mask-image: linear-gradient(to bottom, transparent, #000 ${fade})`);
+		expect(rule).toContain(`mask-size: 100% calc(100% + ${fade})`);
+		expect(rule).toContain(`mask-position: 0 calc(-1 * ${fade})`);
+		// The rail keeps a hint of a fade, not a band over the Co-Founder card.
+		expect(css).toMatch(new RegExp(`\\.rail-scroll \\{[^}]*--quiet-fade: ${QUIET_SCROLL_RAIL_FADE}px;`));
 		expect(css).toContain(".scroll-quiet::-webkit-scrollbar { display: none; }");
 		expect(css).toContain(".scroll-quiet[data-scrolled] { -webkit-mask-position: 0 0; mask-position: 0 0; }");
 		const messages = readFileSync(resolve("src/styles/conversation.css"), "utf8");
