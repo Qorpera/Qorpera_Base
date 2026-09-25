@@ -105,7 +105,8 @@
 .settings-preference { padding: 8px 12px 10px; }
 /* No titles: extra room keeps the theme and colour rows reading as two groups. */
 .settings-preference + .settings-preference { padding-top: 22px; }
-.settings-choices { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px; max-width: 880px; margin: 0; padding: 0; border: 0; min-width: 0; }
+/* Scale the card rows and their gaps together so each preview is 25% smaller. */
+.settings-choices { --appearance-preview-scale: .75; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 13.5px; width: 75%; max-width: 660px; margin: 0 auto; padding: 0; border: 0; min-width: 0; }
 .settings-choice { position: relative; display: grid; gap: 9px; justify-items: center; min-width: 0; cursor: pointer; }
 .settings-choice > input { position: absolute; width: 1px; height: 1px; margin: 0; opacity: 0; pointer-events: none; }
 .settings-choice-label { font-size: 12.5px; color: #73736f; }
@@ -117,9 +118,10 @@
 /* Two wider size cards span the same row as the three theme/colour cards. */
 .settings-size-choices { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .size-swatch { display: grid; place-items: center; aspect-ratio: 15 / 7; background: var(--sidebar-surface); color: var(--text); }
-.size-swatch::before { content: "Aa"; font-size: 32px; font-weight: 500; line-height: 1; }
-.size-swatch-big::before { font-size: 41.6px; }
-.swatch-window { position: absolute; inset: 0; display: grid; grid-template-rows: auto auto minmax(0, 1fr); gap: 5px; padding: 16% 12% 0; background: var(--w-bg); }
+.size-swatch::before { content: "Aa"; font-size: calc(32px * var(--appearance-preview-scale)); font-weight: 500; line-height: 1; }
+.size-swatch-big::before { font-size: calc(41.6px * var(--appearance-preview-scale)); }
+/* Keep the miniature's fixed details proportional as the cards shrink; labels stay readable. */
+.swatch-window { position: absolute; inset: 0; width: calc(100% / var(--appearance-preview-scale)); height: calc(100% / var(--appearance-preview-scale)); transform: scale(var(--appearance-preview-scale)); transform-origin: top left; display: grid; grid-template-rows: auto auto minmax(0, 1fr); gap: 5px; padding: 16% 12% 0; background: var(--w-bg); }
 .swatch-window-light { --w-bg: #e9e7e6; --w-bar: #c6c4c2; --w-panel: #ffffff; --w-pill: #dedddb; --w-line: #ececea; }
 .swatch-window-dark { --w-bg: #1f1f1e; --w-bar: #5e5d5a; --w-panel: #2f2f2e; --w-pill: #4f4f4d; --w-line: #3c3c3a; }
 .swatch-bar { justify-self: center; width: 46%; height: 7px; border-radius: 999px; background: var(--w-bar); }
@@ -130,15 +132,15 @@
 .swatch-pill { width: 34%; height: 8px; background: var(--w-pill); }
 .swatch-line { width: 50%; height: 3px; background: var(--w-line); }
 .theme-swatch-system > .swatch-window-dark { clip-path: inset(0 0 0 50%); }
-.color-swatch .swatch-window { grid-template-rows: auto auto minmax(0, 1fr) auto; align-items: start; gap: 8px; padding: 10% 8% 8%; background: var(--bg); }
+.color-swatch .swatch-window { grid-template-rows: minmax(0, 2fr) minmax(0, 2fr) minmax(0, 1fr) minmax(0, 3fr); align-items: start; gap: 6%; padding: 10% 8% 8%; background: var(--bg); }
 .color-swatch-blue { --swatch-accent: #0a84ff; }
 .color-swatch-green { --swatch-accent: #30d158; }
 .color-swatch-grey { --swatch-accent: #5b5b5b; }
-.swatch-bubble { height: 20px; border-radius: 12px; }
+.swatch-bubble { height: 100%; border-radius: 12px; }
 .swatch-bubble-agent { width: 58%; justify-self: start; background: var(--pane-strong); }
 .swatch-bubble-member { width: 46%; justify-self: end; background: var(--swatch-accent); }
-.swatch-composer { grid-row: 4; display: flex; align-items: center; justify-content: flex-end; height: 30px; padding: 0 5px; border: 1px solid var(--border-strong); border-radius: 999px; background: var(--overlay); }
-.swatch-send { display: block; width: 20px; height: 20px; border-radius: 50%; background: var(--swatch-accent); }
+.swatch-composer { grid-row: 4; display: flex; align-items: center; justify-content: flex-end; height: 100%; padding: 0 5px; border: 1px solid var(--border-strong); border-radius: 999px; background: var(--overlay); }
+.swatch-send { display: block; height: 70%; aspect-ratio: 1; border-radius: 50%; background: var(--swatch-accent); }
 .settings-plan > .btn { align-self: center; }
 /* Plans: the three cards qorpera.com sells, opened under the current plan. */
 .settings-plan-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-top: 12px; }
@@ -279,7 +281,7 @@
  .settings-company-label { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
  .settings-company-picker { margin-top: 0; }
  .settings-content { padding: 24px 20px; }
- .settings-choices { gap: 10px; }
+ .settings-choices { --appearance-preview-scale: 1; width: 100%; gap: 10px; }
  .settings-plan-grid { grid-template-columns: minmax(0, 1fr); }
  .billing-row { grid-template-columns: minmax(0, 1fr) auto; }
  /* The picture takes the room the email needs: Sign out moves under the email. */
@@ -294,10 +296,8 @@
  .swatch-row:nth-child(3) { display: none; }
  .swatch-pill { height: 5px; }
  .swatch-line { height: 2px; }
- .color-swatch .swatch-window { gap: 5px; padding: 8% 7% 6%; }
- .swatch-bubble { height: 12px; }
- .swatch-composer { height: 20px; padding: 0 3px; }
- .swatch-send { width: 14px; height: 14px; }
+ .color-swatch .swatch-window { padding: 8% 7% 6%; }
+ .swatch-composer { padding: 0 3px; }
  .company-person .person-actions { opacity: 1; flex-wrap: wrap; justify-content: end; }
  .company-person { grid-template-columns: 52px minmax(0, 1fr); gap: 15px; }
  .company-person .person-actions { grid-column: 2; justify-content: start; }
