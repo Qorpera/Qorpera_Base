@@ -51,3 +51,6 @@ jobs:
 
       - name: Verify current office activation against disposable PostgreSQL
         run: node scripts/test-runtime-office-current-provider-activation.mjs
+
+      - name: Coding sessions recorded before per-turn history against disposable PostgreSQL
+        run: node scripts/test-coding-turn-backfill.mjs
