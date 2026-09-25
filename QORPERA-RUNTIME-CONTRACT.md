@@ -33,6 +33,12 @@ Qorpera is ready for launch only when the mandatory acceptance gates in this
 document pass against the deployed cloud runtime. A prompt that describes the
 behavior without the machinery that enforces it does not satisfy this contract.
 
+**Current status:** [QORPERA-RUNTIME-STATUS.md](QORPERA-RUNTIME-STATUS.md)
+holds the requirements in force and the evidence matrix: source, component
+tests, real-node proof and deployed acceptance. Dated amendments in this
+document take precedence over the older text they amend. The implementation
+checkpoints in section 19 are historical records, not current status.
+
 ## 1. Precedence and relationship to existing contracts
 
 This document defines how a Qorpera agent is assembled and operated. It is the
