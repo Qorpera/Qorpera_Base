@@ -73,8 +73,10 @@ async function fixture(mode = "company-runtime", httpPathControl = false, presen
 	const wakeIdentity = f.context.identity;
 	const wakeInputId = randomUUID();
 	const wakeRoutineId = randomUUID();
+	// A dynamic routine run keeps its conversation so its reply rules can be shown.
+	const dynamic = mode === "company-dynamic";
 	const wake =
-		wakeIdentity.sessionId === null
+		wakeIdentity.sessionId === null || dynamic
 			? {
 					schema: "qorpera.wake-envelope/v1",
 					id: randomUUID(),
@@ -86,7 +88,11 @@ async function fixture(mode = "company-runtime", httpPathControl = false, presen
 					requesterUserId: wakeIdentity.requesterUserId,
 					actorStaffId: null,
 					actorUserId: null,
-					audience: { kind: wakeIdentity.audienceKind, userId: wakeIdentity.audienceUserId, sessionId: null },
+					audience: {
+						kind: wakeIdentity.audienceKind,
+						userId: wakeIdentity.audienceUserId,
+						sessionId: wakeIdentity.sessionId,
+					},
 					source: {
 						kind: "schedule",
 						id: wakeRoutineId,
@@ -111,7 +117,12 @@ async function fixture(mode = "company-runtime", httpPathControl = false, presen
 						wakeSchema: "qorpera.wake-envelope/v1",
 						runtimeBundleVersion: null,
 					},
-					routine: { id: wakeRoutineId, version: 1, intent: "Check the inbox and file anything new." },
+					routine: {
+						id: wakeRoutineId,
+						version: 1,
+						intent: "Check the inbox and file anything new.",
+						...(dynamic ? { dynamic: true } : {}),
+					},
 					payload: {
 						schema: "qorpera.routine-schedule-occurrence/v1",
 						triggerId: "tick",
@@ -241,6 +252,7 @@ async function fixture(mode = "company-runtime", httpPathControl = false, presen
 		adapterSha256: "b".repeat(64),
 		destinationOrigin: "https://api.linear.app",
 	};
+	const decisions: Record<string, unknown>[] = [];
 	const pathCall = vi.fn<CloudCompanyPathControl["call"]>(async (method, args) => {
 		if (method === "qorpera_record_runtime_observation") {
 			expect(args.p_run_id).toBe(f.binding.runId);
@@ -278,6 +290,16 @@ async function fixture(mode = "company-runtime", httpPathControl = false, presen
 		}
 		if (method === "qorpera_describe_company_run_context") return structuredClone(f.context);
 		if (method === "qorpera_read_native_wake") return structuredClone(mode === "company-worker" ? workerWake : wake);
+		if (method === "qorpera_decide_agent_routine") {
+			decisions.push(args.p_request as Record<string, unknown>);
+			return {
+				schema: "qorpera.agent-routine-receipt/v1",
+				runId: f.binding.runId,
+				receiptId: randomUUID(),
+				action: "upsert",
+				routine: { routineKey: "invoice-watch", status: "active", version: 2, nextRunAt: "2026-09-02T10:00:00Z" },
+			};
+		}
 		if (method === "qorpera_list_native_connector_tools") {
 			return mode === "company-secret" ? [structuredClone(connectorDescriptor)] : [];
 		}
@@ -517,6 +539,7 @@ async function fixture(mode = "company-runtime", httpPathControl = false, presen
 		runtime,
 		control,
 		pathCall,
+		decisions,
 		store,
 		deliveries,
 		evidence,
@@ -924,6 +947,41 @@ it("requires a final send when there is an audience, but does not invent one for
 	expect(silent.control.sendMessage).not.toHaveBeenCalled();
 	const evidence = JSON.parse(await readFile(silent.evidence, "utf8"));
 	expect(JSON.stringify(evidence.threadParameters.dynamicTools)).not.toContain('"name":"send_message"');
+});
+
+it("has a dynamic routine run decide its next run before its final message", async () => {
+	const f = await fixture("company-dynamic");
+	const result = await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+	expect(result.delivery).toEqual({ messageCount: 2, finalMessageId: f.deliveries.get("final")?.messageId });
+	// The early final never reached the kernel: the host showed the model why.
+	const sends = f.control.sendMessage.mock.calls.map(([, input]) => input);
+	expect(sends.map((input) => input.idempotencyKey)).toEqual(["progress", "final"]);
+	expect(f.decisions).toEqual([
+		{
+			action: "next",
+			operationKey: "next-1",
+			at: "2026-09-02T10:00:00.000Z",
+			intent: "Invoice 42 was still open at 10:00. Look again at noon.",
+		},
+	]);
+	const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
+	const names = evidence.threadParameters.dynamicTools[0].tools.map((tool: { name: string }) => tool.name);
+	expect(names).toContain("decide_routine");
+	expect(names).toContain("manage_routine");
+	const early = evidence.fenced.outputs
+		.map((output: { output: string }) => output.output)
+		.find((text: string) => text.includes("INVALID_ARGUMENTS"));
+	expect(early).toContain("decide this dynamic routine first");
+	expect(evidence.threadParameters.developerInstructions).toContain("# This routine is dynamic");
+	// A fixed routine run is not offered the decision. A distinct private identity and
+	// company root keep the first fixture's state out of the second (as for the silent run).
+	await rm(f.identityRoot, { recursive: true, force: true });
+	await rm(f.companyRoot, { recursive: true, force: true });
+	const fixed = await fixture("company-silent");
+	await fixed.runtime.execute(fixed.request, fixed.identityRoot, new AbortController().signal);
+	const fixedEvidence = JSON.parse(await readFile(fixed.evidence, "utf8"));
+	expect(JSON.stringify(fixedEvidence.threadParameters.dynamicTools)).not.toContain('"name":"decide_routine"');
+	expect(fixedEvidence.threadParameters.developerInstructions).not.toContain("# This routine is dynamic");
 });
 
 it("raises one typed card for the member, appended before the final sentence, and ends the turn", async () => {

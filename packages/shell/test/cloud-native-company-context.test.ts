@@ -177,6 +177,17 @@ it.each([
 					"# This wake: your workers reported",
 				])
 					expect(instructions.includes(heading)).toBe(heading === own);
+				// Only a dynamic routine's run is told to decide its next run.
+				expect(instructions.includes("# This routine is dynamic")).toBe(false);
+				if (kind === "routine") {
+					const dynamic = compileCloudNativeCompanyInstructions(context, {
+						...wake,
+						routine: { ...wake.routine!, dynamic: true },
+					});
+					expect(dynamic).toContain("# This wake: your routine");
+					expect(dynamic).toContain("# This routine is dynamic");
+					expect(dynamic).toContain("call decide_routine exactly once");
+				}
 				expect(instructions.includes("qorpera.run-continuation/v1")).toBe(continued);
 				expect(instructions.includes("# Before you end your turn")).toBe(final === "required");
 				// ask_member is offered wherever a final is required (a room wake then is the agent's

@@ -36,10 +36,11 @@ import {
 import {
 	CLOUD_NATIVE_TOOL_CATALOG_BYTES,
 	type CloudNativeTool,
+	CloudToolArgumentRefusal,
 	cloudToolJsonText,
 } from "./cloud-native-tool-boundary.ts";
 import type { CloudNativeToolOperationControlPlane } from "./cloud-native-tool-operations.ts";
-import { cloudRoutineTools } from "./cloud-routine-tools.ts";
+import { cloudRoutineDecisionTool, cloudRoutineTools } from "./cloud-routine-tools.ts";
 import { assertCloudRuntimeBundle } from "./cloud-runtime-bundle.ts";
 import {
 	assertCloudRuntimeObservationReceipt,
@@ -236,6 +237,17 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			);
 			// Diagnostic deduplication uses only validated public receipts, never a model key.
 			const deliveredMessageIds = new Set<string>();
+			// A dynamic routine's run decides its next run (or concludes the routine) before
+			// its final message. The kernel refuses both the final send and the completion
+			// otherwise; this shows the model the reason instead of an unconfirmed outcome.
+			const dynamicRoutine = wake.kind === "routine" && wake.routine?.dynamic === true;
+			let routineDecisionOwed = dynamicRoutine;
+			const assertRoutineDecided = (): void => {
+				if (routineDecisionOwed)
+					throw new CloudToolArgumentRefusal(
+						"decide this dynamic routine first: call decide_routine with next or conclude, then send your final message",
+					);
+			};
 			const send: CloudNativeTool = {
 				name: "send_message" satisfies CloudRuntimeToolOperation,
 				source: "runtime",
@@ -252,6 +264,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				},
 				parseArguments(value) {
 					const input = parseCloudAgentSendInput(value);
+					if (input.phase === "final") assertRoutineDecided();
 					return { idempotencyKey: input.idempotencyKey, text: input.text, phase: input.phase };
 				},
 				async execute(value, context) {
@@ -291,6 +304,8 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				},
 				parseArguments(value) {
 					const input = parseCloudAskMemberInput(value);
+					// A card ends with its final sentence, so it waits for the decision too.
+					assertRoutineDecided();
 					return { idempotencyKey: input.idempotencyKey, text: input.text, ...input.data } as JsonValue;
 				},
 				async execute(value, toolContext) {
@@ -408,6 +423,15 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 									: [
 											cloudCoworkerMessageTool(binding, identity, wakeControl),
 											...cloudRoutineTools(binding, identity, this.#paths),
+											...(dynamicRoutine
+												? [
+														cloudRoutineDecisionTool(binding, identity, this.#paths, {
+															decided: () => {
+																routineDecisionOwed = false;
+															},
+														}),
+													]
+												: []),
 											...cloudSidebarTools(binding, identity, this.#paths),
 										]),
 								// The notebook is the agent's own: a worker of the same agent recalls it,

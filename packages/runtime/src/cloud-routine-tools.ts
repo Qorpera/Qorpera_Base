@@ -5,7 +5,12 @@ import {
 	cloudToolRequest,
 	parseCloudNativeToolBinding,
 } from "./cloud-native-tool-authority.ts";
-import { type CloudNativeTool, type CloudToolContext, cloudToolJsonText } from "./cloud-native-tool-boundary.ts";
+import {
+	type CloudNativeTool,
+	CloudToolArgumentRefusal,
+	type CloudToolContext,
+	cloudToolJsonText,
+} from "./cloud-native-tool-boundary.ts";
 import type { CloudRuntimeToolOperation } from "./cloud-runtime-observability.ts";
 import { CLOUD_RUNTIME_REASONING_EFFORTS, isCloudRuntimeReasoningEffort } from "./cloud-runtime-policy.ts";
 
@@ -15,7 +20,8 @@ const LOCAL_TIME = /^([01][0-9]|2[0-3]):[0-5][0-9]$/;
 const WEEKDAYS = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"] as const;
 const BUSINESS_DAYS = ["monday", "tuesday", "wednesday", "thursday", "friday"] as const;
 const REPLY = ["optional", "required", "silent"] as const;
-const ACTIONS = ["list", "upsert", "pause", "resume", "remove"] as const;
+const ACTIONS = ["list", "upsert", "pause", "resume", "remove", "conclude"] as const;
+const DECISIONS = ["next", "conclude"] as const;
 
 function object(value: unknown, allowed: readonly string[], required: readonly string[]): Record<string, unknown> {
 	if (
@@ -61,9 +67,18 @@ function reply(value: unknown): (typeof REPLY)[number] {
 	return value as (typeof REPLY)[number];
 }
 
+function instant(value: unknown, label: string): string {
+	if (typeof value !== "string" || !Number.isFinite(Date.parse(value)))
+		throw new CloudToolArgumentRefusal(`${label} must be an ISO 8601 date and time with its offset`);
+	return new Date(value).toISOString();
+}
+
 /** The model describes a cadence in the three shapes people use; the cloud
  * scheduler's closed trigger forms are compiled here. The trigger id is
- * host-owned and every routine has exactly one trigger (contract 16.3).
+ * host-owned and every routine has exactly one trigger (contract 16.3). A
+ * dynamic routine has one next run instead of a cadence ("once"); its runs
+ * choose the next one. Without firstRunAt the kernel stamps the save instant,
+ * so a retried save with the same key stays the same request.
  */
 function compileTrigger(value: unknown): Record<string, unknown> {
 	const kind = (value as { kind?: unknown } | null)?.kind;
@@ -111,6 +126,15 @@ function compileTrigger(value: unknown): Record<string, unknown> {
 			replyPolicy: reply(t.report),
 		};
 	}
+	if (kind === "dynamic") {
+		const t = object(value, ["kind", "firstRunAt", "timeZone", "report"], ["kind", "timeZone"]);
+		return {
+			kind: "once",
+			...(t.firstRunAt === undefined ? {} : { at: instant(t.firstRunAt, "firstRunAt") }),
+			timeZone: timeZone(t.timeZone),
+			replyPolicy: reply(t.report),
+		};
+	}
 	if (kind === "file_change") {
 		const t = object(value, ["kind", "path", "match", "timeZone", "report"], ["kind", "path", "timeZone"]);
 		const match = t.match ?? "exact";
@@ -138,23 +162,29 @@ function compileTrigger(value: unknown): Record<string, unknown> {
 export const CLOUD_ROUTINE_TOOL_DESCRIPTION =
 	"Set up your own standing work. A routine wakes you, this same agent, with the stored intent, while no member is online. " +
 	"No member approval is needed; use it whenever a responsibility or a request calls for repeated attention, and tell the member what you set up. " +
-	"Actions: list, upsert, pause, resume, remove. A routine always belongs to you. Reuse one routineKey for the same standing work so a change becomes a new version instead of a duplicate; list first when unsure. " +
-	"trigger is exactly one of: every (minutes 5-10080, optional firstRunAt), weekly (localTime HH:MM, IANA timeZone, weekdays default Monday to Friday, optional firstRunAt), or file_change (a Company File path you can read, match exact or subtree). Use the member's time zone from the wake time context. " +
-	"A new routine runs once right away as a kickoff, then on its schedule; give firstRunAt only when the first run really must wait. Start dense while a responsibility is new to you, every hour or two or daily, and use those early runs to investigate and learn what the work needs; once you know, upsert the same routineKey with the steady cadence and say so. Never leave new standing work idle for days waiting for its first slot. " +
+	"Actions: list, upsert, pause, resume, conclude, remove. A routine always belongs to you. Reuse one routineKey for the same standing work so a change becomes a new version instead of a duplicate; list first when unsure. " +
+	"trigger is exactly one of: dynamic (you choose each next run: optional firstRunAt, default now, and the member's IANA timeZone), every (minutes 5-10080, optional firstRunAt), weekly (localTime HH:MM, IANA timeZone, weekdays default Monday to Friday, optional firstRunAt), or file_change (a Company File path you can read, match exact or subtree). Use the member's time zone from the wake time context. " +
+	"Prefer dynamic when the right time for the next look depends on what you find: learning a new responsibility, following something up, watching a situation. It runs once at firstRunAt; each run then sets the next run, with adjusted instructions if the work changed, or concludes the routine. Use every or weekly for work tied to the clock, such as a Monday report, and file_change to react to a file. " +
+	"A new every or weekly routine runs once right away as a kickoff, then on its schedule; give firstRunAt only when the first run really must wait. Start dense while a responsibility is new to you and use those early runs to learn what the work needs. Never leave new standing work idle for days waiting for its first slot. " +
 	"Write intent as a complete instruction to your future self: what to read, what to decide, when to tell someone and when to stay silent. report is optional (speak only when useful), required (always report) or silent (never speak). When you pick a threshold or cadence nobody gave you, tell the member it is your starting assumption so they can correct it. " +
-	"effort is the thinking depth of each routine run: low, medium (default) or high. Choose high for judgement-heavy analysis, low for a quick check; conversations with members stay at the thread default. " +
-	"Give a finite watch an expiresAt or maxOccurrences so it ends by itself. quietHours holds non-urgent occurrences until the window ends. " +
+	"effort is the thinking depth of each routine run: low, medium or high; a new routine starts at medium and a save without effort keeps what it has. Choose high for judgement-heavy analysis, low for a quick check; conversations with members stay at the thread default. " +
+	"Give a finite watch an expiresAt, or for every or weekly a maxOccurrences, so it ends by itself. quietHours holds non-urgent runs until the window ends. " +
+	"conclude ends a routine with a one-sentence summary of why, and keeps it in the list as concluded; saving it again restarts it. remove deletes it from the list for good. " +
 	"status paused with pauseReason needs_model_account means no model account of the requesting member allows unattended runs yet: say so plainly, it is a one-time account setting. authorization_failed means the account stopped working. " +
 	"Keep operationKey stable for one intended change; an unconfirmed result needs the same key again, never a new one. A routine is not a reminder to a person and cannot act beyond your own authority.";
+
+export const CLOUD_ROUTINE_DECISION_DESCRIPTION =
+	"Decide what happens after this run of your dynamic routine. Call it exactly once per run, before your final message, or as the last thing you do when you send none. " +
+	"next: at is when the next run starts (ISO 8601 with offset; a time already passed means right away). Choose it from what you found: soon while things move or a reply is due, later when they are quiet. " +
+	"intent, when the work changed, is the complete new instruction for your future self: what to check, what you learned, when to speak; without it the next run keeps this run's intent. title, effort (low, medium, high) and report (optional, required, silent) likewise change only when given. " +
+	"conclude: summary is one sentence on why the routine is done (the goal was reached, the question answered, the watch no longer needed); the member sees it. " +
+	"state settled means a member or another conversation already paused, changed or removed the routine, so nothing is owed. state refused carries the reason, such as a next run after the routine's end date: choose again or conclude. " +
+	"Keep operationKey stable for one decision; an unconfirmed result needs the same key and arguments again.";
 
 /** The cloud derives the agent, requester and model account from the run. The
  * model chooses only what to do, when, and how long.
  */
-export function cloudRoutineTools(
-	binding: CloudNativeToolBinding,
-	identity: CloudNativeToolIdentity,
-	control: CloudCompanyPathControl,
-): readonly CloudNativeTool[] {
+function routineAuthority(binding: CloudNativeToolBinding, identity: CloudNativeToolIdentity) {
 	const admitted = parseCloudNativeToolBinding(binding),
 		expected = Object.freeze({ ...identity });
 	if (
@@ -175,6 +205,15 @@ export function cloudRoutineTools(
 			throw new Error("Routine tool identity differs");
 		context.signal.throwIfAborted();
 	};
+	return { admitted, assertContext };
+}
+
+export function cloudRoutineTools(
+	binding: CloudNativeToolBinding,
+	identity: CloudNativeToolIdentity,
+	control: CloudCompanyPathControl,
+): readonly CloudNativeTool[] {
+	const { admitted, assertContext } = routineAuthority(binding, identity);
 	const reportSchema = { type: "string", enum: [...REPLY] };
 	const zoneSchema = { type: "string", minLength: 1, maxLength: 64 };
 	const timeSchema = { type: "string", pattern: LOCAL_TIME.source };
@@ -192,8 +231,20 @@ export function cloudRoutineTools(
 				routineKey: { type: "string", pattern: ROUTINE_KEY.source },
 				title: { type: "string", minLength: 1, maxLength: 160 },
 				intent: { type: "string", minLength: 1, maxLength: 32768 },
+				summary: { type: "string", minLength: 1, maxLength: 2000 },
 				trigger: {
 					oneOf: [
+						{
+							type: "object",
+							additionalProperties: false,
+							required: ["kind", "timeZone"],
+							properties: {
+								kind: { const: "dynamic" },
+								firstRunAt: { type: "string", format: "date-time" },
+								timeZone: zoneSchema,
+								report: reportSchema,
+							},
+						},
 						{
 							type: "object",
 							additionalProperties: false,
@@ -257,6 +308,26 @@ export function cloudRoutineTools(
 				object(value, ["action"], ["action"]);
 				return { action } as never;
 			}
+			if (action === "conclude") {
+				const c = object(
+					value,
+					["action", "operationKey", "routineKey", "summary"],
+					["action", "operationKey", "routineKey", "summary"],
+				);
+				if (
+					typeof c.operationKey !== "string" ||
+					!OPERATION_KEY.test(c.operationKey) ||
+					typeof c.routineKey !== "string" ||
+					!ROUTINE_KEY.test(c.routineKey)
+				)
+					throw new Error("Invalid routine key");
+				return {
+					action,
+					operationKey: c.operationKey,
+					routineKey: c.routineKey,
+					summary: text(c.summary, 2000),
+				} as never;
+			}
 			const upsert = action === "upsert";
 			const a = object(
 				value,
@@ -299,6 +370,10 @@ export function cloudRoutineTools(
 					throw new Error("Invalid routine expiry");
 				request.expiresAt = new Date(a.expiresAt).toISOString();
 			}
+			if (a.maxOccurrences !== undefined && (request.trigger as { kind: string }).kind === "once")
+				throw new CloudToolArgumentRefusal(
+					"a dynamic routine takes no maxOccurrences: it ends when a run concludes it (expiresAt still applies)",
+				);
 			if (a.maxOccurrences !== undefined) {
 				if (
 					!Number.isSafeInteger(a.maxOccurrences) ||
@@ -310,7 +385,8 @@ export function cloudRoutineTools(
 			}
 			if (a.effort !== undefined && !isCloudRuntimeReasoningEffort(a.effort))
 				throw new Error("Invalid routine effort");
-			request.effort = a.effort ?? "medium";
+			// The kernel starts a new routine at medium and keeps a saved routine's effort when none is given.
+			if (a.effort !== undefined) request.effort = a.effort;
 			if (a.quietHours !== undefined) {
 				const quiet = object(a.quietHours, ["start", "end", "timeZone"], ["start", "end", "timeZone"]);
 				const start = localTime(quiet.start),
@@ -347,4 +423,88 @@ export function cloudRoutineTools(
 		},
 	};
 	return [tool];
+}
+
+/** Offered only in a run of a dynamic routine. The kernel refuses this run's final
+ * message and its completion until the routine moved on; `decided` tells the host
+ * mouth, which shows the model that reason first.
+ */
+export function cloudRoutineDecisionTool(
+	binding: CloudNativeToolBinding,
+	identity: CloudNativeToolIdentity,
+	control: CloudCompanyPathControl,
+	options: { readonly decided: () => void },
+): CloudNativeTool {
+	const { admitted, assertContext } = routineAuthority(binding, identity);
+	return {
+		name: "decide_routine" satisfies CloudRuntimeToolOperation,
+		source: "runtime",
+		description: CLOUD_ROUTINE_DECISION_DESCRIPTION,
+		inputSchema: {
+			type: "object",
+			additionalProperties: false,
+			required: ["action", "operationKey"],
+			properties: {
+				action: { type: "string", enum: [...DECISIONS] },
+				operationKey: { type: "string", pattern: OPERATION_KEY.source },
+				at: { type: "string", format: "date-time" },
+				intent: { type: "string", minLength: 1, maxLength: 32768 },
+				title: { type: "string", minLength: 1, maxLength: 160 },
+				effort: { type: "string", enum: [...CLOUD_RUNTIME_REASONING_EFFORTS] },
+				report: { type: "string", enum: [...REPLY] },
+				summary: { type: "string", minLength: 1, maxLength: 2000 },
+			},
+		},
+		parseArguments(value) {
+			const action = (value as { action?: unknown } | null)?.action;
+			if (typeof action !== "string" || !DECISIONS.includes(action as (typeof DECISIONS)[number]))
+				throw new CloudToolArgumentRefusal("action must be next or conclude");
+			if (action === "conclude") {
+				const c = object(value, ["action", "operationKey", "summary"], ["action", "operationKey", "summary"]);
+				if (typeof c.operationKey !== "string" || !OPERATION_KEY.test(c.operationKey))
+					throw new Error("Invalid routine key");
+				return { action, operationKey: c.operationKey, summary: text(c.summary, 2000) } as never;
+			}
+			const n = object(
+				value,
+				["action", "operationKey", "at", "intent", "title", "effort", "report"],
+				["action", "operationKey"],
+			);
+			if (typeof n.operationKey !== "string" || !OPERATION_KEY.test(n.operationKey))
+				throw new Error("Invalid routine key");
+			const request: Record<string, unknown> = { action, operationKey: n.operationKey, at: instant(n.at, "at") };
+			if (n.intent !== undefined) request.intent = text(n.intent, 32768);
+			if (n.title !== undefined) request.title = text(n.title, 160, true);
+			if (n.effort !== undefined) {
+				if (!isCloudRuntimeReasoningEffort(n.effort)) throw new Error("Invalid routine effort");
+				request.effort = n.effort;
+			}
+			if (n.report !== undefined) request.report = reply(n.report);
+			return request as never;
+		},
+		async execute(value, context) {
+			assertContext(context);
+			const request = value as Record<string, unknown>;
+			const result = await cloudToolRequest(
+				(requestSignal) =>
+					control.call("qorpera_decide_agent_routine", { p_binding: admitted, p_request: request }, requestSignal),
+				context.signal,
+			);
+			const r = result as Record<string, unknown> | null;
+			const receipt =
+				r?.schema === "qorpera.agent-routine-receipt/v1" &&
+				r.action === (request.action === "next" ? "upsert" : "conclude") &&
+				!!r.routine &&
+				typeof r.routine === "object";
+			const outcome =
+				r?.schema === "qorpera.agent-routine-decision/v1" && (r.state === "settled" || r.state === "refused")
+					? r.state
+					: undefined;
+			if (!r || typeof r !== "object" || r.runId !== admitted.runId || (!receipt && !outcome))
+				throw new Error("Routine decision receipt differs");
+			if (outcome === "refused") return { kind: "text", value: cloudToolJsonText(r) };
+			options.decided();
+			return { kind: "text", value: cloudToolJsonText(r) };
+		},
+	};
 }

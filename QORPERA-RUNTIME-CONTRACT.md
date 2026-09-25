@@ -1359,6 +1359,31 @@ version it started with while its job is live (a routine run may save its own
 routine), while a queued occurrence of an older version, and work that
 continues after the job ended, follow the current version.
 
+2026-09-25 amendment: dynamic routines (founder request). A routine may have
+no cadence: its trigger holds exactly one next run (kind `once`: an instant,
+a time zone and a reply policy), and the run it wakes decides what follows.
+Before its final message, and before it can complete, that run either sets the
+next run at a time it chooses, optionally with changed instructions, title,
+effort or reply policy, which is a new version of the same routine so its
+history stays, or concludes the routine with a one-sentence reason that members
+see (status `concluded`). The kernel refuses the final send and the completion
+of an undecided run; the host shows the model that reason first. A change made
+elsewhere during the run (a new version from another conversation) settles the
+decision; a pause or a conclusion by someone else stops the started run as a
+pause does. An active dynamic routine always has exactly one pending run: a
+save inserts it, a new version cancels the older one's queued run, and the
+control-plane tick restores a run that ended without deciding (failed, crashed
+or refused): three retries at once, then after 15 minutes, doubling to at most
+a day, never giving up by count. There is no minimum gap between runs and no
+cap on how often a routine reschedules. Quiet hours, expiry (a next run after
+the routine's end is refused with that reason), the unattended sponsor and
+the three-refusal authorization suspension apply as to every routine; a
+dynamic routine takes no occurrence limit. Fixed triggers (schedule, listener)
+stay; agents are told to prefer a dynamic routine when the right time for the
+next look depends on what they find (learning a responsibility, follow-ups,
+watches), and fixed times for work tied to the clock. The agent's own tool
+also concludes a fixed routine from inside its run.
+
 ## 17. Model and reasoning policy
 
 An attended agent thread defaults to low reasoning effort. The resolved

@@ -49,6 +49,8 @@ const routine = (update: Partial<CloudRoutine> = {}): CloudRoutine => ({
 	reviewerStaffIds: [],
 	createdAt: "2026-09-17T06:00:00.000Z",
 	updatedAt: "2026-09-17T06:00:00.000Z",
+	nextRunAt: null,
+	conclusion: null,
 	...update,
 });
 function mount(items: CloudRoutine[], manage = true, connections: NativeMemberConnection[] = [account]) {
@@ -161,6 +163,80 @@ describe("agent routines section", () => {
 		// Read-only: a member save would keep its end, so there is nothing to edit or resume.
 		expect(rows[1]!.querySelectorAll("button")).toHaveLength(0);
 		expect([...rows[0]!.querySelectorAll("button")].map((item) => item.textContent)).toEqual(["Edit", "Pause"]);
+	});
+	it("shows a dynamic routine's next run, that it runs until its agent decides, and why a routine is done", async () => {
+		const row = {
+			routine_id: "10000000-0000-4000-8000-000000000010",
+			client_routine_id: "10000000-0000-4000-8000-000000000011",
+			version: 3,
+			status: "active",
+			staff_agent_id: staff.id,
+			title: "Invoice follow-up",
+			prompt: "Invoice 42 is still open. Look again at noon.",
+			triggers: [
+				{
+					id: "agent",
+					kind: "once",
+					at: "2026-09-26T10:00:00.000Z",
+					timeZone: "Europe/Copenhagen",
+					replyPolicy: "optional",
+				},
+			],
+			effort: "medium",
+			sponsor_binding_id: "10000000-0000-4000-8000-000000000004",
+			sponsor_version: 1,
+			logical_computer_id: null,
+			required_capability: "agent_turn",
+			job_type: "agent_turn",
+			publication_mode: "automatic",
+			review_policy_key: null,
+			reviewer_staff_ids: [],
+			created_at: "2026-09-25T06:00:00.000Z",
+			updated_at: "2026-09-25T08:00:00.000Z",
+			next_run_at: "2026-09-26T10:00:00+00:00",
+			conclusion: null,
+		};
+		const dynamic = parseCloudRoutine(row);
+		expect(dynamic.triggers[0]).toEqual({
+			id: "agent",
+			kind: "once",
+			at: "2026-09-26T10:00:00.000Z",
+			timeZone: "Europe/Copenhagen",
+			replyPolicy: "optional",
+		});
+		expect(dynamic.nextRunAt).toBe("2026-09-26T10:00:00+00:00");
+		const done = parseCloudRoutine({
+			...row,
+			routine_id: "10000000-0000-4000-8000-000000000012",
+			title: "Launch watch",
+			status: "concluded",
+			next_run_at: null,
+			conclusion: "The launch went out on 24 September.",
+		});
+		// A cloud older than dynamic routines sends neither field.
+		const { next_run_at: _next, conclusion: _conclusion, ...older } = row;
+		expect(parseCloudRoutine(older)).toMatchObject({ nextRunAt: null, conclusion: null });
+		expect(() => parseCloudRoutineTrigger({ id: "agent", kind: "once", at: "tomorrow", timeZone: "UTC" })).toThrow();
+		expect(() =>
+			parseCloudRoutineTrigger({
+				id: "agent",
+				kind: "once",
+				at: "2026-09-26T10:00:00.000Z",
+				timeZone: "UTC",
+				intervalMinutes: 60,
+			}),
+		).toThrow();
+		const f = mount([dynamic, done]);
+		await settle();
+		const rows = [...f.view.el.querySelectorAll(".routine-row")];
+		expect(rows[0]!.textContent).toContain("The agent picks each next run");
+		expect(rows[0]!.textContent).toContain("Next run:");
+		expect(rows[0]!.textContent).toContain(`Runs until ${staff.displayName} decides it is done`);
+		// The editor has no shape for a dynamic routine; it can still be paused.
+		expect([...rows[0]!.querySelectorAll("button")].map((item) => item.textContent)).toEqual(["Pause"]);
+		expect(rows[1]!.textContent).toContain("Done: The launch went out on 24 September.");
+		expect(rows[1]!.textContent).not.toContain("Next run:");
+		expect(rows[1]!.querySelectorAll("button")).toHaveLength(0);
 	});
 	it("saves a new weekday routine on the chosen account with one stable identity across a retry", async () => {
 		const f = mount([]);

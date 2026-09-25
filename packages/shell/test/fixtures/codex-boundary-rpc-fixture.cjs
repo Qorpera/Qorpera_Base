@@ -32,6 +32,14 @@ const companyCalls = mode === "company-office"
 			{ tool: "ask_member", arguments: { idempotencyKey: "fruit", text: "Pick one.", surface: "question", title: "Apples or pears?", payload: { options: ["Apples", "Pears"] } } },
 			{ tool: "ask_member", arguments: { idempotencyKey: "fruit", text: "Pick one.", surface: "question", title: "Apples or pears?", payload: { options: [{ label: "Apples" }, { label: "Pears" }] } } },
 		]
+	: mode === "company-dynamic"
+	? [
+			// A dynamic routine run: the early final is refused with the reason, the run decides, then speaks.
+			{ tool: "send_message", arguments: { idempotencyKey: "progress", text: "Checking invoice 42.", phase: "progress" } },
+			{ tool: "send_message", arguments: { idempotencyKey: "early", text: "Invoice 42 is still open.", phase: "final" } },
+			{ tool: "decide_routine", arguments: { action: "next", operationKey: "next-1", at: "2026-09-02T12:00:00+02:00", intent: "Invoice 42 was still open at 10:00. Look again at noon." } },
+			{ tool: "send_message", arguments: { idempotencyKey: "final", text: "Invoice 42 is still open; I will look again at noon.", phase: "final" } },
+		]
 	: mode === "company-silent" || mode === "company-no-send" || mode === "company-worker"
 	? [{ tool: "company_read", arguments: { path: "note.md", offset: 0, limit: 256 } }]
 	: mode === "company-secret"

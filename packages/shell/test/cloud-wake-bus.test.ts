@@ -970,3 +970,35 @@ describe("held coworker messages (contract 14.6, second cut)", () => {
 		}
 	});
 });
+
+describe("dynamic routine wakes", () => {
+	function routineWake(routine: Record<string, unknown>) {
+		const { authority, envelope } = fixture();
+		const routineId = randomUUID();
+		return {
+			identity: authority.identity,
+			wake: {
+				...envelope,
+				kind: "routine",
+				actorUserId: null,
+				source: { kind: "schedule", id: routineId, occurrenceKey: `once:1:1:${routineId}` },
+				policy: policies[2].policy,
+				routine: { id: routineId, version: 1, intent: "Check whether invoice 42 was paid.", ...routine },
+				payload: { schema: "qorpera.routine-once-occurrence/v1", attempt: 1 },
+			} as unknown as CloudWakeEnvelope,
+		};
+	}
+	it("carries the dynamic mark only for a dynamic routine", () => {
+		const dynamic = routineWake({ dynamic: true });
+		expect(parseCloudWakeEnvelope(dynamic.wake, dynamic.identity).routine).toEqual({
+			...dynamic.wake.routine,
+			dynamic: true,
+		});
+		const fixed = routineWake({});
+		expect(parseCloudWakeEnvelope(fixed.wake, fixed.identity).routine).not.toHaveProperty("dynamic");
+	});
+	it.each([{ dynamic: false }, { dynamic: "yes" }, { schedule: "hourly" }])("rejects a routine marked %j", (extra) => {
+		const { identity, wake } = routineWake(extra);
+		expect(() => parseCloudWakeEnvelope(wake, identity)).toThrow();
+	});
+});

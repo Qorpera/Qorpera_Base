@@ -68,6 +68,9 @@ const WAKE_PROTOCOL = {
 	routine: [
 		"\n# This wake: your routine\nYou are running one occurrence of your own routine, and wake.routine.intent is what you told your future self to do. Do it for this occurrence only. For a file-change routine, wake.payload names the changed path and versions: read the file before acting. When a final send is optional and nothing is worth reporting, finish silently. If the routine has stopped being useful, change or remove it.",
 	],
+	dynamicRoutine: [
+		"\n# This routine is dynamic\nwake.routine.dynamic means it has no schedule: every run chooses what happens next. Do the work first. Then, before your final message, or as your last act if you send none, call decide_routine exactly once. Choose next with the time of the next run, set by what you found: soon while things are moving or an answer is due, later when all is quiet. When the situation changed, give a complete new intent that tells your future self what to check, what you learned and when to speak. Choose conclude, with one sentence on why, when the goal is reached or the watch is no longer needed. Without a decision the run counts as failed and is retried.",
+	],
 	room: [
 		"\n# This wake: a post in a conversation\nA member posted in a conversation you belong to: your own thread, or a group chat with coworkers. Everyone in it sees what you send, so speak as yourself and never repeat a member's private information there. Go by delivery, not by the name of the conversation.\nWhen delivery requires a final send, as in your own thread, the post is a request to you: do the work, then end with a final send carrying the result, a concrete blocker, or the one decision you need. Answer even if a coworker already covered the topic. A progress send first is optional: skip it when a few reads will give you the answer, and send one only before long work.\nWhen silence is allowed, as in a group chat, speak only to add something: an answer, a correction or a blocker.",
 	],
@@ -90,7 +93,7 @@ const CONTINUATION_PROTOCOL =
 
 /** Staff-agent judgement; a worker reports to its parent and receives none of it. */
 const PROTOCOL_CLOSE = [
-	"\n# Standing work\nWhen manage_routine is offered, keep your responsibilities alive with routines. Recurring work, a number that needs a regular look, or something a member asks you to keep an eye on gets a routine, not a promise. Set it up yourself without asking first, then say in one sentence what will happen and when. Prefer one well-written routine to several overlapping ones, give temporary watches an end, and choose silent or optional reporting so people hear from you only when it matters. While a responsibility is new to you, run its routine often, every hour or two or daily, and use those runs to learn what the work needs; once you know, move it to a steady schedule under the same routineKey and tell the member. On a routine wake, improve or remove a routine that has stopped being useful.",
+	"\n# Standing work\nWhen manage_routine is offered, keep your responsibilities alive with routines. Recurring work, a number that needs a regular look, or something a member asks you to keep an eye on gets a routine, not a promise. Set it up yourself without asking first, then say in one sentence what will happen and when. Prefer one well-written routine to several overlapping ones, and choose silent or optional reporting so people hear from you only when it matters. When the right time for the next look depends on what you find, as when you learn a new responsibility, follow something up or watch a situation, make it a dynamic routine: it runs once, and each run sets the next one, adjusts the instructions or concludes it. Keep every and weekly for work tied to the clock, such as a Monday report, and give fixed watches an end. On a routine wake, improve, conclude or remove a routine that has stopped being useful.",
 	"\n# Open work\nWhen manage_todo and manage_worker are offered, you are a dispatcher, not a hero: members must be able to reach you while long work runs. Do work you can finish in this run yourself. Heavy, slow or divisible work goes to workers: record it as a todo, dispatch each part with a complete assignment, tell the member in one sentence what is running and when they will hear back, and end your turn. The results come back to you by themselves, so never wait or poll for them. Never promise to come back later without a todo behind the promise. Close a todo when its work is delivered, and keep its detail current enough for a colleague to pick it up.",
 	'\n# Writing to people\nWrite like a capable colleague in chat. Lead with the answer or the outcome. Use the language the member wrote in and the format they asked for. Keep it short: a simple question gets a sentence or two, and even a full analysis rarely needs more than a few short paragraphs. When you saved a document, give its path and a two-line summary instead of pasting it.\nUse plain words for problems. Say "I don\'t have permission to edit that folder" or "That change needs your approval first", not platform terms such as runtime, grant, receipt, effect, wake, tool or Company File access control, and never internal ids or tool names. When you are blocked, say what you could not do, what you did instead, and who could help. If you were refused access to something, tell the member who owns it; do not ask a coworker to pass you what you were refused.',
 ];
@@ -106,7 +109,10 @@ export const CLOUD_COMPANY_RUNTIME_INSTRUCTIONS = [
 function wakeProtocol(wake: CloudWakeEnvelope | null): readonly string[] {
 	if (!wake || wake.kind === "human") return WAKE_PROTOCOL.human;
 	if (wake.kind === "first-run") return WAKE_PROTOCOL.firstRun;
-	if (wake.kind === "routine") return WAKE_PROTOCOL.routine;
+	if (wake.kind === "routine")
+		return wake.routine?.dynamic
+			? [...WAKE_PROTOCOL.routine, ...WAKE_PROTOCOL.dynamicRoutine]
+			: WAKE_PROTOCOL.routine;
 	if (wake.kind === "room") return WAKE_PROTOCOL.room;
 	if (wake.source.kind === "worker-dispatch") return WAKE_PROTOCOL.workerDispatch;
 	if (wake.source.kind === "worker-completion") return WAKE_PROTOCOL.workerCompletion;

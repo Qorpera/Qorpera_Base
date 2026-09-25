@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { CloudCompanyPathControl } from "@qorpera/runtime/cloud-company-path-gateway";
 import { CloudNativeToolRun } from "@qorpera/runtime/cloud-native-tool-authority";
 import { CloudNativeToolBoundary } from "@qorpera/runtime/cloud-native-tool-boundary";
-import { cloudRoutineTools } from "@qorpera/runtime/cloud-routine-tools";
+import { cloudRoutineDecisionTool, cloudRoutineTools } from "@qorpera/runtime/cloud-routine-tools";
 import { describe, expect, it, vi } from "vitest";
 import { nativeToolAuthorityFixture } from "./fixtures/native-tool-authority-fixture.ts";
 
@@ -59,7 +59,6 @@ describe("agent routine tool", () => {
 					p_binding: f.binding,
 					p_request: {
 						...weekly,
-						effort: "medium",
 						trigger: {
 							kind: "schedule",
 							intervalMinutes: 1440,
@@ -77,7 +76,7 @@ describe("agent routine tool", () => {
 			f.run.close();
 		}
 	});
-	it("carries the effort the agent chose and defaults to medium", async () => {
+	it("carries the effort the agent chose and leaves an omitted one to the kernel", async () => {
 		const f = await fixture();
 		try {
 			const high = await f.boundary.invoke("routine_e1", "qorpera", "manage_routine", { ...weekly, effort: "high" });
@@ -90,7 +89,8 @@ describe("agent routine tool", () => {
 			const requests = f.call.mock.calls.map(
 				(call) => (call[1] as { p_request: { effort?: string } }).p_request.effort,
 			);
-			expect(requests).toEqual(["high", "medium"]);
+			// The kernel starts a new routine at medium and keeps a saved one's effort when none is sent.
+			expect(requests).toEqual(["high", undefined]);
 			const bad = await f.boundary.invoke("routine_e3", "qorpera", "manage_routine", { ...weekly, effort: "max" });
 			expect(bad.success).toBe(false);
 			expect(f.call).toHaveBeenCalledTimes(2);
@@ -159,6 +159,61 @@ describe("agent routine tool", () => {
 			f.run.close();
 		}
 	});
+	it("compiles a dynamic routine to one next run and concludes with a reason", async () => {
+		const f = await fixture();
+		try {
+			const timed = await f.boundary.invoke("d1", "qorpera", "manage_routine", {
+				...weekly,
+				operationKey: "d1",
+				trigger: {
+					kind: "dynamic",
+					firstRunAt: "2026-09-26T09:00:00+02:00",
+					timeZone: "Europe/Copenhagen",
+					report: "silent",
+				},
+			});
+			expect(timed.success, JSON.stringify(timed)).toBe(true);
+			const now = await f.boundary.invoke("d2", "qorpera", "manage_routine", {
+				...weekly,
+				operationKey: "d2",
+				trigger: { kind: "dynamic", timeZone: "Europe/Copenhagen" },
+			});
+			expect(now.success, JSON.stringify(now)).toBe(true);
+			const [first, second] = f.call.mock.calls.map((call) => (call[1] as { p_request: any }).p_request);
+			expect(first.trigger).toEqual({
+				kind: "once",
+				at: "2026-09-26T07:00:00.000Z",
+				timeZone: "Europe/Copenhagen",
+				replyPolicy: "silent",
+			});
+			// Without firstRunAt the kernel stamps the save instant, so a retry is the same request.
+			expect(second.trigger).toEqual({ kind: "once", timeZone: "Europe/Copenhagen", replyPolicy: "optional" });
+			const limited = await f.boundary.invoke("d3", "qorpera", "manage_routine", {
+				...weekly,
+				operationKey: "d3",
+				maxOccurrences: 3,
+				trigger: { kind: "dynamic", timeZone: "UTC" },
+			});
+			expect(limited.success).toBe(false);
+			expect(limited.contentItems[0].text).toContain("a dynamic routine takes no maxOccurrences");
+			const done = await f.boundary.invoke("d4", "qorpera", "manage_routine", {
+				action: "conclude",
+				operationKey: "d4",
+				routineKey: "morning-queue",
+				summary: "The queue has stayed empty for a month.",
+			});
+			expect(done.success, JSON.stringify(done)).toBe(true);
+			expect((f.call.mock.calls[2]?.[1] as { p_request: unknown }).p_request).toEqual({
+				action: "conclude",
+				operationKey: "d4",
+				routineKey: "morning-queue",
+				summary: "The queue has stayed empty for a month.",
+			});
+			expect(f.call).toHaveBeenCalledTimes(3);
+		} finally {
+			f.run.close();
+		}
+	});
 	it.each([
 		["another agent", { staffAgentId: randomUUID() }],
 		["a sponsor", { sponsorBindingId: randomUUID() }],
@@ -168,6 +223,9 @@ describe("agent routine tool", () => {
 		["an unknown time zone", { trigger: { kind: "weekly", localTime: "08:00", timeZone: "Mars/Olympus" } }],
 		["a path escape", { trigger: { kind: "file_change", path: "../secrets", timeZone: "UTC" } }],
 		["equal quiet bounds", { quietHours: { start: "08:00", end: "08:00", timeZone: "UTC" } }],
+		["a dynamic routine without a time zone", { trigger: { kind: "dynamic" } }],
+		["a dynamic routine with a cadence", { trigger: { kind: "dynamic", timeZone: "UTC", minutes: 30 } }],
+		["an unreadable first run", { trigger: { kind: "dynamic", timeZone: "UTC", firstRunAt: "tomorrow" } }],
 	])("rejects %s before dispatch", async (_label, extra) => {
 		const f = await fixture();
 		try {
@@ -205,6 +263,150 @@ describe("agent routine tool", () => {
 		} finally {
 			f.run.close();
 			forged.run.close();
+		}
+	});
+});
+
+describe("dynamic routine decision tool", () => {
+	async function decision(result: (request: Record<string, unknown>, runId: string) => unknown) {
+		const { binding, authority } = nativeToolAuthorityFixture();
+		const run = await CloudNativeToolRun.open(
+			binding,
+			{ describeToolAuthority: async () => authority },
+			new AbortController().signal,
+		);
+		const decided = vi.fn();
+		const call = vi.fn<CloudCompanyPathControl["call"]>(async (_method, args) =>
+			result((args as { p_request: Record<string, unknown> }).p_request, binding.runId),
+		);
+		const boundary = new CloudNativeToolBoundary({
+			companyId: run.identity.companyId,
+			runId: run.identity.runId,
+			identity: run.identity,
+			tools: [cloudRoutineDecisionTool(binding, run.identity, { call }, { decided })],
+			assertActive: (signal) => run.assertActive(signal),
+			signal: run.signal,
+		});
+		return { binding, run, call, boundary, decided };
+	}
+	const receipt = (request: Record<string, unknown>, runId: string) => ({
+		schema: "qorpera.agent-routine-receipt/v1",
+		runId,
+		receiptId: randomUUID(),
+		action: request.action === "next" ? "upsert" : "conclude",
+		routine: { routineKey: "invoice-watch", status: request.action === "next" ? "active" : "concluded" },
+	});
+	it("sets the next run with changed instructions, and records that the run decided", async () => {
+		const f = await decision(receipt);
+		try {
+			const next = await f.boundary.invoke("n1", "qorpera", "decide_routine", {
+				action: "next",
+				operationKey: "next-1",
+				at: "2026-09-26T09:00:00+02:00",
+				intent: "Invoice 42 is still open. Remind finance tomorrow if it still is.",
+			});
+			expect(next.success, JSON.stringify(next)).toBe(true);
+			expect(f.call.mock.calls[0]?.slice(0, 2)).toEqual([
+				"qorpera_decide_agent_routine",
+				{
+					p_binding: f.binding,
+					p_request: {
+						action: "next",
+						operationKey: "next-1",
+						at: "2026-09-26T07:00:00.000Z",
+						intent: "Invoice 42 is still open. Remind finance tomorrow if it still is.",
+					},
+				},
+			]);
+			expect(f.decided).toHaveBeenCalledTimes(1);
+			expect(next.completesTurn).toBeUndefined();
+		} finally {
+			f.run.close();
+		}
+	});
+	it("concludes, and treats a routine that already moved on as decided", async () => {
+		const settled = await decision((_request, runId) => ({
+			schema: "qorpera.agent-routine-decision/v1",
+			runId,
+			state: "settled",
+			routine: { routineKey: "invoice-watch", status: "paused" },
+		}));
+		const f = await decision(receipt);
+		try {
+			const done = await f.boundary.invoke("c1", "qorpera", "decide_routine", {
+				action: "conclude",
+				operationKey: "done-1",
+				summary: "Invoice 42 was paid.",
+			});
+			expect(done.success, JSON.stringify(done)).toBe(true);
+			expect((f.call.mock.calls[0]?.[1] as { p_request: unknown }).p_request).toEqual({
+				action: "conclude",
+				operationKey: "done-1",
+				summary: "Invoice 42 was paid.",
+			});
+			expect(f.decided).toHaveBeenCalledTimes(1);
+			const moved = await settled.boundary.invoke("s1", "qorpera", "decide_routine", {
+				action: "conclude",
+				operationKey: "done-2",
+				summary: "Done.",
+			});
+			expect(moved.success).toBe(true);
+			expect(JSON.parse(moved.contentItems[0].text).content.text).toContain('"state":"settled"');
+			expect(settled.decided).toHaveBeenCalledTimes(1);
+		} finally {
+			f.run.close();
+			settled.run.close();
+		}
+	});
+	it("shows a refusal's reason without counting it as the decision", async () => {
+		const f = await decision((_request, runId) => ({
+			schema: "qorpera.agent-routine-decision/v1",
+			runId,
+			state: "refused",
+			reason: "The routine ends at 2026-09-27T00:00:00Z. Choose an earlier time or conclude it.",
+		}));
+		try {
+			const late = await f.boundary.invoke("r1", "qorpera", "decide_routine", {
+				action: "next",
+				operationKey: "late",
+				at: "2026-10-01T09:00:00Z",
+			});
+			expect(late.success).toBe(true);
+			expect(late.contentItems[0].text).toContain("Choose an earlier time or conclude it.");
+			expect(f.decided).not.toHaveBeenCalled();
+		} finally {
+			f.run.close();
+		}
+	});
+	it.each([
+		["no time", { action: "next", operationKey: "k" }, "at must be"],
+		["an unreadable time", { action: "next", operationKey: "k", at: "soon" }, "at must be"],
+		["no summary", { action: "conclude", operationKey: "k" }, ""],
+		["a routine key", { action: "conclude", operationKey: "k", summary: "x", routineKey: "other" }, ""],
+		["another action", { action: "remove", operationKey: "k" }, "action must be next or conclude"],
+	])("refuses %s before dispatch", async (_label, value, reason) => {
+		const f = await decision(receipt);
+		try {
+			const response = await f.boundary.invoke("bad", "qorpera", "decide_routine", value);
+			expect(response.success).toBe(false);
+			expect(response.contentItems[0].text).toContain(`INVALID_ARGUMENTS${reason ? `: ${reason}` : ""}`);
+			expect(f.call).not.toHaveBeenCalled();
+		} finally {
+			f.run.close();
+		}
+	});
+	it("refuses a receipt for another run", async () => {
+		const f = await decision((request) => receipt(request, randomUUID()));
+		try {
+			const forged = await f.boundary.invoke("f", "qorpera", "decide_routine", {
+				action: "conclude",
+				operationKey: "k",
+				summary: "Done.",
+			});
+			expect(forged.success).toBe(false);
+			expect(f.decided).not.toHaveBeenCalled();
+		} finally {
+			f.run.close();
 		}
 	});
 });
