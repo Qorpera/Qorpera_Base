@@ -1,12 +1,13 @@
 -- @fixture 396_runtime_coding_executor.test.sql until "-- 2. The turn as the runner sees it"
--- One lock order for a coding session's rows (v117): Company File, todo, worker,
--- coding session, then the session's turn or machine. Each race below makes two
--- real calls meet on one session in the order that deadlocked before: a third
--- connection holds one row, the first call starts and waits there, the second
--- starts and waits too, and the holder lets go. With one order the second call
--- waits behind the first and both finish; before, one of them was killed with
--- "deadlock detected". Row locks show only across connections, so the dispatch
--- fixture above is committed here and removed again at the end.
+-- One lock order for a coding session's rows (v117): the company's profile fence
+-- and Company File, todo, worker, coding session, then the session's turn or
+-- machine. Each race below makes two real calls meet on one session in the order
+-- that deadlocked before: a third connection holds one row, the first call starts
+-- and waits there, the second starts and waits too, and the holder lets go. With
+-- one order the second call waits behind the first and both finish; before, one
+-- of them was killed with "deadlock detected". Row locks show only across
+-- connections, so the dispatch fixture above is committed here and removed again
+-- at the end.
 
 -- What the races need outlives this transaction.
 reset role;
@@ -41,9 +42,10 @@ commit;
 select set_config('qorpera_test.lock_' || name || '_pid', pid::text, false)
 from unnest(array['first','second']) name, lateral dblink('lock_' || name, 'select pg_backend_pid()') as backend(pid integer);
 
--- The holder locks one row; the first call starts and must wait, then the second; the holder lets go.
--- Each call's result, or its error.
-create function pg_temp.lock_race(p_hold text, p_first text, p_first_claims jsonb, p_second text, p_second_claims jsonb)
+-- The holder locks one row; the first call starts and must wait, then the second (which may instead
+-- finish at once when it needs nothing the first holds); the holder lets go. Each call's result, or its error.
+create function pg_temp.lock_race(p_hold text, p_first text, p_first_claims jsonb, p_second text, p_second_claims jsonb,
+	p_second_waits boolean default true)
 returns jsonb language plpgsql as $$
 declare v_name text; v_pid integer; v_value jsonb; v_outcome jsonb := '{}'::jsonb;
 begin
@@ -58,7 +60,7 @@ begin
 			exit when cardinality(pg_blocking_pids(v_pid)) > 0 or dblink_is_busy('lock_' || v_name) = 0;
 			perform pg_sleep(0.025);
 		end loop;
-		if cardinality(pg_blocking_pids(v_pid)) = 0 then
+		if cardinality(pg_blocking_pids(v_pid)) = 0 and (v_name = 'first' or p_second_waits) then
 			raise exception 'Lock race: the % call did not wait for the held row', v_name; end if;
 	end loop;
 	perform dblink_exec('lock_holder', 'rollback');
@@ -144,10 +146,10 @@ begin
 end $$;
 
 -- 3. The agent cancels while the executor begins the turn. The begin took the session first. Now it
---    waits for the todo; the cancel, queued behind it, already key-shares the company's profile row (its
---    operation receipt references it), so the turn's wake admission refuses at once (55P03, its
---    fail-fast for producers that hold other locks) instead of waiting in a cycle. The cancel lands, and
---    nothing of the turn remains.
+--    waits for the todo; the cancel, queued behind it, already holds the company's profile fence (every
+--    agent tool call takes it first), so the turn's wake admission refuses at once (55P03, its fail-fast
+--    for producers that hold other locks) instead of waiting in a cycle. The cancel lands, and nothing of
+--    the turn remains.
 select pg_temp.lock_next_turn('Also cover the group chat composer.', '60200000-0000-4000-8000-000000000002');
 do $$
 declare v_worker public.qorpera_runtime_workers := pg_temp.worker_row('fix-send'); v_outcome jsonb;
@@ -208,7 +210,27 @@ begin
 		'The admission lands first, then the turn''s own detach: ' || v_outcome::text);
 end $$;
 
--- 6. The helper is internal.
+-- 6. The agent edits the todo while the executor admits the turn to its machine. The admission locks the
+--    worker, never the todo: its node reservation waits for the company's profile fence, which the todo
+--    tool holds while it locks the todo, so the admission must not hold the todo then.
+do $$
+declare v_worker public.qorpera_runtime_workers := pg_temp.worker_row('fix-send'); v_outcome jsonb;
+begin
+	v_outcome := pg_temp.lock_race(pg_temp.lock_row('qorpera_coding_sessions', 'worker_id', v_worker.id),
+		format($q$select public.qorpera_authorize_coding_machine_run(%L, %L, %L, %L::jsonb, %L)$q$, v_worker.id,
+			current_setting('qorpera_test.lock_lease'), current_setting('qorpera_test.coding_binding'),
+			current_setting('qorpera_test.coding_storage'), repeat('c', 64)),
+		'{"role":"service_role"}',
+		format($q$select public.qorpera_manage_agent_todo(%L::jsonb, %L::jsonb)$q$, current_setting('qorpera_test.parent_binding'),
+			'{"action":"upsert","operationKey":"lock-order-todo-1","todoKey":"composer-latency","title":"Fix the delay after send, then the group chat"}'),
+		'{"role":"service_role"}', false);
+	perform pg_temp.lock_race_ok(v_outcome, 'agent todo edit against machine admission');
+	perform pg_temp.wake_assert(v_outcome #>> '{first,result,intent}' = 'run'
+		and (select title from public.qorpera_runtime_agent_todos where id = v_worker.todo_id) = 'Fix the delay after send, then the group chat',
+		'The todo edit and the admission both land: ' || v_outcome::text);
+end $$;
+
+-- 7. The helper is internal.
 select pg_temp.wake_assert(not has_function_privilege(role_name, 'public.qorpera_lock_coding_worker(uuid)', 'EXECUTE'),
 	'Only the kernel locks a coding worker: ' || role_name)
 from unnest(array['anon','authenticated','service_role','qorpera_secret_broker']) role_name;

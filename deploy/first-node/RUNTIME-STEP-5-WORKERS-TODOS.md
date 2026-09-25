@@ -146,7 +146,7 @@ change to any migration needs a new activation, never an edit of this one.
 - Locks are taken todo first, then worker, in every operation, and the drain
   never waits for either, so a parent cancelling while its worker reports cannot
   deadlock. A coding session (Step 9) extends the order: todo, worker, coding
-  session, then the session's turn or machine. Four coding calls broke it until
+  session, then the session's turn or machine. Five coding calls broke it until
   runtime v117 (`20260925117000_runtime_coding_lock_order`): the owner's answer,
   the executor's begin and completion, and machine admission and detach. SQL
   test 602 races each of those pairs across two connections.
