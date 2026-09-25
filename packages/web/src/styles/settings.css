@@ -258,7 +258,7 @@
 .settings-dialog [hidden] { display: none; }
 @media (hover: none) { .company-person .person-actions { opacity: 1; } }
 /* Narrow windows and tablets keep the earlier rail, so the content keeps its width. 1000 design
- * pixels is 1400 on a mouse screen at 140%: a 13" or 14" laptop keeps the large rail. */
+ * pixels is 1300 on a mouse screen at 130%: a 13" or 14" laptop keeps the large rail. */
 @media (max-width: 1000px) {
  .settings-dialog { grid-template-columns: 228px minmax(0, 1fr); }
  .settings-nav { font-size: 13px; }

@@ -1705,7 +1705,7 @@ describe("messages between two agents (contract 14.6)", () => {
 
 describe("the composer at a scale that makes one line fractional", () => {
 	/** The stylesheets as the build draws them at 125% (scripts/design-px.mjs), resolved to plain pixels for jsdom.
-	 * The app ships at tokens.css's --ui-scale (140%, a line of 58.8); 125% keeps the expected sums exact. */
+	 * The app ships at tokens.css's --ui-scale (130%, a line of 54.6); 125% keeps the expected sums exact. */
 	function drawAt125(): HTMLStyleElement {
 		const style = document.createElement("style");
 		// jsdom settles a conflict by order, not specificity, so app.css's bare `textarea` rule goes first;

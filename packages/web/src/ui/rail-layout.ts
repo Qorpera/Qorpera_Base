@@ -8,13 +8,14 @@ import { uiScale } from "./scale.ts";
  * app's scale. */
 const COMPACT = 80;
 const MIN = 240;
-/** A tenth narrower than the earlier 456px (half again the desktop's 304px rail), chosen when the app was first drawn larger. */
-const DEFAULT = 410;
+/** Two tenths off the earlier 456px (half again the desktop's 304px rail), chosen as the app was drawn larger.
+ * Three pinned cards fit a row at this width (four need about 393). */
+const DEFAULT = 369;
 /** The rail may take at most two fifths of the window, a touch wider than a Messages sidebar. */
 const MAX_SHARE = 0.4;
-/** Version 3 came with the 410px default: widths stored before it are not carried over,
+/** Version 4 came with the 369px default: widths stored before it are not carried over,
  * so every member starts once from the new default. */
-const STORAGE_KEY = "qorpera.web.rail-width.v3";
+const STORAGE_KEY = "qorpera.web.rail-width.v4";
 
 /** Only a browser layout preference. Company navigation remains canonical. */
 export class RailLayout {

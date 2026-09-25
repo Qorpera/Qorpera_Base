@@ -51,7 +51,7 @@ test("width breakpoints stay as written for a coarse pointer and are multiplied 
 
 test("tokens.css declares the scale and --px, and the minimized computer keeps screen pixels", () => {
 	const tokens = readFileSync(join(web, "src/styles/tokens.css"), "utf8");
-	assert.equal(readUiScale(join(web, "src/styles/tokens.css")), 1.4);
+	assert.equal(readUiScale(join(web, "src/styles/tokens.css")), 1.3);
 	assert.match(tokens, /--px: calc\(var\(--ui-scale\) \* 1px\);/);
 	assert.match(tokens, /@media \(pointer: coarse\) \{\s*:root \{ --ui-scale: 1; \}\s*\}/);
 	const conversation = readFileSync(join(web, "src/styles/conversation.css"), "utf8");
