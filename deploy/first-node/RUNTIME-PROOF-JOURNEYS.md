@@ -83,13 +83,13 @@ One JSON file `outputs/runtime-proof/<journey>-<yyyymmddThhmmZ>.json`:
 | J04 | Concurrent todo updates keep the Company File at the newest revision | 5, 0 | 6 | node | BLOCKED on v111; read-only audit now |
 | J05 | An agent can page through more than 32 todos and 16 workers | 5 | 14 | node | BLOCKED on v112; baseline now |
 | J06 | Sponsor revocation fences queued and future work | 0, 2, 3, 8 | 2, 6, 17, 29 | node | ready |
-| J07 | Member removal fences that member's queued work | 0 | 2, 6 | node | ready (needs re-invite path) |
+| J07 | Member removal fences that member's access | 0 | 2, 6 | node | PASS 2026-09-25 |
 | J08 | Lost response: a retried member post lands once | 1, 0 | 8, 18 | node | ready |
 | J09 | Lost response inside tools: hiring, memory conflict, long card keys | 6, 8, 1 | 11, 15, 16 | node | BLOCKED on v108, v110 |
 | J10 | Worker continuation: parent stays responsive, revives once | 5 | 12, 14 | node | ready |
 | J11 | Coding follow-up keeps the question and answer | 9 | 14 | deployed | BLOCKED on v113; baseline with Jonas's OK |
 | J12 | Coding retry after executor loss starts clean | 9 | 14 | node | BLOCKED on v113 |
-| J13 | Fresh company formation | 0, 10 | 3, 20, 21 | node | ready |
+| J13 | Fresh company formation | 0, 10 | 3, 20, 21 | node + deployed | node part run; first run needs a model login in the new company (Jonas) |
 | J14 | Connector disconnect fences the next run | 7, 2 | 16, 17 | deployed | NEEDS Jonas (test connection) |
 | J15 | Clients-closed continuation across wake kinds | 3, 5, 8 | 1, 9, 12 | node | ready |
 | J16 | Hiring: new coworker exists once and runs its first run | 8, 10 | 4, 11 | node | ready (happy path) |
@@ -356,6 +356,13 @@ coordinator are told the journey is ready for them.
   direction proposal (or an explicit question) reaches the founder.
 - **Cleanup:** delete the test company through the owner delete path after the
   evidence is kept.
+- **Learned 2026-09-25:** a new company has no model connection, so its
+  first-run record is queued but no first-run wake exists until a member
+  connects a model account there (connections belong to one company). The
+  node-tier part therefore proves the seed only; the full journey runs in the
+  deployed tier: Jonas creates a company in the web app and connects his model
+  account (also stress finding 4, R01), then the Co-Founder's first run is
+  observed to completion.
 
 ### J14 Connector disconnect
 
