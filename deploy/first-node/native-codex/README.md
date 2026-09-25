@@ -118,8 +118,9 @@ Separate actual-binary cases revoke or stall authority before the next request.
 The unpatched official binary and the older result-only patch must be rejected
 before a model request. The default GPT inventory must expose only registered
 Qorpera tools, with no code-mode execution or wait tools.
-Local, remote-v1 and remote-v2 compaction each have success and revocation
-cases: earlier tool results remain fenced, runtime laws survive reconstruction,
+Local and remote-v2 compaction each have success and revocation cases (Codex
+0.155.1 no longer has remote-v1; the older proofs below still include it):
+earlier tool results remain fenced, runtime laws survive reconstruction,
 forged compaction instructions do not acquire authority, and revocation denies
 the next provider request and effect. These checks are also mandatory in the
 standalone Linux fixture for both the synthetic model and the provider default.
@@ -169,8 +170,8 @@ compaction checks. These run in a disposable Linux AMD64 container without
 external networking, using a scripted loopback provider. They do not establish
 real model interpretation or combined office/SQL/object-gateway readiness.
 
-The current [message-composition Linux proof](linux-x64-message-composition-proof.json)
-records the 308,143,880-byte release executable, SHA-256
+The [message-composition Linux proof](linux-x64-message-composition-proof.json),
+recorded on Codex 0.147.0, records the 308,143,880-byte release executable, SHA-256
 `9bd7b4e1148cb77820ea75943d03e7531757b3c74e47399df25a00477e58a7d0`.
 All four actual-binary composition scenarios pass, including early Writing
 while complete arguments are withheld and cancellation before delivery. The
@@ -180,6 +181,9 @@ new unit checks were run from the exact source modules using pinned `rustc
 harness was not run. The proof records the executed source hashes and actual
 Linux guest package manifest. These are scripted loopback checks in a dedicated
 Linux VM, with no real-model or production acceptance.
+The capture-images runner has since dropped remote-v1, so a re-run reports
+eight image/compaction checks instead of twelve, and the runner no longer
+matches the source hash recorded in this proof.
 
 The native checks also caught the namespace description exceeding the pinned
 app-server's 1,024-character bound. Its catalog summary is now compact, while

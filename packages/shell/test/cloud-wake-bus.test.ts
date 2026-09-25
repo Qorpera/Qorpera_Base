@@ -448,31 +448,12 @@ describe("authorized envelope", () => {
 		}
 	});
 	it("reuses the caller's durable operation key and checks the addressed receipt", async () => {
-		const { binding, authority } = fixture();
-		const run = await CloudNativeToolRun.open(
-			binding,
-			{ describeToolAuthority: async () => authority },
-			new AbortController().signal,
-		);
-		const message = {
-			recipientStaffId: randomUUID(),
-			operationKey: "handoff-1",
-			text: "Please examine the note.",
-			priority: true,
-		};
-		const receipt = {
-			schema: "qorpera.coworker-send/v1",
-			runId: binding.runId,
-			receiptId: randomUUID(),
-			occurrenceId: randomUUID(),
-			recipientStaffId: message.recipientStaffId,
-			status: "queued",
-		};
-		const call = vi.fn().mockResolvedValue(receipt);
+		const { run, message: toolArguments, receipt, call, bus } = await coworkerFixture();
+		const message = { ...toolArguments, priority: true };
 		try {
-			const bus = new CloudNativeWakeBus(run, { call });
 			expect(await bus.sendCoworker(message, run.signal)).toEqual(receipt);
 			expect(await bus.sendCoworker(message, run.signal)).toEqual(receipt);
+			expect(call.mock.calls[0][1]).toMatchObject({ p_operation_key: "handoff-1" });
 			expect(call.mock.calls[0][1]).toEqual(call.mock.calls[1][1]);
 			call.mockResolvedValueOnce({ ...receipt, recipientStaffId: randomUUID() });
 			await expect(bus.sendCoworker(message, run.signal)).rejects.toThrow("receipt");
@@ -655,7 +636,9 @@ describe("native coworker tool adapter", () => {
 			run.close();
 			const response = await boundary.invoke("closed", "qorpera", "send_coworker_message", message);
 			expect(response.success).toBe(false);
-			await expect(bus.sendCoworker({ ...message, priority: true }, new AbortController().signal)).rejects.toThrow();
+			await expect(bus.sendCoworker({ ...message, priority: true }, new AbortController().signal)).rejects.toThrow(
+				"Cloud tool authority unavailable",
+			);
 			expect(call).not.toHaveBeenCalled();
 		} finally {
 			boundary.close();
@@ -933,7 +916,7 @@ describe("held coworker messages (contract 14.6, second cut)", () => {
 				},
 				human.authority.identity,
 			),
-		).toThrow();
+		).toThrow("Invalid held coworker messages");
 	});
 	it("sends priority false to the kernel and accepts a held receipt", async () => {
 		const { binding, run, message, call, createBoundary } = await coworkerFixture();
