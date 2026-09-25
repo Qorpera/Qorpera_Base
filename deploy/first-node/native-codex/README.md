@@ -119,10 +119,11 @@ The unpatched official binary and the older result-only patch must be rejected
 before a model request. The default GPT inventory must expose only registered
 Qorpera tools, with no code-mode execution or wait tools.
 Local and remote-v2 compaction each have success and revocation cases (Codex
-0.155.1 no longer has remote-v1; the older proofs below still include it):
-earlier tool results remain fenced, runtime laws survive reconstruction,
-forged compaction instructions do not acquire authority, and revocation denies
-the next provider request and effect. These checks are also mandatory in the
+0.155.1 no longer has remote-v1; the release, direct-tools, capture-images and
+message-composition proofs below still include it): earlier tool results
+remain fenced, runtime laws survive reconstruction, forged compaction
+instructions do not acquire authority, and revocation denies the next provider
+request and effect. These checks are also mandatory in the
 standalone Linux fixture for both the synthetic model and the provider default.
 
 `node packages/shell/test/fixtures/run-native-codex-composition-probe.ts /absolute/native/codex`

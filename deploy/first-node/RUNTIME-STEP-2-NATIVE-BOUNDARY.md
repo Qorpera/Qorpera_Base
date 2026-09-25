@@ -175,7 +175,8 @@ multimodal/encrypted tool results fail closed. The callback covers the common
 HTTP, WebSocket and compaction request builder; the actual-binary acceptance
 below exercises HTTP. Additional actual-binary tests cover local, remote-v1
 and remote-v2 compaction, restored runtime laws, untrusted compaction output,
-and revocation during compaction. Full deployed context reconstruction with
+and revocation during compaction. (Remote-v1 was dropped with Codex 0.155.1;
+the tests now cover local and remote-v2.) Full deployed context reconstruction with
 real GPT and the complete guest boundary remains an integration gate.
 
 Do not infer the active tool set from configuration flags alone. With the

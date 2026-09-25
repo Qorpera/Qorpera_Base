@@ -313,7 +313,8 @@ loopback provider, not a real model or company credentials. Tests show that
 forbidden calls are denied even when emitted; they do not measure a model's
 propensity to follow prompt injection. Local, remote-v1 and remote-v2
 compaction restore the runtime laws, preserve fenced prior results and deny
-continued work after revocation. The HTTP provider path was exercised;
+continued work after revocation. (Remote-v1 was dropped with Codex 0.155.1;
+the tests now cover local and remote-v2.) The HTTP provider path was exercised;
 deployed provider/network and complete guest acceptance remain separate.
 The [release proof](native-codex/linux-x64-release-proof.json) contains the actual
 cloud-node binary/fixture hashes, six compaction results, retained archive paths
