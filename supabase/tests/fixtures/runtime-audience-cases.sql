@@ -6,6 +6,49 @@ returns void language plpgsql as $$
 begin if p_value is distinct from true then raise exception '%',p_message; end if; end
 $$;
 
+-- The provenance driver preserves distinct caller owners across wrapper
+-- replacement. Verify every live direct edge, not only the first list call.
+do $$
+declare v_caller regprocedure; v_role text; v_wrapper regprocedure; v_predecessor regprocedure;
+begin
+	foreach v_caller in array array[
+		'public.qorpera_company_path_require(jsonb,text,text)'::regprocedure,
+		'public.qorpera_list_company_paths(uuid,text,text,uuid,integer,jsonb)'::regprocedure,
+		'public.qorpera_list_member_company_path_commands(uuid,uuid,integer)'::regprocedure,
+		'public.qorpera_list_company_path_proposals(uuid,uuid,integer)'::regprocedure,
+		'public.qorpera_company_path_approved_actor(uuid,text)'::regprocedure,
+		'public.qorpera_presence_path_routes(jsonb,text[],boolean)'::regprocedure,
+		'public.qorpera_list_member_company_snapshot_paths(uuid,uuid,text,integer)'::regprocedure
+	] loop
+		perform pg_temp.audience_assert((select prosecdef and has_function_privilege(proowner,
+			'public.qorpera_company_path_allowed(jsonb,text,text)','EXECUTE') from pg_proc where oid=v_caller),
+			format('Company path caller lost policy EXECUTE: %s',v_caller));
+	end loop;
+	foreach v_role in array array['anon','authenticated','service_role','qorpera_secret_broker'] loop
+		foreach v_wrapper in array array[
+			'public.qorpera_company_path_allowed(jsonb,text,text)'::regprocedure,
+			'public.qorpera_company_path_allowed_before_memory(jsonb,text,text)'::regprocedure,
+			'public.qorpera_company_path_allowed_before_workers(jsonb,text,text)'::regprocedure,
+			'public.qorpera_company_path_allowed_before_hiring(jsonb,text,text)'::regprocedure
+		] loop
+			perform pg_temp.audience_assert(not has_function_privilege(v_role,v_wrapper,'EXECUTE'),
+				format('Internal path policy %s exposed to API role %s',v_wrapper,v_role));
+		end loop;
+	end loop;
+	for v_wrapper,v_predecessor in select * from (values
+		('public.qorpera_company_path_allowed(jsonb,text,text)'::regprocedure,
+		 'public.qorpera_company_path_allowed_before_memory(jsonb,text,text)'::regprocedure),
+		('public.qorpera_company_path_allowed_before_memory(jsonb,text,text)'::regprocedure,
+		 'public.qorpera_company_path_allowed_before_workers(jsonb,text,text)'::regprocedure),
+		('public.qorpera_company_path_allowed_before_workers(jsonb,text,text)'::regprocedure,
+		 'public.qorpera_company_path_allowed_before_hiring(jsonb,text,text)'::regprocedure)
+	) edge(wrapper,predecessor) loop
+		perform pg_temp.audience_assert((select has_function_privilege(proowner,v_predecessor,'EXECUTE')
+			from pg_proc where oid=v_wrapper),format('Company path wrapper lost predecessor EXECUTE: %s',v_wrapper));
+	end loop;
+end
+$$;
+
 do $$
 declare v_binding jsonb := current_setting('qorpera_test.path_binding')::jsonb;
 	v_environment uuid := '29000000-0000-4000-8000-000000000020';

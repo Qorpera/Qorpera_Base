@@ -11,6 +11,7 @@ on:
       - 'scripts/test-hosted-db.test.mjs'
       - 'scripts/test-runtime-office-current-provider-activation.mjs'
       - 'scripts/test-runtime-node-capacity.mjs'
+      - 'scripts/test-runtime-provenance.mjs'
 
 permissions:
   contents: read
@@ -54,3 +55,23 @@ jobs:
 
       - name: Coding sessions recorded before per-turn history against disposable PostgreSQL
         run: node scripts/test-coding-turn-backfill.mjs
+
+  provenance:
+    name: Runtime provenance and historical upgrades
+    runs-on: ubuntu-26.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies without lifecycle scripts
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Verify runtime provenance, authority races and historical upgrades
+        run: node scripts/test-runtime-provenance.mjs
