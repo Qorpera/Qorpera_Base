@@ -14,7 +14,7 @@ select set_config('qorpera_test.continuity_owner', jsonb_build_object(
 	'exp', floor(extract(epoch from statement_timestamp()))::bigint + 300
 )::text, true);
 select set_config('request.jwt.claims', current_setting('qorpera_test.continuity_owner'), true);
-set local role authenticated;
+-- Privileged legacy-company fixture; client creation now uses founding.
 select set_config('qorpera_test.continuity_profile',
 	public.qorpera_create_hosted_profile('Continuity fixture', 'main', 1) ->> 'profile_id', true);
 reset role;

@@ -73,6 +73,7 @@ begin
         'hostBootId','63700000-0000-4000-8000-000000000003','hostUptimeMs',1000000,'physicalId','63700000-0000-4000-8000-000000000002',
         'guestBootId','63700000-0000-4000-8000-000000000004','guestUptimeMs',100000,'observedAt',t,'state','running','evidenceSha256',repeat('a',64));
     checkpoint:=jsonb_build_object('permitId',id,'generation',1,'sample',sample);
+    perform pg_temp.wake_error(format('select public.qorpera_bind_coding_computer_permit(%L,%L)',checkpoint||'{"generation":2}',repeat('K',64)),'PGRST');
     again:=public.qorpera_bind_coding_computer_permit(checkpoint,repeat('K',64));
     perform pg_temp.wake_assert(again#>>'{permit,state}'='bound' and (select active_ms=0 from public.qorpera_computer_usage_streams where allocation_id=machine and epoch=e),'Bind never backfills VM uptime');
     sample:=sample||jsonb_build_object('previousObservationId',sample->'observationId','observationId',extensions.gen_random_uuid(),'hostUptimeMs',1000100,'guestUptimeMs',100100,'observedAt',t+interval '100 milliseconds');
@@ -102,6 +103,7 @@ begin
         'hostUptimeMs',1020200,'guestUptimeMs',null,'observedAt',t+interval '300 milliseconds','state','stopped');
     terminal:=jsonb_build_object('requestId','63700000-0000-4000-8000-000000000040','permitId',id,'generation',2,'sample',sample,'guardClosed',true);
     perform pg_temp.wake_error(format('select public.qorpera_finish_coding_computer_permit(%L,%L)',terminal||'{"guardClosed":false}',repeat('K',64)),'42501');
+    perform pg_temp.wake_error(format('select public.qorpera_finish_coding_computer_permit(%L,%L)',terminal||'{"generation":999}',repeat('K',64)),'PGRST');
     receipt:=public.qorpera_finish_coding_computer_permit(terminal,repeat('K',64));
     perform pg_temp.wake_assert(receipt->>'state'='closed' and receipt->>'validForMs'='0'
         and public.qorpera_finish_coding_computer_permit(terminal,repeat('K',64))=receipt

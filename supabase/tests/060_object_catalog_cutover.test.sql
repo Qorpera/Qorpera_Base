@@ -4,10 +4,10 @@
 -- the drift checks in 050; this suite proves the *source* changed, by
 -- forcing the two apart and watching which one the functions believe.
 
--- A profile created the same way clients create one, as the separation
--- suite's user A (fixtures are order-coupled and already present).
+-- A legacy profile belonging to the separation suite's user A
+-- (fixtures are order-coupled and already present).
 select set_config('request.jwt.claims', '{"sub":"80000000-0000-4000-8000-00000000000a","email":"sep-owner-a@example.test","role":"authenticated","user_metadata":{}}', false);
-set role authenticated;
+-- Privileged legacy-company fixture; client creation now uses founding.
 select set_config('qorpera_test.cutover_profile',
 	public.qorpera_create_hosted_profile('Cutover', 'main', 1) ->> 'profile_id', false);
 reset role;

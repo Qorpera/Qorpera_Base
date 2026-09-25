@@ -12,7 +12,7 @@ values
 	('95000000-0000-4000-8000-00000000000d', 'picture-stranger@example.test', statement_timestamp());
 
 select set_config('request.jwt.claims', '{"sub":"95000000-0000-4000-8000-00000000000a","email":"picture-owner@example.test","role":"authenticated","user_metadata":{}}', false);
-set role authenticated;
+-- Privileged legacy-company fixture; client creation now uses founding.
 select set_config('qorpera_test.picture_profile', public.qorpera_create_hosted_profile('Pictures', 'main', 1) ->> 'profile_id', false);
 reset role;
 

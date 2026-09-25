@@ -1,9 +1,16 @@
 begin;
+create function pg_temp.billing_conflict_envelope(p_message text,p_detail text) returns void language plpgsql as $$
+begin
+    if p_message::jsonb->>'code' is distinct from 'QRC01'
+        or coalesce(p_message::jsonb->>'message','')=''
+        or p_detail::jsonb is distinct from '{"status":409,"headers":{}}'::jsonb then
+        raise exception 'Application conflict lost its non-retrying PostgREST envelope'; end if;
+end $$;
 insert into auth.users(id,email) values('63300000-0000-4000-8000-000000000001','billing-sync@example.test');
 set local request.jwt.claims='{"role":"service_role"}';
 select public.qorpera_map_computer_billing_customer('63300000-0000-4000-8000-000000000001','cus_sync');
 select public.qorpera_map_computer_billing_customer('63300000-0000-4000-8000-000000000001','cus_sync');
-do $$ declare t timestamptz:=statement_timestamp()-interval '1 day'; p jsonb; first_claim jsonb; second_claim jsonb; begin
+do $$ declare conflict_message text; conflict_detail text; t timestamptz:=statement_timestamp()-interval '1 day'; p jsonb; first_claim jsonb; second_claim jsonb; begin
     p:=jsonb_build_object('subscriptionId','sub_sync','customerId','cus_sync','userId','63300000-0000-4000-8000-000000000001',
         'planKey','basis','planVersion',1,'status','active','periodStart',t,'periodEnd',t+interval '1 month');
     first_claim:=public.qorpera_begin_computer_billing_sync('evt_sync1','sub_sync',t,repeat('a',64));
@@ -13,7 +20,9 @@ do $$ declare t timestamptz:=statement_timestamp()-interval '1 day'; p jsonb; fi
     begin
         perform public.qorpera_finish_computer_billing_sync('evt_sync2',(first_claim->>'leaseToken')::uuid,p);
         raise exception 'Another event borrowed active lease';
-    exception when serialization_failure then null; end;
+    exception when sqlstate 'PGRST' then
+        get stacked diagnostics conflict_message=message_text,conflict_detail=pg_exception_detail;
+        perform pg_temp.billing_conflict_envelope(conflict_message,conflict_detail); end;
     perform public.qorpera_finish_computer_billing_sync('evt_sync1',(first_claim->>'leaseToken')::uuid,p);
     if public.qorpera_begin_computer_billing_sync('evt_sync1','sub_sync',t,repeat('a',64))->>'state'<>'completed' then
         raise exception 'Lost success reply did not recover exact completed event'; end if;
@@ -39,19 +48,23 @@ do $$ declare t timestamptz:=statement_timestamp()-interval '1 day'; p jsonb; fi
     begin
         perform public.qorpera_finish_computer_billing_sync('evt_retry',(first_claim->>'leaseToken')::uuid,p);
         raise exception 'Superseded lease committed';
-    exception when serialization_failure then null; end;
+    exception when sqlstate 'PGRST' then
+        get stacked diagnostics conflict_message=message_text,conflict_detail=pg_exception_detail;
+        perform pg_temp.billing_conflict_envelope(conflict_message,conflict_detail); end;
     update public.qorpera_computer_billing_syncs set lease_until=clock_timestamp()-interval '1 second' where subscription_id='sub_sync';
     begin
         perform public.qorpera_finish_computer_billing_sync('evt_retry',(second_claim->>'leaseToken')::uuid,p);
         raise exception 'Expired lease committed';
-    exception when serialization_failure then null; end;
+    exception when sqlstate 'PGRST' then
+        get stacked diagnostics conflict_message=message_text,conflict_detail=pg_exception_detail;
+        perform pg_temp.billing_conflict_envelope(conflict_message,conflict_detail); end;
     begin
         perform public.qorpera_map_computer_billing_customer('63300000-0000-4000-8000-000000000001','cus_other');
         raise exception 'Mapped owner customer was rebound';
     exception when unique_violation then null; end;
 end $$;
 insert into auth.users(id,email) values('63300000-0000-4000-8000-000000000002','billing-command@example.test');
-do $$ declare u uuid:='63300000-0000-4000-8000-000000000002'; q uuid:='63300000-0000-4000-8000-000000000020';
+do $$ declare conflict_message text; conflict_detail text; u uuid:='63300000-0000-4000-8000-000000000002'; q uuid:='63300000-0000-4000-8000-000000000020';
     c jsonb; r jsonb; p jsonb:='{"planKey":"basis","version":1,"tariffVersion":1,"priceId":"price_basis","returnUrl":"https://qorpera.test"}'; begin
     c:=public.qorpera_begin_computer_billing_command(u,'customer',q,'{}');
     if c->>'state'<>'claimed' then raise exception 'Customer command was not claimed'; end if;
@@ -83,7 +96,9 @@ do $$ declare u uuid:='63300000-0000-4000-8000-000000000002'; q uuid:='63300000-
     begin
         perform public.qorpera_finish_computer_billing_command((c->>'commandId')::uuid,(c->>'leaseToken')::uuid,'{}');
         raise exception 'Old command lease committed';
-    exception when serialization_failure then null; end;
+    exception when sqlstate 'PGRST' then
+        get stacked diagnostics conflict_message=message_text,conflict_detail=pg_exception_detail;
+        perform pg_temp.billing_conflict_envelope(conflict_message,conflict_detail); end;
     update public.qorpera_computer_billing_commands set created_at=clock_timestamp()-interval '23 hours',lease_until=null,lease_token=null where id=(r->>'commandId')::uuid;
     if public.qorpera_begin_computer_billing_command(u,'checkout',q,p)->>'state'<>'reconciliation_required' then
         raise exception 'Ambiguous command retried beyond safe provider idempotency window'; end if;

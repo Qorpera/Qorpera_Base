@@ -4,6 +4,7 @@ import { type Cloud, describeError } from "../cloud/client.ts";
 import { createWebCompanyAgents } from "../cloud/company-agents.ts";
 import { WebCompanyFiles } from "../cloud/company-files.ts";
 import { WebCompanyComputer } from "../cloud/computer.ts";
+import { ComputerBillingClient, type ComputerPlan } from "../cloud/computer-billing.ts";
 import { takeConnectorReturn } from "../cloud/connectors.ts";
 import { createWebMemberNotifications } from "../cloud/member-notifications.ts";
 import { createWebNativeSubscription } from "../cloud/native-subscription.ts";
@@ -38,7 +39,7 @@ import { HubController, renderHub } from "./views/hub.ts";
 import { LiveCompanyFileView } from "./views/live-company-file.ts";
 import { type MeetState, renderMeet } from "./views/meet.ts";
 import { NewConversationView } from "./views/new-conversation.ts";
-import { renderPlan } from "./views/plan.ts";
+import { type PlanBilling, renderPlan } from "./views/plan.ts";
 import { type SettingsTab, SettingsView } from "./views/settings.ts";
 import { noteConnectorReturn } from "./views/settings-services.ts";
 import { renderRail, renderTopbar, type ShellContext } from "./views/shell.ts";
@@ -193,11 +194,68 @@ export function mountApplication(
 	let teamFeedback: TeamFeedback = {};
 	let accountState: AccountViewState = {};
 	const accountPlan = h("div");
+	let accountBilling: PlanBilling = {};
+	let accountBillingClient: ComputerBillingClient | undefined;
+	let accountLifetime = new AbortController();
 	let meetState: MeetState = {};
 	let unsubscribeCompany: (() => void) | undefined;
 	let homeReason: string | undefined;
 
 	const render = debounce(() => void draw(), 10);
+
+	async function loadAccountBilling(revision: number): Promise<void> {
+		if (disposed || revision !== accountRevision || accountBilling.loading || !auth.userId) return;
+		const member = auth.userId;
+		accountBillingClient ??= new ComputerBillingClient(cloud, member, accountLifetime.signal, () => {
+			if (disposed || revision !== accountRevision || auth.userId !== member)
+				throw new Error("The account changed.");
+		});
+		accountBilling = { ...accountBilling, loading: true, error: undefined };
+		render();
+		try {
+			const [catalog, usage] = await Promise.all([accountBillingClient.catalog(), accountBillingClient.usage()]);
+			if (disposed || revision !== accountRevision) return;
+			accountBilling = { ...accountBilling, catalog, usage, loading: false };
+		} catch (error) {
+			if (disposed || revision !== accountRevision) return;
+			accountBilling = {
+				...accountBilling,
+				loading: false,
+				catalog: undefined,
+				usage: undefined,
+				error: describeError(error),
+			};
+		}
+		render();
+	}
+
+	async function accountBillingAction(revision: number, offer?: ComputerPlan): Promise<void> {
+		const client = accountBillingClient;
+		if (
+			disposed ||
+			revision !== accountRevision ||
+			!client ||
+			accountBilling.busy ||
+			accountBilling.loading ||
+			(!offer && !accountBilling.usage?.portalAvailable)
+		)
+			return;
+		accountBilling = { ...accountBilling, busy: true, error: undefined };
+		render();
+		try {
+			const url = offer ? await client.checkout(offer) : await client.portal();
+			if (disposed || revision !== accountRevision) return;
+			location.assign(url);
+		} catch (error) {
+			if (disposed || revision !== accountRevision) return;
+			accountBilling = { ...accountBilling, error: describeError(error) };
+		} finally {
+			if (!disposed && revision === accountRevision) {
+				accountBilling = { ...accountBilling, busy: false };
+				render();
+			}
+		}
+	}
 
 	function observeAccount(): void {
 		const currentHub = hub;
@@ -217,6 +275,11 @@ export function mountApplication(
 			accountUserId = userId;
 			pictures.reset();
 			accountRevision++;
+			accountLifetime.abort();
+			accountLifetime = new AbortController();
+			accountBillingClient = undefined;
+			accountBilling = {};
+			accountPlan.replaceChildren();
 			routeRevision++;
 			teardownCompany();
 			hub.dispose();
@@ -527,30 +590,21 @@ export function mountApplication(
 				renderHub(hub, main);
 			} else if (route.name === "account") {
 				const revision = accountRevision;
-				if (!accountState.loading && !accountState.loaded) {
-					accountState.loading = true;
-					void api
-						.getAccountEntitlement()
-						.then((entitlement) => {
-							if (disposed || accountRevision !== revision) return;
-							accountState = { ...accountState, loading: false, loaded: true, entitlement };
-							render();
-						})
-						.catch((error) => {
-							if (disposed || accountRevision !== revision) return;
-							accountState = { ...accountState, loading: false, loaded: true, error: describeError(error) };
-							render();
-						});
-				}
+				if (!accountBilling.loading && !accountBilling.catalog && !accountBilling.error)
+					void loadAccountBilling(revision);
 				renderAccount(auth, main, accountState, (next) => {
 					if (disposed || accountRevision !== revision) return;
 					accountState = { ...accountState, ...next };
 					render();
 				});
 				// The standalone account page shows the plan below the general settings.
-				// One panel across renders keeps an opened plan grid open; the general
-				// panel above already shows the account error.
-				renderPlan(accountPlan, accountState, undefined, {}, { showError: false });
+				// One panel across renders keeps an opened plan grid open.
+				renderPlan(accountPlan, accountState, undefined, {
+					...accountBilling,
+					refresh: () => void loadAccountBilling(revision),
+					checkout: (offer) => void accountBillingAction(revision, offer),
+					portal: () => void accountBillingAction(revision),
+				});
 				main.append(accountPlan);
 			}
 			return;
@@ -1083,6 +1137,7 @@ export function mountApplication(
 
 	return () => {
 		disposed = true;
+		accountLifetime.abort();
 		railLayout.dispose();
 		window.removeEventListener("languagechange", onLanguage);
 		window.removeEventListener("qorpera-language-change", onLanguage);

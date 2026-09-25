@@ -9,7 +9,7 @@ values
 	('b0000000-0000-4000-8000-0000000000bc', 'wake-outsider@example.test', statement_timestamp());
 
 select set_config('request.jwt.claims', '{"sub":"b0000000-0000-4000-8000-0000000000ba","email":"wake-owner@example.test","role":"authenticated","user_metadata":{}}', false);
-set role authenticated;
+-- Privileged legacy-company fixture; client creation now uses founding.
 select set_config('qorpera_test.wk_profile',
 	public.qorpera_create_hosted_profile('Wake Arbiter QA', 'main', 1) ->> 'profile_id', false);
 reset role;

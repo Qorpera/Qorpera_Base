@@ -44,6 +44,11 @@ on:
       - 'packages/runner-orchestrator/test/office-*.test.ts'
       - 'scripts/package-office-service-software-control*.mjs'
       - 'deploy/coding-worker/**'
+      - 'deploy/runtime-computers/**'
+      - 'packages/runner-orchestrator/test/*computer*.test.ts'
+      - 'scripts/package-runtime-computer-guard*.mjs'
+      - 'scripts/package-coding-executor*.mjs'
+      - 'supabase/functions/computer-billing/**'
       - 'packages/runtime/src/cloud-secret-*.ts'
       - 'packages/shell/test/cloud-connector-*.test.ts'
       - 'packages/shell/test/cloud-secret-*.test.ts'
@@ -130,6 +135,25 @@ jobs:
           test/office-self-update-mask.test.ts
           test/office-service-software-control.test.ts
 
+      - name: Test paid computer custody and office lifecycle
+        working-directory: packages/runner-orchestrator
+        run: >-
+          node ../../node_modules/vitest/dist/cli.js --run --maxWorkers=2
+          test/computer-paid-guard.test.ts
+          test/computer-usage-observer.test.ts
+          test/coding-computer-controller.test.ts
+          test/runtime-computer-controller.test.ts
+          test/runtime-computer-http-control.test.ts
+          test/lxd-provider-paid.test.ts
+          test/lxd-office-paid-computer.test.ts
+          test/lxd-office-operations.test.ts
+          test/lxd-office-creation-worker.test.ts
+          test/lxd-office-boot-worker.test.ts
+          test/lxd-office-lifecycle.test.ts
+          test/lxd-office-lifecycle-service.test.ts
+          test/lxd-office-resume-worker.test.ts
+          test/lxd-office-reset-worker.test.ts
+
       - name: Test coding session runtime contracts
         working-directory: packages/runtime
         run: >-
@@ -213,6 +237,11 @@ jobs:
           scripts/package-shared-execution-service.test.mjs
           scripts/office-image-self-update.test.mjs
           scripts/package-office-service-software-control.test.mjs
+          scripts/package-runtime-computer-guard.test.mjs
+          scripts/package-coding-executor.test.mjs
+
+      - name: Test computer billing with a fake payment provider
+        run: node --test supabase/functions/computer-billing/computer-billing.test.ts
 
       - name: Test node tidy-up
         run: node --test deploy/node-tidy/qorpera-node-tidy.test.mjs

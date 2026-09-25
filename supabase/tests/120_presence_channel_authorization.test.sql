@@ -11,7 +11,7 @@ values
 	('a0000000-0000-4000-8000-0000000000ac', 'presence-outsider@example.test', statement_timestamp());
 
 select set_config('request.jwt.claims', '{"sub":"a0000000-0000-4000-8000-0000000000aa","email":"presence-owner@example.test","role":"authenticated","user_metadata":{}}', false);
-set role authenticated;
+-- Privileged legacy-company fixture; client creation now uses founding.
 select set_config('qorpera_test.pr_profile',
 	public.qorpera_create_hosted_profile('Presence QA', 'main', 1) ->> 'profile_id', false);
 reset role;
@@ -114,8 +114,9 @@ reset role;
 -- A member of profile X gains nothing on profile Y's topic: the outsider
 -- creates their own profile and still cannot see the first one's presence.
 select set_config('request.jwt.claims', '{"sub":"a0000000-0000-4000-8000-0000000000ac","email":"presence-outsider@example.test","role":"authenticated","user_metadata":{}}', false);
-set role authenticated;
+-- Privileged legacy-company fixture; client creation now uses founding.
 select public.qorpera_create_hosted_profile('Presence QA Other', 'main', 1);
+set role authenticated;
 do $$
 declare v_seen integer;
 begin

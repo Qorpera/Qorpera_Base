@@ -7,7 +7,7 @@ select set_config(
 	'{"sub":"80000000-0000-4000-8000-00000000000a","email":"sep-owner-a@example.test","role":"authenticated","user_metadata":{}}',
 	false
 );
-set role authenticated;
+-- Privileged legacy-company fixture; client creation now uses founding.
 select set_config(
 	'qorpera_test.supabase_promotion_profile',
 	public.qorpera_create_hosted_profile('Supabase promotion', 'main', 1) ->> 'profile_id',

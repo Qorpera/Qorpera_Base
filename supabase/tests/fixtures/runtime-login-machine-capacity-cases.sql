@@ -38,6 +38,12 @@ select pg_temp.wake_error($q$select public.qorpera_reserve_runtime_node_machine(
 
 savepoint membership_revoked;
 reset role;
+-- The login owner can leave only after another founder accepts usage responsibility.
+update public.qorpera_profile_members set role='owner' where profile_id='30000000-0000-4000-8000-000000000010'
+ and user_id='30000000-0000-4000-8000-000000000002';
+select pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000002');
+select public.qorpera_accept_computer_usage_ownership('30000000-0000-4000-8000-000000000010','30000000-0000-4000-8000-000000000001');
+select pg_temp.path_claims('service_role');
 delete from public.qorpera_profile_members where profile_id='30000000-0000-4000-8000-000000000010' and user_id='30000000-0000-4000-8000-000000000001';
 set local role service_role;
 select pg_temp.wake_error('select pg_temp.login_machine_reserve()','42501');

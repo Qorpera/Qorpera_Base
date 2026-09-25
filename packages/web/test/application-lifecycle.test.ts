@@ -9,7 +9,7 @@ import { renderRail } from "../src/app/views/shell.ts";
 import { CloudRpcError } from "../src/cloud/client.ts";
 import type { HostedCompanyOrganization } from "../src/cloud/organization.ts";
 import type { AgentThreadHandle } from "../src/cloud/parse.ts";
-import type { HostedAccountEntitlement, HostedProfile } from "../src/cloud/types.ts";
+import type { HostedProfile } from "../src/cloud/types.ts";
 import {
 	deferred,
 	fixture,
@@ -69,6 +69,27 @@ function mounted(hash = "#/") {
 	document.body.append(root);
 	dispose = mountApplication(root, f.cloud, f.api);
 	return { ...f, root };
+}
+
+function computerUsage(planKey: string, hours: number) {
+	return {
+		schema: "qorpera.my-computer-usage/v1",
+		meterMode: "paid",
+		checkoutAvailable: false,
+		portalAvailable: true,
+		runtimeAccountingReady: true,
+		subscriptions: [
+			{ planKey, planVersion: 1, status: "active", periodStart: "2026-09-01", periodEnd: "2026-10-01" },
+		],
+		balance: {
+			unit: "standard_computer_microsecond",
+			issuedUs: String(hours * 3_600_000_000),
+			reservedUs: "0",
+			debitedUs: "0",
+			availableUs: String(hours * 3_600_000_000),
+		},
+		standardComputer: { cpuMillis: 2000, memoryBytes: 4 * 1024 ** 3, tariffVersion: 1 },
+	};
 }
 
 function executionTransport() {
@@ -475,23 +496,30 @@ describe("account and route ownership", () => {
 		expect(root.textContent).toContain("Account B");
 	});
 
-	it("loads entitlement and friends afresh for the new account", async () => {
-		const { api, auth, root } = mounted("#/account");
+	it("loads computer subscriptions, allowance and friends afresh for the new account", async () => {
+		const { api, auth, root, cloud } = mounted("#/account");
+		let usage = computerUsage("Account A private plan", 17);
+		const rpc = vi.spyOn(cloud, "rpc").mockImplementation(async (method) => {
+			if (method === "qorpera_computer_plan_catalog")
+				return { schema: "qorpera.computer-plan-catalog/v1", plans: [], meterMode: "paid" };
+			if (method === "qorpera_my_computer_usage") return usage;
+			throw new Error(`Unexpected fixture RPC: ${method}`);
+		});
 		await draw();
 		expect(root.textContent).toContain("Account A private plan");
-		const entitlement: HostedAccountEntitlement = {
-			planKey: "Account B plan",
-			billingMode: "fixture",
-			featureSet: "fixture",
-			storageAllocation: "fixture",
-			source: "fixture",
-		};
-		vi.mocked(api.getAccountEntitlement).mockResolvedValue(entitlement);
+		expect(root.textContent).toContain("17 standard hours available");
+		usage = computerUsage("Account B plan", 29);
 		vi.mocked(api.listProfiles).mockResolvedValue([profileB]);
 		auth(userB);
+		await vi.advanceTimersByTimeAsync(0);
+		expect(root.textContent).not.toContain("Account A private plan");
+		expect(root.textContent).not.toContain("17 standard hours available");
 		await draw();
 		expect(root.textContent).toContain("Account B plan");
+		expect(root.textContent).toContain("29 standard hours available");
 		expect(root.textContent).not.toContain("Account A private plan");
+		expect(rpc.mock.calls.filter(([method]) => method === "qorpera_my_computer_usage")).toHaveLength(2);
+		expect(api.getAccountEntitlement).not.toHaveBeenCalled();
 		expect(api.listFriends).not.toHaveBeenCalled();
 		const openFriends = () => {
 			root.querySelector<HTMLButtonElement>(".account-trigger")!.click();
@@ -507,6 +535,42 @@ describe("account and route ownership", () => {
 		openFriends();
 		await draw();
 		expect(api.listFriends).toHaveBeenCalledTimes(2);
+	});
+
+	it("rejects old account plan responses and detached payment actions even after signing back in", async () => {
+		const { auth, root, cloud } = mounted("#/account");
+		let usage: Promise<ReturnType<typeof computerUsage>> = Promise.resolve(computerUsage("Private A", 17));
+		const rpc = vi.spyOn(cloud, "rpc").mockImplementation(async (method) => {
+			if (method === "qorpera_computer_plan_catalog")
+				return { schema: "qorpera.computer-plan-catalog/v1", plans: [], meterMode: "paid" };
+			if (method === "qorpera_my_computer_usage") return usage;
+			throw new Error(`Unexpected fixture RPC: ${method}`);
+		});
+		await draw();
+		const portal = [...root.querySelectorAll("button")].find((button) => button.textContent === "Manage payments")!;
+		expect(portal.disabled).toBe(false);
+		const old = deferred<ReturnType<typeof computerUsage>>();
+		usage = old.promise;
+		root.querySelector<HTMLButtonElement>('[data-focus="refresh-plan"]')!.click();
+		await draw();
+		usage = Promise.resolve(computerUsage("Current B", 29));
+		auth(userB);
+		await draw();
+		expect(root.textContent).toContain("Current B");
+		usage = Promise.resolve(computerUsage("Current A", 41));
+		auth(userA);
+		await draw();
+		const calls = rpc.mock.calls.length;
+		portal.click();
+		old.resolve(computerUsage("STALE PRIVATE PLAN", 99));
+		await draw();
+		expect(root.textContent).toContain("Current A");
+		expect(root.textContent).toContain("41 standard hours available");
+		expect(root.textContent).not.toContain("STALE PRIVATE PLAN");
+		expect(root.textContent).not.toContain("99 standard hours available");
+		expect(root.textContent).not.toContain("Current B");
+		expect(rpc).toHaveBeenCalledTimes(calls);
+		expect(fetch).not.toHaveBeenCalled();
 	});
 
 	it.each(["#/friends", "#/invitations"])("sends the retired %s page to the company hub", async (hash) => {

@@ -70,7 +70,7 @@ set local role authenticated;
 select public.qorpera_accept_computer_usage_ownership(current_setting('qorpera_test.multiowner')::uuid,
 	'62900000-0000-4000-8000-000000000001');
 select pg_temp.founder_denied(format('select public.qorpera_accept_computer_usage_ownership(%L,%L)',
-	current_setting('qorpera_test.multiowner'),'62900000-0000-4000-8000-000000000001'),'40001');
+	current_setting('qorpera_test.multiowner'),'62900000-0000-4000-8000-000000000001'),'PGRST');
 reset role;
 do $$ begin
 	if public.qorpera_profile_entitlement_json(current_setting('qorpera_test.multiowner')::uuid)->>'plan_key' <> 'internal' then

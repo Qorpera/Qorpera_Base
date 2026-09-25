@@ -126,8 +126,12 @@ end $$;
 do $$
 declare v_id uuid := '30000000-0000-4000-8000-0000000007aa'; v_path text; v_doc text; v_entry jsonb; v_result jsonb;
 begin
-	update public.qorpera_profile_members set role = 'contributor' where user_id = '30000000-0000-4000-8000-000000000001';
+	-- Retain a founder and explicitly transfer usage responsibility first.
 	update public.qorpera_profile_members set role = 'owner' where user_id = '30000000-0000-4000-8000-000000000002';
+	perform pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000002');
+	perform public.qorpera_accept_computer_usage_ownership('30000000-0000-4000-8000-000000000010','30000000-0000-4000-8000-000000000001');
+	perform pg_temp.path_claims('service_role');
+	update public.qorpera_profile_members set role = 'contributor' where user_id = '30000000-0000-4000-8000-000000000001';
 	v_path := 'organization/rooms/' || v_id || '.json';
 	v_doc := jsonb_build_object('schema','qorpera.company-room/v1','roomId',v_id,'key','chat-' || v_id,'name','Contributor room',
 		'purpose','Opened for a contributor.','status','active','projectId',null,'members',jsonb_build_array(

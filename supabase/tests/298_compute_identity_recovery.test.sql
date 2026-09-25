@@ -161,6 +161,12 @@ select pg_temp.recovery_denied(format('select public.qorpera_prepare_identity_ke
 select pg_temp.assert_recovery((public.qorpera_identity_recovery_runtime_state(
   '29800000-0000-4000-8000-000000000020')->>'blocked')::boolean,'Expiry revived the lost identity generation');
 rollback to savepoint current_authority;
+-- Retain company ownership while testing revocation of the approving owner.
+update public.qorpera_profile_members set role='owner'
+where profile_id='29800000-0000-4000-8000-000000000010' and user_id='29800000-0000-4000-8000-000000000003';
+select pg_temp.recovery_claims('authenticated','29800000-0000-4000-8000-000000000003');
+select public.qorpera_accept_computer_usage_ownership('29800000-0000-4000-8000-000000000010','29800000-0000-4000-8000-000000000001');
+select pg_temp.recovery_claims('service_role');
 update public.qorpera_profile_members set role='contributor'
 where profile_id='29800000-0000-4000-8000-000000000010' and user_id='29800000-0000-4000-8000-000000000001';
 set local role service_role;

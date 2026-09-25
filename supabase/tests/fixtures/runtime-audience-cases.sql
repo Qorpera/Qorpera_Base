@@ -58,8 +58,12 @@ begin
 		if sqlerrm <> 'Private-to-shared publication requires its audience owner approval' then raise; end if;
 	end;
 	-- Another owner of the COMPANY is not the audience owner of this draft.
-	update public.qorpera_profile_members set role = 'contributor' where user_id = '29000000-0000-4000-8000-000000000001';
+	-- Retain a founder and explicitly transfer usage responsibility first.
 	update public.qorpera_profile_members set role = 'owner' where user_id = '29000000-0000-4000-8000-000000000002';
+	perform pg_temp.path_claims('authenticated','29000000-0000-4000-8000-000000000002');
+	perform public.qorpera_accept_computer_usage_ownership('29000000-0000-4000-8000-000000000010','29000000-0000-4000-8000-000000000001');
+	perform pg_temp.path_claims('service_role');
+	update public.qorpera_profile_members set role = 'contributor' where user_id = '29000000-0000-4000-8000-000000000001';
 	perform pg_temp.path_claims('authenticated','29000000-0000-4000-8000-000000000002');
 	set local role authenticated;
 	begin perform public.qorpera_get_company_path_proposal(v_proposal);

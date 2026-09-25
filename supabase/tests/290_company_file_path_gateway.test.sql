@@ -415,6 +415,13 @@ begin
 			elsif v_probe = 'staff' then
 				update public.qorpera_profile_staff set employment_status = 'archived' where staff_agent_id = '29000000-0000-4000-8000-000000000030';
 			elsif v_probe = 'requester' then
+                -- Revoking a requester must preserve the company's remaining
+                -- founder and explicitly transfer Computer Usage responsibility.
+                update public.qorpera_profile_members set role='owner' where profile_id='29000000-0000-4000-8000-000000000010'
+                    and user_id='29000000-0000-4000-8000-000000000002';
+                perform pg_temp.path_claims('authenticated','29000000-0000-4000-8000-000000000002');
+                perform public.qorpera_accept_computer_usage_ownership('29000000-0000-4000-8000-000000000010','29000000-0000-4000-8000-000000000001');
+                perform pg_temp.path_claims('service_role');
 				update public.qorpera_profile_members set role = 'viewer' where user_id = '29000000-0000-4000-8000-000000000001';
 			elsif v_probe = 'sponsor' then
 				update public.qorpera_execution_sponsor_bindings set status = 'revoked'

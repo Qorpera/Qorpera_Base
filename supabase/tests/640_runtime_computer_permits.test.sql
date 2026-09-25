@@ -88,6 +88,7 @@ begin
     sample:=sample||jsonb_build_object('previousObservationId',sample->'observationId','observationId',extensions.gen_random_uuid(),
         'hostUptimeMs',1000200,'guestUptimeMs',null,'observedAt',t+interval '200 milliseconds','state','stopped');
     terminal:=jsonb_build_object('requestId',extensions.gen_random_uuid(),'permitId',v_permit,'generation',2,'sample',sample,'guardClosed',true);
+    perform pg_temp.wake_error(format('select public.qorpera_finish_runtime_computer_permit(%L,%L)',terminal||'{"generation":999}',repeat('R',64)),'PGRST');
     receipt:=public.qorpera_finish_runtime_computer_permit(terminal,repeat('R',64));
     perform pg_temp.wake_assert(receipt->>'state'='closed' and receipt->>'validForMs'='0'
         and not public.qorpera_native_computer_permit_ready((b->>'runnerId')::uuid,(b->>'runId')::uuid)
