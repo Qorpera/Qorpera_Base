@@ -4,7 +4,16 @@
 // next sequence carrying the lost turn's submission) runs its retry after the
 // migration, and the context that retry reads is exactly the committed sample
 // the native runtime's parser is tested with
-// (packages/runtime/test/fixtures/coding-turn-context-backfilled.json).
+// (packages/runtime/test/fixtures/coding-turn-context-backfilled.json). A turn
+// in flight during the migration completes on the new schema with the
+// submission it made before. The review fixes (20260925125000) then correct the
+// backfilled rows: no standing pull request on turns that published nothing,
+// and an input without its worker event taken from the session's input event.
+//
+// A one-time migration test: its seed runs test 396's dispatch and machine
+// fixture on the schema from before 20260925113000. When later work changes that
+// fixture in a way the old schema cannot run, retire this script (the backfill
+// has run everywhere by then) rather than pinning the fixture.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
@@ -38,13 +47,18 @@ create function pg_temp.observe() returns void language sql as $$
 		jsonb_build_object('schema','qorpera.runtime-node-inventory/v1','bootId',extensions.gen_random_uuid(),'entries','[]'::jsonb));
 	select null::void
 $$;
+create function pg_temp.storage(p_worker uuid) returns jsonb language sql as $$
+	select current_setting('qorpera_test.coding_storage')::jsonb || jsonb_build_object('volumeId',p_worker,'workerId',p_worker,
+		'dataSource','/srv/coding/executor/workers/30000000-0000-4000-8000-000000000010/30000000-0000-4000-8000-000000000020/' || p_worker::text || '/data',
+		'custodySource','/srv/coding/executor/workers/30000000-0000-4000-8000-000000000010/30000000-0000-4000-8000-000000000020/' || p_worker::text || '/guest-state')
+$$;
 create function pg_temp.begin_turn(p_claim jsonb) returns jsonb language plpgsql as $$
 declare v_worker uuid := (p_claim ->> 'workerId')::uuid; v_turn jsonb; v_run uuid;
 begin
 	perform pg_temp.observe();
 	perform public.qorpera_plan_coding_machine(v_worker,(p_claim ->> 'leaseToken')::uuid,repeat('c',64));
 	perform public.qorpera_authorize_coding_machine_run(v_worker,(p_claim ->> 'leaseToken')::uuid,
-		current_setting('qorpera_test.coding_binding'),current_setting('qorpera_test.coding_storage')::jsonb,repeat('c',64));
+		current_setting('qorpera_test.coding_binding'),pg_temp.storage(v_worker),repeat('c',64));
 	v_turn := public.qorpera_begin_coding_turn(v_worker,(p_claim ->> 'leaseToken')::uuid,
 		jsonb_build_object('vmId',current_setting('qorpera_test.coding_vm'),'turnId',public.qorpera_coding_turn_id(v_worker,(p_claim ->> 'sequence')::int)));
 	perform public.qorpera_materialize_wake_execution_runs(8);
@@ -87,6 +101,17 @@ begin
 		'summary','The poll interval is 500 ms now.','question','Should the poll also back off after errors?','options',jsonb_build_array('Yes','No')));
 	update public.qorpera_coding_sessions set lease_until = clock_timestamp() - interval '1 second' where worker_id = v_worker;
 	perform public.qorpera_claim_coding_session('exec-test',60);
+	-- Turn 3's worker event is gone (the thread's own input event still has the reply).
+	delete from public.qorpera_runtime_worker_events where worker_id = v_worker and sequence = 3 and kind = 'followup';
+	-- Another session of the member is mid-turn when the migration runs: submitted, not yet completed.
+	perform pg_temp.worker('{"action":"dispatch","operationKey":"c9","todoKey":"composer-latency","workerKey":"fix-send-9",
+		"title":"Typing dots","goal":"Show who is typing.","definitionOfDone":"Its test passes.","access":"read",
+		"species":"coding","harness":"codex","repository":{"host":"github.com","owner":"Qorpera","name":"Qorpera_Base","baseBranch":"master"}}');
+	v_claim := public.qorpera_claim_coding_session('exec-test',300);
+	perform pg_temp.wake_assert(v_claim ->> 'workerId' = (pg_temp.worker_row('fix-send-9')).id::text,'The in-flight session is claimed');
+	v_turn := pg_temp.begin_turn(v_claim);
+	perform public.qorpera_submit_coding_turn(v_turn -> 'binding',jsonb_build_object('kind','finish','operationKey','dots',
+		'summary','Typing dots.','headSha','e4d8f9f1c0b6e5a2d3c4b5a69788776655443322'));
 	-- The owner retries: turn 4 is queued with turn 3's submission still on the session (#8).
 	perform pg_temp.answer('Yes, back off.','30000000-0000-4000-8000-000000000403');
 	perform pg_temp.wake_assert((select (submission ->> 'sequence')::int from public.qorpera_coding_sessions where worker_id = v_worker) = 3
@@ -134,10 +159,11 @@ try {
 		]),
 		[
 			["fix-send", 1, "dispatch", null, null, null, "succeeded", null, null, "204"],
-			["fix-send", 2, "member", "Also fix the group chat composer.", null, null, "blocked", null, "Keep 250 ms, or raise to 500 ms?", "204"],
+			["fix-send", 2, "member", "Also fix the group chat composer.", null, null, "blocked", null, "Keep 250 ms, or raise to 500 ms?", null],
 			["fix-send", 3, "member", "Raise it.", "ask", "Should the poll also back off after errors?", "failed", "executor-lease-expired", null, null],
 			["fix-send", 4, "member", "Yes, back off.", null, null, null, null, null, null],
 			["fix-send-2", 1, "dispatch", null, null, null, "cancelled", "parent_cancelled", null, null],
+			["fix-send-9", 1, "dispatch", null, "finish", null, null, null, null, null],
 		],
 	);
 	assert(turns.filter((turn) => turn.key === "fix-send" && turn.sequence < 4).every((turn) => turn.settledAtEvent),
@@ -152,6 +178,21 @@ select public.qorpera_observe_runtime_node_inventory(jsonb_build_object('schema'
 	'observedAt',to_char(clock_timestamp() at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"'),'cpuMillis',6000,'memoryBytes',8589934592,'state','ready'),
 	public.qorpera_runtime_node_inventory_context('30000000-0000-4000-8000-000000000310') ->> 'contextSha256',
 	jsonb_build_object('schema','qorpera.runtime-node-inventory/v1','bootId',extensions.gen_random_uuid(),'entries','[]'::jsonb)) is not null;
+-- The in-flight turn: the executor reads its submission from the turn and completes it with the published PR.
+do $in_flight$
+declare v_worker uuid := (select id from public.qorpera_runtime_workers where worker_key = 'fix-send-9'); v_lease uuid;
+	v_turn public.qorpera_coding_session_turns;
+begin
+	select lease_token into strict v_lease from public.qorpera_coding_sessions where worker_id = v_worker;
+	perform pg_temp.wake_assert(public.qorpera_describe_coding_turn(v_worker,v_lease) #>> '{submission,headSha}' = 'e4d8f9f1c0b6e5a2d3c4b5a69788776655443322',
+		'The executor reads the in-flight submission from its turn');
+	perform public.qorpera_complete_coding_turn(v_worker,v_lease,'succeeded','Typing dots.',null,
+		'{"url":"https://github.com/Qorpera/Qorpera_Base/pull/205","number":205,"headSha":"e4d8f9f1c0b6e5a2d3c4b5a69788776655443322"}',null,null,null,null,null);
+	select * into strict v_turn from public.qorpera_coding_session_turns where worker_id = v_worker and sequence = 1;
+	perform pg_temp.wake_assert(v_turn.submission ->> 'headSha' = 'e4d8f9f1c0b6e5a2d3c4b5a69788776655443322' and v_turn.outcome ->> 'state' = 'succeeded'
+		and v_turn.outcome #>> '{pullRequest,number}' = '205','The in-flight turn settles with its submission and the PR it published');
+end
+$in_flight$;
 create function pg_temp.retry() returns jsonb language plpgsql as $$
 declare v_worker uuid := (select id from public.qorpera_runtime_workers where worker_key = 'fix-send'); v_claim jsonb; v_plan jsonb;
 	v_turn jsonb; v_run uuid; v_binding jsonb; v_context jsonb;

@@ -548,6 +548,11 @@ describe("the coding composition of a native turn", () => {
 			earlierTurns: [{ sequence: 1, submitted: { kind: "ask", question, options: choices } }],
 		});
 		expect(decisions).toEqual(["B: drop the cache and read through"]);
+		// A letter counts by position, and an undecided question is asked again rather than guessed.
+		const instructions = vi.mocked(runCloudNativeRunToolSession).mock.calls[1][0].runtimeInstructions;
+		expect(instructions).toContain("a single letter selects the choice at that position (A is the first)");
+		expect(instructions).toContain("When no reply decides it");
+		expect(instructions).toContain("call coding_ask again");
 		expect(f.gateway.start).not.toHaveBeenCalled();
 		expect(f.coding.submission).toMatchObject({
 			kind: "finish",
@@ -600,7 +605,7 @@ describe("the coding composition of a native turn", () => {
 			});
 		};
 		// The unbroken context is accepted: the turn runs and then ends without a submission.
-		await expect(run({})).rejects.toThrow("CODING_TURN_ENDED_WITHOUT_SUBMISSION");
+		await expect(run({})).rejects.toThrow(/^CODING_TURN_ENDED_WITHOUT_SUBMISSION$/);
 		for (const drift of [
 			{ sequence: 3 },
 			{ workerId: randomUUID() },
@@ -630,7 +635,7 @@ describe("the coding composition of a native turn", () => {
 				],
 			},
 		]) {
-			await expect(run(drift)).rejects.toThrow(/CODING_TURN_CONTEXT_INVALID|INVALID_CODING_PULL_REQUEST/);
+			await expect(run(drift)).rejects.toThrow(/^CODING_TURN_CONTEXT_INVALID$/);
 			expect(runCloudNativeRunToolSession).not.toHaveBeenCalled();
 		}
 	});
