@@ -1,6 +1,6 @@
 # Qorpera Runtime Status
 
-**As of:** 2026-09-25 04:10 UTC. Master `0e1ef1238`. Live runtime bundle **v106**.
+**As of:** 2026-09-25 04:05 UTC. Master `0e1ef1238`. Live runtime bundle **v106**.
 
 This file tracks the current status of [the runtime contract](QORPERA-RUNTIME-CONTRACT.md). It lists the requirements in force today for Orders 0–10 and the launch gate. For each requirement it links whatever evidence exists. The contract is still the source of the requirements. Its dated amendments override older text in it. This file changes no requirement and edits no historical record. Where a record is out of date, it is listed in [Out-of-date statements](#out-of-date-statements-in-historical-records) and left unchanged.
 
@@ -28,7 +28,7 @@ Cell vocabulary:
 
 Evidence references:
 
-- `REG Rnnn`: line *nnn* of the coordinator's bundle registry, `/Users/jonas/Documents/Codex/2026-09-13/take-over-the-qorpera-runtime-work/outputs/BUNDLE-REGISTRY.md`, as read on 2026-09-25 04:20 UTC (1,168 lines). Entries are appended and carry UTC stamps; the stamp identifies the entry if line numbers move. Some "~HH:MMZ" stamps written on 2026-09-22 to 09-24 are really local time. The pause, activation and resume times on the cut lines are exact.
+- `REG Rnnn`: line *nnn* of the coordinator's bundle registry, `/Users/jonas/Documents/Codex/2026-09-13/take-over-the-qorpera-runtime-work/outputs/BUNDLE-REGISTRY.md`, as read on 2026-09-25 04:05 UTC (1,168 lines). Entries are appended and carry UTC stamps; the stamp identifies the entry if line numbers move. Some "~HH:MMZ" stamps written on 2026-09-22 to 09-24 are really local time. The pause, activation and resume times on the cut lines are exact.
 - `OUT/<file>`: a file in the same coordinator outputs folder.
 - `REVIEW`: the independent runtime review of 2026-09-25, `/Users/jonas/Documents/Codex/2026-09-25/i-w/outputs/qorpera-runtime-review.md`, with `verification.md` and `evidence/` beside it. It reviewed master `2a5c8f67e` (bundle v106).
 - CI runs: [Hosted database contract @72cafa347][ci-db] (391 migrations, 86 SQL tests, pass), [Step 2 LXD contracts @72cafa347][ci-lxd] (pass), [Web client @0e1ef1238][ci-web] (pass). `72cafa347` is the v106 PR head. Its runtime code is identical to the v106 merge `82b34214d` and to today's master (later commits touch only the web client).
