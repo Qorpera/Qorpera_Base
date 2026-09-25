@@ -147,15 +147,22 @@ revision, the exact bytes and the file state:
   `active` (its queued/running lease state changes without a revision), and
   timestamps are written in UTC whatever the session.
 - A run writes a todo's document path only with the current revision's exact
-  bytes (trigger on `qorpera_company_path_revisions`, PT412 otherwise). Writes
-  serialize on the Company File head lock taken before that insert, so once a
-  revision's document is written no later write brings back an older one.
+  bytes. `qorpera_check_company_path_mutation` refuses anything else (42501)
+  before bytes are staged, so the agent gets a plain refusal, not "read it
+  again". A trigger on `qorpera_company_path_revisions` checks again after the
+  Company File head lock, holding the todo's row until the write commits, so
+  once a revision's document is written no later write brings back an older one.
 - Confirmation accepts only the current revision, only when the bytes the run
   wrote are that revision's document, and only while the live file still holds
   them; revision, version and sha256 are recorded together.
-- "Published" (the list repair, the todo view, the receipts) means the live file
-  still holds the confirmed bytes, so a change by a member, an older runner or
-  an approved delete is republished by the next list.
+- Anything else that lands on the path afterwards (a member's edit, an approved
+  delete) clears the recorded sha256 in the same trigger, so "published" is a
+  stored fact again and cheap to ask. The list repairs open and blocked todos
+  first, newest first; a finished todo is republished only when the kernel
+  changed it, so a member can still tidy away finished work.
+- At migration, a confirmed todo keeps its record only if its live file holds
+  exactly its current document; every other one is republished once (this also
+  heals any regression the race already caused).
 - The runtime's write key names the version it replaces
   (`todo-doc:<todoKey>:<revision>:<version|absent>`), so a run can republish a
   revision its file has lost since, while a retry still replays.
@@ -163,11 +170,13 @@ revision, the exact bytes and the file state:
 Every publisher (todo and worker receipts, the worker's report, the list
 repair) goes through the same checks. Proof: `supabase/tests/387_runtime_todo_publication_race.test.sql`
 (two runs: the worker's report against the parent's newer change; the review's
-reproduction, including the replayed receipt; a writer outside the check
-detected and repaired; byte-bound confirmation; guarded spellings and deletes).
-Still open: a revision the kernel makes on its own (a worker that ends without
-a report, coding session answers and claims) is published only by the agent's
-next list or change of that todo.
+reproduction, including the replayed receipt; a writer the run checks do not
+stop, detected and repaired; byte-bound confirmation; the write-time check on
+its own; repair order and finished work; where the checks and locks sit). The
+lock itself is asserted from the function bodies: dblink sessions cannot see the
+test's uncommitted fixture. Still open: a revision the kernel makes on its own
+(a worker that ends without a report, coding session answers and claims) is
+published only by the agent's next list or change of that todo.
 
 ## Not built; what keeps Order 5 open
 

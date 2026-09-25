@@ -74,7 +74,7 @@ begin
 		'The newer revision is published and confirmed');
 	perform pg_temp.wake_error(format($q$select pg_temp.write_over(%L::jsonb,'race-publish-worker',%L,%L,%L::uuid)$q$,
 		v_child,v_path,v_report #>> '{publication,text}',pg_temp.live(v_path) ->> 'version'),
-		'PT412','Todo document is not the current revision');
+		'42501','A todo document is written only as its current revision');
 	perform pg_temp.wake_assert(pg_temp.live(v_path) ->> 'version' = v_write ->> 'version'
 		and pg_temp.live(v_path) ->> 'sha256' = pg_temp.sha(v_update #>> '{publication,text}'),
 		'The worker''s older document never replaces the newer one');
@@ -99,12 +99,12 @@ begin
 	perform pg_temp.wake_assert(v_confirm ->> 'published' = 'true','Revision 2 is published');
 	perform pg_temp.wake_error(format($q$select pg_temp.write_over(%L::jsonb,'publish-old',%L,%L,%L::uuid)$q$,
 		v_parent,v_path,v_old #>> '{publication,text}',pg_temp.live(v_path) ->> 'version'),
-		'PT412','Todo document is not the current revision');
+		'42501','A todo document is written only as its current revision');
 	perform pg_temp.wake_assert(pg_temp.todo('{"action":"upsert","operationKey":"race-a","todoKey":"race","title":"Old state"}') = v_old,
 		'Replaying the old operation returns the old receipt');
 	perform pg_temp.wake_error(format($q$select pg_temp.write_over(%L::jsonb,'publish-old-replayed',%L,%L,%L::uuid)$q$,
 		v_parent,v_path,v_old #>> '{publication,text}',pg_temp.live(v_path) ->> 'version'),
-		'PT412','Todo document is not the current revision');
+		'42501','A todo document is written only as its current revision');
 	-- Confirming revision 1 claims nothing, whatever snapshot of this run it names.
 	v_confirm := pg_temp.confirm(v_parent,'race',1,v_write ->> 'snapshotId');
 	perform pg_temp.wake_assert(v_confirm ->> 'published' = 'true' and (v_confirm ->> 'publishedRevision')::int = 2
@@ -113,19 +113,20 @@ begin
 		and pg_temp.unpublished('race') = '[]','The file holds New state, and the kernel says so');
 end $$;
 
--- 4. A writer outside the run check (a runner from before this fix, here with
--- the check swapped out for one write) puts revision 1 over the published revision 2.
+-- 4. A writer the run checks do not stop (a member, a runner from before this
+-- fix; here the refusal is relaxed for one write) puts revision 1 over the
+-- published revision 2.
 savepoint legacy_writer;
 do $$
-declare v_guard text := pg_get_functiondef('public.qorpera_guard_agent_todo_document()'::regprocedure);
+declare v_allowed text := pg_get_functiondef('public.qorpera_agent_todo_document_entry_allowed(public.qorpera_runtime_agent_todos,jsonb)'::regprocedure);
 	v_old jsonb := current_setting('qorpera_test.race_old')::jsonb;
 begin
-	create or replace function public.qorpera_guard_agent_todo_document() returns trigger
-	language plpgsql security definer set search_path = '' as $guard$ begin return new; end $guard$;
+	create or replace function public.qorpera_agent_todo_document_entry_allowed(p_todo public.qorpera_runtime_agent_todos, p_entry jsonb)
+	returns boolean language sql stable security definer set search_path = '' as $allowed$ select true $allowed$;
 	perform set_config('qorpera_test.legacy_write',pg_temp.write_over(current_setting('qorpera_test.parent_binding')::jsonb,
 		'legacy-old',v_old #>> '{publication,path}',v_old #>> '{publication,text}',
 		(pg_temp.live(v_old #>> '{publication,path}') ->> 'version')::uuid)::text,true);
-	execute v_guard;
+	execute v_allowed;
 end $$;
 do $$
 declare v_parent jsonb := current_setting('qorpera_test.parent_binding')::jsonb;
@@ -134,9 +135,11 @@ declare v_parent jsonb := current_setting('qorpera_test.parent_binding')::jsonb;
 begin
 	perform pg_temp.wake_assert(v_legacy ->> 'state' = 'applied'
 		and pg_temp.live(v_path) ->> 'sha256' = pg_temp.sha(v_old #>> '{publication,text}'),'The legacy write landed');
-	-- The kernel no longer claims revision 2 is published, although its published revision is still 2.
+	-- The kernel no longer claims revision 2 is published, although its published revision is still 2:
+	-- the write itself cleared the confirmed bytes.
 	v_listed := pg_temp.unpublished('race');
-	perform pg_temp.wake_assert((select published_revision = revision from public.qorpera_runtime_agent_todos where todo_key = 'race')
+	perform pg_temp.wake_assert((select published_revision = revision and published_sha256 is null
+		from public.qorpera_runtime_agent_todos where todo_key = 'race')
 		and jsonb_array_length(v_listed) = 1 and (v_listed #>> '{0,revision}')::int = 2
 		and (v_listed #>> '{0,text}')::jsonb ->> 'title' = 'New state'
 		and pg_temp.todo('{"action":"list"}') -> 'todos' @> '[{"todoKey":"race","published":false}]',
@@ -176,7 +179,7 @@ begin
 	v_path := current_setting('qorpera_test.race_old')::jsonb #>> '{publication,path}';
 	v_live := pg_temp.live(v_path);
 	perform pg_temp.wake_error(format($q$select pg_temp.write_over(%L::jsonb,'race-scribble',%L,'{}',%L::uuid)$q$,
-		v_parent,v_path,v_live ->> 'version'),'PT412','Todo document is not the current revision');
+		v_parent,v_path,v_live ->> 'version'),'42501','A todo document is written only as its current revision');
 	perform pg_temp.wake_error(format($q$select pg_temp.write_over(%L::jsonb,'race-shout',%L,'{}',%L::uuid)$q$,
 		v_parent,replace(v_path,'race.json','RACE.json'),v_live ->> 'version'),'42501','Company File path is unavailable');
 	perform pg_temp.wake_assert(pg_temp.write_over(v_parent,'race-delete',v_path,null,(v_live ->> 'version')::uuid) ->> 'state' = 'proposed'
@@ -185,14 +188,91 @@ begin
 		->> 'state' = 'applied','Only an existing todo''s document is guarded');
 end $$;
 
--- 6. The new functions are kernel-only.
+-- 6. The check where the file is written refuses on its own: here the earlier
+-- path check is switched off, as if the revision moved between that check and
+-- the Company File head lock.
+savepoint commit_check;
+do $$
+declare v_check text := pg_get_functiondef('public.qorpera_check_company_path_mutation(uuid,jsonb,jsonb)'::regprocedure);
+	v_old jsonb := current_setting('qorpera_test.race_old')::jsonb; v_path text;
+begin
+	v_path := v_old #>> '{publication,path}';
+	-- The path check alone refuses the older document, before the gateway stages any bytes.
+	perform pg_temp.wake_error(format($q$select public.qorpera_check_company_path_mutation('30000000-0000-4000-8000-000000000020',%L::jsonb,
+		pg_temp.path_plan('race-check',%L,pg_temp.path_stage_file(%L,%L),%L::uuid))$q$,
+		current_setting('qorpera_test.parent_binding'),v_path,v_path,v_old #>> '{publication,text}',pg_temp.live(v_path) ->> 'version'),
+		'42501','A todo document is written only as its current revision');
+	execute replace(v_check,'if not public.qorpera_agent_todo_document_entry_allowed(','if false and not public.qorpera_agent_todo_document_entry_allowed(');
+	perform pg_temp.wake_error(format($q$select pg_temp.write_over(%L::jsonb,'race-late',%L,%L,%L::uuid)$q$,
+		current_setting('qorpera_test.parent_binding'),v_path,v_old #>> '{publication,text}',pg_temp.live(v_path) ->> 'version'),
+		'42501','A todo document is written only as its current revision');
+	execute v_check;
+end $$;
+rollback to commit_check;
+
+-- 7. Repair order and finished work. Open work is repaired first and newest
+-- first; a finished todo is republished when the kernel changed it, not when
+-- someone tidied its file away.
+savepoint finished_work;
+do $$
+declare v_parent jsonb := current_setting('qorpera_test.parent_binding')::jsonb; v_allowed text; v_index integer;
+	v_done jsonb; v_write jsonb; v_path text; v_listed jsonb;
+begin
+	-- A finished todo, published; then someone else replaces its file.
+	perform pg_temp.todo('{"action":"upsert","operationKey":"tidy-1","todoKey":"tidy","title":"Finished work"}');
+	v_done := pg_temp.todo('{"action":"done","operationKey":"tidy-2","todoKey":"tidy"}');
+	v_path := v_done #>> '{publication,path}';
+	v_write := pg_temp.write_over(v_parent,'tidy-publish',v_path,v_done #>> '{publication,text}',null);
+	perform pg_temp.wake_assert(pg_temp.confirm(v_parent,'tidy',(v_done #>> '{publication,revision}')::bigint,v_write ->> 'snapshotId')
+		->> 'published' = 'true','The finished todo is published');
+	v_allowed := pg_get_functiondef('public.qorpera_agent_todo_document_entry_allowed(public.qorpera_runtime_agent_todos,jsonb)'::regprocedure);
+	create or replace function public.qorpera_agent_todo_document_entry_allowed(p_todo public.qorpera_runtime_agent_todos, p_entry jsonb)
+	returns boolean language sql stable security definer set search_path = '' as $allowed$ select true $allowed$;
+	perform pg_temp.write_over(v_parent,'tidy-member',v_path,'{"tidied":true}',(pg_temp.live(v_path) ->> 'version')::uuid);
+	execute v_allowed;
+	perform pg_temp.wake_assert(pg_temp.todo('{"action":"list","includeClosed":true}') -> 'todos' @> '[{"todoKey":"tidy","published":false}]'
+		and pg_temp.unpublished('tidy') = '[]','A finished todo whose file was tidied is reported as it is, and left alone');
+	-- Five finished todos the kernel changed and nobody published, then one open todo nobody published.
+	for v_index in 1..5 loop
+		perform pg_temp.todo(jsonb_build_object('action','upsert','operationKey','old-' || v_index,'todoKey','old-' || v_index,'title','Old ' || v_index));
+		perform pg_temp.todo(jsonb_build_object('action','done','operationKey','old-done-' || v_index,'todoKey','old-' || v_index));
+	end loop;
+	perform pg_temp.todo('{"action":"upsert","operationKey":"fresh-1","todoKey":"fresh","title":"Fresh open work"}');
+	v_listed := pg_temp.todo('{"action":"list"}') -> 'unpublished';
+	perform pg_temp.wake_assert(jsonb_array_length(v_listed) = 4 and v_listed #>> '{0,path}' like '%/fresh.json'
+		and v_listed #>> '{1,path}' like '%/old-5.json','Open work comes first, then the newest finished work');
+end $$;
+rollback to finished_work;
+
+-- 8. Where the checks sit. The run check and the tidy check run in a trigger on
+-- the revision insert, which the Company File publisher makes after locking the
+-- head, and the trigger holds the todo's row until the write commits.
+do $$
+declare v_publish text := pg_get_functiondef('public.qorpera_publish_company_path(jsonb,jsonb,jsonb,uuid,text,uuid,uuid)'::regprocedure);
+	v_guard text := pg_get_functiondef('public.qorpera_guard_agent_todo_document()'::regprocedure);
+begin
+	perform pg_temp.wake_assert(exists (select 1 from pg_trigger where tgrelid = 'public.qorpera_company_path_revisions'::regclass
+		and tgname = 'qorpera_company_path_todo_document' and tgenabled = 'O' and tgtype & 2 = 2 and tgtype & 4 = 4
+		and tgfoid = 'public.qorpera_guard_agent_todo_document()'::regprocedure),'The trigger runs before every revision insert');
+	perform pg_temp.wake_assert(position('from public.qorpera_company_files where environment_id' in v_publish) > 0
+		and position('for update' in v_publish) > position('from public.qorpera_company_files where environment_id' in v_publish)
+		and position('for update' in v_publish) < position('insert into public.qorpera_company_path_revisions' in v_publish),
+		'The publisher locks the Company File head before it inserts the revision');
+	perform pg_temp.wake_assert(position('for no key update' in v_guard) > 0
+		and position('for no key update' in v_guard) < position('raise exception' in v_guard),
+		'The trigger locks the todo before it decides');
+end $$;
+
+-- 9. The new functions are kernel-only.
 do $$
 declare v_role text; v_function text;
 begin
 	foreach v_role in array array['anon','authenticated','service_role','qorpera_secret_broker'] loop
 		foreach v_function in array array['public.qorpera_agent_todo_document_sha256(public.qorpera_runtime_agent_todos)',
 			'public.qorpera_agent_todo_published(public.qorpera_runtime_agent_todos)',
-			'public.qorpera_company_path_live_sha256(uuid,text)','public.qorpera_guard_agent_todo_document()'] loop
+			'public.qorpera_company_path_live_sha256(uuid,text)','public.qorpera_agent_todo_for_path(uuid,text)',
+			'public.qorpera_agent_todo_document_entry_allowed(public.qorpera_runtime_agent_todos,jsonb)',
+			'public.qorpera_guard_agent_todo_document()'] loop
 			perform pg_temp.wake_assert(not has_function_privilege(v_role,v_function,'execute'),v_function || ' is exposed to ' || v_role);
 		end loop;
 	end loop;
