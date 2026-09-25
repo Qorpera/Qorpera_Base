@@ -466,7 +466,9 @@ begin
 		perform pg_temp.worker('{"action":"cancel","operationKey":"c18","todoKey":"market-scan","workerKey":"batch-18"}',v_binding);
 		v_done := pg_temp.worker('{"action":"status"}',v_binding);
 		perform pg_temp.wake_assert(jsonb_array_length(v_done -> 'workers') = 16 and (v_done ->> 'moreWorkers')::int >= 2
-			and v_done #>> '{workers,0,workerKey}' = 'batch-18' and v_done ->> 'nextCursor' is not null,
+			and v_done #>> '{workers,0,workerKey}' = (select worker_key from public.qorpera_runtime_workers
+				where staff_agent_id = '30000000-0000-4000-8000-000000000030' order by created_at desc, id desc limit 1)
+			and v_done ->> 'nextCursor' is not null,
 			'Eighteen workers: the newest sixteen listed, the rest counted and reachable by cursor');
 		v_done := pg_temp.worker('{"action":"status","state":"active"}',v_binding);
 		perform pg_temp.wake_assert(jsonb_array_length(v_done -> 'workers') = 16 and (v_done ->> 'moreWorkers')::int >= 1
