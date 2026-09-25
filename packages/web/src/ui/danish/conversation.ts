@@ -207,6 +207,9 @@ export const CONVERSATION: Record<string, string> = {
 	"Saving to Gmail…": "Gemmer i Gmail…",
 	"Discarding…": "Kasserer…",
 	"Send unconfirmed": "Afsendelse ikke bekræftet",
+	"Action unconfirmed": "Handling ikke bekræftet",
+	"Refresh to confirm the previous email action before making changes.":
+		"Opdater for at bekræfte den forrige mailhandling, før du foretager ændringer.",
 	"Saved to Gmail": "Gemt i Gmail",
 	"Account unavailable": "Konto ikke tilgængelig",
 	"Ready to send": "Klar til afsendelse",

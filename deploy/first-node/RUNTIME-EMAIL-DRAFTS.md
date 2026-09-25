@@ -1,6 +1,9 @@
 # Gmail draft cards
 
-Implemented locally; not deployed or accepted against a live Gmail mailbox.
+The draft widget is implemented and integration-tested, but its full live
+acceptance requires the deployment below. A separate live test of the existing
+Gmail connector on 25 September 2026 verified one self-addressed send and a
+subsequent Gmail read with the INBOX label; that does not validate this new route.
 
 When asked to draft an email, the agent reads the connected Gmail profile and
 uses `ask_member` with `surface: "draft"`, `platform: "email"`, and
@@ -34,8 +37,13 @@ before notifying the agent; notification recovery never sends another email.
 
 ## Rollout
 
-1. Coordinate the next runtime bundle number with the merge queue. The branch
-   uses provisional v126 after v125; recut from the final merged tree.
+1. This release uses v126, generated from the reviewed source tree on top of
+   master v113. Versions v114–125 were reserved by other open PRs, not required
+   predecessors. Verify `npm run check:runtime-bundle` on the exact release
+   commit before deployment. If another runtime change lands first, regenerate
+   from that combined tree in a new activation above the latest shipped version.
+   Other queued PRs must likewise recut above v126 after this release; never
+   apply their older provisional activations to roll the runtime backward.
 2. Apply `20260925125900_gmail_draft_catalog.sql` and
    `20260925126000_member_email_drafts.sql` before activating that bundle.
 3. Build and roll the broker and runtime from the reviewed source, then deploy
@@ -50,6 +58,8 @@ before notifying the agent; notification recovery never sends another email.
        limit_except POST OPTIONS { deny all; }
        if ($qorpera_capture_broker = "") { return 404; }
        proxy_pass http://$qorpera_capture_broker;
+       proxy_read_timeout 70s;
+       proxy_cache off;
    }
    ```
 
@@ -80,3 +90,9 @@ integration tests run in CI.
 Crash recovery is covered by SQL test 620: an execution that outlives its
 deadline reports an unconfirmed outcome, retains its send lock, and can
 still accept a late provider receipt.
+
+An admitted action that expires before the broker claims it can be recovered
+without its browser token: reading the card fails that pending action and
+restores editing. An executing action is never unlocked by that recovery.
+After any lost action response, the card requires Refresh before accepting a
+different action or edits, so Send cannot silently retry an earlier Save.

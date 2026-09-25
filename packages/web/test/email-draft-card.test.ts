@@ -197,6 +197,41 @@ describe("email draft card", () => {
 		expect(card.querySelector<HTMLInputElement>("[aria-label=To]")?.readOnly).toBe(false);
 		expect(card.querySelector(".email-draft-status")?.textContent).not.toBe("Sent");
 	});
+	it.each(["save", "discard"] as const)(
+		"locks every action and edit after a lost %s response until recovery",
+		async (action) => {
+			const ctx = context({
+				actEmailDraft: vi.fn(async () => {
+					throw new Error("Response lost");
+				}),
+				loadEmailDraft: vi.fn(
+					async (): Promise<EmailDraftState> => ({
+						...ready,
+						status: action === "save" ? "saved" : "discarded",
+					}),
+				),
+			});
+			let card = renderInteractionCard(item, ctx);
+			click(card, action === "save" ? "Save to Gmail" : "Discard");
+			await ctx.emailDraft?.pending;
+			// Navigation must retain the unresolved operation as well as its text.
+			card = renderInteractionCard(item, ctx);
+			expect(card.querySelector(".email-draft-status")?.textContent).toBe("Action unconfirmed");
+			for (const field of card.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>("input,textarea"))
+				expect(field.readOnly).toBe(true);
+			for (const label of ["Send email", "Save to Gmail", "Discard"]) expect(click(card, label).disabled).toBe(true);
+			expect(ctx.actEmailDraft).toHaveBeenCalledOnce();
+			click(card, "Refresh");
+			await ctx.emailDraft?.pending;
+			expect(ctx.loadEmailDraft).toHaveBeenCalledOnce();
+			expect(ctx.emailDraft?.unconfirmedAction).toBeUndefined();
+			expect(card.querySelector(".email-draft-status")?.textContent).toBe(
+				action === "save" ? "Saved to Gmail" : "Discarded",
+			);
+			if (action === "save") expect(card.querySelector<HTMLInputElement>("[aria-label=To]")?.readOnly).toBe(false);
+			else expect(card.querySelector("button")).toBeNull();
+		},
+	);
 
 	it("discards through the provider path and never sends an unverified interaction answer", async () => {
 		const ctx = context();
@@ -208,6 +243,65 @@ describe("email draft card", () => {
 		expect(card.querySelector(".email-draft-status")?.textContent).toBe("Discarded");
 		expect(card.querySelector("button")).toBeNull();
 	});
+	it.each(["ready", "saved"] as const)(
+		"retains edits when recovery returns the same prior %s receipt after a local refusal",
+		async (status) => {
+			const previous: EmailDraftState = {
+				...ready,
+				status,
+				...(status === "saved" ? { actionId: "prior-save" } : {}),
+			};
+			const ctx = context({
+				emailDraft: { state: structuredClone(previous) },
+				actEmailDraft: vi.fn(async () => {
+					throw new Error("Select an active model account, then try again.");
+				}),
+				loadEmailDraft: vi.fn(async () => structuredClone(previous)),
+			});
+			let card = renderInteractionCard(item, ctx);
+			edit(card, "To", "corrected@example.com");
+			edit(card, "Subject", "Locally revised subject");
+			edit(card, "Email body", "Locally revised letter");
+			click(card, "Send email");
+			await ctx.emailDraft?.pending;
+			card = renderInteractionCard(item, ctx);
+			expect(click(card, "Send email").disabled).toBe(true);
+			click(card, "Refresh");
+			await ctx.emailDraft?.pending;
+			expect(card.querySelector<HTMLInputElement>("[aria-label=To]")?.value).toBe("corrected@example.com");
+			expect(card.querySelector<HTMLInputElement>("[aria-label=Subject]")?.value).toBe("Locally revised subject");
+			expect(card.querySelector<HTMLTextAreaElement>("textarea")?.value).toBe("Locally revised letter");
+			expect(card.querySelector<HTMLTextAreaElement>("textarea")?.readOnly).toBe(false);
+			expect(card.querySelector<HTMLButtonElement>(".email-draft-send")?.disabled).toBe(false);
+			expect(card.querySelector(".email-draft-status")?.textContent).toBe("Ready to send");
+			expect(ctx.emailDraft?.unconfirmedAction).toBeUndefined();
+		},
+	);
+	it.each(["saved", "sent", "discarded"] as const)(
+		"uses authoritative %s content when recovery observes an admitted action",
+		async (status) => {
+			const recovered: EmailDraftState = {
+				...ready,
+				status,
+				actionId: "different-action",
+				content: { ...ready.content, body: "Authoritative letter" },
+			};
+			const ctx = context({
+				actEmailDraft: vi.fn(async () => {
+					throw new Error("Response lost");
+				}),
+				loadEmailDraft: vi.fn(async () => recovered),
+			});
+			const card = renderInteractionCard(item, ctx);
+			edit(card, "Email body", "Local letter");
+			click(card, "Send email");
+			await ctx.emailDraft?.pending;
+			click(card, "Refresh");
+			await ctx.emailDraft?.pending;
+			expect(card.querySelector<HTMLTextAreaElement>("textarea")?.value).toBe("Authoritative letter");
+			expect(card.querySelector<HTMLTextAreaElement>("textarea")?.readOnly).toBe(status !== "saved");
+		},
+	);
 
 	it("retries a failed agent notification without ever offering to resend the email", async () => {
 		const ctx = context({
@@ -227,6 +321,28 @@ describe("email draft card", () => {
 		expect(ctx.actEmailDraft).not.toHaveBeenCalled();
 		expect(card.querySelector(".email-draft-status")?.textContent).toBe("Sent");
 		expect(card.querySelector("button")).toBeNull();
+	});
+	it("does not let a late network rejection undo an authoritative terminal transcript", async () => {
+		let reject!: (error: Error) => void;
+		const ctx = context({
+			actEmailDraft: () =>
+				new Promise<EmailDraftState>((_resolve, fail) => {
+					reject = fail;
+				}),
+		});
+		const card = renderInteractionCard(item, ctx);
+		click(card, "Send email");
+		const delivered = { ...ready.content, body: "Delivered letter" };
+		const finalCard = renderInteractionCard(
+			{ ...item, answer: { outcome: "sent", answer: { content: delivered } } },
+			ctx,
+		);
+		reject(new Error("Late lost response"));
+		await ctx.emailDraft?.pending;
+		expect(finalCard.querySelector(".email-draft-status")?.textContent).toBe("Sent");
+		expect(finalCard.querySelector<HTMLTextAreaElement>("textarea")?.value).toBe("Delivered letter");
+		expect(finalCard.querySelector("[role=alert]")).toBeNull();
+		expect(ctx.emailDraft?.unconfirmedAction).toBeUndefined();
 	});
 
 	it("renders terminal, expired, and other-member drafts without actionable controls", () => {

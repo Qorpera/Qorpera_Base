@@ -89,7 +89,7 @@ async function google(
 	context: ConnectorOperationContext,
 	path: string,
 	options: {
-		query?: Record<string, string | undefined>;
+		query?: Record<string, string | readonly string[] | undefined>;
 		method?: "GET" | "POST" | "PATCH" | "PUT" | "DELETE";
 		body?: Uint8Array | string;
 		contentType?: string;
@@ -263,7 +263,7 @@ async function gmailDraftMessage(
 		const original = jsonRecord(
 			(
 				await google(context, `/gmail/v1/users/me/messages/${id}`, {
-					query: { format: "metadata", metadataHeaders: "Message-ID,References" },
+					query: { format: "metadata", metadataHeaders: ["Message-ID", "References"] },
 				})
 			).json,
 		);
@@ -378,7 +378,7 @@ export function createGmailConnectorAdapters(options: {
 					const message = jsonRecord(
 						(
 							await google(context, `${messages}/${id}`, {
-								query: { format: "metadata", metadataHeaders: "From,To,Cc,Subject,Date" },
+								query: { format: "metadata", metadataHeaders: ["From", "To", "Cc", "Subject", "Date"] },
 							})
 						).json,
 					);
@@ -466,7 +466,7 @@ export function createGmailConnectorAdapters(options: {
 					const original = jsonRecord(
 						(
 							await google(context, `${messages}/${id}`, {
-								query: { format: "metadata", metadataHeaders: "Message-ID,References" },
+								query: { format: "metadata", metadataHeaders: ["Message-ID", "References"] },
 							})
 						).json,
 					);

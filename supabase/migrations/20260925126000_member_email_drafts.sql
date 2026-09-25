@@ -72,6 +72,7 @@ create function public.qorpera_get_email_draft(p_session_id uuid,p_interaction_i
 returns jsonb language plpgsql security definer set search_path='' as $$
 declare v_session public.qorpera_shared_sessions%rowtype; v_payload jsonb; v_data jsonb;
  v_secret public.qorpera_cloud_secrets%rowtype; v_content jsonb; v_actor uuid;
+ v_draft public.qorpera_member_email_drafts%rowtype; v_action public.qorpera_member_email_actions%rowtype;
 begin
  if auth.role() is distinct from 'authenticated' or auth.uid() is null then raise exception 'email draft authority required' using errcode='42501'; end if;
  if not public.qorpera_can_read_session(p_session_id) then raise exception 'email draft unavailable' using errcode='42501'; end if;
@@ -93,6 +94,15 @@ begin
   v_content:=jsonb_build_object('to',v_payload->'to','cc',coalesce(v_payload->'cc','[]'::jsonb),'subject',coalesce(v_payload->'subject','""'::jsonb),'body',v_payload->'body');
   insert into public.qorpera_member_email_drafts(interaction_id,session_id,user_id,secret_id,from_address,content)
   values(p_interaction_id,p_session_id,case when exists(select 1 from public.qorpera_company_rooms where session_id=p_session_id and bound_staff_agent_id is not null) then v_actor else coalesce(v_session.audience_user_id,v_session.created_by_user_id) end,v_secret.id,v_secret.account_label,v_content);
+ end if;
+ -- A closed tab can lose its capability before the broker claims the action.
+ -- Expire that provably unexecuted action without requiring its capability.
+ -- Serialize with claim in the same session, draft, action lock order; an
+ -- executing action remains locked even after its deadline.
+ select * into strict v_draft from public.qorpera_member_email_drafts where interaction_id=p_interaction_id for update;
+ select * into v_action from public.qorpera_member_email_actions where id=v_draft.action_id for update;
+ if v_action.status='pending' and v_action.expires_at<=clock_timestamp() then
+  perform public.qorpera_refuse_email_draft_action(v_action.id,'This email action expired before it started. Try again.');
  end if;
  return public.qorpera_email_draft_state(p_interaction_id);
 end $$;

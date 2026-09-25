@@ -27,6 +27,10 @@ export interface EmailDraftEditor {
 	busy?: "load" | EmailDraftAction;
 	error?: string;
 	loaded?: boolean;
+	/** A lost response must be recovered before another action or edit is offered. */
+	unconfirmedAction?: EmailDraftAction;
+	/** The last acknowledged receipt, used to recognize a click that was never admitted. */
+	recoveryBase?: { actionId?: string; content: EmailDraftContent };
 }
 
 interface DraftReceipt extends EmailDraftState {
@@ -193,6 +197,11 @@ export class EmailDraftClient {
 		this.#signal.throwIfAborted();
 		const key = this.#key(sessionId, interactionId);
 		const existing = this.#restore(key);
+		if (
+			existing &&
+			(existing.action !== action || JSON.stringify(content(existing.content)) !== JSON.stringify(content(edited)))
+		)
+			throw new Error("Refresh to confirm the previous email action before making changes.");
 		const pending = existing ?? {
 			clientActionId: crypto.randomUUID(),
 			capability: btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(32))))

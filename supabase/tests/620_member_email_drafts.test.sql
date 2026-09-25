@@ -73,6 +73,14 @@ set role authenticated;
 select public.qorpera_prepare_email_draft_action('15000000-0000-4000-8000-000000000055','62000000-0000-4000-8000-000000000012','62000000-0000-4000-8000-000000000013','save','{"to":["save@example.test"],"cc":[],"subject":"Saved","body":"Saved"}',repeat('1',64));
 reset role;
 update public.qorpera_member_email_actions set expires_at=statement_timestamp()-interval '1 minute' where id='62000000-0000-4000-8000-000000000013';
+-- A fresh tab has no capability to post. Reading alone must recover an
+-- expired action that the broker never claimed, without unlocking execution.
+set role authenticated;
+do $$ declare v jsonb; begin
+ v:=public.qorpera_get_email_draft('15000000-0000-4000-8000-000000000055','62000000-0000-4000-8000-000000000012');
+ if v->>'status'<>'ready' or v->>'phase'<>'failed' or v->>'error' is null then raise exception 'lost pending capability left draft locked %',v; end if;
+end $$;
+reset role;
 set session authorization qorpera_secret_broker;
 do $$ declare v jsonb; begin
  v:=public.qorpera_claim_email_draft_action('62000000-0000-4000-8000-000000000001',repeat('a',64),'62000000-0000-4000-8000-000000000013',repeat('1',64));
@@ -89,9 +97,25 @@ do $$ begin
 end $$;
 reset role;
 set session authorization qorpera_secret_broker;
+do $$ begin
+ begin
+  perform public.qorpera_claim_email_draft_action('62000000-0000-4000-8000-000000000001',repeat('a',64),'62000000-0000-4000-8000-000000000013',repeat('1',64));
+  raise exception 'expired capability executed after recovery';
+ exception when object_not_in_prerequisite_state then null; end;
+end $$;
 select public.qorpera_claim_email_draft_action('62000000-0000-4000-8000-000000000001',repeat('a',64),'62000000-0000-4000-8000-000000000014',repeat('2',64));
 select public.qorpera_finish_email_draft_action('62000000-0000-4000-8000-000000000001',repeat('a',64),'62000000-0000-4000-8000-000000000014',repeat('2',64),'{"draft_id":"draft1"}');
 reset session authorization;
+set role authenticated;
+select public.qorpera_prepare_email_draft_action('15000000-0000-4000-8000-000000000055','62000000-0000-4000-8000-000000000012','62000000-0000-4000-8000-000000000017','send','{"to":["new@example.test"],"cc":[],"subject":"New","body":"New edits"}',repeat('9',64));
+reset role;
+update public.qorpera_member_email_actions set expires_at=statement_timestamp()-interval '1 minute' where id='62000000-0000-4000-8000-000000000017';
+set role authenticated;
+do $$ declare v jsonb; begin
+ v:=public.qorpera_get_email_draft('15000000-0000-4000-8000-000000000055','62000000-0000-4000-8000-000000000012');
+ if v->>'status'<>'saved' or v->>'draftId'<>'draft1' or v->>'phase'<>'failed' then raise exception 'expired pending action lost saved draft %',v; end if;
+end $$;
+reset role;
 set role authenticated;
 select public.qorpera_prepare_email_draft_action('15000000-0000-4000-8000-000000000055','62000000-0000-4000-8000-000000000012','62000000-0000-4000-8000-000000000015','send','{"to":["new@example.test"],"cc":[],"subject":"New","body":"New edits"}',repeat('3',64));
 reset role;

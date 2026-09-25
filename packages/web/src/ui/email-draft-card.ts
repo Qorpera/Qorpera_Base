@@ -49,6 +49,8 @@ export function renderEmailDraftCard(item: InteractionCardItem, context: Interac
 		editor.fields = { ...content, to: content.to.join(", "), cc: content.cc.join(", ") };
 		editor.state = { ...editor.state, from: editor.state?.from ?? "", content, status: finalOutcome };
 		editor.error = undefined;
+		editor.unconfirmedAction = undefined;
+		editor.recoveryBase = undefined;
 	}
 	const card = h("article", {
 		class: "interaction-card email-draft-card surface-draft",
@@ -56,6 +58,12 @@ export function renderEmailDraftCard(item: InteractionCardItem, context: Interac
 		"aria-label": t("Email draft from {name}", { name: context.agentName }),
 	});
 	const accept = (state: EmailDraftState) => {
+		const unchangedReceipt =
+			Boolean(editor.unconfirmedAction) &&
+			editor.recoveryBase &&
+			(state.status === "ready" || state.status === "saved") &&
+			state.actionId === editor.recoveryBase.actionId &&
+			JSON.stringify(state.content) === JSON.stringify(editor.recoveryBase.content);
 		// An older read may finish after another tab's final transcript arrives.
 		// Keep the final letter while accepting the verified sender from the read.
 		if (
@@ -65,10 +73,20 @@ export function renderEmailDraftCard(item: InteractionCardItem, context: Interac
 			state.status !== "discarded"
 		)
 			state = { ...state, content: editor.state.content, status: editor.state.status, error: undefined };
+		if (
+			unchangedReceipt &&
+			state.status === "saved" &&
+			JSON.stringify(editor.content) !== JSON.stringify(state.content)
+		)
+			state = { ...state, status: "ready" };
 		editor.state = state;
+		editor.unconfirmedAction = undefined;
+		editor.recoveryBase = undefined;
 		editor.error = state.error;
-		editor.content = state.content;
-		editor.fields = { ...state.content, to: state.content.to.join(", "), cc: state.content.cc.join(", ") };
+		if (!unchangedReceipt || state.status === "sent" || state.status === "discarded") {
+			editor.content = state.content;
+			editor.fields = { ...state.content, to: state.content.to.join(", "), cc: state.content.cc.join(", ") };
+		}
 		editor.loaded = true;
 	};
 	const load = () => {
@@ -92,7 +110,7 @@ export function renderEmailDraftCard(item: InteractionCardItem, context: Interac
 		const state = interactionState(item.request, item.answer, context.now);
 		const status = editor.state?.status;
 		const terminal = status === "sent" || status === "discarded" || state !== "waiting";
-		const uncertain = status === "sending" || status === "unconfirmed";
+		const uncertain = Boolean(editor.unconfirmedAction) || status === "sending" || status === "unconfirmed";
 		const editable = context.canAnswer && !terminal && !uncertain && !editor.busy;
 		const connected = Boolean(editor.state?.from);
 		const content = (): EmailDraftContent => ({
@@ -120,14 +138,20 @@ export function renderEmailDraftCard(item: InteractionCardItem, context: Interac
 			if (!editable || editor.pending || !context.actEmailDraft || !connected || (action !== "discard" && !valid()))
 				return;
 			editor.content = content();
+			const previousReceipt = editor.state;
 			editor.busy = action;
 			editor.error = undefined;
 			editor.pending = context
 				.actEmailDraft(action, editor.content)
 				.then(accept, (error: unknown) => {
+					if (editor.state?.status === "sent" || editor.state?.status === "discarded") return;
 					editor.error = error instanceof Error ? error.message : t("The email action could not be confirmed.");
-					// A transport failure does not prove that Gmail rejected a send. Reload
-					// the durable receipt before exposing another send button.
+					// Any lost response can leave an admitted action pending. Recover that
+					// exact action before accepting edits or a different member click.
+					editor.unconfirmedAction = action;
+					editor.recoveryBase = previousReceipt
+						? { actionId: previousReceipt.actionId, content: structuredClone(previousReceipt.content) }
+						: undefined;
 					if (action === "send" && editor.state) editor.state = { ...editor.state, status: "unconfirmed" };
 				})
 				.finally(() => {
@@ -142,6 +166,7 @@ export function renderEmailDraftCard(item: InteractionCardItem, context: Interac
 			if (editor.busy === "save") return t("Saving to Gmail…");
 			if (editor.busy === "send" || status === "sending") return t("Sending…");
 			if (editor.busy === "discard") return t("Discarding…");
+			if (editor.unconfirmedAction && editor.unconfirmedAction !== "send") return t("Action unconfirmed");
 			if (status === "unconfirmed") return t("Send unconfirmed");
 			if (status === "sent" || (item.answer?.outcome === "sent" && !item.answer.pending)) return t("Sent");
 			if (status === "discarded" || item.answer?.outcome === "discarded") return t("Discarded");
@@ -235,7 +260,9 @@ export function renderEmailDraftCard(item: InteractionCardItem, context: Interac
 				h(
 					"p",
 					{ class: "email-draft-note" },
-					t("Check Gmail before sending again. Delivery has not been confirmed."),
+					editor.unconfirmedAction && editor.unconfirmedAction !== "send"
+						? t("Refresh to confirm the previous email action before making changes.")
+						: t("Check Gmail before sending again. Delivery has not been confirmed."),
 				),
 			);
 		if (!terminal && context.canAnswer) {

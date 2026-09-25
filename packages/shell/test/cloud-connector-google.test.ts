@@ -104,6 +104,7 @@ it("exchanges the refresh token per call and searches then summarises messages",
 		},
 		[`GET ${GMAIL}/gmail/v1/users/me/messages/m1`]: (url) => {
 			expect(url.searchParams.get("format")).toBe("metadata");
+			expect(url.searchParams.getAll("metadataHeaders")).toEqual(["From", "To", "Cc", "Subject", "Date"]);
 			return Response.json(message("m1", "Offer", "Hello"));
 		},
 		[`GET ${GMAIL}/gmail/v1/users/me/messages/m2`]: () => Response.json(message("m2", "Re: Offer", "Hi")),
@@ -147,7 +148,15 @@ it("reads a message preferring plain text, reducing HTML otherwise, and lists at
 it("sends a reply inside the original thread as an RFC 822 message", async () => {
 	let sent: Record<string, unknown> | undefined;
 	const { fetchImplementation } = google({
-		[`GET ${GMAIL}/gmail/v1/users/me/messages/m1`]: () => Response.json(message("m1", "Offer", "Hello")),
+		[`GET ${GMAIL}/gmail/v1/users/me/messages/m1`]: (url) => {
+			expect(url.searchParams.get("format")).toBe("metadata");
+			expect(url.searchParams.getAll("metadataHeaders")).toEqual(["Message-ID", "References"]);
+			const original = message("m1", "Offer", "Hello");
+			original.payload.headers = original.payload.headers.filter((item) =>
+				url.searchParams.getAll("metadataHeaders").includes(item.name),
+			);
+			return Response.json(original);
+		},
 		[`POST ${GMAIL}/gmail/v1/users/me/messages/send`]: (_url, init) => {
 			sent = JSON.parse(String(init?.body)) as Record<string, unknown>;
 			return Response.json({ id: "m9", threadId: "t-m1" });
@@ -208,7 +217,16 @@ it("creates and replaces unsent Gmail drafts with the authenticated sender and U
 	const requests: { method: string; message: { raw: string; threadId?: string } }[] = [];
 	const { fetchImplementation } = google({
 		[`GET ${GMAIL}/gmail/v1/users/me/profile`]: () => Response.json({ emailAddress: "sender@example.com" }),
-		[`GET ${GMAIL}/gmail/v1/users/me/messages/m1`]: () => Response.json(message("m1", "Offer", "Hello")),
+		[`GET ${GMAIL}/gmail/v1/users/me/messages/m1`]: (url) => {
+			expect(url.searchParams.get("format")).toBe("metadata");
+			expect(url.searchParams.getAll("metadataHeaders")).toEqual(["Message-ID", "References"]);
+			const original = message("m1", "Offer", "Hello");
+			original.payload.headers.push({ name: "References", value: "<earlier@mail.example.com>" });
+			original.payload.headers = original.payload.headers.filter((item) =>
+				url.searchParams.getAll("metadataHeaders").includes(item.name),
+			);
+			return Response.json(original);
+		},
 		[`POST ${GMAIL}/gmail/v1/users/me/drafts`]: (_url, init) => {
 			requests.push({ method: "POST", ...JSON.parse(String(init?.body)) });
 			return Response.json({ id: "r-draft1", message: { id: "m-draft1", threadId: "t-m1" } });
@@ -242,7 +260,7 @@ it("creates and replaces unsent Gmail drafts with the authenticated sender and U
 	expect(raw).toContain("From: sender@example.com\r\n");
 	expect(raw).toContain("To: anna@example.com\r\nCc: bo@example.com\r\n");
 	expect(raw).toContain("In-Reply-To: <m1@mail.example.com>\r\n");
-	expect(raw).toContain("References: <m1@mail.example.com>\r\n");
+	expect(raw).toContain("References: <earlier@mail.example.com> <m1@mail.example.com>\r\n");
 	const subjectWords = raw.match(/=\?UTF-8\?B\?[^?]+\?=/g) ?? [];
 	expect(subjectWords.length).toBeGreaterThan(1);
 	expect(subjectWords.every((word) => word.length <= 75)).toBe(true);

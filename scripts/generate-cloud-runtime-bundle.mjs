@@ -9,7 +9,7 @@ const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const generatedSource = "packages/runtime/src/cloud-runtime-bundle.generated.ts";
 const activation = "supabase/migrations/20260925126900_runtime_bundle_activation_v126.sql";
 const activationVersion = 126;
-const previousActivationVersion = 125;
+const previousActivationVersion = 113;
 const manifestPath = "deploy/first-node/native-codex/runtime-bundle-manifest.json";
 const sha = (text) => createHash("sha256").update(text).digest("hex");
 

@@ -89,6 +89,32 @@ describe("email draft member transport", () => {
 		expect(fetch).toHaveBeenCalledTimes(1);
 		expect(sessionStorage.length).toBe(1);
 	});
+	it.each(["save", "discard"] as const)(
+		"does not substitute an unresolved %s for a new click or edited letter",
+		async (action) => {
+			const f = fixture();
+			const fetch = vi
+				.fn()
+				.mockRejectedValueOnce(new TypeError("response lost"))
+				.mockResolvedValueOnce(
+					new Response(
+						JSON.stringify({ ...receipt, status: action === "save" ? "saved" : "discarded", actionId }),
+					),
+				);
+			vi.stubGlobal("fetch", fetch);
+			await expect(f.client.act(session, interaction, action, content)).rejects.toThrow("response lost");
+			const edited = { ...content, to: ["corrected@example.com"], body: "The revised letter" };
+			await expect(f.client.act(session, interaction, "send", edited)).rejects.toThrow("Refresh to confirm");
+			await expect(f.client.act(session, interaction, action, edited)).rejects.toThrow("Refresh to confirm");
+			expect(fetch).toHaveBeenCalledTimes(1);
+			expect(f.rpc).toHaveBeenCalledTimes(1);
+			expect(sessionStorage.length).toBe(1);
+			const recovered = await f.client.read(session, interaction);
+			expect(recovered.status).toBe(action === "save" ? "saved" : "discarded");
+			expect(f.rpc.mock.calls[2]).toEqual(f.rpc.mock.calls[0]);
+			expect(sessionStorage.length).toBe(0);
+		},
+	);
 	it("does not reuse another member's recovery capability", async () => {
 		const f = fixture();
 		vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new TypeError("offline")));
