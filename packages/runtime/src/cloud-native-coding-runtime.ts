@@ -21,9 +21,13 @@ import {
 import {
 	CLOUD_NATIVE_TOOL_CATALOG_BYTES,
 	type CloudNativeTool,
+	type CloudToolContext,
 	cloudToolJsonText,
 } from "./cloud-native-tool-boundary.ts";
-import type { CloudNativeToolOperationControlPlane } from "./cloud-native-tool-operations.ts";
+import {
+	type CloudNativeToolOperationControlPlane,
+	observedCloudToolAuthority,
+} from "./cloud-native-tool-operations.ts";
 import { assertCloudRuntimeBundle } from "./cloud-runtime-bundle.ts";
 import type { CloudRuntimeObservability, CloudRuntimeToolOperation } from "./cloud-runtime-observability.ts";
 import type { CloudWakeEnvelope } from "./cloud-wake-bus.ts";
@@ -111,8 +115,8 @@ export interface CloudCodingEarlierTurn {
 }
 
 function closedRecord(value: unknown, keys: readonly string[]): Record<string, unknown> {
-	const item = record(value, "Coding turn context invalid");
-	if (Object.keys(item).sort().join() !== [...keys].sort().join()) throw new Error("Coding turn context invalid");
+	const item = record(value, "CODING_TURN_CONTEXT_INVALID");
+	if (Object.keys(item).sort().join() !== [...keys].sort().join()) throw new Error("CODING_TURN_CONTEXT_INVALID");
 	return item;
 }
 /** Non-empty and bounded. What counts as blank was decided by the kernel when the
@@ -121,11 +125,11 @@ function closedRecord(value: unknown, keys: readonly string[]): Record<string, u
 function boundedText(value: unknown, maximum: number, nullable: boolean): string | null {
 	if (value === null && nullable) return null;
 	if (typeof value !== "string" || !value || Buffer.byteLength(value) > maximum)
-		throw new Error("Coding turn context invalid");
+		throw new Error("CODING_TURN_CONTEXT_INVALID");
 	return value;
 }
 function choices(value: unknown): string[] {
-	if (!Array.isArray(value) || value.length > 6) throw new Error("Coding turn context invalid");
+	if (!Array.isArray(value) || value.length > 6) throw new Error("CODING_TURN_CONTEXT_INVALID");
 	return value.map((option) => boundedText(option, 120, false) as string);
 }
 function turnInput(
@@ -140,7 +144,7 @@ function turnInput(
 		(from === "dispatch") !== (sequence === 1) ||
 		(from === "dispatch") !== (input.text === null)
 	)
-		throw new Error("Coding turn context invalid");
+		throw new Error("CODING_TURN_CONTEXT_INVALID");
 	return { input, from, text: boundedText(input.text, 4000, true) };
 }
 
@@ -159,11 +163,11 @@ export function parseCloudCodingTurnContext(
 		!Number.isSafeInteger(item.omittedEarlierTurns) ||
 		Number(item.omittedEarlierTurns) !== scope.sequence - 1 - item.earlierTurns.length
 	)
-		throw new Error("Coding turn context invalid");
+		throw new Error("CODING_TURN_CONTEXT_INVALID");
 	const current = turnInput(item.input, scope.sequence, ["from", "text", "answers"]);
 	let answers: CloudCodingTurnContext["input"]["answers"] = null;
 	if (current.input.answers !== null) {
-		if (current.from === "dispatch") throw new Error("Coding turn context invalid");
+		if (current.from === "dispatch") throw new Error("CODING_TURN_CONTEXT_INVALID");
 		const answered = closedRecord(current.input.answers, ["question", "options"]);
 		answers = {
 			question: boundedText(answered.question, 1000, false) as string,
@@ -173,7 +177,7 @@ export function parseCloudCodingTurnContext(
 	const first = scope.sequence - item.earlierTurns.length;
 	const earlierTurns = item.earlierTurns.map((entry, index): CloudCodingEarlierTurn => {
 		const turn = closedRecord(entry, ["sequence", "input", "submitted", "outcome"]);
-		if (turn.sequence !== first + index) throw new Error("Coding turn context invalid");
+		if (turn.sequence !== first + index) throw new Error("CODING_TURN_CONTEXT_INVALID");
 		const input = turnInput(turn.input, first + index, ["from", "text"]);
 		let submitted: CloudCodingEarlierTurn["submitted"] = null;
 		if (turn.submitted !== null) {
@@ -184,7 +188,7 @@ export function parseCloudCodingTurnContext(
 				(s.kind === "ask" && s.headSha !== null) ||
 				(s.kind !== "finish" && s.kind !== "ask")
 			)
-				throw new Error("Coding turn context invalid");
+				throw new Error("CODING_TURN_CONTEXT_INVALID");
 			submitted = {
 				kind: s.kind,
 				summary: boundedText(s.summary, 4000, false) as string,
@@ -197,7 +201,7 @@ export function parseCloudCodingTurnContext(
 		if (turn.outcome !== null) {
 			const o = closedRecord(turn.outcome, ["state", "summary", "reason", "needs", "options", "pullRequest"]);
 			if (o.state !== "succeeded" && o.state !== "blocked" && o.state !== "failed" && o.state !== "cancelled")
-				throw new Error("Coding turn context invalid");
+				throw new Error("CODING_TURN_CONTEXT_INVALID");
 			outcome = {
 				state: o.state,
 				summary: boundedText(o.summary, 8192, true),
@@ -254,13 +258,13 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 	) {
 		const { binding, wake } = context;
 		if (wake.kind !== "agent" || wake.source.kind !== "worker-dispatch" || wake.payload.species !== "coding")
-			throw new Error("Native coding turn requires a coding worker-dispatch wake");
+			throw new Error("CODING_TURN_WAKE_DIFFERS");
 		const authorize = async (checked: AbortSignal) => {
 			const authority = record(
 				await this.#control.call("qorpera_authorize_coding_turn", { p_binding: binding }, checked),
 			);
 			if (Object.keys(authority).sort().join() !== "coding,identity,schema,validForMs")
-				throw new Error("Coding turn authority differs");
+				throw new Error("CODING_TURN_AUTHORITY_DIFFERS");
 			const native = parseCloudNativeToolAuthority(
 				{ schema: authority.schema, identity: authority.identity, validForMs: authority.validForMs },
 				binding,
@@ -286,7 +290,7 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 				native.identity.sessionId !== null ||
 				native.identity.staffAgentId !== context.identity.staffAgentId
 			)
-				throw new Error("Coding turn scope differs");
+				throw new Error("CODING_TURN_SCOPE_DIFFERS");
 			const repository = parseCloudCodingRepository(coding.repository);
 			assertCloudRuntimeBundle(native.identity, this.#binarySha256);
 			const scope: CloudCodingCommandScope = Object.freeze({
@@ -299,7 +303,7 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 		};
 		const initial = await cloudToolRequest(authorize, signal);
 		if (initial.coding.submission !== null && initial.coding.submission !== undefined)
-			throw new Error("Coding turn already submitted; the executor publishes it");
+			throw new Error("CODING_TURN_ALREADY_SUBMITTED");
 		const scope = initial.scope;
 		// The session's own record of its turns, read once: earlier turns never change.
 		const turn = parseCloudCodingTurnContext(
@@ -339,7 +343,7 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 			kept = kept.slice(1);
 			prompt = compose(kept);
 		}
-		if (Buffer.byteLength(prompt) > PROMPT_BYTES) throw new Error("Coding turn context exceeds its byte limit");
+		if (Buffer.byteLength(prompt) > PROMPT_BYTES) throw new Error("CODING_TURN_CONTEXT_TOO_LARGE");
 		const contextSha256 = createHash("sha256").update(prompt).digest("hex");
 		let submitted = false;
 		const assertContext = async (checked: AbortSignal): Promise<void> => {
@@ -349,16 +353,15 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 				cloudToolJsonText(live.scope) !== cloudToolJsonText(scope) ||
 				live.coding.goal !== initial.coding.goal
 			)
-				throw new Error("Coding turn authority changed");
+				throw new Error("CODING_TURN_AUTHORITY_CHANGED");
 		};
-		const submit = async (
-			input: Record<string, JsonValue>,
-			identity: CloudNativeToolIdentity | undefined,
-			checked: AbortSignal,
-		): Promise<string> => {
-			if (!identity || cloudToolJsonText(identity) !== cloudToolJsonText(initial.identity))
-				throw new Error("Coding submission identity differs");
-			await assertContext(checked);
+		const submit = async (input: Record<string, JsonValue>, context: CloudToolContext): Promise<string> => {
+			const checked = context.signal;
+			if (!context.identity || cloudToolJsonText(context.identity) !== cloudToolJsonText(initial.identity))
+				throw new Error("CODING_SUBMISSION_IDENTITY_DIFFERS");
+			// The turn check is its own observation: a refusal or timeout there is
+			// told apart from the submission itself.
+			await observedCloudToolAuthority(context.observation, () => assertContext(checked), checked);
 			const receipt = record(
 				await this.#control.call(
 					"qorpera_submit_coding_turn",
@@ -374,7 +377,7 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 				receipt.state !== "submitted" ||
 				receipt.operationKey !== input.operationKey
 			)
-				throw new Error("Coding submission unconfirmed");
+				throw new Error("CODING_SUBMISSION_UNCONFIRMED");
 			submitted = true;
 			return cloudToolJsonText(receipt);
 		};
@@ -412,7 +415,7 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 				const input = finish.parseArguments(value) as Record<string, JsonValue>;
 				return {
 					kind: "text",
-					value: await submit({ kind: "finish", ...input }, toolContext.identity, toolContext.signal),
+					value: await submit({ kind: "finish", ...input }, toolContext),
 				};
 			},
 		};
@@ -456,7 +459,7 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 				const input = ask.parseArguments(value) as Record<string, JsonValue>;
 				return {
 					kind: "text",
-					value: await submit({ kind: "ask", ...input }, toolContext.identity, toolContext.signal),
+					value: await submit({ kind: "ask", ...input }, toolContext),
 				};
 			},
 		};
@@ -468,7 +471,7 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 				// also while the model streams without calling a tool.
 				describeToolAuthority: async (value, checked) => {
 					if (cloudToolJsonText(value) !== cloudToolJsonText(binding))
-						throw new Error("Coding native binding changed");
+						throw new Error("CODING_NATIVE_BINDING_CHANGED");
 					return (await authorize(checked)).authority;
 				},
 				beginToolOperation: (value, input, checked) => this.#control.beginToolOperation(value, input, checked),
@@ -513,16 +516,16 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 					contextBytes: Buffer.byteLength(prompt),
 				};
 				if (cloudToolJsonText(started) !== cloudToolJsonText(expected))
-					throw new Error("Coding execution admission unconfirmed");
+					throw new Error("CODING_EXECUTION_ADMISSION_UNCONFIRMED");
 			},
 			tools: (identity, operations) => {
 				const guarded: CloudCodingCommandGateway = {
 					authorize: async (target, admitted, checked) => {
 						const live = await authorize(checked);
 						if (submitted || (live.coding.submission !== null && live.coding.submission !== undefined))
-							throw new Error("Coding turn already submitted");
+							throw new Error("CODING_COMMAND_AFTER_SUBMISSION");
 						if (cloudToolJsonText(target) !== cloudToolJsonText(scope))
-							throw new Error("Coding command scope differs");
+							throw new Error("CODING_COMMAND_SCOPE_DIFFERS");
 						await gateway.authorize(target, admitted, checked);
 					},
 					start: (...input) => gateway.start(...input),
@@ -546,7 +549,7 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 									output.imageSha256 ||
 									record(envelope.provenance, "Invalid coding context output").companyReadId !== undefined
 								)
-									throw new Error("Coding context cannot introduce other resources");
+									throw new Error("CODING_CONTEXT_RESOURCES_REFUSED");
 								return {
 									callId: output.callId,
 									kind: output.kind,
@@ -578,12 +581,12 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 							Number(receipt.ordinal) < 1 ||
 							Number(receipt.ordinal) > 2_147_483_647
 						)
-							throw new Error("Coding context receipt unconfirmed");
+							throw new Error("CODING_CONTEXT_RECEIPT_UNCONFIRMED");
 					},
 				};
 			},
 		});
-		if (!submitted) throw new Error("Native coding turn ended without a submission");
+		if (!submitted) throw new Error("CODING_TURN_ENDED_WITHOUT_SUBMISSION");
 		return { providerSessionId: result.providerSessionId, delivery: { messageCount: 0, finalMessageId: null } };
 	}
 }

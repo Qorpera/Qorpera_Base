@@ -83,11 +83,12 @@ it.each(["transport", "body", "malformed", "denied", "forged"] as const)(
 				}),
 			});
 			expect(response.status).toBe(422);
-			expect(await response.json()).toEqual({ error: "request rejected" });
+			const body = await response.json();
 			if (failure === "forged") {
+				expect(body).toEqual({ error: "request rejected", code: "UNCLASSIFIED" });
 				expect(logged).toHaveBeenCalledWith(
 					expect.stringMatching(
-						/^Native provider request rejected: internal rejection \(error; message-sha256=[a-f0-9]{16}\)$/,
+						/^Native provider request rejected: internal rejection \(error; message-sha256=[a-f0-9]{16}\) \[code=UNCLASSIFIED\]$/,
 					),
 				);
 				expect(transport).not.toHaveBeenCalled();
@@ -98,8 +99,11 @@ it.each(["transport", "body", "malformed", "denied", "forged"] as const)(
 						: failure === "malformed"
 							? "invalid_response"
 							: "transport_unavailable";
+				// The runner receives the stage and category as a fixed code, never the error's text.
+				const code = `NATIVE_WAKE_ENVELOPE:${category.toUpperCase()}`;
+				expect(body).toEqual({ error: "request rejected", code });
 				expect(logged).toHaveBeenCalledWith(
-					`Native provider request rejected: Native provider execution failed (stage=wake-envelope, category=${category})`,
+					`Native provider request rejected: Native provider execution failed (stage=wake-envelope, category=${category}) [code=${code}]`,
 				);
 				expect(transport).toHaveBeenCalledTimes(1);
 			}

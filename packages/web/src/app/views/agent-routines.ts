@@ -175,8 +175,14 @@ export class AgentRoutines {
 					h("span", null, routine.triggers.map((trigger) => describeCloudRoutineTrigger(trigger, t)).join("; ")),
 					h("small", null, last ? t("Last run: {run}", { run: runLabel(last) }) : t("Has not run yet")),
 				),
-				routine.status === "active" ? badge(t("Active"), "ok") : badge(t("Paused"), "warn"),
-				manage
+				routine.status === "active"
+					? badge(t("Active"), "ok")
+					: routine.status === "expired"
+						? badge(t("Ended"))
+						: badge(t("Paused"), "warn"),
+				// An ended routine is read-only: a member save keeps its end (its expiry or run
+				// limit), so neither Edit nor Resume could start it again. Its agent can.
+				manage && routine.status !== "expired"
 					? h(
 							"div",
 							{ class: "routine-row-actions" },
