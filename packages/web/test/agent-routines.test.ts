@@ -11,7 +11,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AgentRoutines } from "../src/app/views/agent-routines.ts";
 import type { Cloud } from "../src/cloud/client.ts";
 import { createWebRoutines, type WebRoutines } from "../src/cloud/routines.ts";
-import { setLanguagePreference, setTimeZonePreference } from "../src/ui/preferences.ts";
 import { profileA, settle, staff } from "./fixtures.ts";
 
 const account = {
@@ -329,12 +328,12 @@ describe("a member edit of an agent's routine", () => {
 		vi.useFakeTimers({ toFake: ["Date"] });
 		// Half a minute before the hour: a new interval start rounds up to 11:00 however long a test takes.
 		vi.setSystemTime(new Date("2026-09-25T09:59:30.000Z"));
-		setLanguagePreference("en");
-		setTimeZonePreference("Europe/Copenhagen");
+		// Times show in the device's zone and jsdom's English.
+		vi.stubEnv("TZ", "Europe/Copenhagen");
 	});
 	afterEach(() => {
 		vi.useRealTimers();
-		localStorage.clear();
+		vi.unstubAllEnvs();
 	});
 	const type = (form: Element, label: string, value: string) => {
 		const field = form.querySelector<HTMLInputElement>(`[aria-label="${label}"]`)!;
