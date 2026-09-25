@@ -71,7 +71,7 @@ const INSTRUCTIONS =
 	"When only the member who owns this session can decide something, call coding_ask with the exact question (and short choices when there are natural ones) and stop; the session pauses until they answer, and your next turn continues from their answer. " +
 	"When the work and its checks are complete, commit on the current branch and call coding_finish with the commit SHA and a factual summary including failures; that records a submission for trusted publication, not proof that a PR exists. You have no messaging tool. " +
 	"The context is this session's own record: earlierTurns says what started each earlier turn, what you submitted in it (a question with its choices, or a commit) and how it ended; input is what started this turn (the dispatch, the agent's follow-up or the owner's reply). " +
-	"When input.answers is set, input.text replies to that question from your previous turn; a short reply such as a letter or the first words of a choice selects that choice. Act on the decision; do not ask it again or try to infer it from the repository.";
+	"When input.answers is set, it is a question you asked in an earlier turn that is still open. The reply is input.text, or, when input.text does not decide it, a reply in earlierTurns after that question (a turn that ended without a submission); a short reply such as a letter or the first words of a choice selects that choice. Act on the decision; do not ask it again or try to infer it from the repository.";
 
 function record(value: unknown, label = "Invalid coding turn authority"): Record<string, unknown> {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(label);
