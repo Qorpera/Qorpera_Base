@@ -152,6 +152,7 @@ export function button(
 const ICON_PATHS: Record<string, string[]> = {
 	navigation: ["M3 5h18v14H3Z", "M9 5v14"],
 	check: ["m5 12 4 4L19 6"],
+	appearance: ["M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z", "M12 3v18", "M12 7h7M12 12h9M12 17h7"],
 	image: ["M3 3h18v18H3Z", "m3 16 5-5 4 4 3-3 6 6", "M15 7h.01"],
 	camera: [
 		"M9 4h6l2 3h3a1 1 0 0 1 1 1v11a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V8a1 1 0 0 1 1-1h3Z",
