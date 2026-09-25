@@ -16,9 +16,8 @@ export interface WebRoutineDraft {
 	title: string;
 	prompt: string;
 	trigger: CloudRoutineTrigger;
-	/** The routine's effort as it stands; an edit keeps it (an agent may have chosen
-	 * medium or high). Omitted for a new routine, which gets the client default. */
-	effort?: CloudRoutineEffort;
+	/** An edit keeps the routine's own (an agent may have chosen medium or high). */
+	effort: CloudRoutineEffort;
 	enabled: boolean;
 }
 
