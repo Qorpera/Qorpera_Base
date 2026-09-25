@@ -32,8 +32,6 @@ export const CONVERSATION: Record<string, string> = {
 	"Agent {id}": "Agent {id}",
 	"Agent reply · speaker unavailable": "Agentsvar · afsender ukendt",
 	"(empty)": "(tom)",
-	"The agent's turn is not finished": "Agentens tur er ikke færdig",
-	Progress: "Undervejs",
 	Failed: "Mislykkedes",
 	"Failed · {reason}": "Mislykkedes · {reason}",
 	Processing: "Behandles",

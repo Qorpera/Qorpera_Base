@@ -972,13 +972,6 @@ export class ConversationView {
 								: null,
 						...bodies.map((body) => h("div", { class: "bubble" }, body)),
 						attachments?.el,
-						item.phase === "progress"
-							? h(
-									"div",
-									{ class: "message-caption", title: t("The agent's turn is not finished") },
-									t("Progress"),
-								)
-							: null,
 						item.pending
 							? h(
 									"div",
