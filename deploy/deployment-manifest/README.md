@@ -45,8 +45,14 @@ A record says where a fact is written down:
 - `{ "path", "line", "quote" }`: one line of the bundle registry (append-only); the quote must be on that line;
 - `{ "url" }`: a pull request or a check run.
 
-`manifest.mjs check --manifest current.json --root <workspace>` re-reads every record. It fails when a receipt has
-changed, a quote has moved, a digest is stale, or a state does not follow from its evidence.
+`manifest.mjs check --manifest current.json --root <workspace>` re-reads every record. It fails when:
+
+- a receipt has changed or a quote has moved;
+- a digest is stale;
+- a state does not follow from its evidence;
+- evidence predates the identity going live;
+- `current.json` differs from the newest `history/` file, or a history file does not name the sha256 of the one before
+  it. Only `apply` writes both, so a hand edit shows up here.
 
 ## Components
 
@@ -57,10 +63,12 @@ changed, a quote has moved, a digest is stale, or a state does not follow from i
 | `runner-image` | LXD image of agent machines (both nodes + exec host) | `image/signing/image-provenance-*.json` |
 | `codex-fence` | Codex binary with the result fence, inside the runner image | `guest/artifact.json` |
 | `guest-provider-host` | `qorpera-native-provider-host.mjs` inside the runner image | `guest/` |
-| `node-01-release`, `node-02-release` | Node agent release per node: provider (and node 1's orchestrator) program + env, and what the cut enrolled | `agent/release-N/`, `agent/receipts/`, `enroll/receipts/` |
+| `node-01-release`, `node-02-release` | Node agent release per node: provider (and node 1's orchestrator) program + env, and the agent machine (native) policy the cut enrolled | `agent/release-N/`, `agent/receipts/`, `enroll/receipts/` |
+| `node-01-login`, `node-02-login` | Sign-in machines per node: the login policy the cut enrolled + the provider program that holds the login gateway. An agent run does not prove these | `enroll/receipts/` |
 | `node-agent` | The node agent program itself | explicit `set` |
+| `node-01-observer`, `node-02-observer` | Health and inventory observer per node | explicit `set` |
 | `exec-host` | Shared execution host VM on node 2 | `exec-host/receipts/` (package: explicit) |
-| `office-service`, `office-image` | Company Computer provider and image | explicit `set` |
+| `office-service`, `office-image` | Company Computer provider and image (production); `-test` for the acceptance company | explicit `set` |
 | `coding-image`, `coding-executor`, `coding-vm-policy` | Member coding machines on node 2 | explicit `set` |
 | `secret-broker-qorpera`, `secret-broker-acceptance` | Secret brokers on node 1 and their authority rows | explicit `set` |
 | `capture-proxy` | nginx route for captures on node 1 | explicit `set` |
@@ -109,16 +117,25 @@ An accept operation names the components a run actually exercised, e.g. a run pl
 }
 ```
 
+A `set` with an unchanged identity keeps the date and cut it first went live and only adds records. A lane re-reports
+everything it carries, such as an unchanged Codex binary. To correct a wrongly recorded date on purpose, add
+`"replaceLive": true`. An `accept` dated before the component went live is refused.
+
 Changes outside a cut use the same `set` and `accept` operations: a coding machine size change, a broker roll, an
-office image. For a web deploy, run:
+office image. Cloudflare Pages deploys every master merge, and every pull request head as a preview. For a web deploy,
+record master's head:
 
 ```bash
 gh api repos/Qorpera/Qorpera_Base/commits/<sha>/check-runs > /tmp/checks.json
-node $M web --commit <sha> --check-runs /tmp/checks.json > $D/changes/NNNN-web.json
+gh api repos/Qorpera/Qorpera_Base/compare/master...<sha> > /tmp/compare.json
+node $M web --commit <sha> --check-runs /tmp/checks.json --compare /tmp/compare.json > $D/changes/NNNN-web.json
 ```
 
+It refuses a commit that is not master's head and a deploy that did not succeed. Use `--allow-behind yes` only when
+master's newer commits did not deploy.
+
 Every apply writes a new `history/` file. It also replaces `current.json` and `CURRENT.md`, and chains `previous` to the
-sha256 of the file it replaced. Never edit `current.json` by hand: `check` rejects hand edits.
+sha256 of the file it replaced. Never edit `current.json` by hand; `check` compares it with the newest history file.
 
 ## Drift check (no SSH)
 
@@ -138,13 +155,28 @@ Run it read-only (the Management API query endpoint with `read_only: true`) and 
 node $M drift --manifest $D/current.json --observed observed.json
 ```
 
-The output says `match` or `DRIFT` per field. It says `not observable from the backend` for what only a node knows:
-node agent release numbers, program digests, the runner image fingerprint, broker and gateway programs, the proxy
-config. The nodes do not report those to the backend today. This check never uses SSH.
+The output says `match` or `DRIFT` per field (exit 1 on any DRIFT). Enrolled policies are checked twice:
+
+- the policy is enrolled;
+- the newest machine of that provider requested since the component went live used it.
+
+Re-enrolling an older policy keeps its old row, so the newest enrolled row is not always the policy in use.
+
+Some results are neither `match` nor `DRIFT`:
+
+- `no machine requested since live`: nothing used that provider since the component went live.
+- `note`: some runs since the activation carry another bundle. A run takes the bundle its inputs were recorded under,
+  so inputs sent during a cut's pause run on the older one.
+- `not observable from the backend`: what only a node knows (node agent release numbers, program digests, the runner
+  image fingerprint, broker and gateway programs, the proxy config). The nodes do not report those to the backend
+  today.
+
+This check never uses SSH.
 
 ## Rules
 
 - Record only what a receipt, the registry or a read-only query shows. Unknown stays `null`.
-- Evidence counts only for what the run exercised. A run's node comes from its placement: `observed-state.sql`
-  does not show that, so use `qorpera_runtime_node_demands` via the run's machine allocation.
+- Evidence counts only for what the run exercised. A run's node comes from its placement: `run-placements.sql`
+  (read-only) lists every run since the activation with its node and provider policy. A run on node 1 does not accept
+  a node 2 component, and an agent run does not accept a sign-in (login) component.
 - A health check (service active, healthz 200) shows a component started. It is not acceptance.

@@ -7,13 +7,14 @@
 //   manifest.mjs check  --manifest <file> [--root <workspace>]
 //   manifest.mjs render --manifest <file>                                          (prints CURRENT.md)
 //   manifest.mjs drift  --manifest <file> --observed <observed.json>
-//   manifest.mjs web    --commit <sha> --check-runs <file>   (prints changes for the web client's Pages deploy)
+//   manifest.mjs web    --commit <sha> --check-runs <file> --compare <file> [--allow-behind yes]
+//                                                              (prints changes for the web client's Pages deploy)
 //
 // Nothing here talks to a node or a database. `apply` only writes inside --dir.
 
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { basename, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 export const MANIFEST_SCHEMA = "qorpera.deployment-manifest/v1";
@@ -30,6 +31,8 @@ export const COMPONENT_ORDER = [
 	"guest-provider-host",
 	"node-01-release",
 	"node-02-release",
+	"node-01-login",
+	"node-02-login",
 	"node-agent",
 	"node-01-observer",
 	"node-02-observer",
@@ -201,13 +204,18 @@ function setComponent(components, op, root) {
 	if (!title || !scope) throw new Error("a new component needs title and scope");
 	const live = op.live ?? {};
 	const changed = !old || identityDigest(old.identity) !== identityDigest(op.identity);
-	if (!changed && op.live === undefined) throw new Error("identity unchanged and no live record: nothing to set");
+	const records = (live.records ?? []).map((record) => resolveRecord(record, root));
 	const evidence = old?.acceptance.evidence ?? [];
 	const superseded = old?.acceptance.superseded ?? [];
 	if (changed && evidence.length > 0) {
 		const last = evidence[evidence.length - 1];
 		superseded.push({ identityDigest: identityDigest(old.identity), lastAcceptedAt: last.at, summary: last.summary });
 	}
+	// The same identity went live earlier: keep when and in which cut, and only add the new records. A cut lane
+	// re-reports everything it carries (e.g. an unchanged Codex binary), which must not move its live date.
+	// `replaceLive` corrects a wrongly recorded date or cut on purpose.
+	const keep = !changed && !op.replaceLive;
+	const known = new Set((keep ? old.live.records : []).map(canonicalJson));
 	components.set(op.id, {
 		id: op.id,
 		title,
@@ -215,9 +223,9 @@ function setComponent(components, op, root) {
 		identity: op.identity,
 		identityDigest: "",
 		live: {
-			since: live.since ?? null,
-			cut: live.cut ?? null,
-			records: (live.records ?? []).map((record) => resolveRecord(record, root)),
+			since: (keep ? old.live.since : null) ?? live.since ?? null,
+			cut: (keep ? old.live.cut : null) ?? live.cut ?? null,
+			records: [...(keep ? old.live.records : []), ...records.filter((record) => !known.has(canonicalJson(record)))],
 		},
 		acceptance: { state: "", evidence: changed ? [] : evidence, superseded },
 		notes: op.notes ?? (changed ? "" : (old?.notes ?? "")),
@@ -237,6 +245,8 @@ function acceptComponents(components, op, root) {
 		if (unknown.length > 0) throw new Error(`${id}: identity not fully recorded (${unknown.join(", ")})`);
 		if (op.expectIdentityDigest?.[id] && op.expectIdentityDigest[id] !== identityDigest(component.identity))
 			throw new Error(`${id}: identity changed since the evidence was prepared`);
+		if (component.live.since && Date.parse(op.at) < Date.parse(component.live.since))
+			throw new Error(`${id}: evidence at ${op.at} predates the live identity (live since ${component.live.since})`);
 		component.acceptance.evidence.push({
 			at: op.at,
 			summary: op.summary,
@@ -287,6 +297,10 @@ export function checkManifest(manifest, { root } = {}) {
 		for (const item of component.acceptance.evidence) {
 			need(item.identityDigest === component.identityDigest, `${where}: evidence for another identity`);
 			need(ISO.test(item.at ?? ""), `${where}: evidence needs at`);
+			need(
+				!component.live.since || Date.parse(item.at) >= Date.parse(component.live.since),
+				`${where}: evidence at ${item.at} predates live since ${component.live.since}`,
+			);
 			need(Array.isArray(item.records) && item.records.length > 0, `${where}: evidence needs records`);
 		}
 		if (root) {
@@ -382,24 +396,44 @@ export function renderMarkdown(manifest) {
 // Drift: the manifest against what the backend reports about itself (observed-state.sql)
 // ---------------------------------------------------------------------------------------------------------------
 
-const newestProvider = (observed, kind, providerId) =>
-	observed.nodeProviders.find((p) => p.kind === kind && p.providerId === providerId);
-
-/** Per component: match, DRIFT, or not observable from the backend. */
+/** Per component and field: match, DRIFT, or an observation that is neither (no use since live, not observable,
+ * a note). Enrollment is checked twice: the policy must be enrolled, and the newest machine of that provider requested
+ * since the component went live must have used it (re-enrolling an older policy keeps its old row, so "newest
+ * enrolled" is not the policy in use after a rollback). */
 export function drift(manifest, observed) {
 	if (observed?.schema !== OBSERVED_SCHEMA) throw new Error(`observed schema must be ${OBSERVED_SCHEMA}`);
 	const results = [];
 	const compare = (id, field, expected, actual) =>
 		results.push({ id, field, expected, actual, result: expected === actual ? "match" : "DRIFT" });
+	const note = (id, field, result) => results.push({ id, field, expected: "-", actual: "-", result });
+	const enrolled = (id, since, kind, providerId, sha) => {
+		const rows = observed.enrolledProviders.filter((p) => p.kind === kind && p.providerId === providerId);
+		compare(id, `${kind} policy enrolled`, sha, rows.find((p) => p.policySha256 === sha)?.policySha256);
+		const use = observed.providerUse.find((p) => p.kind === kind && p.providerId === providerId);
+		if (use && since && Date.parse(use.requestedAt) >= Date.parse(since))
+			compare(id, `${kind} policy of the newest machine (${use.requestedAt})`, sha, use.policySha256);
+		else note(id, `${kind} policy in use`, "no machine requested since live");
+	};
 	for (const component of manifest.components) {
 		const identity = component.identity;
 		const id = component.id;
+		const since = component.live.since;
 		const before = results.length;
 		if (id === "runtime-bundle") {
 			compare(id, "version", identity.version, observed.activeBundle?.version);
 			compare(id, "sha256", identity.sha256, observed.activeBundle?.sha256);
-			for (const run of observed.runsSinceActivation ?? [])
-				compare(id, `runs since activation (${run.runs}) carry`, identity.sha256, run.runtimeBundleSha256);
+			for (const run of observed.runsSinceActivation ?? []) {
+				if (run.runtimeBundleSha256 === identity.sha256)
+					compare(id, `${run.runs} runs since activation carry it`, identity.sha256, run.runtimeBundleSha256);
+				// A run takes the bundle its inputs were recorded under: inputs sent before the activation (e.g. during
+				// a cut's pause) run on the older bundle by design.
+				else
+					note(
+						id,
+						`${run.runs} runs since activation carry ${run.runtimeBundleSha256}`,
+						"note: inputs from before the activation?",
+					);
+			}
 		} else if (id === "database-migrations") {
 			compare(id, "lastVersion", identity.lastVersion, observed.lastMigration?.version);
 			compare(id, "lastName", identity.lastName, observed.lastMigration?.name);
@@ -409,34 +443,39 @@ export function drift(manifest, observed) {
 		} else if (id === "coding-vm-policy") {
 			const row = observed.codingVmPolicies.find((p) => p.environmentId === identity.environmentId);
 			compare(id, "vmPolicy", canonicalJson(identity.vmPolicy), row ? canonicalJson(row.vmPolicy) : undefined);
-			compare(
-				id,
-				"enrolled coding policy",
-				identity.vmPolicy.providerPolicySha256,
-				newestProvider(observed, "coding", identity.vmPolicy.providerId)?.policySha256,
-			);
+			const { providerId, providerPolicySha256 } = identity.vmPolicy;
+			enrolled(id, since, "coding", providerId, providerPolicySha256);
+		} else if (id === "coding-image") {
+			for (const row of observed.codingVmPolicies) {
+				compare(
+					id,
+					`image in ${row.environmentId.slice(0, 8)} vmPolicy`,
+					identity.fingerprint,
+					row.vmPolicy?.imageFingerprint,
+				);
+				compare(
+					id,
+					`bootstrap in ${row.environmentId.slice(0, 8)} vmPolicy`,
+					identity.bootstrapSha256,
+					row.vmPolicy?.bootstrapSha256,
+				);
+			}
 		} else if (id.startsWith("office-image") && identity.officeId) {
 			const row = observed.officeActivations.find((a) => a.officeId === identity.officeId);
 			compare(id, "image", identity.imageSha256, row?.imageSha256);
 			compare(id, "bootstrap", identity.bootstrapSha256, row?.bootstrapSha256);
 			compare(id, "generation", identity.generation, row?.generation);
+			if (identity.softwareRevision !== undefined)
+				compare(id, "software revision", identity.softwareRevision, row?.softwareRevision);
 		} else if (id.startsWith("secret-broker-") && identity.authority) {
 			const row = observed.secretBrokerAuthorities.find((a) => a.profileId === identity.authority.profileId);
 			compare(id, "authority key", identity.authority.keyId, row?.keyId);
 			compare(id, "authority origin", identity.authority.serviceOrigin, row?.serviceOrigin);
 		}
-		// Any component that says what it enrolled: node releases (native, login), office providers (office).
-		if (identity.enrollment?.policies) {
-			for (const [kind, sha] of Object.entries(identity.enrollment.policies))
-				compare(
-					id,
-					`enrolled ${kind} policy`,
-					sha,
-					newestProvider(observed, kind, identity.enrollment.providerId)?.policySha256,
-				);
-		}
-		if (results.length === before)
-			results.push({ id, field: "-", expected: "-", actual: "-", result: "not observable from the backend" });
+		// Any component that says what it enrolled: node releases (native), sign-in machines (login), office providers.
+		for (const [kind, sha] of Object.entries(identity.enrollment?.policies ?? {}))
+			enrolled(id, since, kind, identity.enrollment.providerId, sha);
+		if (results.length === before) note(id, "-", "not observable from the backend");
 	}
 	return results;
 }
@@ -449,9 +488,10 @@ const readJson = (file) => JSON.parse(readFileSync(file, "utf8"));
 const rel = (root, file) => relative(root, file).split("\\").join("/");
 const newest = (dir, pattern) => {
 	if (!existsSync(dir)) return null;
+	// Numbers compare as numbers: release-11 is newer than release-9.
 	const names = readdirSync(dir)
 		.filter((name) => pattern.test(name))
-		.sort();
+		.sort((a, b) => a.localeCompare(b, "en", { numeric: true }));
 	return names.length > 0 ? join(dir, names[names.length - 1]) : null;
 };
 
@@ -473,7 +513,7 @@ export function laneChanges(laneDir, root, cut) {
 		const packet = readJson(packetFile);
 		const applied = readdirSync(join(lane, "sql/receipts"))
 			.filter((name) => /^apply-\d{14}-commit-\d+-result\.json$/.test(name))
-			.sort()
+			.sort((a, b) => a.localeCompare(b, "en", { numeric: true }))
 			.map((name) => join(lane, "sql/receipts", name));
 		operations.push({
 			op: "set",
@@ -573,8 +613,17 @@ export function laneChanges(laneDir, root, cut) {
 			if (!existsSync(applyFile)) continue;
 			const apply = readJson(applyFile);
 			if (apply.exitCode !== 0) throw new Error(`${applyFile}: apply failed`);
-			const stateLine = apply.stdout.split("\n").find((line) => line.startsWith('{"current":'));
+			// The agent prints its state after the apply; the last state line is the one after the restart.
+			const stateLine = apply.stdout
+				.split("\n")
+				.filter((line) => line.startsWith('{"current":'))
+				.at(-1);
+			if (!stateLine) throw new Error(`${applyFile}: no agent state line in the apply output`);
 			const state = JSON.parse(stateLine);
+			if (state.current !== release.revision)
+				throw new Error(
+					`${applyFile}: node is on release ${state.current}, the lane's newest release is ${release.revision}`,
+				);
 			const files = Object.fromEntries(release.files.map((file) => [file.name, file.sha256]));
 			const buildFile = join(agentDir, `receipts/build-release-${release.revision}.json`);
 			const build = existsSync(buildFile) ? readJson(buildFile) : null;
@@ -588,7 +637,11 @@ export function laneChanges(laneDir, root, cut) {
 					program: info.release === release.revision || same ? (files[component] ?? null) : null,
 				};
 			}
-			const enrollment = enrollmentFromLane(lane, node);
+			// Agent machines (native) and sign-in machines (login) are enrolled separately and exercised by different
+			// work, so each gets its own entry: a completed agent run proves nothing about signing in.
+			const native = enrollmentFromLane(lane, node, "native");
+			const login = enrollmentFromLane(lane, node, "login");
+			const providerProgram = roles.provider?.program ?? null;
 			operations.push({
 				op: "set",
 				id: `node-${node}-release`,
@@ -600,7 +653,7 @@ export function laneChanges(laneDir, root, cut) {
 					sourceCommit: release.sourceCommit,
 					roles,
 					providerEnvSha256: sha256(canonicalJson(release.roles.provider?.env ?? {})),
-					...(enrollment ? { enrollment: enrollment.identity } : {}),
+					...(native ? { enrollment: native.identity } : {}),
 				},
 				live: {
 					since: apply.at,
@@ -609,10 +662,19 @@ export function laneChanges(laneDir, root, cut) {
 						record(releaseFile),
 						...(build ? [record(buildFile)] : []),
 						record(applyFile),
-						...(enrollment?.records ?? []).map(record),
+						...(native ? [record(native.file)] : []),
 					],
 				},
 			});
+			if (login)
+				operations.push({
+					op: "set",
+					id: `node-${node}-login`,
+					title: `Node ${node} sign-in machines (login gateway in the provider)`,
+					scope: `node-${node}`,
+					identity: { providerProgram, enrollment: login.identity },
+					live: { since: apply.at, cut, records: [record(applyFile), record(login.file)] },
+				});
 		}
 	}
 
@@ -647,13 +709,18 @@ export function laneChanges(laneDir, root, cut) {
 	return { schema: CHANGES_SCHEMA, reason: `cut ${cut}`, writtenBy: "", operations };
 }
 
-/** The web client deploys itself: Cloudflare Pages builds every master commit. `checkRuns` is the saved output of
- * `gh api repos/Qorpera/Qorpera_Base/commits/<sha>/check-runs`; only a successful "Cloudflare Pages" run counts. */
-export function webChanges(commit, checkRuns) {
+/** The web client deploys itself: Cloudflare Pages builds every master commit, and every pull request head as a
+ * preview. `checkRuns` is `gh api repos/Qorpera/Qorpera_Base/commits/<sha>/check-runs`; `compare` is
+ * `gh api repos/Qorpera/Qorpera_Base/compare/master...<sha>`. The commit must be master's head (status identical), so
+ * a preview deploy or an older master commit is refused; allowBehind accepts an older master commit when master's
+ * newer commits did not deploy. */
+export function webChanges(commit, checkRuns, compare, { allowBehind = false } = {}) {
 	if (!/^[0-9a-f]{40}$/.test(commit ?? "")) throw new Error("--commit must be a full 40-character commit");
+	const onMaster = compare?.status === "identical" || (allowBehind && compare?.status === "behind");
+	if (!onMaster) throw new Error(`the commit is not master's head (compare master...commit: ${compare?.status})`);
 	const run = (checkRuns.check_runs ?? []).find((item) => item.name === "Cloudflare Pages");
 	if (!run) throw new Error("no Cloudflare Pages check run for this commit");
-	if (run.head_sha !== undefined && run.head_sha !== commit) throw new Error("the check run is for another commit");
+	if (run.head_sha !== commit) throw new Error("the check run is for another commit");
 	if (run.status !== "completed" || run.conclusion !== "success") throw new Error("the Pages deploy did not succeed");
 	const deployment = /\/pages\/view\/[^/]+\/([0-9a-f-]{36})/.exec(run.details_url ?? "")?.[1] ?? null;
 	return {
@@ -673,20 +740,15 @@ export function webChanges(commit, checkRuns) {
 	};
 }
 
-function enrollmentFromLane(lane, node) {
-	const policies = {};
-	const records = [];
-	let providerId = null;
-	for (const kind of ["native", "login"]) {
-		const file = join(lane, `enroll/receipts/node${node}-enroll-${kind}-result.json`);
-		if (!existsSync(file)) continue;
-		const outcome = JSON.parse(readJson(file).stdout);
-		if (!outcome.passed) throw new Error(`${file}: enrollment did not pass`);
-		policies[kind] = outcome.enroll.policySha256;
-		providerId = outcome.enroll.providerId;
-		records.push(file);
-	}
-	return records.length > 0 ? { identity: { providerId, policies }, records } : null;
+function enrollmentFromLane(lane, node, kind) {
+	const file = join(lane, `enroll/receipts/node${node}-enroll-${kind}-result.json`);
+	if (!existsSync(file)) return null;
+	const outcome = JSON.parse(readJson(file).stdout);
+	if (!outcome.passed) throw new Error(`${file}: enrollment did not pass`);
+	return {
+		identity: { providerId: outcome.enroll.providerId, policies: { [kind]: outcome.enroll.policySha256 } },
+		file,
+	};
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -705,6 +767,29 @@ function options(argv) {
 function writeAtomic(file, text) {
 	writeFileSync(`${file}.tmp`, text);
 	renameSync(`${file}.tmp`, file);
+}
+
+/** current.json must be byte-identical to the newest history file, and every history file must name the sha256 of
+ * the one before it. This is what makes a hand edit visible: only `apply` writes both. */
+export function checkHistory(dir, currentBytes) {
+	const historyDir = join(dir, "history");
+	if (!existsSync(historyDir)) return [`${historyDir} is missing`];
+	const names = readdirSync(historyDir)
+		.filter((name) => /^\d{4}-.*\.json$/.test(name))
+		.sort((a, b) => a.localeCompare(b, "en", { numeric: true }));
+	const problems = [];
+	let previous = null;
+	for (const name of names) {
+		const bytes = readFileSync(join(historyDir, name));
+		const manifest = JSON.parse(bytes);
+		const expected = previous ? { sequence: previous.sequence, sha256: sha256(previous.bytes) } : null;
+		if (canonicalJson(manifest.previous) !== canonicalJson(expected))
+			problems.push(`history/${name}: previous does not name the file before it`);
+		previous = { sequence: manifest.sequence, bytes };
+	}
+	if (!previous) problems.push("history is empty");
+	else if (!previous.bytes.equals(currentBytes)) problems.push("current.json differs from the newest history file");
+	return problems;
 }
 
 export function main(argv) {
@@ -745,7 +830,9 @@ export function main(argv) {
 		return 0;
 	}
 	if (command === "check") {
-		const problems = checkManifest(readJson(opts.manifest), { root: opts.root ? resolve(opts.root) : undefined });
+		const file = resolve(opts.manifest);
+		const problems = checkManifest(readJson(file), { root: opts.root ? resolve(opts.root) : undefined });
+		if (basename(file) === "current.json") problems.push(...checkHistory(dirname(file), readFileSync(file)));
 		for (const problem of problems) console.error(problem);
 		console.log(problems.length === 0 ? "manifest checks" : `${problems.length} problem(s)`);
 		return problems.length === 0 ? 0 : 1;
@@ -756,14 +843,18 @@ export function main(argv) {
 	}
 	if (command === "drift") {
 		const results = drift(readJson(opts.manifest), readJson(opts.observed));
-		for (const r of results)
-			console.log(
-				`${r.result.padEnd(10)} ${r.id} ${r.field}${r.result === "DRIFT" ? `: manifest ${r.expected}, backend ${r.actual}` : ""}`,
-			);
+		for (const r of results) {
+			const detail = r.result === "DRIFT" ? `: manifest ${r.expected}, backend ${r.actual}` : "";
+			console.log(`${r.result.padEnd(10)} ${r.id} ${r.field}${detail}`);
+		}
 		return results.some((r) => r.result === "DRIFT") ? 1 : 0;
 	}
 	if (command === "web") {
-		console.log(JSON.stringify(webChanges(opts.commit, readJson(opts["check-runs"])), null, "\t"));
+		const compare = readJson(opts.compare);
+		const changes = webChanges(opts.commit, readJson(opts["check-runs"]), compare, {
+			allowBehind: opts["allow-behind"] === "yes",
+		});
+		console.log(JSON.stringify(changes, null, "\t"));
 		return 0;
 	}
 	console.error("usage: manifest.mjs apply|lane|check|render|drift|web (see the header of this file)");
