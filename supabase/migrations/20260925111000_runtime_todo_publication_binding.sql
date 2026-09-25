@@ -163,9 +163,11 @@ select pg_temp.publication_patch('public.qorpera_confirm_agent_todo_publication(
 select pg_temp.publication_patch('public.qorpera_agent_todo_view(public.qorpera_runtime_agent_todos)'::regprocedure,
 	$old$'published', p_todo.published_revision = p_todo.revision,$old$,
 	$new$'published', public.qorpera_agent_todo_published(p_todo),$new$);
+-- A receipt carries the document on the same terms as the list repair below.
 select pg_temp.publication_patch('public.qorpera_manage_agent_todo(jsonb,jsonb)'::regprocedure,
 	$old$'publication',case when v_todo.published_revision < v_todo.revision then$old$,
-	$new$'publication',case when not public.qorpera_agent_todo_published(v_todo) then$new$);
+	$new$'publication',case when v_todo.published_revision < v_todo.revision
+			or (v_todo.published_sha256 is null and v_todo.state in ('open','blocked')) then$new$);
 -- The list repair: open work first and newest first, so neither finished todos
 -- nor an old document that cannot be written holds back current work.
 select pg_temp.publication_patch('public.qorpera_manage_agent_todo(jsonb,jsonb)'::regprocedure,

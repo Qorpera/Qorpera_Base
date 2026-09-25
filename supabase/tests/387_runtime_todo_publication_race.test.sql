@@ -231,7 +231,9 @@ begin
 	perform pg_temp.write_over(v_parent,'tidy-member',v_path,'{"tidied":true}',(pg_temp.live(v_path) ->> 'version')::uuid);
 	execute v_allowed;
 	perform pg_temp.wake_assert(pg_temp.todo('{"action":"list","includeClosed":true}') -> 'todos' @> '[{"todoKey":"tidy","published":false}]'
-		and pg_temp.unpublished('tidy') = '[]','A finished todo whose file was tidied is reported as it is, and left alone');
+		and pg_temp.unpublished('tidy') = '[]'
+		and pg_temp.todo('{"action":"done","operationKey":"tidy-3","todoKey":"tidy"}') -> 'publication' = 'null'::jsonb,
+		'A finished todo whose file was tidied is reported as it is, and left alone, also by a repeated done');
 	-- Five finished todos the kernel changed and nobody published, then one open todo nobody published.
 	for v_index in 1..5 loop
 		perform pg_temp.todo(jsonb_build_object('action','upsert','operationKey','old-' || v_index,'todoKey','old-' || v_index,'title','Old ' || v_index));
@@ -239,8 +241,17 @@ begin
 	end loop;
 	perform pg_temp.todo('{"action":"upsert","operationKey":"fresh-1","todoKey":"fresh","title":"Fresh open work"}');
 	v_listed := pg_temp.todo('{"action":"list"}') -> 'unpublished';
-	perform pg_temp.wake_assert(jsonb_array_length(v_listed) = 4 and v_listed #>> '{0,path}' like '%/fresh.json'
-		and v_listed #>> '{1,path}' like '%/old-5.json','Open work comes first, then the newest finished work');
+	perform pg_temp.wake_assert(jsonb_array_length(v_listed) = 4
+		and exists (select 1 from jsonb_array_elements(v_listed) where value ->> 'path' like '%/fresh.json')
+		-- no finished todo before an open one, and among the finished ones the newest first
+		and not exists (select 1 from jsonb_array_elements(v_listed) with ordinality done(value, position)
+			join jsonb_array_elements(v_listed) with ordinality open(value, position) on open.position > done.position
+			where (done.value ->> 'text')::jsonb ->> 'state' = 'done' and (open.value ->> 'text')::jsonb ->> 'state' in ('open','blocked'))
+		and (select array_agg(value ->> 'path' order by position) from jsonb_array_elements(v_listed) with ordinality listed(value, position)
+			where (value ->> 'text')::jsonb ->> 'state' = 'done') = (select array_agg(format('work/todos/30000000-0000-4000-8000-000000000030/old-%s.json', n)
+				order by n desc) from generate_series(5, 5 - (select count(*)::int from jsonb_array_elements(v_listed)
+					where (value ->> 'text')::jsonb ->> 'state' = 'done') + 1, -1) n),
+		'Open work comes first, then the newest finished work');
 end $$;
 rollback to finished_work;
 
