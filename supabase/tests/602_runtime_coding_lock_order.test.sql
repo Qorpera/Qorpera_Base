@@ -10,7 +10,9 @@
 -- single calls then show what a call no longer waits for. Row locks show only
 -- across connections, so the dispatch fixture above is committed here and
 -- removed again at the end; the test refuses to run beside other connections to
--- this database, whose rows the cleanup could not tell from its own.
+-- this database, whose rows the cleanup could not tell from its own. A run that
+-- fails before its cleanup leaves the fixture committed: CI starts a fresh
+-- database each time, but a local database must be rebuilt before a rerun.
 
 -- What the races need outlives this transaction.
 reset role;

@@ -193,10 +193,12 @@ published only by the agent's next list or change of that todo.
   session, then the session's turn or machine. Five coding calls broke it until
   runtime v117 (`20260925117000_runtime_coding_lock_order`): the owner's answer,
   the executor's begin and completion, and machine admission and detach. SQL
-  test 602 races each of those pairs across two connections. Known gap: machine
-  planning and admission still reach the company's profile and Company File rows
-  after the session or worker, so they can deadlock with an agent tool on the
-  same worker.
+  test 602 races each of those pairs across two connections. Known gaps: machine
+  planning and admission, and the repository credential grant, still reach the
+  company's profile or Company File rows after the session or worker, so they
+  can deadlock with an agent tool on the same worker; a turn's begin refuses
+  (55P03) while any agent tool holds the company's profile row, and the coding
+  executor does not retry it.
 - A revival whose admission is refused when its run is created (the agent lost
   its model account or its conversation) is not retried: the result stays in
   the todo, which the agent lists the next time it continues that work.
