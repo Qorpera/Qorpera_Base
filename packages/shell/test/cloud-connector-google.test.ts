@@ -364,12 +364,19 @@ it("keeps the Drive upload boundary within 70 characters, stable per key and out
 		).resolves.toMatchObject({ status: "completed" });
 		return uploads.at(-1) as { boundary: string; body: string };
 	};
-	const expectDelimitersOnly = ({ boundary, body }: { boundary: string; body: string }, content: string) => {
+	const expectDelimitersOnly = (
+		{ boundary, body }: { boundary: string; body: string },
+		content: string,
+		name = "Notes",
+	) => {
 		expect(boundary.length).toBeLessThanOrEqual(70);
 		expect(boundary).toMatch(/^[0-9A-Za-z'()+_,./:=?-]+$/);
 		expect(body.split(boundary)).toHaveLength(4);
-		expect(body.startsWith(`--${boundary}\r\n`)).toBe(true);
-		expect(body.endsWith(`\r\n\r\n${content}\r\n--${boundary}--\r\n`)).toBe(true);
+		const metadata = JSON.stringify({ name, mimeType: "text/plain" });
+		expect(body).toBe(
+			`--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${metadata}\r\n` +
+				`--${boundary}\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\n${content}\r\n--${boundary}--\r\n`,
+		);
 	};
 
 	const first = await create("Hello");
@@ -386,13 +393,13 @@ it("keeps the Drive upload boundary within 70 characters, stable per key and out
 	// So does a file name that carries it (the metadata part).
 	const renamed = await create("Hello", { name: `Notes ${first.boundary}` });
 	expect(renamed.boundary).toBe(moved.boundary);
-	expectDelimitersOnly(renamed, "Hello");
+	expectDelimitersOnly(renamed, "Hello", `Notes ${first.boundary}`);
 	// Every derivation is checked against every part: with the first in the content
 	// and the second in the name, the third is used.
 	const crossed = `a ${first.boundary} b`;
 	const third = await create(crossed, { name: `Notes ${moved.boundary}` });
 	expect([first.boundary, moved.boundary]).not.toContain(third.boundary);
-	expectDelimitersOnly(third, crossed);
+	expectDelimitersOnly(third, crossed, `Notes ${moved.boundary}`);
 });
 
 it("pins Gmail and Drive to their own origins", async () => {
