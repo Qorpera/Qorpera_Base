@@ -67,3 +67,16 @@ request recipes. SQL test 620 covers authorization and durable action state;
 SQL test 397 and `scripts/test-gmail-draft-catalog.mjs` cover catalog and grant
 backfill behavior in disposable PostgreSQL. The browser preview uses mocked
 delivery callbacks and sends no email.
+
+`node scripts/test-email-draft-e2e.mjs` runs the production client through real
+loopback HTTPS, the HTTP broker, the restricted PostgreSQL authority, all
+migrations, and the Gmail adapters. It verifies save, edit/update, send,
+replay without a duplicate send, reopening the card, and exactly one durable
+answer containing the approved content. Only OAuth/Gmail responses are
+simulated; it does not test a real LLM turn or deliver real mail. Its database,
+certificate, and keys are disposable. Both this check and the lighter HTTP
+integration tests run in CI.
+
+Crash recovery is covered by SQL test 620: an execution that outlives its
+deadline reports an unconfirmed outcome, retains its send lock, and can
+still accept a late provider receipt.

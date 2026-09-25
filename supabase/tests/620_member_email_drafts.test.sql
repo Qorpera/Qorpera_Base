@@ -170,4 +170,37 @@ do $$ declare v jsonb; begin
  if v->>'status'<>'discarded' then raise exception 'discard not confirmed'; end if;
 end $$;
 reset session authorization;
+-- A broker crash after claim cannot leave Sending visible forever or unlock a
+-- second send. A late, authenticated provider receipt can still resolve it.
+insert into public.qorpera_session_events(session_id,sequence,event_id,event_type,actor_user_id,body,event_hash,created_at)
+select session_id,6,'62000000-0000-4000-8000-000000000040','interaction_request','15000000-0000-4000-8000-000000000002',body,repeat('d',64),created_at
+from public.qorpera_session_events where event_id='62000000-0000-4000-8000-000000000003';
+set role authenticated;
+select public.qorpera_prepare_email_draft_action('15000000-0000-4000-8000-000000000055','62000000-0000-4000-8000-000000000040','62000000-0000-4000-8000-000000000041','send','{"to":["new@example.test"],"cc":[],"subject":"Crash regression","body":"Exact body"}',repeat('7',64));
+reset role;
+set session authorization qorpera_secret_broker;
+do $$ declare v jsonb; begin
+ v:=public.qorpera_claim_email_draft_action('62000000-0000-4000-8000-000000000001',repeat('a',64),'62000000-0000-4000-8000-000000000041',repeat('7',64));
+ if v->'execute'<>'true'::jsonb then raise exception 'crash fixture was not claimed'; end if;
+end $$;
+reset session authorization;
+update public.qorpera_member_email_actions set expires_at=statement_timestamp()-interval '1 minute' where id='62000000-0000-4000-8000-000000000041';
+set role authenticated;
+do $$ declare v jsonb; begin
+ v:=public.qorpera_get_email_draft('15000000-0000-4000-8000-000000000055','62000000-0000-4000-8000-000000000040');
+ if v->>'status'<>'unconfirmed' or v->>'phase'<>'unconfirmed' or v->>'error' is null then raise exception 'crashed send still looks active %',v; end if;
+ begin
+  perform public.qorpera_prepare_email_draft_action('15000000-0000-4000-8000-000000000055','62000000-0000-4000-8000-000000000040','62000000-0000-4000-8000-000000000042','send','{"to":["new@example.test"],"cc":[],"subject":"Crash regression","body":"Exact body"}',repeat('8',64));
+  raise exception 'expired execution allowed a new send';
+ exception when object_not_in_prerequisite_state then null; end;
+end $$;
+reset role;
+set session authorization qorpera_secret_broker;
+do $$ declare v jsonb; begin
+ v:=public.qorpera_claim_email_draft_action('62000000-0000-4000-8000-000000000001',repeat('a',64),'62000000-0000-4000-8000-000000000041',repeat('7',64));
+ if v->'execute'<>'false'::jsonb or v#>>'{state,status}'<>'unconfirmed' or v?'encryptedEnvelopeBase64' then raise exception 'expired claim replay can resend %',v; end if;
+ v:=public.qorpera_finish_email_draft_action('62000000-0000-4000-8000-000000000001',repeat('a',64),'62000000-0000-4000-8000-000000000041',repeat('7',64),'{"message_id":"late-receipt"}');
+ if v->>'status'<>'sent' or v->>'messageId'<>'late-receipt' then raise exception 'late provider receipt lost %',v; end if;
+end $$;
+reset session authorization;
 rollback;

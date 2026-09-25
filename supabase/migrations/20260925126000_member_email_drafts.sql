@@ -50,12 +50,17 @@ begin
 end $$;
 
 -- Internal state renderer. Never returns a capability, credential or envelope.
+-- An expired execution may have reached Gmail before its broker disappeared.
+-- Show uncertainty instead of an endless spinner. Keep the durable execution
+-- lock: no new action may send again, and a late provider receipt can resolve it.
 create function public.qorpera_email_draft_state(p_interaction_id uuid)
 returns jsonb language sql stable security definer set search_path='' as $$
  select jsonb_strip_nulls(jsonb_build_object('schema','qorpera.email-draft-state/v1',
-  'phase',case when a.status='completed' then 'succeeded' else a.status end,'error',a.result->>'error',
+  'phase',case when a.status='executing' and a.expires_at<=statement_timestamp() then 'unconfirmed' when a.status='completed' then 'succeeded' else a.status end,
+  'error',case when a.status='executing' and a.expires_at<=statement_timestamp() then 'Gmail did not confirm the outcome. Check Gmail before creating another email.' else a.result->>'error' end,
   'notificationPending',d.status in ('sent','discarded') and not exists(select 1 from public.qorpera_session_inputs i where i.session_id=d.session_id and i.client_input_id=d.action_id),
-  'companyId',s.profile_id,'from',d.from_address,'content',d.content,'status',d.status,
+  'companyId',s.profile_id,'from',d.from_address,'content',d.content,
+  'status',case when a.status='executing' and a.expires_at<=statement_timestamp() then 'unconfirmed' else d.status end,
   'draftId',d.draft_id,'messageId',d.message_id,'actionId',d.action_id,'brokerOrigin',b.service_origin))
  from public.qorpera_member_email_drafts d join public.qorpera_cloud_secrets s on s.id=d.secret_id
  join public.qorpera_cloud_secret_broker_authorities b on b.id=s.broker_authority_id

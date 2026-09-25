@@ -72,6 +72,7 @@ it("builds a Google consent URL with offline access, PKCE and the connector's sc
 	expect(url.searchParams.get("prompt")).toBe("consent");
 	expect(url.searchParams.get("code_challenge_method")).toBe("S256");
 	expect(url.searchParams.get("scope")).toContain("https://www.googleapis.com/auth/gmail.send");
+	expect(url.searchParams.get("scope")).toContain("https://www.googleapis.com/auth/gmail.compose");
 	// The state starts with the company so the shared public origin can route
 	// the provider's callback to this company's broker; the rest is random.
 	expect(state).toMatch(new RegExp(`^${companyId}\\.[A-Za-z0-9_-]{43}$`));
@@ -331,9 +332,20 @@ it("composes the broker's connector service from one credential and refuses inco
 	// Sign-ins return only to the broker's own member origins (config v2).
 	const service = composeCloudConnectorService(config, ["https://app.qorpera.test"], vi.fn<typeof fetch>());
 	expect(service.connectors).toEqual(["gmail", "google_drive"]);
-	expect(service.adapters.map((adapter) => adapter.connectorId)).toEqual([
-		...Array(4).fill("gmail"),
-		...Array(4).fill("google_drive"),
+	expect(service.adapters.map((adapter) => `${adapter.connectorId}:${adapter.operationId}`).sort()).toEqual([
+		"gmail:create_draft",
+		"gmail:delete_draft",
+		"gmail:get_profile",
+		"gmail:read_message",
+		"gmail:read_thread",
+		"gmail:search_messages",
+		"gmail:send_draft",
+		"gmail:send_message",
+		"gmail:update_draft",
+		"google_drive:create_file",
+		"google_drive:read_file",
+		"google_drive:search_files",
+		"google_drive:update_file",
 	]);
 	expect(service.oauth.available()).toEqual(["gmail", "google_drive"]);
 	expect(() => composeCloudConnectorService(config, [], vi.fn<typeof fetch>())).toThrow("return origins");
