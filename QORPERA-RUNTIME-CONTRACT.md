@@ -1417,6 +1417,19 @@ responsibility, follow-ups, watches), and fixed times for work tied to the
 clock. The agent's own tool also concludes a fixed routine from inside its
 run.
 
+2026-09-25 amendment: a member's save keeps the schedule position. A member's
+save no longer gives the new version a fresh schedule cursor, so renaming or
+pausing a routine does not run it at once. Each schedule trigger is decided by
+its id. The same timing (the trigger unchanged apart from its reply policy and
+the order of its days or months) keeps the exact position, while the routine
+is active or its next slot is still ahead. Changed timing restarts the
+schedule at the save: nothing runs at once, the slots of the new cadence
+before the save are not caught up, and the first run is the new schedule's
+first slot after the save. A save of a paused or ended routine whose next slot
+passed (typically switching it back on) restarts it the same way, so the slots
+it missed while it was off are skipped. A trigger that never scheduled
+anything, or a new trigger id, stays fresh and keeps its kickoff.
+
 2026-09-25 amendment: an agent's changed timing or resume restarts the
 schedule. An agent's save keeps the schedule position only when the timing is
 the same (the trigger unchanged apart from its reply policy and the order of
