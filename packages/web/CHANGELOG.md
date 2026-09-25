@@ -17,7 +17,7 @@
 
 ### Fixed
 
-- Scrolling the rail no longer lays a tall fade over the Co-Founder card: the fade that marks more above is now 8 design px (about 10 on screen), close to the sidebar in the Claude app. The thread keeps its 28px fade.
+- Scrolling the rail or a thread no longer lays a tall fade over the Co-Founder card or the top message: the fade that marks more above is now 8 design px (about 10 on screen, was 36), close to the sidebar in the Claude app.
 - A profile picture being saved is never deleted by a cleanup of leftover uploads that answered late; saving a picture after a very slow connection no longer fails and needs another try.
 - Gmail and Google Drive in Settings → Connections → Services show their own logos instead of the Google "G".
 - A right-click in the rail during the page's first 800 ms opens the agent or section menu; the long-press guard swallowed it before any press had opened one, which also made the rail menu tests fail at random in CI.
