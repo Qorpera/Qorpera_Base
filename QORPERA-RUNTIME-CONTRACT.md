@@ -2289,7 +2289,11 @@ review or retry" surfaces of 16.2 and the classification of section 10.
    rule never undoes an Ask first rule. Only a company Allow rule lifts a
    built-in check, and only when it covers the action: the checks are the
    company's to answer, so a member's own Allow rule never lifts one (a
-   member's rules only add care). The kernel enforces this ordering over the rules and
+   member's rules only add care). As in Grok, the reviewer may also ask on its
+   own when it is unsure the member wants this exact action (an irreversible
+   step the request only loosely describes); the member the run works for
+   answers that card. It denies only an action that clearly works against or
+   outside the request. The kernel enforces this ordering over the rules and
    checks the reviewer cites; which rules apply to an action is the reviewer's
    judgement, so a reviewer that is itself misled can still let an action
    through. The reviewer reads the whole call, never a cut of it.
