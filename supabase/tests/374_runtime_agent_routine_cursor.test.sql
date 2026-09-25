@@ -10,11 +10,12 @@
 -- resume; a never-run cursor stays fresh and keeps its kickoff. A wall-clock
 -- trigger's start the routine has passed is not timing, on both paths.
 -- On #314 + #317 without this migration, the weekly-to-daily, slower, paused
--- save, started and member-start groups fail (the last two also without only
--- the start rule). The resume, suspension and ended-watch groups pass there
--- too, because #317's trigger covers a switch back on at the same version; they
--- hold it on the agent path. The same-timing, never-ran, member's-trigger and
--- leave-alone groups guard the carry that stays.
+-- save, started, member-start and waiting groups fail; with this migration but
+-- without its start rule, the started and member-start groups fail. The resume,
+-- suspension and ended-watch groups pass on #314 + #317 too, because #317's
+-- trigger covers a switch back on at the same version; they hold it on the
+-- agent path. The same-timing, never-ran, member's-trigger and leave-alone
+-- groups guard the carry that stays.
 select pg_temp.path_claims('service_role');
 select pg_temp.wake_public_send(current_setting('qorpera_test.wake_binding')::jsonb,'progress','agent-cursor-ack');
 
@@ -416,6 +417,38 @@ begin
 	v_cursor := pg_temp.agent_cursor('fresh-resume');
 	perform pg_temp.wake_assert((pg_temp.agent_row('fresh-resume')).status = 'active' and v_cursor.last_scheduled_for is null
 		and v_cursor.next_due_at = '-infinity'::timestamptz,'A never-run routine resumed keeps its fresh cursor');
+end $$;
+
+-- A run still waiting for its start when the agent saves the same timing is offered
+-- again to the new version (the old version's waiting run is superseded, and the new
+-- cursor stands one millisecond before its slot). A kickoff still waiting keeps the new
+-- version's cursor fresh, so the new version kicks off instead. Both hold because the
+-- agent save decides the cursor before it moves the routine to the new version.
+do $$
+declare v_trigger jsonb := '{"kind":"schedule","intervalMinutes":1440,"weekdays":["monday"],"localTime":"08:00","timeZone":"Europe/Copenhagen"}';
+	v_waiting timestamptz := date_trunc('milliseconds',statement_timestamp() - interval '1 hour');
+	v_cursor public.qorpera_cloud_routine_schedule_cursors; v_row public.qorpera_cloud_routines; v_waiting_id uuid;
+begin
+	perform pg_temp.agent_save('waiting',v_trigger);
+	v_cursor := pg_temp.agent_cursor('waiting');
+	v_waiting_id := (public.qorpera_enqueue_routine_wake(v_cursor.routine_id,v_cursor.routine_version,extensions.gen_random_uuid(),
+		'agent-cursor-waiting','agent',v_waiting,null,v_waiting + interval '7 days','{}') ->> 'occurrence_id')::uuid;
+	perform pg_temp.agent_save('waiting',v_trigger,'Write the brief for the board.');
+	v_cursor := pg_temp.agent_cursor('waiting');
+	perform pg_temp.wake_assert(v_cursor.routine_version = 2 and v_cursor.last_scheduled_for = v_waiting - interval '1 millisecond'
+		and v_cursor.next_due_at = v_waiting,'A waiting run is offered again to the new version');
+	perform pg_temp.wake_assert((select status = 'cancelled' and blocked_reason = 'Superseded by a newer version'
+		from public.qorpera_wake_occurrences where id = v_waiting_id),'The old version''s waiting run is superseded');
+
+	perform pg_temp.agent_save('kickoff-waiting',v_trigger);
+	v_row := pg_temp.agent_row('kickoff-waiting');
+	perform public.qorpera_enqueue_routine_wake(v_row.id,1,extensions.gen_random_uuid(),'agent-cursor-kickoff','agent',
+		date_trunc('milliseconds',pg_temp.agent_effective_at('kickoff-waiting')),null,
+		date_trunc('milliseconds',pg_temp.agent_effective_at('kickoff-waiting')) + interval '7 days','{}');
+	perform pg_temp.agent_save('kickoff-waiting',v_trigger,'Write the brief for the board.');
+	v_cursor := pg_temp.agent_cursor('kickoff-waiting');
+	perform pg_temp.wake_assert(v_cursor.routine_version = 2 and v_cursor.last_scheduled_for is null
+		and v_cursor.next_due_at = '-infinity'::timestamptz,'A waiting kickoff leaves the new version fresh, owed its kickoff');
 end $$;
 
 rollback;

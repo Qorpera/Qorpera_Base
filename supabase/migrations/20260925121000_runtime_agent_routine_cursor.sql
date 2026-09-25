@@ -36,6 +36,14 @@ begin
 		or to_regprocedure('public.qorpera_routine_resume_restarts_schedule()') is null then
 		raise exception 'Migration runtime_agent_routine_cursor needs runtime_member_routine_cursor first';
 	end if;
+	-- A restart position must not show as the next run. runtime_member_routine_cursor
+	-- patches qorpera_routine_next_run_at only when dynamic routines (v114) are there,
+	-- and this migration always runs after both.
+	if to_regprocedure('public.qorpera_routine_next_run_at(uuid)') is not null
+		and pg_get_functiondef(to_regprocedure('public.qorpera_routine_next_run_at(uuid)'))
+			not like '%cursor.last_scheduled_for + interval ''1 millisecond''%' then
+		raise exception 'Migration runtime_agent_routine_cursor needs qorpera_routine_next_run_at to skip a restart position';
+	end if;
 end
 $$;
 
@@ -89,7 +97,9 @@ select pg_temp.agent_cursor_patch('public.qorpera_manage_agent_routine(jsonb,jso
 			-- runtime_member_routine_cursor and runtime_agent_routine_cursor): the same timing
 			-- keeps the position, changed timing or a late switch back on restarts it at the
 			-- save, and a never-run cursor stays fresh with the kickoff it owes. v_routine is
-			-- still the routine before this save; v_status is its status after it.
+			-- still the routine before this save; v_status is its status after it. This runs
+			-- before the routine moves to the new version, which supersedes the old version's
+			-- queued runs: a run still waiting is offered again only while it is visible here.
 			insert into public.qorpera_cloud_routine_schedule_cursors(routine_id, routine_version, trigger_id,
 				last_scheduled_for, next_due_at)
 			select v_routine.id, v_next, 'agent', position.last_scheduled_for, position.next_due_at
