@@ -2,7 +2,10 @@
 import { readFileSync, realpathSync } from "node:fs";
 import { isIP } from "node:net";
 import { isAbsolute, resolve } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
+import { PaidComputerGuardClient } from "./computer-paid-guard-ipc.ts";
+import { readPaidComputerHostClock } from "./computer-paid-guard-lxd.ts";
 import { LxdUnixClient } from "./lxd-client.ts";
 import { lxdNativeCompanyRuntimeFromEnvironment } from "./lxd-company-runtime.ts";
 import { verifyLxdImageProvenanceFiles } from "./lxd-image-provenance.ts";
@@ -24,6 +27,8 @@ import {
 	type CloudRunnerProviderServiceNetworkOptions,
 	HttpCloudRunnerProviderService,
 } from "./provider-service.ts";
+import { RuntimeComputerController } from "./runtime-computer-controller.ts";
+import { RuntimeComputerHttpControl, readRuntimeComputerExecutorSecret } from "./runtime-computer-http-control.ts";
 
 function required(name: string): string {
 	const value = process.env[name];
@@ -214,9 +219,10 @@ function optionalSha256(name: string): string | undefined {
 interface ProviderRuntime {
 	backend: CloudRunnerProviderServiceBackend;
 	loginGateway?: HttpLxdNativeLoginGateway;
+	maintainComputerUsage?: (signal: AbortSignal) => Promise<void>;
 }
 
-function runtime(): ProviderRuntime {
+async function runtime(): Promise<ProviderRuntime> {
 	const kind = process.env.QORPERA_RUNNER_PROVIDER_BACKEND ?? "process";
 	if (kind === "process") return { backend: new ProcessCloudRunnerProviderBackend(processConfig(), nodeHttpFetch) };
 	if (kind === "lxd") {
@@ -237,13 +243,45 @@ function runtime(): ProviderRuntime {
 			process.env.QORPERA_LXD_SOCKET ?? "/var/snap/lxd/common/lxd/unix.socket",
 			integer("QORPERA_LXD_OPERATION_TIMEOUT_SECONDS", 120),
 		);
-		return {
-			backend: new LxdCloudRunnerProviderBackend(
-				config,
+		const credentialPath = process.env.QORPERA_NATIVE_COMPUTER_EXECUTOR_SECRET_FILE;
+		let computerUsage: RuntimeComputerController | undefined;
+		if (credentialPath !== undefined) {
+			const executorSecret = await readRuntimeComputerExecutorSecret(credentialPath);
+			if (
+				[
+					config.supabaseServiceKey,
+					config.nativeCompanyRuntime?.objectGatewayToken,
+					config.nativeCompanyRuntime?.secretBroker.runtimeToken,
+					config.nativeCompanyRuntime?.codingCommand?.token,
+					...(config.nativeCompanyRuntime?.offices?.map((office) => office.token) ?? []),
+				].includes(executorSecret)
+			)
+				throw new Error("Native computer host credential must be independent");
+			computerUsage = new RuntimeComputerController({
+				control: new RuntimeComputerHttpControl({
+					supabaseUrl: config.supabaseUrl,
+					supabaseServiceKey: config.supabaseServiceKey,
+					executorSecret,
+				}),
+				guard: new PaidComputerGuardClient(
+					process.env.QORPERA_NATIVE_COMPUTER_GUARD_SOCKET ?? "/run/qorpera-native-computer-guard/control.sock",
+				),
 				client,
-				new HttpLxdGuestTransport(client, nodeHttpFetch),
-				nodeHttpFetch,
-			),
+				clock: readPaidComputerHostClock,
+			});
+		}
+		const backend = new LxdCloudRunnerProviderBackend(
+			config,
+			client,
+			new HttpLxdGuestTransport(client, nodeHttpFetch),
+			nodeHttpFetch,
+			computerUsage,
+		);
+		return {
+			backend,
+			...(computerUsage
+				? { maintainComputerUsage: (signal: AbortSignal) => backend.maintainComputerUsage(signal) }
+				: {}),
 			loginGateway: new HttpLxdNativeLoginGateway(
 				new LxdNativeLoginGateway(lxdLoginConfig(config), client, nodeHttpFetch),
 				process.env.QORPERA_LXD_LOGIN_GATEWAY_HOST ?? "127.0.0.1",
@@ -255,7 +293,7 @@ function runtime(): ProviderRuntime {
 }
 
 async function main(): Promise<void> {
-	const current = runtime();
+	const current = await runtime();
 	const network = providerNetwork();
 	const service = new HttpCloudRunnerProviderService(
 		current.backend,
@@ -275,6 +313,20 @@ async function main(): Promise<void> {
 	const stop = (): void => shutdown.abort();
 	process.once("SIGINT", stop);
 	process.once("SIGTERM", stop);
+	const accounting = current.maintainComputerUsage
+		? (async () => {
+				while (!shutdown.signal.aborted) {
+					try {
+						await current.maintainComputerUsage!(AbortSignal.any([shutdown.signal, AbortSignal.timeout(15000)]));
+					} catch {
+						if (!shutdown.signal.aborted)
+							console.error("Native computer accounting is unconfirmed; host guard retains expiry custody");
+					}
+					if (!shutdown.signal.aborted)
+						await delay(5000, undefined, { signal: shutdown.signal }).catch(() => undefined);
+				}
+			})()
+		: undefined;
 	try {
 		await service.start();
 		await current.loginGateway?.start();
@@ -282,10 +334,12 @@ async function main(): Promise<void> {
 			shutdown.signal.addEventListener("abort", () => resolveWait(), { once: true }),
 		);
 	} finally {
+		shutdown.abort();
 		process.removeListener("SIGINT", stop);
 		process.removeListener("SIGTERM", stop);
 		await current.loginGateway?.close();
 		await service.close();
+		await accounting;
 	}
 }
 

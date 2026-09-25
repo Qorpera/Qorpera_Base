@@ -209,7 +209,7 @@ export class PaidComputerGuardClient {
 			typeof r.project !== "string" ||
 			!/^[a-z][a-z0-9-]{0,62}$/.test(r.project) ||
 			typeof r.instanceName !== "string" ||
-			!/^qorpera-coding-machine-[0-9a-f]{32}$/.test(r.instanceName) ||
+			!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/.test(r.instanceName) ||
 			typeof r.operationId !== "string" ||
 			!UUID.test(r.operationId)
 		)

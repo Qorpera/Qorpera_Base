@@ -1,9 +1,14 @@
 import { createHash } from "node:crypto";
 import type { Writable } from "node:stream";
+import { setTimeout as delay } from "node:timers/promises";
+import { PaidComputerGuardClient } from "./computer-paid-guard-ipc.ts";
+import { readPaidComputerHostClock } from "./computer-paid-guard-lxd.ts";
+import { LxdUnixClient } from "./lxd-client.ts";
 import { runLxdOfficeControlObserver } from "./lxd-office-control-observer.ts";
 import { parseOfficeIdleMs } from "./lxd-office-idle-policy.ts";
 import { officeRecord, officeSha } from "./lxd-office-image-provenance.ts";
 import { LxdOfficeLifecycle, type LxdOfficeLifecycleResult, runLxdOfficeLifecycle } from "./lxd-office-lifecycle.ts";
+import { LxdOfficePaidComputer, type LxdOfficePaidComputerPort } from "./lxd-office-paid-computer.ts";
 import {
 	type LxdOfficeGuestResolver,
 	type LxdOfficePassthroughConfig,
@@ -11,10 +16,12 @@ import {
 	runLxdOfficePassthrough,
 } from "./lxd-office-passthrough.ts";
 import { readLxdOfficeCredentialFile, readLxdOfficeProtectedFile } from "./lxd-office-physical-host.ts";
-import { officePhysicalPath } from "./lxd-office-physical-policy.ts";
+import { officePhysicalPath, parseLxdOfficePhysicalPolicy } from "./lxd-office-physical-policy.ts";
 import { LxdOfficeProviderHttpRegistry } from "./lxd-office-provider-registry.ts";
 import { loadLxdOfficeSoftwareLane, parseLxdOfficeSoftwareLaneDocument } from "./lxd-office-software-lane.ts";
 import { parseOfficeInventoryLimits } from "./lxd-office-storage-inventory.ts";
+import { RuntimeComputerController } from "./runtime-computer-controller.ts";
+import { RuntimeComputerHttpControl, readRuntimeComputerExecutorSecret } from "./runtime-computer-http-control.ts";
 
 export function createOfficeLifecycleWriter(stream: Writable) {
 	// Writable emits an error event in addition to rejecting its write callback.
@@ -116,6 +123,7 @@ export function parseLxdOfficeLifecycleServiceConfig(value: unknown) {
 		"codePackageLanePath",
 		"idleMs",
 		"passthroughPath",
+		"computerExecutorCredentialPath",
 	].filter((key) => value && typeof value === "object" && Object.hasOwn(value, key));
 	const r = officeRecord(value, [...keys, ...optionalKeys]);
 	if (r.schema !== "qorpera.lxd-office-provider-service/v1" || typeof r.registryUrl !== "string")
@@ -133,6 +141,10 @@ export function parseLxdOfficeLifecycleServiceConfig(value: unknown) {
 	// Validate the endpoint without loading a credential or sending a request.
 	new LxdOfficeProviderHttpRegistry(r.registryUrl, "validation-only-".repeat(3));
 	return {
+		computerExecutorCredentialPath:
+			r.computerExecutorCredentialPath === undefined
+				? undefined
+				: officePhysicalPath(r.computerExecutorCredentialPath),
 		idleMs: parseOfficeIdleMs(r.idleMs ?? 300000),
 		policyPath: officePhysicalPath(r.policyPath),
 		provenancePath: officePhysicalPath(r.provenancePath),
@@ -183,6 +195,28 @@ export async function runLxdOfficeLifecycleService(
 			config.registryUrl,
 			new TextDecoder("utf8", { fatal: true }).decode(credential),
 		);
+		let paidComputer: LxdOfficePaidComputerPort | undefined;
+		if (config.computerExecutorCredentialPath !== undefined) {
+			const policy = parseLxdOfficePhysicalPolicy(
+				JSON.parse(
+					new TextDecoder("utf8", { fatal: true }).decode(
+						await readLxdOfficeProtectedFile(config.policyPath, 65536),
+					),
+				),
+			);
+			const control = new RuntimeComputerHttpControl({
+				supabaseUrl: config.registryUrl,
+				supabaseServiceKey: new TextDecoder("utf8", { fatal: true }).decode(credential),
+				executorSecret: await readRuntimeComputerExecutorSecret(config.computerExecutorCredentialPath),
+			});
+			const controller = new RuntimeComputerController({
+				control,
+				guard: new PaidComputerGuardClient("/run/qorpera-office-computer-guard/control.sock"),
+				client: new LxdUnixClient(policy.host.socketPath),
+				clock: readPaidComputerHostClock,
+			});
+			paidComputer = new LxdOfficePaidComputer(policy, controller, control);
+		}
 		credential.fill(0);
 		const software =
 			config.softwareLanePath === undefined
@@ -212,7 +246,7 @@ export async function runLxdOfficeLifecycleService(
 			config.policyPath,
 			config.provenancePath,
 			registry,
-			{ ...config, software },
+			{ ...config, software, paidComputer },
 			signal,
 		);
 		const emit = createOfficeLifecycleReporter(lifecycle.observationIdentity, write);
@@ -222,6 +256,7 @@ export async function runLxdOfficeLifecycleService(
 			config.pollIntervalMs,
 			emit,
 			passthrough && { config: passthrough, resolve: lifecycle.guestResolver() },
+			paidComputer,
 		);
 	} catch {
 		if (!signal.aborted) throw new Error("OFFICE_PROVIDER_SERVICE_UNCONFIRMED");
@@ -238,10 +273,12 @@ export async function runOfficeLifecycleLoops(
 	pollIntervalMs: number,
 	emit: ReturnType<typeof createOfficeLifecycleReporter>,
 	passthrough?: { config: LxdOfficePassthroughConfig; resolve: LxdOfficeGuestResolver },
+	paidComputer?: Pick<LxdOfficePaidComputerPort, "maintain">,
 ): Promise<void> {
 	const stop = new AbortController();
 	const running = AbortSignal.any([signal, stop.signal]);
 	const outcomes = await Promise.allSettled([
+		...(paidComputer ? [runOfficeComputerUsageLoop(paidComputer, running, emit).finally(() => stop.abort())] : []),
 		...(passthrough
 			? [
 					runLxdOfficePassthrough(passthrough.config, passthrough.resolve, running, (error) =>
@@ -269,4 +306,21 @@ export async function runOfficeLifecycleLoops(
 	]);
 	if (!signal.aborted && outcomes.some((result) => result.status === "rejected"))
 		throw new Error("OFFICE_PROVIDER_LOOPS_UNCONFIRMED");
+}
+
+/** Separate from slow NAS, adoption and guest preparation. A failed sample
+ * never renews locally: the independent guard retains its previous deadline. */
+export async function runOfficeComputerUsageLoop(
+	computer: Pick<LxdOfficePaidComputerPort, "maintain">,
+	signal: AbortSignal,
+	emit: ReturnType<typeof createOfficeLifecycleReporter>,
+): Promise<void> {
+	while (!signal.aborted) {
+		try {
+			await computer.maintain(AbortSignal.any([signal, AbortSignal.timeout(15000)]));
+		} catch {
+			if (!signal.aborted) emit(undefined, new Error("OFFICE_COMPUTER_USAGE_UNCONFIRMED"));
+		}
+		if (!signal.aborted) await delay(5000, undefined, { signal }).catch(() => {});
+	}
 }

@@ -6,6 +6,7 @@ import { parseCloudCodingNasPolicy } from "@qorpera/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { type LxdCodingMachineBinding, lxdCodingMachinePlan } from "../src/coding-machine.ts";
 import {
+	type CodingPaidComputerMachine,
 	type PaidComputerArm,
 	PaidComputerGuard,
 	PaidComputerGuardJournal,
@@ -49,7 +50,7 @@ async function fixture(initialize = true) {
 		hostBootId: randomUUID(),
 		uptimeMs: 100000,
 	};
-	const input: PaidComputerArm = {
+	const input: PaidComputerArm & { machine: CodingPaidComputerMachine } = {
 		machine: {
 			allocationId: binding.machineId,
 			nodeId: randomUUID(),

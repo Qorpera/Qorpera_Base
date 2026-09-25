@@ -315,7 +315,10 @@ Every logical object has an opaque current version. Disjoint writes may proceed
 independently. Competing writes to the same object or atomic path set are
 serialized or return a typed stale-version result. The agent re-reads and
 retries, narrows the change, or creates a proposal. Silent last-writer-wins is
-forbidden; automatic semantic merging is optional future machinery.
+forbidden; automatic semantic merging is optional future machinery. In the
+cloud tools the typed result is `COMPANY_FILE_VERSION_CHANGED` (nothing was
+written), never the unconfirmed outcome kept for results that may have
+happened (2026-09-25).
 
 The Company File is worked on as one live document. Every agent and member
 edits the same live objects in place through the live mount or Company File
@@ -1201,7 +1204,8 @@ it.
 
 ### 15.1 Memory
 
-Amended 2026-09-22; company first since 2026-09-24. Memory follows the Grok
+Amended 2026-09-22; company first since 2026-09-24; notebook-wide dedupe,
+forget and search since 2026-09-25. Memory follows the Grok
 Bot notebook layout, so a Grok Bot's memory export can be imported into a
 Qorpera company and a hired Grok Bot keeps its notebook. Memory is separate
 from the transcript and from the company's own records: it is what an agent
@@ -1232,13 +1236,30 @@ forget goes through the mutation gateway with the exact expected version
 ledger exists.
 
 Tools: `update_memory` with `action` `write` (`fact`, optional `tier`) or
-`forget` (`fact` = the exact recorded text), and `recall_memory` (`query`,
-optional `limit` 1–50). Writes deduplicate; a correction is forget then write.
-Recall ranks by shared distinctive words and falls back to a case-insensitive
-substring match; results carry each fact's date and tier and are untrusted
-data.
+`forget` (`fact` = the recorded text), and `recall_memory` (`query`,
+optional `limit` 1–50). A fact is one fact wherever it sits: a write that is
+already recorded anywhere in the notebook, in any tier or month, is a
+duplicate and says where; `forget` removes every current copy (compared as
+writes compare, case and spacing aside) and says how many. A correction is
+forget then write. "Forget" governs the current notebook and future
+composition; immutable revision history is kept (5.2). Recall and forget read
+the profile and every monthly log file, with no search horizon, and report how
+many months they read and the oldest. Recall ranks by shared distinctive words
+and falls back to a case-insensitive substring match; results carry each
+fact's date and tier and are untrusted data.
 
-Composition (9.1): every turn composes the whole profile and a bounded
+A notebook write that loses a same-object race gets the typed stale-version
+refusal (5.2) and re-reads and retries; when it keeps losing, the receipt says
+nothing was saved. A write past the profile or monthly file size answers
+`full` and saves nothing. A notebook file that is not notes (larger than a
+text write, or not UTF-8) is a named gap: search reports it, forget answers
+`partial` rather than claim every copy is gone, and only a write into that
+file is refused (`unreadable`). None of these is an unconfirmed outcome. A
+deleted notebook file or folder is recreated against the version its deletion
+left.
+
+Composition (9.1): every turn composes the whole profile (every fact a write
+accepted) and a bounded
 newest-first slice of the current and previous month's log with faded notes
 removed, plus a count of facts not shown. The
 block records the exact object versions it read. Composition uses the trusted
@@ -1460,10 +1481,10 @@ Company File, rather than chat or a machine disk, is what that brain operates.
 | 3 | Wake bus | One agent enters through all five wake kinds; each applies its silence rule; a routine finishes with no send; an authorized Company File event wakes once, and an agent's own write never wakes itself (amended v95: no multi-agent cycle fence). |
 | 4 | Shared office VM | Persistent cloud workbench, live Company File mount, shell, browser with sticky granted sessions, one company machine (additional machines are later capacity work), and several agent desktops work with every member device offline; resetting the VM leaves company state intact. |
 | 5 | Workers and todos | Parent remains interruptible; blank child receives a complete dispatch; durable completion reaches the parent; todos and accepted worker outputs become Company File state and survive restart. |
-| 6 | Agent memory (amended 2026-09-22, company first 2026-09-24) | An agent's profile, monthly log, and notes are its own Company File objects in the Grok Bot layout; `update_memory` write/forget and `recall_memory` work through the versioned mutation gateway with dedupe, exact-text forget, and head-conflict retry; every turn composes the profile and the recent log slice through the trusted read lane; a worker of the same agent recalls but writes only with write access; notebooks are company-owned and there is no member memory; a Grok Bot export imports unchanged. |
+| 6 | Agent memory (amended 2026-09-22, company first 2026-09-24) | An agent's profile, monthly log, and notes are its own Company File objects in the Grok Bot layout; `update_memory` write/forget and `recall_memory` work through the versioned mutation gateway with notebook-wide dedupe, forget of every copy, a search of every month, and stale-version retry; every turn composes the whole profile and the recent log slice through the trusted read lane; a worker of the same agent recalls but writes only with write access; notebooks are company-owned and there is no member memory; a Grok Bot export imports unchanged. |
 | 7 | Connectors | Install, authenticate out of band, call through scoped RPC, and apply the connector-to-browser escalation path. |
 | 8 | Scheduler and listeners | Company File intent plus one compiled trigger wakes the same agent; deterministic deduplication, timezone, expiry, quiet policy, auth suspension, and projection consistency pass. |
-| 9 | Isolated coding VMs and PRs | Worker, repository workspace, branch, follow-up identity, publication, and completion listener retain continuity; a member's sessions share one coding machine that holds no node capacity while asleep and is removed later, its allocation released only on a proven delete (amended 2026-09-24). |
+| 9 | Isolated coding VMs and PRs | Worker, repository workspace, branch, follow-up identity, publication, and completion listener retain continuity; every turn is recorded once (what started it, its submission bound to its own sequence, its outcome) and the next turn reads the session's own earlier turns, including the exact question and choices a reply answers (amended 2026-09-25); a member's sessions share one coding machine that holds no node capacity while asleep and is removed later, its allocation released only on a proven delete (amended 2026-09-24). |
 | 10 | Constitution and hire overlays | Compile a short constitution over the proven loop; add a name and job spec last, without creating a second brain. |
 | Post-build (deferred) | Azure backup/overflow compute | After Orders 0–10 are built, separately approve and prove the optional capacity integration and its placement, failover, isolation, recovery, release, and usage records before enabling it for users. This is not a gate on the preceding orders or initial launch. |
 
@@ -2201,7 +2222,9 @@ returns at admission and the parent ends its run, so a new human message is
 admitted while the child works. Todos and worker handles are durable kernel
 objects; each change publishes the canonical todo document to the Company File
 under `work/todos/<agent>/`, and an accepted output is a Company File revision
-the worker's own run wrote. Disposable-database proofs, runtime tests and a
+the worker's own run wrote. A todo document is written only as the current
+revision's exact bytes and counts as published only while the file still holds
+them (bundle v111), so a late publication can never replace a newer one. Disposable-database proofs, runtime tests and a
 live-model behavior screen pass. Deployed acceptance on the nodes remains the
 gate before Order 5 is closed; coding, media and listener workers remain in
 Orders 9, 7 and 8. See
@@ -2255,7 +2278,7 @@ Founder decision, 2026-09-24 (Grok Bot's rail). Extends 14.1 and the
 | Projects remain bounded and distinct from rooms | Project registry, team membership, todos, outcome, and room lifecycle | Coordinate in the room; finish in durable company state. |
 | Routine policy is real | Scheduler and listener services | Author sensible schedules and intent. |
 | Dismissal is not consent | Interaction state machine | Treat dismissal as skip or decline. |
-| Coding follow-up keeps continuity | Worker identity, VM, branch contract | Steer the existing worker. |
+| Coding follow-up keeps continuity | Worker identity, VM, branch contract, the session's own turn record | Steer the existing worker. |
 | Member machines are not agent tools | Capability compiler and cloud-only execution policy | Request an explicit upload when a member-held file is needed. |
 | Secrets stay out of context | Company-centered cloud secret broker, operation grants, credential bridge, and result fence | Refer to purpose and handle, never value. |
 | Low effort is the thread default | Run admission policy | Escalate effort only for a reason. |

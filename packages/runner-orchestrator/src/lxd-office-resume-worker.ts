@@ -15,12 +15,14 @@ import { officeCanonical, officeDigest, officeRecord } from "./lxd-office-image-
 import { code, publish, readRecord } from "./lxd-office-journal-files.ts";
 import { reserveLxdOfficeNodeMachine } from "./lxd-office-node-admission.ts";
 import { LxdOfficeOperationJournal } from "./lxd-office-operations.ts";
+import type { LxdOfficePaidComputerPort } from "./lxd-office-paid-computer.ts";
 import type { LxdOfficePhysicalGate } from "./lxd-office-physical-gate.ts";
 import { parseLxdOfficePhysicalPolicy } from "./lxd-office-physical-policy.ts";
 import { readLxdOfficePowerOffEvidence } from "./lxd-office-power-off-evidence.ts";
 import { readLxdOfficeStopHistory } from "./lxd-office-stop-history.ts";
 
 interface Ports {
+	paidComputer?: LxdOfficePaidComputerPort;
 	client?: LxdOfficeServiceStartClient;
 	kernelLock?: typeof assertOfficeAdoptionKernelLock;
 }
@@ -38,6 +40,7 @@ export class LxdOfficeResumeWorker {
 	readonly #registry: LxdOfficeBootIntentRegistry;
 	readonly #client: LxdOfficeServiceStartClient;
 	readonly #kernelLock;
+	readonly #paid?: LxdOfficePaidComputerPort;
 	constructor(
 		gate: Pick<LxdOfficePhysicalGate, "policy" | "check">,
 		registry: LxdOfficeBootIntentRegistry,
@@ -46,6 +49,7 @@ export class LxdOfficeResumeWorker {
 		this.#gate = gate;
 		this.#policy = parseLxdOfficePhysicalPolicy(gate.policy);
 		this.#registry = registry;
+		this.#paid = ports.paidComputer;
 		this.#client = ports.client ?? new LxdUnixClient(this.#policy.host.socketPath);
 		this.#kernelLock = ports.kernelLock ?? assertOfficeAdoptionKernelLock;
 	}
@@ -109,7 +113,15 @@ export class LxdOfficeResumeWorker {
 			{ binding } = creation,
 			{ allocationId } = binding;
 		const shutdown = await readLxdOfficePowerOffEvidence(root, creation, request, signal),
-			journal = await LxdOfficeOperationJournal.open(root, intentId, binding, this.#client, true),
+			journal = await LxdOfficeOperationJournal.open(
+				root,
+				intentId,
+				binding,
+				this.#client,
+				true,
+				undefined,
+				this.#paid?.operations(binding),
+			),
 			control = new LxdOfficeBootIntentControl(request, registry);
 		const suffix = `${allocationId}-${request.predecessor.transitionId}`,
 			seedName = `resume-request-${suffix}.json`,
@@ -217,10 +229,19 @@ export class LxdOfficeResumeWorker {
 			if (instance.status !== "Stopped" || instance.statusCode !== 102) throw new Error("resume VM not stopped");
 			const state = await this.#client.getInstanceState(binding.project, instance.name, checked);
 			if (state.status !== "Stopped" || state.statusCode !== 102) throw new Error("resume VM state differs");
-			const authorized = await authorize(checked);
-			const node = await reserveLxdOfficeNodeMachine(this.#policy, binding, registry, authorized);
-			if (node.state === "refused") throw new Error(node.reason);
-			operation = await journal.reconcile(command.commandId, "start", node.signal);
+			let authorized = await authorize(checked);
+			const paid = await this.#paid?.prepareStart(
+				binding,
+				command.commandId,
+				{ kind: "resume", request },
+				authorized,
+			);
+			if (!paid) {
+				const node = await reserveLxdOfficeNodeMachine(this.#policy, binding, registry, authorized);
+				if (node.state === "refused") throw new Error(node.reason);
+				authorized = node.signal;
+			}
+			operation = await journal.reconcile(command.commandId, "start", authorized);
 		}
 		const result = {
 			intentId,

@@ -10,6 +10,7 @@ import {
 	lxdCodingMachinePlan,
 } from "./coding-machine.ts";
 import {
+	isRuntimePaidComputerMachine,
 	PAID_COMPUTER_STOP_RESERVE_MS,
 	PAID_COMPUTER_WINDOW_MS,
 	type PaidComputerArm,
@@ -175,6 +176,7 @@ export class CodingComputerController implements CodingComputerUsage {
 				latest.set(entry.machine.allocationId, entry);
 		}
 		for (const entry of latest.values()) {
+			if (isRuntimePaidComputerMachine(entry.machine)) continue;
 			if (entry.machine.hostMachineIdSha256 !== this.#options.storage.machineIdSha256)
 				throw new Error("CODING_COMPUTER_HOST_DIFFERS");
 			const current = await this.#describe(entry.machine.binding, signal, entry.phase === "stopped");

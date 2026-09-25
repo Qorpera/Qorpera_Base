@@ -57,7 +57,7 @@ After deployment approval, start the observer through systemd and independently 
 
 ## Computer usage shadow telemetry
 
-Migration `20260925115000_computer_shadow_observer.sql` must be installed before deploying the updated observer package. The service now has a separate five-second telemetry loop and emits `computer_usage_shadow` status events. Inventory and health polling have independent connections; a failed telemetry upload does not authorize, block or clean up a computer.
+Migration `20260925125000_computer_shadow_observer.sql` must be installed before deploying the updated observer package. The service now has a separate five-second telemetry loop and emits `computer_usage_shadow` status events. Inventory and health polling have independent connections; a failed telemetry upload does not authorize, block or clean up a computer.
 
 The reviewed unit includes `StateDirectory=qorpera-computer-usage` and `StateDirectoryMode=0700`. Systemd creates `/var/lib/qorpera-computer-usage` for the dedicated observer user. Retain that directory across package updates and service restarts: it holds immutable, fsynced pending samples. Do not clear it to recover an uncertain upload. Exact samples are replayed before new collection, and the database resolves sequence/epoch state. Apply an updated reviewed unit through the existing installation/recovery process; do not add an untracked override or bypass immutable installation receipts. No deployment was performed as part of this implementation.
 

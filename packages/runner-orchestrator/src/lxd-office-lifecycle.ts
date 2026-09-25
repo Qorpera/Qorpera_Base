@@ -40,6 +40,7 @@ import {
 	parseLxdOfficeLifecycleRequest,
 } from "./lxd-office-lifecycle-journal.ts";
 import { observeLxdOfficeOperationJournals } from "./lxd-office-operation-observer.ts";
+import type { LxdOfficePaidComputerPort } from "./lxd-office-paid-computer.ts";
 import { createLxdOfficeGuestResolver, type LxdOfficeGuestResolver } from "./lxd-office-passthrough.ts";
 import { LxdOfficePhysicalGate } from "./lxd-office-physical-gate.ts";
 import { readLxdOfficeProtectedFile } from "./lxd-office-physical-host.ts";
@@ -71,6 +72,7 @@ interface Workers {
 	activation: Pick<LxdOfficeActivationWorker, "reconcileSettled">;
 }
 interface Options {
+	paidComputer?: LxdOfficePaidComputerPort;
 	idleMs?: number;
 	codePackageLanePath?: string;
 	resetImagePackageManifestPath?: string;
@@ -176,6 +178,7 @@ export class LxdOfficeLifecycle {
 	readonly #gate: Pick<LxdOfficePhysicalGate, "policy" | "check" | "inspect"> &
 		Partial<Pick<LxdOfficeHostRebootGate, "physical">>;
 	readonly #registry: LxdOfficeLifecycleRegistry;
+	readonly #paid?: LxdOfficePaidComputerPort;
 	#activeIntent: string | undefined;
 	#activeRecovery: { intentId: string; transitionId: string; activationId: string } | undefined;
 	#activeBoot: { intentId: string; transitionId: string; activationId: string; stageSha256: string } | undefined;
@@ -243,6 +246,7 @@ export class LxdOfficeLifecycle {
 				? undefined
 				: new LxdOfficeIdlePolicy(this.#root, { ...g, providerPolicySha256 }, options.idleMs, registry);
 		this.#registry = registry;
+		this.#paid = options.paidComputer;
 		this.#kernelLock = ports.kernelLock ?? assertOfficeAdoptionKernelLock;
 		this.#readProtected = ports.readProtected ?? readLxdOfficeProtectedFile;
 		this.#stopWorker = ports.stopWorker ?? new LxdOfficeServiceStopWorker(gate, registry);
@@ -288,19 +292,21 @@ export class LxdOfficeLifecycle {
 			ports.successorWorker ??
 			new LxdOfficeSuccessorWorker(gate, registry, { softwarePlan: software?.plan, measureInvocation });
 		this.#powerOffWorker = ports.powerOffWorker ?? new LxdOfficePowerOffWorker(gate, registry);
-		this.#resumeWorker = ports.resumeWorker ?? new LxdOfficeResumeWorker(gate, registry);
+		this.#resumeWorker =
+			ports.resumeWorker ?? new LxdOfficeResumeWorker(gate, registry, { paidComputer: options.paidComputer });
 		this.#bootConfigurationWorker =
 			ports.bootConfigurationWorker ?? new LxdOfficeBootConfigurationWorker(gate, registry);
 		this.#bootActivationWorker =
 			ports.bootActivationWorker ?? new LxdOfficeBootActivationWorker(gate, registry, { measureInvocation });
 		// The reset worker composes its guest successor lane on its own client;
 		// only the enrolled software measurement is shared with the other lanes.
-		this.#resetWorker = ports.resetWorker ?? new LxdOfficeResetWorker(gate, registry);
+		this.#resetWorker =
+			ports.resetWorker ?? new LxdOfficeResetWorker(gate, registry, { paidComputer: options.paidComputer });
 		this.#workers = ports.workers ?? {
-			creation: new LxdOfficeCreationWorker(gate, registry),
+			creation: new LxdOfficeCreationWorker(gate, registry, undefined, options.paidComputer),
 			inventory: new LxdOfficeInventoryWorker(gate, registry, limits),
 			adoption: new LxdOfficeAdoptionWorker(gate, registry, limits),
-			boot: new LxdOfficeBootWorker(gate, registry),
+			boot: new LxdOfficeBootWorker(gate, registry, { paidComputer: options.paidComputer }),
 			preparation: new LxdOfficePreparationWorker(gate, registry),
 			configuration: new LxdOfficeConfigurationWorker(gate, registry),
 			activation: new LxdOfficeActivationWorker(gate, registry, registry),
@@ -371,6 +377,22 @@ export class LxdOfficeLifecycle {
 		await this.#kernelLock(this.#root);
 		signal.throwIfAborted();
 		const status = await this.#provider.status(signal);
+		if (status.reservation && this.#paid) {
+			const binding = {
+				schema: "qorpera.lxd-office-guest/v2" as const,
+				...this.#gate.policy.guest,
+				providerPolicySha256: lxdOfficePhysicalPolicySha256(this.#gate.policy),
+				allocationId: status.reservation.allocationId,
+			};
+			await this.#paid.recover(binding, signal);
+			if (status.officeState === "active") {
+				try {
+					await this.#paid.assertActive(binding, signal);
+				} catch {
+					return { state: "held", intentId: status.intent?.intentId, reason: "OFFICE_PAID_RECOVERY_REQUIRED" };
+				}
+			}
+		}
 		if (status.officeState !== "active") {
 			this.#activeIntent = undefined;
 			this.#activeRecovery = undefined;

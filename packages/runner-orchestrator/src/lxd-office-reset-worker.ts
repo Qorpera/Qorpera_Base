@@ -66,6 +66,7 @@ import { officeCanonical, officeDigest, officeRecord, officeSha } from "./lxd-of
 import { code, publish, readRecord } from "./lxd-office-journal-files.ts";
 import { reserveLxdOfficeNodeMachine } from "./lxd-office-node-admission.ts";
 import { LxdOfficeOperationJournal } from "./lxd-office-operations.ts";
+import type { LxdOfficePaidComputerPort } from "./lxd-office-paid-computer.ts";
 import type { LxdOfficePhysicalGate } from "./lxd-office-physical-gate.ts";
 import {
 	type readLxdOfficeCredentialFile,
@@ -121,6 +122,7 @@ export type LxdOfficeResetCodePackageLane = Pick<
 	"enroll" | "ensure" | "prepareInvocation" | "measureInvocation"
 >;
 interface Ports {
+	paidComputer?: LxdOfficePaidComputerPort;
 	client?: Client;
 	kernelLock?: typeof assertOfficeAdoptionKernelLock;
 	readProtected?: typeof readLxdOfficeProtectedFile;
@@ -459,7 +461,15 @@ export class LxdOfficeResetWorker {
 			throw new Error("reset preparation identity differs");
 		const control = new LxdOfficeResetControl(plan, input.planSha256, registry);
 		const journal = await LxdOfficeResetJournal.open(root, plan);
-		const operations = await LxdOfficeOperationJournal.open(root, intentId, binding, this.#client, true);
+		const operations = await LxdOfficeOperationJournal.open(
+			root,
+			intentId,
+			binding,
+			this.#client,
+			true,
+			undefined,
+			this.#ports.paidComputer?.operations(binding),
+		);
 		// Seed while the old root is still readable: predecessor evidence,
 		// original preparation identity and the retained VM command lineage.
 		let seedValue = await optional(names.seed);
@@ -844,8 +854,14 @@ export class LxdOfficeResetWorker {
 				);
 			}
 			if (next === "root_deleted") {
-				const operation = await dispatch("root_deleted", plan.commands.deleteCommandId, "delete", (checked) =>
-					instance(checked, "Stopped"),
+				const operation = await dispatch(
+					"root_deleted",
+					plan.commands.deleteCommandId,
+					"delete",
+					async (checked) => {
+						await instance(checked, "Stopped");
+						await this.#ports.paidComputer?.settleStopped(binding, checked);
+					},
 				);
 				if (operation.state !== "succeeded") return settled(operation.state);
 				return acknowledge(
@@ -880,6 +896,15 @@ export class LxdOfficeResetWorker {
 			if (next === "restored") {
 				const operation = await dispatch("restored", plan.commands.startCommandId, "start", async (checked) => {
 					await instance(checked, "Stopped");
+					if (
+						await this.#ports.paidComputer?.prepareStart(
+							binding,
+							plan.commands.startCommandId,
+							{ kind: "reset", plan },
+							checked,
+						)
+					)
+						return;
 					const node = await reserveLxdOfficeNodeMachine(this.#policy, binding, registry, checked);
 					if (node.state === "refused") throw new Error(node.reason);
 					node.signal.throwIfAborted();

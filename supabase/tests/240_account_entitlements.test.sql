@@ -83,6 +83,16 @@ select set_config(
 	false
 );
 set role service_role;
+do $$ begin
+    begin
+        perform public.qorpera_set_account_entitlement('80000000-0000-4000-8000-00000000000c',
+            'internal','complimentary','all','unlimited','test-suite','Guest service role cannot grant entitlement');
+        raise exception 'guest service role changed an operator-controlled entitlement';
+    exception when insufficient_privilege then null; end;
+end $$;
+reset role;
+-- The audited mutation belongs to a trusted database operator; guests also
+-- carry the service role, so that role is no longer an operator capability.
 select public.qorpera_set_account_entitlement(
 	'80000000-0000-4000-8000-00000000000c',
 	'internal',
@@ -128,7 +138,9 @@ select public.qorpera_confirm_profile_object_upload(
 	1,
 	'nas-object-gateway'
 );
+reset role;
 
+-- Even a trusted operator cannot strand data by reducing the quota.
 do $$
 declare
 	v_denied boolean := false;
@@ -197,7 +209,7 @@ begin
 			'authenticated',
 			'public.qorpera_set_account_entitlement(uuid,text,text,text,text,text,text)',
 			'EXECUTE'
-		) then
+		) or has_function_privilege('service_role','public.qorpera_set_account_entitlement(uuid,text,text,text,text,text,text)','EXECUTE') then
 		raise exception 'account entitlement mutation authority is exposed';
 	end if;
 	if (

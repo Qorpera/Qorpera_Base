@@ -7,6 +7,7 @@ import { parseCloudCodingNasPolicy } from "@qorpera/contracts";
 import { type CodingMachineStorage, type LxdCodingMachineBinding, lxdCodingMachinePlan } from "./coding-machine.ts";
 import type { LxdOperationReference } from "./lxd-client.ts";
 import { checkDirectory, code, readRecord, syncDirectory } from "./lxd-office-journal-files.ts";
+import { parseRuntimePaidComputerMachine, type RuntimePaidComputerMachine } from "./runtime-paid-machine.ts";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const SHA = /^[0-9a-f]{64}$/;
@@ -19,7 +20,7 @@ export interface PaidComputerHostClock {
 	hostBootId: string;
 	uptimeMs: number;
 }
-export interface PaidComputerMachine {
+export interface CodingPaidComputerMachine {
 	allocationId: string;
 	nodeId: string;
 	binding: Readonly<LxdCodingMachineBinding>;
@@ -27,6 +28,14 @@ export interface PaidComputerMachine {
 	physicalInstanceId: string;
 	hostMachineIdSha256: string;
 	hostBootId: string;
+}
+export type PaidComputerMachine = CodingPaidComputerMachine | RuntimePaidComputerMachine;
+export function isRuntimePaidComputerMachine(machine: PaidComputerMachine): machine is RuntimePaidComputerMachine {
+	return "kind" in machine && machine.kind === "runtime";
+}
+export function paidComputerTarget(machine: PaidComputerMachine): { project: string; instanceName: string } {
+	if (isRuntimePaidComputerMachine(machine)) return machine.physicalTarget;
+	return { project: machine.binding.project, instanceName: lxdCodingMachinePlan(machine.binding).request.name };
 }
 /** Projection of a confirmed kernel receipt, never authority supplied by a
  * member or guest. The trusted executor validates the originating RPC. */
@@ -108,6 +117,7 @@ function id(value: unknown, pattern = UUID): string {
 }
 function parseMachine(value: unknown): PaidComputerMachine {
 	const m = record(value);
+	if (m.kind === "runtime") return parseRuntimePaidComputerMachine(m);
 	const binding = lxdCodingMachinePlan(m.binding as LxdCodingMachineBinding).binding;
 	const storage = record(m.storage);
 	const hostMachineIdSha256 = id(m.hostMachineIdSha256, SHA);
@@ -167,23 +177,24 @@ export function parsePaidComputerArm(value: unknown): PaidComputerArm {
 	const input = record(value),
 		machine = parseMachine(input.machine),
 		permit = parsePaidComputerPermit(input.permit);
-	const plan = lxdCodingMachinePlan(machine.binding);
+	const runtime = isRuntimePaidComputerMachine(machine);
 	if (
 		permit.allocationId !== machine.allocationId ||
 		permit.nodeId !== machine.nodeId ||
-		permit.instanceSha256 !== plan.instanceSha256 ||
+		permit.instanceSha256 !==
+			(runtime ? machine.instanceSha256 : lxdCodingMachinePlan(machine.binding).instanceSha256) ||
 		permit.hostBootId !== machine.hostBootId ||
 		(permit.physicalId !== null && permit.physicalId !== machine.physicalInstanceId) ||
-		permit.cpuMillis !== machine.binding.cpus * 1000 ||
-		permit.memoryBytes !== machine.binding.memoryBytes
+		permit.cpuMillis !== (runtime ? machine.cpuMillis : machine.binding.cpus * 1000) ||
+		permit.memoryBytes !== (runtime ? machine.memoryBytes : machine.binding.memoryBytes)
 	)
 		throw new Error("PAID_GUARD_BINDING_DIFFERS");
 	return { machine, permit, requestStartedUptimeMs: integer(input.requestStartedUptimeMs) };
 }
 function reference(value: unknown, machine: PaidComputerMachine): LxdOperationReference {
 	const ref = record(value),
-		plan = lxdCodingMachinePlan(machine.binding);
-	if (ref.project !== machine.binding.project || ref.instanceName !== plan.request.name)
+		target = paidComputerTarget(machine);
+	if (ref.project !== target.project || ref.instanceName !== target.instanceName)
 		throw new Error("PAID_GUARD_OPERATION_DIFFERS");
 	return { project: ref.project, instanceName: ref.instanceName, operationId: id(ref.operationId) };
 }
@@ -428,7 +439,8 @@ export class PaidComputerGuard {
 				for (const current of this.#records.values())
 					if (
 						current.machine.nodeId === machine.nodeId &&
-						current.machine.binding.machineId === machine.binding.machineId &&
+						paidComputerTarget(current.machine).project === paidComputerTarget(machine).project &&
+						paidComputerTarget(current.machine).instanceName === paidComputerTarget(machine).instanceName &&
 						current.phase !== "stopped"
 					)
 						throw new Error("PAID_GUARD_MACHINE_BUSY");

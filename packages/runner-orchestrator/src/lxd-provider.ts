@@ -27,6 +27,7 @@ import {
 	token,
 	workSha256,
 } from "./provider-shared.ts";
+import type { RuntimeComputerContext, RuntimeComputerController } from "./runtime-computer-controller.ts";
 import { reserveRuntimeNodeMachine } from "./runtime-node-admission.ts";
 import { readRuntimeNodeHost } from "./runtime-node-host.ts";
 
@@ -132,6 +133,8 @@ interface LxdProviderJournal {
 	capacityRegistered?: true;
 	/** Written only after the control plane confirms the exact release; the release is never sent again. */
 	capacityReleased?: true;
+	/** Paid allocation may start/stop only through the independent host guard. */
+	paidComputer?: true;
 	/** Exact node binding retained after the node reservation commits. */
 	nodeCapacity?: NativeNodePlacement;
 	guestAddress?: string;
@@ -380,6 +383,7 @@ function journalFromJson(value: unknown): LxdProviderJournal {
 				!["stopping", "stopped", "lost"].includes(String(input.physicalState)))) ||
 		(input.capacityRegistered !== undefined && input.capacityRegistered !== true) ||
 		(input.capacityReleased !== undefined && input.capacityReleased !== true) ||
+		(input.paidComputer !== undefined && input.paidComputer !== true) ||
 		lxd.type !== "virtual-machine" ||
 		typeof lxd.project !== "string" ||
 		typeof lxd.imageServer !== "string" ||
@@ -507,6 +511,7 @@ function journalFromJson(value: unknown): LxdProviderJournal {
 		...(input.deletionConfirmed === true ? { deletionConfirmed: true } : {}),
 		...(input.capacityRegistered === true ? { capacityRegistered: true } : {}),
 		...(input.capacityReleased === true ? { capacityReleased: true } : {}),
+		...(input.paidComputer === true ? { paidComputer: true } : {}),
 		...(input.nodeCapacity !== undefined ? { nodeCapacity: nodePlacement(input.nodeCapacity) } : {}),
 		...(typeof input.guestAddress === "string" ? { guestAddress: input.guestAddress } : {}),
 		...(typeof input.assignmentId === "string" ? { assignmentId: input.assignmentId } : {}),
@@ -786,6 +791,11 @@ const JOURNAL_ARCHIVE = "archive";
 const SETTLED_JOURNAL_RETENTION_MS = 24 * 60 * 60_000;
 
 export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderServiceBackend {
+	readonly #computerUsage?: Pick<
+		RuntimeComputerController,
+		"ensure" | "recover" | "manages" | "start" | "stop" | "observe" | "maintain" | "assertRunning"
+	>;
+	readonly #paidAllocations = new Set<string>();
 	readonly #registeredCapacity = new Set<string>();
 	readonly #releasedCapacity = new Set<string>();
 	readonly #registeredNodeCapacity = new Map<string, NativeNodePlacement>();
@@ -805,6 +815,10 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 		lxd: LxdClient,
 		guest: LxdGuestTransport = new HttpLxdGuestTransport(lxd),
 		fetchImplementation: ServiceHttpFetch = fetch,
+		computerUsage?: Pick<
+			RuntimeComputerController,
+			"ensure" | "recover" | "manages" | "start" | "stop" | "observe" | "maintain" | "assertRunning"
+		>,
 	) {
 		validateConfig(config);
 		this.adapterId = config.adapterId;
@@ -816,6 +830,40 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 		this.#lxd = lxd;
 		this.#guest = guest;
 		this.#fetch = fetchImplementation;
+		this.#computerUsage = computerUsage;
+	}
+
+	/** Separate five-second host loop; long guest bootstrap/reconcile waits do
+	 * not block renewals. Expiry itself remains in the independent guard daemon. */
+	async maintainComputerUsage(signal: AbortSignal): Promise<void> {
+		if (!this.#computerUsage) return;
+		const usage = this.#computerUsage;
+		// A damaged retained journal or failed recovery must never starve the
+		// independent renewal of computers already managed by this process.
+		const outcomes = await Promise.allSettled([
+			usage.maintain(signal),
+			(async () => {
+				const failures: unknown[] = [];
+				await mkdir(this.#config.stateRoot, { recursive: true, mode: 0o700 });
+				for (const entry of await readdir(this.#config.stateRoot, { withFileTypes: true })) {
+					if (!entry.isDirectory() || !UUID_PATTERN.test(entry.name)) continue;
+					try {
+						const journal = await this.#readJournal(entry.name);
+						if (journal?.paidComputer && !journal.capacityReleased && !usage.manages(journal.acquisitionId))
+							await usage.recover(await this.#computerContext(journal, signal), signal);
+					} catch (error) {
+						failures.push(error);
+					}
+				}
+				if (failures.length) throw new AggregateError(failures, "Native computer recovery is unconfirmed");
+			})(),
+		]);
+		const failures = outcomes.filter((outcome) => outcome.status === "rejected");
+		if (failures.length)
+			throw new AggregateError(
+				failures.map((failure) => failure.reason),
+				"Native computer usage is unconfirmed",
+			);
 	}
 
 	/** Every journal is reconciled on every pass until it is settled (see #settled). One journal that cannot make
@@ -1027,6 +1075,10 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 			}
 			const credentials = await this.#credentials(current.acquisitionId);
 			this.#validateCredentialHashes(current, credentials);
+			if (current.paidComputer || this.#paidAllocations.has(current.acquisitionId)) {
+				if (!this.#computerUsage) throw new Error("Paid native computer host is unavailable");
+				await this.#computerUsage.assertRunning(current.acquisitionId, signal ?? AbortSignal.timeout(15000));
+			}
 			if (current.lxd.companyRuntime) {
 				const instance = await this.#lxd.getInstance(current.lxd.project, current.instanceName, signal);
 				if (!instance || instance.status !== "Running") throw new Error("Governed native guest is unavailable");
@@ -1084,7 +1136,23 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 	 * and on the identity host, so the guest is deleted rather than left behind.
 	 * Retained custom volumes (identity, recovery) are devices and survive. */
 	async #retire(current: LxdProviderJournal, status: string, signal?: AbortSignal): Promise<void> {
-		if (status !== "Stopped") {
+		if (current.paidComputer || this.#paidAllocations.has(current.acquisitionId)) {
+			if (!this.#computerUsage) throw new Error("Paid native computer host is unavailable");
+			const checked = signal ?? AbortSignal.timeout(15000);
+			if (!this.#computerUsage.manages(current.acquisitionId))
+				await this.#computerUsage.recover(await this.#computerContext(current, checked), checked);
+			const request = this.#createRequest(current);
+			const stopped = await this.#computerUsage.stop(current.acquisitionId, checked, {
+				kind: "lxd",
+				project: current.lxd.project,
+				instanceName: current.instanceName,
+				profiles: request.profiles,
+				config: request.config,
+				devices: request.devices,
+			});
+			if (stopped.phase !== "stopped" || !stopped.stopReceipt)
+				throw new Error("Paid native computer stop is not confirmed");
+		} else if (status !== "Stopped") {
 			await this.#lxd.setInstancePower(current.lxd.project, current.instanceName, "stop", signal);
 		}
 		await this.#lxd.deleteInstance(current.lxd.project, current.instanceName, signal);
@@ -1151,13 +1219,29 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 				current = { ...current, physicalState: "starting" };
 				await this.#writeJournal(current);
 				startAdmission!.throwIfAborted();
-				await this.#lxd.setInstancePower(
-					current.lxd.project,
-					current.instanceName,
-					"start",
-					signal,
-					startAdmission,
-				);
+				if (this.#paidAllocations.has(current.acquisitionId) || current.paidComputer) {
+					if (!this.#computerUsage) throw new Error("Paid native computer host is unavailable");
+					const request = this.#createRequest(current);
+					await this.#computerUsage.start(
+						current.acquisitionId,
+						{
+							kind: "lxd",
+							project: current.lxd.project,
+							instanceName: current.instanceName,
+							profiles: request.profiles,
+							config: request.config,
+							devices: request.devices,
+						},
+						signal ?? AbortSignal.timeout(15000),
+					);
+				} else
+					await this.#lxd.setInstancePower(
+						current.lxd.project,
+						current.instanceName,
+						"start",
+						signal,
+						startAdmission,
+					);
 			}
 			if (current.physicalState === "creating" || current.physicalState === "starting") {
 				await this.#prepareBootstrap(current, credentials, signal);
@@ -1178,6 +1262,11 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 				);
 			}
 			address = await this.#readyAddress(current, signal);
+			if (this.#paidAllocations.has(current.acquisitionId) || current.paidComputer) {
+				if (!this.#computerUsage) throw new Error("Paid native computer host is unavailable");
+				await this.#computerUsage.observe(current.acquisitionId, signal ?? AbortSignal.timeout(15000));
+				await this.#computerUsage.assertRunning(current.acquisitionId, signal ?? AbortSignal.timeout(15000));
+			}
 		} catch (error) {
 			if (
 				current.physicalState === "creating" ||
@@ -1830,6 +1919,7 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 			...journal,
 			...(this.#registeredCapacity.has(journal.acquisitionId) ? { capacityRegistered: true as const } : {}),
 			...(this.#releasedCapacity.has(journal.acquisitionId) ? { capacityReleased: true as const } : {}),
+			...(this.#paidAllocations.has(journal.acquisitionId) ? { paidComputer: true as const } : {}),
 			...(this.#registeredNodeCapacity.has(journal.acquisitionId)
 				? { nodeCapacity: this.#registeredNodeCapacity.get(journal.acquisitionId)! }
 				: {}),
@@ -1945,6 +2035,42 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 	async #reserveMachine(current: LxdProviderJournal, signal?: AbortSignal): Promise<AbortSignal> {
 		// A confirmed release is final: it is never sent again, so nothing may charge this allocation anew.
 		if (this.#capacityReleased(current)) throw new Error("Released machine capacity cannot be reserved again");
+		if (current.paidComputer && !this.#computerUsage) throw new Error("Paid native computer host is unavailable");
+		if (this.#computerUsage) {
+			const checked = signal ?? AbortSignal.timeout(15000),
+				context = await this.#computerContext(current, checked);
+			const funding = await this.#computerUsage.ensure(context, current.acquisitionId, checked);
+			if (funding.mode === "paid") {
+				const host = await readRuntimeNodeHost(checked),
+					{ policy, policySha256 } = lxdNativeNodePolicy(this.#config, host.machineIdSha256);
+				if (
+					funding.permit.cpuMillis !== policy.cpuMillis ||
+					funding.permit.memoryBytes !== policy.memoryBytes ||
+					context.policySha256 !== policySha256
+				)
+					throw new Error("Paid native computer resource shape differs");
+				const placement = {
+					nodeId: funding.permit.nodeId,
+					policySha256,
+					machineIdSha256: host.machineIdSha256,
+					cpuMillis: policy.cpuMillis,
+					memoryBytes: policy.memoryBytes,
+				};
+				if (
+					current.nodeCapacity &&
+					JSON.stringify(canonical(current.nodeCapacity)) !== JSON.stringify(canonical(placement))
+				)
+					throw new Error("LXD node placement cannot be changed");
+				this.#registeredNodeCapacity.set(current.acquisitionId, placement);
+				this.#registeredCapacity.add(current.acquisitionId);
+				this.#paidAllocations.add(current.acquisitionId);
+				await this.#writeJournal(current);
+				checked.throwIfAborted();
+				return checked;
+			}
+			if (current.paidComputer || this.#paidAllocations.has(current.acquisitionId))
+				throw new Error("Paid native computer mode cannot change");
+		}
 		const identity = this.#machineIdentity(current);
 		const result = record(
 			await this.#rpc(
@@ -2031,6 +2157,16 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 		// Retained journals of finished runs are reconciled on every pass (19 Sep 2026: 79 stopped
 		// journals sent eight release calls a second). A confirmed release is sent exactly once.
 		if (this.#capacityReleased(current)) return;
+		if (current.paidComputer || this.#paidAllocations.has(current.acquisitionId)) {
+			if (!this.#computerUsage) throw new Error("Paid native computer host is unavailable");
+			const checked = signal ?? AbortSignal.timeout(15000);
+			if (!this.#computerUsage.manages(current.acquisitionId))
+				await this.#computerUsage.recover(await this.#computerContext(current, checked), checked);
+			if (this.#computerUsage.manages(current.acquisitionId))
+				await this.#computerUsage.observe(current.acquisitionId, checked);
+			if (this.#computerUsage.manages(current.acquisitionId))
+				throw new Error("Paid native computer settlement is unconfirmed");
+		}
 		const identity = this.#machineIdentity(current);
 		const result = record(await this.#rpc("qorpera_release_runtime_machine", identity, signal), "Machine release");
 		if (
@@ -2049,6 +2185,28 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 
 	#capacityReleased(current: LxdProviderJournal): boolean {
 		return current.capacityReleased === true || this.#releasedCapacity.has(current.acquisitionId);
+	}
+	async #computerContext(current: LxdProviderJournal, signal: AbortSignal): Promise<RuntimeComputerContext> {
+		const host = await readRuntimeNodeHost(signal),
+			{ policySha256 } = lxdNativeNodePolicy(this.#config, host.machineIdSha256);
+		if (
+			current.nodeCapacity &&
+			(current.nodeCapacity.machineIdSha256 !== host.machineIdSha256 ||
+				current.nodeCapacity.policySha256 !== policySha256)
+		)
+			throw new Error("LXD node placement cannot be changed");
+		return {
+			allocationId: current.acquisitionId,
+			providerKind: "native",
+			providerId: this.adapterId,
+			policySha256,
+			instanceSha256: this.#machineIdentity(current).p_instance_sha256,
+			bootstrapSha256: current.lxd.bootstrapSha256,
+			runId: current.runId ?? current.acquisitionId,
+			runnerId: current.runner.runnerId,
+			officeId: null,
+			computerGeneration: null,
+		};
 	}
 
 	async #rpc(name: string, body: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {

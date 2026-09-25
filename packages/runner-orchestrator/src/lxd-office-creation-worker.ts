@@ -4,6 +4,7 @@ import { openLxdOfficeCreationIdentity } from "./lxd-office-creation-journal.ts"
 import { assertLxdOfficeGuestInstance, lxdOfficeGuestPlan } from "./lxd-office-guest.ts";
 import { reserveLxdOfficeNodeMachine } from "./lxd-office-node-admission.ts";
 import { LxdOfficeOperationJournal } from "./lxd-office-operations.ts";
+import type { LxdOfficePaidComputerPort } from "./lxd-office-paid-computer.ts";
 import { LxdOfficePhysicalGate } from "./lxd-office-physical-gate.ts";
 import { lxdOfficePhysicalPolicySha256, parseLxdOfficePhysicalPolicy } from "./lxd-office-physical-policy.ts";
 import { LxdOfficeProviderControl, type LxdOfficeProviderRegistry } from "./lxd-office-provider-control.ts";
@@ -44,11 +45,18 @@ export class LxdOfficeCreationWorker {
 	readonly #registry: LxdOfficeCreationRegistry;
 	readonly #provider: LxdOfficeProviderControl;
 	readonly #client: LxdTrackedClient;
+	readonly #paid?: LxdOfficePaidComputerPort;
 	#busy = false;
-	constructor(gate: Gate, registry: LxdOfficeCreationRegistry, client?: LxdTrackedClient) {
+	constructor(
+		gate: Gate,
+		registry: LxdOfficeCreationRegistry,
+		client?: LxdTrackedClient,
+		paidComputer?: LxdOfficePaidComputerPort,
+	) {
 		this.#gate = gate;
 		this.#policy = parseLxdOfficePhysicalPolicy(gate.policy);
 		this.#registry = registry;
+		this.#paid = paidComputer;
 		this.#client = client ?? new LxdUnixClient(this.#policy.host.socketPath);
 		const g = this.#policy.guest;
 		this.#provider = new LxdOfficeProviderControl(
@@ -139,13 +147,14 @@ export class LxdOfficeCreationWorker {
 			true,
 		);
 		checked.throwIfAborted();
-		const control = new LxdOfficeStartControl(intentId, binding, this.#registry);
+		const registry = this.#paid?.creationRegistry(binding, intentId, this.#registry) ?? this.#registry;
+		const control = new LxdOfficeStartControl(intentId, binding, registry);
 		if (!status.reservation && (await control.reserve(checked)).state === "refused")
 			return { state: "capacity_refused", intentId, allocationId: binding.allocationId };
 		let operation = await journal.observe(createCommandId, "create", checked);
 		if (operation.state === "not_dispatched") {
 			const authority = await control.check(checked);
-			const node = await reserveLxdOfficeNodeMachine(this.#policy, binding, this.#registry, authority.signal);
+			const node = await reserveLxdOfficeNodeMachine(this.#policy, binding, registry, authority.signal);
 			if (node.state === "refused")
 				return { state: "capacity_refused", intentId, allocationId: binding.allocationId, reason: node.reason };
 			const authorized = AbortSignal.any([checked, authority.signal, node.signal]);

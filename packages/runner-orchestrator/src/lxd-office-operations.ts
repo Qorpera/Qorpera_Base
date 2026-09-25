@@ -2,7 +2,12 @@ import { createHash } from "node:crypto";
 import { mkdir, readdir } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
-import type { LxdOperationState, LxdTrackedClient, LxdTrackedInstanceAction } from "./lxd-client.ts";
+import type {
+	LxdOperationReference,
+	LxdOperationState,
+	LxdTrackedClient,
+	LxdTrackedInstanceAction,
+} from "./lxd-client.ts";
 import {
 	assertLxdOfficeDeleteDispositionContext,
 	type LxdOfficeDeleteDispositionContext,
@@ -20,6 +25,18 @@ import { assertLxdOfficeVmLineageCommands, type LxdOfficeVmLineageCommand } from
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const MAX_EVENTS = 384;
 type Action = LxdTrackedInstanceAction["action"];
+
+/** A protected physical-start adapter. Recovery is observation only and must
+ * return a reference bound to this exact durable command, never a latest start. */
+export interface LxdOfficeOperationPort {
+	submitStart(commandId: string, signal: AbortSignal): Promise<LxdOperationReference | null>;
+	recoverStart(commandId: string, signal: AbortSignal): Promise<LxdOperationReference | null>;
+	inspectStart?(
+		commandId: string,
+		reference: LxdOperationReference,
+		signal: AbortSignal,
+	): Promise<LxdOperationState | null>;
+}
 
 interface EventFields {
 	sequence: number;
@@ -77,6 +94,7 @@ export class LxdOfficeOperationJournal {
 	readonly #authority: { schema: string; intentId: string; binding: Readonly<LxdOfficeGuestBinding> };
 	readonly #client: Pick<LxdTrackedClient, "submitInstanceOperation" | "inspectInstanceOperation">;
 	readonly #now: () => Date;
+	readonly #paid?: LxdOfficeOperationPort;
 
 	private constructor(
 		root: string,
@@ -84,6 +102,7 @@ export class LxdOfficeOperationJournal {
 		binding: LxdOfficeGuestBinding,
 		client: Pick<LxdTrackedClient, "submitInstanceOperation" | "inspectInstanceOperation">,
 		now: () => Date = () => new Date(),
+		paid?: LxdOfficeOperationPort,
 	) {
 		this.#root = root;
 		this.#authority = {
@@ -93,6 +112,7 @@ export class LxdOfficeOperationJournal {
 		};
 		this.#client = client;
 		this.#now = now;
+		this.#paid = paid;
 	}
 
 	static async open(
@@ -102,6 +122,7 @@ export class LxdOfficeOperationJournal {
 		client: Pick<LxdTrackedClient, "submitInstanceOperation" | "inspectInstanceOperation">,
 		existing = false,
 		now: () => Date = () => new Date(),
+		paid?: LxdOfficeOperationPort,
 	): Promise<LxdOfficeOperationJournal> {
 		if (typeof intentId !== "string" || !UUID.test(intentId) || resolve(stateRoot) !== stateRoot)
 			throw new Error("INVALID_LXD_OFFICE_JOURNAL");
@@ -119,7 +140,7 @@ export class LxdOfficeOperationJournal {
 			if (!code(error, "EEXIST")) throw error;
 		}
 		await checkDirectory(root);
-		const journal = new LxdOfficeOperationJournal(root, intentId, plan.binding, client, now);
+		const journal = new LxdOfficeOperationJournal(root, intentId, plan.binding, client, now, paid);
 		if (!existing) await publish(root, "authority.json", encode(journal.#authority));
 		await journal.#read();
 		return journal;
@@ -573,11 +594,13 @@ export class LxdOfficeOperationJournal {
 			let operationId: string;
 			try {
 				signal.throwIfAborted();
-				const reference = await this.#client.submitInstanceOperation(
-					binding.project,
-					action === "create" ? { action, request } : { action, name: request.name },
-					signal,
-				);
+				const reference =
+					(action === "start" ? await this.#paid?.submitStart(commandId, signal) : null) ??
+					(await this.#client.submitInstanceOperation(
+						binding.project,
+						action === "create" ? { action, request } : { action, name: request.name },
+						signal,
+					));
 				if (
 					reference.project !== binding.project ||
 					reference.instanceName !== request.name ||
@@ -833,22 +856,44 @@ export class LxdOfficeOperationJournal {
 	}
 
 	async #observe(commandId: string, action: Action, signal: AbortSignal): Promise<LxdOfficeOperationResult> {
-		const current = await this.#read();
-		const command = lastCommand(current.events, commandId);
+		let current = await this.#read();
+		let command = lastCommand(current.events, commandId);
 		if (!command || command.action !== action) throw new Error("LXD_OFFICE_COMMAND_CONFLICT");
-		if (command.kind === "settled")
+		if (command.kind === "settled") {
 			return { state: command.state as "succeeded" | "failed", operationId: command.operationId as string };
-		if (command.kind === "dispatch") return { state: "unknown" };
+		}
+		if (command.kind === "dispatch") {
+			const recovered = action === "start" ? await this.#paid?.recoverStart(commandId, signal) : null;
+			if (!recovered) return { state: "unknown" };
+			const plan = lxdOfficeGuestPlan(this.#authority.binding);
+			if (
+				recovered.project !== plan.binding.project ||
+				recovered.instanceName !== plan.request.name ||
+				!UUID.test(recovered.operationId)
+			)
+				throw new Error("LXD_OFFICE_PAID_RECOVERY_DIFFERS");
+			await this.#append(current.events, current.previousSha256, {
+				commandId,
+				action,
+				kind: "accepted",
+				operationId: recovered.operationId,
+				state: null,
+			});
+			current = await this.#read();
+			command = lastCommand(current.events, commandId);
+			if (!command || command.kind !== "accepted" || command.operationId !== recovered.operationId)
+				throw new Error("LXD_OFFICE_PAID_RECOVERY_DIFFERS");
+		}
 		if (command.kind === "administrative_disposition") return { state: "unknown", operationId: command.operationId };
 		const { binding, request } = lxdOfficeGuestPlan(this.#authority.binding);
 		const operationId = command.operationId as string;
 		let state: LxdOperationState;
 		try {
 			signal.throwIfAborted();
-			state = await this.#client.inspectInstanceOperation(
-				{ project: binding.project, instanceName: request.name, operationId },
-				signal,
-			);
+			const reference = { project: binding.project, instanceName: request.name, operationId };
+			state =
+				(action === "start" ? await this.#paid?.inspectStart?.(commandId, reference, signal) : null) ??
+				(await this.#client.inspectInstanceOperation(reference, signal));
 			if (!["pending", "succeeded", "failed"].includes(state)) throw new Error("invalid observation");
 		} catch {
 			return { state: "unknown", operationId };

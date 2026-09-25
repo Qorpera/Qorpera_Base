@@ -12,6 +12,7 @@ import type { LxdOfficeStorageObservation } from "./lxd-office-inventory-worker.
 import { code, publish, readRecord, syncDirectory } from "./lxd-office-journal-files.ts";
 import { reserveLxdOfficeNodeMachine } from "./lxd-office-node-admission.ts";
 import { LxdOfficeOperationJournal } from "./lxd-office-operations.ts";
+import { type LxdOfficePaidComputerPort, lxdOfficeInitialPaidIntent } from "./lxd-office-paid-computer.ts";
 import { LxdOfficePhysicalGate } from "./lxd-office-physical-gate.ts";
 import { readLxdOfficeProtectedFile } from "./lxd-office-physical-host.ts";
 import { parseLxdOfficePhysicalPolicy } from "./lxd-office-physical-policy.ts";
@@ -21,6 +22,7 @@ import { parseLxdOfficeStorageReview } from "./lxd-office-storage-review.ts";
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 type Gate = Pick<LxdOfficePhysicalGate, "policy" | "check">;
 interface Ports {
+	paidComputer?: LxdOfficePaidComputerPort;
 	client?: LxdTrackedClient;
 	readProtected?: typeof readLxdOfficeProtectedFile;
 	kernelLock?: typeof assertOfficeAdoptionKernelLock;
@@ -47,11 +49,13 @@ export class LxdOfficeBootWorker {
 	readonly #client: LxdTrackedClient;
 	readonly #readProtected;
 	readonly #kernelLock;
+	readonly #paid?: LxdOfficePaidComputerPort;
 	#busy = false;
 	constructor(gate: Gate, registry: LxdOfficeStartRegistry, ports: Ports = {}) {
 		this.#gate = gate;
 		this.#policy = parseLxdOfficePhysicalPolicy(gate.policy);
 		this.#registry = registry;
+		this.#paid = ports.paidComputer;
 		this.#client = ports.client ?? new LxdUnixClient(this.#policy.host.socketPath);
 		this.#readProtected = ports.readProtected ?? readLxdOfficeProtectedFile;
 		this.#kernelLock = ports.kernelLock ?? assertOfficeAdoptionKernelLock;
@@ -141,7 +145,15 @@ export class LxdOfficeBootWorker {
 			reviewSha256,
 			observationSha256: request.observationSha256,
 		};
-		const journal = await LxdOfficeOperationJournal.open(root, request.intentId, binding, this.#client, true);
+		const journal = await LxdOfficeOperationJournal.open(
+			root,
+			request.intentId,
+			binding,
+			this.#client,
+			true,
+			undefined,
+			this.#paid?.operations(binding),
+		);
 		const control = new LxdOfficeStartControl(request.intentId, binding, this.#registry);
 		const mappings = plan.screens.map((screen) => ({
 			binding: screen.binding,
@@ -223,9 +235,18 @@ export class LxdOfficeBootWorker {
 			if (!vm || vm.status !== "Stopped" || vm.statusCode !== 102)
 				throw new Error("OFFICE_BOOT_STOPPED_VM_UNCONFIRMED");
 			assertLxdOfficeGuestInstance(binding, vm);
-			const node = await reserveLxdOfficeNodeMachine(policy, binding, this.#registry, checked);
-			if (node.state === "refused") throw new Error(node.reason);
-			operation = await journal.reconcile(startCommandId, "start", node.signal);
+			const paid = await this.#paid?.prepareStart(
+				binding,
+				startCommandId,
+				lxdOfficeInitialPaidIntent(binding, request.intentId, mappings),
+				checked,
+			);
+			if (!paid) {
+				const node = await reserveLxdOfficeNodeMachine(policy, binding, this.#registry, checked);
+				if (node.state === "refused") throw new Error(node.reason);
+				checked = node.signal;
+			}
+			operation = await journal.reconcile(startCommandId, "start", checked);
 		}
 		const result = {
 			intentId: request.intentId,

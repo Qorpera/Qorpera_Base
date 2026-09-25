@@ -66,6 +66,50 @@ async function fixture(now?: () => Date) {
 }
 
 describe("durable office operation recovery", () => {
+	it("recovers a paid start's exact retained guard reference without redispatch or raw fallback", async () => {
+		const f = await fixture();
+		const reference = { project: f.config.project, instanceName: f.plan.request.name, operationId: id(201) };
+		const paid = {
+			submitStart: vi.fn(async () => {
+				throw new Error("reply lost after guard accepted");
+			}),
+			recoverStart: vi.fn(async (commandId: string) => {
+				expect(commandId).toBe(id(10));
+				return reference;
+			}),
+		};
+		const first = await LxdOfficeOperationJournal.open(f.root, id(6), f.config, f.client, true, undefined, paid);
+		await expect(first.reconcile(id(10), "start", signal())).resolves.toEqual({ state: "unknown" });
+		f.client.inspectInstanceOperation.mockResolvedValue("succeeded");
+		const resumed = await LxdOfficeOperationJournal.open(f.root, id(6), f.config, f.client, true, undefined, paid);
+		await expect(resumed.observe(id(10), "start", signal())).resolves.toEqual({
+			state: "succeeded",
+			operationId: id(201),
+		});
+		expect(paid.submitStart).toHaveBeenCalledOnce();
+		expect(paid.recoverStart).toHaveBeenCalledOnce();
+		expect(f.client.submitInstanceOperation).not.toHaveBeenCalled();
+		expect((await f.events()).map((event) => event.kind)).toEqual(["dispatch", "accepted", "settled"]);
+	});
+	it("keeps an unproven paid start unknown and rejects a recovered reference for another computer", async () => {
+		const f = await fixture();
+		const paid = {
+			submitStart: vi.fn(async (): Promise<never> => {
+				throw new Error("offline");
+			}),
+			recoverStart: vi.fn(async () => null),
+		};
+		const journal = await LxdOfficeOperationJournal.open(f.root, id(6), f.config, f.client, true, undefined, paid);
+		await journal.reconcile(id(10), "start", signal());
+		await expect(journal.observe(id(10), "start", signal())).resolves.toEqual({ state: "unknown" });
+		const changed = await LxdOfficeOperationJournal.open(f.root, id(6), f.config, f.client, true, undefined, {
+			...paid,
+			recoverStart: async () => ({ project: f.config.project, instanceName: "other", operationId: id(201) }),
+		});
+		await expect(changed.observe(id(10), "start", signal())).rejects.toThrow("PAID_RECOVERY_DIFFERS");
+		expect(f.client.submitInstanceOperation).not.toHaveBeenCalled();
+		expect(await f.events()).toHaveLength(1);
+	});
 	it("retains first observation times across replay and read-only history without provider calls", async () => {
 		const times = ["2026-09-09T01:00:00.001Z", "2026-09-09T01:00:00.002Z", "2026-09-09T01:01:00.003Z"];
 		let index = 0;

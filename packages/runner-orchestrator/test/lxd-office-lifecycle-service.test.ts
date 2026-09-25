@@ -4,6 +4,7 @@ import {
 	createOfficeLifecycleReporter,
 	createOfficeLifecycleWriter,
 	parseLxdOfficeLifecycleServiceConfig,
+	runOfficeLifecycleLoops,
 } from "../src/lxd-office-lifecycle-service.ts";
 
 const config = () => ({
@@ -113,6 +114,17 @@ describe("optional provider lifecycle diagnostics", () => {
 	});
 });
 describe("protected lifecycle service configuration", () => {
+	it("enables paid control only with a local protected credential reference", () => {
+		expect(parseLxdOfficeLifecycleServiceConfig(config()).computerExecutorCredentialPath).toBeUndefined();
+		expect(
+			parseLxdOfficeLifecycleServiceConfig({
+				...config(),
+				computerExecutorCredentialPath: "/etc/qorpera/office-computer-executor.key",
+			}).computerExecutorCredentialPath,
+		).toBe("/etc/qorpera/office-computer-executor.key");
+		for (const computerExecutorCredentialPath of ["../key", "", "/", "secret bytes"])
+			expect(() => parseLxdOfficeLifecycleServiceConfig({ ...config(), computerExecutorCredentialPath })).toThrow();
+	});
 	it("enables server idle policy with a bounded configurable grace period", () => {
 		expect(parseLxdOfficeLifecycleServiceConfig(config()).idleMs).toBe(300000);
 		expect(parseLxdOfficeLifecycleServiceConfig({ ...config(), idleMs: 60000 }).idleMs).toBe(60000);
@@ -159,6 +171,49 @@ describe("protected lifecycle service configuration", () => {
 			expect(() => parseLxdOfficeLifecycleServiceConfig(input)).toThrow();
 	});
 });
+
+it("continues funding maintenance while lifecycle work stalls and contains failed samples", async () => {
+	const stop = new AbortController();
+	let release!: () => void;
+	const slow = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	const lifecycle = {
+		reconcile: vi.fn(async () => {
+			await slow;
+			return { state: "idle" as const };
+		}),
+		observeControlOperations: vi.fn(async () => {}),
+		observeVmOperations: vi.fn(async () => {}),
+	};
+	let maintained!: () => void;
+	const renewed = new Promise<void>((resolve) => {
+		maintained = resolve;
+	});
+	const paidComputer = {
+		maintain: vi
+			.fn<(signal: AbortSignal) => Promise<void>>()
+			.mockRejectedValueOnce(new Error("private failure"))
+			.mockImplementation(async () => {
+				maintained();
+			}),
+	};
+	const report = vi.fn();
+	const running = runOfficeLifecycleLoops(lifecycle, stop.signal, 60000, report, undefined, paidComputer);
+	try {
+		await renewed;
+		expect(lifecycle.reconcile).toHaveBeenCalledTimes(1);
+		expect(paidComputer.maintain).toHaveBeenCalledTimes(2);
+		expect(report).toHaveBeenCalledWith(
+			undefined,
+			expect.objectContaining({ message: "OFFICE_COMPUTER_USAGE_UNCONFIRMED" }),
+		);
+	} finally {
+		stop.abort();
+		release();
+		await running;
+	}
+}, 15000);
 
 it("accepts only a local protected reset image package path while preserving old config", () => {
 	expect(parseLxdOfficeLifecycleServiceConfig(config()).resetImagePackageManifestPath).toBeUndefined();

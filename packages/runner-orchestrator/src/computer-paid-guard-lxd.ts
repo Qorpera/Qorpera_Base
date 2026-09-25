@@ -1,10 +1,17 @@
 import { constants } from "node:fs";
 import { open } from "node:fs/promises";
-import { assertLxdCodingMachineInstance, lxdCodingMachineName } from "./coding-machine.ts";
-import type { PaidComputerGuardPhysical, PaidComputerHostClock, PaidComputerMachine } from "./computer-paid-guard.ts";
+import { assertLxdCodingMachineInstance } from "./coding-machine.ts";
+import {
+	isRuntimePaidComputerMachine,
+	type PaidComputerGuardPhysical,
+	type PaidComputerHostClock,
+	type PaidComputerMachine,
+	paidComputerTarget,
+} from "./computer-paid-guard.ts";
 import type { LxdInstanceRecord, LxdOperationReference, LxdTrackedClient } from "./lxd-client.ts";
 import { parseLxdProcUptime } from "./lxd-proc-uptime.ts";
 import { readRuntimeNodeHost } from "./runtime-node-host.ts";
+import { assertRuntimePaidComputerInstance } from "./runtime-paid-machine.ts";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 async function kernel(path: "/proc/uptime" | "/proc/sys/kernel/random/boot_id"): Promise<Buffer> {
@@ -48,14 +55,12 @@ export class LxdPaidComputerGuardPhysical implements PaidComputerGuardPhysical {
 	}
 	async #instance(machine: PaidComputerMachine, signal: AbortSignal): Promise<LxdInstanceRecord | undefined> {
 		signal.throwIfAborted();
-		const instance = await this.#client.getInstance(
-			machine.binding.project,
-			lxdCodingMachineName(machine.binding.machineId),
-			signal,
-		);
+		const target = paidComputerTarget(machine);
+		const instance = await this.#client.getInstance(target.project, target.instanceName, signal);
 		signal.throwIfAborted();
 		if (instance) {
-			assertLxdCodingMachineInstance(machine.binding, machine.storage, instance);
+			if (isRuntimePaidComputerMachine(machine)) assertRuntimePaidComputerInstance(machine, instance);
+			else assertLxdCodingMachineInstance(machine.binding, machine.storage, instance);
 			if (
 				instance.config["volatile.uuid"] !== machine.physicalInstanceId ||
 				instance.expandedConfig["volatile.uuid"] !== machine.physicalInstanceId
@@ -89,9 +94,10 @@ export class LxdPaidComputerGuardPhysical implements PaidComputerGuardPhysical {
 		)
 			throw new Error("PAID_GUARD_START_EXPIRED");
 		signal.throwIfAborted();
+		const target = paidComputerTarget(machine);
 		return this.#client.submitInstanceOperation(
-			machine.binding.project,
-			{ action: "start", name: lxdCodingMachineName(machine.binding.machineId) },
+			target.project,
+			{ action: "start", name: target.instanceName },
 			AbortSignal.any([signal, AbortSignal.timeout(5000)]),
 		);
 	}
@@ -108,7 +114,7 @@ export class LxdPaidComputerGuardPhysical implements PaidComputerGuardPhysical {
 		if (!instance) throw new Error("PAID_GUARD_PHYSICAL_INSTANCE_ABSENT");
 		signal.throwIfAborted();
 		return this.#client.submitInstanceOperation(
-			machine.binding.project,
+			paidComputerTarget(machine).project,
 			{ action: "stop", name: instance.name, force: true },
 			signal,
 		);
