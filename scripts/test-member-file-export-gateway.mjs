@@ -76,9 +76,9 @@ export async function testMemberFileExportGateway({ root, query, store, replicat
 		assert.equal(refused.status, 403); assert.notDeepEqual(Buffer.from(await refused.arrayBuffer()), Buffer.from(bytes));
 		assert.equal(authorizations - before, 2);
 		await assert.rejects(client.list(new AbortController().signal));
-		console.log(JSON.stringify({ schema: "qorpera.member-file-export-http/v1", actualSql: true, nativeExportReceipt: true, physicalObjectBytes: bytes.length,
+		console.log(JSON.stringify({ schema: "qorpera.member-file-export-gateway/v1", actualSql: true, nativeExportReceipt: true, physicalObjectBytes: bytes.length,
 			closedOfficeConnection: true, revokedOfficeGrant: true, sharedMemberDownload: true, revokedMemberDuringReadDenied: true,
-			browser: null, sqlTransport: "fixture", hosted: false, nas: false }));
+			sqlTransport: "fixture", hosted: false, nas: false }));
 	} finally {
 		store.get = get;
 		await Promise.all([close(gateway), close(control)]); await rm(scratch, { recursive: true, force: true });
