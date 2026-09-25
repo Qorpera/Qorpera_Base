@@ -9,6 +9,8 @@
 /* Layout and components for the web client. Values derive from tokens.css
  * (shared with the desktop). Selectors are the contract with the views. */
 
+/*! Qorpera web stylesheet. Renamed 2026-09-25: an edge cached HTML under app-QUCAFXYX.css. */
+
 * { box-sizing: border-box; margin: 0; }
 html, body { height: 100%; }
 body {
@@ -28,6 +30,7 @@ body {
 	scrollbar-width: none;
 	-webkit-mask-image: linear-gradient(to bottom, transparent, #000 8px); mask-image: linear-gradient(to bottom, transparent, #000 8px);
 	-webkit-mask-size: 100% calc(100% + 8px); mask-size: 100% calc(100% + 8px);
+	-webkit-mask-repeat: no-repeat; mask-repeat: no-repeat;
 	-webkit-mask-position: 0 -8px; mask-position: 0 -8px;
 	transition: mask-position 160ms ease, -webkit-mask-position 160ms ease;
 }
