@@ -912,6 +912,16 @@ begin
 	perform pg_temp.wake_routine('30000000-0000-4000-8000-000000000031',
 		'{"id":"changes","kind":"listener","source":"company-file","path":"","match":"subtree","timeZone":"UTC","replyPolicy":"optional"}');
 	perform pg_temp.path_commit(pg_temp.path_plan('requester-check','note.md',pg_temp.path_stage_file('note.md','Event')));
+	-- Keep company ownership valid while revoking the requester's membership.
+	-- Only this savepoint adds a second fixture owner; responsibility is then
+	-- accepted through the real API before the original owner departs.
+	update public.qorpera_profile_members set role = 'owner'
+		where profile_id = '30000000-0000-4000-8000-000000000010'
+			and user_id = '30000000-0000-4000-8000-000000000002';
+	perform pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000002');
+	perform public.qorpera_accept_computer_usage_ownership('30000000-0000-4000-8000-000000000010',
+		'30000000-0000-4000-8000-000000000001');
+	perform pg_temp.path_claims('service_role');
 	delete from public.qorpera_profile_members where profile_id = '30000000-0000-4000-8000-000000000010'
 		and user_id = '30000000-0000-4000-8000-000000000001';
 	v_result := public.qorpera_drain_company_file_wakes(1);

@@ -13,6 +13,8 @@ User=qorpera-node-observer
 Group=qorpera-node-observer
 SupplementaryGroups=@SOCKET_GID@
 WorkingDirectory=/opt/qorpera/node-observer
+StateDirectory=qorpera-computer-usage
+StateDirectoryMode=0700
 Environment=NODE_EXTRA_CA_CERTS=/etc/qorpera/node-observer-ca.pem
 ExecStart=/usr/bin/node --jitless --disable-proto=throw --disallow-code-generation-from-strings /opt/qorpera/node-observer/qorpera-node-observer.cjs
 Restart=on-failure

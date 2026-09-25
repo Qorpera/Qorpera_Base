@@ -35,3 +35,7 @@ verify_jwt = false
 
 [functions.native-provider-login]
 verify_jwt = false
+
+# Stripe signs the raw webhook body; checkout/portal verify the member JWT.
+[functions.computer-billing]
+verify_jwt = false

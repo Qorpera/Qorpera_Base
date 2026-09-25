@@ -188,12 +188,41 @@ export function renderFriends(friends: FriendsController, hub: HubController, co
 			friends.store.set({ query: "" });
 		});
 	};
-	const invitations = group(
-		t("Company invitations"),
-		companies.invitations
+	const invitations = group(t("Company invitations"), [
+		...companies.invitations
 			.filter((invitation) => matches(invitation.profileName))
 			.map((invitation) => invitationRow(hub, invitation, companies.busyInvitation === invitation.id)),
-	);
+		...(companies.foundingInvitations ?? [])
+			.filter((invitation) => matches(invitation.companyName))
+			.map((invitation) =>
+				h(
+					"div",
+					{ class: "person-row" },
+					companyLogo(invitation.profileId, "person-company"),
+					h(
+						"div",
+						{ class: "person-copy" },
+						h("strong", null, invitation.companyName),
+						h(
+							"span",
+							{ class: "muted small" },
+							t("{name} invited you to join as a co-founder.", { name: invitation.invitedByDisplayName }),
+						),
+					),
+					h(
+						"div",
+						{ class: "person-actions" },
+						button(t("Decline"), () => void hub.respondFoundingInvitation(invitation, false), {
+							disabled: Boolean(companies.busyInvitation),
+						}),
+						button(t("Join setup"), () => void hub.respondFoundingInvitation(invitation, true), {
+							primary: true,
+							disabled: Boolean(companies.busyInvitation),
+						}),
+					),
+				),
+			),
+	]);
 	const groups = [
 		group(
 			t("Requests for you"),

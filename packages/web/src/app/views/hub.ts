@@ -1,5 +1,6 @@
 import type { CloudApi } from "../../cloud/api.ts";
 import { describeError } from "../../cloud/client.ts";
+import { CompanyFoundingApi, type FoundingInvitation } from "../../cloud/company-founding.ts";
 import { UUID_PATTERN } from "../../cloud/parse.ts";
 import type { HostedIncomingProfileInvitation, HostedProfile, HostedProfileRole } from "../../cloud/types.ts";
 import { button, companyLogo, fmtDate, h, notice, replace, spinner } from "../../ui/dom.ts";
@@ -28,6 +29,8 @@ export interface HubState {
 	loaded?: boolean;
 	profiles: HostedProfile[];
 	invitations: HostedIncomingProfileInvitation[];
+	foundingInvitations?: FoundingInvitation[];
+	foundingInvitationsError?: string;
 	error?: string;
 	creating?: { name: string; clientCreationId: string; state: string };
 	creationRetry?: { name: string; clientCreationId: string };
@@ -44,10 +47,20 @@ export class HubController {
 	#refresh: Promise<void> | undefined;
 	#membershipRevision = 0;
 	#creation: { name: string; clientCreationId: string } | undefined;
+	readonly #lifetime = new AbortController();
+	#watch: ReturnType<typeof setInterval> | undefined;
 
 	constructor(api: CloudApi, userId?: string) {
 		this.#api = api;
 		this.#creationKey = userId ? `qorpera-web-creation/v1/${api.cloud.config.projectUrl}/${userId}` : undefined;
+		if (userId) {
+			const refresh = () => {
+				if (!document.hidden && (location.hash === "#/" || !location.hash)) void this.refresh();
+			};
+			window.addEventListener("focus", refresh, { signal: this.#lifetime.signal });
+			document.addEventListener("visibilitychange", refresh, { signal: this.#lifetime.signal });
+			this.#watch = setInterval(refresh, 5000);
+		}
 		try {
 			const saved: unknown = JSON.parse(
 				this.#creationKey ? (sessionStorage.getItem(this.#creationKey) ?? "null") : "null",
@@ -72,6 +85,8 @@ export class HubController {
 
 	dispose(): void {
 		this.#disposed = true;
+		this.#lifetime.abort();
+		clearInterval(this.#watch);
 		this.store.dispose();
 	}
 
@@ -97,6 +112,16 @@ export class HubController {
 	async #load(): Promise<void> {
 		this.store.set({ loading: true, error: undefined });
 		const revision = this.#membershipRevision;
+		const foundingInvitations = this.#api.listFoundingInvitations().then(
+			(invitations) => {
+				if (revision === this.#membershipRevision)
+					this.store.set({ foundingInvitations: invitations, foundingInvitationsError: undefined });
+			},
+			(error: unknown) => {
+				if (revision === this.#membershipRevision)
+					this.store.set({ foundingInvitationsError: describeError(error) });
+			},
+		);
 		try {
 			const [profiles, invitations] = await Promise.all([
 				this.#api.listProfiles(),
@@ -106,6 +131,23 @@ export class HubController {
 				this.store.set({ profiles, invitations, loading: false, loaded: true });
 		} catch (error) {
 			if (revision === this.#membershipRevision) this.store.set({ loading: false, error: describeError(error) });
+		}
+		await foundingInvitations;
+	}
+
+	async respondFoundingInvitation(invitation: FoundingInvitation, accept: boolean): Promise<void> {
+		if (this.#disposed || this.store.get().busyInvitation) return;
+		const route = location.hash;
+		this.store.set({ busyInvitation: invitation.profileId, error: undefined });
+		try {
+			await new CompanyFoundingApi(this.#api.cloud).respond(invitation.profileId, accept);
+			await this.refresh();
+			if (accept && !this.#disposed && location.hash === route)
+				navigate({ name: "company", profileId: invitation.profileId, section: "founding" });
+		} catch (error) {
+			this.store.set({ error: describeError(error) });
+		} finally {
+			this.store.set({ busyInvitation: undefined });
 		}
 	}
 
@@ -173,7 +215,7 @@ export class HubController {
 			this.store.set({ creating: undefined, creationRetry: undefined });
 			await this.refresh();
 			if (!this.#disposed && location.hash === route)
-				navigate({ name: "company", profileId: result.profile.profileId, section: "meet" });
+				navigate({ name: "company", profileId: result.profile.profileId, section: "founding" });
 		} catch (error) {
 			this.store.set({ creating: undefined, creationRetry: this.#creation, error: describeError(error) });
 		}
@@ -229,7 +271,7 @@ export function renderHub(hub: HubController, container: HTMLElement): void {
 	// The welcome state is the first thing a new member sees: no companies, and
 	// nothing still loading that could turn into one.
 	const welcome = !firstRead && state.profiles.length === 0;
-	const invited = state.invitations.length > 0;
+	const invited = state.invitations.length > 0 || Boolean(state.foundingInvitations?.length);
 	const nameInput = h("input", {
 		id: "newCompanyName",
 		"data-draft": "company-name",
@@ -255,6 +297,34 @@ export function renderHub(hub: HubController, container: HTMLElement): void {
 	const invitations = state.invitations.map((invitation) =>
 		invitationCard(hub, invitation, state.busyInvitation === invitation.id),
 	);
+	for (const invitation of state.foundingInvitations ?? [])
+		invitations.push(
+			h(
+				"div",
+				{ class: "invite-card" },
+				h(
+					"div",
+					{ class: "invite-copy" },
+					h("strong", null, invitation.companyName),
+					h(
+						"span",
+						{ class: "muted small" },
+						t("{name} invited you to join as a co-founder.", { name: invitation.invitedByDisplayName }),
+					),
+				),
+				h(
+					"div",
+					{ class: "invite-actions" },
+					button(t("Decline"), () => void hub.respondFoundingInvitation(invitation, false), {
+						disabled: Boolean(state.busyInvitation),
+					}),
+					button(t("Join setup"), () => void hub.respondFoundingInvitation(invitation, true), {
+						primary: true,
+						disabled: Boolean(state.busyInvitation),
+					}),
+				),
+			),
+		);
 
 	if (welcome) {
 		// The character persists across re-renders so its motion is never
@@ -282,7 +352,7 @@ export function renderHub(hub: HubController, container: HTMLElement): void {
 						invited
 							? t("Join a company you have been invited to, or start one of your own.")
 							: t(
-									"Give it a name. Qorpera creates its Company File and a Co-Founder who begins work straight away.",
+									"Give it a name, bring your co-founders, and set up the company before its Co-Founder starts work.",
 								),
 					),
 					invited ? h("div", { class: "invite-list" }, ...invitations) : null,
@@ -296,6 +366,7 @@ export function renderHub(hub: HubController, container: HTMLElement): void {
 								h("button", { type: "submit", class: "hub-create-submit" }, t("Create company")),
 							),
 					state.error ? notice("danger", state.error) : null,
+					state.foundingInvitationsError ? notice("danger", state.foundingInvitationsError) : null,
 					state.creationRetry && !busy
 						? button(
 								t("Resume creating {name}", { name: state.creationRetry.name }),
@@ -353,6 +424,7 @@ export function renderHub(hub: HubController, container: HTMLElement): void {
 				"div",
 				{ class: "hub-inner" },
 				state.error ? notice("danger", state.error) : null,
+				state.foundingInvitationsError ? notice("danger", state.foundingInvitationsError) : null,
 				state.creationRetry && !busy
 					? button(
 							t("Resume creating {name}", { name: state.creationRetry.name }),

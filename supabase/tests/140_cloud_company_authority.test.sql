@@ -231,6 +231,11 @@ select set_config('request.jwt.claims', '', false);
 -- Review-required work is persisted as a verified immutable proposal before
 -- the turn leaves its live lease. Uploading it does not advance the canonical
 -- head; an authorized reviewer must perform the final CAS publication.
+-- This section exercises the existing desktop turn protocol after setup.
+-- Founding consent/launch is exercised through the real APIs in631/632.
+update public.qorpera_company_founding set phase = 'launched',
+	launch_receipt = '{"fixture":"legacy-desktop-turn-authority"}'
+where profile_id = (current_setting('qorpera_test.cloud_company')::jsonb ->> 'profile_id')::uuid;
 insert into auth.users (id, email, raw_user_meta_data)
 values (
 	'14000000-0000-4000-8000-000000000002',

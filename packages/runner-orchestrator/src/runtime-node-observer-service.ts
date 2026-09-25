@@ -1,5 +1,8 @@
 import { request } from "node:https";
 import { setTimeout as delay } from "node:timers/promises";
+import { RuntimeComputerUsageObserver } from "./computer-usage-observer.ts";
+import { ComputerUsageOutbox } from "./computer-usage-outbox.ts";
+import type { ComputerUsageMethod } from "./computer-usage-sample.ts";
 import { officeDigest, officeRecord } from "./lxd-office-image-provenance.ts";
 import { readLxdOfficeCredentialFile, readLxdOfficeProtectedFile } from "./lxd-office-physical-host.ts";
 import { RuntimeNodeHealthPublisher } from "./runtime-node-health.ts";
@@ -10,7 +13,10 @@ import {
 	type RuntimeNodeObserverRegistry,
 } from "./runtime-node-observer.ts";
 
-const METHODS = new Set<RuntimeNodeObserverMethod>([
+type ObserverMethod = RuntimeNodeObserverMethod | ComputerUsageMethod;
+const METHODS = new Set<ObserverMethod>([
+	"qorpera_observe_computer_usage",
+	"qorpera_read_node_computer_usage",
 	"qorpera_runtime_node_inventory_context",
 	"qorpera_observe_runtime_node_inventory",
 	"qorpera_observe_runtime_node",
@@ -28,7 +34,7 @@ export class RuntimeNodeObserverHttpRegistry implements RuntimeNodeObserverRegis
 		this.#origin = origin;
 		this.#key = key;
 	}
-	async call(method: RuntimeNodeObserverMethod, args: Record<string, unknown>, caller: AbortSignal): Promise<unknown> {
+	async call(method: ObserverMethod, args: Record<string, unknown>, caller: AbortSignal): Promise<unknown> {
 		const signal = AbortSignal.any([caller, AbortSignal.timeout(5000)]);
 		if (!METHODS.has(method) || this.#pending) throw new Error("NODE_OBSERVER_RPC_UNAVAILABLE");
 		this.#pending = true;
@@ -106,6 +112,7 @@ export async function runRuntimeNodeObserver(
 	signal: AbortSignal,
 	report: (state: "ready" | "unavailable" | "unconfirmed") => void,
 	reportHealth: (state: "reported" | "unconfirmed") => void = () => {},
+	reportUsage: (state: "reported" | "unconfirmed") => void = () => {},
 ): Promise<void> {
 	const config = officeRecord(
 		JSON.parse(
@@ -117,7 +124,9 @@ export async function runRuntimeNodeObserver(
 	);
 	if (typeof config.registryUrl !== "string") throw new Error("INVALID_NODE_OBSERVER_ENDPOINT");
 	const bytes = await readLxdOfficeCredentialFile("/etc/qorpera/node-observer.key", 4096);
-	let registry: RuntimeNodeObserverHttpRegistry, healthRegistry: RuntimeNodeObserverHttpRegistry;
+	let registry: RuntimeNodeObserverHttpRegistry,
+		healthRegistry: RuntimeNodeObserverHttpRegistry,
+		usageRegistry: RuntimeNodeObserverHttpRegistry;
 	try {
 		registry = new RuntimeNodeObserverHttpRegistry(
 			config.registryUrl,
@@ -126,6 +135,10 @@ export async function runRuntimeNodeObserver(
 		// Independent request ownership: a slow diagnostic export cannot occupy
 		// the inventory connection or become an admission prerequisite.
 		healthRegistry = new RuntimeNodeObserverHttpRegistry(
+			config.registryUrl,
+			new TextDecoder("utf8", { fatal: true }).decode(bytes).trim(),
+		);
+		usageRegistry = new RuntimeNodeObserverHttpRegistry(
 			config.registryUrl,
 			new TextDecoder("utf8", { fatal: true }).decode(bytes).trim(),
 		);
@@ -139,6 +152,11 @@ export async function runRuntimeNodeObserver(
 		policy.host.machineIdSha256,
 		officeDigest(policy),
 		healthRegistry,
+	);
+	const usage = new RuntimeComputerUsageObserver(
+		policy,
+		usageRegistry,
+		new ComputerUsageOutbox("/var/lib/qorpera-computer-usage"),
 	);
 	const inventoryLoop = async () => {
 		while (!signal.aborted) {
@@ -161,5 +179,16 @@ export async function runRuntimeNodeObserver(
 			if (!signal.aborted) await delay(5000, undefined, { signal }).catch(() => {});
 		}
 	};
-	await Promise.all([inventoryLoop(), healthLoop()]);
+	const usageLoop = async () => {
+		while (!signal.aborted) {
+			try {
+				await usage.observe(signal);
+				reportUsage("reported");
+			} catch {
+				if (!signal.aborted) reportUsage("unconfirmed");
+			}
+			if (!signal.aborted) await delay(5000, undefined, { signal }).catch(() => {});
+		}
+	};
+	await Promise.all([inventoryLoop(), healthLoop(), usageLoop()]);
 }

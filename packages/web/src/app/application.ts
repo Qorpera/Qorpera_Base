@@ -21,6 +21,7 @@ import { RailLayout } from "../ui/rail-layout.ts";
 import { blankSkeleton, pageSkeleton, railSkeleton, threadSkeleton } from "../ui/skeleton.ts";
 import { AuthController } from "./auth.ts";
 import { CompanyController } from "./company.ts";
+import { FoundingController } from "./founding.ts";
 import { MemberPictures } from "./member-pictures.ts";
 import { currentRoute, navigate, type Route } from "./router.ts";
 import { createConversationStarter } from "./start-conversation.ts";
@@ -32,6 +33,7 @@ import { ComputerPanels } from "./views/computer.ts";
 import { ConversationView } from "./views/conversation.ts";
 import { ExecutionNotices } from "./views/execution-notices.ts";
 import { FeedbackView } from "./views/feedback.ts";
+import { renderFounding } from "./views/founding.ts";
 import { HubController, renderHub } from "./views/hub.ts";
 import { LiveCompanyFileView } from "./views/live-company-file.ts";
 import { type MeetState, renderMeet } from "./views/meet.ts";
@@ -178,6 +180,7 @@ export function mountApplication(
 	window.addEventListener("resize", syncNavigation);
 
 	let company: CompanyController | undefined;
+	let founding: FoundingController | undefined;
 	let notices: ExecutionNotices | undefined;
 	let computer: WebCompanyComputer | undefined;
 	let computerPanels: ComputerPanels | undefined;
@@ -245,8 +248,12 @@ export function mountApplication(
 			auth,
 			openSettings,
 			openFeedback,
-			invitations: hub.store.get().invitations.length,
-			...(route.name === "company" && route.section !== "meet" && company && !company.store.get().accessLost
+			invitations: hub.store.get().invitations.length + (hub.store.get().foundingInvitations?.length ?? 0),
+			...(route.name === "company" &&
+			route.section !== "meet" &&
+			route.section !== "founding" &&
+			company &&
+			!company.store.get().accessLost
 				? { navigation: { open: navigationOpen, toggle: () => setNavigationOpen(!navigationOpen) } }
 				: {}),
 		};
@@ -292,6 +299,8 @@ export function mountApplication(
 	}
 
 	function teardownCompany(): void {
+		founding?.dispose();
+		founding = undefined;
 		notices?.dispose();
 		notices = undefined;
 		executionNotices.replaceChildren();
@@ -380,6 +389,27 @@ export function mountApplication(
 					)(sessionId, clientInputId, text, signal, files, executionSponsor, roomTarget),
 			);
 			company = controller;
+			const companyFounding = new FoundingController(api, profile.profileId, userId, () => {
+				if (disposed || company !== controller || auth.userId !== userId || controller.store.get().accessLost)
+					throw new Error(t("Company access changed."));
+			});
+			founding = companyFounding;
+			let previousPhase: string | undefined;
+			companyFounding.store.subscribe(({ data, left }) => {
+				if (company !== controller || founding !== companyFounding) return;
+				if (left) {
+					void hub.companyRemoved(profile.profileId);
+					navigate({ name: "hub" });
+					return;
+				}
+				if (previousPhase === "open" && data?.phase === "launched") {
+					void controller.refreshAll();
+					void hub.refresh();
+				}
+				previousPhase = data?.phase;
+				render();
+			});
+			companyFounding.start();
 			if (connectorReturn) {
 				// A provider sign-in (Step 7 connector) sent the member back to this
 				// company: show the outcome where the connection was started.
@@ -531,7 +561,7 @@ export function mountApplication(
 			topbar.classList.remove("topbar-plain");
 			topbar.classList.add("topbar-company");
 			replace(topbar);
-			rail.hidden = route.section === "meet";
+			rail.hidden = route.section === "meet" || route.section === "founding";
 			if (!rail.hidden) replace(rail, ...railSkeleton());
 			if (
 				route.section === "home" ||
@@ -561,6 +591,31 @@ export function mountApplication(
 					h("a", { href: "#/" }, t("Back to companies")),
 				),
 			);
+			return;
+		}
+		const foundingState = founding?.store.get();
+		if (
+			founding &&
+			!controller.store.get().accessLost &&
+			(!foundingState?.data || foundingState.data.phase !== "launched" || route.section === "founding")
+		) {
+			rail.hidden = true;
+			frame.classList.remove("has-thread");
+			renderTopbar(topbar, shellContext(authState.user, route), undefined);
+			if (foundingState?.data?.phase === "launched") {
+				navigate({ name: "company", profileId: controller.profile.profileId, section: "home" }, true);
+				return;
+			}
+			if (foundingState?.data && route.section !== "founding") {
+				navigate({ name: "company", profileId: controller.profile.profileId, section: "founding" }, true);
+				return;
+			}
+			renderFounding(founding, main, {
+				connectModel: () => openSettings("connections"),
+				addFriend: () => openSettings("friends"),
+				openUsage: () => openSettings("plan"),
+				openCompany: () => navigate({ name: "company", profileId: controller.profile.profileId, section: "home" }),
+			});
 			return;
 		}
 		// Agents are Company File documents. Each write re-checks that this

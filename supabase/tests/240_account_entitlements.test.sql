@@ -11,13 +11,14 @@ select set_config(
 	'{"sub":"80000000-0000-4000-8000-00000000000c","email":"internal-owner@example.test","role":"authenticated","user_metadata":{}}',
 	false
 );
-set role authenticated;
+-- Construct a legacy fixture with internal authority, then test real callers.
 select set_config(
 	'qorpera_test.entitlement_profile',
 	public.qorpera_create_hosted_profile('Internal entitlement QA', 'main', 1) ->> 'profile_id',
 	false
 );
 
+set role authenticated;
 do $$
 declare
 	v_entitlement jsonb;

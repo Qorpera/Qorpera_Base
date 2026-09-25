@@ -454,7 +454,12 @@ describe("authorized envelope", () => {
 			{ describeToolAuthority: async () => authority },
 			new AbortController().signal,
 		);
-		const message = { recipientStaffId: randomUUID(), operationKey: "handoff-1", text: "Please examine the note." };
+		const message = {
+			recipientStaffId: randomUUID(),
+			operationKey: "handoff-1",
+			text: "Please examine the note.",
+			priority: true,
+		};
 		const receipt = {
 			schema: "qorpera.coworker-send/v1",
 			runId: binding.runId,
@@ -650,7 +655,7 @@ describe("native coworker tool adapter", () => {
 			run.close();
 			const response = await boundary.invoke("closed", "qorpera", "send_coworker_message", message);
 			expect(response.success).toBe(false);
-			await expect(bus.sendCoworker(message, new AbortController().signal)).rejects.toThrow();
+			await expect(bus.sendCoworker({ ...message, priority: true }, new AbortController().signal)).rejects.toThrow();
 			expect(call).not.toHaveBeenCalled();
 		} finally {
 			boundary.close();
@@ -864,7 +869,7 @@ describe("coworker message in the agent's own thread (contract 14.6, 2026-09-22)
 });
 
 describe("held coworker messages (contract 14.6, second cut)", () => {
-	function heldLine(staffAgentId = randomUUID()) {
+	function heldLine(staffAgentId: string = randomUUID()) {
 		return {
 			eventId: randomUUID(),
 			staffAgentId,

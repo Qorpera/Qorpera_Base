@@ -99,8 +99,8 @@ export const WORKSPACE: Record<string, string> = {
 	"Start your first company": "Start din første virksomhed",
 	"Join a company you have been invited to, or start one of your own.":
 		"Bliv en del af en virksomhed, du er inviteret til, eller start din egen.",
-	"Give it a name. Qorpera creates its Company File and a Co-Founder who begins work straight away.":
-		"Giv den et navn. Qorpera opretter Virksomhedsfilen og en Co-Founder, der går i gang med det samme.",
+	"Give it a name, bring your co-founders, and set up the company before its Co-Founder starts work.":
+		"Giv virksomheden et navn, inviter dine medstiftere, og gør den klar, før dens Co-Founder går i gang.",
 	or: "eller",
 	"Create company": "Opret virksomhed",
 	"Resume creating {name}": "Genoptag oprettelsen af {name}",

@@ -13,9 +13,10 @@ $$;
 insert into auth.users(id,email) values
 	('31500000-0000-4000-8000-000000000001','owner@example.test');
 select pg_temp.staff_claims('authenticated','31500000-0000-4000-8000-000000000001');
-set local role authenticated;
+-- Legacy fixture construction is internal; staff APIs retain client authority.
 select set_config('qorpera_test.staff_profile',public.qorpera_create_hosted_profile(
 	'Staff lifecycle fixture','Staff lifecycle fixture',2)::text,true);
+set local role authenticated;
 select set_config('qorpera_test.staff_record',public.qorpera_put_profile_staff(
 	(current_setting('qorpera_test.staff_profile')::jsonb ->> 'profile_id')::uuid,
 	'31500000-0000-4000-8000-000000000010','Builder','Software delivery','Own tested software delivery.',

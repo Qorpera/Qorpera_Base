@@ -213,6 +213,25 @@ export function fixture() {
 	const api = new CloudApi(cloud);
 	vi.spyOn(api, "listProfiles").mockResolvedValue([profileA]);
 	vi.spyOn(api, "listIncomingInvitations").mockResolvedValue([]);
+	vi.spyOn(api, "listFoundingInvitations").mockResolvedValue([]);
+	vi.spyOn(api, "readCompanyFounding").mockImplementation(async (profileId) => {
+		const profile = profileId === profileB.profileId ? profileB : profileA;
+		return {
+			schema: "qorpera.company-founding/v1",
+			profileId: profile.profileId,
+			environmentId: profile.environmentId,
+			companyName: profile.profileName,
+			description: "",
+			phase: "launched",
+			revision: 0,
+			bootstrapState: "completed",
+			computerUsageOwnerUserId: currentUser?.id ?? userA.id,
+			seats: [],
+			computerUsage: { canStart: true },
+			launch: null,
+			canManage: true,
+		};
+	});
 	vi.spyOn(api, "listFriends").mockResolvedValue([]);
 	vi.spyOn(api, "listMemberPictures").mockResolvedValue([]);
 	vi.spyOn(api, "getAccountEntitlement").mockResolvedValue({

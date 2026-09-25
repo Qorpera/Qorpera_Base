@@ -6,6 +6,7 @@ import {
 	parseCodingSessionRead,
 	parseCodingSessions,
 } from "./coding-session.ts";
+import { type CompanyFounding, CompanyFoundingApi, type FoundingInvitation } from "./company-founding.ts";
 import {
 	isMemberPictureName,
 	MEMBER_PICTURE_BUCKET,
@@ -30,7 +31,6 @@ import {
 	parseCompanySnapshot,
 	parseCompanySnapshots,
 	parseCompanyWorkspaces,
-	parseCreatedCompany,
 	parseEvents,
 	parseFriends,
 	parseIncomingInvitations,
@@ -258,13 +258,15 @@ export class CloudApi {
 	/** Idempotent by client creation id: call again with the same id to read
 	 * bootstrap progress on clouds that report it. */
 	createCompany(clientCreationId: string, name: string): Promise<CreatedCompanyResult> {
-		return this.cloud
-			.rpc("qorpera_create_cloud_company", {
-				p_client_creation_id: requiredUuid(clientCreationId, "Creation id"),
-				p_company_name: name.trim(),
-				p_contract_version: COMPANY_CONTRACT_VERSION,
-			})
-			.then(parseCreatedCompany);
+		return new CompanyFoundingApi(this.cloud).begin(clientCreationId, name);
+	}
+
+	readCompanyFounding(profileId: string): Promise<CompanyFounding> {
+		return new CompanyFoundingApi(this.cloud).read(profileId);
+	}
+
+	listFoundingInvitations(): Promise<FoundingInvitation[]> {
+		return new CompanyFoundingApi(this.cloud).invitations();
 	}
 
 	// Organization and staff

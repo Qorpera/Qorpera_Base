@@ -1,5 +1,6 @@
 import type { CloudApi } from "../../cloud/api.ts";
 import { describeError } from "../../cloud/client.ts";
+import { ComputerBillingClient, type ComputerPlan } from "../../cloud/computer-billing.ts";
 import { createWebConnectors } from "../../cloud/connectors.ts";
 import { createWebNativeSubscription } from "../../cloud/native-subscription.ts";
 import type { HostedCompanyFile, HostedProfile } from "../../cloud/types.ts";
@@ -11,7 +12,7 @@ import { CompanyController } from "../company.ts";
 import { type AccountViewState, renderAccount } from "./account.ts";
 import { FriendsController, renderFriends } from "./friends.ts";
 import type { HubController } from "./hub.ts";
-import { renderPlan } from "./plan.ts";
+import { type PlanBilling, renderPlan } from "./plan.ts";
 import { ConnectionsView, ProviderSignIns } from "./settings-connections.ts";
 import { ServicesView } from "./settings-services.ts";
 import { storageSummary } from "./storage-summary.ts";
@@ -95,6 +96,9 @@ export class SettingsView {
 	#file: HostedCompanyFile | undefined;
 	#fileLoading = false;
 	#fileError: string | undefined;
+	#billing: PlanBilling = {};
+	#billingClient: ComputerBillingClient | undefined;
+	#billingMember: string | undefined;
 
 	constructor(
 		api: CloudApi,
@@ -397,7 +401,7 @@ export class SettingsView {
 		});
 	}
 
-	/** The plan is the account's; the usage shown is the chosen company's storage. */
+	/** Computer subscriptions and allowance belong to the member; storage belongs to the selected company. */
 	#plan(): void {
 		if (this.#lifetime.signal.aborted) return;
 		let panel = this.#panels.get("plan");
@@ -406,6 +410,8 @@ export class SettingsView {
 			this.#panels.set("plan", panel);
 		}
 		const company = this.#company;
+		if (this.#tab === "plan" && !this.#billing.loading && !this.#billing.catalog && !this.#billing.error)
+			void this.#loadBilling();
 		if (this.#tab === "plan" && company && !this.#file && !this.#fileLoading && !this.#fileError)
 			void this.#loadFile();
 		renderPlan(
@@ -420,7 +426,70 @@ export class SettingsView {
 						retry: () => void this.#loadFile(true),
 					}
 				: undefined,
+			{
+				...this.#billing,
+				refresh: () => void this.#loadBilling(),
+				checkout: (offer) => void this.#billingAction(offer),
+				portal: () => void this.#billingAction(),
+			},
 		);
+	}
+
+	async #loadBilling(): Promise<void> {
+		if (this.#billing.loading || this.#lifetime.signal.aborted) return;
+		const member = this.#auth.userId;
+		if (!member) return;
+		this.#billingMember = member;
+		this.#billingClient ??= new ComputerBillingClient(this.#api.cloud, member, this.#lifetime.signal, () => {
+			if (this.#auth.userId !== member) throw new Error("The account changed.");
+		});
+		this.#billing = { ...this.#billing, loading: true, error: undefined };
+		this.#plan();
+		try {
+			const [catalog, usage] = await Promise.all([this.#billingClient.catalog(), this.#billingClient.usage()]);
+			if (this.#lifetime.signal.aborted || this.#auth.userId !== member) return;
+			this.#billing = { ...this.#billing, catalog, usage, loading: false };
+		} catch (error) {
+			if (this.#lifetime.signal.aborted || this.#auth.userId !== member) return;
+			this.#billing = {
+				...this.#billing,
+				loading: false,
+				catalog: undefined,
+				usage: undefined,
+				error: describeError(error),
+			};
+		}
+		if (!this.#lifetime.signal.aborted && this.#auth.userId === member) this.#plan();
+	}
+
+	async #billingAction(offer?: ComputerPlan): Promise<void> {
+		const client = this.#billingClient,
+			member = this.#billingMember;
+		if (
+			!client ||
+			!member ||
+			this.#auth.userId !== member ||
+			this.#lifetime.signal.aborted ||
+			this.#billing.busy ||
+			this.#billing.loading
+		)
+			return;
+		if (!offer && !this.#billing.usage?.portalAvailable) return;
+		this.#billing = { ...this.#billing, busy: true, error: undefined };
+		this.#plan();
+		try {
+			const url = offer ? await client.checkout(offer) : await client.portal();
+			if (this.#lifetime.signal.aborted || this.#auth.userId !== member) return;
+			location.assign(url);
+		} catch (error) {
+			if (this.#lifetime.signal.aborted || this.#auth.userId !== member) return;
+			this.#billing = { ...this.#billing, error: describeError(error) };
+		} finally {
+			if (!this.#lifetime.signal.aborted && this.#auth.userId === member) {
+				this.#billing = { ...this.#billing, busy: false };
+				this.#plan();
+			}
+		}
 	}
 
 	#drawFriends(): void {

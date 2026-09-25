@@ -3,10 +3,9 @@
 
 -- Owner A creates the profile the suite revolves around.
 select set_config('request.jwt.claims', '{"sub":"80000000-0000-4000-8000-00000000000a","email":"sep-owner-a@example.test","role":"authenticated","user_metadata":{}}', false);
-set role authenticated;
+-- Privileged legacy fixture only; leave/delete assertions use client roles.
 select set_config('qorpera_test.dl_profile',
 	public.qorpera_create_hosted_profile('Delete Leave QA', 'main', 1) ->> 'profile_id', false);
-reset role;
 select set_config('request.jwt.claims', '', false);
 
 -- B joins as a contributor (fixture shortcut for the invitation flow).

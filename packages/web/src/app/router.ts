@@ -3,7 +3,17 @@
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-export type CompanySection = "home" | "chat" | "staff" | "file" | "snapshot" | "proposal" | "team" | "new" | "meet";
+export type CompanySection =
+	| "home"
+	| "chat"
+	| "staff"
+	| "file"
+	| "snapshot"
+	| "proposal"
+	| "team"
+	| "new"
+	| "meet"
+	| "founding";
 
 export type Route =
 	| { name: "hub" }
@@ -22,7 +32,13 @@ export function parseRoute(hash: string): Route {
 		if ((section === "chat" || section === "staff" || section === "snapshot" || section === "proposal") && id) {
 			return { name: "company", profileId, section, id };
 		}
-		if (section === "file" || section === "team" || section === "new" || section === "meet") {
+		if (
+			section === "file" ||
+			section === "team" ||
+			section === "new" ||
+			section === "meet" ||
+			section === "founding"
+		) {
 			return { name: "company", profileId, section, ...(section === "file" && id === "history" ? { id } : {}) };
 		}
 		return { name: "company", profileId, section: "home" };

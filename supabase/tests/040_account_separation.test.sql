@@ -18,14 +18,12 @@ values
 	('80000000-0000-4000-8000-00000000000b', 'sep-owner-b@example.test', statement_timestamp());
 
 select set_config('request.jwt.claims', '{"sub":"80000000-0000-4000-8000-00000000000a","email":"sep-owner-a@example.test","role":"authenticated","user_metadata":{}}', false);
-set role authenticated;
+-- Privileged legacy fixture construction; authority assertions below still
+-- execute as the actual client roles. New clients must use founding creation.
 select set_config('qorpera_test.profile_a', public.qorpera_create_hosted_profile('Separation A', 'main', 1) ->> 'profile_id', false);
-reset role;
 
 select set_config('request.jwt.claims', '{"sub":"80000000-0000-4000-8000-00000000000b","email":"sep-owner-b@example.test","role":"authenticated","user_metadata":{}}', false);
-set role authenticated;
 select set_config('qorpera_test.profile_b', public.qorpera_create_hosted_profile('Separation B', 'main', 1) ->> 'profile_id', false);
-reset role;
 
 -- Account A writes and reads back its own object first. Ordering matters:
 -- B's cross-account read assertion below is vacuous unless something actually

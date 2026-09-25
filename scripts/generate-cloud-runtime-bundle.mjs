@@ -7,9 +7,9 @@ import { CLOUD_RUNTIME_MODEL_POLICY } from "../packages/runtime/src/cloud-runtim
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const generatedSource = "packages/runtime/src/cloud-runtime-bundle.generated.ts";
-const activation = "supabase/migrations/20260925107900_runtime_bundle_activation_v107.sql";
-const activationVersion = 107;
-const previousActivationVersion = 106;
+const activation = "supabase/migrations/20260925116900_runtime_bundle_activation_v108.sql";
+const activationVersion = 108;
+const previousActivationVersion = 107;
 const manifestPath = "deploy/first-node/native-codex/runtime-bundle-manifest.json";
 const sha = (text) => createHash("sha256").update(text).digest("hex");
 
@@ -76,6 +76,12 @@ export async function cloudRuntimeBundle(root = repository) {
 		}
 	}
 	for (const path of Object.values(CLOUD_RUNTIME_ENTRY_POINTS)) await include(path);
+	// Shadow computer telemetry is packaged separately on the physical host,
+	// but its observation and recovery contracts belong to this runtime version.
+	for (const path of ["packages/runner-orchestrator/src/runtime-node-observer-main.ts",
+		"packages/runner-orchestrator/src/runtime-node-observer-installation-cli.ts",
+		"scripts/package-runtime-node-observer.mjs", "deploy/first-node/qorpera-node-observer.service.in"])
+		await include(path);
 	for (const name of ["cloud-secret-broker-service-main.ts", "cloud-runtime-policy.ts"]) await include(`packages/runtime/src/${name}`);
 	for (const name of (await readdir(join(root, "packages/runtime/src"))).filter((name) => /^(cloud-coding-|cloud-native-coding-).*\.ts$/.test(name)).sort()) await include(`packages/runtime/src/${name}`);
 	for (const name of (await readdir(join(root, "packages/runner-orchestrator/src"))).filter((name) => /^coding-.*\.ts$/.test(name)).sort()) await include(`packages/runner-orchestrator/src/${name}`);

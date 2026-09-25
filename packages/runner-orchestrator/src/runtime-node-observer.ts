@@ -18,7 +18,7 @@ export type RuntimeNodeObserverMethod =
 export interface RuntimeNodeObserverRegistry {
 	call(method: RuntimeNodeObserverMethod, args: Record<string, unknown>, signal: AbortSignal): Promise<unknown>;
 }
-async function physicalHost(policy: RuntimeNodeInventoryPolicy, signal: AbortSignal) {
+export async function physicalHost(policy: RuntimeNodeInventoryPolicy, signal: AbortSignal) {
 	const socket = await inspectLxdHostInventorySocket(policy.host, signal),
 		hardware = await readRuntimeNodeHost(signal);
 	if (hardware.machineIdSha256 !== policy.host.machineIdSha256) throw new Error("NODE_OBSERVER_HOST_DIFFERS");
