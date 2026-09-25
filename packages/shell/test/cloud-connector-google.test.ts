@@ -385,8 +385,14 @@ it("keeps the Drive upload boundary within 70 characters, stable per key and out
 	expectDelimitersOnly(moved, hostile);
 	// So does a file name that carries it (the metadata part).
 	const renamed = await create("Hello", { name: `Notes ${first.boundary}` });
-	expect(renamed.boundary).not.toBe(first.boundary);
+	expect(renamed.boundary).toBe(moved.boundary);
 	expectDelimitersOnly(renamed, "Hello");
+	// Every derivation is checked against every part: with the first in the content
+	// and the second in the name, the third is used.
+	const crossed = `a ${first.boundary} b`;
+	const third = await create(crossed, { name: `Notes ${moved.boundary}` });
+	expect([first.boundary, moved.boundary]).not.toContain(third.boundary);
+	expectDelimitersOnly(third, crossed);
 });
 
 it("pins Gmail and Drive to their own origins", async () => {

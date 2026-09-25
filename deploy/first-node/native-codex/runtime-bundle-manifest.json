@@ -556,7 +556,7 @@
     "packages/runtime/src/cloud-connector-adapter.ts": "ef194cf4e28d0581ca639dc11f69eefde3695c8da56775aecfa62714c1949e09",
     "packages/runtime/src/cloud-connector-catalog.ts": "b820dc5e47899f43537ade147458796b2dae0d15f2d2ecf5ed2d4d96fa347205",
     "packages/runtime/src/cloud-connector-github.ts": "eb42ebf8e63cc51f4e7abaae38890661bad73c574fdbb0fd26ce83b64c330645",
-    "packages/runtime/src/cloud-connector-google.ts": "926df20af37f6e33556facfa8569056196879e5e815c08ac34e1e75dab438a7c",
+    "packages/runtime/src/cloud-connector-google.ts": "cfe276eaf6399726cdf00172bd6bd9fc9e9c351af574b9565e18dcdc687ec61c",
     "packages/runtime/src/cloud-connector-http.ts": "fd43261c02f04f79464c63a02c31d4c5bcba4e0dffda7daeffb8b40c9a4f3ab1",
     "packages/runtime/src/cloud-connector-oauth.ts": "f61029d77db3f2ec405d06e596b47af24b7e97b867378ff88d826db627413628",
     "packages/runtime/src/cloud-connector-service.ts": "f5e1c144bb417f2c8b274a59533742d61b42a956bda33e2cb1202212ec6ff411",

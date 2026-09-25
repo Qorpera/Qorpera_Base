@@ -366,9 +366,9 @@ const CREATE_MIME_TYPES = new Set([
 ]);
 
 /** A multipart boundary of at most 70 characters (RFC 2046), derived from the
- * operation's idempotency key (up to 128 characters) so a replay sends the same
- * bytes. If a part happens to contain it, the next derivation is used; each
- * occurrence costs a part 56 characters, so the loop ends. */
+ * operation's idempotency key (up to 128 characters), so one operation always
+ * builds the same request. If a part happens to contain it, the next derivation
+ * is used; each occurrence costs a part 56 characters, so the loop ends. */
 function multipartBoundary(idempotencyKey: string, parts: readonly string[]): string {
 	for (let attempt = 0; ; attempt += 1) {
 		const digest = createHash("sha256").update(`${idempotencyKey}\n${attempt}`).digest("hex");
