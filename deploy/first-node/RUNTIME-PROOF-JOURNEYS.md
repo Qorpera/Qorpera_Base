@@ -24,9 +24,9 @@ items it proves.
   Jonas as admin; Co-Founder `5e729fd9`, Research Analyst `3fab4465`, Ledger
   `be8fb5d0`). Company Qorpera (`4168e335-3ac0-4354-99f0-5dfc33428209`) is used
   only for deployed acceptance through the web app, with Jonas's OK.
-- **Shared production nodes.** Node 1 runs Company Computers and the brokers;
-  node 2 runs the shared execution host, member coding machines and run VMs for
-  every company. A degraded-operation scenario that can interrupt company
+- **Shared production nodes.** Node 1 runs every company's agent runs, the
+  Company Computers and the secret brokers; node 2 runs member coding machines
+  and the (currently idle) shared execution host (see "Where things run"). A degraded-operation scenario that can interrupt company
   Qorpera needs (1) the written plan below, (2) the coordinator's agreement on
   timing, (3) a one-line heads-up to Jonas with the time, before it starts.
 - **Never touched:** the production Company Computer `aa551494` (company
@@ -43,7 +43,7 @@ items it proves.
 
 | Tier | Meaning | Status-matrix column |
 | --- | --- | --- |
-| **node** | Real Linux nodes, live runtime and backend, test company A1, driven by an operator through the public API (PostgREST RPCs with a fixture member's session) | actual-node proof |
+| **node** | Real Linux nodes, live runtime and backend, test company A1, driven by an operator through the RPCs the web app calls, executed as the fixture member | actual-node proof |
 | **deployed** | Installed public interfaces end to end: the web app at `app.qorpera.com` (or the test origin) with a real member, on a real company | deployed acceptance |
 
 Verdicts: **PASS**, **FAIL** (defect found; linked), **BASELINE-FAIL** (known
@@ -100,11 +100,11 @@ One JSON file `outputs/runtime-proof/<journey>-<yyyymmddThhmmZ>.json`:
 | D01 | Orchestrator stop/restart mid-run | 3, 5 | 12, 26 | node | plan; needs window |
 | D02 | Provider restart mid-run | 3 | 12, 26 | node | plan; needs window |
 | D03 | One run machine loses its network | 1, 3 | 26 | node | plan; isolated |
-| D04 | Node 2 loses the backend (partition) | 3 | 12, 26 | node | plan; needs window + heads-up |
+| D04 | A node loses the backend (partition) | 3 | 12, 26 | node | plan; needs window + heads-up |
 | D05 | Exhausted screen capacity | 4 | 27, 28 | node | BLOCKED on test office wake |
 | D06 | NAS unavailable | 4, 9 | 13 | node | plan; needs window + heads-up |
 | D07 | Secret broker unavailable | 2, 7 | 17 | node | plan; A1 broker only |
-| D08 | Model provider unavailable or at its usage limit | 1 | 29 | node | plan; observe natural events |
+| D08 | Model provider unavailable or at its usage limit | 1 | 29 | node | D08a ready (limited account); D08b observe |
 | D09 | Backend (database) outage and recovery | 0, 3, 5 | 1, 12, 26 | node | observed 2026-09-25 01:20Z; recorded |
 | D10 | Node reboot | 3, 4, 9 | 13, 19 | node | plan; needs exclusive host |
 
@@ -455,105 +455,139 @@ purpose (it coincided with a backend stall and would risk real users).
 
 ## Degraded operation
 
-Each scenario lists: owner, isolation, rollback, what is measured, what the
-member should be told. "Owner" is who acts on the live system; the proof
-session writes the plan, observes and records.
+Each scenario lists: owner, isolation, steps, rollback, what is measured, and
+what the member should be told. "Owner" acts on the live system; the proof
+session writes the plan, drives the test-company side, observes and records.
+
+**Where things run (read from allocations, 2026-09-25 03:30Z):** agent runs
+of both companies are placed on node 1 (`native25-phql-a1`: 577 company
+Qorpera and 26 A1 allocations in 3 days, last A1 run 2026-09-24 21:01Z); node
+2's shared execution host (`native26-phql-b1`) has had no allocation since
+2026-09-24 03:40Z. Member coding machines are on node 2 (`coding-node-02`,
+company Qorpera only). Company Computers and both secret brokers are on node 1.
+So a service restart on node 1 touches company Qorpera's agent runs, and one
+on node 2 touches its coding sessions. Only a single run machine or a single
+broker is isolated.
+
+Common rules for D01–D10:
+
+- A **pre-check** read-only query right before the start: no active company
+  Qorpera job or coding session in the last 10 minutes (else wait), no cut in
+  progress (registry), node grants valid.
+- A **stop condition** written in the plan: the moment an unrelated job fails
+  or a company Qorpera member posts, the coordinator rolls back at once.
+- Every action goes through the coordinator's root-helper lanes with intent and
+  result receipts; nothing replays automatically.
+- **Evidence:** the time of each action, the job/wake/allocation rows before
+  and after, the member-visible outcome (thread events, failed-run line,
+  notifications), and the time to recovery.
 
 ### D01 Orchestrator stop/restart mid-run
 
-- **Owner:** coordinator (service action). **Where:** the orchestrator that
-  holds the A1 test run (node 2 exec host for attended runs).
-- **Isolation:** the exec host serves every company. Run only in an agreed
-  quiet window (no active company Qorpera job in the last 10 minutes, checked
-  by a read-only query right before), heads-up to Jonas.
-- **Steps:** start a long A1 run (the 150-call prompt from the v104
-  acceptance); at call ~50 the coordinator restarts the orchestrator.
-- **Measure:** time until the run's job reaches a terminal state or a new
-  attempt; whether the lease expiry re-dispatches; duplicated effects (sends,
-  writes) across attempts.
-- **Pass:** no duplicate public send, the run either resumes as a new attempt
-  and completes or fails with a failed-run line and Try again; recovery within
-  the lease window.
-- **Rollback:** start the orchestrator (already part of restart).
+- **Owner:** coordinator. **Where:** the node 1 host orchestrator
+  (`native25-phql-a1`). **Isolation:** none; window + heads-up.
+- **Steps:** (1) pre-check; (2) the proof session posts the 150-call prompt
+  (v104 acceptance text) to the A1 Co-Founder; (3) at about call 50 the
+  coordinator stops the orchestrator for 60 s, then starts it; (4) observe
+  until the run is terminal.
+- **Rollback:** start the orchestrator (the unit has `Restart=always`; the
+  lane also starts it explicitly). If the A1 run is stuck leased after the
+  lease deadline, the coordinator releases it by the documented lease expiry,
+  never by editing rows.
+- **Measure:** lease behaviour, whether the run is resumed, retried as a new
+  attempt or failed; duplicate public sends or writes; seconds to terminal.
+- **Pass:** no duplicate send; a terminal outcome within the lease window; the
+  member sees either the reply or a failed-run line with Try again, and Try
+  again completes.
 
 ### D02 Provider restart mid-run
 
-- **Owner:** coordinator. Same shape as D01, restarting the LXD provider on
-  node 2 instead. Measure run VM fate (released or adopted) and allocation
-  release.
-- **Pass:** allocation released only after confirmed deletion; the run ends
-  with a clear outcome; no leaked VM.
+- **Owner:** coordinator. **Where:** node 1 LXD provider. **Isolation:**
+  none; window + heads-up. Same shape as D01.
+- **Measure/pass:** the run VM is released or adopted, never leaked; the
+  allocation is released only after confirmed deletion; the member outcome as
+  in D01.
 
 ### D03 One run machine loses its network
 
-- **Owner:** coordinator (LXD action through the root helper).
-- **Isolation:** affects only the chosen A1 run VM. Safe during the day.
-- **Steps:** during an A1 run, detach the run VM's NIC for 120 s, then
-  reattach (or let the run fail).
-- **Measure:** lease expiry, provider outcome, time to a terminal state.
-- **Pass:** the run fails cleanly or resumes; allocation released; the member
-  sees a failed-run line with Try again, and Try again completes.
+- **Owner:** coordinator (LXD action through the root helper). **Isolation:**
+  one A1 run VM only; safe during the day.
+- **Steps:** post the 150-call prompt; once its run VM exists, detach that VM's
+  NIC (`lxc config device …` on that instance only) for 120 s, then reattach.
+- **Rollback:** reattach the NIC; if the VM does not recover, let the provider
+  retire it through its normal failure path.
+- **Pass:** the run fails cleanly or resumes; the allocation is released;
+  the member sees a failed-run line with Try again, and Try again completes.
 
-### D04 Node 2 loses the backend
+### D04 A node loses the backend (partition)
 
-- **Owner:** coordinator. **Isolation:** none, node 2 serves every company.
-  Needs window + heads-up.
-- **Steps:** block node 2's egress to the backend for 3 minutes (host
-  firewall rule with an automatic removal timer set before it is applied).
-- **Measure:** what fails, what retries, time to full recovery after the rule
-  is removed; stuck leases; duplicated work.
-- **Rollback:** the timer removes the rule; manual removal command written in
-  the plan before start.
+- **Owner:** coordinator. **Isolation:** none. Needs window + heads-up.
+- **Steps:** block the node's egress to the backend for 3 minutes with a host
+  firewall rule whose removal is armed first (a `systemd-run --on-active=180`
+  timer that deletes the rule), during an A1 run.
+- **Rollback:** the armed timer removes the rule; the manual removal command is
+  written in the lane before the rule is added.
+- **Measure:** what fails, what retries, stuck leases, duplicated work, and the
+  time to full recovery after the rule is removed. Compare with D09 (the
+  natural backend outage lost one revival for good).
 
 ### D05 Exhausted screen capacity
 
-- **Owner:** proof session (member/agent actions) once the test office is up.
-- **Blocked by:** J18.
-- **Steps:** six A1 agents hold screens (office max 6); a seventh asks for one.
-- **Pass:** the seventh gets a capacity refusal the agent reports plainly to
-  the member; after one screen is released the seventh succeeds.
+- **Owner:** proof session (agent/member actions). **Blocked by:** J18 (test
+  office wake).
+- **Steps:** six A1 agents each hold a screen (office max 6); a seventh asks
+  for one; release one; the seventh retries.
+- **Pass:** the seventh gets a capacity refusal the agent reports plainly; after
+  a release it succeeds; screen and computer-hour records stay single.
 
 ### D06 NAS unavailable
 
 - **Owner:** coordinator. **Isolation:** the NAS serves both nodes and every
-  company (workbenches, coding workspaces, recovery volumes). Needs window +
-  heads-up; test-office-only variant preferred (block NFS for the test
-  office's host mount only, if the mount layout allows).
-- **Measure:** what the agent/member sees, whether writes are refused rather
-  than lost, recovery after the NAS returns.
+  company (Company Computer workbenches, coding workspaces, recovery volumes).
+  Needs window + heads-up; prefer a test-only variant (block NFS only for the
+  test office's workbench mount if the mount layout allows it; decide after
+  J18).
+- **Rollback:** remove the block (armed timer as in D04).
+- **Measure:** writes refused rather than lost; what the agent and member see;
+  recovery after return.
 
 ### D07 Secret broker unavailable
 
 - **Owner:** coordinator. **Isolation:** stop only the acceptance broker
-  (`qorpera-phql-broker`, A1). First confirm with the coordinator that no other
-  company's operations route to it (v87 added per-company routing).
-- **Steps:** stop the broker; ask an A1 agent to use a captured secret; start
-  the broker; retry.
-- **Pass:** the use is refused with a clear, non-secret error; no plaintext
-  anywhere; after restart the retry works.
+  (`qorpera-phql-broker`, port 18448, A1). Before the start the coordinator
+  confirms no other company's captures, operations or repository credentials
+  route to it (the node 1 map routes company Qorpera to `qorpera-prod-broker`
+  18547; requests with no company argument go to 18448).
+- **Steps:** stop the broker; an A1 agent tries an operation that needs a
+  captured secret (the Step 2 canary secret); start the broker; retry.
+- **Rollback:** start the unit.
+- **Pass:** a clear, non-secret refusal; nothing leaks; the retry works after
+  the restart.
 
 ### D08 Model provider unavailable or at its usage limit
 
-- **Owner:** proof session (observation). Natural events are recorded when
-  they happen (usage limits, provider 5xx). A forced variant (block provider
-  egress for one run VM) is folded into D03.
-- **Pass:** a transient outage does not trigger a sponsor handoff; a usage
-  limit notifies the member and continues on the next eligible connection of
-  the same member, never another member's.
+- **D08a (ready):** the A1 owner's connection `cb29f1d4` (sponsor `13f2e314`)
+  is at 100 % of its weekly window until 2026-09-26 14:11Z. One post on that
+  sponsor. Pass (launch item 29): the member is notified and the run continues
+  on the next eligible connection of the same member through a recorded
+  sponsor handoff; no other member's credential is used.
+  `qorpera_execution_sponsor_handoffs` has never held a row on this backend.
+- **D08b (natural):** provider 5xx/outage events are recorded when they
+  happen; pass = no sponsor handoff on a transient outage.
 
 ### D09 Backend (database) outage and recovery
 
 - **Observed:** 2026-09-25 ~01:20:30–01:30:04Z (Supabase outage, not caused
   by our load; registry 01:10–01:50Z entry). Recorded from the database after
-  the fact; see the results file.
+  the fact; see the results file (finding P-D09-1).
 
 ### D10 Node reboot
 
-- **Owner:** coordinator. **Isolation:** exclusive host (§24.3). Node 2
-  reboot interrupts coding machines and the exec host for every company.
-  Boot-return was proven on 2026-09-16; this re-proves it on v106. Needs
-  window + heads-up; the node 2 root helper is boot-bound and must be
-  re-bound by Jonas afterwards.
+- **Owner:** coordinator. **Isolation:** exclusive host (§24.3). A node 2
+  reboot interrupts company Qorpera's coding machines; a node 1 reboot
+  interrupts every agent run and both Company Computers. Boot-return was proven
+  on 2026-09-16/17; this re-proves it on v106. Needs window + heads-up, and the
+  boot-bound root helper must be re-bound by Jonas afterwards.
 
 ## Operator tooling
 
