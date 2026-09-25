@@ -1396,6 +1396,21 @@ responsibility, follow-ups, watches), and fixed times for work tied to the
 clock. The agent's own tool also concludes a fixed routine from inside its
 run.
 
+2026-09-25 amendment: an agent's changed timing or resume restarts the
+schedule. An agent's save keeps the schedule position only when the timing is
+the same (the trigger unchanged apart from its reply policy and the order of
+its days or months) and the routine is active or its next slot is still ahead.
+Changed timing restarts the schedule at the save: nothing runs at once, the
+slots of the new cadence before the save are not caught up, and the new
+cadence applies from the save instead of after the old next slot. Switching a
+routine back on after its next slot passed restarts it the same way, whether
+by the agent's resume (also after the authorization-failure suspension), an
+unchanged save or a changed one, so the slots it missed while it was off are
+skipped; before that slot it keeps its position. A routine that never ran
+keeps its kickoff. A restart position is not a run time: the next run shown to
+agents and members is empty until the scheduler admits the first run after
+it.
+
 ## 17. Model and reasoning policy
 
 An attended agent thread defaults to low reasoning effort. The resolved
