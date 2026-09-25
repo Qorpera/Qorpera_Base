@@ -1,6 +1,6 @@
 # Qorpera Runtime Status
 
-**As of:** 2026-09-25 03:30 UTC. Master `8e468811e`. Live runtime bundle **v106**.
+**As of:** 2026-09-25 04:20 UTC. Master `0e1ef1238`. Live runtime bundle **v106**.
 
 This file tracks the current status of [the runtime contract](QORPERA-RUNTIME-CONTRACT.md). It lists the requirements in force today for Orders 0–10 and the launch gate. For each requirement it links whatever evidence exists. The contract is still the source of the requirements. Its dated amendments override older text in it. This file changes no requirement and edits no historical record. Where a record is out of date, it is listed in [Out-of-date statements](#out-of-date-statements-in-historical-records) and left unchanged.
 
@@ -17,17 +17,21 @@ Every requirement has four evidence columns, kept separate:
 
 Cell vocabulary:
 
+- **current bundle**: accepted on v104–v106, the bundles live since the last cut.
+- **earlier bundle**: accepted live on the current backend at an older bundle. Later changes in that area are not covered.
+- **historical**: proven only on the earlier production backend (see below). That proof stays valid for what it ran on. It does not certify today's code (§24.4: evidence can be reused only while the code and environment are unchanged).
 - **not established**: no evidence was found. This does not mean the behaviour is absent in production. It means nobody has recorded proof of it.
-- **historical**: proven on an older bundle or on the earlier production backend. That proof stays valid for what it ran on. It does not certify today's code (§24.4: evidence can be reused only while the code and environment are unchanged).
 - **withdrawn**: removed by a dated amendment or founder decision. Not a gap.
+- **—**: the stage does not apply, or nothing is built yet to prove.
+- A real-node cell reading "not established" beside deployed evidence means no separate node-tier record exists. Deployed runs themselves run on the real nodes.
 
 Evidence references:
 
 - `REG Rnnn`: line *nnn* of the coordinator's bundle registry, `/Users/jonas/Documents/Codex/2026-09-13/take-over-the-qorpera-runtime-work/outputs/BUNDLE-REGISTRY.md`, as read on 2026-09-25 (1,127 lines). Entries are appended and carry UTC stamps; the stamp identifies the entry if line numbers move. Some "~HH:MMZ" stamps written on 2026-09-22 to 09-24 are really local time. The pause, activation and resume times on the cut lines are exact.
 - `OUT/<file>`: a file in the same coordinator outputs folder.
 - `REVIEW`: the independent runtime review of 2026-09-25, `/Users/jonas/Documents/Codex/2026-09-25/i-w/outputs/qorpera-runtime-review.md`, with `verification.md` and `evidence/` beside it. It reviewed master `2a5c8f67e` (bundle v106).
-- CI runs: [Hosted database contract @72cafa347][ci-db] (391 migrations, 86 SQL tests, pass), [Step 2 LXD contracts @72cafa347][ci-lxd] (pass), [Web client @31ebda4ad][ci-web] (pass). `72cafa347` is the v106 PR head. Its runtime code is identical to the v106 merge `82b34214d` and to today's master (later commits touch `packages/web` only).
-- **local only**: no workflow runs the test. Most `packages/shell/test/cloud-*.test.ts` files are in this group. The review ran the relevant groups on `2a5c8f67e` and all passed (REVIEW `verification.md`, "Existing focused suites": 471 tests).
+- CI runs: [Hosted database contract @72cafa347][ci-db] (391 migrations, 86 SQL tests, pass), [Step 2 LXD contracts @72cafa347][ci-lxd] (pass), [Web client @0e1ef1238][ci-web] (pass). `72cafa347` is the v106 PR head. Its runtime code is identical to the v106 merge `82b34214d` and to today's master (later commits touch only the web client).
+- **local only**: no workflow runs the test. Most `packages/shell/test/cloud-*.test.ts` files are in this group. The review ran eight named groups on `2a5c8f67e` and all passed (REVIEW `verification.md`, "Existing focused suites": 471 tests). Other local-only suites cited below have no recorded run on this master. Examples: `cloud-company-path-presence`, `cloud-native-result-fence`, `cloud-native-tool-operations`, `cloud-sidebar-tools`, `cloud-native-company-context`, `cloud-codex-tool-session`.
 
 Two production backends appear in the evidence:
 
@@ -46,30 +50,30 @@ V26–V30 records made before the promotion count as real-node proof, not deploy
   - `node scripts/generate-cloud-runtime-bundle.mjs --check` on this branch prints the same digest.
 - **Runner image** `ba445e02…` with the Codex fence build `a7531592…`. Node release 11 on both nodes (REG R1075–1076).
 - **Coding.** Image cut106 `929e8d07…`, executor `926e97c2` (REG R1078). Member coding machines are 4 vCPU / 8 GiB since 2026-09-25 01:56:37Z; proof#10 was opened on one (REG R1114).
-- **Master matches live.** The runtime code on master equals the live v106 code. Every commit after `82b34214d` is web-only (#293–#298). The web client redeploys from master on merge (REG R176).
-- **Exact component identities are not held here.** The database, images, provider host, brokers and client build are recorded in the deployment manifest, in progress on branch `fable/deployment-manifest` (`deploy/deployment-manifest/README.md` once merged). This file links acceptance evidence; the manifest says which exact identity each piece of evidence ran on.
-  - The manifest's first pass (2026-09-25 03:05Z, staged in the coordinator workspace) lists these live components with no acceptance at their live identity: `node-02-release` (no run on node 2 since the cut), `secret-broker-qorpera`, `secret-broker-acceptance`, `object-gateway`, `office-image-test` and `web-client`.
+- **Master matches live.** The runtime code on master equals the live v106 code. Every commit after `82b34214d` touches only the web client: #293–#298 and #301. #301 changes `packages/cloud-client/src/cloud-routines.ts`, which is not a bundle input (REG R1131). The web client redeploys from master on merge (REG R176).
+- **Exact component identities are not held here.** The database, images, provider host, brokers and client build are recorded in the deployment manifest, draft [#307] (`deploy/deployment-manifest/README.md`; the README names where the current manifest lives). This file links acceptance evidence; the manifest says which exact identity each piece of evidence ran on.
+  - The manifest's first pass (2026-09-25 03:05Z, staged in the coordinator workspace) lists these live components with no acceptance at their live identity: `node-02-release` (no agent run on node 2 since the cut; coding sessions did run there), `secret-broker-qorpera`, `secret-broker-acceptance`, `object-gateway`, `office-image-test` and `web-client`.
   - It has no recorded identity for `exec-host`, `node-01-observer`, `office-service-test` or `capture-proxy`.
   - The office image and service count as accepted at their live identity because they are unchanged since their last accepted run. That is a different claim from an office journey run on v106.
 - **Supabase outage** 2026-09-25, about 01:20:30 to 01:30:04Z. The database was unreachable for every client. It was not caused by Qorpera's workload, and no Postgres restart happened (REG R1090).
 
 ## Decisions that are not gaps
 
-These requirements were removed or changed on purpose. Do not report their absence as missing implementation. REVIEW, "Decisions that must not be misreported as missing implementation", lists the same set.
+These requirements were removed or changed on purpose. Do not report their absence as missing implementation. REVIEW, "Decisions that must not be misreported as missing implementation", lists the first five. The rest come from later amendments and founder decisions.
 
 | Decision | Where it is written | What it changes |
 | --- | --- | --- |
 | Responsibility objects, pages, map, measure views and the escalation queue are retired. An agent's responsibilities are its description, and it keeps them alive with routines it creates. | Contract §19 [2026-09-20 amendment](QORPERA-RUNTIME-CONTRACT.md#2026-09-20-amendment-responsibilities-are-the-agents-description); notes in §14.3 and §14.5 | Withdraws §14.3's object model, §14.5 item 2, Order 6 responsibility views, Order 8 responsibility cadences, and the §20 rows about responsibility objects. Launch items 22–25 are read as amended below. Built: [#152], [#161]. The tables were dropped live at the v57 cut (REG R209). |
 | No member-private agent conversations. Each agent has one shared thread; a post runs on the posting member's own account (member-bound execution). | [2026-09-17 amendment: agent threads are shared channels](QORPERA-RUNTIME-CONTRACT.md#2026-09-17-amendment-agent-threads-are-shared-channels-bound-by-rooms) | Withdraws §14.2's separate one-to-one Co-Founder conversations and the "separate one-to-one conversations" clause of launch item 20. §4.3's private-to-shared publication rule stays in the kernel but has no conversation surface. |
 | Memory is company first: the notebook lives in the Company File under `agents/<id>/memory/`; there is no per-member memory. | §5.4, §15.1, Order 6 row (amended 2026-09-22 and 2026-09-24) | No member shard. Broad company ownership of notebooks is intended, not a privacy regression. |
-| Hiring, opening group chats and an agent's own routines need no member approval. | [2026-09-19/20 amendment](QORPERA-RUNTIME-CONTRACT.md#2026-091920-amendment-agents-set-themselves-up-hire-and-convene-without-approval), items 1–4 | A *change* to an existing agent or room still goes through a Co-Founder proposal and member approval. |
+| Hiring, opening group chats and an agent's own routines need no member approval. | [2026-09-19/20 amendment](QORPERA-RUNTIME-CONTRACT.md#2026-09-1920-amendment-agents-set-themselves-up-hire-and-convene-without-approval), items 1–4 | A *change* to an existing agent or room still goes through a Co-Founder proposal and member approval. |
 | No company or run caps; providers enforce their own limits. | §7.4 amendments of 2026-09-24 (v89, v92, v95, v104); §14.6 (v92); §17 "no turn caps" (2026-09-22) | Withdraws the wake-rate, spend, token and machine ceilings and the tripped-ceiling notice. Also withdraws hop, pair and send budgets, turn, deadline and tool-call counts, and the standing counts (32 routines, 64 todos, 4 active workers, 40 sections). The pause is now an operator brake. §7.4 lists what remains: leases, retry limits, per-call size bounds, 50,000 Company File entries, one-day queue expiry. Launch item 30 is read as amended. Consequence: an agent-to-agent loop runs until a member's Stop or the operator pause (REVIEW, same section). |
 | Azure backup and overflow come after launch. | §1, §19 "Deferred post-build integration", launch item 31 | Not a gate for Orders 0–10 or launch. |
 | A Company File change may wake an agent already earlier in its causal chain; an agent's own write still never wakes itself. | §5.3, Order 3 row, launch item 9 (v95) | Replaces the multi-agent cycle fence. |
 | The operator pause replaces the founder stop; a member's Stop ends a run. | §7.4 amendment 2026-09-24 | Launch item 30 now proves the operator pause, not a member-facing company stop. |
 | Connections are always shared with every agent. There is no share toggle, and a working connection shows only Disconnect. | Founder decision 2026-09-24 ([Step 7 record](deploy/first-node/RUNTIME-STEP-7-CLOUD-CONNECTORS.md) line 319; [#244]; REG R508). **Not yet written into the contract.** | The kernel unshare path was removed in v88 ([#244]). |
 | A Claude subscription is usable for coding sessions only, signed in through Qorpera's cloud login machine. | Founder decision 2026-09-24 (REG R610–613; design `OUT/CLAUDE-CODING-SUBSCRIPTION-DESIGN-20260924.md`). **Not yet written into the contract.** | Not built. Coding runs on Codex today. Launch condition: Anthropic's written confirmation. |
-| Fixed routines (`every`, `weekly`, `file_change`) stay. Dynamic routines are added beside them: one scheduled run at a time, after which the agent schedules the next run or concludes. | Founder decision 2026-09-25 (REG R1108). **Not yet written into the contract.** | In progress, slot v114 (see [Work in flight](#work-in-flight)). |
+| Fixed routines (`every`, `weekly`, `file_change`) stay. Dynamic routines are added beside them: one scheduled run at a time, after which the agent schedules the next run or concludes. | Founder decision 2026-09-25: REG R1108 for dynamic routines. Jonas confirmed that fixed routines stay the same day, in the request for this file. **Not yet written into the contract.** | In progress, slot v114 (see [Work in flight](#work-in-flight)). |
 | One coding machine per member carries all of that member's sessions. It sleeps when idle and holds no node capacity asleep. It is removed later, and its allocation is released only on a proven delete. | §13.1 and Order 9 row, amended 2026-09-24 | Machine size (4 vCPU / 8 GiB since 2026-09-25) is a policy value, not contract text. |
 | Additional Company Computers for one company are later capacity work. | §12, 2026-09-01 amendment placement | Not a gate on Order 4. |
 | The failure-model chapter's implementation is deferred until partner testing. | §23, ratified 2026-09-01 | Until then a missing resilience path must be reported as unavailable, never as healthy. |
@@ -80,11 +84,11 @@ Other amendments are folded into the per-Order requirements below: first-run spo
 
 The contract is inconsistent in these places, or behaviour ships that the text forbids. Each needs an amendment or a founder decision. The code alone cannot resolve them.
 
-1. **Company File scale.** §5.5 calls Company File caps defects. The §7.4 amendment keeps "50,000 Company File entries per company". The gateway also keeps a 32 KiB text write, a 64-chunk read file and an 8 MiB tree manifest, and rebuilds the whole tree on every mutation (REVIEW, "Company File scale"). Decide whether these are accepted bounds or scheduled defects.
+1. **Company File scale.** §5.5 calls Company File caps defects. The §7.4 amendment keeps "50,000 Company File entries per company". The gateway also keeps a 32 KiB text write, 256 MiB/64-chunk readable storage and an 8 MiB tree manifest (REVIEW `work/authority-review.md`, finding 6). It rebuilds the whole tree on every mutation (REVIEW, "Company File scale"). Decide whether these are accepted bounds or scheduled defects.
 2. **Repository credentials.** §11.5 says the broker is the only component that may unwrap a credential. There is "no … service `getSecret`, export". Since v88 ([#244]), the broker returns the company GitHub token to the trusted coding executor (`/v1/repository-credentials`). Either ratify the executor's Git broker as part of the credential boundary, or move Git operations inside the broker (REVIEW, "Decisions that must not be misreported"; `work/authority-review.md` finding 7).
 3. **Skills.** §15.2 (catalog, on-demand load, version recorded in the run) is still normative. §3 lists "skill-loading policy" as a bundle part. But the amended Order 6 row covers memory only. Build it, or defer it by amendment.
 4. **Worker species.** §13.1 media workers and vendor listener workers are not built and not deferred by any amendment.
-5. **Superseded words still in the text.** §20 has rows for responsibility objects and "Ceilings hold without agent cooperation". §12 scales machines "under the kernel-owned spend ceilings". §14.2 names "the responsibility map" and a `responsibility_map` formation stage. §21 items 20 and 22–25 name withdrawn concepts; only item 30 carries an amendment note. The §19 "Current implementation checkpoint" still says Order 6 is "not applied live" and Orders 3 and 5 await deployed acceptance. The amendments already govern all of these; this list only names the old text.
+5. **Superseded words still in the text.** §20 has rows for responsibility objects and "Ceilings hold without agent cooperation". §12 scales machines "under the kernel-owned spend ceilings". §14.2 names "the responsibility map" and a `responsibility_map` formation stage. §21 items 20 and 22–25 name withdrawn concepts; only items 9 and 30 carry amendment notes in the contract. The §19 "Current implementation checkpoint" still says Order 6 is "not applied live" and Orders 3 and 5 await deployed acceptance. The amendments already govern all of these; this list only names the old text.
 6. **Three founder decisions are not yet in the contract:** connections always shared, Claude subscription for coding only, and dynamic routines.
 
 ## Orders 0–10: requirements in force and evidence
@@ -108,7 +112,7 @@ Governing text: §4, §5.1–5.3, §14.1, the Order 0 row, and the amendments of
 | Versioned path ops, ACLs, proposals, revocation, receipts | Steps 0–4 merged by [#116] (`c31d3d522`); [preconditions](supabase/migrations/20260828019950_company_path_preconditions.sql) | SQL [140](supabase/tests/140_cloud_company_authority.test.sql), [290](supabase/tests/290_company_file_path_gateway.test.sql), [295](supabase/tests/295_member_company_file_commands.test.sql), [345](supabase/tests/345_company_path_admission_errors.test.sql): [CI][ci-db]. TS `cloud-company-path-gateway`, `cloud-company-path-control`: local only | `OUT/V26-TWO-MEMBER-ACCEPTANCE.json` (2026-09-14); `OUT/V28-COMPANY-FILE-TRANSFER-ACCEPTANCE.json` (2026-09-18) | Historical: v9 [two-member/one-agent proof](deploy/first-node/acceptance/2026-09-06-runtime-v9/TWO-MEMBER-ONE-AGENT-PATH-PROOF.json) on the earlier production backend. Current bundle: **not established** as a journey. Gateway writes are exercised by accepted runs, e.g. the v86 notebook write (REG R433) |
 | Presence (who is working where; never a lock) | [`cloud-company-path-presence.ts`](packages/runtime/src/cloud-company-path-presence.ts) | TS `cloud-company-path-presence`: local only | not established | not established |
 | Co-Founder, agent documents, lifecycle, default read grant | [#116]; [default read grant](supabase/migrations/20260828020700_company_agent_default_read_grant.sql); edits apply next run [#147] (v42) | SQL [310](supabase/tests/310_company_organization_kernel.test.sql), [315](supabase/tests/315_runtime_step0_staff_lifecycle.test.sql), [376](supabase/tests/376_runtime_staff_execution_authority_default.test.sql): [CI][ci-db] | Isolated run: `OUT/TEST-COMPANY-BOOTSTRAP-RESULT.json` (`OUT/RELEASE-ACCEPTANCE-MATRIX.md` row "Step 0") | Agent created by a member: v58 "Mark", first-run wake `b620339a` (REG R214–215). A post to an agent edited since its thread was bound (agent version 26, thread records 24) completed on node 1: v35, 2026-09-20 02:04Z (REG R67). Archive vs delete: **not established** |
-| Shared agent threads, member-bound execution | Commit `f41f8904d` (2026-09-17), in [#116] | SQL [300](supabase/tests/300_runtime_wake_bus.test.sql) (thread routing): [CI][ci-db] | `OUT/V26-AGENT-THREADS-ACCEPTANCE.json` (2026-09-17): two members in one Co-Founder thread, each run on the poster's account | Single member: every accepted thread run, e.g. Co-Founder thread `f032b788` at v103 (REG R1071). Two members at a current bundle: **not established** (skipped 2026-09-18, `OUT/RELEASE-ACCEPTANCE-MATRIX.md` row "two members at the same time") |
+| Shared agent threads, member-bound execution | Commit `f41f8904d` (2026-09-17), in [#116] | SQL [300_runtime_wake_bus](supabase/tests/300_runtime_wake_bus.test.sql) (thread routing): [CI][ci-db] | `OUT/V26-AGENT-THREADS-ACCEPTANCE.json` (2026-09-17): two members in one Co-Founder thread, each run on the poster's account | Single member: every accepted thread run, e.g. Co-Founder thread `f032b788` at v103 (REG R1071). Two members at a current bundle: **not established** (skipped 2026-09-18, `OUT/RELEASE-ACCEPTANCE-MATRIX.md` row "two members at the same time") |
 | Responsibility objects retired | [#152], [#161]; [migration](supabase/migrations/20260920070000_runtime_retire_responsibility_objects.sql) | SQL 310, rewritten: [CI][ci-db] | — | Withdrawn. Tables dropped live at the v57 cut, 2026-09-22 04:05:05Z, after an export (REG R209) |
 | Sidebar sections; agents organize them | [#254] (v90) | SQL [402](supabase/tests/402_company_sidebar_sections.test.sql): [CI][ci-db]. TS `cloud-sidebar-tools`: local only | — | Accepted at v95, 2026-09-24 15:10–15:15Z: real clicks, and the agent's `organize_sidebar` moved an agent and deleted a section (REG R834) |
 
@@ -135,7 +139,7 @@ Governing text: §6, §7.1–7.3, §17, the Order 1 row.
 | Thread model and effort | [#263] (v91) | SQL [580](supabase/tests/580_conversation_model_selection.test.sql): [CI][ci-db] | Pre-merge on the live backend with a temporary row: Sol `d274689f`, Luna `6beea1de` (REG R598–601) | v95: Sol/High `e49d48f7`, Luna/Low `8e1d55a5` (REG R818–827) |
 | Usage-limit signal and member notification | [#116] | SQL [583](supabase/tests/583_subscription_recovered_handoff.test.sql), [163](supabase/tests/163_member_session_account_selection.test.sql): [CI][ci-db] | Not runnable without a second model account (`OUT/V28-STEP3-LIMITS-ACCEPTANCE.json`) | Historical: v11 [handoff proof](deploy/first-node/acceptance/2026-09-06-runtime-v11/NATIVE-V11-HANDOFF-PROOF.json), earlier production. Current backend: **not established** |
 
-Open: REVIEW notes that protocol enforcement does not guarantee behavioural success (Order 10).
+Open: REVIEW's Order 1 row notes that protocol enforcement does not guarantee behavioural success. Behaviour is covered under Order 10.
 
 ### Order 2: inbound fences, outbound effect check, secret custody
 
@@ -149,10 +153,10 @@ Governing text: §11, the Order 2 row, and the §19 note on Order 2 versus Order
 
 | Capability | Source | Component tests | Real-node proof | Deployed acceptance |
 | --- | --- | --- | --- | --- |
-| Result fence and effect check | [#116]; Codex fence patch [#201] (v60), [#276] (v104) | SQL [360](supabase/tests/360_runtime_contention_hardening.test.sql), [361](supabase/tests/361_runtime_conflict_fences.test.sql): [CI][ci-db]. TS `cloud-native-result-fence`, `cloud-native-tool-boundary`, `cloud-native-tool-operations`: local only. Fence Rust tests 12/12 on a Mac (REG R697) | Fence build tested on node 2 (REG R996) | Historical: v9 [causal file and input fence proof](deploy/first-node/acceptance/2026-09-06-runtime-v9/CAUSAL-FILE-AND-INPUT-FENCE-PROOF.json) (one bounded injection case), earlier production. Current bundle: the fence carries more than 128 outputs (REG R1082). Injection test at the current bundle: **not established** |
-| Secret broker custody | [#116]; per-company routing in [#241] (v87); executor token in [#244] (v88) | SQL [305](supabase/tests/305_cloud_secret_custody.test.sql), [307](supabase/tests/307_cloud_secret_member_authority.test.sql), [398](supabase/tests/398_cloud_secret_broker_company_routing.test.sql): [CI][ci-db]. TS `cloud-secret-broker`, `cloud-secret-broker-http`: [CI][ci-lxd] | `OUT/V28-STEP2-CUSTODY-ACCEPTANCE.json` (2026-09-18, bundle v28): capture, use, rotate, revoke | Historical, earlier production (v9/v10): [use](deploy/first-node/acceptance/2026-09-06-runtime-v9/NATIVE-CUSTODY-USE-PROOF.json), [rotation](deploy/first-node/acceptance/2026-09-06-runtime-v9/NATIVE-CUSTODY-ROTATION-PROOF.json), [revocation](deploy/first-node/acceptance/2026-09-06-runtime-v9/LIVE-GRANT-REVOCATION-PROOF.json), [encrypted recovery](deploy/first-node/acceptance/2026-09-06-runtime-v9/ENCRYPTED-CUSTODY-RECOVERY-PROOF.json), [non-exposure](deploy/first-node/acceptance/2026-09-06-runtime-v10/NONEXPOSURE-V10-SCOPE-MATRIX.json). Current: GitHub capture and use for company Qorpera with "no token anywhere", v87 (REG R480–484). Restart, rotation, recovery and a non-exposure scan at the current bundle: **not established** |
+| Result fence and effect check | [#116]; Codex fence patch [#201] (v60), [#276] (v104) | SQL [360](supabase/tests/360_runtime_contention_hardening.test.sql), [361](supabase/tests/361_runtime_conflict_fences.test.sql): [CI][ci-db]. TS `cloud-native-result-fence`, `cloud-native-tool-boundary`, `cloud-native-tool-operations`: local only. Fence Rust tests 12/12 on a Mac (REG R697) | `OUT/V28-STEP2-CUSTODY-ACCEPTANCE.json` (2026-09-18, current backend before promotion, bundle v28) passed three checks: an injected instruction was ignored, a protected write was denied and a stale write was refused. The fence build was also tested on node 2 (REG R996) | Historical: v9 [causal file and input fence proof](deploy/first-node/acceptance/2026-09-06-runtime-v9/CAUSAL-FILE-AND-INPUT-FENCE-PROOF.json) (one bounded injection case), earlier production. Current bundle: the fence carries more than 128 outputs (REG R1082). Injection test at the current bundle: **not established** |
+| Secret broker custody | [#116]; per-company routing in [#241] (v87); executor token in [#244] (v88) | SQL [305](supabase/tests/305_cloud_secret_custody.test.sql), [307](supabase/tests/307_cloud_secret_member_authority.test.sql), [398](supabase/tests/398_cloud_secret_broker_company_routing.test.sql): [CI][ci-db]. TS `cloud-secret-broker`, `cloud-secret-broker-http`: [CI][ci-lxd] | `OUT/V28-STEP2-CUSTODY-ACCEPTANCE.json` (2026-09-18, bundle v28). Passed: company-owned capture, normal use, four reflection encodings withheld, lost and stalled responses fail closed, broker restart, rotation and old-key removal, keyring loss and byte-identical restore, grant revoked during a live run, and 0 leaks across backend text, both nodes' journals and node files. This is the full Order 2 proof on real nodes (summary in `OUT/RELEASE-ACCEPTANCE-MATRIX.md` line 37). Not covered: member-removal cascade live; TPM/KMS key custody | Historical, earlier production (v9/v10): [use](deploy/first-node/acceptance/2026-09-06-runtime-v9/NATIVE-CUSTODY-USE-PROOF.json), [rotation](deploy/first-node/acceptance/2026-09-06-runtime-v9/NATIVE-CUSTODY-ROTATION-PROOF.json), [revocation](deploy/first-node/acceptance/2026-09-06-runtime-v9/LIVE-GRANT-REVOCATION-PROOF.json), [encrypted recovery](deploy/first-node/acceptance/2026-09-06-runtime-v9/ENCRYPTED-CUSTODY-RECOVERY-PROOF.json), [non-exposure](deploy/first-node/acceptance/2026-09-06-runtime-v10/NONEXPOSURE-V10-SCOPE-MATRIX.json). Earlier bundle: GitHub capture and use for company Qorpera with "no token anywhere", v87 (REG R480–484). Restart, rotation, recovery and a non-exposure scan at the current bundle: **not established** |
 
-Open: [decision 2](#contract-text-that-needs-a-decision-not-code) (repository credential export). The broker accepts one runtime token and has no per-agent restriction ([Step 7 record](deploy/first-node/RUNTIME-STEP-7-CLOUD-CONNECTORS.md) lines 445–454).
+Open: [decision 2](#contract-text-that-needs-a-decision-not-code) (repository credential export). The broker accepts one runtime token. Restricting a connection to chosen agents is not offered to members, although per-agent grants exist in the kernel ([Step 7 record](deploy/first-node/RUNTIME-STEP-7-CLOUD-CONNECTORS.md) lines 429–431 and 445–450).
 
 ### Order 3: wake bus
 
@@ -169,12 +173,12 @@ Governing text: §5.3, §7, §8, §14.6–14.7, §17, the Order 3 row.
 
 | Capability | Source | Component tests | Real-node proof | Deployed acceptance |
 | --- | --- | --- | --- | --- |
-| Five wake kinds and silence | [#116] | SQL [300](supabase/tests/300_runtime_wake_bus.test.sql), [130](supabase/tests/130_wake_arbitration.test.sql): [CI][ci-db]. TS `cloud-wake-bus`, `scripts/test-runtime-wake-bus.mjs`: local only | `OUT/V26-SILENT-ROUTINE-ACCEPTANCE.json`, `OUT/V26-COMPANY-FILE-WAKE-ACCEPTANCE.json` (2026-09-14); `OUT/V26-ROOM-WAKE-ACCEPTANCE.json` (the room wake reached one staff member, not all); `OUT/V26-AGENT-WAKE-ACCEPTANCE.json` (2026-09-16) | Historical, earlier production: [Steps 0–3 ledger](deploy/first-node/RUNTIME-STEPS-0-3-ACCEPTANCE.md) (v9–v13, all five kinds on one staff identity); [silent file routine](deploy/first-node/acceptance/2026-09-06-runtime-v9/SILENT-FILE-ROUTINE-PROOF.json). Current backend: human, agent, room and routine wakes each seen live (rows below). All five on one agent with clients closed at a current bundle: **not established** |
-| File-change wake once; self-write fence; v95 chain revisit | [#116]; [#273] (v95) | SQL 300: [CI][ci-db] | `OUT/V26-COMPANY-FILE-WAKE-ACCEPTANCE.json` | Historical v9 (above). Current bundle: **not established**; v95 has no live behaviour test (REG R827) |
-| Coworker messaging (pair transcript) | [#213] (v70), [#227] (v79) | SQL [380](supabase/tests/380_runtime_agent_messaging.test.sql), 376: [CI][ci-db] | — | v70 test company, round trip A→B→A (REG R305–306). Company Qorpera chains at v80 (REG R350), v82 (REG R361) and v84 (REG R390, R406). The first v70 attempts in company Qorpera failed until #227 and #225 (REG R335–344) |
+| Five wake kinds and silence | [#116] | SQL [300_runtime_wake_bus](supabase/tests/300_runtime_wake_bus.test.sql), [130](supabase/tests/130_wake_arbitration.test.sql): [CI][ci-db]. TS `cloud-wake-bus`, `scripts/test-runtime-wake-bus.mjs`: local only | `OUT/V26-SILENT-ROUTINE-ACCEPTANCE.json`, `OUT/V26-COMPANY-FILE-WAKE-ACCEPTANCE.json` (2026-09-14); `OUT/V26-ROOM-WAKE-ACCEPTANCE.json` (the room wake reached one staff member, not all); `OUT/V26-AGENT-WAKE-ACCEPTANCE.json` (2026-09-16) | Historical, earlier production: [Steps 0–3 ledger](deploy/first-node/RUNTIME-STEPS-0-3-ACCEPTANCE.md) (v9–v13, all five kinds on one staff identity); [silent file routine](deploy/first-node/acceptance/2026-09-06-runtime-v9/SILENT-FILE-ROUTINE-PROOF.json). Current backend: human, agent, room and routine wakes each seen live (rows below). All five on one agent with clients closed at a current bundle: **not established** |
+| File-change wake once; self-write fence; v95 chain revisit | [#116]; [#273] (v95) | SQL 300_runtime_wake_bus: [CI][ci-db] | `OUT/V26-COMPANY-FILE-WAKE-ACCEPTANCE.json` | Historical v9 (above). Current bundle: **not established**. No live test of the v95 chain revisit is recorded |
+| Coworker messaging (pair transcript) | [#213] (v70), [#227] (v79) | SQL [380](supabase/tests/380_runtime_agent_messaging.test.sql), 376: [CI][ci-db] | — | v70 test company, round trip A→B→A (REG R305–306). Company Qorpera: the first v70 attempts failed (no execution authority at hire, then a provider refusal). The chain passed on v70 at 02:25Z on 2026-09-23, after an operator granted authority and a provider hotfix (#225) was applied by hand (REG R335–344). Later chains: v80 (REG R350), v82 (REG R361), v84 (REG R390, R406). #227 (v80) gives hires authority by default |
 | Held delivery (`priority: false`) | [#219] (v73) | SQL [381](supabase/tests/381_runtime_held_peer_messages.test.sql): [CI][ci-db] | — | **not established**: a live proof was planned (REG R327), none recorded |
 | Sponsor handoff on a usage limit | [#116] | SQL 583, 163: [CI][ci-db] | Not runnable without a second model account (`OUT/V28-STEP3-LIMITS-ACCEPTANCE.json`) | Historical, earlier production: v11 [handoff](deploy/first-node/acceptance/2026-09-06-runtime-v11/NATIVE-V11-HANDOFF-PROOF.json); v13 autonomous handoff ([manifest](deploy/first-node/acceptance/2026-09-07-runtime-v13/MANIFEST.json)). Current backend: **not established** |
-| First run on the creator's account | Commit `a40082fe5`, in [#116] | SQL 300: [CI][ci-db] | `OUT/V28-STEP3-LIMITS-ACCEPTANCE.json` (first run fixed and proven) | v58 Mark first-run wake `b620339a` (REG R215); v80 Tina Test startup turn `7c95920a` (REG R350) |
+| First run on the creator's account | Commit `a40082fe5`, in [#116] | SQL 300_runtime_wake_bus: [CI][ci-db] | `OUT/V28-STEP3-LIMITS-ACCEPTANCE.json` (first run fixed and proven) | v58 Mark first-run wake `b620339a` (REG R215); v80 Tina Test startup turn `7c95920a` (REG R350) |
 | Operator pause; member Stop | [#251] (v89), [#265] (v92) | SQL 330, 332, 280: [CI][ci-db] | `OUT/V28-STEP3-LIMITS-ACCEPTANCE.json` (pause and the since-withdrawn ceiling) | Operator pause is used at every cut, e.g. pause 20:59:39Z → resume 21:01:28Z (REG R1074). A test that running work is fenced, at the current bundle: **not established**. Member Stop at the current bundle: **not established**. Historical: v9 [founder controls](deploy/first-node/acceptance/2026-09-06-runtime-v9/FOUNDER-CONTROLS-V9-PROOF.json) |
 
 Open: "Try again" on a failed room delivery was never re-tested live on its happy path (REG R98, R174).
@@ -196,16 +200,17 @@ Governing text: §12, the Order 4 row, the amendments above, §19 "Minimum opera
 
 | Capability | Source | Component tests | Real-node proof | Deployed acceptance |
 | --- | --- | --- | --- | --- |
-| Office VM, desktops, screens, shell, browser | [#116]; office PRs [#158], [#159], [#170], [#173], [#176], [#177], [#181] (v43–v53, live through the v57 cut); [#195] (v57), [#229] (v82), [#233] (v83), [#278] (v97), [#282] (v98) | SQL [350](supabase/tests/350_runtime_office_reset.test.sql), [297](supabase/tests/297_company_path_computer_interlock.test.sql), [306](supabase/tests/306_governed_company_computer_privileges.test.sql): [CI][ci-db]. TS: 3 of 63 `packages/runtime/test/cloud-company-computer-*` and 4 of 92 `packages/runner-orchestrator/test/lxd-office-*` run in [CI][ci-lxd]; the rest are local only. [`scripts/test-runtime-office-linux.mjs`](scripts/test-runtime-office-linux.mjs) runs in a Linux container (not a node) | V26 office series, 2026-09-14 to 17: `OUT/V26-OFFICE-RESET-ACCEPTANCE.json`, `…-SERVICE-RESTART-A1-…`, `…-REBOOT-A1-…`, `…-POWER-OFF-RESUME-A3-…`, `OUT/V26-SIX-SCREENS-GEN15-ACCEPTANCE.json`, `OUT/V26-COMPANY-BROWSER-ACCEPTANCE.json`, `OUT/V26-HOST-REBOOT-NODE1-ACCEPTANCE.json`, `OUT/V28-VIEWER-CONTROL-ACCEPTANCE.json` | Production office recovered 2026-09-20 15:21:35Z (REG R116). Browser guest revision 1 accepted 2026-09-21 02:54–03:01Z (REG R168). Passthrough 23:17–23:18Z (REG R183). Third concurrent machine on node 1 at v82 (REG R361). Office journey at the current bundle: **not established**. The v98 office image guard has not been rolled to the offices; that production step waits for Jonas (REG R955–956) |
+| Office VM, desktops, screens, shell, browser | [#116]; office PRs [#158], [#159], [#170], [#173], [#176], [#177], [#181] (v43–v53; the office image, browser revision and passthrough went live through office lanes from 2026-09-20, the rest with the v57 cut); [#195] (v57), [#229] (v82), [#233] (v83), [#278] (v97), [#282] (v98) | SQL [350](supabase/tests/350_runtime_office_reset.test.sql), [297](supabase/tests/297_company_path_computer_interlock.test.sql), [306](supabase/tests/306_governed_company_computer_privileges.test.sql): [CI][ci-db]. TS: 3 of 63 `packages/runtime/test/cloud-company-computer-*`, 2 of 92 `packages/runner-orchestrator/test/lxd-office-*` and two `office-*` tests run in [CI][ci-lxd]; the rest are local only. [`scripts/test-runtime-office-linux.mjs`](scripts/test-runtime-office-linux.mjs) runs in a Linux container (not a node) | V26 office series, 2026-09-14 to 17: `OUT/V26-OFFICE-RESET-ACCEPTANCE.json`, `…-SERVICE-RESTART-A1-…`, `…-REBOOT-A1-…`, `…-POWER-OFF-RESUME-A3-…`, `OUT/V26-SIX-SCREENS-GEN15-ACCEPTANCE.json`, `OUT/V26-COMPANY-BROWSER-ACCEPTANCE.json`, `OUT/V26-HOST-REBOOT-NODE1-ACCEPTANCE.json`, `OUT/V28-VIEWER-CONTROL-ACCEPTANCE.json` | Production office power-off and resume passed at 15:21:35Z on 2026-09-20, after its recovery (REG R116). Browser guest revision 1 accepted 2026-09-21 02:54–03:01Z (REG R168). Passthrough 23:17–23:18Z (REG R183). Third concurrent machine on node 1 at v82 (REG R361). Office journey at the current bundle: **not established**. The v98 office image guard has not been rolled to the offices; that production step waits for Jonas (REG R955–956) |
 | Placement, capacity and usage records | 2026-09-16 amendment commits (in [#116]); [#279] (v96) | SQL [403](supabase/tests/403_runtime_node_capacity_fits_demand.test.sql), 332, [320](supabase/tests/320_runtime_operational_observability.test.sql): [CI][ci-db]. TS `runtime-node-*`, `lxd-provider`: [CI][ci-lxd] | `OUT/V26-TWO-NODE-PLACEMENT-ACCEPTANCE.json` (2026-09-16) | v96 view shows free CPU and memory (REG R916–919). Launch items 26–28 as operator journeys: **not established** |
-| Shared execution host (sandbox per run) | [#197] (no bundle input), [#228] | TS `shared-execution-backend`: [CI][ci-lxd] | Pilot on node 2, 2026-09-22 ([record](deploy/shared-execution/README.md) lines 137–148; REG R208) | Live since the v70 cut (REG R305); rebuilt on the v106 image (REG R1079). Every accepted run since then used it |
-| Identity recovery inside a login | 2026-09-17 amendment commits (in [#116]) | TS `lxd-login-gateway`: [CI][ci-lxd] | `OUT/V26-LOGIN-RECOVERY-AUTOMATION-ACCEPTANCE.json`, `OUT/V26-NODE2-RECOVERY-LOGIN-ACCEPTANCE.json` | v35: stale-copy recovery (epoch 2→3), then a job completed on node 1, 2026-09-21 00:30–00:43Z (REG R146) |
+| Shared execution host (sandbox per run) | [#197] (no bundle input), [#228] | TS `shared-execution-backend`: [CI][ci-lxd] | Pilot on node 2, 2026-09-22 ([record](deploy/shared-execution/README.md) lines 137–148; REG R208) | Live on node 2 since the v70 cut (REG R305); rebuilt on the v106 image (REG R1079). Runs that used it: the test company at v70 (REG R305–306) and the pre-merge Sol and Luna runs at v88 (REG R598–600). At v106: **not established**. All 20 agent runs since the v106 activation, including every accepted run, were placed on node 1's per-run provider (deployment manifest run placements, 2026-09-25 02:59Z). Node 1 has no shared execution host |
+| Identity recovery inside a login | 2026-09-17 amendment commits (in [#116]) | SQL [300_login_recovery_automation](supabase/tests/300_login_recovery_automation.test.sql): [CI][ci-db]. TS `lxd-login-gateway`: [CI][ci-lxd] | `OUT/V26-LOGIN-RECOVERY-AUTOMATION-ACCEPTANCE.json`, `OUT/V26-NODE2-RECOVERY-LOGIN-ACCEPTANCE.json` | v35: stale-copy recovery (epoch 2→3), then a job completed on node 1, 2026-09-21 00:30–00:43Z (REG R146) |
 
 Open (from REVIEW and `OUT/RELEASE-ACCEPTANCE-MATRIX.md` rows "Step 4"):
 - A two-agent desktop journey with every client closed.
 - Real LXD + NAS reset and durability ([Step 4 acceptance](deploy/first-node/RUNTIME-STEP-4-ACCEPTANCE.md) lines 94–104).
 - Nothing notices a dead office service (D-OFFICE-RESTART-2).
 - Stopped offices still self-update when started (REG R955).
+- The 2026-09-22 shared execution service is on node 2 only. Node 1, where production agent runs land, still boots one machine per run.
 
 ### Order 5: workers and todos
 
@@ -221,12 +226,13 @@ Governing text: §13, §9.1, the Order 5 row.
 
 | Capability | Source | Component tests | Real-node proof | Deployed acceptance |
 | --- | --- | --- | --- | --- |
-| Dispatch, report, parent revival, durable todos | [#157] (v65, `a6e6616c8`); [#273] (v95) | SQL [385](supabase/tests/385_runtime_workers_todos.test.sql): [CI][ci-db]. TS `cloud-worker-tools`: local only. Live-model screen 9/9 with synthetic effects ([Step 5 record](deploy/first-node/RUNTIME-STEP-5-WORKERS-TODOS.md) lines 110–125) | not established | v67, test company on the exec host: first live worker `0a1308d5` (644 tool observations). Parent revival `f6129301` was lost (REG R270, R272). A worker in a real company, restart survival, and the v95 counts: **not established** |
+| Dispatch, report, parent revival, durable todos | [#157] (v65, `a6e6616c8`); [#273] (v95) | SQL [385](supabase/tests/385_runtime_workers_todos.test.sql): [CI][ci-db]. TS `cloud-worker-tools`: local only. Live-model screen 9/9 with synthetic effects ([Step 5 record](deploy/first-node/RUNTIME-STEP-5-WORKERS-TODOS.md) lines 110–125) | not established | v67, test company on the exec host: first live worker `0a1308d5` (644 tool observations). Parent revival `f6129301` was lost (REG R270, R272). **Failure at v106 in company Qorpera:** after the 2026-09-25 database outage, worker-completion revival `5918e47b` (run `096ea4c6`) failed for good at 01:30:37Z. It was never retried and no member was told. This is finding P-D09-1 of the proof runs (REG R1142). A worker completing in a real company, restart survival, and the v95 counts: **not established** |
 | Open work in composed context (§9.1) | Not built ([Step 5 record](deploy/first-node/RUNTIME-STEP-5-WORKERS-TODOS.md) lines 156–158) | — | — | — |
 
 Open:
 - REVIEW finding 2 (a late todo publication overwrites a newer one) → [#303] (v111).
-- Listing pages for todos (32) and workers (16) → v112, no PR yet.
+- Listing pages for todos (32) and workers (16) → [#308] (v112).
+- A worker's report lost to a database outage is never retried and nobody is told (P-D09-1, REG R1142). No fix is assigned yet. It also bears on §23: an unavailable path must show as unavailable.
 
 ### Order 6: agent memory (and skills)
 
@@ -243,7 +249,7 @@ Governing text: Order 6 row (amended 2026-09-22 and 2026-09-24), §5.4, §15.1. 
 | Capability | Source | Component tests | Real-node proof | Deployed acceptance |
 | --- | --- | --- | --- | --- |
 | Notebook tools and composition | [#216] (v85), [#240] (v86) | SQL [386](supabase/tests/386_runtime_memory_notebook_write.test.sql): [CI][ci-db]. TS `cloud-memory-tools`: local only | not established | v85 failed live (every write refused, REG R424). v86 accepted 2026-09-23 23:18Z: write run `2104df01`, recall run `11b89472` (REG R433) |
-| Forget across months, dedupe, conflict retry, whole profile | Defects on master (REVIEW findings 3 and 5) | The existing test simulates the wrong conflict error (REVIEW finding 3) | — | Fix in progress: [#302] (v108) |
+| Forget across months, dedupe, conflict retry, whole profile | Defects on master (REVIEW findings 3 and 5). Fix: [#302] (v108) | The existing test simulates the wrong conflict error. The defects were reproduced with the actual memory code and a synthetic transport or in-memory gateway (REVIEW `verification.md`, "New reproductions") | — | not established |
 | Grok Bot import | Not built ([Step 6 record](deploy/first-node/RUNTIME-STEP-6-MEMORY.md) lines 48–49) | — | — | — |
 | Skill catalog and on-demand loader (§15.2) | Not built. Provider skills are disabled on purpose | Refusal tests only | — | — |
 
@@ -260,7 +266,7 @@ Governing text: §16.1–16.2, the Order 7 row, the §19 note on Order 2 versus 
 | --- | --- | --- | --- | --- |
 | Gmail, Drive and GitHub connectors | [#241] (v87, contains [#202]); [#244] (v88) | SQL [397](supabase/tests/397_cloud_connector_catalog.test.sql), 398, [399](supabase/tests/399_coding_repository_connector.test.sql): [CI][ci-db]. TS `cloud-connector-*`: [CI][ci-lxd]. `scripts/generate-cloud-connector-catalog.mjs --check` | — | GitHub accepted at v87, 2026-09-24 00:40–00:43Z: connected in Jonas's Chrome; the agent created, read and commented on qorpera-coding-proof issue #1 (REG R480–484). v88 read (REG R546). Gmail and Drive: **not established** (not connected, REG R486; Gmail needs Google verification) |
 | Connector-to-browser escalation | Not built ([Step 7 record](deploy/first-node/RUNTIME-STEP-7-CLOUD-CONNECTORS.md) lines 9–10) | — | — | — |
-| Question cards (`ask_member`) and answers | [#215] (v75), [#217] (v80), [#287] (v100), [#289] (v102), [#291] (v105) | SQL [590](supabase/tests/590_thread_interactions.test.sql), [596](supabase/tests/596_runtime_agent_thread_cards.test.sql), [597](supabase/tests/597_runtime_answer_card_outside_agent_thread.test.sql): [CI][ci-db]. TS `cloud-thread-interactions`: local only | — | v100 failed (REG R985). In the agent's own thread, accepted at v103, 2026-09-24 20:42–20:44Z (REG R1068–1071). In a plain conversation, accepted at v106, 2026-09-25 01:04Z (REG R1085–1086) |
+| Question cards (`ask_member`) and answers | [#215] (kernel; live with v80), [#217] (v80), [#287] (v100), [#289] (v102), [#291] (v105) | SQL [590](supabase/tests/590_thread_interactions.test.sql), [596](supabase/tests/596_runtime_agent_thread_cards.test.sql), [597](supabase/tests/597_runtime_answer_card_outside_agent_thread.test.sql): [CI][ci-db]. TS `cloud-thread-interactions`: local only | — | v100 failed (REG R985). In the agent's own thread, accepted at v103, 2026-09-24 20:42–20:44Z (REG R1068–1071). In a plain conversation, accepted at v106, 2026-09-25 01:04Z (REG R1085–1086) |
 | Secret cards through custody | [#221] (v81) | SQL 590: [CI][ci-db] | — | **not established** (REG R334, R351) |
 | Other §16.2 surfaces | Office sign-in handoff (viewer control), member upload/download: [#116]. Plugin installation: not built | SQL 295, 296: [CI][ci-db] | `OUT/V28-VIEWER-CONTROL-ACCEPTANCE.json`; `OUT/V28-COMPANY-FILE-TRANSFER-ACCEPTANCE.json` | Dismissal-is-not-consent at the current bundle: **not established** |
 
@@ -282,10 +288,10 @@ Governing text: §16.3, §17, the Order 8 row, [Step 8 record](deploy/first-node
 
 | Capability | Source | Component tests | Real-node proof | Deployed acceptance |
 | --- | --- | --- | --- | --- |
-| Scheduled routines (`every`, `weekly`): time zone, kickoff, effort, quiet windows | [#148] (v38), [#209] (v66), [#212] (v84), [#273] (v95) | SQL [370](supabase/tests/370_runtime_agent_routines.test.sql): [CI][ci-db]. TS `cloud-routine-tools`, runner-orchestrator `orchestrator.test.ts`: local only | `OUT/V26-SILENT-ROUTINE-ACCEPTANCE.json`; SQL 370 rehearsed on the node 2 cluster before the v57 cut (REG R205–206) | v58: an agent created routine `8b5a1bcc` (REG R215). v67 kickoffs `5f19db53`, `6ca78586` (REG R273). The v84 pause-defers behaviour: **not established** (REG R390) |
-| Finite watches and expiry | [#148] | SQL 370 checks expiry, not execution of the final run (REVIEW finding 1) | — | Defect reproduced (REVIEW `evidence/finite-routine-proof.txt`). Fix: [#300] (v107) |
+| Scheduled routines (`every`, `weekly`): time zone, kickoff, effort, quiet windows | [#148] (v38), [#209] (v66), [#212] (v84), [#273] (v95) | SQL [370](supabase/tests/370_runtime_agent_routines.test.sql): [CI][ci-db]; also rehearsed on a disposable database on the node 2 cluster before the v57 cut (REG R205–206). TS `cloud-routine-tools`, runner-orchestrator `orchestrator.test.ts`: local only | `OUT/V26-SILENT-ROUTINE-ACCEPTANCE.json` (schedule wake, 2026-09-14; predates kickoff, effort and pause-defer) | v58: an agent created routine `8b5a1bcc` (REG R215). v67 kickoffs `5f19db53`, `6ca78586` (REG R273). The v84 pause-defers behaviour: **not established** (REG R390) |
+| Finite watches and expiry | [#148]. Defect on master (REVIEW finding 1). Fix: [#300] (v107) | SQL 370 checks expiry, not execution of the final run. The defect was reproduced on a local PostgreSQL 17.6 with all 391 migrations (REVIEW `evidence/finite-routine-proof.txt`) | — | not established |
 | Pause on repeated authorization failure | [#148] | SQL 370 (admission failures only; REVIEW `work/execution-review.md`) | — | **not established** |
-| File-change listeners | [#116], [#148] | SQL 300, 370: [CI][ci-db] | `OUT/V26-COMPANY-FILE-WAKE-ACCEPTANCE.json` | Current bundle: **not established**. Operation filters: not built ([Step 8 record](deploy/first-node/RUNTIME-STEP-8-SCHEDULER.md) lines 237–238) |
+| File-change listeners | [#116], [#148] | SQL 300_runtime_wake_bus, 370: [CI][ci-db] | `OUT/V26-COMPANY-FILE-WAKE-ACCEPTANCE.json` | Current bundle: **not established**. Operation filters: not built ([Step 8 record](deploy/first-node/RUNTIME-STEP-8-SCHEDULER.md) lines 237–238) |
 | Vendor listeners (webhooks, channels) | Not built (Step 8 record lines 235–236) | — | — | — |
 | Routine intent as a Company File document, with a projection | Not built (Step 8 record lines 228–234) | — | — | — |
 | Hiring and group chats without approval | [#148] (v38), [#227] (v79) | SQL [375](supabase/tests/375_runtime_agent_hiring.test.sql), 376: [CI][ci-db]. TS `cloud-hiring-tools`: local only | — | Agent hires agent at v80: Mark hired Tina Test, and the authority row was created by trigger (REG R350). An agent opening a group chat: **not established** |
@@ -324,21 +330,17 @@ Governing text: §9.3, §18, the Order 10 row.
 
 | Area | Source | Component tests | Real-node proof | Deployed acceptance |
 | --- | --- | --- | --- | --- |
-| Runtime bundle pinning (§3) | [`scripts/generate-cloud-runtime-bundle.mjs`](scripts/generate-cloud-runtime-bundle.mjs) | `--check` passes locally at `0dbf36d4…`. **No CI workflow runs it** | Image lanes re-run the isolation probe at every cut (e.g. REG R1075) | v106 active with that digest (REG R1074) |
+| Runtime bundle pinning (§3) | [`scripts/generate-cloud-runtime-bundle.mjs`](scripts/generate-cloud-runtime-bundle.mjs) | `--check` passes locally at `0dbf36d4…`. **No CI workflow runs it** | Each cut's image lane re-runs the isolation probe (REG R909, R977; v106 lane receipts `work/cut-v106-a1/image/receipts/isolation-*` in the coordinator workspace) | v106 active with that digest (REG R1074) |
 | Clients-closed and headless operation (§2, §24.2, item 12) | [#116] | — | Headless install and call from an installed release on node 1, v29 (`OUT/RELEASE-ACCEPTANCE-MATRIX.md` row "Versioned headless install") | Current bundle: **not established** |
 | Failure model (§23) | Deferred to partner testing | — | — | Must be reported as unavailable |
 
-**CI coverage note.** *Hosted database contract* and *Step 2 LXD contracts* run only on pull requests, and only when certain paths change. Most `packages/shell/test/cloud-*.test.ts` files (wake bus, mouth, memory, workers, routines, hiring, cards, constitution, fences) run in no workflow. The `ephemeral-runner-linux.yml` path filter still points at `packages/shell/src/cloud-runner-*.ts`, but that code moved to `packages/runtime/src`. The workflow has not run since 2026-09-18 ([run][ci-runner]).
+**CI coverage note.** *Hosted database contract* and *Step 2 LXD contracts* run only on pull requests (or by manual dispatch), and only when certain paths change. Most `packages/shell/test/cloud-*.test.ts` files (wake bus, mouth, memory, workers, routines, hiring, cards, constitution, fences) run in no workflow. The `ephemeral-runner-linux.yml` path filter still points at `packages/shell/src/cloud-runner-*.ts`, but that code moved to `packages/runtime/src`. The workflow has not run since 2026-09-18 ([run][ci-runner]).
 
 ## Launch acceptance (§21), read with the amendments
 
 The launch gate passes only when a deployed environment proves items 1–30 at the launch candidate's exact identity. Status below is for the **deployed acceptance** column; the component and node evidence is in the Order tables.
 
-- **Current**: accepted on v104–v106.
-- **Earlier bundle**: accepted live on the current backend at an older bundle. Later changes in that area are not covered.
-- **Historical**: the earlier production backend only.
-- **Partial**: some parts proven.
-- **Not established**: no proof recorded.
+The labels follow the vocabulary at the top: **current bundle**, **earlier bundle**, **historical**, **partial** (some parts proven, possibly at different bundles) and **not established**.
 
 | # | Requirement in force (short) | Orders | Deployed status | Evidence |
 | --- | --- | --- | --- | --- |
@@ -358,45 +360,75 @@ The launch gate passes only when a deployed environment proves items 1–30 at t
 | 14 | The parent stays responsive while a worker runs; a coding follow-up returns to the same worker, machine, repo and branch | 5, 9 | Partial | Worker at v67, revival lost (REG R270); coding follow-up not established (REVIEW findings 4 and 8) |
 | 15 | Memory reads only the agent's own notebook; write, forget and concurrent use keep versions; forgotten facts leave composition | 6 | Partial | Write and recall at v86 (REG R433); forget and concurrency defects: [#302] |
 | 16 | Typed surfaces for connector auth, sign-in handoff, approvals, cards, upload/download; dismissal is never consent | 7 | Partial | Connector auth at v87 (REG R480); cards (REG R1071, R1086) |
-| 17 | Secrets stay out of every surface; revocation fences use | 2 | Historical, plus the v87 check | v10 [non-exposure](deploy/first-node/acceptance/2026-09-06-runtime-v10/NONEXPOSURE-V10-SCOPE-MATRIX.json); "no token anywhere" at v87 (REG R484) |
+| 17 | Secrets stay out of every surface; revocation fences use | 2 | Partial | v10 [non-exposure](deploy/first-node/acceptance/2026-09-06-runtime-v10/NONEXPOSURE-V10-SCOPE-MATRIX.json); "no token anywhere" at v87 (REG R484) |
 | 18 | Every message, effect and operation exposes complete provenance | all | Not established | — |
 | 19 | The native-subscription, control-plane, Company File and storage gates also pass | all | Not established | No consolidated record |
-| 20 | *Amended 2026-09-17.* One shared Co-Founder for every member; member-private facts are never repeated into a shared thread | 0, 3 | Not established (two members) | Node: `OUT/V26-AGENT-THREADS-ACCEPTANCE.json` |
+| 20 | *Read with the 2026-09-17 amendment.* One shared Co-Founder for every member; member-private facts are never repeated into a shared thread | 0, 3 | Not established (two members) | Node: `OUT/V26-AGENT-THREADS-ACCEPTANCE.json` |
 | 21 | Co-Founder first run for a fresh company and for prior work; research in the background; a protected direction proposal | 3, 5, 10 | Not established | REVIEW, "Company formation" |
-| 22 | *Amended 2026-09-20.* A founder direction flows through agents' descriptions, hires and projects; the founder gets one coherent result; the Co-Founder flags deviations | 3, 8, 10 | Not established | — |
-| 23 | *Amended 2026-09-20.* An agent keeps each responsibility in its description alive with its own routines and listeners: an exception wakes only that agent, the work is done once and verified, state is updated, and it speaks up as its description says; this survives restarts | 3, 8 | Not established | The escalation queue is withdrawn |
-| 24 | *Amended 2026-09-20.* Project, room and agent stay distinct; chats and views are never the source of truth | 0 | Not established | Responsibility objects and views are withdrawn |
-| 25 | *Amended 2026-09-20/24.* A replacement client rebuilds the Co-Founder, sections, agents and rooms from the cloud | 0 | Partial | Sections survive a reload at v95 (REG R834) |
+| 22 | *Read with the 2026-09-20 amendment.* A founder direction flows through agents' descriptions, hires and projects; the founder gets one coherent result; the Co-Founder flags deviations | 3, 8, 10 | Not established | — |
+| 23 | *Read with the 2026-09-20 amendment.* An agent keeps each responsibility in its description alive with its own routines and listeners: an exception wakes only that agent, the work is done once and verified, state is updated, and it speaks up as its description says; this survives restarts | 3, 8 | Not established | The escalation queue is withdrawn |
+| 24 | *Read with the 2026-09-20 amendment.* Project, room and agent stay distinct; chats and views are never the source of truth | 0 | Not established | Responsibility objects and views are withdrawn |
+| 25 | *Read with the 2026-09-20/24 amendment.* A replacement client rebuilds the Co-Founder, sections, agents and rooms from the cloud | 0 | Partial | Sections survive a reload at v95 (REG R834) |
 | 26 | An operator can trace a request through job, model and tool records to its outcome, version and compute | cross | Not established | Operator queries exist ([observability](deploy/first-node/RUNTIME-STEPS-0-2-OBSERVABILITY.md)) |
 | 27 | Lifecycle records separate viewer close, shutdown and release; computer-hours are not multiplied | 4 | Not established | [Screen lifecycle](deploy/first-node/RUNTIME-SCREEN-LIFECYCLE.md) (component) |
 | 28 | The operational view shows allocations, pending starts, waiting demand and admissible capacity | 4 | Partial | v96 view check (REG R916–919) |
 | 29 | Sponsor handoff on a usage limit, same principal only, never on a rate limit or outage | 3 | Historical | v11 and v13 on the earlier production backend |
-| 30 | *Amended 2026-09-24.* The operator pause stops a company without agent cooperation; there are no wake, spend or machine ceilings | 3 | Partial | Pause and resume at every cut (REG R1074); fencing of running work not tested at a current bundle |
+| 30 | *Read with the 2026-09-24 amendment.* The operator pause stops a company without agent cooperation; there are no wake, spend or machine ceilings | 3 | Partial | Pause and resume at every cut (REG R1074); fencing of running work not tested at a current bundle |
 | 31 | Azure overflow | — | Deferred; not a launch gate | §19 |
 
 **In short:**
 - No mandatory item has deployed acceptance at the current bundle as a complete journey.
 - Items 4 and 11 were accepted live on the current backend at older bundles (item 11 only piece by piece).
-- Items 3, 8, 14, 15, 16, 25, 28 and 30 are partial.
-- Items 1, 2, 6, 9, 10, 17 and 29 have only historical deployed proof.
+- Items 3, 8, 14, 15, 16, 17, 25, 28 and 30 are partial.
+- Items 1, 2, 6, 9, 10 and 29 have only historical deployed proof.
 - Items 5, 7, 12, 13, 18–24, 26 and 27 are not established.
 
 ## Work in flight
 
-All of this is based on master `31ebda4ad` or later. None of it is merged or live. Slots come from the coordinator (REG R1119–1127). Each PR needs an independent review on its exact head before merge.
+All of this is based on master `31ebda4ad` or later. None of it is merged or live. Slots come from the coordinator (REG R1119–1140). Each PR needs an independent review on its exact head before merge.
 
 | Slot | Work | Session | PR | Moves which cells |
 | --- | --- | --- | --- | --- |
 | v107 | A finite routine's last occurrence runs (REVIEW finding 1) | Fix one-time routines and build dynamic routines | [#300] (draft) | Order 8, finite watches |
 | v108 | Typed stale-version results; notebook-wide dedupe, forget and recall; whole profile (findings 3, 5) | Fix memory retries and forget | [#302] (draft) | Order 0 path ops; Order 6 |
-| v109 | Coding diagnostics (fixed error codes; the authorization step observed on its own) | Design release of kept coding workspaces | none yet | Order 9 |
-| v110 | Hiring and ask-member report true outcomes (findings 6, 7) | Make hiring and ask-member report true outcomes | [#299] (draft; its title still says "v107 provisional") | Orders 7, 8 |
+| v109 | Coding diagnostics (fixed error codes; the authorization step observed on its own) | Design release of kept coding workspaces | [#309] (draft) | Order 9 |
+| v110 | Hiring and ask-member report true outcomes (findings 6, 7) | Make hiring and ask-member report true outcomes | [#299] (ready for review) | Orders 7, 8 |
 | v111 | A late todo publication can no longer replace a newer document (finding 2) | Stop old todo lists overwriting newer ones | [#303] (draft) | Order 5 |
-| v112 | Todo and worker listing pages (cursor, filters) | Let agents page through all their todos and workers | none yet | Order 5 |
-| v113 | Coding turn continuity: the question, answer and prior turns; no inherited submission (findings 4, 8) | Keep coding follow-ups aware of the question | none yet | Order 9 |
+| v112 | Todo and worker listing pages (cursor, filters) | Let agents page through all their todos and workers | [#308] (draft) | Order 5 |
+| v113 | Coding turn continuity: the question, answer and prior turns; no inherited submission (findings 4, 8) | Keep coding follow-ups aware of the question | [#305] (draft) | Order 9 |
 | v114 | Dynamic routines (design goes to Jonas first) | Fix one-time routines and build dynamic routines | none yet | Order 8 |
-| — | Deployment manifest: exact live identities per component | Create one current deployment manifest | branch `fable/deployment-manifest` | "What is live now" |
-| — | Journeys on the real nodes (J01–J16) and degraded-operation scenarios (D01–D08) | Run the runtime proof runs on the real nodes | branch `fable/runtime-proof-journeys` (`deploy/first-node/RUNTIME-PROOF-JOURNEYS.md`, `…-RESULTS.md`) | Real-node proof and deployed acceptance columns |
+| v115 | Auto-review rules: Ask first / Allow automatically, with a silent review before every acting step (REG R1138, R1140) | Rule behavior in Qorpera | none yet | New requirement; needs a contract amendment |
+| v116 (provisional) | Drive uploads use a multipart boundary of at most 70 characters (REG R1145) | Shorten the Drive upload MIME boundary | [#310] (draft) | Order 7 |
+| — | Deployment manifest: exact live identities per component | Create one current deployment manifest | [#307] (draft) | "What is live now" |
+| — | Proof runs: journeys J01–J19, stress-test replays R01–R06 and degraded-operation drills D01–D10 (REG R1141–1144) | Run the runtime proof runs on the real nodes | branch `fable/runtime-proof-journeys` @ `c1d17e95e` (`deploy/first-node/RUNTIME-PROOF-JOURNEYS.md`, `RUNTIME-PROOF-RESULTS.md`) | Real-node proof and deployed acceptance columns |
+
+Proof journeys by Order (from the proof-runs session). One journey can cover several Orders:
+- O0: J04 J06 J07 J08 J13 D09
+- O1: J08 J09 J19 D03 D08
+- O2: J06 J14 D07
+- O3: J01 J02 J06 J15 D01–D04 D09 D10
+- O4: J18 D05 D06 D10
+- O5: J04 J05 J10 J15 D01 D09
+- O6: J09 J17
+- O7: J14 J19 D07
+- O8: J01 J02 J03 J06 J09 J15 J16
+- O9: J11 J12 D06 D10
+- O10: J13 J16
+
+Journeys blocked until a fix is live:
+- J01 and J02: v107.
+- J17 and the memory part of J09: v108.
+- J11: v109 and v113.
+- The hiring and card parts of J09: v110.
+- J04: v111.
+- J05: v112.
+- J12: v113.
+- J03: v114.
+- J18 and D05 wait on the test office self-update lane.
+
+Results so far at v106:
+- D09 failed (see Order 5).
+- The J04 read-only audit found no divergence in 22 live todos. That audit does not test the race itself.
 
 ## Out-of-date statements in historical records
 
@@ -440,7 +472,7 @@ Paths in records that no longer resolve:
 
 [ci-db]: https://github.com/Qorpera/Qorpera_Base/actions/runs/36056957639
 [ci-lxd]: https://github.com/Qorpera/Qorpera_Base/actions/runs/36056957573
-[ci-web]: https://github.com/Qorpera/Qorpera_Base/actions/runs/36083427615
+[ci-web]: https://github.com/Qorpera/Qorpera_Base/actions/runs/36092068507
 [ci-runner]: https://github.com/Qorpera/Qorpera_Base/actions/runs/35348453110
 [#116]: https://github.com/Qorpera/Qorpera_Base/pull/116
 [#135]: https://github.com/Qorpera/Qorpera_Base/pull/135
@@ -499,3 +531,8 @@ Paths in records that no longer resolve:
 [#176]: https://github.com/Qorpera/Qorpera_Base/pull/176
 [#177]: https://github.com/Qorpera/Qorpera_Base/pull/177
 [#181]: https://github.com/Qorpera/Qorpera_Base/pull/181
+[#305]: https://github.com/Qorpera/Qorpera_Base/pull/305
+[#307]: https://github.com/Qorpera/Qorpera_Base/pull/307
+[#308]: https://github.com/Qorpera/Qorpera_Base/pull/308
+[#309]: https://github.com/Qorpera/Qorpera_Base/pull/309
+[#310]: https://github.com/Qorpera/Qorpera_Base/pull/310
