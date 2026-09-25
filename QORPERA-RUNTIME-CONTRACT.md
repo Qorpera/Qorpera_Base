@@ -2318,8 +2318,9 @@ review or retry" surfaces of 16.2 and the classification of section 10.
    which runs once without a second review. A Deny, the member's or the
    reviewer's, stands for that exact call in the run it was given in, and in
    its conversation until a member writes there again: retrying gets the agent
-   no second opinion, but a member who asks again has the action reviewed
-   afresh. A card still waiting holds the same call only in its own
+   no second opinion. When the member asks for it again, the retried call runs
+   only on that member's click on a card, whatever the fresh review says: a
+   "yes" in chat is not enough by itself. A card still waiting holds the same call only in its own
    conversation; elsewhere a new card is raised where it can be seen.
 7. **Record.** Every reviewed call is recorded with its verdict, reason,
    matched rules, answer and use. Reviews are not a cap on work: no number of

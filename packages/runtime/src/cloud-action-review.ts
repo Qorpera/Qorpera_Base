@@ -503,7 +503,7 @@ export class CloudActionReviewGate {
 		if (begin.state === "declined")
 			return {
 				run: false,
-				text: "REVIEW_DENIED: This exact action was declined before, so it did not happen. Do not retry it, reword it or reach it another way; take a genuinely safer path or tell the member.",
+				text: "REVIEW_DENIED: This exact action was declined before, so it did not happen. Do not retry it, reword it or reach it another way; take a genuinely safer path or tell the member. Only if the member then asks for it again, repeat the identical call once: it will wait for their approval on a card.",
 			};
 		if (begin.state === "used")
 			return {
@@ -583,7 +583,7 @@ export class CloudActionReviewGate {
 		if (recorded.decision === "deny")
 			return {
 				run: false,
-				text: `REVIEW_DENIED: ${reason} The action did not happen. Do not retry it, reword it or reach it another way; take a genuinely safer path or tell the member.`,
+				text: `REVIEW_DENIED: ${reason} The action did not happen. Do not retry it, reword it or reach it another way; take a genuinely safer path or tell the member. Only if the member then asks for it again, repeat the identical call once: it will wait for their approval on a card.`,
 			};
 		if (recorded.decision !== "ask") throw new Error("Action review response is invalid");
 		if (recorded.card !== true)
@@ -627,7 +627,7 @@ export class CloudActionReviewGate {
 			if (state.state === "declined")
 				return {
 					run: false,
-					text: `APPROVAL_DECLINED: ${name(state.answeredBy, "The member")} declined this action, so it did not happen. Do not retry it, reword it or reach it another way.`,
+					text: `APPROVAL_DECLINED: ${name(state.answeredBy, "The member")} declined this action, so it did not happen. Do not retry it, reword it or reach it another way. Only if the member later asks for it again, repeat the identical call once: it will ask them on a card.`,
 				};
 			if (state.state === "used")
 				return {

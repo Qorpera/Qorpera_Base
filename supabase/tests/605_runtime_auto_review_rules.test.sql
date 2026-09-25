@@ -436,6 +436,14 @@ begin
 		perform pg_temp.wake_assert(public.qorpera_begin_action_review(v_binding, jsonb_build_object('tool', 'send_email',
 			'argumentSha256', v_digest)) ->> 'state' = 'review',
 			format('After a %s denial, a member who writes again gets the action reviewed afresh', v_answer));
+		-- As in Grok, the retried call runs only on the member's click: whether the fresh review
+		-- allows it or denies it again, it becomes a card for that member.
+		v_record := case v_answer when 'reviewer'
+			then pg_temp.review_record(v_binding, 'retry-' || v_answer, v_digest, 'deny', '{}', 'not_requested')
+			else pg_temp.review_record(v_binding, 'retry-' || v_answer, v_digest, 'allow', '{}') end;
+		perform pg_temp.wake_assert(v_record ->> 'decision' = 'ask' and v_record ->> 'approverScope' = 'member'
+			and (v_record ->> 'card')::boolean,
+			format('After a %s denial, the retried call waits for the member''s own click', v_answer));
 	end loop;
 end
 $$;

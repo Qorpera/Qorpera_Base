@@ -97,7 +97,8 @@ Found in my own review of the approved head and fixed:
   raw data, so its next steps were judged against no request at all.
 - A denial (the reviewer's or a member's) stands in its run, and in its
   conversation until a member writes there again; before, it stood forever
-  for that member and exact call, with no way to ask again.
+  for that member and exact call, with no way to ask again. The retry then
+  waits for the member's click (see the parity section).
 - A card still waiting holds the same call only in its own conversation;
   elsewhere a new card is raised where the member can see it.
 - The agent tool `add_review_rule` (founder decision D4): an agent adds an Ask
@@ -105,6 +106,30 @@ Found in my own review of the approved head and fixed:
   `qorpera_add_agent_review_rule` (run lease, company path lane), observed as
   `add_review_rule`. The contract text said this existed; it did not.
 - Card titles for resuming and ending a routine.
+
+## Grok Bot parity (2026-09-25)
+
+`outputs/auto-review-parity/` in the runtime takeover workspace runs 23
+scenarios through the real review gate (these instructions, prompt and
+parsing) with GPT-6 Luna at low effort on a local Codex app-server, then
+records every verdict through the real `qorpera_record_action_review` in a
+local Postgres (layering, who answers, Always allow). Grok's expected outcome
+comes from its docs and from Grok Teacher (asked 2026-09-25 10:34 local).
+
+Final pass: every scenario matches Grok except one founder decision (D1: a
+company Allow rule that covers a built-in check lifts it; Grok hands payment
+to the human whatever the rules). Changes the parity run led to:
+- Only a company Allow rule lifts a built-in check; a member's own never does
+  (Grok: personal rules only make behaviour stricter).
+- The reviewer asks on its own when unsure the member wants an irreversible
+  step, instead of denying (Grok: the reviewer may allow, ask or deny with no
+  rule matching); it denies only what clearly works against the request.
+- Hiring or instructing the company's own agents is no access change.
+- The reason is in English, or Danish when the request is Danish (Danish rules,
+  domains and currencies had pulled English requests into Danish).
+- A call denied earlier in a conversation and retried after the member wrote
+  again always becomes a card for that member (Grok: a "yes" in chat is not
+  enough by itself; the retry puts a card in front of the member).
 
 ## Rollout order
 
