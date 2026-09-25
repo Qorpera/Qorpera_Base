@@ -29,7 +29,9 @@ function status(code: string): number {
  * replays first; then a stale expected version is PT412
  * (20260828019950_company_path_preconditions); a moved head at commit is PT409;
  * a continuation page on a moved snapshot is PT412
- * (20260828019960_runtime_request_preconditions). Authority is not modelled.
+ * (20260828019960_runtime_request_preconditions). A deletion leaves a
+ * tombstone that keeps a version, as qorpera_publish_company_path does, so
+ * recreating the path must name it. Authority is not modelled.
  */
 export function companyFilePostgrest() {
 	const { binding, authority } = nativeToolAuthorityFixture();
@@ -48,7 +50,7 @@ export function companyFilePostgrest() {
 		},
 	};
 	const store = new CloudContentAddressedStore(transport);
-	const entries = new Map<string, { version: string; entry: CloudCompanyTreeEntry }>();
+	const entries = new Map<string, { version: string; entry: CloudCompanyTreeEntry | null }>();
 	const receipts = new Map<string, unknown>();
 	let head = randomUUID();
 	/** Every RPC as it crossed HTTP, with the status PostgREST answered. */
@@ -62,13 +64,25 @@ export function companyFilePostgrest() {
 	};
 	const directory = (path: string) => {
 		for (let folder = path; folder; folder = parent(folder))
-			if (!entries.has(folder))
+			if (!entries.get(folder)?.entry)
 				entries.set(folder, { version: randomUUID(), entry: { kind: "directory", path: folder } });
 	};
 	/** Another writer (a member, or another run of the same agent) changes a file. */
 	const seed = async (path: string, text: string) => {
 		directory(parent(path));
 		const file = await store.putFile(identity.companyId, Buffer.from(text), "application/octet-stream");
+		entries.set(path, { version: randomUUID(), entry: { kind: "file", path, executable: false, file } });
+		moveHead();
+	};
+	/** Another writer deletes a file or an empty folder: a tombstone with a fresh version. */
+	const remove = (path: string) => {
+		entries.set(path, { version: randomUUID(), entry: null });
+		moveHead();
+	};
+	/** Another writer stores bytes a notebook cannot read (too large, or not UTF-8). */
+	const seedBytes = async (path: string, bytes: Uint8Array) => {
+		directory(parent(path));
+		const file = await store.putFile(identity.companyId, bytes, "application/octet-stream");
 		entries.set(path, { version: randomUUID(), entry: { kind: "file", path, executable: false, file } });
 		moveHead();
 	};
@@ -87,7 +101,7 @@ export function companyFilePostgrest() {
 		const current = entries.get(plan.path);
 		if ((current?.version ?? null) !== plan.expectedVersion)
 			throw new FakeSqlError("PT412", "Company File path version changed");
-		if (plan.entry === null && !current)
+		if (plan.entry === null && !current?.entry)
 			throw new FakeSqlError("PT412", "Company File deletion target is unavailable");
 	};
 	const sql = async (method: string, args: Record<string, unknown>): Promise<unknown> => {
@@ -108,7 +122,7 @@ export function companyFilePostgrest() {
 				version: found?.version ?? null,
 				entry: found?.entry ?? null,
 				manifestBytes:
-					found?.entry.kind === "file"
+					found?.entry?.kind === "file"
 						? objects.get(`${identity.companyId}/${found.entry.file.manifestSha256}`)!.length
 						: null,
 				companyId: identity.companyId,
@@ -127,14 +141,17 @@ export function companyFilePostgrest() {
 			if (args.p_snapshot_id !== null && args.p_snapshot_id !== head)
 				throw new FakeSqlError("PT412", "Company File page changed");
 			const visible = [...entries.entries()]
-				.filter(([path]) => parent(path) === args.p_path && (after === null || path > after))
+				.filter(
+					([path, { entry }]) =>
+						entry !== null && parent(path) === args.p_path && (after === null || path > after),
+				)
 				.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
 				.slice(0, limit + 1);
 			const items = visible.slice(0, limit).map(([path, { version, entry }]) => ({
 				path,
 				version,
-				kind: entry.kind,
-				bytes: entry.kind === "file" ? entry.file.bytes : null,
+				kind: entry!.kind,
+				bytes: entry!.kind === "file" ? entry!.file.bytes : null,
 			}));
 			const hasMore = visible.length > limit;
 			return { snapshotId: head, items, hasMore, nextAfter: hasMore ? items.at(-1)!.path : null };
@@ -152,7 +169,7 @@ export function companyFilePostgrest() {
 			return {
 				state: "ready",
 				snapshotId: head,
-				entries: [...entries.values()].map(({ entry }) => entry),
+				entries: [...entries.values()].flatMap(({ entry }) => (entry ? [entry] : [])),
 			};
 		}
 		if (method === "qorpera_commit_company_path_mutation") {
@@ -160,15 +177,14 @@ export function companyFilePostgrest() {
 			stale(plan);
 			if (args.p_expected_head !== head) throw new FakeSqlError("PT409", "Company File head changed");
 			const version = randomUUID();
-			if (plan.entry) entries.set(plan.path, { version, entry: plan.entry });
-			else entries.delete(plan.path);
+			entries.set(plan.path, { version, entry: plan.entry });
 			moveHead();
 			const result = {
 				schema: "qorpera.company-path-result/v1",
 				state: "applied",
 				operationKey: plan.operationKey,
 				path: plan.path,
-				version: plan.entry ? version : null,
+				version,
 				snapshotId: head,
 				receiptId: randomUUID(),
 				proposalId: null,
@@ -206,5 +222,5 @@ export function companyFilePostgrest() {
 		fetch,
 	});
 	const gateway = new CloudCompanyPathGateway({ binding, identity, control, store });
-	return { binding, identity, gateway, entries, requests, before, seed, directory, text, moveHead };
+	return { binding, identity, gateway, entries, requests, before, seed, seedBytes, remove, directory, text, moveHead };
 }

@@ -1251,7 +1251,12 @@ fact's date and tier and are untrusted data.
 A notebook write that loses a same-object race gets the typed stale-version
 refusal (5.2) and re-reads and retries; when it keeps losing, the receipt says
 nothing was saved. A write past the profile or monthly file size answers
-`full` and saves nothing. Neither is an unconfirmed outcome.
+`full` and saves nothing. A notebook file that is not notes (larger than a
+text write, or not UTF-8) is a named gap: search reports it, forget answers
+`partial` rather than claim every copy is gone, and only a write into that
+file is refused (`unreadable`). None of these is an unconfirmed outcome. A
+deleted notebook file or folder is recreated against the version its deletion
+left.
 
 Composition (9.1): every turn composes the whole profile (every fact a write
 accepted) and a bounded

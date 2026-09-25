@@ -112,6 +112,14 @@ export class CloudCompanyHeadConflict extends Error {
 	}
 }
 
+/** A verified file that is not UTF-8 text (or, for a trusted whole-file read,
+ * larger than a text write). The bytes are intact; they are just not text here. */
+export class CloudCompanyPathNotText extends Error {
+	constructor(message = "Company File range is not UTF-8 text") {
+		super(message);
+	}
+}
+
 export interface CloudCompanyPathResult {
 	schema: "qorpera.company-path-result/v1";
 	state: "applied" | "proposed";
@@ -569,26 +577,24 @@ export class CloudCompanyPathGateway {
 				if (end === file.bytes) break;
 			}
 		}
-		if (text === undefined || (included === 0 && output.length > 0))
-			throw new Error("Company File range is not UTF-8 text");
+		if (text === undefined || (included === 0 && output.length > 0)) throw new CloudCompanyPathNotText();
 		return { text, included };
 	}
 
 	/** Trusted whole-file read for context assembly and runtime-owned notebooks.
 	 * It uses the plain path read (authority and read memory, no model-read
 	 * observation, no wake-work gate), so it is not recorded as a model read
-	 * and may run before the first acknowledgement. Returns null for an absent
-	 * path. Bounded to MAX_WRITE_BYTES so a notebook file can be rewritten. */
+	 * and may run before the first acknowledgement. An absent path keeps the
+	 * version a deletion left (null if it never existed): recreating it must
+	 * name that version. Bounded to MAX_WRITE_BYTES so a notebook file can be
+	 * rewritten; a larger or non-text file is CloudCompanyPathNotText. */
 	async readTrusted(
 		pathValue: string,
 		signal: AbortSignal,
-	): Promise<{
-		path: string;
-		version: string;
-		kind: "file" | "directory";
-		text: string;
-		fileSha256: string | null;
-	} | null> {
+	): Promise<
+		| { path: string; version: string; kind: "file" | "directory"; text: string; fileSha256: string | null }
+		| { path: string; version: string | null; kind: "absent"; text: ""; fileSha256: null }
+	> {
 		const path = parseCloudCompanyPath(pathValue);
 		const input = closed(await this.#call("qorpera_read_company_path", { ...this.#bound(), p_path: path }, signal), [
 			"path",
@@ -599,15 +605,17 @@ export class CloudCompanyPathGateway {
 		]);
 		if (input.path !== path || input.companyId !== this.#identity.companyId)
 			throw new Error("Company File read scope changed");
-		if (input.entry === null) return null;
+		if (input.entry === null)
+			return { path, version: version(input.version, true), kind: "absent", text: "", fileSha256: null };
 		const found = entry(input.entry);
 		if (found.path !== path || input.version === null) throw new Error("Company File read target changed");
 		const current = version(input.version)!;
 		if (found.kind !== "file") return { path, version: current, kind: "directory", text: "", fileSha256: null };
-		if (found.file.bytes > MAX_WRITE_BYTES) throw new Error("Company File notebook exceeds its bound");
+		if (found.file.bytes > MAX_WRITE_BYTES)
+			throw new CloudCompanyPathNotText("Company File notebook exceeds its bound");
 		const manifestSize = integer(input.manifestBytes, 1, 8 * 1024 * 1024);
 		const { text, included } = await this.#fileText(found.file, manifestSize, 0, MAX_WRITE_BYTES, signal);
-		if (included !== found.file.bytes) throw new Error("Company File range is not UTF-8 text");
+		if (included !== found.file.bytes) throw new CloudCompanyPathNotText();
 		return { path, version: current, kind: "file", text, fileSha256: found.file.fileSha256 };
 	}
 

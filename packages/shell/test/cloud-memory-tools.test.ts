@@ -29,7 +29,9 @@ function companyFile(initial: Record<string, string> = {}) {
 	const readTrusted = vi.fn<CloudCompanyPathGateway["readTrusted"]>(async (path) => {
 		const file = files.get(path);
 		if (file) return { path, version: file.version, kind: "file", text: file.text, fileSha256: "a".repeat(64) };
-		return folders.has(path) ? { path, version: randomUUID(), kind: "directory", text: "", fileSha256: null } : null;
+		return folders.has(path)
+			? { path, version: randomUUID(), kind: "directory", text: "", fileSha256: null }
+			: { path, version: null, kind: "absent", text: "", fileSha256: null };
 	});
 	const listTrusted = vi.fn<CloudCompanyPathGateway["listTrusted"]>(async (path) =>
 		[...files.entries()]
@@ -206,6 +208,27 @@ describe("agent memory notebook", () => {
 			});
 			expect(f.receipt(profiled)).toMatchObject({ state: "duplicate", tier: "profile", path: f.paths.profile });
 			expect(f.store.mutate).not.toHaveBeenCalled();
+		} finally {
+			f.run.close();
+		}
+	});
+
+	it("treats a note tag as part of no fact's identity, on write and on forget", async () => {
+		const f = await fixture({
+			"agents/<agent>/memory/profile.md": "- (2026-07-01) [note] Export runs nightly.\n",
+		});
+		try {
+			const tagged = await f.boundary.invoke("n1", "qorpera", "update_memory", {
+				action: "write",
+				fact: "[note] Export runs nightly.",
+			});
+			expect(f.receipt(tagged)).toMatchObject({ state: "duplicate", tier: "profile" });
+			const gone = await f.boundary.invoke("n2", "qorpera", "update_memory", {
+				action: "forget",
+				fact: "Export runs nightly.",
+			});
+			expect(f.receipt(gone)).toMatchObject({ state: "forgotten", removed: 1 });
+			expect(f.store.files.get(f.paths.profile)?.text).toBe("");
 		} finally {
 			f.run.close();
 		}
@@ -521,6 +544,74 @@ describe("agent memory over the real Company File HTTP adapter", () => {
 			expect(f.db.requests.filter((request) => request.method === "qorpera_commit_company_path_mutation")).toEqual(
 				[],
 			);
+		} finally {
+			f.boundary.close();
+		}
+	});
+
+	it("writes again after a member deleted the profile or the whole log folder", async () => {
+		const f = httpNotebook();
+		const month = cloudMemoryLogPath(f.agent, NOW);
+		await f.db.seed(f.paths.profile, "- (2026-09-01) Old profile fact.\n");
+		await f.db.seed(month, "- (2026-09-01) Old log fact.\n");
+		// Deletions leave tombstones that keep a version; the notebook must name it to recreate the path.
+		f.db.remove(f.paths.profile);
+		f.db.remove(month);
+		f.db.remove(f.paths.log);
+		try {
+			const profiled = f.receipt(
+				await f.boundary.invoke("p1", "qorpera", "update_memory", {
+					action: "write",
+					tier: "profile",
+					fact: "New profile fact.",
+				}),
+			);
+			expect(profiled).toMatchObject({ state: "written", tier: "profile" });
+			const logged = f.receipt(
+				await f.boundary.invoke("l1", "qorpera", "update_memory", { action: "write", fact: "New log fact." }),
+			);
+			expect(logged).toMatchObject({ state: "written", tier: "log", path: month });
+			expect(f.db.requests.filter((request) => request.status === 412)).toEqual([]);
+			expect(f.db.entries.get(f.paths.log)?.entry).toEqual({ kind: "directory", path: f.paths.log });
+			expect(await f.db.text(f.paths.profile)).toBe("- (2026-09-22) New profile fact.\n");
+			expect(await f.db.text(month)).toBe("- (2026-09-22) New log fact.\n");
+		} finally {
+			f.boundary.close();
+		}
+	});
+
+	it("treats a notebook file that is not text as a named gap, never a failure of every write", async () => {
+		const f = httpNotebook();
+		await f.db.seed(`${f.paths.log}/2026-07.md`, "- (2026-07-01) Bills go out monthly.\n");
+		// An import or a member left a month that is not notebook text: too large, and not UTF-8.
+		await f.db.seedBytes(`${f.paths.log}/2026-06.md`, Buffer.alloc(40 * 1024, 0x61));
+		await f.db.seedBytes(`${f.paths.log}/2026-05.md`, Buffer.from([0xff, 0xfe, 0x00]));
+		try {
+			const written = f.receipt(
+				await f.boundary.invoke("w1", "qorpera", "update_memory", { action: "write", fact: "Fresh fact." }),
+			);
+			expect(written).toMatchObject({ state: "written" });
+			const unreadable = [`${f.paths.log}/2026-06.md`, `${f.paths.log}/2026-05.md`];
+			const recalled = f.receipt(
+				await f.boundary.invoke("r1", "qorpera", "recall_memory", { query: "Bills monthly" }),
+			);
+			expect(recalled.facts).toEqual([{ date: "2026-07-01", tier: "log", fact: "Bills go out monthly." }]);
+			expect(recalled.searched).toEqual({ logMonths: 4, oldestMonth: "2026-05", unreadable });
+			// Forget removes what it can reach and never claims every copy is gone.
+			const forgotten = f.receipt(
+				await f.boundary.invoke("f1", "qorpera", "update_memory", {
+					action: "forget",
+					fact: "Bills go out monthly.",
+				}),
+			);
+			expect(forgotten).toMatchObject({ state: "partial", removed: 1, searched: { unreadable } });
+			expect(await f.db.text(`${f.paths.log}/2026-07.md`)).toBe("");
+			// Only a write into the unreadable file itself is refused, and it says so.
+			await f.db.seedBytes(cloudMemoryLogPath(f.agent, NOW), Buffer.alloc(40 * 1024, 0x62));
+			const refused = f.receipt(
+				await f.boundary.invoke("w2", "qorpera", "update_memory", { action: "write", fact: "Another fact." }),
+			);
+			expect(refused).toMatchObject({ state: "unreadable", saved: false, path: cloudMemoryLogPath(f.agent, NOW) });
 		} finally {
 			f.boundary.close();
 		}

@@ -27,7 +27,11 @@
  * address the executing agent's own notebook. */
 import { createHash } from "node:crypto";
 import type { JsonValue } from "@qorpera/contracts";
-import { CloudCompanyHeadConflict, type CloudCompanyPathGateway } from "./cloud-company-path-gateway.ts";
+import {
+	CloudCompanyHeadConflict,
+	type CloudCompanyPathGateway,
+	CloudCompanyPathNotText,
+} from "./cloud-company-path-gateway.ts";
 import { CloudCompanyPathVersionChanged } from "./cloud-company-path-refusal.ts";
 import type { CloudNativeToolIdentity } from "./cloud-native-tool-authority.ts";
 import { type CloudNativeTool, type CloudToolContext, cloudToolJsonText } from "./cloud-native-tool-boundary.ts";
@@ -52,6 +56,8 @@ const RECALL_MAX_LIMIT = 50;
 const DISTINCTIVE_WORD_CHARS = 4;
 /** Fresh re-reads when another writer changed a notebook file first. */
 const CONFLICT_ATTEMPTS = 3;
+/** Notebook files read at once; a search reads every month, so read them side by side. */
+const READ_CONCURRENCY = 8;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const LINE = /^- \((\d{4}-\d{2}-\d{2})\) (.+)$/;
 const LOG_FILE = /^\d{4}-\d{2}\.md$/;
@@ -67,6 +73,9 @@ export interface CloudMemoryFact {
 
 interface NotebookFile {
 	readonly path: string;
+	/** absent keeps the version a deletion left (null if it never existed): recreating the
+	 * file must name it. unreadable is a file that is not notebook text (too large, not UTF-8). */
+	readonly state: "file" | "absent" | "unreadable";
 	readonly version: string | null;
 	readonly lines: string[];
 }
@@ -137,6 +146,12 @@ function normalize(text: string): string {
 	return text.trim().replace(/\s+/g, " ").toLowerCase();
 }
 
+/** One fact is one fact: its text without a note tag, case and spacing aside. Write dedupe and forget share this. */
+function factIdentity(text: string): string {
+	const trimmed = text.trim();
+	return normalize(trimmed.startsWith(NOTE_TAG) ? trimmed.slice(NOTE_TAG.length) : trimmed);
+}
+
 function factText(value: unknown, label: string): string {
 	if (
 		typeof value !== "string" ||
@@ -154,11 +169,23 @@ function ageDays(date: string, at: Date): number {
 	return Number.isFinite(then) ? Math.floor((at.getTime() - then) / 86_400_000) : Number.POSITIVE_INFINITY;
 }
 
-async function readFile(gateway: CloudMemoryGateway, path: string, signal: AbortSignal): Promise<NotebookFile | null> {
-	const found = await gateway.readTrusted(path, signal);
-	if (!found) return null;
+async function readFile(gateway: CloudMemoryGateway, path: string, signal: AbortSignal): Promise<NotebookFile> {
+	let found: Awaited<ReturnType<CloudMemoryGateway["readTrusted"]>>;
+	try {
+		found = await gateway.readTrusted(path, signal);
+	} catch (error) {
+		// Intact bytes that are not notebook text: a gap in the notebook, not a failed read.
+		if (error instanceof CloudCompanyPathNotText) return { path, state: "unreadable", version: null, lines: [] };
+		throw error;
+	}
+	if (found.kind === "absent") return { path, state: "absent", version: found.version, lines: [] };
 	if (found.kind !== "file") throw new Error("Memory path is not a file");
-	return { path, version: found.version, lines: found.text.split("\n").filter((line) => line.length > 0) };
+	return {
+		path,
+		state: "file",
+		version: found.version,
+		lines: found.text.split("\n").filter((line) => line.length > 0),
+	};
 }
 
 /** Every monthly log file, newest first. The gateway pages the listing to its end,
@@ -173,7 +200,7 @@ async function logFiles(gateway: CloudMemoryGateway, log: string, signal: AbortS
 }
 
 interface Notebook {
-	readonly profile: NotebookFile | null;
+	readonly profile: NotebookFile;
 	/** Every monthly log file, newest first. */
 	readonly logs: readonly NotebookFile[];
 }
@@ -184,26 +211,40 @@ async function readNotebook(
 	paths: { profile: string; log: string },
 	signal: AbortSignal,
 ): Promise<Notebook> {
-	const profile = await readFile(gateway, paths.profile, signal);
-	const logs: NotebookFile[] = [];
-	for (const path of await logFiles(gateway, paths.log, signal)) {
-		const file = await readFile(gateway, path, signal);
-		if (file) logs.push(file);
-	}
+	const listed = await logFiles(gateway, paths.log, signal);
+	const logs: NotebookFile[] = new Array(listed.length);
+	let next = 0;
+	const [profile] = await Promise.all([
+		readFile(gateway, paths.profile, signal),
+		...Array.from({ length: Math.min(READ_CONCURRENCY, listed.length) }, async () => {
+			while (next < listed.length) {
+				const index = next++;
+				logs[index] = await readFile(gateway, listed[index], signal);
+			}
+		}),
+	]);
 	return { profile, logs };
 }
 
-/** The notebook's files with the tier their lines are read as: the profile, then each month, newest first. */
+/** The notebook's readable files with the tier their lines are read as: the profile, then each month, newest first. */
 function notebookFiles(notebook: Notebook): { file: NotebookFile; tier: "profile" | "log" }[] {
 	return [
-		...(notebook.profile ? [{ file: notebook.profile, tier: "profile" as const }] : []),
+		{ file: notebook.profile, tier: "profile" as const },
 		...notebook.logs.map((file) => ({ file, tier: "log" as const })),
-	];
+	].filter(({ file }) => file.state === "file");
 }
 
-/** How far back a search read: every monthly file there is, so nothing older was skipped. */
-function searched(notebook: Notebook): { logMonths: number; oldestMonth: string | null } {
-	return { logMonths: notebook.logs.length, oldestMonth: notebook.logs.at(-1)?.path.slice(-10, -3) ?? null };
+/** How far back a search read: every monthly file there is, so nothing older was skipped.
+ * Files that are not notebook text are named, because a copy of a fact could sit in one. */
+function searched(notebook: Notebook): { [key: string]: JsonValue } {
+	const unreadable = [notebook.profile, ...notebook.logs]
+		.filter((file) => file.state === "unreadable")
+		.map((file) => file.path);
+	return {
+		logMonths: notebook.logs.length,
+		oldestMonth: notebook.logs.at(-1)?.path.slice(-10, -3) ?? null,
+		...(unreadable.length ? { unreadable } : {}),
+	};
 }
 
 function budget<T>(items: T[], size: (item: T) => number, maxBytes: number, maxCount: number): T[] {
@@ -239,8 +280,10 @@ export async function composeCloudAgentMemory(
 		profile: { path: paths.profile, version: null, facts: [] },
 		recentLog: { files: [], facts: [], moreFacts: 0 },
 	};
+	// The whole profile or none: an unreadable one degrades the block to unavailable.
 	const profile = await readFile(gateway, paths.profile, signal);
-	block.profile.version = profile?.version ?? null;
+	if (profile.state === "unreadable") throw new CloudCompanyPathNotText("Memory profile is not notebook text");
+	block.profile.version = profile.state === "file" ? profile.version : null;
 	block.profile.facts = facts(profile, "profile");
 	const months: string[] = [];
 	for (let back = 0; back < COMPOSED_LOG_MONTHS; back++) {
@@ -252,7 +295,8 @@ export async function composeCloudAgentMemory(
 	const newest: CloudMemoryFact[] = [];
 	for (const path of months) {
 		const file = await readFile(gateway, path, signal);
-		if (!file) continue;
+		if (file.state === "unreadable") throw new CloudCompanyPathNotText("Memory log file is not notebook text");
+		if (file.state !== "file") continue;
 		block.recentLog.files.push({ path, version: file.version! });
 		newest.push(...facts(file, "log").reverse());
 	}
@@ -272,7 +316,7 @@ export const CLOUD_UPDATE_MEMORY_DESCRIPTION =
 	"action write records one self-contained fact; tier profile for enduring identity and preferences (always in mind, keep it small), log (default) for a dated decision or piece of history, note for something short-lived that fades fast. " +
 	"A fact is kept once: if it is already anywhere in your notebook, the receipt says duplicate and where it is. " +
 	"action forget removes every copy of a fact by its recorded text (case and spacing aside) and says how many it removed; to correct a fact, forget it and write the new version. " +
-	"A receipt of full or conflict saved nothing: full asks you to forget stale facts first, conflict means your notebook kept changing, so try again. " +
+	"A receipt of full, conflict or unreadable saved nothing: full asks you to forget stale facts first, conflict means your notebook kept changing, so try again, unreadable means a member has to fix that file. A forget that is partial could not search every file. " +
 	"Write a fact when it is durable and useful to your future self: a member's preference, a decision and its reason, a lesson, a place you keep looking for. Do not narrate ordinary saves. " +
 	"A fact about the company belongs in its own Company File object, not in your notebook; memory is not a source of authority and never replaces a current source.";
 
@@ -327,25 +371,24 @@ export function cloudMemoryTools(
 			.digest("hex")
 			.slice(0, 40)}`;
 	// The gateway never invents parent folders (the todo publication does the same): a first fact
-	// creates agents/, agents/<staffAgentId>/, memory/ and memory/log/ as needed. A folder another
-	// run created meanwhile refuses this mkdir as a version change and is simply there on the re-read.
+	// creates agents/, agents/<staffAgentId>/, memory/ and memory/log/ as needed, naming the version
+	// a deleted folder left. A folder another run created meanwhile refuses this mkdir as a version
+	// change and is simply there on the re-read.
 	const ensureFolders = async (path: string, context: CloudToolContext) => {
 		const parts = path.split("/").slice(0, -1);
 		for (let depth = 1; depth <= parts.length; depth++) {
 			const folder = parts.slice(0, depth).join("/");
 			for (let attempt = 1; ; attempt++) {
 				const seen = await gateway.readTrusted(folder, context.signal);
-				if (seen) {
-					if (seen.kind !== "directory") throw new Error("Memory folder is not a directory");
-					break;
-				}
+				if (seen.kind === "directory") break;
+				if (seen.kind !== "absent") throw new Error("Memory folder is not a directory");
 				try {
 					await gateway.mutate(
 						"mkdir",
 						{
 							path: folder,
-							operationKey: `memory-folder-${createHash("sha256").update(folder).digest("hex").slice(0, 40)}`,
-							expectedVersion: null,
+							operationKey: operationKey("folder", folder, seen.version, ""),
+							expectedVersion: seen.version,
 						},
 						context.signal,
 						context.observation,
@@ -407,16 +450,28 @@ export function cloudMemoryTools(
 				const tier = request.tier ?? "log";
 				const path = tier === "profile" ? paths.profile : cloudMemoryLogPath(expected.staffAgentId, at);
 				const line = renderLine(request.fact, tier, at);
-				const key = normalize(request.fact);
+				const key = factIdentity(request.fact);
 				const written = await retrying(async () => {
 					const notebook = await readNotebook(gateway, paths, context.signal);
+					// A file that is not notebook text is skipped here: at worst this writes a second copy.
 					for (const { file, tier: kind } of notebookFiles(notebook))
 						for (const fact of facts(file, kind))
-							if (normalize(fact.fact) === key)
+							if (factIdentity(fact.fact) === key)
 								return reply({ state: "duplicate", tier: fact.tier, date: fact.date, path: file.path });
 					const current =
-						tier === "profile" ? notebook.profile : (notebook.logs.find((file) => file.path === path) ?? null);
-					const text = `${[...(current?.lines ?? []), line].join("\n")}\n`;
+						tier === "profile"
+							? notebook.profile
+							: (notebook.logs.find((file) => file.path === path) ??
+								(await readFile(gateway, path, context.signal)));
+					if (current.state === "unreadable")
+						return reply({
+							state: "unreadable",
+							saved: false,
+							tier,
+							path,
+							hint: "This notebook file is not plain notes (over 32 KiB or not UTF-8 text), so nothing was written. Ask a member to fix or move it.",
+						});
+					const text = `${[...current.lines, line].join("\n")}\n`;
 					if (Buffer.byteLength(text) > (tier === "profile" ? MAX_PROFILE_BYTES : MAX_FILE_BYTES))
 						return reply({
 							state: "full",
@@ -428,13 +483,13 @@ export function cloudMemoryTools(
 									? "Your profile is full; keep it small: forget stale profile facts first."
 									: "This month's log file is full; forget stale facts first.",
 						});
-					if (!current) await ensureFolders(path, context);
+					if (current.state === "absent") await ensureFolders(path, context);
 					const result = await gateway.mutate(
 						"write",
 						{
 							path,
-							operationKey: operationKey("write", path, current?.version ?? null, line),
-							expectedVersion: current?.version ?? null,
+							operationKey: operationKey("write", path, current.version, line),
+							expectedVersion: current.version,
 							text,
 						},
 						context.signal,
@@ -460,11 +515,11 @@ export function cloudMemoryTools(
 					})
 				);
 			}
-			// Forget matches the same fact identity a write deduplicates on, and a note by its text or its tagged text.
-			const key = normalize(request.fact.startsWith(NOTE_TAG) ? request.fact.slice(NOTE_TAG.length) : request.fact);
+			// Forget matches the same fact identity a write deduplicates on.
+			const key = factIdentity(request.fact);
 			const hit = (line: string, tier: "profile" | "log") => {
 				const fact = parseLine(line, tier);
-				return !!fact && normalize(fact.fact) === key;
+				return !!fact && factIdentity(fact.fact) === key;
 			};
 			const notebook = await readNotebook(gateway, paths, context.signal);
 			const changes: { [key: string]: JsonValue }[] = [];
@@ -474,10 +529,10 @@ export function cloudMemoryTools(
 				if (!file.lines.some((line) => hit(line, tier))) continue;
 				const outcome = await retrying(async (attempt) => {
 					const current = attempt === 1 ? file : await readFile(gateway, file.path, context.signal);
-					const kept = current?.lines.filter((line) => !hit(line, tier)) ?? [];
-					const count = (current?.lines.length ?? 0) - kept.length;
+					const kept = current.lines.filter((line) => !hit(line, tier));
+					const count = current.lines.length - kept.length;
 					// Another writer may have removed it meanwhile: nothing left to forget here.
-					if (!current || !count) return { count: 0, result: null };
+					if (current.state !== "file" || !count) return { count: 0, result: null };
 					const result = await gateway.mutate(
 						"write",
 						{
@@ -510,7 +565,17 @@ export function cloudMemoryTools(
 					state: "conflict",
 					removed,
 					changes,
+					searched: searched(notebook),
 					hint: "Some copies are still there because your notebook kept changing. Call forget again for the rest.",
+				});
+			// A file that is not notebook text may hold a copy: never claim every copy is gone.
+			if ([notebook.profile, ...notebook.logs].some((file) => file.state === "unreadable"))
+				return reply({
+					state: "partial",
+					removed,
+					changes,
+					searched: searched(notebook),
+					hint: "Some notebook files are not plain notes and could not be searched, so a copy may remain there. Ask a member to fix or move them.",
 				});
 			if (changes.length)
 				return reply({ state: removed ? "forgotten" : "proposed", removed, changes, searched: searched(notebook) });
