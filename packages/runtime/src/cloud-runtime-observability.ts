@@ -51,6 +51,8 @@ export const CLOUD_RUNTIME_OPERATIONS = [
 	"context_authority",
 	"native_result_fence",
 	"diagnostic_export",
+	// Auto-review (v115): the reviewer's own model turn before an acting call.
+	"action_review",
 ] as const;
 export const CLOUD_RUNTIME_OUTCOMES = [
 	"succeeded",
@@ -77,6 +79,11 @@ export const CLOUD_RUNTIME_ERROR_CATEGORIES = [
 	"invalid_response",
 	"unknown",
 	"export_unavailable",
+	// Auto-review (v115): why an acting call did not run.
+	"approval_pending",
+	"approval_declined",
+	"review_denied",
+	"review_unavailable",
 ] as const;
 
 export type CloudRuntimeOperation = (typeof CLOUD_RUNTIME_OPERATIONS)[number];

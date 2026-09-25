@@ -241,6 +241,7 @@ async function fixture(mode = "company-runtime", httpPathControl = false, presen
 		adapterSha256: "b".repeat(64),
 		destinationOrigin: "https://api.linear.app",
 	};
+	const reviewedTools: string[] = [];
 	const pathCall = vi.fn<CloudCompanyPathControl["call"]>(async (method, args) => {
 		if (method === "qorpera_record_runtime_observation") {
 			expect(args.p_run_id).toBe(f.binding.runId);
@@ -277,6 +278,16 @@ async function fixture(mode = "company-runtime", httpPathControl = false, presen
 			};
 		}
 		if (method === "qorpera_describe_company_run_context") return structuredClone(f.context);
+		// Auto-review (v115): these fixtures approve every acting call up front; the review
+		// step itself is covered in cloud-action-review.test.ts and cloud-codex-tool-session.test.ts.
+		if (method === "qorpera_begin_action_review") {
+			expect(args.p_call).toEqual({
+				tool: expect.any(String),
+				argumentSha256: expect.stringMatching(/^[0-9a-f]{64}$/),
+			});
+			reviewedTools.push((args.p_call as { tool: string }).tool);
+			return { schema: "qorpera.action-review-begin/v1", state: "approved", reviewId: randomUUID() };
+		}
 		if (method === "qorpera_read_native_wake") return structuredClone(mode === "company-worker" ? workerWake : wake);
 		if (method === "qorpera_list_native_connector_tools") {
 			return mode === "company-secret" ? [structuredClone(connectorDescriptor)] : [];
@@ -517,6 +528,7 @@ async function fixture(mode = "company-runtime", httpPathControl = false, presen
 		runtime,
 		control,
 		pathCall,
+		reviewedTools,
 		store,
 		deliveries,
 		evidence,
@@ -624,6 +636,8 @@ it.each(["available", "unavailable"])(
 it("composes office tools with the actual admitted native run and existing effect ledger, then releases occupancy", async () => {
 	const f = await fixture("company-office");
 	const result = await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+	// The office command is an acting call: it passed the review step (approved in this fixture).
+	expect(f.reviewedTools).toEqual(["computer_shell"]);
 	expect(result.delivery.messageCount).toBe(2);
 	expect(f.officeSession).toHaveBeenCalledTimes(1);
 	expect(f.officeEndpoint.perform).toHaveBeenCalledTimes(1);
@@ -801,6 +815,8 @@ it("projects only native auth from a login capsule without materializing local c
 it("exposes only a named typed connector operation and keeps its grant and destination outside model arguments", async () => {
 	const f = await fixture("company-secret");
 	const result = await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+	// A connector write is reviewed; reads and the agent's own sends are not.
+	expect(f.reviewedTools).toEqual(["linear_issue_create"]);
 	expect(result.delivery).toEqual({ messageCount: 2, finalMessageId: f.deliveries.get("final")?.messageId });
 	expect(f.secretBroker?.execute).toHaveBeenCalledTimes(1);
 	expect(f.control.beginToolOperation).toHaveBeenCalledTimes(1);

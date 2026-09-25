@@ -641,7 +641,7 @@ begin
 		'computer_browser','computer_desktop','computer_shell','computer_screenshot','computer_transfer','hire_agent',
 		'create_group_chat','manage_routine','report_work','manage_todo','manage_worker','company_context','message_composition',
 		'connector','unknown_tool','run_authority',
-		'context_authority','native_result_fence','diagnostic_export',
+		'context_authority','native_result_fence','diagnostic_export','action_review',
 		'coding_run_command','coding_read_command','coding_cancel_command','coding_finish','coding_ask',
 		'update_memory','recall_memory','organize_sidebar'] loop
 		v_event := pg_temp.observation() || jsonb_build_object('operation',v_operation,'assignmentId',null,

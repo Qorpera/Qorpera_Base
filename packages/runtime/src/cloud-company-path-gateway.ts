@@ -89,7 +89,11 @@ export type CloudCompanyPathRpc =
 	| "qorpera_send_coworker_message"
 	| "qorpera_runtime_wake_policy"
 	| "qorpera_assert_wake_work_allowed"
-	| "qorpera_assert_wake_completion";
+	| "qorpera_assert_wake_completion"
+	// Auto-review (v115): rules, verdicts and approval cards for acting calls.
+	| "qorpera_begin_action_review"
+	| "qorpera_record_action_review"
+	| "qorpera_await_action_review";
 
 /** Service-only transport. Never exposed as an arbitrary RPC tool. */
 export interface CloudCompanyPathControl {

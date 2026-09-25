@@ -1,4 +1,5 @@
 import type { JsonValue } from "@qorpera/contracts";
+import { CloudActionReviewChannel, type CloudActionReviewer } from "./cloud-action-review.ts";
 import { runCloudCodexToolSession } from "./cloud-codex-tool-session.ts";
 import type { CloudNativeCaptureImages } from "./cloud-native-capture-images.ts";
 import type { NativeIsolationConfiguration } from "./cloud-native-isolation.ts";
@@ -11,6 +12,7 @@ import {
 	cloudToolRequest,
 } from "./cloud-native-tool-authority.ts";
 import {
+	type CloudNativeActionReview,
 	type CloudNativeFencedResult,
 	type CloudNativeTool,
 	CloudNativeToolBoundary,
@@ -60,6 +62,8 @@ export async function runCloudNativeRunToolSession(options: {
 	signal: AbortSignal;
 	timeoutMs?: number;
 	observability?: CloudRuntimeObservability;
+	/** Auto-review (v115): the review step for acting calls, given the reviewer this run's Codex session answers. */
+	actionReview?: (reviewer: CloudActionReviewer) => CloudNativeActionReview;
 }): Promise<{ providerSessionId: string; toolCalls: number; codexVersion: string; fencedRequests: number }> {
 	const admission = options.observability?.start("run_authority");
 	let run: CloudNativeToolRun;
@@ -101,6 +105,7 @@ export async function runCloudNativeRunToolSession(options: {
 			}
 		};
 		await assertActive(run.signal);
+		const reviewer = options.actionReview ? new CloudActionReviewChannel() : undefined;
 		boundary = new CloudNativeToolBoundary({
 			observability: options.observability,
 			companyId: run.identity.companyId,
@@ -110,6 +115,7 @@ export async function runCloudNativeRunToolSession(options: {
 			captures: adapters.captures,
 			assertActive,
 			signal: run.signal,
+			...(reviewer && options.actionReview ? { review: options.actionReview(reviewer) } : {}),
 		});
 		result = await runCloudCodexToolSession({
 			observability: options.observability,
@@ -124,6 +130,7 @@ export async function runCloudNativeRunToolSession(options: {
 			isolation: options.isolation,
 			signal: run.signal,
 			timeoutMs: options.timeoutMs,
+			...(reviewer ? { reviewer } : {}),
 			beforeModelStart: async (signal) => {
 				await assertActive(signal);
 				await cloudToolRequest(

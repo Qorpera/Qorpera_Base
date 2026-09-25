@@ -92,6 +92,10 @@ export async function startCloudNativeResultFence(options: {
 	root: string;
 	boundary: CloudNativeToolBoundary;
 	assertSession: (request: CloudNativeFenceRequest) => void;
+	/** Auto-review (v115): a reviewer thread's request is answered with the host's own
+	 * verdict acknowledgements, never the agent's tool results, and is not the agent's
+	 * context. Returns undefined for every other request. */
+	releaseReviewOutputs?: (request: CloudNativeFenceRequest) => CloudNativeFencedResult[] | undefined;
 	/** Cloud runtime records exact released evidence before a provider request can leave. */
 	recordContextView?: (
 		request: CloudNativeFenceRequest,
@@ -157,12 +161,12 @@ export async function startCloudNativeResultFence(options: {
 				requestIds.add(request.requestId);
 				if (requestIds.size > TRACKED_REQUESTS) requestIds.delete(requestIds.values().next().value as string);
 				options.assertSession(request);
-				void options.boundary
-					.fenceNativeResults(request.outputs)
+				const review = options.releaseReviewOutputs?.(request);
+				void (review ? Promise.resolve(review) : options.boundary.fenceNativeResults(request.outputs))
 					.then(async (outputs) => {
 						if (stopped || socket.destroyed || options.signal.aborted) return;
 						options.assertSession(request);
-						await options.recordContextView?.(request, outputs, options.signal);
+						if (!review) await options.recordContextView?.(request, outputs, options.signal);
 						if (stopped || socket.destroyed || options.signal.aborted) return;
 						options.assertSession(request);
 						const wire = Buffer.from(

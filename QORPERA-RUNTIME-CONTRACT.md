@@ -2213,6 +2213,55 @@ Founder decision, 2026-09-24 (Grok Bot's rail). Extends 14.1 and the
 4. **Arrangement is not authority.** A section grants nothing and carries no
    content; deleting one moves its agents to Unassigned.
 
+### 2026-09-25 amendment: auto-review rules and approvals
+
+Founder decisions, 2026-09-24/25 (Grok Bot's Auto-review, multiplayer).
+Implements the "destructive or external-action approval" and "safety-check
+review or retry" surfaces of 16.2 and the classification of section 10.
+
+1. **Rules.** A rule is one plain-language sentence, "When an agent wants to
+   ..., it should: Ask first | Allow automatically". A member writes rules for
+   themself ("only me"); owners and admins write company rules, which every
+   member reads and no one else edits. Agents may add Ask first rules only;
+   an Allow rule an agent suggests becomes a card the member confirms (not
+   built in bundle v115).
+2. **What is reviewed.** Every call is classified: reads, and changes that
+   stay inside the company (its versioned Company File, notes, messages,
+   todos, cards), run at once. Outside effects (connector writes, acting
+   computer steps, the computer shell), Company File deletion and delegation
+   (hiring, group chats, routines, starting workers or coding jobs) pass a
+   review first. Coding sessions themselves are not reviewed; starting one is.
+3. **The reviewer.** A separate model (GPT-6 Luna at low effort) in a fresh,
+   tool-less conversation on the run's own model account, inside the same
+   harness process, never a separate credential path. It reads the action,
+   what the member or routine asked for, and the rules that apply (all company
+   rules and the personal rules of the member the run works for), never the
+   agent's transcript, and answers allow, ask or deny. A review that cannot
+   run is never an approval: the call does not run.
+4. **Layering.** Built-in checks (money, legal terms, deleting outside data,
+   access changes: ask; an action that plainly does not serve the request:
+   deny), then company rules, then personal rules. Ask first wins; an Allow
+   rule never undoes an Ask first rule, and lifts a built-in check only when
+   it covers the action. The kernel enforces the ordering on the recorded
+   verdict.
+5. **Approval cards.** An ask raises a card in the conversation the agent
+   works in (its own thread or a member's conversation; never a group chat or
+   a worker, where the call is refused instead). A personal rule's card is
+   answered only by that member; a company rule's or a built-in check's card
+   by any owner or admin. Allow once, Deny, and Always allow (a built-in
+   check's card only; saves a narrow company Allow rule). A card never
+   expires; dismissal is never consent.
+6. **Waiting.** A call a member is likely watching holds on its card for about
+   five minutes and runs at once when approved. After that, and at once for
+   routines and coworker wakes, it parks: the agent is told, keeps working,
+   and the card keeps waiting. An answer to a parked card wakes the agent in
+   that conversation on the answering member's account; the agent repeats the
+   identical call (the card shows it exactly), which runs once without a
+   second review.
+7. **Record.** Every reviewed call is recorded with its verdict, reason,
+   matched rules, answer and use. Reviews are not a cap on work: no number of
+   reviews, calls or approvals is limited.
+
 ## 20. Enforcement matrix
 
 | Requirement | Code owner | Model law |
