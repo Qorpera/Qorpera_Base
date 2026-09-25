@@ -1,0 +1,146 @@
+{
+	"$schema": "https://json-schema.org/draft/2020-12/schema",
+	"$id": "https://github.com/Qorpera/Qorpera_Base/deploy/deployment-manifest/deployment-manifest.schema.json",
+	"title": "Qorpera deployment manifest",
+	"description": "What is live now, per component: exact identity, when and in which cut it went live, and the acceptance evidence run against that exact identity. Written only by manifest.mjs apply; manifest.mjs check enforces the rules this schema cannot express (identityDigest = sha256 of the canonical identity; state follows from evidence; record bytes).",
+	"type": "object",
+	"required": ["schema", "sequence", "previous", "writtenAt", "writtenBy", "reason", "components", "retired"],
+	"additionalProperties": false,
+	"properties": {
+		"schema": { "const": "qorpera.deployment-manifest/v1" },
+		"sequence": { "type": "integer", "minimum": 1, "description": "1 for the first manifest, +1 per apply." },
+		"previous": {
+			"description": "The manifest this one replaced: its sequence and the sha256 of its exact file bytes (history/NNNN-*.json).",
+			"oneOf": [
+				{ "type": "null" },
+				{
+					"type": "object",
+					"required": ["sequence", "sha256"],
+					"additionalProperties": false,
+					"properties": { "sequence": { "type": "integer", "minimum": 1 }, "sha256": { "$ref": "#/$defs/sha256" } }
+				}
+			]
+		},
+		"writtenAt": { "$ref": "#/$defs/time" },
+		"writtenBy": { "type": "string" },
+		"reason": { "type": "string", "minLength": 1 },
+		"components": { "type": "array", "items": { "$ref": "#/$defs/component" } },
+		"retired": {
+			"type": "array",
+			"items": {
+				"type": "object",
+				"required": ["id", "at", "reason", "identity"],
+				"properties": {
+					"id": { "$ref": "#/$defs/id" },
+					"at": { "$ref": "#/$defs/time" },
+					"reason": { "type": "string" },
+					"identity": { "type": "object" }
+				}
+			}
+		}
+	},
+	"$defs": {
+		"sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+		"time": { "type": "string", "format": "date-time" },
+		"id": { "type": "string", "pattern": "^[a-z][a-z0-9-]{1,63}$" },
+		"record": {
+			"description": "Where a fact is written down. Paths are relative to the workspace root the manifest lives in.",
+			"oneOf": [
+				{
+					"description": "A receipt file, pinned by content.",
+					"type": "object",
+					"required": ["path", "sha256"],
+					"additionalProperties": false,
+					"properties": { "path": { "type": "string" }, "sha256": { "$ref": "#/$defs/sha256" } }
+				},
+				{
+					"description": "One line of an append-only log (the bundle registry); quote appears on that line.",
+					"type": "object",
+					"required": ["path", "line", "quote"],
+					"additionalProperties": false,
+					"properties": {
+						"path": { "type": "string" },
+						"line": { "type": "integer", "minimum": 1 },
+						"quote": { "type": "string", "minLength": 8 }
+					}
+				},
+				{
+					"description": "An external record: a pull request, a check run.",
+					"type": "object",
+					"required": ["url"],
+					"additionalProperties": false,
+					"properties": { "url": { "type": "string", "pattern": "^https://" } }
+				}
+			]
+		},
+		"component": {
+			"type": "object",
+			"required": ["id", "title", "scope", "identity", "identityDigest", "live", "acceptance", "notes"],
+			"additionalProperties": false,
+			"properties": {
+				"id": { "$ref": "#/$defs/id" },
+				"title": { "type": "string", "minLength": 1 },
+				"scope": {
+					"type": "string",
+					"minLength": 1,
+					"description": "Where it runs: global, node-01, node-02, exec-host, …"
+				},
+				"identity": {
+					"type": "object",
+					"description": "The exact software/configuration identity (digests, commits, versions). A null value is a live fact no record confirms; such a component is identity-unknown and cannot be accepted."
+				},
+				"identityDigest": { "$ref": "#/$defs/sha256" },
+				"live": {
+					"type": "object",
+					"required": ["since", "cut", "records"],
+					"additionalProperties": false,
+					"properties": {
+						"since": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/time" }] },
+						"cut": { "type": ["string", "null"] },
+						"records": { "type": "array", "items": { "$ref": "#/$defs/record" } }
+					}
+				},
+				"acceptance": {
+					"type": "object",
+					"required": ["state", "evidence", "superseded"],
+					"additionalProperties": false,
+					"properties": {
+						"state": {
+							"enum": ["accepted", "not-accepted-at-this-identity", "identity-unknown"],
+							"description": "accepted = some evidence has this identityDigest; identity-unknown = identity has a null value; otherwise not-accepted-at-this-identity."
+						},
+						"evidence": {
+							"type": "array",
+							"items": {
+								"type": "object",
+								"required": ["at", "summary", "identityDigest", "records"],
+								"additionalProperties": false,
+								"properties": {
+									"at": { "$ref": "#/$defs/time" },
+									"summary": { "type": "string", "minLength": 1 },
+									"identityDigest": { "$ref": "#/$defs/sha256" },
+									"records": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/record" } }
+								}
+							}
+						},
+						"superseded": {
+							"type": "array",
+							"description": "The last acceptance of each earlier identity. It does not count for the live identity.",
+							"items": {
+								"type": "object",
+								"required": ["identityDigest", "lastAcceptedAt", "summary"],
+								"additionalProperties": false,
+								"properties": {
+									"identityDigest": { "$ref": "#/$defs/sha256" },
+									"lastAcceptedAt": { "$ref": "#/$defs/time" },
+									"summary": { "type": "string" }
+								}
+							}
+						}
+					}
+				},
+				"notes": { "type": "string" }
+			}
+		}
+	}
+}

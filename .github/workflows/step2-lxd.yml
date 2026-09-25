@@ -55,6 +55,7 @@ on:
       - 'deploy/shared-execution/**'
       - 'deploy/node-tidy/**'
       - 'deploy/node-agent/**'
+      - 'deploy/deployment-manifest/**'
       - 'packages/runner-orchestrator/src/**'
       - 'packages/contracts/src/**'
       - 'supabase/functions/company-file-verifier/company-file-verifier.ts'
@@ -215,6 +216,9 @@ jobs:
 
       - name: Test node tidy-up
         run: node --test deploy/node-tidy/qorpera-node-tidy.test.mjs
+
+      - name: Test the deployment manifest tool
+        run: node --test deploy/deployment-manifest/manifest.test.mjs
 
       - name: Test node agent and launcher
         run: |
