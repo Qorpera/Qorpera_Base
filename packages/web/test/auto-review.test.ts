@@ -317,6 +317,28 @@ describe("Settings → Rules", () => {
 		expect(view.el.querySelectorAll(".settings-rule")).toHaveLength(2);
 	});
 
+	it("does not ask again for a list that failed until the role moves", async () => {
+		let role = "member";
+		for (const failure of [
+			new CloudRpcError("qorpera_list_review_rules", { code: "PGRST202", message: "Could not find" }, 404),
+			new Error("Network down"),
+		]) {
+			const client = rulesClient(false);
+			vi.mocked(client.list).mockRejectedValue(failure);
+			view?.dispose();
+			view = new RulesView(client, new AbortController().signal, () => role);
+			await settle();
+			for (let change = 0; change < 5; change++) view.update();
+			await settle();
+			expect(client.list).toHaveBeenCalledTimes(1);
+			role = role === "member" ? "admin" : "member";
+			view.update();
+			view.update();
+			await settle();
+			expect(client.list).toHaveBeenCalledTimes(2);
+		}
+	});
+
 	it("adds nothing for an empty rule, and says so when the cloud has no rules yet", async () => {
 		const client = rulesClient(true);
 		view = new RulesView(client, new AbortController().signal);

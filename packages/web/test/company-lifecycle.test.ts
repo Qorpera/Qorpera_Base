@@ -221,6 +221,12 @@ describe("answering an approval card of an agent's action (auto-review, v115)", 
 			sponsorBindingId: id(81),
 			sponsorVersion: 1,
 		});
+		// The answered card keeps the keyboard through the redraws that follow the answer.
+		expect(document.activeElement).toBe(
+			[...view.el.querySelectorAll<HTMLElement>(".action-review-card")].find(
+				(card) => card.dataset.reviewId === id(4003),
+			),
+		);
 	});
 
 	it("takes the controls away when the conversation is closed, and keeps an Always allow draft across redraws", async () => {
@@ -245,6 +251,7 @@ describe("answering an approval card of an agent's action (auto-review, v115)", 
 		input.focus();
 		input.value = "paying invoices under 100 EUR";
 		input.dispatchEvent(new Event("input"));
+		input.setSelectionRange(7, 15);
 		// Something else in the thread changes: the card is drawn again.
 		f.controller.store.set({ team: { ...team, members: [...team.members] } });
 		vi.mocked(f.api.readSessionEvents).mockResolvedValue([card, event(6)]);
@@ -254,6 +261,7 @@ describe("answering an approval card of an agent's action (auto-review, v115)", 
 		expect(redrawn.closest<HTMLElement>(".review-always")!.hidden).toBe(false);
 		expect(redrawn.value).toBe("paying invoices under 100 EUR");
 		expect(document.activeElement).toBe(redrawn);
+		expect([redrawn.selectionStart, redrawn.selectionEnd]).toEqual([7, 15]);
 		// A refused answer keeps the rule as the member narrowed it.
 		vi.spyOn(f.api, "answerActionReview").mockRejectedValue(
 			new Error("Select an active model account, then try again."),
@@ -264,6 +272,7 @@ describe("answering an approval card of an agent's action (auto-review, v115)", 
 		const kept = open().querySelector<HTMLInputElement>(".review-rule-input")!;
 		expect(kept.closest<HTMLElement>(".review-always")!.hidden).toBe(false);
 		expect(kept.value).toBe("paying invoices under 100 EUR");
+		expect(document.activeElement).toBe(open());
 		// The conversation is closed: no controls the cloud would refuse.
 		f.controller.store.set({ sessions: [{ ...session, status: "closed" }] });
 		await settle();

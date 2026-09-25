@@ -50,6 +50,9 @@ export class RulesView {
 	#listedRole: string | undefined;
 	/** Counts loads and changes: a load that a newer load or a change overtook is dropped. */
 	#generation = 0;
+	#refreshing = false;
+	/** A change dropped a load on its way: load again once the change is done. */
+	#stale = false;
 
 	/** `role` is the member's current role in the company: a change reloads the rules (who may edit changes). */
 	constructor(client: WebReviewRules, signal: AbortSignal, role: () => string | undefined = () => undefined) {
@@ -71,21 +74,23 @@ export class RulesView {
 		this.#lifetime.abort();
 	}
 
-	/** The company changed: reload when the member's role did. */
+	/** The company changed: reload when the member's role did (after any change on its way). */
 	update(): void {
-		if (!this.#loading && this.#role() !== this.#listedRole) void this.#refresh();
+		if (!this.#loading && !this.#working && (this.#stale || this.#role() !== this.#listedRole)) void this.#refresh();
 	}
 
 	async #refresh(): Promise<void> {
 		const generation = ++this.#generation;
-		const role = this.#role();
+		// The role is noted as the load starts: a failed load is not retried until the role moves.
+		this.#listedRole = this.#role();
+		this.#stale = false;
+		this.#refreshing = true;
 		const current = () => !this.#lifetime.signal.aborted && generation === this.#generation;
 		try {
 			const listed = await this.#client.list();
 			if (!current()) return;
 			this.#rules = listed.rules;
 			this.#canManage = listed.canManageCompanyRules;
-			this.#listedRole = role;
 			this.#error = undefined;
 		} catch (error) {
 			if (!current()) return;
@@ -93,6 +98,7 @@ export class RulesView {
 			else this.#error = describeError(error);
 		} finally {
 			if (current()) {
+				this.#refreshing = false;
 				this.#loading = false;
 				this.#draw();
 			}
@@ -129,7 +135,9 @@ export class RulesView {
 	}
 
 	async #change(work: () => Promise<void>): Promise<void> {
-		// A load already on its way may not have this change: drop it, and load again after if the role moved.
+		// A load already on its way may not have this change: drop it, and load again once the change is done.
+		if (this.#refreshing) this.#stale = true;
+		this.#refreshing = false;
 		this.#generation++;
 		this.#working = true;
 		this.#error = undefined;

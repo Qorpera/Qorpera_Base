@@ -1187,28 +1187,40 @@ export class ConversationView {
 		}
 		const rowFocus = document.activeElement?.classList.contains("thread-activity") ?? false;
 		// Read before the redraw: a browser blurs an input as it leaves the page.
-		const reviewInput =
-			document.activeElement instanceof HTMLInputElement ? document.activeElement.dataset.reviewRule : undefined;
+		const active =
+			document.activeElement instanceof HTMLElement && this.#messages.contains(document.activeElement)
+				? document.activeElement
+				: undefined;
+		const reviewInput = active instanceof HTMLInputElement ? active : undefined;
+		const reviewCard = active?.closest<HTMLElement>("[data-review-id]")?.dataset.reviewId;
 		// Nodes already in place stay put: a live log re-reads what is taken out and put back.
 		const kept = this.#messages.childNodes;
 		if (nodes.length !== kept.length || nodes.some((node, index) => node !== kept[index]))
 			replace(this.#messages, ...nodes);
 		// A keyboard user reading the row keeps it through a state change or a new message.
 		if (rowFocus) this.#messages.querySelector<HTMLElement>(".thread-activity")?.focus({ preventScroll: true });
-		// The editor of an Always allow a member is typing in keeps focus; once its card is answered, the card has it.
-		const editor = reviewInput
+		// An approval card keeps the keyboard through a redraw: the Always allow editor a member is
+		// typing in (caret and all), else the card itself, also once it is answered.
+		const editor = reviewInput?.dataset.reviewRule
 			? [...this.#messages.querySelectorAll<HTMLInputElement>("input[data-review-rule]")].find(
-					(input) => input.dataset.reviewRule === reviewInput,
+					(input) => input.dataset.reviewRule === reviewInput.dataset.reviewRule,
 				)
 			: undefined;
-		if (editor) editor.focus({ preventScroll: true });
-		else if (reviewInput || this.#focusReview) {
-			const target = this.#focusReview ?? reviewInput;
-			const card = [...this.#messages.querySelectorAll<HTMLElement>("[data-review-id]")].find(
-				(element) => element.dataset.reviewId === target,
-			);
+		if (editor && reviewInput && document.activeElement !== editor) {
+			const { selectionStart, selectionEnd, selectionDirection } = reviewInput;
+			editor.focus({ preventScroll: true });
+			if (selectionStart !== null && selectionEnd !== null)
+				editor.setSelectionRange(selectionStart, selectionEnd, selectionDirection ?? undefined);
+		} else if (!editor) {
+			// Safari does not focus a clicked button: the card just answered is named here too.
+			const target = active && !active.isConnected ? (reviewCard ?? this.#focusReview) : this.#focusReview;
+			const card = target
+				? [...this.#messages.querySelectorAll<HTMLElement>("[data-review-id]")].find(
+						(element) => element.dataset.reviewId === target,
+					)
+				: undefined;
 			if (card) {
-				card.focus({ preventScroll: true });
+				if (!card.contains(document.activeElement)) card.focus({ preventScroll: true });
 				this.#focusReview = undefined;
 			}
 		}
