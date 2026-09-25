@@ -20,13 +20,18 @@
 -- agent tool call takes them first), todo, worker, coding session, then the
 -- session's turn or its machine. A call may start later in the list (a
 -- heartbeat locks only the session, a delegation starts at the worker), but it
--- never goes back, with one known exception: the machine calls. Machine
--- planning and admission reach the profile and Company File rows again after
--- the session or worker (the node reservation's profile fence, and the foreign
--- keys of new machine, storage volume and allocation rows), which still
--- deadlocks with an agent tool on the same worker. That needs its own design;
--- until then admission starts at the worker and never holds the todo, so it
--- cannot also deadlock with every agent tool on that todo.
+-- never goes back, with known exceptions that reach the profile or Company File
+-- rows again after the session or worker:
+--   - machine planning and admission (the node reservation's profile fence, and
+--     the foreign keys of new machine, storage volume and allocation rows),
+--     which can still deadlock with an agent tool on the same worker;
+--   - the repository credential grant (its audit row's profile foreign key,
+--     after it shares the session), likewise;
+--   - the turn's begin, whose wake admission takes the profile row without
+--     waiting and refuses (55P03) while any agent tool holds it.
+-- Those need their own design. Until then admission starts at the worker and
+-- never holds the todo, so it cannot also deadlock with every agent tool on
+-- that todo.
 
 -- Internal: a worker, locked after its todo. A worker's todo never changes.
 create function public.qorpera_lock_coding_worker(p_worker_id uuid)
@@ -108,6 +113,8 @@ select pg_temp.lock_order_patch('public.qorpera_authorize_coding_machine_custody
 		perform 1 from public.qorpera_coding_sessions where worker_id = p_worker_id for update; end if;
 	v_machine := public.qorpera_coding_machine_custody(p_machine_id, p_owner, p_binding_text, p_machine_id_sha256);$new$);
 
+comment on function public.qorpera_coding_session_owner_row(uuid) is
+	'Checks that the signed-in member owns this coding session, on an unlocked read, and returns the row unlocked. Callers lock what they change: the todo and then the worker (qorpera_lock_coding_worker), or the worker alone.';
 comment on function public.qorpera_coding_leased_session(uuid, uuid) is
 	'Locks only the coding session. A caller that also locks or changes the worker or its todo locks them first (qorpera_lock_coding_worker, or the worker alone), never after this.';
 

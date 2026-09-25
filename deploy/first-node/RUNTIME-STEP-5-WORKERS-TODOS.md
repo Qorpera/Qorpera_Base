@@ -202,8 +202,9 @@ published only by the agent's next list or change of that todo.
   (`20260925123000_runtime_coding_machine_lock_order`) they took it last, so an
   agent cancelling a session deadlocked with its admission, plan or credential.
   SQL test 603 races those and the pairs a partial fix would break. Two late
-  touches remain: the executor's begin takes the profile row NOWAIT (it fails
-  fast, never waits), and `qorpera_prepare_company_file_revision` locks the
+  touches remain: the executor's begin takes the profile row NOWAIT (it refuses
+  with 55P03 rather than wait, and the coding executor does not retry it), and
+  `qorpera_prepare_company_file_revision` locks the
   Company File row before the fence, so it can meet a session's first
   admission as it meets every agent tool call.
 - A revival whose admission is refused when its run is created (the agent lost
