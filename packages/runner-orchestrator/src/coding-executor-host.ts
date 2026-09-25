@@ -12,6 +12,7 @@ import {
 	parseCloudCodingNasPolicy,
 } from "@qorpera/contracts";
 import { LxdCodingCommandTransport } from "./coding-command-transport.ts";
+import type { CodingComputerUsage } from "./coding-computer-usage.ts";
 import type {
 	CodingExecutorHost,
 	CodingExecutorPublication,
@@ -91,6 +92,7 @@ export type CodingExecutorVmPolicy = Omit<
 	"schema" | "machineId" | "companyId" | "environmentId" | "memberUserId"
 >;
 export interface LxdCodingExecutorHostOptions {
+	computerUsage?: CodingComputerUsage;
 	control: { call(method: string, args: Record<string, unknown>, signal: AbortSignal): Promise<unknown> };
 	owner: string;
 	machineIdSha256: string;
@@ -391,6 +393,10 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		);
 		// Counted from before the request: the receipt's seconds include the NAS checks below.
 		const deadline = started + Number(value.validForMs);
+		if (value.schema === "qorpera.coding-machine-admission/v2") {
+			if (!this.#options.computerUsage) throw new Error("CODING_PAID_COMPUTER_GUARD_REQUIRED");
+			await this.#options.computerUsage.ensure(claim, machine, signal);
+		}
 		const guestUid = value.guestUid as number | null;
 		if (guestUid !== null && guestUid < CODING_SESSION_UID_BASE)
 			throw new Error("CODING_MACHINE_ADMISSION_UNCONFIRMED");
@@ -460,11 +466,29 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		for (;;) {
 			checked.throwIfAborted();
 			const journalRoot = await this.#directory("machines", checked);
+			const computerUsage = this.#options.computerUsage;
 			const result = await reconcileCodingMachine({
 				plan: journal,
 				journalRoot,
 				desiredState,
-				client: this.#options.client,
+				externalStop: computerUsage
+					? (externalSignal) => computerUsage.externalStop(journal, externalSignal)
+					: undefined,
+				externalStart: computerUsage
+					? (externalSignal) => computerUsage.externalStart(journal, externalSignal)
+					: undefined,
+				client: {
+					getInstance: (...args) => this.#options.client.getInstance(...args),
+					inspectInstanceOperation: (...args) => this.#options.client.inspectInstanceOperation(...args),
+					submitInstanceOperation: (project, operation, operationSignal) => {
+						const usage = this.#options.computerUsage;
+						if (usage?.manages(journal.machineId)) {
+							if (operation.action === "start") return usage.start(journal.machineId, operationSignal);
+							if (operation.action === "stop") return usage.stop(journal.machineId, operationSignal);
+						}
+						return this.#options.client.submitInstanceOperation(project, operation, operationSignal);
+					},
+				},
 				authorize,
 				signal: checked,
 			});
@@ -818,6 +842,8 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			);
 			await this.#run(claim, machine, storage, signal);
 			const boot = await this.#ready(machine, signal);
+			if (this.#options.computerUsage?.manages(machine.machineId))
+				await this.#options.computerUsage.observe(machine.machineId, signal);
 			// From here on the session may be attached: detachSession unplugs it
 			// whatever happens next, a deferral or a failure included.
 			this.#attached.set(claim.workerId, { claim, machine, storage });

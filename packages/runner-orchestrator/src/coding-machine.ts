@@ -8,7 +8,12 @@ import {
 	cloudCodingSessionLayout,
 	createCloudCodingStorageBinding,
 } from "@qorpera/contracts";
-import type { LxdCreateInstanceRequest, LxdInstanceRecord, LxdTrackedClient } from "./lxd-client.ts";
+import type {
+	LxdCreateInstanceRequest,
+	LxdInstanceRecord,
+	LxdOperationReference,
+	LxdTrackedClient,
+} from "./lxd-client.ts";
 import { checkDirectory, code, publish, readRecord, syncDirectory } from "./lxd-office-journal-files.ts";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -226,7 +231,8 @@ export type CodingMachineIntent = "run" | "stop" | "detach" | "delete";
 /** A few seconds of SQL authority for one machine effect
  * (qorpera_authorize_coding_machine_run / _custody). */
 export interface CodingMachineAdmissionReceipt {
-	schema: "qorpera.coding-machine-admission/v1";
+	schema: "qorpera.coding-machine-admission/v1" | "qorpera.coding-machine-admission/v2";
+	fundingRequired?: true;
 	machineId: string;
 	workerId: string | null;
 	instanceSha256: string;
@@ -249,8 +255,13 @@ export function checkCodingMachineReceipt(
 		typeof receipt !== "object" ||
 		Array.isArray(receipt) ||
 		Object.keys(receipt).sort().join() !==
-			"guestUid,instanceSha256,intent,machineId,nodeId,nodeVersion,schema,validForMs,workerId" ||
-		receipt.schema !== "qorpera.coding-machine-admission/v1" ||
+			(receipt.schema === "qorpera.coding-machine-admission/v2"
+				? "fundingRequired,guestUid,instanceSha256,intent,machineId,nodeId,nodeVersion,schema,validForMs,workerId"
+				: "guestUid,instanceSha256,intent,machineId,nodeId,nodeVersion,schema,validForMs,workerId") ||
+		(receipt.schema !== "qorpera.coding-machine-admission/v1" &&
+			(receipt.schema !== "qorpera.coding-machine-admission/v2" ||
+				receipt.fundingRequired !== true ||
+				receipt.intent !== "run")) ||
 		receipt.machineId !== expected.machineId ||
 		receipt.instanceSha256 !== expected.instanceSha256 ||
 		receipt.intent !== expected.intent ||
@@ -325,6 +336,15 @@ export interface CodingMachineReconcileOptions {
 	journalRoot: string;
 	desiredState: CodingMachineDesiredState;
 	client: Client;
+	/** A separately journaled paid guard may stop the VM during NAS or network
+	 * failure. Only its exact verified terminal operation can close that gap. */
+	externalStop?(signal: AbortSignal): Promise<LxdOperationReference | null>;
+	/** Recover accepted start custody after a lost local guard reply. */
+	externalStart?(signal: AbortSignal): Promise<{
+		reference: LxdOperationReference;
+		settled: boolean;
+		stopReference: LxdOperationReference | null;
+	} | null>;
 	/** Fresh SQL authority for this effect's intent (run, stop or delete). */
 	authorize(intent: CodingMachineIntent, signal: AbortSignal): Promise<unknown>;
 	signal: AbortSignal;
@@ -515,7 +535,34 @@ export async function reconcileCodingMachine(
 		);
 	};
 	let tail = current.events.at(-1) ?? current.prior;
-	if (tail?.kind === "dispatch") return result("recovery-required");
+	if (tail?.kind === "dispatch") {
+		const start = tail.action === "start" ? await options.externalStart?.(signal) : null;
+		if (
+			start?.stopReference &&
+			(current.prior?.operationId === start.stopReference.operationId ||
+				current.events.some((event) => event.operationId === start.stopReference?.operationId))
+		)
+			return result("recovery-required");
+		const reference =
+			tail.action === "start"
+				? start?.reference
+				: tail.action === "stop"
+					? await options.externalStop?.(signal)
+					: null;
+		if (
+			!reference ||
+			reference.project !== plan.project ||
+			reference.instanceName !== plan.name ||
+			!UUID.test(reference.operationId) ||
+			current.prior?.operationId === reference.operationId ||
+			current.events.some((event) => event.operationId === reference.operationId)
+		)
+			return result("recovery-required");
+		if (!(await append({ action: tail.action, kind: "accepted", operationId: reference.operationId, state: null })))
+			return result("pending");
+		current = await readEvents(root, plan.binding);
+		tail = current.events.at(-1);
+	}
 	if (tail?.kind === "accepted") {
 		signal.throwIfAborted();
 		let state: "pending" | "succeeded" | "failed";
@@ -525,25 +572,38 @@ export async function reconcileCodingMachine(
 				signal,
 			);
 		} catch (error) {
-			// LXD keeps a finished operation only briefly. A stop or delete it no
-			// longer knows is settled from the VM itself: stopped (or gone) is the
-			// effect, still running (or still there) is its absence. Anything else
-			// stays unknown.
+			const recovered =
+				tail.action === "start" && error instanceof Error && error.message === "LXD_OPERATION_UNKNOWN"
+					? await options.externalStart?.(signal)
+					: null;
 			if (
-				(tail.action !== "stop" && tail.action !== "delete") ||
-				!(error instanceof Error) ||
-				error.message !== "LXD_OPERATION_UNKNOWN"
-			)
-				return result("recovery-required");
-			const observed = await options.client.getInstance(plan.project, plan.name, signal);
-			signal.throwIfAborted();
-			if (tail.action === "delete") state = observed ? "failed" : "succeeded";
-			else {
-				if (!observed) return result("recovery-required");
-				plan.assertInstance(observed);
-				const seen = physical(observed);
-				if (seen === "other") return result("recovery-required");
-				state = seen === "stopped" ? "succeeded" : "failed";
+				recovered?.settled &&
+				recovered.reference.project === plan.project &&
+				recovered.reference.instanceName === plan.name &&
+				recovered.reference.operationId === tail.operationId
+			) {
+				state = "succeeded";
+			} else {
+				// LXD keeps a finished operation only briefly. A stop or delete it no
+				// longer knows is settled from the VM itself: stopped (or gone) is the
+				// effect, still running (or still there) is its absence. Anything else
+				// stays unknown.
+				if (
+					(tail.action !== "stop" && tail.action !== "delete") ||
+					!(error instanceof Error) ||
+					error.message !== "LXD_OPERATION_UNKNOWN"
+				)
+					return result("recovery-required");
+				const observed = await options.client.getInstance(plan.project, plan.name, signal);
+				signal.throwIfAborted();
+				if (tail.action === "delete") state = observed ? "failed" : "succeeded";
+				else {
+					if (!observed) return result("recovery-required");
+					plan.assertInstance(observed);
+					const seen = physical(observed);
+					if (seen === "other") return result("recovery-required");
+					state = seen === "stopped" ? "succeeded" : "failed";
+				}
 			}
 		}
 		signal.throwIfAborted();
@@ -582,6 +642,41 @@ export async function reconcileCodingMachine(
 		if (!instance) return result("recovery-required");
 		plan.assertInstance(instance);
 		const seen = physical(instance);
+		if (
+			seen === "stopped" &&
+			tail.action === "start" &&
+			tail.kind === "settled" &&
+			tail.state === "succeeded" &&
+			options.externalStop
+		) {
+			const stopped = await options.externalStop(signal);
+			if (stopped) {
+				if (
+					stopped.project !== plan.project ||
+					stopped.instanceName !== plan.name ||
+					!UUID.test(stopped.operationId) ||
+					current.prior?.operationId === stopped.operationId ||
+					current.events.some((event) => event.operationId === stopped.operationId)
+				)
+					return result("recovery-required");
+				// Retain the actual guard-dispatched LXD operation, not a synthetic
+				// success. Immutable event CAS still chooses one journal writer.
+				for (const kind of ["dispatch", "accepted", "settled"] as const) {
+					if (
+						!(await append({
+							action: "stop",
+							kind,
+							operationId: kind === "dispatch" ? null : stopped.operationId,
+							state: kind === "settled" ? "succeeded" : null,
+						}))
+					)
+						return result("pending");
+					current = await readEvents(root, plan.binding);
+				}
+				tail = current.events.at(-1);
+				if (!tail) return result("recovery-required");
+			}
+		}
 		if (tail.state === "failed") {
 			// A failed stop: the VM is whatever LXD shows. Stopped is stopped (a
 			// run then starts it, a delete deletes it); still running gets a fresh

@@ -2,6 +2,29 @@ import { describe, expect, it, vi } from "vitest";
 import { CodingExecutorHttpControl } from "../../../deploy/coding-worker/control.ts";
 
 describe("dedicated coding executor control", () => {
+	it("requires a separate host secret for paid RPCs and never sends it to ordinary RPCs", async () => {
+		const fetcher = vi.fn<typeof fetch>(async () => new Response("null", { status: 200 }));
+		const options = { supabaseUrl: "https://project.supabase.co", serviceRoleKey: "private", fetch: fetcher };
+		const signal = new AbortController().signal;
+		await expect(
+			new CodingExecutorHttpControl(options).call("qorpera_prepare_coding_computer_permit", {}, signal),
+		).rejects.toThrow("COMPUTER_KEY_REQUIRED");
+		expect(fetcher).not.toHaveBeenCalled();
+		const secret = "h".repeat(43);
+		const control = new CodingExecutorHttpControl({ ...options, computerExecutorSecret: secret });
+		await control.call(
+			"qorpera_prepare_coding_computer_permit",
+			{ p_request: {}, p_executor_secret: "caller-value" },
+			signal,
+		);
+		expect(JSON.parse(String(fetcher.mock.calls[0][1]?.body))).toEqual({ p_request: {}, p_executor_secret: secret });
+		await control.call("qorpera_claim_coding_session", { p_owner: "node" }, signal);
+		expect(JSON.parse(String(fetcher.mock.calls[1][1]?.body))).toEqual({ p_owner: "node" });
+		await expect(control.call("qorpera_reserve_computer_allowance", {}, signal)).rejects.toThrow("METHOD_INVALID");
+		expect(() => new CodingExecutorHttpControl({ ...options, computerExecutorSecret: "short" })).toThrow(
+			"COMPUTER_KEY_INVALID",
+		);
+	});
 	it("uses a closed RPC set and fixed HTTPS origin without retries", async () => {
 		const fetcher = vi.fn<typeof fetch>(async () => new Response("null", { status: 200 }));
 		const control = new CodingExecutorHttpControl({

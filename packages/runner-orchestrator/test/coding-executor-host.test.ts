@@ -446,6 +446,59 @@ const reconciled = () =>
 	mocked.reconcile.mock.calls.map((call) => (call[0] as CodingMachineReconcileOptions).desiredState);
 
 describe("a coding turn on its member's machine", () => {
+	it("refuses paid admission before any VM effect when the independent guard is missing", async () => {
+		const f = await fixture();
+		const call = f.call.getMockImplementation()!;
+		f.call.mockImplementation(async (method, args, signal) => {
+			const result = await call(method, args, signal);
+			return method === "qorpera_authorize_coding_machine_run"
+				? { ...(result as object), schema: "qorpera.coding-machine-admission/v2", fundingRequired: true }
+				: result;
+		});
+		await expect(f.host.prepareWorkspace(f.claim, f.turn(), f.signal)).rejects.toThrow(
+			"PAID_COMPUTER_GUARD_REQUIRED",
+		);
+		expect(mocked.reconcile).not.toHaveBeenCalled();
+		expect(f.client.submitInstanceOperation).not.toHaveBeenCalled();
+		expect(mocked.seedTransfer).not.toHaveBeenCalled();
+	});
+	it("routes paid start through the guard after funding and observes before preparing session work", async () => {
+		const f = await fixture();
+		const call = f.call.getMockImplementation()!;
+		f.call.mockImplementation(async (method, args, signal) => {
+			const result = await call(method, args, signal);
+			return method === "qorpera_authorize_coding_machine_run"
+				? { ...(result as object), schema: "qorpera.coding-machine-admission/v2", fundingRequired: true }
+				: result;
+		});
+		const reference = { project: f.machine.project, instanceName: f.plan.request.name, operationId: randomUUID() };
+		const usage = {
+			ensure: vi.fn(async () => {}),
+			manages: () => true,
+			start: vi.fn(async () => reference),
+			stop: vi.fn(async () => reference),
+			observe: vi.fn(async () => {}),
+			maintain: vi.fn(async () => {}),
+			externalStart: vi.fn(async () => null),
+			externalStop: vi.fn(async () => null),
+		};
+		const host = new LxdCodingExecutorHost({ ...f.options, computerUsage: usage });
+		const reconcile = mocked.reconcile.getMockImplementation()!;
+		mocked.reconcile.mockImplementation(async (input: CodingMachineReconcileOptions) => {
+			await input.authorize("run", input.signal);
+			await input.client.submitInstanceOperation(
+				f.machine.project,
+				{ action: "start", name: f.plan.request.name },
+				input.signal,
+			);
+			return reconcile(input);
+		});
+		await host.prepareWorkspace(f.claim, f.turn(), f.signal);
+		expect(usage.start).toHaveBeenCalledTimes(1);
+		expect(usage.ensure.mock.invocationCallOrder[0]).toBeLessThan(usage.start.mock.invocationCallOrder[0]);
+		expect(usage.observe.mock.invocationCallOrder[0]).toBeLessThan(mocked.seedTransfer.mock.invocationCallOrder[0]);
+		expect(f.client.submitInstanceOperation).not.toHaveBeenCalled();
+	});
 	it("wakes the member's machine, attaches the session, and runs the pinned seed, push and draft PR", async () => {
 		const f = await fixture();
 		const workspace = await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);

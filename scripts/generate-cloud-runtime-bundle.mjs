@@ -7,9 +7,9 @@ import { CLOUD_RUNTIME_MODEL_POLICY } from "../packages/runtime/src/cloud-runtim
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const generatedSource = "packages/runtime/src/cloud-runtime-bundle.generated.ts";
-const activation = "supabase/migrations/20260925116900_runtime_bundle_activation_v108.sql";
-const activationVersion = 108;
-const previousActivationVersion = 107;
+const activation = "supabase/migrations/20260925119900_runtime_bundle_activation_v109.sql";
+const activationVersion = 109;
+const previousActivationVersion = 108;
 const manifestPath = "deploy/first-node/native-codex/runtime-bundle-manifest.json";
 const sha = (text) => createHash("sha256").update(text).digest("hex");
 
@@ -85,7 +85,7 @@ export async function cloudRuntimeBundle(root = repository) {
 	for (const name of ["cloud-secret-broker-service-main.ts", "cloud-runtime-policy.ts"]) await include(`packages/runtime/src/${name}`);
 	for (const name of (await readdir(join(root, "packages/runtime/src"))).filter((name) => /^(cloud-coding-|cloud-native-coding-).*\.ts$/.test(name)).sort()) await include(`packages/runtime/src/${name}`);
 	for (const name of (await readdir(join(root, "packages/runner-orchestrator/src"))).filter((name) => /^coding-.*\.ts$/.test(name)).sort()) await include(`packages/runner-orchestrator/src/${name}`);
-	for (const name of (await readdir(join(root, "deploy/coding-worker"))).filter((name) => /\.(service|timer|slice|json|ts)$/.test(name)).sort()) await include(`deploy/coding-worker/${name}`);
+	for (const name of (await readdir(join(root, "deploy/coding-worker"))).filter((name) => /\.(service|timer|slice|json|ts|conf)$/.test(name)).sort()) await include(`deploy/coding-worker/${name}`);
 	for (const name of (await readdir(join(root, "scripts"))).filter((name) => /^package-coding-.*\.mjs$/.test(name)).sort()) await include(`scripts/${name}`);
 	// Office adapters are injected at composition boundaries. Pin their sources
 	// even before a deployed service entrypoint selects the concrete guest.

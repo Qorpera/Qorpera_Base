@@ -55,6 +55,12 @@ describe("coding executor service configuration", () => {
 		const config = parseCodingExecutorConfiguration(fixture());
 		expect(config.repositories[0].credential).toBe("qorpera-coding-repository-test");
 		expect(config.broker).toBeNull();
+		expect(config.paidComputers).toBe(false);
+	});
+	it("requires explicit paid computer opt-in", () => {
+		expect(parseCodingExecutorConfiguration({ ...fixture(), paidComputers: true }).paidComputers).toBe(true);
+		for (const paidComputers of [false, null, "true", 1])
+			expect(() => parseCodingExecutorConfiguration({ ...fixture(), paidComputers })).toThrow("CONFIG_INVALID");
 	});
 	it("serves a repository through the company's GitHub connection when it names no static credential", () => {
 		const config = fixture();
@@ -91,6 +97,7 @@ describe("coding executor service configuration", () => {
 		for (const executorTokenCredential of [
 			"qorpera-coding-registry",
 			"qorpera-coding-command",
+			"qorpera-coding-computer-executor",
 			"qorpera-coding-executor-config",
 			"qorpera-coding-repository-test",
 			"../broker",

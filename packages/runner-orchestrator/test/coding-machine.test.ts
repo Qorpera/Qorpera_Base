@@ -181,6 +181,89 @@ async function retainedHistory(
 }
 
 describe("a coding machine's journaled lifecycle", () => {
+	it("recovers a guard's accepted start after a lost IPC reply without another dispatch", async () => {
+		const f = await fixture();
+		await f.reconcile();
+		const submit = f.client.submitInstanceOperation.getMockImplementation()!;
+		f.client.submitInstanceOperation.mockImplementationOnce(async (...args) => {
+			await submit(...args);
+			throw new Error("IPC reply lost");
+		});
+		expect((await f.reconcile()).state).toBe("recovery-required");
+		const externalStart = async () => ({
+			reference: { project: f.journal.project, instanceName: f.journal.name, operationId: id(12) },
+			settled: false,
+			stopReference: null,
+		});
+		expect((await reconcileCodingMachine({ ...f.options, externalStart })).state).toBe("running");
+		expect(f.client.submitInstanceOperation).toHaveBeenCalledTimes(2);
+	});
+	it("requires a proven successful guard start when LXD has forgotten the operation", async () => {
+		const f = await fixture();
+		await f.reconcile();
+		await f.reconcile();
+		await f.client.inspectInstanceOperation();
+		f.client.inspectInstanceOperation.mockRejectedValue(new Error("LXD_OPERATION_UNKNOWN"));
+		const reference = { project: f.journal.project, instanceName: f.journal.name, operationId: id(12) };
+		expect(
+			(
+				await reconcileCodingMachine({
+					...f.options,
+					externalStart: async () => ({ reference, settled: false, stopReference: null }),
+				})
+			).state,
+		).toBe("recovery-required");
+		expect(
+			(
+				await reconcileCodingMachine({
+					...f.options,
+					externalStart: async () => ({ reference, settled: true, stopReference: null }),
+				})
+			).state,
+		).toBe("running");
+		expect(f.client.submitInstanceOperation).toHaveBeenCalledTimes(2);
+	});
+	it("reconciles the actual guard stop into the NAS journal and rejects reused operation evidence", async () => {
+		const f = await fixture();
+		await f.reconcile();
+		await f.reconcile();
+		await f.reconcile();
+		const instance = f.instance()!;
+		instance.status = "Stopped";
+		instance.statusCode = 102;
+		const reference = { project: f.journal.project, instanceName: f.journal.name, operationId: id(12) };
+		expect(
+			(await reconcileCodingMachine({ ...f.options, desiredState: "stopped", externalStop: async () => reference }))
+				.state,
+		).toBe("recovery-required");
+		reference.operationId = id(100);
+		expect(
+			(await reconcileCodingMachine({ ...f.options, desiredState: "stopped", externalStop: async () => reference }))
+				.state,
+		).toBe("stopped");
+		expect(f.client.submitInstanceOperation).toHaveBeenCalledTimes(2);
+		const event = JSON.parse(await readFile(join(f.journalRoot, f.value.machineId, "000008.json"), "utf8"));
+		expect(event).toMatchObject({ action: "stop", kind: "settled", operationId: id(100), state: "succeeded" });
+		expect((await f.reconcile("stopped")).state).toBe("stopped");
+	});
+	it("does not reuse a previous segment's guard start after journal rotation", async () => {
+		const f = await fixture();
+		await retainedHistory(f, 381);
+		expect((await f.reconcile()).state).toBe("pending");
+		f.client.submitInstanceOperation.mockRejectedValue(new Error("crashed before guard start"));
+		expect((await f.reconcile()).state).toBe("recovery-required");
+		const reference = { project: f.journal.project, instanceName: f.journal.name, operationId: id(1125) };
+		const stopReference = { ...reference, operationId: id(1126) };
+		expect(
+			(
+				await reconcileCodingMachine({
+					...f.options,
+					externalStart: async () => ({ reference, stopReference, settled: true }),
+				})
+			).state,
+		).toBe("recovery-required");
+		expect(f.client.submitInstanceOperation).toHaveBeenCalledTimes(3);
+	});
 	it("rolls over a settled stopped journal and retains exact history and stop capacity", async () => {
 		const f = await fixture();
 		const root = await retainedHistory(f, 381);

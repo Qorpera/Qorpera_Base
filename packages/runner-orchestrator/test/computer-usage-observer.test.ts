@@ -149,6 +149,20 @@ async function fixture() {
 }
 const signal = () => new AbortController().signal;
 describe("physical computer shadow observer", () => {
+	it("retires a shadow outbox sample when the protected paid meter owns the allocation", async () => {
+		const f = await fixture();
+		await f.observer.observe(signal());
+		const sample = f.samples[0];
+		await f.outbox.enqueue(sample);
+		f.registry.call.mockResolvedValueOnce({
+			observationId: sample.observationId,
+			recorded: false,
+			charged: false,
+			reason: "paid_meter_owned",
+		});
+		await f.outbox.flush(f.registry, signal());
+		expect(await readdir(f.root)).toEqual([]);
+	});
 	it("preserves an outbox sample when a receipt is malformed, and rejects conflicting persisted bytes", async () => {
 		const f = await fixture();
 		await f.observer.observe(signal());

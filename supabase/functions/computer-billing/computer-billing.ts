@@ -14,6 +14,28 @@ export interface ComputerBillingOptions {
 	rpc(name: string, args: Record<string, unknown>): Promise<unknown>;
 }
 
+/** This credential belongs only to the payment bridge, never a runtime guest. */
+export function createComputerBillingRpc(supabaseUrl: string, serviceKey: string, billingSecret: string, fetcher: typeof fetch): ComputerBillingOptions["rpc"] {
+	if (!supabaseUrl || !serviceKey || billingSecret.length < 32 || billingSecret.length > 512)
+		throw new Error("Computer billing database authority is not configured");
+	let origin: URL;
+	try { origin = new URL(supabaseUrl); } catch { throw new Error("Computer billing database authority is not configured"); }
+	if (origin.protocol !== "https:" || origin.username || origin.password || origin.pathname !== "/" || origin.search || origin.hash)
+		throw new Error("Computer billing database authority is not configured");
+	const endpoint = new URL("/rest/v1/rpc/qorpera_computer_billing_rpc", origin);
+	return async (name, args) => {
+		try {
+			const response = await fetcher(endpoint, {
+				method: "POST", headers: { apikey: serviceKey, authorization: `Bearer ${serviceKey}`, "content-type": "application/json" },
+				body: JSON.stringify({ p_method: name, p_args: args, p_billing_secret: billingSecret }),
+				signal: AbortSignal.timeout(10000), redirect: "error",
+			});
+			if (!response.ok) throw new Error("Billing database unavailable");
+			return response.status === 204 ? null : JSON.parse(new TextDecoder().decode(await boundedBody(response, 65536)));
+		} catch { throw new Error("Billing database unavailable"); }
+	};
+}
+
 class BillingError extends Error {
 	status: number;
 	constructor(status: number, message: string) {
@@ -33,7 +55,7 @@ function identifier(value: unknown, prefix: string): string {
 	return value;
 }
 
-async function boundedBody(request: Request, limit: number): Promise<Uint8Array> {
+async function boundedBody(request: Request | Response, limit: number): Promise<Uint8Array> {
 	if (!request.body) throw new BillingError(400, "Request body required");
 	const reader = request.body.getReader();
 	const parts: Uint8Array[] = [];

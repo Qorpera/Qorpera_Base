@@ -1,11 +1,14 @@
-import { handleComputerBilling, type ComputerBillingOptions } from "./computer-billing.ts";
+import { createComputerBillingRpc, handleComputerBilling, type ComputerBillingOptions } from "./computer-billing.ts";
 
 Deno.serve(async (request: Request) => {
 	const supabaseUrl = Deno.env.get("SUPABASE_URL") ?? "";
 	const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
-	if (!supabaseUrl || !serviceKey) return Response.json({ error: "Computer billing is not configured" }, { status: 503 });
+	const billingSecret = Deno.env.get("QORPERA_COMPUTER_BILLING_RPC_SECRET") ?? "";
+	if (!supabaseUrl || !serviceKey || billingSecret.length < 32 || billingSecret.length > 512) return Response.json({ error: "Computer billing is not configured" }, { status: 503 });
 	let pricePlans: ComputerBillingOptions["pricePlans"];
+	let rpc: ComputerBillingOptions["rpc"];
 	try {
+		rpc = createComputerBillingRpc(supabaseUrl, serviceKey, billingSecret, fetch);
 		const parsed: unknown = JSON.parse(Deno.env.get("QORPERA_STRIPE_PRICE_PLANS") ?? "{}");
 		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("Invalid price configuration");
 		pricePlans = {};
@@ -33,13 +36,6 @@ Deno.serve(async (request: Request) => {
 			const user: unknown = await response.json();
 			return user && typeof user === "object" && "id" in user && typeof user.id === "string" ? user.id : null;
 		},
-		rpc: async (name, args) => {
-			const response = await fetch(`${supabaseUrl}/rest/v1/rpc/${name}`, {
-				method: "POST", headers: { apikey: serviceKey, authorization: `Bearer ${serviceKey}`, "content-type": "application/json" },
-				body: JSON.stringify(args), signal: AbortSignal.timeout(10000),
-			});
-			if (!response.ok) throw new Error("Billing database unavailable");
-			return response.status === 204 ? null : response.json();
-		},
+		rpc,
 	});
 });

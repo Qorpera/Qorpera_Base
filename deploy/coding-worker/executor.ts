@@ -7,6 +7,9 @@ import { type CloudCodingRepository, parseCloudCodingRepository } from "../../pa
 import { cloudCodingSessionLayout } from "../../packages/contracts/src/cloud-coding-session.ts";
 import { parseCloudCodingNasPolicy } from "../../packages/contracts/src/cloud-coding-storage.ts";
 import { CloudCodingExecutor } from "../../packages/runner-orchestrator/src/coding-executor.ts";
+import { CodingComputerController } from "../../packages/runner-orchestrator/src/coding-computer-controller.ts";
+import { PaidComputerGuardClient } from "../../packages/runner-orchestrator/src/computer-paid-guard-ipc.ts";
+import { readPaidComputerHostClock } from "../../packages/runner-orchestrator/src/computer-paid-guard-lxd.ts";
 import { LxdCodingExecutorHost, type LxdCodingExecutorHostOptions } from "../../packages/runner-orchestrator/src/coding-executor-host.ts";
 import { createCodingNasStorage } from "../../packages/runner-orchestrator/src/coding-storage.ts";
 import { lxdCodingMachinePlan } from "../../packages/runner-orchestrator/src/coding-machine.ts";
@@ -27,6 +30,7 @@ interface Config {
 	vmPolicy: LxdCodingExecutorHostOptions["vmPolicy"];
 	storagePolicy: LxdCodingExecutorHostOptions["storagePolicy"];
 	guest: LxdCodingExecutorHostOptions["guest"];
+	paidComputers: boolean;
 	/** The company secret brokers' shared origin and the systemd credential
 	 * holding the executor's own broker token (never the runtime token guests
 	 * hold). Required unless every repository names a static credential. */
@@ -36,7 +40,7 @@ interface Config {
 	 * repository, proof-only plumbing that bypasses the company connection. */
 	repositories: { repository: CloudCodingRepository; credential: string | null }[];
 }
-const RESERVED_CREDENTIALS = new Set(["qorpera-coding-executor-config", "qorpera-coding-registry", "qorpera-coding-command"]);
+const RESERVED_CREDENTIALS = new Set(["qorpera-coding-executor-config", "qorpera-coding-registry", "qorpera-coding-command", "qorpera-coding-computer-executor"]);
 const CONFIG_KEYS = "commandPort,guest,owner,repositories,schema,storagePolicy,supabaseUrl,vmPolicy";
 function object(value: unknown): Record<string, unknown> {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("CODING_EXECUTOR_CONFIG_INVALID");
@@ -65,11 +69,12 @@ function broker(value: unknown): Config["broker"] {
  * executor's own allowlist; SQL repository grants stay the authority. */
 export function parseCodingExecutorConfiguration(value: unknown): Config {
 	const config = object(value);
-	const keys = Object.keys(config).sort().join();
+	const keys = Object.keys(config).filter((key) => key !== "paidComputers").sort().join();
 	if ((keys !== CONFIG_KEYS && keys !== `broker,${CONFIG_KEYS}`) ||
 		config.schema !== "qorpera.coding-executor-service/v5" || typeof config.owner !== "string" || !/^[A-Za-z0-9_.:-]{1,120}$/.test(config.owner) ||
 		!Number.isSafeInteger(config.commandPort) || Number(config.commandPort) < 1024 || Number(config.commandPort) > 65535 ||
 		!Array.isArray(config.repositories) || config.repositories.length < 1 || config.repositories.length > 100) throw new Error("CODING_EXECUTOR_CONFIG_INVALID");
+	if (config.paidComputers !== undefined && config.paidComputers !== true) throw new Error("CODING_EXECUTOR_CONFIG_INVALID");
 	const brokerConfig = broker(config.broker);
 	const repositories = config.repositories.map((value) => {
 		const entry = object(value);
@@ -99,7 +104,7 @@ export function parseCodingExecutorConfiguration(value: unknown): Config {
 	return {
 		schema: "qorpera.coding-executor-service/v5", owner: config.owner, supabaseUrl: origin(config.supabaseUrl),
 		commandPort: Number(config.commandPort), storagePolicy, vmPolicy: vmPolicy as unknown as Config["vmPolicy"],
-		guest: guest as unknown as Config["guest"], broker: brokerConfig, repositories,
+		guest: guest as unknown as Config["guest"], paidComputers: config.paidComputers === true, broker: brokerConfig, repositories,
 	};
 }
 
@@ -121,13 +126,22 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 	const config = parseCodingExecutorConfiguration(JSON.parse(await credential("qorpera-coding-executor-config")));
 	const machine = (await readFile("/etc/machine-id", "utf8")).trim();
 	if (!/^[0-9a-f]{32}$/.test(machine)) throw new Error("CODING_NODE_IDENTITY_INVALID");
-	const control = new CodingExecutorHttpControl({ supabaseUrl: config.supabaseUrl, serviceRoleKey: await credential("qorpera-coding-registry") });
+	const control = new CodingExecutorHttpControl({ supabaseUrl: config.supabaseUrl, serviceRoleKey: await credential("qorpera-coding-registry"),
+		computerExecutorSecret: config.paidComputers ? await credential("qorpera-coding-computer-executor") : undefined });
 	const brokered = config.broker ? new BrokerRepositoryCredentials({ origin: config.broker.origin,
 		executorToken: await credential(config.broker.executorTokenCredential), executorOwner: config.owner }) : null;
 	const journalRoot = await createCodingNasStorage(config.storagePolicy).prepareControl();
+	const machineIdSha256 = createHash("sha256").update(machine).digest("hex");
+	const client = new LxdUnixClient();
+	const computerUsage = config.paidComputers ? new CodingComputerController({
+		control, guard: new PaidComputerGuardClient("/run/qorpera-paid-computer-guard/control.sock"),
+		client, clock: readPaidComputerHostClock, owner: config.owner,
+		storage: { policy: config.storagePolicy, machineIdSha256 },
+	}) : undefined;
+	await computerUsage?.initialize(AbortSignal.timeout(30000));
 	const host = new LxdCodingExecutorHost({
-		control, owner: config.owner, machineIdSha256: createHash("sha256").update(machine).digest("hex"),
-		vmPolicy: config.vmPolicy, storagePolicy: config.storagePolicy, client: new LxdUnixClient(), guest: config.guest, journalRoot,
+		control, owner: config.owner, machineIdSha256, computerUsage,
+		vmPolicy: config.vmPolicy, storagePolicy: config.storagePolicy, client, guest: config.guest, journalRoot,
 		repositoryCredentials: {
 			async withRepositoryToken(scope, repository, use, signal) {
 				signal.throwIfAborted();
@@ -206,7 +220,17 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 				await setTimeout(30_000, undefined, { signal: stop.signal }).catch(() => undefined);
 			}
 		})();
-		await Promise.all([claiming, housekeeping]);
+		const accounting = (async () => {
+			if (!computerUsage) return;
+			while (!stop.signal.aborted) {
+				try { await computerUsage.maintain(stop.signal); }
+				catch (error) {
+					if (!stop.signal.aborted) console.error(JSON.stringify({ event: "coding-computer-usage-error", code: errorCode(error) }));
+				}
+				await setTimeout(5000, undefined, { signal: stop.signal }).catch(() => undefined);
+			}
+		})();
+		await Promise.all([claiming, housekeeping, accounting]);
 	} finally {
 		stop.abort();
 		await executor?.drain();

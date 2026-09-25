@@ -51,7 +51,10 @@ export class ComputerUsageOutbox {
 				result.charged !== false ||
 				!(
 					(result.recorded === true && result.reason === "observed") ||
-					(result.recorded === false && (result.reason === "allocation_released" || result.reason === "excluded"))
+					(result.recorded === false &&
+						(result.reason === "allocation_released" ||
+							result.reason === "excluded" ||
+							result.reason === "paid_meter_owned"))
 				)
 			)
 				throw new Error("COMPUTER_USAGE_RECEIPT_UNCONFIRMED");

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
 import { describe, it } from "node:test";
-import { handleComputerBilling, STRIPE_API_VERSION, type ComputerBillingOptions } from "./computer-billing.ts";
+import { createComputerBillingRpc, handleComputerBilling, STRIPE_API_VERSION, type ComputerBillingOptions } from "./computer-billing.ts";
 
 const now = Date.parse("2026-09-25T10:00:00Z");
 const userId = "63000000-0000-4000-8000-000000000001";
@@ -221,5 +221,42 @@ describe("computer billing service", () => {
 		assert.equal((await handleComputerBilling(new Request("https://edge.test/computer-billing/webhook", { method: "POST", body: "x".repeat(1048577) }), options)).status, 413);
 		assert.equal((await handleComputerBilling(webhook(), { ...options, stripeSecretKey: "" })).status, 503);
 		assert.equal(requests.length, 0);
+	});
+});
+
+describe("computer billing database authority", () => {
+	it("fails closed before HTTP without a dedicated bridge credential", () => {
+		for (const secret of ["", "x".repeat(31), "x".repeat(513)])
+			assert.throws(() => createComputerBillingRpc("https://db.test", "guest-shared-service-key", secret, fetch), /not configured/);
+		for (const url of ["invalid", "http://db.test", "https://u:p@db.test", "https://db.test/path", "https://db.test?key=secret", "https://db.test#secret"])
+			assert.throws(() => createComputerBillingRpc(url, "service-key", "x".repeat(64), fetch), /not configured/);
+	});
+	it("uses a fixed dispatcher, prevents redirects, and does not expose database errors", async () => {
+		const requests: { url: string; init?: RequestInit }[] = [];
+		const secret = "bridge-only-".repeat(5);
+		const rpc = createComputerBillingRpc("https://db.test", "service-key", secret, async (input, init) => {
+			requests.push({ url: String(input), init });
+			return Response.json({ state: "claimed" });
+		});
+		assert.deepEqual(await rpc("qorpera_begin_computer_billing_sync", { p_event_id: "evt_test" }), { state: "claimed" });
+		assert.equal(requests[0].url, "https://db.test/rest/v1/rpc/qorpera_computer_billing_rpc");
+		assert.equal(requests[0].init?.redirect, "error");
+		assert.deepEqual(JSON.parse(String(requests[0].init?.body)), {
+			p_method: "qorpera_begin_computer_billing_sync", p_args: { p_event_id: "evt_test" }, p_billing_secret: secret,
+		});
+		assert.equal(new Headers(requests[0].init?.headers).get("authorization"), "Bearer service-key");
+		await rpc("../../forged", {});
+		assert.equal(requests[1].url, requests[0].url);
+		const failed = createComputerBillingRpc("https://db.test", "service-key", secret,
+			async () => new Response(`database echoed ${secret}`, { status: 403 }));
+		await assert.rejects(failed("qorpera_computer_plan_catalog", {}), { message: "Billing database unavailable" });
+		for (const fetcher of [
+			async () => { throw new Error(`transport echoed ${secret}`); },
+			async () => new Response(secret),
+			async () => new Response("x".repeat(65537)),
+		]) {
+			await assert.rejects(createComputerBillingRpc("https://db.test", "service-key", secret, fetcher)("qorpera_computer_plan_catalog", {}),
+				{ message: "Billing database unavailable" });
+		}
 	});
 });
