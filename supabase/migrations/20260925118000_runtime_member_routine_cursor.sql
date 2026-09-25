@@ -23,7 +23,8 @@
 -- * A run still waiting for its start (an occurrence not yet a run, held by
 --   quiet hours or admission) is refused once a newer version exists. With the
 --   same timing its slot is offered again to the new version, so the edit
---   applies to that run instead of losing it.
+--   applies to that run instead of losing it (only slots after the last one
+--   already handed over; a slot counts once toward a finite routine's limit).
 -- * Changed timing under the same id (time, weekdays, time zone, interval,
 --   start) restarts the schedule at the save: nothing runs at once and nothing
 --   is caught up; the first run is the new schedule's first slot after the
@@ -105,9 +106,15 @@ begin
 	end if;
 	v_same := public.qorpera_routine_schedule_timing(v_earlier) = public.qorpera_routine_schedule_timing(p_trigger);
 	if v_same and p_was_active and p_stays_active then
+		-- Only slots after the last one already handed over: a stale slot that waited
+		-- while a later one ran is not run again.
 		select min(occurrence.scheduled_for) into v_waiting from public.qorpera_wake_occurrences occurrence
 		where occurrence.routine_id = p_routine_id and occurrence.routine_version = p_version
-			and occurrence.trigger_id = p_trigger ->> 'id' and occurrence.status = 'queued';
+			and occurrence.trigger_id = p_trigger ->> 'id' and occurrence.status = 'queued'
+			and occurrence.scheduled_for > coalesce((select max(handed.scheduled_for)
+				from public.qorpera_wake_occurrences handed
+				where handed.routine_id = p_routine_id and handed.routine_version = p_version
+					and handed.trigger_id = p_trigger ->> 'id' and handed.status <> 'queued'), '-infinity'::timestamptz);
 		if v_waiting is not null then
 			last_scheduled_for := v_waiting - interval '1 millisecond';
 			next_due_at := v_waiting;
@@ -152,6 +159,30 @@ select pg_temp.member_cursor_patch(
 	where trigger.value ->> 'kind' = 'schedule';$new$);
 
 -- ---------------------------------------------------------------------------
+-- A slot offered again counts once toward a finite routine's limit
+-- ---------------------------------------------------------------------------
+-- The old version's refused occurrence and the new version's occurrence of the
+-- same slot are two rows. max_occurrences counts slots, so each schedule slot
+-- (trigger and instant) and each file event counts once; otherwise an edit
+-- while a run waits would expire a finite routine one run early.
+create function public.qorpera_routine_occurrence_count(p_routine_id uuid)
+returns bigint language sql stable security definer set search_path = '' as $$
+	select count(distinct (wake.trigger_id, coalesce(wake.file_event_id::text, ''), wake.scheduled_for))
+	from public.qorpera_wake_occurrences wake where wake.routine_id = p_routine_id
+$$;
+revoke all on function public.qorpera_routine_occurrence_count(uuid)
+	from public, anon, authenticated, service_role, qorpera_secret_broker;
+select pg_temp.member_cursor_patch('public.qorpera_routine_occurrence_lifecycle()'::regprocedure,
+	$old$	if v_routine.max_occurrences is not null and (select count(*) from public.qorpera_wake_occurrences wake
+		where wake.routine_id = new.routine_id) >= v_routine.max_occurrences then$old$,
+	$new$	if v_routine.max_occurrences is not null
+		and public.qorpera_routine_occurrence_count(new.routine_id) >= v_routine.max_occurrences then$new$);
+select pg_temp.member_cursor_patch('public.qorpera_routine_occurrence_recorded()'::regprocedure,
+	$old$			and (select count(*) from public.qorpera_wake_occurrences wake where wake.routine_id = routine.id)
+				>= routine.max_occurrences;$old$,
+	$new$			and public.qorpera_routine_occurrence_count(routine.id) >= routine.max_occurrences;$new$);
+
+-- ---------------------------------------------------------------------------
 -- Switched back on at the same version: restart once the next slot passed
 -- ---------------------------------------------------------------------------
 -- Every path that switches a routine back on without a new version lands here:
@@ -191,7 +222,10 @@ revoke all on function public.qorpera_routine_resume_restarts_schedule()
 -- PR #320 checks for this same predicate and then leaves the function alone.
 do $$
 begin
-	if to_regprocedure('public.qorpera_routine_next_run_at(uuid)') is null then return; end if;
+	if to_regprocedure('public.qorpera_routine_next_run_at(uuid)') is null then
+		raise notice 'qorpera_routine_next_run_at is absent (v114 not applied): nothing to patch';
+		return;
+	end if;
 	if pg_get_functiondef(to_regprocedure('public.qorpera_routine_next_run_at(uuid)'))
 		like '%cursor.last_scheduled_for + interval ''1 millisecond''%' then
 		return;

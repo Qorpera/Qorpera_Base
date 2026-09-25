@@ -387,4 +387,56 @@ begin
 		'A new trigger id starts fresh, with its kickoff');
 end $$;
 
+-- A finite routine counts each slot once: a slot offered again after an edit and its
+-- refused twin of the old version are one of its permitted runs, so an edit while a
+-- run waits does not end the routine one run early.
+do $$
+declare v_client uuid := extensions.gen_random_uuid(); v_row public.qorpera_cloud_routines;
+	v_a timestamptz := date_trunc('milliseconds',statement_timestamp() - interval '3 days');
+	v_b timestamptz := date_trunc('milliseconds',statement_timestamp() - interval '2 days');
+	v_c timestamptz := date_trunc('milliseconds',statement_timestamp() - interval '1 day');
+	v_brief jsonb := '[{"id":"brief","kind":"schedule","intervalMinutes":1440}]';
+begin
+	perform pg_temp.member_save(v_client,'Three briefs',v_brief);
+	update public.qorpera_cloud_routines set max_occurrences = 3 where client_routine_id = v_client;
+	perform pg_temp.member_ran(v_client,'brief',v_a,v_b);
+	perform pg_temp.member_enqueued(v_client,'brief',v_b,v_c);
+	perform pg_temp.member_save(v_client,'Three daily briefs',v_brief);
+	perform pg_temp.member_ran(v_client,'brief',v_b,v_c);
+	select * into v_row from public.qorpera_cloud_routines where client_routine_id = v_client;
+	perform pg_temp.wake_assert(v_row.status = 'active'
+		and (select count(*) from public.qorpera_wake_occurrences where routine_id = v_row.id) = 3,
+		'The slot offered again and its refused twin count once toward the limit');
+	perform pg_temp.member_ran(v_client,'brief',v_c,v_c + interval '1 day');
+	select * into v_row from public.qorpera_cloud_routines where client_routine_id = v_client;
+	perform pg_temp.wake_assert(v_row.status = 'expired' and v_row.expired_while_active,
+		'The third slot is the routine''s last run');
+end $$;
+
+-- A slot that waited while a later one already ran is stale: an edit does not offer it
+-- again (it would run after the later slot).
+do $$
+declare v_client uuid := extensions.gen_random_uuid(); v_cursor public.qorpera_cloud_routine_schedule_cursors;
+	v_first timestamptz := date_trunc('milliseconds',statement_timestamp() - interval '2 days');
+	v_second timestamptz := date_trunc('milliseconds',statement_timestamp() - interval '1 day');
+	v_stale uuid;
+	v_brief jsonb := '[{"id":"brief","kind":"schedule","intervalMinutes":1440}]';
+begin
+	perform pg_temp.member_save(v_client,'Daily brief',v_brief);
+	-- Quiet hours now: the first slot waits for the window's end.
+	update public.qorpera_cloud_routines set quiet_start = ((statement_timestamp() at time zone 'UTC') - interval '1 hour')::time,
+		quiet_end = ((statement_timestamp() at time zone 'UTC') + interval '2 hours')::time, quiet_time_zone = 'UTC'
+	where client_routine_id = v_client;
+	v_stale := (pg_temp.member_enqueued(v_client,'brief',v_first,v_second) ->> 'occurrence_id')::uuid;
+	update public.qorpera_cloud_routines set quiet_start = null, quiet_end = null, quiet_time_zone = null
+	where client_routine_id = v_client;
+	perform pg_temp.member_ran(v_client,'brief',v_second,v_second + interval '1 day');
+	perform pg_temp.wake_assert((select status from public.qorpera_wake_occurrences where id = v_stale) = 'queued',
+		'Fixture: the first slot still waits while the second one ran');
+	perform pg_temp.member_save(v_client,'Daily brief, renamed',v_brief);
+	v_cursor := pg_temp.member_cursor(v_client,'brief');
+	perform pg_temp.wake_assert(v_cursor.routine_version = 2 and v_cursor.last_scheduled_for = v_second
+		and v_cursor.next_due_at = v_second + interval '1 day','A stale waiting slot is not offered again');
+end $$;
+
 rollback;
