@@ -9,8 +9,9 @@ import {
 } from "@qorpera/cloud-client/cloud-routines";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AgentRoutines } from "../src/app/views/agent-routines.ts";
-import type { WebRoutines } from "../src/cloud/routines.ts";
-import { settle, staff } from "./fixtures.ts";
+import type { Cloud } from "../src/cloud/client.ts";
+import { createWebRoutines, type WebRoutines } from "../src/cloud/routines.ts";
+import { profileA, settle, staff } from "./fixtures.ts";
 
 const account = {
 	connectionId: "10000000-0000-4000-8000-000000000001",
@@ -190,6 +191,67 @@ describe("agent routines section", () => {
 				localTime: "09:00",
 			},
 		});
+	});
+	it("keeps the effort an agent chose when a member edits the routine", async () => {
+		// An agent may set a routine up at medium or high; a member edit used to save it as low.
+		const upserts: Record<string, unknown>[] = [];
+		const cloud = {
+			rpc: vi.fn(async (name: string, args: Record<string, unknown> = {}) => {
+				if (name === "qorpera_consent_provider_connection_autonomous")
+					return { connection_id: account.connectionId, allow_autonomous: true, version: 2 };
+				if (name === "qorpera_create_member_execution_sponsor")
+					return { binding_id: "10000000-0000-4000-8000-000000000005", version: 1 };
+				if (name !== "qorpera_upsert_cloud_routine") throw new Error(`Unexpected call ${name}`);
+				upserts.push(args);
+				return {
+					routine_id: "10000000-0000-4000-8000-000000000002",
+					client_routine_id: args.p_client_routine_id,
+					version: upserts.length + 1,
+					status: "active",
+				};
+			}),
+		} as unknown as Cloud;
+		const stop = new AbortController();
+		const cloudRoutines = createWebRoutines(cloud, profileA, stop.signal, () => {});
+		const routines = {
+			list: vi.fn(async () => [routine({ effort: "high" })]),
+			runs: vi.fn(async () => []),
+			save: vi.fn(cloudRoutines.save),
+			setEnabled: vi.fn(cloudRoutines.setEnabled),
+		} satisfies WebRoutines;
+		const view = new AgentRoutines(
+			() => staff,
+			{ routines, accounts: async () => ({ connections: [account] }), canManage: () => true },
+			stop.signal,
+		);
+		document.body.append(view.el);
+		await settle();
+		click(view.el, "Edit");
+		await settle();
+		view.el.querySelector<HTMLInputElement>('[aria-label="Routine name"]')!.value = "Morning brief, shorter";
+		click(view.el, "Save routine");
+		await vi.waitFor(() => expect(upserts).toHaveLength(1));
+		expect(routines.save).toHaveBeenCalledWith(
+			expect.objectContaining({ title: "Morning brief, shorter", effort: "high" }),
+			account,
+			expect.any(String),
+		);
+		expect(upserts[0]).toMatchObject({
+			p_client_routine_id: routine().clientRoutineId,
+			p_title: "Morning brief, shorter",
+			p_effort: "high",
+		});
+		// A routine a member starts from scratch keeps the low default.
+		await vi.waitFor(() => expect(view.el.querySelector("h2")?.textContent).toBe("Routines"));
+		click(view.el, "New routine");
+		await settle();
+		view.el.querySelector<HTMLInputElement>('[aria-label="Routine name"]')!.value = "Weekly close";
+		view.el.querySelector<HTMLTextAreaElement>('[aria-label="What to do"]')!.value = "Close the week.";
+		click(view.el, "Save routine");
+		await vi.waitFor(() => expect(upserts).toHaveLength(2));
+		expect(upserts[1]).toMatchObject({ p_title: "Weekly close", p_effort: "low" });
+		expect(upserts[1]!.p_client_routine_id).not.toBe(routine().clientRoutineId);
+		stop.abort();
 	});
 	it("offers each account once, by email, and numbers a repeated account", async () => {
 		const connections = [

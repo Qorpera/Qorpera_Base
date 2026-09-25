@@ -487,6 +487,7 @@ export class AgentRoutines {
 						title: title.value.trim(),
 						prompt: prompt.value.trim(),
 						trigger: built,
+						effort: routine?.effort,
 						enabled: routine ? routine.status === "active" : true,
 					},
 					chosenAccount,
