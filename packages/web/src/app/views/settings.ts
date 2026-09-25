@@ -23,7 +23,7 @@ const TABS = [
 		label: phrase("General"),
 		icon: "settings",
 		keywords:
-			"account appearance theme composer color colour blue green grey gray language region time zone timezone generelt konto udseende tema lys mørk skrivefelt farve blå grøn grå sprog dansk engelsk område tidszone",
+			"account appearance theme composer color colour blue green grey gray interface size big small language region time zone timezone generelt konto udseende tema lys mørk skrivefelt farve blå grøn grå grænseflade størrelse stor lille sprog dansk engelsk område tidszone",
 	},
 	{
 		id: "company",

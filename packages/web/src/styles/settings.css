@@ -114,6 +114,11 @@
 .settings-choice:hover .settings-swatch { box-shadow: inset 0 0 0 1px rgb(18 18 17 / 10%), 0 0 0 2px #c9c9c5; }
 .settings-choice > input:checked ~ .settings-swatch { box-shadow: 0 0 0 2px #1d1d1b; }
 .settings-choice > input:focus-visible ~ .settings-swatch { outline: 2px solid #5b84c4; outline-offset: 3px; }
+/* Two wider size cards span the same row as the three theme/colour cards. */
+.settings-size-choices { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.size-swatch { display: grid; place-items: center; aspect-ratio: 15 / 7; background: var(--sidebar-surface); color: var(--text); }
+.size-swatch::before { content: "Aa"; font-size: 32px; font-weight: 500; line-height: 1; }
+.size-swatch-big::before { font-size: 41.6px; }
 .swatch-window { position: absolute; inset: 0; display: grid; grid-template-rows: auto auto minmax(0, 1fr); gap: 5px; padding: 16% 12% 0; background: var(--w-bg); }
 .swatch-window-light { --w-bg: #e9e7e6; --w-bar: #c6c4c2; --w-panel: #ffffff; --w-pill: #dedddb; --w-line: #ececea; }
 .swatch-window-dark { --w-bg: #1f1f1e; --w-bar: #5e5d5a; --w-panel: #2f2f2e; --w-pill: #4f4f4d; --w-line: #3c3c3a; }

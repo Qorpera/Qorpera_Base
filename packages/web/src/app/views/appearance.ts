@@ -5,9 +5,12 @@ import {
 	phrase,
 	setComposerColorPreference,
 	setThemePreference,
+	setUiSizePreference,
 	type ThemePreference,
 	t,
 	themePreference,
+	type UiSizePreference,
+	uiSizePreference,
 	uiText,
 } from "../../ui/preferences.ts";
 
@@ -133,4 +136,29 @@ export function composerColorChoices(failed: () => void): HTMLFieldSetElement {
 		setComposerColorPreference,
 		failed,
 	);
+}
+
+export function uiSizeChoices(failed: () => void): HTMLFieldSetElement {
+	const group = choices<UiSizePreference>(
+		"ui-size",
+		phrase("Interface size"),
+		[
+			{
+				value: "small",
+				label: phrase("Small"),
+				swatch: h("span", { class: "settings-swatch size-swatch size-swatch-small", "aria-hidden": "true" }),
+			},
+			{
+				value: "big",
+				label: phrase("Big"),
+				swatch: h("span", { class: "settings-swatch size-swatch size-swatch-big", "aria-hidden": "true" }),
+			},
+		],
+		uiSizePreference,
+		setUiSizePreference,
+		failed,
+	);
+	group.classList.add("settings-size-choices");
+	for (const input of group.querySelectorAll("input")) input.dataset.uiSizePreference = "";
+	return group;
 }
