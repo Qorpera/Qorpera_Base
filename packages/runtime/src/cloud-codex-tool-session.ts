@@ -489,7 +489,10 @@ class CodexBoundaryRpc {
 		signal: AbortSignal,
 	): Promise<unknown> {
 		// Reviews run one at a time, and never while an earlier reviewer thread is still
-		// starting; a review that waits longer than its caller does stops waiting.
+		// starting; a review that waits longer than its caller does stops waiting. (A
+		// caller that stops while queued lets the queue move on without waiting for the
+		// review ahead of it; that is safe because the boundary runs one call at a time,
+		// so at most one review is outstanding.)
 		const run = untilAborted(this.#reviewQueue, signal).then(() => this.#review(input, signal));
 		this.#reviewQueue = run.then(
 			() => this.#reviewStarting,

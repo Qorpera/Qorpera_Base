@@ -46,6 +46,19 @@ An independent review of 0e5b25515 asked for changes; all fixed:
 - Approvals and denials are bound to the member the run works for.
 - An allow for an action "not asked for" is recorded as a deny.
 
+## Review round 2 (2026-09-25)
+
+Round 2 (on ac789fe2f) confirmed the round-1 fixes and found two defects in
+them, both fixed:
+- An answer to a parked card wakes the agent on the answerer's account, so the
+  woken run's member is the answerer: `begin` now also matches a review the
+  run's member answered (not only one raised for them).
+- A hold that ends early parks with `p_leaving`: an unanswered card parks, an
+  answered one is left unused (before, the exit park could use up an approval
+  the stopping call would never run).
+- Nits: a failed Always allow's reset archives the rule it saved; a retry with
+  the failed answer's client id is refused (55000), not a success.
+
 ## Rollout order
 
 1. Pause, record `20260925115000` (the observation function must accept

@@ -381,9 +381,10 @@ describe("the review step", () => {
 		await new Promise((resolve) => setTimeout(resolve, 20));
 		abort.abort();
 		await expect(result).rejects.toBeDefined();
+		// Leaving parks an unanswered card and never uses an approval the call will not run.
 		expect(calls.at(-1)).toMatchObject({
 			method: "qorpera_await_action_review",
-			args: { p_review_id: "review-8", p_park: true },
+			args: { p_review_id: "review-8", p_park: true, p_leaving: true },
 		});
 	});
 

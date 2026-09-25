@@ -512,7 +512,8 @@ export class CloudActionReviewGate {
 			await this.#control
 				.call(
 					"qorpera_await_action_review",
-					{ p_binding: this.#binding, p_review_id: reviewId, p_park: true },
+					// Leaving: park an unanswered card, but never use an approval this call will not run.
+					{ p_binding: this.#binding, p_review_id: reviewId, p_park: true, p_leaving: true },
 					AbortSignal.timeout(PARK_ON_EXIT_MS),
 				)
 				.catch(() => undefined);

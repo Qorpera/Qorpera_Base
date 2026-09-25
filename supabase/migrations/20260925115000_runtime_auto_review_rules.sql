@@ -266,10 +266,13 @@ begin
 		raise exception 'Action review request is invalid' using errcode = '22023'; end if;
 	-- The latest review of exactly this action, by this agent, for the same member
 	-- (an approval or a denial given for one member's work never serves another's).
+	-- An answer to a parked card wakes the agent on the answering member's account,
+	-- so a run for the member who answered finds that card too.
 	select review.* into v_review from public.qorpera_action_reviews as review
 	where review.profile_id = v_run.profile_id and review.staff_agent_id = v_run.staff_agent_id
 		and review.tool_name = p_call ->> 'tool' and review.argument_sha256 = p_call ->> 'argumentSha256'
-		and review.requester_user_id is not distinct from v_run.requested_by_user_id
+		and (review.requester_user_id is not distinct from v_run.requested_by_user_id
+			or (v_run.requested_by_user_id is not null and review.answered_by_user_id = v_run.requested_by_user_id))
 		and (review.decision = 'deny' or (review.decision = 'ask' and (review.card_session_id is not null
 			or review.answer is not null)))
 	order by review.created_at desc, review.id desc limit 1 for update;
@@ -465,12 +468,17 @@ $$;
 -- Runtime: a held call reads its card's answer. An approval is used by this call
 -- (so it runs once). With p_park, a call that stops holding leaves the card to
 -- wake the agent when it is answered; a call that holds (again) takes it back.
-create function public.qorpera_await_action_review(p_binding jsonb, p_review_id uuid, p_park boolean)
+-- With p_leaving (a hold that ends early: the run stopped), an unanswered card is
+-- parked and an answered one is left as it is: nothing is used by a call that
+-- will not run.
+create function public.qorpera_await_action_review(p_binding jsonb, p_review_id uuid, p_park boolean,
+	p_leaving boolean default false)
 returns jsonb language plpgsql security definer set search_path = '' as $$
 declare v_run public.qorpera_execution_runs%rowtype; v_review public.qorpera_action_reviews%rowtype; v_state text;
 begin
 	v_run := public.qorpera_native_tool_locked_run(p_binding);
-	if p_park is null then raise exception 'Action review wait is invalid' using errcode = '22023'; end if;
+	if p_park is null or p_leaving is null or (p_leaving and not p_park) then
+		raise exception 'Action review wait is invalid' using errcode = '22023'; end if;
 	select review.* into v_review from public.qorpera_action_reviews as review
 	where review.id = p_review_id and review.profile_id = v_run.profile_id
 		and review.staff_agent_id is not distinct from v_run.staff_agent_id and review.decision = 'ask'
@@ -478,6 +486,8 @@ begin
 	if not found then raise exception 'Action review is unavailable' using errcode = '22023'; end if;
 	if v_review.answer = 'deny' then
 		v_state := 'declined';
+	elsif p_leaving and v_review.answer is not null then
+		v_state := 'answered';
 	elsif v_review.answer is not null and v_review.consumed_at is null then
 		update public.qorpera_action_reviews set consumed_at = clock_timestamp(), consumed_run_id = v_run.id
 		where id = v_review.id;
@@ -551,6 +561,8 @@ begin
 		if v_input.author_user_id <> v_user or v_input.body ->> 'interactionId' <> p_review_id::text
 			or v_review.answer is distinct from p_answer then
 			raise exception 'client input id is already bound to different content' using errcode = '23505'; end if;
+		if v_input.failed_at is not null then
+			raise exception 'That answer did not reach the agent; answer the card again' using errcode = '55000'; end if;
 		return jsonb_build_object('reviewId', p_review_id, 'answer', v_review.answer, 'inputId', v_input.id,
 			'savedRuleId', v_review.saved_rule_id, 'woke', v_review.woken_at is not null);
 	end if;
@@ -567,6 +579,10 @@ begin
 			and input.body ->> 'schema' = 'qorpera.interaction-answer/v1'
 			and input.body ->> 'interactionId' = p_review_id::text and input.failed_at is null
 	) then
+		-- A rule the failed Always allow saved goes with it; the new answer decides again.
+		update public.qorpera_review_rules set archived_at = coalesce(archived_at, clock_timestamp()),
+			updated_at = clock_timestamp()
+		where id = v_review.saved_rule_id;
 		update public.qorpera_action_reviews set answer = null, answered_by_user_id = null, answered_at = null,
 			saved_rule_id = null, woken_at = null
 		where id = p_review_id returning * into v_review;
@@ -722,7 +738,7 @@ revoke all on function public.qorpera_review_rule_view(public.qorpera_review_rul
 	public.qorpera_record_action_review(jsonb, jsonb),
 	public.qorpera_action_review_card(public.qorpera_action_reviews),
 	public.qorpera_action_review_receipt(public.qorpera_action_reviews),
-	public.qorpera_await_action_review(jsonb, uuid, boolean),
+	public.qorpera_await_action_review(jsonb, uuid, boolean, boolean),
 	public.qorpera_answer_action_review(uuid, uuid, text, text, uuid, bigint)
 	from public, anon, authenticated, service_role;
 grant execute on function public.qorpera_list_review_rules(uuid),
@@ -732,7 +748,7 @@ grant execute on function public.qorpera_list_review_rules(uuid),
 	to authenticated;
 grant execute on function public.qorpera_begin_action_review(jsonb, jsonb),
 	public.qorpera_record_action_review(jsonb, jsonb),
-	public.qorpera_await_action_review(jsonb, uuid, boolean)
+	public.qorpera_await_action_review(jsonb, uuid, boolean, boolean)
 	to service_role;
 
 
