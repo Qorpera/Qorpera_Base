@@ -428,6 +428,8 @@ export class AgentRoutines {
 					id,
 					kind: "schedule",
 					intervalMinutes: 1440,
+					// An agent's firstRunAt still holds the first run back; once past, the scheduler ignores it.
+					startAt: first && "localTime" in first ? first.startAt : undefined,
 					weekdays: CLOUD_ROUTINE_WEEKDAYS.filter((day) => chosen.has(day)),
 					localTime: time.value,
 					timeZone: timeZone.value.trim(),

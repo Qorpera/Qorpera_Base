@@ -9,8 +9,9 @@ import {
 } from "@qorpera/cloud-client/cloud-routines";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AgentRoutines } from "../src/app/views/agent-routines.ts";
-import type { WebRoutines } from "../src/cloud/routines.ts";
-import { settle, staff } from "./fixtures.ts";
+import type { Cloud } from "../src/cloud/client.ts";
+import { createWebRoutines, type WebRoutines } from "../src/cloud/routines.ts";
+import { profileA, settle, staff } from "./fixtures.ts";
 
 const account = {
 	connectionId: "10000000-0000-4000-8000-000000000001",
@@ -66,6 +67,39 @@ function mount(items: CloudRoutine[], manage = true, connections: NativeMemberCo
 	);
 	document.body.append(view.el);
 	return { routines, view, stop };
+}
+/** The editor over the real save; each upsert the cloud receives is kept. */
+function mountSaving(items: CloudRoutine[]) {
+	const upserts: Record<string, unknown>[] = [];
+	const cloud = {
+		rpc: vi.fn(async (name: string, args: Record<string, unknown> = {}) => {
+			if (name === "qorpera_consent_provider_connection_autonomous")
+				return { connection_id: account.connectionId, allow_autonomous: true, version: 2 };
+			if (name === "qorpera_create_member_execution_sponsor")
+				return { binding_id: "10000000-0000-4000-8000-000000000005", version: 1 };
+			if (name !== "qorpera_upsert_cloud_routine") throw new Error(`Unexpected call ${name}`);
+			upserts.push(args);
+			return {
+				routine_id: "10000000-0000-4000-8000-000000000002",
+				client_routine_id: args.p_client_routine_id,
+				version: upserts.length + 1,
+				status: "active",
+			};
+		}),
+	} as unknown as Cloud;
+	const stop = new AbortController();
+	const routines = {
+		...createWebRoutines(cloud, profileA, stop.signal, () => {}),
+		list: vi.fn(async () => items),
+		runs: vi.fn(async () => []),
+	} satisfies WebRoutines;
+	const view = new AgentRoutines(
+		() => staff,
+		{ routines, accounts: async () => ({ connections: [account] }), canManage: () => true },
+		stop.signal,
+	);
+	document.body.append(view.el);
+	return { upserts, view, stop };
 }
 const click = (root: Element, label: string) =>
 	[...root.querySelectorAll("button")]
@@ -267,5 +301,49 @@ describe("agent routines section", () => {
 		click(view.el, "Back to agent details");
 		expect(back).toHaveBeenCalledTimes(1);
 		expect(routines.save).not.toHaveBeenCalled();
+	});
+});
+
+describe("a member edit of an agent's routine", () => {
+	const firstRunAt = "2026-10-05T06:30:00.000Z";
+	it.each([
+		[
+			"weekly",
+			{
+				id: "agent",
+				kind: "schedule",
+				intervalMinutes: 1440,
+				startAt: firstRunAt,
+				weekdays: ["monday", "wednesday"],
+				localTime: "08:30",
+				timeZone: "Europe/Copenhagen",
+				replyPolicy: "optional",
+			},
+		],
+		["every", { id: "agent", kind: "schedule", intervalMinutes: 90, startAt: firstRunAt, replyPolicy: "silent" }],
+		[
+			"file_change",
+			{
+				id: "agent",
+				kind: "listener",
+				source: "company-file",
+				path: "finance/invoices",
+				match: "subtree",
+				timeZone: "Europe/Copenhagen",
+				replyPolicy: "optional",
+			},
+		],
+	] as const)("keeps a %s trigger as the agent set it when only the name changes", async (_, trigger) => {
+		// A weekly routine lost the first-run date the agent chose, so the edit ran it at once.
+		const f = mountSaving([routine({ triggers: [parseCloudRoutineTrigger(trigger)] })]);
+		await settle();
+		click(f.view.el, "Edit");
+		await settle();
+		f.view.el.querySelector<HTMLInputElement>('[aria-label="Routine name"]')!.value = "Morning brief, shorter";
+		click(f.view.el, "Save routine");
+		await vi.waitFor(() => expect(f.upserts).toHaveLength(1), { timeout: 3000 });
+		expect(f.upserts[0]!.p_title).toBe("Morning brief, shorter");
+		expect(f.upserts[0]!.p_triggers).toEqual([trigger]);
+		f.stop.abort();
 	});
 });
