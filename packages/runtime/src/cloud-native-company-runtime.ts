@@ -452,6 +452,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 											...(dynamicRoutine
 												? [
 														cloudRoutineDecisionTool(binding, identity, this.#paths, {
+															decisionOwed: () => routineDecisionOwed,
 															decided: () => {
 																routineDecisionOwed = false;
 															},

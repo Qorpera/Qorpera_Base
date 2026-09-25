@@ -383,6 +383,16 @@ export function cloudRoutineTools(
 				trigger: compileTrigger(a.trigger),
 			};
 			if (a.expiresAt !== undefined) request.expiresAt = instant(a.expiresAt, "expiresAt");
+			// A dynamic routine's run after its end would never happen; the kernel refuses it too.
+			const firstRunAt = (request.trigger as { kind: string; at?: string }).at;
+			if (
+				firstRunAt !== undefined &&
+				request.expiresAt !== undefined &&
+				Date.parse(firstRunAt) >= Date.parse(request.expiresAt as string)
+			)
+				throw new CloudToolArgumentRefusal(
+					"firstRunAt must come before expiresAt: choose an earlier first run or a later end",
+				);
 			if (a.maxOccurrences !== undefined && (request.trigger as { kind: string }).kind === "once")
 				throw new CloudToolArgumentRefusal(
 					"a dynamic routine takes no maxOccurrences: it ends when a run concludes it (expiresAt still applies)",
@@ -443,13 +453,14 @@ export function cloudRoutineTools(
 
 /** Offered only in a run of a dynamic routine. The kernel refuses this run's final
  * message and its completion until the routine moved on; `decided` tells the host
- * mouth, which shows the model that reason first.
+ * mouth, which shows the model that reason first. Once nothing is owed, a second
+ * decision is refused here: the kernel would answer settled and change nothing.
  */
 export function cloudRoutineDecisionTool(
 	binding: CloudNativeToolBinding,
 	identity: CloudNativeToolIdentity,
 	control: CloudCompanyPathControl,
-	options: { readonly decided: () => void },
+	options: { readonly decisionOwed: () => boolean; readonly decided: () => void },
 ): CloudNativeTool {
 	const { admitted, assertContext } = routineAuthority(binding, identity);
 	return {
@@ -472,6 +483,10 @@ export function cloudRoutineDecisionTool(
 			},
 		},
 		parseArguments(value) {
+			if (!options.decisionOwed())
+				throw new CloudToolArgumentRefusal(
+					"nothing is owed any more: this run already decided its routine, or it moved on elsewhere. To change the next run or its instructions again, use manage_routine upsert with its routineKey; to end it, manage_routine conclude",
+				);
 			const action = (value as { action?: unknown } | null)?.action;
 			if (typeof action !== "string" || !DECISIONS.includes(action as (typeof DECISIONS)[number]))
 				throw new CloudToolArgumentRefusal("action must be next or conclude");

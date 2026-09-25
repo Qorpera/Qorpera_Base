@@ -52,12 +52,22 @@ alter table public.qorpera_cloud_routines
 -- Any path that moves a routine out of "concluded" (a new save, a member's
 -- pause or resume, a removal) drops the old conclusion with it, and a pause
 -- reason lasts only while the routine is paused (the member save path kept it).
+-- A routine that becomes active again was resumed after any Stop that came
+-- before, so that Stop no longer pauses it (the tick acts only on a newer one).
 create function public.qorpera_routine_conclusion_follows_status()
 returns trigger language plpgsql security definer set search_path = '' as $$
 begin
 	if new.status <> 'paused' then new.pause_reason := null; end if;
 	if new.status <> 'concluded' then
 		new.conclusion := null; new.concluded_at := null; new.concluded_by_run_id := null;
+	end if;
+	if new.status = 'active' and old.status <> 'active' then
+		update public.qorpera_wake_occurrences wake set blocked_reason = 'A member stopped this run; the routine paused'
+		where wake.routine_id = new.id and wake.run_id is not null
+			and wake.blocked_reason is distinct from 'A member stopped this run; the routine paused'
+			and exists (select 1 from public.qorpera_execution_runs run
+				join public.qorpera_runner_jobs job on job.id = run.job_id
+				where run.id = wake.run_id and job.status = 'cancelled' and job.cancelled_by_user_id is not null);
 	end if;
 	return new;
 end
@@ -394,6 +404,16 @@ returns timestamptz language sql stable security definer set search_path = '' as
 					where wake.routine_id = routine.id and wake.routine_version = routine.current_version))) end
 	from public.qorpera_cloud_routines routine where routine.id = p_routine_id
 $$;
+-- A dynamic routine's one next run comes before its end; a later one would never
+-- run while the routine showed it as its next run (decide_routine refuses it too).
+-- Checked after the version check, so a stale decision still reads as settled.
+select pg_temp.dynamic_patch('public.qorpera_manage_agent_routine(jsonb,jsonb)'::regprocedure,
+	$old$		raise exception 'Routine changed after this run started' using errcode = '55000'; end if;$old$,
+	$new$		raise exception 'Routine changed after this run started' using errcode = '55000'; end if;
+	if v_action = 'upsert' and v_trigger ->> 'kind' = 'once' and v_expires is not null
+		and (v_trigger ->> 'at')::timestamptz >= v_expires then
+		raise exception 'The routine ends at %. Choose an earlier first run or a later end.',
+			to_char(v_expires at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS"Z"') using errcode = '22023'; end if;$new$);
 select pg_temp.dynamic_patch('public.qorpera_agent_routine_view(public.qorpera_cloud_routines)'::regprocedure,
 	$old$'occurrences', (select count(*) from public.qorpera_wake_occurrences wake where wake.routine_id = p_routine.id))$old$,
 	$new$'occurrences', (select count(*) from public.qorpera_wake_occurrences wake where wake.routine_id = p_routine.id),

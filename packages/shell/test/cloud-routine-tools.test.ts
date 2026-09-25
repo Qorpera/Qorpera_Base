@@ -240,6 +240,14 @@ describe("agent routine tool", () => {
 			{ trigger: { kind: "weekly", localTime: "09:00", timeZone: "UTC", firstRunAt: "2026-10-01T09:00:00" } },
 		],
 		["an expiry without an offset", { expiresAt: "2026-10-03T18:00" }],
+		// Its one next run would never happen.
+		[
+			"a dynamic first run at its end",
+			{
+				trigger: { kind: "dynamic", timeZone: "UTC", firstRunAt: "2026-10-02T11:00:00+02:00" },
+				expiresAt: "2026-10-02T09:00:00Z",
+			},
+		],
 	])("rejects %s before dispatch", async (_label, extra) => {
 		const f = await fixture();
 		try {
@@ -373,7 +381,10 @@ describe("dynamic routine decision tool", () => {
 			{ describeToolAuthority: async () => authority },
 			new AbortController().signal,
 		);
-		const decided = vi.fn();
+		let owed = true;
+		const decided = vi.fn(() => {
+			owed = false;
+		});
 		const call = vi.fn<CloudCompanyPathControl["call"]>(async (_method, args) =>
 			result((args as { p_request: Record<string, unknown> }).p_request, binding.runId),
 		);
@@ -381,7 +392,7 @@ describe("dynamic routine decision tool", () => {
 			companyId: run.identity.companyId,
 			runId: run.identity.runId,
 			identity: run.identity,
-			tools: [cloudRoutineDecisionTool(binding, run.identity, { call }, { decided })],
+			tools: [cloudRoutineDecisionTool(binding, run.identity, { call }, { decisionOwed: () => owed, decided })],
 			assertActive: (signal) => run.assertActive(signal),
 			signal: run.signal,
 		});
@@ -418,6 +429,16 @@ describe("dynamic routine decision tool", () => {
 			]);
 			expect(f.decided).toHaveBeenCalledTimes(1);
 			expect(next.completesTurn).toBeUndefined();
+			// A second decision would change nothing (the kernel answers settled), so the
+			// run hears where a further change goes instead.
+			const again = await f.boundary.invoke("n2", "qorpera", "decide_routine", {
+				action: "next",
+				operationKey: "next-2",
+				at: "2026-09-25T20:00:00+02:00",
+			});
+			expect(again.success).toBe(false);
+			expect(again.contentItems[0].text).toContain("INVALID_ARGUMENTS: nothing is owed any more");
+			expect(f.call).toHaveBeenCalledTimes(1);
 		} finally {
 			f.run.close();
 		}
