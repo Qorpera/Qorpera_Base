@@ -222,5 +222,19 @@ export function companyFilePostgrest() {
 		fetch,
 	});
 	const gateway = new CloudCompanyPathGateway({ binding, identity, control, store });
-	return { binding, identity, gateway, entries, requests, before, seed, seedBytes, remove, directory, text, moveHead };
+	return {
+		binding,
+		identity,
+		gateway,
+		store,
+		entries,
+		requests,
+		before,
+		seed,
+		seedBytes,
+		remove,
+		directory,
+		text,
+		moveHead,
+	};
 }

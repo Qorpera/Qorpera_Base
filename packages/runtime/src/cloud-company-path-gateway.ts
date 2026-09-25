@@ -565,6 +565,10 @@ export class CloudCompanyPathGateway {
 			}
 			position += chunk.bytes;
 		}
+		// A whole file is also checked against its own digest, so "not text" can only ever
+		// mean intact bytes that are not UTF-8, never a manifest naming the wrong chunks.
+		if (offset === 0 && end === file.bytes && createHash("sha256").update(output).digest("hex") !== file.fileSha256)
+			throw new Error("Company File content does not match its digest");
 		// Do not split the last UTF-8 code point. Invalid binary/interior bytes
 		// remain unsupported, rather than silently changing the file's text.
 		let included = output.length;

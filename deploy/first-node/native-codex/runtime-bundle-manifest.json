@@ -14,16 +14,16 @@
   "components": {
     "kernel": "970d646215c75c8b9731724731082de1c2e1dc130a7f37014a9d15f29dc778b8",
     "constitution": "8641ce64101c52ec5f11f49fe42e70d7300548ecb30314bd59de91714c146d3d",
-    "toolCatalog": "c10c322678287854b659324b90645e589ae0b7d235372abdaa033e60cb2c1a2b",
+    "toolCatalog": "d8c75002fd74bdacf0fd4d0eaeebd6046387df25767fdb9dbaf85606555bb0f2",
     "wakeAndSilence": "5bf43d062333edffb8152de6095862ab43d11625c049b04a3156466c304c1bb1",
-    "contextComposer": "90c70998b329d75a5c5a2edfc1a6637df2a984f4870bedaff5bc730bf36f114f",
+    "contextComposer": "031175583707c7d57c18743ebef1a631675a99d4f80e4dfb6e9ddf4f9ecee0ac",
     "providerBootstrap": "dd7f7ef08c0dc8eac8920d9329117e303b086335f056176624daf3d8f58e9960",
     "authorization": "88566525ec06efea5eacf5b19ffffd57c529bea43c3efb01188e1db8a61d515c",
     "inboundSafety": "c0c404045bcacbddea79156d2d0d000b2d9caac77d53d1c92d64471ae01581d2",
-    "outboundSafety": "179f8e24b81d590ecf5619ffb51704012651341f6e32c02955a7ae0f691dfc11",
+    "outboundSafety": "d58ea1f4789dddda0509407973dedaba8911193acda37266b5934b7bcb8bd927",
     "interactionSurfaces": "bcf1c087497337b6d490eba0dfccba523f55ec9d6ac5f3f90a0c6135f8b66338",
     "workerLifecycle": "e55e18ab99a64dac0dc6863e9b282c52d6e98b6318329ba3017b082836442133",
-    "memoryAndSkills": "d5f47e4d1f25d9dcac39b4f7f011380808d4413cf02592bd97aa667dc94b61bf"
+    "memoryAndSkills": "740db4e2ed7f0b1965a1412d085b6edb53cd381f547a0c0545711b7b400daa99"
   },
   "implementation": {
     "deploy/coding-worker/command-authority.ts": "2efc2f278fb5e60f9211768faedef7e2d850755d714d7ac3d28d589496f0998d",
@@ -550,7 +550,7 @@
     "packages/runtime/src/cloud-company-computer-wallpapers.ts": "9cf40e3076a286d4bcbf46c01ee79e170b6a1004a1bfe2271ae3b54940960403",
     "packages/runtime/src/cloud-company-file-transfer-reader.ts": "d68d19871d496896a0baca3b52ec45f77317a1873fdb540401ce2f82802b8057",
     "packages/runtime/src/cloud-company-path-control.ts": "6a3a94c7144b5fb0c883734639a5a1a2ec1993f88930bcefd0401a4f050b0e9c",
-    "packages/runtime/src/cloud-company-path-gateway.ts": "403aa3add7a646af4cfdccb1d0355a9705e119b357490dd555de12f8ec30680e",
+    "packages/runtime/src/cloud-company-path-gateway.ts": "3b627ed40046cd15a6a1df3b4d3ee0551596f4d3d798c4a44fa62522ff90e5b4",
     "packages/runtime/src/cloud-company-path-presence.ts": "429e9cbe3270ade5d9b9b4651e70becbe1a5ec8e16f17ba0494ef0c27bada19b",
     "packages/runtime/src/cloud-company-path-refusal.ts": "63b1353b228da03cb3f771aa8bc73803f248e853456cb5137955f0b98ce4f277",
     "packages/runtime/src/cloud-connector-adapter.ts": "ef194cf4e28d0581ca639dc11f69eefde3695c8da56775aecfa62714c1949e09",
@@ -568,7 +568,7 @@
     "packages/runtime/src/cloud-identity-recovery-restore-main.ts": "4045d36563419775bf32d3f6fa3a7a1af7eecfc82d0977bc6eaa93f178f224ff",
     "packages/runtime/src/cloud-identity-recovery-store.ts": "86d7822dc731cf27f6c72c5dc3535b1765f75f2ef6b8f91f88a1172f4df95eff",
     "packages/runtime/src/cloud-identity-recovery.ts": "ad12e1d71d90a78e4d87ffd09c6f9600fcd83c33ae4db95e44759946eceb41f4",
-    "packages/runtime/src/cloud-memory-tools.ts": "03aa51e81a494a7c0937c22806c86e521e143556c425e6a4a634ee7663d52b15",
+    "packages/runtime/src/cloud-memory-tools.ts": "fccc8ee5c49a094fbc954c41fdeec00b7bc23228d39ad219ecddab6ecf067ec2",
     "packages/runtime/src/cloud-native-capture-images.ts": "063fa3a75d4ac35298075795462abdbb0c3820e3ca3506749a278b8fb03cea21",
     "packages/runtime/src/cloud-native-coding-runtime.ts": "3919d063bf1767c4ab2be51e4b112a258d880d8e426f45b53fa0a5f07da157cf",
     "packages/runtime/src/cloud-native-company-context.ts": "f8415f7d4522372e5789f2559fc29ddc1754aff39c8355409062abd587b4b102",

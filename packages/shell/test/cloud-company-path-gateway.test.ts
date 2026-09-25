@@ -13,6 +13,7 @@ import {
 	CloudCompanyHeadConflict,
 	type CloudCompanyPathControl,
 	CloudCompanyPathGateway,
+	CloudCompanyPathNotText,
 	type CloudCompanyPathRpc,
 } from "@qorpera/runtime/cloud-company-path-gateway";
 import type { CloudCompanyPathPresence } from "@qorpera/runtime/cloud-company-path-presence";
@@ -422,6 +423,53 @@ describe("cloud Company File path gateway", () => {
 		expect(
 			db.requests.filter((request) => request.method === "qorpera_list_company_paths").map((r) => r.status),
 		).toEqual([200, 412, 200, 412, 200, 412, 200, 412]);
+	});
+	it("tells text that is not UTF-8 apart from bytes that do not match their digest", async () => {
+		const db = companyFilePostgrest();
+		await db.seedBytes("notes/binary.md", Buffer.from([0xff, 0xfe, 0x00]));
+		await expect(db.gateway.readTrusted("notes/binary.md", new AbortController().signal)).rejects.toBeInstanceOf(
+			CloudCompanyPathNotText,
+		);
+		// A verified manifest whose chunks are not the file it names is an integrity failure, never "not text".
+		const chunk = await db.store.putObject(
+			db.identity.companyId,
+			Buffer.from([0xff, 0xfe]),
+			"application/octet-stream",
+		);
+		const claimed = createHash("sha256").update("ok").digest("hex");
+		const manifest = Buffer.from(
+			JSON.stringify({
+				schema: "qorpera.cloud-file-manifest/v1",
+				fileSha256: claimed,
+				bytes: 2,
+				mediaType: "application/octet-stream",
+				chunks: [{ sha256: chunk.sha256, bytes: 2 }],
+			}),
+		);
+		const stored = await db.store.putObject(
+			db.identity.companyId,
+			manifest,
+			"application/vnd.qorpera.file-manifest+json",
+		);
+		db.directory("notes");
+		db.entries.set("notes/forged.md", {
+			version: randomUUID(),
+			entry: {
+				kind: "file",
+				path: "notes/forged.md",
+				executable: false,
+				file: {
+					manifestSha256: stored.sha256,
+					fileSha256: claimed,
+					bytes: 2,
+					mediaType: "application/octet-stream",
+				},
+			},
+		});
+		const forged = await db.gateway.readTrusted("notes/forged.md", new AbortController().signal).catch((e) => e);
+		expect(forged).toBeInstanceOf(Error);
+		expect(forged).not.toBeInstanceOf(CloudCompanyPathNotText);
+		expect(String(forged)).toContain("does not match its digest");
 	});
 	it("refuses a trusted listing page that claims more without a cursor", async () => {
 		const f = fixture();

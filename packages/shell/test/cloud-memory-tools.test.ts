@@ -617,6 +617,45 @@ describe("agent memory over the real Company File HTTP adapter", () => {
 		}
 	});
 
+	it("does not append a fact to a month another run created with it after the listing", async () => {
+		const f = httpNotebook();
+		const month = cloudMemoryLogPath(f.agent, NOW);
+		let raced = false;
+		f.db.before.hook = async (method, args) => {
+			if (method !== "qorpera_read_company_path" || args.p_path !== month || raced) return;
+			raced = true;
+			await f.db.seed(month, "- (2026-09-22) Mine.\n");
+		};
+		try {
+			const again = f.receipt(
+				await f.boundary.invoke("race-dup", "qorpera", "update_memory", { action: "write", fact: "Mine." }),
+			);
+			expect(again).toMatchObject({ state: "duplicate", path: month });
+			expect(await f.db.text(month)).toBe("- (2026-09-22) Mine.\n");
+		} finally {
+			f.boundary.close();
+		}
+	});
+
+	it("composes around a recent month that is not notebook text, and names it", async () => {
+		const f = httpNotebook();
+		await f.db.seed(cloudMemoryLogPath(f.agent, NOW), "- (2026-09-21) Current fact.\n");
+		await f.db.seedBytes(`${f.paths.log}/2026-08.md`, Buffer.alloc(40 * 1024, 0x61));
+		await f.db.seed(f.paths.profile, "- (2026-01-01) I keep the books.\n");
+		const block = await composeCloudAgentMemory(f.db.gateway, f.agent, NOW, new AbortController().signal);
+		expect(block).toMatchObject({
+			available: true,
+			profile: { facts: [{ fact: "I keep the books." }] },
+			recentLog: { facts: [{ fact: "Current fact." }], unreadable: [`${f.paths.log}/2026-08.md`] },
+		});
+		// An unreadable profile cannot be composed whole, so the block degrades with a named reason.
+		await f.db.seedBytes(f.paths.profile, Buffer.from([0xff, 0xfe]));
+		await expect(
+			composeCloudAgentMemory(f.db.gateway, f.agent, NOW, new AbortController().signal),
+		).rejects.toMatchObject({ category: "invalid_response" });
+		f.boundary.close();
+	});
+
 	it("never answers not found or an empty recall when the notebook could not be listed", async () => {
 		const f = httpNotebook();
 		await f.db.seed(`${f.paths.log}/2026-08.md`, "- (2026-08-01) Kept fact.\n");

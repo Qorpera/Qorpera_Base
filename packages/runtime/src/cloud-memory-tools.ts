@@ -35,7 +35,7 @@ import {
 import { CloudCompanyPathVersionChanged } from "./cloud-company-path-refusal.ts";
 import type { CloudNativeToolIdentity } from "./cloud-native-tool-authority.ts";
 import { type CloudNativeTool, type CloudToolContext, cloudToolJsonText } from "./cloud-native-tool-boundary.ts";
-import type { CloudRuntimeToolOperation } from "./cloud-runtime-observability.ts";
+import { CloudRuntimeDiagnosticError, type CloudRuntimeToolOperation } from "./cloud-runtime-observability.ts";
 
 export const CLOUD_MEMORY_SCHEMA = "qorpera.agent-memory/v1" as const;
 export const CLOUD_MEMORY_TIERS = ["profile", "log", "note"] as const;
@@ -93,6 +93,8 @@ export interface CloudAgentMemoryBlock {
 		files: { path: string; version: string }[];
 		facts: CloudMemoryFact[];
 		moreFacts: number;
+		/** Recent months that are not notebook text: skipped, and named. */
+		unreadable?: string[];
 	};
 }
 
@@ -214,12 +216,19 @@ async function readNotebook(
 	const listed = await logFiles(gateway, paths.log, signal);
 	const logs: NotebookFile[] = new Array(listed.length);
 	let next = 0;
+	// After one failure the answer is already a failure: stop reading the rest.
+	let failed = false;
 	const [profile] = await Promise.all([
 		readFile(gateway, paths.profile, signal),
 		...Array.from({ length: Math.min(READ_CONCURRENCY, listed.length) }, async () => {
-			while (next < listed.length) {
+			while (!failed && next < listed.length) {
 				const index = next++;
-				logs[index] = await readFile(gateway, listed[index], signal);
+				try {
+					logs[index] = await readFile(gateway, listed[index], signal);
+				} catch (error) {
+					failed = true;
+					throw error;
+				}
 			}
 		}),
 	]);
@@ -240,9 +249,11 @@ function searched(notebook: Notebook): { [key: string]: JsonValue } {
 	const unreadable = [notebook.profile, ...notebook.logs]
 		.filter((file) => file.state === "unreadable")
 		.map((file) => file.path);
+	// A month deleted between the listing and its read is not a month that was read.
+	const months = notebook.logs.filter((file) => file.state !== "absent");
 	return {
-		logMonths: notebook.logs.length,
-		oldestMonth: notebook.logs.at(-1)?.path.slice(-10, -3) ?? null,
+		logMonths: months.length,
+		oldestMonth: months.at(-1)?.path.slice(-10, -3) ?? null,
 		...(unreadable.length ? { unreadable } : {}),
 	};
 }
@@ -282,7 +293,8 @@ export async function composeCloudAgentMemory(
 	};
 	// The whole profile or none: an unreadable one degrades the block to unavailable.
 	const profile = await readFile(gateway, paths.profile, signal);
-	if (profile.state === "unreadable") throw new CloudCompanyPathNotText("Memory profile is not notebook text");
+	if (profile.state === "unreadable")
+		throw new CloudRuntimeDiagnosticError("invalid_response", "Memory profile is not notebook text");
 	block.profile.version = profile.state === "file" ? profile.version : null;
 	block.profile.facts = facts(profile, "profile");
 	const months: string[] = [];
@@ -295,7 +307,7 @@ export async function composeCloudAgentMemory(
 	const newest: CloudMemoryFact[] = [];
 	for (const path of months) {
 		const file = await readFile(gateway, path, signal);
-		if (file.state === "unreadable") throw new CloudCompanyPathNotText("Memory log file is not notebook text");
+		if (file.state === "unreadable") block.recentLog.unreadable = [...(block.recentLog.unreadable ?? []), path];
 		if (file.state !== "file") continue;
 		block.recentLog.files.push({ path, version: file.version! });
 		newest.push(...facts(file, "log").reverse());
@@ -463,6 +475,11 @@ export function cloudMemoryTools(
 							? notebook.profile
 							: (notebook.logs.find((file) => file.path === path) ??
 								(await readFile(gateway, path, context.signal)));
+					// The month may have appeared after the listing: check it too before appending.
+					const copy = facts(current, tier === "profile" ? "profile" : "log").find(
+						(fact) => factIdentity(fact.fact) === key,
+					);
+					if (copy) return reply({ state: "duplicate", tier: copy.tier, date: copy.date, path });
 					if (current.state === "unreadable")
 						return reply({
 							state: "unreadable",
