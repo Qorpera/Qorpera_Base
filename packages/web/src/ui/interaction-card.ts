@@ -1,3 +1,4 @@
+import type { EmailDraftContent, EmailDraftEditor, EmailDraftState } from "../cloud/email-drafts.ts";
 import {
 	type InteractionAnswer,
 	type InteractionOutcome,
@@ -7,6 +8,7 @@ import {
 } from "../cloud/interactions.ts";
 import type { JsonValue } from "../cloud/types.ts";
 import { badge, button, fmtTime, h, icon } from "./dom.ts";
+import { renderEmailDraftCard } from "./email-draft-card.ts";
 import { phrase, t } from "./preferences.ts";
 
 /* Cards an agent raises in its thread (THREAD-WIDGETS-DESIGN-20260922.md).
@@ -29,6 +31,9 @@ export interface InteractionCardContext {
 	/** Saves a secret card's value into the company vault and marks the card provided;
 	 * absent while this version cannot reach the vault. */
 	provideSecret?: (value: string) => Promise<void>;
+	emailDraft?: EmailDraftEditor;
+	loadEmailDraft?: () => Promise<EmailDraftState>;
+	actEmailDraft?: (action: "save" | "send" | "discard", content: EmailDraftContent) => Promise<EmailDraftState>;
 	now?: number;
 }
 
@@ -96,6 +101,8 @@ function pill(label: string, onClick: () => void, kind: "primary" | "secondary" 
 
 export function renderInteractionCard(item: InteractionCardItem, context: InteractionCardContext): HTMLElement {
 	const { request } = item;
+	if (request.surface === "draft" && request.payload.platform === "email" && request.payload.connectorId === "gmail")
+		return renderEmailDraftCard(item, context);
 	const state = interactionState(request, item.answer, context.now);
 	let busy = false;
 	let card: HTMLElement;

@@ -72,7 +72,12 @@ async function coworkerFixture() {
 		{ describeToolAuthority: async () => authority },
 		new AbortController().signal,
 	);
-	const message = { recipientStaffId: randomUUID(), operationKey: "handoff-1", text: "Please examine the note." };
+	const message = {
+		recipientStaffId: randomUUID(),
+		operationKey: "handoff-1",
+		text: "Please examine the note.",
+		priority: true,
+	};
 	const receipt = {
 		schema: "qorpera.coworker-send/v1",
 		runId: binding.runId,

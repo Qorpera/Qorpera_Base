@@ -231,6 +231,37 @@ const GITHUB: CloudConnectorDefinition = {
 	],
 };
 
+const gmailDraftProperties: CloudConnectorInputSchema["properties"] = {
+	draft_id: {
+		type: "string",
+		description: "Stable Gmail draft id returned by create_draft.",
+		minLength: 1,
+		maxLength: 128,
+	},
+	to: {
+		type: "array",
+		description: "Recipient email addresses.",
+		items: { type: "string", minLength: 3, maxLength: 254 },
+		minItems: 1,
+		maxItems: 20,
+	},
+	cc: {
+		type: "array",
+		description: "Cc email addresses.",
+		items: { type: "string", minLength: 3, maxLength: 254 },
+		maxItems: 20,
+	},
+	subject: { type: "string", description: "Subject line.", minLength: 1, maxLength: 512 },
+	body: { type: "string", description: "Complete plain-text body.", minLength: 1, maxLength: 50_000 },
+	reply_to_message_id: {
+		type: "string",
+		description: "Gmail message id being answered, not a draft id.",
+		minLength: 1,
+		maxLength: 64,
+	},
+};
+const { draft_id: gmailDraftId, ...gmailDraftContentProperties } = gmailDraftProperties;
+
 const GMAIL: CloudConnectorDefinition = {
 	id: "gmail",
 	displayName: "Gmail",
@@ -241,10 +272,83 @@ const GMAIL: CloudConnectorDefinition = {
 		scopes: [
 			"https://www.googleapis.com/auth/gmail.readonly",
 			"https://www.googleapis.com/auth/gmail.send",
+			"https://www.googleapis.com/auth/gmail.compose",
 			GOOGLE_EMAIL_SCOPE,
 		],
 	},
 	operations: [
+		{
+			id: "get_profile",
+			version: 1,
+			toolName: "gmail_get_profile",
+			effect: "read",
+			description:
+				"Get the connected mailbox email_address. Use this trusted address as from when showing an email draft with ask_member surface draft; never invent the sender.",
+			inputSchema: { type: "object", properties: {}, additionalProperties: false },
+			recipe: "GET /gmail/v1/users/me/profile",
+		},
+		{
+			id: "create_draft",
+			version: 1,
+			toolName: "gmail_create_draft",
+			effect: "write",
+			description:
+				"Save an unsent draft in the connected Gmail mailbox. For an email to review in this conversation, use ask_member surface draft instead; its Save to Gmail button persists the draft. Use this operation when the member explicitly requests a Gmail-saved draft. Requires reconnecting older connections to grant draft access. Reuse the same idempotencyKey on retry; never blindly repeat a creation with an uncertain result.",
+			inputSchema: {
+				type: "object",
+				properties: gmailDraftContentProperties,
+				required: ["to", "subject", "body"],
+				additionalProperties: false,
+			},
+			recipe:
+				"GET /gmail/v1/users/me/profile; GET /gmail/v1/users/me/messages/{reply_to_message_id}?format=metadata (when replying); POST /gmail/v1/users/me/drafts with message.raw",
+		},
+		{
+			id: "update_draft",
+			version: 1,
+			toolName: "gmail_update_draft",
+			effect: "write",
+			description:
+				"Replace the complete content of an existing Gmail draft without sending it. Supply every recipient, subject and body to retain. The stable draft_id is unchanged but message_id changes.",
+			inputSchema: {
+				type: "object",
+				properties: gmailDraftProperties,
+				required: ["draft_id", "to", "subject", "body"],
+				additionalProperties: false,
+			},
+			recipe:
+				"GET /gmail/v1/users/me/profile; GET /gmail/v1/users/me/messages/{reply_to_message_id}?format=metadata (when replying); PUT /gmail/v1/users/me/drafts/{draft_id} with message.raw",
+		},
+		{
+			id: "delete_draft",
+			version: 1,
+			toolName: "gmail_delete_draft",
+			effect: "write",
+			description: "Permanently discard an unsent Gmail draft identified by draft_id. Does not send an email.",
+			inputSchema: {
+				type: "object",
+				properties: { draft_id: gmailDraftId },
+				required: ["draft_id"],
+				additionalProperties: false,
+			},
+			recipe: "DELETE /gmail/v1/users/me/drafts/{draft_id}",
+		},
+		{
+			id: "send_draft",
+			version: 1,
+			toolName: "gmail_send_draft",
+			effect: "write",
+			description:
+				"Send an existing Gmail draft with the exact complete content supplied here, atomically replacing its content on send. The email leaves immediately and Gmail removes the draft. A request to draft is not permission to send: present ask_member surface draft for review. Reuse the same idempotencyKey on retry and do not resend an uncertain outcome under another key.",
+			inputSchema: {
+				type: "object",
+				properties: gmailDraftProperties,
+				required: ["draft_id", "to", "subject", "body"],
+				additionalProperties: false,
+			},
+			recipe:
+				"GET /gmail/v1/users/me/profile; GET /gmail/v1/users/me/messages/{reply_to_message_id}?format=metadata (when replying); POST /gmail/v1/users/me/drafts/send with id and message.raw",
+		},
 		{
 			id: "search_messages",
 			version: 1,

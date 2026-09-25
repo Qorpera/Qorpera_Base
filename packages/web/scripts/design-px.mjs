@@ -6,7 +6,8 @@
 // coarse pointer). A part of the page that must keep its old size sets
 // `--px: 1px` for itself and everything inside it (the minimized computer
 // preview does). A query cannot read a variable, so each width breakpoint in
-// @media is written for each pointer: as it stands for a coarse one, multiplied
+// @media is written for each size and pointer: Small keeps it as written;
+// Big keeps it as written for a coarse one, multiplied
 // out for a fine one or none (spelled out rather than `not`, which older
 // browsers cannot parse). Hairlines (under 2px) stay as written, so borders stay crisp,
 // and so do SVG geometry properties, which count in the icon's own viewBox.
@@ -87,6 +88,41 @@ function mediaPrelude(prelude, scale) {
 	return ` ${branches.join(", ")} `;
 }
 
+/** Find the end of a block without treating braces in strings/comments as CSS. */
+function blockEnd(css, start) {
+	let depth = 1;
+	let i = start + 1;
+	while (i < css.length) {
+		const literalEnd = skipLiteral(css, i);
+		if (literalEnd > i) {
+			i = literalEnd;
+			continue;
+		}
+		if (css[i] === "{") depth++;
+		if (css[i] === "}" && --depth === 0) return i;
+		i++;
+	}
+	throw new Error("Unclosed CSS block");
+}
+
+/** Nest responsive rules under a zero-specificity size gate. A :root selector
+ * refers to that root itself, not a descendant root. esbuild lowers nesting. */
+function nestAtRoot(css) {
+	let out = "";
+	let i = 0;
+	while (i < css.length) {
+		const literalEnd = skipLiteral(css, i);
+		if (literalEnd > i) {
+			out += css.slice(i, literalEnd);
+			i = literalEnd;
+			continue;
+		}
+		if (css.startsWith(":root", i) && !/[\w-]/.test(css[i + 5] ?? "") && css[i - 1] !== "&") out += "&";
+		out += css[i++];
+	}
+	return out;
+}
+
 /** Rewrites every design pixel in one stylesheet. */
 export function scaleDesignPx(css, scale) {
 	let out = "";
@@ -111,7 +147,6 @@ export function scaleDesignPx(css, scale) {
 			const name = /^@([\w-]+)/.exec(css.slice(i));
 			if (name) {
 				atRule = name[1].toLowerCase();
-				out += name[0];
 				i += name[0].length;
 				if (atRule === "media" || atRule === "container") {
 					// The prelude runs to the block; comments and strings inside it are skipped whole.
@@ -120,9 +155,19 @@ export function scaleDesignPx(css, scale) {
 					const prelude = css.slice(i, end);
 					if (atRule === "container" && /\dpx/i.test(prelude))
 						throw new Error(`@container${prelude}: pixel widths in container queries are not scaled yet`);
-					out += atRule === "media" ? mediaPrelude(prelude, scale) : prelude;
+					if (atRule === "media" && /\dpx/i.test(prelude.replace(/\/\*[\s\S]*?\*\//g, ""))) {
+						const close = blockEnd(css, end);
+						const body = nestAtRoot(scaleDesignPx(css.slice(end + 1, close), scale));
+						out += `:where(:root:not([data-ui-size="small"])) { @media${mediaPrelude(prelude, scale)}{${body}} }`;
+						out += `\n:where(:root[data-ui-size="small"]) { @media${prelude}{${body}} }`;
+						i = close + 1;
+						start = i;
+						atRule = undefined;
+						continue;
+					}
+					out += name[0] + prelude;
 					i = end;
-				}
+				} else out += name[0];
 				continue;
 			}
 		}

@@ -137,15 +137,15 @@ const PAYLOAD_SCHEMAS: Record<CloudInteractionSurface, Schema> = {
 		{
 			platform: { type: "string", enum: ["email", "slack", "message"] },
 			connectorId: chars(1, 128),
-			from: chars(1, 320),
+			from: chars(1, 320, "For Gmail, use email_address from gmail_get_profile; never guess the connected sender."),
 			to: { type: "array", minItems: 1, maxItems: 32, items: chars(1, 320) },
 			cc: { type: "array", maxItems: 32, items: chars(1, 320) },
 			subject: chars(0, 500),
 			body: chars(1, 65536, "The whole ask_member call must stay under 64 KiB."),
-			replyTo: chars(1, 256),
+			replyTo: chars(1, 256, "For Gmail, the provider message id to reply to, not an address or draft id."),
 			threadRef: chars(1, 256),
 		},
-		"surface draft: a message the member sends or discards.",
+		"surface draft: an editable message the member reviews, saves to Gmail, sends or discards. A card alone is not a saved Gmail draft.",
 	),
 	credential: closedObject(
 		["name", "domain"],
@@ -186,6 +186,7 @@ function payloadRefusal(surface: CloudInteractionSurface): string {
 export const CLOUD_ASK_MEMBER_INSTRUCTIONS =
 	"ask_member puts one typed card in this conversation for the member to answer: a question with options, a secret they enter into the company vault, a form the host fills into the page on your computer, a takeover of your computer for a sign-in or code, a draft message they send or discard, or a credential sign-in the computer performs from the vault. " +
 	"Calling it ends this turn like a final send (text is the sentence shown above the card), so finish every Company File change and coworker message first. " +
+	"When the member asks you to draft an email and Gmail tools are available, call gmail_get_profile to obtain the real sender, then ask_member with surface draft, title New email, and payload {platform: email, connectorId: gmail, from: email_address, to: [recipient addresses], subject, body, cc?}. Put the complete email in the card rather than only writing it in ordinary chat. The member can edit recipients, subject and body, save to Gmail, send or discard. Creating this card does not send mail or save a Gmail draft. A request to draft does not authorize sending. Only report saved or sent after a successful tool result or card outcome confirms it; a sent outcome already sent the email, so never send it again. For replies include replyTo as the original Gmail message id; threadRef alone does not identify the reply message. If the user explicitly wants a draft saved in Gmail immediately, use gmail_create_draft and report its returned draft_id; do not create a separate unlinked card that could duplicate it. Never invent a sender or claim a connection exists based on conversation alone. " +
 	"payload is the closed object its schema gives for the surface you name; for a question it is {options: [{label, value?, description?, style?}], multiSelect?, allowCustom?}, where each option is an object, never a plain string. Text limits count UTF-8 bytes. A refused card says what to fix: fix it and call again. " +
 	"In your own shared thread, only the member you are answering can answer the card. " +
 	"The answer wakes you again in this conversation as qorpera.interaction-answer/v1: an input of your next wake, or in your own thread the newest thread entry, which wake.payload.inputIds names. It carries an outcome and, for a question or form, the chosen values; a secret answer never contains the value, only the vault secret's id and version under the connector you named (connectorId, default vault), for a connector operation to use. " +
