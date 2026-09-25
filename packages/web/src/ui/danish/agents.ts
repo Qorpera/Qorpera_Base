@@ -46,6 +46,7 @@ export const AGENTS: Record<string, string> = {
 	"Has not run yet": "Har ikke kørt endnu",
 	Active: "Aktiv",
 	Paused: "På pause",
+	Ended: "Afsluttet",
 	Pause: "Sæt på pause",
 	Resume: "Genoptag",
 	"Back to agent details": "Tilbage til agentdetaljer",

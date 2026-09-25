@@ -84,21 +84,23 @@ async function fixture(
 					publication: publication(request.todoKey as string, 1),
 				};
 	});
-	const present = new Set(options.present ?? []);
+	// A small Company File: each present path has a version, and every applied change gives it a new one.
+	const versions = new Map((options.present ?? []).map((path) => [path, randomUUID()]));
 	const read = vi.fn(async (path: string) => ({
 		path,
-		version: present.has(path) ? randomUUID() : null,
-		kind: present.has(path) ? "directory" : "absent",
+		version: versions.get(path) ?? null,
+		kind: versions.has(path) ? (path.endsWith(".json") ? "file" : "directory") : "absent",
 		readObservationId: randomUUID(),
 	}));
 	const mutate = vi.fn(async (operation: string, input: { path: string; operationKey: string }) => {
 		if (options.failWrite && operation === "write") throw new Error("object store unavailable");
+		versions.set(input.path, randomUUID());
 		return {
 			schema: "qorpera.company-path-result/v1" as const,
 			state: "applied" as const,
 			operationKey: input.operationKey,
 			path: input.path,
-			version: randomUUID(),
+			version: versions.get(input.path)!,
 			snapshotId: randomUUID(),
 			receiptId: randomUUID(),
 			proposalId: null,
@@ -113,7 +115,7 @@ async function fixture(
 		assertActive: (signal) => run.assertActive(signal),
 		signal: run.signal,
 	});
-	return { binding, run, call, read, mutate, boundary, agent };
+	return { binding, run, call, read, mutate, boundary, agent, versions };
 }
 const body = (result: { contentItems: readonly unknown[] }) =>
 	JSON.parse((result.contentItems[0] as { text: string }).text);
@@ -170,7 +172,7 @@ describe("agent todo and worker tools", () => {
 				["write", `work/todos/${f.agent}/market-scan.json`],
 			]);
 			expect(f.mutate.mock.calls[3][1]).toMatchObject({
-				operationKey: "todo-doc:market-scan:1",
+				operationKey: "todo-doc:market-scan:1:absent",
 				expectedVersion: null,
 			});
 			const confirmation = f.call.mock.calls[1][1] as { p_request: Record<string, unknown> };
@@ -274,6 +276,57 @@ describe("agent todo and worker tools", () => {
 				expect(body(refused).status).toBe("denied");
 			}
 			expect(f.call.mock.calls.length).toBe(calls);
+		} finally {
+			f.run.close();
+		}
+	});
+
+	it("writes a todo document against the version it read, under a key naming that version", async () => {
+		const f = await fixture(parentWake, { present: ["work", "work/todos"] });
+		const path = `work/todos/${f.agent}/market-scan.json`;
+		try {
+			f.versions.set(`work/todos/${f.agent}`, randomUUID());
+			f.versions.set(path, randomUUID());
+			const before = f.versions.get(path);
+			const request = { action: "upsert", operationKey: "t1", todoKey: "market-scan", title: "Market scan for Q4" };
+			await f.boundary.invoke("todo_1", "qorpera", "manage_todo", request);
+			expect(f.mutate.mock.calls.map((entry) => entry[0])).toEqual(["write"]);
+			expect(f.mutate.mock.calls[0][1]).toMatchObject({
+				operationKey: `todo-doc:market-scan:1:${before}`,
+				expectedVersion: before,
+			});
+			// The file changed after that write (here: by the write itself). Publishing the same revision
+			// again is a new write against the new version, not a replay of the old one.
+			const after = f.versions.get(path);
+			expect(after).not.toBe(before);
+			await f.boundary.invoke("todo_2", "qorpera", "manage_todo", request);
+			expect(f.mutate.mock.calls[1][1]).toMatchObject({
+				operationKey: `todo-doc:market-scan:1:${after}`,
+				expectedVersion: after,
+			});
+		} finally {
+			f.run.close();
+		}
+	});
+
+	it("reports a document the kernel refused as unpublished and keeps the change", async () => {
+		const f = await fixture(parentWake, { present: ["work", "work/todos"] });
+		try {
+			f.mutate.mockImplementationOnce(async () => {
+				throw new Error("Todo document is not the current revision");
+			});
+			const kept = await f.boundary.invoke("todo_1", "qorpera", "manage_todo", {
+				action: "upsert",
+				operationKey: "t1",
+				todoKey: "market-scan",
+				title: "Market scan for Q4",
+			});
+			expect(body(kept).status).toBe("ok");
+			expect(JSON.parse(body(kept).content.text).document).toEqual({
+				path: `work/todos/${f.agent}/market-scan.json`,
+				published: false,
+			});
+			expect(f.call.mock.calls.map((entry) => entry[0])).toEqual(["qorpera_manage_agent_todo"]);
 		} finally {
 			f.run.close();
 		}
@@ -494,7 +547,7 @@ describe("agent todo and worker tools", () => {
 				"qorpera_report_worker_result",
 				{ p_binding: f.binding, p_request: report },
 			]);
-			expect(f.mutate.mock.calls.at(-1)?.[1]).toMatchObject({ operationKey: "todo-doc:market-scan:3" });
+			expect(f.mutate.mock.calls.at(-1)?.[1]).toMatchObject({ operationKey: "todo-doc:market-scan:3:absent" });
 			for (const [index, invalid] of [
 				{ ...report, outcome: "blocked" },
 				{ ...report, needs: "A decision" },
