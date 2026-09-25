@@ -71,6 +71,18 @@ describe("thread interaction requests", () => {
 		expect(new Set(keys.map(cloudAskMemberFinalKey)).size).toBe(keys.length);
 		expect(cloudAskMemberFinalKey(`${"k".repeat(127)}a`)).not.toBe(cloudAskMemberFinalKey(`${"k".repeat(127)}b`));
 	});
+	it("refuses a card sentence its final send could not carry, before anything is appended", () => {
+		const card = {
+			idempotencyKey: "k",
+			surface: "question",
+			title: "Decision",
+			payload: { options: [{ label: "Yes" }] },
+		};
+		expect(() => parseCloudAskMemberInput({ ...card, text: "Pick\u0000one." })).toThrow(CloudToolArgumentRefusal);
+		expect(() => parseCloudAskMemberInput({ ...card, text: "Pick one.", title: "Deci\u0000sion" })).toThrow(
+			CloudToolArgumentRefusal,
+		);
+	});
 });
 
 type Schema = { [key: string]: unknown };

@@ -35,6 +35,12 @@ function agentIdFor(runId: string, operationKey: string): string {
 	return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-${((Number.parseInt(hex[16], 16) & 3) | 8).toString(16)}${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
 }
 
+interface Bound {
+	request: string;
+	document: string;
+	unsettled: boolean;
+}
+
 /** Everything a hire request decides, in a fixed order: what one operation key is bound to. */
 function hireRequest(hire: Record<string, string>): string {
 	return JSON.stringify([
@@ -81,18 +87,23 @@ export function cloudHiringTools(
 	const expected = Object.freeze({ ...identity });
 	// One request per operation key in this run. The document is built once, so a retry carries
 	// identical bytes, and every receipt field is read from it, never from a later request.
-	const hires = new Map<string, { request: string; document: string }>();
-	const chats = new Map<string, { request: string; document: string }>();
+	// unsettled: an apply of this document ended without a definite answer.
+	const hires = new Map<string, Bound>();
+	const chats = new Map<string, Bound>();
+	// The earlier request may already have taken effect (an unconfirmed result), so the refusal
+	// points at where it would be rather than inviting a second one under a new key.
 	const refuseRebinding = (
-		bound: Map<string, { request: string }>,
+		bound: Map<string, Bound>,
 		operationKey: string,
 		request: string,
-		kind: string,
+		kind: "hire" | "chat",
 	) => {
 		const previous = bound.get(operationKey);
 		if (previous && previous.request !== request)
 			throw new CloudToolArgumentRefusal(
-				`operationKey is already used in this run for a different ${kind}; repeat it only with identical arguments, and give a different ${kind} a new operationKey`,
+				kind === "hire"
+					? "operationKey is already used in this run for a different hire, which may already exist: check organization/agents before hiring again, and repeat this operationKey only with identical arguments"
+					: "operationKey is already used in this run for a different group chat, which may already exist: check organization/rooms before opening another, and repeat this operationKey only with identical arguments",
 			);
 	};
 	const assertContext = (context: CloudToolContext) => {
@@ -107,24 +118,29 @@ export function cloudHiringTools(
 			throw new Error("Hiring tool identity differs");
 		context.signal.throwIfAborted();
 	};
-	// A new agent or room document is approved by policy and applied at once. Only a validated
-	// refusal from the cloud leaves it a proposal for a member. Any other failure may follow the
-	// commit, so the outcome is read back once through the same proposal: the approval lane replays
-	// an applied proposal as applied and finishes an approved one. Still unknown, the call throws,
-	// is reported unconfirmed, and the same key settles it later.
+	// A new agent or room document is approved by policy and applied at once. A validated refusal
+	// from the cloud leaves it a proposal for a member, but only while no earlier apply of it is
+	// unaccounted for: a refusal (an expired lease, a stop) can also meet a document that is already
+	// applied. Any other failure may follow the commit, so the outcome is read back once through the
+	// same proposal: the approval lane replays an applied proposal as applied and finishes an
+	// approved one. Still unknown, the call throws, is reported unconfirmed, and the same key
+	// settles it later.
 	const settle = async (
 		result: Awaited<ReturnType<CloudCompanyPathGateway["mutate"]>>,
-		document: string,
+		bound: Bound,
 		signal: AbortSignal,
 	): Promise<"applied" | "proposed"> => {
 		if (result.state !== "proposed" || !result.proposalId) return result.state;
-		for (let attempt = 0; ; attempt++) {
+		for (;;) {
 			try {
-				return (await gateway.applyOwnOrganizationDocument(result.proposalId, document, signal)).state;
+				const settled = await gateway.applyOwnOrganizationDocument(result.proposalId, bound.document, signal);
+				bound.unsettled = false;
+				return settled.state;
 			} catch (error) {
 				signal.throwIfAborted();
-				if (error instanceof CloudCompanyPathRpcRefusal) return "proposed";
-				if (attempt > 0) throw error;
+				if (error instanceof CloudCompanyPathRpcRefusal && !bound.unsettled) return "proposed";
+				if (bound.unsettled) throw error;
+				bound.unsettled = true;
 			}
 		}
 	};
@@ -197,7 +213,7 @@ export function cloudHiringTools(
 					null,
 					2,
 				)}\n`;
-				bound = { request, document };
+				bound = { request, document, unsettled: false };
 				hires.set(hire.operationKey, bound);
 			}
 			const committed = JSON.parse(bound.document) as { agentId: string; displayName: string; role: string };
@@ -212,7 +228,7 @@ export function cloudHiringTools(
 				context.signal,
 				context.observation,
 			);
-			const state = await settle(result, bound.document, context.signal);
+			const state = await settle(result, bound, context.signal);
 			return {
 				kind: "text",
 				value: cloudToolJsonText({
@@ -280,7 +296,7 @@ export function cloudHiringTools(
 				coworkerIds: [...(a.coworkerIds as string[])].sort(),
 				includeRequestingMember: a.includeRequestingMember !== false,
 			};
-			refuseRebinding(chats, chat.operationKey, chatRequest(chat), "group chat");
+			refuseRebinding(chats, chat.operationKey, chatRequest(chat), "chat");
 			return chat;
 		},
 		async execute(value, context) {
@@ -293,12 +309,13 @@ export function cloudHiringTools(
 				includeRequestingMember: boolean;
 			};
 			const request = chatRequest(chat);
-			refuseRebinding(chats, chat.operationKey, request, "group chat");
+			refuseRebinding(chats, chat.operationKey, request, "chat");
 			let bound = chats.get(chat.operationKey);
 			if (!bound) {
 				const roomId = agentIdFor(expected.runId, `room:${chat.operationKey}`);
 				bound = {
 					request,
+					unsettled: false,
 					document: JSON.stringify({
 						schema: "qorpera.company-room/v1",
 						roomId,
@@ -329,7 +346,7 @@ export function cloudHiringTools(
 				context.signal,
 				context.observation,
 			);
-			const state = await settle(result, bound.document, context.signal);
+			const state = await settle(result, bound, context.signal);
 			return {
 				kind: "text",
 				value: cloudToolJsonText({

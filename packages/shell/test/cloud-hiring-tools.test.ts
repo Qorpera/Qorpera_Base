@@ -185,6 +185,38 @@ describe("agent hiring tool", () => {
 			f.run.close();
 		}
 	});
+	it("never takes a refusal for a waiting proposal once an apply of the same hire went unanswered", async () => {
+		const f = await fixture();
+		try {
+			// The apply committed but its answer was lost; the read-back then meets a refusal
+			// (an expired lease or a stop reaches an applied proposal too).
+			f.apply.mockRejectedValueOnce(lostResponse()).mockRejectedValueOnce(new CloudCompanyPathRpcRefusal());
+			const unknown = outcome(await f.boundary.invoke("hire_1", "qorpera", "hire_agent", hire));
+			expect(unknown).toMatchObject({ status: "unconfirmed", text: "TOOL_OUTCOME_UNCONFIRMED" });
+			// A retry under the same key is itself a read-back: a refusal there is no answer either.
+			f.apply.mockRejectedValueOnce(new CloudCompanyPathRpcRefusal());
+			expect(outcome(await f.boundary.invoke("hire_2", "qorpera", "hire_agent", hire)).status).toBe("unconfirmed");
+			const settled = outcome(await f.boundary.invoke("hire_3", "qorpera", "hire_agent", hire));
+			expect(settled.receipt).toMatchObject({ state: "applied", awaiting: null });
+			expect(f.apply).toHaveBeenCalledTimes(4);
+		} finally {
+			f.run.close();
+		}
+	});
+	it("still takes a refusal for a waiting proposal when only the write's answer was lost", async () => {
+		const f = await fixture();
+		try {
+			f.mutate.mockRejectedValueOnce(lostResponse());
+			expect(outcome(await f.boundary.invoke("hire_1", "qorpera", "hire_agent", hire)).status).toBe("unconfirmed");
+			expect(f.apply).not.toHaveBeenCalled();
+			// No apply ever ran for this hire, so the refusal is an answer.
+			f.apply.mockRejectedValueOnce(new CloudCompanyPathRpcRefusal());
+			const waiting = outcome(await f.boundary.invoke("hire_2", "qorpera", "hire_agent", hire));
+			expect(waiting.receipt).toMatchObject({ state: "proposed", awaiting: "member_approval" });
+		} finally {
+			f.run.close();
+		}
+	});
 	it("refuses a reused key with changed arguments before any write, and reports only what was committed", async () => {
 		const f = await fixture();
 		try {
@@ -196,6 +228,8 @@ describe("agent hiring tool", () => {
 			const beta = outcome(await f.boundary.invoke("hire_2", "qorpera", "hire_agent", { ...alpha, name: "Beta" }));
 			expect(beta.status).toBe("denied");
 			expect(beta.text).toMatch(/^INVALID_ARGUMENTS: operationKey is already used in this run for a different hire/);
+			// The first hire may exist already: the refusal says where to look, not to hire anew.
+			expect(beta.text).toContain("check organization/agents before hiring again");
 			expect(beta.text).not.toContain("Beta");
 			expect(f.mutate).toHaveBeenCalledOnce();
 			// Only a byte-identical request replays; its receipt names the committed document.
@@ -219,6 +253,7 @@ describe("agent hiring tool", () => {
 			expect(renamed.text).toMatch(
 				/^INVALID_ARGUMENTS: operationKey is already used in this run for a different group chat/,
 			);
+			expect(renamed.text).toContain("check organization/rooms before opening another");
 			expect(f.mutate).toHaveBeenCalledOnce();
 			// The same chat with its coworkers in another order is the same request.
 			const replay = outcome(
