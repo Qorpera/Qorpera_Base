@@ -36,13 +36,17 @@ export function renderAppearance(): HTMLElement {
 	);
 	return h(
 		"section",
-		{ class: "page" },
+		{ class: "page settings-appearance" },
 		h("h1", null, uiText("Appearance")),
 		feedback,
 		// The pictures say what each group is; the groups keep their names for screen readers.
-		h("div", { class: "settings-preference" }, theme),
-		h("div", { class: "settings-preference" }, composerColor),
-		h("div", { class: "settings-preference" }, size),
+		h(
+			"div",
+			{ class: "settings-appearance-choices" },
+			h("div", { class: "settings-preference" }, theme),
+			h("div", { class: "settings-preference" }, composerColor),
+			h("div", { class: "settings-preference" }, size),
+		),
 	);
 }
 

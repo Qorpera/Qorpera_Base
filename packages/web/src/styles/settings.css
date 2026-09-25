@@ -102,6 +102,9 @@
 /* Appearance: each choice is a picture of the result under a native radio.
    The theme pictures keep their own colours in both themes (they show a
    theme, not the page); the composer pictures follow the page. */
+/* Center the rows below the heading; short panels grow and scroll from the top. */
+.settings-appearance { display: flex; flex-direction: column; min-height: 100%; }
+.settings-appearance-choices { flex: none; margin-block: auto; }
 .settings-preference { padding: 8px 12px 10px; }
 /* No titles: extra room keeps the theme and colour rows reading as two groups. */
 .settings-preference + .settings-preference { padding-top: 22px; }
