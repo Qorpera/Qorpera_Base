@@ -137,6 +137,10 @@ jobs:
 
       - name: Test paid computer custody and office lifecycle
         working-directory: packages/runner-orchestrator
+        # The paid guard refuses tmpfs: reboot must not erase start/stop replay
+        # fences. Ubuntu's /tmp may be tmpfs; use the runner's local work disk.
+        env:
+          TMPDIR: ${{ runner.temp }}
         run: >-
           node ../../node_modules/vitest/dist/cli.js --run --maxWorkers=2
           test/computer-paid-guard.test.ts
