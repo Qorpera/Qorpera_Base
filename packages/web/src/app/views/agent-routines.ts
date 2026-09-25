@@ -533,7 +533,7 @@ export class AgentRoutines {
 				weeklyFields,
 				fileFields,
 				h("label", null, t("Reply"), reply),
-				h("p", { class: "muted" }, t("Effort: {effort}", { effort: effortName(effort) })),
+				h("div", { class: "muted" }, t("Effort: {effort}", { effort: effortName(effort) })),
 				this.#accounts.length
 					? h(
 							"label",

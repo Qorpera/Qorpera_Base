@@ -3,6 +3,7 @@ import type { NativeMemberConnection } from "@qorpera/cloud-client/cloud-native-
 import {
 	type CloudRoutine,
 	CloudRoutineClient,
+	type CloudRoutineSaveInput,
 	describeCloudRoutineTrigger,
 	parseCloudRoutine,
 	parseCloudRoutineTrigger,
@@ -255,8 +256,28 @@ describe("agent routines section", () => {
 		expect(upserts[1]!.p_client_routine_id).not.toBe(routine().clientRoutineId);
 		stop.abort();
 	});
+	it("refuses a routine save that does not say its effort, before asking the cloud", async () => {
+		const rpc = vi.fn(async () => ({}));
+		const { effort: _, ...unsaid } = {
+			environmentId: profileA.environmentId,
+			clientRoutineId: routine().clientRoutineId,
+			clientVersionId: routine().routineId,
+			staffAgentId: staff.id,
+			title: "Morning brief",
+			prompt: "Summarise what changed.",
+			triggers: routine().triggers,
+			effort: "high" as const,
+			sponsorBindingId: routine().sponsorBindingId,
+			sponsorVersion: 1,
+			enabled: true,
+		};
+		await expect(
+			new CloudRoutineClient(rpc).save(unsaid as CloudRoutineSaveInput, new AbortController().signal),
+		).rejects.toThrow("Invalid routine effort");
+		expect(rpc).not.toHaveBeenCalled();
+	});
 	it("offers no Edit for a routine the editor cannot show, so a save cannot drop part of it", async () => {
-		const window = routine({
+		const windowed = routine({
 			routineId: "10000000-0000-4000-8000-000000000010",
 			title: "Office hours",
 			triggers: [
@@ -279,7 +300,7 @@ describe("agent routines section", () => {
 				{ id: "f", kind: "listener", source: "company-file", path: "finance", match: "subtree", timeZone: "UTC" },
 			],
 		});
-		const f = mount([routine(), window, two]);
+		const f = mount([routine(), windowed, two]);
 		await settle();
 		const rows = [...f.view.el.querySelectorAll(".routine-row")];
 		expect(rows.map((row) => [...row.querySelectorAll("button")].map((item) => item.textContent))).toEqual([

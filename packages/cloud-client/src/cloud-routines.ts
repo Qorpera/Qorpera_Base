@@ -434,6 +434,7 @@ export class CloudRoutineClient {
 		if (input.triggers.length < 1 || input.triggers.length > 12) invalid("routine triggers");
 		const triggers = input.triggers.map(parseCloudRoutineTrigger);
 		if (new Set(triggers.map((trigger) => trigger.id)).size !== triggers.length) invalid("routine triggers");
+		if (!["low", "medium", "high", "xhigh", "max"].includes(input.effort)) invalid("routine effort");
 		const value = record(
 			await this.#rpc(
 				"qorpera_upsert_cloud_routine",
