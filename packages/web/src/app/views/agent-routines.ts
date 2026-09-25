@@ -175,16 +175,27 @@ export class AgentRoutines {
 					h("span", null, routine.triggers.map((trigger) => describeCloudRoutineTrigger(trigger, t)).join("; ")),
 					h("small", null, last ? t("Last run: {run}", { run: runLabel(last) }) : t("Has not run yet")),
 				),
-				routine.status === "active" ? badge(t("Active"), "ok") : badge(t("Paused"), "warn"),
+				routine.status === "active"
+					? badge(t("Active"), "ok")
+					: routine.status === "expired"
+						? badge(t("Ended"))
+						: badge(t("Paused"), "warn"),
 				manage
 					? h(
 							"div",
 							{ class: "routine-row-actions" },
 							button(t("Edit"), () => void this.#edit(routine), { small: true, disabled: this.#busy }),
-							button(routine.status === "active" ? t("Pause") : t("Resume"), () => void this.#toggle(routine), {
-								small: true,
-								disabled: this.#busy,
-							}),
+							// An ended routine has nothing to pause or resume; saving it again restarts it.
+							routine.status === "expired"
+								? null
+								: button(
+										routine.status === "active" ? t("Pause") : t("Resume"),
+										() => void this.#toggle(routine),
+										{
+											small: true,
+											disabled: this.#busy,
+										},
+									),
 						)
 					: null,
 			);
