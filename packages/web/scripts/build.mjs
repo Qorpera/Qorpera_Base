@@ -35,6 +35,12 @@ rmSync(dist, { recursive: true, force: true });
 mkdirSync(join(dist, "assets"), { recursive: true });
 cpSync(join(root, "public"), dist, { recursive: true });
 writeFileSync(join(dist, "_headers"), deployment.headers);
+// A missing file under a long-cached directory must be a no-store 404, never
+// the app page kept as that file (scripts/deployment.mjs).
+for (const page of deployment.notFoundPages) {
+	mkdirSync(dirname(join(dist, page)), { recursive: true });
+	writeFileSync(join(dist, page), '<!doctype html>\n<meta charset="utf-8">\n<title>Not found</title>\n<p>Not found.</p>\n');
+}
 cpSync(join(viewerRoot, "vendor/NOVNC_LICENSE.txt"), join(dist, "assets/NOVNC_LICENSE.txt"));
 // Reused desktop art. The web app never reads these at build time beyond copying.
 cpSync(join(userland, "fonts"), join(dist, "assets/fonts"), { recursive: true });
@@ -127,7 +133,7 @@ if (serve) {
 		.replace('href="./app.css"', `href="./${style}"`)
 		.replace('src="./main.js"', `src="./${script}"`);
 	writeFileSync(join(dist, "index.html"), html);
-	const files = ["index.html", "_headers", theme, script, style];
+	const files = ["index.html", "_headers", ...deployment.notFoundPages, theme, script, style];
 	writeFileSync(join(dist, "web-deployment.json"), `${JSON.stringify({
 		...deployment.manifest,
 		...provenance,
