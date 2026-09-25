@@ -87,6 +87,9 @@ export class RuntimeComputerController {
 	readonly #work = new Map<string, Promise<unknown>>();
 	readonly #abandoned = new Set<string>();
 	readonly #terminal = new Set<string>();
+	// The guard durably owns recovery; this cache also retries lost archive
+	// replies in-process after the active guard record has already been evicted.
+	readonly #pendingArchives = new Map<string, { allocationId: string; closure: unknown }>();
 	constructor(options: RuntimeComputerControllerOptions) {
 		this.#options = options;
 	}
@@ -122,6 +125,20 @@ export class RuntimeComputerController {
 		)
 			throw new Error("RUNTIME_COMPUTER_CLOCK_INVALID");
 		return clock;
+	}
+	async #archive(allocationId: string, permitId: string, closure: unknown, signal: AbortSignal): Promise<void> {
+		this.#pendingArchives.set(permitId, { allocationId, closure });
+		if (object(closure).schema === "qorpera.computer-abandonment-receipt/v1") {
+			const guarded = await this.#options.guard.status(permitId, signal).catch((error: unknown) => {
+				if (error instanceof Error && error.message === "PAID_GUARD_PERMIT_MISSING") return null;
+				throw error;
+			});
+			if (guarded && guarded.phase !== "stopped") await this.#options.guard.stop(permitId, signal);
+		}
+		await this.#options.guard.archive(permitId, closure, signal);
+		this.#pendingArchives.delete(permitId);
+		this.#terminal.add(permitId);
+		if (this.#computers.get(allocationId)?.permit.permitId === permitId) this.#computers.delete(allocationId);
 	}
 	#permit(
 		value: unknown,
@@ -159,7 +176,11 @@ export class RuntimeComputerController {
 		if (data.permit === null) return { mode: data.mode, current: null };
 		if (data.mode !== "paid") throw new Error("RUNTIME_COMPUTER_MODE_UNCONFIRMED");
 		const permit = this.#permit(data.permit, context, clock, terminal);
-		if (permit.state === "closed") return { mode: "paid", current: null };
+		if (permit.state === "closed") {
+			if (permit.schema === "qorpera.computer-usage-permit/v2")
+				await this.#archive(context.allocationId, permit.permitId, data.permit, signal);
+			return { mode: "paid", current: null };
+		}
 		const lastSample = data.lastSample === null ? null : object(data.lastSample);
 		if (lastSample && (typeof lastSample.observationId !== "string" || !UUID.test(lastSample.observationId)))
 			throw new Error("RUNTIME_COMPUTER_RECEIPT_INVALID");
@@ -208,6 +229,7 @@ export class RuntimeComputerController {
 			signal,
 		);
 		assertComputerAbandonmentReceipt(receipt, terminal);
+		await this.#archive(entry.intent.allocationId, entry.intent.permitId, receipt, signal);
 		this.#abandoned.add(entry.intent.permitId);
 		if (this.#computers.get(entry.intent.allocationId)?.permit.permitId === entry.intent.permitId)
 			this.#computers.delete(entry.intent.allocationId);
@@ -221,8 +243,13 @@ export class RuntimeComputerController {
 		});
 	}
 	async #recoverPrestarts(entries: PaidComputerPrestartRecord[], signal: AbortSignal): Promise<void> {
-		const results = await Promise.allSettled(
-			entries
+		const results = await Promise.allSettled([
+			...[...this.#pendingArchives].map(([permitId, pending]) =>
+				this.#exclusive(pending.allocationId, () =>
+					this.#archive(pending.allocationId, permitId, pending.closure, signal),
+				),
+			),
+			...entries
 				.filter((entry) => computerPrestartRequest(entry).schema === "qorpera.runtime-computer-prepare/v2")
 				.map((entry) =>
 					this.#exclusive(entry.intent.allocationId, async () => {
@@ -266,6 +293,12 @@ export class RuntimeComputerController {
 									throw new Error("RUNTIME_COMPUTER_PRESTART_DIFFERS");
 								assertComputerAbandonmentReceipt(retained.closure, tombstone);
 							}
+							await this.#archive(
+								entry.intent.allocationId,
+								entry.intent.permitId,
+								retained.state === "abandoned" ? retained.closure : retained.permit,
+								signal,
+							);
 							this.#terminal.add(entry.intent.permitId);
 							if (this.#computers.get(entry.intent.allocationId)?.permit.permitId === entry.intent.permitId)
 								this.#computers.delete(entry.intent.allocationId);
@@ -297,7 +330,7 @@ export class RuntimeComputerController {
 						});
 					}),
 				),
-		);
+		]);
 		if (results.some((result) => result.status === "rejected"))
 			throw new Error("RUNTIME_COMPUTER_PRESTART_RECOVERY_UNCONFIRMED");
 	}
@@ -594,7 +627,7 @@ export class RuntimeComputerController {
 			.update(JSON.stringify({ sample: facts, stopReceipt: guarded.stopReceipt }))
 			.digest("hex");
 		if (guarded.phase === "stopped") {
-			await this.#call(
+			const receipt = await this.#call(
 				"qorpera_finish_runtime_computer_permit",
 				{
 					permitId: current.permit.permitId,
@@ -605,6 +638,19 @@ export class RuntimeComputerController {
 				},
 				signal,
 			);
+			const closed = this.#permit(receipt, current.context, await this.#clock(), true);
+			if (
+				closed.state !== "closed" ||
+				closed.schema !== current.permit.schema ||
+				closed.permitId !== current.permit.permitId ||
+				closed.generation !== current.permit.generation ||
+				closed.reservationId !== current.permit.reservationId ||
+				closed.hostBootId !== current.permit.hostBootId ||
+				!isDeepStrictEqual(closed.prestart, current.permit.prestart)
+			)
+				throw new Error("RUNTIME_COMPUTER_CLOSURE_DIFFERS");
+			if (closed.schema === "qorpera.computer-usage-permit/v2")
+				await this.#archive(current.context.allocationId, closed.permitId, receipt, signal);
 			this.#computers.delete(current.context.allocationId);
 			this.#terminal.add(current.permit.permitId);
 			return;
@@ -666,6 +712,7 @@ export class RuntimeComputerController {
 					try {
 						const managed = this.#computers.get(entry.context.allocationId);
 						if (!managed || this.#terminal.has(managed.permit.permitId)) return;
+						if (this.#pendingArchives.has(managed.permit.permitId)) return;
 						const guarded = await this.#options.guard.latest(entry.context.allocationId, signal);
 						const current = (await this.#describe(managed.context, signal, guarded?.phase === "stopped")).current;
 						if (!current) {

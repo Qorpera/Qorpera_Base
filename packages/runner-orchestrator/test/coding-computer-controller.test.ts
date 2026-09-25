@@ -102,6 +102,7 @@ async function fixture() {
 		return wall;
 	};
 	let permit: PaidComputerPermit | null = null,
+		abandonmentClosure: Record<string, unknown> | null = null,
 		lastSample: Record<string, unknown> | null = null;
 	let losePrepare = false,
 		loseRenew = false,
@@ -112,7 +113,12 @@ async function fixture() {
 		call: vi.fn(async (method: string, args: Record<string, unknown>): Promise<unknown> => {
 			const request = args.p_request as Record<string, unknown>;
 			if (method === "qorpera_describe_coding_computer_prestart")
-				return { state: permit?.state ?? "absent", permit: receipt(), lastSample };
+				return {
+					state: abandonmentClosure ? "abandoned" : (permit?.state ?? "absent"),
+					permit: receipt(),
+					lastSample,
+					closure: abandonmentClosure,
+				};
 			if (method === "qorpera_describe_coding_computer_permit") {
 				if (sourceUnavailable) throw new Error("machine owner moved");
 				return permit?.state === "closed" || !permit
@@ -151,9 +157,10 @@ async function fixture() {
 				return receipt();
 			}
 			if (method.includes("abandon")) {
+				if (abandonmentClosure) return abandonmentClosure;
 				const reservationReleased = permit !== null;
 				if (permit) permit = { ...permit, state: "closed" };
-				return {
+				abandonmentClosure = {
 					schema: "qorpera.computer-abandonment-receipt/v1",
 					permitId: request.permitId,
 					state: "abandoned_before_dispatch",
@@ -162,6 +169,7 @@ async function fixture() {
 					debitedUs: "0",
 					releasedUs: reservationReleased ? "330000000" : "0",
 				};
+				return abandonmentClosure;
 			}
 			if (!permit) throw new Error("No permit");
 			lastSample = structuredClone(request.sample as Record<string, unknown>);
@@ -252,6 +260,15 @@ async function fixture() {
 		moveSource() {
 			sourceUnavailable = true;
 		},
+		async restartGuard() {
+			const restarted = new PaidComputerGuard(
+				new PaidComputerGuardJournal(root),
+				new LxdPaidComputerGuardPhysical(client, clock),
+				clock,
+			);
+			await restarted.initialize();
+			return restarted;
+		},
 		async start() {
 			await controller.ensure(claim, machine, signal());
 			return controller.start(machine.machineId, signal());
@@ -263,6 +280,80 @@ async function fixture() {
 }
 
 describe("paid coding computer controller", () => {
+	it("closes an armed but undispatched physical guard before archiving cancellation", async () => {
+		const f = await fixture();
+		await f.controller.ensure(f.claim, f.machine, signal());
+		vi.spyOn(f.guard, "start").mockRejectedValueOnce(new Error("dispatch unavailable"));
+		await expect(f.controller.start(f.machine.machineId, signal())).rejects.toThrow("dispatch unavailable");
+		await f.controller.abandonClaim(f.claim, f.machine, signal());
+		expect(await f.guard.list()).toEqual([]);
+		expect((await f.guard.latest(f.machine.machineId))?.phase).toBe("stopped");
+		expect(await f.controller.ownsStart(f.machine.machineId, signal())).toBe(true);
+		expect(f.client.submitInstanceOperation).not.toHaveBeenCalled();
+	});
+	it("retries a failed archive before terminal caching and keeps exact stop proof across guard restart", async () => {
+		const f = await fixture();
+		await f.start();
+		await f.bind();
+		await f.controller.stop(f.machine.machineId, signal());
+		const archive = vi.spyOn(f.guard, "archive").mockRejectedValueOnce(new Error("archive fsync unavailable"));
+		await expect(f.controller.observe(f.machine.machineId, signal())).rejects.toThrow("archive fsync");
+		expect(f.controller.manages(f.machine.machineId)).toBe(true);
+		expect(await f.guard.list()).toHaveLength(1);
+		f.moveSource();
+		await f.controller.maintain(signal());
+		expect(archive).toHaveBeenCalledTimes(2);
+		expect(f.controller.manages(f.machine.machineId)).toBe(false);
+		const stopped = await f.guard.latest(f.machine.machineId);
+		const guard = await f.restartGuard();
+		const restarted = new CodingComputerController({ ...f.options, guard });
+		f.control.call.mockClear();
+		await restarted.initialize(signal());
+		await restarted.maintain(signal());
+		expect(f.control.call).not.toHaveBeenCalled();
+		expect(await guard.list()).toEqual([]);
+		expect(await guard.listPrestarts()).toEqual([]);
+		expect(await guard.latest(f.machine.machineId)).toEqual(stopped);
+		expect(await restarted.ownsStart(f.machine.machineId, signal())).toBe(true);
+	});
+	it("retains start authority for an archived prepare-only cancellation after a lost archive reply and restart", async () => {
+		const f = await fixture();
+		await f.controller.ensure(f.claim, f.machine, signal());
+		const archive = f.guard.archive.bind(f.guard);
+		vi.spyOn(f.guard, "archive").mockImplementationOnce(async (permitId, closure) => {
+			await archive(permitId, closure);
+			throw new Error("archive reply lost");
+		});
+		await expect(f.controller.abandonClaim(f.claim, f.machine, signal())).rejects.toThrow("archive reply lost");
+		f.control.call.mockClear();
+		f.moveSource();
+		await f.controller.maintain(signal());
+		expect(f.control.call).not.toHaveBeenCalled();
+		expect(f.controller.manages(f.machine.machineId)).toBe(false);
+		const guard = await f.restartGuard();
+		const restarted = new CodingComputerController({ ...f.options, guard });
+		f.control.call.mockClear();
+		f.moveSource();
+		await restarted.initialize(signal());
+		expect(f.control.call).not.toHaveBeenCalled();
+		expect(await guard.listPrestarts()).toEqual([]);
+		expect(await guard.latest(f.machine.machineId)).toBeNull();
+		expect(await restarted.ownsStart(f.machine.machineId, signal())).toBe(true);
+		await expect(restarted.ensure(f.claim, f.machine, signal())).rejects.toThrow("START_ABANDONED");
+		expect(f.calls("qorpera_prepare_coding_computer_permit")).toHaveLength(0);
+		expect(f.client.submitInstanceOperation).not.toHaveBeenCalled();
+	});
+	it("retries cancellation archival after SQL has closed the allowance, without caching premature success", async () => {
+		const f = await fixture();
+		await f.controller.ensure(f.claim, f.machine, signal());
+		const archive = vi.spyOn(f.guard, "archive").mockRejectedValueOnce(new Error("archive not durable"));
+		await expect(f.controller.abandonClaim(f.claim, f.machine, signal())).rejects.toThrow("archive not durable");
+		expect(f.controller.manages(f.machine.machineId)).toBe(true);
+		await f.controller.abandonClaim(f.claim, f.machine, signal());
+		expect(archive).toHaveBeenCalledTimes(2);
+		expect(f.controller.manages(f.machine.machineId)).toBe(false);
+		expect(await f.guard.listPrestarts()).toEqual([]);
+	});
 	it.each([false, true])(
 		"checks the exact durable abandonment closure after a lost reply (altered: %s)",
 		async (altered) => {
@@ -292,7 +383,8 @@ describe("paid coding computer controller", () => {
 				await f.controller.maintain(signal());
 				expect(f.controller.manages(f.machine.machineId)).toBe(false);
 			}
-			expect((await f.guard.listPrestarts())[0].state).toBe("abandoned");
+			expect((await f.guard.prestartStatus(f.getPermit()!.permitId))?.state).toBe("abandoned");
+			expect(await f.guard.listPrestarts()).toHaveLength(altered ? 1 : 0);
 			expect(f.client.submitInstanceOperation).not.toHaveBeenCalled();
 		},
 	);
@@ -330,7 +422,7 @@ describe("paid coding computer controller", () => {
 		await restarted.initialize(signal());
 		await restarted.maintain(signal());
 		expect(restarted.manages(f.machine.machineId)).toBe(false);
-		expect(f.calls("qorpera_describe_coding_computer_prestart")).toHaveLength(1);
+		expect(f.calls("qorpera_describe_coding_computer_prestart")).toHaveLength(0);
 		expect(f.calls("qorpera_describe_coding_computer_permit")).toHaveLength(0);
 		expect((await f.guard.latest(f.machine.machineId))?.phase).toBe("stopped");
 	});

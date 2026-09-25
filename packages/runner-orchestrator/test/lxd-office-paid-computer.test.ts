@@ -273,13 +273,19 @@ describe("paid company computer lifecycle adapter", () => {
 			);
 			await guard.initialize();
 			let permit: PaidComputerPermit | null = null,
+				abandonmentClosure: Record<string, unknown> | null = null,
 				refunded = 0,
 				loseCancellation = true;
 			const control = {
 				call: vi.fn(async (method: string, args: Record<string, unknown>) => {
 					const request = args.p_request as Record<string, unknown>;
 					if (method === "qorpera_describe_runtime_computer_prestart")
-						return { state: permit?.state ?? "absent", permit, lastSample: null };
+						return {
+							state: abandonmentClosure ? "abandoned" : (permit?.state ?? "absent"),
+							permit,
+							lastSample: null,
+							closure: abandonmentClosure,
+						};
 					if (method.includes("describe")) return { mode: "paid", permit, lastSample: null };
 					if (method.includes("abandon")) {
 						expect((await guard.prestartStatus(commandId))?.state).toBe("abandoned");
@@ -287,11 +293,7 @@ describe("paid company computer lifecycle adapter", () => {
 							refunded++;
 							if (permit) permit = { ...permit, state: "closed" };
 						}
-						if (loseCancellation) {
-							loseCancellation = false;
-							throw new Error("cancellation committed reply lost");
-						}
-						return {
+						abandonmentClosure ??= {
 							schema: "qorpera.computer-abandonment-receipt/v1",
 							permitId: commandId,
 							state: "abandoned_before_dispatch",
@@ -300,6 +302,11 @@ describe("paid company computer lifecycle adapter", () => {
 							reservationReleased: true,
 							abandonment: request.abandonment,
 						};
+						if (loseCancellation) {
+							loseCancellation = false;
+							throw new Error("cancellation committed reply lost");
+						}
+						return abandonmentClosure;
 					}
 					if (!method.includes("prepare") || permit) throw new Error("unexpected accounting effect");
 					permit = {

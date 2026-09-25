@@ -43,6 +43,8 @@ export const CODING_COMPUTER_RPCS = [
 ] as const;
 
 export interface CodingPaidGuardPort {
+	archive(permitId: string, closure: unknown, signal: AbortSignal): Promise<void>;
+	hasHistory(allocationId: string, signal: AbortSignal): Promise<boolean>;
 	registerPrestart(input: PaidComputerPrestartIntent, signal: AbortSignal): Promise<PaidComputerPrestartRecord>;
 	prestartStatus(permitId: string, signal: AbortSignal): Promise<PaidComputerPrestartRecord | null>;
 	listPrestarts(signal: AbortSignal): Promise<PaidComputerPrestartRecord[]>;
@@ -98,6 +100,9 @@ export class CodingComputerController implements CodingComputerUsage {
 	readonly #work = new Map<string, Promise<unknown>>();
 	readonly #abandoned = new Set<string>();
 	readonly #terminal = new Set<string>();
+	// An archive may commit while its IPC reply is lost. Retrying this exact
+	// receipt avoids reauthenticating a live machine that has already moved.
+	readonly #pendingArchives = new Map<string, { allocationId: string; closure: unknown }>();
 	constructor(options: CodingComputerControllerOptions) {
 		this.#options = options;
 	}
@@ -134,6 +139,20 @@ export class CodingComputerController implements CodingComputerUsage {
 		)
 			throw new Error("CODING_COMPUTER_HOST_DIFFERS");
 		return clock;
+	}
+	async #archive(allocationId: string, permitId: string, closure: unknown, signal: AbortSignal): Promise<void> {
+		this.#pendingArchives.set(permitId, { allocationId, closure });
+		if (object(closure).schema === "qorpera.computer-abandonment-receipt/v1") {
+			const guarded = await this.#options.guard.status(permitId, signal).catch((error: unknown) => {
+				if (error instanceof Error && error.message === "PAID_GUARD_PERMIT_MISSING") return null;
+				throw error;
+			});
+			if (guarded && guarded.phase !== "stopped") await this.#options.guard.stop(permitId, signal);
+		}
+		await this.#options.guard.archive(permitId, closure, signal);
+		this.#pendingArchives.delete(permitId);
+		this.#terminal.add(permitId);
+		if (this.#computers.get(allocationId)?.permit.permitId === permitId) this.#computers.delete(allocationId);
 	}
 	#checkedPermit(
 		value: unknown,
@@ -173,7 +192,11 @@ export class CodingComputerController implements CodingComputerUsage {
 		const data = object(value);
 		if (data.permit === null) return null;
 		const permit = this.#checkedPermit(data.permit, machine, clock, stopped);
-		if (permit.state === "closed") return null;
+		if (permit.state === "closed") {
+			if (permit.schema === "qorpera.computer-usage-permit/v2")
+				await this.#archive(machine.machineId, permit.permitId, data.permit, signal);
+			return null;
+		}
 		const lastSample = data.lastSample === null ? null : object(data.lastSample);
 		if (lastSample && (typeof lastSample.observationId !== "string" || !UUID.test(lastSample.observationId)))
 			throw new Error("CODING_COMPUTER_RECEIPT_INVALID");
@@ -233,13 +256,19 @@ export class CodingComputerController implements CodingComputerUsage {
 			signal,
 		);
 		assertComputerAbandonmentReceipt(receipt, terminal);
+		await this.#archive(entry.intent.allocationId, entry.intent.permitId, receipt, signal);
 		this.#abandoned.add(entry.intent.permitId);
 		if (this.#computers.get(entry.intent.allocationId)?.permit.permitId === entry.intent.permitId)
 			this.#computers.delete(entry.intent.allocationId);
 	}
 	async #recoverPrestarts(entries: PaidComputerPrestartRecord[], signal: AbortSignal): Promise<void> {
-		const results = await Promise.allSettled(
-			entries
+		const results = await Promise.allSettled([
+			...[...this.#pendingArchives].map(([permitId, pending]) =>
+				this.#exclusive(pending.allocationId, () =>
+					this.#archive(pending.allocationId, permitId, pending.closure, signal),
+				),
+			),
+			...entries
 				.filter((entry) => computerPrestartRequest(entry).schema === "qorpera.coding-computer-prepare/v2")
 				.map((entry) =>
 					this.#exclusive(entry.intent.allocationId, async () => {
@@ -284,6 +313,12 @@ export class CodingComputerController implements CodingComputerUsage {
 									throw new Error("CODING_COMPUTER_PRESTART_DIFFERS");
 								assertComputerAbandonmentReceipt(retained.closure, tombstone);
 							}
+							await this.#archive(
+								entry.intent.allocationId,
+								entry.intent.permitId,
+								retained.state === "abandoned" ? retained.closure : retained.permit,
+								signal,
+							);
 							this.#terminal.add(entry.intent.permitId);
 							if (this.#computers.get(entry.intent.allocationId)?.permit.permitId === entry.intent.permitId)
 								this.#computers.delete(entry.intent.allocationId);
@@ -314,7 +349,7 @@ export class CodingComputerController implements CodingComputerUsage {
 						});
 					}),
 				),
-		);
+		]);
 		if (results.some((result) => result.status === "rejected"))
 			throw new Error("CODING_COMPUTER_PRESTART_RECOVERY_UNCONFIRMED");
 	}
@@ -322,11 +357,7 @@ export class CodingComputerController implements CodingComputerUsage {
 		return this.#computers.has(machineId);
 	}
 	async ownsStart(machineId: string, signal: AbortSignal): Promise<boolean> {
-		return (
-			this.manages(machineId) ||
-			(await this.#options.guard.listPrestarts(signal)).some((entry) => entry.intent.allocationId === machineId) ||
-			(await this.#options.guard.latest(machineId, signal)) !== null
-		);
+		return this.manages(machineId) || (await this.#options.guard.hasHistory(machineId, signal));
 	}
 	#claimId(claim: CodingSessionClaim, machineId: string): string {
 		const hash = computerPrestartDigest(JSON.stringify([machineId, claim.workerId, claim.leaseToken]));
@@ -626,7 +657,7 @@ export class CodingComputerController implements CodingComputerUsage {
 			.update(JSON.stringify({ sample: facts, stopReceipt: guarded.stopReceipt }))
 			.digest("hex");
 		if (guarded.phase === "stopped") {
-			await this.#call(
+			const receipt = await this.#call(
 				"qorpera_finish_coding_computer_permit",
 				{
 					requestId: sample.observationId,
@@ -637,6 +668,19 @@ export class CodingComputerController implements CodingComputerUsage {
 				},
 				signal,
 			);
+			const closed = this.#checkedPermit(receipt, current.machine, await this.#clock(), true);
+			if (
+				closed.state !== "closed" ||
+				closed.schema !== current.permit.schema ||
+				closed.permitId !== current.permit.permitId ||
+				closed.generation !== current.permit.generation ||
+				closed.reservationId !== current.permit.reservationId ||
+				closed.hostBootId !== current.permit.hostBootId ||
+				!isDeepStrictEqual(closed.prestart, current.permit.prestart)
+			)
+				throw new Error("CODING_COMPUTER_CLOSURE_DIFFERS");
+			if (closed.schema === "qorpera.computer-usage-permit/v2")
+				await this.#archive(current.machine.machineId, closed.permitId, receipt, signal);
 			this.#computers.delete(current.machine.machineId);
 			this.#terminal.add(current.permit.permitId);
 			return;
@@ -700,6 +744,7 @@ export class CodingComputerController implements CodingComputerUsage {
 					try {
 						const managed = this.#computers.get(entry.machine.machineId);
 						if (!managed || this.#terminal.has(managed.permit.permitId)) return;
+						if (this.#pendingArchives.has(managed.permit.permitId)) return;
 						const guarded = await this.#options.guard.latest(entry.machine.machineId, signal);
 						const current = await this.#describe(managed.machine, signal, guarded?.phase === "stopped");
 						if (!current) {

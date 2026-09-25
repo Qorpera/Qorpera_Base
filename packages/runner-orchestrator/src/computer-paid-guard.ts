@@ -1,10 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { open, readdir, rename, statfs, unlink } from "node:fs/promises";
+import { mkdir, open, readdir, rename, statfs, unlink } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { parseCloudCodingNasPolicy } from "@qorpera/contracts";
 import { type CodingMachineStorage, type LxdCodingMachineBinding, lxdCodingMachinePlan } from "./coding-machine.ts";
+import { assertComputerAbandonmentReceipt } from "./computer-prestart-control.ts";
 import type { LxdOperationReference } from "./lxd-client.ts";
 import { checkDirectory, code, readRecord, syncDirectory } from "./lxd-office-journal-files.ts";
 import { parseRuntimePaidComputerMachine, type RuntimePaidComputerMachine } from "./runtime-paid-machine.ts";
@@ -92,9 +93,25 @@ export interface PaidComputerPrestartRecord {
 	abandonment: PaidComputerPrestartAbandonment | null;
 }
 interface PaidComputerPrestartJournal {
-	schema: "qorpera.computer-prestart-journal/v1";
+	schema: "qorpera.computer-prestart-journal/v1" | "qorpera.computer-prestart-journal/v2";
 	guardIncarnationId: string;
 	records: PaidComputerPrestartRecord[];
+	archiveCount?: number;
+	archiveHeadSha256?: string | null;
+}
+interface PaidComputerArchive {
+	schema: "qorpera.computer-guard-archive/v1";
+	sequence: number;
+	previousSha256: string | null;
+	prestart: PaidComputerPrestartRecord;
+	guard: PaidComputerGuardRecord | null;
+	closure: Record<string, unknown> | PaidComputerPermit;
+}
+interface PaidComputerArchiveIndex {
+	sequence: number;
+	sha256: string;
+	allocationId: string;
+	issuedAt: string | null;
 }
 export interface PaidComputerArm {
 	machine: PaidComputerMachine;
@@ -396,6 +413,78 @@ export function parsePaidComputerGuardRecord(value: unknown): PaidComputerGuardR
 	};
 }
 
+function archiveClosure(
+	value: unknown,
+	prestart: PaidComputerPrestartRecord,
+	guard: PaidComputerGuardRecord | null,
+): PaidComputerArchive["closure"] {
+	if (guard) {
+		const p = guard.permit,
+			intent = prestart.intent;
+		if (
+			guard.phase !== "stopped" ||
+			!guard.stopReceipt ||
+			p.schema !== "qorpera.computer-usage-permit/v2" ||
+			p.permitId !== intent.permitId ||
+			p.allocationId !== intent.allocationId ||
+			p.instanceSha256 !== intent.instanceSha256 ||
+			p.hostBootId !== intent.hostBootId ||
+			guard.machine.hostMachineIdSha256 !== intent.hostMachineIdSha256 ||
+			p.prestart?.guardIncarnationId !== prestart.guardIncarnationId ||
+			p.prestart.prepareSha256 !== intent.prepareSha256 ||
+			(guard.startDispatched && (prestart.state !== "dispatched" || !guard.startSettled))
+		)
+			throw new Error("PAID_GUARD_ARCHIVE_UNCONFIRMED");
+	}
+	if (prestart.state === "abandoned") {
+		if (guard && (guard.startDispatched || guard.permit.state !== "prepared" || guard.permit.generation !== 1))
+			throw new Error("PAID_GUARD_ARCHIVE_UNCONFIRMED");
+		assertComputerAbandonmentReceipt(value, prestart);
+		const receipt = record(value);
+		return {
+			schema: receipt.schema,
+			permitId: receipt.permitId,
+			state: receipt.state,
+			abandonment: prestart.abandonment,
+			reservationReleased: receipt.reservationReleased,
+			debitedUs: "0",
+			releasedUs: receipt.releasedUs,
+		};
+	}
+	if (!guard) throw new Error("PAID_GUARD_ARCHIVE_UNCONFIRMED");
+	const closed = parsePaidComputerPermit(value);
+	parsePaidComputerArm({ machine: guard.machine, permit: closed, requestStartedUptimeMs: 0 });
+	const { state: _state, validForMs: _ttl, guestBootId: _guest, physicalId: _physical, ...identity } = closed;
+	const { state: _oldState, validForMs: _oldTtl, guestBootId, physicalId, ...original } = guard.permit;
+	if (
+		closed.state !== "closed" ||
+		!isDeepStrictEqual(identity, original) ||
+		(guestBootId !== null && closed.guestBootId !== guestBootId) ||
+		(physicalId !== null && closed.physicalId !== physicalId)
+	)
+		throw new Error("PAID_GUARD_ARCHIVE_UNCONFIRMED");
+	// TTL is recomputed on every SQL read; it is not closure identity.
+	return { ...closed, validForMs: 0 };
+}
+function parseArchive(value: unknown): PaidComputerArchive {
+	const raw = record(value);
+	if (raw.schema !== "qorpera.computer-guard-archive/v1" || Object.keys(raw).length !== 6)
+		throw new Error("PAID_GUARD_ARCHIVE_INVALID");
+	const prestart = parsePaidComputerPrestartRecord(raw.prestart);
+	const guard = raw.guard === null ? null : parsePaidComputerGuardRecord(raw.guard);
+	return {
+		schema: raw.schema,
+		sequence: integer(raw.sequence, 1),
+		previousSha256: raw.previousSha256 === null ? null : id(raw.previousSha256, SHA),
+		prestart,
+		guard,
+		closure: archiveClosure(raw.closure, prestart, guard),
+	};
+}
+function archiveName(sequence: number): string {
+	return `${String(integer(sequence, 1)).padStart(16, "0")}.json`;
+}
+
 /** One daemon owns this LOCAL journal. Atomic snapshots are fsynced before any
  * effect or success reply. Systemd must enforce one daemon; this is not an NFS
  * lock or a multi-writer API. Retained terminal records fence old permit replay. */
@@ -440,8 +529,9 @@ export class PaidComputerGuardJournal {
 		const raw = record(loaded.value),
 			guardIncarnationId = id(raw.guardIncarnationId);
 		if (
-			raw.schema !== "qorpera.computer-prestart-journal/v1" ||
-			Object.keys(raw).length !== 3 ||
+			(raw.schema !== "qorpera.computer-prestart-journal/v1" &&
+				raw.schema !== "qorpera.computer-prestart-journal/v2") ||
+			Object.keys(raw).length !== (raw.schema === "qorpera.computer-prestart-journal/v1" ? 3 : 5) ||
 			!Array.isArray(raw.records) ||
 			raw.records.length > MAX_RECORDS
 		)
@@ -452,9 +542,13 @@ export class PaidComputerGuardJournal {
 			records.some((entry) => entry.guardIncarnationId !== guardIncarnationId)
 		)
 			throw new Error("PAID_GUARD_PRESTART_DIFFERS");
-		return { schema: raw.schema, guardIncarnationId, records };
+		const archiveCount = raw.schema === "qorpera.computer-prestart-journal/v2" ? integer(raw.archiveCount) : 0;
+		const archiveHeadSha256 = archiveCount ? id(raw.archiveHeadSha256, SHA) : null;
+		if (raw.schema === "qorpera.computer-prestart-journal/v2" && !archiveCount && raw.archiveHeadSha256 !== null)
+			throw new Error("PAID_GUARD_ARCHIVE_INVALID");
+		return { schema: raw.schema, guardIncarnationId, records, archiveCount, archiveHeadSha256 };
 	}
-	/** Permanent bounded replay fences. No TTL, deletion, or lossy compaction. */
+	/** Active records plus the durable head of permanent archival history. */
 	async savePrestarts(value: PaidComputerPrestartJournal): Promise<void> {
 		if (
 			value.records.length > MAX_RECORDS ||
@@ -469,11 +563,67 @@ export class PaidComputerGuardJournal {
 		parsePaidComputerGuardRecord(value);
 		await this.#write(`${value.permit.permitId}.json`, value);
 	}
-	async #write(name: string, value: PaidComputerGuardRecord | PaidComputerPrestartJournal): Promise<void> {
+	async archiveNames(): Promise<string[] | null> {
 		await this.#directory();
+		const directory = join(this.root, "archive");
+		try {
+			await checkDirectory(directory);
+		} catch (error) {
+			if (code(error, "ENOENT")) return null;
+			throw error;
+		}
+		const names = (await readdir(directory)).filter((name) => !name.startsWith(".write-"));
+		if (names.some((name) => !/^[0-9]{16}\.json$/.test(name))) throw new Error("PAID_GUARD_ARCHIVE_INVALID");
+		return names.sort();
+	}
+	async readArchive(sequence: number): Promise<{ value: PaidComputerArchive; sha256: string }> {
+		await checkDirectory(join(this.root, "archive"));
+		const loaded = await readRecord(join(this.root, "archive", archiveName(sequence)), 65536);
+		const value = parseArchive(loaded.value);
+		if (value.sequence !== sequence) throw new Error("PAID_GUARD_ARCHIVE_INVALID");
+		return { value, sha256: createHash("sha256").update(loaded.bytes).digest("hex") };
+	}
+	async appendArchive(value: PaidComputerArchive): Promise<string> {
+		parseArchive(value);
+		await this.#directory();
+		const directory = join(this.root, "archive");
+		await mkdir(directory, { mode: 0o700 }).catch((error) => {
+			if (!code(error, "EEXIST")) throw error;
+		});
+		await checkDirectory(directory);
+		await syncDirectory(this.root);
+		const bytes = Buffer.from(`${JSON.stringify(value)}\n`);
+		if (bytes.length > 65536) throw new Error("PAID_GUARD_ARCHIVE_INVALID");
+		const sha256 = createHash("sha256").update(bytes).digest("hex");
+		const existing = await this.readArchive(value.sequence).catch((error) => {
+			if (!code(error, "ENOENT")) throw error;
+			return null;
+		});
+		if (existing && existing.sha256 !== sha256) throw new Error("PAID_GUARD_ARCHIVE_DIFFERS");
+		// This journal has exactly one daemon writer. Atomic rename avoids a
+		// link/unlink crash leaving a two-link file that custody checks refuse.
+		// An existing sequence is verified and never overwritten.
+		if (!existing) await this.#write(archiveName(value.sequence), value, directory);
+		else await syncDirectory(directory);
+		return sha256;
+	}
+	async removeArchivedGuard(permitId: string): Promise<void> {
+		await this.#directory();
+		await unlink(join(this.root, `${id(permitId)}.json`)).catch((error) => {
+			if (!code(error, "ENOENT")) throw error;
+		});
+		await syncDirectory(this.root);
+	}
+	async #write(
+		name: string,
+		value: PaidComputerGuardRecord | PaidComputerPrestartJournal | PaidComputerArchive,
+		directory = this.root,
+	): Promise<void> {
+		await this.#directory();
+		await checkDirectory(directory);
 		const bytes = `${JSON.stringify(value)}\n`;
 		if (Buffer.byteLength(bytes) > 16 * 1024 ** 2) throw new Error("PAID_GUARD_JOURNAL_FULL");
-		const temporary = join(this.root, `.write-${randomUUID()}`);
+		const temporary = join(directory, `.write-${randomUUID()}`);
 		const file = await open(
 			temporary,
 			constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
@@ -486,8 +636,8 @@ export class PaidComputerGuardJournal {
 			await file.close();
 		}
 		try {
-			await rename(temporary, join(this.root, name));
-			await syncDirectory(this.root);
+			await rename(temporary, join(directory, name));
+			await syncDirectory(directory);
 		} finally {
 			await unlink(temporary).catch((error) => {
 				if (!code(error, "ENOENT")) throw error;
@@ -507,6 +657,9 @@ export class PaidComputerGuard {
 	readonly #stops = new Set<string>();
 	readonly #starts = new Map<string, AbortController>();
 	readonly #prestarts = new Map<string, PaidComputerPrestartRecord>();
+	readonly #archives = new Map<string, PaidComputerArchiveIndex>();
+	#archiveCount = 0;
+	#archiveHeadSha256: string | null = null;
 	#guardIncarnationId = "";
 	#prestartsUnconfirmed = false;
 	#serial: Promise<unknown> = Promise.resolve();
@@ -531,6 +684,46 @@ export class PaidComputerGuard {
 			throw new Error("PAID_GUARD_PRESTART_MISSING");
 		this.#guardIncarnationId = prestarts?.guardIncarnationId ?? randomUUID();
 		for (const entry of prestarts?.records ?? []) this.#prestarts.set(entry.intent.permitId, entry);
+		const names = await this.#journal.archiveNames();
+		if (!prestarts && names !== null) throw new Error("PAID_GUARD_ARCHIVE_ANCHOR_MISSING");
+		const count = prestarts?.archiveCount ?? 0;
+		if ((names?.length ?? 0) < count || (names?.length ?? 0) > count + 1)
+			throw new Error("PAID_GUARD_ARCHIVE_INVALID");
+		for (let sequence = 1; sequence <= (names?.length ?? 0); sequence++) {
+			if (names![sequence - 1] !== archiveName(sequence)) throw new Error("PAID_GUARD_ARCHIVE_INVALID");
+			const { value, sha256 } = await this.#journal.readArchive(sequence);
+			const permitId = value.prestart.intent.permitId;
+			if (
+				value.previousSha256 !== this.#archiveHeadSha256 ||
+				this.#archives.has(permitId) ||
+				value.prestart.guardIncarnationId !== this.#guardIncarnationId
+			)
+				throw new Error("PAID_GUARD_ARCHIVE_DIFFERS");
+			const active = this.#records.get(permitId) ?? null;
+			if (sequence <= count) {
+				if (this.#prestarts.has(permitId) || (active && !isDeepStrictEqual(active, value.guard)))
+					throw new Error("PAID_GUARD_ARCHIVE_DIFFERS");
+			} else {
+				// Only an exact terminal write interrupted before the anchor may be
+				// completed. Unrelated or partial tails never manufacture authority.
+				if (
+					!isDeepStrictEqual(this.#prestarts.get(permitId), value.prestart) ||
+					!isDeepStrictEqual(active, value.guard)
+				)
+					throw new Error("PAID_GUARD_ARCHIVE_DIFFERS");
+			}
+			this.#indexArchive(value, sha256);
+			if (sequence === count && this.#archiveHeadSha256 !== prestarts?.archiveHeadSha256)
+				throw new Error("PAID_GUARD_ARCHIVE_DIFFERS");
+			if (sequence > count) this.#prestarts.delete(permitId);
+		}
+		// Validate all anchored history before changing any retained evidence.
+		if (this.#archiveCount > count) await this.#persistPrestarts();
+		for (const permitId of this.#records.keys()) {
+			if (!this.#archives.has(permitId)) continue;
+			await this.#journal.removeArchivedGuard(permitId);
+			this.#records.delete(permitId);
+		}
 		for (const entry of this.#records.values()) {
 			const intent = this.#prestarts.get(entry.permit.permitId);
 			if (entry.permit.schema === "qorpera.computer-usage-permit/v2") {
@@ -555,9 +748,11 @@ export class PaidComputerGuard {
 	async #persistPrestarts(): Promise<void> {
 		try {
 			await this.#journal.savePrestarts({
-				schema: "qorpera.computer-prestart-journal/v1",
+				schema: "qorpera.computer-prestart-journal/v2",
 				guardIncarnationId: this.#guardIncarnationId,
 				records: [...this.#prestarts.values()],
+				archiveCount: this.#archiveCount,
+				archiveHeadSha256: this.#archiveHeadSha256,
 			});
 		} catch (error) {
 			// A rename may have committed. No admission or abandonment receipt can
@@ -568,6 +763,75 @@ export class PaidComputerGuard {
 	}
 	#confirmedPrestarts(): void {
 		if (this.#prestartsUnconfirmed) throw new Error("PAID_GUARD_PRESTART_UNCONFIRMED");
+	}
+	#indexArchive(value: PaidComputerArchive, sha256: string): void {
+		this.#archives.set(value.prestart.intent.permitId, {
+			sequence: value.sequence,
+			sha256,
+			allocationId: value.prestart.intent.allocationId,
+			issuedAt: value.guard?.permit.issuedAt ?? null,
+		});
+		this.#archiveCount = value.sequence;
+		this.#archiveHeadSha256 = sha256;
+	}
+	async #archived(permitId: string): Promise<PaidComputerArchive | null> {
+		const index = this.#archives.get(permitId);
+		if (!index) return null;
+		const { value, sha256 } = await this.#journal.readArchive(index.sequence);
+		if (sha256 !== index.sha256 || value.prestart.intent.permitId !== permitId)
+			throw new Error("PAID_GUARD_ARCHIVE_DIFFERS");
+		return value;
+	}
+	async archive(permitId: string, receipt: unknown): Promise<void> {
+		id(permitId);
+		await this.#exclusive(async () => {
+			this.#confirmedPrestarts();
+			if (this.#starts.has(permitId) || this.#stops.has(permitId)) throw new Error("PAID_GUARD_ARCHIVE_BUSY");
+			const archived = await this.#archived(permitId);
+			if (archived) {
+				if (!isDeepStrictEqual(archiveClosure(receipt, archived.prestart, archived.guard), archived.closure))
+					throw new Error("PAID_GUARD_ARCHIVE_DIFFERS");
+				await this.#journal.removeArchivedGuard(permitId);
+				this.#records.delete(permitId);
+				return;
+			}
+			const prestart = this.#prestarts.get(permitId);
+			if (!prestart) throw new Error("PAID_GUARD_PRESTART_MISSING");
+			const guard = this.#records.get(permitId) ?? null;
+			const closure = archiveClosure(receipt, prestart, guard);
+			const value: PaidComputerArchive = {
+				schema: "qorpera.computer-guard-archive/v1",
+				sequence: this.#archiveCount + 1,
+				previousSha256: this.#archiveHeadSha256,
+				prestart,
+				guard,
+				closure,
+			};
+			try {
+				const sha256 = await this.#journal.appendArchive(value);
+				this.#indexArchive(value, sha256);
+				this.#prestarts.delete(permitId);
+				await this.#persistPrestarts();
+				await this.#journal.removeArchivedGuard(permitId);
+				this.#records.delete(permitId);
+			} catch (error) {
+				// A published tail or committed anchor requires restart recovery.
+				// Keep stop custody; never overwrite or bypass uncertain history.
+				this.#prestartsUnconfirmed = true;
+				throw error;
+			}
+		});
+	}
+	async hasHistory(allocationId: string): Promise<boolean> {
+		id(allocationId);
+		return this.#exclusive(async () => {
+			this.#confirmedPrestarts();
+			return (
+				[...this.#archives.values()].some((entry) => entry.allocationId === allocationId) ||
+				[...this.#prestarts.values()].some((entry) => entry.intent.allocationId === allocationId) ||
+				[...this.#records.values()].some((entry) => entry.machine.allocationId === allocationId)
+			);
+		});
 	}
 	#matchPrestart(permit: PaidComputerPermit, machine: PaidComputerMachine): PaidComputerPrestartRecord {
 		const intent = this.#prestarts.get(permit.permitId);
@@ -589,6 +853,7 @@ export class PaidComputerGuard {
 		const intent = parsePaidComputerPrestartIntent(raw);
 		return this.#exclusive(async () => {
 			this.#confirmedPrestarts();
+			if (this.#archives.has(intent.permitId)) throw new Error("PAID_GUARD_ARCHIVED");
 			const clock = await this.#clock();
 			if (clock.hostMachineIdSha256 !== intent.hostMachineIdSha256) throw new Error("PAID_GUARD_HOST_DIFFERS");
 			const old = this.#prestarts.get(intent.permitId);
@@ -625,7 +890,7 @@ export class PaidComputerGuard {
 		id(permitId);
 		return this.#exclusive(async () => {
 			this.#confirmedPrestarts();
-			return structuredClone(this.#prestarts.get(permitId) ?? null);
+			return structuredClone((await this.#archived(permitId))?.prestart ?? this.#prestarts.get(permitId) ?? null);
 		});
 	}
 	async listPrestarts(): Promise<PaidComputerPrestartRecord[]> {
@@ -638,6 +903,12 @@ export class PaidComputerGuard {
 		const intent = parsePaidComputerPrestartIntent(raw);
 		return this.#exclusive(async () => {
 			this.#confirmedPrestarts();
+			const archived = await this.#archived(intent.permitId);
+			if (archived) {
+				if (archived.prestart.state !== "abandoned" || !isDeepStrictEqual(archived.prestart.intent, intent))
+					throw new Error("PAID_GUARD_ARCHIVED");
+				return structuredClone(archived.prestart);
+			}
 			const old = this.#prestarts.get(intent.permitId),
 				guarded = this.#records.get(intent.permitId);
 			if (!old || !isDeepStrictEqual(intent, old.intent)) throw new Error("PAID_GUARD_PRESTART_MISSING");
@@ -711,6 +982,7 @@ export class PaidComputerGuard {
 			const { machine, permit } = input,
 				clock = await this.#clock();
 			this.#confirmedPrestarts();
+			if (this.#archives.has(permit.permitId)) throw new Error("PAID_GUARD_ARCHIVED");
 			const prestart = this.#prestarts.get(permit.permitId);
 			if (prestart?.state === "abandoned") throw new Error("PAID_GUARD_PRESTART_ABANDONED");
 			if (prestart?.state === "retired") throw new Error("PAID_GUARD_PRESTART_RETIRED");
@@ -810,6 +1082,7 @@ export class PaidComputerGuard {
 		const dispatch = new AbortController();
 		const selected = await this.#exclusive(async () => {
 			this.#confirmedPrestarts();
+			if (this.#archives.has(permitId)) throw new Error("PAID_GUARD_ARCHIVED");
 			const current = this.#get(permitId),
 				clock = await this.#clock();
 			const prestart = this.#prestarts.get(permitId);
@@ -878,30 +1151,50 @@ export class PaidComputerGuard {
 		}
 	}
 	async status(permitId: string): Promise<PaidComputerGuardRecord> {
-		return this.#exclusive(async () => structuredClone(this.#get(permitId)));
+		id(permitId);
+		return this.#exclusive(async () =>
+			structuredClone((await this.#archived(permitId))?.guard ?? this.#get(permitId)),
+		);
 	}
 	async list(): Promise<PaidComputerGuardRecord[]> {
 		return this.#exclusive(async () => structuredClone([...this.#records.values()]));
 	}
 	async latest(allocationId: string): Promise<PaidComputerGuardRecord | null> {
 		id(allocationId);
-		return this.#exclusive(async () =>
-			structuredClone(
+		return this.#exclusive(async () => {
+			let selected: PaidComputerGuardRecord | null =
 				[...this.#records.values()]
 					.filter((value) => value.machine.allocationId === allocationId)
-					.sort((a, b) => Date.parse(b.permit.issuedAt) - Date.parse(a.permit.issuedAt))[0] ?? null,
-			),
-		);
+					.sort((a, b) => Date.parse(b.permit.issuedAt) - Date.parse(a.permit.issuedAt))[0] ?? null;
+			let archivedPermitId: string | null = null;
+			let newest = selected ? Date.parse(selected.permit.issuedAt) : Number.NEGATIVE_INFINITY;
+			for (const [permitId, index] of this.#archives) {
+				if (index.allocationId === allocationId && index.issuedAt !== null && Date.parse(index.issuedAt) > newest) {
+					archivedPermitId = permitId;
+					newest = Date.parse(index.issuedAt);
+				}
+			}
+			if (archivedPermitId) selected = (await this.#archived(archivedPermitId))!.guard;
+			return structuredClone(selected);
+		});
 	}
 	async stop(permitId: string): Promise<PaidComputerGuardRecord> {
 		let journalFailed = false;
-		await this.#exclusive(async () => {
+		const stopped = await this.#exclusive(async () => {
+			if (this.#archives.has(permitId)) {
+				const archived = await this.#archived(permitId);
+				if (!archived?.guard) throw new Error("PAID_GUARD_PERMIT_MISSING");
+				return structuredClone(archived.guard);
+			}
 			const value = this.#get(permitId);
-			if (value.phase !== "stopped" && value.phase !== "stopping")
+			if (value.phase === "stopped") return structuredClone(value);
+			if (value.phase !== "stopping")
 				await this.#latchStop(value).catch(() => {
 					journalFailed = true;
 				});
+			return null;
 		});
+		if (stopped) return stopped;
 		await this.#stopOne(permitId);
 		if (journalFailed) throw new Error("PAID_GUARD_JOURNAL_UNCONFIRMED");
 		return this.status(permitId);

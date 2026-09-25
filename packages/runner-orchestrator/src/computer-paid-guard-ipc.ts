@@ -22,7 +22,8 @@ export type PaidComputerGuardRequest =
 	| { action: "arm"; input: PaidComputerArm }
 	| { action: "start"; permitId: string; generation: number }
 	| { action: "stop" | "status"; permitId: string }
-	| { action: "latest"; allocationId: string }
+	| { action: "latest" | "hasHistory"; allocationId: string }
+	| { action: "archive"; permitId: string; closure: unknown }
 	| { action: "list" | "listPrestarts" }
 	| { action: "prestartStatus"; permitId: string }
 	| { action: "registerPrestart" | "abandonPrestart"; input: PaidComputerPrestartIntent };
@@ -64,9 +65,15 @@ async function handle(guard: PaidComputerGuard, value: unknown): Promise<unknown
 	if (input.action === "abandonPrestart") return guard.abandonPrestart(parsePaidComputerPrestartIntent(input.input));
 	if (input.action === "latest" && typeof input.allocationId === "string" && UUID.test(input.allocationId))
 		return guard.latest(input.allocationId);
+	if (input.action === "hasHistory" && typeof input.allocationId === "string" && UUID.test(input.allocationId))
+		return guard.hasHistory(input.allocationId);
 	if (typeof input.permitId !== "string" || !UUID.test(input.permitId)) throw new Error("PAID_GUARD_IPC_INVALID");
 	if (input.action === "status") return guard.status(input.permitId);
 	if (input.action === "prestartStatus") return guard.prestartStatus(input.permitId);
+	if (input.action === "archive") {
+		await guard.archive(input.permitId, input.closure);
+		return null;
+	}
 	if (input.action === "stop") return guard.stop(input.permitId);
 	if (input.action === "start" && Number.isSafeInteger(input.generation) && Number(input.generation) > 0)
 		return guard.start(input.permitId, Number(input.generation));
@@ -253,6 +260,15 @@ export class PaidComputerGuardClient {
 	async latest(allocationId: string, signal?: AbortSignal): Promise<PaidComputerGuardRecord | null> {
 		const result = await this.#call({ action: "latest", allocationId }, signal);
 		return result === null ? null : parsePaidComputerGuardRecord(result);
+	}
+	async archive(permitId: string, closure: unknown, signal?: AbortSignal): Promise<void> {
+		if ((await this.#call({ action: "archive", permitId, closure }, signal)) !== null)
+			throw new Error("PAID_GUARD_IPC_INVALID");
+	}
+	async hasHistory(allocationId: string, signal?: AbortSignal): Promise<boolean> {
+		const result = await this.#call({ action: "hasHistory", allocationId }, signal);
+		if (typeof result !== "boolean") throw new Error("PAID_GUARD_IPC_INVALID");
+		return result;
 	}
 	async list(signal?: AbortSignal): Promise<PaidComputerGuardRecord[]> {
 		const result = await this.#call({ action: "list" }, signal);

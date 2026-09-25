@@ -90,6 +90,7 @@ async function fixture() {
 	let guard = new PaidComputerGuard(journal, new LxdPaidComputerGuardPhysical(client, hostClock), hostClock);
 	await guard.initialize();
 	let permit: PaidComputerPermit | null = null,
+		abandonmentClosure: Record<string, unknown> | null = null,
 		lastSample: Record<string, unknown> | null = null,
 		mode: "paid" | "shadow" = "paid";
 	let losePrepare = false,
@@ -101,7 +102,12 @@ async function fixture() {
 		call: vi.fn(async (method: string, args: Record<string, unknown>): Promise<unknown> => {
 			const request = args.p_request as Record<string, unknown>;
 			if (method === "qorpera_describe_runtime_computer_prestart")
-				return { state: permit?.state ?? "absent", permit, lastSample };
+				return {
+					state: abandonmentClosure ? "abandoned" : (permit?.state ?? "absent"),
+					permit,
+					lastSample,
+					closure: abandonmentClosure,
+				};
 			if (method.includes("describe")) {
 				if (sourceUnavailable) throw new Error("native run no longer exists");
 				return { mode, permit: permit?.state === "closed" ? null : permit, lastSample };
@@ -139,9 +145,10 @@ async function fixture() {
 				return permit;
 			}
 			if (method.includes("abandon")) {
+				if (abandonmentClosure) return abandonmentClosure;
 				const reservationReleased = permit !== null;
 				if (permit) permit = { ...permit, state: "closed" };
-				return {
+				abandonmentClosure = {
 					schema: "qorpera.computer-abandonment-receipt/v1",
 					permitId: request.permitId,
 					state: "abandoned_before_dispatch",
@@ -150,6 +157,7 @@ async function fixture() {
 					debitedUs: "0",
 					releasedUs: reservationReleased ? "330000000" : "0",
 				};
+				return abandonmentClosure;
 			}
 			if (!permit) throw new Error("permit missing");
 			const sample = request.sample as Record<string, unknown>;
@@ -249,6 +257,100 @@ async function fixture() {
 }
 const signal = () => new AbortController().signal;
 describe("funded runtime physical custody", () => {
+	it("retains an armed cancellation until exact physical stop proof can be archived", async () => {
+		const f = await fixture();
+		await f.controller.ensure(f.context, f.context.allocationId, signal());
+		vi.spyOn(f.guard, "start").mockRejectedValueOnce(new Error("dispatch unavailable"));
+		await expect(f.controller.start(f.context.allocationId, f.target, signal())).rejects.toThrow(
+			"dispatch unavailable",
+		);
+		expect((await f.guard.latest(f.context.allocationId))?.phase).toBe("armed");
+		vi.spyOn(f.guard, "stop").mockRejectedValueOnce(new Error("stop proof unavailable"));
+		await expect(f.controller.abandonUndispatched(f.context, f.context.allocationId, signal())).rejects.toThrow(
+			"stop proof unavailable",
+		);
+		expect(await f.guard.list()).toHaveLength(1);
+		expect(f.controller.manages(f.context.allocationId)).toBe(true);
+		await f.controller.maintain(signal());
+		expect(await f.guard.list()).toEqual([]);
+		expect((await f.guard.latest(f.context.allocationId))?.phase).toBe("stopped");
+		expect(f.client.submitInstanceOperation).not.toHaveBeenCalled();
+	});
+	it("retries archival before forgetting a closed computer and recovers archived proof without SQL", async () => {
+		const f = await fixture();
+		await f.start();
+		await f.controller.stop(f.context.allocationId, signal());
+		const archive = vi.spyOn(f.guard, "archive").mockRejectedValueOnce(new Error("archive fsync unavailable"));
+		await expect(f.controller.observe(f.context.allocationId, signal())).rejects.toThrow("archive fsync");
+		expect(f.controller.manages(f.context.allocationId)).toBe(true);
+		expect(await f.guard.listPrestarts()).toHaveLength(1);
+		f.moveSource();
+		await f.controller.maintain(signal());
+		expect(archive).toHaveBeenCalledTimes(2);
+		expect(f.controller.manages(f.context.allocationId)).toBe(false);
+		expect(await f.guard.list()).toEqual([]);
+		expect(await f.guard.listPrestarts()).toEqual([]);
+		const stopped = await f.guard.latest(f.context.allocationId);
+		f.control.call.mockClear();
+		await f.restart();
+		await f.controller.maintain(signal());
+		expect(f.control.call).not.toHaveBeenCalled();
+		expect(await f.guard.latest(f.context.allocationId)).toEqual(stopped);
+	});
+	it("recovers a committed archive with a lost reply after restart without refunding or repeating finish", async () => {
+		const f = await fixture();
+		await f.start();
+		await f.controller.stop(f.context.allocationId, signal());
+		const archive = f.guard.archive.bind(f.guard);
+		vi.spyOn(f.guard, "archive").mockImplementationOnce(async (permitId, closure) => {
+			await archive(permitId, closure);
+			throw new Error("archive reply lost");
+		});
+		await expect(f.controller.observe(f.context.allocationId, signal())).rejects.toThrow("archive reply lost");
+		expect(f.controller.manages(f.context.allocationId)).toBe(true);
+		f.control.call.mockClear();
+		f.moveSource();
+		await f.controller.maintain(signal());
+		expect(f.controller.manages(f.context.allocationId)).toBe(false);
+		expect(f.control.call).not.toHaveBeenCalled();
+		await f.restart();
+		await f.controller.maintain(signal());
+		expect(f.control.call).not.toHaveBeenCalled();
+		expect((await f.guard.latest(f.context.allocationId))?.phase).toBe("stopped");
+		expect(await f.guard.hasHistory(f.context.allocationId)).toBe(true);
+	});
+	it("does not archive or forget a finish acknowledgement for a different reservation", async () => {
+		const f = await fixture();
+		await f.start();
+		await f.controller.stop(f.context.allocationId, signal());
+		const original = f.control.call.getMockImplementation()!;
+		f.control.call.mockImplementation(async (method, args) => {
+			const response = await original(method, args);
+			return method.includes("finish")
+				? { ...(response as PaidComputerPermit), reservationId: randomUUID() }
+				: response;
+		});
+		await expect(f.controller.observe(f.context.allocationId, signal())).rejects.toThrow("CLOSURE_DIFFERS");
+		expect(f.controller.manages(f.context.allocationId)).toBe(true);
+		expect(await f.guard.list()).toHaveLength(1);
+		await f.controller.maintain(signal());
+		expect(f.controller.manages(f.context.allocationId)).toBe(false);
+	});
+	it("retains stopped custody when SQL renewed beyond the last generation installed in the guard", async () => {
+		const f = await fixture();
+		await f.start();
+		f.clock.uptimeMs = 350000;
+		f.setGuestUptime(251);
+		f.loseRenew();
+		await expect(f.controller.observe(f.context.allocationId, signal())).rejects.toThrow("renew reply lost");
+		await f.controller.stop(f.context.allocationId, signal());
+		await expect(f.controller.observe(f.context.allocationId, signal())).rejects.toThrow("CLOSURE_DIFFERS");
+		await expect(f.controller.maintain(signal())).rejects.toThrow("RECOVERY_UNCONFIRMED");
+		expect(f.controller.manages(f.context.allocationId)).toBe(true);
+		expect(await f.guard.list()).toHaveLength(1);
+		expect((await f.guard.latest(f.context.allocationId))?.permit.generation).toBe(1);
+		expect((await f.guard.latest(f.context.allocationId))?.phase).toBe("stopped");
+	});
 	it.each([false, true])(
 		"checks the exact durable abandonment closure after a lost reply (altered: %s)",
 		async (altered) => {
@@ -280,7 +382,8 @@ describe("funded runtime physical custody", () => {
 				await f.controller.maintain(signal());
 				expect(f.controller.manages(f.context.allocationId)).toBe(false);
 			}
-			expect((await f.guard.listPrestarts())[0].state).toBe("abandoned");
+			expect((await f.guard.prestartStatus(f.context.allocationId))?.state).toBe("abandoned");
+			expect(await f.guard.listPrestarts()).toHaveLength(altered ? 1 : 0);
 			expect(f.client.submitInstanceOperation).not.toHaveBeenCalled();
 		},
 	);

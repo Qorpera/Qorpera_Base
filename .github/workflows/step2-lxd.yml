@@ -146,6 +146,7 @@ jobs:
         run: >-
           node ../../node_modules/vitest/dist/cli.js --run --maxWorkers=2
           test/computer-paid-guard.test.ts
+          test/computer-paid-guard-archive.test.ts
           test/computer-usage-observer.test.ts
           test/coding-computer-controller.test.ts
           test/runtime-computer-controller.test.ts
