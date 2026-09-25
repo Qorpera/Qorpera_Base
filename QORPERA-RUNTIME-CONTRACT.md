@@ -1484,7 +1484,7 @@ Company File, rather than chat or a machine disk, is what that brain operates.
 | 6 | Agent memory (amended 2026-09-22, company first 2026-09-24) | An agent's profile, monthly log, and notes are its own Company File objects in the Grok Bot layout; `update_memory` write/forget and `recall_memory` work through the versioned mutation gateway with notebook-wide dedupe, forget of every copy, a search of every month, and stale-version retry; every turn composes the whole profile and the recent log slice through the trusted read lane; a worker of the same agent recalls but writes only with write access; notebooks are company-owned and there is no member memory; a Grok Bot export imports unchanged. |
 | 7 | Connectors | Install, authenticate out of band, call through scoped RPC, and apply the connector-to-browser escalation path. |
 | 8 | Scheduler and listeners | Company File intent plus one compiled trigger wakes the same agent; deterministic deduplication, timezone, expiry, quiet policy, auth suspension, and projection consistency pass. |
-| 9 | Isolated coding VMs and PRs | Worker, repository workspace, branch, follow-up identity, publication, and completion listener retain continuity; a member's sessions share one coding machine that holds no node capacity while asleep and is removed later, its allocation released only on a proven delete (amended 2026-09-24). |
+| 9 | Isolated coding VMs and PRs | Worker, repository workspace, branch, follow-up identity, publication, and completion listener retain continuity; every turn is recorded once (what started it, its submission bound to its own sequence, its outcome) and the next turn reads the session's own earlier turns, including the exact question and choices a reply answers (amended 2026-09-25); a member's sessions share one coding machine that holds no node capacity while asleep and is removed later, its allocation released only on a proven delete (amended 2026-09-24). |
 | 10 | Constitution and hire overlays | Compile a short constitution over the proven loop; add a name and job spec last, without creating a second brain. |
 | Post-build (deferred) | Azure backup/overflow compute | After Orders 0–10 are built, separately approve and prove the optional capacity integration and its placement, failover, isolation, recovery, release, and usage records before enabling it for users. This is not a gate on the preceding orders or initial launch. |
 
@@ -2222,7 +2222,9 @@ returns at admission and the parent ends its run, so a new human message is
 admitted while the child works. Todos and worker handles are durable kernel
 objects; each change publishes the canonical todo document to the Company File
 under `work/todos/<agent>/`, and an accepted output is a Company File revision
-the worker's own run wrote. Disposable-database proofs, runtime tests and a
+the worker's own run wrote. A todo document is written only as the current
+revision's exact bytes and counts as published only while the file still holds
+them (bundle v111), so a late publication can never replace a newer one. Disposable-database proofs, runtime tests and a
 live-model behavior screen pass. Deployed acceptance on the nodes remains the
 gate before Order 5 is closed; coding, media and listener workers remain in
 Orders 9, 7 and 8. See
@@ -2276,7 +2278,7 @@ Founder decision, 2026-09-24 (Grok Bot's rail). Extends 14.1 and the
 | Projects remain bounded and distinct from rooms | Project registry, team membership, todos, outcome, and room lifecycle | Coordinate in the room; finish in durable company state. |
 | Routine policy is real | Scheduler and listener services | Author sensible schedules and intent. |
 | Dismissal is not consent | Interaction state machine | Treat dismissal as skip or decline. |
-| Coding follow-up keeps continuity | Worker identity, VM, branch contract | Steer the existing worker. |
+| Coding follow-up keeps continuity | Worker identity, VM, branch contract, the session's own turn record | Steer the existing worker. |
 | Member machines are not agent tools | Capability compiler and cloud-only execution policy | Request an explicit upload when a member-held file is needed. |
 | Secrets stay out of context | Company-centered cloud secret broker, operation grants, credential bridge, and result fence | Refer to purpose and handle, never value. |
 | Low effort is the thread default | Run admission policy | Escalate effort only for a reason. |

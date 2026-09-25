@@ -257,8 +257,9 @@ begin
 	v_replay := public.qorpera_submit_coding_turn(v_binding,jsonb_build_object('kind','finish','operationKey','done',
 		'summary','Composer posts first; the send test covers it.','headSha','b4d8f9f1c0b6e5a2d3c4b5a69788776655443322'));
 	perform pg_temp.wake_assert(v_submission = v_replay and v_submission ->> 'kind' = 'finish' and v_submission ->> 'state' = 'submitted'
-		and (pg_temp.session_row('fix-send')).submission = v_submission and (pg_temp.session_row('fix-send')).submission_receipt_id is not null
-		and pg_temp.events('fix-send','text') >= 1,'The submission is durable, receipted and replay-stable');
+		and (select turn.submission = v_submission and turn.submission_receipt_id is not null from public.qorpera_coding_session_turns turn
+			where turn.worker_id = v_worker.id and turn.sequence = 1)
+		and pg_temp.events('fix-send','text') >= 1,'The submission is durable, receipted, replay-stable and the turn''s own');
 	begin perform public.qorpera_submit_coding_turn(v_binding,jsonb_build_object('kind','finish','operationKey','done','summary','other','headSha','b4d8f9f1c0b6e5a2d3c4b5a69788776655443322'));
 		raise exception 'A differing replay was accepted'; exception when unique_violation then null; end;
 	begin perform public.qorpera_authorize_coding_command(v_binding,jsonb_build_object('workerId',v_worker.id,'vmId',v_vm,
@@ -286,9 +287,10 @@ begin
 	v_view := public.qorpera_complete_coding_turn(v_worker.id,(v_claim ->> 'leaseToken')::uuid,'succeeded','Composer posts first; the send test covers it.',null,
 		'{"url":"https://github.com/Qorpera/Qorpera_Base/pull/204","number":204,"headSha":"b4d8f9f1c0b6e5a2d3c4b5a69788776655443322"}',
 		'[{"name":"web client","status":"passed"}]',null,'sess-1',3,null);
-	perform pg_temp.wake_assert(v_view ->> 'phase' = 'completed' and (pg_temp.session_row('fix-send')).submission is null
-		and (pg_temp.session_row('fix-send')).submission_receipt_id is null and (pg_temp.session_row('fix-send')).vm_allocation_id = current_setting('qorpera_test.coding_vm')::uuid,
-		'Completion clears the submission and keeps the machine');
+	perform pg_temp.wake_assert(v_view ->> 'phase' = 'completed' and (select turn.outcome ->> 'state' = 'succeeded' and turn.submission ->> 'kind' = 'finish'
+			from public.qorpera_coding_session_turns turn where turn.worker_id = v_worker.id and turn.sequence = 1)
+		and (pg_temp.session_row('fix-send')).vm_allocation_id = current_setting('qorpera_test.coding_vm')::uuid,
+		'Completion settles the turn with its submission and keeps the machine');
 	-- The owner follows up; the second turn is a new claim on the same machine.
 	perform pg_temp.as_user('30000000-0000-4000-8000-000000000001');
 	perform public.qorpera_answer_coding_session(v_worker.id,'Also fix the group chat composer.','30000000-0000-4000-8000-000000000201');
