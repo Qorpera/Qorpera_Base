@@ -448,20 +448,23 @@ export class AgentRoutines {
 			first?.kind === "schedule" && "startAt" in first && first.startAt && Date.parse(first.startAt) > Date.now()
 				? first.startAt
 				: undefined;
-		const heldStart = () =>
-			held && first && "localTime" in first
-				? movedStart(held, first, { localTime: time.value, timeZone: timeZone.value.trim() })
-				: held;
+		const heldStart = () => {
+			if (!held || !first || !("localTime" in first)) return held;
+			try {
+				const moved = movedStart(held, first, { localTime: time.value, timeZone: timeZone.value.trim() });
+				// A time already past would run the routine at once, so the agent's instant stays.
+				return Date.parse(moved) > Date.now() ? moved : held;
+			} catch {
+				// A time still being typed, or a zone this browser does not know: unmoved.
+				return held;
+			}
+		};
 		const wait = h("input", { type: "checkbox", checked: true });
 		const waitText = h("span");
 		const waiting = h("label", { class: "routine-wait" }, wait, waitText);
 		const showHeld = () => {
-			try {
-				const start = heldStart();
-				if (start) waitText.textContent = t("Wait until {time} before the first run", { time: fmtTime(start) });
-			} catch {
-				// A time or time zone still being typed keeps the last one shown.
-			}
+			if (held)
+				waitText.textContent = t("Wait until {time} before the first run", { time: fmtTime(heldStart() ?? held) });
 		};
 		time.oninput = timeZone.oninput = showHeld;
 		showHeld();
@@ -477,7 +480,8 @@ export class AgentRoutines {
 		const trigger = (): CloudRoutineTrigger => {
 			const replyPolicy = reply.value === "required" ? {} : { replyPolicy: reply.value as CloudRoutineReplyPolicy };
 			const id = first?.id ?? crypto.randomUUID();
-			const keep = !held || wait.checked;
+			// Only while the box shows: it belongs to the routine's own kind of schedule.
+			const letGo = !waiting.hidden && !wait.checked;
 			if (when.value === "file")
 				return parseCloudRoutineTrigger({
 					id,
@@ -494,7 +498,7 @@ export class AgentRoutines {
 					kind: "schedule",
 					intervalMinutes: 1440,
 					// Once past, the scheduler ignores a weekly start, so a past one is kept as it is.
-					startAt: keep && first && "localTime" in first ? (heldStart() ?? first.startAt) : undefined,
+					startAt: !letGo && first && "localTime" in first ? (heldStart() ?? first.startAt) : undefined,
 					weekdays: CLOUD_ROUTINE_WEEKDAYS.filter((day) => chosen.has(day)),
 					localTime: time.value,
 					timeZone: timeZone.value.trim(),
@@ -502,16 +506,19 @@ export class AgentRoutines {
 				});
 			const intervalMinutes = Math.round(Number(every.value) * UNITS[unit.value as keyof typeof UNITS]);
 			const kept =
-				keep && first && first.kind === "schedule" && !("localTime" in first) && "startAt" in first
+				first && first.kind === "schedule" && !("localTime" in first) && "startAt" in first
 					? first.startAt
 					: undefined;
-			const next = new Date(Math.ceil((Date.now() + intervalMinutes * 60_000) / 60_000) * 60_000);
+			const next = (minutes: number) =>
+				new Date(Math.ceil((Date.now() + minutes * 60_000) / 60_000) * 60_000).toISOString();
+			const soon = next(1);
 			return parseCloudRoutineTrigger({
 				id,
 				kind: "schedule",
 				intervalMinutes,
-				// The first run is one interval from now, not at once.
-				startAt: kept ?? next.toISOString(),
+				// The first run is one interval from now, not at once. Letting a held first run
+				// go starts the routine within two minutes instead, never after the held time.
+				startAt: letGo && held ? (held < soon ? held : soon) : (kept ?? next(intervalMinutes)),
 				...replyPolicy,
 			});
 		};

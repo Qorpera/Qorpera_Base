@@ -11,6 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AgentRoutines } from "../src/app/views/agent-routines.ts";
 import type { Cloud } from "../src/cloud/client.ts";
 import { createWebRoutines, type WebRoutines } from "../src/cloud/routines.ts";
+import { setLanguagePreference, setTimeZonePreference } from "../src/ui/preferences.ts";
 import { profileA, settle, staff } from "./fixtures.ts";
 
 const account = {
@@ -328,8 +329,13 @@ describe("a member edit of an agent's routine", () => {
 		vi.useFakeTimers({ toFake: ["Date"] });
 		// Half a minute before the hour: a new interval start rounds up to 11:00 however long a test takes.
 		vi.setSystemTime(new Date("2026-09-25T09:59:30.000Z"));
+		setLanguagePreference("en");
+		setTimeZonePreference("Europe/Copenhagen");
 	});
-	afterEach(() => vi.useRealTimers());
+	afterEach(() => {
+		vi.useRealTimers();
+		localStorage.clear();
+	});
 	const type = (form: Element, label: string, value: string) => {
 		const field = form.querySelector<HTMLInputElement>(`[aria-label="${label}"]`)!;
 		field.value = value;
@@ -373,10 +379,9 @@ describe("a member edit of an agent's routine", () => {
 	it("moves a held first run with the clock time, so an earlier time still runs on the chosen day", async () => {
 		const earlier = await saveEdited(weekly, (form) => {
 			expect(waiting(form).hidden).toBe(false);
-			const shown = waiting(form).textContent;
-			expect(shown).toContain("Wait until");
+			expect(waiting(form).textContent).toMatch(/^Wait until Oct 5, 08:30.* before the first run$/);
 			type(form, "Time", "08:00");
-			expect(waiting(form).textContent).not.toBe(shown);
+			expect(waiting(form).textContent).toMatch(/Oct 5, 08:00/);
 		});
 		// Monday 08:00 in Copenhagen; kept at 08:30, the first run would slip to Wednesday.
 		expect(earlier.p_triggers).toEqual([{ ...weekly, localTime: "08:00", startAt: "2026-10-05T06:00:00.000Z" }]);
@@ -385,13 +390,40 @@ describe("a member edit of an agent's routine", () => {
 			{ ...weekly, timeZone: "America/New_York", startAt: "2026-10-05T12:30:00.000Z" },
 		]);
 	});
-	it("lets a member drop a held first run", async () => {
+	it("keeps the agent's instant when the moved time has already passed that day", async () => {
+		// 10:00 in Copenhagen on the held day; the agent held the first run until 15:00.
+		vi.setSystemTime(new Date("2026-10-05T08:00:00.000Z"));
+		const afternoon = { ...weekly, localTime: "15:00", startAt: "2026-10-05T13:00:00.000Z" } as const;
+		const upsert = await saveEdited(afternoon, (form) => {
+			type(form, "Time", "09:00");
+			expect(waiting(form).textContent).toMatch(/^Wait until 03:00.PM before/);
+		});
+		// Moved to 09:00 it would lie behind the save and run the routine at once.
+		expect(upsert.p_triggers).toEqual([{ ...afternoon, localTime: "09:00" }]);
+	});
+	it("leaves a held first run unmoved while the time or zone cannot be read", async () => {
+		const upsert = await saveEdited(weekly, (form) => {
+			type(form, "Time", "");
+			expect(waiting(form).textContent).toMatch(/Oct 5, 08:30/);
+			type(form, "Time", "08:30");
+			// A zone this browser does not know; the cloud decides whether it is one.
+			type(form, "Time zone", "Mars/Olympus");
+			expect(waiting(form).textContent).toMatch(/Oct 5, 08:30/);
+		});
+		expect(upsert.p_triggers).toEqual([{ ...weekly, timeZone: "Mars/Olympus" }]);
+	});
+	it("lets a member drop a held first run, which never makes it later", async () => {
 		const drop = (form: HTMLElement) => {
 			waiting(form).querySelector("input")!.checked = false;
 		};
 		expect((await saveEdited(weekly, drop)).p_triggers).toEqual([{ ...weekly, startAt: undefined }]);
-		// One interval from now, as for a routine a member starts.
-		expect((await saveEdited(every, drop)).p_triggers).toEqual([{ ...every, startAt: "2026-09-25T11:30:00.000Z" }]);
+		// An interval starts within two minutes instead of one interval from now,
+		expect((await saveEdited(every, drop)).p_triggers).toEqual([{ ...every, startAt: "2026-09-25T10:01:00.000Z" }]);
+		const week = { ...every, intervalMinutes: 10080, startAt: "2026-09-27T10:00:00.000Z" } as const;
+		expect((await saveEdited(week, drop)).p_triggers).toEqual([{ ...week, startAt: "2026-09-25T10:01:00.000Z" }]);
+		// and a held start sooner than that stays.
+		const shortly = { ...every, startAt: "2026-09-25T10:00:00.000Z" } as const;
+		expect((await saveEdited(shortly, drop)).p_triggers).toEqual([shortly]);
 	});
 	it("offers no wait once the first run is reached, or for another kind of schedule", async () => {
 		const reached = { ...weekly, startAt: "2026-09-21T06:30:00.000Z" };
