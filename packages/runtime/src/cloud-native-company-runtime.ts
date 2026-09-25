@@ -209,6 +209,13 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				control: this.#paths,
 				store: this.#store(context.identity.companyId, binding, signal),
 			});
+			// How much open work the agent has (counts only), where it keeps todos and workers:
+			// a company run that is not itself a worker. Asked alongside the notebook; like
+			// memory, it never blocks the run.
+			const openWorkRequest =
+				context.identity.audienceKind === "company" && !cloudWorkerToolFilter(wake).isWorker
+					? describeCloudAgentOpenWork(binding, this.#paths, signal).catch(() => undefined)
+					: Promise.resolve(undefined);
 			// The agent's own notebook (contract 15.1) is composed through the trusted
 			// read lane; an unreadable notebook degrades to "unavailable" and the run
 			// still starts, because memory is never a precondition of company work.
@@ -218,15 +225,8 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					return unavailableCloudAgentMemory(cloudRuntimeErrorCategory(error, signal));
 				},
 			);
-			// How much open work the agent has (counts only), where it keeps todos and workers:
-			// a company run that is not itself a worker. Like memory, it never blocks the run.
-			const openWork =
-				context.identity.audienceKind === "company" && !cloudWorkerToolFilter(wake).isWorker
-					? await describeCloudAgentOpenWork(binding, this.#paths, signal).catch(() => {
-							signal.throwIfAborted();
-							return undefined;
-						})
-					: undefined;
+			const openWork = await openWorkRequest;
+			signal.throwIfAborted();
 			const prompt = composeCloudNativeCompanyPrompt(context, wake, initialPresence, memory, openWork);
 			composition.finish("succeeded", { outputBytes: Buffer.byteLength(prompt) });
 			const contextSha256 = createHash("sha256").update(prompt).digest("hex");

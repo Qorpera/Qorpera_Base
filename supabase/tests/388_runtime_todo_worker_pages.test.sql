@@ -118,6 +118,25 @@ begin
 	end;
 end $$;
 
+-- 1b. A listed todo shows the start of its detail; named by todoKey, the whole of it, in any state.
+do $$
+declare v_item jsonb;
+begin
+	perform pg_temp.todo(jsonb_build_object('action','upsert','operationKey','long-detail','todoKey','long-detail',
+		'title','A long plan','detail',repeat('Step. ',500)));
+	v_item := pg_temp.todo('{"action":"list","search":"long plan"}') #> '{todos,0}';
+	perform pg_temp.wake_assert(char_length(v_item ->> 'detail') = 200 and v_item ->> 'detailTruncated' = 'true' and v_item ? 'cursor'
+		and v_item ->> 'todoKey' = 'long-detail','A listed todo carries the start of its detail and its cursor');
+	v_item := pg_temp.todo('{"action":"list","todoKey":"long-detail"}') #> '{todos,0}';
+	perform pg_temp.wake_assert(char_length(v_item ->> 'detail') = 2999 and not v_item ? 'detailTruncated',
+		'A todo named by todoKey is shown with its whole detail');
+	perform pg_temp.todo('{"action":"cancel","operationKey":"cancel-long-detail","todoKey":"long-detail"}');
+	perform pg_temp.wake_assert(pg_temp.todo('{"action":"list","todoKey":"long-detail"}') #>> '{todos,0,state}' = 'cancelled'
+		and pg_temp.todo('{"action":"list","todoKey":"t-61"}') #>> '{todos,0,state}' = 'done'
+		and jsonb_array_length(pg_temp.todo('{"action":"list","todoKey":"absent"}') -> 'todos') = 0,
+		'A named todo is found in any state');
+end $$;
+
 -- 2. A change between pages neither skips nor repeats a todo.
 do $$
 declare v_first jsonb; v_rest text[]; v_before text[]; v_read text; v_unread text; v_page_one text[];
@@ -152,6 +171,14 @@ begin
 	perform pg_temp.wake_assert(pg_temp.same_once(v_page_one || v_rest,array(select todo_key from public.qorpera_runtime_agent_todos
 			where staff_agent_id = '30000000-0000-4000-8000-000000000030' and state in ('open','blocked'))) and not v_unread = any(v_rest),
 		'A todo closed mid-walk is simply no longer open');
+	-- The cursor's own todo closes before the next page: its place still holds.
+	v_first := pg_temp.todo('{"action":"list"}');
+	v_page_one := array(select item ->> 'todoKey' from jsonb_array_elements(v_first -> 'todos') item);
+	perform pg_temp.todo(jsonb_build_object('action','done','operationKey','close-cursor','todoKey',v_page_one[32]));
+	v_rest := pg_temp.walk('todos','{"action":"list"}',v_first ->> 'nextCursor');
+	perform pg_temp.wake_assert(pg_temp.same_once(v_page_one[1:31] || v_rest,array(select todo_key from public.qorpera_runtime_agent_todos
+			where staff_agent_id = '30000000-0000-4000-8000-000000000030' and state in ('open','blocked'))),
+		'A cursor whose own todo closed still continues exactly after it');
 end $$;
 
 -- 3. Twenty workers on one todo and six elsewhere: status walks all of them, a todoKey walk
@@ -185,11 +212,20 @@ begin
 	v_keys := pg_temp.walk('workers','{"action":"status","state":"active","todoKey":"big"}');
 	perform pg_temp.wake_assert(cardinality(v_keys) = 19 and not 'big/w-07' = any(v_keys),'state and todoKey combine');
 	v_todo := (select item from jsonb_array_elements(pg_temp.todo('{"action":"list","search":"large piece"}') -> 'todos') item);
-	perform pg_temp.wake_assert(jsonb_array_length(v_todo -> 'workers') = 16 and (v_todo ->> 'moreWorkers')::int = 4
-		and v_todo #>> '{workers,0,workerKey}' = 'w-05' and v_todo #>> '{workers,15,workerKey}' = 'w-20',
-		'A todo lists its latest sixteen workers in dispatch order and counts the earlier four');
+	perform pg_temp.wake_assert(v_todo -> 'workers' = '[{"workerKey":"w-17","state":"queued"},{"workerKey":"w-18","state":"queued"},
+			{"workerKey":"w-19","state":"queued"},{"workerKey":"w-20","state":"queued"}]'::jsonb and (v_todo ->> 'moreWorkers')::int = 16,
+		'A listed todo shows its latest four workers by key and state, in dispatch order, and counts the other sixteen');
 	perform pg_temp.wake_assert(not (pg_temp.todo('{"action":"list","search":"t-11"}') #> '{todos,0}') ? 'moreWorkers',
 		'A todo with few workers shows them all and no count');
+	-- A listed worker shows the start of its summary; named, it is shown in full.
+	update public.qorpera_runtime_workers set state = 'succeeded', reported_at = clock_timestamp(),
+		result = jsonb_build_object('outcome','succeeded','outputs','[]'::jsonb,'sequence',sequence,'summary',repeat('Found it. ',60))
+	where worker_key = 'w-20';
+	v_todo := pg_temp.worker('{"action":"status","todoKey":"big","search":"supplier audit 20"}') #> '{workers,0}';
+	perform pg_temp.wake_assert(v_todo ->> 'workerKey' = 'w-20' and char_length(v_todo ->> 'summary') = 200 and v_todo ? 'cursor',
+		'A listed worker carries the start of its summary and its cursor');
+	v_todo := pg_temp.worker('{"action":"status","todoKey":"big","workerKey":"w-20"}') #> '{workers,0}';
+	perform pg_temp.wake_assert(char_length(v_todo ->> 'summary') = 600,'A named worker is shown in full');
 end $$;
 
 -- 4. A change between pages neither skips nor repeats a worker.
@@ -219,17 +255,17 @@ begin
 		and v_counts -> 'todos' = jsonb_build_object(
 			'open',(select count(*) from public.qorpera_runtime_agent_todos where staff_agent_id = '30000000-0000-4000-8000-000000000030' and state = 'open'),
 			'blocked',(select count(*) from public.qorpera_runtime_agent_todos where staff_agent_id = '30000000-0000-4000-8000-000000000030' and state = 'blocked'))
-		and v_counts -> 'workers' = '{"active":24,"blocked":0}'::jsonb,'Open work is counted, not listed');
+		and v_counts -> 'workers' = '{"active":23,"blocked":0}'::jsonb,'Open work is counted, not listed');
 	-- A blocked worker counts while its todo is open, not after the todo closes.
 	begin
 		update public.qorpera_runtime_workers set state = 'blocked', reported_at = clock_timestamp(),
 			result = jsonb_build_object('outcome','blocked','outputs','[]'::jsonb,'sequence',sequence,'summary','Need a list.','needs','A list.')
 		where worker_key = 'side-a';
 		perform pg_temp.wake_assert(public.qorpera_describe_agent_open_work(current_setting('qorpera_test.parent_binding')::jsonb) -> 'workers'
-			= '{"active":21,"blocked":3}'::jsonb,'Blocked workers are counted');
+			= '{"active":20,"blocked":3}'::jsonb,'Blocked workers are counted');
 		update public.qorpera_runtime_agent_todos set state = 'done' where todo_key = 't-11';
 		perform pg_temp.wake_assert(public.qorpera_describe_agent_open_work(current_setting('qorpera_test.parent_binding')::jsonb) -> 'workers'
-			= '{"active":20,"blocked":2}'::jsonb,'Workers of a closed todo are not open work');
+			= '{"active":19,"blocked":2}'::jsonb,'Workers of a closed todo are not open work');
 		raise exception 'rollback-open-work-probe';
 	exception when raise_exception then
 		if sqlerrm <> 'rollback-open-work-probe' then raise; end if;
@@ -243,7 +279,8 @@ select pg_temp.wake_error($q$select pg_temp.todo('{"action":"list","state":"clos
 select pg_temp.wake_error($q$select pg_temp.todo('{"action":"list","state":["open"]}')$q$,'22023');
 select pg_temp.wake_error($q$select pg_temp.todo('{"action":"list","search":""}')$q$,'22023');
 select pg_temp.wake_error($q$select pg_temp.todo('{"action":"list","search":"a\nb"}')$q$,'22023');
-select pg_temp.wake_error($q$select pg_temp.todo('{"action":"list","todoKey":"t-01"}')$q$,'22023');
+select pg_temp.wake_error($q$select pg_temp.todo('{"action":"list","todoKey":"Bad Key"}')$q$,'22023');
+select pg_temp.wake_error($q$select pg_temp.todo('{"action":"list","workerKey":"w-01"}')$q$,'22023');
 select pg_temp.wake_error($q$select pg_temp.worker('{"action":"status","state":"running"}')$q$,'22023');
 select pg_temp.wake_error($q$select pg_temp.worker('{"action":"status","workerKey":"w-01"}')$q$,'22023');
 select pg_temp.wake_error($q$select pg_temp.worker('{"action":"status","cursor":42}')$q$,'22023');
@@ -278,7 +315,8 @@ select pg_temp.wake_assert(
 	and not exists (select 1 from unnest(array['anon','authenticated','service_role','qorpera_secret_broker']) role
 		cross join unnest(array['public.qorpera_agent_todo_page(public.qorpera_execution_runs,jsonb)',
 			'public.qorpera_agent_worker_page(public.qorpera_execution_runs,jsonb)',
-			'public.qorpera_agent_todo_listing(public.qorpera_runtime_agent_todos)']) helper
+			'public.qorpera_agent_todo_listing(public.qorpera_runtime_agent_todos,boolean)',
+			'public.qorpera_agent_worker_listing(public.qorpera_runtime_workers,text,boolean)']) helper
 		where has_function_privilege(role,helper,'execute')),
 	'The open-work count is for the runtime only, and the page helpers for no API role');
 select pg_temp.path_claims('service_role');

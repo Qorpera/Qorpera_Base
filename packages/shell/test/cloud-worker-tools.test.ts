@@ -53,7 +53,7 @@ async function fixture(
 				? {
 						schema: "qorpera.agent-workers/v1",
 						runId: binding.runId,
-						workers: [{ workerKey: "prices", todoKey: "market-scan", state: "queued" }],
+						workers: [{ workerKey: "prices", todoKey: "market-scan", state: "queued", cursor }],
 						moreWorkers: 3,
 						nextCursor: cursor,
 					}
@@ -70,7 +70,7 @@ async function fixture(
 			? {
 					schema: "qorpera.agent-todos/v1",
 					runId: binding.runId,
-					todos: [],
+					todos: [{ todoKey: "market-scan", title: "Market scan", state: "open", cursor }],
 					moreTodos: 7,
 					nextCursor: cursor,
 					unpublished: [publication("left-behind", 4)],
@@ -203,8 +203,12 @@ describe("agent todo and worker tools", () => {
 			expect(JSON.parse(body(listed).content.text).documents).toEqual([
 				{ path: `work/todos/${f.agent}/left-behind.json`, published: true },
 			]);
-			// The list is a page; what it leaves out is counted and reached by its cursor.
-			expect(JSON.parse(body(listed).content.text)).toMatchObject({ moreTodos: 7, nextCursor: cursor });
+			// The list is a page; what it leaves out is counted and reached by its cursor, never shown on an item.
+			expect(JSON.parse(body(listed).content.text)).toMatchObject({
+				todos: [{ todoKey: "market-scan", title: "Market scan", state: "open" }],
+				moreTodos: 7,
+				nextCursor: cursor,
+			});
 			expect(f.mutate.mock.calls.map((entry) => entry[0])).toEqual(["mkdir", "write"]);
 		} finally {
 			failing.run.close();
@@ -217,6 +221,7 @@ describe("agent todo and worker tools", () => {
 		try {
 			const listed = await f.boundary.invoke("l1", "qorpera", "manage_todo", {
 				action: "list",
+				todoKey: "market-scan",
 				state: "done",
 				search: "  Invoice ",
 				cursor,
@@ -224,7 +229,7 @@ describe("agent todo and worker tools", () => {
 			expect(body(listed).status).toBe("ok");
 			expect(f.call.mock.calls[0][1]).toEqual({
 				p_binding: f.binding,
-				p_request: { action: "list", state: "done", search: "Invoice", cursor },
+				p_request: { action: "list", todoKey: "market-scan", state: "done", search: "Invoice", cursor },
 			});
 			const status = await f.boundary.invoke("s1", "qorpera", "manage_worker", {
 				action: "status",
@@ -255,7 +260,9 @@ describe("agent todo and worker tools", () => {
 					["manage_todo", { action: "list", search: "a\nb" }],
 					["manage_todo", { action: "list", search: "tab\there" }],
 					["manage_todo", { action: "list", search: "x".repeat(201) }],
-					["manage_todo", { action: "list", todoKey: "market-scan" }],
+					["manage_todo", { action: "list", search: "next\u0085line" }],
+					["manage_todo", { action: "list", todoKey: "Market Scan" }],
+					["manage_todo", { action: "list", workerKey: "prices" }],
 					["manage_todo", { action: "upsert", operationKey: "u1", todoKey: "k", title: "t", state: "done" }],
 					["manage_worker", { action: "status", state: "running" }],
 					["manage_worker", { action: "status", state: "open" }],
@@ -273,19 +280,22 @@ describe("agent todo and worker tools", () => {
 	});
 
 	it("refuses a page whose count and cursor disagree", async () => {
+		const todos = [{ todoKey: "market-scan", cursor }];
 		for (const broken of [
-			{ moreTodos: 7, nextCursor: null },
-			{ moreTodos: 0, nextCursor: cursor },
-			{ moreTodos: -1, nextCursor: null },
-			{ moreTodos: 1, nextCursor: "not-a-cursor" },
-			{ moreTodos: 0 },
+			{ todos, moreTodos: 7, nextCursor: null },
+			{ todos, moreTodos: 0, nextCursor: cursor },
+			{ todos, moreTodos: -1, nextCursor: null },
+			{ todos, moreTodos: 1, nextCursor: "not-a-cursor" },
+			{ todos, moreTodos: 1, nextCursor: randomUUID() },
+			{ todos, moreTodos: 0 },
+			{ todos: [{ todoKey: "market-scan" }], moreTodos: 0, nextCursor: null },
+			{ todos: [{ todoKey: "market-scan", cursor: "page-2" }], moreTodos: 0, nextCursor: null },
 		]) {
 			const f = await fixture();
 			try {
 				f.call.mockImplementationOnce(async () => ({
 					schema: "qorpera.agent-todos/v1",
 					runId: f.binding.runId,
-					todos: [],
 					unpublished: [],
 					...broken,
 				}));
@@ -294,6 +304,85 @@ describe("agent todo and worker tools", () => {
 			} finally {
 				f.run.close();
 			}
+		}
+	});
+
+	it.each([
+		["manage_todo", { action: "list" }, "todos", "moreTodos", 32, 10],
+		["manage_worker", { action: "status" }, "workers", "moreWorkers", 16, 0],
+	] as const)(
+		"shows as much of a %s page as reaches the model whole, and continues after the last item shown",
+		async (tool, request, items, more, size, after) => {
+			const f = await fixture();
+			try {
+				const cursors = Array.from({ length: size }, () => randomUUID());
+				const listed = cursors.map((itemCursor, index) =>
+					items === "todos"
+						? {
+								todoKey: `todo-${index}`,
+								title: `A piece of work number ${index}`,
+								detail: 'Plan: "read", <check> & report.\n'.repeat(7).slice(0, 200),
+								state: "open",
+								workers: [1, 2, 3, 4].map((n) => ({ workerKey: `w-${n}`, state: "queued" })),
+								cursor: itemCursor,
+							}
+						: {
+								workerKey: `worker-${index}`,
+								todoKey: "market-scan",
+								title: `Research part ${index}`,
+								state: "succeeded",
+								summary: 'Found "it": <b>\n'.repeat(14).slice(0, 200),
+								cursor: itemCursor,
+							},
+				);
+				f.call.mockImplementationOnce(async () => ({
+					schema: items === "todos" ? "qorpera.agent-todos/v1" : "qorpera.agent-workers/v1",
+					runId: f.binding.runId,
+					[items]: listed,
+					[more]: after,
+					nextCursor: after > 0 ? cursors.at(-1) : null,
+					...(items === "todos" ? { unpublished: [] } : {}),
+				}));
+				const envelope = body(await f.boundary.invoke("page", "qorpera", tool, request));
+				expect(envelope.status).toBe("ok");
+				// The fence cuts anything past 8 KiB; a fitted page never reaches that.
+				expect(envelope.content.truncated).toBe(false);
+				const page = JSON.parse(envelope.content.text);
+				const shown = page[items].length;
+				expect(shown).toBeGreaterThan(1);
+				expect(shown).toBeLessThan(size);
+				expect(page[items].some((item: Record<string, unknown>) => "cursor" in item)).toBe(false);
+				expect(page[more]).toBe(after + size - shown);
+				expect(page.nextCursor).toBe(cursors[shown - 1]);
+			} finally {
+				f.run.close();
+			}
+		},
+	);
+
+	it("shows one item alone when even it does not fit, so a walk always moves on", async () => {
+		const f = await fixture();
+		try {
+			const cursors = [randomUUID(), randomUUID()];
+			f.call.mockImplementationOnce(async () => ({
+				schema: "qorpera.agent-todos/v1",
+				runId: f.binding.runId,
+				todos: cursors.map((itemCursor, index) => ({
+					todoKey: `todo-${index}`,
+					title: "Wide",
+					zDetail: "x".repeat(9000),
+					cursor: itemCursor,
+				})),
+				moreTodos: 0,
+				nextCursor: null,
+				unpublished: [],
+			}));
+			const envelope = body(await f.boundary.invoke("big", "qorpera", "manage_todo", { action: "list" }));
+			// Counts and cursor sort before the items, so they survive the fence's cut of the one wide item.
+			expect(envelope.content.truncated).toBe(true);
+			expect(envelope.content.text).toContain(`"moreTodos":1,"nextCursor":"${cursors[0]}"`);
+		} finally {
+			f.run.close();
 		}
 	});
 

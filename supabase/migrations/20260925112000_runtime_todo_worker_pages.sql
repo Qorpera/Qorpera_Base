@@ -3,18 +3,21 @@
 -- workers, but manage_todo list showed only the first 32 and manage_worker
 -- status the first 16: asking again returned the same page, so the rest of the
 -- agent's own work was out of its reach.
--- * A page is a response size, not a limit. nextCursor continues after the
---   last item shown; moreTodos and moreWorkers count exactly what the same
---   filters still hold after this page.
+-- * A page is a response size, not a limit. The kernel returns up to 32 todos or
+--   16 workers, each with its own cursor; the runtime shows as many as fit one
+--   tool result and continues after the last one shown. moreTodos and
+--   moreWorkers count exactly what the same filters still hold after it.
 -- * Pages run in creation order, newest first, keyed on (created_at, id).
 --   Creation never changes, so a todo or worker that changes between two pages
 --   keeps its place: nothing is skipped or shown twice. The former order (most
 --   recently changed first, open ones first) moved an item every time it
 --   changed, which no cursor can follow.
--- * Filters: state and search for todos; todoKey, workerKey, state and search
---   for workers. search is a case-insensitive text match in titles and keys.
--- * A todo in a listing shows its latest sixteen workers and counts the earlier
---   ones in moreWorkers; manage_worker status with its todoKey pages through all.
+-- * Filters: todoKey, state and search for todos; todoKey, workerKey, state and
+--   search for workers. search is a case-insensitive text match in titles and keys.
+-- * A listing keeps each item short so that several fit one result: the start of
+--   a todo's detail and its latest four workers, the start of a worker's summary.
+--   A named todo (list with todoKey) or worker (status with todoKey and
+--   workerKey) is shown in full.
 -- * qorpera_describe_agent_open_work counts a run's open work, so the prompt can
 --   say how much there is without listing it.
 
@@ -34,30 +37,54 @@ create index qorpera_runtime_agent_todos_created on public.qorpera_runtime_agent
 create index qorpera_runtime_workers_created on public.qorpera_runtime_workers
 	(profile_id, environment_id, staff_agent_id, created_at desc, id desc);
 
--- A todo as a listing shows it: its latest sixteen workers, in the order they were
--- dispatched, and a count of the earlier ones, so one busy todo cannot swell a page.
-create function public.qorpera_agent_todo_listing(p_todo public.qorpera_runtime_agent_todos)
+-- A todo as a listing shows it: the start of its detail (all of it when named),
+-- and its latest four workers by key and state, in the order they were dispatched,
+-- with a count of the earlier ones.
+create function public.qorpera_agent_todo_listing(p_todo public.qorpera_runtime_agent_todos, p_full boolean)
 returns jsonb language sql stable security definer set search_path = '' as $$
-	select (public.qorpera_agent_todo_view(p_todo) - 'workers')
-		|| jsonb_build_object('workers', coalesce((select jsonb_agg(public.qorpera_worker_view(latest.worker, false)
+	select (public.qorpera_agent_todo_view(p_todo) - 'workers' - 'detail')
+		|| jsonb_build_object('detail', case when p_full then p_todo.detail else left(p_todo.detail, 200) end,
+			'workers', coalesce((select jsonb_agg(jsonb_build_object('workerKey', (latest.worker).worker_key,
+					'state', public.qorpera_worker_view(latest.worker, false) ->> 'state')
 				order by (latest.worker).created_at, (latest.worker).id)
 			from (select worker from public.qorpera_runtime_workers worker where worker.todo_id = p_todo.id
-				order by worker.created_at desc, worker.id desc limit 16) latest), '[]'::jsonb))
-		|| coalesce((select jsonb_build_object('moreWorkers', count(*) - 16) from public.qorpera_runtime_workers worker
-			where worker.todo_id = p_todo.id having count(*) > 16), '{}'::jsonb)
+				order by worker.created_at desc, worker.id desc limit 4) latest), '[]'::jsonb))
+		|| case when not p_full and char_length(p_todo.detail) > 200 then '{"detailTruncated":true}'::jsonb else '{}'::jsonb end
+		|| coalesce((select jsonb_build_object('moreWorkers', count(*) - 4) from public.qorpera_runtime_workers worker
+			where worker.todo_id = p_todo.id having count(*) > 4), '{}'::jsonb)
+$$;
+
+-- A worker as a listing shows it: the start of its summary, question and review
+-- note, and the phase of a coding session; a named worker is shown in full.
+create function public.qorpera_agent_worker_listing(p_worker public.qorpera_runtime_workers, p_todo_key text, p_full boolean)
+returns jsonb language sql stable security definer set search_path = '' as $$
+	select case when p_full then public.qorpera_worker_view(p_worker, true)
+			|| coalesce((select jsonb_build_object('coding', public.qorpera_coding_session_view(session, p_worker))
+				from public.qorpera_coding_sessions session where session.worker_id = p_worker.id), '{}'::jsonb)
+		else public.qorpera_worker_view(p_worker, false)
+			|| jsonb_build_object('summary', left(p_worker.result ->> 'summary', 200), 'needs', left(p_worker.result ->> 'needs', 200),
+				'decision', case when p_worker.acceptance is null then null else jsonb_build_object('decision', p_worker.acceptance,
+					'note', left(p_worker.acceptance_note, 200), 'at', p_worker.accepted_at) end)
+			|| coalesce((select jsonb_build_object('coding', jsonb_build_object('harness', session.harness, 'phase', session.phase,
+					'branch', session.branch, 'pullRequest', session.pull_request))
+				from public.qorpera_coding_sessions session where session.worker_id = p_worker.id), '{}'::jsonb) end
+		|| jsonb_build_object('todoKey', p_todo_key)
 $$;
 
 -- One page of the run's agent's todos. Without state, open and blocked todos
--- (all of them with includeClosed); a cursor is the last todo of the page before.
+-- (all of them with includeClosed, and any state for a named todoKey). Each item
+-- carries its cursor, which the runtime removes; a cursor is the last todo shown before.
 create function public.qorpera_agent_todo_page(p_run public.qorpera_execution_runs, p_request jsonb)
 returns jsonb language plpgsql stable security definer set search_path = '' as $$
 declare
-	v_states text[]; v_search text; v_after public.qorpera_runtime_agent_todos%rowtype;
-	v_todos jsonb; v_more bigint; v_last uuid;
+	v_states text[]; v_search text; v_key text := p_request ->> 'todoKey';
+	v_after public.qorpera_runtime_agent_todos%rowtype; v_todos jsonb; v_more bigint; v_last uuid;
 begin
 	if exists (select 1 from jsonb_object_keys(p_request) key
-			where key not in ('action','includeClosed','state','search','cursor'))
+			where key not in ('action','includeClosed','todoKey','state','search','cursor'))
 		or (p_request ? 'includeClosed' and jsonb_typeof(p_request -> 'includeClosed') <> 'boolean')
+		or (p_request ? 'todoKey' and (jsonb_typeof(p_request -> 'todoKey') <> 'string'
+			or v_key !~ '^[a-z0-9][a-z0-9._-]{0,63}$'))
 		or (p_request ? 'state' and (jsonb_typeof(p_request -> 'state') <> 'string'
 			or p_request ->> 'state' not in ('open','blocked','done','cancelled')))
 		or (p_request ? 'search' and (jsonb_typeof(p_request -> 'search') <> 'string'
@@ -66,7 +93,7 @@ begin
 			or (p_request ->> 'cursor') !~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')) then
 		raise exception 'Todo request is invalid' using errcode = '22023'; end if;
 	v_states := case when p_request ? 'state' then array[p_request ->> 'state']
-		when coalesce((p_request ->> 'includeClosed')::boolean, false) then array['open','blocked','done','cancelled']
+		when v_key is not null or coalesce((p_request ->> 'includeClosed')::boolean, false) then array['open','blocked','done','cancelled']
 		else array['open','blocked'] end;
 	v_search := lower(btrim(p_request ->> 'search'));
 	if p_request ? 'cursor' then
@@ -75,24 +102,28 @@ begin
 			and todo.environment_id = p_run.environment_id and todo.staff_agent_id = p_run.staff_agent_id;
 		if not found then raise exception 'Todo cursor is unavailable; list again without it' using errcode = '22023'; end if;
 	end if;
+	-- Only the keyset is kept for counting; whole rows are read for the page alone.
 	with matching as (
-		select todo from public.qorpera_runtime_agent_todos todo
+		select todo.id, todo.created_at from public.qorpera_runtime_agent_todos todo
 		where todo.profile_id = p_run.profile_id and todo.environment_id = p_run.environment_id
 			and todo.staff_agent_id = p_run.staff_agent_id and todo.state = any(v_states)
+			and (v_key is null or todo.todo_key = v_key)
 			and (v_search is null or strpos(lower(todo.title), v_search) > 0 or strpos(todo.todo_key, v_search) > 0)
 			and (v_after.id is null or (todo.created_at, todo.id) < (v_after.created_at, v_after.id))),
-	page as (select todo from matching order by (todo).created_at desc, (todo).id desc limit 32)
-	select coalesce(jsonb_agg(public.qorpera_agent_todo_listing(page.todo) order by (page.todo).created_at desc, (page.todo).id desc),
-			'[]'::jsonb),
+	page as (select * from matching order by created_at desc, id desc limit 32)
+	select coalesce(jsonb_agg(public.qorpera_agent_todo_listing(todo, v_key is not null) || jsonb_build_object('cursor', todo.id)
+				order by page.created_at desc, page.id desc), '[]'::jsonb),
 		(select count(*) from matching) - count(*),
-		(array_agg((page.todo).id order by (page.todo).created_at, (page.todo).id))[1]
-	into v_todos, v_more, v_last from page;
+		(array_agg(page.id order by page.created_at, page.id))[1]
+	into v_todos, v_more, v_last
+	from page join public.qorpera_runtime_agent_todos todo on todo.id = page.id;
 	return jsonb_build_object('todos', v_todos, 'moreTodos', v_more, 'nextCursor', case when v_more > 0 then v_last end);
 end
 $$;
 
 -- One page of the run's agent's workers. Without todoKey, those of open todos and
--- any changed in the last week; a cursor is the last worker of the page before.
+-- any changed in the last week. Each item carries its cursor, which the runtime
+-- removes; a cursor is the last worker shown before.
 create function public.qorpera_agent_worker_page(p_run public.qorpera_execution_runs, p_request jsonb)
 returns jsonb language plpgsql stable security definer set search_path = '' as $$
 declare
@@ -117,8 +148,9 @@ begin
 			and worker.environment_id = p_run.environment_id and worker.staff_agent_id = p_run.staff_agent_id;
 		if not found then raise exception 'Worker cursor is unavailable; ask for status again without it' using errcode = '22023'; end if;
 	end if;
+	-- Only the keyset is kept for counting; whole rows are read for the page alone.
 	with matching as (
-		select worker, todo.todo_key from public.qorpera_runtime_workers worker
+		select worker.id, worker.created_at, todo.todo_key from public.qorpera_runtime_workers worker
 		join public.qorpera_runtime_agent_todos todo on todo.id = worker.todo_id
 		where worker.profile_id = p_run.profile_id and worker.environment_id = p_run.environment_id
 			and worker.staff_agent_id = p_run.staff_agent_id
@@ -129,16 +161,14 @@ begin
 			and (p_request ->> 'state' is null or worker.state = p_request ->> 'state')
 			and (v_search is null or strpos(lower(worker.title), v_search) > 0 or strpos(worker.worker_key, v_search) > 0)
 			and (v_after.id is null or (worker.created_at, worker.id) < (v_after.created_at, v_after.id))),
-	page as (select * from matching order by (worker).created_at desc, (worker).id desc limit 16)
-	-- One named worker is shown in full; a listing keeps summaries short so many fit one result.
-	select coalesce(jsonb_agg(public.qorpera_worker_view(page.worker, p_request ? 'workerKey')
-				|| jsonb_build_object('todoKey', page.todo_key)
-				|| coalesce((select jsonb_build_object('coding', public.qorpera_coding_session_view(session, page.worker))
-					from public.qorpera_coding_sessions session where session.worker_id = (page.worker).id), '{}'::jsonb)
-			order by (page.worker).created_at desc, (page.worker).id desc), '[]'::jsonb),
+	page as (select * from matching order by created_at desc, id desc limit 16)
+	select coalesce(jsonb_agg(public.qorpera_agent_worker_listing(worker, page.todo_key, p_request ? 'workerKey')
+				|| jsonb_build_object('cursor', worker.id)
+			order by page.created_at desc, page.id desc), '[]'::jsonb),
 		(select count(*) from matching) - count(*),
-		(array_agg((page.worker).id order by (page.worker).created_at, (page.worker).id))[1]
-	into v_workers, v_more, v_last from page;
+		(array_agg(page.id order by page.created_at, page.id))[1]
+	into v_workers, v_more, v_last
+	from page join public.qorpera_runtime_workers worker on worker.id = page.id;
 	return jsonb_build_object('workers', v_workers, 'moreWorkers', v_more, 'nextCursor', case when v_more > 0 then v_last end);
 end
 $$;
@@ -225,7 +255,8 @@ begin
 end
 $$;
 
-revoke all on function public.qorpera_agent_todo_listing(public.qorpera_runtime_agent_todos),
+revoke all on function public.qorpera_agent_todo_listing(public.qorpera_runtime_agent_todos, boolean),
+	public.qorpera_agent_worker_listing(public.qorpera_runtime_workers, text, boolean),
 	public.qorpera_agent_todo_page(public.qorpera_execution_runs, jsonb),
 	public.qorpera_agent_worker_page(public.qorpera_execution_runs, jsonb),
 	public.qorpera_describe_agent_open_work(jsonb)

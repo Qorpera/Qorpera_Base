@@ -168,16 +168,21 @@ Migration `*_runtime_todo_worker_pages.sql` makes both listings pages:
 
 - `cursor` in, `nextCursor` out (null at the end); `moreTodos` / `moreWorkers`
   count exactly what the same filters still hold after the page. The page size
-  is a response size, not a limit.
+  is a response size, not a limit: the kernel returns up to 32 todos or 16
+  workers, each with its own cursor, and the runtime shows the longest prefix
+  that reaches the model whole (a tool result is cut at 8 KiB), counting the
+  rest and continuing after the last item shown.
 - Keyset on creation order, newest first: `(created_at, id)`. Creation never
   changes, so a todo or worker that changes between two pages keeps its place
   and is neither skipped nor shown twice. The former order (most recently
   changed first) moved an item on every change.
-- Filters: `state` and `search` for todos (`includeClosed` stays); `todoKey`,
-  `workerKey`, `state` and `search` for workers. `search` is a case-insensitive
-  text match in titles and keys.
-- A todo in a listing carries its latest 16 workers and `moreWorkers`; status
-  with its `todoKey` pages through all of them.
+- Filters: `todoKey`, `state` and `search` for todos (`includeClosed` stays);
+  `todoKey`, `workerKey`, `state` and `search` for workers. `search` is a
+  case-insensitive text match in titles and keys.
+- A listing keeps items short: the first 200 characters of a todo's detail and
+  its latest 4 workers (key and state, plus `moreWorkers`); the first 200
+  characters of a worker's summary, question and review note. A todo named with
+  `todoKey`, or a worker named with `todoKey` and `workerKey`, is shown in full.
 - `qorpera_describe_agent_open_work` gives the runtime the counts for
   `openWork`; a failure leaves it out and never blocks the run.
 - Proof: `supabase/tests/388_runtime_todo_worker_pages.test.sql` walks 60 and

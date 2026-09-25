@@ -1065,6 +1065,19 @@ it("runs a background worker blank: reading tools and its report, no mouth, no c
 	expect(evidence.threadParameters.developerInstructions).not.toContain("# This wake: a message from a coworker");
 });
 
+it("starts the run without the open-work count when the kernel cannot give it", async () => {
+	const f = await fixture("company-runtime");
+	const original = f.pathCall.getMockImplementation()!;
+	f.pathCall.mockImplementation(async (method, args, signal) => {
+		if (method === "qorpera_describe_agent_open_work") throw new Error("Open work unavailable");
+		return original(method, args, signal);
+	});
+	const result = await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+	expect(result.delivery.finalMessageId).toBe(f.deliveries.get("final")?.messageId);
+	const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
+	expect(JSON.parse(evidence.turnParameters.input[0].text)).not.toHaveProperty("openWork");
+});
+
 it("does not fall back to local context or another harness when cloud context is unavailable", async () => {
 	const f = await fixture();
 	const original = f.pathCall.getMockImplementation()!;
