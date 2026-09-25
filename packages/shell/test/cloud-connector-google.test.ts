@@ -344,6 +344,49 @@ it("creates a Google Doc from text through a multipart upload and updates conten
 	});
 });
 
+it("keeps the Drive upload boundary within 70 characters, stable per key and out of every part", async () => {
+	const uploads: { boundary: string; body: string }[] = [];
+	const { fetchImplementation } = google({
+		[`POST ${DRIVE}/upload/drive/v3/files`]: (_url, init) => {
+			const contentType = (init?.headers as Record<string, string>)["content-type"];
+			uploads.push({
+				boundary: /^multipart\/related; boundary=(.+)$/.exec(contentType)?.[1] ?? "",
+				body: String(init?.body),
+			});
+			return Response.json({ id: "new1", name: "Notes", mimeType: "text/plain" });
+		},
+	});
+	// The longest key the adapter accepts.
+	const longestKey = `${"f0".repeat(62)}._:-`;
+	const create = async (content: string, idempotencyKey = longestKey) => {
+		await expect(
+			drive("create_file", fetchImplementation).execute(
+				input({ name: "Notes", content }, DRIVE, { idempotencyKey }),
+			),
+		).resolves.toMatchObject({ status: "completed" });
+		return uploads.at(-1) as { boundary: string; body: string };
+	};
+	const expectDelimitersOnly = ({ boundary, body }: { boundary: string; body: string }, content: string) => {
+		expect(boundary.length).toBeLessThanOrEqual(70);
+		expect(boundary).toMatch(/^[0-9A-Za-z'()+_,./:=?-]+$/);
+		expect(body.split(boundary)).toHaveLength(4);
+		expect(body.startsWith(`--${boundary}\r\n`)).toBe(true);
+		expect(body.endsWith(`\r\n\r\n${content}\r\n--${boundary}--\r\n`)).toBe(true);
+	};
+
+	const first = await create("Hello");
+	expect(longestKey).toHaveLength(128);
+	expectDelimitersOnly(first, "Hello");
+	expect((await create("Hello")).boundary).toBe(first.boundary);
+	expect((await create("Hello", "b".repeat(64))).boundary).not.toBe(first.boundary);
+
+	// Content that carries the key's boundary, even as a delimiter line, gets another one.
+	const hostile = `a\r\n--${first.boundary}\r\nContent-Type: text/plain\r\n\r\nb\r\n--${first.boundary}--`;
+	const moved = await create(hostile);
+	expect(moved.boundary).not.toBe(first.boundary);
+	expectDelimitersOnly(moved, hostile);
+});
+
 it("pins Gmail and Drive to their own origins", async () => {
 	const fetchImplementation = vi.fn<typeof fetch>();
 	await expect(gmail("read_message", fetchImplementation).execute(input({ message_id: "m1" }, DRIVE))).rejects.toThrow(
