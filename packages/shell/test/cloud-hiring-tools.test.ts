@@ -203,6 +203,21 @@ describe("agent hiring tool", () => {
 			f.run.close();
 		}
 	});
+	it("keeps reporting an applied hire as applied when a later same-key call is refused", async () => {
+		const f = await fixture();
+		try {
+			expect(outcome(await f.boundary.invoke("hire_1", "qorpera", "hire_agent", hire)).receipt).toMatchObject({
+				state: "applied",
+			});
+			// The write replays its proposal; the applied document is not asked about again.
+			f.apply.mockRejectedValueOnce(new CloudCompanyPathRpcRefusal());
+			const again = outcome(await f.boundary.invoke("hire_2", "qorpera", "hire_agent", hire));
+			expect(again.receipt).toMatchObject({ state: "applied", awaiting: null });
+			expect(f.apply).toHaveBeenCalledOnce();
+		} finally {
+			f.run.close();
+		}
+	});
 	it("still takes a refusal for a waiting proposal when only the write's answer was lost", async () => {
 		const f = await fixture();
 		try {

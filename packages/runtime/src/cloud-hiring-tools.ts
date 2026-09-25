@@ -38,7 +38,8 @@ function agentIdFor(runId: string, operationKey: string): string {
 interface Bound {
 	request: string;
 	document: string;
-	unsettled: boolean;
+	/** What this run knows of applying the document: never tried, an unanswered try, or applied. */
+	apply: "none" | "unknown" | "applied";
 }
 
 /** Everything a hire request decides, in a fixed order: what one operation key is bound to. */
@@ -87,7 +88,6 @@ export function cloudHiringTools(
 	const expected = Object.freeze({ ...identity });
 	// One request per operation key in this run. The document is built once, so a retry carries
 	// identical bytes, and every receipt field is read from it, never from a later request.
-	// unsettled: an apply of this document ended without a definite answer.
 	const hires = new Map<string, Bound>();
 	const chats = new Map<string, Bound>();
 	// The earlier request may already have taken effect (an unconfirmed result), so the refusal
@@ -119,28 +119,29 @@ export function cloudHiringTools(
 		context.signal.throwIfAborted();
 	};
 	// A new agent or room document is approved by policy and applied at once. A validated refusal
-	// from the cloud leaves it a proposal for a member, but only while no earlier apply of it is
-	// unaccounted for: a refusal (an expired lease, a stop) can also meet a document that is already
-	// applied. Any other failure may follow the commit, so the outcome is read back once through the
-	// same proposal: the approval lane replays an applied proposal as applied and finishes an
-	// approved one. Still unknown, the call throws, is reported unconfirmed, and the same key
-	// settles it later.
+	// from the cloud leaves it a proposal for a member, but only while no apply of it was ever
+	// tried: a refusal (an expired lease, a stop) can also meet a document that is already applied.
+	// An applied document stays applied, so a replay reports it without asking again. Any other
+	// failure may follow the commit, so the outcome is read back once through the same proposal:
+	// the approval lane replays an applied proposal as applied and finishes an approved one. Still
+	// unknown, the call throws, is reported unconfirmed, and the same key settles it later.
 	const settle = async (
 		result: Awaited<ReturnType<CloudCompanyPathGateway["mutate"]>>,
 		bound: Bound,
 		signal: AbortSignal,
 	): Promise<"applied" | "proposed"> => {
 		if (result.state !== "proposed" || !result.proposalId) return result.state;
+		if (bound.apply === "applied") return "applied";
 		for (;;) {
 			try {
-				const settled = await gateway.applyOwnOrganizationDocument(result.proposalId, bound.document, signal);
-				bound.unsettled = false;
-				return settled.state;
+				await gateway.applyOwnOrganizationDocument(result.proposalId, bound.document, signal);
+				bound.apply = "applied";
+				return "applied";
 			} catch (error) {
 				signal.throwIfAborted();
-				if (error instanceof CloudCompanyPathRpcRefusal && !bound.unsettled) return "proposed";
-				if (bound.unsettled) throw error;
-				bound.unsettled = true;
+				if (error instanceof CloudCompanyPathRpcRefusal && bound.apply === "none") return "proposed";
+				if (bound.apply === "unknown") throw error;
+				bound.apply = "unknown";
 			}
 		}
 	};
@@ -213,7 +214,7 @@ export function cloudHiringTools(
 					null,
 					2,
 				)}\n`;
-				bound = { request, document, unsettled: false };
+				bound = { request, document, apply: "none" };
 				hires.set(hire.operationKey, bound);
 			}
 			const committed = JSON.parse(bound.document) as { agentId: string; displayName: string; role: string };
@@ -315,7 +316,7 @@ export function cloudHiringTools(
 				const roomId = agentIdFor(expected.runId, `room:${chat.operationKey}`);
 				bound = {
 					request,
-					unsettled: false,
+					apply: "none",
 					document: JSON.stringify({
 						schema: "qorpera.company-room/v1",
 						roomId,
