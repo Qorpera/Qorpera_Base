@@ -52,12 +52,22 @@ alter table public.qorpera_cloud_routines
 -- Any path that moves a routine out of "concluded" (a new save, a member's
 -- pause or resume, a removal) drops the old conclusion with it, and a pause
 -- reason lasts only while the routine is paused (the member save path kept it).
+-- A routine that becomes active again was resumed after any Stop that came
+-- before, so that Stop no longer pauses it (the tick acts only on a newer one).
 create function public.qorpera_routine_conclusion_follows_status()
 returns trigger language plpgsql security definer set search_path = '' as $$
 begin
 	if new.status <> 'paused' then new.pause_reason := null; end if;
 	if new.status <> 'concluded' then
 		new.conclusion := null; new.concluded_at := null; new.concluded_by_run_id := null;
+	end if;
+	if new.status = 'active' and old.status <> 'active' then
+		update public.qorpera_wake_occurrences wake set blocked_reason = 'A member stopped this run; the routine paused'
+		where wake.routine_id = new.id and wake.run_id is not null
+			and wake.blocked_reason is distinct from 'A member stopped this run; the routine paused'
+			and exists (select 1 from public.qorpera_execution_runs run
+				join public.qorpera_runner_jobs job on job.id = run.job_id
+				where run.id = wake.run_id and job.status = 'cancelled' and job.cancelled_by_user_id is not null);
 	end if;
 	return new;
 end
@@ -142,7 +152,9 @@ returns uuid language plpgsql security definer set search_path = '' as $$
 declare v_routine public.qorpera_cloud_routines%rowtype; v_version public.qorpera_cloud_routine_versions%rowtype;
 	v_trigger jsonb; v_ended integer; v_at timestamptz; v_id uuid; v_last public.qorpera_wake_occurrences%rowtype;
 begin
-	select * into v_routine from public.qorpera_cloud_routines where id = p_routine_id for update;
+	-- SKIP LOCKED: the tick never waits on a routine an agent is saving; the next tick retries.
+	-- A caller that already holds the row (a save) still gets it.
+	select * into v_routine from public.qorpera_cloud_routines where id = p_routine_id for update skip locked;
 	-- Dynamic routines belong to agents (a member save cannot create one).
 	if not found or v_routine.status <> 'active' or v_routine.origin <> 'agent' then return null; end if;
 	select * into strict v_version from public.qorpera_cloud_routine_versions
@@ -156,10 +168,11 @@ begin
 	-- and the tick inserts this version's run after it.
 	if exists (select 1 from public.qorpera_wake_occurrences wake where wake.routine_id = v_routine.id
 		and wake.status = 'materialized' and public.qorpera_wake_run_live(wake.run_id)) then return null; end if;
-	-- A member's Stop of this version's run stops the routine: it pauses, visibly,
-	-- instead of running again.
+	-- A member's Stop of the routine's latest run stops the routine: it pauses, visibly,
+	-- instead of running again, also when that run had already chosen its next run
+	-- (a newer version).
 	select wake.* into v_last from public.qorpera_wake_occurrences wake
-	where wake.routine_id = v_routine.id and wake.routine_version = v_routine.current_version
+	where wake.routine_id = v_routine.id
 	order by wake.created_at desc, wake.id desc limit 1;
 	-- It acts once: the stopped occurrence is marked, so a resume runs the routine again.
 	if v_last.run_id is not null and v_last.blocked_reason is distinct from 'A member stopped this run; the routine paused'
@@ -191,22 +204,44 @@ begin
 end
 $$;
 
--- The control-plane tick restores a pending run wherever one is missing. One
--- routine that cannot be admitted (its agent left, say) never stops the others.
+-- The control-plane tick restores a pending run wherever one is missing. It visits
+-- only routines that can take a run now: none while one of its runs is still
+-- working (that run's own authority checks lock the routine NOWAIT) or while its
+-- company is paused. A routine whose run the kernel refuses for want of
+-- authority (its audience or agent is gone) is suspended and its member told
+-- once, as three refused occurrences suspend any routine, instead of being
+-- retried on every tick. One routine never stops the others.
 create function public.qorpera_restore_dynamic_routine_runs()
 returns integer language plpgsql security definer set search_path = '' as $$
-declare v_id uuid; v_count integer := 0;
+declare v_id uuid; v_count integer := 0; v_routine public.qorpera_cloud_routines%rowtype; v_owner uuid;
 begin
 	for v_id in select routine.id from public.qorpera_cloud_routines routine
 		join public.qorpera_cloud_routine_versions version
 			on version.routine_id = routine.id and version.version = routine.current_version
 		where routine.status = 'active' and routine.origin = 'agent' and version.triggers -> 0 ->> 'kind' = 'once'
 			and public.qorpera_dynamic_routine_pending_occurrence(routine.id, routine.current_version) is null
+			and not exists (select 1 from public.qorpera_wake_occurrences wake where wake.routine_id = routine.id
+				and wake.status = 'materialized' and public.qorpera_wake_run_live(wake.run_id))
+			and not public.qorpera_company_execution_paused(routine.profile_id)
 		order by routine.id
 	loop
 		begin
 			if public.qorpera_ensure_dynamic_routine_run(v_id) is not null then v_count := v_count + 1; end if;
-		exception when others then
+		exception when insufficient_privilege then
+			v_routine := null;
+			update public.qorpera_cloud_routines set status = 'paused', pause_reason = 'authorization_failed',
+				updated_at = statement_timestamp()
+			where id = v_id and status = 'active' returning * into v_routine;
+			if v_routine.id is not null then
+				select version.created_by_user_id into v_owner from public.qorpera_cloud_routine_versions version
+				where version.routine_id = v_routine.id and version.version = v_routine.current_version;
+				insert into public.qorpera_member_notifications(profile_id, user_id, kind, subject, dedupe_key)
+				values (v_routine.profile_id, coalesce(v_owner, v_routine.created_by_user_id), 'routine_suspended',
+					jsonb_build_object('routineId', v_routine.id, 'staffAgentId', v_routine.owner_staff_agent_id,
+						'reason', 'authorization_failed'), 'routine:' || v_routine.id::text)
+				on conflict do nothing;
+			end if;
+		when others then
 			raise warning 'Dynamic routine % has no admissible next run: %', v_id, sqlerrm;
 		end;
 	end loop;
@@ -307,12 +342,19 @@ select pg_temp.dynamic_patch('public.qorpera_manage_agent_routine(jsonb,jsonb)':
 	$old$		and routine.routine_key = v_key for update;$old$,
 	$new$		and routine.routine_key = v_key for update;
 	-- A dynamic run decides its own routine through decide_routine (which passes
-	-- expectedVersion); saving, pausing or removing it here would drop that decision.
+	-- expectedVersion): saving or resuming it here would drop that decision, and
+	-- pausing or removing it would revoke this very run. Concluding stays open.
 	if v_action in ('upsert','pause','resume','remove') and not p_request ? 'expectedVersion' and v_routine.id is not null
-		and exists (select 1 from public.qorpera_wake_occurrences wake where wake.run_id = v_run.id
-			and wake.wake_kind = 'routine' and wake.routine_id = v_routine.id)
-		and public.qorpera_routine_decision_pending(v_run.id) then
-		raise exception 'This run decides its own routine through decide_routine' using errcode = '55000'; end if;
+		and exists (select 1 from public.qorpera_wake_occurrences wake
+			join public.qorpera_cloud_routine_versions version
+				on version.routine_id = wake.routine_id and version.version = wake.routine_version
+			where wake.run_id = v_run.id and wake.wake_kind = 'routine' and wake.routine_id = v_routine.id
+				and version.triggers -> 0 ->> 'kind' = 'once') then
+		if v_action in ('pause','remove') then
+			raise exception 'This run cannot pause or remove its own routine; conclude it instead' using errcode = '55000'; end if;
+		if public.qorpera_routine_decision_pending(v_run.id) then
+			raise exception 'This run decides its own routine through decide_routine' using errcode = '55000'; end if;
+	end if;
 	-- A run's decision applies only to the routine as that run found it.
 	if p_request ? 'expectedVersion' and (v_routine.id is null or v_routine.status <> 'active'
 		or v_routine.current_version <> (p_request ->> 'expectedVersion')::bigint) then
@@ -362,6 +404,16 @@ returns timestamptz language sql stable security definer set search_path = '' as
 					where wake.routine_id = routine.id and wake.routine_version = routine.current_version))) end
 	from public.qorpera_cloud_routines routine where routine.id = p_routine_id
 $$;
+-- A dynamic routine's one next run comes before its end; a later one would never
+-- run while the routine showed it as its next run (decide_routine refuses it too).
+-- Checked after the version check, so a stale decision still reads as settled.
+select pg_temp.dynamic_patch('public.qorpera_manage_agent_routine(jsonb,jsonb)'::regprocedure,
+	$old$		raise exception 'Routine changed after this run started' using errcode = '55000'; end if;$old$,
+	$new$		raise exception 'Routine changed after this run started' using errcode = '55000'; end if;
+	if v_action = 'upsert' and v_trigger ->> 'kind' = 'once' and v_expires is not null
+		and (v_trigger ->> 'at')::timestamptz >= v_expires then
+		raise exception 'The routine ends at %. Choose an earlier first run or a later end.',
+			to_char(v_expires at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS"Z"') using errcode = '22023'; end if;$new$);
 select pg_temp.dynamic_patch('public.qorpera_agent_routine_view(public.qorpera_cloud_routines)'::regprocedure,
 	$old$'occurrences', (select count(*) from public.qorpera_wake_occurrences wake where wake.routine_id = p_routine.id))$old$,
 	$new$'occurrences', (select count(*) from public.qorpera_wake_occurrences wake where wake.routine_id = p_routine.id),
@@ -377,7 +429,8 @@ select pg_temp.dynamic_patch('public.qorpera_list_cloud_routines(uuid)'::regproc
 		) order by routine.created_at, routine.id)$new$);
 
 -- Dynamic routines belong to agents: a member save (the web's pause and resume)
--- may keep an agent routine's one next run, never create one.
+-- may keep an agent routine's one next run, never create one or turn a fixed
+-- routine into one.
 select pg_temp.dynamic_patch('public.qorpera_upsert_cloud_routine(uuid,uuid,uuid,uuid,text,text,jsonb,text,uuid,bigint,uuid,text,text,boolean,text,text,uuid[])'::regprocedure,
 	$old$	elsif v_routine.environment_id <> p_environment_id or v_routine.status = 'retired' then
 		raise exception 'cloud routine identity is unavailable' using errcode = '55000';
@@ -386,7 +439,9 @@ select pg_temp.dynamic_patch('public.qorpera_upsert_cloud_routine(uuid,uuid,uuid
 		raise exception 'cloud routine identity is unavailable' using errcode = '55000';
 	end if;
 	if exists (select 1 from jsonb_array_elements(p_triggers) trigger(value) where trigger.value ->> 'kind' = 'once')
-		and (v_routine.origin is distinct from 'agent' or jsonb_array_length(p_triggers) <> 1) then
+		and (v_routine.origin is distinct from 'agent' or jsonb_array_length(p_triggers) <> 1
+			or not exists (select 1 from public.qorpera_cloud_routine_versions version where version.routine_id = v_routine.id
+				and version.version = v_routine.current_version and version.triggers -> 0 ->> 'kind' = 'once')) then
 		raise exception 'cloud routine triggers are invalid' using errcode = '22023'; end if;$new$);
 
 -- ---------------------------------------------------------------------------
@@ -427,7 +482,9 @@ begin
 		raise exception 'Routine decision is invalid' using errcode = '22023'; end if;
 	v_key := 'decide.' || encode(extensions.digest(convert_to(v_key,'utf8'),'sha256'),'hex');
 	if v_routine.expires_at is null or v_routine.expires_at > statement_timestamp() then
-		if v_action = 'next' and v_routine.expires_at is not null and (p_request ->> 'at')::timestamptz >= v_routine.expires_at then
+		-- Only a decision still owed can be refused; a routine that moved on is settled below.
+		if v_action = 'next' and v_routine.expires_at is not null and (p_request ->> 'at')::timestamptz >= v_routine.expires_at
+			and public.qorpera_routine_decision_pending(v_run.id) then
 			return jsonb_build_object('schema','qorpera.agent-routine-decision/v1','runId',v_run.id,'state','refused',
 				'reason','The routine ends at ' || to_char(v_routine.expires_at at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS"Z"')
 					|| '. Choose an earlier time or conclude it.');

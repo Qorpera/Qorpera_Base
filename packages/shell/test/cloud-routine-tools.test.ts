@@ -230,6 +230,24 @@ describe("agent routine tool", () => {
 			"a first run without an offset",
 			{ trigger: { kind: "dynamic", timeZone: "UTC", firstRunAt: "2026-10-01T09:00" } },
 		],
+		// Without an offset the host would read these in its own zone, not the member's.
+		[
+			"an every first run without an offset",
+			{ trigger: { kind: "every", minutes: 60, firstRunAt: "2026-10-01T09:00:00" } },
+		],
+		[
+			"a weekly first run without an offset",
+			{ trigger: { kind: "weekly", localTime: "09:00", timeZone: "UTC", firstRunAt: "2026-10-01T09:00:00" } },
+		],
+		["an expiry without an offset", { expiresAt: "2026-10-03T18:00" }],
+		// Its one next run would never happen.
+		[
+			"a dynamic first run at its end",
+			{
+				trigger: { kind: "dynamic", timeZone: "UTC", firstRunAt: "2026-10-02T11:00:00+02:00" },
+				expiresAt: "2026-10-02T09:00:00Z",
+			},
+		],
 	])("rejects %s before dispatch", async (_label, extra) => {
 		const f = await fixture();
 		try {
@@ -280,6 +298,9 @@ describe("a dynamic routine's own run", () => {
 			new AbortController().signal,
 		);
 		let owed = true;
+		const settled = vi.fn(() => {
+			owed = false;
+		});
 		const call = vi.fn<CloudCompanyPathControl["call"]>(async (_method, args) => {
 			const request = (args as { p_request: Record<string, unknown> }).p_request;
 			return {
@@ -298,7 +319,7 @@ describe("a dynamic routine's own run", () => {
 				binding,
 				run.identity,
 				{ call },
-				{ routineKey: "invoice-watch", decisionOwed: () => owed },
+				{ routineKey: "invoice-watch", decisionOwed: () => owed, settled },
 			),
 			assertActive: (signal) => run.assertActive(signal),
 			signal: run.signal,
@@ -311,7 +332,11 @@ describe("a dynamic routine's own run", () => {
 					routineKey: "invoice-watch",
 				});
 				expect(own.success).toBe(false);
-				expect(own.contentItems[0].text).toContain("this is the routine you are running: use decide_routine");
+				expect(own.contentItems[0].text).toContain(
+					action === "pause" || action === "remove"
+						? "conclude it (manage_routine conclude, or decide_routine conclude) instead of pausing or removing it"
+						: "this is the routine you are running: use decide_routine",
+				);
 			}
 			// Other routines, and concluding its own, stay open; after the decision so does the rest.
 			expect((await boundary.invoke("other", "qorpera", "manage_routine", weekly)).success).toBe(true);
@@ -322,16 +347,25 @@ describe("a dynamic routine's own run", () => {
 				summary: "Done.",
 			});
 			expect(done.success).toBe(true);
-			owed = false;
+			// Concluding its own routine settles the decision the run owed.
+			expect(settled).toHaveBeenCalledTimes(1);
+			expect(owed).toBe(false);
+			// After the decision a save is fine, but pausing or removing it would still revoke this run.
 			expect(
 				(
 					await boundary.invoke("later", "qorpera", "manage_routine", {
-						action: "pause",
+						...weekly,
 						operationKey: "later",
 						routineKey: "invoice-watch",
 					})
 				).success,
 			).toBe(true);
+			const laterPause = await boundary.invoke("later-pause", "qorpera", "manage_routine", {
+				action: "pause",
+				operationKey: "later-pause",
+				routineKey: "invoice-watch",
+			});
+			expect(laterPause.success).toBe(false);
 			expect(call).toHaveBeenCalledTimes(3);
 		} finally {
 			run.close();
@@ -347,7 +381,10 @@ describe("dynamic routine decision tool", () => {
 			{ describeToolAuthority: async () => authority },
 			new AbortController().signal,
 		);
-		const decided = vi.fn();
+		let owed = true;
+		const decided = vi.fn(() => {
+			owed = false;
+		});
 		const call = vi.fn<CloudCompanyPathControl["call"]>(async (_method, args) =>
 			result((args as { p_request: Record<string, unknown> }).p_request, binding.runId),
 		);
@@ -355,7 +392,7 @@ describe("dynamic routine decision tool", () => {
 			companyId: run.identity.companyId,
 			runId: run.identity.runId,
 			identity: run.identity,
-			tools: [cloudRoutineDecisionTool(binding, run.identity, { call }, { decided })],
+			tools: [cloudRoutineDecisionTool(binding, run.identity, { call }, { decisionOwed: () => owed, decided })],
 			assertActive: (signal) => run.assertActive(signal),
 			signal: run.signal,
 		});
@@ -392,6 +429,16 @@ describe("dynamic routine decision tool", () => {
 			]);
 			expect(f.decided).toHaveBeenCalledTimes(1);
 			expect(next.completesTurn).toBeUndefined();
+			// A second decision would change nothing (the kernel answers settled), so the
+			// run hears where a further change goes instead.
+			const again = await f.boundary.invoke("n2", "qorpera", "decide_routine", {
+				action: "next",
+				operationKey: "next-2",
+				at: "2026-09-25T20:00:00+02:00",
+			});
+			expect(again.success).toBe(false);
+			expect(again.contentItems[0].text).toContain("INVALID_ARGUMENTS: nothing is owed any more");
+			expect(f.call).toHaveBeenCalledTimes(1);
 		} finally {
 			f.run.close();
 		}

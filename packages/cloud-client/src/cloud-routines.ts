@@ -435,14 +435,19 @@ export class CloudRoutineClient {
 			signal,
 		);
 		if (!Array.isArray(value) || value.length > 4096) invalid("routine list");
-		// One row this client cannot read (a newer cloud's shape) must not hide the others.
-		return (value as unknown[]).flatMap((row) => {
+		// One row this client cannot read (a newer cloud's shape) must not hide the others,
+		// but it is reported, so a broken reader is not mistaken for missing routines.
+		let unreadable = 0;
+		const routines = (value as unknown[]).flatMap((row) => {
 			try {
 				return [parseCloudRoutine(row)];
 			} catch {
+				unreadable += 1;
 				return [];
 			}
 		});
+		if (unreadable > 0) console.warn(`${unreadable} cloud routine row(s) could not be read and were left out`);
+		return routines;
 	}
 	async occurrences(environmentId: string, signal: AbortSignal, limit = 100): Promise<CloudRoutineOccurrence[]> {
 		if (!Number.isSafeInteger(limit) || limit < 1 || limit > 500) invalid("occurrence limit");
