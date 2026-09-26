@@ -4,6 +4,7 @@ import { promisify } from "node:util";
 import { PaidComputerGuard, PaidComputerGuardJournal } from "./computer-paid-guard.ts";
 import { servePaidComputerGuard } from "./computer-paid-guard-ipc.ts";
 import { LxdPaidComputerGuardPhysical, readPaidComputerHostClock } from "./computer-paid-guard-lxd.ts";
+import { LxdPaidComputerUsageCapture } from "./computer-paid-usage-lxd.ts";
 import { LxdUnixClient } from "./lxd-client.ts";
 
 const execute = promisify(execFile);
@@ -48,11 +49,14 @@ export async function runPaidComputerGuardMain(
 		void notify();
 	}, 3000);
 	try {
+		const client = new LxdUnixClient(lxdSocketPath);
+		const physical = new LxdPaidComputerGuardPhysical(client, readPaidComputerHostClock);
 		await servePaidComputerGuard({
 			guard: new PaidComputerGuard(
 				new PaidComputerGuardJournal(`/var/lib/${name}`),
-				new LxdPaidComputerGuardPhysical(new LxdUnixClient(lxdSocketPath), readPaidComputerHostClock),
+				physical,
 				readPaidComputerHostClock,
+				{ usageCapture: new LxdPaidComputerUsageCapture(client, physical, readPaidComputerHostClock) },
 			),
 			socketPath: `/run/${name}/control.sock`,
 			signal: stop.signal,

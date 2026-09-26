@@ -5,6 +5,12 @@ import { join, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { parseCloudCodingNasPolicy } from "@qorpera/contracts";
 import { type CodingMachineStorage, type LxdCodingMachineBinding, lxdCodingMachinePlan } from "./coding-machine.ts";
+import type {
+	PaidComputerUsageCursor,
+	PaidComputerUsagePage,
+	PaidComputerUsageReadOptions,
+} from "./computer-paid-usage.ts";
+import { type PaidComputerUsageCapture, PaidComputerUsageSampler } from "./computer-paid-usage-sampler.ts";
 import { assertComputerAbandonmentReceipt } from "./computer-prestart-control.ts";
 import type { LxdOperationReference } from "./lxd-client.ts";
 import { checkDirectory, code, readRecord, syncDirectory } from "./lxd-office-journal-files.ts";
@@ -133,6 +139,8 @@ export interface PaidComputerStopReceipt {
 	operationId: string | null;
 }
 export interface PaidComputerGuardRecord {
+	/** Fresh v2 start is owned by the independent durable usage producer. */
+	usageRequired?: true;
 	schema: "qorpera.paid-computer-guard/v1";
 	machine: PaidComputerMachine;
 	permit: PaidComputerPermit;
@@ -354,6 +362,8 @@ export function parsePaidComputerGuardRecord(value: unknown): PaidComputerGuardR
 	parsePaidComputerArm({ machine, permit, requestStartedUptimeMs: 0 });
 	if (
 		r.schema !== "qorpera.paid-computer-guard/v1" ||
+		(r.usageRequired !== undefined &&
+			(r.usageRequired !== true || permit.schema !== "qorpera.computer-usage-permit/v2")) ||
 		!["armed", "starting", "running", "stopping", "stopped"].includes(String(r.phase)) ||
 		typeof r.startDispatched !== "boolean" ||
 		typeof r.startSettled !== "boolean" ||
@@ -399,6 +409,7 @@ export function parsePaidComputerGuardRecord(value: unknown): PaidComputerGuardR
 	}
 	return {
 		schema: r.schema,
+		...(r.usageRequired === true ? { usageRequired: true as const } : {}),
 		machine,
 		permit,
 		deadlineUptimeMs: integer(r.deadlineUptimeMs),
@@ -714,6 +725,9 @@ export class PaidComputerGuardJournal {
  * even while a start reply is unresolved. Every actual stop remains retriable. */
 export class PaidComputerGuard {
 	readonly #journal: PaidComputerGuardJournal;
+	readonly #usage: PaidComputerUsageSampler | null;
+	readonly #usagePrepared = new Map<string, PaidComputerGuardRecord>();
+	readonly #usagePreparing = new Map<string, { value: PaidComputerGuardRecord; work: Promise<void> }>();
 	readonly #physical: PaidComputerGuardPhysical;
 	readonly #clock: () => Promise<PaidComputerHostClock>;
 	readonly #records = new Map<string, PaidComputerGuardRecord>();
@@ -731,10 +745,22 @@ export class PaidComputerGuard {
 		journal: PaidComputerGuardJournal,
 		physical: PaidComputerGuardPhysical,
 		clock: () => Promise<PaidComputerHostClock>,
+		options: { usageCapture?: PaidComputerUsageCapture } = {},
 	) {
 		this.#journal = journal;
 		this.#physical = physical;
 		this.#clock = clock;
+		this.#usage = options.usageCapture
+			? new PaidComputerUsageSampler(
+					journal.root,
+					options.usageCapture,
+					clock,
+					(id) => this.status(id),
+					async (id) => {
+						await this.stop(id);
+					},
+				)
+			: null;
 	}
 	async initialize(
 		options: { progress?: () => void; unconfirmed?: () => void; signal?: AbortSignal } = {},
@@ -863,6 +889,12 @@ export class PaidComputerGuard {
 				} else if (intent) throw new Error("PAID_GUARD_PRESTART_DIFFERS");
 			}
 			if (!prestarts) await this.#persistPrestarts();
+			for (const value of this.#records.values())
+				if (value.usageRequired) {
+					if (!this.#usage) throw new Error("PAID_GUARD_USAGE_REQUIRED");
+					await this.#usage.initialize(value, false);
+					options.progress?.();
+				}
 			closing = true;
 			clearInterval(timer);
 			await Promise.allSettled([...flights.values()]);
@@ -935,6 +967,15 @@ export class PaidComputerGuard {
 	}
 	async archive(permitId: string, receipt: unknown): Promise<void> {
 		id(permitId);
+		const candidate = await this.status(permitId).catch((error) => {
+			if (error instanceof Error && error.message === "PAID_GUARD_PERMIT_MISSING") return null;
+			throw error;
+		});
+		if (candidate?.usageRequired && candidate.startDispatched) {
+			if (!this.#usage) throw new Error("PAID_GUARD_USAGE_REQUIRED");
+			await this.#usage.initialize(candidate, false);
+			await this.#usage.assertDrained(permitId);
+		}
 		await this.#exclusive(async () => {
 			this.#confirmedPrestarts();
 			if (this.#starts.has(permitId) || this.#stops.has(permitId)) throw new Error("PAID_GUARD_ARCHIVE_BUSY");
@@ -944,6 +985,7 @@ export class PaidComputerGuard {
 					throw new Error("PAID_GUARD_ARCHIVE_DIFFERS");
 				await this.#journal.removeArchivedGuard(permitId);
 				this.#records.delete(permitId);
+				this.#usage?.forget(permitId);
 				return;
 			}
 			const prestart = this.#prestarts.get(permitId);
@@ -965,6 +1007,7 @@ export class PaidComputerGuard {
 				await this.#persistPrestarts();
 				await this.#journal.removeArchivedGuard(permitId);
 				this.#records.delete(permitId);
+				this.#usage?.forget(permitId);
 			} catch (error) {
 				// A published tail or committed anchor requires restart recovery.
 				// Keep stop custody; never overwrite or bypass uncertain history.
@@ -1127,9 +1170,23 @@ export class PaidComputerGuard {
 		if (!value) throw new Error("PAID_GUARD_PERMIT_MISSING");
 		return value;
 	}
+	async #usagePreflight(permitId: string): Promise<void> {
+		const current = await this.#exclusive(async () => this.#records.get(permitId) ?? null);
+		if (current?.usageRequired) {
+			if (!this.#usage) throw new Error("PAID_GUARD_USAGE_REQUIRED");
+			await this.#usage.preflight(permitId);
+		}
+	}
+	#sameUsagePreparation(expected: PaidComputerGuardRecord, actual: PaidComputerGuardRecord): void {
+		const { validForMs: _before, ...before } = expected.permit;
+		const { validForMs: _after, ...after } = actual.permit;
+		if (!isDeepStrictEqual(expected.machine, actual.machine) || !isDeepStrictEqual(before, after))
+			throw new Error("PAID_GUARD_REPLAY_DIFFERS");
+	}
 	async arm(raw: PaidComputerArm): Promise<PaidComputerGuardRecord> {
 		const input = parsePaidComputerArm(raw);
-		return this.#exclusive(async () => {
+		await this.#usagePreflight(input.permit.permitId);
+		const result = await this.#exclusive(async () => {
 			const { machine, permit } = input,
 				clock = await this.#clock();
 			this.#confirmedPrestarts();
@@ -1145,6 +1202,10 @@ export class PaidComputerGuard {
 			)
 				throw new Error("PAID_GUARD_HOST_DIFFERS");
 			const old = this.#records.get(permit.permitId);
+			if (old?.usageRequired) {
+				await this.#usage?.assertReady(permit.permitId);
+				if (permit.generation > old.permit.generation) this.#usage?.assertRenewable(permit.permitId, clock);
+			}
 			if (permit.schema === "qorpera.computer-usage-permit/v2") this.#matchPrestart(permit, machine);
 			else if (!old || prestart) throw new Error("PAID_GUARD_PRESTART_REQUIRED");
 			if (!old && prestart?.state === "dispatched") throw new Error("PAID_GUARD_PRESTART_DISPATCHED");
@@ -1170,7 +1231,7 @@ export class PaidComputerGuard {
 					},
 				};
 				if (!isDeepStrictEqual(bound, old)) await this.#save(bound);
-				return structuredClone(bound);
+				return { value: bound, prepare: false };
 			}
 			if (
 				old &&
@@ -1213,6 +1274,7 @@ export class PaidComputerGuard {
 				throw new Error("PAID_GUARD_PERMIT_EXPIRED");
 			const value: PaidComputerGuardRecord = {
 				schema: "qorpera.paid-computer-guard/v1",
+				...(old?.usageRequired || (!old && this.#usage) ? { usageRequired: true as const } : {}),
 				machine,
 				permit,
 				deadlineUptimeMs,
@@ -1225,17 +1287,48 @@ export class PaidComputerGuard {
 				stopReference: old?.stopReference ?? null,
 				stopReceipt: null,
 			};
+			if (!old && value.usageRequired) {
+				const prepared = this.#usagePrepared.get(permit.permitId);
+				if (!prepared) return { value, prepare: true };
+				this.#sameUsagePreparation(prepared, value);
+				if ((await this.#clock()).uptimeMs >= prepared.stopAtUptimeMs) throw new Error("PAID_GUARD_PERMIT_EXPIRED");
+				await this.#save(prepared);
+				this.#usagePrepared.delete(permit.permitId);
+				this.#usagePreparing.delete(permit.permitId);
+				return { value: prepared, prepare: false };
+			}
 			await this.#save(value);
-			return structuredClone(value);
+			return { value, prepare: false };
 		});
+		if (result.prepare) {
+			let pending = this.#usagePreparing.get(result.value.permit.permitId);
+			if (pending) this.#sameUsagePreparation(pending.value, result.value);
+			else {
+				const work = this.#usage!.initialize(result.value, true).then(() => {
+					this.#usagePrepared.set(result.value.permit.permitId, result.value);
+				});
+				pending = { value: result.value, work };
+				this.#usagePreparing.set(result.value.permit.permitId, pending);
+			}
+			await pending.work;
+			// Recheck current authority, absolute deadline and competing VM
+			// custody after disk I/O; only then publish the armed guard.
+			return this.arm(raw);
+		}
+		return structuredClone(result.value);
 	}
 	async start(permitId: string, generation: number): Promise<LxdOperationReference> {
+		await this.#usagePreflight(permitId);
 		const dispatch = new AbortController();
 		const selected = await this.#exclusive(async () => {
 			this.#confirmedPrestarts();
 			if (this.#archives.has(permitId)) throw new Error("PAID_GUARD_ARCHIVED");
 			const current = this.#get(permitId),
 				clock = await this.#clock();
+			if (current.usageRequired) {
+				if (!this.#usage) throw new Error("PAID_GUARD_USAGE_REQUIRED");
+				await this.#usage.assertReady(permitId);
+			}
 			const prestart = this.#prestarts.get(permitId);
 			if (prestart?.state === "abandoned") throw new Error("PAID_GUARD_PRESTART_ABANDONED");
 			if (prestart?.state === "retired") throw new Error("PAID_GUARD_PRESTART_RETIRED");
@@ -1300,6 +1393,25 @@ export class PaidComputerGuard {
 		} finally {
 			this.#starts.delete(permitId);
 		}
+	}
+	/** Fire-and-forget producer progress is deliberately separate from stop I/O. */
+	tickUsage(): void {
+		this.#usage?.tick([...this.#records.values()]);
+	}
+	async settleUsage(permitId: string): Promise<void> {
+		await this.#usage?.settled(permitId);
+	}
+	async readUsage(permitId: string, options: PaidComputerUsageReadOptions = {}): Promise<PaidComputerUsagePage> {
+		const record = await this.status(permitId);
+		if (!record.usageRequired || !this.#usage) throw new Error("PAID_GUARD_USAGE_REQUIRED");
+		await this.#usage.initialize(record, false);
+		return this.#usage.read(permitId, options);
+	}
+	async ackUsage(permitId: string, cursor: PaidComputerUsageCursor): Promise<PaidComputerUsageCursor> {
+		const record = await this.status(permitId);
+		if (!record.usageRequired || !this.#usage) throw new Error("PAID_GUARD_USAGE_REQUIRED");
+		await this.#usage.initialize(record, false);
+		return this.#usage.acknowledge(permitId, cursor);
 	}
 	async status(permitId: string): Promise<PaidComputerGuardRecord> {
 		id(permitId);

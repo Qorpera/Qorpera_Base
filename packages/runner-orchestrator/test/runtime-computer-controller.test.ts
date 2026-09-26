@@ -10,6 +10,11 @@ import {
 	type PaidComputerPermit,
 } from "../src/computer-paid-guard.ts";
 import { LxdPaidComputerGuardPhysical } from "../src/computer-paid-guard-lxd.ts";
+import {
+	type PaidComputerUsageFrame,
+	paidComputerUsageCursor,
+	parsePaidComputerUsageEntry,
+} from "../src/computer-paid-usage.ts";
 import type {
 	LxdInstanceClock,
 	LxdInstanceRecord,
@@ -23,7 +28,7 @@ const roots: string[] = [];
 afterEach(async () => {
 	await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
-async function fixture(providerKind: "native" | "office" = "native") {
+async function fixture(providerKind: "native" | "office" = "native", usage = false) {
 	const root = await realpath(await mkdtemp(join(tmpdir(), "runtime-permit-")));
 	roots.push(root);
 	await chmod(root, 0o700);
@@ -95,7 +100,25 @@ async function fixture(providerKind: "native" | "office" = "native") {
 	};
 	const journal = new PaidComputerGuardJournal(root),
 		hostClock = async () => ({ ...clock });
-	let guard = new PaidComputerGuard(journal, new LxdPaidComputerGuardPhysical(client, hostClock), hostClock);
+	const usageOptions = usage
+		? {
+				usageCapture: {
+					capture: async () => ({
+						host: await hostClock(),
+						guestBootId,
+						guestUptimeMs: guestUptime * 1000,
+						evidenceSha256: "e".repeat(64),
+						observedAt: new Date().toISOString(),
+					}),
+				},
+			}
+		: {};
+	let guard = new PaidComputerGuard(
+		journal,
+		new LxdPaidComputerGuardPhysical(client, hostClock),
+		hostClock,
+		usageOptions,
+	);
 	await guard.initialize();
 	let permit: PaidComputerPermit | null = null,
 		abandonmentClosure: Record<string, unknown> | null = null,
@@ -168,11 +191,40 @@ async function fixture(providerKind: "native" | "office" = "native") {
 				return abandonmentClosure;
 			}
 			if (!permit) throw new Error("permit missing");
+			if (method === "qorpera_record_computer_guard_samples") {
+				const frames = request.entries as PaidComputerUsageFrame[];
+				for (const frame of frames) {
+					const recorded = parsePaidComputerUsageEntry(JSON.parse(frame.entryText)).sample;
+					if (recorded.observationId === lastSample?.observationId) continue;
+					if (recorded.previousObservationId !== (lastSample?.observationId ?? null))
+						throw new Error("SQL predecessor differs");
+					lastSample = structuredClone(recorded) as unknown as Record<string, unknown>;
+					samples.push(structuredClone(lastSample));
+					if (recorded.state === "running")
+						permit = {
+							...permit,
+							state: "bound",
+							physicalId: recorded.physicalId,
+							guestBootId: recorded.guestBootId,
+						};
+				}
+				return {
+					schema: "qorpera.computer-guard-usage-receipt/v1",
+					permit,
+					cursor: paidComputerUsageCursor(frames.at(-1)!),
+					sealed: lastSample?.state === "stopped" || lastSample?.state === "absent",
+					lastSample,
+				};
+			}
+
 			const sample = request.sample as Record<string, unknown>;
 			if (request.generation !== permit.generation) throw new Error("SQL generation differs");
-			if (sample.previousObservationId !== (lastSample?.observationId ?? null))
+			if (
+				!(usage && sample.observationId === lastSample?.observationId) &&
+				sample.previousObservationId !== (lastSample?.observationId ?? null)
+			)
 				throw new Error("SQL predecessor differs");
-			samples.push(structuredClone(sample));
+			if (!usage || sample.observationId !== lastSample?.observationId) samples.push(structuredClone(sample));
 			lastSample = structuredClone(sample);
 			if (method.includes("bind"))
 				permit = {
@@ -251,7 +303,12 @@ async function fixture(providerKind: "native" | "office" = "native") {
 			sourceUnavailable = true;
 		},
 		async restart() {
-			guard = new PaidComputerGuard(journal, new LxdPaidComputerGuardPhysical(client, hostClock), hostClock);
+			guard = new PaidComputerGuard(
+				journal,
+				new LxdPaidComputerGuardPhysical(client, hostClock),
+				hostClock,
+				usageOptions,
+			);
 			await guard.initialize();
 			controller = new RuntimeComputerController(options());
 		},
@@ -268,6 +325,60 @@ async function fixture(providerKind: "native" | "office" = "native") {
 }
 const signal = () => new AbortController().signal;
 describe("funded runtime physical custody", () => {
+	it.each([false, true])(
+		"uploads the guard-owned stream and waits for sealed ACK before finish (lost upload reply: %s)",
+		async (lost) => {
+			const f = await fixture("native", true);
+			await f.controller.ensure(f.context, f.context.allocationId, signal());
+			await f.controller.start(f.context.allocationId, f.target, signal());
+			const permitId = f.permit!.permitId;
+			expect((await f.guard.latest(f.context.allocationId))?.usageRequired).toBe(true);
+			await f.controller.observe(f.context.allocationId, signal());
+			expect(f.permit?.state).toBe("prepared");
+			expect(
+				f.control.call.mock.calls.filter(([method]) => method.includes("bind") || method.includes("checkpoint")),
+			).toHaveLength(0);
+			f.guard.tickUsage();
+			await f.guard.settleUsage(permitId);
+			const page = await f.guard.readUsage(permitId);
+			expect(page.head.sequence).toBe(1);
+			if (lost) {
+				const call = f.control.call.getMockImplementation()!;
+				let lose = true;
+				f.control.call.mockImplementation(async (method, request) => {
+					const result = await call(method, request);
+					if (method === "qorpera_record_computer_guard_samples" && lose) {
+						lose = false;
+						throw new Error("guard upload reply lost");
+					}
+					return result;
+				});
+				await expect(f.controller.observe(f.context.allocationId, signal())).rejects.toThrow("upload reply lost");
+				expect((await f.guard.readUsage(permitId)).acknowledgedThrough.sequence).toBe(0);
+			}
+			await f.controller.observe(f.context.allocationId, signal());
+			expect(f.permit?.state).toBe("bound");
+			expect((await f.guard.readUsage(permitId)).acknowledgedThrough).toEqual(page.head);
+			expect(f.client.readInstanceClock).not.toHaveBeenCalled();
+			await f.controller.stop(f.context.allocationId, signal());
+			await f.controller.observe(f.context.allocationId, signal());
+			expect(
+				f.control.call.mock.calls.filter(([method]) => method === "qorpera_finish_runtime_computer_permit"),
+			).toHaveLength(0);
+			f.guard.tickUsage();
+			await f.guard.settleUsage(permitId);
+			await f.controller.observe(f.context.allocationId, signal());
+			expect(f.permit?.state).toBe("closed");
+			expect(await f.guard.list()).toHaveLength(0);
+			expect(
+				f.control.call.mock.calls.filter(([method]) => method.includes("bind") || method.includes("checkpoint")),
+			).toHaveLength(0);
+			expect(
+				f.control.call.mock.calls.filter(([method]) => method === "qorpera_finish_runtime_computer_permit"),
+			).toHaveLength(1);
+		},
+	);
+
 	it.each(["native", "office"] as const)(
 		"recovers %s SQL closure after lost renewal and finish replies without another settlement",
 		async (kind) => {

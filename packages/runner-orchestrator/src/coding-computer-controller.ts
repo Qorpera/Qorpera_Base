@@ -10,6 +10,7 @@ import {
 	lxdCodingMachineName,
 	lxdCodingMachinePlan,
 } from "./coding-machine.ts";
+import { type ComputerGuardUsagePort, drainComputerGuardUsage } from "./computer-guard-usage-uploader.ts";
 import {
 	assertPaidComputerTerminalPermit,
 	isRuntimePaidComputerMachine,
@@ -40,9 +41,10 @@ export const CODING_COMPUTER_RPCS = [
 	"qorpera_finish_coding_computer_permit",
 	"qorpera_abandon_coding_computer_permit",
 	"qorpera_describe_coding_computer_prestart",
+	"qorpera_record_computer_guard_samples",
 ] as const;
 
-export interface CodingPaidGuardPort {
+export interface CodingPaidGuardPort extends ComputerGuardUsagePort {
 	archive(permitId: string, closure: unknown, signal: AbortSignal): Promise<void>;
 	hasHistory(allocationId: string, signal: AbortSignal): Promise<boolean>;
 	registerPrestart(input: PaidComputerPrestartIntent, signal: AbortSignal): Promise<PaidComputerPrestartRecord>;
@@ -73,6 +75,7 @@ interface ManagedComputer {
 	permit: PaidComputerPermit;
 	requestStartedUptimeMs: number;
 	lastObservationId: string | null;
+	lastSample: unknown;
 	continuity: boolean;
 }
 export interface CodingComputerControllerOptions {
@@ -205,6 +208,7 @@ export class CodingComputerController implements CodingComputerUsage {
 			permit,
 			requestStartedUptimeMs: clock.uptimeMs,
 			lastObservationId: lastSample ? (lastSample.observationId as string) : null,
+			lastSample: lastSample,
 			continuity: false,
 		};
 	}
@@ -344,6 +348,7 @@ export class CodingComputerController implements CodingComputerUsage {
 							permit,
 							requestStartedUptimeMs: started.uptimeMs,
 							lastObservationId: (sample?.observationId as string | null) ?? null,
+							lastSample: sample,
 							continuity: false,
 						};
 						const guarded = await this.#options.guard.status(permit.permitId, signal).catch((error: unknown) => {
@@ -467,6 +472,7 @@ export class CodingComputerController implements CodingComputerUsage {
 					permit: this.#checkedPermit(value, machine, clock),
 					requestStartedUptimeMs: clock.uptimeMs,
 					lastObservationId: null,
+					lastSample: null,
 					continuity: false,
 				};
 			}
@@ -673,6 +679,7 @@ export class CodingComputerController implements CodingComputerUsage {
 				...current,
 				permit,
 				lastObservationId: (lastSample?.observationId as string | null) ?? null,
+				lastSample: lastSample,
 				continuity: false,
 			};
 			const managed = this.#computers.get(current.machine.machineId);
@@ -681,11 +688,43 @@ export class CodingComputerController implements CodingComputerUsage {
 		} else if (guarded.phase !== "stopped" && current.permit.generation !== guarded.permit.generation) {
 			throw new Error("CODING_COMPUTER_GUARD_GENERATION_DIFFERS");
 		}
-		const sample = await this.#sample(current, signal, guarded.phase === "stopped" ? guarded : undefined);
-		const { evidenceSha256: _evidence, ...facts } = sample;
-		sample.evidenceSha256 = createHash("sha256")
-			.update(JSON.stringify({ sample: facts, stopReceipt: guarded.stopReceipt }))
-			.digest("hex");
+		let sample: UsageSample;
+		if (guarded.usageRequired === true) {
+			const usage = await drainComputerGuardUsage({
+				permit: current.permit,
+				lastSample: current.lastSample,
+				guard: this.#options.guard,
+				recover: async () => {
+					const entry = await this.#options.guard.prestartStatus(current.permit.permitId, signal);
+					if (!entry) throw new Error("COMPUTER_GUARD_USAGE_HISTORY_MISSING");
+					const retained = await this.#history(entry, signal);
+					return { permit: retained.permit, lastSample: retained.lastSample };
+				},
+				call: (request, checked) => this.#call("qorpera_record_computer_guard_samples", request, checked),
+				signal,
+			});
+			current.permit = this.#checkedPermit(
+				usage.permit,
+				current.machine,
+				await this.#clock(),
+				guarded.phase === "stopped",
+			);
+			current.lastSample = usage.sample;
+			current.lastObservationId = usage.sample?.observationId ?? null;
+			this.#computers.set(current.machine.machineId, current);
+			if (guarded.phase !== "stopped" && current.permit.generation !== guarded.permit.generation)
+				throw new Error("CODING_COMPUTER_GUARD_GENERATION_DIFFERS");
+			// No first sample means no bind. A sealing/stalled terminal prefix
+			// retains its financial hold while the guard independently stops.
+			if (!usage.sample || (guarded.phase === "stopped" && !usage.sealed)) return;
+			sample = usage.sample;
+		} else {
+			sample = await this.#sample(current, signal, guarded.phase === "stopped" ? guarded : undefined);
+			const { evidenceSha256: _evidence, ...facts } = sample;
+			sample.evidenceSha256 = createHash("sha256")
+				.update(JSON.stringify({ sample: facts, stopReceipt: guarded.stopReceipt }))
+				.digest("hex");
+		}
 		if (guarded.phase === "stopped") {
 			const receipt = await this.#call(
 				"qorpera_finish_coding_computer_permit",
@@ -722,6 +761,7 @@ export class CodingComputerController implements CodingComputerUsage {
 			current.permit.state === "bound" &&
 			sample.state === "running" &&
 			guarded.stopAtUptimeMs - clock.uptimeMs < 60000;
+		if (guarded.usageRequired === true && !renew) return;
 		const method =
 			current.permit.state === "prepared"
 				? "qorpera_bind_coding_computer_permit"

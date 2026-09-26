@@ -22,7 +22,7 @@ test("packages the complete pinned LXD runner guest contract", async () => {
 		const manifestEncoded = await readFile(join(outputRoot, "manifest.json"), "utf-8");
 		const manifest = JSON.parse(manifestEncoded);
 		assert.equal(manifest.schema, "qorpera.lxd-runner-guest-package/v1");
-		assert.deepEqual(manifest.nativeHarnesses, { codex: "0.147.0", claudeCode: "2.1.231" });
+		assert.deepEqual(manifest.nativeHarnesses, { codex: "0.155.1", claudeCode: "2.1.231" });
 		assert.equal(manifest.runnerImage.schema, "qorpera.ephemeral-runner-image-contract/v1");
 		assert.match(manifest.runnerImage.image, /@sha256:[0-9a-f]{64}$/);
 		assert.deepEqual(

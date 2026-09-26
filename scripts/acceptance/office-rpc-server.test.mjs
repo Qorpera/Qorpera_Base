@@ -64,6 +64,7 @@ test("authentication, guest/provider separation and exact RPC paths fail before 
 	for (const options of [
 		{ token: randomBytes(32).toString("base64url") }, { apiKey: tokens.provider },
 		{ path: "/rest/v1/rpc/qorpera_prepare_runtime_computer_permit" },
+		{ path: "/rest/v1/rpc/qorpera_record_computer_guard_samples" },
 		{ path: "/rest/v1/rpc/qorpera_observe_runtime_node_inventory" },
 		{ path: "/rest/v1/rpc/qorpera_prepare_runtime_office_boot_successor" },
 		{ path: "/rest/v1/rpc/qorpera_begin_runtime_office_reset" },
@@ -129,4 +130,31 @@ test("physical evidence captures authorized observations without surrounding cre
 	fail = true;
 	assert.equal((await call(server, options)).status, 503);
 	assert.deepEqual(samples, [{ method: "qorpera_checkpoint_runtime_computer_permit", permitId: "permit", sample }, { method: "qorpera_checkpoint_runtime_computer_permit", permitId: "permit", sample }], "Observed requests survive ambiguous SQL outcomes for later committed-row reconciliation");
+});
+
+test("durable usage batches retain only observations for committed-row reconciliation", async (t) => {
+	const samples = [];
+	let fail = false, calls = 0;
+	const query = async (sql) => {
+		if (sql.includes("from pg_catalog.pg_proc")) return JSON.stringify(metadata().map((row) => ({ ...row, defaults: 0, args: [{ name: "p_request", type: "jsonb" }, { name: "p_executor_secret", type: "text" }] })));
+		calls++;
+		if (fail) throw new Error("commit reply lost");
+		return '{"sealed":false}';
+	};
+	const server = await startOfficeRpcServer({ query, tls, tokens, listen: { host: "127.0.0.1", port: 0 }, onSample: (value) => samples.push(value) });
+	t.after(() => server.close());
+	const captured = [{ observationId: "first", state: "running" }, { observationId: "second", state: "gap" }];
+	const method = "qorpera_record_computer_guard_samples";
+	const options = { token: tokens.provider, path: `/rest/v1/rpc/${method}`, body: JSON.stringify({
+		p_request: { permitId: "permit", generation: 1, entries: captured.map((sample, i) => ({ sequence: i + 1, sha256: "digest", entryText: JSON.stringify({ sample, privateContext: "not retained" }) })) },
+		p_executor_secret: tokens.provider,
+	}) };
+	assert.equal((await call(server, options)).status, 200);
+	assert.deepEqual(samples, captured.map((sample) => ({ method, permitId: "permit", sample })));
+	fail = true;
+	assert.equal((await call(server, options)).status, 503);
+	assert.equal(calls, 2);
+	assert.deepEqual(samples.slice(2), samples.slice(0, 2));
+	assert(!JSON.stringify(samples).includes("privateContext"));
+	assert(!JSON.stringify(samples).includes(tokens.provider));
 });

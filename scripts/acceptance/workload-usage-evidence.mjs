@@ -141,11 +141,41 @@ export function verifyWorkloadUsage(evidence, expected) {
 		assert.equal(settlements.length, reservations.length, "Stopped VM retained an unsettled hold");
 		assert.equal(totalDebit, normalizedUsageUs(active, stream.resource_shape, tariff, stream.resource_kind), "Final cumulative charge differs");
 	}
+	let outage = null;
+	if (expected.controllerOutage) {
+		const ids = new Set(expected.controllerOutage.observationIds);
+		assert(ids.size >= 3, "Three independently retained outage observations required");
+		let outageActive = 0n, outageCharge = 0n, matched = 0;
+		for (const record of samples) {
+			if (!ids.has(record.sample.observationId)) continue;
+			assert.equal(record.coverage, "continuous", "Controller outage contains an uncharged evidence gap");
+			const before = checkpoints[record.sequence - 1], after = checkpoints[record.sequence];
+			outageActive += integer(after.active_ms) - integer(before.active_ms);
+			outageCharge += normalizedUsageUs(after.active_ms, stream.resource_shape, tariff, stream.resource_kind)
+				- normalizedUsageUs(before.active_ms, stream.resource_shape, tariff, stream.resource_kind);
+			matched++;
+		}
+		assert.equal(matched, ids.size, "Retained outage observation missing from SQL");
+		assert(outageActive >= 14000n, "Controller outage did not retain at least fourteen seconds of measured awake time");
+		outage = { activeMs: outageActive.toString(), allocatedStandardUs: outageCharge.toString(), observations: matched };
+	}
+	const firstRunning = samples.find((row) => row.sample.state === "running")?.sample;
+	const lastRunning = samples.findLast((row) => row.sample.state === "running")?.sample;
+	const terminal = samples.at(-1)?.sample;
 	return { schema: "qorpera.workload-usage-reconciliation/v1", resourceKind: stream.resource_kind,
 		permitId: permit.id, allocationId: permit.allocation_id, physicalId: permit.physical_id,
 		shape: stream.resource_shape, samples: samples.length, continuousIntervals: continuous, gapIntervals: gaps,
 		activeMs: active.toString(), elapsedMs: elapsed.toString(), debitedUs: totalDebit.toString(),
-		releasedUs: totalReleased.toString(), reservations: reservations.length, passed: true };
+		releasedUs: totalReleased.toString(), reservations: reservations.length, controllerOutage: outage,
+		observationMargins: {
+			// Boot age is visible, but no paired initial endpoint proves that this
+			// entire interval was billable. Never manufacture an initial charge.
+			firstObservedGuestBootAgeMs: firstRunning?.guestUptimeMs ?? null,
+			beforeFirstPairedObservation: "unmeasured; excluded from billing",
+			lastRunningToTerminalHostMs: terminal && lastRunning && ["stopped", "absent"].includes(terminal.state)
+				&& terminal.hostBootId === lastRunning.hostBootId ? terminal.hostUptimeMs - lastRunning.hostUptimeMs : null,
+			observedUnchargedElapsedMs: (elapsed - active).toString(),
+		}, passed: true };
 }
 
 /** Attribute already reconciled physical intervals to idle and busy phases.

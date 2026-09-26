@@ -11,7 +11,7 @@ import { readWorkloadUsage, verifyWorkloadUsage, verifyWorkloadActivity } from "
 import { retainSecondCodingClaim, exerciseSharedCodingClaims } from "./workload-usage-shared.mjs";
 import { CodingComputerController, CODING_COMPUTER_RPCS, parseCodingSessionClaim, lxdCodingMachinePlan,
  PaidComputerGuardClient, readPaidComputerHostClock, LxdUnixClient, RuntimeComputerController,
- RUNTIME_COMPUTER_RPCS, RuntimeNodeInventoryObserver, physicalHost, exerciseRuntimeWorkloadUsage } from "./workload-usage-tools.mjs";
+ RUNTIME_COMPUTER_RPCS, RuntimeNodeInventoryObserver, physicalHost, exerciseRuntimeWorkloadUsage, workloadUsageSamples } from "./workload-usage-tools.mjs";
 
 // This runs as the dedicated guard UID on an empty, disposable GitHub runner.
 // Company/model/source metadata and invoice funding are labeled SQL fixtures.
@@ -37,6 +37,7 @@ const service = `set local role service_role; set local request.jwt.claims='{"ro
 const socketPath = "/var/snap/lxd/common/lxd/unix.socket", client = new LxdUnixClient(socketPath);
 const signal = AbortSignal.timeout(15 * 60000), executorSecret = randomBytes(48).toString("base64url");
 const evidence = { schema: "qorpera.physical-workload-usage/v1", commit: process.env.GITHUB_SHA, kind,
+ hostCapacity: { observedCpuMillis: cpus().length * 1000, observedMemoryBytes: totalmem(), headroomCpuMillis: 500, headroomMemoryBytes: 2 * 1024 ** 3 },
  shape: { cpuMillis: cpuCount * 1000, memoryBytes }, planKey, poolFallback, renew, sharedClaims, shapeMismatch, funding: "test invoice through actual subscription/funding RPCs",
  sourceFixture: "396 dispatch prefix; no model, repository or login-provider operation executed. Paid guests execute the fixed offline CPU/memory/disk acceptance workload.",
  passed: false, checks: {}, cleanup: false };
@@ -150,7 +151,7 @@ try {
   const parameters = signature[0].args.map((arg) => `${arg.name}=>(select ${arg.name} from input)`).join(",");
   const value = JSON.parse(await query(`begin; ${service} with input as (select * from jsonb_to_record(${literal(input)}) as args(${typed}))
    select coalesce(to_jsonb(public.${method}(${parameters})),'null'::jsonb); commit;`, { signal: callSignal }));
-  if (args.p_request?.sample) calls.push({ method, args: structuredClone(args) });
+  if (args.p_request?.sample || Array.isArray(args.p_request?.entries)) calls.push({ method, args: structuredClone(args) });
   return value;
  } };
  // Keep the same protected host probe as the production observer, but expose
@@ -259,21 +260,25 @@ try {
  await until(async () => { try { return await client.readInstanceFile("default", machineName, "/proc/uptime", 128, signal); } catch { return null; } }, Boolean, 150000, "guest Linux clock");
  assert.equal((await observer.observe(signal)).state, "ready");
  phase = "metering";
+ const nextRunning = async (after = null) => until(async () => {
+  await controller.observe(allocationId, signal);
+  return workloadUsageSamples(calls).at(-1);
+ }, (sample) => sample?.state === "running" && sample.observationId !== after, 25000, "new independent guard sample");
  if (kind !== "login") {
   // Observe actual idle time before starting the fixed guest exercise. LXD
   // exec and controller observations remain concurrent so busy time cannot
   // disappear behind a blocking ten-second command.
-  await controller.observe(allocationId, signal);
+  let idle = await nextRunning();
   const idleObservationIds = [];
   for (let n = 0; n < 2; n++) {
-   await delay(1100, undefined, { signal }); await controller.observe(allocationId, signal);
-   idleObservationIds.push(calls.at(-1).args.p_request.sample.observationId);
+   idle = await nextRunning(idle.observationId);
+   idleObservationIds.push(idle.observationId);
   }
   const guestScript = `/var/tmp/qorpera-usage-${allocationId}.py`, guestMarker = `/var/tmp/qorpera-usage-${allocationId}.json`;
   const payload = await readFile(join(directory, "workload-usage-guest.py"), "utf8");
   await client.pushInstanceFile("default", machineName, guestScript, payload, 0o400, signal);
   let finished = false, failure;
-  const execution = client.execInstance("default", machineName, ["/usr/bin/python3", guestScript, guestMarker], AbortSignal.any([signal, AbortSignal.timeout(45000)]))
+  const execution = client.execInstance("default", machineName, ["/usr/bin/python3", guestScript, guestMarker, "18"], AbortSignal.any([signal, AbortSignal.timeout(45000)]))
    .catch((error) => { failure = error; }).finally(() => { finished = true; });
   while (!finished) { await delay(1000, undefined, { signal }); await controller.observe(allocationId, signal); }
   await execution; if (failure) throw failure;
@@ -289,7 +294,7 @@ try {
   const probe = await exerciseRuntimeWorkloadUsage({ context, guardSocketPath, lxdSocketPath: socketPath, control,
    disposableRun: { githubHosted: true, companyId }, close: true, renew, signal });
   const accounting = await readWorkloadUsage(query, probe.permitId);
-  probe.physicalSamples = calls.map((call) => call.args.p_request.sample);
+  probe.physicalSamples = workloadUsageSamples(calls);
   probe.firstPayerByReservation = Object.fromEntries(accounting.reservations.map((row) => [row.id,
    poolFallback && BigInt(row.from_standard_us) >= 1000000n ? fallbackMember : memberId]));
   evidence.reconciliation = verifyWorkloadUsage(accounting, probe); evidence.probe = probe; evidence.accounting = accounting;
@@ -302,7 +307,7 @@ try {
    phase = "metering";
   }
   const original = await guard.latest(allocationId, signal); assert(original?.phase === "running");
-  for (let n = 0; n < 3; n++) { await controller.observe(allocationId, signal); await delay(1100, undefined, { signal }); }
+  await nextRunning(workloadUsageSamples(calls).at(-1)?.observationId);
   if (renew) {
    log({ waitingForActualRenewal: true });
    await until(async () => {
@@ -311,25 +316,36 @@ try {
     if (record.permit.generation > original.permit.generation) return true;
     await delay(4500, undefined, { signal }); return false;
    }, Boolean, 330000, "natural funded window renewal");
-   const renewal = calls.at(-1); assert.equal(renewal.method, "qorpera_renew_coding_computer_permit");
+   const renewal = calls.findLast((call) => call.method === "qorpera_renew_coding_computer_permit"); assert(renewal);
    await control.call(renewal.method, structuredClone(renewal.args), signal);
    await controller.observe(allocationId, signal);
    evidence.checks.actualWindowRenewal = true; evidence.checks.exactRenewalReplay = true;
   }
+  assert.equal(original.usageRequired, true, "Fresh physical coding proof requires the independent producer");
   const beforeRestart = await guard.status(original.permit.permitId, signal);
-  const last = calls.at(-1); assert.equal(last.method, "qorpera_checkpoint_coding_computer_permit"); await control.call(last.method, last.args, signal);
+  const last = calls.findLast((call) => call.method === "qorpera_record_computer_guard_samples"); assert(last);
+  await control.call(last.method, last.args, signal);
+  const beforeOutage = await guard.readUsage(original.permit.permitId, undefined, signal);
+  await delay(20000, undefined, { signal });
+  const duringOutage = await guard.readUsage(original.permit.permitId, { afterSequence: beforeOutage.head.sequence }, signal);
+  const outageFrames = duringOutage.entries.filter((frame) => frame.sequence > beforeOutage.head.sequence);
+  assert(outageFrames.length >= 3 && outageFrames.every((frame) => JSON.parse(frame.entryText).sample.state === "running"), "Independent coding outage observations missing");
   controller = new CodingComputerController({ control, guard, client, clock: readPaidComputerHostClock, storage, owner: "exec-test" });
   await controller.initialize(signal); await controller.observe(allocationId, signal);
-  assert.equal(calls.at(-1).args.p_request.sample.state, "gap");
+  const uploadedIds = new Set(workloadUsageSamples(calls).map((sample) => sample.observationId));
+  assert(outageFrames.every((frame) => uploadedIds.has(JSON.parse(frame.entryText).sample.observationId)), "Coding outage prefix was not uploaded");
   assert.equal((await guard.status(original.permit.permitId, signal)).deadlineUptimeMs, beforeRestart.deadlineUptimeMs);
-  for (let n = 0; n < 2; n++) { await delay(1100, undefined, { signal }); await controller.observe(allocationId, signal); }
+  evidence.controllerOutage = { beforeSequence: beforeOutage.head.sequence, afterSequence: duringOutage.head.sequence, physicalFrames: outageFrames.length, controllerSilentMs: 20000,
+   observationIds: outageFrames.map((frame) => JSON.parse(frame.entryText).sample.observationId) };
+  await nextRunning(workloadUsageSamples(calls).at(-1)?.observationId);
   await controller.stop(allocationId, signal);
   await until(() => guard.status(original.permit.permitId, signal), (record) => record.phase === "stopped" && record.stopReceipt, 45000, "guard stop");
-  await controller.observe(allocationId, signal);
-  const terminal = calls.at(-1); assert.equal(terminal.method, "qorpera_finish_coding_computer_permit"); await control.call(terminal.method, terminal.args, signal);
-  const accounting = await readWorkloadUsage(query, original.permit.permitId), first = calls.find((call) => call.args.p_request.sample.state === "running").args.p_request.sample;
+  await until(async () => { await controller.observe(allocationId, signal); return controller.manages(allocationId); }, (managed) => !managed, 45000, "sealed coding settlement");
+  const terminal = calls.findLast((call) => call.method === "qorpera_finish_coding_computer_permit"); assert(terminal); await control.call(terminal.method, terminal.args, signal);
+  const accounting = await readWorkloadUsage(query, original.permit.permitId), first = workloadUsageSamples(calls).find((sample) => sample.state === "running");
   const probe = { kind: "coding_machine", shape: evidence.shape, physicalId: first.physicalId, hostBootId: first.hostBootId, guestBootId: first.guestBootId,
-   physicalSamples: calls.map((call) => call.args.p_request.sample), firstPayerByReservation: Object.fromEntries(accounting.reservations.map((row) => [row.id,
+   controllerOutage: evidence.controllerOutage,
+   physicalSamples: workloadUsageSamples(calls), firstPayerByReservation: Object.fromEntries(accounting.reservations.map((row) => [row.id,
     poolFallback && BigInt(row.from_standard_us) >= 1000000n ? fallbackMember : memberId])) };
   evidence.reconciliation = verifyWorkloadUsage(accounting, probe); evidence.probe = probe; evidence.accounting = accounting;
  } else {

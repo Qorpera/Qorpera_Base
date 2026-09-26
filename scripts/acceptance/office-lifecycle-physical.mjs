@@ -15,7 +15,10 @@ import { readWorkloadUsage, verifyWorkloadUsage } from "./workload-usage-evidenc
 // samples, stopped receipts, or recovery acknowledgements in PostgreSQL.
 assert(process.platform === "linux" && process.getuid() === 0);
 assert(process.env.GITHUB_ACTIONS === "true" && process.env.RUNNER_ENVIRONMENT === "github-hosted");
-assert(process.argv.length === 6 && process.argv[2] === "--image-context" && process.argv[4] === "--out");
+assert([6, 8].includes(process.argv.length) && process.argv[2] === "--image-context" && process.argv[4] === "--out");
+assert(process.argv.length === 6 || (process.argv[6] === "--cpus" && ["1", "2"].includes(process.argv[7])));
+const guestCpus = process.argv.length === 8 ? Number(process.argv[7]) : 2;
+const guestCpuMillis = guestCpus * 1000;
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const context = JSON.parse(await readFile(process.argv[3], "utf8"));
 assert(context.provenanceSigned && context.builderVmDeleted && context.finalCloneDeleted);
@@ -84,7 +87,7 @@ async function query(sql, options = {}) {
 				// Public diagnostics retain only SQLSTATE and a routine identifier.
 				// Raw messages, argument values and statement text remain private.
 				evidence.lastSqlFailure = { phase, sqlState: /ERROR:\s+([0-9A-Z]{5}):/.exec(error)?.[1] ?? "unknown",
-					routine: /PL\/pgSQL function ([a-z_][a-z0-9_]*)\(/.exec(error)?.[1] ?? null };
+					routine: /PL\/pgSQL function ((?:[a-z_][a-z0-9_]*\.)?[a-z_][a-z0-9_]*)\(/.exec(error)?.[1] ?? null };
 				reject(new Error("OFFICE_ACCEPTANCE_SQL_FAILED"));
 			}
 		});
@@ -167,10 +170,15 @@ try {
 	await query(`${wake.slice(0, firstStaff)} commit;`);
 	const scope = JSON.parse(await query(`${member} select public.qorpera_register_runtime_office('30000000-0000-4000-8000-000000000020','${randomUUID()}','${context.imageFingerprint}','${context.bootstrapSha256}',2)-'state';`));
 	const measured = JSON.parse(tool("infrastructure", context.imageFingerprint));
+	evidence.hostCapacity = { cpuMillis: measured.cpuMillis, memoryBytes: measured.memoryBytes };
+	evidence.guestShape = { cpuMillis: guestCpuMillis, memoryBytes: 4 * 1024 ** 3 };
+	phase = "host_capacity";
+	assert(measured.cpuMillis >= guestCpuMillis + 1000 && measured.memoryBytes >= 6 * 1024 ** 3,
+		"Office fixture requires its measured guest resources plus 1 CPU and 2 GiB host headroom");
 	const providerId = randomUUID(), nodeId = randomUUID(), intentId = randomUUID();
 	const policy = { schema: "qorpera.lxd-office-physical-policy/v2", guest: { ...scope, providerId, computerGeneration: 1,
 		project: "default", imageFingerprint: context.imageFingerprint, bootstrapSha256: context.bootstrapSha256,
-		storagePool: "default", rootDiskBytes: 30 * 1024 ** 3, workbenchSource: workbench, network: "lxdbr0", cpus: 2, memoryBytes: 4 * 1024 ** 3 },
+		storagePool: "default", rootDiskBytes: 30 * 1024 ** 3, workbenchSource: workbench, network: "lxdbr0", cpus: guestCpus, memoryBytes: 4 * 1024 ** 3 },
 		host: measured.host, infrastructure: measured.infrastructure,
 		image: { bytes: context.imageBytes, guestPackageManifestSha256: context.packageManifestSha256, statementSha256: context.statementSha256, verificationKeySpki: context.verificationKeySpki },
 		workbench: { mountPoint: workbench, root: "/", filesystem: "nfs4", source: "127.0.0.1:/", serverAddress: "127.0.0.1", uid: 1100, gid: 1100 },
@@ -183,12 +191,12 @@ try {
 	phase = "policy_enrollment";
 	await query(`${service}
  insert into public.qorpera_company_computer_billing_modes(profile_id,mode) values('${scope.companyId}','paid');
- select public.qorpera_configure_runtime_node(${literal({ schema: "qorpera.runtime-node-policy/v1", nodeId, machineIdSha256: policy.host.machineIdSha256, label: "office-acceptance", cpuMillis: measured.cpuMillis, memoryBytes: measured.memoryBytes, headroomCpuMillis: 1000, headroomMemoryBytes: 2 * 1024 ** 3, standardCpuMillis: 2000, standardMemoryBytes: 4 * 1024 ** 3, enabled: true })},0);
+ select public.qorpera_configure_runtime_node(${literal({ schema: "qorpera.runtime-node-policy/v1", nodeId, machineIdSha256: policy.host.machineIdSha256, label: "office-acceptance", cpuMillis: measured.cpuMillis, memoryBytes: measured.memoryBytes, headroomCpuMillis: 1000, headroomMemoryBytes: 2 * 1024 ** 3, standardCpuMillis: guestCpuMillis, standardMemoryBytes: 4 * 1024 ** 3, enabled: true })},0);
  select public.qorpera_enroll_runtime_node_inventory(${literal(inventoryPolicy)});
  select public.qorpera_set_runtime_office_provider(${literal(scope)},1,'${providerId}','${policySha256}',0,true);
- select public.qorpera_enroll_runtime_node_provider('${nodeId}','${policy.host.machineIdSha256}','office','${providerId}','${policySha256}',2000,4294967296);
+ select public.qorpera_enroll_runtime_node_provider('${nodeId}','${policy.host.machineIdSha256}','office','${providerId}','${policySha256}',${guestCpuMillis},4294967296);
  insert into public.qorpera_runtime_computer_host_keys(node_id,provider_kind,provider_id,policy_sha256,machine_id_sha256,bootstrap_sha256,cpu_millis,memory_bytes,backend,key_sha256)
- values('${nodeId}','office','${providerId}','${policySha256}','${policy.host.machineIdSha256}','${context.bootstrapSha256}',2000,4294967296,'lxd','${hash(executor)}');
+ values('${nodeId}','office','${providerId}','${policySha256}','${policy.host.machineIdSha256}','${context.bootstrapSha256}',${guestCpuMillis},4294967296,'lxd','${hash(executor)}');
  select public.qorpera_map_computer_billing_customer('30000000-0000-4000-8000-000000000001','cus_PhysicalAcceptance');
  do $$ declare t timestamptz:=clock_timestamp()-interval '1 day'; begin
  perform public.qorpera_reconcile_computer_subscription('evt_PhysicalAcceptance',t,jsonb_build_object('subscriptionId','sub_PhysicalAcceptance','customerId','cus_PhysicalAcceptance','userId','30000000-0000-4000-8000-000000000001','planKey','basis','planVersion',1,'status','active','periodStart',t,'periodEnd',t+interval '1 month'));
@@ -397,7 +405,7 @@ try {
 		const first = samples.find((sample) => sample.state === "running");
 		assert(first, "No actual office guest clock was sampled");
 		assert(evidence.physicalInstanceIds.includes(first.physicalId), "Metered VM was not independently observed by the lifecycle harness");
-		evidence.usageReconciliation.push(verifyWorkloadUsage(accounting, { kind: "company_computer", shape: { cpuMillis: 2000, memoryBytes: 4294967296 },
+		evidence.usageReconciliation.push(verifyWorkloadUsage(accounting, { kind: "company_computer", shape: { cpuMillis: guestCpuMillis, memoryBytes: 4294967296 },
 			physicalId: first.physicalId, hostBootId: first.hostBootId, guestBootId: first.guestBootId,
 			physicalSamples: samples, closed: true }));
 		totalDebit += BigInt(evidence.usageReconciliation.at(-1).debitedUs);

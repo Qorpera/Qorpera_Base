@@ -12,7 +12,7 @@
 		"test": "vitest run"
 	},
 	"dependencies": {
-		"@openai/codex": "0.147.0",
+		"@openai/codex": "0.155.1",
 		"@qorpera/company": "^0.83.0",
 		"@qorpera/contracts": "^0.83.0",
 		"@qorpera/pi-ai": "^0.83.0",

@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import type { CodingPaidGuardPort } from "./coding-computer-controller.ts";
+import { drainComputerGuardUsage } from "./computer-guard-usage-uploader.ts";
 import {
 	assertPaidComputerTerminalPermit,
 	isRuntimePaidComputerMachine,
@@ -41,6 +42,7 @@ interface ManagedRuntimeComputer {
 	permit: PaidComputerPermit;
 	requestStartedUptimeMs: number;
 	lastObservationId: string | null;
+	lastSample: unknown;
 	continuity: boolean;
 }
 interface RuntimeSample {
@@ -73,6 +75,7 @@ export const RUNTIME_COMPUTER_RPCS = [
 	"qorpera_finish_runtime_computer_permit",
 	"qorpera_abandon_runtime_computer_permit",
 	"qorpera_describe_runtime_computer_prestart",
+	"qorpera_record_computer_guard_samples",
 ] as const;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 function object(value: unknown): Record<string, unknown> {
@@ -191,6 +194,7 @@ export class RuntimeComputerController {
 				permit,
 				requestStartedUptimeMs: clock.uptimeMs,
 				lastObservationId: (lastSample?.observationId as string | null) ?? null,
+				lastSample: lastSample,
 				continuity: false,
 			},
 		};
@@ -325,6 +329,7 @@ export class RuntimeComputerController {
 							permit,
 							requestStartedUptimeMs: started.uptimeMs,
 							lastObservationId: (sample?.observationId as string | null) ?? null,
+							lastSample: sample,
 							continuity: false,
 						};
 						const guarded = await this.#options.guard.status(permit.permitId, signal).catch((error: unknown) => {
@@ -412,6 +417,7 @@ export class RuntimeComputerController {
 					permit: this.#permit(receipt, context, clock, false),
 					requestStartedUptimeMs: clock.uptimeMs,
 					lastObservationId: null,
+					lastSample: null,
 					continuity: false,
 				};
 			}
@@ -643,6 +649,7 @@ export class RuntimeComputerController {
 				...current,
 				permit,
 				lastObservationId: (lastSample?.observationId as string | null) ?? null,
+				lastSample: lastSample,
 				continuity: false,
 			};
 			const managed = this.#computers.get(current.context.allocationId);
@@ -651,11 +658,38 @@ export class RuntimeComputerController {
 		} else if (guarded.phase !== "stopped" && current.permit.generation !== guarded.permit.generation) {
 			throw new Error("RUNTIME_COMPUTER_GUARD_GENERATION_DIFFERS");
 		}
-		const sample = await this.#sample(current, guarded, signal),
-			{ evidenceSha256: _evidence, ...facts } = sample;
-		sample.evidenceSha256 = createHash("sha256")
-			.update(JSON.stringify({ sample: facts, stopReceipt: guarded.stopReceipt }))
-			.digest("hex");
+		let sample: RuntimeSample;
+		if (guarded.usageRequired === true) {
+			const usage = await drainComputerGuardUsage({
+				permit: current.permit,
+				lastSample: current.lastSample,
+				guard: this.#options.guard,
+				recover: async () => {
+					const entry = await this.#options.guard.prestartStatus(current.permit.permitId, signal);
+					if (!entry) throw new Error("COMPUTER_GUARD_USAGE_HISTORY_MISSING");
+					const retained = await this.#history(entry, signal);
+					return { permit: retained.permit, lastSample: retained.lastSample };
+				},
+				call: (request, checked) => this.#call("qorpera_record_computer_guard_samples", request, checked),
+				signal,
+			});
+			current.permit = this.#permit(usage.permit, current.context, await this.#clock(), guarded.phase === "stopped");
+			current.lastSample = usage.sample;
+			current.lastObservationId = usage.sample?.observationId ?? null;
+			this.#computers.set(current.context.allocationId, current);
+			if (guarded.phase !== "stopped" && current.permit.generation !== guarded.permit.generation)
+				throw new Error("RUNTIME_COMPUTER_GUARD_GENERATION_DIFFERS");
+			// No first sample means no bind. A sealing/stalled terminal prefix
+			// retains its financial hold while the guard independently stops.
+			if (!usage.sample || (guarded.phase === "stopped" && !usage.sealed)) return;
+			sample = usage.sample;
+		} else {
+			sample = await this.#sample(current, guarded, signal);
+			const { evidenceSha256: _evidence, ...facts } = sample;
+			sample.evidenceSha256 = createHash("sha256")
+				.update(JSON.stringify({ sample: facts, stopReceipt: guarded.stopReceipt }))
+				.digest("hex");
+		}
 		if (guarded.phase === "stopped") {
 			const receipt = await this.#call(
 				"qorpera_finish_runtime_computer_permit",
@@ -692,6 +726,7 @@ export class RuntimeComputerController {
 				current.permit.state === "bound" &&
 				sample.state === "running" &&
 				guarded.stopAtUptimeMs - clock.uptimeMs < 60000;
+		if (guarded.usageRequired === true && !renew) return;
 		await this.#call(
 			current.permit.state === "prepared"
 				? "qorpera_bind_runtime_computer_permit"

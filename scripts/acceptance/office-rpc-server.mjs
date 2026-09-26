@@ -71,6 +71,7 @@ export const OFFICE_PROVIDER_RPCS = Object.freeze([
 	"qorpera_prepare_runtime_computer_permit",
 	"qorpera_bind_runtime_computer_permit",
 	"qorpera_checkpoint_runtime_computer_permit",
+	"qorpera_record_computer_guard_samples",
 	"qorpera_renew_runtime_computer_permit",
 	"qorpera_finish_runtime_computer_permit",
 	"qorpera_abandon_runtime_computer_permit",
@@ -180,6 +181,11 @@ export async function startOfficeRpcServer({ query, tls, tokens, listen, onSampl
 			// against committed rows, excluding requests the database rejected.
 			// Never retain executor secrets or the surrounding RPC request.
 			if (args.p_request?.sample && onSample) onSample({ method: name, permitId: args.p_request.permitId, sample: structuredClone(args.p_request.sample) });
+			if (name === "qorpera_record_computer_guard_samples" && onSample) {
+				if (!Array.isArray(args.p_request?.entries) || args.p_request.entries.length > 16) { reply(400, { error: "Invalid arguments" }); return; }
+				const samples = args.p_request.entries.map((entry) => JSON.parse(entry.entryText).sample);
+				for (const sample of samples) onSample({ method: name, permitId: args.p_request.permitId, sample: structuredClone(sample) });
+			}
 			const output = await query(sql, { signal: lifetime.signal, timeoutMs: 2500, maxOutputBytes: RESPONSE_LIMIT + 1 });
 			lifetime.signal.throwIfAborted();
 			if (Buffer.byteLength(output) > RESPONSE_LIMIT) throw unavailable();

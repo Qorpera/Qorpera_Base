@@ -174,7 +174,7 @@ try {
 				schema: "qorpera.lxd-runner-guest-package/v1",
 				platform: "linux-x64",
 				runtime: { node: ">=22.19.0", podman: ">=5.0.0", cgroups: "v2" },
-				nativeHarnesses: { codex: "0.147.0", claudeCode: "2.1.231" },
+				nativeHarnesses: { codex: "0.155.1", claudeCode: "2.1.231" },
 				...(nativeCompany ? { nativeCompany: nativeCompany.contract } : {}),
 				runnerImage: runnerImageContract,
 				artifacts,

@@ -3,6 +3,8 @@ import { randomUUID } from "node:crypto";
 import { chromium } from "playwright-core";
 import { setTimeout as delay } from "node:timers/promises";
 import { join } from "node:path";
+import { foundingNetworkScope } from "./founding-payment-scope.mjs";
+import { foundingRuntimeHandoff } from "./founding-runtime.mjs";
 import { bootstrapCompanySql, computerPlansSql, modelAccountsSql, runtimeEvidenceSql, sqlUuid } from "./founding-fixtures.mjs";
 
 async function eventually(use, message, timeout = 30000) {
@@ -14,8 +16,10 @@ function lastJson(output) {
 	return JSON.parse(output.split("\n").filter(line => line.startsWith("{") || line.startsWith("[")).at(-1));
 }
 
-export async function runFoundingBrowser({ origin, publicKey, cluster, mail, out }) {
+export async function runFoundingBrowser({ origin, publicKey, cluster, mail, out, computerPlanSetup, bootstrap, afterMaterialized }) {
+	assert(!afterMaterialized || bootstrap, "Joined runtime requires actual bootstrap object publication");
 	const browser = await chromium.launch({ headless: true });
+	const network = foundingNetworkScope(origin);
 	const contexts = [], errors = [], blocked = [], memberTokens = new Map();
 	const evidence = { steps: [], boundaries: {
 		auth: "Real pinned Supabase Auth, SMTP OTP verification and signed sessions",
@@ -33,7 +37,7 @@ export async function runFoundingBrowser({ origin, publicKey, cluster, mail, out
 			contexts.push(context);
 			await context.route("**/*", route => {
 				const url = new URL(route.request().url());
-				if (url.origin === origin || ["data:", "blob:"].includes(url.protocol)) return route.continue();
+				if (network.allows(url.href)) return route.continue();
 				blocked.push(url.origin); return route.abort("blockedbyclient");
 			});
 			const page = await context.newPage(); page.setDefaultTimeout(20000);
@@ -67,6 +71,14 @@ export async function runFoundingBrowser({ origin, publicKey, cluster, mail, out
 		}
 		const first = await member("founder-a@founding.example.test"), second = await member("founder-b@founding.example.test");
 		assert.notEqual(first.userId, second.userId);
+		if (computerPlanSetup) {
+			// Trusted acceptance composition, not a client API. The hook receives
+			// real member browsers but no database or service-role credentials.
+			const payment = await network.pay(() => computerPlanSetup([first, second]));
+			assert(payment && typeof payment.boundary === "string" && payment.boundary.length <= 2000);
+			assert.equal(await cluster.query("select count(*) from public.qorpera_computer_allowance_buckets;"), "2", "Hosted setup must fund exactly two member invoice buckets");
+			evidence.boundaries.computerCapacity = payment.boundary;
+		}
 		evidence.steps.push("Two independent users signed in through real email OTP UI");
 		async function rpc(member, name, args) {
 			const result = await member.context.request.post(`${origin}/rest/v1/rpc/${name}`, { headers: { apikey: publicKey, authorization: `Bearer ${memberTokens.get(member.email)}` }, data: args });
@@ -76,7 +88,7 @@ export async function runFoundingBrowser({ origin, publicKey, cluster, mail, out
 			const [response] = await Promise.all([
 				page.waitForResponse(response => response.url() === `${origin}/rest/v1/rpc/${name}` && response.request().method() === "POST"),
 				action(),
-			]);
+			]).catch(error => { throw new Error(`Founding UI did not submit ${name}`, { cause: error }); });
 			assert.equal(response.status(), 200, `${name} did not succeed`);
 			await response.finished();
 		}
@@ -110,7 +122,11 @@ export async function runFoundingBrowser({ origin, publicKey, cluster, mail, out
 			return value || null;
 		}, "Client did not create a founding company");
 		sqlUuid(profileId);
-		await cluster.query(await bootstrapCompanySql(profileId));
+		if (bootstrap) {
+			evidence.boundaries.bootstrap = bootstrap.boundary;
+			evidence.publications = [await bootstrap.provision(profileId)];
+			evidence.bootstrapReads = [await bootstrap.verifyMemberReads(profileId, [memberTokens.get(first.email)], memberTokens.get(second.email))];
+		} else await cluster.query(await bootstrapCompanySql(profileId));
 		await first.page.getByRole("heading", { name: "Set up your company", exact: true }).waitFor();
 		assert(await first.page.getByRole("button", { name: "Start company", exact: true }).isDisabled());
 		const outsider = await rpc(second, "qorpera_read_company_founding", { p_profile_id: profileId });
@@ -124,12 +140,13 @@ export async function runFoundingBrowser({ origin, publicKey, cluster, mail, out
 		await second.page.reload();
 		await second.page.getByRole("button", { name: "Join setup", exact: true }).click();
 		await second.page.getByRole("heading", { name: "Set up your company", exact: true }).waitFor();
+		if (bootstrap) evidence.bootstrapReads.push(await bootstrap.verifyMemberReads(profileId, [memberTokens.get(first.email), memberTokens.get(second.email)]));
 		const prelaunchRoles = lastJson(await cluster.query(`select jsonb_object_agg(user_id,role) from public.qorpera_profile_members where profile_id=${sqlUuid(profileId)};`));
 		assert.equal(prelaunchRoles[first.userId], "owner"); assert.equal(prelaunchRoles[second.userId], "contributor");
 		assert(await second.page.getByRole("button", { name: "I'm Ready", exact: true }).isDisabled());
 		evidence.steps.push("Company created/bootstrap finalized; second founder explicitly joined as contributor; early launch and unconnected Ready blocked");
 		await cluster.query(modelAccountsSql(profileId, [first.userId, second.userId]));
-		await cluster.query(computerPlansSql([first.userId, second.userId]));
+		if (!computerPlanSetup) await cluster.query(computerPlansSql([first.userId, second.userId]));
 		// This isolated deployment explicitly publishes readiness. Ordinary
 		// production refresh/creation enrolls paid enforcement; no per-company
 		// mode row is fabricated, and individual offers remain unpublished.
@@ -203,6 +220,12 @@ export async function runFoundingBrowser({ origin, publicKey, cluster, mail, out
 		evidence.runtime = { profileId, receiptId: runtime.receipt.receiptId, requester: second.userId, author: first.userId,
 			ownerCount: runtime.owners.length, requestCount: runtime.requestCount, status: runtime.request.status,
 			sourceKind: runtime.source.kind, rosterCount: startup.founding.roster.length };
+		if (afterMaterialized) {
+			// Trusted host composition receives only immutable authority pins. It
+			// must dispatch this existing run before the solo run enters the queue.
+			evidence.joinedRuntime = await afterMaterialized(foundingRuntimeHandoff(runtime, evidence.publications[0]));
+		}
+		const beforeSoloUsage = (await rpc(first, "qorpera_my_computer_usage", {})).body.balance.availableUs;
 		await first.page.goto(`${origin}/#/`);
 		await first.page.getByRole("button", { name: /New company Seeds a Company File/ }).click();
 		await first.page.getByLabel("Company name", { exact: true }).fill("Acceptance Solo");
@@ -211,7 +234,10 @@ export async function runFoundingBrowser({ origin, publicKey, cluster, mail, out
 			const value = await cluster.query(`select profile_id from public.qorpera_company_founding where created_by_user_id=${sqlUuid(first.userId)} and profile_id<>${sqlUuid(profileId)};`);
 			return value || null;
 		}, "Solo company creation did not arrive");
-		await cluster.query(await bootstrapCompanySql(soloId));
+		if (bootstrap) {
+			evidence.publications.push(await bootstrap.provision(soloId));
+			evidence.bootstrapReads.push(await bootstrap.verifyMemberReads(soloId, [memberTokens.get(first.email)], memberTokens.get(second.email)));
+		} else await cluster.query(await bootstrapCompanySql(soloId));
 		await first.page.getByRole("heading", { name: "Set up your company", exact: true }).waitFor();
 		await cluster.query(modelAccountsSql(soloId, [first.userId]));
 		assert.equal(await cluster.query(`select public.qorpera_company_paid_computer_mode(${sqlUuid(soloId)});`), "t", "Published creation did not enroll paid enforcement");
@@ -227,12 +253,16 @@ export async function runFoundingBrowser({ origin, publicKey, cluster, mail, out
 		assert.equal(JSON.parse(solo.source.text).founding.roster.length, 1);
 		assert.equal(await cluster.query("select count(*) from public.qorpera_computer_allowance_buckets;"), "2", "Solo company duplicated global paid allowance");
 		const soloUsage = await rpc(first, "qorpera_my_computer_usage", {});
-		assert.equal(soloUsage.body.balance.availableUs, String(74 * 3600000000), "Founding debited a plan before any physical computer ran");
+		assert.equal(soloUsage.body.balance.availableUs, beforeSoloUsage, "Solo founding debited allowance without dispatch");
 		evidence.steps.push("Solo founder also created, readied and launched through actual UI, producing one owner and one materialized turn");
 		assert.deepEqual(blocked, [], "Browser attempted a nonlocal network destination");
 		assert.deepEqual(errors, [], "Production web client threw uncaught browser errors");
 		return evidence;
 	} catch (error) {
+		for (const [index, context] of contexts.entries()) {
+			const page = context.pages()[0];
+			if (page) await page.screenshot({ path: join(out, `founder-${index + 1}-failure.png`), fullPage: true }).catch(() => undefined);
+		}
 		if (error instanceof Error) error.message += `\nCompleted acceptance steps: ${evidence.steps.join("; ")}`;
 		throw error;
 	} finally { await Promise.all(contexts.map(context => context.close())); await browser.close(); memberTokens.clear(); }

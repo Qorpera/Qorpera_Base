@@ -37,10 +37,38 @@ test("normalization covers fractional CPU, memory-dominant, dedicated and exclud
 
 test("reconciles exact physical awake time and responsible-member-first fallback", () => {
 	const { evidence, expected } = fixture();
-	assert.equal(verifyWorkloadUsage(evidence, expected).debitedUs, "1000000");
+	const result = verifyWorkloadUsage(evidence, expected);
+	assert.equal(result.debitedUs, "1000000");
+	assert.deepEqual(result.observationMargins, { firstObservedGuestBootAgeMs: 10000,
+		beforeFirstPairedObservation: "unmeasured; excluded from billing", lastRunningToTerminalHostMs: 1000,
+		observedUnchargedElapsedMs: "3000" });
 	// Exact replay contributes one SQL observation, not another machine interval.
 	expected.physicalSamples.push(structuredClone(expected.physicalSamples[1]));
 	assert.equal(verifyWorkloadUsage(evidence, expected).samples, 6);
+});
+
+test("outage proof requires actual continuous SQL intervals and includes their allocated debit", () => {
+	const { evidence, expected } = fixture();
+	const times = [0, 5000, 10000, 15000, 20000, 21000];
+	for (const [index, record] of evidence.samples.entries()) {
+		Object.assign(record.sample, { hostUptimeMs: 100000 + times[index],
+			guestUptimeMs: index === 5 ? null : 10000 + times[index],
+			observedAt: new Date(1800000000000 + times[index]).toISOString(),
+			state: index === 5 ? "stopped" : "running" });
+		record.coverage = index === 0 ? "initial" : index === 5 ? "terminal" : "continuous";
+	}
+	evidence.checkpoints = [0, 0, 5000, 10000, 15000, 20000, 20000].map((active, sequence) => ({
+		sequence, active_ms: String(active), elapsed_ms: String(sequence ? times[sequence - 1] : 0), evidence_sha256: "a".repeat(64) }));
+	Object.assign(evidence.stream, { active_ms: "20000", elapsed_ms: "21000" });
+	evidence.reservations[0].reserved_us = "20000000";
+	evidence.holds[1].amount_us = "19250000";
+	Object.assign(evidence.settlements[0], { total_standard_us: "10000000", debited_us: "10000000", released_us: "10000000" });
+	Object.assign(evidence.debits[1], { debited_us: "9250000", released_us: "10000000" });
+	expected.controllerOutage = { observationIds: ["sample-2", "sample-3", "sample-4"] };
+	assert.deepEqual(verifyWorkloadUsage(evidence, expected).controllerOutage,
+		{ activeMs: "15000", allocatedStandardUs: "7500000", observations: 3 });
+	expected.controllerOutage.observationIds[0] = "missing";
+	assert.throws(() => verifyWorkloadUsage(evidence, expected), /missing from SQL/);
 });
 
 test("rejects charging a stopped or observation-gap interval", () => {

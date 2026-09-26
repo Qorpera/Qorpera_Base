@@ -13,12 +13,21 @@ import {
 	parsePaidComputerPrestartIntent,
 	parsePaidComputerPrestartRecord,
 } from "./computer-paid-guard.ts";
+import {
+	type PaidComputerUsageCursor,
+	type PaidComputerUsagePage,
+	type PaidComputerUsageReadOptions,
+	parsePaidComputerUsageCursor,
+	parsePaidComputerUsagePage,
+} from "./computer-paid-usage.ts";
 import type { LxdOperationReference } from "./lxd-client.ts";
 import { checkDirectory, code } from "./lxd-office-journal-files.ts";
 
 const MAX_PACKET = 65536;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 export type PaidComputerGuardRequest =
+	| { action: "readUsage"; permitId: string; options: PaidComputerUsageReadOptions }
+	| { action: "ackUsage"; permitId: string; cursor: PaidComputerUsageCursor }
 	| { action: "arm"; input: PaidComputerArm }
 	| { action: "start"; permitId: string; generation: number }
 	| { action: "stop" | "status"; permitId: string }
@@ -68,6 +77,17 @@ async function handle(guard: PaidComputerGuard, value: unknown): Promise<unknown
 	if (input.action === "hasHistory" && typeof input.allocationId === "string" && UUID.test(input.allocationId))
 		return guard.hasHistory(input.allocationId);
 	if (typeof input.permitId !== "string" || !UUID.test(input.permitId)) throw new Error("PAID_GUARD_IPC_INVALID");
+	if (input.action === "readUsage") {
+		if (
+			!input.options ||
+			typeof input.options !== "object" ||
+			Array.isArray(input.options) ||
+			Object.keys(input.options).some((key) => !["afterSequence", "limit"].includes(key))
+		)
+			throw new Error("PAID_GUARD_IPC_INVALID");
+		return guard.readUsage(input.permitId, input.options as PaidComputerUsageReadOptions);
+	}
+	if (input.action === "ackUsage") return guard.ackUsage(input.permitId, parsePaidComputerUsageCursor(input.cursor));
 	if (input.action === "status") return guard.status(input.permitId);
 	if (input.action === "prestartStatus") return guard.prestartStatus(input.permitId);
 	if (input.action === "archive") {
@@ -159,6 +179,7 @@ export async function servePaidComputerGuard(options: {
 	});
 	await chmod(socketPath, 0o600);
 	options.report?.("ready");
+	const usageTimer = setInterval(() => guard.tickUsage(), 1000);
 	try {
 		while (!signal.aborted) {
 			try {
@@ -169,6 +190,7 @@ export async function servePaidComputerGuard(options: {
 			if (!signal.aborted) await delay(1000, undefined, { signal }).catch(() => {});
 		}
 	} finally {
+		clearInterval(usageTimer);
 		// Shutdown is not a renewed permit. Best-effort immediate stop; retained
 		// unresolved records are resumed by the independent supervisor restart.
 		await Promise.allSettled(
@@ -219,6 +241,20 @@ export class PaidComputerGuardClient {
 		} finally {
 			socket.destroy();
 		}
+	}
+	async readUsage(
+		permitId: string,
+		options: PaidComputerUsageReadOptions = {},
+		signal?: AbortSignal,
+	): Promise<PaidComputerUsagePage> {
+		return parsePaidComputerUsagePage(await this.#call({ action: "readUsage", permitId, options }, signal));
+	}
+	async ackUsage(
+		permitId: string,
+		cursor: PaidComputerUsageCursor,
+		signal?: AbortSignal,
+	): Promise<PaidComputerUsageCursor> {
+		return parsePaidComputerUsageCursor(await this.#call({ action: "ackUsage", permitId, cursor }, signal));
 	}
 	async arm(input: PaidComputerArm, signal?: AbortSignal): Promise<PaidComputerGuardRecord> {
 		return parsePaidComputerGuardRecord(await this.#call({ action: "arm", input }, signal));

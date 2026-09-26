@@ -28,6 +28,8 @@ jobs:
           cache: npm
       - name: Install reviewed dependencies without lifecycle scripts
         run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Hydrate generated model data required by a fresh checkout
+        run: npm run hydrate:model-data
       - name: Check candidate source and browser build
         run: npm run check
       - name: Run all non-e2e tests with isolated credentials and a guest-compatible group
@@ -225,6 +227,8 @@ jobs:
           --test 666_computer_funding_caps.test.sql
           --test 667_dedicated_calendar_boundaries.test.sql
           --test 668_paid_account_refresh_exemption.test.sql
+          --test 669_computer_guard_usage_stream.test.sql
+          --test 670_coding_guard_usage_recovery.test.sql
           --out "${RUNNER_TEMP}/office-acceptance/postgres"
 
       - name: Prove read-only accounting incident detection and resolution
@@ -284,6 +288,7 @@ jobs:
           node scripts/acceptance/office-lifecycle-physical.mjs
           --image-context "${RUNNER_TEMP}/office-acceptance/image/image-context.json"
           --out "${RUNNER_TEMP}/office-acceptance/lifecycle"
+          --cpus 1
 
       - name: Upload bounded acceptance evidence
         if: always()
@@ -310,7 +315,7 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
   workloads:
-    name: Physical workload sizes, pools and sustained usage
+    name: Small-host physical workloads, pools and sustained usage
     runs-on: ubuntu-24.04
     timeout-minutes: 150
     steps:
@@ -388,7 +393,10 @@ jobs:
           set -euo pipefail
           case_number=0
           for kind in native coding login; do
-            for shape in '1 1' '2 2' '2 8' '2 10'; do
+            # Private-repository standard hosts have 2 CPUs / 8 GiB. Preserve
+            # production headroom and test admitted shapes. Larger shapes are
+            # a separate required acceptance run on a sufficiently sized host.
+            for shape in '1 1' '1 4'; do
               read -r cpu_count memory_gib <<< "$shape"
               case_number=$((case_number + 1))
               sudo env PATH="${PATH}:/snap/bin" GITHUB_ACTIONS=true RUNNER_ENVIRONMENT=github-hosted GITHUB_SHA="${GITHUB_SHA}" \
@@ -400,12 +408,12 @@ jobs:
           for kind in native coding; do
             case_number=$((case_number + 1))
             sudo env PATH="${PATH}:/snap/bin" GITHUB_ACTIONS=true RUNNER_ENVIRONMENT=github-hosted GITHUB_SHA="${GITHUB_SHA}" \
-              node scripts/acceptance/workload-usage-physical.mjs --kind "$kind" --cpus 2 --memory-gib 2 --pool-fallback --renew \
+              node scripts/acceptance/workload-usage-physical.mjs --kind "$kind" --cpus 1 --memory-gib 2 --pool-fallback --renew \
               --image-context "${RUNNER_TEMP}/office-acceptance/image/image-context.json" \
               --out "${RUNNER_TEMP}/workload-acceptance/case-${case_number}"
             case_number=$((case_number + 1))
             sudo env PATH="${PATH}:/snap/bin" GITHUB_ACTIONS=true RUNNER_ENVIRONMENT=github-hosted GITHUB_SHA="${GITHUB_SHA}" \
-              node scripts/acceptance/workload-usage-physical.mjs --kind "$kind" --cpus 2 --memory-gib 2 --plan dedicated \
+              node scripts/acceptance/workload-usage-physical.mjs --kind "$kind" --cpus 1 --memory-gib 2 --plan dedicated \
               --image-context "${RUNNER_TEMP}/office-acceptance/image/image-context.json" \
               --out "${RUNNER_TEMP}/workload-acceptance/case-${case_number}"
           done
@@ -414,7 +422,7 @@ jobs:
             kind=native
             if [ "$scenario" = shared-claims ]; then kind=coding; fi
             sudo env PATH="${PATH}:/snap/bin" GITHUB_ACTIONS=true RUNNER_ENVIRONMENT=github-hosted GITHUB_SHA="${GITHUB_SHA}" \
-              node scripts/acceptance/workload-usage-physical.mjs --kind "$kind" --cpus 2 --memory-gib 2 --"$scenario" \
+              node scripts/acceptance/workload-usage-physical.mjs --kind "$kind" --cpus 1 --memory-gib 2 --"$scenario" \
               --image-context "${RUNNER_TEMP}/office-acceptance/image/image-context.json" \
               --out "${RUNNER_TEMP}/workload-acceptance/case-${case_number}"
           done

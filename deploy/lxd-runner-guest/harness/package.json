@@ -4,6 +4,6 @@
 	"private": true,
 	"dependencies": {
 		"@anthropic-ai/claude-code": "2.1.231",
-		"@openai/codex": "0.147.0"
+		"@openai/codex": "0.155.1"
 	}
 }

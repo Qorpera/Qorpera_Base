@@ -17,7 +17,7 @@ package emits a checksum manifest containing:
 - the assignment-scoped runner, native-provider sidecar, sandbox probe, and root bootstrap bundles;
 - three system units with separate `qorpera-runner` and `qorpera-native-provider` identities;
 - a fixed shared execution group (`qorpera-native-execution`, GID 42041) used only for the disposable job workspace;
-- locked official Codex CLI 0.147.0 and Claude Code 2.1.231 package graphs; and
+- locked official Codex CLI 0.155.1 and Claude Code 2.1.231 package graphs; and
 - the fail-closed image-contract installer; and
 - the exact keyless-signed OCI runner archive, its retained Cosign bundle, and
   a contract binding their hashes to the originating workflow identity and

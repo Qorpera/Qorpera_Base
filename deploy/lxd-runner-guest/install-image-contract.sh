@@ -267,7 +267,7 @@ ln -sfn /opt/qorpera-harnesses/node_modules/@anthropic-ai/claude-code-linux-x64/
 
 codex_version=$(DISABLE_AUTOUPDATER=1 /usr/local/bin/codex --version)
 claude_version=$(DISABLE_AUTOUPDATER=1 /usr/local/bin/claude --version)
-if [[ ${codex_version} != *"0.147.0"* || ${claude_version} != 2.1.231* ]]; then
+if [[ ${codex_version} != "codex-cli 0.155.1" || ${claude_version} != 2.1.231* ]]; then
 	echo "The installed native harness versions do not match their package lock." >&2
 	exit 1
 fi
@@ -359,7 +359,7 @@ printf '%s\n' \
 	"  \"guest_package_manifest_sha256\": \"${manifest_sha256}\"," \
 	"  \"node_version\": \"${node_version}\"," \
 	"  \"podman_version\": \"${podman_version}\"," \
-	'  "codex_version": "0.147.0",' \
+	'  "codex_version": "0.155.1",' \
 	'  "claude_code_version": "2.1.231",' \
 	"  \"runner_image\": \"${runner_image}\"," \
 	"  \"native_execution_gid\": ${NATIVE_EXECUTION_GID}" \

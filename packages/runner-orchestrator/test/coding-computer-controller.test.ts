@@ -13,6 +13,11 @@ import {
 } from "../src/coding-machine.ts";
 import { PaidComputerGuard, PaidComputerGuardJournal, type PaidComputerPermit } from "../src/computer-paid-guard.ts";
 import { LxdPaidComputerGuardPhysical } from "../src/computer-paid-guard-lxd.ts";
+import {
+	type PaidComputerUsageFrame,
+	paidComputerUsageCursor,
+	parsePaidComputerUsageEntry,
+} from "../src/computer-paid-usage.ts";
 import type {
 	LxdInstanceClock,
 	LxdInstanceFile,
@@ -25,7 +30,7 @@ afterEach(async () => {
 	await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 const signal = () => new AbortController().signal;
-async function fixture() {
+async function fixture(usage = false) {
 	const root = await realpath(await mkdtemp(join(tmpdir(), "paid-controller-")));
 	roots.push(root);
 	await chmod(root, 0o700);
@@ -180,8 +185,36 @@ async function fixture() {
 				return abandonmentClosure;
 			}
 			if (!permit) throw new Error("No permit");
+			if (method === "qorpera_record_computer_guard_samples") {
+				const frames = request.entries as PaidComputerUsageFrame[];
+				for (const frame of frames) {
+					const recorded = parsePaidComputerUsageEntry(JSON.parse(frame.entryText)).sample;
+					if (recorded.observationId === lastSample?.observationId) continue;
+					if (recorded.previousObservationId !== (lastSample?.observationId ?? null))
+						throw new Error("SQL predecessor differs");
+					lastSample = structuredClone(recorded) as unknown as Record<string, unknown>;
+					if (recorded.state === "running")
+						permit = {
+							...permit,
+							state: "bound",
+							physicalId: recorded.physicalId,
+							guestBootId: recorded.guestBootId,
+						};
+				}
+				return {
+					schema: "qorpera.computer-guard-usage-receipt/v1",
+					permit,
+					cursor: paidComputerUsageCursor(frames.at(-1)!),
+					sealed: lastSample?.state === "stopped" || lastSample?.state === "absent",
+					lastSample,
+				};
+			}
+
 			if (request.generation !== permit.generation) throw new Error("SQL generation differs");
-			if ((request.sample as Record<string, unknown>).previousObservationId !== (lastSample?.observationId ?? null))
+			if (
+				!(usage && (request.sample as Record<string, unknown>).observationId === lastSample?.observationId) &&
+				(request.sample as Record<string, unknown>).previousObservationId !== (lastSample?.observationId ?? null)
+			)
 				throw new Error("SQL predecessor differs");
 			lastSample = structuredClone(request.sample as Record<string, unknown>);
 			if (lastSample.state === "running")
@@ -215,10 +248,24 @@ async function fixture() {
 		}),
 	};
 	const clock = async () => ({ ...host });
+	const usageOptions = usage
+		? {
+				usageCapture: {
+					capture: async () => ({
+						host: await clock(),
+						guestBootId,
+						guestUptimeMs: host.uptimeMs - 50000,
+						evidenceSha256: "e".repeat(64),
+						observedAt: new Date().toISOString(),
+					}),
+				},
+			}
+		: {};
 	const guard = new PaidComputerGuard(
 		new PaidComputerGuardJournal(root),
 		new LxdPaidComputerGuardPhysical(client, clock),
 		clock,
+		usageOptions,
 	);
 	await guard.initialize();
 	const options = { control, guard, client, clock, owner: "executor", storage, now };
@@ -276,6 +323,7 @@ async function fixture() {
 				new PaidComputerGuardJournal(root),
 				new LxdPaidComputerGuardPhysical(client, clock),
 				clock,
+				usageOptions,
 			);
 			await restarted.initialize();
 			return restarted;
@@ -291,6 +339,59 @@ async function fixture() {
 }
 
 describe("paid coding computer controller", () => {
+	it.each([false, true])(
+		"uploads the guard-owned stream and waits for sealed ACK before finish (lost upload reply: %s)",
+		async (lost) => {
+			const f = await fixture(true);
+			await f.start();
+			const permitId = f.getPermit()!.permitId;
+			expect((await f.guard.latest(f.machine.machineId))?.usageRequired).toBe(true);
+			await f.controller.observe(f.machine.machineId, signal());
+			expect(f.getPermit()?.state).toBe("prepared");
+			expect(
+				f.control.call.mock.calls.filter(([method]) => method.includes("bind") || method.includes("checkpoint")),
+			).toHaveLength(0);
+			f.guard.tickUsage();
+			await f.guard.settleUsage(permitId);
+			const page = await f.guard.readUsage(permitId);
+			expect(page.head.sequence).toBe(1);
+			if (lost) {
+				const call = f.control.call.getMockImplementation()!;
+				let lose = true;
+				f.control.call.mockImplementation(async (method, request) => {
+					const result = await call(method, request);
+					if (method === "qorpera_record_computer_guard_samples" && lose) {
+						lose = false;
+						throw new Error("guard upload reply lost");
+					}
+					return result;
+				});
+				await expect(f.controller.observe(f.machine.machineId, signal())).rejects.toThrow("upload reply lost");
+				expect((await f.guard.readUsage(permitId)).acknowledgedThrough.sequence).toBe(0);
+			}
+			await f.controller.observe(f.machine.machineId, signal());
+			expect(f.getPermit()?.state).toBe("bound");
+			expect((await f.guard.readUsage(permitId)).acknowledgedThrough).toEqual(page.head);
+			expect(f.client.readInstanceClock).not.toHaveBeenCalled();
+			await f.controller.stop(f.machine.machineId, signal());
+			await f.controller.observe(f.machine.machineId, signal());
+			expect(
+				f.control.call.mock.calls.filter(([method]) => method === "qorpera_finish_coding_computer_permit"),
+			).toHaveLength(0);
+			f.guard.tickUsage();
+			await f.guard.settleUsage(permitId);
+			await f.controller.observe(f.machine.machineId, signal());
+			expect(f.getPermit()?.state).toBe("closed");
+			expect(await f.guard.list()).toHaveLength(0);
+			expect(
+				f.control.call.mock.calls.filter(([method]) => method.includes("bind") || method.includes("checkpoint")),
+			).toHaveLength(0);
+			expect(
+				f.control.call.mock.calls.filter(([method]) => method === "qorpera_finish_coding_computer_permit"),
+			).toHaveLength(1);
+		},
+	);
+
 	it.each([false, true])(
 		"settles the canonical successor after lost renewal and ownership change (lost finish: %s)",
 		async (lostFinish) => {
