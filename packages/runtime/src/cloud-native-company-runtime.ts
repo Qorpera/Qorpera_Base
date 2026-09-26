@@ -1,6 +1,12 @@
 import { createHash } from "node:crypto";
 import type { CloudContentAddressedStore } from "@qorpera/cloud-client/node/cloud-object-store";
 import type { JsonValue } from "@qorpera/contracts";
+import {
+	CLOUD_ACTION_REVIEW_HOLD_MS,
+	CloudActionReviewGate,
+	cloudActionReviewRequest,
+	cloudConnectorEffects,
+} from "./cloud-action-review.ts";
 import { CLOUD_AGENT_SEND_INSTRUCTIONS, CloudAgentMouth, parseCloudAgentSendInput } from "./cloud-agent-mouth.ts";
 import type { CloudCompanyComputerSessionFactory } from "./cloud-company-computer-control.ts";
 import { type CloudCompanyPathControl, CloudCompanyPathGateway } from "./cloud-company-path-gateway.ts";
@@ -40,6 +46,7 @@ import {
 	cloudToolJsonText,
 } from "./cloud-native-tool-boundary.ts";
 import type { CloudNativeToolOperationControlPlane } from "./cloud-native-tool-operations.ts";
+import { cloudReviewRuleTools } from "./cloud-review-rule-tools.ts";
 import { cloudRoutineDecisionTool, cloudRoutineTools } from "./cloud-routine-tools.ts";
 import { assertCloudRuntimeBundle } from "./cloud-runtime-bundle.ts";
 import {
@@ -404,6 +411,22 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					runtimeInstructions: compileCloudNativeCompanyInstructions(context, wake),
 					signal,
 					timeoutMs: this.#timeoutMs,
+					// Auto-review (v130): acting calls wait for the reviewer, or for a member's approval.
+					// A call a member is likely watching (their message, their post in the thread, a
+					// first run) holds on its card for a while; routines and coworker wakes park at once.
+					actionReview: (reviewer) =>
+						new CloudActionReviewGate({
+							binding,
+							control: {
+								call: (method, argumentsValue, requestSignal) =>
+									this.#paths.call(method, argumentsValue, requestSignal),
+							},
+							reviewer,
+							request: cloudActionReviewRequest(context, wake),
+							holdMs: ["human", "room", "first-run"].includes(wake.kind) ? CLOUD_ACTION_REVIEW_HOLD_MS : 0,
+							connectorEffects: cloudConnectorEffects(connectorDescriptors),
+							observability,
+						}),
 					tools: async (identity, operations, run) => {
 						if (
 							Object.entries(context.identity).some(
@@ -460,6 +483,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 													]
 												: []),
 											...cloudSidebarTools(binding, identity, this.#paths),
+											...cloudReviewRuleTools(binding, identity, this.#paths),
 										]),
 								// The notebook is the agent's own: a worker of the same agent recalls it,
 								// and writes to it only when its dispatch allows Company File writes.
