@@ -17,7 +17,14 @@ case "$base_image" in *@sha256:*) ;; *) echo "Linux test base image must be dige
 
 cd "$repository_root"
 node --test scripts/package-ephemeral-runner.test.mjs
-npm run pack:ephemeral-runner
+# Release train: outside release branches the committed runtime bundle may lag
+# its source by design. The image under test then packages the committed bundle
+# identity (deploy/first-node/RUNTIME-RELEASE-TRAIN.md).
+if [ "${QORPERA_ENFORCE_RUNTIME_BUNDLE:-}" = 1 ]; then
+	npm run pack:ephemeral-runner
+else
+	node --import ./scripts/fixtures/committed-runtime-bundle/register.mjs scripts/package-ephemeral-runner.mjs
+fi
 podman pull "$base_image"
 podman build \
 	--pull=never \

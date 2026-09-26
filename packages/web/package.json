@@ -6,7 +6,8 @@
 	"description": "Qorpera web app — a pure cloud client for Qorpera companies (no local kernel).",
 	"scripts": {
 		"build": "npm --prefix ../.. run build:web-sdk && node scripts/build.mjs",
-		"build:release": "npm --prefix ../.. run check:runtime-bundle && npm --prefix ../.. run build:web-sdk && node scripts/build.mjs --release",
+		"build:release": "npm --prefix ../.. run check:runtime-bundle && npm run build:release-artifact",
+		"build:release-artifact": "npm --prefix ../.. run build:web-sdk && node scripts/build.mjs --release",
 		"dev": "npm --prefix ../.. run build:web-sdk && node scripts/build.mjs --serve",
 		"typecheck": "tsgo -p tsconfig.json && tsgo -p tsconfig.test.json",
 		"test": "vitest run",
