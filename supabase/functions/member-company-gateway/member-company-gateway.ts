@@ -151,7 +151,8 @@ export async function forwardMemberCompanyGateway(
 	try {
 		// Match the gateway's JSON bound: a valid 32 KiB text edit can expand sixfold
 		// when control characters are escaped in JSON.
-		if (request.method !== "GET") body = await bytes(request, UPLOAD.test(path) ? MAX_BYTES : 256 * 1024, signal);
+		if (request.method !== "GET")
+			body = await bytes(request, UPLOAD.test(path) ? MAX_BYTES : PRESENCE.test(path) ? 1024 * 1024 : 256 * 1024, signal);
 	} catch (error) {
 		return fail(error instanceof BodyTooLarge ? 413 : 408, "Member gateway request could not be read");
 	}

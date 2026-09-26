@@ -171,6 +171,44 @@ describe("public member Company File gateway", () => {
 		});
 		assert.equal(response.status, 200);
 	});
+	it("admits the SDK's bounded presence candidate payload without applying the smaller edit limit", async () => {
+		const path = `/v1/member-company-presence/${id}/${id}`;
+		const routes = Array.from({ length: 136 }, () => ({
+			token: "a".repeat(64),
+			relation: "self",
+			extent: "object",
+			activity: "reading",
+		}));
+		const candidates = Array.from({ length: 32 }, () => ({
+			schema: "qorpera.company-path-presence/v1",
+			companyId: id,
+			environmentId: id,
+			clientId: id,
+			sequence: 1,
+			issuedAt: 1,
+			expiresAt: 30001,
+			signature: `${"a".repeat(86)}==`,
+			routes,
+		}));
+		const body = JSON.stringify({ paths: ["notes.txt"], candidates, truncated: false });
+		assert.ok(body.length > 256 * 1024 && body.length <= 1024 * 1024);
+		const response = await forwardMemberCompanyGateway(request(path, { method: "POST", body }), {
+			upstreamUrl,
+			fetchImplementation: async (_url, init) => {
+				assert.equal(new TextDecoder().decode(init?.body as Uint8Array), body);
+				return Response.json({ state: "available" });
+			},
+		});
+		assert.equal(response.status, 200);
+		const oversized = await forwardMemberCompanyGateway(
+			request(path, { method: "POST", body: "x".repeat(1024 * 1024 + 1) }),
+			{
+				upstreamUrl,
+				fetchImplementation: async () => assert.fail("oversized presence forwarded"),
+			},
+		);
+		assert.equal(oversized.status, 413);
+	});
 	it("rejects an oversized response before consuming its stream", async () => {
 		let cancelled = false;
 		const response = await forwardMemberCompanyGateway(request(), {
@@ -284,10 +322,89 @@ describe("public member Company File gateway", () => {
 			clearTimeout(keepAlive);
 		}
 	});
+	it("cancels a request body on caller abort without submitting it", async () => {
+		const abort = new AbortController();
+		let cancelled = false;
+		const body = new ReadableStream<Uint8Array>({
+			cancel() {
+				cancelled = true;
+			},
+		});
+		const init: RequestInit & { duplex: "half" } = { method: "POST", body, signal: abort.signal, duplex: "half" };
+		const pending = forwardMemberCompanyGateway(request(edits, init), {
+			upstreamUrl,
+			fetchImplementation: async () => assert.fail("cancelled request forwarded"),
+		});
+		abort.abort();
+		assert.equal((await pending).status, 408);
+		assert.equal(cancelled, true);
+	});
+	it("cancels upstream response streaming when the caller leaves", async () => {
+		const abort = new AbortController();
+		let cancelled = false;
+		const pending = forwardMemberCompanyGateway(request(object, { signal: abort.signal }), {
+			upstreamUrl,
+			fetchImplementation: async (_url, init) => {
+				queueMicrotask(() => abort.abort());
+				assert.ok(init?.signal);
+				return new Response(
+					new ReadableStream({
+						cancel() {
+							cancelled = true;
+						},
+					}),
+				);
+			},
+		});
+		assert.equal((await pending).status, 503);
+		assert.equal(cancelled, true);
+	});
+	it("bounds response bytes even without a content length", async () => {
+		let cancelled = false;
+		const response = await forwardMemberCompanyGateway(request(), {
+			upstreamUrl,
+			fetchImplementation: async () =>
+				new Response(
+					new ReadableStream<Uint8Array>({
+						pull(controller) {
+							controller.enqueue(new Uint8Array(1024 * 1024));
+						},
+						cancel() {
+							cancelled = true;
+						},
+					}),
+				),
+		});
+		assert.equal(response.status, 502);
+		assert.equal(cancelled, true);
+	});
+	for (const kind of ["edits", "proposals"])
+		it(`forwards exact ${kind} review requests`, async () => {
+			const body = JSON.stringify({ planSha256: "a".repeat(64), decision: "approve" });
+			const response = await forwardMemberCompanyGateway(
+				request(`/v1/member-company-file/${id}/${kind}/${id}/review`, {
+					method: "POST",
+					body,
+					headers: { "content-type": "application/json" },
+				}),
+				{
+					upstreamUrl,
+					fetchImplementation: async (_url, init) => {
+						assert.equal(init?.method, "POST");
+						assert.equal(new TextDecoder().decode(init?.body as Uint8Array), body);
+						return Response.json({ state: "applied" });
+					},
+				},
+			);
+			assert.equal(response.status, 200);
+		});
 	for (const path of [
 		`/v1/member-company-snapshot-objects/${id}/${id}/${"b".repeat(64)}`,
 		`/v1/member-file-exports/${id}/${id}/${"b".repeat(64)}`,
 		`/v1/member-company-file/${id}/edits/${id}`,
+		`/v1/member-company-file/${id}/edits/${id}/content`,
+		`/v1/member-company-file/${id}/edits/${id}/file`,
+		`/v1/member-company-file/${id}/proposals/${id}/content`,
 		`/v1/member-company-file/${id}/proposals/${id}/file`,
 	])
 		it(`supports governed read route ${path.split("/")[2]}`, async () => {

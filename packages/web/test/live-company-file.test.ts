@@ -24,10 +24,12 @@ afterEach(() => {
 	vi.unstubAllGlobals();
 	document.body.replaceChildren();
 });
-async function setup(offerProposal = false) {
+async function setup(offerProposal = false, useBridge = true) {
 	const f = fixture(),
 		stop = new AbortController();
 	f.cloud.config.objectGatewayUrl = "https://objects.fixture.invalid";
+	if (useBridge)
+		f.cloud.config.memberCompanyGatewayUrl = `${f.cloud.config.projectUrl}/functions/v1/member-company-gateway`;
 	let contents = "Original text",
 		version = id(40),
 		exists = true;
@@ -73,9 +75,14 @@ async function setup(offerProposal = false) {
 	const fetch = vi.fn(async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
 		const url = new URL(String(input)),
 			method = url.pathname.split("/").at(-1)!;
-		expect(url.origin).toBe(new URL(f.cloud.config.projectUrl).origin);
-		if (url.pathname.includes("/v1/member-"))
-			expect(url.pathname).toMatch(/^\/functions\/v1\/member-company-gateway\/v1\/member-/);
+		if (url.pathname.includes("/v1/member-")) {
+			expect(url.origin).toBe(
+				new URL(useBridge ? f.cloud.config.projectUrl : f.cloud.config.objectGatewayUrl).origin,
+			);
+			expect(url.pathname).toMatch(
+				useBridge ? /^\/functions\/v1\/member-company-gateway\/v1\/member-/ : /^\/v1\/member-/,
+			);
+		} else expect(url.origin).toBe(new URL(f.cloud.config.projectUrl).origin);
 		expect(init?.redirect).toBe("error");
 		expect(new Headers(init?.headers).get("authorization")).toBe("Bearer fixture-token");
 		const body = typeof init?.body === "string" ? JSON.parse(init.body) : {};
@@ -184,6 +191,18 @@ async function mount(f: Awaited<ReturnType<typeof setup>>) {
 	return view;
 }
 describe("product governed File boundary", () => {
+	it("keeps the configured direct transport until bridge activation", async () => {
+		const f = await setup(false, false),
+			view = await mount(f);
+		button(view.el, "notes.txt").click();
+		await vi.waitFor(() => expect(view.el.querySelector("textarea")?.value).toBe("Original text"));
+		const objects = f.fetch.mock.calls.filter(([url]) => String(url).includes("/v1/member-company-objects/"));
+		expect(objects.length).toBeGreaterThan(0);
+		for (const [url] of objects) expect(new URL(String(url)).origin).toBe(f.cloud.config.objectGatewayUrl);
+		expect(f.fetch.mock.calls.some(([url]) => String(url).includes("/functions/v1/member-company-gateway"))).toBe(
+			false,
+		);
+	});
 	it("says what is opening in its status line, outside the inert panel, until the panel has read the files", async () => {
 		const f = await setup();
 		const view = new LiveCompanyFileView(f.company, f.stop, profileA.profileId, "owner");

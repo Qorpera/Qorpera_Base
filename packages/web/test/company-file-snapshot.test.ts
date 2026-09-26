@@ -17,6 +17,7 @@ function setup() {
 	vi.stubGlobal("crypto", webcrypto);
 	const f = fixture();
 	f.cloud.config.objectGatewayUrl = "https://objects.fixture.invalid";
+	f.cloud.config.memberCompanyGatewayUrl = `${f.cloud.config.projectUrl}/functions/v1/member-company-gateway`;
 	vi.mocked(f.api.usesPathGateway).mockResolvedValue(true);
 	const company = new CompanyController(f.api, profileA, userA.id);
 	company.store.set({ team, loading: false });

@@ -51,13 +51,14 @@ export class WebCompanyFiles {
 			},
 			fetch: async (input, init) => {
 				this.current();
-				// Browser DNS may resolve the node to a private tailnet address. Send member
-				// gateway traffic through the public project endpoint; the gateway still
-				// authenticates the member and checks current resource authority.
+				// Enable the public bridge only after its deployment has been accepted.
+				// This is a configured transport selection, never a fallback after a write.
 				const url = new URL(input instanceof Request ? input.url : input);
 				const target =
-					url.origin === new URL(cloud.config.objectGatewayUrl).origin && url.pathname.startsWith("/v1/member-")
-						? `${new URL(cloud.config.projectUrl).origin}/functions/v1/member-company-gateway${url.pathname}${url.search}`
+					cloud.config.memberCompanyGatewayUrl &&
+					url.origin === new URL(cloud.config.objectGatewayUrl).origin &&
+					url.pathname.startsWith("/v1/member-")
+						? `${cloud.config.memberCompanyGatewayUrl}${url.pathname}${url.search}`
 						: input;
 				const response = await fetch(input instanceof Request ? new Request(target, input) : target, {
 					...init,
