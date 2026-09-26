@@ -463,7 +463,7 @@ report. It stops that one run; a scheduled routine keeps its schedule. Who may
 stop is unchanged: a member who can write the conversation and started the
 run's work (for a routine, the member who saved it, or for whom its agent
 set it up) or an owner or admin.
-Before this (until bundle v141) the Stop only reached a member's own turns.
+Before this amendment the Stop only reached a member's own turns.
 
 ### 7.4 Ceilings and brake
 

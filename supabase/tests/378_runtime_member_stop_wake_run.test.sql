@@ -1,6 +1,6 @@
 -- @fixture 300_runtime_wake_bus.test.sql until "-- END WAKE FIXTURE"
 -- A member's Stop stops the run the agent is on in the displayed conversation,
--- whatever woke it (20260926141000). A routine run is a wake run in its agent's
+-- whatever woke it (20260926183100). A routine run is a wake run in its agent's
 -- thread; the conversation run control saw member turns only, so the web's Stop
 -- never offered a routine run. Same authority as a member turn: the member may
 -- write the conversation and saved the routine (created the job) or is an owner

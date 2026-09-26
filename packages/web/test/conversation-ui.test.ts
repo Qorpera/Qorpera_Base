@@ -791,7 +791,7 @@ describe("conversation UI boundaries", () => {
 
 	it("stops a routine run working in the agent's thread through the conversation run control", async () => {
 		// A routine run is a wake run in the agent's own thread. The cloud's run control
-		// reports it like a member's turn (20260926141000); the composer's one button
+		// reports it like a member's turn (20260926183100); the composer's one button
 		// stops its exact id over the real transport; with a draft it is Send again.
 		const routineRun = id(74);
 		let working = true;
