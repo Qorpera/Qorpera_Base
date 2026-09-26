@@ -546,7 +546,7 @@ export class CloudApi {
 			.then(parseSessionInputReceipt);
 	}
 
-	/** Answer an approval card of an agent's action (kernel bundle v115). Allow once,
+	/** Answer an approval card of an agent's action (kernel bundle v130). Allow once,
 	 * Always allow (a built-in check's card only; saves `ruleText` as a company
 	 * Allow rule) or Deny. When the agent stopped waiting, the answer wakes it on
 	 * the member's own model account, which `sponsor` names. */

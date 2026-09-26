@@ -154,7 +154,7 @@ export interface ActionReviewDraft {
 }
 
 /**
- * An approval card of an agent's action (auto-review, kernel bundle v115): what
+ * An approval card of an agent's action (auto-review, kernel bundle v130): what
  * the agent wants to do, why it waits, and the exact call. The member it waits
  * for answers Allow once, Deny, or, on a built-in check's card, Always allow
  * with the proposed rule (editable) saved for the company. Everyone else sees

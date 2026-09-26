@@ -2,7 +2,7 @@ import type { Cloud } from "./client.ts";
 import type { JsonValue } from "./types.ts";
 
 /**
- * Auto-review rules and approval cards (kernel bundle v115; CLIENT-CONTRACT.md
+ * Auto-review rules and approval cards (kernel bundle v130; CLIENT-CONTRACT.md
  * §2 "Auto-review rules and approvals"). A rule is one sentence, "When an agent
  * wants to …, it should: Ask first | Allow automatically", written by a member
  * for themself or, by an owner or admin, for the whole company. Before an

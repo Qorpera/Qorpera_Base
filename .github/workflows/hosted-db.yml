@@ -9,6 +9,14 @@ on:
       - 'supabase/tests/**'
       - 'scripts/test-hosted-db.mjs'
       - 'scripts/test-hosted-db.test.mjs'
+      - 'scripts/test-coding-turn-backfill.mjs'
+      - 'scripts/fixtures/coding-turn-pre-continuity.sql'
+      - 'scripts/test-runtime-bundle-activation.mjs'
+      - 'scripts/test-email-draft-e2e.mjs'
+      - 'scripts/fixtures/email-draft-e2e*'
+      - 'packages/runtime/src/cloud-secret-*.ts'
+      - 'packages/runtime/src/cloud-connector-*.ts'
+      - 'packages/web/src/cloud/email-drafts.ts'
       - 'scripts/test-runtime-office-current-provider-activation.mjs'
       - 'scripts/test-runtime-node-capacity.mjs'
 
@@ -43,6 +51,12 @@ jobs:
       - name: Apply all migrations and run SQL regression tests
         run: npm run test:hosted-db
 
+      - name: Runtime activation predecessor and concurrent deployment guards
+        run: node scripts/test-runtime-bundle-activation.mjs
+
+      - name: Email draft client, broker and PostgreSQL integration
+        run: node scripts/test-email-draft-e2e.mjs
+
       - name: Node capacity and company computer slot suspension against disposable PostgreSQL
         run: node scripts/test-runtime-node-capacity.mjs
 
@@ -51,3 +65,6 @@ jobs:
 
       - name: Verify current office activation against disposable PostgreSQL
         run: node scripts/test-runtime-office-current-provider-activation.mjs
+
+      - name: Coding sessions recorded before per-turn history against disposable PostgreSQL
+        run: node scripts/test-coding-turn-backfill.mjs

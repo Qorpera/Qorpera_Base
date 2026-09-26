@@ -10,7 +10,7 @@ import { badge, button, h, notice, replace } from "../../ui/dom.ts";
 import { t } from "../../ui/preferences.ts";
 
 /**
- * Settings → Rules (auto-review, kernel bundle v115). Before an agent acts
+ * Settings → Rules (auto-review, kernel bundle v130). Before an agent acts
  * outside the company (sends, buys, deletes, hires, sets up routines), it checks
  * these rules. A rule is one sentence, "When an agent wants to …, it should:
  * Ask first | Allow automatically". Every member writes their own; owners and

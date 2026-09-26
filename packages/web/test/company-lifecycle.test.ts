@@ -86,7 +86,7 @@ function company() {
 	return { ...f, controller, write };
 }
 
-describe("answering an approval card of an agent's action (auto-review, v115)", () => {
+describe("answering an approval card of an agent's action (auto-review, v130)", () => {
 	const reviewed = {
 		reviewId: id(597),
 		answer: "allow_once" as const,

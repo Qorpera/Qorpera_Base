@@ -10,6 +10,7 @@ import { phrase, t, uiText } from "../../ui/preferences.ts";
 import type { AuthController } from "../auth.ts";
 import { CompanyController } from "../company.ts";
 import { type AccountViewState, renderAccount } from "./account.ts";
+import { renderAppearance } from "./appearance.ts";
 import { FriendsController, renderFriends } from "./friends.ts";
 import type { HubController } from "./hub.ts";
 import { renderPlan } from "./plan.ts";
@@ -24,8 +25,14 @@ const TABS = [
 		id: "general",
 		label: phrase("General"),
 		icon: "settings",
+		keywords: "account language region time zone timezone generelt konto sprog dansk engelsk område tidszone",
+	},
+	{
+		id: "appearance",
+		label: phrase("Appearance"),
+		icon: "appearance",
 		keywords:
-			"account appearance theme composer color colour blue green grey gray language region time zone timezone generelt konto udseende tema lys mørk skrivefelt farve blå grøn grå sprog dansk engelsk område tidszone",
+			"theme composer color colour blue green grey gray interface size big small udseende tema lys mørk skrivefelt farve blå grøn grå grænseflade størrelse stor lille",
 	},
 	{
 		id: "company",
@@ -312,6 +319,7 @@ export class SettingsView {
 			button.tabIndex = tab === id ? 0 : -1;
 		}
 		if (tab === "general") this.#general();
+		else if (tab === "appearance") this.#panels.set(tab, renderAppearance());
 		else if (tab === "plan") this.#plan();
 		else if (tab === "friends") this.#drawFriends();
 		else if (tab === "company") this.#drawCompany();

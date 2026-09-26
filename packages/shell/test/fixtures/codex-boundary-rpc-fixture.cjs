@@ -26,11 +26,24 @@ const companyCalls = mode === "company-office"
 			{ tool: "ask_member", arguments: { idempotencyKey: "channel", text: "One thing to decide first.", surface: "question", title: "Which channel should the digest go to?", payload: { options: [{ label: "#general", value: "general" }, { label: "#finance", value: "finance", style: "primary" }] } } },
 			{ tool: "ask_member", arguments: { idempotencyKey: "channel", text: "One thing to decide first.", surface: "question", title: "Which channel should the digest go to?", payload: { options: [{ label: "#general", value: "general" }, { label: "#finance", value: "finance", style: "primary" }] } } },
 		]
+	: mode === "company-cards-long-key"
+	? [
+			// The longest key ask_member accepts, then its retry: both must finish the turn.
+			{ tool: "ask_member", arguments: { idempotencyKey: `digest-channel-${"k".repeat(113)}`, text: "One thing to decide first.", surface: "question", title: "Which channel should the digest go to?", payload: { options: [{ label: "#general" }, { label: "#finance" }] } } },
+			{ tool: "ask_member", arguments: { idempotencyKey: `digest-channel-${"k".repeat(113)}`, text: "One thing to decide first.", surface: "question", title: "Which channel should the digest go to?", payload: { options: [{ label: "#general" }, { label: "#finance" }] } } },
+		]
 	: mode === "company-cards-retry"
 	? [
 			// What the live model sent (options as plain strings), then the card its refusal asked for.
 			{ tool: "ask_member", arguments: { idempotencyKey: "fruit", text: "Pick one.", surface: "question", title: "Apples or pears?", payload: { options: ["Apples", "Pears"] } } },
 			{ tool: "ask_member", arguments: { idempotencyKey: "fruit", text: "Pick one.", surface: "question", title: "Apples or pears?", payload: { options: [{ label: "Apples" }, { label: "Pears" }] } } },
+		]
+	: mode === "company-cards-unavailable"
+	? [
+			// Valid protocol shapes with no executor: neither may publish a card or end the turn.
+			{ tool: "ask_member", arguments: { idempotencyKey: "page-form", text: "Enter your email.", surface: "form", title: "Sign in", payload: { domain: "app.example.com", fields: [{ id: "email", label: "Email", type: "email" }] } } },
+			{ tool: "ask_member", arguments: { idempotencyKey: "vault-login", text: "Signing in.", surface: "credential", title: "Company account", payload: { name: "example-login", domain: "app.example.com" } } },
+			{ tool: "send_message", arguments: { idempotencyKey: "fallback", text: "This app cannot fill the page or sign in from the vault. No sign-in was performed.", phase: "final" } },
 		]
 	: mode === "company-silent" || mode === "company-no-send" || mode === "company-worker"
 	? [{ tool: "company_read", arguments: { path: "note.md", offset: 0, limit: 256 } }]

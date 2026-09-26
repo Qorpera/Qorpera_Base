@@ -52,7 +52,8 @@ import { cloudSidebarTools } from "./cloud-sidebar-tools.ts";
 import {
 	CLOUD_ASK_MEMBER_INSTRUCTIONS,
 	CLOUD_ASK_MEMBER_PAYLOAD_SCHEMA,
-	CLOUD_INTERACTION_SURFACES,
+	CLOUD_ASK_MEMBER_SURFACES,
+	cloudAskMemberFinalKey,
 	cloudInteractionEventId,
 	parseCloudAskMemberInput,
 } from "./cloud-thread-interactions.ts";
@@ -62,7 +63,7 @@ import {
 	cloudWakeIsOwnThread,
 	parseCloudWakeEnvelope,
 } from "./cloud-wake-bus.ts";
-import { cloudWorkerToolFilter, cloudWorkerTools } from "./cloud-worker-tools.ts";
+import { cloudWorkerToolFilter, cloudWorkerTools, describeCloudAgentOpenWork } from "./cloud-worker-tools.ts";
 
 type NativeCompanyControl = CloudNativeToolAuthorityReader &
 	CloudNativeToolOperationControlPlane &
@@ -209,6 +210,13 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				control: this.#paths,
 				store: this.#store(context.identity.companyId, binding, signal),
 			});
+			// How much open work the agent has (counts only), where it keeps todos and workers:
+			// a company run that is not itself a worker. Asked alongside the notebook; like
+			// memory, it never blocks the run.
+			const openWorkRequest =
+				context.identity.audienceKind === "company" && !cloudWorkerToolFilter(wake).isWorker
+					? describeCloudAgentOpenWork(binding, this.#paths, signal).catch(() => undefined)
+					: Promise.resolve(undefined);
 			// The agent's own notebook (contract 15.1) is composed through the trusted
 			// read lane; an unreadable notebook degrades to "unavailable" and the run
 			// still starts, because memory is never a precondition of company work.
@@ -218,7 +226,9 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					return unavailableCloudAgentMemory(cloudRuntimeErrorCategory(error, signal));
 				},
 			);
-			const prompt = composeCloudNativeCompanyPrompt(context, wake, initialPresence, memory);
+			const openWork = await openWorkRequest;
+			signal.throwIfAborted();
+			const prompt = composeCloudNativeCompanyPrompt(context, wake, initialPresence, memory, openWork);
 			composition.finish("succeeded", { outputBytes: Buffer.byteLength(prompt) });
 			const contextSha256 = createHash("sha256").update(prompt).digest("hex");
 			const mouth = new CloudAgentMouth(
@@ -280,7 +290,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					properties: {
 						idempotencyKey: { type: "string", pattern: "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" },
 						text: { type: "string", minLength: 1, maxLength: 4096 },
-						surface: { type: "string", enum: [...CLOUD_INTERACTION_SURFACES] },
+						surface: { type: "string", enum: [...CLOUD_ASK_MEMBER_SURFACES] },
 						title: { type: "string", minLength: 1, maxLength: 200 },
 						body: { type: "string", maxLength: 2000 },
 						expiresAt: { type: "string" },
@@ -296,6 +306,13 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				async execute(value, toolContext) {
 					const input = parseCloudAskMemberInput(value);
 					const eventId = cloudInteractionEventId(binding.runId, input.idempotencyKey);
+					// The sentence's send is derived and checked before the card exists: every accepted
+					// key can finish its turn, and a retry replays both the card and the same send.
+					const sentence = parseCloudAgentSendInput({
+						idempotencyKey: cloudAskMemberFinalKey(input.idempotencyKey),
+						text: input.text,
+						phase: "final",
+					});
 					const append = control.appendInteractionRequest;
 					if (!append) throw new Error("Cloud cards are unavailable on this control plane");
 					const card = await cloudToolRequest(
@@ -303,11 +320,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 						signal,
 					);
 					if (card.sessionId !== context.identity.sessionId) throw new Error("Cloud card audience changed");
-					const receipt = await mouth.send({
-						idempotencyKey: `${input.idempotencyKey}:final`,
-						text: input.text,
-						phase: "final",
-					});
+					const receipt = await mouth.send(sentence);
 					const replayed = deliveredMessageIds.has(receipt.messageId);
 					deliveredMessageIds.add(receipt.messageId);
 					const text = JSON.stringify({
