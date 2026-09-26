@@ -83,6 +83,8 @@
 
 ### Fixed
 
+- `company_write` and `company_mkdir` into a folder that does not exist are a definite `COMPANY_FILE_PARENT_MISSING` refusal (denied, `errorCategory` `parent_missing`) that tells the model to create the folder with `company_mkdir` first and repeat the call. SQL refuses it at the check (PT424), before presence and before any bytes are uploaded, and again at prepare and commit. Previously the runner uploaded the bytes, failed while building the candidate tree and reported an unconfirmed, unknown outcome.
+
 - Preserved office startup, supervision, desktop and cleanup failure causes in bounded structured diagnostics. Logs include only allowlisted stages, error codes and categories, never raw messages, credentials, paths or stacks.
 
 - Loaded Chrome for Testing's managed browser policies from its actual Linux path. The browser uses a measured dedicated Bubblewrap copy and enforcing AppArmor profile so Chromium's nested sandbox can start on Ubuntu without changing the shell/desktop profile or granting host capabilities. Browser startup refuses a missing or different enforcing profile when AppArmor is enabled.

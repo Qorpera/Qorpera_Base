@@ -27,7 +27,9 @@ function status(code: string): number {
  * the plain trusted read/list and the governed check/prepare/commit RPCs are
  * emulated, with the migrations' order of checks: a completed operation key
  * replays first; then a stale expected version is PT412
- * (20260828019950_company_path_preconditions); a moved head at commit is PT409;
+ * (20260828019950_company_path_preconditions); a new entry whose folder is not
+ * a directory is PT424 (20260926203300_company_file_missing_parent), in check,
+ * prepare and commit alike; a moved head at commit is PT409;
  * a continuation page on a moved snapshot is PT412
  * (20260828019960_runtime_request_preconditions). A deletion leaves a
  * tombstone that keeps a version, as qorpera_publish_company_path does, so
@@ -103,6 +105,9 @@ export function companyFilePostgrest() {
 			throw new FakeSqlError("PT412", "Company File path version changed");
 		if (plan.entry === null && !current?.entry)
 			throw new FakeSqlError("PT412", "Company File deletion target is unavailable");
+		const folder = parent(plan.path);
+		if (plan.entry !== null && folder && entries.get(folder)?.entry?.kind !== "directory")
+			throw new FakeSqlError("PT424", "Company File parent folder is missing");
 	};
 	const sql = async (method: string, args: Record<string, unknown>): Promise<unknown> => {
 		if (method === "qorpera_verify_company_path_file") return null;
@@ -227,6 +232,7 @@ export function companyFilePostgrest() {
 		identity,
 		gateway,
 		store,
+		objects,
 		entries,
 		requests,
 		before,
