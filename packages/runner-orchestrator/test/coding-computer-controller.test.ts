@@ -13,7 +13,12 @@ import {
 } from "../src/coding-machine.ts";
 import { PaidComputerGuard, PaidComputerGuardJournal, type PaidComputerPermit } from "../src/computer-paid-guard.ts";
 import { LxdPaidComputerGuardPhysical } from "../src/computer-paid-guard-lxd.ts";
-import type { LxdInstanceFile, LxdInstanceRecord, LxdTrackedInstanceAction } from "../src/lxd-client.ts";
+import type {
+	LxdInstanceClock,
+	LxdInstanceFile,
+	LxdInstanceRecord,
+	LxdTrackedInstanceAction,
+} from "../src/lxd-client.ts";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -85,6 +90,9 @@ async function fixture() {
 			return { project, instanceName: instance.name, operationId: randomUUID() };
 		}),
 		inspectInstanceOperation: vi.fn(async (): Promise<"pending" | "succeeded" | "failed"> => "succeeded"),
+		readInstanceClock: vi.fn(
+			async (): Promise<LxdInstanceClock> => ({ bootId: guestBootId, uptimeMs: host.uptimeMs - 50000 }),
+		),
 		readInstanceFile: vi.fn(
 			async (_project: string, _name: string, path: string): Promise<LxdInstanceFile> => ({
 				uid: 0,
@@ -314,6 +322,39 @@ describe("paid coding computer controller", () => {
 			expect(f.client.submitInstanceOperation.mock.calls.map((call) => call[1].action)).toEqual(["start", "stop"]);
 		},
 	);
+	it.each([1000, 1001, -1])("keeps the one-second, nondecreasing host clock bracket (%s ms)", async (elapsed) => {
+		const f = await fixture();
+		await f.start();
+		await f.bind();
+		const initial = f.calls("qorpera_checkpoint_coding_computer_permit").length;
+		const read = f.client.readInstanceClock.getMockImplementation()!;
+		f.client.readInstanceClock.mockImplementationOnce(async () => {
+			const guest = await read();
+			f.host.uptimeMs += elapsed;
+			return guest;
+		});
+		if (elapsed === 1000) {
+			await f.controller.observe(f.machine.machineId, signal());
+			expect(f.calls("qorpera_checkpoint_coding_computer_permit").length).toBe(initial + 1);
+		} else {
+			await expect(f.controller.observe(f.machine.machineId, signal())).rejects.toThrow("OBSERVATION_UNCONFIRMED");
+			expect(f.calls("qorpera_checkpoint_coding_computer_permit").length).toBe(initial);
+		}
+	});
+	it.each(["boot", "uptime", "fraction"])("refuses an invalid clock-port %s before SQL", async (failure) => {
+		const f = await fixture();
+		await f.start();
+		await f.bind();
+		const initial = f.calls("qorpera_checkpoint_coding_computer_permit").length;
+		const guest = await f.client.readInstanceClock();
+		f.client.readInstanceClock.mockResolvedValueOnce({
+			bootId: failure === "boot" ? "invalid" : guest.bootId,
+			uptimeMs: failure === "uptime" ? -1 : failure === "fraction" ? 0.5 : guest.uptimeMs,
+		});
+		await expect(f.controller.observe(f.machine.machineId, signal())).rejects.toThrow("OBSERVATION_UNCONFIRMED");
+		expect(f.calls("qorpera_checkpoint_coding_computer_permit").length).toBe(initial);
+	});
+
 	it("refuses a changed successor reservation before terminal settlement", async () => {
 		const f = await fixture();
 		await f.start();
@@ -643,7 +684,7 @@ describe("paid coding computer controller", () => {
 		f.host.uptimeMs += 5000;
 		await restarted.maintain(signal());
 		expect(sample().state).toBe("running");
-		f.client.readInstanceFile.mockRejectedValueOnce(new Error("guest unavailable"));
+		f.client.readInstanceClock.mockRejectedValueOnce(new Error("guest unavailable"));
 		await expect(restarted.maintain(signal())).rejects.toThrow("UNCONFIRMED");
 		f.host.uptimeMs += 5000;
 		await restarted.maintain(signal());

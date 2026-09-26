@@ -176,7 +176,7 @@ export class ComputerBillingClient {
 		this.#memberId = memberId;
 		this.#signal = signal;
 		this.#assertCurrent = assertCurrent;
-		this.#fetch = options.fetch ?? fetch;
+		this.#fetch = options.fetch ?? globalThis.fetch.bind(globalThis);
 		this.#storage = options.storage ?? {
 			getItem: (key) => sessionStorage.getItem(key),
 			setItem: (key, value) => sessionStorage.setItem(key, value),

@@ -52,6 +52,7 @@ async function fixture() {
 			},
 		),
 		inspectInstanceOperation: vi.fn(async () => "succeeded" as const),
+		readInstanceClock: vi.fn(async () => ({ bootId: guestBootId, uptimeMs: 1000 })),
 		readInstanceFile: vi.fn(async (_project: string, _name: string, path: string) => ({
 			content: Buffer.from(path === "/proc/uptime" ? "1.00 0.00\n" : `${guestBootId}\n`),
 			uid: 0,

@@ -137,6 +137,15 @@ export interface LxdClient {
 	deleteInstance(project: string, name: string, signal?: AbortSignal): Promise<void>;
 }
 
+export interface LxdInstanceClock {
+	bootId: string;
+	uptimeMs: number;
+}
+/** Narrow provider clock observation; never a caller-selected command. */
+export interface LxdClockClient {
+	readInstanceClock(project: string, name: string, signal?: AbortSignal): Promise<LxdInstanceClock>;
+}
+
 export interface LxdInstanceFile {
 	content: Buffer;
 	uid: number;
@@ -2586,6 +2595,124 @@ export class LxdUnixClient
 		)
 			throw new Error("LXD_INSTANCE_FILE_UNCONFIRMED");
 		return { ...after, content };
+	}
+
+	/** Fixed public kernel clock observation. Callers retain the physical VM and
+	 * host-clock bracket; this method does not attest lifecycle or activation. */
+	async readInstanceClock(project: string, name: string, signal?: AbortSignal): Promise<LxdInstanceClock> {
+		try {
+			if (!INSTANCE_NAME.test(project) || !INSTANCE_NAME.test(name)) throw new Error("invalid clock target");
+			const checked = AbortSignal.any([...(signal ? [signal] : []), AbortSignal.timeout(10000)]);
+			checked.throwIfAborted();
+			const bootPath = "/proc/sys/kernel/random/boot_id",
+				uptimePath = "/proc/uptime";
+			const metadata = async () => {
+				const files = await Promise.all([
+					this.#readInstanceFile(project, name, bootPath, 64, checked),
+					this.#readInstanceFile(project, name, uptimePath, 128, checked),
+				]);
+				if (files.some((file) => file.uid !== 0 || file.gid !== 0 || file.mode !== 0o444))
+					throw new Error("clock metadata differs");
+				return files;
+			};
+			const before = await metadata();
+			const result = await this.#request(
+				"POST",
+				projectPath(`/1.0/instances/${name}/exec`, project),
+				{
+					command: ["/usr/bin/cat", "--", bootPath, uptimePath, bootPath],
+					interactive: false,
+					"wait-for-websocket": false,
+					"record-output": true,
+					user: 65534,
+					group: 65534,
+					cwd: "/",
+					environment: {},
+				},
+				checked,
+			);
+			const envelope = record(result.body, "clock read");
+			if (
+				result.status !== 202 ||
+				envelope.type !== "async" ||
+				envelope.status_code !== 100 ||
+				typeof envelope.operation !== "string" ||
+				!envelope.operation.startsWith("/1.0/operations/")
+			)
+				throw new Error("clock read not accepted");
+			const operationId = envelope.operation.slice("/1.0/operations/".length);
+			if (!OPERATION_UUID.test(operationId)) throw new Error("invalid clock operation");
+			const reference = { project, instanceName: name, operationId };
+			trackedOperation(envelope.metadata, reference);
+			const operation = await this.#officeMetadata(
+				projectPath(`${envelope.operation}/wait?timeout=5`, project),
+				checked,
+			);
+			if (trackedOperation(operation, reference) !== "succeeded") throw new Error("clock read incomplete");
+			const completed = record(operation.metadata, "clock read result");
+			const output = record(completed.output, "clock read output");
+			const prefix = `/1.0/instances/${name}/logs/exec-output/exec_${operationId}`;
+			if (
+				completed.return !== 0 ||
+				Object.keys(output).sort().join() !== "1,2" ||
+				output["1"] !== `${prefix}.stdout` ||
+				output["2"] !== `${prefix}.stderr`
+			)
+				throw new Error("clock output identity differs");
+			const [stdout, stderr] = await Promise.all([
+				this.#requestPayload(
+					"GET",
+					projectPath(`${prefix}.stdout`, project),
+					undefined,
+					undefined,
+					checked,
+					256,
+					"text",
+				),
+				this.#requestPayload(
+					"GET",
+					projectPath(`${prefix}.stderr`, project),
+					undefined,
+					undefined,
+					checked,
+					1,
+					"text",
+				),
+			]);
+			if (stdout.status !== 200 || stderr.status !== 200 || stderr.body !== "" || typeof stdout.body !== "string")
+				throw new Error("invalid clock output");
+			const lines = stdout.body.split("\n");
+			if (lines.length !== 4 || lines[3] !== "" || !OPERATION_UUID.test(lines[0]!) || lines[0] !== lines[2])
+				throw new Error("clock boot changed");
+			const bootId = lines[0]!,
+				uptimeMs = parseLxdProcUptime(Buffer.from(`${lines[1]}\n`));
+			if (!Number.isSafeInteger(uptimeMs) || uptimeMs < 0) throw new Error("invalid clock uptime");
+			const after = await metadata();
+			for (const files of [before, after]) {
+				if (files[0]!.content.length !== 0 && !files[0]!.content.equals(Buffer.from(`${bootId}\n`)))
+					throw new Error("clock boot metadata differs");
+			}
+			if (
+				(before[1]!.content.length !== 0 && parseLxdProcUptime(before[1]!.content) > uptimeMs) ||
+				(after[1]!.content.length !== 0 && parseLxdProcUptime(after[1]!.content) < uptimeMs)
+			)
+				throw new Error("clock uptime metadata differs");
+			// These are only the two public output logs owned by the exact
+			// completed observation; no guest file or command is replayed.
+			for (const suffix of ["stdout", "stderr"]) {
+				const removed = await this.#request(
+					"DELETE",
+					projectPath(`${prefix}.${suffix}`, project),
+					undefined,
+					checked,
+				);
+				if (removed.status !== 200) throw new Error("clock log cleanup unconfirmed");
+			}
+			checked.throwIfAborted();
+			return { bootId, uptimeMs };
+		} catch {
+			throw new Error("LXD_INSTANCE_CLOCK_UNCONFIRMED");
+		}
 	}
 
 	async #readPublicProcValue(

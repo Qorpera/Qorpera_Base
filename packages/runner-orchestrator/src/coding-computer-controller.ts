@@ -29,8 +29,7 @@ import {
 	computerPrestartExpired,
 	computerPrestartRequest,
 } from "./computer-prestart-control.ts";
-import type { LxdInspectableClient, LxdOperationReference, LxdTrackedClient } from "./lxd-client.ts";
-import { parseLxdProcUptime } from "./lxd-proc-uptime.ts";
+import type { LxdClockClient, LxdOperationReference, LxdTrackedClient } from "./lxd-client.ts";
 
 export const CODING_COMPUTER_RPCS = [
 	"qorpera_prepare_coding_computer_permit",
@@ -79,7 +78,7 @@ interface ManagedComputer {
 export interface CodingComputerControllerOptions {
 	control: { call(method: string, args: Record<string, unknown>, signal: AbortSignal): Promise<unknown> };
 	guard: CodingPaidGuardPort;
-	client: Pick<LxdTrackedClient, "getInstance"> & Pick<LxdInspectableClient, "readInstanceFile">;
+	client: Pick<LxdTrackedClient, "getInstance"> & LxdClockClient;
 	clock(): Promise<PaidComputerHostClock>;
 	owner: string;
 	storage: CodingMachineStorage;
@@ -624,21 +623,11 @@ export class CodingComputerController implements CodingComputerUsage {
 		const physicalId = before.config["volatile.uuid"];
 		if (!UUID.test(physicalId ?? "") || (current.permit.physicalId && current.permit.physicalId !== physicalId))
 			throw new Error("CODING_COMPUTER_PHYSICAL_ID_CHANGED");
-		const boot = await client.readInstanceFile(machine.project, name, "/proc/sys/kernel/random/boot_id", 64, signal);
-		const uptime = await client.readInstanceFile(machine.project, name, "/proc/uptime", 128, signal);
-		const bootAfter = await client.readInstanceFile(
-			machine.project,
-			name,
-			"/proc/sys/kernel/random/boot_id",
-			64,
-			signal,
-		);
+		const guest = await client.readInstanceClock(machine.project, name, signal);
 		const after = await client.getInstance(machine.project, name, signal);
-		const guestBootId = boot.content.toString("utf8").trim();
+		const guestBootId = guest.bootId;
 		if (
-			[boot, uptime, bootAfter].some((file) => file.uid !== 0 || file.gid !== 0 || file.mode !== 0o444) ||
 			!UUID.test(guestBootId) ||
-			bootAfter.content.toString("utf8").trim() !== guestBootId ||
 			!after ||
 			after.status !== "Running" ||
 			after.statusCode !== 103 ||
@@ -646,12 +635,13 @@ export class CodingComputerController implements CodingComputerUsage {
 		)
 			throw new Error("CODING_COMPUTER_OBSERVATION_UNCONFIRMED");
 		assertLxdCodingMachineInstance(machine, this.#options.storage, after);
-		const guestUptimeMs = parseLxdProcUptime(uptime.content);
+		const guestUptimeMs = guest.uptimeMs;
 		const completed = await this.#clock();
 		if (
 			!Number.isSafeInteger(guestUptimeMs) ||
 			guestUptimeMs < 0 ||
 			completed.hostBootId !== clock.hostBootId ||
+			completed.uptimeMs < clock.uptimeMs ||
 			completed.uptimeMs - clock.uptimeMs > 1000
 		)
 			throw new Error("CODING_COMPUTER_OBSERVATION_UNCONFIRMED");

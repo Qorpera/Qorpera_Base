@@ -18,7 +18,7 @@ Stripe acceptance must use a test key and a separate database. Evidence must dis
 
 ## Docker-free joined acceptance
 
-The separate manual `Docker-free office acceptance` workflow runs four isolated jobs without invoking Docker: guard storage recovery, real Auth/browser company creation, paid office lifecycle, and physical workload accounting:
+The separate manual `Docker-free office acceptance` workflow runs five isolated jobs without invoking Docker: the full Linux regression suite, guard storage recovery, real Auth/browser company creation, paid office lifecycle, and physical workload accounting:
 
 ```sh
 gh workflow run office-physical-acceptance.yml --ref <reviewed-branch>

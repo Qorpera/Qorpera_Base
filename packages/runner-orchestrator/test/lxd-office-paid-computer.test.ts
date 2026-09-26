@@ -264,6 +264,7 @@ describe("paid company computer lifecycle adapter", () => {
 				),
 				inspectInstanceOperation: vi.fn(async () => "succeeded" as const),
 				readInstanceFile: vi.fn(),
+				readInstanceClock: vi.fn(),
 			};
 			const guardRoot = join(f.root, "guard");
 			await mkdir(guardRoot, { mode: 0o700 });

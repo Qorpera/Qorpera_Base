@@ -18,8 +18,7 @@ import {
 	computerPrestartExpired,
 	computerPrestartRequest,
 } from "./computer-prestart-control.ts";
-import type { LxdInspectableClient, LxdOperationReference, LxdTrackedClient } from "./lxd-client.ts";
-import { parseLxdProcUptime } from "./lxd-proc-uptime.ts";
+import type { LxdClockClient, LxdOperationReference, LxdTrackedClient } from "./lxd-client.ts";
 import { assertRuntimePaidComputerInstance, type RuntimePaidComputerMachine } from "./runtime-paid-machine.ts";
 
 export type PaidComputerGuardPort = CodingPaidGuardPort;
@@ -61,7 +60,7 @@ export interface RuntimeComputerControllerOptions {
 	 * service JWT alone and never include the secret in a journal/bootstrap. */
 	control: { call(method: string, args: Record<string, unknown>, signal: AbortSignal): Promise<unknown> };
 	guard: PaidComputerGuardPort;
-	client: Pick<LxdTrackedClient, "getInstance"> & Pick<LxdInspectableClient, "readInstanceFile">;
+	client: Pick<LxdTrackedClient, "getInstance"> & LxdClockClient;
 	clock(): Promise<PaidComputerHostClock>;
 	now?: () => number;
 }
@@ -577,28 +576,14 @@ export class RuntimeComputerController {
 		const before = await client.getInstance(target.project, target.instanceName, signal);
 		if (!before || before.status !== "Running" || before.statusCode !== 103) return sample;
 		assertRuntimePaidComputerInstance(machine, before);
-		const boot = await client.readInstanceFile(
-			target.project,
-			target.instanceName,
-			"/proc/sys/kernel/random/boot_id",
-			64,
-			signal,
-		);
-		const uptime = await client.readInstanceFile(target.project, target.instanceName, "/proc/uptime", 128, signal);
-		const bootAfter = await client.readInstanceFile(
-			target.project,
-			target.instanceName,
-			"/proc/sys/kernel/random/boot_id",
-			64,
-			signal,
-		);
+		const guest = await client.readInstanceClock(target.project, target.instanceName, signal);
 		const after = await client.getInstance(target.project, target.instanceName, signal),
 			completed = await this.#clock();
-		const guestBootId = boot.content.toString("utf8").trim();
+		const guestBootId = guest.bootId;
 		if (
-			[boot, uptime, bootAfter].some((file) => file.uid !== 0 || file.gid !== 0 || file.mode !== 0o444) ||
 			!UUID.test(guestBootId) ||
-			bootAfter.content.toString("utf8").trim() !== guestBootId ||
+			!Number.isSafeInteger(guest.uptimeMs) ||
+			guest.uptimeMs < 0 ||
 			!after ||
 			after.status !== "Running" ||
 			after.statusCode !== 103 ||
@@ -612,7 +597,7 @@ export class RuntimeComputerController {
 			...sample,
 			physicalId: machine.physicalInstanceId,
 			guestBootId,
-			guestUptimeMs: parseLxdProcUptime(uptime.content),
+			guestUptimeMs: guest.uptimeMs,
 			state: "running",
 		};
 	}

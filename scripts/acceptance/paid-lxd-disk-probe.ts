@@ -32,13 +32,18 @@ if (action === "fill") {
 	const file = await open(filler, "wx", 0o600);
 	let bytes = 0, errno = "";
 	try {
-		const block = Buffer.alloc(1024 * 1024, 0x61);
-		while (bytes < 1024 ** 3) {
-			try { bytes += (await file.write(block)).bytesWritten; }
-			catch (error) { errno = String((error as NodeJS.ErrnoException).code); if (errno !== "ENOSPC") throw error; break; }
+		// A rejected 1MiB write can leave enough free ext4 blocks for a small
+		// journal rename. Exhaust successively smaller writes as well.
+		for (const size of [1024 * 1024, 65536, 4096, 512]) {
+			errno = "";
+			const block = Buffer.alloc(size, 0x61);
+			while (bytes < 1024 ** 3) {
+				try { const written = (await file.write(block)).bytesWritten; assert(written > 0); bytes += written; }
+				catch (error) { errno = String((error as NodeJS.ErrnoException).code); if (errno !== "ENOSPC") throw error; break; }
+			}
+			await file.sync().catch((error: NodeJS.ErrnoException) => { if (error.code !== "ENOSPC") throw error; errno = "ENOSPC"; });
+			assert.equal(errno, "ENOSPC", `The isolated filesystem must reject ${size}-byte writes`);
 		}
-		await file.sync().catch((error: NodeJS.ErrnoException) => { if (error.code !== "ENOSPC") throw error; errno = "ENOSPC"; });
-		assert.equal(errno, "ENOSPC", "The isolated filesystem must actually reach ENOSPC");
 		if (scenario === "tail") await file.truncate(Math.max(0, (await file.stat()).size - 16384));
 		await file.sync();
 	} finally { await file.close(); }

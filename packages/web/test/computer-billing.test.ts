@@ -50,6 +50,19 @@ function setup() {
 	};
 }
 describe("computer billing authority", () => {
+	it("keeps the Window receiver when using the browser's native payment fetch", async () => {
+		const env = setup();
+		const transport = vi.spyOn(globalThis, "fetch").mockImplementation(function (this: typeof globalThis) {
+			if (this !== globalThis) throw new TypeError("Illegal invocation");
+			return Promise.resolve(Response.json({ url: "https://checkout.stripe.com/c/pay/cs_fixture" }));
+		});
+		const client = new ComputerBillingClient(env.cloud, userA.id, env.abort.signal, () => {});
+		await expect(client.checkout(env.catalog.plans[0]!)).resolves.toBe(
+			"https://checkout.stripe.com/c/pay/cs_fixture",
+		);
+		expect(transport).toHaveBeenCalledOnce();
+		expect(transport.mock.calls[0]![1]!.headers).toMatchObject({ authorization: "Bearer fixture-token" });
+	});
 	it("validates authoritative catalog and paid-balance schemas", () => {
 		expect(parseComputerPlanCatalog(catalogResponse()).plans[0]!.monthlyPriceMinor).toBe(18500);
 		expect(parseComputerUsage(usageResponse()).balance.availableUs).toBe("255600000000");

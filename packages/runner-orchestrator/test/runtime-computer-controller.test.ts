@@ -10,7 +10,12 @@ import {
 	type PaidComputerPermit,
 } from "../src/computer-paid-guard.ts";
 import { LxdPaidComputerGuardPhysical } from "../src/computer-paid-guard-lxd.ts";
-import type { LxdInstanceRecord, LxdOperationReference, LxdTrackedClient } from "../src/lxd-client.ts";
+import type {
+	LxdInstanceClock,
+	LxdInstanceRecord,
+	LxdOperationReference,
+	LxdTrackedClient,
+} from "../src/lxd-client.ts";
 import { type RuntimeComputerContext, RuntimeComputerController } from "../src/runtime-computer-controller.ts";
 import type { RuntimePaidComputerMachine } from "../src/runtime-paid-machine.ts";
 
@@ -78,6 +83,9 @@ async function fixture(providerKind: "native" | "office" = "native") {
 			},
 		),
 		inspectInstanceOperation: vi.fn(async () => "succeeded" as const),
+		readInstanceClock: vi.fn(
+			async (): Promise<LxdInstanceClock> => ({ bootId: guestBootId, uptimeMs: guestUptime * 1000 }),
+		),
 		readInstanceFile: vi.fn(async (_project: string, _name: string, path: string) => ({
 			content: Buffer.from(path === "/proc/uptime" ? `${guestUptime}.00 0.00\n` : `${guestBootId}\n`),
 			uid: 0,
@@ -307,6 +315,39 @@ describe("funded runtime physical custody", () => {
 			expect(await f.guard.list()).toHaveLength(1);
 		},
 	);
+	it.each([1000, 1001, -1])("keeps the one-second, nondecreasing host clock bracket (%s ms)", async (elapsed) => {
+		const f = await fixture();
+		await f.start();
+		const initial = f.samples.length;
+		const read = f.client.readInstanceClock.getMockImplementation()!;
+		f.client.readInstanceClock.mockImplementationOnce(async () => {
+			const guest = await read();
+			f.clock.uptimeMs += elapsed;
+			return guest;
+		});
+		if (elapsed === 1000) {
+			await f.controller.observe(f.context.allocationId, signal());
+			expect(f.samples.length).toBe(initial + 1);
+		} else {
+			await expect(f.controller.observe(f.context.allocationId, signal())).rejects.toThrow(
+				"OBSERVATION_UNCONFIRMED",
+			);
+			expect(f.samples.length).toBe(initial);
+		}
+	});
+	it.each(["boot", "uptime", "fraction"])("refuses an invalid clock-port %s before SQL", async (failure) => {
+		const f = await fixture();
+		await f.start();
+		const initial = f.samples.length;
+		const guest = await f.client.readInstanceClock();
+		f.client.readInstanceClock.mockResolvedValueOnce({
+			bootId: failure === "boot" ? "invalid" : guest.bootId,
+			uptimeMs: failure === "uptime" ? -1 : failure === "fraction" ? 0.5 : guest.uptimeMs,
+		});
+		await expect(f.controller.observe(f.context.allocationId, signal())).rejects.toThrow("OBSERVATION_UNCONFIRMED");
+		expect(f.samples.length).toBe(initial);
+	});
+
 	it("does not charge or renew while stopping, or advance SQL again before the recovered generation reaches the guard", async () => {
 		const f = await fixture();
 		await f.start();

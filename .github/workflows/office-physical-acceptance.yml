@@ -12,6 +12,38 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  regression:
+    name: Full isolated Linux regression suite
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      TMPDIR: ${{ runner.temp }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+      - name: Install reviewed dependencies without lifecycle scripts
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Check candidate source and browser build
+        run: npm run check
+      - name: Run all non-e2e tests with isolated credentials and a guest-compatible group
+        run: |
+          set -euo pipefail
+          # Coding supervisor fixtures exercise real chown to an admitted
+          # guest UID/GID. Use a normal group held by the unprivileged runner.
+          if [ "$(id -g)" -ge 1000 ]; then
+            VITEST_MAX_WORKERS=2 ./test.sh
+          else
+            sudo groupadd qorpera-acceptance-test
+            sudo usermod -aG qorpera-acceptance-test "$(id -un)"
+            sg qorpera-acceptance-test -c 'VITEST_MAX_WORKERS=2 ./test.sh'
+          fi
   guard-storage:
     name: Physical guard disk exhaustion and archive recovery
     runs-on: ubuntu-24.04

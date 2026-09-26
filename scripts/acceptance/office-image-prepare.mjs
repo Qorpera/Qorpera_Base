@@ -209,12 +209,22 @@ try {
 	assert.match(image.target, /^[a-f0-9]{64}$/);
 	evidence.publishedImageFingerprint = image.target;
 	evidence.packageManifestSha256 = createHash("sha256").update(manifest).digest("hex");
-	const published = JSON.parse(run("lxc", ["query", `/1.0/images/${image.target}`]));
-	assert(published.type === "virtual-machine" && published.architecture === "x86_64" && Number.isSafeInteger(published.size) && published.size > 0);
-	run("lxc", ["init", image.target, clone, "--vm", "--storage", "default", "-c", "boot.mode=uefi-secureboot", "-c", "limits.cpu=2", "-c", "limits.memory=4GiB", "-d", "root,size=30GiB"], 120000);
+	const imagePath = `/1.0/images/${image.target}`;
+	const initialImage = JSON.parse(run("lxc", ["query", imagePath]));
+	// Published images inherit default profiles unless explicitly cleared. Office
+	// provisioning supplies its own devices and must never inherit host policy.
+	run("lxc", ["query", "--request", "PUT", imagePath, "--data", JSON.stringify({ public: false, auto_update: false, profiles: [], properties: initialImage.properties })]);
+	const published = JSON.parse(run("lxc", ["query", imagePath]));
+	assert(published.fingerprint === image.target && published.type === "virtual-machine" && published.architecture === "x86_64" && Number.isSafeInteger(published.size) && published.size > 0 && published.size <= 1024 ** 4);
+	assert.equal(published.public, false);
+	assert.equal(published.auto_update, false);
+	assert.deepEqual(published.profiles, []);
+	evidence.publishedImagePolicy = { public: published.public, autoUpdate: published.auto_update, profiles: published.profiles };
+	run("lxc", ["init", image.target, clone, "--vm", "--no-profiles", "--storage", "default", "--network", "lxdbr0", "-c", "boot.mode=uefi-secureboot", "-c", "limits.cpu=2", "-c", "limits.memory=4GiB", "-d", "root,size=30GiB"], 120000);
 	cloneCreated = true;
 	const cloneDefinition = JSON.parse(run("lxc", ["query", `/1.0/instances/${clone}`]));
 	assert.equal(cloneDefinition.config["volatile.base_image"], image.target);
+	assert.deepEqual(cloneDefinition.profiles, []);
 	assert.equal(cloneDefinition.expanded_config["boot.mode"], "uefi-secureboot");
 	guestName = clone;
 	run("lxc", ["start", clone], 60000); await ready();

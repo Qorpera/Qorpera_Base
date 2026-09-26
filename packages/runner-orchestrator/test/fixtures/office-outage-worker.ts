@@ -91,6 +91,7 @@ export async function officeOutageWorkerFixture(roots: string[]) {
 			},
 		),
 		inspectInstanceOperation: vi.fn(async () => "succeeded" as const),
+		readInstanceClock: vi.fn(async () => ({ bootId: guestBootId, uptimeMs: 1000 })),
 		readInstanceFile: vi.fn(async (_project: string, _name: string, path: string) =>
 			files.has(path)
 				? { ...files.get(path)!, content: Buffer.from(files.get(path)!.content) }

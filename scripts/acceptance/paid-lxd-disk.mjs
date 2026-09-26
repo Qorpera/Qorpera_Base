@@ -98,12 +98,16 @@ try {
 	await until(vmState, (state) => state === "Stopped", 105000, "physical stop despite ENOSPC");
 	const stoppedAt = await uptime();
 	assert(stoppedAt <= full.deadlineUptimeMs, "Physical stop must precede the original paid deadline");
+	// Wait across several guard sweeps: an immediate stopping observation
+	// alone could merely precede the next successful receipt write.
+	await delay(6000);
 	const held = probe("status", "full");
 	assert.equal(held.phase, "stopping");
 	assert.equal(held.stopReceipt, null, "A failed durable write must not publish financial stopped evidence");
+	assert.equal((await guardRecord(full.permit.permitId)).stopReceipt, null);
 	probe("free", "full");
 	await unlink(`${journal}/filler.bin`);
-	evidence.checks.fullDiskExpiry = { ...fullDisk, originalDeadlineUptimeMs: full.deadlineUptimeMs, physicalStoppedAtUptimeMs: stoppedAt, noFalseReceipt: true, stopReceipt: await confirmed("full", full) };
+	evidence.checks.fullDiskExpiry = { ...fullDisk, originalDeadlineUptimeMs: full.deadlineUptimeMs, physicalStoppedAtUptimeMs: stoppedAt, unwritableReceiptObservedForMs: 6000, noFalseReceipt: true, stopReceipt: await confirmed("full", full) };
 
 	console.log("Testing genuine archive-tail publication followed by ENOSPC anchor failure and systemd restart.");
 	probe("padding", "tail");

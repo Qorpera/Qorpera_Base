@@ -53,6 +53,17 @@ client.readInstanceFile = async (...args) => {
  }
  return file;
 };
+const readClockPhysical = client.readInstanceClock.bind(client);
+client.readInstanceClock = async (...args) => {
+ const started = performance.now();
+ let guest = null;
+ try { guest = await readClockPhysical(...args); return guest; }
+ finally {
+  clockReads.push({ operation: "readInstanceClock", startedMs: started, durationMs: performance.now() - started,
+   bootId: guest?.bootId ?? null, uptimeMs: guest?.uptimeMs ?? null, confirmed: guest !== null });
+  if (clockReads.length > 24) clockReads.shift();
+ }
+};
 client.getInstance = async (...args) => {
  const started = performance.now(), instance = await readInstancePhysical(...args);
  clockReads.push({ operation: "getInstance", startedMs: started, durationMs: performance.now() - started,
