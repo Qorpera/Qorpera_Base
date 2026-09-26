@@ -547,6 +547,36 @@ begin
 end
 $$;
 
+-- Delegating to the company's own agents is never a built-in check (20260926210000): an allow
+-- the reviewer tagged "access change" on a coding job runs, and a card carries the call as an
+-- object the woken agent copies (quotation marks included) next to the text the member reads.
+do $$
+declare v_binding jsonb := current_setting('qorpera_test.review_binding')::jsonb; v_record jsonb;
+	v_arguments text := '{"action":"dispatch","goal":"Add a line \"Coding check\" to CHECK.md","operationKey":"k1"}';
+	v_event public.qorpera_session_events%rowtype;
+begin
+	v_record := public.qorpera_record_action_review(v_binding, jsonb_build_object('callId', 'fix-delegation',
+		'tool', 'manage_worker', 'effect', 'delegation', 'argumentSha256', repeat('8a', 32),
+		'action', jsonb_build_object('title', 'Start a coding job', 'arguments', v_arguments),
+		'decision', 'allow', 'ruleIds', '[]'::jsonb, 'builtIn', 'access_change',
+		'reason', 'Starting a coding job.', 'proposedRule', null, 'reviewerModel', 'gpt-6-luna'));
+	perform pg_temp.wake_assert(v_record ->> 'decision' = 'allow' and v_record ->> 'builtIn' = 'none',
+		'A delegation call is never held by a built-in check');
+	v_record := public.qorpera_record_action_review(v_binding, jsonb_build_object('callId', 'fix-card-call',
+		'tool', 'send_email', 'effect', 'external', 'argumentSha256', repeat('8b', 32),
+		'action', jsonb_build_object('title', 'Send an email', 'arguments', v_arguments),
+		'decision', 'ask', 'ruleIds', '["30000000-0000-4000-8000-000000000a01"]'::jsonb, 'builtIn', 'none',
+		'reason', 'The company asks first.', 'proposedRule', null, 'reviewerModel', 'gpt-6-luna'));
+	select * into strict v_event from public.qorpera_session_events where event_id = (v_record ->> 'reviewId')::uuid;
+	perform pg_temp.wake_assert(v_event.body #>> '{entry,data,arguments}' = v_arguments
+		and v_event.body #> '{entry,data,call}' = v_arguments::jsonb
+		and v_event.body #>> '{entry,data,call,goal}' = 'Add a line "Coding check" to CHECK.md',
+		'The card carries the exact text and the same call as an object');
+	perform pg_temp.wake_assert(public.qorpera_action_review_call('not json') is null
+		and public.qorpera_action_review_call('[1]') is null, 'Only an object becomes the card''s call');
+end
+$$;
+
 -- A group chat carries no card: the ask is recorded and the call is refused.
 savepoint review_group_chat;
 do $$

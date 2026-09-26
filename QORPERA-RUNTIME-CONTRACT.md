@@ -2304,7 +2304,9 @@ review or retry" surfaces of 16.2 and the classification of section 10.
    rule never undoes an Ask first rule. Only a company Allow rule lifts a
    built-in check, and only when it covers the action: the checks are the
    company's to answer, so a member's own Allow rule never lifts one (a
-   member's rules only add care). As in Grok, the reviewer may also ask on its
+   member's rules only add care). Delegating to the company's own agents
+   (hiring, group chats, routines, workers, coding jobs) is never a built-in
+   check. As in Grok, the reviewer may also ask on its
    own when it is unsure the member wants this exact action (an irreversible
    step the request only loosely describes); the member the run works for
    answers that card. It denies only an action that clearly works against or
@@ -2329,8 +2331,9 @@ review or retry" surfaces of 16.2 and the classification of section 10.
    and the card keeps waiting. A holding call renews a short heartbeat; an
    answer to a card no call is holding (parked, stopped, or its run ended)
    wakes the agent in that conversation on the answering member's account.
-   The agent repeats the identical call (the card shows its exact arguments),
-   which runs once without a second review. A Deny, the member's or the
+   The agent repeats the identical call (the card carries it, as text and as
+   an object the agent copies value for value), which runs once without a
+   second review. A Deny, the member's or the
    reviewer's, stands for that exact call in the run it was given in, and in
    its conversation until a member writes there again: retrying gets the agent
    no second opinion. When the member asks for it again, the retried call runs

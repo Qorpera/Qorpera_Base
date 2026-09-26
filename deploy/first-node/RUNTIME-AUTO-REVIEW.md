@@ -169,6 +169,38 @@ APPROVE WITH NITS; the two low findings and the draft titles fixed:
 - Gmail draft tools have card titles, and a list of recipients shows as the
   card's target.
 
+## Live acceptance (2026-09-26, v130 in A1)
+
+All three acceptance checks passed in the acceptance company, as its fixture
+owner and contributor (PR #315 comment; receipts in the takeover workspace,
+`work/runtime-proof-a1/autoreview_acceptance.py` and `logs-autoreview-*`):
+1. A company rule ("starting a group chat") raised a card for owners and admins
+   22 s after the post; Allow once 1 s later ran the held call in its own run.
+2. With nobody answering, the call parked exactly 5 minutes after its card; the
+   agent told the member; a later Allow woke it, and its repeat used the
+   approval without a second review.
+3. A personal rule raised a card for its member only; the contributor was
+   refused (42501); the owner's Deny stopped the call.
+
+## Fixes after going live (20260926210000)
+
+- The card carries the call as an object (`call`) next to the text: a woken
+  agent that copied the text form (JSON inside the card's own JSON) kept one
+  escaping level too many around quotation marks, so its repeat missed the
+  approval and was reviewed afresh (Qorpera company, reviews 3b014c43 →
+  29d7a476). The agent is told to copy `call`, value for value.
+- Delegating to the company's own agents is never a built-in check, in the
+  reviewer's instructions and in the kernel (a delegation call's money, terms,
+  deletion or access tag is dropped). The reviewer had tagged a group chat and
+  a coding job as access changes, which made every coding job wait for an
+  owner.
+- The reviewer counts an explicitly asked action as requested even when the
+  request limits other work ("do nothing else" had been read as the whole
+  request once, review 4587f298).
+- Rollout: the release branch's activation requires this migration
+  (`qorpera_action_review_call(text)`), since the runtime tells agents to copy
+  `call`.
+
 ## Rollout order
 
 1. Pause, record `20260926130000` (the observation function must accept
