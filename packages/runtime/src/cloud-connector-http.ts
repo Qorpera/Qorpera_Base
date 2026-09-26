@@ -123,8 +123,8 @@ export interface ConnectorRequestInput {
 	readonly fetch: typeof fetch;
 	readonly origin: string;
 	readonly path: string;
-	readonly query?: Readonly<Record<string, string | undefined>>;
-	readonly method?: "GET" | "POST" | "PATCH";
+	readonly query?: Readonly<Record<string, string | readonly string[] | undefined>>;
+	readonly method?: "GET" | "POST" | "PATCH" | "PUT" | "DELETE";
 	readonly headers: Readonly<Record<string, string>>;
 	readonly body?: Uint8Array | string;
 	readonly signal: AbortSignal;
@@ -144,7 +144,8 @@ export async function connectorRequest(input: ConnectorRequestInput): Promise<Co
 	if (url.origin !== input.origin || url.protocol !== "https:") throw new Error("Connector request origin is invalid");
 	url.pathname = input.path;
 	for (const [key, value] of Object.entries(input.query ?? {})) {
-		if (value !== undefined) url.searchParams.set(key, value);
+		if (typeof value === "string") url.searchParams.set(key, value);
+		else if (value !== undefined) for (const item of value) url.searchParams.append(key, item);
 	}
 	if (url.origin !== input.origin) throw new Error("Connector request escaped its origin");
 	const body = typeof input.body === "string" ? Buffer.from(input.body, "utf8") : input.body;

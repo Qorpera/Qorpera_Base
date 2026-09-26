@@ -1,3 +1,5 @@
+import { CloudCompanyAgentOperationRejectedError } from "@qorpera/cloud-client/cloud-company-agent";
+import { prepareWebCompanyAgentCreation } from "../../cloud/company-agents.ts";
 import type { HostedStaffAgent } from "../../cloud/types.ts";
 import { agentFigure, figureElement, nativeColorOf } from "../../ui/avatar.ts";
 import { button, h, icon, replace } from "../../ui/dom.ts";
@@ -6,7 +8,7 @@ import { matchesKey } from "../../ui/keys.ts";
 import { t } from "../../ui/preferences.ts";
 import type { CompanyController } from "../company.ts";
 import { navigate } from "../router.ts";
-import type { AgentDraft, WorkspaceActions } from "../workspace-actions.ts";
+import type { AgentCreation, AgentDraft, WorkspaceActions } from "../workspace-actions.ts";
 
 /* A "To:" field with one short list under it. The list starts a new agent,
  * gathers recipients for the first message of a conversation. Focus
@@ -114,6 +116,7 @@ export class NewConversationView {
 	#editing = false;
 	#pending = false;
 	#createdAgentId: string | undefined;
+	#creation: AgentCreation | undefined;
 	#syncControls: () => void = () => {};
 	#draft: AgentDraft = { displayName: "", role: "", charter: "", figure: "rocket", color: nativeColorOf("rocket") };
 	constructor(
@@ -193,6 +196,8 @@ export class NewConversationView {
 				this.#search.value.trim() ||
 				this.#selected.size ||
 				this.#editing ||
+				this.#creation ||
+				this.#createdAgentId ||
 				this.#sending,
 		);
 	}
@@ -487,7 +492,7 @@ export class NewConversationView {
 		// "Search or create": what was typed names the agent, unless the draft
 		// already carries a name of the member's own.
 		const typed = this.#query.trim().slice(0, 64);
-		if (!this.#createdAgentId && typed && (!this.#draft.displayName || this.#draft.displayName === this.#prefilled)) {
+		if (!this.#creation && typed && (!this.#draft.displayName || this.#draft.displayName === this.#prefilled)) {
 			this.#draft.displayName = typed;
 			this.#prefilled = typed;
 		}
@@ -547,14 +552,16 @@ export class NewConversationView {
 			{ class: "surface-status", role: "status" },
 			this.#createdAgentId
 				? t("The agent was created. Retry adding it once the agent list is available.")
-				: this.#actions.createAgent
-					? ""
-					: t("Agent creation is not available yet."),
+				: this.#creation
+					? t("Creation could not be confirmed. Retry to check the same agent.")
+					: this.#actions.createAgent
+						? ""
+						: t("Agent creation is not available yet."),
 		);
 		const create = h(
 			"button",
 			{ class: "btn btn-primary", type: "submit", disabled: !this.#actions.createAgent },
-			this.#createdAgentId ? t("Add created agent") : t("Create agent"),
+			this.#createdAgentId ? t("Add created agent") : this.#creation ? t("Check agent creation") : t("Create agent"),
 		);
 		const back = button([icon("back"), t("Back")], () => {
 			if (!this.#pending) {
@@ -577,7 +584,7 @@ export class NewConversationView {
 		);
 		this.#syncControls = () => {
 			const canWrite = this.#company.store.get().team?.capabilities.authorize === true;
-			fields.disabled = this.#pending || !canWrite || !!this.#createdAgentId;
+			fields.disabled = this.#pending || !canWrite || !!this.#creation;
 			create.disabled = this.#pending || !canWrite || !this.#actions.createAgent;
 			back.disabled = this.#pending;
 		};
@@ -600,14 +607,15 @@ export class NewConversationView {
 			back.disabled = true;
 			status.textContent = t("Creating agent…");
 			try {
+				this.#creation ??= prepareWebCompanyAgentCreation({
+					...this.#draft,
+					displayName: name.value.trim(),
+					role: role.value.trim(),
+					charter: charter.value.trim(),
+				});
 				this.#createdAgentId ??= await this.#actions.createAgent(
 					this.#company.profile.profileId,
-					{
-						...this.#draft,
-						displayName: name.value.trim(),
-						role: role.value.trim(),
-						charter: charter.value.trim(),
-					},
+					this.#creation,
 					this.#lifetime.signal,
 				);
 				if (this.#lifetime.signal.aborted || this.#company.signal.aborted) return;
@@ -616,6 +624,7 @@ export class NewConversationView {
 					if (!this.#company.staffById(this.#createdAgentId)) throw new Error("Agent roster is still refreshing.");
 					this.#selected.add(this.#createdAgentId);
 					this.#createdAgentId = undefined;
+					this.#creation = undefined;
 					this.#query = "";
 					this.#search.value = "";
 					this.#draft = {
@@ -629,12 +638,22 @@ export class NewConversationView {
 					this.#picker();
 					this.#message.focus();
 				}
-			} catch {
+			} catch (error) {
 				if (!this.#lifetime.signal.aborted) {
+					const rejected = !this.#createdAgentId && error instanceof CloudCompanyAgentOperationRejectedError;
+					if (rejected) this.#creation = undefined;
 					status.textContent = this.#createdAgentId
 						? t("The agent was created. Retry adding it once the agent list is available.")
-						: t("The agent could not be created. Your draft is still here.");
-					if (this.#createdAgentId) create.textContent = t("Add created agent");
+						: this.#creation
+							? t("Creation could not be confirmed. Retry to check the same agent.")
+							: rejected
+								? t("Agent creation was rejected. Your draft is still here and can be edited.")
+								: t("Agent details are too long or invalid. Shorten them and try again.");
+					create.textContent = this.#createdAgentId
+						? t("Add created agent")
+						: this.#creation
+							? t("Check agent creation")
+							: t("Create agent");
 				}
 			} finally {
 				this.#pending = false;

@@ -4,6 +4,9 @@ Date: 2026-09-22, re-slotted 2026-09-24 as bundle **v87** together with the
 Step 9 coding route (branch `fable/coding-connectors-v86`, superseding #202
 and #223). **Components are implemented and verified offline; nothing is
 deployed.**
+The Gmail draft extension and its additional rollout requirements are described
+in [RUNTIME-EMAIL-DRAFTS.md](RUNTIME-EMAIL-DRAFTS.md).
+
 The first goal of Order 7 is deliberately narrow: offer three production
 connectors through the Step 2 custody kernel, with a member sign-in flow and
 company-wide agent access. No plugin marketplace, no company-authored

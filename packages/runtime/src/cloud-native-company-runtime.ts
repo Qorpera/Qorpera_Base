@@ -1,6 +1,12 @@
 import { createHash } from "node:crypto";
 import type { CloudContentAddressedStore } from "@qorpera/cloud-client/node/cloud-object-store";
 import type { JsonValue } from "@qorpera/contracts";
+import {
+	CLOUD_ACTION_REVIEW_HOLD_MS,
+	CloudActionReviewGate,
+	cloudActionReviewRequest,
+	cloudConnectorEffects,
+} from "./cloud-action-review.ts";
 import { CLOUD_AGENT_SEND_INSTRUCTIONS, CloudAgentMouth, parseCloudAgentSendInput } from "./cloud-agent-mouth.ts";
 import type { CloudCompanyComputerSessionFactory } from "./cloud-company-computer-control.ts";
 import { type CloudCompanyPathControl, CloudCompanyPathGateway } from "./cloud-company-path-gateway.ts";
@@ -36,10 +42,12 @@ import {
 import {
 	CLOUD_NATIVE_TOOL_CATALOG_BYTES,
 	type CloudNativeTool,
+	CloudToolArgumentRefusal,
 	cloudToolJsonText,
 } from "./cloud-native-tool-boundary.ts";
 import type { CloudNativeToolOperationControlPlane } from "./cloud-native-tool-operations.ts";
-import { cloudRoutineTools } from "./cloud-routine-tools.ts";
+import { cloudReviewRuleTools } from "./cloud-review-rule-tools.ts";
+import { cloudRoutineDecisionTool, cloudRoutineTools } from "./cloud-routine-tools.ts";
 import { assertCloudRuntimeBundle } from "./cloud-runtime-bundle.ts";
 import {
 	assertCloudRuntimeObservationReceipt,
@@ -52,7 +60,7 @@ import { cloudSidebarTools } from "./cloud-sidebar-tools.ts";
 import {
 	CLOUD_ASK_MEMBER_INSTRUCTIONS,
 	CLOUD_ASK_MEMBER_PAYLOAD_SCHEMA,
-	CLOUD_INTERACTION_SURFACES,
+	CLOUD_ASK_MEMBER_SURFACES,
 	cloudAskMemberFinalKey,
 	cloudInteractionEventId,
 	parseCloudAskMemberInput,
@@ -246,6 +254,17 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			);
 			// Diagnostic deduplication uses only validated public receipts, never a model key.
 			const deliveredMessageIds = new Set<string>();
+			// A dynamic routine's run decides its next run (or concludes the routine) before
+			// its final message. The kernel refuses both the final send and the completion
+			// otherwise; this shows the model the reason instead of an unconfirmed outcome.
+			const dynamicRoutine = wake.kind === "routine" && wake.routine?.dynamic === true;
+			let routineDecisionOwed = dynamicRoutine;
+			const assertRoutineDecided = (): void => {
+				if (routineDecisionOwed)
+					throw new CloudToolArgumentRefusal(
+						"decide this dynamic routine first: call decide_routine with next or conclude (it answers settled if the routine already changed elsewhere), then send your final message",
+					);
+			};
 			const send: CloudNativeTool = {
 				name: "send_message" satisfies CloudRuntimeToolOperation,
 				source: "runtime",
@@ -262,6 +281,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				},
 				parseArguments(value) {
 					const input = parseCloudAgentSendInput(value);
+					if (input.phase === "final") assertRoutineDecided();
 					return { idempotencyKey: input.idempotencyKey, text: input.text, phase: input.phase };
 				},
 				async execute(value, context) {
@@ -290,7 +310,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					properties: {
 						idempotencyKey: { type: "string", pattern: "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" },
 						text: { type: "string", minLength: 1, maxLength: 4096 },
-						surface: { type: "string", enum: [...CLOUD_INTERACTION_SURFACES] },
+						surface: { type: "string", enum: [...CLOUD_ASK_MEMBER_SURFACES] },
 						title: { type: "string", minLength: 1, maxLength: 200 },
 						body: { type: "string", maxLength: 2000 },
 						expiresAt: { type: "string" },
@@ -301,6 +321,8 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				},
 				parseArguments(value) {
 					const input = parseCloudAskMemberInput(value);
+					// A card ends with its final sentence, so it waits for the decision too.
+					assertRoutineDecided();
 					return { idempotencyKey: input.idempotencyKey, text: input.text, ...input.data } as JsonValue;
 				},
 				async execute(value, toolContext) {
@@ -389,6 +411,22 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					runtimeInstructions: compileCloudNativeCompanyInstructions(context, wake),
 					signal,
 					timeoutMs: this.#timeoutMs,
+					// Auto-review (v130): acting calls wait for the reviewer, or for a member's approval.
+					// A call a member is likely watching (their message, their post in the thread, a
+					// first run) holds on its card for a while; routines and coworker wakes park at once.
+					actionReview: (reviewer) =>
+						new CloudActionReviewGate({
+							binding,
+							control: {
+								call: (method, argumentsValue, requestSignal) =>
+									this.#paths.call(method, argumentsValue, requestSignal),
+							},
+							reviewer,
+							request: cloudActionReviewRequest(context, wake),
+							holdMs: ["human", "room", "first-run"].includes(wake.kind) ? CLOUD_ACTION_REVIEW_HOLD_MS : 0,
+							connectorEffects: cloudConnectorEffects(connectorDescriptors),
+							observability,
+						}),
 					tools: async (identity, operations, run) => {
 						if (
 							Object.entries(context.identity).some(
@@ -420,8 +458,32 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 									? []
 									: [
 											cloudCoworkerMessageTool(binding, identity, wakeControl),
-											...cloudRoutineTools(binding, identity, this.#paths),
+											...cloudRoutineTools(
+												binding,
+												identity,
+												this.#paths,
+												dynamicRoutine && wake.routine?.routineKey
+													? {
+															routineKey: wake.routine.routineKey,
+															decisionOwed: () => routineDecisionOwed,
+															settled: () => {
+																routineDecisionOwed = false;
+															},
+														}
+													: undefined,
+											),
+											...(dynamicRoutine
+												? [
+														cloudRoutineDecisionTool(binding, identity, this.#paths, {
+															decisionOwed: () => routineDecisionOwed,
+															decided: () => {
+																routineDecisionOwed = false;
+															},
+														}),
+													]
+												: []),
 											...cloudSidebarTools(binding, identity, this.#paths),
+											...cloudReviewRuleTools(binding, identity, this.#paths),
 										]),
 								// The notebook is the agent's own: a worker of the same agent recalls it,
 								// and writes to it only when its dispatch allows Company File writes.

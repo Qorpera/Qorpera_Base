@@ -120,6 +120,13 @@ export interface CodingRepositoryCredentialAuthorization extends CloudSecretEnve
 }
 
 export interface CloudSecretBrokerAuthority {
+	claimEmailDraftAction?(actionId: string, capabilitySha256: string, signal: AbortSignal): Promise<unknown>;
+	finishEmailDraftAction?(
+		actionId: string,
+		capabilitySha256: string,
+		result: JsonValue,
+		signal: AbortSignal,
+	): Promise<unknown>;
 	describeCapture(ticketId: string, captureCapabilitySha256: string, signal: AbortSignal): Promise<unknown>;
 	completeCapture(
 		ticketId: string,
@@ -601,6 +608,108 @@ export class CloudSecretBroker {
 		}
 	}
 
+	/** A member capability is bound by the kernel to one card and exact edits.
+	 * Claim commits before touching Gmail; a duplicate or an interrupted process
+	 * can only read its receipt, never issue a second provider mutation. */
+	async executeEmailDraft(actionId: string, capability: string, signal: AbortSignal): Promise<JsonValue> {
+		if (
+			!UUID.test(actionId) ||
+			!CAPABILITY.test(capability) ||
+			!this.#authority.claimEmailDraftAction ||
+			!this.#authority.finishEmailDraftAction
+		)
+			throw new Error("Email draft action unavailable");
+		const hash = createHash("sha256").update(capability).digest("hex");
+		const claim = record(await this.#authority.claimEmailDraftAction(actionId, hash, signal), "Email draft claim");
+		if (claim.execute === false) return claim.state as JsonValue;
+		if (claim.execute !== true || !["save", "send", "discard"].includes(String(claim.action)))
+			throw new Error("Email draft claim invalid");
+		let result: JsonValue = { status: "unconfirmed" };
+		try {
+			if (claim.action === "discard" && claim.draftId === null) result = { deleted: true };
+			else {
+				const operationId =
+					claim.action === "save"
+						? claim.draftId
+							? "update_draft"
+							: "create_draft"
+						: claim.action === "send"
+							? claim.draftId
+								? "send_draft"
+								: "send_message"
+							: "delete_draft";
+				const adapters = [...this.#adapters.values()].filter(
+					(adapter) => adapter.connectorId === "gmail" && adapter.operationId === operationId,
+				);
+				if (adapters.length !== 1) throw new Error("Gmail draft adapter unavailable");
+				const adapter = adapters[0];
+				const identity: CloudSecretEnvelopeIdentity = {
+					companyId: uuid(claim.companyId, "Email company"),
+					environmentId: uuid(claim.environmentId, "Email environment"),
+					secretId: uuid(claim.secretId, "Email secret"),
+					version: integer(claim.version, "Email secret version"),
+					keyId: String(claim.keyId),
+				};
+				const envelope = Buffer.from(String(claim.encryptedEnvelopeBase64), "base64");
+				try {
+					if (createHash("sha256").update(envelope).digest("hex") !== claim.envelopeSha256)
+						throw new Error("Email envelope invalid");
+					result = await this.#keys.use(envelope, identity, async (credentials) => {
+						const content = record(claim.content, "Email content");
+						const argumentsValue: JsonValue =
+							claim.action === "discard"
+								? { draft_id: String(claim.draftId) }
+								: {
+										...(content as Record<string, JsonValue>),
+										...(claim.draftId ? { draft_id: String(claim.draftId) } : {}),
+										...(claim.replyTo ? { reply_to_message_id: String(claim.replyTo) } : {}),
+									};
+						const output = await adapter.execute({
+							arguments: argumentsValue,
+							credentials,
+							credentialName: "refresh_token",
+							destinationOrigin: adapter.destinationOrigin,
+							idempotencyKey: actionId,
+							signal,
+						});
+						if (containsSensitiveOutput(output, sensitiveFingerprints(credentials)))
+							return { status: "unconfirmed" };
+						const response = record(output, "Gmail result");
+						if (response.status === "completed") return response.result as JsonValue;
+						// Only a definitive rejection is retryable with a NEW member action.
+						// Provider/server failures, malformed success and transport errors may have sent.
+						if (
+							response.status === "failed" &&
+							["authorization_required", "forbidden", "invalid_request", "not_found", "rate_limited"].includes(
+								String(response.reason),
+							)
+						)
+							return {
+								status: "failed",
+								error:
+									response.reason === "authorization_required" || response.reason === "forbidden"
+										? "Reconnect Gmail to allow this email action."
+										: "Gmail refused this email action. Review the draft and try again.",
+							};
+						return { status: "unconfirmed" };
+					});
+				} finally {
+					envelope.fill(0);
+				}
+			}
+		} catch {
+			result = { status: "unconfirmed" };
+		}
+		// Completion has its own deadline: aborting a browser/provider call must
+		// not skip persistence of a success or ambiguous result.
+		return (await this.#authority.finishEmailDraftAction(
+			actionId,
+			hash,
+			result,
+			AbortSignal.timeout(5000),
+		)) as JsonValue;
+	}
+
 	async #execute(request: CloudSecretOperationRequest, signal: AbortSignal): Promise<CloudToolContent> {
 		if (
 			!UUID.test(request.receiptId) ||
@@ -846,6 +955,27 @@ export class PostgresCloudSecretBrokerAuthority implements CloudSecretBrokerAuth
 		this.#brokerAuthorityId = uuid(options.brokerAuthorityId, "Cloud secret broker authority");
 		if (!CAPABILITY.test(options.brokerCapability)) throw new Error("Cloud secret broker capability is invalid");
 		this.#brokerCapabilitySha256 = createHash("sha256").update(options.brokerCapability).digest("hex");
+	}
+
+	claimEmailDraftAction(actionId: string, capabilitySha256: string, signal: AbortSignal): Promise<unknown> {
+		return this.#rpc(
+			"select public.qorpera_claim_email_draft_action($1::uuid,$2::text,$3::uuid,$4::text) as result",
+			[this.#brokerAuthorityId, this.#brokerCapabilitySha256, actionId, capabilitySha256],
+			signal,
+		);
+	}
+
+	finishEmailDraftAction(
+		actionId: string,
+		capabilitySha256: string,
+		result: JsonValue,
+		signal: AbortSignal,
+	): Promise<unknown> {
+		return this.#rpc(
+			"select public.qorpera_finish_email_draft_action($1::uuid,$2::text,$3::uuid,$4::text,$5::jsonb) as result",
+			[this.#brokerAuthorityId, this.#brokerCapabilitySha256, actionId, capabilitySha256, JSON.stringify(result)],
+			signal,
+		);
 	}
 
 	describeCapture(ticketId: string, captureCapabilitySha256: string, signal: AbortSignal): Promise<unknown> {

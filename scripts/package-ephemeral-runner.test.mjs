@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { runtimeBundlePackagingEnvironment } from "./runtime-bundle-release-train.mjs";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -15,7 +16,7 @@ test("packages directly executable ephemeral runner bundles", async () => {
 		const packaged = spawnSync(
 			process.execPath,
 			["scripts/package-ephemeral-runner.mjs", "--out", outputRoot],
-			{ cwd: repositoryRoot, encoding: "utf-8" },
+			{ cwd: repositoryRoot, encoding: "utf-8", env: runtimeBundlePackagingEnvironment() },
 		);
 		assert.equal(packaged.status, 0, packaged.stderr);
 

@@ -4,10 +4,12 @@ import { DANISH } from "./danish/index.ts";
 export type LanguagePreference = "system" | "en" | "da";
 export type ThemePreference = "system" | "light" | "dark";
 export type ComposerColorPreference = "blue" | "green" | "grey";
+export type UiSizePreference = "big" | "small";
 const LANGUAGE_KEY = "qorpera.web.language";
 const TIME_ZONE_KEY = "qorpera.web.time-zone";
 const THEME_KEY = "qorpera.web.theme";
 const COMPOSER_COLOR_KEY = "qorpera.web.composer-color";
+const UI_SIZE_KEY = "qorpera.web.ui-size";
 const SYSTEM_DARK = "(prefers-color-scheme: dark)";
 
 export function languagePreference(): LanguagePreference {
@@ -209,6 +211,36 @@ export function themePreference(): ThemePreference {
 	}
 }
 
+export function uiSizePreference(): UiSizePreference {
+	try {
+		return localStorage.getItem(UI_SIZE_KEY) === "small" ? "small" : "big";
+	} catch {
+		return "big";
+	}
+}
+
+/** Restore before paint, then refresh measured layouts just as a window resize does. */
+export function applyUiSize(): void {
+	const size = uiSizePreference();
+	const changed = document.documentElement.dataset.uiSize !== size;
+	document.documentElement.dataset.uiSize = size;
+	for (const input of document.querySelectorAll<HTMLInputElement>("input[data-ui-size-preference]")) {
+		input.checked = input.value === size;
+	}
+	if (changed) window.dispatchEvent(new Event("resize"));
+}
+
+export function setUiSizePreference(value: string): boolean {
+	if (value !== "big" && value !== "small") return false;
+	try {
+		localStorage.setItem(UI_SIZE_KEY, value);
+	} catch {
+		return false;
+	}
+	applyUiSize();
+	return true;
+}
+
 /** The theme on screen: the stored choice, else the device's appearance. */
 export function presentationTheme(): "light" | "dark" {
 	const preference = themePreference();
@@ -242,9 +274,11 @@ export function watchTheme(): () => void {
 	const onStorage = (event: StorageEvent) => {
 		if (event.key === THEME_KEY || event.key === null) applyTheme();
 		if (event.key === COMPOSER_COLOR_KEY || event.key === null) applyComposerColor();
+		if (event.key === UI_SIZE_KEY || event.key === null) applyUiSize();
 	};
 	applyTheme();
 	applyComposerColor();
+	applyUiSize();
 	system.addEventListener("change", applyTheme);
 	window.addEventListener("storage", onStorage);
 	return () => {

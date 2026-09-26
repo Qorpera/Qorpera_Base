@@ -7,6 +7,12 @@ import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { CLOUD_RUNTIME_ENTRY_POINTS, cloudRuntimeBundle, generateCloudRuntimeBundle, runtimeManifestText } from "./generate-cloud-runtime-bundle.mjs";
+import {
+	committedRuntimeBundle,
+	RUNTIME_BUNDLE_NOT_ENFORCED,
+	runtimeBundleEnforced,
+	runtimeBundlePackagingEnvironment,
+} from "./runtime-bundle-release-train.mjs";
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -16,12 +22,16 @@ test("serializes the bounded manifest using PostgreSQL jsonb key order", () => {
 	assert.throws(() => runtimeManifestText({ "é": true }), /Non-ASCII/);
 });
 
-test("the packaged native host embeds the same executable and policy pins as its manifest", async () => {
+test("the packaged native host embeds the same executable and policy pins as its manifest", async (t) => {
 	const output = await mkdtemp(join(tmpdir(), "qorpera-runtime-package-test-"));
 	try {
-		const expected = await generateCloudRuntimeBundle(true);
+		// A release branch must match its source. Elsewhere the committed files may
+		// lag it (release train); the package must then carry the committed pins.
+		const enforced = runtimeBundleEnforced();
+		if (!enforced) t.diagnostic(`packaged against the committed bundle: ${RUNTIME_BUNDLE_NOT_ENFORCED}`);
+		const expected = enforced ? await generateCloudRuntimeBundle(true) : await committedRuntimeBundle();
 		const packaged = spawnSync(process.execPath, ["scripts/package-ephemeral-runner.mjs", "--out", output], {
-			cwd: repository, encoding: "utf8", timeout: 60_000,
+			cwd: repository, encoding: "utf8", timeout: 60_000, env: runtimeBundlePackagingEnvironment(),
 		});
 		assert.equal(packaged.status, 0, packaged.stderr);
 		const manifest = JSON.parse(await readFile(join(output, "manifest.json"), "utf8"));
