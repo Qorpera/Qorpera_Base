@@ -16,6 +16,7 @@ const PROVIDERS: ReadonlyArray<{ id: Provider; label: string; logo: string }> = 
 ];
 const WATCH_MS = 2000;
 const USAGE_FRESH_MS = 5 * 60_000;
+const UPDATED_MS = 2000;
 
 function resetCountdown(milliseconds: number): string {
 	const minutes = Math.ceil(milliseconds / 60_000);
@@ -49,6 +50,9 @@ export class ProviderSignIns {
 
 const live = (connection: NativeMemberConnection) =>
 	connection.connectionStatus === "active" && connection.authorizationState === "active";
+/** Cards with the same provider and email read the same. */
+const lookalike = (connection: NativeMemberConnection) =>
+	`${connection.provider}\n${connection.providerAccountEmail?.toLowerCase() ?? ""}`;
 
 /** Accounts share one list; provider selection belongs to adding an account.
  * A connected account is enabled for the member's own messages right away. */
@@ -67,9 +71,12 @@ export class ConnectionsView {
 	#error: string | undefined;
 	#watch: ReturnType<typeof setTimeout> | undefined;
 	#usageClock: ReturnType<typeof setTimeout> | undefined;
+	#updatedClock: ReturnType<typeof setTimeout> | undefined;
+	#updated = false;
 	#refreshing: Promise<void> | undefined;
 	#refreshAgain = false;
 	#metadataRefresh: Promise<void> | undefined;
+	#metadataForced = false;
 	#usageUpdating = false;
 	#usageError: string | undefined;
 	/** `signIns` and `begin` come from the application when sign-ins should
@@ -109,6 +116,7 @@ export class ConnectionsView {
 		this.#lifetime.abort();
 		clearTimeout(this.#watch);
 		clearTimeout(this.#usageClock);
+		clearTimeout(this.#updatedClock);
 		this.#connections = undefined;
 		this.el.replaceChildren();
 		this.el.remove();
@@ -121,22 +129,47 @@ export class ConnectionsView {
 		return this.#refreshing;
 	}
 	/** `force` is the member's own Refresh: a new observation even while a
-	 * recent one would otherwise answer. */
+	 * recent one would otherwise answer. A Refresh that joins a background read
+	 * makes it forced; it can only join before that read asks for usage, since
+	 * the button is greyed out from the read's first redraw. */
 	#refreshUsage(force = false): Promise<void> {
 		if (this.#lifetime.signal.aborted) return Promise.resolve();
 		if (!this.#client.refreshAccountMetadata) return this.#refresh();
-		this.#metadataRefresh ??= this.#readUsage(force);
+		this.#metadataForced = (this.#metadataRefresh !== undefined && this.#metadataForced) || force;
+		this.#metadataRefresh ??= this.#readUsage();
 		return this.#metadataRefresh;
 	}
-	async #readUsage(force: boolean): Promise<void> {
+	/** The member's Refresh reads "Updated" for a moment once the new reading is
+	 * in; an unchanged reading would otherwise look as if nothing happened. */
+	async #refreshNow(): Promise<void> {
+		clearTimeout(this.#updatedClock);
+		this.#updated = false;
+		await this.#refreshUsage(true);
+		if (this.#lifetime.signal.aborted || this.#error || this.#usageError) return;
+		// A second click during the same read ends here too; keep one clock.
+		clearTimeout(this.#updatedClock);
+		this.#updated = true;
+		this.#draw();
+		this.#updatedClock = setTimeout(() => {
+			this.#updated = false;
+			if (!this.#lifetime.signal.aborted) this.#draw();
+		}, UPDATED_MS);
+	}
+	async #readUsage(): Promise<void> {
 		this.#usageUpdating = true;
 		this.#usageError = undefined;
+		// A read the member did not ask for ends an "Updated" still showing.
+		clearTimeout(this.#updatedClock);
+		if (this.#updated) {
+			this.#updated = false;
+			this.#draw();
+		}
 		try {
 			// Show existing account identities while their isolated host refreshes
 			// allowances. No sign-in or model message is started by this read.
 			await this.#refresh();
 			if (this.#lifetime.signal.aborted || !this.#connections?.connections.some(live)) return;
-			await this.#client.refreshAccountMetadata!(this.#lifetime.signal, force);
+			await this.#client.refreshAccountMetadata!(this.#lifetime.signal, this.#metadataForced);
 			if (!this.#lifetime.signal.aborted) await this.#refresh();
 		} catch {
 			if (!this.#lifetime.signal.aborted) this.#usageError = t("Usage could not be refreshed. Try again.");
@@ -288,7 +321,8 @@ export class ConnectionsView {
 			this.#draw();
 		}
 	}
-	#account(connection: NativeMemberConnection): HTMLElement {
+	/** `showAdded`: another card reads the same, so this one says when it was added. */
+	#account(connection: NativeMemberConnection, showAdded: boolean): HTMLElement {
 		const provider = PROVIDERS.find((item) => item.id === connection.provider)!;
 		const email = connection.providerAccountEmail;
 		const signOut = button(
@@ -306,6 +340,16 @@ export class ConnectionsView {
 				{ class: "settings-copy" },
 				h("strong", null, provider.label),
 				h("small", { class: "connection-email" }, email ?? t("Email unavailable")),
+				showAdded
+					? h(
+							"small",
+							{ class: "connection-identity", title: t("Connection {id}", { id: connection.connectionId }) },
+							t("Added {time} · {id}", {
+								time: fmtTime(connection.consentedAt),
+								id: connection.connectionId.slice(-8),
+							}),
+						)
+					: null,
 				!live(connection)
 					? h("small", { role: "status" }, t("Sign out and add this account again to reconnect."))
 					: null,
@@ -330,6 +374,12 @@ export class ConnectionsView {
 			return h("div", { class: "connection-usage muted" }, limitNotice ?? t("Usage unavailable"));
 		const stale =
 			limitReached || now - Date.parse(usage.observedAt) > USAGE_FRESH_MS || Date.parse(usage.observedAt) > now;
+		const checked = fmtTime(usage.observedAt);
+		// An old reading never says "left" (the limit may be reached since) but says
+		// when it was taken, unless the host's clock ran ahead of this one.
+		const dated = Date.parse(usage.observedAt) <= now;
+		// One bar needs no name; two (5 hours and Weekly) would look alike without one.
+		const named = usage.windows.length > 1;
 		return h(
 			"div",
 			{ class: "connection-usage" },
@@ -341,7 +391,9 @@ export class ConnectionsView {
 				const value = expired
 					? t("Usage unavailable")
 					: stale
-						? t("{percent}% at last check", { percent: remaining })
+						? dated
+							? t("{percent}% at last check · {time}", { percent: remaining, time: checked })
+							: t("{percent}% at last check", { percent: remaining })
 						: t("{percent}% left", { percent: remaining });
 				const fill = h("span");
 				// CSSOM property updates work with the release CSP; style attributes do not.
@@ -349,6 +401,8 @@ export class ConnectionsView {
 				return h(
 					"div",
 					{ class: "connection-usage-window" },
+					// The meter's own label names it for screen readers.
+					named ? h("span", { class: "connection-usage-label", "aria-hidden": "true" }, window.label) : null,
 					h(
 						"div",
 						{ class: "connection-usage-heading" },
@@ -361,7 +415,7 @@ export class ConnectionsView {
 									? t("Reset time unavailable")
 									: t("Resets in {time}", { time: resetCountdown(resetIn) }),
 						),
-						h("span", null, value),
+						h("span", { title: t("Last checked {time}", { time: checked }) }, value),
 					),
 					expired
 						? null
@@ -455,14 +509,13 @@ export class ConnectionsView {
 					(attempt) => attempt.login?.clientConnectionId === connection.clientConnectionId && !live(connection),
 				),
 		);
+		const lookalikes = new Map<string, number>();
+		for (const key of accounts.map(lookalike)) lookalikes.set(key, (lookalikes.get(key) ?? 0) + 1);
 		const canConnect = Boolean(this.#client.onboardingAvailable && this.#begin);
 		const refresh = button(
-			this.#usageUpdating ? t("Refreshing…") : t("Refresh"),
-			() => void this.#refreshUsage(true),
-			{
-				small: true,
-				disabled: this.#loading || this.#usageUpdating,
-			},
+			this.#usageUpdating ? t("Refreshing…") : this.#updated ? t("Updated") : t("Refresh"),
+			() => void this.#refreshNow(),
+			{ small: true, disabled: this.#loading || this.#usageUpdating },
 		);
 		refresh.dataset.focusKey = "refresh";
 		const add = button(
@@ -502,7 +555,9 @@ export class ConnectionsView {
 				h(
 					"div",
 					{ class: "connection-list" },
-					...accounts.map((connection) => this.#account(connection)),
+					...accounts.map((connection) =>
+						this.#account(connection, (lookalikes.get(lookalike(connection)) ?? 0) > 1),
+					),
 					...PROVIDERS.flatMap((provider) => {
 						const attempt = this.#attempts.get(provider.id);
 						return attempt ? [this.#attempt(provider, attempt)] : [];
