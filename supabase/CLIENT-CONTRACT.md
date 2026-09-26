@@ -247,7 +247,8 @@ profile RPCs; RLS is the second read boundary.
   Card facts (`entry.data`): `title`, `summary` (the reviewer's reason),
   `operation`, `effect` `external|destructive|delegation`, `target`,
   `details` (a few short facts), `tool` + `arguments` (the exact canonical call
-  arguments as text, up to 64 KiB),
+  arguments as text, up to 64 KiB) + `call` (the same arguments as a JSON object,
+  for the agent to copy; since 20260926210000; show `arguments`),
   `builtIn` (`none|money|legal_terms|delete_outside|access_change|...`),
   `rules` (matched, `{id, scope, when, outcome}`), `approverScope`,
   `approverUserId`, `approverName`, `requesterUserId`, `alwaysAllow`,

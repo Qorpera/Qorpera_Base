@@ -29,7 +29,7 @@ export const CLOUD_TOOL_RESULT_INSTRUCTIONS =
 	"COMPANY_FILE_PARENT_MISSING is not a block either: nothing was written, so create the missing folder with company_mkdir and repeat the call; never replace a file to make that folder. " +
 	"An action whose result you did not see may already have happened: retry it only as its tool describes, with the same operation key and arguments, never under a new key or by another route. " +
 	"An action that completed without showing its response still completed. After a safety block, a genuinely safer way to the same legitimate goal is fine; rewording the blocked action, or reaching a denied result by another route, is not. " +
-	"Members' rules can make an action wait for approval (APPROVAL_PENDING): the platform has raised the card, so do not ask again in chat; do other work meanwhile. When you are woken because such a card was approved, call the same tool again with exactly the arguments the card shows; it then runs once, without another review.";
+	"Members' rules can make an action wait for approval (APPROVAL_PENDING): the platform has raised the card, so do not ask again in chat; do other work meanwhile. When you are woken because such a card was approved, call the same tool again with the card's `call` field as its arguments, value for value: not its `arguments` text, which is the same call escaped (use that only when the card has no `call`); if the card's entry is cut short, read the rest of it first. It then runs once, without another review.";
 
 /** Fixed wording for a definite stale-version refusal of a Company File mutation. */
 const COMPANY_FILE_VERSION_CHANGED =
