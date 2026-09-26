@@ -47,6 +47,13 @@ const companyCalls = mode === "company-office"
 			{ tool: "decide_routine", arguments: { action: "next", operationKey: "next-1", at: "2026-09-02T12:00:00+02:00", intent: "Invoice 42 was still open at 10:00. Look again at noon." } },
 			{ tool: "send_message", arguments: { idempotencyKey: "final", text: "Invoice 42 is still open; I will look again at noon.", phase: "final" } },
 		]
+	: mode === "company-cards-unavailable"
+	? [
+			// Valid protocol shapes with no executor: neither may publish a card or end the turn.
+			{ tool: "ask_member", arguments: { idempotencyKey: "page-form", text: "Enter your email.", surface: "form", title: "Sign in", payload: { domain: "app.example.com", fields: [{ id: "email", label: "Email", type: "email" }] } } },
+			{ tool: "ask_member", arguments: { idempotencyKey: "vault-login", text: "Signing in.", surface: "credential", title: "Company account", payload: { name: "example-login", domain: "app.example.com" } } },
+			{ tool: "send_message", arguments: { idempotencyKey: "fallback", text: "This app cannot fill the page or sign in from the vault. No sign-in was performed.", phase: "final" } },
+		]
 	: mode === "company-silent" || mode === "company-no-send" || mode === "company-worker"
 	? [{ tool: "company_read", arguments: { path: "note.md", offset: 0, limit: 256 } }]
 	: mode === "company-secret"

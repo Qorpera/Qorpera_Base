@@ -291,3 +291,38 @@ final result: passed
 - [x] Preserve click behavior when no drag threshold is crossed.
 
 final result: passed
+
+---
+
+# Email draft card QA
+
+Result: passed local UI verification on 2026-09-25.
+
+Reference: user-supplied screenshot, “Screenshot 2026-09-25 at 16.30.34.png”.
+Compared the production component in the in-app browser with the reference:
+rounded charcoal card, New email heading, status pill, inset letter, horizontal
+From/To/Subject rows, editable body, white Send email and secondary Discard.
+Added Cc disclosure and Save to Gmail as secondary controls for the requested
+functionality. Uses the application's system font and light/dark tokens.
+
+Initial global label and button styles conflicted with the reference. Fixed
+row direction, font weight, action colors and typography; inspected again.
+No remaining blocking visual findings. The card scales to conversation width
+instead of reproducing the screenshot's physical pixel dimensions.
+
+Verified in browser:
+
+- Desktop dark theme: layout and contrast match the reference hierarchy.
+- 390 × 844 viewport: all actions visible, no horizontal page overflow;
+  body wraps and long subject remains editable within its field.
+- Light theme and Danish labels remain readable.
+- Cc and subject edits survive Save to Gmail; further body edits appear in the
+  final Sent view; terminal controls disappear.
+- Invalid recipient disables Send; Discard remains usable.
+- No browser warnings or errors during these interactions.
+
+This preview uses local mocked delivery callbacks. It validates the production
+card's presentation and interaction, not a live Gmail delivery. Broker/provider
+and durable-state behavior are covered separately by focused tests and
+disposable PostgreSQL regressions. Production rollout and live mailbox
+acceptance remain required as documented in RUNTIME-EMAIL-DRAFTS.md.

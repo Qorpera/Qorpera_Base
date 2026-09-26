@@ -1078,6 +1078,48 @@ it("tells the model the card shape and why a card was refused, so it can fix the
 	]);
 });
 
+it("refuses unavailable form and credential cards without effects and lets the model recover", async () => {
+	const f = await fixture("company-cards-unavailable");
+	const result = await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+	expect(f.control.appendInteractionRequest).not.toHaveBeenCalled();
+	expect(f.control.beginToolOperation).not.toHaveBeenCalled();
+	expect(f.control.completeToolOperation).not.toHaveBeenCalled();
+	expect(f.control.sendMessage).toHaveBeenCalledExactlyOnceWith(
+		f.request,
+		{
+			idempotencyKey: "fallback",
+			text: "This app cannot fill the page or sign in from the vault. No sign-in was performed.",
+			phase: "final",
+		},
+		expect.any(AbortSignal),
+	);
+	expect(result.delivery).toEqual({ messageCount: 1, finalMessageId: f.deliveries.get("fallback")?.messageId });
+	const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
+	const ask = evidence.threadParameters.dynamicTools[0].tools.find(
+		(tool: { name: string }) => tool.name === "ask_member",
+	);
+	expect(ask.inputSchema.properties.surface.enum).toEqual(["question", "secret", "takeover", "draft"]);
+	expect(ask.inputSchema.properties.payload).toEqual(CLOUD_ASK_MEMBER_PAYLOAD_SCHEMA);
+	expect(ask.inputSchema.properties.payload.oneOf.map((branch: { required: string[] }) => branch.required)).toEqual([
+		["options"],
+		["name", "label", "purpose"],
+		["instruction"],
+		["platform", "connectorId", "from", "to", "body"],
+	]);
+	for (const index of [0, 1]) {
+		const refused = JSON.parse(evidence.fenced.outputs[index].output);
+		expect(refused.status).toBe("denied");
+		expect(refused.content.text).toMatch(/^INVALID_ARGUMENTS:/);
+		expect(refused.content.text).toContain("No card was created");
+		expect(refused.content.text).toMatch(/unavailable|not supported/);
+	}
+	const asks = f.observations.filter((row) => row.operation === "ask_member" && row.phase === "finish");
+	expect(asks.map((row) => [row.status, row.errorCategory])).toEqual([
+		["denied", "invalid_arguments"],
+		["denied", "invalid_arguments"],
+	]);
+});
+
 /** A member's post in a room, as the kernel admits it: final required only in the agent's own thread. */
 function roomWake(f: Awaited<ReturnType<typeof fixture>>, final: "required" | "optional") {
 	const inputId = randomUUID();
