@@ -384,6 +384,11 @@ export class LxdOfficeLifecycle {
 				providerPolicySha256: lxdOfficePhysicalPolicySha256(this.#gate.policy),
 				allocationId: status.reservation.allocationId,
 			};
+			if (
+				["active", "maintenance"].includes(status.officeState) &&
+				(await this.#paid.reconcileStopped(binding, this.#registry, signal))
+			)
+				return { state: "held", intentId: status.intent?.intentId, reason: "OFFICE_PAID_RECOVERY_REQUIRED" };
 			await this.#paid.recover(binding, signal);
 			if (status.officeState === "active") {
 				try {

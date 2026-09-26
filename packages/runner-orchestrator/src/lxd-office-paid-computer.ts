@@ -1,6 +1,8 @@
 import { join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
+import { reconcileLxdOfficeComputerOutage } from "./lxd-office-computer-outage.ts";
 import { type LxdOfficeGuestBinding, lxdOfficeGuestPlan } from "./lxd-office-guest.ts";
+import type { LxdOfficeHostRebootRegistry } from "./lxd-office-host-reboot.ts";
 import { publish, readRecord } from "./lxd-office-journal-files.ts";
 import type { LxdOfficeAbandonedStart, LxdOfficeOperationPort } from "./lxd-office-operations.ts";
 import { assertLxdOfficePhysicalBinding, type LxdOfficePhysicalPolicy } from "./lxd-office-physical-policy.ts";
@@ -37,6 +39,11 @@ export interface LxdOfficePaidComputerPort {
 	operations(binding: LxdOfficeGuestBinding): LxdOfficeOperationPort;
 	recover(binding: LxdOfficeGuestBinding, signal: AbortSignal): Promise<void>;
 	assertActive(binding: LxdOfficeGuestBinding, signal: AbortSignal): Promise<void>;
+	reconcileStopped(
+		binding: LxdOfficeGuestBinding,
+		registry: Pick<LxdOfficeHostRebootRegistry, "call">,
+		signal: AbortSignal,
+	): Promise<boolean>;
 	settleStopped(binding: LxdOfficeGuestBinding, signal: AbortSignal): Promise<void>;
 	maintain(signal: AbortSignal): Promise<void>;
 }
@@ -261,6 +268,13 @@ export class LxdOfficePaidComputer implements LxdOfficePaidComputerPort {
 	async assertActive(binding: LxdOfficeGuestBinding, signal: AbortSignal): Promise<void> {
 		if ((await this.#controller.recover(this.#context(binding), signal)) === "paid")
 			await this.#controller.assertRunning(binding.allocationId, signal);
+	}
+	reconcileStopped(
+		binding: LxdOfficeGuestBinding,
+		registry: Pick<LxdOfficeHostRebootRegistry, "call">,
+		signal: AbortSignal,
+	): Promise<boolean> {
+		return reconcileLxdOfficeComputerOutage(this.#policy, binding, this.#controller, this.#control, registry, signal);
 	}
 	async settleStopped(binding: LxdOfficeGuestBinding, signal: AbortSignal): Promise<void> {
 		await this.recover(binding, signal);

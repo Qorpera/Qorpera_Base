@@ -153,6 +153,7 @@ jobs:
           test/runtime-computer-http-control.test.ts
           test/lxd-provider-paid.test.ts
           test/lxd-office-paid-computer.test.ts
+          test/lxd-office-computer-outage.test.ts
           test/lxd-office-operations.test.ts
           test/lxd-office-creation-worker.test.ts
           test/lxd-office-boot-worker.test.ts

@@ -10,18 +10,21 @@ const config = {
 const method = "qorpera_prepare_runtime_computer_permit";
 const signal = () => AbortSignal.timeout(5000);
 describe("runtime computer host capability transport", () => {
-	it("adds the separate secret only at the protected transport boundary", async () => {
-		const fetcher = vi.fn<ServiceHttpFetch>().mockResolvedValue(Response.json({ permitId: "permit" }));
-		const control = new RuntimeComputerHttpControl(config, fetcher);
-		const request = { p_request: { allocationId: "allocation" } };
-		await expect(control.call(method, request, signal())).resolves.toEqual({ permitId: "permit" });
-		expect(request).toEqual({ p_request: { allocationId: "allocation" } });
-		const [url, init] = fetcher.mock.calls[0]!;
-		expect(url).toBe(`https://control.example/rest/v1/rpc/${method}`);
-		expect(init).toMatchObject({ method: "POST", redirect: "error" });
-		expect(JSON.parse(String(init?.body))).toEqual({ ...request, p_executor_secret: config.executorSecret });
-		expect(JSON.stringify(control)).toBe("{}");
-	});
+	it.each([method, "qorpera_register_runtime_office_computer_outage"])(
+		"adds the separate secret only at the protected transport boundary for %s",
+		async (method) => {
+			const fetcher = vi.fn<ServiceHttpFetch>().mockResolvedValue(Response.json({ permitId: "permit" }));
+			const control = new RuntimeComputerHttpControl(config, fetcher);
+			const request = { p_request: { allocationId: "allocation" } };
+			await expect(control.call(method, request, signal())).resolves.toEqual({ permitId: "permit" });
+			expect(request).toEqual({ p_request: { allocationId: "allocation" } });
+			const [url, init] = fetcher.mock.calls[0]!;
+			expect(url).toBe(`https://control.example/rest/v1/rpc/${method}`);
+			expect(init).toMatchObject({ method: "POST", redirect: "error" });
+			expect(JSON.parse(String(init?.body))).toEqual({ ...request, p_executor_secret: config.executorSecret });
+			expect(JSON.stringify(control)).toBe("{}");
+		},
+	);
 	it("refuses arbitrary RPCs and caller-supplied capability overrides before sending", async () => {
 		const fetcher = vi.fn<ServiceHttpFetch>();
 		const control = new RuntimeComputerHttpControl(config, fetcher);

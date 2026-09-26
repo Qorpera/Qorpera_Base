@@ -1,9 +1,14 @@
 import type { ServiceHttpFetch } from "./http-transport.ts";
+import { OFFICE_COMPUTER_OUTAGE_RPC } from "./lxd-office-computer-outage.ts";
 import { readLxdOfficeCredentialFile } from "./lxd-office-physical-host.ts";
 import { nodeHttpFetch } from "./node-http-fetch.ts";
 import { RUNTIME_COMPUTER_RPCS } from "./runtime-computer-controller.ts";
 
-const METHODS = new Set<string>([...RUNTIME_COMPUTER_RPCS, "qorpera_paid_office_admission"]);
+const METHODS = new Set<string>([
+	...RUNTIME_COMPUTER_RPCS,
+	"qorpera_paid_office_admission",
+	OFFICE_COMPUTER_OUTAGE_RPC,
+]);
 const LIMIT = 65536;
 
 /** Host-local credential only. The existing protected reader validates root

@@ -203,6 +203,7 @@ describe("paid company computer lifecycle adapter", () => {
 			recover: async () => {},
 			settleStopped: async () => {},
 			assertActive: async () => {},
+			reconcileStopped: async () => false,
 			maintain: async () => {},
 		};
 		const create = () =>
@@ -489,65 +490,82 @@ describe("paid company computer lifecycle adapter", () => {
 		);
 		expect(fallback.call).toHaveBeenCalledOnce();
 	});
-	it("holds an apparently active office after paid custody expires without inventing a resume", async () => {
-		const f = await fixture(),
-			g = f.policy.guest,
-			intentId = randomUUID();
-		f.controller.recover.mockResolvedValue("paid");
-		f.controller.assertRunning.mockRejectedValue(new Error("RUNTIME_COMPUTER_PERMIT_REQUIRED"));
-		const registry = {
-			call: vi.fn(async () => ({
-				schema: "qorpera.office-provider-status/v1",
-				scope: {
-					companyId: g.companyId,
-					environmentId: g.environmentId,
-					companyComputerId: g.companyComputerId,
-					logicalComputerId: g.logicalComputerId,
+	it.each(["unconfirmed", "active", "maintenance", "orderly"])(
+		"reconciles %s paid custody before live recovery without inventing a resume",
+		async (state) => {
+			const f = await fixture(),
+				g = f.policy.guest,
+				intentId = randomUUID();
+			f.controller.recover.mockResolvedValue("paid");
+			f.controller.assertRunning.mockRejectedValue(new Error("RUNTIME_COMPUTER_PERMIT_REQUIRED"));
+			if (state !== "unconfirmed") vi.spyOn(f.adapter, "reconcileStopped").mockResolvedValue(state !== "orderly");
+			if (state === "active" || state === "maintenance")
+				f.controller.recover.mockRejectedValue(new Error("live source unavailable"));
+			const registry = {
+				call: vi.fn(async () => ({
+					schema: "qorpera.office-provider-status/v1",
+					scope: {
+						companyId: g.companyId,
+						environmentId: g.environmentId,
+						companyComputerId: g.companyComputerId,
+						logicalComputerId: g.logicalComputerId,
+					},
+					computerGeneration: g.computerGeneration,
+					providerId: g.providerId,
+					providerPolicySha256: f.binding.providerPolicySha256,
+					providerVersion: 1,
+					preparationEnabled: true,
+					officeState: state === "maintenance" || state === "orderly" ? "maintenance" : "active",
+					imageSha256: g.imageFingerprint,
+					bootstrapSha256: g.bootstrapSha256,
+					intent: {
+						schema: "qorpera.office-start-intent/v1",
+						intentId,
+						companyComputerId: g.companyComputerId,
+						computerGeneration: 1,
+						state: "reserved",
+					},
+					reservation: {
+						allocationId: f.binding.allocationId,
+						instanceSha256: "a".repeat(64),
+						providerBindingSha256: "b".repeat(64),
+					},
+				})),
+			};
+			const lifecycle = new LxdOfficeLifecycle(
+				{ policy: f.policy, inspect: vi.fn(), check: vi.fn() },
+				registry,
+				{
+					paidComputer: f.adapter,
+					planPath: "/protected/lifecycle.json",
+					inventoryLimits: {
+						maxEntries: 100,
+						maxDepth: 4,
+						maxFileBytes: 1024,
+						maxTotalBytes: 4096,
+						maxManifestBytes: 65536,
+					},
 				},
-				computerGeneration: g.computerGeneration,
-				providerId: g.providerId,
-				providerPolicySha256: f.binding.providerPolicySha256,
-				providerVersion: 1,
-				preparationEnabled: true,
-				officeState: "active",
-				imageSha256: g.imageFingerprint,
-				bootstrapSha256: g.bootstrapSha256,
-				intent: {
-					schema: "qorpera.office-start-intent/v1",
-					intentId,
-					companyComputerId: g.companyComputerId,
-					computerGeneration: 1,
-					state: "reserved",
+				{
+					kernelLock: vi.fn(async () => {}),
+					readProtected: vi.fn(async () => {
+						throw Object.assign(new Error("missing"), { code: "ENOENT" });
+					}),
 				},
-				reservation: {
-					allocationId: f.binding.allocationId,
-					instanceSha256: "a".repeat(64),
-					providerBindingSha256: "b".repeat(64),
-				},
-			})),
-		};
-		const lifecycle = new LxdOfficeLifecycle(
-			{ policy: f.policy, inspect: vi.fn(), check: vi.fn() },
-			registry,
-			{
-				paidComputer: f.adapter,
-				planPath: "/protected/lifecycle.json",
-				inventoryLimits: {
-					maxEntries: 100,
-					maxDepth: 4,
-					maxFileBytes: 1024,
-					maxTotalBytes: 4096,
-					maxManifestBytes: 65536,
-				},
-			},
-			{ kernelLock: vi.fn(async () => {}) },
-		);
-		await expect(lifecycle.reconcile(signal())).resolves.toEqual({
-			state: "held",
-			intentId,
-			reason: "OFFICE_PAID_RECOVERY_REQUIRED",
-		});
-		expect(f.controller.start).not.toHaveBeenCalled();
-		expect(f.controller.ensure).not.toHaveBeenCalled();
-	});
+			);
+			await expect(lifecycle.reconcile(signal())).resolves.toEqual(
+				state === "orderly"
+					? { state: "held", intentId }
+					: {
+							state: "held",
+							intentId,
+							reason: "OFFICE_PAID_RECOVERY_REQUIRED",
+						},
+			);
+			expect(f.controller.start).not.toHaveBeenCalled();
+			expect(f.controller.ensure).not.toHaveBeenCalled();
+			if (state === "active" || state === "maintenance") expect(f.controller.recover).not.toHaveBeenCalled();
+			if (state === "orderly") expect(f.controller.recover).toHaveBeenCalledOnce();
+		},
+	);
 });
