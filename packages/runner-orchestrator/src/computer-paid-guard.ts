@@ -568,7 +568,7 @@ export class PaidComputerGuardJournal {
 		)
 			throw new Error("PAID_GUARD_LOCAL_JOURNAL_REQUIRED");
 	}
-	async load(): Promise<PaidComputerGuardRecord[]> {
+	async load(loaded?: (record: PaidComputerGuardRecord) => void): Promise<PaidComputerGuardRecord[]> {
 		await this.#directory();
 		const names = (await readdir(this.root)).filter((name) => name.endsWith(".json") && name !== "prestarts.json");
 		if (names.length > MAX_RECORDS) throw new Error("PAID_GUARD_JOURNAL_FULL");
@@ -578,6 +578,7 @@ export class PaidComputerGuardJournal {
 			const value = parsePaidComputerGuardRecord((await readRecord(join(this.root, name), 32768)).value);
 			if (name !== `${value.permit.permitId}.json`) throw new Error("PAID_GUARD_JOURNAL_INVALID");
 			values.push(value);
+			loaded?.(value);
 		}
 		return values;
 	}
@@ -735,78 +736,166 @@ export class PaidComputerGuard {
 		this.#physical = physical;
 		this.#clock = clock;
 	}
-	async initialize(): Promise<void> {
+	async initialize(
+		options: { progress?: () => void; unconfirmed?: () => void; signal?: AbortSignal } = {},
+	): Promise<void> {
 		if (this.#loaded) throw new Error("PAID_GUARD_ALREADY_INITIALIZED");
-		for (const value of await this.#journal.load()) this.#records.set(value.permit.permitId, value);
-		const prestarts = await this.#journal.loadPrestarts();
-		if (
-			!prestarts &&
-			[...this.#records.values()].some((entry) => entry.permit.schema === "qorpera.computer-usage-permit/v2")
-		)
-			throw new Error("PAID_GUARD_PRESTART_MISSING");
-		this.#guardIncarnationId = prestarts?.guardIncarnationId ?? randomUUID();
-		for (const entry of prestarts?.records ?? []) this.#prestarts.set(entry.intent.permitId, entry);
-		const names = await this.#journal.archiveNames();
-		if (!prestarts && names !== null) throw new Error("PAID_GUARD_ARCHIVE_ANCHOR_MISSING");
-		const count = prestarts?.archiveCount ?? 0;
-		if ((names?.length ?? 0) < count || (names?.length ?? 0) > count + 1)
-			throw new Error("PAID_GUARD_ARCHIVE_INVALID");
-		for (let sequence = 1; sequence <= (names?.length ?? 0); sequence++) {
-			if (names![sequence - 1] !== archiveName(sequence)) throw new Error("PAID_GUARD_ARCHIVE_INVALID");
-			const { value, sha256 } = await this.#journal.readArchive(sequence);
-			const permitId = value.prestart.intent.permitId;
-			if (
-				value.previousSha256 !== this.#archiveHeadSha256 ||
-				this.#archives.has(permitId) ||
-				value.prestart.guardIncarnationId !== this.#guardIncarnationId
-			)
-				throw new Error("PAID_GUARD_ARCHIVE_DIFFERS");
-			const active = this.#records.get(permitId) ?? null;
-			if (sequence <= count) {
-				if (this.#prestarts.has(permitId) || (active && !isDeepStrictEqual(active, value.guard)))
-					throw new Error("PAID_GUARD_ARCHIVE_DIFFERS");
-			} else {
-				// Only an exact terminal write interrupted before the anchor may be
-				// completed. Unrelated or partial tails never manufacture authority.
-				if (
-					!isDeepStrictEqual(this.#prestarts.get(permitId), value.prestart) ||
-					!isDeepStrictEqual(active, value.guard)
-				)
-					throw new Error("PAID_GUARD_ARCHIVE_DIFFERS");
-			}
-			this.#indexArchive(value, sha256);
-			if (sequence === count && this.#archiveHeadSha256 !== prestarts?.archiveHeadSha256)
-				throw new Error("PAID_GUARD_ARCHIVE_DIFFERS");
-			if (sequence > count) this.#prestarts.delete(permitId);
-		}
-		// Validate all anchored history before changing any retained evidence.
-		if (this.#archiveCount > count) await this.#persistPrestarts();
-		for (const permitId of this.#records.keys()) {
-			if (!this.#archives.has(permitId)) continue;
-			await this.#journal.removeArchivedGuard(permitId);
-			this.#records.delete(permitId);
-		}
-		for (const entry of this.#records.values()) {
-			const intent = this.#prestarts.get(entry.permit.permitId);
-			if (entry.permit.schema === "qorpera.computer-usage-permit/v2") {
-				this.#matchPrestart(entry.permit, entry.machine);
-				if (
-					(entry.startDispatched && intent?.state !== "dispatched") ||
-					(intent?.state === "abandoned" && entry.startDispatched)
-				)
-					throw new Error("PAID_GUARD_PRESTART_DIFFERS");
-				// Retirement was fsynced before the stopping record. A crash between
-				// those writes must resume stop custody, never reopen admission.
-				if (intent?.state === "retired" && entry.phase === "armed") {
-					const stopping = { ...entry, phase: "stopping" as const };
-					await this.#journal.save(stopping);
-					this.#records.set(entry.permit.permitId, stopping);
+		const startup = new Map<string, PaidComputerGuardRecord>();
+		const stoppedDuringStartup = new Set<string>();
+		const flights = new Map<string, Promise<void>>();
+		let closing = false;
+		// Stop-only custody has no socket, financial receipt or permission to
+		// start. It does not wait for permanent history or a writable disk.
+		const stopStartup = async (force = false) => {
+			if (closing && !force) return;
+			const clock = await this.#clock().catch(() => null);
+			if (closing && !force) return;
+			for (const value of startup.values()) {
+				if (flights.has(value.permit.permitId)) continue;
+				if (clock && clock.hostMachineIdSha256 !== value.machine.hostMachineIdSha256) {
+					options.unconfirmed?.();
+					continue;
 				}
-			} else if (intent) throw new Error("PAID_GUARD_PRESTART_DIFFERS");
+				if (
+					!force &&
+					clock &&
+					value.phase !== "stopping" &&
+					clock.hostBootId === value.machine.hostBootId &&
+					clock.uptimeMs < value.stopAtUptimeMs
+				)
+					continue;
+				stoppedDuringStartup.add(value.permit.permitId);
+				const work = this.#stopDuringInitialization(value)
+					.catch(() => options.unconfirmed?.())
+					.finally(() => flights.delete(value.permit.permitId));
+				flights.set(value.permit.permitId, work);
+			}
+			await Promise.allSettled([...flights.values()]);
+		};
+		const timer = setInterval(() => {
+			void stopStartup().catch(() => options.unconfirmed?.());
+		}, 1000);
+		try {
+			const prestarts = await this.#journal.loadPrestarts();
+			this.#guardIncarnationId = prestarts?.guardIncarnationId ?? randomUUID();
+			for (const entry of prestarts?.records ?? []) this.#prestarts.set(entry.intent.permitId, entry);
+			await this.#journal.load((value) => {
+				options.signal?.throwIfAborted();
+				this.#records.set(value.permit.permitId, value);
+				// Never-dispatched arms do not establish physical start custody.
+				if (value.phase !== "stopped" && value.startDispatched) {
+					if (value.permit.schema === "qorpera.computer-usage-permit/v2") {
+						if (!prestarts) throw new Error("PAID_GUARD_PRESTART_MISSING");
+						const intent = this.#matchPrestart(value.permit, value.machine);
+						if (intent.state !== "dispatched") throw new Error("PAID_GUARD_PRESTART_DIFFERS");
+						startup.set(value.permit.permitId, value);
+					} else {
+						if (this.#prestarts.has(value.permit.permitId)) throw new Error("PAID_GUARD_PRESTART_DIFFERS");
+						startup.set(value.permit.permitId, value);
+					}
+				}
+				options.progress?.();
+			});
+			if (
+				!prestarts &&
+				[...this.#records.values()].some((entry) => entry.permit.schema === "qorpera.computer-usage-permit/v2")
+			)
+				throw new Error("PAID_GUARD_PRESTART_MISSING");
+			await stopStartup();
+			const names = await this.#journal.archiveNames();
+			if (!prestarts && names !== null) throw new Error("PAID_GUARD_ARCHIVE_ANCHOR_MISSING");
+			const count = prestarts?.archiveCount ?? 0;
+			if ((names?.length ?? 0) < count || (names?.length ?? 0) > count + 1)
+				throw new Error("PAID_GUARD_ARCHIVE_INVALID");
+			for (let sequence = 1; sequence <= (names?.length ?? 0); sequence++) {
+				if (names![sequence - 1] !== archiveName(sequence)) throw new Error("PAID_GUARD_ARCHIVE_INVALID");
+				options.signal?.throwIfAborted();
+				const { value, sha256 } = await this.#journal.readArchive(sequence);
+				const permitId = value.prestart.intent.permitId;
+				if (
+					value.previousSha256 !== this.#archiveHeadSha256 ||
+					this.#archives.has(permitId) ||
+					value.prestart.guardIncarnationId !== this.#guardIncarnationId
+				)
+					throw new Error("PAID_GUARD_ARCHIVE_DIFFERS");
+				const active = this.#records.get(permitId) ?? null;
+				if (sequence <= count) {
+					if (this.#prestarts.has(permitId) || (active && !isDeepStrictEqual(active, value.guard)))
+						throw new Error("PAID_GUARD_ARCHIVE_DIFFERS");
+				} else {
+					// Only an exact terminal write interrupted before the anchor may be
+					// completed. Unrelated or partial tails never manufacture authority.
+					if (
+						!isDeepStrictEqual(this.#prestarts.get(permitId), value.prestart) ||
+						!isDeepStrictEqual(active, value.guard)
+					)
+						throw new Error("PAID_GUARD_ARCHIVE_DIFFERS");
+				}
+				this.#indexArchive(value, sha256);
+				options.progress?.();
+				if (sequence === count && this.#archiveHeadSha256 !== prestarts?.archiveHeadSha256)
+					throw new Error("PAID_GUARD_ARCHIVE_DIFFERS");
+				if (sequence > count) this.#prestarts.delete(permitId);
+			}
+			// Validate all anchored history before changing any retained evidence.
+			if (this.#archiveCount > count) await this.#persistPrestarts();
+			for (const permitId of this.#records.keys()) {
+				if (!this.#archives.has(permitId)) continue;
+				await this.#journal.removeArchivedGuard(permitId);
+				this.#records.delete(permitId);
+			}
+			for (const entry of this.#records.values()) {
+				const intent = this.#prestarts.get(entry.permit.permitId);
+				if (entry.permit.schema === "qorpera.computer-usage-permit/v2") {
+					this.#matchPrestart(entry.permit, entry.machine);
+					if (
+						(entry.startDispatched && intent?.state !== "dispatched") ||
+						(intent?.state === "abandoned" && entry.startDispatched)
+					)
+						throw new Error("PAID_GUARD_PRESTART_DIFFERS");
+					// Retirement was fsynced before the stopping record. A crash between
+					// those writes must resume stop custody, never reopen admission.
+					if (intent?.state === "retired" && entry.phase === "armed") {
+						const stopping = { ...entry, phase: "stopping" as const };
+						await this.#journal.save(stopping);
+						this.#records.set(entry.permit.permitId, stopping);
+					}
+				} else if (intent) throw new Error("PAID_GUARD_PRESTART_DIFFERS");
+			}
+			if (!prestarts) await this.#persistPrestarts();
+			closing = true;
+			clearInterval(timer);
+			await Promise.allSettled([...flights.values()]);
+			// Full history is now valid. Only now may ordinary durable stop
+			// records replace the original active snapshots and produce receipts.
+			for (const permitId of stoppedDuringStartup) {
+				const value = this.#records.get(permitId);
+				if (value && value.phase !== "stopped") await this.#latchStop(value);
+			}
+			options.signal?.throwIfAborted();
+			this.#loaded = true;
+		} catch (error) {
+			// Corruption or failed anchor repair must refuse admission, while
+			// locally validated physical custody is closed immediately.
+			await stopStartup(true);
+			throw error;
+		} finally {
+			closing = true;
+			clearInterval(timer);
+			await Promise.allSettled([...flights.values()]);
 		}
-		if (!prestarts) await this.#persistPrestarts();
-		this.#loaded = true;
 	}
+	async #stopDuringInitialization(value: PaidComputerGuardRecord): Promise<void> {
+		const clock = await this.#clock();
+		if (clock.hostMachineIdSha256 !== value.machine.hostMachineIdSha256) throw new Error("PAID_GUARD_HOST_DIFFERS");
+		const signal = AbortSignal.timeout(5000);
+		const state = await this.#physical.inspect(value.machine, signal);
+		if (state !== "stopped" && state !== "absent")
+			reference(await this.#physical.stop(value.machine, signal), value.machine);
+		// Do not manufacture a stopped receipt, settle a possibly late start,
+		// or mutate an archive anchor before complete durable recovery.
+	}
+
 	async #persistPrestarts(): Promise<void> {
 		try {
 			await this.#journal.savePrestarts({

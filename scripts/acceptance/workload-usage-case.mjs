@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { expandTestFixture } from "../test-hosted-db.mjs";
 import { startNativePostgres } from "./native-postgres.mjs";
 import { readWorkloadUsage, verifyWorkloadUsage, verifyWorkloadActivity } from "./workload-usage-evidence.mjs";
+import { retainSecondCodingClaim, exerciseSharedCodingClaims } from "./workload-usage-shared.mjs";
 import { CodingComputerController, CODING_COMPUTER_RPCS, parseCodingSessionClaim, lxdCodingMachinePlan,
  PaidComputerGuardClient, readPaidComputerHostClock, LxdUnixClient, RuntimeComputerController,
  RUNTIME_COMPUTER_RPCS, RuntimeNodeInventoryObserver, physicalHost, exerciseRuntimeWorkloadUsage } from "./workload-usage-tools.mjs";
@@ -19,9 +20,11 @@ const directory = dirname(fileURLToPath(import.meta.url));
 const options = JSON.parse(await readFile(process.argv[2], "utf8"));
 assert.equal(process.platform, "linux"); assert(process.getuid() > 0);
 assert.equal(process.env.GITHUB_ACTIONS, "true"); assert.equal(process.env.RUNNER_ENVIRONMENT, "github-hosted");
-const { kind, cpuCount, memoryBytes, imageFingerprint, bootstrapSha256, planKey, poolFallback, renew, out } = options;
+const { kind, cpuCount, memoryBytes, imageFingerprint, bootstrapSha256, planKey, poolFallback, renew, sharedClaims = false, shapeMismatch = false, out } = options;
 assert(["native", "coding", "login"].includes(kind));
 assert(["basis", "dedicated"].includes(planKey) && typeof poolFallback === "boolean" && typeof renew === "boolean" && !(kind === "login" && (poolFallback || renew)));
+assert(typeof sharedClaims === "boolean" && (!sharedClaims || (kind === "coding" && !renew && !poolFallback)));
+assert(typeof shapeMismatch === "boolean" && (!shapeMismatch || (kind === "native" && !renew && !poolFallback)));
 assert(Number.isSafeInteger(cpuCount) && cpuCount > 0 && cpuCount * 1000 + 500 <= cpus().length * 1000);
 assert(Number.isSafeInteger(memoryBytes) && memoryBytes >= 1024 ** 3 && memoryBytes + 2 * 1024 ** 3 < totalmem());
 assert(/^[0-9a-f]{64}$/.test(imageFingerprint) && /^[0-9a-f]{64}$/.test(bootstrapSha256));
@@ -34,9 +37,29 @@ const service = `set local role service_role; set local request.jwt.claims='{"ro
 const socketPath = "/var/snap/lxd/common/lxd/unix.socket", client = new LxdUnixClient(socketPath);
 const signal = AbortSignal.timeout(15 * 60000), executorSecret = randomBytes(48).toString("base64url");
 const evidence = { schema: "qorpera.physical-workload-usage/v1", commit: process.env.GITHUB_SHA, kind,
- shape: { cpuMillis: cpuCount * 1000, memoryBytes }, planKey, poolFallback, renew, funding: "test invoice through actual subscription/funding RPCs",
+ shape: { cpuMillis: cpuCount * 1000, memoryBytes }, planKey, poolFallback, renew, sharedClaims, shapeMismatch, funding: "test invoice through actual subscription/funding RPCs",
  sourceFixture: "396 dispatch prefix; no model, repository or login-provider operation executed. Paid guests execute the fixed offline CPU/memory/disk acceptance workload.",
  passed: false, checks: {}, cleanup: false };
+// Bounded diagnostics contain only public kernel clock metadata and physical
+// power state. Preserve the production one-second observation budget unchanged.
+const clockReads = [], readFilePhysical = client.readInstanceFile.bind(client), readInstancePhysical = client.getInstance.bind(client);
+client.readInstanceFile = async (...args) => {
+ const clockPath = ["/proc/uptime", "/proc/sys/kernel/random/boot_id"].includes(args[2]), started = performance.now();
+ const file = await readFilePhysical(...args);
+ if (clockPath) {
+  clockReads.push({ operation: args[2], startedMs: started, durationMs: performance.now() - started,
+   uid: file.uid, gid: file.gid, mode: file.mode, value: file.content.toString("utf8").trim() });
+  if (clockReads.length > 24) clockReads.shift();
+ }
+ return file;
+};
+client.getInstance = async (...args) => {
+ const started = performance.now(), instance = await readInstancePhysical(...args);
+ clockReads.push({ operation: "getInstance", startedMs: started, durationMs: performance.now() - started,
+  status: instance?.status ?? null, statusCode: instance?.statusCode ?? null });
+ if (clockReads.length > 24) clockReads.shift();
+ return instance;
+};
 let database, machineName, phase = "database";
 const log = (value) => console.log(JSON.stringify({ phase, kind, ...value }));
 async function until(read, accept, milliseconds, label) {
@@ -59,7 +82,8 @@ try {
  // Request a real, supported fifteen-minute logical lease so natural paid
  // renewal does not outlive the source fixture's ordinary two-minute lease.
  // This changes only public lease-request arguments, never a physical clock.
- const base = expanded.slice(0, expanded.indexOf(marker)).replaceAll(",120);", ",900);");
+ const dispatched = expanded.slice(0, expanded.indexOf(marker)).replaceAll(",120);", ",900);");
+ const base = sharedClaims ? retainSecondCodingClaim(dispatched) : dispatched;
  // Finish only fixture logical runs before selecting paid mode. No physical
  // accounting rows or clocks are seeded by this source prefix.
  const native = kind === "native" ? `
@@ -149,7 +173,7 @@ try {
  }
  const guardSocketPath = kind === "coding" ? "/run/qorpera-paid-computer-guard/control.sock" : "/run/qorpera-native-computer-guard/control.sock";
  const guard = new PaidComputerGuardClient(guardSocketPath);
- let controller, context, allocationId, request, codingBinding, storage, claim;
+ let controller, context, allocationId, request, codingBinding, storage, claim, startRequestId;
  if (kind === "coding") {
   phase = "coding_admission";
   const policy = { providerId, providerPolicySha256: policySha256, project: "default", imageFingerprint, bootstrapSha256,
@@ -184,7 +208,8 @@ try {
    await query(`insert into public.qorpera_runtime_computer_host_keys(node_id,provider_kind,provider_id,policy_sha256,machine_id_sha256,bootstrap_sha256,cpu_millis,memory_bytes,backend,key_sha256)
     values('${nodeId}','native','${providerId}','${policySha256}','${host.machineIdSha256}','${bootstrapSha256}',${cpuCount * 1000},${memoryBytes},'lxd','${hash(executorSecret)}');`);
    controller = new RuntimeComputerController({ control, guard, client, clock: readPaidComputerHostClock });
-   assert.equal((await controller.ensure(context, randomUUID(), signal)).mode, "paid");
+   startRequestId = randomUUID();
+   assert.equal((await controller.ensure(context, startRequestId, signal)).mode, "paid");
   } else {
    const login = JSON.parse(await query(`begin; set local role authenticated; set local request.jwt.claims='{"role":"authenticated","sub":"${memberId}"}';
     select public.qorpera_begin_native_provider_login('${companyId}','${randomUUID()}','${randomUUID()}','${source.identity.compute_identity_id}','openai','codex-cli','${"8".repeat(64)}',900); commit;`));
@@ -195,7 +220,26 @@ try {
   }
  }
  phase = "physical_start"; machineName = request.name;
- await client.createInstance("default", request, signal);
+ const physicalRequest = shapeMismatch ? { ...request, config: { ...request.config, "limits.memory": String(memoryBytes + 256 * 1024 ** 2) } } : request;
+ await client.createInstance("default", physicalRequest, signal);
+ if (shapeMismatch) {
+  phase = "physical_shape_mismatch";
+  const physical = await client.getInstance("default", machineName, signal);
+  assert.equal(physical.status, "Stopped"); assert.equal(physical.config["limits.memory"], String(memoryBytes + 256 * 1024 ** 2));
+  assert.notEqual((await observer.observe(signal)).state, "ready", "Actual shape drift must fail inventory readiness");
+  await assert.rejects(controller.start(allocationId, { kind: "lxd", project: "default", instanceName: machineName,
+   profiles: [], config: request.config, devices: request.devices }, signal), /PAID_GUARD_PHYSICAL_INSTANCE_DIFFERS/);
+  assert.equal((await client.getInstance("default", machineName, signal)).status, "Stopped");
+  assert.equal(await guard.latest(allocationId, signal), null, "Mismatch must never arm or dispatch a paid start");
+  await controller.abandonUndispatched(context, startRequestId, signal);
+  const closure = JSON.parse(await query(`select jsonb_build_object('permits',count(*),'closed',bool_and(state='closed'),
+   'samples',(select count(*) from public.qorpera_coding_computer_samples),
+   'unsettled',(select count(*) from public.qorpera_computer_allowance_reservations where settled_at is null),
+   'reservedUs',(select sum(reserved_us)::text from public.qorpera_computer_allowance_buckets),
+   'debitedUs',(select sum(debited_us)::text from public.qorpera_computer_allowance_buckets)) from public.qorpera_coding_computer_permits;`));
+  assert.deepEqual(closure, { permits: 1, closed: true, samples: 0, unsettled: 0, reservedUs: "0", debitedUs: "0" });
+  evidence.shapeMismatchClosure = closure; evidence.checks.physicalShapeMismatchRefusedBeforeStart = true;
+ } else {
  assert.equal((await observer.observe(signal)).state, "ready");
  assert.equal(await query(`select count(*) from public.qorpera_runtime_node_instance_bindings where allocation_id='${allocationId}';`), "1");
  if (kind === "coding") await controller.start(allocationId, signal);
@@ -239,6 +283,13 @@ try {
    poolFallback && BigInt(row.from_standard_us) >= 1000000n ? fallbackMember : memberId]));
   evidence.reconciliation = verifyWorkloadUsage(accounting, probe); evidence.probe = probe; evidence.accounting = accounting;
  } else if (kind === "coding") {
+  if (sharedClaims) {
+   phase = "shared_coding_claims";
+   evidence.sharedCoding = await exerciseSharedCodingClaims({ query, parseClaim: parseCodingSessionClaim, planMachine: lxdCodingMachinePlan,
+    controller, guard, client, firstClaim: claim, binding: codingBinding, nas: storage.policy, hostMachineIdSha256: host.machineIdSha256,
+    companyId, environmentId, payload: await readFile(join(directory, "workload-usage-guest.py"), "utf8"), signal });
+   phase = "metering";
+  }
   const original = await guard.latest(allocationId, signal); assert(original?.phase === "running");
   for (let n = 0; n < 3; n++) { await controller.observe(allocationId, signal); await delay(1100, undefined, { signal }); }
   if (renew) {
@@ -280,6 +331,7 @@ try {
   assert.equal(await query("select coalesce(sum(debited_us+reserved_us),0) from public.qorpera_computer_allowance_buckets;"), "0");
   evidence.checks.physicalLoginAwakeButUncharged = true;
  }
+ }
  assert.equal((await client.getInstance("default", machineName, signal)).status, "Stopped");
  if (evidence.guestWorkload) {
   evidence.activityReconciliation = verifyWorkloadActivity(evidence.accounting, evidence.guestWorkload);
@@ -301,7 +353,7 @@ try {
  }
  evidence.checks.physicalStop = true; evidence.passed = true;
 } catch (error) {
- evidence.phase = phase; evidence.error = String(error); process.exitCode = 1;
+ evidence.phase = phase; evidence.error = String(error); evidence.recentPhysicalClockReads = [...clockReads]; process.exitCode = 1;
 } finally {
  try {
   if (machineName) {

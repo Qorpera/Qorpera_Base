@@ -1,0 +1,23 @@
+[Unit]
+Description=Read-only Qorpera paid computer accounting health
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=qorpera-accounting-monitor
+Group=qorpera-accounting-monitor
+ExecStart=/usr/bin/node /opt/qorpera/accounting-health/computer-accounting-health.mjs --config /etc/qorpera/accounting-health/config.json
+TimeoutStartSec=90
+UMask=0077
+StateDirectory=qorpera-accounting-health
+StateDirectoryMode=0700
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
+LockPersonality=true
+StandardOutput=journal
+StandardError=journal

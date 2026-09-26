@@ -18,7 +18,7 @@
     "wakeAndSilence": "afcdd01831284c2d3dfb4586c4a2267193e26fe00cdddb50bfe8ee8dac6e2212",
     "contextComposer": "1796c8300b3e5395d11fe57b132a51bda1025a7bbdb260fcec3019a40336dc87",
     "providerBootstrap": "7e2e03d4e847a5b9db55d3eeb98c0ae7486013619c081d451a5fa4f8aa049554",
-    "authorization": "f29185d1148de212db914cfbb414b5f6040ac8449874f4c9c150f3af219c4ac8",
+    "authorization": "3bd1de734f02a2ff06f75db04a0257c2ba77973829183aa9a52a5359d4a70c35",
     "inboundSafety": "c0c404045bcacbddea79156d2d0d000b2d9caac77d53d1c92d64471ae01581d2",
     "outboundSafety": "7d0c9cb7c599fb0e6292e389204cf0ed8e1aae9e616bf471391a7861040f168a",
     "interactionSurfaces": "4d902f96c16b5998243dd3a1977921834832505674860c0adb96e303336c5a08",
@@ -333,10 +333,10 @@
     "packages/runner-orchestrator/src/coding-storage.ts": "58cb71b829ba67bfc2ce641ba8ad3821ab55efd4938cb6c0cb5adf17a8925369",
     "packages/runner-orchestrator/src/coding-vm.ts": "ad1f79ecc69f7a46565ca3c78fc730344b15693eb941bb755ced66e5004d1af1",
     "packages/runner-orchestrator/src/coding-workspace.ts": "fe73428a933aa7648b0d53a5a39008468bc86ff9d55c652d19e590e10e5e70b1",
-    "packages/runner-orchestrator/src/computer-paid-guard-ipc.ts": "8c7f4c9117b9e47424636c8fdf2a153a98e6484c85e231951386fa753893383a",
+    "packages/runner-orchestrator/src/computer-paid-guard-ipc.ts": "49669513c3d16a6575eaae4fa1765401bf3a8a9fb8654af8e0961108ae815ec4",
     "packages/runner-orchestrator/src/computer-paid-guard-lxd.ts": "1bdfe7014606c49bd7e3ffdc906e1a37be78754343324169afca55e64dee7629",
-    "packages/runner-orchestrator/src/computer-paid-guard-service.ts": "db288ec5de977443029417a7bce44828597b1fc0f0c5002a8fc9d67d76a3fde4",
-    "packages/runner-orchestrator/src/computer-paid-guard.ts": "1a06adef78ff21b627641f448635d0f9910fe7dcbd6684b972da4fa509e94d9b",
+    "packages/runner-orchestrator/src/computer-paid-guard-service.ts": "f091c6e9f9fe8417ca1b24afa1d987445757bff3aaa20d2be0b5aa26dc7559dc",
+    "packages/runner-orchestrator/src/computer-paid-guard.ts": "35e9b041cfa2e8ef50463264219092d766faa3ea1672f2c48661dfa3074874dc",
     "packages/runner-orchestrator/src/computer-prestart-control.ts": "4b705b9fae26c3b561d5a9712c549b975ede6b28f94bc63d74822fd850489e51",
     "packages/runner-orchestrator/src/computer-usage-observer.ts": "1fb608ab6c23915ecb71d471d44e1cd01d7527c784bb91a8771cfa8d3612a8c8",
     "packages/runner-orchestrator/src/computer-usage-outbox.ts": "504e70af2ea9074dde320b4826859245e638ff0ec95a5e5997a03d5a68b640f5",
@@ -699,7 +699,7 @@
     "packages/runtime/src/native-provider-account.ts": "9dbb6d065639253c5584876adbeb70f2803de29575ae7de7d1e0f0bbe0442b2b",
     "packages/runtime/src/native-provider-usage.ts": "935086f12167064ae71e90b44af1cbfe28b0d64a59ec2ba685157f45d320297c",
     "packages/runtime/src/systemd-credential.ts": "1d3eb8038a369c58418cbd8248aecf457662cbb3430cc84847235c2222a82478",
-    "scripts/generate-cloud-runtime-bundle.mjs": "383a0a8ea7df4ed4f1d49436c5d5ead1daa2ee1c4a30406eec2940c6bc5dc0f2",
+    "scripts/generate-cloud-runtime-bundle.mjs": "6d23daea5f5ab7f2a87daad2ccef3b4599e527c57c1f3e0a24092c2ae991cff3",
     "scripts/native-company-artifact.mjs": "e394bc799104f188769de07cd3be14e6c732a1a672113ea45d349a29d8e0ca63",
     "scripts/package-coding-executor.mjs": "bc5670e8ed06779453b075ed132351a5899ad45c6cf5d89b75fa296e4c146dce",
     "scripts/package-coding-executor.test.mjs": "765a2d1e130a26622f476130c934c95107cf1b2a0c736e478820f467e6f416a9",
@@ -1140,6 +1140,7 @@
     "supabase/migrations/20260925163000_runtime_bundle_activation_v128.sql": "9592c8b3d3149821f3bcb712dafb8d5eae5c57045813eb20b255ddfcc6ace4f1",
     "supabase/migrations/20260925164000_computer_billing_command_recovery.sql": "256602fcd38dce087dea9b7cfc0a3a8753a3a33c35bd059d7aba98df82e8426e",
     "supabase/migrations/20260925165000_computer_billing_recovery_bridge.sql": "009e5e3abfd37e4feda86f612eaf6d1323f827068785812473a85daf28b306d4",
-    "supabase/migrations/20260925166000_computer_funding_caps.sql": "50b954cccf1ac91db0d74c3254abc59d33ac45d2eddf2edd18da99b94a4c028c"
+    "supabase/migrations/20260925166000_computer_funding_caps.sql": "50b954cccf1ac91db0d74c3254abc59d33ac45d2eddf2edd18da99b94a4c028c",
+    "supabase/migrations/20260925167000_runtime_bundle_activation_v129.sql": "8207e09dccf3b6aec9d8f18fb70a68c1465cbf257fea2dd9872d0f7a4f2ecc8b"
   }
 }

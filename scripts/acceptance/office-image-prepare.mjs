@@ -43,6 +43,20 @@ try {
 	assert.deepEqual(JSON.parse(run("lxc", ["list", "--all-projects", "--format=json"])), [], "Refuse host with existing VMs");
 	assert.deepEqual(JSON.parse(run("lxc", ["storage", "list", "--format=json"])), [], "Fresh uninitialized LXD required");
 	run("lxd", ["init", "--auto", "--storage-backend", "dir"], 120000);
+	// Match the production office infrastructure policy before any guest exists.
+	// LXD's auto initialization enables IPv6 by default on some releases.
+	run("lxc", ["network", "set", "lxdbr0", "ipv6.address", "none"]);
+	run("lxc", ["network", "set", "lxdbr0", "ipv4.nat", "true"]);
+	const initializedNetwork = JSON.parse(run("lxc", ["query", "/1.0/networks/lxdbr0"]));
+	evidence.initializedInfrastructure = {
+		network: { name: initializedNetwork.name, type: initializedNetwork.type, managed: initializedNetwork.managed,
+			status: initializedNetwork.status, ipv4Address: initializedNetwork.config["ipv4.address"],
+			ipv4Nat: initializedNetwork.config["ipv4.nat"], ipv6Address: initializedNetwork.config["ipv6.address"] },
+		storage: JSON.parse(run("lxc", ["storage", "list", "--format=json"])).map(({ name, driver, status }) => ({ name, driver, status })),
+	};
+	assert(initializedNetwork.managed && initializedNetwork.type === "bridge" && initializedNetwork.status === "Created");
+	assert.equal(initializedNetwork.config["ipv6.address"], "none");
+	assert.equal(initializedNetwork.config["ipv4.nat"], "true");
 	await mkdir(work, { mode: 0o755 });
 	assert.equal(run("git", ["status", "--porcelain", "--untracked-files=no"]), "", "Image provenance requires an unchanged checkout");
 	assert.equal(run("git", ["rev-parse", "HEAD"]), process.env.GITHUB_SHA);
@@ -163,6 +177,10 @@ try {
 	guest(["chmod", "-R", "go-w", work]);
 	console.log(guest(["/usr/bin/node", `${work}/guest.mjs`, "install"], 180000));
 	evidence.installation = JSON.parse(guest(["cat", `${work}/install-proof.json`]));
+	// Retain exact measured installation bytes for the later signed reset lane.
+	run("lxc", ["file", "pull", `${vm}/opt/qorpera-office/installation.json`, `${work}/base-installation-receipt.json`]);
+	await chmod(`${work}/base-installation-receipt.json`, 0o444);
+	assert.equal(hash(await readFile(`${work}/base-installation-receipt.json`)), evidence.installation.installationReceiptSha256);
 	console.log(guest(["/usr/bin/node", `${work}/guest.mjs`, "credentials-before"]));
 	evidence.credentialsBefore = JSON.parse(guest(["cat", `${work}/credentials-before.json`]));
 	// Persist fixture setup before injecting abrupt power loss; the assertion
@@ -212,12 +230,14 @@ try {
 	for (const file of ["scripts/acceptance/office-image-prepare.mjs", "scripts/acceptance/office-image-dependencies.sh", "scripts/package-company-computer.mjs"]) recipe[file] = hash(await readFile(join(repository, file)));
 	const bootstrapBytes = Buffer.from(`${JSON.stringify({ schema: "qorpera.office-image-acceptance-bootstrap/v1", baseImageFingerprint: evidence.baseImageFingerprint, packageManifestSha256: evidence.packageManifestSha256, dependencies: evidence.installation.dependencies, caSha256, managerSha256, bootMode: "uefi-secureboot", recipe }, null, 2)}\n`);
 	await writeFile(join(out, "office-image-bootstrap.json"), bootstrapBytes, { mode: 0o644, flag: "wx" });
-	const bootstrapSha256 = hash(bootstrapBytes);
+	// Reset provisioning pins the actual installed base receipt as bootstrap
+	// identity. The build recipe remains separate provenance, not a substitute.
+	const bootstrapSha256 = evidence.installation.installationReceiptSha256;
 	const acceptanceBytes = Buffer.from(`${JSON.stringify({ schema: "qorpera.office-image-trust-acceptance/v1", imageFingerprint: image.target, baseImageFingerprint: evidence.baseImageFingerprint, imageBytes: published.size, bootstrapSha256, packageManifestSha256: evidence.packageManifestSha256, builder: evidence.builderTrust, finalImageBoot: evidence.finalImageBoot }, null, 2)}\n`);
 	await writeFile(join(out, "image-trust-evidence.json"), acceptanceBytes, { mode: 0o644, flag: "wx" });
 	const statement = { schema: "qorpera.lxd-office-image-provenance/v1", image: { fingerprint: image.target, baseFingerprint: evidence.baseImageFingerprint, architecture: "x86_64", bytes: published.size, guestPackageManifestSha256: evidence.packageManifestSha256, bootstrapSha256 }, source: { repository: "https://github.com/Qorpera/Qorpera_Base", commit: process.env.GITHUB_SHA, tree: "clean" }, acceptance: { testedAt: new Date().toISOString(), evidenceSha256: hash(acceptanceBytes), virtualization: "kvm", bootMode: "uefi-secureboot", secureBoot: true, credentials: "absent", computeIdentity: "absent", companyState: "absent", services: "fail-closed" } };
 	await writeFile(`${work}/statement.json`, JSON.stringify(statement), { mode: 0o600, flag: "wx" });
-	run(process.execPath, [`${work}/provenance.mjs`, `${work}/statement.json`, out]);
+	run(process.execPath, [`${work}/provenance.mjs`, `${work}/statement.json`, out, `${work}/reset-signing.key`]);
 	const verification = JSON.parse(await readFile(join(out, "image-verification.json"), "utf8"));
 	evidence.provenance = { statementSha256: verification.statementSha256, productionVerifierAccepted: verification.productionVerifierAccepted, alteredImageRejected: verification.alteredImageRejected };
 	context = { schema: "qorpera.office-image-acceptance-context/v1", project: "default", alias, imageFingerprint: image.target, imageBytes: published.size, bootstrapSha256, packageRoot: `${work}/package`, packageManifestSha256: evidence.packageManifestSha256, uid: 1100, gid: 1100, builderVmDeleted: true, finalCloneDeleted: true, imageRetainedForSameDisposableJob: true, provenanceSigned: true, provenancePath: join(out, "image-provenance.json"), statementSha256: verification.statementSha256, verificationKeySpki: verification.verificationKeySpki, trustContextPath: `${trustRoot}/context.json`, trustListenerRetained: retained };

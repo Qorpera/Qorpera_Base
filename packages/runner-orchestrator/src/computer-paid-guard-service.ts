@@ -27,13 +27,17 @@ export async function runPaidComputerGuardMain(
 	const shutdown = () => stop.abort(new Error("PAID_GUARD_SHUTDOWN"));
 	process.on("SIGTERM", shutdown);
 	process.on("SIGINT", shutdown);
+	let startupProgressAt = performance.now();
 	let ready = false,
 		notifying = false;
 	const notify = async () => {
-		if (!ready || notifying) return;
+		if (notifying || (!ready && performance.now() - startupProgressAt > 10000)) return;
 		notifying = true;
 		try {
-			await execute("/usr/bin/systemd-notify", ["WATCHDOG=1"], { timeout: 2000, maxBuffer: 4096 });
+			await execute("/usr/bin/systemd-notify", [ready ? "WATCHDOG=1" : "EXTEND_TIMEOUT_USEC=20000000"], {
+				timeout: 2000,
+				maxBuffer: 4096,
+			});
 		} catch {
 			stop.abort(new Error("PAID_GUARD_SUPERVISOR_UNCONFIRMED"));
 		} finally {
@@ -52,6 +56,9 @@ export async function runPaidComputerGuardMain(
 			),
 			socketPath: `/run/${name}/control.sock`,
 			signal: stop.signal,
+			startupProgress: () => {
+				startupProgressAt = performance.now();
+			},
 			report: (state) => {
 				if (state === "ready")
 					void execute("/usr/bin/systemd-notify", ["--ready"], { timeout: 2000, maxBuffer: 4096 })

@@ -16,7 +16,7 @@ assert.equal(process.env.GITHUB_ACTIONS, "true"); assert.equal(process.env.RUNNE
 const args = process.argv.slice(2), options = {};
 for (let i = 0; i < args.length; i++) {
  const name = args[i]; assert(!Object.hasOwn(options, name), "Duplicate workload CLI argument");
- if (name === "--pool-fallback" || name === "--renew") options[name] = true;
+ if (["--pool-fallback", "--renew", "--shared-claims", "--shape-mismatch"].includes(name)) options[name] = true;
  else {
   assert(["--kind", "--cpus", "--memory-gib", "--image-context", "--out", "--plan"].includes(name) && args[i + 1], "Invalid workload CLI");
   options[name] = args[++i];
@@ -25,14 +25,18 @@ for (let i = 0; i < args.length; i++) {
 const kind = options["--kind"], cpuCount = Number(options["--cpus"]), memoryBytes = Number(options["--memory-gib"]) * 1024 ** 3;
 const planKey = options["--plan"] ?? "basis", poolFallback = options["--pool-fallback"] ?? false;
 const renew = options["--renew"] ?? false;
+const sharedClaims = options["--shared-claims"] ?? false;
+const shapeMismatch = options["--shape-mismatch"] ?? false;
 assert(["native", "coding", "login"].includes(kind));
 assert(["basis", "dedicated"].includes(planKey) && !(kind === "login" && (poolFallback || renew)));
+assert(!sharedClaims || (kind === "coding" && !renew && !poolFallback));
+assert(!shapeMismatch || (kind === "native" && !renew && !poolFallback));
 assert(Number.isInteger(cpuCount) && cpuCount >= 1 && cpuCount <= 64);
 assert(Number.isSafeInteger(memoryBytes) && memoryBytes >= 1024 ** 3 && memoryBytes <= 1024 ** 4);
 assert(options["--out"] && options["--image-context"]);
 const out = resolve(options["--out"]), context = JSON.parse(await readFile(resolve(options["--image-context"]), "utf8"));
 assert(/^[0-9a-f]{64}$/.test(context.imageFingerprint)); assert(/^[0-9a-f]{64}$/.test(context.bootstrapSha256));
-const root = `/opt/qorpera-workload-usage-${kind}-${cpuCount}-${memoryBytes}-${planKey}-${poolFallback ? "pool" : "member"}-${renew ? "renew" : "short"}`, source = `${root}/source`, account = "qorpera-usage-acceptance", uid = 1251;
+const root = `/opt/qorpera-workload-usage-${kind}-${cpuCount}-${memoryBytes}-${planKey}-${poolFallback ? "pool" : "member"}-${renew ? "renew" : "short"}${sharedClaims ? "-shared" : ""}${shapeMismatch ? "-mismatch" : ""}`, source = `${root}/source`, account = "qorpera-usage-acceptance", uid = 1251;
 const unit = "qorpera-workload-usage-acceptance.service";
 const guardState = `/var/lib/${kind === "coding" ? "qorpera-paid-computer-guard" : "qorpera-native-computer-guard"}`;
 let installed = false, createdUser = false, stateIdentity;
@@ -48,7 +52,7 @@ try {
  run("usermod", ["--append", "--groups", "lxd", account]);
  await mkdir(`${source}/scripts/acceptance`, { recursive: true, mode: 0o755 });
  await mkdir(`${source}/supabase`, { recursive: true, mode: 0o755 });
- for (const name of ["native-postgres.mjs", "workload-usage-case.mjs", "workload-usage-evidence.mjs", "workload-usage-guest.py"]) await cp(join(repository, "scripts/acceptance", name), `${source}/scripts/acceptance/${name}`);
+ for (const name of ["native-postgres.mjs", "workload-usage-case.mjs", "workload-usage-evidence.mjs", "workload-usage-shared.mjs", "workload-usage-guest.py"]) await cp(join(repository, "scripts/acceptance", name), `${source}/scripts/acceptance/${name}`);
  await cp(join(repository, "scripts/test-hosted-db.mjs"), `${source}/scripts/test-hosted-db.mjs`);
  await cp(join(repository, "supabase/migrations"), `${source}/supabase/migrations`, { recursive: true });
  await cp(join(repository, "supabase/tests"), `${source}/supabase/tests`, { recursive: true });
@@ -68,7 +72,7 @@ try {
   stateIdentity = await lstat(guardState); assert(stateIdentity.isDirectory() && !stateIdentity.isSymbolicLink() && stateIdentity.uid === uid);
  }
  await mkdir(`${root}/results`, { mode: 0o700 }); await chown(`${root}/results`, uid, uid);
- await writeFile(`${root}/case.json`, `${JSON.stringify({ kind, cpuCount, memoryBytes, planKey, poolFallback, renew, imageFingerprint: context.imageFingerprint,
+ await writeFile(`${root}/case.json`, `${JSON.stringify({ kind, cpuCount, memoryBytes, planKey, poolFallback, renew, sharedClaims, shapeMismatch, imageFingerprint: context.imageFingerprint,
   bootstrapSha256: context.bootstrapSha256, out: `${root}/results/evidence.json` })}\n`, { flag: "wx", mode: 0o444 });
  const code = await new Promise((done, reject) => {
   const child = spawn("runuser", ["-u", account, "--", process.execPath, `${source}/scripts/acceptance/workload-usage-case.mjs`, `${root}/case.json`], { stdio: "inherit" });

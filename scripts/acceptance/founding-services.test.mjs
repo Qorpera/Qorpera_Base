@@ -1,10 +1,14 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { request } from "node:https";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { connect } from "node:net";
 import test from "node:test";
 import { foundingOptions } from "./founding-native.mjs";
 import { bootstrapCompanySql, computerPlansSql, modelAccountsSql, runtimeEvidenceSql, sqlUuid } from "./founding-fixtures.mjs";
-import { platformBootstrapParts, startFoundingMail } from "./founding-services.mjs";
+import { platformBootstrapParts, startFoundingGateway, startFoundingMail } from "./founding-services.mjs";
 
 test("founding runner cannot attach an existing remote service or database", () => {
 	assert.deepEqual(foundingOptions(["--bin", "/usr/lib/postgresql/17/bin", "--tools", "/tmp/tools", "--out", "/tmp/results"]),
@@ -62,4 +66,39 @@ test("private SMTP accepts only owned test addresses and captures an Auth-genera
 		assert.deepEqual(mail.diagnostics(), { connections: 1, acceptedRecipients: 1, rejectedRecipients: 1, dataMessages: 1, codesCaptured: 1, templateRequests: 1 });
 		assert(!JSON.stringify(mail.diagnostics()).includes("12345678"));
 	} finally { socket.destroy(); await mail.close(); }
+});
+
+test("optional billing transport preserves exact signatures and bearer without granting another function route", async () => {
+	const root = await mkdtemp(join(tmpdir(), "founding-billing-transport-"));
+	let gateway;
+	try {
+		const generated = spawnSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1", "-subj", "/CN=localhost",
+			"-addext", "subjectAltName=IP:127.0.0.1", "-keyout", join(root, "key.pem"), "-out", join(root, "cert.pem")], { encoding: "utf8" });
+		assert.equal(generated.status, 0);
+		const cert = await readFile(join(root, "cert.pem"));
+		gateway = await startFoundingGateway({ cert, key: await readFile(join(root, "key.pem")), publicKey: "test-public", webRoot: root });
+		const body = '{ "signed" : "unaltered\\nbytes" }';
+		const call = path => new Promise((resolve, reject) => {
+			const req = request(`${gateway.origin}${path}`, { method: "POST", ca: cert,
+				headers: { authorization: "Bearer actual-session-forwarded", "stripe-signature": "original-signature", "content-type": "application/json" } }, response => {
+				response.resume(); response.on("end", () => resolve(response.statusCode));
+			});
+			req.once("error", reject); req.end(body);
+		});
+		assert.equal(await call("/functions/v1/computer-billing/checkout"), 503);
+		const observed = [];
+		gateway.upstream.computerBilling = async value => {
+			observed.push({ url: value.url, bearer: value.headers.get("authorization"), signature: value.headers.get("stripe-signature"), body: await value.text() });
+			return Response.json({ refused: true }, { status: 401 });
+		};
+		assert.equal(await call("/functions/v1/computer-billing/checkout"), 401);
+		assert.equal(await call("/functions/v1/computer-billing/webhook"), 401);
+		assert.equal(await call("/functions/v1/computer-billing/secret-admin"), 503);
+		assert.equal(await call("/functions/v1/other/checkout"), 503);
+		assert.equal(observed.length, 2);
+		for (const value of observed) {
+			assert.equal(value.bearer, "Bearer actual-session-forwarded"); assert.equal(value.signature, "original-signature");
+			assert.equal(value.body, body); assert(value.url.startsWith(gateway.origin));
+		}
+	} finally { await gateway?.close(); await rm(root, { recursive: true }); }
 });

@@ -1,0 +1,12 @@
+[Unit]
+Description=Check Qorpera paid accounting and guard availability every minute
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=1min
+AccuracySec=5s
+Persistent=true
+Unit=qorpera-computer-accounting-health.service
+
+[Install]
+WantedBy=timers.target

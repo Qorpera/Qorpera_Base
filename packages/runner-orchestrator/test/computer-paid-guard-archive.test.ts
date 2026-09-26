@@ -155,6 +155,207 @@ function abandonment(entry: PaidComputerPrestartRecord) {
 	};
 }
 
+async function unusedAttempt(f: Awaited<ReturnType<typeof fixture>>) {
+	const permitId = randomUUID();
+	const prepareRequestText = JSON.stringify({
+		...JSON.parse(f.prestart.intent.prepareRequestText),
+		requestId: permitId,
+	});
+	const entry = await f.guard.registerPrestart({
+		...f.prestart.intent,
+		permitId,
+		prepareRequestText,
+		prepareSha256: createHash("sha256").update(prepareRequestText).digest("hex"),
+	});
+	return f.guard.abandonPrestart(entry.intent);
+}
+
+describe("paid guard startup stop custody", () => {
+	it("enforces the original deadline during archive validation without publishing readiness or a receipt", async () => {
+		const f = await fixture();
+		const unused = await unusedAttempt(f);
+		await f.guard.archive(unused.intent.permitId, abandonment(unused));
+		const armed = await f.guard.arm(f.input);
+		await f.guard.start(f.input.permit.permitId, 1);
+		await f.guard.sweep();
+		const original = await f.guard.status(f.input.permit.permitId);
+		f.host.uptimeMs = armed.stopAtUptimeMs - 1;
+		let release!: () => void;
+		const barrier = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const read = f.journal.readArchive.bind(f.journal);
+		const blocked = vi.spyOn(f.journal, "readArchive").mockImplementationOnce(async (sequence) => {
+			await barrier;
+			return read(sequence);
+		});
+		const restarted = f.restart(),
+			controller = new AbortController(),
+			report = vi.fn(),
+			progress = vi.fn();
+		const serving = servePaidComputerGuard({
+			guard: restarted,
+			socketPath: join(f.journalRoot, "guard.sock"),
+			signal: controller.signal,
+			report,
+			startupProgress: progress,
+		});
+		try {
+			await vi.waitFor(() => expect(blocked).toHaveBeenCalledOnce());
+			expect(f.physical.stop).not.toHaveBeenCalled();
+			f.host.uptimeMs = armed.stopAtUptimeMs;
+			await vi.waitFor(() => expect(f.physical.stop).toHaveBeenCalledOnce(), { timeout: 2500 });
+			expect(report).not.toHaveBeenCalledWith("ready");
+			expect(progress).toHaveBeenCalled();
+			await expect(restarted.status(f.input.permit.permitId)).rejects.toThrow("NOT_INITIALIZED");
+			expect(JSON.parse(await readFile(join(f.journalRoot, `${f.input.permit.permitId}.json`), "utf8"))).toEqual(
+				original,
+			);
+			release();
+			await vi.waitFor(() => expect(report).toHaveBeenCalledWith("ready"));
+			const stopped = await restarted.stop(f.input.permit.permitId);
+			expect(stopped.phase).toBe("stopped");
+			expect(stopped.stopReceipt).not.toBeNull();
+			expect(stopped.stopAtUptimeMs).toBe(original.stopAtUptimeMs);
+			expect(f.physical.start).toHaveBeenCalledOnce();
+		} finally {
+			release();
+			controller.abort();
+			await serving;
+		}
+	});
+
+	it("retires a pending startup clock read before a ready guard can renew the permit", async () => {
+		const f = await fixture(),
+			unused = await unusedAttempt(f);
+		await f.guard.archive(unused.intent.permitId, abandonment(unused));
+		const armed = await f.guard.arm(f.input);
+		await f.guard.start(f.input.permit.permitId, 1);
+		await f.guard.sweep();
+		let releaseArchive!: () => void, releaseClock!: () => void;
+		const archiveBarrier = new Promise<void>((resolve) => {
+			releaseArchive = resolve;
+		});
+		const clockBarrier = new Promise<void>((resolve) => {
+			releaseClock = resolve;
+		});
+		const read = f.journal.readArchive.bind(f.journal);
+		const blocked = vi.spyOn(f.journal, "readArchive").mockImplementationOnce(async (sequence) => {
+			await archiveBarrier;
+			return read(sequence);
+		});
+		let pauseClock = false,
+			clockPending = false,
+			clockResumed = false;
+		const restarted = new PaidComputerGuard(f.journal, f.physical, async () => {
+			if (pauseClock) {
+				pauseClock = false;
+				clockPending = true;
+				await clockBarrier;
+				clockResumed = true;
+			}
+			return { ...f.host };
+		});
+		const initializing = restarted.initialize();
+		try {
+			await vi.waitFor(() => expect(blocked).toHaveBeenCalledOnce());
+			pauseClock = true;
+			await vi.waitFor(() => expect(clockPending).toBe(true), { timeout: 2500 });
+			releaseArchive();
+			await initializing;
+			f.host.uptimeMs = armed.stopAtUptimeMs - 1000;
+			const renewed = await restarted.arm({
+				...f.input,
+				requestStartedUptimeMs: f.host.uptimeMs,
+				permit: {
+					...f.input.permit,
+					generation: 2,
+					reservationId: randomUUID(),
+					issuedAt: "2026-09-25T12:04:00.000Z",
+					deadline: "2026-09-25T12:09:30.000Z",
+				},
+			});
+			f.host.uptimeMs = armed.stopAtUptimeMs;
+			releaseClock();
+			await vi.waitFor(() => expect(clockResumed).toBe(true));
+			await new Promise((resolve) => setTimeout(resolve, 25));
+			expect(f.physical.stop).not.toHaveBeenCalled();
+			expect(await restarted.status(f.input.permit.permitId)).toEqual(renewed);
+		} finally {
+			releaseArchive();
+			releaseClock();
+			await initializing;
+		}
+	});
+
+	it("physically closes validated active custody when interrupted archive repair cannot write its anchor", async () => {
+		const f = await fixture();
+		await f.guard.arm(f.input);
+		await f.guard.start(f.input.permit.permitId, 1);
+		await f.guard.sweep();
+		const original = await f.guard.status(f.input.permit.permitId);
+		const unused = await unusedAttempt(f);
+		const save = vi.spyOn(f.journal, "savePrestarts").mockRejectedValue(new Error("ENOSPC"));
+		await expect(f.guard.archive(unused.intent.permitId, abandonment(unused))).rejects.toThrow("ENOSPC");
+		expect(await readdir(join(f.journalRoot, "archive"))).toContain("0000000000000001.json");
+		const restarted = f.restart();
+		await expect(restarted.initialize()).rejects.toThrow("ENOSPC");
+		expect(f.physical.stop).toHaveBeenCalledOnce();
+		expect(JSON.parse(await readFile(join(f.journalRoot, `${f.input.permit.permitId}.json`), "utf8"))).toEqual(
+			original,
+		);
+		await expect(restarted.status(f.input.permit.permitId)).rejects.toThrow("NOT_INITIALIZED");
+		save.mockRestore();
+		const repaired = f.restart();
+		await repaired.initialize();
+		await repaired.archive(unused.intent.permitId, abandonment(unused));
+		const stopped = await repaired.stop(f.input.permit.permitId);
+		expect(stopped.phase).toBe("stopped");
+		expect(stopped.stopAtUptimeMs).toBe(original.stopAtUptimeMs);
+		expect(f.physical.start).toHaveBeenCalledOnce();
+	});
+
+	it.each([false, true])(
+		"rejects corrupt history and only closes machines on the enrolled host (foreign: %s)",
+		async (foreign) => {
+			const f = await fixture(),
+				unused = await unusedAttempt(f);
+			await f.guard.archive(unused.intent.permitId, abandonment(unused));
+			await f.guard.arm(f.input);
+			await f.guard.start(f.input.permit.permitId, 1);
+			await f.guard.sweep();
+			await writeFile(join(f.journalRoot, "archive", "0000000000000001.json"), "{}", { mode: 0o600 });
+			if (foreign) f.host.hostMachineIdSha256 = "f".repeat(64);
+			await expect(f.restart().initialize()).rejects.toThrow();
+			expect(f.physical.stop).toHaveBeenCalledTimes(foreign ? 0 : 1);
+		},
+	);
+
+	it("does not assert physical start custody from an abandoned never-dispatched arm during corrupt recovery", async () => {
+		const f = await fixture(),
+			unused = await unusedAttempt(f);
+		await f.guard.archive(unused.intent.permitId, abandonment(unused));
+		await f.guard.arm(f.input);
+		await f.guard.abandonPrestart(f.prestart.intent);
+		await writeFile(join(f.journalRoot, "archive", "0000000000000001.json"), "{}", { mode: 0o600 });
+		f.physical.inspect.mockResolvedValue("running");
+		await expect(f.restart().initialize()).rejects.toThrow();
+		expect(f.physical.stop).not.toHaveBeenCalled();
+	});
+
+	it("does not stop a valid running machine on an ordinary restart before its original deadline", async () => {
+		const f = await fixture();
+		await f.guard.arm(f.input);
+		await f.guard.start(f.input.permit.permitId, 1);
+		await f.guard.sweep();
+		const original = await f.guard.status(f.input.permit.permitId);
+		const restarted = f.restart();
+		await restarted.initialize();
+		expect(await restarted.status(f.input.permit.permitId)).toEqual(original);
+		expect(f.physical.stop).not.toHaveBeenCalled();
+	});
+});
+
 describe("paid guard terminal archival", () => {
 	it.each([false, true])(
 		"archives a lost SQL renewal without changing physical stop evidence (late commit: %s)",

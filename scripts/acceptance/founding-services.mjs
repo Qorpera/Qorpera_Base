@@ -117,10 +117,23 @@ export async function waitHttp(url, process) {
 /** HTTPS origins are real client configuration. The proxy forwards tokens
  * unchanged to real Auth/PostgREST; it never interprets or substitutes claims. */
 export async function startFoundingGateway({ cert, key, publicKey, webRoot }) {
-	const upstream = { auth: null, rest: null };
+	const upstream = { auth: null, rest: null, computerBilling: null };
 	const server = createHttpsServer({ cert, key }, async (req, res) => {
 		try {
 			const url = new URL(req.url, "https://127.0.0.1");
+			// Optional joined billing acceptance. The production handler still
+			// verifies Auth bearers/webhook signatures; this is transport only.
+			if (/^\/functions\/v1\/computer-billing\/(checkout|portal|webhook)$/.test(url.pathname) && upstream.computerBilling) {
+				const chunks = []; let size = 0;
+				for await (const chunk of req) { size += chunk.length; assert(size <= 1048576, "Billing request too large"); chunks.push(chunk); }
+				const headers = new Headers();
+				for (const [name, value] of Object.entries(req.headers)) if (value !== undefined) headers.set(name, Array.isArray(value) ? value.join(", ") : value);
+				const request = new Request(`https://${req.headers.host}${req.url}`, { method: req.method, headers,
+					...(["GET", "HEAD"].includes(req.method) ? {} : { body: Buffer.concat(chunks) }) });
+				const response = await upstream.computerBilling(request), body = Buffer.from(await response.arrayBuffer());
+				assert(body.length <= 65536, "Billing response too large");
+				res.writeHead(response.status, Object.fromEntries(response.headers)); res.end(body); return;
+			}
 			const kind = url.pathname.startsWith("/auth/v1/") ? "auth" : url.pathname.startsWith("/rest/v1/") ? "rest" : null;
 			if (kind) {
 				if (req.headers.apikey !== publicKey || !upstream[kind]) { res.writeHead(401); res.end(); return; }

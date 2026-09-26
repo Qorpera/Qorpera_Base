@@ -89,6 +89,7 @@ export async function servePaidComputerGuard(options: {
 	socketPath: string;
 	signal: AbortSignal;
 	report?: (state: "ready" | "unconfirmed") => void;
+	startupProgress?: () => void;
 }): Promise<void> {
 	const { guard, socketPath, signal } = options;
 	if (resolve(socketPath) !== socketPath || Buffer.byteLength(socketPath) > 100)
@@ -123,7 +124,11 @@ export async function servePaidComputerGuard(options: {
 			throw new Error("PAID_GUARD_SOCKET_EXISTS");
 		await unlink(socketPath);
 	}
-	await guard.initialize();
+	await guard.initialize({
+		signal,
+		progress: options.startupProgress,
+		unconfirmed: () => options.report?.("unconfirmed"),
+	});
 	const sockets = new Set<Socket>();
 	const server = createServer({ allowHalfOpen: true }, (socket) => {
 		if (sockets.size >= 32) {

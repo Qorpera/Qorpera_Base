@@ -21,14 +21,15 @@ export function foundingOptions(args) {
 }
 async function freePort() { const server = createServer(); const port = await listenLoopback(server); await closeServer(server); return port; }
 
-export async function runFoundingNative(options) {
+export async function runFoundingNative(options, prepareScenario) {
 	assert(process.platform === "linux" && process.getuid?.() > 0, "Disposable unprivileged Linux runner required");
 	await mkdir(options.out, { mode: 0o700 });
 	assert.equal(await realpath(options.out), options.out);
 	assert.deepEqual(await readdir(options.out), []);
 	const privateRoot = await mkdtemp("/tmp/qorpera-founding-");
 	const owned = [];
-	let cluster, mail, gateway;
+	let cluster, mail, gateway, scenario;
+	let scenarioSetupCleanupFailed = false;
 	const evidence = { schema: "qorpera.founding-browser-acceptance/v1", commit: process.env.GITHUB_SHA ?? null,
 		passed: false, cleanup: false, authVersion: "v2.197.0", postgrestVersion: "16.4" };
 	const env = { PATH: "/usr/bin:/bin", HOME: privateRoot, LANG: "C.UTF-8", LC_ALL: "C.UTF-8", TZ: "UTC" };
@@ -40,7 +41,7 @@ export async function runFoundingNative(options) {
 		const jwtSecret = randomBytes(48).toString("base64url"), publicKey = `sb_publishable_${randomBytes(24).toString("base64url")}`;
 		mail = await startFoundingMail();
 		gateway = await startFoundingGateway({ cert: await readFile(join(privateRoot, "cert.pem")), key: await readFile(join(privateRoot, "key.pem")), publicKey,
-			webRoot: join(repository, "packages/web/dist") });
+			webRoot: join(privateRoot, "web-dist") });
 		const authPort = await freePort(), restPort = await freePort();
 		gateway.upstream.auth = authPort; gateway.upstream.rest = restPort;
 		let authProcess;
@@ -80,11 +81,26 @@ export async function runFoundingNative(options) {
 			PGRST_JWT_SECRET: jwtSecret, PGRST_SERVER_HOST: "127.0.0.1", PGRST_SERVER_PORT: String(restPort), PGRST_LOG_LEVEL: "warn",
 		} });
 		owned.push(restProcess); await waitHttp(`http://127.0.0.1:${restPort}/`, restProcess);
+		if (prepareScenario) {
+			// Trusted acceptance composition only. User authentication continues
+			// through the actual Auth API; no member token is minted here.
+			try {
+				scenario = await prepareScenario({ cluster, mail, gateway, publicKey, jwtSecret, authPort, restPort, privateRoot, out: options.out });
+			} catch (error) {
+				// A setup callback that cannot confirm cleanup of its own external
+				// resources must retain its private reconciliation evidence. This
+				// marker never changes success or skips local process shutdown.
+				scenarioSetupCleanupFailed = error instanceof Error && error.retainPrivateState === true;
+				throw error;
+			}
+			assert(typeof scenario.runBrowser === "function" && typeof scenario.close === "function");
+			if (scenario.handleComputerBilling) gateway.upstream.computerBilling = scenario.handleComputerBilling;
+		}
 		const build = await startOwnedProcess(process.execPath, ["packages/web/scripts/build.mjs"], { cwd: repository,
-			env: { ...env, QORPERA_WEB_CONFIG_JSON: JSON.stringify({ projectUrl: gateway.origin, publishableKey: publicKey, objectGatewayUrl: gateway.origin }) },
+			env: { ...env, QORPERA_WEB_OUTDIR: join(privateRoot, "web-dist"), QORPERA_WEB_CONFIG_JSON: JSON.stringify({ projectUrl: gateway.origin, publishableKey: publicKey, objectGatewayUrl: gateway.origin }) },
 			logPath: join(privateRoot, "web-build.log") });
 		owned.push(build); await build.wait();
-		Object.assign(evidence, await runFoundingBrowser({ origin: gateway.origin, publicKey, cluster, mail, out: options.out }));
+		Object.assign(evidence, await (scenario?.runBrowser ?? runFoundingBrowser)({ origin: gateway.origin, publicKey, cluster, mail, out: options.out }));
 		evidence.passed = true;
 	} catch (error) {
 		evidence.error = error instanceof Error ? `${error.name}: ${error.message}` : "Unknown founding acceptance failure";
@@ -92,10 +108,14 @@ export async function runFoundingNative(options) {
 		process.stderr.write(`Founding acceptance failed: ${evidence.error}\n`);
 	} finally {
 		try {
+			let scenarioCleanupFailed = scenarioSetupCleanupFailed;
+			try { await scenario?.close(); } catch { scenarioCleanupFailed = true; }
 			await gateway?.close();
 			for (const process of owned.reverse()) await process.close();
 			await mail?.close(); await cluster?.close();
-			await rm(privateRoot, { recursive: true }); evidence.cleanup = true;
+			assert(!scenarioCleanupFailed, "Acceptance scenario cleanup unconfirmed");
+			await rm(privateRoot, { recursive: true });
+			evidence.cleanup = true;
 		} catch { evidence.cleanup = false; evidence.passed = false; evidence.cleanupError = "Owned process cleanup unconfirmed; private state retained"; }
 		await writeFile(join(options.out, "evidence.json"), `${JSON.stringify(evidence, null, 2)}\n`, { flag: "wx", mode: 0o600 });
 	}

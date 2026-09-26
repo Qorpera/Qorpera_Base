@@ -1,9 +1,9 @@
 // Build the web client into dist/: one bundled ES module, one stylesheet, the
 // static shell, and the reused desktop assets. `--serve` keeps esbuild's dev
 // server up with rebuild-on-request; no framework, no plugin chain.
-import { cpSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
-import { dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import * as esbuild from "esbuild";
 import { assertMemberWebInputs } from "../../../scripts/check-headless-packages.mjs";
@@ -12,7 +12,13 @@ import { designPxPlugin, readUiScale } from "./design-px.mjs";
 import { webSourceProvenance } from "./provenance.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const dist = join(root, "dist");
+const outputOverride = process.env.QORPERA_WEB_OUTDIR;
+if (outputOverride !== undefined && (!isAbsolute(outputOverride) || resolve(outputOverride) !== outputOverride ||
+	outputOverride === "/" || /[\x00-\x1f\x7f]/.test(outputOverride))) throw new Error("Web output must be a canonical absolute directory");
+const dist = outputOverride ?? join(root, "dist");
+if (outputOverride !== undefined && existsSync(dist) &&
+	(!lstatSync(dist).isDirectory() || lstatSync(dist).isSymbolicLink() || readdirSync(dist).length !== 0))
+	throw new Error("Private web output must be a new or empty directory");
 const userland = resolve(root, "../shell/userland");
 const serve = process.argv.includes("--serve");
 const deployment = prepareDeployment({
@@ -31,7 +37,7 @@ for (const source of viewerSource.sources) {
 	if (createHash("sha256").update(bytes).digest("hex") !== source.sha256) throw new Error("Viewer source differs from its accepted checksum");
 }
 
-rmSync(dist, { recursive: true, force: true });
+if (outputOverride === undefined) rmSync(dist, { recursive: true, force: true });
 mkdirSync(join(dist, "assets"), { recursive: true });
 cpSync(join(root, "public"), dist, { recursive: true });
 writeFileSync(join(dist, "_headers"), deployment.headers);
@@ -125,7 +131,7 @@ if (serve) {
 		outputs: { ...result.metafile.outputs, ...themeResult.metafile.outputs },
 	};
 	writeFileSync(join(dist, "build-manifest.json"), `${JSON.stringify(metafile, null, 2)}\n`);
-	const outputs = Object.keys(metafile.outputs).map((file) => file.slice(file.indexOf("dist/") + 5));
+	const outputs = Object.keys(metafile.outputs).map((file) => relative(dist, resolve(file)).split(sep).join("/"));
 	const script = outputs.find((file) => /^build\/main-[A-Z0-9]+\.js$/.test(file));
 	const style = outputs.find((file) => /^build\/app-[A-Z0-9]+\.css$/.test(file));
 	const theme = outputs.find((file) => /^build\/theme-[A-Z0-9]+\.js$/.test(file));

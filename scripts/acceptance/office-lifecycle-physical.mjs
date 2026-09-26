@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { chmod, chown, cp, mkdir, readFile, rm, rmdir, unlink, writeFile } from "node:fs/promises";
+import { chmod, chown, cp, link, mkdir, readFile, rename, rm, rmdir, unlink, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
+import { isDeepStrictEqual } from "node:util";
 import { build } from "esbuild";
 import { startOfficeRpcServer } from "./office-rpc-server.mjs";
 import { readWorkloadUsage, verifyWorkloadUsage } from "./workload-usage-evidence.mjs";
@@ -19,7 +20,7 @@ const repository = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const context = JSON.parse(await readFile(process.argv[3], "utf8"));
 assert(context.provenanceSigned && context.builderVmDeleted && context.finalCloneDeleted);
 const out = resolve(process.argv[5]), root = "/opt/qorpera-office-lifecycle-acceptance";
-const storage = "/srv/qorpera-office-lifecycle-acceptance", journal = `${storage}/journal`, workbench = `${storage}/workbench`;
+const storage = "/srv/qorpera-office-lifecycle-acceptance", journal = `${storage}/journal`, workbench = `${storage}/workbench`, custodyRoot = `${storage}/reset-custody`;
 const account = "qorpera-office-provider", unit = "qorpera-office-computer-guard.service";
 const evidence = { schema: "qorpera.office-lifecycle-physical-acceptance/v1", commit: process.env.GITHUB_SHA,
 	passed: false, checks: {}, observations: [], scope: "Actual office provider, paid SQL, LXD/KVM guest, local NFS and forced-stop recovery. Subscription is a labeled isolated test entitlement; Stripe acceptance is separate." };
@@ -92,8 +93,14 @@ async function query(sql, options = {}) {
 }
 async function protectedFile(name, value, secret = false) {
 	const path = join(root, name), bytes = Buffer.isBuffer(value) ? value : Buffer.from(typeof value === "string" ? value : `${JSON.stringify(value)}\n`);
-	await writeFile(path, bytes, { flag: "wx", mode: secret ? 0o440 : 0o444 });
-	await chown(path, 0, secret ? 1100 : 0);
+	const temporary = `${path}.publish-${randomUUID()}`;
+	try {
+		await writeFile(temporary, bytes, { flag: "wx", mode: secret ? 0o440 : 0o444 });
+		await chown(temporary, 0, secret ? 1100 : 0);
+		// Exclusive atomic publication: a running provider cannot read a partial
+		// resume plan, and an existing protected plan is never overwritten.
+		await link(temporary, path);
+	} finally { await unlink(temporary); }
 	return { path, bytes: bytes.length, sha256: hash(bytes) };
 }
 function tool(action, ...args) { return run(process.execPath, [`${root}/tools.mjs`, action, ...args]); }
@@ -119,6 +126,7 @@ try {
 	tool("namespace");
 	for (const path of ["export", "workbench", "journal"]) await mkdir(`${storage}/${path}`, { mode: 0o700 });
 	await chown(`${storage}/export`, 1100, 1100);
+	await mkdir(custodyRoot, { mode: 0o700 }); await chown(custodyRoot, 1100, 1100);
 	await writeFile("/etc/exports.d/qorpera-office-lifecycle-acceptance.exports", `${storage}/export 127.0.0.1(rw,sync,root_squash,no_subtree_check,fsid=0)\n`, { mode: 0o644, flag: "wx" }); exported = true;
 	run("systemctl", ["start", "nfs-server"]); run("exportfs", ["-ra"]);
 	run("mount", ["-t", "nfs4", "-o", "vers=4.2,proto=tcp,hard,nosuid,nodev", "127.0.0.1:/", workbench]); mounted = true;
@@ -206,7 +214,8 @@ try {
 	const executorCredential = await protectedFile("executor.key", executor, true);
 	await protectedFile("service.json", { schema: "qorpera.lxd-office-provider-service/v1", policyPath: `${root}/policy.json`, provenancePath: `${root}/provenance.json`, planPath: `${root}/plan.json`, registryUrl, registryCredential,
 		inventoryLimits: { maxEntries: 1000, maxDepth: 20, maxFileBytes: 1024 ** 2, maxTotalBytes: 8 * 1024 ** 2, maxManifestBytes: 1024 ** 2 }, pollIntervalMs: 1000, idleMs: 3600000,
-		computerExecutorCredentialPath: executorCredential.path, outageImagePackageManifestPath: `${root}/image-manifest.json` });
+		computerExecutorCredentialPath: executorCredential.path, outageImagePackageManifestPath: `${root}/image-manifest.json`,
+		resetImagePackageManifestPath: `${root}/image-manifest.json`, codePackageLanePath: `${root}/reset-lane/lane-document.json` });
 	phase = "initial_admission"; provider = startProvider(ca.path);
 	const reviewed = await until(() => evidence.observations.at(-1), (value) => value?.state === "awaiting_review", 90000, "creation and inventory");
 	const creation = JSON.parse(await readFile(`${journal}/intent-${intentId}.json`, "utf8"));
@@ -227,9 +236,13 @@ try {
 	evidence.checks.initialActivation = before[0];
 	const physical = JSON.parse(run("lxc", ["query", `/1.0/instances/${machineName}`]));
 	evidence.physicalInstanceId = physical.config["volatile.uuid"];
+	evidence.physicalInstanceIds = [evidence.physicalInstanceId];
 	// Retained file goes into the adopted company-owned workbench after adoption.
 	const sentinel = join(workbench, review.plan.destinationName, "workbench", "physical-acceptance.txt");
-	run("runuser", ["-u", account, "--", "touch", sentinel]);
+	const sentinelContents = `Company workbench retained across boot and root replacement: ${randomUUID()}`;
+	const sentinelInput = await protectedFile("sentinel.txt", sentinelContents);
+	run("runuser", ["-u", account, "--", "cp", sentinelInput.path, sentinel]);
+	const assertWorkbench = () => assert.equal(run("runuser", ["-u", account, "--", "cat", sentinel]), sentinelContents);
 	await delay(20000);
 	phase = "forced_outage"; await stop(provider); provider = undefined;
 	await until(() => JSON.parse(run("lxc", ["query", `/1.0/instances/${machineName}/state`])).status, (value) => value === "Stopped", 330000, "guard forced physical shutdown");
@@ -240,11 +253,128 @@ try {
 	assert.notEqual(after[0].invocation, after[1].invocation); assert.notEqual(after[0].attestation.bootId, after[1].attestation.bootId);
 	assert.equal(JSON.parse(run("lxc", ["query", `/1.0/instances/${machineName}`])).config["volatile.uuid"], evidence.physicalInstanceId);
 	// root_squash deliberately prevents host root from traversing this export.
-	run("runuser", ["-u", account, "--", "test", "-f", sentinel]);
+	assertWorkbench();
 	evidence.checks.outageRecovery = { predecessorSuperseded: true, freshBoot: true, freshInvocation: true, samePhysicalVm: true, retainedWorkbench: true };
 	phase = "replay"; await stop(provider); provider = startProvider(ca.path); await delay(15000);
 	assert.deepEqual(await activations(), after);
 	evidence.checks.providerRestartDidNotDuplicateActivation = true;
+	// Author ordinary protected lifecycle plans from the actual current SQL
+	// activation. Every stop acknowledgement, resume boot and reset receipt is
+	// produced by the real provider/guest protocol, never inserted as a fixture.
+	const currentIdentity = async () => {
+		const value = JSON.parse(await query(`${service} select public.qorpera_runtime_office_provider_activation(${literal(scope)},1,'${providerId}','${policySha256}');`));
+		assert.equal(value.officeState, "active"); assert(value.activation);
+		return value.activation;
+	};
+	const balance = () => query("select jsonb_agg(jsonb_build_object('id',id,'reserved',reserved_us::text,'debited',debited_us::text) order by id) from public.qorpera_computer_allowance_buckets;");
+	const lifecycleRequest = async (action) => ({ schema: "qorpera.office-lifecycle-request/v1", transitionId: randomUUID(), action, ...await currentIdentity() });
+	const completedRecovery = async (request) => until(async () => {
+		try { return JSON.parse(await readFile(`${journal}/recovery-active-${request.transitionId}.json`, "utf8")); }
+		catch (error) { if (error.code === "ENOENT") return null; throw error; }
+	}, value => isDeepStrictEqual(value, request), 30000, "durable recovery completion");
+	const archivePlans = async (transitionId) => {
+		for (const suffix of ["recovery", "resume"]) {
+			try { await rename(`${root}/plan.json.${suffix}`, `${root}/completed-${transitionId}.${suffix}`); }
+			catch (error) { if (error.code !== "ENOENT") throw error; }
+		}
+	};
+	phase = "ordinary_power_off";
+	await stop(provider); provider = undefined;
+	const powerOff = await lifecycleRequest("power_off");
+	await protectedFile("plan.json.recovery", { schema: "qorpera.lxd-office-recovery-plan/v1", request: powerOff });
+	provider = startProvider(ca.path);
+	await until(() => evidence.observations.at(-1), value => value?.state === "powered_off" && value.transitionId === powerOff.transitionId, 180000, "governed power-off");
+	assert.equal(JSON.parse(run("lxc", ["query", `/1.0/instances/${machineName}/state`])).status, "Stopped");
+	await until(() => query("select count(*) from public.qorpera_coding_computer_permits where state<>'closed';"), value => value === "0", 30000, "ordinary stopped settlement");
+	const sleepingBalance = await balance();
+	await delay(20000);
+	assert.equal(await balance(), sleepingBalance, "Sleeping office changed paid balance");
+	assert.equal(JSON.parse(run("lxc", ["query", `/1.0/instances/${machineName}/state`])).status, "Stopped");
+	evidence.checks.ordinaryPowerOffAndSleepUncharged = true;
+	phase = "ordinary_resume";
+	const powerSuffix = `${powerOff.startup.allocationId}-${powerOff.transitionId}`;
+	const stopHistory = await readFile(`${journal}/power-off-history-${powerSuffix}.json`);
+	const powerCompletion = await readFile(`${journal}/power-off-completed-${powerSuffix}.json`);
+	const resume = { schema: "qorpera.office-boot-intent-request/v1", bootIntentId: randomUUID(), activationId: randomUUID(),
+		predecessor: powerOff, stopHistorySha256: hash(stopHistory), powerOffCompletionSha256: hash(powerCompletion) };
+	await protectedFile("plan.json.resume", { schema: "qorpera.lxd-office-resume-plan/v1", request: resume });
+	await until(activations, value => value.some(row => row.activationId === resume.activationId && row.state === "active" && !row.superseded), 240000, "ordinary resumed activation");
+	const resumed = await currentIdentity();
+	assert.equal(resumed.activationId, resume.activationId);
+	assert.notEqual(resumed.startup.bootId, powerOff.startup.bootId);
+	assert.equal(JSON.parse(run("lxc", ["query", `/1.0/instances/${machineName}`])).config["volatile.uuid"], evidence.physicalInstanceId);
+	assertWorkbench();
+	evidence.checks.ordinaryResumeRetainedVmAndWorkbench = true;
+	await completedRecovery(powerOff);
+	phase = "ordinary_service_restart";
+	await stop(provider); provider = undefined;
+	await archivePlans(powerOff.transitionId);
+	const restart = await lifecycleRequest("service_restart");
+	await protectedFile("plan.json.recovery", { schema: "qorpera.lxd-office-recovery-plan/v1", request: restart });
+	provider = startProvider(ca.path);
+	await until(async () => { const value = await currentIdentity().catch(() => null); return value; }, value => value && value.activationId !== restart.activationId, 180000, "ordinary service successor");
+	const restarted = await currentIdentity();
+	assert.equal(restarted.startup.bootId, restart.startup.bootId);
+	assert.notEqual(restarted.startup.serviceInvocationId, restart.startup.serviceInvocationId);
+	assert.equal(JSON.parse(run("lxc", ["query", `/1.0/instances/${machineName}`])).config["volatile.uuid"], evidence.physicalInstanceId);
+	evidence.checks.ordinaryServiceRestartRetainedVm = true;
+	await completedRecovery(restart);
+	phase = "ordinary_root_reset";
+	await stop(provider); provider = undefined;
+	await archivePlans(restart.transitionId);
+	const replace = await lifecycleRequest("replace");
+	const predecessor = (await activations()).find(row => row.activationId === replace.activationId);
+	assert(predecessor && !predecessor.superseded);
+	const reset = { schema: "qorpera.lxd-office-reset-plan/v1", resetId: randomUUID(), intentId, predecessor: replace,
+		preparationObservationSha256: predecessor.attestation.preparationObservationSha256, providerBindingSha256: review.providerBindingSha256,
+		nodeId, predecessorRootIncarnationId: null, rootIncarnationId: randomUUID(), successorActivationId: randomUUID(),
+		commands: { stopCommandId: randomUUID(), deleteCommandId: randomUUID(), createCommandId: randomUUID(), startCommandId: randomUUID() },
+		custody: { archiveRoot: custodyRoot } };
+	await protectedFile("plan.json.reset", reset);
+	// Provision the real signed package lane, using the measured base image's
+	// receipt and the exact current package. No fake installation/measurement
+	// record is inserted: the worker must install and attest the new root.
+	const imageWork = dirname(context.packageRoot), lane = `${root}/reset-lane`, tools = `${root}/reset-tools`;
+	const bundle = JSON.parse(await query("select jsonb_build_object('version',b.version,'sha256',b.sha256) from public.qorpera_active_runtime_bundle a join public.qorpera_runtime_bundles b on b.id=a.runtime_bundle_id where a.singleton;"));
+	const softwareRevision = await query(`select coalesce(software_revision::text,'null') from public.qorpera_runtime_office_activations where activation_id='${replace.activationId}';`);
+	assert.equal(softwareRevision, "null", "Unexpected software update before first root reset");
+	run(process.execPath, ["scripts/package-office-code-package-control.mjs", "--out", tools], 120000);
+	const capability = randomBytes(32).toString("hex");
+	const provision = JSON.parse(run(process.execPath, ["scripts/prepare-office-code-package-provision.mjs",
+		"--base-manifest", `${context.packageRoot}/manifest.json`, "--target-package", context.packageRoot,
+		"--installation-receipt", `${imageWork}/base-installation-receipt.json`, "--mount-template", `${context.packageRoot}/qorpera-office-private.mount.in`,
+		"--tools", tools, "--reset-plan", `${root}/plan.json.reset`, "--policy", `${root}/policy.json`, "--private-key", `${imageWork}/reset-signing.key`,
+		"--base-source-commit", process.env.GITHUB_SHA, "--target-source-commit", process.env.GITHUB_SHA,
+		"--runtime-bundle-version", String(bundle.version), "--runtime-bundle-sha256", bundle.sha256,
+		"--expected-software-revision", "null", "--target-revision", "1",
+		"--evidence-sha256", hash(await readFile(join(dirname(context.provenancePath), "image-trust-evidence.json"))),
+		"--lane-root", lane, "--capability-sha256", hash(capability), "--out", `${root}/reset-provision`], 120000));
+	await mkdir(lane, { mode: 0o755 });
+	await cp(context.packageRoot, `${lane}/artifacts`, { recursive: true });
+	await cp(tools, `${lane}/tools`, { recursive: true });
+	run("chmod", ["-R", "a+rX,go-w", lane]);
+	await chmod(`${lane}/tools`, 0o755);
+	for (const name of ["envelope.json", "plan.json", "lane-document.json"]) await protectedFile(`reset-lane/${name}`, await readFile(`${root}/reset-provision/${name}`));
+	for (const [name, source] of [["base-manifest.json", `${context.packageRoot}/manifest.json`], ["target-manifest.json", `${context.packageRoot}/manifest.json`],
+		["base-installation-receipt.json", `${imageWork}/base-installation-receipt.json`], ["base-mount-template", `${context.packageRoot}/qorpera-office-private.mount.in`]])
+		await protectedFile(`reset-lane/${name}`, await readFile(source));
+	await protectedFile("reset-lane/package.capability", capability, true);
+	await query(`insert into public.qorpera_office_package_capabilities(allocation_id,provider_id,provider_policy_sha256,capability_sha256,revision,enabled)
+		values('${replace.startup.allocationId}','${providerId}','${policySha256}','${hash(capability)}',1,true);`);
+	evidence.resetProvision = { provisionId: provision.provisionId, statementSha256: provision.statementSha256, planSha256: provision.planSha256, sameCodePackage: provision.changedArtifacts.length === 0 };
+	await protectedFile("plan.json.recovery", { schema: "qorpera.lxd-office-recovery-plan/v1", request: replace });
+	provider = startProvider(ca.path);
+	await until(activations, value => value.some(row => row.activationId === reset.successorActivationId && row.state === "active" && !row.superseded), 360000, "ordinary root replacement activation");
+	const replacement = await currentIdentity();
+	assert.equal(replacement.activationId, reset.successorActivationId);
+	assert.notEqual(replacement.startup.bootId, replace.startup.bootId);
+	const replacementPhysicalId = JSON.parse(run("lxc", ["query", `/1.0/instances/${machineName}`])).config["volatile.uuid"];
+	assert.notEqual(replacementPhysicalId, evidence.physicalInstanceId);
+	evidence.physicalInstanceIds.push(replacementPhysicalId);
+	assertWorkbench();
+	evidence.checks.ordinaryResetReplacedRootAndRetainedWorkbench = true;
+	await completedRecovery(replace);
+	await delay(15000);
 	// Stop the ordinary provider, then transfer custody to the same real paid
 	// controller under its existing flock. Settle the successor only after the
 	// independent guard confirms the actual physical VM is stopped.
@@ -266,8 +396,9 @@ try {
 		const samples = physicalSamples.filter((entry) => entry.permitId === permit.id && ids.has(entry.sample.observationId)).map((entry) => entry.sample);
 		const first = samples.find((sample) => sample.state === "running");
 		assert(first, "No actual office guest clock was sampled");
+		assert(evidence.physicalInstanceIds.includes(first.physicalId), "Metered VM was not independently observed by the lifecycle harness");
 		evidence.usageReconciliation.push(verifyWorkloadUsage(accounting, { kind: "company_computer", shape: { cpuMillis: 2000, memoryBytes: 4294967296 },
-			physicalId: evidence.physicalInstanceId, hostBootId: first.hostBootId, guestBootId: first.guestBootId,
+			physicalId: first.physicalId, hostBootId: first.hostBootId, guestBootId: first.guestBootId,
 			physicalSamples: samples, closed: true }));
 		totalDebit += BigInt(evidence.usageReconciliation.at(-1).debitedUs);
 	}

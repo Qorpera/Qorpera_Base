@@ -12,6 +12,8 @@ import time
 
 signal.alarm(30)
 marker = pathlib.Path(sys.argv[1])
+duration = int(sys.argv[2]) if len(sys.argv) == 3 else 10
+assert duration in (10, 18)
 assert marker.parent == pathlib.Path("/var/tmp")
 assert marker.name.startswith("qorpera-usage-") and not marker.exists()
 started = time.clock_gettime_ns(time.CLOCK_BOOTTIME) // 1_000_000
@@ -31,7 +33,7 @@ with tempfile.TemporaryFile(dir="/var/tmp") as disk:
     disk.seek(0)
     assert disk.read() == block
 hashes = 0
-deadline = time.monotonic() + 10
+deadline = time.monotonic() + duration
 while time.monotonic() < deadline:
     digest = hashlib.sha256(memory).hexdigest()
     hashes += 1

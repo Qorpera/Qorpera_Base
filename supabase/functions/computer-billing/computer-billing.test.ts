@@ -272,7 +272,9 @@ function reversalFixture({ refunds = [], notes = [], disputes = [] }: { refunds?
  return f;
 }
 const refund = { id: "re_example", charge: "ch_example", currency: "dkk", amount: 9250, status: "succeeded" };
-const dispute = { id: "du_example", charge: "ch_example", currency: "dkk", amount: 18500, livemode: false, status: "needs_response" };
+const withdrawnPrincipal = { id: "txn_withdrawal", source: "du_example", currency: "dkk", amount: -18500, fee: 20000, net: -38500 };
+const restoredPrincipal = { id: "txn_restoration", source: "du_example", currency: "dkk", amount: 18500, fee: 0, net: 18500 };
+const dispute = { balance_transactions: [withdrawnPrincipal], id: "du_example", charge: "ch_example", currency: "dkk", amount: 18500, livemode: false, status: "needs_response" };
 const credit = { id: "cn_example", invoice: "in_example", customer: "cus_example", currency: "dkk", livemode: false,
  amount: 9250, pre_payment_amount: 0, post_payment_amount: 9250, status: "issued", refunds: [] };
 function fundingSnapshot(calls: ReturnType<typeof fixture>["calls"]) {
@@ -297,23 +299,43 @@ describe("computer payment reversals", () => {
  it("restores failed refunds and won disputes from current history, despite charge.disputed remaining true", async () => {
   for (const state of ["failed", "canceled", "won", "warning_closed", "prevented"]) {
    const isRefund = ["failed", "canceled"].includes(state);
-   const { options, calls } = reversalFixture(isRefund ? { refunds: [{ ...refund, status: state }] } : { disputes: [{ ...dispute, status: state }] });
+   const { options, calls } = reversalFixture(isRefund ? { refunds: [{ ...refund, status: state }] } : { disputes: [{ ...dispute, status: state, balance_transactions: state === "won" ? [withdrawnPrincipal, restoredPrincipal] : [] }] });
    assert.equal((await handleComputerBilling(webhook({ type: isRefund ? "refund.failed" : "charge.dispute.closed", data: { object: { id: isRefund ? refund.id : dispute.id } } }), options)).status, 200);
    assert.equal(fundingSnapshot(calls).reversedMinor, 0); assert.equal(fundingSnapshot(calls).held, false);
   }
  });
  it("an old dispute-created event retrieves the current won outcome under a fresh lease", async () => {
-  const { options, calls } = reversalFixture({ disputes: [{ ...dispute, status: "won" }] });
+  const { options, calls } = reversalFixture({ disputes: [{ ...dispute, status: "won", balance_transactions: [withdrawnPrincipal, restoredPrincipal] }] });
   assert.equal((await handleComputerBilling(webhook({ type: "charge.dispute.created", data: { object: dispute } }), options)).status, 200);
   assert.equal(fundingSnapshot(calls).held, false); assert.equal(fundingSnapshot(calls).reversedMinor, 0);
   const evidence = JSON.parse(String(fundingSnapshot(calls).evidence)); assert.equal(evidence.disputes[0].status, "won");
  });
- it("holds unresolved disputes and ambiguous lost-dispute/refund overlap without erasing original issuance", async () => {
-  for (const value of [dispute, { ...dispute, status: "lost" }]) {
-   const { options, calls } = reversalFixture({ disputes: [value], refunds: [refund] });
-   assert.equal((await handleComputerBilling(webhook({ type: "charge.dispute.updated", data: { object: value } }), options)).status, 200);
-   assert.equal(fundingSnapshot(calls).held, true);
+ it("resolves lost-dispute/refund overlap from gross principal movement, excluding fees", async () => {
+  const partial = { ...dispute, status: "lost", amount: 4625, balance_transactions: [{ ...withdrawnPrincipal, amount: -4625, fee: 20000, net: -24625 }] };
+  const { options, calls } = reversalFixture({ disputes: [partial], refunds: [refund] });
+  assert.equal((await handleComputerBilling(webhook({ type: "charge.dispute.closed", data: { object: partial } }), options)).status, 200);
+  assert.equal(fundingSnapshot(calls).held, false); assert.equal(fundingSnapshot(calls).reversedMinor, 13875);
+ });
+ it("won status remains held until actual principal reinstatement, regardless of fee totals", async () => {
+  for (const transactions of [[], [withdrawnPrincipal], [withdrawnPrincipal, restoredPrincipal]]) {
+   const { options, calls } = reversalFixture({ disputes: [{ ...dispute, status: "won", balance_transactions: transactions }] });
+   assert.equal((await handleComputerBilling(webhook({ type: "charge.dispute.closed", data: { object: dispute } }), options)).status, 200);
+   assert.equal(fundingSnapshot(calls).held, transactions.length !== 2);
+   assert.equal(fundingSnapshot(calls).reversedMinor, 0);
   }
+ });
+ it("rejects duplicate, foreign-source, wrong-currency or excessive principal movements", async () => {
+  for (const transactions of [[withdrawnPrincipal, withdrawnPrincipal], [{ ...withdrawnPrincipal, source: "du_other" }],
+   [{ ...withdrawnPrincipal, currency: "eur" }], [{ ...withdrawnPrincipal, amount: -18501 }]]) {
+   const { options, calls } = reversalFixture({ disputes: [{ ...dispute, status: "lost", balance_transactions: transactions }] });
+   assert.equal((await handleComputerBilling(webhook({ type: "charge.dispute.closed", data: { object: dispute } }), options)).status, 503);
+   assert.equal(fundingSnapshot(calls), undefined); assert(calls.some(c => c.name === "qorpera_fence_computer_payment"));
+  }
+ });
+ it("keeps unresolved disputes held without erasing original issuance", async () => {
+  const { options, calls } = reversalFixture({ disputes: [dispute], refunds: [refund] });
+  assert.equal((await handleComputerBilling(webhook({ type: "charge.dispute.updated", data: { object: dispute } }), options)).status, 200);
+  assert.equal(fundingSnapshot(calls).held, true);
  });
  it("a delayed invoice.paid commits the current reduced cap before funding", async () => {
   const { options, calls } = reversalFixture({ refunds: [refund] });

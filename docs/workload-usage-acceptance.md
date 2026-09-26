@@ -1,0 +1,43 @@
+# Physical workload accounting acceptance
+
+The disposable `office-physical-acceptance.yml` workload job joins actual Linux/LXD VM clocks and the production paid controller/guard to a fresh native PostgreSQL database containing every migration. It runs cases sequentially against one built image, with a separate database and owned guard state for each case. It never substitutes containers or mocked physical observations when KVM is unavailable.
+
+The financial setup uses explicitly synthetic invoice proofs passed through the real privileged funding kernels. These are test entitlements, not evidence of a new Stripe payment. Source agents, repositories and model accounts are fixtures. The separate Stripe acceptance evidence establishes payment integration; it must not be inferred from these VM tests.
+
+## Cases and assertions
+
+| Case | Physical operation | Required financial result |
+| --- | --- | --- |
+| Native and coding, 1 CPU / 1 GiB | Actual idle intervals and bounded CPU, memory and disk activity | Exact cumulative elapsed time at 0.25 standard size |
+| Native and coding, 2 CPU / 2 GiB | Same | Exact cumulative elapsed time at 0.5 standard size |
+| Native and coding, 2 CPU / 8 GiB | Same | Exact cumulative elapsed time at 1 standard size, dominated by memory |
+| Native and coding, 2 CPU / 10 GiB | Same | Exact cumulative elapsed time at 1.25 standard size, dominated by memory |
+| Login, each of those four shapes | Actual guest clock advances before physical stop | No paid permit, reservation or debit |
+| Native and coding, pooled renewal | Actual natural five-minute funding-window renewal; exact renewal replay; controller recreation and stop | Responsible member's remaining allowance drains first, then consenting fallback; exact aggregate debit and no remaining hold |
+| Native and coding, Dedicated | Actual idle/busy intervals and stop | Same elapsed-time tariff, with allowance issued for the exact test invoice period |
+| Coding, two concurrent claims | Two distinct public dispatches/leases, same planned machine, separate authorized storage identities, overlapping 10- and 18-second guest processes | One physical UUID, permit, metering stream and initial held amount; first claim completion cannot stop the second; final global debit counts machine time once |
+| Native, physical shape mismatch | Real stopped VM has 256 MiB more memory than its admitted shape | Inventory refuses readiness, controller refuses before arming/start dispatch, retained prestart cancellation closes the hold with zero debit |
+
+One standard computer is 4 CPU / 8 GiB. These cases cover the CPU- and memory-dominant branches and fractional, standard and greater-than-standard ratios. They are not an exhaustive enumeration of every configurable CPU/RAM pair. The GitHub host must retain its configured infrastructure headroom; the test must not silently lower that headroom to admit a larger guest.
+
+`workload-usage-evidence.mjs` independently computes cumulative normalized microseconds with integer arithmetic. It joins the actual successful controller samples to SQL observations, checkpoints, reservations, settlements, and per-bucket debits. It verifies exact sample predecessors, physical/boot identities, zero-charge uncertainty gaps, reservation draw order, replay deduplication, full hold closure, and equality between the observed bucket balance changes and the sum of actual settlements. The physical idle and busy intervals use the same pinned tariff. CPU utilization is not the billed unit.
+
+In the pooled case only, an explicitly labeled operator fixture sets the responsible member's **starting** balance to one standard-computer second. That prior-consumption fixture is not claimed as historical physical usage. The subsequent VM observations, current-period debit, and fallback draw are real execution of the accounting path.
+
+The shared case completes its synthetic source claims with a failed outcome explaining that no model or repository task ran. The workload completion markers attest only the bounded offline CPU/memory/disk exercises. There is no fabricated successful product task, pull request, model response, repository checkout, or NAS hot-plug evidence.
+
+## Companion database evidence
+
+- Test 667 exercises actual Dedicated funding for 28-, 29-, 30- and 31-day periods and an invoice period spanning a UTC-offset change. It verifies exact replay and overlap refusal, refuses use of a future paid bucket, crosses a real two-second wall-clock period boundary, closes the old authorized hold, and draws the next hold from the newly active period. Its checkpoints are explicitly SQL fixtures.
+- Test 668 creates a real account-refresh request/allocation in paid mode, verifies `login_helper` classification and zero normalization even at double standard size, refuses relabeling as a sandbox, and refuses an allowance hold. It does not log into a provider or boot another VM.
+- `allowance-concurrency.mjs` uses separate PostgreSQL processes and observes actual row-lock blocking through `pg_blocking_pids`. It covers competing 75% reservations across companies, both payment-fence/reservation orderings, settlement of already authorized holds after a fence, and a delayed paid event that cannot remove that fence. It is database concurrency evidence, not physical VM evidence.
+
+## Evidence boundaries and status
+
+As of the addition of this matrix, local PostgreSQL 17.11 acceptance passed tests 667 and 668 with all 432 migrations. A separate fresh-database preflight passed actual two-claim admission, shared planning, distinct guest UID authorization, completion and custody refusal/permission. The usage oracle's eight unit tests passed. These local checks do not establish Linux physical acceptance.
+
+Run `36270332908` did not prove VM accounting: its workload job stopped during node observation. The subsequent fix corrects the local RPC adapter's rejection of valid parameter names containing digits. Base run `36272593866` passed actual inventory, paid preparation and physical boot, then failed the first native 1 CPU / 1 GiB case at its first metering observation with `RUNTIME_COMPUTER_OBSERVATION_UNCONFIRMED`. No paid sample reached SQL. That failure does not yet identify whether metadata, boot/state continuity or the unchanged one-second acquisition budget refused the sample. Bounded public-clock diagnostics have been added for the next run. The newly added shared/mismatch cases also require a run containing their changes. A case is physically proven only when its uploaded evidence has `passed: true`, `cleanup: true`, the expected case options, and a successful usage reconciliation or explicit zero-charge exclusion/refusal result. A successful image-build job alone is insufficient.
+
+The separate office runner owns full guest/provider/SQL lifecycle evidence. Ordinary power-off, sleeping balance, resume, service restart and root reset must be verified there; native/coding controller recreation cannot substitute for those operations. The shared coding case does not exercise the complete coding executor, model harness, repository workflow or real session-volume attachment. Paid shared-systemd/process execution remains explicitly unsupported and refused; an LXD pass must not be advertised as proof for an enabled process backend.
+
+Legacy holds without retained start authority, skipped-generation reconciliation, archive disk-failure/restart behavior and accounting-health alarms have separate recovery/operational checks. Retaining an unresolved hold is safe financial custody, but it is not successful reconciliation. Acceptance must report those outcomes explicitly rather than silently treating them as closed.

@@ -43,12 +43,14 @@ export async function runFoundingBrowser({ origin, publicKey, cluster, mail, out
 					const session = await response.json(); memberTokens.set(email, session.access_token);
 				}
 			});
+			const settingsReady = page.waitForResponse(response => response.url() === `${origin}/auth/v1/settings`).then(response => response.finished());
 			await page.goto(origin);
+			await settingsReady;
 			await page.getByLabel("Email", { exact: true }).fill(email);
 			const [otpResponse] = await Promise.all([
 				page.waitForResponse(response => response.url().startsWith(`${origin}/auth/v1/otp`) && response.request().method() === "POST"),
 				page.getByRole("button", { name: "Continue with email", exact: true }).click(),
-			]);
+			]).catch(() => { throw new Error(`OTP submit was not observed for member ${contexts.length}; blocked destinations: ${blocked.length}; browser errors: ${errors.length}`); });
 			if (!otpResponse.ok()) {
 				// Only the fixed provider error code is retained. Never log response
 				// bodies, request headers, OTPs, sessions or email addresses.

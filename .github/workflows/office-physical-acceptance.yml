@@ -12,6 +12,65 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  guard-storage:
+    name: Physical guard disk exhaustion and archive recovery
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+      - name: Require disposable Linux host
+        run: |
+          set -euo pipefail
+          test "${RUNNER_ENVIRONMENT}" = github-hosted
+          test "$(uname -m)" = x86_64
+          test "$(cat /proc/1/comm)" = systemd
+          test -c /dev/kvm
+          sudo -n python3 scripts/acceptance/paid-lxd-kvm.py
+      - name: Install reviewed dependencies and filesystem tools
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          sudo apt-get update
+          sudo apt-get install --yes e2fsprogs util-linux
+      - name: Install the reviewed LXD revision
+        timeout-minutes: 8
+        run: |
+          set -euo pipefail
+          if ! command -v snap >/dev/null; then sudo apt-get install --yes snapd; fi
+          sudo systemctl start snapd.socket
+          sudo snap wait system seed.loaded
+          if snap list lxd >/dev/null 2>&1; then
+            if [ "$(snap list lxd | awk 'NR==2 {print $3}')" != 40424 ]; then
+              sudo snap refresh lxd --channel=6/stable --revision=40424
+            fi
+          else
+            sudo snap install lxd --channel=6/stable --revision=40424
+          fi
+          test "$(snap list lxd | awk 'NR==2 {print $2 ":" $3}')" = 6.9-ab8fad2:40424
+          sudo snap refresh --hold=forever lxd
+          sudo /snap/bin/lxd waitready --timeout=60
+      - name: Prove physical stop during full journal disk and startup recovery
+        timeout-minutes: 20
+        run: >-
+          sudo env PATH="${PATH}:/snap/bin" GITHUB_ACTIONS=true RUNNER_ENVIRONMENT=github-hosted GITHUB_SHA="${GITHUB_SHA}"
+          node scripts/acceptance/paid-lxd-disk.mjs --out "${RUNNER_TEMP}/guard-storage-acceptance"
+      - name: Upload bounded guard storage evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: guard-storage-docker-free-${{ github.sha }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/guard-storage-acceptance/evidence.json
+            ${{ runner.temp }}/guard-storage-acceptance/guard.log
+          if-no-files-found: warn
+          retention-days: 14
   founding:
     name: Two founders through real web client and Supabase Auth
     runs-on: ubuntu-24.04
@@ -60,7 +119,7 @@ jobs:
   prerequisites:
     name: Paid office lifecycle on native PostgreSQL and LXD
     runs-on: ubuntu-24.04
-    timeout-minutes: 75
+    timeout-minutes: 90
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -132,7 +191,15 @@ jobs:
           --test 662_founding_paid_rollout_enrollment.test.sql
           --test 664_computer_billing_command_recovery.test.sql
           --test 666_computer_funding_caps.test.sql
+          --test 667_dedicated_calendar_boundaries.test.sql
+          --test 668_paid_account_refresh_exemption.test.sql
           --out "${RUNNER_TEMP}/office-acceptance/postgres"
+
+      - name: Prove read-only accounting incident detection and resolution
+        timeout-minutes: 5
+        run: >-
+          node scripts/acceptance/accounting-health-native.mjs --bin /usr/lib/postgresql/17/bin
+          --out "${RUNNER_TEMP}/office-acceptance/accounting-health"
 
       - name: Prove concurrent global spending and payment reversal ordering
         timeout-minutes: 5
@@ -178,8 +245,8 @@ jobs:
           sudo env PATH="${PATH}:/snap/bin" GITHUB_ACTIONS=true RUNNER_ENVIRONMENT=github-hosted GITHUB_SHA="${GITHUB_SHA}"
           node scripts/acceptance/office-image-prepare.mjs --out "${RUNNER_TEMP}/office-acceptance/image"
 
-      - name: Admit, meter, force-stop and recover the actual office
-        timeout-minutes: 22
+      - name: Prove paid office outage, sleep, resume, restart and reset
+        timeout-minutes: 35
         run: >-
           sudo env PATH="${PATH}:/snap/bin" GITHUB_ACTIONS=true RUNNER_ENVIRONMENT=github-hosted GITHUB_SHA="${GITHUB_SHA}"
           node scripts/acceptance/office-lifecycle-physical.mjs
@@ -195,6 +262,7 @@ jobs:
             ${{ runner.temp }}/office-acceptance/host-packages.txt
             ${{ runner.temp }}/office-acceptance/postgres/evidence.json
             ${{ runner.temp }}/office-acceptance/concurrency/evidence.json
+            ${{ runner.temp }}/office-acceptance/accounting-health/evidence.json
             ${{ runner.temp }}/office-acceptance/rpc/evidence.json
             ${{ runner.temp }}/office-acceptance/storage/evidence.json
             ${{ runner.temp }}/office-acceptance/image/evidence.json
@@ -306,6 +374,15 @@ jobs:
             case_number=$((case_number + 1))
             sudo env PATH="${PATH}:/snap/bin" GITHUB_ACTIONS=true RUNNER_ENVIRONMENT=github-hosted GITHUB_SHA="${GITHUB_SHA}" \
               node scripts/acceptance/workload-usage-physical.mjs --kind "$kind" --cpus 2 --memory-gib 2 --plan dedicated \
+              --image-context "${RUNNER_TEMP}/office-acceptance/image/image-context.json" \
+              --out "${RUNNER_TEMP}/workload-acceptance/case-${case_number}"
+          done
+          for scenario in shared-claims shape-mismatch; do
+            case_number=$((case_number + 1))
+            kind=native
+            if [ "$scenario" = shared-claims ]; then kind=coding; fi
+            sudo env PATH="${PATH}:/snap/bin" GITHUB_ACTIONS=true RUNNER_ENVIRONMENT=github-hosted GITHUB_SHA="${GITHUB_SHA}" \
+              node scripts/acceptance/workload-usage-physical.mjs --kind "$kind" --cpus 2 --memory-gib 2 --"$scenario" \
               --image-context "${RUNNER_TEMP}/office-acceptance/image/image-context.json" \
               --out "${RUNNER_TEMP}/workload-acceptance/case-${case_number}"
           done

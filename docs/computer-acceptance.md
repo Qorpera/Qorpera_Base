@@ -16,9 +16,9 @@ This uses synthetic control-plane permits. It proves the physical guard boundary
 
 Stripe acceptance must use a test key and a separate database. Evidence must distinguish genuine Stripe canonical objects replayed with local signatures from actual Stripe-to-endpoint webhook delivery. Hosted Checkout creation is not payment completion. A paid invoice and its exact replay must fund one period only; renewals, failed payments and cross-company pooling need their own assertions. Production offer and accounting flags stay disabled until the complete rollout gates pass.
 
-## Docker-free office prerequisites
+## Docker-free joined acceptance
 
-The separate manual `Docker-free office acceptance` workflow prepares the remaining real office test infrastructure without invoking Docker:
+The separate manual `Docker-free office acceptance` workflow runs four isolated jobs without invoking Docker: guard storage recovery, real Auth/browser company creation, paid office lifecycle, and physical workload accounting:
 
 ```sh
 gh workflow run office-physical-acceptance.yml --ref <reviewed-branch>
@@ -32,8 +32,20 @@ gh workflow run step2-lxd.yml --ref <reviewed-branch> -f office_physical_accepta
 
 It starts PostgreSQL 17 as an unprivileged owned process with a fresh private data directory and Unix socket, applies every migration, and runs the selected subscription, allowance, billing-authority and outage-recovery SQL regressions. No existing database is attached. The PostgreSQL listener has no TCP address; the harness stops its own process before deleting its own temporary cluster.
 
-The storage stage mounts a loopback NFSv4 export and a separate ext4 journal, then runs the production open-descriptor mount checks against actual Linux mount metadata. It preserves root squashing and checks workbench access as its owner. This proves the local protocol and mount boundary, not remote NAS durability or guest workbench custody.
+The guard storage job exhausts a separate ext4 filesystem while a real LXD VM has an active permit. It exercises physical deadline enforcement without writable receipt storage, interrupted archive-tail repair and restart with 4,161 archived records. It requires independent physical stop confirmation, recovery of durable receipts after space is released, and cleanup of the VM and mount. Its control-plane permits are synthetic; SQL settlement is covered by the joined lifecycle jobs.
 
-The guest stage builds and installs the actual office package inside an LXD VM, measures the installed dependencies and performs real systemd/boot-credential checks. Image and package measurements are retained as evidence for the next admission test. These prerequisite results must not be described as complete office admission or outage recovery: the real initial guest/provider/SQL lifetime still has to be connected and exercised.
+The office storage stage mounts a loopback NFSv4 export and a separate ext4 journal, then runs the production open-descriptor mount checks against actual Linux mount metadata. It preserves root squashing and checks workbench access as its owner. This proves the local protocol and mount boundary, not remote NAS durability or guest workbench custody.
+
+The guest stage builds and installs the actual office package inside an LXD VM, measures the installed dependencies and performs real systemd/boot-credential checks. It verifies Secure Boot, effective guest HTTPS certificate trust and signed image provenance. Successful image preparation is only a prerequisite; it does not establish successful paid admission or usage reconciliation.
+
+The office lifecycle then connects the actual provider, guest, independent guard and SQL control plane. Acceptance must show a paid start, measured usage, provider outage, independent physical deadline stop, retained-workbench recovery and final settlement. The ordinary lifecycle cases additionally cover power-off, an unchanged balance while stopped, same-machine resume, service restart and root replacement with retained workbench data. Every claimed operation needs its own successful physical evidence; a timeout or fixture-setup error is a failed case.
+
+The browser job runs the production web entry, actual Supabase Auth with email OTP, PostgREST and native PostgreSQL in separate member browser contexts. It checks invitations and joining, setup-revision agreement, separate contribution consent, noncreator launch, retry deduplication, immutable shared vision and solo creation. Its invoice and model-account setup are labeled fixtures. It does not establish external provider OAuth, hosted Stripe Checkout completion or model execution.
+
+The workload job covers native and coding LXD machines, exempt login helpers, CPU- and memory-dominant normalization, idle/busy time, natural renewal, pooled fallback, Dedicated plans, concurrent coding claims and rejected resource-shape drift. See the [workload matrix and evidence boundaries](workload-usage-acceptance.md). Every case uses a new database and owned guard state, with exact integer reconciliation of physical samples against reservations, settlements and global balances.
+
+The database stages also exercise real concurrent row-lock ordering and the restricted [accounting health checker](computer-accounting-health.md). The checker must detect an unresolved hold without mutating it, distinguish refund-related funding shortfalls from ledger corruption, and clear after a trusted settlement. Local checker success does not prove delivery through a deployment's alert collector.
+
+Review the uploaded `evidence.json` files against the run's exact commit. Require `passed: true`, successful owned-resource cleanup and the expected options for each case. Raw credentials, signing material, access tokens and private service logs are not uploaded. Retain failed reports rather than rewriting them as passed after a later correction. A green SQL or image stage must never substitute for a missing browser or physical lifecycle result.
 
 See [computer billing setup](computer-billing-setup.md) for the agreed plans, authority boundaries and remaining launch gates.

@@ -66,11 +66,16 @@ test("authentication, guest/provider separation and exact RPC paths fail before 
 		{ path: "/rest/v1/rpc/qorpera_prepare_runtime_computer_permit" },
 		{ path: "/rest/v1/rpc/qorpera_observe_runtime_node_inventory" },
 		{ path: "/rest/v1/rpc/qorpera_prepare_runtime_office_boot_successor" },
+		{ path: "/rest/v1/rpc/qorpera_begin_runtime_office_reset" },
+		{ path: "/rest/v1/rpc/qorpera_activate_runtime_office_reset_successor" },
+		{ path: "/rest/v1/rpc/qorpera_enroll_office_package_provision" },
 		{ path: "/rest/v1/rpc/qorpera_computer_billing_rpc", token: tokens.provider },
 		{ path: `/rest/v1/rpc/${method}?override=true` }, { method: "GET" },
 	]) assert([401, 403].includes((await call(f.server, options)).status));
 	assert.equal(f.calls.length, 0);
 	assert.equal((await call(f.server, { path: "/rest/v1/rpc/qorpera_prepare_runtime_computer_permit", token: tokens.provider })).status, 200);
+	for (const name of ["qorpera_begin_runtime_office_reset", "qorpera_check_runtime_office_reset_phase", "qorpera_activate_runtime_office_reset_successor", "qorpera_enroll_office_package_provision", "qorpera_ack_office_package_provision"])
+		assert.equal((await call(f.server, { path: `/rest/v1/rpc/${name}`, token: tokens.provider })).status, 200);
 });
 
 test("unknown arguments, malformed UTF8/JSON, compression and oversized requests never invoke SQL", async (t) => {

@@ -252,22 +252,41 @@ async function snapshotInvoiceFunding(options: ComputerBillingOptions, invoice: 
    throw new BillingError(503, "Refund history changed");
   const disputes = await stripeList(options, `disputes?charge=${chargeId}&limit=100`);
   if (charge.disputed && disputes.length === 0) throw new BillingError(503, "Dispute history incomplete");
+  const balanceIds = new Set<string>();
   for (const dispute of disputes) {
-   identifier(dispute.id, "du");
+   const disputeId = identifier(dispute.id, "du");
    if (dispute.charge !== chargeId || dispute.livemode !== options.liveMode || dispute.currency !== "dkk" || minor(dispute.amount) > minor(charge.amount))
     throw new BillingError(503, "Dispute accounting differs");
-   if (["won", "warning_closed", "prevented"].includes(String(dispute.status))) continue;
-   if (dispute.status === "lost") {
-    // Credit/refund and lost-dispute overlap cannot be inferred from face
-    // amounts. Keep the ambiguous principal held for explicit reconciliation.
-    if (activeRefunds > 0 || credit > 0) held = true;
-    else lostDispute += minor(dispute.amount);
+   if (!Array.isArray(dispute.balance_transactions) || dispute.balance_transactions.length > 2)
+    throw new BillingError(503, "Dispute principal history incomplete");
+   let movement = 0, withdrawn = false;
+   for (const value of dispute.balance_transactions) {
+    const transaction = object(value), transactionId = identifier(transaction.id, "txn");
+    if (balanceIds.has(transactionId) || transaction.source !== disputeId || transaction.currency !== "dkk" ||
+     typeof transaction.amount !== "number" || !Number.isSafeInteger(transaction.amount) || Math.abs(transaction.amount) > minor(dispute.amount))
+     throw new BillingError(503, "Dispute principal transaction differs");
+    balanceIds.add(transactionId); movement += transaction.amount; withdrawn ||= transaction.amount < 0;
+   }
+   if (!Number.isSafeInteger(movement) || movement > 0 || -movement > minor(dispute.amount))
+    throw new BillingError(503, "Dispute principal balance differs");
+   if (["won", "warning_closed", "prevented"].includes(String(dispute.status))) {
+    // Fees are separate business costs. Only gross principal movements prove
+    // whether the originally paid amount has actually been reinstated.
+    if (movement < 0 || (dispute.status === "won" && !withdrawn)) held = true;
+   } else if (dispute.status === "lost") {
+    if (!withdrawn) throw new BillingError(503, "Lost dispute withdrawal incomplete");
+    // The ledger proves additional money removed, so refund/credit-note face
+    // amount overlap no longer requires an indefinite blanket hold.
+    lostDispute += -movement;
    } else if (["needs_response", "under_review", "warning_needs_response", "warning_under_review"].includes(String(dispute.status))) held = true;
    else throw new BillingError(503, "Dispute outcome unavailable");
   }
+
   (evidence.charges as unknown[]).push({ id: chargeId, amount: charge.amount, refundedAmount: charge.amount_refunded });
   (evidence.refunds as unknown[]).push(...refunds.map(value => ({ id: value.id, amount: value.amount, status: value.status })));
-  (evidence.disputes as unknown[]).push(...disputes.map(value => ({ id: value.id, amount: value.amount, status: value.status })));
+  (evidence.disputes as unknown[]).push(...disputes.map(value => ({ id: value.id, amount: value.amount, status: value.status,
+   balanceTransactions: (value.balance_transactions as unknown[]).map(entry => { const transaction = object(entry);
+    return { id: transaction.id, source: transaction.source, currency: transaction.currency, amount: transaction.amount }; }) })));
  }
  if (linked.size > 0 || !Number.isSafeInteger(credit + refundReversal + lostDispute)) throw new BillingError(503, "Payment reversal needs reconciliation");
  const digest = await crypto.subtle.digest("SHA-256", encoder.encode(JSON.stringify(evidence)));
