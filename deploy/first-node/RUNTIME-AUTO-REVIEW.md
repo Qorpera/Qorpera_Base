@@ -191,9 +191,13 @@ owner and contributor (PR #315 comment; receipts in the takeover workspace,
   29d7a476). The agent is told to copy `call`, value for value.
 - Delegating to the company's own agents is never a built-in check, in the
   reviewer's instructions and in the kernel (a delegation call's money, terms,
-  deletion or access tag is dropped). The reviewer had tagged a group chat and
-  a coding job as access changes, which made every coding job wait for an
-  owner.
+  deletion or access tag is dropped, and an ask resting on that tag alone
+  becomes an allow; an Ask first rule and the reviewer's own doubt still ask).
+  The reviewer had tagged a group chat and a coding job as access changes,
+  which made every coding job wait for an owner.
+- The card's `call` keeps null values (it is added after the card's other
+  empty fields are dropped), so a call such as a write with
+  `expectedVersion: null` is copied back exactly.
 - The reviewer counts an explicitly asked action as requested even when the
   request limits other work ("do nothing else" had been read as the whole
   request once, review 4587f298).

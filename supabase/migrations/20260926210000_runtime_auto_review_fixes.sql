@@ -13,8 +13,9 @@
 --    outside and changes nobody's access: the kernel ignores those built-in
 --    checks on a delegation call. The reviewer had tagged starting a group chat
 --    and starting a coding job as access changes, which sent every such card to
---    the owners and admins and made every coding job wait for an owner. Rules,
---    "not asked for" and the reviewer's own doubt still apply.
+--    the owners and admins and made every coding job wait for an owner. An ask
+--    based on such a check alone becomes an allow. Rules, "not asked for" and the
+--    reviewer's own doubt still apply.
 begin;
 
 -- The call as an object, from the exact canonical text; null for anything else.
@@ -43,12 +44,10 @@ returns jsonb language sql stable security definer set search_path = '' as $$
 		'target', left(p_review.action ->> 'target', 500),
 		'details', case when jsonb_typeof(p_review.action -> 'details') = 'object' then p_review.action -> 'details' end,
 		-- The exact call, so the agent woken by a parked approval can repeat it identically:
-		-- the text as the member reads it, and the same call as an object the agent copies.
+		-- the text as the member reads it; the same call as an object is added below.
 		'tool', p_review.tool_name,
 		'arguments', case when jsonb_typeof(p_review.action -> 'arguments') = 'string'
 			then p_review.action ->> 'arguments' end,
-		'call', case when jsonb_typeof(p_review.action -> 'arguments') = 'string'
-			then public.qorpera_action_review_call(p_review.action ->> 'arguments') end,
 		'builtIn', p_review.built_in,
 		'rules', (select jsonb_agg(jsonb_build_object('id', rule.id, 'scope', rule.scope, 'when', rule.when_text,
 				'outcome', rule.outcome) order by rule.scope = 'company' desc, rule.created_at)
@@ -59,6 +58,10 @@ returns jsonb language sql stable security definer set search_path = '' as $$
 		'requesterUserId', p_review.requester_user_id,
 		'alwaysAllow', p_review.proposed_rule is not null,
 		'proposedRule', p_review.proposed_rule))
+	-- Added after the strip: a null inside the call (an absent path's expectedVersion) is part of it.
+	|| coalesce((select jsonb_build_object('call', call.value)
+		from (select public.qorpera_action_review_call(p_review.action ->> 'arguments') as value) as call
+		where jsonb_typeof(p_review.action -> 'arguments') = 'string' and call.value is not null), '{}'::jsonb)
 $$;
 
 create function pg_temp.auto_review_fix_replace(p_definition text, p_old text, p_new text)
@@ -76,13 +79,18 @@ begin
 	v_definition := pg_temp.auto_review_fix_replace(v_definition,
 		$old$	v_decision := p_review ->> 'decision';
 $old$,
-		$new$	-- Delegating to the company's own agents moves no money, accepts no terms, deletes
+		$new$	v_decision := p_review ->> 'decision';
+	-- Delegating to the company's own agents moves no money, accepts no terms, deletes
 	-- nothing outside and changes nobody's access: those built-in checks never apply to it.
+	-- An ask the reviewer based on such a check alone lets the call run; an Ask first
+	-- rule still asks, and the reviewer's own doubt (built-in "none") is untouched.
 	if p_review ->> 'effect' = 'delegation'
 		and v_built_in in ('money', 'legal_terms', 'delete_outside', 'access_change') then
 		v_built_in := 'none';
+		if v_decision = 'ask' and not exists (select 1 from unnest(v_rules) as rule where (rule).outcome = 'ask_first') then
+			v_decision := 'allow';
+		end if;
 	end if;
-	v_decision := p_review ->> 'decision';
 $new$);
 	execute v_definition;
 end
