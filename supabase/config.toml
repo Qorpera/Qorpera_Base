@@ -35,3 +35,8 @@ verify_jwt = false
 
 [functions.native-provider-login]
 verify_jwt = false
+
+# The member gateway preserves the JWT for authoritative checks at the object
+# gateway. OPTIONS carries no JWT; no service-role authority is added.
+[functions.member-company-gateway]
+verify_jwt = false

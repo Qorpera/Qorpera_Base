@@ -17,6 +17,7 @@ on:
       - 'deploy/first-node/native-codex/runtime-bundle-manifest.json'
       - 'supabase/migrations/**'
       - 'supabase/functions/native-provider-login/**'
+      - 'supabase/functions/member-company-gateway/**'
       - 'scripts/check-headless-packages.mjs'
       - 'scripts/generate-cloud-runtime-bundle.mjs'
       - 'scripts/web-deployment.test.mjs'
@@ -34,6 +35,7 @@ on:
       - 'deploy/first-node/native-codex/runtime-bundle-manifest.json'
       - 'supabase/migrations/**'
       - 'supabase/functions/native-provider-login/**'
+      - 'supabase/functions/member-company-gateway/**'
       - 'scripts/check-headless-packages.mjs'
       - 'scripts/generate-cloud-runtime-bundle.mjs'
       - 'scripts/web-deployment.test.mjs'
@@ -69,7 +71,7 @@ jobs:
       - name: Unit tests
         run: npm test --workspace packages/web
       - name: Deployment configuration and provenance contracts
-        run: node --test scripts/web-deployment.test.mjs supabase/functions/native-provider-login/native-provider-login.test.ts
+        run: node --test scripts/web-deployment.test.mjs supabase/functions/native-provider-login/native-provider-login.test.ts supabase/functions/member-company-gateway/member-company-gateway.test.ts
       - name: Lint
         run: npx biome check packages/web/src packages/web/test
       - name: Build release artifact against public fixture endpoints
