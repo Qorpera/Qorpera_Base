@@ -196,14 +196,18 @@ published only by the agent's next list or change of that todo.
   test 602 races each of those pairs across two connections. The company's
   profile row comes before all of these, and after the machine come its storage
   volume, allocation, node and demand. A call that needs the profile row at all
-  takes it first: machine admission, sleep and release take the fence; a
-  machine plan and the secret broker's repository credential take a key-share
-  lock (their inserts only need the company to exist). Until runtime v123
+  takes it first: machine admission, a machine plan, sleep and release take
+  the fence; the secret broker's repository credential takes a key-share lock
+  (its audit insert only needs the company to exist). A plan takes the fence,
+  not a key-share lock, because it takes the fence anyway before it inserts a
+  member's new machine: two members planning their first machines would each
+  hold a key share while waiting to upgrade it. Until runtime v123
   (`20260925123000_runtime_coding_machine_lock_order`) they took it last, so an
   agent cancelling a session deadlocked with its admission, plan or credential.
-  SQL test 603 races those and the pairs a partial fix would break. Two late
-  touches remain: the executor's begin takes the profile row NOWAIT (it refuses
-  with 55P03 rather than wait, and the coding executor does not retry it), and
+  SQL test 603 races those, the pairs a partial fix would break, and two new
+  members planning at once. Two late touches remain: the executor's begin takes
+  the profile row NOWAIT (it refuses with 55P03 rather than wait; the coding
+  executor begins again until its lease ends), and
   `qorpera_prepare_company_file_revision` locks the
   Company File row before the fence, so it can meet a session's first
   admission as it meets every agent tool call.

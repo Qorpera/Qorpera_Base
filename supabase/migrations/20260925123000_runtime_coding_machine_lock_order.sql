@@ -6,8 +6,8 @@
 -- to the company's profile row after they held later rows:
 --   - machine admission held the worker, session, machine, storage volume and
 --     allocation, then its node reservation waited for the profile fence;
---   - a plan held the session and the member's machine, then inserted the new
---     machine row, whose key check waits for any profile lock;
+--   - a plan held the session and the member's machine, then took the fence before
+--     inserting a new machine row and reserving its node;
 --   - a machine's sleep and its release held the machine, then waited for the fence;
 --   - the secret broker held the session (shared), then inserted the credential's
 --     audit event, whose key check waits for any profile lock.
@@ -18,14 +18,20 @@
 -- The order, everywhere: the company's profile row, then Company File, todo,
 -- worker, coding session, machine, storage volume, allocation, node, demand. A
 -- call that needs the profile row at all takes it first, in the strongest mode it
--- will take: the fence for admission, sleep and release (the node's slot changes
--- under it), a key-share lock for a plan and the broker (their inserts only need
--- the company to exist). Calls that never wait for it keep starting later in the
--- list (stop, detach, delete, heartbeat, progress, completion, the owner's answer;
--- begin takes it NOWAIT and fails fast). Holding the fence while waiting for a
--- worker or session is what every agent tool call already does. Those rows, and
--- the machine, volume, allocation, node and demand after them, are held only by
--- calls that never wait for the profile row, so the wait ends with one such call.
+-- will take: the fence for admission, a plan, sleep and release (the node's slot
+-- changes under it), a key-share lock for the broker (its audit insert only needs
+-- the company to exist). A plan must not start with a key-share lock: it takes the
+-- fence itself before it inserts a member's new machine, so two members of one
+-- company planning their first machines would each hold the key share and wait
+-- for the other's to upgrade it. Calls that never wait for the profile row keep
+-- starting later in the list (stop, detach, delete, heartbeat, progress,
+-- completion, the owner's answer; begin takes it NOWAIT and fails fast). Holding
+-- the fence while waiting for a worker or session is what every agent tool call
+-- already does. Those rows, and the machine, volume, allocation, node and demand
+-- after them, are held only by calls that never wait for the profile row, so the
+-- wait ends with one such call. So are the two a plan also waits for under the
+-- fence: its executor's row (deployment settings) and the member's machine lock
+-- (the claim, besides other plans, which take the fence first).
 -- The exception is the Company File row, which a session's first admission reads
 -- for its new storage volume: a writer that locks it before the fence
 -- (qorpera_prepare_company_file_revision) can meet admission as it meets every
@@ -51,11 +57,10 @@ $old$,
 	perform public.qorpera_lock_profile_gc_fence(worker.profile_id) from public.qorpera_runtime_workers worker where worker.id = p_worker_id;
 $new$);
 
--- A plan: the profile row before the session, for the new machine row's key check.
+-- A plan: the fence before the session, as admission. The new machine's fence below takes it again, already held.
 select pg_temp.machine_lock_patch('public.qorpera_plan_coding_machine(uuid,uuid,text)',
 	$old$	v_session := public.qorpera_coding_leased_session(p_worker_id, p_lease_token);$old$,
-	$new$	perform 1 from public.qorpera_profiles profile where profile.id = (select worker.profile_id
-		from public.qorpera_runtime_workers worker where worker.id = p_worker_id) for key share;
+	$new$	perform public.qorpera_lock_profile_gc_fence(worker.profile_id) from public.qorpera_runtime_workers worker where worker.id = p_worker_id;
 	v_session := public.qorpera_coding_leased_session(p_worker_id, p_lease_token);$new$);
 
 -- Sleep and release: the fence before the machine, then allocation, node and demand as before.

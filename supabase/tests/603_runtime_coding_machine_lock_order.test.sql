@@ -2,11 +2,12 @@
 -- The company's profile row first, for every coding machine call (v123). 602's order (profile fence and
 -- Company File, todo, worker, coding session, then turn or machine) goes on past the machine: storage
 -- volume, allocation, node, demand. A call that needs the profile row at all takes it before any of them:
--- admission, sleep and release take the fence, a plan and the secret broker a key-share lock (their
--- inserts only need the company to exist). Each race below makes two real calls meet in the order that
--- deadlocked before, or that would have deadlocked had only the admission changed: a third connection
--- holds one row, the first call starts and waits there, the second starts and waits too, and the holder
--- lets go. The committed fixture is 602's and is removed the same way at the end.
+-- admission, a plan, sleep and release take the fence, the secret broker a key-share lock (its insert
+-- only needs the company to exist). Each race below makes two real calls meet in the order that
+-- deadlocked before, or that would have deadlocked had only the admission changed, or (7) had a plan
+-- started with a key-share lock: a third connection holds one row, the first call starts and waits there,
+-- the second starts and waits too, and the holder lets go. The committed fixture is 602's and is removed
+-- the same way at the end.
 
 -- Each session's lease, and the calls the races make.
 create temporary table machine_leases (worker_key text primary key, lease uuid not null);
@@ -235,28 +236,96 @@ begin
 end $$;
 
 -- 6. The agent cancels while the executor plans a member's first machine. The plan held the session,
---    then the new machine row's key check waited for the profile row, which the cancel held while it
---    waited to change the session. Now the plan takes the profile row first.
+--    then waited for the profile fence to insert the new machine, which the cancel held while it waited
+--    to change the session. Now the plan takes the fence first.
+--    The machine planned above goes first, as any machine goes: its session ends, it sleeps past the
+--    removal delay, it is deleted. A plan reserves its node, so it is never released at once.
+select pg_temp.machine_agent_cancel('fix-send-3', 'machine-lock-cancel-5');
 do $$
 begin
+	perform set_config('qorpera_test.coding_vm', current_setting('qorpera_test.machine_plan')::jsonb ->> 'machineId', false);
+	perform set_config('qorpera_test.coding_binding', current_setting('qorpera_test.machine_plan')::jsonb ->> 'bindingText', false);
+	perform pg_temp.wake_assert(pg_temp.machine_custody('stop') ->> 'intent' = 'stop', 'The planned machine may stop');
 	perform pg_temp.path_claims('service_role');
-	-- The machine planned above, never admitted, goes; the member has none again.
-	perform public.qorpera_release_coding_machine((current_setting('qorpera_test.machine_plan')::jsonb ->> 'machineId')::uuid, 'exec-test',
-		(current_setting('qorpera_test.machine_plan')::jsonb -> 'binding')::text, repeat('c', 64));
-	perform public.qorpera_heartbeat_coding_session((pg_temp.worker_row('fix-send-3')).id, pg_temp.machine_lease('fix-send-3'), 300);
+	perform pg_temp.wake_assert(public.qorpera_suspend_coding_machine(current_setting('qorpera_test.coding_vm')::uuid, 'exec-test',
+		current_setting('qorpera_test.coding_binding'), repeat('c', 64)) ->> 'state' = 'suspended', 'The planned machine sleeps');
+	update public.qorpera_runtime_node_demands set suspended_at = suspended_at - interval '1 hour'
+	where allocation_id = current_setting('qorpera_test.coding_vm')::uuid;
+	perform pg_temp.wake_assert(pg_temp.machine_custody('delete') ->> 'intent' = 'delete', 'The planned machine may be deleted');
+	perform pg_temp.path_claims('service_role');
+	perform pg_temp.wake_assert(public.qorpera_release_coding_machine(current_setting('qorpera_test.coding_vm')::uuid, 'exec-test',
+		current_setting('qorpera_test.coding_binding'), repeat('c', 64)) ->> 'state' = 'released', 'The planned machine is released');
+	perform pg_temp.worker('{"action":"dispatch","operationKey":"machine-lock-dispatch-4","todoKey":"composer-latency","workerKey":"fix-send-4",
+		"title":"Fourth","goal":"g","definitionOfDone":"d","access":"read","species":"coding","harness":"codex",
+		"repository":{"host":"github.com","owner":"Qorpera","name":"Qorpera_Base","baseBranch":"master"}}');
 end $$;
+select pg_temp.machine_claim('fix-send-4');
 do $$
-declare v_worker public.qorpera_runtime_workers := pg_temp.worker_row('fix-send-3'); v_outcome jsonb;
+declare v_worker public.qorpera_runtime_workers := pg_temp.worker_row('fix-send-4'); v_outcome jsonb;
 begin
+	perform pg_temp.wake_assert(not exists (select 1 from public.qorpera_coding_machines where member_user_id = v_worker.owner_user_id
+		and removed_at is null), 'The member has no machine again');
 	v_outcome := pg_temp.lock_race(pg_temp.lock_row('qorpera_runtime_agent_todos', 'id', v_worker.todo_id),
-		pg_temp.machine_cancel('fix-send-3', 'machine-lock-cancel-5'), '{"role":"service_role"}',
-		pg_temp.machine_plan('fix-send-3'), '{"role":"service_role"}');
+		pg_temp.machine_cancel('fix-send-4', 'machine-lock-cancel-6'), '{"role":"service_role"}',
+		pg_temp.machine_plan('fix-send-4'), '{"role":"service_role"}');
 	perform pg_temp.wake_assert(v_outcome #>> '{second,state}' = '55000' and v_outcome #>> '{second,error}' = 'Coding session was cancelled',
 		'The plan is refused because the session was cancelled, not killed: ' || v_outcome::text);
 	perform pg_temp.lock_race_ok(v_outcome - 'second', 'agent cancel against machine plan');
-	perform pg_temp.wake_assert(v_outcome #>> '{first,result,action}' = 'cancel' and (pg_temp.session_row('fix-send-3')).phase = 'cancelled'
+	perform pg_temp.wake_assert(v_outcome #>> '{first,result,action}' = 'cancel' and (pg_temp.session_row('fix-send-4')).phase = 'cancelled'
 		and not exists (select 1 from public.qorpera_coding_machines where member_user_id = v_worker.owner_user_id and removed_at is null),
 		'The cancel lands and no machine was planned: ' || v_outcome::text);
+end $$;
+
+-- 7. Two members of the company plan their first machines at the same moment, while an agent tool call
+--    holds the company's profile row. Each plan takes the fence before it inserts its new machine. A plan
+--    that took a key-share lock on the profile row first would hold it while it went on to that fence:
+--    each would wait for the other's key share to go. Now each takes the fence first, so they plan one
+--    after the other. Each member's session is a copy of the first one, as in 602's fleet test.
+create function pg_temp.machine_member_session(p_key text, p_member uuid) returns void language plpgsql as $$
+declare v_id uuid := extensions.gen_random_uuid();
+begin
+	insert into public.qorpera_runtime_workers select * from jsonb_populate_record(null::public.qorpera_runtime_workers,
+		(select to_jsonb(w) || jsonb_build_object('id',v_id,'worker_key',p_key,'owner_user_id',p_member,
+			'state','active','result',null,'reported_at',null,'completion_state','none','completion_occurrence_id',null,
+			'occurrence_id',null,'sequence',1) from public.qorpera_runtime_workers w where w.worker_key='fix-send'));
+	insert into public.qorpera_coding_sessions select * from jsonb_populate_record(null::public.qorpera_coding_sessions,
+		(select to_jsonb(s) || jsonb_build_object('worker_id',v_id,'branch','qorpera/coding/'||v_id,'phase','queued','vm_allocation_id',null,
+			'storage_volume_id',null,'lease_owner',null,'lease_token',null,'lease_until',null,'claim_after',null,'finished_at',null)
+			from public.qorpera_coding_sessions s join public.qorpera_runtime_workers w on w.id=s.worker_id where w.worker_key='fix-send'));
+	-- A committed coding worker has its turn recorded.
+	insert into public.qorpera_coding_session_turns select * from jsonb_populate_record(null::public.qorpera_coding_session_turns,
+		(select to_jsonb(t) || jsonb_build_object('worker_id',v_id,'submission',null,'submission_receipt_id',null,'submitted_at',null,
+			'outcome',null,'settled_at',null) from public.qorpera_coding_session_turns t
+			join public.qorpera_runtime_workers w on w.id=t.worker_id where w.worker_key='fix-send' and t.sequence=1));
+end $$;
+do $$
+declare v_claim jsonb;
+begin
+	perform pg_temp.machine_member_session('member-two', '30000000-0000-4000-8000-000000000002');
+	perform pg_temp.machine_member_session('member-three', '30000000-0000-4000-8000-000000000003');
+	perform pg_temp.machine_node_seen();
+	for attempt in 1..2 loop
+		perform pg_temp.path_claims('service_role');
+		v_claim := public.qorpera_claim_coding_session('exec-test', 300);
+		insert into pg_temp.machine_leases select worker.worker_key, (v_claim ->> 'leaseToken')::uuid
+		from public.qorpera_runtime_workers worker where worker.id = (v_claim ->> 'workerId')::uuid;
+	end loop;
+	perform pg_temp.wake_assert((select count(*) from pg_temp.machine_leases where worker_key in ('member-two','member-three')) = 2,
+		'The executor claims both members');
+end $$;
+do $$
+declare v_outcome jsonb;
+begin
+	v_outcome := pg_temp.lock_race(pg_temp.lock_row('qorpera_profiles', 'id', '30000000-0000-4000-8000-000000000010'),
+		pg_temp.machine_plan('member-two'), '{"role":"service_role"}',
+		pg_temp.machine_plan('member-three'), '{"role":"service_role"}');
+	perform pg_temp.lock_race_ok(v_outcome, 'two new members planning');
+	perform pg_temp.wake_assert(v_outcome #>> '{first,result,state}' = 'planned' and v_outcome #>> '{second,result,state}' = 'planned'
+		and v_outcome #>> '{first,result,binding,memberUserId}' = '30000000-0000-4000-8000-000000000002'
+		and v_outcome #>> '{second,result,binding,memberUserId}' = '30000000-0000-4000-8000-000000000003'
+		and (select count(*) from public.qorpera_runtime_node_demands where allocation_id in ((v_outcome #>> '{first,result,machineId}')::uuid,
+			(v_outcome #>> '{second,result,machineId}')::uuid) and reserved_at is not null and released_at is null) = 2,
+		'Each member gets a first machine with its node reserved: ' || v_outcome::text);
 end $$;
 
 -- Remove what this test committed.
