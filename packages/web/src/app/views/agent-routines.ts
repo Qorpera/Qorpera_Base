@@ -165,6 +165,9 @@ export class AgentRoutines {
 			: null;
 		const rows = this.#routines.map((routine) => {
 			const last = this.#runs.find((run) => run.routineId === routine.routineId);
+			// A dynamic routine has one next run at a time, chosen by its agent after each run.
+			const dynamic = routine.triggers.some((trigger) => trigger.kind === "once");
+			const ended = routine.status === "expired" || routine.status === "concluded";
 			return h(
 				"article",
 				{ class: "routine-row" },
@@ -173,20 +176,34 @@ export class AgentRoutines {
 					{ class: "routine-row-copy" },
 					h("strong", null, routine.title),
 					h("span", null, routine.triggers.map((trigger) => describeCloudRoutineTrigger(trigger, t)).join("; ")),
+					routine.status === "concluded" && routine.conclusion
+						? h("small", null, t("Done: {reason}", { reason: routine.conclusion }))
+						: null,
+					routine.status === "active" && routine.nextRunAt
+						? h("small", null, t("Next run: {time}", { time: fmtTime(routine.nextRunAt) }))
+						: null,
+					dynamic && routine.status === "active"
+						? h("small", null, t("Runs until {name} decides it is done", { name: this.#agent().displayName }))
+						: null,
 					h("small", null, last ? t("Last run: {run}", { run: runLabel(last) }) : t("Has not run yet")),
 				),
 				routine.status === "active"
 					? badge(t("Active"), "ok")
-					: routine.status === "expired"
-						? badge(t("Ended"))
-						: badge(t("Paused"), "warn"),
+					: routine.status === "concluded"
+						? badge(t("Done"))
+						: routine.status === "expired"
+							? badge(t("Ended"))
+							: badge(t("Paused"), "warn"),
 				// An ended routine is read-only: a member save keeps its end (its expiry or run
-				// limit), so neither Edit nor Resume could start it again. Its agent can.
-				manage && routine.status !== "expired"
+				// limit), so neither Edit nor Resume could start it again. Its agent can. The
+				// editor has no shape for a dynamic routine: its agent changes it.
+				manage && !ended
 					? h(
 							"div",
 							{ class: "routine-row-actions" },
-							button(t("Edit"), () => void this.#edit(routine), { small: true, disabled: this.#busy }),
+							dynamic
+								? null
+								: button(t("Edit"), () => void this.#edit(routine), { small: true, disabled: this.#busy }),
 							button(routine.status === "active" ? t("Pause") : t("Resume"), () => void this.#toggle(routine), {
 								small: true,
 								disabled: this.#busy,

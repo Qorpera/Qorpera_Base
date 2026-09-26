@@ -547,6 +547,72 @@ begin
 end
 $$;
 
+-- Delegating to the company's own agents is never a built-in check (20260926210000): an allow
+-- the reviewer tagged "access change" on a coding job runs, and a card carries the call as an
+-- object the woken agent copies (quotation marks included) next to the text the member reads.
+do $$
+declare v_binding jsonb := current_setting('qorpera_test.review_binding')::jsonb; v_record jsonb;
+	v_arguments text := '{"action":"dispatch","expectedVersion":null,"goal":"Add a line \"Coding check\" to CHECK.md","operationKey":"k1"}';
+	v_event public.qorpera_session_events%rowtype;
+begin
+	v_record := public.qorpera_record_action_review(v_binding, jsonb_build_object('callId', 'fix-delegation',
+		'tool', 'manage_worker', 'effect', 'delegation', 'argumentSha256', repeat('8a', 32),
+		'action', jsonb_build_object('title', 'Start a coding job', 'arguments', v_arguments),
+		'decision', 'allow', 'ruleIds', '[]'::jsonb, 'builtIn', 'access_change',
+		'reason', 'Starting a coding job.', 'proposedRule', null, 'reviewerModel', 'gpt-6-luna'));
+	perform pg_temp.wake_assert(v_record ->> 'decision' = 'allow' and v_record ->> 'builtIn' = 'none',
+		'A delegation call is never held by a built-in check');
+	-- An ask based on such a check alone runs too; an Ask first rule still asks, and so does the
+	-- reviewer's own doubt.
+	v_record := public.qorpera_record_action_review(v_binding, jsonb_build_object('callId', 'fix-delegation-ask',
+		'tool', 'manage_worker', 'effect', 'delegation', 'argumentSha256', repeat('8c', 32),
+		'action', jsonb_build_object('title', 'Start a coding job'), 'decision', 'ask', 'ruleIds', '[]'::jsonb,
+		'builtIn', 'access_change', 'reason', 'Starting a coding job.', 'proposedRule', null, 'reviewerModel', 'gpt-6-luna'));
+	perform pg_temp.wake_assert(v_record ->> 'decision' = 'allow' and v_record ->> 'builtIn' = 'none',
+		'An ask resting only on a built-in check lets a delegation run');
+	v_record := public.qorpera_record_action_review(v_binding, jsonb_build_object('callId', 'fix-delegation-rule',
+		'tool', 'manage_worker', 'effect', 'delegation', 'argumentSha256', repeat('8d', 32),
+		'action', jsonb_build_object('title', 'Start a coding job'), 'decision', 'ask',
+		'ruleIds', '["30000000-0000-4000-8000-000000000a01"]'::jsonb, 'builtIn', 'access_change',
+		'reason', 'Starting a coding job.', 'proposedRule', null, 'reviewerModel', 'gpt-6-luna'));
+	perform pg_temp.wake_assert(v_record ->> 'decision' = 'ask' and v_record ->> 'approverScope' = 'owners_admins',
+		'An Ask first rule still asks for a delegation');
+	v_record := public.qorpera_record_action_review(v_binding, jsonb_build_object('callId', 'fix-delegation-doubt',
+		'tool', 'manage_worker', 'effect', 'delegation', 'argumentSha256', repeat('8e', 32),
+		'action', jsonb_build_object('title', 'Start a coding job'), 'decision', 'ask', 'ruleIds', '[]'::jsonb,
+		'builtIn', 'none', 'reason', 'Unsure this job is wanted.', 'proposedRule', null, 'reviewerModel', 'gpt-6-luna'));
+	perform pg_temp.wake_assert(v_record ->> 'decision' = 'ask' and v_record ->> 'approverScope' = 'member',
+		'The reviewer''s own doubt still asks the member');
+	-- A deny stays a deny (only its tag is dropped), and a retry of that call after the member
+	-- writes again still waits for the member's click.
+	v_record := public.qorpera_record_action_review(v_binding, jsonb_build_object('callId', 'fix-delegation-deny',
+		'tool', 'manage_worker', 'effect', 'delegation', 'argumentSha256', repeat('8f', 32),
+		'action', jsonb_build_object('title', 'Start a coding job'), 'decision', 'deny', 'ruleIds', '[]'::jsonb,
+		'builtIn', 'access_change', 'reason', 'Not asked for.', 'proposedRule', null, 'reviewerModel', 'gpt-6-luna'));
+	perform pg_temp.wake_assert(v_record ->> 'decision' = 'deny' and v_record ->> 'builtIn' = 'none',
+		'A delegation deny stays a deny');
+	v_record := public.qorpera_record_action_review(v_binding, jsonb_build_object('callId', 'fix-delegation-retry',
+		'tool', 'manage_worker', 'effect', 'delegation', 'argumentSha256', repeat('8f', 32),
+		'action', jsonb_build_object('title', 'Start a coding job'), 'decision', 'allow', 'ruleIds', '[]'::jsonb,
+		'builtIn', 'access_change', 'reason', 'Asked for now.', 'proposedRule', null, 'reviewerModel', 'gpt-6-luna'));
+	perform pg_temp.wake_assert(v_record ->> 'decision' = 'ask' and v_record ->> 'approverScope' = 'member',
+		'A delegation retried after a denial waits for the member''s click');
+	v_record := public.qorpera_record_action_review(v_binding, jsonb_build_object('callId', 'fix-card-call',
+		'tool', 'send_email', 'effect', 'external', 'argumentSha256', repeat('8b', 32),
+		'action', jsonb_build_object('title', 'Send an email', 'arguments', v_arguments),
+		'decision', 'ask', 'ruleIds', '["30000000-0000-4000-8000-000000000a01"]'::jsonb, 'builtIn', 'none',
+		'reason', 'The company asks first.', 'proposedRule', null, 'reviewerModel', 'gpt-6-luna'));
+	select * into strict v_event from public.qorpera_session_events where event_id = (v_record ->> 'reviewId')::uuid;
+	perform pg_temp.wake_assert(v_event.body #>> '{entry,data,arguments}' = v_arguments
+		and v_event.body #> '{entry,data,call}' = v_arguments::jsonb
+		and v_event.body #>> '{entry,data,call,goal}' = 'Add a line "Coding check" to CHECK.md'
+		and v_event.body #> '{entry,data,call}' ? 'expectedVersion',
+		'The card carries the exact text and the same call as an object, nulls included');
+	perform pg_temp.wake_assert(public.qorpera_action_review_call('not json') is null
+		and public.qorpera_action_review_call('[1]') is null, 'Only an object becomes the card''s call');
+end
+$$;
+
 -- A group chat carries no card: the ask is recorded and the call is refused.
 savepoint review_group_chat;
 do $$

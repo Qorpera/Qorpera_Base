@@ -17,7 +17,18 @@ case "$base_image" in *@sha256:*) ;; *) echo "Linux test base image must be dige
 
 cd "$repository_root"
 node --test scripts/package-ephemeral-runner.test.mjs
-npm run pack:ephemeral-runner
+# Release train: outside release branches the committed runtime bundle may lag
+# its source by design. The image under test then packages the committed bundle
+# identity (deploy/first-node/RUNTIME-RELEASE-TRAIN.md) into its own folder, so
+# the install folder .artifacts/ephemeral-runner never holds a test-only package.
+if [ "${QORPERA_ENFORCE_RUNTIME_BUNDLE:-}" = 1 ]; then
+	package_directory=.artifacts/ephemeral-runner
+	npm run pack:ephemeral-runner
+else
+	package_directory=.artifacts/ephemeral-runner-committed-bundle-test
+	node --import ./scripts/fixtures/committed-runtime-bundle/register.mjs \
+		scripts/package-ephemeral-runner.mjs --out "$package_directory"
+fi
 podman pull "$base_image"
 podman build \
 	--pull=never \
@@ -25,7 +36,7 @@ podman build \
 	--build-arg "BASE_IMAGE=$base_image" \
 	--file deploy/ephemeral-runner/image/Containerfile \
 	--tag "$local_image" \
-	.artifacts/ephemeral-runner
+	"$package_directory"
 
 image_digest=$(podman image inspect --format '{{.Digest}}' "$local_image")
 digest_value=${image_digest#sha256:}
@@ -69,7 +80,7 @@ if command -v systemd-analyze >/dev/null; then
 	trap cleanup_systemd_probe EXIT HUP INT TERM
 	sed \
 		-e "s|/usr/bin/node|$node_path|" \
-		-e "s|/opt/qorpera-runner/qorpera-ephemeral-runner.mjs|$repository_root/.artifacts/ephemeral-runner/qorpera-ephemeral-runner.mjs|" \
+		-e "s|/opt/qorpera-runner/qorpera-ephemeral-runner.mjs|$repository_root/$package_directory/qorpera-ephemeral-runner.mjs|" \
 		deploy/ephemeral-runner/qorpera-ephemeral-runner.service > "$unit_copy"
 	systemd-analyze --user verify "$unit_copy"
 

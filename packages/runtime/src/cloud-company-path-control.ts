@@ -3,7 +3,11 @@ import {
 	type CloudCompanyPathControl,
 	type CloudCompanyPathRpc,
 } from "./cloud-company-path-gateway.ts";
-import { CloudCompanyPathRpcPrecondition, CloudCompanyPathRpcRefusal } from "./cloud-company-path-refusal.ts";
+import {
+	CloudCompanyPathRpcParentMissing,
+	CloudCompanyPathRpcPrecondition,
+	CloudCompanyPathRpcRefusal,
+} from "./cloud-company-path-refusal.ts";
 import { cloudToolRequest } from "./cloud-native-tool-authority.ts";
 import { CloudRuntimeDiagnosticError } from "./cloud-runtime-observability.ts";
 
@@ -34,6 +38,7 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 	call(method: CloudCompanyPathRpc, argumentsValue: Record<string, unknown>, signal: AbortSignal): Promise<unknown> {
 		const permitted: readonly CloudCompanyPathRpc[] = [
 			"qorpera_manage_agent_routine",
+			"qorpera_decide_agent_routine",
 			"qorpera_manage_agent_sidebar",
 			"qorpera_manage_agent_todo",
 			"qorpera_confirm_agent_todo_publication",
@@ -175,6 +180,7 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 						);
 					if (response.status === 403 && postgrestError("42501")) throw new CloudCompanyPathRpcRefusal();
 					if (response.status === 412 && postgrestError("PT412")) throw new CloudCompanyPathRpcPrecondition();
+					if (response.status === 424 && postgrestError("PT424")) throw new CloudCompanyPathRpcParentMissing();
 					if (
 						response.status === 409 &&
 						value &&

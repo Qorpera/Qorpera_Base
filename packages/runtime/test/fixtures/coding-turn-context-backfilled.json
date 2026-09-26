@@ -48,11 +48,7 @@
 					"Raise to 500 ms"
 				],
 				"summary": "Composer fixed.",
-				"pullRequest": {
-					"url": "https://github.com/Qorpera/Qorpera_Base/pull/204",
-					"number": 204,
-					"headSha": "b4d8f9f1c0b6e5a2d3c4b5a69788776655443322"
-				}
+				"pullRequest": null
 			},
 			"sequence": 2,
 			"submitted": null

@@ -78,7 +78,8 @@ merge and the pin (APPROVE WITH NITS); fixed:
   conversation, where the wake lands: an owner's answer on a contributor's
   card elsewhere neither ran nor blocked the owner's own identical call.
 - The observation vocabulary is patched into the live function, not re-stated:
-  v114's `decide_routine` (PR #314, migration 20260925114000) stays in either
+  `decide_routine` (PR #314: v131, migration 20260926131000; v114 when this was
+  written) stays in either
   merge order (checked with #314's migration applied first).
 - One index serves `begin`'s lookup of the latest review of an action (it was
   a scan of the whole audit table on every acting call).
@@ -93,7 +94,8 @@ hold can wake the agent.
 ## Review round 5 (2026-09-25, own review of 47ef78dee)
 
 Found in my own review of the approved head and fixed:
-- `decide_routine` (v114, PR #314, merged before this) is internal. Unlisted it
+- `decide_routine` (PR #314: planned then as v114 ahead of this, now v131 after
+  it) is internal. Unlisted it
   would have been reviewed as an outside action, and a routine run parks at
   once, so a dynamic routine's decision would wait on a card and its run count
   as failed.
@@ -168,6 +170,42 @@ APPROVE WITH NITS; the two low findings and the draft titles fixed:
   to …, subject …", never with its body read as the member's words.
 - Gmail draft tools have card titles, and a list of recipients shows as the
   card's target.
+
+## Live acceptance (2026-09-26, v130 in A1)
+
+All three acceptance checks passed in the acceptance company, as its fixture
+owner and contributor (PR #315 comment; receipts in the takeover workspace,
+`work/runtime-proof-a1/autoreview_acceptance.py` and `logs-autoreview-*`):
+1. A company rule ("starting a group chat") raised a card for owners and admins
+   22 s after the post; Allow once 1 s later ran the held call in its own run.
+2. With nobody answering, the call parked exactly 5 minutes after its card; the
+   agent told the member; a later Allow woke it, and its repeat used the
+   approval without a second review.
+3. A personal rule raised a card for its member only; the contributor was
+   refused (42501); the owner's Deny stopped the call.
+
+## Fixes after going live (20260926210000)
+
+- The card carries the call as an object (`call`) next to the text: a woken
+  agent that copied the text form (JSON inside the card's own JSON) kept one
+  escaping level too many around quotation marks, so its repeat missed the
+  approval and was reviewed afresh (Qorpera company, reviews 3b014c43 →
+  29d7a476). The agent is told to copy `call`, value for value.
+- Delegating to the company's own agents is never a built-in check, in the
+  reviewer's instructions and in the kernel (a delegation call's money, terms,
+  deletion or access tag is dropped, and an ask resting on that tag alone
+  becomes an allow; an Ask first rule and the reviewer's own doubt still ask).
+  The reviewer had tagged a group chat and a coding job as access changes,
+  which made every coding job wait for an owner.
+- The card's `call` keeps null values (it is added after the card's other
+  empty fields are dropped), so a call such as a write with
+  `expectedVersion: null` is copied back exactly.
+- The reviewer counts an explicitly asked action as requested even when the
+  request limits other work ("do nothing else" had been read as the whole
+  request once, review 4587f298).
+- Rollout: the release branch's activation requires this migration
+  (`qorpera_action_review_call(text)`), since the runtime tells agents to copy
+  `call`.
 
 ## Rollout order
 

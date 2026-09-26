@@ -30,6 +30,14 @@ export class CodingMachineUnavailable extends Error {
 		this.reason = reason;
 	}
 }
+/** The kernel refused a call on a busy row (SQLSTATE 55P03, lock_not_available)
+ * and rolled its transaction back whole: the call wrote nothing. A control
+ * rejects with this only for a complete PostgREST error with that SQLSTATE. */
+export class CodingControlBusy extends Error {
+	constructor() {
+		super("CODING_CONTROL_BUSY");
+	}
+}
 /** One housekeeping step on one machine, for the executor's log. */
 export interface CodingHousekeepingOutcome {
 	machineId: string;
@@ -455,13 +463,22 @@ export class CloudCodingExecutor {
 				],
 			});
 			// 2. The model turn: admitted through the wake bus under the owner's sponsor.
-			const begun = record(
-				await call("qorpera_begin_coding_turn", {
-					...args,
-					p_coding: { vmId: workspace.vmId, turnId: turn.turnId },
-				}),
-				"Coding turn admission unconfirmed",
-			);
+			// Wake admission never waits for its company's row, and every agent tool
+			// call holds that row for its whole transaction, so begin is refused as
+			// busy while one runs. A busy refusal wrote nothing: begin again after a
+			// short pause, until the lease this turn held at the first try ends.
+			const admission = { ...args, p_coding: { vmId: workspace.vmId, turnId: turn.turnId } };
+			const admitBy = Date.parse(claimed.leaseUntil);
+			let begun: Record<string, unknown> | undefined;
+			for (let attempt = 0; !begun; attempt++) {
+				try {
+					begun = record(await call("qorpera_begin_coding_turn", admission), "Coding turn admission unconfirmed");
+				} catch (error) {
+					const pause = Math.min(2000, 250 * 2 ** attempt) * (0.5 + Math.random() / 2);
+					if (!(error instanceof CodingControlBusy) || Date.now() + pause >= admitBy) throw error;
+					await setTimeout(pause, undefined, { signal: active });
+				}
+			}
 			if (begun.workerId !== claimed.workerId || begun.sequence !== claimed.sequence)
 				throw new Error("Coding turn admission unconfirmed");
 			for (;;) {

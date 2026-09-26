@@ -24,6 +24,7 @@ export const CLOUD_RUNTIME_TOOL_OPERATIONS = [
 	"hire_agent",
 	"create_group_chat",
 	"manage_routine",
+	"decide_routine",
 	"report_work",
 	"manage_todo",
 	"manage_worker",
@@ -86,6 +87,8 @@ export const CLOUD_RUNTIME_ERROR_CATEGORIES = [
 	"approval_declined",
 	"review_denied",
 	"review_unavailable",
+	// A Company File write or mkdir whose folder does not exist (20260926203300).
+	"parent_missing",
 ] as const;
 
 export type CloudRuntimeOperation = (typeof CLOUD_RUNTIME_OPERATIONS)[number];

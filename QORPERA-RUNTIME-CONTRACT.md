@@ -318,7 +318,10 @@ retries, narrows the change, or creates a proposal. Silent last-writer-wins is
 forbidden; automatic semantic merging is optional future machinery. In the
 cloud tools the typed result is `COMPANY_FILE_VERSION_CHANGED` (nothing was
 written), never the unconfirmed outcome kept for results that may have
-happened (2026-09-25).
+happened (2026-09-25). The gateway never invents parent folders: a write or
+mkdir whose folder does not exist is refused, normally before any bytes are
+staged, as `COMPANY_FILE_PARENT_MISSING` (nothing was written; create the
+folder, then repeat the call) (2026-09-26).
 
 The Company File is worked on as one live document. Every agent and member
 edits the same live objects in place through the live mount or Company File
@@ -455,6 +458,19 @@ New human input MUST be able to reach the parent agent while workers continue.
 The runtime MUST NOT hold an agent process or visible chat hostage to one long
 tool call. New input may steer, cancel, supersede, or coexist with existing
 work according to explicit run state.
+
+2026-09-26 amendment: a member's Stop. The Stop in a conversation reaches the
+agent's runs there: a member's message (in a plain conversation or in the
+agent's own thread), a routine run, the answer to a coworker message, and the
+continuation after a worker's report. It stops one run. A scheduled routine
+keeps its schedule; stopping a worker report's continuation also stops that
+agent's workers still running for it, as stopping their parent does. Work with
+no conversation (a worker's own run, a Company Computer start) is not stopped
+here. Who may stop is unchanged: a member who can write the conversation and
+started the run's work (for a routine, the member who saved it, or for whom its
+agent set it up) or an owner or admin. With several runs live, the Stop names
+one the member may stop, the working one first. Before this amendment the Stop
+only reached a member's turns in a plain conversation.
 
 ### 7.4 Ceilings and brake
 
@@ -1391,6 +1407,42 @@ agent (a routine run may save its own routine), while a queued occurrence of
 an older version, work that continues after the job ended, and a run whose
 routine a member moved to another agent follow the current version.
 
+2026-09-25 amendment: dynamic routines (founder request). An agent's routine
+may have no cadence: its trigger holds exactly one next run (kind `once`: an
+instant, a time zone and a reply policy), and the run it wakes decides what
+follows. Before its final message (or a card), and before it can complete,
+that run either sets the next run at a time it chooses, optionally with
+changed instructions, title, effort or reply policy, which is a new version of
+the same routine so its history stays, or concludes the routine with a
+one-sentence reason that members see (status `concluded`). A run that hands
+work to workers or waits for the Company Computer decides before it ends; the
+continuation cannot. The kernel refuses the final send and the completion of
+an undecided run; the host shows the model that reason first. A change made
+in another conversation during the run, or the routine's end date passing,
+settles the decision; a pause or a conclusion by someone else stops the
+started run as a pause does, and a member's Stop of the run pauses the
+routine once (a resume runs it again). An active dynamic routine always has exactly one pending run, and
+runs of one routine never overlap: an agent's save inserts it (a save without
+a time keeps the routine's next run if it is still ahead, or runs now); while
+a run owes its decision it cannot save, pause or remove its own routine, only
+decide (conclude ends it); a new version cancels the
+older one's queued run; a run already admitted before an edit still runs once
+with the instructions it was admitted with; the next run a run chose is
+inserted when that run ends; and the control-plane tick restores a run that
+ended without deciding (failed, crashed or refused), three times at once, then
+after 15 minutes, doubling to at most a day, never giving up by count. A
+member's save through the web (pause, resume) keeps the routine's one next
+run and cannot create a dynamic routine. There is no minimum gap between runs
+and no cap on how often a routine reschedules. Quiet hours, expiry (a next
+run after the routine's end is refused with that reason), the unattended
+sponsor and the three-refusal authorization suspension apply as to every
+routine; a dynamic routine takes no occurrence limit. Fixed triggers
+(schedule, listener) stay; agents are told to prefer a dynamic routine when
+the right time for the next look depends on what they find (learning a
+responsibility, follow-ups, watches), and fixed times for work tied to the
+clock. The agent's own tool also concludes a fixed routine from inside its
+run.
+
 ## 17. Model and reasoning policy
 
 An attended agent thread defaults to low reasoning effort. The resolved
@@ -1493,7 +1545,7 @@ Company File, rather than chat or a machine disk, is what that brain operates.
 | 5 | Workers and todos | Parent remains interruptible; blank child receives a complete dispatch; durable completion reaches the parent; todos and accepted worker outputs become Company File state and survive restart. |
 | 6 | Agent memory (amended 2026-09-22, company first 2026-09-24) | An agent's profile, monthly log, and notes are its own Company File objects in the Grok Bot layout; `update_memory` write/forget and `recall_memory` work through the versioned mutation gateway with notebook-wide dedupe, forget of every copy, a search of every month, and stale-version retry; every turn composes the whole profile and the recent log slice through the trusted read lane; a worker of the same agent recalls but writes only with write access; notebooks are company-owned and there is no member memory; a Grok Bot export imports unchanged. |
 | 7 | Connectors | Install, authenticate out of band, call through scoped RPC, and apply the connector-to-browser escalation path. |
-| 8 | Scheduler and listeners | Company File intent plus one compiled trigger wakes the same agent; deterministic deduplication, timezone, expiry, quiet policy, auth suspension, and projection consistency pass. |
+| 8 | Scheduler and listeners | Company File intent plus one compiled trigger wakes the same agent; deterministic deduplication, timezone, expiry, quiet policy, auth suspension, and projection consistency pass. Dynamic routines (2026-09-25 amendment in 16.3): one next run per version, and each run sets the next run or concludes the routine. |
 | 9 | Isolated coding VMs and PRs | Worker, repository workspace, branch, follow-up identity, publication, and completion listener retain continuity; every turn is recorded once (what started it, its submission bound to its own sequence, its outcome) and the next turn reads the session's own earlier turns, including the exact question and choices a reply answers (amended 2026-09-25); a member's sessions share one coding machine that holds no node capacity while asleep and is removed later, its allocation released only on a proven delete (amended 2026-09-24). |
 | 10 | Constitution and hire overlays | Compile a short constitution over the proven loop; add a name and job spec last, without creating a second brain. |
 | Post-build (deferred) | Azure backup/overflow compute | After Orders 0–10 are built, separately approve and prove the optional capacity integration and its placement, failover, isolation, recovery, release, and usage records before enabling it for users. This is not a gate on the preceding orders or initial launch. |
@@ -2304,7 +2356,9 @@ review or retry" surfaces of 16.2 and the classification of section 10.
    rule never undoes an Ask first rule. Only a company Allow rule lifts a
    built-in check, and only when it covers the action: the checks are the
    company's to answer, so a member's own Allow rule never lifts one (a
-   member's rules only add care). As in Grok, the reviewer may also ask on its
+   member's rules only add care). Delegating to the company's own agents
+   (hiring, group chats, routines, workers, coding jobs) is never a built-in
+   check. As in Grok, the reviewer may also ask on its
    own when it is unsure the member wants this exact action (an irreversible
    step the request only loosely describes); the member the run works for
    answers that card. It denies only an action that clearly works against or
@@ -2329,8 +2383,9 @@ review or retry" surfaces of 16.2 and the classification of section 10.
    and the card keeps waiting. A holding call renews a short heartbeat; an
    answer to a card no call is holding (parked, stopped, or its run ended)
    wakes the agent in that conversation on the answering member's account.
-   The agent repeats the identical call (the card shows its exact arguments),
-   which runs once without a second review. A Deny, the member's or the
+   The agent repeats the identical call (the card carries it, as text and as
+   an object the agent copies value for value), which runs once without a
+   second review. A Deny, the member's or the
    reviewer's, stands for that exact call in the run it was given in, and in
    its conversation until a member writes there again: retrying gets the agent
    no second opinion. When the member asks for it again, the retried call runs
