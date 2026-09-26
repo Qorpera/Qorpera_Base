@@ -36,13 +36,16 @@ export const SETTINGS: Record<string, string> = {
 	"That picture is too detailed to upload.": "Billedet er for detaljeret til at blive uploadet.",
 
 	// General (app/views/account.ts, appearance.ts, ui/preference-picker.ts)
+	"write your name": "skriv dit navn",
+	Username: "Brugernavn",
+	"Enter a name between 1 and 64 characters.": "Skriv et navn på mellem 1 og 64 tegn.",
+	"Sign in to change your name.": "Log ind for at ændre dit navn.",
+	"Your name could not be saved. Try again.": "Dit navn kunne ikke gemmes. Prøv igen.",
 	"Your browser could not save the language preference.": "Din browser kunne ikke gemme dit valg af sprog.",
 	"Your browser could not save the time zone preference.": "Din browser kunne ikke gemme dit valg af tidszone.",
 	"Your browser could not save the theme preference.": "Din browser kunne ikke gemme dit valg af tema.",
 	"Your browser could not save the composer color preference.":
 		"Din browser kunne ikke gemme dit valg af farve til skrivefeltet.",
-	"Signed in with email": "Logget ind med e-mail",
-	"Signed in with {provider}": "Logget ind med {provider}",
 	System: "System",
 	"Interface size": "Grænsefladens størrelse",
 	Big: "Stor",
