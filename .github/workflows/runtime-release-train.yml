@@ -105,6 +105,21 @@ jobs:
       - name: Install dependencies without lifecycle scripts
         run: npm ci --ignore-scripts --no-audit --no-fund
 
+      # Tests use this Node binary as the native boundary artifact, and the
+      # boundary refuses a group- or world-writable executable.
+      - name: Make the Node binary writable by its owner only
+        run: |
+          node_binary="$(node -p 'require("node:fs").realpathSync(process.execPath)')"
+          ls -l "$node_binary"
+          chmod go-w "$node_binary" || sudo chmod go-w "$node_binary"
+          ls -l "$node_binary"
+
+      # Two office probes run a real Linux container from a cached image with
+      # --pull=never --network none.
+      - name: Cache the office probe container image
+        if: matrix.suite == 'runtime'
+        run: docker pull --quiet node:22-bookworm-slim
+
       - name: Unit tests
         working-directory: packages/${{ matrix.suite }}
         run: >-
@@ -114,7 +129,7 @@ jobs:
           --exclude test/cloud-coding-command-guest.test.ts
 
       - name: Coding command supervisor
-        if: matrix.supervisor
+        if: ${{ !cancelled() && matrix.supervisor }}
         working-directory: packages/runtime
         run: |
           supervisor="node ../../node_modules/vitest/dist/cli.js --run test/cloud-coding-command-guest.test.ts"
