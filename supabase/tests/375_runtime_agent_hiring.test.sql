@@ -48,7 +48,7 @@ begin
 	perform pg_temp.wake_assert((select count(*) from public.qorpera_agent_first_runs where staff_agent_id = v_id) = 1,
 		'Exactly one first run is seeded');
 	perform pg_temp.wake_assert(exists (select 1 from public.qorpera_company_path_grants
-		where principal_kind = 'staff_agent' and principal_id = v_id and permissions = array['read']),'The new agent gets the default read grant only');
+		where principal_kind = 'staff_agent' and principal_id = v_id and permissions = array['read','write']),'The new agent can read and write ordinary company files');
 	perform pg_temp.wake_assert((select approved_by_user_id = '30000000-0000-4000-8000-000000000001' and status = 'applied'
 		from public.qorpera_company_path_proposals where id = (v_result ->> 'proposalId')::uuid),
 		'The approval is recorded in the name of the requesting owner');
