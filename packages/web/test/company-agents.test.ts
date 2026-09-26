@@ -1,8 +1,8 @@
 import { parseCloudCompanyAgentDocument } from "@qorpera/cloud-client/cloud-company-agent";
 import { describe, expect, it, vi } from "vitest";
-import { createWebCompanyAgents } from "../src/cloud/company-agents.ts";
+import { createWebCompanyAgents, prepareWebCompanyAgentCreation } from "../src/cloud/company-agents.ts";
 import type { WebCompanyFiles } from "../src/cloud/company-files.ts";
-import { staff } from "./fixtures.ts";
+import { id, staff, timestamp } from "./fixtures.ts";
 
 function fake() {
 	let file: { version: string; text: string } | undefined;
@@ -35,9 +35,22 @@ function fake() {
 		current,
 	};
 }
-const draft = { displayName: "Ledger", role: "Keeps the books", charter: "", figure: "owl", color: "#123456" };
+const draft = {
+	id: id(93),
+	createdAt: timestamp,
+	displayName: "Ledger",
+	role: "Keeps the books",
+	charter: "",
+	figure: "owl",
+	color: "#123456",
+};
 
 describe("web company agents", () => {
+	it("rejects oversized escaped JSON before retaining a creation attempt", () => {
+		expect(() => prepareWebCompanyAgentCreation({ ...draft, charter: "\u0000".repeat(10_000) })).toThrow(
+			"text file limit",
+		);
+	});
 	it("creates an agent as a reviewed Company File document with a first turn", async () => {
 		const f = fake();
 		const id = await createWebCompanyAgents(f.files).create(draft, new AbortController().signal);
@@ -100,5 +113,63 @@ describe("web company agents", () => {
 			"Company access changed.",
 		);
 		expect(f.edits).toHaveLength(0);
+	});
+	it("reconciles a creation whose approval applied but whose reply was lost", async () => {
+		const f = fake();
+		const approve = f.editor.review.getMockImplementation()!;
+		f.editor.review.mockImplementationOnce(async () => {
+			await approve();
+			throw new TypeError("Failed to fetch");
+		});
+		await expect(createWebCompanyAgents(f.files).create(draft, new AbortController().signal)).rejects.toThrow(
+			"Failed to fetch",
+		);
+		// The application recreates its adapter between calls. Identity belongs to the draft.
+		await expect(createWebCompanyAgents(f.files).create(draft, new AbortController().signal)).resolves.toBe(draft.id);
+		expect(f.editor.edit).toHaveBeenCalledTimes(1);
+		expect(f.editor.review).toHaveBeenCalledTimes(1);
+	});
+	it("retries an unconfirmed submission with identical bytes, path, and operation key", async () => {
+		const f = fake();
+		f.editor.edit.mockRejectedValueOnce(new TypeError("Failed to fetch"));
+		await expect(createWebCompanyAgents(f.files).create(draft, new AbortController().signal)).rejects.toThrow();
+		await createWebCompanyAgents(f.files).create(draft, new AbortController().signal);
+		expect(f.editor.edit.mock.calls[0]![0]).toEqual(f.editor.edit.mock.calls[1]![0]);
+		expect(f.editor.edit.mock.calls[1]![0]).toMatchObject({
+			operationKey: `staff-create:${draft.id}`,
+			expectedVersion: null,
+		});
+	});
+	it("recognizes a later revision without overwriting it when creation is retried", async () => {
+		const f = fake();
+		const agents = createWebCompanyAgents(f.files);
+		await agents.create(draft, new AbortController().signal);
+		await agents.update(
+			{ ...staff, id: draft.id, createdAt: draft.createdAt },
+			{ ...draft, displayName: "Changed" },
+			new AbortController().signal,
+		);
+		await expect(agents.create(draft, new AbortController().signal)).resolves.toBe(draft.id);
+		expect(f.editor.edit).toHaveBeenCalledTimes(2);
+		expect(f.editor.review).toHaveBeenCalledTimes(2);
+	});
+	it.each(["agentId", "createdAt"])("rejects a conflicting immutable %s without writing", async (field) => {
+		const f = fake();
+		const agents = createWebCompanyAgents(f.files);
+		await agents.create(draft, new AbortController().signal);
+		const document = parseCloudCompanyAgentDocument(JSON.parse(f.edits[0]!.text!));
+		f.editor.read.mockResolvedValueOnce({
+			path: `organization/agents/${draft.id}.json`,
+			kind: "file",
+			version: id(99),
+			executable: false,
+			text: JSON.stringify({
+				...document,
+				revision: 2,
+				[field]: field === "agentId" ? id(99) : "2026-01-01T00:00:00Z",
+			}),
+		});
+		await expect(agents.create(draft, new AbortController().signal)).rejects.toThrow("creation document changed");
+		expect(f.editor.edit).toHaveBeenCalledTimes(1);
 	});
 });

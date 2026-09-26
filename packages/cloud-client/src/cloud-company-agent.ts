@@ -223,6 +223,42 @@ async function applied(
 	return result;
 }
 
+/** A creation attempt keeps its identity and document across uncertain replies.
+ * Never turn a retry into an update of a document that has since changed. */
+export async function createCloudCompanyAgent(options: {
+	editor: CompanyAgentEditor;
+	agent: StaffAgent;
+	startupInstructions: string;
+	operationKey: string;
+	signal: AbortSignal;
+}): Promise<void> {
+	const path = cloudCompanyAgentPath(options.agent.id);
+	const text = JSON.stringify(cloudCompanyAgentDocument(options.agent, 1, options.startupInstructions));
+	const current = await options.editor.read(path, options.signal);
+	options.signal.throwIfAborted();
+	if (current.kind === "file") {
+		const document = parseCloudCompanyAgentDocument(JSON.parse(current.text));
+		if (
+			document.agentId !== options.agent.id ||
+			Date.parse(document.createdAt) !== Date.parse(options.agent.createdAt) ||
+			(document.revision === 1 && JSON.stringify(document) !== text)
+		)
+			throw new Error("Company agent creation document changed");
+		// A later governed revision may already have activated or edited this
+		// agent. Its immutable identity confirms creation without another write.
+		return;
+	}
+	if (current.kind !== "absent") throw new Error("Company agent path is not a file");
+	await applied(
+		options.editor,
+		await options.editor.edit(
+			{ operation: "write", operationKey: options.operationKey, path, expectedVersion: null, text },
+			options.signal,
+		),
+		options.signal,
+	);
+}
+
 export async function writeCloudCompanyAgent(options: {
 	editor: CompanyAgentEditor;
 	agent: StaffAgent;
