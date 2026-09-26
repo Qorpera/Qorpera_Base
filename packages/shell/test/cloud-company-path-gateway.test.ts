@@ -18,6 +18,7 @@ import {
 } from "@qorpera/runtime/cloud-company-path-gateway";
 import type { CloudCompanyPathPresence } from "@qorpera/runtime/cloud-company-path-presence";
 import {
+	CloudCompanyPathRpcParentMissing,
 	CloudCompanyPathRpcPrecondition,
 	CloudCompanyPathRpcRefusal,
 } from "@qorpera/runtime/cloud-company-path-refusal";
@@ -404,6 +405,218 @@ describe("cloud Company File path gateway", () => {
 		} finally {
 			boundary.close();
 		}
+	});
+	// Live 2026-09-26 (run 71b86758): company_write into acceptance/auto-review/ when only acceptance/
+	// existed uploaded its bytes and came back unconfirmed/unknown, twice. The check refuses it first now.
+	it.each([
+		["company_write", "acceptance/auto-review/check-1.txt", { text: "check 1\n" }],
+		["company_mkdir", "acceptance/auto-review/round-1", {}],
+	] as const)(
+		"refuses %s into a missing folder before anything is staged, then applies once it exists",
+		async (tool, path, extra) => {
+			const db = companyFilePostgrest();
+			db.directory("acceptance");
+			const rows: CloudRuntimeObservation[] = [];
+			const observability = new CloudRuntimeObservability({
+				assignmentId: null,
+				publish: async (row) => {
+					rows.push(row);
+				},
+			});
+			const boundary = new CloudNativeToolBoundary({
+				companyId: db.identity.companyId,
+				runId: db.identity.runId,
+				identity: db.identity,
+				tools: db.gateway.tools(),
+				assertActive: async () => {},
+				signal: new AbortController().signal,
+				observability,
+			});
+			try {
+				const objects = db.objects.size;
+				const args = { path, operationKey: "check-1", expectedVersion: null, ...extra };
+				const response = await boundary.invoke("missing_parent", "qorpera", tool, args);
+				const envelope = JSON.parse(response.contentItems[0].text);
+				expect(response.success).toBe(false);
+				expect(envelope).toMatchObject({ status: "denied" });
+				expect(envelope.content.text).toMatch(
+					/^COMPANY_FILE_PARENT_MISSING: nothing was written; the folder this path goes in does not exist\. Create it with company_mkdir first/,
+				);
+				expect(envelope.content.text).toContain("do not replace the file");
+				expect(envelope.content.text).not.toContain("Company File parent folder is missing");
+				// Only the check crossed the wire: no upload, no prepare or commit.
+				expect(db.requests).toEqual([{ method: "qorpera_check_company_path_mutation", path, status: 424 }]);
+				expect(db.objects.size).toBe(objects);
+				expect(db.entries.has(path)).toBe(false);
+				// As the result says: create the folder, then repeat the same call.
+				const folder = await boundary.invoke("create_folder", "qorpera", "company_mkdir", {
+					path: "acceptance/auto-review",
+					operationKey: "auto-review-folder",
+					expectedVersion: null,
+				});
+				expect(JSON.parse(folder.contentItems[0].text)).toMatchObject({ status: "ok" });
+				const repeated = await boundary.invoke("missing_parent_again", "qorpera", tool, args);
+				expect(JSON.parse(repeated.contentItems[0].text)).toMatchObject({
+					status: "ok",
+					content: { kind: "json" },
+				});
+				expect(db.entries.get(path)?.entry?.kind).toBe(tool === "company_write" ? "file" : "directory");
+				if (tool === "company_write") expect(await db.text(path)).toBe("check 1\n");
+				await observability.close();
+				const finishes = rows.filter((row) => row.operation === tool && row.phase === "finish");
+				// For company_mkdir, creating the folder is the middle one.
+				expect(finishes.map((row) => [row.status, row.errorCategory])).toEqual([
+					["denied", "parent_missing"],
+					...(tool === "company_mkdir" ? [["succeeded", null]] : []),
+					["succeeded", null],
+				]);
+			} finally {
+				boundary.close();
+			}
+		},
+	);
+	it.each([
+		["at prepare, after staging", "qorpera_prepare_company_path_mutation"],
+		["at commit", "qorpera_commit_company_path_mutation"],
+	] as const)("carries a folder deleted after the check (%s) into the same typed result", async (_label, rpc) => {
+		const db = companyFilePostgrest();
+		db.directory("acceptance/auto-review");
+		let raced = false;
+		db.before.hook = (method) => {
+			if (method !== rpc || raced) return;
+			raced = true;
+			db.remove("acceptance/auto-review");
+		};
+		const boundary = new CloudNativeToolBoundary({
+			companyId: db.identity.companyId,
+			runId: db.identity.runId,
+			identity: db.identity,
+			tools: db.gateway.tools(),
+			assertActive: async () => {},
+			signal: new AbortController().signal,
+		});
+		try {
+			const path = "acceptance/auto-review/check-1.txt";
+			const response = await boundary.invoke("folder_deleted", "qorpera", "company_write", {
+				path,
+				operationKey: "check-1",
+				expectedVersion: null,
+				text: "check 1\n",
+			});
+			expect(JSON.parse(response.contentItems[0].text)).toMatchObject({
+				status: "denied",
+				content: { text: expect.stringMatching(/^COMPANY_FILE_PARENT_MISSING: nothing was written/) },
+			});
+			expect(db.requests.filter((request) => request.status === 424)).toEqual([{ method: rpc, path, status: 424 }]);
+			expect(db.entries.has(path)).toBe(false);
+		} finally {
+			boundary.close();
+		}
+	});
+	it("refuses a copy of a shared export into a missing folder at its check, before uploading anything", async () => {
+		const db = companyFilePostgrest();
+		db.directory("acceptance");
+		const source = db.seedExport(Buffer.from([0, 1, 2, 255]));
+		const boundary = new CloudNativeToolBoundary({
+			companyId: db.identity.companyId,
+			runId: db.identity.runId,
+			identity: db.identity,
+			tools: db.gateway.tools(),
+			assertActive: async () => {},
+			signal: new AbortController().signal,
+		});
+		try {
+			const objects = db.objects.size;
+			const args = { path: "acceptance/auto-review/out.bin", operationKey: "copy-1", expectedVersion: null, source };
+			const response = await boundary.invoke("missing_parent_copy", "qorpera", "company_write", args);
+			expect(JSON.parse(response.contentItems[0].text)).toMatchObject({
+				status: "denied",
+				content: { text: expect.stringMatching(/^COMPANY_FILE_PARENT_MISSING: nothing was written/) },
+			});
+			expect(db.requests).toEqual([
+				{ method: "qorpera_native_company_file_write_source", path: null, status: 200 },
+				{ method: "qorpera_native_company_file_write", path: args.path, status: 424 },
+			]);
+			expect(db.objects.size).toBe(objects);
+			await db.gateway.mutate(
+				"mkdir",
+				{ path: "acceptance/auto-review", operationKey: "folder", expectedVersion: null },
+				new AbortController().signal,
+			);
+			const repeated = await boundary.invoke("missing_parent_copy_again", "qorpera", "company_write", args);
+			expect(JSON.parse(repeated.contentItems[0].text)).toMatchObject({ status: "ok" });
+			expect(db.entries.get(args.path)?.entry?.kind).toBe("file");
+		} finally {
+			boundary.close();
+		}
+	});
+	it("registers no presence for a write the check refused for its missing folder", async () => {
+		const observe = vi.fn<CloudCompanyPathPresence["observe"]>();
+		const f = fixture(undefined, { observe, close: async () => {} });
+		f.overrides.set("qorpera_check_company_path_mutation", async () => {
+			throw new CloudCompanyPathRpcParentMissing();
+		});
+		const response = await f.boundary.invoke("presence_orphan", "qorpera", "company_write", {
+			path: "gone/check-1.txt",
+			operationKey: "presence-orphan",
+			expectedVersion: null,
+			text: "x",
+		});
+		expect(JSON.parse(response.contentItems[0].text)).toMatchObject({
+			status: "denied",
+			content: { text: expect.stringMatching(/^COMPANY_FILE_PARENT_MISSING: /) },
+		});
+		expect(observe).not.toHaveBeenCalled();
+		expect(f.transport.put).not.toHaveBeenCalled();
+		// Besides the boundary's own authority checks, only the refused check ran.
+		expect(
+			f.call.mock.calls.map(([method]) => method).filter((method) => method !== "qorpera_assert_company_path_reads"),
+		).toEqual(["qorpera_check_company_path_mutation"]);
+	});
+	it("refuses a plan whose folder is missing from the entries it would stage, before any commit", async () => {
+		// SQL found the folder at the check; it was deleted before prepare listed the head.
+		const f = fixture();
+		const response = await f.boundary.invoke("stage_orphan", "qorpera", "company_write", {
+			path: "gone/check-1.txt",
+			operationKey: "stage-orphan",
+			expectedVersion: null,
+			text: "x",
+		});
+		expect(JSON.parse(response.contentItems[0].text)).toMatchObject({
+			status: "denied",
+			content: { text: expect.stringMatching(/^COMPANY_FILE_PARENT_MISSING: /) },
+		});
+		expect(f.call.mock.calls.filter(([method]) => method === "qorpera_commit_company_path_mutation")).toHaveLength(0);
+		expect(f.call.mock.calls.filter(([method]) => method === "qorpera_verify_company_path_tree")).toHaveLength(0);
+		expect(f.receipts.size).toBe(0);
+	});
+	it("does not infer a missing folder from adapter text or from a refusal outside a mutation", async () => {
+		const f = fixture();
+		f.overrides.set("qorpera_check_company_path_mutation", async () => {
+			throw new Error("PT424 Company File parent folder is missing");
+		});
+		const write = await f.boundary.invoke("text_orphan", "qorpera", "company_write", {
+			path: "a/b.txt",
+			text: "x",
+			operationKey: "text-orphan",
+			expectedVersion: null,
+		});
+		expect(JSON.parse(write.contentItems[0].text)).toMatchObject({
+			status: "unconfirmed",
+			content: { text: "TOOL_OUTCOME_UNCONFIRMED" },
+		});
+		f.overrides.set("qorpera_read_company_path_v2", async () => {
+			throw new CloudCompanyPathRpcParentMissing();
+		});
+		const read = await f.boundary.invoke("read_orphan", "qorpera", "company_read", {
+			path: "a/b.txt",
+			offset: 0,
+			limit: 4096,
+		});
+		expect(JSON.parse(read.contentItems[0].text)).toMatchObject({
+			status: "unconfirmed",
+			content: { text: "TOOL_OUTCOME_UNCONFIRMED" },
+		});
 	});
 	it("pages the trusted listing to its end and starts again, a bounded number of times, when the company moves on", async () => {
 		const db = companyFilePostgrest();

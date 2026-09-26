@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { JsonValue } from "@qorpera/contracts";
 import { type ConnectorOperationContext, defineConnectorAdapters } from "./cloud-connector-adapter.ts";
 import { cloudConnector } from "./cloud-connector-catalog.ts";
@@ -513,6 +514,18 @@ const CREATE_MIME_TYPES = new Set([
 	"application/vnd.google-apps.document",
 ]);
 
+/** A multipart boundary of at most 70 characters (RFC 2046), derived from the
+ * operation's idempotency key (up to 128 characters), so one operation always
+ * builds the same request. If a part happens to contain it, the next derivation
+ * is used; each occurrence costs a part 56 characters, so the loop ends. */
+function multipartBoundary(idempotencyKey: string, parts: readonly string[]): string {
+	for (let attempt = 0; ; attempt += 1) {
+		const digest = createHash("sha256").update(`${idempotencyKey}\n${attempt}`).digest("hex");
+		const boundary = `qorpera-${digest.slice(0, 48)}`;
+		if (!parts.some((part) => part.includes(boundary))) return boundary;
+	}
+}
+
 function driveQuery(value: string): string {
 	return value.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
 }
@@ -627,16 +640,18 @@ export function createGoogleDriveConnectorAdapters(options: {
 				const metadata: Record<string, JsonValue> = { name: String(args.name), mimeType };
 				if (typeof args.folder_id === "string") metadata.parents = [googleId(args.folder_id, "folder id")];
 				const contentType = mimeType === "application/vnd.google-apps.document" ? "text/plain" : mimeType;
-				const boundary = `qorpera-${context.idempotencyKey.replace(/[^A-Za-z0-9]/g, "")}`;
+				const metadataJson = JSON.stringify(metadata);
+				const content = String(args.content);
+				const boundary = multipartBoundary(context.idempotencyKey, [metadataJson, content]);
 				const body = [
 					`--${boundary}`,
 					"Content-Type: application/json; charset=UTF-8",
 					"",
-					JSON.stringify(metadata),
+					metadataJson,
 					`--${boundary}`,
 					`Content-Type: ${contentType}; charset=UTF-8`,
 					"",
-					String(args.content),
+					content,
 					`--${boundary}--`,
 					"",
 				].join("\r\n");

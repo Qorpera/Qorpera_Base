@@ -183,7 +183,7 @@ describe("settings session lifecycle", () => {
 		expect(f.cloud.supabase.removeChannel).toHaveBeenLastCalledWith(channels[2]);
 		expect(f.cloud.supabase.removeChannel).not.toHaveBeenCalledWith(channels[0]);
 	});
-	it("opens all six tabs over the same conversation and restores the profile button", async () => {
+	it("opens all seven tabs over the same conversation and restores the profile button", async () => {
 		const f = await setup(),
 			composer = f.root.querySelector<HTMLTextAreaElement>("textarea")!;
 		composer.value = "Keep my conversation draft";
@@ -197,6 +197,7 @@ describe("settings session lifecycle", () => {
 			"Friends",
 			"Plan & usage",
 			"Connections",
+			"Rules",
 		]);
 		for (const tab of f.root.querySelectorAll('[role="tab"]')) expect(tab.querySelector("svg.icon")).not.toBeNull();
 		expect(f.root.querySelector<HTMLElement>(".frame")!.inert).toBe(true);

@@ -700,6 +700,13 @@ begin
 	begin
 		perform pg_temp.path_commit(pg_temp.path_plan('shadow-parent','note.md/child',jsonb_build_object('kind','directory','path','note.md/child')));
 		raise exception 'File was accepted as a parent directory';
+	-- Refused by the path check, before any tree is staged (20260926203300); SQL 291.
+	exception when sqlstate 'PT424' then null; end;
+	-- The tree verifier still refuses such a tree on its own.
+	begin
+		perform pg_temp.path_stage_tree(jsonb_build_array(pg_temp.path_stage_file('note.md','x'),
+			jsonb_build_object('kind','directory','path','note.md/child')));
+		raise exception 'Tree verifier accepted a file as a parent directory';
 	exception when invalid_parameter_value then null; end;
 	reset role;
 	begin
