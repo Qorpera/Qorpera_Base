@@ -143,8 +143,13 @@ export const WORKSPACE: Record<string, string> = {
 	"Create an agent": "Opret en agent",
 	"Enter a name and title.": "Skriv et navn og en titel.",
 	"Creating agent…": "Opretter agent…",
-	"The agent could not be created. Your draft is still here.":
-		"Agenten kunne ikke oprettes. Din kladde er her stadig.",
+	"Creation could not be confirmed. Retry to check the same agent.":
+		"Oprettelsen kunne ikke bekræftes. Prøv igen for at kontrollere den samme agent.",
+	"Check agent creation": "Kontroller agentoprettelse",
+	"Agent creation was rejected. Your draft is still here and can be edited.":
+		"Agentoprettelsen blev afvist. Din kladde er her stadig og kan redigeres.",
+	"Agent details are too long or invalid. Shorten them and try again.":
+		"Agentoplysningerne er for lange eller ugyldige. Gør dem kortere, og prøv igen.",
 
 	// app/views/signin.ts
 	"Continue with {provider}": "Fortsæt med {provider}",
