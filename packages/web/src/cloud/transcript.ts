@@ -445,6 +445,7 @@ export function projectTranscript(
 		hiddenCount++;
 	}
 	hiddenCount += legacyParts.size;
+	const waiting: TranscriptMessage[] = [];
 	for (const input of pending) {
 		if (input.kind !== "user_message" || inputIds.has(input.inputId)) continue;
 		const body = asRecord(input.body);
@@ -467,7 +468,7 @@ export function projectTranscript(
 			typeof body?.displayText === "string" ? body.displayText : typeof body?.text === "string" ? body.text : "";
 		const images = Array.isArray(body?.images) ? body.images : [];
 		const attachments = images.map((image) => attachmentMetadata({ ...asRecord(image), type: "image" }));
-		items.push({
+		waiting.push({
 			kind: "member",
 			id: input.inputId,
 			sequence: Number.MAX_SAFE_INTEGER,
@@ -489,5 +490,13 @@ export function projectTranscript(
 		if (interaction && !interaction.answer) interaction.answerFailed = true;
 	}
 	items.sort((a, b) => (a.sequence === b.sequence ? a.createdAt.localeCompare(b.createdAt) : a.sequence - b.sequence));
+	// A waiting message stands where it was sent, after everything written before it.
+	// Below everything, one the cloud never takes would sink under days of newer messages.
+	for (const message of waiting) {
+		const sent = Date.parse(message.createdAt);
+		let at = items.length;
+		while (at > 0 && Date.parse(items[at - 1]!.createdAt) > sent) at--;
+		items.splice(at, 0, message);
+	}
 	return { items, hiddenCount, lastSequence };
 }

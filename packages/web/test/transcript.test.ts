@@ -241,6 +241,36 @@ describe("projectTranscript", () => {
 		expect(item && item.kind === "member" ? item.pending : undefined).toBe("processing");
 	});
 
+	it("places a waiting input where it was sent, not below newer messages", () => {
+		const input = (inputId: string, position: number, createdAt: string): PendingSessionInput => ({
+			inputId,
+			position,
+			kind: "user_message",
+			authorUserId: USER,
+			authorDisplayName: "Jonas",
+			body: { schema: "qorpera.session-prompt/v1", text: inputId, images: [] },
+			createdAt,
+			status: "queued",
+		});
+		const stuck = "66666666-6666-4666-8666-666666666666";
+		const fresh = "77777777-7777-4777-8777-777777777777";
+		const member = (sequence: number, text: string) => {
+			const id = `44444444-4444-4444-8444-${String(sequence).padStart(12, "0")}`;
+			return event(sequence, { sessionInputId: id, body: runnerEntry("user", text, { id }) });
+		};
+		const projection = projectTranscript(
+			[member(1, "before"), member(3, "after"), member(5, "latest")],
+			[input(stuck, 1, "2026-09-02T10:00:02Z"), input(fresh, 2, "2026-09-02T10:00:09Z")],
+		);
+		expect(projection.items.map((item) => (item.kind === "member" ? item.text : item.kind))).toEqual([
+			"before",
+			stuck,
+			"after",
+			"latest",
+			fresh,
+		]);
+	});
+
 	it("surfaces authorization events as cards", () => {
 		const projection = projectTranscript([
 			event(1, { eventType: "authorization_request", body: { operation: "send-email", to: "x@y.z" } }),

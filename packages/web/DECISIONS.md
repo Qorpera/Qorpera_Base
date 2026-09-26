@@ -105,7 +105,9 @@ Per §6 and launch acceptance item 8, from `qorpera_read_session_events`:
 - `session_info`, `run_receipt`, `artifact_receipt` → never rendered.
 - Queued inputs from `qorpera_list_session_inputs` not yet in the transcript
   render as *pending* member messages; `processing` shows the agent is
-  working; `failed` shows the failure reason.
+  working; `failed` shows the failure reason. A pending message stands where
+  it was sent (after every item created before it), not below the whole
+  transcript: one the cloud never takes must not sink under newer messages.
 
 ## 2026-09-22 — Coding sessions in the thread (Order 9, part 2)
 
