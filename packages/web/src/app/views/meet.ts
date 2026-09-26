@@ -46,6 +46,7 @@ export function renderMeet(
 	container: HTMLElement,
 	state: MeetState,
 	setState: (next: MeetState) => void,
+	current: () => boolean = () => true,
 ): void {
 	const companyState = company.store.get();
 	const cofounder = cofounderOf(company);
@@ -86,25 +87,26 @@ export function renderMeet(
 	// saving never replaces a colour chosen in the details.
 	const color = state.figure ? nativeColorOf(figure) : agentColor(cofounder, figure);
 	const canWrite = companyState.team?.capabilities.authorize === true;
-	const save = () => {
-		if (!canWrite || state.saving) return;
+	let submitted = false;
+	const save = async () => {
+		if (!canWrite || state.saving || submitted || !current()) return;
+		// The application redraw is debounced; latch before it can disable Save.
+		submitted = true;
 		const route = location.hash;
 		setState({ ...state, saving: true, error: undefined });
-		void saveAppearance(cofounder, figure, color)
-			.then(async () => {
-				await company.refreshStaff();
-				if (!company.signal.aborted && location.hash === route && container.isConnected) open();
-			})
-			.catch(() => {
-				if (company.signal.aborted || location.hash !== route || !container.isConnected) return;
-				setState({
-					...state,
-					saving: false,
-					error: t(
-						"The appearance change could not be confirmed. Open the company to check it before saving again.",
-					),
-				});
+		try {
+			await saveAppearance(cofounder, figure, color);
+			if (!current() || company.signal.aborted) return;
+			await company.refreshStaff();
+			if (current() && !company.signal.aborted && location.hash === route && container.isConnected) open();
+		} catch {
+			if (!current() || company.signal.aborted || location.hash !== route || !container.isConnected) return;
+			setState({
+				...state,
+				saving: false,
+				error: t("The appearance change could not be confirmed. Open the company to check it before saving again."),
 			});
+		}
 	};
 
 	replace(
