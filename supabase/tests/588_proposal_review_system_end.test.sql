@@ -14,17 +14,18 @@ returns public.qorpera_runner_jobs language sql stable as $$
 $$;
 
 -- A review whose job is queued ('none'), or leased to a runner that has not
--- called the model yet ('idle') or has a model call in flight ('calling').
+-- called the model yet ('idle'), has a model call in flight ('calling') or has
+-- finished one ('called').
 create function pg_temp.live_review(p_company jsonb, p_lease text) returns jsonb language plpgsql as $$
 declare proposal uuid; job public.qorpera_runner_jobs%rowtype; claim jsonb; runner uuid := extensions.gen_random_uuid();
- assignment uuid := extensions.gen_random_uuid(); i integer;
+ assignment uuid := extensions.gen_random_uuid(); request uuid := extensions.gen_random_uuid(); i integer;
 begin
  proposal := pg_temp.queue_review(p_company);
  perform pg_temp.queue_auth();
  perform public.qorpera_materialize_company_proposal_review_runs(32);
  job := pg_temp.review_job(proposal);
  perform pg_temp.queue_assert(job.status = 'queued', 'review job was not queued');
- if p_lease in ('idle', 'calling') then
+ if p_lease <> 'none' then
   insert into public.qorpera_runners(id,profile_id,client_runner_id,display_name,runner_kind,capabilities,
    max_concurrency,status,platform,runner_version,activation_token_sha256,activation_expires_at,
    session_token_sha256,session_expires_at,registered_by_user_id,activated_at,last_seen_at)
@@ -44,14 +45,19 @@ begin
   perform pg_temp.queue_assert(job.status = 'leased' and job.lease_token_sha256 = repeat('b',64),
    'review job was not leased');
  end if;
- if p_lease = 'calling' then
-  -- A gateway call the runner reserved and has not finalized.
-  insert into public.qorpera_runner_model_requests(job_id,profile_id,environment_id,runner_id,actor_user_id,
-   authorized_by_user_id,client_request_id,provider,model,request_sha256,input_token_reservation,output_token_reservation)
-  values(job.id,job.profile_id,job.environment_id,runner,(p_company->>'owner')::uuid,(p_company->>'owner')::uuid,
-   extensions.gen_random_uuid(),'openai','gpt-test',repeat('9',64),1000,1000);
+ if p_lease in ('calling', 'called') then
+  execute 'set local role service_role';
+  perform pg_temp.queue_assert(public.qorpera_runner_broker_reserve_model_request(runner,repeat('d',64),job.id,
+   repeat('b',64),request,'openai','gpt-test',repeat('9',64),1000,1000)->>'state' = 'reserved',
+   'gateway call was not reserved');
+  if p_lease = 'called' then
+   perform public.qorpera_runner_broker_finalize_model_request(runner,repeat('d',64),job.id,repeat('b',64),
+    request,repeat('9',64),'completed',10,5,5,'{"output":"ok"}',null);
+  end if;
+  execute 'reset role';
  end if;
- return jsonb_build_object('proposal',proposal,'job',job.id,'run',job.run_id,'assignment',assignment,'lease',p_lease);
+ return jsonb_build_object('proposal',proposal,'job',job.id,'run',job.run_id,'runner',runner,'assignment',assignment,
+  'lease',p_lease);
 end $$;
 
 -- The rows qorpera_rebase_company_proposal writes for a new revision. The RPC
@@ -84,6 +90,7 @@ begin
  execute 'set local role authenticated';
  perform public.qorpera_reject_company_proposal(p_proposal, snapshot);
  execute 'reset role';
+ perform pg_temp.queue_auth();
  perform pg_temp.queue_assert((select status = 'rejected' from public.qorpera_company_proposals where id = p_proposal),
   'proposal was not rejected');
 end $$;
@@ -92,42 +99,52 @@ end $$;
 -- with it; nothing reads it as a member's Stop or asks anyone to act on it.
 create function pg_temp.assert_system_end(p_company jsonb, p_live jsonb, p_reason text)
 returns void language plpgsql as $$
-declare job public.qorpera_runner_jobs%rowtype; expected text; leased boolean := p_live->>'lease' <> 'none';
+declare job public.qorpera_runner_jobs%rowtype; expected text; lease text := p_live->>'lease';
 begin
  select * into strict job from public.qorpera_runner_jobs where id = (p_live->>'job')::uuid;
- -- A gateway call in flight is output of the attempt that someone must review.
- expected := p_reason || case when p_live->>'lease' = 'calling' then '; durable attempt output requires review' else '' end;
+ -- A model call is output of the attempt: the job's error says so.
+ expected := p_reason || case when lease in ('calling', 'called') then '; durable attempt output requires review' else '' end;
  perform pg_temp.queue_assert(job.status = 'failed' and job.finished_at is not null
   and job.cancelled_at is null and job.cancelled_by_user_id is null and job.last_error = expected,
   'system end of a review job is not a failure with its reason: ' || row_to_json(job)::text);
  perform pg_temp.queue_assert(job.lease_token_sha256 is null and job.lease_expires_at is null
-  and job.terminal_lease_token_sha256 is not distinct from case when leased then repeat('b',64) end
-  and job.attempt_count = case when leased then 1 else 0 end,
+  and job.terminal_lease_token_sha256 is not distinct from case when lease <> 'none' then repeat('b',64) end
+  and job.attempt_count = case when lease <> 'none' then 1 else 0 end,
   'system end left runner authority or re-queued the review');
+ -- A review run writes nothing, so the review (shown next to its reviewer) keeps the plain reason.
  perform pg_temp.queue_assert((select review.status = 'failed' and review.completed_at is not null
-   and review.failure_reason = expected
+   and review.failure_reason = p_reason
   from public.qorpera_company_proposal_review_assignments as review where review.run_id = job.run_id),
-  'review assignment did not fail with the job');
+  'review assignment did not fail with the plain reason');
  perform pg_temp.queue_assert(exists(select 1 from public.qorpera_execution_run_events
    where run_id = job.run_id and event_type = 'failed' and payload->>'error' = expected)
   and not exists(select 1 from public.qorpera_execution_run_events where run_id = job.run_id and event_type = 'cancelled'),
   'run history does not record the failure');
- -- Unknown gateway spend settles at the reserved ceiling, otherwise at the usage.
- perform pg_temp.queue_assert((select status = 'settled'
-   and actual_microusd = case when p_live->>'lease' = 'calling' then reserved_microusd else 0 end
+ -- Unknown gateway spend settles at the reserved ceiling, known spend at its cost.
+ perform pg_temp.queue_assert((select status = 'settled' and actual_microusd = case lease
+   when 'calling' then reserved_microusd when 'called' then 5 else 0 end
   from public.qorpera_execution_sponsor_reservations where run_id = job.run_id),
   'review budget reservation was not settled');
- perform pg_temp.queue_assert((select count(*) = case when p_live->>'lease' = 'calling' then 1 else 0 end
-  from public.qorpera_execution_run_events where run_id = job.run_id and event_type = 'review_pending'
-   and payload->>'reason' = 'ambiguous_model_usage'), 'unknown gateway spend was not flagged exactly when a call was in flight');
- if p_live->>'lease' = 'calling' then
-  perform pg_temp.queue_assert((select status = 'ambiguous' and error_code = 'gateway_outcome_unknown'
-   from public.qorpera_runner_model_requests where job_id = job.id), 'in-flight gateway call was not quarantined');
- end if;
- if leased then
+ perform pg_temp.queue_assert((select coalesce(jsonb_agg(payload->>'reason' order by id), '[]')
+  from public.qorpera_execution_run_events where run_id = job.run_id and event_type = 'review_pending')
+  = case lease when 'calling' then '["ambiguous_model_usage"]' when 'called' then '["partial_attempt_output"]'
+   else '[]' end::jsonb, 'attempt output was not flagged exactly as it happened');
+ perform pg_temp.queue_assert((select coalesce(jsonb_agg(status), '[]') from public.qorpera_runner_model_requests
+  where job_id = job.id) = case lease when 'calling' then '["ambiguous"]' when 'called' then '["completed"]'
+   else '[]' end::jsonb, 'gateway call was not quarantined, or a finished one was changed');
+ if lease <> 'none' then
   perform pg_temp.queue_assert((select status = 'failed' and last_error = expected
    from public.qorpera_runner_assignments where id = (p_live->>'assignment')::uuid),
    'runner assignment stayed accepted');
+  execute 'set local role service_role';
+  begin
+   perform public.qorpera_runner_broker_reserve_model_request((p_live->>'runner')::uuid,repeat('d',64),job.id,
+    repeat('b',64),extensions.gen_random_uuid(),'openai','gpt-test',repeat('8',64),1000,1000);
+   raise exception 'runner kept model authority after the system ended its review';
+  exception when sqlstate 'PGRST' then
+   if sqlerrm not like '%runner job lease is unavailable%' then raise; end if;
+  end;
+  execute 'reset role';
  end if;
  perform pg_temp.queue_auth((p_company->>'owner')::uuid);
  execute 'set local role authenticated';
@@ -211,5 +228,22 @@ begin
  perform pg_temp.assert_system_end(a, live, 'Proposal review was closed before this assignment completed');
 end $$;
 rollback to savepoint closed_calling;
+
+-- 6. A member rejects the proposal after its runner called the model. The
+-- decided proposal shows the review with the plain reason.
+savepoint closed_called;
+do $$
+declare a jsonb := current_setting('queue.a')::jsonb; live jsonb; shown jsonb;
+begin
+ live := pg_temp.live_review(a, 'called');
+ perform pg_temp.reject(a, (live->>'proposal')::uuid);
+ perform pg_temp.assert_system_end(a, live, 'Proposal review was closed before this assignment completed');
+ select public.qorpera_company_proposal_json(proposal) -> 'reviews' into strict shown
+ from public.qorpera_company_proposals as proposal where proposal.id = (live->>'proposal')::uuid;
+ perform pg_temp.queue_assert(jsonb_array_length(shown) = 1 and shown->0->>'status' = 'failed'
+  and shown->0->>'failure_reason' = 'Proposal review was closed before this assignment completed',
+  'decided proposal does not show the review with its plain reason: ' || shown::text);
+end $$;
+rollback to savepoint closed_called;
 
 rollback;

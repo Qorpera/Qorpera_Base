@@ -20,8 +20,11 @@
 -- update left it reserved), and marks executing operations ambiguous. The job
 -- keeps the runner's lease token as its terminal token, so the runner is fenced.
 -- The status trigger fails the accepted runner assignment and the review
--- assignment with the job's last error; the unchanged update after it fails the
--- reviews that had not started.
+-- assignment with the job's last error. After a model call that error adds
+-- "durable attempt output requires review", which a review run cannot have (it
+-- writes nothing), and the web shows the review's reason next to the reviewer.
+-- So the update after it gives those reviews the plain reason again, and fails
+-- the reviews that had not started, as before.
 --
 -- Nobody is asked to act on such a run: the activity list shows a failed review
 -- only while its proposal is open at the reviewed revision, the recovery list
@@ -53,7 +56,12 @@ select pg_temp.review_end_patch('public.qorpera_seed_company_proposal_reviews()'
 	from public.qorpera_company_proposal_review_assignments as review
 	where review.proposal_id = new.proposal_id and review.proposal_revision < new.revision
 		and review.status = 'running' and job.run_id = review.run_id
-		and job.status in ('queued', 'leased');$old$,
+		and job.status in ('queued', 'leased');
+	update public.qorpera_company_proposal_review_assignments
+	set status = 'failed', completed_at = statement_timestamp(),
+		failure_reason = 'Proposal review was superseded by a newer revision'
+	where proposal_id = new.proposal_id and proposal_revision < new.revision
+		and status in ('queued', 'running');$old$,
 	$new$	-- No member stopped this run: the system ends it as a failure.
 	perform public.qorpera_terminalize_runner_attempt(
 		job.id, 'failed', 'Proposal review was superseded by a newer revision', false
@@ -61,7 +69,14 @@ select pg_temp.review_end_patch('public.qorpera_seed_company_proposal_reviews()'
 	from public.qorpera_company_proposal_review_assignments as review
 	join public.qorpera_runner_jobs as job on job.run_id = review.run_id
 	where review.proposal_id = new.proposal_id and review.proposal_revision < new.revision
-		and review.status = 'running' and job.status in ('queued', 'leased');$new$);
+		and review.status = 'running' and job.status in ('queued', 'leased');
+	-- The review keeps the plain reason: a review run writes nothing to review.
+	update public.qorpera_company_proposal_review_assignments
+	set status = 'failed', completed_at = statement_timestamp(),
+		failure_reason = 'Proposal review was superseded by a newer revision'
+	where proposal_id = new.proposal_id and proposal_revision < new.revision
+		and (status in ('queued', 'running') or (status = 'failed' and completed_at = statement_timestamp()
+			and failure_reason like 'Proposal review was superseded by a newer revision;%'));$new$);
 
 select pg_temp.review_end_patch('public.qorpera_runner_proposal_wake_status()',
 	$old$		update public.qorpera_runner_jobs as job
@@ -75,7 +90,11 @@ select pg_temp.review_end_patch('public.qorpera_runner_proposal_wake_status()',
 			last_error = 'Proposal review was closed before this assignment completed'
 		from public.qorpera_company_proposal_review_assignments as review
 		where review.proposal_id = new.id and review.status = 'running'
-			and job.run_id = review.run_id and job.status in ('queued', 'leased');$old$,
+			and job.run_id = review.run_id and job.status in ('queued', 'leased');
+		update public.qorpera_company_proposal_review_assignments
+		set status = 'failed', completed_at = statement_timestamp(),
+			failure_reason = 'Proposal review was closed before this assignment completed'
+		where proposal_id = new.id and status in ('queued', 'running');$old$,
 	$new$		-- No member stopped this run: the system ends it as a failure.
 		perform public.qorpera_terminalize_runner_attempt(
 			job.id, 'failed', 'Proposal review was closed before this assignment completed', false
@@ -83,4 +102,11 @@ select pg_temp.review_end_patch('public.qorpera_runner_proposal_wake_status()',
 		from public.qorpera_company_proposal_review_assignments as review
 		join public.qorpera_runner_jobs as job on job.run_id = review.run_id
 		where review.proposal_id = new.id and review.status = 'running'
-			and job.status in ('queued', 'leased');$new$);
+			and job.status in ('queued', 'leased');
+		-- The review keeps the plain reason: a review run writes nothing to review.
+		update public.qorpera_company_proposal_review_assignments
+		set status = 'failed', completed_at = statement_timestamp(),
+			failure_reason = 'Proposal review was closed before this assignment completed'
+		where proposal_id = new.id and (status in ('queued', 'running') or (status = 'failed'
+			and completed_at = statement_timestamp()
+			and failure_reason like 'Proposal review was closed before this assignment completed;%'));$new$);
