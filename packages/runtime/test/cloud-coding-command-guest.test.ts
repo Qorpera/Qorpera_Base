@@ -13,6 +13,15 @@ import {
 
 import { refreshCodingGuestLease } from "../src/cloud-coding-watchdog.ts";
 
+// These integration cases perform real fchown to the admitted Linux identity.
+// macOS developer accounts commonly use uid 501/gid 20 and cannot own that identity.
+const ownGuestLogs =
+	process.platform === "linux" && (process.getuid?.() ?? 0) >= 1000 && (process.getgid?.() ?? 0) >= 1000;
+const ownershipTest = it.runIf(ownGuestLogs);
+if (!ownGuestLogs)
+	console.info(
+		"Skipping coding log ownership integration: requires Linux with current UID and GID >= 1000; parser and refusal tests still run.",
+	);
 const roots: string[] = [];
 afterEach(async () => {
 	await Promise.all(roots.splice(0).map((path) => rm(path, { recursive: true, force: true })));
@@ -49,10 +58,10 @@ async function fixture() {
 			workerId: request.workerId,
 			vmId: request.vmId,
 			bootId,
-			// start chowns each log to uid:gid, so the test user must hold both;
-			// CI runs this file under a gid >= 1000 (see step2-lxd.yml).
-			uid: Math.max(1000, process.getuid?.() ?? 1000),
-			gid: Math.max(1000, process.getgid?.() ?? 1000),
+			// Real ownership tests use this exact eligible process identity. Portable
+			// refusal/parser cases only read the synthetic identity and never chown.
+			uid: ownGuestLogs ? process.getuid!() : 1000,
+			gid: ownGuestLogs ? process.getgid!() : 1000,
 			...folders,
 			resourceProfile: {
 				maxTimeoutMs: 1800000,
@@ -120,7 +129,7 @@ async function fixture() {
 }
 
 describe("coding VM command supervisor", () => {
-	it("bounds derived read pages without deleting authoritative logs", async () => {
+	ownershipTest("bounds derived read pages without deleting authoritative logs", async () => {
 		const f = await fixture();
 		await runCodingGuestCommand("start", f.request.workerId, f.request.commandId, f.ports);
 		await writeFile(join(f.root, "logs", f.request.commandId, "output.log"), "x".repeat(128));
@@ -178,7 +187,7 @@ describe("coding VM command supervisor", () => {
 		expect(JSON.parse(await readFile(join(f.root, "lease.json"), "utf8")).expiresAtMonoMs).toBe(61000);
 	});
 
-	it("retains intent before one background unit and publishes a protected running receipt", async () => {
+	ownershipTest("retains intent before one background unit and publishes a protected running receipt", async () => {
 		const f = await fixture();
 		const result = await runCodingGuestCommand("start", f.request.workerId, f.request.commandId, f.ports);
 		expect(result.schema).toBe("qorpera.coding-command-result/v2");
@@ -207,7 +216,7 @@ describe("coding VM command supervisor", () => {
 		await runCodingGuestCommand("start", f.request.workerId, f.request.commandId, f.ports);
 		expect(f.system.mock.calls.filter(([executable]) => executable === "/usr/bin/systemd-run")).toHaveLength(1);
 	});
-	it("keeps uncertain launches unconfirmed across replacement without replay", async () => {
+	ownershipTest("keeps uncertain launches unconfirmed across replacement without replay", async () => {
 		const f = await fixture();
 		f.system.mockImplementation(async (executable) => {
 			if (executable === "/usr/bin/systemd-run") throw new Error("lost acceptance");
@@ -225,7 +234,7 @@ describe("coding VM command supervisor", () => {
 		).toBe("unconfirmed");
 		expect(f.system.mock.calls.filter(([executable]) => executable === "/usr/bin/systemd-run")).toHaveLength(1);
 	});
-	it("retains successful terminal state after transient unit loss", async () => {
+	ownershipTest("retains successful terminal state after transient unit loss", async () => {
 		const f = await fixture();
 		await runCodingGuestCommand("start", f.request.workerId, f.request.commandId, f.ports);
 		await writeFile(join(f.root, "logs", f.request.commandId, "output.log"), "passed\n");
@@ -247,7 +256,7 @@ describe("coding VM command supervisor", () => {
 			complete,
 		);
 	});
-	it("kills the exact command unit and records cancellation only after a stopped observation", async () => {
+	ownershipTest("kills the exact command unit and records cancellation only after a stopped observation", async () => {
 		const f = await fixture();
 		await runCodingGuestCommand("start", f.request.workerId, f.request.commandId, f.ports);
 		expect(await runCodingGuestCommand("cancel", f.request.workerId, f.request.commandId, f.ports)).toMatchObject({
@@ -259,7 +268,7 @@ describe("coding VM command supervisor", () => {
 			`qorpera-coding-${f.request.workerId.replaceAll("-", "")}-${f.request.commandId}.service`,
 		]);
 	});
-	it("reports reboot uncertainty without invoking another command", async () => {
+	ownershipTest("reports reboot uncertainty without invoking another command", async () => {
 		const f = await fixture();
 		await runCodingGuestCommand("start", f.request.workerId, f.request.commandId, f.ports);
 		await writeFile(join(f.root, "logs", f.request.commandId, "output.log"), "retained before reboot");
@@ -288,7 +297,7 @@ describe("coding VM command supervisor", () => {
 			).output,
 		).toBe("retained before reboot");
 	});
-	it("bounds invalid UTF8 and output truncation in bytes", async () => {
+	ownershipTest("bounds invalid UTF8 and output truncation in bytes", async () => {
 		const f = await fixture();
 		await runCodingGuestCommand("start", f.request.workerId, f.request.commandId, f.ports);
 		await writeFile(join(f.root, "logs", f.request.commandId, "output.log"), Buffer.alloc(4097, 255));
@@ -296,7 +305,7 @@ describe("coding VM command supervisor", () => {
 		expect(Buffer.byteLength(result.output)).toBeLessThanOrEqual(4096);
 		expect(result.truncated).toBe(true);
 	});
-	it("retains output beyond the preview and pages terminal logs without re-execution", async () => {
+	ownershipTest("retains output beyond the preview and pages terminal logs without re-execution", async () => {
 		const f = await fixture();
 		await runCodingGuestCommand("start", f.request.workerId, f.request.commandId, f.ports);
 		const contents = `first\n${"x".repeat(12000)}\nlast\n`;
@@ -324,7 +333,7 @@ describe("coding VM command supervisor", () => {
 		expect(tail.truncated).toBe(false);
 		expect(f.system.mock.calls.filter(([exe]) => exe === "/usr/bin/systemd-run")).toHaveLength(1);
 	});
-	it("applies the admitted resource limits and permits only the admitted NAS working paths", async () => {
+	ownershipTest("applies the admitted resource limits and permits only the admitted NAS working paths", async () => {
 		const f = await fixture(),
 			path = f.ports.configurationPath!;
 		const config = JSON.parse(await readFile(path, "utf8"));
@@ -356,7 +365,7 @@ describe("coding VM command supervisor", () => {
 			).log,
 		).toMatchObject({ totalBytes: 1048576, limitBytes: 1048576, limitReached: true });
 	});
-	it("rejects changed requests and linked or writable inbox files before execution", async () => {
+	ownershipTest("rejects changed requests and linked or writable inbox files before execution", async () => {
 		const f = await fixture();
 		await chmod(f.requestPath, 0o666);
 		await expect(runCodingGuestCommand("start", f.request.workerId, f.request.commandId, f.ports)).rejects.toThrow(
@@ -373,7 +382,7 @@ describe("coding VM command supervisor", () => {
 		await expect(runCodingGuestCommand("start", f.request.workerId, f.request.commandId, f.ports)).rejects.toThrow();
 		expect(f.system.mock.calls.filter(([executable]) => executable === "/usr/bin/systemd-run")).toHaveLength(1);
 	});
-	it("reads a refused execute step back as failed with only its code, never unconfirmed", async () => {
+	ownershipTest("reads a refused execute step back as failed with only its code, never unconfirmed", async () => {
 		const f = await fixture();
 		await runCodingGuestCommand("start", f.request.workerId, f.request.commandId, f.ports);
 		const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
@@ -397,7 +406,7 @@ describe("coding VM command supervisor", () => {
 			output: "CODING_GUEST_STORAGE_MOUNT_INVALID\n",
 		});
 	});
-	it("rejects a replaced output ancestor without reading its target", async () => {
+	ownershipTest("rejects a replaced output ancestor without reading its target", async () => {
 		const f = await fixture();
 		await runCodingGuestCommand("start", f.request.workerId, f.request.commandId, f.ports);
 		await rm(join(f.root, "logs", f.request.commandId), { recursive: true });
