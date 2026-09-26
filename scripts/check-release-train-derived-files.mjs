@@ -16,13 +16,13 @@ export const RELEASE_OWNED_FILES = Object.freeze([
 const activationMigration = /^supabase\/migrations\/[^/]+_runtime_bundle_activation(?:_v\d+)?\.sql$/;
 const generator = "scripts/generate-cloud-runtime-bundle.mjs";
 const versionLine =
-	/^const (?:activation|activationVersion|previousActivationVersion|previousActivationSha256) = .*$/gm;
+	/^\s*(?:export\s+)?(?:const|let|var)\s+(?:activation|activationVersion|previousActivationVersion|previousActivationSha256)\b.*$/gm;
 
-/** Release-owned paths among `changed`; the generator counts only when one of
- * its bundle version lines differs between the two texts. */
+/** Release-owned paths among `changed`; the generator counts only when its set
+ * of bundle version lines (each trimmed) differs between the two texts. */
 export function releaseTrainViolations(changed, generatorBefore, generatorAfter) {
 	const violations = changed.filter((path) => RELEASE_OWNED_FILES.includes(path) || activationMigration.test(path));
-	const lines = (text) => (text ?? "").match(versionLine)?.join("\n") ?? "";
+	const lines = (text) => ((text ?? "").match(versionLine) ?? []).map((line) => line.trim()).join("\n");
 	if (changed.includes(generator) && lines(generatorBefore) !== lines(generatorAfter)) {
 		violations.push(`${generator} (bundle version lines)`);
 	}

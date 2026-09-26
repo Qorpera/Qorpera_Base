@@ -8,6 +8,9 @@ on:
   push:
     branches: [master, 'release/runtime-*']
   pull_request:
+    # edited fires when the base branch changes, so a stacked PR re-runs the
+    # guard against its new base.
+    types: [opened, synchronize, reopened, edited]
 
 # Release train (deploy/first-node/RUNTIME-RELEASE-TRAIN.md): only release
 # branches declare the runtime bundle, so only they must carry derived files
