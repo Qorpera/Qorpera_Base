@@ -1,0 +1,60 @@
+name: Runtime release train
+
+# No path filter: under the release train a runtime-only feature PR changes no
+# derived file, so it may match no other workflow's paths. This job still
+# packages the runtime and guards the release-owned files on every PR.
+on:
+  workflow_dispatch:
+  push:
+    branches: [master, 'release/runtime-*']
+  pull_request:
+
+# Release train (deploy/first-node/RUNTIME-RELEASE-TRAIN.md): only release
+# branches declare the runtime bundle, so only they must carry derived files
+# that match the source. Everywhere else the freshness asserts are skipped.
+env:
+  QORPERA_ENFORCE_RUNTIME_BUNDLE: ${{ ((github.event_name == 'pull_request' && startsWith(github.head_ref, 'release/runtime-')) || (github.event_name == 'push' && startsWith(github.ref_name, 'release/runtime-'))) && '1' || '0' }}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: runtime-release-train-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  train:
+    name: Runtime bundle and release-owned files
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # On a pull request: the merge commit and its base parent.
+          fetch-depth: 2
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Feature PRs leave release-owned runtime bundle files alone
+        if: github.event_name == 'pull_request' && !startsWith(github.head_ref, 'release/runtime-')
+        run: |
+          git rev-parse --verify --quiet 'HEAD^2' >/dev/null || { echo "::error::Expected the pull request merge commit"; exit 1; }
+          node scripts/check-release-train-derived-files.mjs 'HEAD^1' HEAD
+
+      - name: Install dependencies without lifecycle scripts
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Runtime bundle check (strict on release branches only)
+        run: npm run check:runtime-bundle:release-train
+
+      - name: Packaged host pins, ephemeral runner package and the guard
+        run: >-
+          node --test
+          scripts/generate-cloud-runtime-bundle.test.mjs
+          scripts/package-ephemeral-runner.test.mjs
+          scripts/check-release-train-derived-files.test.mjs
