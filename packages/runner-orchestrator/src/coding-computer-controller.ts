@@ -711,7 +711,9 @@ export class CodingComputerController implements CodingComputerUsage {
 			);
 			current.lastSample = usage.sample;
 			current.lastObservationId = usage.sample?.observationId ?? null;
-			this.#computers.set(current.machine.machineId, current);
+			const managed = this.#computers.get(current.machine.machineId);
+			if (!managed || managed.permit.permitId === current.permit.permitId)
+				this.#computers.set(current.machine.machineId, current);
 			if (guarded.phase !== "stopped" && current.permit.generation !== guarded.permit.generation)
 				throw new Error("CODING_COMPUTER_GUARD_GENERATION_DIFFERS");
 			// No first sample means no bind. A sealing/stalled terminal prefix

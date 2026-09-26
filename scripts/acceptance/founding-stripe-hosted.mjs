@@ -384,6 +384,7 @@ export async function prepareHostedFoundingScenario(platform, configuration) {
 					...browserOptions,
 					bootstrap,
 					afterMaterialized: configuration.afterMaterialized,
+					modelAccountSetup: configuration.modelAccountSetup,
 					computerPlanSetup: async (members) => {
 						for (const [index, member] of members.entries()) {
 							const planKey = index === 0 ? "basis" : "standard";

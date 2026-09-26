@@ -92,6 +92,16 @@ begin
     perform public.qorpera_bind_runtime_computer_permit(jsonb_build_object('permitId',v_permit,'generation',1,'sample',sample),repeat('R',64));
     perform pg_temp.wake_assert(public.qorpera_native_computer_permit_ready((b->>'runnerId')::uuid,(b->>'runId')::uuid)
         and not public.qorpera_native_computer_permit_ready((b->>'runnerId')::uuid,extensions.gen_random_uuid()),'Bound permit crossed run identity');
+    declare frozen jsonb; begin
+        frozen:=sample||jsonb_build_object('previousObservationId',sample->'observationId','observationId',extensions.gen_random_uuid(),
+            'hostUptimeMs',1000500,'observedAt',t+interval '500 milliseconds');
+        perform public.qorpera_checkpoint_runtime_computer_permit(jsonb_build_object('permitId',v_permit,'generation',1,'sample',frozen),repeat('R',64));
+        perform pg_temp.wake_assert(not public.qorpera_native_computer_permit_ready((b->>'runnerId')::uuid,(b->>'runId')::uuid),
+            'A running VM with rejected frozen clock still admitted native execution');
+        perform pg_temp.wake_error(format('select public.qorpera_renew_runtime_computer_permit(%L,%L)',
+            jsonb_build_object('requestId',extensions.gen_random_uuid(),'permitId',v_permit,'generation',1,'sample',frozen,'windowMs',300000,'stopReserveMs',30000),repeat('R',64)),'55000');
+        raise exception using errcode='QT671';
+    exception when sqlstate 'QT671' then null; end;
     -- The remaining executable provenance guard still runs; a paid computer
     -- does not itself admit arbitrary binaries, model accounts, or tool grants.
     perform pg_temp.wake_error(format('select public.qorpera_begin_native_company_execution_v2(%L,%L,%L,%L,%L,%L,10)',b,repeat('0',64),repeat('0',64),repeat('0',64),'{}',repeat('0',64)),

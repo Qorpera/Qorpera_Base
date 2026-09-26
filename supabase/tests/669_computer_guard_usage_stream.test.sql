@@ -97,45 +97,54 @@ begin
     previous:=entry; entry:=pg_temp.guard_entry(initial,21,previous->>'sha256',sample);
     perform public.qorpera_record_computer_guard_samples(jsonb_build_object('permitId',attempt,'generation',1,'entries',jsonb_build_array(entry)),repeat('R',64));
     previous:=entry;
+    perform pg_temp.wake_error(format('select public.qorpera_renew_runtime_computer_permit(%L,%L)',
+        jsonb_build_object('requestId',renewal,'permitId',attempt,'generation',1,'sample',sample,'windowMs',300000,'stopReserveMs',30000),repeat('R',64)),'55000');
+    -- The first running endpoint after a gap cannot prove the missing interval.
+    -- A subsequent positive paired interval restores renewal authority.
+    sample:=sample||jsonb_build_object('observationId',extensions.gen_random_uuid(),'previousObservationId',sample->'observationId',
+        'hostUptimeMs',1090100,'guestUptimeMs',190100,'observedAt',t+interval '90.1 seconds');
+    entry:=pg_temp.guard_entry(initial,22,previous->>'sha256',sample);
+    perform public.qorpera_record_computer_guard_samples(jsonb_build_object('permitId',attempt,'generation',1,'entries',jsonb_build_array(entry)),repeat('R',64));
+    previous:=entry;
     perform pg_temp.wake_assert((select generation=1 from public.qorpera_coding_computer_permits where id=attempt)
         and (select count(*)=1 from public.qorpera_coding_computer_windows where permit_id=attempt), 'Rejected stale renewal allocated another hold');
     captured:=initial;
     initial:=public.qorpera_renew_runtime_computer_permit(jsonb_build_object('requestId',renewal,'permitId',attempt,'generation',1,
         'sample',sample,'windowMs',300000,'stopReserveMs',30000),repeat('R',64));
-    perform pg_temp.wake_assert((select debited_us=45000000 from public.qorpera_computer_allowance_settlements where reservation_id=attempt),
-        'Ninety physical seconds at half size must debit exactly45 standard seconds');
+    perform pg_temp.wake_assert((select debited_us=45050000 from public.qorpera_computer_allowance_settlements where reservation_id=attempt),
+        'Ninety seconds plus the confirmed recovery pair must debit exactly45.05 standard seconds');
     -- One sample captured under N races the SQL N+1 response. Its exact prefix
     -- belongs to the current hold, never the already settled reservation.
     sample:=sample||jsonb_build_object('observationId',extensions.gen_random_uuid(),'previousObservationId',sample->'observationId',
-        'hostUptimeMs',1090500,'guestUptimeMs',190500,'observedAt',t+interval '90.5 seconds');
-    entry:=pg_temp.guard_entry(captured,22,previous->>'sha256',sample);
+        'hostUptimeMs',1090600,'guestUptimeMs',190600,'observedAt',t+interval '90.6 seconds');
+    entry:=pg_temp.guard_entry(captured,23,previous->>'sha256',sample);
     upload:=jsonb_build_object('permitId',attempt,'generation',2,'entries',jsonb_build_array(entry));
     receipt:=public.qorpera_record_computer_guard_samples(upload,repeat('R',64));
-    perform pg_temp.wake_assert(receipt#>>'{cursor,sequence}'='22' and (select applied_generation=2 from public.qorpera_computer_guard_sample_entries where permit_id=attempt and sequence=22),
+    perform pg_temp.wake_assert(receipt#>>'{cursor,sequence}'='23' and (select applied_generation=2 from public.qorpera_computer_guard_sample_entries where permit_id=attempt and sequence=23),
         'Adjacent captured generation did not continue into unsettled hold');
     previous:=entry;
     -- A source registration change must not strand already captured usage.
     update public.qorpera_runners set client_runner_id=extensions.gen_random_uuid() where id=(b->>'runnerId')::uuid;
     next_sample:=sample||jsonb_build_object('observationId',extensions.gen_random_uuid(),'previousObservationId',sample->'observationId',
-        'hostUptimeMs',1090600,'guestUptimeMs',null,'observedAt',t+interval '90.6 seconds','state','stopped');
+        'hostUptimeMs',1090700,'guestUptimeMs',null,'observedAt',t+interval '90.7 seconds','state','stopped');
     terminal:=jsonb_build_object('requestId',extensions.gen_random_uuid(),'permitId',attempt,'generation',2,'sample',next_sample,'guardClosed',true);
     perform pg_temp.wake_error(format('select public.qorpera_finish_runtime_computer_permit(%L,%L)',terminal,repeat('R',64)),'55000');
     stop:=jsonb_build_object('permitId',attempt,'generation',1,'allocationId',allocation,'instanceSha256',repeat('d',64),
-        'physicalInstanceId',sample->'physicalId','hostBootId',request->'hostBootId','observedUptimeMs',1090550,'closedAtUptimeMs',1090600,
+        'physicalInstanceId',sample->'physicalId','hostBootId',request->'hostBootId','observedUptimeMs',1090650,'closedAtUptimeMs',1090700,
         'closedHostBootId',request->'hostBootId','state','stopped','operationId',extensions.gen_random_uuid());
-    entry:=pg_temp.guard_entry(captured,23,previous->>'sha256',next_sample,stop);
+    entry:=pg_temp.guard_entry(captured,24,previous->>'sha256',next_sample,stop);
     perform pg_temp.wake_error(format('select public.qorpera_record_computer_guard_samples(%L,%L)',
-        jsonb_build_object('permitId',attempt,'generation',2,'entries',jsonb_build_array(pg_temp.guard_entry(captured,23,previous->>'sha256',next_sample,stop||'{"closedAtUptimeMs":1090601}'))),repeat('R',64)),'42501');
+        jsonb_build_object('permitId',attempt,'generation',2,'entries',jsonb_build_array(pg_temp.guard_entry(captured,24,previous->>'sha256',next_sample,stop||'{"closedAtUptimeMs":1090701}'))),repeat('R',64)),'42501');
     upload:=jsonb_build_object('permitId',attempt,'generation',2,'entries',jsonb_build_array(entry));
     receipt:=public.qorpera_record_computer_guard_samples(upload,repeat('R',64));
-    perform pg_temp.wake_assert(receipt->'sealed'='true' and receipt#>>'{cursor,sequence}'='23','Terminal prefix was not sealed');
+    perform pg_temp.wake_assert(receipt->'sealed'='true' and receipt#>>'{cursor,sequence}'='24','Terminal prefix was not sealed');
     receipt:=public.qorpera_finish_runtime_computer_permit(terminal,repeat('R',64));
     perform pg_temp.wake_assert(receipt->>'state'='closed' and (select debited_us=250000 from public.qorpera_computer_allowance_settlements where reservation_id=renewal)
-        and (select reserved_us=0 and debited_us=45250000 from public.qorpera_computer_allowance_buckets where invoice_id='in_runtime')
-        and (select closed and active_ms=90500 from public.qorpera_computer_usage_streams where allocation_id=allocation),
+        and (select reserved_us=0 and debited_us=45300000 from public.qorpera_computer_allowance_buckets where invoice_id='in_runtime')
+        and (select closed and active_ms=90600 from public.qorpera_computer_usage_streams where allocation_id=allocation),
         'Sealed settlement double charged, invented terminal time or leaked a hold');
     again:=public.qorpera_record_computer_guard_samples(upload||'{"generation":1}',repeat('R',64));
-    perform pg_temp.wake_assert(again#>>'{cursor,sequence}'='23' and again#>>'{permit,state}'='closed',
+    perform pg_temp.wake_assert(again#>>'{cursor,sequence}'='24' and again#>>'{permit,state}'='closed',
         'Exact terminal upload replay required stale generation or current source');
     perform pg_temp.wake_assert(public.qorpera_finish_runtime_computer_permit(terminal,repeat('R',64))=receipt,'Finish replay changed final receipt');
     perform pg_temp.wake_error(format('update public.qorpera_computer_guard_sample_entries set sha256=%L where permit_id=%L',repeat('f',64),attempt),'42501');

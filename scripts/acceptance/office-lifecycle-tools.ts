@@ -7,7 +7,7 @@ import { planLxdOfficeAdoption } from "../../packages/runner-orchestrator/src/lx
 import { lxdOfficeGuestPlan } from "../../packages/runner-orchestrator/src/lxd-office-guest.ts";
 import { captureLxdOfficeHostNamespace } from "../../packages/runner-orchestrator/src/lxd-office-host-namespace.ts";
 import { officeDigest } from "../../packages/runner-orchestrator/src/lxd-office-image-provenance.ts";
-import { parseLxdOfficeLifecycleServiceConfig, runLxdOfficeLifecycleService } from "../../packages/runner-orchestrator/src/lxd-office-lifecycle-service.ts";
+import { officeLifecycleErrorCode, parseLxdOfficeLifecycleServiceConfig, runLxdOfficeLifecycleService } from "../../packages/runner-orchestrator/src/lxd-office-lifecycle-service.ts";
 import { readLxdOfficeCredentialFile, readLxdOfficeProtectedFile } from "../../packages/runner-orchestrator/src/lxd-office-physical-host.ts";
 import { lxdOfficePhysicalPolicySha256, parseLxdOfficePhysicalPolicy } from "../../packages/runner-orchestrator/src/lxd-office-physical-policy.ts";
 import { lxdOfficeProviderBindingSha256 } from "../../packages/runner-orchestrator/src/lxd-office-start-control.ts";
@@ -23,7 +23,12 @@ process.once("SIGTERM", () => abort.abort());
 process.once("SIGINT", () => abort.abort());
 const report = (value: unknown) => process.stdout.write(`${JSON.stringify(value)}\n`);
 if (action === "provider") {
-	await runLxdOfficeLifecycleService(process.argv[3], abort.signal, (line) => { process.stdout.write(`${line}\n`); });
+	try {
+		await runLxdOfficeLifecycleService(process.argv[3], abort.signal, (line) => { process.stdout.write(`${line}\n`); });
+	} catch (error) {
+		report({ schema: "qorpera.office-acceptance-provider-failure/v1", state: "startup_failed", errorCode: officeLifecycleErrorCode(error) });
+		process.exitCode = 1;
+	}
 } else if (action === "observer") {
 	await runRuntimeNodeObserver(abort.signal, (state) => report({ observer: state }));
 } else if (action === "namespace") {

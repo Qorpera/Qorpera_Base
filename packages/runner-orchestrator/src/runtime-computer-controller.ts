@@ -676,7 +676,9 @@ export class RuntimeComputerController {
 			current.permit = this.#permit(usage.permit, current.context, await this.#clock(), guarded.phase === "stopped");
 			current.lastSample = usage.sample;
 			current.lastObservationId = usage.sample?.observationId ?? null;
-			this.#computers.set(current.context.allocationId, current);
+			const managed = this.#computers.get(current.context.allocationId);
+			if (!managed || managed.permit.permitId === current.permit.permitId)
+				this.#computers.set(current.context.allocationId, current);
 			if (guarded.phase !== "stopped" && current.permit.generation !== guarded.permit.generation)
 				throw new Error("RUNTIME_COMPUTER_GUARD_GENERATION_DIFFERS");
 			// No first sample means no bind. A sealing/stalled terminal prefix

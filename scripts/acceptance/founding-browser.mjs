@@ -16,7 +16,7 @@ function lastJson(output) {
 	return JSON.parse(output.split("\n").filter(line => line.startsWith("{") || line.startsWith("[")).at(-1));
 }
 
-export async function runFoundingBrowser({ origin, publicKey, cluster, mail, out, computerPlanSetup, bootstrap, afterMaterialized }) {
+export async function runFoundingBrowser({ origin, publicKey, cluster, mail, out, computerPlanSetup, bootstrap, afterMaterialized, modelAccountSetup }) {
 	assert(!afterMaterialized || bootstrap, "Joined runtime requires actual bootstrap object publication");
 	const browser = await chromium.launch({ headless: true });
 	const network = foundingNetworkScope(origin);
@@ -84,6 +84,18 @@ export async function runFoundingBrowser({ origin, publicKey, cluster, mail, out
 			const result = await member.context.request.post(`${origin}/rest/v1/rpc/${name}`, { headers: { apikey: publicKey, authorization: `Bearer ${memberTokens.get(member.email)}` }, data: args });
 			return { status: result.status(), body: await result.json() };
 		}
+		async function setupModels(profileId, members) {
+			if (!modelAccountSetup) return cluster.query(modelAccountsSql(profileId, members.map(member => member.userId)));
+			const model = await modelAccountSetup({ profileId, members: members.map(({ userId }) => ({ userId })),
+				invokeMember: (userId, name, args) => {
+					const member = members.find(member => member.userId === userId);
+					assert(member && ["qorpera_upsert_member_compute_identity", "qorpera_begin_native_provider_login", "qorpera_create_member_execution_sponsor"].includes(name), "Model hook attempted unrelated member authority");
+					assert.equal(args.p_profile_id, profileId);
+					return rpc(member, name, args);
+				} });
+			assert(model && typeof model.boundary === "string" && model.boundary.length <= 2000);
+			evidence.boundaries.modelAccounts = model.boundary;
+		}
 		async function submit(page, name, action) {
 			const [response] = await Promise.all([
 				page.waitForResponse(response => response.url() === `${origin}/rest/v1/rpc/${name}` && response.request().method() === "POST"),
@@ -145,7 +157,7 @@ export async function runFoundingBrowser({ origin, publicKey, cluster, mail, out
 		assert.equal(prelaunchRoles[first.userId], "owner"); assert.equal(prelaunchRoles[second.userId], "contributor");
 		assert(await second.page.getByRole("button", { name: "I'm Ready", exact: true }).isDisabled());
 		evidence.steps.push("Company created/bootstrap finalized; second founder explicitly joined as contributor; early launch and unconnected Ready blocked");
-		await cluster.query(modelAccountsSql(profileId, [first.userId, second.userId]));
+		await setupModels(profileId, [first, second]);
 		if (!computerPlanSetup) await cluster.query(computerPlansSql([first.userId, second.userId]));
 		// This isolated deployment explicitly publishes readiness. Ordinary
 		// production refresh/creation enrolls paid enforcement; no per-company
@@ -239,7 +251,7 @@ export async function runFoundingBrowser({ origin, publicKey, cluster, mail, out
 			evidence.bootstrapReads.push(await bootstrap.verifyMemberReads(soloId, [memberTokens.get(first.email)], memberTokens.get(second.email)));
 		} else await cluster.query(await bootstrapCompanySql(soloId));
 		await first.page.getByRole("heading", { name: "Set up your company", exact: true }).waitFor();
-		await cluster.query(modelAccountsSql(soloId, [first.userId]));
+		await setupModels(soloId, [first]);
 		assert.equal(await cluster.query(`select public.qorpera_company_paid_computer_mode(${sqlUuid(soloId)});`), "t", "Published creation did not enroll paid enforcement");
 		await first.page.reload();
 		await first.page.getByLabel("Contribute my Qorpera computer allowance to this company", { exact: true }).check();

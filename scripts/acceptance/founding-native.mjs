@@ -6,6 +6,7 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { startNativePostgres } from "./native-postgres.mjs";
 import { runFoundingBrowser } from "./founding-browser.mjs";
+import { prepareFoundingBootstrap } from "./founding-bootstrap.mjs";
 import { closeServer, listenLoopback, platformBootstrapParts, startFoundingGateway, startFoundingMail, startOwnedProcess, waitHttp } from "./founding-services.mjs";
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -95,6 +96,9 @@ export async function runFoundingNative(options, prepareScenario) {
 			}
 			assert(typeof scenario.runBrowser === "function" && typeof scenario.close === "function");
 			if (scenario.handleComputerBilling) gateway.upstream.computerBilling = scenario.handleComputerBilling;
+		} else {
+			const bootstrap = await prepareFoundingBootstrap({ cluster, gateway, publicKey, jwtSecret, restPort, privateRoot });
+			scenario = { close: bootstrap.close, runBrowser: browserOptions => runFoundingBrowser({ ...browserOptions, bootstrap }) };
 		}
 		const build = await startOwnedProcess(process.execPath, ["packages/web/scripts/build.mjs"], { cwd: repository,
 			env: { ...env, QORPERA_WEB_OUTDIR: join(privateRoot, "web-dist"), QORPERA_WEB_CONFIG_JSON: JSON.stringify({ projectUrl: gateway.origin, publishableKey: publicKey, objectGatewayUrl: gateway.origin }) },

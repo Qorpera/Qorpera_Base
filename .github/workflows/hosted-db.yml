@@ -22,6 +22,8 @@ on:
       - 'scripts/test-runtime-office-current-provider-activation.mjs'
       - 'scripts/test-runtime-node-capacity.mjs'
       - 'scripts/test-runtime-provenance.mjs'
+      - 'scripts/test-runtime-history.mjs'
+      - 'scripts/fixtures/committed-runtime-bundle/**'
 
 # Release train (deploy/first-node/RUNTIME-RELEASE-TRAIN.md): only release
 # branches declare the runtime bundle, so only they must carry derived files
@@ -96,4 +98,9 @@ jobs:
         run: npm ci --ignore-scripts --no-audit --no-fund
 
       - name: Verify runtime provenance, authority races and historical upgrades
+        if: env.QORPERA_ENFORCE_RUNTIME_BUNDLE == '1'
         run: node scripts/test-runtime-provenance.mjs
+
+      - name: Verify authority races and historical upgrades against committed release identity
+        if: env.QORPERA_ENFORCE_RUNTIME_BUNDLE != '1'
+        run: node scripts/test-runtime-history.mjs

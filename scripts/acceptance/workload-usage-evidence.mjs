@@ -31,7 +31,7 @@ export async function readWorkloadUsage(query, permitId) {
  s as (select usage.* from public.qorpera_computer_usage_streams usage join p on usage.allocation_id=p.allocation_id and usage.epoch=p.epoch),
  r as (select reservation.* from public.qorpera_computer_allowance_reservations reservation join p on reservation.allocation_id=p.allocation_id and reservation.epoch=p.epoch)
  select jsonb_build_object(
- 'permit',(select jsonb_build_object('id',p.id,'allocation_id',p.allocation_id,'epoch',p.epoch,
+ 'permit',(select jsonb_build_object('id',p.id,'allocation_id',p.allocation_id,'epoch',p.epoch,'node_id',p.node_id,
    'host_boot_id',p.host_boot_id,'physical_id',p.physical_id,'guest_boot_id',p.guest_boot_id,
    'state',p.state,'generation',p.generation,'closed_at',p.closed_at) from p),
  'stream',(select to_jsonb(s)||jsonb_build_object('active_ms',s.active_ms::text,'elapsed_ms',s.elapsed_ms::text) from s),
@@ -54,7 +54,12 @@ export function verifyWorkloadUsage(evidence, expected) {
 	const { permit, stream, tariff, samples, checkpoints, reservations, holds, settlements, debits } = evidence;
 	assert(permit && stream && tariff, "Paid permit and pinned stream required");
 	assert.equal(stream.resource_kind, expected.kind, "Workload identity differs");
-	assert.deepEqual(stream.resource_shape, expected.shape, "Admitted physical shape differs");
+	assert.deepEqual({ cpuMillis: stream.resource_shape?.cpuMillis, memoryBytes: stream.resource_shape?.memoryBytes }, expected.shape, "Admitted physical shape differs");
+	assert(expected.shapeProvenance && uuid.test(expected.shapeProvenance.nodeId)
+		&& /^[a-f0-9]{64}$/.test(expected.shapeProvenance.policySha256), "Independently enrolled shape provenance required");
+	assert.equal(expected.shapeProvenance.providerKind, { coding_machine: "coding", agent_sandbox: "native", company_computer: "office" }[expected.kind]);
+	assert.deepEqual(stream.resource_shape, { ...expected.shape, source: "admitted_node_demand", ...expected.shapeProvenance }, "Admitted shape provenance differs");
+	assert.equal(permit.node_id, expected.shapeProvenance.nodeId, "Permit belongs to another physical node");
 	assert.equal(permit.physical_id, expected.physicalId, "Physical VM identity differs");
 	assert.equal(permit.host_boot_id, expected.hostBootId, "Host boot differs");
 	assert.equal(permit.guest_boot_id, expected.guestBootId, "Guest boot differs");
@@ -70,7 +75,7 @@ export function verifyWorkloadUsage(evidence, expected) {
 	assert.equal(checkpoints[0].sequence, 0);
 	assert.equal(integer(checkpoints[0].active_ms), 0n);
 	assert.equal(integer(checkpoints[0].elapsed_ms), 0n);
-	let active = 0n, elapsed = 0n, previous = null, continuous = 0, gaps = 0;
+	let active = 0n, elapsed = 0n, previous = null, segment = null, continuous = 0, gaps = 0;
 	for (const [index, record] of samples.entries()) {
 		const sample = record.sample, checkpoint = checkpoints[index + 1];
 		assert.deepEqual(sample, observed.get(sample.observationId), "SQL sample differs from real controller observation");
@@ -91,13 +96,18 @@ export function verifyWorkloadUsage(evidence, expected) {
 			if (sample.state === "running" && previous.state === "running") {
 				const guest = integer(sample.guestUptimeMs) - integer(previous.guestUptimeMs);
 				const wall = Date.parse(sample.observedAt) - Date.parse(previous.observedAt);
-				if (host <= 15000n && guest >= 0n && Math.abs(Number(guest - host)) <= 1000 && Math.abs(wall - Number(host)) <= 1000) {
-					active += guest < host ? guest : host;
+				const anchor = segment ?? previous;
+				const segmentHost = integer(sample.hostUptimeMs) - integer(anchor.hostUptimeMs);
+				const segmentGuest = integer(sample.guestUptimeMs) - integer(anchor.guestUptimeMs);
+				if (host > 0n && host <= 15000n && guest > 0n && Math.abs(Number(guest - host)) <= 1000
+					&& Math.abs(wall - Number(host)) <= 1000 && Math.abs(Number(segmentGuest - segmentHost)) <= 1000) {
+					active += host;
 					coverage = "continuous"; continuous++;
 				}
 			}
 		}
 		if (["stopped", "absent"].includes(sample.state)) coverage = "terminal";
+		if (coverage !== "continuous") segment = sample.state === "running" ? sample : null;
 		if (coverage === "gap") gaps++;
 		assert.equal(record.coverage, coverage, "SQL coverage differs from clocks");
 		assert.equal(integer(checkpoint.active_ms), active, "SQL active time over/under-counted");
@@ -168,6 +178,8 @@ export function verifyWorkloadUsage(evidence, expected) {
 		activeMs: active.toString(), elapsedMs: elapsed.toString(), debitedUs: totalDebit.toString(),
 		releasedUs: totalReleased.toString(), reservations: reservations.length, controllerOutage: outage,
 		observationMargins: {
+			pairedClockUncertaintyMsPerContinuousSegment: 1000,
+			unobservedSubsecondSuspension: "not resolved by sampled clocks",
 			// Boot age is visible, but no paired initial endpoint proves that this
 			// entire interval was billable. Never manufacture an initial charge.
 			firstObservedGuestBootAgeMs: firstRunning?.guestUptimeMs ?? null,

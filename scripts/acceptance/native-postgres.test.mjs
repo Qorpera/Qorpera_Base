@@ -77,10 +77,17 @@ test("CLI refuses arbitrary modes without trying to start PostgreSQL", () => {
 
 test("one-shot CLI accepts exact SQL test names and refuses traversal, duplicate evidence and mixed serving", () => {
 	assert.deepEqual(parseNativePostgresCli(["--bin", binDirectory, "--test", "648_office_outage_recovery.test.sql", "--out", "/tmp/native-evidence"]), {
-		binDirectory, tests: ["648_office_outage_recovery.test.sql"], out: "/tmp/native-evidence", serve: false,
+		binDirectory, tests: ["648_office_outage_recovery.test.sql"], out: "/tmp/native-evidence", serve: false, allTests: false,
 	});
 	assert.equal(parseNativePostgresCli(["--bin", binDirectory, "--serve"]).serve, true);
+	assert.deepEqual(parseNativePostgresCli(["--bin", binDirectory, "--all-tests", "--out", "/tmp/native-evidence"]), {
+		binDirectory, tests: [], out: "/tmp/native-evidence", serve: false, allTests: true,
+	});
 	for (const args of [
+		["--all-tests", "--all-tests", "--out", "/tmp/out"],
+		["--all-tests", "--test", "648_test.test.sql", "--out", "/tmp/out"],
+		["--serve", "--all-tests"],
+		["--all-tests"],
 		["--test", "../bootstrap.sql", "--out", "/tmp/out"],
 		["--test", "648_test.test.sql", "--test", "648_test.test.sql", "--out", "/tmp/out"],
 		["--serve", "--test", "648_test.test.sql", "--out", "/tmp/out"],

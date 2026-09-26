@@ -1,11 +1,87 @@
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { Type } from "typebox";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { stream as streamAnthropic } from "../src/api/anthropic-messages.ts";
-import { getModel, getModels, streamSimple } from "../src/compat.ts";
+import { streamSimple } from "../src/compat.ts";
 import { findEnvKeys, getEnvApiKey } from "../src/env-api-keys.ts";
-import type { Context, Model, Tool } from "../src/types.ts";
+import type { Api, Context, Model, Tool } from "../src/types.ts";
+
+// Exercise the actual catalog generator against a fixed upstream snapshot.
+// Model retirement and changing prices must not rewrite these protocol regressions.
+let generatedModels: Record<string, Model<Api>>;
+beforeAll(() => {
+	const root = mkdtempSync(join(tmpdir(), "fireworks-generator-"));
+	try {
+		const ids = [
+			"models/kimi-k2p6",
+			"routers/firepass-turbo",
+			"models/glm-5p2",
+			"routers/glm-5p2-fast",
+			"models/kimi-k3",
+			"routers/kimi-k3-fast",
+		];
+		const models = Object.fromEntries(
+			ids.map((suffix) => {
+				const id = `accounts/fireworks/${suffix}`;
+				return [
+					id,
+					{
+						id,
+						name: suffix,
+						tool_call: true,
+						reasoning: true,
+						modalities: { input: ["text", "image"] },
+						limit: { context: 262000, output: 262000 },
+						cost: { input: 0.95, output: 4, cache_read: 0.16 },
+						...(suffix.includes("kimi-k3")
+							? { reasoning_options: [{ type: "effort", values: ["low", "medium", "high", "max"] }] }
+							: {}),
+					},
+				];
+			}),
+		);
+		const preload = join(root, "fetch.mjs");
+		writeFileSync(
+			preload,
+			`const catalog = ${JSON.stringify({ "fireworks-ai": { models } })};
+globalThis.fetch = async (url) => {
+  if (url === "https://models.dev/api.json") return Response.json(catalog);
+  if (url === "https://openrouter.ai/api/v1/models" || url === "https://ai-gateway.vercel.sh/v1/models") return Response.json({data: []});
+  throw new Error("Unexpected generator request: " + url);
+};\n`,
+		);
+		const output = join(root, "catalog");
+		const generated = spawnSync(
+			process.execPath,
+			[
+				"--import",
+				preload,
+				fileURLToPath(new URL("../scripts/generate-models.ts", import.meta.url)),
+				"--strict",
+				"--json-only",
+				"--json-output",
+				output,
+			],
+			{ encoding: "utf8", timeout: 15000 },
+		);
+		expect(generated.status, generated.stderr).toBe(0);
+		generatedModels = JSON.parse(readFileSync(join(output, "providers/fireworks.json"), "utf8"));
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+function getModel(_provider: "fireworks", id: string): Model<Api> {
+	const model = generatedModels[id];
+	if (!model) throw new Error(`Missing generated Fireworks fixture: ${id}`);
+	return model;
+}
 
 const originalFireworksApiKey = process.env.FIREWORKS_API_KEY;
 
@@ -38,7 +114,7 @@ describe("Fireworks models", () => {
 	});
 
 	it("registers the Fire Pass turbo router model", () => {
-		const model = getModels("fireworks").find(
+		const model = Object.values(generatedModels).find(
 			(candidate) => candidate.id.startsWith("accounts/fireworks/routers/") && candidate.id.endsWith("-turbo"),
 		);
 
@@ -118,10 +194,12 @@ describe("Fireworks models", () => {
 		const model = getModel("fireworks", "accounts/fireworks/models/kimi-k2p6");
 
 		expect(model.compat).toBeDefined();
-		expect(model.compat?.sendSessionAffinityHeaders).toBe(true);
-		expect(model.compat?.supportsEagerToolInputStreaming).toBe(false);
-		expect(model.compat?.supportsCacheControlOnTools).toBe(false);
-		expect(model.compat?.supportsLongCacheRetention).toBe(false);
+		expect(model.compat).toMatchObject({
+			sendSessionAffinityHeaders: true,
+			supportsEagerToolInputStreaming: false,
+			supportsCacheControlOnTools: false,
+			supportsLongCacheRetention: false,
+		});
 	});
 });
 

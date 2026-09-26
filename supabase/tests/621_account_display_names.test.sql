@@ -6,11 +6,13 @@ insert into auth.users (id, email, raw_user_meta_data)
 values
 	('96210000-0000-4000-8000-00000000000a', 'name-owner@example.test', '{"name":"Provider Name","full_name":"Original Name"}'),
 	('96210000-0000-4000-8000-00000000000b', 'name-friend@example.test', '{"name":"Friend Provider"}');
+update auth.users set email_confirmed_at = now()
+where id = '96210000-0000-4000-8000-00000000000a';
 
 select set_config('request.jwt.claims', '{"sub":"96210000-0000-4000-8000-00000000000a","email":"name-owner@example.test","role":"authenticated","user_metadata":{"full_name":"Old JWT Name"}}', true);
 set local role authenticated;
-select set_config('qorpera_test.name_profile_a', public.qorpera_create_hosted_profile('Name A', 'main', 1) ->> 'profile_id', true);
-select set_config('qorpera_test.name_profile_b', public.qorpera_create_hosted_profile('Name B', 'main', 1) ->> 'profile_id', true);
+select set_config('qorpera_test.name_profile_a', public.qorpera_begin_company_founding('96210000-0000-4000-8000-00000000001a', 'Name A', 2) ->> 'profile_id', true);
+select set_config('qorpera_test.name_profile_b', public.qorpera_begin_company_founding('96210000-0000-4000-8000-00000000001b', 'Name B', 2) ->> 'profile_id', true);
 select public.qorpera_send_friend_request('name-friend@example.test');
 reset role;
 
@@ -73,7 +75,7 @@ $$;
 
 -- A third company created with the same old JWT still gets the saved name.
 set local role authenticated;
-select set_config('qorpera_test.name_profile_c', public.qorpera_create_hosted_profile('Name C', 'main', 1) ->> 'profile_id', true);
+select set_config('qorpera_test.name_profile_c', public.qorpera_begin_company_founding('96210000-0000-4000-8000-00000000001c', 'Name C', 2) ->> 'profile_id', true);
 do $$
 declare
 	v_team jsonb := public.qorpera_profile_team_info(current_setting('qorpera_test.name_profile_c')::uuid);

@@ -68,7 +68,8 @@ begin
         'guestUptimeMs',1000,'observedAt',clock_timestamp(),'state','running','evidenceSha256',repeat('b',64));
     perform public.qorpera_bind_runtime_computer_permit(jsonb_build_object('permitId',r->'requestId','generation',1,'sample',sample),repeat('O',64));
     renewal:=jsonb_build_object('requestId',extensions.gen_random_uuid(),'permitId',r->'requestId','generation',1,'windowMs',300000,'stopReserveMs',30000,
-        'sample',sample||jsonb_build_object('previousObservationId',sample->'observationId','observationId',extensions.gen_random_uuid(),'observedAt',clock_timestamp()));
+        'sample',sample||jsonb_build_object('previousObservationId',sample->'observationId','observationId',extensions.gen_random_uuid(),
+            'hostUptimeMs',200100,'guestUptimeMs',1100,'observedAt',clock_timestamp()));
     perform pg_temp.wake_error(format('select public.qorpera_renew_runtime_computer_permit(%L,%L)',renewal,repeat('O',64)),'42501');
     observation:=jsonb_build_object('schema','qorpera.lxd-office-outage-resume-observation/v1','intentId','64100000-0000-4000-8000-000000000002',
         'allocationId',r->'allocationId','recoveryId',base->'recoveryId','activationId',base->'activationId','startCommandId',base->'startCommandId',
@@ -174,6 +175,11 @@ begin
         -- authority; maintenance cannot renew merely to refresh this sample.
         update public.qorpera_coding_computer_permits set last_sample=jsonb_set(last_sample,'{observedAt}',to_jsonb(clock_timestamp()-interval '20 seconds'))
             where id=(base->>'startCommandId')::uuid;
+        -- Move the synthetic fixture's immutable source together with its tip;
+        -- a fabricated tip that differs from its receipt is never authority.
+        update public.qorpera_coding_computer_samples sample set sample=permit.last_sample
+            from public.qorpera_coding_computer_permits permit where permit.id=(base->>'startCommandId')::uuid
+                and sample.permit_id=permit.id and sample.observation_id=(permit.last_sample->>'observationId')::uuid;
         perform pg_temp.wake_assert(public.qorpera_check_runtime_office_startup(startup)->'activationId'=base->'activationId',
             'In-window startup incorrectly depends on a recent paid bind sample');
         raise exception using errcode='QT648';

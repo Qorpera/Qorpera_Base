@@ -225,7 +225,11 @@ try {
 		computerExecutorCredentialPath: executorCredential.path, outageImagePackageManifestPath: `${root}/image-manifest.json`,
 		resetImagePackageManifestPath: `${root}/image-manifest.json`, codePackageLanePath: `${root}/reset-lane/lane-document.json` });
 	phase = "initial_admission"; provider = startProvider(ca.path);
-	const reviewed = await until(() => evidence.observations.at(-1), (value) => value?.state === "awaiting_review", 90000, "creation and inventory");
+	const reviewed = await until(() => {
+		assert(provider.exitCode === null && provider.signalCode === null, "OFFICE_ACCEPTANCE_PROVIDER_EXITED");
+		assert(evidence.observations.at(-1)?.state !== "startup_failed", "OFFICE_ACCEPTANCE_PROVIDER_STARTUP_FAILED");
+		return evidence.observations.at(-1);
+	}, (value) => value?.state === "awaiting_review", 90000, "creation and inventory");
 	const creation = JSON.parse(await readFile(`${journal}/intent-${intentId}.json`, "utf8"));
 	machineName = `qorpera-office-${creation.binding.allocationId.replaceAll("-", "")}`;
 	const observation = JSON.parse(await readFile(`${journal}/inventory-${reviewed.observationSha256}.json`, "utf8"));
@@ -406,6 +410,7 @@ try {
 		assert(first, "No actual office guest clock was sampled");
 		assert(evidence.physicalInstanceIds.includes(first.physicalId), "Metered VM was not independently observed by the lifecycle harness");
 		evidence.usageReconciliation.push(verifyWorkloadUsage(accounting, { kind: "company_computer", shape: { cpuMillis: guestCpuMillis, memoryBytes: 4294967296 },
+			shapeProvenance: { nodeId, providerKind: "office", policySha256 },
 			physicalId: first.physicalId, hostBootId: first.hostBootId, guestBootId: first.guestBootId,
 			physicalSamples: samples, closed: true }));
 		totalDebit += BigInt(evidence.usageReconciliation.at(-1).debitedUs);

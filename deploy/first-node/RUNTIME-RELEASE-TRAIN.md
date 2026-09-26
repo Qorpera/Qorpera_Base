@@ -158,6 +158,15 @@ packager, the rollout gates (`scripts/test-runtime-context-parity.mjs`,
 `scripts/test-runtime-provenance.mjs`) and the activation SQL guards still
 refuse a stale bundle.
 
+Hosted database CI runs `scripts/test-runtime-history.mjs` on feature branches
+to exercise the same SQL history, authority races, restart and preservation
+assertions against the committed release identity. It explicitly reports that
+source freshness is unverified when the source has moved. Its module hook is
+limited to the historical test driver's generator import; it cannot write
+derived files. Release CI invokes `scripts/test-runtime-provenance.mjs`
+directly, preserving its strict source freshness gate. Historical acceptance
+does not certify a new release.
+
 ## Cloudflare Pages
 
 The Pages build command stays `npm run build:release --workspace packages/web`.

@@ -20,7 +20,7 @@ export function bootstrapAuthorityTransport(origin, restPort, transport = fetch)
 	return (input, init) => {
 		const url = new URL(String(input));
 		assert(
-			url.origin === origin && /^\/rest\/v1\/rpc\/qorpera_[a-z_]+$/.test(url.pathname) && !url.search && !url.hash,
+			url.origin === origin && /^\/rest\/v1\/rpc\/qorpera_[a-z0-9_]+$/.test(url.pathname) && !url.search && !url.hash,
 			"Bootstrap acceptance allows only its own actual PostgREST RPC transport",
 		);
 		return transport(`http://127.0.0.1:${restPort}${url.pathname.slice("/rest/v1".length)}`, {
@@ -69,6 +69,12 @@ export async function prepareFoundingBootstrap({ cluster, gateway, publicKey, jw
 		boundary:
 			"Actual CompanyBootstrapProvisioner, durable filesystem objects/journal, live PostgREST staging/verification/publication and real member-authorized HTTP byte reads. Local NAS-compatible filesystem only; physical NFS and remote Storage replication are not exercised.",
 		close: () => closeServer(server),
+		// Host-only joined composition. This serves the same durable objects
+		// and invokes the production native binding/run authorization again;
+		// it does not expose the store or a bypass download capability.
+		nativeHandler: token => createObjectGatewayHandler({ store, authority, replication,
+			controlToken: randomBytes(32).toString("base64url"), verifierToken: randomBytes(32).toString("base64url"),
+			nativeObjects: { token, authority } }),
 		async provision(profileId) {
 			sqlUuid(profileId);
 			for (let attempt = 0; attempt < 10; attempt++) {

@@ -286,8 +286,13 @@ export async function runLxdOfficeLifecycleService(
 			passthrough && { config: passthrough, resolve: lifecycle.guestResolver() },
 			paidComputer,
 		);
-	} catch {
-		if (!signal.aborted) throw new Error("OFFICE_PROVIDER_SERVICE_UNCONFIRMED");
+	} catch (error) {
+		if (!signal.aborted)
+			throw new Error("OFFICE_PROVIDER_SERVICE_UNCONFIRMED", {
+				cause: (officeLifecycleErrorCode(error) ?? "opaque")
+					.split(" <- ")
+					.reduce<Error | undefined>((cause, message) => new Error(message, { cause }), undefined),
+			});
 	} finally {
 		credential?.fill(0);
 	}

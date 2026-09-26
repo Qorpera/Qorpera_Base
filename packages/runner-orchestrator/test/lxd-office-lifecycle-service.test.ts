@@ -4,8 +4,10 @@ import {
 	createOfficeLifecycleReporter,
 	createOfficeLifecycleWriter,
 	parseLxdOfficeLifecycleServiceConfig,
+	runLxdOfficeLifecycleService,
 	runOfficeLifecycleLoops,
 } from "../src/lxd-office-lifecycle-service.ts";
+import * as physicalHost from "../src/lxd-office-physical-host.ts";
 
 const config = () => ({
 	schema: "qorpera.lxd-office-provider-service/v1",
@@ -31,6 +33,22 @@ const identity = () => ({
 });
 const settle = () => new Promise<void>((resolve) => setImmediate(resolve));
 describe("optional provider lifecycle diagnostics", () => {
+	it("retains safe startup reason codes while excluding private error details", async () => {
+		const privateError = new Error("secret /private/provider-key value=do-not-publish", {
+			cause: new Error("OFFICE_LOCAL_FILE_UNSAFE"),
+		});
+		const read = vi.spyOn(physicalHost, "readLxdOfficeProtectedFile").mockRejectedValueOnce(privateError);
+		try {
+			await expect(
+				runLxdOfficeLifecycleService("/private/provider.json", new AbortController().signal),
+			).rejects.toMatchObject({
+				message: "OFFICE_PROVIDER_SERVICE_UNCONFIRMED",
+				cause: { message: "opaque", cause: { message: "OFFICE_LOCAL_FILE_UNSAFE", cause: undefined } },
+			});
+		} finally {
+			read.mockRestore();
+		}
+	});
 	it("contains real Writable callback and error-event failures", async () => {
 		const stream = new Writable({
 			write(_chunk, _encoding, callback) {

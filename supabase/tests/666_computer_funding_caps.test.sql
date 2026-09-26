@@ -45,14 +45,22 @@ begin
  perform pg_temp.assert_ledger((select count(*)=5 from public.qorpera_computer_invoice_funding_events),'Funding history lost');
 end $$;
 
-do $$ declare first jsonb; next jsonb; snapshot jsonb; args jsonb; old_end timestamptz; begin
+do $$ declare first jsonb; next jsonb; snapshot jsonb; args jsonb; old_end timestamptz; failure_detail text; begin
  snapshot:=jsonb_build_object('evidence','{}','schema','qorpera.invoice-funding/v1','invoiceId','in_ledger1','subscriptionId','sub_ledger1','customerId','cus_ledger1',
   'currency','dkk','basisMinor',18500,'reversedMinor',1,'held',false,'evidenceSha256',encode(extensions.digest(convert_to('{}','UTF8'),'sha256'),'hex'));
  first:=public.qorpera_begin_computer_billing_sync('evt_stale','sub_ledger1',statement_timestamp(),repeat('a',64));
  update public.qorpera_computer_billing_syncs set lease_until=clock_timestamp()-interval '1 second' where subscription_id='sub_ledger1';
  next:=public.qorpera_begin_computer_billing_sync('evt_fresh','sub_ledger1',statement_timestamp(),repeat('b',64));
  args:=jsonb_build_object('p_event_id','evt_stale','p_lease_token',first->>'leaseToken','p_snapshot',snapshot,'p_complete',true);
- perform pg_temp.ledger_error(format('select public.qorpera_computer_billing_rpc(%L,%L,%L)','qorpera_apply_computer_invoice_funding',args,repeat('C',64)),'40001');
+ begin
+  perform public.qorpera_computer_billing_rpc('qorpera_apply_computer_invoice_funding',args,repeat('C',64));
+  raise exception 'Stale funding lease accepted';
+ exception when sqlstate 'PGRST' then
+  get stacked diagnostics failure_detail=pg_exception_detail;
+  perform pg_temp.assert_ledger(sqlerrm::jsonb->>'code'='QRC01'
+   and sqlerrm::jsonb->>'message'='Billing retrieval lease unavailable'
+   and failure_detail::jsonb='{"status":409,"headers":{}}'::jsonb,'Stale funding lease lost application conflict identity');
+ end;
  args:=args||jsonb_build_object('p_event_id','evt_fresh','p_lease_token',next->>'leaseToken');
  perform public.qorpera_computer_billing_rpc('qorpera_apply_computer_invoice_funding',args,repeat('C',64));
  perform pg_temp.assert_ledger((select funded_us=floor(issued_us::numeric*18499/18500) from public.qorpera_computer_allowance_buckets where invoice_id='in_ledger1'),'Cumulative cap rounding differs');

@@ -184,7 +184,7 @@ try {
 	assert.deepEqual(JSON.parse(sql(`select bundle.manifest from public.qorpera_runtime_bundles bundle
 		join public.qorpera_active_runtime_bundle active on active.runtime_bundle_id=bundle.id
 			and active.runtime_bundle_sha256=bundle.sha256;`).trim()), bundle.manifest);
-	console.log(`PASS: ${migrations.length} migrations, source/SQL manifest parity, split-owner retention grants`);
+	console.log(`PASS: ${migrations.length} migrations, supplied bundle/SQL manifest parity, split-owner retention grants`);
 	assert.equal(authorityReady, true);
 	assert.equal(docker(authorityPsql, `select grant_row.status='revoked' and secret.status='active'
 		and grant_row.issued_by_user_id='30700000-0000-4000-8000-000000000003'

@@ -295,6 +295,7 @@ try {
    disposableRun: { githubHosted: true, companyId }, close: true, renew, signal });
   const accounting = await readWorkloadUsage(query, probe.permitId);
   probe.physicalSamples = workloadUsageSamples(calls);
+  probe.shapeProvenance = { nodeId, providerKind: "native", policySha256 };
   probe.firstPayerByReservation = Object.fromEntries(accounting.reservations.map((row) => [row.id,
    poolFallback && BigInt(row.from_standard_us) >= 1000000n ? fallbackMember : memberId]));
   evidence.reconciliation = verifyWorkloadUsage(accounting, probe); evidence.probe = probe; evidence.accounting = accounting;
@@ -344,6 +345,7 @@ try {
   const terminal = calls.findLast((call) => call.method === "qorpera_finish_coding_computer_permit"); assert(terminal); await control.call(terminal.method, terminal.args, signal);
   const accounting = await readWorkloadUsage(query, original.permit.permitId), first = workloadUsageSamples(calls).find((sample) => sample.state === "running");
   const probe = { kind: "coding_machine", shape: evidence.shape, physicalId: first.physicalId, hostBootId: first.hostBootId, guestBootId: first.guestBootId,
+   shapeProvenance: { nodeId, providerKind: "coding", policySha256 },
    controllerOutage: evidence.controllerOutage,
    physicalSamples: workloadUsageSamples(calls), firstPayerByReservation: Object.fromEntries(accounting.reservations.map((row) => [row.id,
     poolFallback && BigInt(row.from_standard_us) >= 1000000n ? fallbackMember : memberId])) };

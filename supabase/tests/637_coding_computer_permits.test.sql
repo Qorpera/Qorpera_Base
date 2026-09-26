@@ -101,6 +101,14 @@ begin
     perform public.qorpera_checkpoint_coding_computer_permit(checkpoint,repeat('K',64));
     perform pg_temp.wake_assert((select active_ms=100 from public.qorpera_computer_usage_streams where allocation_id=machine and epoch=e),'Clock/observation gap cannot invent billable time');
     renewal:=jsonb_build_object('requestId','63700000-0000-4000-8000-000000000030','permitId',id,'generation',1,'sample',sample,'windowMs',300000,'stopReserveMs',30000);
+    perform pg_temp.wake_error(format('select public.qorpera_renew_coding_computer_permit(%L,%L)',renewal,repeat('K',64)),'55000');
+    -- Re-establish a real continuous pair before testing the separate funding
+    -- refusal. A running state alone does not validate its clock interval.
+    sample:=sample||jsonb_build_object('previousObservationId',sample->'observationId','observationId',extensions.gen_random_uuid(),
+        'hostUptimeMs',1020200,'guestUptimeMs',120200,'observedAt',t+interval '300 milliseconds');
+    checkpoint:=checkpoint||jsonb_build_object('sample',sample);
+    perform public.qorpera_checkpoint_coding_computer_permit(checkpoint,repeat('K',64));
+    renewal:=renewal||jsonb_build_object('sample',sample);
     select issued_us into v_issue from public.qorpera_computer_allowance_buckets where invoice_id='in_permits';
     -- Operator-only synthetic balance setup; production custody resumes below.
     alter table public.qorpera_computer_allowance_buckets disable trigger qorpera_computer_bucket_payment_guard;
@@ -117,16 +125,16 @@ begin
     again:=public.qorpera_renew_coding_computer_permit(renewal,repeat('K',64));
     perform pg_temp.wake_assert(receipt->>'generation'='2' and again->>'deadline'=receipt->>'deadline'
         and (again->>'validForMs')::bigint<=(receipt->>'validForMs')::bigint
-        and (select sum(debited_us)=50000 from public.qorpera_computer_allowance_buckets),'Atomic renewal did not settle half-size known time exactly once');
+        and (select sum(debited_us)=100000 from public.qorpera_computer_allowance_buckets),'Atomic renewal did not settle half-size known time exactly once');
     sample:=sample||jsonb_build_object('previousObservationId',sample->'observationId','observationId',extensions.gen_random_uuid(),
-        'hostUptimeMs',1020200,'guestUptimeMs',null,'observedAt',t+interval '300 milliseconds','state','stopped');
+        'hostUptimeMs',1020300,'guestUptimeMs',null,'observedAt',t+interval '400 milliseconds','state','stopped');
     terminal:=jsonb_build_object('requestId','63700000-0000-4000-8000-000000000040','permitId',id,'generation',2,'sample',sample,'guardClosed',true);
     perform pg_temp.wake_error(format('select public.qorpera_finish_coding_computer_permit(%L,%L)',terminal||'{"guardClosed":false}',repeat('K',64)),'42501');
     perform pg_temp.wake_error(format('select public.qorpera_finish_coding_computer_permit(%L,%L)',terminal||'{"generation":999}',repeat('K',64)),'PGRST');
     receipt:=public.qorpera_finish_coding_computer_permit(terminal,repeat('K',64));
     perform pg_temp.wake_assert(receipt->>'state'='closed' and receipt->>'validForMs'='0'
         and public.qorpera_finish_coding_computer_permit(terminal,repeat('K',64))=receipt
-        and (select sum(reserved_us)=0 and sum(debited_us)=50000 from public.qorpera_computer_allowance_buckets),
+        and (select sum(reserved_us)=0 and sum(debited_us)=100000 from public.qorpera_computer_allowance_buckets),
         'Verified stop/retry must settle once and release only unused holds');
     -- A failed create never acquired a guest boot; trusted absent/terminal proof
     -- can close its zero-usage reservation without manufacturing a measurement.
@@ -137,7 +145,7 @@ begin
         'hostUptimeMs',1020300,'observedAt',clock_timestamp(),'state','absent');
     terminal:=jsonb_build_object('requestId',extensions.gen_random_uuid(),'permitId',receipt->'permitId','generation',1,'sample',sample,'guardClosed',true);
     perform public.qorpera_finish_coding_computer_permit(terminal,repeat('K',64));
-    perform pg_temp.wake_assert((select sum(reserved_us)=0 and sum(debited_us)=50000 from public.qorpera_computer_allowance_buckets),'Never-started VM consumed allowance');
+    perform pg_temp.wake_assert((select sum(reserved_us)=0 and sum(debited_us)=100000 from public.qorpera_computer_allowance_buckets),'Never-started VM consumed allowance');
 end $$;
 select pg_temp.wake_assert(not has_table_privilege('service_role','public.qorpera_computer_executor_keys','INSERT,UPDATE,DELETE')
     and not has_function_privilege('service_role','public.qorpera_record_computer_usage_checkpoint_internal(uuid,text,uuid,bigint,bigint,bigint,timestamptz,boolean,text,text)','EXECUTE')

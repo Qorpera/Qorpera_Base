@@ -339,6 +339,34 @@ async function fixture(usage = false) {
 }
 
 describe("paid coding computer controller", () => {
+	it("drains and archives a historical stream without replacing newer managed custody", async () => {
+		const f = await fixture(true);
+		await f.start();
+		const oldId = f.getPermit()!.permitId;
+		f.guard.tickUsage();
+		await f.guard.settleUsage(oldId);
+		await f.bind();
+		await f.controller.stop(f.machine.machineId, signal());
+		f.guard.tickUsage();
+		await f.guard.settleUsage(oldId);
+		const newer = { ...f.getPermit()!, permitId: randomUUID(), epoch: randomUUID(), reservationId: randomUUID() };
+		const original = f.control.call.getMockImplementation()!;
+		f.control.call.mockImplementation(async (method, args) => {
+			if (method === "qorpera_describe_coding_computer_permit") return { permit: newer, lastSample: null };
+			return original(method, args);
+		});
+		const controller = new CodingComputerController(f.options);
+		await controller.ensure(f.claim, f.machine, signal());
+		const archive = vi.spyOn(f.guard, "archive");
+		f.control.call.mockClear();
+		await controller.maintain(signal());
+		expect(controller.manages(f.machine.machineId)).toBe(true);
+		expect(archive).toHaveBeenCalledTimes(1);
+		expect(archive.mock.calls[0]?.[0]).toBe(oldId);
+		expect(f.getPermit()?.state).toBe("closed");
+		expect(f.calls("qorpera_describe_coding_computer_permit")).toHaveLength(1);
+		expect(f.client.submitInstanceOperation.mock.calls.map((call) => call[1].action)).toEqual(["start", "stop"]);
+	});
 	it.each([false, true])(
 		"uploads the guard-owned stream and waits for sealed ACK before finish (lost upload reply: %s)",
 		async (lost) => {

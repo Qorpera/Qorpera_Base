@@ -325,6 +325,36 @@ async function fixture(providerKind: "native" | "office" = "native", usage = fal
 }
 const signal = () => new AbortController().signal;
 describe("funded runtime physical custody", () => {
+	it("drains and archives a historical stream without replacing newer managed custody", async () => {
+		const f = await fixture("native", true);
+		await f.start();
+		const oldId = f.permit!.permitId;
+		f.guard.tickUsage();
+		await f.guard.settleUsage(oldId);
+		await f.controller.observe(f.context.allocationId, signal());
+		await f.controller.stop(f.context.allocationId, signal());
+		f.guard.tickUsage();
+		await f.guard.settleUsage(oldId);
+		const newer = { ...f.permit!, permitId: randomUUID(), epoch: randomUUID(), reservationId: randomUUID() };
+		const original = f.control.call.getMockImplementation()!;
+		f.control.call.mockImplementation(async (method, args) => {
+			if (method === "qorpera_describe_runtime_computer_permit")
+				return { mode: "paid", permit: newer, lastSample: null };
+			return original(method, args);
+		});
+		await f.controller.recover(f.context, signal());
+		const archive = vi.spyOn(f.guard, "archive");
+		f.control.call.mockClear();
+		await f.controller.maintain(signal());
+		expect(f.controller.manages(f.context.allocationId)).toBe(true);
+		expect(archive).toHaveBeenCalledTimes(1);
+		expect(archive.mock.calls[0]?.[0]).toBe(oldId);
+		expect(f.permit?.state).toBe("closed");
+		expect(f.control.call.mock.calls.some(([method]) => method === "qorpera_describe_runtime_computer_permit")).toBe(
+			true,
+		);
+		expect(f.client.submitInstanceOperation.mock.calls.map((call) => call[1].action)).toEqual(["start", "stop"]);
+	});
 	it.each([false, true])(
 		"uploads the guard-owned stream and waits for sealed ACK before finish (lost upload reply: %s)",
 		async (lost) => {

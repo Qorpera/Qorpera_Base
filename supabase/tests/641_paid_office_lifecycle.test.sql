@@ -135,7 +135,8 @@ do $$ declare sample jsonb; renewal jsonb; boot jsonb; r jsonb:=current_setting(
         'hostUptimeMs',100000,'physicalId','64100000-0000-4000-8000-000000000030','guestBootId','64100000-0000-4000-8000-000000000031',
         'guestUptimeMs',10000,'observedAt',clock_timestamp(),'state','running','evidenceSha256',repeat('a',64));
     perform public.qorpera_bind_runtime_computer_permit(jsonb_build_object('permitId',r->'requestId','generation',1,'sample',sample),repeat('O',64));
-    sample:=sample||jsonb_build_object('previousObservationId',sample->'observationId','observationId',extensions.gen_random_uuid(),'observedAt',clock_timestamp());
+    sample:=sample||jsonb_build_object('previousObservationId',sample->'observationId','observationId',extensions.gen_random_uuid(),
+        'hostUptimeMs',100100,'guestUptimeMs',10100,'observedAt',clock_timestamp());
     renewal:=jsonb_build_object('requestId',extensions.gen_random_uuid(),'permitId',r->'requestId','generation',1,'sample',sample,'windowMs',300000,'stopReserveMs',30000);
     perform pg_temp.wake_error(format('select public.qorpera_renew_runtime_computer_permit(%L,%L)',renewal,repeat('O',64)),'42501');
     -- Seed the observed successful successor activation. Its exact boot may

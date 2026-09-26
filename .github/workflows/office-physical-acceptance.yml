@@ -202,38 +202,11 @@ jobs:
           mkdir -p "${RUNNER_TEMP}/office-acceptance"
           dpkg-query -W postgresql-17 postgresql-client-17 nfs-kernel-server nfs-common > "${RUNNER_TEMP}/office-acceptance/host-packages.txt"
 
-      - name: Exercise actual migrations and recovery SQL without Docker
+      - name: Exercise every hosted SQL regression without Docker
         timeout-minutes: 8
         run: >-
           node scripts/acceptance/native-postgres.mjs --bin /usr/lib/postgresql/17/bin
-          --test 630_company_computer_subscriptions.test.sql
-          --test 631_company_founding.test.sql
-          --test 632_founder_launch_provenance.test.sql
-          --test 633_computer_billing_sync.test.sql
-          --test 634_computer_shadow_observer.test.sql
-          --test 635_computer_allowance_ledger.test.sql
-          --test 636_founder_legacy_turn_gate.test.sql
-          --test 637_coding_computer_permits.test.sql
-          --test 638_paid_computer_admission_boundaries.test.sql
-          --test 639_computer_billing_authority.test.sql
-          --test 640_runtime_computer_permits.test.sql
-          --test 641_paid_office_lifecycle.test.sql
-          --test 642_computer_prestart_abandonment.test.sql
-          --test 643_runtime_prestart_abandonment.test.sql
-          --test 644_office_prestart_abandonment.test.sql
-          --test 645_coding_terminal_recovery.test.sql
-          --test 646_runtime_terminal_recovery.test.sql
-          --test 647_office_computer_outages.test.sql
-          --test 648_office_outage_recovery.test.sql
-          --test 660_paid_company_founding_capacity.test.sql
-          --test 661_computer_payment_fences.test.sql
-          --test 662_founding_paid_rollout_enrollment.test.sql
-          --test 664_computer_billing_command_recovery.test.sql
-          --test 666_computer_funding_caps.test.sql
-          --test 667_dedicated_calendar_boundaries.test.sql
-          --test 668_paid_account_refresh_exemption.test.sql
-          --test 669_computer_guard_usage_stream.test.sql
-          --test 670_coding_guard_usage_recovery.test.sql
+          --all-tests
           --out "${RUNNER_TEMP}/office-acceptance/postgres"
 
       - name: Prove read-only accounting incident detection and resolution

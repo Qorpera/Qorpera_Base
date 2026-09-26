@@ -26,5 +26,7 @@ test("bootstrap authority preserves actual member credentials and refuses remote
 		"https://127.0.0.1:4331/rest/v1/profiles",
 	])
 		assert.throws(() => transport(url, init), /only its own/);
-	assert.equal(calls.length, 1, "Rejected destinations must not receive any credential");
+	await transport("https://127.0.0.1:4331/rest/v1/rpc/qorpera_read_company_path_v2", init);
+	assert.equal(calls[1].url, "http://127.0.0.1:5433/rpc/qorpera_read_company_path_v2");
+	assert.equal(calls.length, 2, "Rejected destinations must not receive any credential");
 });

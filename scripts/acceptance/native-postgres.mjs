@@ -158,7 +158,12 @@ export async function startNativePostgres(options) {
 		await mkdir(socketDirectory, { mode: 0o700 });
 		const log = await open(join(root, "postgres.log"), "wx", 0o600);
 		try {
-			server = spawn(join(binDirectory, "postgres"), nativePostgresArguments(dataDirectory, socketDirectory), { env: environment, stdio: ["ignore", log.fd, log.fd] });
+			// SQL concurrency fixtures use dblink with a database-only DSN. Give
+			// server-side libpq this cluster's private socket, never the host default.
+			server = spawn(join(binDirectory, "postgres"), nativePostgresArguments(dataDirectory, socketDirectory), {
+				env: { ...environment, PGHOST: socketDirectory, PGPORT: String(port), PGUSER: username },
+				stdio: ["ignore", log.fd, log.fd],
+			});
 			serverClosed = new Promise((done) => {
 				server.once("error", () => {});
 				server.once("close", () => { exited = true; done(); });
@@ -207,10 +212,11 @@ export async function startNativePostgres(options) {
 }
 
 export function parseNativePostgresCli(args) {
-	const parsed = { tests: [], serve: false };
+	const parsed = { tests: [], serve: false, allTests: false };
 	for (let i = 0; i < args.length; i++) {
 		const key = args[i];
 		if (key === "--serve") { assert(!parsed.serve, "Duplicate --serve"); parsed.serve = true; }
+		else if (key === "--all-tests") { assert(!parsed.allTests, "Duplicate --all-tests"); parsed.allTests = true; }
 		else if (["--bin", "--out", "--test"].includes(key)) {
 			const value = args[++i];
 			assert(typeof value === "string" && !value.startsWith("--"), "Missing acceptance CLI value");
@@ -225,7 +231,9 @@ export function parseNativePostgresCli(args) {
 		} else throw new Error("Unknown native PostgreSQL CLI argument");
 	}
 	nativePostgresOptions({ binDirectory: parsed.binDirectory });
-	assert(parsed.serve ? parsed.tests.length === 0 && parsed.out === undefined : parsed.tests.length > 0 && typeof parsed.out === "string", "Choose --serve or --test <file> --out <directory>");
+	assert(parsed.serve ? parsed.tests.length === 0 && !parsed.allTests && parsed.out === undefined
+		: (parsed.allTests ? parsed.tests.length === 0 : parsed.tests.length > 0) && typeof parsed.out === "string",
+		"Choose --serve, or --all-tests/--test <file> with --out <directory>");
 	if (parsed.out !== undefined) assert(isAbsolute(parsed.out) && resolve(parsed.out) === parsed.out && parsed.out !== "/" && !/[\x00-\x20\x7f'\\]/.test(parsed.out), "Canonical acceptance output directory required");
 	return parsed;
 }
@@ -258,7 +266,10 @@ if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.m
 			console.log(JSON.stringify({ ...evidence, root: cluster.root, socketDirectory: cluster.socketDirectory, port: cluster.port, database: cluster.database, username: cluster.username, ready: true }));
 			await stopping;
 		} else {
-			for (const name of options.tests) {
+			const tests = options.allTests ? (await readdir(join(repository, "supabase/tests")))
+				.filter((name) => /^\d+_[a-z0-9_]+\.test\.sql$/.test(name)).sort() : options.tests;
+			assert(tests.length > 0, "No acceptance tests found");
+			for (const name of tests) {
 				assert(!interrupted, "Native PostgreSQL acceptance interrupted");
 				process.stderr.write(`Running ${name}\n`);
 				await cluster.runTest(name);
