@@ -25,6 +25,7 @@ if (stage === "install") {
 	const dependencies = JSON.parse(run("/usr/bin/node", [installer, "--measure-dependencies"]));
 	const spec = { schema: "qorpera.office-image-installation/v1", packageRoot: pkg, packageManifestSha256: hash(manifest), uid: 1100, gid: 1100, architecture: process.arch, dependencies };
 	await writeFile(specPath, JSON.stringify(spec), { mode: 0o444, flag: "wx" });
+	run("/usr/bin/node", [`${root}/inputs.mjs`, specPath]);
 	const check = JSON.parse(run("/usr/bin/node", [installer, "--check", "--spec", specPath]));
 	assert.equal(check.state, "unconfigured-inactive");
 	run("/usr/bin/node", [installer, "--apply", "--spec", specPath]);

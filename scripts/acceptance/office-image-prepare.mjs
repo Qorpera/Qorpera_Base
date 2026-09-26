@@ -49,6 +49,7 @@ try {
 	evidence.browserVersion = browser.browserVersion;
 	evidence.nodeVersion = "22.19.0";
 	await build({ absWorkingDir: repository, entryPoints: ["packages/runner-orchestrator/test/fixtures/office-image-systemd-consumer.ts"], outfile: `${work}/consumer.mjs`, bundle: true, platform: "node", format: "esm", target: "node22.19", logLevel: "silent" });
+	await build({ absWorkingDir: repository, entryPoints: ["scripts/acceptance/office-image-inputs.ts"], outfile: `${work}/inputs.mjs`, bundle: true, platform: "node", format: "esm", target: "node22.19", logLevel: "silent" });
 	run("lxc", ["init", "ubuntu:26.04", vm, "--vm", "--storage", "default", "-c", "limits.cpu=2", "-c", "limits.memory=4GiB", "-d", "root,size=30GiB"], 300000);
 	created = true;
 	const initial = JSON.parse(run("lxc", ["query", `/1.0/instances/${vm}`]));
@@ -109,7 +110,7 @@ try {
 	run("tar", ["-C", work, "-cf", `${work}/package.tar`, "package"]);
 	run("lxc", ["file", "push", `${work}/package.tar`, `${vm}${work}/package.tar`], 120000);
 	guest(["tar", "-C", work, "-xf", `${work}/package.tar`]);
-	for (const [source, target] of [["scripts/acceptance/office-image-guest.mjs", "guest.mjs"], ["scripts/acceptance/office-image-credential-child.mjs", "credential-child.mjs"], [`${work}/consumer.mjs`, "consumer.mjs"]]) run("lxc", ["file", "push", "--uid=0", "--gid=0", "--mode=0644", source, `${vm}${work}/${target}`]);
+	for (const [source, target] of [["scripts/acceptance/office-image-guest.mjs", "guest.mjs"], ["scripts/acceptance/office-image-credential-child.mjs", "credential-child.mjs"], [`${work}/consumer.mjs`, "consumer.mjs"], [`${work}/inputs.mjs`, "inputs.mjs"]]) run("lxc", ["file", "push", "--uid=0", "--gid=0", "--mode=0644", source, `${vm}${work}/${target}`]);
 	guest(["chmod", "-R", "go-w", work]);
 	console.log(guest(["/usr/bin/node", `${work}/guest.mjs`, "install"], 180000));
 	evidence.installation = JSON.parse(guest(["cat", `${work}/install-proof.json`]));
