@@ -3,6 +3,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
+import { transformSync } from "esbuild";
 import { readUiScale, scaleDesignPx } from "./design-px.mjs";
 
 const web = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -35,18 +36,32 @@ test("design pixels become calc() on --px; hairlines, SVG strokes and literals s
 	);
 });
 
-test("width breakpoints stay as written for a coarse pointer and are multiplied out for a fine one or none", () => {
+test("Big keeps pointer-aware breakpoints and Small restores unscaled breakpoints", () => {
 	const css = "@media (max-width: 760px) { .rail { width: 304px; } }\n@media (hover: none) and (min-width: 1100px), (max-width: 560px) or (max-height: 400px) { .x { gap: 2px; } }\n@media (prefers-reduced-motion: reduce) { .y { top: 0; } }";
 	assert.equal(
 		scaleDesignPx(css, 1.25),
 		[
-			"@media (pointer: coarse) and (max-width: 760px), (pointer: fine) and (max-width: 950px), (pointer: none) and (max-width: 950px) { .rail { width: calc(304 * var(--px)); } }",
-			"@media (pointer: coarse) and (hover: none) and (min-width: 1100px), (pointer: fine) and (hover: none) and (min-width: 1375px), (pointer: none) and (hover: none) and (min-width: 1375px), (pointer: coarse) and ((max-width: 560px) or (max-height: 400px)), (pointer: fine) and ((max-width: 700px) or (max-height: 500px)), (pointer: none) and ((max-width: 700px) or (max-height: 500px)) { .x { gap: calc(2 * var(--px)); } }",
+			':where(:root:not([data-ui-size="small"])) { @media (pointer: coarse) and (max-width: 760px), (pointer: fine) and (max-width: 950px), (pointer: none) and (max-width: 950px) { .rail { width: calc(304 * var(--px)); } } }',
+			':where(:root[data-ui-size="small"]) { @media (max-width: 760px) { .rail { width: calc(304 * var(--px)); } } }',
+			':where(:root:not([data-ui-size="small"])) { @media (pointer: coarse) and (hover: none) and (min-width: 1100px), (pointer: fine) and (hover: none) and (min-width: 1375px), (pointer: none) and (hover: none) and (min-width: 1375px), (pointer: coarse) and ((max-width: 560px) or (max-height: 400px)), (pointer: fine) and ((max-width: 700px) or (max-height: 500px)), (pointer: none) and ((max-width: 700px) or (max-height: 500px)) { .x { gap: calc(2 * var(--px)); } } }',
+			':where(:root[data-ui-size="small"]) { @media (hover: none) and (min-width: 1100px), (max-width: 560px) or (max-height: 400px) { .x { gap: calc(2 * var(--px)); } } }',
 			"@media (prefers-reduced-motion: reduce) { .y { top: 0; } }",
 		].join("\n"),
 	);
 	assert.throws(() => scaleDesignPx("@media screen and (max-width: 760px) { .a { top: 0; } }", 1.25), /plain condition/);
 	assert.throws(() => scaleDesignPx("@container (min-width: 400px) { .a { top: 0; } }", 1.25), /container/);
+});
+
+test("size gates preserve root selectors, pseudo-elements, literals and nested feature queries", () => {
+	const css = '@media (max-width: 760px) { :root[data-theme="dark"] .a, .b::before { content: "}:root"; width: 20px; } @media (hover: none) { :root .c { margin: 4px; } } }';
+	const { code, warnings } = transformSync(scaleDesignPx(css, 1.3), { loader: "css", supported: { nesting: false } });
+	assert.deepEqual(warnings, []);
+	assert.ok(code.includes(':where(:root[data-ui-size=small]):root[data-theme=dark] .a'));
+	assert.ok(code.includes(':where(:root:not([data-ui-size=small])):root[data-theme=dark] .a'));
+	assert.ok(code.includes(':where(:root[data-ui-size=small]) .b::before'));
+	assert.ok(code.includes(':where(:root[data-ui-size=small]):root .c'));
+	assert.ok(code.includes('content: "}:root"'));
+	assert.ok(!code.includes("&"));
 });
 
 test("tokens.css declares the scale and --px, and the minimized computer keeps screen pixels", () => {

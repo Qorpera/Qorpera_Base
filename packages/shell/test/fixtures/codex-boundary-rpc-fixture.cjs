@@ -38,6 +38,13 @@ const companyCalls = mode === "company-office"
 			{ tool: "ask_member", arguments: { idempotencyKey: "fruit", text: "Pick one.", surface: "question", title: "Apples or pears?", payload: { options: ["Apples", "Pears"] } } },
 			{ tool: "ask_member", arguments: { idempotencyKey: "fruit", text: "Pick one.", surface: "question", title: "Apples or pears?", payload: { options: [{ label: "Apples" }, { label: "Pears" }] } } },
 		]
+	: mode === "company-cards-unavailable"
+	? [
+			// Valid protocol shapes with no executor: neither may publish a card or end the turn.
+			{ tool: "ask_member", arguments: { idempotencyKey: "page-form", text: "Enter your email.", surface: "form", title: "Sign in", payload: { domain: "app.example.com", fields: [{ id: "email", label: "Email", type: "email" }] } } },
+			{ tool: "ask_member", arguments: { idempotencyKey: "vault-login", text: "Signing in.", surface: "credential", title: "Company account", payload: { name: "example-login", domain: "app.example.com" } } },
+			{ tool: "send_message", arguments: { idempotencyKey: "fallback", text: "This app cannot fill the page or sign in from the vault. No sign-in was performed.", phase: "final" } },
+		]
 	: mode === "company-silent" || mode === "company-no-send" || mode === "company-worker"
 	? [{ tool: "company_read", arguments: { path: "note.md", offset: 0, limit: 256 } }]
 	: mode === "company-secret"
@@ -69,6 +76,10 @@ for (let index = 0; index < args.length; index++) {
 }
 const done = () => write({ method: "turn/completed", params: { threadId, turn: { id: turnId, status: "completed", error: null } } });
 const sendEvidence = { reply: null, fenced: null, interrupt: null, pending: null };
+// Auto-review (v130): a reviewer thread started while the agent's tool call is open.
+const reviewThreadId = "thread_review";
+const reviewTurnId = "turn_review";
+const reviewEvidence = { reviewerThread: null, reviewerTurn: null, prewarm: null, verdictReply: null, closingFence: null, interrupt: null };
 const usage = (total = {}, last = {}) => ({
 	total: { inputTokens: 23, outputTokens: 7, cachedInputTokens: 3, cacheWriteInputTokens: 5, reasoningOutputTokens: 2, totalTokens: 30, ...total },
 	last: { inputTokens: 2, outputTokens: 1, cachedInputTokens: 0, cacheWriteInputTokens: 0, reasoningOutputTokens: 0, totalTokens: 3, ...last },
@@ -121,6 +132,32 @@ async function handle(message) {
 		write({ id: message.id, result: { config: configuration } });
 	} else if (message.method === "skills/list") {
 		write({ id: message.id, result: { data: [{ skills: mode === "extra-skills" ? [{ name: "PRIVATE_UNCONTROLLED_SKILL" }] : [], errors: [] }] } });
+	} else if (message.method === "thread/start" && mode.startsWith("review") && threadParameters) {
+		reviewEvidence.reviewerThread = message.params;
+		reviewEvidence.prewarm = await fence([], { threadId: reviewThreadId, turnId: "", purpose: "prewarm" });
+		write({ id: message.id, result: { thread: { id: reviewThreadId } } });
+	} else if (message.method === "turn/start" && mode.startsWith("review") && message.params.threadId === reviewThreadId) {
+		reviewEvidence.reviewerTurn = message.params;
+		write({ id: message.id, result: { turn: { id: reviewTurnId } } });
+		write({ method: "turn/started", params: { threadId: reviewThreadId, turn: { id: reviewTurnId } } });
+		await fence([], { threadId: reviewThreadId, turnId: reviewTurnId });
+		// The reviewer's text never matters; only its verdict tool call does.
+		write({ method: "item/agentMessage/delta", params: { threadId: reviewThreadId, turnId: reviewTurnId, delta: "PRIVATE_REVIEW_CANARY" } });
+		if (mode === "review-no-verdict") {
+			write({ method: "turn/completed", params: { threadId: reviewThreadId, turn: { id: reviewTurnId, status: "completed", error: null } } });
+			return;
+		}
+		if (mode === "review-wrong-tool") {
+			// The reviewer reaches for the agent's tool: refused, and no verdict follows.
+			write({ id: "reviewer_wrong_tool", method: "item/tool/call", params: {
+				threadId: reviewThreadId, turnId: reviewTurnId, callId: "wrong_1", namespace: "qorpera", tool: "send_email", arguments: { to: "x@evil.test" },
+			} });
+			return;
+		}
+		write({ id: "verdict_request", method: "item/tool/call", params: {
+			threadId: reviewThreadId, turnId: reviewTurnId, callId: "verdict_1", namespace: "qorpera", tool: "review_verdict",
+			arguments: { decision: "allow", ruleIds: [], builtIn: "none", reason: "Fine.", proposedRule: "" },
+		} });
 	} else if (message.method === "thread/start") {
 		threadParameters = message.params;
 		if (mode === "bootstrap") {
@@ -224,6 +261,8 @@ async function handle(message) {
 			failed();
 		} else if (mode === "interrupted-turn") {
 			write({ method: "turn/completed", params: { threadId, turn: { id: turnId, status: "interrupted", error: null } } });
+		} else if (mode.startsWith("review")) {
+			write({ id: "review_tool", method: "item/tool/call", params: { threadId, turnId, callId: "email_1", namespace: "qorpera", tool: "send_email", arguments: { to: "bob@acme.test" } } });
 		} else if (mode === "capture-image") {
 			write({ id: "capture_request", method: "item/tool/call", params: { threadId, turnId, callId: "capture_1", namespace: "qorpera", tool: "computer_screenshot", arguments: {} } });
 		} else if (mode.startsWith("company-")) {
@@ -282,6 +321,21 @@ async function handle(message) {
 			if (mode === "progress-send-no-end" && sendEvidence.interrupt) { failed({ message: "PRIVATE_UNEXPECTED_INTERRUPT" }); return; }
 			done();
 		}
+	} else if (message.method === "turn/interrupt" && mode.startsWith("review") && message.params.threadId === reviewThreadId) {
+		reviewEvidence.interrupt = message.params;
+		write({ id: message.id, result: {} });
+		write({ method: "turn/completed", params: { threadId: reviewThreadId, turn: { id: reviewTurnId, status: "interrupted", error: null } } });
+	} else if (message.id === "reviewer_wrong_tool") {
+		reviewEvidence.wrongTool = message;
+		write({ method: "turn/completed", params: { threadId: reviewThreadId, turn: { id: reviewTurnId, status: "completed", error: null } } });
+	} else if (message.id === "verdict_request") {
+		reviewEvidence.verdictReply = message;
+		// A closing request of the reviewer can still arrive before the interrupt lands.
+		reviewEvidence.closingFence = await fence([{ kind: "function_call_output", callId: "verdict_1", output: message.result.contentItems[0].text }], { threadId: reviewThreadId, turnId: reviewTurnId });
+	} else if (message.id === "review_tool") {
+		const mainFenced = await fence([{ kind: "function_call_output", callId: "email_1", output: message.result.contentItems[0].text }]);
+		writeFileSync(evidencePath, JSON.stringify({ ...reviewEvidence, mainThread: threadParameters, reply: message, mainFenced }));
+		done();
 	} else if (message.method === "turn/interrupt") {
 		sendEvidence.interrupt = message.params;
 		write({ id: message.id, result: {} });

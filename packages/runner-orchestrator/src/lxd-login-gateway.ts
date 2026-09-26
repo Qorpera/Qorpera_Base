@@ -87,6 +87,8 @@ const RECOVERY_MASTER_KEY_PATH = "/var/lib/qorpera/identity/qorpera-native-provi
 /** The guest writes this marker when a recovery completes here (identityRecoveryEpochFilename in the runtime). */
 const recoveryEpochMarkerPath = (epoch: number): string =>
 	`/var/lib/qorpera/identity/qorpera-identity-recovery-${epoch}.json`;
+/** An approved restore retained in this guest can be resumed by the same login. */
+class LoginRecoveryPending extends Error {}
 /** RSA-3072 recipient key generated inside the pinned guest; only the public half is read back. */
 const RECOVERY_KEYGEN_SCRIPT = [
 	"set -e; umask 077",
@@ -607,7 +609,10 @@ export class LxdNativeLoginGateway {
 		const settled = await (running
 			? withBudget(running, budgetMs)
 			: withBudget(this.#startRoute(login, authority), budgetMs));
-		if (settled.state === "pending")
+		if (
+			settled.state === "pending" ||
+			(settled.state === "rejected" && settled.error instanceof LoginRecoveryPending)
+		)
 			return json(
 				refresh
 					? { schema: NATIVE_ACCOUNT_REFRESH_RESULT_SCHEMA, request_id: login.loginId, status: "preparing" }
@@ -1318,7 +1323,7 @@ export class LxdNativeLoginGateway {
 		const notBefore = recovery.notBefore ? Date.parse(recovery.notBefore) : Number.NaN;
 		if (Number.isFinite(notBefore)) {
 			const delayMs = notBefore + 2000 - Date.now();
-			if (delayMs > waitMs) throw new Error("LOGIN_IDENTITY_RECOVERY_DEFERRED");
+			if (delayMs > waitMs) throw new LoginRecoveryPending("LOGIN_IDENTITY_RECOVERY_DEFERRED");
 			if (delayMs > 0) await delay(delayMs, undefined, { signal });
 		}
 		await this.#restoreInGuest(instanceName, recovery.recoveryId, recovery.epoch, signal);
@@ -1398,7 +1403,7 @@ export class LxdNativeLoginGateway {
 			console.error(
 				`LXD native login identity restore did not complete (recovery ${recoveryId}); the next post retries`,
 			);
-			throw new Error("LOGIN_IDENTITY_RECOVERY_PENDING");
+			throw new LoginRecoveryPending("LOGIN_IDENTITY_RECOVERY_PENDING");
 		}
 		if (result?.status !== "completed" || result.epoch !== epoch) throw new Error("LOGIN_IDENTITY_RECOVERY_FAILED");
 		await this.#lxd

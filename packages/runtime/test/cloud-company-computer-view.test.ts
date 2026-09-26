@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import { once } from "node:events";
 import { connect, createServer, type Server, type Socket } from "node:net";
 import { performance } from "node:perf_hooks";
 import {
@@ -568,19 +569,28 @@ describe("windowed member input (loopback only, authority/guest doubles)", () =>
 		view.socket.resume();
 		view.socket.write(Buffer.concat([hello, key, move(1), move(2, 1)]));
 		await vi.waitFor(() => expect(fail).toBeTypeOf("function"), { interval: 5 });
-		view.socket.write(move(3, 1));
+		// A protocol request behind the last input is a real receive barrier.
+		// Advancing fake time after a fixed real sleep can let a delayed TCP
+		// write arrive after the retry delay, when it can open a fresh window.
+		const barrier = Buffer.from([3, 1, 0, 0, 0, 0, 7, 128, 4, 176]);
+		view.socket.write(Buffer.concat([move(3, 1), barrier]));
 		fail!(new Error("OFFICE_REGISTRY_UNCONFIRMED"));
 		fixture.authority.admitInputWindow = vi.fn(async () => admitted());
-		// Both chunks are read and dropped now, not held for the next window.
-		await settle();
+		const beforeInput = Buffer.concat([hello, barrier]);
+		// Keep the fake clock still while the real sockets finish both chunks.
+		const guest = [...fixture.guestSockets][0];
+		while (Buffer.concat(fixture.received).length < beforeInput.length) await once(guest, "data");
+		expect(Buffer.concat(fixture.received)).toEqual(beforeInput);
 		await vi.advanceTimersByTimeAsync(1000);
-		expect(inputsOf(fixture.received).length).toBe(0);
+		expect(Buffer.concat(fixture.received)).toEqual(beforeInput);
 		expect(fixture.authority.recordInput).not.toHaveBeenCalled();
 		// Nothing was dispatched, so nothing retries by itself. The next packet opens a fresh window.
 		expect(fixture.authority.admitInputWindow).not.toHaveBeenCalled();
 		expect(view.socket.destroyed).toBe(false);
 		view.socket.write(otherKey);
-		await vi.waitFor(() => expect(inputsOf(fixture.received)).toEqual(otherKey), { interval: 5 });
+		await vi.waitFor(() => expect(Buffer.concat(fixture.received)).toEqual(Buffer.concat([beforeInput, otherKey])), {
+			interval: 5,
+		});
 		expect(vi.mocked(fixture.authority.recordInput).mock.calls.map(([, input]) => input.sequence)).toEqual([1]);
 	});
 

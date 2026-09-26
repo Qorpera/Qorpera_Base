@@ -14,6 +14,12 @@ export interface AgentDraft extends FigureChoice {
 	charter: string;
 }
 
+/** Retained until creation and roster projection are both confirmed. */
+export interface AgentCreation extends AgentDraft {
+	id: string;
+	createdAt: string;
+}
+
 /** Member UI adapters over the shared cloud SDK. A view offers an action only
  * when its adapter is present. */
 export interface WorkspaceActions {
@@ -40,7 +46,7 @@ export interface WorkspaceActions {
 	startConversation?: (recipientIds: readonly string[], text: string, signal: AbortSignal) => Promise<string>;
 	/** Returns the exact applied agent document revision, also projected as roster version. */
 	updateAgent?: (agent: HostedStaffAgent, draft: AgentDraft, signal: AbortSignal) => Promise<number>;
-	createAgent?: (profileId: string, draft: AgentDraft, signal: AbortSignal) => Promise<string>;
+	createAgent?: (profileId: string, draft: AgentCreation, signal: AbortSignal) => Promise<string>;
 	/** Removes the agent for good: its document leaves the Company File. */
 	deleteAgent?: (agent: HostedStaffAgent, signal: AbortSignal) => Promise<void>;
 }
