@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { JsonValue } from "@qorpera/contracts";
+import type { CloudActionGateResult } from "./cloud-action-review.ts";
 import type { CompanyComputerScreenshotAsset } from "./cloud-company-computer-screenshots.ts";
 import { CloudCompanyPathToolRefusal, CloudCompanyPathVersionChanged } from "./cloud-company-path-refusal.ts";
 import type { CloudNativeCaptureImages } from "./cloud-native-capture-images.ts";
@@ -22,7 +23,8 @@ export const CLOUD_TOOL_RESULT_INSTRUCTIONS =
 	"A denied, failed, cut-off or unconfirmed result grants nothing new; read missing pages with the offered read tool. " +
 	"COMPANY_FILE_VERSION_CHANGED is not a block: nothing was written, so read the path again and make the change on its current version. " +
 	"An action whose result you did not see may already have happened: retry it only as its tool describes, with the same operation key and arguments, never under a new key or by another route. " +
-	"An action that completed without showing its response still completed. After a safety block, a genuinely safer way to the same legitimate goal is fine; rewording the blocked action, or reaching a denied result by another route, is not.";
+	"An action that completed without showing its response still completed. After a safety block, a genuinely safer way to the same legitimate goal is fine; rewording the blocked action, or reaching a denied result by another route, is not. " +
+	"Members' rules can make an action wait for approval (APPROVAL_PENDING): the platform has raised the card, so do not ask again in chat; do other work meanwhile. When you are woken because such a card was approved, call the same tool again with exactly the arguments the card shows; it then runs once, without another review.";
 
 /** Fixed wording for a definite stale-version refusal of a Company File mutation. */
 const COMPANY_FILE_VERSION_CHANGED =
@@ -83,6 +85,21 @@ export type CloudToolContent = ({ kind: "text"; value: string } | { kind: "json"
 	/** Host-only: a confirmed final public send. The turn ends after this result is fenced. */
 	completesTurn?: boolean;
 };
+
+/** The auto-review step (runtime v130) an acting call passes before it runs. */
+export interface CloudNativeActionReview {
+	check(
+		call: {
+			tool: CloudNativeTool;
+			parsed: JsonValue;
+			/** The exact canonical arguments the digest covers: repeating them repeats the call. */
+			argumentsText: string;
+			argumentSha256: string;
+			callId: string;
+		},
+		signal: AbortSignal,
+	): Promise<CloudActionGateResult>;
+}
 
 export interface CloudToolResult {
 	schema: typeof CLOUD_TOOL_RESULT_SCHEMA;
@@ -217,6 +234,7 @@ export class CloudNativeToolBoundary {
 	readonly #tools = new Map<string, CloudNativeTool>();
 	readonly #assertActive: (signal: AbortSignal) => Promise<void>;
 	readonly #captures?: CloudNativeCaptureImages;
+	readonly #review?: CloudNativeActionReview;
 	readonly #stop = new AbortController();
 	readonly #signal: AbortSignal;
 	readonly #calls = new Map<
@@ -236,6 +254,8 @@ export class CloudNativeToolBoundary {
 		identity?: CloudNativeToolIdentity;
 		observability?: CloudRuntimeObservability;
 		captures?: CloudNativeCaptureImages;
+		/** Auto-review before acting calls; absent in compositions that review nothing (coding sessions). */
+		review?: CloudNativeActionReview;
 	}) {
 		if (!UUID.test(options.companyId) || !UUID.test(options.runId)) {
 			throw new Error("Invalid cloud tool boundary");
@@ -251,6 +271,7 @@ export class CloudNativeToolBoundary {
 		this.#observability = options.observability;
 		this.#assertActive = options.assertActive;
 		this.#captures = options.captures;
+		this.#review = options.review;
 		this.#signal = AbortSignal.any([options.signal, this.#stop.signal]);
 		for (const tool of options.tools) {
 			if (
@@ -418,6 +439,12 @@ export class CloudNativeToolBoundary {
 					TOOL_BUDGET_EXHAUSTED: "budget_exhausted",
 					AUTHORITY_UNAVAILABLE: "authority_unavailable",
 					COMPANY_FILE_ACCESS_DENIED: "authority_unavailable",
+					APPROVAL_PENDING: "approval_pending",
+					APPROVAL_UNAVAILABLE_HERE: "approval_pending",
+					APPROVAL_DECLINED: "approval_declined",
+					APPROVAL_USED: "approval_declined",
+					REVIEW_DENIED: "review_denied",
+					REVIEW_UNAVAILABLE: "review_unavailable",
 					COMPANY_FILE_VERSION_CHANGED: "stale_version",
 				} as const;
 				observation?.finish(envelope.status, {
@@ -535,6 +562,31 @@ export class CloudNativeToolBoundary {
 			this.#signal.throwIfAborted();
 		} catch {
 			return this.#result(callId, tool, digest, "denied", { kind: "text", value: "AUTHORITY_UNAVAILABLE" });
+		}
+		if (this.#review) {
+			// Auto-review (v130): an acting call runs only after the reviewer lets it, or a
+			// member approves it. A review that cannot run never counts as an approval.
+			let gate: CloudActionGateResult;
+			try {
+				gate = await untilStopped(
+					() => this.#review!.check({ tool, parsed, argumentsText, argumentSha256: digest, callId }, this.#signal),
+					this.#signal,
+				);
+			} catch {
+				return this.#result(callId, tool, digest, "denied", {
+					kind: "text",
+					value: "REVIEW_UNAVAILABLE: The safety review of this action could not run, so it did not happen. You may try the identical call once more; if it fails again, tell the member.",
+				});
+			}
+			if (!gate.run) return this.#result(callId, tool, digest, "denied", { kind: "text", value: gate.text });
+			// The call may have waited for an approval: authority is checked again right before the effect (contract 4.3).
+			try {
+				this.#signal.throwIfAborted();
+				await untilStopped(() => this.#assertActive(this.#signal), this.#signal);
+				this.#signal.throwIfAborted();
+			} catch {
+				return this.#result(callId, tool, digest, "denied", { kind: "text", value: "AUTHORITY_UNAVAILABLE" });
+			}
 		}
 		try {
 			const content = await untilStopped(

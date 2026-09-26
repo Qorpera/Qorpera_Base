@@ -2,6 +2,8 @@ import { parseCloudAgentSendInput } from "@qorpera/runtime/cloud-agent-mouth";
 import { CloudToolArgumentRefusal } from "@qorpera/runtime/cloud-native-tool-boundary";
 import {
 	CLOUD_ASK_MEMBER_PAYLOAD_SCHEMA,
+	CLOUD_ASK_MEMBER_SURFACES,
+	CLOUD_INTERACTION_PAYLOAD_SCHEMA,
 	CLOUD_INTERACTION_SURFACES,
 	cloudAskMemberFinalKey,
 	cloudInteractionEventId,
@@ -312,7 +314,27 @@ const ask = (surface: string, payload: unknown) => ({
 });
 
 describe("ask_member card shapes", () => {
-	const branches = CLOUD_ASK_MEMBER_PAYLOAD_SCHEMA.oneOf as Schema[];
+	const branches = CLOUD_INTERACTION_PAYLOAD_SCHEMA.oneOf as Schema[];
+	const stored = (surface: string, payload: unknown) =>
+		parseCloudInteractionRequestData({ schema: "qorpera.interaction/v1", surface, title: "A decision", payload });
+
+	it.each(CLOUD_ASK_MEMBER_SURFACES)("offers the callable %s workflow", (surface) => {
+		const offered = CLOUD_ASK_MEMBER_PAYLOAD_SCHEMA.oneOf as Schema[];
+		expect(offered).toHaveLength(CLOUD_ASK_MEMBER_SURFACES.length);
+		expect(offered[CLOUD_ASK_MEMBER_SURFACES.indexOf(surface)]).toEqual(
+			branches[CLOUD_INTERACTION_SURFACES.indexOf(surface)],
+		);
+		for (const payload of Object.values(PAYLOADS[surface]))
+			expect(parseCloudAskMemberInput(ask(surface, payload)).data.payload).toEqual(payload);
+	});
+
+	it.each(["form", "credential"] as const)("refuses a new %s while preserving stored events", (surface) => {
+		for (const payload of Object.values(PAYLOADS[surface])) {
+			expect(stored(surface, payload).payload).toEqual(payload);
+			expect(() => parseCloudAskMemberInput(ask(surface, payload))).toThrow(CloudToolArgumentRefusal);
+			expect(() => parseCloudAskMemberInput(ask(surface, payload))).toThrow(/cards are unavailable.*Use takeover/);
+		}
+	});
 
 	it.each(CLOUD_INTERACTION_SURFACES.map((surface, index) => [surface, index] as const))(
 		"offers the %s payload the parser accepts: nothing more, nothing it refuses",
@@ -321,11 +343,9 @@ describe("ask_member card shapes", () => {
 			const { minimal, maximal } = PAYLOADS[surface];
 			expect(new Set(valuePaths(maximal))).toEqual(new Set(schemaPaths(schema)));
 			expect(Object.keys(minimal).sort()).toEqual([...(schema.required as string[])].sort());
-			expect(parseCloudAskMemberInput(ask(surface, minimal)).data.payload).toEqual(minimal);
-			expect(parseCloudAskMemberInput(ask(surface, maximal)).data.payload).toEqual(maximal);
-			expect(() => parseCloudAskMemberInput(ask(surface, { ...maximal, extra: true }))).toThrow(
-				CloudToolArgumentRefusal,
-			);
+			expect(stored(surface, minimal).payload).toEqual(minimal);
+			expect(stored(surface, maximal).payload).toEqual(maximal);
+			expect(() => stored(surface, { ...maximal, extra: true })).toThrow(/Invalid interaction request/);
 		},
 	);
 
@@ -393,7 +413,7 @@ describe("ask_member card shapes", () => {
 		(surface, index) => {
 			const accepts = (payload: unknown) => {
 				try {
-					parseCloudAskMemberInput(ask(surface, payload));
+					stored(surface, payload);
 					return true;
 				} catch {
 					return false;

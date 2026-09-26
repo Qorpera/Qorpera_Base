@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AuthController } from "../src/app/auth.ts";
-import { type AccountViewState, renderAccount } from "../src/app/views/account.ts";
+import { renderAccount } from "../src/app/views/account.ts";
+import { renderAppearance } from "../src/app/views/appearance.ts";
 import {
 	applyComposerColor,
 	composerColorPreference,
@@ -32,13 +33,10 @@ afterEach(() => {
 	localStorage.clear();
 });
 
-function account() {
-	const auth = new AuthController(fixture().cloud);
-	auth.store.set({ user: userA });
+function appearance() {
 	const container = document.createElement("div");
 	document.body.append(container);
-	const setState = vi.fn<(next: AccountViewState) => void>();
-	const render = () => renderAccount(auth, container, {}, setState);
+	const render = () => container.replaceChildren(renderAppearance());
 	render();
 	const group = () => container.querySelector<HTMLFieldSetElement>('fieldset[aria-label="Composer color"]')!;
 	const radios = () => [...group().querySelectorAll<HTMLInputElement>("input[type=radio]")];
@@ -48,14 +46,14 @@ function account() {
 		radio.checked = true;
 		radio.dispatchEvent(new Event("change"));
 	};
-	return { container, render, group, radios, checked, choose, setState };
+	return { container, render, group, radios, checked, choose };
 }
 
 describe("composer color preference", () => {
 	it("offers blue, green and grey as cards in Appearance and remembers changes when settings reopen", () => {
-		const view = account();
+		const view = appearance();
 		expect(view.group()).not.toBeNull();
-		expect(view.group().closest("section")?.querySelector("h2")?.textContent).toBe("Appearance");
+		expect(view.group().closest("section")?.querySelector("h1")?.textContent).toBe("Appearance");
 		expect(view.radios().map((radio) => radio.value)).toEqual(["blue", "green", "grey"]);
 		expect(view.radios().map((radio) => radio.closest("label")?.querySelector(".color-swatch")?.className)).toEqual([
 			"settings-swatch color-swatch color-swatch-blue",
@@ -70,11 +68,11 @@ describe("composer color preference", () => {
 			view.render();
 			expect(view.checked()).toBe(color);
 		}
-		expect(view.setState).not.toHaveBeenCalled();
+		expect(view.container.querySelector("[role=alert]")).toBeNull();
 	});
 
 	it("offers System, Light and Dark as cards, the System card showing both halves", () => {
-		const view = account();
+		const view = appearance();
 		const group = view.container.querySelector<HTMLFieldSetElement>('fieldset[aria-label="Theme"]')!;
 		const radios = [...group.querySelectorAll<HTMLInputElement>("input[type=radio]")];
 		expect(radios.map((radio) => radio.value)).toEqual(["system", "light", "dark"]);
@@ -94,12 +92,12 @@ describe("composer color preference", () => {
 				(radio) => radio.checked,
 			)?.value,
 		).toBe("dark");
-		expect(view.setState).not.toHaveBeenCalled();
+		expect(view.container.querySelector("[role=alert]")).toBeNull();
 	});
 
-	it("keeps two rendered groups independent, as the account page and the dialog can both show them", () => {
-		const first = account();
-		const second = account();
+	it("keeps two rendered groups independent", () => {
+		const first = appearance();
+		const second = appearance();
 		expect(first.radios()[0]!.name).not.toBe(second.radios()[0]!.name);
 		second.choose("green");
 		expect(first.checked()).toBe("blue");
@@ -137,7 +135,7 @@ describe("composer color preference", () => {
 
 	it("keeps the saved color and resets the settings control when saving fails", () => {
 		expect(setComposerColorPreference("green")).toBe(true);
-		const view = account();
+		const view = appearance();
 		vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
 			throw new Error("Storage full");
 		});
@@ -145,7 +143,7 @@ describe("composer color preference", () => {
 		expect(view.checked()).toBe("green");
 		expect(composerColorPreference()).toBe("green");
 		expect(document.documentElement.dataset.composerColor).toBe("green");
-		expect(view.setState).toHaveBeenCalledWith({ error: expect.stringMatching(/save.*composer.*color/i) });
+		expect(view.container.querySelector("[role=alert]")?.textContent).toMatch(/save.*composer.*color/i);
 	});
 
 	it("follows changes from other tabs, handles cleared storage and removes its listener on cleanup", () => {
@@ -171,29 +169,31 @@ describe("composer color preference", () => {
 
 describe("General settings", () => {
 	it("ends with Language & region and offers no company link or cloud endpoint override", () => {
-		const view = account();
+		const auth = new AuthController(fixture().cloud);
+		auth.store.set({ user: userA });
+		const view = { container: document.createElement("div") };
+		renderAccount(auth, view.container, {}, () => {});
+		expect(view.container.querySelector("fieldset")).toBeNull();
 		expect([...view.container.querySelectorAll("h2")].map((heading) => heading.textContent)).toEqual([
 			"Account",
-			"Appearance",
 			"Language & region",
 		]);
 		expect(view.container.querySelector("a")).toBeNull();
 		expect(view.container.textContent).not.toContain("All companies");
 		expect(view.container.querySelector("details")).toBeNull();
-		expect(view.container.querySelector('input[type="url"], input[type="text"]')).toBeNull();
+		expect(view.container.querySelector('input[type="url"], input[type="text"]:not(.account-name-input)')).toBeNull();
 		expect(view.container.textContent).not.toContain("Cloud endpoint");
 	});
 
-	it("shows Appearance as the two picture groups alone, named only for screen readers", () => {
-		const view = account();
-		const appearance = view.group().closest("section")!;
-		expect([...appearance.querySelectorAll("fieldset")].map((group) => group.getAttribute("aria-label"))).toEqual([
+	it("shows theme, color and size as three card groups named for screen readers", () => {
+		const view = appearance();
+		const panel = view.group().closest("section")!;
+		expect([...panel.querySelectorAll("fieldset")].map((group) => group.getAttribute("aria-label"))).toEqual([
 			"Theme",
 			"Composer color",
+			"Interface size",
 		]);
-		expect([...appearance.querySelectorAll(".settings-preference")].map((row) => row.children.length)).toEqual([
-			1, 1,
-		]);
-		expect(appearance.textContent).toBe("AppearanceSystemLightDarkBlueGreenGrey");
+		expect([...panel.querySelectorAll(".settings-preference")].map((row) => row.children.length)).toEqual([1, 1, 1]);
+		expect(panel.textContent).toBe("AppearanceSystemLightDarkBlueGreenGreySmallBig");
 	});
 });

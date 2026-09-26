@@ -2,6 +2,13 @@ import type { NativeExecutionConnections } from "@qorpera/cloud-client/cloud-nat
 import type { CloudApi } from "../cloud/api.ts";
 import { CloudRpcError, describeError } from "../cloud/client.ts";
 import type { CodingSession, CodingSessionRead } from "../cloud/coding-session.ts";
+import {
+	type EmailDraftAction,
+	EmailDraftClient,
+	type EmailDraftContent,
+	type EmailDraftEditor,
+	type EmailDraftState,
+} from "../cloud/email-drafts.ts";
 import { type GroupChatDetails, listGroupChatDetails, readGroupChatDetails } from "../cloud/group-details.ts";
 import type { InteractionAnswer, InteractionOutcome, InteractionRequest } from "../cloud/interactions.ts";
 import { buildCompanyHierarchy, type CompanyHierarchy, type HostedCompanyOrganization } from "../cloud/organization.ts";
@@ -13,6 +20,7 @@ import {
 	subscribeProfileRealtime,
 	subscribeSidebarRealtime,
 } from "../cloud/realtime.ts";
+import type { ActionReviewAnswer } from "../cloud/review-rules.ts";
 import { sessionAttachmentProblem } from "../cloud/session-attachments.ts";
 import {
 	type RoomMessageTarget,
@@ -260,6 +268,8 @@ export class CompanyController {
 	readonly store: Store<CompanyState>;
 	readonly conversations = new Map<string, Store<ConversationState>>();
 	readonly #api: CloudApi;
+	#emailDraftClient: EmailDraftClient | undefined;
+	readonly #emailDraftEditors = new Map<string, EmailDraftEditor>();
 	readonly #userId: string;
 	readonly #writeInput: SessionInputWriter;
 	#realtime: RealtimeSubscription | undefined;
@@ -332,6 +342,7 @@ export class CompanyController {
 		if (this.#stopped) return;
 		this.#stopped = true;
 		this.#abort.abort();
+		this.#emailDraftEditors.clear();
 		for (const store of this.conversations.values())
 			store.set({ draft: "", attachments: [], retrySend: undefined, executionSponsor: undefined });
 		this.#realtime?.stop();
@@ -1095,6 +1106,74 @@ export class CompanyController {
 		});
 	}
 
+	/** Editors are company/member scoped and survive navigation and transcript polling. */
+	emailDraftEditor(interactionId: string): EmailDraftEditor {
+		let editor = this.#emailDraftEditors.get(interactionId);
+		if (!editor) {
+			editor = {};
+			this.#emailDraftEditors.set(interactionId, editor);
+		}
+		return editor;
+	}
+
+	async loadEmailDraft(sessionId: string, interactionId: string): Promise<EmailDraftState> {
+		this.signal.throwIfAborted();
+		if (this.store.get().accessLost || !this.store.get().team?.capabilities.read)
+			throw new Error(t("This conversation is not available for sending."));
+		this.#emailDraftClient ??= new EmailDraftClient(this.#api.cloud, this.#userId, this.signal);
+		return this.#notifyEmailDraft(
+			sessionId,
+			interactionId,
+			await this.#emailDraftClient.read(sessionId, interactionId),
+		);
+	}
+
+	async actEmailDraft(
+		sessionId: string,
+		interactionId: string,
+		action: EmailDraftAction,
+		content: EmailDraftContent,
+	): Promise<EmailDraftState> {
+		this.assertCanSend(sessionId);
+		this.#emailDraftClient ??= new EmailDraftClient(this.#api.cloud, this.#userId, this.signal);
+		const result = await this.#notifyEmailDraft(
+			sessionId,
+			interactionId,
+			await this.#emailDraftClient.act(sessionId, interactionId, action, content, this.#answerSponsor(sessionId)),
+		);
+		// The broker records delivery before the answer. Never optimistically mark an email sent.
+		if (!this.#stopped && (result.status === "sent" || result.status === "discarded")) {
+			void this.loadConversation(sessionId);
+			void this.refreshActivity();
+			this.#watchWork(20_000);
+		}
+		return result;
+	}
+
+	async #notifyEmailDraft(sessionId: string, interactionId: string, state: EmailDraftState): Promise<EmailDraftState> {
+		if (!state.notificationPending || !state.actionId || (state.status !== "sent" && state.status !== "discarded"))
+			return state;
+		try {
+			this.assertCanSend(sessionId);
+			// The kernel replaces this empty answer with its durable provider receipt.
+			// Retrying only the notification cannot invoke Gmail again.
+			await this.#api.answerInteraction(
+				sessionId,
+				state.actionId,
+				interactionId,
+				state.status,
+				{},
+				this.#answerSponsor(sessionId),
+			);
+			void this.loadConversation(sessionId);
+			void this.refreshActivity();
+			this.#watchWork(20_000);
+			return { ...state, notificationPending: false };
+		} catch {
+			return state; // Keep the confirmed delivery visible while notification is pending.
+		}
+	}
+
 	/** Answer a card the agent raised in this thread. The answer is sent like a
 	 * message and shows on the card at once; the kernel refuses a second answer,
 	 * an expired card, or a member who does not answer it (answersInteraction). */
@@ -1142,6 +1221,77 @@ export class CompanyController {
 		}
 		void this.loadConversation(sessionId);
 		// The answer wakes the agent, as a message does; watch for its run.
+		void this.refreshActivity();
+		this.#watchWork(20_000);
+	}
+
+	/** Answer an approval card of an agent's action (bundle v130): Allow once,
+	 * Always allow (saves `ruleText` as a company rule) or Deny. The card shows the
+	 * answer at once; the kernel refuses a member the card does not wait for
+	 * (answersActionReview). If the agent stopped waiting, the answer wakes it on
+	 * the member's selected model account; while it still waits, none is needed. */
+	async answerActionReview(
+		sessionId: string,
+		reviewId: string,
+		answer: ActionReviewAnswer,
+		ruleText?: string,
+	): Promise<void> {
+		const store = this.conversation(sessionId);
+		const key = reviewId.toLowerCase();
+		if (store.get().interactionAnswers?.[key]) return;
+		try {
+			this.assertCanSend(sessionId);
+		} catch (error) {
+			// Say why on the thread (an archived conversation, no write access), not silently.
+			store.set({ interactionError: answerRefusal(error) });
+			throw error;
+		}
+		store.set({
+			interactionAnswers: {
+				...store.get().interactionAnswers,
+				[key]: {
+					outcome: answer === "deny" ? "declined" : "approved",
+					answer: { answer },
+					answeredBy: this.#userId,
+					answeredAt: new Date().toISOString(),
+					pending: true,
+				},
+			},
+			interactionError: undefined,
+		});
+		try {
+			const selected = this.conversation(sessionId).get().executionSponsor;
+			const receipt = await this.#api
+				.answerActionReview(
+					reviewId,
+					crypto.randomUUID(),
+					answer,
+					ruleText,
+					selected
+						? { sponsorBindingId: selected.sponsorBindingId, sponsorVersion: selected.sponsorVersion }
+						: undefined,
+				)
+				.catch((error: unknown) => {
+					if (error instanceof CloudRpcError && error.missing)
+						throw new Error(t("Approvals are not available here yet. Reply in a message instead."));
+					throw error;
+				});
+			const sent = store.get().interactionAnswers?.[key];
+			if (sent)
+				store.set({
+					interactionAnswers: { ...store.get().interactionAnswers, [key]: { ...sent, inputId: receipt.inputId } },
+				});
+		} catch (error) {
+			const { [key]: _dropped, ...rest } = store.get().interactionAnswers ?? {};
+			store.set({
+				interactionAnswers: Object.keys(rest).length ? rest : undefined,
+				interactionError: answerRefusal(error),
+			});
+			// Someone else may have answered first: show the card as it is now.
+			void this.loadConversation(sessionId);
+			throw error;
+		}
+		void this.loadConversation(sessionId);
 		void this.refreshActivity();
 		this.#watchWork(20_000);
 	}

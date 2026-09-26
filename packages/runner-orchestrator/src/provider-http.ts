@@ -125,8 +125,14 @@ export class CloudRunnerProviderRequestError extends Error {
 	/** Set when the provider answered a typed admission refusal (ceiling or node chooser). */
 	readonly admission: CloudRunnerProviderAdmissionRefusal | undefined;
 
-	constructor(status: number, admission?: CloudRunnerProviderAdmissionRefusal) {
-		super(`Runner provider request failed (${status})`);
+	constructor(
+		status: number,
+		admission?: CloudRunnerProviderAdmissionRefusal,
+		action?: CloudRunnerProviderRequest["action"],
+	) {
+		// This code comes from our request, never backend error text. It survives
+		// durable error redaction and distinguishes acquisition from delivery.
+		super(`Runner provider request failed (${status})${action ? ` [code=PROVIDER_${action.toUpperCase()}]` : ""}`);
 		this.name = "CloudRunnerProviderRequestError";
 		this.status = status;
 		this.admission = admission;
@@ -268,7 +274,11 @@ export class HttpCloudRunnerProviderAdapter implements CloudRunnerProviderAdapte
 			signal: requestSignal,
 		});
 		if (!response.ok)
-			throw new CloudRunnerProviderRequestError(response.status, await providerAdmissionRefusal(response));
+			throw new CloudRunnerProviderRequestError(
+				response.status,
+				await providerAdmissionRefusal(response),
+				body.action,
+			);
 		const encoded = await response.text();
 		if (Buffer.byteLength(encoded) > PROVIDER_RESPONSE_LIMIT_BYTES) {
 			throw new Error("Runner provider response exceeds its byte limit");
