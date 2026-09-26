@@ -21,6 +21,8 @@ import type { JsonValue } from "@qorpera/contracts";
 import { parseCompanyComputerScreenshotAsset } from "./cloud-company-computer-screenshots.ts";
 import { type CloudCompanyPathPresence, observeCloudCompanyPathPresence } from "./cloud-company-path-presence.ts";
 import {
+	CloudCompanyPathParentMissing,
+	CloudCompanyPathRpcParentMissing,
 	CloudCompanyPathRpcPrecondition,
 	CloudCompanyPathRpcRefusal,
 	CloudCompanyPathToolRefusal,
@@ -909,6 +911,10 @@ export class CloudCompanyPathGateway {
 				// whole: at any stage this is a definite "changed, nothing written".
 				if (error instanceof CloudCompanyPathRpcPrecondition && !signal.aborted)
 					throw new CloudCompanyPathVersionChanged();
+				// Each of them also checks the path's folder (20260926203300); check runs first, so a
+				// missing folder is normally refused before presence and before any bytes are staged.
+				if (error instanceof CloudCompanyPathRpcParentMissing && !signal.aborted)
+					throw new CloudCompanyPathParentMissing();
 				throw error;
 			}
 		};
@@ -944,6 +950,14 @@ export class CloudCompanyPathGateway {
 					errorCategory: preparation.result.state === "proposed" ? "protected_path" : null,
 				});
 				return preparation.result;
+			}
+			// SQL checked the plan's own folder at check and prepare. Missing from the entries prepare
+			// listed, it was deleted in between; nothing of this plan is committed yet, so that is still
+			// a definite refusal. (The approval lane stages the same way but never gets this brand.)
+			if (preparation.state === "ready" && next !== null && path.includes("/")) {
+				const folder = path.slice(0, path.lastIndexOf("/"));
+				if (!preparation.entries.some((candidate) => candidate.path === folder && candidate.kind === "directory"))
+					throw new CloudCompanyPathParentMissing();
 			}
 			const tree =
 				preparation.state === "ready"
@@ -1068,7 +1082,7 @@ export class CloudCompanyPathGateway {
 			registered.push({
 				name: `company_${operation}` satisfies CloudRuntimeToolOperation,
 				source: "company_file",
-				description: `${operation === "write" ? "Write UTF-8 text (up to 32 KiB), or copy a completed shared export (up to 8 MiB) selected by object_storage assetId and sha256" : operation === "mkdir" ? "Create one directory" : "Propose deleting one file or empty directory"} in the live Company File. Read first and supply its exact opaque version, or null only for an unseen absent path. If the path changed since, the result is COMPANY_FILE_VERSION_CHANGED and nothing was written: read it again and make the change on its current version. Keep operationKey stable for the same intended change. Protected changes return a proposal, not a completed edit; only a human can approve it. Never retry different content or a different source under the same key.`,
+				description: `${operation === "write" ? "Write UTF-8 text (up to 32 KiB), or copy a completed shared export (up to 8 MiB) selected by object_storage assetId and sha256" : operation === "mkdir" ? "Create one directory" : "Propose deleting one file or empty directory"} in the live Company File. Read first and supply its exact opaque version, or null only for an unseen absent path.${operation === "delete" ? "" : " The folder it goes in must already exist: create missing folders with company_mkdir first, outermost first. Otherwise the result is COMPANY_FILE_PARENT_MISSING and nothing was written."} If the path changed since, the result is COMPANY_FILE_VERSION_CHANGED and nothing was written: read it again and make the change on its current version. Keep operationKey stable for the same intended change. Protected changes return a proposal, not a completed edit; only a human can approve it. Never retry different content or a different source under the same key.`,
 				inputSchema:
 					operation === "write"
 						? {
