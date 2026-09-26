@@ -61,6 +61,10 @@ export interface TranscriptCard {
 	actorUserId: string;
 	body: JsonValue;
 	createdAt: string;
+	/** An approval card's answer still on its way (queued, not yet in the transcript). */
+	answer?: InteractionAnswer;
+	/** An answer was given and its delivery failed: the card is open again. */
+	answerFailed?: boolean;
 }
 
 export interface TranscriptPeerLink {
@@ -309,6 +313,7 @@ export function projectTranscript(
 	let lastSequence = 0;
 	const inputIds = new Set<string>();
 	const interactions = new Map<string, TranscriptInteraction>();
+	const cards = new Map<string, TranscriptCard>();
 	const answers = new Map<string, InteractionAnswer>();
 	const failedAnswers = new Set<string>();
 	const legacyParts = new Map<string, { count: number; parts: (string | null)[]; event: HostedSessionEvent }>();
@@ -316,14 +321,16 @@ export function projectTranscript(
 		lastSequence = Math.max(lastSequence, event.sequence);
 		if (event.sessionInputId) inputIds.add(event.sessionInputId);
 		if (event.eventType === "authorization_request" || event.eventType === "authorization_decision") {
-			items.push({
+			const card: TranscriptCard = {
 				kind: event.eventType,
 				id: event.eventId,
 				sequence: event.sequence,
 				actorUserId: event.actorUserId,
 				body: event.body,
 				createdAt: event.createdAt,
-			});
+			};
+			if (event.eventType === "authorization_request") cards.set(event.eventId.toLowerCase(), card);
+			items.push(card);
 			continue;
 		}
 		if (event.eventType === "interaction_request") {
@@ -474,11 +481,11 @@ export function projectTranscript(
 		});
 	}
 	for (const [interactionId, answer] of answers) {
-		const interaction = interactions.get(interactionId);
+		const interaction = interactions.get(interactionId) ?? cards.get(interactionId);
 		if (interaction) interaction.answer = answer;
 	}
 	for (const interactionId of failedAnswers) {
-		const interaction = interactions.get(interactionId);
+		const interaction = interactions.get(interactionId) ?? cards.get(interactionId);
 		if (interaction && !interaction.answer) interaction.answerFailed = true;
 	}
 	items.sort((a, b) => (a.sequence === b.sequence ? a.createdAt.localeCompare(b.createdAt) : a.sequence - b.sequence));

@@ -86,6 +86,262 @@ function company() {
 	return { ...f, controller, write };
 }
 
+describe("answering an approval card of an agent's action (auto-review, v130)", () => {
+	const reviewed = {
+		reviewId: id(597),
+		answer: "allow_once" as const,
+		inputId: id(598),
+		savedRuleId: null,
+		woke: false,
+	};
+
+	it("answers on the member's selected model account and shows the answer at once", async () => {
+		const f = company();
+		const answer = vi.spyOn(f.api, "answerActionReview").mockResolvedValue(reviewed);
+		await f.controller.answerActionReview(session.sessionId, id(597), "allow_once");
+		expect(answer).toHaveBeenCalledOnce();
+		expect(answer.mock.calls[0]!.slice(2)).toEqual([
+			"allow_once",
+			undefined,
+			{ sponsorBindingId: id(81), sponsorVersion: 1 },
+		]);
+		const saved = f.controller.conversation(session.sessionId).get().interactionAnswers?.[id(597)];
+		expect(saved).toMatchObject({ outcome: "approved", answer: { answer: "allow_once" }, inputId: id(598) });
+	});
+
+	it("saves the edited rule with Always allow, and records Deny as declined", async () => {
+		const f = company();
+		const answer = vi.spyOn(f.api, "answerActionReview").mockResolvedValue({ ...reviewed, answer: "always_allow" });
+		await f.controller.answerActionReview(session.sessionId, id(597), "always_allow", "renewing our domains");
+		expect(answer.mock.calls[0]!.slice(2, 4)).toEqual(["always_allow", "renewing our domains"]);
+		answer.mockResolvedValue({ ...reviewed, reviewId: id(599), answer: "deny" });
+		await f.controller.answerActionReview(session.sessionId, id(599), "deny");
+		expect(f.controller.conversation(session.sessionId).get().interactionAnswers?.[id(599)]?.outcome).toBe(
+			"declined",
+		);
+	});
+
+	it("still answers a waiting card without a selected account; the kernel needs one only to wake the agent", async () => {
+		const f = company();
+		f.controller.conversation(session.sessionId).set({ executionSponsor: undefined });
+		const answer = vi.spyOn(f.api, "answerActionReview").mockResolvedValue(reviewed);
+		await f.controller.answerActionReview(session.sessionId, id(597), "allow_once");
+		expect(answer.mock.calls[0]![4]).toBeUndefined();
+	});
+
+	function review(sequence: number, approverScope: "member" | "owners_admins"): HostedSessionEvent {
+		const eventId = id(4000 + sequence);
+		return {
+			...event(sequence),
+			eventId,
+			actorUserId: userA.id,
+			sessionInputId: undefined,
+			eventType: "authorization_request",
+			body: {
+				schema: "qorpera.runner-transcript-entry/v1",
+				entry: {
+					type: "custom",
+					customType: "authorization_request",
+					id: eventId,
+					parentId: null,
+					timestamp: "2026-09-25T10:00:00.000Z",
+					data: {
+						schema: "qorpera.action-review/v1",
+						reviewId: eventId,
+						title: "Send an email",
+						summary: "The company asks first before emailing outside the company.",
+						target: "bob@acme.test",
+						rules: [
+							{ id: id(4999), scope: "company", when: "emailing outside the company", outcome: "ask_first" },
+						],
+						approverScope,
+						...(approverScope === "member" ? { approverUserId: userB.id, approverName: "Bea" } : {}),
+						alwaysAllow: false,
+					},
+				},
+			},
+		};
+	}
+
+	it("draws the approval card with its outcome, never a second card for its decision, and answers it", async () => {
+		const f = company();
+		f.controller.store.set({ loading: false });
+		const decided = review(1, "owners_admins");
+		const decision: HostedSessionEvent = {
+			...event(2),
+			eventId: id(4100),
+			actorUserId: userA.id,
+			sessionInputId: id(4101),
+			eventType: "authorization_decision",
+			body: {
+				schema: "qorpera.runner-transcript-entry/v1",
+				entry: {
+					type: "custom",
+					customType: "authorization_decision",
+					id: id(4101),
+					parentId: null,
+					timestamp: "2026-09-25T10:01:00.000Z",
+					data: {
+						schema: "qorpera.interaction-answer/v1",
+						interactionId: decided.eventId,
+						requestEventId: decided.eventId,
+						surface: "approval",
+						outcome: "approved",
+						decision: "approved",
+						answer: { answer: "allow_once" },
+						answeredBy: userA.id,
+					},
+				},
+			},
+		};
+		vi.mocked(f.api.readSessionEvents).mockResolvedValue([
+			decided,
+			decision,
+			review(3, "owners_admins"),
+			review(4, "member"),
+		]);
+		const answer = vi.spyOn(f.api, "answerActionReview").mockResolvedValue(reviewed);
+		void f.controller.loadConversation(session.sessionId);
+		const view = new ConversationView(f.controller, session.sessionId, {
+			sendMessage: (sessionId, text) => f.controller.sendPrompt(sessionId, text),
+		});
+		cleanup.push(() => view.dispose());
+		document.body.append(view.el);
+		await settle();
+		expect(view.el.querySelectorAll(".auth-card")).toHaveLength(3);
+		const cards = [...view.el.querySelectorAll<HTMLElement>(".action-review-card")];
+		expect(cards.map((card) => card.dataset.decisionState)).toEqual(["approved", "pending", "pending"]);
+		expect(cards[0]!.querySelector("button")).toBeNull();
+		// An owner answers a company rule's card; a personal rule's card waits for its member.
+		expect(cards[2]!.querySelector("button")).toBeNull();
+		expect(cards[2]!.textContent).toContain("Waiting for Bea to approve.");
+		[...cards[1]!.querySelectorAll("button")].find((button) => button.textContent === "Allow once")!.click();
+		await settle();
+		expect(answer).toHaveBeenCalledWith(id(4003), expect.any(String), "allow_once", undefined, {
+			sponsorBindingId: id(81),
+			sponsorVersion: 1,
+		});
+		// The answered card keeps the keyboard through the redraws that follow the answer.
+		expect(document.activeElement).toBe(
+			[...view.el.querySelectorAll<HTMLElement>(".action-review-card")].find(
+				(card) => card.dataset.reviewId === id(4003),
+			),
+		);
+	});
+
+	it("takes the controls away when the conversation is closed, and keeps an Always allow draft across redraws", async () => {
+		const f = company();
+		f.controller.store.set({ loading: false });
+		const card = review(5, "owners_admins");
+		const data = (card.body as { entry: { data: Record<string, unknown> } }).entry.data;
+		data.builtIn = "money";
+		data.alwaysAllow = true;
+		data.proposedRule = "paying for anything";
+		vi.mocked(f.api.readSessionEvents).mockResolvedValue([card]);
+		void f.controller.loadConversation(session.sessionId);
+		const view = new ConversationView(f.controller, session.sessionId, {
+			sendMessage: (sessionId, text) => f.controller.sendPrompt(sessionId, text),
+		});
+		cleanup.push(() => view.dispose());
+		document.body.append(view.el);
+		await settle();
+		const open = () => view.el.querySelector<HTMLElement>(".action-review-card")!;
+		[...open().querySelectorAll("button")].find((button) => button.textContent === "Always allow…")!.click();
+		const input = open().querySelector<HTMLInputElement>(".review-rule-input")!;
+		input.focus();
+		input.value = "paying invoices under 100 EUR";
+		input.dispatchEvent(new Event("input"));
+		input.setSelectionRange(7, 15);
+		// Something else in the thread changes: the card is drawn again.
+		f.controller.store.set({ team: { ...team, members: [...team.members] } });
+		vi.mocked(f.api.readSessionEvents).mockResolvedValue([card, event(6)]);
+		await f.controller.loadConversation(session.sessionId);
+		await settle();
+		const redrawn = open().querySelector<HTMLInputElement>(".review-rule-input")!;
+		expect(redrawn.closest<HTMLElement>(".review-always")!.hidden).toBe(false);
+		expect(redrawn.value).toBe("paying invoices under 100 EUR");
+		expect(document.activeElement).toBe(redrawn);
+		expect([redrawn.selectionStart, redrawn.selectionEnd]).toEqual([7, 15]);
+		// A refused answer keeps the rule as the member narrowed it.
+		vi.spyOn(f.api, "answerActionReview").mockRejectedValue(
+			new Error("Select an active model account, then try again."),
+		);
+		[...open().querySelectorAll("button")].find((button) => button.textContent === "Save rule and allow")!.click();
+		await settle();
+		expect(open().dataset.decisionState).toBe("pending");
+		const kept = open().querySelector<HTMLInputElement>(".review-rule-input")!;
+		expect(kept.closest<HTMLElement>(".review-always")!.hidden).toBe(false);
+		expect(kept.value).toBe("paying invoices under 100 EUR");
+		expect(document.activeElement).toBe(open());
+		// The conversation is closed: no controls the cloud would refuse.
+		f.controller.store.set({ sessions: [{ ...session, status: "closed" }] });
+		await settle();
+		expect(open().querySelector("button")).toBeNull();
+	});
+
+	it("shows an answer still on its way on the card, and opens it again when its delivery failed", async () => {
+		const f = company();
+		f.controller.store.set({ loading: false });
+		const card = review(7, "owners_admins");
+		vi.mocked(f.api.readSessionEvents).mockResolvedValue([card]);
+		vi.mocked(f.api.listSessionInputs).mockResolvedValue({
+			items: [
+				{
+					inputId: id(4201),
+					position: 9,
+					kind: "user_message",
+					authorUserId: userB.id,
+					authorDisplayName: "Bea",
+					body: {
+						schema: "qorpera.interaction-answer/v1",
+						interactionId: card.eventId,
+						surface: "approval",
+						outcome: "approved",
+						answer: { answer: "allow_once" },
+					},
+					createdAt: "2026-09-25T10:02:00.000Z",
+					status: "queued",
+				},
+			],
+			hasMore: false,
+			nextAfterPosition: 9,
+		});
+		void f.controller.loadConversation(session.sessionId);
+		const view = new ConversationView(f.controller, session.sessionId, {
+			sendMessage: (sessionId, text) => f.controller.sendPrompt(sessionId, text),
+		});
+		cleanup.push(() => view.dispose());
+		document.body.append(view.el);
+		await settle();
+		const shown = () => view.el.querySelector<HTMLElement>(".action-review-card")!;
+		expect(shown().dataset.decisionState).toBe("approved");
+		expect(shown().querySelector("button")).toBeNull();
+		// The answer never reached the agent: the card is open again for whoever answers it.
+		const queued = (await f.api.listSessionInputs(session.sessionId, 0)).items[0]!;
+		vi.mocked(f.api.listSessionInputs).mockResolvedValue({
+			items: [{ ...queued, status: "failed", failureReason: "The selected sponsor quota is unavailable" }],
+			hasMore: false,
+			nextAfterPosition: 9,
+		});
+		await f.controller.loadConversation(session.sessionId);
+		await settle();
+		expect(shown().dataset.decisionState).toBe("pending");
+		expect(shown().textContent).toContain("That answer did not reach the agent. Answer again.");
+		expect([...shown().querySelectorAll("button")].map((button) => button.textContent)).toContain("Allow once");
+	});
+
+	it("keeps the card open, saying why, where the cloud has no approvals yet", async () => {
+		const f = company();
+		vi.spyOn(f.api, "answerActionReview").mockRejectedValue(
+			new CloudRpcError("qorpera_answer_action_review", { code: "PGRST202", message: "Could not find" }, 404),
+		);
+		await expect(f.controller.answerActionReview(session.sessionId, id(597), "allow_once")).rejects.toThrow();
+		const state = f.controller.conversation(session.sessionId).get();
+		expect(state.interactionError).toBe("Approvals are not available here yet. Reply in a message instead.");
+		expect(state.interactionAnswers).toBeUndefined();
+	});
+});
+
 describe("answering a card", () => {
 	const thread: HostedSession = {
 		...session,
@@ -554,12 +810,109 @@ describe("agent execution state", () => {
 		expect(state(row("leased", "working"))).toBe("working");
 		expect(state(row("completed", "needs_attention"))).toBe("decision");
 		expect(state(row("failed", "needs_attention"))).toBe("failed");
-		expect(state(row("cancelled", "needs_attention"))).toBe("failed");
 		// A failed run that left Company File changes waits on a decision.
-		expect(state(row("cancelled", "needs_attention"), { [id(70)]: recovery({ proposalId: id(71) }) })).toBe(
-			"decision",
-		);
+		expect(state(row("failed", "needs_attention"), { [id(70)]: recovery({ proposalId: id(71) }) })).toBe("decision");
+		// A run a member stopped is never a failure. The cloud lists one only while the
+		// Company File changes it left wait, so it is a decision until its details say
+		// it left none; then it is settled (an older cloud still lists every stop).
+		const stopped = (extra: Partial<HostedRunRecovery> = {}) => ({
+			[id(70)]: recovery({ jobStatus: "cancelled", ...extra }),
+		});
+		expect(state(row("cancelled", "needs_attention"))).toBe("decision");
+		expect(state(row("cancelled", "needs_attention"), stopped({ proposalId: id(71) }))).toBe("decision");
+		expect(state(row("cancelled", "needs_attention"), stopped())).toBe("idle");
 		expect(company.agentState(undefined)).toBe("idle");
+	});
+
+	it("never reads a run a member stopped as a failure, and never offers to repeat it", () => {
+		const { company } = controller();
+		const stopped = { ...row("cancelled", "needs_attention"), sourceKind: "room_delivery" as const };
+		const details = recovery({
+			sourceKind: "room_delivery",
+			jobStatus: "cancelled",
+			lastError: "Runner job was cancelled by a company member",
+		});
+		// An older cloud still lists the stop, ranked above the agent's other work.
+		company.store.set({ team, activity: [stopped], recoveries: { [id(70)]: details } });
+		expect(company.agentState(staff.id)).toBe("idle");
+		expect(company.activityFor(staff.id)).toBeUndefined();
+		expect(company.failedRunFor(staff.id)).toBeUndefined();
+		// Try again is for failures: the same post, had it failed, could be tried again.
+		expect(
+			company.canRetryFailedRun({
+				activity: { ...stopped, jobStatus: "failed" },
+				recovery: { ...details, jobStatus: "failed" },
+			}),
+		).toBe(true);
+		expect(company.canRetryFailedRun({ activity: stopped, recovery: details })).toBe(false);
+		// A stop that left Company File changes asks for that decision, still without Try again.
+		company.store.set({ recoveries: { [id(70)]: { ...details, proposalId: id(71) } } });
+		expect(company.agentState(staff.id)).toBe("decision");
+		const decision = company.failedRunFor(staff.id);
+		expect(decision?.recovery?.proposalId).toBe(id(71));
+		expect(company.canRetryFailedRun(decision!)).toBe(false);
+		// Until its details arrive, a listed stop shows no line at all.
+		company.store.set({ recoveries: {} });
+		expect(company.agentState(staff.id)).toBe("decision");
+		expect(company.failedRunFor(staff.id)).toBeUndefined();
+	});
+
+	it("acknowledges a stop an older cloud still lists, so the work it hid shows again", async () => {
+		const { api, company } = controller();
+		company.store.set({ team });
+		const working = { ...row("leased", "working"), runId: id(72), sourceKind: "wake" as const };
+		vi.spyOn(api, "getRunRecovery").mockResolvedValue(recovery({ jobStatus: "cancelled" }));
+		// Acknowledged, the stop no longer outranks the routine run it hid.
+		const acknowledge = vi.spyOn(api, "acknowledgeFailedRun").mockImplementation(async () => {
+			vi.mocked(api.listStaffActivity).mockResolvedValue([working]);
+		});
+		vi.mocked(api.listStaffActivity).mockResolvedValue([row("cancelled", "needs_attention")]);
+		await company.refreshActivity();
+		await settle();
+		expect(acknowledge).toHaveBeenCalledExactlyOnceWith(id(70));
+		expect(company.agentState(staff.id)).toBe("working");
+		expect(company.activityFor(staff.id)?.runId).toBe(id(72));
+		await company.refreshActivity();
+		await settle();
+		expect(acknowledge).toHaveBeenCalledOnce();
+	});
+
+	it("leaves a stop's decision and a reader's company alone, and tries a refused acknowledgment again", async () => {
+		const reader = controller();
+		reader.company.store.set({ team: { ...team, capabilities: { ...team.capabilities, write: false } } });
+		vi.spyOn(reader.api, "getRunRecovery").mockResolvedValue(recovery({ jobStatus: "cancelled" }));
+		const readerAcknowledge = vi.spyOn(reader.api, "acknowledgeFailedRun").mockResolvedValue();
+		vi.mocked(reader.api.listStaffActivity).mockResolvedValue([row("cancelled", "needs_attention")]);
+		await reader.company.refreshActivity();
+		await settle();
+		// A reader writes nothing; the stop still reads as settled.
+		expect(readerAcknowledge).not.toHaveBeenCalled();
+		expect(reader.company.agentState(staff.id)).toBe("idle");
+		const writer = controller();
+		writer.company.store.set({ team });
+		vi.spyOn(writer.api, "getRunRecovery").mockResolvedValue(
+			recovery({ jobStatus: "cancelled", proposalId: id(71) }),
+		);
+		const acknowledge = vi.spyOn(writer.api, "acknowledgeFailedRun").mockRejectedValueOnce(new Error("offline"));
+		vi.mocked(writer.api.listStaffActivity).mockResolvedValue([row("cancelled", "needs_attention")]);
+		await writer.company.refreshActivity();
+		await settle();
+		// Its Company File changes wait for a decision, which acknowledging would not make.
+		expect(acknowledge).not.toHaveBeenCalled();
+		expect(writer.company.agentState(staff.id)).toBe("decision");
+		// Decided: now it is a plain stop. The first acknowledgment does not reach the cloud.
+		writer.company.store.set({ recoveries: { [id(70)]: recovery({ jobStatus: "cancelled" }) } });
+		await writer.company.refreshActivity();
+		await settle();
+		expect(acknowledge).toHaveBeenCalledOnce();
+		expect(writer.company.agentState(staff.id)).toBe("idle");
+		acknowledge.mockResolvedValue();
+		await writer.company.refreshActivity();
+		await settle();
+		expect(acknowledge).toHaveBeenCalledTimes(2);
+		await writer.company.refreshActivity();
+		await settle();
+		expect(acknowledge).toHaveBeenCalledTimes(2);
 	});
 
 	// Recovery reads are timed with performance.now(), so the fake clock must drive it too.
@@ -679,16 +1032,21 @@ describe("agent execution state", () => {
 		expect(company.agentState(staff.id)).toBe("decision");
 	});
 
-	it("dismisses the agent's failure when the member sends a new message", async () => {
+	// A stop already reads as settled, but an older cloud still ranks it above the
+	// new message's run, so sending dismisses it the same way.
+	it.each([
+		["failed", "failed"],
+		["cancelled", "idle"],
+	] as const)("dismisses the agent's %s run when the member sends a new message", async (jobStatus, before) => {
 		const { api, controller, write } = company();
 		// The thread belongs to the agent whose run failed.
 		controller.store.set({ sessions: [{ ...session, staffAgentId: staff.id }] });
-		const read = vi.spyOn(api, "getRunRecovery").mockResolvedValue(recovery());
+		const read = vi.spyOn(api, "getRunRecovery").mockResolvedValue(recovery({ jobStatus }));
 		const acknowledge = vi.spyOn(api, "acknowledgeFailedRun").mockResolvedValue();
-		vi.mocked(api.listStaffActivity).mockResolvedValue([row("failed", "needs_attention")]);
+		vi.mocked(api.listStaffActivity).mockResolvedValue([row(jobStatus, "needs_attention")]);
 		await controller.refreshActivity();
 		await settle();
-		expect(controller.agentState(staff.id)).toBe("failed");
+		expect(controller.agentState(staff.id)).toBe(before);
 		expect(read).toHaveBeenCalledTimes(1);
 		vi.mocked(api.listStaffActivity).mockResolvedValue([]);
 		expect(await controller.sendPrompt(session.sessionId, "Once more, please.")).toBe(true);

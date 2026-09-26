@@ -1,4 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
+import type {
+	CompanyComputerFileExportAsset,
+	ObjectStorageFileSelection,
+} from "@qorpera/cloud-client/cloud-file-transfer";
 import type { CloudCompanyPathPlan } from "@qorpera/cloud-client/company-path-schema";
 import type { CloudCompanyTreeEntry } from "@qorpera/cloud-client/node/cloud-company-snapshot";
 import { CloudContentAddressedStore, type CloudObjectTransport } from "@qorpera/cloud-client/node/cloud-object-store";
@@ -27,9 +31,13 @@ function status(code: string): number {
  * the plain trusted read/list and the governed check/prepare/commit RPCs are
  * emulated, with the migrations' order of checks: a completed operation key
  * replays first; then a stale expected version is PT412
- * (20260828019950_company_path_preconditions); a moved head at commit is PT409;
+ * (20260828019950_company_path_preconditions); a new entry whose folder is not
+ * a directory is PT424 (20260926203300_company_file_missing_parent), in check,
+ * prepare and commit alike; a moved head at commit is PT409;
  * a continuation page on a moved snapshot is PT412
- * (20260828019960_runtime_request_preconditions). A deletion leaves a
+ * (20260828019960_runtime_request_preconditions). A write from a shared export
+ * (qorpera_native_company_file_write) checks its source, then takes the same
+ * check, prepare or commit (20260908003200). A deletion leaves a
  * tombstone that keeps a version, as qorpera_publish_company_path does, so
  * recreating the path must name it. Authority is not modelled.
  */
@@ -52,6 +60,7 @@ export function companyFilePostgrest() {
 	const store = new CloudContentAddressedStore(transport);
 	const entries = new Map<string, { version: string; entry: CloudCompanyTreeEntry | null }>();
 	const receipts = new Map<string, unknown>();
+	const exports = new Map<string, CompanyComputerFileExportAsset>();
 	let head = randomUUID();
 	/** Every RPC as it crossed HTTP, with the status PostgREST answered. */
 	const requests: { method: string; path: string | null; status: number }[] = [];
@@ -86,6 +95,26 @@ export function companyFilePostgrest() {
 		entries.set(path, { version: randomUUID(), entry: { kind: "file", path, executable: false, file } });
 		moveHead();
 	};
+	/** A completed shared export the run may copy into the Company File. */
+	const seedExport = (bytes: Uint8Array): ObjectStorageFileSelection => {
+		const asset: CompanyComputerFileExportAsset = {
+			schema: "qorpera.file-transfer-asset/v1",
+			assetId: randomUUID(),
+			sha256: createHash("sha256").update(bytes).digest("hex"),
+			bytes: bytes.length,
+			mediaType: "application/octet-stream",
+			source: {
+				realm: "company_computer",
+				companyComputerId: randomUUID(),
+				screenId: randomUUID(),
+				path: "out.bin",
+			},
+			destination: { realm: "object_storage" },
+		};
+		exports.set(asset.assetId, asset);
+		objects.set(`${identity.companyId}/${asset.sha256}`, Uint8Array.from(bytes));
+		return { realm: "object_storage", assetId: asset.assetId, sha256: asset.sha256 };
+	};
 	const text = async (path: string): Promise<string | null> => {
 		const found = entries.get(path)?.entry;
 		if (!found || found.kind !== "file") return null;
@@ -103,6 +132,9 @@ export function companyFilePostgrest() {
 			throw new FakeSqlError("PT412", "Company File path version changed");
 		if (plan.entry === null && !current?.entry)
 			throw new FakeSqlError("PT412", "Company File deletion target is unavailable");
+		const folder = parent(plan.path);
+		if (plan.entry !== null && folder && entries.get(folder)?.entry?.kind !== "directory")
+			throw new FakeSqlError("PT424", "Company File parent folder is missing");
 	};
 	const sql = async (method: string, args: Record<string, unknown>): Promise<unknown> => {
 		if (method === "qorpera_verify_company_path_file") return null;
@@ -155,6 +187,21 @@ export function companyFilePostgrest() {
 			}));
 			const hasMore = visible.length > limit;
 			return { snapshotId: head, items, hasMore, nextAfter: hasMore ? items.at(-1)!.path : null };
+		}
+		if (method === "qorpera_native_company_file_write_source" || method === "qorpera_native_company_file_write") {
+			const source = args.p_source as ObjectStorageFileSelection;
+			const asset = exports.get(source.assetId);
+			if (!asset || asset.sha256 !== source.sha256) throw new FakeSqlError("42501", "Export is unavailable");
+			if (method === "qorpera_native_company_file_write_source") return asset;
+			const action = args.p_action as string;
+			return sql(
+				action === "check"
+					? "qorpera_check_company_path_mutation"
+					: action === "prepare"
+						? "qorpera_prepare_company_path_mutation"
+						: "qorpera_commit_company_path_mutation",
+				args,
+			);
 		}
 		const plan = args.p_plan as CloudCompanyPathPlan;
 		const receipt = receipts.get(plan.operationKey);
@@ -227,11 +274,13 @@ export function companyFilePostgrest() {
 		identity,
 		gateway,
 		store,
+		objects,
 		entries,
 		requests,
 		before,
 		seed,
 		seedBytes,
+		seedExport,
 		remove,
 		directory,
 		text,

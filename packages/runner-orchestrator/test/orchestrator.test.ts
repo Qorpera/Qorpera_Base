@@ -758,6 +758,60 @@ describe("cloud runner orchestrator", () => {
 		});
 	});
 
+	it("runs a routine whose member save restarted its schedule at the first new slot after the save, with no kickoff or catch-up", async () => {
+		// A Monday routine last ran 2026-08-24; on Thursday a member made it a weekday
+		// routine, so the kernel set the cursor at the save (to the millisecond) and one
+		// millisecond later is due, which lists it at once.
+		const control = controlPlane(undefined);
+		vi.mocked(control.listRoutineScheduleHeads).mockResolvedValue({
+			items: [
+				{
+					routineId: "12121212-1212-4212-8212-121212121212",
+					profileId: "88888888-8888-4888-8888-888888888888",
+					environmentId: "99999999-9999-4999-8999-999999999999",
+					version: 2,
+					staffAgentId: "cdcdcdcd-cdcd-4dcd-8dcd-cdcdcdcdcdcd",
+					triggers: [
+						{
+							id: "brief",
+							kind: "schedule",
+							intervalMinutes: 1_440,
+							weekdays: ["monday", "tuesday", "wednesday", "thursday", "friday"],
+							localTime: "09:00",
+							timeZone: "UTC",
+						},
+					],
+					scheduleCursors: [
+						{
+							triggerId: "brief",
+							lastScheduledFor: "2026-08-27T10:15:30.123Z",
+							nextDueAt: "2026-08-27T10:15:30.124Z",
+						},
+					],
+					contentSha256: "a".repeat(64),
+					effectiveAt: "2026-08-27T10:15:30.123Z",
+					updatedAt: "2026-08-27T10:15:30.123Z",
+				},
+			],
+			hasMore: false,
+		});
+		let now = new Date("2026-08-27T12:00:00.000Z");
+		const reconciler = new CloudRoutineScheduleReconciler({ now: () => now });
+
+		await reconciler.reconcile(control);
+		expect(control.enqueueRoutineWake).not.toHaveBeenCalled();
+
+		now = new Date("2026-08-28T09:05:00.000Z");
+		await reconciler.reconcile(control);
+		expect(control.enqueueRoutineWake).toHaveBeenCalledOnce();
+		expect(vi.mocked(control.enqueueRoutineWake).mock.calls[0]?.[0]).toMatchObject({
+			scheduledFor: "2026-08-28T09:00:00.000Z",
+			expectedLastScheduledFor: "2026-08-27T10:15:30.123Z",
+			nextDueAt: "2026-08-31T09:00:00.000Z",
+			payload: { schema: "qorpera.routine-schedule-occurrence/v1", coalesced: 0 },
+		});
+	});
+
 	it.each(["optional", "required", "silent"])("enqueues %s weekday wakes", async (replyPolicy) => {
 		const control = controlPlane(undefined);
 		vi.mocked(control.listRoutineScheduleHeads).mockResolvedValue({

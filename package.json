@@ -15,9 +15,10 @@
 	"scripts": {
 		"clean": "npm run clean --workspaces",
 		"build": "cd packages/contracts && npm run build && cd ../company && npm run build && cd ../cloud-client && npm run build && cd ../object-gateway && npm run build && cd ../runner-orchestrator && npm run build && cd ../runtime && npm run build",
-		"check": "biome check --write --error-on-warnings . && npm run check:runtime-bundle && npm run check:connector-catalog && npm run check:pinned-deps && npm run check:ts-imports && npm run check:cloud-boundaries && tsgo --noEmit && tsgo -p packages/member-web/tsconfig.json && npm run build:web-sdk && npm run typecheck --workspace=@qorpera/web",
+		"check": "biome check --write --error-on-warnings . && npm run check:runtime-bundle:release-train && npm run check:connector-catalog && npm run check:pinned-deps && npm run check:ts-imports && npm run check:cloud-boundaries && tsgo --noEmit && tsgo -p packages/member-web/tsconfig.json && npm run build:web-sdk && npm run typecheck --workspace=@qorpera/web",
 		"build:web-sdk": "npm run build --workspace=@qorpera/contracts && npm run build --workspace=@qorpera/company && npm run build --workspace=@qorpera/cloud-client",
 		"check:runtime-bundle": "node scripts/generate-cloud-runtime-bundle.mjs --check",
+		"check:runtime-bundle:release-train": "node scripts/runtime-bundle-release-train.mjs",
 		"check:connector-catalog": "node scripts/generate-cloud-connector-catalog.mjs --check",
 		"generate:connector-catalog": "node scripts/generate-cloud-connector-catalog.mjs",
 		"generate:runtime-bundle": "node scripts/generate-cloud-runtime-bundle.mjs",
