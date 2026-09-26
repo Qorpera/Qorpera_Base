@@ -1,6 +1,7 @@
 import { HttpCloudCompanyPathControl } from "@qorpera/runtime/cloud-company-path-control";
 import { CloudCompanyHeadConflict } from "@qorpera/runtime/cloud-company-path-gateway";
 import {
+	CloudCompanyPathRpcParentMissing,
 	CloudCompanyPathRpcPrecondition,
 	CloudCompanyPathRpcRefusal,
 } from "@qorpera/runtime/cloud-company-path-refusal";
@@ -156,6 +157,26 @@ describe("Company File bounded control transport", () => {
 		expect(error instanceof CloudCompanyPathRpcPrecondition).toBe(precondition);
 		// Either way the diagnostic category stays what it was, and no database text leaks.
 		if (status === 412) expect((error as CloudRuntimeDiagnosticError).category).toBe("stale_version");
+		expect(String(error)).not.toContain("PRIVATE_DIAGNOSTIC");
+		expect(transport).toHaveBeenCalledOnce();
+	});
+
+	it.each([
+		[424, { code: "PT424", message: "Company File parent folder is missing", details: null, hint: null }, true],
+		[424, { code: "PT424", message: "PRIVATE_DIAGNOSTIC", details: "private", hint: "private" }, true],
+		[424, { code: "PT424", message: "PRIVATE_DIAGNOSTIC" }, false],
+		[424, { code: "PT424", message: "PRIVATE_DIAGNOSTIC", details: null, hint: null, extra: true }, false],
+		[424, { code: "PT412", message: "PRIVATE_DIAGNOSTIC", details: null, hint: null }, false],
+		[412, { code: "PT424", message: "PRIVATE_DIAGNOSTIC", details: null, hint: null }, false],
+		[500, { code: "PT424", message: "PRIVATE_DIAGNOSTIC", details: null, hint: null }, false],
+	] as const)("brands only a complete missing-folder refusal (%i, %j)", async (status, body, missing) => {
+		const transport = vi.fn<typeof fetch>(async () => Response.json(body, { status }));
+		const error = await fixture(transport)
+			.call("qorpera_check_company_path_mutation", {}, new AbortController().signal)
+			.catch((error: unknown) => error);
+		expect(error instanceof CloudCompanyPathRpcParentMissing).toBe(missing);
+		expect(error instanceof CloudCompanyPathRpcPrecondition).toBe(false);
+		if (missing) expect((error as CloudRuntimeDiagnosticError).category).toBe("parent_missing");
 		expect(String(error)).not.toContain("PRIVATE_DIAGNOSTIC");
 		expect(transport).toHaveBeenCalledOnce();
 	});

@@ -86,6 +86,20 @@ describe("email draft card", () => {
 		expect(ctx.answer).not.toHaveBeenCalled();
 		await ctx.emailDraft?.pending;
 		expect(card.querySelector(".email-draft-status")?.textContent).toBe("Sent");
+		expect(card.querySelector("h3")?.textContent).toBe("Email sent");
+		expect(card.querySelector("input, textarea")).toBeNull();
+		expect(card.querySelector(".email-sent-to")?.textContent).toContain("henrik@example.com, colleague@example.com");
+		expect(card.querySelector(".email-sent-cc")?.textContent).toContain("copy@example.com");
+		expect(card.querySelector(".email-sent-subject")?.textContent).toBe("Kort om Qorpera");
+		expect(card.querySelector(".email-sent-body")?.textContent).toBe("Hej Henrik,\n\nHer er Qorpera.");
+		const details = card.querySelector("details")!;
+		expect(details.open).toBe(false);
+		details.querySelector("summary")!.click();
+		expect(details.open).toBe(true);
+		details.dispatchEvent(new Event("toggle"));
+		const refreshed = renderInteractionCard(item, ctx);
+		expect(refreshed.querySelector("details")?.open).toBe(true);
+		expect(ctx.actEmailDraft).toHaveBeenCalledOnce();
 		expect(card.querySelector("button")).toBeNull();
 	});
 
@@ -298,8 +312,13 @@ describe("email draft card", () => {
 			await ctx.emailDraft?.pending;
 			click(card, "Refresh");
 			await ctx.emailDraft?.pending;
-			expect(card.querySelector<HTMLTextAreaElement>("textarea")?.value).toBe("Authoritative letter");
-			expect(card.querySelector<HTMLTextAreaElement>("textarea")?.readOnly).toBe(status !== "saved");
+			if (status === "sent") {
+				expect(card.querySelector(".email-sent-body")?.textContent).toBe("Authoritative letter");
+				expect(card.querySelector("input, textarea")).toBeNull();
+			} else {
+				expect(card.querySelector<HTMLTextAreaElement>("textarea")?.value).toBe("Authoritative letter");
+				expect(card.querySelector<HTMLTextAreaElement>("textarea")?.readOnly).toBe(status !== "saved");
+			}
 		},
 	);
 
@@ -340,9 +359,31 @@ describe("email draft card", () => {
 		reject(new Error("Late lost response"));
 		await ctx.emailDraft?.pending;
 		expect(finalCard.querySelector(".email-draft-status")?.textContent).toBe("Sent");
-		expect(finalCard.querySelector<HTMLTextAreaElement>("textarea")?.value).toBe("Delivered letter");
+		expect(finalCard.querySelector(".email-sent-body")?.textContent).toBe("Delivered letter");
 		expect(finalCard.querySelector("[role=alert]")).toBeNull();
 		expect(ctx.emailDraft?.unconfirmedAction).toBeUndefined();
+	});
+
+	it("uses the trusted final transcript sender without needing to reload a historical receipt", () => {
+		const ctx = context({
+			emailDraft: {},
+			loadEmailDraft: vi.fn(async () => {
+				throw new Error("Unavailable");
+			}),
+		});
+		const card = renderInteractionCard(
+			{
+				...item,
+				answer: { outcome: "sent", answer: { from: "actual-sender@example.com", content: { ...ready.content } } },
+			},
+			ctx,
+		);
+		expect(card.querySelector(".email-draft-from")?.textContent).toBe("actual-sender@example.com");
+		expect(card.querySelector(".email-sent-body")?.textContent).toBe(ready.content.body);
+		expect(card.querySelector("details")?.open).toBe(false);
+		expect(card.querySelector("input, textarea")).toBeNull();
+		expect(ctx.loadEmailDraft).not.toHaveBeenCalled();
+		expect(card.textContent).not.toContain("spoofed@example.com");
 	});
 
 	it("renders terminal, expired, and other-member drafts without actionable controls", () => {

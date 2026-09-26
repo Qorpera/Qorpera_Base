@@ -35,6 +35,16 @@
 .settings-content .notice { font-size: 12px; overflow-wrap: anywhere; }
 .settings-content .row { flex-wrap: wrap; }
 .settings-group { margin: 28px 0; }
+/* Settings → Rules (auto-review, v130): one row per rule, the form below. */
+.settings-rule-list { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.settings-rule { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 12px; padding: 11px 13px; border-radius: 13px; background: #f1f1ef; }
+.settings-rule .settings-copy { display: grid; gap: 2px; min-width: 0; overflow-wrap: anywhere; }
+.settings-rule .settings-copy small { color: var(--text-muted); }
+.settings-rule-form label { display: grid; gap: 6px; margin: 10px 0; color: var(--text-muted); font-size: 13px; }
+.settings-rule-form input, .settings-rule-form select { padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; background: transparent; color: var(--text); font: inherit; font-size: 14px; }
+.settings-rule-choices { display: flex; flex-wrap: wrap; align-items: end; gap: 12px; }
+.settings-rule-choices label { margin: 0; }
+.settings-rule-choices .btn { margin-left: auto; }
 .settings-card { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 11px; min-height: 72px; padding: 11px 13px; border-radius: 13px; background: #f1f1ef; }
 /* The account card leads with the member's picture: a camera badge says it can
  * be changed, a click picks a photo, and once there is one a small menu offers
@@ -96,6 +106,13 @@
 .settings-copy { display: grid; gap: 2px; min-width: 0; overflow-wrap: anywhere; }
 .settings-copy strong { font-size: 13px; font-weight: 600; }
 .settings-copy small { font-size: 11.5px; color: #797975; }
+.settings-account .account-name-input { width: 100%; min-width: 0; min-height: 0; padding: 0; border: 0; border-radius: 3px; background: transparent; color: inherit; font: inherit; font-size: 13px; font-weight: 600; line-height: inherit; text-overflow: ellipsis; box-shadow: none; }
+.settings-account .account-name-input::placeholder { color: var(--text-muted); opacity: 1; }
+.settings-account .account-name-input:is(:hover, :focus) { box-shadow: 0 1px 0 var(--border-strong); }
+.settings-account .account-name-input:focus-visible { outline: 2px solid #5b84c4; outline-offset: 3px; }
+.settings-account .account-name-input[aria-busy=true] { opacity: .6; }
+.account-name-error { margin-top: 8px; }
+.account-name-error[hidden] { display: none; }
 .settings-plan { min-height: 82px; }
 .settings-preference-row { display: flex; flex-direction: row; align-items: center; justify-content: space-between; gap: 16px; min-height: 46px; padding: 5px 12px; font-size: 12.5px; font-weight: 500; }
 .settings-help { color: #797975; font-size: 11.5px; margin: 4px 12px; }
@@ -126,7 +143,7 @@
 /* Keep the miniature's fixed details proportional as the cards shrink; labels stay readable. */
 .swatch-window { position: absolute; inset: 0; width: calc(100% / var(--appearance-preview-scale)); height: calc(100% / var(--appearance-preview-scale)); transform: scale(var(--appearance-preview-scale)); transform-origin: top left; display: grid; grid-template-rows: auto auto minmax(0, 1fr); gap: 5px; padding: 16% 12% 0; background: var(--w-bg); }
 .swatch-window-light { --w-bg: #e9e7e6; --w-bar: #c6c4c2; --w-panel: #ffffff; --w-pill: #dedddb; --w-line: #ececea; }
-.swatch-window-dark { --w-bg: #1f1f1e; --w-bar: #5e5d5a; --w-panel: #2f2f2e; --w-pill: #4f4f4d; --w-line: #3c3c3a; }
+.swatch-window-dark { --w-bg: #3c3c3c; --w-bar: #5e5d5a; --w-panel: #1f2120; --w-pill: #4f4f4d; --w-line: #3c3c3a; }
 .swatch-bar { justify-self: center; width: 46%; height: 7px; border-radius: 999px; background: var(--w-bar); }
 .swatch-bar-sub { width: 68%; height: 5px; opacity: .65; }
 .swatch-panel { display: grid; grid-auto-rows: minmax(0, 1fr); margin-top: 5px; padding: 0 7%; border-radius: 12px 12px 0 0; background: var(--w-panel); }

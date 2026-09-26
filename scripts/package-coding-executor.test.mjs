@@ -6,16 +6,19 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { generateCloudRuntimeBundle } from "./generate-cloud-runtime-bundle.mjs";
+import { cloudRuntimeBundle, generateCloudRuntimeBundle } from "./generate-cloud-runtime-bundle.mjs";
+
+import { committedRuntimeBundle, runtimeBundleEnforced, runtimeBundlePackagingEnvironment } from "./runtime-bundle-release-train.mjs";
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 test("packages the independent paid guard and pins its supervisor and explicit opt-in", async () => {
 	const root = await mkdtemp(join(tmpdir(), "coding-executor-package-"));
 	try {
-		const expected = await generateCloudRuntimeBundle(true);
+		const expected = runtimeBundleEnforced() ? await generateCloudRuntimeBundle(true) : await committedRuntimeBundle();
+		const source = await cloudRuntimeBundle();
 		const output = join(root, "package");
 		const result = spawnSync(process.execPath, ["scripts/package-coding-executor.mjs", "--out", output], {
-			cwd: repository, encoding: "utf8", timeout: 60000,
+			cwd: repository, encoding: "utf8", timeout: 60000, env: runtimeBundlePackagingEnvironment(),
 		});
 		assert.equal(result.status, 0, result.stderr);
 		const manifest = JSON.parse(await readFile(join(output, "manifest.json"), "utf8"));
@@ -29,7 +32,7 @@ test("packages the independent paid guard and pins its supervisor and explicit o
 			assert.equal(entry.sha256, createHash("sha256").update(bytes).digest("hex"));
 		}
 		for (const name of ["paid-computer-guard.ts", "qorpera-paid-computer-guard.service", "qorpera-coding-paid.conf"])
-			assert.match(expected.manifest.implementation[`deploy/coding-worker/${name}`], /^[a-f0-9]{64}$/);
+			assert.match(source.manifest.implementation[`deploy/coding-worker/${name}`], /^[a-f0-9]{64}$/);
 		const guard = await readFile(join(output, "qorpera-paid-computer-guard.mjs"), "utf8");
 		assert.doesNotMatch(guard, /SUPABASE_SERVICE_ROLE_KEY|qorpera-coding-registry|qorpera-coding-computer-executor/);
 		const unit = await readFile(join(output, "qorpera-paid-computer-guard.service"), "utf8");

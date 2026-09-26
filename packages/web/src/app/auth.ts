@@ -188,6 +188,23 @@ export class AuthController {
 		this.store.set({ session: null, user: null, pendingEmail: undefined, message: undefined, error: undefined });
 	}
 
+	async updateName(value: string): Promise<void> {
+		const name = value.trim();
+		if (!name || name.length > 64 || /[\u0000-\u001f\u007f]/.test(name))
+			throw new Error(t("Enter a name between 1 and 64 characters."));
+		const userId = this.userId;
+		if (!userId) throw new Error(t("Sign in to change your name."));
+		// Keep an explicitly chosen name separate from OAuth-managed profile fields.
+		const { data, error } = await this.#cloud.supabase.auth.updateUser({ data: { display_name: name } });
+		if (error) throw new Error(t("Your name could not be saved. Try again."));
+		if (this.#disposed || this.userId !== userId) return;
+		if (!data.user || data.user.id !== userId) throw new Error(t("Your name could not be saved. Try again."));
+		this.store.set((current) => ({
+			user: data.user,
+			session: current.session ? { ...current.session, user: data.user! } : null,
+		}));
+	}
+
 	resetEmail(): void {
 		this.store.set({ pendingEmail: undefined, message: undefined, error: undefined });
 	}
@@ -195,8 +212,14 @@ export class AuthController {
 
 export function displayName(user: User | null): string {
 	if (!user) return "";
+	return accountName(user) || t("Member");
+}
+
+/** The editable name excludes the email fallback used by authentication. */
+export function accountName(user: User | null): string {
+	if (!user) return "";
 	const meta = user.user_metadata as Record<string, unknown> | undefined;
-	const candidates = [meta?.full_name, meta?.name, meta?.user_name, meta?.preferred_username, user.email];
+	const candidates = [meta?.display_name, meta?.full_name, meta?.name, meta?.user_name, meta?.preferred_username];
 	const value = candidates.find((candidate) => typeof candidate === "string" && candidate.trim());
-	return typeof value === "string" ? value : t("Member");
+	return typeof value === "string" ? value.trim() : "";
 }

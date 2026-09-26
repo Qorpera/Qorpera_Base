@@ -7,10 +7,12 @@ import { dirname, join, resolve } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
+import { RUNTIME_BUNDLE_NOT_ENFORCED, runtimeBundleEnforced } from "./runtime-bundle-release-train.mjs";
+
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const sha256 = (content) => createHash("sha256").update(content).digest("hex");
 
-test("packages and pins the shared execution service", async () => {
+test("packages and pins the shared execution service", async (t) => {
 	const outputRoot = await mkdtemp(join(tmpdir(), "qorpera-shared-execution-package-"));
 	try {
 		const packaged = spawnSync(
@@ -73,7 +75,7 @@ test("packages and pins the shared execution service", async () => {
 			`EXPECTED_ENV_EXAMPLE_SHA256="${sha256(contents.get("shared-execution.env.example"))}"`,
 			`EXPECTED_ORCHESTRATOR_UNIT_SHA256="${sha256(contents.get("qorpera-runner-orchestrator.service"))}"`,
 		];
-		if (process.platform === "linux" && process.arch === "x64") {
+		if (runtimeBundleEnforced() && process.platform === "linux" && process.arch === "x64") {
 			expectedPins.push(
 				`EXPECTED_SERVICE_SHA256="${sha256(contents.get("qorpera-shared-execution-service.mjs"))}"`,
 				`EXPECTED_ORCHESTRATOR_SHA256="${sha256(contents.get("qorpera-runner-orchestrator.mjs"))}"`,
@@ -82,6 +84,7 @@ test("packages and pins the shared execution service", async () => {
 			assert.match(installer, /EXPECTED_SERVICE_SHA256="[0-9a-f]{64}"/);
 			assert.match(installer, /EXPECTED_ORCHESTRATOR_SHA256="[0-9a-f]{64}"/);
 		}
+		if (!runtimeBundleEnforced()) t.diagnostic(`released installer bundle pins not compared with source: ${RUNTIME_BUNDLE_NOT_ENFORCED}`);
 		for (const expected of expectedPins) {
 			assert.ok(installer.includes(expected), `installer is missing checksum pin ${expected}`);
 		}

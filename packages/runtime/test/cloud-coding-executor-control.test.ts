@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { CodingExecutorHttpControl } from "../../../deploy/coding-worker/control.ts";
+import { CodingControlBusy } from "../../runner-orchestrator/src/coding-executor.ts";
 
 describe("dedicated coding executor control", () => {
 	it("requires a separate host secret for paid RPCs and never sends it to ordinary RPCs", async () => {
@@ -20,6 +21,13 @@ describe("dedicated coding executor control", () => {
 		expect(JSON.parse(String(fetcher.mock.calls[0][1]?.body))).toEqual({ p_request: {}, p_executor_secret: secret });
 		await control.call("qorpera_claim_coding_session", { p_owner: "node" }, signal);
 		expect(JSON.parse(String(fetcher.mock.calls[1][1]?.body))).toEqual({ p_owner: "node" });
+		await control.call("qorpera_route_coding_command", { p_action: "read" }, signal);
+		expect(JSON.parse(String(fetcher.mock.calls[2][1]?.body))).toEqual({ p_action: "read" });
+		await control.call("qorpera_record_computer_guard_samples", { p_request: { entries: [] } }, signal);
+		expect(JSON.parse(String(fetcher.mock.calls[3][1]?.body))).toEqual({
+			p_request: { entries: [] },
+			p_executor_secret: secret,
+		});
 		await expect(control.call("qorpera_reserve_computer_allowance", {}, signal)).rejects.toThrow("METHOD_INVALID");
 		expect(() => new CodingExecutorHttpControl({ ...options, computerExecutorSecret: "short" })).toThrow(
 			"COMPUTER_KEY_INVALID",
@@ -48,10 +56,62 @@ describe("dedicated coding executor control", () => {
 			"https://project.supabase.co/rest/v1/rpc/qorpera_list_coding_machines",
 			expect.objectContaining({ redirect: "error", method: "POST" }),
 		);
+		await control.call("qorpera_route_coding_command", {}, new AbortController().signal);
+		expect(fetcher).toHaveBeenLastCalledWith(
+			"https://project.supabase.co/rest/v1/rpc/qorpera_route_coding_command",
+			expect.objectContaining({ redirect: "error", method: "POST" }),
+		);
 		// The per-session VM authority is gone.
 		await expect(control.call("qorpera_describe_coding_cleanup", {}, new AbortController().signal)).rejects.toThrow(
 			"METHOD_INVALID",
 		);
+	});
+	it("tells only a complete PostgREST 55P03 refusal apart as busy", async () => {
+		const busy = {
+			code: "55P03",
+			details: null,
+			hint: null,
+			message: 'could not obtain lock on row in relation "qorpera_profiles"',
+		};
+		const answer = (status: number, body: string) => async () =>
+			new Response(body, { status, headers: { "content-type": "application/json" } });
+		const cases: [status: number, body: string, expected: string][] = [
+			[500, JSON.stringify(busy), "CODING_CONTROL_BUSY"],
+			[500, JSON.stringify({ ...busy, code: "40P01" }), "CODING_CONTROL_UNCONFIRMED"],
+			[503, JSON.stringify(busy), "CODING_CONTROL_UNCONFIRMED"],
+			[500, JSON.stringify({ ...busy, extra: 1 }), "CODING_CONTROL_UNCONFIRMED"],
+			[500, JSON.stringify({ ...busy, details: 1 }), "CODING_CONTROL_UNCONFIRMED"],
+			[500, JSON.stringify({ ...busy, message: "x".repeat(5000) }), "CODING_CONTROL_UNCONFIRMED"],
+			[500, "55P03", "CODING_CONTROL_UNCONFIRMED"],
+		];
+		for (const [status, body, expected] of cases) {
+			const fetcher = vi.fn<typeof fetch>(answer(status, body));
+			const control = new CodingExecutorHttpControl({
+				supabaseUrl: "https://project.supabase.co",
+				serviceRoleKey: "private",
+				fetch: fetcher,
+			});
+			const call = control.call("qorpera_begin_coding_turn", {}, new AbortController().signal);
+			await expect(call).rejects.toThrow(expected);
+			if (expected === "CODING_CONTROL_BUSY") await expect(call).rejects.toBeInstanceOf(CodingControlBusy);
+			// The control never retries by itself.
+			expect(fetcher).toHaveBeenCalledTimes(1);
+		}
+	});
+	it("does not wait on an error body that stalls", async () => {
+		const fetcher = vi.fn<typeof fetch>(
+			async () => new Response(new ReadableStream({ start() {} }), { status: 500 }),
+		);
+		const control = new CodingExecutorHttpControl({
+			supabaseUrl: "https://project.supabase.co",
+			serviceRoleKey: "private",
+			fetch: fetcher,
+		});
+		const started = Date.now();
+		await expect(control.call("qorpera_begin_coding_turn", {}, new AbortController().signal)).rejects.toThrow(
+			"CODING_CONTROL_UNCONFIRMED",
+		);
+		expect(Date.now() - started).toBeLessThan(5000);
 	});
 	it("sanitizes failures and rejects credential-bearing destinations", async () => {
 		const fetcher = vi.fn<typeof fetch>(async () => {

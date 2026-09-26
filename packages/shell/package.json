@@ -26,6 +26,7 @@
 		"@qorpera/cloud-client": "^0.83.0"
 	},
 	"devDependencies": {
+		"@openai/codex-boundary-test": "npm:@openai/codex@0.155.1",
 		"@types/pg": "8.23.1",
 		"electron": "43.2.0",
 		"electron-builder": "26.15.3",

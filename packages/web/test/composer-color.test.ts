@@ -181,7 +181,7 @@ describe("General settings", () => {
 		expect(view.container.querySelector("a")).toBeNull();
 		expect(view.container.textContent).not.toContain("All companies");
 		expect(view.container.querySelector("details")).toBeNull();
-		expect(view.container.querySelector('input[type="url"], input[type="text"]')).toBeNull();
+		expect(view.container.querySelector('input[type="url"], input[type="text"]:not(.account-name-input)')).toBeNull();
 		expect(view.container.textContent).not.toContain("Cloud endpoint");
 	});
 

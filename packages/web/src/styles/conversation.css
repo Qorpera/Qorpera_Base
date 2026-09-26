@@ -167,6 +167,17 @@
 .decision-facts dt, .decision-attribution { color: var(--text-muted); font-size: 11px; }
 .decision-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; padding-top: 8px; }
 .decision-actions p { flex-basis: 100%; color: var(--text-muted); font-size: 11px; }
+/* Approval cards of agents' actions (auto-review, v130). */
+.action-review-card .review-target { margin: 0 0 6px; font-weight: 600; }
+.review-reasons { margin: 8px 0; padding-left: 18px; color: var(--text-muted); }
+.review-reasons li + li { margin-top: 3px; }
+.review-call { max-height: 180px; margin: 8px 0 0; padding: 10px; overflow: auto; border-radius: 8px; background: #f1f1ef; font-size: 11px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.review-failed { margin: 10px 0 0; color: var(--danger, #b3261e); font-size: 12px; }
+.action-review-card:focus { outline: none; }
+.action-review-card:focus-visible { outline: 2px solid var(--focus, #3478f6); outline-offset: 2px; }
+.review-always label { display: grid; gap: 6px; margin-top: 10px; color: var(--text-muted); font-size: 11px; }
+.review-rule-input { width: 100%; padding: 8px 10px; border: 1px solid #dfdfdb; border-radius: 8px; background: #fff; color: var(--text); font: inherit; font-size: 13px; }
+.review-waiting, .review-outcome { margin: 10px 0 0; font-size: 12px; }
 .decision-details { border-top: 1px solid var(--border); margin-top: 14px; padding-top: 4px; font-size: 11px; }
 .decision-details > summary { color: var(--text-muted); font-weight: 400; }
 .decision-details .kv { grid-template-columns: minmax(0, 1fr); }
@@ -715,6 +726,15 @@
 .email-draft-note, .email-draft-error { margin: 10px 0 0; font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
 .email-draft-note { color: var(--text-muted); }
 .email-draft-error { color: var(--danger); }
+.email-draft-card[data-email-state="sent"] .email-draft-status { color: #08734e; background: color-mix(in srgb, var(--ok) 12%, transparent); }
+[data-theme="dark"] .email-draft-card[data-email-state="sent"] .email-draft-status { color: var(--ok); }
+.email-sent-to, .email-sent-cc { margin: 0 0 4px; font-size: 14px; line-height: 1.5; color: var(--text-muted); overflow-wrap: anywhere; }
+.email-sent-subject { margin: 8px 0 12px; font-size: 17px; font-weight: 500; line-height: 1.4; overflow-wrap: anywhere; }
+.email-sent-details summary { width: fit-content; cursor: pointer; color: var(--text-muted); font-size: 13px; line-height: 1.5; border-radius: 4px; }
+.email-sent-details summary:hover { color: var(--text); }
+.email-sent-details summary:focus-visible { outline: 2px solid var(--text-muted); outline-offset: 4px; }
+.email-sent-from { display: flex; gap: 8px; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border); color: var(--text-muted); font-size: 13px; line-height: 1.5; }
+.email-sent-body { margin-top: 12px; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 16px; line-height: 1.5; }
 [data-theme="dark"] .email-draft-card { background: #292929; border-color: #424242; }
 [data-theme="dark"] .email-draft-panel { background: #202020; }
 [data-theme="dark"] .email-draft-card .email-draft-actions .email-draft-send { background: #fafafa; color: #191919; }

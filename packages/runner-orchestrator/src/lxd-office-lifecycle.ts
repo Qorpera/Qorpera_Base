@@ -1,6 +1,6 @@
 import { lstat } from "node:fs/promises";
 import { join } from "node:path";
-import { setTimeout as delay } from "node:timers/promises";
+import { setTimeout as delay, setImmediate as yieldToEventLoop } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
 import {
 	parseCompanyComputerBootIntentRequest,
@@ -1224,7 +1224,8 @@ export class LxdOfficeLifecycle {
 	}
 }
 
-/** Delay after settlement; no catch-up queue or overlapping timer callbacks.
+/** Continue settled phase advances after yielding to cancellation and IO;
+ * poll only while no progress is available. No overlapping timer callbacks.
  * Active service health/admission remains the runtime's responsibility. A new
  * provider process rechecks activation once, without repeating preparation. */
 export async function runLxdOfficeLifecycle(
@@ -1254,6 +1255,7 @@ export async function runLxdOfficeLifecycle(
 			} catch {}
 		}
 		if (signal.aborted) break;
-		await delay(pollIntervalMs, undefined, { signal }).catch(() => {});
+		if (result?.state === "progressed") await yieldToEventLoop(undefined, { signal }).catch(() => {});
+		else await delay(pollIntervalMs, undefined, { signal }).catch(() => {});
 	}
 }

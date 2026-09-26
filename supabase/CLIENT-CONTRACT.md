@@ -202,6 +202,59 @@ profile RPCs; RLS is the second read boundary.
   placed, pinned or hidden. Agents change the same shared sections through the
   runtime tool `organize_sidebar` (`qorpera_manage_agent_sidebar`, runner only).
 
+### Auto-review rules and approvals (4) — bundle v130
+
+- `qorpera_list_review_rules(p_profile_id)` → `qorpera.review-rules/v1`:
+  `canManageCompanyRules` (owner or admin) and `rules`: every active company
+  rule plus the caller's own (`id`, `scope` `company|member`, `memberUserId`,
+  `when`, `outcome` `ask_first|allow_automatically`, `createdVia`
+  `settings|card|agent`, `createdByUserId`, `createdByStaffAgentId`,
+  `createdAt`, `updatedAt`). Any member, viewers included. A rule with
+  `createdVia: agent` was added by an agent (`createdByStaffAgentId`) when the
+  member asked it to: always one of the member's own Ask first rules, which the
+  member removes like any other.
+- `qorpera_save_review_rule(p_profile_id, p_rule_id, p_scope, p_when,
+  p_outcome)`: the client picks `p_rule_id` (a new uuid creates, an existing
+  one changes its text or outcome; a retry is the same rule). `when` is one
+  sentence, 1-280 characters after trimming. Company rules: owners and admins
+  (42501 otherwise); a personal rule belongs to its author only. 54000 when
+  the company's rules pass 48 KiB of text or one member's pass 16 KiB (what
+  the reviewer reads for one action). Returns the rule.
+- `qorpera_archive_review_rule(p_profile_id, p_rule_id)`: removes a rule
+  (again: no change). Company rules: owners and admins; personal: its author.
+- `qorpera_answer_action_review(p_review_id, p_client_input_id, p_answer,
+  p_rule_text?, p_sponsor_binding_id?, p_sponsor_version?)` answers an approval
+  card (`authorization_request` whose `entry.data.schema` is
+  `qorpera.action-review/v1`; `p_review_id` = its `reviewId` = the event id).
+  `p_answer`: `allow_once | always_allow | deny`. Who may answer is on the
+  card: `approverScope` `member` (only `approverUserId`) or `owners_admins`
+  (any owner or admin). `always_allow` only where the card says
+  `alwaysAllow: true`; it saves `p_rule_text` (the card's `proposedRule`, as
+  the member edited it) as a company Allow automatically rule. The answer
+  joins the card's conversation as its `authorization_decision`
+  (`decision` `approved|declined`, `answer.answer` the exact answer). When the
+  agent stopped waiting, the answer also wakes it there on the answering
+  member's own account: send the selected execution sponsor as for
+  `qorpera_answer_interaction` (42501 `Room sponsor is unavailable` /
+  `Session sponsor is unavailable` otherwise; nothing is recorded). 55000 when
+  already answered; a retry with the same `p_client_input_id` returns the
+  receipt `{reviewId, answer, inputId, savedRuleId, woke}`. The answerer needs
+  write access to the card's conversation; in an agent's thread, waking also
+  needs an active thread membership. An answer whose delivery failed (its turn
+  request refused) may be given again. `qorpera_answer_interaction` refuses
+  these cards (22023).
+
+  Card facts (`entry.data`): `title`, `summary` (the reviewer's reason),
+  `operation`, `effect` `external|destructive|delegation`, `target`,
+  `details` (a few short facts), `tool` + `arguments` (the exact canonical call
+  arguments as text, up to 64 KiB) + `call` (the same arguments as a JSON object,
+  for the agent to copy; since 20260926210000; show `arguments`),
+  `builtIn` (`none|money|legal_terms|delete_outside|access_change|...`),
+  `rules` (matched, `{id, scope, when, outcome}`), `approverScope`,
+  `approverUserId`, `approverName`, `requesterUserId`, `alwaysAllow`,
+  `proposedRule`. Do not answer these cards through
+  `qorpera_answer_interaction`: its approval surface is owner/admin-only and
+  does not know the review.
 
 ### Conversations, turns, wakes (28)
 
@@ -356,6 +409,7 @@ machine.
 | Auth, profiles, membership, invitations, friends, presence | live | build fully |
 | Conversations: sessions, inputs, events, replay, Realtime | live (Order 1 mouth writes the canonical transcript) | build fully; render only send operations |
 | Approvals | `authorization_request` answered through `qorpera_answer_interaction` (bundle v75) | build the inbox; Approve and Decline call the answer RPC |
+| Auto-review rules and approval cards | kernel + runtime in bundle v130 | Settings → Rules; approval cards with Allow once / Deny / Always allow through `qorpera_answer_action_review`; show no live controls until v130 is live |
 | Thread interactions (typed cards) | kernel in bundle v75; runtime tool and web cards follow | render `interaction_request` events as cards; answer through the RPC |
 | Company File: published snapshots, objects, proposals | live | build browsing/review |
 | Company File: live logical paths with ACLs | Order 0 gateway in progress | read-only projection, then live |
@@ -813,3 +867,18 @@ above.
     number of tool outputs (the pinned Codex refused 128 or more). Nothing a
     client calls changes; a long run simply no longer fails after about 128
     tool calls between compactions.
+
+### 2026-09-25 — from the runtime (bundle v130, `20260926130000_runtime_auto_review_rules.sql`)
+
+18. **Auto-review rules and approval cards.** Members write rules ("When an
+    agent wants to …, it should: Ask first | Allow automatically"), for
+    themselves or, owners and admins, for the whole company. Before an agent's
+    acting call runs (connection writes, computer steps that act, shell,
+    deletions, hiring, routines, workers), a reviewer decides allow / ask /
+    deny. An ask raises an `authorization_request` card of schema
+    `qorpera.action-review/v1` in the conversation the agent works in (its
+    own thread or a plain conversation; never a group chat). The web needs a
+    Settings → Rules tab (the three rule RPCs) and live controls on these
+    cards (`qorpera_answer_action_review`, section 2). Older approval cards
+    without `reviewId` keep the v75 path.
+

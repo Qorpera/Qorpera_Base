@@ -7,13 +7,15 @@ import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
+import { RUNTIME_BUNDLE_NOT_ENFORCED, runtimeBundleEnforced } from "./runtime-bundle-release-train.mjs";
+
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 function sha256(content) {
 	return createHash("sha256").update(content).digest("hex");
 }
 
-test("packages and pins the first-node LXD provider", async () => {
+test("packages and pins the first-node LXD provider", async (t) => {
 	const outputRoot = await mkdtemp(join(tmpdir(), "qorpera-lxd-provider-package-test-"));
 	try {
 		const packaged = spawnSync(process.execPath, ["scripts/package-lxd-provider.mjs", "--out", outputRoot], {
@@ -52,11 +54,12 @@ test("packages and pins the first-node LXD provider", async () => {
 			`EXPECTED_UNIT_SHA256="${sha256(unit)}"`,
 			`EXPECTED_ENV_EXAMPLE_SHA256="${sha256(environmentExample)}"`,
 		];
-		if (process.platform === "linux" && process.arch === "x64") {
+		if (runtimeBundleEnforced() && process.platform === "linux" && process.arch === "x64") {
 			expectedPins.unshift(`EXPECTED_ARTIFACT_SHA256="${sha256(providerArtifact)}"`);
 		} else {
 			assert.match(installer, /EXPECTED_ARTIFACT_SHA256="[0-9a-f]{64}"/);
 		}
+		if (!runtimeBundleEnforced()) t.diagnostic(`released installer bundle pins not compared with source: ${RUNTIME_BUNDLE_NOT_ENFORCED}`);
 		for (const expected of expectedPins) {
 			assert.ok(installer.includes(expected), `installer is missing checksum pin ${expected}`);
 		}

@@ -7,6 +7,11 @@ on:
 permissions:
   contents: read
 
+# This manual acceptance executes candidate source against the committed
+# release identity; production bundle freshness belongs to the release cut.
+env:
+  QORPERA_ENFORCE_RUNTIME_BUNDLE: '0'
+
 concurrency:
   group: office-physical-acceptance-${{ github.ref }}
   cancel-in-progress: false

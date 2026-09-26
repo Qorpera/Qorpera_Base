@@ -84,6 +84,21 @@ test("explicit login bridge base is locked into configuration and matching CSP",
 	]) assert.throws(() => parseCloudConfig({ ...config, nativeProviderLoginUrl: value }), undefined, value);
 });
 
+test("member gateway activation requires the exact configured project bridge", t => {
+	const memberCompanyGatewayUrl = `${config.projectUrl}/functions/v1/member-company-gateway`;
+	const deployment = prepareDeployment(fixture(t, { ...config, memberCompanyGatewayUrl }));
+	assert.equal(deployment.config.memberCompanyGatewayUrl, memberCompanyGatewayUrl);
+	assert.equal(deployment.manifest.config.memberCompanyGatewayUrl, memberCompanyGatewayUrl);
+	assert.equal(parseCloudConfig(config).memberCompanyGatewayUrl, undefined);
+	assert.equal(DEFAULT_CLOUD_CONFIG.memberCompanyGatewayUrl, undefined);
+	for (const value of [
+		"https://other-project.supabase.co/functions/v1/member-company-gateway",
+		`${memberCompanyGatewayUrl}/`, `${memberCompanyGatewayUrl}?upstream=other`,
+		`${config.projectUrl}/functions/v1/other`, "https://user:secret@project.invalid/",
+		true, null, "",
+	]) assert.throws(() => parseCloudConfig({ ...config, memberCompanyGatewayUrl: value }), /exact project member gateway/);
+});
+
 test("compiled builds use their own endpoints and never read browser storage", async t => {
 	for (const [deployment, expected] of [
 		[prepareDeployment(fixture(t)), config],

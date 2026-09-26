@@ -1102,6 +1102,7 @@ export function mountApplication(
 						meetState = next;
 						render();
 					},
+					current,
 				);
 				return;
 			case "team":

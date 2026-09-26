@@ -6,6 +6,8 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-
 const LOCAL_TIME = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
 const INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 const LISTENER_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+/** The cloud's closed form for a dynamic routine's next run. */
+const ONCE_INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z$/;
 const encoder = new TextEncoder();
 
 export const CLOUD_ROUTINE_WEEKDAYS = [
@@ -54,7 +56,15 @@ export interface CloudRoutineFileTrigger extends TriggerBase {
 	match: "exact" | "subtree";
 	timeZone: string;
 }
+/** A dynamic routine's one next run. It has no cadence: each run of the agent
+ * chooses the next one, or concludes the routine. */
+export interface CloudRoutineOnceTrigger extends TriggerBase {
+	kind: "once";
+	at: string;
+	timeZone: string;
+}
 export type CloudRoutineTrigger =
+	| CloudRoutineOnceTrigger
 	| CloudRoutineIntervalTrigger
 	| CloudRoutineWeeklyTrigger
 	| CloudRoutineWindowTrigger
@@ -66,8 +76,9 @@ export interface CloudRoutine {
 	routineId: string;
 	clientRoutineId: string;
 	version: number;
-	/** expired: a finite or time-bounded routine that has ended; it schedules nothing more. */
-	status: "active" | "paused" | "expired" | "retired";
+	/** expired: a finite or time-bounded routine that has ended; concluded: its agent
+	 * ended it (conclusion says why). Neither schedules anything more. */
+	status: "active" | "paused" | "expired" | "concluded" | "retired";
 	staffAgentId: string;
 	title: string;
 	prompt: string;
@@ -83,6 +94,10 @@ export interface CloudRoutine {
 	reviewerStaffIds: string[];
 	createdAt: string;
 	updatedAt: string;
+	/** When the routine runs next, if it is active and that is known. */
+	nextRunAt: string | null;
+	/** The agent's one-sentence reason, when it concluded the routine. */
+	conclusion: string | null;
 }
 
 export interface CloudRoutineOccurrence {
@@ -197,6 +212,18 @@ export function parseCloudRoutineTrigger(value: unknown): CloudRoutineTrigger {
 			...replyPolicy,
 		};
 	}
+	if (input.kind === "once") {
+		only(input, ["id", "kind", "at", "timeZone", "replyPolicy"], "routine next run");
+		if (
+			typeof input.id !== "string" ||
+			!LISTENER_ID.test(input.id) ||
+			typeof input.at !== "string" ||
+			!ONCE_INSTANT.test(input.at) ||
+			!Number.isFinite(Date.parse(input.at))
+		)
+			invalid("routine next run");
+		return { id: input.id, kind: "once", at: input.at, timeZone: zone(input.timeZone), ...replyPolicy };
+	}
 	if (input.kind !== "schedule") invalid("routine trigger kind");
 	const id = text(input.id, "routine trigger id", 160);
 	if (id !== id.trim() || /[\r\n]/.test(id)) invalid("routine trigger id");
@@ -269,12 +296,7 @@ export function parseCloudRoutineTrigger(value: unknown): CloudRoutineTrigger {
 
 export function parseCloudRoutine(value: unknown): CloudRoutine {
 	const input = record(value, "routine");
-	if (
-		input.status !== "active" &&
-		input.status !== "paused" &&
-		input.status !== "expired" &&
-		input.status !== "retired"
-	)
+	if (!["active", "paused", "expired", "concluded", "retired"].includes(input.status as string))
 		invalid("routine status");
 	if (!["low", "medium", "high", "xhigh", "max"].includes(input.effort as string)) invalid("routine effort");
 	if (!["agent_turn", "git_worktree", "company_substrate"].includes(input.required_capability as string))
@@ -287,7 +309,7 @@ export function parseCloudRoutine(value: unknown): CloudRoutine {
 		routineId: uuid(input.routine_id, "routine id"),
 		clientRoutineId: uuid(input.client_routine_id, "routine client id"),
 		version: count(input.version, "routine version"),
-		status: input.status,
+		status: input.status as CloudRoutine["status"],
 		staffAgentId: uuid(input.staff_agent_id, "routine agent"),
 		title: text(input.title, "routine title", 640),
 		prompt: text(input.prompt, "routine prompt", 32 * 1024),
@@ -303,6 +325,9 @@ export function parseCloudRoutine(value: unknown): CloudRoutine {
 		reviewerStaffIds: (input.reviewer_staff_ids as unknown[]).map((id) => uuid(id, "routine reviewer")),
 		createdAt: instant(input.created_at, "routine creation time"),
 		updatedAt: instant(input.updated_at, "routine update time"),
+		// Absent from a cloud older than dynamic routines.
+		nextRunAt: input.next_run_at == null ? null : instant(input.next_run_at, "routine next run"),
+		conclusion: input.conclusion == null ? null : text(input.conclusion, "routine conclusion", 2000),
 	};
 }
 
@@ -370,6 +395,7 @@ function weekdayWords(days: readonly CloudRoutineWeekday[], t: CloudRoutineText)
 /** Plain words for a trigger, in the viewer's language of days and clocks;
  * pass the interface's translation to have them in its language. */
 export function describeCloudRoutineTrigger(trigger: CloudRoutineTrigger, t: CloudRoutineText = english): string {
+	if (trigger.kind === "once") return t("The agent picks each next run");
 	if (trigger.kind === "listener")
 		return trigger.match === "subtree"
 			? t("When {path} or anything under it changes", { path: trigger.path })
@@ -409,7 +435,19 @@ export class CloudRoutineClient {
 			signal,
 		);
 		if (!Array.isArray(value) || value.length > 4096) invalid("routine list");
-		return (value as unknown[]).map(parseCloudRoutine);
+		// One row this client cannot read (a newer cloud's shape) must not hide the others,
+		// but it is reported, so a broken reader is not mistaken for missing routines.
+		let unreadable = 0;
+		const routines = (value as unknown[]).flatMap((row) => {
+			try {
+				return [parseCloudRoutine(row)];
+			} catch {
+				unreadable += 1;
+				return [];
+			}
+		});
+		if (unreadable > 0) console.warn(`${unreadable} cloud routine row(s) could not be read and were left out`);
+		return routines;
 	}
 	async occurrences(environmentId: string, signal: AbortSignal, limit = 100): Promise<CloudRoutineOccurrence[]> {
 		if (!Number.isSafeInteger(limit) || limit < 1 || limit > 500) invalid("occurrence limit");

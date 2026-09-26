@@ -74,8 +74,8 @@ const INSTRUCTIONS =
 	"Do not look for credentials or publish with shell credentials; the trusted broker publishes your commit. Keep operation keys stable after unknown outcomes. " +
 	"When only the member who owns this session can decide something, call coding_ask with the exact question (and short choices when there are natural ones) and stop; the session pauses until they answer, and your next turn continues from their answer. " +
 	"When the work and its checks are complete, commit on the current branch and call coding_finish with the commit SHA and a factual summary including failures; that records a submission for trusted publication, not proof that a PR exists. You have no messaging tool. " +
-	"The context is this session's own record: earlierTurns says what started each earlier turn, what you submitted in it (a question with its choices, or a commit) and how it ended; input is what started this turn (the dispatch, the agent's follow-up or the owner's reply). " +
-	"When input.answers is set, it is a question you asked in an earlier turn that is still open. The reply is input.text, or, when input.text does not decide it, a reply in earlierTurns after that question (a turn that ended without a submission); a short reply such as a letter or the first words of a choice selects that choice. Act on the decision; do not ask it again or try to infer it from the repository.";
+	"The context is this session's own record: earlierTurns says what started each earlier turn, what you submitted in it (a question with its choices, or a commit) and how it ended (a turn marked shortened had its long texts cut to fit); input is what started this turn (the dispatch, the agent's follow-up or the owner's reply). " +
+	"When input.answers is set, it is a question you asked in an earlier turn that is still open. Its reply is input.text or, when that does not decide it, a reply in earlierTurns after that question (a turn that ended without a submission). A reply of the first words of a choice selects that choice; a single letter selects the choice at that position (A is the first) or, when there is no choice at that position, the only choice that starts with that letter. When a reply decides the question, act on it: do not ask it again or infer a different decision from the repository. When no reply decides it (a clarifying question, or other instructions), do not guess: do what you can without the decision, then call coding_ask again.";
 
 function record(value: unknown, label = "Invalid coding turn authority"): Record<string, unknown> {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(label);
@@ -148,6 +148,32 @@ function turnInput(
 	return { input, from, text: boundedText(input.text, 4000, true) };
 }
 
+/** An earlier turn cut to fit the prompt: each long text keeps its first
+ * `limit` characters, and the turn says it was shortened. */
+function shortenedTurn(turn: CloudCodingEarlierTurn, limit: number): CloudCodingEarlierTurn & { shortened: true } {
+	const cut = (text: string | null) => (text === null ? null : Array.from(text).slice(0, limit).join(""));
+	return {
+		...turn,
+		input: { ...turn.input, text: cut(turn.input.text) },
+		submitted: turn.submitted && {
+			...turn.submitted,
+			summary: cut(turn.submitted.summary) as string,
+			question: cut(turn.submitted.question),
+		},
+		outcome: turn.outcome && { ...turn.outcome, summary: cut(turn.outcome.summary), needs: cut(turn.outcome.needs) },
+		shortened: true,
+	};
+}
+
+/** A pull request this session published: the session's own repository, or the context is refused. */
+function contextPullRequest(value: unknown, repository: CloudCodingRepository): CloudCodingPullRequest {
+	try {
+		return parseCloudCodingPullRequest(value, repository);
+	} catch {
+		throw new Error("CODING_TURN_CONTEXT_INVALID");
+	}
+}
+
 /** Strict: the context must be this turn's, contiguous and bounded. */
 export function parseCloudCodingTurnContext(
 	value: unknown,
@@ -208,7 +234,7 @@ export function parseCloudCodingTurnContext(
 				reason: boundedText(o.reason, 200, true),
 				needs: boundedText(o.needs, 1000, true),
 				options: choices(o.options),
-				pullRequest: o.pullRequest === null ? null : parseCloudCodingPullRequest(o.pullRequest, repository),
+				pullRequest: o.pullRequest === null ? null : contextPullRequest(o.pullRequest, repository),
 			};
 		}
 		return { sequence: first + index, input: { from: input.from, text: input.text }, submitted, outcome };
@@ -337,13 +363,29 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 				// Measured before trimming: the whole reply fits the control's 256 KiB response bound.
 				16 * PROMPT_BYTES,
 			);
-		let kept = turn.earlierTurns;
-		let prompt = compose(kept);
-		while (Buffer.byteLength(prompt) > PROMPT_BYTES && kept.length > 0) {
-			kept = kept.slice(1);
-			prompt = compose(kept);
+		// The prompt grows with every earlier turn kept: find the newest turns that fit.
+		const newest = (count: number) => turn.earlierTurns.slice(turn.earlierTurns.length - count);
+		let prompt = compose(turn.earlierTurns);
+		if (Buffer.byteLength(prompt) > PROMPT_BYTES) {
+			let fits = 0;
+			let fails = turn.earlierTurns.length;
+			while (fails - fits > 1) {
+				const middle = Math.floor((fits + fails) / 2);
+				if (Buffer.byteLength(compose(newest(middle))) <= PROMPT_BYTES) fits = middle;
+				else fails = middle;
+			}
+			prompt = compose(newest(fits));
+			// The previous turn is kept even when it alone is too large: shortened, and marked so.
+			const previous = turn.earlierTurns.at(-1);
+			for (const limit of fits === 0 && previous ? [2000, 1000, 500, 200] : []) {
+				const shortened = compose([shortenedTurn(previous as CloudCodingEarlierTurn, limit)]);
+				if (Buffer.byteLength(shortened) <= PROMPT_BYTES) {
+					prompt = shortened;
+					break;
+				}
+			}
+			if (Buffer.byteLength(prompt) > PROMPT_BYTES) throw new Error("CODING_TURN_CONTEXT_TOO_LARGE");
 		}
-		if (Buffer.byteLength(prompt) > PROMPT_BYTES) throw new Error("CODING_TURN_CONTEXT_TOO_LARGE");
 		const contextSha256 = createHash("sha256").update(prompt).digest("hex");
 		let submitted = false;
 		const assertContext = async (checked: AbortSignal): Promise<void> => {

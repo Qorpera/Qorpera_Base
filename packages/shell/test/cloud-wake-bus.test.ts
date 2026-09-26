@@ -278,6 +278,19 @@ describe("worker dispatch and completion envelopes", () => {
 		const { identity, wake } = workerWakeFixture("worker-dispatch");
 		expect(() => parseCloudWakeEnvelope(mutate(wake), identity)).toThrow();
 	});
+	it.each(["worker-dispatch", "worker-completion"] as const)(
+		"rejects this run in capitals as the parent of a %s",
+		(kind) => {
+			const { identity, wake } = workerWakeFixture(kind);
+			const self = wake.runId.toUpperCase();
+			expect(() =>
+				parseCloudWakeEnvelope(
+					{ ...wake, parentRunId: self, payload: { ...wake.payload, parentRunId: self } },
+					identity,
+				),
+			).toThrow(kind === "worker-dispatch" ? "Invalid worker dispatch wake" : "Invalid worker completion wake");
+		},
+	);
 	it("never lets a worker, a coworker message or an office continuation borrow the speaking policy", () => {
 		const worker = workerWakeFixture("worker-dispatch");
 		expect(() => parseCloudWakeEnvelope({ ...worker.wake, policy: worker.continuation }, worker.identity)).toThrow();
@@ -329,6 +342,14 @@ describe("office activation continuation envelope", () => {
 	])("rejects changed source, parent, actor and activation identity %#", (change) => {
 		const { identity, wake } = officeWakeFixture();
 		expect(() => parseCloudWakeEnvelope(change(wake), identity)).toThrow();
+	});
+	it("rejects this run in capitals as its own parent", () => {
+		const { identity, wake } = officeWakeFixture();
+		const self = wake.runId.toUpperCase();
+		const occurrenceKey = `office-activation:${wake.payload.intentId}:${self}`;
+		expect(() =>
+			parseCloudWakeEnvelope({ ...wake, parentRunId: self, source: { ...wake.source, occurrenceKey } }, identity),
+		).toThrow("Invalid office activation wake");
 	});
 });
 
@@ -396,6 +417,16 @@ describe("authorized envelope", () => {
 			expect(() => parseCloudWakeEnvelope({ ...envelope, [key]: randomUUID() }, authority.identity)).toThrow();
 		},
 	);
+	it("rejects an input id repeated in capitals", () => {
+		const { authority, envelope } = fixture();
+		const input = envelope.source.id;
+		expect(() =>
+			parseCloudWakeEnvelope(
+				{ ...envelope, payload: { inputIds: [input, input.toUpperCase()] } },
+				authority.identity,
+			),
+		).toThrow("Invalid input wake");
+	});
 	it("rejects unadmitted room authority even though room policy is defined", () => {
 		const { authority, envelope } = fixture();
 		expect(() =>
@@ -424,6 +455,13 @@ describe("authorized envelope", () => {
 				authority.identity,
 			),
 		).toThrow();
+		const upper = envelope.staffAgentId.toUpperCase();
+		expect(() =>
+			parseCloudWakeEnvelope(
+				{ ...envelope, causal: { ...envelope.causal, agentIds: [upper, envelope.staffAgentId] } },
+				authority.identity,
+			),
+		).toThrow("Cloud wake does not match its admitted run");
 	});
 	it("does not accept startup assignment flags or a source missing from the input set", () => {
 		const { authority, envelope } = fixture();
@@ -930,15 +968,28 @@ describe("held coworker messages (contract 14.6, second cut)", () => {
 	});
 	it("rejects a held message the agent supposedly left for itself", () => {
 		const human = fixture();
+		const self = human.authority.identity.staffAgentId;
+		for (const staffAgentId of [self, self.toUpperCase()])
+			expect(() =>
+				parseCloudWakeEnvelope(
+					{ ...human.envelope, payload: { ...human.envelope.payload, heldMessages: [heldLine(staffAgentId)] } },
+					human.authority.identity,
+				),
+			).toThrow("Invalid held coworker messages");
+		// The same the other way round: an identity in capitals and a lowercase line.
+		const upper = self.toUpperCase();
+		const identity = { ...human.authority.identity, staffAgentId: upper };
 		expect(() =>
 			parseCloudWakeEnvelope(
 				{
 					...human.envelope,
-					payload: { ...human.envelope.payload, heldMessages: [heldLine(human.authority.identity.staffAgentId)] },
+					staffAgentId: upper,
+					causal: { ...human.envelope.causal, agentIds: [upper] },
+					payload: { ...human.envelope.payload, heldMessages: [heldLine(self)] },
 				},
-				human.authority.identity,
+				identity,
 			),
-		).toThrow();
+		).toThrow("Invalid held coworker messages");
 	});
 	it("sends priority false to the kernel and accepts a held receipt", async () => {
 		const { binding, run, message, call, createBoundary } = await coworkerFixture();
@@ -978,5 +1029,45 @@ describe("held coworker messages (contract 14.6, second cut)", () => {
 			boundary.close();
 			run.close();
 		}
+	});
+});
+
+describe("dynamic routine wakes", () => {
+	function routineWake(routine: Record<string, unknown>) {
+		const { authority, envelope } = fixture();
+		const routineId = randomUUID();
+		return {
+			identity: authority.identity,
+			wake: {
+				...envelope,
+				kind: "routine",
+				actorUserId: null,
+				source: { kind: "schedule", id: routineId, occurrenceKey: `once:1:1:${routineId}` },
+				policy: policies[2].policy,
+				routine: { id: routineId, version: 1, intent: "Check whether invoice 42 was paid.", ...routine },
+				payload: { schema: "qorpera.routine-once-occurrence/v1", attempt: 1 },
+			} as unknown as CloudWakeEnvelope,
+		};
+	}
+	it("carries the dynamic mark and routine key only for a dynamic routine", () => {
+		const dynamic = routineWake({ dynamic: true, routineKey: "invoice-watch" });
+		expect(parseCloudWakeEnvelope(dynamic.wake, dynamic.identity).routine).toEqual({
+			...dynamic.wake.routine,
+			dynamic: true,
+			routineKey: "invoice-watch",
+		});
+		const fixed = routineWake({});
+		expect(parseCloudWakeEnvelope(fixed.wake, fixed.identity).routine).not.toHaveProperty("dynamic");
+	});
+	it.each([
+		{ dynamic: false },
+		{ dynamic: "yes" },
+		{ schedule: "hourly" },
+		{ dynamic: true },
+		{ routineKey: "invoice-watch" },
+		{ dynamic: true, routineKey: "Not A Key" },
+	])("rejects a routine marked %j", (extra) => {
+		const { identity, wake } = routineWake(extra);
+		expect(() => parseCloudWakeEnvelope(wake, identity)).toThrow();
 	});
 });

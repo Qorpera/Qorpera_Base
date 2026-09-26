@@ -39,3 +39,8 @@ verify_jwt = false
 # Stripe signs the raw webhook body; checkout/portal verify the member JWT.
 [functions.computer-billing]
 verify_jwt = false
+
+# The member gateway preserves the JWT for authoritative checks at the object
+# gateway. OPTIONS carries no JWT; no service-role authority is added.
+[functions.member-company-gateway]
+verify_jwt = false

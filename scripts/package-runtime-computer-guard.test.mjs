@@ -6,15 +6,18 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { generateCloudRuntimeBundle } from "./generate-cloud-runtime-bundle.mjs";
+import { cloudRuntimeBundle, generateCloudRuntimeBundle } from "./generate-cloud-runtime-bundle.mjs";
+
+import { committedRuntimeBundle, runtimeBundleEnforced, runtimeBundlePackagingEnvironment } from "./runtime-bundle-release-train.mjs";
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 test("packages independent native and office guards with separate account custody", async () => {
 	const root = await mkdtemp(join(tmpdir(), "runtime-guard-package-"));
 	try {
-		const expected = await generateCloudRuntimeBundle(true), output = join(root, "package");
+		const expected = runtimeBundleEnforced() ? await generateCloudRuntimeBundle(true) : await committedRuntimeBundle();
+		const source = await cloudRuntimeBundle(), output = join(root, "package");
 		const result = spawnSync(process.execPath, ["scripts/package-runtime-computer-guard.mjs", "--out", output], {
-			cwd: repository, encoding: "utf8", timeout: 60000,
+			cwd: repository, encoding: "utf8", timeout: 60000, env: runtimeBundlePackagingEnvironment(),
 		});
 		assert.equal(result.status, 0, result.stderr);
 		const manifest = JSON.parse(await readFile(join(output, "manifest.json"), "utf8"));
@@ -49,7 +52,7 @@ test("packages independent native and office guards with separate account custod
 			assert.equal(unsupervised.status, 1, unsupervised.stderr);
 			assert.equal(unsupervised.stderr.trim(), "PAID_GUARD_START_FAILED");
 		}
-		assert.match(expected.manifest.implementation["deploy/runtime-computers/paid-computer-guard.ts"], /^[a-f0-9]{64}$/);
+		assert.match(source.manifest.implementation["deploy/runtime-computers/paid-computer-guard.ts"], /^[a-f0-9]{64}$/);
 	} finally {
 		await rm(root, { recursive: true, force: true });
 	}
