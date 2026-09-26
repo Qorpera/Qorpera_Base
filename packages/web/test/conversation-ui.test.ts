@@ -9,6 +9,7 @@ import { ConversationView } from "../src/app/views/conversation.ts";
 import { NewConversationView } from "../src/app/views/new-conversation.ts";
 import type { WorkspaceActions } from "../src/app/workspace-actions.ts";
 import { CloudRpcError } from "../src/cloud/client.ts";
+import { createWebSessionRunControl } from "../src/cloud/session-run-control.ts";
 import type { TranscriptMessage } from "../src/cloud/transcript.ts";
 import appCss from "../src/styles/app.css?raw";
 import conversationCss from "../src/styles/conversation.css?raw";
@@ -786,6 +787,74 @@ describe("conversation UI boundaries", () => {
 		button(f.view.el, "Stop").click();
 		await settle();
 		expect(cancel).toHaveBeenCalledExactlyOnceWith(session.sessionId, nextRun, expect.any(AbortSignal));
+	});
+
+	it("stops a routine run working in the agent's thread through the conversation run control", async () => {
+		// A routine run is a wake run in the agent's own thread. The cloud's run control
+		// reports it like a member's turn (20260926183100); the composer's one button
+		// stops its exact id over the real transport; with a draft it is Send again.
+		const routineRun = id(74);
+		let working = true;
+		const fetch = vi.fn(async (input: string | URL | Request, _init?: RequestInit) => {
+			if (String(input).endsWith("/rpc/qorpera_cancel_session_run")) {
+				working = false;
+				return Response.json({ session_id: session.sessionId, run_id: routineRun, status: "cancelled" });
+			}
+			return Response.json({
+				session_id: session.sessionId,
+				staff_agent_id: staff.id,
+				run: working ? { run_id: routineRun, status: "leased", can_cancel: true } : null,
+			});
+		});
+		vi.stubGlobal("fetch", fetch);
+		const f = fixture();
+		const lifetime = new AbortController();
+		const company = new CompanyController(f.api, profileA, userA.id);
+		company.store.set({ team, staff: [staff], sessions: [{ ...session, staffAgentId: staff.id }], loading: false });
+		const view = new ConversationView(company, session.sessionId, {
+			runControl: createWebSessionRunControl(f.cloud, userA.id, lifetime.signal, () => {}),
+		});
+		document.body.append(view.el);
+		dispose = () => {
+			view.dispose();
+			company.stop();
+			lifetime.abort();
+		};
+		const routine = {
+			runId: routineRun,
+			staffAgentId: staff.id,
+			sourceKind: "wake" as const,
+			jobStatus: "leased" as const,
+			activity: "working" as const,
+			updatedAt: timestamp,
+		};
+		company.store.set({ activity: [routine] });
+		await settle();
+		await settle();
+		expect(company.agentState(staff.id)).toBe("working");
+		expect(button(view.el, "Stop").disabled).toBe(false);
+		input(view.el, "Message", "Also check the invoices.");
+		await settle();
+		expect(view.el.querySelector('[aria-label="Stop"]')).toBeNull();
+		expect(button(view.el, "Send message")).toBe(view.el.querySelector(".composer-send"));
+		input(view.el, "Message", "");
+		await settle();
+		button(view.el, "Stop").click();
+		await settle();
+		await settle();
+		const cancel = fetch.mock.calls.find(([url]) => String(url).endsWith("/rpc/qorpera_cancel_session_run"));
+		expect(JSON.parse(cancel?.[1]?.body as string)).toEqual({
+			p_session_id: session.sessionId,
+			p_run_id: routineRun,
+		});
+		// The confirmed Stop re-reads the conversation: no run is left to stop, even
+		// before the agent's activity catches up.
+		expect(fetch).toHaveBeenCalledTimes(3);
+		expect(view.el.querySelector('[aria-label="Stop"]')).toBeNull();
+		company.store.set({ activity: [] });
+		await settle();
+		expect(company.agentState(staff.id)).toBe("idle");
+		expect(view.el.querySelector('[aria-label="Stop"]')).toBeNull();
 	});
 
 	it("offers Try again in the thread, runs it on the selected account, and reports a refusal in plain words", async () => {
