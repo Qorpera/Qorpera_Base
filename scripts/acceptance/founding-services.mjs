@@ -30,7 +30,9 @@ export async function closeServer(server) {
 export async function startFoundingMail() {
 	const messages = new Map();
 	const sockets = new Set();
+	const stages = { connections: 0, acceptedRecipients: 0, rejectedRecipients: 0, dataMessages: 0, codesCaptured: 0, templateRequests: 0 };
 	const smtp = createTcpServer(socket => {
+		stages.connections++;
 		sockets.add(socket); socket.on("close", () => sockets.delete(socket));
 		socket.setTimeout(10000, () => socket.destroy());
 		let buffer = "", recipient = null, data = null;
@@ -43,13 +45,15 @@ export async function startFoundingMail() {
 				if (data !== null) {
 					if (line !== ".") { data += `${line}\n`; continue; }
 					const code = data.match(/\b([0-9]{8})\b/)?.[1];
-					if (recipient && code) messages.set(recipient, code);
+					stages.dataMessages++;
+					if (recipient && code) { messages.set(recipient, code); stages.codesCaptured++; }
 					data = null; socket.write("250 captured\r\n"); continue;
 				}
 				if (/^(EHLO|HELO) /i.test(line)) socket.write("250 localhost\r\n");
 				else if (/^MAIL FROM:/i.test(line)) socket.write("250 OK\r\n");
 				else if (/^RCPT TO:/i.test(line)) {
 					recipient = line.match(/^RCPT TO:<([a-z0-9-]+@founding\.example\.test)>$/i)?.[1]?.toLowerCase() ?? null;
+					if (recipient) stages.acceptedRecipients++; else stages.rejectedRecipients++;
 					socket.write(recipient ? "250 OK\r\n" : "550 local acceptance recipients only\r\n");
 				} else if (line === "DATA" && recipient) { data = ""; socket.write("354 End with dot\r\n"); }
 				else if (line === "QUIT") socket.end("221 bye\r\n");
@@ -61,15 +65,17 @@ export async function startFoundingMail() {
 	});
 	const port = await listenLoopback(smtp);
 	const template = createHttpServer((_req, res) => {
+		stages.templateRequests++;
 		res.writeHead(200, { "content-type": "text/html" }); res.end("<p>Your verification code: {{ .Token }}</p>");
 	});
 	const templatePort = await listenLoopback(template);
 	return {
 		port, templateUrl: `http://127.0.0.1:${templatePort}/template`,
+		diagnostics: () => ({ ...stages }),
 		async code(email) {
 			const until = Date.now() + 15000;
 			while (Date.now() < until) { if (messages.has(email)) return messages.get(email); await delay(100); }
-			throw new Error("Auth verification email was not delivered to private SMTP capture");
+			throw new Error(`Auth verification email was not delivered to private SMTP capture: ${JSON.stringify(stages)}`);
 		},
 		async close() { for (const socket of sockets) socket.destroy(); await Promise.all([closeServer(smtp), closeServer(template)]); messages.clear(); },
 	};

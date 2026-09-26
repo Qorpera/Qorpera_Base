@@ -18,7 +18,7 @@
     "wakeAndSilence": "afcdd01831284c2d3dfb4586c4a2267193e26fe00cdddb50bfe8ee8dac6e2212",
     "contextComposer": "1796c8300b3e5395d11fe57b132a51bda1025a7bbdb260fcec3019a40336dc87",
     "providerBootstrap": "7e2e03d4e847a5b9db55d3eeb98c0ae7486013619c081d451a5fa4f8aa049554",
-    "authorization": "6feb329adfee23e297897424d8ba7a358c06bc4f1f154d36979303b0e2bd9325",
+    "authorization": "3e94698677fe544091fe6147d6109f9c7f93a80d76fc6b3b70b0bb7cdc6cad6a",
     "inboundSafety": "c0c404045bcacbddea79156d2d0d000b2d9caac77d53d1c92d64471ae01581d2",
     "outboundSafety": "7d0c9cb7c599fb0e6292e389204cf0ed8e1aae9e616bf471391a7861040f168a",
     "interactionSurfaces": "4d902f96c16b5998243dd3a1977921834832505674860c0adb96e303336c5a08",
@@ -699,7 +699,7 @@
     "packages/runtime/src/native-provider-account.ts": "9dbb6d065639253c5584876adbeb70f2803de29575ae7de7d1e0f0bbe0442b2b",
     "packages/runtime/src/native-provider-usage.ts": "935086f12167064ae71e90b44af1cbfe28b0d64a59ec2ba685157f45d320297c",
     "packages/runtime/src/systemd-credential.ts": "1d3eb8038a369c58418cbd8248aecf457662cbb3430cc84847235c2222a82478",
-    "scripts/generate-cloud-runtime-bundle.mjs": "916c91ea3d0b926ce290a4df8e180eef380d9c8a58941ee4ae4b4c77c544fb05",
+    "scripts/generate-cloud-runtime-bundle.mjs": "74be46105a2d4e36e7e4e827ae944d20d3ecdae609b8977c68d427959a144d9a",
     "scripts/native-company-artifact.mjs": "e394bc799104f188769de07cd3be14e6c732a1a672113ea45d349a29d8e0ca63",
     "scripts/package-coding-executor.mjs": "bc5670e8ed06779453b075ed132351a5899ad45c6cf5d89b75fa296e4c146dce",
     "scripts/package-coding-executor.test.mjs": "765a2d1e130a26622f476130c934c95107cf1b2a0c736e478820f467e6f416a9",
@@ -1132,6 +1132,10 @@
     "supabase/migrations/20260925154000_computer_prestart_abandonment.sql": "6641883780536fa3593db917bbc2560dc186c680a8e7cd5c43d16736f1768ef9",
     "supabase/migrations/20260925155000_computer_terminal_recovery.sql": "d5e5b61d8c7fac6c5ea2890f2b747a413a2ccc0d28946a6ef215d7ef095343f3",
     "supabase/migrations/20260925156000_office_computer_outages.sql": "c5ad8cb3e1477680bef38cdc26e71d334f6a445f09ab8d739a4239f424e0c89e",
-    "supabase/migrations/20260925157000_office_outage_recovery.sql": "b19064ca795892383635b4f566fbd0b433e4d2e53b30d1a6d026841b00dc4de5"
+    "supabase/migrations/20260925157000_office_outage_recovery.sql": "b19064ca795892383635b4f566fbd0b433e4d2e53b30d1a6d026841b00dc4de5",
+    "supabase/migrations/20260925159000_runtime_bundle_activation_v127.sql": "cb32f8c7af1281440e7c04f959e3cceb2336a19ccbbff33dd5e2f929f7a99e68",
+    "supabase/migrations/20260925160000_paid_company_founding_capacity.sql": "e8b252619e82ca98c72cbb68bb7b12c36ac16632c047e50387b8a6201b551c9b",
+    "supabase/migrations/20260925161000_computer_payment_fences.sql": "854f46acdf30f876a52b5e9ee874302fad87be86f66add802247dcea3e0cc240",
+    "supabase/migrations/20260925162000_founding_paid_rollout_enrollment.sql": "e9abea70fb09310659f16739cce31219827b59b801813774bad341d2a3afaa45"
   }
 }

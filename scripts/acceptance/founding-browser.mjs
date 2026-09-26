@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { chromium } from "playwright-core";
 import { setTimeout as delay } from "node:timers/promises";
 import { join } from "node:path";
-import { bootstrapCompanySql, modelAccountsSql, runtimeEvidenceSql, sqlUuid } from "./founding-fixtures.mjs";
+import { bootstrapCompanySql, computerPlansSql, modelAccountsSql, runtimeEvidenceSql, sqlUuid } from "./founding-fixtures.mjs";
 
 async function eventually(use, message, timeout = 30000) {
 	const until = Date.now() + timeout;
@@ -23,7 +23,7 @@ export async function runFoundingBrowser({ origin, publicKey, cluster, mail, out
 		client: "Actual production web entry, styles, auth, controllers and views; separate browser contexts",
 		bootstrap: "Canonical staging/verification/finalization RPCs; storage object metadata fixture",
 		modelAccounts: "Separate member-owned native-login completion/sponsor fixtures; no external ChatGPT OAuth or model execution",
-		computerCapacity: "Explicit isolated complimentary entitlement; no paid checkout or live capacity",
+		computerCapacity: "Canonical invoice-funded Basis/Standard balances, actual readiness-gated rollout enrollment and each founder's UI pool consent; Stripe payment itself is fixture, no live checkout or capacity",
 		runtime: "Actual launch, turn materialization, wake and immutable startup context; no inference or physical VM dispatch",
 		realtime: "Not hosted; production polling/reload paths provide shared state",
 	} };
@@ -45,7 +45,17 @@ export async function runFoundingBrowser({ origin, publicKey, cluster, mail, out
 			});
 			await page.goto(origin);
 			await page.getByLabel("Email", { exact: true }).fill(email);
-			await page.getByRole("button", { name: "Continue with email", exact: true }).click();
+			const [otpResponse] = await Promise.all([
+				page.waitForResponse(response => response.url().startsWith(`${origin}/auth/v1/otp`) && response.request().method() === "POST"),
+				page.getByRole("button", { name: "Continue with email", exact: true }).click(),
+			]);
+			if (!otpResponse.ok()) {
+				// Only the fixed provider error code is retained. Never log response
+				// bodies, request headers, OTPs, sessions or email addresses.
+				const response = await otpResponse.json().catch(() => ({}));
+				const code = typeof response.error_code === "string" && /^[a-z_]{1,80}$/.test(response.error_code) ? response.error_code : "unavailable";
+				throw new Error(`Real Auth OTP request failed: HTTP ${otpResponse.status()} (${code}); SMTP ${JSON.stringify(mail.diagnostics())}`);
+			}
 			await page.getByLabel("Verification code", { exact: true }).fill(await mail.code(email));
 			await page.getByRole("button", { name: "Verify and sign in", exact: true }).click();
 			await page.getByRole("heading", { name: "Start your first company", exact: true }).waitFor();
@@ -100,18 +110,32 @@ export async function runFoundingBrowser({ origin, publicKey, cluster, mail, out
 		assert(await second.page.getByRole("button", { name: "I'm Ready", exact: true }).isDisabled());
 		evidence.steps.push("Company created/bootstrap finalized; second founder explicitly joined as contributor; early launch and unconnected Ready blocked");
 		await cluster.query(modelAccountsSql(profileId, [first.userId, second.userId]));
-		await cluster.query(`insert into public.qorpera_account_entitlements(user_id,plan_key,billing_mode,feature_set,storage_allocation,operator_reference,reason)
-		values(${sqlUuid(first.userId)},'internal','complimentary','all','unlimited','isolated-founding-acceptance','Explicit fixture computer capacity');`);
+		await cluster.query(computerPlansSql([first.userId, second.userId]));
+		// This isolated deployment explicitly publishes readiness. Ordinary
+		// production refresh/creation enrolls paid enforcement; no per-company
+		// mode row is fabricated, and individual offers remain unpublished.
+		await cluster.query("update public.qorpera_computer_billing_readiness set runtime_accounting_ready=true,checkout_enabled=true where singleton;");
+		const unfundedPool = await rpc(first, "qorpera_read_company_founding", { p_profile_id: profileId });
+		assert.equal(unfundedPool.body.computerUsage.meterMode, "paid", "Published rollout did not enroll existing open setup");
+		assert.equal(unfundedPool.body.computerUsage.canStart, false, "Paid plan or Computer Usage owner implied pool consent");
 		await Promise.all([first.page.reload(), second.page.reload()]);
 		await first.page.getByLabel("Your role (optional)", { exact: true }).fill("Product and customer discovery");
 		await first.page.getByLabel("Contribute my Qorpera computer allowance to this company", { exact: true }).check();
 		await first.page.getByRole("button", { name: "I'm Ready", exact: true }).click();
 		await first.page.getByRole("button", { name: "Not ready yet", exact: true }).waitFor();
 		await second.page.getByLabel("Your role (optional)", { exact: true }).fill("Engineering and delivery");
+		await second.page.getByLabel("Contribute my Qorpera computer allowance to this company", { exact: true }).check();
 		await second.page.getByRole("button", { name: "I'm Ready", exact: true }).click();
 		await second.page.getByRole("button", { name: "Not ready yet", exact: true }).waitFor();
 		const ready = await rpc(second, "qorpera_read_company_founding", { p_profile_id: profileId });
 		assert.equal(ready.status, 200); assert(ready.body.seats.every(seat => seat.readyRevision === ready.body.revision));
+		assert(ready.body.seats.every(seat => seat.computerPoolEnabled));
+		assert.equal(ready.body.computerUsage.meterMode, "paid");
+		assert.equal(ready.body.computerUsage.availableAllowance.availableUs, String(360 * 3600000000));
+		const [firstUsage, secondUsage] = await Promise.all([rpc(first, "qorpera_my_computer_usage", {}), rpc(second, "qorpera_my_computer_usage", {})]);
+		assert.equal(firstUsage.body.balance.availableUs, String(74 * 3600000000));
+		assert.equal(secondUsage.body.balance.availableUs, String(286 * 3600000000));
+		evidence.steps.push("Invoice-funded Basis and Standard plans retained separate member balances; each founder explicitly contributed through UI; combined company pool matched 360 standard hours");
 		// An edit after both signatures invalidates the exact shared revision.
 		await first.page.getByLabel("A little about the company", { exact: true }).fill("Build practical tools for local businesses. Agree on the vision, validate with customers, and ship useful prototypes.");
 		await first.page.getByRole("button", { name: "Save company details", exact: true }).click();
@@ -171,6 +195,7 @@ export async function runFoundingBrowser({ origin, publicKey, cluster, mail, out
 		await cluster.query(await bootstrapCompanySql(soloId));
 		await first.page.getByRole("heading", { name: "Set up your company", exact: true }).waitFor();
 		await cluster.query(modelAccountsSql(soloId, [first.userId]));
+		assert.equal(await cluster.query(`select public.qorpera_company_paid_computer_mode(${sqlUuid(soloId)});`), "t", "Published creation did not enroll paid enforcement");
 		await first.page.reload();
 		await first.page.getByLabel("Contribute my Qorpera computer allowance to this company", { exact: true }).check();
 		await first.page.getByRole("button", { name: "I'm Ready", exact: true }).click();
@@ -181,6 +206,9 @@ export async function runFoundingBrowser({ origin, publicKey, cluster, mail, out
 		assert.deepEqual(solo.owners, [first.userId]); assert.equal(solo.requestCount, 1);
 		assert.equal(solo.request.status, "materialized"); assert.equal(solo.run.sponsored_by_user_id, first.userId);
 		assert.equal(JSON.parse(solo.source.text).founding.roster.length, 1);
+		assert.equal(await cluster.query("select count(*) from public.qorpera_computer_allowance_buckets;"), "2", "Solo company duplicated global paid allowance");
+		const soloUsage = await rpc(first, "qorpera_my_computer_usage", {});
+		assert.equal(soloUsage.body.balance.availableUs, String(74 * 3600000000), "Founding debited a plan before any physical computer ran");
 		evidence.steps.push("Solo founder also created, readied and launched through actual UI, producing one owner and one materialized turn");
 		assert.deepEqual(blocked, [], "Browser attempted a nonlocal network destination");
 		assert.deepEqual(errors, [], "Production web client threw uncaught browser errors");

@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import { connect } from "node:net";
 import test from "node:test";
 import { foundingOptions } from "./founding-native.mjs";
-import { bootstrapCompanySql, modelAccountsSql, runtimeEvidenceSql, sqlUuid } from "./founding-fixtures.mjs";
+import { bootstrapCompanySql, computerPlansSql, modelAccountsSql, runtimeEvidenceSql, sqlUuid } from "./founding-fixtures.mjs";
 import { platformBootstrapParts, startFoundingMail } from "./founding-services.mjs";
 
 test("founding runner cannot attach an existing remote service or database", () => {
@@ -34,6 +34,10 @@ test("bootstrap and model fixtures preserve real publication and member identity
 	assert(!sql.includes("qorpera_create_cloud_company"));
 	assert(!sql.includes("insert into auth.users"));
 	assert(modelAccountsSql(id, [id]).includes("qorpera_create_member_execution_sponsor"));
+	const plans = computerPlansSql([id, "f0000000-0000-4000-8000-000000000002"]);
+	assert(plans.includes("qorpera_finish_computer_billing_sync"));
+	assert(!plans.includes("complimentary"));
+	assert(!plans.includes("insert into public.qorpera_computer_allowance_buckets"));
 	assert(runtimeEvidenceSql(id).includes("qorpera_materialize_session_turn_requests"));
 	assert.throws(() => sqlUuid("' or true;--"));
 });
@@ -55,5 +59,7 @@ test("private SMTP accepts only owned test addresses and captures an Auth-genera
 		socket.write("Subject: OTP\r\n\r\n<p>12345678</p>\r\n.\r\n"); assert.match(await line(), /^250/);
 		assert.equal(await mail.code("founder-a@founding.example.test"), "12345678");
 		const template = await fetch(mail.templateUrl); assert((await template.text()).includes("{{ .Token }}"));
+		assert.deepEqual(mail.diagnostics(), { connections: 1, acceptedRecipients: 1, rejectedRecipients: 1, dataMessages: 1, codesCaptured: 1, templateRequests: 1 });
+		assert(!JSON.stringify(mail.diagnostics()).includes("12345678"));
 	} finally { socket.destroy(); await mail.close(); }
 });

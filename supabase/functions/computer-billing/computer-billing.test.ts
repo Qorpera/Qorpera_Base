@@ -11,9 +11,13 @@ const subscription = {
 		price: { id: "price_basis", currency: "dkk", unit_amount: 18500, recurring: { interval: "month", interval_count: 1 } } }] },
 };
 const invoice = { id: "in_example", customer: "cus_example", livemode: false, status: "paid", amount_remaining: 0, amount_paid: 18500,
+	pre_payment_credit_notes_amount: 0, post_payment_credit_notes_amount: 0,
 	currency: "dkk", billing_reason: "subscription_cycle", parent: { subscription_details: { subscription: "sub_example" } },
 	lines: { has_more: false, data: [{ quantity: 1, currency: "dkk", parent: { subscription_item_details: { subscription: "sub_example", proration: false } },
 		pricing: { price_details: { price: "price_basis" }, unit_amount_decimal: "18500" }, period: { start: 1790000000, end: 1792600000 } }] } };
+const charge = { id: "ch_example", customer: "cus_example", livemode: false, payment_intent: "pi_example", paid: true, disputed: false, amount_refunded: 0 };
+const invoicePayment = { id: "inpay_example", invoice: "in_example", livemode: false, status: "paid", amount_paid: 18500,
+	payment: { type: "payment_intent", payment_intent: "pi_example" } };
 function fixture() {
 	const calls: { name: string; args: Record<string, unknown> }[] = [];
 	const requests: { url: string; init?: RequestInit }[] = [];
@@ -27,6 +31,9 @@ function fixture() {
 			return Response.json(String(input).includes("billing_portal/configurations")
 				? { id: "bpc_test", active: true, livemode: false, features: { subscription_update: { enabled: false } } }
 				: String(input).includes("billing_portal") ? { url: "https://billing.stripe.com/p/session_test" }
+				: String(input).includes("/invoice_payments?") ? { has_more: false, data: [invoicePayment] }
+				: String(input).includes("/payment_intents/") ? { id: "pi_example", customer: "cus_example", livemode: false, latest_charge: "ch_example" }
+				: String(input).includes("/charges/") ? charge
 				: String(input).includes("/invoices/") ? invoice : subscription);
 		},
 		rpc: async (name, args) => {
@@ -221,6 +228,71 @@ describe("computer billing service", () => {
 		assert.equal((await handleComputerBilling(new Request("https://edge.test/computer-billing/webhook", { method: "POST", body: "x".repeat(1048577) }), options)).status, 413);
 		assert.equal((await handleComputerBilling(webhook(), { ...options, stripeSecretKey: "" })).status, 503);
 		assert.equal(requests.length, 0);
+	});
+});
+
+describe("computer payment reversals", () => {
+	it("reconciles canonical partial refunds, disputes and credit notes rather than webhook snapshots", async () => {
+		for (const [type, id, canonical, path, reason] of [
+			["charge.refunded", "ch_example", { ...charge, amount_refunded: 1 }, "/charges/", "charge_adverse"],
+			["refund.created", "re_example", { id: "re_example", status: "pending", charge: "ch_example" }, "/refunds/", "refund"],
+			["charge.dispute.created", "du_example", { id: "du_example", livemode: false, charge: "ch_example", status: "needs_response" }, "/disputes/", "dispute"],
+			["credit_note.created", "cn_example", { id: "cn_example", livemode: false, customer: "cus_example", invoice: "in_example", amount: 1, status: "issued" }, "/credit_notes/", "credit_note"],
+		] as const) {
+			const { options, calls } = fixture(), fetcher = options.fetch;
+			options.fetch = async (input, init) => String(input).includes(path) ? Response.json(canonical) : fetcher(input, init);
+			const event = { type, data: { object: { id, customer: "cus_forged", amount_refunded: 0 } } };
+			assert.equal((await handleComputerBilling(webhook(event), options)).status, 200, type);
+			const fence = calls.find((call) => call.name === "qorpera_fence_computer_payment");
+			assert.deepEqual(fence?.args.p_proof, { invoiceId: "in_example", subscriptionId: "sub_example", customerId: "cus_example", sourceId: id, reason });
+			assert.equal(calls.some((call) => call.name === "qorpera_finish_computer_billing_sync"), false);
+		}
+	});
+	it("lost fence response stays retryable and replays the same immutable proof", async () => {
+		const { options, calls } = fixture(), fetcher = options.fetch, rpc = options.rpc;
+		options.fetch = async (input, init) => String(input).includes("/charges/") ? Response.json({ ...charge, disputed: true }) : fetcher(input, init);
+		let first = true;
+		options.rpc = async (name, args) => { const result = await rpc(name, args); if (name === "qorpera_fence_computer_payment" && first) { first = false; throw new Error("lost reply"); } return result; };
+		const event = { type: "charge.refunded", data: { object: { id: "ch_example" } } };
+		assert.equal((await handleComputerBilling(webhook(event), options)).status, 503);
+		assert.equal((await handleComputerBilling(webhook(event), options)).status, 200);
+		const records = calls.filter((call) => call.name === "qorpera_fence_computer_payment");
+		assert.equal(records.length, 2); assert.deepEqual(records[0].args, records[1].args);
+	});
+	it("invoice.paid checks payment reversals and credit notes before finishing funding", async () => {
+		for (const changed of [{ ...charge, amount_refunded: 18500 }, { ...charge, disputed: true }, null]) {
+			const { options, calls } = fixture(), fetcher = options.fetch;
+			options.fetch = async (input, init) => changed && String(input).includes("/charges/") ? Response.json(changed)
+				: !changed && String(input).includes("/invoices/") ? Response.json({ ...invoice, post_payment_credit_notes_amount: 100 }) : fetcher(input, init);
+			assert.equal((await handleComputerBilling(webhook({ type: "invoice.paid", data: { object: invoice } }), options)).status, 200);
+			const fence = calls.findIndex((call) => call.name === "qorpera_fence_computer_payment");
+			assert(fence >= 0 && fence < calls.findIndex((call) => call.name === "qorpera_finish_computer_billing_sync"));
+		}
+	});
+	it("unknown, incomplete or cross-customer payment history never authorizes funding", async () => {
+		for (const bad of [{ has_more: true, data: [invoicePayment] }, { has_more: false, data: [] },
+			{ has_more: false, data: [{ ...invoicePayment, invoice: "in_other" }] },
+			{ has_more: false, data: [{ ...invoicePayment, payment: { type: "payment_record", payment_record: "pr_example" } }] }]) {
+			const { options, calls } = fixture(), fetcher = options.fetch;
+			options.fetch = async (input, init) => String(input).includes("/invoice_payments?") ? Response.json(bad) : fetcher(input, init);
+			assert.equal((await handleComputerBilling(webhook({ type: "invoice.paid", data: { object: invoice } }), options)).status, 503);
+			assert.equal(calls.some((call) => call.name === "qorpera_finish_computer_billing_sync"), false);
+		}
+		const { options, calls } = fixture(), fetcher = options.fetch;
+		options.fetch = async (input, init) => String(input).includes("/charges/") ? Response.json({ ...charge, customer: "cus_other", amount_refunded: 1 }) : fetcher(input, init);
+		assert.equal((await handleComputerBilling(webhook({ type: "charge.refunded", data: { object: charge } }), options)).status, 503);
+		assert.equal(calls.some((call) => call.name === "qorpera_fence_computer_payment"), false);
+	});
+	it("failed refunds and void credit notes do not mint or restore funds", async () => {
+		for (const [type, id, canonical, path] of [
+			["refund.failed", "re_example", { id: "re_example", status: "failed", charge: "ch_example" }, "/refunds/"],
+			["credit_note.voided", "cn_example", { id: "cn_example", livemode: false, status: "void", amount: 100 }, "/credit_notes/"],
+		] as const) {
+			const { options, calls } = fixture(), fetcher = options.fetch;
+			options.fetch = async (input, init) => String(input).includes(path) ? Response.json(canonical) : fetcher(input, init);
+			assert.equal((await handleComputerBilling(webhook({ type, data: { object: { id } } }), options)).status, 200);
+			assert.equal(calls.length, 0);
+		}
 	});
 });
 

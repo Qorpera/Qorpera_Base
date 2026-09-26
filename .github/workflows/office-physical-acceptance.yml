@@ -121,6 +121,9 @@ jobs:
           --test 642_computer_prestart_abandonment.test.sql
           --test 647_office_computer_outages.test.sql
           --test 648_office_outage_recovery.test.sql
+          --test 660_paid_company_founding_capacity.test.sql
+          --test 661_computer_payment_fences.test.sql
+          --test 662_founding_paid_rollout_enrollment.test.sql
           --out "${RUNNER_TEMP}/office-acceptance/postgres"
 
       - name: Exercise authenticated TLS RPC against native PostgreSQL
@@ -189,5 +192,116 @@ jobs:
             ${{ runner.temp }}/office-acceptance/image/image-provenance.json
             ${{ runner.temp }}/office-acceptance/image/image-verification.json
             ${{ runner.temp }}/office-acceptance/lifecycle/evidence.json
+          if-no-files-found: warn
+          retention-days: 14
+  workloads:
+    name: Physical workload sizes, pools and sustained usage
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Require disposable Linux host
+        run: |
+          set -euo pipefail
+          test "${RUNNER_ENVIRONMENT}" = github-hosted
+          test "$(uname -m)" = x86_64
+          test "$(cat /proc/1/comm)" = systemd
+          test -c /dev/kvm
+          sudo -n python3 scripts/acceptance/paid-lxd-kvm.py
+          df -h "${RUNNER_TEMP}"
+
+      - name: Install dependencies without npm lifecycle scripts
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Test isolated fixture boundaries
+        run: node --test scripts/acceptance/native-postgres.test.mjs scripts/acceptance/office-rpc-server.test.mjs scripts/acceptance/workload-usage-evidence.test.mjs
+
+      - name: Install native PostgreSQL and NFS tools
+        timeout-minutes: 8
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
+            https://www.postgresql.org/media/keys/ACCC4CF8.asc -o "${RUNNER_TEMP}/pgdg.asc"
+          test "$(gpg --show-keys --with-colons "${RUNNER_TEMP}/pgdg.asc" | awk -F: '$1=="fpr" {print $10; exit}')" = B97B0AFCAA1A47F044F244A07FCC7D46ACCC4CF8
+          sudo install -m 0644 "${RUNNER_TEMP}/pgdg.asc" /usr/share/keyrings/qorpera-acceptance-pgdg.asc
+          echo 'deb [signed-by=/usr/share/keyrings/qorpera-acceptance-pgdg.asc] https://apt.postgresql.org/pub/repos/apt noble-pgdg main' | sudo tee /etc/apt/sources.list.d/qorpera-acceptance-pgdg.list
+          sudo apt-get update
+          sudo apt-get install --yes postgresql-17 postgresql-client-17 nfs-kernel-server nfs-common
+          /usr/lib/postgresql/17/bin/postgres --version
+          mkdir -p "${RUNNER_TEMP}/office-acceptance"
+          dpkg-query -W postgresql-17 postgresql-client-17 nfs-kernel-server nfs-common > "${RUNNER_TEMP}/office-acceptance/host-packages.txt"
+
+      - name: Install the reviewed LXD revision
+        timeout-minutes: 8
+        run: |
+          set -euo pipefail
+          if ! command -v snap >/dev/null; then
+            sudo apt-get install --yes snapd
+          fi
+          sudo systemctl start snapd.socket
+          sudo snap wait system seed.loaded
+          if snap list lxd >/dev/null 2>&1; then
+            if [ "$(snap list lxd | awk 'NR==2 {print $3}')" != 40424 ]; then
+              sudo snap refresh lxd --channel=6/stable --revision=40424
+            fi
+          else
+            sudo snap install lxd --channel=6/stable --revision=40424
+          fi
+          test "$(snap list lxd | awk 'NR==2 {print $2 ":" $3}')" = 6.9-ab8fad2:40424
+          sudo snap refresh --hold=forever lxd
+          sudo /snap/bin/lxd waitready --timeout=60
+
+      - name: Build and cold-boot the actual office guest
+        timeout-minutes: 22
+        run: >-
+          sudo env PATH="${PATH}:/snap/bin" GITHUB_ACTIONS=true RUNNER_ENVIRONMENT=github-hosted GITHUB_SHA="${GITHUB_SHA}"
+          node scripts/acceptance/office-image-prepare.mjs --out "${RUNNER_TEMP}/office-acceptance/image"
+
+      - name: Reconcile each physical workload and resource shape
+        timeout-minutes: 110
+        run: |
+          set -euo pipefail
+          case_number=0
+          for kind in native coding login; do
+            for shape in '1 1' '2 2' '2 8' '2 10'; do
+              read -r cpu_count memory_gib <<< "$shape"
+              case_number=$((case_number + 1))
+              sudo env PATH="${PATH}:/snap/bin" GITHUB_ACTIONS=true RUNNER_ENVIRONMENT=github-hosted GITHUB_SHA="${GITHUB_SHA}" \
+                node scripts/acceptance/workload-usage-physical.mjs --kind "$kind" --cpus "$cpu_count" --memory-gib "$memory_gib" \
+                --image-context "${RUNNER_TEMP}/office-acceptance/image/image-context.json" \
+                --out "${RUNNER_TEMP}/workload-acceptance/case-${case_number}"
+            done
+          done
+          for kind in native coding; do
+            case_number=$((case_number + 1))
+            sudo env PATH="${PATH}:/snap/bin" GITHUB_ACTIONS=true RUNNER_ENVIRONMENT=github-hosted GITHUB_SHA="${GITHUB_SHA}" \
+              node scripts/acceptance/workload-usage-physical.mjs --kind "$kind" --cpus 2 --memory-gib 2 --pool-fallback --renew \
+              --image-context "${RUNNER_TEMP}/office-acceptance/image/image-context.json" \
+              --out "${RUNNER_TEMP}/workload-acceptance/case-${case_number}"
+            case_number=$((case_number + 1))
+            sudo env PATH="${PATH}:/snap/bin" GITHUB_ACTIONS=true RUNNER_ENVIRONMENT=github-hosted GITHUB_SHA="${GITHUB_SHA}" \
+              node scripts/acceptance/workload-usage-physical.mjs --kind "$kind" --cpus 2 --memory-gib 2 --plan dedicated \
+              --image-context "${RUNNER_TEMP}/office-acceptance/image/image-context.json" \
+              --out "${RUNNER_TEMP}/workload-acceptance/case-${case_number}"
+          done
+      - name: Upload bounded workload evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: workload-docker-free-${{ github.sha }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/workload-acceptance/case-*/evidence.json
+            ${{ runner.temp }}/office-acceptance/image/evidence.json
+            ${{ runner.temp }}/office-acceptance/image/image-trust-evidence.json
           if-no-files-found: warn
           retention-days: 14

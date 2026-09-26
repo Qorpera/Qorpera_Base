@@ -4,12 +4,16 @@ import { readFile, stat } from "node:fs/promises";
 import { cpus, totalmem } from "node:os";
 import { LxdUnixClient } from "../../packages/runner-orchestrator/src/lxd-client.ts";
 import { planLxdOfficeAdoption } from "../../packages/runner-orchestrator/src/lxd-office-adoption-plan.ts";
+import { lxdOfficeGuestPlan } from "../../packages/runner-orchestrator/src/lxd-office-guest.ts";
 import { captureLxdOfficeHostNamespace } from "../../packages/runner-orchestrator/src/lxd-office-host-namespace.ts";
 import { officeDigest } from "../../packages/runner-orchestrator/src/lxd-office-image-provenance.ts";
-import { runLxdOfficeLifecycleService } from "../../packages/runner-orchestrator/src/lxd-office-lifecycle-service.ts";
+import { parseLxdOfficeLifecycleServiceConfig, runLxdOfficeLifecycleService } from "../../packages/runner-orchestrator/src/lxd-office-lifecycle-service.ts";
+import { readLxdOfficeCredentialFile, readLxdOfficeProtectedFile } from "../../packages/runner-orchestrator/src/lxd-office-physical-host.ts";
 import { lxdOfficePhysicalPolicySha256, parseLxdOfficePhysicalPolicy } from "../../packages/runner-orchestrator/src/lxd-office-physical-policy.ts";
 import { lxdOfficeProviderBindingSha256 } from "../../packages/runner-orchestrator/src/lxd-office-start-control.ts";
 import { runRuntimeNodeObserver } from "../../packages/runner-orchestrator/src/runtime-node-observer-service.ts";
+import { RuntimeComputerHttpControl, readRuntimeComputerExecutorSecret } from "../../packages/runner-orchestrator/src/runtime-computer-http-control.ts";
+import { exerciseRuntimeWorkloadUsage } from "./workload-usage-probe.ts";
 
 // This executable composes the real production components. It supplies no
 // replacement physical, registry, journal, clock, or worker ports.
@@ -24,6 +28,24 @@ if (action === "provider") {
 	await runRuntimeNodeObserver(abort.signal, (state) => report({ observer: state }));
 } else if (action === "namespace") {
 	await captureLxdOfficeHostNamespace();
+} else if (action === "finish-usage") {
+	const config = parseLxdOfficeLifecycleServiceConfig(JSON.parse((await readLxdOfficeProtectedFile(process.argv[3], 16384)).toString("utf8")));
+	assert(config.computerExecutorCredentialPath);
+	const credential = await readLxdOfficeCredentialFile(config.registryCredential.path, 4096);
+	try {
+		assert.equal(credential.byteLength, config.registryCredential.bytes);
+		assert.equal(createHash("sha256").update(credential).digest("hex"), config.registryCredential.sha256);
+		const policy = parseLxdOfficePhysicalPolicy(JSON.parse((await readLxdOfficeProtectedFile(config.policyPath, 65536)).toString("utf8")));
+		const journal = JSON.parse(await readFile(process.argv[4], "utf8"));
+		const plan = lxdOfficeGuestPlan(journal.binding), binding = plan.binding;
+		const control = new RuntimeComputerHttpControl({ supabaseUrl: config.registryUrl, supabaseServiceKey: credential.toString("utf8"),
+			executorSecret: await readRuntimeComputerExecutorSecret(config.computerExecutorCredentialPath) });
+		report(await exerciseRuntimeWorkloadUsage({ context: { allocationId: binding.allocationId, providerKind: "office", providerId: binding.providerId,
+			policySha256: binding.providerPolicySha256, instanceSha256: plan.instanceSha256, bootstrapSha256: binding.bootstrapSha256,
+			runId: null, runnerId: null, officeId: binding.companyComputerId, computerGeneration: binding.computerGeneration },
+			guardSocketPath: "/run/qorpera-office-computer-guard/control.sock", lxdSocketPath: policy.host.socketPath, control,
+			disposableRun: { githubHosted: true, companyId: binding.companyId }, close: true, signal: abort.signal }));
+	} finally { credential.fill(0); }
 } else if (action === "infrastructure") {
 	const socketPath = "/var/snap/lxd/common/lxd/unix.socket";
 	const client = new LxdUnixClient(socketPath);

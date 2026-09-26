@@ -106,3 +106,22 @@ test("fixture tokens must be distinct and cryptographically sized", async () => 
 		await assert.rejects(startOfficeRpcServer({ query: async () => "[]", tls, tokens: invalid, listen: { host: "127.0.0.1", port: 0 } }), /INVALID_OFFICE_ACCEPTANCE_SERVER/);
 	}
 });
+
+test("physical evidence captures authorized observations without surrounding credentials", async (t) => {
+	const samples = [];
+	let fail = false;
+	const query = async (sql) => {
+		if (sql.includes("from pg_catalog.pg_proc")) return JSON.stringify(metadata().map((row) => ({ ...row, defaults: 0, args: [{ name: "p_request", type: "jsonb" }, { name: "p_executor_secret", type: "text" }] })));
+		if (fail) throw new Error("private SQL failure");
+		return '{"state":"checkpointed"}';
+	};
+	const server = await startOfficeRpcServer({ query, tls, tokens, listen: { host: "127.0.0.1", port: 0 }, onSample: (value) => samples.push(value) });
+	t.after(() => server.close());
+	const sample = { observationId: "physical-observation", state: "running", hostUptimeMs: 1234 };
+	const options = { token: tokens.provider, path: "/rest/v1/rpc/qorpera_checkpoint_runtime_computer_permit", body: JSON.stringify({ p_request: { permitId: "permit", sample, privateContext: "private" }, p_executor_secret: tokens.provider }) };
+	assert.equal((await call(server, options)).status, 200);
+	assert.deepEqual(samples, [{ method: "qorpera_checkpoint_runtime_computer_permit", permitId: "permit", sample }]);
+	fail = true;
+	assert.equal((await call(server, options)).status, 503);
+	assert.deepEqual(samples, [{ method: "qorpera_checkpoint_runtime_computer_permit", permitId: "permit", sample }, { method: "qorpera_checkpoint_runtime_computer_permit", permitId: "permit", sample }], "Observed requests survive ambiguous SQL outcomes for later committed-row reconciliation");
+});

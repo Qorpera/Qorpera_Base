@@ -45,6 +45,27 @@ foreach v_user in array array[${userIds.map(sqlUuid).join(",")}] loop
 end loop; end $$; commit;`;
 }
 
+/** Canonical invoice reconciliation is the explicit Stripe boundary. There are
+ * real per-member subscriptions and one global allowance bucket per invoice;
+ * no complimentary grant or copied company-local balance is manufactured. */
+export function computerPlansSql(userIds) {
+	assert(Array.isArray(userIds) && userIds.length === 2);
+	return `begin;
+select set_config('request.jwt.claims','{"role":"service_role"}',true);
+do $$ declare v_users uuid[]:=array[${userIds.map(sqlUuid).join(",")}]; i integer; payload jsonb; claim jsonb;
+ t timestamptz:=statement_timestamp()-interval '1 day'; begin
+for i in 1..2 loop
+ perform public.qorpera_map_computer_billing_customer(v_users[i],'cus_foundingaccept'||i);
+ payload:=jsonb_build_object('subscriptionId','sub_foundingaccept'||i,'customerId','cus_foundingaccept'||i,'userId',v_users[i],
+  'planKey',case when i=1 then 'basis' else 'standard' end,'planVersion',1,'status','active','periodStart',t,'periodEnd',t+interval '1 month');
+ claim:=public.qorpera_begin_computer_billing_sync('evt_foundingaccept'||i,'sub_foundingaccept'||i,t,repeat('a',64));
+ perform public.qorpera_finish_computer_billing_sync('evt_foundingaccept'||i,(claim->>'leaseToken')::uuid,payload,
+  jsonb_build_object('invoiceId','in_foundingaccept'||i,'subscriptionId','sub_foundingaccept'||i,'customerId','cus_foundingaccept'||i,
+   'planKey',payload->>'planKey','planVersion',1,'periodStart',t,'periodEnd',t+interval '1 month',
+   'amountPaid',case when i=1 then 18500 else 63000 end,'billingReason','subscription_cycle','status','paid','currency','dkk'));
+end loop; end $$; commit;`;
+}
+
 export function runtimeEvidenceSql(profileId) {
 	return `begin;
 select set_config('request.jwt.claims','{"role":"service_role"}',true);
