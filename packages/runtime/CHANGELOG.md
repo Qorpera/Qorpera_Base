@@ -83,7 +83,7 @@
 
 ### Fixed
 
-- `company_write` and `company_mkdir` into a folder that does not exist are a definite `COMPANY_FILE_PARENT_MISSING` refusal (denied, `errorCategory` `parent_missing`) that tells the model to create the folder with `company_mkdir` first and repeat the call. SQL refuses it at the check (PT424), before presence and before any bytes are uploaded, and again at prepare and commit. Previously the runner uploaded the bytes, failed while building the candidate tree and reported an unconfirmed, unknown outcome.
+- `company_write` and `company_mkdir` into a folder that does not exist are a definite `COMPANY_FILE_PARENT_MISSING` refusal (denied, `errorCategory` `parent_missing`) that tells the model to create the folder with `company_mkdir` first and repeat the call (and never to replace a file to make that folder). SQL refuses it at the check (PT424), before presence and before any bytes are uploaded, and again at prepare and commit. Previously the runner uploaded the bytes, failed while building the candidate tree and reported an unconfirmed, unknown outcome.
 
 - Preserved office startup, supervision, desktop and cleanup failure causes in bounded structured diagnostics. Logs include only allowlisted stages, error codes and categories, never raw messages, credentials, paths or stacks.
 

@@ -950,6 +950,14 @@ export class CloudCompanyPathGateway {
 				});
 				return preparation.result;
 			}
+			// SQL checked the plan's own folder at check and prepare. Missing from the entries prepare
+			// listed, it was deleted in between; nothing of this plan is committed yet, so that is still
+			// a definite refusal. (The approval lane stages the same way but never gets this brand.)
+			if (preparation.state === "ready" && next !== null && path.includes("/")) {
+				const folder = path.slice(0, path.lastIndexOf("/"));
+				if (!preparation.entries.some((candidate) => candidate.path === folder && candidate.kind === "directory"))
+					throw new CloudCompanyPathParentMissing();
+			}
 			const tree =
 				preparation.state === "ready"
 					? await stageCompanyPathCandidate(
@@ -1168,11 +1176,7 @@ async function stageCompanyPathCandidate(
 		parseCloudCompanyPath(candidate.path);
 		const slash = candidate.path.lastIndexOf("/");
 		if (slash !== -1 && byPath.get(candidate.path.slice(0, slash)) !== "directory")
-			// SQL checked the plan's own folder first; missing here, it was deleted since. Nothing
-			// of this plan is committed before this candidate, so that is still a definite refusal.
-			throw candidate === plan.entry
-				? new CloudCompanyPathParentMissing()
-				: new Error("Company File parent is not a directory");
+			throw new Error("Company File parent is not a directory");
 	}
 	const bytes = Buffer.from(
 		JSON.stringify({

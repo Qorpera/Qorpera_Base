@@ -442,8 +442,9 @@ describe("cloud Company File path gateway", () => {
 				expect(envelope.content.text).toMatch(
 					/^COMPANY_FILE_PARENT_MISSING: nothing was written; the folder this path goes in does not exist\. Create it with company_mkdir first/,
 				);
+				expect(envelope.content.text).toContain("do not replace the file");
 				expect(envelope.content.text).not.toContain("Company File parent folder is missing");
-				// Only the check crossed the wire: no presence, no upload, no prepare or commit.
+				// Only the check crossed the wire: no upload, no prepare or commit.
 				expect(db.requests).toEqual([{ method: "qorpera_check_company_path_mutation", path, status: 424 }]);
 				expect(db.objects.size).toBe(objects);
 				expect(db.entries.has(path)).toBe(false);
@@ -512,6 +513,66 @@ describe("cloud Company File path gateway", () => {
 			boundary.close();
 		}
 	});
+	it("refuses a copy of a shared export into a missing folder at its check, before uploading anything", async () => {
+		const db = companyFilePostgrest();
+		db.directory("acceptance");
+		const source = db.seedExport(Buffer.from([0, 1, 2, 255]));
+		const boundary = new CloudNativeToolBoundary({
+			companyId: db.identity.companyId,
+			runId: db.identity.runId,
+			identity: db.identity,
+			tools: db.gateway.tools(),
+			assertActive: async () => {},
+			signal: new AbortController().signal,
+		});
+		try {
+			const objects = db.objects.size;
+			const args = { path: "acceptance/auto-review/out.bin", operationKey: "copy-1", expectedVersion: null, source };
+			const response = await boundary.invoke("missing_parent_copy", "qorpera", "company_write", args);
+			expect(JSON.parse(response.contentItems[0].text)).toMatchObject({
+				status: "denied",
+				content: { text: expect.stringMatching(/^COMPANY_FILE_PARENT_MISSING: nothing was written/) },
+			});
+			expect(db.requests).toEqual([
+				{ method: "qorpera_native_company_file_write_source", path: null, status: 200 },
+				{ method: "qorpera_native_company_file_write", path: args.path, status: 424 },
+			]);
+			expect(db.objects.size).toBe(objects);
+			await db.gateway.mutate(
+				"mkdir",
+				{ path: "acceptance/auto-review", operationKey: "folder", expectedVersion: null },
+				new AbortController().signal,
+			);
+			const repeated = await boundary.invoke("missing_parent_copy_again", "qorpera", "company_write", args);
+			expect(JSON.parse(repeated.contentItems[0].text)).toMatchObject({ status: "ok" });
+			expect(db.entries.get(args.path)?.entry?.kind).toBe("file");
+		} finally {
+			boundary.close();
+		}
+	});
+	it("registers no presence for a write the check refused for its missing folder", async () => {
+		const observe = vi.fn<CloudCompanyPathPresence["observe"]>();
+		const f = fixture(undefined, { observe, close: async () => {} });
+		f.overrides.set("qorpera_check_company_path_mutation", async () => {
+			throw new CloudCompanyPathRpcParentMissing();
+		});
+		const response = await f.boundary.invoke("presence_orphan", "qorpera", "company_write", {
+			path: "gone/check-1.txt",
+			operationKey: "presence-orphan",
+			expectedVersion: null,
+			text: "x",
+		});
+		expect(JSON.parse(response.contentItems[0].text)).toMatchObject({
+			status: "denied",
+			content: { text: expect.stringMatching(/^COMPANY_FILE_PARENT_MISSING: /) },
+		});
+		expect(observe).not.toHaveBeenCalled();
+		expect(f.transport.put).not.toHaveBeenCalled();
+		// Besides the boundary's own authority checks, only the refused check ran.
+		expect(
+			f.call.mock.calls.map(([method]) => method).filter((method) => method !== "qorpera_assert_company_path_reads"),
+		).toEqual(["qorpera_check_company_path_mutation"]);
+	});
 	it("refuses a plan whose folder is missing from the entries it would stage, before any commit", async () => {
 		// SQL found the folder at the check; it was deleted before prepare listed the head.
 		const f = fixture();
@@ -526,6 +587,7 @@ describe("cloud Company File path gateway", () => {
 			content: { text: expect.stringMatching(/^COMPANY_FILE_PARENT_MISSING: /) },
 		});
 		expect(f.call.mock.calls.filter(([method]) => method === "qorpera_commit_company_path_mutation")).toHaveLength(0);
+		expect(f.call.mock.calls.filter(([method]) => method === "qorpera_verify_company_path_tree")).toHaveLength(0);
 		expect(f.receipts.size).toBe(0);
 	});
 	it("does not infer a missing folder from adapter text or from a refusal outside a mutation", async () => {

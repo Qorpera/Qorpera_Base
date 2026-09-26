@@ -319,9 +319,9 @@ forbidden; automatic semantic merging is optional future machinery. In the
 cloud tools the typed result is `COMPANY_FILE_VERSION_CHANGED` (nothing was
 written), never the unconfirmed outcome kept for results that may have
 happened (2026-09-25). The gateway never invents parent folders: a write or
-directory whose folder does not exist is refused before any bytes are staged,
-as `COMPANY_FILE_PARENT_MISSING` (nothing was written; create the folder, then
-repeat the call) (2026-09-26).
+mkdir whose folder does not exist is refused, normally before any bytes are
+staged, as `COMPANY_FILE_PARENT_MISSING` (nothing was written; create the
+folder, then repeat the call) (2026-09-26).
 
 The Company File is worked on as one live document. Every agent and member
 edits the same live objects in place through the live mount or Company File

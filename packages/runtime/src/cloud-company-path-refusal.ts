@@ -47,12 +47,12 @@ export class CloudCompanyPathRpcParentMissing extends CloudRuntimeDiagnosticErro
 	}
 }
 
-/** Only the Company File gateway promotes a missing-folder refusal of its own
- * check, prepare or commit (each runs the same check, which a refusal rolls
- * back whole), or finds the plan's own folder missing from the entries it is
- * about to stage, before any commit. The gateway never invents parent folders:
- * this write or mkdir changed nothing, and succeeds once the folder exists.
- * Never infer this brand from any other RPC or text. */
+/** Only the Company File gateway's mutate() promotes a missing-folder refusal
+ * of its own check, prepare or commit (each runs the same check, which a
+ * refusal rolls back whole), or finds the plan's own folder missing from the
+ * entries prepare listed, before its commit. The gateway never invents parent
+ * folders: this write or mkdir changed nothing, and succeeds once the folder
+ * exists. Never infer this brand from any other RPC or text. */
 export class CloudCompanyPathParentMissing extends CloudRuntimeDiagnosticError {
 	constructor() {
 		super("parent_missing", "Company File parent folder is missing");

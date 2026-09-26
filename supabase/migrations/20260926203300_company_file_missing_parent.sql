@@ -30,7 +30,7 @@ $$;
 
 select pg_temp.parent_patch('public.qorpera_check_company_path_mutation(uuid,jsonb,jsonb)'::regprocedure,
 	$old$	return jsonb_build_object('state',case when public.qorpera_company_path_needs_approval(v_actor,v_resource,p_plan)$old$,
-	$new$	-- A new entry goes into an existing folder: refused before any bytes are staged.
+	$new$	-- A new entry goes into an existing folder. The check refuses it before any bytes are staged.
 	if p_plan -> 'entry' <> 'null'::jsonb and strpos(p_plan ->> 'path','/') > 0 and not exists (
 		select 1 from public.qorpera_company_path_entries parent
 		where parent.environment_id = (v_actor ->> 'environmentId')::uuid
