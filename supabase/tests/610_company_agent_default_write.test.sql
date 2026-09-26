@@ -132,6 +132,40 @@ begin
 	end loop;
 end $$;
 
+-- Before platform defaults existed, explicit root grants suppressed their
+-- creation. A later expiry/revocation is not permission to add a fresh default.
+do $$
+declare v_profile uuid := '29000000-0000-4000-8000-000000000010';
+	v_staff uuid := '29000000-0000-4000-8000-000000000030';
+	v_resource public.qorpera_company_path_resources; v_probe text; v_historical boolean;
+begin
+	select * into v_resource from public.qorpera_company_path_resources
+	where environment_id = '29000000-0000-4000-8000-000000000020' and path = '';
+	foreach v_probe in array array['revoked','expired'] loop
+		foreach v_historical in array array[false,true] loop
+			begin
+				update public.qorpera_company_path_grants set origin = 'explicit', permissions = array['read'],
+					resource_version = case when v_historical then extensions.gen_random_uuid() else v_resource.version end,
+					created_at = clock_timestamp() - interval '1 minute',
+					revoked_at = case when v_probe = 'revoked' then clock_timestamp() else null end,
+					expires_at = case when v_probe = 'expired' then clock_timestamp() - interval '1 second' else null end
+				where resource_id = v_resource.id and principal_id = v_staff;
+				perform public.qorpera_ensure_default_agent_read_grants(v_profile,null);
+				update public.qorpera_profile_staff set employment_status = 'archived'
+				where profile_id = v_profile and staff_agent_id = v_staff;
+				update public.qorpera_profile_staff set employment_status = 'active'
+				where profile_id = v_profile and staff_agent_id = v_staff;
+				if exists (select 1 from public.qorpera_company_path_grants where resource_id = v_resource.id
+					and principal_id = v_staff and origin = 'default_agent_read') then
+					raise exception 'Explicit % grant was replaced by a default (historical=%)',v_probe,v_historical; end if;
+				if public.qorpera_company_path_principal_allowed(v_profile,v_resource,'staff_agent',v_staff,'read') then
+					raise exception 'Explicit % grant regained access (historical=%)',v_probe,v_historical; end if;
+				raise exception using errcode = 'QTC01';
+			exception when sqlstate 'QTC01' then null; end;
+		end loop;
+	end loop;
+end $$;
+
 -- A more-specific private resource still overrides the usable shared root.
 select pg_temp.path_claims('authenticated','29000000-0000-4000-8000-000000000001');
 set local role authenticated;
