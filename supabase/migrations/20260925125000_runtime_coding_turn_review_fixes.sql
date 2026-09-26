@@ -5,12 +5,15 @@
 --    worker result repeats the session's standing PR on every later report,
 --    so a failed or blocked turn after PR 204 read as if it had published 204.
 --    The settle trigger now compares the result's PR with the session's PR
---    from before the turn (completion updates it only afterwards).
+--    from before the turn (completion updates it only afterwards): a new head
+--    on the same PR is that turn's publication, the standing PR re-reported
+--    unchanged is not.
 -- 2. Rows written before this migration are corrected once, from the thread's
 --    own events: the standing PR is removed from turns that published nothing,
 --    and backfilled "Not recorded." inputs take the session's input event and
---    its time. The guard that keeps a turn "recorded once" is set aside for
---    exactly these two derived corrections and restored in the same transaction.
+--    its time (and a predecessor settled at that time follows it). The guard
+--    that keeps a turn "recorded once" is set aside for exactly these derived
+--    corrections and restored in the same transaction.
 -- 3. A coding worker cannot commit a sequence without its turn row (deferred
 --    constraint triggers). The turn context refuses a gap, so a future path
 --    that moved the sequence without opening the turn would otherwise break
@@ -51,20 +54,34 @@ begin
 	update public.qorpera_coding_session_turns set outcome = public.qorpera_coding_turn_outcome(new.state, new.result,
 			case when new.result -> 'pullRequest' is distinct from v_standing then new.result -> 'pullRequest' end),
 		settled_at = clock_timestamp()$new$);
-drop function public.qorpera_coding_turn_outcome(text, jsonb);
+-- The two-argument form stays: a completion in flight across this migration may
+-- still run the old trigger body. Nothing new calls it; a later migration may drop it.
 
 -- ---------------------------------------------------------------------------
 -- 2. Rows written before this migration, corrected once from the thread's events
 -- ---------------------------------------------------------------------------
 alter table public.qorpera_coding_session_turns disable trigger qorpera_coding_session_turns_guard;
--- A turn published the pull request its completion recorded as the thread's 'published' event.
-update public.qorpera_coding_session_turns turn set outcome = jsonb_set(turn.outcome, '{pullRequest}', coalesce((
-		select event.body from public.qorpera_coding_session_events event where event.worker_id = turn.worker_id
+-- The rule the settle trigger now applies: a turn published the pull request its
+-- completion recorded as the thread's 'published' event, unless that is exactly
+-- the standing PR from an earlier turn (a follow-up that re-reported it unchanged).
+with published as (
+	select turn.worker_id, turn.sequence,
+		(select event.body from public.qorpera_coding_session_events event where event.worker_id = turn.worker_id
 			and event.sequence = turn.sequence and event.kind = 'published' and event.actor = 'executor' and jsonb_typeof(event.body) = 'object'
-		order by event.id desc limit 1), 'null'::jsonb))
-where turn.outcome is not null and jsonb_typeof(turn.outcome -> 'pullRequest') = 'object'
-	and not exists (select 1 from public.qorpera_coding_session_events event where event.worker_id = turn.worker_id
-		and event.sequence = turn.sequence and event.kind = 'published' and event.actor = 'executor' and event.body = turn.outcome -> 'pullRequest');
+		order by event.id desc limit 1) as mine,
+		(select event.body from public.qorpera_coding_session_events event where event.worker_id = turn.worker_id
+			and event.sequence < turn.sequence and event.kind = 'published' and event.actor = 'executor' and jsonb_typeof(event.body) = 'object'
+		order by event.sequence desc, event.id desc limit 1) as standing
+	from public.qorpera_coding_session_turns turn where turn.outcome is not null
+), corrected as (
+	select published.worker_id, published.sequence,
+		coalesce(case when published.mine is distinct from published.standing then published.mine end, 'null'::jsonb) as pull_request
+	from published
+)
+update public.qorpera_coding_session_turns turn set outcome = jsonb_set(turn.outcome, '{pullRequest}', corrected.pull_request)
+from corrected
+where corrected.worker_id = turn.worker_id and corrected.sequence = turn.sequence
+	and turn.outcome -> 'pullRequest' is distinct from corrected.pull_request;
 -- A backfilled input without its worker event takes the session's own input event.
 update public.qorpera_coding_session_turns turn set input_from = case when input.actor = 'member' then 'member' else 'agent' end,
 	input_text = btrim(input.body ->> 'text'),
@@ -78,6 +95,11 @@ from (select distinct on (event.worker_id, event.sequence) event.worker_id, even
 where turn.input_text = 'Not recorded.' and turn.input_user_id is null and turn.input_run_id is null
 	and input.worker_id = turn.worker_id and input.sequence = turn.sequence
 	and octet_length(btrim(coalesce(input.body ->> 'text', ''))) between 1 and 4000;
+-- A turn with no evidence of its end was settled when the next one started: follow a re-dated next turn.
+update public.qorpera_coding_session_turns turn set settled_at = next.created_at
+from public.qorpera_coding_session_turns next
+where next.worker_id = turn.worker_id and next.sequence = turn.sequence + 1
+	and turn.outcome ->> 'reason' = 'unrecorded' and turn.settled_at is distinct from next.created_at;
 alter table public.qorpera_coding_session_turns enable trigger qorpera_coding_session_turns_guard;
 
 -- ---------------------------------------------------------------------------
@@ -113,5 +135,6 @@ select pg_temp.review_patch('public.qorpera_read_coding_turn_context(jsonb)',
 -- ---------------------------------------------------------------------------
 -- Grants
 -- ---------------------------------------------------------------------------
-revoke all on function public.qorpera_coding_turn_outcome(text, jsonb, jsonb), public.qorpera_assert_coding_turn_recorded()
+revoke all on function public.qorpera_coding_turn_outcome(text, jsonb, jsonb), public.qorpera_coding_turn_outcome(text, jsonb),
+	public.qorpera_assert_coding_turn_recorded()
 	from public, anon, authenticated, service_role, qorpera_secret_broker;

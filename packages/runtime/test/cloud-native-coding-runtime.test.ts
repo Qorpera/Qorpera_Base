@@ -551,6 +551,7 @@ describe("the coding composition of a native turn", () => {
 		// A letter counts by position, and an undecided question is asked again rather than guessed.
 		const instructions = vi.mocked(runCloudNativeRunToolSession).mock.calls[1][0].runtimeInstructions;
 		expect(instructions).toContain("a single letter selects the choice at that position (A is the first)");
+		expect(instructions).toContain("the only choice that starts with that letter");
 		expect(instructions).toContain("When no reply decides it");
 		expect(instructions).toContain("call coding_ask again");
 		expect(f.gateway.start).not.toHaveBeenCalled();
@@ -699,6 +700,51 @@ describe("the coding composition of a native turn", () => {
 		expect(context.earlierTurns.map((turn) => turn.sequence)).toEqual(
 			Array.from({ length: context.earlierTurns.length }, (_, index) => 43 - context.earlierTurns.length + index),
 		);
+	});
+	it("keeps the previous turn, shortened, when it alone does not fit the prompt", async () => {
+		const f = fixture();
+		Object.assign(f.coding, { sequence: 3 });
+		const wake = structuredClone(f.turn.wake) as unknown as { payload: { sequence: number } };
+		wake.payload.sequence = 3;
+		// Control characters escape to six bytes each: turn 2 alone is about 90 KB of prompt.
+		const wide = "\u0001".repeat(4000);
+		const question = `Keep the raw log?${"\u0001".repeat(900)}`;
+		f.turnContext.earlierTurns = [
+			{ sequence: 1, input: { from: "dispatch", text: null }, submitted: null, outcome: null },
+			{
+				sequence: 2,
+				input: { from: "member", text: wide },
+				submitted: { kind: "ask", summary: wide, question, options: ["Yes", "No"], headSha: null },
+				outcome: {
+					state: "blocked",
+					summary: wide,
+					reason: null,
+					needs: question,
+					options: ["Yes", "No"],
+					pullRequest: null,
+				},
+			},
+		];
+		f.turnContext.input = { from: "member", text: "Yes", answers: { question, options: ["Yes", "No"] } };
+		let prompt = "";
+		vi.mocked(runCloudNativeRunToolSession).mockImplementation(async (options) => {
+			prompt = options.prompt;
+			throw new Error("stop after composing");
+		});
+		await expect(
+			f.runtime.execute(f.request, "/private", f.context.signal, {
+				...f.turn,
+				wake: wake as unknown as CloudWakeEnvelope,
+			}),
+		).rejects.toThrow("stop after composing");
+		const context = JSON.parse(prompt) as {
+			earlierTurns: { sequence: number; shortened?: boolean; submitted: { question: string } }[];
+			omittedEarlierTurns: number;
+		};
+		expect(Buffer.byteLength(prompt)).toBeLessThanOrEqual(64 * 1024);
+		expect(context.earlierTurns.map((turn) => [turn.sequence, turn.shortened])).toEqual([[2, true]]);
+		expect(context.earlierTurns[0].submitted.question.startsWith("Keep the raw log?")).toBe(true);
+		expect(context.omittedEarlierTurns).toBe(1);
 	});
 	it("does not claim completion when the harness ends without a submission", async () => {
 		const f = fixture();

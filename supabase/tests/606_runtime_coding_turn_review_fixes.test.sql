@@ -22,6 +22,17 @@ begin
 	perform pg_temp.wake_assert((select turn.outcome #>> '{pullRequest,headSha}' from public.qorpera_coding_session_turns turn
 		where turn.worker_id = v_worker.id and turn.sequence = (pg_temp.worker_row('fix-send')).sequence) = 'f4d8f9f1c0b6e5a2d3c4b5a69788776655443322',
 		'A new head pushed to the same PR is that turn''s publication');
+	-- A follow-up that finishes on the PR's current head re-reports it unchanged: it published nothing new.
+	perform pg_temp.as_user('30000000-0000-4000-8000-000000000001');
+	perform public.qorpera_answer_coding_session(v_worker.id,'Check it once more.','30000000-0000-4000-8000-000000000603');
+	perform pg_temp.path_claims('service_role');
+	v_turn := pg_temp.next_turn('fix-send');
+	perform public.qorpera_complete_coding_turn(v_worker.id,(v_turn #>> '{claim,leaseToken}')::uuid,'succeeded','Nothing to change.',null,
+		'{"url":"https://github.com/Qorpera/Qorpera_Base/pull/204","number":204,"headSha":"f4d8f9f1c0b6e5a2d3c4b5a69788776655443322"}',
+		null,null,null,null,null);
+	perform pg_temp.wake_assert((select turn.outcome -> 'pullRequest' from public.qorpera_coding_session_turns turn
+		where turn.worker_id = v_worker.id and turn.sequence = (pg_temp.worker_row('fix-send')).sequence) = 'null'::jsonb,
+		'The standing PR re-reported unchanged is not a publication of that turn');
 end $$;
 
 -- 2. Every sequence a coding worker commits has its turn: all the paths above pass the
@@ -80,7 +91,7 @@ select pg_temp.wake_assert(not has_function_privilege('service_role','public.qor
 	and not has_function_privilege('authenticated','public.qorpera_assert_coding_turn_recorded()','EXECUTE')
 	and not has_function_privilege('service_role','public.qorpera_coding_turn_outcome(text,jsonb,jsonb)','EXECUTE')
 	and not has_function_privilege('qorpera_secret_broker','public.qorpera_coding_turn_outcome(text,jsonb,jsonb)','EXECUTE')
-	and to_regprocedure('public.qorpera_coding_turn_outcome(text,jsonb)') is null,
+	and not has_function_privilege('service_role','public.qorpera_coding_turn_outcome(text,jsonb)','EXECUTE'),
 	'The review fixes add no API surface');
 
 rollback;
