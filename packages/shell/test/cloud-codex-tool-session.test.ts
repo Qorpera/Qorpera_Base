@@ -843,7 +843,7 @@ it("clears writing and its renewal timer when composition is cancelled", async (
 	expect(f.execute).not.toHaveBeenCalled();
 });
 
-// Auto-review (v115): the reviewer is a second, fresh thread in the same app-server,
+// Auto-review (v130): the reviewer is a second, fresh thread in the same app-server,
 // started while the agent's tool call is open. Its only output is its verdict tool
 // call; its model requests pass the fence on their own lane, never as the agent's.
 function reviewRun(mode: "review" | "review-no-verdict" | "review-wrong-tool") {

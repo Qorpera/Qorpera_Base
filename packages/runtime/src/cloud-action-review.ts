@@ -8,7 +8,7 @@ import type { CloudRuntimeReasoningEffort } from "./cloud-runtime-policy.ts";
 import type { CloudWakeEnvelope } from "./cloud-wake-bus.ts";
 
 /**
- * Auto-review (runtime v115, founder decisions 2026-09-24/25). Before an agent's
+ * Auto-review (runtime v130, founder decisions 2026-09-24/25). Before an agent's
  * acting tool call runs, a separate reviewer, a fresh tool-less conversation on
  * the run's own model account, decides whether it may go ahead, needs a member's
  * approval first, or must not run. The kernel owns the rules, the record and the

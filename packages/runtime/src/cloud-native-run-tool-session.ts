@@ -62,7 +62,7 @@ export async function runCloudNativeRunToolSession(options: {
 	signal: AbortSignal;
 	timeoutMs?: number;
 	observability?: CloudRuntimeObservability;
-	/** Auto-review (v115): the review step for acting calls, given the reviewer this run's Codex session answers. */
+	/** Auto-review (v130): the review step for acting calls, given the reviewer this run's Codex session answers. */
 	actionReview?: (reviewer: CloudActionReviewer) => CloudNativeActionReview;
 }): Promise<{ providerSessionId: string; toolCalls: number; codexVersion: string; fencedRequests: number }> {
 	const admission = options.observability?.start("run_authority");

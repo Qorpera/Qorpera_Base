@@ -202,7 +202,7 @@ profile RPCs; RLS is the second read boundary.
   placed, pinned or hidden. Agents change the same shared sections through the
   runtime tool `organize_sidebar` (`qorpera_manage_agent_sidebar`, runner only).
 
-### Auto-review rules and approvals (4) — bundle v115
+### Auto-review rules and approvals (4) — bundle v130
 
 - `qorpera_list_review_rules(p_profile_id)` → `qorpera.review-rules/v1`:
   `canManageCompanyRules` (owner or admin) and `rules`: every active company
@@ -408,7 +408,7 @@ machine.
 | Auth, profiles, membership, invitations, friends, presence | live | build fully |
 | Conversations: sessions, inputs, events, replay, Realtime | live (Order 1 mouth writes the canonical transcript) | build fully; render only send operations |
 | Approvals | `authorization_request` answered through `qorpera_answer_interaction` (bundle v75) | build the inbox; Approve and Decline call the answer RPC |
-| Auto-review rules and approval cards | kernel + runtime in bundle v115 | Settings → Rules; approval cards with Allow once / Deny / Always allow through `qorpera_answer_action_review`; show no live controls until v115 is live |
+| Auto-review rules and approval cards | kernel + runtime in bundle v130 | Settings → Rules; approval cards with Allow once / Deny / Always allow through `qorpera_answer_action_review`; show no live controls until v130 is live |
 | Thread interactions (typed cards) | kernel in bundle v75; runtime tool and web cards follow | render `interaction_request` events as cards; answer through the RPC |
 | Company File: published snapshots, objects, proposals | live | build browsing/review |
 | Company File: live logical paths with ACLs | Order 0 gateway in progress | read-only projection, then live |
@@ -867,7 +867,7 @@ above.
     client calls changes; a long run simply no longer fails after about 128
     tool calls between compactions.
 
-### 2026-09-25 — from the runtime (bundle v115, `20260925115000_runtime_auto_review_rules.sql`)
+### 2026-09-25 — from the runtime (bundle v130, `20260926130000_runtime_auto_review_rules.sql`)
 
 18. **Auto-review rules and approval cards.** Members write rules ("When an
     agent wants to …, it should: Ask first | Allow automatically"), for

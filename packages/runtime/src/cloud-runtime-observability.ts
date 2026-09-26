@@ -37,7 +37,7 @@ export const CLOUD_RUNTIME_TOOL_OPERATIONS = [
 	"recall_memory",
 	// Company sidebar sections, shared with members (2026-09-24).
 	"organize_sidebar",
-	// Auto-review (v115): an agent adds an Ask first rule for its member.
+	// Auto-review (v130): an agent adds an Ask first rule for its member.
 	"add_review_rule",
 ] as const;
 /** Closed vocabulary; the SQL ingestion function checks the same list. */
@@ -53,7 +53,7 @@ export const CLOUD_RUNTIME_OPERATIONS = [
 	"context_authority",
 	"native_result_fence",
 	"diagnostic_export",
-	// Auto-review (v115): the reviewer's own model turn before an acting call.
+	// Auto-review (v130): the reviewer's own model turn before an acting call.
 	"action_review",
 ] as const;
 export const CLOUD_RUNTIME_OUTCOMES = [
@@ -81,7 +81,7 @@ export const CLOUD_RUNTIME_ERROR_CATEGORIES = [
 	"invalid_response",
 	"unknown",
 	"export_unavailable",
-	// Auto-review (v115): why an acting call did not run.
+	// Auto-review (v130): why an acting call did not run.
 	"approval_pending",
 	"approval_declined",
 	"review_denied",

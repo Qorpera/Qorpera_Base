@@ -347,7 +347,7 @@ select set_config('qorpera_test.default_read_grant', (
 	from public.qorpera_company_path_grants g join public.qorpera_company_path_resources r on r.id = g.resource_id
 	where r.environment_id = '29000000-0000-4000-8000-000000000020' and r.path = ''
 		and g.principal_id = '29000000-0000-4000-8000-000000000030'
-		and g.origin = 'default_agent_read' and g.permissions = array['read']::text[] and g.revoked_at is null
+		and g.origin = 'default_agent_read' and g.permissions = array['read','write']::text[] and g.revoked_at is null
 ), true);
 select pg_temp.path_claims('service_role');
 set local role service_role;

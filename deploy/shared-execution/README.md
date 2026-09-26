@@ -147,6 +147,35 @@ is not mounted.
   held the slot. The host unit now stops in 10 s and the service never
   blocks on a stop.
 
+## Capacity sizing (2026-09-25)
+
+Node 2's execution host was reduced to **4 vCPU / 8 GiB, with two slots**.
+The orchestrator and execution service share that allocation. The 16-vCPU,
+32-GiB, 16-slot commands above describe the original pilot, not measured
+minimum requirements. Preserve the deployed slot count in both the guest
+environment and the host's staging environment when rebuilding.
+
+Drain before changing size: hold new node admissions, stop and disable the
+orchestrator, then stop the execution service. Check for live slot units and
+unarchived journals again **after** the service stops: an acquire already in
+flight can finish during shutdown. Refuse the resize if either remains.
+Preserve the VM disk and identity mounts, update its limits and slot count,
+and replace the inventory configuration digest. Update the observer and node
+headroom together; resume dispatch only after fresh inventory is ready.
+
+The deployed host allowance remains 4 CPU / 24 GiB, so node 2's total
+infrastructure headroom is 8 CPU / 32 GiB after resizing. Customer CPU sharing
+is a separate versioned node policy: `cpuAllocationRatio: 2` permits twice
+the physical CPU remaining after headroom. Physical inventory stays unchanged
+and RAM is never multiplied. Office and coding machines consume the same
+customer budget; their guest vCPU and RAM sizes remain unchanged.
+
+Acceptance included two concurrent synthetic workers allocating 1.5 GiB each
+and exercising four CPU threads in total, plus the shared-slot lifecycle
+tests. This verifies basic operation after resizing, not representative native
+agent throughput. Measure real run latency, queue delay and peak memory before
+raising execution concurrency.
+
 ## Not in this package
 
 - Node capacity accounting for the execution host itself (`qorpera_reserve_runtime_node_machine`):

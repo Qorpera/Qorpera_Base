@@ -1,4 +1,4 @@
--- Bundle v115: auto-review rules (founder decisions 2026-09-24/25).
+-- Bundle v130: auto-review rules (founder decisions 2026-09-24/25).
 --
 -- Members write plain-language rules for what agents may do: "When an agent
 -- wants to <text>, it should: Ask first | Allow automatically". A rule applies
@@ -49,7 +49,7 @@
 -- without a card and the call is refused; the agent can repeat it from its
 -- own thread.
 --
--- Rollout: with the v115 activation. Nothing here changes what earlier
+-- Rollout: with the v130 activation. Nothing here changes what earlier
 -- runtimes do; they never call these functions.
 begin;
 

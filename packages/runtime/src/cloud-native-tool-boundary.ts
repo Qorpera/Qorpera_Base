@@ -86,7 +86,7 @@ export type CloudToolContent = ({ kind: "text"; value: string } | { kind: "json"
 	completesTurn?: boolean;
 };
 
-/** The auto-review step (runtime v115) an acting call passes before it runs. */
+/** The auto-review step (runtime v130) an acting call passes before it runs. */
 export interface CloudNativeActionReview {
 	check(
 		call: {
@@ -564,7 +564,7 @@ export class CloudNativeToolBoundary {
 			return this.#result(callId, tool, digest, "denied", { kind: "text", value: "AUTHORITY_UNAVAILABLE" });
 		}
 		if (this.#review) {
-			// Auto-review (v115): an acting call runs only after the reviewer lets it, or a
+			// Auto-review (v130): an acting call runs only after the reviewer lets it, or a
 			// member approves it. A review that cannot run never counts as an approval.
 			let gate: CloudActionGateResult;
 			try {

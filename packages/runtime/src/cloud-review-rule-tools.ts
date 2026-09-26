@@ -24,7 +24,7 @@ function ruleText(value: unknown): string {
 	return text;
 }
 
-/** The agent tool add_review_rule (auto-review v115, founder decision D4): an
+/** The agent tool add_review_rule (auto-review v130, founder decision D4): an
  * agent adds an Ask first rule for the member its run works for. The cloud
  * derives the company, the member and the agent from the run. */
 export function cloudReviewRuleTools(

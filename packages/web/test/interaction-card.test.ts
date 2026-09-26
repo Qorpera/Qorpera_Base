@@ -145,9 +145,57 @@ describe("interaction cards", () => {
 		// Without a vault path the card can only be declined.
 		const readOnly = renderInteractionCard(secret, context());
 		expect(readOnly.querySelector("input")).toBeNull();
+		expect(readOnly.textContent).toContain("Saving a secret to the company vault is unavailable here.");
+		expect(readOnly.textContent).not.toContain("newer version");
 		const pills = [...readOnly.querySelectorAll<HTMLButtonElement>(".interaction-actions .btn")];
 		expect(pills.map((pill) => pill.textContent)).toEqual(["Decline"]);
 	});
+
+	it("keeps historical form cards skippable without suggesting that fields can be filled", () => {
+		const request: InteractionRequest = {
+			surface: "form",
+			title: "Delivery address",
+			payload: { domain: "shop.example", fields: [{ name: "address", label: "Address", type: "text" }] },
+		};
+		const ctx = context();
+		const card = renderInteractionCard(item(request), ctx);
+		expect(card.textContent).toContain("Website: shop.example");
+		expect(card.textContent).toContain("Filling a webpage through this card is unavailable.");
+		expect(card.textContent).not.toContain("Filled on the computer");
+		expect(card.textContent).not.toContain("newer version");
+		expect(card.querySelector("input, select, textarea")).toBeNull();
+		const actions = [...card.querySelectorAll<HTMLButtonElement>("button")];
+		expect(actions.map((action) => action.textContent)).toEqual(["Skip"]);
+		actions[0]?.click();
+		expect(ctx.answer).toHaveBeenCalledWith("declined", {});
+
+		const readOnly = renderInteractionCard(item(request), context({ canAnswer: false }));
+		expect(readOnly.textContent).toContain("Filling a webpage through this card is unavailable.");
+		expect(readOnly.querySelector("button, input")).toBeNull();
+		const declined = renderInteractionCard(item(request, { outcome: "declined", answer: {} }), context());
+		expect(declined.dataset.state).toBe("declined");
+		expect(declined.querySelector(".interaction-result")?.textContent).toBe("Declined");
+		expect(declined.querySelector("button, input")).toBeNull();
+	});
+
+	it.each(["accounts.example", undefined])(
+		"renders historical credential cards without claiming a sign-in occurred (domain: %s)",
+		(domain) => {
+			const ctx = context();
+			const card = renderInteractionCard(
+				item({ surface: "credential", title: "Company account", payload: domain ? { domain } : {} }),
+				ctx,
+			);
+			expect(card.textContent).toContain(
+				domain
+					? "Signing in to accounts.example through this card is unavailable."
+					: "Signing in through this card is unavailable.",
+			);
+			expect(card.textContent).not.toContain("Nothing to do here");
+			expect(card.querySelector("button, input")).toBeNull();
+			expect(ctx.answer).not.toHaveBeenCalled();
+		},
+	);
 
 	it("shows an expired card without controls and a read-only card for another member", () => {
 		const expired = renderInteractionCard(

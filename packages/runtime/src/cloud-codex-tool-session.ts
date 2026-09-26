@@ -287,7 +287,7 @@ class CodexBoundaryRpc {
 	#modelRequestCount = 0;
 	/** Call ids whose fenced result closes the turn (a confirmed final public send). */
 	readonly #turnEndCallIds = new Set<string>();
-	/** Auto-review (v115): the reviewer's own short conversations, one fresh thread
+	/** Auto-review (v130): the reviewer's own short conversations, one fresh thread
 	 * per review, in this same app-server (a second process on the same login could
 	 * race the first on token refresh). Their only tool records the verdict; their
 	 * model requests pass the result fence on their own lane and are never recorded
@@ -1053,7 +1053,7 @@ export async function runCloudCodexToolSession(options: {
 	isolation?: NativeIsolationConfiguration;
 	/** Called after artifact/configuration checks and before thread prewarm or any model request. */
 	beforeModelStart?: (signal: AbortSignal) => Promise<void>;
-	/** Auto-review (v115): this session answers the boundary's reviews while the agent's turn runs. */
+	/** Auto-review (v130): this session answers the boundary's reviews while the agent's turn runs. */
 	reviewer?: CloudActionReviewChannel;
 	/** Optional metadata-only logical-turn/gate observations; not provider HTTP timing. */
 	observability?: CloudRuntimeObservability;

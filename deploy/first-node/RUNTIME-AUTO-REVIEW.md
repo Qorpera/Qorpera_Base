@@ -1,13 +1,20 @@
-# Runtime auto-review rules (bundle v115)
+# Runtime auto-review rules (bundle v130)
 
 Founder decisions 2026-09-24/25; contract amendment "2026-09-25 amendment:
 auto-review rules and approvals". Design, Grok Bot reference and probe
 results: `outputs/AUTO-REVIEW-RULES-DESIGN-20260924.md` in the runtime
 takeover workspace.
 
+Re-slotted 2026-09-26 from v115 to **v130** (confirmed by the coordinator):
+master took v126–v129 first and its `20260925115000` is another migration.
+Migration `20260926130000`, activation `20260926130900` (previous v129, exact
+predecessor bundle `4b74abe4…`, every master guard kept). #314 (dynamic
+routines) follows as v131; the `decide_routine` handling works in either order.
+Earlier notes below keep the numbers they were written with.
+
 ## What ships
 
-- **Kernel** `20260925115000_runtime_auto_review_rules.sql`: `qorpera_review_rules`,
+- **Kernel** `20260926130000_runtime_auto_review_rules.sql`: `qorpera_review_rules`,
   `qorpera_action_reviews`; member RPCs `qorpera_list_review_rules`,
   `qorpera_save_review_rule`, `qorpera_archive_review_rule`,
   `qorpera_answer_action_review`; runtime RPCs (service role, run lease)
@@ -23,7 +30,7 @@ takeover workspace.
   as the reviewer's only tool call, its own lane through the result fence,
   never recorded as the agent's context), and the gate wired into company
   runs only (not coding sessions).
-- **Activation** `20260925115900_runtime_bundle_activation_v115.sql`, which
+- **Activation** `20260926130900_runtime_bundle_activation_v130.sql`, which
   refuses to activate without the kernel migration.
 
 ## Review round 1 (2026-09-25)
@@ -153,11 +160,11 @@ A fresh independent review asked for changes; fixed:
 
 ## Rollout order
 
-1. Pause, record `20260925115000` (the observation function must accept
-   `action_review` before any v115 runner reports it).
-2. Runner image with the v115 guest provider host; providers restart.
-3. Activation v115; resume.
-4. Web (Rules tab, live approval cards) after v115 is live; before that the
+1. Pause, record `20260926130000` (the observation function must accept
+   `action_review` before any v130 runner reports it).
+2. Runner image with the v130 guest provider host; providers restart.
+3. Activation v130; resume.
+4. Web (Rules tab, live approval cards) after v130 is live; before that the
    web shows no controls the kernel refuses.
 
 ## Measured before building (2026-09-25, local 0.155 alpha app-server)

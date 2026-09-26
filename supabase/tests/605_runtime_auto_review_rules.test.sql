@@ -1,5 +1,5 @@
 -- @fixture 596_runtime_agent_thread_cards.test.sql until "-- A group chat carries no card"
--- Auto-review rules (bundle v115). Members write rules; company rules need an
+-- Auto-review rules (bundle v130). Members write rules; company rules need an
 -- owner or admin. The runtime asks the kernel for the rules that apply to one
 -- acting call, records the reviewer's verdict (Ask first always wins; a
 -- built-in check asks unless an allow rule covers it), and for an ask the
@@ -8,6 +8,9 @@
 -- owner or admin. A held call reads the answer and uses the approval once; a
 -- parked card wakes the agent when answered, and the repeated call runs
 -- without a second review. Always allow saves a company allow rule.
+-- Membership names come from the account (20260926000000): the fixture's owner is named Owner.
+update auth.users set raw_user_meta_data = coalesce(raw_user_meta_data, '{}'::jsonb) || '{"full_name":"Owner"}'::jsonb
+where id = '30000000-0000-4000-8000-000000000001';
 select pg_temp.path_claims('service_role');
 
 create function pg_temp.review_rule(p_user uuid, p_id uuid, p_scope text, p_when text, p_outcome text)

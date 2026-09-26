@@ -100,7 +100,7 @@ export type CloudCompanyPathRpc =
 	| "qorpera_runtime_wake_policy"
 	| "qorpera_assert_wake_work_allowed"
 	| "qorpera_assert_wake_completion"
-	// Auto-review (v115): rules, verdicts and approval cards for acting calls.
+	// Auto-review (v130): rules, verdicts and approval cards for acting calls.
 	| "qorpera_begin_action_review"
 	| "qorpera_record_action_review"
 	| "qorpera_await_action_review"

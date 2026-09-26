@@ -89,8 +89,8 @@ async function google(
 	context: ConnectorOperationContext,
 	path: string,
 	options: {
-		query?: Record<string, string | undefined>;
-		method?: "GET" | "POST" | "PATCH";
+		query?: Record<string, string | readonly string[] | undefined>;
+		method?: "GET" | "POST" | "PATCH" | "PUT" | "DELETE";
 		body?: Uint8Array | string;
 		contentType?: string;
 		raw?: boolean;
@@ -112,7 +112,20 @@ async function google(
 		maximumBytes: options.maximumBytes,
 		keepHeaders: ["content-type"],
 	});
-	if (response.status < 200 || response.status >= 300) throw providerRefusal(response, "Google");
+	if (response.status < 200 || response.status >= 300) {
+		if (response.status === 403) {
+			const error = jsonRecord(jsonRecord(parseJsonResponse(response)).error);
+			const missingScope =
+				jsonArray(error.errors).some((item) => jsonRecord(item).reason === "insufficientPermissions") ||
+				jsonArray(error.details).some((item) => jsonRecord(item).reason === "ACCESS_TOKEN_SCOPE_INSUFFICIENT");
+			if (missingScope)
+				throw new ConnectorRequestError(
+					"authorization_required",
+					"Reconnect this Google account to grant the permissions needed for this operation, including Gmail draft access.",
+				);
+		}
+		throw providerRefusal(response, "Google");
+	}
 	return {
 		json: options.raw ? null : parseJsonResponse(response),
 		bytes: response.bytes,
@@ -198,9 +211,88 @@ function addressList(value: JsonValue | undefined, label: string): string[] {
 }
 
 function headerValue(value: string): string {
-	if (/[\r\n]/.test(value))
-		throw new ConnectorRequestError("invalid_request", "Header lines cannot contain line breaks.");
-	return /^[\x20-\x7e]*$/.test(value) ? value : `=?UTF-8?B?${Buffer.from(value, "utf8").toString("base64")}?=`;
+	if (/[\x00-\x1f\x7f]/.test(value))
+		throw new ConnectorRequestError("invalid_request", "Header lines cannot contain control characters.");
+	if (/^[\x20-\x7e]*$/.test(value)) return value;
+	// RFC 2047 encoded words may contain at most 75 characters. Split at a
+	// Unicode code point boundary and fold with whitespace between words.
+	const words: string[] = [];
+	let chunk = "";
+	for (const character of value) {
+		if (Buffer.byteLength(chunk + character, "utf8") > 45) {
+			words.push(`=?UTF-8?B?${Buffer.from(chunk, "utf8").toString("base64")}?=`);
+			chunk = "";
+		}
+		chunk += character;
+	}
+	if (chunk) words.push(`=?UTF-8?B?${Buffer.from(chunk, "utf8").toString("base64")}?=`);
+	return words.join("\r\n ");
+}
+
+async function gmailProfile(context: ConnectorOperationContext): Promise<string> {
+	const profile = jsonRecord((await google(context, "/gmail/v1/users/me/profile")).json);
+	const address = profile.emailAddress;
+	if (typeof address !== "string" || address.length > 254 || !EMAIL.test(address) || /[\r\n,;]/.test(address))
+		throw new ConnectorRequestError("provider_error", "Gmail did not return a valid mailbox address.");
+	return address;
+}
+
+/** Draft MIME always derives From from the authenticated mailbox. Never accept
+ * model-authored From headers or raw MIME. Gmail send supports this exact same
+ * replacement message in a single request, so edits cannot race a second call. */
+async function gmailDraftMessage(
+	args: Record<string, JsonValue>,
+	context: ConnectorOperationContext,
+): Promise<Record<string, JsonValue>> {
+	const to = addressList(args.to, "recipient");
+	const cc = args.cc === undefined ? [] : addressList(args.cc, "cc");
+	const subject = headerValue(String(args.subject));
+	const from = await gmailProfile(context);
+	const lines = [
+		`From: ${from}`,
+		`To: ${to.join(", ")}`,
+		...(cc.length ? [`Cc: ${cc.join(", ")}`] : []),
+		`Subject: ${subject}`,
+		"MIME-Version: 1.0",
+		"Content-Type: text/plain; charset=UTF-8",
+		"Content-Transfer-Encoding: base64",
+	];
+	let threadId: string | undefined;
+	if (typeof args.reply_to_message_id === "string") {
+		const id = googleId(args.reply_to_message_id, "message id");
+		const original = jsonRecord(
+			(
+				await google(context, `/gmail/v1/users/me/messages/${id}`, {
+					query: { format: "metadata", metadataHeaders: ["Message-ID", "References"] },
+				})
+			).json,
+		);
+		const payload = jsonRecord(original.payload);
+		const messageId = header(payload, "Message-ID");
+		threadId = jsonString(original.threadId, 64) ?? undefined;
+		if (messageId) {
+			lines.push(`In-Reply-To: ${headerValue(messageId)}`);
+			const references = header(payload, "References");
+			lines.push(`References: ${headerValue(references ? `${references} ${messageId}` : messageId)}`);
+		}
+	}
+	const encodedBody =
+		Buffer.from(String(args.body), "utf8")
+			.toString("base64")
+			.match(/.{1,76}/g)
+			?.join("\r\n") ?? "";
+	return { raw: encodeBase64Url(`${lines.join("\r\n")}\r\n\r\n${encodedBody}`), ...(threadId ? { threadId } : {}) };
+}
+
+function gmailDraftReceipt(value: unknown): Record<string, JsonValue> {
+	const draft = jsonRecord(value);
+	const message = jsonRecord(draft.message);
+	if (typeof draft.id !== "string" || !GOOGLE_ID.test(draft.id))
+		throw new ConnectorRequestError(
+			"provider_error",
+			"Gmail did not confirm the saved draft. Check Gmail before creating another draft.",
+		);
+	return { draft_id: draft.id, message_id: jsonString(message.id, 64), thread_id: jsonString(message.threadId, 64) };
 }
 
 export function createGmailConnectorAdapters(options: {
@@ -209,10 +301,67 @@ export function createGmailConnectorAdapters(options: {
 }): readonly CloudSecretConnectorAdapter[] {
 	const fetchImplementation = options.fetch ?? fetch;
 	const messages = "/gmail/v1/users/me/messages";
+	const drafts = "/gmail/v1/users/me/drafts";
 	return defineConnectorAdapters(cloudConnector("gmail"), {
 		fetch: fetchImplementation,
 		exchange: createGoogleAccessTokenExchange(options.client),
 		handlers: {
+			async get_profile(_args, context) {
+				return { email_address: await gmailProfile(context) };
+			},
+			async create_draft(args, context) {
+				const message = await gmailDraftMessage(args, context);
+				return gmailDraftReceipt(
+					(
+						await google(context, drafts, {
+							method: "POST",
+							contentType: "application/json",
+							body: JSON.stringify({ message }),
+						})
+					).json,
+				);
+			},
+			async update_draft(args, context) {
+				const id = googleId(args.draft_id, "draft id");
+				const message = await gmailDraftMessage(args, context);
+				return gmailDraftReceipt(
+					(
+						await google(context, `${drafts}/${id}`, {
+							method: "PUT",
+							contentType: "application/json",
+							body: JSON.stringify({ id, message }),
+						})
+					).json,
+				);
+			},
+			async delete_draft(args, context) {
+				const id = googleId(args.draft_id, "draft id");
+				await google(context, `${drafts}/${id}`, { method: "DELETE" });
+				return { draft_id: id, deleted: true };
+			},
+			async send_draft(args, context) {
+				const id = googleId(args.draft_id, "draft id");
+				const message = await gmailDraftMessage(args, context);
+				const sent = jsonRecord(
+					(
+						await google(context, `${drafts}/send`, {
+							method: "POST",
+							contentType: "application/json",
+							body: JSON.stringify({ id, message }),
+						})
+					).json,
+				);
+				if (typeof sent.id !== "string" || !GOOGLE_ID.test(sent.id))
+					throw new ConnectorRequestError(
+						"provider_error",
+						"Gmail did not confirm the send. Check Sent mail before attempting another send.",
+					);
+				return {
+					message_id: sent.id,
+					thread_id: jsonString(sent.threadId, 64),
+					recipients: jsonArray(args.to).length + jsonArray(args.cc).length,
+				};
+			},
 			async search_messages(args, context) {
 				const limit = jsonInteger(args.limit) ?? 10;
 				const listing = jsonRecord(
@@ -229,7 +378,7 @@ export function createGmailConnectorAdapters(options: {
 					const message = jsonRecord(
 						(
 							await google(context, `${messages}/${id}`, {
-								query: { format: "metadata", metadataHeaders: "From,To,Cc,Subject,Date" },
+								query: { format: "metadata", metadataHeaders: ["From", "To", "Cc", "Subject", "Date"] },
 							})
 						).json,
 					);
@@ -317,7 +466,7 @@ export function createGmailConnectorAdapters(options: {
 					const original = jsonRecord(
 						(
 							await google(context, `${messages}/${id}`, {
-								query: { format: "metadata", metadataHeaders: "Message-ID,References" },
+								query: { format: "metadata", metadataHeaders: ["Message-ID", "References"] },
 							})
 						).json,
 					);

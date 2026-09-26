@@ -92,7 +92,7 @@ export async function startCloudNativeResultFence(options: {
 	root: string;
 	boundary: CloudNativeToolBoundary;
 	assertSession: (request: CloudNativeFenceRequest) => void;
-	/** Auto-review (v115): a reviewer thread's request is answered with the host's own
+	/** Auto-review (v130): a reviewer thread's request is answered with the host's own
 	 * verdict acknowledgements, never the agent's tool results, and is not the agent's
 	 * context. Returns undefined for every other request. */
 	releaseReviewOutputs?: (request: CloudNativeFenceRequest) => CloudNativeFencedResult[] | undefined;
