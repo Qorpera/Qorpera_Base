@@ -20,6 +20,7 @@ import {
 	subscribeProfileRealtime,
 	subscribeSidebarRealtime,
 } from "../cloud/realtime.ts";
+import type { ActionReviewAnswer } from "../cloud/review-rules.ts";
 import { sessionAttachmentProblem } from "../cloud/session-attachments.ts";
 import {
 	type RoomMessageTarget,
@@ -1220,6 +1221,77 @@ export class CompanyController {
 		}
 		void this.loadConversation(sessionId);
 		// The answer wakes the agent, as a message does; watch for its run.
+		void this.refreshActivity();
+		this.#watchWork(20_000);
+	}
+
+	/** Answer an approval card of an agent's action (bundle v130): Allow once,
+	 * Always allow (saves `ruleText` as a company rule) or Deny. The card shows the
+	 * answer at once; the kernel refuses a member the card does not wait for
+	 * (answersActionReview). If the agent stopped waiting, the answer wakes it on
+	 * the member's selected model account; while it still waits, none is needed. */
+	async answerActionReview(
+		sessionId: string,
+		reviewId: string,
+		answer: ActionReviewAnswer,
+		ruleText?: string,
+	): Promise<void> {
+		const store = this.conversation(sessionId);
+		const key = reviewId.toLowerCase();
+		if (store.get().interactionAnswers?.[key]) return;
+		try {
+			this.assertCanSend(sessionId);
+		} catch (error) {
+			// Say why on the thread (an archived conversation, no write access), not silently.
+			store.set({ interactionError: answerRefusal(error) });
+			throw error;
+		}
+		store.set({
+			interactionAnswers: {
+				...store.get().interactionAnswers,
+				[key]: {
+					outcome: answer === "deny" ? "declined" : "approved",
+					answer: { answer },
+					answeredBy: this.#userId,
+					answeredAt: new Date().toISOString(),
+					pending: true,
+				},
+			},
+			interactionError: undefined,
+		});
+		try {
+			const selected = this.conversation(sessionId).get().executionSponsor;
+			const receipt = await this.#api
+				.answerActionReview(
+					reviewId,
+					crypto.randomUUID(),
+					answer,
+					ruleText,
+					selected
+						? { sponsorBindingId: selected.sponsorBindingId, sponsorVersion: selected.sponsorVersion }
+						: undefined,
+				)
+				.catch((error: unknown) => {
+					if (error instanceof CloudRpcError && error.missing)
+						throw new Error(t("Approvals are not available here yet. Reply in a message instead."));
+					throw error;
+				});
+			const sent = store.get().interactionAnswers?.[key];
+			if (sent)
+				store.set({
+					interactionAnswers: { ...store.get().interactionAnswers, [key]: { ...sent, inputId: receipt.inputId } },
+				});
+		} catch (error) {
+			const { [key]: _dropped, ...rest } = store.get().interactionAnswers ?? {};
+			store.set({
+				interactionAnswers: Object.keys(rest).length ? rest : undefined,
+				interactionError: answerRefusal(error),
+			});
+			// Someone else may have answered first: show the card as it is now.
+			void this.loadConversation(sessionId);
+			throw error;
+		}
+		void this.loadConversation(sessionId);
 		void this.refreshActivity();
 		this.#watchWork(20_000);
 	}

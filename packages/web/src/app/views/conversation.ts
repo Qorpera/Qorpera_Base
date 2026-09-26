@@ -1,11 +1,24 @@
 import type { CodingSession } from "../../cloud/coding-session.ts";
 import type { EmailDraftAction, EmailDraftContent } from "../../cloud/email-drafts.ts";
+import {
+	ACTION_REVIEW_SCHEMA,
+	type ActionReviewAnswer,
+	type ActionReviewCard,
+	actionReviewCard,
+	answersActionReview,
+} from "../../cloud/review-rules.ts";
 import { sessionAttachmentProblem } from "../../cloud/session-attachments.ts";
 import type { TranscriptCard, TranscriptItem } from "../../cloud/transcript.ts";
 import type { HostedSession, HostedStaffAgent, JsonValue } from "../../cloud/types.ts";
 import { AGENT_LOOK, activityCaption, syncCaption } from "../../ui/agent-activity.ts";
 import { AttachmentTray, attachmentProblemText } from "../../ui/attachments.ts";
-import { authorizationRequestId, renderAuthorizationCard } from "../../ui/authorization-card.ts";
+import {
+	type ActionReviewDraft,
+	authorizationData,
+	authorizationRequestId,
+	renderActionReviewCard,
+	renderAuthorizationCard,
+} from "../../ui/authorization-card.ts";
 import { agentFigure } from "../../ui/avatar.ts";
 import { CodingSessionElement } from "../../ui/coding-session.ts";
 import { CodingSessionThreadView } from "../../ui/coding-session-thread.ts";
@@ -118,6 +131,10 @@ export class ConversationView {
 	/** The coding sessions shown in this thread, one element per session, kept
 	 * across renders so each keeps its stream, its cursor and its open state. */
 	readonly #codingElements = new Map<string, CodingSessionElement>();
+	/** An approval card's Always allow editor, by review id: kept across re-renders. */
+	readonly #reviewDrafts = new Map<string, ActionReviewDraft>();
+	/** The approval card to give focus after the thread redraws (it was just answered). */
+	#focusReview: string | undefined;
 	readonly #emailCards = new Map<string, { key: string; element: HTMLElement }>();
 	/** A coding session opened as its own thread over this one, from its chip. */
 	#codingThread: { workerId: string; view: CodingSessionThreadView } | undefined;
@@ -581,6 +598,18 @@ export class ConversationView {
 		}
 	}
 
+	/** Record an answer to an approval card of an agent's action; the card shows it at once. */
+	async #answerActionReview(reviewId: string, answer: ActionReviewAnswer, ruleText?: string): Promise<void> {
+		this.#focusReview = reviewId.toLowerCase();
+		try {
+			await this.#company.answerActionReview(this.#sessionId, reviewId, answer, ruleText);
+			this.#reviewDrafts.delete(reviewId.toLowerCase());
+		} catch {
+			// The controller keeps the reason in the conversation state; a refused
+			// Always allow keeps the rule as the member edited it.
+		}
+	}
+
 	/** Take over the agent's computer for a card: open its screen here and give it the keyboard. */
 	#takeOver(agent: HostedStaffAgent): void {
 		const panel = this.#panel ?? this.#showPanel(agent);
@@ -894,6 +923,8 @@ export class ConversationView {
 					: [],
 			),
 			role,
+			session?.status,
+			canWrite,
 			conversation.interactionAnswers,
 			conversation.interactionError,
 			this.#company.store.get().team?.members,
@@ -914,6 +945,13 @@ export class ConversationView {
 			if (item.kind === "authorization_decision") {
 				const request = authorizationRequestId(item.body);
 				if (request) decisions.set(request, item);
+			}
+		// Approval cards of agents' actions (auto-review, v130) show their own outcome.
+		const reviews = new Map<string, ActionReviewCard>();
+		for (const item of items)
+			if (item.kind === "authorization_request") {
+				const review = actionReviewCard(authorizationData(item.body));
+				if (review) reviews.set(item.id.toLowerCase(), review);
 			}
 		const nodes: HTMLElement[] = [];
 		this.#timestampRows = [];
@@ -1041,6 +1079,37 @@ export class ConversationView {
 				);
 			} else if (item.kind === "note") {
 				nodes.push(h("div", { class: "conversation-note", role: "note" }, item.text));
+			} else if (item.kind === "authorization_request" && reviews.has(item.id.toLowerCase())) {
+				const review = reviews.get(item.id.toLowerCase())!;
+				// A decided card needs no editor any more.
+				if (decisions.has(item.id.toLowerCase())) this.#reviewDrafts.delete(review.reviewId);
+				// The decision in the transcript, or an answer on its way (this browser's, or queued).
+				const given = conversation.interactionAnswers?.[item.id.toLowerCase()] ?? item.answer;
+				nodes.push(
+					renderActionReviewCard(
+						review,
+						item.createdAt,
+						decisions.get(item.id.toLowerCase())?.body ??
+							(given
+								? { decision: given.outcome, answer: given.answer, answeredBy: given.answeredBy ?? null }
+								: undefined),
+						{
+							answerFailed: item.answerFailed === true && !given,
+							draft: this.#reviewDrafts.get(review.reviewId),
+							onDraft: (draft) => this.#reviewDrafts.set(review.reviewId, draft),
+							answer:
+								canWrite &&
+								session?.status === "open" &&
+								answersActionReview(review, this.#company.userId, role)
+									? (answer, ruleText) => void this.#answerActionReview(item.id, answer, ruleText)
+									: undefined,
+							memberName: (userId) => this.#company.memberName(userId),
+						},
+					),
+				);
+			} else if (item.kind === "authorization_decision" && reviews.has(authorizationRequestId(item.body) ?? "")) {
+				// Its approval card already shows this decision; it draws nothing, so it marks no time either.
+				continue;
 			} else if (item.kind === "authorization_request" || item.kind === "authorization_decision") {
 				const optimistic =
 					item.kind === "authorization_request"
@@ -1056,7 +1125,11 @@ export class ConversationView {
 							? (decisions.get(item.id.toLowerCase())?.body ??
 									(optimistic ? { decision: optimistic.outcome, requestEventId: item.id } : undefined))
 							: undefined,
-						item.kind === "authorization_request" && canDecide(item.actorUserId)
+						// A card of an agent's action the web cannot read is shown read-only: the general
+						// answer refuses those (kernel v130), so it offers no controls.
+						item.kind === "authorization_request" &&
+							canDecide(item.actorUserId) &&
+							authorizationData(item.body).schema !== ACTION_REVIEW_SCHEMA
 							? (decision) => void this.#answerInteraction(item.id, decision)
 							: undefined,
 					),
@@ -1153,6 +1226,13 @@ export class ConversationView {
 			nodes.push(row);
 		}
 		const rowFocus = document.activeElement?.classList.contains("thread-activity") ?? false;
+		// Read before the redraw: a browser blurs an input as it leaves the page.
+		const active =
+			document.activeElement instanceof HTMLElement && this.#messages.contains(document.activeElement)
+				? document.activeElement
+				: undefined;
+		const reviewInput = active instanceof HTMLInputElement ? active : undefined;
+		const reviewCard = active?.closest<HTMLElement>("[data-review-id]")?.dataset.reviewId;
 		// Nodes already in place stay put: a live log re-reads what is taken out and put back.
 		const kept = this.#messages.childNodes;
 		if (nodes.length !== kept.length || nodes.some((node, index) => node !== kept[index])) {
@@ -1168,6 +1248,31 @@ export class ConversationView {
 		}
 		// A keyboard user reading the row keeps it through a state change or a new message.
 		if (rowFocus) this.#messages.querySelector<HTMLElement>(".thread-activity")?.focus({ preventScroll: true });
+		// An approval card keeps the keyboard through a redraw: the Always allow editor a member is
+		// typing in (caret and all), else the card itself, also once it is answered.
+		const editor = reviewInput?.dataset.reviewRule
+			? [...this.#messages.querySelectorAll<HTMLInputElement>("input[data-review-rule]")].find(
+					(input) => input.dataset.reviewRule === reviewInput.dataset.reviewRule,
+				)
+			: undefined;
+		if (editor && reviewInput && document.activeElement !== editor) {
+			const { selectionStart, selectionEnd, selectionDirection } = reviewInput;
+			editor.focus({ preventScroll: true });
+			if (selectionStart !== null && selectionEnd !== null)
+				editor.setSelectionRange(selectionStart, selectionEnd, selectionDirection ?? undefined);
+		} else if (!editor) {
+			// Safari does not focus a clicked button: the card just answered is named here too.
+			const target = active && !active.isConnected ? (reviewCard ?? this.#focusReview) : this.#focusReview;
+			const card = target
+				? [...this.#messages.querySelectorAll<HTMLElement>("[data-review-id]")].find(
+						(element) => element.dataset.reviewId === target,
+					)
+				: undefined;
+			if (card) {
+				if (!card.contains(document.activeElement)) card.focus({ preventScroll: true });
+				this.#focusReview = undefined;
+			}
+		}
 		this.#refreshTimestamps(false);
 		this.#pinToBottom();
 	}
