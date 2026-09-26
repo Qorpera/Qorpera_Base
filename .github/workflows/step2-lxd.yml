@@ -13,6 +13,11 @@ on:
         type: boolean
         required: false
         default: false
+      office_lifecycle_only:
+        description: Run only the office lifecycle acceptance without canceling the full physical matrix
+        type: boolean
+        required: false
+        default: false
   push:
     branches: ['release/runtime-*']
   pull_request:
@@ -105,13 +110,15 @@ permissions:
   contents: read
 
 concurrency:
-  group: step2-lxd-${{ github.ref }}-${{ inputs.office_physical_acceptance && 'office' || inputs.real_lxd_acceptance && 'physical' || 'contracts' }}
+  group: step2-lxd-${{ github.ref }}-${{ inputs.office_physical_acceptance && (inputs.office_lifecycle_only && 'office-lifecycle' || 'office') || inputs.real_lxd_acceptance && 'physical' || 'contracts' }}
   cancel-in-progress: true
 
 jobs:
   office-physical-acceptance:
     if: github.event_name == 'workflow_dispatch' && inputs.office_physical_acceptance
     uses: ./.github/workflows/office-physical-acceptance.yml
+    with:
+      office_lifecycle_only: ${{ inputs.office_lifecycle_only }}
 
   contracts:
     name: Provider, guest, and package contracts

@@ -97,3 +97,9 @@ test("one-shot CLI accepts exact SQL test names and refuses traversal, duplicate
 		["--serve", "--bin", binDirectory],
 	]) assert.throws(() => parseNativePostgresCli(["--bin", binDirectory, ...args]));
 });
+
+test("serving retention is explicit, cannot affect test mode, and rejects duplicate flags", () => {
+	assert.equal(parseNativePostgresCli(["--bin", binDirectory, "--serve", "--keep-files"]).keepFiles, true);
+	assert.throws(() => parseNativePostgresCli(["--bin", binDirectory, "--serve", "--keep-files", "--keep-files"]), /Duplicate/);
+	assert.throws(() => parseNativePostgresCli(["--bin", binDirectory, "--all-tests", "--out", "/tmp/out", "--keep-files"]), /requires --serve/);
+});

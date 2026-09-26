@@ -216,6 +216,7 @@ export function parseNativePostgresCli(args) {
 	for (let i = 0; i < args.length; i++) {
 		const key = args[i];
 		if (key === "--serve") { assert(!parsed.serve, "Duplicate --serve"); parsed.serve = true; }
+		else if (key === "--keep-files") { assert(parsed.keepFiles === undefined, "Duplicate --keep-files"); parsed.keepFiles = true; }
 		else if (key === "--all-tests") { assert(!parsed.allTests, "Duplicate --all-tests"); parsed.allTests = true; }
 		else if (["--bin", "--out", "--test"].includes(key)) {
 			const value = args[++i];
@@ -230,6 +231,7 @@ export function parseNativePostgresCli(args) {
 			}
 		} else throw new Error("Unknown native PostgreSQL CLI argument");
 	}
+	assert(!parsed.keepFiles || parsed.serve, "--keep-files requires --serve");
 	nativePostgresOptions({ binDirectory: parsed.binDirectory });
 	assert(parsed.serve ? parsed.tests.length === 0 && !parsed.allTests && parsed.out === undefined
 		: (parsed.allTests ? parsed.tests.length === 0 : parsed.tests.length > 0) && typeof parsed.out === "string",
@@ -284,11 +286,12 @@ if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.m
 	} finally {
 		process.removeListener("SIGTERM", shutdown);
 		process.removeListener("SIGINT", shutdown);
-		try { await cluster?.close(); evidence.cleanup = !startupCleanupFailed; }
+		try { await cluster?.close({ keepFiles: options.keepFiles === true }); evidence.cleanup = !startupCleanupFailed && !options.keepFiles; evidence.retained = options.keepFiles === true; evidence.closed = cluster !== undefined; }
 		catch { evidence.cleanup = false; evidence.passed = false; evidence.error = "Owned PostgreSQL shutdown unconfirmed; private cluster retained"; process.exitCode = 1; }
 		if (options.out) {
 			await writeFile(join(options.out, "evidence.json"), `${JSON.stringify(evidence, null, 2)}\n`, { flag: "wx", mode: 0o600 });
 			console.log(JSON.stringify(evidence));
 		} else if (evidence.error) process.stderr.write(`${evidence.error}\n`);
+		else if (options.serve && evidence.closed) console.log(JSON.stringify({ closed: true, retained: evidence.retained }));
 	}
 }

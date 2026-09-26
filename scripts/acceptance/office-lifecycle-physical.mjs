@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { chmod, chown, cp, link, mkdir, readFile, rename, rm, rmdir, unlink, writeFile } from "node:fs/promises";
+import { chmod, chown, cp, link, lstat, mkdir, readFile, rename, rm, rmdir, unlink, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 import { build } from "esbuild";
+import { closeOfficeLifecycleCustody, officeCustodyMachines } from "./office-lifecycle-custody.mjs";
 import { startOfficeRpcServer } from "./office-rpc-server.mjs";
 import { readWorkloadUsage, verifyWorkloadUsage } from "./workload-usage-evidence.mjs";
 
@@ -31,7 +32,7 @@ const evidence = { schema: "qorpera.office-lifecycle-physical-acceptance/v1", co
 	passed: false, checks: {}, observations: [], scope: "Actual office provider, paid SQL, LXD/KVM guest, local NFS and forced-stop recovery. Subscription is a labeled isolated test entitlement; Stripe acceptance is separate." };
 const children = new Set();
 const physicalSamples = [];
-let pg, pgReady, rpc, provider, observer, metering, mounted = false, journalMounted = false, exported = false, guardInstalled = false, fixtureCreated = false;
+let pg, pgReady, pgClosed = false, rpc, provider, observer, metering, mounted = false, journalMounted = false, exported = false, guardInstalled = false, fixtureCreated = false;
 let machineName, phase = "setup";
 const hash = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const literal = (value) => `'${JSON.stringify(value).replaceAll("'", "''")}'::jsonb`;
@@ -110,7 +111,9 @@ async function protectedFile(name, value, secret = false) {
 }
 function tool(action, ...args) { return run(process.execPath, [`${root}/tools.mjs`, action, ...args]); }
 function startProvider(ca) {
-	return child("runuser", ["-u", account, "--", "flock", "--no-fork", `${journal}/adoption.lock`, process.execPath, `${root}/tools.mjs`, "provider", `${root}/service.json`], (line) => {
+	// Match the installed provider's NoNewPrivileges=yes boundary. Dropping
+	// UID alone does not set the kernel flag required by storage adoption.
+	return child("runuser", ["-u", account, "--", "setpriv", "--no-new-privs", "flock", "--no-fork", `${journal}/adoption.lock`, process.execPath, `${root}/tools.mjs`, "provider", `${root}/service.json`], (line) => {
 		const observation = JSON.parse(line);
 		if (evidence.observations.length >= 200) evidence.observations.shift();
 		evidence.observations.push(observation);
@@ -158,7 +161,7 @@ try {
 	await cp(join(repository, "supabase/tests/bootstrap.sql"), `${pgSource}/supabase/tests/bootstrap.sql`);
 	await cp(join(repository, "supabase/migrations"), `${pgSource}/supabase/migrations`, { recursive: true });
 	phase = "database";
-	pg = child("runuser", ["-u", account, "--", process.execPath, `${pgSource}/scripts/acceptance/native-postgres.mjs`, "--bin", "/usr/lib/postgresql/17/bin", "--serve"], (line) => { const parsed = JSON.parse(line); if (parsed.ready) pgReady = parsed; });
+	pg = child("runuser", ["-u", account, "--", process.execPath, `${pgSource}/scripts/acceptance/native-postgres.mjs`, "--bin", "/usr/lib/postgresql/17/bin", "--serve", "--keep-files"], (line) => { const parsed = JSON.parse(line); if (parsed.ready) pgReady = parsed; if (parsed.closed === true && parsed.retained === true) pgClosed = true; });
 	await until(() => { assert(pg.exitCode === null, "Native PostgreSQL startup failed"); return pgReady; }, Boolean, 240000, "native PostgreSQL migrations");
 	evidence.migrationCount = pgReady.migrationCount;
 	rpc = await startOfficeRpcServer({ query, tls: { cert: await readFile(trust.serverCertificatePath), key: await readFile(trust.serverPrivateKeyPath) }, tokens, listen: { host: trust.host, port: trust.port }, onSample: (sample) => physicalSamples.push(sample) });
@@ -394,7 +397,7 @@ try {
 	// independent guard confirms the actual physical VM is stopped.
 	await stop(provider); provider = undefined;
 	phase = "successor_settlement";
-	metering = child("runuser", ["-u", account, "--", "flock", "--no-fork", `${journal}/adoption.lock`, process.execPath, `${root}/tools.mjs`,
+	metering = child("runuser", ["-u", account, "--", "setpriv", "--no-new-privs", "flock", "--no-fork", `${journal}/adoption.lock`, process.execPath, `${root}/tools.mjs`,
 		"finish-usage", `${root}/service.json`, `${journal}/intent-${intentId}.json`], (line) => { evidence.finalPhysicalUsage = JSON.parse(line); }, { NODE_EXTRA_CA_CERTS: ca.path });
 	await until(() => metering.exitCode !== null || metering.signalCode !== null, Boolean, 90000, "successor physical stop and settlement");
 	assert.equal(metering.exitCode, 0, "Successor metering process failed");
@@ -427,18 +430,73 @@ try {
 	// Diagnostics remain root-private on the ephemeral runner and are never an artifact.
 	if (fixtureCreated) await writeFile(`${root}/private-process-errors`, [provider, observer, metering, pg].map((processChild) => processChild?.privateDiagnostics() ?? "").join("\n"), { mode: 0o600 });
 } finally {
-	try {
-		await stop(provider); await stop(metering); await stop(observer);
-		if (guardInstalled) run("systemctl", ["stop", unit]);
-		if (machineName) run("lxc", ["delete", machineName, "--force"], 60000);
-		assert.deepEqual(JSON.parse(run("lxc", ["list", "--all-projects", "--format=json"])), [], "An unfinished VM must not be reported as cleaned up");
-		await rpc?.close(); await stop(pg);
-		if (mounted) run("umount", [workbench]);
-		if (journalMounted) run("umount", [journal]);
-		if (exported) { await unlink("/etc/exports.d/qorpera-office-lifecycle-acceptance.exports"); run("exportfs", ["-ra"]); }
-		if (fixtureCreated) await rm(storage, { recursive: true });
-		evidence.cleanup = true;
-	} catch { evidence.cleanup = false; evidence.passed = false; process.exitCode = 1; }
+	let cleanupPolicy, cleanupPolicySha256, databaseIdentity;
+	const inspectOwned = (machine) => {
+		const value = JSON.parse(run("lxc", ["query", `/1.0/instances/${machine.name}?project=${machine.project}`]));
+		assert.deepEqual(officeCustodyMachines([{ ...value, project: machine.project }], cleanupPolicy, cleanupPolicySha256), [machine], "Office physical identity changed during closure");
+		return value;
+	};
+	const closure = await closeOfficeLifecycleCustody({
+		passed: evidence.passed,
+		stopProducers: [() => stop(provider), () => stop(metering), () => stop(observer)],
+		discover: async () => {
+			const instances = JSON.parse(run("lxc", ["list", "--all-projects", "--format=json"]));
+			if (instances.length) {
+				cleanupPolicy = JSON.parse(await readFile(`${root}/policy.json`, "utf8"));
+				cleanupPolicySha256 = JSON.parse(tool("policy", `${root}/policy.json`)).policySha256;
+			}
+			return officeCustodyMachines(instances, cleanupPolicy, cleanupPolicySha256);
+		},
+		stopAndVerify: async (machine) => {
+			inspectOwned(machine);
+			const state = () => JSON.parse(run("lxc", ["query", `/1.0/instances/${machine.name}/state?project=${machine.project}`])).status;
+			if (state() !== "Stopped") run("lxc", ["stop", machine.name, "--project", machine.project, "--force"], 60000);
+			assert.equal(state(), "Stopped", "Office physical stop remains unconfirmed");
+			inspectOwned(machine);
+		},
+		accountingSettled: async () => pgReady && await query("select not exists(select 1 from public.qorpera_coding_computer_permits where state<>'closed') and not exists(select 1 from public.qorpera_computer_allowance_buckets where reserved_us<>0);") === "t",
+		deleteStopped: async (machine) => {
+			inspectOwned(machine);
+			assert.equal(JSON.parse(run("lxc", ["query", `/1.0/instances/${machine.name}/state?project=${machine.project}`])).status, "Stopped");
+			run("lxc", ["delete", machine.name, "--project", machine.project], 60000);
+		},
+		confirmEmpty: async () => assert.deepEqual(JSON.parse(run("lxc", ["list", "--all-projects", "--format=json"])), [], "Unfinished VM custody remains"),
+		stopGuard: async () => { if (guardInstalled) run("systemctl", ["stop", unit]); },
+		closeRpc: async () => rpc?.close(),
+		stopDatabaseRetainingFiles: async () => {
+			try {
+				if (pgReady) {
+					assert(/^\/tmp\/qorpera-native-pg-[A-Za-z0-9]+$/.test(pgReady.root), "Unexpected private cluster root");
+					databaseIdentity = await lstat(pgReady.root);
+					assert(databaseIdentity.isDirectory() && !databaseIdentity.isSymbolicLink() && databaseIdentity.uid === 1100 && (databaseIdentity.mode & 0o777) === 0o700);
+				}
+			} finally { await stop(pg); }
+			if (pgReady) assert(pgClosed, "Private PostgreSQL retained shutdown was not acknowledged");
+		},
+		removeStorage: async () => {
+			if (mounted) run("umount", [workbench]);
+			if (journalMounted) run("umount", [journal]);
+			if (exported) { await unlink("/etc/exports.d/qorpera-office-lifecycle-acceptance.exports"); run("exportfs", ["-ra"]); }
+			if (fixtureCreated) await rm(storage, { recursive: true });
+		},
+		removeDatabase: async () => {
+			if (!pgReady) return;
+			const current = await lstat(pgReady.root);
+			assert(current.isDirectory() && !current.isSymbolicLink() && current.dev === databaseIdentity.dev && current.ino === databaseIdentity.ino && current.uid === databaseIdentity.uid, "Private cluster identity changed");
+			await rm(pgReady.root, { recursive: true });
+		},
+		retainDiagnostic: async (state) => {
+			if (fixtureCreated) await writeFile(`${root}/private-retained-custody.json`, `${JSON.stringify({ ...state, phase, storage, journal, guardUnit: guardInstalled ? unit : null, database: pgReady ?? null })}\n`, { mode: 0o600, flag: "wx" });
+		},
+	});
+	evidence.cleanup = closure.cleanup;
+	evidence.custodyRetained = closure.custodyRetained;
+	evidence.cleanupErrors = closure.errors;
+	if (!closure.cleanup) { evidence.passed = false; process.exitCode = 1; }
+	// Unconfirmed owned children remain a failure, never a cleanup claim. Let
+	// the disposable runner reap them without blocking publication indefinitely;
+	// PostgreSQL's serving mode already pins keepFiles before any failure.
+	for (const processChild of children) { processChild.stdout.destroy(); processChild.stderr.destroy(); processChild.unref(); }
 	await writeFile(join(out, "evidence.json"), `${JSON.stringify(evidence, null, 2)}\n`, { mode: 0o644 });
 	console.log(JSON.stringify(evidence));
 }
