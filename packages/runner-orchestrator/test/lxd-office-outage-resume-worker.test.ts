@@ -31,6 +31,7 @@ describe("paid outage cold boot", () => {
 					"RUNNING_PERMIT_REQUIRED",
 				);
 				await f.guard().sweep();
+				await f.sampleUsage();
 				await f.controller().maintain(signal());
 			}
 			const method =
@@ -92,6 +93,7 @@ describe("paid outage cold boot", () => {
 		const original = await f.guard().status(f.permitId);
 		await expect(f.worker().reconcile(f.intentId, original, signal())).rejects.toThrow("RUNNING_PERMIT_REQUIRED");
 		await f.guard().sweep();
+		await f.sampleUsage();
 		await f.controller().maintain(signal());
 		const freshGuard = await f.controller().guardRecord(f.binding.allocationId, signal());
 		await f.controller().maintain(signal());
@@ -146,6 +148,7 @@ describe("paid outage cold boot", () => {
 		const original = await f.guard().status(f.permitId);
 		await expect(f.worker().reconcile(f.intentId, original, signal())).rejects.toThrow("RUNNING_PERMIT_REQUIRED");
 		await f.guard().sweep();
+		await f.sampleUsage();
 		await f.controller().maintain(signal());
 		expect((await f.termination().reconcile(f.intentId, original, signal())).state).toBe("awaiting_configuration");
 		await f.stop();
@@ -168,6 +171,7 @@ describe("paid outage cold boot", () => {
 		const original = await f.guard().status(f.permitId);
 		await expect(f.worker().reconcile(f.intentId, original, signal())).rejects.toThrow("RUNNING_PERMIT_REQUIRED");
 		await f.guard().sweep();
+		await f.sampleUsage();
 		await f.controller().maintain(signal());
 		f.loseAck();
 		await expect(f.termination().reconcile(f.intentId, original, signal())).rejects.toThrow("lost committed ACK");
@@ -185,6 +189,7 @@ describe("paid outage cold boot", () => {
 		const original = await f.guard().status(f.permitId);
 		await expect(f.worker().reconcile(f.intentId, original, signal())).rejects.toThrow("RUNNING_PERMIT_REQUIRED");
 		await f.guard().sweep();
+		await f.sampleUsage();
 		await f.controller().maintain(signal());
 		const result = await f.worker().reconcile(f.intentId, original, signal());
 		expect(result.state).toBe("awaiting_termination");

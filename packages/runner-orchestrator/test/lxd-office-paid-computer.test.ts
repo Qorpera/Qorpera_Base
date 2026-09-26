@@ -223,8 +223,8 @@ describe("paid company computer lifecycle adapter", () => {
 		expect(submitStart).toHaveBeenCalledOnce();
 		expect(f.call.mock.calls.some(([method]) => method === "qorpera_reserve_runtime_node_machine")).toBe(false);
 	});
-	it.each(["guarded start", "prepare before office dispatch"])(
-		"integrates real durable guard and office journals across a lost %s reply",
+	it.each(["guarded start", "prepare before office dispatch", "usage unavailable"])(
+		"integrates real durable guard and office journals (%s)",
 		async (lost) => {
 			const f = await fixture(),
 				plan = lxdOfficeGuestPlan(f.binding),
@@ -266,12 +266,28 @@ describe("paid company computer lifecycle adapter", () => {
 				readInstanceFile: vi.fn(),
 				readInstanceClock: vi.fn(),
 			};
+			const guestBootId = randomUUID();
+			const usageOptions =
+				lost === "usage unavailable"
+					? {}
+					: {
+							usageCapture: {
+								capture: async () => ({
+									host: { ...clock },
+									guestBootId,
+									guestUptimeMs: 1000,
+									evidenceSha256: "e".repeat(64),
+									observedAt: new Date().toISOString(),
+								}),
+							},
+						};
 			const guardRoot = join(f.root, "guard");
 			await mkdir(guardRoot, { mode: 0o700 });
 			let guard = new PaidComputerGuard(
 				new PaidComputerGuardJournal(guardRoot),
 				new LxdPaidComputerGuardPhysical(client, async () => clock),
 				async () => clock,
+				usageOptions,
 			);
 			await guard.initialize();
 			let permit: PaidComputerPermit | null = null,
@@ -311,6 +327,10 @@ describe("paid company computer lifecycle adapter", () => {
 						return abandonmentClosure;
 					}
 					if (!method.includes("prepare") || permit) throw new Error("unexpected accounting effect");
+					expect(request).toMatchObject({
+						schema: "qorpera.runtime-computer-prepare/v3",
+						usageProducer: "guard-v1",
+					});
 					permit = {
 						schema: "qorpera.computer-usage-permit/v2",
 						prestart: request.prestart as PaidComputerPermit["prestart"],
@@ -351,6 +371,15 @@ describe("paid company computer lifecycle adapter", () => {
 				adapter.operations(f.binding),
 			);
 			await journal.reconcile(randomUUID(), "create", signal());
+			if (lost === "usage unavailable") {
+				await expect(
+					adapter.prepareStart(f.binding, commandId, { kind: "initial", intentId, mappings: [] }, signal()),
+				).rejects.toThrow("PAID_GUARD_USAGE_REQUIRED");
+				expect(control.call.mock.calls.some(([method]) => method.includes("prepare"))).toBe(false);
+				expect(await guard.prestartStatus(commandId)).toBeNull();
+				expect(client.submitInstanceOperation.mock.calls.map((call) => call[1].action)).toEqual(["create"]);
+				return;
+			}
 			if (lost === "prepare before office dispatch") {
 				const intent = { kind: "initial", intentId, mappings: [] };
 				await expect(adapter.prepareStart(f.binding, commandId, intent, signal())).rejects.toThrow(
@@ -361,6 +390,7 @@ describe("paid company computer lifecycle adapter", () => {
 					new PaidComputerGuardJournal(guardRoot),
 					new LxdPaidComputerGuardPhysical(client, async () => clock),
 					async () => clock,
+					usageOptions,
 				);
 				await restartedGuard.initialize();
 				guard = restartedGuard;
@@ -410,6 +440,7 @@ describe("paid company computer lifecycle adapter", () => {
 			});
 			await expect(journal.reconcile(commandId, "start", signal())).resolves.toEqual({ state: "unknown" });
 			await guard.sweep();
+			expect((await guard.status(commandId)).usageRequired).toBe(true);
 			client.inspectInstanceOperation.mockRejectedValue(new Error("LXD five-second operation retention elapsed"));
 			const resumed = await LxdOfficeOperationJournal.open(
 				f.root,

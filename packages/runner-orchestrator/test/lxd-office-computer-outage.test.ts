@@ -11,6 +11,7 @@ import { lxdOfficeGuestPlan } from "../src/lxd-office-guest.ts";
 import { LxdOfficePaidComputer } from "../src/lxd-office-paid-computer.ts";
 import { lxdOfficePhysicalPolicySha256 } from "../src/lxd-office-physical-policy.ts";
 import { RuntimeComputerController } from "../src/runtime-computer-controller.ts";
+import { acceptOfficeGuardUsage, sampleOfficeGuardUsage } from "./fixtures/office-paid-usage.ts";
 import { officePhysicalFixture } from "./fixtures/office-physical-policy.ts";
 
 const roots: string[] = [];
@@ -67,6 +68,17 @@ async function fixture() {
 			new PaidComputerGuardJournal(guardRoot),
 			new LxdPaidComputerGuardPhysical(client, async () => ({ ...clock })),
 			async () => ({ ...clock }),
+			{
+				usageCapture: {
+					capture: async () => ({
+						host: { ...clock },
+						guestBootId,
+						guestUptimeMs: 1000,
+						evidenceSha256: "e".repeat(64),
+						observedAt: new Date().toISOString(),
+					}),
+				},
+			},
 		);
 	let guard = openGuard();
 	await guard.initialize();
@@ -131,6 +143,7 @@ async function fixture() {
 			if (method === "qorpera_describe_runtime_computer_permit")
 				return { mode: "paid", permit: permit?.state === "closed" ? null : permit, lastSample };
 			if (method === "qorpera_prepare_runtime_computer_permit") {
+				expect(request).toMatchObject({ schema: "qorpera.runtime-computer-prepare/v3", usageProducer: "guard-v1" });
 				if (permit) throw new Error("duplicate reservation");
 				permit = {
 					schema: "qorpera.computer-usage-permit/v2",
@@ -158,9 +171,19 @@ async function fixture() {
 				};
 				return permit;
 			}
+			if (method === "qorpera_record_computer_guard_samples") {
+				if (!permit) throw new Error("permit required");
+				const receipt = acceptOfficeGuardUsage(request, permit, lastSample);
+				permit = receipt.permit;
+				lastSample = receipt.lastSample;
+				return receipt;
+			}
 			if (!permit || request.generation !== permit.generation) throw new Error("SQL generation differs");
 			const sample = request.sample as Record<string, unknown>;
-			if (sample.previousObservationId !== (lastSample?.observationId ?? null))
+			if (
+				sample.observationId !== lastSample?.observationId &&
+				sample.previousObservationId !== (lastSample?.observationId ?? null)
+			)
 				throw new Error("SQL predecessor differs");
 			lastSample = structuredClone(sample);
 			if (method === "qorpera_bind_runtime_computer_permit")
@@ -179,6 +202,7 @@ async function fixture() {
 	await adapter.prepareStart(binding, permitId, { kind: "initial", intentId: randomUUID(), mappings: [] }, signal());
 	await adapter.operations(binding).submitStart(permitId, signal());
 	await guard.sweep();
+	await sampleOfficeGuardUsage(guard);
 	await controller.maintain(signal());
 	return {
 		root,
@@ -191,6 +215,7 @@ async function fixture() {
 		permitId,
 		requestPath,
 		receiptPath,
+		sampleUsage: () => sampleOfficeGuardUsage(guard),
 		guard: () => guard,
 		controller: () => controller,
 		adapter: () => adapter,
@@ -203,6 +228,7 @@ async function fixture() {
 		stop: async () => {
 			clock.uptimeMs += 300001;
 			await guard.sweep();
+			await sampleOfficeGuardUsage(guard);
 		},
 		restart: async () => {
 			guard = openGuard();

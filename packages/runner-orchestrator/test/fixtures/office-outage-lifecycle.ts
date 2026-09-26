@@ -111,6 +111,7 @@ export async function officeOutageLifecycleFixture(roots: string[]) {
 				// host contention. Every attempt obtains real fresh authority; no
 				// production timeout is extended or physical dispatch reset.
 				await f.guard().sweep();
+				await f.sampleUsage();
 				await f.controller().maintain(signal());
 			}
 		}

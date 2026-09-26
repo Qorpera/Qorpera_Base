@@ -39,6 +39,7 @@ import type { LxdOfficeServiceBootstrap } from "../../src/lxd-office-service-boo
 import { lxdOfficeProviderBindingSha256 } from "../../src/lxd-office-start-control.ts";
 import { RuntimeComputerController } from "../../src/runtime-computer-controller.ts";
 import { officeImagePackageFixture } from "./office-image-package.ts";
+import { acceptOfficeGuardUsage, sampleOfficeGuardUsage } from "./office-paid-usage.ts";
 import { officePhysicalFixture } from "./office-physical-policy.ts";
 
 const signal = () => new AbortController().signal;
@@ -123,6 +124,17 @@ export async function officeOutageWorkerFixture(roots: string[]) {
 			new PaidComputerGuardJournal(guardRoot),
 			new LxdPaidComputerGuardPhysical(client, async () => ({ ...clock })),
 			async () => ({ ...clock }),
+			{
+				usageCapture: {
+					capture: async () => ({
+						host: { ...clock },
+						guestBootId,
+						guestUptimeMs: 1000,
+						evidenceSha256: "e".repeat(64),
+						observedAt: new Date().toISOString(),
+					}),
+				},
+			},
 		);
 	let guard = openGuard();
 	await guard.initialize();
@@ -275,6 +287,7 @@ export async function officeOutageWorkerFixture(roots: string[]) {
 			if (method === "qorpera_describe_runtime_computer_permit")
 				return { mode: "paid", permit: permit?.state === "closed" ? null : permit, lastSample };
 			if (method === "qorpera_prepare_runtime_computer_permit") {
+				expect(request).toMatchObject({ schema: "qorpera.runtime-computer-prepare/v3", usageProducer: "guard-v1" });
 				if (permit && permit.state !== "closed") throw new Error("duplicate reservation");
 				if (permit) {
 					expect(request.requestId).toBe(recovery?.request.startCommandId);
@@ -307,9 +320,20 @@ export async function officeOutageWorkerFixture(roots: string[]) {
 				permits.set(permit.permitId, permit);
 				return permit;
 			}
+			if (method === "qorpera_record_computer_guard_samples") {
+				if (!permit) throw new Error("permit required");
+				const receipt = acceptOfficeGuardUsage(request, permit, lastSample);
+				permit = receipt.permit;
+				lastSample = receipt.lastSample;
+				permits.set(permit.permitId, permit);
+				return receipt;
+			}
 			if (!permit || request.generation !== permit.generation) throw new Error("SQL generation differs");
 			const sample = request.sample as Record<string, unknown>;
-			if (sample.previousObservationId !== (lastSample?.observationId ?? null))
+			if (
+				sample.observationId !== lastSample?.observationId &&
+				sample.previousObservationId !== (lastSample?.observationId ?? null)
+			)
 				throw new Error("SQL predecessor differs");
 			lastSample = structuredClone(sample);
 			if (method === "qorpera_bind_runtime_computer_permit")
@@ -347,6 +371,7 @@ export async function officeOutageWorkerFixture(roots: string[]) {
 	await journal.reconcile(createCommandId, "create", signal());
 	await journal.reconcile(permitId, "start", signal());
 	await guard.sweep();
+	await sampleOfficeGuardUsage(guard);
 	await controller.maintain(signal());
 	const original = parseCompanyComputerPreparationRequest({
 		schema: "qorpera.office-guest-preparation/v1",
@@ -708,6 +733,7 @@ export async function officeOutageWorkerFixture(roots: string[]) {
 		permitId,
 		requestPath,
 		receiptPath,
+		sampleUsage: () => sampleOfficeGuardUsage(guard),
 		guard: () => guard,
 		controller: () => controller,
 		adapter: () => adapter,
@@ -720,6 +746,7 @@ export async function officeOutageWorkerFixture(roots: string[]) {
 		stop: async () => {
 			clock.uptimeMs += 300001;
 			await guard.sweep();
+			await sampleOfficeGuardUsage(guard);
 		},
 		restart: async () => {
 			guard = openGuard();
