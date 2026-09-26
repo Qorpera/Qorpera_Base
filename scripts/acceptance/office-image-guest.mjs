@@ -36,7 +36,15 @@ if (stage === "install") {
 		assert.equal(info.uid, 0); assert.equal(info.gid, 0); assert.equal(info.mode & 0o7777, file.mode);
 	}
 	for (const name of [unit, mountUnit, "qorpera-company-computer-preparation.service"]) assert.equal(prop(name, "ActiveState"), "inactive");
-	for (const name of [unit, "qorpera-company-computer-preparation.service"]) assert.equal(prop(name, "ProtectHostname"), "private", "The real systemd manager must enforce the packaged private hostname namespace");
+	const hostnamePolicies = {};
+	for (const name of [unit, "qorpera-company-computer-preparation.service"]) {
+		// ProtectHostname is a legacy boolean even on systemd259. The extended
+		// D-Bus property retains the exact namespace mode and optional hostname.
+		assert.equal(prop(name, "ProtectHostname"), "yes");
+		const objectPath = `/org/freedesktop/systemd1/unit/${name.replaceAll("-", "_2d").replaceAll(".", "_2e")}`;
+		hostnamePolicies[name] = run("busctl", ["get-property", "org.freedesktop.systemd1", objectPath, "org.freedesktop.systemd1.Service", "ProtectHostnameEx"]);
+		assert.equal(hostnamePolicies[name], '(ss) "private" ""', "The real systemd manager must retain the exact private hostname policy");
+	}
 	assert.equal(prop(unit, "UnitFileState"), "disabled");
 	assert.equal(run("/usr/bin/node", [`${root}/consumer.mjs`]), "OFFICE_IMAGE_PREPARATION_CONSUMER_ACCEPTED");
 	ctl("start", mountUnit);
@@ -46,7 +54,7 @@ if (stage === "install") {
 	assert.notEqual(exec("/usr/bin/systemctl", ["start", unit]).status, 0);
 	assert.equal(prop(unit, "MainPID"), "0");
 	ctl("stop", unit); ctl("stop", mountUnit);
-	await writeFile(`${root}/install-proof.json`, JSON.stringify({ dependencies, packageManifestSha256: hash(manifest), installationReceiptSha256: hash(await readFile("/opt/qorpera-office/installation.json")), installedFiles: receipt.files.length, actualPreparationManager: true, actualPrivateTmpfs: true, unconfiguredStartRefused: true }), { mode: 0o444 });
+	await writeFile(`${root}/install-proof.json`, JSON.stringify({ dependencies, packageManifestSha256: hash(manifest), installationReceiptSha256: hash(await readFile("/opt/qorpera-office/installation.json")), installedFiles: receipt.files.length, hostnamePolicies, actualPreparationManager: true, actualPrivateTmpfs: true, unconfiguredStartRefused: true }), { mode: 0o444 });
 	console.log("OFFICE_IMAGE_INSTALLED_AND_VERIFIED");
 } else if (stage === "credentials-before" || stage === "credentials-after") {
 	const lines = (await readFile(`/etc/systemd/system/${unit}`, "utf8")).split("\n").filter((line) => line.startsWith("LoadCredential="));
