@@ -13,6 +13,7 @@ import type { LxdOfficeCreationIdentity } from "./lxd-office-creation-journal.ts
 import { lxdOfficeGuestPlan } from "./lxd-office-guest.ts";
 import { officeDigest, officeRecord } from "./lxd-office-image-provenance.ts";
 import { readRecord } from "./lxd-office-journal-files.ts";
+import { readLxdOfficeOutageBootEvidence } from "./lxd-office-outage-history.ts";
 import { readLxdOfficeResetVmHistory } from "./lxd-office-reset-vm-history.ts";
 import { readLxdOfficeResumeEvidence } from "./lxd-office-resume-evidence.ts";
 import { officeStopHash } from "./lxd-office-stop-evidence.ts";
@@ -43,10 +44,12 @@ async function readShutdown(
 		return readSource(name, 65536);
 	};
 	const seedFile = await read(seedName),
+		outageRoot =
+			(seedFile.value as { schema?: unknown } | null)?.schema === "qorpera.lxd-office-power-off-request/v5",
 		resetRoot = (seedFile.value as { schema?: unknown } | null)?.schema === "qorpera.lxd-office-power-off-request/v4",
 		later = (seedFile.value as { schema?: unknown } | null)?.schema === "qorpera.lxd-office-power-off-request/v3",
 		seed = officeRecord(seedFile.value, [
-			...(later ? ["bootIntent"] : resetRoot ? ["resetOriginActivationId"] : []),
+			...(outageRoot ? ["outageRecoveryId"] : later ? ["bootIntent"] : resetRoot ? ["resetOriginActivationId"] : []),
 			"schema",
 			"intentId",
 			"binding",
@@ -66,11 +69,13 @@ async function readShutdown(
 	parseCompanyComputerPreparationCommand({ ...command, commandId: seed.startCommandId });
 	if (
 		seed.schema !==
-			(resetRoot
-				? "qorpera.lxd-office-power-off-request/v4"
-				: later
-					? "qorpera.lxd-office-power-off-request/v3"
-					: "qorpera.lxd-office-power-off-request/v2") ||
+			(outageRoot
+				? "qorpera.lxd-office-power-off-request/v5"
+				: resetRoot
+					? "qorpera.lxd-office-power-off-request/v4"
+					: later
+						? "qorpera.lxd-office-power-off-request/v3"
+						: "qorpera.lxd-office-power-off-request/v2") ||
 		seed.intentId !== intentId ||
 		!isDeepStrictEqual(seed.binding, binding) ||
 		!isDeepStrictEqual(seed.request, predecessor) ||
@@ -81,13 +86,17 @@ async function readShutdown(
 	)
 		throw new Error("shutdown identity differs");
 	const bootIntent = later ? parseCompanyComputerBootIntentRequest(seed.bootIntent) : undefined;
-	const resumeNames = resetRoot
-		? [`reset-activation-${allocationId}-${seed.resetOriginActivationId}.json`]
-		: bootIntent
-			? ["request", "prepared", "observation", "completed"].map(
-					(kind) => `resume-${kind}-${allocationId}-${bootIntent.predecessor.transitionId}.json`,
-				)
-			: [bootName];
+	const resumeNames = outageRoot
+		? ["outage-prepared", "outage-observation"].map(
+				(prefix) => `${prefix}-${allocationId}-${seed.outageRecoveryId}.json`,
+			)
+		: resetRoot
+			? [`reset-activation-${allocationId}-${seed.resetOriginActivationId}.json`]
+			: bootIntent
+				? ["request", "prepared", "observation", "completed"].map(
+						(kind) => `resume-${kind}-${allocationId}-${bootIntent.predecessor.transitionId}.json`,
+					)
+				: [bootName];
 	const records = seed.records as Record<string, unknown>,
 		entries = Object.entries(records);
 	if (
@@ -147,7 +156,7 @@ async function readShutdown(
 		!history.entries.some(
 			(entry) =>
 				entry.path ===
-					(later || resetRoot
+					(later || resetRoot || outageRoot
 						? `${companyComputerBootDirectory(predecessor.startup.bootId)}/credentials/config.json`
 						: "/etc/qorpera-office/credentials/config.json") &&
 				entry.sha256 === predecessor.startup.configurationSha256,
@@ -155,6 +164,9 @@ async function readShutdown(
 	)
 		throw new Error("shutdown archive differs");
 	const bootResume = bootIntent ? await readLxdOfficeResumeEvidence(creation, bootIntent, read, signal) : undefined;
+	const outage = outageRoot
+		? await readLxdOfficeOutageBootEvidence(root, creation, seed.outageRecoveryId as string)
+		: undefined;
 	const reset = resetRoot
 		? await readLxdOfficeResetVmHistory(
 				root,
@@ -167,11 +179,13 @@ async function readShutdown(
 				signal,
 			)
 		: undefined;
-	const boot = reset
-		? reset.observation
-		: bootResume
-			? { ...bootResume.observation, createCommandId: creation.createCommandId }
-			: ((await read(bootName)).value as Record<string, unknown>);
+	const boot = outage
+		? { ...outage.observation, createCommandId: creation.createCommandId }
+		: reset
+			? reset.observation
+			: bootResume
+				? { ...bootResume.observation, createCommandId: creation.createCommandId }
+				: ((await read(bootName)).value as Record<string, unknown>);
 	if (
 		boot.createCommandId !== creation.createCommandId ||
 		boot.startCommandId !== seed.startCommandId ||
@@ -213,6 +227,7 @@ async function readShutdown(
 		bootIntent,
 		bootResume,
 		reset,
+		outage,
 		predecessorBootId: predecessor.startup.bootId,
 		hostBootId: command.bootId,
 		startCommandId: seed.startCommandId as string,
@@ -261,7 +276,7 @@ export async function readLxdOfficePowerOffEvidence(
 		selected = previous;
 	}
 	if (selected.reset) commands.unshift(...selected.reset.commands.slice(0, -1));
-	else commands.unshift({ commandId: creation.createCommandId, action: "create" });
+	else if (!selected.outage) commands.unshift({ commandId: creation.createCommandId, action: "create" });
 	if (new Set(commands.map((command) => command.commandId)).size !== commands.length)
 		throw new Error("shutdown command reused");
 	signal.throwIfAborted();
@@ -271,10 +286,33 @@ export async function readLxdOfficePowerOffEvidence(
 		predecessorBootId: _predecessorBootId,
 		...evidence
 	} = current;
+	const original = selected.outage
+		? officeRecord((await readSource(`boot-observation-${creation.binding.allocationId}.json`)).value, [
+				"schema",
+				"intentId",
+				"allocationId",
+				"createCommandId",
+				"startCommandId",
+				"observationSha256",
+				"planSha256",
+				"copySha256",
+				"reviewSha256",
+				"bootId",
+				"instanceSha256",
+				"hostBootId",
+			])
+		: undefined;
+	if (
+		original &&
+		(original.intentId !== creation.intentId ||
+			original.allocationId !== creation.binding.allocationId ||
+			original.createCommandId !== creation.createCommandId)
+	)
+		throw new Error("outage original VM history differs");
 	return {
 		...evidence,
 		commands,
 		bootIds: [...boots],
-		originalBootId: selected.reset?.originalBootId ?? selected.predecessorBootId,
+		originalBootId: selected.reset?.originalBootId ?? original?.bootId ?? selected.predecessorBootId,
 	};
 }

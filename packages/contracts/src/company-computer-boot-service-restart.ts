@@ -1,12 +1,16 @@
 import {
-	type CompanyComputerBootServiceStartCompletion,
 	type CompanyComputerBootServiceStartRequest,
 	parseCompanyComputerBootServiceStartRequest,
 } from "./company-computer-boot-service-start.ts";
 import {
+	type CompanyComputerOutageServiceStartRequest,
+	parseCompanyComputerOutageServiceStartRequest,
+} from "./company-computer-outage-service-start.ts";
+import {
 	type CompanyComputerPreparationCommand,
 	parseCompanyComputerPreparationCommand,
 } from "./company-computer-preparation.ts";
+import type { CompanyComputerServiceStartCompletion } from "./company-computer-service-start.ts";
 import {
 	type CompanyComputerServiceStopRequest,
 	parseCompanyComputerServiceStopRequest,
@@ -25,17 +29,19 @@ import {
  * activation. Public SQL metadata never substitutes for physical root proof. */
 export interface CompanyComputerBootServiceRestartRequest {
 	readonly schema: "qorpera.office-boot-service-restart-request/v1";
-	readonly origin: CompanyComputerBootServiceStartRequest;
+	readonly origin: CompanyComputerBootServiceStartRequest | CompanyComputerOutageServiceStartRequest;
 	readonly successor: CompanyComputerServiceSuccessor;
 	readonly stop: CompanyComputerServiceStopRequest;
 	readonly acknowledgement: CompanyComputerServiceStopAcknowledgement;
 	readonly stopCompletionSha256: string;
 }
-export interface CompanyComputerBootServiceRestartCompletion
-	extends Omit<CompanyComputerBootServiceStartCompletion, "schema"> {
+export type CompanyComputerBootServiceRestartCompletion = Omit<CompanyComputerServiceStartCompletion, "schema"> & {
 	readonly schema: "qorpera.office-boot-service-restart-completion/v1";
 	readonly originActivationId: string;
-}
+} & (
+		| { readonly bootIntentId: string; readonly recoveryId?: never }
+		| { readonly recoveryId: string; readonly bootIntentId?: never }
+	);
 export interface CompanyComputerBootServiceRestartInspection {
 	readonly schema: "qorpera.office-boot-service-restart-inspection/v1";
 	readonly inspectionId: string;
@@ -75,7 +81,10 @@ export function parseCompanyComputerBootServiceRestartRequest(
 			new TextEncoder().encode(JSON.stringify(value)).length > COMPANY_COMPUTER_BOOT_SERVICE_RESTART_MAX_BYTES
 		)
 			throw new Error("schema");
-		const origin = parseCompanyComputerBootServiceStartRequest(r.origin),
+		const origin =
+				(r.origin as { schema?: unknown })?.schema === "qorpera.office-outage-service-start-request/v1"
+					? parseCompanyComputerOutageServiceStartRequest(r.origin)
+					: parseCompanyComputerBootServiceStartRequest(r.origin),
 			input = r.successor as CompanyComputerServiceSuccessor,
 			successor = parseCompanyComputerServiceSuccessor(input, input.request),
 			stop = parseCompanyComputerServiceStopRequest(r.stop),
@@ -109,10 +118,21 @@ export function parseCompanyComputerBootServiceRestartCompletion(
 	expectedRequest: CompanyComputerBootServiceRestartRequest,
 ): Readonly<CompanyComputerBootServiceRestartCompletion> {
 	try {
-		const r = record(value, [
+		const request = parseCompanyComputerBootServiceRestartRequest(expectedRequest),
+			correlationKey =
+				request.origin.schema === "qorpera.office-outage-service-start-request/v1" ? "recoveryId" : "bootIntentId",
+			correlationId =
+				request.origin.schema === "qorpera.office-outage-service-start-request/v1"
+					? request.origin.successor.request.recovery.recoveryId
+					: request.origin.successor.request.bootIntentId,
+			predecessorInvocation =
+				request.origin.schema === "qorpera.office-outage-service-start-request/v1"
+					? undefined
+					: request.origin.successor.request.predecessor.startup.serviceInvocationId,
+			r = record(value, [
 				"schema",
 				"command",
-				"bootIntentId",
+				correlationKey,
 				"originActivationId",
 				"activationId",
 				"configurationCompletionSha256",
@@ -123,7 +143,6 @@ export function parseCompanyComputerBootServiceRestartCompletion(
 			]),
 			command = parseCompanyComputerPreparationCommand(r.command),
 			target = parseCompanyComputerPreparationCommand(expectedCommand),
-			request = parseCompanyComputerBootServiceRestartRequest(expectedRequest),
 			origin = request.origin.successor.request,
 			attestation = request.successor.request.attestation,
 			previous = request.acknowledgement.inspection.stop;
@@ -132,7 +151,7 @@ export function parseCompanyComputerBootServiceRestartCompletion(
 			!equal(command, target) ||
 			command.bootId !== attestation.bootId ||
 			[request.origin.configuration.command.commandId, previous.command.commandId].includes(command.commandId) ||
-			r.bootIntentId !== origin.bootIntentId ||
+			r[correlationKey] !== correlationId ||
 			r.originActivationId !== origin.attestation.activationId ||
 			r.activationId !== attestation.activationId ||
 			r.configurationCompletionSha256 !== request.origin.configurationCompletionSha256 ||
@@ -140,7 +159,7 @@ export function parseCompanyComputerBootServiceRestartCompletion(
 			typeof r.serviceInvocationId !== "string" ||
 			!/^(?!0{32}$)[0-9a-f]{32}$/.test(r.serviceInvocationId) ||
 			[
-				origin.predecessor.startup.serviceInvocationId,
+				predecessorInvocation,
 				previous.fromServiceInvocationId,
 				previous.observedInvocationId,
 				previous.stoppedInvocationId,

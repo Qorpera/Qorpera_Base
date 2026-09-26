@@ -1,5 +1,6 @@
 import type { ServiceHttpFetch } from "./http-transport.ts";
 import { OFFICE_COMPUTER_OUTAGE_RPC } from "./lxd-office-computer-outage.ts";
+import { OFFICE_OUTAGE_RECOVERY_RPCS } from "./lxd-office-outage-recovery-control.ts";
 import { readLxdOfficeCredentialFile } from "./lxd-office-physical-host.ts";
 import { nodeHttpFetch } from "./node-http-fetch.ts";
 import { RUNTIME_COMPUTER_RPCS } from "./runtime-computer-controller.ts";
@@ -8,6 +9,14 @@ const METHODS = new Set<string>([
 	...RUNTIME_COMPUTER_RPCS,
 	"qorpera_paid_office_admission",
 	OFFICE_COMPUTER_OUTAGE_RPC,
+	...OFFICE_OUTAGE_RECOVERY_RPCS,
+	"qorpera_prepare_runtime_office_outage_termination",
+	"qorpera_ack_runtime_office_outage_termination",
+	"qorpera_check_runtime_office_outage_configuration",
+	"qorpera_prepare_runtime_office_outage_successor",
+	"qorpera_runtime_office_outage_successor_status",
+	"qorpera_check_runtime_office_outage_successor",
+	"qorpera_activate_runtime_office_outage_successor",
 ]);
 const LIMIT = 65536;
 

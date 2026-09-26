@@ -20,6 +20,55 @@ export function officeStopHistoryFixture(
 		boot = files.has(bootStartPath),
 		directory = companyComputerBootDirectory(command.bootId),
 		start = boot ? JSON.parse(files.get(bootStartPath)!.content.toString()) : undefined;
+	const outageStartPath = "/run/qorpera-office-preparation/outage-service-start-completion.json",
+		outage = files.has(outageStartPath) ? JSON.parse(files.get(outageStartPath)!.content.toString()) : undefined,
+		outagePacket = outage
+			? JSON.parse(
+					files
+						.get(
+							`/run/qorpera-office-preparation/outage-service-start-incoming-${outage.command.requestSha256}.json`,
+						)!
+						.content.toString(),
+				)
+			: undefined,
+		outageRestart =
+			outage && outage.activationId !== activationId
+				? JSON.parse(
+						files
+							.get(`/run/qorpera-office-preparation/boot-service-restart-completion-${activationId}.json`)!
+							.content.toString(),
+					)
+				: undefined,
+		outageRestartPacket = outageRestart
+			? JSON.parse(
+					files
+						.get(
+							`/run/qorpera-office-preparation/boot-service-restart-incoming-${outageRestart.command.requestSha256}.json`,
+						)!
+						.content.toString(),
+				)
+			: undefined,
+		outagePaths = outage
+			? [
+					outageStartPath,
+					"/run/qorpera-office-preparation/outage-service-start-claim.json",
+					`/run/qorpera-office-preparation/outage-service-start-incoming-${outage.command.requestSha256}.json`,
+					`/run/qorpera-office-preparation/outage-termination-inspection-${outagePacket.successor.request.termination.request.inspection.inspectionId}.json`,
+					...[
+						"adoption.json",
+						"configuration-claim.json",
+						"configuration-completion.json",
+						"credentials/config.json",
+					].map((path) => `${directory}/${path}`),
+					...(outageRestart
+						? [
+								`/run/qorpera-office-preparation/boot-service-restart-completion-${activationId}.json`,
+								`/run/qorpera-office-preparation/boot-service-restart-incoming-${outageRestart.command.requestSha256}.json`,
+								`/run/qorpera-office-preparation/service-successor-${outageRestartPacket.stop.revocation.request.activationId}.json`,
+							]
+						: []),
+				]
+			: [];
 	const restartPath = `/run/qorpera-office-preparation/boot-service-restart-completion-${activationId}.json`,
 		restart =
 			boot && activationId !== start.activationId
@@ -74,32 +123,34 @@ export function officeStopHistoryFixture(
 	const sources = [...files]
 		.filter(
 			([path]) =>
-				(reset
-					? resetPaths.includes(path)
-					: boot
-						? [
-								bootStartPath,
-								"/run/qorpera-office-preparation/boot-service-start-claim.json",
-								`/run/qorpera-office-preparation/boot-service-start-incoming-${start.command.requestSha256}.json`,
-								...(restart
-									? [
-											restartPath,
-											`/run/qorpera-office-preparation/boot-service-restart-incoming-${restart.command.requestSha256}.json`,
-											`/run/qorpera-office-preparation/service-successor-${restartPacket.stop.revocation.request.activationId}.json`,
-										]
-									: []),
-								...[
-									"adoption.json",
-									"configuration-claim.json",
-									"configuration-completion.json",
-									"credentials/config.json",
-								].map((name) => `${directory}/${name}`),
-							].includes(path)
-						: path === "/etc/qorpera-office/credentials/config.json" ||
-							path === "/etc/qorpera-office/adoption.json" ||
-							path === "/run/qorpera-office-preparation/configuration-completion.json" ||
-							path === "/run/qorpera-office-preparation/service-start-completion.json" ||
-							path === `/run/qorpera-office-preparation/service-restart-completion-${activationId}.json`) ||
+				(outage
+					? outagePaths.includes(path)
+					: reset
+						? resetPaths.includes(path)
+						: boot
+							? [
+									bootStartPath,
+									"/run/qorpera-office-preparation/boot-service-start-claim.json",
+									`/run/qorpera-office-preparation/boot-service-start-incoming-${start.command.requestSha256}.json`,
+									...(restart
+										? [
+												restartPath,
+												`/run/qorpera-office-preparation/boot-service-restart-incoming-${restart.command.requestSha256}.json`,
+												`/run/qorpera-office-preparation/service-successor-${restartPacket.stop.revocation.request.activationId}.json`,
+											]
+										: []),
+									...[
+										"adoption.json",
+										"configuration-claim.json",
+										"configuration-completion.json",
+										"credentials/config.json",
+									].map((name) => `${directory}/${name}`),
+								].includes(path)
+							: path === "/etc/qorpera-office/credentials/config.json" ||
+								path === "/etc/qorpera-office/adoption.json" ||
+								path === "/run/qorpera-office-preparation/configuration-completion.json" ||
+								path === "/run/qorpera-office-preparation/service-start-completion.json" ||
+								path === `/run/qorpera-office-preparation/service-restart-completion-${activationId}.json`) ||
 				path === `/run/qorpera-office-preparation/service-stop-incoming-${command.requestSha256}.json` ||
 				path === completionPath,
 		)

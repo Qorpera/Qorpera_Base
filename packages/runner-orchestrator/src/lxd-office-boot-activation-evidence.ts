@@ -20,7 +20,7 @@ import type { LxdOfficeBootConfigurationRequest } from "./lxd-office-boot-config
 import type { LxdOfficeCreationIdentity } from "./lxd-office-creation-journal.ts";
 import { officeDigest, officeRecord, officeSha } from "./lxd-office-image-provenance.ts";
 import { readRecord } from "./lxd-office-journal-files.ts";
-import { LxdOfficeOperationJournal } from "./lxd-office-operations.ts";
+import { openLxdOfficeCurrentOperationJournal } from "./lxd-office-outage-history.ts";
 import { readLxdOfficePowerOffEvidence } from "./lxd-office-power-off-evidence.ts";
 import { LxdOfficePreparationJournal } from "./lxd-office-preparation-journal.ts";
 import { readLxdOfficePreparationRecovery } from "./lxd-office-preparation-recovery.ts";
@@ -82,7 +82,7 @@ export async function readLxdOfficeBootActivationEvidence(
 		})
 	)
 		throw new Error("resume acknowledgement differs");
-	const vm = await LxdOfficeOperationJournal.open(root, intentId, binding, client, true);
+	const { journal: vm } = await openLxdOfficeCurrentOperationJournal(root, creation, client);
 	await vm.assertRetainedLifecycleSequence(
 		[...shutdown.commands, { commandId: resume.startCommandId, action: "start" }],
 		signal,

@@ -24,7 +24,7 @@ import type { LxdOfficeCreationIdentity } from "./lxd-office-creation-journal.ts
 import type { LxdOfficeGuestBinding } from "./lxd-office-guest.ts";
 import { officeCanonical, officeDigest, officeRecord, officeSha } from "./lxd-office-image-provenance.ts";
 import type { readRecord } from "./lxd-office-journal-files.ts";
-import { LxdOfficeOperationJournal } from "./lxd-office-operations.ts";
+import { openLxdOfficeCurrentOperationJournal } from "./lxd-office-outage-history.ts";
 import { readLxdOfficePowerOffEvidence } from "./lxd-office-power-off-evidence.ts";
 import { officeStopHash } from "./lxd-office-stop-evidence.ts";
 
@@ -175,7 +175,7 @@ export async function readLxdOfficeBootActivationHistory(
 		)
 			throw new Error("boot predecessor differs");
 	}
-	const vm = await LxdOfficeOperationJournal.open(root, intentId, binding, client, true);
+	const { journal: vm } = await openLxdOfficeCurrentOperationJournal(root, creation, client);
 	await vm.assertRetainedLifecycleSequence(
 		[...shutdown.commands, { commandId: resume.startCommandId, action: "start" }],
 		signal,

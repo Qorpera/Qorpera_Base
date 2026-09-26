@@ -12,6 +12,7 @@ import {
 } from "@qorpera/contracts";
 import { readCompanyComputerBootServiceStartEvidence } from "./cloud-company-computer-boot-service-start-evidence.ts";
 import { readCompanyComputerLinuxMetadata } from "./cloud-company-computer-linux-host.ts";
+import { readCompanyComputerOutageServiceStartEvidence } from "./cloud-company-computer-outage-service-start-evidence.ts";
 import {
 	assertCompanyComputerPreparationLockAndBoot,
 	readCompanyComputerPreparationProtected,
@@ -109,7 +110,10 @@ export async function measureCompanyComputerServiceSoftware(
 		if (invocation.kind === "reset" || invocation.kind === "reset_restart")
 			bootMaterial = await readCompanyComputerResetRetainedEvidence(command, invocation.origin.request, signal);
 		else if (invocation.kind !== "original")
-			bootMaterial = await readCompanyComputerBootServiceStartEvidence(command, invocation.origin.request, signal);
+			bootMaterial =
+				invocation.origin.request.schema === "qorpera.office-outage-service-start-request/v1"
+					? await readCompanyComputerOutageServiceStartEvidence(command, invocation.origin.request, signal)
+					: await readCompanyComputerBootServiceStartEvidence(command, invocation.origin.request, signal);
 		const material = originalMaterial ?? bootMaterial!;
 		const expectedPreparation = originalMaterial?.preparation ?? {
 			invocationId: "",

@@ -13,6 +13,7 @@ import {
 import type { LxdOfficeCreationIdentity } from "./lxd-office-creation-journal.ts";
 import { officeDigest, officeRecord, officeSha } from "./lxd-office-image-provenance.ts";
 import { LxdOfficeOperationJournal } from "./lxd-office-operations.ts";
+import { readLxdOfficeOutageBootEvidence } from "./lxd-office-outage-history.ts";
 import { parseLxdOfficeResetSeed } from "./lxd-office-reset-journal.ts";
 import { lxdOfficeProviderBindingSha256 } from "./lxd-office-start-control.ts";
 import { assertLxdOfficeVmLineageCommands } from "./lxd-office-vm-lineage.ts";
@@ -47,6 +48,9 @@ export async function readLxdOfficeResetVmHistory(
 		throw new Error("reset VM index differs");
 	const suffix = `${binding.allocationId}-${plan.resetId}`;
 	const seed = parseLxdOfficeResetSeed(await read(`reset-seed-${suffix}.json`));
+	const outage = seed.outageRecoveryId
+		? await readLxdOfficeOutageBootEvidence(root, creation, seed.outageRecoveryId)
+		: undefined;
 	const originalPacket = officeRecord(await read(`activation-request-${binding.allocationId}.json`), [
 		"schema",
 		"intentId",
@@ -68,11 +72,11 @@ export async function readLxdOfficeResetVmHistory(
 		seed.originalBootId !== originalCommand.bootId ||
 		seed.intentId !== intentId ||
 		seed.planSha256 !== officeDigest(plan) ||
-		seed.commands[0]?.commandId !== creation.createCommandId ||
+		seed.commands[0]?.commandId !== (outage?.origin.startCommandId ?? creation.createCommandId) ||
 		seed.attestation.activationId !== plan.predecessor.activationId ||
 		seed.attestation.bootId !== plan.predecessor.startup.bootId ||
 		seed.attestation.preparationObservationSha256 !== plan.preparationObservationSha256 ||
-		plan.preparationObservationSha256 !== original.attestation.preparationObservationSha256 ||
+		(!outage && plan.preparationObservationSha256 !== original.attestation.preparationObservationSha256) ||
 		seed.adoptionReceiptSha256 !== original.attestation.adoptionReceiptSha256
 	)
 		throw new Error("reset VM origin differs");
@@ -150,8 +154,12 @@ export async function readLxdOfficeResetVmHistory(
 		{ commandId: plan.commands.createCommandId, action: "create" as const },
 		{ commandId: plan.commands.startCommandId, action: "start" as const },
 	];
-	assertLxdOfficeVmLineageCommands(commands, true);
-	const vm = await LxdOfficeOperationJournal.readHistory(root, binding.allocationId);
+	assertLxdOfficeVmLineageCommands(commands, true, outage?.origin);
+	const vm = await LxdOfficeOperationJournal.readHistory(
+		outage?.segmentRoot ?? root,
+		binding.allocationId,
+		outage?.origin,
+	);
 	if (
 		vm.intentId !== intentId ||
 		vm.companyId !== binding.companyId ||
@@ -167,9 +175,10 @@ export async function readLxdOfficeResetVmHistory(
 	)
 		throw new Error("reset VM journal differs");
 	const administrativeDispositions = await LxdOfficeOperationJournal.assertCompletedHistory(
-		root,
+		outage?.segmentRoot ?? root,
 		binding.allocationId,
 		commands,
+		outage?.origin,
 	);
 	for (const disposition of administrativeDispositions)
 		if (

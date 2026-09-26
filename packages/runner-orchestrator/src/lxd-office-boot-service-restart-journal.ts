@@ -1,10 +1,9 @@
 import type { LxdOfficeBootServiceRestartClient } from "./lxd-client.ts";
 import { LxdOfficeControlJournal } from "./lxd-office-control-journal.ts";
 import type { LxdOfficeServiceRestartIdentity } from "./lxd-office-service-restart-journal.ts";
-export interface LxdOfficeBootServiceRestartIdentity extends LxdOfficeServiceRestartIdentity {
-	bootIntentId: string;
+export type LxdOfficeBootServiceRestartIdentity = LxdOfficeServiceRestartIdentity & {
 	originActivationId: string;
-}
+} & ({ bootIntentId: string; recoveryId?: never } | { recoveryId: string; bootIntentId?: never });
 /** Distinct restart dispatch, binding the immutable boot origin as well as
  * the acknowledged immediate predecessor. Unknown outcomes never retry. */
 export function openLxdOfficeBootServiceRestartJournal(

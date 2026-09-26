@@ -7,6 +7,7 @@ import {
 	type CompanyComputerPreparationRequest,
 	companyComputerBootDirectory,
 	parseCompanyComputerBootAdoptionReceipt,
+	parseCompanyComputerOutageAdoptionReceipt,
 	parseCompanyComputerServiceStopCompletion,
 	parseCompanyComputerServiceStopRequest,
 } from "@qorpera/contracts";
@@ -99,7 +100,14 @@ export async function verifyCompanyComputerBootPredecessor(
 		)
 			throw new Error("archived activation differs");
 		const receiptBytes = await archived(selected.adoptionPath, 16384, 0o444),
-			receipt = parseCompanyComputerBootAdoptionReceipt(decode(receiptBytes));
+			decoded = decode(receiptBytes),
+			receipt =
+				decoded &&
+				typeof decoded === "object" &&
+				"schema" in decoded &&
+				decoded.schema === "qorpera.office-state-outage-retained/v1"
+					? parseCompanyComputerOutageAdoptionReceipt(decoded)
+					: parseCompanyComputerBootAdoptionReceipt(decoded);
 		if (
 			!isDeepStrictEqual(receipt.origin, {
 				bootId: original.bootId,

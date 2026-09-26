@@ -3,7 +3,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { bootFixtureId as id } from "../../runtime/test/fixtures/company-computer-boot-configuration.ts";
-import { openLxdOfficeBootServiceRestartJournal } from "../src/lxd-office-boot-service-restart-journal.ts";
+import {
+	type LxdOfficeBootServiceRestartIdentity,
+	openLxdOfficeBootServiceRestartJournal,
+} from "../src/lxd-office-boot-service-restart-journal.ts";
 import { lxdOfficeGuestPlan } from "../src/lxd-office-guest.ts";
 
 const roots: string[] = [];
@@ -52,11 +55,26 @@ async function fixture() {
 	});
 	const inspect = vi.fn(async () => "succeeded" as const);
 	const client = { submitOfficeBootServiceRestart: submit, inspectOfficeBootServiceRestart: inspect };
-	const open = (existing = true, value = identity) =>
+	const open = (existing = true, value: LxdOfficeBootServiceRestartIdentity = identity) =>
 		openLxdOfficeBootServiceRestartJournal(root, value, client, existing);
 	return { root, path, identity, open, submit, inspect };
 }
 describe("retained-boot service start command journal", () => {
+	it("retains an outage recovery identity across ordinary service restart without a fabricated boot intent", async () => {
+		const f = await fixture(),
+			{ bootIntentId: _bootIntentId, ...base } = f.identity,
+			identity = { ...base, recoveryId: id(15) },
+			signal = new AbortController().signal;
+		const result = await (await f.open(false, identity)).reconcile(signal);
+		expect(result).toEqual({ state: "succeeded", operationId: id(12) });
+		expect(await (await f.open(true, identity)).reconcile(signal)).toEqual(result);
+		const authority = JSON.parse(await readFile(join(f.path, "authority.json"), "utf8"));
+		expect(authority.recoveryId).toBe(identity.recoveryId);
+		expect(authority).not.toHaveProperty("bootIntentId");
+		await expect(f.open(true, { ...identity, recoveryId: id(16) })).rejects.toThrow("JOURNAL_UNCONFIRMED");
+		await expect(f.open(true, f.identity)).rejects.toThrow("JOURNAL_UNCONFIRMED");
+		expect(f.submit).toHaveBeenCalledOnce();
+	});
 	it("retains exactly one dispatch and reopens the same successful command", async () => {
 		const f = await fixture(),
 			journal = await f.open(false);

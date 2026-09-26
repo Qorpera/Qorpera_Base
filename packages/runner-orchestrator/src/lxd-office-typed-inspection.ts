@@ -38,7 +38,12 @@ async function assertInspectionBudget(
 		if (attempts.size >= MAX_INSPECTION_ATTEMPTS) throw new Error("inspection recovery budget exhausted");
 	}
 }
-type InspectionPurpose = "boot-service" | "boot-service-restart" | "reset-service" | "reset-service-restart";
+type InspectionPurpose =
+	| "boot-service"
+	| "boot-service-restart"
+	| "reset-service"
+	| "reset-service-restart"
+	| "outage-service";
 interface Client {
 	submit(
 		project: string,

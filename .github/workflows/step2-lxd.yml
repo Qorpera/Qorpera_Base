@@ -36,6 +36,8 @@ on:
       - 'packages/runtime/src/cloud-company-computer-service-main.ts'
       - 'packages/runtime/src/cloud-company-computer-preparation-main.ts'
       - 'packages/runtime/src/cloud-company-computer-diagnostics.ts'
+      - 'packages/runtime/src/cloud-company-computer-outage-*.ts'
+      - 'packages/runtime/test/cloud-company-computer-outage-*.test.ts'
       - 'packages/runtime/test/cloud-company-computer-service-main.test.ts'
       - 'packages/runtime/test/cloud-company-computer-preparation-main.test.ts'
       - 'packages/runtime/test/cloud-company-computer-diagnostics.test.ts'
@@ -56,6 +58,7 @@ on:
       - 'packages/web/src/cloud/email-drafts.ts'
       - 'scripts/package-lxd-*.mjs'
       - 'scripts/package-lxd-*.test.mjs'
+      - 'scripts/package-company-computer*.mjs'
       - 'scripts/package-runtime-node-updater*.mjs'
       - 'scripts/package-shared-execution-service*.mjs'
       - 'scripts/jitless-service-bundle.mjs'
@@ -154,6 +157,15 @@ jobs:
           test/lxd-provider-paid.test.ts
           test/lxd-office-paid-computer.test.ts
           test/lxd-office-computer-outage.test.ts
+          test/lxd-office-outage-resume-worker.test.ts
+          test/lxd-office-outage-successor-control.test.ts
+          test/lxd-office-outage-lineage.test.ts
+          test/lxd-office-outage-coordinator.test.ts
+          test/lxd-office-outage-lifecycle.test.ts
+          test/lxd-office-outage-stop-evidence.test.ts
+          test/lxd-office-outage-activation-history.test.ts
+          test/lxd-office-boot-service-restart-journal.test.ts
+          test/lxd-office-power-off-worker.test.ts
           test/lxd-office-operations.test.ts
           test/lxd-office-creation-worker.test.ts
           test/lxd-office-boot-worker.test.ts
@@ -192,6 +204,8 @@ jobs:
           test/cloud-company-computer-service-main.test.ts
           test/cloud-company-computer-preparation-main.test.ts
           test/cloud-company-computer-diagnostics.test.ts
+          test/cloud-company-computer-outage-termination.test.ts
+          test/cloud-company-computer-outage-contracts.test.ts
 
       - name: Test the coding command supervisor
         # Its fixtures chown each command log to the coding gid, which must be
@@ -242,6 +256,7 @@ jobs:
           node --test
           scripts/package-lxd-provider.test.mjs
           scripts/package-lxd-runner-guest.test.mjs
+          scripts/package-company-computer.test.mjs
           scripts/package-runner-orchestrator.test.mjs
           scripts/package-runtime-node-updater.test.mjs
           scripts/package-shared-execution-service.test.mjs

@@ -3,11 +3,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseCompanyComputerLifecycleRequest } from "@qorpera/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { PaidComputerGuardRecord } from "../src/computer-paid-guard.ts";
 import type { LxdOfficeConfigurationRequest } from "../src/lxd-office-configuration-worker.ts";
 import { officeDigest } from "../src/lxd-office-image-provenance.ts";
 import type { LxdOfficeStorageObservation } from "../src/lxd-office-inventory-worker.ts";
 import { publish } from "../src/lxd-office-journal-files.ts";
 import { LxdOfficeLifecycle, runLxdOfficeLifecycle } from "../src/lxd-office-lifecycle.ts";
+import type { LxdOfficeOutageCoordinator } from "../src/lxd-office-outage-coordinator.ts";
+import type { LxdOfficePaidComputerPort } from "../src/lxd-office-paid-computer.ts";
 import { lxdOfficePhysicalPolicySha256 } from "../src/lxd-office-physical-policy.ts";
 import type { LxdOfficeResumeWorker } from "../src/lxd-office-resume-worker.ts";
 import { officePhysicalFixture } from "./fixtures/office-physical-policy.ts";
@@ -311,11 +314,20 @@ async function fixture() {
 	const preparePackageInvocation = vi.fn<
 		NonNullable<NonNullable<ConstructorParameters<typeof LxdOfficeLifecycle>[3]>["preparePackageInvocation"]>
 	>(async () => undefined);
-	const open = (resetImagePackageManifestPath?: string, codePackageLanePath?: string, idleMs?: number) =>
+	const open = (
+		resetImagePackageManifestPath?: string,
+		codePackageLanePath?: string,
+		idleMs?: number,
+		paid?: {
+			paidComputer: LxdOfficePaidComputerPort;
+			outageCoordinator?: Pick<LxdOfficeOutageCoordinator, "pendingGuard" | "latestStopped" | "recover" | "active">;
+		},
+	) =>
 		new LxdOfficeLifecycle(
 			{ policy, check: vi.fn(), inspect: vi.fn() },
 			registry,
 			{
+				paidComputer: paid?.paidComputer,
 				idleMs,
 				planPath: "/protected/lifecycle.json",
 				resetImagePackageManifestPath,
@@ -329,6 +341,7 @@ async function fixture() {
 				},
 			},
 			{
+				outageCoordinator: paid?.outageCoordinator,
 				preparePackageInvocation,
 				workers: workers as unknown as NonNullable<ConstructorParameters<typeof LxdOfficeLifecycle>[3]>["workers"],
 				kernelLock,
@@ -377,6 +390,157 @@ async function fixture() {
 }
 
 describe("serialized office lifecycle", () => {
+	function outagePorts() {
+		// Opaque worker input: this suite tests routing, while the real guard and
+		// complete admission fixture validate the record and physical evidence.
+		const stopped = { permit: { permitId: allocationId } } as unknown as PaidComputerGuardRecord;
+		const paidComputer: LxdOfficePaidComputerPort = {
+			creationRegistry: (_binding, _intent, registry) => registry,
+			prepareStart: vi.fn(async () => true),
+			operations: vi.fn(() => {
+				throw new Error("unexpected VM dispatch");
+			}),
+			recover: vi.fn(async () => {}),
+			assertActive: vi.fn(async () => {}),
+			reconcileStopped: vi.fn(async () => false),
+			settleStopped: vi.fn(async () => {}),
+			maintain: vi.fn(async () => {}),
+		};
+		const outageCoordinator = {
+			pendingGuard: vi.fn<LxdOfficeOutageCoordinator["pendingGuard"]>(async () => null),
+			latestStopped: vi.fn<LxdOfficeOutageCoordinator["latestStopped"]>(async () => stopped),
+			recover: vi.fn<LxdOfficeOutageCoordinator["recover"]>(async () => ({
+				state: "awaiting_readiness",
+				phase: "outage_recovery",
+				intentId,
+			})),
+			active: vi.fn<LxdOfficeOutageCoordinator["active"]>(async () => null),
+		};
+		return { paidComputer, outageCoordinator, stopped };
+	}
+	it("continues the original outage before interpreting a stopped successor as another outage", async () => {
+		const f = await fixture(),
+			ports = outagePorts();
+		await f.toPhase(7);
+		await f.open().reconcile(signal());
+		f.state.office = "maintenance";
+		ports.outageCoordinator.pendingGuard.mockResolvedValue(ports.stopped);
+		const dispose = vi.fn();
+		f.preparePackageInvocation.mockResolvedValue({ measure: vi.fn(), dispose });
+		await expect(f.open(undefined, undefined, undefined, ports).reconcile(signal())).resolves.toMatchObject({
+			state: "awaiting_readiness",
+			phase: "outage_recovery",
+		});
+		expect(ports.paidComputer.reconcileStopped).not.toHaveBeenCalled();
+		expect(ports.outageCoordinator.latestStopped).not.toHaveBeenCalled();
+		expect(ports.outageCoordinator.recover).toHaveBeenCalledWith(
+			intentId,
+			ports.stopped,
+			f.request.serviceBootstrapPath,
+			expect.any(AbortSignal),
+		);
+		expect(f.preparePackageInvocation.mock.invocationCallOrder[0]).toBeLessThan(
+			ports.outageCoordinator.recover.mock.invocationCallOrder[0]!,
+		);
+		expect(dispose).toHaveBeenCalledOnce();
+		expect(f.workers.activation.reconcileSettled).toHaveBeenCalledOnce();
+	});
+	it("registers a new forced shutdown before selecting a recovery guard and retains the old hold without capability", async () => {
+		const f = await fixture(),
+			ports = outagePorts();
+		await f.toPhase(7);
+		await f.open().reconcile(signal());
+		vi.mocked(ports.paidComputer.reconcileStopped).mockResolvedValue(true);
+		await expect(
+			f.open(undefined, undefined, undefined, { paidComputer: ports.paidComputer }).reconcile(signal()),
+		).resolves.toMatchObject({ state: "held", reason: "OFFICE_PAID_RECOVERY_REQUIRED" });
+		expect(ports.outageCoordinator.recover).not.toHaveBeenCalled();
+		await f.open(undefined, undefined, undefined, ports).reconcile(signal());
+		expect(vi.mocked(ports.paidComputer.reconcileStopped).mock.invocationCallOrder.at(-1)).toBeLessThan(
+			ports.outageCoordinator.latestStopped.mock.invocationCallOrder[0]!,
+		);
+		expect(ports.outageCoordinator.recover).toHaveBeenCalledOnce();
+	});
+	it("observes an admitted outage without replaying installation and still permits an explicit stop", async () => {
+		const f = await fixture(),
+			ports = outagePorts();
+		await f.toPhase(7);
+		await f.open().reconcile(signal());
+		ports.outageCoordinator.active.mockResolvedValue({
+			state: "active",
+			phase: "outage_recovery",
+			intentId,
+			activationId: allocationId,
+		});
+		await expect(f.open(undefined, undefined, undefined, ports).reconcile(signal())).resolves.toMatchObject({
+			state: "active",
+			phase: "outage_recovery",
+		});
+		expect(f.workers.activation.reconcileSettled).toHaveBeenCalledOnce();
+		f.state.recovery = {
+			schema: "qorpera.lxd-office-recovery-plan/v1",
+			request: { ...f.recovery, action: "power_off" },
+		};
+		await expect(f.open(undefined, undefined, undefined, ports).reconcile(signal())).resolves.toMatchObject({
+			state: "progressed",
+			phase: "service_stop",
+		});
+		expect(f.stopWorker.reconcileSettled).toHaveBeenCalledOnce();
+		expect(ports.outageCoordinator.active).toHaveBeenCalledOnce();
+	});
+	it("keeps disabled recovery held and refuses a lost lifecycle prefix before recovery dispatch", async () => {
+		const f = await fixture(),
+			ports = outagePorts();
+		await f.toPhase(7);
+		await f.open().reconcile(signal());
+		ports.outageCoordinator.pendingGuard.mockResolvedValue(ports.stopped);
+		f.state.enabled = false;
+		await expect(f.open(undefined, undefined, undefined, ports).reconcile(signal())).resolves.toMatchObject({
+			state: "held",
+		});
+		expect(ports.outageCoordinator.recover).not.toHaveBeenCalled();
+		f.state.enabled = true;
+		await unlink(join(f.root, `lifecycle-${intentId}-7.json`));
+		await expect(f.open(undefined, undefined, undefined, ports).reconcile(signal())).rejects.toThrow("UNCONFIRMED");
+		expect(ports.outageCoordinator.recover).not.toHaveBeenCalled();
+	});
+	it("retires a completed pre-outage operator plan after verifying current admission and lets idle target the current office", async () => {
+		const f = await fixture(),
+			ports = outagePorts();
+		await f.toPhase(7);
+		await f.open().reconcile(signal());
+		const previous = { ...f.recovery, action: "service_restart" };
+		f.state.recovery = { schema: "qorpera.lxd-office-recovery-plan/v1", request: previous };
+		await publish(f.root, `recovery-active-${previous.transitionId}.json`, Buffer.from(JSON.stringify(previous)));
+		ports.outageCoordinator.active.mockResolvedValue({
+			state: "active",
+			phase: "outage_recovery",
+			intentId,
+			activationId: allocationId,
+		});
+		const idle = {
+			...f.recovery,
+			action: "power_off",
+			transitionId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+			activationId: allocationId,
+		};
+		f.state.idle = idle;
+		f.stopWorker.reconcileSettled.mockResolvedValueOnce({
+			state: "stopped",
+			intentId,
+			allocationId,
+			transitionId: idle.transitionId,
+			commandId: intentId,
+			acknowledgedAtMs: 3000,
+		});
+		await expect(f.open(undefined, undefined, 300000, ports).reconcile(signal())).resolves.toMatchObject({
+			state: "progressed",
+			phase: "service_stop",
+			transitionId: idle.transitionId,
+		});
+		expect(f.successorWorker.reconcileSettled).not.toHaveBeenCalled();
+		expect(f.stopWorker.reconcileSettled).toHaveBeenCalledWith(intentId, idle, expect.any(AbortSignal));
+	});
 	it.each(["boot", "resume"])("forwards paid cancellation diagnosis while retaining the %s phase", async (phase) => {
 		const f = await fixture();
 		const reason = "OFFICE_PAID_START_ABANDONED";

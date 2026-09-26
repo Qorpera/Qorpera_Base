@@ -138,7 +138,9 @@ export function officeBootServiceRestartHttpFixture(
 						? JSON.parse((await officeHttpGuestRead(files, guest, completionPath))!.content.toString())
 						: {
 								schema: "qorpera.office-boot-service-restart-completion/v1",
-								bootIntentId: request.origin.successor.request.bootIntentId,
+								...(request.origin.schema === "qorpera.office-outage-service-start-request/v1"
+									? { recoveryId: request.origin.successor.request.recovery.recoveryId }
+									: { bootIntentId: request.origin.successor.request.bootIntentId }),
 								originActivationId: request.origin.successor.request.attestation.activationId,
 								command: retained.command,
 								activationId: request.successor.request.attestation.activationId,
@@ -157,7 +159,9 @@ export function officeBootServiceRestartHttpFixture(
 									JSON.stringify({
 										schema: "qorpera.office-boot-service-successor-claim/v1",
 										command: retained.command,
-										bootIntentId: request.origin.successor.request.bootIntentId,
+										...(request.origin.schema === "qorpera.office-outage-service-start-request/v1"
+											? { recoveryId: request.origin.successor.request.recovery.recoveryId }
+											: { bootIntentId: request.origin.successor.request.bootIntentId }),
 										originActivationId: request.origin.successor.request.attestation.activationId,
 										activationId: request.successor.request.attestation.activationId,
 										predecessorActivationId: request.stop.revocation.request.activationId,

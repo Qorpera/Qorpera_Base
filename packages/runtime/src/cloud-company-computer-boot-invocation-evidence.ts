@@ -16,6 +16,7 @@ import {
 	parseCompanyComputerPreparationCommand,
 } from "@qorpera/contracts";
 import { readCompanyComputerAcknowledgedStop } from "./cloud-company-computer-acknowledged-stop.ts";
+import { readCompanyComputerInitialOutageServiceInvocation } from "./cloud-company-computer-outage-invocation-evidence.ts";
 import { OFFICE_PREPARATION_CONTROL_ROOT as root } from "./cloud-company-computer-preparation-control.ts";
 import {
 	type CompanyComputerProtectedEvidenceReader,
@@ -31,8 +32,17 @@ export async function readCompanyComputerInitialBootServiceInvocation(
 ) {
 	const directory = companyComputerBootDirectory(bootId),
 		adoptionPath = companyComputerBootAdoptionReceiptPath(bootId);
+	const adoptionBytes = await read(adoptionPath, 16384, 0o444),
+		adoption = json(adoptionBytes);
+	if (
+		adoption &&
+		typeof adoption === "object" &&
+		"schema" in adoption &&
+		adoption.schema === "qorpera.office-state-outage-retained/v1"
+	)
+		return readCompanyComputerInitialOutageServiceInvocation(bootId, read);
 	const bytes = await read(`${root}/boot-service-start-completion.json`, 8192, 0o600),
-		receiptBytes = await read(adoptionPath, 16384, 0o444),
+		receiptBytes = adoptionBytes,
 		claimBytes = await read(`${root}/boot-service-start-claim.json`, 4096, 0o600);
 	const data = json(bytes) as Record<string, unknown>,
 		command = parseCompanyComputerPreparationCommand(data.command),
@@ -114,7 +124,9 @@ export function companyComputerBootSuccessorClaim(
 	return {
 		schema: "qorpera.office-boot-service-successor-claim/v1",
 		command,
-		bootIntentId: request.origin.successor.request.bootIntentId,
+		...(request.origin.schema === "qorpera.office-outage-service-start-request/v1"
+			? { recoveryId: request.origin.successor.request.recovery.recoveryId }
+			: { bootIntentId: request.origin.successor.request.bootIntentId }),
 		originActivationId: request.origin.successor.request.attestation.activationId,
 		activationId: request.successor.request.attestation.activationId,
 		predecessorActivationId: request.stop.revocation.request.activationId,

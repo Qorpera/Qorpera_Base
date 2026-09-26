@@ -123,7 +123,9 @@ export function lxdOfficeSuccessorLane(
 			stopCompletionSha256,
 		}),
 		bootIdentity = {
-			bootIntentId: evidence.origin.bootIntent.bootIntentId,
+			...(evidence.kind === "outage"
+				? { recoveryId: evidence.origin.recovery.request.recoveryId }
+				: { bootIntentId: evidence.origin.bootIntent.bootIntentId }),
 			originActivationId: evidence.origin.completion.activationId,
 		};
 	return {
@@ -132,8 +134,10 @@ export function lxdOfficeSuccessorLane(
 		indexSchema: "qorpera.lxd-office-boot-service-restart-intent/v1",
 		request,
 		bootIdentity,
-		openJournal: (identity: LxdOfficeServiceRestartIdentity, existing = true) =>
-			openLxdOfficeBootServiceRestartJournal(root, { ...identity, ...bootIdentity }, selected, existing),
+		openJournal: (identity: LxdOfficeServiceRestartIdentity, existing = true) => {
+			const { bootIntentId: _bootIntentId, recoveryId: _recoveryId, ...base } = identity;
+			return openLxdOfficeBootServiceRestartJournal(root, { ...base, ...bootIdentity }, selected, existing);
+		},
 		push: selected.pushOfficeBootServiceRestartRequest,
 		read: selected.readOfficeBootServiceRestartRequest,
 		parseCompletion: (value: unknown, command: CompanyComputerPreparationCommand) =>

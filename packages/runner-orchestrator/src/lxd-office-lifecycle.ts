@@ -40,6 +40,11 @@ import {
 	parseLxdOfficeLifecycleRequest,
 } from "./lxd-office-lifecycle-journal.ts";
 import { observeLxdOfficeOperationJournals } from "./lxd-office-operation-observer.ts";
+import { LxdOfficeOutageAdmissionWorker } from "./lxd-office-outage-admission-worker.ts";
+import { LxdOfficeOutageConfigurationWorker } from "./lxd-office-outage-configuration-worker.ts";
+import { LxdOfficeOutageCoordinator, type LxdOfficeOutageOptions } from "./lxd-office-outage-coordinator.ts";
+import { LxdOfficeOutageResumeWorker } from "./lxd-office-outage-resume-worker.ts";
+import { LxdOfficeOutageTerminationWorker } from "./lxd-office-outage-termination-worker.ts";
 import type { LxdOfficePaidComputerPort } from "./lxd-office-paid-computer.ts";
 import { createLxdOfficeGuestResolver, type LxdOfficeGuestResolver } from "./lxd-office-passthrough.ts";
 import { LxdOfficePhysicalGate } from "./lxd-office-physical-gate.ts";
@@ -73,6 +78,7 @@ interface Workers {
 }
 interface Options {
 	paidComputer?: LxdOfficePaidComputerPort;
+	outageRecovery?: LxdOfficeOutageOptions;
 	idleMs?: number;
 	codePackageLanePath?: string;
 	resetImagePackageManifestPath?: string;
@@ -84,6 +90,7 @@ interface Options {
 	software?: Readonly<LxdOfficeSoftwareLaneOptions>;
 }
 interface Ports {
+	outageCoordinator?: Pick<LxdOfficeOutageCoordinator, "pendingGuard" | "latestStopped" | "recover" | "active">;
 	preparePackageInvocation?: (
 		allocationId: string,
 		signal: AbortSignal,
@@ -123,6 +130,7 @@ export interface LxdOfficeLifecycleResult {
 		| "resume"
 		| "boot_configuration"
 		| "boot_activation"
+		| "outage_recovery"
 		| "reset";
 	intentId?: string;
 	observationSha256?: string;
@@ -179,6 +187,7 @@ export class LxdOfficeLifecycle {
 		Partial<Pick<LxdOfficeHostRebootGate, "physical">>;
 	readonly #registry: LxdOfficeLifecycleRegistry;
 	readonly #paid?: LxdOfficePaidComputerPort;
+	readonly #outage?: Pick<LxdOfficeOutageCoordinator, "pendingGuard" | "latestStopped" | "recover" | "active">;
 	#activeIntent: string | undefined;
 	#activeRecovery: { intentId: string; transitionId: string; activationId: string } | undefined;
 	#activeBoot: { intentId: string; transitionId: string; activationId: string; stageSha256: string } | undefined;
@@ -288,6 +297,26 @@ export class LxdOfficeLifecycle {
 				if (this.#preparedPackage) await this.#preparedPackage.measure(...args);
 				else if (historicalMeasurement) await historicalMeasurement(...args);
 			});
+		if (options.outageRecovery && !options.paidComputer) throw new Error("OFFICE_OUTAGE_PAID_CONTROL_REQUIRED");
+		this.#outage = ports.outageCoordinator;
+		if (!this.#outage && options.outageRecovery && options.paidComputer) {
+			const resume = new LxdOfficeOutageResumeWorker(gate, options.outageRecovery.control, {
+				paidComputer: options.paidComputer,
+				imagePackageManifest: options.outageRecovery.imagePackageManifest,
+				client: this.#operationClient,
+				kernelLock: this.#kernelLock,
+			});
+			const configuration = new LxdOfficeOutageConfigurationWorker(
+				new LxdOfficeOutageTerminationWorker(resume, this.#operationClient),
+				this.#operationClient,
+			);
+			this.#outage = new LxdOfficeOutageCoordinator(
+				new LxdOfficeOutageAdmissionWorker(configuration, this.#operationClient, { measureInvocation }),
+				options.outageRecovery.guard,
+				this.#operationClient,
+				registry,
+			);
+		}
 		this.#successorWorker =
 			ports.successorWorker ??
 			new LxdOfficeSuccessorWorker(gate, registry, { softwarePlan: software?.plan, measureInvocation });
@@ -377,6 +406,38 @@ export class LxdOfficeLifecycle {
 		await this.#kernelLock(this.#root);
 		signal.throwIfAborted();
 		const status = await this.#provider.status(signal);
+		const recoverOutage = async (guard: Awaited<ReturnType<LxdOfficeOutageCoordinator["latestStopped"]>>) => {
+			if (
+				!status.intent ||
+				status.intent.state === "cancelled" ||
+				status.officeState === "retired" ||
+				!status.preparationEnabled
+			)
+				return {
+					state: "held" as const,
+					intentId: status.intent?.intentId,
+					reason: "OFFICE_PAID_RECOVERY_REQUIRED",
+				};
+			const journal = await LxdOfficeLifecycleJournal.open(
+				this.#root,
+				status.intent.intentId,
+				this.#configSha,
+				true,
+			);
+			const context = journal.context;
+			if (
+				journal.phase !== "activation" ||
+				!context.request ||
+				context.allocationId !== status.reservation?.allocationId
+			)
+				throw new Error("OFFICE_OUTAGE_LIFECYCLE_PREFIX_LOST");
+			this.#activeIntent = undefined;
+			this.#activeRecovery = undefined;
+			this.#activeBoot = undefined;
+			this.#activeReset = undefined;
+			await this.#prepareMeasurement(context.allocationId!, signal);
+			return this.#outage!.recover(status.intent.intentId, guard, context.request.serviceBootstrapPath, signal);
+		};
 		if (status.reservation && this.#paid) {
 			const binding = {
 				schema: "qorpera.lxd-office-guest/v2" as const,
@@ -385,10 +446,22 @@ export class LxdOfficeLifecycle {
 				allocationId: status.reservation.allocationId,
 			};
 			if (
+				this.#outage &&
+				status.intent &&
+				status.intent.state !== "cancelled" &&
+				["active", "maintenance"].includes(status.officeState)
+			) {
+				const guard = await this.#outage.pendingGuard(status.intent.intentId, signal);
+				if (guard) return recoverOutage(guard);
+			}
+			if (
 				["active", "maintenance"].includes(status.officeState) &&
 				(await this.#paid.reconcileStopped(binding, this.#registry, signal))
-			)
+			) {
+				if (this.#outage && status.intent)
+					return recoverOutage(await this.#outage.latestStopped(binding.allocationId, signal));
 				return { state: "held", intentId: status.intent?.intentId, reason: "OFFICE_PAID_RECOVERY_REQUIRED" };
+			}
 			await this.#paid.recover(binding, signal);
 			if (status.officeState === "active") {
 				try {
@@ -431,13 +504,25 @@ export class LxdOfficeLifecycle {
 		// An explicit plan keeps precedence until its successor was activated.
 		// Retaining that completed plan for recovery must not disable future idle.
 		let completedRecovery = false;
-		if (recovery && this.#idlePolicy) {
+		if (recovery && (this.#idlePolicy || this.#outage)) {
 			try {
 				const completed = await readRecord(join(this.#root, `recovery-active-${recovery.transitionId}.json`));
 				if (!isDeepStrictEqual(completed.value, recovery)) throw new Error("completed recovery differs");
 				completedRecovery = true;
 			} catch (error) {
 				if (!code(error, "ENOENT")) throw error;
+			}
+		}
+		// A completed operator plan can predate the forced shutdown. Once the
+		// current outage lineage is proven active, that old plan must not replay
+		// its predecessor or suppress a new idle decision. Uncompleted explicit
+		// plans retain precedence and never acquire completion from this check.
+		if (recovery && completedRecovery && this.#outage && status.officeState === "active") {
+			const current = await this.#outage.active(intentId, signal);
+			if (current?.state === "active") {
+				recovery = undefined;
+				hostReboot = undefined;
+				this.#protectedRecovery = undefined;
 			}
 		}
 		// SQL checks live demand under the office lock and excludes operator maintenance.
@@ -1015,6 +1100,10 @@ export class LxdOfficeLifecycle {
 				transitionId: result.transitionId,
 				...(result.acknowledgedAtMs === undefined ? {} : { acknowledgedAtMs: result.acknowledgedAtMs }),
 			};
+		}
+		if (this.#outage && phase === "activation" && status.reservation) {
+			const active = await this.#outage.active(intentId, signal);
+			if (active) return active;
 		}
 		// A lost suffix cannot roll back across a physical dispatch whose reply
 		// (or SQL activation) was lost. Presence only fences earlier phases; the

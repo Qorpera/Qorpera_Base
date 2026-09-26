@@ -24,6 +24,9 @@ export interface LxdOfficeControlClient {
 	inspect(reference: LxdOperationReference, signal: AbortSignal): Promise<LxdOperationState>;
 }
 type Purpose =
+	| "outage-termination"
+	| "outage-configuration"
+	| "outage-service-start"
 	| "preparation"
 	| "configuration"
 	| "boot-configuration"
@@ -52,6 +55,7 @@ export interface LxdOfficeControlIdentity {
 	originPreparationSha256?: string;
 	resetId?: string;
 	rootIncarnationId?: string;
+	recoveryId?: string;
 }
 interface Event {
 	schema: `qorpera.lxd-office-${Purpose}-event/v1`;
@@ -106,7 +110,7 @@ export class LxdOfficeControlJournal {
 		signal: AbortSignal,
 	): Promise<LxdOfficeControlOperationResult> {
 		const match =
-			/^(preparation|configuration|boot-configuration|boot-service-restart|boot-service-start|service-start|service-stop|service-restart|reset-configuration|reset-service-start|reset-service-restart)-([0-9a-f-]+)$/.exec(
+			/^(outage-termination|outage-configuration|outage-service-start|preparation|configuration|boot-configuration|boot-service-restart|boot-service-start|service-start|service-stop|service-restart|reset-configuration|reset-service-start|reset-service-restart)-([0-9a-f-]+)$/.exec(
 				name,
 			);
 		if (!match) throw new Error("INVALID_OFFICE_CONTROL_JOURNAL_NAME");
@@ -145,6 +149,9 @@ export class LxdOfficeControlJournal {
 	): Promise<LxdOfficeControlJournal> {
 		if (
 			![
+				"outage-termination",
+				"outage-configuration",
+				"outage-service-start",
 				"preparation",
 				"configuration",
 				"boot-configuration",
@@ -163,27 +170,41 @@ export class LxdOfficeControlJournal {
 			resolve(stateRoot) !== stateRoot ||
 			!value ||
 			Object.keys(value).sort().join() !==
-				(purpose === "reset-service-restart"
-					? "activationId,binding,bootObservationSha256,command,configurationObservationSha256,intentId,originActivationId,resetId,rootIncarnationId,stopObservationSha256,transitionId"
-					: purpose === "reset-configuration"
-						? "activationId,binding,bootObservationSha256,command,intentId,originPreparationSha256,resetId"
-						: purpose === "reset-service-start"
-							? "activationId,binding,bootObservationSha256,command,configurationObservationSha256,intentId,resetId"
-							: purpose === "boot-service-restart"
-								? "activationId,binding,bootIntentId,bootObservationSha256,command,configurationObservationSha256,intentId,originActivationId,stopObservationSha256,transitionId"
-								: purpose === "boot-service-start"
-									? "activationId,binding,bootIntentId,bootObservationSha256,command,configurationObservationSha256,intentId"
-									: purpose === "boot-configuration"
-										? "activationId,binding,bootIntentId,bootObservationSha256,command,intentId,originPreparationSha256"
-										: purpose === "preparation"
-											? "binding,bootObservationSha256,command,intentId"
-											: purpose === "configuration"
-												? "binding,bootObservationSha256,command,intentId,preparationObservationSha256"
-												: purpose === "service-start"
-													? "binding,bootObservationSha256,command,configurationObservationSha256,intentId"
-													: purpose === "service-stop"
-														? "binding,bootObservationSha256,command,intentId,revocationSha256,startObservationSha256,transitionId"
-														: "activationId,binding,bootObservationSha256,command,configurationObservationSha256,intentId,stopObservationSha256,transitionId") ||
+				(purpose === "outage-service-start"
+					? "activationId,binding,bootObservationSha256,command,configurationObservationSha256,intentId,recoveryId"
+					: purpose === "outage-termination" || purpose === "outage-configuration"
+						? "activationId,binding,bootObservationSha256,command,intentId,originPreparationSha256,recoveryId"
+						: purpose === "reset-service-restart"
+							? "activationId,binding,bootObservationSha256,command,configurationObservationSha256,intentId,originActivationId,resetId,rootIncarnationId,stopObservationSha256,transitionId"
+							: purpose === "reset-configuration"
+								? "activationId,binding,bootObservationSha256,command,intentId,originPreparationSha256,resetId"
+								: purpose === "reset-service-start"
+									? "activationId,binding,bootObservationSha256,command,configurationObservationSha256,intentId,resetId"
+									: purpose === "boot-service-restart"
+										? Object.hasOwn(value, "recoveryId")
+											? "activationId,binding,bootObservationSha256,command,configurationObservationSha256,intentId,originActivationId,recoveryId,stopObservationSha256,transitionId"
+											: "activationId,binding,bootIntentId,bootObservationSha256,command,configurationObservationSha256,intentId,originActivationId,stopObservationSha256,transitionId"
+										: purpose === "boot-service-start"
+											? "activationId,binding,bootIntentId,bootObservationSha256,command,configurationObservationSha256,intentId"
+											: purpose === "boot-configuration"
+												? "activationId,binding,bootIntentId,bootObservationSha256,command,intentId,originPreparationSha256"
+												: purpose === "preparation"
+													? "binding,bootObservationSha256,command,intentId"
+													: purpose === "configuration"
+														? "binding,bootObservationSha256,command,intentId,preparationObservationSha256"
+														: purpose === "service-start"
+															? "binding,bootObservationSha256,command,configurationObservationSha256,intentId"
+															: purpose === "service-stop"
+																? "binding,bootObservationSha256,command,intentId,revocationSha256,startObservationSha256,transitionId"
+																: "activationId,binding,bootObservationSha256,command,configurationObservationSha256,intentId,stopObservationSha256,transitionId") ||
+			((purpose === "outage-termination" || purpose === "outage-configuration") &&
+				(![value.activationId, value.recoveryId].every((id) => typeof id === "string" && UUID.test(id)) ||
+					typeof value.originPreparationSha256 !== "string" ||
+					!/^[0-9a-f]{64}$/.test(value.originPreparationSha256))) ||
+			(purpose === "outage-service-start" &&
+				(![value.activationId, value.recoveryId].every((id) => typeof id === "string" && UUID.test(id)) ||
+					typeof value.configurationObservationSha256 !== "string" ||
+					!/^[0-9a-f]{64}$/.test(value.configurationObservationSha256))) ||
 			(purpose === "configuration" &&
 				(typeof value.preparationObservationSha256 !== "string" ||
 					!/^[0-9a-f]{64}$/.test(value.preparationObservationSha256))) ||
@@ -222,9 +243,10 @@ export class LxdOfficeControlJournal {
 						(value) => typeof value === "string" && /^[0-9a-f]{64}$/.test(value),
 					))) ||
 			(purpose === "boot-service-restart" &&
-				(![value.bootIntentId, value.originActivationId].every(
-					(value) => typeof value === "string" && UUID.test(value),
-				) ||
+				(![
+					Object.hasOwn(value, "recoveryId") ? value.recoveryId : value.bootIntentId,
+					value.originActivationId,
+				].every((value) => typeof value === "string" && UUID.test(value)) ||
 					value.originActivationId === value.activationId)) ||
 			(purpose === "reset-service-restart" &&
 				(![value.resetId, value.rootIncarnationId, value.originActivationId].every(
@@ -244,6 +266,20 @@ export class LxdOfficeControlJournal {
 			binding: lxdOfficeGuestPlan(value.binding).binding,
 			bootObservationSha256: value.bootObservationSha256,
 			command: Object.freeze({ ...value.command }),
+			...(purpose === "outage-termination" || purpose === "outage-configuration"
+				? {
+						activationId: value.activationId,
+						recoveryId: value.recoveryId,
+						originPreparationSha256: value.originPreparationSha256,
+					}
+				: {}),
+			...(purpose === "outage-service-start"
+				? {
+						activationId: value.activationId,
+						recoveryId: value.recoveryId,
+						configurationObservationSha256: value.configurationObservationSha256,
+					}
+				: {}),
 			...(purpose === "boot-configuration"
 				? {
 						activationId: value.activationId,
@@ -277,7 +313,12 @@ export class LxdOfficeControlJournal {
 					}
 				: {}),
 			...(purpose === "boot-service-restart"
-				? { bootIntentId: value.bootIntentId, originActivationId: value.originActivationId }
+				? {
+						...(Object.hasOwn(value, "recoveryId")
+							? { recoveryId: value.recoveryId }
+							: { bootIntentId: value.bootIntentId }),
+						originActivationId: value.originActivationId,
+					}
 				: {}),
 			...(purpose === "service-restart" || purpose === "boot-service-restart" || purpose === "reset-service-restart"
 				? {
@@ -291,7 +332,7 @@ export class LxdOfficeControlJournal {
 		await checkDirectory(stateRoot);
 		const root = join(
 			stateRoot,
-			`${purpose}-${identity.binding.allocationId}${purpose === "service-stop" ? `-${identity.transitionId}` : purpose === "service-restart" || purpose === "boot-service-restart" || purpose === "reset-service-restart" || purpose === "boot-configuration" || purpose === "boot-service-start" || purpose === "reset-configuration" || purpose === "reset-service-start" ? `-${identity.activationId}` : ""}`,
+			`${purpose}-${identity.binding.allocationId}${purpose === "outage-termination" ? `-${identity.recoveryId}` : purpose === "service-stop" ? `-${identity.transitionId}` : purpose === "outage-configuration" || purpose === "outage-service-start" || purpose === "service-restart" || purpose === "boot-service-restart" || purpose === "reset-service-restart" || purpose === "boot-configuration" || purpose === "boot-service-start" || purpose === "reset-configuration" || purpose === "reset-service-start" ? `-${identity.activationId}` : ""}`,
 		);
 		const journal = new LxdOfficeControlJournal(root, identity, client, purpose);
 		if (!existing) {

@@ -114,6 +114,19 @@ describe("optional provider lifecycle diagnostics", () => {
 	});
 });
 describe("protected lifecycle service configuration", () => {
+	it("requires paid control and a protected image reference to opt into outage recovery", () => {
+		expect(parseLxdOfficeLifecycleServiceConfig(config()).outageImagePackageManifestPath).toBeUndefined();
+		const paid = { ...config(), computerExecutorCredentialPath: "/protected/executor.key" };
+		expect(
+			parseLxdOfficeLifecycleServiceConfig({ ...paid, outageImagePackageManifestPath: "/protected/image.json" })
+				.outageImagePackageManifestPath,
+		).toBe("/protected/image.json");
+		expect(() =>
+			parseLxdOfficeLifecycleServiceConfig({ ...config(), outageImagePackageManifestPath: "/protected/image.json" }),
+		).toThrow("OFFICE_OUTAGE_PAID_CONTROL_REQUIRED");
+		for (const outageImagePackageManifestPath of ["../image.json", "", "/", "embedded manifest"])
+			expect(() => parseLxdOfficeLifecycleServiceConfig({ ...paid, outageImagePackageManifestPath })).toThrow();
+	});
 	it("enables paid control only with a local protected credential reference", () => {
 		expect(parseLxdOfficeLifecycleServiceConfig(config()).computerExecutorCredentialPath).toBeUndefined();
 		expect(

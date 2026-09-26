@@ -18,7 +18,7 @@ import { assertLxdOfficeGuestInstance, inspectLxdOfficeGuestBoot, lxdOfficeGuest
 import { officeCanonical, officeDigest, officeRecord } from "./lxd-office-image-provenance.ts";
 import { code, publish, readRecord } from "./lxd-office-journal-files.ts";
 import { suspendLxdOfficeNodeMachine } from "./lxd-office-node-admission.ts";
-import { LxdOfficeOperationJournal } from "./lxd-office-operations.ts";
+import { openLxdOfficeCurrentOperationJournal, readLxdOfficeOutageBootEvidence } from "./lxd-office-outage-history.ts";
 import type { LxdOfficePhysicalGate } from "./lxd-office-physical-gate.ts";
 import { parseLxdOfficePhysicalPolicy } from "./lxd-office-physical-policy.ts";
 import { readLxdOfficeResetVmHistory } from "./lxd-office-reset-vm-history.ts";
@@ -189,7 +189,8 @@ export class LxdOfficePowerOffWorker {
 		)
 			throw new Error("stop acknowledgement differs");
 		const control = new LxdOfficeStopControl(stop, stopCommand, registry);
-		const journal = await LxdOfficeOperationJournal.open(root, intentId, binding, this.#client, true);
+		const selected = await openLxdOfficeCurrentOperationJournal(root, creation, this.#client),
+			journal = selected.journal;
 		let seedValue = await optional(seedName);
 		if (seedValue === undefined) {
 			if ((await optional(doneName)) !== undefined) throw new Error("power-off prefix lost");
@@ -201,6 +202,10 @@ export class LxdOfficePowerOffWorker {
 					: undefined;
 			const bootIntent =
 				evidence.kind === "boot" || evidence.kind === "boot_restart" ? evidence.origin.bootIntent : undefined;
+			const outage =
+				evidence.kind === "outage"
+					? await readLxdOfficeOutageBootEvidence(root, creation, evidence.origin.recovery.request.recoveryId)
+					: undefined;
 			const reset = resetOriginActivationId
 				? await readLxdOfficeResetVmHistory(
 						root,
@@ -211,14 +216,16 @@ export class LxdOfficePowerOffWorker {
 					)
 				: undefined;
 			const resumed = bootIntent ? await readLxdOfficeBootVmEvidence(root, creation, bootIntent, signal) : undefined;
-			const boot = reset
-				? reset.observation
-				: resumed
-					? { ...resumed.observation, createCommandId: creation.createCommandId }
-					: ((await readRecord(join(root, `boot-observation-${allocationId}.json`))).value as Record<
-							string,
-							unknown
-						>);
+			const boot = outage
+				? { ...outage.observation, createCommandId: creation.createCommandId }
+				: reset
+					? reset.observation
+					: resumed
+						? { ...resumed.observation, createCommandId: creation.createCommandId }
+						: ((await readRecord(join(root, `boot-observation-${allocationId}.json`))).value as Record<
+								string,
+								unknown
+							>);
 			if (
 				stop.startCompletionSha256 !== evidence.startCompletionSha256 ||
 				boot.createCommandId !== creation.createCommandId ||
@@ -227,14 +234,16 @@ export class LxdOfficePowerOffWorker {
 			)
 				throw new Error("power-off history differs");
 			await journal.assertRetainedLifecycleSequence(
-				reset
-					? reset.commands
-					: resumed
-						? resumed.commands
-						: [
-								{ commandId: creation.createCommandId, action: "create" },
-								{ commandId: boot.startCommandId as string, action: "start" },
-							],
+				outage
+					? outage.commands
+					: reset
+						? reset.commands
+						: resumed
+							? resumed.commands
+							: [
+									{ commandId: creation.createCommandId, action: "create" },
+									{ commandId: boot.startCommandId as string, action: "start" },
+								],
 				signal,
 			);
 			const completionPath = evidence.initial
@@ -265,16 +274,29 @@ export class LxdOfficePowerOffWorker {
 			if (!(await readRecord(join(root, historyName), 65536)).bytes.equals(history.bytes))
 				throw new Error("retained history differs");
 			const records = { ...evidence.records };
+			if (outage)
+				for (const prefix of ["outage-prepared", "outage-observation"])
+					records[`${prefix}-${allocationId}-${outage.recovery.request.recoveryId}.json`] = officeStopHash(
+						(
+							await readRecord(
+								join(root, `${prefix}-${allocationId}-${outage.recovery.request.recoveryId}.json`),
+								131072,
+							)
+						).bytes,
+					);
 			records[historyName] = history.manifestSha256;
 			for (const name of [stopName, stopDoneName])
 				records[name] = officeStopHash((await readRecord(join(root, name))).bytes);
 			seedValue = {
-				schema: reset
-					? "qorpera.lxd-office-power-off-request/v4"
-					: bootIntent
-						? "qorpera.lxd-office-power-off-request/v3"
-						: "qorpera.lxd-office-power-off-request/v2",
+				schema: outage
+					? "qorpera.lxd-office-power-off-request/v5"
+					: reset
+						? "qorpera.lxd-office-power-off-request/v4"
+						: bootIntent
+							? "qorpera.lxd-office-power-off-request/v3"
+							: "qorpera.lxd-office-power-off-request/v2",
 				...(reset ? { resetOriginActivationId } : {}),
+				...(outage ? { outageRecoveryId: outage.recovery.request.recoveryId } : {}),
 				...(bootIntent ? { bootIntent } : {}),
 				intentId,
 				binding,
@@ -291,8 +313,10 @@ export class LxdOfficePowerOffWorker {
 		const resetRoot =
 			(seedValue as { schema?: unknown } | null)?.schema === "qorpera.lxd-office-power-off-request/v4";
 		const later = (seedValue as { schema?: unknown } | null)?.schema === "qorpera.lxd-office-power-off-request/v3";
+		const outageRoot =
+			(seedValue as { schema?: unknown } | null)?.schema === "qorpera.lxd-office-power-off-request/v5";
 		const seed = officeRecord(seedValue, [
-			...(later ? ["bootIntent"] : resetRoot ? ["resetOriginActivationId"] : []),
+			...(outageRoot ? ["outageRecoveryId"] : later ? ["bootIntent"] : resetRoot ? ["resetOriginActivationId"] : []),
 			"schema",
 			"intentId",
 			"binding",
@@ -312,11 +336,13 @@ export class LxdOfficePowerOffWorker {
 		parseCompanyComputerPreparationCommand({ ...command, commandId: seed.startCommandId });
 		if (
 			seed.schema !==
-				(resetRoot
-					? "qorpera.lxd-office-power-off-request/v4"
-					: later
-						? "qorpera.lxd-office-power-off-request/v3"
-						: "qorpera.lxd-office-power-off-request/v2") ||
+				(outageRoot
+					? "qorpera.lxd-office-power-off-request/v5"
+					: resetRoot
+						? "qorpera.lxd-office-power-off-request/v4"
+						: later
+							? "qorpera.lxd-office-power-off-request/v3"
+							: "qorpera.lxd-office-power-off-request/v2") ||
 			seed.intentId !== intentId ||
 			!isDeepStrictEqual(seed.binding, binding) ||
 			!isDeepStrictEqual(seed.request, recovery) ||
@@ -328,6 +354,17 @@ export class LxdOfficePowerOffWorker {
 			throw new Error("power-off identity differs");
 
 		const bootIntent = later ? parseCompanyComputerBootIntentRequest(seed.bootIntent) : undefined;
+		const outage = outageRoot
+			? await readLxdOfficeOutageBootEvidence(root, creation, seed.outageRecoveryId as string)
+			: undefined;
+		if (
+			outage &&
+			(outage.observation.bootId !== recovery.startup.bootId ||
+				outage.observation.startCommandId !== seed.startCommandId ||
+				outage.observation.hostBootId !== seed.hostBootId ||
+				outage.segmentRoot !== selected.segmentRoot)
+		)
+			throw new Error("outage power-off boot differs");
 		const reset = resetRoot
 			? await readLxdOfficeResetVmHistory(
 					root,
@@ -355,22 +392,28 @@ export class LxdOfficePowerOffWorker {
 				resumed.observation.hostBootId !== seed.hostBootId)
 		)
 			throw new Error("power-off resumed boot differs");
-		const bootNames = reset
-			? [`reset-activation-${allocationId}-${reset.plan.successorActivationId}.json`]
-			: bootIntent
-				? ["request", "prepared", "observation", "completed"].map(
-						(kind) => `resume-${kind}-${allocationId}-${bootIntent.predecessor.transitionId}.json`,
-					)
-				: [`boot-observation-${allocationId}.json`];
+		const bootNames = outage
+			? ["outage-prepared", "outage-observation"].map(
+					(prefix) => `${prefix}-${allocationId}-${outage.recovery.request.recoveryId}.json`,
+				)
+			: reset
+				? [`reset-activation-${allocationId}-${reset.plan.successorActivationId}.json`]
+				: bootIntent
+					? ["request", "prepared", "observation", "completed"].map(
+							(kind) => `resume-${kind}-${allocationId}-${bootIntent.predecessor.transitionId}.json`,
+						)
+					: [`boot-observation-${allocationId}.json`];
 		const sequence = [
-			...(reset
-				? reset.commands
-				: resumed
-					? resumed.commands
-					: [
-							{ commandId: creation.createCommandId, action: "create" as const },
-							{ commandId: seed.startCommandId as string, action: "start" as const },
-						]),
+			...(outage
+				? outage.commands
+				: reset
+					? reset.commands
+					: resumed
+						? resumed.commands
+						: [
+								{ commandId: creation.createCommandId, action: "create" as const },
+								{ commandId: seed.startCommandId as string, action: "start" as const },
+							]),
 			{ commandId: command.commandId, action: "stop" as const },
 		];
 		const records = seed.records as Record<string, unknown>,
@@ -401,6 +444,7 @@ export class LxdOfficePowerOffWorker {
 			throw new Error("power-off history differs");
 		const retained = async () => {
 			await this.#kernelLock(root);
+			await selected.assertCurrent();
 			if (
 				!isDeepStrictEqual(await optional(seedName), seed) ||
 				!isDeepStrictEqual(

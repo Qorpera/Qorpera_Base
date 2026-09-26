@@ -49,6 +49,8 @@ export const COMPANY_COMPUTER_RESET_FORBIDDEN_ROOT_PATHS = Object.freeze([
 	`${root}/service-stop-claim.json`,
 	`${root}/boot-service-start-claim.json`,
 	`${root}/boot-service-start-completion.json`,
+	`${root}/outage-service-start-claim.json`,
+	`${root}/outage-service-start-completion.json`,
 ]);
 /** The image's tmpfiles layout (qorpera-office-preparation.conf) creates the
  * credential directory itself, root-only and empty, on every boot of a fresh

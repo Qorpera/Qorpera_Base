@@ -1,9 +1,11 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
+	assertOfficeImageOutageCapability,
 	assertOfficeImageResetCapability,
 	OFFICE_IMAGE_EXECUTABLES,
 	OFFICE_IMAGE_MOUNT_UNIT,
+	OFFICE_IMAGE_OUTAGE_PACKAGE_FILES,
 	OFFICE_IMAGE_PACKAGE_FILES,
 	OFFICE_IMAGE_RESET_PACKAGE_FILES,
 	officeImageDestination,
@@ -51,6 +53,26 @@ const manifest = {
 	].map((file) => ({ file, bytes: 1, sha256: sha })),
 };
 describe("office image installation contract", () => {
+	it("requires every outage helper before cold recovery while keeping old image manifests readable", () => {
+		expect(() => assertOfficeImageOutageCapability(parseOfficeImagePackage(manifest))).toThrow(
+			"OUTAGE_IMAGE_CAPABILITY",
+		);
+		const artifacts = [
+			...manifest.artifacts,
+			...OFFICE_IMAGE_OUTAGE_PACKAGE_FILES.map((file) => ({ file, bytes: 1, sha256: sha })),
+		];
+		expect(() =>
+			assertOfficeImageOutageCapability(parseOfficeImagePackage({ ...manifest, artifacts })),
+		).not.toThrow();
+		for (const missing of OFFICE_IMAGE_OUTAGE_PACKAGE_FILES) {
+			expect(officeImageDestination(missing)).toEqual({ path: `/opt/qorpera-office/${missing}`, mode: 0o444 });
+			expect(() =>
+				assertOfficeImageOutageCapability(
+					parseOfficeImagePackage({ ...manifest, artifacts: artifacts.filter((entry) => entry.file !== missing) }),
+				),
+			).toThrow("OUTAGE_IMAGE_CAPABILITY");
+		}
+	});
 	it("preserves historical packages while requiring explicit reset helper inventory", () => {
 		const historical = parseOfficeImagePackage(manifest);
 		expect(() => assertOfficeImageResetCapability(historical)).toThrow("OFFICE_RESET_IMAGE_CAPABILITY_UNCONFIRMED");

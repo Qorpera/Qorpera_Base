@@ -12,6 +12,7 @@ import {
 	companyComputerBootAdoptionReceiptPath,
 	companyComputerResetAdoptionReceiptPath,
 	parseCompanyComputerBootAdoptionReceipt,
+	parseCompanyComputerOutageAdoptionReceipt,
 	parseCompanyComputerResetAdoptionReceipt,
 } from "@qorpera/contracts";
 import type { CompanyComputerGuestBoundary } from "./cloud-company-computer-guest.ts";
@@ -170,8 +171,14 @@ export class CompanyComputerLinuxBoundary implements CompanyComputerGuestBoundar
 					if (createHash("sha256").update(text).digest("hex") !== attestation.adoptionReceiptSha256)
 						throw new Error("adoption receipt changed");
 					const receipt = JSON.parse(text) as Record<string, unknown>;
-					if (receipt?.schema === "qorpera.office-state-retained/v1") {
-						const retained = parseCompanyComputerBootAdoptionReceipt(receipt);
+					if (
+						receipt?.schema === "qorpera.office-state-retained/v1" ||
+						receipt?.schema === "qorpera.office-state-outage-retained/v1"
+					) {
+						const retained =
+							receipt.schema === "qorpera.office-state-outage-retained/v1"
+								? parseCompanyComputerOutageAdoptionReceipt(receipt)
+								: parseCompanyComputerBootAdoptionReceipt(receipt);
 						if (
 							attestation.adoptionReceiptPath !== companyComputerBootAdoptionReceiptPath(attestation.bootId) ||
 							!isDeepStrictEqual(

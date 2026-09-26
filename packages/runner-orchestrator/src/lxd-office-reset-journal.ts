@@ -130,7 +130,8 @@ export class LxdOfficeResetJournal {
  * before begin while the old root is still readable; every later tick must
  * read the identical record, so a destroyed root never has to be reread. */
 export interface LxdOfficeResetSeed {
-	schema: "qorpera.lxd-office-reset-seed/v1" | "qorpera.lxd-office-reset-seed/v2";
+	schema: "qorpera.lxd-office-reset-seed/v1" | "qorpera.lxd-office-reset-seed/v2" | "qorpera.lxd-office-reset-seed/v3";
+	outageRecoveryId?: string;
 	intentId: string;
 	planSha256: string;
 	hostBootId: string;
@@ -145,7 +146,9 @@ export interface LxdOfficeResetSeed {
 }
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 export function parseLxdOfficeResetSeed(value: unknown): LxdOfficeResetSeed {
+	const outage = (value as { schema?: unknown } | null)?.schema === "qorpera.lxd-office-reset-seed/v3";
 	const r = officeRecord(value, [
+		...(outage ? ["outageRecoveryId"] : []),
 		"schema",
 		"intentId",
 		"planSha256",
@@ -160,7 +163,8 @@ export function parseLxdOfficeResetSeed(value: unknown): LxdOfficeResetSeed {
 		"commands",
 	]);
 	if (
-		(r.schema !== "qorpera.lxd-office-reset-seed/v1" && r.schema !== "qorpera.lxd-office-reset-seed/v2") ||
+		(r.schema !== "qorpera.lxd-office-reset-seed/v1" && r.schema !== "qorpera.lxd-office-reset-seed/v2" && !outage) ||
+		(outage && (typeof r.outageRecoveryId !== "string" || !UUID.test(r.outageRecoveryId))) ||
 		typeof r.intentId !== "string" ||
 		!UUID.test(r.intentId) ||
 		typeof r.hostBootId !== "string" ||
@@ -172,7 +176,7 @@ export function parseLxdOfficeResetSeed(value: unknown): LxdOfficeResetSeed {
 				String(r.completionPath),
 			)) ||
 		!Array.isArray(r.commands) ||
-		r.commands.length < 2 ||
+		r.commands.length < (outage ? 1 : 2) ||
 		r.commands.length > 128 ||
 		r.commands.some(
 			(command, index) =>
@@ -185,6 +189,11 @@ export function parseLxdOfficeResetSeed(value: unknown): LxdOfficeResetSeed {
 		)
 	)
 		throw new Error("INVALID_OFFICE_RESET_SEED");
+	if (outage)
+		assertLxdOfficeVmLineageCommands(r.commands as LxdOfficeVmLineageCommand[], true, {
+			kind: "outage",
+			startCommandId: (r.commands[0] as LxdOfficeVmLineageCommand).commandId,
+		});
 	if (r.schema === "qorpera.lxd-office-reset-seed/v2") {
 		assertLxdOfficeVmLineageCommands(r.commands as LxdOfficeVmLineageCommand[], true);
 		if (!(r.commands as LxdOfficeVmLineageCommand[]).some((command) => command.action === "delete"))

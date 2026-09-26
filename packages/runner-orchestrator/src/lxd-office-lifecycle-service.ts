@@ -6,8 +6,10 @@ import { readPaidComputerHostClock } from "./computer-paid-guard-lxd.ts";
 import { LxdUnixClient } from "./lxd-client.ts";
 import { runLxdOfficeControlObserver } from "./lxd-office-control-observer.ts";
 import { parseOfficeIdleMs } from "./lxd-office-idle-policy.ts";
+import { assertOfficeImageOutageCapability, parseOfficeImagePackage } from "./lxd-office-image-installation.ts";
 import { officeRecord, officeSha } from "./lxd-office-image-provenance.ts";
 import { LxdOfficeLifecycle, type LxdOfficeLifecycleResult, runLxdOfficeLifecycle } from "./lxd-office-lifecycle.ts";
+import type { LxdOfficeOutageOptions } from "./lxd-office-outage-coordinator.ts";
 import { LxdOfficePaidComputer, type LxdOfficePaidComputerPort } from "./lxd-office-paid-computer.ts";
 import {
 	type LxdOfficeGuestResolver,
@@ -124,6 +126,7 @@ export function parseLxdOfficeLifecycleServiceConfig(value: unknown) {
 		"idleMs",
 		"passthroughPath",
 		"computerExecutorCredentialPath",
+		"outageImagePackageManifestPath",
 	].filter((key) => value && typeof value === "object" && Object.hasOwn(value, key));
 	const r = officeRecord(value, [...keys, ...optionalKeys]);
 	if (r.schema !== "qorpera.lxd-office-provider-service/v1" || typeof r.registryUrl !== "string")
@@ -140,7 +143,13 @@ export function parseLxdOfficeLifecycleServiceConfig(value: unknown) {
 		throw new Error("INVALID_OFFICE_SERVICE_CONFIG");
 	// Validate the endpoint without loading a credential or sending a request.
 	new LxdOfficeProviderHttpRegistry(r.registryUrl, "validation-only-".repeat(3));
+	if (r.outageImagePackageManifestPath !== undefined && r.computerExecutorCredentialPath === undefined)
+		throw new Error("OFFICE_OUTAGE_PAID_CONTROL_REQUIRED");
 	return {
+		outageImagePackageManifestPath:
+			r.outageImagePackageManifestPath === undefined
+				? undefined
+				: officePhysicalPath(r.outageImagePackageManifestPath),
 		computerExecutorCredentialPath:
 			r.computerExecutorCredentialPath === undefined
 				? undefined
@@ -196,6 +205,7 @@ export async function runLxdOfficeLifecycleService(
 			new TextDecoder("utf8", { fatal: true }).decode(credential),
 		);
 		let paidComputer: LxdOfficePaidComputerPort | undefined;
+		let outageRecovery: LxdOfficeOutageOptions | undefined;
 		if (config.computerExecutorCredentialPath !== undefined) {
 			const policy = parseLxdOfficePhysicalPolicy(
 				JSON.parse(
@@ -209,13 +219,31 @@ export async function runLxdOfficeLifecycleService(
 				supabaseServiceKey: new TextDecoder("utf8", { fatal: true }).decode(credential),
 				executorSecret: await readRuntimeComputerExecutorSecret(config.computerExecutorCredentialPath),
 			});
+			const guard = new PaidComputerGuardClient("/run/qorpera-office-computer-guard/control.sock");
 			const controller = new RuntimeComputerController({
 				control,
-				guard: new PaidComputerGuardClient("/run/qorpera-office-computer-guard/control.sock"),
+				guard,
 				client: new LxdUnixClient(policy.host.socketPath),
 				clock: readPaidComputerHostClock,
 			});
 			paidComputer = new LxdOfficePaidComputer(policy, controller, control);
+			if (config.outageImagePackageManifestPath !== undefined) {
+				const imagePackageManifest = await readLxdOfficeProtectedFile(
+					config.outageImagePackageManifestPath,
+					1048576,
+				);
+				if (
+					createHash("sha256").update(imagePackageManifest).digest("hex") !==
+					policy.image.guestPackageManifestSha256
+				)
+					throw new Error("OFFICE_OUTAGE_IMAGE_PACKAGE_DIFFERS");
+				assertOfficeImageOutageCapability(
+					parseOfficeImagePackage(
+						JSON.parse(new TextDecoder("utf8", { fatal: true }).decode(imagePackageManifest)),
+					),
+				);
+				outageRecovery = { guard, control, imagePackageManifest };
+			}
 		}
 		credential.fill(0);
 		const software =
@@ -246,7 +274,7 @@ export async function runLxdOfficeLifecycleService(
 			config.policyPath,
 			config.provenancePath,
 			registry,
-			{ ...config, software, paidComputer },
+			{ ...config, software, paidComputer, outageRecovery },
 			signal,
 		);
 		const emit = createOfficeLifecycleReporter(lifecycle.observationIdentity, write);

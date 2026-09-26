@@ -20,7 +20,11 @@ import {
 	type LxdOfficeAdministrativeDeleteMarker,
 	lxdOfficeVmCompletion,
 } from "./lxd-office-operation-completion.ts";
-import { assertLxdOfficeVmLineageCommands, type LxdOfficeVmLineageCommand } from "./lxd-office-vm-lineage.ts";
+import {
+	assertLxdOfficeVmLineageCommands,
+	type LxdOfficeOutageVmOrigin,
+	type LxdOfficeVmLineageCommand,
+} from "./lxd-office-vm-lineage.ts";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const MAX_EVENTS = 384;
@@ -119,6 +123,7 @@ export class LxdOfficeOperationJournal {
 	readonly #client: Pick<LxdTrackedClient, "submitInstanceOperation" | "inspectInstanceOperation">;
 	readonly #now: () => Date;
 	readonly #paid?: LxdOfficeOperationPort;
+	readonly #outageOrigin?: LxdOfficeOutageVmOrigin;
 
 	private constructor(
 		root: string,
@@ -127,7 +132,15 @@ export class LxdOfficeOperationJournal {
 		client: Pick<LxdTrackedClient, "submitInstanceOperation" | "inspectInstanceOperation">,
 		now: () => Date = () => new Date(),
 		paid?: LxdOfficeOperationPort,
+		outageOrigin?: LxdOfficeOutageVmOrigin,
 	) {
+		if (
+			outageOrigin &&
+			(outageOrigin.kind !== "outage" ||
+				!UUID.test(outageOrigin.startCommandId) ||
+				resolve(outageOrigin.metadataRoot) !== outageOrigin.metadataRoot)
+		)
+			throw new Error("INVALID_LXD_OFFICE_OUTAGE_ORIGIN");
 		this.#root = root;
 		this.#authority = {
 			schema: "qorpera.lxd-office-operation-journal/v1",
@@ -137,6 +150,7 @@ export class LxdOfficeOperationJournal {
 		this.#client = client;
 		this.#now = now;
 		this.#paid = paid;
+		this.#outageOrigin = outageOrigin;
 	}
 
 	static async open(
@@ -147,6 +161,7 @@ export class LxdOfficeOperationJournal {
 		existing = false,
 		now: () => Date = () => new Date(),
 		paid?: LxdOfficeOperationPort,
+		outageOrigin?: LxdOfficeOutageVmOrigin,
 	): Promise<LxdOfficeOperationJournal> {
 		if (typeof intentId !== "string" || !UUID.test(intentId) || resolve(stateRoot) !== stateRoot)
 			throw new Error("INVALID_LXD_OFFICE_JOURNAL");
@@ -164,7 +179,7 @@ export class LxdOfficeOperationJournal {
 			if (!code(error, "EEXIST")) throw error;
 		}
 		await checkDirectory(root);
-		const journal = new LxdOfficeOperationJournal(root, intentId, plan.binding, client, now, paid);
+		const journal = new LxdOfficeOperationJournal(root, intentId, plan.binding, client, now, paid, outageOrigin);
 		if (!existing) await publish(root, "authority.json", encode(journal.#authority));
 		await journal.#read();
 		return journal;
@@ -172,8 +187,8 @@ export class LxdOfficeOperationJournal {
 
 	/** Local operator read only: validate the original authority and hash chain,
 	 * without creating files, loading credentials or contacting a provider. */
-	static async readHistory(stateRoot: string, allocationId: string) {
-		return (await LxdOfficeOperationJournal.#existing(stateRoot, allocationId)).history();
+	static async readHistory(stateRoot: string, allocationId: string, outageOrigin?: LxdOfficeOutageVmOrigin) {
+		return (await LxdOfficeOperationJournal.#existing(stateRoot, allocationId, undefined, outageOrigin)).history();
 	}
 
 	/** Root operator metadata reconciliation. This entry point has no client
@@ -182,10 +197,11 @@ export class LxdOfficeOperationJournal {
 		stateRoot: string,
 		allocationId: string,
 		context: LxdOfficeDeleteDispositionContext,
+		outageOrigin?: LxdOfficeOutageVmOrigin,
 	): Promise<void> {
-		await (await LxdOfficeOperationJournal.#existing(stateRoot, allocationId)).#recordAdministrativeDisposition(
-			context,
-		);
+		await (
+			await LxdOfficeOperationJournal.#existing(stateRoot, allocationId, undefined, outageOrigin)
+		).#recordAdministrativeDisposition(context);
 	}
 
 	/** Terminal prefix proof shared by reset and successor history readers.
@@ -194,9 +210,10 @@ export class LxdOfficeOperationJournal {
 		stateRoot: string,
 		allocationId: string,
 		commands: readonly LxdOfficeVmLineageCommand[],
+		outageOrigin?: LxdOfficeOutageVmOrigin,
 	) {
-		assertLxdOfficeVmLineageCommands(commands);
-		const journal = await LxdOfficeOperationJournal.#existing(stateRoot, allocationId);
+		assertLxdOfficeVmLineageCommands(commands, false, outageOrigin);
+		const journal = await LxdOfficeOperationJournal.#existing(stateRoot, allocationId, undefined, outageOrigin);
 		const current = await journal.#read();
 		if (current.events.length < commands.length * 3) throw new Error("OFFICE_VM_LINEAGE_UNCONFIRMED");
 		const contexts = await journal.#dispositions(current);
@@ -220,9 +237,10 @@ export class LxdOfficeOperationJournal {
 		allocationId: string,
 		inspect: LxdTrackedClient["inspectInstanceOperation"],
 		signal: AbortSignal,
+		outageOrigin?: LxdOfficeOutageVmOrigin,
 	): Promise<void> {
 		signal.throwIfAborted();
-		const journal = await LxdOfficeOperationJournal.#existing(stateRoot, allocationId, inspect);
+		const journal = await LxdOfficeOperationJournal.#existing(stateRoot, allocationId, inspect, outageOrigin);
 		const tail = (await journal.#read()).events.at(-1);
 		if (tail?.kind === "accepted") await journal.#observe(tail.commandId, tail.action, signal);
 	}
@@ -231,6 +249,7 @@ export class LxdOfficeOperationJournal {
 		stateRoot: string,
 		allocationId: string,
 		inspect?: LxdTrackedClient["inspectInstanceOperation"],
+		outageOrigin?: LxdOfficeOutageVmOrigin,
 	) {
 		if (resolve(stateRoot) !== stateRoot || !UUID.test(allocationId)) throw new Error("INVALID_LXD_OFFICE_HISTORY");
 		await checkDirectory(stateRoot);
@@ -252,10 +271,18 @@ export class LxdOfficeOperationJournal {
 		const denied = async (): Promise<never> => {
 			throw new Error("LXD_OFFICE_HISTORY_READ_ONLY");
 		};
-		const journal = new LxdOfficeOperationJournal(root, authority.intentId, binding, {
-			submitInstanceOperation: denied,
-			inspectInstanceOperation: inspect ?? denied,
-		});
+		const journal = new LxdOfficeOperationJournal(
+			root,
+			authority.intentId,
+			binding,
+			{
+				submitInstanceOperation: denied,
+				inspectInstanceOperation: inspect ?? denied,
+			},
+			undefined,
+			undefined,
+			outageOrigin,
+		);
 		return journal;
 	}
 
@@ -381,7 +408,7 @@ export class LxdOfficeOperationJournal {
 					(event.kind !== "administrative_disposition" ||
 						event.state !== "unknown" ||
 						event.action !== "delete" ||
-						index < 11 ||
+						index < (this.#outageOrigin ? 8 : 11) ||
 						index % 3 !== 2 ||
 						!timestamp(event.recordedAt) ||
 						![event.auditId, event.resetId, event.nextCreateCommandId].every(
@@ -393,6 +420,12 @@ export class LxdOfficeOperationJournal {
 				)
 					throw new Error("invalid administrative marker");
 				const previous = events.at(-1);
+				if (
+					index < 3 &&
+					this.#outageOrigin &&
+					(event.commandId !== this.#outageOrigin.startCommandId || event.action !== "start")
+				)
+					throw new Error("outage segment origin differs");
 				if (event.kind === "dispatch") {
 					if (
 						(previous &&
@@ -488,7 +521,8 @@ export class LxdOfficeOperationJournal {
 				throw new Error("OFFICE_DELETE_DISPOSITION_STOP_DIFFERS");
 			await assertLxdOfficeDeleteDispositionPhases(
 				context,
-				async (name) => (await readRecord(join(dirname(this.#root), name))).value,
+				async (name) =>
+					(await readRecord(join(this.#outageOrigin?.metadataRoot ?? dirname(this.#root), name))).value,
 				true,
 			);
 		}
@@ -511,7 +545,8 @@ export class LxdOfficeOperationJournal {
 			lxdOfficeVmCompletion(last, verified, { authoritySha256: current.authoritySha256, ...this.#authority });
 			await assertLxdOfficeDeleteDispositionPhases(
 				verified,
-				async (name) => (await readRecord(join(dirname(this.#root), name))).value,
+				async (name) =>
+					(await readRecord(join(this.#outageOrigin?.metadataRoot ?? dirname(this.#root), name))).value,
 				false,
 			);
 			return;
@@ -546,7 +581,7 @@ export class LxdOfficeOperationJournal {
 		const commands = current.events
 			.filter((event) => event.kind === "dispatch")
 			.map(({ commandId, action }) => ({ commandId, action }));
-		assertLxdOfficeVmLineageCommands(commands);
+		assertLxdOfficeVmLineageCommands(commands, false, this.#outageOrigin);
 		for (let i = 2; i < current.events.length - 2; i += 3) {
 			if (!this.#completion(current.events[i], current.authoritySha256, contexts))
 				throw new Error("OFFICE_DELETE_DISPOSITION_PREFIX_UNCONFIRMED");
@@ -561,7 +596,7 @@ export class LxdOfficeOperationJournal {
 			throw new Error("OFFICE_DELETE_DISPOSITION_STOP_DIFFERS");
 		await assertLxdOfficeDeleteDispositionPhases(
 			verified,
-			async (name) => (await readRecord(join(dirname(this.#root), name))).value,
+			async (name) => (await readRecord(join(this.#outageOrigin?.metadataRoot ?? dirname(this.#root), name))).value,
 			false,
 		);
 		await publish(this.#root, `${String(marker.sequence).padStart(6, "0")}.json`, encode(marker));
@@ -857,8 +892,8 @@ export class LxdOfficeOperationJournal {
 		commands: readonly LxdOfficeVmLineageCommand[],
 		signal: AbortSignal,
 	): Promise<void> {
-		assertLxdOfficeVmLineageCommands(commands);
-		if (!commands.some((command) => command.action === "delete"))
+		assertLxdOfficeVmLineageCommands(commands, false, this.#outageOrigin);
+		if (!this.#outageOrigin && !commands.some((command) => command.action === "delete"))
 			return this.assertLifecycleSequence(
 				commands as readonly { commandId: string; action: "create" | "start" | "stop" }[],
 				signal,
@@ -910,13 +945,13 @@ export class LxdOfficeOperationJournal {
 			{ commandId: reset.startCommandId, action: "start" as const },
 		];
 		try {
-			assertLxdOfficeVmLineageCommands(prior, true);
+			assertLxdOfficeVmLineageCommands(prior, true, this.#outageOrigin);
 		} catch {
 			throw new Error("OFFICE_RESET_LINEAGE_UNCONFIRMED");
 		}
 		const commands = [...prior, ...suffix];
 		if (
-			prior.length < 2 ||
+			prior.length < (this.#outageOrigin ? 1 : 2) ||
 			commands.some((command) => !UUID.test(command.commandId)) ||
 			new Set(commands.map((command) => command.commandId)).size !== commands.length ||
 			commands.length > MAX_EVENTS / 3 ||

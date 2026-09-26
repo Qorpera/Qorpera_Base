@@ -263,10 +263,20 @@ export class LxdOfficePaidComputer implements LxdOfficePaidComputerPort {
 		};
 	}
 	async recover(binding: LxdOfficeGuestBinding, signal: AbortSignal): Promise<void> {
-		await this.#controller.recover(this.#context(binding), signal);
+		const guard = await this.#controller.guardRecord(binding.allocationId, signal);
+		await this.#controller.recover(
+			guard ? await this.#retained(binding, guard.permit.permitId) : this.#context(binding),
+			signal,
+		);
 	}
 	async assertActive(binding: LxdOfficeGuestBinding, signal: AbortSignal): Promise<void> {
-		if ((await this.#controller.recover(this.#context(binding), signal)) === "paid")
+		const guard = await this.#controller.guardRecord(binding.allocationId, signal);
+		if (
+			(await this.#controller.recover(
+				guard ? await this.#retained(binding, guard.permit.permitId) : this.#context(binding),
+				signal,
+			)) === "paid"
+		)
 			await this.#controller.assertRunning(binding.allocationId, signal);
 	}
 	reconcileStopped(

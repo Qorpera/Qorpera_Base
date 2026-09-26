@@ -65,7 +65,8 @@ import {
 import { officeCanonical, officeDigest, officeRecord, officeSha } from "./lxd-office-image-provenance.ts";
 import { code, publish, readRecord } from "./lxd-office-journal-files.ts";
 import { reserveLxdOfficeNodeMachine } from "./lxd-office-node-admission.ts";
-import { LxdOfficeOperationJournal } from "./lxd-office-operations.ts";
+import type { LxdOfficeOperationJournal } from "./lxd-office-operations.ts";
+import { openLxdOfficeCurrentOperationJournal, readLxdOfficeOutageBootEvidence } from "./lxd-office-outage-history.ts";
 import type { LxdOfficePaidComputerPort } from "./lxd-office-paid-computer.ts";
 import type { LxdOfficePhysicalGate } from "./lxd-office-physical-gate.ts";
 import {
@@ -461,15 +462,13 @@ export class LxdOfficeResetWorker {
 			throw new Error("reset preparation identity differs");
 		const control = new LxdOfficeResetControl(plan, input.planSha256, registry);
 		const journal = await LxdOfficeResetJournal.open(root, plan);
-		const operations = await LxdOfficeOperationJournal.open(
+		const selected = await openLxdOfficeCurrentOperationJournal(
 			root,
-			intentId,
-			binding,
+			creation,
 			this.#client,
-			true,
-			undefined,
 			this.#ports.paidComputer?.operations(binding),
 		);
+		const operations = selected.journal;
 		// Seed while the old root is still readable: predecessor evidence,
 		// original preparation identity and the retained VM command lineage.
 		let seedValue = await optional(names.seed);
@@ -479,30 +478,33 @@ export class LxdOfficeResetWorker {
 			if (evidence.attestation.preparationObservationSha256 !== plan.preparationObservationSha256)
 				throw new Error("reset preparation identity differs");
 			const commands =
-				evidence.kind === "reset" || evidence.kind === "reset_restart"
-					? evidence.origin.commands
-					: evidence.kind !== "original"
-						? (await readLxdOfficeBootVmEvidence(root, creation, evidence.origin.bootIntent, signal)).commands
-						: [
-								{ commandId: creation.createCommandId, action: "create" as const },
-								{
-									commandId: officeRecord(await optional(`boot-observation-${allocationId}.json`), [
-										"schema",
-										"intentId",
-										"allocationId",
-										"createCommandId",
-										"startCommandId",
-										"observationSha256",
-										"planSha256",
-										"copySha256",
-										"reviewSha256",
-										"bootId",
-										"instanceSha256",
-										"hostBootId",
-									]).startCommandId as string,
-									action: "start" as const,
-								},
-							];
+				evidence.kind === "outage"
+					? (await readLxdOfficeOutageBootEvidence(root, creation, evidence.origin.recovery.request.recoveryId))
+							.commands
+					: evidence.kind === "reset" || evidence.kind === "reset_restart"
+						? evidence.origin.commands
+						: evidence.kind !== "original"
+							? (await readLxdOfficeBootVmEvidence(root, creation, evidence.origin.bootIntent, signal)).commands
+							: [
+									{ commandId: creation.createCommandId, action: "create" as const },
+									{
+										commandId: officeRecord(await optional(`boot-observation-${allocationId}.json`), [
+											"schema",
+											"intentId",
+											"allocationId",
+											"createCommandId",
+											"startCommandId",
+											"observationSha256",
+											"planSha256",
+											"copySha256",
+											"reviewSha256",
+											"bootId",
+											"instanceSha256",
+											"hostBootId",
+										]).startCommandId as string,
+										action: "start" as const,
+									},
+								];
 			const completionPath = evidence.initial
 				? "/run/qorpera-office-preparation/service-stop-completion.json"
 				: `/run/qorpera-office-preparation/service-stop-completion-${recovery.activationId}.json`;
@@ -515,10 +517,13 @@ export class LxdOfficeResetWorker {
 			)
 				throw new Error("root stop differs");
 			seedValue = {
-				schema: commands.some((command) => command.action === "delete")
-					? "qorpera.lxd-office-reset-seed/v2"
-					: "qorpera.lxd-office-reset-seed/v1",
+				schema: selected.origin
+					? "qorpera.lxd-office-reset-seed/v3"
+					: commands.some((command) => command.action === "delete")
+						? "qorpera.lxd-office-reset-seed/v2"
+						: "qorpera.lxd-office-reset-seed/v1",
 				intentId,
+				...(selected.origin ? { outageRecoveryId: selected.segments.at(-1)!.bridge!.request.recoveryId } : {}),
 				planSha256: input.planSha256,
 				hostBootId: evidence.hostBootId,
 				attestation: evidence.attestation,
@@ -541,7 +546,8 @@ export class LxdOfficeResetWorker {
 			seed.attestation.preparationObservationSha256 !== plan.preparationObservationSha256 ||
 			seed.originalBootId !== preparation.request.bootId ||
 			seed.adoptionReceiptSha256 !== preparation.adoptionReceiptSha256 ||
-			seed.commands[0]?.commandId !== creation.createCommandId
+			seed.commands[0]?.commandId !== (selected.origin?.startCommandId ?? creation.createCommandId) ||
+			seed.outageRecoveryId !== selected.segments.at(-1)?.bridge?.request.recoveryId
 		)
 			throw new Error("reset seed differs");
 		// Immutable lookup by activation; later stop/restart/reboot must resolve
@@ -612,6 +618,7 @@ export class LxdOfficeResetWorker {
 		const physical: Authorize = async (caller) => {
 			caller.throwIfAborted();
 			await this.#kernelLock(root);
+			await selected.assertCurrent();
 			const freshMaterial = await this.#loadPackage(input, caller);
 			try {
 				if (

@@ -6,6 +6,11 @@ export * from "./company-computer-boot-service-start.ts";
 export * from "./company-computer-code-package-provision.ts";
 export * from "./company-computer-configuration.ts";
 export * from "./company-computer-native-endpoint.ts";
+export * from "./company-computer-outage-adoption.ts";
+export * from "./company-computer-outage-configuration.ts";
+export * from "./company-computer-outage-recovery.ts";
+export * from "./company-computer-outage-service-start.ts";
+export * from "./company-computer-outage-successor.ts";
 export * from "./company-computer-preparation.ts";
 /** JSON-compatible durable data accepted by Qorpera cloud contracts. */
 export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };

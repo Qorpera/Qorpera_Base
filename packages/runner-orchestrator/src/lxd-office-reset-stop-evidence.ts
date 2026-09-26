@@ -19,7 +19,7 @@ export async function readLxdOfficeResetStopEvidence(
 	root: string,
 	intentId: string,
 	binding: LxdOfficeGuestBinding,
-	recovery: CompanyComputerLifecycleRequest,
+	recovery: Pick<CompanyComputerLifecycleRequest, "activationId" | "providerId" | "providerPolicySha256" | "startup">,
 	records: Record<string, string>,
 	readSource: (name: string, limit?: number) => ReturnType<typeof readRecord>,
 	client: LxdOfficeResetRetainedHistoryClient,

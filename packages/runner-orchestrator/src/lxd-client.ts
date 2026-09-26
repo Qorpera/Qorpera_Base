@@ -8,6 +8,9 @@ import {
 	COMPANY_COMPUTER_BOOT_SERVICE_START_MAX_BYTES,
 	COMPANY_COMPUTER_CODE_PACKAGE_ARTIFACTS,
 	COMPANY_COMPUTER_CONFIGURATION_MAX_BYTES,
+	COMPANY_COMPUTER_OUTAGE_CONFIGURATION_MAX_BYTES,
+	COMPANY_COMPUTER_OUTAGE_SERVICE_START_MAX_BYTES,
+	COMPANY_COMPUTER_OUTAGE_TERMINATION_MAX_BYTES,
 	COMPANY_COMPUTER_PREPARATION_MAX_BYTES,
 	COMPANY_COMPUTER_RESET_CONFIGURATION_MAX_BYTES,
 	COMPANY_COMPUTER_RESET_SERVICE_RESTART_MAX_BYTES,
@@ -389,6 +392,82 @@ export interface LxdOfficeBootServiceStartClient extends LxdOfficeInspectableCli
 }
 /** Stop and its read-only inspection use a separate fixed root helper. The
  * owning lifecycle worker must retain SQL revocation before submitting stop. */
+export interface LxdOfficeOutageTerminationClient extends LxdOfficeInspectableClient {
+	submitOfficeOutageTermination(
+		project: string,
+		name: string,
+		command: LxdOfficePreparationCommand,
+		signal: AbortSignal,
+	): Promise<LxdOperationReference>;
+	inspectOfficeOutageTermination(reference: LxdOperationReference, signal: AbortSignal): Promise<LxdOperationState>;
+	pushOfficeOutageTerminationRequest(
+		project: string,
+		name: string,
+		requestSha256: string,
+		content: Buffer,
+		signal: AbortSignal,
+	): Promise<void>;
+	readOfficeOutageTerminationRequest(
+		project: string,
+		name: string,
+		requestSha256: string,
+		bytes: number,
+		signal: AbortSignal,
+	): Promise<LxdInstanceFile>;
+}
+export interface LxdOfficeOutageConfigurationClient extends LxdOfficeOutageTerminationClient {
+	submitOfficeOutageConfiguration(
+		project: string,
+		name: string,
+		command: LxdOfficePreparationCommand,
+		signal: AbortSignal,
+	): Promise<LxdOperationReference>;
+	inspectOfficeOutageConfiguration(reference: LxdOperationReference, signal: AbortSignal): Promise<LxdOperationState>;
+	pushOfficeOutageConfigurationRequest(
+		project: string,
+		name: string,
+		requestSha256: string,
+		content: Buffer,
+		signal: AbortSignal,
+	): Promise<void>;
+	readOfficeOutageConfigurationRequest(
+		project: string,
+		name: string,
+		requestSha256: string,
+		bytes: number,
+		signal: AbortSignal,
+	): Promise<LxdInstanceFile>;
+}
+export interface LxdOfficeOutageServiceStartClient extends LxdOfficeOutageConfigurationClient {
+	submitOfficeOutageServiceStart(
+		project: string,
+		name: string,
+		command: LxdOfficePreparationCommand,
+		signal: AbortSignal,
+	): Promise<LxdOperationReference>;
+	submitOfficeOutageServiceInspection(
+		project: string,
+		name: string,
+		command: LxdOfficePreparationCommand,
+		inspectionId: string,
+		signal: AbortSignal,
+	): Promise<LxdOperationReference>;
+	inspectOfficeOutageServiceStart(reference: LxdOperationReference, signal: AbortSignal): Promise<LxdOperationState>;
+	pushOfficeOutageServiceStartRequest(
+		project: string,
+		name: string,
+		requestSha256: string,
+		content: Buffer,
+		signal: AbortSignal,
+	): Promise<void>;
+	readOfficeOutageServiceStartRequest(
+		project: string,
+		name: string,
+		requestSha256: string,
+		bytes: number,
+		signal: AbortSignal,
+	): Promise<LxdInstanceFile>;
+}
 export interface LxdOfficeServiceStopClient extends LxdOfficeInspectableClient {
 	submitOfficeServiceStop(
 		project: string,
@@ -889,6 +968,9 @@ export function officeSoftwareCommand(tool: LxdOfficeSoftwareTool, args: readonl
 	]);
 }
 type OfficeControlPurpose =
+	| "outage-termination"
+	| "outage-configuration"
+	| "outage-service-start"
 	| "preparation"
 	| "configuration"
 	| "boot-configuration"
@@ -901,27 +983,33 @@ type OfficeControlPurpose =
 	| "reset-service-start"
 	| "reset-service-restart";
 const officeControlMaximum = (purpose: OfficeControlPurpose) =>
-	purpose === "reset-service-restart"
-		? COMPANY_COMPUTER_RESET_SERVICE_RESTART_MAX_BYTES
-		: purpose === "reset-configuration"
-			? COMPANY_COMPUTER_RESET_CONFIGURATION_MAX_BYTES
-			: purpose === "reset-service-start"
-				? COMPANY_COMPUTER_RESET_SERVICE_START_MAX_BYTES
-				: purpose === "boot-service-restart"
-					? COMPANY_COMPUTER_BOOT_SERVICE_RESTART_MAX_BYTES
-					: purpose === "boot-service-start"
-						? COMPANY_COMPUTER_BOOT_SERVICE_START_MAX_BYTES
-						: purpose === "boot-configuration"
-							? COMPANY_COMPUTER_BOOT_CONFIGURATION_MAX_BYTES
-							: purpose === "preparation"
-								? COMPANY_COMPUTER_PREPARATION_MAX_BYTES
-								: purpose === "configuration"
-									? COMPANY_COMPUTER_CONFIGURATION_MAX_BYTES
-									: purpose === "service-start"
-										? COMPANY_COMPUTER_SERVICE_START_MAX_BYTES
-										: purpose === "service-stop"
-											? COMPANY_COMPUTER_SERVICE_STOP_MAX_BYTES
-											: COMPANY_COMPUTER_SERVICE_RESTART_MAX_BYTES;
+	purpose === "outage-configuration"
+		? COMPANY_COMPUTER_OUTAGE_CONFIGURATION_MAX_BYTES
+		: purpose === "outage-service-start"
+			? COMPANY_COMPUTER_OUTAGE_SERVICE_START_MAX_BYTES
+			: purpose === "outage-termination"
+				? COMPANY_COMPUTER_OUTAGE_TERMINATION_MAX_BYTES
+				: purpose === "reset-service-restart"
+					? COMPANY_COMPUTER_RESET_SERVICE_RESTART_MAX_BYTES
+					: purpose === "reset-configuration"
+						? COMPANY_COMPUTER_RESET_CONFIGURATION_MAX_BYTES
+						: purpose === "reset-service-start"
+							? COMPANY_COMPUTER_RESET_SERVICE_START_MAX_BYTES
+							: purpose === "boot-service-restart"
+								? COMPANY_COMPUTER_BOOT_SERVICE_RESTART_MAX_BYTES
+								: purpose === "boot-service-start"
+									? COMPANY_COMPUTER_BOOT_SERVICE_START_MAX_BYTES
+									: purpose === "boot-configuration"
+										? COMPANY_COMPUTER_BOOT_CONFIGURATION_MAX_BYTES
+										: purpose === "preparation"
+											? COMPANY_COMPUTER_PREPARATION_MAX_BYTES
+											: purpose === "configuration"
+												? COMPANY_COMPUTER_CONFIGURATION_MAX_BYTES
+												: purpose === "service-start"
+													? COMPANY_COMPUTER_SERVICE_START_MAX_BYTES
+													: purpose === "service-stop"
+														? COMPANY_COMPUTER_SERVICE_STOP_MAX_BYTES
+														: COMPANY_COMPUTER_SERVICE_RESTART_MAX_BYTES;
 const officeControlError = (purpose: OfficeControlPurpose | "software" | "code_package", operation: string) =>
 	new Error(`LXD_OFFICE_${purpose.replaceAll("-", "_").toUpperCase()}_${operation}_UNCONFIRMED`);
 
@@ -1182,6 +1270,9 @@ export class LxdUnixClient
 		LxdOfficeServiceStartClient,
 		LxdOfficeBootServiceStartClient,
 		LxdOfficeServiceStopClient,
+		LxdOfficeOutageTerminationClient,
+		LxdOfficeOutageConfigurationClient,
+		LxdOfficeOutageServiceStartClient,
 		LxdOfficeServiceRestartClient,
 		LxdOfficeBootServiceRestartClient,
 		LxdOfficeResetServiceRestartClient,
@@ -1705,6 +1796,40 @@ export class LxdUnixClient
 	): Promise<LxdOperationReference> {
 		return this.#submitOfficeControl(project, name, command, signal, "service-stop");
 	}
+	async submitOfficeOutageTermination(
+		project: string,
+		name: string,
+		command: LxdOfficePreparationCommand,
+		signal: AbortSignal,
+	): Promise<LxdOperationReference> {
+		return this.#submitOfficeControl(project, name, command, signal, "outage-termination");
+	}
+	async submitOfficeOutageConfiguration(
+		project: string,
+		name: string,
+		command: LxdOfficePreparationCommand,
+		signal: AbortSignal,
+	): Promise<LxdOperationReference> {
+		return this.#submitOfficeControl(project, name, command, signal, "outage-configuration");
+	}
+	async submitOfficeOutageServiceStart(
+		project: string,
+		name: string,
+		command: LxdOfficePreparationCommand,
+		signal: AbortSignal,
+	): Promise<LxdOperationReference> {
+		return this.#submitOfficeControl(project, name, command, signal, "outage-service-start");
+	}
+	async submitOfficeOutageServiceInspection(
+		project: string,
+		name: string,
+		command: LxdOfficePreparationCommand,
+		inspectionId: string,
+		signal: AbortSignal,
+	): Promise<LxdOperationReference> {
+		if (typeof inspectionId !== "string") throw officeControlError("outage-service-start", "SUBMISSION");
+		return this.#submitOfficeControl(project, name, command, signal, "outage-service-start", inspectionId);
+	}
 	async submitOfficeServiceRestart(
 		project: string,
 		name: string,
@@ -1889,6 +2014,24 @@ export class LxdUnixClient
 	}
 	async inspectOfficeServiceStop(reference: LxdOperationReference, signal: AbortSignal): Promise<LxdOperationState> {
 		return this.#inspectOfficeControl(reference, signal, "service-stop");
+	}
+	async inspectOfficeOutageTermination(
+		reference: LxdOperationReference,
+		signal: AbortSignal,
+	): Promise<LxdOperationState> {
+		return this.#inspectOfficeControl(reference, signal, "outage-termination");
+	}
+	async inspectOfficeOutageConfiguration(
+		reference: LxdOperationReference,
+		signal: AbortSignal,
+	): Promise<LxdOperationState> {
+		return this.#inspectOfficeControl(reference, signal, "outage-configuration");
+	}
+	async inspectOfficeOutageServiceStart(
+		reference: LxdOperationReference,
+		signal: AbortSignal,
+	): Promise<LxdOperationState> {
+		return this.#inspectOfficeControl(reference, signal, "outage-service-start");
 	}
 	async inspectOfficeServiceRestart(
 		reference: LxdOperationReference,
@@ -2598,6 +2741,33 @@ export class LxdUnixClient
 	): Promise<void> {
 		return this.#pushOfficeControlRequest(project, name, requestSha256, content, signal, "service-stop");
 	}
+	async pushOfficeOutageTerminationRequest(
+		project: string,
+		name: string,
+		requestSha256: string,
+		content: Buffer,
+		signal: AbortSignal,
+	): Promise<void> {
+		return this.#pushOfficeControlRequest(project, name, requestSha256, content, signal, "outage-termination");
+	}
+	async pushOfficeOutageConfigurationRequest(
+		project: string,
+		name: string,
+		requestSha256: string,
+		content: Buffer,
+		signal: AbortSignal,
+	): Promise<void> {
+		return this.#pushOfficeControlRequest(project, name, requestSha256, content, signal, "outage-configuration");
+	}
+	async pushOfficeOutageServiceStartRequest(
+		project: string,
+		name: string,
+		requestSha256: string,
+		content: Buffer,
+		signal: AbortSignal,
+	): Promise<void> {
+		return this.#pushOfficeControlRequest(project, name, requestSha256, content, signal, "outage-service-start");
+	}
 	async pushOfficeServiceRestartRequest(
 		project: string,
 		name: string,
@@ -2748,6 +2918,33 @@ export class LxdUnixClient
 	): Promise<LxdInstanceFile> {
 		return this.#readOfficeControlRequest(project, name, requestSha256, bytes, signal, "service-stop");
 	}
+	async readOfficeOutageTerminationRequest(
+		project: string,
+		name: string,
+		requestSha256: string,
+		bytes: number,
+		signal: AbortSignal,
+	): Promise<LxdInstanceFile> {
+		return this.#readOfficeControlRequest(project, name, requestSha256, bytes, signal, "outage-termination");
+	}
+	async readOfficeOutageConfigurationRequest(
+		project: string,
+		name: string,
+		requestSha256: string,
+		bytes: number,
+		signal: AbortSignal,
+	): Promise<LxdInstanceFile> {
+		return this.#readOfficeControlRequest(project, name, requestSha256, bytes, signal, "outage-configuration");
+	}
+	async readOfficeOutageServiceStartRequest(
+		project: string,
+		name: string,
+		requestSha256: string,
+		bytes: number,
+		signal: AbortSignal,
+	): Promise<LxdInstanceFile> {
+		return this.#readOfficeControlRequest(project, name, requestSha256, bytes, signal, "outage-service-start");
+	}
 	async readOfficeServiceRestartRequest(
 		project: string,
 		name: string,
@@ -2839,10 +3036,14 @@ export class LxdUnixClient
 				maximumBytes < 1 ||
 				maximumBytes >
 					(officeCodePackageReadMaximum(path) ??
-						(path.startsWith("/run/qorpera-office-preparation/reset-configuration-incoming-") &&
-						/^\/run\/qorpera-office-preparation\/reset-configuration-incoming-[0-9a-f]{64}\.json$/.test(path)
-							? COMPANY_COMPUTER_RESET_CONFIGURATION_MAX_BYTES
-							: COMPANY_COMPUTER_PREPARATION_MAX_BYTES))
+						(/^\/run\/qorpera-office-preparation\/outage-configuration-incoming-[0-9a-f]{64}\.json$/.test(path)
+							? COMPANY_COMPUTER_OUTAGE_CONFIGURATION_MAX_BYTES
+							: path.startsWith("/run/qorpera-office-preparation/reset-configuration-incoming-") &&
+									/^\/run\/qorpera-office-preparation\/reset-configuration-incoming-[0-9a-f]{64}\.json$/.test(
+										path,
+									)
+								? COMPANY_COMPUTER_RESET_CONFIGURATION_MAX_BYTES
+								: COMPANY_COMPUTER_PREPARATION_MAX_BYTES))
 			)
 				throw new Error("invalid request");
 			const checked = AbortSignal.any([...(signal ? [signal] : []), AbortSignal.timeout(5000)]);

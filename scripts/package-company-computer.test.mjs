@@ -67,6 +67,17 @@ test("packages and starts the headless office outside the workspace, with all ru
 		}
 		const prepUnit = await readFile(join(output, "qorpera-company-computer-preparation.service"), "utf8");
 		const bootConfiguration = join(output, "qorpera-company-computer-boot-configuration-control.mjs");
+        for (const helper of ["termination", "configuration", "service-start"]) {
+            const file = `qorpera-company-computer-outage-${helper}-control.mjs`;
+            const executable = join(output, file);
+            assert.ok(manifest.artifacts.some(artifact => artifact.file === file));
+            const help = spawnSync(process.execPath, [executable, "--help"], { cwd: temporary, env, encoding: "utf8", timeout: 10000 });
+            assert.equal(help.status, 0, help.stderr); assert.match(help.stdout, /Protected/);
+            for (const args of [[], ["--config", "must-not-leak"], ["--locked", "must-not-leak", "x", "y"]]) {
+                const failed = spawnSync(process.execPath, [executable, ...args], { cwd: temporary, env, encoding: "utf8", timeout: 10000 });
+                assert.equal(failed.status, 1); assert.doesNotMatch(failed.stderr, /must-not-leak|Error:|node_modules/);
+            }
+        }
 		assert.ok(manifest.artifacts.some(artifact => artifact.file === "qorpera-company-computer-boot-configuration-control.mjs"));
 		const bootHelp = spawnSync(process.execPath, [bootConfiguration, "--help"], { cwd: temporary, env, encoding: "utf8", timeout: 10000 });
 		assert.equal(bootHelp.status, 0, bootHelp.stderr); assert.match(bootHelp.stdout, /Protected/);

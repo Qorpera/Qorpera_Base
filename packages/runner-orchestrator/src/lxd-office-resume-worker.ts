@@ -14,7 +14,7 @@ import { assertLxdOfficeGuestInstance, inspectLxdOfficeGuestBoot, lxdOfficeGuest
 import { officeCanonical, officeDigest, officeRecord } from "./lxd-office-image-provenance.ts";
 import { code, publish, readRecord } from "./lxd-office-journal-files.ts";
 import { reserveLxdOfficeNodeMachine } from "./lxd-office-node-admission.ts";
-import { LxdOfficeOperationJournal } from "./lxd-office-operations.ts";
+import { openLxdOfficeCurrentOperationJournal } from "./lxd-office-outage-history.ts";
 import type { LxdOfficePaidComputerPort } from "./lxd-office-paid-computer.ts";
 import type { LxdOfficePhysicalGate } from "./lxd-office-physical-gate.ts";
 import { parseLxdOfficePhysicalPolicy } from "./lxd-office-physical-policy.ts";
@@ -113,15 +113,13 @@ export class LxdOfficeResumeWorker {
 			{ binding } = creation,
 			{ allocationId } = binding;
 		const shutdown = await readLxdOfficePowerOffEvidence(root, creation, request, signal),
-			journal = await LxdOfficeOperationJournal.open(
+			selected = await openLxdOfficeCurrentOperationJournal(
 				root,
-				intentId,
-				binding,
+				creation,
 				this.#client,
-				true,
-				undefined,
 				this.#paid?.operations(binding),
 			),
+			journal = selected.journal,
 			control = new LxdOfficeBootIntentControl(request, registry);
 		const suffix = `${allocationId}-${request.predecessor.transitionId}`,
 			seedName = `resume-request-${suffix}.json`,
@@ -172,6 +170,7 @@ export class LxdOfficeResumeWorker {
 		const sequence = [...shutdown.commands, { commandId: command.commandId, action: "start" as const }];
 		const retained = async () => {
 			await this.#kernelLock(root);
+			await selected.assertCurrent();
 			if (
 				!isDeepStrictEqual(await read(seedName), seed) ||
 				!isDeepStrictEqual(

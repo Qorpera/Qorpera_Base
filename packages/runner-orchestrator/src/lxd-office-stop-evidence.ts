@@ -6,6 +6,7 @@ import {
 	type CompanyComputerLifecycleRequest,
 	companyComputerBootDirectory,
 	parseCompanyComputerBootAdoptionReceipt,
+	parseCompanyComputerBootServiceRestartRequest,
 	parseCompanyComputerPreparationCommand,
 } from "@qorpera/contracts";
 import type { LxdOfficeServiceRestartClient } from "./lxd-client.ts";
@@ -20,6 +21,8 @@ import {
 import { type LxdOfficeGuestBinding, lxdOfficeGuestPlan } from "./lxd-office-guest.ts";
 import { officeDigest, officeRecord } from "./lxd-office-image-provenance.ts";
 import { code, readRecord } from "./lxd-office-journal-files.ts";
+import type { LxdOfficeOutageRetainedHistoryClient } from "./lxd-office-outage-restart-history.ts";
+import { readLxdOfficeOutageStopEvidence } from "./lxd-office-outage-stop-evidence.ts";
 
 import type { LxdOfficeResetRetainedHistoryClient } from "./lxd-office-reset-restart-history.ts";
 import { readLxdOfficeResetStopEvidence } from "./lxd-office-reset-stop-evidence.ts";
@@ -37,10 +40,11 @@ export async function readLxdOfficeStopEvidence(
 	root: string,
 	intentId: string,
 	binding: LxdOfficeGuestBinding,
-	recovery: CompanyComputerLifecycleRequest,
+	recovery: Pick<CompanyComputerLifecycleRequest, "activationId" | "providerId" | "providerPolicySha256" | "startup">,
 	client: LxdOfficeRetainedActivationHistoryClient &
 		Partial<LxdOfficeServiceRestartClient> &
-		LxdOfficeResetRetainedHistoryClient,
+		LxdOfficeResetRetainedHistoryClient &
+		LxdOfficeOutageRetainedHistoryClient,
 	signal: AbortSignal,
 ) {
 	const records: Record<string, string> = {};
@@ -51,6 +55,29 @@ export async function readLxdOfficeStopEvidence(
 		return file;
 	};
 	const read = async (name: string) => (await readSource(name)).value;
+	let outage = false;
+	try {
+		await readSource(`outage-service-start-request-${binding.allocationId}-${recovery.activationId}.json`);
+		outage = true;
+	} catch (error) {
+		if (!code(error, "ENOENT")) throw error;
+	}
+	if (!outage) {
+		let restart: unknown;
+		try {
+			restart = await read(`boot-service-restart-request-${binding.allocationId}-${recovery.activationId}.json`);
+		} catch (error) {
+			if (!code(error, "ENOENT")) throw error;
+		}
+		if (restart !== undefined) {
+			const packet = officeRecord(restart, ["schema", "intentId", "binding", "command", "request"]);
+			outage =
+				parseCompanyComputerBootServiceRestartRequest(packet.request).origin.schema ===
+				"qorpera.office-outage-service-start-request/v1";
+		}
+	}
+	if (outage)
+		return readLxdOfficeOutageStopEvidence(root, intentId, binding, recovery, records, readSource, client, signal);
 	for (const prefix of ["reset-activation", "reset-service-restart-request"]) {
 		try {
 			await readSource(`${prefix}-${binding.allocationId}-${recovery.activationId}.json`);

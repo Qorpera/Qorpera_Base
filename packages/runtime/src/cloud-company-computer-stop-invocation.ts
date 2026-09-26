@@ -43,6 +43,22 @@ export async function readCompanyComputerStopInvocation(
 	];
 	const resetEvidence = [];
 	for (const path of resetPaths) resetEvidence.push(await optional(path, 16384, 0o600));
+	const outageCompletion = await optional(`${root}/outage-service-start-completion.json`, 8192, 0o600),
+		outageClaim = await optional(`${root}/outage-service-start-claim.json`, 4096, 0o600);
+	if (outageCompletion || outageClaim) {
+		if (
+			!outageCompletion ||
+			!outageClaim ||
+			!receiptBytes ||
+			bytes ||
+			claimBytes ||
+			resetEvidence.some(Boolean) ||
+			(await optional(`${root}/service-start-completion.json`, 8192, 0o600)) ||
+			(await optional(`${root}/service-start-claim.json`, 4096, 0o600))
+		)
+			throw new Error("ambiguous outage start evidence");
+		return readCompanyComputerBootServiceInvocation(activationId, bootId, read);
+	}
 	if (resetEvidence.some(Boolean)) {
 		if (
 			!resetEvidence.every(Boolean) ||

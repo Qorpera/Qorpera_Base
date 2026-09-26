@@ -32,6 +32,18 @@ export const COMPANY_COMPUTER_SERVICE_SOFTWARE_FILES: Readonly<Record<string, { 
 			path: "/opt/qorpera-office/qorpera-company-computer-boot-configuration-control.mjs",
 			mode: 0o444,
 		},
+		"qorpera-company-computer-outage-termination-control.mjs": {
+			path: "/opt/qorpera-office/qorpera-company-computer-outage-termination-control.mjs",
+			mode: 0o444,
+		},
+		"qorpera-company-computer-outage-configuration-control.mjs": {
+			path: "/opt/qorpera-office/qorpera-company-computer-outage-configuration-control.mjs",
+			mode: 0o444,
+		},
+		"qorpera-company-computer-outage-service-start-control.mjs": {
+			path: "/opt/qorpera-office/qorpera-company-computer-outage-service-start-control.mjs",
+			mode: 0o444,
+		},
 		"qorpera-company-computer-boot-service-start-control.mjs": {
 			path: "/opt/qorpera-office/qorpera-company-computer-boot-service-start-control.mjs",
 			mode: 0o444,

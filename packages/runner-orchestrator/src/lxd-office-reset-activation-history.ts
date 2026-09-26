@@ -15,9 +15,11 @@ import {
 } from "@qorpera/contracts";
 import type { LxdOfficeResetSuccessorClient, LxdOfficeServiceStartClient } from "./lxd-client.ts";
 import { readLxdOfficeInitialActivationHistory } from "./lxd-office-activation-history.ts";
+import type { LxdOfficeCreationIdentity } from "./lxd-office-creation-journal.ts";
 import type { LxdOfficeGuestBinding } from "./lxd-office-guest.ts";
 import { officeDigest, officeRecord, officeSha } from "./lxd-office-image-provenance.ts";
 import { LxdOfficeOperationJournal } from "./lxd-office-operations.ts";
+import { readLxdOfficeOutageBootEvidence } from "./lxd-office-outage-history.ts";
 import { parseLxdOfficeResetSeed } from "./lxd-office-reset-journal.ts";
 import {
 	openLxdOfficeResetConfigurationJournal,
@@ -56,6 +58,24 @@ export async function readLxdOfficeResetActivationHistory(
 		throw new Error("reset activation index differs");
 	const suffix = `${binding.allocationId}-${plan.resetId}`;
 	const seed = parseLxdOfficeResetSeed(await read(`reset-seed-${suffix}.json`));
+	const creationValue = seed.outageRecoveryId
+		? officeRecord(await read(`intent-${intentId}.json`), ["schema", "intentId", "binding", "createCommandId"])
+		: undefined;
+	if (
+		creationValue &&
+		(creationValue.schema !== "qorpera.lxd-office-creation/v1" ||
+			creationValue.intentId !== intentId ||
+			!isDeepStrictEqual(creationValue.binding, binding))
+	)
+		throw new Error("reset creation identity differs");
+	const outage =
+		seed.outageRecoveryId && creationValue
+			? await readLxdOfficeOutageBootEvidence(
+					root,
+					creationValue as unknown as LxdOfficeCreationIdentity,
+					seed.outageRecoveryId,
+				)
+			: undefined;
 	const original = await readLxdOfficeInitialActivationHistory(root, intentId, binding, read, client, signal);
 	if (
 		seed.intentId !== intentId ||
@@ -64,7 +84,7 @@ export async function readLxdOfficeResetActivationHistory(
 		seed.attestation.activationId !== plan.predecessor.activationId ||
 		seed.attestation.bootId !== plan.predecessor.startup.bootId ||
 		seed.attestation.preparationObservationSha256 !== plan.preparationObservationSha256 ||
-		plan.preparationObservationSha256 !== original.request.attestation.preparationObservationSha256 ||
+		(!outage && plan.preparationObservationSha256 !== original.request.attestation.preparationObservationSha256) ||
 		seed.adoptionReceiptSha256 !== original.request.attestation.adoptionReceiptSha256
 	)
 		throw new Error("reset permanent origin differs");
@@ -283,7 +303,11 @@ export async function readLxdOfficeResetActivationHistory(
 		{ commandId: plan.commands.createCommandId, action: "create" as const },
 		{ commandId: plan.commands.startCommandId, action: "start" as const },
 	];
-	const vm = await LxdOfficeOperationJournal.readHistory(root, binding.allocationId);
+	const vm = await LxdOfficeOperationJournal.readHistory(
+		outage?.segmentRoot ?? root,
+		binding.allocationId,
+		outage?.origin,
+	);
 	if (
 		vm.intentId !== intentId ||
 		vm.companyId !== binding.companyId ||
@@ -300,9 +324,10 @@ export async function readLxdOfficeResetActivationHistory(
 	)
 		throw new Error("reset VM history differs");
 	const administrativeDispositions = await LxdOfficeOperationJournal.assertCompletedHistory(
-		root,
+		outage?.segmentRoot ?? root,
 		binding.allocationId,
 		commands,
+		outage?.origin,
 	);
 	for (const disposition of administrativeDispositions)
 		if (

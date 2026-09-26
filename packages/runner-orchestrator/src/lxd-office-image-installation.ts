@@ -70,6 +70,23 @@ export const OFFICE_IMAGE_RESET_PACKAGE_FILES = [
 	"qorpera-company-computer-reset-service-restart-control.mjs",
 ] as const;
 
+export const OFFICE_IMAGE_OUTAGE_PACKAGE_FILES = [
+	"qorpera-company-computer-outage-termination-control.mjs",
+	"qorpera-company-computer-outage-configuration-control.mjs",
+	"qorpera-company-computer-outage-service-start-control.mjs",
+] as const;
+
+/** Recovery requires a pinned root inspector; older images remain valid but
+ * must never be physically restarted into an unsupported recovery lane. */
+export function assertOfficeImageOutageCapability(value: ReturnType<typeof parseOfficeImagePackage>): void {
+	if (
+		OFFICE_IMAGE_OUTAGE_PACKAGE_FILES.some(
+			(file) => !value.artifacts.some((artifact) => artifact.file === file && artifact.bytes > 0),
+		)
+	)
+		throw new Error("OFFICE_OUTAGE_IMAGE_CAPABILITY_UNCONFIRMED");
+}
+
 /** Explicit reset capability of an already validated, immutable image package.
  * Historical v1 packages remain valid for their original service-only uses. */
 export function assertOfficeImageResetCapability(value: ReturnType<typeof parseOfficeImagePackage>): void {
@@ -139,7 +156,15 @@ export function officeImageDestination(file: string): { path: string; mode: numb
 	// Static figure plus the optional hourly tone-on-tone frames (-00 .. -23).
 	if (/^wallpapers\/qorpera-screen-[a-z]+(?:-(?:[01][0-9]|2[0-3]))?\.png$/.test(file))
 		return { path: `/usr/share/backgrounds/${posix.basename(file)}`, mode: 0o444 };
-	if (([...OFFICE_IMAGE_PACKAGE_FILES, ...OFFICE_IMAGE_RESET_PACKAGE_FILES] as readonly string[]).includes(file))
+	if (
+		(
+			[
+				...OFFICE_IMAGE_PACKAGE_FILES,
+				...OFFICE_IMAGE_RESET_PACKAGE_FILES,
+				...OFFICE_IMAGE_OUTAGE_PACKAGE_FILES,
+			] as readonly string[]
+		).includes(file)
+	)
 		return { path: `${OFFICE_IMAGE_ROOT}/${file}`, mode: 0o444 };
 	if (
 		file.startsWith("node_modules/playwright-core/") &&

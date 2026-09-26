@@ -1,6 +1,9 @@
 import {
 	type CompanyComputerBootServiceRestartCompletion,
 	type CompanyComputerBootServiceStartCompletion,
+	type CompanyComputerBootServiceStartRequest,
+	type CompanyComputerOutageServiceStartCompletion,
+	type CompanyComputerOutageServiceStartRequest,
 	parseCompanyComputerBootServiceRestartCompletion,
 	parseCompanyComputerBootServiceRestartRequest,
 	parseCompanyComputerServiceStopCompletion,
@@ -22,8 +25,14 @@ const root = "/run/qorpera-office-preparation";
 /** Synthetic SQL/physical facts for parser and custody tests. The Linux and
  * systemd probes independently execute the actual root stop/start controls. */
 export function appendBootServiceRestartFixture(
-	f: ReturnType<typeof bootServiceStopFixture>,
-	prior: CompanyComputerBootServiceStartCompletion | CompanyComputerBootServiceRestartCompletion = f.startCompletion,
+	f: Pick<ReturnType<typeof bootServiceStopFixture>, "files" | "stopRequest"> & {
+		request: CompanyComputerBootServiceStartRequest | CompanyComputerOutageServiceStartRequest;
+		startCompletion: CompanyComputerBootServiceStartCompletion | CompanyComputerOutageServiceStartCompletion;
+	},
+	prior:
+		| CompanyComputerBootServiceStartCompletion
+		| CompanyComputerOutageServiceStartCompletion
+		| CompanyComputerBootServiceRestartCompletion = f.startCompletion,
 	serial = 1,
 ) {
 	const base = 400 + serial * 10,
@@ -100,7 +109,9 @@ export function appendBootServiceRestartFixture(
 			{
 				schema: "qorpera.office-boot-service-restart-completion/v1",
 				command,
-				bootIntentId: prior.bootIntentId,
+				...(f.request.schema === "qorpera.office-outage-service-start-request/v1"
+					? { recoveryId: f.request.successor.request.recovery.recoveryId }
+					: { bootIntentId: f.request.successor.request.bootIntentId }),
 				originActivationId: f.startCompletion.activationId,
 				activationId,
 				configurationCompletionSha256: prior.configurationCompletionSha256,

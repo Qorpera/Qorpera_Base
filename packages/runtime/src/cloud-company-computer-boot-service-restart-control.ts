@@ -19,6 +19,7 @@ import {
 	createCompanyComputerBootServiceStartSystemdManager,
 } from "./cloud-company-computer-boot-service-start-control.ts";
 import { readCompanyComputerBootServiceStartEvidence } from "./cloud-company-computer-boot-service-start-evidence.ts";
+import { readCompanyComputerOutageServiceStartEvidence } from "./cloud-company-computer-outage-service-start-evidence.ts";
 import {
 	assertCompanyComputerPreparationLockAndBoot,
 	publishCompanyComputerPreparationProtected as publish,
@@ -109,7 +110,10 @@ export async function controlCompanyComputerBootServiceRestart(
 		const claimPath = companyComputerSuccessorClaimPath(prior.start.activationId),
 			completionPath = companyComputerBootServiceRestartCompletionPath(activationId),
 			claimBytes = encode(companyComputerBootSuccessorClaim(command, request));
-		material = await readCompanyComputerBootServiceStartEvidence(command, request.origin, signal);
+		material =
+			request.origin.schema === "qorpera.office-outage-service-start-request/v1"
+				? await readCompanyComputerOutageServiceStartEvidence(command, request.origin, signal)
+				: await readCompanyComputerBootServiceStartEvidence(command, request.origin, signal);
 		const optional = async (path: string) => {
 			try {
 				return await read(path, 8192, 0o600);
@@ -185,7 +189,9 @@ export async function controlCompanyComputerBootServiceRestart(
 				{
 					schema: "qorpera.office-boot-service-restart-completion/v1",
 					command,
-					bootIntentId: request.origin.successor.request.bootIntentId,
+					...(request.origin.schema === "qorpera.office-outage-service-start-request/v1"
+						? { recoveryId: request.origin.successor.request.recovery.recoveryId }
+						: { bootIntentId: request.origin.successor.request.bootIntentId }),
 					originActivationId: request.origin.successor.request.attestation.activationId,
 					activationId,
 					configurationCompletionSha256: request.origin.configurationCompletionSha256,

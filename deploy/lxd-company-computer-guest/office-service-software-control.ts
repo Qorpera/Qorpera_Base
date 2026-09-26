@@ -22,6 +22,7 @@ import {
 } from "../../packages/runner-orchestrator/src/lxd-office-service-software-files.ts";
 import { verifyLxdOfficeServiceSoftware } from "../../packages/runner-orchestrator/src/lxd-office-service-software.ts";
 import { readCompanyComputerBootServiceStartEvidence } from "../../packages/runtime/src/cloud-company-computer-boot-service-start-evidence.ts";
+import { readCompanyComputerOutageServiceStartEvidence } from "../../packages/runtime/src/cloud-company-computer-outage-service-start-evidence.ts";
 import { assertCompanyComputerImageArtifact } from "../../packages/runtime/src/cloud-company-computer-linux-host.ts";
 import {
 	assertCompanyComputerPreparationLockAndBoot,
@@ -232,7 +233,7 @@ async function lockedInstall(input: ReturnType<typeof parseOfficeSoftwareControl
 				? await readCompanyComputerServiceStartEvidence(command, prior.request, signal)
 				: prior.kind === "reset" || prior.kind === "reset_restart"
 					? await readCompanyComputerResetRetainedEvidence(command, prior.origin.request, signal)
-					: await readCompanyComputerBootServiceStartEvidence(command, prior.origin.request, signal);
+					: prior.origin.request.schema === "qorpera.office-outage-service-start-request/v1" ? await readCompanyComputerOutageServiceStartEvidence(command, prior.origin.request, signal) : await readCompanyComputerBootServiceStartEvidence(command, prior.origin.request, signal);
 		if ("close" in material) closeMaterial = material.close;
 		const configBytes = await read(prior.configurationPath, 16384, 0o400);
 		const config = parseCompanyComputerServiceConfig(configBytes.toString("utf8"));
