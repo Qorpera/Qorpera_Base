@@ -126,7 +126,7 @@
 /* Keep the miniature's fixed details proportional as the cards shrink; labels stay readable. */
 .swatch-window { position: absolute; inset: 0; width: calc(100% / var(--appearance-preview-scale)); height: calc(100% / var(--appearance-preview-scale)); transform: scale(var(--appearance-preview-scale)); transform-origin: top left; display: grid; grid-template-rows: auto auto minmax(0, 1fr); gap: 5px; padding: 16% 12% 0; background: var(--w-bg); }
 .swatch-window-light { --w-bg: #e9e7e6; --w-bar: #c6c4c2; --w-panel: #ffffff; --w-pill: #dedddb; --w-line: #ececea; }
-.swatch-window-dark { --w-bg: #1f1f1e; --w-bar: #5e5d5a; --w-panel: #2f2f2e; --w-pill: #4f4f4d; --w-line: #3c3c3a; }
+.swatch-window-dark { --w-bg: #3c3c3c; --w-bar: #5e5d5a; --w-panel: #1f2120; --w-pill: #4f4f4d; --w-line: #3c3c3a; }
 .swatch-bar { justify-self: center; width: 46%; height: 7px; border-radius: 999px; background: var(--w-bar); }
 .swatch-bar-sub { width: 68%; height: 5px; opacity: .65; }
 .swatch-panel { display: grid; grid-auto-rows: minmax(0, 1fr); margin-top: 5px; padding: 0 7%; border-radius: 12px 12px 0 0; background: var(--w-panel); }
