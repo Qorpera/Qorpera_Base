@@ -56,6 +56,7 @@ const TRUSTED_LIST_ATTEMPTS = 4;
 
 export type CloudCompanyPathRpc =
 	| "qorpera_manage_agent_routine"
+	| "qorpera_decide_agent_routine"
 	| "qorpera_manage_agent_sidebar"
 	// Workers and durable todos (runtime Step 5).
 	| "qorpera_manage_agent_todo"
