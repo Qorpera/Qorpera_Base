@@ -681,7 +681,7 @@ export class CloudActionReviewGate {
 			if (state.state === "parked")
 				return {
 					run: false,
-					text: `APPROVAL_PENDING: The action waits for approval from ${approver} on the card in this conversation, so it has not happened yet. Do not repeat, reword or split it, and do not ask for approval again in chat. Carry on with other work, or finish your turn. When you are woken because it was approved, call the same tool again with the card's call object as its arguments, value for value; it will then run without another review.`,
+					text: `APPROVAL_PENDING: The action waits for approval from ${approver} on the card in this conversation, so it has not happened yet. Do not repeat, reword or split it, and do not ask for approval again in chat. Carry on with other work, or finish your turn. When you are woken because it was approved, call the same tool again with the card's \`call\` field as its arguments, value for value (not its \`arguments\` text, which is the same call escaped; use that only when the card has no \`call\`); it will then run without another review.`,
 				};
 			// A wait that asked to park is answered, used or parked, never still pending.
 			if (state.state !== "pending" || park) throw new Error("Action review response is invalid");

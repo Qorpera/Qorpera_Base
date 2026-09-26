@@ -583,6 +583,20 @@ begin
 		'builtIn', 'none', 'reason', 'Unsure this job is wanted.', 'proposedRule', null, 'reviewerModel', 'gpt-6-luna'));
 	perform pg_temp.wake_assert(v_record ->> 'decision' = 'ask' and v_record ->> 'approverScope' = 'member',
 		'The reviewer''s own doubt still asks the member');
+	-- A deny stays a deny (only its tag is dropped), and a retry of that call after the member
+	-- writes again still waits for the member's click.
+	v_record := public.qorpera_record_action_review(v_binding, jsonb_build_object('callId', 'fix-delegation-deny',
+		'tool', 'manage_worker', 'effect', 'delegation', 'argumentSha256', repeat('8f', 32),
+		'action', jsonb_build_object('title', 'Start a coding job'), 'decision', 'deny', 'ruleIds', '[]'::jsonb,
+		'builtIn', 'access_change', 'reason', 'Not asked for.', 'proposedRule', null, 'reviewerModel', 'gpt-6-luna'));
+	perform pg_temp.wake_assert(v_record ->> 'decision' = 'deny' and v_record ->> 'builtIn' = 'none',
+		'A delegation deny stays a deny');
+	v_record := public.qorpera_record_action_review(v_binding, jsonb_build_object('callId', 'fix-delegation-retry',
+		'tool', 'manage_worker', 'effect', 'delegation', 'argumentSha256', repeat('8f', 32),
+		'action', jsonb_build_object('title', 'Start a coding job'), 'decision', 'allow', 'ruleIds', '[]'::jsonb,
+		'builtIn', 'access_change', 'reason', 'Asked for now.', 'proposedRule', null, 'reviewerModel', 'gpt-6-luna'));
+	perform pg_temp.wake_assert(v_record ->> 'decision' = 'ask' and v_record ->> 'approverScope' = 'member',
+		'A delegation retried after a denial waits for the member''s click');
 	v_record := public.qorpera_record_action_review(v_binding, jsonb_build_object('callId', 'fix-card-call',
 		'tool', 'send_email', 'effect', 'external', 'argumentSha256', repeat('8b', 32),
 		'action', jsonb_build_object('title', 'Send an email', 'arguments', v_arguments),

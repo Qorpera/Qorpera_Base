@@ -59,9 +59,12 @@ returns jsonb language sql stable security definer set search_path = '' as $$
 		'alwaysAllow', p_review.proposed_rule is not null,
 		'proposedRule', p_review.proposed_rule))
 	-- Added after the strip: a null inside the call (an absent path's expectedVersion) is part of it.
+	-- A call whose object form grows past 64 KiB (long number spellings) is left out so the card
+	-- stays within its event bound; the agent then copies the arguments text.
 	|| coalesce((select jsonb_build_object('call', call.value)
 		from (select public.qorpera_action_review_call(p_review.action ->> 'arguments') as value) as call
-		where jsonb_typeof(p_review.action -> 'arguments') = 'string' and call.value is not null), '{}'::jsonb)
+		where jsonb_typeof(p_review.action -> 'arguments') = 'string' and call.value is not null
+			and octet_length(call.value::text) <= 65536), '{}'::jsonb)
 $$;
 
 create function pg_temp.auto_review_fix_replace(p_definition text, p_old text, p_new text)
