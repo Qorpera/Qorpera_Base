@@ -61,3 +61,67 @@ jobs:
           scripts/generate-cloud-runtime-bundle.test.mjs
           scripts/package-ephemeral-runner.test.mjs
           scripts/check-release-train-derived-files.test.mjs
+
+  # A runtime or shell change no longer regenerates the bundle, so it may match
+  # no path-filtered workflow. This job runs every unit test file of
+  # packages/runtime, packages/shell and packages/cloud-client on every run,
+  # sharded across runners. New test files join automatically.
+  #
+  # Tests that need podman, a source-built Codex binary or Windows skip
+  # themselves when their environment is absent. Excluded here:
+  # - shell test/staff-conception-e2e.test.ts: it imports @qorpera/pi-ai, whose
+  #   model data (packages/ai/src/providers/data, gitignored) exists only after
+  #   `npm run hydrate:model-data` downloads public model catalogs (network).
+  # - runtime test/cloud-coding-command-guest.test.ts: its fixtures chown each
+  #   command log to a coding group the test user holds (gid >= 1000). It runs
+  #   in its own step below, under such a group as in the Step 2 LXD workflow.
+  unit:
+    name: Unit tests (${{ matrix.suite }} ${{ matrix.shard }})
+    runs-on: ubuntu-26.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { suite: runtime, shard: 1/2, supervisor: true }
+          - { suite: runtime, shard: 2/2 }
+          - { suite: shell, shard: 1/4 }
+          - { suite: shell, shard: 2/4 }
+          - { suite: shell, shard: 3/4 }
+          - { suite: shell, shard: 4/4 }
+          - { suite: cloud-client, shard: 1/1 }
+    env:
+      TMPDIR: /tmp
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies without lifecycle scripts
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Unit tests
+        working-directory: packages/${{ matrix.suite }}
+        run: >-
+          node ../../node_modules/vitest/dist/cli.js --run
+          --shard=${{ matrix.shard }}
+          --exclude test/staff-conception-e2e.test.ts
+          --exclude test/cloud-coding-command-guest.test.ts
+
+      - name: Coding command supervisor
+        if: matrix.supervisor
+        working-directory: packages/runtime
+        run: |
+          supervisor="node ../../node_modules/vitest/dist/cli.js --run test/cloud-coding-command-guest.test.ts"
+          if [ "$(id -g)" -ge 1000 ]; then
+            $supervisor
+          else
+            sudo groupadd qorpera-coding-test
+            sudo usermod -aG qorpera-coding-test "$(id -un)"
+            sg qorpera-coding-test -c "$supervisor"
+          fi
