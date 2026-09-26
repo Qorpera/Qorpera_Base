@@ -102,31 +102,73 @@ begin
 	end loop;
 end $$;
 
--- The old rollover trigger omitted revoked defaults (and inactive staff).
--- A historical default with no current-version row is not fresh employment:
--- backfill and reactivation must not silently restore its missing access.
+-- The old rollover trigger omitted inactive staff. Rehire recovers valid
+-- platform defaults without losing expiry or overriding any access decision.
 do $$
 declare v_profile uuid := '29000000-0000-4000-8000-000000000010';
 	v_staff uuid := '29000000-0000-4000-8000-000000000030';
-	v_resource public.qorpera_company_path_resources; v_revoked boolean;
+	v_resource public.qorpera_company_path_resources; v_history public.qorpera_company_path_grants;
+	v_probe text; v_allowed boolean; v_expiry timestamptz; v_count bigint;
 begin
 	select * into v_resource from public.qorpera_company_path_resources
 	where environment_id = '29000000-0000-4000-8000-000000000020' and path = '';
-	foreach v_revoked in array array[true,false] loop
+	foreach v_probe in array array['read','read-write','finite','mixed-finite','mixed-unlimited','revoked','expired',
+		'mixed-revoked','mixed-expired','mixed-explicit','current-revoked','current-explicit'] loop
 		begin
-			update public.qorpera_company_path_grants set resource_version = extensions.gen_random_uuid(),
-				permissions = array['read'], revoked_at = case when v_revoked then clock_timestamp() else null end
-			where resource_id = v_resource.id and principal_id = v_staff and origin = 'default_agent_read';
-			perform public.qorpera_ensure_default_agent_read_grants(v_profile,null);
+			v_allowed := v_probe in ('read','read-write','finite','mixed-finite','mixed-unlimited');
+			v_expiry := case when v_probe in ('finite','mixed-finite','mixed-unlimited') then clock_timestamp() + interval '1 hour' else null end;
 			update public.qorpera_profile_staff set employment_status = 'archived'
 			where profile_id = v_profile and staff_agent_id = v_staff;
+			-- Model the database left by a pre-upgrade rollover: the archived
+			-- agent's default remains at an older version, with no current row.
+			update public.qorpera_company_path_grants set resource_version = extensions.gen_random_uuid(),
+				permissions = case when v_probe = 'read-write' then array['read','write'] else array['read'] end,
+				created_at = clock_timestamp() - interval '1 minute',
+				revoked_at = case when v_probe = 'revoked' then clock_timestamp() else null end,
+				expires_at = case when v_probe = 'expired' then clock_timestamp() - interval '1 second' else v_expiry end
+			where resource_id = v_resource.id and principal_id = v_staff and origin = 'default_agent_read'
+			returning * into strict v_history;
+			if v_probe like 'mixed-%' or v_probe like 'current-%' then
+				insert into public.qorpera_company_path_grants(resource_id,resource_version,principal_kind,principal_id,
+					permissions,expires_at,revoked_at,created_at,created_by_user_id,origin)
+				values (v_resource.id,case when v_probe like 'current-%' then v_resource.version else extensions.gen_random_uuid() end,
+					'staff_agent',v_staff,array['read'],
+					case when v_probe = 'mixed-expired' then clock_timestamp() - interval '1 second'
+						when v_probe = 'mixed-finite' then clock_timestamp() + interval '2 hours' else null end,
+					case when v_probe in ('mixed-revoked','current-revoked') then clock_timestamp() else null end,
+					clock_timestamp() - interval '1 minute',v_history.created_by_user_id,
+					case when v_probe in ('mixed-explicit','current-explicit') then 'explicit' else 'default_agent_read' end);
+			end if;
+			select count(*) into v_count from public.qorpera_company_path_grants where resource_id = v_resource.id;
+			perform public.qorpera_ensure_default_agent_read_grants(v_profile,null);
+			if (select count(*) from public.qorpera_company_path_grants where resource_id = v_resource.id) <> v_count then
+				raise exception 'Backfill restored inactive % grant',v_probe; end if;
 			update public.qorpera_profile_staff set employment_status = 'active'
 			where profile_id = v_profile and staff_agent_id = v_staff;
-			if exists (select 1 from public.qorpera_company_path_grants where resource_id = v_resource.id
-				and resource_version = v_resource.version and principal_id = v_staff) then
-				raise exception 'Historical default was silently recreated'; end if;
-			if public.qorpera_company_path_principal_allowed(v_profile,v_resource,'staff_agent',v_staff,'read') then
-				raise exception 'Historical default restored access'; end if;
+			perform public.qorpera_ensure_default_agent_read_grants(v_profile,null);
+			perform public.qorpera_ensure_default_agent_read_grants(v_profile,v_staff);
+			if (select count(*) from public.qorpera_company_path_grants where resource_id = v_resource.id)
+				<> v_count + v_allowed::integer then raise exception 'Wrong recovery count for %',v_probe; end if;
+			if public.qorpera_company_path_principal_allowed(v_profile,v_resource,'staff_agent',v_staff,'write')
+				is distinct from v_allowed then raise exception 'Wrong recovered write access for %',v_probe; end if;
+			if public.qorpera_company_path_principal_allowed(v_profile,v_resource,'staff_agent',v_staff,'read')
+				is distinct from (v_allowed or v_probe = 'current-explicit') then
+				raise exception 'Wrong recovered read access for %',v_probe; end if;
+			if v_allowed then
+				if not exists (select 1 from public.qorpera_company_path_grants where resource_id = v_resource.id
+					and resource_version = v_resource.version and principal_id = v_staff
+					and expires_at is not distinct from v_expiry and created_at = v_history.created_at
+					and created_by_user_id = v_history.created_by_user_id and origin = 'default_agent_read') then
+					raise exception 'Recovery lost expiry or attribution for %',v_probe; end if;
+				-- Confirm expiry continues to deny access after the restored grant lapses.
+				if v_expiry is not null then
+					update public.qorpera_company_path_grants set expires_at = clock_timestamp() - interval '1 second'
+					where resource_id = v_resource.id and resource_version = v_resource.version and principal_id = v_staff;
+					perform public.qorpera_ensure_default_agent_read_grants(v_profile,v_staff);
+					if public.qorpera_company_path_principal_allowed(v_profile,v_resource,'staff_agent',v_staff,'read') then
+						raise exception 'Recovery extended expired access for %',v_probe; end if;
+				end if;
+			end if;
 			raise exception using errcode = 'QTC01';
 		exception when sqlstate 'QTC01' then null; end;
 	end loop;
