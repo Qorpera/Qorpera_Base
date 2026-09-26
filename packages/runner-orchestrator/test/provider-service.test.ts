@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { NODE_OBSERVATIONS_PATH, ProviderNodeObservability } from "../src/node-observability.ts";
 import type { CloudRunnerAssignmentDelivery, CloudRunnerInstance, CloudRunnerWork } from "../src/orchestrator.ts";
+import { HttpCloudRunnerProviderAdapter } from "../src/provider-http.ts";
 import { type CloudRunnerProviderServiceBackend, HttpCloudRunnerProviderService } from "../src/provider-service.ts";
 
 const token = "provider-service-token";
@@ -475,6 +476,7 @@ describe("runner provider HTTP service", () => {
 					schema: "qorpera.provider-request-error/v1",
 					providerAdapter: "managed",
 					status: "rejected",
+					action: "acquire",
 					errorCategory: "unknown",
 				}),
 			);
@@ -519,11 +521,82 @@ describe("runner provider HTTP service", () => {
 					schema: "qorpera.provider-request-error/v1",
 					providerAdapter: "managed",
 					status: "rejected",
+					action: "acquire",
 					errorCategory: "admission_refused",
 					state: "refused",
 					reason: "NODE_NOT_PREFERRED",
 				}),
 			);
+		} finally {
+			log.mockRestore();
+		}
+	});
+
+	it("logs validation instead of an unvalidated request action", async () => {
+		const provider = backend();
+		const service = new HttpCloudRunnerProviderService(provider, token);
+		services.push(service);
+		const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
+		try {
+			const port = await service.start();
+			const response = await fetch(`http://127.0.0.1:${port}/v1/qorpera-runner-provider`, {
+				method: "POST",
+				headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+				body: JSON.stringify({ schema: "qorpera.runner-provider/v1", adapter_id: "managed", action: "PRIVATE" }),
+			});
+			expect(response.status).toBe(422);
+			expect(JSON.parse(String(log.mock.calls[0]?.[0])).action).toBe("validation");
+			expect(JSON.stringify(log.mock.calls)).not.toContain("PRIVATE");
+			expect(provider.acquire).not.toHaveBeenCalled();
+		} finally {
+			log.mockRestore();
+		}
+	});
+
+	it("keeps concurrent provider refusal phases distinct without exporting backend secrets", async () => {
+		const provider = backend();
+		provider.acquire.mockRejectedValue(new Error("PRIVATE_ACQUIRE"));
+		provider.deliver.mockRejectedValue(new Error("PRIVATE_DELIVERY"));
+		provider.stop = vi.fn().mockRejectedValue(new Error("PRIVATE_STOP"));
+		const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
+		const service = new HttpCloudRunnerProviderService(provider, token);
+		services.push(service);
+		try {
+			const port = await service.start();
+			const adapter = new HttpCloudRunnerProviderAdapter(`http://127.0.0.1:${port}`, "managed", token);
+			const results = await Promise.allSettled([
+				adapter.acquire(work, new AbortController().signal),
+				adapter.deliver(runner, {
+					assignment: {
+						assignmentId: "77777777-7777-4777-8777-777777777777",
+						claimId: "22222222-2222-4222-8222-222222222222",
+						runId: work.runId,
+						jobId: work.jobId,
+						runnerId,
+						capabilitySha256: "b".repeat(64),
+						expiresAt: "2026-08-21T18:00:00.000Z",
+					},
+					capability: "a".repeat(43),
+					work,
+				}),
+				adapter.stop(runner, "idle"),
+			]);
+			expect(
+				results.map((result) => (result.status === "rejected" ? String(result.reason) : "unexpected success")),
+			).toEqual([
+				"CloudRunnerProviderRequestError: Runner provider request failed (422) [code=PROVIDER_ACQUIRE]",
+				"CloudRunnerProviderRequestError: Runner provider request failed (422) [code=PROVIDER_DELIVER]",
+				"CloudRunnerProviderRequestError: Runner provider request failed (422) [code=PROVIDER_STOP]",
+			]);
+			expect(log.mock.calls.map(([line]) => JSON.parse(String(line)).action).sort()).toEqual([
+				"acquire",
+				"deliver",
+				"stop",
+			]);
+			expect(JSON.stringify(log.mock.calls)).not.toContain("PRIVATE");
+			expect(provider.acquire).toHaveBeenCalledOnce();
+			expect(provider.deliver).toHaveBeenCalledOnce();
+			expect(provider.stop).toHaveBeenCalledOnce();
 		} finally {
 			log.mockRestore();
 		}

@@ -10,7 +10,7 @@ const generatedSource = "packages/runtime/src/cloud-runtime-bundle.generated.ts"
 const activation = "supabase/migrations/20260926133900_runtime_bundle_activation_v133.sql";
 const activationVersion = 133;
 const previousActivationVersion = 132;
-const previousActivationSha256 = "716f8f792680388f513d9ea6fd5b27fd54db31f122cb65442ec850ed3eb55bf4";
+const previousActivationSha256 = "0cc17315f00a59731fd550153cb762dd484724269251ae17bba82c3b6df6c1d6";
 const manifestPath = "deploy/first-node/native-codex/runtime-bundle-manifest.json";
 const sha = (text) => createHash("sha256").update(text).digest("hex");
 
