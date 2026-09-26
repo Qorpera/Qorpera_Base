@@ -552,6 +552,7 @@ describe("the coding composition of a native turn", () => {
 		const instructions = vi.mocked(runCloudNativeRunToolSession).mock.calls[1][0].runtimeInstructions;
 		expect(instructions).toContain("a single letter selects the choice at that position (A is the first)");
 		expect(instructions).toContain("the only choice that starts with that letter");
+		expect(instructions).toContain("a turn marked shortened had its long texts cut to fit");
 		expect(instructions).toContain("When no reply decides it");
 		expect(instructions).toContain("call coding_ask again");
 		expect(f.gateway.start).not.toHaveBeenCalled();

@@ -9,11 +9,6 @@
 // submission it made before. The review fixes (20260926162500) then correct the
 // backfilled rows: no standing pull request on turns that published nothing,
 // and an input without its worker event taken from the session's input event.
-//
-// A one-time migration test: its seed runs test 396's dispatch and machine
-// fixture on the schema from before 20260925113000. When later work changes that
-// fixture in a way the old schema cannot run, retire this script (the backfill
-// has run everywhere by then) rather than pinning the fixture.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";

@@ -14,7 +14,7 @@
   "components": {
     "kernel": "6e1716bbd54f99205aba9143e054459b28358bcd78f58ec662568a45ec7c00cc",
     "constitution": "8641ce64101c52ec5f11f49fe42e70d7300548ecb30314bd59de91714c146d3d",
-    "toolCatalog": "451b0c5b7b3a78a92465856e178c092d7733443535ba93af570919fee087fffe",
+    "toolCatalog": "07c5f121b8e54b892a3283e094a7cf0a6aa5ed9b15e3910035b02e1e8d213e81",
     "wakeAndSilence": "de89fad84470eb18094ad8347a9ac71b58432e037d4dabe4973eed676cbdf140",
     "contextComposer": "1796c8300b3e5395d11fe57b132a51bda1025a7bbdb260fcec3019a40336dc87",
     "providerBootstrap": "7e2e03d4e847a5b9db55d3eeb98c0ae7486013619c081d451a5fa4f8aa049554",
@@ -576,7 +576,7 @@
     "packages/runtime/src/cloud-identity-recovery.ts": "ad12e1d71d90a78e4d87ffd09c6f9600fcd83c33ae4db95e44759946eceb41f4",
     "packages/runtime/src/cloud-memory-tools.ts": "fccc8ee5c49a094fbc954c41fdeec00b7bc23228d39ad219ecddab6ecf067ec2",
     "packages/runtime/src/cloud-native-capture-images.ts": "063fa3a75d4ac35298075795462abdbb0c3820e3ca3506749a278b8fb03cea21",
-    "packages/runtime/src/cloud-native-coding-runtime.ts": "e58979abd89119b6e10ee6d18b9ca74a6ab3e1a9b3554d3b1c9a13e3700455af",
+    "packages/runtime/src/cloud-native-coding-runtime.ts": "e2ab6eef9547d4cbf693951d75e0e3ec3dcba11882890f84e4e28a9ffad264d5",
     "packages/runtime/src/cloud-native-company-context.ts": "87c4c1fb9c4b8db59643486f59cd1689b2bacdf891e0aa5f8685929c03ae2922",
     "packages/runtime/src/cloud-native-company-objects.ts": "46b7f525613dc1cea220fa31c26d635b48e0513d51729e0df87d77ee75c7740a",
     "packages/runtime/src/cloud-native-company-runner.ts": "75ac5ea4812da1784301e78fa61458a7c233278ec418eccd3d8bf3046be94c7c",
