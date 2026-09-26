@@ -31,6 +31,15 @@ regenerates everything once.
   `npm run generate:runtime-bundle`, and do not re-pin the guest package.
   Between cuts master's derived files describe the last release, not master's
   source. That is expected.
+- CI enforces this. The "Runtime release train" workflow fails any pull request
+  whose head branch does not start with `release/runtime-` when it changes a
+  derived file: the generated bundle, its manifest, the guest pin, an
+  activation migration, or the `activation`, `activationVersion`,
+  `previousActivationVersion` and `previousActivationSha256` lines of
+  `scripts/generate-cloud-runtime-bundle.mjs`. Other generator changes are
+  allowed. The check compares the pull request merge commit with its base
+  (`scripts/check-release-train-derived-files.mjs`). An open PR that still
+  carries these files fails until they are dropped.
 - CI skips only the freshness comparisons listed below. Every other assertion in
   those tests still runs. Packaging tests package against the committed bundle
   identity, which is exactly what the packaged host embeds.
@@ -82,10 +91,24 @@ Each workflow sets `QORPERA_ENFORCE_RUNTIME_BUNDLE` to `1` only when
 
 and to `0` otherwise. Manual `workflow_dispatch` runs are not enforced, with one
 exception: the signed ephemeral runner export always enforces, because it
-publishes a signed image. The Step 2 LXD, hosted database, web client and
-ephemeral runner workflows also run on every push to `release/runtime-*`, and
-their pull request path filters include the derived files, so a release PR runs
-every bundle-related job.
+publishes a signed image.
+
+Which workflows run:
+
+- "Runtime release train" (`runtime-release-train.yml`) has no path filter. It
+  runs on every pull request, on pushes to master and `release/runtime-*`, and
+  by hand. It runs the derived-files guard on feature PRs, then
+  `npm run check:runtime-bundle:release-train`, the generator test, the
+  ephemeral runner packaging test and the guard's own test. A runtime-only
+  feature PR matches no other workflow's paths, so this job is the one that
+  packages its runtime.
+- Step 2 LXD, hosted database and ephemeral runner run on every push to
+  `release/runtime-*`. The web client workflow also lists `release/runtime-*`
+  in its push branches, but keeps its path filter there, so a release push runs
+  it only when the push touches one of its paths. The derived files are among
+  them.
+- The pull request path filters of all four include the derived files, so a
+  release PR, which always changes them, runs every bundle-related job.
 
 Locally, `QORPERA_ENFORCE_RUNTIME_BUNDLE=1` reproduces release enforcement:
 
@@ -110,7 +133,9 @@ Enforced only when `QORPERA_ENFORCE_RUNTIME_BUNDLE=1`:
 - `scripts/package-ephemeral-runner.test.mjs` and
   `scripts/native-company-artifact.test.mjs`: the packager's freshness gate only.
 - `scripts/test-ephemeral-runner-linux.sh`: the packager's freshness gate for
-  the image the containment test builds.
+  the image the containment test builds. Without enforcement that package goes
+  to `.artifacts/ephemeral-runner-committed-bundle-test`, never to the install
+  folder `.artifacts/ephemeral-runner`.
 - `npm run check`: the generator check. `check:runtime-bundle` itself is
   unchanged.
 - Web `build:release` (the Cloudflare Pages command): it now runs
