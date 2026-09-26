@@ -134,6 +134,8 @@ A successful browser redirect never grants access. Stripe subscription status al
 
 ## Validation
 
+See [paid computer acceptance](computer-acceptance.md) for the opt-in disposable Linux/systemd/LXD workflow and the required distinction between physical guard enforcement, complete office recovery and Stripe funding evidence.
+
 Run the focused fake-provider suite with `node --test supabase/functions/computer-billing/computer-billing.test.ts`. Apply SQL migrations to a disposable local database and run tests 630–646, including subscription funding, the allowance ledger, separate billing authority, native permits, office start authority and prestart abandonment. Tests 642–644 exercise exact cancellation, original pooled-source restoration, delayed prepares, authority rejection and historical recovery. Tests 645–646 prove lost-renewal settlement after live-source changes, revoked-host refusal, exact allowance release and idempotent closure. The 639 tests switch to the actual service SQL role to prove the gateway boundary; older accounting fixtures run as a trusted operator. The 635 fixture marker supports two-connection contention tests across companies. Test 240 now also verifies that the legacy complimentary-entitlement setter is operator-only. These tests create no real Stripe objects and spend no money.
 
 Run test 647 for office outages: actual paid prepare/bind receipts, first-window and lost-renewal stop proof, settlement before reporting, stale activation and revoked-host rejection, immutable retries, privacy/drain preservation, and acknowledged orderly reset after physical binding removal. The provider tests use real durable guard and outage journals with fake LXD/control ports; live node acceptance is still required.

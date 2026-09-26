@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmod, mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { chmod, mkdir, readFile, stat, unlink, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
@@ -21,13 +22,14 @@ const vm = "qorpera-paid-acceptance";
 const evidence = { schema: "qorpera.paid-lxd-physical-acceptance/v1", commit: process.env.GITHUB_SHA ?? null, scope: "Production guard, real Linux clock, systemd, LXD and KVM VM with synthetic permit. No SQL, billing, Stripe, full provider, or office-image acceptance.", passed: false, checks: {} };
 let installed = false;
 let createdVm = false;
+let proxy;
 function run(command, args, timeout = 30000) {
 	const result = spawnSync(command, args, { cwd: repository, encoding: "utf8", timeout, maxBuffer: 2 * 1024 * 1024 });
 	if (result.status !== 0) throw new Error(`${command} failed: ${String(result.stderr || result.error || result.stdout).slice(0, 2000)}`);
 	return result.stdout.trim();
 }
-function probe(action) {
-	return JSON.parse(run("runuser", ["-u", user, "--", process.execPath, join(install, "probe.mjs"), action]));
+function probe(action, scenario = "baseline") {
+	return JSON.parse(run("runuser", ["-u", user, "--", process.execPath, join(install, "probe.mjs"), action, scenario]));
 }
 async function until(read, accept, timeoutMs, label) {
 	const end = Date.now() + timeoutMs;
@@ -52,7 +54,7 @@ try {
 	assert.equal(instance.type, "virtual-machine");
 	evidence.imageFingerprint = instance.config["volatile.base_image"] ?? null;
 	await mkdir(install, { mode: 0o755 });
-	for (const [entry, name] of [["deploy/coding-worker/paid-computer-guard.ts", "guard"], ["scripts/acceptance/paid-lxd-probe.ts", "probe"]]) {
+	for (const [entry, name] of [["deploy/coding-worker/paid-computer-guard.ts", "guard"], ["scripts/acceptance/paid-lxd-probe.ts", "probe"], ["scripts/acceptance/paid-lxd-proxy-guard.ts", "proxy-guard"]]) {
 		await build({ absWorkingDir: repository, entryPoints: [entry], outfile: join(install, `${name}.mjs`), bundle: true, platform: "node", format: "esm", target: "node24", logLevel: "silent" });
 	}
 	evidence.guardBundleSha256 = createHash("sha256").update(await readFile(join(install, "guard.mjs"))).digest("hex");
@@ -91,7 +93,42 @@ try {
 	assert.equal(stopped.stopReceipt.physicalInstanceId, armed.machine.physicalInstanceId);
 	assert.equal(JSON.parse(run("lxc", ["query", `/1.0/instances/${vm}/state`])).status, "Stopped");
 	evidence.checks.expiryStop = { physicalStopped: true, stopReceipt: stopped.stopReceipt, deadlineMarginMs: armed.deadlineUptimeMs - stopped.stopReceipt.closedAtUptimeMs };
-	evidence.notTested = ["stalled LXD socket", "SQL funding and settlement", "full office outage recovery", "guest service activation"];
+	console.log("Baseline real VM expiry and SIGKILL recovery passed; starting LXD transport-stall phase.");
+	run("systemctl", ["stop", unit]);
+	const proxyRoot = "/run/qorpera-paid-lxd-proxy";
+	await mkdir(proxyRoot, { mode: 0o755 });
+	proxy = spawn(process.execPath, [join(repository, "scripts/acceptance/paid-lxd-proxy.mjs"), run("id", ["-u", user]), run("id", ["-g", user])], { stdio: "inherit" });
+	await until(() => existsSync(`${proxyRoot}/ready`), Boolean, 10000, "LXD transparent proxy ready");
+	await writeFile(`/etc/systemd/system/${unit}`, service.replace(`${install}/guard.mjs`, `${install}/proxy-guard.mjs`), { mode: 0o644 });
+	run("systemctl", ["daemon-reload"]);
+	run("systemctl", ["start", unit]);
+	const fault = probe("start", "stalled");
+	await until(() => probe("status", "stalled"), (record) => record.startSettled && record.startSucceeded === true, 30000, "second real start operation settlement");
+	const faultPid = run("systemctl", ["show", unit, "--property=MainPID", "--value"]);
+	const uptime = Number((await readFile("/proc/uptime", "utf8")).split(" ")[0]) * 1000;
+	await delay(Math.max(0, fault.armed.stopAtUptimeMs - uptime - 2000));
+	await writeFile(`${proxyRoot}/stall`, "withhold LXD replies\n", { mode: 0o600, flag: "wx" });
+	await delay(10000);
+	const heldStarted = Date.now();
+	const held = probe("status", "stalled");
+	const statusLatencyMs = Date.now() - heldStarted;
+	assert(statusLatencyMs < 3000, "Guard IPC must remain responsive during stalled physical I/O");
+	assert.equal(held.phase, "stopping");
+	assert.equal(held.stopReceipt, null, "No stopped receipt may be invented while LXD cannot be observed");
+	assert.equal(held.deadlineUptimeMs, fault.armed.deadlineUptimeMs);
+	assert.equal(JSON.parse(run("lxc", ["query", `/1.0/instances/${vm}/state`])).status, "Running");
+	assert.equal(run("systemctl", ["show", unit, "--property=MainPID", "--value"]), faultPid);
+	assert.equal(run("systemctl", ["is-active", unit]), "active");
+	const injected = JSON.parse(await readFile(`${proxyRoot}/stalled.json`, "utf8"));
+	assert(injected.stalledConnections >= 1, "At least one real guard request must encounter the transport stall");
+	await unlink(`${proxyRoot}/stall`);
+	const recoveredStop = await until(() => probe("status", "stalled"), (record) => record.phase === "stopped", 20000, "physical stop after transport restoration");
+	assert(recoveredStop.stopReceipt && recoveredStop.stopReceipt.state === "stopped");
+	assert(recoveredStop.stopReceipt.closedAtUptimeMs <= fault.armed.deadlineUptimeMs);
+	assert.equal(JSON.parse(run("lxc", ["query", `/1.0/instances/${vm}/state`])).status, "Stopped");
+	evidence.checks.stalledLxdSocket = { stalledConnections: injected.stalledConnections, statusLatencyMs, physicalRunningDuringStall: true, heldPhase: held.phase, noFalseStopReceipt: true, supervisorResponsive: true, physicalStoppedAfterRestoration: true, stopReceipt: recoveredStop.stopReceipt, deadlineMarginMs: fault.armed.deadlineUptimeMs - recoveredStop.stopReceipt.closedAtUptimeMs };
+	evidence.proxyGuardBundleSha256 = createHash("sha256").update(await readFile(join(install, "proxy-guard.mjs"))).digest("hex");
+	evidence.notTested = ["indefinite LXD unavailability cannot guarantee physical deadline enforcement", "SQL funding and settlement", "full office outage recovery", "guest service activation"];
 	evidence.passed = true;
 } catch (error) {
 	evidence.error = String(error);
@@ -101,6 +138,7 @@ try {
 		try { await writeFile(join(out, "guard.log"), run("journalctl", ["-u", unit, "--no-pager", "--output=short-monotonic"]), { mode: 0o644 }); } catch { /* Evidence JSON still records failure. */ }
 		try { run("systemctl", ["stop", unit]); } catch { /* Runner destruction is the final cleanup boundary. */ }
 	}
+	proxy?.kill("SIGTERM");
 	if (createdVm) { try { run("lxc", ["delete", vm, "--force"], 60000); } catch { evidence.cleanupFailed = true; evidence.passed = false; process.exitCode = 1; } }
 	await writeFile(join(out, "evidence.json"), `${JSON.stringify(evidence, null, 2)}\n`, { mode: 0o644 });
 	await chmod(out, 0o755);

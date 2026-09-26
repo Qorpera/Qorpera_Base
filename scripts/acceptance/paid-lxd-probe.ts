@@ -9,7 +9,8 @@ import type { RuntimePaidComputerMachine } from "../../packages/runner-orchestra
 // Synthetic control-plane receipts exercise the real guard/clock/LXD boundary.
 // They are not proof of SQL funding, billing, provider enrollment or office admission.
 const guard = new PaidComputerGuardClient("/run/qorpera-paid-computer-guard/control.sock");
-const statePath = "/var/lib/qorpera-paid-lxd-acceptance/arm.json";
+const stalled = process.argv[3] === "stalled";
+const statePath = `/var/lib/qorpera-paid-lxd-acceptance/${stalled ? "stalled-" : ""}arm.json`;
 const signal = AbortSignal.timeout(20000);
 const action = process.argv[2];
 if (action === "start") {
@@ -33,8 +34,8 @@ if (action === "start") {
 		schema: "qorpera.computer-usage-permit/v2", prestart: { guardIncarnationId: prestart.guardIncarnationId, prepareSha256 }, mode: "paid",
 		permitId, allocationId: machine.allocationId, instanceSha256: machine.instanceSha256, nodeId: machine.nodeId,
 		epoch: randomUUID(), generation: 1, reservationId: randomUUID(), hostBootId: clock.hostBootId,
-		guestBootId: null, physicalId: null, issuedAt: new Date().toISOString(), deadline: new Date(Date.now() + 180000).toISOString(),
-		state: "prepared", validForMs: 180000, windowMs: 300000, stopReserveMs: 30000, tariffVersion: 1,
+		guestBootId: null, physicalId: null, issuedAt: new Date().toISOString(), deadline: new Date(Date.now() + (stalled ? 90000 : 180000)).toISOString(),
+		state: "prepared", validForMs: stalled ? 90000 : 180000, windowMs: 300000, stopReserveMs: 30000, tariffVersion: 1,
 		cpuMillis: machine.cpuMillis, memoryBytes: machine.memoryBytes,
 	};
 	const arm = { machine, permit, requestStartedUptimeMs: prestart.requestStartedUptimeMs };
