@@ -20,6 +20,7 @@ const alias = "qorpera-office-acceptance";
 const evidence = { schema: "qorpera.office-image-physical-acceptance/v1", commit: process.env.GITHUB_SHA ?? null, passed: false, scope: "Real KVM VM, production office package/installer/dependency measurements, actual systemd/tmpfs/preparation inspection, and cold-boot credential selection using synthetic probe credentials. No SQL office admission, real company state, NFS durability, model work or production deployment." };
 let created = false;
 let context;
+const forwardingRules = [];
 function run(file, args, timeout = 60000) {
 	const result = spawnSync(file, args, { cwd: repository, encoding: "utf8", timeout, maxBuffer: 8 * 1024 * 1024 });
 	if (result.status !== 0) throw new Error(`${file}: ${String(result.stderr || result.error || result.stdout).slice(-5000)}`);
@@ -57,6 +58,38 @@ try {
 	run("lxc", ["start", vm], 60000); await ready();
 	guest(["mkdir", "-p", work]);
 	guest(["chmod", "0755", work]);
+	run("lxc", ["file", "push", "scripts/acceptance/office-image-network-probe.py", `${vm}${work}/network-probe.py`]);
+	const bridge = JSON.parse(run("lxc", ["query", "/1.0/networks/lxdbr0"]));
+	assert(bridge.managed && bridge.type === "bridge" && bridge.config["ipv4.nat"] === "true");
+	const guestAddresses = JSON.parse(guest(["ip", "-j", "-4", "address"]));
+	const guestRoutes = JSON.parse(guest(["ip", "-j", "-4", "route"]));
+	const guestDevice = guestRoutes.find((route) => route.dst === "default")?.dev;
+	const address = guestAddresses.find((link) => link.ifname === guestDevice)?.addr_info.find((entry) => entry.family === "inet" && entry.scope === "global")?.local;
+	const hostRoutes = JSON.parse(run("ip", ["-j", "-4", "route", "show", "default"]));
+	const outward = hostRoutes[0]?.dev;
+	assert.match(address ?? "", /^(?:\d{1,3}\.){3}\d{1,3}$/);
+	assert.match(outward ?? "", /^[a-zA-Z0-9_.:-]{1,32}$/);
+	const [bridgeIp, prefix] = bridge.config["ipv4.address"].split("/");
+	const numeric = (ip) => ip.split(".").reduce((sum, byte) => sum * 256 + Number(byte), 0);
+	assert(Number(prefix) >= 8 && Number(prefix) <= 30);
+	assert.equal(Math.floor(numeric(address) / 2 ** (32 - Number(prefix))), Math.floor(numeric(bridgeIp) / 2 ** (32 - Number(prefix))), "Only the actual managed LXD subnet may receive a fixture exception");
+	evidence.network = { bridge: { name: bridge.name, ipv4Address: bridge.config["ipv4.address"], nat: true }, guestAddresses, guestRoutes, hostRoutes, ipForward: run("sysctl", ["-n", "net.ipv4.ip_forward"]), beforeForwardRules: run("iptables", ["-S", "FORWARD"]) };
+	assert.equal(evidence.network.ipForward, "1");
+	try { evidence.network.initialHttps = JSON.parse(guest(["python3", `${work}/network-probe.py`], 20000)); }
+	catch (error) {
+		evidence.network.initialHttpsError = String(error);
+		// GitHub's preinstalled container firewall can leave FORWARD DROP even
+		// without invoking Docker. Permit only this VM's web egress and replies;
+		// retain all global policies, other guests and all unrelated traffic.
+		for (const rule of [
+			["FORWARD", "-i", "lxdbr0", "-s", `${address}/32`, "-o", outward, "-p", "tcp", "-m", "multiport", "--dports", "80,443", "-m", "conntrack", "--ctstate", "NEW,ESTABLISHED", "-m", "comment", "--comment", "qorpera-office-image-acceptance", "-j", "ACCEPT"],
+			["FORWARD", "-i", outward, "-o", "lxdbr0", "-d", `${address}/32`, "-p", "tcp", "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-m", "comment", "--comment", "qorpera-office-image-acceptance", "-j", "ACCEPT"],
+		]) { run("iptables", ["-I", rule[0], "1", ...rule.slice(1)]); forwardingRules.push(rule); }
+		evidence.network.afterForwardRules = run("iptables", ["-S", "FORWARD"]);
+		evidence.network.restoredHttps = JSON.parse(guest(["python3", `${work}/network-probe.py`], 20000));
+		evidence.network.afterProbeCounters = run("iptables", ["-L", "FORWARD", "-n", "-v", "-x"]);
+	}
+	console.log("Actual guest IPv4/TLS archive reachability verified; scoped forwarding evidence retained.");
 	run("lxc", ["file", "push", "scripts/acceptance/office-image-dependencies.sh", `${vm}${work}/dependencies.sh`]);
 	console.log("Installing real office image dependencies through Ubuntu apt and version-pinned official archives.");
 	guest(["bash", `${work}/dependencies.sh`, browser.browserVersion], 1200000);
@@ -103,6 +136,7 @@ try {
 	evidence.passed = true;
 } catch (error) { evidence.error = String(error); process.exitCode = 1; }
 finally {
+	for (const rule of forwardingRules.reverse()) { try { run("iptables", ["-D", ...rule]); } catch { evidence.firewallCleanupFailed = true; evidence.passed = false; process.exitCode = 1; } }
 	if (created) {
 		try { run("lxc", ["delete", vm, "--force"], 90000); } catch { evidence.cleanupFailed = true; evidence.passed = false; process.exitCode = 1; }
 	}
