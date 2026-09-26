@@ -1,4 +1,4 @@
-import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import { createClient, navigatorLock, processLock, type SupabaseClient } from "@supabase/supabase-js";
 import type { CloudConfig } from "./config.ts";
 
 /* The client is a viewing, input, approval, upload, download endpoint
@@ -47,6 +47,14 @@ export interface Cloud {
 export function createCloud(config: CloudConfig): Cloud {
 	const supabase = createClient(config.projectUrl, config.publishableKey, {
 		auth: {
+			// updateUser persists its captured session before notifying subscribers.
+			// Serialize it with sign-out, including across tabs, so a late name save
+			// cannot restore a session that the member has already signed out of.
+			lock:
+				typeof navigator !== "undefined" && "locks" in navigator && navigator.locks ? navigatorLock : processLock,
+			// A timeout must not steal a lock while the original request can still
+			// commit its session. Wait for that request (or its tab) to release it.
+			lockAcquireTimeout: -1,
 			flowType: "pkce",
 			persistSession: true,
 			autoRefreshToken: true,
