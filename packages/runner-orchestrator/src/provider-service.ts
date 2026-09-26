@@ -177,6 +177,14 @@ export async function executeCloudRunnerProviderRequest(
 	signal?: AbortSignal,
 ): Promise<unknown> {
 	const parsed = parseRequest(value, backend.adapterId);
+	return executeParsedRequest(backend, parsed, signal);
+}
+
+async function executeParsedRequest(
+	backend: CloudRunnerProviderServiceBackend,
+	parsed: ProviderRequest,
+	signal?: AbortSignal,
+): Promise<unknown> {
 	switch (parsed.action) {
 		case "reconcile":
 			await backend.reconcile(signal);
@@ -394,17 +402,16 @@ export class HttpCloudRunnerProviderService {
 		};
 		request.once("aborted", abort);
 		response.once("close", responseClosed);
+		let action: ProviderRequest["action"] | "validation" = "validation";
 		try {
 			let encoded = "";
 			for await (const chunk of request) {
 				encoded += Buffer.isBuffer(chunk) ? chunk.toString("utf-8") : String(chunk);
 				if (Buffer.byteLength(encoded) > MAX_REQUEST_BYTES) throw new Error("Provider request is too large");
 			}
-			const value = await executeCloudRunnerProviderRequest(
-				this.#backend,
-				JSON.parse(encoded) as unknown,
-				controller.signal,
-			);
+			const parsed = parseRequest(JSON.parse(encoded) as unknown, this.#backend.adapterId);
+			action = parsed.action;
+			const value = await executeParsedRequest(this.#backend, parsed, controller.signal);
 			response.writeHead(200, { "content-type": "application/json" }).end(`${JSON.stringify({ value })}\n`);
 		} catch (error) {
 			if (controller.signal.aborted) return;
@@ -416,6 +423,7 @@ export class HttpCloudRunnerProviderService {
 					schema: "qorpera.provider-request-error/v1",
 					providerAdapter: this.#backend.adapterId,
 					status: "rejected",
+					action,
 					errorCategory:
 						error instanceof SyntaxError ? "invalid_arguments" : refusal ? "admission_refused" : "unknown",
 					...(refusal ? { state: refusal.state, reason: refusal.reason } : {}),
