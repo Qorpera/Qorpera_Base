@@ -148,6 +148,14 @@ interface CheckoutAttempt {
 }
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
+class ReconciledCheckout extends Error {
+	readonly expiresAt: string;
+	constructor(expiresAt: string) {
+		super("Your previous checkout is closed. Refresh the plan status before trying again.");
+		this.expiresAt = expiresAt;
+	}
+}
+
 /** Member credentials only. An uncertain checkout keeps its durable identity
  * through explicit retries and page reloads; it is never retried automatically. */
 export class ComputerBillingClient {
@@ -216,6 +224,24 @@ export class ComputerBillingClient {
 			cache: "no-store",
 		});
 		this.#assert();
+		if (action === "checkout" && response.status === 409) {
+			const payload: unknown = await response.json().catch(() => null);
+			this.#assert();
+			if (payload && typeof payload === "object" && !Array.isArray(payload)) {
+				const receipt = payload as Record<string, unknown>;
+				if (
+					receipt.code === "checkout_reconciled_terminal" &&
+					receipt.requestId === body.requestId &&
+					typeof receipt.sessionId === "string" &&
+					/^cs_[A-Za-z0-9_]+$/.test(receipt.sessionId) &&
+					typeof receipt.expiresAt === "string" &&
+					Number.isFinite(Date.parse(receipt.expiresAt)) &&
+					Date.parse(receipt.expiresAt) > 0 &&
+					Date.parse(receipt.expiresAt) <= Date.now()
+				)
+					throw new ReconciledCheckout(receipt.expiresAt);
+			}
+		}
 		if (!response.ok) throw new Error("Computer billing is unavailable. Refresh the plan status before retrying.");
 		const value: unknown = await response.json();
 		this.#assert();
@@ -253,11 +279,20 @@ export class ComputerBillingClient {
 		if (!attempt || (attempt.expiresAt && Date.parse(attempt.expiresAt) <= Date.now()))
 			attempt = { requestId: crypto.randomUUID() };
 		this.#storage.setItem(key, JSON.stringify(attempt));
-		const result = await this.#command("checkout", {
-			planKey: offer.planKey,
-			version: offer.version,
-			requestId: attempt.requestId,
-		});
+		let result: Record<string, unknown>;
+		try {
+			result = await this.#command("checkout", {
+				planKey: offer.planKey,
+				version: offer.version,
+				requestId: attempt.requestId,
+			});
+		} catch (error) {
+			if (error instanceof ReconciledCheckout) {
+				this.#assert();
+				this.#storage.setItem(key, JSON.stringify({ ...attempt, expiresAt: error.expiresAt }));
+			}
+			throw error;
+		}
 		const url = stripeRedirect(result, "checkout");
 		if (typeof result.expiresAt === "string" && Number.isFinite(Date.parse(result.expiresAt))) {
 			this.#storage.setItem(key, JSON.stringify({ ...attempt, expiresAt: result.expiresAt }));

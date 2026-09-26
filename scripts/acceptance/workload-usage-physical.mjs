@@ -48,7 +48,7 @@ try {
  run("usermod", ["--append", "--groups", "lxd", account]);
  await mkdir(`${source}/scripts/acceptance`, { recursive: true, mode: 0o755 });
  await mkdir(`${source}/supabase`, { recursive: true, mode: 0o755 });
- for (const name of ["native-postgres.mjs", "workload-usage-case.mjs", "workload-usage-evidence.mjs"]) await cp(join(repository, "scripts/acceptance", name), `${source}/scripts/acceptance/${name}`);
+ for (const name of ["native-postgres.mjs", "workload-usage-case.mjs", "workload-usage-evidence.mjs", "workload-usage-guest.py"]) await cp(join(repository, "scripts/acceptance", name), `${source}/scripts/acceptance/${name}`);
  await cp(join(repository, "scripts/test-hosted-db.mjs"), `${source}/scripts/test-hosted-db.mjs`);
  await cp(join(repository, "supabase/migrations"), `${source}/supabase/migrations`, { recursive: true });
  await cp(join(repository, "supabase/tests"), `${source}/supabase/tests`, { recursive: true });

@@ -119,6 +119,48 @@ describe("computer billing authority", () => {
 		expect(env.fetcher.mock.calls[0]![1]!.headers).toMatchObject({ authorization: "Bearer refreshed-member-token" });
 		expect(env.fetcher.mock.calls[0]![1]!.body).toBe("{}");
 	});
+	it("retires only an exact reconciled terminal checkout and waits for an explicit retry", async () => {
+		const env = setup(),
+			offer = env.catalog.plans[0]!;
+		env.fetcher.mockImplementationOnce(async (_url, init) =>
+			Response.json(
+				{
+					code: "checkout_reconciled_terminal",
+					requestId: JSON.parse(init!.body as string).requestId,
+					sessionId: "cs_closed",
+					expiresAt: "2000-01-01T00:00:00Z",
+				},
+				{ status: 409 },
+			),
+		);
+		await expect(env.client().checkout(offer)).rejects.toThrow("previous checkout is closed");
+		expect(env.fetcher).toHaveBeenCalledOnce();
+		await env.client().checkout(offer);
+		expect(JSON.parse(env.fetcher.mock.calls[0]![1]!.body as string).requestId).not.toBe(
+			JSON.parse(env.fetcher.mock.calls[1]![1]!.body as string).requestId,
+		);
+	});
+	it("retains uncertain purchase identity for generic or mismatched terminal conflicts", async () => {
+		for (const reply of [
+			{ error: "Busy" },
+			{
+				code: "checkout_reconciled_terminal",
+				requestId: "wrong",
+				sessionId: "cs_closed",
+				expiresAt: "2000-01-01T00:00:00Z",
+			},
+		]) {
+			const env = setup(),
+				offer = env.catalog.plans[0]!;
+			env.fetcher.mockResolvedValueOnce(Response.json(reply, { status: 409 }));
+			await expect(env.client().checkout(offer)).rejects.toThrow("unavailable");
+			await env.client().checkout(offer);
+			expect(JSON.parse(env.fetcher.mock.calls[0]![1]!.body as string).requestId).toBe(
+				JSON.parse(env.fetcher.mock.calls[1]![1]!.body as string).requestId,
+			);
+			sessionStorage.clear();
+		}
+	});
 	it("does not send payment commands after an account change during token refresh", async () => {
 		const env = setup();
 		const { data } = await env.cloud.supabase.auth.getSession();

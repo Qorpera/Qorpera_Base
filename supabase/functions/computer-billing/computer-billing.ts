@@ -38,9 +38,11 @@ export function createComputerBillingRpc(supabaseUrl: string, serviceKey: string
 
 class BillingError extends Error {
 	status: number;
-	constructor(status: number, message: string) {
+	details?: { code: "checkout_reconciled_terminal"; requestId: string; sessionId: string; expiresAt: string };
+	constructor(status: number, message: string, details?: BillingError["details"]) {
 		super(message);
 		this.status = status;
+		this.details = details;
 	}
 }
 
@@ -127,6 +129,14 @@ async function billingCommand(options: ComputerBillingOptions, userId: string, k
 		p_user_id: userId, p_kind: kind, p_request_id: requestId, p_payload: payload,
 	}));
 	if (command.state === "completed") return object(command.result);
+	if (command.state === "recovered_terminal") {
+		if (kind !== "checkout" || command.requestId !== requestId || typeof command.sessionId !== "string" ||
+			!/^cs_[A-Za-z0-9_]+$/.test(command.sessionId) || typeof command.expiresAt !== "string" ||
+			!Number.isFinite(Date.parse(command.expiresAt)) || Date.parse(command.expiresAt) > options.now())
+			throw new BillingError(503, "Recovered checkout identity differs");
+		throw new BillingError(409, "The previous checkout was reconciled and is closed. Start a new checkout to continue.",
+			{ code: "checkout_reconciled_terminal", requestId, sessionId: command.sessionId, expiresAt: command.expiresAt });
+	}
 	if (command.state !== "claimed" || typeof command.commandId !== "string" || typeof command.leaseToken !== "string" || typeof command.idempotencyKey !== "string")
 		throw new BillingError(503, command.state === "reconciliation_required" ? "Billing request needs reconciliation" : "Billing request is already being processed");
 	try {
@@ -169,77 +179,157 @@ async function fenceInvoice(options: ComputerBillingOptions, eventId: string, bo
 		p_proof: { invoiceId: identifier(invoice.id, "in"), subscriptionId, customerId, sourceId, reason } });
 }
 
-/** A monotonic fence is separate from subscription state: cancellation preserves
- * a paid period, whereas reversal cannot be undone by a delayed invoice.paid.
- * Restoring disputed/refunded allowance requires an explicit audited policy.
- */
-async function reconcileAdversePayment(options: ComputerBillingOptions, type: string, data: Record<string, unknown>, eventId: string, bodySha256: string): Promise<void> {
-	if (type.startsWith("credit_note.")) {
-		const id = identifier(data.id, "cn"), note = await stripe(options, `credit_notes/${id}`);
-		if (note.id !== id || note.livemode !== options.liveMode || !["issued", "void"].includes(String(note.status)) ||
-			typeof note.amount !== "number" || !Number.isSafeInteger(note.amount) || note.amount < 0)
-			throw new BillingError(503, "Credit note retrieval differs");
-		if (note.status === "void" || note.amount === 0) return;
-		const invoiceId = identifier(note.invoice, "in"), invoice = await stripe(options, `invoices/${invoiceId}`);
-		if (invoice.id !== invoiceId || invoice.customer !== note.customer) throw new BillingError(503, "Credit note invoice differs");
-		await fenceInvoice(options, eventId, bodySha256, invoice, id, "credit_note");
-		return;
-	}
-	let chargeId: string, sourceId: string, reason: "charge_adverse" | "refund" | "dispute";
-	if (type.startsWith("charge.dispute.")) {
-		sourceId = identifier(data.id, "du");
-		const dispute = await stripe(options, `disputes/${sourceId}`);
-		if (dispute.id !== sourceId || dispute.livemode !== options.liveMode) throw new BillingError(503, "Dispute retrieval differs");
-		chargeId = identifier(dispute.charge, "ch"); reason = "dispute";
-	} else if (type.startsWith("refund.") || type === "charge.refund.updated") {
-		sourceId = identifier(data.id, "re");
-		const refund = await stripe(options, `refunds/${sourceId}`);
-		if (refund.id !== sourceId || !["pending", "requires_action", "succeeded", "failed", "canceled"].includes(String(refund.status)))
-			throw new BillingError(503, "Refund retrieval differs");
-		if (["failed", "canceled"].includes(String(refund.status))) return;
-		chargeId = identifier(refund.charge, "ch"); reason = "refund";
-	} else { chargeId = identifier(data.id, "ch"); sourceId = chargeId; reason = "charge_adverse"; }
-	const charge = await canonicalCharge(options, chargeId);
-	if (reason === "charge_adverse" && charge.disputed === false && charge.amount_refunded === 0) return;
-	if (charge.payment_intent === null) throw new BillingError(503, "Charge payment relation needs reconciliation");
-	const paymentIntent = identifier(charge.payment_intent, "pi");
-	const payments = await stripeList(options, `invoice_payments?payment[type]=payment_intent&payment[payment_intent]=${paymentIntent}&limit=100`);
-	for (const payment of payments) {
-		if (payment.livemode !== options.liveMode || object(payment.payment).type !== "payment_intent" || object(payment.payment).payment_intent !== paymentIntent)
-			throw new BillingError(503, "Invoice payment relation differs");
-		const invoiceId = identifier(payment.invoice, "in"), invoice = await stripe(options, `invoices/${invoiceId}`);
-		if (invoice.id !== invoiceId || invoice.customer !== charge.customer) throw new BillingError(503, "Charge invoice differs");
-		await fenceInvoice(options, eventId, bodySha256, invoice, sourceId, reason);
-	}
+function minor(value: unknown): number {
+ if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0 || value > 999999999999999)
+  throw new BillingError(503, "Canonical payment amount differs");
+ return value;
+}
+async function snapshotInvoiceFunding(options: ComputerBillingOptions, invoice: Record<string, unknown>): Promise<Record<string, unknown>> {
+ const invoiceId = identifier(invoice.id, "in"), customerId = identifier(invoice.customer, "cus");
+ const subscriptionId = identifier(object(object(invoice.parent).subscription_details).subscription, "sub");
+ if (invoice.livemode !== options.liveMode || invoice.currency !== "dkk" || invoice.status !== "paid" || invoice.amount_remaining !== 0)
+  throw new BillingError(503, "Canonical paid invoice differs");
+ const basis = minor(invoice.total), preCredit = minor(invoice.pre_payment_credit_notes_amount), postCredit = minor(invoice.post_payment_credit_notes_amount);
+ const notes = await stripeList(options, `credit_notes?invoice=${invoiceId}&limit=100`);
+ let credit = 0, notedPre = 0, notedPost = 0;
+ const linked = new Map<string, number>();
+ for (const note of notes) {
+  identifier(note.id, "cn");
+  if (note.invoice !== invoiceId || note.customer !== customerId || note.livemode !== options.liveMode || note.currency !== "dkk" ||
+   !["issued", "void"].includes(String(note.status))) throw new BillingError(503, "Credit note identity differs");
+  if (note.status === "void") continue;
+  const amount = minor(note.amount), pre = minor(note.pre_payment_amount), post = minor(note.post_payment_amount);
+  if (amount !== pre + post || !Array.isArray(note.refunds)) throw new BillingError(503, "Credit note accounting differs");
+  credit += amount; notedPre += pre; notedPost += post;
+  let allocations = 0;
+  for (const value of note.refunds) {
+   const entry = object(value), id = identifier(typeof entry.refund === "string" ? entry.refund : object(entry.refund).id, "re");
+   if (entry.type !== undefined && entry.type !== null && entry.type !== "refund") throw new BillingError(503, "Credit note payment needs reconciliation");
+   const amount = minor(entry.amount_refunded); allocations += amount;
+   linked.set(id, (linked.get(id) ?? 0) + amount);
+  }
+  if (allocations > post) throw new BillingError(503, "Credit note refund allocation differs");
+ }
+ if (notedPre !== preCredit || notedPost !== postCredit || credit > basis) throw new BillingError(503, "Credit note history changed");
+ const payments = await stripeList(options, `invoice_payments?invoice=${invoiceId}&status=paid&limit=100`);
+ // The current product has one price/period and one payment. Split payments or
+ // customer-balance transfers need an explicit allocation model, never a guess.
+ if ((basis - preCredit > 0 && payments.length !== 1) || payments.length > 1 || minor(invoice.amount_paid) + preCredit !== basis)
+  throw new BillingError(503, "Invoice funding allocation needs reconciliation");
+ let refundReversal = 0, lostDispute = 0, held = false;
+ const evidence: Record<string, unknown> = {
+  creditNotes: notes.map(note => ({ id: note.id, status: note.status, amount: note.amount, prePaymentAmount: note.pre_payment_amount,
+   postPaymentAmount: note.post_payment_amount, refunds: Array.isArray(note.refunds) ? note.refunds.map(value => {
+    const item = object(value); return { refund: typeof item.refund === "string" ? item.refund : object(item.refund).id, amount: item.amount_refunded };
+   }) : [] })), payments: payments.map(payment => ({ id: payment.id, amount: payment.amount_paid })), charges: [], refunds: [], disputes: [],
+ };
+ for (const entry of payments) {
+  if (entry.invoice !== invoiceId || entry.livemode !== options.liveMode || entry.status !== "paid" || minor(entry.amount_paid) !== invoice.amount_paid)
+   throw new BillingError(503, "Invoice payment differs");
+  const payment = object(entry.payment);
+  if (payment.type !== "payment_intent") throw new BillingError(503, "Invoice payment method needs reconciliation");
+  const id = identifier(payment.payment_intent, "pi"), intent = await stripe(options, `payment_intents/${id}`);
+  if (intent.id !== id || intent.livemode !== options.liveMode || intent.customer !== customerId)
+   throw new BillingError(503, "Invoice payment intent differs");
+  const charge = await canonicalCharge(options, identifier(intent.latest_charge, "ch")), chargeId = identifier(charge.id, "ch");
+  if (charge.payment_intent !== id || charge.customer !== customerId || charge.paid !== true || charge.currency !== "dkk" || minor(charge.amount) !== entry.amount_paid)
+   throw new BillingError(503, "Invoice charge allocation differs");
+  const relations = await stripeList(options, `invoice_payments?payment[type]=payment_intent&payment[payment_intent]=${id}&limit=100`);
+  if (relations.length !== 1 || relations[0].invoice !== invoiceId || object(relations[0].payment).payment_intent !== id)
+   throw new BillingError(503, "Shared invoice payment needs reconciliation");
+  const refunds = await stripeList(options, `refunds?charge=${chargeId}&limit=100`);
+  let succeeded = 0, activeRefunds = 0;
+  for (const refund of refunds) {
+   const refundId = identifier(refund.id, "re"), amount = minor(refund.amount), allocation = linked.get(refundId) ?? 0;
+   if (refund.charge !== chargeId || refund.currency !== "dkk" || allocation > amount ||
+    !["pending", "requires_action", "succeeded", "failed", "canceled"].includes(String(refund.status)))
+    throw new BillingError(503, "Refund accounting differs");
+   linked.delete(refundId);
+   if (refund.status === "succeeded") succeeded += amount;
+   if (!["failed", "canceled"].includes(String(refund.status))) { activeRefunds += amount; refundReversal += amount - allocation; }
+  }
+  if (activeRefunds > minor(charge.amount) || succeeded > minor(charge.amount_refunded) || minor(charge.amount_refunded) > activeRefunds)
+   throw new BillingError(503, "Refund history changed");
+  const disputes = await stripeList(options, `disputes?charge=${chargeId}&limit=100`);
+  if (charge.disputed && disputes.length === 0) throw new BillingError(503, "Dispute history incomplete");
+  for (const dispute of disputes) {
+   identifier(dispute.id, "du");
+   if (dispute.charge !== chargeId || dispute.livemode !== options.liveMode || dispute.currency !== "dkk" || minor(dispute.amount) > minor(charge.amount))
+    throw new BillingError(503, "Dispute accounting differs");
+   if (["won", "warning_closed", "prevented"].includes(String(dispute.status))) continue;
+   if (dispute.status === "lost") {
+    // Credit/refund and lost-dispute overlap cannot be inferred from face
+    // amounts. Keep the ambiguous principal held for explicit reconciliation.
+    if (activeRefunds > 0 || credit > 0) held = true;
+    else lostDispute += minor(dispute.amount);
+   } else if (["needs_response", "under_review", "warning_needs_response", "warning_under_review"].includes(String(dispute.status))) held = true;
+   else throw new BillingError(503, "Dispute outcome unavailable");
+  }
+  (evidence.charges as unknown[]).push({ id: chargeId, amount: charge.amount, refundedAmount: charge.amount_refunded });
+  (evidence.refunds as unknown[]).push(...refunds.map(value => ({ id: value.id, amount: value.amount, status: value.status })));
+  (evidence.disputes as unknown[]).push(...disputes.map(value => ({ id: value.id, amount: value.amount, status: value.status })));
+ }
+ if (linked.size > 0 || !Number.isSafeInteger(credit + refundReversal + lostDispute)) throw new BillingError(503, "Payment reversal needs reconciliation");
+ const digest = await crypto.subtle.digest("SHA-256", encoder.encode(JSON.stringify(evidence)));
+ return { schema: "qorpera.invoice-funding/v1", invoiceId, subscriptionId, customerId, currency: "dkk", basisMinor: basis,
+  reversedMinor: Math.min(basis, credit + refundReversal + lostDispute), held, evidence: JSON.stringify(evidence),
+  evidenceSha256: Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, "0")).join("") };
 }
 
-async function inspectInvoiceFunding(options: ComputerBillingOptions, invoice: Record<string, unknown>, eventId: string, bodySha256: string): Promise<void> {
-	const invoiceId = identifier(invoice.id, "in");
-	for (const field of ["pre_payment_credit_notes_amount", "post_payment_credit_notes_amount"]) {
-		const amount = invoice[field];
-		if (typeof amount !== "number" || !Number.isSafeInteger(amount) || amount < 0)
-			throw new BillingError(503, "Invoice credit history needs reconciliation");
-		if (amount > 0) await fenceInvoice(options, eventId, bodySha256, invoice, invoiceId, "credit_note");
-	}
-	const payments = await stripeList(options, `invoice_payments?invoice=${invoiceId}&status=paid&limit=100`);
-	let total = 0;
-	for (const entry of payments) {
-		if (entry.invoice !== invoiceId || entry.livemode !== options.liveMode || entry.status !== "paid" ||
-			typeof entry.amount_paid !== "number" || !Number.isSafeInteger(entry.amount_paid) || entry.amount_paid < 0)
-			throw new BillingError(503, "Invoice payment differs");
-		const payment = object(entry.payment);
-		if (payment.type !== "payment_intent") throw new BillingError(503, "Invoice payment method needs reconciliation");
-		const id = identifier(payment.payment_intent, "pi"), intent = await stripe(options, `payment_intents/${id}`);
-		if (intent.id !== id || intent.livemode !== options.liveMode || intent.customer !== invoice.customer)
-			throw new BillingError(503, "Invoice payment intent differs");
-		const charge = await canonicalCharge(options, identifier(intent.latest_charge, "ch"));
-		if (charge.payment_intent !== id || charge.customer !== invoice.customer || charge.paid !== true)
-			throw new BillingError(503, "Invoice charge differs");
-		if (charge.disputed || Number(charge.amount_refunded) > 0)
-			await fenceInvoice(options, eventId, bodySha256, invoice, String(charge.id), "charge_adverse");
-		total += entry.amount_paid;
-	}
-	if (!Number.isSafeInteger(total) || total !== invoice.amount_paid) throw new BillingError(503, "Invoice payments need reconciliation");
+/** Every restoration and reduction is retrieved under the same subscription
+ * lease; a delayed event re-reads current payment history, never its old body. */
+async function reconcileAdversePayment(options: ComputerBillingOptions, type: string, data: Record<string, unknown>, eventId: string, bodySha256: string, created: number): Promise<void> {
+ let sourceId: string, reason: "charge_adverse" | "refund" | "dispute" | "credit_note", invoices: Record<string, unknown>[];
+ if (type.startsWith("credit_note.")) {
+  sourceId = identifier(data.id, "cn"); reason = "credit_note";
+  const note = await stripe(options, `credit_notes/${sourceId}`);
+  if (note.id !== sourceId || note.livemode !== options.liveMode) throw new BillingError(503, "Credit note retrieval differs");
+  invoices = [await stripe(options, `invoices/${identifier(note.invoice, "in")}`)];
+  if (invoices[0].customer !== note.customer) throw new BillingError(503, "Credit note invoice differs");
+ } else {
+  let chargeId: string;
+  if (type.startsWith("charge.dispute.")) {
+   sourceId = identifier(data.id, "du"); reason = "dispute";
+   const value = await stripe(options, `disputes/${sourceId}`);
+   if (value.id !== sourceId || value.livemode !== options.liveMode) throw new BillingError(503, "Dispute retrieval differs");
+   chargeId = identifier(value.charge, "ch");
+  } else if (type.startsWith("refund.") || type === "charge.refund.updated") {
+   sourceId = identifier(data.id, "re"); reason = "refund";
+   const value = await stripe(options, `refunds/${sourceId}`);
+   if (value.id !== sourceId) throw new BillingError(503, "Refund retrieval differs");
+   chargeId = identifier(value.charge, "ch");
+  } else { chargeId = identifier(data.id, "ch"); sourceId = chargeId; reason = "charge_adverse"; }
+  const charge = await canonicalCharge(options, chargeId), paymentIntent = identifier(charge.payment_intent, "pi");
+  const payments = await stripeList(options, `invoice_payments?payment[type]=payment_intent&payment[payment_intent]=${paymentIntent}&limit=100`);
+  if (payments.length === 0) return; // No computer invoice relation.
+  if (payments.length !== 1) throw new BillingError(503, "Shared invoice payment needs reconciliation");
+  const payment = payments[0];
+  if (payment.livemode !== options.liveMode || object(payment.payment).type !== "payment_intent" || object(payment.payment).payment_intent !== paymentIntent)
+   throw new BillingError(503, "Invoice payment relation differs");
+  invoices = [await stripe(options, `invoices/${identifier(payment.invoice, "in")}`)];
+  if (invoices[0].customer !== charge.customer) throw new BillingError(503, "Charge invoice differs");
+ }
+ for (const initial of invoices) {
+  if (initial.parent === null) continue;
+  const invoiceId = identifier(initial.id, "in"), subscriptionId = identifier(object(object(initial.parent).subscription_details).subscription, "sub");
+  const claim = object(await options.rpc("qorpera_begin_computer_billing_sync", { p_event_id: eventId, p_subscription_id: subscriptionId,
+   p_event_created_at: new Date(created * 1000).toISOString(), p_body_sha256: bodySha256 }));
+  if (claim.state === "completed") continue;
+  if (claim.state !== "claimed" || typeof claim.leaseToken !== "string") throw new BillingError(503, "Payment reconciliation busy");
+  try {
+   const invoice = await stripe(options, `invoices/${invoiceId}`);
+   if (invoice.id !== invoiceId || object(object(invoice.parent).subscription_details).subscription !== subscriptionId)
+    throw new BillingError(503, "Invoice retrieval differs");
+   // Persist a conservative hold before traversing remote history. If any
+   // lookup fails, uncertain money never continues funding NEW reservations.
+   await fenceInvoice(options, eventId, bodySha256, invoice, sourceId, reason);
+   const snapshot = await snapshotInvoiceFunding(options, invoice);
+   await options.rpc("qorpera_apply_computer_invoice_funding", { p_event_id: eventId, p_lease_token: claim.leaseToken, p_snapshot: snapshot, p_complete: true });
+  } catch (error) {
+   try { await options.rpc("qorpera_release_computer_billing_sync", { p_event_id: eventId, p_lease_token: claim.leaseToken }); } catch { /* finite lease */ }
+   throw error;
+  }
+ }
 }
 
 async function reconcileWebhook(bytes: Uint8Array, options: ComputerBillingOptions): Promise<void> {
@@ -257,7 +347,7 @@ async function reconcileWebhook(bytes: Uint8Array, options: ComputerBillingOptio
 		throw new BillingError(400, "Invalid webhook timestamp");
 	const digest = await crypto.subtle.digest("SHA-256", new Uint8Array(bytes));
 	const bodySha256 = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
-	if (adverse) { await reconcileAdversePayment(options, type, data, eventId, bodySha256); return; }
+	if (adverse) { await reconcileAdversePayment(options, type, data, eventId, bodySha256, event.created); return; }
 	if (type.startsWith("invoice.") && data.parent === null) return;
 	const subscriptionId = identifier(
 		type.startsWith("customer.subscription.") ? data.id : object(object(data.parent).subscription_details).subscription,
@@ -310,7 +400,7 @@ async function reconcileWebhook(bytes: Uint8Array, options: ComputerBillingOptio
 				invoice.currency !== "dkk" || !["subscription_create", "subscription_cycle"].includes(String(invoice.billing_reason)) ||
 				object(object(invoice.parent).subscription_details).subscription !== subscriptionId)
 				throw new BillingError(503, "Paid invoice retrieval differs");
-			await inspectInvoiceFunding(options, invoice, eventId, bodySha256);
+
 			const lines = object(invoice.lines);
 			if (lines.has_more !== false || !Array.isArray(lines.data) || lines.data.length !== 1)
 				throw new BillingError(503, "Invoice lines need reconciliation");
@@ -325,6 +415,8 @@ async function reconcileWebhook(bytes: Uint8Array, options: ComputerBillingOptio
 				Number(pricing.unit_amount_decimal) !== invoiceOffer.monthlyPriceMinor ||
 				typeof period.start !== "number" || typeof period.end !== "number" || !Number.isSafeInteger(period.start) || !Number.isSafeInteger(period.end) || period.start <= 0 || period.end <= period.start)
 				throw new BillingError(503, "Invoice allowance period or offer differs");
+			const snapshot = await snapshotInvoiceFunding(options, invoice);
+			await options.rpc("qorpera_apply_computer_invoice_funding", { p_event_id: eventId, p_lease_token: claim.leaseToken, p_snapshot: snapshot, p_complete: false });
 			paidInvoice = { invoiceId, subscriptionId, customerId, planKey: invoicePlan.planKey, planVersion: invoicePlan.version,
 				periodStart: new Date(period.start * 1000).toISOString(), periodEnd: new Date(period.end * 1000).toISOString(),
 				amountPaid: invoice.amount_paid, billingReason: invoice.billing_reason, status: "paid", currency: "dkk" };
@@ -390,7 +482,7 @@ export async function handleComputerBilling(request: Request, options: ComputerB
 			const checkout = await billingCommand(options, userId, "checkout", body.requestId,
 				{ planKey: offer.planKey, version: offer.version, tariffVersion: offer.tariffVersion, priceId, returnUrl: options.returnUrl }, async (checkoutKey) => {
 					const customer = await billingCommand(options, userId, "customer", body.requestId as string, {}, async (customerKey) => {
-						const created = await stripe(options, "customers", new URLSearchParams({ "metadata[qorpera_user_id]": userId }), customerKey);
+						const created = await stripe(options, "customers", new URLSearchParams({ "metadata[qorpera_user_id]": userId, "metadata[qorpera_command_id]": customerKey }), customerKey);
 						return { customerId: identifier(created.id, "cus") };
 					});
 					// A completed Checkout can be paid even when its webhook is late.
@@ -405,6 +497,7 @@ export async function handleComputerBilling(request: Request, options: ComputerB
 						mode: "subscription", customer: identifier(customer.customerId, "cus"), "line_items[0][price]": priceId,
 						"line_items[0][quantity]": "1", success_url: options.returnUrl, cancel_url: options.returnUrl,
 						client_reference_id: userId, "subscription_data[metadata][qorpera_user_id]": userId,
+						"metadata[qorpera_command_id]": checkoutKey,
 					}), checkoutKey);
 					if (typeof session.url !== "string" || new URL(session.url).protocol !== "https:" || new URL(session.url).hostname !== "checkout.stripe.com" ||
 						typeof session.id !== "string" || !/^cs_[A-Za-z0-9_]+$/.test(session.id) || typeof session.expires_at !== "number" || !Number.isSafeInteger(session.expires_at))
@@ -428,6 +521,7 @@ export async function handleComputerBilling(request: Request, options: ComputerB
 		return Response.json({ url: portal.url }, { headers });
 	} catch (error) {
 		const status = error instanceof BillingError ? error.status : error instanceof SyntaxError ? 400 : 503;
-		return Response.json({ error: error instanceof BillingError ? error.message : status === 400 ? "Invalid billing payload" : "Billing temporarily unavailable" }, { status, headers });
+		return Response.json({ error: error instanceof BillingError ? error.message : status === 400 ? "Invalid billing payload" : "Billing temporarily unavailable",
+			...(error instanceof BillingError ? error.details : undefined) }, { status, headers });
 	}
 }

@@ -53,17 +53,26 @@ set local role authenticated;
 select pg_temp.assert_paid_founding(not (public.qorpera_company_computer_usage_status(pg_temp.founding_profile())->>'canStart')::boolean,
     'Fully reserved allowance was promised to a new company');
 reset role;
+-- Owner-only time travel for this read-only readiness assertion.
+alter table public.qorpera_computer_allowance_buckets disable trigger qorpera_computer_bucket_payment_guard;
 update public.qorpera_computer_allowance_buckets set reserved_us=0,period_end=statement_timestamp()-interval '1 minute' where invoice_id='in_foundingpaid1';
+alter table public.qorpera_computer_allowance_buckets enable trigger qorpera_computer_bucket_payment_guard;
 set local role authenticated;
 select pg_temp.assert_paid_founding(not (public.qorpera_company_computer_usage_status(pg_temp.founding_profile())->>'canStart')::boolean,
     'Expired invoice period admitted founding');
 reset role;
+-- Owner-only time travel for this read-only readiness assertion.
+alter table public.qorpera_computer_allowance_buckets disable trigger qorpera_computer_bucket_payment_guard;
 update public.qorpera_computer_allowance_buckets set period_end=statement_timestamp()+interval '60 seconds' where invoice_id='in_foundingpaid1';
+alter table public.qorpera_computer_allowance_buckets enable trigger qorpera_computer_bucket_payment_guard;
 set local role authenticated;
 select pg_temp.assert_paid_founding(not (public.qorpera_company_computer_usage_status(pg_temp.founding_profile())->>'canStart')::boolean,
     'Period cannot cover first guarded start window');
 reset role;
+-- Owner-only time travel for this read-only readiness assertion.
+alter table public.qorpera_computer_allowance_buckets disable trigger qorpera_computer_bucket_payment_guard;
 update public.qorpera_computer_allowance_buckets set period_end=statement_timestamp()+interval '1 month',reserved_us=issued_us-329999999 where invoice_id='in_foundingpaid1';
+alter table public.qorpera_computer_allowance_buckets enable trigger qorpera_computer_bucket_payment_guard;
 set local role authenticated;
 select pg_temp.assert_paid_founding(not (public.qorpera_company_computer_usage_status(pg_temp.founding_profile())->>'canStart')::boolean,
     'Less than first standard window should not promise startup');

@@ -77,9 +77,9 @@ select jsonb_build_object(
  'owners',(select jsonb_agg(user_id order by user_id) from public.qorpera_profile_members where profile_id=f.profile_id and role='owner'),
  'requestCount',(select count(*) from public.qorpera_session_turn_requests where profile_id=f.profile_id),
  'request',to_jsonb(q),'run',to_jsonb(r),
- 'source',public.qorpera_company_context_source(r,'input',q.input_id))
+ 'source',case when r.id is not null then public.qorpera_company_context_source(r,'input',q.input_id) end)
 from public.qorpera_company_founding f
 join public.qorpera_session_turn_requests q on q.id=(f.launch_receipt->>'turnRequestId')::uuid
-join public.qorpera_execution_runs r on r.id=q.run_id where f.profile_id=${sqlUuid(profileId)};
+left join public.qorpera_execution_runs r on r.id=q.run_id where f.profile_id=${sqlUuid(profileId)};
 commit;`;
 }

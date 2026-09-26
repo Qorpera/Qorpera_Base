@@ -7,10 +7,10 @@ import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { expandTestFixture } from "../test-hosted-db.mjs";
 import { startNativePostgres } from "./native-postgres.mjs";
-import { readWorkloadUsage, verifyWorkloadUsage } from "./workload-usage-evidence.mjs";
+import { readWorkloadUsage, verifyWorkloadUsage, verifyWorkloadActivity } from "./workload-usage-evidence.mjs";
 import { CodingComputerController, CODING_COMPUTER_RPCS, parseCodingSessionClaim, lxdCodingMachinePlan,
  PaidComputerGuardClient, readPaidComputerHostClock, LxdUnixClient, RuntimeComputerController,
- RUNTIME_COMPUTER_RPCS, RuntimeNodeInventoryObserver, exerciseRuntimeWorkloadUsage } from "./workload-usage-tools.mjs";
+ RUNTIME_COMPUTER_RPCS, RuntimeNodeInventoryObserver, physicalHost, exerciseRuntimeWorkloadUsage } from "./workload-usage-tools.mjs";
 
 // This runs as the dedicated guard UID on an empty, disposable GitHub runner.
 // Company/model/source metadata and invoice funding are labeled SQL fixtures.
@@ -35,7 +35,7 @@ const socketPath = "/var/snap/lxd/common/lxd/unix.socket", client = new LxdUnixC
 const signal = AbortSignal.timeout(15 * 60000), executorSecret = randomBytes(48).toString("base64url");
 const evidence = { schema: "qorpera.physical-workload-usage/v1", commit: process.env.GITHUB_SHA, kind,
  shape: { cpuMillis: cpuCount * 1000, memoryBytes }, planKey, poolFallback, renew, funding: "test invoice through actual subscription/funding RPCs",
- sourceFixture: "396 dispatch prefix; no model, repository, login-provider or guest workload command executed",
+ sourceFixture: "396 dispatch prefix; no model, repository or login-provider operation executed. Paid guests execute the fixed offline CPU/memory/disk acceptance workload.",
  passed: false, checks: {}, cleanup: false };
 let database, machineName, phase = "database";
 const log = (value) => console.log(JSON.stringify({ phase, kind, ...value }));
@@ -105,11 +105,12 @@ try {
  from pg_proc p join pg_namespace n on n.oid=p.pronamespace where n.nspname='public' and p.proname in (${[...allowed].map(quoted).join(",")});`));
  const calls = [];
  const control = { async call(method, args, callSignal) {
+  evidence.lastControlMethod = method;
   assert(allowed.has(method)); const signature = signatures.filter((row) => row.name === method); assert.equal(signature.length, 1);
   const paid = CODING_COMPUTER_RPCS.includes(method) || RUNTIME_COMPUTER_RPCS.includes(method);
   const input = paid ? { ...args, p_executor_secret: executorSecret } : args;
   assert.deepEqual(Object.keys(input).sort(), signature[0].args.map((arg) => arg.name).sort());
-  assert(signature[0].args.every((arg) => /^[a-z_]+$/.test(arg.name) && ["uuid", "jsonb", "text"].includes(arg.type)));
+  assert(signature[0].args.every((arg) => /^[a-z_][a-z0-9_]*$/.test(arg.name) && ["uuid", "jsonb", "text"].includes(arg.type)));
   const typed = signature[0].args.map((arg) => `${arg.name} ${arg.type}`).join(",");
   const parameters = signature[0].args.map((arg) => `${arg.name}=>(select ${arg.name} from input)`).join(",");
   const value = JSON.parse(await query(`begin; ${service} with input as (select * from jsonb_to_record(${literal(input)}) as args(${typed}))
@@ -117,17 +118,21 @@ try {
   if (args.p_request?.sample) calls.push({ method, args: structuredClone(args) });
   return value;
  } };
+ // Keep the same protected host probe as the production observer, but expose
+ // its bounded refusal code before the observer deliberately redacts causes.
+ await physicalHost(inventoryPolicy, signal);
  const observer = new RuntimeNodeInventoryObserver(inventoryPolicy, control);
  assert.equal((await observer.observe(signal)).state, "ready"); evidence.checks.actualNodeInventory = true;
  // Grants are intentionally test invoices, not a second Stripe purchase. The
- // same public privileged reconciler creates immutable spendable entitlement.
- await query(`begin; ${service} select public.qorpera_map_computer_billing_customer('${memberId}','cus_WorkloadAcceptance');
+ // same owner-only reconciler creates immutable spendable entitlement. Guest
+ // service-role authority deliberately cannot mint or alter payment truth.
+ await query(`begin; ${service} reset role; select public.qorpera_map_computer_billing_customer('${memberId}','cus_WorkloadAcceptance');
  do $$ declare t timestamptz:=clock_timestamp()-interval '1 day'; begin
  perform public.qorpera_reconcile_computer_subscription('evt_WorkloadAcceptance',t,jsonb_build_object('subscriptionId','sub_WorkloadAcceptance','customerId','cus_WorkloadAcceptance','userId','${memberId}','planKey','${planKey}','planVersion',1,'status','active','periodStart',t,'periodEnd',t+interval '1 month'));
  perform public.qorpera_fund_computer_invoice(jsonb_build_object('invoiceId','in_WorkloadAcceptance','subscriptionId','sub_WorkloadAcceptance','customerId','cus_WorkloadAcceptance','planKey','${planKey}','planVersion',1,'periodStart',t,'periodEnd',t+interval '1 month','amountPaid',${planKey === "basis" ? 18500 : 159200},'billingReason','subscription_create','status','paid','currency','dkk')); end $$; commit;`);
  const fallbackMember = "30000000-0000-4000-8000-000000000002";
  if (poolFallback) {
-  await query(`begin; ${service} select public.qorpera_map_computer_billing_customer('${fallbackMember}','cus_WorkloadFallback');
+  await query(`begin; ${service} reset role; select public.qorpera_map_computer_billing_customer('${fallbackMember}','cus_WorkloadFallback');
    do $$ declare t timestamptz:=clock_timestamp()-interval '1 day'; begin
    perform public.qorpera_reconcile_computer_subscription('evt_WorkloadFallback',t,jsonb_build_object('subscriptionId','sub_WorkloadFallback','customerId','cus_WorkloadFallback','userId','${fallbackMember}','planKey','basis','planVersion',1,'status','active','periodStart',t,'periodEnd',t+interval '1 month'));
    perform public.qorpera_fund_computer_invoice(jsonb_build_object('invoiceId','in_WorkloadFallback','subscriptionId','sub_WorkloadFallback','customerId','cus_WorkloadFallback','planKey','basis','planVersion',1,'periodStart',t,'periodEnd',t+interval '1 month','amountPaid',18500,'billingReason','subscription_create','status','paid','currency','dkk')); end $$;
@@ -199,6 +204,32 @@ try {
  await until(async () => { try { return await client.readInstanceFile("default", machineName, "/proc/uptime", 128, signal); } catch { return null; } }, Boolean, 150000, "guest Linux clock");
  assert.equal((await observer.observe(signal)).state, "ready");
  phase = "metering";
+ if (kind !== "login") {
+  // Observe actual idle time before starting the fixed guest exercise. LXD
+  // exec and controller observations remain concurrent so busy time cannot
+  // disappear behind a blocking ten-second command.
+  await controller.observe(allocationId, signal);
+  const idleObservationIds = [];
+  for (let n = 0; n < 2; n++) {
+   await delay(1100, undefined, { signal }); await controller.observe(allocationId, signal);
+   idleObservationIds.push(calls.at(-1).args.p_request.sample.observationId);
+  }
+  const guestScript = `/var/tmp/qorpera-usage-${allocationId}.py`, guestMarker = `/var/tmp/qorpera-usage-${allocationId}.json`;
+  const payload = await readFile(join(directory, "workload-usage-guest.py"), "utf8");
+  await client.pushInstanceFile("default", machineName, guestScript, payload, 0o400, signal);
+  let finished = false, failure;
+  const execution = client.execInstance("default", machineName, ["/usr/bin/python3", guestScript, guestMarker], AbortSignal.any([signal, AbortSignal.timeout(45000)]))
+   .catch((error) => { failure = error; }).finally(() => { finished = true; });
+  while (!finished) { await delay(1000, undefined, { signal }); await controller.observe(allocationId, signal); }
+  await execution; if (failure) throw failure;
+  const completion = JSON.parse((await client.readInstanceFile("default", machineName, guestMarker, 4096, signal)).content.toString("utf8"));
+  assert.equal(completion.schema, "qorpera.guest-workload-completion/v1"); assert.equal(completion.completed, true);
+  assert.equal(completion.touchedMemoryBytes, 64 * 1024 ** 2); assert.equal(completion.writtenDiskBytes, 32 * 1024 ** 2);
+  assert(completion.hashIterations > 0 && completion.cpuTimeMs > 0 && /^[a-f0-9]{64}$/.test(completion.sha256));
+  assert(completion.finishedGuestUptimeMs - completion.startedGuestUptimeMs >= 10000);
+  await client.execInstance("default", machineName, ["/bin/rm", "--", guestScript, guestMarker], signal);
+  evidence.guestWorkload = { payloadSha256: hash(payload), idleObservationIds, completion };
+ }
  if (kind === "native") {
   const probe = await exerciseRuntimeWorkloadUsage({ context, guardSocketPath, lxdSocketPath: socketPath, control,
    disposableRun: { githubHosted: true, companyId }, close: true, renew, signal });
@@ -250,6 +281,10 @@ try {
   evidence.checks.physicalLoginAwakeButUncharged = true;
  }
  assert.equal((await client.getInstance("default", machineName, signal)).status, "Stopped");
+ if (evidence.guestWorkload) {
+  evidence.activityReconciliation = verifyWorkloadActivity(evidence.accounting, evidence.guestWorkload);
+  evidence.checks.actualBusyGuestWorkload = true; evidence.checks.idleAndBusyUseSameTariff = true;
+ }
  evidence.balancesAfter = await balances();
  for (const before of evidence.balancesBefore) {
   const after = evidence.balancesAfter.find((bucket) => bucket.id === before.id);

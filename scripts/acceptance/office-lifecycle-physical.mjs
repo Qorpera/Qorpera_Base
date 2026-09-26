@@ -66,7 +66,7 @@ async function until(read, accept, timeout, label) {
 async function query(sql, options = {}) {
 	assert(pgReady, "Database not ready");
 	return new Promise((resolveQuery, reject) => {
-		const command = spawn("/usr/lib/postgresql/17/bin/psql", ["-X", "-qAt", "-v", "ON_ERROR_STOP=1", "-h", pgReady.socketDirectory, "-U", "postgres", "-d", "qorpera_test"],
+		const command = spawn("/usr/lib/postgresql/17/bin/psql", ["-X", "-qAt", "-v", "ON_ERROR_STOP=1", "-v", "VERBOSITY=verbose", "-h", pgReady.socketDirectory, "-U", "postgres", "-d", "qorpera_test"],
 			{ env: { PATH: "/usr/bin:/bin", LANG: "C", PGOPTIONS: "-c statement_timeout=10000 -c lock_timeout=2000" }, stdio: ["pipe", "pipe", "pipe"] });
 		let output = "", error = "";
 		const abort = () => command.kill("SIGKILL"), timer = setTimeout(abort, options.timeoutMs ?? 15000);
@@ -78,7 +78,14 @@ async function query(sql, options = {}) {
 		command.once("close", (code) => {
 			clearTimeout(timer); options.signal?.removeEventListener("abort", abort);
 			if (code === 0) resolveQuery(output.trim());
-			else { void writeFile(`${root}/private-sql-error`, error, { mode: 0o600 }); reject(new Error("OFFICE_ACCEPTANCE_SQL_FAILED")); }
+			else {
+				void writeFile(`${root}/private-sql-error`, error, { mode: 0o600 });
+				// Public diagnostics retain only SQLSTATE and a routine identifier.
+				// Raw messages, argument values and statement text remain private.
+				evidence.lastSqlFailure = { phase, sqlState: /ERROR:\s+([0-9A-Z]{5}):/.exec(error)?.[1] ?? "unknown",
+					routine: /PL\/pgSQL function ([a-z_][a-z0-9_]*)\(/.exec(error)?.[1] ?? null };
+				reject(new Error("OFFICE_ACCEPTANCE_SQL_FAILED"));
+			}
 		});
 		command.stdin.end(sql);
 	});
@@ -137,16 +144,19 @@ try {
 	await cp(join(repository, "scripts/test-hosted-db.mjs"), `${pgSource}/scripts/test-hosted-db.mjs`);
 	await cp(join(repository, "supabase/tests/bootstrap.sql"), `${pgSource}/supabase/tests/bootstrap.sql`);
 	await cp(join(repository, "supabase/migrations"), `${pgSource}/supabase/migrations`, { recursive: true });
+	phase = "database";
 	pg = child("runuser", ["-u", account, "--", process.execPath, `${pgSource}/scripts/acceptance/native-postgres.mjs`, "--bin", "/usr/lib/postgresql/17/bin", "--serve"], (line) => { const parsed = JSON.parse(line); if (parsed.ready) pgReady = parsed; });
 	await until(() => { assert(pg.exitCode === null, "Native PostgreSQL startup failed"); return pgReady; }, Boolean, 240000, "native PostgreSQL migrations");
 	evidence.migrationCount = pgReady.migrationCount;
 	rpc = await startOfficeRpcServer({ query, tls: { cert: await readFile(trust.serverCertificatePath), key: await readFile(trust.serverPrivateKeyPath) }, tokens, listen: { host: trust.host, port: trust.port }, onSample: (sample) => physicalSamples.push(sample) });
 	const registryUrl = `https://${trust.host}:${trust.port}`;
 	const wake = await readFile(join(repository, "supabase/tests/300_runtime_wake_bus.test.sql"), "utf8");
-	const parts = wake.split("insert into public.qorpera_profile_staff"); assert.equal(parts.length, 2);
+	const firstStaff = wake.indexOf("\ninsert into public.qorpera_profile_staff(");
+	assert(firstStaff > 0, "Pre-run company fixture boundary missing");
 	// Only the pre-run company/path setup is reused. Its object metadata is a
 	// labeled SQL fixture; it is not physical guest or canonical-storage proof.
-	await query(`${parts[0]} commit;`);
+	phase = "company_bootstrap";
+	await query(`${wake.slice(0, firstStaff)} commit;`);
 	const scope = JSON.parse(await query(`${member} select public.qorpera_register_runtime_office('30000000-0000-4000-8000-000000000020','${randomUUID()}','${context.imageFingerprint}','${context.bootstrapSha256}',2)-'state';`));
 	const measured = JSON.parse(tool("infrastructure", context.imageFingerprint));
 	const providerId = randomUUID(), nodeId = randomUUID(), intentId = randomUUID();
@@ -162,6 +172,7 @@ try {
 	await protectedFile("provenance.json", await readFile(context.provenancePath));
 	await protectedFile("image-manifest.json", await readFile(`${context.packageRoot}/manifest.json`));
 	const inventoryPolicy = { schema: "qorpera.runtime-node-inventory-policy/v1", nodeId, host: policy.host, operatingCpuMillis: 500, operatingMemoryBytes: 1024 ** 3, infrastructure: [] };
+	phase = "policy_enrollment";
 	await query(`${service}
  insert into public.qorpera_company_computer_billing_modes(profile_id,mode) values('${scope.companyId}','paid');
  select public.qorpera_configure_runtime_node(${literal({ schema: "qorpera.runtime-node-policy/v1", nodeId, machineIdSha256: policy.host.machineIdSha256, label: "office-acceptance", cpuMillis: measured.cpuMillis, memoryBytes: measured.memoryBytes, headroomCpuMillis: 1000, headroomMemoryBytes: 2 * 1024 ** 3, standardCpuMillis: 2000, standardMemoryBytes: 4 * 1024 ** 3, enabled: true })},0);
@@ -181,6 +192,7 @@ try {
 	await writeFile("/etc/qorpera/node-observer.json", `${JSON.stringify({ registryUrl, policy: inventoryPolicy })}\n`, { flag: "wx", mode: 0o444 });
 	await writeFile("/etc/qorpera/node-observer.key", tokens.provider, { flag: "wx", mode: 0o440 }); await chown("/etc/qorpera/node-observer.key", 0, 1100);
 	await mkdir("/var/lib/qorpera-computer-usage", { mode: 0o700 }); await chown("/var/lib/qorpera-computer-usage", 1100, 1100);
+	phase = "node_inventory";
 	observer = child("runuser", ["-u", account, "--", process.execPath, `${root}/tools.mjs`, "observer"], () => {}, { NODE_EXTRA_CA_CERTS: ca.path });
 	await until(() => query(`select count(*) from public.qorpera_runtime_node_observations where node_id='${nodeId}' and observation->>'state'='ready';`), (value) => value === "1", 30000, "actual node inventory");
 	evidence.checks.actualNodeInventory = true;

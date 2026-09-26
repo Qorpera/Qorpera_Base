@@ -147,3 +147,40 @@ export function verifyWorkloadUsage(evidence, expected) {
 		activeMs: active.toString(), elapsedMs: elapsed.toString(), debitedUs: totalDebit.toString(),
 		releasedUs: totalReleased.toString(), reservations: reservations.length, passed: true };
 }
+
+/** Attribute already reconciled physical intervals to idle and busy phases.
+ * These are cumulative-tariff allocations of the final debit, not separate
+ * settlements. Busy boundaries come from the completed guest process's actual
+ * Linux boot clock; both endpoints must be inside that observed execution. */
+export function verifyWorkloadActivity(evidence, activity) {
+	const { samples, checkpoints, stream, tariff } = evidence;
+	const { startedGuestUptimeMs: start, finishedGuestUptimeMs: end } = activity.completion;
+	assert(Number.isSafeInteger(start) && Number.isSafeInteger(end) && end > start, "Guest workload clock required");
+	const idleIds = new Set(activity.idleObservationIds);
+	assert.equal(idleIds.size, 2, "Two distinct idle observations required");
+	const phases = { idle: { active: 0n, charge: 0n, observations: [] }, busy: { active: 0n, charge: 0n, observations: [] } };
+	for (let index = 1; index < samples.length; index++) {
+		const previous = samples[index - 1], current = samples[index];
+		let phase;
+		if (idleIds.has(current.sample.observationId)) {
+			assert(current.sample.guestUptimeMs <= start, "Idle interval overlaps guest workload");
+			phase = phases.idle;
+		} else if (previous.sample.guestUptimeMs >= start && current.sample.guestUptimeMs <= end
+			&& current.sample.state === "running" && previous.sample.state === "running") phase = phases.busy;
+		if (!phase) continue;
+		assert.equal(current.coverage, "continuous", "Workload phase lacks continuous physical coverage");
+		const before = checkpoints.find((row) => row.sequence === previous.sequence);
+		const after = checkpoints.find((row) => row.sequence === current.sequence);
+		assert(before && after, "Workload phase lacks immutable checkpoints");
+		phase.active += integer(after.active_ms) - integer(before.active_ms);
+		phase.charge += normalizedUsageUs(after.active_ms, stream.resource_shape, tariff, stream.resource_kind)
+			- normalizedUsageUs(before.active_ms, stream.resource_shape, tariff, stream.resource_kind);
+		phase.observations.push(current.sample.observationId);
+	}
+	assert.equal(phases.idle.observations.length, 2, "Idle observations missing from actual SQL samples");
+	assert(phases.idle.active >= 1000n && phases.busy.active >= 5000n, "Insufficient observed idle/busy physical time");
+	return { schema: "qorpera.workload-activity-reconciliation/v1", tariffVersion: stream.tariff_version,
+		shape: stream.resource_shape, phases: Object.fromEntries(Object.entries(phases).map(([name, phase]) => [name,
+			{ activeMs: phase.active.toString(), allocatedStandardUs: phase.charge.toString(), observationIds: phase.observations }])),
+		passed: true };
+}

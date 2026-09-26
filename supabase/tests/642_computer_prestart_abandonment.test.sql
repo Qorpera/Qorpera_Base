@@ -20,7 +20,10 @@ do $$ declare t timestamptz:=clock_timestamp()-interval '1 day'; begin
     perform public.qorpera_set_company_computer_pool('30000000-0000-4000-8000-000000000010',true);
     perform pg_temp.path_claims('service_role');
 end $$;
-update public.qorpera_computer_allowance_buckets set issued_us=100000000 where invoice_id='in_permits';
+-- Operator-only synthetic balance setup; production custody resumes below.
+alter table public.qorpera_computer_allowance_buckets disable trigger qorpera_computer_bucket_payment_guard;
+update public.qorpera_computer_allowance_buckets set issued_us=100000000,funded_us=100000000 where invoice_id='in_permits';
+alter table public.qorpera_computer_allowance_buckets enable trigger qorpera_computer_bucket_payment_guard;
 do $$ declare request jsonb; cancellation jsonb; result jsonb; receipt jsonb; sample jsonb; baseline jsonb; held bigint;
     first_cancel_id uuid; machine uuid:=current_setting('qorpera_test.coding_vm')::uuid; attempt uuid:='64200000-0000-4000-8000-000000000010';
 begin

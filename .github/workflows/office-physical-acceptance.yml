@@ -110,21 +110,35 @@ jobs:
           node scripts/acceptance/native-postgres.mjs --bin /usr/lib/postgresql/17/bin
           --test 630_company_computer_subscriptions.test.sql
           --test 631_company_founding.test.sql
+          --test 632_founder_launch_provenance.test.sql
           --test 633_computer_billing_sync.test.sql
           --test 634_computer_shadow_observer.test.sql
           --test 635_computer_allowance_ledger.test.sql
+          --test 636_founder_legacy_turn_gate.test.sql
           --test 637_coding_computer_permits.test.sql
           --test 638_paid_computer_admission_boundaries.test.sql
           --test 639_computer_billing_authority.test.sql
           --test 640_runtime_computer_permits.test.sql
           --test 641_paid_office_lifecycle.test.sql
           --test 642_computer_prestart_abandonment.test.sql
+          --test 643_runtime_prestart_abandonment.test.sql
+          --test 644_office_prestart_abandonment.test.sql
+          --test 645_coding_terminal_recovery.test.sql
+          --test 646_runtime_terminal_recovery.test.sql
           --test 647_office_computer_outages.test.sql
           --test 648_office_outage_recovery.test.sql
           --test 660_paid_company_founding_capacity.test.sql
           --test 661_computer_payment_fences.test.sql
           --test 662_founding_paid_rollout_enrollment.test.sql
+          --test 664_computer_billing_command_recovery.test.sql
+          --test 666_computer_funding_caps.test.sql
           --out "${RUNNER_TEMP}/office-acceptance/postgres"
+
+      - name: Prove concurrent global spending and payment reversal ordering
+        timeout-minutes: 5
+        run: >-
+          node scripts/acceptance/allowance-concurrency.mjs --bin /usr/lib/postgresql/17/bin
+          --out "${RUNNER_TEMP}/office-acceptance/concurrency"
 
       - name: Exercise authenticated TLS RPC against native PostgreSQL
         timeout-minutes: 8
@@ -180,6 +194,7 @@ jobs:
           path: |
             ${{ runner.temp }}/office-acceptance/host-packages.txt
             ${{ runner.temp }}/office-acceptance/postgres/evidence.json
+            ${{ runner.temp }}/office-acceptance/concurrency/evidence.json
             ${{ runner.temp }}/office-acceptance/rpc/evidence.json
             ${{ runner.temp }}/office-acceptance/storage/evidence.json
             ${{ runner.temp }}/office-acceptance/image/evidence.json

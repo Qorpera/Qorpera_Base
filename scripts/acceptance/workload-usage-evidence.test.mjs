@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { normalizedUsageUs, readWorkloadUsage, verifyWorkloadUsage } from "./workload-usage-evidence.mjs";
+import { normalizedUsageUs, readWorkloadUsage, verifyWorkloadUsage, verifyWorkloadActivity } from "./workload-usage-evidence.mjs";
 
 const tariff = { reference_cpu_millis: 4000, reference_memory_bytes: 8589934592 };
 function fixture() {
@@ -97,4 +97,19 @@ test("read-only evidence query refuses SQL interpolation and does not select hos
 		assert(!sql.includes("executor_secret") && !sql.includes("key_sha256") && !sql.includes("prepare_request"));
 		assert(sql.startsWith("with p as")); return "{}";
 	}, "00000000-0000-4000-8000-000000000001");
+});
+
+test("idle and completed busy guest intervals allocate the same pinned shape tariff", () => {
+	const evidence = { tariff, stream: { resource_kind: "agent_sandbox", resource_shape: { cpuMillis: 2000, memoryBytes: 1073741824 }, tariff_version: 1 },
+		samples: Array.from({ length: 12 }, (_, index) => ({ sequence: index + 1, coverage: index ? "continuous" : "initial",
+			sample: { observationId: `phase-${index}`, state: "running", guestUptimeMs: index * 1000 } })),
+		checkpoints: Array.from({ length: 13 }, (_, sequence) => ({ sequence, active_ms: String(Math.max(sequence - 1, 0) * 1000) })) };
+	const activity = { idleObservationIds: ["phase-1", "phase-2"], completion: { startedGuestUptimeMs: 2500, finishedGuestUptimeMs: 10500 } };
+	const result = verifyWorkloadActivity(evidence, activity);
+	assert.equal(result.phases.idle.activeMs, "2000"); assert.equal(result.phases.idle.allocatedStandardUs, "1000000");
+	assert.equal(result.phases.busy.activeMs, "7000"); assert.equal(result.phases.busy.allocatedStandardUs, "3500000");
+	const bad = structuredClone(activity); bad.completion.finishedGuestUptimeMs = 4500;
+	assert.throws(() => verifyWorkloadActivity(evidence, bad), /Insufficient/);
+	evidence.samples[6].coverage = "gap";
+	assert.throws(() => verifyWorkloadActivity(evidence, activity), /continuous physical coverage/);
 });

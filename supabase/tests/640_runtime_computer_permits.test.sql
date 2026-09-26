@@ -59,11 +59,17 @@ begin
     perform pg_temp.wake_error(format('select pg_temp.prepare_runtime(%L,%L)',request,repeat('R',64)),'42501');
     update public.qorpera_runtime_node_providers set cpu_millis=2000 where provider_kind='native' and provider_id='process';
     select issued_us into v_issued from public.qorpera_computer_allowance_buckets where invoice_id='in_runtime';
-    update public.qorpera_computer_allowance_buckets set issued_us=1 where invoice_id='in_runtime';
+    -- Operator-only synthetic balance setup; production custody resumes below.
+    alter table public.qorpera_computer_allowance_buckets disable trigger qorpera_computer_bucket_payment_guard;
+    update public.qorpera_computer_allowance_buckets set issued_us=1,funded_us=1 where invoice_id='in_runtime';
+    alter table public.qorpera_computer_allowance_buckets enable trigger qorpera_computer_bucket_payment_guard;
     perform pg_temp.wake_error(format('select pg_temp.prepare_runtime(%L,%L)',request,repeat('R',64)),'P0001');
     perform pg_temp.wake_assert(not exists(select 1 from public.qorpera_runtime_machine_allocations where id=v_allocation),
         'Insufficient funding left a partially admitted allocation');
-    update public.qorpera_computer_allowance_buckets set issued_us=v_issued where invoice_id='in_runtime';
+    -- Operator-only synthetic balance setup; production custody resumes below.
+    alter table public.qorpera_computer_allowance_buckets disable trigger qorpera_computer_bucket_payment_guard;
+    update public.qorpera_computer_allowance_buckets set issued_us=v_issued,funded_us=v_issued where invoice_id='in_runtime';
+    alter table public.qorpera_computer_allowance_buckets enable trigger qorpera_computer_bucket_payment_guard;
     receipt:=pg_temp.prepare_runtime(request,repeat('R',64)); v_epoch:=(receipt->>'epoch')::uuid;
     again:=pg_temp.prepare_runtime(request,repeat('R',64));
     perform pg_temp.wake_error(format('select public.qorpera_describe_runtime_computer_permit(%L,%L)',request||jsonb_build_object('bootstrapSha256',repeat('a',64)),repeat('R',64)),'42501');

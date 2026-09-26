@@ -102,11 +102,17 @@ begin
     perform pg_temp.wake_assert((select active_ms=100 from public.qorpera_computer_usage_streams where allocation_id=machine and epoch=e),'Clock/observation gap cannot invent billable time');
     renewal:=jsonb_build_object('requestId','63700000-0000-4000-8000-000000000030','permitId',id,'generation',1,'sample',sample,'windowMs',300000,'stopReserveMs',30000);
     select issued_us into v_issue from public.qorpera_computer_allowance_buckets where invoice_id='in_permits';
-    update public.qorpera_computer_allowance_buckets set issued_us=reserved_us+debited_us where invoice_id='in_permits';
+    -- Operator-only synthetic balance setup; production custody resumes below.
+    alter table public.qorpera_computer_allowance_buckets disable trigger qorpera_computer_bucket_payment_guard;
+    update public.qorpera_computer_allowance_buckets set issued_us=reserved_us+debited_us,funded_us=reserved_us+debited_us where invoice_id='in_permits';
+    alter table public.qorpera_computer_allowance_buckets enable trigger qorpera_computer_bucket_payment_guard;
     perform pg_temp.wake_error(format('select public.qorpera_renew_coding_computer_permit(%L,%L)',renewal,repeat('K',64)),'P0001');
     perform pg_temp.wake_assert((select permit.generation=1 from public.qorpera_coding_computer_permits permit where permit.id='63700000-0000-4000-8000-000000000010')
         and (select sum(debited_us)=0 from public.qorpera_computer_allowance_buckets),'Failed renewal released old hold or partially debited');
-    update public.qorpera_computer_allowance_buckets set issued_us=v_issue where invoice_id='in_permits';
+    -- Operator-only synthetic balance setup; production custody resumes below.
+    alter table public.qorpera_computer_allowance_buckets disable trigger qorpera_computer_bucket_payment_guard;
+    update public.qorpera_computer_allowance_buckets set issued_us=v_issue,funded_us=v_issue where invoice_id='in_permits';
+    alter table public.qorpera_computer_allowance_buckets enable trigger qorpera_computer_bucket_payment_guard;
     receipt:=public.qorpera_renew_coding_computer_permit(renewal,repeat('K',64));
     again:=public.qorpera_renew_coding_computer_permit(renewal,repeat('K',64));
     perform pg_temp.wake_assert(receipt->>'generation'='2' and again->>'deadline'=receipt->>'deadline'

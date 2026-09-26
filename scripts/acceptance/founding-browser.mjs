@@ -70,6 +70,22 @@ export async function runFoundingBrowser({ origin, publicKey, cluster, mail, out
 			const result = await member.context.request.post(`${origin}/rest/v1/rpc/${name}`, { headers: { apikey: publicKey, authorization: `Bearer ${memberTokens.get(member.email)}` }, data: args });
 			return { status: result.status(), body: await result.json() };
 		}
+		async function submit(page, name, action) {
+			const [response] = await Promise.all([
+				page.waitForResponse(response => response.url() === `${origin}/rest/v1/rpc/${name}` && response.request().method() === "POST"),
+				action(),
+			]);
+			assert.equal(response.status(), 200, `${name} did not succeed`);
+			await response.finished();
+		}
+		async function materialized(profileId) {
+			return eventually(async () => {
+				const runtime = lastJson(await cluster.query(runtimeEvidenceSql(profileId)));
+				assert(runtime.request, "Launch request evidence is missing");
+				assert.notEqual(runtime.request.status, "failed", `Launch materialization failed: ${runtime.request.failure_reason}`);
+				return runtime.request.status === "materialized" ? runtime : null;
+			}, "Launch remained queued at the real materializer boundary");
+		}
 		async function friends(member) {
 			await member.page.locator(".account-trigger").click();
 			await member.page.getByRole("menuitem", { name: "Friends", exact: true }).click();
@@ -97,10 +113,11 @@ export async function runFoundingBrowser({ origin, publicKey, cluster, mail, out
 		assert(await first.page.getByRole("button", { name: "Start company", exact: true }).isDisabled());
 		const outsider = await rpc(second, "qorpera_read_company_founding", { p_profile_id: profileId });
 		assert(outsider.status >= 400, "Nonmember could read founding company");
-		await first.page.getByLabel("A little about the company", { exact: true }).fill("Build practical tools for small local businesses. Shared judgment, clear evidence, useful prototypes.");
-		await first.page.getByRole("button", { name: "Save company details", exact: true }).click();
+		await first.page.getByLabel("A little about the company").fill("Build practical tools for small local businesses. Shared judgment, clear evidence, useful prototypes.");
+		await submit(first.page, "qorpera_update_company_founding", () => first.page.getByRole("button", { name: "Save company details", exact: true }).click());
+		await eventually(() => first.page.getByRole("button", { name: "Save company details", exact: true }).isEnabled(), "Company edit did not finish");
 		await first.page.getByLabel("Choose a co-founder", { exact: true }).selectOption(second.userId);
-		await first.page.getByRole("button", { name: "Invite co-founder", exact: true }).click();
+		await submit(first.page, "qorpera_invite_company_founder", () => first.page.getByRole("button", { name: "Invite co-founder", exact: true }).click());
 		await first.page.getByText("Invited", { exact: true }).waitFor();
 		await second.page.reload();
 		await second.page.getByRole("button", { name: "Join setup", exact: true }).click();
@@ -137,7 +154,7 @@ export async function runFoundingBrowser({ origin, publicKey, cluster, mail, out
 		assert.equal(secondUsage.body.balance.availableUs, String(286 * 3600000000));
 		evidence.steps.push("Invoice-funded Basis and Standard plans retained separate member balances; each founder explicitly contributed through UI; combined company pool matched 360 standard hours");
 		// An edit after both signatures invalidates the exact shared revision.
-		await first.page.getByLabel("A little about the company", { exact: true }).fill("Build practical tools for local businesses. Agree on the vision, validate with customers, and ship useful prototypes.");
+		await first.page.getByLabel("A little about the company").fill("Build practical tools for local businesses. Agree on the vision, validate with customers, and ship useful prototypes.");
 		await first.page.getByRole("button", { name: "Save company details", exact: true }).click();
 		await first.page.getByRole("button", { name: "I'm Ready", exact: true }).waitFor();
 		const stale = await rpc(second, "qorpera_set_founder_ready", { p_profile_id: profileId, p_expected_revision: ready.body.revision, p_ready: true, p_role_description: "Engineering" });
@@ -167,7 +184,7 @@ export async function runFoundingBrowser({ origin, publicKey, cluster, mail, out
 		assert.deepEqual(exactReplay.body.launch, otherTab.body.launch);
 		await Promise.all([first.page.reload(), second.page.reload()]);
 		await eventually(async () => !first.page.url().endsWith("/founding") && !second.page.url().endsWith("/founding"), "Launched clients did not open the company");
-		const runtime = lastJson(await cluster.query(runtimeEvidenceSql(profileId)));
+		const runtime = await materialized(profileId);
 		assert.equal(runtime.phase, "launched"); assert.equal(runtime.requestCount, 1);
 		assert.deepEqual(runtime.owners.sort(), [first.userId, second.userId].sort());
 		assert.equal(runtime.request.status, "materialized");
@@ -202,7 +219,7 @@ export async function runFoundingBrowser({ origin, publicKey, cluster, mail, out
 		await eventually(() => first.page.getByRole("button", { name: "Start company", exact: true }).isEnabled(), "Solo Ready did not enable launch");
 		await first.page.getByRole("button", { name: "Start company", exact: true }).click();
 		await eventually(async () => (await rpc(first, "qorpera_read_company_founding", { p_profile_id: soloId })).body.phase === "launched", "Solo launch did not commit");
-		const solo = lastJson(await cluster.query(runtimeEvidenceSql(soloId)));
+		const solo = await materialized(soloId);
 		assert.deepEqual(solo.owners, [first.userId]); assert.equal(solo.requestCount, 1);
 		assert.equal(solo.request.status, "materialized"); assert.equal(solo.run.sponsored_by_user_id, first.userId);
 		assert.equal(JSON.parse(solo.source.text).founding.roster.length, 1);
@@ -213,5 +230,8 @@ export async function runFoundingBrowser({ origin, publicKey, cluster, mail, out
 		assert.deepEqual(blocked, [], "Browser attempted a nonlocal network destination");
 		assert.deepEqual(errors, [], "Production web client threw uncaught browser errors");
 		return evidence;
+	} catch (error) {
+		if (error instanceof Error) error.message += `\nCompleted acceptance steps: ${evidence.steps.join("; ")}`;
+		throw error;
 	} finally { await Promise.all(contexts.map(context => context.close())); await browser.close(); memberTokens.clear(); }
 }

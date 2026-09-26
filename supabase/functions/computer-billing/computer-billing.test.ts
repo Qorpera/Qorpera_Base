@@ -10,12 +10,12 @@ const subscription = {
 	items: { has_more: false, data: [{ quantity: 1, current_period_start: 1790000000, current_period_end: 1792600000,
 		price: { id: "price_basis", currency: "dkk", unit_amount: 18500, recurring: { interval: "month", interval_count: 1 } } }] },
 };
-const invoice = { id: "in_example", customer: "cus_example", livemode: false, status: "paid", amount_remaining: 0, amount_paid: 18500,
+const invoice = { id: "in_example", customer: "cus_example", livemode: false, status: "paid", amount_remaining: 0, amount_paid: 18500, total: 18500,
 	pre_payment_credit_notes_amount: 0, post_payment_credit_notes_amount: 0,
 	currency: "dkk", billing_reason: "subscription_cycle", parent: { subscription_details: { subscription: "sub_example" } },
 	lines: { has_more: false, data: [{ quantity: 1, currency: "dkk", parent: { subscription_item_details: { subscription: "sub_example", proration: false } },
 		pricing: { price_details: { price: "price_basis" }, unit_amount_decimal: "18500" }, period: { start: 1790000000, end: 1792600000 } }] } };
-const charge = { id: "ch_example", customer: "cus_example", livemode: false, payment_intent: "pi_example", paid: true, disputed: false, amount_refunded: 0 };
+const charge = { id: "ch_example", customer: "cus_example", livemode: false, payment_intent: "pi_example", paid: true, currency: "dkk", amount: 18500, disputed: false, amount_refunded: 0 };
 const invoicePayment = { id: "inpay_example", invoice: "in_example", livemode: false, status: "paid", amount_paid: 18500,
 	payment: { type: "payment_intent", payment_intent: "pi_example" } };
 function fixture() {
@@ -31,6 +31,7 @@ function fixture() {
 			return Response.json(String(input).includes("billing_portal/configurations")
 				? { id: "bpc_test", active: true, livemode: false, features: { subscription_update: { enabled: false } } }
 				: String(input).includes("billing_portal") ? { url: "https://billing.stripe.com/p/session_test" }
+				: ["/credit_notes?", "/refunds?", "/disputes?"].some(path => String(input).includes(path)) ? { has_more: false, data: [] }
 				: String(input).includes("/invoice_payments?") ? { has_more: false, data: [invoicePayment] }
 				: String(input).includes("/payment_intents/") ? { id: "pi_example", customer: "cus_example", livemode: false, latest_charge: "ch_example" }
 				: String(input).includes("/charges/") ? charge
@@ -105,7 +106,8 @@ describe("computer billing service", () => {
 		for (const badInvoice of [{ ...invoice, status: "open" }, { ...invoice, billing_reason: "subscription_update" },
 			{ ...invoice, lines: { ...invoice.lines, data: [{ ...invoice.lines.data[0], parent: { subscription_item_details: { subscription: "sub_example", proration: true } } }] } }]) {
 			const { options, calls } = fixture();
-			options.fetch = async (input) => Response.json(String(input).includes("/invoices/") ? badInvoice : subscription);
+			const fetcher = options.fetch;
+			options.fetch = async (input, init) => String(input).includes("/invoices/") ? Response.json(badInvoice) : fetcher(input, init);
 			assert.equal((await handleComputerBilling(webhook({ type: "invoice.paid", data: { object: invoice } }), options)).status, 503);
 			assert.equal(calls.some((call) => call.name === "qorpera_finish_computer_billing_sync"), false);
 		}
@@ -155,12 +157,34 @@ describe("computer billing service", () => {
 		const customerRequest = requests.find((entry) => entry.url.endsWith("/customers"));
 		assert.equal(new Headers(customerRequest?.init?.headers).get("idempotency-key"), "stable-customer");
 		assert.equal((customerRequest?.init?.body as URLSearchParams).get("metadata[qorpera_user_id]"), userId);
+		assert.equal((customerRequest?.init?.body as URLSearchParams).get("metadata[qorpera_command_id]"), "stable-customer");
 		const checkoutRequest = requests.find((entry) => entry.url.endsWith("/checkout/sessions"));
 		assert.equal(new Headers(checkoutRequest?.init?.headers).get("idempotency-key"), "stable-checkout");
 		assert.equal((checkoutRequest?.init?.body as URLSearchParams).get("customer"), "cus_created");
+		assert.equal((checkoutRequest?.init?.body as URLSearchParams).get("metadata[qorpera_command_id]"), "stable-checkout");
 		assert.equal((checkoutRequest?.init?.body as URLSearchParams).get("success_url"), options.returnUrl);
 		assert.equal((await handleComputerBilling(memberRequest("checkout", body), options)).status, 200);
 		assert.equal(requests.filter((entry) => entry.init?.method === "POST").length, 2);
+	});
+	it("recovered terminal Checkout returns a verified conflict without creating another provider session", async () => {
+		const requestId = "63000000-0000-4000-8000-000000000052", expiresAt = new Date(now - 1000).toISOString();
+		for (const [terminal, status] of [
+			[{ state: "recovered_terminal", requestId, sessionId: "cs_test_closed", expiresAt }, 409],
+			[{ state: "recovered_terminal", requestId: "different", sessionId: "cs_test_closed", expiresAt }, 503],
+			[{ state: "recovered_terminal", requestId, sessionId: "https://wrong.test", expiresAt }, 503],
+			[{ state: "recovered_terminal", requestId, sessionId: "cs_test_closed", expiresAt: new Date(now + 1000).toISOString() }, 503],
+		] as const) {
+			const { options, requests } = fixture();
+			options.rpc = async (name) => name === "qorpera_computer_plan_catalog"
+				? { plans: [{ planKey: "basis", version: 1, tariffVersion: 1, monthlyPriceMinor: 18500, activeForCheckout: true }] } : terminal;
+			options.fetch = async (input, init) => { requests.push({ url: String(input), init }); return Response.json({ ...subscription.items.data[0].price, active: true, livemode: false }); };
+			const response = await handleComputerBilling(memberRequest("checkout", { planKey: "basis", version: 1, requestId }), options);
+			assert.equal(response.status, status); const body = await response.json();
+			if (status === 409) assert.deepEqual(body, { code: "checkout_reconciled_terminal", requestId, sessionId: "cs_test_closed", expiresAt,
+				error: "The previous checkout was reconciled and is closed. Start a new checkout to continue." });
+			else assert.equal(body.code, undefined);
+			assert.equal(requests.some((entry) => entry.init?.method === "POST"), false);
+		}
 	});
 	it("ambiguous create retries use the same provider key and do not grant paid access", async () => {
 		const { options, requests } = fixture();
@@ -231,69 +255,97 @@ describe("computer billing service", () => {
 	});
 });
 
+function reversalFixture({ refunds = [], notes = [], disputes = [] }: { refunds?: Record<string, unknown>[]; notes?: Record<string, unknown>[]; disputes?: Record<string, unknown>[] } = {}) {
+ const f = fixture(), fetcher = f.options.fetch;
+ const amount = refunds.filter(r => r.status === "succeeded").reduce((n, r) => n + Number(r.amount), 0);
+ const credits = notes.filter(n => n.status === "issued").reduce((n, r) => n + Number(r.amount), 0);
+ f.options.fetch = async (input, init) => {
+  const url = String(input);
+  for (const [kind, data] of [["refunds", refunds], ["credit_notes", notes], ["disputes", disputes]] as const) {
+   if (url.includes(`/${kind}?`)) return Response.json({ has_more: false, data });
+   if (url.includes(`/${kind}/`)) return Response.json(data.find(value => url.endsWith(String(value.id))));
+  }
+  if (url.includes("/charges/")) return Response.json({ ...charge, amount_refunded: amount, disputed: disputes.length > 0 });
+  if (url.includes("/invoices/")) return Response.json({ ...invoice, post_payment_credit_notes_amount: credits });
+  return fetcher(input, init);
+ };
+ return f;
+}
+const refund = { id: "re_example", charge: "ch_example", currency: "dkk", amount: 9250, status: "succeeded" };
+const dispute = { id: "du_example", charge: "ch_example", currency: "dkk", amount: 18500, livemode: false, status: "needs_response" };
+const credit = { id: "cn_example", invoice: "in_example", customer: "cus_example", currency: "dkk", livemode: false,
+ amount: 9250, pre_payment_amount: 0, post_payment_amount: 9250, status: "issued", refunds: [] };
+function fundingSnapshot(calls: ReturnType<typeof fixture>["calls"]) {
+ return calls.findLast(c => c.name === "qorpera_apply_computer_invoice_funding")?.args.p_snapshot as Record<string, unknown>;
+}
 describe("computer payment reversals", () => {
-	it("reconciles canonical partial refunds, disputes and credit notes rather than webhook snapshots", async () => {
-		for (const [type, id, canonical, path, reason] of [
-			["charge.refunded", "ch_example", { ...charge, amount_refunded: 1 }, "/charges/", "charge_adverse"],
-			["refund.created", "re_example", { id: "re_example", status: "pending", charge: "ch_example" }, "/refunds/", "refund"],
-			["charge.dispute.created", "du_example", { id: "du_example", livemode: false, charge: "ch_example", status: "needs_response" }, "/disputes/", "dispute"],
-			["credit_note.created", "cn_example", { id: "cn_example", livemode: false, customer: "cus_example", invoice: "in_example", amount: 1, status: "issued" }, "/credit_notes/", "credit_note"],
-		] as const) {
-			const { options, calls } = fixture(), fetcher = options.fetch;
-			options.fetch = async (input, init) => String(input).includes(path) ? Response.json(canonical) : fetcher(input, init);
-			const event = { type, data: { object: { id, customer: "cus_forged", amount_refunded: 0 } } };
-			assert.equal((await handleComputerBilling(webhook(event), options)).status, 200, type);
-			const fence = calls.find((call) => call.name === "qorpera_fence_computer_payment");
-			assert.deepEqual(fence?.args.p_proof, { invoiceId: "in_example", subscriptionId: "sub_example", customerId: "cus_example", sourceId: id, reason });
-			assert.equal(calls.some((call) => call.name === "qorpera_finish_computer_billing_sync"), false);
-		}
-	});
-	it("lost fence response stays retryable and replays the same immutable proof", async () => {
-		const { options, calls } = fixture(), fetcher = options.fetch, rpc = options.rpc;
-		options.fetch = async (input, init) => String(input).includes("/charges/") ? Response.json({ ...charge, disputed: true }) : fetcher(input, init);
-		let first = true;
-		options.rpc = async (name, args) => { const result = await rpc(name, args); if (name === "qorpera_fence_computer_payment" && first) { first = false; throw new Error("lost reply"); } return result; };
-		const event = { type: "charge.refunded", data: { object: { id: "ch_example" } } };
-		assert.equal((await handleComputerBilling(webhook(event), options)).status, 503);
-		assert.equal((await handleComputerBilling(webhook(event), options)).status, 200);
-		const records = calls.filter((call) => call.name === "qorpera_fence_computer_payment");
-		assert.equal(records.length, 2); assert.deepEqual(records[0].args, records[1].args);
-	});
-	it("invoice.paid checks payment reversals and credit notes before finishing funding", async () => {
-		for (const changed of [{ ...charge, amount_refunded: 18500 }, { ...charge, disputed: true }, null]) {
-			const { options, calls } = fixture(), fetcher = options.fetch;
-			options.fetch = async (input, init) => changed && String(input).includes("/charges/") ? Response.json(changed)
-				: !changed && String(input).includes("/invoices/") ? Response.json({ ...invoice, post_payment_credit_notes_amount: 100 }) : fetcher(input, init);
-			assert.equal((await handleComputerBilling(webhook({ type: "invoice.paid", data: { object: invoice } }), options)).status, 200);
-			const fence = calls.findIndex((call) => call.name === "qorpera_fence_computer_payment");
-			assert(fence >= 0 && fence < calls.findIndex((call) => call.name === "qorpera_finish_computer_billing_sync"));
-		}
-	});
-	it("unknown, incomplete or cross-customer payment history never authorizes funding", async () => {
-		for (const bad of [{ has_more: true, data: [invoicePayment] }, { has_more: false, data: [] },
-			{ has_more: false, data: [{ ...invoicePayment, invoice: "in_other" }] },
-			{ has_more: false, data: [{ ...invoicePayment, payment: { type: "payment_record", payment_record: "pr_example" } }] }]) {
-			const { options, calls } = fixture(), fetcher = options.fetch;
-			options.fetch = async (input, init) => String(input).includes("/invoice_payments?") ? Response.json(bad) : fetcher(input, init);
-			assert.equal((await handleComputerBilling(webhook({ type: "invoice.paid", data: { object: invoice } }), options)).status, 503);
-			assert.equal(calls.some((call) => call.name === "qorpera_finish_computer_billing_sync"), false);
-		}
-		const { options, calls } = fixture(), fetcher = options.fetch;
-		options.fetch = async (input, init) => String(input).includes("/charges/") ? Response.json({ ...charge, customer: "cus_other", amount_refunded: 1 }) : fetcher(input, init);
-		assert.equal((await handleComputerBilling(webhook({ type: "charge.refunded", data: { object: charge } }), options)).status, 503);
-		assert.equal(calls.some((call) => call.name === "qorpera_fence_computer_payment"), false);
-	});
-	it("failed refunds and void credit notes do not mint or restore funds", async () => {
-		for (const [type, id, canonical, path] of [
-			["refund.failed", "re_example", { id: "re_example", status: "failed", charge: "ch_example" }, "/refunds/"],
-			["credit_note.voided", "cn_example", { id: "cn_example", livemode: false, status: "void", amount: 100 }, "/credit_notes/"],
-		] as const) {
-			const { options, calls } = fixture(), fetcher = options.fetch;
-			options.fetch = async (input, init) => String(input).includes(path) ? Response.json(canonical) : fetcher(input, init);
-			assert.equal((await handleComputerBilling(webhook({ type, data: { object: { id } } }), options)).status, 200);
-			assert.equal(calls.length, 0);
-		}
-	});
+ it("reduces partial refunds proportionally under the lease despite forged event amounts", async () => {
+  const { options, calls } = reversalFixture({ refunds: [refund] });
+  assert.equal((await handleComputerBilling(webhook({ type: "refund.created", data: { object: { ...refund, amount: 1 } } }), options)).status, 200);
+  assert.equal(fundingSnapshot(calls).basisMinor, 18500); assert.equal(fundingSnapshot(calls).reversedMinor, 9250);
+  assert.equal(fundingSnapshot(calls).held, false);
+  assert(calls.findIndex(c => c.name === "qorpera_begin_computer_billing_sync") < calls.findIndex(c => c.name === "qorpera_fence_computer_payment"));
+  assert.equal(calls.findLast(c => c.name === "qorpera_apply_computer_invoice_funding")?.args.p_complete, true);
+ });
+ it("counts a credit note's linked refund once, including a failed refund still owed by an issued note", async () => {
+  for (const status of ["succeeded", "failed"]) {
+   const { options, calls } = reversalFixture({ refunds: [{ ...refund, status }], notes: [{ ...credit, refunds: [{ refund: "re_example", amount_refunded: 9250, type: "refund" }] }] });
+   assert.equal((await handleComputerBilling(webhook({ type: "credit_note.created", data: { object: credit } }), options)).status, 200);
+   assert.equal(fundingSnapshot(calls).reversedMinor, 9250);
+  }
+ });
+ it("restores failed refunds and won disputes from current history, despite charge.disputed remaining true", async () => {
+  for (const state of ["failed", "canceled", "won", "warning_closed", "prevented"]) {
+   const isRefund = ["failed", "canceled"].includes(state);
+   const { options, calls } = reversalFixture(isRefund ? { refunds: [{ ...refund, status: state }] } : { disputes: [{ ...dispute, status: state }] });
+   assert.equal((await handleComputerBilling(webhook({ type: isRefund ? "refund.failed" : "charge.dispute.closed", data: { object: { id: isRefund ? refund.id : dispute.id } } }), options)).status, 200);
+   assert.equal(fundingSnapshot(calls).reversedMinor, 0); assert.equal(fundingSnapshot(calls).held, false);
+  }
+ });
+ it("an old dispute-created event retrieves the current won outcome under a fresh lease", async () => {
+  const { options, calls } = reversalFixture({ disputes: [{ ...dispute, status: "won" }] });
+  assert.equal((await handleComputerBilling(webhook({ type: "charge.dispute.created", data: { object: dispute } }), options)).status, 200);
+  assert.equal(fundingSnapshot(calls).held, false); assert.equal(fundingSnapshot(calls).reversedMinor, 0);
+  const evidence = JSON.parse(String(fundingSnapshot(calls).evidence)); assert.equal(evidence.disputes[0].status, "won");
+ });
+ it("holds unresolved disputes and ambiguous lost-dispute/refund overlap without erasing original issuance", async () => {
+  for (const value of [dispute, { ...dispute, status: "lost" }]) {
+   const { options, calls } = reversalFixture({ disputes: [value], refunds: [refund] });
+   assert.equal((await handleComputerBilling(webhook({ type: "charge.dispute.updated", data: { object: value } }), options)).status, 200);
+   assert.equal(fundingSnapshot(calls).held, true);
+  }
+ });
+ it("a delayed invoice.paid commits the current reduced cap before funding", async () => {
+  const { options, calls } = reversalFixture({ refunds: [refund] });
+  assert.equal((await handleComputerBilling(webhook({ type: "invoice.paid", data: { object: invoice } }), options)).status, 200);
+  const apply = calls.findIndex(c => c.name === "qorpera_apply_computer_invoice_funding");
+  assert(apply >= 0 && apply < calls.findIndex(c => c.name === "qorpera_finish_computer_billing_sync"));
+  assert.equal(calls[apply].args.p_complete, false); assert.equal(fundingSnapshot(calls).reversedMinor, 9250);
+ });
+ it("a lost fence reply remains retryable, and a completed adverse replay cannot re-fence restored funds", async () => {
+  const { options, calls } = reversalFixture({ refunds: [refund] }), rpc = options.rpc;
+  let first = true;
+  options.rpc = async (name, args) => { const result = await rpc(name, args); if (name === "qorpera_fence_computer_payment" && first) { first = false; throw new Error("lost reply"); } return result; };
+  const event = { type: "refund.created", data: { object: refund } };
+  assert.equal((await handleComputerBilling(webhook(event), options)).status, 503);
+  assert.equal((await handleComputerBilling(webhook(event), options)).status, 200);
+  const records = calls.filter(c => c.name === "qorpera_fence_computer_payment");
+  assert.deepEqual(records[0].args, records[1].args);
+  calls.length = 0; options.rpc = async (name, args) => name === "qorpera_begin_computer_billing_sync" ? { state: "completed" } : rpc(name, args);
+  assert.equal((await handleComputerBilling(webhook(event), options)).status, 200); assert.equal(calls.length, 0);
+ });
+ it("unknown or paginated histories leave the conservative fence in place and never commit a restoration", async () => {
+  const { options, calls } = reversalFixture({ refunds: [refund] }), fetcher = options.fetch;
+  options.fetch = async (input, init) => String(input).includes("/refunds?") ? Response.json({ has_more: true, data: [refund] }) : fetcher(input, init);
+  assert.equal((await handleComputerBilling(webhook({ type: "refund.created", data: { object: refund } }), options)).status, 503);
+  assert(calls.some(c => c.name === "qorpera_fence_computer_payment")); assert.equal(fundingSnapshot(calls), undefined);
+ });
+ it("rejects a cross-customer charge before mutating its invoice", async () => {
+  const { options, calls } = fixture(), fetcher = options.fetch;
+  options.fetch = async (input, init) => String(input).includes("/charges/") ? Response.json({ ...charge, customer: "cus_other" }) : fetcher(input, init);
+  assert.equal((await handleComputerBilling(webhook({ type: "charge.refunded", data: { object: charge } }), options)).status, 503);
+  assert.equal(calls.length, 0);
+ });
 });
 
 describe("computer billing database authority", () => {

@@ -48,7 +48,10 @@ export async function runFoundingNative(options) {
 			bootstrap: async handle => {
 				const [before, after] = platformBootstrapParts(handle.platformSql);
 				await handle.query(before);
-				const connection = `postgres://postgres@localhost/${handle.database}?host=${encodeURIComponent(handle.socketDirectory)}&sslmode=disable`;
+				// Auth's migrations create auth.users, but the API queries users
+				// through its connection search path (the hosted Auth role normally
+				// configures this). Keep this local to Auth, not the shared DB role.
+				const connection = `postgres://postgres@localhost/${handle.database}?host=${encodeURIComponent(handle.socketDirectory)}&sslmode=disable&search_path=auth`;
 				authProcess = await startOwnedProcess(join(options.tools, "auth/auth"), [], {
 					cwd: join(options.tools, "auth"), logPath: join(privateRoot, "auth.log"), env: { ...env,
 						GOTRUE_DB_DRIVER: "postgres", DB_NAMESPACE: "auth", DATABASE_URL: connection,
