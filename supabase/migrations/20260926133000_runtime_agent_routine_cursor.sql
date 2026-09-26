@@ -37,7 +37,7 @@ begin
 		raise exception 'Migration runtime_agent_routine_cursor needs runtime_member_routine_cursor first';
 	end if;
 	-- A restart position must not show as the next run. runtime_member_routine_cursor
-	-- patches qorpera_routine_next_run_at only when dynamic routines (v114) are there,
+	-- patches qorpera_routine_next_run_at only when dynamic routines (v131) are there,
 	-- and this migration always runs after both.
 	if to_regprocedure('public.qorpera_routine_next_run_at(uuid)') is not null
 		and pg_get_functiondef(to_regprocedure('public.qorpera_routine_next_run_at(uuid)'))
