@@ -109,7 +109,9 @@ try {
 	assert.equal(evidence.guestVirtualization, "kvm");
 	run("tar", ["-C", work, "-cf", `${work}/package.tar`, "package"]);
 	run("lxc", ["file", "push", `${work}/package.tar`, `${vm}${work}/package.tar`], 120000);
-	guest(["tar", "-C", work, "-xf", `${work}/package.tar`]);
+	// The reviewed package may carry the build runner's UID in its archive.
+	// Root stages new local inputs; no source UID becomes guest authority.
+	guest(["tar", "--no-same-owner", "-C", work, "-xf", `${work}/package.tar`]);
 	for (const [source, target] of [["scripts/acceptance/office-image-guest.mjs", "guest.mjs"], ["scripts/acceptance/office-image-credential-child.mjs", "credential-child.mjs"], [`${work}/consumer.mjs`, "consumer.mjs"], [`${work}/inputs.mjs`, "inputs.mjs"]]) run("lxc", ["file", "push", "--uid=0", "--gid=0", "--mode=0644", source, `${vm}${work}/${target}`]);
 	guest(["chmod", "-R", "go-w", work]);
 	console.log(guest(["/usr/bin/node", `${work}/guest.mjs`, "install"], 180000));
