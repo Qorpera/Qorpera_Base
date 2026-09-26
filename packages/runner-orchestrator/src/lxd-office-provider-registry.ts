@@ -2,6 +2,7 @@ import type { LxdOfficeActivationRegistry } from "./lxd-office-activation-contro
 import type { LxdOfficeBootIntentRegistry } from "./lxd-office-boot-intent-control.ts";
 import type { LxdOfficeBootSuccessorRegistry } from "./lxd-office-boot-successor-control.ts";
 import type { LxdOfficeCodePackageRegistry } from "./lxd-office-code-package-control.ts";
+import type { OfficeFleetMethod } from "./lxd-office-fleet.ts";
 import type { LxdOfficeHostRebootRegistry } from "./lxd-office-host-reboot.ts";
 import type { LxdOfficeIdleRegistry } from "./lxd-office-idle-policy.ts";
 import type { LxdOfficeLifecycleControlRegistry } from "./lxd-office-lifecycle-control.ts";
@@ -35,7 +36,11 @@ export interface LxdOfficeLifecycleRegistry {
 /** The closed RPC allowlist. It is a record over the full method type, so a method any
  * lifecycle registry can call but this list omits is a compile error, not a runtime
  * refusal (2026-09-23: #229 added the node suspension call and the provider refused it). */
-const ALLOWED: Record<LxdOfficeProviderMethod, true> = {
+type OfficeProviderHttpMethod = LxdOfficeProviderMethod | OfficeFleetMethod;
+const ALLOWED: Record<OfficeProviderHttpMethod, true> = {
+	qorpera_runtime_office_fleet_status: true,
+	qorpera_offer_runtime_office_fleet: true,
+	qorpera_place_runtime_office_fleet: true,
 	qorpera_reconcile_runtime_office_idle: true,
 	qorpera_enroll_office_package_provision: true,
 	qorpera_check_office_package_provision: true,
@@ -93,7 +98,7 @@ const ALLOWED: Record<LxdOfficeProviderMethod, true> = {
 	qorpera_ack_office_software_invocation: true,
 	qorpera_suspend_runtime_node_machine: true,
 };
-const METHODS = new Set(Object.keys(ALLOWED) as LxdOfficeProviderMethod[]);
+const METHODS = new Set(Object.keys(ALLOWED) as OfficeProviderHttpMethod[]);
 const LIMIT = 65536;
 
 /** Node 22's web Response/Headers load Undici's WASM parser even when fetch
@@ -158,7 +163,8 @@ function nativeRpc(url: string, key: string, body: string, signal: AbortSignal):
 }
 
 /** Infrastructure credential boundary, separate from the guest registry.
- * Closed lifecycle/admission RPCs; no enrollment, cancellation, deletion, arbitrary REST,
+ * Closed lifecycle/admission and staged fleet-offer RPCs; no infrastructure
+ * enrollment, cancellation, deletion, arbitrary REST,
  * redirects or automatic replay after an uncertain response. SQL remains the
  * authority for every bound request. Errors never expose credentials/bodies. */
 export class LxdOfficeProviderHttpRegistry implements LxdOfficeLifecycleRegistry {
@@ -188,7 +194,7 @@ export class LxdOfficeProviderHttpRegistry implements LxdOfficeLifecycleRegistry
 			throw new Error("INVALID_OFFICE_PROVIDER_REGISTRY");
 		}
 	}
-	async call(method: LxdOfficeProviderMethod, args: Record<string, unknown>, caller: AbortSignal): Promise<unknown> {
+	async call(method: OfficeProviderHttpMethod, args: Record<string, unknown>, caller: AbortSignal): Promise<unknown> {
 		caller.throwIfAborted();
 		if (!METHODS.has(method)) throw new Error("OFFICE_PROVIDER_RPC_FORBIDDEN");
 		if (this.#pending) throw new Error("OFFICE_PROVIDER_RPC_PENDING");

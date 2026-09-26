@@ -946,13 +946,23 @@ Authorized agents may create coworkers with startup instructions through the
 same cloud operation. The creating agent cannot grant authority it does not
 possess.
 
-Ratified 2026-09-02: a staff agent reads the company's shared Company File by
-default. Creation, reactivation, genesis, and migration of a company give each
-active agent a read grant on the shared root of every environment, recorded as
-an ordinary revocable grant attributed to the company owner and carried forward
-across root resource versions until an owner revokes it. Writes, protected
-paths, private scopes, and responsibility- or project-scoped resources keep
-their own rules; the default never widens them.
+Amended 2026-09-26 (superseding the 2026-09-02 read-only default): a staff
+agent reads and writes ordinary shared Company File paths by default, so work
+can become durable files. Creation, reactivation, genesis, and migration give
+active agents a read/write grant on the shared root of every environment,
+recorded as an ordinary revocable grant attributed to the company owner.
+Explicit restrictions, expiry and revocation MUST survive reactivation and
+root resource version changes. Protected paths, private scopes, and narrower
+responsibility- or project-scoped resources keep their own rules; the default
+never overrides them.
+
+Automatic hiring MUST verify that the creator can delegate the child's entire
+default: current, nonexpiring read/write authority on every live shared root
+in the company. Verify this both at policy approval and before publication.
+Restricted creators may propose hires for an authorized member to approve.
+Member consent MUST be distinguished durably from policy approval in that
+member's name; an agent retry MUST NOT manufacture or renew member consent.
+Completed operations retain their receipt replay semantics.
 
 Agent templates MUST NOT create dedicated prebuilt artifacts. Artifacts are
 ordinary Company File objects created when useful. Permanent deletion of an
@@ -1961,13 +1971,17 @@ Founder decisions, 2026-09-19 and 2026-09-20.
    leases and custody bind to them, but they are granted by default when an
    account is bound and when standing work needs them. A member who does not
    want an account used disconnects it.
-3. **Hiring a coworker and opening a group chat need no member approval.** Any
-   active agent may create a new agent (14.1) or a new room (14.7). The
+3. **Authorized hiring and opening a group chat need no member approval.** Any
+   active agent may propose a new agent (14.1) or create a new room (14.7). The
    governed write, its receipt, the projection and the rule that a creator
    cannot delegate authority it lacks are unchanged; the approval of a NEW
    agent or room is given by policy in the name of the requesting member, or of
-   the company owner, and is bounded per run. A change to an existing agent or
-   room stays proposed by the Co-Founder (14.2) and approved by a member.
+   the company owner. The 2026-09-24 amendment below removes per-run counts.
+   As amended 2026-09-26, automatic
+   hiring requires the creator to cover the full default grants in 14.1;
+   otherwise the proposal waits for member approval. The room policy is
+   unchanged. A change to an existing agent or room stays proposed by the
+   Co-Founder (14.2) and approved by a member.
 4. **The gate is authority, never the client.** A capability a signed-in member
    has through one client is a cloud operation. Whether an agent may perform it
    is decided by the authority chain of its run, not by which surface first
