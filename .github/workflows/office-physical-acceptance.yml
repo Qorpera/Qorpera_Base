@@ -370,40 +370,36 @@ jobs:
         run: |
           set -euo pipefail
           case_number=0
+          failed=0
+          run_case() {
+            case_number=$((case_number + 1))
+            case_path="${RUNNER_TEMP}/workload-acceptance/case-${case_number}"
+            if sudo env PATH="${PATH}:/snap/bin" GITHUB_ACTIONS=true RUNNER_ENVIRONMENT=github-hosted GITHUB_SHA="${GITHUB_SHA}" \
+              node scripts/acceptance/workload-usage-physical.mjs "$@" \
+              --image-context "${RUNNER_TEMP}/office-acceptance/image/image-context.json" --out "$case_path"; then
+              return 0
+            fi
+            failed=1
+            # A failed assertion need not hide independent cases, but uncertain
+            # VM/database or host-service cleanup must halt this shared host.
+            node --input-type=module -e 'import { readFile } from "node:fs/promises"; import assert from "node:assert/strict"; const report=JSON.parse(await readFile(process.argv[1],"utf8")); assert(report.cleanup===true && report.hostCleanup===true,"Cannot continue after unconfirmed workload cleanup");' "$case_path/evidence.json"
+          }
           for kind in native coding login; do
             # Private-repository standard hosts have 2 CPUs / 8 GiB. Preserve
             # production headroom and test admitted shapes. Larger shapes are
             # a separate required acceptance run on a sufficiently sized host.
             for shape in '1 1' '1 4'; do
               read -r cpu_count memory_gib <<< "$shape"
-              case_number=$((case_number + 1))
-              sudo env PATH="${PATH}:/snap/bin" GITHUB_ACTIONS=true RUNNER_ENVIRONMENT=github-hosted GITHUB_SHA="${GITHUB_SHA}" \
-                node scripts/acceptance/workload-usage-physical.mjs --kind "$kind" --cpus "$cpu_count" --memory-gib "$memory_gib" \
-                --image-context "${RUNNER_TEMP}/office-acceptance/image/image-context.json" \
-                --out "${RUNNER_TEMP}/workload-acceptance/case-${case_number}"
+              run_case --kind "$kind" --cpus "$cpu_count" --memory-gib "$memory_gib"
             done
           done
           for kind in native coding; do
-            case_number=$((case_number + 1))
-            sudo env PATH="${PATH}:/snap/bin" GITHUB_ACTIONS=true RUNNER_ENVIRONMENT=github-hosted GITHUB_SHA="${GITHUB_SHA}" \
-              node scripts/acceptance/workload-usage-physical.mjs --kind "$kind" --cpus 1 --memory-gib 2 --pool-fallback --renew \
-              --image-context "${RUNNER_TEMP}/office-acceptance/image/image-context.json" \
-              --out "${RUNNER_TEMP}/workload-acceptance/case-${case_number}"
-            case_number=$((case_number + 1))
-            sudo env PATH="${PATH}:/snap/bin" GITHUB_ACTIONS=true RUNNER_ENVIRONMENT=github-hosted GITHUB_SHA="${GITHUB_SHA}" \
-              node scripts/acceptance/workload-usage-physical.mjs --kind "$kind" --cpus 1 --memory-gib 2 --plan dedicated \
-              --image-context "${RUNNER_TEMP}/office-acceptance/image/image-context.json" \
-              --out "${RUNNER_TEMP}/workload-acceptance/case-${case_number}"
+            run_case --kind "$kind" --cpus 1 --memory-gib 2 --pool-fallback --renew
+            run_case --kind "$kind" --cpus 1 --memory-gib 2 --plan dedicated
           done
-          for scenario in shared-claims shape-mismatch; do
-            case_number=$((case_number + 1))
-            kind=native
-            if [ "$scenario" = shared-claims ]; then kind=coding; fi
-            sudo env PATH="${PATH}:/snap/bin" GITHUB_ACTIONS=true RUNNER_ENVIRONMENT=github-hosted GITHUB_SHA="${GITHUB_SHA}" \
-              node scripts/acceptance/workload-usage-physical.mjs --kind "$kind" --cpus 1 --memory-gib 2 --"$scenario" \
-              --image-context "${RUNNER_TEMP}/office-acceptance/image/image-context.json" \
-              --out "${RUNNER_TEMP}/workload-acceptance/case-${case_number}"
-          done
+          run_case --kind coding --cpus 1 --memory-gib 2 --shared-claims
+          run_case --kind native --cpus 1 --memory-gib 2 --shape-mismatch
+          test "$failed" -eq 0
       - name: Upload bounded workload evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

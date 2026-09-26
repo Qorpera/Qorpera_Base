@@ -39,7 +39,7 @@ assert(/^[0-9a-f]{64}$/.test(context.imageFingerprint)); assert(/^[0-9a-f]{64}$/
 const root = `/opt/qorpera-workload-usage-${kind}-${cpuCount}-${memoryBytes}-${planKey}-${poolFallback ? "pool" : "member"}-${renew ? "renew" : "short"}${sharedClaims ? "-shared" : ""}${shapeMismatch ? "-mismatch" : ""}`, source = `${root}/source`, account = "qorpera-usage-acceptance", uid = 1251;
 const unit = "qorpera-workload-usage-acceptance.service";
 const guardState = `/var/lib/${kind === "coding" ? "qorpera-paid-computer-guard" : "qorpera-native-computer-guard"}`;
-let installed = false, createdUser = false, stateIdentity;
+let installed = false, createdUser = false, childStarted = false, childEvidence = null, stateIdentity;
 function run(command, commandArgs, timeout = 30000) {
  const result = spawnSync(command, commandArgs, { encoding: "utf8", timeout, maxBuffer: 4 * 1024 ** 2 });
  assert.equal(result.status, 0, `WORKLOAD_ACCEPTANCE_COMMAND_FAILED: ${command}`);
@@ -74,23 +74,44 @@ try {
  await mkdir(`${root}/results`, { mode: 0o700 }); await chown(`${root}/results`, uid, uid);
  await writeFile(`${root}/case.json`, `${JSON.stringify({ kind, cpuCount, memoryBytes, planKey, poolFallback, renew, sharedClaims, shapeMismatch, imageFingerprint: context.imageFingerprint,
   bootstrapSha256: context.bootstrapSha256, out: `${root}/results/evidence.json` })}\n`, { flag: "wx", mode: 0o444 });
+ childStarted = true;
  const code = await new Promise((done, reject) => {
   const child = spawn("runuser", ["-u", account, "--", process.execPath, `${source}/scripts/acceptance/workload-usage-case.mjs`, `${root}/case.json`], { stdio: "inherit" });
   const timeout = setTimeout(() => child.kill("SIGTERM"), 18 * 60000);
   child.once("error", reject); child.once("close", (status) => { clearTimeout(timeout); done(status); });
  });
  await cp(`${root}/results/evidence.json`, join(out, "evidence.json")); await chmod(join(out, "evidence.json"), 0o644);
+ childEvidence = JSON.parse(await readFile(join(out, "evidence.json"), "utf8"));
  assert.equal(code, 0, "Physical workload accounting failed; inspect evidence.json");
- const evidence = JSON.parse(await readFile(join(out, "evidence.json"), "utf8")); assert(evidence.passed && evidence.cleanup);
+ assert(childEvidence.passed && childEvidence.cleanup);
 } finally {
- if (installed) {
-  run("systemctl", ["stop", unit]);
-  if (stateIdentity) {
-   const current = await lstat(guardState);
-   assert.equal(current.ino, stateIdentity.ino); assert.equal(current.dev, stateIdentity.dev); assert.equal(current.uid, uid);
-   await rm(guardState, { recursive: true });
+ let hostCleanup = false;
+ try {
+  // An unconfirmed child may still have a physical VM. Preserve its independent
+  // stop authority, durable journal and service account until that is resolved.
+  // Before any child/guard existed, setup-only resources are safe to remove.
+  if (childEvidence?.cleanup === true || (!childStarted && !installed)) {
+   if (installed) {
+    run("systemctl", ["stop", unit]);
+    if (stateIdentity) {
+     const current = await lstat(guardState);
+     assert.equal(current.ino, stateIdentity.ino); assert.equal(current.dev, stateIdentity.dev); assert.equal(current.uid, uid);
+     await rm(guardState, { recursive: true });
+    }
+    await unlink(`/etc/systemd/system/${unit}`); run("systemctl", ["daemon-reload"]);
+   }
+   if (createdUser) run("userdel", [account]);
+   hostCleanup = true;
   }
-  await unlink(`/etc/systemd/system/${unit}`); run("systemctl", ["daemon-reload"]);
+ } finally {
+  // A matrix may continue only after both child and parent cleanup succeeded.
+  // Missing child evidence must never be mistaken for confirmed shutdown.
+  if (childEvidence || installed || childStarted) {
+   await writeFile(join(out, "evidence.json"), `${JSON.stringify({
+    ...(childEvidence ?? { schema: "qorpera.physical-workload-usage/v1", commit: process.env.GITHUB_SHA,
+     kind, passed: false, cleanup: false, error: "Child cleanup evidence unavailable; independent guard custody retained" }),
+    hostCleanup,
+   }, null, 2)}\n`, { mode: 0o644 });
+  }
  }
- if (createdUser) run("userdel", [account]);
 }

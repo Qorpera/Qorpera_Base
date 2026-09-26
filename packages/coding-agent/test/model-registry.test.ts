@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AnthropicMessagesCompat, Api, Context, Model, OpenAICompletionsCompat } from "@qorpera/pi-ai/compat";
 import { getApiProvider, getSupportedThinkingLevels } from "@qorpera/pi-ai/compat";
+import * as builtinProviderCatalog from "@qorpera/pi-ai/providers/all";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { clearApiKeyCache, type ModelRegistry, type ProviderConfigInput } from "../src/core/model-registry.ts";
@@ -85,6 +86,29 @@ describe("ModelRegistry", () => {
 		contextWindow: 128000,
 		maxTokens: 4096,
 	};
+
+	/** Fix only the input catalog. Keep provider composition, auth and account
+	 * filtering real, independent of upstream model retirement. */
+	function fixedProviderCatalog(providerId: string, ids: readonly string[]) {
+		const providers = builtinProviderCatalog.builtinProviders();
+		expect(providers.some((provider) => provider.id === providerId)).toBe(true);
+		vi.spyOn(builtinProviderCatalog, "builtinProviders").mockReturnValue(
+			providers.map((provider) =>
+				provider.id === providerId
+					? {
+							...provider,
+							getModels: () =>
+								ids.map((id) => ({
+									...openAiModel,
+									id,
+									name: id,
+									provider: providerId,
+								})),
+						}
+					: provider,
+			),
+		);
+	}
 
 	const emptyContext: Context = {
 		messages: [],
@@ -784,6 +808,7 @@ describe("ModelRegistry", () => {
 		});
 
 		test("multiple model overrides on same provider", async () => {
+			fixedProviderCatalog("openrouter", ["anthropic/claude-sonnet-4", "anthropic/claude-opus-4"]);
 			writeRawModelsJson({
 				openrouter: {
 					modelOverrides: {
@@ -810,6 +835,7 @@ describe("ModelRegistry", () => {
 		});
 
 		test("model override combined with baseUrl override", async () => {
+			fixedProviderCatalog("openrouter", ["anthropic/claude-sonnet-4", "anthropic/claude-opus-4"]);
 			writeRawModelsJson({
 				openrouter: {
 					baseUrl: "https://my-proxy.example.com/v1",
@@ -1852,6 +1878,7 @@ describe("ModelRegistry", () => {
 			});
 
 			test("getAvailable filters GitHub Copilot OAuth models to account picker availability", async () => {
+				fixedProviderCatalog("github-copilot", ["gpt-4.1", "catalog-fixture-unavailable"]);
 				await authStorage.modify("github-copilot", async () => ({
 					type: "oauth",
 					refresh: "github-access-token",
