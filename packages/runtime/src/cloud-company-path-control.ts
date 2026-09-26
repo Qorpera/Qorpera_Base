@@ -76,6 +76,11 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 			"qorpera_runtime_wake_policy",
 			"qorpera_assert_wake_work_allowed",
 			"qorpera_assert_wake_completion",
+			// Auto-review (v130).
+			"qorpera_begin_action_review",
+			"qorpera_record_action_review",
+			"qorpera_await_action_review",
+			"qorpera_add_agent_review_rule",
 		];
 		if (!permitted.includes(method)) throw new Error("Unknown Company File control operation");
 		const body = JSON.stringify(argumentsValue);
