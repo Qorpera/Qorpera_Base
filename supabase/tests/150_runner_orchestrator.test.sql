@@ -1,9 +1,9 @@
 begin;
 
-insert into auth.users (id, email)
+insert into auth.users (id, email, raw_user_meta_data)
 values
-	('15000000-0000-4000-8000-000000000001', 'orchestrator-owner@example.test'),
-	('15000000-0000-4000-8000-000000000002', 'orchestrator-member@example.test');
+	('15000000-0000-4000-8000-000000000001', 'orchestrator-owner@example.test', '{"full_name":"Orchestrator Owner"}'),
+	('15000000-0000-4000-8000-000000000002', 'orchestrator-member@example.test', '{"full_name":"Orchestrator Member"}');
 
 insert into public.qorpera_profiles (id, name, created_by_user_id)
 values (
