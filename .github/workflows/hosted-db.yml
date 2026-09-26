@@ -2,6 +2,8 @@ name: Hosted database contract
 
 on:
   workflow_dispatch:
+  push:
+    branches: ['release/runtime-*']
   pull_request:
     paths:
       - '.github/workflows/hosted-db.yml'
@@ -19,6 +21,12 @@ on:
       - 'packages/web/src/cloud/email-drafts.ts'
       - 'scripts/test-runtime-office-current-provider-activation.mjs'
       - 'scripts/test-runtime-node-capacity.mjs'
+
+# Release train (deploy/first-node/RUNTIME-RELEASE-TRAIN.md): only release
+# branches declare the runtime bundle, so only they must carry derived files
+# that match the source. Everywhere else the freshness asserts are skipped.
+env:
+  QORPERA_ENFORCE_RUNTIME_BUNDLE: ${{ ((github.event_name == 'pull_request' && startsWith(github.head_ref, 'release/runtime-')) || (github.event_name == 'push' && startsWith(github.ref_name, 'release/runtime-'))) && '1' || '0' }}
 
 permissions:
   contents: read

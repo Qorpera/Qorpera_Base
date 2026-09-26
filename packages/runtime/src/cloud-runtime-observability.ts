@@ -87,6 +87,8 @@ export const CLOUD_RUNTIME_ERROR_CATEGORIES = [
 	"approval_declined",
 	"review_denied",
 	"review_unavailable",
+	// A Company File write or mkdir whose folder does not exist (20260926203300).
+	"parent_missing",
 ] as const;
 
 export type CloudRuntimeOperation = (typeof CLOUD_RUNTIME_OPERATIONS)[number];
