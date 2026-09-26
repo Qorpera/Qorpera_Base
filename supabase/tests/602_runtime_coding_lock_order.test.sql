@@ -154,6 +154,39 @@ begin
 end
 $$;
 
+-- At the end: remove what the test committed. Every row written since the fixture's first write goes,
+-- with triggers and foreign-key checks off, and the rows it changed come back as they were. Every table
+-- must hold again exactly what other connections saw before.
+create function pg_temp.lock_order_cleanup() returns void language plpgsql as $$
+declare v_table text; v_columns text; v_expected bigint; v_count bigint; v_wrong text[] := '{}'; v_first xid := current_setting('qorpera_test.lock_order_first_xid')::xid;
+begin
+	perform pg_temp.lock_alone_in_database();
+	perform dblink_disconnect(name) from unnest(array['lock_holder','lock_first','lock_second']) name;
+	perform set_config('session_replication_role', 'replica', true);
+	for v_table in select format('%I.%I', namespace.nspname, class.relname)
+		from pg_catalog.pg_class class join pg_catalog.pg_namespace namespace on namespace.oid = class.relnamespace
+		where class.relkind = 'r' and namespace.nspname not in ('pg_catalog','information_schema') and namespace.nspname !~ '^pg_(temp|toast)' loop
+		execute format('delete from %s where age(xmin) <= age(%L::xid)', v_table, v_first);
+	end loop;
+	for v_table in select distinct table_name from pg_temp.lock_order_rows loop
+		select string_agg(quote_ident(attribute.attname), ',' order by attribute.attnum) into v_columns
+		from pg_catalog.pg_attribute attribute where attribute.attrelid = v_table::regclass and attribute.attnum > 0
+			and not attribute.attisdropped and attribute.attgenerated = '';
+		execute format('insert into %1$s (%2$s) overriding system value select %2$s from (select (jsonb_populate_record(null::%1$s, kept.row_value)).*
+			from pg_temp.lock_order_rows kept where kept.table_name = %3$L
+				and not exists (select 1 from %1$s present where to_jsonb(present) = kept.row_value)) restored', v_table, v_columns, v_table);
+		execute format('select count(*) from pg_temp.lock_order_rows kept where kept.table_name = %2$L
+			and not exists (select 1 from %1$s present where to_jsonb(present) = kept.row_value)', v_table, v_table) into v_count;
+		if v_count > 0 then v_wrong := v_wrong || format('%s: %s rows not restored as they were', v_table, v_count); end if;
+	end loop;
+	for v_table, v_expected in select table_name, row_count from pg_temp.lock_order_counts loop
+		execute format('select count(*) from %s', v_table) into v_count;
+		if v_count <> v_expected then
+			v_wrong := v_wrong || format('%s %s/%s', v_table, v_count, v_expected); end if;
+	end loop;
+	if cardinality(v_wrong) > 0 then raise exception 'Lock order cleanup left other row counts: %', v_wrong; end if;
+end $$;
+
 -- 1. The owner answers while the executor finishes the turn with a question. The completion waits for
 --    the todo first; the answer used to lock the worker and wait for the session the completion held.
 --    (The main connection writes nothing in a race's own transaction: the calls would wait for it.)
@@ -318,35 +351,5 @@ select pg_temp.wake_assert(not has_function_privilege(role_name, 'public.qorpera
 	'Only the kernel locks a coding worker: ' || role_name)
 from unnest(array['anon','authenticated','service_role','qorpera_secret_broker']) role_name;
 
--- Remove what this test committed: every row written since the fixture's first write, with triggers
--- and foreign-key checks off, and put back the rows it changed. Every table must hold again exactly
--- what other connections saw before.
-select pg_temp.lock_alone_in_database();
-select dblink_disconnect(name) from unnest(array['lock_holder','lock_first','lock_second']) name;
-do $$
-declare v_table text; v_columns text; v_expected bigint; v_count bigint; v_wrong text[] := '{}'; v_first xid := current_setting('qorpera_test.lock_order_first_xid')::xid;
-begin
-	perform set_config('session_replication_role', 'replica', true);
-	for v_table in select format('%I.%I', namespace.nspname, class.relname)
-		from pg_catalog.pg_class class join pg_catalog.pg_namespace namespace on namespace.oid = class.relnamespace
-		where class.relkind = 'r' and namespace.nspname not in ('pg_catalog','information_schema') and namespace.nspname !~ '^pg_(temp|toast)' loop
-		execute format('delete from %s where age(xmin) <= age(%L::xid)', v_table, v_first);
-	end loop;
-	for v_table in select distinct table_name from pg_temp.lock_order_rows loop
-		select string_agg(quote_ident(attribute.attname), ',' order by attribute.attnum) into v_columns
-		from pg_catalog.pg_attribute attribute where attribute.attrelid = v_table::regclass and attribute.attnum > 0
-			and not attribute.attisdropped and attribute.attgenerated = '';
-		execute format('insert into %1$s (%2$s) overriding system value select %2$s from (select (jsonb_populate_record(null::%1$s, kept.row_value)).*
-			from pg_temp.lock_order_rows kept where kept.table_name = %3$L
-				and not exists (select 1 from %1$s present where to_jsonb(present) = kept.row_value)) restored', v_table, v_columns, v_table);
-		execute format('select count(*) from pg_temp.lock_order_rows kept where kept.table_name = %2$L
-			and not exists (select 1 from %1$s present where to_jsonb(present) = kept.row_value)', v_table, v_table) into v_count;
-		if v_count > 0 then v_wrong := v_wrong || format('%s: %s rows not restored as they were', v_table, v_count); end if;
-	end loop;
-	for v_table, v_expected in select table_name, row_count from pg_temp.lock_order_counts loop
-		execute format('select count(*) from %s', v_table) into v_count;
-		if v_count <> v_expected then
-			v_wrong := v_wrong || format('%s %s/%s', v_table, v_count, v_expected); end if;
-	end loop;
-	if cardinality(v_wrong) > 0 then raise exception 'Lock order cleanup left other row counts: %', v_wrong; end if;
-end $$;
+-- Remove what this test committed.
+select pg_temp.lock_order_cleanup();
