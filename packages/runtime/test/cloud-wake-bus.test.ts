@@ -72,7 +72,12 @@ async function coworkerFixture() {
 		{ describeToolAuthority: async () => authority },
 		new AbortController().signal,
 	);
-	const message = { recipientStaffId: randomUUID(), operationKey: "handoff-1", text: "Please examine the note." };
+	const message = {
+		recipientStaffId: randomUUID(),
+		operationKey: "handoff-1",
+		text: "Please examine the note.",
+		priority: true,
+	};
 	const receipt = {
 		schema: "qorpera.coworker-send/v1",
 		runId: binding.runId,
@@ -454,7 +459,12 @@ describe("authorized envelope", () => {
 			{ describeToolAuthority: async () => authority },
 			new AbortController().signal,
 		);
-		const message = { recipientStaffId: randomUUID(), operationKey: "handoff-1", text: "Please examine the note." };
+		const message = {
+			recipientStaffId: randomUUID(),
+			operationKey: "handoff-1",
+			text: "Please examine the note.",
+			priority: true,
+		};
 		const receipt = {
 			schema: "qorpera.coworker-send/v1",
 			runId: binding.runId,
@@ -864,7 +874,7 @@ describe("coworker message in the agent's own thread (contract 14.6, 2026-09-22)
 });
 
 describe("held coworker messages (contract 14.6, second cut)", () => {
-	function heldLine(staffAgentId = randomUUID()) {
+	function heldLine(staffAgentId: string = randomUUID()) {
 		return {
 			eventId: randomUUID(),
 			staffAgentId,

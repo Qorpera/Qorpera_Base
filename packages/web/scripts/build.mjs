@@ -78,6 +78,8 @@ const options = {
 	metafile: true,
 	// Stylesheets are written in design pixels and drawn at tokens.css's --ui-scale (scripts/design-px.mjs).
 	plugins: [boundary, designPxPlugin(readUiScale(join(root, "src/styles/tokens.css")))],
+	// Lower the size gates emitted by design-px for browsers without CSS nesting.
+	supported: { nesting: false },
 	sourcemap: true,
 	// Fonts and art are copied into dist/assets above; leave their URLs untouched.
 	external: ["*.woff2", "*.png", "*.svg"],

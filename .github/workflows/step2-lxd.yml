@@ -45,6 +45,8 @@ on:
       - 'packages/runtime/src/cloud-secret-*.ts'
       - 'packages/runtime/test/cloud-connector-*.test.ts'
       - 'packages/runtime/test/cloud-secret-*.test.ts'
+      - 'packages/runtime/test/cloud-email-draft*.test.ts'
+      - 'packages/web/src/cloud/email-drafts.ts'
       - 'scripts/package-lxd-*.mjs'
       - 'scripts/package-lxd-*.test.mjs'
       - 'scripts/package-runtime-node-updater*.mjs'
@@ -199,6 +201,8 @@ jobs:
           test/cloud-secret-broker.test.ts
           test/cloud-secret-broker-http.test.ts
           test/cloud-secret-tools.test.ts
+          test/cloud-email-draft.test.ts
+          test/cloud-email-draft-integration.test.ts
 
       - name: Test deterministic packaging
         run: >-
