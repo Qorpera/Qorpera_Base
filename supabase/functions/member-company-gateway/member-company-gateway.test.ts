@@ -20,6 +20,49 @@ function request(path = object, init: RequestInit = {}) {
 }
 
 describe("public member Company File gateway", () => {
+	it("keeps concurrent tiny replies small while assembling their streamed bytes", async () => {
+		const original = globalThis.Uint8Array;
+		const allocations: number[] = [];
+		const requests = Array.from({ length: 8 }, () => request());
+		globalThis.Uint8Array = new Proxy(original, {
+			construct(target, args, newTarget) {
+				if (typeof args[0] === "number") allocations.push(args[0]);
+				return Reflect.construct(target, args, newTarget);
+			},
+		});
+		try {
+			const replies = await Promise.all(
+				requests.map((req) =>
+					forwardMemberCompanyGateway(req, {
+						upstreamUrl,
+						fetchImplementation: async () => {
+							let next = 0;
+							return new Response(
+								new ReadableStream<Uint8Array>({
+									pull(controller) {
+										if (next === 17) controller.close();
+										else controller.enqueue(new Uint8Array([next++]));
+									},
+								}),
+							);
+						},
+					}),
+				),
+			);
+			for (const reply of replies)
+				assert.deepEqual(
+					new Uint8Array(await reply.arrayBuffer()),
+					Uint8Array.from({ length: 17 }, (_, index) => index),
+				);
+			assert.ok(allocations.length > 0);
+			assert.ok(
+				allocations.every((size) => size < 1024 * 1024),
+				`Tiny responses reserved large buffers: ${allocations}`,
+			);
+		} finally {
+			globalThis.Uint8Array = original;
+		}
+	});
 	it("serves authorized verified object bytes without exposing the private origin to the browser", async () => {
 		let calls = 0;
 		const response = await forwardMemberCompanyGateway(

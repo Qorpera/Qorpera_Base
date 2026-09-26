@@ -45,17 +45,25 @@ async function bytes(
 	try {
 		signal.throwIfAborted();
 		if (Number(message.headers.get("content-length") ?? "0") > limit) throw new BodyTooLarge();
-		const result = new Uint8Array(limit);
+		// Grow with received data rather than reserving the full object limit for
+		// every small reply. A single buffer also bounds tiny-chunk metadata.
+		let result = new Uint8Array(0);
 		let length = 0;
 		while (reader) {
 			const chunk = await reader.read();
 			signal.throwIfAborted();
 			if (chunk.done) break;
 			if (chunk.value.byteLength > limit - length) throw new BodyTooLarge();
+			const needed = length + chunk.value.byteLength;
+			if (needed > result.byteLength) {
+				const grown = new Uint8Array(Math.min(limit, Math.max(needed, result.byteLength * 2)));
+				grown.set(result);
+				result = grown;
+			}
 			result.set(chunk.value, length);
-			length += chunk.value.byteLength;
+			length = needed;
 		}
-		return result.slice(0, length);
+		return length === result.byteLength ? result : result.slice(0, length);
 	} catch (error) {
 		cancel();
 		throw error;
