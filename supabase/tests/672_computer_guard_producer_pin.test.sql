@@ -84,8 +84,14 @@ begin
         'Stale raw writer won before first guard upload');
     frame:=pg_temp.guard_entry(permit,1,null,sample);
     result:=public.qorpera_record_computer_guard_samples(jsonb_build_object('permitId',attempt,'generation',1,'entries',jsonb_build_array(frame)),repeat('K',64));
+    -- Replay returns current authority with a decreasing deadline budget, not
+    -- an identical wall-clock-dependent validForMs value.
+    perform pg_sleep(0.02);
     again:=public.qorpera_record_computer_guard_samples(jsonb_build_object('permitId',attempt,'generation',1,'entries',jsonb_build_array(frame)),repeat('K',64));
-    perform pg_temp.wake_assert(result=again and result#>>'{permit,state}'='bound' and result#>>'{cursor,sequence}'='1',
+    perform pg_temp.wake_assert((result #- '{permit,validForMs}')=(again #- '{permit,validForMs}')
+        and (again#>>'{permit,validForMs}')::bigint<(result#>>'{permit,validForMs}')::bigint
+        and (again#>>'{permit,validForMs}')::bigint>0
+        and result#>>'{permit,state}'='bound' and result#>>'{cursor,sequence}'='1',
         'Guard first bind or exact upload replay failed after stale raw writer');
     perform pg_temp.wake_error(format('select public.qorpera_checkpoint_coding_computer_permit(%L,%L)',
         jsonb_build_object('permitId',attempt,'generation',1,'sample',sample||jsonb_build_object('observationId',extensions.gen_random_uuid(),

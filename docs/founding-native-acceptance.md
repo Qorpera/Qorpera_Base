@@ -36,11 +36,10 @@ existing VM, guard journal or guard service may share this test host.
 
 Provide these actual immutable artifacts, without changing release pins:
 
-- A current Linux governed runner guest package containing the patched native
-  Codex0.155.1 artifact and the signed runner OCI archive. Use the existing
-  `scripts/package-lxd-runner-guest.mjs` procedure with
-  `--native-company-artifact` and `--signed-runner-image`. Its normal release
-  provenance checks remain mandatory; a stale package is not current proof.
+- A Linux guest package built from the current checkout, containing the pinned
+  native Codex0.155.1 artifact and exact signed runner OCI archive. For isolated
+  feature-branch acceptance, use the test packaging command below. Production
+  packaging and release freshness enforcement remain separate and unchanged.
 - The SHA256 of that package's `manifest.json`, with package files root-owned
   and not group/world writable.
 - A locally imported Ubuntu26.04 VM image's full fingerprint. The preparation
@@ -50,6 +49,37 @@ The existing production image installer runs inside that image. Only an
 ephemeral acceptance CA is added to the resulting test image; no production
 certificate or authentication key is imported. The private CA key never enters
 the guest, package, public evidence directory or upload artifact.
+
+## Build an isolated test package
+
+On Linux x64, with a new output directory and the verified native/signed image
+artifacts already available:
+
+```sh
+node scripts/acceptance/founding-native-package.mjs \
+  --out /opt/founding-package-test \
+  --native-company-artifact /opt/verified-native-codex \
+  --signed-runner-image /opt/verified-signed-runner
+```
+
+The wrapper uses the existing `runtimeBundlePackagingEnvironment` test hook.
+It bundles current sources while preserving the committed runtime identity
+embedded by the native host; it does not regenerate or relabel release files.
+The production packager still verifies exact native source/binary pins and signed
+image archive/bundle digests. All packaged files must exist and match their
+manifest; a contract-only package is refused. Existing output is never replaced.
+
+`/opt/founding-package-test/evidence.json` records `testOnly: true`, the current
+source manifest/digest, the committed identity, and the resulting guest manifest
+digest. Source identity is checked again after packaging. Use its `package`
+directory and `manifestSha256` in the preparation configuration, after ensuring
+the files are root-owned and not group/world writable. Retain this evidence with
+the acceptance report; it is not a verified release, deployment authorization,
+or physical execution result.
+
+With `QORPERA_ENFORCE_RUNTIME_BUNDLE=1`, the wrapper invokes the real strict check
+and does not install the test hook; stale release files still fail before output
+creation. Inherited `NODE_OPTIONS` hooks are refused in either mode.
 
 ## Run
 
