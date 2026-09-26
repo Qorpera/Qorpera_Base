@@ -18,7 +18,7 @@
     "wakeAndSilence": "ac07a531640daaee6385f031445dcff94aadcbdc44feb72c1eba898fffd50fc1",
     "contextComposer": "bca07b639e4d59ef23e42bedc3fc9e7c8f4c366595be21f2b605befe48d2b61f",
     "providerBootstrap": "411d3f6c7cc27c8a34483ba39caa1fd1b51e331ff0e691b81441a812d755f1b2",
-    "authorization": "c1a651295f8b809e39ec9da10bc6b75e94a504358151b20c8a4bba160a731bd1",
+    "authorization": "ea87bb3fa381c30f721fd7a00bf5ad73701a12361a3009dac732baf5f4a902f4",
     "inboundSafety": "c0c404045bcacbddea79156d2d0d000b2d9caac77d53d1c92d64471ae01581d2",
     "outboundSafety": "1ecf26f9a8701070dec224d96a90c8e27b05fbf2ea6d3eab4839e933dcf7d247",
     "interactionSurfaces": "c97ba3d2ee12834d2129c607f6e93ed9f42afaaacc7a2d8031f01c8e5ce8136a",
@@ -241,7 +241,7 @@
     "deploy/lxd-runner-guest/qorpera-native-login-provider-host.service": "0f5e9ca1118ca9f678e6f26f061dd3c3d17710f8360a58b14c7055edc4ea9275",
     "deploy/lxd-runner-guest/qorpera-native-provider-host.service": "1b15b9537e0d7d5eec01d5dd99f0df1415e6459422415eebec43c7f048b1bd6f",
     "deploy/lxd-runner-guest/runner-image-contract.json": "fb0bc315f357ba16220f729ca2810a2ae8ba9299bf9765daed02a52a9f3c8f38",
-    "package-lock.json": "923be0c2f4521804594973cc65e6c2e119d8ebcd7ea47b0c98bf5c4ebd6221fb",
+    "package-lock.json": "ae12c1a77da140b023da935d92bad625f2e94aa5c7298e275fda4fe09f8a7f48",
     "packages/cloud-client/package.json": "b31f05157cb23a31c6afe2cacadb7ab604467f7581e90389ee926a0da24360a8",
     "packages/cloud-client/src/cloud-company-computer-contract.ts": "981b94cbe4823fff15b0d968d194bbd299b9e25b395b1a41eb7790332caeb1b7",
     "packages/cloud-client/src/cloud-company-computer-privacy.ts": "0817810023ef21416ff268279d9823d03d9c95da15fe3e694d34ad6e541693d0",
@@ -628,7 +628,7 @@
     "packages/runtime/src/native-provider-account.ts": "9dbb6d065639253c5584876adbeb70f2803de29575ae7de7d1e0f0bbe0442b2b",
     "packages/runtime/src/native-provider-usage.ts": "935086f12167064ae71e90b44af1cbfe28b0d64a59ec2ba685157f45d320297c",
     "packages/runtime/src/systemd-credential.ts": "1d3eb8038a369c58418cbd8248aecf457662cbb3430cc84847235c2222a82478",
-    "scripts/generate-cloud-runtime-bundle.mjs": "1d66c9099ce903b4169bc9fe8fa8835f35cd6ec4a8e00fc3c52c00c6d5630e95",
+    "scripts/generate-cloud-runtime-bundle.mjs": "fff06db8e2a2dc52c020ac6495c6180b41a9a0de5a1a1a7cd8b796b3c58c5247",
     "scripts/native-company-artifact.mjs": "e394bc799104f188769de07cd3be14e6c732a1a672113ea45d349a29d8e0ca63",
     "scripts/package-coding-executor.mjs": "292c557c75728d08e2fd2574c75cc07634f36bca629981709373f62af90a9272",
     "scripts/package-coding-guest.mjs": "04b1d63699aef4f05a5b800b06adff366e1607b1eaac53da8694d1e7e5d84ad3",
@@ -1050,9 +1050,9 @@
     "supabase/migrations/20260926000100_runtime_bundle_activation_v127.sql": "08d17fa3fed85f73a05cfe2a9e0983b18ea85d255cfa9b04d62b3eef9299de86",
     "supabase/migrations/20260926034000_runtime_bundle_activation_v128.sql": "daa847010177dcd390361f9a1b6fc25f252f9fabb2eb251979ef570d58db9d40",
     "supabase/migrations/20260926035000_company_agent_default_write_grants.sql": "99673ba627f3841847d2ba108a25a70895acbcf2f077d7239fc00088e8f02769",
-    "supabase/migrations/20260926035100_runtime_bundle_activation_v129.sql": "85fcca45465e034ca44233a920bb7c4cdd6a1c80bc8a5b1d576618f6486f7b0d",
+    "supabase/migrations/20260926035100_runtime_bundle_activation_v129.sql": "fd450572314e7ae0a29be26908c506c0b23bd66abc672e1e00dea5ac06bcfa5c",
     "supabase/migrations/20260926131000_runtime_dynamic_routines.sql": "19287ba6272d4b1e533fb605c5d624637b1788b8787a354baefe4391dd37403f",
-    "supabase/migrations/20260926131900_runtime_bundle_activation_v131.sql": "f1ac89e03128939ac79d4c414fc004fcdeecd75d845b12f3be0a7689fff03623",
+    "supabase/migrations/20260926131900_runtime_bundle_activation_v131.sql": "bdf2a7edd9f5e70227267ef40ffe6d444f88e541ffc0fead7839ab8beb0cdbd8",
     "supabase/migrations/20260926132000_runtime_member_routine_cursor.sql": "ca2d7a822c7bc26a76e62b39a2c1e330e3ffc85e4c69acde3973997a3b851629"
   }
 }

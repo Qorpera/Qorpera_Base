@@ -5,6 +5,7 @@ export interface CloudConfig {
 	objectGatewayUrl: string;
 	officeViewerOrigin?: string;
 	nativeProviderLoginUrl?: string;
+	memberCompanyGatewayUrl?: string;
 }
 
 export const DEFAULT_CLOUD_CONFIG: CloudConfig = {
@@ -61,6 +62,7 @@ export function parseCloudConfig(value: unknown, requireViewer = false): CloudCo
 					"objectGatewayUrl",
 					"officeViewerOrigin",
 					"nativeProviderLoginUrl",
+					"memberCompanyGatewayUrl",
 				].includes(key),
 		)
 	)
@@ -74,12 +76,19 @@ export function parseCloudConfig(value: unknown, requireViewer = false): CloudCo
 	if (requireViewer && !officeViewerOrigin) throw new Error("A release build requires the office viewer origin");
 	const nativeProviderLoginUrl =
 		input.nativeProviderLoginUrl === undefined ? undefined : loginBase(input.nativeProviderLoginUrl);
+	const memberCompanyGatewayUrl = input.memberCompanyGatewayUrl;
+	if (
+		memberCompanyGatewayUrl !== undefined &&
+		memberCompanyGatewayUrl !== `${projectUrl}/functions/v1/member-company-gateway`
+	)
+		throw new Error("Expected the exact project member gateway URL");
 	return {
 		projectUrl,
 		objectGatewayUrl,
 		publishableKey: input.publishableKey,
 		...(officeViewerOrigin ? { officeViewerOrigin } : {}),
 		...(nativeProviderLoginUrl ? { nativeProviderLoginUrl } : {}),
+		...(memberCompanyGatewayUrl ? { memberCompanyGatewayUrl } : {}),
 	};
 }
 
