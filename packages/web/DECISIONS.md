@@ -335,7 +335,8 @@ the rail clears that choice and follows the current size's default again.
 "did not finish this run" line and no Try again. The agent shows its other
 work, or idle. To repeat a stopped message, the member sends it again. The one
 exception is a stop that left an open Company File proposal of the run's own:
-it reads as "Needs you" with Review, ranked below the agent's live work.
+it reads as "Needs you" with Review, ranked below all of the agent's work,
+queued runs included.
 
 **Why.** The activity list keeps one run per agent and ranked a stopped member
 turn or room post above the run the agent was still working on. The agent read
@@ -345,10 +346,13 @@ run in the same thread) until the member dismissed the line.
 **How.** Every cancelled job is a member's Stop: the job table requires
 `cancelled_by_user_id` whenever the status is `cancelled`. The cloud leaves a
 stopped run out of `qorpera_list_staff_execution_activity` unless its own
-proposal is open, and ranks that decision like a completed run's (migration
-`20260926192436_member_stop_settled_activity`). The web reads a listed stop as a
-decision, and as settled once its details show no proposal, so an older cloud's
-listing is no failure either; sending a message still dismisses it there.
+proposal is open, and ranks that decision lowest (migration
+`20260926192436_member_stop_settled_activity`). A proposal review a member
+stopped (only possible through the job-id cancel) drops out too; its proposal
+still waits in the Company File. The web reads a listed stop as a decision, and
+as settled once its details show no proposal. An older cloud still lists every
+stop above the agent's live work, so there a member who can write acknowledges
+such a stop as soon as its details are read, and the work it hid shows again.
 
 **Rules out.** Try again for a stop (`qorpera_retry_room_delivery` still accepts
 one from its author; the web never offers it), and a grey "You stopped this

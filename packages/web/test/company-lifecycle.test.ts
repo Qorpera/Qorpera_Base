@@ -568,21 +568,16 @@ describe("agent execution state", () => {
 		expect(company.agentState(undefined)).toBe("idle");
 	});
 
-	it("never reads a run a member stopped as a failure, and never offers to repeat it", async () => {
-		const { api, company } = controller();
-		company.store.set({ team });
+	it("never reads a run a member stopped as a failure, and never offers to repeat it", () => {
+		const { company } = controller();
 		const stopped = { ...row("cancelled", "needs_attention"), sourceKind: "room_delivery" as const };
 		const details = recovery({
 			sourceKind: "room_delivery",
 			jobStatus: "cancelled",
 			lastError: "Runner job was cancelled by a company member",
 		});
-		const read = vi.spyOn(api, "getRunRecovery").mockResolvedValue(details);
 		// An older cloud still lists the stop, ranked above the agent's other work.
-		vi.mocked(api.listStaffActivity).mockResolvedValue([stopped]);
-		await company.refreshActivity();
-		await settle();
-		expect(read).toHaveBeenCalledExactlyOnceWith(id(70));
+		company.store.set({ team, activity: [stopped], recoveries: { [id(70)]: details } });
 		expect(company.agentState(staff.id)).toBe("idle");
 		expect(company.activityFor(staff.id)).toBeUndefined();
 		expect(company.failedRunFor(staff.id)).toBeUndefined();
@@ -604,6 +599,64 @@ describe("agent execution state", () => {
 		company.store.set({ recoveries: {} });
 		expect(company.agentState(staff.id)).toBe("decision");
 		expect(company.failedRunFor(staff.id)).toBeUndefined();
+	});
+
+	it("acknowledges a stop an older cloud still lists, so the work it hid shows again", async () => {
+		const { api, company } = controller();
+		company.store.set({ team });
+		const working = { ...row("leased", "working"), runId: id(72), sourceKind: "wake" as const };
+		vi.spyOn(api, "getRunRecovery").mockResolvedValue(recovery({ jobStatus: "cancelled" }));
+		// Acknowledged, the stop no longer outranks the routine run it hid.
+		const acknowledge = vi.spyOn(api, "acknowledgeFailedRun").mockImplementation(async () => {
+			vi.mocked(api.listStaffActivity).mockResolvedValue([working]);
+		});
+		vi.mocked(api.listStaffActivity).mockResolvedValue([row("cancelled", "needs_attention")]);
+		await company.refreshActivity();
+		await settle();
+		expect(acknowledge).toHaveBeenCalledExactlyOnceWith(id(70));
+		expect(company.agentState(staff.id)).toBe("working");
+		expect(company.activityFor(staff.id)?.runId).toBe(id(72));
+		await company.refreshActivity();
+		await settle();
+		expect(acknowledge).toHaveBeenCalledOnce();
+	});
+
+	it("leaves a stop's decision and a reader's company alone, and tries a refused acknowledgment again", async () => {
+		const reader = controller();
+		reader.company.store.set({ team: { ...team, capabilities: { ...team.capabilities, write: false } } });
+		vi.spyOn(reader.api, "getRunRecovery").mockResolvedValue(recovery({ jobStatus: "cancelled" }));
+		const readerAcknowledge = vi.spyOn(reader.api, "acknowledgeFailedRun").mockResolvedValue();
+		vi.mocked(reader.api.listStaffActivity).mockResolvedValue([row("cancelled", "needs_attention")]);
+		await reader.company.refreshActivity();
+		await settle();
+		// A reader writes nothing; the stop still reads as settled.
+		expect(readerAcknowledge).not.toHaveBeenCalled();
+		expect(reader.company.agentState(staff.id)).toBe("idle");
+		const writer = controller();
+		writer.company.store.set({ team });
+		vi.spyOn(writer.api, "getRunRecovery").mockResolvedValue(
+			recovery({ jobStatus: "cancelled", proposalId: id(71) }),
+		);
+		const acknowledge = vi.spyOn(writer.api, "acknowledgeFailedRun").mockRejectedValueOnce(new Error("offline"));
+		vi.mocked(writer.api.listStaffActivity).mockResolvedValue([row("cancelled", "needs_attention")]);
+		await writer.company.refreshActivity();
+		await settle();
+		// Its Company File changes wait for a decision, which acknowledging would not make.
+		expect(acknowledge).not.toHaveBeenCalled();
+		expect(writer.company.agentState(staff.id)).toBe("decision");
+		// Decided: now it is a plain stop. The first acknowledgment does not reach the cloud.
+		writer.company.store.set({ recoveries: { [id(70)]: recovery({ jobStatus: "cancelled" }) } });
+		await writer.company.refreshActivity();
+		await settle();
+		expect(acknowledge).toHaveBeenCalledOnce();
+		expect(writer.company.agentState(staff.id)).toBe("idle");
+		acknowledge.mockResolvedValue();
+		await writer.company.refreshActivity();
+		await settle();
+		expect(acknowledge).toHaveBeenCalledTimes(2);
+		await writer.company.refreshActivity();
+		await settle();
+		expect(acknowledge).toHaveBeenCalledTimes(2);
 	});
 
 	// Recovery reads are timed with performance.now(), so the fake clock must drive it too.

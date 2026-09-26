@@ -541,6 +541,7 @@ export class CompanyController {
 			if (this.#stopped || version !== this.#versions.activity) return;
 			this.store.set((state) => ({ activity, recoveries: stillFailed(state.recoveries, activity) }));
 			if (activity.some((item) => item.activity !== "needs_attention")) this.#watchWork(6_000);
+			this.#settleStops();
 			void this.#readRecoveries(activity);
 		} catch {
 			/* Activity is an indicator; its absence must not block the company. */
@@ -585,12 +586,33 @@ export class CompanyController {
 		}
 		const known = this.store.get().recoveries;
 		const changed = read.filter((recovery) => JSON.stringify(known[recovery.runId]) !== JSON.stringify(recovery));
-		if (!changed.length) return;
-		this.store.set((state) => {
-			const recoveries = { ...state.recoveries };
-			for (const recovery of changed) recoveries[recovery.runId] = recovery;
-			return { recoveries: stillFailed(recoveries, state.activity) };
-		});
+		if (changed.length)
+			this.store.set((state) => {
+				const recoveries = { ...state.recoveries };
+				for (const recovery of changed) recoveries[recovery.runId] = recovery;
+				return { recoveries: stillFailed(recoveries, state.activity) };
+			});
+		this.#settleStops();
+	}
+
+	/* A run a member stopped is no failure. A cloud before 20260926192436 still lists
+	 * a stop, ranked above the agent's live work, which it then hides (and that work's
+	 * Stop with it). Once the stop's details show it left no decision, a member who can
+	 * write acknowledges it for the company, and the live work shows again. A newer
+	 * cloud lists a stop only while its proposal waits, so this finds nothing there. A
+	 * refused acknowledgment is tried again on a later activity read. */
+	#settleStops(): void {
+		const { activity, recoveries, acknowledgedRuns, team, accessLost } = this.store.get();
+		if (!team?.capabilities.write || accessLost) return;
+		for (const row of activity) {
+			const recovery = recoveries[row.runId];
+			if (row.jobStatus !== "cancelled" || !isFailedRun(row) || !recovery || recovery.proposalId) continue;
+			if (acknowledgedRuns?.[row.runId]) continue;
+			void this.dismissFailedRun(row.runId, { refresh: false }).then(
+				() => this.refreshActivity(),
+				() => undefined,
+			);
+		}
 	}
 
 	/** The next activity read asks again for a run's details. */
@@ -768,7 +790,7 @@ export class CompanyController {
 	 * finish. The server reports one run per agent and ranks an undismissed failure
 	 * above newer work, so "failed" stands until the member dismisses it. A run a
 	 * member stopped (every cancelled job is one) is never "failed": the server
-	 * lists it only while its proposal waits, below the agent's live work. */
+	 * lists it only while its proposal waits, below all of the agent's work. */
 	agentState(staffAgentId: string | undefined): AgentState {
 		const row = this.activityFor(staffAgentId);
 		if (!row) return "idle";

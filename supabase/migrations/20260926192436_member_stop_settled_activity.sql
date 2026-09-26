@@ -19,16 +19,18 @@
 -- message the member sends it again. The one thing a Stop can leave behind is
 -- a Company File proposal of the run's own (partial durable output becomes a
 -- recovery proposal when the attempt ends). While it is open it still asks for
--- the decision, for every kind of run, a wake included, but it ranks like a
--- completed run's decision (1), below the run the agent is working on.
+-- the decision, for every kind of run, a wake included, but it ranks below all
+-- of the agent's work (0), queued runs included, so it never hides a Stop.
 --
 -- Three exact-once text patches of the current function
 -- (20260922010000_runtime_failed_run_acknowledgment.sql), so it keeps its ACL:
 -- a stopped run never enters through the failure branches, it is listed like a
--- completed run while its own proposal is open, and the failure rank is for
--- runs no member stopped. Failures are unchanged, and so are the recovery
--- actions: qorpera_retry_room_delivery still accepts a stopped post from its
--- author, but the web no longer offers it.
+-- completed run while its own proposal is open, and it ranks lowest. Runs no
+-- member stopped are unchanged, and so are the recovery actions:
+-- qorpera_retry_room_delivery still accepts a stopped post from its author, but
+-- the web no longer offers it. A proposal review a member stopped (reachable
+-- only through the job-id cancel, never from the web) drops out as well; the
+-- proposal it was reviewing still waits in the Company File.
 
 create function pg_temp.settled_stop_patch(p_target regprocedure, p_old text, p_new text)
 returns void language plpgsql as $$
@@ -48,4 +50,5 @@ select pg_temp.settled_stop_patch('public.qorpera_list_staff_execution_activity(
 	$new$or ((job.status = 'completed' or job.cancelled_by_user_id is not null) and exists ( -- a decision, finished or stopped$new$);
 select pg_temp.settled_stop_patch('public.qorpera_list_staff_execution_activity(uuid)',
 	$old$when job.status in ('failed', 'cancelled') then 3$old$,
-	$new$when job.status in ('failed', 'cancelled') and job.cancelled_by_user_id is null then 3$new$);
+	$new$when job.cancelled_by_user_id is not null then 0 -- a stop's decision waits below all work
+					when job.status in ('failed', 'cancelled') then 3$new$);

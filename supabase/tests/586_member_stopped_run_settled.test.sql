@@ -4,7 +4,7 @@
 -- a stopped message used to stand for the agent as failed and hid the run it
 -- was still working on (and with it the composer's Stop). Now a stopped run
 -- drops out, except while a Company File proposal of its own waits for a
--- decision; that decision ranks below live work.
+-- decision; that decision ranks below all of the agent's work.
 
 -- Bob's own thread, reopened as in 378: his routine runs there, and a member's
 -- message there is a room post.
@@ -162,6 +162,22 @@ select pg_temp.wake_assert(public.qorpera_cancel_runner_job(pg_temp.settled_job(
 	->> 'status' = 'cancelled','The owner stops the routine run');
 select pg_temp.wake_assert(pg_temp.settled_bob() = pg_temp.settled_row(current_setting('qorpera_test.settled_changes'),
 	'room_delivery','cancelled','needs_attention'),'Once nothing runs, the stopped run''s open proposal asks for the decision');
+-- Queued work, even work queued before the stop, still stands above that decision
+-- (its Stop stays), as a leased run does.
+reset role;
+savepoint queued;
+select set_config('qorpera_test.settled_queued',pg_temp.settled_run('room_delivery',
+	current_setting('qorpera_test.settled_thread')::uuid,'30000000-0000-4000-8000-000000000002')::text,true);
+update public.qorpera_runner_jobs set created_at = created_at - interval '1 hour'
+where run_id = current_setting('qorpera_test.settled_queued')::uuid;
+set role authenticated;
+select pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001');
+select pg_temp.wake_assert(pg_temp.settled_bob() = pg_temp.settled_row(current_setting('qorpera_test.settled_queued'),
+	'room_delivery','queued','waiting'),'A stopped run''s open proposal ranks below queued work, even older work');
+reset role;
+rollback to savepoint queued;
+set role authenticated;
+select pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001');
 -- Dismissing the line does not decide the proposal, so the decision stays.
 select pg_temp.wake_assert(public.qorpera_resolve_failed_execution_run(current_setting('qorpera_test.settled_changes')::uuid,
 	'acknowledge') ->> 'resolved' = 'true','The owner dismisses the stopped run');
