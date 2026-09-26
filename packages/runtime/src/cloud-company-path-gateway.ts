@@ -20,7 +20,12 @@ import type { CloudContentAddressedStore, CloudFileReference } from "@qorpera/cl
 import type { JsonValue } from "@qorpera/contracts";
 import { parseCompanyComputerScreenshotAsset } from "./cloud-company-computer-screenshots.ts";
 import { type CloudCompanyPathPresence, observeCloudCompanyPathPresence } from "./cloud-company-path-presence.ts";
-import { CloudCompanyPathRpcRefusal, CloudCompanyPathToolRefusal } from "./cloud-company-path-refusal.ts";
+import {
+	CloudCompanyPathRpcPrecondition,
+	CloudCompanyPathRpcRefusal,
+	CloudCompanyPathToolRefusal,
+	CloudCompanyPathVersionChanged,
+} from "./cloud-company-path-refusal.ts";
 import type { CloudNativeFenceRequest } from "./cloud-native-result-fence.ts";
 import {
 	type CloudNativeToolBinding,
@@ -44,15 +49,21 @@ const FILE_MEDIA = "application/vnd.qorpera.file-manifest+json";
 const TREE_MEDIA = "application/vnd.qorpera.company-tree+json";
 const MAX_WRITE_BYTES = 32 * 1024;
 const MAX_READ_BYTES = 4096;
+/** The plain listing RPC's largest page (SQL: p_limit 1..100). */
+const TRUSTED_LIST_PAGE = 100;
+/** Fresh starts of a paged trusted listing after the company moved on between pages. */
+const TRUSTED_LIST_ATTEMPTS = 4;
 
 export type CloudCompanyPathRpc =
 	| "qorpera_manage_agent_routine"
+	| "qorpera_decide_agent_routine"
 	| "qorpera_manage_agent_sidebar"
 	// Workers and durable todos (runtime Step 5).
 	| "qorpera_manage_agent_todo"
 	| "qorpera_confirm_agent_todo_publication"
 	| "qorpera_manage_agent_worker"
 	| "qorpera_report_worker_result"
+	| "qorpera_describe_agent_open_work"
 	| "qorpera_record_runtime_observation"
 	| "qorpera_record_provider_usage_signal"
 	| "qorpera_begin_native_company_execution_v2"
@@ -100,6 +111,14 @@ export interface CloudCompanyPathControl {
 export class CloudCompanyHeadConflict extends Error {
 	constructor() {
 		super("Company File head changed");
+	}
+}
+
+/** A verified file that is not UTF-8 text (or, for a trusted whole-file read,
+ * larger than a text write). The bytes are intact; they are just not text here. */
+export class CloudCompanyPathNotText extends Error {
+	constructor(message = "Company File range is not UTF-8 text") {
+		super(message);
 	}
 }
 
@@ -548,6 +567,10 @@ export class CloudCompanyPathGateway {
 			}
 			position += chunk.bytes;
 		}
+		// A whole file is also checked against its own digest, so "not text" can only ever
+		// mean intact bytes that are not UTF-8, never a manifest naming the wrong chunks.
+		if (offset === 0 && end === file.bytes && createHash("sha256").update(output).digest("hex") !== file.fileSha256)
+			throw new Error("Company File content does not match its digest");
 		// Do not split the last UTF-8 code point. Invalid binary/interior bytes
 		// remain unsupported, rather than silently changing the file's text.
 		let included = output.length;
@@ -560,26 +583,24 @@ export class CloudCompanyPathGateway {
 				if (end === file.bytes) break;
 			}
 		}
-		if (text === undefined || (included === 0 && output.length > 0))
-			throw new Error("Company File range is not UTF-8 text");
+		if (text === undefined || (included === 0 && output.length > 0)) throw new CloudCompanyPathNotText();
 		return { text, included };
 	}
 
 	/** Trusted whole-file read for context assembly and runtime-owned notebooks.
 	 * It uses the plain path read (authority and read memory, no model-read
 	 * observation, no wake-work gate), so it is not recorded as a model read
-	 * and may run before the first acknowledgement. Returns null for an absent
-	 * path. Bounded to MAX_WRITE_BYTES so a notebook file can be rewritten. */
+	 * and may run before the first acknowledgement. An absent path keeps the
+	 * version a deletion left (null if it never existed): recreating it must
+	 * name that version. Bounded to MAX_WRITE_BYTES so a notebook file can be
+	 * rewritten; a larger or non-text file is CloudCompanyPathNotText. */
 	async readTrusted(
 		pathValue: string,
 		signal: AbortSignal,
-	): Promise<{
-		path: string;
-		version: string;
-		kind: "file" | "directory";
-		text: string;
-		fileSha256: string | null;
-	} | null> {
+	): Promise<
+		| { path: string; version: string; kind: "file" | "directory"; text: string; fileSha256: string | null }
+		| { path: string; version: string | null; kind: "absent"; text: ""; fileSha256: null }
+	> {
 		const path = parseCloudCompanyPath(pathValue);
 		const input = closed(await this.#call("qorpera_read_company_path", { ...this.#bound(), p_path: path }, signal), [
 			"path",
@@ -590,48 +611,92 @@ export class CloudCompanyPathGateway {
 		]);
 		if (input.path !== path || input.companyId !== this.#identity.companyId)
 			throw new Error("Company File read scope changed");
-		if (input.entry === null) return null;
+		if (input.entry === null)
+			return { path, version: version(input.version, true), kind: "absent", text: "", fileSha256: null };
 		const found = entry(input.entry);
 		if (found.path !== path || input.version === null) throw new Error("Company File read target changed");
 		const current = version(input.version)!;
 		if (found.kind !== "file") return { path, version: current, kind: "directory", text: "", fileSha256: null };
-		if (found.file.bytes > MAX_WRITE_BYTES) throw new Error("Company File notebook exceeds its bound");
+		if (found.file.bytes > MAX_WRITE_BYTES)
+			throw new CloudCompanyPathNotText("Company File notebook exceeds its bound");
 		const manifestSize = integer(input.manifestBytes, 1, 8 * 1024 * 1024);
 		const { text, included } = await this.#fileText(found.file, manifestSize, 0, MAX_WRITE_BYTES, signal);
-		if (included !== found.file.bytes) throw new Error("Company File range is not UTF-8 text");
+		if (included !== found.file.bytes) throw new CloudCompanyPathNotText();
 		return { path, version: current, kind: "file", text, fileSha256: found.file.fileSha256 };
 	}
 
-	/** Trusted one-page directory listing (see readTrusted). Empty for an absent directory. */
+	/** Trusted directory listing (see readTrusted): every child, page after page
+	 * on one snapshot. A write anywhere in the company moves the snapshot and SQL
+	 * refuses the next page (PT412); the listing then starts again from the
+	 * first page. Empty for an absent directory. */
 	async listTrusted(
 		pathValue: string,
 		signal: AbortSignal,
 	): Promise<{ path: string; version: string; kind: "file" | "directory"; bytes: number | null }[]> {
 		const path = parseCloudCompanyPath(pathValue, true);
-		const page = closed(
-			await this.#call(
-				"qorpera_list_company_paths",
-				{ ...this.#bound(), p_path: path, p_after: null, p_snapshot_id: null, p_limit: 100 },
-				signal,
-			),
-			["snapshotId", "items", "hasMore", "nextAfter"],
-		);
-		if (!Array.isArray(page.items) || page.items.length > 100) throw new Error("Invalid Company File page");
-		return page.items.map((value) => {
-			const item = closed(value, ["path", "version", "kind", "bytes"]);
-			const child = parseCloudCompanyPath(item.path);
-			if (
-				child.slice(0, Math.max(0, child.lastIndexOf("/"))) !== path ||
-				(item.kind !== "directory" && item.kind !== "file")
-			)
-				throw new Error("Company File page includes an invalid child");
-			return {
-				path: child,
-				version: version(item.version)!,
-				kind: item.kind,
-				bytes: item.kind === "file" ? integer(item.bytes, 0, 1024 ** 4) : null,
-			};
-		});
+		for (let attempt = 1; ; attempt++) {
+			const items: { path: string; version: string; kind: "file" | "directory"; bytes: number | null }[] = [];
+			let snapshotId: string | null = null;
+			let after: string | null = null;
+			try {
+				do {
+					const page = closed(
+						await this.#call(
+							"qorpera_list_company_paths",
+							{
+								...this.#bound(),
+								p_path: path,
+								p_after: after,
+								p_snapshot_id: snapshotId,
+								p_limit: TRUSTED_LIST_PAGE,
+							},
+							signal,
+						),
+						["snapshotId", "items", "hasMore", "nextAfter"],
+					);
+					const pinned = version(page.snapshotId)!;
+					if (
+						(snapshotId !== null && pinned !== snapshotId) ||
+						!Array.isArray(page.items) ||
+						page.items.length > TRUSTED_LIST_PAGE ||
+						typeof page.hasMore !== "boolean"
+					)
+						throw new Error("Invalid Company File page");
+					snapshotId = pinned;
+					for (const value of page.items) {
+						const item = closed(value, ["path", "version", "kind", "bytes"]);
+						const child = parseCloudCompanyPath(item.path);
+						const previous = items.at(-1)?.path;
+						if (
+							child.slice(0, Math.max(0, child.lastIndexOf("/"))) !== path ||
+							(previous !== undefined && Buffer.compare(Buffer.from(child), Buffer.from(previous)) <= 0) ||
+							(item.kind !== "directory" && item.kind !== "file") ||
+							(item.kind === "directory" && item.bytes !== null)
+						)
+							throw new Error("Company File page includes an invalid child");
+						items.push({
+							path: child,
+							version: version(item.version)!,
+							kind: item.kind,
+							bytes: item.kind === "file" ? integer(item.bytes, 0, 1024 ** 4) : null,
+						});
+					}
+					// A page that says there is more must name where it ended, so the loop always advances.
+					if (page.nextAfter !== (page.hasMore ? (page.items.length ? items.at(-1)!.path : undefined) : null))
+						throw new Error("Invalid Company File page cursor");
+					after = page.nextAfter as string | null;
+				} while (after !== null);
+				return items;
+			} catch (error) {
+				if (
+					!(error instanceof CloudCompanyPathRpcPrecondition) ||
+					after === null ||
+					attempt >= TRUSTED_LIST_ATTEMPTS ||
+					signal.aborted
+				)
+					throw error;
+			}
+		}
 	}
 
 	async list(
@@ -818,20 +883,30 @@ export class CloudCompanyPathGateway {
 			expectedVersion,
 			entry: next,
 		};
-		const mutation = (action: "check" | "prepare" | "commit", extra: Record<string, unknown> = {}) =>
-			this.#call(
-				source
-					? "qorpera_native_company_file_write"
-					: action === "check"
-						? "qorpera_check_company_path_mutation"
-						: action === "prepare"
-							? "qorpera_prepare_company_path_mutation"
-							: "qorpera_commit_company_path_mutation",
-				{ ...this.#bound(), p_plan: plan, ...extra, ...(source ? { p_source: source, p_action: action } : {}) },
-				signal,
-				// Only check precedes presence, object staging and canonical writes.
-				action === "check",
-			);
+		const mutation = async (action: "check" | "prepare" | "commit", extra: Record<string, unknown> = {}) => {
+			try {
+				return await this.#call(
+					source
+						? "qorpera_native_company_file_write"
+						: action === "check"
+							? "qorpera_check_company_path_mutation"
+							: action === "prepare"
+								? "qorpera_prepare_company_path_mutation"
+								: "qorpera_commit_company_path_mutation",
+					{ ...this.#bound(), p_plan: plan, ...extra, ...(source ? { p_source: source, p_action: action } : {}) },
+					signal,
+					// Only check precedes presence, object staging and canonical writes.
+					action === "check",
+				);
+			} catch (error) {
+				// Each of these transactions replays a completed operation key before it
+				// tests the expected version (20260828019950), and a refusal rolls it back
+				// whole: at any stage this is a definite "changed, nothing written".
+				if (error instanceof CloudCompanyPathRpcPrecondition && !signal.aborted)
+					throw new CloudCompanyPathVersionChanged();
+				throw error;
+			}
+		};
 		const preflight = prepared(await mutation("check"), plan, false);
 		this.#remember(path);
 		if (preflight.state === "completed") {
@@ -988,7 +1063,7 @@ export class CloudCompanyPathGateway {
 			registered.push({
 				name: `company_${operation}` satisfies CloudRuntimeToolOperation,
 				source: "company_file",
-				description: `${operation === "write" ? "Write UTF-8 text (up to 32 KiB), or copy a completed shared export (up to 8 MiB) selected by object_storage assetId and sha256" : operation === "mkdir" ? "Create one directory" : "Propose deleting one file or empty directory"} in the live Company File. Read first and supply its exact opaque version, or null only for an unseen absent path. Keep operationKey stable for the same intended change. Protected changes return a proposal, not a completed edit; only a human can approve it. Never retry different content or a different source under the same key.`,
+				description: `${operation === "write" ? "Write UTF-8 text (up to 32 KiB), or copy a completed shared export (up to 8 MiB) selected by object_storage assetId and sha256" : operation === "mkdir" ? "Create one directory" : "Propose deleting one file or empty directory"} in the live Company File. Read first and supply its exact opaque version, or null only for an unseen absent path. If the path changed since, the result is COMPANY_FILE_VERSION_CHANGED and nothing was written: read it again and make the change on its current version. Keep operationKey stable for the same intended change. Protected changes return a proposal, not a completed edit; only a human can approve it. Never retry different content or a different source under the same key.`,
 				inputSchema:
 					operation === "write"
 						? {

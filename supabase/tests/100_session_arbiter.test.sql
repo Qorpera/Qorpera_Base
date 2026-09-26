@@ -103,6 +103,10 @@ $$;
 reset role;
 select set_config('request.jwt.claims', '', false);
 
+-- Membership names are projected from the account's saved identity.
+update auth.users set raw_user_meta_data = raw_user_meta_data || '{"full_name":"B"}'::jsonb
+where id = '80000000-0000-4000-8000-00000000000b';
+
 insert into public.qorpera_profile_members (profile_id, user_id, email, display_name, role)
 values (current_setting('qorpera_test.sa_profile')::uuid,
 	'80000000-0000-4000-8000-00000000000b', 'sep-owner-b@example.test', 'B', 'contributor');

@@ -503,7 +503,7 @@ describe("native provider host", () => {
 			});
 			expect(response.status).toBe(422);
 			expect(logged).toHaveBeenCalledWith(
-				`Native provider request rejected: internal rejection (error; message-sha256=${createHash("sha256").update(privateDiagnostic).digest("hex").slice(0, 16)})`,
+				`Native provider request rejected: internal rejection (error; message-sha256=${createHash("sha256").update(privateDiagnostic).digest("hex").slice(0, 16)}) [code=UNCLASSIFIED]`,
 			);
 			expect(logged.mock.calls.flat().join("\n")).not.toContain(privateDiagnostic);
 		} finally {
@@ -984,9 +984,11 @@ describe("native provider host", () => {
 			const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
 			try {
 				const rejected = await bridge.start({ ...nativeAuthority, leaseId: otherComputeIdentityId }, request);
-				await expect(rejected.result).rejects.toThrow("Native provider bridge request failed (422)");
+				await expect(rejected.result).rejects.toThrow(
+					/^Native provider bridge request failed \(422\) \[code=NATIVE_HARNESS_EXECUTION:FILESYSTEM_PERMISSION\]$/,
+				);
 				expect(logged).toHaveBeenCalledWith(
-					"Native provider request rejected: Native provider execution harness-execution stage failed (filesystem-permission) [mouth=uninitialized]",
+					"Native provider request rejected: Native provider execution harness-execution stage failed (filesystem-permission) [mouth=uninitialized] [code=NATIVE_HARNESS_EXECUTION:FILESYSTEM_PERMISSION]",
 				);
 				expect(logged.mock.calls.flat().join("\n")).not.toContain(privateDiagnostic);
 			} finally {
@@ -1007,9 +1009,11 @@ describe("native provider host", () => {
 			const startupLogged = vi.spyOn(console, "error").mockImplementation(() => undefined);
 			try {
 				const rejected = await bridge.start({ ...nativeAuthority, leaseId: otherComputeIdentityId }, request);
-				await expect(rejected.result).rejects.toThrow("Native provider bridge request failed (422)");
+				await expect(rejected.result).rejects.toThrow(
+					/^Native provider bridge request failed \(422\) \[code=HARNESS_EXITED:PROVIDER_AUTHORIZATION\]$/,
+				);
 				expect(startupLogged).toHaveBeenCalledWith(
-					"Native provider request rejected: Provider harness exited with 1 (provider authorization unavailable) [mouth=ready]",
+					"Native provider request rejected: Provider harness exited with 1 (provider authorization unavailable) [mouth=ready] [code=HARNESS_EXITED:PROVIDER_AUTHORIZATION]",
 				);
 			} finally {
 				startupLogged.mockRestore();

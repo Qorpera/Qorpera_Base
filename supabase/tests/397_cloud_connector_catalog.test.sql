@@ -45,13 +45,13 @@ insert into public.qorpera_cloud_secret_broker_authorities(id,profile_id,service
 values ('38000000-0000-4000-8000-000000000040','38000000-0000-4000-8000-000000000010',
 	'https://secrets.qorpera.test','company-kek-1',repeat('c',64));
 
--- The shipped catalog: three connectors, fifteen closed operations, tool names
+-- The shipped catalog: three connectors, twenty closed operations, tool names
 -- prefixed by their connector, every schema closed.
-select pg_temp.connector_assert((select count(*)=15 from public.qorpera_cloud_connector_operations
+select pg_temp.connector_assert((select count(*)=20 from public.qorpera_cloud_connector_operations
 	where connector_id in ('github','gmail','google_drive') and status='active'),'Connector catalog rows are missing');
 select pg_temp.connector_assert((select count(*)=7 from public.qorpera_cloud_connector_operations where connector_id='github'),
 	'GitHub catalog differs');
-select pg_temp.connector_assert((select count(*)=4 from public.qorpera_cloud_connector_operations where connector_id='gmail'),
+select pg_temp.connector_assert((select count(*)=9 from public.qorpera_cloud_connector_operations where connector_id='gmail'),
 	'Gmail catalog differs');
 select pg_temp.connector_assert((select count(*)=4 from public.qorpera_cloud_connector_operations where connector_id='google_drive'),
 	'Google Drive catalog differs');
@@ -133,11 +133,11 @@ select pg_temp.connector_assert((current_setting('qorpera_test.gmail_descriptor'
 select pg_temp.connector_assert((select available_to_all_agents from public.qorpera_cloud_secrets
 	where id=(current_setting('qorpera_test.gmail_descriptor')::jsonb->>'secretId')::uuid),
 	'The captured company connection is not marked shared');
-select pg_temp.connector_assert((select count(*)=8 and count(distinct staff_agent_id)=2
+select pg_temp.connector_assert((select count(*)=18 and count(distinct staff_agent_id)=2
 		and bool_and(issued_by_user_id='38000000-0000-4000-8000-000000000001')
 	from public.qorpera_cloud_secret_operation_grants
 	where secret_id=(current_setting('qorpera_test.gmail_descriptor')::jsonb->>'secretId')::uuid and status='active'),
-	'Capture did not grant the four Gmail operations to both active agents');
+	'Capture did not grant the nine Gmail operations to both active agents');
 
 -- A contributor cannot open a company connection (the kernel's owner/admin rule).
 select pg_temp.connector_claims('authenticated','38000000-0000-4000-8000-000000000002');
@@ -236,7 +236,7 @@ select pg_temp.connector_assert((public.qorpera_grant_cloud_connector(
 	array['38000000-0000-4000-8000-000000000030'::uuid])->>'grantsIssued')::int=0,
 	'A shared GitHub connection was granted again');
 reset role;
-select pg_temp.connector_assert((select count(*)=22 from public.qorpera_cloud_secret_operation_grants
+select pg_temp.connector_assert((select count(*)=32 from public.qorpera_cloud_secret_operation_grants
 	where profile_id='38000000-0000-4000-8000-000000000010' and status='active'),'Active grant count differs');
 select pg_temp.connector_assert((select available_to_all_agents from public.qorpera_cloud_secrets
 	where id=(current_setting('qorpera_test.gmail_descriptor')::jsonb->>'secretId')::uuid),'Gmail connection is not marked shared');
@@ -253,7 +253,7 @@ reset role;
 select pg_temp.connector_assert((select count(*)=2 from jsonb_array_elements(current_setting('qorpera_test.connections')::jsonb)
 	as item where item->>'ownerKind'='company'),
 	'Member sees a different number of company connections');
-select pg_temp.connector_assert((select bool_and(item->>'accountLabel'='office@example.test' and (item->>'activeGrantCount')::int=8
+select pg_temp.connector_assert((select bool_and(item->>'accountLabel'='office@example.test' and (item->>'activeGrantCount')::int=18
 		and (item->>'availableToAllAgents')::boolean
 		and item->>'connectedByUserId'='38000000-0000-4000-8000-000000000001')
 	from jsonb_array_elements(current_setting('qorpera_test.connections')::jsonb) as item
@@ -274,7 +274,7 @@ insert into public.qorpera_profile_staff(profile_id,staff_agent_id,display_name,
 	appearance_color,appearance_shape,employment_status,lifecycle_state,model_provider,model_id,created_at,updated_at,updated_by_user_id)
 values ('38000000-0000-4000-8000-000000000010','38000000-0000-4000-8000-000000000033','Newcomer','Support','Help customers.',
 	'green','round','active','setup','openai','gpt-native',clock_timestamp(),clock_timestamp(),'38000000-0000-4000-8000-000000000002');
-select pg_temp.connector_assert((select count(*)=4 from public.qorpera_cloud_secret_operation_grants
+select pg_temp.connector_assert((select count(*)=9 from public.qorpera_cloud_secret_operation_grants
 	where staff_agent_id='38000000-0000-4000-8000-000000000033' and status='active' and connector_id='gmail'
 		and issued_by_user_id='38000000-0000-4000-8000-000000000001'),
 	'New hire did not receive the shared Gmail grants from an owner');
@@ -288,7 +288,7 @@ select pg_temp.connector_assert((select count(*)=0 from public.qorpera_cloud_sec
 	where staff_agent_id='38000000-0000-4000-8000-000000000033' and status='active'),'Archiving left connector grants active');
 
 -- The runtime lists the granted operations as tools, one per grant.
-select pg_temp.connector_assert((select count(*)=11 from public.qorpera_cloud_secret_operation_grants
+select pg_temp.connector_assert((select count(*)=16 from public.qorpera_cloud_secret_operation_grants
 	where staff_agent_id='38000000-0000-4000-8000-000000000031' and status='active'),
 	'Bo does not hold exactly the Gmail and GitHub grants');
 

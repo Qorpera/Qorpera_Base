@@ -177,6 +177,17 @@ it.each([
 					"# This wake: your workers reported",
 				])
 					expect(instructions.includes(heading)).toBe(heading === own);
+				// Only a dynamic routine's run is told to decide its next run.
+				expect(instructions.includes("# This routine is dynamic")).toBe(false);
+				if (kind === "routine") {
+					const dynamic = compileCloudNativeCompanyInstructions(context, {
+						...wake,
+						routine: { ...wake.routine!, dynamic: true },
+					});
+					expect(dynamic).toContain("# This wake: your routine");
+					expect(dynamic).toContain("# This routine is dynamic");
+					expect(dynamic).toContain("call decide_routine exactly once");
+				}
 				expect(instructions.includes("qorpera.run-continuation/v1")).toBe(continued);
 				expect(instructions.includes("# Before you end your turn")).toBe(final === "required");
 				// ask_member is offered wherever a final is required (a room wake then is the agent's
@@ -324,6 +335,34 @@ it("keeps hostile names, job specifications and history in a single escaped data
 	expect(JSON.parse(prompt).delivery.requireFinalSend).toBe(true);
 	f.context.identity = { ...f.context.identity, sessionId: null };
 	expect(JSON.parse(composeCloudNativeCompanyPrompt(f.context)).delivery.requireFinalSend).toBe(false);
+});
+
+it("composes the whole profile, and degrades memory instead of failing when a notebook outgrows the context", () => {
+	const f = nativeCompanyContextFixture();
+	const context = parseCloudNativeCompanyContext(f.context, f.binding);
+	const memory = (count: number): NonNullable<Parameters<typeof composeCloudNativeCompanyPrompt>[3]> => ({
+		schema: "qorpera.agent-memory/v1",
+		trust: "own_notebook_not_authority",
+		available: true,
+		tools: ["update_memory", "recall_memory"],
+		profile: {
+			path: `agents/${context.agent.id}/memory/profile.md`,
+			version: randomUUID(),
+			// Angle brackets are escaped six bytes each: the worst case another writer can leave.
+			facts: Array.from({ length: count }, (_, index) => ({
+				date: "2026-09-01",
+				tier: "profile" as const,
+				fact: `${index} ${"<".repeat(1000)}`,
+			})),
+		},
+		recentLog: { files: [], facts: [], moreFacts: 0 },
+	});
+	const whole = JSON.parse(composeCloudNativeCompanyPrompt(context, null, undefined, memory(20)));
+	expect(whole.memory).toMatchObject({ available: true });
+	expect(whole.memory.profile.facts).toHaveLength(20);
+	const degraded = JSON.parse(composeCloudNativeCompanyPrompt(context, null, undefined, memory(200)));
+	expect(degraded.memory).toMatchObject({ available: false, reason: "too_large", profile: { facts: [] } });
+	expect(degraded.hireOverlay.agentId).toBe(context.agent.id);
 });
 
 it.each(["cofounder", "employee"] as const)(

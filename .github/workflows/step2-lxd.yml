@@ -47,6 +47,8 @@ on:
       - 'packages/runtime/src/cloud-secret-*.ts'
       - 'packages/shell/test/cloud-connector-*.test.ts'
       - 'packages/shell/test/cloud-secret-*.test.ts'
+      - 'packages/shell/test/cloud-email-draft*.test.ts'
+      - 'packages/web/src/cloud/email-drafts.ts'
       - 'scripts/package-lxd-*.mjs'
       - 'scripts/package-lxd-*.test.mjs'
       - 'scripts/package-runtime-node-updater*.mjs'
@@ -135,6 +137,7 @@ jobs:
         run: >-
           node ../../node_modules/vitest/dist/cli.js --run
           test/cloud-native-coding-runtime.test.ts
+          test/cloud-native-failure-code.test.ts
           test/cloud-coding-command-http.test.ts
           test/cloud-coding-command-tools.test.ts
           test/cloud-coding-command-log.test.ts
@@ -201,6 +204,8 @@ jobs:
           test/cloud-secret-broker.test.ts
           test/cloud-secret-broker-http.test.ts
           test/cloud-secret-tools.test.ts
+          test/cloud-email-draft.test.ts
+          test/cloud-email-draft-integration.test.ts
 
       - name: Test deterministic packaging
         run: >-

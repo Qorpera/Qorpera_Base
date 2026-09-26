@@ -24,6 +24,7 @@ export const CLOUD_RUNTIME_TOOL_OPERATIONS = [
 	"hire_agent",
 	"create_group_chat",
 	"manage_routine",
+	"decide_routine",
 	"report_work",
 	"manage_todo",
 	"manage_worker",

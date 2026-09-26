@@ -13,9 +13,9 @@ import {
 	uiText,
 } from "../../ui/preferences.ts";
 import { timeZoneCity, timeZoneEntries } from "../../ui/time-zones.ts";
-import { type AuthController, displayName } from "../auth.ts";
+import type { AuthController } from "../auth.ts";
+import { accountNameEditor } from "./account-name.ts";
 import { accountPicture } from "./account-picture.ts";
-import { composerColorChoices, themeChoices } from "./appearance.ts";
 
 /** Each language by its own name; the list shows it again in the interface's. */
 const LANGUAGES = [
@@ -117,81 +117,63 @@ export function renderAccount(
 ): void {
 	const user = auth.store.get().user;
 	const picture = accountPicture(user);
-	const provider: string = user?.app_metadata?.provider ?? "email";
+	const name = accountNameEditor(auth, container);
 	const { labels, language, timeZone } = pickersFor(container, setState);
 	const focused =
 		document.activeElement instanceof HTMLElement && container.contains(document.activeElement)
 			? document.activeElement
 			: null;
-	const theme = themeChoices(() => setState({ error: t("Your browser could not save the theme preference.") }));
-	const composerColor = composerColorChoices(() =>
-		setState({ error: t("Your browser could not save the composer color preference.") }),
-	);
-	replace(
-		container,
-		h(
-			"section",
-			{ class: "page account" },
-			h("h1", null, uiText("General")),
-			state.error ? notice("danger", state.error) : null,
-			state.message ? notice("ok", state.message) : null,
+	name.preserveDraft(() =>
+		replace(
+			container,
 			h(
 				"section",
-				{ class: "settings-group" },
-				h("h2", null, uiText("Account")),
+				{ class: "page account" },
+				h("h1", null, uiText("General")),
+				state.error ? notice("danger", state.error) : null,
+				state.message ? notice("ok", state.message) : null,
 				h(
-					"div",
-					{ class: "settings-card settings-account" },
-					picture.picture,
+					"section",
+					{ class: "settings-group" },
+					h("h2", null, uiText("Account")),
 					h(
 						"div",
-						{ class: "settings-copy" },
-						h("strong", null, user?.email || displayName(user)),
-						h(
-							"small",
-							null,
-							provider === "email" ? t("Signed in with email") : t("Signed in with {provider}", { provider }),
-						),
+						{ class: "settings-card settings-account" },
+						picture.picture,
+						h("div", { class: "settings-copy" }, name.input, h("small", null, user?.email ?? "")),
+						button(uiText("Sign out"), () => void auth.signOut()),
 					),
-					button(uiText("Sign out"), () => void auth.signOut()),
+					picture.error,
+					name.error,
 				),
-				picture.error,
-			),
-			h(
-				"section",
-				{ class: "settings-group" },
-				h("h2", null, uiText("Appearance")),
-				// The pictures say what each group is; the groups keep their names for screen readers.
-				h("div", { class: "settings-preference" }, theme),
-				h("div", { class: "settings-preference" }, composerColor),
-			),
-			h(
-				"section",
-				{ class: "settings-group" },
-				h("h2", null, uiText("Language & region")),
 				h(
-					"div",
-					{ class: "settings-rows" },
+					"section",
+					{ class: "settings-group" },
+					h("h2", null, uiText("Language & region")),
 					h(
 						"div",
-						{ class: "settings-preference-row" },
+						{ class: "settings-rows" },
 						h(
-							"label",
-							{ class: "settings-copy", for: language.buttonId },
-							h("span", { id: labels.language }, uiText("Language")),
+							"div",
+							{ class: "settings-preference-row" },
+							h(
+								"label",
+								{ class: "settings-copy", for: language.buttonId },
+								h("span", { id: labels.language }, uiText("Language")),
+							),
+							language.el,
 						),
-						language.el,
-					),
-					h(
-						"div",
-						{ class: "settings-preference-row" },
 						h(
-							"label",
-							{ class: "settings-copy", for: timeZone.buttonId },
-							h("span", { id: labels.timeZone }, uiText("Time zone")),
-							h("small", null, uiText("Message times and new routines use this zone.")),
+							"div",
+							{ class: "settings-preference-row" },
+							h(
+								"label",
+								{ class: "settings-copy", for: timeZone.buttonId },
+								h("span", { id: labels.timeZone }, uiText("Time zone")),
+								h("small", null, uiText("Message times and new routines use this zone.")),
+							),
+							timeZone.el,
 						),
-						timeZone.el,
 					),
 				),
 			),

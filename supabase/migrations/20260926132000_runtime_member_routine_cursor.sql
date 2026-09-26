@@ -45,7 +45,7 @@
 -- unchanged) restarts its cursor in place the same way once its next slot has
 -- passed. A member's pause keeps the position, so without this an agent's
 -- resume after it would replay every slot the pause skipped. (The agent path,
--- v121 #320, relies on this trigger and on the helpers below.)
+-- v133 #320, relies on this trigger and on the helpers below.)
 --
 -- The restart position is the effective time truncated to the millisecond,
 -- with next_due_at one millisecond later so the scheduler lists the routine at
@@ -54,7 +54,7 @@
 -- which the enqueue compares exactly, so a microsecond value would refuse every
 -- later occurrence. A restart never moves the position behind the one the
 -- routine already reached. A restart position is not a run time, so
--- qorpera_routine_next_run_at (v114, when present) does not show it.
+-- qorpera_routine_next_run_at (v131, when present) does not show it.
 
 create function pg_temp.member_cursor_patch(p_target regprocedure, p_old text, p_new text)
 returns void language plpgsql as $$
@@ -184,7 +184,7 @@ select pg_temp.member_cursor_patch('public.qorpera_routine_occurrence_recorded()
 	$old$			and (select count(*) from public.qorpera_wake_occurrences wake where wake.routine_id = routine.id)
 				>= routine.max_occurrences;$old$,
 	$new$			and public.qorpera_routine_occurrence_count(routine.id) >= routine.max_occurrences;$new$);
--- What an agent sees beside maxOccurrences counts the same way (v114 keeps this
+-- What an agent sees beside maxOccurrences counts the same way (v131 keeps this
 -- expression when it extends the view).
 select pg_temp.member_cursor_patch('public.qorpera_agent_routine_view(public.qorpera_cloud_routines)'::regprocedure,
 	$old$'occurrences', (select count(*) from public.qorpera_wake_occurrences wake where wake.routine_id = p_routine.id)$old$,
@@ -222,16 +222,16 @@ revoke all on function public.qorpera_routine_resume_restarts_schedule()
 	from public, anon, authenticated, service_role, qorpera_secret_broker;
 
 -- ---------------------------------------------------------------------------
--- The next run shown to agents and members (v114, when present)
+-- The next run shown to agents and members (v131, when present)
 -- ---------------------------------------------------------------------------
 -- A restart position (next_due_at one millisecond after the position) only
 -- tells the scheduler to compute the first slot after it; it is not a run time.
--- qorpera_routine_next_run_at arrives with v114 (#314), which merges first;
--- v121 (#320) requires this exact predicate (last_scheduled_for + 1 ms).
+-- qorpera_routine_next_run_at arrives with v131 (#314), which merges first;
+-- v133 (#320) requires this exact predicate (last_scheduled_for + 1 ms).
 do $$
 begin
 	if to_regprocedure('public.qorpera_routine_next_run_at(uuid)') is null then
-		raise notice 'qorpera_routine_next_run_at is absent (v114 not applied): nothing to patch';
+		raise notice 'qorpera_routine_next_run_at is absent (v131 not applied): nothing to patch';
 		return;
 	end if;
 	if pg_get_functiondef(to_regprocedure('public.qorpera_routine_next_run_at(uuid)'))

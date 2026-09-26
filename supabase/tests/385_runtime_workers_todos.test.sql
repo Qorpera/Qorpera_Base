@@ -90,7 +90,8 @@ begin
 		perform pg_temp.wake_assert((select count(*) >= 66 from public.qorpera_runtime_agent_todos where state in ('open','blocked')
 			and staff_agent_id = '30000000-0000-4000-8000-000000000030'),'An agent keeps sixty-six open todos');
 		perform pg_temp.wake_assert(jsonb_array_length(pg_temp.todo('{"action":"list"}') -> 'todos') = 32
-			and (pg_temp.todo('{"action":"list"}') ->> 'moreTodos')::int >= 34,'The todo list is a page of thirty-two and counts the rest');
+			and (pg_temp.todo('{"action":"list"}') ->> 'moreTodos')::int >= 34
+			and pg_temp.todo('{"action":"list"}') ->> 'nextCursor' is not null,'The todo list is a page of thirty-two, counts the rest and continues by cursor');
 		raise exception 'rollback-todo-count-probe';
 	exception when raise_exception then
 		if sqlerrm <> 'rollback-todo-count-probe' then raise; end if;
@@ -455,21 +456,27 @@ begin
 	exception when raise_exception then
 		if sqlerrm <> 'rollback-stopped-revival-workers-probe' then raise; end if;
 	end;
-	-- The status listing is a page of sixteen, active workers first, and counts the rest. Probed in a subtransaction.
+	-- The status listing is a page of sixteen, newest first, and counts the rest; a state filter
+	-- finds the active ones. Probed in a subtransaction (paging itself: 388).
 	begin
 		for v_index in 7..18 loop
 			perform pg_temp.worker(jsonb_build_object('action','dispatch','operationKey','b' || v_index,'todoKey','market-scan','workerKey','batch-' || v_index,
 				'title','Batch ' || v_index,'goal','Research part ' || v_index,'definitionOfDone','A paragraph.','access','read'),v_binding);
 		end loop;
-		-- The most recently changed worker is a cancelled one; the page still shows active workers first.
 		perform pg_temp.worker('{"action":"cancel","operationKey":"c18","todoKey":"market-scan","workerKey":"batch-18"}',v_binding);
 		v_done := pg_temp.worker('{"action":"status"}',v_binding);
 		perform pg_temp.wake_assert(jsonb_array_length(v_done -> 'workers') = 16 and (v_done ->> 'moreWorkers')::int >= 2
+			and v_done #>> '{workers,0,workerKey}' = (select worker_key from public.qorpera_runtime_workers
+				where staff_agent_id = '30000000-0000-4000-8000-000000000030' order by created_at desc, id desc limit 1)
+			and v_done ->> 'nextCursor' is not null,
+			'Eighteen workers: the newest sixteen listed, the rest counted and reachable by cursor');
+		v_done := pg_temp.worker('{"action":"status","state":"active"}',v_binding);
+		perform pg_temp.wake_assert(jsonb_array_length(v_done -> 'workers') = 16 and (v_done ->> 'moreWorkers')::int >= 1
 			and not exists (select 1 from jsonb_array_elements(v_done -> 'workers') listed
 				join public.qorpera_runtime_agent_todos todo on todo.todo_key = listed ->> 'todoKey'
 				join public.qorpera_runtime_workers worker on worker.todo_id = todo.id and worker.worker_key = listed ->> 'workerKey'
 				where worker.state <> 'active'),
-			'Seventeen active workers and a newer cancelled one: sixteen listed, all active, and the rest counted');
+			'Seventeen active workers and a newer cancelled one: state active lists sixteen, all active, and counts the rest');
 		raise exception 'rollback-status-page-probe';
 	exception when raise_exception then
 		if sqlerrm <> 'rollback-status-page-probe' then raise; end if;

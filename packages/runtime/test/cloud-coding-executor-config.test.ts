@@ -3,10 +3,12 @@ import { errorCode, parseCodingExecutorConfiguration } from "../../../deploy/cod
 
 function fixture() {
 	return {
-		schema: "qorpera.coding-executor-service/v5",
+		schema: "qorpera.coding-executor-service/v6",
 		owner: "node-coding",
 		supabaseUrl: "https://project.supabase.co",
 		commandPort: 8789,
+		peerCommandPort: 8790,
+		commandPeers: [],
 		storagePolicy: {
 			schema: "qorpera.coding-nas-policy/v1",
 			mountPoint: "/srv/coding",
@@ -105,7 +107,7 @@ describe("coding executor service configuration", () => {
 	});
 	it("refuses the previous schema and unknown keys", () => {
 		expect(() =>
-			parseCodingExecutorConfiguration({ ...fixture(), schema: "qorpera.coding-executor-service/v4" }),
+			parseCodingExecutorConfiguration({ ...fixture(), schema: "qorpera.coding-executor-service/v5" }),
 		).toThrow("CONFIG_INVALID");
 		expect(() => parseCodingExecutorConfiguration({ ...fixture(), token: "inline-secret" })).toThrow(
 			"CONFIG_INVALID",
@@ -118,6 +120,34 @@ describe("coding executor service configuration", () => {
 				repositories: [{ repository: config.repositories[0].repository, credential: null }],
 			}),
 		).toThrow("CONFIG_INVALID");
+	});
+	it("accepts trusted peer identities and rejects ambiguous routes or credential reuse", () => {
+		const peer = {
+			owner: "node-other",
+			providerId: "native-other",
+			origin: "https://peer.qorpera.test",
+			tokenCredential: "qorpera-coding-peer-other",
+		};
+		expect(parseCodingExecutorConfiguration({ ...fixture(), commandPeers: [peer] }).commandPeers).toEqual([peer]);
+		for (const commandPeers of [
+			[peer, peer],
+			[{ ...peer, owner: fixture().owner }],
+			[{ ...peer, origin: "http://peer.qorpera.test" }],
+			[{ ...peer, origin: "https://peer.qorpera.test/commands" }],
+			[{ ...peer, tokenCredential: "qorpera-coding-peer-command" }],
+			[{ ...peer, tokenCredential: "qorpera-coding-command" }],
+			[{ ...peer, tokenCredential: "qorpera-coding-registry" }],
+			[{ ...peer, tokenCredential: "qorpera-coding-repository-test" }],
+		])
+			expect(() => parseCodingExecutorConfiguration({ ...fixture(), commandPeers })).toThrow();
+		expect(() => parseCodingExecutorConfiguration({ ...fixture(), peerCommandPort: 8789 })).toThrow();
+		expect(() =>
+			parseCodingExecutorConfiguration({
+				...fixture(),
+				commandPeers: [peer],
+				broker: { ...broker, executorTokenCredential: peer.tokenCredential },
+			}),
+		).toThrow();
 	});
 	it.each(["supabaseUrl"])("rejects secret-bearing or non-origin %s", (key) => {
 		expect(() =>

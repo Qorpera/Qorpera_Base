@@ -18,6 +18,9 @@ export const CLOUD_INTERACTION_ANSWER_SCHEMA = "qorpera.interaction-answer/v1";
 export const CLOUD_INTERACTION_SURFACES = ["question", "secret", "form", "takeover", "draft", "credential"] as const;
 export type CloudInteractionSurface = (typeof CLOUD_INTERACTION_SURFACES)[number];
 
+/** Surfaces with an implemented member workflow. Stored events retain the full protocol. */
+export const CLOUD_ASK_MEMBER_SURFACES = ["question", "secret", "takeover", "draft"] as const;
+
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const NAME_PATTERN = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 /** Names in the cloud secret custody start with a letter. */
@@ -25,7 +28,8 @@ const VAULT_NAME_PATTERN = /^[a-z][a-z0-9_-]{0,63}$/;
 const FIELD_ID_PATTERN = /^[a-z][a-z0-9_]{0,31}$/;
 const HOST_PATTERN = /^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?)+$/;
 const TIMESTAMP_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z$/;
-const CONTROL_PATTERN = /[\x01-\x08\x0b\x0c\x0e-\x1f\x7f]/;
+// NUL too: PostgreSQL text cannot hold it, and the final send of a card's sentence refuses it.
+const CONTROL_PATTERN = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/;
 
 type Schema = { [key: string]: JsonValue };
 const chars = (minLength: number, maxLength: number, description?: string): Schema => ({
@@ -59,18 +63,24 @@ const PAYLOAD_SCHEMAS: Record<CloudInteractionSurface, Schema> = {
 				type: "array",
 				minItems: 1,
 				maxItems: 6,
+				description:
+					"Concrete alternatives for a decision you need from the member before proceeding. Do not invent generic choices for an open-ended question or optional next-step offer.",
 				items: closedObject(["label"], {
-					label: chars(1, 80),
+					label: chars(1, 80, "A specific answer that resolves the pending decision."),
 					value: chars(1, 200, "Returned as the answer; defaults to the label."),
 					description: chars(0, 200),
 					style: { type: "string", enum: ["default", "primary", "danger"] },
 				}),
 			},
 			multiSelect: { type: "boolean" },
-			allowCustom: { type: "boolean", description: "Lets the member type their own answer." },
+			allowCustom: {
+				type: "boolean",
+				description:
+					"An alternative to meaningful choices, not a reason to turn an open-ended question into a menu.",
+			},
 			dismissOnMoveOn: { type: "boolean" },
 		},
-		"surface question: the member picks from 1-6 options.",
+		"surface question: a needed decision with 1-6 concrete choices. Open-ended questions and optional offers belong in ordinary chat.",
 	),
 	secret: closedObject(
 		["name", "label", "purpose"],
@@ -119,7 +129,7 @@ const PAYLOAD_SCHEMAS: Record<CloudInteractionSurface, Schema> = {
 				}),
 			},
 		},
-		"surface form: the host fills these fields into the page on your computer.",
+		"surface form: reserved for protected entry into observed fields on a real web page. Not supported by the current web client; use an available computer takeover instead.",
 	),
 	takeover: closedObject(
 		["instruction"],
@@ -136,26 +146,31 @@ const PAYLOAD_SCHEMAS: Record<CloudInteractionSurface, Schema> = {
 		{
 			platform: { type: "string", enum: ["email", "slack", "message"] },
 			connectorId: chars(1, 128),
-			from: chars(1, 320),
+			from: chars(1, 320, "For Gmail, use email_address from gmail_get_profile; never guess the connected sender."),
 			to: { type: "array", minItems: 1, maxItems: 32, items: chars(1, 320) },
 			cc: { type: "array", maxItems: 32, items: chars(1, 320) },
 			subject: chars(0, 500),
 			body: chars(1, 65536, "The whole ask_member call must stay under 64 KiB."),
-			replyTo: chars(1, 256),
+			replyTo: chars(1, 256, "For Gmail, the provider message id to reply to, not an address or draft id."),
 			threadRef: chars(1, 256),
 		},
-		"surface draft: a message the member sends or discards.",
+		"surface draft: an editable message the member reviews, saves to Gmail, sends or discards. A card alone is not a saved Gmail draft.",
 	),
 	credential: closedObject(
 		["name", "domain"],
 		{ name: matching(NAME_PATTERN), domain: matching(HOST_PATTERN), purpose: chars(0, 300) },
-		"surface credential: the computer signs in from the vault; the member does not answer it.",
+		"surface credential: reserved for host-mediated sign-in from the vault. The current web client does not execute it; do not claim that raising this card signs in.",
 	),
 };
 
 /** The payload for the surface named beside it, one closed object per surface. */
-export const CLOUD_ASK_MEMBER_PAYLOAD_SCHEMA: Schema = {
+export const CLOUD_INTERACTION_PAYLOAD_SCHEMA: Schema = {
 	oneOf: CLOUD_INTERACTION_SURFACES.map((surface) => PAYLOAD_SCHEMAS[surface]),
+};
+
+/** Only advertise workflows the member can actually complete. */
+export const CLOUD_ASK_MEMBER_PAYLOAD_SCHEMA: Schema = {
+	oneOf: CLOUD_ASK_MEMBER_SURFACES.map((surface) => PAYLOAD_SCHEMAS[surface]),
 };
 
 /** A schema as a short type sketch for a refusal: {options: [{label, value?}], multiSelect?}. */
@@ -183,13 +198,13 @@ function payloadRefusal(surface: CloudInteractionSurface): string {
 }
 
 export const CLOUD_ASK_MEMBER_INSTRUCTIONS =
-	"ask_member puts one typed card in this conversation for the member to answer: a question with options, a secret they enter into the company vault, a form the host fills into the page on your computer, a takeover of your computer for a sign-in or code, a draft message they send or discard, or a credential sign-in the computer performs from the vault. " +
-	"Calling it ends this turn like a final send (text is the sentence shown above the card), so finish every Company File change and coworker message first. " +
-	"payload is the closed object its schema gives for the surface you name; for a question it is {options: [{label, value?, description?, style?}], multiSelect?, allowCustom?}, where each option is an object, never a plain string. Text limits count UTF-8 bytes. A refused card says what to fix: fix it and call again. " +
-	"In your own shared thread, only the member you are answering can answer the card. " +
-	"The answer wakes you again in this conversation as qorpera.interaction-answer/v1: an input of your next wake, or in your own thread the newest thread entry, which wake.payload.inputIds names. It carries an outcome and, for a question or form, the chosen values; a secret answer never contains the value, only the vault secret's id and version under the connector you named (connectorId, default vault), for a connector operation to use. " +
-	"Never ask the member to paste a password, token or code into ordinary chat; raise a secret card, a form or a takeover instead. A declined, dismissed or expired card is the answer: do not raise the same card again at once. " +
-	"Form fields that are secret (password, otp, or secret: true) need a target from your latest page snapshot; the host fills them and you click the site's own submit afterwards. Reuse the same idempotencyKey and arguments when retrying.";
+	"Show one member card: question, secret, takeover or draft. This ends the turn like a final send; text is its introductory sentence. Finish independent work first, never actions depending on an unanswered decision. " +
+	"Use question only for a missing decision needed to continue that fits a few concrete choices, such as two actual contact matches or specific available times. First use existing instructions and authorized information; do not ask for facts you can find or permission already given. Never invent generic options like Investigate a topic or Get started. allowCustom supplements meaningful choices. Open-ended questions belong in chat even when blocking; optional follow-up offers belong there too. Ask once, use selected/custom answers, and follow up only for missing information. Do not repeat the question across title, introduction and chat. " +
+	"Use email draft and platform approval cards directly; do not put an extra question confirmation before their review. A question answer never bypasses required authorization. " +
+	"Form entry and credential sign-in cards are unavailable and refused. Forms would target actual webpage fields, not general questions. For page entry or authentication, offer takeover only when a member-controllable computer is available; otherwise explain the limitation. After handback, inspect the page before claiming success: I am done is not login proof. Secret cards save reusable secrets to the vault; they do not fill pages or sign in. Never collect passwords, tokens or one-time codes in chat or question answers. " +
+	"For an email draft when Gmail tools are available, call gmail_get_profile for the real sender, then ask_member with surface draft, title New email, payload {platform: email, connectorId: gmail, from: email_address, to: [recipients], subject, body, cc?}. Put the complete email in the card, not just chat. The member can edit recipients, subject and body, save to Gmail, send or discard. Creating a card neither sends nor saves a Gmail draft; a draft request never authorizes sending. Report saved/sent only after a successful tool result or card outcome. A sent outcome already sent it: never send again. For replies, replyTo is the original Gmail message id; threadRef alone is insufficient. If explicitly asked to save in Gmail immediately, use gmail_create_draft and report draft_id; do not create a separate unlinked card. Never invent the sender or infer a connection from conversation alone. " +
+	"payload must match the closed schema for surface. For question use {options: [{label, value?, description?, style?}], multiSelect?, allowCustom?}; options are objects, not strings. Text limits count UTF-8 bytes. Correct refused arguments before retrying; unsupported surfaces require a supported alternative. Reuse identical idempotencyKey and arguments for a retry of the same action. " +
+	"In your own shared thread, only the member you answer can answer the card. The answer wakes you as qorpera.interaction-answer/v1: the next wake input or newest thread entry named by wake.payload.inputIds. It carries an outcome and chosen values for questions. Secret answers contain only the vault secret id/version and connectorId (default vault), never its value. A declined, dismissed or expired card is an answer; do not immediately raise it again.";
 
 export interface CloudInteractionRequestData {
 	schema: typeof CLOUD_INTERACTION_SCHEMA;
@@ -470,6 +485,10 @@ export function parseCloudAskMemberInput(value: unknown): CloudAskMemberInput {
 		throw new CloudToolArgumentRefusal("text must be the sentence shown above the card, 1 to 4096 UTF-8 bytes");
 	const issue = interactionRequestIssue({ schema: CLOUD_INTERACTION_SCHEMA, ...card });
 	if (issue) throw new CloudToolArgumentRefusal(issue);
+	if (card.surface === "form" || card.surface === "credential")
+		throw new CloudToolArgumentRefusal(
+			"Form entry and vault sign-in cards are unavailable. No card was created and no page was filled or signed in. Use takeover only if a member-controllable computer is available; otherwise explain the limitation in chat. Use a secret card only to save a reusable secret to the vault.",
+		);
 	return {
 		idempotencyKey,
 		text: sentence,
@@ -483,6 +502,14 @@ export function cloudInteractionEventId(runId: string, idempotencyKey: string): 
 	if (!UUID_PATTERN.test(runId)) throw new Error("Invalid run id");
 	const digest = createHash("sha256").update(`qorpera.interaction:${runId}:${idempotencyKey}`).digest("hex");
 	return `${digest.slice(0, 8)}-${digest.slice(8, 12)}-4${digest.slice(13, 16)}-a${digest.slice(17, 20)}-${digest.slice(20, 32)}`;
+}
+
+/** The idempotency key of the final send that carries a card's sentence. It always fits the
+ * send's 128-character key, so every key ask_member accepts can finish its turn and a retry
+ * replays the same send. A key with no room for ":final" is replaced by its digest. */
+export function cloudAskMemberFinalKey(idempotencyKey: string): string {
+	const suffixed = `${idempotencyKey}:final`;
+	return suffixed.length <= 128 ? suffixed : `ask-final.${createHash("sha256").update(idempotencyKey).digest("hex")}`;
 }
 
 export function parseCloudInteractionRequestReceipt(value: unknown, eventId: string): CloudInteractionRequestReceipt {
