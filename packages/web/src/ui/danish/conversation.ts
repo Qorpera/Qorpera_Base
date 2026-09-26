@@ -192,11 +192,10 @@ export const CONVERSATION: Record<string, string> = {
 	"Save securely": "Gem sikkert",
 	"Encrypted in the company vault. The agent never sees the value, only that it was saved.":
 		"Krypteret i virksomhedens boks. Agenten ser aldrig værdien, kun at den blev gemt.",
-	"Entering a secret here needs a newer version of the app. The value would go to the company vault, never to the agent.":
-		"Du skal have en nyere version af appen for at indtaste en hemmelighed her. Værdien ville gå til virksomhedens boks, aldrig til agenten.",
-	"Filled on the computer at {domain} only": "Udfyldes kun på computeren på {domain}",
-	"Filling this form here needs a newer version of the app.":
-		"Du skal have en nyere version af appen for at udfylde formularen her.",
+	"Saving a secret to the company vault is unavailable here. Do not paste it into chat.":
+		"Du kan ikke gemme en hemmelighed i virksomhedens boks her. Indsæt den ikke i chatten.",
+	"Website: {domain}": "Websted: {domain}",
+	"Filling a webpage through this card is unavailable.": "Du kan ikke udfylde en webside via dette kort.",
 	Discard: "Kassér",
 	"Sending this draft from here needs a newer version of the app.":
 		"Du skal have en nyere version af appen for at sende kladden herfra.",
@@ -230,10 +229,8 @@ export const CONVERSATION: Record<string, string> = {
 	"Retry notifying agent": "Prøv at give agenten besked igen",
 	"Check Gmail before sending again. Delivery has not been confirmed.":
 		"Tjek Gmail, før du sender igen. Leveringen er ikke bekræftet.",
-	"The computer signs in at {domain} with the company account. Nothing to do here.":
-		"Computeren logger ind på {domain} med virksomhedens konto. Du skal ikke gøre noget her.",
-	"The computer signs in with the company account. Nothing to do here.":
-		"Computeren logger ind med virksomhedens konto. Du skal ikke gøre noget her.",
+	"Signing in to {domain} through this card is unavailable.": "Du kan ikke logge ind på {domain} via dette kort.",
+	"Signing in through this card is unavailable.": "Du kan ikke logge ind via dette kort.",
 	"{kind} from {name}: {title}": "{kind} fra {name}: {title}",
 
 	// Approval cards (ui/authorization-card.ts)

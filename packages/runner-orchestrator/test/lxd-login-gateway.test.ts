@@ -707,6 +707,53 @@ describe("LXD native login gateway", () => {
 			expect(boundary.requests.filter((request) => request.url.endsWith("/login"))).toHaveLength(1);
 		},
 	);
+	it.each(["cancelled", "epoch-changed", "missing-restore", "foreign-restore"] as const)(
+		"does not resume a preparing login after %s invalidates its retained recovery authority",
+		async (fault) => {
+			const root = await stateRoot(),
+				lxd = new FakeLxd(),
+				boundary = fetchBoundary([]);
+			boundary.control.recovery = "established";
+			let approved = false;
+			const transport: typeof fetch = async (input, init) => {
+				if (String(input).endsWith("qorpera_identity_recovery_runtime_state") && approved)
+					return Response.json({ canInitialize: false, blocked: true, epoch: fault === "epoch-changed" ? 3 : 2 });
+				const response = await boundary.fetchImplementation(input, init);
+				if (String(input).endsWith("qorpera_request_login_identity_recovery")) approved = true;
+				return response;
+			};
+			const gateway = new LxdNativeLoginGateway(
+				{
+					...config(root),
+					identityRecoveryRegistrarCapability: "r".repeat(43),
+					guestManifestSha256: "m".repeat(64),
+					recoveryWaitMs: 0,
+				},
+				lxd,
+				transport,
+			);
+			expect(await (await gateway.handle(loginRequest())).json()).toMatchObject({ status: "preparing" });
+			const restorePath = "/var/lib/qorpera-recovery/credentials/qorpera-recovery-restore";
+			if (fault === "cancelled") boundary.control.status = "cancelled";
+			if (fault === "missing-restore") lxd.guestFiles.delete(restorePath);
+			if (fault === "foreign-restore") {
+				const restore = JSON.parse(lxd.guestFiles.get(restorePath)!);
+				lxd.guestFiles.set(restorePath, JSON.stringify({ ...restore, companyId: randomUUID() }));
+			}
+			const second = await gateway.handle(loginRequest());
+			expect(second.status).toBe(fault === "cancelled" ? 403 : 503);
+			expect(lxd.createCalls).toHaveLength(1);
+			expect(lxd.powerCalls).toEqual(["start"]);
+			expect(boundary.control.targetRegistrations).toHaveLength(1);
+			expect(boundary.control.recoveryRequests).toHaveLength(1);
+			expect(boundary.control.repins).toHaveLength(0);
+			expect(
+				lxd.execCalls.some((command) => command.join(" ").includes("qorpera-identity-recovery-restore.mjs")),
+			).toBe(false);
+			expect(lxd.execCalls.some((command) => command[0] === "/usr/bin/systemctl")).toBe(false);
+			expect(boundary.requests.some((request) => request.url.endsWith("/login"))).toBe(false);
+		},
+	);
 	it("refuses an established identity on a fresh volume when the node has no registrar, and a fenced identity always", async () => {
 		for (const [recovery, extra] of [
 			["established", {}],
