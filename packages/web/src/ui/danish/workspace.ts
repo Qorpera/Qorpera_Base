@@ -173,6 +173,8 @@ export const WORKSPACE: Record<string, string> = {
 	"Choose a figure": "Vælg en figur",
 	"Saving…": "Gemmer…",
 	"Save appearance and continue": "Gem udseende og fortsæt",
+	"The appearance change could not be confirmed. Open the company to check it before saving again.":
+		"Ændringen af udseendet kunne ikke bekræftes. Åbn virksomheden og tjek det, før du gemmer igen.",
 	"Open the company without changing appearance": "Åbn virksomheden uden at ændre udseende",
 
 	// app/views/computer.ts

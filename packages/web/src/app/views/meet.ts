@@ -1,4 +1,3 @@
-import { describeError } from "../../cloud/client.ts";
 import type { HostedStaffAgent } from "../../cloud/types.ts";
 import {
 	agentColor,
@@ -96,7 +95,16 @@ export function renderMeet(
 				await company.refreshStaff();
 				if (!company.signal.aborted && location.hash === route && container.isConnected) open();
 			})
-			.catch((error) => setState({ ...state, saving: false, error: describeError(error) }));
+			.catch(() => {
+				if (company.signal.aborted || location.hash !== route || !container.isConnected) return;
+				setState({
+					...state,
+					saving: false,
+					error: t(
+						"The appearance change could not be confirmed. Open the company to check it before saving again.",
+					),
+				});
+			});
 	};
 
 	replace(
@@ -145,7 +153,15 @@ export function renderMeet(
 						)
 					: h("button", { type: "button", class: "meet-start", onclick: open }, t("Open the company")),
 				canWrite
-					? h("p", null, h("a", { href: `#/c/${profileId}` }, t("Open the company without changing appearance")))
+					? h(
+							"p",
+							null,
+							h(
+								"a",
+								{ href: `#/c/${profileId}` },
+								t(state.error ? "Open the company" : "Open the company without changing appearance"),
+							),
+						)
 					: null,
 			),
 		),
