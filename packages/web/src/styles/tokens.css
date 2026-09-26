@@ -89,8 +89,8 @@
 	--composer-on-accent: #ffffff;
 	--composer-accent-hover: color-mix(in srgb, var(--composer-accent) 88%, #000000);
 
-	/* scale: every design pixel is drawn as --ui-scale screen pixels, 130%
-	   with a mouse or trackpad (phones and tablets keep 1, below). The build
+	/* scale: Big draws each design pixel at 130% with a mouse or trackpad;
+	   Small, phones and tablets keep 1, below. The build
 	   (scripts/design-px.mjs) writes each "14px" in these stylesheets as
 	   calc(14 * var(--px)) and each width breakpoint for both scales; a part
 	   that keeps its own size sets --px: 1px. Scripts read the same scale
@@ -128,20 +128,21 @@
 	--surface-grain-size: 256px 256px;
 }
 
-/* Phones and tablets keep the sizes the phone layout was drawn for. */
+/* Small restores the original scale. Phones and tablets keep it in both sizes. */
+:root[data-ui-size="small"] { --ui-scale: 1; }
 @media (pointer: coarse) {
 	:root { --ui-scale: 1; }
 }
 
-/* Dark: warm near-black surfaces that lift toward the viewer, as the light
- * theme's warm greys sink away from it. Layout tokens are shared. */
+/* Dark: a charcoal page framed by a lighter neutral sidebar.
+ * Layout tokens are shared with the light theme. */
 :root[data-theme="dark"] {
 	color-scheme: dark;
 
 	--coding-rule: rgba(244, 243, 240, 0.55);
 
-	--chrome: #1a1a19;
-	--bg: #1d1d1c;
+	--chrome: #1f2120;
+	--bg: #1f2120;
 	--pane-strong: rgba(255, 255, 255, 0.08);
 	--hover: rgba(255, 255, 255, 0.07);
 	--popover: rgba(42, 42, 41, 0.98);
@@ -151,12 +152,12 @@
 	--text-soft: #908f8a;
 	--border: rgba(255, 255, 255, 0.09);
 	--border-strong: rgba(255, 255, 255, 0.17);
-	--header-surface: #232322;
-	--sidebar-surface: #292928;
-	--sidebar-search: #363635;
-	--sidebar-divider: #333332;
-	--sidebar-vibrancy-tint: rgba(41, 41, 40, 0.32);
-	--sidebar-hover: #333332;
+	--header-surface: var(--bg);
+	--sidebar-surface: #3c3c3c;
+	--sidebar-search: #494949;
+	--sidebar-divider: #464646;
+	--sidebar-vibrancy-tint: rgba(60, 60, 60, 0.32);
+	--sidebar-hover: #464646;
 	--skeleton: rgba(255, 255, 255, 0.07);
 
 	--primary: #edece9;

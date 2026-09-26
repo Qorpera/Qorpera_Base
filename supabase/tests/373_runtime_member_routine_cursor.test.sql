@@ -332,7 +332,7 @@ begin
 		'A resume without a new version keeps a cursor whose next slot is ahead');
 end $$;
 
--- A restart position is not a run time: once qorpera_routine_next_run_at exists (v114),
+-- A restart position is not a run time: once qorpera_routine_next_run_at exists (v131),
 -- it does not show one as the next run.
 do $$
 declare v_client uuid := extensions.gen_random_uuid();

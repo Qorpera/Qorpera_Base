@@ -53,7 +53,7 @@ import { cloudSidebarTools } from "./cloud-sidebar-tools.ts";
 import {
 	CLOUD_ASK_MEMBER_INSTRUCTIONS,
 	CLOUD_ASK_MEMBER_PAYLOAD_SCHEMA,
-	CLOUD_INTERACTION_SURFACES,
+	CLOUD_ASK_MEMBER_SURFACES,
 	cloudAskMemberFinalKey,
 	cloudInteractionEventId,
 	parseCloudAskMemberInput,
@@ -303,7 +303,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					properties: {
 						idempotencyKey: { type: "string", pattern: "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" },
 						text: { type: "string", minLength: 1, maxLength: 4096 },
-						surface: { type: "string", enum: [...CLOUD_INTERACTION_SURFACES] },
+						surface: { type: "string", enum: [...CLOUD_ASK_MEMBER_SURFACES] },
 						title: { type: "string", minLength: 1, maxLength: 200 },
 						body: { type: "string", maxLength: 2000 },
 						expiresAt: { type: "string" },

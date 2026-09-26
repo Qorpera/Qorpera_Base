@@ -417,10 +417,12 @@ export class HttpCloudSecretBrokerService {
 		const url = new URL(request.url ?? "/", "http://cloud-secret-broker.invalid");
 		const path = url.pathname;
 		const capture = /^\/v1\/captures\/([0-9a-f-]{36})$/i.exec(path);
+		const emailDraft = /^\/v1\/email-drafts\/([0-9a-f-]{36})$/i.exec(path);
 		const oauthStart = /^\/v1\/oauth\/([0-9a-f-]{36})\/start$/i.exec(path);
 		const oauthConfirm = /^\/v1\/oauth\/([0-9a-f-]{36})\/confirm$/i.exec(path);
 		const memberRoute = Boolean(
 			(capture && UUID.test(capture[1])) ||
+				(emailDraft && UUID.test(emailDraft[1])) ||
 				(oauthStart && UUID.test(oauthStart[1])) ||
 				(oauthConfirm && UUID.test(oauthConfirm[1])),
 		);
@@ -454,6 +456,19 @@ export class HttpCloudSecretBrokerService {
 					AbortSignal.timeout(15_000),
 				);
 				response(reply, 200, descriptor as unknown as JsonValue, cors);
+				return;
+			}
+			if (emailDraft && UUID.test(emailDraft[1])) {
+				const input = record(await readRequest(request), "Email draft action");
+				exact(input, ["schema", "capability"], "Email draft action");
+				if (input.schema !== "qorpera.email-draft-action/v1" || typeof input.capability !== "string")
+					throw new Error("Email draft action invalid");
+				const state = await this.#broker.executeEmailDraft(
+					emailDraft[1],
+					input.capability,
+					AbortSignal.timeout(60_000),
+				);
+				response(reply, 200, state, cors);
 				return;
 			}
 			if ((oauthStart && UUID.test(oauthStart[1])) || (oauthConfirm && UUID.test(oauthConfirm[1]))) {
