@@ -30,6 +30,9 @@ import { CompanyComputerScreenOutbox } from "../../src/cloud-company-computer-sc
 import { computerBinding } from "./company-computer.ts";
 import { screenStartup } from "./screen-lifecycle.ts";
 
+assert.equal(process.platform, "linux", "Physical filesystem probe requires Linux");
+assert.equal(process.getuid?.(), 0, "Physical ownership probe requires isolated root");
+
 const signal = () => new AbortController().signal;
 const roots: string[] = [];
 const digest = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");

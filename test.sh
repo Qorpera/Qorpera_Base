@@ -103,6 +103,16 @@ if [[ -n ${VITEST_MAX_WORKERS-} ]]; then
 	test_env+=("VITEST_MAX_WORKERS=$VITEST_MAX_WORKERS")
 fi
 
+# Real root-owned filesystem probes run only when explicitly enabled on an
+# isolated Linux test host; this admits no executable paths or credentials.
+if [[ -n ${QORPERA_LINUX_ROOT_PROBES-} ]]; then
+	if [[ $QORPERA_LINUX_ROOT_PROBES != 1 || ${OSTYPE-} != linux* ]]; then
+		printf 'QORPERA_LINUX_ROOT_PROBES requires Linux and the exact value 1\n' >&2
+		exit 1
+	fi
+	test_env+=("QORPERA_LINUX_ROOT_PROBES=1")
+fi
+
 # Native Windows needs these inherited values to launch child processes.
 for name in SystemRoot SYSTEMROOT WINDIR COMSPEC PATHEXT; do
 	value="${!name-}"

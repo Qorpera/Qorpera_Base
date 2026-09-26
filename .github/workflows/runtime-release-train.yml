@@ -114,14 +114,18 @@ jobs:
           chmod go-w "$node_binary" || sudo chmod go-w "$node_binary"
           ls -l "$node_binary"
 
-      # Two office probes run a real Linux container from a cached image with
-      # --pull=never --network none.
-      - name: Cache the office probe container image
+      # Preserve both real root-owned filesystem probes without Docker. Their
+      # Bubblewrap namespaces expose no writable host paths or network.
+      - name: Install the office filesystem probe sandbox
         if: matrix.suite == 'runtime'
-        run: docker pull --quiet node:22-bookworm-slim
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes bubblewrap
 
       - name: Unit tests
         working-directory: packages/${{ matrix.suite }}
+        env:
+          QORPERA_LINUX_ROOT_PROBES: ${{ matrix.suite == 'runtime' && '1' || '' }}
         run: >-
           node ../../node_modules/vitest/dist/cli.js --run
           --shard=${{ matrix.shard }}

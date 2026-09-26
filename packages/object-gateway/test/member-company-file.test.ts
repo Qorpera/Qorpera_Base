@@ -357,7 +357,9 @@ describe("selected member binary uploads", () => {
 			const chunks = await Promise.all(
 				metadata.manifest.chunks.map((chunk) => service.store.get(companyId, chunk.sha256, chunk.bytes)),
 			);
-			expect(Buffer.concat(chunks)).toEqual(bytes);
+			// Compare every byte without expanding multi-megabyte buffers into
+			// millions of JavaScript entries in the assertion library.
+			expect(Buffer.concat(chunks).equals(bytes)).toBe(true);
 			expect(service.member).toHaveBeenCalledWith(
 				"qorpera_begin_member_company_file_upload",
 				token,

@@ -47,13 +47,26 @@ jobs:
           cache: npm
       - name: Install reviewed dependencies without lifecycle scripts
         run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Install native test prerequisites and protect the fixture executable
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes bubblewrap ripgrep python3
+          node_binary="$(node -p 'require("node:fs").realpathSync(process.execPath)')"
+          chmod go-w "$node_binary" || sudo chmod go-w "$node_binary"
+          /usr/bin/bwrap --version
+          rg --version
       - name: Hydrate generated model data required by a fresh checkout
         run: npm run hydrate:model-data
+      - name: Verify actual unprivileged Git containment
+        working-directory: packages/runner-orchestrator
+        run: node ../../node_modules/vitest/dist/cli.js --run --maxWorkers=1 --no-cache test/coding-git-sandbox.test.ts
       - name: Check candidate source and browser build
         run: npm run check
       - name: Run all non-e2e tests with isolated credentials and a guest-compatible group
         env:
           TMPDIR: ${{ runner.temp }}
+          QORPERA_LINUX_ROOT_PROBES: '1'
         run: |
           set -euo pipefail
           # Coding supervisor fixtures exercise real chown to an admitted
