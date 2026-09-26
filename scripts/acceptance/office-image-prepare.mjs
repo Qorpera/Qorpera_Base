@@ -76,6 +76,9 @@ try {
 	evidence.installation = JSON.parse(guest(["cat", `${work}/install-proof.json`]));
 	console.log(guest(["/usr/bin/node", `${work}/guest.mjs`, "credentials-before"]));
 	evidence.credentialsBefore = JSON.parse(guest(["cat", `${work}/credentials-before.json`]));
+	// Persist fixture setup before injecting abrupt power loss; the assertion
+	// concerns new-boot credential selection, not unflushed fixture writes.
+	guest(["sync"]);
 	run("lxc", ["stop", vm, "--force"], 60000);
 	assert.equal(JSON.parse(run("lxc", ["query", `/1.0/instances/${vm}/state`])).status, "Stopped");
 	run("lxc", ["start", vm], 60000); await ready();

@@ -8,6 +8,11 @@ on:
         type: boolean
         required: false
         default: false
+      office_physical_acceptance:
+        description: Run Docker-free native database, NFS and real office guest acceptance
+        type: boolean
+        required: false
+        default: false
   pull_request:
     paths:
       - '.github/workflows/step2-lxd.yml'
@@ -87,13 +92,17 @@ permissions:
   contents: read
 
 concurrency:
-  group: step2-lxd-${{ github.ref }}-${{ inputs.real_lxd_acceptance && 'physical' || 'contracts' }}
+  group: step2-lxd-${{ github.ref }}-${{ inputs.office_physical_acceptance && 'office' || inputs.real_lxd_acceptance && 'physical' || 'contracts' }}
   cancel-in-progress: true
 
 jobs:
+  office-physical-acceptance:
+    if: github.event_name == 'workflow_dispatch' && inputs.office_physical_acceptance
+    uses: ./.github/workflows/office-physical-acceptance.yml
+
   contracts:
     name: Provider, guest, and package contracts
-    if: github.event_name != 'workflow_dispatch' || !inputs.real_lxd_acceptance
+    if: github.event_name != 'workflow_dispatch' || (!inputs.real_lxd_acceptance && !inputs.office_physical_acceptance)
     runs-on: ubuntu-26.04
     timeout-minutes: 20
     env:
@@ -307,7 +316,7 @@ jobs:
 
   real-lxd-acceptance:
     name: Disposable nested-KVM paid guard acceptance
-    if: github.event_name == 'workflow_dispatch' && inputs.real_lxd_acceptance
+    if: github.event_name == 'workflow_dispatch' && inputs.real_lxd_acceptance && !inputs.office_physical_acceptance
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:

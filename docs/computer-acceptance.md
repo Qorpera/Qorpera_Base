@@ -24,6 +24,12 @@ The separate manual `Docker-free office acceptance` workflow prepares the remain
 gh workflow run office-physical-acceptance.yml --ref <reviewed-branch>
 ```
 
+Before that workflow reaches the default branch, dispatch it through the existing workflow's reusable-job entry:
+
+```sh
+gh workflow run step2-lxd.yml --ref <reviewed-branch> -f office_physical_acceptance=true
+```
+
 It starts PostgreSQL 17 as an unprivileged owned process with a fresh private data directory and Unix socket, applies every migration, and runs the selected subscription, allowance, billing-authority and outage-recovery SQL regressions. No existing database is attached. The PostgreSQL listener has no TCP address; the harness stops its own process before deleting its own temporary cluster.
 
 The storage stage mounts a loopback NFSv4 export and a separate ext4 journal, then runs the production open-descriptor mount checks against actual Linux mount metadata. It preserves root squashing and checks workbench access as its owner. This proves the local protocol and mount boundary, not remote NAS durability or guest workbench custody.

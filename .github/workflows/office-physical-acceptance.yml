@@ -2,6 +2,7 @@ name: Docker-free office acceptance
 
 on:
   workflow_dispatch:
+  workflow_call:
 
 permissions:
   contents: read
