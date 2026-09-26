@@ -1,3 +1,4 @@
+import { CloudCompanyAgentOperationRejectedError } from "@qorpera/cloud-client/cloud-company-agent";
 import { prepareWebCompanyAgentCreation } from "../../cloud/company-agents.ts";
 import type { HostedStaffAgent } from "../../cloud/types.ts";
 import { agentFigure, figureElement, nativeColorOf } from "../../ui/avatar.ts";
@@ -637,13 +638,17 @@ export class NewConversationView {
 					this.#picker();
 					this.#message.focus();
 				}
-			} catch {
+			} catch (error) {
 				if (!this.#lifetime.signal.aborted) {
+					const rejected = !this.#createdAgentId && error instanceof CloudCompanyAgentOperationRejectedError;
+					if (rejected) this.#creation = undefined;
 					status.textContent = this.#createdAgentId
 						? t("The agent was created. Retry adding it once the agent list is available.")
 						: this.#creation
 							? t("Creation could not be confirmed. Retry to check the same agent.")
-							: t("Agent details are too long or invalid. Shorten them and try again.");
+							: rejected
+								? t("Agent creation was rejected. Your draft is still here and can be edited.")
+								: t("Agent details are too long or invalid. Shorten them and try again.");
 					create.textContent = this.#createdAgentId
 						? t("Add created agent")
 						: this.#creation

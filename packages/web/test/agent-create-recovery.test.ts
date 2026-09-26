@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { CloudCompanyAgentOperationRejectedError } from "@qorpera/cloud-client/cloud-company-agent";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CompanyController } from "../src/app/company.ts";
 import { NewConversationView } from "../src/app/views/new-conversation.ts";
@@ -14,6 +15,41 @@ afterEach(() => {
 });
 
 describe("uncertain agent creation", () => {
+	it("unlocks the preserved draft only after the server confirms rejection", async () => {
+		stubFigureMotion();
+		const f = fixture();
+		const company = new CompanyController(f.api, profileA, userA.id);
+		company.store.set({ team, staff: [staff], loading: false });
+		const create = vi.fn(async (_profile: string, _draft: AgentCreation): Promise<string> => {
+			throw new CloudCompanyAgentOperationRejectedError();
+		});
+		const view = new NewConversationView(company, { createAgent: create }, () => {});
+		document.body.append(view.el);
+		cleanup.push(() => {
+			view.dispose();
+			company.stop();
+		});
+		view.el.querySelector<HTMLElement>('[data-choice="create"]')!.click();
+		const name = view.el.querySelector<HTMLInputElement>('[aria-label="Agent name"]')!;
+		const role = view.el.querySelector<HTMLInputElement>('[aria-label="Agent title"]')!;
+		name.value = "Ledger";
+		name.dispatchEvent(new Event("input"));
+		role.value = "Finance";
+		role.dispatchEvent(new Event("input"));
+		view.el.querySelector<HTMLButtonElement>('[type="submit"]')!.click();
+		await vi.waitFor(() => expect(view.el.textContent).toContain("Agent creation was rejected"));
+		expect(view.el.querySelector<HTMLFieldSetElement>("fieldset")!.disabled).toBe(false);
+		expect(name.value).toBe("Ledger");
+		expect(role.value).toBe("Finance");
+		expect(view.el.querySelector<HTMLButtonElement>('[type="submit"]')!.textContent).toBe("Create agent");
+		expect(create).toHaveBeenCalledTimes(1);
+		name.value = "Bookkeeper";
+		name.dispatchEvent(new Event("input"));
+		view.el.querySelector<HTMLButtonElement>('[type="submit"]')!.click();
+		await vi.waitFor(() => expect(create).toHaveBeenCalledTimes(2));
+		expect(create.mock.calls[1]![1].displayName).toBe("Bookkeeper");
+		expect(create.mock.calls[1]![1].id).not.toBe(create.mock.calls[0]![1].id);
+	});
 	it("keeps the submitted identity and draft across Back, then clears them after recovery", async () => {
 		stubFigureMotion();
 		const f = fixture();

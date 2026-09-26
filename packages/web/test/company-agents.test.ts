@@ -1,4 +1,7 @@
-import { parseCloudCompanyAgentDocument } from "@qorpera/cloud-client/cloud-company-agent";
+import {
+	CloudCompanyAgentOperationRejectedError,
+	parseCloudCompanyAgentDocument,
+} from "@qorpera/cloud-client/cloud-company-agent";
 import { describe, expect, it, vi } from "vitest";
 import { createWebCompanyAgents, prepareWebCompanyAgentCreation } from "../src/cloud/company-agents.ts";
 import type { WebCompanyFiles } from "../src/cloud/company-files.ts";
@@ -140,6 +143,18 @@ describe("web company agents", () => {
 			expectedVersion: null,
 		});
 	});
+	it.each(["edit", "review"] as const)(
+		"reports a confirmed rejection from %s distinctly from uncertainty",
+		async (stage) => {
+			const f = fake();
+			f.editor[stage].mockResolvedValueOnce({ commandId: "c", state: "rejected", result: null } as never);
+			await expect(
+				createWebCompanyAgents(f.files).create(draft, new AbortController().signal),
+			).rejects.toBeInstanceOf(CloudCompanyAgentOperationRejectedError);
+			expect(f.editor.edit).toHaveBeenCalledTimes(1);
+			expect(f.editor.review).toHaveBeenCalledTimes(stage === "review" ? 1 : 0);
+		},
+	);
 	it("recognizes a later revision without overwriting it when creation is retried", async () => {
 		const f = fake();
 		const agents = createWebCompanyAgents(f.files);

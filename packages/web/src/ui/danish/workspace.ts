@@ -146,6 +146,8 @@ export const WORKSPACE: Record<string, string> = {
 	"Creation could not be confirmed. Retry to check the same agent.":
 		"Oprettelsen kunne ikke bekræftes. Prøv igen for at kontrollere den samme agent.",
 	"Check agent creation": "Kontroller agentoprettelse",
+	"Agent creation was rejected. Your draft is still here and can be edited.":
+		"Agentoprettelsen blev afvist. Din kladde er her stadig og kan redigeres.",
 	"Agent details are too long or invalid. Shorten them and try again.":
 		"Agentoplysningerne er for lange eller ugyldige. Gør dem kortere, og prøv igen.",
 

@@ -34,6 +34,15 @@ export interface CloudCompanyAgentDocument {
 
 type CompanyAgentEditor = Pick<CloudMemberCompanyFileClient, "edit" | "read" | "review">;
 
+/** The server confirmed this command cannot apply. A transport failure does
+ * not carry this guarantee and must retain the original operation identity. */
+export class CloudCompanyAgentOperationRejectedError extends Error {
+	constructor() {
+		super("Company agent lifecycle operation was rejected");
+		this.name = "CloudCompanyAgentOperationRejectedError";
+	}
+}
+
 function record(value: unknown, label: string): Record<string, unknown> {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`Invalid ${label}`);
 	return value as Record<string, unknown>;
@@ -217,6 +226,7 @@ async function applied(
 		if (!("commandId" in reviewed)) throw new Error("Company agent review changed kind");
 		result = reviewed;
 	}
+	if (result.state === "rejected") throw new CloudCompanyAgentOperationRejectedError();
 	if (result.state !== "applied" || !result.result) {
 		throw new Error("Company agent lifecycle operation did not apply");
 	}
