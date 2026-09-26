@@ -48,8 +48,9 @@ begin
 end
 $$;
 
--- A contributor's own queued turn in Bob's thread, inserted as 280 does: this
--- fixture gives the contributor no model account of their own to post with.
+-- A contributor's own queued message in Bob's thread: a room delivery, as every
+-- member message there is. Inserted as 280 does, because this fixture gives the
+-- contributor no model account of their own to post with.
 create function pg_temp.stop_member_run(p_user uuid) returns uuid language plpgsql as $$
 declare v_base public.qorpera_execution_runs%rowtype; v_id uuid := extensions.gen_random_uuid(); v_job uuid;
 begin
@@ -61,8 +62,8 @@ begin
 	insert into public.qorpera_execution_runs(id,profile_id,environment_id,source_kind,source_id,session_id,job_id,
 		substrate_version_id,company_snapshot_id,staff_agent_id,staff_version,input_ids,sponsor_binding_id,sponsor_version,
 		required_capability,job_type,payload_sha256,compute_identity_id,transcript_start_sequence,created_by_user_id)
-	values(v_id,v_base.profile_id,v_base.environment_id,'session_turn',v_id,v_base.session_id,v_job,
-		v_base.substrate_version_id,v_base.company_snapshot_id,v_base.staff_agent_id,v_base.staff_version,array[v_id],
+	values(v_id,v_base.profile_id,v_base.environment_id,'room_delivery',v_id,v_base.session_id,v_job,
+		v_base.substrate_version_id,v_base.company_snapshot_id,v_base.staff_agent_id,v_base.staff_version,'{}',
 		v_base.sponsor_binding_id,v_base.sponsor_version,'agent_turn','agent_turn',repeat('e',64),v_base.compute_identity_id,0,p_user);
 	update public.qorpera_runner_jobs set run_id = v_id where id = v_job;
 	return v_id;
@@ -108,7 +109,7 @@ select set_config('qorpera_test.stop_binding',pg_temp.wake_start(current_setting
 
 -- A member's own message in the thread is a room post; its run is stoppable too.
 -- While the routine run works, the owner is offered the working run, and a
--- contributor is offered their own queued run, never another member's.
+-- contributor is offered their own queued message and may not stop another's.
 savepoint member_messages;
 do $$
 declare v_base public.qorpera_execution_runs%rowtype; v_result jsonb; v_run uuid;
@@ -135,17 +136,19 @@ select pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001
 select pg_temp.wake_assert(pg_temp.stop_read(current_setting('qorpera_test.stop_thread')::uuid) = jsonb_build_object(
 	'run_id',current_setting('qorpera_test.stop_run'),'status','leased','can_cancel',true),
 	'An owner is offered the run the agent is working on');
-select pg_temp.wake_assert(public.qorpera_cancel_session_run(current_setting('qorpera_test.stop_thread')::uuid,
-	current_setting('qorpera_test.stop_post_run')::uuid) ->> 'status' = 'cancelled','The owner stops the reply to their own message');
 select pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000002');
+select pg_temp.stop_denied(current_setting('qorpera_test.stop_thread')::uuid,current_setting('qorpera_test.stop_post_run')::uuid);
 select pg_temp.wake_assert(pg_temp.stop_read(current_setting('qorpera_test.stop_thread')::uuid) = jsonb_build_object(
 	'run_id',current_setting('qorpera_test.stop_own_run'),'status','queued','can_cancel',true),
-	'A contributor is offered their own queued run, not the routine run they may not stop');
+	'A contributor is offered their own queued message, not the routine run they may not stop');
 select pg_temp.wake_assert(public.qorpera_cancel_session_run(current_setting('qorpera_test.stop_thread')::uuid,
 	current_setting('qorpera_test.stop_own_run')::uuid) ->> 'status' = 'cancelled','The contributor stops their own run');
 select pg_temp.wake_assert(pg_temp.stop_read(current_setting('qorpera_test.stop_thread')::uuid) = jsonb_build_object(
 	'run_id',current_setting('qorpera_test.stop_run'),'status','leased','can_cancel',false),
 	'Then the contributor sees the routine run, without a Stop');
+select pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001');
+select pg_temp.wake_assert(public.qorpera_cancel_session_run(current_setting('qorpera_test.stop_thread')::uuid,
+	current_setting('qorpera_test.stop_post_run')::uuid) ->> 'status' = 'cancelled','The owner stops the reply to their own message');
 reset role;
 select pg_temp.wake_assert((select array_agg(cancelled_by_user_id::text order by cancelled_by_user_id) from public.qorpera_runner_jobs
 	where run_id in (current_setting('qorpera_test.stop_post_run')::uuid,current_setting('qorpera_test.stop_own_run')::uuid)
