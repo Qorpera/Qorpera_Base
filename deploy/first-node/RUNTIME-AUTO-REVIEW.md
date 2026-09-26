@@ -78,7 +78,8 @@ merge and the pin (APPROVE WITH NITS); fixed:
   conversation, where the wake lands: an owner's answer on a contributor's
   card elsewhere neither ran nor blocked the owner's own identical call.
 - The observation vocabulary is patched into the live function, not re-stated:
-  v114's `decide_routine` (PR #314, migration 20260925114000) stays in either
+  `decide_routine` (PR #314: v131, migration 20260926131000; v114 when this was
+  written) stays in either
   merge order (checked with #314's migration applied first).
 - One index serves `begin`'s lookup of the latest review of an action (it was
   a scan of the whole audit table on every acting call).
@@ -93,7 +94,8 @@ hold can wake the agent.
 ## Review round 5 (2026-09-25, own review of 47ef78dee)
 
 Found in my own review of the approved head and fixed:
-- `decide_routine` (v114, PR #314, merged before this) is internal. Unlisted it
+- `decide_routine` (PR #314: planned then as v114 ahead of this, now v131 after
+  it) is internal. Unlisted it
   would have been reviewed as an outside action, and a routine run parks at
   once, so a dynamic routine's decision would wait on a card and its run count
   as failed.
