@@ -20,6 +20,8 @@ export interface EmailDraftState {
 }
 /** Local editor state survives thread polling and navigation, including incomplete addresses. */
 export interface EmailDraftEditor {
+	/** Keep the member's receipt expanded through conversation refreshes. */
+	receiptExpanded?: boolean;
 	fields?: { to: string; cc: string; subject: string; body: string };
 	state?: EmailDraftState;
 	content?: EmailDraftContent;

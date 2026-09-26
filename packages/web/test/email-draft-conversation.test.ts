@@ -286,10 +286,9 @@ describe("email drafts in a live conversation", () => {
 			},
 		]);
 		f.view.update();
-		expect(body(f.view).value).toBe(delivered.body);
-		expect(f.view.el.querySelector<HTMLInputElement>(".email-draft-input[aria-label=To]")?.value).toBe(
-			"changed@example.com",
-		);
+		expect(f.view.el.querySelector("input.email-draft-input, textarea.email-draft-body")).toBeNull();
+		expect(f.view.el.querySelector(".email-sent-body")?.textContent).toBe(delivered.body);
+		expect(f.view.el.querySelector(".email-sent-to")?.textContent).toContain("changed@example.com");
 		expect(f.view.el.querySelector(".email-draft-status")?.textContent).toBe("Sent");
 		expect(f.view.el.querySelector(".email-draft-actions")).toBeNull();
 	});
@@ -302,7 +301,7 @@ describe("email drafts in a live conversation", () => {
 		f.view.update();
 		pending.resolve(ready);
 		await settle();
-		expect(body(f.view).value).toBe(delivered.body);
+		expect(f.view.el.querySelector(".email-sent-body")?.textContent).toBe(delivered.body);
 		expect(f.view.el.querySelector(".email-draft-status")?.textContent).toBe("Sent");
 		expect(f.view.el.querySelector(".email-draft-from")?.textContent).toBe(ready.from);
 		expect(f.view.el.querySelector(".email-draft-actions")).toBeNull();
