@@ -373,12 +373,31 @@ describe("shell presentation lifecycle", () => {
 			name: string;
 			run?: [HostedStaffExecutionActivity["jobStatus"], HostedStaffExecutionActivity["activity"]];
 			proposal?: boolean;
+			/** The run's details have been read (a proposal implies them). */
+			details?: boolean;
 			figure: string;
 			line: string;
 			disc: "red" | "green" | "none";
 		}[] = [
 			{ name: "Failed", run: ["failed", "needs_attention"], figure: "Idle", line: "Analyst", disc: "red" },
-			{ name: "Stopped", run: ["cancelled", "needs_attention"], figure: "Idle", line: "Analyst", disc: "red" },
+			// A run a member stopped is no failure: once its details show it left no
+			// decision, the agent is idle (an older cloud still lists every stop).
+			{
+				name: "Stopped",
+				run: ["cancelled", "needs_attention"],
+				details: true,
+				figure: "Idle",
+				line: "Analyst",
+				disc: "none",
+			},
+			{
+				name: "Stopped mid-change",
+				run: ["cancelled", "needs_attention"],
+				proposal: true,
+				figure: "Waiting",
+				line: "Needs you",
+				disc: "none",
+			},
 			{
 				name: "Decision",
 				run: ["completed", "needs_attention"],
@@ -432,14 +451,14 @@ describe("shell presentation lifecycle", () => {
 			],
 			recoveries: Object.fromEntries(
 				rows
-					.filter((row) => row.proposal)
-					.map(({ runId }) => [
+					.filter((row) => row.proposal || row.details)
+					.map(({ runId, run, proposal }) => [
 						runId,
 						{
 							runId,
 							sourceKind: "session_turn",
-							jobStatus: "failed",
-							proposalId: id(99),
+							jobStatus: run?.[0] === "cancelled" ? "cancelled" : "failed",
+							...(proposal ? { proposalId: id(99) } : {}),
 							unsettledOperations: 0,
 						},
 					]),

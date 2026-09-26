@@ -9,6 +9,7 @@ import { ConversationView } from "../src/app/views/conversation.ts";
 import { NewConversationView } from "../src/app/views/new-conversation.ts";
 import type { WorkspaceActions } from "../src/app/workspace-actions.ts";
 import { CloudRpcError } from "../src/cloud/client.ts";
+import { createWebSessionRunControl } from "../src/cloud/session-run-control.ts";
 import type { TranscriptMessage } from "../src/cloud/transcript.ts";
 import appCss from "../src/styles/app.css?raw";
 import conversationCss from "../src/styles/conversation.css?raw";
@@ -786,6 +787,131 @@ describe("conversation UI boundaries", () => {
 		button(f.view.el, "Stop").click();
 		await settle();
 		expect(cancel).toHaveBeenCalledExactlyOnceWith(session.sessionId, nextRun, expect.any(AbortSignal));
+	});
+
+	it("shows a message the member stopped as stopped, not failed, and keeps the Stop for the agent's other run", async () => {
+		const routineRun = id(73);
+		const cancel = vi.fn(async () => "cancelled" as const);
+		const f = setup({
+			runControl: {
+				read: vi.fn(async () => ({
+					sessionId: session.sessionId,
+					staffAgentId: staff.id,
+					run: { runId: routineRun, status: "leased" as const, canCancel: true },
+				})),
+				cancel,
+			},
+		});
+		const stopped = {
+			runId: id(70),
+			staffAgentId: staff.id,
+			sourceKind: "room_delivery" as const,
+			jobStatus: "cancelled" as const,
+			activity: "needs_attention" as const,
+			updatedAt: timestamp,
+		};
+		const details = {
+			runId: stopped.runId,
+			sourceKind: stopped.sourceKind,
+			jobStatus: stopped.jobStatus,
+			lastError: "Runner job was cancelled by a company member",
+			unsettledOperations: 0,
+		};
+		const card = () => f.view.el.querySelector<HTMLElement>(".run-failure");
+		// The cloud no longer lists the stopped message: the routine run the agent is
+		// still working on stands for it, and the member can stop that one too.
+		f.company.store.set({
+			activity: [{ ...stopped, runId: routineRun, sourceKind: "wake", jobStatus: "leased", activity: "working" }],
+		});
+		await settle();
+		expect(f.company.agentState(staff.id)).toBe("working");
+		expect(card()).toBeNull();
+		button(f.view.el, "Stop").click();
+		await settle();
+		expect(cancel).toHaveBeenCalledExactlyOnceWith(session.sessionId, routineRun, expect.any(AbortSignal));
+		// An older cloud still lists the stop: nothing reads as failed or offers Try again.
+		f.company.store.set({ activity: [stopped], recoveries: { [stopped.runId]: details } });
+		await settle();
+		expect(f.company.agentState(staff.id)).toBe("idle");
+		expect(card()).toBeNull();
+		// A stop that left Company File changes asks for the decision: Review, never Try again.
+		f.company.store.set({ recoveries: { [stopped.runId]: { ...details, proposalId: id(71) } } });
+		await settle();
+		expect(f.company.agentState(staff.id)).toBe("decision");
+		expect(card()?.querySelector(".run-failure-title")?.textContent).toBe(
+			"Fixture agent stopped with changes to review",
+		);
+		expect(card()?.querySelector("a")?.getAttribute("href")).toBe(`#/c/${profileA.profileId}/proposal/${id(71)}`);
+		expect([...(card()?.querySelectorAll("button") ?? [])].map((item) => item.textContent)).toEqual(["Dismiss"]);
+		expect(card()?.querySelector('[data-action="retry-run"]')).toBeNull();
+	});
+
+	it("stops a routine run working in the agent's thread through the conversation run control", async () => {
+		// A routine run is a wake run in the agent's own thread. The cloud's run control
+		// reports it like a member's turn (20260926183100); the composer's one button
+		// stops its exact id over the real transport; with a draft it is Send again.
+		const routineRun = id(74);
+		let working = true;
+		const fetch = vi.fn(async (input: string | URL | Request, _init?: RequestInit) => {
+			if (String(input).endsWith("/rpc/qorpera_cancel_session_run")) {
+				working = false;
+				return Response.json({ session_id: session.sessionId, run_id: routineRun, status: "cancelled" });
+			}
+			return Response.json({
+				session_id: session.sessionId,
+				staff_agent_id: staff.id,
+				run: working ? { run_id: routineRun, status: "leased", can_cancel: true } : null,
+			});
+		});
+		vi.stubGlobal("fetch", fetch);
+		const f = fixture();
+		const lifetime = new AbortController();
+		const company = new CompanyController(f.api, profileA, userA.id);
+		company.store.set({ team, staff: [staff], sessions: [{ ...session, staffAgentId: staff.id }], loading: false });
+		const view = new ConversationView(company, session.sessionId, {
+			runControl: createWebSessionRunControl(f.cloud, userA.id, lifetime.signal, () => {}),
+		});
+		document.body.append(view.el);
+		dispose = () => {
+			view.dispose();
+			company.stop();
+			lifetime.abort();
+		};
+		const routine = {
+			runId: routineRun,
+			staffAgentId: staff.id,
+			sourceKind: "wake" as const,
+			jobStatus: "leased" as const,
+			activity: "working" as const,
+			updatedAt: timestamp,
+		};
+		company.store.set({ activity: [routine] });
+		await settle();
+		await settle();
+		expect(company.agentState(staff.id)).toBe("working");
+		expect(button(view.el, "Stop").disabled).toBe(false);
+		input(view.el, "Message", "Also check the invoices.");
+		await settle();
+		expect(view.el.querySelector('[aria-label="Stop"]')).toBeNull();
+		expect(button(view.el, "Send message")).toBe(view.el.querySelector(".composer-send"));
+		input(view.el, "Message", "");
+		await settle();
+		button(view.el, "Stop").click();
+		await settle();
+		await settle();
+		const cancel = fetch.mock.calls.find(([url]) => String(url).endsWith("/rpc/qorpera_cancel_session_run"));
+		expect(JSON.parse(cancel?.[1]?.body as string)).toEqual({
+			p_session_id: session.sessionId,
+			p_run_id: routineRun,
+		});
+		// The confirmed Stop re-reads the conversation: no run is left to stop, even
+		// before the agent's activity catches up.
+		expect(fetch).toHaveBeenCalledTimes(3);
+		expect(view.el.querySelector('[aria-label="Stop"]')).toBeNull();
+		company.store.set({ activity: [] });
+		await settle();
+		expect(company.agentState(staff.id)).toBe("idle");
+		expect(view.el.querySelector('[aria-label="Stop"]')).toBeNull();
 	});
 
 	it("offers Try again in the thread, runs it on the selected account, and reports a refusal in plain words", async () => {

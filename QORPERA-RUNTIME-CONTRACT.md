@@ -459,6 +459,19 @@ The runtime MUST NOT hold an agent process or visible chat hostage to one long
 tool call. New input may steer, cancel, supersede, or coexist with existing
 work according to explicit run state.
 
+2026-09-26 amendment: a member's Stop. The Stop in a conversation reaches the
+agent's runs there: a member's message (in a plain conversation or in the
+agent's own thread), a routine run, the answer to a coworker message, and the
+continuation after a worker's report. It stops one run. A scheduled routine
+keeps its schedule; stopping a worker report's continuation also stops that
+agent's workers still running for it, as stopping their parent does. Work with
+no conversation (a worker's own run, a Company Computer start) is not stopped
+here. Who may stop is unchanged: a member who can write the conversation and
+started the run's work (for a routine, the member who saved it, or for whom its
+agent set it up) or an owner or admin. With several runs live, the Stop names
+one the member may stop, the working one first. Before this amendment the Stop
+only reached a member's turns in a plain conversation.
+
 ### 7.4 Ceilings and brake
 
 Intelligence is not deterministic, so the kernel bounds the damage a loop can

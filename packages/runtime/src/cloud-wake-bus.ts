@@ -86,6 +86,11 @@ function nullableUuid(value: unknown): string | null {
 	return value === null ? null : uuid(value);
 }
 
+/** UUID accepts either case, so a check that two ids differ (or none repeats) compares these. */
+function uuidKey(value: unknown): string {
+	return uuid(value).toLowerCase();
+}
+
 /** A validator for cloud-derived immutable policy, never a job/prompt flag resolver. */
 export function parseCloudWakePolicy(value: unknown): CloudWakePolicy {
 	try {
@@ -285,7 +290,7 @@ export function parseCloudWakeEnvelope(value: unknown, identity: CloudNativeTool
 		time.timeZone.length > 128 ||
 		!Array.isArray(causal.agentIds) ||
 		causal.agentIds.length < 1 ||
-		new Set(causal.agentIds.map(uuid)).size !== causal.agentIds.length ||
+		new Set(causal.agentIds.map(uuidKey)).size !== causal.agentIds.length ||
 		causal.agentIds.at(-1) !== identity.staffAgentId
 	)
 		throw new Error("Cloud wake does not match its admitted run");
@@ -312,7 +317,7 @@ export function parseCloudWakeEnvelope(value: unknown, identity: CloudNativeTool
 				Buffer.byteLength(line.text) > 4096 ||
 				typeof line.at !== "string" ||
 				!Number.isFinite(Date.parse(line.at)) ||
-				uuid(line.staffAgentId) === identity.staffAgentId
+				uuidKey(line.staffAgentId) === uuidKey(identity.staffAgentId)
 			)
 				throw new Error("Invalid held coworker messages");
 			uuid(line.eventId);
@@ -395,7 +400,7 @@ export function parseCloudWakeEnvelope(value: unknown, identity: CloudNativeTool
 			activation.schema !== "qorpera.office-start-continuation/v1" ||
 			policy.final !== "forbidden" ||
 			parentRunId === null ||
-			parentRunId === identity.runId ||
+			uuidKey(parentRunId) === uuidKey(identity.runId) ||
 			actorStaffId !== null ||
 			actorUserId !== null ||
 			audience.kind !== "company" ||
@@ -450,7 +455,7 @@ export function parseCloudWakeEnvelope(value: unknown, identity: CloudNativeTool
 			(work.sequence as number) < 1 ||
 			source.occurrenceKey !== `worker-dispatch:${source.id}:${work.sequence}` ||
 			parentRunId === null ||
-			parentRunId === identity.runId ||
+			uuidKey(parentRunId) === uuidKey(identity.runId) ||
 			uuid(work.parentRunId) !== parentRunId ||
 			actorStaffId !== null ||
 			actorUserId !== null ||
@@ -473,7 +478,7 @@ export function parseCloudWakeEnvelope(value: unknown, identity: CloudNativeTool
 		if (
 			done.schema !== "qorpera.worker-completion/v1" ||
 			parentRunId === null ||
-			parentRunId === identity.runId ||
+			uuidKey(parentRunId) === uuidKey(identity.runId) ||
 			uuid(done.parentRunId) !== parentRunId ||
 			actorStaffId !== null ||
 			actorUserId !== null ||
@@ -559,7 +564,7 @@ export function parseCloudWakeEnvelope(value: unknown, identity: CloudNativeTool
 			!Array.isArray(input.inputIds) ||
 			input.inputIds.length < 1 ||
 			input.inputIds.length > 32 ||
-			new Set(input.inputIds.map(uuid)).size !== input.inputIds.length ||
+			new Set(input.inputIds.map(uuidKey)).size !== input.inputIds.length ||
 			!input.inputIds.includes(source.id) ||
 			(wake.kind === "first-run" && input.inputIds.length !== 1) ||
 			parentRunId !== null ||
