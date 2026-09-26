@@ -34,9 +34,10 @@ regenerates everything once.
 - CI skips only the freshness comparisons listed below. Every other assertion in
   those tests still runs. Packaging tests package against the committed bundle
   identity, which is exactly what the packaged host embeds.
-- `npm run check` reports a stale bundle instead of failing. It still fails on
-  any other generator error. `npm run check:runtime-bundle` stays strict. On a
-  stale master it fails, and that is not a reason to regenerate.
+- `npm run check` and the web `build:release` report a stale bundle instead of
+  failing. They still fail on any other generator error.
+  `npm run check:runtime-bundle` stays strict. On a stale master it fails, and
+  that is not a reason to regenerate.
 - If the change needs an activation prerequisite (a guard such as "Activation
   requires migration X"), say so in the PR body. The release branch adds the
   guard.
@@ -112,21 +113,20 @@ Enforced only when `QORPERA_ENFORCE_RUNTIME_BUNDLE=1`:
   the image the containment test builds.
 - `npm run check`: the generator check. `check:runtime-bundle` itself is
   unchanged.
-- Web client workflow: the generator check that `build:release` runs before the
-  release build. CI now runs it as its own step, only when enforced, and then
-  runs `build:release-artifact`.
+- Web `build:release` (the Cloudflare Pages command): it now runs
+  `check:runtime-bundle:release-train` instead of `check:runtime-bundle`, then
+  `build:release-artifact`. The web client workflow also runs the strict
+  `check:runtime-bundle` as its own step, only when enforced.
 
 Nothing else changed. The generator, `check:runtime-bundle`, every production
 packager, the rollout gates (`scripts/test-runtime-context-parity.mjs`,
 `scripts/test-runtime-provenance.mjs`) and the activation SQL guards still
 refuse a stale bundle.
 
-## Open: Cloudflare Pages
+## Cloudflare Pages
 
-The Pages build command is `npm run build:release --workspace packages/web`.
-`build:release` still runs the strict generator check. Between cuts master is
-stale, so Pages builds of master fail until the next release PR merges. The live
-site keeps its last deployment. Decide whether web deploys should wait for
-runtime cuts (no change) or whether Pages should build without the check. The
-second option means switching the Pages command to `build:release-artifact` or
-gating the check in `build:release`.
+The Pages build command stays `npm run build:release --workspace packages/web`.
+Pages does not set `QORPERA_ENFORCE_RUNTIME_BUNDLE`, so a Pages build of master
+between cuts deploys and does not fail on a stale bundle. `web-deployment.json`
+then records the committed bundle identity. That is the last release, which is
+what the nodes run.

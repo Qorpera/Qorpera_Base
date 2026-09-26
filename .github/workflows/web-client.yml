@@ -82,8 +82,9 @@ jobs:
         run: node --test scripts/web-deployment.test.mjs supabase/functions/native-provider-login/native-provider-login.test.ts
       - name: Lint
         run: npx biome check packages/web/src packages/web/test
-      # build:release = this check + build:release-artifact. The check runs
-      # here only on release branches (see QORPERA_ENFORCE_RUNTIME_BUNDLE).
+      # Strict generator check, release branches only. build:release (the
+      # Pages command) runs the release-train check, which is strict only
+      # when QORPERA_ENFORCE_RUNTIME_BUNDLE=1.
       - name: Runtime bundle matches its source (release branches only)
         if: env.QORPERA_ENFORCE_RUNTIME_BUNDLE == '1'
         run: npm run check:runtime-bundle
@@ -91,4 +92,4 @@ jobs:
         env:
           QORPERA_WEB_CONFIG_JSON: >-
             {"projectUrl":"https://project.example.invalid","publishableKey":"sb_publishable_fixture123","objectGatewayUrl":"https://objects.example.invalid","officeViewerOrigin":"wss://viewer.example.invalid:8443","nativeProviderLoginUrl":"https://project.example.invalid/functions/v1/native-provider-login/"}
-        run: npm run build:release-artifact --workspace packages/web
+        run: npm run build:release --workspace packages/web
