@@ -15,8 +15,9 @@ regenerates everything once.
 
 - `scripts/generate-cloud-runtime-bundle.mjs`: the `activation`,
   `activationVersion`, `previousActivationVersion` and
-  `previousActivationSha256` lines, and the activation prerequisite guards in
-  its activation template.
+  `previousActivationSha256` lines (CI enforces these), and the activation
+  prerequisite guards in its activation template (release-owned by review; CI
+  does not enforce them).
 - `supabase/migrations/<timestamp>_runtime_bundle_activation_vNNN.sql`.
 - `packages/runtime/src/cloud-runtime-bundle.generated.ts`.
 - `deploy/first-node/native-codex/runtime-bundle-manifest.json`.
@@ -107,8 +108,12 @@ Which workflows run:
   in its push branches, but keeps its path filter there, so a release push runs
   it only when the push touches one of its paths. The derived files are among
   them.
-- The pull request path filters of all four include the derived files, so a
-  release PR, which always changes them, runs every bundle-related job.
+- A release PR always changes the generated bundle, its manifest and an
+  activation migration, so every bundle-related job runs on it. The pull request
+  path filters of Step 2 LXD (`deploy/first-node/**`), web client and ephemeral
+  runner include the generated bundle or its manifest. Hosted database includes
+  none of those; it runs on a release PR because its `supabase/migrations/**`
+  filter matches the new activation migration.
 
 Locally, `QORPERA_ENFORCE_RUNTIME_BUNDLE=1` reproduces release enforcement:
 
