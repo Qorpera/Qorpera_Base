@@ -789,6 +789,63 @@ describe("conversation UI boundaries", () => {
 		expect(cancel).toHaveBeenCalledExactlyOnceWith(session.sessionId, nextRun, expect.any(AbortSignal));
 	});
 
+	it("shows a message the member stopped as stopped, not failed, and keeps the Stop for the agent's other run", async () => {
+		const routineRun = id(73);
+		const cancel = vi.fn(async () => "cancelled" as const);
+		const f = setup({
+			runControl: {
+				read: vi.fn(async () => ({
+					sessionId: session.sessionId,
+					staffAgentId: staff.id,
+					run: { runId: routineRun, status: "leased" as const, canCancel: true },
+				})),
+				cancel,
+			},
+		});
+		const stopped = {
+			runId: id(70),
+			staffAgentId: staff.id,
+			sourceKind: "room_delivery" as const,
+			jobStatus: "cancelled" as const,
+			activity: "needs_attention" as const,
+			updatedAt: timestamp,
+		};
+		const details = {
+			runId: stopped.runId,
+			sourceKind: stopped.sourceKind,
+			jobStatus: stopped.jobStatus,
+			lastError: "Runner job was cancelled by a company member",
+			unsettledOperations: 0,
+		};
+		const card = () => f.view.el.querySelector<HTMLElement>(".run-failure");
+		// The cloud no longer lists the stopped message: the routine run the agent is
+		// still working on stands for it, and the member can stop that one too.
+		f.company.store.set({
+			activity: [{ ...stopped, runId: routineRun, sourceKind: "wake", jobStatus: "leased", activity: "working" }],
+		});
+		await settle();
+		expect(f.company.agentState(staff.id)).toBe("working");
+		expect(card()).toBeNull();
+		button(f.view.el, "Stop").click();
+		await settle();
+		expect(cancel).toHaveBeenCalledExactlyOnceWith(session.sessionId, routineRun, expect.any(AbortSignal));
+		// An older cloud still lists the stop: nothing reads as failed or offers Try again.
+		f.company.store.set({ activity: [stopped], recoveries: { [stopped.runId]: details } });
+		await settle();
+		expect(f.company.agentState(staff.id)).toBe("idle");
+		expect(card()).toBeNull();
+		// A stop that left Company File changes asks for the decision: Review, never Try again.
+		f.company.store.set({ recoveries: { [stopped.runId]: { ...details, proposalId: id(71) } } });
+		await settle();
+		expect(f.company.agentState(staff.id)).toBe("decision");
+		expect(card()?.querySelector(".run-failure-title")?.textContent).toBe(
+			"Fixture agent stopped with changes to review",
+		);
+		expect(card()?.querySelector("a")?.getAttribute("href")).toBe(`#/c/${profileA.profileId}/proposal/${id(71)}`);
+		expect([...(card()?.querySelectorAll("button") ?? [])].map((item) => item.textContent)).toEqual(["Dismiss"]);
+		expect(card()?.querySelector('[data-action="retry-run"]')).toBeNull();
+	});
+
 	it("stops a routine run working in the agent's thread through the conversation run control", async () => {
 		// A routine run is a wake run in the agent's own thread. The cloud's run control
 		// reports it like a member's turn (20260926183100); the composer's one button
