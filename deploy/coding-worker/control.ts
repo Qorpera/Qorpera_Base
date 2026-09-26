@@ -2,7 +2,7 @@ import { readBoundedCloudResponse, supabaseServiceHeaders } from "../../packages
 import { CODING_EXECUTOR_RPCS } from "../../packages/runner-orchestrator/src/coding-executor.ts";
 import { CODING_HOST_RPCS } from "../../packages/runner-orchestrator/src/coding-executor-host.ts";
 
-const METHODS = new Set<string>([...CODING_EXECUTOR_RPCS, ...CODING_HOST_RPCS, "qorpera_authorize_coding_command"]);
+const METHODS = new Set<string>([...CODING_EXECUTOR_RPCS, ...CODING_HOST_RPCS, "qorpera_authorize_coding_command", "qorpera_route_coding_command"]);
 
 /** Service-role custody lives only in this dedicated control process. All
  * requests use a fixed origin and closed RPC set, without mutation retries. */

@@ -6,7 +6,7 @@
 // the native runtime's parser is tested with
 // (packages/runtime/test/fixtures/coding-turn-context-backfilled.json). A turn
 // in flight during the migration completes on the new schema with the
-// submission it made before. The review fixes (20260925125000) then correct the
+// submission it made before. The review fixes (20260926162500) then correct the
 // backfilled rows: no standing pull request on turns that published nothing,
 // and an input without its worker event taken from the session's input event.
 //
@@ -35,9 +35,9 @@ function docker(args, input) {
 }
 const sql = (text) => docker(psql, text);
 
-// The history, built with the functions as they were before the migration, from
-// the executor test's dispatch and machine fixture (test 396 up to its section 2).
-const seed = `-- @fixture 396_runtime_coding_executor.test.sql until "-- 2. The turn as the runner sees it"
+// Seed against the historical schema. The current executor fixture requires
+// fleet admission, which is introduced only after this migration boundary.
+const seed = `${read("scripts/fixtures/coding-turn-pre-continuity.sql")}
 create function pg_temp.observe() returns void language sql as $$
 	select public.qorpera_observe_runtime_node_inventory(jsonb_build_object('schema','qorpera.runtime-node-observation/v1',
 		'nodeId','30000000-0000-4000-8000-000000000310','machineIdSha256',repeat('c',64),'observationId',extensions.gen_random_uuid(),

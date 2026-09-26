@@ -1,5 +1,5 @@
 -- @fixture 601_runtime_coding_turn_continuity.test.sql until "-- 7. Only the turn's own runner reads its context."
--- Coding turn continuity, review fixes (20260925125000): a turn's outcome names
+-- Coding turn continuity, review fixes (20260926162500): a turn's outcome names
 -- only the pull request it published; a coding worker cannot commit a sequence
 -- without its turn; the newest earlier turn is always in the history window.
 

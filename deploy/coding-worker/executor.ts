@@ -15,15 +15,18 @@ import { HttpCloudCodingCommandService } from "../../packages/runtime/src/cloud-
 import { codingErrorCode } from "../../packages/runtime/src/cloud-coding-error-code.ts";
 import { parseCodingGuestConfiguration } from "../../packages/runtime/src/cloud-coding-guest-configuration.ts";
 import { authorizeCodingCommand } from "./command-authority.ts";
+import { CodingCommandRouter, type CodingCommandPeer } from "./command-routing.ts";
 import { CodingExecutorHttpControl } from "./control.ts";
 import { readCodingServiceCredential } from "./credentials.ts";
 import { BrokerRepositoryCredentials, REPOSITORY_TOKEN } from "./repository-credentials.ts";
 
 interface Config {
-	schema: "qorpera.coding-executor-service/v5";
+	schema: "qorpera.coding-executor-service/v6";
 	owner: string;
 	supabaseUrl: string;
 	commandPort: number;
+	peerCommandPort: number;
+	commandPeers: CodingCommandPeer[];
 	vmPolicy: LxdCodingExecutorHostOptions["vmPolicy"];
 	storagePolicy: LxdCodingExecutorHostOptions["storagePolicy"];
 	guest: LxdCodingExecutorHostOptions["guest"];
@@ -36,8 +39,8 @@ interface Config {
 	 * repository, proof-only plumbing that bypasses the company connection. */
 	repositories: { repository: CloudCodingRepository; credential: string | null }[];
 }
-const RESERVED_CREDENTIALS = new Set(["qorpera-coding-executor-config", "qorpera-coding-registry", "qorpera-coding-command"]);
-const CONFIG_KEYS = "commandPort,guest,owner,repositories,schema,storagePolicy,supabaseUrl,vmPolicy";
+const RESERVED_CREDENTIALS = new Set(["qorpera-coding-executor-config", "qorpera-coding-registry", "qorpera-coding-command", "qorpera-coding-peer-command"]);
+const CONFIG_KEYS = "commandPeers,commandPort,guest,owner,peerCommandPort,repositories,schema,storagePolicy,supabaseUrl,vmPolicy";
 function object(value: unknown): Record<string, unknown> {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("CODING_EXECUTOR_CONFIG_INVALID");
 	return value as Record<string, unknown>;
@@ -56,7 +59,9 @@ function broker(value: unknown): Config["broker"] {
 		input.executorTokenCredential.startsWith("qorpera-coding-repository-")) throw new Error("CODING_EXECUTOR_CONFIG_INVALID");
 	return { origin: origin(input.origin), executorTokenCredential: input.executorTokenCredential };
 }
-/** The reviewed JSON configuration (v5: one coding machine per member, many
+/** The reviewed JSON configuration (v6: SQL placement routes commands across
+ * per-node executors using a separate, local-only peer listener and credential;
+ * one coding machine per member, many
  * sessions per machine; every guest path derives from the session, so the
  * guest section names only the image's own coding user, the per-command
  * resource profile and the helper pins). The executor claims coding sessions
@@ -67,10 +72,26 @@ export function parseCodingExecutorConfiguration(value: unknown): Config {
 	const config = object(value);
 	const keys = Object.keys(config).sort().join();
 	if ((keys !== CONFIG_KEYS && keys !== `broker,${CONFIG_KEYS}`) ||
-		config.schema !== "qorpera.coding-executor-service/v5" || typeof config.owner !== "string" || !/^[A-Za-z0-9_.:-]{1,120}$/.test(config.owner) ||
+		config.schema !== "qorpera.coding-executor-service/v6" || typeof config.owner !== "string" || !/^[A-Za-z0-9_.:-]{1,120}$/.test(config.owner) ||
 		!Number.isSafeInteger(config.commandPort) || Number(config.commandPort) < 1024 || Number(config.commandPort) > 65535 ||
+		!Number.isSafeInteger(config.peerCommandPort) || Number(config.peerCommandPort) < 1024 || Number(config.peerCommandPort) > 65535 || config.peerCommandPort === config.commandPort ||
+		!Array.isArray(config.commandPeers) || config.commandPeers.length > 100 ||
 		!Array.isArray(config.repositories) || config.repositories.length < 1 || config.repositories.length > 100) throw new Error("CODING_EXECUTOR_CONFIG_INVALID");
 	const brokerConfig = broker(config.broker);
+	const commandPeers = config.commandPeers.map((value): CodingCommandPeer => {
+		const entry = object(value);
+		if (Object.keys(entry).sort().join() !== "origin,owner,providerId,tokenCredential" ||
+			typeof entry.owner !== "string" || !/^[A-Za-z0-9_.:-]{1,120}$/.test(entry.owner) || entry.owner === config.owner ||
+			typeof entry.providerId !== "string" || !/^[a-z][a-z0-9_-]{0,63}$/.test(entry.providerId) ||
+			typeof entry.tokenCredential !== "string" || !/^qorpera-coding-peer-[a-z0-9-]{1,60}$/.test(entry.tokenCredential) ||
+			RESERVED_CREDENTIALS.has(entry.tokenCredential) || entry.tokenCredential === brokerConfig?.executorTokenCredential)
+			throw new Error("CODING_EXECUTOR_CONFIG_INVALID");
+		return { owner: entry.owner, providerId: entry.providerId, origin: origin(entry.origin), tokenCredential: entry.tokenCredential };
+	});
+	if (new Set(commandPeers.map((entry) => entry.owner)).size !== commandPeers.length ||
+		new Set(commandPeers.map((entry) => entry.origin)).size !== commandPeers.length ||
+		new Set(commandPeers.map((entry) => entry.tokenCredential)).size !== commandPeers.length)
+		throw new Error("CODING_EXECUTOR_CONFIG_INVALID");
 	const repositories = config.repositories.map((value) => {
 		const entry = object(value);
 		const entryKeys = Object.keys(entry).sort().join();
@@ -97,8 +118,8 @@ export function parseCodingExecutorConfiguration(value: unknown): Config {
 		parsedGuest.resourceProfile.cpuQuotaPercent > Number(vmPolicy.cpus) * 100)
 		throw new Error("CODING_EXECUTOR_RESOURCE_POLICY_INVALID");
 	return {
-		schema: "qorpera.coding-executor-service/v5", owner: config.owner, supabaseUrl: origin(config.supabaseUrl),
-		commandPort: Number(config.commandPort), storagePolicy, vmPolicy: vmPolicy as unknown as Config["vmPolicy"],
+		schema: "qorpera.coding-executor-service/v6", owner: config.owner, supabaseUrl: origin(config.supabaseUrl),
+		commandPort: Number(config.commandPort), peerCommandPort: Number(config.peerCommandPort), commandPeers, storagePolicy, vmPolicy: vmPolicy as unknown as Config["vmPolicy"],
 		guest: guest as unknown as Config["guest"], broker: brokerConfig, repositories,
 	};
 }
@@ -152,10 +173,9 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 	const shutdown = () => stop.abort(new Error("CODING_EXECUTOR_SHUTDOWN"));
 	process.on("SIGTERM", shutdown);
 	process.on("SIGINT", shutdown);
-	const commands = new HttpCloudCodingCommandService({
-		token: await credential("qorpera-coding-command"), port: config.commandPort,
-		authorize: (request, signal) => authorizeCodingCommand(control, request, signal),
-		async execute(request, signal) {
+	const router = new CodingCommandRouter({
+		owner: config.owner, providerId: config.vmPolicy.providerId, peers: config.commandPeers, control, credential,
+		async executeLocal(request, signal) {
 			const transport = await host.commandTransport(request.scope, async (action, scope, commandId, inputSha256, checked) => {
 				if (action !== request.action || JSON.stringify(scope) !== JSON.stringify(request.scope) || commandId !== request.input.commandId ||
 					(request.action === "start" && inputSha256 !== request.input.inputSha256)) throw new Error("CODING_COMMAND_REQUEST_CHANGED");
@@ -165,9 +185,27 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 				request.action === "read" ? transport.read(request.scope, request.input, signal) : transport.cancel(request.scope, request.input.commandId, signal);
 		},
 	});
+	const commandToken = await credential("qorpera-coding-command");
+	const peerToken = await credential("qorpera-coding-peer-command");
+	if (commandToken === peerToken) throw new Error("CODING_COMMAND_CREDENTIALS_NOT_SEPARATE");
+	for (const peer of config.commandPeers) {
+		const remoteToken = await credential(peer.tokenCredential);
+		if (remoteToken === commandToken || remoteToken === peerToken) throw new Error("CODING_COMMAND_CREDENTIALS_NOT_SEPARATE");
+	}
+	const commands = new HttpCloudCodingCommandService({
+		token: commandToken, port: config.commandPort,
+		authorize: (request, signal) => authorizeCodingCommand(control, request, signal),
+		execute: (request, signal) => router.execute(request, signal),
+	});
+	const peerCommands = new HttpCloudCodingCommandService({
+		token: peerToken, port: config.peerCommandPort,
+		authorize: (request, signal) => authorizeCodingCommand(control, request, signal),
+		execute: (request, signal) => router.execute(request, signal, true),
+	});
 	let executor: CloudCodingExecutor | undefined;
 	try {
 		await commands.start(stop.signal);
+		await peerCommands.start(stop.signal);
 		const running = new CloudCodingExecutor({
 			control,
 			host,
@@ -211,6 +249,7 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 		stop.abort();
 		await executor?.drain();
 		await commands.close();
+		await peerCommands.close();
 		process.off("SIGTERM", shutdown);
 		process.off("SIGINT", shutdown);
 	}
