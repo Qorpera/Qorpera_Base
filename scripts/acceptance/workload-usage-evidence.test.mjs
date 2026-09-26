@@ -174,11 +174,23 @@ test("rejects wrong payer, duplicate debit and failure to release an unused hold
 	assert.throws(() => verifyWorkloadUsage(third.evidence, third.expected), /remainder refunded/);
 });
 
+test("rejects flattened SQL observations that lost their immutable row metadata", () => {
+	const { evidence, expected } = fixture();
+	evidence.samples = evidence.samples.map((row) => row.sample);
+	assert.throws(() => verifyWorkloadUsage(evidence, expected), /SQL sample row must retain/);
+});
+
 test("read-only evidence query refuses SQL interpolation and does not select host secrets", async () => {
 	await assert.rejects(readWorkloadUsage(() => assert.fail("must not execute"), "' ; select"), /UUID/);
 	await readWorkloadUsage(async (sql) => {
 		assert(!sql.includes("executor_secret") && !sql.includes("key_sha256") && !sql.includes("prepare_request"));
-		assert(sql.startsWith("with p as")); return "{}";
+		assert(sql.startsWith("with p as"));
+		// A table alias named sample collides with its JSONB sample column in
+		// PostgreSQL: to_jsonb(sample) silently drops sequence and coverage.
+		assert(!sql.includes("to_jsonb(sample)"));
+		assert(sql.includes("'sample',observation.sample") && sql.includes("'sequence',observation.sequence")
+			&& sql.includes("'coverage',observation.coverage"));
+		return "{}";
 	}, "00000000-0000-4000-8000-000000000001");
 });
 

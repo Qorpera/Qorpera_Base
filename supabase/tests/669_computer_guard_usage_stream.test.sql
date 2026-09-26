@@ -17,12 +17,16 @@ do $$ declare b jsonb:=current_setting('qorpera_test.runtime_paid_binding')::jso
     i integer;
 begin
     select client_runner_id into strict allocation from public.qorpera_runners where id=(b->>'runnerId')::uuid;
-    request:=pg_temp.prestart_request(jsonb_build_object('schema','qorpera.runtime-computer-prepare/v2',
+    request:=pg_temp.prestart_request(jsonb_build_object('schema','qorpera.runtime-computer-prepare/v3','usageProducer','guard-v1',
         'requestId',attempt,'allocationId',allocation,'providerKind','native','providerId','process','policySha256',repeat('f',64),
         'instanceSha256',repeat('d',64),'machineIdSha256',repeat('c',64),'hostBootId','66900000-0000-4000-8000-000000000011',
         'bootstrapSha256',repeat('b',64),'runId',b->'runId','runnerId',b->'runnerId','officeId',null,'computerGeneration',null,
         'windowMs',300000,'stopReserveMs',30000));
+    perform pg_temp.wake_error(format('select public.qorpera_prepare_runtime_computer_permit(%L,%L)',
+        pg_temp.prestart_request(request-'usageProducer'),repeat('R',64)),'55000');
     initial:=public.qorpera_prepare_runtime_computer_permit(request,repeat('R',64));
+    perform pg_temp.wake_assert(exists(select 1 from public.qorpera_computer_guard_sample_cursors where permit_id=attempt and sequence=0),
+        'Runtime prepare did not pin producer before returning');
     -- Move only the fixture's initial clock origin; every upload below uses the
     -- canonical production receipt and verifies historical capture boundaries.
     update public.qorpera_coding_computer_windows set issued_at=t-interval '1 second',deadline=t+interval '329 seconds' where permit_id=attempt;
@@ -34,6 +38,8 @@ begin
     sample:=jsonb_build_object('observationId',extensions.gen_random_uuid(),'previousObservationId',null,
         'hostBootId',request->'hostBootId','hostUptimeMs',1000000,'physicalId','66900000-0000-4000-8000-000000000012',
         'guestBootId','66900000-0000-4000-8000-000000000013','guestUptimeMs',100000,'observedAt',t,'state','running','evidenceSha256',repeat('a',64));
+    perform pg_temp.wake_error(format('select public.qorpera_bind_runtime_computer_permit(%L,%L)',
+        jsonb_build_object('permitId',attempt,'generation',1,'sample',sample),repeat('R',64)),'42501');
     entry:=pg_temp.guard_entry(initial,1,null,sample);
     upload:=jsonb_build_object('permitId',attempt,'generation',1,'entries',jsonb_build_array(entry));
     perform pg_temp.wake_error(format('select public.qorpera_record_computer_guard_samples(%L,%L)',upload,repeat('X',64)),'42501');

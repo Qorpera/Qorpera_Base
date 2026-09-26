@@ -4,7 +4,7 @@
 
 The same two members then create a company, invite and join, explicitly contribute their 74 + 286 funded hours, co-sign a revised vision, and launch from the noncreator's session. Lost launch replies and concurrent founder replay must produce one materialized turn with the frozen roster/vision and the launcher's own model sponsorship. A solo company reuses the first member's global balance without duplicating or debiting it before physical execution.
 
-The hosted composition uses the production CompanyBootstrapProvisioner, object store, durable journal and replication staging path. It verifies real filesystem bytes and SHA-256 digests against the published snapshot and complete closure. The actual object HTTP handler reauthorizes reads with each real member session; the second founder is denied before joining and remains denied from the separate solo company. The default offline founding harness retains its explicitly labeled bootstrap/invoice fixtures.
+Both the hosted composition and the default offline founding harness use the production CompanyBootstrapProvisioner, object store, durable journal and replication staging path. They verify real filesystem bytes and SHA-256 digests against the published snapshot and complete closure. The actual object HTTP handler reauthorizes reads with each real member session; the second founder is denied before joining and remains denied from the separate solo company. The default offline harness retains explicitly labeled invoice and model-account fixtures.
 
 ## Run on a disposable Linux host
 

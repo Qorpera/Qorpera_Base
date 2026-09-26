@@ -18,6 +18,7 @@ import {
 	paidComputerUsageCursor,
 	parsePaidComputerUsageEntry,
 } from "../src/computer-paid-usage.ts";
+import { computerPrestartDigest } from "../src/computer-prestart-control.ts";
 import type {
 	LxdInstanceClock,
 	LxdInstanceFile,
@@ -292,6 +293,34 @@ async function fixture(usage = false) {
 		context: "",
 		followUp: null,
 	};
+	// Historical unmarked custody remains recoverable. Seed its exact retained
+	// v2 intent before the controller runs; fresh producer tests skip this fixture.
+	if (!usage) {
+		const hash = computerPrestartDigest(JSON.stringify([machine.machineId, claim.workerId, claim.leaseToken]));
+		const requestId = `${hash.slice(0, 8)}-${hash.slice(8, 12)}-5${hash.slice(13, 16)}-a${hash.slice(17, 20)}-${hash.slice(20, 32)}`;
+		const prepareRequestText = JSON.stringify({
+			schema: "qorpera.coding-computer-prepare/v2",
+			requestId,
+			workerId: claim.workerId,
+			machineId: machine.machineId,
+			owner: "executor",
+			bindingText: lxdCodingMachinePlan(machine).text,
+			machineIdSha256: host.hostMachineIdSha256,
+			hostBootId: host.hostBootId,
+			windowMs: 300000,
+			stopReserveMs: 30000,
+		});
+		await guard.registerPrestart({
+			schema: "qorpera.computer-prestart-intent/v1",
+			permitId: requestId,
+			allocationId: machine.machineId,
+			instanceSha256: lxdCodingMachinePlan(machine).instanceSha256,
+			hostMachineIdSha256: host.hostMachineIdSha256,
+			hostBootId: host.hostBootId,
+			prepareRequestText,
+			prepareSha256: computerPrestartDigest(prepareRequestText),
+		});
+	}
 	const calls = (method: string) => control.call.mock.calls.filter(([name]) => name === method);
 	return {
 		machine,
@@ -374,6 +403,17 @@ describe("paid coding computer controller", () => {
 			await f.start();
 			const permitId = f.getPermit()!.permitId;
 			expect((await f.guard.latest(f.machine.machineId))?.usageRequired).toBe(true);
+			const prepare = f.control.call.mock.calls.find(
+				([method]) => method === "qorpera_prepare_coding_computer_permit",
+			)?.[1].p_request as Record<string, unknown>;
+			expect(prepare).toMatchObject({ schema: "qorpera.coding-computer-prepare/v3", usageProducer: "guard-v1" });
+			expect(JSON.parse(String(prepare.prepareRequestText))).toMatchObject({
+				schema: prepare.schema,
+				usageProducer: "guard-v1",
+			});
+			expect(prepare.prestart).toMatchObject({
+				prepareSha256: computerPrestartDigest(String(prepare.prepareRequestText)),
+			});
 			await f.controller.observe(f.machine.machineId, signal());
 			expect(f.getPermit()?.state).toBe("prepared");
 			expect(

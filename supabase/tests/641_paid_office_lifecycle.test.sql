@@ -3,15 +3,25 @@
 create function pg_temp.prestart_request(p_request jsonb) returns jsonb language plpgsql as $$
 declare v_base jsonb; v_text text;
 begin
-    v_base:=(p_request-'prestart'-'prepareRequestText')||jsonb_build_object('schema','qorpera.runtime-computer-prepare/v2');
+    v_base:=(p_request-'prestart'-'prepareRequestText')||jsonb_build_object('schema',case when p_request ? 'usageProducer' then 'qorpera.runtime-computer-prepare/v3' else 'qorpera.runtime-computer-prepare/v2' end);
     v_text:=(v_base-'leaseToken')::text;
     return v_base||jsonb_build_object('prepareRequestText',v_text,'prestart',jsonb_build_object(
         'guardIncarnationId','64200000-0000-4000-8000-000000000001',
         'prepareSha256',encode(extensions.digest(convert_to(v_text,'UTF8'),'sha256'),'hex')));
 end $$;
-create function pg_temp.prepare_runtime(p_request jsonb,p_secret text) returns jsonb language sql as $$
-    select public.qorpera_prepare_runtime_computer_permit(pg_temp.prestart_request(p_request),p_secret)
-$$;
+-- Operator-only historical fixture: an unmarked intent was registered before
+-- producer pinning shipped. This is not a fresh public admission path. Keep the
+-- original raw-sample settlement regressions for these retained permits.
+create function pg_temp.prepare_runtime(p_request jsonb,p_secret text) returns jsonb language plpgsql as $$
+declare r jsonb:=pg_temp.prestart_request(p_request); identity jsonb;
+begin
+    if not (r ? 'usageProducer') and not exists(select 1 from public.qorpera_computer_prestart_attempts where permit_id=(r->>'requestId')::uuid) then
+        identity:=public.qorpera_computer_prestart_identity(r,p_secret,'runtime');
+        insert into public.qorpera_computer_prestart_attempts(permit_id,profile_id,kind,host_key_id,identity,prepare_request_text)
+            values((r->>'requestId')::uuid,(identity->>'profileId')::uuid,'runtime',(identity->>'hostKeyId')::uuid,identity,r->>'prepareRequestText');
+    end if;
+    return public.qorpera_prepare_runtime_computer_permit(r,p_secret);
+end $$;
 -- Real founder demand/provider enrollment; no physical machine or live charge.
 select pg_temp.as_user('30000000-0000-4000-8000-000000000001');
 select set_config('qorpera_test.office_scope', (public.qorpera_register_runtime_office(

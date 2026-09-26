@@ -23,7 +23,7 @@ begin
     perform pg_temp.wake_error(format('select public.qorpera_prepare_runtime_computer_permit(%L,%L)',request,repeat('R',64)),'55000');
     request:=pg_temp.prestart_request(request||jsonb_build_object('requestId','64300000-0000-4000-8000-000000000020'));
     cancellation:=pg_temp.runtime_abandon_request(request);
-    receipt:=public.qorpera_prepare_runtime_computer_permit(request,repeat('R',64));
+    receipt:=pg_temp.prepare_runtime(request,repeat('R',64));
     select reserved_us into baseline from public.qorpera_computer_allowance_buckets where invoice_id='in_runtime';
     perform pg_temp.wake_error(format('select public.qorpera_abandon_runtime_computer_permit(%L,%L)',cancellation,repeat('X',64)),'42501');
     perform pg_temp.wake_error(format('select public.qorpera_abandon_coding_computer_permit(%L,%L)',cancellation,repeat('R',64)),'42501');
@@ -53,7 +53,7 @@ begin
     -- A different completed attempt proves closed history recovery is not
     -- coupled to its old runner's current allocation/provider registration.
     request:=pg_temp.prestart_request(request||jsonb_build_object('requestId','64300000-0000-4000-8000-000000000030'));
-    receipt:=public.qorpera_prepare_runtime_computer_permit(request,repeat('R',64));
+    receipt:=pg_temp.prepare_runtime(request,repeat('R',64));
     perform public.qorpera_finish_runtime_computer_permit(jsonb_build_object('requestId',extensions.gen_random_uuid(),
         'permitId',request->'requestId','generation',1,'guardClosed',true,'sample',jsonb_build_object(
         'observationId',extensions.gen_random_uuid(),'previousObservationId',null,'hostBootId',request->'hostBootId','hostUptimeMs',1000,

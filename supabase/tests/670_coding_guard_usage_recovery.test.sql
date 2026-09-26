@@ -13,7 +13,7 @@ do $$ declare machine uuid:=current_setting('qorpera_test.coding_vm')::uuid; att
     request jsonb; permit jsonb; sample jsonb; entry jsonb; receipt jsonb; previous jsonb; terminal jsonb; stop jsonb; stale_sample jsonb;
     t timestamptz:=clock_timestamp()-interval '30 seconds';
 begin
-    request:=pg_temp.prestart_request(jsonb_build_object('schema','qorpera.coding-computer-prepare/v2','requestId',attempt,
+    request:=pg_temp.prestart_request(jsonb_build_object('schema','qorpera.coding-computer-prepare/v3','usageProducer','guard-v1','requestId',attempt,
         'workerId',(pg_temp.worker_row('fix-send')).id,'leaseToken','63700000-0000-4000-8000-000000000001',
         'machineId',machine,'owner','exec-test','bindingText',current_setting('qorpera_test.coding_binding'),
         'machineIdSha256',repeat('c',64),'hostBootId','67000000-0000-4000-8000-000000000011','windowMs',300000,'stopReserveMs',30000));

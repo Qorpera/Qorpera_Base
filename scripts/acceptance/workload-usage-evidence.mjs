@@ -36,7 +36,10 @@ export async function readWorkloadUsage(query, permitId) {
    'state',p.state,'generation',p.generation,'closed_at',p.closed_at) from p),
  'stream',(select to_jsonb(s)||jsonb_build_object('active_ms',s.active_ms::text,'elapsed_ms',s.elapsed_ms::text) from s),
  'tariff',(select to_jsonb(t) from public.qorpera_computer_tariff_versions t join s on t.version=s.tariff_version),
- 'samples',coalesce((select jsonb_agg(to_jsonb(sample) order by sequence) from public.qorpera_coding_computer_samples sample where permit_id='${permitId}'::uuid),'[]'),
+ 'samples',coalesce((select jsonb_agg(jsonb_build_object('permit_id',observation.permit_id,
+   'observation_id',observation.observation_id,'generation',observation.generation,'sample',observation.sample,
+   'sequence',observation.sequence,'coverage',observation.coverage,'created_at',observation.created_at) order by observation.sequence)
+   from public.qorpera_coding_computer_samples observation where observation.permit_id='${permitId}'::uuid),'[]'),
  'checkpoints',coalesce((select jsonb_agg(to_jsonb(cp)||jsonb_build_object('active_ms',cp.active_ms::text,'elapsed_ms',cp.elapsed_ms::text) order by cp.sequence) from public.qorpera_computer_usage_receipts cp join p on cp.allocation_id=p.allocation_id and cp.epoch=p.epoch),'[]'),
  'reservations',coalesce((select jsonb_agg(to_jsonb(r)||jsonb_build_object('reserved_us',r.reserved_us::text,'from_standard_us',r.from_standard_us::text) order by r.created_at,r.id) from r),'[]'),
  'holds',coalesce((select jsonb_agg(to_jsonb(h)||jsonb_build_object('amount_us',h.amount_us::text,'user_id',b.user_id) order by h.reservation_id,h.draw_order) from public.qorpera_computer_allowance_holds h join r on r.id=h.reservation_id join public.qorpera_computer_allowance_buckets b on b.id=h.bucket_id),'[]'),
@@ -77,6 +80,8 @@ export function verifyWorkloadUsage(evidence, expected) {
 	assert.equal(integer(checkpoints[0].elapsed_ms), 0n);
 	let active = 0n, elapsed = 0n, previous = null, segment = null, continuous = 0, gaps = 0;
 	for (const [index, record] of samples.entries()) {
+		assert(record && record.sample && typeof record.sample === "object" && !Array.isArray(record.sample)
+			&& Number.isSafeInteger(record.sequence) && typeof record.coverage === "string", "SQL sample row must retain its payload, sequence and coverage");
 		const sample = record.sample, checkpoint = checkpoints[index + 1];
 		assert.deepEqual(sample, observed.get(sample.observationId), "SQL sample differs from real controller observation");
 		assert.equal(record.sequence, index + 1);

@@ -21,7 +21,7 @@ begin
         elapsed:=(offsets->>-1)::bigint; t:=clock_timestamp()-make_interval(secs=>(elapsed+1000)::double precision/1000);
         id:=extensions.gen_random_uuid(); previous:=null; sample:=null;
         select debited_us into prior_debit from public.qorpera_computer_allowance_buckets where invoice_id='in_permits';
-        request:=pg_temp.prestart_request(jsonb_build_object('schema','qorpera.coding-computer-prepare/v2','requestId',id,
+        request:=pg_temp.prestart_request(jsonb_build_object('schema','qorpera.coding-computer-prepare/v3','usageProducer','guard-v1','requestId',id,
             'workerId',(pg_temp.worker_row('fix-send')).id,'leaseToken','63700000-0000-4000-8000-000000000001',
             'machineId',machine,'owner','exec-test','bindingText',current_setting('qorpera_test.coding_binding'),
             'machineIdSha256',repeat('c',64),'hostBootId',extensions.gen_random_uuid(),'windowMs',300000,'stopReserveMs',30000));

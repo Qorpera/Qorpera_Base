@@ -11,7 +11,7 @@ begin
         'instanceSha256',repeat('d',64),'machineIdSha256',repeat('c',64),'hostBootId','64600000-0000-4000-8000-000000000011',
         'bootstrapSha256',repeat('b',64),'runId',b->'runId','runnerId',b->'runnerId','officeId',null,'computerGeneration',null,
         'windowMs',300000,'stopReserveMs',30000));
-    initial:=public.qorpera_prepare_runtime_computer_permit(request,repeat('R',64));
+    initial:=pg_temp.prepare_runtime(request,repeat('R',64));
     insert into public.qorpera_runtime_node_instance_bindings(allocation_id,node_id,physical_id,binding)
         values(allocation,'30000000-0000-4000-8000-000000000310','64600000-0000-4000-8000-000000000012','{}');
     t:=clock_timestamp();

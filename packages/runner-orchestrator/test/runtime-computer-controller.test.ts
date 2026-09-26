@@ -15,6 +15,7 @@ import {
 	paidComputerUsageCursor,
 	parsePaidComputerUsageEntry,
 } from "../src/computer-paid-usage.ts";
+import { computerPrestartDigest } from "../src/computer-prestart-control.ts";
 import type {
 	LxdInstanceClock,
 	LxdInstanceRecord,
@@ -264,6 +265,29 @@ async function fixture(providerKind: "native" | "office" = "native", usage = fal
 		clock: hostClock,
 		now: () => Date.parse("2026-09-25T12:00:00Z") + clock.uptimeMs,
 	});
+	// Historical unmarked custody remains recoverable. Seed its exact retained
+	// v2 intent before the controller runs; fresh producer tests skip this fixture.
+	if (!usage) {
+		const prepareRequestText = JSON.stringify({
+			...context,
+			schema: "qorpera.runtime-computer-prepare/v2",
+			requestId: context.allocationId,
+			machineIdSha256: clock.hostMachineIdSha256,
+			hostBootId: clock.hostBootId,
+			windowMs: 300000,
+			stopReserveMs: 30000,
+		});
+		await guard.registerPrestart({
+			schema: "qorpera.computer-prestart-intent/v1",
+			permitId: context.allocationId,
+			allocationId: context.allocationId,
+			instanceSha256: context.instanceSha256,
+			hostMachineIdSha256: clock.hostMachineIdSha256,
+			hostBootId: clock.hostBootId,
+			prepareRequestText,
+			prepareSha256: computerPrestartDigest(prepareRequestText),
+		});
+	}
 	let controller = new RuntimeComputerController(options());
 	return {
 		context,
@@ -363,6 +387,17 @@ describe("funded runtime physical custody", () => {
 			await f.controller.start(f.context.allocationId, f.target, signal());
 			const permitId = f.permit!.permitId;
 			expect((await f.guard.latest(f.context.allocationId))?.usageRequired).toBe(true);
+			const prepare = f.control.call.mock.calls.find(
+				([method]) => method === "qorpera_prepare_runtime_computer_permit",
+			)?.[1].p_request as Record<string, unknown>;
+			expect(prepare).toMatchObject({ schema: "qorpera.runtime-computer-prepare/v3", usageProducer: "guard-v1" });
+			expect(JSON.parse(String(prepare.prepareRequestText))).toMatchObject({
+				schema: prepare.schema,
+				usageProducer: "guard-v1",
+			});
+			expect(prepare.prestart).toMatchObject({
+				prepareSha256: computerPrestartDigest(String(prepare.prepareRequestText)),
+			});
 			await f.controller.observe(f.context.allocationId, signal());
 			expect(f.permit?.state).toBe("prepared");
 			expect(
@@ -850,7 +885,7 @@ describe("funded runtime physical custody", () => {
 		await expect(f.controller.stop(f.context.allocationId, signal())).rejects.toThrow("PHYSICAL_INSTANCE_DIFFERS");
 	});
 	it("cannot mistake an unknown billing mode for a free computer", async () => {
-		const f = await fixture();
+		const f = await fixture("native", true);
 		f.control.call.mockResolvedValueOnce({ permit: null, lastSample: null } as never);
 		await expect(f.controller.ensure(f.context, f.context.allocationId, signal())).rejects.toThrow(
 			"MODE_UNCONFIRMED",

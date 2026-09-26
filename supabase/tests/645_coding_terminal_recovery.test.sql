@@ -9,7 +9,7 @@ begin
         'workerId',(pg_temp.worker_row('fix-send')).id,'leaseToken','63700000-0000-4000-8000-000000000001',
         'machineId',machine,'owner','exec-test','bindingText',current_setting('qorpera_test.coding_binding'),
         'machineIdSha256',repeat('c',64),'hostBootId','64500000-0000-4000-8000-000000000011','windowMs',300000,'stopReserveMs',30000));
-    initial:=public.qorpera_prepare_coding_computer_permit(request,repeat('K',64));
+    initial:=pg_temp.prepare_coding(request,repeat('K',64));
     t:=clock_timestamp();
     sample:=jsonb_build_object('observationId',extensions.gen_random_uuid(),'previousObservationId',null,
         'hostBootId',request->'hostBootId','hostUptimeMs',1000000,'physicalId','63700000-0000-4000-8000-000000000002',

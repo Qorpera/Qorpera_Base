@@ -204,10 +204,14 @@ export class RuntimeComputerController {
 	}
 	#context(entry: PaidComputerPrestartRecord): RuntimeComputerContext {
 		const request = computerPrestartRequest(entry);
-		if (request.schema !== "qorpera.runtime-computer-prepare/v2")
+		if (
+			request.schema !== "qorpera.runtime-computer-prepare/v2" &&
+			request.schema !== "qorpera.runtime-computer-prepare/v3"
+		)
 			throw new Error("RUNTIME_COMPUTER_PRESTART_DIFFERS");
 		const {
 			schema: _schema,
+			usageProducer: _usageProducer,
 			requestId: _requestId,
 			machineIdSha256: _machine,
 			hostBootId: _boot,
@@ -267,7 +271,11 @@ export class RuntimeComputerController {
 				),
 			),
 			...entries
-				.filter((entry) => computerPrestartRequest(entry).schema === "qorpera.runtime-computer-prepare/v2")
+				.filter((entry) =>
+					["qorpera.runtime-computer-prepare/v2", "qorpera.runtime-computer-prepare/v3"].includes(
+						String(computerPrestartRequest(entry).schema),
+					),
+				)
 				.map((entry) =>
 					this.#exclusive(entry.intent.allocationId, async () => {
 						if (this.#terminal.has(entry.intent.permitId)) return;
@@ -379,7 +387,8 @@ export class RuntimeComputerController {
 				if (!intent) {
 					const prepareRequestText = JSON.stringify({
 						...context,
-						schema: "qorpera.runtime-computer-prepare/v2",
+						schema: "qorpera.runtime-computer-prepare/v3",
+						usageProducer: "guard-v1",
 						requestId,
 						machineIdSha256: clock.hostMachineIdSha256,
 						hostBootId: clock.hostBootId,

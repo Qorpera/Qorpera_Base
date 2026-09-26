@@ -639,7 +639,7 @@ begin
 	foreach v_operation in array array['model_turn','model_request','company_read','company_list','company_write',
 		'company_mkdir','company_delete','send_message','ask_member','read_context','send_coworker_message','computer_start','computer_screen',
 		'computer_browser','computer_desktop','computer_shell','computer_screenshot','computer_transfer','hire_agent',
-		'create_group_chat','manage_routine','report_work','manage_todo','manage_worker','company_context','message_composition',
+		'create_group_chat','manage_routine','decide_routine','report_work','manage_todo','manage_worker','company_context','message_composition',
 		'connector','unknown_tool','run_authority',
 		'context_authority','native_result_fence','diagnostic_export','action_review',
 		'coding_run_command','coding_read_command','coding_cancel_command','coding_finish','coding_ask',
@@ -655,7 +655,8 @@ begin
 	end loop;
 	foreach v_category in array array['invalid_arguments','unavailable_tool','call_id_reused','budget_exhausted',
 		'authority_unavailable','stale_version','protected_path','ambiguous_effect','cancelled','timeout','provider_failed',
-		'transport_unavailable','invalid_response','unknown','export_unavailable'] loop
+		'transport_unavailable','invalid_response','unknown','export_unavailable',
+		'approval_pending','approval_declined','review_denied','review_unavailable','parent_missing'] loop
 		perform public.qorpera_record_runtime_observation(v_run,pg_temp.observation() || jsonb_build_object('phase','finish',
 			'status','failed','errorCategory',v_category,'operation','diagnostic_export'));
 	end loop;

@@ -117,7 +117,24 @@ describe("GitHub Copilot OAuth device flow", () => {
 		const store = new InMemoryCredentialStore();
 		await store.modify("github-copilot", async () => ({ ...credentials, type: "oauth" }));
 		const models = createModels({ credentials: store });
-		models.setProvider(githubCopilotProvider());
+		// Keep the real OAuth policy filter; model retirement in the public
+		// catalog must not alter this account-availability regression.
+		models.setProvider({
+			...githubCopilotProvider(),
+			getModels: () =>
+				["gpt-4.1", "claude-opus-4.7", "gpt-5.4-nano"].map((id) => ({
+					id,
+					name: id,
+					api: "openai-responses",
+					provider: "github-copilot",
+					baseUrl: "https://api.individual.githubcopilot.com",
+					reasoning: false,
+					input: ["text"],
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+					contextWindow: 8192,
+					maxTokens: 1024,
+				})),
+		});
 		expect((await models.getAvailable("github-copilot")).map((model) => model.id)).toEqual(["gpt-4.1"]);
 	});
 

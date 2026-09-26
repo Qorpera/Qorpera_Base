@@ -185,6 +185,14 @@ export function parsePaidComputerPrestartIntent(value: unknown): PaidComputerPre
 	)
 		throw new Error("PAID_GUARD_PRESTART_INVALID");
 	const request = record(JSON.parse(raw.prepareRequestText));
+	const guardedPrepare = ["qorpera.coding-computer-prepare/v3", "qorpera.runtime-computer-prepare/v3"].includes(
+		String(request.schema),
+	);
+	if (
+		(guardedPrepare && request.usageProducer !== "guard-v1") ||
+		(request.usageProducer !== undefined && !guardedPrepare)
+	)
+		throw new Error("PAID_GUARD_USAGE_PRODUCER_INVALID");
 	const pending: { value: unknown; depth: number }[] = [{ value: request, depth: 0 }];
 	while (pending.length) {
 		const next = pending.pop()!;
@@ -1045,6 +1053,8 @@ export class PaidComputerGuard {
 	}
 	async registerPrestart(raw: PaidComputerPrestartIntent): Promise<PaidComputerPrestartRecord> {
 		const intent = parsePaidComputerPrestartIntent(raw);
+		if (record(JSON.parse(intent.prepareRequestText)).usageProducer === "guard-v1" && !this.#usage)
+			throw new Error("PAID_GUARD_USAGE_REQUIRED");
 		return this.#exclusive(async () => {
 			this.#confirmedPrestarts();
 			if (this.#archives.has(intent.permitId)) throw new Error("PAID_GUARD_ARCHIVED");
@@ -1192,6 +1202,12 @@ export class PaidComputerGuard {
 			this.#confirmedPrestarts();
 			if (this.#archives.has(permit.permitId)) throw new Error("PAID_GUARD_ARCHIVED");
 			const prestart = this.#prestarts.get(permit.permitId);
+			if (
+				prestart &&
+				record(JSON.parse(prestart.intent.prepareRequestText)).usageProducer === "guard-v1" &&
+				!this.#usage
+			)
+				throw new Error("PAID_GUARD_USAGE_REQUIRED");
 			if (prestart?.state === "abandoned") throw new Error("PAID_GUARD_PRESTART_ABANDONED");
 			if (prestart?.state === "retired") throw new Error("PAID_GUARD_PRESTART_RETIRED");
 			if (

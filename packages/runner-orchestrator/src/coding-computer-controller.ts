@@ -233,7 +233,8 @@ export class CodingComputerController implements CodingComputerUsage {
 	#prestartMachine(entry: PaidComputerPrestartRecord): Readonly<LxdCodingMachineBinding> {
 		const request = computerPrestartRequest(entry);
 		if (
-			request.schema !== "qorpera.coding-computer-prepare/v2" ||
+			(request.schema !== "qorpera.coding-computer-prepare/v2" &&
+				request.schema !== "qorpera.coding-computer-prepare/v3") ||
 			request.owner !== this.#options.owner ||
 			typeof request.bindingText !== "string"
 		)
@@ -286,7 +287,11 @@ export class CodingComputerController implements CodingComputerUsage {
 				),
 			),
 			...entries
-				.filter((entry) => computerPrestartRequest(entry).schema === "qorpera.coding-computer-prepare/v2")
+				.filter((entry) =>
+					["qorpera.coding-computer-prepare/v2", "qorpera.coding-computer-prepare/v3"].includes(
+						String(computerPrestartRequest(entry).schema),
+					),
+				)
 				.map((entry) =>
 					this.#exclusive(entry.intent.allocationId, async () => {
 						if (this.#terminal.has(entry.intent.permitId)) return;
@@ -427,7 +432,8 @@ export class CodingComputerController implements CodingComputerUsage {
 				const clock = await this.#clock();
 				if (!intent) {
 					const prepareRequestText = JSON.stringify({
-						schema: "qorpera.coding-computer-prepare/v2",
+						schema: "qorpera.coding-computer-prepare/v3",
+						usageProducer: "guard-v1",
 						requestId,
 						workerId: claim.workerId,
 						machineId: machine.machineId,

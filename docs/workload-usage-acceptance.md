@@ -13,7 +13,7 @@ The financial setup uses explicitly synthetic invoice proofs passed through the 
 | Native and coding, 2 CPU / 2 GiB | Same | Exact cumulative elapsed time at 0.5 standard size |
 | Native and coding, 2 CPU / 8 GiB | Same | Exact cumulative elapsed time at 1 standard size, dominated by memory |
 | Native and coding, 2 CPU / 10 GiB | Same | Exact cumulative elapsed time at 1.25 standard size, dominated by memory |
-| Login, each of those four shapes | Actual guest clock advances before physical stop | No paid permit, reservation or debit |
+| Login, each of those five shapes | Actual guest clock advances before physical stop | No paid permit, reservation or debit |
 | Native and coding, pooled renewal | Actual natural five-minute funding-window renewal; exact renewal replay; controller recreation and stop | Responsible member's remaining allowance drains first, then consenting fallback; exact aggregate debit and no remaining hold |
 | Native and coding, Dedicated | Actual idle/busy intervals and stop | Same elapsed-time tariff, with allowance issued for the exact test invoice period |
 | Coding, two concurrent claims | Two distinct public dispatches/leases, same planned machine, separate authorized storage identities, overlapping 10- and 18-second guest processes | One physical UUID, permit, metering stream and initial held amount; first claim completion cannot stop the second; final global debit counts machine time once |

@@ -30,7 +30,7 @@ Before that workflow reaches the default branch, dispatch it through the existin
 gh workflow run step2-lxd.yml --ref <reviewed-branch> -f office_physical_acceptance=true
 ```
 
-It starts PostgreSQL 17 as an unprivileged owned process with a fresh private data directory and Unix socket, applies every migration, and runs the selected subscription, allowance, billing-authority and outage-recovery SQL regressions. No existing database is attached. The PostgreSQL listener has no TCP address; the harness stops its own process before deleting its own temporary cluster.
+It starts PostgreSQL 17 as an unprivileged owned process with a fresh private data directory and Unix socket, applies every migration, and runs every SQL regression. No existing database is attached. The PostgreSQL listener has no TCP address; the harness stops its own process before deleting its own temporary cluster.
 
 The guard storage job exhausts a separate ext4 filesystem while a real LXD VM has an active permit. It exercises physical deadline enforcement without writable receipt storage, interrupted archive-tail repair and restart with 4,161 archived records. It requires independent physical stop confirmation, recovery of durable receipts after space is released, and cleanup of the VM and mount. Its control-plane permits are synthetic; SQL settlement is covered by the joined lifecycle jobs.
 

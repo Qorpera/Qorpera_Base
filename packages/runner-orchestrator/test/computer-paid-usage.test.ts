@@ -14,6 +14,7 @@ import {
 	type PaidComputerHostClock,
 	type PaidComputerMachine,
 	type PaidComputerPrestartIntent,
+	parsePaidComputerPrestartIntent,
 } from "../src/computer-paid-guard.ts";
 import { PaidComputerGuardClient, servePaidComputerGuard } from "../src/computer-paid-guard-ipc.ts";
 import {
@@ -23,6 +24,7 @@ import {
 } from "../src/computer-paid-usage.ts";
 import { PaidComputerUsageJournal } from "../src/computer-paid-usage-journal.ts";
 import { LxdPaidComputerUsageCapture } from "../src/computer-paid-usage-lxd.ts";
+import type { PaidComputerUsageCapture } from "../src/computer-paid-usage-sampler.ts";
 import type { LxdOperationReference } from "../src/lxd-client.ts";
 
 function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
@@ -133,18 +135,21 @@ async function fixture(initialize = true) {
 	const journal = new PaidComputerGuardJournal(journalRoot);
 	const guestBootId = randomUUID();
 	const capture = {
-		capture: vi.fn(async () => ({
-			host: { ...host },
-			guestBootId,
-			guestUptimeMs: host.uptimeMs - 90000,
-			evidenceSha256: "e".repeat(64),
-			observedAt: new Date().toISOString(),
-		})),
+		capture: vi.fn(
+			async (): ReturnType<PaidComputerUsageCapture["capture"]> => ({
+				host: { ...host },
+				guestBootId,
+				guestUptimeMs: host.uptimeMs - 90000,
+				evidenceSha256: "e".repeat(64),
+				observedAt: new Date().toISOString(),
+			}),
+		),
 	};
 	const guard = new PaidComputerGuard(journal, physical, clock, { usageCapture: capture });
-	const register = async (arm = input) => {
+	const register = async (arm = input, producer = false) => {
 		const prepareRequestText = JSON.stringify({
-			schema: "qorpera.coding-computer-prepare/v2",
+			schema: producer ? "qorpera.coding-computer-prepare/v3" : "qorpera.coding-computer-prepare/v2",
+			...(producer ? { usageProducer: "guard-v1" } : {}),
 			requestId: arm.permit.permitId,
 			machineId: arm.machine.allocationId,
 			machineIdSha256: arm.machine.hostMachineIdSha256,
@@ -201,6 +206,57 @@ async function collect(f: Awaited<ReturnType<typeof fixture>>, guard = f.guard) 
 	return guard.readUsage(f.input.permit.permitId);
 }
 describe("independent durable paid usage", () => {
+	it("retries initial boot clocks every second then returns to the five-second cadence", async () => {
+		const f = await fixture();
+		const now = vi.spyOn(performance, "now").mockReturnValue(10000);
+		await f.guard.arm(f.input);
+		await f.guard.start(f.input.permit.permitId, 1);
+		f.capture.capture.mockRejectedValueOnce(new Error("guest booting"));
+		await collect(f);
+		now.mockReturnValue(10999);
+		await collect(f);
+		expect(f.capture.capture).toHaveBeenCalledTimes(1);
+		now.mockReturnValue(11000);
+		f.host.uptimeMs += 1000;
+		const first = await collect(f);
+		expect(
+			first.entries.map((frame) => parsePaidComputerUsageEntry(JSON.parse(frame.entryText)).sample.state),
+		).toEqual(["gap", "running"]);
+		now.mockReturnValue(15999);
+		await collect(f);
+		expect(f.capture.capture).toHaveBeenCalledTimes(2);
+		now.mockReturnValue(16000);
+		f.host.uptimeMs += 5000;
+		await collect(f);
+		expect(f.capture.capture).toHaveBeenCalledTimes(3);
+		expect(f.physical.stop).not.toHaveBeenCalled();
+	});
+	it("pins the v3 producer in prepare bytes and refuses a guard without its sampler", async () => {
+		const f = await fixture(false);
+		await f.guard.initialize();
+		const intent = await f.register(f.input, true);
+		expect(parsePaidComputerPrestartIntent(intent)).toEqual(intent);
+		for (const patch of [
+			{ usageProducer: "other" },
+			{ schema: "qorpera.coding-computer-prepare/v2" },
+			{ usageProducer: undefined },
+		]) {
+			const text = JSON.stringify({ ...JSON.parse(intent.prepareRequestText), ...patch });
+			expect(() =>
+				parsePaidComputerPrestartIntent({
+					...intent,
+					prepareRequestText: text,
+					prepareSha256: createHash("sha256").update(text).digest("hex"),
+				}),
+			).toThrow("USAGE_PRODUCER_INVALID");
+		}
+		const noSampler = new PaidComputerGuard(f.journal, f.physical, f.clock);
+		await noSampler.initialize();
+		await expect(noSampler.registerPrestart(intent)).rejects.toThrow("USAGE_REQUIRED");
+		await expect(noSampler.arm(f.input)).rejects.toThrow("USAGE_REQUIRED");
+		expect(f.physical.start).not.toHaveBeenCalled();
+		expect((await f.guard.arm(f.input)).usageRequired).toBe(true);
+	});
 	it("publishes before dispatch and collects with no controller or SQL", async () => {
 		const f = await fixture();
 		expect((await f.guard.arm(f.input)).usageRequired).toBe(true);
@@ -359,6 +415,91 @@ describe("independent durable paid usage", () => {
 	});
 });
 describe("durable usage terminal and renewal races", () => {
+	it.each(["after_stop", "host_reboot"])(
+		"discards an in-flight pair when %s breaks terminal ordering",
+		async (kind) => {
+			const f = await fixture();
+			await f.guard.arm(f.input);
+			await f.guard.start(f.input.permit.permitId, 1);
+			const first = await collect(f);
+			const prior = parsePaidComputerUsageEntry(JSON.parse(first.entries[0].entryText)).sample;
+			vi.spyOn(performance, "now").mockReturnValue(performance.now() + 6000);
+			f.host.uptimeMs += 5000;
+			const captured = {
+				host: { ...f.host, uptimeMs: kind === "after_stop" ? 107000 : f.host.uptimeMs },
+				guestBootId: prior.guestBootId!,
+				guestUptimeMs: prior.guestUptimeMs! + 5000,
+				evidenceSha256: "e".repeat(64),
+				observedAt: new Date().toISOString(),
+			};
+			const release = deferred<typeof captured>();
+			f.capture.capture.mockImplementationOnce(() => release.promise);
+			f.guard.tickUsage();
+			await vi.waitFor(() => expect(f.capture.capture).toHaveBeenCalledTimes(2));
+			if (kind === "host_reboot") {
+				f.host.hostBootId = randomUUID();
+				f.host.uptimeMs = 2000;
+			} else f.host.uptimeMs += 1000;
+			const stopped = await f.guard.stop(f.input.permit.permitId);
+			expect(stopped.phase).toBe("stopped");
+			release.resolve(captured);
+			await f.guard.settleUsage(f.input.permit.permitId);
+			const page = await collect(f);
+			expect(
+				page.entries.map((frame) => parsePaidComputerUsageEntry(JSON.parse(frame.entryText)).sample.state),
+			).toEqual(["running", "stopped"]);
+			expect(page.state).toBe("sealed");
+		},
+	);
+	it.each(["stopping", "stopped"])(
+		"retains an actual pre-stop pair completed while %s without delaying stop",
+		async (phase) => {
+			const f = await fixture();
+			await f.guard.arm(f.input);
+			await f.guard.start(f.input.permit.permitId, 1);
+			const first = await collect(f);
+			const previous = parsePaidComputerUsageEntry(JSON.parse(first.entries[0].entryText)).sample;
+			vi.spyOn(performance, "now").mockReturnValue(performance.now() + 6000);
+			f.host.uptimeMs += 5000;
+			const captured = {
+				host: { ...f.host },
+				guestBootId: previous.guestBootId!,
+				guestUptimeMs: previous.guestUptimeMs! + 5000,
+				evidenceSha256: "e".repeat(64),
+				observedAt: new Date().toISOString(),
+			};
+			const capture = deferred<typeof captured>(),
+				physicalStop = deferred<void>();
+			f.capture.capture.mockImplementationOnce(() => capture.promise);
+			f.guard.tickUsage();
+			await vi.waitFor(() => expect(f.capture.capture).toHaveBeenCalledTimes(2));
+			if (phase === "stopping")
+				f.physical.stop.mockImplementationOnce(async () => {
+					await physicalStop.promise;
+					f.setState("stopped");
+					return f.operation();
+				});
+			f.host.uptimeMs += 1000;
+			const stopping = f.guard.stop(f.input.permit.permitId);
+			await vi.waitFor(() => expect(f.physical.stop).toHaveBeenCalledOnce());
+			if (phase === "stopped") expect((await stopping).phase).toBe("stopped");
+			capture.resolve(captured);
+			await f.guard.settleUsage(f.input.permit.permitId);
+			expect((await f.guard.readUsage(f.input.permit.permitId)).head.sequence).toBe(1);
+			physicalStop.resolve();
+			const stopped = await stopping;
+			const page = await collect(f);
+			const entries = page.entries.map((frame) => parsePaidComputerUsageEntry(JSON.parse(frame.entryText)));
+			expect(entries.map((entry) => [entry.sample.state, entry.sample.hostUptimeMs])).toEqual([
+				["running", 100000],
+				["running", 105000],
+				["stopped", 106000],
+			]);
+			expect(entries[2].stopReceipt).toEqual(stopped.stopReceipt);
+			expect(entries[2].sample.previousObservationId).toBe(entries[1].sample.observationId);
+			expect(page.state).toBe("sealed");
+		},
+	);
 	it("requires the complete SQL ACK before archival and replays after restart", async () => {
 		const f = await fixture();
 		await f.guard.arm(f.input);

@@ -17,7 +17,11 @@ import {
 	parseLxdOfficePassthroughConfig,
 	runLxdOfficePassthrough,
 } from "./lxd-office-passthrough.ts";
-import { readLxdOfficeCredentialFile, readLxdOfficeProtectedFile } from "./lxd-office-physical-host.ts";
+import {
+	readLxdOfficeCredentialFile,
+	readLxdOfficeProtectedFile,
+	readLxdOfficeProtectedImageManifestFile,
+} from "./lxd-office-physical-host.ts";
 import { officePhysicalPath, parseLxdOfficePhysicalPolicy } from "./lxd-office-physical-policy.ts";
 import { LxdOfficeProviderHttpRegistry } from "./lxd-office-provider-registry.ts";
 import { loadLxdOfficeSoftwareLane, parseLxdOfficeSoftwareLaneDocument } from "./lxd-office-software-lane.ts";
@@ -228,9 +232,8 @@ export async function runLxdOfficeLifecycleService(
 			});
 			paidComputer = new LxdOfficePaidComputer(policy, controller, control);
 			if (config.outageImagePackageManifestPath !== undefined) {
-				const imagePackageManifest = await readLxdOfficeProtectedFile(
+				const imagePackageManifest = await readLxdOfficeProtectedImageManifestFile(
 					config.outageImagePackageManifestPath,
-					1048576,
 				);
 				if (
 					createHash("sha256").update(imagePackageManifest).digest("hex") !==

@@ -29,11 +29,37 @@ function quotedList(source, marker) {
 
 async function latestDefinition() {
 	const names = (await readdir(migrationsRoot)).filter((name) => /^\d{14}_[a-z0-9_]+\.sql$/.test(name)).sort();
-	for (const name of names.reverse()) {
-		const source = await readFile(join(migrationsRoot, name), "utf8");
-		if (source.includes(FUNCTION)) return { name, source };
+	let definition;
+	for (const name of names) {
+		const migration = await readFile(join(migrationsRoot, name), "utf8");
+		const start = migration.indexOf(FUNCTION);
+		if (start !== -1) {
+			const end = migration.indexOf("$$;", start);
+			assert(end > start, `Unrecognized observation definition in ${name}`);
+			definition = { name, source: migration.slice(start, end + 3) };
+		}
+		if (!definition) continue;
+		// Later migrations preserve ownership/ACLs by patching the live body.
+		// Interpret only their literal, exactly-once replacements; the actual
+		// PostgreSQL regression below remains the executable authority check.
+		const patches = [];
+		for (const match of migration.matchAll(/select pg_temp\.\w+\('public\.qorpera_record_runtime_observation\(uuid,jsonb\)'::regprocedure,\s*\$old\$([\s\S]*?)\$old\$,\s*\$new\$([\s\S]*?)\$new\$\);/g)) {
+			patches.push([match.index, match[1], match[2]]);
+		}
+		for (const block of migration.matchAll(/do \$(\w+)\$([\s\S]*?)\$\1\$;/g)) {
+			if (!block[2].includes("pg_get_functiondef('public.qorpera_record_runtime_observation(uuid,jsonb)'::regprocedure)")) continue;
+			assert.match(block[2], /execute v_definition;/, `Unrecognized observation patch in ${name}`);
+			for (const match of block[2].matchAll(/v_definition := pg_temp\.\w+\(v_definition,\s*\$old\$([\s\S]*?)\$old\$,\s*\$new\$([\s\S]*?)\$new\$\);/g)) {
+				patches.push([block.index + match.index, match[1], match[2]]);
+			}
+		}
+		for (const [, oldText, newText] of patches.sort((a, b) => a[0] - b[0])) {
+			assert.equal(definition.source.split(oldText).length, 2, `Observation patch must match once in ${name}`);
+			definition = { name, source: definition.source.replace(oldText, () => newText) };
+		}
 	}
-	throw new Error("no migration defines qorpera_record_runtime_observation");
+	assert(definition, "no migration defines qorpera_record_runtime_observation");
+	return definition;
 }
 
 // The runtime validates the same closed vocabulary before publishing; a name
@@ -47,12 +73,15 @@ test("the newest SQL definition accepts exactly the TypeScript observation vocab
 	assert.deepEqual(new Set(categories), new Set(CLOUD_RUNTIME_ERROR_CATEGORIES), `error categories in ${name}`);
 });
 
-test("the SQL regression test exercises every operation", async () => {
+test("the SQL regression test exercises every operation and error category", async () => {
 	const source = await readFile(join(repositoryRoot, "supabase/tests/320_runtime_operational_observability.test.sql"), "utf8");
-	const marker = "foreach v_operation in array array[";
-	const start = source.indexOf(marker);
-	assert.notEqual(start, -1);
-	const list = source.slice(start + marker.length, source.indexOf("]", start));
-	const exercised = [...list.matchAll(/'([a-z_]+)'/g)].map((match) => match[1]);
-	assert.deepEqual(new Set(exercised), new Set(CLOUD_RUNTIME_OPERATIONS));
+	for (const [variable, values] of [["v_operation", CLOUD_RUNTIME_OPERATIONS], ["v_category", CLOUD_RUNTIME_ERROR_CATEGORIES]]) {
+		const marker = `foreach ${variable} in array array[`;
+		const start = source.indexOf(marker);
+		assert.notEqual(start, -1);
+		const list = source.slice(start + marker.length, source.indexOf("]", start));
+		const exercised = [...list.matchAll(/'([a-z_]+)'/g)].map((match) => match[1]);
+		assert.deepEqual(new Set(exercised), new Set(values));
+		assert.equal(exercised.length, values.length, `duplicate ${variable} fixture`);
+	}
 });

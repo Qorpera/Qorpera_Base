@@ -22,7 +22,9 @@ const guestCpuMillis = guestCpus * 1000;
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const context = JSON.parse(await readFile(process.argv[3], "utf8"));
 assert(context.provenanceSigned && context.builderVmDeleted && context.finalCloneDeleted);
-const out = resolve(process.argv[5]), root = "/opt/qorpera-office-lifecycle-acceptance";
+// GitHub-hosted /opt can be runner-writable. Configuration and bundled tools
+// live beneath the same protected /etc ancestry as the actual node observer.
+const out = resolve(process.argv[5]), root = "/etc/qorpera-office-lifecycle-acceptance";
 const storage = "/srv/qorpera-office-lifecycle-acceptance", journal = `${storage}/journal`, workbench = `${storage}/workbench`, custodyRoot = `${storage}/reset-custody`;
 const account = "qorpera-office-provider", unit = "qorpera-office-computer-guard.service";
 const evidence = { schema: "qorpera.office-lifecycle-physical-acceptance/v1", commit: process.env.GITHUB_SHA,

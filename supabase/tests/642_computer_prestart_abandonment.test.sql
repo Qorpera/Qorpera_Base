@@ -49,7 +49,7 @@ begin
     perform pg_temp.wake_error(format('select public.qorpera_prepare_coding_computer_permit(%L,%L)',
         (request-'prestart'-'prepareRequestText')||'{"schema":"qorpera.coding-computer-prepare/v1"}',repeat('K',64)),'22023');
     select jsonb_agg(jsonb_build_array(id,issued_us,reserved_us,debited_us) order by id) into baseline from public.qorpera_computer_allowance_buckets;
-    receipt:=public.qorpera_prepare_coding_computer_permit(request,repeat('K',64));
+    receipt:=pg_temp.prepare_coding(request,repeat('K',64));
     perform pg_temp.wake_assert(receipt->>'schema'='qorpera.computer-usage-permit/v2' and receipt->'prestart'=request->'prestart',
         'Prepared receipt lost durable guard identity');
     perform pg_temp.wake_assert(public.qorpera_describe_coding_computer_prestart(request-'leaseToken',repeat('K',64))->>'state'='prepared', 'Exact intent could not recover a lost prepare reply');

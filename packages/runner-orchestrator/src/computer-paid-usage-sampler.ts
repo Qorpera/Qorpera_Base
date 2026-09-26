@@ -33,6 +33,10 @@ interface Stream {
 	renewable: boolean;
 	closing: boolean;
 	watchdog?: Promise<void>;
+	finalCapture?: {
+		record: PaidComputerGuardRecord;
+		capture: Awaited<ReturnType<PaidComputerUsageCapture["capture"]>>;
+	};
 }
 /** Independent, DB-free writer. A slow capture or disk cannot hold the physical
  * stop serializer; failures revoke new sampling/start authority and request stop. */
@@ -181,7 +185,9 @@ export class PaidComputerUsageSampler {
 				(record.phase !== "stopped" && performance.now() < stream.nextAt)
 			)
 				continue;
-			stream.nextAt = performance.now() + 5000;
+			// Booting guests can expose their first trustworthy clock between ticks.
+			// Retry that initial observation promptly; established streams stay at 5s.
+			stream.nextAt = performance.now() + (stream.lastRunning ? 5000 : 1000);
 			const work = this.#collect(record, stream)
 				.catch(async () => {
 					stream.failed = true;
@@ -222,6 +228,7 @@ export class PaidComputerUsageSampler {
 		await stream.journal.append(entry);
 		stream.renewable = value.state === "running";
 		if (value.state === "running") {
+			if (!stream.lastRunning) stream.nextAt = performance.now() + 5000;
 			stream.lastRunning = entry.sample;
 			stream.consecutiveFailures = 0;
 		}
@@ -251,11 +258,21 @@ export class PaidComputerUsageSampler {
 		});
 	}
 	async #collect(record: PaidComputerGuardRecord, stream: Stream): Promise<void> {
-		const previous = await stream.journal.latest();
+		let previous = await stream.journal.latest();
 		if (previous?.stopReceipt) return;
 		if (record.phase === "stopped") {
 			const receipt = record.stopReceipt;
 			if (!receipt) throw new Error("PAID_USAGE_STOP_PROOF_MISSING");
+			const finalCapture = stream.finalCapture;
+			if (
+				finalCapture &&
+				finalCapture.capture.host.hostBootId === receipt.closedHostBootId &&
+				finalCapture.capture.host.uptimeMs < receipt.observedUptimeMs
+			) {
+				await this.#appendCapture(finalCapture.record, stream, finalCapture.capture);
+				previous = await stream.journal.latest();
+			}
+			stream.finalCapture = undefined;
 			await this.#append(record, stream, {
 				hostBootId: receipt.closedHostBootId,
 				hostUptimeMs: receipt.closedAtUptimeMs,
@@ -288,15 +305,27 @@ export class PaidComputerUsageSampler {
 			return;
 		}
 		const current = await this.#record(record.permit.permitId);
-		// A simultaneous forced stop owns the terminal timestamp. Discard the late
-		// capture rather than move history beyond an already observed closed VM.
-		if (stream.failed || current.phase === "stopping" || current.phase === "stopped") return;
+		if (stream.failed) return;
 		if (
 			capture.host.hostMachineIdSha256 !== record.machine.hostMachineIdSha256 ||
 			capture.host.hostBootId !== record.machine.hostBootId ||
 			capture.host.uptimeMs > record.deadlineUptimeMs
 		)
 			return;
+		if (current.phase === "stopping" || current.phase === "stopped") {
+			// Stop never waits for capture or journal I/O. Retain at most one actual
+			// paired observation, then order it against confirmed physical stop proof
+			// before publishing it. Late and other-boot observations are discarded.
+			stream.finalCapture = { record, capture: structuredClone(capture) };
+			return;
+		}
+		await this.#appendCapture(record, stream, capture);
+	}
+	async #appendCapture(
+		record: PaidComputerGuardRecord,
+		stream: Stream,
+		capture: Awaited<ReturnType<PaidComputerUsageCapture["capture"]>>,
+	): Promise<void> {
 		await this.#append(record, stream, {
 			hostBootId: capture.host.hostBootId,
 			hostUptimeMs: capture.host.uptimeMs,

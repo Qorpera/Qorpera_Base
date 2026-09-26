@@ -1,5 +1,8 @@
+import { createHash } from "node:crypto";
 import { Writable } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
+import { OFFICE_IMAGE_OUTAGE_PACKAGE_FILES } from "../src/lxd-office-image-installation.ts";
+import { LxdOfficeLifecycle } from "../src/lxd-office-lifecycle.ts";
 import {
 	createOfficeLifecycleReporter,
 	createOfficeLifecycleWriter,
@@ -8,6 +11,8 @@ import {
 	runOfficeLifecycleLoops,
 } from "../src/lxd-office-lifecycle-service.ts";
 import * as physicalHost from "../src/lxd-office-physical-host.ts";
+import { officeImagePackageFixture } from "./fixtures/office-image-package.ts";
+import { officePhysicalFixture } from "./fixtures/office-physical-policy.ts";
 
 const config = () => ({
 	schema: "qorpera.lxd-office-provider-service/v1",
@@ -132,6 +137,58 @@ describe("optional provider lifecycle diagnostics", () => {
 	});
 });
 describe("protected lifecycle service configuration", () => {
+	it.each([false, true])(
+		"uses the protected large-manifest reader and checks its exact pin (tampered=%s)",
+		async (tampered) => {
+			const manifest = officeImagePackageFixture();
+			manifest.artifacts.push(
+				...OFFICE_IMAGE_OUTAGE_PACKAGE_FILES.map((file) => ({ file, bytes: 1, sha256: "a".repeat(64) })),
+			);
+			const bytes = Buffer.from(`${JSON.stringify(manifest)}${" ".repeat(65536)}`);
+			const { policy } = officePhysicalFixture();
+			policy.image.guestPackageManifestSha256 = createHash("sha256").update(bytes).digest("hex");
+			const credential = Buffer.from("provider-key-".repeat(4));
+			const input = {
+				...config(),
+				registryCredential: {
+					path: config().registryCredential.path,
+					bytes: credential.length,
+					sha256: createHash("sha256").update(credential).digest("hex"),
+				},
+				computerExecutorCredentialPath: "/protected/executor.key",
+				outageImagePackageManifestPath: "/protected/image.json",
+			};
+			const read = vi.spyOn(physicalHost, "readLxdOfficeProtectedFile").mockImplementation(async (path, limit) => {
+				if (limit > 65536) throw new Error("INVALID_OFFICE_FILE_LIMIT");
+				if (path === "/protected/service.json") return Buffer.from(JSON.stringify(input));
+				if (path === input.policyPath) return Buffer.from(JSON.stringify(policy));
+				throw new Error("UNEXPECTED_PROTECTED_READ");
+			});
+			const secrets = vi
+				.spyOn(physicalHost, "readLxdOfficeCredentialFile")
+				.mockImplementation(async (path) =>
+					path === input.registryCredential.path ? Buffer.from(credential) : Buffer.from("e".repeat(64)),
+				);
+			const image = vi
+				.spyOn(physicalHost, "readLxdOfficeProtectedImageManifestFile")
+				.mockResolvedValue(tampered ? Buffer.concat([bytes, Buffer.from(" ")]) : bytes);
+			const opened = vi.spyOn(LxdOfficeLifecycle, "open").mockRejectedValue(new Error("LIFECYCLE_OPEN_REACHED"));
+			try {
+				await expect(
+					runLxdOfficeLifecycleService("/protected/service.json", new AbortController().signal),
+				).rejects.toMatchObject({
+					cause: { message: tampered ? "OFFICE_OUTAGE_IMAGE_PACKAGE_DIFFERS" : "LIFECYCLE_OPEN_REACHED" },
+				});
+				expect(image).toHaveBeenCalledExactlyOnceWith(input.outageImagePackageManifestPath);
+				expect(opened).toHaveBeenCalledTimes(tampered ? 0 : 1);
+			} finally {
+				read.mockRestore();
+				secrets.mockRestore();
+				image.mockRestore();
+				opened.mockRestore();
+			}
+		},
+	);
 	it("requires paid control and a protected image reference to opt into outage recovery", () => {
 		expect(parseLxdOfficeLifecycleServiceConfig(config()).outageImagePackageManifestPath).toBeUndefined();
 		const paid = { ...config(), computerExecutorCredentialPath: "/protected/executor.key" };
