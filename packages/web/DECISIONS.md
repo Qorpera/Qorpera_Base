@@ -328,3 +328,28 @@ and navigation accessibility state update together.
 An unset rail width follows the size: 369 design pixels for Big, the original
 456 for Small. An explicitly resized width is kept across size changes; resetting
 the rail clears that choice and follows the current size's default again.
+
+## 2026-09-26 — A member's Stop is not a failure
+
+**Decision (Jonas).** A run a member stopped reads as stopped: no red disc, no
+"did not finish this run" line and no Try again. The agent shows its other
+work, or idle. To repeat a stopped message, the member sends it again. The one
+exception is a stop that left an open Company File proposal of the run's own:
+it reads as "Needs you" with Review, ranked below the agent's live work.
+
+**Why.** The activity list keeps one run per agent and ranked a stopped member
+turn or room post above the run the agent was still working on. The agent read
+as failed, and the composer lost its Stop for the agent's other runs (a routine
+run in the same thread) until the member dismissed the line.
+
+**How.** Every cancelled job is a member's Stop: the job table requires
+`cancelled_by_user_id` whenever the status is `cancelled`. The cloud leaves a
+stopped run out of `qorpera_list_staff_execution_activity` unless its own
+proposal is open, and ranks that decision like a completed run's (migration
+`20260926192436_member_stop_settled_activity`). The web reads a listed stop as a
+decision, and as settled once its details show no proposal, so an older cloud's
+listing is no failure either; sending a message still dismisses it there.
+
+**Rules out.** Try again for a stop (`qorpera_retry_room_delivery` still accepts
+one from its author; the web never offers it), and a grey "You stopped this
+run" line with Try again, the option Jonas did not pick.

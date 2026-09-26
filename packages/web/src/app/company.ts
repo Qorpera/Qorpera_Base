@@ -739,47 +739,64 @@ export class CompanyController {
 		return this.store.get().team?.members.find((member) => member.userId === userId)?.displayName ?? t("Member");
 	}
 
-	activityFor(staffAgentId: string | undefined): HostedStaffExecutionActivity | undefined {
+	/** The agent's newest run as the server reports it, settled or not. */
+	#newestActivity(staffAgentId: string | undefined): HostedStaffExecutionActivity | undefined {
 		if (!staffAgentId) return undefined;
-		const state = this.store.get();
-		const row = state.activity
-			.filter((item) => item.staffAgentId === staffAgentId)
+		return this.store
+			.get()
+			.activity.filter((item) => item.staffAgentId === staffAgentId)
 			.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
+	}
+
+	activityFor(staffAgentId: string | undefined): HostedStaffExecutionActivity | undefined {
+		const row = this.#newestActivity(staffAgentId);
+		if (!row || !isFailedRun(row)) return row;
+		const state = this.store.get();
+		const recovery = state.recoveries[row.runId];
+		// An open proposal is a decision, not a failure, and stays until it is decided.
+		if (recovery?.proposalId) return row;
 		// A dismissed failure is settled for this member even before the cloud's next
-		// activity read; the agent reads as idle until newer work is reported. An open
-		// proposal is a decision, not a failure, and stays until it is decided.
-		return row && isFailedRun(row) && state.acknowledgedRuns?.[row.runId] && !state.recoveries[row.runId]?.proposalId
-			? undefined
-			: row;
+		// activity read; the agent reads as idle until newer work is reported. A run a
+		// member stopped is no failure at all: once its details show it left no
+		// decision, it is settled too (a cloud before 20260926192436 still lists it).
+		return state.acknowledgedRuns?.[row.runId] || (row.jobStatus === "cancelled" && recovery) ? undefined : row;
 	}
 
 	/** What the member sees of an agent's execution. A queued run is already the
 	 * agent's work from the member's side of the screen. needs_attention is either
 	 * a decision (a run's Company File proposal is open) or a run that did not
 	 * finish. The server reports one run per agent and ranks an undismissed failure
-	 * above newer work, so "failed" stands until the member dismisses it. */
+	 * above newer work, so "failed" stands until the member dismisses it. A run a
+	 * member stopped (every cancelled job is one) is never "failed": the server
+	 * lists it only while its proposal waits, below the agent's live work. */
 	agentState(staffAgentId: string | undefined): AgentState {
 		const row = this.activityFor(staffAgentId);
 		if (!row) return "idle";
 		if (row.activity !== "needs_attention")
 			return row.jobStatus === "leased" && row.phase === "writing" ? "writing" : "working";
 		if (!isFailedRun(row)) return "decision";
-		return this.store.get().recoveries[row.runId]?.proposalId ? "decision" : "failed";
+		return row.jobStatus === "cancelled" || this.store.get().recoveries[row.runId]?.proposalId
+			? "decision"
+			: "failed";
 	}
 
 	failedRunFor(staffAgentId: string | undefined): FailedRun | undefined {
 		const row = this.activityFor(staffAgentId);
 		if (!row || !isFailedRun(row)) return undefined;
 		const recovery = this.store.get().recoveries[row.runId];
+		// A stopped run's line only ever asks for its decision, so it waits for the details that name it.
+		if (row.jobStatus === "cancelled" && !recovery?.proposalId) return undefined;
 		return recovery ? { activity: row, recovery } : { activity: row };
 	}
 
 	/** Whether Try again can be offered for this run. A session turn is re-queued by the
 	 * recovery RPC; a post into a room needs qorpera_retry_room_delivery (20260920080000).
-	 * Routine and agent wakes, and proposal reviews, are not the member's to repeat. */
+	 * Routine and agent wakes, and proposal reviews, are not the member's to repeat, and
+	 * neither is a run a member stopped: to repeat the message, they send it again. */
 	canRetryFailedRun(failed: FailedRun): boolean {
 		const state = this.store.get();
 		if (!state.team?.capabilities.write || state.accessLost || failed.recovery?.proposalId) return false;
+		if (failed.activity.jobStatus === "cancelled") return false;
 		if ((failed.recovery?.unsettledOperations ?? 0) > 0) return false;
 		if (failed.activity.sourceKind === "session_turn") return true;
 		return failed.activity.sourceKind === "room_delivery" && !state.roomRetryUnavailable;
@@ -865,13 +882,23 @@ export class CompanyController {
 
 	/** A new message supersedes the agent's last failure: dismiss it on the member's behalf. */
 	#dismissFailureFor(sessionId: string): void {
-		const session = this.store.get().sessions.find((item) => item.sessionId === sessionId);
-		const failed = this.failedRunFor(session?.staffAgentId);
+		const state = this.store.get();
+		const session = state.sessions.find((item) => item.sessionId === sessionId);
+		const row = this.#newestActivity(session?.staffAgentId);
+		const recovery = row && isFailedRun(row) ? state.recoveries[row.runId] : undefined;
 		// Only a failure whose details are known and that left no decision behind; a
 		// run with an open proposal is the member's to decide, not to dismiss by sending.
-		if (failed?.recovery && failed.activity.sourceKind !== "proposal_review" && !failed.recovery.proposalId)
+		// A stop reads as settled already, but a cloud before 20260926192436 still ranks
+		// it above the new message's run, so it is dismissed the same way.
+		if (
+			row &&
+			recovery &&
+			row.sourceKind !== "proposal_review" &&
+			!recovery.proposalId &&
+			!state.acknowledgedRuns?.[row.runId]
+		)
 			// sendPrompt reads activity again right after; no second read here.
-			void this.dismissFailedRun(failed.activity.runId, { refresh: false }).catch(() => undefined);
+			void this.dismissFailedRun(row.runId, { refresh: false }).catch(() => undefined);
 	}
 
 	primarySessionFor(staffAgentId: string): HostedSession | undefined {

@@ -554,12 +554,56 @@ describe("agent execution state", () => {
 		expect(state(row("leased", "working"))).toBe("working");
 		expect(state(row("completed", "needs_attention"))).toBe("decision");
 		expect(state(row("failed", "needs_attention"))).toBe("failed");
-		expect(state(row("cancelled", "needs_attention"))).toBe("failed");
 		// A failed run that left Company File changes waits on a decision.
-		expect(state(row("cancelled", "needs_attention"), { [id(70)]: recovery({ proposalId: id(71) }) })).toBe(
-			"decision",
-		);
+		expect(state(row("failed", "needs_attention"), { [id(70)]: recovery({ proposalId: id(71) }) })).toBe("decision");
+		// A run a member stopped is never a failure. The cloud lists one only while the
+		// Company File changes it left wait, so it is a decision until its details say
+		// it left none; then it is settled (an older cloud still lists every stop).
+		const stopped = (extra: Partial<HostedRunRecovery> = {}) => ({
+			[id(70)]: recovery({ jobStatus: "cancelled", ...extra }),
+		});
+		expect(state(row("cancelled", "needs_attention"))).toBe("decision");
+		expect(state(row("cancelled", "needs_attention"), stopped({ proposalId: id(71) }))).toBe("decision");
+		expect(state(row("cancelled", "needs_attention"), stopped())).toBe("idle");
 		expect(company.agentState(undefined)).toBe("idle");
+	});
+
+	it("never reads a run a member stopped as a failure, and never offers to repeat it", async () => {
+		const { api, company } = controller();
+		company.store.set({ team });
+		const stopped = { ...row("cancelled", "needs_attention"), sourceKind: "room_delivery" as const };
+		const details = recovery({
+			sourceKind: "room_delivery",
+			jobStatus: "cancelled",
+			lastError: "Runner job was cancelled by a company member",
+		});
+		const read = vi.spyOn(api, "getRunRecovery").mockResolvedValue(details);
+		// An older cloud still lists the stop, ranked above the agent's other work.
+		vi.mocked(api.listStaffActivity).mockResolvedValue([stopped]);
+		await company.refreshActivity();
+		await settle();
+		expect(read).toHaveBeenCalledExactlyOnceWith(id(70));
+		expect(company.agentState(staff.id)).toBe("idle");
+		expect(company.activityFor(staff.id)).toBeUndefined();
+		expect(company.failedRunFor(staff.id)).toBeUndefined();
+		// Try again is for failures: the same post, had it failed, could be tried again.
+		expect(
+			company.canRetryFailedRun({
+				activity: { ...stopped, jobStatus: "failed" },
+				recovery: { ...details, jobStatus: "failed" },
+			}),
+		).toBe(true);
+		expect(company.canRetryFailedRun({ activity: stopped, recovery: details })).toBe(false);
+		// A stop that left Company File changes asks for that decision, still without Try again.
+		company.store.set({ recoveries: { [id(70)]: { ...details, proposalId: id(71) } } });
+		expect(company.agentState(staff.id)).toBe("decision");
+		const decision = company.failedRunFor(staff.id);
+		expect(decision?.recovery?.proposalId).toBe(id(71));
+		expect(company.canRetryFailedRun(decision!)).toBe(false);
+		// Until its details arrive, a listed stop shows no line at all.
+		company.store.set({ recoveries: {} });
+		expect(company.agentState(staff.id)).toBe("decision");
+		expect(company.failedRunFor(staff.id)).toBeUndefined();
 	});
 
 	// Recovery reads are timed with performance.now(), so the fake clock must drive it too.
@@ -679,16 +723,21 @@ describe("agent execution state", () => {
 		expect(company.agentState(staff.id)).toBe("decision");
 	});
 
-	it("dismisses the agent's failure when the member sends a new message", async () => {
+	// A stop already reads as settled, but an older cloud still ranks it above the
+	// new message's run, so sending dismisses it the same way.
+	it.each([
+		["failed", "failed"],
+		["cancelled", "idle"],
+	] as const)("dismisses the agent's %s run when the member sends a new message", async (jobStatus, before) => {
 		const { api, controller, write } = company();
 		// The thread belongs to the agent whose run failed.
 		controller.store.set({ sessions: [{ ...session, staffAgentId: staff.id }] });
-		const read = vi.spyOn(api, "getRunRecovery").mockResolvedValue(recovery());
+		const read = vi.spyOn(api, "getRunRecovery").mockResolvedValue(recovery({ jobStatus }));
 		const acknowledge = vi.spyOn(api, "acknowledgeFailedRun").mockResolvedValue();
-		vi.mocked(api.listStaffActivity).mockResolvedValue([row("failed", "needs_attention")]);
+		vi.mocked(api.listStaffActivity).mockResolvedValue([row(jobStatus, "needs_attention")]);
 		await controller.refreshActivity();
 		await settle();
-		expect(controller.agentState(staff.id)).toBe("failed");
+		expect(controller.agentState(staff.id)).toBe(before);
 		expect(read).toHaveBeenCalledTimes(1);
 		vi.mocked(api.listStaffActivity).mockResolvedValue([]);
 		expect(await controller.sendPrompt(session.sessionId, "Once more, please.")).toBe(true);
