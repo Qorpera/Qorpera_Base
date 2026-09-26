@@ -311,3 +311,43 @@ layout switches at the new scale (Settings' smaller rail moved from 1100 to
 1000 design pixels, 1300 on screen, so 13" and 14" laptops keep the large one).
 The rail's default narrowed with each step (456 → 410 → 369 design pixels); at
 369 three pinned cards share a row.
+
+## 2026-09-25 — Interface size in Appearance
+
+Settings → General → Appearance offers Big (the default, current 130% desktop
+scale) and Small (the original 100% scale). The browser stores the choice in
+`qorpera.web.ui-size`, restores it before paint, and follows changes from other
+tabs. Phones and tablets keep their 100% scale in either choice.
+
+Responsive pixel queries have two mutually exclusive, zero-specificity root
+gates: Big uses the existing pointer-aware breakpoints, Small uses the original
+breakpoints. The build lowers the generated CSS nesting. A size change also
+dispatches resize so measured rail widths, composer heights, menus, dialogs,
+and navigation accessibility state update together.
+
+An unset rail width follows the size: 369 design pixels for Big, the original
+456 for Small. An explicitly resized width is kept across size changes; resetting
+the rail clears that choice and follows the current size's default again.
+
+## 2026-09-25 — Rules and approval cards for agents' actions
+
+**Decision (Jonas).** The web client gets Settings → Rules and live approval
+cards for agents' actions (runtime bundle v130, contract amendment
+2026-09-25). Grok Bot's Auto-review is the reference; Qorpera adds the
+multiplayer scope: a rule is the member's own ("only me") or, written by an
+owner or admin, the company's. An approval card is answered by the member it
+waits for, as the card names: a personal rule's owner, or any owner or admin
+for a company rule or a built-in check. Allow once, Deny, and on a built-in
+check's card Always allow, which saves the proposed rule as a company rule.
+
+**Why.** Jonas asked for the rule behaviour "in the runtime architecture",
+with personal and global rules. This is the new decision the 2026-09-24 entry
+asked for before any approvals surface returns: approvals come back as cards
+in the thread where the agent works, not as a separate Approvals page.
+
+**Rules out.** An Approvals page or inbox; answering these cards through
+`qorpera_answer_interaction` (its approval surface is owner/admin-only and does
+not know the review); live controls on a card for a member it does not wait
+for; controls the live kernel refuses (before v130 the tab says rules are not
+available and no card has buttons, because no such card exists).
+

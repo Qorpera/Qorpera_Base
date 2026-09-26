@@ -946,13 +946,23 @@ Authorized agents may create coworkers with startup instructions through the
 same cloud operation. The creating agent cannot grant authority it does not
 possess.
 
-Ratified 2026-09-02: a staff agent reads the company's shared Company File by
-default. Creation, reactivation, genesis, and migration of a company give each
-active agent a read grant on the shared root of every environment, recorded as
-an ordinary revocable grant attributed to the company owner and carried forward
-across root resource versions until an owner revokes it. Writes, protected
-paths, private scopes, and responsibility- or project-scoped resources keep
-their own rules; the default never widens them.
+Amended 2026-09-26 (superseding the 2026-09-02 read-only default): a staff
+agent reads and writes ordinary shared Company File paths by default, so work
+can become durable files. Creation, reactivation, genesis, and migration give
+active agents a read/write grant on the shared root of every environment,
+recorded as an ordinary revocable grant attributed to the company owner.
+Explicit restrictions, expiry and revocation MUST survive reactivation and
+root resource version changes. Protected paths, private scopes, and narrower
+responsibility- or project-scoped resources keep their own rules; the default
+never overrides them.
+
+Automatic hiring MUST verify that the creator can delegate the child's entire
+default: current, nonexpiring read/write authority on every live shared root
+in the company. Verify this both at policy approval and before publication.
+Restricted creators may propose hires for an authorized member to approve.
+Member consent MUST be distinguished durably from policy approval in that
+member's name; an agent retry MUST NOT manufacture or renew member consent.
+Completed operations retain their receipt replay semantics.
 
 Agent templates MUST NOT create dedicated prebuilt artifacts. Artifacts are
 ordinary Company File objects created when useful. Permanent deletion of an
@@ -1484,7 +1494,7 @@ Company File, rather than chat or a machine disk, is what that brain operates.
 | 6 | Agent memory (amended 2026-09-22, company first 2026-09-24) | An agent's profile, monthly log, and notes are its own Company File objects in the Grok Bot layout; `update_memory` write/forget and `recall_memory` work through the versioned mutation gateway with notebook-wide dedupe, forget of every copy, a search of every month, and stale-version retry; every turn composes the whole profile and the recent log slice through the trusted read lane; a worker of the same agent recalls but writes only with write access; notebooks are company-owned and there is no member memory; a Grok Bot export imports unchanged. |
 | 7 | Connectors | Install, authenticate out of band, call through scoped RPC, and apply the connector-to-browser escalation path. |
 | 8 | Scheduler and listeners | Company File intent plus one compiled trigger wakes the same agent; deterministic deduplication, timezone, expiry, quiet policy, auth suspension, and projection consistency pass. |
-| 9 | Isolated coding VMs and PRs | Worker, repository workspace, branch, follow-up identity, publication, and completion listener retain continuity; a member's sessions share one coding machine that holds no node capacity while asleep and is removed later, its allocation released only on a proven delete (amended 2026-09-24). |
+| 9 | Isolated coding VMs and PRs | Worker, repository workspace, branch, follow-up identity, publication, and completion listener retain continuity; every turn is recorded once (what started it, its submission bound to its own sequence, its outcome) and the next turn reads the session's own earlier turns, including the exact question and choices a reply answers (amended 2026-09-25); a member's sessions share one coding machine that holds no node capacity while asleep and is removed later, its allocation released only on a proven delete (amended 2026-09-24). |
 | 10 | Constitution and hire overlays | Compile a short constitution over the proven loop; add a name and job spec last, without creating a second brain. |
 | Post-build (deferred) | Azure backup/overflow compute | After Orders 0–10 are built, separately approve and prove the optional capacity integration and its placement, failover, isolation, recovery, release, and usage records before enabling it for users. This is not a gate on the preceding orders or initial launch. |
 
@@ -1961,13 +1971,17 @@ Founder decisions, 2026-09-19 and 2026-09-20.
    leases and custody bind to them, but they are granted by default when an
    account is bound and when standing work needs them. A member who does not
    want an account used disconnects it.
-3. **Hiring a coworker and opening a group chat need no member approval.** Any
-   active agent may create a new agent (14.1) or a new room (14.7). The
+3. **Authorized hiring and opening a group chat need no member approval.** Any
+   active agent may propose a new agent (14.1) or create a new room (14.7). The
    governed write, its receipt, the projection and the rule that a creator
    cannot delegate authority it lacks are unchanged; the approval of a NEW
    agent or room is given by policy in the name of the requesting member, or of
-   the company owner, and is bounded per run. A change to an existing agent or
-   room stays proposed by the Co-Founder (14.2) and approved by a member.
+   the company owner. The 2026-09-24 amendment below removes per-run counts.
+   As amended 2026-09-26, automatic
+   hiring requires the creator to cover the full default grants in 14.1;
+   otherwise the proposal waits for member approval. The room policy is
+   unchanged. A change to an existing agent or room stays proposed by the
+   Co-Founder (14.2) and approved by a member.
 4. **The gate is authority, never the client.** A capability a signed-in member
    has through one client is a cloud operation. Whether an agent may perform it
    is decided by the authority chain of its run, not by which surface first
@@ -2251,6 +2265,84 @@ Founder decision, 2026-09-24 (Grok Bot's rail). Extends 14.1 and the
 4. **Arrangement is not authority.** A section grants nothing and carries no
    content; deleting one moves its agents to Unassigned.
 
+### 2026-09-25 amendment: auto-review rules and approvals
+
+Founder decisions, 2026-09-24/25 (Grok Bot's Auto-review, multiplayer).
+Implements the "destructive or external-action approval" and "safety-check
+review or retry" surfaces of 16.2 and the classification of section 10.
+
+1. **Rules.** A rule is one plain-language sentence, "When an agent wants to
+   ..., it should: Ask first | Allow automatically". A member writes rules for
+   themself ("only me"); owners and admins write company rules, which every
+   member reads and no one else edits. An agent may add an Ask first rule for
+   the member it works for, when that member asks it to (the tool
+   add_review_rule; the rule is the member's own, listed and removable in
+   Settings); agents never add Allow rules or company rules. An Allow rule an
+   agent suggests becoming a card the member confirms is not built in bundle
+   v130.
+2. **What is reviewed.** Every call is classified: reads, and changes that
+   stay inside the company (its versioned Company File, notes, messages,
+   todos, cards, a dynamic routine's own decision at the end of its run unless
+   it rewrites the routine's instructions or title, an Ask first rule an agent
+   adds), run at once. Outside effects (connector
+   writes, acting computer steps, the computer shell), Company File deletion
+   and delegation (hiring, group chats, setting up or changing routines,
+   starting workers or coding jobs) pass a review first. Coding sessions
+   themselves are not reviewed; starting one is.
+3. **The reviewer.** A separate model (GPT-6 Luna at low effort) in a fresh,
+   tool-less conversation on the run's own model account, inside the same
+   harness process, never a separate credential path. It reads the action,
+   what the member or routine asked for (a card answer in plain words, and,
+   when members started the run, their latest earlier messages in the
+   conversation), and the rules that apply (all company rules and the
+   personal rules of the member the run works for), never the agent's own
+   words or any tool result, and answers allow, ask or deny. A review that cannot
+   run is never an approval: the call does not run.
+4. **Layering.** Built-in checks (money, legal terms, deleting outside data,
+   access changes: ask; an action that plainly does not serve the request:
+   deny), then company rules, then personal rules. Ask first wins; an Allow
+   rule never undoes an Ask first rule. Only a company Allow rule lifts a
+   built-in check, and only when it covers the action: the checks are the
+   company's to answer, so a member's own Allow rule never lifts one (a
+   member's rules only add care). As in Grok, the reviewer may also ask on its
+   own when it is unsure the member wants this exact action (an irreversible
+   step the request only loosely describes); the member the run works for
+   answers that card. It denies only an action that clearly works against or
+   outside the request. The kernel enforces this ordering over the rules and
+   checks the reviewer cites; which rules apply to an action is the reviewer's
+   judgement, so a reviewer that is itself misled can still let an action
+   through. The reviewer reads the whole call, never a cut of it.
+5. **Approval cards.** An ask raises a card in the conversation the agent
+   works in (its own thread or a member's conversation; never a group chat or
+   a worker, and never a card for owners and admins in one member's private
+   conversation, which they cannot read: there the call is refused instead). A personal rule's card is
+   answered only by that member; a company rule's or a built-in check's card
+   by any owner or admin, who need write access to the conversation. Allow
+   once, Deny, and Always allow (a built-in check's card only; saves a narrow
+   company Allow rule). A card never expires; dismissal is never consent. These
+   cards are answered only through their own answer path, never the general
+   card answer. A card may quote the matched rules, a member's own included:
+   the thread shows why the action waits.
+6. **Waiting.** A call a member is likely watching holds on its card for about
+   five minutes and runs at once when approved. After that, and at once for
+   routines and coworker wakes, it parks: the agent is told, keeps working,
+   and the card keeps waiting. A holding call renews a short heartbeat; an
+   answer to a card no call is holding (parked, stopped, or its run ended)
+   wakes the agent in that conversation on the answering member's account.
+   The agent repeats the identical call (the card shows its exact arguments),
+   which runs once without a second review. A Deny, the member's or the
+   reviewer's, stands for that exact call in the run it was given in, and in
+   its conversation until a member writes there again: retrying gets the agent
+   no second opinion. When the member asks for it again, the retried call runs
+   only on a click on a card, whatever the fresh review says: a "yes" in chat
+   is not enough by itself. Who clicks never goes down: the member when the
+   fresh review lets it through, the owners and admins when it is still not
+   asked for or when they answered this call before. A card still waiting holds the same call only in its own
+   conversation; elsewhere a new card is raised where it can be seen.
+7. **Record.** Every reviewed call is recorded with its verdict, reason,
+   matched rules, answer and use. Reviews are not a cap on work: no number of
+   reviews, calls or approvals is limited.
+
 ## 20. Enforcement matrix
 
 | Requirement | Code owner | Model law |
@@ -2278,7 +2370,7 @@ Founder decision, 2026-09-24 (Grok Bot's rail). Extends 14.1 and the
 | Projects remain bounded and distinct from rooms | Project registry, team membership, todos, outcome, and room lifecycle | Coordinate in the room; finish in durable company state. |
 | Routine policy is real | Scheduler and listener services | Author sensible schedules and intent. |
 | Dismissal is not consent | Interaction state machine | Treat dismissal as skip or decline. |
-| Coding follow-up keeps continuity | Worker identity, VM, branch contract | Steer the existing worker. |
+| Coding follow-up keeps continuity | Worker identity, VM, branch contract, the session's own turn record | Steer the existing worker. |
 | Member machines are not agent tools | Capability compiler and cloud-only execution policy | Request an explicit upload when a member-held file is needed. |
 | Secrets stay out of context | Company-centered cloud secret broker, operation grants, credential bridge, and result fence | Refer to purpose and handle, never value. |
 | Low effort is the thread default | Run admission policy | Escalate effort only for a reason. |

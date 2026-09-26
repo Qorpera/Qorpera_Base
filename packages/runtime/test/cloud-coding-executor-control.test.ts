@@ -26,6 +26,11 @@ describe("dedicated coding executor control", () => {
 			"https://project.supabase.co/rest/v1/rpc/qorpera_list_coding_machines",
 			expect.objectContaining({ redirect: "error", method: "POST" }),
 		);
+		await control.call("qorpera_route_coding_command", {}, new AbortController().signal);
+		expect(fetcher).toHaveBeenLastCalledWith(
+			"https://project.supabase.co/rest/v1/rpc/qorpera_route_coding_command",
+			expect.objectContaining({ redirect: "error", method: "POST" }),
+		);
 		// The per-session VM authority is gone.
 		await expect(control.call("qorpera_describe_coding_cleanup", {}, new AbortController().signal)).rejects.toThrow(
 			"METHOD_INVALID",

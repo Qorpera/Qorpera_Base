@@ -2,9 +2,16 @@ name: Step 2 LXD contracts
 
 on:
   workflow_dispatch:
+  push:
+    branches: ['release/runtime-*']
   pull_request:
     paths:
       - '.github/workflows/step2-lxd.yml'
+      - 'packages/runtime/src/cloud-runtime-bundle.generated.ts'
+      - 'scripts/generate-cloud-runtime-bundle.mjs'
+      - 'scripts/generate-cloud-runtime-bundle.test.mjs'
+      - 'scripts/runtime-bundle-release-train.mjs'
+      - 'scripts/fixtures/committed-runtime-bundle/**'
       - 'deploy/first-node/**'
       - 'deploy/lxd-runner-guest/**'
       - 'packages/runner-orchestrator/src/lxd-*.ts'
@@ -47,6 +54,8 @@ on:
       - 'packages/runtime/src/cloud-secret-*.ts'
       - 'packages/shell/test/cloud-connector-*.test.ts'
       - 'packages/shell/test/cloud-secret-*.test.ts'
+      - 'packages/shell/test/cloud-email-draft*.test.ts'
+      - 'packages/web/src/cloud/email-drafts.ts'
       - 'scripts/package-lxd-*.mjs'
       - 'scripts/package-lxd-*.test.mjs'
       - 'scripts/package-runtime-node-updater*.mjs'
@@ -65,6 +74,12 @@ on:
       - 'supabase/functions/runner-orchestrator/**'
       - 'package-lock.json'
       - 'package.json'
+
+# Release train (deploy/first-node/RUNTIME-RELEASE-TRAIN.md): only release
+# branches declare the runtime bundle, so only they must carry derived files
+# that match the source. Everywhere else the freshness asserts are skipped.
+env:
+  QORPERA_ENFORCE_RUNTIME_BUNDLE: ${{ ((github.event_name == 'pull_request' && startsWith(github.head_ref, 'release/runtime-')) || (github.event_name == 'push' && startsWith(github.ref_name, 'release/runtime-'))) && '1' || '0' }}
 
 permissions:
   contents: read
@@ -202,10 +217,13 @@ jobs:
           test/cloud-secret-broker.test.ts
           test/cloud-secret-broker-http.test.ts
           test/cloud-secret-tools.test.ts
+          test/cloud-email-draft.test.ts
+          test/cloud-email-draft-integration.test.ts
 
       - name: Test deterministic packaging
         run: >-
           node --test
+          scripts/generate-cloud-runtime-bundle.test.mjs
           scripts/package-lxd-provider.test.mjs
           scripts/package-lxd-runner-guest.test.mjs
           scripts/package-runner-orchestrator.test.mjs

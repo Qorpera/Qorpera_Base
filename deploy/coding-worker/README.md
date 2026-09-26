@@ -8,7 +8,7 @@ An agent dispatches a coding session through `manage_worker` (species `coding`);
 
 The native harness runs the turn on the identity host like any other run, in the coding composition: three tools start/read/cancel repository commands through this service's command gateway, `coding_finish` submits a commit, `coding_ask` submits a question for the owner. Commands execute as the session's own uid in the session's bounded systemd slice. A root-owned guest lease, tied to the boot and Linux uptime, expires independently of the executor's network connection; a reviewed timer stops the entire command slice on expiry. A receipt's hash binds the exact command, timeout, worker, VM, turn id and sequence. Every command is authorized in SQL against the turn (`qorpera_authorize_coding_command`) before it starts.
 
-The harness's submission is durable in SQL (`qorpera_submit_coding_turn`); the executor waits on `qorpera_describe_coding_turn` for the run to end and acts on the submission, never on prose. A commit is exported as a bundle, validated in a fresh constrained Git broker, pushed only to the fixed session branch, and published as the same draft PR. The session is detached before it is completed (`qorpera_complete_coding_turn`: succeeded with the PR, blocked with the question and its choices, or failed): its commands are stopped and seen stopped, the guest is synced, its boot-local state and user are removed, and its NAS folders are unplugged. The machine keeps running for the member's other sessions. The owner's answer or a follow-up starts the next turn on the same worker, NAS folders, repository and branch, on the member's current machine.
+The harness's submission is durable in SQL (`qorpera_submit_coding_turn`); the executor waits on `qorpera_describe_coding_turn` for the run to end and acts on the submission, never on prose. A commit is exported as a bundle, validated in a fresh constrained Git broker, pushed only to the fixed session branch, and published as the same draft PR. The session is detached before it is completed (`qorpera_complete_coding_turn`: succeeded with the PR, blocked with the question and its choices, or failed): its commands are stopped and seen stopped, the guest is synced, its boot-local state and user are removed, and its NAS folders are unplugged. The machine keeps running for the member's other sessions. The owner's answer or a follow-up starts the next turn on the same worker, NAS folders, repository and branch, on the member's current machine. Every turn is a row of its own (`qorpera_coding_session_turns`, 20260925113000): what started it (the dispatch, the agent's follow-up or the owner's answer), the harness's submission, which belongs to that turn's sequence only, and how it ended. The next turn reads them through its run authority (`qorpera_read_coding_turn_context`) and the native runtime composes them into its context: the exact question and choices a reply answers, and the session's earlier turns (the newest that fit, the rest counted). A new turn never inherits an earlier submission; when an executor is lost after the harness submitted, the lease expiry settles that turn as failed, keeps the submission in it and names the unanswered question or the unpublished commit, and the owner's retry runs clean. The provider thread itself is not resumed: continuity is the composed record, not provider-held state.
 
 ## Member machines: sleep, wake and removal
 
@@ -43,10 +43,17 @@ Install `qorpera-coding-executor.service` with its persistent dedicated account 
 
 ```json
 {
-  "schema": "qorpera.coding-executor-service/v5",
+  "schema": "qorpera.coding-executor-service/v6",
   "owner": "coding-node-02",
   "supabaseUrl": "https://PROJECT.supabase.co",
   "commandPort": 8789,
+  "peerCommandPort": 8790,
+  "commandPeers": [{
+    "owner": "coding-node-01",
+    "providerId": "coding-node-01",
+    "origin": "https://CODING_NODE_01_PEER_ORIGIN",
+    "tokenCredential": "qorpera-coding-peer-node-01"
+  }],
   "storagePolicy": {
     "schema": "qorpera.coding-nas-policy/v1",
     "mountPoint": "/srv/qorpera-coding",
@@ -85,7 +92,17 @@ Install `qorpera-coding-executor.service` with its persistent dedicated account 
 }
 ```
 
-`vmPolicy` sizes one member's machine, shared by that member's sessions; `guest.resourceProfile` bounds each command and must fit inside it. `guest.uid`/`gid` is the image's coding account (below 200000); session paths are not configured, they derive from the worker id. A config with the old `v4` schema is refused.
+`vmPolicy` sizes one member's machine, shared by that member's sessions; `guest.resourceProfile` bounds each command and must fit inside it. `guest.uid`/`gid` is the image's coding account (below 200000); session paths are not configured, they derive from the worker id. Previous configuration schemas are refused.
+
+## Fleet command routing
+
+Install an independently configured executor on each eligible node, with its own owner, local provider policy and NAS placement. SQL selects an eligible node for a new member machine against shared node capacity and preserves the host of retained machines and existing NAS volumes. An existing volume never moves because its lease expired or another node has spare capacity. Configure each environment's executor records through the administrative RPCs before enabling that node.
+
+The harness may keep its existing `QORPERA_CODING_COMMAND_URL`: `commandPort` is the authenticated ingress. After exact command authorization, `qorpera_route_coding_command` resolves the session's persisted machine and executor. A local machine executes locally. A remote machine is reached only through the matching `commandPeers` owner/provider entry. SQL never supplies an arbitrary network destination. Forwarding has no effect retries, follows no redirects and validates the bounded command receipt.
+
+Each node exposes a second HTTPS origin whose proxy targets loopback `peerCommandPort`. This listener reauthorizes the binding, receipt and current placement, and refuses a machine assigned to any other executor; it never forwards. Install `/etc/qorpera/coding-peer-command.key` as 32 random bytes encoded in base64url for that node's peer listener. Its required systemd credential is `qorpera-coding-peer-command`. For every remote peer, install that peer's token in a private file and a reviewed drop-in, for example `LoadCredential=qorpera-coding-peer-node-01:/etc/qorpera/coding-peer-node-01.key`. Peer tokens must be unique per destination and distinct from the harness ingress token and broker tokens. Configuration contains credential names only. The peers' HTTPS certificates must be trusted by the executor (`NODE_EXTRA_CA_CERTS` in the deployment drop-in when using the private CA).
+
+Both command backends bind only loopback. Public ingress and peer proxies must target their respective ports; the peer origin must never point back at an ingress. The separate peer token and local-only execution prevent forwarding loops even if deployment routing is wrong. `commandPeers: []` is valid for a node with no remote destinations; unknown destinations fail closed.
 
 All privileged credentials use systemd `LoadCredential`: registry service key (`qorpera-coding-registry`), the distinct coding-command transport token (`qorpera-coding-command`) and the executor's own broker token (`qorpera-coding-broker-executor`, the name `broker.executorTokenCredential` gives). Never put a credential into configuration JSON, a model prompt or the repository VM. `repositories` is the executor's own allowlist; it does not substitute for current SQL repository authority.
 

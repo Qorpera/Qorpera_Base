@@ -530,7 +530,7 @@ describe("account and route ownership", () => {
 		opened.resolve({ sessionId: session.sessionId, roomId: id(31), staffAgentId: staff.id, status: "active" });
 		await draw();
 		expect(location.hash).toBe("#/account");
-		expect(root.textContent).toContain("Appearance");
+		expect(root.querySelector("main .account h1")?.textContent).toBe("General");
 	});
 
 	it("ignores a late company lookup after navigating away", async () => {
@@ -546,7 +546,7 @@ describe("account and route ownership", () => {
 		await draw();
 		expect(location.hash).toBe("#/account");
 		expect(f.api.getCompanyFile).not.toHaveBeenCalled();
-		expect(f.root.querySelector("main")?.textContent).toContain("Appearance");
+		expect(f.root.querySelector("main .account h1")?.textContent).toBe("General");
 	});
 
 	it("initializes Company File once while its response is delayed", async () => {

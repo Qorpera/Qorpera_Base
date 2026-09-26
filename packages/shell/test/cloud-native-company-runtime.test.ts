@@ -241,6 +241,7 @@ async function fixture(mode = "company-runtime", httpPathControl = false, presen
 		adapterSha256: "b".repeat(64),
 		destinationOrigin: "https://api.linear.app",
 	};
+	const reviewedTools: string[] = [];
 	const pathCall = vi.fn<CloudCompanyPathControl["call"]>(async (method, args) => {
 		if (method === "qorpera_record_runtime_observation") {
 			expect(args.p_run_id).toBe(f.binding.runId);
@@ -277,6 +278,16 @@ async function fixture(mode = "company-runtime", httpPathControl = false, presen
 			};
 		}
 		if (method === "qorpera_describe_company_run_context") return structuredClone(f.context);
+		// Auto-review (v130): these fixtures approve every acting call up front; the review
+		// step itself is covered in cloud-action-review.test.ts and cloud-codex-tool-session.test.ts.
+		if (method === "qorpera_begin_action_review") {
+			expect(args.p_call).toEqual({
+				tool: expect.any(String),
+				argumentSha256: expect.stringMatching(/^[0-9a-f]{64}$/),
+			});
+			reviewedTools.push((args.p_call as { tool: string }).tool);
+			return { schema: "qorpera.action-review-begin/v1", state: "approved", reviewId: randomUUID() };
+		}
 		if (method === "qorpera_read_native_wake") return structuredClone(mode === "company-worker" ? workerWake : wake);
 		if (method === "qorpera_describe_agent_open_work") {
 			if (mode === "company-worker") throw new Error("A worker keeps no todos");
@@ -526,6 +537,7 @@ async function fixture(mode = "company-runtime", httpPathControl = false, presen
 		runtime,
 		control,
 		pathCall,
+		reviewedTools,
 		store,
 		deliveries,
 		evidence,
@@ -633,6 +645,8 @@ it.each(["available", "unavailable"])(
 it("composes office tools with the actual admitted native run and existing effect ledger, then releases occupancy", async () => {
 	const f = await fixture("company-office");
 	const result = await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+	// The office command is an acting call: it passed the review step (approved in this fixture).
+	expect(f.reviewedTools).toEqual(["computer_shell"]);
 	expect(result.delivery.messageCount).toBe(2);
 	expect(f.officeSession).toHaveBeenCalledTimes(1);
 	expect(f.officeEndpoint.perform).toHaveBeenCalledTimes(1);
@@ -713,6 +727,7 @@ it.each([
 				"manage_todo",
 				"manage_worker",
 				"organize_sidebar",
+				"add_review_rule",
 				"read_context",
 				"recall_memory",
 				"send_coworker_message",
@@ -812,6 +827,8 @@ it("projects only native auth from a login capsule without materializing local c
 it("exposes only a named typed connector operation and keeps its grant and destination outside model arguments", async () => {
 	const f = await fixture("company-secret");
 	const result = await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+	// A connector write is reviewed; reads and the agent's own sends are not.
+	expect(f.reviewedTools).toEqual(["linear_issue_create"]);
 	expect(result.delivery).toEqual({ messageCount: 2, finalMessageId: f.deliveries.get("final")?.messageId });
 	expect(f.secretBroker?.execute).toHaveBeenCalledTimes(1);
 	expect(f.control.beginToolOperation).toHaveBeenCalledTimes(1);
@@ -1012,6 +1029,48 @@ it("tells the model the card shape and why a card was refused, so it can fix the
 	expect(asks.map((row) => [row.status, row.errorCategory])).toEqual([
 		["denied", "invalid_arguments"],
 		["succeeded", null],
+	]);
+});
+
+it("refuses unavailable form and credential cards without effects and lets the model recover", async () => {
+	const f = await fixture("company-cards-unavailable");
+	const result = await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+	expect(f.control.appendInteractionRequest).not.toHaveBeenCalled();
+	expect(f.control.beginToolOperation).not.toHaveBeenCalled();
+	expect(f.control.completeToolOperation).not.toHaveBeenCalled();
+	expect(f.control.sendMessage).toHaveBeenCalledExactlyOnceWith(
+		f.request,
+		{
+			idempotencyKey: "fallback",
+			text: "This app cannot fill the page or sign in from the vault. No sign-in was performed.",
+			phase: "final",
+		},
+		expect.any(AbortSignal),
+	);
+	expect(result.delivery).toEqual({ messageCount: 1, finalMessageId: f.deliveries.get("fallback")?.messageId });
+	const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
+	const ask = evidence.threadParameters.dynamicTools[0].tools.find(
+		(tool: { name: string }) => tool.name === "ask_member",
+	);
+	expect(ask.inputSchema.properties.surface.enum).toEqual(["question", "secret", "takeover", "draft"]);
+	expect(ask.inputSchema.properties.payload).toEqual(CLOUD_ASK_MEMBER_PAYLOAD_SCHEMA);
+	expect(ask.inputSchema.properties.payload.oneOf.map((branch: { required: string[] }) => branch.required)).toEqual([
+		["options"],
+		["name", "label", "purpose"],
+		["instruction"],
+		["platform", "connectorId", "from", "to", "body"],
+	]);
+	for (const index of [0, 1]) {
+		const refused = JSON.parse(evidence.fenced.outputs[index].output);
+		expect(refused.status).toBe("denied");
+		expect(refused.content.text).toMatch(/^INVALID_ARGUMENTS:/);
+		expect(refused.content.text).toContain("No card was created");
+		expect(refused.content.text).toMatch(/unavailable|not supported/);
+	}
+	const asks = f.observations.filter((row) => row.operation === "ask_member" && row.phase === "finish");
+	expect(asks.map((row) => [row.status, row.errorCategory])).toEqual([
+		["denied", "invalid_arguments"],
+		["denied", "invalid_arguments"],
 	]);
 });
 

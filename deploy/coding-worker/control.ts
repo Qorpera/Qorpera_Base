@@ -2,7 +2,7 @@ import { readBoundedCloudResponse, supabaseServiceHeaders } from "../../packages
 import { CODING_EXECUTOR_RPCS, CodingControlBusy } from "../../packages/runner-orchestrator/src/coding-executor.ts";
 import { CODING_HOST_RPCS } from "../../packages/runner-orchestrator/src/coding-executor-host.ts";
 
-const METHODS = new Set<string>([...CODING_EXECUTOR_RPCS, ...CODING_HOST_RPCS, "qorpera_authorize_coding_command"]);
+const METHODS = new Set<string>([...CODING_EXECUTOR_RPCS, ...CODING_HOST_RPCS, "qorpera_authorize_coding_command", "qorpera_route_coding_command"]);
 
 /** PostgREST answers SQLSTATE 55P03 (lock_not_available) with HTTP 500 and
  * exactly this error body; its transaction rolled back whole. */

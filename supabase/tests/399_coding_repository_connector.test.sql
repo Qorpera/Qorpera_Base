@@ -52,6 +52,30 @@ $$;
 select pg_temp.wake_public_send(current_setting('qorpera_test.parent_binding')::jsonb,'progress','repo-credential-ack');
 select pg_temp.todo('{"action":"upsert","operationKey":"todo-r1","todoKey":"repo-credential","title":"Fix the flaky test"}');
 select public.qorpera_configure_coding_executor('30000000-0000-4000-8000-000000000020','exec-test',true,array['codex']);
+-- A claim requires the executor's VM/NAS policies and fresh physical inventory.
+select public.qorpera_configure_coding_vm_policy('30000000-0000-4000-8000-000000000020','exec-test',
+	jsonb_build_object('providerId','coding-fixture','providerPolicySha256',repeat('f',64),'project','coding',
+		'imageFingerprint',repeat('a',64),'bootstrapSha256',repeat('b',64),'storagePool','coding','network','coding',
+		'cpus',2,'memoryBytes',2147483648,'rootDiskBytes',4294967296));
+select public.qorpera_configure_coding_nas_policy('30000000-0000-4000-8000-000000000020','exec-test',repeat('c',64),
+	jsonb_build_object('schema','qorpera.coding-nas-policy/v1','mountPoint','/srv/coding','rootPath','/srv/coding/executor',
+		'source','192.168.1.40:/coding','serverAddress','192.168.1.40'));
+select public.qorpera_configure_runtime_node(jsonb_build_object('schema','qorpera.runtime-node-policy/v1',
+	'nodeId','39900000-0000-4000-8000-000000000310','machineIdSha256',repeat('c',64),'label','coding-fixture',
+	'cpuMillis',6000,'memoryBytes',8589934592,'headroomCpuMillis',2000,'headroomMemoryBytes',1073741824,
+	'standardCpuMillis',2000,'standardMemoryBytes',2147483648,'enabled',true),0);
+select public.qorpera_enroll_runtime_node_provider('39900000-0000-4000-8000-000000000310',repeat('c',64),
+	'coding','coding-fixture',repeat('f',64),2000,2147483648);
+select public.qorpera_enroll_runtime_node_inventory(jsonb_build_object('schema','qorpera.runtime-node-inventory-policy/v1',
+	'nodeId','39900000-0000-4000-8000-000000000310','host',jsonb_build_object('machineIdSha256',repeat('c',64),
+		'socketPath','/var/snap/lxd/common/lxd/unix.socket','socketGid',0,'certificateSha256',repeat('e',64),'serverName','lxd',
+		'serverVersion','5.21','architecture','x86_64'),'operatingCpuMillis',500,'operatingMemoryBytes',536870912,'infrastructure','[]'::jsonb));
+select public.qorpera_observe_runtime_node_inventory(jsonb_build_object('schema','qorpera.runtime-node-observation/v1',
+	'nodeId','39900000-0000-4000-8000-000000000310','machineIdSha256',repeat('c',64),'observationId',extensions.gen_random_uuid(),
+	'observedAt',to_char(clock_timestamp() at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"'),
+	'cpuMillis',6000,'memoryBytes',8589934592,'state','ready'),
+	public.qorpera_runtime_node_inventory_context('39900000-0000-4000-8000-000000000310') ->> 'contextSha256',
+	jsonb_build_object('schema','qorpera.runtime-node-inventory/v1','bootId',extensions.gen_random_uuid(),'entries','[]'::jsonb));
 select public.qorpera_set_coding_repository_grant('30000000-0000-4000-8000-000000000020','30000000-0000-4000-8000-000000000030',
 	'{"host":"github.com","owner":"Qorpera","name":"Qorpera_Base","baseBranch":"master"}',true);
 select pg_temp.worker('{"action":"dispatch","operationKey":"r1","todoKey":"repo-credential","workerKey":"repo-credential",
@@ -102,9 +126,15 @@ select pg_temp.wake_assert((select count(*) = 21 and bool_and(issued_by_user_id 
 
 -- 5. The executor claims the session (preparing: it resolves and seeds the base).
 select pg_temp.path_claims('service_role');
-select set_config('qorpera_test.claim',public.qorpera_claim_coding_session('exec-test',60)::text,true);
-select pg_temp.wake_assert((current_setting('qorpera_test.claim')::jsonb->>'workerId')::uuid = pg_temp.worker_id(),
-	'The executor did not claim the session');
+do $$
+declare v_claim jsonb;
+begin
+	v_claim := public.qorpera_claim_coding_session('exec-test',60);
+	perform pg_temp.wake_assert(v_claim is not null,'The configured executor did not claim the session');
+	perform pg_temp.wake_assert((v_claim->>'workerId')::uuid = pg_temp.worker_id(),'The executor claimed another session');
+	perform set_config('qorpera_test.claim',v_claim::text,true);
+end
+$$;
 
 create function pg_temp.credential(p_authority uuid,p_capability text,p_owner text default 'exec-test',
 	p_lease uuid default null,p_repository jsonb default null,p_worker uuid default null)

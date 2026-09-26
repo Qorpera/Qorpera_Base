@@ -1,7 +1,7 @@
 import { h } from "./dom.ts";
 import { matchesKey } from "./keys.ts";
 import { isPhoneLayout } from "./layout.ts";
-import { t } from "./preferences.ts";
+import { t, uiSizePreference } from "./preferences.ts";
 import { uiScale } from "./scale.ts";
 
 /* Widths here are design pixels (ui/scale.ts): the member's choice keeps its look whatever the
@@ -11,6 +11,8 @@ const MIN = 240;
 /** The earlier 456px made a tenth narrower twice (half again the desktop's 304px rail), chosen as the app was drawn larger.
  * Three pinned cards fit a row at this width (four need about 393). */
 const DEFAULT = 369;
+/** The rail's default before the app was scaled up. Explicit resized widths span both sizes. */
+const SMALL_DEFAULT = 456;
 /** The rail may take at most two fifths of the window, a touch wider than a Messages sidebar. */
 const MAX_SHARE = 0.4;
 /** Version 4 came with the 369px default: widths stored before it are not carried over,
@@ -23,8 +25,8 @@ export class RailLayout {
 	readonly #frame: HTMLElement;
 	readonly #rail: HTMLElement;
 	readonly #lifetime = new AbortController();
-	/** What the member last chose; the shown width is this, clamped to the window. */
-	#preferred = DEFAULT;
+	/** An explicit width, or the current size's default; shown clamped to the window. */
+	#preferred: number | undefined;
 	#width = DEFAULT;
 	#max = 0;
 	#scale = 0;
@@ -112,14 +114,14 @@ export class RailLayout {
 	}
 	/** Back to the default, not clamped: a narrow window shows less of it, a wide one all of it. */
 	#reset(): void {
-		this.#preferred = DEFAULT;
+		this.#preferred = undefined;
 		this.#apply();
 		this.#persist();
 	}
 	/** The default is stored as no choice at all, so a later default reaches this member too. */
 	#persist(): void {
 		try {
-			if (this.#preferred === DEFAULT) localStorage.removeItem(STORAGE_KEY);
+			if (this.#preferred === undefined) localStorage.removeItem(STORAGE_KEY);
 			else localStorage.setItem(STORAGE_KEY, String(this.#preferred));
 		} catch {
 			/* Layout still works for this window. */
@@ -127,7 +129,7 @@ export class RailLayout {
 	}
 	#apply(): void {
 		const max = this.#cap();
-		const width = Math.min(this.#preferred, max);
+		const width = Math.min(this.#preferred ?? (uiSizePreference() === "small" ? SMALL_DEFAULT : DEFAULT), max);
 		const drawer = isPhoneLayout();
 		const scale = uiScale();
 		if (width === this.#width && max === this.#max && drawer === this.#drawer && scale === this.#scale) return;

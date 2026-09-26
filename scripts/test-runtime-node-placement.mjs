@@ -205,7 +205,9 @@ try {
 	const firstLogin = decide("login", "login-a", randomUUID());
 	assert.equal(firstLogin.decision, "placed"); assert.equal(firstLogin.reason, "ROUTED_NODE_FITS");
 	// Two homes: a second login of the identity completed on node B (its native adapter there is native-b).
-	sql(`insert into public.qorpera_native_provider_login_sessions select * from jsonb_populate_record(null::public.qorpera_native_provider_login_sessions,
+	const loginColumns = sql(`select string_agg(quote_ident(attname),',' order by attnum) from pg_attribute
+		where attrelid='public.qorpera_native_provider_login_sessions'::regclass and attnum>0 and not attisdropped and attgenerated='';`);
+	sql(`insert into public.qorpera_native_provider_login_sessions (${loginColumns}) select ${loginColumns} from jsonb_populate_record(null::public.qorpera_native_provider_login_sessions,
 		(select to_jsonb(l)||jsonb_build_object('id','38000000-0000-4000-8000-000000000201','client_login_id','38000000-0000-4000-8000-000000000202','client_connection_id','38000000-0000-4000-8000-000000000203','capability_sha256',repeat('a',64))
 		 from public.qorpera_native_provider_login_sessions l where l.id=(select login_session_id from public.qorpera_runtime_machine_allocations where id='38000000-0000-4000-8000-000000000103')));
 	 insert into public.qorpera_runtime_machine_allocations(id,profile_id,login_session_id,login_compute_identity_id,provider_adapter,instance_sha256,released_at)
@@ -248,6 +250,14 @@ try {
 	assert.equal(sql(`select policy_sha256 from public.qorpera_runtime_node_inventory_policies where node_id='${nodeA}';`), replacement.policySha256);
 	const same = JSON.parse(sql(`${service} select public.qorpera_replace_runtime_node_inventory(${literal(replaced)},'${replacement.policySha256}');`));
 	assert.equal(same.replaced, false);
+	// Hardware remains fresh/ready, but the old receipt cannot attest the new
+	// inventory policy. Selection must skip it just as final admission does.
+	const outdatedInventory = JSON.parse(sql(`${service} select public.qorpera_runtime_node_placement_candidates('native');`));
+	assert.equal(outdatedInventory.find((c) => c.providerId === "native-a").eligible, false);
+	assert.equal(decide("native", "native-b", identity).decision, "placed");
+	sql(`${service} ${observe(nodeA, mA)} ${observe(nodeB, mB)}`);
+	const currentInventory = JSON.parse(sql(`${service} select public.qorpera_runtime_node_placement_candidates('native');`));
+	assert.equal(currentInventory.find((c) => c.providerId === "native-a").eligible, true);
 	// Records: one row per allocation, attempts counted, decisions overwritten by the latest.
 	assert.equal(sql(`select attempts||' '||decision from public.qorpera_runtime_node_placements where allocation_id='${alloc1}';`), "2 placed");
 	// The patched reservations carry the chooser call.

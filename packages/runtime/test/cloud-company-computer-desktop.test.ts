@@ -587,8 +587,18 @@ describe("restored XFCE startup settings (real Bash helper, fake X11/XFCE comman
 		expect(await readFile(f.entry, "utf8")).toBe("qorpera-browser.desktop\n");
 		expect(await readdir(f.root)).not.toContain("dialog");
 		expect(await readdir(f.root)).not.toContain("xfconf-unexpected");
-		// Nothing is left behind: no marker for the watcher, no private write directory.
-		expect(await readdir(f.runtime)).toEqual([]);
+		// The reusable lock file remains when flock is installed, but the exited
+		// launcher no longer holds it. No request or launching marker may remain.
+		const flock = await execute("/bin/bash", ["-c", "command -v flock"], { env: f.env }).then(
+			({ stdout }) => stdout.trim(),
+			() => undefined,
+		);
+		expect(await readdir(f.runtime)).toEqual(flock ? ["qorpera-screen-browser.lock"] : []);
+		if (flock)
+			await execute(flock, ["-n", join(f.runtime, "qorpera-screen-browser.lock"), "/bin/true"], {
+				env: f.env,
+				timeout: 3000,
+			});
 		expect((await readdir(f.config)).filter((name) => name.startsWith(".qorpera"))).toEqual([]);
 	});
 
