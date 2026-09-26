@@ -16,4 +16,18 @@ This uses synthetic control-plane permits. It proves the physical guard boundary
 
 Stripe acceptance must use a test key and a separate database. Evidence must distinguish genuine Stripe canonical objects replayed with local signatures from actual Stripe-to-endpoint webhook delivery. Hosted Checkout creation is not payment completion. A paid invoice and its exact replay must fund one period only; renewals, failed payments and cross-company pooling need their own assertions. Production offer and accounting flags stay disabled until the complete rollout gates pass.
 
+## Docker-free office prerequisites
+
+The separate manual `Docker-free office acceptance` workflow prepares the remaining real office test infrastructure without invoking Docker:
+
+```sh
+gh workflow run office-physical-acceptance.yml --ref <reviewed-branch>
+```
+
+It starts PostgreSQL 17 as an unprivileged owned process with a fresh private data directory and Unix socket, applies every migration, and runs the selected subscription, allowance, billing-authority and outage-recovery SQL regressions. No existing database is attached. The PostgreSQL listener has no TCP address; the harness stops its own process before deleting its own temporary cluster.
+
+The storage stage mounts a loopback NFSv4 export and a separate ext4 journal, then runs the production open-descriptor mount checks against actual Linux mount metadata. It preserves root squashing and checks workbench access as its owner. This proves the local protocol and mount boundary, not remote NAS durability or guest workbench custody.
+
+The guest stage builds and installs the actual office package inside an LXD VM, measures the installed dependencies and performs real systemd/boot-credential checks. Image and package measurements are retained as evidence for the next admission test. These prerequisite results must not be described as complete office admission or outage recovery: the real initial guest/provider/SQL lifetime still has to be connected and exercised.
+
 See [computer billing setup](computer-billing-setup.md) for the agreed plans, authority boundaries and remaining launch gates.
