@@ -16,8 +16,6 @@ jobs:
     name: Full isolated Linux regression suite
     runs-on: ubuntu-24.04
     timeout-minutes: 35
-    env:
-      TMPDIR: ${{ runner.temp }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -33,6 +31,8 @@ jobs:
       - name: Check candidate source and browser build
         run: npm run check
       - name: Run all non-e2e tests with isolated credentials and a guest-compatible group
+        env:
+          TMPDIR: ${{ runner.temp }}
         run: |
           set -euo pipefail
           # Coding supervisor fixtures exercise real chown to an admitted
