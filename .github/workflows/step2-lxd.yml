@@ -2,6 +2,12 @@ name: Step 2 LXD contracts
 
 on:
   workflow_dispatch:
+    inputs:
+      real_lxd_acceptance:
+        description: Run the disposable nested-KVM paid guard acceptance instead of mock contracts
+        type: boolean
+        required: false
+        default: false
   pull_request:
     paths:
       - '.github/workflows/step2-lxd.yml'
@@ -62,6 +68,7 @@ on:
       - 'scripts/package-runtime-node-updater*.mjs'
       - 'scripts/package-shared-execution-service*.mjs'
       - 'scripts/jitless-service-bundle.mjs'
+      - 'scripts/acceptance/**'
       - 'deploy/shared-execution/**'
       - 'deploy/node-tidy/**'
       - 'deploy/node-agent/**'
@@ -80,12 +87,13 @@ permissions:
   contents: read
 
 concurrency:
-  group: step2-lxd-${{ github.ref }}
+  group: step2-lxd-${{ github.ref }}-${{ inputs.real_lxd_acceptance && 'physical' || 'contracts' }}
   cancel-in-progress: true
 
 jobs:
   contracts:
     name: Provider, guest, and package contracts
+    if: github.event_name != 'workflow_dispatch' || !inputs.real_lxd_acceptance
     runs-on: ubuntu-26.04
     timeout-minutes: 20
     env:
@@ -105,6 +113,9 @@ jobs:
 
       - name: Validate deployment shell
         run: bash -n deploy/first-node/*.sh deploy/lxd-runner-guest/*.sh
+
+      - name: Validate disposable acceptance harness syntax
+        run: node --check scripts/acceptance/paid-lxd-guard.mjs
 
       - name: Test LXD provider contracts
         working-directory: packages/runner-orchestrator
@@ -293,3 +304,80 @@ jobs:
           npm run check:cloud-boundaries
           npm run check:ts-imports
           npm run check:pinned-deps
+
+  real-lxd-acceptance:
+    name: Disposable nested-KVM paid guard acceptance
+    if: github.event_name == 'workflow_dispatch' && inputs.real_lxd_acceptance
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    # GitHub supports accelerated Linux workloads, but nested VMs are
+    # experimental. This job cannot certify production host/image parity.
+    # It uses synthetic permits and never connects to a live company or SQL.
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies without lifecycle scripts
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Require disposable Linux host capabilities
+        run: |
+          set -euo pipefail
+          test "${RUNNER_ENVIRONMENT}" = github-hosted
+          test "$(uname -m)" = x86_64
+          test "$(cat /proc/1/comm)" = systemd
+          test -d /run/systemd/system
+          test -c /dev/kvm
+          sudo -n true
+          sudo python3 -c 'import fcntl, os; fd=os.open("/dev/kvm", os.O_RDWR | os.O_CLOEXEC); assert fcntl.ioctl(fd, 0xAE00, 0)==12; vm=fcntl.ioctl(fd, 0xAE01, 0); os.close(vm); os.close(fd); print("KVM API 12 and VM creation verified")'
+          systemd --version
+          df -h "${RUNNER_TEMP}"
+
+      - name: Install the reviewed LXD revision
+        timeout-minutes: 8
+        run: |
+          set -euo pipefail
+          if ! command -v snap >/dev/null; then
+            sudo apt-get update
+            sudo apt-get install --yes snapd
+          fi
+          sudo systemctl start snapd.socket
+          sudo snap wait system seed.loaded
+          if snap list lxd >/dev/null 2>&1; then
+            if [ "$(snap list lxd | awk 'NR==2 {print $3}')" != 40424 ]; then
+              sudo snap refresh lxd --channel=6/stable --revision=40424
+            fi
+          else
+            sudo snap install lxd --channel=6/stable --revision=40424
+          fi
+          test "$(snap list lxd | awk 'NR==2 {print $2 ":" $3}')" = 6.9-ab8fad2:40424
+          sudo snap refresh --hold=forever lxd
+          sudo /snap/bin/lxd waitready --timeout=60
+
+      - name: Exercise the paid guard against a real disposable VM
+        timeout-minutes: 15
+        run: |
+          set -euo pipefail
+          sudo env PATH="${PATH}:/snap/bin" GITHUB_ACTIONS=true RUNNER_ENVIRONMENT=github-hosted GITHUB_SHA="${GITHUB_SHA}" \
+            node scripts/acceptance/paid-lxd-guard.mjs --out "${RUNNER_TEMP}/paid-lxd-acceptance"
+
+      - name: Upload sanitized physical enforcement evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: paid-lxd-physical-enforcement-${{ github.sha }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/paid-lxd-acceptance/evidence.json
+            ${{ runner.temp }}/paid-lxd-acceptance/*.log
+          if-no-files-found: warn
+          retention-days: 14

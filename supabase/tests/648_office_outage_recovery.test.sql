@@ -9,8 +9,11 @@ begin
         'recoveryId','64800000-0000-4000-8000-000000000001','outageRequestId',outage->'requestId',
         'activationId','64800000-0000-4000-8000-000000000002','startCommandId','64800000-0000-4000-8000-000000000003');
     perform pg_temp.wake_error(format('select public.qorpera_prepare_runtime_office_outage_recovery(%L,%L)',r,repeat('O',64)),'42501');
+    -- The successor epoch starts from the database clock. Keep this terminal
+    -- observation in the past rather than adding simulated uptime to wall
+    -- time: fast CI can reach the next prepare within that artificial 100 ms.
     sample:=sample||jsonb_build_object('previousObservationId',sample->'observationId','observationId',extensions.gen_random_uuid(),
-        'hostUptimeMs',100100,'guestUptimeMs',null,'state','stopped','observedAt',(sample->>'observedAt')::timestamptz+interval '100 milliseconds');
+        'hostUptimeMs',100100,'guestUptimeMs',null,'state','stopped','observedAt',clock_timestamp());
     perform public.qorpera_finish_runtime_computer_permit(jsonb_build_object('requestId',extensions.gen_random_uuid(),
         'permitId',outage#>'{guard,permit,permitId}','generation',1,'sample',sample,'guardClosed',true),repeat('O',64));
     perform pg_temp.wake_error(format('select public.qorpera_prepare_runtime_office_outage_recovery(%L,%L)',r,repeat('X',64)),'42501');
