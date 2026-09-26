@@ -56,6 +56,12 @@ try {
 	evidence.baseImageFingerprint = initial.config["volatile.base_image"];
 	evidence.physicalInstanceId = initial.config["volatile.uuid"];
 	run("lxc", ["start", vm], 60000); await ready();
+	// LXD agent/PID1 readiness precedes cloud-init's network and resolver setup.
+	// Do not classify an early boot DNS failure as a firewall failure.
+	const cloudInit = spawnSync("lxc", ["exec", vm, "--", "cloud-init", "status", "--wait"], { encoding: "utf8", timeout: 120000, maxBuffer: 65536 });
+	evidence.cloudInit = { status: cloudInit.status, stdout: (cloudInit.stdout ?? "").trim().slice(-2000), stderr: (cloudInit.stderr ?? "").trim().slice(-2000) };
+	assert(cloudInit.status === 0 || cloudInit.status === 2, "Guest cloud-init did not finish within120 seconds");
+	assert.equal(guest(["systemctl", "is-active", "systemd-resolved"]), "active");
 	guest(["mkdir", "-p", work]);
 	guest(["chmod", "0755", work]);
 	run("lxc", ["file", "push", "scripts/acceptance/office-image-network-probe.py", `${vm}${work}/network-probe.py`]);
@@ -73,7 +79,7 @@ try {
 	const numeric = (ip) => ip.split(".").reduce((sum, byte) => sum * 256 + Number(byte), 0);
 	assert(Number(prefix) >= 8 && Number(prefix) <= 30);
 	assert.equal(Math.floor(numeric(address) / 2 ** (32 - Number(prefix))), Math.floor(numeric(bridgeIp) / 2 ** (32 - Number(prefix))), "Only the actual managed LXD subnet may receive a fixture exception");
-	evidence.network = { bridge: { name: bridge.name, ipv4Address: bridge.config["ipv4.address"], nat: true }, guestAddresses, guestRoutes, hostRoutes, ipForward: run("sysctl", ["-n", "net.ipv4.ip_forward"]), beforeForwardRules: run("iptables", ["-S", "FORWARD"]) };
+	evidence.network = { bridge: { name: bridge.name, ipv4Address: bridge.config["ipv4.address"], nat: true }, guestAddresses, guestRoutes, hostRoutes, guestResolver: guest(["resolvectl", "status"]), guestResolvConf: guest(["cat", "/etc/resolv.conf"]), hostResolver: run("resolvectl", ["status"]), ipForward: run("sysctl", ["-n", "net.ipv4.ip_forward"]), beforeForwardRules: run("iptables", ["-S", "FORWARD"]), beforeInputRules: run("iptables", ["-S", "INPUT"]), beforeOutputRules: run("iptables", ["-S", "OUTPUT"]) };
 	assert.equal(evidence.network.ipForward, "1");
 	try { evidence.network.initialHttps = JSON.parse(guest(["python3", `${work}/network-probe.py`], 20000)); }
 	catch (error) {
