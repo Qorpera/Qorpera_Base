@@ -80,10 +80,10 @@ function setup() {
 				manifestBytes: manifest.length,
 			});
 		}
-		expect(url.origin).toBe("https://objects.fixture.invalid");
+		expect(url.origin).toBe(new URL(f.cloud.config.projectUrl).origin);
 		expect(
 			url.pathname.startsWith(
-				`/v1/member-company-snapshot-objects/${profileA.environmentId}/${snapshot.snapshotId}/`,
+				`/functions/v1/member-company-gateway/v1/member-company-snapshot-objects/${profileA.environmentId}/${snapshot.snapshotId}/`,
 			),
 		).toBe(true);
 		const sha = url.pathname.split("/").at(-1);

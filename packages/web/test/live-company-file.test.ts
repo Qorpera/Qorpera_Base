@@ -73,6 +73,9 @@ async function setup(offerProposal = false) {
 	const fetch = vi.fn(async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
 		const url = new URL(String(input)),
 			method = url.pathname.split("/").at(-1)!;
+		expect(url.origin).toBe(new URL(f.cloud.config.projectUrl).origin);
+		if (url.pathname.includes("/v1/member-"))
+			expect(url.pathname).toMatch(/^\/functions\/v1\/member-company-gateway\/v1\/member-/);
 		expect(init?.redirect).toBe("error");
 		expect(new Headers(init?.headers).get("authorization")).toBe("Bearer fixture-token");
 		const body = typeof init?.body === "string" ? JSON.parse(init.body) : {};
@@ -244,7 +247,7 @@ describe("product governed File boundary", () => {
 			text: "Updated by member",
 		});
 		expect(String(writes[0]![0])).toBe(
-			`https://objects.fixture.invalid/v1/member-company-file/${profileA.environmentId}/edits`,
+			`${f.cloud.config.projectUrl}/functions/v1/member-company-gateway/v1/member-company-file/${profileA.environmentId}/edits`,
 		);
 		expect(f.cloud.rpc).not.toHaveBeenCalled();
 	});
