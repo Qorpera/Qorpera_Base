@@ -10,11 +10,9 @@ import { POSTGRES_IMAGE, sortMigrationNames } from "./test-hosted-db.mjs";
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const container = `qorpera-bundle-activation-${randomBytes(6).toString("hex")}`;
 assert(process.argv.slice(2).every((arg) => arg === "--v128"), "Usage: test-runtime-bundle-activation.mjs [--v128]");
-const target = process.argv.includes("--v128") ? 128 : 127;
+const target = 128;
 const previous = target - 1;
-const activationName = target === 128
-	? "20260926034000_runtime_bundle_activation_v128.sql"
-	: "20260925127900_runtime_bundle_activation_v127.sql";
+const activationName = "20260926034000_runtime_bundle_activation_v128.sql";
 const read = (path) => readFileSync(join(root, path), "utf8");
 const activation = read(`supabase/migrations/${activationName}`);
 const psql = ["exec", "-i", container, "psql", "-X", "-qAt", "-U", "postgres", "-d", "activation", "-v", "ON_ERROR_STOP=1"];
