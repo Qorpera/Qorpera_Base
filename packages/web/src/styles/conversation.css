@@ -715,6 +715,15 @@
 .email-draft-note, .email-draft-error { margin: 10px 0 0; font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
 .email-draft-note { color: var(--text-muted); }
 .email-draft-error { color: var(--danger); }
+.email-draft-card[data-email-state="sent"] .email-draft-status { color: #08734e; background: color-mix(in srgb, var(--ok) 12%, transparent); }
+[data-theme="dark"] .email-draft-card[data-email-state="sent"] .email-draft-status { color: var(--ok); }
+.email-sent-to, .email-sent-cc { margin: 0 0 4px; font-size: 14px; line-height: 1.5; color: var(--text-muted); overflow-wrap: anywhere; }
+.email-sent-subject { margin: 8px 0 12px; font-size: 17px; font-weight: 500; line-height: 1.4; overflow-wrap: anywhere; }
+.email-sent-details summary { width: fit-content; cursor: pointer; color: var(--text-muted); font-size: 13px; line-height: 1.5; border-radius: 4px; }
+.email-sent-details summary:hover { color: var(--text); }
+.email-sent-details summary:focus-visible { outline: 2px solid var(--text-muted); outline-offset: 4px; }
+.email-sent-from { display: flex; gap: 8px; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border); color: var(--text-muted); font-size: 13px; line-height: 1.5; }
+.email-sent-body { margin-top: 12px; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 16px; line-height: 1.5; }
 [data-theme="dark"] .email-draft-card { background: #292929; border-color: #424242; }
 [data-theme="dark"] .email-draft-panel { background: #202020; }
 [data-theme="dark"] .email-draft-card .email-draft-actions .email-draft-send { background: #fafafa; color: #191919; }

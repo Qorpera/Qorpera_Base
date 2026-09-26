@@ -201,6 +201,9 @@ export const CONVERSATION: Record<string, string> = {
 	"Sending this draft from here needs a newer version of the app.":
 		"Du skal have en nyere version af appen for at sende kladden herfra.",
 	"Email draft from {name}": "Mailkladde fra {name}",
+	"Email sent by {name}": "Mail sendt af {name}",
+	"Email sent": "Mail sendt",
+	"View email": "Vis mail",
 	"The email draft could not be loaded.": "Mailkladden kunne ikke hentes.",
 	"The email action could not be confirmed.": "Mailhandlingen kunne ikke bekræftes.",
 	"Loading email…": "Henter mail…",
