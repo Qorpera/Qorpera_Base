@@ -159,7 +159,7 @@ export function renderMeet(
 							h(
 								"a",
 								{ href: `#/c/${profileId}` },
-								t(state.error ? "Open the company" : "Open the company without changing appearance"),
+								state.error ? t("Open the company") : t("Open the company without changing appearance"),
 							),
 						)
 					: null,
