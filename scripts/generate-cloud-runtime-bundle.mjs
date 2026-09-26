@@ -11,7 +11,7 @@ const activation = "supabase/migrations/20260926131900_runtime_bundle_activation
 const activationVersion = 131;
 // Provisional until #311 (v130) is merged: then previous = 130 and its bundle sha.
 const previousActivationVersion = 129;
-const previousActivationSha256 = "4b74abe408e78af9fa23e5df9754f5f8b1d8c761812ec6cb965075095f80a45b";
+const previousActivationSha256 = "81324154178875f3c74182102e490e864a89bb1eb8256fd117f4fc9a2e86fb3c";
 const manifestPath = "deploy/first-node/native-codex/runtime-bundle-manifest.json";
 const sha = (text) => createHash("sha256").update(text).digest("hex");
 

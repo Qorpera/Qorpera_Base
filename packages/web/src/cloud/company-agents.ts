@@ -1,4 +1,9 @@
-import { deleteCloudCompanyAgent, writeCloudCompanyAgent } from "@qorpera/cloud-client/cloud-company-agent";
+import {
+	cloudCompanyAgentDocument,
+	createCloudCompanyAgent,
+	deleteCloudCompanyAgent,
+	writeCloudCompanyAgent,
+} from "@qorpera/cloud-client/cloud-company-agent";
 import type { StaffAgent } from "@qorpera/company/company-staff";
 import type { WebCompanyFiles } from "./company-files.ts";
 import type { HostedStaffAgent } from "./types.ts";
@@ -12,11 +17,16 @@ export interface WebCompanyAgentDraft {
 	color: string;
 }
 
+export interface WebCompanyAgentCreation extends WebCompanyAgentDraft {
+	id: string;
+	createdAt: string;
+}
+
 /** An agent is a document in the Company File. Creating or changing one is a
  * governed File write the cloud projects onto the roster; the browser never
  * writes the roster itself. */
 export interface WebCompanyAgents {
-	create(draft: WebCompanyAgentDraft, signal: AbortSignal): Promise<string>;
+	create(draft: WebCompanyAgentCreation, signal: AbortSignal): Promise<string>;
 	update(agent: HostedStaffAgent, draft: WebCompanyAgentDraft, signal: AbortSignal): Promise<number>;
 	/** Deleting the agent's document removes the agent for good (owner or admin; never the Co-Founder). */
 	delete(agent: HostedStaffAgent, signal: AbortSignal): Promise<void>;
@@ -29,6 +39,30 @@ const blankCharter =
 	"No responsibilities have been written for this agent yet. Replace this text with what the agent is responsible for, in plain words.";
 
 const firstTurn = "No first assignment was given. Start from your responsibilities.";
+
+function creationAgent(draft: WebCompanyAgentCreation): StaffAgent {
+	return {
+		id: draft.id,
+		displayName: draft.displayName,
+		role: draft.role,
+		charter: draft.charter || blankCharter,
+		appearance: { color: draft.color, shape: "round", creature: draft.figure },
+		employmentStatus: "active",
+		lifecycleState: "setup",
+		createdAt: draft.createdAt,
+		updatedAt: draft.createdAt,
+	};
+}
+
+/** Validate before the view retains an attempt and locks its editable fields. */
+export function prepareWebCompanyAgentCreation<T extends WebCompanyAgentDraft>(draft: T): T & WebCompanyAgentCreation {
+	const creation = { ...draft, id: crypto.randomUUID(), createdAt: new Date().toISOString() };
+	const document = cloudCompanyAgentDocument(creationAgent(creation), 1, firstTurn);
+	// The governed text editor limits the complete JSON file, including escapes.
+	if (new TextEncoder().encode(JSON.stringify(document)).length > 32 * 1024)
+		throw new Error("Company agent document exceeds the text file limit");
+	return creation;
+}
 
 function staffAgent(agent: HostedStaffAgent, draft: WebCompanyAgentDraft): StaffAgent {
 	return {
@@ -48,50 +82,35 @@ function staffAgent(agent: HostedStaffAgent, draft: WebCompanyAgentDraft): Staff
 }
 
 export function createWebCompanyAgents(files: WebCompanyFiles): WebCompanyAgents {
-	const write = async (
-		agent: StaffAgent,
-		kind: "create" | "update",
-		startup: string | undefined,
-		signal: AbortSignal,
-	) => {
-		const lifetime = AbortSignal.any([files.signal, signal]);
-		files.current();
-		const editor = await files.files();
-		lifetime.throwIfAborted();
-		const applied = await writeCloudCompanyAgent({
-			editor,
-			agent,
-			...(startup ? { startupInstructions: startup } : {}),
-			operationKey: `staff-${kind}:${agent.id}:${crypto.randomUUID()}`,
-			signal: lifetime,
-		});
-		files.current();
-		return applied.agentRevision;
-	};
 	return {
 		async create(draft, signal) {
-			const now = new Date().toISOString();
-			const id = crypto.randomUUID();
-			await write(
-				{
-					id,
-					displayName: draft.displayName,
-					role: draft.role,
-					charter: draft.charter || blankCharter,
-					appearance: { color: draft.color, shape: "round", creature: draft.figure },
-					employmentStatus: "active",
-					lifecycleState: "setup",
-					createdAt: now,
-					updatedAt: now,
-				},
-				"create",
-				firstTurn,
-				signal,
-			);
-			return id;
+			const lifetime = AbortSignal.any([files.signal, signal]);
+			files.current();
+			const editor = await files.files();
+			lifetime.throwIfAborted();
+			await createCloudCompanyAgent({
+				editor,
+				agent: creationAgent(draft),
+				startupInstructions: firstTurn,
+				operationKey: `staff-create:${draft.id}`,
+				signal: lifetime,
+			});
+			files.current();
+			return draft.id;
 		},
 		async update(agent, draft, signal) {
-			return write(staffAgent(agent, draft), "update", undefined, signal);
+			const lifetime = AbortSignal.any([files.signal, signal]);
+			files.current();
+			const editor = await files.files();
+			lifetime.throwIfAborted();
+			const applied = await writeCloudCompanyAgent({
+				editor,
+				agent: staffAgent(agent, draft),
+				operationKey: `staff-update:${agent.id}:${crypto.randomUUID()}`,
+				signal: lifetime,
+			});
+			files.current();
+			return applied.agentRevision;
 		},
 		async delete(agent, signal) {
 			const lifetime = AbortSignal.any([files.signal, signal]);
