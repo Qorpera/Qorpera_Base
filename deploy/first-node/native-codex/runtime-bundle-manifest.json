@@ -241,7 +241,7 @@
     "deploy/lxd-runner-guest/qorpera-native-login-provider-host.service": "0f5e9ca1118ca9f678e6f26f061dd3c3d17710f8360a58b14c7055edc4ea9275",
     "deploy/lxd-runner-guest/qorpera-native-provider-host.service": "1b15b9537e0d7d5eec01d5dd99f0df1415e6459422415eebec43c7f048b1bd6f",
     "deploy/lxd-runner-guest/runner-image-contract.json": "fb0bc315f357ba16220f729ca2810a2ae8ba9299bf9765daed02a52a9f3c8f38",
-    "package-lock.json": "923be0c2f4521804594973cc65e6c2e119d8ebcd7ea47b0c98bf5c4ebd6221fb",
+    "package-lock.json": "ae12c1a77da140b023da935d92bad625f2e94aa5c7298e275fda4fe09f8a7f48",
     "packages/cloud-client/package.json": "b31f05157cb23a31c6afe2cacadb7ab604467f7581e90389ee926a0da24360a8",
     "packages/cloud-client/src/cloud-company-computer-contract.ts": "981b94cbe4823fff15b0d968d194bbd299b9e25b395b1a41eb7790332caeb1b7",
     "packages/cloud-client/src/cloud-company-computer-privacy.ts": "0817810023ef21416ff268279d9823d03d9c95da15fe3e694d34ad6e541693d0",
