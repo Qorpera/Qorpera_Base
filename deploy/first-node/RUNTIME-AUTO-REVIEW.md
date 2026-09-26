@@ -158,6 +158,17 @@ A fresh independent review asked for changes; fixed:
   the retry hint says a new message is needed (a card answer does not count);
   a full rule list refusal is tested.
 
+## Review round 7 (2026-09-26, on fdc7aeb65, re-cut as v130)
+
+APPROVE WITH NITS; the two low findings and the draft titles fixed:
+- A dynamic routine's rewrite of its instructions raises no card (its approval
+  could never be applied: `decide_routine` exists only in that routine's run);
+  the run decides without the rewrite.
+- A sent email draft reaches the reviewer as "the email the agent drafted went
+  to …, subject …", never with its body read as the member's words.
+- Gmail draft tools have card titles, and a list of recipients shows as the
+  card's target.
+
 ## Rollout order
 
 1. Pause, record `20260926130000` (the observation function must accept

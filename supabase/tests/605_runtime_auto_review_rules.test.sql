@@ -531,6 +531,22 @@ begin
 end
 $$;
 
+-- A dynamic routine's rewrite of its instructions raises no card: decide_routine exists only in
+-- that routine's run, so an approval given later could never be applied.
+do $$
+declare v_record jsonb;
+begin
+	v_record := public.qorpera_record_action_review(current_setting('qorpera_test.review_binding')::jsonb,
+		jsonb_build_object('callId', 'decide-1', 'tool', 'decide_routine', 'effect', 'delegation',
+			'argumentSha256', repeat('9f', 32), 'action', jsonb_build_object('title', 'Change what a routine does'),
+			'decision', 'ask', 'ruleIds', '[]'::jsonb, 'builtIn', 'none',
+			'reason', 'Unsure the member wants these new instructions.', 'proposedRule', null,
+			'reviewerModel', 'gpt-6-luna'));
+	perform pg_temp.wake_assert(v_record ->> 'decision' = 'ask' and not (v_record ->> 'card')::boolean,
+		'A routine rewrite waits on no card');
+end
+$$;
+
 -- A group chat carries no card: the ask is recorded and the call is refused.
 savepoint review_group_chat;
 do $$

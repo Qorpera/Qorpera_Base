@@ -44,6 +44,10 @@ const PARK_ON_EXIT_MS = 5_000;
 /** Plain titles for connector writes, by tool name; others show their tool name. */
 const CONNECTOR_TITLES: Readonly<Record<string, string>> = {
 	gmail_send_message: "Send an email",
+	gmail_create_draft: "Draft an email",
+	gmail_update_draft: "Change an email draft",
+	gmail_delete_draft: "Delete an email draft",
+	gmail_send_draft: "Send an email draft",
 	google_drive_create_file: "Create a Google Drive file",
 	google_drive_update_file: "Change a Google Drive file",
 	github_create_issue: "Open a GitHub issue",
@@ -304,7 +308,16 @@ export function describeCloudAction(
 	} else if (tool.source === "connector") {
 		title = CONNECTOR_TITLES[tool.name] ?? title;
 		const input = record(args.input ?? parsed);
-		target = text(input.to) || text(input.repository) || text(input.repo) || text(input.name) || null;
+		const recipients = Array.isArray(input.to)
+			? input.to.filter((item): item is string => typeof item === "string").join(", ")
+			: undefined;
+		target =
+			(recipients ? line(recipients, 500) : "") ||
+			text(input.to) ||
+			text(input.repository) ||
+			text(input.repo) ||
+			text(input.name) ||
+			null;
 		for (const key of ["subject", "title", "body", "text", "path", "name"]) add(key, input[key]);
 	}
 	return { title: line(title, 200), target: target ? line(target, 500) : null, details };
@@ -319,15 +332,22 @@ function cardAnswer(body: Record<string, JsonValue>): string | undefined {
 	if (body.schema !== ANSWER_SCHEMA) return undefined;
 	const answer = record(body.answer ?? null);
 	const values = Array.isArray(answer.values) ? answer.values.filter((value) => typeof value === "string") : [];
-	// An option's words are the agent's (it wrote the card), not the member's own.
+	const content = record(answer.content ?? null);
+	const to = Array.isArray(content.to) ? content.to.filter((item) => typeof item === "string") : [];
+	// An option's words are the agent's (it wrote the card), not the member's own; so is a
+	// drafted email's body, which the reviewer never reads as the member's request.
 	const detail =
 		typeof answer.answer === "string"
 			? ` (${answer.answer})`
-			: values.length
-				? `; they chose ${values.length > 1 ? "options" : "an option"} the agent wrote: ${values.join(", ")}`
-				: JSON.stringify(answer) !== "{}"
-					? ` (${JSON.stringify(answer)})`
-					: "";
+			: answer.content !== undefined
+				? `; the email the agent drafted went to ${to.join(", ") || "its recipients"}${
+						typeof content.subject === "string" ? `, subject "${content.subject}"` : ""
+					} (its wording is the agent's)`
+				: values.length
+					? `; they chose ${values.length > 1 ? "options" : "an option"} the agent wrote: ${values.join(", ")}`
+					: JSON.stringify(answer) !== "{}"
+						? ` (${JSON.stringify(answer)})`
+						: "";
 	return `The member answered a card (${typeof body.surface === "string" ? body.surface : "card"}): ${
 		typeof body.outcome === "string" ? body.outcome : "answered"
 	}${detail}.`;

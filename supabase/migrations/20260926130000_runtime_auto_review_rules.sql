@@ -433,7 +433,10 @@ begin
 	-- Cards live in the agent's own thread or a plain conversation, never a group chat or a worker,
 	-- and only where the member it waits for can read it: a card for the owners and admins is never
 	-- raised in one member's private conversation (they could not see it there).
-	v_card := v_decision = 'ask' and v_run.session_id is not null
+	-- A dynamic routine's rewrite of its own instructions raises no card: decide_routine exists
+	-- only in that routine's run, so an approval given later could never be applied. The run
+	-- decides without the rewrite; a member makes the change with manage_routine.
+	v_card := v_decision = 'ask' and v_run.session_id is not null and p_review ->> 'tool' <> 'decide_routine'
 		and (public.qorpera_run_worker(v_run.id)).id is null
 		and not exists (select 1 from public.qorpera_company_rooms as room
 			where room.session_id = v_run.session_id and room.bound_staff_agent_id is distinct from v_run.staff_agent_id)
