@@ -1,0 +1,59 @@
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import { connect } from "node:net";
+import test from "node:test";
+import { foundingOptions } from "./founding-native.mjs";
+import { bootstrapCompanySql, modelAccountsSql, runtimeEvidenceSql, sqlUuid } from "./founding-fixtures.mjs";
+import { platformBootstrapParts, startFoundingMail } from "./founding-services.mjs";
+
+test("founding runner cannot attach an existing remote service or database", () => {
+	assert.deepEqual(foundingOptions(["--bin", "/usr/lib/postgresql/17/bin", "--tools", "/tmp/tools", "--out", "/tmp/results"]),
+		{ binDirectory: "/usr/lib/postgresql/17/bin", tools: "/tmp/tools", out: "/tmp/results" });
+	for (const args of [["--database", "postgres://production"], ["--out", "/tmp/../private"], ["--bin", "/"],
+		["--tools", "/tmp/a", "--tools", "/tmp/b"], ["--out", "/tmp/a b"]]) assert.throws(() => foundingOptions(args));
+});
+
+test("real Auth bootstrap excludes only the stub users and tolerates Auth-owned functions", async () => {
+	const sql = await readFile(new URL("../../supabase/tests/bootstrap.sql", import.meta.url), "utf8");
+	const [before, after] = platformBootstrapParts(sql);
+	assert(before.includes("create schema auth;"));
+	assert(before.includes("create role authenticated nologin;"));
+	assert(!`${before}${after}`.includes("create table auth.users"));
+	assert(after.includes("create or replace function auth.uid()"));
+	assert(after.includes("create table storage.objects"));
+	assert(after.includes("alter default privileges in schema public grant all on tables"));
+	assert.throws(() => platformBootstrapParts("create table changed;"));
+});
+
+test("bootstrap and model fixtures preserve real publication and member identity boundaries", async () => {
+	const id = "f0000000-0000-4000-8000-000000000001";
+	const sql = await bootstrapCompanySql(id);
+	assert(sql.includes("qorpera_claim_company_bootstrap"));
+	assert(sql.includes("qorpera_verify_company_path_tree"));
+	assert(sql.includes("qorpera_finalize_company_bootstrap"));
+	assert(!sql.includes("qorpera_create_cloud_company"));
+	assert(!sql.includes("insert into auth.users"));
+	assert(modelAccountsSql(id, [id]).includes("qorpera_create_member_execution_sponsor"));
+	assert(runtimeEvidenceSql(id).includes("qorpera_materialize_session_turn_requests"));
+	assert.throws(() => sqlUuid("' or true;--"));
+});
+
+test("private SMTP accepts only owned test addresses and captures an Auth-generated OTP", async () => {
+	const mail = await startFoundingMail();
+	const socket = connect(mail.port, "127.0.0.1");
+	let buffer = "", response;
+	const line = () => new Promise(done => { response = done; drain(); });
+	const drain = () => { const end = buffer.indexOf("\r\n"); if (response && end >= 0) { const done = response; response = undefined; const value = buffer.slice(0, end); buffer = buffer.slice(end + 2); done(value); } };
+	// drain is called only after its declaration has initialized.
+	socket.on("data", chunk => { buffer += chunk.toString(); drain(); });
+	try {
+		assert.match(await line(), /^220/);
+		for (const [command, code] of [["EHLO localhost", "250"], ["MAIL FROM:<auth@founding.example.test>", "250"],
+			["RCPT TO:<someone@example.com>", "550"], ["RCPT TO:<founder-a@founding.example.test>", "250"], ["DATA", "354"]]) {
+			socket.write(`${command}\r\n`); assert((await line()).startsWith(code));
+		}
+		socket.write("Subject: OTP\r\n\r\n<p>12345678</p>\r\n.\r\n"); assert.match(await line(), /^250/);
+		assert.equal(await mail.code("founder-a@founding.example.test"), "12345678");
+		const template = await fetch(mail.templateUrl); assert((await template.text()).includes("{{ .Token }}"));
+	} finally { socket.destroy(); await mail.close(); }
+});

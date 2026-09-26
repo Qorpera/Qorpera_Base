@@ -64,6 +64,8 @@ test("authentication, guest/provider separation and exact RPC paths fail before 
 	for (const options of [
 		{ token: randomBytes(32).toString("base64url") }, { apiKey: tokens.provider },
 		{ path: "/rest/v1/rpc/qorpera_prepare_runtime_computer_permit" },
+		{ path: "/rest/v1/rpc/qorpera_observe_runtime_node_inventory" },
+		{ path: "/rest/v1/rpc/qorpera_prepare_runtime_office_boot_successor" },
 		{ path: "/rest/v1/rpc/qorpera_computer_billing_rpc", token: tokens.provider },
 		{ path: `/rest/v1/rpc/${method}?override=true` }, { method: "GET" },
 	]) assert([401, 403].includes((await call(f.server, options)).status));

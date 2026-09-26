@@ -12,10 +12,55 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  prerequisites:
-    name: Native PostgreSQL, NFS and office guest
+  founding:
+    name: Two founders through real web client and Supabase Auth
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+      - name: Install reviewed application dependencies
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          npm run build:web-sdk
+      - name: Install native PostgreSQL and pinned Auth/browser tools
+        timeout-minutes: 8
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
+            https://www.postgresql.org/media/keys/ACCC4CF8.asc -o "${RUNNER_TEMP}/pgdg.asc"
+          test "$(gpg --show-keys --with-colons "${RUNNER_TEMP}/pgdg.asc" | awk -F: '$1=="fpr" {print $10; exit}')" = B97B0AFCAA1A47F044F244A07FCC7D46ACCC4CF8
+          sudo install -m 0644 "${RUNNER_TEMP}/pgdg.asc" /usr/share/keyrings/qorpera-acceptance-pgdg.asc
+          echo 'deb [signed-by=/usr/share/keyrings/qorpera-acceptance-pgdg.asc] https://apt.postgresql.org/pub/repos/apt noble-pgdg main' | sudo tee /etc/apt/sources.list.d/qorpera-acceptance-pgdg.list
+          sudo apt-get update
+          sudo apt-get install --yes postgresql-17 postgresql-client-17
+          bash scripts/acceptance/founding-install.sh "${RUNNER_TEMP}/founding-tools"
+      - name: Prove multiplayer company creation
+        timeout-minutes: 12
+        run: >-
+          node scripts/acceptance/founding-native.mjs --bin /usr/lib/postgresql/17/bin
+          --tools "${RUNNER_TEMP}/founding-tools" --out "${RUNNER_TEMP}/founding-acceptance"
+      - name: Upload bounded founding evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: founding-docker-free-${{ github.sha }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/founding-acceptance/evidence.json
+            ${{ runner.temp }}/founding-acceptance/founder-*-ready.png
+          if-no-files-found: warn
+          retention-days: 14
+  prerequisites:
+    name: Paid office lifecycle on native PostgreSQL and LXD
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -64,8 +109,17 @@ jobs:
         run: >-
           node scripts/acceptance/native-postgres.mjs --bin /usr/lib/postgresql/17/bin
           --test 630_company_computer_subscriptions.test.sql
+          --test 631_company_founding.test.sql
+          --test 633_computer_billing_sync.test.sql
+          --test 634_computer_shadow_observer.test.sql
           --test 635_computer_allowance_ledger.test.sql
+          --test 637_coding_computer_permits.test.sql
+          --test 638_paid_computer_admission_boundaries.test.sql
           --test 639_computer_billing_authority.test.sql
+          --test 640_runtime_computer_permits.test.sql
+          --test 641_paid_office_lifecycle.test.sql
+          --test 642_computer_prestart_abandonment.test.sql
+          --test 647_office_computer_outages.test.sql
           --test 648_office_outage_recovery.test.sql
           --out "${RUNNER_TEMP}/office-acceptance/postgres"
 
@@ -107,6 +161,14 @@ jobs:
           sudo env PATH="${PATH}:/snap/bin" GITHUB_ACTIONS=true RUNNER_ENVIRONMENT=github-hosted GITHUB_SHA="${GITHUB_SHA}"
           node scripts/acceptance/office-image-prepare.mjs --out "${RUNNER_TEMP}/office-acceptance/image"
 
+      - name: Admit, meter, force-stop and recover the actual office
+        timeout-minutes: 22
+        run: >-
+          sudo env PATH="${PATH}:/snap/bin" GITHUB_ACTIONS=true RUNNER_ENVIRONMENT=github-hosted GITHUB_SHA="${GITHUB_SHA}"
+          node scripts/acceptance/office-lifecycle-physical.mjs
+          --image-context "${RUNNER_TEMP}/office-acceptance/image/image-context.json"
+          --out "${RUNNER_TEMP}/office-acceptance/lifecycle"
+
       - name: Upload bounded acceptance evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -122,5 +184,10 @@ jobs:
             ${{ runner.temp }}/office-acceptance/image/dependency-versions.json
             ${{ runner.temp }}/office-acceptance/image/package-manifest.json
             ${{ runner.temp }}/office-acceptance/image/image-context.json
+            ${{ runner.temp }}/office-acceptance/image/office-image-bootstrap.json
+            ${{ runner.temp }}/office-acceptance/image/image-trust-evidence.json
+            ${{ runner.temp }}/office-acceptance/image/image-provenance.json
+            ${{ runner.temp }}/office-acceptance/image/image-verification.json
+            ${{ runner.temp }}/office-acceptance/lifecycle/evidence.json
           if-no-files-found: warn
           retention-days: 14

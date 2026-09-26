@@ -16,14 +16,15 @@ class NativePostgresCleanupError extends AggregateError {}
 
 export function nativePostgresOptions(value) {
 	assert(value && typeof value === "object" && !Array.isArray(value), "PostgreSQL options required");
-	assert(Object.keys(value).every((key) => ["binDirectory", "tempParent", "onProgress"].includes(key)), "Unknown PostgreSQL option");
-	const { binDirectory, tempParent = "/tmp", onProgress } = value;
+	assert(Object.keys(value).every((key) => ["binDirectory", "tempParent", "onProgress", "bootstrap"].includes(key)), "Unknown PostgreSQL option");
+	const { binDirectory, tempParent = "/tmp", onProgress, bootstrap } = value;
 	for (const path of [binDirectory, tempParent]) {
 		assert(typeof path === "string" && isAbsolute(path) && resolve(path) === path && path !== "/" && !/[\x00-\x20\x7f'\\]/.test(path), "Canonical absolute PostgreSQL paths required");
 	}
 	assert(Buffer.byteLength(join(tempParent, "qorpera-native-pg-XXXXXX", "socket", `.s.PGSQL.${port}`)) < 100, "PostgreSQL socket path too long");
 	assert(onProgress === undefined || typeof onProgress === "function", "Invalid PostgreSQL progress callback");
-	return { binDirectory, tempParent, onProgress };
+	assert(bootstrap === undefined || typeof bootstrap === "function", "Invalid PostgreSQL bootstrap callback");
+	return { binDirectory, tempParent, onProgress, bootstrap };
 }
 
 export function assertNativePostgresVersion(output) {
@@ -94,7 +95,7 @@ async function sqlFile(path) {
  * No credentials or unbounded SQL diagnostics are written to stdout.
  */
 export async function startNativePostgres(options) {
-	const { binDirectory, tempParent, onProgress } = nativePostgresOptions(options);
+	const { binDirectory, tempParent, onProgress, bootstrap } = nativePostgresOptions(options);
 	assert(process.platform === "linux" && process.getuid?.() > 0 && process.geteuid?.() === process.getuid(), "Unprivileged Linux user required");
 	assert(await realpath(binDirectory) === binDirectory && await realpath(tempParent) === tempParent, "Symlink PostgreSQL roots refused");
 	const parent = await lstat(tempParent);
@@ -176,7 +177,9 @@ export async function startNativePostgres(options) {
 		assert(ready, "Native PostgreSQL did not become ready; inspect private postgres.log before cleanup");
 		await query(`create database ${database};`, { databaseName: "postgres" });
 		onProgress?.("bootstrap.sql");
-		await query(await sqlFile(join(repository, "supabase/tests/bootstrap.sql")));
+		const platformSql = await sqlFile(join(repository, "supabase/tests/bootstrap.sql"));
+		if (bootstrap) await bootstrap({ query, root, socketDirectory, database, username, port, platformSql });
+		else await query(platformSql);
 		const migrationsDirectory = join(repository, "supabase/migrations");
 		const migrations = sortMigrationNames(await readdir(migrationsDirectory));
 		assert(migrations.length > 0, "No acceptance migrations found");

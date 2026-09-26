@@ -15,7 +15,7 @@ for attempt in $(seq 1 120); do
 done
 apt-get -o Acquire::ForceIPv4=true -o Acquire::Retries=0 -o Acquire::https::Timeout=15 -o APT::Update::Error-Mode=any -o DPkg::Lock::Timeout=180 update
 apt-get -o Acquire::ForceIPv4=true -o Acquire::Retries=0 -o Acquire::https::Timeout=15 -o DPkg::Lock::Timeout=180 install --yes --no-install-recommends \
-  ca-certificates curl unzip xz-utils bubblewrap tini tigervnc-standalone-server \
+  ca-certificates curl unzip xz-utils mokutil bubblewrap tini tigervnc-standalone-server \
   xfce4-session xfwm4 xfconf xfce4-panel xfdesktop4 xfce4-terminal thunar \
   dbus-x11 x11-utils x11-xserver-utils xdotool scrot apparmor-utils tzdata \
   fonts-liberation fonts-dejavu-core libgbm1 libnss3 libatk1.0-0t64 \

@@ -15,10 +15,17 @@ import {
 const binDirectory = "/usr/lib/postgresql/17/bin";
 
 test("acceptance options cannot target an existing cluster, remote server or SQL database", () => {
-	assert.deepEqual(nativePostgresOptions({ binDirectory }), { binDirectory, tempParent: "/tmp", onProgress: undefined });
+	assert.deepEqual(nativePostgresOptions({ binDirectory }), { binDirectory, tempParent: "/tmp", onProgress: undefined, bootstrap: undefined });
 	for (const key of ["dataDirectory", "database", "host", "port", "root", "connectionString", "command"]) {
 		assert.throws(() => nativePostgresOptions({ binDirectory, [key]: "/existing" }), /Unknown PostgreSQL option/);
 	}
+});
+
+test("real platform bootstrap is an in-process callback, never an external cluster target", () => {
+	const bootstrap = async () => {};
+	assert.equal(nativePostgresOptions({ binDirectory, bootstrap }).bootstrap, bootstrap);
+	for (const value of [null, "postgres://remote", {}, true])
+		assert.throws(() => nativePostgresOptions({ binDirectory, bootstrap: value }), /bootstrap callback/);
 });
 
 test("unsafe, ambiguous and overlong socket roots are refused before any process or filesystem mutation", async () => {
