@@ -38,6 +38,8 @@ export function renderEmailDraftCard(item: InteractionCardItem, context: Interac
 		!item.answer?.pending && (item.answer?.outcome === "sent" || item.answer?.outcome === "discarded")
 			? item.answer.outcome
 			: undefined;
+	const confirmedFrom =
+		finalOutcome && typeof item.answer?.answer.from === "string" ? item.answer.answer.from : undefined;
 	if (finalOutcome && answerContent && typeof answerContent === "object" && !Array.isArray(answerContent)) {
 		const content: EmailDraftContent = {
 			to: recipients(answerContent.to),
@@ -47,7 +49,12 @@ export function renderEmailDraftCard(item: InteractionCardItem, context: Interac
 		};
 		editor.content = content;
 		editor.fields = { ...content, to: content.to.join(", "), cc: content.cc.join(", ") };
-		editor.state = { ...editor.state, from: editor.state?.from ?? "", content, status: finalOutcome };
+		editor.state = {
+			...editor.state,
+			from: confirmedFrom || editor.state?.from || "",
+			content,
+			status: finalOutcome,
+		};
 		editor.error = undefined;
 		editor.unconfirmedAction = undefined;
 		editor.recoveryBase = undefined;
@@ -162,13 +169,13 @@ export function renderEmailDraftCard(item: InteractionCardItem, context: Interac
 			draw();
 		};
 		const statusText = () => {
+			if (status === "sent" || finalOutcome === "sent") return t("Sent");
 			if (editor.busy === "load") return t("Loading email…");
 			if (editor.busy === "save") return t("Saving to Gmail…");
 			if (editor.busy === "send" || status === "sending") return t("Sending…");
 			if (editor.busy === "discard") return t("Discarding…");
 			if (editor.unconfirmedAction && editor.unconfirmedAction !== "send") return t("Action unconfirmed");
 			if (status === "unconfirmed") return t("Send unconfirmed");
-			if (status === "sent" || (item.answer?.outcome === "sent" && !item.answer.pending)) return t("Sent");
 			if (status === "discarded" || item.answer?.outcome === "discarded") return t("Discarded");
 			if (state === "expired") return t("Expired");
 			if (item.answer?.pending) return t("Sending…");
@@ -230,30 +237,87 @@ export function renderEmailDraftCard(item: InteractionCardItem, context: Interac
 		const to = input("to", t("To"));
 		if (editable) to.append(addCc);
 		card.dataset.state = state;
-		card.dataset.emailState = status ?? "loading";
 		card.setAttribute("aria-busy", String(Boolean(editor.busy)));
+		const sent = status === "sent" || finalOutcome === "sent";
+		card.dataset.emailState = sent ? "sent" : (status ?? "loading");
+		card.setAttribute(
+			"aria-label",
+			sent
+				? t("Email sent by {name}", { name: context.agentName })
+				: t("Email draft from {name}", { name: context.agentName }),
+		);
 		card.replaceChildren(
-			h("header", { class: "email-draft-heading" }, h("h3", null, t("New email")), statusLabel),
 			h(
-				"div",
-				{ class: "email-draft-panel" },
-				h(
-					"div",
-					{ class: "email-draft-row" },
-					h("span", { class: "email-draft-label" }, t("From")),
-					h(
-						"span",
-						{ class: "email-draft-from" },
-						editor.state?.from ||
-							(editor.busy === "load" ? t("Checking connected account…") : t("Account unavailable")),
-					),
-				),
-				to,
-				cc,
-				input("subject", t("Subject")),
-				body,
+				"header",
+				{ class: "email-draft-heading" },
+				h("h3", null, sent ? t("Email sent") : t("New email")),
+				statusLabel,
 			),
 		);
+		if (sent) {
+			const receipt = editor.state?.content ?? initial;
+			const details = h("details", {
+				class: "email-sent-details",
+				open: editor.receiptExpanded,
+				ontoggle: (event: Event) => {
+					if (card.contains(event.currentTarget as Node))
+						editor.receiptExpanded = (event.currentTarget as HTMLDetailsElement).open;
+				},
+			});
+			details.append(
+				h("summary", null, t("View email")),
+				h(
+					"div",
+					{ class: "email-sent-from" },
+					h("span", { class: "email-draft-label" }, t("From")),
+					h("span", { class: "email-draft-from" }, editor.state?.from || t("Account unavailable")),
+				),
+				h("div", { class: "email-sent-body" }, receipt.body),
+			);
+			card.append(
+				h(
+					"p",
+					{ class: "email-sent-to" },
+					h("span", { class: "email-draft-label" }, t("To")),
+					" ",
+					receipt.to.join(", "),
+				),
+				...(receipt.cc.length
+					? [
+							h(
+								"p",
+								{ class: "email-sent-cc" },
+								h("span", { class: "email-draft-label" }, t("Cc")),
+								" ",
+								receipt.cc.join(", "),
+							),
+						]
+					: []),
+				h("p", { class: "email-sent-subject" }, receipt.subject),
+				details,
+			);
+		} else
+			card.append(
+				h(
+					"div",
+					{ class: "email-draft-panel" },
+					h(
+						"div",
+						{ class: "email-draft-row" },
+						h("span", { class: "email-draft-label" }, t("From")),
+						h(
+							"span",
+							{ class: "email-draft-from" },
+							editor.state?.from ||
+								(editor.busy === "load" ? t("Checking connected account…") : t("Account unavailable")),
+						),
+					),
+					to,
+					cc,
+					input("subject", t("Subject")),
+					body,
+				),
+			);
 		if (editor.error) card.append(h("p", { class: "email-draft-error", role: "alert" }, editor.error));
 		if (uncertain)
 			card.append(
