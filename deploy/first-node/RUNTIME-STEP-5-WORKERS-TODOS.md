@@ -193,12 +193,24 @@ published only by the agent's next list or change of that todo.
   session, then the session's turn or machine. Five coding calls broke it until
   runtime v117 (`20260925117000_runtime_coding_lock_order`): the owner's answer,
   the executor's begin and completion, and machine admission and detach. SQL
-  test 602 races each of those pairs across two connections. Known gaps: machine
-  planning and admission, and the repository credential grant, still reach the
-  company's profile or Company File rows after the session or worker, so they
-  can deadlock with an agent tool on the same worker; a turn's begin refuses
-  (55P03) while any agent tool holds the company's profile row, and the coding
-  executor does not retry it.
+  test 602 races each of those pairs across two connections. The company's
+  profile row comes before all of these, and after the machine come its storage
+  volume, allocation, node and demand. A call that needs the profile row at all
+  takes it first: machine admission, a machine plan, sleep and release take
+  the fence; the secret broker's repository credential takes a key-share lock
+  (its audit insert only needs the company to exist). A plan takes the fence,
+  not a key-share lock, because it takes the fence anyway before it inserts a
+  member's new machine: two members planning their first machines would each
+  hold a key share while waiting to upgrade it. Until runtime v123
+  (`20260925123000_runtime_coding_machine_lock_order`) they took it last, so an
+  agent cancelling a session deadlocked with its admission, plan or credential.
+  SQL test 603 races those, the pairs a partial fix would break, and two new
+  members planning at once. Two late touches remain: the executor's begin takes
+  the profile row NOWAIT (it refuses with 55P03 rather than wait; the coding
+  executor begins again until its lease ends), and
+  `qorpera_prepare_company_file_revision` locks the
+  Company File row before the fence, so it can meet a session's first
+  admission as it meets every agent tool call.
 - A revival whose admission is refused when its run is created (the agent lost
   its model account or its conversation) is not retried: the result stays in
   the todo, which the agent lists the next time it continues that work.
