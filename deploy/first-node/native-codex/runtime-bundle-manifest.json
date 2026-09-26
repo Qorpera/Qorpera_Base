@@ -18,7 +18,7 @@
     "wakeAndSilence": "afcdd01831284c2d3dfb4586c4a2267193e26fe00cdddb50bfe8ee8dac6e2212",
     "contextComposer": "1796c8300b3e5395d11fe57b132a51bda1025a7bbdb260fcec3019a40336dc87",
     "providerBootstrap": "7e2e03d4e847a5b9db55d3eeb98c0ae7486013619c081d451a5fa4f8aa049554",
-    "authorization": "0ca7b5bc4571c60b80308fc42889a8d1e7e85a8d57e22eb76f7352f459c29865",
+    "authorization": "ac29d450f41b1b31e16846919366e6d49371bcce6e6eb0a9d40984f09d4e2b1b",
     "inboundSafety": "c0c404045bcacbddea79156d2d0d000b2d9caac77d53d1c92d64471ae01581d2",
     "outboundSafety": "7d0c9cb7c599fb0e6292e389204cf0ed8e1aae9e616bf471391a7861040f168a",
     "interactionSurfaces": "4d902f96c16b5998243dd3a1977921834832505674860c0adb96e303336c5a08",
@@ -622,7 +622,7 @@
     "packages/runtime/src/native-provider-account.ts": "9dbb6d065639253c5584876adbeb70f2803de29575ae7de7d1e0f0bbe0442b2b",
     "packages/runtime/src/native-provider-usage.ts": "935086f12167064ae71e90b44af1cbfe28b0d64a59ec2ba685157f45d320297c",
     "packages/runtime/src/systemd-credential.ts": "1d3eb8038a369c58418cbd8248aecf457662cbb3430cc84847235c2222a82478",
-    "scripts/generate-cloud-runtime-bundle.mjs": "e5acdc957a84ab2f2ea00c869c251879c84dead926e2feb1b8a1e1e3c0c2d1f5",
+    "scripts/generate-cloud-runtime-bundle.mjs": "21af5891a6f898ba7574a1906d75173195a98626af10de162ada6e11a8681e5b",
     "scripts/native-company-artifact.mjs": "e394bc799104f188769de07cd3be14e6c732a1a672113ea45d349a29d8e0ca63",
     "scripts/package-coding-executor.mjs": "292c557c75728d08e2fd2574c75cc07634f36bca629981709373f62af90a9272",
     "scripts/package-coding-guest.mjs": "04b1d63699aef4f05a5b800b06adff366e1607b1eaac53da8694d1e7e5d84ad3",
@@ -1034,6 +1034,7 @@
     "supabase/migrations/20260925113900_runtime_bundle_activation_v113.sql": "cd80efd112d9a7d44c560f28e1c82aaf05fa706f7e0af04e8e512c79b2f314da",
     "supabase/migrations/20260925125900_gmail_draft_catalog.sql": "ca1d8936eef66879e4ee934226b42cec79c186c124403363e0ec181b88c52077",
     "supabase/migrations/20260925126000_member_email_drafts.sql": "223241a6e30093185dfcb766415877a7a0d309b23f16b7e8211fa53be576c6a9",
+    "supabase/migrations/20260925126900_runtime_bundle_activation_v126.sql": "2fd2c2c464a553f12f87bd82fe5fdc3f93b534e017a835f03afc5b4bac0b8fae",
     "supabase/migrations/20260926000000_account_display_names.sql": "1480a7cca7624db33d70e4fe90b7a1e8a3e60c3f0ab55318a9dd3e4568228d91"
   }
 }
