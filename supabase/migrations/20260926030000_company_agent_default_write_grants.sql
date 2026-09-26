@@ -36,9 +36,11 @@ begin
 					and 'read' = any(grant_row.permissions) and grant_row.revoked_at is null
 					and (grant_row.expires_at is null or grant_row.expires_at > clock_timestamp()))
 			and not exists (
-				-- An expired or revoked default is not a missing default.
+				-- An expired or revoked default is not a missing default. Older
+				-- versions of the root trigger dropped those rows on rollover;
+				-- their historical grants must still prevent recreated access.
 				select 1 from public.qorpera_company_path_grants as grant_row
-				where grant_row.resource_id = v_resource.id and grant_row.resource_version = v_resource.version
+				where grant_row.resource_id = v_resource.id
 					and grant_row.principal_kind = 'staff_agent' and grant_row.principal_id = v_staff.staff_agent_id
 					and grant_row.origin = 'default_agent_read') then
 				insert into public.qorpera_company_path_grants(resource_id, resource_version, principal_kind, principal_id,

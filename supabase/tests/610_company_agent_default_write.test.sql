@@ -102,6 +102,36 @@ begin
 	end loop;
 end $$;
 
+-- The old rollover trigger omitted revoked defaults (and inactive staff).
+-- A historical default with no current-version row is not fresh employment:
+-- backfill and reactivation must not silently restore its missing access.
+do $$
+declare v_profile uuid := '29000000-0000-4000-8000-000000000010';
+	v_staff uuid := '29000000-0000-4000-8000-000000000030';
+	v_resource public.qorpera_company_path_resources; v_revoked boolean;
+begin
+	select * into v_resource from public.qorpera_company_path_resources
+	where environment_id = '29000000-0000-4000-8000-000000000020' and path = '';
+	foreach v_revoked in array array[true,false] loop
+		begin
+			update public.qorpera_company_path_grants set resource_version = extensions.gen_random_uuid(),
+				permissions = array['read'], revoked_at = case when v_revoked then clock_timestamp() else null end
+			where resource_id = v_resource.id and principal_id = v_staff and origin = 'default_agent_read';
+			perform public.qorpera_ensure_default_agent_read_grants(v_profile,null);
+			update public.qorpera_profile_staff set employment_status = 'archived'
+			where profile_id = v_profile and staff_agent_id = v_staff;
+			update public.qorpera_profile_staff set employment_status = 'active'
+			where profile_id = v_profile and staff_agent_id = v_staff;
+			if exists (select 1 from public.qorpera_company_path_grants where resource_id = v_resource.id
+				and resource_version = v_resource.version and principal_id = v_staff) then
+				raise exception 'Historical default was silently recreated'; end if;
+			if public.qorpera_company_path_principal_allowed(v_profile,v_resource,'staff_agent',v_staff,'read') then
+				raise exception 'Historical default restored access'; end if;
+			raise exception using errcode = 'QTC01';
+		exception when sqlstate 'QTC01' then null; end;
+	end loop;
+end $$;
+
 -- A more-specific private resource still overrides the usable shared root.
 select pg_temp.path_claims('authenticated','29000000-0000-4000-8000-000000000001');
 set local role authenticated;
