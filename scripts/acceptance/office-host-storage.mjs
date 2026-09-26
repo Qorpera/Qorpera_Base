@@ -54,7 +54,9 @@ try {
 	journalMounted = true;
 	await chmod(journal, 0o700);
 	await chown(journal, 1100, 1100);
-	const probe = join(out, "storage-probe.mjs");
+	// The exported owner cannot traverse the runner's private home directory.
+	// Keep this non-secret executable under our own traversable fixture root.
+	const probe = join(root, "storage-probe.mjs");
 	await build({ entryPoints: [join(repository, "scripts/acceptance/office-host-storage-probe.ts")], outfile: probe,
 		bundle: true, platform: "node", format: "esm", target: "node24", logLevel: "silent" });
 	evidence.observation = JSON.parse(run("setpriv", ["--reuid=1100", "--regid=1100", "--clear-groups", process.execPath, probe, workbench, journal]));
