@@ -258,7 +258,11 @@ export class CompanyComputerNativeGateway {
 				lease: structuredClone(session.lease),
 				effects,
 			});
-			if (session.closed) throw new Error("OFFICE_NATIVE_CLOSED");
+			if (session.closed) {
+				// The run's close may already have closed the session it replaced.
+				await session.guest.close().catch(() => undefined);
+				throw new Error("OFFICE_NATIVE_CLOSED");
+			}
 		})().finally(() => {
 			session.reopening = undefined;
 		});
