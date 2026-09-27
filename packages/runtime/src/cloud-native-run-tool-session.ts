@@ -23,6 +23,7 @@ import {
 	CloudNativeToolOperations,
 } from "./cloud-native-tool-operations.ts";
 import { type CloudRuntimeObservability, cloudRuntimeErrorCategory } from "./cloud-runtime-observability.ts";
+import type { CloudRuntimeServiceTier } from "./cloud-runtime-policy.ts";
 
 export interface CloudNativeRunToolAdapters {
 	tools: readonly CloudNativeTool[];
@@ -45,6 +46,8 @@ export interface CloudNativeRunToolAdapters {
  */
 export async function runCloudNativeRunToolSession(options: {
 	binding: CloudNativeToolBinding;
+	/** The run's admitted tier, from its company context; absent runs at standard speed. */
+	serviceTier?: CloudRuntimeServiceTier;
 	controlPlane: CloudNativeToolAuthorityReader & CloudNativeToolOperationControlPlane;
 	/** Durable cloud admission, once per run. A lost response must not be retried. */
 	beginExecution: (specification: JsonValue, signal: AbortSignal) => Promise<void>;
@@ -134,6 +137,7 @@ export async function runCloudNativeRunToolSession(options: {
 			boundary,
 			model: run.identity.model,
 			reasoningEffort: run.identity.reasoningEffort,
+			serviceTier: options.serviceTier,
 			prompt: options.prompt,
 			runtimeInstructions: options.runtimeInstructions,
 			identityRoot: options.identityRoot,

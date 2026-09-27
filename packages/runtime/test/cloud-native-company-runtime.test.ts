@@ -715,6 +715,21 @@ it("closes an initialized office session when native execution admission fails",
 	expect(f.control.sendMessage).not.toHaveBeenCalled();
 });
 
+it("runs a standard-tier run without Fast", async () => {
+	const f = await fixture("company-runtime");
+	f.context.serviceTier = "standard";
+	await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+	const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
+	expect(evidence.configuration.service_tier).toBe("default");
+});
+
+it("refuses a run whose context names no tier before starting Codex", async () => {
+	const f = await fixture("company-runtime");
+	delete f.context.serviceTier;
+	await expect(f.runtime.execute(f.request, f.identityRoot, new AbortController().signal)).rejects.toThrow();
+	await expect(readFile(f.evidence, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+});
+
 it.each([
 	["cofounder", false],
 	["cofounder", true],
@@ -763,6 +778,8 @@ it.each([
 		);
 		expect(evidence.threadParameters.runtimeWorkspaceRoots).toEqual([]);
 		expect(evidence.turnParameters.effort).toBe("low");
+		// The fixture's run was admitted on the Fast tier.
+		expect(evidence.configuration).toMatchObject({ service_tier: "fast", features: { fast_mode: true } });
 		expect(evidence.cwd).not.toBe(f.companyRoot);
 		expect(JSON.stringify(evidence)).not.toMatch(
 			/SYNTHETIC_NATIVE_SECRET|LOCAL_PAYLOAD_IS_NOT_AUTHORITY|missing-context|missing-transcript|QORPERA_AGENT_SEND_TOKEN|SUPABASE_SERVICE/,

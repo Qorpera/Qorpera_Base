@@ -896,3 +896,25 @@ it("projects and pages prior completed work only for this admitted run", async (
 	f.context.continuation.id = randomUUID();
 	expect(() => parseCloudNativeCompanyContext(f.context, f.binding)).toThrow();
 });
+
+it("carries the run's service tier outside the shared tool identity", () => {
+	const f = nativeCompanyContextFixture();
+	for (const serviceTier of ["fast", "standard"] as const) {
+		const context = parseCloudNativeCompanyContext({ ...f.context, serviceTier }, f.binding);
+		expect(context.serviceTier).toBe(serviceTier);
+		expect(Object.hasOwn(context.identity, "serviceTier")).toBe(false);
+	}
+	const { serviceTier: _named, ...older } = f.context;
+	expect(Object.hasOwn(parseCloudNativeCompanyContext(older, f.binding), "serviceTier")).toBe(false);
+	for (const serviceTier of ["priority", "default", null, true])
+		expect(() => parseCloudNativeCompanyContext({ ...f.context, serviceTier }, f.binding)).toThrow(
+			"Invalid cloud company context",
+		);
+	// The tool identity stays closed: company computers read it too.
+	expect(() =>
+		parseCloudNativeCompanyContext(
+			{ ...f.context, identity: { ...f.context.identity, serviceTier: "fast" } },
+			f.binding,
+		),
+	).toThrow();
+});
