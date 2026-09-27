@@ -24,7 +24,8 @@ begin
 		raise exception 'conversation should initially inherit its agent model'; end if;
 	if v_result ->> 'reasoning_effort' <> 'low' then
 		raise exception 'conversation should initially run at the bundle default effort'; end if;
-	v_result := public.qorpera_set_session_model(v_session,'gpt-6-sol',0);
+	-- A bundle with fast mode also reports the speed (test 584 covers it).
+	v_result := public.qorpera_set_session_model(v_session,'gpt-6-sol',0) - 'service_tier';
 	if v_result <> jsonb_build_object('session_id',v_session,'model_id','gpt-6-sol','reasoning_effort','low',
 		'version',1) then
 		raise exception 'conversation model selection did not persist'; end if;
@@ -195,7 +196,7 @@ begin
 		perform public.qorpera_set_session_model('58000000-0000-4000-8000-000000000050',null,0,null);
 		raise exception 'an empty conversation choice was accepted';
 	exception when invalid_parameter_value then null; end;
-	v_result := public.qorpera_set_session_model('58000000-0000-4000-8000-000000000050',null,0,'high');
+	v_result := public.qorpera_set_session_model('58000000-0000-4000-8000-000000000050',null,0,'high') - 'service_tier';
 	if v_result <> jsonb_build_object('session_id','58000000-0000-4000-8000-000000000050','model_id','gpt-native',
 		'reasoning_effort','high','version',1) then
 		raise exception 'an effort-only choice did not keep the agent model: %', v_result; end if;

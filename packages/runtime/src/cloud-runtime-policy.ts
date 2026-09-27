@@ -3,7 +3,11 @@
  * agent chooses it when it sets the routine up. A member's turn in a
  * conversation takes the effort chosen for that conversation in its Model
  * menu. Anything else runs at the default effort. The kernel pins the
- * resolved value on the run. */
+ * resolved value on the run.
+ *
+ * `fastMode: "thread"`: a member's turn in a conversation runs on Codex's Fast
+ * service tier unless that conversation's Model menu turned it off; every
+ * other run is standard. The kernel pins the tier on the run as well. */
 export const CLOUD_RUNTIME_REASONING_EFFORTS = Object.freeze(["low", "medium", "high"] as const);
 
 export type CloudRuntimeReasoningEffort = (typeof CLOUD_RUNTIME_REASONING_EFFORTS)[number];
@@ -13,7 +17,16 @@ export const CLOUD_RUNTIME_MODEL_POLICY = Object.freeze({
 	effort: "low",
 	overrides: "routine-and-thread",
 	allowed: CLOUD_RUNTIME_REASONING_EFFORTS,
+	fastMode: "thread",
 } as const);
+
+export const CLOUD_RUNTIME_SERVICE_TIERS = Object.freeze(["fast", "standard"] as const);
+
+export type CloudRuntimeServiceTier = (typeof CLOUD_RUNTIME_SERVICE_TIERS)[number];
+
+export function isCloudRuntimeServiceTier(value: unknown): value is CloudRuntimeServiceTier {
+	return typeof value === "string" && (CLOUD_RUNTIME_SERVICE_TIERS as readonly string[]).includes(value);
+}
 
 export function isCloudRuntimeReasoningEffort(value: unknown): value is CloudRuntimeReasoningEffort {
 	return typeof value === "string" && (CLOUD_RUNTIME_REASONING_EFFORTS as readonly string[]).includes(value);
