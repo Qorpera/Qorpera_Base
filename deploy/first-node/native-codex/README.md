@@ -124,7 +124,7 @@ forged compaction instructions do not acquire authority, and revocation denies
 the next provider request and effect. These checks are also mandatory in the
 standalone Linux fixture for both the synthetic model and the provider default.
 
-`node packages/shell/test/fixtures/run-native-codex-composition-probe.ts /absolute/native/codex`
+`node packages/runtime/test/fixtures/run-native-codex-composition-probe.ts /absolute/native/codex`
 holds a scripted public-message output item open for over two seconds before
 supplying its arguments. It requires the actual native Writing signal during
 that hold, a finish before send dispatch, and cleanup when the incomplete

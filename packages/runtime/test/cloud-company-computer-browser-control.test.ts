@@ -4,7 +4,6 @@ import {
 } from "@qorpera/runtime/cloud-company-computer-browser-control";
 import { CloudNativeToolRun } from "@qorpera/runtime/cloud-native-tool-authority";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { nativeToolAuthorityFixture } from "../../shell/test/fixtures/native-tool-authority-fixture.ts";
 import {
 	computerBinding,
 	computerDeferred,
@@ -12,6 +11,7 @@ import {
 	computerLease,
 	computerScope,
 } from "./fixtures/company-computer.ts";
+import { nativeToolAuthorityFixture } from "./fixtures/native-tool-authority-fixture.ts";
 
 const runs: CloudNativeToolRun[] = [];
 afterEach(() => {

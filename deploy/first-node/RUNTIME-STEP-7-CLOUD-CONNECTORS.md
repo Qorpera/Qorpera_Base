@@ -383,7 +383,7 @@ browser) was already in place; no prompt change.
 
 ## Verification
 
-- `packages/shell/test/cloud-connector-{catalog,github,google,oauth,oauth-http}.test.ts`
+- `packages/runtime/test/cloud-connector-{catalog,github,google,oauth,oauth-http}.test.ts`
   and the existing `cloud-secret-*` tests: adapters against fake providers
   (request shape, reduction, refusals, injection, origin pinning), OAuth
   begin/complete/replay/decline/expiry, broker routes with CORS and redirects,
