@@ -261,6 +261,7 @@ function fetchBoundary(logins: NativeLoginResponse[], statuses: Array<"pending" 
 		status: "pending" as "pending" | "completed" | "expired" | "cancelled",
 		committed: false,
 		recovery: "new" as "new" | "established" | "blocked",
+		recoveryEpochKnown: true,
 		recoveryApproval: "approved" as string,
 		recoveryRequests: [] as Record<string, unknown>[],
 		targetRegistrations: [] as Record<string, unknown>[],
@@ -360,7 +361,7 @@ function fetchBoundary(logins: NativeLoginResponse[], statuses: Array<"pending" 
 			return Response.json({
 				companyId: profileId,
 				computeIdentityId,
-				epoch: control.recovery === "established" ? 1 : 0,
+				epoch: control.recoveryEpochKnown ? (control.recovery === "established" ? 1 : 0) : undefined,
 				blocked: control.recovery === "blocked",
 				canInitialize: control.recovery === "new",
 				recoveryConfiguration: {
@@ -782,6 +783,21 @@ describe("LXD native login gateway", () => {
 		const gateway = new LxdNativeLoginGateway(config(root), lxd, boundary.fetchImplementation);
 		expect((await gateway.handle(loginRequest())).status).toBe(200);
 		expect(boundary.control.targetRegistrations).toHaveLength(0);
+	});
+	it("lets the key alone decide when the recovery state names no epoch: no marker is asked for", async () => {
+		const root = await stateRoot(),
+			lxd = new FakeLxd(),
+			boundary = fetchBoundary([
+				{ status: "awaiting_member", interactionUrl: "https://provider.example/device", userCode: null },
+			]);
+		boundary.control.recovery = "established";
+		boundary.control.recoveryEpochKnown = false;
+		lxd.guestFiles.set("/var/lib/qorpera/identity/qorpera-native-provider-master-key", "present");
+		// No registrar is configured, so a recovery attempt here would answer 503.
+		const gateway = new LxdNativeLoginGateway(config(root), lxd, boundary.fetchImplementation);
+		expect((await gateway.handle(loginRequest())).status).toBe(200);
+		expect(boundary.control.targetRegistrations).toHaveLength(0);
+		expect(boundary.control.recoveryRequests).toHaveLength(0);
 	});
 	it("continues a pending login after another request restored the node's current identity epoch", async () => {
 		const root = await stateRoot(),

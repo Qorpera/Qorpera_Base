@@ -8,6 +8,7 @@ import { HubController } from "../src/app/views/hub.ts";
 import { SettingsView } from "../src/app/views/settings.ts";
 import { CloudRpcError } from "../src/cloud/client.ts";
 import type { HostedAccountEntitlement } from "../src/cloud/types.ts";
+import { setTimeZonePreference } from "../src/ui/preferences.ts";
 import {
 	deferred,
 	file,
@@ -363,6 +364,120 @@ describe("settings session lifecycle", () => {
 		expect(f.api.listFriends).toHaveBeenCalledTimes(2);
 		expect(f.root.querySelector("#settings-content")?.textContent).toContain("Request sent to new@example.invalid.");
 		expect(f.root.querySelector<HTMLInputElement>(".panel-search input")!.value).toBe("");
+	});
+	it("never moves the Friends field: composed text filters the list and the field keeps focus", async () => {
+		history.replaceState(null, "", "/#/");
+		const fixtureState = fixture(),
+			profiles = deferred<(typeof profileA)[]>(),
+			friend = { status: "accepted", direction: "outgoing", since: timestamp } as const;
+		vi.mocked(fixtureState.api.listProfiles).mockReturnValue(profiles.promise);
+		vi.mocked(fixtureState.api.listFriends).mockResolvedValue([
+			{ ...friend, userId: userB.id, email: userB.email!, displayName: "Émile" },
+			{ ...friend, userId: id(44), email: "carl@example.invalid", displayName: "Carl" },
+		]);
+		const f = await setup(fixtureState);
+		open(f.root);
+		click(f.root, "#settings-tab-friends");
+		await draw();
+		const field = f.root.querySelector<HTMLInputElement>(".panel-search input")!,
+			names = () =>
+				[...f.root.querySelectorAll(".settings-dialog .person-row strong")].map((name) => name.textContent);
+		expect(names()).toEqual(["Émile", "Carl"]);
+		// Every removal that took the field out of the page, even if it was put back afterwards.
+		const removed: Node[] = [],
+			observer = new MutationObserver((records) => {
+				for (const record of records) removed.push(...record.removedNodes);
+			}),
+			fieldRemovals = () => {
+				for (const record of observer.takeRecords()) removed.push(...record.removedNodes);
+				return removed.filter((node) => node.contains(field));
+			};
+		observer.observe(f.root, { childList: true, subtree: true });
+		// A dead key (´ then e on a Danish Mac) or an IME composes "é"; the list filters while it composes.
+		field.focus();
+		field.dispatchEvent(new CompositionEvent("compositionstart"));
+		field.value = "é";
+		field.dispatchEvent(new InputEvent("input", { isComposing: true }));
+		await draw();
+		expect(fieldRemovals()).toEqual([]);
+		expect(document.activeElement).toBe(field);
+		expect(names()).toEqual(["Émile"]);
+		// The company list arriving mid-composition selects the open tab again; nothing it shows changed.
+		const row = f.root.querySelector(".settings-dialog .person-row");
+		profiles.resolve([profileA]);
+		await draw();
+		expect(f.root.querySelector<HTMLSelectElement>(".settings-company-picker")!.value).toBe(profileA.profileId);
+		expect(fieldRemovals()).toEqual([]);
+		expect(document.activeElement).toBe(field);
+		expect(field.value).toBe("é");
+		expect(f.root.querySelector(".settings-dialog .person-row")).toBe(row);
+		observer.disconnect();
+	});
+	it("draws the Friends dates again in a time zone chosen while the tab was hidden", async () => {
+		history.replaceState(null, "", "/#/");
+		const fixtureState = fixture();
+		// 23:30 UTC on 5 September is already 6 September in Auckland.
+		vi.mocked(fixtureState.api.listFriends).mockResolvedValue([
+			{
+				status: "accepted",
+				direction: "outgoing",
+				since: "2026-09-05T23:30:00Z",
+				userId: userB.id,
+				email: userB.email!,
+				displayName: "Émile",
+			},
+		]);
+		expect(setTimeZonePreference("UTC")).toBe(true);
+		try {
+			const f = await setup(fixtureState);
+			open(f.root);
+			click(f.root, "#settings-tab-friends");
+			await draw();
+			const row = () => f.root.querySelector(".settings-dialog .person-row")?.textContent;
+			expect(row()).toContain("since Sep 5, 2026");
+			click(f.root, "#settings-tab-general");
+			expect(setTimeZonePreference("Pacific/Auckland")).toBe(true);
+			await draw();
+			click(f.root, "#settings-tab-friends");
+			await draw();
+			expect(row()).toContain("since Sep 6, 2026");
+		} finally {
+			setTimeZonePreference("system");
+		}
+	});
+	it("draws the Friends rows again when the tab is shown again, so a company logo is live", async () => {
+		history.replaceState(null, "", "/#/");
+		const fixtureState = fixture();
+		vi.mocked(fixtureState.api.listIncomingInvitations).mockResolvedValue([
+			{
+				id: id(43),
+				profileId: profileB.profileId,
+				environmentId: profileB.environmentId,
+				profileName: profileB.profileName,
+				environmentName: profileB.environmentName,
+				email: userA.email!,
+				role: "contributor",
+				invitedByUserId: userB.id,
+				createdAt: timestamp,
+				expiresAt: "2099-01-01T00:00:00Z",
+			},
+		]);
+		const f = await setup(fixtureState);
+		open(f.root);
+		click(f.root, "#settings-tab-friends");
+		await draw();
+		const logo = () => f.root.querySelector(".settings-dialog .person-row .company-logo");
+		const first = logo();
+		expect(first?.isConnected).toBe(true);
+		// Off the page the logo's figure stops; a theme or size change would not reach it.
+		click(f.root, "#settings-tab-general");
+		await draw();
+		expect(first?.isConnected).toBe(false);
+		click(f.root, "#settings-tab-friends");
+		await draw();
+		expect(logo()).not.toBeNull();
+		expect(logo()).not.toBe(first);
+		expect(logo()?.isConnected).toBe(true);
 	});
 	it("offers accepted friends in the company invitation picker and sends Add a friend to the Friends tab", async () => {
 		const fixtureState = fixture();

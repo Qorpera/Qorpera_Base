@@ -1,6 +1,6 @@
-// Build the web client into dist/: one bundled ES module, one stylesheet, the
-// static shell, and the reused desktop assets. `--serve` keeps esbuild's dev
-// server up with rebuild-on-request; no framework, no plugin chain.
+// Build the web client into dist/: one bundled ES module, one stylesheet and
+// the static shell with its assets. `--serve` keeps esbuild's dev server up
+// with rebuild-on-request; no framework, no plugin chain.
 import { cpSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { dirname, join, resolve } from "node:path";
@@ -13,7 +13,6 @@ import { webSourceProvenance } from "./provenance.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const dist = join(root, "dist");
-const userland = resolve(root, "../shell/userland");
 const serve = process.argv.includes("--serve");
 const deployment = prepareDeployment({
 	configPath: process.env.QORPERA_WEB_CONFIG,
@@ -42,27 +41,6 @@ for (const page of deployment.notFoundPages) {
 	writeFileSync(join(dist, page), '<!doctype html>\n<meta charset="utf-8">\n<title>Not found</title>\n<p>Not found.</p>\n');
 }
 cpSync(join(viewerRoot, "vendor/NOVNC_LICENSE.txt"), join(dist, "assets/NOVNC_LICENSE.txt"));
-// Reused desktop art. The web app never reads these at build time beyond copying.
-cpSync(join(userland, "fonts"), join(dist, "assets/fonts"), { recursive: true });
-for (const icon of [
-	"icon-plus.svg",
-	"icon-check.svg",
-	"icon-x.svg",
-	"icon-log-out.svg",
-	"icon-settings.svg",
-	"icon-switch-company.svg",
-	"icon-chevron-down.svg",
-	"icon-clock.svg",
-	"icon-attach.svg",
-	"provider-google.svg",
-	"provider-gmail.svg",
-	"provider-drive.svg",
-	"provider-github.svg",
-	"provider-openai.svg",
-	"provider-anthropic.svg",
-]) {
-	cpSync(join(userland, icon), join(dist, "assets", icon));
-}
 
 const version = JSON.parse(readFileSync(join(root, "package.json"), "utf8")).version;
 const boundary = { name: "member-authority-boundary", setup(build) {

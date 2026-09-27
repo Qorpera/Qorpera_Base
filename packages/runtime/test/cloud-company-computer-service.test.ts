@@ -16,7 +16,6 @@ import {
 import { CompanyComputerStartupControl } from "@qorpera/runtime/cloud-company-computer-startup";
 import { CompanyComputerOfficeSupervisor } from "@qorpera/runtime/cloud-company-computer-supervisor";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { nativeToolAuthorityFixture } from "../../shell/test/fixtures/native-tool-authority-fixture.ts";
 import {
 	computerBinding,
 	computerDeferred,
@@ -26,6 +25,7 @@ import {
 	computerRfbServerHello,
 	computerScope,
 } from "./fixtures/company-computer.ts";
+import { nativeToolAuthorityFixture } from "./fixtures/native-tool-authority-fixture.ts";
 
 const linuxGuest = vi.hoisted(() => ({ construct: vi.fn(), ready: vi.fn(), physical: vi.fn() }));
 vi.mock("../src/cloud-company-computer-linux-boundary.ts", () => ({

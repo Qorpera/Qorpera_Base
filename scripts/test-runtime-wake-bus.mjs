@@ -183,7 +183,7 @@ async function verifyDatabase(database, target) {
 	console.log(`Verifying component contracts, concurrency and recovery against ${database}`);
 	sql(database, componentTest);
 	pass(target, "300_runtime_wake_bus.test.sql");
-	const policies = JSON.parse(readFileSync(join(root, "packages/shell/test/fixtures/wake-policies.json"), "utf8"));
+	const policies = JSON.parse(readFileSync(join(root, "packages/runtime/test/fixtures/wake-policies.json"), "utf8"));
 	for (const { scenario, policy, reporting: fixed } of policies) {
 		// A worker-completion continuation is the one policy the kernel selects by source, not by reply policy.
 		const reporting =
