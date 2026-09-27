@@ -97,16 +97,23 @@ describe("conversation model transport", () => {
 			serviceTier: "standard",
 			version: 1,
 		});
+		expect(f.fetch.mock.calls[1]![0]).toBe("https://fixture.invalid/rest/v1/rpc/qorpera_set_session_service_tier");
 		expect(JSON.parse(f.fetch.mock.calls[1]![1]?.body as string)).toEqual({
 			p_session_id: session.sessionId,
-			p_model_id: null,
-			p_expected_version: 0,
 			p_service_tier: "standard",
+			p_expected_version: 0,
 		});
 		// A save that did not come back at the chosen speed is not confirmed.
 		f.fetch.mockResolvedValueOnce(Response.json({ ...model, service_tier: "fast", version: 2 }));
 		await expect(f.control.set(session.sessionId, { serviceTier: "standard" }, 1)).rejects.toThrow("Refresh");
 		await expect(f.control.set(session.sessionId, { serviceTier: "priority" }, 2)).rejects.toThrow("Refresh");
+		// The speed is saved on its own.
+		await expect(
+			f.control.set(session.sessionId, { serviceTier: "fast", reasoningEffort: "high" }, 2),
+		).rejects.toThrow("Refresh");
+		await expect(f.control.set(session.sessionId, { serviceTier: "fast", modelId: "gpt-6-sol" }, 2)).rejects.toThrow(
+			"Refresh",
+		);
 		expect(f.fetch).toHaveBeenCalledTimes(3);
 	});
 

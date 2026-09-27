@@ -74,24 +74,36 @@ select pg_temp.fast_activate('qorpera_test.fast_bundle');
 set role authenticated;
 do $$
 declare v_session uuid := current_setting('qorpera_test.fast_room_session')::uuid; v_result jsonb;
+	v_bad text; v_message text;
 begin
 	v_result := public.qorpera_get_session_model(v_session);
 	if v_result ->> 'service_tier' <> 'fast' or (v_result ->> 'version')::bigint <> 0 then
 		raise exception 'a conversation did not start on Fast: %', v_result; end if;
+	foreach v_bad in array array['priority','default','','Fast'] loop
+		begin
+			perform public.qorpera_set_session_service_tier(v_session,v_bad,0);
+			raise exception 'an unsupported conversation speed was accepted: %', v_bad;
+		exception when invalid_parameter_value then null; end;
+	end loop;
 	begin
-		perform public.qorpera_set_session_model(v_session,null,0,null,'priority');
-		raise exception 'an unsupported conversation speed was accepted';
-	exception when invalid_parameter_value then null; end;
-	begin
-		perform public.qorpera_set_session_model(v_session,null,0,null,null);
-		raise exception 'an empty conversation choice was accepted';
+		perform public.qorpera_set_session_service_tier(v_session,null,0);
+		raise exception 'an empty conversation speed was accepted';
 	exception when invalid_parameter_value then null; end;
 	-- Turning Fast off keeps the default model path and effort.
-	v_result := public.qorpera_set_session_model(v_session,null,0,null,'standard');
+	v_result := public.qorpera_set_session_service_tier(v_session,'standard',0);
 	if v_result <> jsonb_build_object('session_id',v_session,'model_id','gpt-native','reasoning_effort','low',
 		'service_tier','standard','version',1) then
 		raise exception 'turning Fast off did not persist alone: %', v_result; end if;
-	-- A client that predates the switch changes only the model and keeps the speed.
+	-- The speed shares the model's version: a stale switch gets the conflict.
+	begin
+		perform public.qorpera_set_session_service_tier(v_session,'fast',0);
+		raise exception 'a stale conversation speed was accepted';
+	exception when sqlstate 'PGRST' then
+		get stacked diagnostics v_message = message_text;
+		if v_message::jsonb ->> 'code' <> 'QRC01' then
+			raise exception 'a stale speed did not use the application conflict envelope'; end if;
+	end;
+	-- The model and effort setter keeps the speed.
 	v_result := public.qorpera_set_session_model(v_session,'gpt-6-sol',1);
 	if v_result ->> 'model_id' <> 'gpt-6-sol' or v_result ->> 'service_tier' <> 'standard' then
 		raise exception 'a model pick dropped the conversation speed: %', v_result; end if;
@@ -104,7 +116,38 @@ do $$ begin
 	if (select service_tier from public.qorpera_session_models
 		where session_id = current_setting('qorpera_test.fast_room_session')::uuid) <> 'standard' then
 		raise exception 'the conversation speed was not stored'; end if;
+	-- Only members call the setters; the shared writer is private.
+	if has_function_privilege('authenticated','public.qorpera_session_model_writer(uuid)','EXECUTE')
+		or has_function_privilege('anon','public.qorpera_set_session_service_tier(uuid,text,bigint)','EXECUTE')
+		or not has_function_privilege('authenticated','public.qorpera_set_session_service_tier(uuid,text,bigint)','EXECUTE')
+		or to_regprocedure('public.qorpera_set_session_model(uuid,text,bigint,text)') is null then
+		raise exception 'conversation speed setters have the wrong privileges or signatures'; end if;
 end $$;
+-- A viewer or a stranger cannot change the speed.
+update public.qorpera_profile_members set role = 'viewer'
+where profile_id = '16000000-0000-4000-8000-000000000010' and user_id = '16000000-0000-4000-8000-000000000002';
+select set_config('request.jwt.claims',
+	'{"sub":"16000000-0000-4000-8000-000000000002","role":"authenticated"}',false);
+set role authenticated;
+do $$ begin
+	begin
+		perform public.qorpera_set_session_service_tier(current_setting('qorpera_test.fast_room_session')::uuid,'fast',3);
+		raise exception 'a viewer changed the conversation speed';
+	exception when insufficient_privilege then null; end;
+end $$;
+reset role;
+update public.qorpera_profile_members set role = 'contributor'
+where profile_id = '16000000-0000-4000-8000-000000000010' and user_id = '16000000-0000-4000-8000-000000000002';
+select set_config('request.jwt.claims',
+	'{"sub":"58400000-0000-4000-8000-000000000099","role":"authenticated"}',false);
+set role authenticated;
+do $$ begin
+	begin
+		perform public.qorpera_set_session_service_tier(current_setting('qorpera_test.fast_room_session')::uuid,'fast',3);
+		raise exception 'a stranger changed the conversation speed';
+	exception when insufficient_privilege then null; end;
+end $$;
+reset role;
 
 -- The real request, materialization and claim path: a new conversation's
 -- first turn runs Fast, and the host learns it with the run's identity.

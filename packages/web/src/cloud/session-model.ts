@@ -27,7 +27,8 @@ export interface SessionModel {
 }
 
 /** What the member changed: an omitted model, effort or speed keeps the
- * conversation's own (a cloud without effort accepts only a model). */
+ * conversation's own (a cloud without effort accepts only a model). The speed
+ * is saved on its own, never together with a model or an effort. */
 export interface SessionModelSelection {
 	modelId?: string;
 	reasoningEffort?: string;
@@ -78,13 +79,19 @@ export function createWebSessionModel(
 				(selection.reasoningEffort !== undefined &&
 					!(SESSION_EFFORTS as readonly string[]).includes(selection.reasoningEffort)) ||
 				(selection.serviceTier !== undefined &&
-					!(SESSION_SERVICE_TIERS as readonly string[]).includes(selection.serviceTier)) ||
+					(!(SESSION_SERVICE_TIERS as readonly string[]).includes(selection.serviceTier) ||
+						selection.modelId !== undefined ||
+						selection.reasoningEffort !== undefined)) ||
 				!Number.isSafeInteger(selection.expectedVersion) ||
 				selection.expectedVersion < 0 ||
 				selection.expectedVersion === Number.MAX_SAFE_INTEGER)
 		)
 			throw new Error("Invalid conversation model selection.");
-		const method = selection ? "qorpera_set_session_model" : "qorpera_get_session_model";
+		const method = !selection
+			? "qorpera_get_session_model"
+			: selection.serviceTier !== undefined
+				? "qorpera_set_session_service_tier"
+				: "qorpera_set_session_model";
 		return withCloudDeadline(
 			async (deadline) => {
 				const check = () => {
@@ -110,14 +117,15 @@ export function createWebSessionModel(
 					},
 					body: JSON.stringify({
 						p_session_id: sessionId,
-						...(selection
-							? {
-									p_model_id: selection.modelId ?? null,
-									p_expected_version: selection.expectedVersion,
-									...(selection.reasoningEffort ? { p_reasoning_effort: selection.reasoningEffort } : {}),
-									...(selection.serviceTier ? { p_service_tier: selection.serviceTier } : {}),
-								}
-							: {}),
+						...(selection?.serviceTier !== undefined
+							? { p_service_tier: selection.serviceTier, p_expected_version: selection.expectedVersion }
+							: selection
+								? {
+										p_model_id: selection.modelId ?? null,
+										p_expected_version: selection.expectedVersion,
+										...(selection.reasoningEffort ? { p_reasoning_effort: selection.reasoningEffort } : {}),
+									}
+								: {}),
 					}),
 					signal: deadline,
 					redirect: "error",

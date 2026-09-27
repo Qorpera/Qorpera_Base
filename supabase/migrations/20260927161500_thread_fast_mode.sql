@@ -95,15 +95,12 @@ select pg_temp.fast_patch('public.qorpera_get_session_model(uuid)'::regprocedure
 		|| case when v_policy ->> 'fastMode' = 'thread' then jsonb_build_object('service_tier',
 			coalesce(v_choice.service_tier,'fast')) else '{}'::jsonb end;$new$);
 
--- An omitted speed keeps the conversation's speed, so a client that predates
--- the switch still works and a save sends only what the member changed.
-drop function public.qorpera_set_session_model(uuid,text,bigint,text);
-create function public.qorpera_set_session_model(
-	p_session_id uuid,p_model_id text,p_expected_version bigint,p_reasoning_effort text default null,
-	p_service_tier text default null)
-returns jsonb language plpgsql security definer set search_path = '' as $$
-declare v_session public.qorpera_shared_sessions%rowtype; v_choice public.qorpera_session_models%rowtype;
-	v_user uuid := auth.uid();
+-- Who may change a conversation's model, effort or speed, in the lock order of
+-- room post admission (membership and room before the session). Shared by the
+-- two setters; returns the member.
+create function public.qorpera_session_model_writer(p_session_id uuid)
+returns uuid language plpgsql security definer set search_path = '' as $$
+declare v_session public.qorpera_shared_sessions%rowtype; v_user uuid := auth.uid();
 begin
 	if auth.role() is distinct from 'authenticated' or v_user is null then
 		raise exception 'Conversation model requires a member' using errcode = '42501'; end if;
@@ -125,10 +122,22 @@ begin
 	select * into v_session from public.qorpera_shared_sessions where id = p_session_id for update;
 	if not found or v_session.status <> 'open' or not public.qorpera_can_write_session(p_session_id) then
 		raise exception 'Conversation model unavailable' using errcode = '42501'; end if;
-	if (p_model_id is null and p_reasoning_effort is null and p_service_tier is null)
+	return v_user;
+end $$;
+revoke all on function public.qorpera_session_model_writer(uuid) from public,anon,authenticated,service_role;
+
+-- The model and effort setter keeps its signature (activation guards name it)
+-- and its behaviour; its checks now live in the shared writer. It never
+-- touches the speed.
+create or replace function public.qorpera_set_session_model(
+	p_session_id uuid,p_model_id text,p_expected_version bigint,p_reasoning_effort text default null)
+returns jsonb language plpgsql security definer set search_path = '' as $$
+declare v_choice public.qorpera_session_models%rowtype; v_user uuid;
+begin
+	v_user := public.qorpera_session_model_writer(p_session_id);
+	if (p_model_id is null and p_reasoning_effort is null)
 		or (p_model_id is not null and p_model_id not in ('gpt-6-astra','gpt-6-sol','gpt-6-luna'))
 		or (p_reasoning_effort is not null and p_reasoning_effort not in ('low','medium','high'))
-		or (p_service_tier is not null and p_service_tier not in ('fast','standard'))
 		or p_expected_version is null or p_expected_version < 0 then
 		raise exception 'Conversation model is invalid' using errcode = '22023'; end if;
 	select * into v_choice from public.qorpera_session_models where session_id = p_session_id;
@@ -136,15 +145,37 @@ begin
 		raise sqlstate 'PGRST' using message = jsonb_build_object('code','QRC01',
 			'message','Conversation model changed; refresh before retrying','details',null,'hint',null)::text,
 			detail = '{"status":409,"headers":{}}'; end if;
-	insert into public.qorpera_session_models(session_id,model_id,reasoning_effort,service_tier,version,updated_by_user_id)
-	values(p_session_id,p_model_id,p_reasoning_effort,p_service_tier,p_expected_version + 1,v_user)
+	insert into public.qorpera_session_models(session_id,model_id,reasoning_effort,version,updated_by_user_id)
+	values(p_session_id,p_model_id,p_reasoning_effort,p_expected_version + 1,v_user)
 	on conflict(session_id) do update set
 		model_id = coalesce(excluded.model_id,public.qorpera_session_models.model_id),
 		reasoning_effort = coalesce(excluded.reasoning_effort,public.qorpera_session_models.reasoning_effort),
-		service_tier = coalesce(excluded.service_tier,public.qorpera_session_models.service_tier),
 		version = excluded.version,updated_by_user_id = excluded.updated_by_user_id,updated_at = clock_timestamp();
 	return public.qorpera_get_session_model(p_session_id);
 end $$;
-revoke all on function public.qorpera_set_session_model(uuid,text,bigint,text,text)
+
+-- The Fast switch: sets only the speed, on the same version as the model and
+-- effort, so a stale client gets the same conflict and refreshes first.
+create function public.qorpera_set_session_service_tier(
+	p_session_id uuid,p_service_tier text,p_expected_version bigint)
+returns jsonb language plpgsql security definer set search_path = '' as $$
+declare v_choice public.qorpera_session_models%rowtype; v_user uuid;
+begin
+	v_user := public.qorpera_session_model_writer(p_session_id);
+	if p_service_tier is null or p_service_tier not in ('fast','standard')
+		or p_expected_version is null or p_expected_version < 0 then
+		raise exception 'Conversation speed is invalid' using errcode = '22023'; end if;
+	select * into v_choice from public.qorpera_session_models where session_id = p_session_id;
+	if coalesce(v_choice.version,0) <> p_expected_version then
+		raise sqlstate 'PGRST' using message = jsonb_build_object('code','QRC01',
+			'message','Conversation model changed; refresh before retrying','details',null,'hint',null)::text,
+			detail = '{"status":409,"headers":{}}'; end if;
+	insert into public.qorpera_session_models(session_id,service_tier,version,updated_by_user_id)
+	values(p_session_id,p_service_tier,p_expected_version + 1,v_user)
+	on conflict(session_id) do update set service_tier = excluded.service_tier,
+		version = excluded.version,updated_by_user_id = excluded.updated_by_user_id,updated_at = clock_timestamp();
+	return public.qorpera_get_session_model(p_session_id);
+end $$;
+revoke all on function public.qorpera_set_session_service_tier(uuid,text,bigint)
 	from public,anon,authenticated,service_role;
-grant execute on function public.qorpera_set_session_model(uuid,text,bigint,text,text) to authenticated;
+grant execute on function public.qorpera_set_session_service_tier(uuid,text,bigint) to authenticated;
