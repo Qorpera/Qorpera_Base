@@ -557,18 +557,18 @@ The automatic review (2026-09-25 amendment) is unchanged:
   - creating an agent's folder (hiring);
   - archiving or reactivating an agent;
   - creating a `group.md`;
-  - creating or deleting a routine file, or changing its instructions or
-    title. A dynamic routine's own decision at the end of its run (its next
-    run, its conclusion, its effort or reply policy) is saved in the routine
-    file as a new version (16.3) and applies at once, as the 2026-09-25
-    amendment, item 2, allows;
+  - creating, changing or deleting a routine file, except the routine run's
+    own end-of-run decision (its next run, its conclusion, its effort or reply
+    policy). That decision is saved in the routine file as a new version
+    (16.3) and applies at once unless it changes the routine's instructions or
+    title, as the 2026-09-25 amendment, item 2, allows;
   - deleting or moving paths.
 
   They pass it as one unit per change set (the 2026-09-27 amendment "every
   machine works in the company folder", item 6).
 - The review covers changes made by an agent's run or worker, whatever
   carries them: a tool, the mount or a desktop application. A change is
-  classified by its path. A tool that writes these paths is not "internal"
+  classified by its path and what it changes. A tool that writes these paths is not "internal"
   because it is a file write. Members' own changes are not reviewed.
 - Coding sessions stay unreviewed, so in a coding session `agents/` and
   `rules/` are read-only.

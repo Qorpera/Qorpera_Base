@@ -78,7 +78,9 @@ writes to different files never conflict. Silent last-writer-wins is
 forbidden. Everything is approved by default: no path needs a member's
 approval. The automatic review (contract, 2026-09-25 amendment) still checks
 outside effects, hiring, archiving and reactivating agents, new group chats,
-any change to a routine file, deletes and moves, on every write path. Coding
+any change to a routine file (except a routine run's own end-of-run decision
+that leaves its instructions and title alone), deletes and moves, made by an
+agent on any write path. Members' own changes are not reviewed. Coding
 sessions are not reviewed, so they see `agents/` and `rules/` read-only.
 Any change can be restored from the version history. The seeded folders
 cannot be deleted or moved.

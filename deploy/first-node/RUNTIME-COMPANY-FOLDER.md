@@ -228,7 +228,9 @@ All clean units of a boundary land in one revision and one head move.
   of the boundary go to the automatic review together, as one reviewed action
   that lists them all (2026-09-25 amendment). Since 2026-09-27 (contract 5.6)
   delegation units are: a new agent folder, an agent's archive or
-  reactivation, a new `group.md`, and any change to a routine file. The folder service asks the harness host of the
+  reactivation, a new `group.md`, and any change to a routine file except the
+  routine run's own end-of-run decision, which is reviewed only when it
+  changes the routine's instructions or title. The folder service asks the harness host of the
   run that made the change; a Company Computer reaches it through that screen
   holder's run.
   - **Allow:** the units land with the clean ones.
