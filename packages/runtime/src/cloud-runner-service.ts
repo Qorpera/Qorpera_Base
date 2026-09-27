@@ -467,6 +467,9 @@ export async function runEphemeralCloudRunnerService(options: RunEphemeralCloudR
 		await options.runWorker(worker, signal);
 		return;
 	}
+	// Activate before the inbox answers: a provider reports a runner ready once its
+	// inbox is healthy, and the control plane assigns only to an active runner.
+	if (!runner.snapshot().active) await runner.activate(config.platform, config.runnerVersion);
 	let inbox: HttpCloudRunnerAssignmentInbox | undefined;
 	let assignmentSource = options.assignmentSource;
 	if (!assignmentSource && config.assignmentHost && config.assignmentPort && assignmentToken) {

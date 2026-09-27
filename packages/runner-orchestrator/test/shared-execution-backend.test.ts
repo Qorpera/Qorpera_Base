@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { afterEach, describe, expect, it } from "vitest";
 import type { LxdNativeCompanyRuntimeConfig } from "../src/lxd-company-runtime.ts";
 import type { CloudRunnerAssignmentDelivery, CloudRunnerWork } from "../src/orchestrator.ts";
@@ -100,6 +101,8 @@ class FakeUnits implements SharedExecutionUnitControl {
 	readonly stuck = new Set<string>();
 	/** Units that survive even SIGKILL (a process stuck in the kernel). */
 	readonly unkillable = new Set<string>();
+	/** Running units whose health endpoint does not answer yet (still loading). */
+	readonly loading = new Set<string>();
 	async start(unit: string): Promise<void> {
 		this.log.push(`start ${unit}`);
 		this.activeUnits.add(unit);
@@ -283,7 +286,9 @@ async function fixture(
 			const unit =
 				port % 2 === 0 ? `qorpera-shared-run-host@${slot}.service` : `qorpera-shared-runner@${slot}.service`;
 			if (url.pathname === "/healthz")
-				return state.units.activeUnits.has(unit) ? Response.json({ ok: true }) : new Response("", { status: 503 });
+				return state.units.activeUnits.has(unit) && !state.units.loading.has(unit)
+					? Response.json({ ok: true })
+					: new Response("", { status: 503 });
 			if (url.pathname === "/v1/assignment" && init?.method === "POST") {
 				const headers = new Headers(init.headers);
 				state.deliveries.push({
@@ -630,6 +635,22 @@ describe("shared execution provider backend", () => {
 		const retry = await f.backend.acquire(runId, work(), signal).catch((value) => value);
 		expect(retry).toMatchObject({ category: "admission_refused", state: "deferred", reason: "SANDBOX_RETIRING" });
 		expect(f.provisioned).toBe(1);
+	});
+
+	it("starts the runner while the host is still loading and returns only once both answer", async () => {
+		const f = await fixture();
+		f.units.loading.add("qorpera-shared-run-host@0.service");
+		let acquired = false;
+		const acquisition = f.backend.acquire(runId, work(), new AbortController().signal).then((runner) => {
+			acquired = true;
+			return runner;
+		});
+		while (!f.units.log.includes("start qorpera-shared-runner@0.service")) await delay(5);
+		await delay(60);
+		expect(acquired).toBe(false);
+		expect(f.deliveries).toHaveLength(0);
+		f.units.loading.delete("qorpera-shared-run-host@0.service");
+		await expect(acquisition).resolves.toMatchObject({ runnerId });
 	});
 
 	it("restarts the units when a journal left in 'starting' is replayed after a restart", async () => {

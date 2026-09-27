@@ -1559,6 +1559,94 @@ describe("cloud runner orchestrator", () => {
 		expect(local.deliver).toHaveBeenCalledOnce();
 	});
 
+	it("retries an assignment that raced the runner's activation after 50 ms, then doubling", async () => {
+		const control = controlPlane();
+		const assign = control.assign;
+		const racing = new CloudRunnerOrchestratorRequestError(423);
+		const attempts: number[] = [];
+		control.assign = vi.fn(async (...args: Parameters<typeof assign>) => {
+			attempts.push(performance.now());
+			if (attempts.length < 3) throw racing;
+			return assign(...args);
+		});
+		const local = localAdapter();
+		const orchestrator = new CloudRunnerOrchestrator({
+			orchestratorId,
+			controlPlane: control,
+			providerAdapter: local.adapter,
+			clientClaimId: () => claimId,
+			clientAssignmentId: () => assignmentId,
+			createCapability: () => capability,
+		});
+
+		await expect(orchestrator.runOnce()).resolves.toMatchObject({ status: "assigned" });
+		expect(attempts).toHaveLength(3);
+		// 50 ms, then 100 ms: well under the former 250 ms first wait.
+		expect(attempts[1] - attempts[0]).toBeGreaterThanOrEqual(45);
+		expect(attempts[1] - attempts[0]).toBeLessThan(240);
+		expect(attempts[2] - attempts[1]).toBeGreaterThanOrEqual(95);
+		expect(local.deliver).toHaveBeenCalledOnce();
+	});
+
+	it("asks for new work on every poll without waiting for the slower reconcile", async () => {
+		const control = controlPlane(undefined);
+		vi.mocked(control.claimNext)
+			.mockResolvedValueOnce(undefined)
+			.mockResolvedValueOnce(undefined)
+			.mockResolvedValueOnce(undefined)
+			.mockResolvedValueOnce(claim());
+		const local = localAdapter();
+		const controller = new AbortController();
+		local.deliver.mockImplementationOnce(async () => {
+			controller.abort();
+			return undefined;
+		});
+		const orchestrator = new CloudRunnerOrchestrator({
+			orchestratorId,
+			controlPlane: control,
+			providerAdapter: local.adapter,
+			clientClaimId: () => claimId,
+			clientAssignmentId: () => assignmentId,
+			createCapability: () => capability,
+		});
+
+		await orchestrator.run(controller.signal, { pollIntervalMs: 10, reconcileIntervalMs: 60_000 });
+		expect(control.claimNext).toHaveBeenCalledTimes(4);
+		expect(control.reconcileExpired).toHaveBeenCalledOnce();
+		expect(local.reconcile).toHaveBeenCalledOnce();
+		expect(control.retainedClaims).toHaveBeenCalledOnce();
+		expect(local.deliver).toHaveBeenCalledOnce();
+	});
+
+	it("retries a failed reconcile on the next poll and claims nothing until it succeeds", async () => {
+		const control = controlPlane(undefined);
+		vi.mocked(control.reconcileExpired).mockRejectedValueOnce(new Error("Control plane unavailable"));
+		vi.mocked(control.claimNext).mockResolvedValueOnce(claim());
+		const local = localAdapter();
+		const controller = new AbortController();
+		local.deliver.mockImplementationOnce(async () => {
+			controller.abort();
+			return undefined;
+		});
+		const onError = vi.fn();
+		const orchestrator = new CloudRunnerOrchestrator({
+			orchestratorId,
+			controlPlane: control,
+			providerAdapter: local.adapter,
+			clientClaimId: () => claimId,
+			clientAssignmentId: () => assignmentId,
+			createCapability: () => capability,
+		});
+
+		await orchestrator.run(controller.signal, { pollIntervalMs: 10, reconcileIntervalMs: 60_000, onError });
+		expect(onError).toHaveBeenCalledOnce();
+		expect(control.reconcileExpired).toHaveBeenCalledTimes(2);
+		expect(vi.mocked(control.claimNext).mock.invocationCallOrder[0]).toBeGreaterThan(
+			vi.mocked(control.reconcileExpired).mock.invocationCallOrder[1],
+		);
+		expect(local.deliver).toHaveBeenCalledOnce();
+	});
+
 	it.each([401, 503])("isolates persistent enqueue %i failures from later schedules and dispatch", async (status) => {
 		const control = controlPlane();
 		const blocked = scheduleHead();
@@ -1591,7 +1679,7 @@ describe("cloud runner orchestrator", () => {
 			createCapability: () => capability,
 		});
 
-		await orchestrator.run(controller.signal, { pollIntervalMs: 10, onError });
+		await orchestrator.run(controller.signal, { pollIntervalMs: 20, reconcileIntervalMs: 10, onError });
 
 		expect(vi.mocked(control.enqueueRoutineWake).mock.calls.map(([input]) => input.routineId)).toEqual([
 			blocked.routineId,

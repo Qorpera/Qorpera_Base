@@ -202,8 +202,12 @@ that service's HTTPS endpoint. The login service must run inside the declared
 dedicated VM or microVM boundary; a developer host process is not a production
 Member Compute Identity.
 
-`QORPERA_RUNNER_ORCHESTRATOR_POLL_MS` optionally controls the durable
-reconciliation interval. `QORPERA_RUNNER_ORCHESTRATOR_CONCURRENCY` controls the
+`QORPERA_RUNNER_ORCHESTRATOR_POLL_MS` optionally controls how often the service
+asks for new work (default 250 ms). `QORPERA_RUNNER_ORCHESTRATOR_RECONCILE_MS`
+controls how often it renews control, runs the occurrence reconcilers, reconciles
+expired claims and the provider, and re-reads its retained claims (default 2 s);
+a failed reconcile blocks claims and is retried on the next poll.
+`QORPERA_RUNNER_ORCHESTRATOR_CONCURRENCY` controls the
 bounded concurrent dispatcher (default 8, maximum 64). The service deliberately
 has no desktop fallback.
 

@@ -81,6 +81,10 @@
 
 - Added protected retained-workbench adoption and configuration for a distinct resumed boot, binding the original adoption, shutdown archive and pre-boot intent. Root checks retain directory descriptors and measure the current mount without comparing mutable files to their original inventory. Current-boot receipts and credentials are published under the kernel flock; acknowledged missing files are never repaired. The normal Linux boundary accepts the new receipt while preserving current SQL checks. Provider lifecycle composition and ordinary-service admission remain separate work.
 
+### Changed
+
+- The ephemeral runner service activates its runner before its assignment inbox answers, so a provider that reports a runner ready on a healthy inbox never offers the control plane an inactive runner (which refused the assignment with 423 and cost a retry).
+
 ### Fixed
 
 - The company browser's /tmp is now 1 GiB instead of the 64 MiB other office namespaces keep. With `--disable-dev-shm-usage` all of Chromium's shared memory lives there, so renderers failed allocations and crashed on ordinary sites ("Aw, Snap!", reported as SIGSEGV because the crash handler's `alarm()` tripped seccomp).

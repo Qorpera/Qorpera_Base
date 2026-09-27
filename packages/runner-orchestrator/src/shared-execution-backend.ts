@@ -620,13 +620,17 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 					return next;
 				});
 			}
-			// A replay after a restart may find either unit not yet started.
-			if (!(await this.#units.active(this.#unit("host", current.slot), timeout)))
-				await this.#units.start(this.#unit("host", current.slot), timeout);
-			await this.#waitHealthy(current.hostPort, timeout, "native provider host");
-			if (!(await this.#units.active(this.#unit("runner", current.slot), timeout)))
-				await this.#units.start(this.#unit("runner", current.slot), timeout);
-			await this.#waitHealthy(current.inboxPort, timeout, "runner assignment inbox");
+			// A replay after a restart may find either unit not yet started. The runner
+			// unit is ordered after the host unit's start (After=, BindsTo=), not after its
+			// health: it boots and activates while the host loads. The assignment is
+			// delivered only once both answer, so no job reaches a host that is not ready.
+			for (const kind of ["host", "runner"] as const)
+				if (!(await this.#units.active(this.#unit(kind, current.slot), timeout)))
+					await this.#units.start(this.#unit(kind, current.slot), timeout);
+			await Promise.all([
+				this.#waitHealthy(current.hostPort, timeout, "native provider host"),
+				this.#waitHealthy(current.inboxPort, timeout, "runner assignment inbox"),
+			]);
 			return this.#exclusive(async () => {
 				const latest = (await this.#readJournal(current.acquisitionId)) ?? current;
 				if (latest.physicalState === "starting")
@@ -651,7 +655,8 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 			} catch (error) {
 				if (signal.aborted) throw new Error(`Shared execution ${label} did not become ready`, { cause: error });
 			}
-			await delay(100, signal).catch(() => {
+			// Loopback polls are cheap; a sandbox answers within a second.
+			await delay(25, signal).catch(() => {
 				throw new Error(`Shared execution ${label} did not become ready`);
 			});
 		}

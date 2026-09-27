@@ -90,6 +90,8 @@
 
 ### Changed
 
+- The orchestrator asks for new work on every poll (250 ms) and reconciles (control renewal, occurrence reconcilers, expired claims, provider, retained claims) every `QORPERA_RUNNER_ORCHESTRATOR_RECONCILE_MS` (default 2 s) instead of before every claim; a failed reconcile still blocks claims and is retried on the next poll. An assignment that races a runner's activation is retried after 50 ms, doubling to 3 s, instead of after 250 ms.
+- The shared execution service starts a sandbox's runner unit right after its host unit (systemd orders it after the host's start) and waits for both health endpoints together, polling every 25 ms; the assignment is still delivered only once both answer.
 - Shared preparation/configuration journal mechanics while preserving existing preparation authority and event bytes. Configuration records additionally bind the acknowledged preparation observation and use separate schemas and directories.
 - Connected the adoption copier to repeated creation-journal, stopped-VM, physical-policy and cloud mapping checks. A root-protected, boot/plan-bound infrastructure maintenance handoff is required at each checkpoint; it records operator responsibility for excluding other NAS writers and does not acquire a remote lock. Copy completion still grants no boot or activation.
 
