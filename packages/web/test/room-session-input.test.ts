@@ -175,6 +175,12 @@ describe("room session input routing", () => {
 			{ ...target, images: true },
 		);
 		expect(state.get()).toMatchObject({ draft: "", attachments: [] });
+		// Images alone are not a room post; nothing is uploaded or sent.
+		state.set({ attachments: [file] });
+		expect(await f.controller.sendPrompt(session.sessionId, "")).toBe(false);
+		expect(state.get().sendError).toBe("Add a message to send with the images.");
+		expect(state.get().attachments?.[0]).toBe(file);
+		expect(f.write).toHaveBeenCalledTimes(1);
 	});
 	it.each([{ ...roomSession, executionScope: { roomId: "invalid" } }])(
 		"refuses a malformed canonical room scope",

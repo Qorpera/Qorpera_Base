@@ -729,6 +729,12 @@ export class ConversationView {
 			noImages && conversation.attachments?.length
 				? t("Images are not supported in group chats. Use Company File.")
 				: problem && attachmentProblemText(problem);
+		// A post into a room (an agent's thread or a group chat) carries text: the cloud
+		// refuses images without a message, so they wait for one.
+		const needsText =
+			typeof session?.executionScope?.roomId === "string" &&
+			Boolean(conversation.attachments?.length) &&
+			!conversation.draft?.trim();
 		this.#attachments.sync(
 			conversation.attachments ?? [],
 			!canWrite || conversation.sending,
@@ -739,7 +745,9 @@ export class ConversationView {
 						? t("Attachments stay on this device. {issue}", { issue: attachmentIssue })
 						: conversation.sending
 							? t("Uploading images and sending message…")
-							: t("Images stay on this device until you send. Up to 5 images, 8 MiB total.")
+							: needsText
+								? t("Add a message to send with the images.")
+								: t("Images stay on this device until you send. Up to 5 images, 8 MiB total.")
 					: undefined,
 		);
 		// The agent's run is watched quietly; a change in who is working re-reads it.
@@ -766,6 +774,7 @@ export class ConversationView {
 			!canWrite ||
 			conversation.sending ||
 			(!conversation.draft?.trim() && !this.#attachments.count) ||
+			needsText ||
 			Boolean(attachmentIssue);
 		this.#syncSend();
 		this.#attach.disabled = this.#composer.disabled || noImages;

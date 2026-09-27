@@ -1473,6 +1473,8 @@ export class CompanyController {
 				throw new Error(t("The conversation destination changed. Refresh before starting a new request."));
 			if (roomTarget && !roomTarget.images && files.length)
 				throw new Error(t("Images are not supported in team rooms. Use Company File."));
+			// A room post carries text; the cloud refuses images alone.
+			if (roomTarget && !trimmed) throw new Error(t("Add a message to send with the images."));
 		} catch (error) {
 			store.set({ sendError: describeError(error), draft: text });
 			return false;

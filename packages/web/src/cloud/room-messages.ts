@@ -8,7 +8,7 @@ export interface RoomMessageInput {
 	environmentId: string;
 	clientInputId: string;
 	text: string;
-	/** Staged uploads of this input; only an agent thread accepts them. */
+	/** Staged uploads of this input: an agent thread takes them, a group chat since 20260927140000. */
 	images?: readonly { objectSha256: string; bytes: number; mediaType: string }[];
 	sponsorBindingId: string;
 	sponsorVersion: number;

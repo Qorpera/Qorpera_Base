@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AuthController } from "../src/app/auth.ts";
 import { CompanyController } from "../src/app/company.ts";
 import type { Route } from "../src/app/router.ts";
+import { GroupUpdateNotWrittenError } from "../src/app/update-group.ts";
 import { renderRail, type ShellContext } from "../src/app/views/shell.ts";
 import { CloudRpcError } from "../src/cloud/client.ts";
 import type { GroupChatDetails } from "../src/cloud/group-details.ts";
@@ -968,6 +969,26 @@ describe("group chats in the rail", () => {
 		await ready;
 		await settle();
 		expect(deleteGroup).toHaveBeenCalledWith(launchSession.sessionId, launchRoom, expect.any(AbortSignal));
+	});
+	it("sends a rename refused for its participants to the group details", async () => {
+		const updateGroup = vi.fn(async () => {
+			throw new GroupUpdateNotWrittenError(
+				"Choose at least two active agents and current company members, with no duplicate participants.",
+			);
+		});
+		const { rail, ready } = companyWith(...launchCompany({ updateGroup, deleteGroup: vi.fn() }));
+		await ready;
+		await settle();
+		rightClick(groupRow(rail));
+		choose("Rename");
+		const input = document.querySelector<HTMLInputElement>(".name-dialog-input")!;
+		input.value = "Launch plan";
+		input.dispatchEvent(new Event("input"));
+		input.form!.requestSubmit();
+		await settle();
+		expect(rail.textContent).toContain(
+			"Launch could not be renamed. Update its participants in the group details first.",
+		);
 	});
 	it("says in the rail when a group chat could not be deleted", async () => {
 		const deleteGroup = vi.fn(async () => {

@@ -71,17 +71,21 @@ create function public.qorpera_sidebar_is_room(p_profile_id uuid, p_id uuid)
 returns boolean language plpgsql stable security definer set search_path = '' as $$
 begin
 	if public.qorpera_sidebar_room_placeable(p_profile_id, p_id) then return true; end if;
-	perform public.qorpera_sidebar_assert_agent(p_profile_id, p_id);
-	return false;
+	if public.qorpera_sidebar_placeable(p_profile_id, p_id) then return false; end if;
+	-- The Co-Founder keeps its own refusal; anything else is gone or never was here.
+	if p_id is null or public.qorpera_sidebar_is_cofounder(p_profile_id, p_id) then
+		perform public.qorpera_sidebar_assert_agent(p_profile_id, p_id); end if;
+	raise exception 'That agent or group chat is no longer in this company' using errcode = 'P0002';
 end $$;
 
 /** The agents and group chats a section (null: Unassigned) shows, in order. Positioned
- * ones first; then agents in roster order, then group chats oldest first. */
+ * ones first; then agents in roster order, then group chats oldest first, by their
+ * conversations as a client sees them (created_at, then session id). */
 create or replace function public.qorpera_sidebar_container(p_profile_id uuid, p_section_id uuid)
 returns uuid[] language sql stable security definer set search_path = '' as $$
-	select coalesce(array_agg(item.id order by item.position nulls last, item.kind, item.created_at, item.id), '{}')
+	select coalesce(array_agg(item.id order by item.position nulls last, item.kind, item.created_at, item.tiebreak), '{}')
 	from (
-		select staff.staff_agent_id as id, placement.position, 0 as kind, staff.created_at
+		select staff.staff_agent_id as id, placement.position, 0 as kind, staff.created_at, staff.staff_agent_id as tiebreak
 		from public.qorpera_profile_staff staff
 		left join public.qorpera_company_sidebar_placements placement
 			on placement.profile_id = staff.profile_id and placement.staff_agent_id = staff.staff_agent_id
@@ -89,8 +93,9 @@ returns uuid[] language sql stable security definer set search_path = '' as $$
 			and not public.qorpera_sidebar_is_cofounder(staff.profile_id, staff.staff_agent_id)
 			and placement.section_id is not distinct from p_section_id
 		union all
-		select room.id, placement.position, 1, room.created_at
+		select room.id, placement.position, 1, coalesce(session.created_at, room.created_at), coalesce(session.id, room.id)
 		from public.qorpera_company_rooms room
+		left join public.qorpera_shared_sessions session on session.id = room.session_id
 		left join public.qorpera_company_sidebar_room_placements placement
 			on placement.profile_id = room.profile_id and placement.room_id = room.id
 		where room.profile_id = p_profile_id and room.bound_staff_agent_id is null and room.status = 'active'

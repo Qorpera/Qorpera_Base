@@ -309,6 +309,8 @@ export const WORKSPACE: Record<string, string> = {
 	"Delete the section {name}? Its agents and group chats move to Unassigned, for everyone in the company.":
 		"Slet sektionen {name}? Dens agenter og gruppechats flyttes til Uden sektion for alle i virksomheden.",
 	"Rename group chat": "Omdøb gruppechat",
+	"{name} could not be renamed. Update its participants in the group details first.":
+		"{name} kunne ikke omdøbes. Opdater først deltagerne i gruppens detaljer.",
 	"Group chat name": "Gruppechattens navn",
 	"Delete {name}? The group chat is removed for everyone. This cannot be undone.":
 		"Slet {name}? Gruppechatten fjernes for alle. Det kan ikke fortrydes.",

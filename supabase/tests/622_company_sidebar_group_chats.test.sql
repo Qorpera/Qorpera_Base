@@ -150,6 +150,16 @@ begin
 	-- An agent's own thread, an unknown room and mixed-up requests are refused.
 	perform pg_temp.member_error(v_owner,jsonb_build_object('action','move_room','roomId',v_thread,'sectionId',null),'P0002');
 	perform pg_temp.member_error(v_owner,jsonb_build_object('action','set_pins','order',jsonb_build_array(v_thread)),'P0002');
+	begin
+		perform pg_temp.member_sidebar(v_owner,jsonb_build_object('action','set_pins','order',
+			jsonb_build_array('62200000-0000-4000-8000-000000000099')));
+		raise exception 'an unknown id was pinned';
+	exception when sqlstate 'P0002' then
+		reset role;
+		perform pg_temp.path_claims('service_role');
+		perform pg_temp.wake_assert(sqlerrm = 'That agent or group chat is no longer in this company',
+			'A pin of something gone says so for both kinds');
+	end;
 	perform pg_temp.member_error(v_owner,jsonb_build_object('action','set_hidden','roomId',v_thread,'hidden',true),'P0002');
 	perform pg_temp.member_error(v_owner,jsonb_build_object('action','move_room','roomId',
 		'62200000-0000-4000-8000-000000000099','sectionId',null),'P0002');

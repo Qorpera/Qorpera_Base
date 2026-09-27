@@ -487,6 +487,12 @@ describe("conversation execution account", () => {
 		await settle();
 		expect(f.company.conversation(session.sessionId).get().attachments).toEqual([image, image]);
 		expect(f.company.roomTargetFor(session.sessionId)).toMatchObject({ agentThread: false, images: true });
+		// A room post carries text: images wait for a message.
+		expect(f.send().disabled).toBe(true);
+		expect(f.view.el.querySelector(".composer")!.textContent).toContain("Add a message to send with the images.");
+		f.company.conversation(session.sessionId).set({ draft: "Here is the banner" });
+		await settle();
+		expect(f.send().disabled).toBe(false);
 		f.view.el.querySelector<HTMLButtonElement>(".composer-more")!.click();
 		const menu = f.view.el.querySelector<HTMLElement>(".composer-menu")!;
 		const attachItem = [...menu.querySelectorAll<HTMLButtonElement>("button")].find(

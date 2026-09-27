@@ -1215,11 +1215,17 @@ async function renameGroup(
 		await company.refreshSessions();
 	} catch (error) {
 		if (company.signal.aborted) return;
-		// A check before anything was written says what to do in the member's words.
+		// A check before anything was written says what to do in the member's words. A group
+		// whose participants no longer pass (an agent left the company) is fixed in its details.
 		company.reportRailError(
-			error instanceof GroupUpdateNotWrittenError && error.message
-				? error.message
-				: t("{name} could not be renamed.", { name: latest.name }),
+			!(error instanceof GroupUpdateNotWrittenError) || !error.message
+				? t("{name} could not be renamed.", { name: latest.name })
+				: error.message ===
+						t("Choose at least two active agents and current company members, with no duplicate participants.")
+					? t("{name} could not be renamed. Update its participants in the group details first.", {
+							name: latest.name,
+						})
+					: error.message,
 		);
 	}
 }
