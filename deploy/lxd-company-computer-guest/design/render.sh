@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Renders the dock icons (112x112 PNG, transparent) from dock-icons.js into
-# ./icons and the look checks ./mock.png and ./mock-browser.png from mock.html, with a local headless
+# ./icons and the look checks ./mock.png, ./mock-browser.png and ./mock-states.png from mock.html, with a local headless
 # Chrome. Nothing here ships to a guest: qorpera-screen-session carries the
 # icons as base64 (guest code reaches existing computers; new files do not).
 # Every run also rewrites the block between the DOCK-ICONS markers of
@@ -10,7 +10,7 @@ set -euo pipefail
 # a test compares ./icons with what the wrapper writes).
 here=$(cd "$(dirname "$0")" && pwd -P)
 chrome=${CHROME:-/Applications/Google Chrome.app/Contents/MacOS/Google Chrome}
-icons=(browser:idle browser:launching browser:running browser:failed files:idle files:running terminal:idle terminal:running)
+icons=(browser:idle browser:launching browser:launching-2 browser:running browser:failed files:idle files:running terminal:idle terminal:running)
 embed() {
 	local icon session="${here}/../qorpera-screen-session" block
 	block=$(mktemp)
@@ -37,5 +37,7 @@ done
 	--screenshot="${here}/mock.png" "file://${here}/mock.html" >/dev/null 2>&1
 "${chrome}" --headless=new --hide-scrollbars --window-size=1920,1200 \
 	--screenshot="${here}/mock-browser.png" "file://${here}/mock.html?browser=1" >/dev/null 2>&1
+"${chrome}" --headless=new --hide-scrollbars --window-size=1920,1200 \
+	--screenshot="${here}/mock-states.png" "file://${here}/mock.html?states=1" >/dev/null 2>&1
 embed
 ls -l "${here}/icons" "${here}"/mock*.png

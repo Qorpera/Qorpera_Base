@@ -32,8 +32,8 @@ marked with `countComplete: false` and an uncertain-record count; that count
 is diagnostic records, not distinct additional jobs.
 
 No-job classification is not a CPU-idle measurement and never changes capacity.
-Use `qorpera_runtime_node_capacity` for whole admissible slots and its own
-observation time. This allocation query cannot authorize work, release capacity,
+Use `qorpera_runtime_node_capacity` for free CPU/RAM (`freeCpuMillis`,
+`freeMemoryBytes`), whole admissible slots and its own observation time. This allocation query cannot authorize work, release capacity,
 or turn unused CPU into spare computer slots. Overflow remains unavailable.
 
 Hardware totals and VM inventory remain separate from diagnostic measurements.

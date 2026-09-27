@@ -2,16 +2,51 @@ import { createHash, randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
 
 export const CLOUD_RUNTIME_OBSERVATION_SCHEMA = "qorpera.runtime-observation/v1";
-export const CLOUD_RUNTIME_OPERATIONS = [
-	"model_turn",
-	"model_request",
+/** Runtime-owned tools observed under their own registered name. Connector tools
+ * are observed as `connector`; any other name is `unknown_tool`. */
+export const CLOUD_RUNTIME_TOOL_OPERATIONS = [
 	"company_read",
 	"company_list",
 	"company_write",
 	"company_mkdir",
 	"company_delete",
-	"company_context",
 	"send_message",
+	"ask_member",
+	"read_context",
+	"send_coworker_message",
+	"computer_start",
+	"computer_screen",
+	"computer_browser",
+	"computer_desktop",
+	"computer_shell",
+	"computer_screenshot",
+	"computer_transfer",
+	"hire_agent",
+	"create_group_chat",
+	"manage_routine",
+	"decide_routine",
+	"report_work",
+	"manage_todo",
+	"manage_worker",
+	"coding_run_command",
+	"coding_read_command",
+	"coding_cancel_command",
+	"coding_finish",
+	"coding_ask",
+	// Agent memory (runtime Step 6, Grok Bot shape).
+	"update_memory",
+	"recall_memory",
+	// Company sidebar sections, shared with members (2026-09-24).
+	"organize_sidebar",
+	// Auto-review (v130): an agent adds an Ask first rule for its member.
+	"add_review_rule",
+] as const;
+/** Closed vocabulary; the SQL ingestion function checks the same list. */
+export const CLOUD_RUNTIME_OPERATIONS = [
+	"model_turn",
+	"model_request",
+	...CLOUD_RUNTIME_TOOL_OPERATIONS,
+	"company_context",
 	"message_composition",
 	"connector",
 	"unknown_tool",
@@ -19,6 +54,8 @@ export const CLOUD_RUNTIME_OPERATIONS = [
 	"context_authority",
 	"native_result_fence",
 	"diagnostic_export",
+	// Auto-review (v130): the reviewer's own model turn before an acting call.
+	"action_review",
 ] as const;
 export const CLOUD_RUNTIME_OUTCOMES = [
 	"succeeded",
@@ -45,9 +82,18 @@ export const CLOUD_RUNTIME_ERROR_CATEGORIES = [
 	"invalid_response",
 	"unknown",
 	"export_unavailable",
+	// Auto-review (v130): why an acting call did not run.
+	"approval_pending",
+	"approval_declined",
+	"review_denied",
+	"review_unavailable",
+	// A Company File write or mkdir whose folder does not exist (20260926203300).
+	"parent_missing",
 ] as const;
 
 export type CloudRuntimeOperation = (typeof CLOUD_RUNTIME_OPERATIONS)[number];
+/** The name a runtime-owned tool must register under; factories assert it with `satisfies`. */
+export type CloudRuntimeToolOperation = (typeof CLOUD_RUNTIME_TOOL_OPERATIONS)[number];
 export type CloudRuntimeOutcome = (typeof CLOUD_RUNTIME_OUTCOMES)[number];
 export type CloudRuntimeErrorCategory = (typeof CLOUD_RUNTIME_ERROR_CATEGORIES)[number];
 /** A safe classification from a trusted boundary, never a provider's diagnostic text. */
@@ -209,6 +255,15 @@ export function assertCloudRuntimeObservationReceipt(
 		new Date(`${row.ingestedAt.slice(0, 19)}.000Z`).toISOString().slice(0, 19) !== row.ingestedAt.slice(0, 19)
 	)
 		throw new CloudRuntimeDiagnosticError("invalid_response", "Runtime observation acknowledgement unavailable");
+}
+
+/** Names an invocation by the registered tool, never by the model-supplied name. */
+export function cloudRuntimeToolOperation(
+	tool: { readonly name: string; readonly source: string } | undefined,
+): CloudRuntimeOperation {
+	if (!tool) return "unknown_tool";
+	if (tool.source === "connector") return "connector";
+	return CLOUD_RUNTIME_TOOL_OPERATIONS.find((value) => value === tool.name) ?? "unknown_tool";
 }
 
 /** Correlates logical retries without retaining a model-supplied call/operation key. */

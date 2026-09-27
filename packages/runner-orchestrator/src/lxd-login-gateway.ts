@@ -1,5 +1,5 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual, X509Certificate } from "node:crypto";
-import { lstat, mkdir, readdir } from "node:fs/promises";
+import { lstat, mkdir, readdir, rename, unlink } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { isIP } from "node:net";
 import { isAbsolute, join, resolve } from "node:path";
@@ -41,6 +41,8 @@ const PROFILE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/;
 const STORAGE_SIZE_PATTERN = /^[1-9][0-9]*(?:KiB|MiB|GiB|TiB)$/;
 const MAX_REQUEST_BYTES = 64 * 1024;
 const MAX_RESPONSE_BYTES = 64 * 1024;
+/** Released journals move here, inside the state root, out of every scan. */
+const JOURNAL_ARCHIVE = "archive";
 
 type NativeComputeOwnershipKind = "member" | "company" | "department" | "security_boundary";
 
@@ -85,6 +87,8 @@ const RECOVERY_MASTER_KEY_PATH = "/var/lib/qorpera/identity/qorpera-native-provi
 /** The guest writes this marker when a recovery completes here (identityRecoveryEpochFilename in the runtime). */
 const recoveryEpochMarkerPath = (epoch: number): string =>
 	`/var/lib/qorpera/identity/qorpera-identity-recovery-${epoch}.json`;
+/** An approved restore retained in this guest can be resumed by the same login. */
+class LoginRecoveryPending extends Error {}
 /** RSA-3072 recipient key generated inside the pinned guest; only the public half is read back. */
 const RECOVERY_KEYGEN_SCRIPT = [
 	"set -e; umask 077",
@@ -203,11 +207,24 @@ export interface LxdNativeLoginGatewayConfig {
 	/** How long a new sign-in waits for the member's replaced sign-in to give its machine back (default 120 s). */
 	identityReleaseWaitMs?: number;
 	loginPreparingAfterMs?: number;
+	/** How long a released journal stays in the scanned root before it is archived (default 24 h).
+	 * A login capability lives at most an hour and an account refresh five minutes. */
+	releasedJournalRetentionMs?: number;
 }
 
 function record(value: unknown, label: string): Record<string, unknown> {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} is invalid`);
 	return value as Record<string, unknown>;
+}
+
+async function present(path: string): Promise<boolean> {
+	try {
+		await lstat(path);
+		return true;
+	} catch (error) {
+		if (!code(error, "ENOENT")) throw error;
+		return false;
+	}
 }
 
 function exactKeys(input: Record<string, unknown>, allowed: readonly string[], label: string): void {
@@ -521,6 +538,11 @@ export class LxdNativeLoginGateway {
 	readonly #lxd: LxdClient & Pick<LxdTrackedClient, "submitInstanceOperation" | "inspectInstanceOperation">;
 	readonly #fetch: ServiceHttpFetch;
 	readonly #serial = new Map<string, Promise<void>>();
+	/** Every sign-in and account refresh leaves its journal on disk, released. A released
+	 * journal accepts no further event, so scans read it once per process, not on every
+	 * pass (23 Sep 2026: 1 084 of them kept node 1's provider busy on one core), and
+	 * reconcile archives it once it is old. */
+	readonly #released = new Map<string, { computeIdentityId: string; releasedAt: number }>();
 
 	constructor(
 		config: LxdNativeLoginGatewayConfig,
@@ -587,7 +609,10 @@ export class LxdNativeLoginGateway {
 		const settled = await (running
 			? withBudget(running, budgetMs)
 			: withBudget(this.#startRoute(login, authority), budgetMs));
-		if (settled.state === "pending")
+		if (
+			settled.state === "pending" ||
+			(settled.state === "rejected" && settled.error instanceof LoginRecoveryPending)
+		)
 			return json(
 				refresh
 					? { schema: NATIVE_ACCOUNT_REFRESH_RESULT_SCHEMA, request_id: login.loginId, status: "preparing" }
@@ -668,12 +693,11 @@ export class LxdNativeLoginGateway {
 			journal = await LxdLoginJournal.open(this.#config.stateRoot, login.loginId, this.#lxd);
 		} catch (error) {
 			if (!code(error, "ENOENT")) throw error;
-			const retained = await lstat(join(this.#config.stateRoot, login.loginId)).catch((error) => {
-				if (!code(error, "ENOENT")) throw error;
-				return undefined;
-			});
-			if (retained) throw new Error("LOGIN_JOURNAL_UNCONFIRMED");
+			if (await present(join(this.#config.stateRoot, login.loginId))) throw new Error("LOGIN_JOURNAL_UNCONFIRMED");
 			if (authority.status === "completed") return this.#completed(login.loginId);
+			// An archived journal was released: its login is over, never allocated again.
+			if (await present(join(this.#config.stateRoot, JOURNAL_ARCHIVE, login.loginId)))
+				throw new Error("LOGIN_ALLOCATION_CLOSED");
 			// Legacy identity-keyed VMs have no trustworthy physical allocation.
 			// Preserve them and refuse another attachment until explicitly reconciled.
 			if (
@@ -958,12 +982,15 @@ export class LxdNativeLoginGateway {
 	async #releaseReplaced(login: NativeLoginRequest, signal: AbortSignal): Promise<void> {
 		for (const name of (await readdir(this.#config.stateRoot)).sort()) {
 			signal.throwIfAborted();
-			if (!LOGIN_UUID.test(name) || name === login.loginId) continue;
+			if (!LOGIN_UUID.test(name) || name === login.loginId || this.#released.has(name)) continue;
 			try {
 				const journal = await LxdLoginJournal.open(this.#config.stateRoot, name, this.#lxd);
-				if (journal.binding.computeIdentityId !== login.computeIdentityId) continue;
 				const state = await journal.state();
-				if (state.releasedAt) continue;
+				if (state.releasedAt) {
+					this.#remember(name, journal, state.releasedAt);
+					continue;
+				}
+				if (journal.binding.computeIdentityId !== login.computeIdentityId) continue;
 				const description = await this.#machineDescription(journal.binding, signal);
 				if (state.closing || description.cleanupRequired) await this.#cleanup(journal, signal);
 			} catch {
@@ -980,26 +1007,67 @@ export class LxdNativeLoginGateway {
 			unconfirmed = 0;
 		for (const name of (await readdir(this.#config.stateRoot)).sort()) {
 			signal.throwIfAborted();
+			if (name === JOURNAL_ARCHIVE) continue;
 			if (!LOGIN_UUID.test(name)) {
 				unconfirmed++;
 				continue;
 			}
 			scanned++;
 			try {
-				const journal = await LxdLoginJournal.open(this.#config.stateRoot, name, this.#lxd);
-				await this.#exclusive(journal.binding.computeIdentityId, async () => {
-					const state = await journal.state();
-					if (state.releasedAt) return;
-					if (await this.#retireOrphan(journal, signal)) return;
-					const description = await this.#machineDescription(journal.binding, signal);
-					if (state.closing || description.cleanupRequired) await this.#cleanup(journal, signal);
-				});
+				let released = this.#released.get(name);
+				if (!released) {
+					const journal = await LxdLoginJournal.open(this.#config.stateRoot, name, this.#lxd);
+					const releasedAt = await this.#exclusive(journal.binding.computeIdentityId, async () => {
+						const state = await journal.state();
+						if (state.releasedAt) return state.releasedAt;
+						if (!(await this.#retireOrphan(journal, signal))) {
+							const description = await this.#machineDescription(journal.binding, signal);
+							if (!state.closing && !description.cleanupRequired) return null;
+							await this.#cleanup(journal, signal);
+						}
+						// Orphan retirement and cleanup release the journal or throw.
+						return (await journal.state()).releasedAt;
+					});
+					if (!releasedAt) continue;
+					released = this.#remember(name, journal, releasedAt);
+				}
+				if (Date.now() - released.releasedAt >= (this.#config.releasedJournalRetentionMs ?? 24 * 60 * 60_000))
+					await this.#exclusive(released.computeIdentityId, () => this.#archive(name));
 			} catch {
 				signal.throwIfAborted();
 				unconfirmed++;
 			}
 		}
 		return { scanned, unconfirmed };
+	}
+
+	#remember(name: string, journal: LxdLoginJournal, releasedAt: string) {
+		const released = { computeIdentityId: journal.binding.computeIdentityId, releasedAt: Date.parse(releasedAt) };
+		this.#released.set(name, released);
+		return released;
+	}
+
+	/** Moves a released journal out of the scanned root with its history, and deletes its bridge token, which
+	 * died with its machine. A later request for its login finds it in the archive and is refused like a
+	 * released one. */
+	async #archive(name: string): Promise<void> {
+		const archive = join(this.#config.stateRoot, JOURNAL_ARCHIVE);
+		try {
+			await mkdir(archive, { mode: 0o700 });
+			await syncDirectory(this.#config.stateRoot);
+		} catch (error) {
+			if (!code(error, "EEXIST")) throw error;
+		}
+		await checkDirectory(archive);
+		if (await present(join(archive, name))) throw new Error("LOGIN_JOURNAL_ARCHIVE_CONFLICT");
+		await rename(join(this.#config.stateRoot, name), join(archive, name));
+		await unlink(join(archive, name, "bridge.json")).catch((error) => {
+			if (!code(error, "ENOENT")) throw error;
+		});
+		await syncDirectory(join(archive, name));
+		await syncDirectory(archive);
+		await syncDirectory(this.#config.stateRoot);
+		this.#released.delete(name);
 	}
 
 	async #ensureIdentityVolume(computeIdentityId: string, signal?: AbortSignal): Promise<boolean> {
@@ -1159,8 +1227,12 @@ export class LxdNativeLoginGateway {
 			(epoch === null ||
 				epoch === 0 ||
 				(await this.#guestFileExists(instanceName, recoveryEpochMarkerPath(epoch), signal)))
-		)
+		) {
+			// Another request may have restored this volume after the pending login
+			// was created. Reconcile its pin before bootstrap on the current epoch.
+			if (epoch !== null && epoch > 0) await this.#repinLogin(binding, signal);
 			return;
+		}
 		const registrar = this.#config.identityRecoveryRegistrarCapability,
 			guestManifestSha256 = this.#config.guestManifestSha256,
 			configuration = state.recoveryConfiguration;
@@ -1251,7 +1323,7 @@ export class LxdNativeLoginGateway {
 		const notBefore = recovery.notBefore ? Date.parse(recovery.notBefore) : Number.NaN;
 		if (Number.isFinite(notBefore)) {
 			const delayMs = notBefore + 2000 - Date.now();
-			if (delayMs > waitMs) throw new Error("LOGIN_IDENTITY_RECOVERY_DEFERRED");
+			if (delayMs > waitMs) throw new LoginRecoveryPending("LOGIN_IDENTITY_RECOVERY_DEFERRED");
 			if (delayMs > 0) await delay(delayMs, undefined, { signal });
 		}
 		await this.#restoreInGuest(instanceName, recovery.recoveryId, recovery.epoch, signal);
@@ -1259,7 +1331,7 @@ export class LxdNativeLoginGateway {
 		console.error(`LXD native login identity recovered (login ${binding.loginId}, node ${nodeId})`);
 	}
 
-	/** The login's own recovery advanced the identity's generation past the one
+	/** A completed recovery advanced the identity's generation past the one
 	 * the session was pinned to; the backend re-pins it so the login's backup
 	 * stage and completion run on the restored generation. */
 	async #repinLogin(binding: LxdLoginBinding, signal: AbortSignal): Promise<void> {
@@ -1331,7 +1403,7 @@ export class LxdNativeLoginGateway {
 			console.error(
 				`LXD native login identity restore did not complete (recovery ${recoveryId}); the next post retries`,
 			);
-			throw new Error("LOGIN_IDENTITY_RECOVERY_PENDING");
+			throw new LoginRecoveryPending("LOGIN_IDENTITY_RECOVERY_PENDING");
 		}
 		if (result?.status !== "completed" || result.epoch !== epoch) throw new Error("LOGIN_IDENTITY_RECOVERY_FAILED");
 		await this.#lxd

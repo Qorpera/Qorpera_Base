@@ -184,6 +184,8 @@ export async function testOfficeResetChain({stop,attestation,scope,binding,servi
  const text=x=>`'${x.replaceAll("'","''")}'`;
  const dispose=(doc=document,over={})=>`select public.qorpera_administratively_dispose_office_reset_delete(${text(typeof doc==='string'?doc:JSON.stringify(doc))},${over.office??pins.office},${over.reset??pins.reset},${over.provider??pins.provider},${over.cap??pins.cap});`;
  const auditCount=()=>Number(execute('select count(*) from public.qorpera_office_delete_dispositions;'));
+ // Bundles by manifest digest: each manifest is ~250 KB, and the whole history
+ // would outgrow the driver's 8 MiB output buffer; the digest still catches any change.
  const snapshot=()=>execute(`select jsonb_build_object('allocations',(select jsonb_agg(x order by id) from public.qorpera_runtime_machine_allocations x),
   'demands',(select jsonb_agg(x order by allocation_id) from public.qorpera_runtime_node_demands x),
   'office',(select jsonb_agg(x order by id) from public.qorpera_runtime_offices x),'provider',(select jsonb_agg(x order by office_id) from public.qorpera_runtime_office_providers x),
@@ -191,7 +193,7 @@ export async function testOfficeResetChain({stop,attestation,scope,binding,servi
   'package',(select jsonb_agg(x order by id) from public.qorpera_office_package_provisions x),
   'capability',(select jsonb_agg(x order by allocation_id) from public.qorpera_office_package_capabilities x),
   'baseline',(select jsonb_agg(x order by allocation_id) from public.qorpera_office_package_baselines x),
-  'bundle',(select jsonb_agg(x order by version) from public.qorpera_runtime_bundles x),'activeBundle',(select to_jsonb(x) from public.qorpera_active_runtime_bundle x),
+  'bundle',(select jsonb_agg((to_jsonb(x)-'manifest')||jsonb_build_object('manifestSha256',encode(sha256(convert_to(x.manifest::text,'UTF8')),'hex')) order by version) from public.qorpera_runtime_bundles x),'activeBundle',(select to_jsonb(x) from public.qorpera_active_runtime_bundle x),
   'events',(select jsonb_agg(x order by sequence) from public.qorpera_runtime_office_reset_events x where sequence<5));`);
  const preservedAdmin=snapshot();
  for(const role of [service,'',`set session authorization service_role;${owner}`])await deny(dispose(),role);
@@ -263,7 +265,8 @@ export async function testOfficeResetChain({stop,attestation,scope,binding,servi
  // phase challenge still requires an explicit subsequent unpause.
  const created=physical('root_created',plan.commands.createCommandId,{instanceSha256:predecessor.startup.instanceSha256});
  await refuse(prepare('root_created',fresh(),officeDigest(created)),/restart authority/);
- execute(`${owner}select public.qorpera_set_company_execution_pause('${scope.companyId}',false,'disposable continuation');`);
+ // The pause is an operator brake: the operator session acts with the owner's claims.
+ execute(`${owner}reset role;select public.qorpera_set_company_execution_pause('${scope.companyId}',false,'disposable continuation');`);
  const nc=fresh();call(prepare('root_created',nc,officeDigest(created)));call(ack(nc,created));
  assert.equal(reset().phase,'root_created');assert.equal(auditCount(),1);
  assert.deepEqual(call(dispose(),owner),received); // immutable historical replay only, no renewal

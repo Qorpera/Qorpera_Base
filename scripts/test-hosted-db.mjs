@@ -25,15 +25,17 @@ export function sortMigrationNames(names) {
 }
 
 /** A test may begin with `-- @fixture <file> until "<marker>"` to run after another test's
- * fixture section instead of copying it. The marker line itself is not included. */
-export function expandTestFixture(name, read) {
+ * fixture section instead of copying it. The marker line itself is not included. The other
+ * test may itself run after a third one; a cycle is refused. */
+export function expandTestFixture(name, read, chain = []) {
 	const source = read(name);
 	const directive = /^-- @fixture ([0-9a-z_.-]+\.test\.sql) until "([^"\n]+)"\n/.exec(source);
 	if (!directive) return source;
 	const [line, fixtureName, marker] = directive;
-	const fixture = read(fixtureName);
+	if (fixtureName === name || chain.includes(fixtureName)) throw new Error(`Test fixture is unavailable: ${fixtureName}`);
+	const fixture = expandTestFixture(fixtureName, read, [...chain, name]);
 	const end = fixture.indexOf(marker);
-	if (fixtureName === name || end < 0) throw new Error(`Test fixture is unavailable: ${fixtureName}`);
+	if (end < 0) throw new Error(`Test fixture is unavailable: ${fixtureName}`);
 	return fixture.slice(0, end) + source.slice(line.length);
 }
 

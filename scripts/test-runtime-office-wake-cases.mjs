@@ -65,7 +65,7 @@ export async function testOfficeWake({ setup, intent, service, owner, execute, l
     or exists(select 1 from public.qorpera_wake_occurrences where source_kind='office-activation') then raise exception 'Revoked source admitted an office wake'; end if;
    end $$; rollback;`);
  }
- execute(`begin; ${owner} select public.qorpera_set_company_execution_pause('${setup.identity.companyId}',true,'pending office wake');
+ execute(`begin; ${owner} reset role; select public.qorpera_set_company_execution_pause('${setup.identity.companyId}',true,'pending office wake');
   reset role; ${service} ${materialize} reset role; do $$ begin
   if exists(select 1 from public.qorpera_runtime_office_start_waiters where state<>'waiting')
    or exists(select 1 from public.qorpera_wake_occurrences where source_kind='office-activation') then raise exception 'Paused office wake was delivered'; end if;
@@ -132,7 +132,7 @@ export async function testOfficeWake({ setup, intent, service, owner, execute, l
   `update public.qorpera_runtime_machine_allocations set released_at=clock_timestamp() where office_id='${setup.descriptor.scope.companyComputerId}';`,
  ];
  for(const change of rejected) assert.equal(execute(`begin; ${change} select public.qorpera_run_wake_authorized('${wake.run_id}'); rollback;`),"f");
- execute(`begin; ${owner} select public.qorpera_set_company_execution_pause('${setup.identity.companyId}',true,'offline continuation test'); reset role; do $$ begin if public.qorpera_run_wake_authorized('${wake.run_id}') then raise exception 'Paused office wake retained authority'; end if; end $$; rollback;`);
+ execute(`begin; ${owner} reset role; select public.qorpera_set_company_execution_pause('${setup.identity.companyId}',true,'offline continuation test'); reset role; do $$ begin if public.qorpera_run_wake_authorized('${wake.run_id}') then raise exception 'Paused office wake retained authority'; end if; end $$; rollback;`);
  for(const sql of ["select * from public.qorpera_runtime_office_start_waiters;","select public.qorpera_drain_office_activation_wakes(32);"]){
   const [denied]=await race([`${service} ${sql}`]); assert.notEqual(denied.code,0); assert.match(denied.error,/permission denied/);
  }

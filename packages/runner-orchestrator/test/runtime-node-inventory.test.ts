@@ -45,9 +45,9 @@ function fixture() {
 		contextSha256: sha,
 		headroomCpuMillis: 4000,
 		headroomMemoryBytes: 8 * 1024 ** 3,
-		allocations: ["native", "office", "login"].map((kind) => ({
+		allocations: ["native", "office", "login", "coding"].map((kind) => ({
 			allocationId: randomUUID(),
-			providerKind: kind as "native" | "office" | "login",
+			providerKind: kind as "native" | "office" | "login" | "coding",
 			providerId: kind === "office" ? randomUUID() : kind,
 			policySha256: sha,
 			instanceSha256: "b".repeat(64),
@@ -66,9 +66,12 @@ function fixture() {
 					? "qorpera.lxd-office-guest/v2"
 					: a.providerKind === "native"
 						? "qorpera.native-job-vm/v1"
-						: "qorpera.native-login-vm/v2",
+						: a.providerKind === "coding"
+							? "qorpera.lxd-coding-vm/v2"
+							: "qorpera.native-login-vm/v2",
 			[`user.qorpera.${a.providerKind === "native" ? "acquisition_id" : "allocation_id"}`]: a.allocationId,
-			[`user.qorpera.${a.providerKind === "office" ? "provider_id" : "provider_adapter"}`]: a.providerId,
+			[`user.qorpera.${a.providerKind === "office" || a.providerKind === "coding" ? "provider_id" : "provider_adapter"}`]:
+				a.providerId,
 			"user.qorpera.provider_policy_sha256": a.policySha256,
 			"user.qorpera.instance_sha256": a.instanceSha256,
 		};
@@ -123,11 +126,71 @@ describe("complete host inventory reconciliation", () => {
 		if (fault === "configuration") i.expandedDevices.extra = { type: "disk", source: "/changed" };
 		expect(reconcileRuntimeNodeInventory(f.inventory, f.context).state).toBe("unavailable");
 	});
+	it("matches a member's coding machine, and its sessions' folders coming and going do not change its enrollment", () => {
+		const f = fixture(),
+			i = f.inventory.instances[3];
+		i.config["user.qorpera.schema"] = i.expandedConfig["user.qorpera.schema"] = "qorpera.lxd-coding-machine/v1";
+		f.context.allocations[3].physical = {
+			project: i.project,
+			name: i.name,
+			physicalId: i.config["volatile.uuid"],
+			configurationSha256: runtimeNodeInstanceConfigurationSha256(i),
+		};
+		expect(reconcileRuntimeNodeInventory(f.inventory, f.context).state).toBe("ready");
+		const workerId = randomUUID(),
+			worker = workerId.replaceAll("-", ""),
+			folder = `/srv/qorpera-coding/executor/workers/${randomUUID()}/${randomUUID()}/${workerId}`;
+		for (const devices of [i.devices, i.expandedDevices]) {
+			devices[`data-${worker}`] = {
+				type: "disk",
+				source: `${folder}/data`,
+				path: `/workspace/${workerId}`,
+				required: "true",
+			};
+			devices[`custody-${worker}`] = {
+				type: "disk",
+				source: `${folder}/guest-state`,
+				path: `/var/lib/qorpera-coding/${workerId}`,
+				required: "true",
+			};
+		}
+		expect(reconcileRuntimeNodeInventory(f.inventory, f.context).entries[3].allocation?.providerKind).toBe("coding");
+		expect(reconcileRuntimeNodeInventory(f.inventory, f.context).state).toBe("ready");
+		// A device under a session's name that is not exactly its folder is a change of enrollment.
+		const changes: Record<string, string>[] = [
+			{ type: "disk", source: "/", path: "/host", required: "true" },
+			{ type: "disk", source: `${folder}/data`, path: `/workspace/${workerId}` },
+			{ type: "disk", source: `${folder}/../../../data`, path: `/workspace/${workerId}`, required: "true" },
+			{
+				type: "disk",
+				source: `${folder}/data`,
+				path: `/workspace/${workerId}`,
+				required: "true",
+				readonly: "false",
+			},
+		];
+		for (const changed of changes) {
+			const kept = i.devices[`data-${worker}`];
+			i.devices[`data-${worker}`] = i.expandedDevices[`data-${worker}`] = changed;
+			expect(reconcileRuntimeNodeInventory(f.inventory, f.context).state).toBe("unavailable");
+			i.devices[`data-${worker}`] = i.expandedDevices[`data-${worker}`] = kept;
+		}
+		expect(reconcileRuntimeNodeInventory(f.inventory, f.context).state).toBe("ready");
+		// Any other device is still a change of enrollment, as for every machine.
+		i.expandedDevices.extra = { type: "disk", source: "/changed" };
+		expect(reconcileRuntimeNodeInventory(f.inventory, f.context).state).toBe("unavailable");
+		// A per-session VM keeps its devices in its enrollment.
+		const g = fixture(),
+			legacy = g.inventory.instances[3];
+		const before = runtimeNodeInstanceConfigurationSha256(legacy);
+		legacy.devices[`data-${worker}`] = { type: "disk", source: "/srv/coding/data", path: "/workspace/x" };
+		expect(runtimeNodeInstanceConfigurationSha256(legacy)).not.toBe(before);
+	});
 	it("matches all three physical provider types with exact ledger costs across projects", () => {
 		const f = fixture(),
 			result = reconcileRuntimeNodeInventory(f.inventory, f.context);
 		expect(result.state).toBe("ready");
-		expect(result.entries.map((i) => i.allocation?.providerKind)).toEqual(["native", "office", "login"]);
+		expect(result.entries.map((i) => i.allocation?.providerKind)).toEqual(["native", "office", "login", "coding"]);
 	});
 	it.each(["Stopped", "Frozen", "Starting", "Stopping", "Error"])(
 		"retains %s computers and their charge",
@@ -151,7 +214,7 @@ describe("complete host inventory reconciliation", () => {
 			entries: [],
 			headroomValid: true,
 		});
-		expect(f.context.allocations).toHaveLength(3);
+		expect(f.context.allocations).toHaveLength(4);
 	});
 	it.each([
 		"legacy",
@@ -221,7 +284,7 @@ describe("complete host inventory reconciliation", () => {
 		});
 		const result = reconcileRuntimeNodeInventory(f.inventory, f.context);
 		expect(result.state).toBe("ready");
-		expect(result.entries[3].category).toBe("infrastructure");
+		expect(result.entries[4].category).toBe("infrastructure");
 		expect(JSON.stringify(result)).not.toContain("PRIVATE_BYTES");
 		f.context.headroomCpuMillis = 2000;
 		expect(reconcileRuntimeNodeInventory(f.inventory, f.context).state).toBe("unavailable");
@@ -269,7 +332,7 @@ describe("trusted node inventory publisher composition", () => {
 		]);
 		expect(f.calls[1].args.p_inventory).toMatchObject({
 			bootId: f.host.bootId,
-			entries: Array(3).fill({ category: "managed" }),
+			entries: Array(4).fill({ category: "managed" }),
 		});
 	});
 	it.each(["socket", "boot", "hardware", "policy", "inventory"])(
@@ -299,7 +362,12 @@ describe("trusted node inventory publisher composition", () => {
 		delete f.inventory.instances[0].config["user.qorpera.schema"];
 		expect((await f.observer.observe(signal())).state).toBe("unavailable");
 		expect(f.calls.at(-1)?.args.p_inventory).toMatchObject({
-			entries: [{ category: "unmanaged" }, { category: "managed" }, { category: "managed" }],
+			entries: [
+				{ category: "unmanaged" },
+				{ category: "managed" },
+				{ category: "managed" },
+				{ category: "managed" },
+			],
 		});
 	});
 	it("does not rebind an uncertain publication or retry it with new bytes", async () => {

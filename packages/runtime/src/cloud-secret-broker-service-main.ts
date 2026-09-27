@@ -4,12 +4,13 @@ import { open } from "node:fs/promises";
 import { basename, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Pool } from "pg";
+import { composeCloudConnectorService, parseCloudConnectorServiceConfig } from "./cloud-connector-service.ts";
 import {
 	CloudSecretBroker,
 	type CloudSecretConnectorAdapter,
 	PostgresCloudSecretBrokerAuthority,
 } from "./cloud-secret-broker.ts";
-import { HttpCloudSecretBrokerService } from "./cloud-secret-broker-http.ts";
+import { HttpCloudSecretBrokerService, parseMemberOrigin } from "./cloud-secret-broker-http.ts";
 import { CloudSecretKeyring } from "./cloud-secret-crypto.ts";
 import { systemdCredentialMetadataIsSafe } from "./systemd-credential.ts";
 
@@ -66,6 +67,17 @@ function brokerDatabase(value: string): {
 		throw new Error("Cloud secret broker database credential is invalid");
 	}
 	return { host: url.hostname, port, user, password, database: "postgres" };
+}
+
+/** An optional credential: absent means the feature stays off. Any other
+ * failure still fails closed. */
+async function readOptionalCredential(directory: string, name: string): Promise<string | undefined> {
+	try {
+		return await readCredential(directory, name);
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException | undefined)?.code === "ENOENT") return undefined;
+		throw error;
+	}
 }
 
 async function readCredential(directory: string, name: string): Promise<string> {
@@ -147,9 +159,12 @@ export async function runCloudSecretBrokerServiceMain(
 	if (process.platform !== "linux") throw new Error("The cloud secret broker requires a separate Linux service");
 	const directory = environment.CREDENTIALS_DIRECTORY;
 	if (!directory || !isAbsolute(directory)) throw new Error("Cloud secret broker requires systemd credentials");
+	const configValue: unknown = JSON.parse(await readCredential(directory, "qorpera-cloud-secret-config"));
+	// memberOrigins (optional, v2): the member app origins allowed to post a capture from a browser.
+	const withOrigins = !!configValue && typeof configValue === "object" && Object.hasOwn(configValue, "memberOrigins");
 	const config = record(
-		JSON.parse(await readCredential(directory, "qorpera-cloud-secret-config")),
-		["schema", "brokerAuthorityId", "port"],
+		configValue,
+		withOrigins ? ["schema", "brokerAuthorityId", "port", "memberOrigins"] : ["schema", "brokerAuthorityId", "port"],
 		"Cloud secret broker configuration",
 	);
 	if (
@@ -158,9 +173,11 @@ export async function runCloudSecretBrokerServiceMain(
 		!UUID.test(config.brokerAuthorityId) ||
 		!Number.isSafeInteger(config.port) ||
 		(config.port as number) < 1 ||
-		(config.port as number) > 65_535
+		(config.port as number) > 65_535 ||
+		(withOrigins && (!Array.isArray(config.memberOrigins) || config.memberOrigins.length > 16))
 	)
 		throw new Error("Cloud secret broker configuration is invalid");
+	const memberOrigins = withOrigins ? (config.memberOrigins as unknown[]).map(parseMemberOrigin) : [];
 	const database = brokerDatabase(await readCredential(directory, "qorpera-cloud-secret-database-url"));
 	const databaseCa = await readCredential(directory, "qorpera-cloud-secret-database-ca");
 	let certificate: X509Certificate;
@@ -174,13 +191,28 @@ export async function runCloudSecretBrokerServiceMain(
 	}
 	const brokerCapability = await readCredential(directory, "qorpera-cloud-secret-control");
 	const runtimeToken = await readCredential(directory, "qorpera-cloud-secret-runtime");
+	// Bundle v88: the coding executor's own bearer for repository credentials.
+	// Only a broker whose company runs coding sessions gets it (a drop-in);
+	// without it the route answers 404. Never the runtime token guests hold.
+	const codingExecutorToken = await readOptionalCredential(directory, "qorpera-cloud-secret-coding-executor");
 	if (
 		!CAPABILITY.test(brokerCapability) ||
 		!TOKEN.test(runtimeToken) ||
-		new Set([database.password, brokerCapability, runtimeToken]).size !== 3
+		(codingExecutorToken !== undefined && !TOKEN.test(codingExecutorToken)) ||
+		new Set([database.password, brokerCapability, runtimeToken, codingExecutorToken ?? ""]).size !== 4
 	)
 		throw new Error("Cloud secret broker credentials are invalid");
 	const keyring = parseKeyring(await readCredential(directory, "qorpera-cloud-secret-keyring"));
+	// Step 7 production connectors and their OAuth routes exist only when the
+	// operator supplies the connectors credential. The canary and any adapters
+	// passed by the caller are kept either way.
+	const connectorsText = await readOptionalCredential(directory, "qorpera-cloud-secret-connectors");
+	const connectors = connectorsText
+		? composeCloudConnectorService(parseCloudConnectorServiceConfig(connectorsText), memberOrigins)
+		: undefined;
+	if (connectors) {
+		console.error(`Cloud secret broker serves connectors: ${connectors.connectors.join(", ")}`);
+	}
 	const pool = new Pool({
 		host: database.host,
 		port: database.port,
@@ -207,8 +239,18 @@ export async function runCloudSecretBrokerServiceMain(
 			brokerAuthorityId: config.brokerAuthorityId,
 			brokerCapability,
 		});
-		const broker = new CloudSecretBroker({ authority, keyring, adapters });
-		const service = new HttpCloudSecretBrokerService(broker, runtimeToken, "127.0.0.1", config.port as number);
+		const broker = new CloudSecretBroker({
+			authority,
+			keyring,
+			adapters: [...adapters, ...(connectors?.adapters ?? [])],
+		});
+		const service = new HttpCloudSecretBrokerService(broker, runtimeToken, {
+			host: "127.0.0.1",
+			port: config.port as number,
+			memberOrigins,
+			...(connectors ? { oauth: connectors.oauth } : {}),
+			...(codingExecutorToken ? { codingExecutorToken } : {}),
+		});
 		const stop = new AbortController();
 		const shutdown = (): void => stop.abort();
 		process.once("SIGINT", shutdown);

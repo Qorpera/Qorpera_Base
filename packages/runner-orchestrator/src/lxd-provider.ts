@@ -1,17 +1,32 @@
-import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { chmod, mkdir, open, readdir, readFile, rename, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { chmod, lstat, mkdir, open, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { isIP } from "node:net";
 import { isAbsolute, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { parseCompanyComputerNativeUrl } from "@qorpera/contracts";
 import type { ServiceHttpFetch } from "./http-transport.ts";
 import type { LxdClient, LxdCreateInstanceRequest, LxdInstanceRecord, LxdStorageVolumeRecord } from "./lxd-client.ts";
-import { type LxdNativeCompanyRuntimeConfig, validateLxdNativeCompanyRuntime } from "./lxd-company-runtime.ts";
+import {
+	exactHttpsOrigin,
+	type LxdNativeCompanyRuntimeConfig,
+	validateLxdNativeCompanyRuntime,
+} from "./lxd-company-runtime.ts";
 import { lxdGuestIpv4 } from "./lxd-guest-network.ts";
 import { lxdNativeNodePolicy } from "./lxd-native-node-policy.ts";
 import type { CloudRunnerAssignmentDelivery, CloudRunnerInstance, CloudRunnerWork } from "./orchestrator.ts";
 import { validateCloudRunnerWork } from "./orchestrator.ts";
 import type { CloudRunnerProviderServiceBackend } from "./provider-service.ts";
+import {
+	canonical,
+	exactRunner,
+	ProviderAdmissionRefused,
+	record,
+	runAttemptAcquisitionId,
+	sha256,
+	supabaseServiceHeaders,
+	token,
+	workSha256,
+} from "./provider-shared.ts";
 import { reserveRuntimeNodeMachine } from "./runtime-node-admission.ts";
 import { readRuntimeNodeHost } from "./runtime-node-host.ts";
 
@@ -141,6 +156,7 @@ interface LxdProviderJournal {
 			recoveryVolumeSize: string;
 			configurationSha256: string;
 			office?: { environmentId: string; url: string; tokenSha256: string };
+			codingCommand?: { url: string; tokenSha256: string };
 		};
 	};
 	credentials: {
@@ -192,7 +208,10 @@ function liveCompanyAuthority(config: LxdCloudRunnerProviderConfig, jobType: str
  * match, but a later configuration or credential (an office credential is
  * replaced with every computer generation) does not make its journal
  * unreadable. Otherwise one rotation strands every kept journal, reconcile and
- * the capacity inventory refuse, and the node stops taking work. */
+ * the capacity inventory refuse, and the node stops taking work. The coding
+ * command route is node configuration, not company routing: a retired guest
+ * that was given none (every journal kept from before a node turned coding on)
+ * or another one stays readable. */
 function sameCompanyRuntimeAuthority(
 	config: LxdCloudRunnerProviderConfig,
 	journal: LxdProviderJournal,
@@ -214,6 +233,7 @@ function sameCompanyRuntimeAuthority(
 				...value,
 				configurationSha256: undefined,
 				office: value.office ? { environmentId: value.office.environmentId, url: value.office.url } : undefined,
+				codingCommand: undefined,
 			}),
 		);
 	return route(recorded) === route(expected);
@@ -240,49 +260,10 @@ function companyRuntimeAuthority(
 		...(office
 			? { office: { environmentId: office.environmentId, url: office.url, tokenSha256: sha256(office.token) } }
 			: {}),
+		...(runtime.codingCommand
+			? { codingCommand: { url: runtime.codingCommand.origin, tokenSha256: sha256(runtime.codingCommand.token) } }
+			: {}),
 	};
-}
-
-function record(value: unknown, label: string): Record<string, unknown> {
-	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} is invalid`);
-	return value as Record<string, unknown>;
-}
-
-function canonical(value: unknown): unknown {
-	if (Array.isArray(value)) return value.map((entry) => canonical(entry));
-	if (!value || typeof value !== "object") return value;
-	const output: Record<string, unknown> = {};
-	for (const key of Object.keys(value).sort()) {
-		const entry = (value as Record<string, unknown>)[key];
-		if (entry !== undefined) output[key] = canonical(entry);
-	}
-	return output;
-}
-
-function sha256(value: string): string {
-	return createHash("sha256").update(value).digest("hex");
-}
-
-function workSha256(work: CloudRunnerWork): string {
-	/* The control plane annotates each dispatch with attempt-scoped fields; a
-	 * retry is the same immutable run, so the journal digest must not vary
-	 * with them — or every second attempt is refused as foreign work. */
-	const { attempt: _attempt, ...immutable } = work as CloudRunnerWork & { attempt?: unknown };
-	return sha256(JSON.stringify(canonical(immutable)));
-}
-
-function runAttemptAcquisitionId(runId: string, attempt: number): string {
-	// The first attempt retains its original key and historical journals. A
-	// control-plane continuation gets a new physical guest, never a replay of
-	// the prior attempt's credentials, activation or retained recovery volume.
-	if (attempt === 1) return runId;
-	const digest = sha256(`qorpera.lxd-run-attempt/v1:${runId}:${attempt}`);
-	const variant = ((Number.parseInt(digest[16] ?? "0", 16) & 0x3) | 0x8).toString(16);
-	return `${digest.slice(0, 8)}-${digest.slice(8, 12)}-8${digest.slice(13, 16)}-${variant}${digest.slice(17, 20)}-${digest.slice(20, 32)}`;
-}
-
-function token(): string {
-	return randomBytes(32).toString("base64url");
 }
 
 function bootstrapSha256(files: readonly LxdGuestBootstrapFile[]): string {
@@ -291,49 +272,6 @@ function bootstrapSha256(files: readonly LxdGuestBootstrapFile[]): string {
 			files.map((file) => ({ path: file.path, contentSha256: sha256(file.content), mode: "0600", uid: 0, gid: 0 })),
 		),
 	);
-}
-
-function supabaseServiceHeaders(serviceKey: string): Record<string, string> {
-	const headers: Record<string, string> = { apikey: serviceKey };
-	if (serviceKey.startsWith("eyJ") && serviceKey.split(".").length === 3) {
-		headers.authorization = `Bearer ${serviceKey}`;
-	}
-	return headers;
-}
-
-function uuid(value: unknown, label: string): string {
-	if (typeof value !== "string" || !UUID_PATTERN.test(value)) throw new Error(`${label} is invalid`);
-	return value;
-}
-
-function exactRunner(value: unknown, work: CloudRunnerWork, adapterId: string): CloudRunnerInstance {
-	const input = record(value, "Provisioned runner");
-	if (
-		input.runner_kind !== "qorpera_computer" ||
-		input.provider_adapter !== adapterId ||
-		input.status === "revoked" ||
-		input.compute_identity_id !== work.computeIdentityId ||
-		input.logical_computer_id !== (work.logicalComputerId ?? null) ||
-		input.worker_class !== work.workerClass ||
-		input.template_key !== work.computeTemplateKey ||
-		input.template_version !== work.computeTemplateVersion ||
-		input.compute_policy_sha256 !== work.computePolicySha256 ||
-		!Array.isArray(input.capabilities) ||
-		!input.capabilities.includes(work.requiredCapability)
-	) {
-		throw new Error("Provisioned runner does not match immutable compute authority");
-	}
-	return {
-		runnerId: uuid(input.runner_id, "Provisioned runner id"),
-		...(work.logicalComputerId ? { logicalComputerId: work.logicalComputerId } : {}),
-		...(work.computeIdentityId ? { computeIdentityId: work.computeIdentityId } : {}),
-		workerClass: work.workerClass,
-		providerAdapter: adapterId,
-		capabilities: input.capabilities as CloudRunnerInstance["capabilities"],
-		templateKey: work.computeTemplateKey as string,
-		templateVersion: work.computeTemplateVersion as string,
-		policySha256: work.computePolicySha256 as string,
-	};
 }
 
 function runnerFromJournal(value: unknown): CloudRunnerInstance {
@@ -496,6 +434,7 @@ function journalFromJson(value: unknown): LxdProviderJournal {
 					"recoveryVolumeSize",
 					"configurationSha256",
 					...(company.office !== undefined ? ["office"] : []),
+					...(company.codingCommand !== undefined ? ["codingCommand"] : []),
 				]
 					.sort()
 					.join() ||
@@ -529,6 +468,21 @@ function journalFromJson(value: unknown): LxdProviderJournal {
 				tokenSha256: route.tokenSha256,
 			};
 		}
+		let codingCommand: NonNullable<LxdProviderJournal["lxd"]["companyRuntime"]>["codingCommand"];
+		if (company.codingCommand !== undefined) {
+			const gateway = record(company.codingCommand, "Governed coding command route");
+			if (
+				Object.keys(gateway).sort().join() !== "tokenSha256,url" ||
+				typeof gateway.url !== "string" ||
+				typeof gateway.tokenSha256 !== "string" ||
+				!SHA256_PATTERN.test(gateway.tokenSha256)
+			)
+				throw new Error("Governed coding command route is invalid");
+			codingCommand = {
+				url: exactHttpsOrigin(gateway.url, "Coding command gateway"),
+				tokenSha256: gateway.tokenSha256,
+			};
+		}
 		companyRuntime = {
 			mode: "company-path-v1",
 			profileId: company.profileId,
@@ -536,6 +490,7 @@ function journalFromJson(value: unknown): LxdProviderJournal {
 			recoveryVolumeSize: company.recoveryVolumeSize,
 			configurationSha256: company.configurationSha256,
 			...(office ? { office } : {}),
+			...(codingCommand ? { codingCommand } : {}),
 		};
 	} else if (lxd.companyRuntime !== undefined) {
 		throw new Error("Legacy journal cannot carry governed runtime authority");
@@ -687,6 +642,7 @@ function validateConfig(config: LxdCloudRunnerProviderConfig): void {
 			service !== "qorpera-lxd-runner-bootstrap.service" ||
 			config.nativeCompanyRuntime.recoveryVolumePrefix === config.identityVolumePrefix ||
 			config.nativeCompanyRuntime.objectGatewayToken === config.supabaseServiceKey ||
+			config.nativeCompanyRuntime.codingCommand?.token === config.supabaseServiceKey ||
 			config.nativeCompanyRuntime.offices?.some((office) => office.token === config.supabaseServiceKey)
 		) {
 			throw new Error(
@@ -805,27 +761,38 @@ export class HttpLxdGuestTransport implements LxdGuestTransport {
 
 /** The company ceiling or the node chooser refused or deferred a machine start. The
  * orchestrator releases its claim without spending an infrastructure retry on it. */
-export class LxdMachineAdmissionRefused extends Error {
-	readonly category = "admission_refused" as const;
-	readonly state: "refused" | "deferred";
-	readonly reason: string;
-
+export class LxdMachineAdmissionRefused extends ProviderAdmissionRefused {
 	constructor(state: "refused" | "deferred", reason: string) {
-		super("Machine start was not admitted by the company ceiling");
+		super(state, reason, "Machine start was not admitted by the company ceiling");
 		this.name = "LxdMachineAdmissionRefused";
-		this.state = state;
-		this.reason = reason;
+	}
+}
+
+async function present(path: string): Promise<boolean> {
+	try {
+		await lstat(path);
+		return true;
+	} catch (error) {
+		if (error instanceof Error && "code" in error && error.code === "ENOENT") return false;
+		throw error;
 	}
 }
 
 /** A reserving journal is advanced only by the orchestrator's acquire; after this long without
  * progress the acquisition is retired instead of being re-tried by every reconcile pass. */
 const RESERVING_RETIREMENT_MS = 10 * 60_000;
+/** Settled journals move here, inside the state root, out of every scan. */
+const JOURNAL_ARCHIVE = "archive";
+const SETTLED_JOURNAL_RETENTION_MS = 24 * 60 * 60_000;
 
 export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderServiceBackend {
 	readonly #registeredCapacity = new Set<string>();
 	readonly #releasedCapacity = new Set<string>();
 	readonly #registeredNodeCapacity = new Map<string, NativeNodePlacement>();
+	/** Journals of finished runs stay on disk. Once one is stopped or lost, its guest gone and its capacity
+	 * settled, reconcile has nothing left to do for it: it is skipped for the rest of the process and archived
+	 * a day after its last change (23 Sep 2026: node 1 re-read 76 of them, three LXD calls each, every pass). */
+	readonly #settled = new Map<string, number>();
 	readonly adapterId: string;
 	readonly #config: LxdCloudRunnerProviderConfig;
 	readonly #lxd: LxdClient;
@@ -851,7 +818,7 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 		this.#fetch = fetchImplementation;
 	}
 
-	/** Every journal is reconciled on every pass. One journal that cannot make
+	/** Every journal is reconciled on every pass until it is settled (see #settled). One journal that cannot make
 	 * progress (for example a reserving acquisition the node ceiling refuses
 	 * while another guest still holds the slot) must not stop the retirement of
 	 * finished guests behind it, or the slot is never released and the provider
@@ -863,10 +830,23 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 			const failures: unknown[] = [];
 			for (const entry of await readdir(this.#config.stateRoot, { withFileTypes: true })) {
 				if (!entry.isDirectory() || !UUID_PATTERN.test(entry.name)) continue;
-				const current = await this.#readJournal(entry.name);
-				if (!current) continue;
+				if (!this.#settled.has(entry.name)) {
+					const current = await this.#readJournal(entry.name);
+					if (!current) continue;
+					try {
+						await this.#reconcileJournal(current, signal);
+						const settledAt = await this.#settledAt(entry.name, signal);
+						if (settledAt !== undefined) this.#settled.set(entry.name, settledAt);
+					} catch (error) {
+						if (signal?.aborted) throw error;
+						failures.push(error);
+						continue;
+					}
+				}
+				const settledAt = this.#settled.get(entry.name);
+				if (settledAt === undefined || Date.now() - settledAt < SETTLED_JOURNAL_RETENTION_MS) continue;
 				try {
-					await this.#reconcileJournal(current, signal);
+					await this.#archive(entry.name);
 				} catch (error) {
 					if (signal?.aborted) throw error;
 					failures.push(error);
@@ -896,6 +876,8 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 				: runId;
 			const digest = workSha256(work);
 			let current = await this.#readJournal(acquisitionId);
+			if (!current && (await present(join(this.#config.stateRoot, JOURNAL_ARCHIVE, acquisitionId))))
+				throw new Error("LXD provider acquisition is archived and cannot be replayed");
 			if (!current && this.#config.nativeCompanyRuntime && work.attempt > 1) {
 				// A sponsor handoff is recorded before the old one-run guest finishes
 				// shutting down. Keep this acquisition (and its renewed dispatch claim)
@@ -1344,6 +1326,9 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 		);
 		if (office && Object.values(credentials).includes(office.token))
 			throw new Error("Governed native office credential must be independent");
+		const coding = runtime?.codingCommand;
+		if (coding && (Object.values(credentials).includes(coding.token) || coding.token === office?.token))
+			throw new Error("Governed coding command credential must be independent");
 		if (
 			runtime &&
 			(runtime.objectGatewayToken === credentials.nativeBridgeToken ||
@@ -1411,6 +1396,9 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 											},
 										}
 									: {}),
+								...(coding
+									? { coding_command: { url: coding.origin, token_sha256: sha256(coding.token) } }
+									: {}),
 								recovery_volume_path: "/var/lib/qorpera-runner",
 							},
 						}
@@ -1445,6 +1433,7 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 						`QORPERA_NATIVE_OBJECT_GATEWAY_URL=${runtime.objectGatewayUrl}`,
 						`QORPERA_CLOUD_SECRET_BROKER_URL=${runtime.secretBroker.origin}`,
 						...(office ? [`QORPERA_COMPANY_COMPUTER_URL=${office.url}`] : []),
+						...(coding ? [`QORPERA_CODING_COMMAND_URL=${coding.origin}`] : []),
 					]
 				: []),
 			"",
@@ -1476,6 +1465,11 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 							// An unconfigured route has no authority. The fixed systemd
 							// credential source still exists and contains zero bytes.
 							content: office ? `${office.token}\n` : "",
+						},
+						{
+							path: "/var/lib/qorpera-bootstrap/credentials/qorpera-coding-command",
+							// Same shape as the office route: present, empty without a gateway.
+							content: coding ? `${coding.token}\n` : "",
 						},
 						{
 							path: "/var/lib/qorpera-bootstrap/credentials/qorpera-native-object-token",
@@ -1860,6 +1854,38 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 		}
 	}
 
+	/** When a journal needs no further reconciliation (stopped or lost, no guest, capacity never registered or
+	 * its release confirmed), the time of its last change. */
+	async #settledAt(acquisitionId: string, signal?: AbortSignal): Promise<number | undefined> {
+		const journal = await this.#readJournal(acquisitionId);
+		if (!journal || (journal.physicalState !== "stopped" && journal.physicalState !== "lost")) return undefined;
+		if ((journal.capacityRegistered || journal.nodeCapacity) && !this.#capacityReleased(journal)) return undefined;
+		if (await this.#lxd.getInstance(journal.lxd.project, journal.instanceName, signal)) return undefined;
+		return Date.parse(journal.updatedAt);
+	}
+
+	/** Moves a settled journal out of the scanned state root and deletes its credentials: the run is over, so its
+	 * activation, assignment and bridge tokens are dead, and the journal keeps their hashes. An acquire of its id
+	 * is refused like a replay of a stopped one. */
+	async #archive(acquisitionId: string): Promise<void> {
+		const archive = join(this.#config.stateRoot, JOURNAL_ARCHIVE);
+		await mkdir(archive, { recursive: true, mode: 0o700 });
+		await chmod(archive, 0o700);
+		const target = join(archive, acquisitionId);
+		if (await present(target)) throw new Error("LXD journal archive already holds this acquisition");
+		await rename(join(this.#config.stateRoot, acquisitionId), target);
+		await rm(join(target, "credentials"), { recursive: true, force: true });
+		for (const directory of [target, archive, this.#config.stateRoot]) {
+			const handle = await open(directory, "r");
+			try {
+				await handle.sync();
+			} finally {
+				await handle.close();
+			}
+		}
+		this.#settled.delete(acquisitionId);
+	}
+
 	async #findJournalByRunner(runnerId: string): Promise<LxdProviderJournal | undefined> {
 		await mkdir(this.#config.stateRoot, { recursive: true, mode: 0o700 });
 		for (const entry of await readdir(this.#config.stateRoot, { withFileTypes: true })) {
@@ -1886,7 +1912,7 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 			if (!journal || (journal.capacityRegistered && journal.nodeCapacity) || journal.physicalState === "reserving")
 				continue;
 			if (
-				(journal.deletionConfirmed || journal.physicalState === "stopped") &&
+				(journal.deletionConfirmed || journal.physicalState === "stopped" || journal.physicalState === "lost") &&
 				!(await this.#lxd.getInstance(journal.lxd.project, journal.instanceName, signal))
 			)
 				continue;
@@ -1981,7 +2007,10 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 			{ call: (method, args, checked) => this.#rpc(method, args, checked) },
 			signal,
 		);
-		if (admission.state === "refused") throw new Error(admission.reason);
+		// A node refusal (capacity, observation, policy) is an admission answer, not an
+		// infrastructure fault: the control plane defers the job instead of counting a
+		// failed attempt. The allocation and its demand row are kept for the next try.
+		if (admission.state === "refused") throw new LxdMachineAdmissionRefused("refused", admission.reason);
 		if (prior && prior.nodeId !== admission.nodeId) throw new Error("LXD node placement cannot be changed");
 		this.#registeredNodeCapacity.set(current.acquisitionId, {
 			nodeId: admission.nodeId,

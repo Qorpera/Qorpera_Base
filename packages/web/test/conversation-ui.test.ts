@@ -1,11 +1,15 @@
 // @vitest-environment jsdom
+
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mountApplication } from "../src/app/application.ts";
 import { CompanyController } from "../src/app/company.ts";
 import { parseRoute } from "../src/app/router.ts";
+import { ComputerPanels } from "../src/app/views/computer.ts";
 import { ConversationView } from "../src/app/views/conversation.ts";
 import { NewConversationView } from "../src/app/views/new-conversation.ts";
 import type { WorkspaceActions } from "../src/app/workspace-actions.ts";
+import { CloudRpcError } from "../src/cloud/client.ts";
+import { createWebSessionRunControl } from "../src/cloud/session-run-control.ts";
 import type { TranscriptMessage } from "../src/cloud/transcript.ts";
 import appCss from "../src/styles/app.css?raw";
 import conversationCss from "../src/styles/conversation.css?raw";
@@ -13,7 +17,22 @@ import tokensCss from "../src/styles/tokens.css?raw";
 import { AttachmentTray } from "../src/ui/attachments.ts";
 import { fmtTime } from "../src/ui/dom.ts";
 import { markdown, markdownBubbles } from "../src/ui/markdown.ts";
-import { deferred, fixture, id, profileA, session, settle, staff, team, timestamp, userA, userB } from "./fixtures.ts";
+import { setLanguagePreference } from "../src/ui/preferences.ts";
+import {
+	deferred,
+	fixture,
+	id,
+	placeholderLabel,
+	profileA,
+	session,
+	settle,
+	staff,
+	team,
+	timestamp,
+	userA,
+	userB,
+	visibleText,
+} from "./fixtures.ts";
 
 let dispose: (() => void) | undefined;
 beforeEach(() => {
@@ -55,6 +74,46 @@ function setup(actions: WorkspaceActions = {}) {
 		company.stop();
 	};
 	return { ...f, company, view };
+}
+/** A conversation whose messages are already loaded, built before it is placed
+ * in the page, with the message pane's scroll metrics under the test's control
+ * (jsdom lays nothing out). */
+function loadedView() {
+	const f = fixture();
+	const company = new CompanyController(f.api, profileA, userA.id);
+	company.store.set({ team, staff: [staff], sessions: [{ ...session, staffAgentId: staff.id }], loading: false });
+	const reply: TranscriptMessage = {
+		kind: "agent",
+		id: id(83),
+		sequence: 1,
+		text: "Latest answer",
+		attachmentCount: 0,
+		phase: "final",
+		createdAt: timestamp,
+		authorUserId: userA.id,
+	};
+	company
+		.conversation(session.sessionId)
+		.set({ loading: false, projection: { items: [reply], hiddenCount: 0, lastSequence: 1 } });
+	const view = new ConversationView(company, session.sessionId);
+	dispose = () => {
+		view.dispose();
+		company.stop();
+	};
+	const messages = view.el.querySelector<HTMLElement>(".messages")!;
+	expect(messages.textContent).toContain("Latest answer");
+	const metrics = { scrollTop: 0, scrollHeight: 0, clientHeight: 400 };
+	// Like a browser: a write past the end lands at the end.
+	Object.defineProperty(messages, "scrollTop", {
+		configurable: true,
+		get: () => metrics.scrollTop,
+		set: (value: number) => {
+			metrics.scrollTop = Math.max(0, Math.min(value, metrics.scrollHeight - metrics.clientHeight));
+		},
+	});
+	Object.defineProperty(messages, "scrollHeight", { configurable: true, get: () => metrics.scrollHeight });
+	Object.defineProperty(messages, "clientHeight", { configurable: true, get: () => metrics.clientHeight });
+	return { view, messages, metrics };
 }
 function button(root: ParentNode, label: string): HTMLButtonElement {
 	const result = [...root.querySelectorAll<HTMLButtonElement>("button")].find(
@@ -146,7 +205,9 @@ describe("conversation UI boundaries", () => {
 		expect(messages[0]?.querySelectorAll(".bubble")).toHaveLength(2);
 		expect(messages[0]?.getAttribute("aria-label")).toContain(staff.displayName);
 		expect(messages[0]?.title).toContain(fmtTime(timestamp));
-		expect(messages[0]?.querySelector(".message-caption")?.textContent).toBe("Progress");
+		// A progress message is not labelled: its text is the whole message.
+		expect(messages[0]?.classList.contains("message-progress")).toBe(true);
+		expect(messages[0]?.querySelector(".message-caption")).toBeNull();
 		expect(messages[0]?.querySelectorAll(".received-file")).toHaveLength(1);
 		expect(messages[0]?.querySelector(".received-file")?.textContent).toContain("Preview unavailable");
 		expect(messages[1]?.querySelector(".message-author")?.textContent).toBe("Anna");
@@ -306,6 +367,99 @@ describe("conversation UI boundaries", () => {
 		expect(button(restored.el, "Preview private.png")).toBeDefined();
 		restored.dispose();
 	});
+	function stubResizeObserver() {
+		const observers: { callback: () => void; targets: Element[]; disconnected: boolean }[] = [];
+		vi.stubGlobal(
+			"ResizeObserver",
+			class {
+				readonly #entry: (typeof observers)[number];
+				constructor(callback: () => void) {
+					this.#entry = { callback, targets: [], disconnected: false };
+					observers.push(this.#entry);
+				}
+				observe(target: Element) {
+					this.#entry.targets.push(target);
+				}
+				disconnect() {
+					this.#entry.disconnected = true;
+				}
+			},
+		);
+		return observers;
+	}
+
+	it("opens a loaded conversation at its latest message and keeps it there while the pane resizes", () => {
+		// The view renders before it is placed in the page, so the end of the
+		// thread can only be shown once the message pane has a size.
+		const observers = stubResizeObserver();
+		const { view, messages, metrics } = loadedView();
+		const sizes = observers.find((entry) => entry.targets.includes(messages))!;
+		expect(sizes.targets).toEqual([messages]);
+		document.body.append(view.el);
+		metrics.scrollHeight = 2000;
+		sizes.callback();
+		expect(metrics.scrollTop).toBe(1600);
+		// A reader who scrolled up to older messages is left there.
+		metrics.scrollTop = 500;
+		messages.dispatchEvent(new Event("scroll"));
+		metrics.scrollHeight = 2400;
+		sizes.callback();
+		expect(metrics.scrollTop).toBe(500);
+		// Back at the end, a pane that changes size still shows the latest message.
+		metrics.scrollTop = 2000;
+		messages.dispatchEvent(new Event("scroll"));
+		metrics.scrollHeight = 2600;
+		sizes.callback();
+		expect(metrics.scrollTop).toBe(2200);
+		view.dispose();
+		expect(sizes.disconnected).toBe(true);
+		metrics.scrollTop = 0;
+		sizes.callback();
+		expect(metrics.scrollTop).toBe(0);
+	});
+
+	it("stays pinned when the pin's own scroll event arrives after the pane shrank", () => {
+		// The composer or a notice line appears in the same task as the pin, so the
+		// pin's scroll event reads a gap it did not cause. Only a real scroll counts.
+		const observers = stubResizeObserver();
+		const { view, messages, metrics } = loadedView();
+		const sizes = observers.find((entry) => entry.targets.includes(messages))!;
+		document.body.append(view.el);
+		metrics.scrollHeight = 2000;
+		sizes.callback();
+		expect(metrics.scrollTop).toBe(1600);
+		metrics.clientHeight = 340; // a line appeared above the composer
+		messages.dispatchEvent(new Event("scroll")); // the pin's event, 60px short now
+		sizes.callback();
+		expect(metrics.scrollTop).toBe(1660);
+		// The guard is spent: the next event at another position is the member's.
+		metrics.scrollTop = 1000;
+		messages.dispatchEvent(new Event("scroll"));
+		metrics.scrollHeight = 2400;
+		sizes.callback();
+		expect(metrics.scrollTop).toBe(1000);
+		// Back at the end; a pin that does not move the thread arms nothing, so a
+		// later real scroll that lands on the same position is still the member's.
+		metrics.scrollTop = 2060;
+		messages.dispatchEvent(new Event("scroll"));
+		sizes.callback();
+		expect(metrics.scrollTop).toBe(2060);
+		metrics.scrollHeight = 2500; // content grew under the reader
+		messages.dispatchEvent(new Event("scroll")); // still at 2060: 100px from the end
+		metrics.scrollHeight = 2600;
+		sizes.callback();
+		expect(metrics.scrollTop).toBe(2060);
+		view.dispose();
+	});
+	it("still opens a loaded conversation at its latest message without a size observer", async () => {
+		vi.stubGlobal("ResizeObserver", undefined);
+		const { view, metrics } = loadedView();
+		metrics.scrollHeight = 2000;
+		document.body.append(view.el);
+		expect(metrics.scrollTop).toBe(0);
+		await Promise.resolve();
+		expect(metrics.scrollTop).toBe(1600);
+	});
 	it("keeps the computer popover compact and the conversation usable at every width", () => {
 		const f = setup(),
 			toggle = button(f.view.el, "Open agent computer");
@@ -315,8 +469,7 @@ describe("conversation UI boundaries", () => {
 		expect(document.activeElement).toBe(toggle);
 		expect(toggle.getAttribute("aria-expanded")).toBe("true");
 		expect(panel.textContent).toContain("Computer access is not available yet.");
-		expect(panel.querySelector("header, select, .computer-preview, .computer-close")).toBeNull();
-		expect(panel.querySelector("[aria-label='Close computer']")).toBeNull();
+		expect(panel.querySelector("header, select, .computer-preview")).toBeNull();
 		expect(panel.textContent).not.toContain("Open computer");
 		expect(panel.textContent).not.toContain("Routines");
 		const composer = f.view.el.querySelector<HTMLTextAreaElement>(".composer-input")!;
@@ -351,6 +504,92 @@ describe("conversation UI boundaries", () => {
 		}
 		expect(f.cloud.rpc).not.toHaveBeenCalled();
 	});
+	it("closes the popover from its X top right as the toggle does", () => {
+		const f = setup(),
+			toggle = button(f.view.el, "Open agent computer");
+		toggle.focus();
+		toggle.click();
+		const panel = f.view.el.querySelector<HTMLElement>(".computer-panel")!;
+		const close = panel.querySelector<HTMLButtonElement>("button.computer-close")!;
+		expect(close.getAttribute("aria-label")).toBe("Close computer");
+		expect(close.getAttribute("title")).toBe("Close");
+		close.click();
+		expect(f.view.el.querySelector(".computer-panel")).toBeNull();
+		expect(toggle.getAttribute("aria-expanded")).toBe("false");
+		expect(f.view.el.querySelector<HTMLElement>(".thread-conversation")?.inert).toBeFalsy();
+		expect(document.activeElement).toBe(toggle);
+		expect(f.cloud.rpc).not.toHaveBeenCalled();
+	});
+	it("keeps the agent's computer open across the threads a member moves between", () => {
+		const panels = new ComputerPanels(),
+			f = setup({ computerPanels: panels });
+		button(f.view.el, "Open agent computer").click();
+		const panel = f.view.el.querySelector<HTMLElement>(".computer-panel")!;
+		expect(panel).not.toBeNull();
+		// Leaving the thread keeps the panel; it is only out of the page for now.
+		f.view.dispose();
+		expect(panel.isConnected).toBe(false);
+		expect(panels.get(staff.id)?.el).toBe(panel);
+		// Another thread without this agent shows nothing of it.
+		const other = new ConversationView(f.company, id(90), { computerPanels: panels });
+		expect(other.el.querySelector(".computer-panel")).toBeNull();
+		other.dispose();
+		// Back in the agent's thread the same panel is there, with no click.
+		const restored = new ConversationView(f.company, session.sessionId, { computerPanels: panels });
+		document.body.append(restored.el);
+		expect(restored.el.querySelector(".computer-panel")).toBe(panel);
+		expect(button(restored.el, "Open agent computer").getAttribute("aria-expanded")).toBe("true");
+		// Closing it there ends it for every thread.
+		button(restored.el, "Open agent computer").click();
+		expect(restored.el.querySelector(".computer-panel")).toBeNull();
+		expect(panels.get(staff.id)).toBeUndefined();
+		restored.dispose();
+		const again = new ConversationView(f.company, session.sessionId, { computerPanels: panels });
+		expect(again.el.querySelector(".computer-panel")).toBeNull();
+		again.dispose();
+		// The company's shared panel set is left to the company: this view never disposes it.
+		expect(f.cloud.rpc).not.toHaveBeenCalled();
+	});
+
+	it("keeps the open computer through a rename and replaces it only when the thread changes agent", async () => {
+		const panels = new ComputerPanels(),
+			f = setup({ computerPanels: panels });
+		button(f.view.el, "Open agent computer").click();
+		const panel = f.view.el.querySelector<HTMLElement>(".computer-panel")!;
+		f.company.store.set({ staff: [{ ...staff, displayName: "Renamed" }] });
+		await settle();
+		expect(f.view.el.querySelector(".computer-panel")).toBe(panel);
+		expect(f.view.el.querySelector(".thread-identity h1")?.textContent).toBe("Renamed");
+		expect(panels.get(staff.id)?.el).toBe(panel);
+		const other = { ...staff, id: id(97), displayName: "Other" };
+		f.company.store.set({
+			staff: [{ ...staff, displayName: "Renamed" }, other],
+			sessions: [{ ...session, staffAgentId: other.id }],
+		});
+		await settle();
+		const replaced = f.view.el.querySelector<HTMLElement>(".computer-panel")!;
+		expect(replaced).not.toBe(panel);
+		expect(panels.get(staff.id)).toBeUndefined();
+		expect(panels.get(other.id)?.el).toBe(replaced);
+	});
+
+	it("places the company notices right above the composer, inside the conversation", () => {
+		const host = document.createElement("div");
+		const f = setup({ notificationHost: host });
+		expect(host.parentElement).toBe(f.view.el.querySelector(".thread-conversation"));
+		// The failed-run line shares the band: notices first, then the run, then the composer.
+		const slot = host.nextElementSibling;
+		expect(slot?.classList.contains("thread-run-failure")).toBe(true);
+		expect(slot?.nextElementSibling).toBe(f.view.el.querySelector("footer.composer"));
+	});
+
+	it("places the failed-run line right above the composer without a notification host", () => {
+		const f = setup();
+		const slot = f.view.el.querySelector<HTMLElement>(".thread-run-failure");
+		expect(slot?.parentElement).toBe(f.view.el.querySelector(".thread-conversation"));
+		expect(slot?.previousElementSibling?.classList.contains("thread-status")).toBe(true);
+		expect(slot?.nextElementSibling).toBe(f.view.el.querySelector("footer.composer"));
+	});
 
 	it.each([false, true])("restores notification focus with the computer open (entered: %s)", async (entered) => {
 		const host = document.createElement("div");
@@ -373,10 +612,10 @@ describe("conversation UI boundaries", () => {
 			],
 		});
 		await settle();
-		const close = button(host, "Dismiss notification");
+		const close = button(f.view.el, "Dismiss");
 		close.focus();
 		close.click();
-		expect(host.querySelector(".notification-card")).toBeNull();
+		expect(f.view.el.querySelector(".run-failure")).toBeNull();
 		expect(document.activeElement).toBe(entered ? panel : f.view.el.querySelector(".composer-input"));
 		expect(f.view.el.querySelector<HTMLElement>(".thread-conversation")?.inert).toBeFalsy();
 	});
@@ -402,17 +641,31 @@ describe("conversation UI boundaries", () => {
 			lastError: "Runner lease expired before durable completion",
 			unsettledOperations: 1,
 		};
-		const card = () => host.querySelector<HTMLElement>(".notification-card");
+		const card = () => document.querySelector<HTMLElement>(".run-failure");
 		const discard = vi.spyOn(f.api, "discardFailedRun");
 		f.company.store.set({ activity: [run], recoveries: { [run.runId]: details } });
 		await settle();
-		expect(card()?.textContent).toBe("A run did not finish");
+		expect(card()?.querySelector(".run-failure-title")?.textContent).toBe("Fixture agent did not finish this run");
+		expect(card()?.querySelector(".run-failure-reason")?.textContent).toBe("The run took too long and was stopped.");
+		// The cloud's own error text stays out of the card; the reason is in the member's words.
+		expect(card()?.textContent).not.toContain(details.lastError);
+		expect(card()?.querySelector("details")).toBeNull();
+		expect([...(card()?.querySelectorAll("button") ?? [])].map((item) => item.textContent)).toEqual(["Dismiss"]);
+		// Unsettled operations: nothing may be repeated yet.
+		expect(card()?.querySelector('[data-action="retry-run"]')).toBeNull();
+		// The card sits right above the composer, below the company notices, never inside the thread.
+		expect(f.view.el.querySelector(".messages")?.contains(card())).toBe(false);
+		expect(host.querySelector(".run-failure")).toBeNull();
+		const slot = f.view.el.querySelector<HTMLElement>(".thread-run-failure");
+		expect(slot?.contains(card())).toBe(true);
+		expect(slot?.previousElementSibling).toBe(host);
+		expect(slot?.nextElementSibling?.classList.contains("composer")).toBe(true);
 		expect(f.view.el.querySelector(".thread-status .notice-warn")).toBeNull();
-		const close = button(host, "Dismiss notification");
+		const close = button(f.view.el, "Dismiss");
 		close.focus();
 		f.company.store.set({ activity: [{ ...run }] });
 		await settle();
-		expect(button(host, "Dismiss notification")).toBe(close);
+		expect(button(f.view.el, "Dismiss")).toBe(close);
 		expect(document.activeElement).toBe(close);
 		close.click();
 		expect(card()).toBeNull();
@@ -455,7 +708,7 @@ describe("conversation UI boundaries", () => {
 			unsettledOperations: 0,
 			proposalId: id(71),
 		};
-		const card = () => f.view.el.querySelector<HTMLElement>(".notification-card");
+		const card = () => f.view.el.querySelector<HTMLElement>(".run-failure");
 		f.company.store.set({
 			team: { ...team, capabilities: { ...team.capabilities, write: false } },
 			activity: [run],
@@ -463,86 +716,338 @@ describe("conversation UI boundaries", () => {
 		});
 		await settle();
 		expect(card()?.querySelector("a")?.getAttribute("href")).toBe(`#/c/${profileA.profileId}/proposal/${id(71)}`);
-		expect(card()?.textContent).toBe("Run stopped with changes to reviewReview");
-		button(f.view.el, "Dismiss notification").focus();
-		button(f.view.el, "Dismiss notification").dispatchEvent(
-			new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+		expect(card()?.querySelector(".run-failure-title")?.textContent).toBe(
+			"Fixture agent stopped with changes to review",
 		);
+		expect(card()?.querySelector(".run-failure-reason")?.textContent).toBe("Its changes wait for your decision.");
+		expect(card()?.querySelector('[data-action="retry-run"]')).toBeNull();
+		button(f.view.el, "Dismiss").focus();
+		button(f.view.el, "Dismiss").dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
 		expect(card()).toBeNull();
 		expect(document.activeElement).toBe(button(f.view.el, "Open agent details"));
 		const review = { ...run, runId: id(72), sourceKind: "proposal_review" as const };
 		f.company.store.set({ activity: [review] });
 		await settle();
-		expect(card()?.textContent).toBe("A review did not finishReview");
+		expect(card()?.querySelector(".run-failure-title")?.textContent).toBe("A review did not finish");
+		expect(card()?.querySelector('[data-action="retry-run"]')).toBeNull();
 		expect(card()?.querySelector("a")?.getAttribute("href")).toBe(`#/c/${profileA.profileId}/file`);
 		f.company.store.set({ team: undefined });
 		await settle();
 		expect(card()).toBeNull();
 	});
 
-	it.each([false, true])(
-		"clears settled failure activity and restores Stop (details arrive late: %s)",
-		async (late) => {
-			const nextRun = id(73);
-			const cancel = vi.fn(async () => "cancelled" as const);
-			const f = setup({
-				runControl: {
-					read: vi.fn(async () => ({
-						sessionId: session.sessionId,
-						staffAgentId: staff.id,
-						run: { runId: nextRun, status: "leased" as const, canCancel: true },
-					})),
-					cancel,
-				},
-			});
-			const run = {
-				runId: id(70),
-				staffAgentId: staff.id,
-				sourceKind: "session_turn" as const,
-				jobStatus: "failed" as const,
-				activity: "needs_attention" as const,
-				updatedAt: timestamp,
-			};
-			const recovery = {
-				runId: run.runId,
-				sourceKind: run.sourceKind,
-				jobStatus: run.jobStatus,
-				unsettledOperations: 0,
-			};
-			const pending = deferred<void>();
-			const discard = vi.spyOn(f.api, "discardFailedRun").mockReturnValue(pending.promise);
-			// Match the server's priority: the old failure masks the newer leased run until discarded.
-			vi.mocked(f.api.listStaffActivity).mockResolvedValue([
-				{ ...run, runId: nextRun, jobStatus: "leased", activity: "working" },
-			]);
-			f.company.store.set({ activity: [run], recoveries: late ? {} : { [run.runId]: recovery } });
-			await settle();
-			expect(f.company.agentState(staff.id)).toBe("failed");
-			expect(f.view.el.querySelector('[aria-label="Stop"]')).toBeNull();
-			const close = button(f.view.el, "Dismiss notification");
-			close.focus();
-			close.click();
-			close.click();
-			expect(f.view.el.querySelector(".notification-card")).toBeNull();
-			expect(document.activeElement).toBe(f.view.el.querySelector("textarea"));
-			if (late) {
-				expect(discard).not.toHaveBeenCalled();
-				f.company.store.set({ recoveries: { [run.runId]: recovery } });
-				await settle();
-			}
-			expect(discard).toHaveBeenCalledExactlyOnceWith(run.runId);
-			pending.resolve();
-			await settle();
-			expect(f.company.agentState(staff.id)).toBe("working");
-			expect(f.view.el.querySelector(".notification-card")).toBeNull();
-			expect(button(f.view.el, "Stop").disabled).toBe(false);
-			button(f.view.el, "Stop").click();
-			await settle();
-			expect(cancel).toHaveBeenCalledExactlyOnceWith(session.sessionId, nextRun, expect.any(AbortSignal));
-		},
-	);
+	it("dismisses durably at once, and the next run then shows with its Stop control", async () => {
+		const nextRun = id(73);
+		const cancel = vi.fn(async () => "cancelled" as const);
+		const f = setup({
+			runControl: {
+				read: vi.fn(async () => ({
+					sessionId: session.sessionId,
+					staffAgentId: staff.id,
+					run: { runId: nextRun, status: "leased" as const, canCancel: true },
+				})),
+				cancel,
+			},
+		});
+		const run = {
+			runId: id(70),
+			staffAgentId: staff.id,
+			sourceKind: "session_turn" as const,
+			jobStatus: "failed" as const,
+			activity: "needs_attention" as const,
+			updatedAt: timestamp,
+		};
+		const pending = deferred<void>();
+		const acknowledge = vi.spyOn(f.api, "acknowledgeFailedRun").mockReturnValue(pending.promise);
+		const discard = vi.spyOn(f.api, "discardFailedRun");
+		// Match the server's priority: the old failure masks the newer leased run until acknowledged.
+		vi.mocked(f.api.listStaffActivity).mockResolvedValue([
+			{ ...run, runId: nextRun, jobStatus: "leased", activity: "working" },
+		]);
+		// Details have not arrived yet: dismissing does not wait for them.
+		f.company.store.set({ activity: [run], recoveries: {} });
+		await settle();
+		expect(f.company.agentState(staff.id)).toBe("failed");
+		expect(f.view.el.querySelector('[aria-label="Stop"]')).toBeNull();
+		const close = button(f.view.el, "Dismiss");
+		close.focus();
+		close.click();
+		close.click();
+		expect(f.view.el.querySelector(".run-failure")).toBeNull();
+		expect(document.activeElement).toBe(f.view.el.querySelector("textarea"));
+		// Seen: the run stops standing in for the agent before the cloud has answered.
+		expect(acknowledge).toHaveBeenCalledExactlyOnceWith(run.runId);
+		expect(discard).not.toHaveBeenCalled();
+		expect(f.company.agentState(staff.id)).toBe("idle");
+		pending.resolve();
+		await settle();
+		expect(f.company.agentState(staff.id)).toBe("working");
+		expect(f.view.el.querySelector(".run-failure")).toBeNull();
+		expect(button(f.view.el, "Stop").disabled).toBe(false);
+		button(f.view.el, "Stop").click();
+		await settle();
+		expect(cancel).toHaveBeenCalledExactlyOnceWith(session.sessionId, nextRun, expect.any(AbortSignal));
+	});
 
-	it("allows a displaced failure to be dismissed again when it becomes current", async () => {
+	it("shows a message the member stopped as stopped, not failed, and keeps the Stop for the agent's other run", async () => {
+		const routineRun = id(73);
+		const cancel = vi.fn(async () => "cancelled" as const);
+		const f = setup({
+			runControl: {
+				read: vi.fn(async () => ({
+					sessionId: session.sessionId,
+					staffAgentId: staff.id,
+					run: { runId: routineRun, status: "leased" as const, canCancel: true },
+				})),
+				cancel,
+			},
+		});
+		const stopped = {
+			runId: id(70),
+			staffAgentId: staff.id,
+			sourceKind: "room_delivery" as const,
+			jobStatus: "cancelled" as const,
+			activity: "needs_attention" as const,
+			updatedAt: timestamp,
+		};
+		const details = {
+			runId: stopped.runId,
+			sourceKind: stopped.sourceKind,
+			jobStatus: stopped.jobStatus,
+			lastError: "Runner job was cancelled by a company member",
+			unsettledOperations: 0,
+		};
+		const card = () => f.view.el.querySelector<HTMLElement>(".run-failure");
+		// The cloud no longer lists the stopped message: the routine run the agent is
+		// still working on stands for it, and the member can stop that one too.
+		f.company.store.set({
+			activity: [{ ...stopped, runId: routineRun, sourceKind: "wake", jobStatus: "leased", activity: "working" }],
+		});
+		await settle();
+		expect(f.company.agentState(staff.id)).toBe("working");
+		expect(card()).toBeNull();
+		button(f.view.el, "Stop").click();
+		await settle();
+		expect(cancel).toHaveBeenCalledExactlyOnceWith(session.sessionId, routineRun, expect.any(AbortSignal));
+		// An older cloud still lists the stop: nothing reads as failed or offers Try again.
+		f.company.store.set({ activity: [stopped], recoveries: { [stopped.runId]: details } });
+		await settle();
+		expect(f.company.agentState(staff.id)).toBe("idle");
+		expect(card()).toBeNull();
+		// A stop that left Company File changes asks for the decision: Review, never Try again.
+		f.company.store.set({ recoveries: { [stopped.runId]: { ...details, proposalId: id(71) } } });
+		await settle();
+		expect(f.company.agentState(staff.id)).toBe("decision");
+		expect(card()?.querySelector(".run-failure-title")?.textContent).toBe(
+			"Fixture agent stopped with changes to review",
+		);
+		expect(card()?.querySelector("a")?.getAttribute("href")).toBe(`#/c/${profileA.profileId}/proposal/${id(71)}`);
+		expect([...(card()?.querySelectorAll("button") ?? [])].map((item) => item.textContent)).toEqual(["Dismiss"]);
+		expect(card()?.querySelector('[data-action="retry-run"]')).toBeNull();
+	});
+
+	it("stops a routine run working in the agent's thread through the conversation run control", async () => {
+		// A routine run is a wake run in the agent's own thread. The cloud's run control
+		// reports it like a member's turn (20260926183100); the composer's one button
+		// stops its exact id over the real transport; with a draft it is Send again.
+		const routineRun = id(74);
+		let working = true;
+		const fetch = vi.fn(async (input: string | URL | Request, _init?: RequestInit) => {
+			if (String(input).endsWith("/rpc/qorpera_cancel_session_run")) {
+				working = false;
+				return Response.json({ session_id: session.sessionId, run_id: routineRun, status: "cancelled" });
+			}
+			return Response.json({
+				session_id: session.sessionId,
+				staff_agent_id: staff.id,
+				run: working ? { run_id: routineRun, status: "leased", can_cancel: true } : null,
+			});
+		});
+		vi.stubGlobal("fetch", fetch);
+		const f = fixture();
+		const lifetime = new AbortController();
+		const company = new CompanyController(f.api, profileA, userA.id);
+		company.store.set({ team, staff: [staff], sessions: [{ ...session, staffAgentId: staff.id }], loading: false });
+		const view = new ConversationView(company, session.sessionId, {
+			runControl: createWebSessionRunControl(f.cloud, userA.id, lifetime.signal, () => {}),
+		});
+		document.body.append(view.el);
+		dispose = () => {
+			view.dispose();
+			company.stop();
+			lifetime.abort();
+		};
+		const routine = {
+			runId: routineRun,
+			staffAgentId: staff.id,
+			sourceKind: "wake" as const,
+			jobStatus: "leased" as const,
+			activity: "working" as const,
+			updatedAt: timestamp,
+		};
+		company.store.set({ activity: [routine] });
+		await settle();
+		await settle();
+		expect(company.agentState(staff.id)).toBe("working");
+		expect(button(view.el, "Stop").disabled).toBe(false);
+		input(view.el, "Message", "Also check the invoices.");
+		await settle();
+		expect(view.el.querySelector('[aria-label="Stop"]')).toBeNull();
+		expect(button(view.el, "Send message")).toBe(view.el.querySelector(".composer-send"));
+		input(view.el, "Message", "");
+		await settle();
+		button(view.el, "Stop").click();
+		await settle();
+		await settle();
+		const cancel = fetch.mock.calls.find(([url]) => String(url).endsWith("/rpc/qorpera_cancel_session_run"));
+		expect(JSON.parse(cancel?.[1]?.body as string)).toEqual({
+			p_session_id: session.sessionId,
+			p_run_id: routineRun,
+		});
+		// The confirmed Stop re-reads the conversation: no run is left to stop, even
+		// before the agent's activity catches up.
+		expect(fetch).toHaveBeenCalledTimes(3);
+		expect(view.el.querySelector('[aria-label="Stop"]')).toBeNull();
+		company.store.set({ activity: [] });
+		await settle();
+		expect(company.agentState(staff.id)).toBe("idle");
+		expect(view.el.querySelector('[aria-label="Stop"]')).toBeNull();
+	});
+
+	it("offers Try again in the thread, runs it on the selected account, and reports a refusal in plain words", async () => {
+		const f = setup();
+		const run = {
+			runId: id(70),
+			staffAgentId: staff.id,
+			sourceKind: "room_delivery" as const,
+			jobStatus: "failed" as const,
+			activity: "needs_attention" as const,
+			updatedAt: timestamp,
+		};
+		const details = {
+			runId: run.runId,
+			sourceKind: run.sourceKind,
+			jobStatus: run.jobStatus,
+			lastError:
+				"Runner dispatch failed after the final infrastructure attempt: Runner provider request failed (422)",
+			unsettledOperations: 0,
+		};
+		const card = () => f.view.el.querySelector<HTMLElement>(".run-failure");
+		const retryButton = () => card()?.querySelector<HTMLButtonElement>('[data-action="retry-run"]') ?? null;
+		const sponsor = {
+			connectionId: id(80),
+			provider: "openai",
+			nativeHarness: "codex-cli" as const,
+			sponsorBindingId: id(81),
+			sponsorVersion: 3,
+			computeIdentityId: id(82),
+			workerClass: "managed_sandbox" as const,
+		};
+		f.company.conversation(session.sessionId, false).set({ executionSponsor: sponsor });
+		// The cloud keeps reporting the failed run until it is released or dismissed.
+		vi.spyOn(f.api, "listStaffActivity").mockResolvedValue([run]);
+		vi.spyOn(f.api, "getRunRecovery").mockResolvedValue(details);
+		f.company.store.set({ activity: [run], recoveries: { [run.runId]: details } });
+		await settle();
+		expect(card()?.querySelector(".run-failure-reason")?.textContent).toBe(
+			"No computer could be started for this run. The problem is on Qorpera's side.",
+		);
+		let release: (() => void) | undefined;
+		const retry = vi.spyOn(f.api, "retryRoomDelivery").mockImplementation(
+			() =>
+				new Promise<void>((resolve) => {
+					release = resolve;
+				}),
+		);
+		retryButton()!.focus();
+		retryButton()!.click();
+		await settle();
+		expect(retry).toHaveBeenCalledExactlyOnceWith(run.runId, sponsor.sponsorBindingId, sponsor.sponsorVersion);
+		expect(retryButton()?.textContent).toBe("Trying again…");
+		expect(retryButton()?.getAttribute("aria-disabled")).toBe("true");
+		// A second click while it runs does nothing, and the button keeps focus across the redraw.
+		retryButton()!.click();
+		expect(retry).toHaveBeenCalledTimes(1);
+		expect(document.activeElement).toBe(retryButton());
+		release?.();
+		await settle();
+		// A refusal stays in the card, in the member's words.
+		retry.mockRejectedValueOnce(new Error("Only the author of the post can retry it"));
+		f.company.store.set({ activity: [{ ...run }], recoveries: { [run.runId]: details } });
+		await settle();
+		retryButton()!.click();
+		await settle();
+		expect(card()?.querySelector(".run-failure-error")?.textContent).toBe(
+			"Only the person who wrote the message can try it again.",
+		);
+		expect(retryButton()?.textContent).toBe("Try again");
+		// Only an operator pauses a company now; there is nothing for the member to resume.
+		retry.mockRejectedValueOnce(new Error("Company execution is paused"));
+		retryButton()!.click();
+		await settle();
+		expect(card()?.querySelector(".run-failure-error")?.textContent).toBe(
+			"Agents are paused for a moment while Qorpera updates. Try again shortly.",
+		);
+	});
+
+	it("stops offering Try again for room posts when the deployed cloud cannot do it, and keeps it for session turns", async () => {
+		const f = setup();
+		const run = {
+			runId: id(70),
+			staffAgentId: staff.id,
+			sourceKind: "room_delivery" as const,
+			jobStatus: "failed" as const,
+			activity: "needs_attention" as const,
+			updatedAt: timestamp,
+		};
+		const details = {
+			runId: run.runId,
+			sourceKind: run.sourceKind,
+			jobStatus: run.jobStatus,
+			lastError: "Runner lease expired before durable completion",
+			unsettledOperations: 0,
+		};
+		const retryButton = () => f.view.el.querySelector<HTMLButtonElement>('.run-failure [data-action="retry-run"]');
+		f.company.conversation(session.sessionId, false).set({
+			executionSponsor: {
+				connectionId: id(80),
+				provider: "openai",
+				nativeHarness: "codex-cli",
+				sponsorBindingId: id(81),
+				sponsorVersion: 1,
+				computeIdentityId: id(82),
+				workerClass: "managed_sandbox",
+			},
+		});
+		f.company.store.set({ activity: [run], recoveries: { [run.runId]: details } });
+		await settle();
+		vi.spyOn(f.api, "listStaffActivity").mockResolvedValue([run]);
+		vi.spyOn(f.api, "getRunRecovery").mockResolvedValue(details);
+		vi.spyOn(f.api, "retryRoomDelivery").mockRejectedValue(
+			new CloudRpcError("qorpera_retry_room_delivery", { message: "not found", code: "PGRST202" }, 404),
+		);
+		retryButton()!.click();
+		await settle();
+		f.company.store.set({ activity: [{ ...run }], recoveries: { [run.runId]: details } });
+		await settle();
+		expect(retryButton()).toBeNull();
+		expect(f.view.el.querySelector(".run-failure-error")?.textContent).toBe(
+			"Trying again is not available yet. Send the message again instead.",
+		);
+		expect(button(f.view.el, "Dismiss")).toBeTruthy();
+		const turn = { ...run, runId: id(71), sourceKind: "session_turn" as const };
+		const turnRetry = vi.spyOn(f.api, "retryFailedRun").mockResolvedValue();
+		f.company.store.set({
+			activity: [turn],
+			recoveries: { [turn.runId]: { ...details, runId: turn.runId, sourceKind: turn.sourceKind } },
+		});
+		await settle();
+		retryButton()!.click();
+		await settle();
+		expect(turnRetry).toHaveBeenCalledExactlyOnceWith(turn.runId);
+	});
+
+	it("offers Dismiss only for a refused run, and Try again for an interrupted one", async () => {
 		const f = setup();
 		const run = {
 			runId: id(70),
@@ -552,13 +1057,54 @@ describe("conversation UI boundaries", () => {
 			activity: "needs_attention" as const,
 			updatedAt: timestamp,
 		};
-		const discard = vi.spyOn(f.api, "discardFailedRun").mockResolvedValue(undefined);
+		const details = (lastError: string) => ({
+			runId: run.runId,
+			sourceKind: run.sourceKind,
+			jobStatus: run.jobStatus,
+			lastError,
+			unsettledOperations: 0,
+		});
+		const card = () => f.view.el.querySelector<HTMLElement>(".run-failure");
+		f.company.store.set({ activity: [run], recoveries: { [run.runId]: details("You have hit your usage limit.") } });
+		await settle();
+		expect(card()?.querySelector(".run-failure-reason")?.textContent).toBe(
+			"Your model account has reached its usage limit.",
+		);
+		expect([...(card()?.querySelectorAll("button") ?? [])].map((item) => item.textContent)).toEqual(["Dismiss"]);
+		f.company.store.set({
+			activity: [run],
+			recoveries: { [run.runId]: details("Runner lease expired before durable completion") },
+		});
+		await settle();
+		expect([...(card()?.querySelectorAll("button") ?? [])].map((item) => item.textContent)).toEqual([
+			"Try again",
+			"Dismiss",
+		]);
+		// The card is one quiet line, like a company notice: no big mark, no rule.
+		expect(card()?.querySelector(".run-failure-mark")).toBeNull();
+		expect(card()?.querySelector(".run-failure-rule")).toBeNull();
+	});
+
+	it("keeps a dismissed failure dismissed when it is displaced and returns", async () => {
+		const f = setup();
+		const run = {
+			runId: id(70),
+			staffAgentId: staff.id,
+			sourceKind: "session_turn" as const,
+			jobStatus: "failed" as const,
+			activity: "needs_attention" as const,
+			updatedAt: timestamp,
+		};
+		const acknowledge = vi.spyOn(f.api, "acknowledgeFailedRun").mockResolvedValue(undefined);
+		// The cloud's next read reports a newer failure, which gets its own card.
+		vi.mocked(f.api.listStaffActivity).mockResolvedValue([{ ...run, runId: id(71) }]);
 		f.company.store.set({ activity: [run] });
 		await settle();
-		button(f.view.el, "Dismiss notification").click();
-		f.company.store.set({ activity: [{ ...run, runId: id(71) }] });
+		button(f.view.el, "Dismiss").click();
+		expect(acknowledge).toHaveBeenCalledExactlyOnceWith(run.runId);
 		await settle();
-		expect(discard).not.toHaveBeenCalled();
+		expect(f.view.el.querySelector(".run-failure")).not.toBeNull();
+		// The dismissed run comes back from a stale read: it stays dismissed, once.
 		f.company.store.set({
 			activity: [run],
 			recoveries: {
@@ -571,13 +1117,12 @@ describe("conversation UI boundaries", () => {
 			},
 		});
 		await settle();
-		button(f.view.el, "Dismiss notification").click();
-		await settle();
-		expect(discard).toHaveBeenCalledExactlyOnceWith(run.runId);
+		expect(f.view.el.querySelector(".run-failure")).toBeNull();
+		expect(acknowledge).toHaveBeenCalledTimes(1);
 		expect(f.company.agentState(staff.id)).toBe("idle");
 	});
 
-	it("restores a retryable popup after a rejected dismissal across navigation", async () => {
+	it("keeps a dismissal across navigation, and shows the card again after a lost cloud reply", async () => {
 		const f = setup();
 		const run = {
 			runId: id(70),
@@ -594,15 +1139,12 @@ describe("conversation UI boundaries", () => {
 			unsettledOperations: 0,
 		};
 		const pending = deferred<void>();
-		const discard = vi
-			.spyOn(f.api, "discardFailedRun")
-			.mockReturnValueOnce(pending.promise)
-			.mockResolvedValue(undefined);
+		const acknowledge = vi.spyOn(f.api, "acknowledgeFailedRun").mockReturnValueOnce(pending.promise);
 		vi.mocked(f.api.listStaffActivity).mockResolvedValue([run]);
 		vi.spyOn(f.api, "getRunRecovery").mockResolvedValue(recovery);
 		f.company.store.set({ activity: [run] });
 		await settle();
-		button(f.view.el, "Dismiss notification").click();
+		button(f.view.el, "Dismiss").click();
 		f.view.dispose();
 		f.view.el.remove();
 		const reopened = new ConversationView(f.company, session.sessionId);
@@ -613,15 +1155,22 @@ describe("conversation UI boundaries", () => {
 		};
 		f.company.store.set({ recoveries: { [run.runId]: recovery } });
 		await settle();
-		expect(discard).toHaveBeenCalledExactlyOnceWith(run.runId);
-		expect(reopened.el.querySelector(".notification-card")).toBeNull();
+		expect(acknowledge).toHaveBeenCalledExactlyOnceWith(run.runId);
+		expect(reopened.el.querySelector(".run-failure")).toBeNull();
+		// Nothing reached the cloud: the failure is not settled, so the card returns
+		// in the current view and can be dismissed again.
 		pending.reject(new Error("Connection lost"));
 		await settle();
-		expect(reopened.el.querySelector(".notification-card")?.textContent).toBe("A run did not finish");
+		expect(reopened.el.querySelector(".run-failure-title")?.textContent).toBe(
+			"Fixture agent did not finish this run",
+		);
+		expect(f.company.agentState(staff.id)).toBe("failed");
+		acknowledge.mockResolvedValue(undefined);
 		vi.mocked(f.api.listStaffActivity).mockResolvedValue([]);
-		button(reopened.el, "Dismiss notification").click();
+		button(reopened.el, "Dismiss").click();
 		await settle();
-		expect(discard).toHaveBeenCalledTimes(2);
+		expect(acknowledge).toHaveBeenCalledTimes(2);
+		expect(reopened.el.querySelector(".run-failure")).toBeNull();
 		expect(f.company.agentState(staff.id)).toBe("idle");
 	});
 
@@ -640,7 +1189,7 @@ describe("conversation UI boundaries", () => {
 			const discard = vi.spyOn(f.api, "discardFailedRun");
 			f.company.store.set({ activity: [run] });
 			await settle();
-			const close = button(f.view.el, "Dismiss notification");
+			const close = button(f.view.el, "Dismiss");
 			if (kind === "reader")
 				f.company.store.set({ team: { ...team, capabilities: { ...team.capabilities, write: false } } });
 			close.click();
@@ -660,9 +1209,75 @@ describe("conversation UI boundaries", () => {
 			});
 			await settle();
 			expect(discard).not.toHaveBeenCalled();
-			expect(f.view.el.querySelector(".notification-card")).toBeNull();
+			expect(f.view.el.querySelector(".run-failure")).toBeNull();
 		},
 	);
+});
+
+describe("conversation loading placeholders", () => {
+	it("stands the header, messages and composer as placeholders, each replaced where it stands", async () => {
+		const f = fixture();
+		const events = deferred<Awaited<ReturnType<typeof f.api.readSessionEvents>>>();
+		vi.mocked(f.api.readSessionEvents).mockReturnValue(events.promise);
+		const company = new CompanyController(f.api, profileA, userA.id);
+		const view = new ConversationView(company, session.sessionId, {});
+		document.body.append(view.el);
+		dispose = () => {
+			view.dispose();
+			company.stop();
+		};
+		const header = view.el.querySelector(".thread-identity")!;
+		const composer = () => view.el.querySelector<HTMLElement>(".composer:not(.skeleton-composer)")!;
+		// The company is still opening: neither the conversation nor who may write in it is known.
+		expect(header.querySelector(".skeleton-identity-figure")).not.toBeNull();
+		expect(header.getAttribute("title")).toBe("");
+		expect(visibleText(view.el.querySelector(".thread-header"))).toBe("");
+		expect(visibleText(view.el.querySelector(".messages"))).toBe("");
+		expect(placeholderLabel(view.el.querySelector(".messages"))).toBe("Loading conversation");
+		expect(view.el.querySelectorAll(".skeleton-composer")).toHaveLength(1);
+		expect(composer().hidden).toBe(true);
+		const messages = view.el.querySelector(".messages")!;
+		const placeholder = messages.querySelector(".skeleton-messages");
+		const records: MutationRecord[] = [];
+		const changes = new MutationObserver((batch) => records.push(...batch));
+		changes.observe(messages, { childList: true });
+		company.store.set({ team, staff: [staff], sessions: [{ ...session, staffAgentId: staff.id }], loading: false });
+		await settle();
+		// The live log keeps the same placeholder in place, so a screen reader does not hear it again.
+		expect(messages.querySelector(".skeleton-messages")).toBe(placeholder);
+		records.push(...changes.takeRecords());
+		expect(records).toHaveLength(0);
+		changes.disconnect();
+		// Header and composer arrive; the messages are still being read.
+		expect(header.querySelector(".skeleton")).toBeNull();
+		expect(header.querySelector("h1")?.textContent).toBe(staff.displayName);
+		expect(view.el.querySelector(".skeleton-composer")).toBeNull();
+		expect(composer().hidden).toBe(false);
+		expect(view.el.querySelector(".messages .skeleton-messages")).not.toBeNull();
+		events.resolve([]);
+		await settle();
+		expect(view.el.querySelector(".skeleton")).toBeNull();
+	});
+
+	it("keeps no composer placeholder for a member who cannot write once the company is open", async () => {
+		const f = fixture();
+		const company = new CompanyController(f.api, profileA, userA.id);
+		company.store.set({
+			team: { ...team, capabilities: { ...team.capabilities, write: false } },
+			staff: [staff],
+			sessions: [{ ...session, staffAgentId: staff.id }],
+			loading: false,
+		});
+		const view = new ConversationView(company, session.sessionId, {});
+		document.body.append(view.el);
+		dispose = () => {
+			view.dispose();
+			company.stop();
+		};
+		await settle();
+		expect(view.el.querySelector(".skeleton-composer")).toBeNull();
+		expect(view.el.querySelector<HTMLElement>(".composer")?.hidden).toBe(true);
+	});
 });
 
 describe("local attachment validation", () => {
@@ -1061,5 +1676,221 @@ describe("new conversation and agent setup", () => {
 		await settle();
 		expect(location.hash).toBe(originalHash);
 		expect(f.api.listStaff).not.toHaveBeenCalled();
+	});
+});
+
+describe("messages between two agents (contract 14.6)", () => {
+	it("keeps the coworker's figure and name together wherever Danish puts them", async () => {
+		setLanguagePreference("da");
+		const f = setup();
+		const coworker = { ...staff, id: id(97), displayName: "Helper" };
+		f.company.store.set({ staff: [staff, coworker] });
+		await f.company.loadConversation(session.sessionId);
+		f.company.conversation(session.sessionId).set({
+			loading: false,
+			projection: {
+				items: [
+					{
+						kind: "peer_link",
+						id: id(96),
+						sequence: 1,
+						direction: "in",
+						counterpartStaffId: coworker.id,
+						pairSessionId: id(98),
+						createdAt: timestamp,
+					},
+				],
+				hiddenCount: 0,
+				lastSequence: 1,
+			},
+		});
+		f.view.update();
+		const chip = f.view.el.querySelector<HTMLButtonElement>(".peer-chip")!;
+		expect([...chip.querySelectorAll(":scope > span:not(.figure)")].map((span) => span.textContent)).toEqual([
+			"Besked fra",
+			"Helper",
+		]);
+		expect(chip.querySelector(".figure")?.nextElementSibling?.textContent).toBe("Helper");
+		expect(chip.getAttribute("aria-label")).toBe("Besked fra Helper. Åbn samtalen");
+	});
+
+	it("shows a chip for a coworker's message and opens the two agents' view-only transcript from it", async () => {
+		const f = setup();
+		const coworker = { ...staff, id: id(97), displayName: "Helper" };
+		f.company.store.set({ staff: [staff, coworker] });
+		const pairSessionId = id(98);
+		// The thread's own first load finishes before the test supplies its projection.
+		await f.company.loadConversation(session.sessionId);
+		f.company.conversation(session.sessionId).set({
+			loading: false,
+			projection: {
+				items: [
+					{
+						kind: "peer_link",
+						id: id(96),
+						sequence: 1,
+						direction: "in",
+						counterpartStaffId: coworker.id,
+						pairSessionId,
+						createdAt: timestamp,
+					},
+					{
+						kind: "note",
+						id: id(95),
+						sequence: 2,
+						text: "This exchange paused after 6 messages.",
+						createdAt: timestamp,
+					},
+					{
+						kind: "peer_link",
+						id: id(89),
+						sequence: 3,
+						direction: "out",
+						held: true,
+						counterpartStaffId: coworker.id,
+						pairSessionId,
+						createdAt: timestamp,
+					},
+				],
+				hiddenCount: 0,
+				lastSequence: 3,
+			},
+		});
+		f.view.update();
+		const chips = f.view.el.querySelectorAll<HTMLButtonElement>(".peer-chip");
+		const chip = chips[0]!;
+		// Verb, the coworker's figure, then the name: the figure sits between the two spans.
+		expect([...chip.querySelectorAll(":scope > span:not(.figure)")].map((span) => span.textContent)).toEqual([
+			"Message from",
+			"Helper",
+		]);
+		expect(chip.querySelector(".figure")?.previousElementSibling?.textContent).toBe("Message from");
+		expect(chip.getAttribute("aria-label")).toBe("Message from Helper. Open the conversation");
+		expect(chips[1]?.getAttribute("aria-label")).toBe("Left a note for Helper. Open the conversation");
+		expect(f.view.el.querySelector(".conversation-note")?.textContent).toBe("This exchange paused after 6 messages.");
+		expect(f.view.el.querySelector(".pair-transcript")).toBeNull();
+		chip.click();
+		await settle();
+		// The transcript itself (loaded after the panel opened): the coworker's message under its name, nothing to type into.
+		f.company.conversation(pairSessionId).set({
+			loading: false,
+			projection: {
+				items: [
+					{
+						kind: "agent",
+						id: id(94),
+						sequence: 1,
+						text: "Jonas created you and asked me to pass this along: he approves of you. Welcome.",
+						attachmentCount: 0,
+						phase: "final",
+						runId: id(93),
+						staffSpeaker: { runId: id(93), staffAgentId: coworker.id, staffVersion: 1, displayName: "Helper" },
+						createdAt: timestamp,
+					},
+					{
+						kind: "agent",
+						id: id(92),
+						sequence: 2,
+						text: "FYI: the note is updated.",
+						attachmentCount: 0,
+						phase: "final",
+						runId: id(91),
+						held: true,
+						staffSpeaker: {
+							runId: id(91),
+							staffAgentId: staff.id,
+							staffVersion: 1,
+							displayName: staff.displayName,
+						},
+						createdAt: timestamp,
+					},
+				],
+				hiddenCount: 0,
+				lastSequence: 2,
+			},
+		});
+		await settle();
+		const panel = f.view.el.querySelector<HTMLElement>(".pair-transcript")!;
+		expect(panel).not.toBeNull();
+		expect(panel.querySelector(".pair-header")?.textContent).toBe(`${staff.displayName}⇄Helper`);
+		expect(panel.querySelector(".message-author")?.textContent).toBe("Helper");
+		// The coworker speaks from the left, this thread's own agent from the right.
+		const rows = panel.querySelectorAll<HTMLElement>(".pair-row");
+		expect(rows[0]?.classList.contains("pair-row-right")).toBe(false);
+		expect(rows[1]?.classList.contains("pair-row-right")).toBe(true);
+		expect(rows[1]?.querySelector(".message-author")?.textContent).toBe(staff.displayName);
+		expect(panel.textContent).toContain("he approves of you");
+		expect(panel.querySelector(".message-caption")?.textContent).toBe("Left for Helper's next turn");
+		expect(panel.textContent).toContain("This chat is view-only");
+		expect(panel.querySelector("textarea")).toBeNull();
+		expect(f.view.el.querySelector<HTMLElement>(".thread-conversation")?.inert).toBe(true);
+		button(panel, "Close Chat").click();
+		expect(f.view.el.querySelector(".pair-transcript")).toBeNull();
+		expect(f.view.el.querySelector<HTMLElement>(".thread-conversation")?.inert).toBe(false);
+		expect(document.activeElement).toBe(chip);
+	});
+});
+
+describe("the composer at a scale that makes one line fractional", () => {
+	/** The stylesheets as the build draws them at 125% (scripts/design-px.mjs), resolved to plain pixels for jsdom.
+	 * The app ships at tokens.css's --ui-scale (130%, a line of 54.6); 125% keeps the expected sums exact. */
+	function drawAt125(): HTMLStyleElement {
+		const style = document.createElement("style");
+		// jsdom settles a conflict by order, not specificity, so app.css's bare `textarea` rule goes first;
+		// and it cannot split a border shorthand that holds var(), so the shell's widths are spelled out.
+		style.textContent = [
+			tokensCss,
+			appCss,
+			conversationCss,
+			".composer-shell { border-top-width: 1px; border-bottom-width: 1px; }",
+		]
+			.join("\n")
+			.replace(/^@import .*;$/gm, "")
+			.replace(/(?<![\w.#-])(\d+(?:\.\d+)?)px/g, (text, value: string) =>
+				Number(value) < 2 ? text : `${Number(value) * 1.25}px`,
+			);
+		document.head.append(style);
+		return style;
+	}
+	/** Types a draft whose field reports `scrollHeight` as Chrome rounds it, and lays the field out at the height it is given. */
+	function typeDraft(view: ConversationView, scrollHeight: number) {
+		const field = view.el.querySelector<HTMLTextAreaElement>('[aria-label="Message"]')!;
+		Object.defineProperty(field, "scrollHeight", { configurable: true, get: () => scrollHeight });
+		field.getBoundingClientRect = () => ({ height: Number.parseFloat(field.style.height) || 0 }) as DOMRect;
+		field.value = "draft";
+		field.dispatchEvent(new Event("input", { bubbles: true }));
+		const shell = view.el.querySelector<HTMLElement>(".composer-shell")!;
+		return { field, shell, expanded: shell.classList.contains("is-expanded") };
+	}
+
+	it("keeps one line on one row, grows for more and scrolls past the tallest draft", () => {
+		const style = drawAt125();
+		try {
+			const f = setup();
+			// One line is 42 × 1.25 = 52.5 pixels, which Chrome reports as 53. The empty composer once
+			// opened in its two-row shape here, because 53 > 52.5.
+			const one = typeDraft(f.view, 53);
+			expect(one.expanded).toBe(false);
+			expect(one.field.style.height).toBe("53px");
+			expect(one.shell.style.height).toBe("55px");
+			// Two lines: the shell adds its expanded padding (8 + 34, at 125%) and its 1px borders.
+			const two = typeDraft(f.view, 79);
+			expect(two.expanded).toBe(true);
+			expect(two.shell.style.height).toBe("133.5px");
+			// Back to one line: the shell is measured compact again, so it folds back to one row.
+			const again = typeDraft(f.view, 53);
+			expect(again.expanded).toBe(false);
+			expect(again.shell.style.height).toBe("55px");
+			// The tallest draft is 112 × 1.25 = 140 pixels; past it the field scrolls.
+			const tall = typeDraft(f.view, 400);
+			expect(tall.field.style.height).toBe("140px");
+			expect(tall.field.style.overflowY).toBe("auto");
+			// A file keeps the shell expanded, even under one line of text: measured expanded, one
+			// line is the expanded field's 30 × 1.25 = 37.5, read as 38, under the compact 52.5.
+			attach(f.view.el, [new File(["notes"], "notes.txt", { type: "text/plain" })]);
+			expect(typeDraft(f.view, 38).expanded).toBe(true);
+		} finally {
+			style.remove();
+		}
 	});
 });

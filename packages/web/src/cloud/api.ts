@@ -1,4 +1,21 @@
 import type { Cloud } from "./client.ts";
+import {
+	type CodingSession,
+	type CodingSessionRead,
+	parseCodingSession,
+	parseCodingSessionRead,
+	parseCodingSessions,
+} from "./coding-session.ts";
+import {
+	isMemberPictureName,
+	MEMBER_PICTURE_BUCKET,
+	type MemberPicture,
+	type MemberPictureChange,
+	type MemberPictureObject,
+	parseMemberPictureChange,
+	parseMemberPictureObjects,
+	parseMemberPictures,
+} from "./member-pictures.ts";
 import { type HostedCompanyOrganization, parseHostedCompanyOrganization } from "./organization.ts";
 import { collectPages, type PageCursor } from "./pagination.ts";
 import {
@@ -20,8 +37,9 @@ import {
 	parseInvitation,
 	parsePendingSessionInputs,
 	parseProfiles,
-	parseRunDismissal,
+	parseRoomDeliveryRetry,
 	parseRunRecovery,
+	parseRunResolution,
 	parseSessionInputReceipt,
 	parseSessionPage,
 	parseStaffExecutionActivity,
@@ -30,6 +48,8 @@ import {
 	parseTeam,
 	UUID_PATTERN,
 } from "./parse.ts";
+import { type ActionReviewAnswer, type ActionReviewReceipt, parseActionReviewReceipt } from "./review-rules.ts";
+import { type CompanySidebar, parseCompanySidebar, type SidebarRequest } from "./sidebar.ts";
 import type {
 	CreatedCompanyResult,
 	HostedAccountEntitlement,
@@ -52,6 +72,7 @@ import type {
 	HostedSessionEvent,
 	HostedStaffAgent,
 	HostedStaffExecutionActivity,
+	JsonValue,
 	PendingSessionInputPage,
 	SessionInputReceipt,
 	StaffSessionHandle,
@@ -122,6 +143,60 @@ export class CloudApi {
 
 	async removeFriend(userId: string): Promise<void> {
 		await this.cloud.rpc("qorpera_remove_friend", { p_user_id: requiredUuid(userId, "Account id") });
+	}
+
+	// Member pictures: the photo a member chose for their account. The cloud
+	// returns only the pictures the caller may see (themselves, company
+	// colleagues, friends); the bytes are private storage objects the member
+	// uploads into their own folder.
+
+	listMemberPictures(userIds: readonly string[]): Promise<MemberPicture[]> {
+		if (userIds.length > 200) throw new Error("Ask for at most 200 pictures at a time.");
+		return this.cloud
+			.rpc("qorpera_member_pictures", { p_user_ids: userIds.map((userId) => requiredUuid(userId, "Account id")) })
+			.then(parseMemberPictures);
+	}
+
+	/** Resolves true when this call stored the object, false when those bytes were already there. */
+	async uploadMemberPicture(objectName: string, picture: Blob): Promise<boolean> {
+		if (!isMemberPictureName(objectName)) throw new Error("Invalid picture name.");
+		const { error } = await this.cloud.supabase.storage.from(MEMBER_PICTURE_BUCKET).upload(objectName, picture, {
+			contentType: picture.type,
+			// The name is the content's hash, so the bytes behind it never change.
+			cacheControl: "31536000",
+			upsert: false,
+		});
+		if (!error) return true;
+		// The same picture uploaded again already sits under its name.
+		if (error.statusCode === "409" || /already exists/i.test(error.message)) return false;
+		throw error;
+	}
+
+	/** Everything in the caller's own folder: the current picture and uploads never chosen. */
+	ownMemberPictureObjects(): Promise<MemberPictureObject[]> {
+		return this.cloud.rpc("qorpera_own_member_picture_objects").then(parseMemberPictureObjects);
+	}
+
+	async downloadMemberPicture(objectName: string): Promise<Blob> {
+		if (!isMemberPictureName(objectName)) throw new Error("Invalid picture name.");
+		const { data, error } = await this.cloud.supabase.storage.from(MEMBER_PICTURE_BUCKET).download(objectName);
+		if (error || !data) throw error ?? new Error("The picture is unavailable.");
+		return data;
+	}
+
+	async deleteMemberPicture(objectName: string): Promise<void> {
+		if (!isMemberPictureName(objectName)) throw new Error("Invalid picture name.");
+		const { error } = await this.cloud.supabase.storage.from(MEMBER_PICTURE_BUCKET).remove([objectName]);
+		if (error) throw error;
+	}
+
+	setMemberPicture(objectName: string): Promise<MemberPictureChange> {
+		if (!isMemberPictureName(objectName)) throw new Error("Invalid picture name.");
+		return this.cloud.rpc("qorpera_set_member_picture", { p_object_name: objectName }).then(parseMemberPictureChange);
+	}
+
+	clearMemberPicture(): Promise<MemberPictureChange> {
+		return this.cloud.rpc("qorpera_clear_member_picture").then(parseMemberPictureChange);
 	}
 
 	getTeam(profileId: string): Promise<HostedProfileTeam> {
@@ -207,6 +282,22 @@ export class CloudApi {
 			.then(parseHostedCompanyOrganization);
 	}
 
+	/** Sections are the company's; pins and hidden agents are the signed-in member's. */
+	readCompanySidebar(profileId: string): Promise<CompanySidebar> {
+		return this.cloud
+			.rpc("qorpera_read_company_sidebar", { p_profile_id: requiredUuid(profileId, "Profile id") })
+			.then(parseCompanySidebar);
+	}
+
+	manageCompanySidebar(profileId: string, request: SidebarRequest): Promise<CompanySidebar> {
+		return this.cloud
+			.rpc("qorpera_manage_company_sidebar", {
+				p_profile_id: requiredUuid(profileId, "Profile id"),
+				p_request: request,
+			})
+			.then(parseCompanySidebar);
+	}
+
 	listStaffActivity(environmentId: string): Promise<HostedStaffExecutionActivity[]> {
 		return this.cloud
 			.rpc("qorpera_list_staff_execution_activity", {
@@ -227,7 +318,40 @@ export class CloudApi {
 		const id = requiredUuid(runId, "Run id");
 		return this.cloud
 			.rpc("qorpera_resolve_failed_execution_run", { p_run_id: id, p_action: "discard" })
-			.then((value) => parseRunDismissal(value, id));
+			.then((value) => parseRunResolution(value, id, "discard"));
+	}
+
+	/** Dismiss: a member saw the failure. The run stops standing in for the agent;
+	 * nothing is discarded, replayed or changed, so this also settles a run whose
+	 * durable outcome is still unknown, which discard refuses. */
+	acknowledgeFailedRun(runId: string): Promise<void> {
+		const id = requiredUuid(runId, "Run id");
+		return this.cloud
+			.rpc("qorpera_resolve_failed_execution_run", { p_run_id: id, p_action: "acknowledge" })
+			.then((value) => parseRunResolution(value, id, "acknowledge"));
+	}
+
+	/** Try again for a session turn: the cloud releases the run and queues its inputs again. */
+	retryFailedRun(runId: string): Promise<void> {
+		const id = requiredUuid(runId, "Run id");
+		return this.cloud
+			.rpc("qorpera_resolve_failed_execution_run", { p_run_id: id, p_action: "retry" })
+			.then((value) => parseRunResolution(value, id, "retry"));
+	}
+
+	/** Try again for a post into a room or agent thread (20260920080000): the member's
+	 * message stays as it is and wakes the same agent once more, on the account chosen
+	 * now. Only the author of the post may do this. */
+	retryRoomDelivery(runId: string, sponsorBindingId: string, sponsorVersion: number): Promise<void> {
+		const id = requiredUuid(runId, "Run id");
+		if (!Number.isSafeInteger(sponsorVersion) || sponsorVersion < 1) throw new Error("Model account is invalid.");
+		return this.cloud
+			.rpc("qorpera_retry_room_delivery", {
+				p_run_id: id,
+				p_sponsor_binding_id: requiredUuid(sponsorBindingId, "Model account"),
+				p_sponsor_version: sponsorVersion,
+			})
+			.then((value) => parseRoomDeliveryRetry(value, id));
 	}
 
 	// Conversations
@@ -282,6 +406,45 @@ export class CloudApi {
 			.then(parseEvents);
 	}
 
+	// Coding sessions (Order 9): what the thread element renders. The list finds
+	// the sessions an agent dispatched from a conversation; the read follows one
+	// session's event stream; answer and delegate are the owner's only writes.
+
+	listCodingSessions(sessionId: string): Promise<CodingSession[]> {
+		return this.cloud
+			.rpc("qorpera_list_coding_sessions", { p_session_id: requiredUuid(sessionId, "Session id") })
+			.then(parseCodingSessions);
+	}
+
+	readCodingSession(workerId: string, afterEvent = 0, limit = 200): Promise<CodingSessionRead> {
+		return this.cloud
+			.rpc("qorpera_read_coding_session", {
+				p_worker_id: requiredUuid(workerId, "Coding session id"),
+				p_after_event: afterEvent,
+				p_limit: limit,
+			})
+			.then(parseCodingSessionRead);
+	}
+
+	answerCodingSession(workerId: string, text: string, clientRequestId: string): Promise<CodingSession> {
+		return this.cloud
+			.rpc("qorpera_answer_coding_session", {
+				p_worker_id: requiredUuid(workerId, "Coding session id"),
+				p_text: text,
+				p_client_request_id: requiredUuid(clientRequestId, "Client request id"),
+			})
+			.then(parseCodingSession);
+	}
+
+	delegateCodingSession(workerId: string, clientRequestId: string): Promise<CodingSession> {
+		return this.cloud
+			.rpc("qorpera_delegate_coding_session", {
+				p_worker_id: requiredUuid(workerId, "Coding session id"),
+				p_client_request_id: requiredUuid(clientRequestId, "Client request id"),
+			})
+			.then(parseCodingSession);
+	}
+
 	listSessionInputs(sessionId: string, afterPosition = 0, limit = 100): Promise<PendingSessionInputPage> {
 		return this.cloud
 			.rpc("qorpera_list_session_inputs", {
@@ -290,6 +453,124 @@ export class CloudApi {
 				p_limit: limit,
 			})
 			.then(parsePendingSessionInputs);
+	}
+
+	/** The company's saved secrets (references only: never a value). */
+	listSecretConnections(profileId: string, environmentId: string): Promise<CloudSecretReference[]> {
+		return this.cloud
+			.rpc("qorpera_list_cloud_secret_connections", {
+				p_profile_id: requiredUuid(profileId, "Profile id"),
+				p_environment_id: requiredUuid(environmentId, "Environment id"),
+			})
+			.then(parseSecretReferences);
+	}
+
+	/** A one-time ticket to put a secret into the company's cloud custody. The
+	 * value itself goes to the secret broker's origin (`captureSecret`), never
+	 * through this RPC. */
+	beginSecretCapture(input: {
+		profileId: string;
+		environmentId: string;
+		ownerKind: "company" | "member";
+		ownerUserId?: string;
+		connectorId: string;
+		secretName: string;
+		purpose: string;
+		existingSecretId?: string;
+	}): Promise<CloudSecretCaptureTicket> {
+		return this.cloud
+			.rpc("qorpera_begin_cloud_secret_capture", {
+				p_profile_id: requiredUuid(input.profileId, "Profile id"),
+				p_environment_id: requiredUuid(input.environmentId, "Environment id"),
+				p_owner_kind: input.ownerKind,
+				p_owner_user_id: input.ownerUserId ? requiredUuid(input.ownerUserId, "Owner") : null,
+				p_connector_id: input.connectorId,
+				p_secret_name: input.secretName,
+				p_purpose: input.purpose,
+				p_existing_secret_id: input.existingSecretId ? requiredUuid(input.existingSecretId, "Secret id") : null,
+			})
+			.then(parseSecretCaptureTicket);
+	}
+
+	/** Post the plaintext to the secret broker, the one place that may see it.
+	 * The ticket's capability is the only credential; nothing else identifies
+	 * the member, and the answer carries a reference, never the value. Several
+	 * companies' brokers can share one origin, each its own process: the company
+	 * id (not a secret) lets the origin's router pick the company's broker, and a
+	 * broker refuses a ticket of any other company. */
+	async captureSecret(ticket: CloudSecretCaptureTicket, value: string): Promise<CloudSecretReference> {
+		if (!value || value.length > 32 * 1024) throw new Error("The secret is empty or too long.");
+		const route = `${ticket.serviceOrigin}/v1/captures/${ticket.ticketId}?company=${ticket.companyId}`;
+		const response = await fetch(route, {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({
+				schema: "qorpera.cloud-secret-capture-request/v1",
+				captureCapability: ticket.captureCapability,
+				fields: { value },
+			}),
+			redirect: "error",
+			credentials: "omit",
+		});
+		if (!response.ok) throw new Error("The secret could not be saved. Try again in a moment.");
+		return parseSecretReference(await response.json());
+	}
+
+	/** Answer a typed card the agent raised (kernel bundle v70). Never a secret
+	 * value: a secret card answers with its outcome only. The answer is delivered
+	 * the way a message there is and runs on the member's own model account,
+	 * which `sponsor` names: like a post in an agent's shared thread (bundle v100),
+	 * like a turn request in a plain conversation (bundle v105). */
+	answerInteraction(
+		sessionId: string,
+		clientInputId: string,
+		interactionId: string,
+		outcome: string,
+		answer: Record<string, JsonValue> = {},
+		sponsor?: { sponsorBindingId: string; sponsorVersion: number },
+	): Promise<SessionInputReceipt> {
+		return this.cloud
+			.rpc("qorpera_answer_interaction", {
+				p_session_id: requiredUuid(sessionId, "Session id"),
+				p_client_input_id: requiredUuid(clientInputId, "Client input id"),
+				p_interaction_id: requiredUuid(interactionId, "Interaction id"),
+				p_outcome: outcome,
+				p_answer: answer,
+				...(sponsor
+					? {
+							p_sponsor_binding_id: requiredUuid(sponsor.sponsorBindingId, "Sponsor binding id"),
+							p_sponsor_version: sponsor.sponsorVersion,
+						}
+					: {}),
+			})
+			.then(parseSessionInputReceipt);
+	}
+
+	/** Answer an approval card of an agent's action (kernel bundle v130). Allow once,
+	 * Always allow (a built-in check's card only; saves `ruleText` as a company
+	 * Allow rule) or Deny. When the agent stopped waiting, the answer wakes it on
+	 * the member's own model account, which `sponsor` names. */
+	answerActionReview(
+		reviewId: string,
+		clientInputId: string,
+		answer: ActionReviewAnswer,
+		ruleText: string | undefined,
+		sponsor?: { sponsorBindingId: string; sponsorVersion: number },
+	): Promise<ActionReviewReceipt> {
+		return this.cloud
+			.rpc("qorpera_answer_action_review", {
+				p_review_id: requiredUuid(reviewId, "Approval id"),
+				p_client_input_id: requiredUuid(clientInputId, "Client input id"),
+				p_answer: answer,
+				...(ruleText === undefined ? {} : { p_rule_text: ruleText }),
+				...(sponsor
+					? {
+							p_sponsor_binding_id: requiredUuid(sponsor.sponsorBindingId, "Sponsor binding id"),
+							p_sponsor_version: sponsor.sponsorVersion,
+						}
+					: {}),
+			})
+			.then(parseActionReviewReceipt);
 	}
 
 	/** The one member write into a conversation: a queued prompt. The mouth is
@@ -435,4 +716,88 @@ export class CloudApi {
 			p_diagnostics: {},
 		});
 	}
+}
+
+/** A saved secret as the custody describes it: ids, names and owner, never a value. */
+export interface CloudSecretReference {
+	secretId: string;
+	version: number;
+	connectorId: string;
+	secretName: string;
+	purpose: string;
+	ownerKind: "company" | "member";
+	ownerUserId?: string;
+	status: "active" | "revoked";
+}
+
+export interface CloudSecretCaptureTicket {
+	ticketId: string;
+	captureCapability: string;
+	serviceOrigin: string;
+	companyId: string;
+	secretId: string;
+	version: number;
+	expiresAt: string;
+}
+
+function parseSecretReference(value: unknown): CloudSecretReference {
+	const input = value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+	if (
+		typeof input.secretId !== "string" ||
+		!Number.isSafeInteger(input.version) ||
+		typeof input.connectorId !== "string" ||
+		typeof input.secretName !== "string" ||
+		(input.ownerKind !== "company" && input.ownerKind !== "member") ||
+		(input.status !== "active" && input.status !== "revoked")
+	)
+		throw new Error("The saved secret's description is invalid.");
+	return {
+		secretId: requiredUuid(input.secretId, "Secret id"),
+		version: input.version as number,
+		connectorId: input.connectorId,
+		secretName: input.secretName,
+		purpose: typeof input.purpose === "string" ? input.purpose : "",
+		ownerKind: input.ownerKind,
+		...(typeof input.ownerUserId === "string" ? { ownerUserId: input.ownerUserId } : {}),
+		status: input.status,
+	};
+}
+
+function parseSecretReferences(value: unknown): CloudSecretReference[] {
+	return Array.isArray(value) ? value.map(parseSecretReference) : [];
+}
+
+function parseSecretCaptureTicket(value: unknown): CloudSecretCaptureTicket {
+	const input = value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+	const scope =
+		input.scope && typeof input.scope === "object" && !Array.isArray(input.scope)
+			? (input.scope as Record<string, unknown>)
+			: {};
+	let origin: string;
+	try {
+		const url = new URL(String(input.serviceOrigin));
+		if (url.protocol !== "https:" || url.pathname !== "/" || url.search || url.hash) throw new Error("origin");
+		origin = url.origin;
+	} catch {
+		throw new Error("The secret service is not set up for this company.");
+	}
+	if (
+		input.schema !== "qorpera.cloud-secret-capture/v1" ||
+		typeof input.ticketId !== "string" ||
+		typeof input.captureCapability !== "string" ||
+		typeof scope.companyId !== "string" ||
+		typeof scope.secretId !== "string" ||
+		!Number.isSafeInteger(scope.version) ||
+		typeof input.expiresAt !== "string"
+	)
+		throw new Error("The secret ticket is invalid.");
+	return {
+		ticketId: requiredUuid(input.ticketId, "Ticket id"),
+		captureCapability: input.captureCapability,
+		serviceOrigin: origin,
+		companyId: requiredUuid(scope.companyId, "Company id"),
+		secretId: requiredUuid(scope.secretId, "Secret id"),
+		version: scope.version as number,
+		expiresAt: input.expiresAt,
+	};
 }

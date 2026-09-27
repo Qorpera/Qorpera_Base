@@ -79,60 +79,97 @@ set_cosmetic_property xfwm4 /general/zoom_desktop bool false
 set_cosmetic_property xfwm4 /general/box_resize bool true
 set_cosmetic_property xfwm4 /general/workspace_count int 1
 set_cosmetic_property xfwm4 /general/scroll_workspaces bool false
+set_cosmetic_property xfwm4 /general/placement_mode string center
+set_cosmetic_property xfwm4 /general/placement_ratio int 100
+# Title bars: no "roll up" button nobody asks for, and the font of the dock.
+set_cosmetic_property xfwm4 /general/button_layout string "O|HMC"
+set_cosmetic_property xfwm4 /general/title_font string "Liberation Sans Bold 10"
+# The terminal's look. The wrapper writes the same into terminalrc; newer
+# xfce4-terminal versions keep their settings here and read that file only once.
+set_cosmetic_property xfce4-terminal /misc-menubar-default bool false
+set_cosmetic_property xfce4-terminal /misc-default-geometry string 110x30
+set_cosmetic_property xfce4-terminal /scrolling-bar string TERMINAL_SCROLLBAR_NONE
+set_cosmetic_property xfce4-terminal /font-use-system bool false
+set_cosmetic_property xfce4-terminal /font-name string "DejaVu Sans Mono 11"
+set_cosmetic_property xfce4-terminal /color-foreground string "#e6e9ef"
+set_cosmetic_property xfce4-terminal /color-background string "#12141a"
+set_cosmetic_property xfce4-terminal /color-cursor string "#7ee787"
+set_cosmetic_property xfce4-terminal /color-cursor-use-default bool false
+set_cosmetic_property xfce4-terminal /color-palette string \
+	"#1b1f2a;#f47067;#7ee787;#f5a524;#5aa9ff;#c297ff;#56d4dd;#c9ced8;#565d6b;#ff938a;#a5f3ae;#ffd166;#8cc4ff;#d8b9ff;#8ae7ee;#ffffff"
+terminal_rc="${XDG_CONFIG_HOME}/qorpera-bashrc"
+plain_path='^[A-Za-z0-9/._ -]+$'
+if [[ -f ${terminal_rc} && ! -L ${terminal_rc} && ${terminal_rc} =~ ${plain_path} ]]; then
+	set_cosmetic_property xfce4-terminal /run-custom-command bool true
+	set_cosmetic_property xfce4-terminal /custom-command string "/usr/bin/bash --rcfile \"${terminal_rc}\""
+fi
 # One static, client-drawn pointer theme when the image carries it; otherwise
 # the X core pointer. Never an animated or oversized one.
 if [[ -d /usr/share/icons/Adwaita/cursors ]]; then
 	export XCURSOR_THEME=Adwaita XCURSOR_SIZE=24
 fi
-# Running dots. The wrapper wrote an idle and a running launcher entry per dock
-# icon; the panel reloads an entry when its file changes. This waits on the
-# window manager's client list (no polling) and swaps the entry of an icon
-# whose windows appeared or went. The client list includes minimised windows:
-# the dock is the only window list, so a minimised application keeps its dot.
-# It ends with the X server and never blocks or fails the desktop: without the
-# tools the dock simply shows no dots.
-dock_state="${XDG_CONFIG_HOME}/qorpera-dock"
+# Running marks. Immutable entries live outside XFCE's launcher directories:
+# changing `items` deletes the previous managed entry. XFCE imports a copy of
+# the requested state, so the source survives every later transition.
+# This waits on the window manager's client list and
+# also looks every few seconds, in case an announcement is lost: one xprop call,
+# and nothing more while the list is unchanged. The client list includes
+# minimised windows: the dock is the only window list, so a minimised
+# application keeps its mark. It ends with the X server and never blocks or
+# fails the desktop: without the tools the dock simply shows no marks.
 dock_launchers="${XDG_CONFIG_HOME}/xfce4/panel"
-dock_scratch=""
+dock_templates="${XDG_CONFIG_HOME}/qorpera-dock"
 show_dock_state() {
-	local app=$1 state=$2 target=$3 temporary
-	local template="${dock_state}/${app}.${state}.desktop"
-	[[ -f ${template} && ! -L ${template} && -d ${target%/*} && ! -d ${target} ]] || return 0
-	if cmp -s -- "${template}" "${target}"; then return 0; fi
-	# Never a predictable name: a private directory, then an atomic rename.
-	if [[ -z ${dock_scratch} || ! -d ${dock_scratch} ]]; then
-		dock_scratch=$(mktemp -d "${XDG_CONFIG_HOME}/.qorpera-dock.XXXXXXXX" 2>/dev/null) || return 0
-	fi
-	temporary=$(mktemp "${dock_scratch}/entry.XXXXXXXX" 2>/dev/null) || return 0
-	cp -f -- "${template}" "${temporary}" && mv -f -- "${temporary}" "${target}"
+	local app=$1 plugin=$2 state=$3 entry current
+	entry="qorpera-${app}.desktop"
+	[[ ${state} == idle ]] || entry="qorpera-${app}-${state}.desktop"
+	[[ -f ${dock_templates}/${entry} && ! -L ${dock_templates}/${entry} ]] || return 0
+	current=$(xfconf-query -c xfce4-panel -p "/plugins/plugin-${plugin}/items" 2>/dev/null) || current=""
+	[[ ${current} != *$'\n'"${dock_templates}/${entry}" ]] || return 0
+	xfconf-query -c xfce4-panel -p "/plugins/plugin-${plugin}/items" -n -a -t string -s "${dock_templates}/${entry}" >/dev/null 2>&1 || true
 }
-# Classes of every managed window, one per line, minimised included.
+# Instance and class of every managed window of a client list, one window per
+# line, minimised included.
 dock_classes() {
-	local list id class
-	list=$(xprop -root _NET_CLIENT_LIST 2>/dev/null) || return 0
+	local list=$1 id class
 	[[ ${list} == *"#"* ]] || return 0
 	list=${list#*#}
 	for id in ${list//,/ }; do
 		[[ ${id} =~ ^0x[0-9a-fA-F]+$ ]] || continue
 		class=$(xprop -id "${id}" WM_CLASS 2>/dev/null) || continue
-		if [[ ${class} =~ \"([^\"]*)\"[[:space:]]*$ ]]; then echo "${BASH_REMATCH[1]}"; fi
+		# WM_CLASS(STRING) = "instance", "Class"
+		[[ ${class} != *=* ]] || echo "${class#*=}"
 	done
 }
 watch_dock() {
-	local entry app target pattern state classes class
-	while read -r _; do
-		sleep 0.3
-		# A burst of window events costs one pass: drain what is already waiting.
-		while read -r -t 0 _ 2>/dev/null; do read -r _ || break; done
-		classes=$(dock_classes)
+	local entry app plugin pattern state classes class list last="" status
+	while :; do
+		if read -r -t 3 _; then
+			sleep 0.3
+			# A burst of window events costs one pass: drain what is already waiting.
+			while read -r -t 0 _ 2>/dev/null; do read -r _ || break; done
+			last=""
+		else
+			# A timeout (Bash 4 and later say so with a status above 128) is the
+			# regular look; anything else is the end of the X server.
+			status=$?
+			((status > 128)) || break
+		fi
+		list=$(xprop -root _NET_CLIENT_LIST 2>/dev/null) || list=""
+		[[ ${list} != "${last}" ]] || continue
+		last=${list}
+		classes=$(dock_classes "${list}")
+		# The browser is matched by the class the office service gives it and by
+		# every name a Chromium build uses for itself (Chromium, Google-chrome,
+		# Google-chrome-for-testing, ...), in the instance or the class.
 		for entry in \
-			"browser;launcher-6/qorpera-browser.desktop;^([Cc]hromium|[Cc]hrome)" \
-			"files;launcher-5/qorpera-files.desktop;^[Tt]hunar" \
-			"terminal;launcher-4/qorpera-terminal.desktop;^[Xx]fce4-terminal"; do
+			"browser;6;([Qq]orpera-[Bb]rowser|[Cc]hrom(e|ium))" \
+			"files;5;\"[Tt]hunar\"" \
+			"terminal;4;\"[Xx]fce4-terminal\""; do
 			app=${entry%%;*}
 			pattern=${entry##*;}
-			target=${entry#*;}
-			target="${dock_launchers}/${target%%;*}"
+			plugin=${entry#*;}
+			plugin=${plugin%%;*}
 			state=idle
 			while IFS= read -r class; do
 				if [[ -n ${class} && ${class} =~ ${pattern} ]]; then state=running; fi
@@ -142,17 +179,16 @@ watch_dock() {
 				-e ${XDG_RUNTIME_DIR}/qorpera-screen-browser.launching ]]; then
 				continue
 			fi
-			show_dock_state "${app}" "${state}" "${target}" || true
+			show_dock_state "${app}" "${plugin}" "${state}" || true
 		done
 	done < <(xprop -root -spy _NET_CLIENT_LIST 2>/dev/null)
 }
 # A launcher that was killed while waiting must not freeze its icon.
 [[ -z ${XDG_RUNTIME_DIR:-} ]] || rm -f -- "${XDG_RUNTIME_DIR}/qorpera-screen-browser.launching" 2>/dev/null || true
-if [[ -d ${dock_state} && ! -L ${dock_state} ]] && command -v xprop >/dev/null 2>&1; then
+if [[ -d ${dock_launchers} && ! -L ${dock_launchers} ]] && command -v xprop >/dev/null 2>&1; then
 	(
 		set +e
 		watch_dock
-		[[ -z ${dock_scratch} ]] || rm -rf -- "${dock_scratch}"
 	) >/dev/null 2>&1 &
 fi
 exec xfce4-session

@@ -1,0 +1,37 @@
+name: Root typecheck
+
+# Runs the root `tsgo --noEmit` from `npm run check`. web-client.yml
+# typechecks only packages/web, so type errors in the other packages' tests
+# reached master unseen (#264, #304).
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [master]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: root-typecheck-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tsgo:
+    name: Root tsgo --noEmit
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies without lifecycle scripts
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Typecheck
+        run: npx tsgo --noEmit

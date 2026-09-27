@@ -217,15 +217,16 @@ begin
 end $$;
 $test$);
 
-select pg_temp.wake_acceptance_case('public_send_budget_enforced_at_admission',$test$
+select pg_temp.wake_acceptance_case('public_sends_have_no_count_at_admission',$test$
 do $$
 declare v_binding jsonb; v_count integer;
 begin
+	-- Runtime v92: no send limit per wake (was 64).
 	v_binding := pg_temp.wake_acceptance_routine('optional');
-	for v_count in 1..64 loop perform pg_temp.wake_public_send(v_binding,'progress','bounded-' || v_count); end loop;
-	perform pg_temp.wake_error(format('select pg_temp.wake_public_send(%L,''final'')',v_binding),'55000');
-	perform pg_temp.wake_assert((select count(*)=64 from public.qorpera_agent_sends
-		where run_id=(v_binding ->> 'runId')::uuid),'Budget denial does not append a 65th event');
+	for v_count in 1..70 loop perform pg_temp.wake_public_send(v_binding,'progress','many-' || v_count); end loop;
+	perform pg_temp.wake_public_send(v_binding,'final');
+	perform pg_temp.wake_assert((select count(*)=71 from public.qorpera_agent_sends
+		where run_id=(v_binding ->> 'runId')::uuid),'Seventy progress messages and a final are admitted');
 end $$;
 $test$);
 
@@ -283,7 +284,7 @@ begin
 end $$;
 $test$);
 
-select pg_temp.wake_acceptance_case('room_post_fans_out_bounded_sends_and_silent_completion',$test$
+select pg_temp.wake_acceptance_case('room_post_fans_out_sends_and_silent_completion',$test$
 do $$
 declare v_binding jsonb := current_setting('qorpera_test.wake_binding')::jsonb; v_base public.qorpera_execution_runs%rowtype;
 	v_room uuid := '30000000-0000-4000-8000-000000000080'; v_path text; v_doc text; v_entry jsonb; v_post jsonb;
@@ -317,16 +318,17 @@ begin
 	perform pg_temp.wake_assert((select count(*) = 1 from public.qorpera_session_events
 		where session_id = (v_post ->> 'sessionId')::uuid and session_input_id = (v_post ->> 'inputId')::uuid),
 		'The post enters the room conversation once');
-	-- First agent: the room policy bounds public sends to three; a fourth is refused at admission.
+	-- First agent: a room wake has no send limit (runtime v92); four progress messages and a final are admitted.
 	v_first := pg_temp.wake_start(null);
 	v_wake := public.qorpera_read_native_wake(v_first);
-	perform pg_temp.wake_assert(v_wake ->> 'kind' = 'room' and (v_wake #>> '{policy,maxPublicSends}') = '3'
+	perform pg_temp.wake_assert(v_wake ->> 'kind' = 'room' and v_wake -> 'policy' -> 'maxPublicSends' = 'null'::jsonb
 		and (v_wake #>> '{payload,roomId}') = v_room::text and (v_wake #>> '{audience,sessionId}') = v_post ->> 'sessionId','Room envelope');
 	perform public.qorpera_begin_native_company_execution(v_first,repeat('7',64));
 	perform pg_temp.wake_public_send(v_first,'progress','room-1');
 	perform pg_temp.wake_public_send(v_first,'progress','room-2');
-	perform pg_temp.wake_public_send(v_first,'final','room-3');
-	perform pg_temp.wake_error(format('select pg_temp.wake_public_send(%L,''progress'',''room-4'')',v_first),'55000');
+	perform pg_temp.wake_public_send(v_first,'progress','room-3');
+	perform pg_temp.wake_public_send(v_first,'progress','room-4');
+	perform pg_temp.wake_public_send(v_first,'final','room-5');
 	perform pg_temp.wake_acceptance_finish(v_first);
 	-- Second agent: silence is a valid room result.
 	v_second := pg_temp.wake_start(null);
@@ -339,32 +341,24 @@ begin
 end $$;
 $test$);
 
-select pg_temp.wake_acceptance_case('wake_rate_ceiling_and_founder_stop',$test$
+select pg_temp.wake_acceptance_case('no_wake_ceiling_and_operator_stop',$test$
 do $$
 declare v_binding jsonb := current_setting('qorpera_test.wake_binding')::jsonb; v_base public.qorpera_execution_runs%rowtype;
-	v_first jsonb; v_second jsonb; v_occurrence public.qorpera_wake_occurrences%rowtype; v_used bigint;
+	v_first jsonb; v_second jsonb; v_notifications bigint;
 begin
 	select * into strict v_base from public.qorpera_execution_runs where id = (v_binding ->> 'runId')::uuid;
 	perform public.qorpera_begin_native_company_execution(v_binding,repeat('7',64));
 	perform pg_temp.wake_public_send(v_binding,'progress');
-	-- The founder sets the wake ceiling to one more autonomous wake than this hour already holds.
-	v_used := public.qorpera_company_wakes_last_hour(v_base.profile_id);
-	perform pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001');
-	perform public.qorpera_set_company_execution_ceiling(v_base.profile_id,250000000,100000000,0,v_used + 1);
-	perform pg_temp.path_claims('service_role');
+	-- There is no company wake ceiling (2026-09-24): back-to-back delegations are both admitted.
 	v_first := public.qorpera_send_coworker_message(v_binding,'30000000-0000-4000-8000-000000000031','ceiling-1','First delegation.');
 	perform pg_temp.wake_assert(v_first ->> 'status' = 'queued' and (select status = 'queued' from public.qorpera_wake_occurrences
 		where id = (v_first ->> 'occurrenceId')::uuid),'First autonomous wake admitted');
 	v_second := public.qorpera_send_coworker_message(v_binding,'30000000-0000-4000-8000-000000000032','ceiling-2','Second delegation.');
-	select * into strict v_occurrence from public.qorpera_wake_occurrences where id = (v_second ->> 'occurrenceId')::uuid;
-	perform pg_temp.wake_assert(v_occurrence.status = 'cancelled' and v_occurrence.blocked_reason = 'Company wake ceiling tripped',
-		'Second wake stopped at the ceiling without agent cooperation');
-	perform pg_temp.wake_assert(exists(select 1 from public.qorpera_company_ceiling_trips where profile_id = v_base.profile_id
-		and dimension = 'wakes' and run_id = v_occurrence.id),'Ceiling trip recorded');
-	perform pg_temp.wake_assert(exists(select 1 from public.qorpera_member_notifications where profile_id = v_base.profile_id
-		and user_id = '30000000-0000-4000-8000-000000000001' and kind = 'company_ceiling_tripped' and subject ->> 'dimension' = 'wakes'),
-		'Founder notified from the control plane');
-	-- The founder stop: running work is fenced at its next effect, new turns and posts are refused.
+	perform pg_temp.wake_assert((select status = 'queued' from public.qorpera_wake_occurrences
+		where id = (v_second ->> 'occurrenceId')::uuid),'Second autonomous wake admitted without a company ceiling');
+	select count(*) into v_notifications from public.qorpera_member_notifications where profile_id = v_base.profile_id;
+	-- The operator stop (an operator session with a founder's claims): running work is fenced at its next
+	-- effect, new turns and posts are refused, and no member is notified.
 	perform pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001');
 	perform public.qorpera_set_company_execution_pause(v_base.profile_id,true,'Acceptance stop');
 	perform pg_temp.path_claims('service_role');
@@ -376,8 +370,8 @@ begin
 	perform pg_temp.wake_assert(v_second = '[]'::jsonb,'Nothing materializes while paused');
 	perform pg_temp.wake_assert((select blocked_reason = 'Company execution is paused' and status = 'queued'
 		from public.qorpera_wake_occurrences where id = (v_first ->> 'occurrenceId')::uuid),'Queued wakes wait while paused');
-	perform pg_temp.wake_assert(exists(select 1 from public.qorpera_member_notifications where profile_id = v_base.profile_id
-		and kind = 'company_execution_paused'),'Founders notified of the stop');
+	perform pg_temp.wake_assert((select count(*) from public.qorpera_member_notifications
+		where profile_id = v_base.profile_id) = v_notifications,'The stop notifies no member');
 	-- Resume: work continues.
 	perform pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001');
 	perform public.qorpera_set_company_execution_pause(v_base.profile_id,false,null);

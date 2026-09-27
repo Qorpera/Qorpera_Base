@@ -11,8 +11,20 @@ vi.mock("../src/cloud-company-computer-stop-history.ts", () => ({ readCompanyCom
 import { verifyCompanyComputerBootPredecessor } from "../src/cloud-company-computer-boot-predecessor.ts";
 
 afterEach(() => vi.resetAllMocks());
-function fixture(restarts = 2) {
-	const f = laterBootConfigurationFixture({ restarts }),
+/** Layout version 2 (the production office) adds the company root to every
+ * retained receipt a later boot rereads from the previous boot. */
+const layoutV2 = {
+	layoutVersion: 2 as const,
+	entries: [".", "company", "desktop", "profiles", "screens", "workbench"].map((path) => ({
+		path,
+		kind: "directory" as const,
+		mode: 0o700,
+		bytes: 0,
+		sha256: null,
+	})),
+};
+function fixture(restarts = 2, layoutVersion: 1 | 2 = 1) {
+	const f = laterBootConfigurationFixture({ restarts, ...(layoutVersion === 2 ? { original: layoutV2 } : {}) }),
 		reads: string[] = [];
 	mocked.read.mockImplementation(async () => ({
 		manifest: f.manifest,
@@ -49,6 +61,13 @@ describe("retained boot predecessor for subsequent VM configuration", () => {
 			expect(f.reads.every((path) => path.startsWith(f.previous.directory))).toBe(true);
 		},
 	);
+	it("verifies a later boot of a layout version 2 office: the previous boot's receipt carries the company root", async () => {
+		const f = fixture(1, 2);
+		expect(f.originReceipt.layout).toHaveProperty("companyRoot");
+		expect(f.previous.receipt.layout).toEqual(f.originReceipt.layout);
+		await f.run();
+		expect(f.reads).toHaveLength(4);
+	});
 	it.each([
 		"configuration",
 		"receipt",

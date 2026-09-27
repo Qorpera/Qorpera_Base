@@ -6,11 +6,18 @@ import type { WebSessionModel } from "../cloud/session-model.ts";
 import type { WebSessionRunControl } from "../cloud/session-run-control.ts";
 import type { HostedStaffAgent } from "../cloud/types.ts";
 import type { FigureChoice } from "../ui/figure-picker.ts";
+import type { ComputerPanels } from "./views/computer.ts";
 
 export interface AgentDraft extends FigureChoice {
 	displayName: string;
 	role: string;
 	charter: string;
+}
+
+/** Retained until creation and roster projection are both confirmed. */
+export interface AgentCreation extends AgentDraft {
+	id: string;
+	createdAt: string;
 }
 
 /** Member UI adapters over the shared cloud SDK. A view offers an action only
@@ -22,9 +29,11 @@ export interface WorkspaceActions {
 		draft: GroupChatDraft,
 		signal: AbortSignal,
 	) => Promise<void>;
-	/** Shared workspace surface for transient notifications owned by the view. */
+	/** Company notices (all company computers in use). The conversation shows them above its composer. */
 	notificationHost?: HTMLElement;
 	computer?: WebCompanyComputer;
+	/** The company's open computers, kept across the threads a member moves between. */
+	computerPanels?: ComputerPanels;
 	runControl?: WebSessionRunControl;
 	sessionModel?: WebSessionModel;
 	nativeSubscription?: WebNativeSubscription;
@@ -37,5 +46,7 @@ export interface WorkspaceActions {
 	startConversation?: (recipientIds: readonly string[], text: string, signal: AbortSignal) => Promise<string>;
 	/** Returns the exact applied agent document revision, also projected as roster version. */
 	updateAgent?: (agent: HostedStaffAgent, draft: AgentDraft, signal: AbortSignal) => Promise<number>;
-	createAgent?: (profileId: string, draft: AgentDraft, signal: AbortSignal) => Promise<string>;
+	createAgent?: (profileId: string, draft: AgentCreation, signal: AbortSignal) => Promise<string>;
+	/** Removes the agent for good: its document leaves the Company File. */
+	deleteAgent?: (agent: HostedStaffAgent, signal: AbortSignal) => Promise<void>;
 }

@@ -9,7 +9,7 @@ afterEach(() => {
 	vi.useRealTimers();
 });
 
-const model = { session_id: session.sessionId, model_id: "gpt-6-astra", version: 0 };
+const model = { session_id: session.sessionId, model_id: "gpt-6-astra", reasoning_effort: "low", version: 0 };
 
 function setup() {
 	const f = fixture();
@@ -34,12 +34,18 @@ describe("conversation model transport", () => {
 		expect(await f.control.read(session.sessionId, f.view.signal)).toEqual({
 			sessionId: session.sessionId,
 			modelId: "gpt-6-astra",
+			reasoningEffort: "low",
 			version: 0,
 		});
-		f.fetch.mockResolvedValueOnce(Response.json({ ...model, model_id: "gpt-5.6-sol", version: 1 }));
-		expect(await f.control.set(session.sessionId, "gpt-5.6-sol", 0, f.view.signal)).toEqual({
+		f.fetch.mockResolvedValueOnce(
+			Response.json({ ...model, model_id: "gpt-6-sol", reasoning_effort: "high", version: 1 }),
+		);
+		expect(
+			await f.control.set(session.sessionId, { modelId: "gpt-6-sol", reasoningEffort: "high" }, 0, f.view.signal),
+		).toEqual({
 			sessionId: session.sessionId,
-			modelId: "gpt-5.6-sol",
+			modelId: "gpt-6-sol",
+			reasoningEffort: "high",
 			version: 1,
 		});
 		const [url, request] = f.fetch.mock.calls[1]!;
@@ -48,17 +54,71 @@ describe("conversation model transport", () => {
 		expect(new Headers(request?.headers).get("authorization")).toBe("Bearer fixture-token");
 		expect(JSON.parse(request?.body as string)).toEqual({
 			p_session_id: session.sessionId,
-			p_model_id: "gpt-5.6-sol",
+			p_model_id: "gpt-6-sol",
 			p_expected_version: 0,
+			p_reasoning_effort: "high",
 		});
 		expect(f.current).toHaveBeenCalledWith(session.sessionId);
 	});
 
+	it("saves only an effort, leaving the conversation's model to the cloud", async () => {
+		const f = setup();
+		f.fetch.mockResolvedValueOnce(
+			Response.json({ ...model, model_id: "gpt-native", reasoning_effort: "high", version: 1 }),
+		);
+		expect(await f.control.set(session.sessionId, { reasoningEffort: "high" }, 0)).toEqual({
+			sessionId: session.sessionId,
+			modelId: "gpt-native",
+			reasoningEffort: "high",
+			version: 1,
+		});
+		expect(JSON.parse(f.fetch.mock.calls[0]![1]?.body as string)).toEqual({
+			p_session_id: session.sessionId,
+			p_model_id: null,
+			p_expected_version: 0,
+			p_reasoning_effort: "high",
+		});
+		await expect(f.control.set(session.sessionId, {}, 1)).rejects.toThrow("Refresh");
+		expect(f.fetch).toHaveBeenCalledTimes(1);
+	});
+
+	it("works with a cloud that predates per-conversation effort", async () => {
+		const f = setup();
+		const { reasoning_effort: _, ...older } = model;
+		f.fetch.mockResolvedValueOnce(Response.json(older));
+		expect(await f.control.read(session.sessionId)).toEqual({
+			sessionId: session.sessionId,
+			modelId: "gpt-6-astra",
+			version: 0,
+		});
+		f.fetch.mockResolvedValueOnce(Response.json({ ...older, model_id: "gpt-6-luna", version: 1 }));
+		expect(await f.control.set(session.sessionId, { modelId: "gpt-6-luna" }, 0)).toMatchObject({
+			modelId: "gpt-6-luna",
+			version: 1,
+		});
+		expect(JSON.parse(f.fetch.mock.calls[1]![1]?.body as string)).toEqual({
+			p_session_id: session.sessionId,
+			p_model_id: "gpt-6-luna",
+			p_expected_version: 0,
+		});
+	});
+
 	it("retains unknown existing models while refusing unsupported new selections", async () => {
 		const f = setup();
-		f.fetch.mockResolvedValueOnce(Response.json({ ...model, model_id: "future-model", version: 5 }));
-		expect(await f.control.read(session.sessionId)).toMatchObject({ modelId: "future-model", version: 5 });
-		await expect(f.control.set(session.sessionId, "future-model", 5)).rejects.toThrow("Refresh");
+		f.fetch.mockResolvedValueOnce(
+			Response.json({ ...model, model_id: "future-model", reasoning_effort: "xhigh", version: 5 }),
+		);
+		expect(await f.control.read(session.sessionId)).toMatchObject({
+			modelId: "future-model",
+			reasoningEffort: "xhigh",
+			version: 5,
+		});
+		await expect(f.control.set(session.sessionId, { modelId: "future-model" }, 5)).rejects.toThrow("Refresh");
+		for (const retired of ["gpt-5.6-sol", "gpt-5.6-terra"])
+			await expect(f.control.set(session.sessionId, { modelId: retired }, 5)).rejects.toThrow("Refresh");
+		await expect(
+			f.control.set(session.sessionId, { modelId: "gpt-6-sol", reasoningEffort: "xhigh" }, 5),
+		).rejects.toThrow("Refresh");
 		expect(f.fetch).toHaveBeenCalledTimes(1);
 	});
 
@@ -67,6 +127,11 @@ describe("conversation model transport", () => {
 		{ model_id: "" },
 		{ model_id: " gpt-6-astra" },
 		{ model_id: "x".repeat(257) },
+		{ reasoning_effort: "" },
+		{ reasoning_effort: " low" },
+		{ reasoning_effort: 2 },
+		{ reasoning_effort: null },
+		{ reasoning_effort: "x".repeat(65) },
 		{ version: -1 },
 		{ version: 0.5 },
 		{ version: Number.MAX_SAFE_INTEGER + 1 },
@@ -77,13 +142,17 @@ describe("conversation model transport", () => {
 	});
 
 	it.each([
-		{ model_id: "gpt-5.6-sol", version: 0 },
-		{ model_id: "gpt-6-astra", version: 1 },
-		{ model_id: "gpt-5.6-sol", version: 2 },
-	])("does not confirm a different model or revision after saving %j", async (invalid) => {
+		{ model_id: "gpt-6-sol", reasoning_effort: "medium", version: 0 },
+		{ model_id: "gpt-6-astra", reasoning_effort: "medium", version: 1 },
+		{ model_id: "gpt-6-sol", reasoning_effort: "medium", version: 2 },
+		{ model_id: "gpt-6-sol", reasoning_effort: "low", version: 1 },
+		{ model_id: "gpt-6-sol", reasoning_effort: undefined, version: 1 },
+	])("does not confirm a different model, effort or revision after saving %j", async (invalid) => {
 		const f = setup();
 		f.fetch.mockResolvedValueOnce(Response.json({ ...model, ...invalid }));
-		await expect(f.control.set(session.sessionId, "gpt-5.6-sol", 0)).rejects.toThrow("Refresh");
+		await expect(
+			f.control.set(session.sessionId, { modelId: "gpt-6-sol", reasoningEffort: "medium" }, 0),
+		).rejects.toThrow("Refresh");
 	});
 
 	it("refuses a switched account before dispatch", async () => {
@@ -150,11 +219,12 @@ describe("conversation model transport", () => {
 		f.fetch.mockResolvedValueOnce(
 			Response.json({ code: "QRC01", message: "Conversation model changed; refresh first." }, { status: 409 }),
 		);
-		await expect(f.control.set(session.sessionId, "gpt-5.6-sol", 0)).rejects.toMatchObject({ code: "QRC01" });
+		const sol = { modelId: "gpt-6-sol" };
+		await expect(f.control.set(session.sessionId, sol, 0)).rejects.toMatchObject({ code: "QRC01" });
 		f.fetch.mockResolvedValueOnce(new Response(null, { status: 403 }));
-		await expect(f.control.set(session.sessionId, "gpt-5.6-sol", 0)).rejects.toBeInstanceOf(CloudRpcError);
+		await expect(f.control.set(session.sessionId, sol, 0)).rejects.toBeInstanceOf(CloudRpcError);
 		f.fetch.mockRejectedValueOnce(new Error("Lost response after commit"));
-		await expect(f.control.set(session.sessionId, "gpt-5.6-sol", 0)).rejects.toThrow("Refresh");
+		await expect(f.control.set(session.sessionId, sol, 0)).rejects.toThrow("Refresh");
 		expect(f.fetch).toHaveBeenCalledTimes(3);
 	});
 

@@ -1,8 +1,8 @@
 diff --git a/codex-rs/Cargo.lock b/codex-rs/Cargo.lock
-index 70880f3..c7ce15f 100644
+index 5394382df..d21e0d89a 100644
 --- a/codex-rs/Cargo.lock
 +++ b/codex-rs/Cargo.lock
-@@ -2804,6 +2804,7 @@ dependencies = [
+@@ -3067,6 +3067,7 @@ dependencies = [
   "serde_json",
   "serial_test",
   "sha1 0.10.6",
@@ -11,10 +11,10 @@ index 70880f3..c7ce15f 100644
   "similar",
   "tempfile",
 diff --git a/codex-rs/app-server-protocol/src/protocol/common.rs b/codex-rs/app-server-protocol/src/protocol/common.rs
-index c36df0a..c44cd05 100644
+index 70954a3d6..4f71b712a 100644
 --- a/codex-rs/app-server-protocol/src/protocol/common.rs
 +++ b/codex-rs/app-server-protocol/src/protocol/common.rs
-@@ -1715,6 +1715,8 @@ server_notification_definitions! {
+@@ -1948,6 +1948,8 @@ server_notification_definitions! {
      RawResponseItemCompleted => "rawResponseItem/completed" (v2::RawResponseItemCompletedNotification),
      /// This event is internal-only. Used by clients that need exact upstream usage.
      RawResponseCompleted => "rawResponse/completed" (v2::RawResponseCompletedNotification),
@@ -24,10 +24,10 @@ index c36df0a..c44cd05 100644
      /// EXPERIMENTAL - proposed plan streaming deltas for plan items.
      PlanDelta => "item/plan/delta" (v2::PlanDeltaNotification),
 diff --git a/codex-rs/app-server-protocol/src/protocol/v2/item.rs b/codex-rs/app-server-protocol/src/protocol/v2/item.rs
-index 25ee56d..8907eac 100644
+index f56386cae..4c2eaa0cd 100644
 --- a/codex-rs/app-server-protocol/src/protocol/v2/item.rs
 +++ b/codex-rs/app-server-protocol/src/protocol/v2/item.rs
-@@ -1334,6 +1334,17 @@ pub struct RawResponseItemCompletedNotification {
+@@ -1415,6 +1415,17 @@ pub struct RawResponseItemCompletedNotification {
      pub item: ResponseItem,
  }
  
@@ -45,7 +45,7 @@ index 25ee56d..8907eac 100644
  // Item-specific progress notifications
  #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
  #[serde(rename_all = "camelCase")]
-@@ -1690,3 +1701,26 @@ pub struct ToolRequestUserInputAnswer {
+@@ -1786,3 +1797,26 @@ pub struct ToolRequestUserInputAnswer {
  pub struct ToolRequestUserInputResponse {
      pub answers: HashMap<String, ToolRequestUserInputAnswer>,
  }
@@ -73,12 +73,12 @@ index 25ee56d..8907eac 100644
 +    }
 +}
 diff --git a/codex-rs/app-server/src/bespoke_event_handling.rs b/codex-rs/app-server/src/bespoke_event_handling.rs
-index a14522f..38a4398 100644
+index be146d82c..1d53fe704 100644
 --- a/codex-rs/app-server/src/bespoke_event_handling.rs
 +++ b/codex-rs/app-server/src/bespoke_event_handling.rs
-@@ -1069,6 +1069,19 @@ pub(crate) async fn apply_bespoke_event_handling(
-             )
-             .await;
+@@ -1196,6 +1196,19 @@ pub(crate) async fn apply_bespoke_event_handling(
+             }
+             outgoing.send_server_notification(notification).await;
          }
 +        EventMsg::QorperaMessageComposition(event) => {
 +            let notification = codex_app_server_protocol::QorperaMessageCompositionNotification {
@@ -96,11 +96,24 @@ index a14522f..38a4398 100644
          EventMsg::RawResponseCompleted(raw_response_completed_event) => {
              let notification = RawResponseCompletedNotification {
                  thread_id: conversation_id.to_string(),
+diff --git a/codex-rs/app-server/src/notification_media.rs b/codex-rs/app-server/src/notification_media.rs
+index 04e57f8c5..064a3bbf3 100644
+--- a/codex-rs/app-server/src/notification_media.rs
++++ b/codex-rs/app-server/src/notification_media.rs
+@@ -55,6 +55,8 @@ pub(crate) fn without_notification_media(notification: ServerNotification) -> Se
+             ServerNotification::RawResponseItemCompleted(notification)
+         }
+         ServerNotification::Error(_)
++        // Private downstream composition metadata carries no media.
++        | ServerNotification::QorperaMessageComposition(_)
+         | ServerNotification::ThreadStarted(_)
+         | ServerNotification::ThreadStatusChanged(_)
+         | ServerNotification::ThreadArchived(_)
 diff --git a/codex-rs/app-server/src/request_processors/initialize_processor.rs b/codex-rs/app-server/src/request_processors/initialize_processor.rs
-index 442b71f..4678c7f 100644
+index d6c77f12e..f622b4c15 100644
 --- a/codex-rs/app-server/src/request_processors/initialize_processor.rs
 +++ b/codex-rs/app-server/src/request_processors/initialize_processor.rs
-@@ -138,7 +138,12 @@ impl InitializeRequestProcessor {
+@@ -173,7 +173,12 @@ impl InitializeRequestProcessor {
              *suffix = Some(user_agent_suffix);
          }
  
@@ -115,10 +128,10 @@ index 442b71f..4678c7f 100644
              user_agent,
              codex_home,
 diff --git a/codex-rs/core/Cargo.toml b/codex-rs/core/Cargo.toml
-index 0fc5d1a..00476b6 100644
+index 24c6640cc..a851e5344 100644
 --- a/codex-rs/core/Cargo.toml
 +++ b/codex-rs/core/Cargo.toml
-@@ -103,6 +103,7 @@ rmcp = { workspace = true, default-features = false, features = [
+@@ -105,6 +105,7 @@ rmcp = { workspace = true, default-features = false, features = [
  serde = { workspace = true, features = ["derive"] }
  serde_json = { workspace = true }
  sha1 = { workspace = true }
@@ -127,66 +140,66 @@ index 0fc5d1a..00476b6 100644
  similar = { workspace = true }
  tempfile = { workspace = true }
 diff --git a/codex-rs/core/src/client.rs b/codex-rs/core/src/client.rs
-index 0253d32..df61232 100644
+index d46a98ed3..4c1e3f306 100644
 --- a/codex-rs/core/src/client.rs
 +++ b/codex-rs/core/src/client.rs
-@@ -575,15 +575,17 @@ impl ModelClient {
-             RequestRouteTelemetry::for_endpoint(RESPONSES_COMPACT_ENDPOINT),
-             self.state.auth_env_telemetry.clone(),
-         );
--        let request = self.build_responses_request(
--            &client_setup.api_provider,
--            prompt,
--            model_info,
--            settings.effort,
--            settings.summary,
--            settings.service_tier,
--            responses_metadata,
--        )?;
-+        let request = self
-+            .build_responses_request(
-+                &client_setup.api_provider,
-+                prompt,
-+                model_info,
-+                settings.effort,
-+                settings.summary,
-+                settings.service_tier,
-+                responses_metadata,
-+            )
-+            .await?;
-         let ResponsesApiRequest {
-             model,
-             instructions,
-@@ -835,7 +837,7 @@ impl ModelClient {
+@@ -781,6 +781,8 @@ impl ModelClient {
+         }
      }
  
-     #[allow(clippy::too_many_arguments)]
--    fn build_responses_request(
-+    async fn build_responses_request(
++    /// Unfenced builder for size/budget checks and tests; nothing built here is sent
++    /// to the provider. Provider-bound requests use `build_fenced_responses_request`.
+     pub(crate) fn build_responses_request(
          &self,
-         provider: &codex_api::Provider,
          prompt: &Prompt,
-@@ -845,7 +847,13 @@ impl ModelClient {
+@@ -790,7 +792,41 @@ impl ModelClient {
          service_tier: Option<String>,
          responses_metadata: &CodexResponsesMetadata,
      ) -> Result<ResponsesApiRequest> {
--        let mut input = prompt.get_formatted_input_for_request(model_info.use_responses_lite);
-+        // Validate governed image detail in native history before provider formatting
-+        // removes that field for Responses Lite. Pixels and authority stay unchanged.
-+        let mut input = prompt.get_formatted_input_for_request(/*use_responses_lite*/ false);
+-        let mut input = prompt.get_formatted_input_for_request(model_info);
++        let input = prompt.get_formatted_input_for_request(model_info);
++        self.build_responses_request_from_input(input, prompt, model_info, effort, summary, service_tier, responses_metadata)
++    }
++
++    /// Governed request builder: validates and fences native results in the history
++    /// before Responses Lite normalization removes image detail. Pixels and authority
++    /// stay unchanged. Every provider-bound request (HTTP, WebSocket, v2 compaction and
++    /// guardian) is built here.
++    #[allow(clippy::too_many_arguments)]
++    pub(crate) async fn build_fenced_responses_request(
++        &self,
++        prompt: &Prompt,
++        model_info: &ModelInfo,
++        effort: Option<ReasoningEffortConfig>,
++        summary: ReasoningSummaryConfig,
++        service_tier: Option<String>,
++        responses_metadata: &CodexResponsesMetadata,
++    ) -> Result<ResponsesApiRequest> {
++        let mut input = prompt.input.clone();
 +        crate::qorpera_result_fence::fence_results(&mut input, responses_metadata).await?;
-+        if model_info.use_responses_lite {
-+            crate::client_common::strip_image_details(&mut input);
-+        }
++        crate::client_common::normalize_image_details(&mut input, model_info);
++        self.build_responses_request_from_input(input, prompt, model_info, effort, summary, service_tier, responses_metadata)
++    }
++
++    #[allow(clippy::too_many_arguments)]
++    fn build_responses_request_from_input(
++        &self,
++        mut input: Vec<ResponseItem>,
++        prompt: &Prompt,
++        model_info: &ModelInfo,
++        effort: Option<ReasoningEffortConfig>,
++        summary: ReasoningSummaryConfig,
++        service_tier: Option<String>,
++        responses_metadata: &CodexResponsesMetadata,
++    ) -> Result<ResponsesApiRequest> {
          let is_openai = self.state.provider.info().is_openai();
-         if !is_openai {
-             for item in &mut input {
-@@ -1445,15 +1453,18 @@ impl ModelClientSession {
+         let (instructions, tools) = if model_info.use_responses_lite {
+             // These prompt-only items are rebuilt on every request. Hash their visible payloads
+@@ -1522,14 +1558,17 @@ impl ModelClientSession {
                  )
                  .await;
  
 -            let mut request = self.client.build_responses_request(
--                &client_setup.api_provider,
 -                prompt,
 -                model_info,
 -                effort.clone(),
@@ -196,8 +209,7 @@ index 0253d32..df61232 100644
 -            )?;
 +            let mut request = self
 +                .client
-+                .build_responses_request(
-+                    &client_setup.api_provider,
++                .build_fenced_responses_request(
 +                    prompt,
 +                    model_info,
 +                    effort.clone(),
@@ -206,15 +218,14 @@ index 0253d32..df61232 100644
 +                    responses_metadata,
 +                )
 +                .await?;
-             self.client
-                 .prepare_response_items_for_request(&mut request.input);
-             let request_session_telemetry =
-@@ -1557,15 +1568,18 @@ impl ModelClientSession {
+             ModelClient::filter_tool_result_metadata(
+                 &mut request.input,
+                 &client_setup.api_provider,
+@@ -1678,14 +1717,17 @@ impl ModelClientSession {
                  client_setup.agent_identity_telemetry.clone(),
                  pending_retry,
              );
 -            let mut request = self.client.build_responses_request(
--                &client_setup.api_provider,
 -                prompt,
 -                model_info,
 -                effort.clone(),
@@ -224,8 +235,7 @@ index 0253d32..df61232 100644
 -            )?;
 +            let mut request = self
 +                .client
-+                .build_responses_request(
-+                    &client_setup.api_provider,
++                .build_fenced_responses_request(
 +                    prompt,
 +                    model_info,
 +                    effort.clone(),
@@ -234,24 +244,24 @@ index 0253d32..df61232 100644
 +                    responses_metadata,
 +                )
 +                .await?;
-             let request_session_telemetry = if warmup {
-                 // `generate=false` prewarm is connection setup, not an inference request.
-                 session_telemetry.clone()
+             ModelClient::filter_tool_result_metadata(
+                 &mut request.input,
+                 &client_setup.api_provider,
 diff --git a/codex-rs/core/src/client_common.rs b/codex-rs/core/src/client_common.rs
-index 54ad70d..3ebe9c4 100644
+index 96cd7eab0..9827f0fdb 100644
 --- a/codex-rs/core/src/client_common.rs
 +++ b/codex-rs/core/src/client_common.rs
-@@ -61,7 +61,7 @@ impl Prompt {
+@@ -66,7 +66,7 @@ impl Prompt {
      }
  }
  
--fn strip_image_details(items: &mut [ResponseItem]) {
-+pub(crate) fn strip_image_details(items: &mut [ResponseItem]) {
+-fn normalize_image_details(items: &mut [ResponseItem], model_info: &ModelInfo) {
++pub(crate) fn normalize_image_details(items: &mut [ResponseItem], model_info: &ModelInfo) {
      for item in items {
          match item {
              ResponseItem::Message { content, .. } => {
 diff --git a/codex-rs/core/src/lib.rs b/codex-rs/core/src/lib.rs
-index 4cecf46..8e43fb2 100644
+index 55d1f474e..b4bbae8f4 100644
 --- a/codex-rs/core/src/lib.rs
 +++ b/codex-rs/core/src/lib.rs
 @@ -9,6 +9,8 @@ mod apply_patch;
@@ -262,10 +272,10 @@ index 4cecf46..8e43fb2 100644
 +mod qorpera_result_fence;
  mod realtime_context;
  mod realtime_conversation;
- mod realtime_prompt;
+ mod realtime_history;
 diff --git a/codex-rs/core/src/qorpera_message_composition.rs b/codex-rs/core/src/qorpera_message_composition.rs
 new file mode 100644
-index 0000000..75c17fc
+index 000000000..75c17fc4e
 --- /dev/null
 +++ b/codex-rs/core/src/qorpera_message_composition.rs
 @@ -0,0 +1,178 @@
@@ -449,10 +459,10 @@ index 0000000..75c17fc
 +}
 diff --git a/codex-rs/core/src/qorpera_result_fence.rs b/codex-rs/core/src/qorpera_result_fence.rs
 new file mode 100644
-index 0000000..59cac32
+index 000000000..4a60a6777
 --- /dev/null
 +++ b/codex-rs/core/src/qorpera_result_fence.rs
-@@ -0,0 +1,371 @@
+@@ -0,0 +1,385 @@
 +//! Private cloud result boundary. This has no access to provider credentials or transports.
 +//! The Qorpera host enables it only in a pinned, isolated app-server process.
 +
@@ -475,6 +485,12 @@ index 0000000..59cac32
 +    } else {
 +        requested
 +    }
++}
++
++/// Governed runs expose only the tools the cloud runtime brokers; the native helper tools the model
++/// catalog advertises (clock, async user questions, async user messages) are never registered there.
++pub(crate) fn native_helper_tools_allowed(socket: Option<&std::ffi::OsStr>) -> bool {
++    socket.is_none()
 +}
 +
 +pub(crate) async fn fence_results(
@@ -524,8 +540,8 @@ index 0000000..59cac32
 +    use crate::responses_metadata::CodexResponsesRequestKind;
 +
 +    const SCHEMA: &str = "qorpera.native-result-fence/v1";
-+    const MAX_FRAME_BYTES: usize = 8 * 1024 * 1024;
-+    const MAX_SOURCE_BYTES: usize = 1024 * 1024;
++    const MAX_FRAME_BYTES: usize = 64 * 1024 * 1024;
++    const MAX_SOURCE_BYTES: usize = 64 * 1024 * 1024;
 +    const MAX_RESULT_BYTES: usize = 8 * 1024;
 +    const MAX_IMAGE_BYTES: usize = 8 * 1024 * 1024;
 +    const MAX_IMAGE_BATCH_BYTES: usize = 128 * 1024 * 1024;
@@ -618,12 +634,18 @@ index 0000000..59cac32
 +        let mut image_bytes = 0;
 +        for (index, item) in input.iter().enumerate() {
 +            let (kind, call_id, output) = match item {
++                // A function call output without a call id (upstream now allows one)
++                // cannot be bound to an issued result and is refused below as empty.
 +                ResponseItem::FunctionCallOutput {
 +                    call_id, output, ..
-+                } => (Kind::FunctionCallOutput, call_id, output),
++                } => (
++                    Kind::FunctionCallOutput,
++                    call_id.as_deref().unwrap_or(""),
++                    output,
++                ),
 +                ResponseItem::CustomToolCallOutput {
 +                    call_id, output, ..
-+                } => (Kind::CustomToolCallOutput, call_id, output),
++                } => (Kind::CustomToolCallOutput, call_id.as_str(), output),
 +                // These surfaces are not admitted by this cloud adapter. Never silently
 +                // pass an unhandled result or a newly introduced item to the provider.
 +                ResponseItem::AgentMessage { .. }
@@ -652,15 +674,17 @@ index 0000000..59cac32
 +                | ResponseItem::CustomToolCall { .. }
 +                | ResponseItem::Compaction { .. }
 +                | ResponseItem::CompactionTrigger { .. }
-+                | ResponseItem::ContextCompaction { .. } => continue,
++                | ResponseItem::ContextCompaction { .. }
++                // Upstream 0.155: a configuration update item carries no tool result.
++                | ResponseItem::ConfigurationUpdate { .. } => continue,
 +            };
-+            if call_id.is_empty() || call_id.len() > 160 || outputs.len() >= 128 {
++            if call_id.is_empty() || call_id.len() > 160 {
 +                return Err(());
 +            }
 +            let body = match &output.body {
 +                FunctionCallOutputBody::Text(text) => {
 +                    source_bytes += text.len();
-+                    Body::Text(text)
++                    Body::Text(text.as_str())
 +                }
 +                FunctionCallOutputBody::ContentItems(items) => {
 +                    if items.len() > 16 {
@@ -826,10 +850,10 @@ index 0000000..59cac32
 +mod tests;
 diff --git a/codex-rs/core/src/qorpera_result_fence_tests.rs b/codex-rs/core/src/qorpera_result_fence_tests.rs
 new file mode 100644
-index 0000000..a005898
+index 000000000..0e95b6fab
 --- /dev/null
 +++ b/codex-rs/core/src/qorpera_result_fence_tests.rs
-@@ -0,0 +1,371 @@
+@@ -0,0 +1,398 @@
 +use anyhow::Context;
 +use base64::Engine;
 +use base64::engine::general_purpose::STANDARD;
@@ -845,6 +869,14 @@ index 0000000..a005898
 +use super::governed_tool_mode;
 +use super::unix::fence;
 +use crate::responses_metadata::CodexResponsesMetadata;
++
++#[test]
++fn only_governed_runs_suppress_native_helper_tools() {
++    assert!(super::native_helper_tools_allowed(/*socket*/ None));
++    assert!(!super::native_helper_tools_allowed(Some(std::ffi::OsStr::new(
++        "/run/qorpera/fence.sock"
++    ))));
++}
 +
 +#[test]
 +fn only_governed_runs_override_the_requested_tool_mode() {
@@ -1201,11 +1233,30 @@ index 0000000..a005898
 +    assert!(started.elapsed() < std::time::Duration::from_secs(7));
 +    host.abort();
 +}
++
++#[tokio::test]
++async fn a_request_with_any_number_of_tool_outputs_is_fenced_whole() {
++    // No count of tool outputs per model request (was fewer than 128, and at most
++    // 1 MiB of result text): 300 outputs of 7,000 bytes, about 2 MB, are fenced.
++    let directory = tempfile::tempdir().unwrap();
++    let path = directory.path().join("f.sock");
++    let mut items = Vec::new();
++    for index in 0..300 {
++        items.push(json!({"type":"function_call","call_id":format!("call-{index}"),"name":"unsupported","arguments":"{}"}));
++        items.push(json!({"type":"function_call_output","call_id":format!("call-{index}"),"output":"x".repeat(7000)}));
++    }
++    let mut input: Vec<ResponseItem> = serde_json::from_value(Value::Array(items)).unwrap();
++    let listener = UnixListener::bind(&path).unwrap();
++    let host = tokio::spawn(reply(listener, "none"));
++    assert_eq!(fence(&mut input, &metadata(), &path).await, Ok(()));
++    let request = host.await.unwrap().unwrap();
++    assert_eq!(request["outputs"].as_array().unwrap().len(), 300);
++}
 diff --git a/codex-rs/core/src/session/turn.rs b/codex-rs/core/src/session/turn.rs
-index 16ef4e7..d947ab3 100644
+index 5d5fa3a0a..1e15fed86 100644
 --- a/codex-rs/core/src/session/turn.rs
 +++ b/codex-rs/core/src/session/turn.rs
-@@ -1785,6 +1785,7 @@ pub(super) fn realtime_text_for_event(msg: &EventMsg) -> Option<(String, Option<
+@@ -2049,6 +2049,7 @@ pub(super) fn realtime_text_for_event(msg: &EventMsg) -> Option<(String, Option<
          | EventMsg::ExitedReviewMode(_)
          | EventMsg::RawResponseItem(_)
          | EventMsg::RawResponseCompleted(_)
@@ -1213,7 +1264,7 @@ index 16ef4e7..d947ab3 100644
          | EventMsg::ItemStarted(_)
          | EventMsg::HookStarted(_)
          | EventMsg::HookCompleted(_)
-@@ -2197,6 +2198,10 @@ async fn try_run_sampling_request(
+@@ -2481,6 +2482,10 @@ async fn try_run_sampling_request(
      let defer_streamed_turn_items_for_contributors =
          !sess.services.extensions.turn_item_contributors().is_empty();
      let mut active_item_is_streaming_to_client = false;
@@ -1224,9 +1275,9 @@ index 16ef4e7..d947ab3 100644
      let receiving_span = trace_span!("receiving_stream");
      let outcome: CodexResult<SamplingRequestResult> = loop {
          let handle_responses = trace_span!(
-@@ -2244,6 +2249,10 @@ async fn try_run_sampling_request(
-         match event {
-             ResponseEvent::Created => {}
+@@ -2534,6 +2539,10 @@ async fn try_run_sampling_request(
+                 }
+             }
              ResponseEvent::OutputItemDone(mut item) => {
 +                if let Some(event) = public_message_composition.done(&item) {
 +                    sess.send_event(&turn_context, EventMsg::QorperaMessageComposition(event))
@@ -1235,7 +1286,7 @@ index 16ef4e7..d947ab3 100644
                  assign_missing_streamed_response_item_id(&mut item, active_item.as_ref());
                  if analytics_tool_call_ids.len() < MAX_ANALYTICS_TOOL_CALL_IDS_PER_RESPONSE {
                      let call_id = match &item {
-@@ -2355,6 +2364,10 @@ async fn try_run_sampling_request(
+@@ -2646,6 +2655,10 @@ async fn try_run_sampling_request(
                  }
              }
              ResponseEvent::OutputItemAdded(mut item) => {
@@ -1246,7 +1297,7 @@ index 16ef4e7..d947ab3 100644
                  assign_missing_streamed_response_item_id(&mut item, /*active_item*/ None);
                  if let ResponseItem::CustomToolCall {
                      call_id,
-@@ -2682,6 +2695,12 @@ async fn try_run_sampling_request(
+@@ -2973,6 +2986,12 @@ async fn try_run_sampling_request(
              }
          }
      };
@@ -1260,19 +1311,19 @@ index 16ef4e7..d947ab3 100644
  
      flush_assistant_text_segments_all(
 diff --git a/codex-rs/core/src/tools/mod.rs b/codex-rs/core/src/tools/mod.rs
-index 89d0cd1..4c58160 100644
+index 7a65bc95a..6f1c66845 100644
 --- a/codex-rs/core/src/tools/mod.rs
 +++ b/codex-rs/core/src/tools/mod.rs
-@@ -68,7 +68,7 @@ pub(crate) fn tool_user_shell_type(
+@@ -66,7 +66,7 @@ pub(crate) fn tool_user_shell_type(
  }
  
- pub(crate) fn requested_tool_mode(turn_context: &TurnContext) -> ToolMode {
--    turn_context.model_info.tool_mode.unwrap_or_else(|| {
-+    let requested = turn_context.model_info.tool_mode.unwrap_or_else(|| {
+ pub(crate) fn requested_tool_mode(turn_context: &TurnContext, model_info: &ModelInfo) -> ToolMode {
+-    model_info.tool_mode.unwrap_or_else(|| {
++    let requested = model_info.tool_mode.unwrap_or_else(|| {
          if turn_context.config.features.enabled(Feature::CodeModeOnly) {
              ToolMode::CodeModeOnly
          } else if turn_context.config.features.enabled(Feature::CodeMode) {
-@@ -76,7 +76,11 @@ pub(crate) fn requested_tool_mode(turn_context: &TurnContext) -> ToolMode {
+@@ -74,7 +74,11 @@ pub(crate) fn requested_tool_mode(turn_context: &TurnContext, model_info: &Model
          } else {
              ToolMode::Direct
          }
@@ -1284,24 +1335,53 @@ index 89d0cd1..4c58160 100644
 +    )
  }
  
- pub(crate) fn effective_tool_mode(turn_context: &TurnContext) -> ToolMode {
-diff --git a/codex-rs/mcp-server/src/codex_tool_runner.rs b/codex-rs/mcp-server/src/codex_tool_runner.rs
-index dd551a5..6545bfe 100644
---- a/codex-rs/mcp-server/src/codex_tool_runner.rs
-+++ b/codex-rs/mcp-server/src/codex_tool_runner.rs
-@@ -346,6 +346,7 @@ async fn run_codex_tool_session_inner(
-                     | EventMsg::ViewImageToolCall(_)
-                     | EventMsg::RawResponseItem(_)
-                     | EventMsg::RawResponseCompleted(_)
-+                    | EventMsg::QorperaMessageComposition(_)
-                     | EventMsg::EnteredReviewMode(_)
-                     | EventMsg::ItemStarted(_)
-                     | EventMsg::ItemCompleted(_)
+ pub(crate) fn effective_tool_mode(turn_context: &TurnContext, model_info: &ModelInfo) -> ToolMode {
+diff --git a/codex-rs/core/src/tools/spec_plan.rs b/codex-rs/core/src/tools/spec_plan.rs
+index 01054b1b5..ffef21aa5 100644
+--- a/codex-rs/core/src/tools/spec_plan.rs
++++ b/codex-rs/core/src/tools/spec_plan.rs
+@@ -1164,7 +1164,11 @@ fn add_core_utility_tools(context: &CoreToolPlanContext<'_>, registry: &mut Tool
+         );
+     }
+ 
+-    if !turn_context.session_source.is_non_root_agent()
++    let native_helper_tools_allowed = crate::qorpera_result_fence::native_helper_tools_allowed(
++        std::env::var_os("QORPERA_NATIVE_RESULT_FENCE_SOCKET").as_deref(),
++    );
++    if native_helper_tools_allowed
++        && !turn_context.session_source.is_non_root_agent()
+         && context
+             .model_info
+             .experimental_supported_tools
+@@ -1189,7 +1193,8 @@ fn add_core_utility_tools(context: &CoreToolPlanContext<'_>, registry: &mut Tool
+         );
+     }
+ 
+-    if !turn_context.session_source.is_non_root_agent()
++    if native_helper_tools_allowed
++        && !turn_context.session_source.is_non_root_agent()
+         && context
+             .model_info
+             .experimental_supported_tools
+@@ -1214,10 +1219,11 @@ fn add_core_utility_tools(context: &CoreToolPlanContext<'_>, registry: &mut Tool
+         .experimental_supported_tools
+         .iter()
+         .any(|tool| tool == "clock");
+-    if current_time_reminder_enabled || model_has_clock {
++    if native_helper_tools_allowed && (current_time_reminder_enabled || model_has_clock) {
+         registry.add(CurrentTimeHandler);
+     }
+-    if features.enabled(Feature::SleepTool)
++    if native_helper_tools_allowed
++        && features.enabled(Feature::SleepTool)
+         && match turn_context.config.sleep_tool_mode {
+             SleepToolMode::AlwaysOn => true,
+             SleepToolMode::ModelDriven => {
 diff --git a/codex-rs/protocol/src/protocol.rs b/codex-rs/protocol/src/protocol.rs
-index 242a565..086c49a 100644
+index e25cce88a..0aa416e4b 100644
 --- a/codex-rs/protocol/src/protocol.rs
 +++ b/codex-rs/protocol/src/protocol.rs
-@@ -1459,6 +1459,9 @@ pub enum EventMsg {
+@@ -1544,6 +1544,9 @@ pub enum EventMsg {
      RawResponseItem(RawResponseItemEvent),
      RawResponseCompleted(RawResponseCompletedEvent),
  
@@ -1311,8 +1391,8 @@ index 242a565..086c49a 100644
      ItemStarted(ItemStartedEvent),
      ItemCompleted(ItemCompletedEvent),
      HookStarted(HookStartedEvent),
-@@ -1835,6 +1838,20 @@ pub struct RawResponseCompletedEvent {
-     pub token_usage: Option<TokenUsage>,
+@@ -1932,6 +1935,20 @@ pub struct RawResponseCompletedEvent {
+     pub usage_metadata: Option<crate::ResponseUsageMetadata>,
  }
  
 +#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, TS, JsonSchema)]
@@ -1333,10 +1413,10 @@ index 242a565..086c49a 100644
  pub struct ItemStartedEvent {
      pub thread_id: ThreadId,
 diff --git a/codex-rs/rollout-trace/src/protocol_event.rs b/codex-rs/rollout-trace/src/protocol_event.rs
-index 22d2974..787af9a 100644
+index dadc4bb0a..22a3350a0 100644
 --- a/codex-rs/rollout-trace/src/protocol_event.rs
 +++ b/codex-rs/rollout-trace/src/protocol_event.rs
-@@ -414,6 +414,7 @@ pub(crate) fn tool_runtime_trace_event(event: &EventMsg) -> Option<ToolRuntimeTr
+@@ -421,6 +421,7 @@ pub(crate) fn tool_runtime_trace_event(event: &EventMsg) -> Option<ToolRuntimeTr
          | EventMsg::ExitedReviewMode(_)
          | EventMsg::RawResponseItem(_)
          | EventMsg::RawResponseCompleted(_)
@@ -1344,7 +1424,7 @@ index 22d2974..787af9a 100644
          | EventMsg::ItemStarted(_)
          | EventMsg::ItemCompleted(_)
          | EventMsg::HookStarted(_)
-@@ -490,6 +491,7 @@ pub(crate) fn wrapped_protocol_event_type(event: &EventMsg) -> Option<&'static s
+@@ -500,6 +501,7 @@ pub(crate) fn wrapped_protocol_event_type(event: &EventMsg) -> Option<&'static s
          | EventMsg::ExitedReviewMode(_)
          | EventMsg::RawResponseItem(_)
          | EventMsg::RawResponseCompleted(_)
@@ -1353,10 +1433,10 @@ index 22d2974..787af9a 100644
          | EventMsg::ItemCompleted(_)
          | EventMsg::HookStarted(_)
 diff --git a/codex-rs/rollout/src/policy.rs b/codex-rs/rollout/src/policy.rs
-index 65a8213..5340e4b 100644
+index c82b5ce95..512cf8bbe 100644
 --- a/codex-rs/rollout/src/policy.rs
 +++ b/codex-rs/rollout/src/policy.rs
-@@ -143,6 +143,7 @@ pub fn should_persist_event_msg(ev: &EventMsg, history_mode: ThreadHistoryMode)
+@@ -166,6 +166,7 @@ pub fn should_persist_event_msg(ev: &EventMsg, history_mode: ThreadHistoryMode)
          | EventMsg::AgentReasoningSectionBreak(_)
          | EventMsg::RawResponseItem(_)
          | EventMsg::RawResponseCompleted(_)
@@ -1365,10 +1445,10 @@ index 65a8213..5340e4b 100644
          | EventMsg::EnvironmentConnected(_)
          | EventMsg::EnvironmentDisconnected(_)
 diff --git a/codex-rs/tui/src/app/app_server_event_targets.rs b/codex-rs/tui/src/app/app_server_event_targets.rs
-index 5935e46..6b3c678 100644
+index 0054f7924..2247738b1 100644
 --- a/codex-rs/tui/src/app/app_server_event_targets.rs
 +++ b/codex-rs/tui/src/app/app_server_event_targets.rs
-@@ -87,6 +87,9 @@ pub(super) fn server_notification_thread_target(
+@@ -100,6 +100,9 @@ pub(super) fn server_notification_thread_target(
          ServerNotification::RawResponseItemCompleted(notification) => {
              Some(notification.thread_id.as_str())
          }
@@ -1379,11 +1459,11 @@ index 5935e46..6b3c678 100644
              Some(notification.thread_id.as_str())
          }
 diff --git a/codex-rs/tui/src/chatwidget/protocol.rs b/codex-rs/tui/src/chatwidget/protocol.rs
-index 79e2c3f..0538c02 100644
+index 9ec441ad2..566d20cd6 100644
 --- a/codex-rs/tui/src/chatwidget/protocol.rs
 +++ b/codex-rs/tui/src/chatwidget/protocol.rs
-@@ -201,6 +201,7 @@ impl ChatWidget {
-             | ServerNotification::ThreadUnarchived(_)
+@@ -316,6 +316,7 @@ impl ChatWidget {
+             | ServerNotification::ThreadAttachmentUpdated(_)
              | ServerNotification::RawResponseItemCompleted(_)
              | ServerNotification::RawResponseCompleted(_)
 +            | ServerNotification::QorperaMessageComposition(_)

@@ -23,6 +23,7 @@ import {
 	type CompanyComputerScreenLeaseControl,
 	CompanyComputerScreenLeaseHandle,
 } from "./cloud-company-computer-leases.ts";
+import type { CloudRuntimeToolOperation } from "./cloud-runtime-observability.ts";
 
 export type CompanyComputerBrowserRole = "button" | "link" | "textbox" | "checkbox" | "radio" | "combobox" | "tab";
 export type CompanyComputerAction =
@@ -362,7 +363,7 @@ export function createCompanyComputerTools(options: {
 					: capabilities.has(kind === "transfer" ? "shell" : kind)),
 		)
 		.map((kind): CompanyComputerTool => {
-			const name = `computer_${kind}`;
+			const name = `computer_${kind}` satisfies CloudRuntimeToolOperation;
 			const parse = (value: unknown): CompanyComputerToolArguments => {
 				const parsed = parseCompanyComputerToolArguments(value);
 				if (

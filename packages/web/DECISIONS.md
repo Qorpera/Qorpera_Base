@@ -80,6 +80,11 @@ production migration" per `deploy/first-node/RUNTIME-STEP-0-ORGANIZATION.md`).
 The contract list is derived from migrations, not the deployed schema, and
 says so; the app must not assume parity.
 
+**Superseded in part (2026-09-24).** The Cloud check page, its RPC probe and
+the browser endpoint override in Settings were removed. Features still gate
+on `PGRST202` where they call the RPC; every build uses the endpoints compiled
+into it.
+
 ## 2026-09-02 — Transcript projection rules (what the web app renders)
 
 Per §6 and launch acceptance item 8, from `qorpera_read_session_events`:
@@ -100,299 +105,282 @@ Per §6 and launch acceptance item 8, from `qorpera_read_session_events`:
 - `session_info`, `run_receipt`, `artifact_receipt` → never rendered.
 - Queued inputs from `qorpera_list_session_inputs` not yet in the transcript
   render as *pending* member messages; `processing` shows the agent is
-  working; `failed` shows the failure reason.
+  working; `failed` shows the failure reason. A pending message stands before
+  the first member message sent after it, else at the end, so one the cloud
+  never takes does not sink under newer messages. Agent output is no measure:
+  a taken input is written at the next sequence with its send time, so a
+  message sent while the agent works stays below the agent's output, where it
+  lands once taken.
 
-## 2026-09-02 — Verification method for RPCs
+## 2026-09-22 — Coding sessions in the thread (Order 9, part 2)
 
-The contract's SQL query needs a database credential this session does not
-have. Verification is therefore: (1) replay every `grant`/`revoke` in the
-migrations in statement order to derive the authenticated surface (matches the
-contract's 151 exactly, plus 14 granted-but-undocumented functions), then
-(2) probe the target project anonymously with each function's exact named
-parameters (`PGRST202` = missing), and (3) the in-app `Cloud check` page
-repeats the probe with the member's token. Recorded as a limitation in the
-session log; the SQL check should still be run by whoever holds a credential.
+A coding session is not a transcript event. `qorpera_list_coding_sessions`
+names the sessions the agent dispatched from a conversation, and the thread
+places each one where it was started: before the first message written after
+it. The element (`ui/coding-session.ts`) has the shape of a bot-to-bot handoff
+line: a centered chip, "Bo started a coding session with you in ✳ Claude
+Code", with the agent's figure and the harness mark, and the live status under
+it (title · state · time · last step · diff size). The chip opens the session
+as its own thread over the conversation (`ui/coding-session-thread.ts`: header
+"Bo ⇄ Claude Code", the session unfolded, a footer that says who may type);
+Show unfolds it in place. Both show the session's own steps and the harness's
+voice from `qorpera_read_coding_session`, the owner's input and the pull
+request. (The first cut carried dashed rules around the line; they were
+dropped the same day for the handoff-line shape.)
 
-## 2026-09-02 — Stay in the monorepo; serve from `app.qorpera.com` on Cloudflare Pages
+- Every word in the captions comes from the session view (agent, owner, harness,
+  phase, PR); nothing comes from the agent's prose.
+- Only the owner types into the session; other members see the same body with
+  a lock line ("This session is view-only" in the thread view). The kernel
+  enforces this too.
+- The element persists per session across renders and follows its own stream
+  (2.5 s while working, 6 s while it waits, 30 s after it settled, 20 s while
+  the tab is hidden). A missing list RPC means no sessions; the thread renders
+  as before.
 
-**Decision (founder, 2026-09-02).** The web app stays in `packages/web` of the
-`Qorpera_Base` monorepo and is deployed from it. The production origin is
-`https://app.qorpera.com`.
+## 2026-09-24 — No company execution controls, no Organization or Approvals pages
 
-**Why the monorepo.** The web app's only coupling is the client contract and
-the migrations that define its wire shapes, and both live here; the daily
-rebase and the Requests workflow only work on shared history. It imports no
-workspace package at runtime (supabase-js only) and copies design assets from
-the shell package at build time, so a later split stays cheap. The repository
-is private; a separate public repository becomes the reason to split if the
-client is ever open-sourced on its own.
+**Decision (Jonas).** Settings → Company no longer carries Company execution
+(pause/resume, monthly spend and token limits, hourly wake limit, the usage
+line) or the Organization and Approvals cards, and the client has no pages or
+routes for them. The limits go as policy, not just as settings: the runtime
+removes the spend, token and wake ceilings themselves in its own change.
 
-**Why Cloudflare Pages.** `qorpera.com` is already on Cloudflare DNS and
-`objects.qorpera.com` is proxied there, so the custom domain is a one-step
-setting in the same account. A GitHub Actions workflow
-(`.github/workflows/web-client.yml`) checks, builds and publishes
-`packages/web/dist`; the site is static, hash-routed, and needs no server.
-`packages/web/public/_headers` carries a strict Content Security Policy that
-pins `connect-src` to the production project and the object gateway; the
-Account page's preview-project override therefore works on localhost and on
-Pages preview deployments, not on the production origin. That is intended.
+**Why.** Jonas asked for all of it to go, the limits as policy and not only
+as settings. A provider's own usage limits still bound subscription work. The
+Approvals list only gathered `authorization_request` events, which the cloud
+runtime never emits (its harness runs with approvals set to never); approval
+cards an agent raises in its thread are a different thing and stay.
 
-**One-time setup outside the repo.** A Cloudflare Pages project named
-`qorpera-web`, the custom domain `app.qorpera.com` attached to it, and two
-repository secrets: `CLOUDFLARE_API_TOKEN` (Pages: Edit) and
-`CLOUDFLARE_ACCOUNT_ID`. Until those exist the workflow's deploy job is
-skipped and the build job still proves the package.
+**Rules out.** Re-adding a pause, limit or approvals surface in the client
+without a new decision. Notices of a tripped company limit or a pause/resume
+that already exist in a member's list are skipped, never shown and never a
+failed read; the machine-capacity notice, which shares the
+`company_ceiling_tripped` kind, still shows.
 
-**Amendment, same day, after setup.** The Pages project was created through
-Cloudflare's Git integration rather than a wrangler publish from GitHub
-Actions: no API token has to be created or pasted anywhere, and every push to
-the production branch (`web/client-app` for now) builds and publishes on
-Cloudflare. Settings: root `/`, build command
-`npm ci --ignore-scripts --no-audit --no-fund && npm run build --workspace packages/web`,
-output `packages/web/dist`, `NODE_VERSION=22`. The first build succeeded and
-serves `https://qorpera-web.pages.dev` with the `_headers` policy verified
-live. The GitHub workflow is therefore checks-only. Two follow-ups: set
-`SKIP_DEPENDENCY_INSTALL=true` on the project so Cloudflare does not run a
-second, script-enabled `npm ci` before the build command; and the custom
-domain, which is on hold because `app.qorpera.com` already resolves through a
-CNAME to a Vercel deployment (see SESSION-LOG.md).
+## 2026-09-24 — The Co-Founder's colour can be changed
 
-## 2026-09-02 — Brand source of truth is `Qorpera_Website`, not the desktop tree
+**Decision (Jonas).** The Co-Founder's figure picker offers the colours and
+Reset like every other agent's, and the Co-Founder is drawn in the colour it
+was given. This replaces the 2026-09-12 rule (PR #115) that the Co-Founder
+always wears its figure's own shade, as in the trailer.
 
-**Decision.** The web client takes its brand from the marketing site's
-repository (`Qorpera/Qorpera_Website`, `landing/public/brand/final` and
-`landing/src/styles.css`): the approved lockup and outlined wordmark (never
-set as text), the material crown icon, the crown hero render with its contour
-mask and eye shapes, paper `#ffffff` / ink `#161615` / line
-`rgba(11,11,11,0.11)` / cobalt `#2d6ff2`, Source Sans 3, 8px buttons, 14px
-cards, and the faint 88px grid floor. The desktop `userland/onboarding.css`
-brand field in this branch is the earlier design and must not be ported.
+**Why.** Jonas reported that the Co-Founder's colour could not be changed. The
+desktop client and the cloud never had the rule; it was a web rendering rule.
 
-**Avatars.** The seven staff creatures are current on desktop and mobile, but
-they are drawn as the agent's colour through the silhouette mask plus two
-white capsule eyes at per-creature positions (QorperaMobile
-`CreatureEyeLayout`); the web client now does the same in CSS, with the mobile
-colour alias table.
+**How.** The cloud seeds every Co-Founder with the token `qorpera-blue`, which
+nobody chose, and a colour picked in a client is saved as a palette hex, never
+as that token. A Co-Founder that still carries the seed token keeps its
+figure's own shade (`agentColor` in `ui/avatar.ts`), so no Co-Founder changes
+colour just because this shipped. The first-run meet page still offers figures
+only; each figure brings its own shade there.
 
-## 2026-09-02 — The agent characters are the approved vector figures, and the
-## avatar entry above supersedes itself
+**Follow-up after review (same day).** Production held six Co-Founders: four on
+the seed token, one planet in `#5ec0b5` and one crown in `#fcb51b`, all drawn as
+before. A Co-Founder saved as `#2047bd` without anybody choosing blue (the meet
+page of 2 to 12 September, or the desktop picker on a figure change) would now
+be drawn blue; none existed.
 
-**Correction.** The entry above is wrong about the avatars. The seven flat
-creatures it describes (bloom, brain, folio, halo, pebble, ribbon, wisp) are
-the previous roster. The approved agent visual system replaced them with seven
-figures — Planet, Acorn, Flame, Rocket, Crown, Heart, Ghost — and it landed on
-`origin/master` in "adopt the approved agent visual system", which the runtime
-handoff branch this client is based on does not contain. That is why the
-client still ships the old art. Storm and Folio are retired and not
-selectable.
+A figure in its own shade has no colour of its own to keep. So when the
+details picker opens on an agent in its own shade, changing the figure brings
+the new figure's own shade until a colour is clicked; Reset returns to that.
+The rule is decided when the picker opens or the look changes elsewhere, never
+on the member's own changes, so a colour chosen in the session survives passing
+through a figure whose own shade it is.
+Saved data cannot tell a chosen Gold on a crown from the crown's own shade, so
+such an agent follows its figure. This deliberately differs from the desktop
+picker, which always keeps the current colour. The meet page keeps the stored
+colour until a different figure is picked there, so returning to it never
+replaces a colour chosen in the details.
 
-**Decision.** The web client draws agents as the **vector** figures from the
-visual workspace (`Qorpera_Base-step2/.artifacts/qorpera-avatar-assets`, Vector
-design section), not the raster masters: `vector-figures.js` builds one from
-its baked trace, `vector-rig.js` drives it, and both sit on `motion-model.js`,
-`motion-visuals.js` and `avatar-appearance.js`. The rig runs with **part
-motion 0**: the body holds still and the life is in the eyes. No figure ever
-follows the pointer, on any surface. The website vendors the same six scripts
-under `landing/public/avatars`, so the client vendors them too rather than
-reimplementing any of it — every earlier attempt to approximate this by hand
-was wrong.
+## 2026-09-24 — Rail menu, pinned cards and sections (Grok Bot's rail)
 
-**Figure and colour are independent settings.** The palette is the eleven
-colours in `avatar-appearance.js`; a figure's native shade bypasses recolouring
-entirely. The selector is seven figures in one row, each in its own shade, then
-the colours in centred rows of six and five.
+Jonas asked for Grok Bot's right-click menu on agents, pinned agents as square
+centered cards right below the Co-Founder card, sections created from the rail
+or from Move to, drag between sections and into the pinned row with invisible
+containers that light up, and agents moving each other into sections.
 
-**Shell.** The company shell follows the approved V24 product preview
-(`Qorpera_Website`, `landing/src/ProductPreview.jsx`, `v24.css`) in the system
-face, not the web client's Source Sans 3, and not the rail this client
-currently renders. The client's present rail — Approvals, Company File,
-Organization, Team — exists in no Qorpera surface and must be replaced.
+- **Sections are the company's; pins and hiding are the member's.** Agents
+  organize sections (the `organize_sidebar` tool), so sections must be shared
+  cloud state (`qorpera_company_sidebar_*`; one revision row per company is the
+  only published, member-readable table, so a move is one hint). A pin
+  or a hidden agent only changes one member's view, so it lives per member
+  (`qorpera_member_sidebar_agents`) and follows the member across devices.
+  Nothing is kept in `localStorage`.
+- **One RPC answers the whole sidebar.** Every change returns the member's full
+  sidebar; the rail draws the change at once from the same rules
+  (`applySidebarRequest`) and replaces it with the answer. Changes go one at a
+  time; a refusal puts back what the cloud has and says why in the rail.
+- **Order is explicit, and hidden agents keep theirs.** A drag sends the whole
+  order of the container it lands in, computed from the full container, not the
+  visible rows, so hiding or pinning never reshuffles another member's view.
+- **Degrade, never lie.** A cloud without the sidebar RPCs (web deploys before
+  the bundle cut) shows the single list of before and a menu of Rename, Copy
+  conversation ID and Delete. The sidebar's Realtime channel is its own, so a
+  missing table cannot degrade the company's live updates.
+- **Not built: Mark as Unread.** The rail has no unread state at all yet (no
+  per-member read cursor in the cloud); a menu item for it would render
+  machinery that does not exist (runtime contract §14.5). It is its own feature.
+- **Moving a pinned agent to a section unpins it**, from the menu as from a drag,
+  so the move is visible; choosing the section an agent is already in does nothing.
+- **Dragging has keyboard twins.** Alt+Up / Alt+Down move the focused agent one
+  place in its section or in the pinned row; Move to covers sections. Shift with a
+  mouse right-click keeps the browser's own link menu.
+- **Hidden agents stay reachable** (Jonas, after the live test): a "Hidden agents"
+  group with the count folds at the foot of the list and opens to list them; showing
+  one again is the menu's Show in sidebar, a pin, a Move to, or a drag out of it.
+- **Delete is permanent**, as in Grok Bot: it deletes the agent's document
+  (owner or admin; the Co-Founder never), after a confirmation that says so.
 
-**The approved first-run screen** is `packages/web/design/cofounder-first-run.html`.
+## 2026-09-24 — The web app is offered in English and Danish
 
-## 2026-09-05 — Port all four desktop settings tabs into the web client
+**Decision.** Every piece of interface text goes through `t(source, values)`
+(`src/ui/preferences.ts`) with the English as the key and the Danish in
+`src/ui/danish/<area>.ts`. English stays the source language. Values fill
+`{placeholders}` and are never translated: names, messages, file names, roles
+typed by members and server error text are company content. A sentence with a
+value is one key, never glued fragments, because Danish word order differs;
+plurals are two keys. Text kept in a table before it is drawn (labels by code,
+menu items) is marked with `phrase("…")`, which returns it unchanged. Choosing a
+language redraws the screens in place (application.ts `onLanguage` /
+`redrawScreens`): drafts, chosen images and edits live in the stores and
+survive; Settings reopens on the same tab. The data layer returns codes
+(`sessionAttachmentProblem`, `ObjectAccessError.reason`) and views translate
+them; never match English message text.
 
-**Decision (founder).** The sidebar profile popup contains account settings,
-Friends, Invitations and Sign out. Company navigation belongs in settings.
-Adapt the desktop's General, Company, Connections and Policy tabs in PR #110,
-using its modal, gray navigation, account cards, people rows and policy icons.
-Keep the conversation mounted beneath the modal and preserve its draft.
+**Checks.** `test/translations.test.ts` reads the source: every key written
+in `t()`/`uiText()`/`phrase()` has Danish, placeholders match, a key lives in
+one area file, no Danish is left that no code asks for, and no English literal
+sits unwrapped where interface text goes (aria-label, placeholder, title, text
+children of `h()`, `button()`, `notice()`, `badge()`, `spinner()`, `confirm()`).
+`test/setup.ts` fails any test file whose screens drew text without Danish
+(keys built at run time). So a new label needs `t()` and its Danish in the
+same change.
 
-**Cloud behavior.** General reads account entitlement and retains feedback and
-endpoint configuration. Company embeds the member controls and links to the
-existing Company File, Organization and Approvals pages. Connections starts
-member-owned native provider login, enables requested-work sponsorship, and
-revokes accounts; Services lists and revokes existing cloud secret connections.
-Desktop-local connector setup, local-computer controls and unsupported billing
-actions do not become pretend browser actions. Creating new service connections
-still requires the cloud's registered connector and secure capture machinery.
+**Wording.** Plain, short Danish in the du-form, matching qorpera.com and the
+desktop (`packages/shell/userland/localization.js`): Company File is
+"Virksomhedsfilen", Co-Founder stays a name, a thread is a "tråd", a run a
+"kørsel", a draft a "kladde".
 
-**Policy.** The four Ask/Act/Auto choices live in protected `authority.toml`,
-not browser storage or a second settings table. Browser reads verify scoped
-object hashes and the current path version. Saves preserve unrelated TOML and
-use the human path-command review/apply protocol with exact version, content,
-operation key and plan digest. A successful save is read back from the cloud.
-New native runs read the same file through the governed path gateway before
-composition. Only validated choices, source version/hash and read observation
-references enter context; arbitrary TOML text is not a runtime instruction.
-Missing choices default to Ask. Malformed, stale or unauthorized reads stop
-composition. These choices never expand technical permissions or privacy consent.
+**Out of scope.** Error text written by the cloud layer (`src/cloud/*.ts`,
+`describeError`) stays English, as the server's own messages do. The computer
+screen viewer (`member-web/ui/screen-viewer.js`) is copied unchanged from the
+desktop, so `ui/computer-viewer.ts` translates its fixed text inside its own
+overlay. The live Company File panel (`member-web/src/file-panel.ts`) takes
+`t` as an option so member-web stays independent.
 
-**Deployment boundary.** The web UI requires the member-route CORS changes in
-the object gateway and native-provider-login Edge Function. Policy consumption
-also requires a matching native runtime bundle rollout and activation. The Pages
-preview alone cannot verify those backend changes. Local browser checks use a
-fake cloud boundary; adapter and runtime tests exercise the real parsers and
-protocols without live credentials or company mutations.
+## 2026-09-24 — The web app is drawn at 130% (design pixels)
 
-## 2026-09-06 — Restore desktop conversation surfaces before runtime integration
+**Decision.** Jonas found the app better at the browser's 125% zoom, then at
+150%; 140% shipped and was too much, so 130% is the default (2026-09-25). The stylesheets keep writing design pixels; the build
+(`scripts/design-px.mjs`, an esbuild plugin over every stylesheet) turns each
+px value of 2 or more into `calc(N * var(--px))`, and `tokens.css` sets `--px`
+to `--ui-scale` pixels: 1.3 with a mouse or trackpad, 1 on a coarse pointer
+(phones and tablets, whose layout was drawn for 100%). Each width breakpoint in
+`@media` is written by the build for each pointer: as written for a coarse one,
+multiplied out for a fine one or none (spelled out, since older browsers cannot
+parse `not (pointer: coarse)`), so layouts switch at the widths the browser's
+zoom switched them. Hairlines under 2px and SVG stroke geometry stay as written.
 
-**Decision (founder).** Port the approved desktop interactions in a first UI
-pass: compact agent header and details, figure/name/title/description drafts,
-integrated composer, local attachment previews, new-conversation and agent
-setup screens, and the computer panel. The shell uses the system face and
-the supplied Messages reference colors: header `#FBF7F4`, sidebar `#E8E4E1`,
-search `#DBD8D6`, selection `#007AFF`. The header is 48px with a 32px figure;
-scope badges do not belong in it. Approved vector figures remain unchanged.
+**Keeping a size.** A part that keeps its old size sets `--px: 1px` for itself
+and everything inside it: the minimized computer preview (Jonas kept its size;
+it also pins the 14px text it used to inherit) and the picture cropper's view,
+which is laid out in its own units and scaled by script.
 
-**Boundary.** Production supplies no agent-creation or metadata-write adapter
-to these new forms. They allow draft preparation and explicitly disable
-unavailable saves. Selected files stay in the current company's in-memory
-conversation draft; previews use revocable object URLs, never uploads.
-Attachments block text submission until removed, so no bytes are silently
-dropped. Existing text submission still uses the established append protocol.
-The computer panel reports unavailable access and has no run, wake, screen,
-routine-creation or provider-control connection. Injectable UI action ports
-exist for isolated tests and later reviewed integration only.
+**Scripts.** A script that sizes or places something in design pixels
+multiplies by `uiScale()` or writes `designPx(n)` into an inline style
+(`src/ui/scale.ts`); pointer positions and measured boxes are screen pixels
+already. Rail widths, stored and shown, are design pixels. The computer
+preview's drag and resize code (`computer-drag.ts`) stays in screen pixels,
+since the preview keeps its size.
 
-**Messages.** Explicitly delivered agent messages render GFM using the existing
-repository-pinned `marked` lexer and DOM nodes. Raw HTML stays text; links are
-limited to HTTP(S) and mailto; remote images become links and do not load
-automatically. Transcript admission rules are unchanged. The diagnostic count
-of hidden runtime entries is removed from the conversation UI, superseding
-that display choice in the 2026-09-02 entry.
+**Not CSS zoom, not rem.** `zoom` on the root changes what
+`getBoundingClientRect`, pointer positions, `left`/`top` and viewport units mean,
+differently in Chrome and Firefox (standardized zoom) than in Safari, which
+would put menus, drags and full-height dialogs off by the scale. Rewriting the
+stylesheets in rem would have touched every line under the open web PRs and
+left new px unscaled.
 
-**Verification.** Tests cover permission changes, unavailable write paths,
-late async completions, IME/newline behavior, file validation, preview cleanup,
-conversation-scoped drafts and inert Markdown content. Browser fixtures cover
-desktop/mobile geometry, focus, native dialogs and the unchanged text-send
-path without using a live company. Declaring the already-pinned Markdown
-dependency updates the root lockfile and its generated bundle provenance;
-this does not activate or deploy a runtime bundle.
+**Rules.** Keep writing px in the web stylesheets. A `@media` query with pixel
+widths must be a plain condition such as `(max-width: 760px)` (the build stops
+otherwise); `@container` queries with pixel widths stop the build until they are
+needed. Pair two breakpoints on the same number (`max-width: 760px` against
+`min-width: 760px`, or range syntax), never 760/761: scaled, 761 becomes 989.3
+and leaves a gap. A script that compares a measured size with a design size
+reads that size from the computed style where the stylesheet has it (the
+composer does), and otherwise multiplies its constant by `uiScale()`; either
+way it rounds up where the browser rounds (`scrollHeight`).
+`scripts/design-px.test.mjs` checks that no design pixel in the stylesheets
+escapes the scale. Breakpoints were set for 100%; check the widths where a
+layout switches at the new scale (Settings' smaller rail moved from 1100 to
+1000 design pixels, 1300 on screen, so 13" and 14" laptops keep the large one).
+The rail's default narrowed with each step (456 → 410 → 369 design pixels); at
+369 three pinned cards share a row.
 
-## 2026-09-06 — Keep this work within the web client shell
+## 2026-09-25 — Interface size in Appearance
 
-**Correction (founder).** Porting all four settings tabs authorizes their UI,
-not integration with the runtime being built separately. This supersedes the
-Connections, Policy and deployment behavior above, and the earlier decision
-to retain live text submission from the composer.
+Settings → General → Appearance offers Big (the default, current 130% desktop
+scale) and Small (the original 100% scale). The browser stores the choice in
+`qorpera.web.ui-size`, restores it before paint, and follows changes from other
+tabs. Phones and tablets keep their 100% scale in either choice.
 
-**Boundary.** Connections displays unavailable account/service controls with
-no provider login, sponsorship, revocation, service API calls or polling.
-Policy offers local Ask/Act/Auto previews, explicitly labeled as unsaved and
-not the active company policy. Changing company or closing settings discards
-those choices. The composer retains local text and attachment drafts; message
-submission, agent creation and metadata saves have no production action
-adapter. Computer controls remain unavailable. Fixture adapters may exercise
-UI flows without live credentials or runtime calls.
+Responsive pixel queries have two mutually exclusive, zero-specificity root
+gates: Big uses the existing pointer-aware breakpoints, Small uses the original
+breakpoints. The build lowers the generated CSS nesting. A size change also
+dispatches resize so measured rail widths, composer heights, menus, dialogs,
+and navigation accessibility state update together.
 
-**Scope.** Existing cloud account and company management and read projections
-remain available. Runtime policy consumption, object-gateway CORS, provider
-login CORS and runtime packaging changes have been removed from this PR.
-The previously deployed login CORS wrapper was rolled back. No runtime,
-tunnel or NAS deployment is required to publish this shell. The repository's
-generated bundle checksum files still reflect the web dependency lockfile;
-they are source provenance only and must not be deployed or applied as part
-of this work.
+An unset rail width follows the size: 369 design pixels for Big, the original
+456 for Small. An explicitly resized width is kept across size changes; resetting
+the rail clears that choice and follows the current size's default again.
 
-## 2026-09-17 — Agents are written through the Company File
+## 2026-09-25 — Rules and approval cards for agents' actions
 
-**Decision.** Creating an agent, saving agent edits and saving the
-Co-Founder's figure are governed Company File writes of the agent's document
-(`organization/agents/<id>.json`), using the codec the desktop uses, now in
-`@qorpera/cloud-client/cloud-company-agent`. The browser never writes the
-staff roster; the cloud projects the document onto it. Agent paths are
-protected, so these actions are offered to owners and admins only.
+**Decision (Jonas).** The web client gets Settings → Rules and live approval
+cards for agents' actions (runtime bundle v130, contract amendment
+2026-09-25). Grok Bot's Auto-review is the reference; Qorpera adds the
+multiplayer scope: a rule is the member's own ("only me") or, written by an
+owner or admin, the company's. An approval card is answered by the member it
+waits for, as the card names: a personal rule's owner, or any owner or admin
+for a company rule or a built-in check. Allow once, Deny, and on a built-in
+check's card Always allow, which saves the proposed rule as a company rule.
 
-**Removed.** The Policy settings tab was a local draft with no backend and is
-gone. The direct roster write for figures is gone; governed companies refuse
-it.
+**Why.** Jonas asked for the rule behaviour "in the runtime architecture",
+with personal and global rules. This is the new decision the 2026-09-24 entry
+asked for before any approvals surface returns: approvals come back as cards
+in the thread where the agent works, not as a separate Approvals page.
 
-## 2026-09-17 — Routines live in the agent's Computer panel
+**Rules out.** An Approvals page or inbox; answering these cards through
+`qorpera_answer_interaction` (its approval surface is owner/admin-only and does
+not know the review); live controls on a card for a member it does not wait
+for; controls the live kernel refuses (before v130 the tab says rules are not
+available and no card has buttons, because no such card exists).
 
-**Decision.** The web client is the first client of the cloud routine calls
-(`@qorpera/cloud-client/cloud-routines`). An owner or admin creates, edits,
-pauses and resumes an agent's routines from the Routines section of that
-agent's Computer panel. A routine has one trigger: chosen days at a time,
-every so often, or a change under a Company File path, plus a reply choice
-(always, only when useful, silent). The cloud schedules and delivers; nothing
-runs in the browser.
+## 2026-09-26 — A member's Stop is not a failure
 
-**Whose account.** A routine runs while nobody is present, so it names the
-model account of the member who saves it. Saving records that member's
-consent to unattended use of that account and binds one sponsor per account
-version, reused on later saves. The cloud has no member delete for routines;
-"Pause" is the removal a member has.
+**Decision (Jonas).** A run a member stopped reads as stopped: no red disc, no
+"did not finish this run" line and no Try again. The agent shows its other
+work, or idle. To repeat a stopped message, the member sends it again. The one
+exception is a stop that left an open Company File proposal of the run's own:
+it reads as "Needs you" with Review, ranked below all of the agent's work,
+queued runs included.
 
-## 2026-09-17 — No private member browsers in the web client
+**Why.** The activity list keeps one run per agent and ranked a stopped member
+turn or room post above the run the agent was still working on. The agent read
+as failed, and the composer lost its Stop for the agent's other runs (a routine
+run in the same thread) until the member dismissed the line.
 
-**Decision (Jonas).** The company comes first: agents are the primary workers
-against it, and members are mounted on the agents as reviewers. A member's
-private browser on the Company Computer does not fit that, so the web client
-has none: the "Your browsers" panel (browser profiles, private sign-in,
-per-agent browser consent) and the account's "Browser access" page are
-deleted, together with the per-agent computer permissions form. Computer
-access is a default for every agent (migration 20260917045000), and the
-Computer panel offers one action, Open computer.
+**How.** Every cancelled job is a member's Stop: the job table requires
+`cancelled_by_user_id` whenever the status is `cancelled`. The cloud leaves a
+stopped run out of `qorpera_list_staff_execution_activity` unless its own
+proposal is open, and ranks that decision lowest (migration
+`20260926192436_member_stop_settled_activity`). A proposal review a member
+stopped (only possible through the job-id cancel) drops out too; its proposal
+still waits in the Company File. The web reads a listed stop as a decision, and
+as settled once its details show no proposal. An older cloud still lists every
+stop above the agent's live work, so there a member who can write acknowledges
+such a stop as soon as its details are read, and the work it hid shows again.
 
-**Still in the backend and runtime.** The privacy challenge, private display
-and browser-profile grant machinery of contract section 12 is untouched; no
-client reaches it now. Removing it is a contract amendment, not a web change.
-
-## 2026-09-19 — Friends and company invitations share one Settings tab
-
-**Decision (Jonas).** Friends and the company invitations waiting for the
-account live together on one Friends tab in Settings, not on pages of their
-own. The profile popup holds Account and settings, Friends (with the count of
-waiting invitations), Feedback and Sign out. The separate Invitations item and
-the `#/friends` and `#/invitations` pages are gone; old links land on the
-company hub. The Company tab's "Add a friend" opens the Friends tab. This
-replaces the popup contents in the 2026-09-05 entry.
-
-**Settings look.** The window is 20% larger (1200×816), and each section in
-its menu has an icon and a 13px medium-weight label.
-
-## 2026-09-19 — Agent details hold routines and responsibilities; edits are in place
-
-**Decision (Jonas).** Routines leave the Computer panel for the agent's details
-popup. Two buttons sit left of its close button: Responsibilities, then
-Routines. Each turns the popup into that page, with a back arrow to the
-details; Routines keeps the whole manager (list, pause and resume, create and
-edit). The Computer panel holds only the computer again. This moves where the
-2026-09-17 routines entry put them; the rest of that entry stands.
-
-**Edits are in place.** The "Edit agent" button is gone. For owners and
-admins, name, title and description are always editable where they stand:
-Enter or leaving a field saves it, Escape puts the saved text back. The figure
-edits as on the desktop: on hover it darkens inside a pale outline with a
-pencil, a click opens a picker under it, and each choice saves at once and
-keeps the agent's colour (the Co-Founder chooses a figure only). Changes made
-while a save is out follow it as one more write. Closing the popup keeps a
-change that was being typed; leaving the conversation, changing company or
-losing access drops it. Members without write access see the same popup read
-only. The description is taller: at least five lines, growing to thirteen.
-
-## 2026-09-19 — New conversation is one list under the To: field
-
-**Decision (Jonas).** The new-conversation screen follows Grok's bot picker:
-a "To:" field with one short list under it, replacing the page of agent
-cards. The list starts with New agent and New group chat, then every active
-agent. The rows show names only, so the field searches names only. Picking an
-agent opens its conversation at once. New group chat turns the rows into
-checkboxes and puts the chosen agents in the field as chips. A name typed
-into the field carries into New agent.
-
-**Still missing.** No client can start a group conversation yet (`room:create`
-in CLIENT-CONTRACT.md). The Start group chat row stays disabled and says "Not
-available yet", as the old screen's Open button did.
-
+**Rules out.** Try again for a stop (`qorpera_retry_room_delivery` still accepts
+one from its author; the web never offers it), and a grey "You stopped this
+run" line with Try again, the option Jonas did not pick.

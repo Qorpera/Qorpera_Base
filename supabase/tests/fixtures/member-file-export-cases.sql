@@ -92,12 +92,13 @@ reset role;
 rollback to savepoint member_exports;
 
 -- Manifest size is measured before compression, while hashes and immutability
--- remain enforced. The accepted payload exceeds the previous logical bound.
+-- remain enforced. The accepted payload exceeds the previous logical bound; the
+-- refused one exceeds the 262144-byte text bound (20260924060000).
 do $$ declare v_manifest jsonb; begin
  v_manifest:=jsonb_build_object('fixture',repeat('x',70000));
  insert into public.qorpera_runtime_bundles(bundle_key,version,manifest,sha256)
  values('test.manifest.capacity',1,v_manifest,encode(extensions.digest(convert_to(v_manifest::text,'utf8'),'sha256'),'hex'));
- v_manifest:=jsonb_build_object('fixture',repeat('x',131072));
+ v_manifest:=jsonb_build_object('fixture',repeat('x',262144));
  begin
   insert into public.qorpera_runtime_bundles(bundle_key,version,manifest,sha256)
   values('test.manifest.capacity',2,v_manifest,encode(extensions.digest(convert_to(v_manifest::text,'utf8'),'sha256'),'hex'));

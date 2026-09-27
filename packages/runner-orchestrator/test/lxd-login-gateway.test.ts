@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { mkdtemp, realpath, rm, unlink } from "node:fs/promises";
+import { mkdtemp, readdir, realpath, rm, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -21,6 +21,7 @@ import {
 	LxdNativeLoginGateway,
 	type LxdNativeLoginGatewayConfig,
 } from "../src/lxd-login-gateway.ts";
+import { LxdLoginJournal } from "../src/lxd-login-journal.ts";
 import { readRuntimeNodeHost } from "../src/runtime-node-host.ts";
 
 vi.mock("../src/runtime-node-host.ts", () => ({
@@ -66,6 +67,7 @@ class FakeLxd implements LxdClient {
 	deleteCalls = 0;
 	lostSubmission?: LxdTrackedInstanceAction["action"];
 	lostPolls = 0;
+	restoreFailures = 0;
 	pending = false;
 	onSubmit?: (action: LxdTrackedInstanceAction) => void;
 
@@ -154,6 +156,7 @@ class FakeLxd implements LxdClient {
 	async pushInstanceFile(_project: string, _name: string, path: string, content: string, mode: number): Promise<void> {
 		if (this.instance?.status !== "Running") throw new Error("fake VM agent is unavailable");
 		this.filePushes.push({ path, content, mode });
+		this.guestFiles.set(path, content);
 	}
 
 	guestFiles = new Map<string, string>();
@@ -165,11 +168,13 @@ class FakeLxd implements LxdClient {
 		const script = command[0] === "/bin/bash" && command[1] === "-c" ? command[2]! : "";
 		if (script.includes("generateKeyPairSync"))
 			this.guestFiles.set("/var/lib/qorpera-recovery/recipient-public-key", `${"M".repeat(560)}\n`);
-		if (script.includes("qorpera-identity-recovery-restore.mjs"))
+		if (script.includes("qorpera-identity-recovery-restore.mjs")) {
+			if (this.restoreFailures-- > 0) throw new Error("restore quiet period has not elapsed");
 			this.guestFiles.set(
 				"/var/lib/qorpera-recovery/restore-result.json",
 				`${JSON.stringify({ status: "completed", receiptId: "30000000-0000-4000-8000-000000000099", epoch: 2 })}\n`,
 			);
+		}
 		if (command[0] === "/bin/rm")
 			for (const key of [...this.guestFiles.keys()]) if (key.startsWith(command[2]!)) this.guestFiles.delete(key);
 	}
@@ -240,7 +245,7 @@ function loginRequest(body = loginBody(), bearerCapability = capability): Reques
 	});
 }
 
-function fetchBoundary(logins: NativeLoginResponse[], statuses: Array<"pending" | "completed"> = []) {
+function fetchBoundary(logins: NativeLoginResponse[], statuses: Array<"pending" | "completed"> = [], id = loginId) {
 	const requests: Array<{ url: string; authorization: string | null; body: string }> = [];
 	const control = {
 		companyRefusal: null as string | null,
@@ -272,7 +277,7 @@ function fetchBoundary(logins: NativeLoginResponse[], statuses: Array<"pending" 
 		if (args.p_request_id) args.p_login_id = args.p_request_id;
 		if (originalUrl.endsWith("qorpera_describe_native_account_refresh_route"))
 			return Response.json({
-				request_id: loginId,
+				request_id: id,
 				profile_id: profileId,
 				compute_identity_id: computeIdentityId,
 				requested_by_user_id: ownerUserId,
@@ -283,14 +288,14 @@ function fetchBoundary(logins: NativeLoginResponse[], statuses: Array<"pending" 
 			control.status = "completed";
 			return Response.json({
 				schema: "qorpera.native-account-refresh-result/v1",
-				request_id: loginId,
+				request_id: id,
 				status: "completed",
 			});
 		}
 		if (url.includes("qorpera_describe_native_provider_login")) {
 			control.status = statuses.shift() ?? control.status;
 			return Response.json({
-				login_id: loginId,
+				login_id: id,
 				profile_id: profileId,
 				client_connection_id: clientConnectionId,
 				compute_identity_id: computeIdentityId,
@@ -343,7 +348,7 @@ function fetchBoundary(logins: NativeLoginResponse[], statuses: Array<"pending" 
 			if (!control.committed) return Response.json({ error: "absent" }, { status: 403 });
 			return Response.json({
 				allocationId: args.p_allocation_id,
-				loginId,
+				loginId: id,
 				profileId,
 				computeIdentityId,
 				expiresAt,
@@ -381,7 +386,7 @@ function fetchBoundary(logins: NativeLoginResponse[], statuses: Array<"pending" 
 				notBefore: new Date(Date.now() + 100).toISOString(),
 				expiresAt,
 				receiptId: null,
-				loginId,
+				loginId: id,
 				requestedByUserId: ownerUserId,
 				backupSha256: "b".repeat(64),
 				authorityId: "30000000-0000-4000-8000-000000000030",
@@ -403,7 +408,7 @@ function fetchBoundary(logins: NativeLoginResponse[], statuses: Array<"pending" 
 			if (!response) throw new Error("unexpected login forwarding call");
 			return Response.json({
 				schema: "qorpera.native-provider-login-result/v1",
-				login_id: loginId,
+				login_id: id,
 				status: response.status,
 				interaction_url: response.interactionUrl,
 				user_code: response.userCode,
@@ -500,8 +505,15 @@ describe("LXD native login gateway", () => {
 		const gate = new Promise<void>((resolve) => {
 			release = resolve;
 		});
+		let entered = () => {};
+		const reached = new Promise<void>((resolve) => {
+			entered = resolve;
+		});
 		const transport: typeof fetch = async (input, init) => {
-			if (String(input) === "http://10.41.0.9:8083/login") await gate;
+			if (String(input) === "http://10.41.0.9:8083/login") {
+				entered();
+				await gate;
+			}
 			return boundary.fetchImplementation(input, init);
 		};
 		const gateway = new LxdNativeLoginGateway({ ...config(root), loginPreparingAfterMs: 200 }, lxd, transport);
@@ -515,6 +527,7 @@ describe("LXD native login gateway", () => {
 			user_code: null,
 		});
 		// The work continued: one VM was created and started while the member was told to come back.
+		await reached;
 		expect(lxd.createCalls).toHaveLength(1);
 		const pending = gateway.handle(loginRequest());
 		await vi.waitFor(() =>
@@ -642,6 +655,106 @@ describe("LXD native login gateway", () => {
 		expect(boundary.control.repins).toEqual([{ p_login_id: loginId }]);
 		expect(lxd.guestFiles.has("/var/lib/qorpera-recovery/recipient-public-key")).toBe(false);
 	});
+	it.each(["quiet-period", "interrupted-restore"] as const)(
+		"keeps the same login preparing after an approved %s recovery, then resumes its retained restore",
+		async (fault) => {
+			const root = await stateRoot(),
+				lxd = new FakeLxd(),
+				boundary = fetchBoundary([
+					{ status: "awaiting_member", interactionUrl: "https://provider.example/device", userCode: "RESUMED" },
+				]);
+			boundary.control.recovery = "established";
+			lxd.restoreFailures = fault === "interrupted-restore" ? 1 : 0;
+			let approved = false;
+			const transport: typeof fetch = async (input, init) => {
+				if (String(input).endsWith("qorpera_identity_recovery_runtime_state") && approved) {
+					return Response.json({ canInitialize: false, blocked: true, epoch: 2 });
+				}
+				const response = await boundary.fetchImplementation(input, init);
+				if (String(input).endsWith("qorpera_request_login_identity_recovery")) approved = true;
+				return response;
+			};
+			const gateway = new LxdNativeLoginGateway(
+				{
+					...config(root),
+					identityRecoveryRegistrarCapability: "r".repeat(43),
+					guestManifestSha256: "m".repeat(64),
+					recoveryWaitMs: fault === "quiet-period" ? 0 : 5000,
+				},
+				lxd,
+				transport,
+			);
+			const first = await gateway.handle(loginRequest());
+			expect(first.status).toBe(200);
+			expect(await first.json()).toEqual({
+				schema: "qorpera.native-provider-login-result/v1",
+				login_id: loginId,
+				status: "preparing",
+				interaction_url: null,
+				user_code: null,
+			});
+			expect(lxd.execCalls.some((command) => command[0] === "/usr/bin/systemctl")).toBe(false);
+			expect(boundary.requests.some((request) => request.url.endsWith("/login"))).toBe(false);
+			expect(lxd.guestFiles.has("/var/lib/qorpera-recovery/credentials/qorpera-recovery-restore")).toBe(true);
+
+			const second = await gateway.handle(loginRequest());
+			expect(second.status).toBe(200);
+			expect(await second.json()).toMatchObject({ status: "awaiting_member", user_code: "RESUMED" });
+			expect(lxd.createCalls).toHaveLength(1);
+			expect(lxd.powerCalls).toEqual(["start"]);
+			expect(boundary.control.targetRegistrations).toHaveLength(1);
+			expect(boundary.control.recoveryRequests).toHaveLength(1);
+			expect(boundary.control.repins).toEqual([{ p_login_id: loginId }]);
+			expect(boundary.requests.filter((request) => request.url.endsWith("/login"))).toHaveLength(1);
+		},
+	);
+	it.each(["cancelled", "epoch-changed", "missing-restore", "foreign-restore"] as const)(
+		"does not resume a preparing login after %s invalidates its retained recovery authority",
+		async (fault) => {
+			const root = await stateRoot(),
+				lxd = new FakeLxd(),
+				boundary = fetchBoundary([]);
+			boundary.control.recovery = "established";
+			let approved = false;
+			const transport: typeof fetch = async (input, init) => {
+				if (String(input).endsWith("qorpera_identity_recovery_runtime_state") && approved)
+					return Response.json({ canInitialize: false, blocked: true, epoch: fault === "epoch-changed" ? 3 : 2 });
+				const response = await boundary.fetchImplementation(input, init);
+				if (String(input).endsWith("qorpera_request_login_identity_recovery")) approved = true;
+				return response;
+			};
+			const gateway = new LxdNativeLoginGateway(
+				{
+					...config(root),
+					identityRecoveryRegistrarCapability: "r".repeat(43),
+					guestManifestSha256: "m".repeat(64),
+					recoveryWaitMs: 0,
+				},
+				lxd,
+				transport,
+			);
+			expect(await (await gateway.handle(loginRequest())).json()).toMatchObject({ status: "preparing" });
+			const restorePath = "/var/lib/qorpera-recovery/credentials/qorpera-recovery-restore";
+			if (fault === "cancelled") boundary.control.status = "cancelled";
+			if (fault === "missing-restore") lxd.guestFiles.delete(restorePath);
+			if (fault === "foreign-restore") {
+				const restore = JSON.parse(lxd.guestFiles.get(restorePath)!);
+				lxd.guestFiles.set(restorePath, JSON.stringify({ ...restore, companyId: randomUUID() }));
+			}
+			const second = await gateway.handle(loginRequest());
+			expect(second.status).toBe(fault === "cancelled" ? 403 : 503);
+			expect(lxd.createCalls).toHaveLength(1);
+			expect(lxd.powerCalls).toEqual(["start"]);
+			expect(boundary.control.targetRegistrations).toHaveLength(1);
+			expect(boundary.control.recoveryRequests).toHaveLength(1);
+			expect(boundary.control.repins).toHaveLength(0);
+			expect(
+				lxd.execCalls.some((command) => command.join(" ").includes("qorpera-identity-recovery-restore.mjs")),
+			).toBe(false);
+			expect(lxd.execCalls.some((command) => command[0] === "/usr/bin/systemctl")).toBe(false);
+			expect(boundary.requests.some((request) => request.url.endsWith("/login"))).toBe(false);
+		},
+	);
 	it("refuses an established identity on a fresh volume when the node has no registrar, and a fenced identity always", async () => {
 		for (const [recovery, extra] of [
 			["established", {}],
@@ -684,6 +797,63 @@ describe("LXD native login gateway", () => {
 		const gateway = new LxdNativeLoginGateway(config(root), lxd, boundary.fetchImplementation);
 		expect((await gateway.handle(loginRequest())).status).toBe(200);
 		expect(boundary.control.targetRegistrations).toHaveLength(0);
+		expect(boundary.control.recoveryRequests).toHaveLength(0);
+	});
+	it("continues a pending login after another request restored the node's current identity epoch", async () => {
+		const root = await stateRoot(),
+			lxd = new FakeLxd(),
+			boundary = fetchBoundary([
+				{ status: "awaiting_member", interactionUrl: "https://provider.example/device", userCode: "CURRENT-EPOCH" },
+			]);
+		boundary.control.recovery = "established";
+		lxd.guestFiles.set("/var/lib/qorpera/identity/qorpera-native-provider-master-key", "present");
+		lxd.guestFiles.set("/var/lib/qorpera/identity/qorpera-identity-recovery-3.json", "present");
+		let loginEpoch = 2;
+		const transport: typeof fetch = async (input, init) => {
+			const url = String(input);
+			if (url.endsWith("qorpera_identity_recovery_runtime_state")) {
+				const response = await boundary.fetchImplementation(input, init);
+				const state = (await response.json()) as Record<string, unknown>;
+				return Response.json({ ...state, epoch: 3 });
+			}
+			if (url.endsWith("qorpera_repin_login_recovery_epoch")) {
+				// The SQL contract permits re-pinning a pending login after any
+				// completed recovery at the identity's current generation.
+				loginEpoch = 3;
+				return Response.json({ loginId, epoch: loginEpoch, repinned: true });
+			}
+			if (url.endsWith("/login") && loginEpoch !== 3)
+				return Response.json({ error: "native login generation is fenced for recovery" }, { status: 403 });
+			return boundary.fetchImplementation(input, init);
+		};
+		const gateway = new LxdNativeLoginGateway(config(root), lxd, transport);
+		const response = await gateway.handle(loginRequest());
+		expect(response.status).toBe(200);
+		expect(await response.json()).toMatchObject({ status: "awaiting_member", user_code: "CURRENT-EPOCH" });
+		expect(loginEpoch).toBe(3);
+		expect(boundary.control.targetRegistrations).toHaveLength(0);
+		expect(boundary.control.recoveryRequests).toHaveLength(0);
+		expect(lxd.execCalls.some((command) => command.join(" ").includes("qorpera-identity-recovery-restore.mjs"))).toBe(
+			false,
+		);
+	});
+	it("does not bootstrap a current local identity when its login epoch cannot be re-pinned", async () => {
+		const root = await stateRoot(),
+			lxd = new FakeLxd(),
+			boundary = fetchBoundary([]);
+		boundary.control.recovery = "established";
+		lxd.guestFiles.set("/var/lib/qorpera/identity/qorpera-native-provider-master-key", "present");
+		lxd.guestFiles.set("/var/lib/qorpera/identity/qorpera-identity-recovery-1.json", "present");
+		const transport: typeof fetch = async (input, init) => {
+			if (String(input).endsWith("qorpera_repin_login_recovery_epoch"))
+				return Response.json({ error: "login re-pin requires a restored identity" }, { status: 403 });
+			return boundary.fetchImplementation(input, init);
+		};
+		const gateway = new LxdNativeLoginGateway(config(root), lxd, transport);
+		expect((await gateway.handle(loginRequest())).status).toBe(503);
+		expect(lxd.filePushes).toHaveLength(0);
+		expect(lxd.execCalls.some((command) => command[0] === "/usr/bin/systemctl")).toBe(false);
+		expect(boundary.requests.some((request) => request.url.endsWith("/login"))).toBe(false);
 		expect(boundary.control.recoveryRequests).toHaveLength(0);
 	});
 	it("recovers a copy left behind by a recovery on another node: the key is here, the current epoch's marker is not", async () => {
@@ -981,6 +1151,87 @@ describe("LXD native login gateway", () => {
 			await service.close();
 		}
 		expect(lxd.deleteCalls).toBe(1);
+	});
+	it("reads a released journal once per process, not on every cleanup pass or sign-in", async () => {
+		const root = await stateRoot(),
+			kept = { ...config(root), releasedJournalRetentionMs: Number.MAX_SAFE_INTEGER },
+			lxd = new FakeLxd(),
+			released = fetchBoundary([
+				{ status: "awaiting_member", interactionUrl: "https://provider.example/device", userCode: null },
+			]);
+		await new LxdNativeLoginGateway(kept, lxd, released.fetchImplementation).handle(loginRequest());
+		released.control.cleanupRequired = true;
+		await new LxdNativeLoginGateway(kept, lxd, released.fetchImplementation).reconcile(new AbortController().signal);
+		expect(released.control.releasedAt).not.toBeNull();
+
+		const nextLoginId = "30000000-0000-4000-8000-000000000011",
+			next = fetchBoundary(
+				[{ status: "awaiting_member", interactionUrl: "https://provider.example/device", userCode: null }],
+				[],
+				nextLoginId,
+			);
+		let boundary = released;
+		const opens = vi.spyOn(LxdLoginJournal, "open");
+		const reads = (id: string) => opens.mock.calls.filter(([, name]) => name === id).length;
+		try {
+			// A restarted process verifies the retained journal once, then skips it.
+			const gateway = new LxdNativeLoginGateway(kept, lxd, (input, init) =>
+				boundary.fetchImplementation(input, init),
+			);
+			for (let pass = 0; pass < 3; pass++)
+				expect(await gateway.reconcile(new AbortController().signal)).toEqual({ scanned: 1, unconfirmed: 0 });
+			expect(reads(loginId)).toBe(1);
+			// A later sign-in of the same identity scans for replaced logins without reopening it.
+			boundary = next;
+			expect((await gateway.handle(loginRequest(loginBody({ login_id: nextLoginId })))).status).toBe(200);
+			expect(reads(nextLoginId)).toBeGreaterThan(0);
+			expect(reads(loginId)).toBe(1);
+			expect(lxd.createCalls).toHaveLength(2);
+			expect(await gateway.reconcile(new AbortController().signal)).toEqual({ scanned: 2, unconfirmed: 0 });
+			expect(reads(loginId)).toBe(1);
+		} finally {
+			opens.mockRestore();
+		}
+	});
+	it("archives a released journal after a day and refuses a later request for its login", async () => {
+		const root = await stateRoot(),
+			lxd = new FakeLxd(),
+			boundary = fetchBoundary([
+				{ status: "awaiting_member", interactionUrl: "https://provider.example/device", userCode: null },
+			]),
+			kept = { ...config(root), releasedJournalRetentionMs: Number.MAX_SAFE_INTEGER };
+		await new LxdNativeLoginGateway(kept, lxd, boundary.fetchImplementation).handle(loginRequest());
+		boundary.control.cleanupRequired = true;
+		await new LxdNativeLoginGateway(kept, lxd, boundary.fetchImplementation).reconcile(new AbortController().signal);
+		expect(boundary.control.releasedAt).toBe("2026-09-08T00:00:00.000Z");
+
+		const gateway = new LxdNativeLoginGateway(config(root), lxd, boundary.fetchImplementation);
+		const opens = vi.spyOn(LxdLoginJournal, "open");
+		const now = vi.spyOn(Date, "now");
+		try {
+			now.mockReturnValue(Date.parse("2026-09-08T12:00:00.000Z"));
+			expect(await gateway.reconcile(new AbortController().signal)).toEqual({ scanned: 1, unconfirmed: 0 });
+			expect(await readdir(root)).toEqual([loginId]);
+			// A day after its release it moves to the archive without being read again.
+			now.mockReturnValue(Date.parse("2026-09-09T00:00:00.000Z"));
+			expect(await gateway.reconcile(new AbortController().signal)).toEqual({ scanned: 1, unconfirmed: 0 });
+			expect(opens.mock.calls.filter(([, name]) => name === loginId)).toHaveLength(1);
+		} finally {
+			now.mockRestore();
+			opens.mockRestore();
+		}
+		expect(await readdir(root)).toEqual(["archive"]);
+		expect(await readdir(join(root, "archive", loginId))).not.toContain("bridge.json");
+		const archived = await LxdLoginJournal.open(join(root, "archive"), loginId, lxd);
+		expect((await archived.state()).releasedAt).toBe("2026-09-08T00:00:00.000Z");
+		expect(await gateway.reconcile(new AbortController().signal)).toEqual({ scanned: 0, unconfirmed: 0 });
+
+		// Its login is over: a later post neither allocates a machine nor a new journal.
+		expect((await gateway.handle(loginRequest())).status).toBe(503);
+		expect(lxd.createCalls).toHaveLength(1);
+		expect(await readdir(root)).toEqual(["archive"]);
+		boundary.control.status = "completed";
+		expect(await (await gateway.handle(loginRequest())).json()).toMatchObject({ status: "completed" });
 	});
 	it("fails closed on protected host changes and missing retained authority", async () => {
 		const root = await stateRoot(),

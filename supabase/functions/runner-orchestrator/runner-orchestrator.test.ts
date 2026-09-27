@@ -106,6 +106,61 @@ describe("runner orchestrator boundary", () => {
 		);
 	});
 
+	it("parses a first-slot advance that compares the position the orchestrator read", () => {
+		assert.deepEqual(
+			parseRunnerOrchestratorRequest({
+				action: "advance_next_due",
+				orchestratorId,
+				routineId,
+				expectedVersion: 3,
+				triggerId: "schedule-main",
+				expectedLastScheduledFor: "2026-08-27T10:15:30.123Z",
+				nextDueAt: "2026-08-28T09:00:00.000Z",
+			}),
+			{
+				action: "advance_next_due",
+				orchestratorId,
+				routineId,
+				expectedVersion: 3,
+				triggerId: "schedule-main",
+				expectedLastScheduledFor: "2026-08-27T10:15:30.123Z",
+				nextDueAt: "2026-08-28T09:00:00.000Z",
+			},
+		);
+		// A fresh cursor has no position.
+		assert.deepEqual(
+			parseRunnerOrchestratorRequest({
+				action: "advance_next_due",
+				orchestratorId,
+				routineId,
+				expectedVersion: 1,
+				triggerId: "schedule-main",
+				nextDueAt: "2026-08-31T09:00:00+02:00",
+			}),
+			{
+				action: "advance_next_due",
+				orchestratorId,
+				routineId,
+				expectedVersion: 1,
+				triggerId: "schedule-main",
+				nextDueAt: "2026-08-31T07:00:00.000Z",
+			},
+		);
+		for (const nextDueAt of ["2026-08-27T10:15:30.123Z", "not a time", undefined]) {
+			assert.throws(() =>
+				parseRunnerOrchestratorRequest({
+					action: "advance_next_due",
+					orchestratorId,
+					routineId,
+					expectedVersion: 3,
+					triggerId: "schedule-main",
+					expectedLastScheduledFor: "2026-08-27T10:15:30.123Z",
+					nextDueAt,
+				}),
+			);
+		}
+	});
+
 	it("rejects secret-shaped garbage and maps durable conflicts", () => {
 		assert.throws(() => parseRunnerOrchestratorBearer(`Bearer ${token}secret`), /authorization/);
 		assert.throws(() =>

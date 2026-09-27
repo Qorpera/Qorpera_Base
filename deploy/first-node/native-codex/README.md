@@ -1,6 +1,6 @@
 # Pinned native result fence, governed tools, images and composition
 
-This is a narrow downstream change to the official Codex 0.147.0 source, not
+This is a narrow downstream change to the official Codex 0.155.1 source, not
 an official upstream release. The user explicitly authorized this exception
 to the unmodified-harness requirement on 2026-08-28. Native GPT sign-in,
 refresh, credential storage, provider transport, model metadata and provider
@@ -38,6 +38,12 @@ Images must originate in an issued tool result and match its call, envelope and
 hash. The host rechecks the capture read set on every provider/compaction request,
 including when reconstruction has replaced pixels with summaries. Arbitrary
 provider-message media cannot acquire authority through this path.
+
+The result fence sends every tool output of a model request's history to the
+host, which returns each as a host-issued envelope of at most 8 KiB. Since bundle
+v104 a request may carry any number of outputs: the frame is bounded at 64 MiB
+each way (it was 8 MiB, with fewer than 128 outputs and 1 MiB of result text),
+more than any model context holds.
 
 ## Build
 
@@ -118,7 +124,7 @@ forged compaction instructions do not acquire authority, and revocation denies
 the next provider request and effect. These checks are also mandatory in the
 standalone Linux fixture for both the synthetic model and the provider default.
 
-`node packages/shell/test/fixtures/run-native-codex-composition-probe.ts /absolute/native/codex`
+`node packages/runtime/test/fixtures/run-native-codex-composition-probe.ts /absolute/native/codex`
 holds a scripted public-message output item open for over two seconds before
 supplying its arguments. It requires the actual native Writing signal during
 that hold, a finish before send dispatch, and cleanup when the incomplete

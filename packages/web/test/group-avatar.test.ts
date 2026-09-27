@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { HostedStaffAgent } from "../src/cloud/types.ts";
 import { FIGURE_IDS } from "../src/ui/avatar.ts";
 import { groupAvatar } from "../src/ui/group-avatar.ts";
 import { deferred, id, settle, staff } from "./fixtures.ts";
@@ -182,12 +183,17 @@ describe("approved group avatar compositor", () => {
 		expect(selected.context.text.at(-1)?.color).toBe("#ffffff");
 	});
 
-	it("retains the Co-Founder's native artwork color", async () => {
-		const subject = { ...agents(1)[0]!, templateId: "co-founder" };
-		const canvas = groupAvatar([subject]) as HTMLCanvasElement;
-		document.body.append(canvas);
-		await settle();
-		expect(artwork.drawable).toHaveBeenCalledWith("planet", "#fcb51b");
+	it("draws a seeded Co-Founder in its native artwork color and a chosen color once picked", async () => {
+		const chosen = { ...agents(1)[0]!, templateId: "co-founder" };
+		const seeded = { ...chosen, appearance: { ...chosen.appearance, color: "qorpera-blue" } };
+		const drawn = async (subject: HostedStaffAgent) => {
+			artwork.drawable.mockClear();
+			document.body.append(groupAvatar([subject]));
+			await settle();
+			return new Set(artwork.drawable.mock.calls.map(([figure, color]) => `${figure} ${color}`));
+		};
+		expect(await drawn(seeded)).toEqual(new Set(["planet #fcb51b"]));
+		expect(await drawn(chosen)).toEqual(new Set(["planet #312f2d"]));
 	});
 
 	it("scales its bitmap and layout to the actual responsive size", async () => {

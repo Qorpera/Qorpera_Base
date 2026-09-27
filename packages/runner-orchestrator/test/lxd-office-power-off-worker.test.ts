@@ -58,8 +58,71 @@ describe("serialized VM power-off", () => {
 		expect(f.submit).toHaveBeenCalledOnce();
 		expect(f.exec).toHaveBeenCalledOnce();
 		expect(await readFile(f.activation.names.completion)).toEqual(original);
-		expect(f.registry.mock.calls.every(([method]) => method === "qorpera_runtime_office_stop_status")).toBe(true);
+		expect(
+			f.registry.mock.calls.every(([method]) =>
+				["qorpera_runtime_office_stop_status", "qorpera_suspend_runtime_node_machine"].includes(method as string),
+			),
+		).toBe(true);
 	});
+	it("gives the node slot back after the confirmed stop, and repeats the same suspension on replay", async () => {
+		const f = await fixture();
+		await expect(f.run()).resolves.toMatchObject({ state: "powered_off" });
+		const [call] = f.suspensions();
+		expect(call![1]).toEqual({
+			p_allocation_id: f.binding.allocationId,
+			p_provider_id: f.binding.providerId,
+			p_policy_sha256: f.binding.providerPolicySha256,
+			p_instance_sha256: f.request.startup.instanceSha256,
+			p_machine_id_sha256: f.policy.host.machineIdSha256,
+			p_transition_id: f.request.transitionId,
+		});
+		expect(f.submit.mock.invocationCallOrder[0]!).toBeLessThan(f.registry.mock.invocationCallOrder.at(-1)!);
+		f.file.mockRejectedValue(new Error("stopped guest has no file API"));
+		await expect(f.run()).resolves.toMatchObject({ state: "powered_off" });
+		expect(f.suspensions()).toHaveLength(2);
+		expect(f.suspensions()[1]![1]).toEqual(call![1]);
+		expect(f.submit).toHaveBeenCalledOnce();
+	});
+	it("keeps the slot through a reboot", async () => {
+		const f = await officePowerOffWorkerFixture(roots, "reboot");
+		await expect(f.run()).resolves.toMatchObject({ state: "powered_off" });
+		expect(f.suspensions()).toHaveLength(0);
+	});
+	it("keeps the slot when a resume was already requested", async () => {
+		const f = await fixture();
+		f.suspension.value = { state: "kept", reason: "RESUME_PENDING" };
+		await expect(f.run()).resolves.toMatchObject({ state: "powered_off" });
+		expect(f.suspensions()).toHaveLength(1);
+	});
+	it.each([
+		["lost reply", new Error("suspension reply lost")],
+		[
+			"foreign receipt",
+			{
+				state: "suspended",
+				allocationId: "36000000-0000-4000-8000-000000000099",
+				nodeId: "36000000-0000-4000-8000-000000000010",
+				suspendedAt: "2026-09-23T15:00:00Z",
+			},
+		],
+		["unknown reason", { state: "kept", reason: "SOMETHING_ELSE" }],
+	])(
+		"does not report powered off without a suspension receipt (%s), and completes on the next pass",
+		async (_, value) => {
+			const f = await fixture();
+			f.suspension.value = value;
+			await expect(f.run()).rejects.toThrow("OFFICE_POWER_OFF_UNCONFIRMED");
+			expect(await readFile(f.paths.done, "utf8")).toContain("power-off-completion");
+			f.suspension.value = {
+				state: "suspended",
+				allocationId: f.binding.allocationId,
+				nodeId: "36000000-0000-4000-8000-000000000010",
+				suspendedAt: "2026-09-23T15:00:00Z",
+			};
+			await expect(f.run()).resolves.toMatchObject({ state: "powered_off" });
+			expect(f.submit).toHaveBeenCalledOnce();
+		},
+	);
 	it.each([true, false])("never retries an unknown VM dispatch (stopped: %s)", async (physical) => {
 		const f = await fixture();
 		f.state.physical = physical;

@@ -6,6 +6,7 @@ import type {
 import type { WebNativeSubscription } from "../../cloud/native-subscription.ts";
 import { selectSessionExecutionSponsor } from "../../cloud/session-input.ts";
 import { button, h, replace } from "../../ui/dom.ts";
+import { t } from "../../ui/preferences.ts";
 import type { CompanyController } from "../company.ts";
 
 /** Unknown windows sort after measured allowance. Expired windows no longer
@@ -169,12 +170,12 @@ export class SessionExecutionView {
 		if (connections.status === "fulfilled") this.#observed = connections.value;
 		else {
 			this.#observed = undefined;
-			this.#error = "Model accounts are unavailable. Refresh to try again.";
+			this.#error = t("Model accounts are unavailable. Refresh to try again.");
 		}
 		if (provenance.status === "fulfilled") this.#provenance = provenance.value;
 		else {
 			this.#provenance = [];
-			this.#historyError = "Execution history is unavailable.";
+			this.#historyError = t("Execution history is unavailable.");
 		}
 		this.#busy = false;
 		this.#request = undefined;
@@ -199,7 +200,7 @@ export class SessionExecutionView {
 			company.sessions.find((session) => session.sessionId === this.#sessionId)?.status !== "open" ||
 			conversation.sending ||
 			conversation.retrySend ||
-			(this.#usageHydratedAt !== undefined && Date.now() - this.#usageHydratedAt < 60_000)
+			!this.#usageDue(Date.now())
 		)
 			return;
 		const request = new AbortController();
@@ -227,6 +228,25 @@ export class SessionExecutionView {
 		if (!this.#busy && !current.sending && !current.retrySend) this.#scheduleRefresh(1000);
 	}
 
+	/** Usage is asked for once per opened thread and again only once a known
+	 * reset has passed since: an idle thread never asks on a clock. Sends in
+	 * between keep the account the conversation already has. */
+	#usageDue(now: number): boolean {
+		const hydratedAt = this.#usageHydratedAt;
+		if (hydratedAt === undefined) return true;
+		return this.#resets().some((reset) => reset > hydratedAt && reset <= now);
+	}
+
+	#resets(): number[] {
+		return (this.#observed?.connections ?? [])
+			.flatMap((connection) => [
+				connection.usageLimitResetAt,
+				...(connection.providerAccountUsage?.windows.map((window) => window.resetAt) ?? []),
+			])
+			.map((reset) => Date.parse(reset ?? ""))
+			.filter((reset) => Number.isFinite(reset));
+	}
+
 	#scheduleRefresh(maxDelay = 30_000): void {
 		clearTimeout(this.#refreshTimer);
 		const company = this.#company.store.get();
@@ -238,11 +258,7 @@ export class SessionExecutionView {
 		)
 			return;
 		const now = Date.now();
-		const resets = (this.#observed?.connections ?? []).flatMap((connection) => [
-			connection.usageLimitResetAt,
-			...(connection.providerAccountUsage?.windows.map((window) => window.resetAt) ?? []),
-		]);
-		const nextReset = Math.min(...resets.map((reset) => Date.parse(reset ?? "")).filter((reset) => reset > now));
+		const nextReset = Math.min(...this.#resets().filter((reset) => reset > now));
 		const delay = Math.max(1000, Math.min(maxDelay, nextReset - now + 250));
 		this.#refreshTimer = setTimeout(() => {
 			this.#refreshTimer = undefined;
@@ -252,7 +268,6 @@ export class SessionExecutionView {
 				this.#scheduleRefresh();
 				return;
 			}
-			if (nextReset <= Date.now()) this.#usageHydratedAt = undefined;
 			void this.refresh();
 		}, delay);
 	}
@@ -345,9 +360,6 @@ export class SessionExecutionView {
 
 		replace(
 			this.el,
-			this.#busy && !conversation.retrySend
-				? h("p", { class: "muted", role: "status" }, "Checking model accounts…")
-				: null,
 			this.#error ? h("p", { class: "muted" }, this.#error) : null,
 			conversation.retrySend
 				? h(
@@ -356,10 +368,12 @@ export class SessionExecutionView {
 						h(
 							"p",
 							{ class: "muted" },
-							"Retry keeps the original model account and message request. The earlier message may already have been accepted. Starting a new request can send it again.",
+							t(
+								"Retry keeps the original model account and message request. The earlier message may already have been accepted. Starting a new request can send it again.",
+							),
 						),
 						button(
-							"Start a new message request",
+							t("Start a new message request"),
 							() => {
 								if (this.#lifetime.signal.aborted) return;
 								try {
@@ -368,7 +382,7 @@ export class SessionExecutionView {
 									else this.#choose();
 									this.#error = undefined;
 								} catch {
-									this.#error = "This conversation is unavailable for a new request.";
+									this.#error = t("This conversation is unavailable for a new request.");
 								}
 								this.#render();
 								this.#changed();
@@ -381,8 +395,10 @@ export class SessionExecutionView {
 							"p",
 							{ class: "muted" },
 							this.#observed.connections.some((connection) => remainingAllowance(connection, Date.now()) === 0)
-								? "Your model accounts have reached their usage limits. Sending resumes when an account resets."
-								: "Connect a model account in Settings → Connections to send messages.",
+								? t(
+										"Your model accounts have reached their usage limits. Sending resumes when an account resets.",
+									)
+								: t("Connect a model account in Settings → Connections to send messages."),
 						)
 					: null,
 		);

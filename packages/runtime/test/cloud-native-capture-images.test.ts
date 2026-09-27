@@ -195,17 +195,43 @@ it.each([
 	expect(f.reader.read).not.toHaveBeenCalled();
 });
 
-it("bounds total issued pixels without retaining a second pixel cache", async () => {
+it("issues screenshots past the old per-run bound without retaining a second pixel cache", async () => {
+	// Runtime v92: a run used to fail after 128 screenshots or 128 MiB of them.
 	const pixels = Buffer.alloc(8 * 1024 * 1024);
 	const large = { ...asset, bytes: pixels.length, sha256: createHash("sha256").update(pixels).digest("hex") };
 	const reader = { read: vi.fn(async () => pixels), assertReadable: async () => undefined };
 	const captures = new CloudNativeCaptureImages(reader);
-	for (let i = 0; i < 16; i++)
+	for (let i = 0; i < 17; i++)
 		await captures.issue(`call-${i}`, "envelope", { kind: "json", value: large }, new AbortController().signal);
+	expect(reader.read).toHaveBeenCalledTimes(17);
+	// The same issued result is never issued twice.
 	await expect(
-		captures.issue("call-17", "envelope", { kind: "json", value: large }, new AbortController().signal),
-	).rejects.toThrow("NATIVE_CAPTURE_BUDGET_EXCEEDED");
-	expect(reader.read).toHaveBeenCalledTimes(16);
+		captures.issue("call-0", "envelope", { kind: "json", value: large }, new AbortController().signal),
+	).rejects.toThrow("NATIVE_CAPTURE_REISSUED");
+	expect(reader.read).toHaveBeenCalledTimes(17);
+});
+
+it("checks every issued screenshot in batches the kernel accepts", async () => {
+	const pixels = Buffer.alloc(4 * 1024 * 1024, 7);
+	const sha256 = createHash("sha256").update(pixels).digest("hex");
+	const assertReadable = vi.fn(async (_assets: readonly (typeof asset)[]) => undefined);
+	const captures = new CloudNativeCaptureImages({ read: async () => pixels, assertReadable });
+	const signal = new AbortController().signal;
+	const issued: string[] = [];
+	for (let index = 0; index < 150; index++) {
+		const value = { ...asset, assetId: randomUUID(), screenId: randomUUID(), sha256, bytes: pixels.length };
+		issued.push(value.assetId);
+		await captures.issue(`call-${index}`, "envelope", { kind: "json", value }, signal);
+	}
+	await captures.assertReadable(signal);
+	const batches = assertReadable.mock.calls.map(([assets]) => assets);
+	expect(batches.flat().map((item) => item.assetId)).toEqual(issued);
+	for (const batch of batches) {
+		expect(batch.length).toBeLessThanOrEqual(128);
+		expect(batch.reduce((total, item) => total + item.bytes, 0)).toBeLessThanOrEqual(128 * 1024 * 1024);
+	}
+	// 150 screenshots of 4 MiB: 32 per batch by bytes, so five checks.
+	expect(batches).toHaveLength(5);
 });
 
 async function exchange(path: string, value: unknown): Promise<unknown> {

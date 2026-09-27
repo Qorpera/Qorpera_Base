@@ -1,0 +1,11 @@
+[Unit]
+Description=Reconcile an enrolled signed Qorpera node update
+
+[Timer]
+OnBootSec=1min
+OnUnitInactiveSec=15s
+Unit=qorpera-node-updater.service
+Persistent=false
+
+[Install]
+WantedBy=timers.target

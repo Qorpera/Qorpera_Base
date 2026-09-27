@@ -331,6 +331,17 @@ export class CompanyComputerGuestAutomation {
 		await this.#browser?.close();
 	}
 
+	/**
+	 * Drop this run's handles, preserving the shared desktop's tabs. Even a tab
+	 * this run created may now contain a member's draft or a JS-written document
+	 * while still reporting about:blank. Creation does not prove it is unused.
+	 */
+	async release(): Promise<void> {
+		this.#page = undefined;
+		this.#tabLease = undefined;
+		this.#tabIds.clear();
+	}
+
 	async perform(
 		value: CompanyComputerAction,
 		lease: CompanyComputerScreenLease,

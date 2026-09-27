@@ -7,6 +7,12 @@ import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { CLOUD_RUNTIME_ENTRY_POINTS, cloudRuntimeBundle, generateCloudRuntimeBundle, runtimeManifestText } from "./generate-cloud-runtime-bundle.mjs";
+import {
+	committedRuntimeBundle,
+	RUNTIME_BUNDLE_NOT_ENFORCED,
+	runtimeBundleEnforced,
+	runtimeBundlePackagingEnvironment,
+} from "./runtime-bundle-release-train.mjs";
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -16,12 +22,16 @@ test("serializes the bounded manifest using PostgreSQL jsonb key order", () => {
 	assert.throws(() => runtimeManifestText({ "é": true }), /Non-ASCII/);
 });
 
-test("the packaged native host embeds the same executable and policy pins as its manifest", async () => {
+test("the packaged native host embeds the same executable and policy pins as its manifest", async (t) => {
 	const output = await mkdtemp(join(tmpdir(), "qorpera-runtime-package-test-"));
 	try {
-		const expected = await generateCloudRuntimeBundle(true);
+		// A release branch must match its source. Elsewhere the committed files may
+		// lag it (release train); the package must then carry the committed pins.
+		const enforced = runtimeBundleEnforced();
+		if (!enforced) t.diagnostic(`packaged against the committed bundle: ${RUNTIME_BUNDLE_NOT_ENFORCED}`);
+		const expected = enforced ? await generateCloudRuntimeBundle(true) : await committedRuntimeBundle();
 		const packaged = spawnSync(process.execPath, ["scripts/package-ephemeral-runner.mjs", "--out", output], {
-			cwd: repository, encoding: "utf8", timeout: 60_000,
+			cwd: repository, encoding: "utf8", timeout: 60_000, env: runtimeBundlePackagingEnvironment(),
 		});
 		assert.equal(packaged.status, 0, packaged.stderr);
 		const manifest = JSON.parse(await readFile(join(output, "manifest.json"), "utf8"));
@@ -49,7 +59,12 @@ test("pins every packaged entrypoint and detects code, generated-output and arti
 		const initial = await generateCloudRuntimeBundle(false, fixture);
 		assert.equal(initial.sha256, current.sha256);
 		assert.equal(initial.sha256, createHash("sha256").update(initial.text).digest("hex"));
-		assert.deepEqual(initial.manifest.modelPolicy, { schema: "qorpera.model-reasoning/v1", effort: "low", overrides: "none" });
+		assert.deepEqual(initial.manifest.modelPolicy, {
+			schema: "qorpera.model-reasoning/v1",
+			effort: "low",
+			overrides: "routine-and-thread",
+			allowed: ["low", "medium", "high"],
+		});
 		for (const path of Object.values(CLOUD_RUNTIME_ENTRY_POINTS)) assert.match(initial.manifest.implementation[path], /^[0-9a-f]{64}$/);
 		assert.match(initial.manifest.implementation["supabase/migrations/20260828020000_runtime_wake_bus.sql"], /^[0-9a-f]{64}$/);
 		for (const path of ["packages/runtime/src/cloud-company-computer-browser-control.ts", "packages/runtime/src/cloud-company-computer-privacy.ts", "deploy/lxd-company-computer-guest/qorpera-screen-session", "deploy/lxd-company-computer-guest/qorpera-company-computer.service", "packages/runtime/src/cloud-company-computer-service-main.ts", "scripts/package-company-computer.mjs", "deploy/lxd-company-computer-guest/backdrops/qorpera-screen-pebble-00.png"]) {

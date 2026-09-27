@@ -6,6 +6,8 @@ import { ConversationView } from "../src/app/views/conversation.ts";
 import { renderRail } from "../src/app/views/shell.ts";
 import { parseStaffExecutionActivity } from "../src/cloud/parse.ts";
 import type { HostedStaffExecutionActivity } from "../src/cloud/types.ts";
+import { AGENT_LOOK, activityCaption, stateLine, statusCaption, syncCaption } from "../src/ui/agent-activity.ts";
+import { setLanguagePreference, untranslated } from "../src/ui/preferences.ts";
 import { fixture, id, profileA, session, settle, staff, stubFigureMotion, team, timestamp, userA } from "./fixtures.ts";
 
 const cleanup: (() => void)[] = [];
@@ -79,9 +81,17 @@ describe("shared agent activity", () => {
 			});
 			const indicator = f.view.el.querySelector<HTMLElement>(".thread-activity")!;
 			const label = phase === "writing" ? "Writing" : "Working";
-			expect(indicator.title).toBe(`${staff.displayName} · ${label}`);
-			expect(indicator.getAttribute("aria-label")).toBe(indicator.title);
+			const sentence = `${staff.displayName} is ${label.toLowerCase()}`;
+			expect(indicator.getAttribute("aria-label")).toBe(sentence);
+			expect(indicator.tabIndex).toBe(0);
+			expect(indicator.hasAttribute("title")).toBe(false);
+			const caption = indicator.querySelector<HTMLElement>(".status-caption")!;
+			expect(caption.textContent).toBe(sentence);
+			expect(caption.getAttribute("aria-hidden")).toBe("true");
+			expect(caption.querySelector(".status-caption-name")?.textContent).toBe(staff.displayName);
+			expect(caption.querySelectorAll(".status-wave-letter")).toHaveLength(sentence.replace(/\s/g, "").length);
 			expect(f.rail.querySelector(".rail-row-copy small")?.textContent).toBe(label);
+			expect(f.rail.querySelectorAll(".rail-row-copy small .status-wave-letter")).toHaveLength(label.length);
 			expect(f.rail.querySelector(".rail-row")?.getAttribute("title")).toContain(label);
 			expect(indicator.querySelector(".bubble, .typing")).toBeNull();
 			const calls = f.mount.mock.calls.filter(([, , , , options]) => options?.identity === staff.id);
@@ -129,5 +139,81 @@ describe("shared agent activity", () => {
 			expect(parseStaffExecutionActivity([{ ...row, phase }])[0]?.phase).toBe(phase);
 		for (const phase of [undefined, null, "future-phase", { text: "private" }])
 			expect(parseStaffExecutionActivity([{ ...row, phase }])[0]?.phase).toBeUndefined();
+	});
+
+	it("waves only a live state; Needs you and roles stay still", () => {
+		expect(stateLine(AGENT_LOOK.decision, "Marketing Lead")).toBe("Needs you");
+		expect(stateLine(AGENT_LOOK.idle, "Marketing Lead")).toBe("Marketing Lead");
+		expect(stateLine(AGENT_LOOK.failed, "Marketing Lead")).toBe("Marketing Lead");
+		for (const state of ["working", "writing"] as const) {
+			const line = stateLine(AGENT_LOOK[state], "Marketing Lead") as HTMLElement;
+			expect(line.textContent).toBe(AGENT_LOOK[state].line);
+			expect(line.querySelectorAll(".status-wave-letter")).toHaveLength(7);
+		}
+	});
+
+	it("keeps every wave on one clock: later letters are delayed by the elapsed phase", () => {
+		vi.useFakeTimers();
+		try {
+			const delay = (el: Element) => Number.parseFloat((el as HTMLElement).style.getPropertyValue("--wave-delay"));
+			const first = stateLine(AGENT_LOOK.working, "") as HTMLElement;
+			vi.advanceTimersByTime(500);
+			const second = stateLine(AGENT_LOOK.working, "") as HTMLElement;
+			const a = delay(first.querySelector(".status-wave-letter")!);
+			const b = delay(second.querySelector(".status-wave-letter")!);
+			expect(((a - b - 500) % 1400) + 0).toBe(0);
+			// Letters step by 37.5 ms along the sentence, spaces counted, across the caption's parts.
+			const caption = statusCaption("Bo", " is writing");
+			const letters = [...caption.querySelectorAll(".status-wave-letter")];
+			expect(letters.map((el) => el.textContent).join("")).toBe("Boiswriting");
+			expect(delay(letters[2]!) - delay(letters[0]!)).toBeCloseTo(3 * 37.5);
+			// Showing the caption again rebuilds its letters from the clock.
+			vi.advanceTimersByTime(200);
+			syncCaption(caption);
+			const rebuilt = [...caption.querySelectorAll(".status-wave-letter")];
+			expect(rebuilt[0]).not.toBe(letters[0]);
+			expect(caption.textContent).toBe("Bo is writing");
+			expect(((delay(letters[0]!) - delay(rebuilt[0]!) - 200) % 1400) + 0).toBe(0);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("keeps keyboard focus on the thread row through a state change", async () => {
+		const f = setup();
+		f.company.store.set({ activity: [working] });
+		f.view.update();
+		await settle();
+		const row = f.view.el.querySelector<HTMLElement>(".thread-activity")!;
+		row.focus();
+		expect(document.activeElement).toBe(row);
+		f.company.store.set({ activity: [{ ...working, phase: "writing" }] });
+		f.view.update();
+		await settle();
+		const next = f.view.el.querySelector<HTMLElement>(".thread-activity")!;
+		expect(next).not.toBe(row);
+		expect(next.getAttribute("aria-label")).toBe(`${staff.displayName} is writing`);
+		expect(document.activeElement).toBe(next);
+	});
+});
+
+describe("agent activity in Danish", () => {
+	it("says the whole sentence and sets the name apart where Danish puts it", () => {
+		setLanguagePreference("da");
+		try {
+			const { label, caption } = activityCaption(AGENT_LOOK.working, "Nova");
+			expect(label).toBe("Nova arbejder");
+			expect([...caption.children].map((part) => [part.className, (part as HTMLElement).dataset.text])).toEqual([
+				["status-caption-name", "Nova"],
+				["status-caption-detail", " arbejder"],
+			]);
+			expect((stateLine(AGENT_LOOK.working, "Marketing Lead") as HTMLElement).textContent).toBe("Arbejder");
+			expect(stateLine(AGENT_LOOK.decision, "Marketing Lead")).toBe("Venter på dig");
+			// Each word is translated once, from its English key.
+			expect(untranslated()).toEqual([]);
+		} finally {
+			setLanguagePreference("system");
+			localStorage.clear();
+		}
 	});
 });

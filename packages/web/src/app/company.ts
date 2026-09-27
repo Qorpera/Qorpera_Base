@@ -1,7 +1,16 @@
 import type { NativeExecutionConnections } from "@qorpera/cloud-client/cloud-native-subscription-control";
 import type { CloudApi } from "../cloud/api.ts";
 import { CloudRpcError, describeError } from "../cloud/client.ts";
+import type { CodingSession, CodingSessionRead } from "../cloud/coding-session.ts";
+import {
+	type EmailDraftAction,
+	EmailDraftClient,
+	type EmailDraftContent,
+	type EmailDraftEditor,
+	type EmailDraftState,
+} from "../cloud/email-drafts.ts";
 import { type GroupChatDetails, listGroupChatDetails, readGroupChatDetails } from "../cloud/group-details.ts";
+import type { InteractionAnswer, InteractionOutcome, InteractionRequest } from "../cloud/interactions.ts";
 import { buildCompanyHierarchy, type CompanyHierarchy, type HostedCompanyOrganization } from "../cloud/organization.ts";
 import { UUID_PATTERN } from "../cloud/parse.ts";
 import {
@@ -9,14 +18,17 @@ import {
 	type RealtimeResource,
 	type RealtimeSubscription,
 	subscribeProfileRealtime,
+	subscribeSidebarRealtime,
 } from "../cloud/realtime.ts";
-import { sessionAttachmentIssue } from "../cloud/session-attachments.ts";
+import type { ActionReviewAnswer } from "../cloud/review-rules.ts";
+import { sessionAttachmentProblem } from "../cloud/session-attachments.ts";
 import {
 	type RoomMessageTarget,
 	type SessionExecutionSponsor,
 	type SessionInputWriter,
 	selectSessionExecutionSponsor,
 } from "../cloud/session-input.ts";
+import { applySidebarRequest, type CompanySidebar, type SidebarRequest } from "../cloud/sidebar.ts";
 import { projectTranscript, type TranscriptProjection } from "../cloud/transcript.ts";
 import type {
 	HostedProfile,
@@ -26,8 +38,11 @@ import type {
 	HostedSessionEvent,
 	HostedStaffAgent,
 	HostedStaffExecutionActivity,
+	JsonValue,
 	PendingSessionInput,
 } from "../cloud/types.ts";
+import { attachmentProblemText } from "../ui/attachments.ts";
+import { t } from "../ui/preferences.ts";
 import { debounce, Store } from "./state.ts";
 
 /* One controller per open company. It holds the canonical projections the
@@ -65,6 +80,42 @@ function stillFailed(
 const RECOVERY_RECHECK_MS = 25_000;
 const RECOVERY_RETRY_MS = 5_000;
 
+/** Why the cloud refused a sidebar change, in the member's words. Only the sidebar
+ * RPC's own refusals are shown as they are: they are written for members ("A section
+ * called … already exists"). A network or server failure never shows its text. */
+function sidebarRefusal(error: unknown, request: SidebarRequest): string {
+	if (error instanceof CloudRpcError) {
+		const shared = ["create_section", "rename_section", "delete_section", "move_agent"].includes(request.action);
+		if (error.code === "42501" && shared)
+			return t("Only owners, admins and contributors can change the company's sections.");
+		const own = ["23505", "P0002", "54000", "22023"].includes(error.code ?? "");
+		if (own && error.message.trim() && !/request is invalid/i.test(error.message)) return error.message.trim();
+	}
+	return t("The sidebar could not be changed. Try again.");
+}
+
+/** Why the cloud would not try a run again, in the member's words. */
+function retryRefusal(error: unknown): string {
+	const message = error instanceof Error ? error.message : "";
+	if (/author of the post/i.test(message)) return t("Only the person who wrote the message can try it again.");
+	if (/sponsor|model account/i.test(message)) return t("Select an active model account, then try again.");
+	// Only an operator pauses a company, briefly, while the runtime is updated.
+	if (/paused/i.test(message)) return t("Agents are paused for a moment while Qorpera updates. Try again shortly.");
+	if (/already resolved/i.test(message)) return t("This run was already handled.");
+	if (/already answered|durable operation|open proposal/i.test(message))
+		return t("This run already did part of its work, so it cannot be repeated. Send the message again instead.");
+	return t("It could not be tried again. Send the message again instead.");
+}
+
+/** Why the cloud would not take a card's answer, in the member's words. */
+function answerRefusal(error: unknown): string {
+	const message = error instanceof Error ? error.message : "";
+	// In an agent's thread an answer runs the agent on the member's own model account.
+	if (/sponsor|model account/i.test(message)) return t("Select an active model account, then try again.");
+	if (/paused/i.test(message)) return t("Agents are paused for a moment while Qorpera updates. Try again shortly.");
+	return describeError(error);
+}
+
 export interface CompanyState {
 	profile: HostedProfile;
 	team?: HostedProfileTeam;
@@ -72,6 +123,7 @@ export interface CompanyState {
 	sessions: HostedSession[];
 	sessionsError?: string;
 	groups?: Record<string, GroupChatDetails>;
+	/** Kept for diagnostics only; the rail does not show it (see shell.ts). */
 	groupsError?: string;
 	organization?: HostedCompanyOrganization;
 	organizationState: Deployment;
@@ -80,6 +132,19 @@ export interface CompanyState {
 	activity: HostedStaffExecutionActivity[];
 	/** Details of the failed runs in `activity`, by run id. */
 	recoveries: Record<string, HostedRunRecovery>;
+	/** Try again in flight or refused, by run id. */
+	runRetries?: Record<string, { pending: boolean; error?: string }>;
+	/** The deployed cloud cannot retry a post into a room yet (no qorpera_retry_room_delivery). */
+	roomRetryUnavailable?: boolean;
+	/** Failed runs a member dismissed here, by run id. They stop standing in for the
+	 * agent at once; the cloud records the same acknowledgment durably. */
+	acknowledgedRuns?: Record<string, true>;
+	/** The rail's sections (the company's) and pins and hidden agents (this member's). */
+	sidebar?: CompanySidebar;
+	/** The deployed cloud has no sidebar yet: the rail shows no sections, pins or hiding. */
+	sidebarUnavailable?: boolean;
+	/** A rail action (a sidebar change, a rename, a delete) that did not happen, in the member's words. */
+	railError?: string;
 	realtime: RealtimePhase;
 	realtimeError?: string;
 	loading: boolean;
@@ -109,6 +174,10 @@ export interface ConversationState {
 		executionSponsor: SessionExecutionSponsor;
 		roomTarget?: RoomMessageTarget;
 	};
+	/** The coding sessions the agent dispatched from this conversation (Order 9),
+	 * oldest first; absent until the first listing, empty when the cloud has none
+	 * or does not carry coding sessions yet. */
+	codingSessions?: CodingSession[];
 	/** Inputs this browser appended that the cloud has not listed back yet. */
 	optimistic: {
 		clientInputId: string;
@@ -118,6 +187,30 @@ export interface ConversationState {
 		createdAt: string;
 		authorUserId: string;
 	}[];
+	/** Card answers this browser sent that the cloud has not listed back yet, by interaction id. */
+	interactionAnswers?: Record<string, InteractionAnswer>;
+	/** What went wrong with the last card answer, in the member's words. */
+	interactionError?: string;
+}
+
+/** Drop optimistic card answers once the projection carries them, or once their
+ * input failed: that answer never reached the agent, so the card is open again. */
+function reconcileInteractionAnswers(
+	answers: Record<string, InteractionAnswer> | undefined,
+	projection: TranscriptProjection,
+	pending: readonly PendingSessionInput[],
+): Record<string, InteractionAnswer> | undefined {
+	if (!answers) return undefined;
+	const settled = new Set(
+		projection.items.flatMap((item) => (item.kind === "interaction" && item.answer ? [item.id.toLowerCase()] : [])),
+	);
+	const failed = new Set(pending.flatMap((input) => (input.status === "failed" ? [input.inputId] : [])));
+	const kept = Object.fromEntries(
+		Object.entries(answers).filter(
+			([id, answer]) => !settled.has(id) && !(answer.inputId && failed.has(answer.inputId)),
+		),
+	);
+	return Object.keys(kept).length ? kept : undefined;
 }
 
 function reconcileOptimistic(state: Pick<ConversationState, "optimistic" | "pending" | "events">) {
@@ -145,6 +238,25 @@ export function isAgentThreadSession(session: HostedSession): boolean {
 		scope.agentThread === true
 	);
 }
+/** Who answers a card, as the kernel's qorpera_answer_interaction checks it: the
+ * member a private conversation belongs to, the creator of a company one, and in
+ * an agent's shared thread the member the card was raised for, whom the card's
+ * event names as its actor. Nobody in a group chat: an answer there reaches no
+ * single agent (bundle v105). */
+export function answersInteraction(session: HostedSession, actorUserId: string, userId: string): boolean {
+	if (session.status !== "open") return false;
+	if (isAgentThreadSession(session)) return actorUserId === userId;
+	if (session.executionScope && "roomId" in session.executionScope) return false;
+	return session.audience.kind === "member_private"
+		? session.audience.userId === userId
+		: session.createdByUserId === userId;
+}
+/** The transcript of two agents' messages to each other (contract 14.6): a
+ * company-audience session bound to the pair, view-only, opened from a chip. */
+export function isAgentPairSession(session: HostedSession | undefined): boolean {
+	const pair = session?.executionScope?.agentPair;
+	return !session?.staffAgentId && Array.isArray(pair) && pair.length === 2;
+}
 export function isPrimaryStaffSession(session: HostedSession): boolean {
 	if (!session.staffAgentId || session.status !== "open" || session.audience.kind !== "company") return false;
 	if (isAgentThreadSession(session)) return true;
@@ -156,14 +268,20 @@ export class CompanyController {
 	readonly store: Store<CompanyState>;
 	readonly conversations = new Map<string, Store<ConversationState>>();
 	readonly #api: CloudApi;
+	#emailDraftClient: EmailDraftClient | undefined;
+	readonly #emailDraftEditors = new Map<string, EmailDraftEditor>();
 	readonly #userId: string;
 	readonly #writeInput: SessionInputWriter;
 	#realtime: RealtimeSubscription | undefined;
+	#sidebarRealtime: RealtimeSubscription | undefined;
+	/** Sidebar changes sent and not yet answered; each answer carries the whole sidebar. */
+	#sidebarPending = 0;
+	#sidebarWrites: Promise<unknown> = Promise.resolve();
 	#poll: ReturnType<typeof setInterval> | undefined;
 	#openSessionId: string | undefined;
 	#stopped = false;
 	readonly #abort = new AbortController();
-	readonly #versions = { team: 0, staff: 0, sessions: 0, groups: 0, organization: 0, activity: 0 };
+	readonly #versions = { team: 0, staff: 0, sessions: 0, groups: 0, organization: 0, activity: 0, sidebar: 0 };
 	#polling = false;
 	readonly #invalidations = new Set<(resource: RealtimeResource) => void>();
 	readonly #conversationLoads = new Map<string, { promise: Promise<void>; repeat: boolean }>();
@@ -179,7 +297,7 @@ export class CompanyController {
 		this.#writeInput =
 			writeInput ??
 			(async () => {
-				throw new Error("Sponsored message transport is unavailable.");
+				throw new Error(t("Sponsored message transport is unavailable."));
 			});
 		this.store = new Store<CompanyState>({
 			profile,
@@ -224,9 +342,11 @@ export class CompanyController {
 		if (this.#stopped) return;
 		this.#stopped = true;
 		this.#abort.abort();
+		this.#emailDraftEditors.clear();
 		for (const store of this.conversations.values())
 			store.set({ draft: "", attachments: [], retrySend: undefined, executionSponsor: undefined });
 		this.#realtime?.stop();
+		this.#sidebarRealtime?.stop();
 		if (this.#poll) clearInterval(this.#poll);
 		clearTimeout(this.#watching);
 		this.#invalidations.clear();
@@ -251,6 +371,7 @@ export class CompanyController {
 			this.refreshSessions(),
 			this.refreshOrganization(),
 			this.refreshActivity(),
+			this.refreshSidebar(),
 		]);
 		await this.refreshGroups();
 		this.store.set({ loading: false });
@@ -343,6 +464,76 @@ export class CompanyController {
 		}
 	}
 
+	async refreshSidebar(): Promise<void> {
+		if (this.#stopped || this.store.get().sidebarUnavailable) return;
+		const version = ++this.#versions.sidebar;
+		try {
+			const sidebar = await this.#api.readCompanySidebar(this.profile.profileId);
+			// A change in flight answers with a newer sidebar than this read.
+			if (this.#stopped || version !== this.#versions.sidebar || this.#sidebarPending) return;
+			this.store.set({ sidebar });
+			// Its own channel: a cloud without the sidebar tables must not degrade the company's hints.
+			this.#sidebarRealtime ??= subscribeSidebarRealtime(this.#api.cloud, this.profile.profileId, () =>
+				this.#onHint("sidebar"),
+			);
+		} catch (error) {
+			if (this.#stopped || version !== this.#versions.sidebar) return;
+			if (error instanceof CloudRpcError && error.missing)
+				this.store.set({ sidebarUnavailable: true, sidebar: undefined });
+			// Otherwise the rail keeps what it showed: the sidebar arranges agents, it holds no content.
+		}
+	}
+
+	/** The agents the sidebar arranges, in roster order: active, never the Co-Founder. */
+	sidebarRoster(): string[] {
+		const cofounder = this.cofounderId();
+		return this.store
+			.get()
+			.staff.filter((agent) => agent.employmentStatus === "active" && agent.id !== cofounder)
+			.map((agent) => agent.id);
+	}
+
+	cofounderId(): string | undefined {
+		const state = this.store.get();
+		return (
+			(state.organization ? this.staffById(state.organization.cofounder.staffAgentId)?.id : undefined) ??
+			state.staff.find((agent) => agent.employmentStatus === "active" && agent.templateId === "co-founder")?.id
+		);
+	}
+
+	/** Draws a sidebar change at once and sends it; changes go one at a time, in order.
+	 * A refusal puts back what the cloud has and says why. */
+	async changeSidebar(request: SidebarRequest): Promise<boolean> {
+		const current = this.store.get();
+		if (this.#stopped || !current.sidebar || current.sidebarUnavailable) return false;
+		this.store.set({
+			sidebar: applySidebarRequest(current.sidebar, request, this.sidebarRoster()),
+			railError: undefined,
+		});
+		this.#sidebarPending++;
+		const write = this.#sidebarWrites.then(() => this.#api.manageCompanySidebar(this.profile.profileId, request));
+		this.#sidebarWrites = write.catch(() => {});
+		try {
+			const sidebar = await write;
+			this.#sidebarPending--;
+			if (this.#stopped) return false;
+			++this.#versions.sidebar;
+			if (!this.#sidebarPending) this.store.set({ sidebar });
+			return true;
+		} catch (error) {
+			this.#sidebarPending--;
+			if (this.#stopped) return false;
+			this.store.set({ railError: sidebarRefusal(error, request) });
+			if (!this.#sidebarPending) await this.refreshSidebar();
+			return false;
+		}
+	}
+
+	/** Says in the rail why a rail action did not happen; undefined clears it. */
+	reportRailError(text: string | undefined): void {
+		if (!this.#stopped) this.store.set({ railError: text });
+	}
+
 	async refreshActivity(): Promise<void> {
 		if (this.#stopped) return;
 		const version = ++this.#versions.activity;
@@ -351,6 +542,7 @@ export class CompanyController {
 			if (this.#stopped || version !== this.#versions.activity) return;
 			this.store.set((state) => ({ activity, recoveries: stillFailed(state.recoveries, activity) }));
 			if (activity.some((item) => item.activity !== "needs_attention")) this.#watchWork(6_000);
+			this.#settleStops();
 			void this.#readRecoveries(activity);
 		} catch {
 			/* Activity is an indicator; its absence must not block the company. */
@@ -395,12 +587,33 @@ export class CompanyController {
 		}
 		const known = this.store.get().recoveries;
 		const changed = read.filter((recovery) => JSON.stringify(known[recovery.runId]) !== JSON.stringify(recovery));
-		if (!changed.length) return;
-		this.store.set((state) => {
-			const recoveries = { ...state.recoveries };
-			for (const recovery of changed) recoveries[recovery.runId] = recovery;
-			return { recoveries: stillFailed(recoveries, state.activity) };
-		});
+		if (changed.length)
+			this.store.set((state) => {
+				const recoveries = { ...state.recoveries };
+				for (const recovery of changed) recoveries[recovery.runId] = recovery;
+				return { recoveries: stillFailed(recoveries, state.activity) };
+			});
+		this.#settleStops();
+	}
+
+	/* A run a member stopped is no failure. A cloud before 20260926192436 still lists
+	 * a stop, ranked above the agent's live work, which it then hides (and that work's
+	 * Stop with it). Once the stop's details show it left no decision, a member who can
+	 * write acknowledges it for the company, and the live work shows again. A newer
+	 * cloud lists a stop only while its proposal waits, so this finds nothing there. A
+	 * refused acknowledgment is tried again on a later activity read. */
+	#settleStops(): void {
+		const { activity, recoveries, acknowledgedRuns, team, accessLost } = this.store.get();
+		if (!team?.capabilities.write || accessLost) return;
+		for (const row of activity) {
+			const recovery = recoveries[row.runId];
+			if (row.jobStatus !== "cancelled" || !isFailedRun(row) || !recovery || recovery.proposalId) continue;
+			if (acknowledgedRuns?.[row.runId]) continue;
+			void this.dismissFailedRun(row.runId, { refresh: false }).then(
+				() => this.refreshActivity(),
+				() => undefined,
+			);
+		}
 	}
 
 	/** The next activity read asks again for a run's details. */
@@ -425,13 +638,13 @@ export class CompanyController {
 				session.profileId !== this.profile.profileId ||
 				session.environmentId !== this.profile.environmentId
 			)
-				throw new Error("This group chat is no longer available.");
+				throw new Error(t("This group chat is no longer available."));
 			return session;
 		};
 		const session = current();
 		const details = await readGroupChatDetails(this.#api.cloud, session, signal);
 		if (current().executionScope?.roomId !== session.executionScope?.roomId)
-			throw new Error("This group chat has changed. Open its details again.");
+			throw new Error(t("This group chat has changed. Open its details again."));
 		const previous = this.store.get().groups?.[details.roomId];
 		const latest =
 			previous &&
@@ -544,12 +757,13 @@ export class CompanyController {
 	}
 
 	memberName(userId: string | undefined): string {
-		if (!userId) return "Member";
-		if (userId === this.#userId) return "You";
-		return this.store.get().team?.members.find((member) => member.userId === userId)?.displayName ?? "Member";
+		if (!userId) return t("Member");
+		if (userId === this.#userId) return t("You");
+		return this.store.get().team?.members.find((member) => member.userId === userId)?.displayName ?? t("Member");
 	}
 
-	activityFor(staffAgentId: string | undefined): HostedStaffExecutionActivity | undefined {
+	/** The agent's newest run as the server reports it, settled or not. */
+	#newestActivity(staffAgentId: string | undefined): HostedStaffExecutionActivity | undefined {
 		if (!staffAgentId) return undefined;
 		return this.store
 			.get()
@@ -557,37 +771,157 @@ export class CompanyController {
 			.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
 	}
 
+	activityFor(staffAgentId: string | undefined): HostedStaffExecutionActivity | undefined {
+		const row = this.#newestActivity(staffAgentId);
+		if (!row || !isFailedRun(row)) return row;
+		const state = this.store.get();
+		const recovery = state.recoveries[row.runId];
+		// An open proposal is a decision, not a failure, and stays until it is decided.
+		if (recovery?.proposalId) return row;
+		// A dismissed failure is settled for this member even before the cloud's next
+		// activity read; the agent reads as idle until newer work is reported. A run a
+		// member stopped is no failure at all: once its details show it left no
+		// decision, it is settled too (a cloud before 20260926192436 still lists it).
+		return state.acknowledgedRuns?.[row.runId] || (row.jobStatus === "cancelled" && recovery) ? undefined : row;
+	}
+
 	/** What the member sees of an agent's execution. A queued run is already the
 	 * agent's work from the member's side of the screen. needs_attention is either
 	 * a decision (a run's Company File proposal is open) or a run that did not
 	 * finish. The server reports one run per agent and ranks an undismissed failure
-	 * above newer work, so "failed" stands until the member dismisses it. */
+	 * above newer work, so "failed" stands until the member dismisses it. A run a
+	 * member stopped (every cancelled job is one) is never "failed": the server
+	 * lists it only while its proposal waits, below all of the agent's work. */
 	agentState(staffAgentId: string | undefined): AgentState {
 		const row = this.activityFor(staffAgentId);
 		if (!row) return "idle";
 		if (row.activity !== "needs_attention")
 			return row.jobStatus === "leased" && row.phase === "writing" ? "writing" : "working";
 		if (!isFailedRun(row)) return "decision";
-		return this.store.get().recoveries[row.runId]?.proposalId ? "decision" : "failed";
+		return row.jobStatus === "cancelled" || this.store.get().recoveries[row.runId]?.proposalId
+			? "decision"
+			: "failed";
 	}
 
 	failedRunFor(staffAgentId: string | undefined): FailedRun | undefined {
 		const row = this.activityFor(staffAgentId);
 		if (!row || !isFailedRun(row)) return undefined;
 		const recovery = this.store.get().recoveries[row.runId];
+		// A stopped run's line only ever asks for its decision, so it waits for the details that name it.
+		if (row.jobStatus === "cancelled" && !recovery?.proposalId) return undefined;
 		return recovery ? { activity: row, recovery } : { activity: row };
 	}
 
-	/** The run stops standing in for the agent's state; the next activity read shows what is left. */
-	async dismissFailedRun(runId: string): Promise<void> {
-		if (this.#stopped) return;
+	/** Whether Try again can be offered for this run. A session turn is re-queued by the
+	 * recovery RPC; a post into a room needs qorpera_retry_room_delivery (20260920080000).
+	 * Routine and agent wakes, and proposal reviews, are not the member's to repeat, and
+	 * neither is a run a member stopped: to repeat the message, they send it again. */
+	canRetryFailedRun(failed: FailedRun): boolean {
+		const state = this.store.get();
+		if (!state.team?.capabilities.write || state.accessLost || failed.recovery?.proposalId) return false;
+		if (failed.activity.jobStatus === "cancelled") return false;
+		if ((failed.recovery?.unsettledOperations ?? 0) > 0) return false;
+		if (failed.activity.sourceKind === "session_turn") return true;
+		return failed.activity.sourceKind === "room_delivery" && !state.roomRetryUnavailable;
+	}
+
+	/** Try again. The member's message stays as it is; the cloud runs it once more on
+	 * the model account selected in this conversation. */
+	async retryFailedRun(runId: string, sessionId: string): Promise<void> {
+		if (this.#stopped || this.store.get().runRetries?.[runId]?.pending) return;
+		const failed = this.store.get().activity.find((row) => row.runId === runId);
+		if (!failed) return;
+		const mark = (value: { pending: boolean; error?: string } | undefined) => {
+			const runRetries = { ...(this.store.get().runRetries ?? {}) };
+			if (value) runRetries[runId] = value;
+			else delete runRetries[runId];
+			this.store.set({ runRetries });
+		};
+		mark({ pending: true });
 		try {
-			await this.#api.discardFailedRun(runId);
+			if (failed.sourceKind === "session_turn") await this.#api.retryFailedRun(runId);
+			else {
+				const sponsor = this.conversation(sessionId, false).get().executionSponsor;
+				if (!sponsor) {
+					mark({ pending: false, error: t("Select an active model account, then try again.") });
+					return;
+				}
+				await this.#api.retryRoomDelivery(runId, sponsor.sponsorBindingId, sponsor.sponsorVersion);
+			}
+			mark(undefined);
+		} catch (error) {
+			if (this.#stopped) return;
+			if (error instanceof CloudRpcError && error.missing) {
+				// The web is ahead of the deployed cloud. Say so once and stop offering it.
+				mark({ pending: false, error: t("Trying again is not available yet. Send the message again instead.") });
+				this.store.set({ roomRetryUnavailable: true });
+			} else mark({ pending: false, error: retryRefusal(error) });
 		} finally {
-			// Refused or not, read again: someone may have settled the run first.
+			// Released or refused: someone may have settled the run first.
 			this.#recheckRecovery(runId);
 			await this.refreshActivity();
 		}
+	}
+
+	/** Dismiss: the run stops standing in for the agent's state, here at once and in
+	 * the cloud durably, so it does not return on reload or on another device. The
+	 * cloud acknowledges any failed run, including one whose durable outcome is still
+	 * unknown; a cloud without that action falls back to discard where it can. */
+	async dismissFailedRun(runId: string, options: { refresh?: boolean } = {}): Promise<void> {
+		if (this.#stopped) return;
+		const mark = (acknowledged: boolean) =>
+			this.store.set((state) => {
+				const acknowledgedRuns = { ...(state.acknowledgedRuns ?? {}) };
+				if (acknowledged) acknowledgedRuns[runId] = true;
+				else delete acknowledgedRuns[runId];
+				return { acknowledgedRuns };
+			});
+		mark(true);
+		// A member known to lack write access hides the card for this session only;
+		// acknowledging needs write access.
+		const { team, accessLost } = this.store.get();
+		if ((team && !team.capabilities.write) || accessLost) return;
+		try {
+			await this.#api.acknowledgeFailedRun(runId);
+		} catch (error) {
+			if (this.#stopped) return;
+			if (error instanceof CloudRpcError && error.status !== 401 && error.status !== 403) {
+				// Older cloud: try the discard it knows; a refused discard changes nothing,
+				// and the dismissal stays local for this session.
+				await this.#api.discardFailedRun(runId).catch(() => undefined);
+			} else {
+				// Nothing reached the cloud: the failure is not settled, so show it again.
+				mark(false);
+				throw error;
+			}
+		} finally {
+			if (!this.#stopped && options.refresh !== false) {
+				// Refused or not, read again: someone may have settled the run first.
+				this.#recheckRecovery(runId);
+				await this.refreshActivity();
+			}
+		}
+	}
+
+	/** A new message supersedes the agent's last failure: dismiss it on the member's behalf. */
+	#dismissFailureFor(sessionId: string): void {
+		const state = this.store.get();
+		const session = state.sessions.find((item) => item.sessionId === sessionId);
+		const row = this.#newestActivity(session?.staffAgentId);
+		const recovery = row && isFailedRun(row) ? state.recoveries[row.runId] : undefined;
+		// Only a failure whose details are known and that left no decision behind; a
+		// run with an open proposal is the member's to decide, not to dismiss by sending.
+		// A stop reads as settled already, but a cloud before 20260926192436 still ranks
+		// it above the new message's run, so it is dismissed the same way.
+		if (
+			row &&
+			recovery &&
+			row.sourceKind !== "proposal_review" &&
+			!recovery.proposalId &&
+			!state.acknowledgedRuns?.[row.runId]
+		)
+			// sendPrompt reads activity again right after; no second read here.
+			void this.dismissFailedRun(row.runId, { refresh: false }).catch(() => undefined);
 	}
 
 	primarySessionFor(staffAgentId: string): HostedSession | undefined {
@@ -598,7 +932,7 @@ export class CompanyController {
 	/** The agent's shared thread (2026-09-17 amendment): one conversation every
 	 * member sees, bound to the agent's room by the kernel. */
 	async openStaffConversation(agent: HostedStaffAgent): Promise<string> {
-		if (this.#stopped) throw new Error("This company is no longer open.");
+		if (this.#stopped) throw new Error(t("This company is no longer open."));
 		const existing = this.primarySessionFor(agent.id);
 		if (existing) return existing.sessionId;
 		const thread = await this.#api.agentThread(this.profile.environmentId, agent.id);
@@ -608,31 +942,32 @@ export class CompanyController {
 
 	/** The Co-Founder's shared thread; there is no member-private conversation. */
 	async openCofounderConversation(): Promise<{ sessionId?: string; reason?: string }> {
-		if (this.#stopped) return { reason: "This company is no longer open." };
+		if (this.#stopped) return { reason: t("This company is no longer open.") };
 		const { organization, organizationState, team, sessions } = this.store.get();
 		if (organizationState === "not-deployed") {
 			return {
-				reason:
+				reason: t(
 					"The organization kernel (Order 0) is not deployed on this cloud yet, so there is no Co-Founder home here.",
+				),
 			};
 		}
 		if (!organization)
 			return {
-				reason: "This company has no Co-Founder yet. The cloud seeds one when Order 0 bootstraps the company.",
+				reason: t("This company has no Co-Founder yet. The cloud seeds one when Order 0 bootstraps the company."),
 			};
 		if (organization.cofounder.memberSessionId) return { sessionId: organization.cofounder.memberSessionId };
 		const thread = sessions.find(
 			(session) => session.staffAgentId === organization.cofounder.staffAgentId && isAgentThreadSession(session),
 		);
 		if (thread) return { sessionId: thread.sessionId };
-		if (!team?.capabilities.read) return { reason: "This company is not readable." };
+		if (!team?.capabilities.read) return { reason: t("This company is not readable.") };
 		try {
 			const handle = await this.#api.agentThread(this.profile.environmentId, organization.cofounder.staffAgentId);
 			await this.refreshSessions();
 			return { sessionId: handle.sessionId };
 		} catch (error) {
 			if (error instanceof CloudRpcError && error.missing) {
-				return { reason: "Agent threads are not deployed on this cloud yet." };
+				return { reason: t("Agent threads are not deployed on this cloud yet.") };
 			}
 			return { reason: describeError(error) };
 		}
@@ -691,7 +1026,7 @@ export class CompanyController {
 						if (!events.some((existing) => existing.sequence === event.sequence)) events.push(event);
 					if (page.length < EVENT_PAGE) break;
 					const next = page[page.length - 1]?.sequence ?? after;
-					if (next <= after) throw new Error("The transcript cursor did not advance.");
+					if (next <= after) throw new Error(t("The transcript cursor did not advance."));
 					after = next;
 					store.set({ events: [...events], projection: projectTranscript(events, store.get().pending) });
 				}
@@ -703,24 +1038,68 @@ export class CompanyController {
 					pending.push(...page.items);
 					if (!page.hasMore) break;
 					if (page.nextAfterPosition <= position || !page.items.length)
-						throw new Error("The input cursor did not advance.");
+						throw new Error(t("The input cursor did not advance."));
 					position = page.nextAfterPosition;
 				}
 				const optimistic = reconcileOptimistic({ optimistic: store.get().optimistic, pending, events });
+				const projection = projectTranscript(events, pending);
+				// The listing is optional: a cloud without Order 9 answers with a missing
+				// RPC, and a refused or failed listing keeps what the thread already shows.
+				let codingSessions = store.get().codingSessions;
+				try {
+					codingSessions = await this.#api.listCodingSessions(sessionId);
+				} catch {
+					codingSessions ??= [];
+				}
+				if (this.#stopped) return;
 				store.set({
 					events,
 					pending,
-					projection: projectTranscript(events, pending),
+					projection,
 					loading: false,
 					complete: true,
 					error: undefined,
 					optimistic,
+					interactionAnswers: reconcileInteractionAnswers(store.get().interactionAnswers, projection, pending),
+					codingSessions,
 				});
 			} catch (error) {
 				store.set({ loading: false, complete: false, error: describeError(error) });
 				return;
 			}
 		} while (request.repeat && !this.#stopped);
+	}
+
+	// Coding sessions: the thread element follows one session's stream itself; the
+	// owner's answer and delegation go through here so the listing stays current.
+
+	readCodingSession(workerId: string, afterEvent = 0): Promise<CodingSessionRead> {
+		return this.#api.readCodingSession(workerId, afterEvent);
+	}
+
+	async answerCodingSession(
+		sessionId: string,
+		workerId: string,
+		text: string,
+		clientRequestId: string,
+	): Promise<void> {
+		this.#mergeCodingSession(sessionId, await this.#api.answerCodingSession(workerId, text, clientRequestId));
+	}
+
+	async delegateCodingSession(sessionId: string, workerId: string, clientRequestId: string): Promise<void> {
+		this.#mergeCodingSession(sessionId, await this.#api.delegateCodingSession(workerId, clientRequestId));
+	}
+
+	#mergeCodingSession(sessionId: string, session: CodingSession): void {
+		const store = this.conversations.get(sessionId);
+		if (!store) return;
+		const current = store.get().codingSessions ?? [];
+		const merged = current.some((item) => item.workerId === session.workerId)
+			? current.map((item) =>
+					item.workerId === session.workerId ? { ...session, isOwner: session.isOwner ?? item.isOwner } : item,
+				)
+			: [...current, session];
+		store.set({ codingSessions: merged });
 	}
 
 	assertCanSend(sessionId: string): void {
@@ -736,7 +1115,7 @@ export class CompanyController {
 			session.profileId !== this.profile.profileId ||
 			session.environmentId !== this.profile.environmentId
 		)
-			throw new Error("This conversation is not available for sending.");
+			throw new Error(t("This conversation is not available for sending."));
 	}
 
 	setExecutionSponsor(sessionId: string, observed: NativeExecutionConnections, connectionId?: string): void {
@@ -752,7 +1131,7 @@ export class CompanyController {
 		this.assertCanSend(sessionId);
 		const store = this.conversation(sessionId, false);
 		const state = store.get();
-		if (state.sending) throw new Error("Wait for message submission before starting a new request.");
+		if (state.sending) throw new Error(t("Wait for message submission before starting a new request."));
 		if (!state.retrySend) return;
 		const clientInputId = state.retrySend.clientInputId;
 		store.set({
@@ -767,13 +1146,261 @@ export class CompanyController {
 		const scope = session?.executionScope;
 		if (!session || !scope || !("roomId" in scope)) return undefined;
 		if (typeof scope.roomId !== "string" || !UUID_PATTERN.test(scope.roomId))
-			throw new Error("The team room conversation is unavailable.");
+			throw new Error(t("The team room conversation is unavailable."));
 		// An agent thread is a room the kernel bound to one agent; a team room has no single agent.
 		return Object.freeze({
 			roomId: scope.roomId,
 			environmentId: session.environmentId,
 			agentThread: isAgentThreadSession(session),
 		});
+	}
+
+	/** Editors are company/member scoped and survive navigation and transcript polling. */
+	emailDraftEditor(interactionId: string): EmailDraftEditor {
+		let editor = this.#emailDraftEditors.get(interactionId);
+		if (!editor) {
+			editor = {};
+			this.#emailDraftEditors.set(interactionId, editor);
+		}
+		return editor;
+	}
+
+	async loadEmailDraft(sessionId: string, interactionId: string): Promise<EmailDraftState> {
+		this.signal.throwIfAborted();
+		if (this.store.get().accessLost || !this.store.get().team?.capabilities.read)
+			throw new Error(t("This conversation is not available for sending."));
+		this.#emailDraftClient ??= new EmailDraftClient(this.#api.cloud, this.#userId, this.signal);
+		return this.#notifyEmailDraft(
+			sessionId,
+			interactionId,
+			await this.#emailDraftClient.read(sessionId, interactionId),
+		);
+	}
+
+	async actEmailDraft(
+		sessionId: string,
+		interactionId: string,
+		action: EmailDraftAction,
+		content: EmailDraftContent,
+	): Promise<EmailDraftState> {
+		this.assertCanSend(sessionId);
+		this.#emailDraftClient ??= new EmailDraftClient(this.#api.cloud, this.#userId, this.signal);
+		const result = await this.#notifyEmailDraft(
+			sessionId,
+			interactionId,
+			await this.#emailDraftClient.act(sessionId, interactionId, action, content, this.#answerSponsor(sessionId)),
+		);
+		// The broker records delivery before the answer. Never optimistically mark an email sent.
+		if (!this.#stopped && (result.status === "sent" || result.status === "discarded")) {
+			void this.loadConversation(sessionId);
+			void this.refreshActivity();
+			this.#watchWork(20_000);
+		}
+		return result;
+	}
+
+	async #notifyEmailDraft(sessionId: string, interactionId: string, state: EmailDraftState): Promise<EmailDraftState> {
+		if (!state.notificationPending || !state.actionId || (state.status !== "sent" && state.status !== "discarded"))
+			return state;
+		try {
+			this.assertCanSend(sessionId);
+			// The kernel replaces this empty answer with its durable provider receipt.
+			// Retrying only the notification cannot invoke Gmail again.
+			await this.#api.answerInteraction(
+				sessionId,
+				state.actionId,
+				interactionId,
+				state.status,
+				{},
+				this.#answerSponsor(sessionId),
+			);
+			void this.loadConversation(sessionId);
+			void this.refreshActivity();
+			this.#watchWork(20_000);
+			return { ...state, notificationPending: false };
+		} catch {
+			return state; // Keep the confirmed delivery visible while notification is pending.
+		}
+	}
+
+	/** Answer a card the agent raised in this thread. The answer is sent like a
+	 * message and shows on the card at once; the kernel refuses a second answer,
+	 * an expired card, or a member who does not answer it (answersInteraction). */
+	async answerInteraction(
+		sessionId: string,
+		interactionId: string,
+		outcome: InteractionOutcome,
+		answer: Record<string, JsonValue> = {},
+	): Promise<void> {
+		this.assertCanSend(sessionId);
+		const store = this.conversation(sessionId);
+		const key = interactionId.toLowerCase();
+		if (store.get().interactionAnswers?.[key]) return;
+		store.set({
+			interactionAnswers: {
+				...store.get().interactionAnswers,
+				[key]: { outcome, answer, answeredBy: this.#userId, answeredAt: new Date().toISOString(), pending: true },
+			},
+			interactionError: undefined,
+		});
+		try {
+			const sponsor = this.#answerSponsor(sessionId);
+			const receipt = await this.#api
+				.answerInteraction(sessionId, crypto.randomUUID(), interactionId, outcome, answer, sponsor)
+				.catch((error: unknown) => {
+					// A cloud before bundle v100 cannot deliver an answer in an agent's thread:
+					// it would queue one that never wakes the agent. Keep the card open.
+					if (error instanceof CloudRpcError && error.missing)
+						throw new Error(t("Answering cards here is not available yet. Reply in a message instead."));
+					throw error;
+				});
+			// Remembered so a delivery that fails later opens the card again (reconcileInteractionAnswers).
+			const sent = store.get().interactionAnswers?.[key];
+			if (sent)
+				store.set({
+					interactionAnswers: { ...store.get().interactionAnswers, [key]: { ...sent, inputId: receipt.inputId } },
+				});
+		} catch (error) {
+			const { [key]: _dropped, ...rest } = store.get().interactionAnswers ?? {};
+			store.set({
+				interactionAnswers: Object.keys(rest).length ? rest : undefined,
+				interactionError: answerRefusal(error),
+			});
+			throw error;
+		}
+		void this.loadConversation(sessionId);
+		// The answer wakes the agent, as a message does; watch for its run.
+		void this.refreshActivity();
+		this.#watchWork(20_000);
+	}
+
+	/** Answer an approval card of an agent's action (bundle v130): Allow once,
+	 * Always allow (saves `ruleText` as a company rule) or Deny. The card shows the
+	 * answer at once; the kernel refuses a member the card does not wait for
+	 * (answersActionReview). If the agent stopped waiting, the answer wakes it on
+	 * the member's selected model account; while it still waits, none is needed. */
+	async answerActionReview(
+		sessionId: string,
+		reviewId: string,
+		answer: ActionReviewAnswer,
+		ruleText?: string,
+	): Promise<void> {
+		const store = this.conversation(sessionId);
+		const key = reviewId.toLowerCase();
+		if (store.get().interactionAnswers?.[key]) return;
+		try {
+			this.assertCanSend(sessionId);
+		} catch (error) {
+			// Say why on the thread (an archived conversation, no write access), not silently.
+			store.set({ interactionError: answerRefusal(error) });
+			throw error;
+		}
+		store.set({
+			interactionAnswers: {
+				...store.get().interactionAnswers,
+				[key]: {
+					outcome: answer === "deny" ? "declined" : "approved",
+					answer: { answer },
+					answeredBy: this.#userId,
+					answeredAt: new Date().toISOString(),
+					pending: true,
+				},
+			},
+			interactionError: undefined,
+		});
+		try {
+			const selected = this.conversation(sessionId).get().executionSponsor;
+			const receipt = await this.#api
+				.answerActionReview(
+					reviewId,
+					crypto.randomUUID(),
+					answer,
+					ruleText,
+					selected
+						? { sponsorBindingId: selected.sponsorBindingId, sponsorVersion: selected.sponsorVersion }
+						: undefined,
+				)
+				.catch((error: unknown) => {
+					if (error instanceof CloudRpcError && error.missing)
+						throw new Error(t("Approvals are not available here yet. Reply in a message instead."));
+					throw error;
+				});
+			const sent = store.get().interactionAnswers?.[key];
+			if (sent)
+				store.set({
+					interactionAnswers: { ...store.get().interactionAnswers, [key]: { ...sent, inputId: receipt.inputId } },
+				});
+		} catch (error) {
+			const { [key]: _dropped, ...rest } = store.get().interactionAnswers ?? {};
+			store.set({
+				interactionAnswers: Object.keys(rest).length ? rest : undefined,
+				interactionError: answerRefusal(error),
+			});
+			// Someone else may have answered first: show the card as it is now.
+			void this.loadConversation(sessionId);
+			throw error;
+		}
+		void this.loadConversation(sessionId);
+		void this.refreshActivity();
+		this.#watchWork(20_000);
+	}
+
+	/** An answer runs the agent the way a message there does, on the member's
+	 * selected model account: like a post in an agent's shared thread (bundle
+	 * v100), like a turn request in a plain conversation (bundle v105). */
+	#answerSponsor(sessionId: string): { sponsorBindingId: string; sponsorVersion: number } {
+		const sponsor = this.conversation(sessionId).get().executionSponsor;
+		if (!sponsor) throw new Error(t("Select an active model account, then try again."));
+		return { sponsorBindingId: sponsor.sponsorBindingId, sponsorVersion: sponsor.sponsorVersion };
+	}
+
+	/** Put a secret card's value into the company's cloud custody and answer the
+	 * card as provided. The value goes from this browser to the secret broker
+	 * and nowhere else; the card learns a reference. Owners and admins save it
+	 * for the company, other members for themselves. An existing secret with the
+	 * same connector and name is replaced (a new version), never duplicated. */
+	async provideSecret(
+		sessionId: string,
+		interactionId: string,
+		request: InteractionRequest,
+		value: string,
+	): Promise<void> {
+		this.assertCanSend(sessionId);
+		const store = this.conversation(sessionId);
+		const name = typeof request.payload.name === "string" ? request.payload.name : "";
+		const connectorId = typeof request.payload.connectorId === "string" ? request.payload.connectorId : "vault";
+		const purpose = typeof request.payload.purpose === "string" ? request.payload.purpose : request.title;
+		const role = this.store.get().team?.role;
+		const company = role === "owner" || role === "admin";
+		store.set({ interactionError: undefined });
+		try {
+			// Never store a value whose answer could not be sent.
+			this.#answerSponsor(sessionId);
+			const existing = (
+				await this.#api.listSecretConnections(this.profile.profileId, this.profile.environmentId)
+			).find(
+				(secret) =>
+					secret.status === "active" &&
+					secret.connectorId === connectorId &&
+					secret.secretName === name &&
+					(company ? secret.ownerKind === "company" : secret.ownerUserId === this.#userId),
+			);
+			const ticket = await this.#api.beginSecretCapture({
+				profileId: this.profile.profileId,
+				environmentId: this.profile.environmentId,
+				ownerKind: company ? "company" : "member",
+				...(company ? {} : { ownerUserId: this.#userId }),
+				connectorId,
+				secretName: name,
+				purpose: purpose.slice(0, 512),
+				...(existing ? { existingSecretId: existing.secretId } : {}),
+			});
+			await this.#api.captureSecret(ticket, value);
+		} catch (error) {
+			store.set({ interactionError: describeError(error) });
+			throw error;
+		}
+		await this.answerInteraction(sessionId, interactionId, "provided", {});
 	}
 
 	async sendPrompt(sessionId: string, text: string, viewSignal?: AbortSignal): Promise<boolean> {
@@ -787,9 +1414,9 @@ export class CompanyController {
 		const trimmed = text.trim();
 		const files = [...(store.get().attachments ?? [])];
 		if ((!trimmed && !files.length) || store.get().sending) return false;
-		const issue = sessionAttachmentIssue(files);
-		if (issue) {
-			store.set({ sendError: issue });
+		const problem = sessionAttachmentProblem(files);
+		if (problem) {
+			store.set({ sendError: attachmentProblemText(problem) });
 			return false;
 		}
 		const retry = store.get().retrySend;
@@ -799,8 +1426,10 @@ export class CompanyController {
 		if (retry && !sameRequest) {
 			store.set({
 				draft: text,
-				sendError:
-					'The earlier message may already have been accepted. Choose "Start a new message request" before sending changed text or images.',
+				sendError: t(
+					"The earlier message may already have been accepted. Choose {action} before sending changed text or images.",
+					{ action: `"${t("Start a new message request")}"` },
+				),
 			});
 			return false;
 		}
@@ -813,9 +1442,9 @@ export class CompanyController {
 				observed?.environmentId !== roomTarget?.environmentId ||
 				observed?.agentThread !== roomTarget?.agentThread
 			)
-				throw new Error("The conversation destination changed. Refresh before starting a new request.");
+				throw new Error(t("The conversation destination changed. Refresh before starting a new request."));
 			if (roomTarget && !roomTarget.agentThread && files.length)
-				throw new Error("Images are not supported in team rooms. Use Company File.");
+				throw new Error(t("Images are not supported in team rooms. Use Company File."));
 		} catch (error) {
 			store.set({ sendError: describeError(error), draft: text });
 			return false;
@@ -824,7 +1453,7 @@ export class CompanyController {
 		// the current chooser has changed. SQL checks exact replay identity.
 		const executionSponsor = sameRequest ? retry.executionSponsor : store.get().executionSponsor;
 		if (!executionSponsor) {
-			store.set({ sendError: "Select an active model account before sending.", draft: text });
+			store.set({ sendError: t("Select an active model account before sending."), draft: text });
 			return false;
 		}
 		const clientInputId = sameRequest ? retry.clientInputId : crypto.randomUUID();
@@ -863,6 +1492,7 @@ export class CompanyController {
 					),
 				}),
 			}));
+			this.#dismissFailureFor(sessionId);
 			await this.loadConversation(sessionId);
 			void this.refreshActivity();
 			// The run is admitted a moment after the message; watch for it to appear.
@@ -913,6 +1543,9 @@ export class CompanyController {
 		}, wait);
 	}
 
+	/** Hints about one change arrive together (a move, then another member's echo). */
+	readonly #refreshSidebarSoon = debounce(() => void this.refreshSidebar(), 250);
+
 	readonly #refreshOpenConversation = debounce(() => {
 		if (this.#openSessionId) void this.loadConversation(this.#openSessionId);
 		void this.refreshActivity();
@@ -929,6 +1562,8 @@ export class CompanyController {
 			void this.refreshOrganization();
 		} else if (resource === "access") {
 			void this.refreshTeam();
+		} else if (resource === "sidebar") {
+			this.#refreshSidebarSoon();
 		} else if (resource === "company-file") {
 			void this.refreshGroups();
 			// Accepting a proposal moves the Company File head: runs waiting on one are read again.
@@ -956,7 +1591,7 @@ export class CompanyController {
 			// Refresh this surface even with a healthy Realtime channel.
 			if (!this.#stopped) for (const listener of this.#invalidations) listener("company-file");
 			if (this.#openSessionId) await this.loadConversation(this.#openSessionId);
-			await this.refreshActivity();
+			await Promise.all([this.refreshActivity(), this.refreshSidebar()]);
 		} finally {
 			this.#polling = false;
 		}

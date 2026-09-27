@@ -1,0 +1,18 @@
+[Unit]
+Description=Expire the coding guest execution lease
+After=local-fs.target
+# The timer starts this every second; the default start limit (5 starts in
+# 10 s) would otherwise refuse it every few seconds with start-limit-hit.
+StartLimitIntervalSec=0
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+ExecStart=/usr/bin/node /opt/qorpera-coding/cloud-coding-watchdog.mjs
+TimeoutStartSec=10
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadOnlyPaths=-/run/qorpera-coding

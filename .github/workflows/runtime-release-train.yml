@@ -1,0 +1,137 @@
+name: Runtime release train
+
+# No path filter: under the release train a runtime-only feature PR changes no
+# derived file, so it may match no other workflow's paths. This job still
+# packages the runtime and guards the release-owned files on every PR.
+on:
+  workflow_dispatch:
+  push:
+    branches: [master, 'release/runtime-*']
+  pull_request:
+    # edited fires when the base branch changes, so a stacked PR re-runs the
+    # guard against its new base.
+    types: [opened, synchronize, reopened, edited]
+
+# Release train (deploy/first-node/RUNTIME-RELEASE-TRAIN.md): only release
+# branches declare the runtime bundle, so only they must carry derived files
+# that match the source. Everywhere else the freshness asserts are skipped.
+env:
+  QORPERA_ENFORCE_RUNTIME_BUNDLE: ${{ ((github.event_name == 'pull_request' && startsWith(github.head_ref, 'release/runtime-')) || (github.event_name == 'push' && startsWith(github.ref_name, 'release/runtime-'))) && '1' || '0' }}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: runtime-release-train-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  train:
+    name: Runtime bundle and release-owned files
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # On a pull request: the merge commit and its base parent.
+          fetch-depth: 2
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Feature PRs leave release-owned runtime bundle files alone
+        if: github.event_name == 'pull_request' && !startsWith(github.head_ref, 'release/runtime-')
+        run: |
+          git rev-parse --verify --quiet 'HEAD^2' >/dev/null || { echo "::error::Expected the pull request merge commit"; exit 1; }
+          node scripts/check-release-train-derived-files.mjs 'HEAD^1' HEAD
+
+      - name: Install dependencies without lifecycle scripts
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Runtime bundle check (strict on release branches only)
+        run: npm run check:runtime-bundle:release-train
+
+      - name: Packaged host pins, ephemeral runner package and the guard
+        run: >-
+          node --test
+          scripts/generate-cloud-runtime-bundle.test.mjs
+          scripts/package-ephemeral-runner.test.mjs
+          scripts/check-release-train-derived-files.test.mjs
+
+  # A runtime change no longer regenerates the bundle, so it may match no
+  # path-filtered workflow. This job runs every unit test file of
+  # packages/runtime and packages/cloud-client on every run, sharded across
+  # runners. New test files join automatically.
+  #
+  # Tests that need podman, a source-built Codex binary or Windows skip
+  # themselves when their environment is absent. Excluded here:
+  # - runtime test/cloud-coding-command-guest.test.ts: its fixtures chown each
+  #   command log to a coding group the test user holds (gid >= 1000). It runs
+  #   in its own step below, under such a group as in the Step 2 LXD workflow.
+  unit:
+    name: Unit tests (${{ matrix.suite }} ${{ matrix.shard }})
+    runs-on: ubuntu-26.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { suite: runtime, shard: 1/5, supervisor: true }
+          - { suite: runtime, shard: 2/5 }
+          - { suite: runtime, shard: 3/5 }
+          - { suite: runtime, shard: 4/5 }
+          - { suite: runtime, shard: 5/5 }
+          - { suite: cloud-client, shard: 1/1 }
+    env:
+      TMPDIR: /tmp
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies without lifecycle scripts
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      # Tests use this Node binary as the native boundary artifact, and the
+      # boundary refuses a group- or world-writable executable.
+      - name: Make the Node binary writable by its owner only
+        run: |
+          node_binary="$(node -p 'require("node:fs").realpathSync(process.execPath)')"
+          ls -l "$node_binary"
+          chmod go-w "$node_binary" || sudo chmod go-w "$node_binary"
+          ls -l "$node_binary"
+
+      # Two office probes run a real Linux container from a cached image with
+      # --pull=never --network none.
+      - name: Cache the office probe container image
+        if: matrix.suite == 'runtime'
+        run: docker pull --quiet node:22-bookworm-slim
+
+      - name: Unit tests
+        working-directory: packages/${{ matrix.suite }}
+        run: >-
+          node ../../node_modules/vitest/dist/cli.js --run
+          --shard=${{ matrix.shard }}
+          --exclude test/cloud-coding-command-guest.test.ts
+
+      - name: Coding command supervisor
+        if: ${{ !cancelled() && matrix.supervisor }}
+        working-directory: packages/runtime
+        run: |
+          supervisor="node ../../node_modules/vitest/dist/cli.js --run test/cloud-coding-command-guest.test.ts"
+          if [ "$(id -g)" -ge 1000 ]; then
+            $supervisor
+          else
+            sudo groupadd qorpera-coding-test
+            sudo usermod -aG qorpera-coding-test "$(id -un)"
+            sg qorpera-coding-test -c "$supervisor"
+          fi

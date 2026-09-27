@@ -210,6 +210,7 @@ lxc exec "${ACCEPTANCE_INSTANCE}" --project "${LXD_PROJECT}" -- \
 	grep -Fxq "Environment=NODE_EXTRA_CA_CERTS=/run/credentials/qorpera-native-login-provider-host.service/qorpera-identity-recovery-ca" /etc/systemd/system/qorpera-native-login-provider-host.service
 	grep -Fxq "LoadCredential=qorpera-cloud-secret-runtime:/var/lib/qorpera-bootstrap/credentials/qorpera-cloud-secret-runtime" /etc/systemd/system/qorpera-native-company-host.service
 	grep -Fxq "LoadCredential=qorpera-cloud-secret-ca:/var/lib/qorpera-bootstrap/credentials/qorpera-cloud-secret-ca" /etc/systemd/system/qorpera-native-company-host.service
+	grep -Fxq "LoadCredential=qorpera-coding-command:/var/lib/qorpera-bootstrap/credentials/qorpera-coding-command" /etc/systemd/system/qorpera-native-company-host.service
 	grep -Fxq "Environment=NODE_EXTRA_CA_CERTS=/run/credentials/qorpera-native-company-host.service/qorpera-cloud-secret-ca" /etc/systemd/system/qorpera-native-company-host.service
 	[[ ! -e /var/lib/qorpera-bootstrap/bootstrap.json ]]
 	[[ ! -e /var/lib/qorpera-bootstrap/login-bootstrap.json ]]

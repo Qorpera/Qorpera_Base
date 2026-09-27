@@ -347,7 +347,7 @@ select set_config('qorpera_test.default_read_grant', (
 	from public.qorpera_company_path_grants g join public.qorpera_company_path_resources r on r.id = g.resource_id
 	where r.environment_id = '29000000-0000-4000-8000-000000000020' and r.path = ''
 		and g.principal_id = '29000000-0000-4000-8000-000000000030'
-		and g.origin = 'default_agent_read' and g.permissions = array['read']::text[] and g.revoked_at is null
+		and g.origin = 'default_agent_read' and g.permissions = array['read','write']::text[] and g.revoked_at is null
 ), true);
 select pg_temp.path_claims('service_role');
 set local role service_role;
@@ -637,8 +637,13 @@ declare v_run uuid := (current_setting('qorpera_test.path_binding')::jsonb ->> '
 	v_event jsonb; v_operation text; v_status text; v_category text; v_query jsonb;
 begin
 	foreach v_operation in array array['model_turn','model_request','company_read','company_list','company_write',
-		'company_mkdir','company_delete','company_context','send_message','message_composition','connector','unknown_tool','run_authority',
-		'context_authority','native_result_fence','diagnostic_export'] loop
+		'company_mkdir','company_delete','send_message','ask_member','read_context','send_coworker_message','computer_start','computer_screen',
+		'computer_browser','computer_desktop','computer_shell','computer_screenshot','computer_transfer','hire_agent',
+		'create_group_chat','manage_routine','report_work','manage_todo','manage_worker','company_context','message_composition',
+		'connector','unknown_tool','run_authority',
+		'context_authority','native_result_fence','diagnostic_export','action_review',
+		'coding_run_command','coding_read_command','coding_cancel_command','coding_finish','coding_ask',
+		'update_memory','recall_memory','organize_sidebar','add_review_rule'] loop
 		v_event := pg_temp.observation() || jsonb_build_object('operation',v_operation,'assignmentId',null,
 			'phase','finish','status','succeeded','logicalOperationSha256',null,'observedAt','0001-01-01T00:00:00.000Z',
 			'durationMs',9007199254740991,'inputBytes',9007199254740991,'outputBytes',0,'inputTokens',0,'outputTokens',1,

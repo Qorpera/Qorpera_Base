@@ -1,16 +1,23 @@
 import { h } from "./dom.ts";
 import { matchesKey } from "./keys.ts";
 import { isPhoneLayout } from "./layout.ts";
+import { t, uiSizePreference } from "./preferences.ts";
+import { uiScale } from "./scale.ts";
 
+/* Widths here are design pixels (ui/scale.ts): the member's choice keeps its look whatever the
+ * app's scale. */
 const COMPACT = 80;
 const MIN = 240;
-/** Half again the desktop's 304px rail. */
-const DEFAULT = 456;
+/** The earlier 456px made a tenth narrower twice (half again the desktop's 304px rail), chosen as the app was drawn larger.
+ * Three pinned cards fit a row at this width (four need about 393). */
+const DEFAULT = 369;
+/** The rail's default before the app was scaled up. Explicit resized widths span both sizes. */
+const SMALL_DEFAULT = 456;
 /** The rail may take at most two fifths of the window, a touch wider than a Messages sidebar. */
 const MAX_SHARE = 0.4;
-/** Version 2 came with the 456px default: widths stored before it are not carried over,
+/** Version 4 came with the 369px default: widths stored before it are not carried over,
  * so every member starts once from the new default. */
-const STORAGE_KEY = "qorpera.web.rail-width.v2";
+const STORAGE_KEY = "qorpera.web.rail-width.v4";
 
 /** Only a browser layout preference. Company navigation remains canonical. */
 export class RailLayout {
@@ -18,10 +25,11 @@ export class RailLayout {
 	readonly #frame: HTMLElement;
 	readonly #rail: HTMLElement;
 	readonly #lifetime = new AbortController();
-	/** What the member last chose; the shown width is this, clamped to the window. */
-	#preferred = DEFAULT;
+	/** An explicit width, or the current size's default; shown clamped to the window. */
+	#preferred: number | undefined;
 	#width = DEFAULT;
 	#max = 0;
+	#scale = 0;
 	#drawer = false;
 	#dragging = false;
 	#dragged = false;
@@ -38,7 +46,7 @@ export class RailLayout {
 			class: "rail-resizer",
 			role: "separator",
 			tabindex: "0",
-			"aria-label": "Resize company navigation",
+			"aria-label": t("Resize company navigation"),
 			"aria-orientation": "vertical",
 			"aria-valuemin": String(COMPACT),
 		});
@@ -52,7 +60,7 @@ export class RailLayout {
 		});
 		this.el.addEventListener("pointermove", (event) => {
 			if (!this.#dragging) return;
-			const width = event.clientX - frame.getBoundingClientRect().left;
+			const width = (event.clientX - frame.getBoundingClientRect().left) / uiScale();
 			this.#dragged = true;
 			this.#set(width < 160 ? COMPACT : width, false);
 		});
@@ -85,11 +93,15 @@ export class RailLayout {
 		});
 		// The frame fills the window, so the window is what the cap follows.
 		window.addEventListener("resize", () => this.#apply(), { signal: this.#lifetime.signal });
+		// The scale changes with the primary pointer (a 2-in-1 turned into a tablet) without any resize.
+		window.matchMedia?.("(pointer: coarse)")?.addEventListener?.("change", () => this.#apply(), {
+			signal: this.#lifetime.signal,
+		});
 		this.#apply();
 	}
 	/** Two fifths of the window, but never below the narrowest expanded rail. */
 	#cap(): number {
-		return Math.max(MIN, Math.floor(window.innerWidth * MAX_SHARE));
+		return Math.max(MIN, Math.floor((window.innerWidth * MAX_SHARE) / uiScale()));
 	}
 	/** A choice the member makes now is bounded by what they can see now. */
 	#set(width: number, persist = true): void {
@@ -102,14 +114,14 @@ export class RailLayout {
 	}
 	/** Back to the default, not clamped: a narrow window shows less of it, a wide one all of it. */
 	#reset(): void {
-		this.#preferred = DEFAULT;
+		this.#preferred = undefined;
 		this.#apply();
 		this.#persist();
 	}
 	/** The default is stored as no choice at all, so a later default reaches this member too. */
 	#persist(): void {
 		try {
-			if (this.#preferred === DEFAULT) localStorage.removeItem(STORAGE_KEY);
+			if (this.#preferred === undefined) localStorage.removeItem(STORAGE_KEY);
 			else localStorage.setItem(STORAGE_KEY, String(this.#preferred));
 		} catch {
 			/* Layout still works for this window. */
@@ -117,22 +129,31 @@ export class RailLayout {
 	}
 	#apply(): void {
 		const max = this.#cap();
-		const width = Math.min(this.#preferred, max);
+		const width = Math.min(this.#preferred ?? (uiSizePreference() === "small" ? SMALL_DEFAULT : DEFAULT), max);
 		const drawer = isPhoneLayout();
-		if (width === this.#width && max === this.#max && drawer === this.#drawer) return;
+		const scale = uiScale();
+		if (width === this.#width && max === this.#max && drawer === this.#drawer && scale === this.#scale) return;
 		this.#width = width;
 		this.#max = max;
 		this.#drawer = drawer;
+		this.#scale = scale;
 		// --rail-width does not inherit (app.css), so each of its two readers carries its own value.
-		this.#rail.style.setProperty("--rail-width", `${width}px`);
-		this.el.style.setProperty("--rail-width", `${width}px`);
+		const shown = `${width * scale}px`;
+		this.#rail.style.setProperty("--rail-width", shown);
+		this.el.style.setProperty("--rail-width", shown);
 		// Collapsed only where the rail stands beside the page; the drawer always shows it whole.
 		this.#frame.classList.toggle("rail-compact", width === COMPACT && !drawer);
 		this.el.setAttribute("aria-valuemax", String(max));
 		this.el.setAttribute("aria-valuenow", String(width));
-		this.el.setAttribute("aria-valuetext", width === COMPACT ? "Compact" : `${width} pixels`);
+		this.el.setAttribute("aria-valuetext", width === COMPACT ? t("Compact") : t("{width} pixels", { width }));
 		window.dispatchEvent(new Event("qorpera-rail-resize"));
 	}
+	/** Say the handle's name and width again in a newly chosen language. */
+	relabel(): void {
+		this.el.setAttribute("aria-label", t("Resize company navigation"));
+		this.#apply();
+	}
+
 	dispose(): void {
 		this.#lifetime.abort();
 		this.el.remove();

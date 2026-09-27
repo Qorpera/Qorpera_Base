@@ -552,11 +552,12 @@ begin
 	perform public.qorpera_materialize_wake_execution_runs(1);
 	select run_id into strict v_run from public.qorpera_wake_occurrences where id = v_wake;
 	v_binding := pg_temp.wake_start(v_run);
-	for v_count in 1..64 loop
+	-- No limit on public sends in a wake (runtime v92): past the old 64, sending and completing still work.
+	for v_count in 1..70 loop
 		perform pg_temp.wake_public_send(v_binding,'progress','budget-' || v_count);
 	end loop;
-	perform pg_temp.wake_error(format('select pg_temp.wake_public_send(%L,''final''); select public.qorpera_assert_wake_completion(%L)',
-		v_binding,v_run),'55000');
+	perform pg_temp.wake_public_send(v_binding,'final');
+	perform public.qorpera_assert_wake_completion(v_run);
 end
 $$;
 rollback to routine_reporting;
@@ -720,20 +721,38 @@ begin
 	perform pg_temp.wake_assert(v_bob_run is not null,'Coworker wake gets fresh admission');
 	v_bob := pg_temp.wake_start(v_bob_run);
 	v_result := public.qorpera_read_native_wake(v_bob);
-	perform pg_temp.wake_assert(v_result #>> '{payload,text}' = 'Examine the note.' and v_result #>> '{policy,final}' = 'forbidden','Durable addressed message is private to recipient');
+	-- Since 2026-09-22 (contract 14.6 amendment) the message lands in the pair
+	-- transcript and wakes the coworker in its own shared thread under the pair
+	-- policy; the reply is one more hop, not a fenced cycle (test 380 covers the budget).
+	perform pg_temp.wake_assert(v_result #>> '{payload,text}' = 'Examine the note.' and v_result #>> '{policy,final}' = 'optional'
+		and v_result #>> '{policy,initial}' = 'forbidden' and v_result -> 'policy' -> 'maxPublicSends' = 'null'::jsonb
+		and v_result #>> '{audience,sessionId}' is not null and v_result #>> '{payload,pairSessionId}' is not null
+		and jsonb_array_length(v_result #> '{payload,transcript}') = 1,'Durable addressed message reaches the recipient in its own thread');
 	perform pg_temp.wake_assert(v_result #> '{causal,agentIds}' = '["30000000-0000-4000-8000-000000000030","30000000-0000-4000-8000-000000000031"]'::jsonb,'Coworker retains ancestry');
 	perform public.qorpera_assert_wake_completion(v_bob_run);
 	v_result := public.qorpera_send_coworker_message(v_bob,'30000000-0000-4000-8000-000000000030','thanks','Thanks.');
-	perform pg_temp.wake_assert(v_result ->> 'status' = 'causal-fence' and v_result -> 'occurrenceId' = 'null'::jsonb,'Acknowledgement cycle is fenced');
-	perform pg_temp.wake_assert((select count(*) = 2 from public.qorpera_wake_occurrences),'Cycle creates no new occurrence');
+	perform pg_temp.wake_assert(v_result ->> 'status' = 'queued' and v_result ->> 'occurrenceId' is not null,'A reply to the sender is one more hop');
+	perform pg_temp.wake_assert((select count(*) = 3 from public.qorpera_wake_occurrences),'The reply is one new occurrence');
+	perform pg_temp.wake_assert((select causal_hop_count = 2 and causal_agent_ids = array['30000000-0000-4000-8000-000000000031','30000000-0000-4000-8000-000000000030']::uuid[]
+		from public.qorpera_wake_occurrences where id = (v_result ->> 'occurrenceId')::uuid),'The reply moves the sender to the end of the chain');
 	v_routine := pg_temp.wake_routine('30000000-0000-4000-8000-000000000030',
 		'{"id":"changes","kind":"listener","source":"company-file","path":"note.md","match":"exact","timeZone":"Europe/Copenhagen","replyPolicy":"optional"}');
 	perform set_config('qorpera_test.wake_binding',v_bob::text,true);
 	perform pg_temp.path_commit(pg_temp.path_plan('bob-note','note.md',pg_temp.path_stage_file('note.md','From Bob')));
 	v_result := public.qorpera_drain_company_file_wakes(1);
-	perform pg_temp.wake_assert(v_result ->> 'examined' = '1' and v_result ->> 'admitted' = '0','Message to file to ancestor does not loop');
-	perform pg_temp.wake_assert((select outcome = 'causal-fence' from public.qorpera_company_file_wake_claims
-		where routine_id = (v_routine ->> 'routine_id')::uuid),'Cycle decision is durable');
+	-- Runtime v95: an agent earlier in the chain is woken again and moves to its end (it was fenced).
+	perform pg_temp.wake_assert(v_result ->> 'examined' = '1' and v_result ->> 'admitted' = '1','Message to file to ancestor wakes the ancestor again');
+	perform pg_temp.wake_assert((select outcome = 'admitted' from public.qorpera_company_file_wake_claims
+		where routine_id = (v_routine ->> 'routine_id')::uuid),'The decision is durable');
+	perform pg_temp.wake_assert((select causal_agent_ids = array['30000000-0000-4000-8000-000000000031','30000000-0000-4000-8000-000000000030']::uuid[]
+		from public.qorpera_wake_occurrences where routine_id = (v_routine ->> 'routine_id')::uuid),'The revisited agent moves to the end of the chain');
+	-- An agent's own write never wakes its own watch routine.
+	v_routine := pg_temp.wake_routine('30000000-0000-4000-8000-000000000031',
+		'{"id":"own","kind":"listener","source":"company-file","path":"bob.md","match":"exact","timeZone":"Europe/Copenhagen","replyPolicy":"optional"}');
+	perform pg_temp.path_commit(pg_temp.path_plan('bob-own','bob.md',pg_temp.path_stage_file('bob.md','Mine')));
+	v_result := public.qorpera_drain_company_file_wakes(1);
+	perform pg_temp.wake_assert(v_result ->> 'admitted' = '0' and (select outcome = 'causal-fence' from public.qorpera_company_file_wake_claims
+		where routine_id = (v_routine ->> 'routine_id')::uuid),'An agent''s own write does not wake its own routine');
 end
 $$;
 rollback to coworker_delivery;
@@ -807,8 +826,10 @@ begin
 	v_result := public.qorpera_read_native_wake(v_bob);
 	perform pg_temp.wake_assert(v_result #>> '{source,kind}' = 'company-file' and v_result #>> '{payload,path}' = 'note.md','File event enters routine context');
 	perform pg_temp.wake_assert(exists(select 1 from public.qorpera_company_run_read_paths where run_id = v_wake.run_id and path = 'note.md'),'Event path enters existing read-set fence');
+	-- Since 2026-09-22 a coworker message is bounded by hops, never by earlier visits:
+	-- the agent a file event woke may write to the file's author (test 380 covers the budget).
 	perform pg_temp.wake_assert(public.qorpera_send_coworker_message(v_bob,'30000000-0000-4000-8000-000000000030','file-reply','Acknowledged.')
-		->> 'status' = 'causal-fence','File to coworker causal cycle is fenced');
+		->> 'status' = 'queued','A coworker may answer the author of the file that woke it');
 	-- A proposed deletion is not a live event. Only the separately authorized
 	-- publication enters the same immutable revision stream.
 	v_proposal := pg_temp.path_commit(pg_temp.path_plan('delete-proposed','note.md',null,(v_change ->> 'version')::uuid));
@@ -952,6 +973,73 @@ end
 $$;
 
 rollback to thread_audience;
+
+-- A failed post into an agent's thread can be tried again: the member's message stays once, the
+-- failed run leaves recovery, and the same input wakes the same agent under a new occurrence key.
+savepoint room_retry;
+do $$
+declare v_thread uuid; v_room uuid; v_result jsonb; v_run uuid; v_binding jsonb; v_retry jsonb; v_retry_run uuid;
+	v_base public.qorpera_execution_runs%rowtype; v_member jsonb := current_setting('qorpera_test.wake_binding')::jsonb;
+	v_inputs bigint;
+begin
+	update public.qorpera_shared_sessions set status = 'open'
+	where environment_id = '30000000-0000-4000-8000-000000000020' and execution_scope ->> 'agentThread' = 'true'
+		and staff_agent_id = '30000000-0000-4000-8000-000000000031' returning id into strict v_thread;
+	select id into strict v_room from public.qorpera_company_rooms where session_id = v_thread and status = 'active';
+	select * into strict v_base from public.qorpera_execution_runs where id = (v_member ->> 'runId')::uuid;
+	perform pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001');
+	v_result := public.qorpera_post_company_room_message(v_room,extensions.gen_random_uuid(),
+		'{"schema":"qorpera.session-prompt/v1","text":"Bob, are you there?"}',v_base.sponsor_binding_id,v_base.sponsor_version);
+	perform pg_temp.path_claims('service_role');
+	perform public.qorpera_materialize_wake_execution_runs(1);
+	select run_id into strict v_run from public.qorpera_wake_occurrences where id = (v_result #>> '{occurrenceIds,0}')::uuid;
+	v_binding := pg_temp.wake_start(v_run);
+	select count(*) into v_inputs from public.qorpera_session_inputs where session_id = v_thread;
+
+	-- Only a failed delivery can be retried, and only by the author of the post.
+	perform pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001');
+	perform pg_temp.wake_error(format('select public.qorpera_retry_room_delivery(%L,%L,%s)',v_run,v_base.sponsor_binding_id,
+		v_base.sponsor_version),'55000','execution recovery action is unavailable');
+	perform pg_temp.path_claims('service_role');
+	perform public.qorpera_fail_runner_job((v_binding ->> 'runnerId')::uuid,repeat('2',64),(v_binding ->> 'jobId')::uuid,
+		repeat('3',64),'Native provider bridge request failed (422)',false);
+	perform pg_temp.wake_assert((select status = 'failed' from public.qorpera_runner_jobs where id = (v_binding ->> 'jobId')::uuid),
+		'The delivery failed the way a runner reports it');
+	perform pg_temp.wake_error(format('select public.qorpera_retry_room_delivery(%L,%L,%s)',v_run,v_base.sponsor_binding_id,
+		v_base.sponsor_version),'42501','Room retry requires a member');
+	perform pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000002');
+	perform pg_temp.wake_error(format('select public.qorpera_retry_room_delivery(%L,%L,%s)',v_run,v_base.sponsor_binding_id,
+		v_base.sponsor_version),'42501');
+	perform pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001');
+	perform pg_temp.wake_error(format('select public.qorpera_retry_room_delivery(%L,%L,%s)',v_run,extensions.gen_random_uuid(),1),
+		'42501','Room sponsor is unavailable');
+
+	v_retry := public.qorpera_retry_room_delivery(v_run,v_base.sponsor_binding_id,v_base.sponsor_version);
+	perform pg_temp.wake_assert(v_retry ->> 'inputId' = v_result ->> 'inputId' and v_retry ->> 'runId' = v_run::text,
+		'The retry is bound to the failed run and the same input');
+	perform pg_temp.wake_error(format('select public.qorpera_retry_room_delivery(%L,%L,%s)',v_run,v_base.sponsor_binding_id,
+		v_base.sponsor_version),'55000','execution recovery was already resolved');
+	perform pg_temp.path_claims('service_role');
+	perform pg_temp.wake_assert((select count(*) from public.qorpera_session_inputs where session_id = v_thread) = v_inputs,
+		'The member''s message stays once');
+	perform pg_temp.wake_assert((select count(*) = 1 from public.qorpera_execution_run_events
+		where run_id = v_run and event_type = 'recovery_released'),'The failed run leaves recovery');
+	perform pg_temp.wake_assert((select w.payload = first.payload from public.qorpera_wake_occurrences w,
+		public.qorpera_wake_occurrences first where w.id = (v_retry ->> 'occurrenceId')::uuid
+			and first.id = (v_result #>> '{occurrenceIds,0}')::uuid),
+		'A retried wake carries exactly the payload of a first delivery (the runner parses it as a closed object)');
+	perform public.qorpera_materialize_wake_execution_runs(1);
+	select run_id into strict v_retry_run from public.qorpera_wake_occurrences where id = (v_retry ->> 'occurrenceId')::uuid;
+	perform pg_temp.wake_assert((select r.source_kind = 'room_delivery' and r.session_id = v_thread and r.id <> v_run
+		and r.staff_agent_id = '30000000-0000-4000-8000-000000000031'
+		from public.qorpera_execution_runs r where r.id = v_retry_run),'The same agent is woken again for the same post');
+	v_binding := pg_temp.wake_start(v_retry_run);
+	perform pg_temp.wake_public_send(v_binding,'final','answer-after-retry');
+	perform pg_temp.wake_assert((select count(*) = 1 from public.qorpera_agent_sends where run_id = v_retry_run),
+		'The retried delivery answers in the thread');
+end
+$$;
+rollback to room_retry;
 
 -- An agent edit never ends a run and applies from the agent's next run. A wake admitted at the
 -- agent's later version answers in the thread opened at the earlier one; a thread that claims a

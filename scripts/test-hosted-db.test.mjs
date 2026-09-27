@@ -34,10 +34,15 @@ test("a test can run after another test's fixture section", () => {
 		"370_next.test.sql": '-- @fixture 300_base.test.sql until "-- END FIXTURE"\nselect 3;\nrollback;\n',
 		"380_self.test.sql": '-- @fixture 380_self.test.sql until "x"\n',
 		"390_missing.test.sql": '-- @fixture 300_base.test.sql until "-- ABSENT"\n',
+		"395_chained.test.sql": '-- @fixture 370_next.test.sql until "rollback;"\nselect 4;\nrollback;\n',
+		"396_cycle_a.test.sql": '-- @fixture 397_cycle_b.test.sql until "x"\nx\n',
+		"397_cycle_b.test.sql": '-- @fixture 396_cycle_a.test.sql until "x"\nx\n',
 	};
 	const read = (name) => files[name];
 	assert.equal(expandTestFixture("300_base.test.sql", read), files["300_base.test.sql"]);
 	assert.equal(expandTestFixture("370_next.test.sql", read), "begin;\nselect 1;\nselect 3;\nrollback;\n");
 	assert.throws(() => expandTestFixture("380_self.test.sql", read), /fixture is unavailable/);
 	assert.throws(() => expandTestFixture("390_missing.test.sql", read), /fixture is unavailable/);
+	assert.equal(expandTestFixture("395_chained.test.sql", read), "begin;\nselect 1;\nselect 3;\nselect 4;\nrollback;\n");
+	assert.throws(() => expandTestFixture("396_cycle_a.test.sql", read), /fixture is unavailable/);
 });

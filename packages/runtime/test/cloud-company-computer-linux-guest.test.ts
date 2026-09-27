@@ -13,7 +13,6 @@ import { CompanyComputerLinuxGuest } from "@qorpera/runtime/cloud-company-comput
 import { CompanyComputerScreenLifecyclePublisher } from "@qorpera/runtime/cloud-company-computer-screen-lifecycle";
 import { CloudNativeToolRun } from "@qorpera/runtime/cloud-native-tool-authority";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { nativeToolAuthorityFixture } from "../../shell/test/fixtures/native-tool-authority-fixture.ts";
 import {
 	computerBinding,
 	computerDeferred,
@@ -22,6 +21,7 @@ import {
 	computerOperation,
 	computerScope,
 } from "./fixtures/company-computer.ts";
+import { nativeToolAuthorityFixture } from "./fixtures/native-tool-authority-fixture.ts";
 import { screenReceipt, screenStartup } from "./fixtures/screen-lifecycle.ts";
 
 const physical = vi.hoisted(() => ({
@@ -394,39 +394,40 @@ describe("whole Linux guest ownership (physical adapters mocked here; separate L
 		expect(physical.launch).toHaveBeenCalledTimes(2);
 		expect(f.failure).not.toHaveBeenCalled();
 	});
-	it("has the browser open for a member who arrives and may use the screen, never for a watcher and never at desktop start", async () => {
+	it("opens no browser when a member arrives, whatever their mode, nor at desktop start: only the dock icon or a run does", async () => {
 		const f = await fixture({ browser: true });
-		// A desktop with only a watcher costs no Chromium: nothing is asked of SQL.
+		// A watcher, a member with input permission, and a second one: the desktop
+		// is shown as it is, and nothing is asked of SQL.
 		await f.guest.viewer.connect({ ...f.sharedViewer(), mode: "watch" }, new AbortController().signal);
-		await new Promise((resolve) => setTimeout(resolve, 700));
+		await f.guest.viewer.connect(f.sharedViewer(), new AbortController().signal);
+		await f.guest.viewer.connect(f.sharedViewer(), new AbortController().signal);
+		// Two dock polls (500 ms each) pass with nothing asked and nothing launched.
+		await new Promise((resolve) => setTimeout(resolve, 1200));
 		expect(physical.browserLaunch).not.toHaveBeenCalled();
 		expect(f.screenBrowser.opens).toEqual([]);
-		// The first viewer with input permission: no click, no request file.
-		await f.guest.viewer.connect(f.sharedViewer(), new AbortController().signal);
-		await f.guest.viewer.connect(f.sharedViewer(), new AbortController().signal);
+		expect(f.order.filter((entry) => entry.startsWith("qorpera_office_screen_browser_grant"))).toEqual([]);
+		expect(f.failure).not.toHaveBeenCalled();
+		// The member's own click at the dock is what opens it.
+		physical.browserRequest.mockResolvedValueOnce(true);
 		await vi.waitFor(() => expect(physical.browserLaunch).toHaveBeenCalledOnce(), { timeout: 3000 });
-		expect(physical.browserRequest.mock.results.every((result) => result.value !== true)).toBe(true);
 		expect(f.screenBrowser.opens).toEqual(["desktop"]);
-		// A later viewer joins the window that is already there.
-		await f.guest.viewer.connect(f.sharedViewer(), new AbortController().signal);
-		await new Promise((resolve) => setTimeout(resolve, 700));
-		expect(physical.browserLaunch).toHaveBeenCalledOnce();
-		expect(f.screenBrowser.opens).toEqual(["desktop"]);
-		// The member closes the browser on purpose: reconnecting does not bring it back...
+		// The member closes the browser on purpose: a reconnect does not bring it back.
 		browsers[0].end();
 		await f.guest.viewer.connect(f.sharedViewer(), new AbortController().signal);
 		await new Promise((resolve) => setTimeout(resolve, 700));
 		expect(physical.browserLaunch).toHaveBeenCalledOnce();
-		expect(f.failure).not.toHaveBeenCalled();
-		// ...until the desktop itself has been stopped and started again.
+		// Nor does a fresh start of the desktop.
 		await f.guest.stopResources(f.binding, new AbortController().signal);
 		await f.guest.viewer.connect(f.sharedViewer(), new AbortController().signal);
-		await vi.waitFor(() => expect(physical.browserLaunch).toHaveBeenCalledTimes(2), { timeout: 3000 });
-		expect(f.screenBrowser.opens).toEqual(["desktop", "desktop"]);
-	});
+		await new Promise((resolve) => setTimeout(resolve, 700));
+		expect(physical.browserLaunch).toHaveBeenCalledOnce();
+		expect(f.screenBrowser.opens).toEqual(["desktop"]);
+		expect(f.failure).not.toHaveBeenCalled();
+	}, 15000);
 	it("answers a dock request for a browser that is already open by bringing its minimised window back, without choosing a tab", async () => {
 		const f = await fixture({ browser: true });
 		await f.guest.viewer.connect(f.sharedViewer(), new AbortController().signal);
+		physical.browserRequest.mockResolvedValueOnce(true);
 		await vi.waitFor(() => expect(physical.browserLaunch).toHaveBeenCalledOnce(), { timeout: 3000 });
 		windows.pages = [{} as never];
 		// Open and not minimised: only looked at.
@@ -450,22 +451,24 @@ describe("whole Linux guest ownership (physical adapters mocked here; separate L
 		expect(f.failure).not.toHaveBeenCalled();
 		expect(displays[0].stop).not.toHaveBeenCalled();
 	});
-	it("asks again quietly while SQL does not yet see the arriving member, then leaves it to the dock", async () => {
+	it("opens from the dock once SQL allows what it refused before: a refusal is not remembered", async () => {
 		const f = await fixture({ browser: true });
 		f.screenBrowser.authorized = false;
 		await f.guest.viewer.connect(f.sharedViewer(), new AbortController().signal);
+		physical.browserRequest.mockResolvedValueOnce(true);
 		const asked = () => f.order.filter((entry) => entry.startsWith("qorpera_office_screen_browser_grant")).length;
-		await vi.waitFor(() => expect(asked()).toBe(3), { timeout: 6000 });
-		await new Promise((resolve) => setTimeout(resolve, 600));
-		expect(asked()).toBe(3);
+		await vi.waitFor(() => expect(asked()).toBe(1), { timeout: 3000 });
+		await new Promise((resolve) => setTimeout(resolve, 700));
+		expect(asked()).toBe(1);
 		expect(physical.browserLaunch).not.toHaveBeenCalled();
 		expect(displays[0].stop).not.toHaveBeenCalled();
-		expect(f.failure).not.toHaveBeenCalled();
-		// The member's own click still works once SQL agrees.
+		// The member's next click, once SQL agrees, opens it.
 		f.screenBrowser.authorized = true;
 		physical.browserRequest.mockResolvedValueOnce(true);
 		await vi.waitFor(() => expect(physical.browserLaunch).toHaveBeenCalledOnce(), { timeout: 3000 });
-	}, 15000);
+		expect(f.screenBrowser.opens).toEqual(["desktop"]);
+		expect(f.failure).not.toHaveBeenCalled();
+	});
 	it("opens the screen's browser for a member at the dock with no run, and the agent's next run uses the same window", async () => {
 		const f = await fixture({ browser: true });
 		// A watcher's connection starts the desktop and opens nothing by itself.
@@ -530,7 +533,6 @@ describe("whole Linux guest ownership (physical adapters mocked here; separate L
 	it("starts nothing when SQL refuses the screen's browser, and an agent without its own grant cannot start it either", async () => {
 		const f = await fixture({ browser: true });
 		f.screenBrowser.authorized = false;
-		// A watcher, so that only the dock request asks (an arriving member asks too; see above).
 		await f.guest.viewer.connect({ ...f.sharedViewer(), mode: "watch" }, new AbortController().signal);
 		physical.browserRequest.mockResolvedValueOnce(true);
 		await vi.waitFor(() =>

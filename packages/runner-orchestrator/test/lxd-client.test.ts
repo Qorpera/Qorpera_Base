@@ -24,7 +24,7 @@ async function unixServer(
 		url: string,
 		body: unknown,
 		headers: IncomingHttpHeaders,
-	) => { status?: number; body: unknown },
+	) => { status?: number; body: unknown; headers?: Record<string, string> },
 ): Promise<string> {
 	const root = await mkdtemp(join(tmpdir(), "qorpera-lxd-client-"));
 	roots.push(root);
@@ -41,7 +41,7 @@ async function unixServer(
 						: null
 					: Buffer.from(encoded, "utf-8");
 			const result = handle(request.method ?? "", request.url ?? "", body, request.headers);
-			response.writeHead(result.status ?? 200, { "content-type": "application/json" });
+			response.writeHead(result.status ?? 200, { "content-type": "application/json", ...result.headers });
 			response.end(JSON.stringify(result.body));
 		});
 	});
@@ -89,6 +89,67 @@ function createVolumeRequest(): LxdCreateStorageVolumeRequest {
 }
 
 describe("LXD Unix client", () => {
+	it("replaces only an instance's devices, under the ETag of its own read, and waits for the operation", async () => {
+		const requests: { method: string; url: string; body: unknown; ifMatch: unknown }[] = [];
+		const metadata = {
+			name: "qorpera-coding-machine-1",
+			architecture: "x86_64",
+			config: { "limits.cpu": "4", "user.qorpera.schema": "qorpera.lxd-coding-machine/v1" },
+			devices: { root: { type: "disk", path: "/", pool: "coding" } },
+			ephemeral: false,
+			profiles: [],
+			stateful: false,
+			description: "",
+			type: "virtual-machine",
+		};
+		const socket = await unixServer((method, url, body, headers) => {
+			requests.push({ method, url, body, ifMatch: headers["if-match"] });
+			if (method === "GET" && url.startsWith("/1.0/instances/"))
+				return { body: { type: "sync", metadata }, headers: { etag: '"v7"' } };
+			if (method === "PUT") return { body: { type: "async", operation: "/1.0/operations/devices", metadata: {} } };
+			return { body: { type: "sync", metadata: { status_code: 200, err: "" } } };
+		});
+		const devices = {
+			root: { type: "disk", path: "/", pool: "coding" },
+			"data-0123": { type: "disk", source: "/srv/x/data", path: "/workspace/x", required: "true" },
+		};
+		await new LxdUnixClient(socket).replaceInstanceDevices(
+			"coding",
+			"qorpera-coding-machine-1",
+			devices,
+			new AbortController().signal,
+		);
+		expect(requests.map((request) => [request.method, request.url])).toEqual([
+			["GET", "/1.0/instances/qorpera-coding-machine-1?project=coding"],
+			["PUT", "/1.0/instances/qorpera-coding-machine-1?project=coding"],
+			["GET", "/1.0/operations/devices/wait?timeout=120"],
+		]);
+		expect(requests[1].ifMatch).toBe('"v7"');
+		expect(requests[1].body).toEqual({
+			architecture: "x86_64",
+			config: metadata.config,
+			devices,
+			ephemeral: false,
+			profiles: [],
+			stateful: false,
+			description: "",
+		});
+	});
+	it("refuses to replace devices without an ETag to write under, or outside an instance's scope", async () => {
+		let puts = 0;
+		const socket = await unixServer((method) => {
+			if (method === "PUT") puts++;
+			return { body: { type: "sync", metadata: { architecture: "x86_64", config: {}, devices: {}, profiles: [] } } };
+		});
+		const client = new LxdUnixClient(socket);
+		await expect(
+			client.replaceInstanceDevices("coding", "qorpera-coding-machine-1", {}, new AbortController().signal),
+		).rejects.toThrow("LXD instance version is unavailable");
+		await expect(
+			client.replaceInstanceDevices("coding", "../other", {}, new AbortController().signal),
+		).rejects.toThrow("LXD instance scope is invalid");
+		expect(puts).toBe(0);
+	});
 	it.each(["create", "start"])("observes accepted %s after its dispatch grant expires", async (action) => {
 		const dispatch = new AbortController(),
 			caller = new AbortController();
@@ -326,6 +387,101 @@ describe("LXD Unix client", () => {
 			},
 		);
 		expect(requests[0]).toMatchObject({ method: "POST", body: volumeRequest });
+	});
+
+	describe("an exec operation that fails", () => {
+		const name = "qorpera-20000000000040008000000000000001";
+		const agentOffline = "LXD VM agent is not currently running";
+		async function exec(wait: { status?: number; body: unknown }, post?: { status?: number; body: unknown }) {
+			const socket = await unixServer((method, url) => {
+				if (method === "POST" && url.includes("/exec?project="))
+					return (
+						post ?? {
+							status: 202,
+							body: {
+								type: "async",
+								status: "Operation created",
+								status_code: 100,
+								operation: "/1.0/operations/operation-3",
+								metadata: {},
+							},
+						}
+					);
+				if (method === "GET" && url === "/1.0/operations/operation-3/wait?timeout=30") return wait;
+				throw new Error(`unexpected request ${method} ${url}`);
+			});
+			return new LxdUnixClient(socket, 30).execInstance("coding", name, ["/usr/bin/systemctl", "is-active", "x"]);
+		}
+		// LXD 5.21-6.x: the wait writes its 200 header first, so the failed
+		// operation's SmartError arrives as an error envelope under HTTP 200.
+		const errorEnvelope = (error: string) => ({
+			status: 200,
+			body: { type: "error", status: "", status_code: 0, operation: "", error_code: 500, error, metadata: null },
+		});
+		// Newer LXD renders the failed operation itself.
+		const failedOperation = (err: string) => ({
+			body: {
+				type: "sync",
+				status: "Success",
+				status_code: 200,
+				operation: "",
+				error_code: 0,
+				error: "",
+				metadata: {
+					id: "operation-3",
+					class: "task",
+					description: "Executing command",
+					status: "Failure",
+					status_code: 400,
+					resources: { instances: [`/1.0/instances/${name}?project=coding`] },
+					metadata: null,
+					may_cancel: false,
+					err,
+				},
+			},
+		});
+		it.each([
+			["an error envelope under HTTP 200 (LXD 5.21-6.x)", errorEnvelope(agentOffline)],
+			["the failed operation (newer LXD)", failedOperation(agentOffline)],
+			["the older wording", errorEnvelope("LXD VM agent isn't currently running")],
+		])("names a VM agent that is not running yet: %s", async (_shape, wait) => {
+			await expect(exec(wait)).rejects.toThrow(/^LXD instance agent not running$/);
+		});
+		it("names it when the exec request itself is refused for it", async () => {
+			await expect(
+				exec(errorEnvelope("unused"), {
+					status: 500,
+					body: { type: "error", error_code: 500, error: agentOffline, metadata: null },
+				}),
+			).rejects.toThrow(/^LXD instance agent not running$/);
+		});
+		it.each([
+			["another failure as an error envelope", errorEnvelope("Instance is not running"), /^LXD operation failed$/],
+			["another failed operation", failedOperation("Command not found"), /^LXD operation failed$/],
+			[
+				"a malformed wait reply",
+				{ body: { type: "sync", status: "Success", status_code: 200, metadata: null } },
+				/^LXD operation is invalid$/,
+			],
+			[
+				"an unavailable operation",
+				{ status: 404, body: { type: "error", error_code: 404, error: "not found" } },
+				/^LXD: not found$/,
+			],
+		])("keeps %s a plain failure", async (_case, wait, expected) => {
+			await expect(exec(wait)).rejects.toThrow(expected);
+		});
+		it("still separates a command that ran and exited non-zero", async () => {
+			const ran = {
+				body: {
+					type: "sync",
+					status: "Success",
+					status_code: 200,
+					metadata: { status: "Success", status_code: 200, err: "", metadata: { return: 3 } },
+				},
+			};
+			await expect(exec(ran)).rejects.toThrow(/^LXD instance command failed$/);
+		});
 	});
 
 	it("pushes root-owned private files and starts bootstrap through the VM agent", async () => {

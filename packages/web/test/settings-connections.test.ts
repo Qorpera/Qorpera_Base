@@ -6,6 +6,8 @@ import type {
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ConnectionsView, ProviderSignIns } from "../src/app/views/settings-connections.ts";
 import type { WebNativeProviderLogin, WebNativeSubscription } from "../src/cloud/native-subscription.ts";
+import { fmtTime } from "../src/ui/dom.ts";
+import { setLanguagePreference } from "../src/ui/preferences.ts";
 import { deferred, id, settle, timestamp, userA } from "./fixtures.ts";
 
 const WATCH_MS = 2000;
@@ -139,6 +141,147 @@ describe("member model account settings", () => {
 		expect(view.el.textContent).not.toContain("Refreshing…");
 		expect(client.beginProviderLogin).not.toHaveBeenCalled();
 	});
+	it("asks for a new observation only from the member's own Refresh button", async () => {
+		const { client, lifetime } = await setup(
+			true,
+			observed({ ...connected, sponsorBindingId: id(82), sponsorVersion: 1 }),
+		);
+		view.dispose();
+		const refreshAccountMetadata = vi.fn(async () => {});
+		view = new ConnectionsView({ ...client, refreshAccountMetadata }, lifetime.signal);
+		document.body.append(view.el);
+		await settle();
+		expect(refreshAccountMetadata).toHaveBeenCalledExactlyOnceWith(expect.any(AbortSignal), false);
+		[...view.el.querySelectorAll("button")].find((button) => button.textContent === "Refresh")!.click();
+		await settle();
+		expect(refreshAccountMetadata).toHaveBeenCalledTimes(2);
+		expect(refreshAccountMetadata).toHaveBeenLastCalledWith(expect.any(AbortSignal), true);
+	});
+	it("says Updated for a moment after the member's own Refresh, and never after a failed one", async () => {
+		vi.useFakeTimers();
+		const { client, lifetime } = await setup(
+			true,
+			observed({ ...connected, sponsorBindingId: id(82), sponsorVersion: 1 }),
+		);
+		view.dispose();
+		const refreshAccountMetadata = vi.fn(async (_signal?: AbortSignal, _force?: boolean) => {});
+		view = new ConnectionsView({ ...client, refreshAccountMetadata }, lifetime.signal);
+		document.body.append(view.el);
+		await settle();
+		const refresh = () => view.el.querySelector<HTMLButtonElement>('[data-focus-key="refresh"]')!;
+		expect(refresh().textContent).toBe("Refresh");
+		refresh().click();
+		await settle();
+		expect(refresh().textContent).toBe("Updated");
+		await vi.advanceTimersByTimeAsync(1999);
+		expect(refresh().textContent).toBe("Updated");
+		await vi.advanceTimersByTimeAsync(1);
+		expect(refresh().textContent).toBe("Refresh");
+		// A read the member did not ask for ends "Updated" at once and is not credited to them.
+		refresh().click();
+		await settle();
+		expect(refresh().textContent).toBe("Updated");
+		window.dispatchEvent(new Event("focus"));
+		expect(refresh().textContent).toBe("Refreshing…");
+		await settle();
+		expect(refresh().textContent).toBe("Refresh");
+		expect(refreshAccountMetadata.mock.calls.at(-1)![1]).toBe(false);
+		refresh().click();
+		await settle();
+		expect(refresh().textContent).toBe("Updated");
+		refreshAccountMetadata.mockRejectedValueOnce(new Error("offline"));
+		window.dispatchEvent(new Event("focus"));
+		await settle();
+		expect(refresh().textContent).toBe("Refresh");
+		expect(view.el.textContent).toContain("Usage could not be refreshed. Try again.");
+		expect(refreshAccountMetadata.mock.calls.at(-1)![1]).toBe(false);
+		refreshAccountMetadata.mockRejectedValueOnce(new Error("offline"));
+		refresh().click();
+		await settle();
+		expect(refresh().textContent).toBe("Refresh");
+		expect(view.el.textContent).toContain("Usage could not be refreshed. Try again.");
+		view.dispose();
+		expect(vi.getTimerCount()).toBe(0);
+	});
+	it("makes a background read ask for a new observation when Refresh joins it", async () => {
+		const { client, lifetime } = await setup(
+			true,
+			observed({ ...connected, sponsorBindingId: id(82), sponsorVersion: 1 }),
+		);
+		view.dispose();
+		const refreshAccountMetadata = vi.fn(async (_signal?: AbortSignal, _force?: boolean) => {});
+		view = new ConnectionsView({ ...client, refreshAccountMetadata }, lifetime.signal);
+		document.body.append(view.el);
+		await settle();
+		// Returning to the window starts a background read; the button is not greyed out yet.
+		window.dispatchEvent(new Event("focus"));
+		view.el.querySelector<HTMLButtonElement>('[data-focus-key="refresh"]')!.click();
+		await vi.waitFor(() => expect(refreshAccountMetadata).toHaveBeenCalledTimes(2));
+		await settle();
+		expect(refreshAccountMetadata.mock.calls.map((call) => call[1])).toEqual([false, true]);
+		expect(view.el.querySelector('[data-focus-key="refresh"]')!.textContent).toBe("Updated");
+	});
+	it("keeps one Updated clock when Refresh is pressed twice during one read", async () => {
+		vi.useFakeTimers();
+		const { client } = await setup(true, observed({ ...connected, sponsorBindingId: id(82), sponsorVersion: 1 }));
+		const pending = deferred<NativeExecutionConnections>();
+		vi.mocked(client.listConnections).mockReturnValueOnce(pending.promise);
+		const refresh = () => view.el.querySelector<HTMLButtonElement>('[data-focus-key="refresh"]')!;
+		refresh().click();
+		refresh().click();
+		pending.resolve(observed({ ...connected, sponsorBindingId: id(82), sponsorVersion: 1 }));
+		await settle();
+		expect(refresh().textContent).toBe("Updated");
+		view.dispose();
+		expect(vi.getTimerCount()).toBe(0);
+	});
+	it("shows the returning card details in Danish", async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(new Date("2026-09-19T20:00:00Z"));
+		setLanguagePreference("da");
+		try {
+			const first = {
+				...connected,
+				sponsorBindingId: id(82),
+				sponsorVersion: 1,
+				providerAccountUsage: {
+					observedAt: "2026-09-19T19:00:00.000Z",
+					windows: [{ id: "primary" as const, label: "5 hours", usedPercent: 8 }],
+				},
+			};
+			await setup(true, observed(first, { ...first, connectionId: id(83) }));
+			const card = view.el.querySelector(".connection-card")!;
+			const time = fmtTime("2026-09-19T19:00:00.000Z");
+			expect(card.querySelector(".connection-identity")!.textContent).toBe(
+				`Tilføjet ${fmtTime(connected.consentedAt)} · ${id(81).slice(-8)}`,
+			);
+			expect(card.querySelector(".connection-identity")!.getAttribute("title")).toBe(`Forbindelse ${id(81)}`);
+			expect(card.querySelector(`[title="Sidst tjekket ${time}"]`)!.textContent).toBe(
+				`92% ved sidste tjek · ${time}`,
+			);
+			view.el.querySelector<HTMLButtonElement>('[data-focus-key="refresh"]')!.click();
+			await settle();
+			expect(view.el.querySelector('[data-focus-key="refresh"]')!.textContent).toBe("Opdateret");
+		} finally {
+			setLanguagePreference("en");
+		}
+	});
+	it("tells apart two cards for the same provider and email by when each was added", async () => {
+		const first = { ...connected, sponsorBindingId: id(82), sponsorVersion: 1 };
+		const second = {
+			...first,
+			connectionId: id(83),
+			providerAccountEmail: "Member@Example.com",
+			consentedAt: "2026-09-21T00:24:00.000Z",
+		};
+		const other = { ...first, connectionId: id(84), providerAccountEmail: "other@example.com" };
+		await setup(true, observed(first, second, other));
+		const identity = (index: number) =>
+			view.el.querySelectorAll(".connection-card")[index]!.querySelector(".connection-identity")?.textContent;
+		expect(identity(0)).toBe(`Added ${fmtTime(first.consentedAt)} · ${id(81).slice(-8)}`);
+		expect(identity(1)).toBe(`Added ${fmtTime(second.consentedAt)} · ${id(83).slice(-8)}`);
+		expect(identity(2)).toBeUndefined();
+	});
 	it("keeps connected identities visible when usage refresh fails", async () => {
 		const { client, lifetime } = await setup(true);
 		view.dispose();
@@ -166,9 +309,8 @@ describe("member model account settings", () => {
 		const labels = [...view.el.querySelectorAll("button")].map((item) => item.textContent);
 		for (const removed of ["Refresh model accounts", "Enable for my messages", "Revoke connection"])
 			expect(labels).not.toContain(removed);
-		expect(view.el.textContent).toContain("Connect your tools");
-		const service = [...view.el.querySelectorAll("button")].find((item) => item.textContent === "Add service")!;
-		expect(service.disabled).toBe(true);
+		// Services moved to their own view beside the model accounts (Step 7).
+		expect(view.el.textContent).not.toContain("Add service");
 	});
 	it("shows each connected account with its provider logo and email, hiding opaque references", async () => {
 		await setup(
@@ -207,7 +349,7 @@ describe("member model account settings", () => {
 		for (const account of accounts) expect(account.querySelector("button")!.textContent).toBe("Sign out");
 		expect(view.el.textContent).not.toContain("opaque-account");
 	});
-	it("distinguishes accounts with missing email without presenting references as identity", async () => {
+	it("tells apart accounts with missing email by when they were added, without presenting references", async () => {
 		await setup(
 			true,
 			observed(
@@ -221,8 +363,11 @@ describe("member model account settings", () => {
 		]);
 		expect(view.el.textContent).not.toContain("unverified@example.com");
 		const identities = [...view.el.querySelectorAll(".connection-identity")];
-		expect(identities[0]!.textContent).toContain(id(81).slice(-8));
-		expect(identities[1]!.textContent).toContain(id(83).slice(-8));
+		expect(identities.map((item) => item.textContent)).toEqual([
+			`Added ${fmtTime(connected.consentedAt)} · ${id(81).slice(-8)}`,
+			`Added ${fmtTime(connected.consentedAt)} · ${id(83).slice(-8)}`,
+		]);
+		expect(identities[1]!.getAttribute("title")).toBe(`Connection ${id(83)}`);
 		expect(view.el.querySelectorAll("[role=meter]")).toHaveLength(0);
 		expect(view.el.textContent).toContain("Usage unavailable");
 	});
@@ -250,7 +395,24 @@ describe("member model account settings", () => {
 		expect(view.el.textContent).toContain("9% left");
 		expect(view.el.textContent).toContain("Resets in 3h 30m");
 		expect(view.el.querySelector('[role="slider"], input[type="range"]')).toBeNull();
-		expect(view.el.textContent).toContain("Last checked");
+		expect(meters.map((meter) => meter.getAttribute("aria-label"))).toEqual([
+			"5-hour limit remaining usage",
+			"Weekly limit remaining usage",
+		]);
+		// Two bars would look alike, so each carries its name.
+		const card = view.el.querySelector(".connection-card")!;
+		const labels = [...card.querySelectorAll(".connection-usage-label")];
+		expect(labels.map((item) => item.textContent)).toEqual(["5-hour limit", "Weekly limit"]);
+		expect(labels.every((item) => item.getAttribute("aria-hidden") === "true")).toBe(true);
+		// The check time is on hover only; the card has no date line of its own.
+		expect(card.textContent).not.toContain("Last checked");
+		expect(card.querySelector(`[title="Last checked ${fmtTime(new Date().toISOString())}"]`)?.textContent).toBe(
+			"87.5% left",
+		);
+		expect(card.querySelector(".connection-identity")).toBeNull();
+		expect(card.textContent).not.toContain("Connected");
+		expect(card.textContent).not.toContain(id(81).slice(-8));
+		expect(card.querySelector("[title^='Connection ']")).toBeNull();
 	});
 	it("ages a snapshot, expires its meter, and preserves focus when time advances", async () => {
 		vi.useFakeTimers();
@@ -269,8 +431,12 @@ describe("member model account settings", () => {
 		);
 		action(OPENAI).focus();
 		await vi.advanceTimersByTimeAsync(6 * 60_000);
-		expect(view.el.textContent).toContain("0% at last check");
-		expect(view.el.textContent).toContain("may be out of date");
+		// An old reading says when it was taken; one bar needs no name.
+		expect(view.el.textContent).toContain(`0% at last check · ${fmtTime("2026-09-19T20:00:00.000Z")}`);
+		expect(view.el.querySelector(".connection-usage-meter")!.classList.contains("is-stale")).toBe(true);
+		expect(view.el.querySelector(".connection-usage-label")).toBeNull();
+		expect(view.el.textContent).not.toContain("5-hour limit");
+		expect(view.el.textContent).not.toContain("may be out of date");
 		expect(document.activeElement).toBe(action(OPENAI));
 		await vi.advanceTimersByTimeAsync(4 * 60_000);
 		expect(view.el.querySelector("[role=meter]")).toBeNull();
@@ -319,7 +485,7 @@ describe("member model account settings", () => {
 		await vi.advanceTimersByTimeAsync(60_000);
 		expect(client.listConnections).toHaveBeenCalledTimes(4);
 		expect(view.el.textContent).toContain("5% left");
-		expect(view.el.textContent).not.toContain("may be out of date");
+		expect(view.el.textContent).not.toContain("at last check");
 	});
 	it("shows an active provider usage wall without treating an earlier snapshot as available quota", async () => {
 		vi.useFakeTimers();
@@ -336,8 +502,26 @@ describe("member model account settings", () => {
 			}),
 		);
 		expect(view.el.textContent).toContain("Usage limit reached · resets in 1h 0m");
-		expect(view.el.textContent).toContain("50% at last check");
+		expect(view.el.querySelector("[role=meter]")!.getAttribute("aria-valuetext")).toBe(
+			`50% at last check · ${fmtTime("2026-09-19T20:00:00.000Z")}`,
+		);
 		expect(view.el.textContent).not.toContain("50% left");
+		expect(view.el.querySelector(".connection-usage-meter")!.classList.contains("is-stale")).toBe(true);
+	});
+	it("never shows a reading time later than now when the host's clock runs ahead", async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(new Date("2026-09-19T20:00:00Z"));
+		await setup(
+			true,
+			observed({
+				...connected,
+				providerAccountUsage: {
+					observedAt: "2026-09-19T20:10:00.000Z",
+					windows: [{ id: "primary", label: "5-hour limit", usedPercent: 8 }],
+				},
+			}),
+		);
+		expect(view.el.querySelector("[role=meter]")!.getAttribute("aria-valuetext")).toBe("92% at last check");
 	});
 	it("refreshes usage from the account projection without losing keyboard focus", async () => {
 		const { client } = await setup(true, observed({ ...connected, sponsorBindingId: id(82), sponsorVersion: 1 }));
@@ -463,6 +647,7 @@ describe("member model account settings", () => {
 		expect(card(OPENAI).querySelector("small")!.textContent).toBe("member@example.com");
 		expect(action(OPENAI).textContent).toBe("Sign out");
 		expect(card(CLAUDE).textContent).toContain("Sign out and add this account again to reconnect.");
+		expect(card(CLAUDE).textContent).not.toContain("Added");
 		expect([...card(CLAUDE).querySelectorAll("button")].map((item) => item.textContent)).toEqual(["Sign out"]);
 		expect(action(CLAUDE).disabled).toBe(false);
 	});

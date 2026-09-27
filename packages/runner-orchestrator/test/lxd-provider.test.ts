@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -456,9 +456,12 @@ describe("LXD cloud runner provider", () => {
 			return provision(input, init);
 		};
 		const backend = new LxdCloudRunnerProviderBackend(config(stateRoot), lxd, new FakeGuest(), fetcher);
-		await expect(backend.acquire(runId, work(), new AbortController().signal)).rejects.toThrow(
-			"NODE_OBSERVATION_UNAVAILABLE",
-		);
+		await expect(backend.acquire(runId, work(), new AbortController().signal)).rejects.toMatchObject({
+			name: "LxdMachineAdmissionRefused",
+			category: "admission_refused",
+			state: "refused",
+			reason: "NODE_OBSERVATION_UNAVAILABLE",
+		});
 		expect(lxd.createCalls).toHaveLength(1);
 		expect(lxd.powerCalls).toHaveLength(0);
 		const journalPath = join(stateRoot, runId, "journal.json");
@@ -672,6 +675,47 @@ describe("LXD cloud runner provider", () => {
 		);
 	});
 
+	it("stops reconciling a settled journal, archives it a day later and refuses its replay", async () => {
+		// Live cost (23 Sep 2026): node 1 re-read 76 finished run journals, three LXD calls each, on every pass.
+		const f = await acquiredFixture();
+		const backend = new LxdCloudRunnerProviderBackend(config(f.stateRoot), f.lxd, f.guest, f.fetchImplementation);
+		const runner = await backend.acquire(runId, f.request, new AbortController().signal);
+		await backend.stop(runner, "idle");
+		const lxdCalls = [vi.spyOn(f.lxd, "getInstance"), vi.spyOn(f.lxd, "getStorageVolume")];
+		const calls = () => lxdCalls.reduce((sum, spy) => sum + spy.mock.calls.length, 0);
+		await backend.reconcile();
+		const settledCalls = calls();
+		expect(settledCalls).toBeGreaterThan(0);
+		for (let pass = 0; pass < 3; pass++) await backend.reconcile();
+		expect(calls()).toBe(settledCalls);
+		expect((await readdir(f.stateRoot)).sort()).toEqual([runId]);
+
+		// A day after its last change a restarted provider moves it, with its credentials, to the archive.
+		const old = JSON.parse(await readFile(f.journalPath, "utf8")) as Record<string, unknown>;
+		await writeFile(
+			f.journalPath,
+			JSON.stringify({ ...old, updatedAt: new Date(Date.now() - 25 * 60 * 60_000).toISOString() }),
+			{ mode: 0o600 },
+		);
+		const restarted = new LxdCloudRunnerProviderBackend(config(f.stateRoot), f.lxd, f.guest, f.fetchImplementation);
+		await restarted.reconcile();
+		expect(await readdir(f.stateRoot)).toEqual(["archive"]);
+		// The run is over: its tokens are dead and only their hashes stay, in the journal.
+		expect(await readdir(join(f.stateRoot, "archive", runId))).toEqual(["journal.json"]);
+		expect((await stat(join(f.stateRoot, "archive"))).mode & 0o777).toBe(0o700);
+		const archivedCalls = calls();
+		await restarted.reconcile();
+		expect(calls()).toBe(archivedCalls);
+
+		// Its run is over: a replayed acquire allocates nothing and leaves no journal behind.
+		await expect(restarted.acquire(runId, f.request, new AbortController().signal)).rejects.toThrow(
+			"archived and cannot be replayed",
+		);
+		await restarted.stop(runner, "idle");
+		expect(f.lxd.createCalls).toHaveLength(1);
+		expect(await readdir(f.stateRoot)).toEqual(["archive"]);
+	});
+
 	it("releases a stopped journal from an older build once more and then marks it", async () => {
 		const f = await acquiredFixture();
 		const releases = () =>
@@ -823,7 +867,7 @@ describe("LXD cloud runner provider", () => {
 			physicalState: "reserving",
 		});
 	});
-	it("retires a reserving journal that made no progress for ten minutes", async () => {
+	it.each([false, true])("allows new work after retiring a stale reservation (registered: %s)", async (registered) => {
 		const f = await acquiredFixture();
 		const reservingId = "10000000-0000-4000-8000-000000000002";
 		const journal = JSON.parse(await readFile(f.journalPath, "utf8"));
@@ -838,6 +882,7 @@ describe("LXD cloud runner provider", () => {
 			updatedAt: stale,
 		};
 		delete reserving.nodeCapacity;
+		if (!registered) delete reserving.capacityRegistered;
 		delete reserving.guestAddress;
 		delete reserving.assignmentId;
 		await mkdir(join(f.stateRoot, reservingId), { recursive: true, mode: 0o700 });
@@ -854,6 +899,31 @@ describe("LXD cloud runner provider", () => {
 					String(url).includes("qorpera_release_runtime_machine") && String(init?.body).includes(reservingId),
 			);
 		expect(releases).toHaveLength(reserving.capacityRegistered ? 1 : 0);
+		// A provider restart must not let the retired reservation block unrelated work.
+		f.lxd.instance = { ...f.lxd.instance!, status: "Stopped", statusCode: 102 };
+		await backend.reconcile();
+		const nextId = "30000000-0000-4000-8000-000000000001";
+		const restarted = new LxdCloudRunnerProviderBackend(config(f.stateRoot), f.lxd, f.guest, f.fetchImplementation);
+		await restarted.acquire(nextId, { ...work(), runId: nextId }, new AbortController().signal);
+		expect(f.lxd.createCalls).toHaveLength(2);
+		expect(f.lxd.powerCalls).toEqual(["start", "start"]);
+	});
+	it.each(["present", "unknown"])("blocks new work when a lost guest is %s", async (presence) => {
+		const f = await acquiredFixture();
+		const journal = JSON.parse(await readFile(f.journalPath, "utf8"));
+		journal.physicalState = "lost";
+		delete journal.nodeCapacity;
+		delete journal.capacityRegistered;
+		await writeFile(f.journalPath, JSON.stringify(journal));
+		if (presence === "unknown") vi.spyOn(f.lxd, "getInstance").mockRejectedValue(new Error("LXD unavailable"));
+		const backend = new LxdCloudRunnerProviderBackend(config(f.stateRoot), f.lxd, f.guest, f.fetchImplementation);
+		const nextId = "30000000-0000-4000-8000-000000000001";
+		await expect(backend.acquire(nextId, { ...work(), runId: nextId }, new AbortController().signal)).rejects.toThrow(
+			presence === "present" ? "machine-capacity inventory" : "LXD unavailable",
+		);
+		expect(f.lxd.createCalls).toHaveLength(1);
+		expect(f.lxd.powerCalls).toEqual(["start"]);
+		expect(JSON.parse(await readFile(f.journalPath, "utf8"))).toEqual(journal);
 	});
 	it("reconciles a lost journal whose guest and recovery volume never existed", async () => {
 		const directory = await root();
@@ -927,6 +997,32 @@ describe("LXD cloud runner provider", () => {
 		});
 		expect(lxd.createCalls).toHaveLength(0);
 	});
+	it.each(["NODE_CAPACITY_EXHAUSTED", "NODE_OBSERVATION_UNAVAILABLE", "NODE_DISABLED"])(
+		"reports a node refusal %s as a typed admission refusal",
+		async (reason) => {
+			const stateRoot = join(await root(), "state");
+			const lxd = new FakeLxd();
+			const base = fetchProvisioner([]);
+			const fetcher: typeof fetch = async (input, init) => {
+				if (String(input).includes("qorpera_reserve_runtime_node_machine"))
+					return Response.json({ state: "refused", reason });
+				return base(input, init);
+			};
+			const backend = new LxdCloudRunnerProviderBackend(config(stateRoot), lxd, new FakeGuest(), fetcher);
+			const failure = await backend
+				.acquire(runId, work(), new AbortController().signal)
+				.catch((error: unknown) => error);
+			expect(failure).toMatchObject({
+				name: "LxdMachineAdmissionRefused",
+				category: "admission_refused",
+				state: "refused",
+				reason,
+			});
+			expect(lxd.createCalls).toHaveLength(0);
+			const journal = JSON.parse(await readFile(join(stateRoot, runId, "journal.json"), "utf8"));
+			expect(journal).toMatchObject({ physicalState: "reserving", capacityRegistered: true });
+		},
+	);
 	it("blocks new starts until retained live guests have a capacity record", async () => {
 		const f = await acquiredFixture();
 		const journal = JSON.parse(await readFile(f.journalPath, "utf8"));
@@ -1793,6 +1889,58 @@ describe("LXD cloud runner provider", () => {
 		},
 	);
 
+	it.each(["configured", "unconfigured"])(
+		"hands the guest the coding command gateway only when configured (%s)",
+		async (scope) => {
+			const settings = governedConfig(join(await root(), "state"));
+			const gateway = { origin: "https://coding.example.test:8789", token: "k".repeat(43) };
+			if (scope === "configured") settings.nativeCompanyRuntime!.codingCommand = gateway;
+			const lxd = new FakeLxd(),
+				guest = new FakeGuest();
+			const backend = new LxdCloudRunnerProviderBackend(settings, lxd, guest, fetchProvisioner([]));
+			const runner = await backend.acquire(runId, work(), new AbortController().signal);
+			const files = new Map(lxd.filePushes.map((file) => [file.path, file.content]));
+			const credential = "/var/lib/qorpera-bootstrap/credentials/qorpera-coding-command";
+			expect(files.get(credential)).toBe(scope === "configured" ? `${gateway.token}\n` : "");
+			expect(lxd.filePushes.find((file) => file.path === credential)?.mode).toBe(0o600);
+			const bootstrap = JSON.parse(files.get("/var/lib/qorpera-bootstrap/bootstrap.json")!);
+			const journalText = await readFile(join(settings.stateRoot, runId, "journal.json"), "utf-8");
+			const journal = JSON.parse(journalText);
+			const environment = files.get("/var/lib/qorpera-bootstrap/native-provider.env")!;
+			if (scope === "configured") {
+				const tokenSha256 = createHash("sha256").update(gateway.token).digest("hex");
+				expect(bootstrap.company_runtime.coding_command).toEqual({
+					url: gateway.origin,
+					token_sha256: tokenSha256,
+				});
+				expect(journal.lxd.companyRuntime.codingCommand).toEqual({ url: gateway.origin, tokenSha256 });
+				expect(environment).toContain(`QORPERA_CODING_COMMAND_URL=${gateway.origin}\n`);
+			} else {
+				expect(bootstrap.company_runtime.coding_command).toBeUndefined();
+				expect(journal.lxd.companyRuntime.codingCommand).toBeUndefined();
+				expect(environment).not.toContain("QORPERA_CODING_COMMAND_URL");
+			}
+			expect(journalText).not.toContain(gateway.token);
+			expect(JSON.stringify(lxd.createCalls)).not.toContain(gateway.token);
+			expect(JSON.stringify(lxd.filePushes.filter((file) => file.path !== credential))).not.toContain(gateway.token);
+			const pushed = lxd.filePushes.length;
+			const restarted = new LxdCloudRunnerProviderBackend(settings, lxd, guest, fetchProvisioner([]));
+			await expect(restarted.acquire(runId, work(), new AbortController().signal)).resolves.toEqual(runner);
+			expect(lxd.filePushes).toHaveLength(pushed);
+		},
+	);
+
+	it("refuses a coding command token shared with another guest credential", async () => {
+		const settings = governedConfig(join(await root(), "state"));
+		settings.nativeCompanyRuntime!.codingCommand = {
+			origin: "https://coding.example.test:8789",
+			token: "q".repeat(43),
+		};
+		expect(
+			() => new LxdCloudRunnerProviderBackend(settings, new FakeLxd(), new FakeGuest(), fetchProvisioner([])),
+		).toThrow();
+	});
+
 	it("freezes route credentials at construction and refuses changed restart authority", async () => {
 		const settings = governedConfig(join(await root(), "state"));
 		const route = {
@@ -1855,6 +2003,39 @@ describe("LXD cloud runner provider", () => {
 			expect(await readFile(path, "utf-8")).toBe(before);
 		},
 	);
+
+	it.each([
+		["retired", "added"],
+		["retired", "removed"],
+		["retired", "moved"],
+		["live", "added"],
+	])("keeps a %s journal %s-coding-route readable only when retired", async (scope, change) => {
+		const settings = governedConfig(join(await root(), "state"));
+		const gateway = { origin: "https://coding.example.test:8789", token: "c".repeat(43) };
+		if (change !== "added") settings.nativeCompanyRuntime!.codingCommand = gateway;
+		const lxd = new FakeLxd(),
+			guest = new FakeGuest();
+		const backend = new LxdCloudRunnerProviderBackend(settings, lxd, guest, fetchProvisioner([]));
+		const runner = await backend.acquire(runId, work(), new AbortController().signal);
+		if (scope === "retired") {
+			await backend.stop(runner, "idle");
+			await backend.reconcile();
+		}
+		const path = join(settings.stateRoot, runId, "journal.json");
+		const before = await readFile(path, "utf-8");
+		const later = governedConfig(settings.stateRoot);
+		if (change === "added") later.nativeCompanyRuntime!.codingCommand = gateway;
+		if (change === "moved")
+			later.nativeCompanyRuntime!.codingCommand = {
+				origin: "https://coding-2.example.test:8789",
+				token: "d".repeat(43),
+			};
+		const restarted = new LxdCloudRunnerProviderBackend(later, lxd, guest, fetchProvisioner([]));
+		// A node turning coding on (or off, or moving its gateway) must not strand the journals it kept.
+		if (scope === "retired") await expect(restarted.reconcile()).resolves.toBeUndefined();
+		else await expect(restarted.reconcile()).rejects.toThrow("journal");
+		expect(await readFile(path, "utf-8")).toBe(before);
+	});
 
 	it.each(["environmentId", "url", "tokenSha256", "unknown"])(
 		"refuses altered journal office authority (%s)",

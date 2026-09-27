@@ -104,13 +104,7 @@ interface StaffRegistry {
 const STAFF_REGISTRY_RELATIVE_PATH = join(".qorpera", "staff.json");
 const AGENTS_RELATIVE_PATH = "agents";
 const AGENT_INSTRUCTIONS_FILE = "instructions.md";
-const AGENT_MEMORY_FILE = "memory.md";
 const AGENT_SKILLS_DIRECTORY = "skills";
-const MAX_AGENT_MEMORY_BYTES = 64 * 1024;
-const AGENT_MEMORY_SEED = `# Memory
-
-Durable facts this agent has learned: founder preferences, decisions, recurring context, and lessons from past work. Keep entries short, current, and remove anything that turns out to be wrong.
-`;
 const MAX_STAFF_REGISTRY_BYTES = 4 * 1024 * 1024;
 const MAX_STAFF_AGENTS = 1_000;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -369,30 +363,8 @@ export function staffAgentInstructionsPath(root: string, id: string): string {
 	return join(staffAgentDirectoryPath(root, id), AGENT_INSTRUCTIONS_FILE);
 }
 
-export function staffAgentMemoryPath(root: string, id: string): string {
-	return join(staffAgentDirectoryPath(root, id), AGENT_MEMORY_FILE);
-}
-
 export function staffAgentSkillsPath(root: string, id: string): string {
 	return join(staffAgentDirectoryPath(root, id), AGENT_SKILLS_DIRECTORY);
-}
-
-/** Best-effort read of an agent's durable private memory. Missing or invalid
- * memory degrades to empty instead of blocking a launch; oversized memory is
- * truncated at the byte limit so a runaway file cannot flood the context. */
-export function readStaffAgentMemory(root: string, id: string): string {
-	const path = staffAgentMemoryPath(root, id);
-	try {
-		const entry = lstatSync(path);
-		if (!entry.isFile() || entry.isSymbolicLink()) return "";
-		const content = readFileSync(path, "utf-8");
-		const buffer = Buffer.from(content, "utf-8");
-		return buffer.length > MAX_AGENT_MEMORY_BYTES
-			? buffer.subarray(0, MAX_AGENT_MEMORY_BYTES).toString("utf-8")
-			: content;
-	} catch {
-		return "";
-	}
 }
 
 function physicalAgentDirectory(root: string, id: string, create: boolean): string | undefined {
@@ -424,8 +396,6 @@ function writeAgentInstructions(root: string, id: string, charter: string): void
 	}
 	const skills = join(directory, AGENT_SKILLS_DIRECTORY);
 	if (!existsSync(skills)) mkdirSync(skills);
-	const memory = join(directory, AGENT_MEMORY_FILE);
-	if (!existsSync(memory)) writeFileSync(memory, AGENT_MEMORY_SEED, { encoding: "utf-8", flag: "wx" });
 	const path = join(directory, AGENT_INSTRUCTIONS_FILE);
 	const temporary = `${path}.${randomUUID()}.tmp`;
 	try {

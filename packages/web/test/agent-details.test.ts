@@ -7,8 +7,9 @@ import type { WebNativeSubscription } from "../src/cloud/native-subscription.ts"
 import type { HostedCompanyOrganization } from "../src/cloud/organization.ts";
 import type { WebRoutines } from "../src/cloud/routines.ts";
 import type { HostedStaffAgent } from "../src/cloud/types.ts";
-import { FIGURE_IDS, figureFor } from "../src/ui/avatar.ts";
-import { deferred, fixture, id, profileA, settle, staff, team, userA } from "./fixtures.ts";
+import conversationCss from "../src/styles/conversation.css?raw";
+import { FIGURE_IDS, figureFor, nativeColorOf } from "../src/ui/avatar.ts";
+import { deferred, fixture, id, profileA, settle, staff, stubFigureMotion, team, userA } from "./fixtures.ts";
 
 const cleanup: (() => void)[] = [];
 beforeEach(() => {
@@ -326,12 +327,46 @@ describe("agent figure", () => {
 		f.dialog.querySelector(".agent-inline-description")!.dispatchEvent(new Event("pointerdown", { bubbles: true }));
 		expect(picker.hidden).toBe(true);
 	});
-	it("offers the Co-Founder figures only", () => {
-		const f = open({ updateAgent: saving() }, { ...staff, id: id(40), templateId: "co-founder" });
+	it("lets the Co-Founder choose a color like any agent", () => {
+		const figures = stubFigureMotion();
+		vi.stubGlobal("QORPERA_AVATAR_APPEARANCE", { palette: [{ name: "Teal", color: "#00bfb3" }] });
+		const drawnIn = () => figures.mock.calls.at(-1)?.[2];
+		const updateAgent = saving();
+		const cofounder = { ...staff, id: id(40), templateId: "co-founder" };
+		const f = open({ updateAgent }, { ...cofounder, appearance: { ...cofounder.appearance, color: "qorpera-blue" } });
 		named("Edit figure").click();
 		const picker = f.dialog.querySelector<HTMLElement>(".agent-figure-picker")!;
-		expect(picker.classList.contains("figures-only")).toBe(true);
-		expect(picker.querySelector(".color-grid, .agent-figure-reset")).toBeNull();
+		expect(picker.getAttribute("aria-label")).toBe("Choose a figure and color");
+		expect(named("Reset")).toBeDefined();
+		// The seeded colour is nobody's choice: the figure starts in its own shade.
+		expect(drawnIn()).toBe(nativeColorOf(figureFor(cofounder)));
+		expect(named("Teal").getAttribute("aria-checked")).toBe("false");
+		named("Teal").click();
+		expect(updateAgent).toHaveBeenCalledTimes(1);
+		expect(updateAgent.mock.calls[0]![1]).toMatchObject({ figure: figureFor(cofounder), color: "#00bfb3" });
+		expect(named("Teal").getAttribute("aria-checked")).toBe("true");
+		expect(drawnIn()).toBe("#00bfb3");
+	});
+	it("resets to the figure's own shade, which then follows the figure", async () => {
+		stubFigureMotion();
+		vi.stubGlobal("QORPERA_MOTION_MODEL", {
+			avatars: [
+				{ id: "crown", color: "#fcb51b" },
+				{ id: "heart", color: "#fb672a" },
+			],
+			faces: {},
+		});
+		vi.stubGlobal("QORPERA_AVATAR_APPEARANCE", { palette: [{ name: "Teal", color: "#00bfb3" }] });
+		const updateAgent = saving();
+		open({ updateAgent }, { ...staff, appearance: { color: "#00bfb3", shape: "round", creature: "crown" } });
+		named("Edit figure").click();
+		named("Reset").click();
+		expect(updateAgent.mock.calls.at(-1)![1]).toMatchObject({ figure: "crown", color: "#fcb51b" });
+		// Saves run one at a time; the next figure is written once this one lands.
+		await settle();
+		named("heart").click();
+		await settle();
+		expect(updateAgent.mock.calls.at(-1)![1]).toMatchObject({ figure: "heart", color: "#fb672a" });
 	});
 });
 
@@ -409,5 +444,36 @@ describe("agent pages", () => {
 		expect(routines.list).toHaveBeenCalledTimes(2);
 		expect(f.dialog.textContent).toContain("Renamed has no routines yet.");
 		expect(f.cloud.rpc).not.toHaveBeenCalled();
+	});
+});
+
+describe("the popup's frame", () => {
+	it("keeps one static height on the details and routines pages and leaves the group popup to its content", () => {
+		const style = document.createElement("style");
+		style.textContent = conversationCss.replace(/^@import .*;$/gm, "");
+		document.head.append(style);
+		cleanup.push(() => style.remove());
+		const f = open();
+		const rules = [...style.sheet!.cssRules].filter((rule): rule is CSSStyleRule => rule instanceof CSSStyleRule);
+		const declared = (selector: string, property: string) =>
+			rules.find((rule) => rule.selectorText === selector)?.style.getPropertyValue(property);
+		// The agent popup carries the class with the static height; the shared
+		// frame class does not, so the group popup keeps sizing itself.
+		expect(f.dialog.classList.contains("staff-details")).toBe(true);
+		expect(declared(".staff-details", "height")).toBe("var(--agent-details-height)");
+		expect(declared(".staff-details", "--agent-details-height")).toContain("8 * 1.6 * 13px");
+		expect(declared(".agent-details", "height")).toBeFalsy();
+		// Only the agent page's description fills the frame; elsewhere the sizer still grows it to 13 lines.
+		expect(declared(".agent-details-page .agent-inline-description", "flex")).toBe("1 1 auto");
+		expect(declared(".agent-details-page .agent-inline-description > .agent-inline-size::after", "display")).toBe(
+			"none",
+		);
+		expect(declared(".agent-inline-description > .agent-inline-size::after", "max-height")).toMatch(
+			/13 \* 1\.6em|20\.8em/,
+		);
+		expect(f.dialog.querySelector(".agent-details-page .agent-inline-description textarea")).not.toBeNull();
+		named("Routines").click();
+		expect(f.dialog.dataset.page).toBe("routines");
+		expect(f.dialog.classList.contains("staff-details")).toBe(true);
 	});
 });

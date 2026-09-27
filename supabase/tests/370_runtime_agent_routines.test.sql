@@ -59,6 +59,26 @@ select pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001
 select pg_temp.wake_error($q$select public.qorpera_manage_agent_routine(current_setting('qorpera_test.routine_binding')::jsonb,'{"action":"list"}')$q$,'42501');
 select pg_temp.path_claims('service_role');
 
+-- Runtime v95: an agent keeps any number of routines (was 32 active or paused).
+-- Probed in a subtransaction.
+do $$
+declare v_index integer;
+begin
+	begin
+		for v_index in 1..33 loop
+			perform pg_temp.routine(jsonb_build_object('action','upsert','operationKey','many-' || v_index,'routineKey','many-' || v_index,
+				'title','Check ' || v_index,'intent','Read support/queue.json.',
+				'trigger','{"kind":"schedule","intervalMinutes":1440,"weekdays":["monday","tuesday","wednesday","thursday","friday"],
+					"localTime":"08:00","timeZone":"Europe/Copenhagen","replyPolicy":"optional"}'::jsonb));
+		end loop;
+		perform pg_temp.wake_assert((select count(*) from public.qorpera_cloud_routines where origin = 'agent'
+			and status in ('active','paused')) >= 34,'An agent keeps thirty-four routines');
+		raise exception 'rollback-routine-count-probe';
+	exception when raise_exception then
+		if sqlerrm <> 'rollback-routine-count-probe' then raise; end if;
+	end;
+end $$;
+
 -- Pause, resume, remove.
 do $$
 begin
@@ -82,6 +102,93 @@ begin
 	perform pg_temp.wake_schedule(v_routine,'once-a');
 	perform pg_temp.wake_assert((pg_temp.routine_row('watch-once')).status = 'expired','The last permitted occurrence expires the watch');
 	perform pg_temp.wake_error(format('select pg_temp.wake_schedule(%L::jsonb,%L)',v_routine,'once-b'),'PGRST');
+end $$;
+
+-- Effort: the agent chooses the thinking depth of its routine runs; medium unless it says otherwise.
+-- The materialized run carries the routine version's effort when the active bundle allows routine
+-- overrides (contract 17), and the bundle default otherwise.
+do $$
+declare v_row public.qorpera_cloud_routines; v_routine jsonb; v_run public.qorpera_execution_runs; v_manifest jsonb;
+	v_expected text;
+begin
+	perform pg_temp.routine('{"action":"upsert","operationKey":"eff-1","routineKey":"deep-check","title":"Deep check","intent":"Think hard.",
+		"effort":"high","trigger":{"kind":"schedule","intervalMinutes":5,"replyPolicy":"silent"}}');
+	v_row := pg_temp.routine_row('deep-check');
+	perform pg_temp.wake_assert((select effort from public.qorpera_cloud_routine_versions where routine_id = v_row.id and version = 1) = 'high'
+		and (select routine ->> 'effort' from jsonb_array_elements(pg_temp.routine('{"action":"list"}') -> 'routines') routine
+			where routine ->> 'routineKey' = 'deep-check') = 'high','A routine stores and lists the effort its agent chose');
+	perform pg_temp.routine('{"action":"upsert","operationKey":"eff-2","routineKey":"plain-check","title":"Plain check","intent":"Look.",
+		"trigger":{"kind":"schedule","intervalMinutes":5,"replyPolicy":"silent"}}');
+	perform pg_temp.wake_assert((select effort from public.qorpera_cloud_routine_versions
+		where routine_id = (pg_temp.routine_row('plain-check')).id and version = 1) = 'medium','Effort defaults to medium');
+	v_routine := jsonb_build_object('routine_id',v_row.id,'version',v_row.current_version);
+	perform pg_temp.wake_schedule(v_routine,'eff-a');
+	perform public.qorpera_materialize_wake_execution_runs(8);
+	select run.* into v_run from public.qorpera_execution_runs run
+	join public.qorpera_wake_occurrences wake on wake.id = run.source_id
+	where run.source_kind = 'wake' and wake.routine_id = v_row.id order by run.created_at desc limit 1;
+	perform pg_temp.wake_assert(v_run.id is not null,'The routine occurrence materialized a run');
+	v_manifest := public.qorpera_execution_runtime_manifest(v_run);
+	v_expected := case when v_manifest #>> '{modelPolicy,overrides}' in ('routine','routine-and-thread') and (v_manifest #> '{modelPolicy,allowed}') ? 'high'
+		then 'high' else v_manifest #>> '{modelPolicy,effort}' end;
+	perform pg_temp.wake_assert(v_run.reasoning_effort = v_expected
+		and public.qorpera_manifest_allows_reasoning_effort(v_manifest, v_run.reasoning_effort),
+		'The routine run is pinned to the routine effort the bundle allows');
+end $$;
+select pg_temp.wake_error($q$select pg_temp.routine('{"action":"upsert","operationKey":"eff-3","routineKey":"bad-check","title":"Bad","intent":"x",
+	"effort":"max","trigger":{"kind":"schedule","intervalMinutes":5,"replyPolicy":"silent"}}')$q$,'22023','Routine effort is invalid');
+do $$
+declare v_row public.qorpera_cloud_routines; v_first public.qorpera_cloud_routine_schedule_cursors;
+	v_second public.qorpera_cloud_routine_schedule_cursors;
+begin
+	v_row := pg_temp.routine_row('deep-check');
+	select * into v_first from public.qorpera_cloud_routine_schedule_cursors
+	where routine_id = v_row.id and routine_version = v_row.current_version and trigger_id = 'agent';
+	perform pg_temp.routine('{"action":"upsert","operationKey":"eff-4","routineKey":"deep-check","title":"Deep check","intent":"Think harder.",
+		"trigger":{"kind":"schedule","intervalMinutes":5,"replyPolicy":"silent"}}');
+	v_row := pg_temp.routine_row('deep-check');
+	select * into v_second from public.qorpera_cloud_routine_schedule_cursors
+	where routine_id = v_row.id and routine_version = v_row.current_version and trigger_id = 'agent';
+	perform pg_temp.wake_assert(v_row.current_version = 2
+		and (select effort from public.qorpera_cloud_routine_versions where routine_id = v_row.id and version = 2) = 'high',
+		'A save that does not mention effort keeps the effort the routine has');
+	perform pg_temp.wake_assert(v_first.last_scheduled_for is not null and v_second.last_scheduled_for = v_first.last_scheduled_for
+		and v_second.next_due_at = v_first.next_due_at,'A new version keeps the schedule position its routine reached');
+end $$;
+
+-- A founder pause defers an occurrence: nothing is admitted and the cursor does not move,
+-- so the same slot is offered again after the resume instead of being cancelled and lost.
+do $$
+declare v_row public.qorpera_cloud_routines; v_cursor public.qorpera_cloud_routine_schedule_cursors;
+	v_before public.qorpera_cloud_routine_schedule_cursors; v_result jsonb; v_id uuid := extensions.gen_random_uuid();
+	v_at timestamptz := statement_timestamp() - interval '4 minutes';
+begin
+	perform pg_temp.routine('{"action":"upsert","operationKey":"pz-1","routineKey":"paused-check","title":"Paused check","intent":"Look.",
+		"trigger":{"kind":"schedule","intervalMinutes":5,"replyPolicy":"silent"}}');
+	v_row := pg_temp.routine_row('paused-check');
+	select * into strict v_before from public.qorpera_cloud_routine_schedule_cursors
+	where routine_id = v_row.id and routine_version = v_row.current_version and trigger_id = 'agent';
+	perform pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001');
+	perform public.qorpera_set_company_execution_pause(v_row.profile_id, true, 'test pause');
+	perform pg_temp.path_claims('service_role');
+	v_result := public.qorpera_enqueue_routine_wake(v_row.id, v_row.current_version, v_id, 'paused-a', 'agent',
+		v_at, v_before.last_scheduled_for, v_at + interval '5 minutes', '{}');
+	select * into strict v_cursor from public.qorpera_cloud_routine_schedule_cursors
+	where routine_id = v_row.id and routine_version = v_row.current_version and trigger_id = 'agent';
+	perform pg_temp.wake_assert(v_result ->> 'status' = 'deferred' and v_result ->> 'occurrence_id' is null
+		and not exists (select 1 from public.qorpera_wake_occurrences where id = v_id)
+		and v_cursor.last_scheduled_for is not distinct from v_before.last_scheduled_for
+		and v_cursor.next_due_at = v_before.next_due_at,
+		'While paused an occurrence is deferred: nothing admitted, cursor unchanged');
+	perform pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001');
+	perform public.qorpera_set_company_execution_pause(v_row.profile_id, false, 'test resume');
+	perform pg_temp.path_claims('service_role');
+	v_result := public.qorpera_enqueue_routine_wake(v_row.id, v_row.current_version, v_id, 'paused-a', 'agent',
+		v_at, v_before.last_scheduled_for, v_at + interval '5 minutes', '{}');
+	select * into strict v_cursor from public.qorpera_cloud_routine_schedule_cursors
+	where routine_id = v_row.id and routine_version = v_row.current_version and trigger_id = 'agent';
+	perform pg_temp.wake_assert(v_result ->> 'status' = 'queued' and (v_result ->> 'occurrence_id')::uuid = v_id
+		and v_cursor.last_scheduled_for = v_at,'After the resume the same occurrence is admitted and the cursor advances');
 end $$;
 
 -- Expiry by time: the control-plane tick retires it and the scheduler stops listing it.

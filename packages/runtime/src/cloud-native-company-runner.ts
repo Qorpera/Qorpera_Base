@@ -1,6 +1,9 @@
 import { isDeepStrictEqual } from "node:util";
 import { withCloudDeadline } from "@qorpera/cloud-client/cloud-request";
-import { serializeCloudRunnerExecutionUsage } from "@qorpera/cloud-client/cloud-runner-usage";
+import {
+	CLOUD_RUNNER_NO_WALL_TIME_MS,
+	serializeCloudRunnerExecutionUsage,
+} from "@qorpera/cloud-client/cloud-runner-usage";
 import type { CloudRunnerJob } from "@qorpera/cloud-client/node/cloud-runner-protocol";
 import type { JsonValue } from "@qorpera/contracts";
 import { type NativeProviderComputerBridge, parseNativeHarnessResult } from "./cloud-native-provider.ts";
@@ -71,12 +74,9 @@ export async function executeNativeCompanyRunnerJob(options: {
 		30_000,
 		signal,
 	);
-	const timeout = new AbortController();
-	const timer = setTimeout(
-		() => timeout.abort(new Error("Native company execution exceeded its deadline")),
-		limits.wallTimeMs,
-	);
-	const stopped = AbortSignal.any([signal, timeout.signal]);
+	// A company run has no wall-clock deadline (founder, 2026-09-24): it ends when
+	// it completes, is cancelled, or loses its job lease.
+	const stopped = signal;
 	let abort: () => void = () => {};
 	const cancelled = new Promise<never>((_resolve, reject) => {
 		abort = () => reject(stopped.reason);
@@ -104,7 +104,7 @@ export async function executeNativeCompanyRunnerJob(options: {
 			outputBytes: 0,
 			resultBytes,
 			limits: {
-				wallTimeMs: limits.wallTimeMs,
+				wallTimeMs: CLOUD_RUNNER_NO_WALL_TIME_MS,
 				memoryBytes: limits.memoryBytes,
 				cpuMillis: Math.ceil(limits.cpuCount * 1000),
 				maxPids: limits.maxPids,
@@ -113,7 +113,6 @@ export async function executeNativeCompanyRunnerJob(options: {
 				maxResultBytes: limits.maxResultBytes,
 			},
 		};
-		if (usage.executionMs > limits.wallTimeMs) throw new Error("Native company execution exceeded its deadline");
 		const result: JsonValue = {
 			schema: "qorpera.runner-result/v1",
 			runtime: "company-path-v1",
@@ -129,7 +128,6 @@ export async function executeNativeCompanyRunnerJob(options: {
 		completed = true;
 		return { result, outputFiles: [], outputBytes: 0, usage };
 	} finally {
-		clearTimeout(timer);
 		stopped.removeEventListener("abort", abort);
 		if (!completed) {
 			// A non-cooperative bridge cannot hold the authority watchdog open.

@@ -82,25 +82,50 @@ command is ever written.
   the script. `design/render.sh` renders them and rewrites the block
   between the wrapper's `DOCK-ICONS` markers; a test compares both.
 - *Look and click feedback.* `config/gtk-3.0/gtk.css`, every rule scoped to
-  `.xfce4-panel`: no button boxes, a soft hover and press highlight, and the
-  icon jumps 9 px while pressed and settles back with an overshoot
-  (`-gtk-icon-transform` transition). This needs no compositor. It is a press
-  jump, not a repeating launch bounce; a true dock bounce needs a dock
-  application (for example `plank`) in a new image.
+  `.xfce4-panel`: no button boxes, a soft hover and press highlight, the date
+  dimmer than the time (Liberation Sans, regular), and click feedback on the
+  icon itself: pushed in (`scale(0.9)`) while the button is held, then one
+  420 ms jump (`@keyframes qorpera-dock-jump`, 8 px up, a small second bounce)
+  when it is let go. The icon gets the bar's full height to move in (negative
+  image margin). It plays once per click and once when the panel starts; nothing
+  repeats, so a viewer gets a handful of small updates. This needs no
+  compositor. The browser icon also pulses while the service opens the browser:
+  the launcher alternates two icon frames for the first three seconds. What CSS
+  on xfce4-panel cannot do: a bounce that lasts until the window appears for
+  Files and Terminal, magnification under the pointer, labels on hover, or
+  moving a neighbour aside; those need a dock application (for example
+  `plank`) in a new image.
 - *The dock is the window list.* All three icons run
   `qorpera-screen-browser` (no argument, `files` or `terminal`; one guest file
   because only existing files reach installed computers). It takes window ids
   from the root window's `_NET_CLIENT_LIST`, which includes minimised windows,
-  matches `WM_CLASS` with `xprop -id`, and restores (`xdotool windowmap`) and
-  activates the newest one. Only with no window does Files or Terminal start.
-- *Running dots.* For each icon the wrapper writes an `idle` and a `running`
-  launcher entry (same command, the icon with or without the dot).
-  `qorpera-screen-xfce` starts a small watcher that blocks on
-  `xprop -root -spy _NET_CLIENT_LIST` (no polling), drains a burst of events
-  into one pass, reads the same client list (so a minimised application keeps
-  its dot) and copies the matching entry over the panel's launcher file; the
-  panel reloads a launcher whose file changed. Without `xprop` there are
-  simply no dots.
+  matches `WM_CLASS` (instance or class) with `xprop -id`, and restores
+  (`xdotool windowmap`) and activates the newest one. Only with no window does
+  Files or Terminal start. The browser is matched by `qorpera-browser`, the
+  class the office service gives it (`--class`), and by every name a Chromium
+  build uses for itself: the image's browser is a Chrome for Testing build
+  whose class does not start with "Chromium" or "Chrome".
+- *Running marks.* Each icon state is an immutable launcher template in
+  `config/qorpera-dock/` (`qorpera-<app>.desktop` idle, `qorpera-<app>-running.desktop`,
+  and for the browser `-launching`, `-launching-2`, `-failed`); the icon shows
+  a white pill under the tile (outlined while opening, amber when it did not
+  open). A state is shown by naming its absolute path in the panel's configuration
+  (`xfconf-query -c xfce4-panel -p /plugins/plugin-N/items`), which the panel
+  follows at once. XFCE imports a managed copy and deletes the previous copy
+  when `items` changes; the external template survives repeated transitions.
+  The first version replaced the file the panel already
+  showed and relied on the panel's file monitor; on a real xfce4-panel
+  (capture of 20 September 2026) neither the terminal nor the browser got its
+  mark. `qorpera-screen-xfce` starts a small watcher that blocks on
+  `xprop -root -spy _NET_CLIENT_LIST`, drains a burst of events into one pass,
+  and also looks every three seconds in case an announcement is lost (one
+  `xprop` call; nothing more while the list is unchanged). A minimised
+  application keeps its mark. Without `xprop` there are simply no marks.
+- *Terminal.* Bash with a prompt that shows the folder (a per-screen rc file
+  that reads `~/.bashrc` first), DejaVu Sans Mono 11 on a calm dark palette, no
+  menu bar or scrollbar, 110x30. Written to `terminalrc` and repeated in the
+  `xfce4-terminal` xfconf channel, where newer versions keep their settings.
+  New windows open centred; title bars lose the roll-up button.
 - *Nothing cosmetic can stop a desktop.* Generated files are written in a
   fresh `mktemp -d` directory (0700) and renamed into place, never at a
   predictable name. A look that cannot be written (CSS, icons, the extra icon
@@ -116,12 +141,15 @@ command is ever written.
 **Verify on a real node before rollout** (none of this can be proven with the
 doubles the tests use):
 
-1. The panel reloads a launcher after the atomic `mv` onto its `.desktop` file:
-   open and close Files and watch the dot; click Browser and watch the hollow
-   dot, then the solid one.
-2. The GTK CSS applies: no button boxes, hover and press highlight, the 9 px
-   press jump, and the date and time labels equally wide (icons on the centre
-   line of a 1920 px screen).
+1. The panel follows its `items` setting: repeatedly open and close Files and Terminal
+   and watch the white mark; click Browser and watch the pulse, the outlined
+   mark, then the solid one. `xprop WM_CLASS` on the browser window shows
+   `qorpera-browser` once the service revision is active. Repeat a failed browser
+   launch and then a successful one; every pulse/state must remain available.
+2. The GTK CSS applies: no button boxes, hover and press highlight, the pushed-in
+   icon and the jump on release without the tile being cut off at the top, and
+   the date and time labels equally wide (icons on the centre line of a 1920 px
+   screen), the date dimmer than the time (`#clock-7` / `#clock-3`).
 3. `xfsettingsd` (if the image runs it) keeps animations on and does not
    replace `gtk-3.0/settings.ini`; the xfwm4 settings stick after the session
    is up (`xfconf-query -c xfwm4 -p /general/use_compositing` is `false`).
@@ -133,18 +161,19 @@ doubles the tests use):
 6. Connect as `shared`: the browser is there within a few seconds. Close it,
    reconnect: it stays closed. `watch` never opens it.
 
-`design/mock.html` with `design/mock.png` and `design/mock-browser.png` is the
-look check at 1920×1200. Nothing under `design/` is packaged.
+`design/mock.html` with `design/mock.png`, `design/mock-browser.png` (the state
+of the real capture: browser and terminal open, both marked) and
+`design/mock-states.png` (every icon state) is the look check at 1920×1200. Nothing under `design/` is packaged.
 
 **The company browser belongs to the screen.** The Browser launcher raises the
 browser window already on the screen. When there is none it touches the empty
 file `/run/qorpera/browser-request` (the service-owned `<runtime>/session`
 directory bound into the desktop), waits about ten seconds for a Chromium
 window and raises it; if none appears it asks once more and waits again. It
-never opens a dialog: the icon shows a hollow dot from the first click while
-the browser is being opened (a further click meanwhile shows the same and
-starts no second wait), and after both waits it turns grey with an amber dot
-for six seconds and returns to normal. When the service finds the browser
+never opens a dialog: the icon pulses for three seconds and shows an outlined
+mark from the first click while the browser is being opened (a further click
+meanwhile shows the same and starts no second wait), and after both waits it
+turns grey with an amber mark for six seconds and returns to normal. When the service finds the browser
 already open for such a request it restores the window if it was minimised
 (CDP window state only; it never chooses a tab).
 
@@ -157,7 +186,27 @@ the service asks for the browser exactly as the dock icon would (opener
 the dock. This happens once per desktop start: a member who closed the browser
 on purpose does not get it back by reconnecting. Chromium starts with
 `--start-maximized`, so the window manager fits it above the dock. It still
-closes once nobody entitled remains. The file carries no data and nothing in it is read. The office
+closes once nobody entitled remains.
+
+*What a member sees in it.* The image's browser is Playwright's Chromium, a
+Chrome for Testing build, which tells everybody that it "is only for automated
+testing". `--disable-infobars` hides that bar: it is the switch Playwright
+itself passes for this, Chrome for Testing reads it for that purpose and
+Chromium, Chrome and Edge ignore it; no managed policy hides the bar, and
+`--test-type` is not used because it also silences the warnings about unsafe
+flags. `--class=qorpera-browser` gives the window one known class for the dock.
+Each launch gives its command-line placeholder a unique
+`about:blank#qorpera-startup-<uuid>` address. Immediately after connecting,
+`tidyCompanyComputerBrowserTabs` reads and rechecks Chromium's targets, closing
+only that exact placeholder when another page exists. The only page stays and
+its marker is removed with a guarded `history.replaceState`, without navigation.
+Restored blank/new-tab pages, loading targets and all other pages stay. A timed
+out read cannot issue later cleanup commands. Cookies and profile data are
+never touched. Detach preserves every shared tab, including agent-created blank
+tabs: an unchanged URL cannot prove that a member has not used one. A desktop
+request for an already-open browser opens no tab. The launch service and browser
+child must ship together in a guest-code revision. The request file carries no
+data and nothing in it is read. The office
 service polls for it while the desktop is ready, removes it without following
 links, and opens the screen agent's granted profile through the same contained
 launch as before (bwrap, managed policy, egress relay, profile custody). Whether
@@ -193,10 +242,13 @@ ledger. `qorpera-screen-browser` is guest code: an existing computer gets the
 new launcher through a guest-code revision, while the service side needs only
 the service file and the SQL migration. The same holds for the dock:
 `qorpera-screen-session` (panel, look, icons), `qorpera-screen-xfce` (VNC
-settings, running dots) and `qorpera-screen-browser` reach existing computers
+settings, terminal look, running marks) and `qorpera-screen-browser` reach existing computers
 through one guest-code revision and take effect at the next start of each
-desktop; the browser on arrival and `--start-maximized` live in
-`qorpera-company-computer-service.mjs` and need only a service revision.
+desktop; the browser's command line (`--start-maximized`, `--disable-infobars`,
+`--class`) lives in `qorpera-company-computer-service.mjs`.
+The owned startup placeholder also changes `office-browser-child.mjs`; include
+that entry together with the service and three desktop scripts in the guest-code
+revision. The dock matches the browser window with or without the new class.
 
 The wrapper is not an authorization or sandbox implementation. Directory-name
 validation cannot detect bind mounts, NAS aliases, unsafe inherited image
@@ -521,12 +573,16 @@ The `--boundary` probe uses a unique persistent Docker volume, a synthetic root 
 
 ## Governed service-only software revisions (temporary provider-pinned tools)
 
+**Before updating an office's code (from bundle v98): make sure its image cannot update itself.** The office service and preparation refuse to run unless the image masks the five apt self-update units (`RUNNER_IMAGE_SELF_UPDATE_ENABLED:<UNIT>`, see [INSTALLATION.md](INSTALLATION.md)). An office on an older, unmasked image gets the masks in one of two ways: a re-image with the v98 installer, or a service-only or guest-code revision installed by the install tool at or after the version that masks (below), which masks before the new service lands. A code-only package revision (`office-code-package-control.ts`) does not mask, so such an office must be re-imaged before it. Installed into an unmasked office any other way, the new service refuses on every start (three failed starts, then systemd gives up) and preparation refuses too, so the office stays down; the signed statement and the install receipt do not record the masks.
+
 The historical office image is never rebuilt for a service-only update. Instead the provider stages two standalone, independently pinned root tools into the root-only `/run/qorpera-office-preparation` inbox and runs them under the existing preparation flock:
 
 | Tool | Entry point | Staged path | Purpose |
 |---|---|---|---|
-| install | `office-service-software-control.ts` | `software-control.mjs` | Verifies the signed statement/plan, stopped predecessor custody and the capability-gated SQL install challenge, then atomically installs the target service bytes and writes `/var/lib/qorpera-office-service-software/<updateId>/installed.json` (the root-only journal root is created on the first revision; the historical image ships without it). No start, no SQL acknowledgement. |
+| install | `office-service-software-control.ts` | `software-control.mjs` | Masks the image's apt self-update units (see below). Verifies the signed statement/plan, stopped predecessor custody and the capability-gated SQL install challenge, then atomically installs the target service bytes and writes `/var/lib/qorpera-office-service-software/<updateId>/installed.json` (the root-only journal root is created on the first revision; the historical image ships without it). No start, no SQL acknowledgement. |
 | measure | `office-service-software-measurement-control.ts` | `software-measurement-control.mjs` | Reads a staged canonical invocation challenge, claims its nonce once, measures the actual running service (bytes, invocation, PID, cgroup, configuration) and publishes a closed receipt `software-measurement-<challengeId>.json`. No SQL, no capability, no start or activation. |
+
+The install tool also masks the office image's apt self-update units (`apt-daily{,-upgrade}.{timer,service}`, `unattended-upgrades.service`) after its local checks and before its own challenge check (`office-self-update-mask.ts`). It runs inside the provider's 5 s install challenge, so units already masked skip the mask call and its systemd reload, and each check is one `systemctl` call. It refuses while an apt job is still running and never stops one mid-upgrade; on an office just woken, wait until `apt-daily.service` and `apt-daily-upgrade.service` are inactive or failed before the install step (a refusal shows only as `UNCONFIRMED` and uses one challenge and one attempt). The mask is idempotent, so a retried install is safe and fast. The signed receipt does not record the masks; a v98+ office service refuses to start without all five, so the successor's measured start proves them.
 
 `scripts/package-office-service-software-control.mjs --out <new-directory>` builds both bundles and a `qorpera.office-software-control-package/v2` manifest with one digest per tool. Both launch through `office-software-control-launcher.ts`: the parent pins its own bytes and location, opens the preparation lock and re-executes itself under `flock --exclusive --nonblock --no-fork` with an empty environment; only the locked child works. Execution caps (60 s install, 5 s measure) never extend a SQL challenge.
 
