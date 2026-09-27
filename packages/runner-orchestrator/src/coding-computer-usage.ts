@@ -16,6 +16,7 @@ export interface CodingComputerUsage {
 	start(machineId: string, signal: AbortSignal): Promise<LxdOperationReference>;
 	stop(machineId: string, signal: AbortSignal): Promise<LxdOperationReference>;
 	observe(machineId: string, signal: AbortSignal): Promise<void>;
+	assertRunning(machineId: string, signal: AbortSignal): Promise<void>;
 	maintain(signal: AbortSignal): Promise<void>;
 	externalStop(journal: CodingMachineJournalPlan, signal: AbortSignal): Promise<LxdOperationReference | null>;
 	externalStart(

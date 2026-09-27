@@ -511,9 +511,9 @@ describe("the coding executor over a session turn", () => {
 		]);
 	});
 
-	it("a turn whose member's machine is not available yet waits in the queue", async () => {
+	it.each(["NODE_CAPACITY_EXHAUSTED", "COMPUTER_USAGE_NOT_READY"])("queues a turn waiting for %s", async (reason) => {
 		const w = world();
-		vi.mocked(w.host.prepareWorkspace).mockRejectedValueOnce(new CodingMachineUnavailable("NODE_CAPACITY_EXHAUSTED"));
+		vi.mocked(w.host.prepareWorkspace).mockRejectedValueOnce(new CodingMachineUnavailable(reason));
 		const executor = new CloudCodingExecutor({ control: w.control, host: w.host, owner: "exec-test", turnPollMs: 1 });
 		expect(await executor.runOnce(new AbortController().signal)).toBe("deferred");
 		// Anything attached is unplugged before the session goes back to the queue.
@@ -522,7 +522,7 @@ describe("the coding executor over a session turn", () => {
 		expect(deferral).toEqual({
 			p_worker_id: w.world.claim.workerId,
 			p_lease_token: w.world.claim.leaseToken,
-			p_reason: "NODE_CAPACITY_EXHAUSTED",
+			p_reason: reason,
 		});
 		expect(w.world.calls.map((c) => c.method)).not.toContain("qorpera_begin_coding_turn");
 		expect(w.world.calls.map((c) => c.method)).not.toContain("qorpera_complete_coding_turn");

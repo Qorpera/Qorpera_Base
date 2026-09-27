@@ -249,17 +249,16 @@ async function fixture(usage = false) {
 		}),
 	};
 	const clock = async () => ({ ...host });
+	const capture = vi.fn(async () => ({
+		host: await clock(),
+		guestBootId,
+		guestUptimeMs: host.uptimeMs - 50000,
+		evidenceSha256: "e".repeat(64),
+		observedAt: new Date().toISOString(),
+	}));
 	const usageOptions = usage
 		? {
-				usageCapture: {
-					capture: async () => ({
-						host: await clock(),
-						guestBootId,
-						guestUptimeMs: host.uptimeMs - 50000,
-						evidenceSha256: "e".repeat(64),
-						observedAt: new Date().toISOString(),
-					}),
-				},
+				usageCapture: { capture },
 			}
 		: {};
 	const guard = new PaidComputerGuard(
@@ -327,6 +326,7 @@ async function fixture(usage = false) {
 		host,
 		instance,
 		client,
+		capture,
 		control,
 		guard,
 		options,
@@ -368,6 +368,48 @@ async function fixture(usage = false) {
 }
 
 describe("paid coding computer controller", () => {
+	it("requires a committed running observation after a delayed first capture", async () => {
+		const f = await fixture(true);
+		await f.start();
+		const capture = f.capture.getMockImplementation()!;
+		let release: (() => void) | undefined;
+		const held = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		f.capture.mockImplementationOnce(async () => {
+			await held;
+			return capture();
+		});
+		f.guard.tickUsage();
+		await f.controller.observe(f.machine.machineId, signal());
+		await expect(f.controller.assertRunning(f.machine.machineId, signal())).rejects.toThrow(
+			"RUNNING_PERMIT_REQUIRED",
+		);
+		release?.();
+		await f.guard.settleUsage(f.getPermit()!.permitId);
+		await expect(f.controller.assertRunning(f.machine.machineId, signal())).rejects.toThrow(
+			"RUNNING_PERMIT_REQUIRED",
+		);
+		await f.controller.observe(f.machine.machineId, signal());
+		await expect(f.controller.assertRunning(f.machine.machineId, signal())).resolves.toBeUndefined();
+		f.host.uptimeMs += 10001;
+		await expect(f.controller.assertRunning(f.machine.machineId, signal())).rejects.toThrow(
+			"RUNNING_PERMIT_REQUIRED",
+		);
+	});
+	it("refuses a failed first capture even though LXD reports the funded VM running", async () => {
+		const f = await fixture(true);
+		await f.start();
+		f.capture.mockRejectedValueOnce(new Error("clock unavailable"));
+		f.guard.tickUsage();
+		await f.guard.settleUsage(f.getPermit()!.permitId);
+		await f.controller.observe(f.machine.machineId, signal());
+		expect(f.instance.status).toBe("Running");
+		await expect(f.controller.assertRunning(f.machine.machineId, signal())).rejects.toThrow(
+			"RUNNING_PERMIT_REQUIRED",
+		);
+		expect(f.getPermit()?.state).toBe("prepared");
+	});
 	it("drains and archives a historical stream without replacing newer managed custody", async () => {
 		const f = await fixture(true);
 		await f.start();

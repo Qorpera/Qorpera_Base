@@ -847,10 +847,22 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 				async (_intent, checked) => this.#run(claim, machine, storage, checked),
 				signal,
 			);
-			await this.#run(claim, machine, storage, signal);
+			const admission = await this.#run(claim, machine, storage, signal);
 			const boot = await this.#ready(machine, signal);
-			if (this.#options.computerUsage?.manages(machine.machineId))
+			if (
+				this.#options.computerUsage &&
+				(admission.schema === "qorpera.coding-machine-admission/v2" ||
+					this.#options.computerUsage.manages(machine.machineId))
+			) {
 				await this.#options.computerUsage.observe(machine.machineId, signal);
+				try {
+					await this.#options.computerUsage.assertRunning(machine.machineId, signal);
+				} catch (error) {
+					if (error instanceof Error && error.message === "CODING_COMPUTER_RUNNING_PERMIT_REQUIRED")
+						throw new CodingMachineUnavailable("COMPUTER_USAGE_NOT_READY");
+					throw error;
+				}
+			}
 			// From here on the session may be attached: detachSession unplugs it
 			// whatever happens next, a deferral or a failure included.
 			this.#attached.set(claim.workerId, { claim, machine, storage });

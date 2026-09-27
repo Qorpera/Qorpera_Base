@@ -374,6 +374,45 @@ export class CodingComputerController implements CodingComputerUsage {
 	manages(machineId: string): boolean {
 		return this.#computers.has(machineId);
 	}
+	/** Funding and a completed start do not prove that metering has begun. */
+	async assertRunning(machineId: string, signal: AbortSignal): Promise<void> {
+		await this.#exclusive(machineId, async () => {
+			signal.throwIfAborted();
+			const current = this.#required(machineId),
+				guarded = await this.#options.guard.latest(machineId, signal),
+				clock = await this.#clock(),
+				sample = current.lastSample === null ? null : object(current.lastSample);
+			if (
+				current.permit.state !== "bound" ||
+				!guarded ||
+				guarded.permit.permitId !== current.permit.permitId ||
+				guarded.permit.generation !== current.permit.generation ||
+				guarded.phase !== "running" ||
+				clock.hostBootId !== current.permit.hostBootId ||
+				clock.uptimeMs >= guarded.stopAtUptimeMs ||
+				!sample ||
+				sample.state !== "running" ||
+				sample.hostBootId !== clock.hostBootId ||
+				sample.physicalId !== guarded.machine.physicalInstanceId ||
+				sample.guestBootId !== current.permit.guestBootId ||
+				typeof sample.hostUptimeMs !== "number" ||
+				!Number.isSafeInteger(sample.hostUptimeMs) ||
+				sample.hostUptimeMs > clock.uptimeMs ||
+				clock.uptimeMs - sample.hostUptimeMs > 10000
+			)
+				throw new Error("CODING_COMPUTER_RUNNING_PERMIT_REQUIRED");
+			if (guarded.usageRequired) {
+				const usage = await this.#options.guard.readUsage(current.permit.permitId, { limit: 1 }, signal);
+				if (
+					usage.state !== "open" ||
+					usage.head.observationId !== sample.observationId ||
+					usage.acknowledgedThrough.sequence !== usage.head.sequence ||
+					usage.acknowledgedThrough.sha256 !== usage.head.sha256
+				)
+					throw new Error("CODING_COMPUTER_RUNNING_PERMIT_REQUIRED");
+			}
+		});
+	}
 	async ownsStart(machineId: string, signal: AbortSignal): Promise<boolean> {
 		return this.manages(machineId) || (await this.#options.guard.hasHistory(machineId, signal));
 	}

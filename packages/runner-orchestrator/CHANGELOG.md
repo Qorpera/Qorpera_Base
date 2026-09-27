@@ -100,6 +100,7 @@
 
 ### Fixed
 
+- Require confirmed paid running observations before attaching coding sessions or starting workspace work; pending confirmation returns the session to the queue for retry.
 - Continue completed office startup and wake phases without waiting for the next polling interval, while retaining backoff for pending work and failures.
 - Bound office-provider startup to the enrolled journal and NAS workbench mounts, so a node reboot cannot leave required storage inactive when the provider starts. Mount dependency paths preserve literal dollar signs while escaping systemd specifiers.
 - Corrected boot-successor SQL admission to preserve the original preparation observation while requiring fresh boot, configuration and receipt evidence. The prior check required a new preparation digest and rejected the concrete retained-workbench resume path. An additive migration preserves existing history and refuses a substituted preparation identity.

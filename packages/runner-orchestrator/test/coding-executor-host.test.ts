@@ -460,6 +460,7 @@ function paidUsage(f: Fixture) {
 		start: vi.fn(async () => reference),
 		stop: vi.fn(async () => reference),
 		observe: vi.fn(async () => {}),
+		assertRunning: vi.fn<CodingComputerUsage["assertRunning"]>(async () => {}),
 		maintain: vi.fn(async () => {}),
 		externalStart: vi.fn(async () => null),
 		externalStop: vi.fn(async () => null),
@@ -503,7 +504,59 @@ describe("a coding turn on its member's machine", () => {
 		expect(usage.start).toHaveBeenCalledTimes(1);
 		expect(usage.ensure.mock.invocationCallOrder[0]).toBeLessThan(usage.start.mock.invocationCallOrder[0]);
 		expect(usage.observe.mock.invocationCallOrder[0]).toBeLessThan(mocked.seedTransfer.mock.invocationCallOrder[0]);
+		expect(usage.observe.mock.invocationCallOrder[0]).toBeLessThan(usage.assertRunning.mock.invocationCallOrder[0]);
+		expect(usage.assertRunning.mock.invocationCallOrder[0]).toBeLessThan(
+			vi.mocked(f.client.replaceInstanceDevices).mock.invocationCallOrder[0],
+		);
 		expect(f.client.submitInstanceOperation).not.toHaveBeenCalled();
+	});
+	it("defers without attaching or starting session work until the first paid observation is confirmed", async () => {
+		const f = await fixture(),
+			usage = paidUsage(f);
+		usage.assertRunning.mockRejectedValueOnce(new Error("CODING_COMPUTER_RUNNING_PERMIT_REQUIRED"));
+		const host = new LxdCodingExecutorHost({ ...f.options, computerUsage: usage });
+		const error = await host.prepareWorkspace(f.claim, f.turn(), f.signal).catch((error: unknown) => error);
+		expect(error).toBeInstanceOf(CodingMachineUnavailable);
+		expect(error).toMatchObject({ reason: "COMPUTER_USAGE_NOT_READY" });
+		expect(usage.observe).toHaveBeenCalledOnce();
+		expect(f.client.replaceInstanceDevices).not.toHaveBeenCalled();
+		expect(f.client.pushInstanceFile).not.toHaveBeenCalled();
+		expect(mocked.resolveBase).not.toHaveBeenCalled();
+		expect(mocked.seedTransfer).not.toHaveBeenCalled();
+		await expect(host.commandTransport(f.scope(), async () => undefined, f.signal)).rejects.toThrow("NOT_PREPARED");
+		// A later attempt after confirmed metering may prepare the same session.
+		await host.prepareWorkspace(f.claim, f.turn(), f.signal);
+		expect(f.client.replaceInstanceDevices).toHaveBeenCalledOnce();
+		expect(mocked.seedTransfer).toHaveBeenCalledOnce();
+	});
+	it("does not turn unrelated paid confirmation failures into queue retries", async () => {
+		const f = await fixture(),
+			usage = paidUsage(f);
+		const error = new Error("COMPUTER_GUARD_USAGE_CANONICAL_TIP_DIFFERS");
+		usage.assertRunning.mockRejectedValueOnce(error);
+		const host = new LxdCodingExecutorHost({ ...f.options, computerUsage: usage });
+		await expect(host.prepareWorkspace(f.claim, f.turn(), f.signal)).rejects.toBe(error);
+		expect(f.client.replaceInstanceDevices).not.toHaveBeenCalled();
+		expect(mocked.seedTransfer).not.toHaveBeenCalled();
+	});
+	it("keeps the session unattached while first paid confirmation is delayed", async () => {
+		const f = await fixture(),
+			usage = paidUsage(f);
+		let release: (() => void) | undefined;
+		const held = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		usage.assertRunning.mockImplementationOnce(async () => held);
+		const host = new LxdCodingExecutorHost({ ...f.options, computerUsage: usage });
+		const preparing = host.prepareWorkspace(f.claim, f.turn(), f.signal);
+		await vi.waitFor(() => expect(usage.assertRunning).toHaveBeenCalledOnce());
+		expect(f.client.replaceInstanceDevices).not.toHaveBeenCalled();
+		expect(f.client.pushInstanceFile).not.toHaveBeenCalled();
+		expect(mocked.seedTransfer).not.toHaveBeenCalled();
+		release?.();
+		await preparing;
+		expect(f.client.replaceInstanceDevices).toHaveBeenCalledOnce();
+		expect(mocked.seedTransfer).toHaveBeenCalledOnce();
 	});
 	it("retains guard-only start ownership after in-memory paid management disappears", async () => {
 		const f = await fixture(),
