@@ -15,7 +15,7 @@
 -- name. The retired responsibility objects (20260920070000) did not retire the
 -- stage: forming the company still includes working out who owns what.
 
-create function pg_temp.edit(p_definition text, p_old text, p_new text) returns text language plpgsql as $$
+create function pg_temp.formation_stage_patch(p_definition text, p_old text, p_new text) returns text language plpgsql as $$
 begin
 	if (length(p_definition) - length(replace(p_definition, p_old, ''))) / length(p_old) <> 1 then
 		raise exception 'Formation stage: the projection differs at "%"', left(p_old, 70); end if;
@@ -26,7 +26,7 @@ $$;
 do $patch$
 declare v text := pg_get_functiondef('public.qorpera_project_organization_document(jsonb,jsonb,text,uuid,uuid)'::regprocedure);
 begin
-	v := pg_temp.edit(v, $old$						when 'goals_ratified' then v_document ->> 'state' = 'organization_formation'
+	v := pg_temp.formation_stage_patch(v, $old$						when 'goals_ratified' then v_document ->> 'state' = 'organization_formation'
 						when 'organization_formation' then v_document ->> 'state' = 'operating'
 $old$, $new$						when 'goals_ratified' then v_document ->> 'state' = 'responsibility_map'
 						when 'responsibility_map' then v_document ->> 'state' = 'operating'
@@ -35,12 +35,14 @@ $new$);
 end
 $patch$;
 
--- Every stage the projection can move a formation into is one the table accepts.
+-- Every stage the projection can move a formation into (all six after
+-- source_inventory) is one the table accepts.
 do $$
 declare v_definition text := pg_get_functiondef(
 	'public.qorpera_project_organization_document(jsonb,jsonb,text,uuid,uuid)'::regprocedure);
 	v_check text;
 	v_stage text;
+	v_stages integer := 0;
 begin
 	select pg_get_constraintdef(constraint_row.oid) into strict v_check from pg_constraint constraint_row
 	where constraint_row.conrelid = 'public.qorpera_company_formations'::regclass
@@ -49,7 +51,10 @@ begin
 		$re$v_document ->> 'state' = '([a-z_]+)'$re$, 'g') as match loop
 		if position(quote_literal(v_stage) || '::text' in v_check) = 0 then
 			raise exception 'Formation stage % is not a state the table accepts', v_stage; end if;
+		v_stages := v_stages + 1;
 	end loop;
+	if v_stages <> 6 then
+		raise exception 'The projection names % formation stages, expected 6', v_stages; end if;
 	if position('organization_formation' in v_definition) > 0 then
 		raise exception 'The projection still names organization_formation'; end if;
 end

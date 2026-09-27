@@ -77,24 +77,29 @@ end
 $$;
 
 -- After goals_ratified: the retired name, skipping ahead, and skipping a
--- revision are each refused, and the formation stays where it is.
+-- revision are each refused as a transition, and the formation stays where it
+-- is. (Before 20260927185000 the retired name passed the transition and broke
+-- the table's state check instead: "Organization document is invalid".)
 do $$
 begin
 	begin
 		perform pg_temp.formation_write('formation-organization-formation',
 			pg_temp.formation_document('organization_formation','active',6));
 		raise exception 'The retired organization_formation stage was accepted';
-	exception when invalid_parameter_value then null; end;
+	exception when invalid_parameter_value then
+		if sqlerrm <> 'Company formation transition is invalid' then raise; end if; end;
 	begin
 		perform pg_temp.formation_write('formation-skip-to-operating',
 			pg_temp.formation_document('operating','active',6));
 		raise exception 'Formation skipped responsibility_map';
-	exception when invalid_parameter_value then null; end;
+	exception when invalid_parameter_value then
+		if sqlerrm <> 'Company formation transition is invalid' then raise; end if; end;
 	begin
 		perform pg_temp.formation_write('formation-skip-revision',
 			pg_temp.formation_document('responsibility_map','active',7));
 		raise exception 'Formation skipped a revision';
-	exception when invalid_parameter_value then null; end;
+	exception when invalid_parameter_value then
+		if sqlerrm <> 'Company formation transition is invalid' then raise; end if; end;
 	perform pg_temp.formation_expect('goals_ratified','active',5);
 end
 $$;
@@ -114,12 +119,14 @@ begin
 		perform pg_temp.formation_write('formation-back-to-map',
 			pg_temp.formation_document('responsibility_map','completed',8));
 		raise exception 'Formation moved backward from operating';
-	exception when invalid_parameter_value then null; end;
+	exception when invalid_parameter_value then
+		if sqlerrm <> 'Company formation transition is invalid' then raise; end if; end;
 	begin
 		perform pg_temp.formation_write('formation-reopened',
 			pg_temp.formation_document('operating','active',8));
 		raise exception 'A completed formation became active again';
-	exception when invalid_parameter_value then null; end;
+	exception when invalid_parameter_value then
+		if sqlerrm <> 'Company formation transition is invalid' then raise; end if; end;
 	perform pg_temp.formation_expect('operating','completed',7);
 end
 $$;
