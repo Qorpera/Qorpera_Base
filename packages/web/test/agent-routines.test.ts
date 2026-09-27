@@ -430,32 +430,49 @@ describe("agent routines section", () => {
 	it("keeps a moved switch through a list read that went out before the change", async () => {
 		const f = mount([routine()]);
 		await settle();
-		let answer!: (items: CloudRoutine[]) => void;
-		f.routines.list.mockImplementationOnce(
-			() =>
-				new Promise<CloudRoutine[]>((resolve) => {
-					answer = resolve;
-				}),
-		);
+		const held: Array<(items: CloudRoutine[]) => void> = [];
+		const hold = () =>
+			new Promise<CloudRoutine[]>((resolve) => {
+				held.push(resolve);
+			});
+		// The read sent before the change, and the one the change sends afterwards.
+		f.routines.list.mockImplementationOnce(hold).mockImplementationOnce(hold);
 		f.view.refresh();
-		let saved!: () => void;
-		f.routines.setEnabled.mockImplementationOnce(
-			() =>
-				new Promise<void>((resolve) => {
-					saved = resolve;
-				}),
-		);
 		click(f.view.el, "Morning brief");
-		// The earlier read answers with the routine as it was before the change.
-		answer([routine()]);
+		await settle();
+		expect(f.routines.setEnabled).toHaveBeenCalledTimes(1);
+		expect(held).toHaveLength(2);
+		// The earlier read answers after the change went through, with the routine as it was.
+		held[0]!([routine()]);
 		await settle();
 		expect(controls(cards(f.view.el)[0]!)).toEqual(["Edit", "switch:false"]);
 		// The read after the change decides.
-		f.routines.list.mockResolvedValue([routine({ status: "paused" })]);
-		saved();
+		held[1]!([routine({ status: "paused" })]);
 		await settle();
 		expect(controls(cards(f.view.el)[0]!)).toEqual(["Edit", "switch:false"]);
-		expect(f.routines.list).toHaveBeenCalledTimes(3);
+		f.routines.list.mockResolvedValue([routine()]);
+		f.view.refresh();
+		await settle();
+		expect(controls(cards(f.view.el)[0]!)).toEqual(["Edit", "switch:true"]);
+	});
+	it("puts a switch back where it was moved when a second change fails before any read confirms the first", async () => {
+		const f = mount([routine()]);
+		await settle();
+		// The pause goes through, but the read after it fails: the switch stays off.
+		f.routines.list.mockRejectedValueOnce(new Error("offline"));
+		click(f.view.el, "Morning brief");
+		await settle();
+		expect(controls(cards(f.view.el)[0]!)).toEqual(["Edit", "switch:false"]);
+		// Turning it back on fails, and so does the read after it: it stays off, as the routine is.
+		f.routines.setEnabled.mockRejectedValueOnce(new Error("offline"));
+		f.routines.list.mockRejectedValueOnce(new Error("offline"));
+		click(f.view.el, "Morning brief");
+		await settle();
+		expect(f.routines.setEnabled).toHaveBeenLastCalledWith(expect.anything(), account, true, expect.any(String));
+		expect(controls(cards(f.view.el)[0]!)).toEqual(["Edit", "switch:false"]);
+		expect(f.view.el.querySelector(".surface-status")?.textContent).toBe(
+			"The routine could not be changed. Try again.",
+		);
 	});
 	it("keeps saying why when the model accounts could not be read for a switch", async () => {
 		const routines = {

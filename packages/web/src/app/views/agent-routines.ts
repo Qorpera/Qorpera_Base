@@ -565,7 +565,10 @@ export class AgentRoutines {
 	async #toggle(routine: CloudRoutine): Promise<void> {
 		if (this.#busy || !this.#access?.canManage()) return;
 		const id = routine.routineId;
-		const enabled = !(this.#flipped.get(id) ?? routine.status === "active");
+		// Where the switch stood: a failed change puts it back there, even if that was a
+		// place it was moved to whose change no read has confirmed yet.
+		const previous = this.#flipped.get(id);
+		const enabled = !(previous ?? routine.status === "active");
 		this.#busy = true;
 		this.#moving = id;
 		this.#changes += 1;
@@ -587,7 +590,8 @@ export class AgentRoutines {
 		} finally {
 			this.#busy = false;
 			this.#moving = undefined;
-			if (failure) this.#flipped.delete(id);
+			if (failure && previous === undefined) this.#flipped.delete(id);
+			else if (failure) this.#flipped.set(id, previous!);
 			if (!this.#signal.aborted) {
 				this.#setControls();
 				await this.#refresh();
