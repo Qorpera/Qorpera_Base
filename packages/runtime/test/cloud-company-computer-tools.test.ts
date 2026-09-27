@@ -698,6 +698,15 @@ describe("guest dispatch adapter", () => {
 		// Confirmed once: nothing is left to drain.
 		await harness.endpoint.drainSettled(new AbortController().signal);
 		expect(harness.effects.finish).toHaveBeenCalledTimes(2);
+		// A successful action whose drain got no answer is reported as before and retried too.
+		vi.mocked(harness.effects.finish).mockRejectedValueOnce(
+			new CompanyComputerRegistryUnansweredError(new Error("request timed out")),
+		);
+		await expect(harness.endpoint.perform(computerOperation(), computerLease(), computerEffect())).rejects.toThrow(
+			"OFFICE_REGISTRY_UNCONFIRMED",
+		);
+		await harness.endpoint.drainSettled(new AbortController().signal);
+		expect(harness.effects.finish).toHaveBeenCalledTimes(4);
 	});
 
 	it("still stops the browser and keeps the resource when authority is refused before the work", async () => {

@@ -55,7 +55,7 @@ export class CompanyComputerGuestEndpoint implements CompanyComputerCloudEndpoin
 	readonly #automation: Pick<CompanyComputerGuestAutomation, "perform" | "stopBrowser">;
 	readonly #assertScreenAdmitted: (binding: CompanyComputerScreenBinding, signal: AbortSignal) => Promise<void>;
 	readonly #prepareScreen: (binding: CompanyComputerScreenBinding, signal: AbortSignal) => Promise<void>;
-	/** Settled failures whose drain got no confirmation yet, by receipt. */
+	/** Settled actions (failed or successful) whose drain got no confirmation yet, by receipt. */
 	readonly #undrained = new Map<string, CompanyComputerGuestEffectInput>();
 
 	constructor(options: {
@@ -87,7 +87,7 @@ export class CompanyComputerGuestEndpoint implements CompanyComputerCloudEndpoin
 	}
 
 	/**
-	 * Drain again the settled failures whose first drain got no confirmation.
+	 * Drain again the settled actions whose first drain got no confirmation.
 	 * Called before the run's screen lease is released: an open resource at
 	 * release makes SQL drain the whole desktop. What still fails stays open.
 	 */
@@ -230,7 +230,11 @@ export class CompanyComputerGuestEndpoint implements CompanyComputerCloudEndpoin
 				}
 				throw error;
 			});
-		await this.#effects.finish(structuredClone(effect), new AbortController().signal);
+		await this.#effects.finish(structuredClone(effect), new AbortController().signal).catch((error: unknown) => {
+			// Reported as before, and tried again before release.
+			this.#undrained.set(receipt.receiptId, structuredClone(effect));
+			throw error;
+		});
 		return result;
 	}
 }
