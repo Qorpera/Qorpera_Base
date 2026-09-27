@@ -167,9 +167,16 @@ export async function startOfficeRpcServer({ query, tls, tokens, listen, onSampl
 			const body = JSON.stringify(value);
 			response.writeHead(status, { "content-type": "application/json", "content-length": Buffer.byteLength(body), "cache-control": "no-store" }).end(body);
 		};
-		const bearer = request.headers.authorization?.match(/^Bearer ([A-Za-z0-9_-]{43,128})$/)?.[1];
-		if (!bearer || request.headers.apikey !== bearer) { reply(401, { error: "Unauthorized" }); return; }
-		const digest = secretDigest(bearer);
+		// Production sends opaque Supabase service keys as apikey only. A bearer
+		// is optional, but when supplied must identify the same exact fixture key.
+		const apiKey = request.headers.apikey, authorization = request.headers.authorization;
+		if (["apikey", "authorization"].some(name => request.rawHeaders.filter((header, index) => index % 2 === 0 && header.toLowerCase() === name).length > 1)) { reply(401, { error: "Unauthorized" }); return; }
+		if (typeof apiKey !== "string" || !/^[A-Za-z0-9_-]{43,128}$/.test(apiKey)) { reply(401, { error: "Unauthorized" }); return; }
+		const digest = secretDigest(apiKey);
+		if (authorization !== undefined) {
+			const bearer = authorization.match(/^Bearer ([A-Za-z0-9_-]{43,128})$/)?.[1];
+			if (!bearer || !timingSafeEqual(secretDigest(bearer), digest)) { reply(401, { error: "Unauthorized" }); return; }
+		}
 		const allowed = timingSafeEqual(digest, provider) ? providerMethods : timingSafeEqual(digest, guest) ? guestMethods : null;
 		if (!allowed) { reply(401, { error: "Unauthorized" }); return; }
 		const name = request.url?.match(/^\/rest\/v1\/rpc\/(qorpera_[a-z0-9_]+)$/)?.[1];

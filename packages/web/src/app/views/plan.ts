@@ -250,7 +250,7 @@ export function renderPlan(
 								? button(uiText("Retry"), company.retry, { small: true, disabled: company.loading })
 								: null,
 						)
-					: h("p", { class: "settings-help" }, uiText("Choose a company to see its storage.")),
+					: h("p", { class: "settings-help" }, uiText("Open a company to see its storage.")),
 			),
 			h(
 				"section",

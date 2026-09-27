@@ -207,7 +207,9 @@ describe("cloud presence", () => {
 				teammateKeys.privateKey,
 			).toString("base64"),
 		});
-		// Different members' signatures verify independently; their completion order is not a transport guarantee.
+		// Each broadcast verifies its signature on its own async path, and only a
+		// single sender's sequence is ordered, so the two senders may land in
+		// either order. Compare them as a set.
 		await vi.waitFor(() => expect([...activities].sort()).toEqual(["legal-agent:working", "legal-agent:writing"]));
 
 		await handle.stop();

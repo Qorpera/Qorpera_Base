@@ -75,7 +75,7 @@ label > input, label > select { font-weight: 400; }
 	transition: background 120ms ease, border-color 120ms ease;
 	display: inline-flex; align-items: center; gap: 6px;
 }
-.btn:hover:not(:disabled) { background: var(--hover); }
+.btn:hover:not(:disabled, [aria-disabled="true"]) { background: var(--hover); }
 .btn:disabled, .btn[aria-disabled="true"] { opacity: 0.5; cursor: default; }
 .btn-primary { background: var(--primary); color: var(--on-primary); border-color: var(--primary); }
 .btn-primary:hover:not(:disabled) { background: var(--primary-hover); }

@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { request } from "node:https";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
+import { build } from "esbuild";
 import { loadOfficeRpcSignatures, OFFICE_PROVIDER_RPCS, startOfficeRpcServer } from "./office-rpc-server.mjs";
 
 let root, tls;
@@ -19,6 +20,7 @@ before(async () => {
 		"-addext", "subjectAltName=DNS:localhost,IP:127.0.0.1", "-keyout", join(root, "key.pem"), "-out", join(root, "cert.pem")], { encoding: "utf8" });
 	assert.equal(generated.status, 0, "Test TLS certificate creation failed");
 	tls = { key: await readFile(join(root, "key.pem")), cert: await readFile(join(root, "cert.pem")) };
+	await build({ entryPoints: [new URL("./office-rpc-client-probe.ts", import.meta.url).pathname], outfile: join(root, "client.mjs"), bundle: true, platform: "node", format: "esm", target: "node24", logLevel: "silent" });
 });
 after(async () => { await rm(root, { recursive: true, force: true }); });
 
@@ -32,16 +34,34 @@ async function fixture(t, use = async () => '{"state":"prepared"}') {
 	t.after(() => server.close());
 	return { server, calls };
 }
-function call(server, { path = `/rest/v1/rpc/${method}`, body = '{"p_startup":{}}', token = tokens.guest, apiKey = token, ca = tls.cert, headers = {}, method: verb = "POST" } = {}) {
+function call(server, { path = `/rest/v1/rpc/${method}`, body = '{"p_startup":{}}', token = tokens.guest, apiKey = token, authorization = `Bearer ${token}`, ca = tls.cert, headers = {}, method: verb = "POST" } = {}) {
 	return new Promise((resolve, reject) => {
 		const req = request({ hostname: "127.0.0.1", port: server.address.port, path, method: verb, ca,
-			headers: { authorization: `Bearer ${token}`, apikey: apiKey, "content-type": "application/json", ...headers } }, (response) => {
+			headers: { ...(authorization === null ? {} : { authorization }), ...(apiKey === null ? {} : { apikey: apiKey }), "content-type": "application/json", ...headers } }, (response) => {
 			const chunks = []; response.on("data", (chunk) => chunks.push(chunk));
 			response.once("end", () => resolve({ status: response.statusCode, body: Buffer.concat(chunks).toString("utf8"), headers: response.headers }));
 		});
 		req.once("error", reject); req.end(body);
 	});
 }
+
+test("the unmodified production registry authenticates its opaque apikey over verified TLS", async (t) => {
+	const f = await fixture(t);
+	const result = await new Promise((resolve, reject) => {
+		const child = spawn(process.execPath, [join(root, "client.mjs")], { env: { ...process.env, NODE_EXTRA_CA_CERTS: join(root, "cert.pem") }, stdio: ["pipe", "pipe", "pipe"] });
+		let output = "";
+		const timer = setTimeout(() => { child.kill("SIGKILL"); reject(new Error("Production registry probe timed out")); }, 10000);
+		child.stdout.on("data", bytes => { output += bytes; if (Buffer.byteLength(output) > 16384) child.kill("SIGKILL"); });
+		child.stderr.resume();
+		child.once("error", error => { clearTimeout(timer); reject(error); });
+		child.once("close", code => { clearTimeout(timer); resolve({ code, output }); });
+		child.stdin.end(JSON.stringify({ supabaseUrl: `https://127.0.0.1:${f.server.address.port}`, serviceRoleKey: tokens.guest }));
+	});
+	assert.equal(result.code, 0);
+	assert.deepEqual(JSON.parse(result.output), { state: "prepared" });
+	assert.equal(f.calls.length, 1);
+	assert(!f.calls[0].sql.includes(tokens.guest));
+});
 
 test("TLS RPC binds exact payload through stdin variables and executes the actual service role", async (t) => {
 	const f = await fixture(t);
@@ -63,6 +83,10 @@ test("authentication, guest/provider separation and exact RPC paths fail before 
 	const f = await fixture(t);
 	for (const options of [
 		{ token: randomBytes(32).toString("base64url") }, { apiKey: tokens.provider },
+		{ apiKey: null }, { apiKey: null, authorization: null }, { authorization: "Basic invalid" },
+		{ authorization: `Bearer ${tokens.provider}` }, { authorization: "" },
+		{ headers: { authorization: [`Bearer ${tokens.guest}`, `Bearer ${tokens.provider}`] } },
+		{ headers: { apikey: [tokens.guest, tokens.guest] } },
 		{ path: "/rest/v1/rpc/qorpera_prepare_runtime_computer_permit" },
 		{ path: "/rest/v1/rpc/qorpera_record_computer_guard_samples" },
 		{ path: "/rest/v1/rpc/qorpera_observe_runtime_node_inventory" },
@@ -74,6 +98,8 @@ test("authentication, guest/provider separation and exact RPC paths fail before 
 		{ path: `/rest/v1/rpc/${method}?override=true` }, { method: "GET" },
 	]) assert([401, 403].includes((await call(f.server, options)).status));
 	assert.equal(f.calls.length, 0);
+	assert.equal((await call(f.server, { authorization: null })).status, 200);
+	assert.equal((await call(f.server, { authorization: null, path: "/rest/v1/rpc/qorpera_prepare_runtime_computer_permit" })).status, 403);
 	assert.equal((await call(f.server, { path: "/rest/v1/rpc/qorpera_prepare_runtime_computer_permit", token: tokens.provider })).status, 200);
 	for (const name of ["qorpera_begin_runtime_office_reset", "qorpera_check_runtime_office_reset_phase", "qorpera_activate_runtime_office_reset_successor", "qorpera_enroll_office_package_provision", "qorpera_ack_office_package_provision"])
 		assert.equal((await call(f.server, { path: `/rest/v1/rpc/${name}`, token: tokens.provider })).status, 200);
