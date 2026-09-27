@@ -13,6 +13,7 @@ import { type GroupChatDetails, listGroupChatDetails, readGroupChatDetails } fro
 import type { InteractionAnswer, InteractionOutcome, InteractionRequest } from "../cloud/interactions.ts";
 import { buildCompanyHierarchy, type CompanyHierarchy, type HostedCompanyOrganization } from "../cloud/organization.ts";
 import { UUID_PATTERN } from "../cloud/parse.ts";
+import type { CloudPresenceHandle, PresenceMember } from "../cloud/presence.ts";
 import {
 	type RealtimePhase,
 	type RealtimeResource,
@@ -147,6 +148,8 @@ export interface CompanyState {
 	railError?: string;
 	realtime: RealtimePhase;
 	realtimeError?: string;
+	/** The other members' open browser tabs and the conversation each shows (presence). */
+	here?: readonly PresenceMember[];
 	loading: boolean;
 	error?: string;
 	accessLost?: boolean;
@@ -305,6 +308,10 @@ export class CompanyController {
 	readonly #recoveryReads = new Map<string, { due: number; request: number }>();
 	/** The details RPC is not deployed on this cloud. */
 	#recoveriesMissing = false;
+	/** This tab on the company's presence channel, once another member could be here. */
+	#presence: CloudPresenceHandle | undefined;
+	/** The conversation this tab says it shows: the open one while the tab is visible. */
+	#tracked: string | null = null;
 
 	constructor(api: CloudApi, profile: HostedProfile, userId: string, writeInput?: SessionInputWriter) {
 		this.#api = api;
@@ -362,6 +369,8 @@ export class CompanyController {
 			store.set({ draft: "", attachments: [], retrySend: undefined, executionSponsor: undefined });
 		this.#realtime?.stop();
 		this.#sidebarRealtime?.stop();
+		void this.#presence?.stop().catch(() => {});
+		this.#presence = undefined;
 		if (this.#poll) clearInterval(this.#poll);
 		clearTimeout(this.#watching);
 		this.#invalidations.clear();
@@ -399,6 +408,7 @@ export class CompanyController {
 			const team = await this.#api.getTeam(this.profile.profileId);
 			if (this.#stopped || version !== this.#versions.team) return;
 			this.store.set({ team, accessLost: false });
+			this.#joinPresence();
 		} catch (error) {
 			if (this.#stopped || version !== this.#versions.team) return;
 			if (error instanceof CloudRpcError && error.denied) {
@@ -1009,6 +1019,51 @@ export class CompanyController {
 
 	setOpenSession(sessionId: string | undefined): void {
 		this.#openSessionId = sessionId;
+		this.#trackOpen();
+	}
+
+	/** The other members who have this conversation open now, one entry per member. */
+	presentIn(sessionId: string): { userId: string; name: string }[] {
+		const state = this.store.get();
+		const seen = new Map<string, { userId: string; name: string }>();
+		for (const member of state.here ?? [])
+			if (member.staffAgentId === sessionId && member.userId !== this.#userId && !seen.has(member.userId))
+				seen.set(member.userId, {
+					userId: member.userId,
+					name: state.team?.members.find((item) => item.userId === member.userId)?.displayName ?? member.name,
+				});
+		return [...seen.values()];
+	}
+
+	/** Join the presence channel once the company has another member: alone, nobody could be here. */
+	#joinPresence(): void {
+		const team = this.store.get().team;
+		if (this.#stopped || this.#presence || !team?.members.some((member) => member.userId !== this.#userId)) return;
+		try {
+			this.#presence = this.#api.joinPresence(
+				this.profile.profileId,
+				(members) => {
+					if (!this.#stopped) this.store.set({ here: members.filter((member) => member.userId !== this.#userId) });
+				},
+				() => {},
+			);
+		} catch {
+			return;
+		}
+		this.#tracked = null;
+		if (typeof document !== "undefined")
+			document.addEventListener("visibilitychange", () => this.#trackOpen(), { signal: this.signal });
+		this.#trackOpen();
+	}
+
+	/** Say which conversation this tab shows: none while the tab is hidden. */
+	#trackOpen(): void {
+		if (!this.#presence || this.#stopped) return;
+		const visible = typeof document === "undefined" || document.visibilityState !== "hidden";
+		const open = visible ? (this.#openSessionId ?? null) : null;
+		if (open === this.#tracked) return;
+		this.#tracked = open;
+		this.#presence.setOpenThread(open);
 	}
 
 	loadConversation(sessionId: string): Promise<void> {

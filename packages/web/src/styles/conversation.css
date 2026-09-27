@@ -15,6 +15,14 @@
 .thread-identity:disabled > .icon { display: none; }
 /* The computer button is a plain disc: a light wash on hover, a slightly deeper one while the computer is open. No colour, no border. */
 .thread-computer { margin-left: auto; border-radius: 50%; transition: background-color 120ms ease, color 120ms ease; }
+/* Who is here: the other members with this conversation open, as overlapping faces before the computer button. */
+.thread-presence { display: flex; flex: none; align-items: center; margin-left: auto; padding-left: 4px; }
+.thread-presence[hidden] { display: none; }
+.thread-presence:not([hidden]) + .thread-computer { margin-left: 6px; }
+.thread-presence > .person-avatar { width: 28px; height: 28px; font-size: 11px; box-shadow: 0 0 0 2px var(--header-surface); animation: presence-in 220ms cubic-bezier(.2,.7,.2,1) both; }
+.thread-presence > .person-avatar + .person-avatar, .thread-presence > .thread-presence-more { margin-left: -5px; }
+.thread-presence-more { display: grid; place-items: center; min-width: 28px; height: 28px; padding: 0 6px; border-radius: 14px; background: var(--pane-strong); box-shadow: 0 0 0 2px var(--header-surface); color: var(--text-muted); font-size: 11px; font-weight: 600; }
+@keyframes presence-in { from { transform: scale(.4); opacity: 0; } to { transform: scale(1); opacity: 1; } }
 .thread-computer:hover:not(:disabled) { color: var(--text); }
 .thread-computer:active:not(:disabled) { background: color-mix(in srgb, var(--text) 18%, transparent); }
 .thread-computer[aria-expanded=true] { color: var(--text); background: color-mix(in srgb, var(--text) 12%, transparent); }
@@ -521,7 +529,7 @@
 	.recipient-menu { left: 8px; right: 8px; width: auto; }
 }
 @keyframes computer-enter { from { opacity: 0; transform: translateX(18px); } to { opacity: 1; transform: translateX(0); } }
-@media (prefers-reduced-motion: reduce) { .computer-panel, .agent-page, .agent-figure-picker { animation: none; } .composer-shell, .composer-switch, .composer-switch::after { transition: none; } }
+@media (prefers-reduced-motion: reduce) { .computer-panel, .agent-page, .agent-figure-picker, .thread-presence > .person-avatar { animation: none; } .composer-shell, .composer-switch, .composer-switch::after { transition: none; } }
 
 /* Group details use the same anchored frame as an agent's details. */
 .group-details-stage { display: grid; place-items: center; min-width: 0; }

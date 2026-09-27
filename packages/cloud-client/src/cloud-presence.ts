@@ -59,11 +59,21 @@ export interface CloudPresenceHandle {
 	stop(): Promise<void>;
 }
 
-export class SupabaseCloudPresenceTransport {
-	readonly #client: SupabaseClient<HostedPrimaryDatabase>;
-	readonly #primary: QorperaHostedPrimary;
+/** The device registry calls presence needs; a client that does not carry the whole
+ * hosted primary (the web app) supplies just these. */
+export type PresenceDevices = Pick<
+	QorperaHostedPrimary,
+	"registerPresenceDevice" | "listPresenceDevices" | "unregisterPresenceDevice"
+>;
 
-	constructor(client: SupabaseClient<HostedPrimaryDatabase>, primary: QorperaHostedPrimary) {
+export class SupabaseCloudPresenceTransport {
+	readonly #client: Pick<SupabaseClient<HostedPrimaryDatabase>, "channel" | "removeChannel">;
+	readonly #primary: PresenceDevices;
+
+	constructor(
+		client: Pick<SupabaseClient<HostedPrimaryDatabase>, "channel" | "removeChannel">,
+		primary: PresenceDevices,
+	) {
 		this.#client = client;
 		this.#primary = primary;
 	}

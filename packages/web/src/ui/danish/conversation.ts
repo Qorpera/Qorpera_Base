@@ -20,6 +20,9 @@ export const CONVERSATION: Record<string, string> = {
 	"Sending messages is not available yet. Your draft stays here.":
 		"Beskeder kan ikke sendes endnu. Din kladde bliver her.",
 	"The message could not be confirmed. Try again.": "Beskeden kunne ikke bekræftes. Prøv igen.",
+	// Who is here: the other members with the conversation open (conversation.ts)
+	"{name} is here": "{name} er her",
+	"{names} are here": "{names} er her",
 	"Messages support PNG, JPEG, GIF and WebP images. Upload other files through Company File.":
 		"Beskeder understøtter billeder i PNG, JPEG, GIF og WebP. Upload andre filer via Virksomhedsfilen.",
 	"Choose up to 5 images totaling no more than 8 MiB.": "Vælg op til 5 billeder på højst 8 MiB i alt.",

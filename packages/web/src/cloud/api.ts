@@ -48,6 +48,7 @@ import {
 	parseTeam,
 	UUID_PATTERN,
 } from "./parse.ts";
+import { type CloudPresenceHandle, joinCompanyPresence, type PresenceHealth, type PresenceMember } from "./presence.ts";
 import { type ActionReviewAnswer, type ActionReviewReceipt, parseActionReviewReceipt } from "./review-rules.ts";
 import { type CompanySidebar, parseCompanySidebar, type SidebarRequest } from "./sidebar.ts";
 import type {
@@ -280,6 +281,15 @@ export class CloudApi {
 		return this.cloud
 			.rpc("qorpera_company_organization_json", { p_profile_id: requiredUuid(profileId, "Profile id") })
 			.then(parseHostedCompanyOrganization);
+	}
+
+	/** Who has which conversation open, live (the company's presence channel). */
+	joinPresence(
+		profileId: string,
+		onMembers: (members: PresenceMember[]) => void,
+		onHealth: (health: PresenceHealth) => void,
+	): CloudPresenceHandle {
+		return joinCompanyPresence(this.cloud, requiredUuid(profileId, "Profile id"), onMembers, onHealth);
 	}
 
 	/** Sections are the company's; pins and hidden agents are the signed-in member's. */
