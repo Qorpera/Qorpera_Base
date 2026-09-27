@@ -339,7 +339,8 @@ The Company File is worked on as one live folder. Every agent and member
 edits the same live objects in place through the live mount or Company File
 tools; there are no per-agent worktrees, checkouts, or copies of the Company
 File on any machine. (Git worktrees of code kept in the Company File are
-company files, not copies; see the 2026-09-27 amendment, item 9.) A presence service records who is currently working in
+company files, not copies; see the 2026-09-27 amendment "every machine works
+in the company folder", item 9.) A presence service records who is currently working in
 which object or subtree; the composer includes presence for relevant paths so
 agents see overlap and resolve it among themselves through ordinary messages.
 Presence is never a lock. Code repositories remain the branch-and-PR
@@ -350,7 +351,8 @@ destructive, production, and other high-impact paths use a durable proposal or
 action-specific grant. Review policy belongs to those paths, not to every
 Company File write. Since 2026-09-27 no path is configured this way by
 default: everything is approved by default, and only the seeded folders and
-`rules/` have their own rules (5.6).
+`rules/` have their own rules (5.6). The automatic review of the 2026-09-25
+amendment is a separate layer and still applies.
 
 ### 5.3 Change events
 
@@ -401,11 +403,13 @@ machine is logical path `<p>`.
 
 The database holds only what is not company state:
 
-- members, sign-in and invitations;
+- members, sign-in and invitations, and each member's own settings (pins,
+  hidden agents, a conversation's model, personal review rules);
 - plan, usage and billing;
 - runtime state: runs, queues, wakes, leases, locks, presence, receipts, read
   sets, schedule positions and message delivery;
-- conversations; and
+- conversations;
+- the folder's versions, heads, authority and path grants; and
 - indexes of the folder.
 
 An index is rebuilt from the files. It never decides anything the files do not
@@ -423,6 +427,7 @@ vision/
   vision.md                  the company's name, what it builds, for whom, why,
                              and how it works
 agents/
+  sections.md                sidebar sections, in order, with their agents
   <agent-name>/              one folder per agent
     agent.md                 settings in front matter; instructions in the body
     memory/                  the agent's notebook (15.1)
@@ -440,8 +445,9 @@ rules/
 ```
 
 `code/<owner>/<name>/` holds repositories and is created when coding starts
-(2026-09-27 amendment, item 9). Everything else the company makes goes in
-folders it creates, one folder per category of files.
+(the 2026-09-27 amendment "every machine works in the company folder", item
+9). Everything else the company makes goes in folders it creates, one folder
+per category of files.
 
 **`vision/`.** Filling `vision/vision.md` is the Co-Founder's first
 responsibility, and keeping it current is a standing one. Every agent reads it,
@@ -449,58 +455,103 @@ in full, at every run: it is the company's AGENTS.md. It starts with the
 company's name. Other files in `vision/` are read on demand.
 
 **`agents/<agent-name>/`.** An agent is its folder. Hiring an agent creates its
-folder and its `agent.md`. Renaming an agent moves its folder. Deleting the
-folder retires the agent: its runs are fenced, and its conversations and
-history stay. The folder name is the agent's name in lowercase, with hyphens
-for spaces, and is unique in the company. `groups` is reserved.
+folder and its `agent.md`.
+
+The folder name is the agent's handle:
+- It is made from the agent's name when the agent is hired: lowercase letters
+  a–z, digits and hyphens, with æ, ø and å written as ae, oe and aa, and other
+  characters dropped.
+- It is unique among the agents, ignoring case. `groups` and `sections.md` are
+  reserved.
+- `name` in `agent.md` is how the agent is shown, and may use any characters.
+  Renaming an agent changes both and moves its folder. Editing `name` alone
+  does not move the folder.
 
 `agent.md` front matter holds:
 
 - the agent's stable `id`, which never changes, so threads and history survive
   a rename;
-- `name`, `role`, `kind` (`co-founder` or `agent`), `status` (`active` or
-  `archived`);
-- `colour`, `figure`, `model`, `effort`; and
-- `section`, the sidebar section the agent sits in.
+- `name`, `role`, `kind` (`co-founder` or `agent`) and `status` (`active` or
+  `archived`); and
+- `colour`, `figure`, `model` and `effort`.
 
 The body holds the agent's instructions: its job and responsibilities in
 plain prose, its voice, and how it works (9.3).
 
+The Co-Founder is the agent the platform seeded when it created the company,
+and the platform keeps that agent's `id`. A save is refused if it:
+- changes any agent's `id`;
+- gives `kind: co-founder` to another agent; or
+- takes it from the Co-Founder.
+
+An agent leaves in one of three ways:
+
+- **Archive:** `status: archived`. The agent stops, and its folder stays.
+  Setting it back to `active` restores it.
+- **Delete:** deleting the folder. This retires the agent: its runs are
+  fenced, its conversations stay, and its files can be restored from the
+  version history. The Co-Founder cannot be deleted.
+- **Permanent erasure:** purging a deleted agent's history. This is a separate
+  operation that only owners and admins perform (14.1).
+
+**`agents/sections.md`.** The sidebar's sections in order, each with its agents
+in order. A section may be empty. An agent that no section lists sits in
+Unassigned, and the Co-Founder is never listed (2026-09-24 amendment).
+
 **`agents/groups/<group-name>/group.md`.** A group chat must have a name, and
-its folder is named after it. The front matter lists the agents in it; the
-body states its purpose. An agent's own conversation thread follows the
-agent's folder and has no file of its own.
+its folder is named from it by the same rules as an agent's folder. The front
+matter holds the group's stable `id`, its `name`, and its members, both people
+and agents. The body states its purpose. An agent's own conversation thread
+follows the agent's folder and has no file of its own.
 
 **`connections/<connection>.md`.** Each file describes one connected account,
 shared by all agents: the service, the account, its status, the actions agents
-may take with it, and who connected it and when. The body says what the
-connection is for. The platform writes the descriptive fields in the same step
-as the vault record, and the vault stays the authority for the secret and its
-status. Connecting and disconnecting are member actions through the vault.
-The body is company-authored.
+may take with it, and who connected it and when.
+
+- Only the platform writes these fields, in the same step as the vault record.
+  A save that changes them is refused.
+- The vault and the operation grants (11.5) stay the authority for the secret,
+  its status and what agents may do. The file shows them.
+- The body says what the connection is for and is company-authored.
+- Connecting and disconnecting are member actions through the vault.
+  Disconnecting removes the file; deleting the file is refused while the
+  account is connected.
 
 **`rules/<rule>.md`.** Company review rules (2026-09-25 amendment), one file per
-rule. Only members write here. An agent may add a rule only when it makes
-review stricter (ask first). Otherwise an agent could rewrite a rule that
-reviews it.
+rule, written, moved, deleted and restored only by owners and admins. Agents
+read them and never write them. The reviewer reads every company rule's text,
+so a rule an agent could write would be a way to instruct its own reviewer.
+A member's personal rules stay in the database with that member's other
+settings. An agent may still add an Ask first personal rule for the member it
+works for when that member asks (2026-09-25 amendment, item 1).
 
-**Approval.** Everything is approved by default. A change in the folder,
-including a delete or a move, applies at once and can be restored from the
-version history. No path needs a proposal unless a later amendment adds one.
-There are two exceptions:
+**Approval.** Everything is approved by default:
+- No path needs a member's approval or a proposal, and none is configured to
+  need one. The mechanism for protected paths stays, unused.
+- Seeded folders and files cannot be deleted or moved: `vision/`, `vision/vision.md`,
+  `agents/`, `agents/sections.md`, `agents/groups/`, `connections/`, `skills/`
+  and `rules/`. The Co-Founder's folder cannot be deleted; it moves only when
+  the Co-Founder is renamed.
+- Only owners and admins write `rules/`.
 
-- the seeded folders cannot be deleted or moved: `vision/`,
-  `vision/vision.md`, `agents/`, the Co-Founder's folder and its `agent.md`,
-  `agents/groups/`, `connections/`, `skills/` and `rules/`; and
-- only members write `rules/`, as above.
+The automatic review (2026-09-25 amendment) is unchanged:
+- Outside effects pass it first.
+- So do the folder changes it counts as delegation or deletion:
+  - creating an agent's folder (hiring);
+  - creating a `group.md`;
+  - creating a routine file, or changing a routine's instructions or title;
+  - deleting or moving paths.
 
-The automatic review of outside effects (2026-09-25 amendment) is unchanged.
+  They pass it as one unit per change set (the 2026-09-27 amendment "every
+  machine works in the company folder", item 6).
+- Everything else applies at once, and any change can be restored from the
+  version history.
 
-**Structured files.** `agent.md`, routine files, todo files, `group.md`,
-connection files and rule files have a fixed format. A save updates the
-file's index in the same step. A save the platform cannot read correctly is
-refused for that file, with the reason. A human, an agent's shell and a tool
-all save through this same path.
+**Structured files.** `agent.md`, `agents/sections.md`, routine files, todo
+files, `group.md`, connection files and rule files have a fixed format. A save
+updates the file's index in the same step. A save the platform cannot read
+correctly is refused for that file, with the reason. A human, an agent's shell
+and a tool all save through this same path.
 
 ## 6. Mouth and visibility contract
 
@@ -1060,7 +1111,8 @@ Worker species have separate lifecycle contracts:
 - **In-house worker:** runs a bounded internal stream and publishes a durable
   completion event that revives or continues the parent.
 - **Coding worker:** owns an isolated repository workspace (its own NAS
-  folders and guest user; since the 2026-09-27 amendment, item 9, its
+  folders and guest user; since the 2026-09-27 amendment "every machine
+  works in the company folder", item 9, its
   worktree lives in the company folder and its NAS folders keep only caches
   and custody), worker identity, and branch, and runs on its
   member's coding machine (amended 2026-09-24: one machine per member and
@@ -1093,8 +1145,10 @@ Membership and roles stay in the database.
 > **Amended 2026-09-27.** An agent is its folder, `agents/<agent-name>/`
 > (5.6). Creating an agent creates the folder and its `agent.md`, and the
 > index rows follow in the same step. The Co-Founder's folder is seeded and
-> cannot be deleted. Agent documents are no longer protected paths; changes
-> apply at once.
+> cannot be deleted. Agent documents are no longer protected paths: no member
+> approval is needed, and hiring passes the automatic review as delegation
+> (2026-09-25 amendment). Archive, delete and permanent erasure are defined in
+> 5.6; "permanent deletion" below is that erasure.
 
 Creating a company MUST atomically create one seeded Co-Founder agent and
 exactly one first-run kickoff, together with their authoritative Company File
@@ -1309,8 +1363,8 @@ a permanent hire when the responsibility ends with the project.
 ### 14.5 Attention and product projection
 
 > **Amended 2026-09-27.** The hierarchy is built from the company folder: the
-> Co-Founder, then agents grouped by the `section` in their `agent.md`, then
-> group chats (5.6).
+> Co-Founder, then the sections of `agents/sections.md` with their agents,
+> then group chats (5.6).
 
 > **Amended 2026-09-20.** Item 2 below is withdrawn: clients present no
 > dedicated responsibility area and no responsibility pages. The hierarchy is
@@ -1466,7 +1520,7 @@ never blocks the run.
 
 Export and import: a portable notebook is `profile.md` plus the `log/` files
 with `[note]` and `[episode]` lines removed. A Grok Bot import maps the bot's
-agent memory onto `agents/<staffAgentId>/memory/` unchanged; a Grok Bot export
+agent memory onto `agents/<agent-name>/memory/` unchanged; a Grok Bot export
 carries no user memory, and the import creates none.
 
 The constitution tells agents what is worth remembering and not to bloat a
@@ -2272,7 +2326,8 @@ Founder decisions, 2026-09-19 and 2026-09-20.
    otherwise the proposal waits for member approval. The room policy is
    unchanged. A change to an existing agent or room stays proposed by the
    Co-Founder (14.2) and approved by a member. (Superseded 2026-09-27: agent
-   and group files are approved by default, 5.6.)
+   and group files need no member approval, 5.6; hiring and new group chats
+   still pass the automatic review.)
 4. **The gate is authority, never the client.** A capability a signed-in member
    has through one client is a cloud operation. Whether an agent may perform it
    is decided by the authority chain of its run, not by which surface first
@@ -2570,9 +2625,9 @@ Orders 9, 7 and 8. See
 ### 2026-09-24 amendment: sidebar sections are the company's, and agents organize them
 
 Founder decision, 2026-09-24 (Grok Bot's rail). Extends 14.1 and the
-2026-09-19/20 amendment, item 4. Since 2026-09-27 a section is the `section`
-field in each agent's `agent.md` (5.6); the decisions below keep their
-meaning.
+2026-09-19/20 amendment, item 4. Since 2026-09-27 the sections, their order
+and their agents are the file `agents/sections.md` (5.6); the decisions below
+keep their meaning.
 
 1. **Sections are company structure.** The rail groups agents under named
    sections. Sections and which agent sits in which, in what order, belong to
@@ -2727,10 +2782,7 @@ section 12.2 and the 2026-09-16 storage rule. Design:
 5. **The shell never shares a box with credentials.** Commands run in a
    credential-free box beside the model's harness. The provider login,
    service keys and tokens stay outside it (11.4, 11.5).
-6. **Deletes and moves.** (Superseded later on 2026-09-27 by the layout
-   amendment below: everything is approved by default, so a delete or move
-   applies at once and can be restored; seeded folders cannot be deleted or
-   moved.) Deleting or moving an ordinary path no longer waits
+6. **Deletes and moves.** Deleting or moving an ordinary path no longer waits
    for a member. The deletes and moves of one change set pass the automatic
    review together (2026-09-25 amendment, item 2).
    - When the review asks, they park on the card and apply on approval
@@ -2769,7 +2821,8 @@ section 12.2 and the 2026-09-16 storage rule. Design:
 ### 2026-09-27 amendment: the company folder layout
 
 Founder decisions of 27 September 2026 (evening). They complete section 5 and
-the amendment above, and are written into 5.6.
+the amendment above ("every machine works in the company folder"), and are
+written into 5.6.
 
 A review of master at bundle v137 found three problems:
 
@@ -2781,8 +2834,8 @@ A review of master at bundle v137 found three problems:
 - This contract never defined the folder's layout.
 
 1. **The folder is the company.** All company state lives in the company
-   folder. The database holds only non-company data plus indexes of the
-   folder (5.6).
+   folder. The database holds only non-company data plus the folder's versions,
+   authority and indexes (5.6).
 2. **Machines project onto the folder.** No machine holds the company folder
    or a copy of it. The agent's run box, Company Computers and coding
    machines each project onto the one folder on the NAS. This restates items
@@ -2800,28 +2853,38 @@ A review of master at bundle v137 found three problems:
    hold no secrets; the secrets stay in the vault.
 7. **Routines sit inside the agent's folder.**
 8. **No transcript export for now.** Conversations stay in the database.
-9. **Everything is approved by default.** Complexity is added only when it is
-   needed. The seeded folders cannot be deleted. Only members write `rules/`,
-   so an agent cannot rewrite a rule that reviews it.
+9. **Everything is approved by default.** No path needs a member's approval or
+   a proposal; complexity is added only when it is needed. The seeded folders
+   cannot be deleted. Only owners and admins write `rules/`, so an agent can
+   never write a rule that its own reviewer reads. The automatic review of the
+   2026-09-25 amendment is unchanged.
+10. **Projects are dropped for now** (approved with the layout). Agents make
+    ordinary folders for project work.
+
+The file formats in 5.6 are design that follows from these decisions, and so
+are the tools, computers and migration below. They may be refined without a
+new founder decision, as long as the decisions hold.
 
 **What this supersedes.** Where these passages conflict with 5.6, 5.6
 governs:
 
-- **§4.3:** provider connections as "explicit non-file resources". The secret
-  and the lease stay outside the folder; the descriptor is a file.
+- **§2:** mentions of projects as a product unit.
+- **§4.3:** provider connections as "explicit non-file resources". The secret,
+  the grants and the lease stay outside the folder; the descriptor is a file.
 - **§5.2:** "Configured money, identity, membership … paths use a durable
   proposal". None are configured by default.
 - **§12 and §12.2:** a Company File realm for explicit transfers, and company
   work state on a machine.
 - **§13:** todos as "durable code objects".
 - **§14, opening:** agents and rooms as "cloud state".
-- **§14.1:** protected agent documents.
+- **§14.1:** protected agent documents. "Permanent deletion" is now the
+  owners' and admins' erasure of a deleted agent's history (5.6); deleting an
+  agent's folder retires it.
 - **§14.2:** the protected direction proposal and its ratification. The
   Co-Founder writes the vision; members edit it like any file.
-- **§14.4:** projects. They are dropped for now, and agents make ordinary
-  folders for project work.
+- **§14.4:** projects.
 - **§14.5:** the product hierarchy. It is built from the folder: the
-  Co-Founder, then agents grouped by `section`, then group chats.
+  Co-Founder, then the sections of `agents/sections.md`, then group chats.
 - **§14.7:** rooms as control-plane objects.
 - **§15.1:** the notebook path `agents/<staffAgentId>/memory/`. It becomes
   `agents/<agent-name>/memory/`.
@@ -2832,12 +2895,11 @@ governs:
 - **2026-09-19/20 amendment, item 3:** "A change to an existing agent or room
   stays proposed by the Co-Founder (14.2) and approved by a member."
 - **2026-09-24 amendment, items 1–2:** section storage and
-  `organize_sidebar`. A section is the `section` field in `agent.md`.
-- **2026-09-25 amendment:** where company rules are stored. They move to
-  `rules/`.
-- **Amendment above, item 6:** reviewed deletes and moves. A delete or move in
-  the folder applies at once and can be restored, except for the seeded
-  folders.
+  `organize_sidebar`. Sections are `agents/sections.md`.
+- **2026-09-25 amendment, item 1:** where company rules are stored. They are
+  files in `rules/`, written only by owners and admins. Personal rules stay in
+  the database. Its item 2 (what is reviewed) is unchanged. It now applies to
+  folder changes as 5.6 lists them.
 - **`supabase/COMPANY-FILE.md`:** rewritten for the folder model on this date.
 
 **Tools.** Folder state is changed by editing files: through the shell and
@@ -2847,11 +2909,17 @@ until then.
 - **Retired as their state moves into files** (or kept only as thin writers of
   the same files): `manage_routine`, `decide_routine`, `manage_todo`,
   `organize_sidebar`, `update_memory`, `recall_memory`, `update_skill`,
-  `hire_agent`, `create_group_chat` and `add_review_rule`.
-- **Kept:** tools that act outside the folder or on live people. These are
-  reply and send, messages to coworkers, questions to members, workers, the
-  Company Computer's screen, coding sessions, connector actions and
-  conversation history.
+  `hire_agent` and `create_group_chat`.
+- **Kept:** tools that act outside the folder or on live people:
+  - reply and send;
+  - messages to coworkers;
+  - questions to members;
+  - workers;
+  - the Company Computer's screen;
+  - coding sessions;
+  - connector actions;
+  - conversation history;
+  - `add_review_rule`, for a member's personal Ask first rule.
 - **A company adds its own tools as skills,** with scripts beside
   `SKILL.md`.
 
@@ -2862,44 +2930,55 @@ only its system, applications and caches. Its browser sign-ins belong in the
 vault.
 
 **Storage core before writes through the mount.** One head per company cannot
-carry a folder of many terabytes that many agents write at once. Before any
-machine writes through the folder, the Company File must change:
+carry a folder of many terabytes that many agents write at once.
 
-- It MUST move to a version per file, with per-folder trees instead of one
-  manifest.
-- It MUST take change sets: many files, moves and deletes in one unit.
-- It MUST stop taking a company-wide lock for reads.
-- It MUST stop re-staging the whole tree on every write.
+- Before whole-company reads ship, reads MUST stop taking a company-wide lock.
+- Before any machine writes through the folder, the Company File MUST:
+  - move to a version per file, with per-folder trees instead of one manifest;
+  - take change sets: many files, moves and deletes in one unit;
+  - stop re-staging the whole tree on every write; and
+  - have the structured-file saves, index updates and seeded-folder refusals
+    of 5.6 in place.
 
 The build order in `deploy/first-node/RUNTIME-COMPANY-FOLDER.md` is reordered
-to match: per-folder trees join the server's writing side, before writes
-through the mount.
+to match.
 
 **Moving today's state.** Each move publishes the new files and turns the old
-table into an index of them in the same step. The old path is then removed.
+table into an index of them in the same step. The old path is then removed
+unless the row says otherwise.
 
 | Today | Moves to |
 | --- | --- |
 | `organization/agents/<uuid>.json` and the agent roster rows | `agents/<agent-name>/agent.md` |
+| the Co-Founder mark | the platform's record of the seeded Co-Founder, shown as `kind: co-founder` |
 | `agents/<uuid>/memory/` | `agents/<agent-name>/memory/` |
-| `agents/<uuid>/skills/` | `agents/<agent-name>/skills/` |
+| `agents/<uuid>/skills/` (from #387, if merged first) | `agents/<agent-name>/skills/` |
 | routine rows and versions | `agents/<agent-name>/routines/<routine>.md` |
 | `work/todos/<uuid>/` and the todo rows | `agents/<agent-name>/todos/`, with worker briefs and results beside each todo |
 | `organization/rooms/<uuid>.json` | `agents/groups/<group-name>/group.md`; a group without a name gets one before it moves |
-| sidebar section rows | the `section` field in each `agent.md` |
+| agent-thread room rows | no file; the thread follows the agent's folder |
+| sidebar section and placement rows | `agents/sections.md` |
 | company review rule rows | `rules/<rule>.md` |
+| personal review rule rows | stay in the database |
 | connection records (non-secret fields) | `connections/<connection>.md` |
 | `organization/formation.json` and formation text | `vision/vision.md` |
 | the company name | the top of `vision/vision.md`; the database keeps an index copy |
+| `organization/projects/*.json` and project rows | stay where they are as ordinary files; the rows are dropped |
+| `organization/responsibilities/*.json` | stay where they are as ordinary files |
 
 Time zone and language are account settings in the database, and runs receive
 them.
 
-**Launch items to prove again.** Section 21 items 3, 5, 6, 11, 13, 14 and 19
-must be proven again on the folder. Items 6 and 13 were passed through
-explicit file transfers, not a shared folder. Items 20, 22–25 and 30 describe
-withdrawn models; they are rewritten together with the section 19 checkpoint
-and the section 20 matrix once the state has moved.
+**Launch items to prove again.** Section 21 items 3, 4, 5, 6, 11, 13, 14, 15,
+17, 19 and 21 must be proven again on the folder.
+
+- Items 6 and 13 were passed through explicit file transfers, not a shared
+  folder.
+- Item 21's protected direction proposal becomes the vision written by the
+  Co-Founder.
+- Items 20 and 22–25 and item 30 describe withdrawn models. They are rewritten
+  together with the section 19 checkpoint and the section 20 matrix once the
+  state has moved.
 
 ## 20. Enforcement matrix
 
@@ -2942,9 +3021,10 @@ and the section 20 matrix once the state has moved.
 
 ## 21. Launch acceptance
 
-> **Note, 2026-09-27.** Items 3, 5, 6, 11, 13, 14 and 19 must be proven again
-> on the company folder (5.6). Items 6 and 13 were passed through explicit file
-> transfers.
+> **Note, 2026-09-27.** Items 3, 4, 5, 6, 11, 13, 14, 15, 17, 19 and 21 must be
+> proven again on the company folder (5.6). Items 6 and 13 were passed through
+> explicit file transfers; item 21's protected direction proposal becomes the
+> vision the Co-Founder writes.
 
 The runtime launch gate passes only when a deployed environment proves the
 mandatory items 1–30 without manual database repair or a hidden desktop

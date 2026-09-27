@@ -7,13 +7,14 @@ coding machines mount the folder too and keep repositories and worktrees in
 it, is part of that amendment. This document is the design those decisions
 refer to.
 
-
 > **Note, 2026-09-27 (evening).** The contract's company folder layout (section
 > 5.6 and the layout amendment in section 19) fixes the folder's seeded tree,
-> makes everything approved by default, and moves per-folder trees ahead of
-> writes through the mount (section 9). Where this design speaks of reviewed
-> deletes and moves, or of protected paths producing proposals by default,
-> the layout amendment governs.
+> makes everything approved by default (no path needs a member's approval),
+> and moves per-folder trees ahead of writes through the mount (section 9).
+> The automatic review of deletes, moves and delegation is unchanged. Where
+> this design speaks of protected paths producing proposals, none are
+> configured by default.
+
 ## Goal
 
 The Company File is the company's whole folder: its full digital state, not
@@ -256,11 +257,12 @@ These refusals happen as a file is opened or named:
   exception (section 6). (Amended 2026-09-27: `agents/*/instructions.md` and
   the retired `departments/*` prefixes are no longer refused; an agent's
   instructions are its `agents/<agent-name>/agent.md`, contract 5.6);
-- deleting or moving a seeded folder is refused (`EPERM`): `vision/`,
-  `vision/vision.md`, `agents/`, the Co-Founder's folder and its `agent.md`,
-  `agents/groups/`, `connections/`, `skills/` and `rules/` (contract 5.6);
-- a write under `rules/` from an agent is refused (`EACCES`) unless it only
-  adds a stricter rule (contract 5.6);
+- deleting or moving a seeded folder or file is refused (`EPERM`): `vision/`,
+  `vision/vision.md`, `agents/`, `agents/sections.md`, `agents/groups/`,
+  `connections/`, `skills/` and `rules/`; the Co-Founder's folder cannot be
+  deleted (contract 5.6);
+- `rules/` is mounted read-only for agents (`EACCES`); only owners and admins
+  write it (contract 5.6);
 - names the Company File forbids are refused (`EINVAL`; under `code/`, git's
   rules apply instead, section 6): control characters,
   `:`, `%`, `\`, a trailing dot or space, device names with or without an
@@ -634,7 +636,7 @@ stays usable, and the platform flags the branch.
 
 A repository adds its tracked files and its `.git` files. This repository
 alone is about 9,500 entries before any worktree. Code areas therefore come
-after per-folder trees and the lifted caps (build step 8). Pack files over
+after per-folder trees and the lifted caps (build step 4 since 2026-09-27). Pack files over
 256 MiB need open question 4.
 
 ## 7. Server work (SQL and gateway)
@@ -706,12 +708,15 @@ keeps using today's tools until step 5.
 Amended 2026-09-27 (contract, company folder layout amendment): per-folder
 trees move from step 8 into step 4. One head per company would make writes
 through the mount conflict constantly, so the storage core changes before any
-machine writes through the folder. The folder layout of contract 5.6 is
-seeded and today's state moves into it alongside these steps. Decision 6's
-reviewed deletes and moves is superseded: everything is approved by default,
-and a delete or move applies at once and can be restored.
+machine writes through the folder. Removing the company-wide lock for reads
+moves into step 1, because steps 1–3 ship whole-company reads. The
+structured-file saves, index updates and seeded-folder refusals of contract
+5.6, and the move of today's state into the layout, join step 4, before any
+writes through the mount. Decision 6's automatic review of deletes and moves
+is unchanged.
 
 1. **Server, reading side.**
+   - Reads stop taking a company-wide lock (moved here on 2026-09-27).
    - A run-authorized listing of a whole subtree.
    - Byte-range reads.
    - The feed.
@@ -728,11 +733,14 @@ and a delete or move applies at once and can be restored.
    whole company.
 4. **Server, writing side.**
    - Per-folder trees and a version per file, lifting the manifest and entry
-     caps, with no company-wide lock for reads (moved here from step 8).
+     caps (moved here from step 8).
+   - Structured-file saves with their index update, and the refusals for
+     seeded folders and `rules/` (contract 5.6).
+   - Today's state moved into the layout of contract 5.6.
    - Change sets and units.
    - Move and rename.
    - Streamed binary writes.
-   - Deletes and moves apply at once (amended 2026-09-27); seeded folders are
+   - The delete policy of decision 6, with parked units; seeded folders are
      refused.
    - Restore, plus a file history view in the web app.
    - The upload binding.
@@ -773,8 +781,9 @@ and a delete or move applies at once and can be restored.
   - a Python script that writes 200 CSV files.
 - **Conflict.** Two agents edit the same file. The second gets a conflict
   report, and its version is kept on its receipt.
-- **Protected.** A write under `finance/` becomes a proposal, and the mount
-  shows the live content.
+- **Protected.** Once a company configures a protected path (none is
+  configured by default since 2026-09-27), a write under it becomes a
+  proposal, and the mount shows the live content.
 - **Company Computer.**
   - The file manager shows the same folder.
   - LibreOffice saves a document into it, and the lock file is never

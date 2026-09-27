@@ -24,6 +24,7 @@ Three things sit beside the folder:
 1. **Supabase** holds what is not company state:
    - members, sign-in and invitations;
    - plan, usage and billing;
+   - each member's own settings, including personal review rules;
    - runtime state: runs, queues, wakes, leases, locks, presence, receipts,
      read sets, schedule positions and message delivery;
    - conversations;
@@ -41,11 +42,12 @@ The platform seeds this tree when a company is created (contract 5.6):
 
 ```
 vision/vision.md             the company's AGENTS.md; every agent reads it
+agents/sections.md           sidebar sections, in order, with their agents
 agents/<agent-name>/         agent.md, memory/, skills/, routines/, todos/
 agents/groups/<group-name>/  group.md, one folder per group chat
 connections/<connection>.md  one file per connected account, no secrets
 skills/<skill>/SKILL.md      company skills
-rules/<rule>.md              company review rules, written by members
+rules/<rule>.md              company review rules, written by owners and admins
 ```
 
 `code/<owner>/<name>/` holds repositories and is created when coding starts.
@@ -59,7 +61,8 @@ The folder must be able to hold and restore the company's durable work:
 - the vision, agents, group chats, connections, skills and rules above;
 - shared data files, attachments, generated artifacts and review material;
 - repositories with their shared git directory, branches, worktrees and
-  unmerged work (contract, 2026-09-27 amendment, item 9); and
+  unmerged work (contract, 2026-09-27 amendment "every machine works in the
+  company folder", item 9); and
 - admitted recovery archives with their inventories and restore proofs.
 
 Plaintext provider credentials and connector secrets never belong in the
@@ -72,8 +75,11 @@ Every write passes the mutation gateway: authority, version checks, a receipt
 and a change event. A change from a shell command or a desktop application's
 save is published as one change set. Each file keeps its own version, so
 writes to different files never conflict. Silent last-writer-wins is
-forbidden. Everything is approved by default, and any change can be restored
-from the version history. The seeded folders cannot be deleted or moved.
+forbidden. Everything is approved by default: no path needs a member's
+approval. The automatic review (contract, 2026-09-25 amendment) still checks
+outside effects, hiring, new group chats, routine changes, deletes and moves.
+Any change can be restored from the version history. The seeded folders
+cannot be deleted or moved.
 
 ## Recovery admission
 
@@ -100,8 +106,10 @@ The build does not yet match this file:
 - **One version for the whole company.** The Company File is one tree
   manifest with one head per company. Every write re-stages the whole tree,
   so unrelated writes conflict.
-- **A hard ceiling.** The manifest's 8 MiB bound caps a company at about
-  25,000 files.
+- **Hard ceilings.** The manifest's 8 MiB bound caps a company at roughly
+  25,000 to 27,000 files, depending on path lengths. There are also caps of
+  50,000 entries, 256 MiB per file and 1 TiB per company (contract 5.5 calls
+  them defects).
 - **One path per change.** There is no move, change set or restore.
 - **A company-wide lock.** Every tool call, reads included, locks the
   company's row.
