@@ -24,8 +24,9 @@
 -- always did, and takes the fence for every stored object. A member's own upload needs no profile row; it
 -- now also waits for fence holders that never lock the Company File row, each for one short call. The
 -- fence is re-entrant, so a trigger that takes it again later finds it held. A rebase takes it after its
--- proposal row and before the Company File row, where accepting a proposal now takes it too (inside
--- publish): every call that locks a proposal row locks it before both.
+-- proposal row and the jobs of the reviews its new revision ends, and before the Company File row. Accepting
+-- a proposal keeps the same order: its status trigger ends those jobs, then publish takes the fence. No call
+-- here locks a runner job after the fence.
 --
 -- Unchanged: the path gateway's actors and cutover, upload confirmation, object promotion and wake
 -- admission already take the fence (or its NOWAIT form) first; claiming a bootstrap job locks the Company
@@ -108,9 +109,24 @@ select pg_temp.company_file_fence_patch('public.qorpera_rebase_company_proposal(
 		and file.environment_id = v_proposal.environment_id
 	for update;
 $old$,
-	$new$	-- The company's profile fence after the proposal and before the Company File row, as accepting one
-	-- takes them: the new revision seeds its review assignments, which need the profile row.
+	$new$	-- The new revision's trigger ends the jobs of the proposal's running reviews: take them first, since every
+	-- job holder takes its job before the fence. Then the company's profile fence, before the Company File row:
+	-- the trigger also seeds the new revision's review assignments, which need the profile row. A review job
+	-- that appeared while this call waited for the fence is taken without waiting: a job holder waiting for the
+	-- fence refuses this rebase instead of deadlocking with it.
+	perform 1 from public.qorpera_company_proposal_review_assignments as review
+	join public.qorpera_runner_jobs as job on job.run_id = review.run_id
+	where review.proposal_id = v_proposal.id and review.status = 'running'
+	order by job.id for update of job;
 	perform public.qorpera_lock_profile_gc_fence(v_proposal.profile_id);
+	begin
+		perform 1 from public.qorpera_company_proposal_review_assignments as review
+		join public.qorpera_runner_jobs as job on job.run_id = review.run_id
+		where review.proposal_id = v_proposal.id and review.status = 'running'
+		order by job.id for update of job nowait;
+	exception when lock_not_available then
+		raise sqlstate 'PGRST' using message = jsonb_build_object('code', 'QRC01', 'message', 'company proposal review changed before rebase', 'details', null, 'hint', null)::text, detail = '{"status":409,"headers":{}}';
+	end;
 	select file.* into strict v_file
 	from public.qorpera_company_files as file
 	where file.profile_id = v_proposal.profile_id

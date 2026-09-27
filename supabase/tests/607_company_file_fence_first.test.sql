@@ -3,14 +3,14 @@
 -- agent tool call takes the fence (the profile row, then the company's wake admission fence) and then locks
 -- the Company File row; so do the object gateway's upload confirmation and a session's first coding machine
 -- admission. A member saving, proposing or accepting, and the object gateway copying an object into the
--- company's bucket, locked the Company File row first and then waited for the profile row. Each race below makes the two meet in that order: a third connection holds
--- the company's wake admission fence row, the fence-first call starts, takes the profile row and waits
--- there, the other call starts and waits too, and the holder lets go. On the previous function text each
--- race ends in "deadlock detected" (40P01): the other call held the Company File row the fence-first call
--- needed next. Now it waits for the profile row before it locks anything, and both land. Races 1-2 use the
--- path gateway company of 602's committed fixture and an agent listing a folder; races 3-5 use a company
--- that is not on the path gateway (publishing a revision needs one), created here and removed with the
--- fixture at the end.
+-- company's bucket, locked the Company File row first and then waited for the profile row. Each race below
+-- makes the two meet in that order: a third connection holds the company's wake admission fence row, the
+-- fence-first call starts, takes the profile row and waits there, the other call starts and waits too, and
+-- the holder lets go. On the previous function text each race ends in "deadlock detected" (40P01): the
+-- other call held the Company File row the fence-first call needed next. Now it waits for the profile row
+-- before it locks anything, and both land. Races 1-2 use the path gateway company of 602's committed
+-- fixture and an agent listing a folder; the rest use a company that is not on the path gateway (publishing
+-- a revision needs one), created here and removed with the fixture at the end.
 
 -- A company that is not on the path gateway: its owner, the company, and the stored objects its revisions
 -- and proposals name (fixture bytes only, as in 300).
@@ -30,7 +30,7 @@ insert into public.qorpera_profile_members(profile_id,user_id,email,display_name
 insert into storage.objects(bucket_id,name,metadata)
 select 'qorpera-profile-objects',profile_id || '/' || repeat(sha,64),'{"size":128}'
 from unnest(array[current_setting('qorpera_test.fence_profile'),'30000000-0000-4000-8000-000000000010']) profile_id,
-	unnest(array['a','b','c','d','e']) sha;
+	unnest(array['a','b','c','d','e','f']) sha;
 -- The company's wake admission fence row exists before a race holds it.
 select public.qorpera_lock_profile_gc_fence(profile_id)
 from unnest(array[current_setting('qorpera_test.fence_profile')::uuid,'30000000-0000-4000-8000-000000000010'::uuid]) profile_id;
@@ -181,7 +181,76 @@ begin
 		'The rebase waits for the company''s profile row, then lands on the current head: ' || v_outcome::text);
 end $$;
 
--- 5. The object gateway confirms an upload while the owner accepts the proposal: acceptance publishes it,
+-- A running review of the proposal, with its job leased (fixture rows, triggers and key checks off: they
+-- stand in for a review the materializer started), and a second replacement on the current head.
+do $$
+declare v_parent uuid := (current_setting('qorpera_test.parent_binding')::jsonb ->> 'runId')::uuid;
+	v_run uuid := extensions.gen_random_uuid(); v_job uuid := extensions.gen_random_uuid();
+begin
+	perform set_config('session_replication_role','replica',true);
+	insert into public.qorpera_execution_runs
+	select (jsonb_populate_record(null::public.qorpera_execution_runs, to_jsonb(run) || jsonb_build_object('id',v_run,
+		'profile_id',current_setting('qorpera_test.fence_profile'),'environment_id',current_setting('qorpera_test.fence_environment'),
+		'source_kind','proposal_review','source_id',current_setting('qorpera_test.fence_proposal'),'input_ids','[]'::jsonb,
+		'job_id',v_job,'session_id',null))).*
+	from public.qorpera_execution_runs run where run.id = v_parent;
+	insert into public.qorpera_runner_jobs
+	select (jsonb_populate_record(null::public.qorpera_runner_jobs, to_jsonb(job) || jsonb_build_object('id',v_job,
+		'profile_id',current_setting('qorpera_test.fence_profile'),'environment_id',current_setting('qorpera_test.fence_environment'),
+		'run_id',v_run,'session_id',null,'client_job_id',extensions.gen_random_uuid(),'client_lease_id',extensions.gen_random_uuid()))).*
+	from public.qorpera_runner_jobs job where job.run_id = v_parent;
+	insert into public.qorpera_company_proposal_review_assignments(profile_id,proposal_id,proposal_revision,reviewer_staff_agent_id,
+		reviewer_sponsor_binding_id,reviewer_sponsor_version,status,run_id,started_at)
+	select proposal.profile_id,proposal.id,(select max(revision) from public.qorpera_company_proposal_revisions where proposal_id = proposal.id),
+		extensions.gen_random_uuid(),extensions.gen_random_uuid(),1,'running',v_run,clock_timestamp()
+	from public.qorpera_company_proposals proposal where proposal.id = current_setting('qorpera_test.fence_proposal')::uuid;
+	perform set_config('qorpera_test.fence_review_job',v_job::text,false);
+end $$;
+do $$
+declare v_replacement jsonb;
+begin
+	perform pg_temp.path_claims('authenticated','60700000-0000-4000-8000-000000000001');
+	v_replacement := public.qorpera_prepare_company_file_proposal(current_setting('qorpera_test.fence_environment')::uuid,
+		'60700000-0000-4000-8000-000000000046',current_setting('qorpera_test.fence_second')::uuid,repeat('f',64),128,3,1,4);
+	perform pg_temp.fence_verify((v_replacement ->> 'snapshot_id')::uuid,'f','60700000-0000-4000-8000-000000000047');
+	perform set_config('qorpera_test.fence_proposed',current_setting('qorpera_test.fence_replacement'),false);
+	perform set_config('qorpera_test.fence_replacement',v_replacement ->> 'snapshot_id',false);
+end $$;
+
+-- 5. The new revision ends the jobs of the proposal's running reviews, and every job holder takes its job before
+--    the fence (a machine reservation holds the job and waits for the fence). So a rebase takes those jobs
+--    first: while it waits for a review job another connection holds, the company's profile row stays free.
+do $$
+declare v_job uuid := current_setting('qorpera_test.fence_review_job')::uuid; v_pid integer := current_setting('qorpera_test.lock_first_pid')::integer;
+	v_waited boolean := false; v_free boolean := false; v_outcome jsonb;
+begin
+	perform dblink_exec('lock_holder', 'begin');
+	perform * from dblink('lock_holder', pg_temp.lock_row('qorpera_runner_jobs', 'id', v_job)) as held(held integer);
+	perform pg_temp.lock_as('lock_first', pg_temp.fence_owner());
+	perform dblink_send_query('lock_first', format($q$select public.qorpera_rebase_company_proposal(%L, %L, %L, %L)$q$,
+		current_setting('qorpera_test.fence_proposal'), current_setting('qorpera_test.fence_proposed'),
+		current_setting('qorpera_test.fence_second'), current_setting('qorpera_test.fence_replacement')));
+	for attempt in 1..200 loop
+		if cardinality(pg_blocking_pids(v_pid)) > 0 then v_waited := true; exit; end if;
+		exit when dblink_is_busy('lock_first') = 0;
+		perform pg_sleep(0.025);
+	end loop;
+	perform dblink_exec('lock_second', 'reset role');
+	begin
+		perform * from dblink('lock_second', format('select 1 from public.qorpera_profiles where id = %L for update nowait',
+			current_setting('qorpera_test.fence_profile'))) as probe(held integer);
+		v_free := true;
+	exception when others then v_free := false;
+	end;
+	perform dblink_exec('lock_holder', 'rollback');
+	v_outcome := pg_temp.lock_collect('lock_first') || jsonb_build_object('waited', v_waited, 'profileFree', v_free);
+	perform pg_temp.wake_assert(v_waited and v_free
+		and v_outcome #>> '{result,proposal_snapshot,snapshot_id}' = current_setting('qorpera_test.fence_replacement')
+		and (select status from public.qorpera_runner_jobs where id = v_job) = 'failed',
+		'The rebase waits for the review job with the profile row free, then ends the job and lands: ' || v_outcome::text);
+end $$;
+
+-- 6. The object gateway confirms an upload while the owner accepts the proposal: acceptance publishes it,
 --    which locked the Company File row before the fence.
 do $$
 declare v_outcome jsonb;
@@ -197,7 +266,7 @@ begin
 		'The proposal is accepted and its revision is the head: ' || v_outcome::text);
 end $$;
 
--- 6. The object gateway confirms one upload while it copies another, already confirmed, into the company's
+-- 7. The object gateway confirms one upload while it copies another, already confirmed, into the company's
 --    Storage bucket. The quota trigger locked the Company File row; the replica guard, the next trigger,
 --    then took the fence.
 do $$
@@ -221,7 +290,7 @@ begin
 		'The object is confirmed and the copy is stored: ' || v_outcome::text);
 end $$;
 
--- 7. The fence waits until the caller may write: a viewer's save is refused without waiting for the
+-- 8. The fence waits until the caller may write: a viewer's save is refused without waiting for the
 --    company's profile row, which another connection holds.
 do $$
 declare v_outcome jsonb;
