@@ -490,13 +490,18 @@ export function projectTranscript(
 		if (interaction && !interaction.answer) interaction.answerFailed = true;
 	}
 	items.sort((a, b) => (a.sequence === b.sequence ? a.createdAt.localeCompare(b.createdAt) : a.sequence - b.sequence));
-	// A waiting message stands where it was sent, after everything written before it.
-	// Below everything, one the cloud never takes would sink under days of newer messages.
+	// A waiting message stands before the first member message sent after it, else at
+	// the end. At the end always, one the cloud never takes would sink under days of
+	// newer messages. Agent output is no measure: a message sent while the agent works
+	// stays below it, where it lands once taken (a taken input keeps its send time).
+	let from = 0;
 	for (const message of waiting) {
 		const sent = Date.parse(message.createdAt);
-		let at = items.length;
-		while (at > 0 && Date.parse(items[at - 1]!.createdAt) > sent) at--;
+		let at = from;
+		// Waiting messages placed so far all stand before `from`.
+		while (at < items.length && !(items[at]!.kind === "member" && Date.parse(items[at]!.createdAt) > sent)) at++;
 		items.splice(at, 0, message);
+		from = at + 1;
 	}
 	return { items, hiddenCount, lastSequence };
 }

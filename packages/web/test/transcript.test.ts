@@ -241,7 +241,7 @@ describe("projectTranscript", () => {
 		expect(item && item.kind === "member" ? item.pending : undefined).toBe("processing");
 	});
 
-	it("places a waiting input where it was sent, not below newer messages", () => {
+	it("places a waiting input before the next member message sent after it, else last", () => {
 		const input = (inputId: string, position: number, createdAt: string): PendingSessionInput => ({
 			inputId,
 			position,
@@ -252,23 +252,37 @@ describe("projectTranscript", () => {
 			createdAt,
 			status: "queued",
 		});
-		const stuck = "66666666-6666-4666-8666-666666666666";
-		const fresh = "77777777-7777-4777-8777-777777777777";
-		const member = (sequence: number, text: string) => {
-			const id = `44444444-4444-4444-8444-${String(sequence).padStart(12, "0")}`;
-			return event(sequence, { sessionInputId: id, body: runnerEntry("user", text, { id }) });
+		const id = (sequence: number) => `44444444-4444-4444-8444-${String(sequence).padStart(12, "0")}`;
+		const member = (sequence: number, text: string) =>
+			event(sequence, { sessionInputId: id(sequence), body: runnerEntry("user", text, { id: id(sequence) }) });
+		const agent = (sequence: number, text: string) => {
+			const execution = { kind: "run" as const, id: RUN, claimantId: RUN, runnerAssignmentId: RUN };
+			return event(sequence, {
+				execution,
+				body: runnerEntry("assistant", text, {
+					id: id(sequence),
+					execution,
+					delivery: { schema: AGENT_SEND_SCHEMA, phase: "final" },
+				}),
+			});
 		};
+		// One the cloud never took, and one sent while the agent is still writing.
+		const stuck = "66666666-6666-4666-8666-666666666666";
+		const busy = "77777777-7777-4777-8777-777777777777";
 		const projection = projectTranscript(
-			[member(1, "before"), member(3, "after"), member(5, "latest")],
-			[input(stuck, 1, "2026-09-02T10:00:02Z"), input(fresh, 2, "2026-09-02T10:00:09Z")],
+			[
+				member(1, "before"),
+				agent(2, "reply to before"),
+				agent(3, "routine note"),
+				member(4, "after"),
+				agent(5, "reply to after"),
+				agent(6, "still working"),
+			],
+			[input(stuck, 1, "2026-09-02T10:00:03.500Z"), input(busy, 2, "2026-09-02T10:00:05.500Z")],
 		);
-		expect(projection.items.map((item) => (item.kind === "member" ? item.text : item.kind))).toEqual([
-			"before",
-			stuck,
-			"after",
-			"latest",
-			fresh,
-		]);
+		expect(
+			projection.items.map((item) => (item.kind === "member" || item.kind === "agent" ? item.text : item.kind)),
+		).toEqual(["before", "reply to before", "routine note", stuck, "after", "reply to after", "still working", busy]);
 	});
 
 	it("surfaces authorization events as cards", () => {
