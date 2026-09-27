@@ -1234,6 +1234,35 @@ it("starts the run without the open-work count when the kernel cannot give it", 
 	expect(JSON.parse(evidence.turnParameters.input[0].text)).not.toHaveProperty("openWork");
 });
 
+it("asks for the run's context and its wake together, and reports a context failure first", async () => {
+	const f = await fixture();
+	const original = f.pathCall.getMockImplementation()!;
+	let describing = false;
+	let overlapped = false;
+	f.pathCall.mockImplementation(async (method, args, signal) => {
+		if (method === "qorpera_describe_company_run_context") {
+			describing = true;
+			await new Promise((resolve) => setTimeout(resolve, 20));
+			describing = false;
+		}
+		if (method === "qorpera_read_native_wake" && describing) overlapped = true;
+		return original(method, args, signal);
+	});
+	await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+	expect(overlapped).toBe(true);
+	f.pathCall.mockImplementation(async (method, args, signal) => {
+		if (method === "qorpera_describe_company_run_context") {
+			await new Promise((resolve) => setTimeout(resolve, 20));
+			throw new Error("Cloud context unavailable");
+		}
+		if (method === "qorpera_read_native_wake") throw new Error("Admitted wake is unavailable");
+		return original(method, args, signal);
+	});
+	await expect(f.runtime.execute(f.request, f.identityRoot, new AbortController().signal)).rejects.toThrow(
+		"Cloud context unavailable",
+	);
+});
+
 it("does not fall back to local context or another harness when cloud context is unavailable", async () => {
 	const f = await fixture();
 	const original = f.pathCall.getMockImplementation()!;
@@ -1320,6 +1349,31 @@ it("records no usage signal for failures that are not quota, rate-limit or outag
 		"authentication unavailable",
 	);
 	expect(f.pathCall.mock.calls.some(([method]) => method === "qorpera_record_provider_usage_signal")).toBe(false);
+});
+
+it("readies a spare Codex process for the identity root of a successful run, and stops it on release", async () => {
+	const f = await fixture();
+	const startedPids = async () =>
+		(await readFile(`${f.evidence}.starts`, "utf8").catch(() => "")).split("\n").filter(Boolean);
+	// Nothing ran on this root yet: no spare.
+	f.runtime.prepareSpare(f.identityRoot, 60_000);
+	await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+	expect(await startedPids()).toHaveLength(1);
+	f.runtime.prepareSpare(f.identityRoot, 60_000);
+	for (let attempt = 0; attempt < 400 && (await startedPids()).length < 2; attempt++)
+		await new Promise((resolve) => setTimeout(resolve, 10));
+	const spare = Number((await startedPids())[1]);
+	expect(() => process.kill(spare, 0)).not.toThrow();
+	await f.runtime.disposeSpares(f.identityRoot);
+	for (let attempt = 0; attempt < 200; attempt++) {
+		try {
+			process.kill(spare, 0);
+		} catch {
+			break;
+		}
+		await new Promise((resolve) => setTimeout(resolve, 10));
+	}
+	expect(() => process.kill(spare, 0)).toThrow();
 });
 
 it("binds durable start admission to the exact lease and refuses same-run restarts", async () => {

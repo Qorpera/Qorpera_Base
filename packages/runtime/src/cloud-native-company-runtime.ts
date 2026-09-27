@@ -8,6 +8,11 @@ import {
 	cloudConnectorEffects,
 } from "./cloud-action-review.ts";
 import { CLOUD_AGENT_SEND_INSTRUCTIONS, CloudAgentMouth, parseCloudAgentSendInput } from "./cloud-agent-mouth.ts";
+import {
+	disposeCloudCodexSpares,
+	prefetchCloudCodexArtifact,
+	prepareCloudCodexSpare,
+} from "./cloud-codex-tool-session.ts";
 import type { CloudCompanyComputerSessionFactory } from "./cloud-company-computer-control.ts";
 import { type CloudCompanyPathControl, CloudCompanyPathGateway } from "./cloud-company-path-gateway.ts";
 import {
@@ -34,6 +39,7 @@ import {
 } from "./cloud-native-provider-host.ts";
 import { runCloudNativeRunToolSession } from "./cloud-native-run-tool-session.ts";
 import {
+	CLOUD_PAIRED_REQUEST_TIMEOUT_MS,
 	type CloudNativeToolAuthorityReader,
 	type CloudNativeToolBinding,
 	cloudToolRequest,
@@ -55,7 +61,11 @@ import {
 	type CloudRuntimeToolOperation,
 	cloudRuntimeErrorCategory,
 } from "./cloud-runtime-observability.ts";
-import { isCloudRuntimeServiceTier } from "./cloud-runtime-policy.ts";
+import {
+	type CloudRuntimeReasoningEffort,
+	type CloudRuntimeServiceTier,
+	isCloudRuntimeServiceTier,
+} from "./cloud-runtime-policy.ts";
 import { type CloudSecretOperationClient, cloudSecretTools, describeCloudSecretTools } from "./cloud-secret-tools.ts";
 import { cloudSidebarTools } from "./cloud-sidebar-tools.ts";
 import {
@@ -125,11 +135,41 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		this.#store = options.objectStore;
 		this.#command = Object.freeze([...options.command]) as readonly [string, ...string[]];
 		this.#sha256 = options.binarySha256;
+		// Hash the Codex binary once per service process, while it waits for its run.
+		void prefetchCloudCodexArtifact(this.#command[0]);
 		this.#timeoutMs = options.timeoutMs;
 		this.#isolation = options.isolation ? Object.freeze({ ...options.isolation }) : undefined;
 		this.#secretBroker = options.secretBroker;
 		this.#computerSession = options.computerSession;
 		this.#coding = options.coding;
+	}
+
+	/** The effort and tier of the last successful run per identity root: a spare starts with them. */
+	readonly #spareEfforts = new Map<
+		string,
+		{ reasoningEffort: CloudRuntimeReasoningEffort; serviceTier: CloudRuntimeServiceTier }
+	>();
+
+	/** Warm conversations: starts a spare Codex process for the next run on this identity root. */
+	prepareSpare(identityRoot: string, idleMs: number): void {
+		const settings = this.#spareEfforts.get(identityRoot);
+		if (!settings) return;
+		prepareCloudCodexSpare(
+			{
+				command: this.#command,
+				binarySha256: this.#sha256,
+				reasoningEffort: settings.reasoningEffort,
+				serviceTier: settings.serviceTier,
+				identityRoot,
+				...(this.#isolation ? { isolation: this.#isolation } : {}),
+			},
+			idleMs,
+		);
+	}
+
+	async disposeSpares(identityRoot: string): Promise<void> {
+		this.#spareEfforts.delete(identityRoot);
+		await disposeCloudCodexSpares(identityRoot);
 	}
 
 	async execute(request: NativeCompanyExecutionRequest, identityRoot: string, signal: AbortSignal) {
@@ -162,29 +202,32 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		let stage: NativeRuntimeFailureStage = "company-context";
 		let presence: CloudCompanyPathPresence | undefined;
 		try {
-			const context = parseCloudNativeCompanyContext(
-				await cloudToolRequest(
-					(requestSignal) =>
-						this.#paths.call("qorpera_describe_company_run_context", { p_binding: binding }, requestSignal),
-					signal,
-				),
-				binding,
+			// Both reads need only the binding: ask for them together and check them in
+			// the original order, so a failure still names its stage. Both lock the run's
+			// job row, so each gets the pair's budget (the database serialises them).
+			const contextRequest = cloudToolRequest(
+				(requestSignal) =>
+					this.#paths.call("qorpera_describe_company_run_context", { p_binding: binding }, requestSignal),
+				signal,
+				CLOUD_PAIRED_REQUEST_TIMEOUT_MS,
 			);
+			const wakeRequest = cloudToolRequest(
+				(requestSignal) => this.#paths.call("qorpera_read_native_wake", { p_binding: binding }, requestSignal),
+				signal,
+				CLOUD_PAIRED_REQUEST_TIMEOUT_MS,
+			);
+			wakeRequest.catch(() => undefined);
+			const context = parseCloudNativeCompanyContext(await contextRequest, binding);
 			stage = "bundle-compatibility";
 			assertCloudRuntimeBundle(context.identity, this.#sha256);
 			// This host's policy declares fast mode, so every run admitted under it names its tier.
-			if (!isCloudRuntimeServiceTier(context.serviceTier))
+			const serviceTier = context.serviceTier;
+			if (!isCloudRuntimeServiceTier(serviceTier))
 				throw new Error("Admitted runtime bundle is not supported by this host");
 			// Every activation enters through the wake bus (contract 8): the admitted
 			// occurrence's typed envelope and kernel-owned reply policy, never a job flag.
 			stage = "wake-envelope";
-			const wake = parseCloudWakeEnvelope(
-				await cloudToolRequest(
-					(requestSignal) => this.#paths.call("qorpera_read_native_wake", { p_binding: binding }, requestSignal),
-					signal,
-				),
-				context.identity,
-			);
+			const wake = parseCloudWakeEnvelope(await wakeRequest, context.identity);
 			// A coding session's turn is its own composition: three command tools in
 			// the credential-free repository VM and two ways to end the turn.
 			if (wake.kind === "agent" && wake.source.kind === "worker-dispatch" && wake.payload.species === "coding") {
@@ -367,7 +410,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				const result = await runCloudNativeRunToolSession({
 					observability,
 					binding,
-					serviceTier: context.serviceTier,
+					serviceTier,
 					controlPlane: this.#control,
 					beginExecution: async (specification, requestSignal) => {
 						const toolCatalogText = cloudToolJsonText(specification, CLOUD_NATIVE_TOOL_CATALOG_BYTES);
@@ -411,6 +454,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					command: this.#command,
 					binarySha256: this.#sha256,
 					identityRoot,
+					...(this.#spareEfforts.has(identityRoot) ? { reusedIdentityRoot: true } : {}),
 					isolation: this.#isolation,
 					prompt,
 					runtimeInstructions: compileCloudNativeCompanyInstructions(context, wake),
@@ -520,10 +564,9 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					},
 				});
 				stage = "public-completion";
-				return {
-					providerSessionId: result.providerSessionId,
-					delivery: await mouth.finish(wake.policy.final === "required"),
-				};
+				const delivery = await mouth.finish(wake.policy.final === "required");
+				this.#spareEfforts.set(identityRoot, { reasoningEffort: context.identity.reasoningEffort, serviceTier });
+				return { providerSessionId: result.providerSessionId, delivery };
 			} finally {
 				await mouth.close();
 			}
