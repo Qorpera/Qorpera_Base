@@ -3,7 +3,9 @@ import { UUID_PATTERN } from "./parse.ts";
 /* The company sidebar (2026-09-24): sections are the company's, shared by every
  * member and changed by agents too; pins and hidden agents are this member's own.
  * qorpera_read_company_sidebar answers the member's whole sidebar and every change
- * through qorpera_manage_company_sidebar answers it again. */
+ * through qorpera_manage_company_sidebar answers it again.
+ * Since 20260927140000 group chats are placed, pinned and hidden like agents, named by
+ * their room id; agents and group chats share one order in each section. */
 
 export interface SidebarSection {
 	sectionId: string;
@@ -19,21 +21,39 @@ export interface SidebarPlacement {
 export interface CompanySidebar {
 	/** In their order in the rail. */
 	sections: SidebarSection[];
-	/** Where placed agents sit, by agent id. An agent without an entry is Unassigned, after the positioned ones. */
+	/** Where placed agents and group chats sit, by agent or room id. One without an entry
+	 * is Unassigned, after the positioned ones. */
 	placements: Record<string, SidebarPlacement>;
-	/** This member's pinned agents, in order. */
+	/** This member's pinned agents and group chats, in order. */
 	pinned: string[];
-	/** Agents this member keeps out of the rail. */
+	/** Agents and group chats this member keeps out of the rail. */
 	hidden: string[];
+	/** Whether the cloud places group chats too (and takes images in them); an older one places agents only. */
+	groupChats?: boolean;
 }
 
 export type SidebarRequest =
-	| { action: "create_section"; sectionId: string; name: string; staffAgentId?: string; unpin?: boolean }
+	| {
+			action: "create_section";
+			sectionId: string;
+			name: string;
+			staffAgentId?: string;
+			roomId?: string;
+			unpin?: boolean;
+	  }
 	| { action: "rename_section"; sectionId: string; name: string }
 	| { action: "delete_section"; sectionId: string }
 	| { action: "move_agent"; staffAgentId: string; sectionId: string | null; order?: string[]; unpin?: boolean }
+	| { action: "move_room"; roomId: string; sectionId: string | null; order?: string[]; unpin?: boolean }
+	/** Agents and group chats, in one order. */
 	| { action: "set_pins"; order: string[] }
-	| { action: "set_hidden"; staffAgentId: string; hidden: boolean };
+	| { action: "set_hidden"; staffAgentId: string; hidden: boolean }
+	| { action: "set_hidden"; roomId: string; hidden: boolean };
+
+/** What a request places, pins or hides: an agent or a group chat, by its id. */
+export function sidebarItem(request: SidebarRequest): string | undefined {
+	return "staffAgentId" in request ? request.staffAgentId : "roomId" in request ? request.roomId : undefined;
+}
 
 export const SECTION_NAME_LIMIT = 60;
 export const PIN_LIMIT = 24;
@@ -60,28 +80,33 @@ export function parseCompanySidebar(value: unknown): CompanySidebar {
 		if (typeof section.name !== "string" || !section.name.trim()) throw new Error("Invalid sidebar section");
 		return { sectionId: id(section.sectionId, "sidebar section"), name: section.name };
 	});
+	const groupChats = input.roomPlacements !== undefined;
+	if (groupChats && !Array.isArray(input.roomPlacements)) throw new Error("Invalid company sidebar");
 	const placements: Record<string, SidebarPlacement> = {};
-	for (const item of input.placements) {
+	const place = (item: unknown, key: "staffAgentId" | "roomId") => {
 		const placement = record(item, "sidebar placement");
 		const position = placement.position;
 		if (typeof position !== "number" || !Number.isSafeInteger(position) || position < 0)
 			throw new Error("Invalid sidebar placement");
-		placements[id(placement.staffAgentId, "sidebar placement")] =
+		placements[id(placement[key], "sidebar placement")] =
 			placement.sectionId === null || placement.sectionId === undefined
 				? { position }
 				: { sectionId: id(placement.sectionId, "sidebar placement"), position };
-	}
+	};
+	for (const item of input.placements) place(item, "staffAgentId");
+	for (const item of groupChats ? (input.roomPlacements as unknown[]) : []) place(item, "roomId");
 	return {
 		sections,
 		placements,
 		pinned: ids(input.pinned, "pinned agent"),
 		hidden: ids(input.hidden, "hidden agent"),
+		...(groupChats ? { groupChats } : {}),
 	};
 }
 
-/** The agents of one container (a section, or Unassigned for undefined) in their
- * order: positioned agents by position, then the rest in roster order. The cloud
- * orders the same way. */
+/** The agents and group chats of one container (a section, or Unassigned for undefined)
+ * in their order: positioned ones by position, then the rest in roster order (agents,
+ * then group chats oldest first). The cloud orders the same way. */
 export function containerOrder(
 	sidebar: CompanySidebar,
 	sectionId: string | undefined,
@@ -117,34 +142,37 @@ export function applySidebarRequest(
 		placements: { ...sidebar.placements },
 		pinned: [...sidebar.pinned],
 		hidden: [...sidebar.hidden],
+		...(sidebar.groupChats ? { groupChats: true } : {}),
 	};
-	const place = (agentId: string, sectionId: string | undefined, order?: readonly string[]) => {
+	// An agent and a group chat are placed alike, by their ids.
+	const place = (itemId: string, sectionId: string | undefined, order?: readonly string[]) => {
 		const current = containerOrder(next, sectionId, roster);
-		// Moving an agent where it already is changes nothing, as in the cloud.
-		if (!order && current.includes(agentId)) return;
-		const members = current.filter((member) => member !== agentId);
+		// Moving an item where it already is changes nothing, as in the cloud.
+		if (!order && current.includes(itemId)) return;
+		const members = current.filter((member) => member !== itemId);
 		let final: string[];
 		if (order) {
 			final = [];
 			for (const member of order)
-				if ((member === agentId || members.includes(member)) && !final.includes(member)) final.push(member);
-			if (!final.includes(agentId)) final.push(agentId);
+				if ((member === itemId || members.includes(member)) && !final.includes(member)) final.push(member);
+			if (!final.includes(itemId)) final.push(itemId);
 			for (const member of members) if (!final.includes(member)) final.push(member);
-		} else final = [...members, agentId];
+		} else final = [...members, itemId];
 		final.forEach((member, position) => {
 			next.placements[member] = sectionId ? { sectionId, position } : { position };
 		});
 	};
-	const unpin = (agentId: string) => {
-		next.pinned = next.pinned.filter((pinned) => pinned !== agentId);
+	const unpin = (itemId: string) => {
+		next.pinned = next.pinned.filter((pinned) => pinned !== itemId);
 	};
+	const item = sidebarItem(request);
 	switch (request.action) {
 		case "create_section":
 			if (!next.sections.some((section) => section.sectionId === request.sectionId))
 				next.sections.push({ sectionId: request.sectionId, name: request.name });
-			if (request.staffAgentId) {
-				place(request.staffAgentId, request.sectionId);
-				if (request.unpin) unpin(request.staffAgentId);
+			if (item) {
+				place(item, request.sectionId);
+				if (request.unpin) unpin(item);
 			}
 			break;
 		case "rename_section":
@@ -162,8 +190,9 @@ export function applySidebarRequest(
 			break;
 		}
 		case "move_agent":
-			place(request.staffAgentId, request.sectionId ?? undefined, request.order);
-			if (request.unpin) unpin(request.staffAgentId);
+		case "move_room":
+			place(item!, request.sectionId ?? undefined, request.order);
+			if (request.unpin) unpin(item!);
 			break;
 		case "set_pins":
 			next.pinned = [...request.order];
@@ -171,9 +200,9 @@ export function applySidebarRequest(
 			break;
 		case "set_hidden":
 			if (request.hidden) {
-				if (!next.hidden.includes(request.staffAgentId)) next.hidden.push(request.staffAgentId);
-				unpin(request.staffAgentId);
-			} else next.hidden = next.hidden.filter((agentId) => agentId !== request.staffAgentId);
+				if (!next.hidden.includes(item!)) next.hidden.push(item!);
+				unpin(item!);
+			} else next.hidden = next.hidden.filter((hidden) => hidden !== item);
 			break;
 	}
 	return next;

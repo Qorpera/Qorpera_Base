@@ -1,32 +1,38 @@
-/* Dragging agents in the rail: between sections, into or out of the pinned row,
- * and up or down inside one. Rows carry data-agent-id; the places they can land
- * carry data-drop-zone ("pinned", "section:<id>" or "unassigned"). While a row is
- * dragged, the zone under the pointer is shaded (no border) and a thin marker shows
- * where the row will land. A press that never moves stays an ordinary click. */
+/* Dragging agents and group chats in the rail: between sections, into or out of the
+ * pinned row, and up or down inside one. Rows carry data-agent-id or, for a group
+ * chat, data-room-id; the places they can land carry data-drop-zone ("pinned",
+ * "section:<id>" or "unassigned"). While a row is dragged, the zone under the pointer
+ * is shaded (no border) and a thin marker shows where the row will land. A press that
+ * never moves stays an ordinary click. */
 
 import { uiScale } from "./scale.ts";
 
 export interface RailDrop {
-	agentId: string;
+	/** The agent or group chat dropped. */
+	itemId: string;
 	zone: string;
-	/** The zone's agents after the drop, the dragged one included, in order. */
+	/** The zone's agents and group chats after the drop, the dragged one included, in order. */
 	order: string[];
 }
 
 export interface RailDragHooks {
-	/** Whether this agent can be picked up now (no search running, the sidebar is loaded…). */
-	canDrag(agentId: string): boolean;
-	/** Whether the agent may land in this zone. */
-	accepts(zone: string, agentId: string): boolean;
+	/** Whether this item can be picked up now (no search running, the sidebar is loaded…). */
+	canDrag(itemId: string): boolean;
+	/** Whether the item may land in this zone. */
+	accepts(zone: string, itemId: string): boolean;
 	drop(drop: RailDrop): void;
 }
+
+/** What the rail drags: agents and group chats. */
+const ITEM = "[data-agent-id], [data-room-id]";
+const itemIdOf = (element: HTMLElement) => element.dataset.agentId ?? element.dataset.roomId;
 
 /** Design pixels: how far a press moves before it drags, and the band at the list's edges that scrolls it. */
 const THRESHOLD = 6;
 const EDGE = 40;
 
 interface Active {
-	agentId: string;
+	itemId: string;
 	pointerId: number;
 	start: { x: number; y: number };
 	offset: { x: number; y: number };
@@ -51,12 +57,12 @@ export class RailDrag {
 		this.#marker = document.createElement("div");
 		this.#marker.className = "rail-drop-marker";
 		this.#marker.setAttribute("aria-hidden", "true");
-		// Agent links and their figures are natively draggable; the rail drags those itself.
-		// Other links (group chats) keep the browser's own dragging.
+		// Agent and group chat links and their figures are natively draggable; the rail drags
+		// those itself. Other links keep the browser's own dragging.
 		list.addEventListener(
 			"dragstart",
 			(event) => {
-				if ((event.target as Element).closest?.("[data-agent-id], [data-cofounder-id]")) event.preventDefault();
+				if ((event.target as Element).closest?.(`${ITEM}, [data-cofounder-id]`)) event.preventDefault();
 			},
 			{ signal },
 		);
@@ -79,9 +85,9 @@ export class RailDrag {
 		signal.addEventListener("abort", () => this.cancel());
 	}
 
-	/** The agent being dragged, once the pointer has moved far enough. */
+	/** The item being dragged, once the pointer has moved far enough. */
 	get dragging(): string | undefined {
-		return this.#active?.ghost ? this.#active.agentId : undefined;
+		return this.#active?.ghost ? this.#active.itemId : undefined;
 	}
 
 	/** After the rail redraws: the dragged row may be a new element, the redraw took
@@ -89,7 +95,7 @@ export class RailDrag {
 	refresh(): void {
 		const active = this.#active;
 		if (!active?.ghost) return;
-		const source = this.#row(active.agentId, active.source);
+		const source = this.#row(active.itemId, active.source);
 		if (source && source !== active.source) {
 			active.source.classList.remove("is-drag-source");
 			active.source = source;
@@ -118,22 +124,23 @@ export class RailDrag {
 		return this.#list.closest(".rail-compact") !== null;
 	}
 
-	#row(agentId: string, near: HTMLElement): HTMLElement | undefined {
-		// The same agent can stand in the list and nowhere else; prefer the zone it was in.
+	#row(itemId: string, near: HTMLElement): HTMLElement | undefined {
+		// The same item can stand in the list and nowhere else; prefer the zone it was in.
+		const selector = `[data-agent-id="${itemId}"], [data-room-id="${itemId}"]`;
 		const zone = near.closest("[data-drop-zone]");
-		const inZone = zone?.isConnected ? zone.querySelector<HTMLElement>(`[data-agent-id="${agentId}"]`) : null;
-		return inZone ?? this.#list.querySelector<HTMLElement>(`[data-agent-id="${agentId}"]`) ?? undefined;
+		const inZone = zone?.isConnected ? zone.querySelector<HTMLElement>(selector) : null;
+		return inZone ?? this.#list.querySelector<HTMLElement>(selector) ?? undefined;
 	}
 
 	#press(event: PointerEvent): void {
 		if (event.button !== 0 || event.pointerType === "touch" || event.ctrlKey || event.metaKey || event.shiftKey)
 			return;
-		const source = (event.target as Element).closest<HTMLElement>("[data-agent-id]");
-		const agentId = source?.dataset.agentId;
-		if (!source || !agentId || !this.#list.contains(source) || !this.#hooks().canDrag(agentId)) return;
+		const source = (event.target as Element).closest<HTMLElement>(ITEM);
+		const itemId = source ? itemIdOf(source) : undefined;
+		if (!source || !itemId || !this.#list.contains(source) || !this.#hooks().canDrag(itemId)) return;
 		const rect = source.getBoundingClientRect();
 		this.#active = {
-			agentId,
+			itemId,
 			pointerId: event.pointerId,
 			start: { x: event.clientX, y: event.clientY },
 			offset: { x: event.clientX - rect.left, y: event.clientY - rect.top },
@@ -146,7 +153,7 @@ export class RailDrag {
 	#begin(active: Active): void {
 		// A redraw between the press and the first move may have rebuilt the row.
 		if (!active.source.isConnected) {
-			const source = this.#row(active.agentId, active.source);
+			const source = this.#row(active.itemId, active.source);
 			if (!source) {
 				this.#active = undefined;
 				return;
@@ -202,7 +209,7 @@ export class RailDrag {
 		const listRect = this.#list.getBoundingClientRect();
 		const inside = x >= listRect.left && x <= listRect.right && y >= listRect.top && y <= listRect.bottom;
 		let zone = inside ? (under?.closest<HTMLElement>("[data-drop-zone]") ?? null) : null;
-		if (zone && !hooks.accepts(zone.dataset.dropZone!, active.agentId)) zone = null;
+		if (zone && !hooks.accepts(zone.dataset.dropZone!, active.itemId)) zone = null;
 		if (zone !== active.zone) {
 			active.zone?.classList.remove("is-drop-target");
 			zone?.classList.add("is-drop-target");
@@ -213,9 +220,7 @@ export class RailDrag {
 			this.#marker.remove();
 			return;
 		}
-		const items = [...zone.querySelectorAll<HTMLElement>("[data-agent-id]")].filter(
-			(item) => item.dataset.agentId !== active.agentId,
-		);
+		const items = [...zone.querySelectorAll<HTMLElement>(ITEM)].filter((item) => itemIdOf(item) !== active.itemId);
 		// The collapsed rail stacks pinned figures in a column: they order like rows there.
 		const grid = zone.dataset.dropZone === "pinned" && !this.#compact();
 		let index = items.length;
@@ -240,7 +245,7 @@ export class RailDrag {
 		const marker = this.#marker;
 		marker.classList.toggle("vertical", grid && items.length > 0);
 		if (!items.length) {
-			// An empty zone: its shading says where the agent lands.
+			// An empty zone: its shading says where the item lands.
 			marker.remove();
 			return;
 		}
@@ -311,10 +316,10 @@ export class RailDrag {
 		window.addEventListener("click", swallow, { capture: true, once: true });
 		setTimeout(() => window.removeEventListener("click", swallow, { capture: true }), 0);
 		if (!zone?.isConnected || index === undefined) return;
-		const order = [...zone.querySelectorAll<HTMLElement>("[data-agent-id]")]
-			.map((item) => item.dataset.agentId!)
-			.filter((agentId) => agentId !== active.agentId);
-		order.splice(index, 0, active.agentId);
-		this.#hooks().drop({ agentId: active.agentId, zone: zone.dataset.dropZone!, order });
+		const order = [...zone.querySelectorAll<HTMLElement>(ITEM)]
+			.map((item) => itemIdOf(item)!)
+			.filter((itemId) => itemId !== active.itemId);
+		order.splice(index, 0, active.itemId);
+		this.#hooks().drop({ itemId: active.itemId, zone: zone.dataset.dropZone!, order });
 	}
 }

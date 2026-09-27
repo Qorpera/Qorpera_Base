@@ -2022,7 +2022,8 @@ removal; until it is removed it MUST NOT be reachable from any member client.
   and MUST NOT repeat them into a shared thread. §14.2's separate one-to-one
   Co-Founder conversation no longer exists: the Co-Founder's thread is shared.
 - **Images.** An agent thread accepts the same attachments as an agent
-  session did; team rooms stay text-only.
+  session did. Team rooms (group chats) accept the same since 2026-09-27
+  (migration `20260927140000`); before, they were text-only.
 - **The thread outlives edits of its agent (added 2026-09-19).** A wake or
   room delivery is admitted at the agent's current version and MAY use a
   session that records an earlier version of the same agent. This holds for

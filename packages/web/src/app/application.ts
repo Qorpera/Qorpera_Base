@@ -25,7 +25,7 @@ import { MemberPictures } from "./member-pictures.ts";
 import { currentRoute, navigate, type Route } from "./router.ts";
 import { createConversationStarter } from "./start-conversation.ts";
 import { debounce } from "./state.ts";
-import { createGroupUpdater } from "./update-group.ts";
+import { createGroupDeleter, createGroupUpdater } from "./update-group.ts";
 import { type AccountViewState, renderAccount } from "./views/account.ts";
 import { CompanyFileController, renderCompanyFile } from "./views/companyfile.ts";
 import { ComputerPanels } from "./views/computer.ts";
@@ -587,13 +587,36 @@ export function mountApplication(
 			updateAgent: (agent, draft, signal) => agents().update(agent, draft, signal),
 			deleteAgent: (agent, signal) => agents().delete(agent, signal),
 		};
+		// The rail renames and deletes group chats from their menu, with the same rechecks.
+		const companyCurrent = () => {
+			const now = controller.store.get();
+			if (disposed || company !== controller || auth.userId !== controller.userId || now.accessLost)
+				throw new Error(t("Company access changed."));
+		};
+		const groupEditor = async (signal: AbortSignal) => {
+			companyCurrent();
+			const team = controller.store.get().team;
+			if (!team?.capabilities.authorize) throw new Error(t("Only an owner or admin can edit group chats."));
+			return new WebCompanyFiles(cloud, controller.profile, controller.userId, team.role, signal, () => {
+				companyCurrent();
+				if (!controller.store.get().team?.capabilities.authorize)
+					throw new Error(t("Group chat editing access changed."));
+			}).files();
+		};
+		const groupActions: Pick<WorkspaceActions, "updateGroup" | "deleteGroup"> = {
+			updateGroup: createGroupUpdater({ company: controller, current: companyCurrent, editor: groupEditor }),
+			deleteGroup: createGroupDeleter({ company: controller, current: companyCurrent, editor: groupEditor }),
+		};
 		// First run is a moment, not a workspace: the rail stays away until the
 		// Co-Founder has a face.
 		rail.hidden = route.section === "meet" || controller.store.get().accessLost === true;
 		const context = shellContext(authState.user, route);
 		renderTopbar(topbar, context, rail.hidden ? undefined : controller);
 		if (!rail.hidden)
-			renderRail(rail, controller, { ...context, agentActions: { ...agentActions, ...workspaceActions } });
+			renderRail(rail, controller, {
+				...context,
+				agentActions: { ...agentActions, ...groupActions, ...workspaceActions },
+			});
 		if (navigationFocus) {
 			const target =
 				navigationFocus === "rail"

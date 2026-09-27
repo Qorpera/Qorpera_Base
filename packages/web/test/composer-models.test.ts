@@ -18,10 +18,17 @@ afterEach(() => {
 	vi.unstubAllGlobals();
 });
 
-async function setup() {
+async function setup(groupChat = false) {
 	const f = fixture();
 	const company = new CompanyController(f.api, profileA, userA.id);
-	company.store.set({ team, staff: [staff], sessions: [{ ...session, staffAgentId: staff.id }], loading: false });
+	company.store.set({
+		team,
+		staff: [staff],
+		sessions: [
+			groupChat ? { ...session, executionScope: { roomId: id(190) } } : { ...session, staffAgentId: staff.id },
+		],
+		loading: false,
+	});
 	const models = new Map<string, SessionModel>();
 	const read = vi.fn(
 		async (sessionId: string): Promise<SessionModel> =>
@@ -72,6 +79,23 @@ async function open(view: ConversationView, label = "Model: GPT-6 Astra, Low eff
 }
 
 describe("composer model selector", () => {
+	it("gives a group chat one model and effort, for every agent in it", async () => {
+		const f = await setup(true);
+		const panel = await open(f.view);
+		expect(panel.textContent).toContain("Every agent in this group chat. Applies from your next message.");
+		button(panel, "GPT-6 Sol").click();
+		await settle();
+		expect(f.set).toHaveBeenCalledWith(session.sessionId, { modelId: "gpt-6-sol" }, 0, expect.any(AbortSignal));
+		button(panel, "High").click();
+		await settle();
+		expect(f.set).toHaveBeenLastCalledWith(
+			session.sessionId,
+			{ reasoningEffort: "high" },
+			1,
+			expect.any(AbortSignal),
+		);
+		expect(button(f.view.el, "Model: GPT-6 Sol, High effort")).toBeTruthy();
+	});
 	it("before the cloud honours thread effort, offers only GPT-6 Astra and skips hidden choices", async () => {
 		const f = await setup();
 		f.read.mockImplementation(async (sessionId: string) => {

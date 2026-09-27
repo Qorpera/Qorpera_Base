@@ -22,12 +22,14 @@ export function effortName(effort: string): string {
 }
 
 /** Conversation-scoped model and effort; the server pins them when admitting
- * the member's next run in this conversation. */
+ * the member's next run in this conversation. In a group chat the one choice is
+ * every agent's there: each agent's reply to a post runs in the group's conversation. */
 export class ComposerModels {
 	readonly button: HTMLButtonElement;
 	readonly el: HTMLElement;
 	readonly #label = h("small");
 	readonly #status = h("p", { class: "composer-model-status", role: "status" });
+	readonly #scope = h("p", { class: "composer-model-scope" });
 	readonly #refresh: HTMLButtonElement;
 	readonly #choices: HTMLButtonElement[];
 	readonly #efforts: HTMLButtonElement[];
@@ -112,7 +114,7 @@ export class ComposerModels {
 			h("button", { type: "button", role: "menuitem", onclick: back }, icon("back"), t("Model")),
 			...this.#choices,
 			this.#effortGroup,
-			h("p", { class: "composer-model-scope" }, t("Only this conversation. Applies from your next message.")),
+			this.#scope,
 			this.#status,
 			this.#refresh,
 		);
@@ -122,9 +124,13 @@ export class ComposerModels {
 		return this.#pending !== undefined;
 	}
 
-	update(available: boolean, locked: boolean): void {
+	update(available: boolean, locked: boolean, group = false): void {
 		if (this.#signal.aborted) return;
 		this.#locked = locked;
+		const scope = group
+			? t("Every agent in this group chat. Applies from your next message.")
+			: t("Only this conversation. Applies from your next message.");
+		if (this.#scope.textContent !== scope) this.#scope.textContent = scope;
 		this.button.hidden = !available || !this.#client;
 		const state = this.#company.store.get();
 		if (

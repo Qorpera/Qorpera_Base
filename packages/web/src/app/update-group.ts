@@ -173,3 +173,72 @@ export function createGroupUpdater(options: {
 		}
 	};
 }
+
+/** Deletes a group chat for everyone: its room document leaves the Company File, the
+ * cloud removes the room and closes its conversation (20260918010000). Owners and
+ * admins only, as for every room change. */
+export function createGroupDeleter(options: {
+	company: CompanyController;
+	editor: (signal: AbortSignal) => Promise<Pick<CloudMemberCompanyFileClient, "read" | "edit" | "review">>;
+	current: () => void;
+}): NonNullable<WorkspaceActions["deleteGroup"]> {
+	const company = options.company;
+	return async (sessionId, roomId, signal) => {
+		const check = () => {
+			signal.throwIfAborted();
+			company.signal.throwIfAborted();
+			options.current();
+			const state = company.store.get();
+			if (
+				state.accessLost ||
+				!state.team?.capabilities.write ||
+				!state.team.capabilities.authorize ||
+				!["owner", "admin"].includes(state.team.role) ||
+				state.team.profileId !== company.profile.profileId
+			)
+				throw new Error(t("Only an owner or admin can change group chats."));
+			const session = state.sessions.find((item) => item.sessionId === sessionId);
+			if (
+				!session ||
+				session.staffAgentId ||
+				session.profileId !== company.profile.profileId ||
+				!UUID_PATTERN.test(roomId) ||
+				String(session.executionScope?.roomId).toLowerCase() !== roomId.toLowerCase()
+			)
+				throw new Error(t("This group chat is no longer available."));
+		};
+		check();
+		const editor = await options.editor(signal);
+		check();
+		const path = `organization/rooms/${roomId.toLowerCase()}.json`;
+		const current = await editor.read(path, signal);
+		check();
+		// Deleted already (by another member, or by a lost answer to this request).
+		if (current.kind === "absent") return;
+		if (current.kind !== "file" || !current.version || current.path !== path)
+			throw new Error(t("This group chat is no longer available."));
+		const document = record(JSON.parse(current.text), "group chat document");
+		if (
+			document.schema !== "qorpera.company-room/v1" ||
+			String(document.roomId).toLowerCase() !== roomId.toLowerCase()
+		)
+			throw new Error(t("This group chat is no longer available."));
+		let command = await editor.edit(
+			{
+				operation: "delete",
+				operationKey: `group-delete:${roomId.toLowerCase()}:${crypto.randomUUID()}`,
+				path,
+				expectedVersion: current.version,
+			},
+			signal,
+		);
+		check();
+		if (command.state === "review_required") {
+			const reviewed = await editor.review(command, "approve", signal);
+			check();
+			if (!("commandId" in reviewed)) throw new Error(t("Group chat review changed kind."));
+			command = reviewed;
+		}
+		if (command.state !== "applied" || !command.result) throw new Error(t("The group chat could not be deleted."));
+	};
+}

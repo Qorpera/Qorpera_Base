@@ -60,8 +60,10 @@ export function selectSessionExecutionSponsor(
 export interface RoomMessageTarget {
 	readonly roomId: string;
 	readonly environmentId: string;
-	/** True for an agent's shared thread (one bound agent; attachments allowed). */
+	/** True for an agent's shared thread (one bound agent). */
 	readonly agentThread: boolean;
+	/** Whether the room takes images: an agent's thread always, a group chat since 20260927140000. */
+	readonly images: boolean;
 }
 
 export type SessionInputWriter = (
@@ -122,7 +124,7 @@ export function createWebSessionInputWriter(
 					current(sessionId);
 				};
 				check();
-				if (room && !room.agentThread && files.length)
+				if (room && !room.images && files.length)
 					throw new Error("Images are not supported in team rooms. Use Company File.");
 				const images: { objectSha256: string; bytes: number; mediaType: string }[] = [];
 				if (files.length) {

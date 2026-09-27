@@ -11,7 +11,7 @@ afterEach(() => {
 	vi.restoreAllMocks();
 	vi.unstubAllGlobals();
 });
-const target = { roomId: id(70), environmentId: profileA.environmentId, agentThread: false };
+const target = { roomId: id(70), environmentId: profileA.environmentId, agentThread: false, images: false };
 const roomSession: HostedSession = { ...session, executionScope: { roomId: target.roomId } };
 const sponsor: SessionExecutionSponsor = {
 	connectionId: id(80),
@@ -156,6 +156,25 @@ describe("room session input routing", () => {
 		expect(f.fetch).not.toHaveBeenCalled();
 		expect(f.cloud.supabase.auth.getSession).not.toHaveBeenCalled();
 		expect(f.append).not.toHaveBeenCalled();
+	});
+	it("sends a group chat's images once the cloud takes them", async () => {
+		const f = setup();
+		f.controller.store.set({ sidebar: { sections: [], placements: {}, pinned: [], hidden: [], groupChats: true } });
+		const file = new File(["image bytes"], "image.png", { type: "image/png" });
+		f.write.mockResolvedValueOnce({ inputId: receipt.inputId } as Awaited<ReturnType<typeof f.write>>);
+		const state = f.controller.conversation(session.sessionId, false);
+		state.set({ attachments: [file], draft: "Look at this" });
+		expect(await f.controller.sendPrompt(session.sessionId, "Look at this")).toBe(true);
+		expect(f.write).toHaveBeenCalledExactlyOnceWith(
+			session.sessionId,
+			expect.any(String),
+			"Look at this",
+			expect.any(AbortSignal),
+			[file],
+			sponsor,
+			{ ...target, images: true },
+		);
+		expect(state.get()).toMatchObject({ draft: "", attachments: [] });
 	});
 	it.each([{ ...roomSession, executionScope: { roomId: "invalid" } }])(
 		"refuses a malformed canonical room scope",

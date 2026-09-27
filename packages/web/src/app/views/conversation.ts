@@ -206,7 +206,7 @@ export class ConversationView {
 		});
 		const fileInput = h("input", { type: "file", multiple: true, hidden: true, "aria-label": t("Attach files") });
 		fileInput.onchange = () => {
-			if (!this.#composer.disabled && !this.#isRoom) this.#attachments.add([...(fileInput.files ?? [])]);
+			if (!this.#composer.disabled && !this.#noImages) this.#attachments.add([...(fileInput.files ?? [])]);
 			fileInput.value = "";
 		};
 		this.#more = h(
@@ -229,7 +229,7 @@ export class ConversationView {
 				role: "menuitem",
 				onclick: () => {
 					this.#setMenu(false);
-					if (!this.#isRoom) fileInput.click();
+					if (!this.#noImages) fileInput.click();
 				},
 			},
 			icon("attach"),
@@ -305,20 +305,20 @@ export class ConversationView {
 			const files = [...(event.clipboardData?.files ?? [])];
 			if (files.length) {
 				event.preventDefault();
-				if (!this.#isRoom) this.#attachments.add(files);
+				if (!this.#noImages) this.#attachments.add(files);
 			}
 		});
 		this.#composerShell.addEventListener("dragover", (event) => {
 			if (!this.#composer.disabled && event.dataTransfer?.types.includes("Files")) {
 				event.preventDefault();
-				if (!this.#isRoom) this.#composerShell.classList.add("is-dragging");
+				if (!this.#noImages) this.#composerShell.classList.add("is-dragging");
 			}
 		});
 		this.#composerShell.addEventListener("dragleave", () => this.#composerShell.classList.remove("is-dragging"));
 		this.#composerShell.addEventListener("drop", (event) => {
 			event.preventDefault();
 			this.#composerShell.classList.remove("is-dragging");
-			if (!this.#composer.disabled && !this.#isRoom) this.#attachments.add([...(event.dataTransfer?.files ?? [])]);
+			if (!this.#composer.disabled && !this.#noImages) this.#attachments.add([...(event.dataTransfer?.files ?? [])]);
 		});
 		this.#composerWrap = h("footer", { class: "composer" }, this.#composerShell, this.#attachments.status);
 		this.#identity = h("button", {
@@ -438,6 +438,11 @@ export class ConversationView {
 	get #isRoom(): boolean {
 		const session = this.#company.store.get().sessions.find((s) => s.sessionId === this.#sessionId);
 		return isGroupChat(session);
+	}
+
+	/** A group chat on a cloud that keeps group chats text-only (before 20260927140000). */
+	get #noImages(): boolean {
+		return this.#isRoom && !this.#company.groupChatImages();
 	}
 
 	focus(): void {
@@ -707,9 +712,12 @@ export class ConversationView {
 		const agent = this.#company.staffById(session?.staffAgentId);
 		const canWrite = company.team?.capabilities.write === true && session?.status === "open";
 		const room = this.#isRoom;
+		const noImages = this.#noImages;
+		// A group chat has one model and effort for every agent in it.
 		this.#models.update(
-			Boolean(agent) && !room,
+			Boolean(agent) || room,
 			!canWrite || conversation.sending || this.#submitting || Boolean(conversation.retrySend),
+			room,
 		);
 		this.#execution?.update();
 		this.#run?.update(
@@ -718,13 +726,13 @@ export class ConversationView {
 		);
 		const problem = sessionAttachmentProblem(conversation.attachments ?? []);
 		const attachmentIssue =
-			room && conversation.attachments?.length
+			noImages && conversation.attachments?.length
 				? t("Images are not supported in group chats. Use Company File.")
 				: problem && attachmentProblemText(problem);
 		this.#attachments.sync(
 			conversation.attachments ?? [],
 			!canWrite || conversation.sending,
-			room
+			noImages
 				? t("Images are not supported in group chats. Use Company File.")
 				: this.#actions.sendMessage
 					? attachmentIssue
@@ -760,8 +768,8 @@ export class ConversationView {
 			(!conversation.draft?.trim() && !this.#attachments.count) ||
 			Boolean(attachmentIssue);
 		this.#syncSend();
-		this.#attach.disabled = this.#composer.disabled || room;
-		this.#attachNote.hidden = !room;
+		this.#attach.disabled = this.#composer.disabled || noImages;
+		this.#attachNote.hidden = !noImages;
 		this.#more.disabled = this.#composer.disabled;
 		if (this.#composer.disabled && !this.#menu.hidden) this.#setMenu(false, false);
 		this.#composerWrap.hidden = !canWrite;

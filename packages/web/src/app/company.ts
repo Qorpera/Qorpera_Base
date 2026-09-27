@@ -42,6 +42,7 @@ import type {
 	PendingSessionInput,
 } from "../cloud/types.ts";
 import { attachmentProblemText } from "../ui/attachments.ts";
+import { isGroupChat } from "../ui/group-chat.ts";
 import { t } from "../ui/preferences.ts";
 import { debounce, Store } from "./state.ts";
 
@@ -85,7 +86,9 @@ const RECOVERY_RETRY_MS = 5_000;
  * called … already exists"). A network or server failure never shows its text. */
 function sidebarRefusal(error: unknown, request: SidebarRequest): string {
 	if (error instanceof CloudRpcError) {
-		const shared = ["create_section", "rename_section", "delete_section", "move_agent"].includes(request.action);
+		const shared = ["create_section", "rename_section", "delete_section", "move_agent", "move_room"].includes(
+			request.action,
+		);
 		if (error.code === "42501" && shared)
 			return t("Only owners, admins and contributors can change the company's sections.");
 		const own = ["23505", "P0002", "54000", "22023"].includes(error.code ?? "");
@@ -484,13 +487,36 @@ export class CompanyController {
 		}
 	}
 
-	/** The agents the sidebar arranges, in roster order: active, never the Co-Founder. */
+	/** What the sidebar arranges, in roster order: the active agents but the Co-Founder, then,
+	 * where the cloud places them, the open group chats oldest first (as the cloud orders them). */
 	sidebarRoster(): string[] {
 		const cofounder = this.cofounderId();
-		return this.store
+		const agents = this.store
 			.get()
 			.staff.filter((agent) => agent.employmentStatus === "active" && agent.id !== cofounder)
 			.map((agent) => agent.id);
+		return this.store.get().sidebar?.groupChats ? [...agents, ...this.groupChatRooms().keys()] : agents;
+	}
+
+	/** The open group chats by room id, oldest first, each with its conversation. */
+	groupChatRooms(): Map<string, HostedSession> {
+		const rooms = new Map<string, HostedSession>();
+		const chats = this.store
+			.get()
+			.sessions.filter((session) => session.status === "open" && isGroupChat(session))
+			.sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.sessionId.localeCompare(b.sessionId));
+		for (const session of chats) {
+			const roomId = String(session.executionScope?.roomId).toLowerCase();
+			if (UUID_PATTERN.test(roomId) && !rooms.has(roomId)) rooms.set(roomId, session);
+		}
+		return rooms;
+	}
+
+	/** Whether this cloud takes images in group chats: the migration that places group
+	 * chats in the sidebar (20260927140000) lifted the text-only rule too. */
+	groupChatImages(): boolean {
+		const state = this.store.get();
+		return Boolean(state.sidebar?.groupChats && !state.sidebarUnavailable);
 	}
 
 	cofounderId(): string | undefined {
@@ -1148,10 +1174,12 @@ export class CompanyController {
 		if (typeof scope.roomId !== "string" || !UUID_PATTERN.test(scope.roomId))
 			throw new Error(t("The team room conversation is unavailable."));
 		// An agent thread is a room the kernel bound to one agent; a team room has no single agent.
+		const agentThread = isAgentThreadSession(session);
 		return Object.freeze({
 			roomId: scope.roomId,
 			environmentId: session.environmentId,
-			agentThread: isAgentThreadSession(session),
+			agentThread,
+			images: agentThread || this.groupChatImages(),
 		});
 	}
 
@@ -1443,7 +1471,7 @@ export class CompanyController {
 				observed?.agentThread !== roomTarget?.agentThread
 			)
 				throw new Error(t("The conversation destination changed. Refresh before starting a new request."));
-			if (roomTarget && !roomTarget.agentThread && files.length)
+			if (roomTarget && !roomTarget.images && files.length)
 				throw new Error(t("Images are not supported in team rooms. Use Company File."));
 		} catch (error) {
 			store.set({ sendError: describeError(error), draft: text });

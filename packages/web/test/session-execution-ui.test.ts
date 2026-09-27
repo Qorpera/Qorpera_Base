@@ -471,7 +471,34 @@ describe("conversation execution account", () => {
 		expect(f.native.createMemberSponsor).not.toHaveBeenCalled();
 	});
 
-	it("rejects picker, pasted and dropped images in group chats without losing the text draft", async () => {
+	it("takes picked, pasted and dropped images in group chats once the cloud does", async () => {
+		const f = setup(true);
+		// The cloud that places group chats in the sidebar also takes their images (20260927140000).
+		f.company.store.set({ sidebar: { sections: [], placements: {}, pinned: [], hidden: [], groupChats: true } });
+		await settle();
+		const image = new File(["image"], "local.png", { type: "image/png" });
+		const input = f.view.el.querySelector<HTMLInputElement>('input[type="file"]')!;
+		Object.defineProperty(input, "files", { value: [image] });
+		input.dispatchEvent(new Event("change"));
+		const shell = f.view.el.querySelector(".composer-shell")!;
+		const paste = new Event("paste", { bubbles: true, cancelable: true });
+		Object.defineProperty(paste, "clipboardData", { value: { files: [image] } });
+		shell.dispatchEvent(paste);
+		await settle();
+		expect(f.company.conversation(session.sessionId).get().attachments).toEqual([image, image]);
+		expect(f.company.roomTargetFor(session.sessionId)).toMatchObject({ agentThread: false, images: true });
+		f.view.el.querySelector<HTMLButtonElement>(".composer-more")!.click();
+		const menu = f.view.el.querySelector<HTMLElement>(".composer-menu")!;
+		const attachItem = [...menu.querySelectorAll<HTMLButtonElement>("button")].find(
+			(item) => item.textContent === "Attach files",
+		)!;
+		expect(attachItem.disabled).toBe(false);
+		expect(menu.querySelector<HTMLElement>(".composer-menu-note")!.hidden).toBe(true);
+		expect(f.view.el.querySelector(".composer")!.textContent).toContain(
+			"Images stay on this device until you send. Up to 5 images, 8 MiB total.",
+		);
+	});
+	it("rejects picker, pasted and dropped images in group chats on a cloud that keeps them text-only", async () => {
 		const f = setup(true);
 		await settle();
 		f.company.conversation(session.sessionId).set({ draft: "Keep team text" });
