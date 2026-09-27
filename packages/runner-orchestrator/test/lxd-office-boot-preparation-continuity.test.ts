@@ -6,6 +6,7 @@ import {
 	COMPANY_COMPUTER_CONFIGURATION_FILES,
 	companyComputerBootDirectory,
 	companyComputerPreparationAdoptionReceipt,
+	companyComputerStopHistoryDirectory,
 	parseCompanyComputerBootIntentRequest,
 	parseCompanyComputerPreparationCompletion,
 	parseCompanyComputerPreparationRequest,
@@ -37,6 +38,13 @@ afterEach(async () => {
 	vi.restoreAllMocks();
 	for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
 });
+
+function errorMessages(value: unknown) {
+	const messages: string[] = [];
+	for (let cause = value; cause instanceof Error && messages.length < 8; cause = cause.cause)
+		messages.push(cause.message);
+	return messages;
+}
 
 /** Complete original preparation and admitted outage history. All provider
  * workers and protected journals are real; guest effects and SQL are fixtures. */
@@ -373,30 +381,63 @@ describe("preparation anchor continuity after an admitted outage", () => {
 			read = vi.mocked(f.client.readInstanceFile).getMockImplementation()!,
 			call = f.registry.getMockImplementation()!,
 			lock = f.kernelLock.getMockImplementation()!,
-			directory = companyComputerBootDirectory((await f.readEvidence()).bootId),
+			evidence = await f.readEvidence(),
+			directory = companyComputerBootDirectory(evidence.bootId),
 			currentPaths = [
 				`${directory}/configuration-completion.json`,
 				`${directory}/configuration-claim.json`,
 				`${directory}/adoption.json`,
 				...Object.values(COMPANY_COMPUTER_CONFIGURATION_FILES).map((name) => `${directory}/credentials/${name}`),
 			],
-			currentReads = new Map<string, number>();
+			archiveDirectory = companyComputerStopHistoryDirectory(
+				evidence.shutdown.history.command.bootId,
+				f.input.request.predecessor.activationId,
+			),
+			archivePaths = [
+				`${archiveDirectory}/manifest.json`,
+				`${archiveDirectory}/claim.json`,
+				...evidence.shutdown.history.entries.map((entry) => `${archiveDirectory}/${entry.sha256}.json`),
+				`${archiveDirectory}/claim.json`,
+				`${archiveDirectory}/manifest.json`,
+			],
+			bootPath = "/proc/sys/kernel/random/boot_id",
+			expectedFullProof = new Map<string, number>(),
+			beforeWindowReads = new Map<string, number>(),
+			windowReads = new Map<string, number>(),
+			currentReads = new Map<string, number>(),
+			readsByKernelCheck: { archive: number; current: number; boot: number; inspection: number; other: number }[] =
+				[];
+		for (const path of [...archivePaths, ...currentPaths, bootPath, bootPath])
+			expectedFullProof.set(path, (expectedFullProof.get(path) ?? 0) + 1);
 		let inspectionStarted = 0,
 			guestReads = 0,
 			activeGuestReads = 0,
 			peakGuestReads = 0,
-			authorizationPasses = 0,
+			kernelChecks = 0,
 			sqlChecks = 0;
-		const guestReadMs = 50,
+		let refusal: unknown;
+		const guestReadMs = 100,
 			sqlReadMs = 20;
 		vi.mocked(f.client.readInstanceFile).mockImplementation(async (...args) => {
 			if (!inspectionStarted) {
 				const value = await read(...args);
 				if (args[2] === f.completionPath) inspectionStarted = performance.now();
+				else beforeWindowReads.set(args[2], (beforeWindowReads.get(args[2]) ?? 0) + 1);
 				return value;
 			}
 			guestReads++;
+			windowReads.set(args[2], (windowReads.get(args[2]) ?? 0) + 1);
 			if (currentPaths.includes(args[2])) currentReads.set(args[2], (currentReads.get(args[2]) ?? 0) + 1);
+			const kind = currentPaths.includes(args[2])
+				? "current"
+				: args[2].startsWith("/etc/qorpera-office/history/")
+					? "archive"
+					: args[2] === "/proc/sys/kernel/random/boot_id"
+						? "boot"
+						: args[2].startsWith("/run/qorpera-office-preparation/boot-service-inspection-")
+							? "inspection"
+							: "other";
+			readsByKernelCheck.at(-1)![kind]++;
 			activeGuestReads++;
 			peakGuestReads = Math.max(peakGuestReads, activeGuestReads);
 			try {
@@ -407,7 +448,10 @@ describe("preparation anchor continuity after an admitted outage", () => {
 			}
 		});
 		f.kernelLock.mockImplementation(async (...args) => {
-			if (inspectionStarted) authorizationPasses++;
+			if (inspectionStarted) {
+				kernelChecks++;
+				readsByKernelCheck.push({ archive: 0, current: 0, boot: 0, inspection: 0, other: 0 });
+			} else beforeWindowReads.clear();
 			return lock(...args);
 		});
 		f.registry.mockImplementation(async (...args) => {
@@ -418,15 +462,23 @@ describe("preparation anchor continuity after an admitted outage", () => {
 			return call(...args);
 		});
 		try {
-			await expect(f.run()).resolves.toMatchObject({ state: "active" });
+			expect(await f.run()).toMatchObject({ state: "active" });
 			expect(f.exec).toHaveBeenCalledOnce();
 			expect(f.inspect).toHaveBeenCalledOnce();
 			expect(f.state.activations).toBe(1);
 			expect(f.state.current!.request.attestation.preparationObservationSha256).toBe(origin.anchor);
 			expect(activeGuestReads).toBe(0);
 			expect(peakGuestReads).toBe(4);
-			expect(authorizationPasses).toBe(5);
-			expect(currentPaths.map((path) => currentReads.get(path))).toEqual(Array(9).fill(authorizationPasses));
+			expect(kernelChecks).toBe(6);
+			expect(sqlChecks).toBe(8);
+			expect(guestReads).toBe(26);
+			expect(currentPaths.map((path) => currentReads.get(path))).toEqual(Array(9).fill(1));
+			expect(beforeWindowReads).toEqual(expectedFullProof);
+			for (const [path, count] of expectedFullProof) expect(windowReads.get(path), path).toBe(count);
+			expect(performance.now() - inspectionStarted).toBeLessThan(5000);
+		} catch (error) {
+			refusal = error;
+			throw error;
 		} finally {
 			console.info(
 				"BOOT_INSPECTION_LATENCY",
@@ -435,12 +487,16 @@ describe("preparation anchor continuity after an admitted outage", () => {
 					sqlReadMs,
 					guestReads,
 					peakGuestReads,
-					authorizationPasses,
+					kernelChecks,
 					sqlChecks,
 					inspectionElapsedMs: inspectionStarted ? Math.round(performance.now() - inspectionStarted) : null,
 					inspectionDispatches: f.inspect.mock.calls.length,
 					activations: f.state.activations,
 					outstandingGuestReads: activeGuestReads,
+					archiveEntries: evidence.shutdown.history.entries.length,
+					beforeWindowGuestReads: [...beforeWindowReads.values()].reduce((sum, count) => sum + count, 0),
+					readsByKernelCheck,
+					causes: errorMessages(refusal),
 				}),
 			);
 		}
@@ -497,11 +553,125 @@ describe("preparation anchor continuity after an admitted outage", () => {
 			expect(buffers).toHaveLength(started.length);
 			for (const bytes of buffers) expect(bytes.every((byte) => byte === 0)).toBe(true);
 			expect(f.exec).toHaveBeenCalledOnce();
-			expect(f.inspect).not.toHaveBeenCalled();
+			expect(f.inspect).toHaveBeenCalledOnce();
 			expect(f.state.activations).toBe(0);
 		},
 		60000,
 	);
+	it.each(
+		(["archive", "credential", "history"] as const).flatMap((changed) =>
+			(["dispatch", "readback"] as const).map((boundary) => ({ changed, boundary })),
+		),
+	)(
+		"refuses activation when $changed changes after inspection $boundary",
+		async ({ changed, boundary }) => {
+			const origin = await outageFixture(),
+				f = await resumeFixture(origin),
+				evidence = await f.readEvidence(),
+				inspect = f.inspect.getMockImplementation()!,
+				read = vi.mocked(f.client.readInstanceFile).getMockImplementation()!;
+			let mutated = false;
+			const mutate = async () => {
+				if (changed === "history") {
+					await rm(
+						join(
+							origin.root,
+							`outage-activation-completed-${origin.binding.allocationId}-${origin.admitted.activationId}.json`,
+						),
+					);
+				} else {
+					const path =
+						changed === "archive"
+							? `${companyComputerStopHistoryDirectory(evidence.shutdown.history.command.bootId, f.input.request.predecessor.activationId)}/${evidence.shutdown.history.entries[0].sha256}.json`
+							: `${companyComputerBootDirectory(evidence.bootId)}/credentials/tls-key.pem`;
+					const file = f.guest.get(path)!;
+					const bytes = Buffer.from(file.content);
+					bytes[0] ^= 1;
+					f.guest.set(path, { ...file, content: bytes });
+				}
+				mutated = true;
+			};
+			f.inspect.mockImplementationOnce(async (...args) => {
+				const reference = await inspect(...args);
+				if (boundary === "dispatch") await mutate();
+				return reference;
+			});
+			vi.mocked(f.client.readInstanceFile).mockImplementation(async (...args) => {
+				const file = await read(...args);
+				if (
+					boundary === "readback" &&
+					args[2].startsWith("/run/qorpera-office-preparation/boot-service-inspection-")
+				)
+					await mutate();
+				return file;
+			});
+			const failure: unknown = await f.run().then(
+				() => undefined,
+				(error: unknown) => error,
+			);
+			const causes = errorMessages(failure);
+			expect(causes).toContain("OFFICE_BOOT_ACTIVATION_UNCONFIRMED");
+			if (changed === "archive") expect(causes).toContain("history blob differs");
+			else if (changed === "credential") expect(causes).toContain("guest evidence changed");
+			else expect(causes.some((message) => message.includes("ENOENT"))).toBe(true);
+			expect(causes.some((message) => message.includes("WINDOW_EXPIRED"))).toBe(false);
+			expect(mutated).toBe(true);
+			expect(f.exec).toHaveBeenCalledOnce();
+			expect(f.inspect).toHaveBeenCalledOnce();
+			expect(f.state.activations).toBe(0);
+			await expect(readFile(f.paths.completion)).rejects.toMatchObject({ code: "ENOENT" });
+		},
+		60000,
+	);
+	it("cannot renew the original physical lease during read-only inspection", async () => {
+		const origin = await outageFixture(),
+			f = await resumeFixture(origin),
+			check = f.check.getMockImplementation()!,
+			read = vi.mocked(f.client.readInstanceFile).getMockImplementation()!,
+			call = f.registry.getMockImplementation()!,
+			poll = f.poll.getMockImplementation()!;
+		let latestLease: AbortController | undefined, originalLease: AbortController | undefined;
+		let liveSqlChecks = 0,
+			inspectionPolls = 0;
+		f.check.mockImplementation(async (...args) => {
+			const checked = await check(...args);
+			latestLease = new AbortController();
+			return { ...checked, signal: AbortSignal.any([checked.signal, latestLease.signal]) };
+		});
+		vi.mocked(f.client.readInstanceFile).mockImplementation(async (...args) => {
+			const file = await read(...args);
+			if (args[2] === f.completionPath) originalLease = latestLease;
+			return file;
+		});
+		f.registry.mockImplementation(async (...args) => {
+			const current = await call(...args);
+			if (originalLease && args[0] === "qorpera_check_runtime_office_boot_successor") liveSqlChecks++;
+			return current;
+		});
+		f.poll.mockImplementation(async (...args) => {
+			if (f.inspect.mock.calls.length) {
+				inspectionPolls++;
+				expect(liveSqlChecks).toBe(3);
+				expect(args[1].aborted).toBe(false);
+				if (!originalLease) throw new Error("original physical lease was not captured");
+				originalLease.abort(new Error("TEST_ORIGINAL_PHYSICAL_LEASE_REVOKED"));
+				expect(args[1].aborted).toBe(true);
+			}
+			return poll(...args);
+		});
+		const failure: unknown = await f.run().then(
+			() => undefined,
+			(error: unknown) => error,
+		);
+		expect(errorMessages(failure)).toContain("OFFICE_INSPECTION_CALLER_ABORTED_DURING_POLL");
+		expect(originalLease?.signal.aborted).toBe(true);
+		expect(liveSqlChecks).toBe(3);
+		expect(inspectionPolls).toBe(1);
+		expect(f.exec).toHaveBeenCalledOnce();
+		expect(f.inspect).toHaveBeenCalledOnce();
+		expect(f.state.activations).toBe(0);
+		await expect(readFile(f.paths.completion)).rejects.toMatchObject({ code: "ENOENT" });
+	}, 60000);
 	it("activates and reads retained ordinary resume history using the admitted outage anchor", async () => {
 		const origin = await outageFixture(),
 			f = await resumeFixture(origin),

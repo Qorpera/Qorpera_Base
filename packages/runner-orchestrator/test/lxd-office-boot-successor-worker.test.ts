@@ -1,4 +1,5 @@
 import { readFile, rm, writeFile } from "node:fs/promises";
+import { setTimeout as delay } from "node:timers/promises";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { readLxdOfficeStopEvidence } from "../src/lxd-office-stop-evidence.ts";
 import { officeBootSuccessorWorkerFixture } from "./fixtures/office-boot-successor-worker.ts";
@@ -11,7 +12,212 @@ afterEach(async () => {
 	for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
 });
 const fixture = () => officeBootSuccessorWorkerFixture(roots);
+const errorMessages = (value: unknown) => {
+	const messages: string[] = [];
+	for (let error = value; error instanceof Error; error = error.cause) messages.push(error.message);
+	return messages;
+};
 describe("provider same-boot successor after retained boot", () => {
+	it("keeps restart inspection fresh with bounded guest and SQL read latency", async () => {
+		const f = await fixture(),
+			read = vi.mocked(f.client.readInstanceFile).getMockImplementation()!,
+			call = f.registry.getMockImplementation()!,
+			lock = f.kernelLock.getMockImplementation()!,
+			beforeWindowReads = new Map<string, number>(),
+			windowReads = new Map<string, number>();
+		let inspectionStarted = 0,
+			guestReads = 0,
+			activeGuestReads = 0,
+			kernelChecks = 0,
+			sqlChecks = 0;
+		let refusal: unknown;
+		const guestReadMs = 120,
+			sqlReadMs = 20;
+		vi.mocked(f.client.readInstanceFile).mockImplementation(async (...args) => {
+			if (!inspectionStarted) {
+				const value = await read(...args);
+				if (args[2].startsWith("/run/qorpera-office-preparation/boot-service-restart-completion-"))
+					inspectionStarted = performance.now();
+				else beforeWindowReads.set(args[2], (beforeWindowReads.get(args[2]) ?? 0) + 1);
+				return value;
+			}
+			guestReads++;
+			windowReads.set(args[2], (windowReads.get(args[2]) ?? 0) + 1);
+			activeGuestReads++;
+			try {
+				await delay(guestReadMs, undefined, { signal: args[4] });
+				return await read(...args);
+			} finally {
+				activeGuestReads--;
+			}
+		});
+		f.kernelLock.mockImplementation(async (...args) => {
+			if (inspectionStarted) kernelChecks++;
+			else beforeWindowReads.clear();
+			return lock(...args);
+		});
+		f.registry.mockImplementation(async (...args) => {
+			if (inspectionStarted) {
+				sqlChecks++;
+				await delay(sqlReadMs, undefined, { signal: args[2] });
+			}
+			return call(...args);
+		});
+		try {
+			expect(await f.worker.reconcileSettled(f.intentId, f.request, signal())).toMatchObject({ state: "active" });
+			expect(f.exec).toHaveBeenCalledOnce();
+			expect(f.inspect).toHaveBeenCalledOnce();
+			expect(f.state.activations).toBe(1);
+			expect(activeGuestReads).toBe(0);
+			expect(kernelChecks).toBe(6);
+			expect(sqlChecks).toBe(8);
+			expect([...beforeWindowReads.values()].reduce((sum, count) => sum + count, 0)).toBe(10);
+			for (const [path, count] of beforeWindowReads) expect(windowReads.get(path), path).toBe(count);
+			expect(guestReads).toBe(11);
+			expect(performance.now() - inspectionStarted).toBeLessThan(5000);
+		} catch (error) {
+			refusal = error;
+			throw error;
+		} finally {
+			console.info(
+				"RESTART_INSPECTION_LATENCY",
+				JSON.stringify({
+					guestReadMs,
+					sqlReadMs,
+					guestReads,
+					kernelChecks,
+					sqlChecks,
+					inspectionElapsedMs: inspectionStarted ? Math.round(performance.now() - inspectionStarted) : null,
+					inspectionDispatches: f.inspect.mock.calls.length,
+					activations: f.state.activations,
+					outstandingGuestReads: activeGuestReads,
+					beforeWindowGuestReads: [...beforeWindowReads.values()].reduce((sum, count) => sum + count, 0),
+					causes: errorMessages(refusal),
+				}),
+			);
+		}
+	}, 60000);
+	it.each(["original", "final"] as const)(
+		"retains the %s physical lease through inspection and activation",
+		async (lease) => {
+			const f = await fixture(),
+				read = vi.mocked(f.client.readInstanceFile).getMockImplementation()!,
+				check = f.check.getMockImplementation()!,
+				inspect = f.inspect.getMockImplementation()!,
+				call = f.registry.getMockImplementation()!;
+			let latestLease: AbortController | undefined, originalLease: AbortController | undefined;
+			f.check.mockImplementation(async (...args) => {
+				const current = await check(...args);
+				latestLease = new AbortController();
+				return { ...current, signal: AbortSignal.any([current.signal, latestLease.signal]) };
+			});
+			vi.mocked(f.client.readInstanceFile).mockImplementation(async (...args) => {
+				const value = await read(...args);
+				if (args[2].startsWith("/run/qorpera-office-preparation/boot-service-restart-completion-"))
+					originalLease = latestLease;
+				return value;
+			});
+			f.inspect.mockImplementation(async (...args) => {
+				const reference = await inspect(...args);
+				if (lease === "original") {
+					expect(originalLease).toBeDefined();
+					originalLease!.abort(new Error("original physical lease expired"));
+				}
+				return reference;
+			});
+			f.registry.mockImplementation(async (...args) => {
+				const value = await call(...args);
+				if (lease === "final" && args[0] === "qorpera_runtime_office_successor_status") {
+					expect(latestLease).toBeDefined();
+					expect(latestLease).not.toBe(originalLease);
+					latestLease!.abort(new Error("final physical lease expired"));
+				}
+				return value;
+			});
+			const refusal = await f.worker
+				.reconcileSettled(f.intentId, f.request, signal())
+				.catch((error: unknown) => error);
+			expect(refusal).toBeInstanceOf(Error);
+			const causes = errorMessages(refusal);
+			expect(causes).toContain(
+				lease === "original"
+					? "OFFICE_INSPECTION_CALLER_ABORTED_DURING_SUBMISSION"
+					: "OFFICE_SUCCESSOR_REQUEST_UNCONFIRMED",
+			);
+			expect(causes.some((cause) => /WINDOW_EXPIRED|REQUEST_EXPIRED|RECONCILIATION_ABORTED/.test(cause))).toBe(
+				false,
+			);
+			if (lease === "final") {
+				expect(originalLease?.signal.aborted).toBe(false);
+				expect(latestLease?.signal.reason).toMatchObject({ message: "final physical lease expired" });
+			} else expect(originalLease?.signal.reason).toMatchObject({ message: "original physical lease expired" });
+			expect(f.exec).toHaveBeenCalledOnce();
+			expect(f.inspect).toHaveBeenCalledOnce();
+			expect(f.state.activations).toBe(0);
+			expect(f.registry.mock.calls.some(([method]) => method === "qorpera_activate_runtime_office_successor")).toBe(
+				false,
+			);
+		},
+	);
+	it.each([
+		"stop request",
+		"stop acknowledgement",
+		"restart packet",
+		"restart index",
+		"kernel",
+		"SQL",
+		"guest configuration",
+		"guest boot",
+		"guest stop",
+	] as const)("refuses changed %s during read-only inspection before activation", async (changed) => {
+		const f = await fixture(),
+			inspect = f.inspect.getMockImplementation()!;
+		f.inspect.mockImplementation(async (...args) => {
+			const reference = await inspect(...args);
+			if (changed === "kernel") f.kernelLock.mockRejectedValue(new Error("kernel lock lost"));
+			else if (changed === "SQL") f.state.enabled = false;
+			else if (changed === "guest configuration")
+				f.guest.get(`${f.directory}/credentials/config.json`)!.content.fill(0);
+			else if (changed === "guest boot")
+				f.guest.get("/proc/sys/kernel/random/boot_id")!.content = Buffer.from(id(99));
+			else if (changed === "guest stop") f.guest.get(f.stop.completionPath)!.uid = 1000;
+			else {
+				const path =
+					changed === "stop request"
+						? f.stop.names.stop
+						: changed === "stop acknowledgement"
+							? f.stop.names.done
+							: changed === "restart packet"
+								? f.paths().packet
+								: f.paths().index;
+				const value = JSON.parse(await readFile(path, "utf8"));
+				value.schema = "changed";
+				await writeFile(path, JSON.stringify(value));
+			}
+			return reference;
+		});
+		const refusal = await f.worker.reconcileSettled(f.intentId, f.request, signal()).catch((error: unknown) => error);
+		expect(refusal).toBeInstanceOf(Error);
+		expect(errorMessages(refusal)).toContain(
+			{
+				"stop request": "inspection stop changed",
+				"stop acknowledgement": "inspection stop changed",
+				"restart packet": "restart evidence changed",
+				"restart index": "restart evidence changed",
+				kernel: "kernel lock lost",
+				SQL: "authority unavailable",
+				"guest configuration": "guest evidence custody",
+				"guest boot": "successor boot changed",
+				"guest stop": "root stop differs",
+			}[changed],
+		);
+		expect(f.exec).toHaveBeenCalledOnce();
+		expect(f.inspect).toHaveBeenCalledOnce();
+		expect(f.state.activations).toBe(0);
+		expect(f.registry.mock.calls.some(([method]) => method === "qorpera_activate_runtime_office_successor")).toBe(
+			false,
+		);
+	});
 	it("retains prepared identity, dispatches once, inspects before activation and preserves initial history", async () => {
 		const f = await fixture(),
 			original = await readFile(f.originCompletion);

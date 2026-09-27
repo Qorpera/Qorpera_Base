@@ -312,8 +312,8 @@ export class LxdOfficeSuccessorWorker {
 		if (prepared.state !== "prepared" || prepared.stopAcknowledgedAtMs !== acknowledgement.acknowledgedAtMs)
 			throw new Error("prepared metadata differs");
 		let state = prepared;
-		const authorize = async (caller: AbortSignal) => {
-			const checked = await physical(caller);
+		const currentSuccessor = async (checked: AbortSignal) => {
+			checked.throwIfAborted();
 			if (
 				!isDeepStrictEqual(await optional(seedName), seed) ||
 				!isDeepStrictEqual(await optional(preparedName), prepared)
@@ -331,6 +331,7 @@ export class LxdOfficeSuccessorWorker {
 			current.signal.throwIfAborted();
 			return current.signal;
 		};
+		const authorize = async (caller: AbortSignal) => currentSuccessor(await physical(caller));
 		const lane = lxdOfficeSuccessorLane(
 				root,
 				binding,
@@ -402,8 +403,8 @@ export class LxdOfficeSuccessorWorker {
 			await retain(indexName, index);
 		}
 		if (!isDeepStrictEqual(await optional(indexName), index)) throw new Error("restart index changed");
-		const checkedRestart = async (caller: AbortSignal) => {
-			const checked = await authorize(caller);
+		const currentRestart = async (checked: AbortSignal) => {
+			checked.throwIfAborted();
 			if (
 				!isDeepStrictEqual(await optional(packetName), packet) ||
 				!isDeepStrictEqual(await optional(indexName), index)
@@ -412,6 +413,7 @@ export class LxdOfficeSuccessorWorker {
 			checked.throwIfAborted();
 			return checked;
 		};
+		const checkedRestart = async (caller: AbortSignal) => currentRestart(await authorize(caller));
 		const journal = await lane.openJournal(identity);
 		let operation = await journal.observe(await checkedRestart(signal));
 		if (operation.state === "not_dispatched") {
@@ -455,10 +457,45 @@ export class LxdOfficeSuccessorWorker {
 		return lane.inspectAndUse(
 			command,
 			completion,
-			checkedRestart,
-			async (current, checked, assertFresh, deadline) => {
+			async (caller) => {
+				// Keep the completed restart's original physical lease through the
+				// read-only inspection. Fresh SQL checks cannot renew that lease;
+				// every stage still checks the lock and exact retained bindings.
+				const bounded = AbortSignal.any([caller, checked]);
+				bounded.throwIfAborted();
+				await this.#kernelLock(root);
+				if (
+					!isDeepStrictEqual(
+						await openLxdOfficeCreationIdentity(this.#policy, intentId, true, this.#client, bounded),
+						creation,
+					)
+				)
+					throw new Error("inspection creation changed");
+				if (
+					!isDeepStrictEqual(
+						await optional(`service-stop-request-${allocationId}-${transitionId}.json`),
+						stopEnvelope,
+					) ||
+					!isDeepStrictEqual(
+						await optional(`service-stop-completed-${allocationId}-${transitionId}.json`),
+						stopMarker,
+					)
+				)
+					throw new Error("inspection stop changed");
+				return currentRestart(await currentSuccessor(bounded));
+			},
+			async (current, authority, assertFresh, deadline) => {
+				// Recheck the complete physical/history/guest proof before status,
+				// measurement or activation, retaining both authority signals and
+				// the original end-to-end inspection deadline.
+				const checked = AbortSignal.any([authority, await checkedRestart(authority)]);
+				const assertCurrent = () => {
+					assertFresh();
+					checked.throwIfAborted();
+				};
+				assertCurrent();
 				const status = await control.status(checked);
-				assertFresh();
+				assertCurrent();
 				if (status.serviceInvocationId !== null && status.serviceInvocationId !== current.serviceInvocationId)
 					throw new Error("successor invocation differs");
 				if (status.state === "prepared" || (status.state === "ready" && !status.readinessFresh))
@@ -474,10 +511,10 @@ export class LxdOfficeSuccessorWorker {
 						deadline,
 						checked,
 					);
-					assertFresh();
+					assertCurrent();
 				}
 				await control.activate(current.serviceInvocationId, deadline, checked);
-				assertFresh();
+				assertCurrent();
 				await retain(doneName, {
 					schema: "qorpera.lxd-office-successor-completion/v1",
 					intentId,
@@ -489,10 +526,10 @@ export class LxdOfficeSuccessorWorker {
 					completion,
 					requestSha256: command.requestSha256,
 				});
-				assertFresh();
+				assertCurrent();
 				return { ...result, state: "active" as const, serviceInvocationId: current.serviceInvocationId };
 			},
-			signal,
+			checked,
 		);
 	}
 }

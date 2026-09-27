@@ -106,6 +106,7 @@
 
 ### Fixed
 
+- Keep resumed-boot and same-boot restart inspection within the original physical authority lease, rechecking command bindings and SQL at every stage and repeating full history, credential, boot and physical validation before activation. Restart inspection also retains the exact predecessor stop and acknowledgement. Later checks cannot extend either physical lease or the five-second inspection deadline; service-start dispatch still requires complete fresh authority.
 - Read independent sealed stop-history blobs and resumed-boot credential evidence in bounded batches of four. Every custody, byte and hash check remains required; started reads settle before a failed batch returns, and live physical and SQL authority are still checked within the original inspection window.
 - Preserve the verified admitted preparation anchor through ordinary office resumes and same-boot restarts after outage recovery. The bounded shutdown lineage selects the exact outage or reset origin while the original preparation document, completion and operation remain independently verified; missing or changed admitted proof refuses activation.
 - Retain completed outage configuration, service-start and nested termination-control results in the background before LXD expires them. Recovery keeps the exact command and terminal outcome without redispatching, traversing symlinks or inferring missing completion.

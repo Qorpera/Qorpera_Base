@@ -331,8 +331,8 @@ export class LxdOfficeBootActivationWorker {
 		)
 			throw new Error("prepared snapshot differs");
 		let state: CompanyComputerBootSuccessor = prepared;
-		const authorize = async (caller: AbortSignal) => {
-			const checked = await physical(caller);
+		const currentSuccessor = async (checked: AbortSignal) => {
+			checked.throwIfAborted();
 			if (
 				!isDeepStrictEqual(await optional(seedName), seed) ||
 				!isDeepStrictEqual(await optional(preparedName), prepared)
@@ -350,6 +350,7 @@ export class LxdOfficeBootActivationWorker {
 			current.signal.throwIfAborted();
 			return current.signal;
 		};
+		const authorize = async (caller: AbortSignal) => currentSuccessor(await physical(caller));
 		const request = parseCompanyComputerBootServiceStartRequest({
 				schema: "qorpera.office-boot-service-start-request/v1",
 				successor: prepared,
@@ -424,8 +425,8 @@ export class LxdOfficeBootActivationWorker {
 			await retain(indexName, index);
 		}
 		if (!isDeepStrictEqual(await optional(indexName), index)) throw new Error("start index changed");
-		const checkedStart = async (caller: AbortSignal) => {
-			const checked = await authorize(caller);
+		const currentStart = async (checked: AbortSignal) => {
+			checked.throwIfAborted();
 			if (
 				!isDeepStrictEqual(await optional(packetName), packet) ||
 				!isDeepStrictEqual(await optional(indexName), index)
@@ -434,6 +435,7 @@ export class LxdOfficeBootActivationWorker {
 			checked.throwIfAborted();
 			return checked;
 		};
+		const checkedStart = async (caller: AbortSignal) => currentStart(await authorize(caller));
 		const journal = await openLxdOfficeBootServiceStartJournal(root, identity, this.#client);
 		let operation = await journal.observe(await checkedStart(signal));
 		if (operation.state === "not_dispatched") {
@@ -506,10 +508,36 @@ export class LxdOfficeBootActivationWorker {
 			command,
 			request,
 			completion,
-			checkedStart,
-			async (current, checked, assertFresh, deadline) => {
+			async (caller) => {
+				// The completed start has already received a full physical/history
+				// check. Its original lease bounds this read-only inspection; a
+				// later SQL check cannot renew that physical authority. Keep the
+				// lock, immutable command bindings and SQL state current at every
+				// inspection stage without downloading the same guest proof again.
+				const bounded = AbortSignal.any([caller, checked]);
+				bounded.throwIfAborted();
+				await this.#kernelLock(root);
+				if (
+					!isDeepStrictEqual(
+						await openLxdOfficeCreationIdentity(this.#policy, intentId, true, this.#client, bounded),
+						creation,
+					)
+				)
+					throw new Error("inspection creation changed");
+				return currentStart(await currentSuccessor(bounded));
+			},
+			async (current, authority, assertFresh, deadline) => {
+				// Revalidate every historical and live guest proof before publishing
+				// readiness or activation. Both this result and the original lease
+				// remain bounded by the same inspection deadline.
+				const checked = AbortSignal.any([authority, await checkedStart(authority)]);
+				const assertCurrent = () => {
+					assertFresh();
+					checked.throwIfAborted();
+				};
+				assertCurrent();
 				const status = await control.status(checked);
-				assertFresh();
+				assertCurrent();
 				if (status.serviceInvocationId !== null && status.serviceInvocationId !== current.serviceInvocationId)
 					throw new Error("successor invocation differs");
 				if (status.state === "prepared" || (status.state === "ready" && !status.readinessFresh))
@@ -526,10 +554,10 @@ export class LxdOfficeBootActivationWorker {
 						deadline,
 						checked,
 					);
-					assertFresh();
+					assertCurrent();
 				}
 				await control.activate(current.serviceInvocationId, deadline, checked);
-				assertFresh();
+				assertCurrent();
 				await retain(doneName, {
 					schema: "qorpera.lxd-office-boot-successor-completion/v1",
 					...result,
@@ -538,10 +566,10 @@ export class LxdOfficeBootActivationWorker {
 					completion,
 					requestSha256: command.requestSha256,
 				});
-				assertFresh();
+				assertCurrent();
 				return { ...result, state: "active" as const, serviceInvocationId: current.serviceInvocationId };
 			},
-			signal,
+			checked,
 			true,
 		);
 	}
