@@ -85,6 +85,8 @@
 
 - Recover from explicitly confirmed office metering delays during closed-listener startup within a fixed 30-second budget. Each readiness retry rechecks physical custody; credential, invocation and unknown transport failures remain terminal.
 - Recheck paid metering coverage at the office work boundary using the exact boot, configuration and current service invocation. Superseded processes and coverage gaps cannot admit effects; lifecycle custody stays available.
+- The company browser's /tmp is now 1 GiB instead of the 64 MiB other office namespaces keep. With `--disable-dev-shm-usage` all of Chromium's shared memory lives there, so renderers failed allocations and crashed on ordinary sites ("Aw, Snap!", reported as SIGSEGV because the crash handler's `alarm()` tripped seccomp).
+
 - `company_write` and `company_mkdir` into a folder that does not exist are a definite `COMPANY_FILE_PARENT_MISSING` refusal (denied, `errorCategory` `parent_missing`) that tells the model to create the folder with `company_mkdir` first and repeat the call (and never to replace a file to make that folder). SQL refuses it at the check (PT424), before presence and before any bytes are uploaded, and again at prepare and commit. Previously the runner uploaded the bytes, failed while building the candidate tree and reported an unconfirmed, unknown outcome.
 
 - Preserved office startup, supervision, desktop and cleanup failure causes in bounded structured diagnostics. Logs include only allowlisted stages, error codes and categories, never raw messages, credentials, paths or stacks.

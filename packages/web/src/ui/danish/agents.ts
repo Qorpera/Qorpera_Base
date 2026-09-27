@@ -1,7 +1,7 @@
 /* Danish interface text, keyed by the English source exactly as the code
  * passes it to t() / uiText(). One file per area of the app; a key lives in
  * one file only (test/translations.test.ts checks). Wording follows
- * qorpera.com and the desktop app (packages/shell/userland/localization.js). */
+ * qorpera.com. */
 /** Agent and group details, routines, coding sessions. */
 export const AGENTS: Record<string, string> = {
 	// Agent details (app/views/agent-details.ts, agent-edits.ts)
@@ -90,6 +90,7 @@ export const AGENTS: Record<string, string> = {
 	Every: "Hver",
 	at: "kl.",
 	"Save routine": "Gem rutine",
+	"Wait until {time} before the first run": "Vent til {time} med den første kørsel",
 	"Choose an interval between 5 minutes and 7 days.": "Vælg et interval mellem 5 minutter og 7 dage.",
 	"Choose at least one day, a time and a time zone such as Europe/Copenhagen.":
 		"Vælg mindst én dag, et tidspunkt og en tidszone som Europe/Copenhagen.",

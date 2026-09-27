@@ -1,9 +1,9 @@
 import { createHash, randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { authorizeCodingCommand } from "../../../deploy/coding-worker/command-authority.ts";
-import { nativeToolAuthorityFixture } from "../../shell/test/fixtures/native-tool-authority-fixture.ts";
 import type { CloudCodingCommandHttpRequest } from "../src/cloud-coding-command-http.ts";
 import { cloudNativeToolOperationEnvelope } from "../src/cloud-native-tool-operations.ts";
+import { nativeToolAuthorityFixture } from "./fixtures/native-tool-authority-fixture.ts";
 
 function fixture() {
 	const { authority, binding } = nativeToolAuthorityFixture();

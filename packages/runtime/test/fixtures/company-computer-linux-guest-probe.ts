@@ -7,7 +7,6 @@ import type {
 	CompanyComputerScreenLease,
 } from "@qorpera/cloud-client/cloud-company-computer-contract";
 import type { CompanyComputerPrivacyChallenge } from "@qorpera/cloud-client/cloud-company-computer-privacy";
-import { nativeToolAuthorityFixture } from "../../../shell/test/fixtures/native-tool-authority-fixture.ts";
 import { CompanyComputerDrainSupervisor } from "../../src/cloud-company-computer-drain.ts";
 import { CloudCompanyComputerEffectControl } from "../../src/cloud-company-computer-effect-control.ts";
 import { CompanyComputerScreenActionGate } from "../../src/cloud-company-computer-leases.ts";
@@ -22,6 +21,7 @@ import { CompanyComputerScreenOutbox } from "../../src/cloud-company-computer-sc
 import { parseRecoveryDirectoryMount } from "../../src/cloud-identity-recovery-filesystems.ts";
 import { CloudNativeToolRun } from "../../src/cloud-native-tool-authority.ts";
 import { computerBinding, computerId, computerLease, computerOperation, computerScope } from "./company-computer.ts";
+import { nativeToolAuthorityFixture } from "./native-tool-authority-fixture.ts";
 import { screenReceipt, screenStartup } from "./screen-lifecycle.ts";
 
 // Actual whole-guest adapters and privacy/drain supervisors. SQL/native ledger,

@@ -79,8 +79,8 @@ results, and private Git trees. No Git commit is needed to apply the patch.
 | `supabase/migrations/20260828020000_runtime_wake_bus.sql` | Occurrence identity, policies, queued-input admission, private listener cursors/claims, coworker delivery, authorized envelope, existing materializer replacement. |
 | `supabase/migrations/20260828020500_runtime_wake_policy_admission.sql` | Forward correction for required reporting on omitted policy, current public-session eligibility, private File-event denial, and historical occurrence fencing. |
 | `packages/shell/src/cloud-wake-bus.ts` | Closed immutable policy/envelope parsers, native binding adapter, coworker tool registration factory, bounded service RPC transport. |
-| `packages/shell/test/cloud-wake-bus.test.ts` | Policy, mouth, identity, post-I/O authority, receipt, native tool boundary and transport tests. |
-| `packages/shell/test/fixtures/wake-policies.json` | Eight exact SQL/TypeScript policy fixtures, including all five kinds and closed fallback. |
+| `packages/runtime/test/cloud-wake-bus.test.ts` | Policy, mouth, identity, post-I/O authority, receipt, native tool boundary and transport tests. |
+| `packages/runtime/test/fixtures/wake-policies.json` | Eight exact SQL/TypeScript policy fixtures, including all five kinds and closed fallback. |
 | `supabase/tests/300_runtime_wake_bus.test.sql` | Real admission/receipt/path component cases and disposable native fixtures. |
 | `supabase/acceptance/runtime_wake_bus.sql` | Actual database completion, send and effect acceptance; missing shared enforcement fails. |
 | `scripts/test-runtime-wake-bus.mjs` | Isolated PostgreSQL upgrade, audience contention, concurrent/interrupted delivery, queue and admitted-start recovery; replay against integrated migrations and actual acceptance with JSON reports. |
@@ -551,7 +551,7 @@ node scripts/test-runtime-wake-bus.mjs
 # Explicit integration acceptance; exits nonzero on this pinned baseline.
 node scripts/test-runtime-wake-bus.mjs --integration --report /tmp/qorpera-step3-v4-integration.json
 
-# packages/shell
+# packages/runtime
 node ../../node_modules/vitest/dist/cli.js --run test/cloud-wake-bus.test.ts
 node ../../node_modules/vitest/dist/cli.js --run test/cloud-native-tool-boundary.test.ts
 

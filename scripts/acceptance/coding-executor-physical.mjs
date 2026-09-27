@@ -26,7 +26,7 @@ const hash = (v) => createHash("sha256").update(v).digest("hex");
 const evidence = { schema: "qorpera.coding-executor-physical/v1", commit: process.env.GITHUB_SHA ?? null,
   passed: false, cleanup: false, hostCleanup: false, phase: "preflight" };
 const forwardingRules = [];
-let user = false, createdRoot = false, exported = false, mounted = false, imageCreated = false, imageFingerprint, installed = false, childStarted = false, childEvidence, stateIdentity;
+let user = false, createdRoot = false, exported = false, mounted = false, imageCreated = false, imagePublishAttempted = false, imageFingerprint, installed = false, childStarted = false, childEvidence, stateIdentity;
 function command(executable, args, timeout = 30000) {
   const result = spawnSync(executable, args, { cwd: repository, encoding: "utf8", timeout, maxBuffer: 4 * 1024 ** 2 });
   return { status: result.status, stdout: result.stdout?.trim() ?? "", stderr: result.stderr?.trim() ?? "" };
@@ -125,9 +125,13 @@ try {
   guest(["systemctl", "daemon-reload"]); guest(["systemctl", "enable", "--now", "qorpera-coding-watchdog.timer"]);
   guest(["/usr/bin/node", "/opt/qorpera-coding/cloud-coding-storage-guest.mjs", "image"]);
   const bootstrapSha256 = hash(JSON.stringify(installation));
+  evidence.image = { ...installation, bootstrapSha256 };
   run("lxc", ["stop", imageVm], 60000);
+  imagePublishAttempted = true;
   run("lxc", ["publish", imageVm, "--alias", imageAlias], 120000);
-  imageFingerprint = JSON.parse(run("lxc", ["image", "info", imageAlias, "--format=json"])).fingerprint;
+  const publishedAlias = JSON.parse(run("lxc", ["query", `/1.0/images/aliases/${imageAlias}`]));
+  assert.equal(publishedAlias.name, imageAlias);
+  imageFingerprint = publishedAlias.target;
   assert(/^[a-f0-9]{64}$/.test(imageFingerprint));
   const image = JSON.parse(run("lxc", ["query", `/1.0/images/${imageFingerprint}`]));
   run("lxc", ["query", "-X", "PUT", `/1.0/images/${imageFingerprint}`, "-d", JSON.stringify({ auto_update: false, public: false, properties: image.properties, profiles: [] })]);
@@ -190,7 +194,12 @@ finally {
     }
     if (mounted) run("umount", [mount], 30000);
     if (exported) { await unlink(exportsFile); run("exportfs", ["-ra"]); }
-    if (imageFingerprint) run("lxc", ["image", "delete", imageFingerprint]);
+    if (imagePublishAttempted) {
+      const alias = JSON.parse(run("lxc", ["query", `/1.0/images/aliases/${imageAlias}`]));
+      assert.equal(alias.name, imageAlias); assert(/^[a-f0-9]{64}$/.test(alias.target));
+      if (imageFingerprint) assert.equal(alias.target, imageFingerprint);
+      run("lxc", ["image", "delete", alias.target]);
+    }
     if (user) run("userdel", [account]);
     if (createdRoot) await rm(root, { recursive: true });
     evidence.hostCleanup = true;

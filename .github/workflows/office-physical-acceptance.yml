@@ -84,8 +84,6 @@ jobs:
           chmod go-w "$node_binary" || sudo chmod go-w "$node_binary"
           /usr/bin/bwrap --version
           rg --version
-      - name: Hydrate generated model data required by a fresh checkout
-        run: npm run hydrate:model-data
       - name: Verify actual unprivileged Git containment
         working-directory: packages/runner-orchestrator
         env:

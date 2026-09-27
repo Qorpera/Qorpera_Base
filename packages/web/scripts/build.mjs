@@ -1,6 +1,6 @@
-// Build the web client into dist/: one bundled ES module, one stylesheet, the
-// static shell, and the reused desktop assets. `--serve` keeps esbuild's dev
-// server up with rebuild-on-request; no framework, no plugin chain.
+// Build the web client into dist/: one bundled ES module, one stylesheet and
+// the static shell with its assets. `--serve` keeps esbuild's dev server up
+// with rebuild-on-request; no framework, no plugin chain.
 import { cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
@@ -19,7 +19,6 @@ const dist = outputOverride ?? join(root, "dist");
 if (outputOverride !== undefined && existsSync(dist) &&
 	(!lstatSync(dist).isDirectory() || lstatSync(dist).isSymbolicLink() || readdirSync(dist).length !== 0))
 	throw new Error("Private web output must be a new or empty directory");
-const userland = resolve(root, "../shell/userland");
 const serve = process.argv.includes("--serve");
 const deployment = prepareDeployment({
 	configPath: process.env.QORPERA_WEB_CONFIG,
@@ -48,27 +47,6 @@ for (const page of deployment.notFoundPages) {
 	writeFileSync(join(dist, page), '<!doctype html>\n<meta charset="utf-8">\n<title>Not found</title>\n<p>Not found.</p>\n');
 }
 cpSync(join(viewerRoot, "vendor/NOVNC_LICENSE.txt"), join(dist, "assets/NOVNC_LICENSE.txt"));
-// Reused desktop art. The web app never reads these at build time beyond copying.
-cpSync(join(userland, "fonts"), join(dist, "assets/fonts"), { recursive: true });
-for (const icon of [
-	"icon-plus.svg",
-	"icon-check.svg",
-	"icon-x.svg",
-	"icon-log-out.svg",
-	"icon-settings.svg",
-	"icon-switch-company.svg",
-	"icon-chevron-down.svg",
-	"icon-clock.svg",
-	"icon-attach.svg",
-	"provider-google.svg",
-	"provider-gmail.svg",
-	"provider-drive.svg",
-	"provider-github.svg",
-	"provider-openai.svg",
-	"provider-anthropic.svg",
-]) {
-	cpSync(join(userland, icon), join(dist, "assets", icon));
-}
 
 const version = JSON.parse(readFileSync(join(root, "package.json"), "utf8")).version;
 const boundary = { name: "member-authority-boundary", setup(build) {

@@ -1,7 +1,7 @@
 /* Danish interface text, keyed by the English source exactly as the code
  * passes it to t() / uiText(). One file per area of the app; a key lives in
  * one file only (test/translations.test.ts checks). Wording follows
- * qorpera.com and the desktop app (packages/shell/userland/localization.js). */
+ * qorpera.com. */
 /** Settings: General, Plan & usage, Friends, Company, Connections. */
 export const SETTINGS: Record<string, string> = {
 	"Refresh plan status": "Opdater abonnementsstatus",
@@ -168,6 +168,7 @@ export const SETTINGS: Record<string, string> = {
 	"{days}d {hours}h": "{days} d {hours} t",
 	"Model accounts": "Modelkonti",
 	"Refreshing…": "Opdaterer…",
+	Updated: "Opdateret",
 	"Usage could not be refreshed. Try again.": "Forbruget kunne ikke opdateres. Prøv igen.",
 	"Your model accounts could not be read.": "Dine modelkonti kunne ikke hentes.",
 	"Checking…": "Tjekker…",
@@ -177,12 +178,16 @@ export const SETTINGS: Record<string, string> = {
 	"Choose a model provider": "Vælg en modeludbyder",
 	"Signing out…": "Logger ud…",
 	"Email unavailable": "E-mail ikke tilgængelig",
+	"Connection {id}": "Forbindelse {id}",
+	"Added {time} · {id}": "Tilføjet {time} · {id}",
 	"Sign out and add this account again to reconnect.": "Log ud og tilføj kontoen igen for at genoprette forbindelsen.",
 	"The account could not be disconnected. Try again.": "Kontoen kunne ikke afbrydes. Prøv igen.",
 	"Usage limit reached · resets in {time}": "Forbrugsgrænsen er nået · nulstilles om {time}",
 	"Usage unavailable": "Forbrug ikke tilgængeligt",
 	"{percent}% left": "{percent}% tilbage",
 	"{percent}% at last check": "{percent}% ved sidste tjek",
+	"{percent}% at last check · {time}": "{percent}% ved sidste tjek · {time}",
+	"Last checked {time}": "Sidst tjekket {time}",
 	"Resets in {time}": "Nulstilles om {time}",
 	"Reset passed · awaiting updated usage": "Nulstillet · venter på opdateret forbrug",
 	"Reset time unavailable": "Tidspunkt for nulstilling ikke tilgængeligt",
