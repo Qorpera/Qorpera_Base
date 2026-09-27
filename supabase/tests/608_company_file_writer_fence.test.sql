@@ -403,5 +403,20 @@ begin
 		'The owner''s submission waits for the profile row, then fails for its own reason: ' || v_outcome::text);
 end $$;
 
+-- 11. Only the service role's replica copy takes the fence in the quota trigger, as only the service role passes
+--    the replica guard: a member's upload flagged as a replica is refused by the guard without waiting for the
+--    company's profile row, which another connection holds.
+do $$
+declare v_outcome jsonb;
+begin
+	v_outcome := pg_temp.lock_single(pg_temp.lock_row('qorpera_profiles', 'id', current_setting('qorpera_test.fence_profile')::uuid),
+		format($q$insert into storage.objects(bucket_id, name, metadata, user_metadata) values ('qorpera-profile-objects', %L,
+			'{"size":"64"}', '{"qorpera_nas_replica":true,"qorpera_nas_replica_bytes":64}') returning jsonb_build_object('name', name)$q$,
+			current_setting('qorpera_test.fence_profile') || '/' || repeat('8', 64)),
+		pg_temp.fence_owner());
+	perform pg_temp.wake_assert(v_outcome ->> 'waited' = 'false' and v_outcome ->> 'state' = '42501',
+		'A member''s replica-flagged upload is refused without taking the fence: ' || v_outcome::text);
+end $$;
+
 -- Remove what this test committed.
 select pg_temp.lock_order_cleanup();

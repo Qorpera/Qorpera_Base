@@ -28,10 +28,13 @@ for (let index = 0; index < args.length; index += 1) {
 	else throw new Error(`Unknown argument ${args[index]}; use --skip <migration file> and --check`);
 }
 const containerName = buildContainerName(process.pid, randomBytes(4).toString("hex"));
-for (const signal of ["SIGINT", "SIGTERM"]) {
+for (const [signal, code] of [
+	["SIGINT", 130],
+	["SIGTERM", 143],
+]) {
 	process.on(signal, () => {
 		spawnSync("docker", ["rm", "--force", containerName]);
-		process.exit(130);
+		process.exit(code);
 	});
 }
 const database = "qorpera_test";
