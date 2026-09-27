@@ -35,6 +35,7 @@ import {
 } from "./cloud-native-provider-host.ts";
 import { runCloudNativeRunToolSession } from "./cloud-native-run-tool-session.ts";
 import {
+	CLOUD_PAIRED_REQUEST_TIMEOUT_MS,
 	type CloudNativeToolAuthorityReader,
 	type CloudNativeToolBinding,
 	cloudToolRequest,
@@ -171,12 +172,12 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				(requestSignal) =>
 					this.#paths.call("qorpera_describe_company_run_context", { p_binding: binding }, requestSignal),
 				signal,
-				10_000,
+				CLOUD_PAIRED_REQUEST_TIMEOUT_MS,
 			);
 			const wakeRequest = cloudToolRequest(
 				(requestSignal) => this.#paths.call("qorpera_read_native_wake", { p_binding: binding }, requestSignal),
 				signal,
-				10_000,
+				CLOUD_PAIRED_REQUEST_TIMEOUT_MS,
 			);
 			wakeRequest.catch(() => undefined);
 			const context = parseCloudNativeCompanyContext(await contextRequest, binding);

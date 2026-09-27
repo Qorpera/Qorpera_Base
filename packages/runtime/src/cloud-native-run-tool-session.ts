@@ -5,6 +5,7 @@ import type { CloudNativeCaptureImages } from "./cloud-native-capture-images.ts"
 import type { NativeIsolationConfiguration } from "./cloud-native-isolation.ts";
 import type { CloudNativeFenceRequest } from "./cloud-native-result-fence.ts";
 import {
+	CLOUD_PAIRED_REQUEST_TIMEOUT_MS,
 	type CloudNativeToolAuthorityReader,
 	type CloudNativeToolBinding,
 	type CloudNativeToolIdentity,
@@ -22,9 +23,6 @@ import {
 	CloudNativeToolOperations,
 } from "./cloud-native-tool-operations.ts";
 import { type CloudRuntimeObservability, cloudRuntimeErrorCategory } from "./cloud-runtime-observability.ts";
-
-/** Two cloud reads sent together that the database serialises on the run's job row. */
-const PAIRED_REQUEST_TIMEOUT_MS = 10_000;
 
 export interface CloudNativeRunToolAdapters {
 	tools: readonly CloudNativeTool[];
@@ -98,11 +96,11 @@ export async function runCloudNativeRunToolSession(options: {
 			try {
 				// Two independent reads, both required: the run's admission and its context read set.
 				// Both lock the run's job row, so each gets the pair's budget, not one read's.
-				const admission = run.assertActive(signal, PAIRED_REQUEST_TIMEOUT_MS);
+				const admission = run.assertActive(signal, CLOUD_PAIRED_REQUEST_TIMEOUT_MS);
 				const context = cloudToolRequest(
 					(requestSignal) => activeAdapters.assertContext(requestSignal),
 					signal,
-					PAIRED_REQUEST_TIMEOUT_MS,
+					CLOUD_PAIRED_REQUEST_TIMEOUT_MS,
 				);
 				await Promise.all([admission, context]);
 				observation?.finish("succeeded");

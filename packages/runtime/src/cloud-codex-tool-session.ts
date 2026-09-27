@@ -141,12 +141,13 @@ async function artifactIdentity(path: string): Promise<string> {
 
 /** A run that stops does not wait for a digest another caller started. */
 function abortableDigest(value: Promise<string>, signal: AbortSignal): Promise<string> {
-	signal.throwIfAborted();
 	let onAbort: () => void = () => undefined;
 	const aborted = new Promise<never>((_resolve, reject) => {
 		onAbort = () => reject(signal.reason);
-		signal.addEventListener("abort", onAbort, { once: true });
+		if (signal.aborted) onAbort();
+		else signal.addEventListener("abort", onAbort, { once: true });
 	});
+	// The race handles both promises, so neither can reject unobserved.
 	return Promise.race([value, aborted]).finally(() => signal.removeEventListener("abort", onAbort));
 }
 
