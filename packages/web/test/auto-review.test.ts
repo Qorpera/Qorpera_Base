@@ -240,49 +240,154 @@ function rulesClient(canManage: boolean, rules: HostedReviewRule[] = []) {
 	return client;
 }
 
-describe("Settings → Rules", () => {
+function typeRule(el: HTMLElement, text: string): HTMLInputElement {
+	const input = el.querySelector<HTMLInputElement>('input[aria-label="When an agent wants to:"]')!;
+	input.value = text;
+	input.dispatchEvent(new Event("input"));
+	return input;
+}
+
+const addButton = (el: HTMLElement) =>
+	[...el.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === "Add rule")!;
+
+const tableRows = (el: HTMLElement) =>
+	[...el.querySelectorAll<HTMLTableRowElement>(".settings-rule-table tbody tr")].map((row) =>
+		[...row.cells].slice(0, 3).map((cell) => cell.textContent),
+	);
+
+describe("Settings → General → rules", () => {
 	it("shows the company's rules locked to a member who does not manage them, and adds a rule of their own", async () => {
 		const client = rulesClient(false, [
-			rule(901, "company", "sending email outside the company"),
 			rule(902, "member", "posting on LinkedIn"),
+			rule(901, "company", "sending email outside the company"),
 		]);
 		view = new RulesView(client, new AbortController().signal);
 		document.body.append(view.el);
 		await settle();
-		const [company, own] = [...view.el.querySelectorAll(".settings-rule-list")];
-		expect(company?.textContent).toContain("sending email outside the company");
-		expect(company?.textContent).toContain("Locked");
+		// One table, the company's rules first, as Grok Bot lists them: Action, Behavior, and whom it applies to.
+		expect([...view.el.querySelectorAll(".settings-rule-table th")].map((cell) => cell.textContent)).toEqual([
+			"Action",
+			"Behavior",
+			"Applies to",
+			"Edit or remove",
+		]);
+		expect(tableRows(view.el)).toEqual([
+			["sending email outside the company", "Ask first", "Everyone in the company"],
+			["posting on LinkedIn", "Ask first", "Only me"],
+		]);
+		const [company, own] = [...view.el.querySelectorAll<HTMLTableRowElement>(".settings-rule-table tbody tr")];
 		expect(company?.querySelector("button")).toBeNull();
-		expect(own?.querySelector("button")?.textContent).toBe("Remove");
-		expect(view.el.textContent).toContain("Owners and admins write company rules.");
+		expect(company?.querySelector(".settings-rule-locked")?.getAttribute("aria-label")).toBe("Locked");
+		expect([...own!.querySelectorAll("button")].map((button) => button.getAttribute("aria-label"))).toEqual([
+			"Edit the rule: posting on LinkedIn",
+			"Remove the rule: posting on LinkedIn",
+		]);
+		expect(view.el.querySelector("h1, h2")).toBeNull();
+		expect(view.el.textContent).toContain("Built-in safety checks always apply.");
 		expect(view.el.querySelector('select[aria-label="Applies to:"]')).toBeNull();
-		const input = view.el.querySelector<HTMLInputElement>('input[aria-label="When an agent wants to:"]')!;
-		input.value = "  reply to emails for me ";
+		// Add rule waits for a rule to add.
+		expect(addButton(view.el).disabled).toBe(true);
+		const input = typeRule(view.el, "  reply to emails for me ");
+		expect(addButton(view.el).disabled).toBe(false);
 		view.el.querySelector<HTMLSelectElement>('select[aria-label="It should:"]')!.value = "ask_first";
-		[...view.el.querySelectorAll("button")].find((button) => button.textContent === "Add rule")!.click();
+		addButton(view.el).click();
 		await settle();
 		expect(client.save).toHaveBeenCalledWith(
 			expect.objectContaining({ scope: "member", when: "reply to emails for me", outcome: "ask_first" }),
 		);
-		expect(view.el.textContent).toContain("reply to emails for me");
+		expect(tableRows(view.el).at(-1)).toEqual(["reply to emails for me", "Ask first", "Only me"]);
 		expect(input.value).toBe("");
+		expect(addButton(view.el).disabled).toBe(true);
 	});
 
 	it("lets an owner or admin write company rules and remove them", async () => {
 		const client = rulesClient(true, [rule(903, "company", "deleting files")]);
-		view = new RulesView(client, new AbortController().signal);
+		view = new RulesView(client, new AbortController().signal, () => "owner");
+		// The role shows Applies to before the list arrives, so the form does not move.
+		expect(view.el.querySelector('select[aria-label="Applies to:"]')).not.toBeNull();
 		await settle();
 		view.el.querySelector<HTMLSelectElement>('select[aria-label="Applies to:"]')!.value = "company";
-		view.el.querySelector<HTMLInputElement>('input[aria-label="When an agent wants to:"]')!.value = "hiring agents";
-		[...view.el.querySelectorAll("button")].find((button) => button.textContent === "Add rule")!.click();
+		typeRule(view.el, "hiring agents");
+		addButton(view.el).click();
 		await settle();
 		expect(client.save).toHaveBeenCalledWith(expect.objectContaining({ scope: "company", when: "hiring agents" }));
-		const remove = view.el.querySelector<HTMLButtonElement>(".settings-rule button")!;
-		expect(remove.getAttribute("aria-label")).toBe("Remove the rule: deleting files");
+		expect(tableRows(view.el)).toEqual([
+			["deleting files", "Ask first", "Everyone in the company"],
+			["hiring agents", "Allow automatically", "Everyone in the company"],
+		]);
+		const remove = view.el.querySelector<HTMLButtonElement>('button[aria-label="Remove the rule: deleting files"]')!;
 		remove.click();
 		await settle();
 		expect(client.archive).toHaveBeenCalledWith(id(903));
 		expect(view.el.textContent).not.toContain("deleting files");
+		expect(view.el.querySelector(".settings-rule-table")).not.toBeNull();
+		view.el.querySelector<HTMLButtonElement>('button[aria-label="Remove the rule: hiring agents"]')!.click();
+		await settle();
+		// No rules: no table, only the form and the note.
+		expect(view.el.querySelector(".settings-rule-table")).toBeNull();
+	});
+
+	it("edits a rule's sentence and behaviour in its row, and Escape leaves the edit, not Settings", async () => {
+		const client = rulesClient(false, [rule(905, "member", "buying anything")]);
+		view = new RulesView(client, new AbortController().signal);
+		document.body.append(view.el);
+		await settle();
+		const closeSettings = vi.fn();
+		document.addEventListener("keydown", closeSettings);
+		try {
+			view.el.querySelector<HTMLButtonElement>(".settings-rule-edit")!.click();
+			const input = view.el.querySelector<HTMLInputElement>('.settings-rule-table input[aria-label="Action"]')!;
+			expect(input.value).toBe("buying anything");
+			expect(document.activeElement).toBe(input);
+			input.value = "buying anything over $20";
+			input.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+			expect(closeSettings).not.toHaveBeenCalled();
+			expect(tableRows(view.el)).toEqual([["buying anything", "Ask first", "Only me"]]);
+			expect(document.activeElement).toBe(view.el.querySelector(".settings-rule-edit"));
+			expect(client.save).not.toHaveBeenCalled();
+
+			view.el.querySelector<HTMLButtonElement>(".settings-rule-edit")!.click();
+			const again = view.el.querySelector<HTMLInputElement>('.settings-rule-table input[aria-label="Action"]')!;
+			again.value = "  buying anything over $20 ";
+			view.el.querySelector<HTMLSelectElement>('.settings-rule-table select[aria-label="Behavior"]')!.value =
+				"allow_automatically";
+			again.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+			await settle();
+			// The same rule, rewritten: the kernel keeps its id and whom it applies to.
+			expect(client.save).toHaveBeenCalledExactlyOnceWith({
+				id: id(905),
+				scope: "member",
+				when: "buying anything over $20",
+				outcome: "allow_automatically",
+			});
+			expect(tableRows(view.el)).toEqual([["buying anything over $20", "Allow automatically", "Only me"]]);
+			expect(document.activeElement).toBe(view.el.querySelector(".settings-rule-edit"));
+		} finally {
+			document.removeEventListener("keydown", closeSettings);
+		}
+	});
+
+	it("keeps an edit and its draft when the save is refused", async () => {
+		const client = rulesClient(false, [rule(906, "member", "buying anything")]);
+		client.save = vi.fn(async () => {
+			throw new CloudRpcError(
+				"qorpera_save_review_rule",
+				{ code: "42501", message: "This rule cannot be changed here" },
+				403,
+			);
+		});
+		view = new RulesView(client, new AbortController().signal);
+		document.body.append(view.el);
+		await settle();
+		view.el.querySelector<HTMLButtonElement>(".settings-rule-edit")!.click();
+		const input = view.el.querySelector<HTMLInputElement>('.settings-rule-table input[aria-label="Action"]')!;
+		input.value = "buying things";
+		view.el.querySelector<HTMLButtonElement>('.settings-rule-table button[aria-label="Save"]')!.click();
+		await settle();
+		expect(view.el.querySelector(".notice-danger")?.textContent).toContain("cannot be changed here");
+		expect(view.el.querySelector('.settings-rule-table input[aria-label="Action"]')).toBe(input);
+		expect(input.value).toBe("buying things");
+		expect(document.activeElement).toBe(input);
 	});
 
 	it("drops a list that a newer load or a change overtook", async () => {
@@ -308,8 +413,8 @@ describe("Settings → Rules", () => {
 		// A save while a load is on its way: the rule shows once, and the old load does not hide it.
 		role = "member";
 		view.update();
-		view.el.querySelector<HTMLInputElement>('input[aria-label="When an agent wants to:"]')!.value = "posting";
-		[...view.el.querySelectorAll("button")].find((button) => button.textContent === "Add rule")!.click();
+		typeRule(view.el, "posting");
+		addButton(view.el).click();
 		await settle();
 		loads.shift()!({ canManageCompanyRules: false, rules: [] });
 		await settle();
@@ -343,7 +448,11 @@ describe("Settings → Rules", () => {
 		const client = rulesClient(true);
 		view = new RulesView(client, new AbortController().signal);
 		await settle();
-		[...view.el.querySelectorAll("button")].find((button) => button.textContent === "Add rule")!.click();
+		typeRule(view.el, "   ");
+		expect(addButton(view.el).disabled).toBe(true);
+		view.el
+			.querySelector<HTMLInputElement>('input[aria-label="When an agent wants to:"]')!
+			.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter" }));
 		await settle();
 		expect(client.save).not.toHaveBeenCalled();
 		const missing: WebReviewRules = {
@@ -370,11 +479,11 @@ describe("Settings → Rules", () => {
 		});
 		view = new RulesView(client, new AbortController().signal);
 		await settle();
-		const input = view.el.querySelector<HTMLInputElement>('input[aria-label="When an agent wants to:"]')!;
-		input.value = "something";
-		[...view.el.querySelectorAll("button")].find((button) => button.textContent === "Add rule")!.click();
+		const input = typeRule(view.el, "something");
+		addButton(view.el).click();
 		await settle();
 		expect(view.el.querySelector(".notice-danger")?.textContent).toContain("one short sentence");
 		expect(input.value).toBe("something");
+		expect(addButton(view.el).disabled).toBe(false);
 	});
 });

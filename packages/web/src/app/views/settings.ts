@@ -25,7 +25,8 @@ const TABS = [
 		id: "general",
 		label: phrase("General"),
 		icon: "settings",
-		keywords: "account language region time zone timezone generelt konto sprog dansk engelsk område tidszone",
+		keywords:
+			"account language region time zone timezone rules auto-review review approval approve ask first allow automatically safety agents actions permissions generelt konto sprog dansk engelsk område tidszone regler godkendelse godkend spørg først tillad automatisk sikkerhed agenter handlinger tilladelser",
 	},
 	{
 		id: "appearance",
@@ -61,13 +62,6 @@ const TABS = [
 		icon: "connections",
 		keywords:
 			"providers subscriptions openai codex anthropic claude secrets forbindelser udbydere modelkonti konti tjenester gmail google drive github hemmeligheder",
-	},
-	{
-		id: "rules",
-		label: phrase("Rules"),
-		icon: "lock",
-		keywords:
-			"auto-review review approval approve ask first allow automatically safety agents actions permissions regler godkendelse godkend spørg først tillad automatisk sikkerhed agenter handlinger tilladelser",
 	},
 ] as const;
 export type SettingsTab = (typeof TABS)[number]["id"];
@@ -108,6 +102,9 @@ export class SettingsView {
 	#connections: ConnectionsView | undefined;
 	#services: ServicesView | undefined;
 	#rules: RulesView | undefined;
+	/** General: the account's settings, then the chosen company's rules. */
+	readonly #accountPanel = h("div");
+	readonly #rulesSlot = h("div");
 	#feedback: TeamFeedback = {};
 	#file: HostedCompanyFile | undefined;
 	#fileLoading = false;
@@ -379,14 +376,6 @@ export class SettingsView {
 					);
 					this.#panels.set(tab, h("div", null, this.#connections.el, this.#services.el));
 				}
-			} else if (tab === "rules" && !this.#rules) {
-				const company = this.#company;
-				this.#rules = new RulesView(
-					createWebReviewRules(this.#api.cloud, company.profile.profileId),
-					AbortSignal.any([this.#companyLifetime.signal, this.#lifetime.signal, company.signal]),
-					() => company.store.get().team?.role,
-				);
-				this.#panels.set(tab, this.#rules.el);
 			}
 		}
 		const panel =
@@ -412,16 +401,24 @@ export class SettingsView {
 
 	#general(): void {
 		if (this.#lifetime.signal.aborted) return;
-		let panel = this.#panels.get("general");
-		if (!panel) {
-			panel = h("div");
-			this.#panels.set("general", panel);
-		}
-		renderAccount(this.#auth, panel, this.#account, (next) => {
+		if (!this.#panels.has("general"))
+			this.#panels.set("general", h("div", null, this.#accountPanel, this.#rulesSlot));
+		renderAccount(this.#auth, this.#accountPanel, this.#account, (next) => {
 			if (this.#lifetime.signal.aborted) return;
 			this.#account = { ...this.#account, ...next };
 			this.#general();
 		});
+		// The chosen company's rules sit under the account's settings, loaded once General is open.
+		const company = this.#company;
+		if (company && !this.#rules && this.#tab === "general")
+			this.#rules = new RulesView(
+				createWebReviewRules(this.#api.cloud, company.profile.profileId),
+				AbortSignal.any([this.#companyLifetime.signal, this.#lifetime.signal, company.signal]),
+				() => company.store.get().team?.role,
+			);
+		// Moved only when it changes: moving it would take the focus out of a field in use.
+		const rules = this.#rules?.el;
+		if (this.#rulesSlot.firstChild !== (rules ?? null)) replace(this.#rulesSlot, rules);
 	}
 
 	/** The plan is the account's; the usage shown is the chosen company's storage. */
@@ -483,7 +480,7 @@ export class SettingsView {
 		this.#file = undefined;
 		this.#fileLoading = false;
 		this.#fileError = undefined;
-		for (const tab of ["company", "connections", "rules"] as const) this.#panels.delete(tab);
+		for (const tab of ["company", "connections"] as const) this.#panels.delete(tab);
 		if (company) {
 			this.#unsubscribe = company.store.subscribe(() => {
 				if (company.store.get().accessLost) {

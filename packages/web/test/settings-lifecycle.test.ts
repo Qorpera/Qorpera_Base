@@ -6,7 +6,7 @@ import { AuthController } from "../src/app/auth.ts";
 import { CompanyController } from "../src/app/company.ts";
 import { HubController } from "../src/app/views/hub.ts";
 import { SettingsView } from "../src/app/views/settings.ts";
-import { CloudRpcError } from "../src/cloud/client.ts";
+import { type Cloud, CloudRpcError } from "../src/cloud/client.ts";
 import type { HostedAccountEntitlement } from "../src/cloud/types.ts";
 import {
 	deferred,
@@ -46,6 +46,13 @@ async function setup(f = fixture()) {
 	dispose = mountApplication(root, f.cloud, f.api);
 	await draw();
 	return { ...f, root };
+}
+/** The SDK RPCs Settings made, besides General's rules list (its only one until Connections opens). */
+function sdkRpcs(f: { cloud: Cloud }): string[] {
+	return vi
+		.mocked(f.cloud.rpc)
+		.mock.calls.map(([name]) => name)
+		.filter((name) => name !== "qorpera_list_review_rules");
 }
 function click(root: Element, selector: string) {
 	root.querySelector<HTMLButtonElement>(selector)!.click();
@@ -112,7 +119,7 @@ describe("settings session lifecycle", () => {
 			// The Company tab has no heading of its own.
 			expect(f.root.querySelector("#settings-content h1")).toBeNull();
 			expect(f.root.querySelector(`.settings-dialog a[href='#/c/${selected.profileId}/file']`)).not.toBeNull();
-			expect(f.cloud.rpc).not.toHaveBeenCalled();
+			expect(sdkRpcs(f)).toEqual([]);
 		},
 	);
 	it("preserves the selected company and focus when the profile list refreshes", async () => {
@@ -183,7 +190,7 @@ describe("settings session lifecycle", () => {
 		expect(f.cloud.supabase.removeChannel).toHaveBeenLastCalledWith(channels[2]);
 		expect(f.cloud.supabase.removeChannel).not.toHaveBeenCalledWith(channels[0]);
 	});
-	it("opens all seven tabs over the same conversation and restores the profile button", async () => {
+	it("opens all six tabs over the same conversation and restores the profile button", async () => {
 		const f = await setup(),
 			composer = f.root.querySelector<HTMLTextAreaElement>("textarea")!;
 		composer.value = "Keep my conversation draft";
@@ -197,9 +204,15 @@ describe("settings session lifecycle", () => {
 			"Friends",
 			"Plan & usage",
 			"Connections",
-			"Rules",
 		]);
 		for (const tab of f.root.querySelectorAll('[role="tab"]')) expect(tab.querySelector("svg.icon")).not.toBeNull();
+		// Rules live on General, under the account's settings, for the chosen company.
+		expect(
+			f.root.querySelector('#settings-content .settings-rules input[aria-label="When an agent wants to:"]'),
+		).not.toBeNull();
+		expect(vi.mocked(f.cloud.rpc)).toHaveBeenCalledWith("qorpera_list_review_rules", {
+			p_profile_id: profileA.profileId,
+		});
 		expect(f.root.querySelector<HTMLElement>(".frame")!.inert).toBe(true);
 		click(f.root, "#settings-tab-company");
 		expect(f.root.querySelector('.settings-dialog a[href$="/file"]')).not.toBeNull();
@@ -549,7 +562,7 @@ describe("settings session lifecycle", () => {
 		expect(f.root.querySelector(".settings-file + .settings-company-exit > .company-exit")?.textContent).toBe(
 			"Delete company",
 		);
-		expect(f.cloud.rpc).not.toHaveBeenCalled();
+		expect(sdkRpcs(f)).toEqual([]);
 	});
 	it.each(["delete", "leave"])("closes settings and refreshes the hub after %s", async (action) => {
 		history.replaceState(null, "", "/#/");
@@ -576,7 +589,7 @@ describe("settings session lifecycle", () => {
 		expect(f.root.querySelector(".company-card[href]")).toBeNull();
 		expect(f.api.listProfiles).toHaveBeenCalledTimes(2);
 		expect(f.cloud.supabase.removeChannel).toHaveBeenCalledTimes(1);
-		expect(f.cloud.rpc).not.toHaveBeenCalled();
+		expect(sdkRpcs(f)).toEqual([]);
 	});
 	it("keeps a different company's conversation and draft when settings deletes a company", async () => {
 		const f = await setup(realtimeFixture());
@@ -600,7 +613,7 @@ describe("settings session lifecycle", () => {
 		expect(f.root.querySelector("textarea")).toBe(composer);
 		expect(composer.value).toBe("Keep this conversation");
 		expect(f.cloud.supabase.removeChannel).toHaveBeenCalledTimes(1);
-		expect(f.cloud.rpc).not.toHaveBeenCalled();
+		expect(sdkRpcs(f)).toEqual([]);
 	});
 	it("keeps settings and company membership after a failed deletion", async () => {
 		history.replaceState(null, "", "/#/");
@@ -637,7 +650,7 @@ describe("settings session lifecycle", () => {
 		await draw();
 		expect(f.api.listProfiles).toHaveBeenCalledTimes(2);
 		expect(f.root.querySelector(".company-card[href]")).toBeNull();
-		expect(f.cloud.rpc).not.toHaveBeenCalled();
+		expect(sdkRpcs(f)).toEqual([]);
 	});
 	it("ignores a deletion response from a previous account", async () => {
 		history.replaceState(null, "", "/#/");
@@ -701,7 +714,7 @@ describe("settings session lifecycle", () => {
 		expect(f.root.querySelector(".company-card[href]")).toBeNull();
 		expect(f.api.listProfiles).toHaveBeenCalledTimes(2);
 		expect(f.cloud.supabase.removeChannel).toHaveBeenCalledTimes(1);
-		expect(f.cloud.rpc).not.toHaveBeenCalled();
+		expect(sdkRpcs(f)).toEqual([]);
 	});
 	it.each(["settings", "team page"])("shows a failed company deletion right under its button in %s", async (place) => {
 		history.replaceState(null, "", place === "settings" ? "/#/" : `/#/c/${profileA.profileId}/team`);
@@ -749,7 +762,7 @@ describe("settings session lifecycle", () => {
 		expect(f.root.querySelector(".company-card[href]")).toBeNull();
 		expect(f.api.listProfiles).toHaveBeenCalledTimes(3);
 		expect(f.root.querySelector(".settings-overlay")).toBeNull();
-		expect(f.cloud.rpc).not.toHaveBeenCalled();
+		expect(sdkRpcs(f)).toEqual([]);
 	});
 	it.each(["connections"])("keeps the focused %s control through an unrelated company refresh", async (tab) => {
 		const f = await setup();
@@ -786,9 +799,7 @@ describe("settings session lifecycle", () => {
 		expect(f.root.querySelectorAll("#settings-content .service-card")).toHaveLength(3);
 		await vi.advanceTimersByTimeAsync(60_000);
 		// Model accounts never go through the SDK RPC path; the services list is the only RPC.
-		expect(vi.mocked(f.cloud.rpc).mock.calls.map(([name]) => name)).toEqual([
-			"qorpera_list_cloud_secret_connections",
-		]);
+		expect(sdkRpcs(f)).toEqual(["qorpera_list_cloud_secret_connections"]);
 		expect(fetch.mock.calls.filter(([url]) => String(url) === connectionsUrl)).toEqual([
 			[connectionsUrl, expect.objectContaining({ method: "POST" })],
 		]);

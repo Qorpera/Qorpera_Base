@@ -379,3 +379,11 @@ such a stop as soon as its details are read, and the work it hid shows again.
 **Rules out.** Try again for a stop (`qorpera_retry_room_delivery` still accepts
 one from its author; the web never offers it), and a grey "You stopped this
 run" line with Try again, the option Jonas did not pick.
+
+## 2026-09-27 — Rules live in Settings → General
+
+**Decision (Jonas).** The rules leave their own tab for Settings → General,
+simplified to Grok Bot's Auto-review rules form (without its "Auto-review
+Rules" title and hint) plus Qorpera's "Applies to:" choice, and one table of
+rules with edit and remove icons. The rules still follow the company chosen
+in Settings' company picker.
