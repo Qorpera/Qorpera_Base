@@ -2447,6 +2447,62 @@ review or retry" surfaces of 16.2 and the classification of section 10.
    matched rules, answer and use. Reviews are not a cap on work: no number of
    reviews, calls or approvals is limited.
 
+### 2026-09-27 amendment: every machine works in the company folder
+
+Founder decisions of 27 September 2026. They complete section 5.2, section 12
+and the 2026-09-16 storage rule. The design is
+`deploy/first-node/RUNTIME-COMPANY-FOLDER.md`.
+
+1. **One folder, many machines.**
+   - The Company File is the company's whole folder: its full digital state.
+   - It lives once, on the NAS.
+   - Agent run machines, Company Computers and coding machines are scalable
+     compute. Each one mounts the same live folder at `/company`.
+   - File explorers show it and shells work in it.
+   - No machine keeps the company's files on its own disk. A Company
+     Computer's disk and workbench hold only the system, installed
+     applications, browser profiles and caches.
+2. **The same as a local disk.** Agents work in the mounted folder exactly as
+   an agent works in its own computer's files. They list, search, read, edit,
+   write text or binary files, create folders, move, rename, copy, delete and
+   run scripts. The model reaches the folder through a shell and an edit tool
+   shaped like its harness's own. Once the mount is accepted, the one-file
+   Company File tools and the Company File realm of the computer transfer are
+   retired.
+3. **Reads.**
+   - A mount shows exactly the paths its run's current authority can read.
+     Other paths do not exist in it.
+   - Reads are authorized cloud reads and are recorded in the run's read set.
+   - Bytes stream from the NAS and a machine keeps them only in memory.
+4. **Writes still pass the gateway.**
+   - A shell command's changes, or a desktop application's save, are
+     published as one path set (5.1). This happens when the command ends or
+     the file is saved.
+   - Nothing bypasses the mutation gateway, and silent last-writer-wins stays
+     forbidden.
+   - The result reports each changed path: saved, waiting for approval, not
+     applied, or in conflict. A conflicting version is kept for the run and
+     never overwrites the live file.
+   - Protected paths still produce proposals.
+   - Files that are created and removed within one command never reach the
+     Company File.
+5. **The shell never shares a box with credentials.** Commands run in a
+   credential-free box beside the model's harness. The provider login,
+   service keys and tokens stay outside it (11.4, 11.5).
+6. **Deletes and moves.** Deleting or moving an ordinary path no longer waits
+   for a member. It passes the automatic review (2026-09-25 amendment, item 2)
+   and can be restored from the version history. Protected paths keep their
+   proposals.
+7. **No internet in the agent's shell at first.**
+   - The run machine's shell has no network. Its commands stay inside the
+     company and run at once, without review.
+   - A preinstalled toolbox covers common work.
+   - Web work stays on the Company Computer's browser and on connectors.
+   - Giving the shell network access is a later decision. If it is taken, the
+     shell's commands become outside effects and pass review.
+8. **Folders.** An agent creates a folder when it needs a home for a category
+   of files, never to hold a single file.
+
 ## 20. Enforcement matrix
 
 | Requirement | Code owner | Model law |
