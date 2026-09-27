@@ -466,7 +466,7 @@ The folder name is the agent's handle:
   reserved. A handle that is taken or reserved gets `-2`, `-3` and so on. A
   name that leaves nothing becomes `agent`, numbered the same way.
 - An agent's folder can only be renamed within `agents/`. Moving it anywhere
-  else is refused.
+  else, including into `agents/groups/`, is refused.
 - `name` in `agent.md` is how the agent is shown, and may use any characters.
   Renaming an agent changes both and moves its folder. Editing `name` alone
   does not move the folder.
@@ -512,8 +512,11 @@ Unassigned, and the Co-Founder is never listed (2026-09-24 amendment).
 its folder is named from it by the same rules as an agent's folder. The front
 matter holds the group's stable `id`, its `name`, and its members, both people
 and agents, listed by id (a name beside an id is only for reading). The body
-states its purpose. An agent's own conversation thread
-follows the agent's folder and has no file of its own.
+states its purpose. A group's folder is only renamed within `agents/groups/`
+(a name that leaves nothing becomes `group`). Deleting `group.md` on its own
+is refused. Deleting the folder closes the group chat: its conversation stays,
+and the folder can be restored. An agent's own conversation thread follows the
+agent's folder and has no file of its own.
 
 **`connections/<connection>.md`.** Each file describes one connected account,
 shared by all agents: the service, the account, its status, the actions agents
@@ -554,15 +557,19 @@ The automatic review (2026-09-25 amendment) is unchanged:
   - creating an agent's folder (hiring);
   - archiving or reactivating an agent;
   - creating a `group.md`;
-  - creating, changing or deleting a routine file (a dynamic routine's choice
-    of its next run is a schedule position in the database, as today);
+  - creating or deleting a routine file, or changing its instructions or
+    title. A dynamic routine's own decision at the end of its run (its next
+    run, its conclusion, its effort or reply policy) is saved in the routine
+    file as a new version (16.3) and applies at once, as the 2026-09-25
+    amendment, item 2, allows;
   - deleting or moving paths.
 
   They pass it as one unit per change set (the 2026-09-27 amendment "every
   machine works in the company folder", item 6).
-- A write is classified by its path, whatever makes it: a tool, the mount, a
-  desktop application or the web app. A tool that writes these paths is not
-  "internal" because it is a file write.
+- The review covers changes made by an agent's run or worker, whatever
+  carries them: a tool, the mount or a desktop application. A change is
+  classified by its path. A tool that writes these paths is not "internal"
+  because it is a file write. Members' own changes are not reviewed.
 - Coding sessions stay unreviewed, so in a coding session `agents/` and
   `rules/` are read-only.
 - Everything else applies at once, and any change can be restored from the
@@ -1120,7 +1127,10 @@ Workers cannot communicate directly with humans. They report to the parent,
 which owns the public mouth.
 
 Todos are files in the agent's folder, `agents/<agent-name>/todos/`, with a
-worker's brief and results beside its todo (5.6, amended 2026-09-27). Worker
+worker's brief and results beside its todo (5.6, amended 2026-09-27). The
+platform writes the brief when the worker is dispatched and the results when
+it reports, for every worker species, including coding workers, whose view of
+`agents/` is read-only. Worker
 handles, leases and revival state are runtime state in the database. The
 model updates todos by editing their files, but a prose promise to remember or
 poll is not a todo system.
@@ -2875,7 +2885,8 @@ A review of master at bundle v137 found three problems:
 7. **Routines sit inside the agent's folder.**
 8. **No transcript export for now.** Conversations stay in the database.
 9. **Everything is approved by default.** No path needs a member's approval or
-   a proposal; complexity is added only when it is needed. The seeded folders
+   a proposal, apart from the hire of an agent whose own authority is
+   restricted (14.1); complexity is added only when it is needed. The seeded folders
    cannot be deleted. Only owners and admins write `rules/`, so an agent can
    never write a rule that its own reviewer reads. The automatic review of the
    2026-09-25 amendment is unchanged.

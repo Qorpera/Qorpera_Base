@@ -221,7 +221,9 @@ All clean units of a boundary land in one revision and one head move.
   work is overwritten (no last-writer-wins). The run's version is kept as an
   immutable object on the run's receipt. It is shown read-only in the box
   under `~/conflicts/` and can be restored from the receipt after the run.
-- **Protected.** The unit becomes a proposal and waits for a member.
+- **Protected.** The unit becomes a proposal and waits for a member. Since
+  2026-09-27 no path is protected by default; the one standing case is a hire
+  by an agent whose own authority is restricted (contract 5.6, 14.1).
 - **Delete or move of an ordinary path, or a delegation unit.** All such units
   of the boundary go to the automatic review together, as one reviewed action
   that lists them all (2026-09-25 amendment). Since 2026-09-27 (contract 5.6)
@@ -261,8 +263,12 @@ These refusals happen as a file is opened or named:
   instructions are its `agents/<agent-name>/agent.md`, contract 5.6);
 - deleting or moving a seeded folder or file is refused (`EPERM`): `vision/`,
   `vision/vision.md`, `agents/`, `agents/sections.md`, `agents/groups/`,
-  `connections/`, `skills/` and `rules/`; the Co-Founder's folder cannot be
-  deleted (contract 5.6);
+  `connections/`, `skills/` and `rules/`; the Co-Founder's folder and its
+  `agent.md` cannot be deleted (contract 5.6);
+- deleting an `agent.md` or a `group.md` on its own is refused (`EPERM`); the
+  folder is deleted instead (contract 5.6);
+- moving an agent's folder out of `agents/` or into `agents/groups/`, or a
+  group's folder out of `agents/groups/`, is refused (`EPERM`) (contract 5.6);
 - `rules/` is mounted read-only for agents (`EACCES`); only owners and admins
   write it (contract 5.6);
 - names the Company File forbids are refused (`EINVAL`; under `code/`, git's
@@ -739,9 +745,10 @@ is unchanged.
 4. **Server, writing side.**
    - Per-folder trees and a version per file, lifting the manifest and entry
      caps (moved here from step 8).
-   - Structured-file saves with their index update, the refusals for seeded
-     folders and `rules/`, and review by path for delegation units on every
-     write path, including today's Company File tools (contract 5.6).
+   - Structured-file saves with their index update; the refusals for seeded
+     folders, `rules/`, a lone `agent.md` or `group.md`, and agent or group
+     folders moved out of place; and review by path for delegation units on
+     every write path, including today's Company File tools (contract 5.6).
    - Today's state moved into the layout of contract 5.6.
    - Change sets and units.
    - Move and rename.
