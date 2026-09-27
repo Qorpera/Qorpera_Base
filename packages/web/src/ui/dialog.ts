@@ -1,5 +1,8 @@
 import { h, icon } from "./dom.ts";
 import { matchesKey } from "./keys.ts";
+import { isPhoneLayout } from "./layout.ts";
+import { t } from "./preferences.ts";
+import { uiScale } from "./scale.ts";
 
 /** Anchored desktop details are nonmodal; mobile sheets and previews retain
  * native modal containment. Disposal never restores focus into another route. */
@@ -24,7 +27,7 @@ export class SurfaceDialog {
 			{
 				type: "button",
 				class: "surface-close icon-button",
-				"aria-label": `Close ${label.toLowerCase()}`,
+				"aria-label": t("Close {name}", { name: label.toLowerCase() }),
 				onclick: () => this.close(),
 			},
 			icon("close"),
@@ -91,7 +94,7 @@ export class SurfaceDialog {
 		this.#close.focus({ preventScroll: true });
 	}
 	#layout(): void {
-		const modal = !this.#anchor || window.innerWidth <= 760;
+		const modal = !this.#anchor || isPhoneLayout();
 		if (!this.el.open || modal !== this.#modal) {
 			if (this.el.open) this.el.close();
 			this.#modal = modal;
@@ -101,11 +104,14 @@ export class SurfaceDialog {
 		}
 		if (this.#anchor && !modal) {
 			const rect = this.#anchor.getBoundingClientRect();
-			this.el.style.left = `${Math.max(12, Math.min(rect.left, window.innerWidth - this.el.getBoundingClientRect().width - 12))}px`;
-			this.el.style.top = `${rect.bottom + 8}px`;
+			const scale = uiScale();
+			this.el.style.left = `${Math.max(12 * scale, Math.min(rect.left, window.innerWidth - this.el.getBoundingClientRect().width - 12 * scale))}px`;
+			this.el.style.top = `${rect.bottom + 8 * scale}px`;
+			this.el.style.maxHeight = `${Math.max(0, window.innerHeight - rect.bottom - 24 * scale)}px`;
 		} else {
 			this.el.style.removeProperty("left");
 			this.el.style.removeProperty("top");
+			this.el.style.removeProperty("max-height");
 		}
 	}
 	close(restoreFocus = true): void {
@@ -121,7 +127,12 @@ export class SurfaceDialog {
 
 /** The heading of a page shown inside a dialog: the way back, a title and an
  * optional line under it. */
-export function dialogPageHeader(title: string, back?: () => void, backLabel = "Back", detail?: string): HTMLElement {
+export function dialogPageHeader(
+	title: string,
+	back?: () => void,
+	backLabel = t("Back"),
+	detail?: string,
+): HTMLElement {
 	return h(
 		"header",
 		{ class: "dialog-page-header" },

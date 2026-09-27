@@ -5,9 +5,6 @@ select pg_temp.wake_routine('30000000-0000-4000-8000-000000000030',
  '{"id":"tick","kind":"schedule","intervalMinutes":5,"replyPolicy":"optional"}') r from generate_series(1,4);
 select set_config('qorpera_test.review2_concurrent_binding',pg_temp.review2_start('routine')::text,true);
 select pg_temp.handoff_begin(current_setting('qorpera_test.review2_concurrent_binding')::jsonb,repeat('c',64));
-select pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001');
-select public.qorpera_set_company_execution_ceiling('30000000-0000-4000-8000-000000000010',250000000,100000000,0,
- public.qorpera_company_wakes_last_hour('30000000-0000-4000-8000-000000000010')+1);
 select pg_temp.path_claims('service_role');
 select jsonb_build_object(
  'connection',(current_setting('qorpera_test.wake_connection')::jsonb->>'connection_id'),

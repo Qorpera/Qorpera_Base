@@ -1,45 +1,73 @@
 import type { CloudApi } from "../../cloud/api.ts";
 import { describeError } from "../../cloud/client.ts";
-import { createWebCompanyExecution } from "../../cloud/company-execution.ts";
+import { createWebConnectors } from "../../cloud/connectors.ts";
 import { createWebNativeSubscription } from "../../cloud/native-subscription.ts";
+import { createWebReviewRules } from "../../cloud/review-rules.ts";
 import type { HostedCompanyFile, HostedProfile } from "../../cloud/types.ts";
 import { agentFigure } from "../../ui/avatar.ts";
-import { button, fmtBytes, h, icon, notice, replace } from "../../ui/dom.ts";
-import { uiText } from "../../ui/preferences.ts";
+import { button, h, icon, notice, replace } from "../../ui/dom.ts";
+import { phrase, t, uiText } from "../../ui/preferences.ts";
 import type { AuthController } from "../auth.ts";
 import { CompanyController } from "../company.ts";
 import { type AccountViewState, renderAccount } from "./account.ts";
-import { CompanyExecutionView } from "./company-execution.ts";
+import { renderAppearance } from "./appearance.ts";
 import { FriendsController, renderFriends } from "./friends.ts";
 import type { HubController } from "./hub.ts";
+import { renderPlan } from "./plan.ts";
 import { ConnectionsView, ProviderSignIns } from "./settings-connections.ts";
-import { renderTeam } from "./team.ts";
+import { RulesView } from "./settings-rules.ts";
+import { ServicesView } from "./settings-services.ts";
+import { storageSummary } from "./storage-summary.ts";
+import { renderTeam, type TeamFeedback } from "./team.ts";
 
 const TABS = [
 	{
 		id: "general",
-		label: "General",
+		label: phrase("General"),
 		icon: "settings",
-		keywords: "account plan billing companies appearance theme language region",
+		keywords: "account language region time zone timezone generelt konto sprog dansk engelsk område tidszone",
 	},
 	{
-		id: "friends",
-		label: "Friends",
-		icon: "friends",
-		keywords: "people contacts requests add email invitations invites join accept decline",
+		id: "appearance",
+		label: phrase("Appearance"),
+		icon: "appearance",
+		keywords:
+			"theme composer color colour blue green grey gray interface size big small udseende tema lys mørk skrivefelt farve blå grøn grå grænseflade størrelse stor lille",
 	},
 	{
 		id: "company",
-		label: "Company",
+		label: phrase("Company"),
 		icon: "company",
 		keywords:
-			"people team members invitations staff file organization approvals execution pause resume ceilings limits",
+			"people team members invitations staff file delete leave virksomhed personer medlemmer invitationer agenter virksomhedsfilen roller slet forlad",
+	},
+	{
+		id: "friends",
+		label: phrase("Friends"),
+		icon: "friends",
+		keywords:
+			"people contacts requests add email invitations invites join accept decline venner personer kontakter anmodninger tilføj e-mail invitationer inviter accepter afvis",
+	},
+	{
+		id: "plan",
+		label: phrase("Plan & usage"),
+		icon: "plan",
+		keywords:
+			"plan billing subscription usage storage trial upgrade price payment card invoices computer hours basis standard dedicated abonnement forbrug betaling lager lagerplads prøveperiode opgrader pris kort fakturaer computertimer dedikeret",
 	},
 	{
 		id: "connections",
-		label: "Connections",
+		label: phrase("Connections"),
 		icon: "connections",
-		keywords: "providers subscriptions openai codex anthropic claude secrets",
+		keywords:
+			"providers subscriptions openai codex anthropic claude secrets forbindelser udbydere modelkonti konti tjenester gmail google drive github hemmeligheder",
+	},
+	{
+		id: "rules",
+		label: phrase("Rules"),
+		icon: "lock",
+		keywords:
+			"auto-review review approval approve ask first allow automatically safety agents actions permissions regler godkendelse godkend spørg først tillad automatisk sikkerhed agenter handlinger tilladelser",
 	},
 ] as const;
 export type SettingsTab = (typeof TABS)[number]["id"];
@@ -60,12 +88,16 @@ export class SettingsView {
 	readonly #companyRemoved: (profileId: string) => void;
 	readonly #lifetime = new AbortController();
 	readonly #content = h("div", { class: "settings-content", id: "settings-content", role: "tabpanel", tabindex: "0" });
-	readonly #search = h("input", { type: "search", placeholder: "Search settings", "aria-label": "Search settings" });
+	readonly #search = h("input", {
+		type: "search",
+		placeholder: t("Search settings"),
+		"aria-label": t("Search settings"),
+	});
 	readonly #panels = new Map<SettingsTab, HTMLElement>();
 	readonly #tabs = new Map<SettingsTab, HTMLButtonElement>();
 	readonly #borrowedCompany: CompanyController | undefined;
-	readonly #companyPicker = h("select", { class: "settings-company-picker", "aria-label": "Company for settings" });
-	readonly #companyLabel = h("label", { class: "settings-company-label" }, "Company", this.#companyPicker);
+	readonly #companyPicker = h("select", { class: "settings-company-picker", "aria-label": t("Company for settings") });
+	readonly #companyLabel = h("label", { class: "settings-company-label" }, t("Company"), this.#companyPicker);
 	#profiles: HostedProfile[] = [];
 	#tab: SettingsTab = "general";
 	#account: AccountViewState = { loading: true };
@@ -74,8 +106,9 @@ export class SettingsView {
 	#unsubscribe: (() => void) | undefined;
 	#companyLifetime = new AbortController();
 	#connections: ConnectionsView | undefined;
-	#execution: CompanyExecutionView | undefined;
-	#feedback: { message?: string; error?: string } = {};
+	#services: ServicesView | undefined;
+	#rules: RulesView | undefined;
+	#feedback: TeamFeedback = {};
 	#file: HostedCompanyFile | undefined;
 	#fileLoading = false;
 	#fileError: string | undefined;
@@ -98,9 +131,13 @@ export class SettingsView {
 		this.#companyRemoved = companyRemoved;
 		this.#borrowedCompany = company;
 		const search = this.#search;
-		const empty = h("p", { class: "muted small", hidden: true }, "No settings found.");
-		const nav = h("nav", { class: "settings-nav", "aria-label": "Settings sections" }, search);
-		const tablist = h("div", { role: "tablist", "aria-label": "Settings sections", "aria-orientation": "vertical" });
+		const empty = h("p", { class: "muted small", hidden: true }, t("No settings found."));
+		const nav = h("nav", { class: "settings-nav", "aria-label": t("Settings sections") }, search);
+		const tablist = h("div", {
+			role: "tablist",
+			"aria-label": t("Settings sections"),
+			"aria-orientation": "vertical",
+		});
 		for (const tab of TABS) {
 			const button = h(
 				"button",
@@ -137,9 +174,12 @@ export class SettingsView {
 			}
 		};
 		search.oninput = () => {
-			const query = search.value.trim().toLowerCase();
-			for (const tab of TABS)
-				this.#tabs.get(tab.id)!.hidden = !`${tab.label} ${tab.keywords}`.toLowerCase().includes(query);
+			// Every word must match, so "delete company" finds the tab its button is on.
+			const words = search.value.trim().toLowerCase().split(/\s+/).filter(Boolean);
+			for (const tab of TABS) {
+				const text = `${tab.label} ${tab.keywords}`.toLowerCase();
+				this.#tabs.get(tab.id)!.hidden = !words.every((word) => text.includes(word));
+			}
 			const first = [...this.#tabs.entries()].find(([, button]) => !button.hidden);
 			empty.hidden = Boolean(first);
 			if (first && this.#tabs.get(this.#tab)?.hidden) this.#select(first[0]);
@@ -156,12 +196,12 @@ export class SettingsView {
 			},
 			h(
 				"section",
-				{ class: "settings-dialog", role: "dialog", "aria-modal": "true", "aria-label": "Settings" },
+				{ class: "settings-dialog", role: "dialog", "aria-modal": "true", "aria-label": t("Settings") },
 				nav,
 				this.#content,
 				h(
 					"button",
-					{ type: "button", class: "settings-close", "aria-label": "Close settings", onclick: close },
+					{ type: "button", class: "settings-close", "aria-label": t("Close settings"), onclick: close },
 					"×",
 				),
 			),
@@ -173,14 +213,8 @@ export class SettingsView {
 		this.updateProfiles(profiles);
 		void api
 			.getAccountEntitlement()
-			.then((entitlement) => {
-				this.#account = { loaded: true, entitlement };
-				this.#general();
-			})
-			.catch((error) => {
-				this.#account = { loaded: true, error: describeError(error) };
-				this.#general();
-			});
+			.then((entitlement) => this.#loadedAccount({ loaded: true, entitlement }))
+			.catch((error) => this.#loadedAccount({ loaded: true, error: describeError(error) }));
 		// The friends list also feeds the Company tab's invitation picker.
 		this.#friends.store.subscribe(() => {
 			if (this.#tab === "friends") this.#drawFriends();
@@ -198,6 +232,11 @@ export class SettingsView {
 		this.#select(tab);
 	}
 
+	/** The open tab, so a language change can reopen Settings where it was. */
+	get tab(): SettingsTab {
+		return this.#tab;
+	}
+
 	focus(): void {
 		this.#tabs.get(this.#tab)?.focus();
 	}
@@ -210,7 +249,7 @@ export class SettingsView {
 		this.#profiles = profiles;
 		replace(
 			this.#companyPicker,
-			h("option", { value: "" }, "Choose a company"),
+			h("option", { value: "" }, t("Choose a company")),
 			...profiles.map((profile) => h("option", { value: profile.profileId }, profile.profileName)),
 		);
 		this.#companyPicker.value = selected?.profileId ?? "";
@@ -238,7 +277,8 @@ export class SettingsView {
 		this.#companyLifetime.abort();
 		this.#unsubscribe?.();
 		this.#connections?.dispose();
-		this.#execution?.dispose();
+		this.#services?.dispose();
+		this.#rules?.dispose();
 		this.#friends.dispose();
 		if (this.#ownsCompany) this.#company?.stop();
 		this.el.remove();
@@ -279,6 +319,8 @@ export class SettingsView {
 			button.tabIndex = tab === id ? 0 : -1;
 		}
 		if (tab === "general") this.#general();
+		else if (tab === "appearance") this.#panels.set(tab, renderAppearance());
+		else if (tab === "plan") this.#plan();
 		else if (tab === "friends") this.#drawFriends();
 		else if (tab === "company") this.#drawCompany();
 		else if (this.#company) {
@@ -315,8 +357,36 @@ export class SettingsView {
 						signIns,
 						(input) => signIn.beginProviderLogin(input),
 					);
+					// Step 7 connectors sit under the model accounts on the same page.
+					// Company first: owners and admins manage them, everyone sees them.
+					this.#services = new ServicesView(
+						createWebConnectors(this.#api.cloud, {
+							profileId: company.profile.profileId,
+							environmentId: company.profile.environmentId,
+						}),
+						signal,
+						{
+							access: {
+								canManage: () => {
+									const role = company.store.get().team?.role;
+									return role === "owner" || role === "admin";
+								},
+								memberName: (userId) =>
+									company.store.get().team?.members.find((member) => member.userId === userId)?.displayName ||
+									undefined,
+							},
+						},
+					);
+					this.#panels.set(tab, h("div", null, this.#connections.el, this.#services.el));
 				}
-				this.#panels.set(tab, this.#connections.el);
+			} else if (tab === "rules" && !this.#rules) {
+				const company = this.#company;
+				this.#rules = new RulesView(
+					createWebReviewRules(this.#api.cloud, company.profile.profileId),
+					AbortSignal.any([this.#companyLifetime.signal, this.#lifetime.signal, company.signal]),
+					() => company.store.get().team?.role,
+				);
+				this.#panels.set(tab, this.#rules.el);
 			}
 		}
 		const panel =
@@ -324,12 +394,21 @@ export class SettingsView {
 			h(
 				"div",
 				null,
-				h("h1", null, TABS.find((item) => item.id === tab)!.label),
-				notice("neutral", "Choose a company to view these settings."),
+				h("h1", null, t(TABS.find((item) => item.id === tab)!.label)),
+				notice("neutral", t("Choose a company to view these settings.")),
 			);
 		this.#content.setAttribute("aria-labelledby", `settings-tab-${tab}`);
 		// A company change selects the open tab again; its panel, and a field being typed in, stay put.
 		if (panel.parentElement !== this.#content) replace(this.#content, panel);
+	}
+
+	/** General shows only the account's error and message, so it is redrawn only
+	 * when those change: a control in use keeps focus when the plan arrives. */
+	#loadedAccount(next: AccountViewState): void {
+		const redraw = next.error !== this.#account.error || next.message !== this.#account.message;
+		this.#account = next;
+		if (redraw) this.#general();
+		if (this.#panels.has("plan")) this.#plan();
 	}
 
 	#general(): void {
@@ -344,6 +423,32 @@ export class SettingsView {
 			this.#account = { ...this.#account, ...next };
 			this.#general();
 		});
+	}
+
+	/** The plan is the account's; the usage shown is the chosen company's storage. */
+	#plan(): void {
+		if (this.#lifetime.signal.aborted) return;
+		let panel = this.#panels.get("plan");
+		if (!panel) {
+			panel = h("div");
+			this.#panels.set("plan", panel);
+		}
+		const company = this.#company;
+		if (this.#tab === "plan" && company && !this.#file && !this.#fileLoading && !this.#fileError)
+			void this.#loadFile();
+		renderPlan(
+			panel,
+			this.#account,
+			company
+				? {
+						companyName: company.profile.profileName,
+						file: this.#file,
+						loading: this.#fileLoading,
+						error: this.#fileError,
+						retry: () => void this.#loadFile(true),
+					}
+				: undefined,
+		);
 	}
 
 	#drawFriends(): void {
@@ -368,8 +473,10 @@ export class SettingsView {
 		this.#unsubscribe?.();
 		this.#connections?.dispose();
 		this.#connections = undefined;
-		this.#execution?.dispose();
-		this.#execution = undefined;
+		this.#services?.dispose();
+		this.#services = undefined;
+		this.#rules?.dispose();
+		this.#rules = undefined;
 		if (this.#ownsCompany) this.#company?.stop();
 		this.#company = company;
 		this.#ownsCompany = owned;
@@ -377,13 +484,15 @@ export class SettingsView {
 		this.#file = undefined;
 		this.#fileLoading = false;
 		this.#fileError = undefined;
-		for (const tab of ["company", "connections"] as const) this.#panels.delete(tab);
+		for (const tab of ["company", "connections", "rules"] as const) this.#panels.delete(tab);
 		if (company) {
 			this.#unsubscribe = company.store.subscribe(() => {
 				if (company.store.get().accessLost) {
 					this.#close();
 					return;
 				}
+				this.#services?.update();
+				this.#rules?.update();
 				this.#drawCompany();
 			});
 			if (owned) void company.start();
@@ -405,7 +514,6 @@ export class SettingsView {
 			team = h("div", { class: "settings-team" });
 			replace(
 				panel,
-				h("h1", null, company.profile.profileName),
 				team,
 				h(
 					"section",
@@ -414,51 +522,9 @@ export class SettingsView {
 					h("div", { class: "settings-staff" }),
 				),
 				h("div", { class: "settings-file" }),
-				h("div", { class: "settings-execution" }),
-				...(
-					[
-						["organization", "Organization", "Responsibilities, projects and staff"],
-						["approvals", "Approvals", "Review requests that need your decision"],
-					] as const
-				).map(([path, title, detail]) =>
-					h(
-						"a",
-						{ class: "settings-card settings-link", href: `#/c/${company.profile.profileId}/${path}` },
-						h("span", { class: "settings-copy" }, h("strong", null, uiText(title)), h("small", null, detail)),
-						h("span", { "aria-hidden": "true" }, "›"),
-					),
-				),
+				h("div", { class: "settings-company-exit" }),
 			);
 		}
-		if (this.#tab === "company" && !this.#execution && company.store.get().team?.capabilities.read) {
-			const memberId = this.#auth.userId!;
-			const signal = AbortSignal.any([this.#companyLifetime.signal, this.#lifetime.signal, company.signal]);
-			this.#execution = new CompanyExecutionView(
-				createWebCompanyExecution(this.#api.cloud, company.profile.profileId, memberId, signal, () => {
-					signal.throwIfAborted();
-					if (
-						this.#auth.userId !== memberId ||
-						this.#company !== company ||
-						company.store.get().accessLost ||
-						!company.store.get().team?.capabilities.read
-					)
-						throw new Error("The account or company changed.");
-				}),
-				signal,
-				() => {
-					const state = company.store.get();
-					return (
-						!signal.aborted &&
-						this.#auth.userId === memberId &&
-						this.#company === company &&
-						!state.accessLost &&
-						(state.team?.role === "owner" || state.team?.role === "admin")
-					);
-				},
-			);
-			panel.querySelector(".settings-execution")!.append(this.#execution.el);
-		}
-		this.#execution?.update();
 		const staffList = panel.querySelector<HTMLElement>(".settings-staff")!;
 		const staffFocus = staffList.contains(document.activeElement)
 			? document.activeElement?.closest("a")?.getAttribute("href")
@@ -477,7 +543,7 @@ export class SettingsView {
 					),
 				),
 		);
-		const file = this.#file;
+		const storage = storageSummary(this.#file, this.#fileError);
 		replace(
 			panel.querySelector(".settings-file")!,
 			h(
@@ -488,27 +554,13 @@ export class SettingsView {
 					"div",
 					{ class: "settings-copy" },
 					h("strong", null, uiText("Company File")),
-					h(
-						"small",
-						null,
-						file
-							? `${fmtBytes(file.storageUsedBytes)} used${file.storageLimitBytes > 0 ? ` of ${fmtBytes(file.storageLimitBytes)}` : ""}`
-							: this.#fileError
-								? "Storage information unavailable"
-								: "Loading storage…",
-					),
-					file && file.storageLimitBytes > 0
-						? h("progress", {
-								max: file.storageLimitBytes,
-								value: Math.min(file.storageUsedBytes, file.storageLimitBytes),
-								"aria-label": "Company storage used",
-							})
-						: null,
+					h("small", null, storage.text),
+					storage.meter,
 				),
 				icon("chevron"),
 			),
 			this.#fileError
-				? button("Retry storage", () => void this.#loadFile(), { small: true, disabled: this.#fileLoading })
+				? button(uiText("Retry"), () => void this.#loadFile(true), { small: true, disabled: this.#fileLoading })
 				: null,
 		);
 		if (staffFocus)
@@ -529,6 +581,7 @@ export class SettingsView {
 				friends: this.#friends.store.get().loaded ? this.#friends.store.get().friends : undefined,
 				signal: this.#companyLifetime.signal,
 				embedded: true,
+				exit: panel.querySelector<HTMLElement>(".settings-company-exit")!,
 				addFriend: () => {
 					// A settings search can hide the Friends tab; clear it so the open tab shows in the menu.
 					if (this.#tabs.get("friends")?.hidden) {
@@ -546,11 +599,16 @@ export class SettingsView {
 		);
 	}
 
-	async #loadFile(): Promise<void> {
+	/** `redraw` (a retry) repaints at once so the Retry button disables while the load runs. */
+	async #loadFile(redraw = false): Promise<void> {
 		const company = this.#company;
 		if (!company || this.#fileLoading) return;
 		const signal = this.#companyLifetime.signal;
 		this.#fileLoading = true;
+		if (redraw) {
+			this.#drawCompany();
+			if (this.#panels.has("plan")) this.#plan();
+		}
 		try {
 			const file = await this.#api.getCompanyFile(company.profile.environmentId);
 			if (signal.aborted || this.#lifetime.signal.aborted) return;
@@ -563,6 +621,7 @@ export class SettingsView {
 			if (!signal.aborted && !this.#lifetime.signal.aborted) {
 				this.#fileLoading = false;
 				this.#drawCompany();
+				if (this.#panels.has("plan")) this.#plan();
 			}
 		}
 	}

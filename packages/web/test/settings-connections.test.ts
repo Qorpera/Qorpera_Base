@@ -6,9 +6,11 @@ import type {
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ConnectionsView, ProviderSignIns } from "../src/app/views/settings-connections.ts";
 import type { WebNativeProviderLogin, WebNativeSubscription } from "../src/cloud/native-subscription.ts";
+import { fmtTime } from "../src/ui/dom.ts";
+import { setLanguagePreference } from "../src/ui/preferences.ts";
 import { deferred, id, settle, timestamp, userA } from "./fixtures.ts";
 
-const WATCH_MS = 5000;
+const WATCH_MS = 2000;
 const OPENAI = "ChatGPT / Codex";
 const CLAUDE = "Claude";
 const START_FAILED = "Sign-in could not be started. If you started one a moment ago, give it a few minutes to clear.";
@@ -16,12 +18,14 @@ const ID_KEYS = ["clientIdentityId", "clientLoginId", "clientConnectionId"] as c
 /** A connected account that is not yet enabled for the member's messages. */
 const connected: NativeMemberConnection = {
 	connectionId: id(81),
+	clientConnectionId: id(181),
 	connectionVersion: 2,
 	provider: "openai",
 	nativeHarness: "codex-cli",
 	authorizationState: "active",
 	maxNativeConcurrency: 1,
-	providerAccountReference: "member@example.com",
+	providerAccountReference: "codex-cli:opaque-account",
+	providerAccountEmail: "member@example.com",
 	billingSource: "member",
 	consentVersion: "v1",
 	consentedAt: timestamp,
@@ -68,7 +72,7 @@ async function setup(
 		onboardingAvailable,
 		beginProviderLogin: vi.fn(async (input) => ({
 			loginId: input.clientLoginId,
-			connectionId: input.clientConnectionId,
+			clientConnectionId: input.clientConnectionId,
 			status: "awaiting_member" as const,
 			interactionUrl: `https://auth.${input.provider}.com/device`,
 			userCode: "ABCD-EFGH",
@@ -89,7 +93,15 @@ function card(label: string): HTMLElement {
 function status(label: string): string | null {
 	return card(label).querySelector('small[role="status"]')!.textContent;
 }
-/** The one action of a provider card. */
+function addAccount(label: string): HTMLButtonElement {
+	view.el.querySelector<HTMLButtonElement>(".connection-add")!.click();
+	const provider = [...view.el.querySelectorAll<HTMLButtonElement>(".connection-provider-picker button")].find(
+		(item) => item.textContent === label,
+	)!;
+	provider.click();
+	return provider;
+}
+/** The first action of an existing account or sign-in attempt. */
 function action(label: string): HTMLButtonElement {
 	return card(label).querySelector<HTMLButtonElement>("button")!;
 }
@@ -101,27 +113,510 @@ function loginIds(client: Awaited<ReturnType<typeof setup>>["client"], call: num
 }
 
 describe("member model account settings", () => {
-	it("shows one card per provider and keeps sign-in unavailable without configured onboarding", async () => {
-		const { client } = await setup(false, observed());
-		expect([...view.el.querySelectorAll(".connection-card strong")].map((item) => item.textContent)).toEqual([
-			OPENAI,
-			CLAUDE,
-		]);
-		for (const label of [OPENAI, CLAUDE]) {
-			expect(status(label)).toBe("Not available yet");
-			expect(action(label).textContent).toBe("Connect");
-			expect(action(label).disabled).toBe(true);
-			action(label).click();
+	it("renders existing identities while refreshing usage and then reads new observations", async () => {
+		const { client, lifetime } = await setup(
+			true,
+			observed({ ...connected, sponsorBindingId: id(82), sponsorVersion: 1 }),
+		);
+		view.dispose();
+		const pending = deferred<void>();
+		const refreshAccountMetadata = vi.fn(() => pending.promise);
+		view = new ConnectionsView({ ...client, refreshAccountMetadata }, lifetime.signal);
+		document.body.append(view.el);
+		await settle();
+		expect(view.el.textContent).toContain("member@example.com");
+		expect(view.el.textContent).toContain("Refreshing…");
+		expect(refreshAccountMetadata).toHaveBeenCalledTimes(1);
+		vi.mocked(client.listConnections).mockResolvedValue(
+			observed({
+				...connected,
+				providerAccountEmail: "verified@example.com",
+				sponsorBindingId: id(82),
+				sponsorVersion: 1,
+			}),
+		);
+		pending.resolve();
+		await settle();
+		expect(view.el.textContent).toContain("verified@example.com");
+		expect(view.el.textContent).not.toContain("Refreshing…");
+		expect(client.beginProviderLogin).not.toHaveBeenCalled();
+	});
+	it("asks for a new observation only from the member's own Refresh button", async () => {
+		const { client, lifetime } = await setup(
+			true,
+			observed({ ...connected, sponsorBindingId: id(82), sponsorVersion: 1 }),
+		);
+		view.dispose();
+		const refreshAccountMetadata = vi.fn(async () => {});
+		view = new ConnectionsView({ ...client, refreshAccountMetadata }, lifetime.signal);
+		document.body.append(view.el);
+		await settle();
+		expect(refreshAccountMetadata).toHaveBeenCalledExactlyOnceWith(expect.any(AbortSignal), false);
+		[...view.el.querySelectorAll("button")].find((button) => button.textContent === "Refresh")!.click();
+		await settle();
+		expect(refreshAccountMetadata).toHaveBeenCalledTimes(2);
+		expect(refreshAccountMetadata).toHaveBeenLastCalledWith(expect.any(AbortSignal), true);
+	});
+	it("says Updated for a moment after the member's own Refresh, and never after a failed one", async () => {
+		vi.useFakeTimers();
+		const { client, lifetime } = await setup(
+			true,
+			observed({ ...connected, sponsorBindingId: id(82), sponsorVersion: 1 }),
+		);
+		view.dispose();
+		const refreshAccountMetadata = vi.fn(async (_signal?: AbortSignal, _force?: boolean) => {});
+		view = new ConnectionsView({ ...client, refreshAccountMetadata }, lifetime.signal);
+		document.body.append(view.el);
+		await settle();
+		const refresh = () => view.el.querySelector<HTMLButtonElement>('[data-focus-key="refresh"]')!;
+		expect(refresh().textContent).toBe("Refresh");
+		refresh().click();
+		await settle();
+		expect(refresh().textContent).toBe("Updated");
+		await vi.advanceTimersByTimeAsync(1999);
+		expect(refresh().textContent).toBe("Updated");
+		await vi.advanceTimersByTimeAsync(1);
+		expect(refresh().textContent).toBe("Refresh");
+		// A read the member did not ask for ends "Updated" at once and is not credited to them.
+		refresh().click();
+		await settle();
+		expect(refresh().textContent).toBe("Updated");
+		window.dispatchEvent(new Event("focus"));
+		expect(refresh().textContent).toBe("Refreshing…");
+		await settle();
+		expect(refresh().textContent).toBe("Refresh");
+		expect(refreshAccountMetadata.mock.calls.at(-1)![1]).toBe(false);
+		refresh().click();
+		await settle();
+		expect(refresh().textContent).toBe("Updated");
+		refreshAccountMetadata.mockRejectedValueOnce(new Error("offline"));
+		window.dispatchEvent(new Event("focus"));
+		await settle();
+		expect(refresh().textContent).toBe("Refresh");
+		expect(view.el.textContent).toContain("Usage could not be refreshed. Try again.");
+		expect(refreshAccountMetadata.mock.calls.at(-1)![1]).toBe(false);
+		refreshAccountMetadata.mockRejectedValueOnce(new Error("offline"));
+		refresh().click();
+		await settle();
+		expect(refresh().textContent).toBe("Refresh");
+		expect(view.el.textContent).toContain("Usage could not be refreshed. Try again.");
+		view.dispose();
+		expect(vi.getTimerCount()).toBe(0);
+	});
+	it("makes a background read ask for a new observation when Refresh joins it", async () => {
+		const { client, lifetime } = await setup(
+			true,
+			observed({ ...connected, sponsorBindingId: id(82), sponsorVersion: 1 }),
+		);
+		view.dispose();
+		const refreshAccountMetadata = vi.fn(async (_signal?: AbortSignal, _force?: boolean) => {});
+		view = new ConnectionsView({ ...client, refreshAccountMetadata }, lifetime.signal);
+		document.body.append(view.el);
+		await settle();
+		// Returning to the window starts a background read; the button is not greyed out yet.
+		window.dispatchEvent(new Event("focus"));
+		view.el.querySelector<HTMLButtonElement>('[data-focus-key="refresh"]')!.click();
+		await vi.waitFor(() => expect(refreshAccountMetadata).toHaveBeenCalledTimes(2));
+		await settle();
+		expect(refreshAccountMetadata.mock.calls.map((call) => call[1])).toEqual([false, true]);
+		expect(view.el.querySelector('[data-focus-key="refresh"]')!.textContent).toBe("Updated");
+	});
+	it("keeps one Updated clock when Refresh is pressed twice during one read", async () => {
+		vi.useFakeTimers();
+		const { client } = await setup(true, observed({ ...connected, sponsorBindingId: id(82), sponsorVersion: 1 }));
+		const pending = deferred<NativeExecutionConnections>();
+		vi.mocked(client.listConnections).mockReturnValueOnce(pending.promise);
+		const refresh = () => view.el.querySelector<HTMLButtonElement>('[data-focus-key="refresh"]')!;
+		refresh().click();
+		refresh().click();
+		pending.resolve(observed({ ...connected, sponsorBindingId: id(82), sponsorVersion: 1 }));
+		await settle();
+		expect(refresh().textContent).toBe("Updated");
+		view.dispose();
+		expect(vi.getTimerCount()).toBe(0);
+	});
+	it("shows the returning card details in Danish", async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(new Date("2026-09-19T20:00:00Z"));
+		setLanguagePreference("da");
+		try {
+			const first = {
+				...connected,
+				sponsorBindingId: id(82),
+				sponsorVersion: 1,
+				providerAccountUsage: {
+					observedAt: "2026-09-19T19:00:00.000Z",
+					windows: [{ id: "primary" as const, label: "5 hours", usedPercent: 8 }],
+				},
+			};
+			await setup(true, observed(first, { ...first, connectionId: id(83) }));
+			const card = view.el.querySelector(".connection-card")!;
+			const time = fmtTime("2026-09-19T19:00:00.000Z");
+			expect(card.querySelector(".connection-identity")!.textContent).toBe(
+				`Tilføjet ${fmtTime(connected.consentedAt)} · ${id(81).slice(-8)}`,
+			);
+			expect(card.querySelector(".connection-identity")!.getAttribute("title")).toBe(`Forbindelse ${id(81)}`);
+			expect(card.querySelector(`[title="Sidst tjekket ${time}"]`)!.textContent).toBe(
+				`92% ved sidste tjek · ${time}`,
+			);
+			view.el.querySelector<HTMLButtonElement>('[data-focus-key="refresh"]')!.click();
+			await settle();
+			expect(view.el.querySelector('[data-focus-key="refresh"]')!.textContent).toBe("Opdateret");
+		} finally {
+			setLanguagePreference("en");
 		}
+	});
+	it("tells apart two cards for the same provider and email by when each was added", async () => {
+		const first = { ...connected, sponsorBindingId: id(82), sponsorVersion: 1 };
+		const second = {
+			...first,
+			connectionId: id(83),
+			providerAccountEmail: "Member@Example.com",
+			consentedAt: "2026-09-21T00:24:00.000Z",
+		};
+		const other = { ...first, connectionId: id(84), providerAccountEmail: "other@example.com" };
+		await setup(true, observed(first, second, other));
+		const identity = (index: number) =>
+			view.el.querySelectorAll(".connection-card")[index]!.querySelector(".connection-identity")?.textContent;
+		expect(identity(0)).toBe(`Added ${fmtTime(first.consentedAt)} · ${id(81).slice(-8)}`);
+		expect(identity(1)).toBe(`Added ${fmtTime(second.consentedAt)} · ${id(83).slice(-8)}`);
+		expect(identity(2)).toBeUndefined();
+	});
+	it("keeps connected identities visible when usage refresh fails", async () => {
+		const { client, lifetime } = await setup(true);
+		view.dispose();
+		view = new ConnectionsView(
+			{ ...client, refreshAccountMetadata: vi.fn().mockRejectedValue(new Error("offline")) },
+			lifetime.signal,
+		);
+		document.body.append(view.el);
+		await settle();
+		expect(view.el.textContent).toContain("member@example.com");
+		expect(view.el.textContent).toContain("Usage could not be refreshed. Try again.");
+		expect(view.el.textContent).not.toContain("Your model accounts could not be read");
+	});
+	it("keeps account addition unavailable without configured onboarding", async () => {
+		const { client } = await setup(false, observed());
+		expect(view.el.querySelectorAll(".connection-card")).toHaveLength(0);
+		const add = view.el.querySelector<HTMLButtonElement>(".connection-add")!;
+		expect(add.textContent).toBe("Add account");
+		expect(add.disabled).toBe(true);
+		add.click();
+		expect(view.el.querySelector<HTMLElement>(".connection-provider-picker")!.hidden).toBe(true);
 		await settle();
 		expect(client.beginProviderLogin).not.toHaveBeenCalled();
 		expect(view.el.querySelector('input[type="password"]')).toBeNull();
 		const labels = [...view.el.querySelectorAll("button")].map((item) => item.textContent);
 		for (const removed of ["Refresh model accounts", "Enable for my messages", "Revoke connection"])
 			expect(labels).not.toContain(removed);
-		expect(view.el.textContent).toContain("Connect your tools");
-		const service = [...view.el.querySelectorAll("button")].find((item) => item.textContent === "Add service")!;
-		expect(service.disabled).toBe(true);
+		// Services moved to their own view beside the model accounts (Step 7).
+		expect(view.el.textContent).not.toContain("Add service");
+	});
+	it("shows each connected account with its provider logo and email, hiding opaque references", async () => {
+		await setup(
+			true,
+			observed(
+				{
+					...connected,
+					providerAccountReference: "codex-cli:opaque-account",
+					providerAccountEmail: "first@example.com",
+				},
+				{ ...connected, connectionId: id(83), providerAccountEmail: "second@example.com" },
+				{
+					...connected,
+					connectionId: id(84),
+					provider: "anthropic",
+					nativeHarness: "claude-code",
+					providerAccountReference: "claude:opaque-account",
+					providerAccountEmail: undefined,
+				},
+				{ ...connected, connectionId: id(85), connectionStatus: "revoked", authorizationState: "revoked" },
+			),
+		);
+		const accounts = [...view.el.querySelectorAll(".connection-card")];
+		expect(accounts).toHaveLength(3);
+		expect(accounts.map((item) => item.querySelector("strong")!.textContent)).toEqual([OPENAI, OPENAI, CLAUDE]);
+		expect(accounts.map((item) => item.querySelector("small")!.textContent)).toEqual([
+			"first@example.com",
+			"second@example.com",
+			"Email unavailable",
+		]);
+		expect(accounts.map((item) => item.querySelector("img")!.getAttribute("src"))).toEqual([
+			"./assets/provider-openai.svg",
+			"./assets/provider-openai.svg",
+			"./assets/provider-anthropic.svg",
+		]);
+		for (const account of accounts) expect(account.querySelector("button")!.textContent).toBe("Sign out");
+		expect(view.el.textContent).not.toContain("opaque-account");
+	});
+	it("tells apart accounts with missing email by when they were added, without presenting references", async () => {
+		await setup(
+			true,
+			observed(
+				{ ...connected, providerAccountEmail: undefined, providerAccountReference: "unverified@example.com" },
+				{ ...connected, connectionId: id(83), providerAccountEmail: undefined },
+			),
+		);
+		expect([...view.el.querySelectorAll(".connection-email")].map((item) => item.textContent)).toEqual([
+			"Email unavailable",
+			"Email unavailable",
+		]);
+		expect(view.el.textContent).not.toContain("unverified@example.com");
+		const identities = [...view.el.querySelectorAll(".connection-identity")];
+		expect(identities.map((item) => item.textContent)).toEqual([
+			`Added ${fmtTime(connected.consentedAt)} · ${id(81).slice(-8)}`,
+			`Added ${fmtTime(connected.consentedAt)} · ${id(83).slice(-8)}`,
+		]);
+		expect(identities[1]!.getAttribute("title")).toBe(`Connection ${id(83)}`);
+		expect(view.el.querySelectorAll("[role=meter]")).toHaveLength(0);
+		expect(view.el.textContent).toContain("Usage unavailable");
+	});
+	it("shows remaining usage and reset countdowns in read-only meters for each account", async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(new Date("2026-09-19T20:00:00Z"));
+		await setup(
+			true,
+			observed({
+				...connected,
+				providerAccountUsage: {
+					observedAt: new Date().toISOString(),
+					windows: [
+						{ id: "primary", label: "5-hour limit", usedPercent: 12.5, resetAt: "2026-09-19T23:30:00Z" },
+						{ id: "secondary", label: "Weekly limit", usedPercent: 91, resetAt: "2026-09-26T14:00:00Z" },
+					],
+				},
+			}),
+		);
+		const meters = [...view.el.querySelectorAll<HTMLElement>("[role=meter]")];
+		expect(meters.map((meter) => meter.getAttribute("aria-valuenow"))).toEqual(["87.5", "9"]);
+		expect(meters[1]!.classList.contains("is-low")).toBe(true);
+		expect(meters[1]!.querySelector<HTMLElement>("span")!.style.width).toBe("9%");
+		expect(view.el.textContent).toContain("Resets in 6d 18h");
+		expect(view.el.textContent).toContain("9% left");
+		expect(view.el.textContent).toContain("Resets in 3h 30m");
+		expect(view.el.querySelector('[role="slider"], input[type="range"]')).toBeNull();
+		expect(meters.map((meter) => meter.getAttribute("aria-label"))).toEqual([
+			"5-hour limit remaining usage",
+			"Weekly limit remaining usage",
+		]);
+		// Two bars would look alike, so each carries its name.
+		const card = view.el.querySelector(".connection-card")!;
+		const labels = [...card.querySelectorAll(".connection-usage-label")];
+		expect(labels.map((item) => item.textContent)).toEqual(["5-hour limit", "Weekly limit"]);
+		expect(labels.every((item) => item.getAttribute("aria-hidden") === "true")).toBe(true);
+		// The check time is on hover only; the card has no date line of its own.
+		expect(card.textContent).not.toContain("Last checked");
+		expect(card.querySelector(`[title="Last checked ${fmtTime(new Date().toISOString())}"]`)?.textContent).toBe(
+			"87.5% left",
+		);
+		expect(card.querySelector(".connection-identity")).toBeNull();
+		expect(card.textContent).not.toContain("Connected");
+		expect(card.textContent).not.toContain(id(81).slice(-8));
+		expect(card.querySelector("[title^='Connection ']")).toBeNull();
+	});
+	it("ages a snapshot, expires its meter, and preserves focus when time advances", async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(new Date("2026-09-19T20:00:00Z"));
+		const { client } = await setup(
+			true,
+			observed({
+				...connected,
+				sponsorBindingId: id(82),
+				sponsorVersion: 1,
+				providerAccountUsage: {
+					observedAt: new Date().toISOString(),
+					windows: [{ id: "primary", label: "5-hour limit", usedPercent: 100, resetAt: "2026-09-19T20:10:00Z" }],
+				},
+			}),
+		);
+		action(OPENAI).focus();
+		await vi.advanceTimersByTimeAsync(6 * 60_000);
+		// An old reading says when it was taken; one bar needs no name.
+		expect(view.el.textContent).toContain(`0% at last check · ${fmtTime("2026-09-19T20:00:00.000Z")}`);
+		expect(view.el.querySelector(".connection-usage-meter")!.classList.contains("is-stale")).toBe(true);
+		expect(view.el.querySelector(".connection-usage-label")).toBeNull();
+		expect(view.el.textContent).not.toContain("5-hour limit");
+		expect(view.el.textContent).not.toContain("may be out of date");
+		expect(document.activeElement).toBe(action(OPENAI));
+		await vi.advanceTimersByTimeAsync(4 * 60_000);
+		expect(view.el.querySelector("[role=meter]")).toBeNull();
+		expect(view.el.textContent).toContain("Reset passed");
+		expect(view.el.textContent).not.toContain("0%");
+		expect(client.listConnections).toHaveBeenCalledTimes(11);
+		view.dispose();
+		await vi.advanceTimersByTimeAsync(1);
+		expect(vi.getTimerCount()).toBe(0);
+	});
+	it("refreshes missing usage while visible, pauses hidden requests, and hydrates usage on return", async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(new Date("2026-09-19T20:00:00Z"));
+		const account = { ...connected, sponsorBindingId: id(82), sponsorVersion: 1 };
+		const { client } = await setup(true, observed(account));
+		action(OPENAI).focus();
+		await vi.advanceTimersByTimeAsync(60_000);
+		expect(client.listConnections).toHaveBeenCalledTimes(2);
+		vi.spyOn(document, "hidden", "get").mockReturnValue(true);
+		await vi.advanceTimersByTimeAsync(120_000);
+		expect(client.listConnections).toHaveBeenCalledTimes(2);
+		vi.mocked(client.listConnections).mockResolvedValue(
+			observed({
+				...account,
+				providerAccountUsage: {
+					observedAt: new Date().toISOString(),
+					windows: [{ id: "primary", label: "5-hour limit", usedPercent: 91 }],
+				},
+			}),
+		);
+		vi.spyOn(document, "hidden", "get").mockReturnValue(false);
+		document.dispatchEvent(new Event("visibilitychange"));
+		await settle();
+		expect(client.listConnections).toHaveBeenCalledTimes(3);
+		expect(view.el.textContent).toContain("9% left");
+		expect(document.activeElement).toBe(action(OPENAI));
+		vi.mocked(client.listConnections).mockImplementation(async () =>
+			observed({
+				...account,
+				providerAccountUsage: {
+					observedAt: new Date().toISOString(),
+					windows: [{ id: "primary", label: "5-hour limit", usedPercent: 95 }],
+				},
+			}),
+		);
+		await vi.advanceTimersByTimeAsync(60_000);
+		expect(client.listConnections).toHaveBeenCalledTimes(4);
+		expect(view.el.textContent).toContain("5% left");
+		expect(view.el.textContent).not.toContain("at last check");
+	});
+	it("shows an active provider usage wall without treating an earlier snapshot as available quota", async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(new Date("2026-09-19T20:00:00Z"));
+		await setup(
+			true,
+			observed({
+				...connected,
+				usageLimitResetAt: "2026-09-19T21:00:00Z",
+				providerAccountUsage: {
+					observedAt: new Date().toISOString(),
+					windows: [{ id: "primary", label: "5-hour limit", usedPercent: 50 }],
+				},
+			}),
+		);
+		expect(view.el.textContent).toContain("Usage limit reached · resets in 1h 0m");
+		expect(view.el.querySelector("[role=meter]")!.getAttribute("aria-valuetext")).toBe(
+			`50% at last check · ${fmtTime("2026-09-19T20:00:00.000Z")}`,
+		);
+		expect(view.el.textContent).not.toContain("50% left");
+		expect(view.el.querySelector(".connection-usage-meter")!.classList.contains("is-stale")).toBe(true);
+	});
+	it("never shows a reading time later than now when the host's clock runs ahead", async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(new Date("2026-09-19T20:00:00Z"));
+		await setup(
+			true,
+			observed({
+				...connected,
+				providerAccountUsage: {
+					observedAt: "2026-09-19T20:10:00.000Z",
+					windows: [{ id: "primary", label: "5-hour limit", usedPercent: 8 }],
+				},
+			}),
+		);
+		expect(view.el.querySelector("[role=meter]")!.getAttribute("aria-valuetext")).toBe("92% at last check");
+	});
+	it("refreshes usage from the account projection without losing keyboard focus", async () => {
+		const { client } = await setup(true, observed({ ...connected, sponsorBindingId: id(82), sponsorVersion: 1 }));
+		const refresh = view.el.querySelector<HTMLButtonElement>('[data-focus-key="refresh"]')!;
+		refresh.focus();
+		vi.mocked(client.listConnections).mockResolvedValue(
+			observed({
+				...connected,
+				sponsorBindingId: id(82),
+				sponsorVersion: 1,
+				providerAccountUsage: {
+					observedAt: new Date().toISOString(),
+					windows: [{ id: "primary", label: "5-hour limit", usedPercent: 0 }],
+				},
+			}),
+		);
+		refresh.click();
+		await settle();
+		expect(view.el.querySelector("[role=meter]")!.getAttribute("aria-valuenow")).toBe("100");
+		expect(view.el.textContent).toContain("Reset time unavailable");
+		expect(document.activeElement).toBe(view.el.querySelector('[data-focus-key="refresh"]'));
+	});
+	it.each([false, true])(
+		"shows only the latest version of an account regardless of response order: %s",
+		async (reverse) => {
+			const older = {
+				...connected,
+				providerAccountEmail: "old@example.com",
+				sponsorBindingId: id(82),
+				sponsorVersion: 1,
+			};
+			const newer = { ...older, connectionVersion: 3, providerAccountEmail: "current@example.com" };
+			await setup(true, observed(...(reverse ? [newer, older] : [older, newer])));
+			expect(view.el.querySelectorAll(".connection-card")).toHaveLength(1);
+			expect(card(OPENAI).querySelector("small")!.textContent).toBe("current@example.com");
+			expect(view.el.textContent).not.toContain("old@example.com");
+		},
+	);
+	it("does not restore an older account version after the latest version was revoked", async () => {
+		const older = { ...connected };
+		const { client } = await setup(
+			true,
+			observed(
+				{ ...older, connectionVersion: 3, connectionStatus: "revoked", authorizationState: "revoked" },
+				older,
+			),
+		);
+		expect(view.el.querySelectorAll(".connection-card")).toHaveLength(0);
+		expect(view.el.textContent).not.toContain("member@example.com");
+		expect(client.createMemberSponsor).not.toHaveBeenCalled();
+	});
+	it("signs out only the selected account when several accounts share a provider", async () => {
+		const first = { ...connected, sponsorBindingId: id(82), sponsorVersion: 1 };
+		const second = { ...first, connectionId: id(83), providerAccountEmail: "second@example.com" };
+		const { client } = await setup(true, observed(first, second));
+		vi.mocked(client.listConnections).mockResolvedValue(
+			observed(first, { ...second, connectionStatus: "revoked", authorizationState: "revoked" }),
+		);
+		view.el.querySelectorAll<HTMLButtonElement>(".connection-card button")[1]!.click();
+		await settle();
+		expect(client.revokeConnection).toHaveBeenCalledExactlyOnceWith(
+			{ providerConnectionId: second.connectionId },
+			expect.any(AbortSignal),
+		);
+		expect(view.el.querySelectorAll(".connection-card")).toHaveLength(1);
+		expect(card(OPENAI).querySelector("small")!.textContent).toBe("member@example.com");
+		expect(view.el.textContent).not.toContain("second@example.com");
+	});
+	it("keeps existing accounts visible while adding another account from the same provider", async () => {
+		vi.useFakeTimers();
+		const first = { ...connected, sponsorBindingId: id(82), sponsorVersion: 1 };
+		const { client } = await setup(true, observed(first));
+		addAccount(OPENAI);
+		await settle();
+		expect(view.el.querySelectorAll(".connection-card:not(.connection-attempt)")).toHaveLength(1);
+		expect(card(OPENAI).querySelector("small")!.textContent).toBe("member@example.com");
+		expect(action(OPENAI).textContent).toBe("Sign out");
+		expect(view.el.querySelector(".connection-attempt .connection-sign-in")).not.toBeNull();
+		const target = loginIds(client, 0).clientConnectionId;
+		vi.mocked(client.listConnections).mockResolvedValue(
+			observed(first, {
+				...first,
+				connectionId: id(182),
+				clientConnectionId: target,
+				providerAccountEmail: "second@example.com",
+			}),
+		);
+		await vi.advanceTimersByTimeAsync(WATCH_MS);
+		expect(view.el.querySelector(".connection-attempt")).toBeNull();
+		expect([...view.el.querySelectorAll(".connection-email")].map((item) => item.textContent)).toEqual([
+			"member@example.com",
+			"second@example.com",
+		]);
+		expect(client.revokeConnection).not.toHaveBeenCalled();
+		expect(client.beginProviderLogin).toHaveBeenCalledTimes(1);
 	});
 	it("shows the checked state of each account", async () => {
 		const pending = deferred<NativeExecutionConnections>();
@@ -137,8 +632,8 @@ describe("member model account settings", () => {
 			lifetime.signal,
 		);
 		document.body.append(view.el);
-		expect(status(OPENAI)).toBe("Checking…");
-		expect(action(OPENAI).disabled).toBe(true);
+		expect(view.el.textContent).toContain("Checking");
+		expect(view.el.querySelector<HTMLButtonElement>(".connection-add")!.disabled).toBe(true);
 		pending.resolve(
 			observed(connected, {
 				...connected,
@@ -149,10 +644,11 @@ describe("member model account settings", () => {
 			}),
 		);
 		await settle();
-		expect(status(OPENAI)).toBe("Connected · member@example.com");
-		expect(action(OPENAI).textContent).toBe("Disconnect");
-		expect(status(CLAUDE)).toBe("Sign in again to keep using this account");
-		expect(action(CLAUDE).textContent).toBe("Sign in again");
+		expect(card(OPENAI).querySelector("small")!.textContent).toBe("member@example.com");
+		expect(action(OPENAI).textContent).toBe("Sign out");
+		expect(card(CLAUDE).textContent).toContain("Sign out and add this account again to reconnect.");
+		expect(card(CLAUDE).textContent).not.toContain("Added");
+		expect([...card(CLAUDE).querySelectorAll("button")].map((item) => item.textContent)).toEqual(["Sign out"]);
 		expect(action(CLAUDE).disabled).toBe(false);
 	});
 	it.each([
@@ -160,9 +656,18 @@ describe("member model account settings", () => {
 		["Anthropic", "anthropic", CLAUDE],
 	] as const)("starts %s only on an explicit action with fresh admission IDs", async (name, provider, label) => {
 		const { client } = await setup(true, observed());
-		expect(status(label)).toBe("Not connected");
+		expect(view.el.querySelectorAll(".connection-card")).toHaveLength(0);
 		expect(client.beginProviderLogin).not.toHaveBeenCalled();
-		action(label).click();
+		const add = view.el.querySelector<HTMLButtonElement>(".connection-add")!;
+		expect(add.getAttribute("aria-expanded")).toBe("false");
+		add.click();
+		expect(view.el.querySelector(".connection-add")!.getAttribute("aria-expanded")).toBe("true");
+		const providers = [...view.el.querySelectorAll<HTMLButtonElement>(".connection-provider-picker button")];
+		expect(providers.map((item) => item.textContent)).toEqual([OPENAI, CLAUDE]);
+		for (const item of providers) expect(item.querySelector("img")).not.toBeNull();
+		expect(client.beginProviderLogin).not.toHaveBeenCalled();
+		providers.find((item) => item.textContent === label)!.click();
+		expect(view.el.querySelector<HTMLElement>(".connection-provider-picker")!.hidden).toBe(true);
 		expect(status(label)).toBe("Preparing sign-in. The first time can take a minute or two.");
 		expect(action(label).textContent).toBe("Connecting…");
 		expect(action(label).disabled).toBe(true);
@@ -188,7 +693,7 @@ describe("member model account settings", () => {
 	it("watches an open sign-in and enables the finished connection for the member's messages", async () => {
 		vi.useFakeTimers();
 		const { client } = await setup(true, observed());
-		action(OPENAI).click();
+		addAccount(OPENAI);
 		await settle();
 		const target = loginIds(client, 0).clientConnectionId;
 		expect(client.listConnections).toHaveBeenCalledTimes(2);
@@ -204,16 +709,24 @@ describe("member model account settings", () => {
 		await vi.advanceTimersByTimeAsync(WATCH_MS);
 		expect(status(OPENAI)).toBe("Waiting for you to finish signing in…");
 		expect(client.createMemberSponsor).not.toHaveBeenCalled();
-		vi.mocked(client.listConnections).mockResolvedValueOnce(observed({ ...connected, connectionId: target }));
+		vi.mocked(client.listConnections).mockResolvedValueOnce(
+			observed({ ...connected, connectionId: id(182), clientConnectionId: target }),
+		);
 		vi.mocked(client.listConnections).mockResolvedValue(
-			observed({ ...connected, connectionId: target, sponsorBindingId: id(82), sponsorVersion: 1 }),
+			observed({
+				...connected,
+				connectionId: id(182),
+				clientConnectionId: target,
+				sponsorBindingId: id(82),
+				sponsorVersion: 1,
+			}),
 		);
 		await vi.advanceTimersByTimeAsync(WATCH_MS);
 		expect(view.el.querySelector(".connection-sign-in")).toBeNull();
-		expect(status(OPENAI)).toBe("Connected · member@example.com");
-		expect(action(OPENAI).textContent).toBe("Disconnect");
+		expect(card(OPENAI).querySelector("small")!.textContent).toBe("member@example.com");
+		expect(action(OPENAI).textContent).toBe("Sign out");
 		expect(client.createMemberSponsor).toHaveBeenCalledExactlyOnceWith(
-			{ providerConnectionId: target, providerConnectionVersion: 2, allowAutonomous: false },
+			{ providerConnectionId: id(182), providerConnectionVersion: 2, allowAutonomous: false },
 			expect.any(AbortSignal),
 		);
 		// Enabling re-reads once; with no sign-in open the page stops watching.
@@ -222,31 +735,144 @@ describe("member model account settings", () => {
 		expect(client.listConnections).toHaveBeenCalledTimes(6);
 		expect(client.beginProviderLogin).toHaveBeenCalledTimes(1);
 	});
-	it("never replays a start: every explicit Connect is a new sign-in with its own IDs", async () => {
+	it("correlates completion with the exact provider and client ID, then displays the provider email", async () => {
+		vi.useFakeTimers();
+		const signIns = new ProviderSignIns();
+		const { client } = await setup(true, observed(), signIns);
+		addAccount(OPENAI);
+		await settle();
+		const target = loginIds(client, 0).clientConnectionId;
+		const unrelated = { ...connected, connectionId: target, sponsorBindingId: id(82), sponsorVersion: 1 };
+		vi.mocked(client.listConnections).mockResolvedValue(observed(unrelated));
+		await vi.advanceTimersByTimeAsync(WATCH_MS);
+		expect(view.el.querySelector(".connection-sign-in")).not.toBeNull();
+		vi.mocked(client.listConnections).mockResolvedValue(
+			observed({ ...unrelated, provider: "anthropic", nativeHarness: "claude-code", clientConnectionId: target }),
+		);
+		await vi.advanceTimersByTimeAsync(WATCH_MS);
+		expect(view.el.querySelector(".connection-sign-in")).not.toBeNull();
+		const matching = {
+			...connected,
+			connectionId: id(182),
+			clientConnectionId: target,
+			providerAccountReference: "codex-cli:opaque-account",
+			providerAccountEmail: "signed-in@example.com",
+			sponsorBindingId: id(183),
+			sponsorVersion: 1,
+		};
+		vi.mocked(client.listConnections).mockResolvedValue(
+			observed(unrelated, { ...matching, authorizationState: "reauthentication_required" }),
+		);
+		await vi.advanceTimersByTimeAsync(WATCH_MS);
+		expect(view.el.querySelector(".connection-sign-in")).not.toBeNull();
+		expect(view.el.querySelectorAll(".connection-card:not(.connection-attempt)")).toHaveLength(1);
+		view.el.querySelector<HTMLAnchorElement>(".connection-sign-in a")!.focus();
+		vi.mocked(client.listConnections).mockResolvedValue(observed(unrelated, matching));
+		await vi.advanceTimersByTimeAsync(WATCH_MS);
+		expect(view.el.querySelector(".connection-attempt")).toBeNull();
+		expect(view.el.textContent).toContain("signed-in@example.com");
+		expect(view.el.textContent).not.toContain("Email unavailable");
+		expect(signIns.attempts.size).toBe(0);
+		expect(document.activeElement).toBe(view.el.querySelector(".connection-add"));
+		const reads = vi.mocked(client.listConnections).mock.calls.length;
+		await vi.advanceTimersByTimeAsync(WATCH_MS * 3);
+		expect(client.listConnections).toHaveBeenCalledTimes(reads);
+		expect(client.beginProviderLogin).toHaveBeenCalledTimes(1);
+	});
+	it.each(["focus", "visibilitychange"])(
+		"checks completion immediately on %s when returning from sign-in",
+		async (event) => {
+			vi.useFakeTimers();
+			const { client, lifetime } = await setup(true, observed());
+			addAccount(OPENAI);
+			await settle();
+			vi.mocked(client.listConnections).mockResolvedValue(
+				observed({
+					...connected,
+					clientConnectionId: loginIds(client, 0).clientConnectionId,
+					sponsorBindingId: id(82),
+					sponsorVersion: 1,
+				}),
+			);
+			const target = event === "focus" ? window : document;
+			target.dispatchEvent(new Event(event));
+			await settle();
+			expect(view.el.querySelector(".connection-attempt")).toBeNull();
+			expect(view.el.textContent).toContain("member@example.com");
+			expect(client.listConnections).toHaveBeenCalledTimes(3);
+			target.dispatchEvent(new Event(event));
+			await vi.advanceTimersByTimeAsync(WATCH_MS * 3);
+			expect(client.listConnections).toHaveBeenCalledTimes(4);
+			lifetime.abort();
+			target.dispatchEvent(new Event(event));
+			await settle();
+			expect(client.listConnections).toHaveBeenCalledTimes(4);
+		},
+	);
+	it("coalesces changes during a slow read and observes both completed sign-ins without overlapping reads", async () => {
+		vi.useFakeTimers();
+		const { client } = await setup(true, observed());
+		const earlier = deferred<NativeExecutionConnections>();
+		vi.mocked(client.listConnections).mockReturnValueOnce(earlier.promise);
+		addAccount(OPENAI);
+		await settle();
+		addAccount(CLAUDE);
+		await settle();
+		window.dispatchEvent(new Event("focus"));
+		document.dispatchEvent(new Event("visibilitychange"));
+		expect(client.listConnections).toHaveBeenCalledTimes(2);
+		vi.mocked(client.listConnections).mockResolvedValue(
+			observed(
+				{
+					...connected,
+					clientConnectionId: loginIds(client, 0).clientConnectionId,
+					sponsorBindingId: id(82),
+					sponsorVersion: 1,
+				},
+				{
+					...connected,
+					connectionId: id(84),
+					provider: "anthropic",
+					nativeHarness: "claude-code",
+					clientConnectionId: loginIds(client, 1).clientConnectionId,
+					sponsorBindingId: id(85),
+					sponsorVersion: 1,
+				},
+			),
+		);
+		earlier.resolve(observed());
+		await settle();
+		expect(client.listConnections).toHaveBeenCalledTimes(3);
+		expect(view.el.querySelectorAll(".connection-attempt")).toHaveLength(0);
+		expect(view.el.querySelectorAll(".connection-card")).toHaveLength(2);
+		await vi.advanceTimersByTimeAsync(WATCH_MS * 3);
+		expect(client.listConnections).toHaveBeenCalledTimes(3);
+		expect(view.el.querySelectorAll(".connection-card")).toHaveLength(2);
+	});
+	it("never replays a start: every explicit account addition is a new sign-in with its own IDs", async () => {
 		const { client } = await setup(true, observed());
 		vi.mocked(client.beginProviderLogin).mockRejectedValueOnce(new Error("Unknown admission result"));
-		const original = action(OPENAI);
-		original.click();
+		const original = addAccount(OPENAI);
 		original.click();
 		await settle();
 		expect(client.beginProviderLogin).toHaveBeenCalledTimes(1);
 		expect(status(OPENAI)).toBe(START_FAILED);
 		expect(view.el.querySelector(".connection-sign-in")).toBeNull();
-		expect(action(OPENAI).textContent).toBe("Connect");
+		expect(action(OPENAI).textContent).toBe("Try again");
 		expect(action(OPENAI).disabled).toBe(false);
 		action(OPENAI).click();
 		await settle();
 		expect(client.beginProviderLogin).toHaveBeenCalledTimes(2);
 		expect(status(OPENAI)).toBe("Waiting for you to finish signing in…");
 		// The other provider is its own sign-in.
-		action(CLAUDE).click();
+		addAccount(CLAUDE);
 		await settle();
 		expect(view.el.querySelectorAll(".connection-sign-in")).toHaveLength(2);
 		action(OPENAI).click();
 		expect(view.el.querySelectorAll(".connection-sign-in")).toHaveLength(1);
-		expect(status(OPENAI)).toBe("Not connected");
+		expect(card(OPENAI)).toBeUndefined();
 		expect(status(CLAUDE)).toBe("Waiting for you to finish signing in…");
-		action(OPENAI).click();
+		addAccount(OPENAI);
 		await settle();
 		expect(client.beginProviderLogin).toHaveBeenCalledTimes(4);
 		const used = [0, 1, 2, 3].flatMap((call) => Object.values(loginIds(client, call)));
@@ -255,19 +881,19 @@ describe("member model account settings", () => {
 	it("removes an expired sign-in on the next read and uses new IDs for the next attempt", async () => {
 		vi.useFakeTimers();
 		const { client } = await setup(true, observed());
-		action(OPENAI).click();
+		addAccount(OPENAI);
 		await settle();
 		await vi.advanceTimersByTimeAsync(55_000);
 		expect(card(OPENAI).querySelector(".connection-sign-in")).not.toBeNull();
 		await vi.advanceTimersByTimeAsync(5_000);
 		expect(view.el.querySelector(".connection-sign-in")).toBeNull();
-		expect(status(OPENAI)).toBe("Not connected");
-		expect(action(OPENAI).textContent).toBe("Connect");
+		expect(card(OPENAI)).toBeUndefined();
+		expect(view.el.querySelector<HTMLButtonElement>(".connection-add")!.disabled).toBe(false);
 		const reads = vi.mocked(client.listConnections).mock.calls.length;
 		await vi.advanceTimersByTimeAsync(WATCH_MS * 3);
 		expect(client.listConnections).toHaveBeenCalledTimes(reads);
 		expect(client.beginProviderLogin).toHaveBeenCalledTimes(1);
-		action(OPENAI).click();
+		addAccount(OPENAI);
 		await settle();
 		const first = loginIds(client, 0);
 		const renewed = loginIds(client, 1);
@@ -278,13 +904,13 @@ describe("member model account settings", () => {
 		const { client, lifetime } = await setup(true, observed(), signIns);
 		const pending = deferred<WebNativeProviderLogin>();
 		vi.mocked(client.beginProviderLogin).mockReturnValueOnce(pending.promise);
-		action(OPENAI).click();
+		addAccount(OPENAI);
 		const [input] = vi.mocked(client.beginProviderLogin).mock.calls[0]!;
 		lifetime.abort();
 		expect(view.el.textContent).toBe("");
 		pending.resolve({
 			loginId: input.clientLoginId,
-			connectionId: input.clientConnectionId,
+			clientConnectionId: input.clientConnectionId,
 			status: "awaiting_member",
 			interactionUrl: "https://auth.openai.com/device",
 			userCode: "PRIVATE-CODE",
@@ -304,7 +930,7 @@ describe("member model account settings", () => {
 		const first = await setup(true, observed(), signIns);
 		const pending = deferred<WebNativeProviderLogin>();
 		vi.mocked(first.client.beginProviderLogin).mockReturnValueOnce(pending.promise);
-		action(OPENAI).click();
+		addAccount(OPENAI);
 		const [input] = vi.mocked(first.client.beginProviderLogin).mock.calls[0]!;
 		first.lifetime.abort();
 		const closed = view;
@@ -313,11 +939,11 @@ describe("member model account settings", () => {
 		expect(action(OPENAI).textContent).toBe("Connecting…");
 		expect(action(OPENAI).disabled).toBe(true);
 		action(OPENAI).click();
-		expect(status(CLAUDE)).toBe("Not connected");
+		expect(card(CLAUDE)).toBeUndefined();
 		expect(rebuilt.client.listConnections).toHaveBeenCalledTimes(1);
 		pending.resolve({
 			loginId: input.clientLoginId,
-			connectionId: input.clientConnectionId,
+			clientConnectionId: input.clientConnectionId,
 			status: "awaiting_member",
 			interactionUrl: "https://auth.openai.com/device",
 			userCode: "ABCD-EFGH",
@@ -340,7 +966,7 @@ describe("member model account settings", () => {
 		vi.useFakeTimers();
 		const signIns = new ProviderSignIns();
 		const first = await setup(true, observed(), signIns);
-		action(CLAUDE).click();
+		addAccount(CLAUDE);
 		await settle();
 		first.lifetime.abort();
 		const rebuilt = await setup(true, observed(), signIns);
@@ -356,7 +982,7 @@ describe("member model account settings", () => {
 	it("stops watching an open sign-in on teardown", async () => {
 		vi.useFakeTimers();
 		const { client, lifetime } = await setup(true, observed());
-		action(OPENAI).click();
+		addAccount(OPENAI);
 		await settle();
 		expect(client.listConnections).toHaveBeenCalledTimes(2);
 		lifetime.abort();
@@ -365,6 +991,16 @@ describe("member model account settings", () => {
 		expect(client.listConnections).toHaveBeenCalledTimes(2);
 		expect(view.el.textContent).toBe("");
 		expect(document.querySelector(".connection-sign-in")).toBeNull();
+	});
+	it("keeps keyboard focus on the provider sign-in link across polling", async () => {
+		vi.useFakeTimers();
+		const { client } = await setup(true, observed());
+		addAccount(OPENAI);
+		await settle();
+		view.el.querySelector<HTMLAnchorElement>(".connection-sign-in a")!.focus();
+		await vi.advanceTimersByTimeAsync(WATCH_MS);
+		expect(client.listConnections).toHaveBeenCalledTimes(3);
+		expect(document.activeElement).toBe(view.el.querySelector(".connection-sign-in a"));
 	});
 	it("enables a connected account for member messages once per connection version", async () => {
 		vi.useFakeTimers();
@@ -375,9 +1011,9 @@ describe("member model account settings", () => {
 		);
 		expect(vi.mocked(client.createMemberSponsor).mock.calls[0]![0]).not.toHaveProperty("clientBindingId");
 		expect(client.listConnections).toHaveBeenCalledTimes(2);
-		expect(status(OPENAI)).toBe("Connected · member@example.com");
+		expect(card(OPENAI).querySelector("small")!.textContent).toBe("member@example.com");
 		// Later reads of the same version do not enable it again.
-		action(CLAUDE).click();
+		addAccount(CLAUDE);
 		await settle();
 		await vi.advanceTimersByTimeAsync(WATCH_MS);
 		expect(client.createMemberSponsor).toHaveBeenCalledTimes(1);
@@ -402,7 +1038,7 @@ describe("member model account settings", () => {
 		await settle();
 		expect(createMemberSponsor).toHaveBeenCalledTimes(1);
 		expect(listConnections).toHaveBeenCalledTimes(1);
-		expect(status(OPENAI)).toBe("Connected · member@example.com");
+		expect(card(OPENAI).querySelector("small")!.textContent).toBe("member@example.com");
 		expect(view.el.querySelector("p[role=status]")).toBeNull();
 	});
 	it.each([
@@ -435,7 +1071,7 @@ describe("member model account settings", () => {
 		const disconnect = action(OPENAI);
 		disconnect.click();
 		disconnect.click();
-		expect(action(OPENAI).textContent).toBe("Disconnecting…");
+		expect(action(OPENAI).textContent).toBe("Signing out…");
 		expect(action(OPENAI).disabled).toBe(true);
 		action(OPENAI).click();
 		expect(client.revokeConnection).toHaveBeenCalledExactlyOnceWith(
@@ -448,9 +1084,8 @@ describe("member model account settings", () => {
 		pending.resolve({ connectionId: id(81), status: "revoked" });
 		await settle();
 		expect(client.listConnections).toHaveBeenCalledTimes(2);
-		expect(status(OPENAI)).toBe("Not connected");
-		expect(action(OPENAI).textContent).toBe("Connect");
-		expect(action(OPENAI).disabled).toBe(false);
+		expect(card(OPENAI)).toBeUndefined();
+		expect(view.el.querySelector<HTMLButtonElement>(".connection-add")!.disabled).toBe(false);
 		expect(client.createMemberSponsor).not.toHaveBeenCalled();
 	});
 	it("reads the account again after an uncertain disconnect instead of guessing", async () => {
@@ -460,7 +1095,7 @@ describe("member model account settings", () => {
 		await settle();
 		expect(client.revokeConnection).toHaveBeenCalledTimes(1);
 		expect(client.listConnections).toHaveBeenCalledTimes(2);
-		expect(status(OPENAI)).toBe("Connected · member@example.com");
+		expect(card(OPENAI).querySelector("small")!.textContent).toBe("member@example.com");
 		expect(view.el.querySelector("p[role=status]")!.textContent).toContain("The account could not be disconnected.");
 		// The lost reply had in fact disconnected it: the next read shows that and says nothing more.
 		vi.mocked(client.revokeConnection).mockRejectedValueOnce(new Error("lost reply"));
@@ -470,8 +1105,24 @@ describe("member model account settings", () => {
 		action(OPENAI).click();
 		await settle();
 		expect(client.revokeConnection).toHaveBeenCalledTimes(2);
-		expect(status(OPENAI)).toBe("Not connected");
+		expect(card(OPENAI)).toBeUndefined();
 		expect(view.el.querySelector("p[role=status]")).toBeNull();
+	});
+	it("reports a failed sign-out when an account needing reauthentication remains connected", async () => {
+		const { client } = await setup(true, observed({ ...connected, authorizationState: "reauthentication_required" }));
+		vi.mocked(client.revokeConnection).mockRejectedValueOnce(new Error("lost reply"));
+		action(OPENAI).click();
+		await settle();
+		expect(client.revokeConnection).toHaveBeenCalledExactlyOnceWith(
+			{ providerConnectionId: connected.connectionId },
+			expect.any(AbortSignal),
+		);
+		expect(client.listConnections).toHaveBeenCalledTimes(2);
+		expect(card(OPENAI).querySelector("small")!.textContent).toBe("member@example.com");
+		expect(action(OPENAI).textContent).toBe("Sign out");
+		expect(action(OPENAI).disabled).toBe(false);
+		expect(view.el.querySelector("p[role=status]")!.textContent).toContain("The account could not be disconnected.");
+		expect(client.beginProviderLogin).not.toHaveBeenCalled();
 	});
 	it("offers another read when the accounts could not be read", async () => {
 		const lifetime = new AbortController();
@@ -488,7 +1139,7 @@ describe("member model account settings", () => {
 		await settle();
 		expect(listConnections).toHaveBeenCalledTimes(2);
 		expect(view.el.querySelector("p[role=status]")).toBeNull();
-		expect(status(OPENAI)).toBe("Not available yet");
+		expect(view.el.querySelector<HTMLButtonElement>(".connection-add")!.disabled).toBe(true);
 	});
 	it("aborts and discards a response when the selected company closes", async () => {
 		const pending = deferred<NativeExecutionConnections>();

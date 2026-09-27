@@ -1,0 +1,544 @@
+{
+  "schema": "qorpera.native-message-composition-component-proof/v1",
+  "artifact": {
+    "schema": "qorpera.native-codex-artifact/v1",
+    "source": {
+      "schema": "qorpera.native-codex-source/v1",
+      "repository": "https://github.com/openai/codex.git",
+      "tag": "rust-v0.147.0",
+      "tagObject": "3ed6f04f6bf8b7c46299d1cb1ff99c74ce21a51d",
+      "commit": "be6e8eac029b183056b7e4402879f15d2c85f61b",
+      "version": "0.147.0",
+      "rustToolchain": "1.95.0",
+      "protocol": "qorpera.native-result-fence/v1",
+      "capabilities": [
+        "qorpera.native-result-fence/v1",
+        "qorpera.native-direct-tools/v1",
+        "qorpera.native-capture-images/v1",
+        "qorpera.native-message-composition/v1"
+      ],
+      "patchSha256": "24f9fffe1a35ba29763951b1b904b9b5b194cdcb368ff23c3f8e4bcf900c67f9",
+      "cargoLock": {
+        "upstreamSha256": "eeab4e9d3466da54037032251e2f13ad1ed11eae18bb8ee7dd2c89dbb86f645d",
+        "normalizedSha256": "bc4fe450de929afe82928734f860ca83e5f9dc5f9f1211b0974ea47b57af77ca",
+        "pathPackages": 135
+      }
+    },
+    "artifact": {
+      "file": "codex",
+      "bytes": 308143880,
+      "sha256": "9bd7b4e1148cb77820ea75943d03e7531757b3c74e47399df25a00477e58a7d0",
+      "target": "x86_64-unknown-linux-gnu",
+      "profile": "release",
+      "compiler": "rustc 1.95.0 (59807616e 2026-04-14)\nbinary: rustc\ncommit-hash: 59807616e1fa2540724bfbac14d7976d7e4a3860\ncommit-date: 2026-04-14\nhost: x86_64-unknown-linux-gnu\nrelease: 1.95.0\nLLVM version: 22.1.2",
+      "processing": {
+        "tool": "rust-llvm-objcopy",
+        "toolchain": "1.95.0",
+        "operation": "strip-debug",
+        "inputSha256": "0b1f3e342f705b0d23aa56c38db8e1e8f3fd8966298d2861fbea2b35159f51a8",
+        "toolSha256": "211b1e47ef0078d91f33d5076e958bf40a65b0f634d59c9802f0b049b9662728"
+      }
+    },
+    "cloudAcceptance": "not_performed"
+  },
+  "verification": {
+    "platform": "linux-x64",
+    "operatingSystem": "Ubuntu 24.04.5 LTS",
+    "node": "22.22.1",
+    "realNativeExecutable": true,
+    "scriptedLoopbackProvider": true,
+    "realModel": false,
+    "deployed": false,
+    "runtimeBundleSha256": "4bc5651f2a57e14f7b7ce71713f0479771b969bcaffa74c56164affee175000d",
+    "guestPackageManifestSha256": "f0c8b98b1b93c90681d144f76aae758deb95172cce689c43aa7584551313e2cb",
+    "executedSourceManifestSha256": "87fe05a60ff63ef739cf49a0cec2d9c0a2b1b3928ad554bd7bff1a5bd6a11fec",
+    "executedSources": {
+      "packages/runtime/src/cloud-codex-tool-session.ts": "3f0be98be3ecaa1b5e7040256a20eb3c73a5618b469a8b1415dfd105f18677b0",
+      "packages/runtime/src/cloud-native-tool-boundary.ts": "7ac70d2277f426a6a376c149582e5578408b986b8696b9b3c7bf7e097102a64e",
+      "packages/runtime/src/cloud-runtime-observability.ts": "d18b52122d171b64b268080ca17079f5e5bb978e7569705ec1f10d8772d31022",
+      "packages/shell/test/fixtures/cloud-mouth-probe.ts": "6a4c389be5c16c4b822744e668bf1bfa7e077a9f8e5e314ea5a4a8544620c84f",
+      "packages/shell/test/fixtures/member-identity-recovery.ts": "34a2b66176ce07a844e491a5f0deaa4b126b0835fa9ad6bb9badd2453d01420f",
+      "packages/shell/test/fixtures/native-codex-compaction-probe.ts": "910dc94b9342377a840d1d6964c70d752a73a48222842a425aed17aaee04e094",
+      "packages/shell/test/fixtures/native-codex-composition-probe.ts": "1fcd421c9bb5c92af21e12455a1694cf385b2dbd3c6ad506f7d898b0439cfaf4",
+      "packages/shell/test/fixtures/native-codex-fence-failure-probe.ts": "bc0f771832ca2507b0fb9b768f5356ad972270a3ebc676e60a94b9b640d95918",
+      "packages/shell/test/fixtures/native-codex-fixture-command.ts": "afb8cb3d5ce07da33c5d9fde505bc6c884a5db925e32328ac08ffeb062268f3f",
+      "packages/shell/test/fixtures/native-company-context-fixture.ts": "5da55102612b818814a0f3d120ce75a4d1556c475b8f754ad716b45901254934",
+      "packages/shell/test/fixtures/native-credential-custody-probe.ts": "75f3fa8e8f9dea7fdd21b9b87cb170efffcd6eaa76ddb272b5180914a00ccce5",
+      "packages/shell/test/fixtures/native-isolation-probe.ts": "89a92c305abd16afc26d7388694d1ad57263e15430ae0cc801bf8bc8d05da34d",
+      "packages/shell/test/fixtures/native-probe-source-loader.ts": "ca48034509a1367957667530e298624f574af6a9836cd4e68b155e7e54cd135e",
+      "packages/shell/test/fixtures/native-recovery-volume-probe.ts": "d27fe4b87a115cfd0d5e6cc16fa968af90f582623adb60746cd55b69f84f8f39",
+      "packages/shell/test/fixtures/native-tool-authority-fixture.ts": "2196aef425e91cf34a671ef857a3156509d5ec63c06083a2a7b37a6d49a816dd",
+      "packages/shell/test/fixtures/official-codex-boundary-probe.ts": "a78e4750593dd6d5329f1571c3ad6a267df2abfceb9a5c7d314b393088c20d23",
+      "packages/shell/test/fixtures/official-codex-mouth-probe.ts": "9b3aed3a710c383ac736ad7f59a8918fa3709a118ce208f0a8ca4762fee6776b",
+      "packages/shell/test/fixtures/run-cloud-mouth-probe.ts": "7b4c3b0d787c26e0fa7611ca132117866689d852b2de948decb5eb17c1786539",
+      "packages/shell/test/fixtures/run-native-codex-capture-images-probe.ts": "b4e2622f917f48656fb0e2dd50e5773ecb9dc370775ef6641ac8632937462c87",
+      "packages/shell/test/fixtures/run-native-codex-composition-probe.ts": "711810a2a7b3003cbb2399c8a61932b1b956c980629c56b8c4c4fbdb96c43c86",
+      "packages/shell/test/fixtures/run-official-codex-boundary-probe.ts": "c0aba046d8429ca34a6f7c003c68cb03e80ec3a92803b825002c76ec76927eac",
+      "packages/shell/test/fixtures/run-official-codex-mouth-probe.ts": "2c61e787b3e5bdbdd888d8027fecb3629fdbd131f41883f368c2f28f56e6d180"
+    },
+    "commands": [
+      "node packages/shell/test/fixtures/run-native-codex-composition-probe.ts /home/builder/build-composition-1/codex",
+      "node packages/shell/test/fixtures/run-official-codex-boundary-probe.ts /home/builder/build-composition-1/codex",
+      "node packages/shell/test/fixtures/run-native-codex-capture-images-probe.ts /home/builder/build-composition-1/codex"
+    ],
+    "nativeUnitChecks": {
+      "passed": 5,
+      "method": "Pinned rustc --test on exact composition source module and exact protocol test module, linked against the compiled release libraries; full upstream test harness not run",
+      "scriptSha256": "953a3a252bee38dde870cb9eb90673337c61d246fe5e753faba04c597fff8807",
+      "logSha256": "2f6d26322b7a0cfcacee44e670556f6f613abe41f4e3ea057c68c982877f4a02"
+    }
+  },
+  "composition": {
+    "schema": "qorpera.native-message-composition-proof/v1",
+    "checks": [
+      {
+        "mode": "delivery",
+        "model": "offline-probe",
+        "modelRequests": 2,
+        "sends": 1,
+        "heldBeforeCompleteArgumentsMs": 2202,
+        "earlyNativeStart": true,
+        "finishBeforeDispatch": true,
+        "cancelledCompositionClosed": false,
+        "metadataOnly": true
+      },
+      {
+        "mode": "cancelled",
+        "model": "offline-probe",
+        "modelRequests": 1,
+        "sends": 0,
+        "heldBeforeCompleteArgumentsMs": 2200,
+        "earlyNativeStart": true,
+        "finishBeforeDispatch": false,
+        "cancelledCompositionClosed": true,
+        "metadataOnly": true
+      },
+      {
+        "mode": "delivery",
+        "model": "provider-default",
+        "modelRequests": 2,
+        "sends": 1,
+        "heldBeforeCompleteArgumentsMs": 2201,
+        "earlyNativeStart": true,
+        "finishBeforeDispatch": true,
+        "cancelledCompositionClosed": false,
+        "metadataOnly": true
+      },
+      {
+        "mode": "cancelled",
+        "model": "provider-default",
+        "modelRequests": 1,
+        "sends": 0,
+        "heldBeforeCompleteArgumentsMs": 2202,
+        "earlyNativeStart": true,
+        "finishBeforeDispatch": false,
+        "cancelledCompositionClosed": true,
+        "metadataOnly": true
+      }
+    ]
+  },
+  "boundary": {
+    "platform": "linux",
+    "codexVersion": "0.147.0",
+    "providerModel": "gpt-5.6-sol",
+    "toolInventory": [
+      "qorpera.read_document",
+      "qorpera.send_message"
+    ],
+    "forcedBypassesDenied": 22,
+    "canonicalBytesUnchanged": true,
+    "unbrokeredRequests": 0,
+    "syntheticSecretExcluded": true,
+    "controlledResultsFenced": 8,
+    "nativeResultsFenced": 23,
+    "unfencedNativeResults": 0,
+    "publicMessages": 2,
+    "immediateDelivery": true,
+    "retryDeduplicated": true,
+    "privateOutputExcluded": true,
+    "allNativeResultsFenced": true,
+    "failureChecks": [
+      {
+        "fault": "revoked",
+        "requests": 1,
+        "effects": 0,
+        "deniedChecks": 1,
+        "blocked": true
+      },
+      {
+        "fault": "stalled",
+        "requests": 1,
+        "effects": 0,
+        "deniedChecks": 1,
+        "blocked": true
+      }
+    ],
+    "compactionChecks": [
+      {
+        "mode": "local",
+        "compactions": 1,
+        "modelRequests": 4,
+        "fencedCompactionOutputs": 2,
+        "readEffects": 1,
+        "writeEffects": 1,
+        "revoked": false,
+        "resumedWithLaws": true
+      },
+      {
+        "mode": "local",
+        "compactions": 1,
+        "modelRequests": 2,
+        "fencedCompactionOutputs": 2,
+        "readEffects": 1,
+        "writeEffects": 0,
+        "revoked": true,
+        "resumedWithLaws": false
+      },
+      {
+        "mode": "remote",
+        "compactions": 1,
+        "modelRequests": 4,
+        "fencedCompactionOutputs": 2,
+        "readEffects": 1,
+        "writeEffects": 1,
+        "revoked": false,
+        "resumedWithLaws": true
+      },
+      {
+        "mode": "remote",
+        "compactions": 1,
+        "modelRequests": 2,
+        "fencedCompactionOutputs": 2,
+        "readEffects": 1,
+        "writeEffects": 0,
+        "revoked": true,
+        "resumedWithLaws": false
+      },
+      {
+        "mode": "remote-v2",
+        "compactions": 1,
+        "modelRequests": 4,
+        "fencedCompactionOutputs": 2,
+        "readEffects": 1,
+        "writeEffects": 1,
+        "revoked": false,
+        "resumedWithLaws": true
+      },
+      {
+        "mode": "remote-v2",
+        "compactions": 1,
+        "modelRequests": 2,
+        "fencedCompactionOutputs": 2,
+        "readEffects": 1,
+        "writeEffects": 0,
+        "revoked": true,
+        "resumedWithLaws": false
+      }
+    ],
+    "providerDefaultCompactionChecks": [
+      {
+        "mode": "local",
+        "compactions": 1,
+        "modelRequests": 4,
+        "fencedCompactionOutputs": 2,
+        "readEffects": 1,
+        "writeEffects": 1,
+        "revoked": false,
+        "resumedWithLaws": true
+      },
+      {
+        "mode": "local",
+        "compactions": 1,
+        "modelRequests": 2,
+        "fencedCompactionOutputs": 2,
+        "readEffects": 1,
+        "writeEffects": 0,
+        "revoked": true,
+        "resumedWithLaws": false
+      },
+      {
+        "mode": "remote",
+        "compactions": 1,
+        "modelRequests": 4,
+        "fencedCompactionOutputs": 2,
+        "readEffects": 1,
+        "writeEffects": 1,
+        "revoked": false,
+        "resumedWithLaws": true
+      },
+      {
+        "mode": "remote",
+        "compactions": 1,
+        "modelRequests": 2,
+        "fencedCompactionOutputs": 2,
+        "readEffects": 1,
+        "writeEffects": 0,
+        "revoked": true,
+        "resumedWithLaws": false
+      },
+      {
+        "mode": "remote-v2",
+        "compactions": 1,
+        "modelRequests": 4,
+        "fencedCompactionOutputs": 2,
+        "readEffects": 1,
+        "writeEffects": 1,
+        "revoked": false,
+        "resumedWithLaws": true
+      },
+      {
+        "mode": "remote-v2",
+        "compactions": 1,
+        "modelRequests": 2,
+        "fencedCompactionOutputs": 2,
+        "readEffects": 1,
+        "writeEffects": 0,
+        "revoked": true,
+        "resumedWithLaws": false
+      }
+    ]
+  },
+  "capture": {
+    "platform": "linux",
+    "checks": [
+      {
+        "model": "offline-probe",
+        "mode": "local",
+        "compactions": 1,
+        "modelRequests": 4,
+        "fencedCompactionOutputs": 2,
+        "readEffects": 1,
+        "writeEffects": 1,
+        "revoked": false,
+        "resumedWithLaws": true,
+        "fencedCompactionImages": 1
+      },
+      {
+        "model": "offline-probe",
+        "mode": "local",
+        "compactions": 1,
+        "modelRequests": 2,
+        "fencedCompactionOutputs": 2,
+        "readEffects": 1,
+        "writeEffects": 0,
+        "revoked": true,
+        "resumedWithLaws": false,
+        "fencedCompactionImages": 1
+      },
+      {
+        "model": "offline-probe",
+        "mode": "remote",
+        "compactions": 1,
+        "modelRequests": 4,
+        "fencedCompactionOutputs": 2,
+        "readEffects": 1,
+        "writeEffects": 1,
+        "revoked": false,
+        "resumedWithLaws": true,
+        "fencedCompactionImages": 1
+      },
+      {
+        "model": "offline-probe",
+        "mode": "remote",
+        "compactions": 1,
+        "modelRequests": 2,
+        "fencedCompactionOutputs": 2,
+        "readEffects": 1,
+        "writeEffects": 0,
+        "revoked": true,
+        "resumedWithLaws": false,
+        "fencedCompactionImages": 1
+      },
+      {
+        "model": "offline-probe",
+        "mode": "remote-v2",
+        "compactions": 1,
+        "modelRequests": 4,
+        "fencedCompactionOutputs": 2,
+        "readEffects": 1,
+        "writeEffects": 1,
+        "revoked": false,
+        "resumedWithLaws": true,
+        "fencedCompactionImages": 1
+      },
+      {
+        "model": "offline-probe",
+        "mode": "remote-v2",
+        "compactions": 1,
+        "modelRequests": 2,
+        "fencedCompactionOutputs": 2,
+        "readEffects": 1,
+        "writeEffects": 0,
+        "revoked": true,
+        "resumedWithLaws": false,
+        "fencedCompactionImages": 1
+      },
+      {
+        "model": "provider-default",
+        "mode": "local",
+        "compactions": 1,
+        "modelRequests": 4,
+        "fencedCompactionOutputs": 2,
+        "readEffects": 1,
+        "writeEffects": 1,
+        "revoked": false,
+        "resumedWithLaws": true,
+        "fencedCompactionImages": 1
+      },
+      {
+        "model": "provider-default",
+        "mode": "local",
+        "compactions": 1,
+        "modelRequests": 2,
+        "fencedCompactionOutputs": 2,
+        "readEffects": 1,
+        "writeEffects": 0,
+        "revoked": true,
+        "resumedWithLaws": false,
+        "fencedCompactionImages": 1
+      },
+      {
+        "model": "provider-default",
+        "mode": "remote",
+        "compactions": 1,
+        "modelRequests": 4,
+        "fencedCompactionOutputs": 2,
+        "readEffects": 1,
+        "writeEffects": 1,
+        "revoked": false,
+        "resumedWithLaws": true,
+        "fencedCompactionImages": 1
+      },
+      {
+        "model": "provider-default",
+        "mode": "remote",
+        "compactions": 1,
+        "modelRequests": 2,
+        "fencedCompactionOutputs": 2,
+        "readEffects": 1,
+        "writeEffects": 0,
+        "revoked": true,
+        "resumedWithLaws": false,
+        "fencedCompactionImages": 1
+      },
+      {
+        "model": "provider-default",
+        "mode": "remote-v2",
+        "compactions": 1,
+        "modelRequests": 4,
+        "fencedCompactionOutputs": 2,
+        "readEffects": 1,
+        "writeEffects": 1,
+        "revoked": false,
+        "resumedWithLaws": true,
+        "fencedCompactionImages": 1
+      },
+      {
+        "model": "provider-default",
+        "mode": "remote-v2",
+        "compactions": 1,
+        "modelRequests": 2,
+        "fencedCompactionOutputs": 2,
+        "readEffects": 1,
+        "writeEffects": 0,
+        "revoked": true,
+        "resumedWithLaws": false,
+        "fencedCompactionImages": 1
+      }
+    ],
+    "unissuedMediaChecks": [
+      {
+        "fault": "message_image",
+        "requests": 1,
+        "effects": 0,
+        "deniedChecks": 0,
+        "blocked": true
+      }
+    ]
+  },
+  "limits": [
+    "Scripted loopback provider; no real model or account acceptance",
+    "Guest package generated in contract-only mode without a signed runner image",
+    "No production deployment or combined office/SQL/object-gateway acceptance"
+  ],
+  "mergedIntegration": {
+    "baseCommit": "71352b03338e6ad8b56a950263f315c565f32d60",
+    "runtimeBundleVersion": 39,
+    "runtimeBundleSha256": "218d6b2759093ced7b17e3e56657fc29afb8f488d65d845c7b71558690597cb3",
+    "guestPackageManifestSha256": "b5573681690b805b5f337e4e1b3572764e6a0ee3026d4e7fddc17cb323a7727c",
+    "nativeProbeSourceHashesUnchanged": true,
+    "existingMasterMigrationsUnchanged": 285,
+    "focusedRuntimeHiringRoutineTestsPassed": 55,
+    "focusedWebTestsPassed": 45,
+    "repositoryCheckPassed": true,
+    "linuxBuildPackageBundleTestsPassed": 12
+  },
+  "retainedArchive": {
+    "host": "company41-node-02",
+    "path": "/var/tmp/qorpera-pr146-native-composition/pr146-native-composition-v39-linux-x64.tar.zst",
+    "bytes": 269435111,
+    "sha256": "258dcfa58096ce9e734b2ce4e745e30123b710785076474e89838f4d50893053",
+    "zstdIntegrityVerified": true,
+    "archivedBuildAndPackagedBinarySha256": "9bd7b4e1148cb77820ea75943d03e7531757b3c74e47399df25a00477e58a7d0",
+    "archivedGuestManifestSha256": "b5573681690b805b5f337e4e1b3572764e6a0ee3026d4e7fddc17cb323a7727c",
+    "runtimeBundleSha256": "218d6b2759093ced7b17e3e56657fc29afb8f488d65d845c7b71558690597cb3",
+    "mergedSourceManifestSha256": "beb09846e6bef2fb40bf98aa4c90d77bea4cc2135efec461ae2e6be8ff87c4c0",
+    "linuxParityTests": {
+      "passed": 12,
+      "failed": 0,
+      "skipped": 0
+    },
+    "cleanup": {
+      "vmAbsent": true,
+      "networkRemoved": "pr146build0",
+      "projectRemoved": "codex-pr146-native-build",
+      "hostStagingRemoved": "/var/tmp/qorpera-pr146-merged-2314",
+      "retainedArchivesPreserved": true
+    }
+  },
+  "mergePreparation": {
+    "baseCommit": "be2828d88c933fd9db9862140c12be6b09039783",
+    "runtimeBundleVersion": 40,
+    "runtimeBundleSha256": "a29b67f8d68355c9657f4317d114c5972baf7c02a08e929c4918a154a9b5564a",
+    "guestPackageManifestSha256": "03b33a1806049a3094e20fb6d887d0c4583677793e37ba6b74fb5a9da8ff8363",
+    "nativeProbeSourceHashesUnchanged": true,
+    "existingMasterMigrationsUnchanged": 287,
+    "focusedWebTestsPassed": 136,
+    "repositoryCheckPassed": true,
+    "linuxBuildPackageBundleTestsPassed": 12,
+    "retainedArchive": {
+      "host": "company41-node-02",
+      "path": "/var/tmp/qorpera-pr146-native-composition/pr146-native-composition-v40-linux-x64.tar.zst",
+      "bytes": 102702924,
+      "sha256": "a2b4b7b907eee25169f8a4e7e58cfdad8f50464d3aa6ab4df35e18b9c5930508",
+      "zstdIntegrityVerified": true,
+      "archivedBinaryPath": "guest-package-v40/native-company/codex",
+      "archivedBinarySha256": "9bd7b4e1148cb77820ea75943d03e7531757b3c74e47399df25a00477e58a7d0",
+      "archivedGuestManifestSha256": "03b33a1806049a3094e20fb6d887d0c4583677793e37ba6b74fb5a9da8ff8363",
+      "runtimeBundleSha256": "a29b67f8d68355c9657f4317d114c5972baf7c02a08e929c4918a154a9b5564a",
+      "sourceManifestSha256": "0603f0c0336cb284435f1b0384490c93507d9ec086a8c3c9855a5a8814e72146",
+      "sourceFilesVerifiedAgainstMergedCheckout": 3944,
+      "linuxParityTests": {
+        "passed": 12,
+        "failed": 0,
+        "skipped": 0
+      },
+      "contents": [
+        "Actual Linux guest package containing the verified native executable",
+        "Native artifact manifest, LICENSE and NOTICE",
+        "Native composition, boundary, capture-images, Rust module and Linux packaging proof logs",
+        "v40 source hash manifest and packaging host metadata"
+      ],
+      "nativeSourceProvenanceArchive": {
+        "path": "/var/tmp/qorpera-pr146-native-composition/pr146-native-composition-v39-linux-x64.tar.zst",
+        "sha256": "258dcfa58096ce9e734b2ce4e745e30123b710785076474e89838f4d50893053"
+      },
+      "cleanup": {
+        "hostStagingRemoved": "/var/tmp/qorpera-pr146-v40.86T5nU",
+        "noVmCreated": true,
+        "retainedArchivesPreserved": true,
+        "productionResourcesChanged": false
+      }
+    }
+  }
+}

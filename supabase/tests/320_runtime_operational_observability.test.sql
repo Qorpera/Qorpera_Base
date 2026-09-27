@@ -347,7 +347,7 @@ select set_config('qorpera_test.default_read_grant', (
 	from public.qorpera_company_path_grants g join public.qorpera_company_path_resources r on r.id = g.resource_id
 	where r.environment_id = '29000000-0000-4000-8000-000000000020' and r.path = ''
 		and g.principal_id = '29000000-0000-4000-8000-000000000030'
-		and g.origin = 'default_agent_read' and g.permissions = array['read']::text[] and g.revoked_at is null
+		and g.origin = 'default_agent_read' and g.permissions = array['read','write']::text[] and g.revoked_at is null
 ), true);
 select pg_temp.path_claims('service_role');
 set local role service_role;
@@ -637,8 +637,13 @@ declare v_run uuid := (current_setting('qorpera_test.path_binding')::jsonb ->> '
 	v_event jsonb; v_operation text; v_status text; v_category text; v_query jsonb;
 begin
 	foreach v_operation in array array['model_turn','model_request','company_read','company_list','company_write',
-		'company_mkdir','company_delete','company_context','send_message','connector','unknown_tool','run_authority',
-		'context_authority','native_result_fence','diagnostic_export'] loop
+		'company_mkdir','company_delete','send_message','ask_member','read_context','send_coworker_message','computer_start','computer_screen',
+		'computer_browser','computer_desktop','computer_shell','computer_screenshot','computer_transfer','hire_agent',
+		'create_group_chat','manage_routine','report_work','manage_todo','manage_worker','company_context','message_composition',
+		'connector','unknown_tool','run_authority',
+		'context_authority','native_result_fence','diagnostic_export','action_review',
+		'coding_run_command','coding_read_command','coding_cancel_command','coding_finish','coding_ask',
+		'update_memory','recall_memory','organize_sidebar','add_review_rule'] loop
 		v_event := pg_temp.observation() || jsonb_build_object('operation',v_operation,'assignmentId',null,
 			'phase','finish','status','succeeded','logicalOperationSha256',null,'observedAt','0001-01-01T00:00:00.000Z',
 			'durationMs',9007199254740991,'inputBytes',9007199254740991,'outputBytes',0,'inputTokens',0,'outputTokens',1,
@@ -892,6 +897,118 @@ begin
 	exception when insufficient_privilege then null; end;
 	begin perform public.qorpera_purge_runtime_observations(); raise exception 'Nonservice purge accepted';
 	exception when insufficient_privilege then null; end;
+end
+$$;
+-- Members get only a presentation phase for the selected active run, never
+-- diagnostics, tool arguments, or provider text. Each read exercises the real
+-- authenticated RPC while the disposable fixture alone owns diagnostic writes.
+create function pg_temp.member_staff_activity()
+returns jsonb language plpgsql as $$
+declare v_activity jsonb;
+begin
+	perform pg_temp.path_claims('authenticated','29000000-0000-4000-8000-000000000001');
+	set local role authenticated;
+	v_activity := public.qorpera_list_staff_execution_activity('29000000-0000-4000-8000-000000000020') -> 0;
+	reset role;
+	perform pg_temp.path_claims('service_role');
+	return v_activity;
+end
+$$;
+do $$
+declare b jsonb := current_setting('qorpera_test.path_binding')::jsonb;
+	v_run uuid := (b ->> 'runId')::uuid; v_start jsonb; v_other jsonb; v_activity jsonb;
+begin
+	if pg_temp.member_staff_activity() ->> 'phase' is distinct from 'working' then
+		raise exception 'Absent composition telemetry fabricated writing'; end if;
+	-- A delivery may remain in flight after composition has already finished.
+	-- Its transport span must never put the agent into the writing state.
+	v_other := pg_temp.observation() || jsonb_build_object('operation','send_message',
+		'observedAt',to_char(clock_timestamp() at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'));
+	set local role service_role;
+	perform public.qorpera_record_runtime_observation(v_run,v_other);
+	reset role;
+	if pg_temp.member_staff_activity() ->> 'phase' is distinct from 'working' then
+		raise exception 'Send transport telemetry fabricated writing'; end if;
+	v_start := pg_temp.observation() || jsonb_build_object('operation','message_composition',
+		'observedAt',to_char(clock_timestamp() at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'));
+	set local role service_role;
+	perform public.qorpera_record_runtime_observation(v_run,v_start);
+	reset role;
+	v_activity := pg_temp.member_staff_activity();
+	if v_activity ->> 'phase' is distinct from 'writing' or v_activity ->> 'activity' <> 'working'
+		or v_activity ->> 'run_id' <> v_run::text
+		or v_activity - array['run_id','staff_agent_id','source_kind','job_status','activity','updated_at','phase'] <> '{}'::jsonb then
+		raise exception 'Current composition was not projected as closed presentation metadata'; end if;
+	-- Finished composition never lingers as typing, even while delivery is pending.
+	set local role service_role;
+	perform public.qorpera_record_runtime_observation(v_run,v_start || '{"phase":"finish","status":"succeeded","durationMs":1}');
+	reset role;
+	if pg_temp.member_staff_activity() ->> 'phase' is distinct from 'working' then
+		raise exception 'Completed composition kept the writing phase'; end if;
+	-- A finish delivered before its start is still terminal for that attempt.
+	v_other := v_start || jsonb_build_object('attemptId',extensions.gen_random_uuid());
+	set local role service_role;
+	perform public.qorpera_record_runtime_observation(v_run,v_other || '{"phase":"finish","status":"failed","durationMs":1}');
+	perform public.qorpera_record_runtime_observation(v_run,v_other);
+	reset role;
+	if pg_temp.member_staff_activity() ->> 'phase' is distinct from 'working' then
+		raise exception 'Out-of-order start revived finished composition'; end if;
+	-- Cancellation also closes the presentation span without waiting for expiry.
+	v_other := v_start || jsonb_build_object('attemptId',extensions.gen_random_uuid());
+	set local role service_role;
+	perform public.qorpera_record_runtime_observation(v_run,v_other);
+	perform public.qorpera_record_runtime_observation(v_run,v_other || '{"phase":"finish","status":"cancelled","durationMs":1}');
+	reset role;
+	if pg_temp.member_staff_activity() ->> 'phase' is distinct from 'working' then
+		raise exception 'Cancelled composition kept the writing phase'; end if;
+	-- Freshly ingested old work and old ingestion with a fresh sender clock
+	-- both expire. Unknown/previous assignments cannot animate the current run.
+	insert into public.qorpera_runtime_observations(run_id,attempt_id,phase,assignment_id,
+		operation,observed_at,ingested_at,observation)
+	values
+		(v_run,extensions.gen_random_uuid(),'start',(b ->> 'assignmentId')::uuid,
+			'message_composition',clock_timestamp()-interval '21 seconds',clock_timestamp(),v_start),
+		(v_run,extensions.gen_random_uuid(),'start',(b ->> 'assignmentId')::uuid,
+			'message_composition',clock_timestamp(),clock_timestamp()-interval '21 seconds',v_start),
+		(v_run,extensions.gen_random_uuid(),'start',extensions.gen_random_uuid(),
+			'message_composition',clock_timestamp(),clock_timestamp(),v_start),
+		(v_run,extensions.gen_random_uuid(),'start',null,
+			'message_composition',clock_timestamp(),clock_timestamp(),v_start);
+	if pg_temp.member_staff_activity() ->> 'phase' is distinct from 'working' then
+		raise exception 'Stale or unbound composition telemetry animated the current assignment'; end if;
+	v_other := v_start || jsonb_build_object('attemptId',extensions.gen_random_uuid());
+	set local role service_role;
+	perform public.qorpera_record_runtime_observation(v_run,v_other);
+	reset role;
+	if pg_temp.member_staff_activity() ->> 'phase' is distinct from 'writing' then
+		raise exception 'An older finished composition masked the current composition'; end if;
+	begin
+		update public.qorpera_runner_jobs set lease_expires_at = clock_timestamp()-interval '1 second'
+		where id = (b ->> 'jobId')::uuid;
+		if pg_temp.member_staff_activity() ->> 'phase' is distinct from 'working' then
+			raise exception 'Expired execution lease retained writing'; end if;
+		raise exception using errcode='QTO02';
+	exception when sqlstate 'QTO02' then null; end;
+	begin
+		perform pg_temp.path_claims('service_role');
+		set local role service_role;
+		perform public.qorpera_terminalize_runner_attempt((b ->> 'jobId')::uuid,'failed','Writing fixture',false);
+		reset role;
+		v_activity := pg_temp.member_staff_activity();
+		if v_activity ->> 'activity' is distinct from 'needs_attention' or v_activity ? 'phase' then
+			raise exception 'Optional writing phase overrode terminal execution state'; end if;
+		raise exception using errcode='QTO02';
+	exception when sqlstate 'QTO02' then null; end;
+	perform pg_temp.path_claims('authenticated',extensions.gen_random_uuid());
+	set local role authenticated;
+	begin
+		perform public.qorpera_list_staff_execution_activity('29000000-0000-4000-8000-000000000020');
+		raise exception 'Activity phase leaked outside company membership';
+	exception when insufficient_privilege then null; end;
+	reset role;
+	-- Keep this projection fixture independent of the preceding diagnostic suite.
+	raise exception using errcode='QTO02';
+exception when sqlstate 'QTO02' then null;
 end
 $$;
 set constraints all immediate;

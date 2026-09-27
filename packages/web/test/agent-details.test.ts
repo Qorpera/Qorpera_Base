@@ -2,17 +2,20 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CompanyController } from "../src/app/company.ts";
 import { AgentDetails } from "../src/app/views/agent-details.ts";
-import type { WorkspaceActions } from "../src/app/workspace-actions.ts";
+import type { AgentDraft, WorkspaceActions } from "../src/app/workspace-actions.ts";
 import type { WebNativeSubscription } from "../src/cloud/native-subscription.ts";
 import type { HostedCompanyOrganization } from "../src/cloud/organization.ts";
 import type { WebRoutines } from "../src/cloud/routines.ts";
 import type { HostedStaffAgent } from "../src/cloud/types.ts";
-import { FIGURE_IDS, figureFor } from "../src/ui/avatar.ts";
-import { deferred, fixture, id, profileA, settle, staff, team, userA } from "./fixtures.ts";
+import conversationCss from "../src/styles/conversation.css?raw";
+import { FIGURE_IDS, figureFor, nativeColorOf } from "../src/ui/avatar.ts";
+import { deferred, fixture, id, profileA, settle, staff, stubFigureMotion, team, userA } from "./fixtures.ts";
 
 const cleanup: (() => void)[] = [];
 beforeEach(() => {
 	vi.stubGlobal("innerWidth", 1280);
+	// A desktop window: anchored details stay beside their agent.
+	vi.stubGlobal("matchMedia", () => ({ matches: false, addEventListener() {}, removeEventListener() {} }));
 	// jsdom has no native dialog methods.
 	HTMLDialogElement.prototype.showModal = function () {
 		this.open = true;
@@ -29,14 +32,14 @@ afterEach(() => {
 	vi.unstubAllGlobals();
 });
 
-function open(actions: WorkspaceActions = {}, agent: HostedStaffAgent = staff) {
+function open(actions: WorkspaceActions = {}, agent: HostedStaffAgent = staff, scope?: AbortSignal) {
 	const f = fixture();
 	const company = new CompanyController(f.api, profileA, userA.id);
 	company.store.set({ team, staff: [agent], loading: false });
 	const anchor = document.createElement("button");
 	document.body.append(anchor);
 	const onClose = vi.fn();
-	const details = new AgentDetails(company, agent, actions, onClose, anchor);
+	const details = new AgentDetails(company, agent, actions, onClose, anchor, scope);
 	cleanup.push(() => {
 		details.dispose();
 		company.stop();
@@ -59,7 +62,149 @@ function type(label: string, value: string) {
 const press = (target: Element, key: string, init: KeyboardEventInit = {}) =>
 	target.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true, ...init }));
 const status = () => document.querySelector(".agent-details-status")?.textContent;
-const saving = () => vi.fn(async (_agent: HostedStaffAgent, _draft: unknown, _signal: AbortSignal) => {});
+const saving = () =>
+	vi.fn(async (_agent: HostedStaffAgent, _draft: unknown, _signal: AbortSignal) => staff.version + 1);
+
+describe("agent saves across panel lifetimes", () => {
+	it("keeps a failed close-save draft and offers an explicit retry when reopened", async () => {
+		const pending = deferred<number>();
+		const updateAgent = saving().mockReturnValueOnce(pending.promise);
+		const f = open({ updateAgent });
+		type("Agent name", "Unsaved name");
+		f.details.dialog.close();
+		pending.reject(new Error("offline"));
+		await settle();
+		const reopened = new AgentDetails(f.company, staff, { updateAgent }, () => {});
+		cleanup.push(() => reopened.dispose());
+		expect(field("Agent name").value).toBe("Unsaved name");
+		expect(status()).toContain("could not be saved");
+		await settle();
+		expect(updateAgent).toHaveBeenCalledTimes(1);
+		named("Try again").click();
+		await settle();
+		expect(updateAgent).toHaveBeenCalledTimes(2);
+		expect(updateAgent.mock.calls[1]![1]).toMatchObject({ displayName: "Unsaved name" });
+		expect(status()).toBe("Saved");
+	});
+	it("serializes reopened edits and retains the first accepted change in the next full draft", async () => {
+		const first = deferred<void>();
+		let remote = { ...staff };
+		let calls = 0;
+		const updateAgent = vi.fn(async (_agent: HostedStaffAgent, draft: AgentDraft) => {
+			// The server applies the first write before its response reaches the browser.
+			remote = { ...remote, displayName: draft.displayName, role: draft.role, charter: draft.charter };
+			if (++calls === 1) await first.promise;
+			return staff.version + calls;
+		});
+		const f = open({ updateAgent });
+		vi.mocked(f.api.listStaff).mockImplementation(async () => [remote]);
+		type("Agent name", "Kept name");
+		f.details.dialog.close();
+		expect(remote.displayName).toBe("Kept name");
+		const reopened = new AgentDetails(f.company, staff, { updateAgent }, () => {});
+		cleanup.push(() => reopened.dispose());
+		expect(field("Agent name").value).toBe("Kept name");
+		expect(status()).toBe("Saving…");
+		press(type("Agent title", "New role"), "Enter");
+		type("Responsibilities", "New description").blur();
+		expect(updateAgent).toHaveBeenCalledTimes(1);
+		first.resolve();
+		await settle();
+		expect(updateAgent).toHaveBeenCalledTimes(2);
+		expect(remote).toMatchObject({ displayName: "Kept name", role: "New role", charter: "New description" });
+		expect(field("Agent name").value).toBe("Kept name");
+		expect(status()).toBe("Saved");
+	});
+	it("coalesces reopened edits while the first save refreshes the roster", async () => {
+		const roster = deferred<HostedStaffAgent[]>();
+		const updateAgent = saving();
+		const f = open({ updateAgent });
+		vi.mocked(f.api.listStaff).mockReturnValueOnce(roster.promise);
+		type("Agent name", "Kept name");
+		f.details.dialog.close();
+		await settle();
+		const reopened = new AgentDetails(f.company, staff, { updateAgent }, () => {});
+		cleanup.push(() => reopened.dispose());
+		press(type("Agent title", "Lead"), "Enter");
+		expect(updateAgent).toHaveBeenCalledTimes(1);
+		roster.resolve([{ ...staff, displayName: "Kept name" }]);
+		await settle();
+		expect(updateAgent).toHaveBeenCalledTimes(2);
+		expect(updateAgent.mock.calls[1]![1]).toMatchObject({ displayName: "Kept name", role: "Lead" });
+	});
+	it.each(["navigation", "company", "authority"] as const)(
+		"cancels closed-panel writes and queued edits on %s loss",
+		async (loss) => {
+			const pending = deferred<number>();
+			const updateAgent = saving().mockReturnValueOnce(pending.promise);
+			const scope = new AbortController();
+			const f = open({ updateAgent }, staff, scope.signal);
+			press(type("Agent name", "Queued name"), "Enter");
+			type("Agent title", "Queued title").blur();
+			f.details.dialog.close();
+			const signal = updateAgent.mock.calls[0]![2];
+			if (loss === "navigation") scope.abort();
+			else if (loss === "company") f.company.stop();
+			else f.company.store.set({ team: { ...team, capabilities: { ...team.capabilities, authorize: false } } });
+			await settle();
+			expect(signal.aborted).toBe(true);
+			pending.resolve(staff.version + 1);
+			await settle();
+			expect(updateAgent).toHaveBeenCalledTimes(1);
+			expect(f.api.listStaff).not.toHaveBeenCalled();
+			if (loss !== "company") {
+				const reopened = new AgentDetails(f.company, staff, { updateAgent }, () => {});
+				cleanup.push(() => reopened.dispose());
+				expect(field("Agent name").value).toBe(staff.displayName);
+			}
+		},
+	);
+	it("isolates an unsaved draft from another company controller", async () => {
+		const updateAgent = saving().mockRejectedValueOnce(new Error("offline"));
+		const first = open({ updateAgent });
+		type("Agent name", "Only in this company");
+		first.details.dialog.close();
+		await settle();
+		open({ updateAgent });
+		expect(field("Agent name").value).toBe(staff.displayName);
+		expect(status()).toBe("");
+	});
+	it("only saves a newly entered edit after authority is restored during cancellation", async () => {
+		const pending = deferred<number>();
+		const updateAgent = saving().mockReturnValueOnce(pending.promise);
+		const f = open({ updateAgent });
+		press(type("Agent name", "Revoked name"), "Enter");
+		f.company.store.set({ team: { ...team, capabilities: { ...team.capabilities, authorize: false } } });
+		await settle();
+		expect(updateAgent.mock.calls[0]![2].aborted).toBe(true);
+		f.company.store.set({ team });
+		await settle();
+		press(type("Agent title", "Authorized title"), "Enter");
+		expect(updateAgent).toHaveBeenCalledTimes(1);
+		pending.resolve(staff.version + 1);
+		await settle();
+		expect(updateAgent).toHaveBeenCalledTimes(2);
+		expect(updateAgent.mock.calls[1]![1]).toMatchObject({ displayName: staff.displayName, role: "Authorized title" });
+	});
+	it.each([
+		["Agent name", staff.displayName],
+		["Agent title", staff.role],
+		["Responsibilities", staff.charter],
+	])("discards focused uncommitted %s text when authority is revoked", async (label, saved) => {
+		const updateAgent = saving();
+		const f = open({ updateAgent });
+		const control = type(label, "Uncommitted before revocation");
+		f.company.store.set({ team: { ...team, capabilities: { ...team.capabilities, authorize: false } } });
+		await settle();
+		expect(control.readOnly).toBe(true);
+		expect(control.value).toBe(saved);
+		f.company.store.set({ team });
+		await settle();
+		control.blur();
+		await settle();
+		expect(updateAgent).not.toHaveBeenCalled();
+	});
+});
 
 describe("agent details edited in place", () => {
 	it("saves a field on Enter, gives it back on Escape and closes on a second Escape", async () => {
@@ -89,17 +234,17 @@ describe("agent details edited in place", () => {
 		expect(f.onClose).toHaveBeenCalledTimes(1);
 	});
 	it("folds changes made during a save into one following write", async () => {
-		const first = deferred<void>();
+		const first = deferred<number>();
 		const updateAgent = saving().mockReturnValueOnce(first.promise);
 		open({ updateAgent });
 		press(type("Agent name", "Ada"), "Enter");
 		type("Agent title", "Lead").blur();
-		const description = type("Agent description", "Owns the launch.");
+		const description = type("Responsibilities", "Owns the launch.");
 		press(description, "Enter");
-		expect(field("Agent description")).toBe(document.activeElement);
+		expect(field("Responsibilities")).toBe(document.activeElement);
 		press(description, "Enter", { ctrlKey: true });
 		expect(updateAgent).toHaveBeenCalledTimes(1);
-		first.resolve();
+		first.resolve(staff.version + 1);
 		await settle();
 		await settle();
 		expect(updateAgent).toHaveBeenCalledTimes(2);
@@ -182,12 +327,46 @@ describe("agent figure", () => {
 		f.dialog.querySelector(".agent-inline-description")!.dispatchEvent(new Event("pointerdown", { bubbles: true }));
 		expect(picker.hidden).toBe(true);
 	});
-	it("offers the Co-Founder figures only", () => {
-		const f = open({ updateAgent: saving() }, { ...staff, id: id(40), templateId: "co-founder" });
+	it("lets the Co-Founder choose a color like any agent", () => {
+		const figures = stubFigureMotion();
+		vi.stubGlobal("QORPERA_AVATAR_APPEARANCE", { palette: [{ name: "Teal", color: "#00bfb3" }] });
+		const drawnIn = () => figures.mock.calls.at(-1)?.[2];
+		const updateAgent = saving();
+		const cofounder = { ...staff, id: id(40), templateId: "co-founder" };
+		const f = open({ updateAgent }, { ...cofounder, appearance: { ...cofounder.appearance, color: "qorpera-blue" } });
 		named("Edit figure").click();
 		const picker = f.dialog.querySelector<HTMLElement>(".agent-figure-picker")!;
-		expect(picker.classList.contains("figures-only")).toBe(true);
-		expect(picker.querySelector(".color-grid, .agent-figure-reset")).toBeNull();
+		expect(picker.getAttribute("aria-label")).toBe("Choose a figure and color");
+		expect(named("Reset")).toBeDefined();
+		// The seeded colour is nobody's choice: the figure starts in its own shade.
+		expect(drawnIn()).toBe(nativeColorOf(figureFor(cofounder)));
+		expect(named("Teal").getAttribute("aria-checked")).toBe("false");
+		named("Teal").click();
+		expect(updateAgent).toHaveBeenCalledTimes(1);
+		expect(updateAgent.mock.calls[0]![1]).toMatchObject({ figure: figureFor(cofounder), color: "#00bfb3" });
+		expect(named("Teal").getAttribute("aria-checked")).toBe("true");
+		expect(drawnIn()).toBe("#00bfb3");
+	});
+	it("resets to the figure's own shade, which then follows the figure", async () => {
+		stubFigureMotion();
+		vi.stubGlobal("QORPERA_MOTION_MODEL", {
+			avatars: [
+				{ id: "crown", color: "#fcb51b" },
+				{ id: "heart", color: "#fb672a" },
+			],
+			faces: {},
+		});
+		vi.stubGlobal("QORPERA_AVATAR_APPEARANCE", { palette: [{ name: "Teal", color: "#00bfb3" }] });
+		const updateAgent = saving();
+		open({ updateAgent }, { ...staff, appearance: { color: "#00bfb3", shape: "round", creature: "crown" } });
+		named("Edit figure").click();
+		named("Reset").click();
+		expect(updateAgent.mock.calls.at(-1)![1]).toMatchObject({ figure: "crown", color: "#fcb51b" });
+		// Saves run one at a time; the next figure is written once this one lands.
+		await settle();
+		named("heart").click();
+		await settle();
+		expect(updateAgent.mock.calls.at(-1)![1]).toMatchObject({ figure: "heart", color: "#fb672a" });
 	});
 });
 
@@ -220,7 +399,7 @@ describe("agent pages", () => {
 		],
 		projects: [],
 	};
-	it("opens routines and responsibilities from the corner, each with a way back", async () => {
+	it("opens routines from the corner with a way back; responsibilities are the description, not a page", async () => {
 		const routines = {
 			list: vi.fn(async () => []),
 			runs: vi.fn(async () => []),
@@ -234,7 +413,7 @@ describe("agent pages", () => {
 		const tools = [...f.dialog.querySelectorAll(".surface-tools button")].map((item) =>
 			item.getAttribute("aria-label"),
 		);
-		expect(tools).toEqual(["Responsibilities", "Routines", "Close agent details"]);
+		expect(tools).toEqual(["Routines", "Close agent details"]);
 		const toRoutines = named("Routines");
 		toRoutines.click();
 		// Until the first read answers, the page does not claim there are none.
@@ -253,13 +432,10 @@ describe("agent pages", () => {
 		expect(document.activeElement).toBe(toRoutines);
 		f.company.store.set({ organization });
 		await settle();
-		named("Responsibilities").click();
-		expect(f.dialog.textContent).toContain("Product quality");
-		expect(f.dialog.querySelector(".responsibility-node")?.getAttribute("href")).toBe(
-			`#/c/${profileA.profileId}/responsibility/${id(31)}`,
-		);
-		named("Responsibilities").click();
-		expect(f.dialog.dataset.page).toBe("details");
+		// Recorded responsibility objects no longer surface: the agent's own description is the reference.
+		expect(f.dialog.textContent).not.toContain("Product quality");
+		expect(f.dialog.querySelector('a[href*="/responsibility/"]')).toBeNull();
+		expect(field("Responsibilities").value).toBe(staff.charter);
 		f.company.store.set({ staff: [{ ...staff, displayName: "Renamed" }] });
 		await settle();
 		toRoutines.click();
@@ -269,12 +445,35 @@ describe("agent pages", () => {
 		expect(f.dialog.textContent).toContain("Renamed has no routines yet.");
 		expect(f.cloud.rpc).not.toHaveBeenCalled();
 	});
-	it("says when an agent has no responsibilities", () => {
+});
+
+describe("the popup's frame", () => {
+	it("keeps one static height on the details and routines pages and leaves the group popup to its content", () => {
+		const style = document.createElement("style");
+		style.textContent = conversationCss.replace(/^@import .*;$/gm, "");
+		document.head.append(style);
+		cleanup.push(() => style.remove());
 		const f = open();
-		named("Responsibilities").click();
-		expect(f.dialog.textContent).toContain("No responsibilities assigned yet.");
-		expect(f.dialog.querySelector(".agent-page-link")?.getAttribute("href")).toBe(
-			`#/c/${profileA.profileId}/organization`,
+		const rules = [...style.sheet!.cssRules].filter((rule): rule is CSSStyleRule => rule instanceof CSSStyleRule);
+		const declared = (selector: string, property: string) =>
+			rules.find((rule) => rule.selectorText === selector)?.style.getPropertyValue(property);
+		// The agent popup carries the class with the static height; the shared
+		// frame class does not, so the group popup keeps sizing itself.
+		expect(f.dialog.classList.contains("staff-details")).toBe(true);
+		expect(declared(".staff-details", "height")).toBe("var(--agent-details-height)");
+		expect(declared(".staff-details", "--agent-details-height")).toContain("8 * 1.6 * 13px");
+		expect(declared(".agent-details", "height")).toBeFalsy();
+		// Only the agent page's description fills the frame; elsewhere the sizer still grows it to 13 lines.
+		expect(declared(".agent-details-page .agent-inline-description", "flex")).toBe("1 1 auto");
+		expect(declared(".agent-details-page .agent-inline-description > .agent-inline-size::after", "display")).toBe(
+			"none",
 		);
+		expect(declared(".agent-inline-description > .agent-inline-size::after", "max-height")).toMatch(
+			/13 \* 1\.6em|20\.8em/,
+		);
+		expect(f.dialog.querySelector(".agent-details-page .agent-inline-description textarea")).not.toBeNull();
+		named("Routines").click();
+		expect(f.dialog.dataset.page).toBe("routines");
+		expect(f.dialog.classList.contains("staff-details")).toBe(true);
 	});
 });

@@ -521,9 +521,12 @@ export async function runOfficeCreationSqlProbe(
 				if (
 					method === "qorpera_begin_runtime_office_host_reboot" ||
 					method === "qorpera_record_runtime_office_host_reboot_resume" ||
-					method === "qorpera_runtime_office_provider_activation"
+					method === "qorpera_runtime_office_provider_activation" ||
+					method === "qorpera_reconcile_runtime_office_idle"
 				)
 					throw new Error("First activation fixture has no host reboot lane");
+				if (method === "qorpera_suspend_runtime_node_machine")
+					throw new Error("First activation fixture never powers off");
 				return registry.call(method, args, signal);
 			},
 		};

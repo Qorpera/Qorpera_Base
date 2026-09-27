@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
+import { cloudCodingSessionLayout } from "@qorpera/contracts";
 import type { LxdHostInventory, LxdHostInventoryInstance } from "./lxd-client.ts";
 import { lxdResourceBytes } from "./lxd-native-node-policy.ts";
 import { officeDigest, officeRecord, officeSha } from "./lxd-office-image-provenance.ts";
@@ -93,7 +94,7 @@ export function parseRuntimeNodeInventoryPolicy(value: unknown): RuntimeNodeInve
 }
 export interface RuntimeNodeInventoryAllocation {
 	allocationId: string;
-	providerKind: "native" | "office" | "login";
+	providerKind: "native" | "office" | "login" | "coding";
 	providerId: string;
 	policySha256: string;
 	instanceSha256: string;
@@ -118,7 +119,7 @@ export function parseRuntimeNodeInventoryContext(value: unknown): RuntimeNodeInv
 			"allocationId,providerKind,providerId,policySha256,instanceSha256,cpuMillis,memoryBytes,physical",
 		);
 		const physical = a.physical === null ? null : record(a.physical, "project,name,physicalId,configurationSha256");
-		if (!["native", "office", "login"].includes(a.providerKind as string))
+		if (!["native", "office", "login", "coding"].includes(a.providerKind as string))
 			throw new Error("INVALID_NODE_INVENTORY_CONTEXT");
 		return {
 			allocationId: text(a.allocationId, UUID),
@@ -165,19 +166,56 @@ export interface RuntimeNodeInventoryEntry {
 	reason: "UNREGISTERED_INSTANCE" | "INSTANCE_AUTHORITY_DIFFERS" | "INSTANCE_STATE_UNAVAILABLE" | null;
 }
 
+const SESSION_DEVICE = /^(data|custody)-([0-9a-f]{32})$/;
+/** A session's NAS folder exactly as the coding executor hot-plugs it: a
+ * required directory disk at that session's data or custody root, from that
+ * session's own NAS folder. Anything else under such a name is enrollment. */
+function sessionFolder(name: string, device: Readonly<Record<string, string>>): boolean {
+	const match = SESSION_DEVICE.exec(name);
+	if (!match) return false;
+	const compact = match[2];
+	const workerId = `${compact.slice(0, 8)}-${compact.slice(8, 12)}-${compact.slice(12, 16)}-${compact.slice(16, 20)}-${compact.slice(20)}`;
+	let layout: ReturnType<typeof cloudCodingSessionLayout>;
+	try {
+		layout = cloudCodingSessionLayout(workerId);
+	} catch {
+		return false;
+	}
+	const data = match[1] === "data";
+	return (
+		Object.keys(device).sort().join() === "path,required,source,type" &&
+		device.type === "disk" &&
+		device.required === "true" &&
+		device.path === (data ? layout.dataRoot : layout.custodyRoot) &&
+		device.source.startsWith("/") &&
+		!device.source.split("/").some((part) => part === ".." || part === ".") &&
+		device.source.endsWith(`/${workerId}/${data ? "data" : "guest-state"}`)
+	);
+}
+
 /** Hash configuration without disclosing cloud-init or other host secrets.
  * Volatile runtime bookkeeping is not enrollment policy; the actual physical
- * UUID is bound separately. Both local and effective configuration are hashed. */
+ * UUID is bound separately. Both local and effective configuration are hashed.
+ * A member's coding machine hot-plugs each session's two NAS folders while
+ * that session's turn runs (data-<worker>, custody-<worker>); they are not its
+ * enrollment, so its digest covers everything else. Only a device of exactly
+ * that shape is left out (sessionFolder); the coding executor checks the
+ * folders' NAS placement itself. */
 export function runtimeNodeInstanceConfigurationSha256(i: LxdHostInventoryInstance): string {
 	const stable = (value: Record<string, string>) =>
 		Object.fromEntries(Object.entries(value).filter(([k]) => !k.startsWith("volatile.")));
+	const machine =
+		i.config["user.qorpera.schema"] === "qorpera.lxd-coding-machine/v1" &&
+		i.expandedConfig["user.qorpera.schema"] === "qorpera.lxd-coding-machine/v1";
+	const enrolled = (value: Record<string, Readonly<Record<string, string>>>) =>
+		machine ? Object.fromEntries(Object.entries(value).filter(([k, device]) => !sessionFolder(k, device))) : value;
 	return officeDigest({
 		type: i.type,
 		profiles: i.profiles,
 		config: stable(i.config),
 		expandedConfig: stable(i.expandedConfig),
-		devices: i.devices,
-		expandedDevices: i.expandedDevices,
+		devices: enrolled(i.devices),
+		expandedDevices: enrolled(i.expandedDevices),
 	});
 }
 function state(i: LxdHostInventoryInstance): RuntimeNodePhysicalState {
@@ -224,14 +262,16 @@ function allocation(
 				? "login"
 				: tag("schema") === "qorpera.native-job-vm/v1"
 					? "native"
-					: null;
+					: tag("schema") === "qorpera.lxd-coding-vm/v2" || tag("schema") === "qorpera.lxd-coding-machine/v1"
+						? "coding"
+						: null;
 	const id = kind === "native" ? tag("acquisition_id") : tag("allocation_id");
 	const expected = c.allocations.find((a) => a.allocationId === id);
 	if (
 		!expected ||
 		i.type !== "virtual-machine" ||
 		kind !== expected.providerKind ||
-		tag(kind === "office" ? "provider_id" : "provider_adapter") !== expected.providerId ||
+		tag(kind === "office" || kind === "coding" ? "provider_id" : "provider_adapter") !== expected.providerId ||
 		tag("provider_policy_sha256") !== expected.policySha256 ||
 		tag("instance_sha256") !== expected.instanceSha256
 	)

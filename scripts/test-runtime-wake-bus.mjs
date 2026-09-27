@@ -183,9 +183,11 @@ async function verifyDatabase(database, target) {
 	console.log(`Verifying component contracts, concurrency and recovery against ${database}`);
 	sql(database, componentTest);
 	pass(target, "300_runtime_wake_bus.test.sql");
-	const policies = JSON.parse(readFileSync(join(root, "packages/shell/test/fixtures/wake-policies.json"), "utf8"));
-	for (const { scenario, policy } of policies) {
-		const reporting = policy.final === "forbidden" ? "silent" : policy.final === "required" ? "required" : "optional";
+	const policies = JSON.parse(readFileSync(join(root, "packages/runtime/test/fixtures/wake-policies.json"), "utf8"));
+	for (const { scenario, policy, reporting: fixed } of policies) {
+		// A worker-completion continuation is the one policy the kernel selects by source, not by reply policy.
+		const reporting =
+			fixed ?? (policy.final === "forbidden" ? "silent" : policy.final === "required" ? "required" : "optional");
 		const kind = policy.kind === null ? "null" : `'${policy.kind}'`;
 		const actual = JSON.parse(sql(database, `select public.qorpera_wake_policy_value(${kind},'${reporting}')::text;`));
 		assert.deepEqual(actual, policy, `SQL / TypeScript fixture drift: ${scenario}`);

@@ -1,10 +1,12 @@
 import type { CloudApi } from "../../cloud/api.ts";
 import { describeError } from "../../cloud/client.ts";
 import type { HostedFriend, HostedIncomingProfileInvitation } from "../../cloud/types.ts";
-import { button, companyLogo, fmtDate, h, notice, personAvatar, replace, spinner } from "../../ui/dom.ts";
-import { presentationLocale, uiText } from "../../ui/preferences.ts";
+import { button, companyLogo, fmtDate, h, notice, personAvatar, replace } from "../../ui/dom.ts";
+import { presentationLocale, presentationTimeZone, t, uiText } from "../../ui/preferences.ts";
+import { listSkeleton } from "../../ui/skeleton.ts";
 import { Store } from "../state.ts";
 import type { HubController } from "./hub.ts";
+import { roleLabel } from "./team.ts";
 
 /* Friends: the account's address book, and the company invitations waiting
  * for it. A company invitation can only reach someone this account is already
@@ -59,7 +61,7 @@ export class FriendsController {
 		try {
 			await this.#api.sendFriendRequest(address);
 			await this.refresh();
-			this.store.set({ message: `Request sent to ${address}.` });
+			this.store.set({ message: t("Request sent to {email}.", { email: address }) });
 		} catch (error) {
 			this.store.set({ error: describeError(error) });
 		} finally {
@@ -124,14 +126,17 @@ function invitationRow(hub: HubController, invitation: HostedIncomingProfileInvi
 			h(
 				"span",
 				{ class: "muted small" },
-				`Invited as ${invitation.role} · expires ${fmtDate(invitation.expiresAt)}`,
+				t("Invited as {role} · expires {date}", {
+					role: roleLabel(invitation.role),
+					date: fmtDate(invitation.expiresAt),
+				}),
 			),
 		),
 		h(
 			"div",
 			{ class: "person-actions" },
-			button("Decline", () => void hub.respondInvitation(invitation, false), { disabled: busy }),
-			button("Accept", () => void hub.respondInvitation(invitation, true), { primary: true, disabled: busy }),
+			button(t("Decline"), () => void hub.respondInvitation(invitation, false), { disabled: busy }),
+			button(t("Accept"), () => void hub.respondInvitation(invitation, true), { primary: true, disabled: busy }),
 		),
 	);
 }
@@ -176,10 +181,10 @@ function partsFor(friends: FriendsController): FriendsParts {
 	if (!parts) {
 		const input = h("input", {
 			type: "text",
-			placeholder: "Search friends, or type an email to add someone",
+			placeholder: t("Search friends, or type an email to add someone"),
 			autocomplete: "off",
 			spellcheck: "false",
-			"aria-label": "Search friends, or type an email to add someone",
+			"aria-label": t("Search friends, or type an email to add someone"),
 		});
 		// Every keystroke filters, composed text included; drawing never moves the field.
 		input.addEventListener("input", () => friends.store.set({ query: input.value }));
@@ -195,7 +200,7 @@ function partsFor(friends: FriendsController): FriendsParts {
 		};
 		const title = h("h1");
 		const notices = h("div");
-		const submit = h("button", { type: "submit", class: "btn btn-primary" }, "Send request");
+		const submit = h("button", { type: "submit", class: "btn btn-primary" }, t("Send request"));
 		const results = h("div");
 		parts = {
 			page: h(
@@ -205,7 +210,7 @@ function partsFor(friends: FriendsController): FriendsParts {
 				h(
 					"p",
 					{ class: "settings-lead" },
-					"Invite friends into your companies. Invitations to join other companies show up here too.",
+					t("Invite friends into your companies. Invitations to join other companies show up here too."),
 				),
 				notices,
 				h("div", { class: "panel" }, h("form", { class: "panel-search", onsubmit: send }, input, submit), results),
@@ -237,7 +242,7 @@ export function renderFriends(friends: FriendsController, hub: HubController, co
 	const accepted = matching.filter((friend) => friend.status === "accepted");
 	const invitations = companies.invitations.filter((invitation) => matches(invitation.profileName));
 	parts.submit.disabled = !invitable || state.sending === true;
-	const label = state.sending ? "Sending…" : "Send request";
+	const label = state.sending ? t("Sending…") : t("Send request");
 	if (parts.submit.textContent !== label) parts.submit.textContent = label;
 	// The heading and dates are redrawn for a language chosen while this tab was hidden.
 	const locale = presentationLocale();
@@ -263,11 +268,13 @@ export function renderFriends(friends: FriendsController, hub: HubController, co
 			? null
 			: query
 				? invitable
-					? `Nobody here by that address. Send ${query} a friend request.`
-					: "Nobody here by that name."
-				: "No friends yet. Add someone by their Qorpera email address.";
+					? t("Nobody here by that address. Send {email} a friend request.", { email: query })
+					: t("Nobody here by that name.")
+				: t("No friends yet. Add someone by their Qorpera email address.");
+	// The dates follow a time zone chosen while this tab was hidden, too.
 	const shown = JSON.stringify([
 		locale,
+		presentationTimeZone(),
 		invitations.map((invitation) => [invitation, companies.busyInvitation === invitation.id]),
 		[incoming, outgoing, accepted].map((list) => list.map((friend) => [friend, busy(friend)])),
 		loading,
@@ -278,41 +285,41 @@ export function renderFriends(friends: FriendsController, hub: HubController, co
 	replace(
 		parts.results,
 		group(
-			"Company invitations",
+			t("Company invitations"),
 			invitations.map((invitation) => invitationRow(hub, invitation, companies.busyInvitation === invitation.id)),
 		),
 		group(
-			"Requests for you",
+			t("Requests for you"),
 			incoming.map((friend) =>
 				personRow(
 					friend,
-					`asked ${fmtDate(friend.since)}`,
-					button("Decline", () => void friends.respond(friend, false), { disabled: busy(friend) }),
-					button("Accept", () => void friends.respond(friend, true), { primary: true, disabled: busy(friend) }),
+					t("asked {date}", { date: fmtDate(friend.since) }),
+					button(t("Decline"), () => void friends.respond(friend, false), { disabled: busy(friend) }),
+					button(t("Accept"), () => void friends.respond(friend, true), { primary: true, disabled: busy(friend) }),
 				),
 			),
 		),
 		group(
-			"Sent",
+			t("Sent"),
 			outgoing.map((friend) =>
 				personRow(
 					friend,
-					`sent ${fmtDate(friend.since)}`,
-					button("Cancel", () => void friends.remove(friend), { disabled: busy(friend) }),
+					t("sent {date}", { date: fmtDate(friend.since) }),
+					button(t("Cancel"), () => void friends.remove(friend), { disabled: busy(friend) }),
 				),
 			),
 		),
 		group(
-			`Friends${accepted.length ? ` (${accepted.length})` : ""}`,
+			accepted.length ? t("Friends ({count})", { count: accepted.length }) : t("Friends"),
 			accepted.map((friend) =>
 				personRow(
 					friend,
-					`since ${fmtDate(friend.since)}`,
-					button("Remove", () => void friends.remove(friend), { disabled: busy(friend) }),
+					t("since {date}", { date: fmtDate(friend.since) }),
+					button(t("Remove"), () => void friends.remove(friend), { disabled: busy(friend) }),
 				),
 			),
 		),
-		loading ? spinner("Loading friends") : null,
+		loading ? listSkeleton(t("Loading friends")) : null,
 		empty ? h("p", { class: "panel-empty muted" }, empty) : null,
 	);
 }

@@ -5,10 +5,10 @@ import {
 	parseWorkbenchFilePath,
 } from "@qorpera/cloud-client/cloud-file-transfer";
 import { afterEach, expect, it, vi } from "vitest";
-import { nativeToolAuthorityFixture } from "../../shell/test/fixtures/native-tool-authority-fixture.ts";
 import { CloudCompanyComputerFileExports } from "../src/cloud-company-computer-file-transfers.ts";
 import { CloudNativeToolRun } from "../src/cloud-native-tool-authority.ts";
 import { computerBinding, computerLease, computerOperation } from "./fixtures/company-computer.ts";
+import { nativeToolAuthorityFixture } from "./fixtures/native-tool-authority-fixture.ts";
 
 const runs: CloudNativeToolRun[] = [];
 afterEach(() => {

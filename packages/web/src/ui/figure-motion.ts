@@ -11,6 +11,7 @@ import {
 	type EyeGeometry,
 	loadRecordedMotion,
 } from "../../public/assets/avatars/status-2d-v1/recorded-motion.mjs";
+import { createWorkingSchedule, stepKey, type WorkingSchedule, workingStep } from "./working-sequence.ts";
 
 export type { Activity };
 
@@ -18,6 +19,8 @@ export interface FigureArtwork {
 	faces: Record<string, EyeGeometry[]>;
 	prepare(id: string, image: HTMLImageElement): void;
 	drawable(id: string, color: string): CanvasImageSource;
+	/** The approved shade of `color` on a dark surface. */
+	colorOnDark(id: string, color: string): string;
 }
 export interface MotionOptions {
 	activity?: Activity;
@@ -31,7 +34,14 @@ export interface FigureMotion {
 
 const prepared = new Map<string, Promise<void>>();
 const surfaces = new Map<string, { body: HTMLCanvasElement; source: CanvasImageSource }>();
-const clocks = new Map<string, { elapsed: number; users: number }>();
+/** One clock per agent and activity, shared by every view of that agent. A
+ * Working clock also carries the agent's own order of recorded pieces. */
+interface Clock {
+	elapsed: number;
+	users: number;
+	schedule?: WorkingSchedule;
+}
+const clocks = new Map<string, Clock>();
 const live = new Set<LiveMotion>();
 let frame = 0;
 let last = 0;
@@ -47,13 +57,25 @@ interface LiveMotion {
 	artwork: FigureArtwork;
 	id: string;
 	color: string;
+	/** The colour on screen: `color`, or its dark-surface shade on the dark theme. */
+	shown: string;
 	activity: Activity;
 	still: boolean;
-	clock: { elapsed: number; users: number };
+	clock: Clock;
 	visible: boolean;
 	ready: boolean;
 	painted: string;
 	side: number;
+}
+
+/* On the dark theme a figure takes its dark-surface shade from the approved
+ * visual system: charcoal, the palette's ink and the company logos' ink,
+ * turns light as text does. Only the painting changes, never the stored
+ * colour. */
+function shownColor(entry: LiveMotion): string {
+	return document.documentElement.dataset.theme === "dark"
+		? entry.artwork.colorOnDark(entry.id, entry.color)
+		: entry.color;
 }
 
 function base(): URL {
@@ -78,7 +100,7 @@ function capsule(
 }
 
 async function prepare(entry: LiveMotion): Promise<void> {
-	const { id, artwork, color } = entry;
+	const { id, artwork } = entry;
 	let loaded = prepared.get(id);
 	if (!loaded) {
 		loaded = Promise.all(
@@ -101,6 +123,8 @@ async function prepare(entry: LiveMotion): Promise<void> {
 	}
 	await loaded;
 	if (!live.has(entry)) return;
+	const color = shownColor(entry);
+	entry.shown = color;
 	const key = id + color;
 	if (!surfaces.has(key)) {
 		const source = artwork.drawable(id, color),
@@ -194,9 +218,15 @@ function paint(entry: LiveMotion): void {
 	const duration = timelines[activity].end - timelines[activity].start;
 	const elapsed = reduced ? (activity === "Working" ? 1 : duration) : entry.clock.elapsed;
 	const recorded = ["Idle", "Working", "Waiting"].includes(activity);
-	const sample = Math.min(Math.round(duration * 60) - 1, Math.floor(localTime(activity, elapsed) * 60 + 1e-6));
+	// Working plays the agent's own order of recorded pieces; the reduced
+	// still keeps the studio's frame at one second.
+	const step = activity === "Working" && !reduced ? workingStep(entry.clock.schedule!, elapsed) : undefined;
+	const sample = step
+		? step.frame
+		: Math.min(Math.round(duration * 60) - 1, Math.floor(localTime(activity, elapsed) * 60 + 1e-6));
+	const clip = step?.clip ?? activity;
 	const side = Math.max(1, Math.round(entry.side * Math.min(window.devicePixelRatio || 1, 3)));
-	const key = `${side}:${sample}:${reduced}`;
+	const key = `${side}:${step ? stepKey(step) : sample}:${reduced}`;
 	if (entry.painted === key) return;
 	entry.painted = key;
 	const ctx = canvas.getContext("2d")!;
@@ -210,9 +240,9 @@ function paint(entry: LiveMotion): void {
 	ctx.clearRect(0, 0, side, side);
 	ctx.scale(side / 100, side / 100);
 	const p = pose(activity, elapsed, { reduced });
-	const asset = surfaces.get(entry.id + entry.color)!;
-	if (activity === "Working" && !reduced) drawWorkingStrokes(ctx, sample, false);
-	else strokes(ctx, p.strokes, false, entry.side);
+	const asset = surfaces.get(entry.id + entry.shown)!;
+	if (step?.clip === "Working") drawWorkingStrokes(ctx, sample, false, step.strokes);
+	else if (!step) strokes(ctx, p.strokes, false, entry.side);
 	if (p.body > 0.001) {
 		if (!eyesCanvas) {
 			eyesCanvas = document.createElement("canvas");
@@ -225,7 +255,7 @@ function paint(entry: LiveMotion): void {
 		ec.globalCompositeOperation = "source-over";
 		ec.fillStyle = "#fff";
 		const eyes = artwork.faces[entry.id]!;
-		if (recorded) drawRecordedEyes(ec, eyes, activity, sample);
+		if (recorded) drawRecordedEyes(ec, eyes, clip, sample, step?.eyes);
 		else {
 			const spacing = eyes[1]!.x - eyes[0]!.x,
 				height = (eyes[0]!.height + eyes[1]!.height) / 2;
@@ -252,12 +282,12 @@ function paint(entry: LiveMotion): void {
 		ctx.rotate((p.turn * Math.PI) / 180);
 		ctx.scale(p.scaleX * p.body, p.scaleY * p.body);
 		ctx.translate(-50, -50);
-		ctx.drawImage(featheredBody(entry.id + entry.color, asset.body, side), 0, 0, 100, 100);
+		ctx.drawImage(featheredBody(entry.id + entry.shown, asset.body, side), 0, 0, 100, 100);
 		ctx.globalAlpha = p.eyes;
 		ctx.drawImage(eyesCanvas, 0, 0, 100, 100);
 		ctx.restore();
 	}
-	ctx.fillStyle = entry.color;
+	ctx.fillStyle = entry.shown;
 	if (p.stemWidth > 0.001) {
 		const half = p.stemWidth / 2,
 			top = p.stemTop,
@@ -286,12 +316,28 @@ function paint(entry: LiveMotion): void {
 			ctx.fill();
 		}
 	ctx.globalAlpha = 1;
-	if (activity === "Working" && !reduced) drawWorkingStrokes(ctx, sample, true);
-	else strokes(ctx, p.strokes, true, entry.side);
+	if (step?.clip === "Working") drawWorkingStrokes(ctx, sample, true, step.strokes);
+	else if (!step) strokes(ctx, p.strokes, true, entry.side);
 	ctx.setTransform(1, 0, 0, 1, 0, 0);
 	canvas.dataset.frame = String(sample);
+	if (step) canvas.dataset.clip = clip;
+	else delete canvas.dataset.clip;
 	canvas.hidden = false;
 	entry.fallback.hidden = true;
+}
+
+/** Repaint a ready figure whose shown colour the theme has changed. */
+function recolor(entry: LiveMotion): void {
+	if (!entry.ready || shownColor(entry) === entry.shown) return;
+	entry.ready = false;
+	void prepare(entry).then(() => {
+		if (!live.has(entry)) return;
+		entry.ready = true;
+		entry.painted = "";
+		if (entry.visible) paint(entry);
+		schedule();
+		recolor(entry);
+	});
 }
 
 function moving(entry: LiveMotion): boolean {
@@ -342,6 +388,7 @@ export function mountFigureMotion(
 	const activity = options.activity ?? "Idle";
 	const clockKey = `${options.identity ?? id + color}:${activity}`;
 	const clock = clocks.get(clockKey) ?? { elapsed: 0, users: 0 };
+	if (activity === "Working" && !clock.schedule) clock.schedule = createWorkingSchedule();
 	clock.users++;
 	clocks.set(clockKey, clock);
 	const entry: LiveMotion = {
@@ -351,6 +398,7 @@ export function mountFigureMotion(
 		artwork,
 		id,
 		color,
+		shown: color,
 		activity,
 		clock,
 		still: Boolean(options.still),
@@ -375,6 +423,25 @@ export function mountFigureMotion(
 			},
 			{ signal: lifetime.signal },
 		);
+		window.addEventListener(
+			"qorpera-theme-change",
+			() => {
+				for (const item of live) recolor(item);
+			},
+			{ signal: lifetime.signal },
+		);
+		// A window moved to a screen of another pixel density repaints its figures at that density.
+		const signal = lifetime.signal;
+		const watchDensity = () =>
+			window.matchMedia(`(resolution: ${window.devicePixelRatio || 1}dppx)`).addEventListener(
+				"change",
+				() => {
+					for (const item of live) if (item.ready && item.visible) paint(item);
+					watchDensity();
+				},
+				{ once: true, signal },
+			);
+		watchDensity();
 		document.addEventListener(
 			"visibilitychange",
 			() => {
@@ -405,12 +472,19 @@ export function mountFigureMotion(
 	}
 	visibility!.observe(host);
 	sizes!.observe(host);
-	void Promise.all([prepare(entry), loadRecordedMotion(activity, base())])
+	void Promise.all([
+		prepare(entry),
+		loadRecordedMotion(activity, base()),
+		// Working borrows the Waiting clip's sideways glance between turns.
+		activity === "Working" ? loadRecordedMotion("Waiting", base()) : undefined,
+	])
 		.then(() => {
 			if (!live.has(entry)) return;
 			entry.ready = true;
 			if (entry.visible) paint(entry);
 			schedule();
+			// The theme may have changed while the artwork loaded.
+			recolor(entry);
 		})
 		.catch(() => {
 			if (live.has(entry)) host.dataset.motionUnavailable = "true";

@@ -2,7 +2,7 @@ import { isIP } from "node:net";
 import type { CompanyComputerScope } from "@qorpera/cloud-client/cloud-company-computer-contract";
 import { assertCompanyComputerScope } from "@qorpera/cloud-client/cloud-company-computer-contract";
 import { isCompanyComputerScreenTimeZone } from "./cloud-company-computer-desktop.ts";
-import { assertCompanyComputerGuestLayout } from "./cloud-company-computer-layout.ts";
+import { parseCompanyComputerGuestLayout } from "./cloud-company-computer-layout.ts";
 import type { CompanyComputerLinuxOfficeServiceOptions } from "./cloud-company-computer-linux-service.ts";
 
 /** Provider-owned configuration. No identity, provider secret, executable,
@@ -106,14 +106,7 @@ export function parseCompanyComputerServiceConfig(text: string): CompanyComputer
 			...optional,
 		]);
 		if (optional.length && !isCompanyComputerScreenTimeZone(linux.desktopTimeZone)) throw new Error("time zone");
-		strings(linux.layout, [
-			"workbenchRoot",
-			"desktopHome",
-			"screenStateRoot",
-			"browserProfilesRoot",
-			...(linux.layout && typeof linux.layout === "object" && "companyRoot" in linux.layout ? ["companyRoot"] : []),
-		]);
-		assertCompanyComputerGuestLayout(linux.layout as CompanyComputerServiceConfig["linux"]["layout"]);
+		parseCompanyComputerGuestLayout(linux.layout);
 		for (const item of Object.values(record(linux.limits, ["memoryBytes", "pids", "cpuQuota", "cpuPeriod"])))
 			positive(item);
 		for (const mount of [linux.workbenchMount, linux.privateWorkbenchMount])

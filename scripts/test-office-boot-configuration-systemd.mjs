@@ -6,6 +6,9 @@ import {basename,join,resolve} from "node:path";
 import {setTimeout as delay} from "node:timers/promises";
 import {build} from "esbuild";
 const repository=resolve(import.meta.dirname,".."),image=process.env.QORPERA_OFFICE_SYSTEMD_TEST_IMAGE;
+// QORPERA_OFFICE_FIXTURE_LAYOUT_VERSION=2 proves the real guest helper on a layout version 2 office (company root).
+const layoutVersion=process.env.QORPERA_OFFICE_FIXTURE_LAYOUT_VERSION??"1";
+if(!["1","2"].includes(layoutVersion))throw new Error("QORPERA_OFFICE_FIXTURE_LAYOUT_VERSION must be 1 or 2");
 if(process.argv.length!==2||!image||!/^(?:[^\s]+@)?sha256:[0-9a-f]{64}$/.test(image))throw new Error("Select digest-pinned local QORPERA_OFFICE_SYSTEMD_TEST_IMAGE");
 const temporary=await mkdtemp(join(tmpdir(),"qorpera-boot-configuration-systemd-")),name=basename(temporary),volume=name+"-workbench";
 const command=(file,args)=>{const r=spawnSync(file,args,{cwd:repository,encoding:"utf8",timeout:120000});assert.equal(r.status,0,r.stderr);return r.stdout.trim();};
@@ -19,7 +22,7 @@ try{
 	for(const [source,target] of [[pkg,"/fixture/package"],[join(temporary,"data.mjs"),"/fixture/data.mjs"],[join(temporary,"mount.mjs"),"/fixture/mount.mjs"],[join(repository,"scripts/fixtures/office-boot-configuration-systemd.mjs"),"/fixture/check.mjs"]])args.push("--mount",`type=bind,src=${source},dst=${target},readonly`);
 	args.push(image,"/bin/bash","-c","mount -o remount,bind,rw /sys/fs/cgroup && exec /lib/systemd/systemd --log-target=console");container=command("docker",args);
 	let ready=false;for(let i=0;i<40;i++){const state=spawnSync("docker",["exec",container,"systemctl","is-system-running"],{encoding:"utf8",timeout:10000}).stdout?.trim();if(["running","degraded"].includes(state)){ready=true;break;}await delay(500);}assert(ready,"Disposable systemd manager did not start");
-	await new Promise((resolve,reject)=>{const child=spawn("docker",["exec",container,"node","/fixture/check.mjs"],{stdio:"inherit",timeout:600000});child.once("error",reject);child.once("exit",code=>code===0?resolve():reject(new Error("Retained boot actual-systemd proof failed")));});
+	await new Promise((resolve,reject)=>{const child=spawn("docker",["exec","--env","QORPERA_OFFICE_FIXTURE_LAYOUT_VERSION="+layoutVersion,container,"node","/fixture/check.mjs"],{stdio:"inherit",timeout:600000});child.once("error",reject);child.once("exit",code=>code===0?resolve():reject(new Error("Retained boot actual-systemd proof failed")));});
 }finally{
 	if(container)spawnSync("docker",["rm","-f",container],{stdio:"ignore",timeout:10000});
 	spawnSync("docker",["volume","rm",volume],{stdio:"ignore",timeout:10000});

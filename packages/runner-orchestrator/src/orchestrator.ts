@@ -156,9 +156,25 @@ export interface EnqueueCloudRoutineWakeInput {
 	payload: JsonValue;
 }
 
+/** Raises a listed cursor's next due time to the first slot it waits for. The
+ * position (`expectedLastScheduledFor`, absent for a fresh cursor) is compared
+ * exactly and never moves; no occurrence is created. */
+export interface AdvanceCloudRoutineNextDueInput {
+	routineId: string;
+	expectedVersion: number;
+	triggerId: string;
+	expectedLastScheduledFor?: string;
+	nextDueAt: string;
+}
+
+export interface CloudRoutineNextDue {
+	status: "advanced" | "unchanged" | "stale";
+	nextDueAt?: string;
+}
+
 export interface CloudRoutineWakeOccurrence {
 	occurrenceId: string;
-	status: "queued" | "materialized" | "completed" | "failed" | "requires_review" | "cancelled";
+	status: "queued" | "materialized" | "completed" | "failed" | "requires_review" | "cancelled" | "deferred";
 	runId?: string;
 	scheduledFor: string;
 }
@@ -171,6 +187,7 @@ export interface CloudRunnerOrchestratorControlPlane {
 		signal?: AbortSignal,
 	): Promise<CloudRoutineSchedulePage>;
 	enqueueRoutineWake(input: EnqueueCloudRoutineWakeInput, signal?: AbortSignal): Promise<CloudRoutineWakeOccurrence>;
+	advanceRoutineNextDue(input: AdvanceCloudRoutineNextDueInput, signal?: AbortSignal): Promise<CloudRoutineNextDue>;
 	reconcileExpired(orchestratorId: string, signal?: AbortSignal): Promise<void>;
 	retainedClaims(orchestratorId: string, signal?: AbortSignal): Promise<readonly CloudRunnerOrchestrationClaim[]>;
 	claimNext(
@@ -273,6 +290,15 @@ type CloudRunnerOrchestratorRequest =
 			expectedLastScheduledFor?: string;
 			nextDueAt: string;
 			payload: JsonValue;
+	  }
+	| {
+			action: "advance_next_due";
+			orchestratorId: string;
+			routineId: string;
+			expectedVersion: number;
+			triggerId: string;
+			expectedLastScheduledFor?: string;
+			nextDueAt: string;
 	  }
 	| { action: "reconcile"; orchestratorId: string }
 	| { action: "retained"; orchestratorId: string }
@@ -446,8 +472,17 @@ function parseRoutineSchedulePage(value: unknown): CloudRoutineSchedulePage {
 	};
 }
 
-function parseRoutineWakeOccurrence(value: unknown): CloudRoutineWakeOccurrence {
+function parseRoutineWakeOccurrence(value: unknown, occurrenceId?: string): CloudRoutineWakeOccurrence {
 	const input = record(value, "routine wake occurrence");
+	// The company is paused: nothing was admitted and the cursor did not move; the
+	// same occurrence is offered again on the next pass.
+	if (input.status === "deferred" && input.occurrence_id === null && occurrenceId) {
+		return {
+			occurrenceId,
+			status: "deferred",
+			scheduledFor: responseTimestamp(input.scheduled_for, "wake occurrence schedule"),
+		};
+	}
 	if (
 		input.status !== "queued" &&
 		input.status !== "materialized" &&
@@ -468,6 +503,18 @@ function parseRoutineWakeOccurrence(value: unknown): CloudRoutineWakeOccurrence 
 		...(runId ? { runId } : {}),
 		scheduledFor: responseTimestamp(input.scheduled_for, "wake occurrence schedule"),
 	};
+}
+
+function parseRoutineNextDue(value: unknown): CloudRoutineNextDue {
+	const input = record(value, "routine next due time");
+	if (input.status !== "advanced" && input.status !== "unchanged" && input.status !== "stale") {
+		throw new Error("Runner orchestrator returned invalid routine next due status");
+	}
+	const nextDueAt =
+		input.next_due_at === null || input.next_due_at === undefined
+			? undefined
+			: responseTimestamp(input.next_due_at, "routine next due time");
+	return { status: input.status, ...(nextDueAt ? { nextDueAt } : {}) };
 }
 
 function parseExecutionSponsor(value: unknown): CloudExecutionSponsorPin {
@@ -1050,6 +1097,66 @@ function routineOccurrence(
 	};
 }
 
+/** A routine that has never run runs once as soon as it exists — the kickoff —
+ * and then on its cadence, so weekly work set up on a Tuesday starts that day
+ * instead of the following Monday. A version's cursor is fresh only when no
+ * earlier version advanced it (the kernel carries the position forward), so
+ * an edit neither re-runs the routine nor loses a kickoff still owed. The
+ * kickoff instant is the version's effective time, which every orchestrator
+ * derives identically; a version older than the kickoff window (a routine
+ * revived weeks later) takes its next ordinary slot instead. There is no
+ * kickoff when the trigger names a later start (that is the agent asking to
+ * wait) or when a window bounds the run times. */
+const ROUTINE_KICKOFF_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+
+function routineKickoffForgone(trigger: RoutineScheduleTrigger, effectiveAt: Date): boolean {
+	if ("windowStart" in trigger) return true;
+	if (trigger.startAt === undefined) return false;
+	const startAt = Date.parse(trigger.startAt);
+	return !Number.isFinite(startAt) || startAt > effectiveAt.getTime();
+}
+
+function routineKickoff(trigger: RoutineScheduleTrigger, now: Date, effectiveAt: Date): Date | undefined {
+	if (routineKickoffForgone(trigger, effectiveAt)) return undefined;
+	if (!Number.isFinite(effectiveAt.getTime()) || effectiveAt.getTime() > now.getTime()) return undefined;
+	if (now.getTime() - effectiveAt.getTime() > ROUTINE_KICKOFF_WINDOW_MS) return undefined;
+	return effectiveAt;
+}
+
+interface RoutineFirstSlot {
+	expectedLastScheduledFor?: string;
+	nextDueAt: string;
+}
+
+/** A listed trigger with nothing due waits for its first slot: a restart position
+ * (the kernel restarts the schedule at a save or a resume, due one millisecond
+ * later so the scheduler lists it) or a fresh cursor whose trigger names a later
+ * start or a window. Raising its next due time to that slot takes it off the
+ * listing until then and gives it a next run to show. The position is never moved,
+ * so a fresh cursor stays fresh: its first run is still the latest slot at or
+ * after the version's effective time. A fresh cursor that may still owe its
+ * kickoff is left alone. Call only when `dueRoutineWakes` found nothing due. */
+function routineFirstSlot(
+	head: CloudRoutineScheduleHead,
+	trigger: RoutineScheduleTrigger,
+	now: Date,
+): RoutineFirstSlot | undefined {
+	const cursor = head.scheduleCursors.find((candidate) => candidate.triggerId === trigger.id);
+	if (!cursor) return undefined;
+	if (cursor.lastScheduledFor) {
+		const first = nextRoutineOccurrence(trigger, new Date(cursor.lastScheduledFor));
+		// Not yet due by this clock, but already the cursor's own next due time (an
+		// ordinary position, or a database clock ahead of this one): nothing to raise.
+		if (!first || first.getTime() <= now.getTime()) return undefined;
+		if (cursor.nextDueAt && first.getTime() <= Date.parse(cursor.nextDueAt)) return undefined;
+		return { expectedLastScheduledFor: cursor.lastScheduledFor, nextDueAt: first.toISOString() };
+	}
+	const effectiveAt = new Date(head.effectiveAt);
+	if (!routineKickoffForgone(trigger, effectiveAt)) return undefined;
+	const first = nextRoutineOccurrence(trigger, new Date(Math.max(now.getTime(), effectiveAt.getTime() - 1)));
+	return first ? { nextDueAt: first.toISOString() } : undefined;
+}
+
 function dueRoutineWakes(
 	head: CloudRoutineScheduleHead,
 	trigger: RoutineScheduleTrigger,
@@ -1059,8 +1166,12 @@ function dueRoutineWakes(
 	const cursor = head.scheduleCursors.find((candidate) => candidate.triggerId === trigger.id);
 	if (!cursor) throw new Error(`Routine schedule cursor is missing for ${trigger.id}`);
 	if (!cursor.lastScheduledFor) {
-		const scheduledFor = latestRoutineOccurrence(trigger, now);
-		if (!scheduledFor || scheduledFor.getTime() < Date.parse(head.effectiveAt)) return [];
+		const effectiveAt = new Date(head.effectiveAt);
+		let scheduledFor = latestRoutineOccurrence(trigger, now);
+		if (!scheduledFor || scheduledFor.getTime() < effectiveAt.getTime()) {
+			scheduledFor = routineKickoff(trigger, now, effectiveAt);
+			if (!scheduledFor) return [];
+		}
 		const nextDueAt = nextRoutineOccurrence(trigger, scheduledFor);
 		if (!nextDueAt) throw new Error(`Routine schedule has no future occurrence for ${trigger.id}`);
 		return [{ ...routineOccurrence(head, trigger, scheduledFor), nextDueAt: nextDueAt.toISOString(), coalesced: 0 }];
@@ -1099,6 +1210,8 @@ function dueRoutineWakes(
 	});
 }
 
+const ROUTINE_ADVANCE_RETRY_MS = 10 * 60 * 1000;
+
 class RoutineWakeAdmissionErrors extends AggregateError {
 	readonly failures: readonly unknown[];
 
@@ -1114,6 +1227,11 @@ export class CloudRoutineScheduleReconciler implements CloudRunnerOccurrenceReco
 	readonly #now: () => Date;
 	readonly #pageSize: number;
 	readonly #catchUpLimit: number;
+	/** A control plane that answers the first-slot advance with 400 does not know
+	 * it yet (its edge function predates this orchestrator): report that and keep
+	 * scheduling as before for a while, instead of failing every poll, then ask
+	 * again in case the edge function was deployed meanwhile. */
+	#advancePausedUntil = 0;
 
 	constructor(options: CloudRoutineScheduleReconcilerOptions = {}) {
 		this.#now = options.now ?? (() => new Date());
@@ -1139,7 +1257,32 @@ export class CloudRoutineScheduleReconciler implements CloudRunnerOccurrenceReco
 				for (const value of head.triggers) {
 					const trigger = parseScheduleTrigger(value);
 					if (!trigger) continue;
-					for (const occurrence of dueRoutineWakes(head, trigger, this.#now(), this.#catchUpLimit)) {
+					const now = this.#now();
+					const wakes = dueRoutineWakes(head, trigger, now, this.#catchUpLimit);
+					const firstSlot =
+						wakes.length === 0 && now.getTime() >= this.#advancePausedUntil
+							? routineFirstSlot(head, trigger, now)
+							: undefined;
+					if (firstSlot) {
+						const input: AdvanceCloudRoutineNextDueInput = {
+							routineId: head.routineId,
+							expectedVersion: head.version,
+							triggerId: trigger.id,
+							...firstSlot,
+						};
+						try {
+							// A stale answer is not a failure: the next poll reads the cursor again.
+							if (signal) await controlPlane.advanceRoutineNextDue(input, signal);
+							else await controlPlane.advanceRoutineNextDue(input);
+						} catch (error) {
+							if (signal?.aborted) throw error;
+							if (error instanceof CloudRunnerOrchestratorRequestError && error.status === 400) {
+								this.#advancePausedUntil = now.getTime() + ROUTINE_ADVANCE_RETRY_MS;
+							}
+							failures.push(error);
+						}
+					}
+					for (const occurrence of wakes) {
 						const input: EnqueueCloudRoutineWakeInput = {
 							routineId: head.routineId,
 							expectedVersion: head.version,
@@ -1586,12 +1729,14 @@ export class CloudRunnerOrchestrator {
 					if (
 						!(error instanceof CloudRunnerOrchestratorRequestError) ||
 						error.status !== 423 ||
-						assignAttempt >= 10 ||
+						assignAttempt >= 20 ||
 						signal?.aborted
 					) {
 						throw error;
 					}
-					await waitForPoll(3_000, signal ?? new AbortController().signal);
+					// A sandbox activates within a second; a booting guest within
+					// tens. Back off from 250 ms towards 3 s inside the claim window.
+					await waitForPoll(Math.min(3_000, 250 * assignAttempt), signal ?? new AbortController().signal);
 				}
 			}
 		} catch (error) {
@@ -1659,7 +1804,7 @@ export class CloudRunnerOrchestrator {
 	}
 
 	async run(signal: AbortSignal, options: CloudRunnerOrchestratorLoopOptions = {}): Promise<void> {
-		const pollIntervalMs = options.pollIntervalMs ?? 2_000;
+		const pollIntervalMs = options.pollIntervalMs ?? 250;
 		if (!Number.isSafeInteger(pollIntervalMs) || pollIntervalMs < 10 || pollIntervalMs > 60_000) {
 			throw new Error("Orchestrator poll interval is outside the supported range");
 		}
@@ -1843,26 +1988,66 @@ export class SupabaseCloudRunnerOrchestratorControlPlane implements CloudRunnerO
 		) {
 			throw new Error("Wake occurrence is invalid");
 		}
-		return parseRoutineWakeOccurrence(
-			await this.#request(
-				{
-					action: "enqueue_wake",
-					orchestratorId: this.#orchestratorId,
-					routineId: input.routineId,
-					expectedVersion: input.expectedVersion,
-					occurrenceId: input.occurrenceId,
-					occurrenceKey: input.occurrenceKey,
-					triggerId: input.triggerId,
-					scheduledFor: new Date(input.scheduledFor).toISOString(),
-					...(input.expectedLastScheduledFor
-						? { expectedLastScheduledFor: new Date(input.expectedLastScheduledFor).toISOString() }
-						: {}),
-					nextDueAt: new Date(input.nextDueAt).toISOString(),
-					payload: structuredClone(input.payload),
-				},
-				signal,
-			),
+		const enqueued = await this.#request(
+			{
+				action: "enqueue_wake",
+				orchestratorId: this.#orchestratorId,
+				routineId: input.routineId,
+				expectedVersion: input.expectedVersion,
+				occurrenceId: input.occurrenceId,
+				occurrenceKey: input.occurrenceKey,
+				triggerId: input.triggerId,
+				scheduledFor: new Date(input.scheduledFor).toISOString(),
+				...(input.expectedLastScheduledFor
+					? { expectedLastScheduledFor: new Date(input.expectedLastScheduledFor).toISOString() }
+					: {}),
+				nextDueAt: new Date(input.nextDueAt).toISOString(),
+				payload: structuredClone(input.payload),
+			},
+			signal,
 		);
+		return parseRoutineWakeOccurrence(enqueued, input.occurrenceId);
+	}
+
+	async advanceRoutineNextDue(
+		input: AdvanceCloudRoutineNextDueInput,
+		signal?: AbortSignal,
+	): Promise<CloudRoutineNextDue> {
+		requiredUuid(input.routineId, "Routine id");
+		if (
+			!Number.isSafeInteger(input.expectedVersion) ||
+			input.expectedVersion < 1 ||
+			input.expectedVersion > 1_000_000
+		) {
+			throw new Error("Routine version is invalid");
+		}
+		if (
+			input.triggerId !== input.triggerId.trim() ||
+			Buffer.byteLength(input.triggerId, "utf-8") < 1 ||
+			Buffer.byteLength(input.triggerId, "utf-8") > 160 ||
+			/[\0\r\n]/.test(input.triggerId) ||
+			(input.expectedLastScheduledFor !== undefined &&
+				(!Number.isFinite(Date.parse(input.expectedLastScheduledFor)) ||
+					Date.parse(input.nextDueAt) <= Date.parse(input.expectedLastScheduledFor))) ||
+			!Number.isFinite(Date.parse(input.nextDueAt))
+		) {
+			throw new Error("Routine next due time is invalid");
+		}
+		const advanced = await this.#request(
+			{
+				action: "advance_next_due",
+				orchestratorId: this.#orchestratorId,
+				routineId: input.routineId,
+				expectedVersion: input.expectedVersion,
+				triggerId: input.triggerId,
+				...(input.expectedLastScheduledFor
+					? { expectedLastScheduledFor: new Date(input.expectedLastScheduledFor).toISOString() }
+					: {}),
+				nextDueAt: new Date(input.nextDueAt).toISOString(),
+			},
+			signal,
+		);
+		return parseRoutineNextDue(advanced);
 	}
 
 	async reconcileExpired(orchestratorId: string, signal?: AbortSignal): Promise<void> {

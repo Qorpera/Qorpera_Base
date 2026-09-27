@@ -209,7 +209,8 @@ interface Held {
 	handle: FileHandle;
 	identity: BigIntStats;
 }
-/** Descriptor custody of the four adopted layout roots on the NAS mount for
+/** Descriptor custody of every adopted layout root (four, or five with the
+ * version 2 company root) on the NAS mount for
  * the duration of a reset phase. Only directory identity, ownership and mode
  * are checked; mutable working contents are never enumerated, read, copied or
  * compared. The layout digest binds those identities into custody evidence. */

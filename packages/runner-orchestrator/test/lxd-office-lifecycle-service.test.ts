@@ -113,6 +113,12 @@ describe("optional provider lifecycle diagnostics", () => {
 	});
 });
 describe("protected lifecycle service configuration", () => {
+	it("enables server idle policy with a bounded configurable grace period", () => {
+		expect(parseLxdOfficeLifecycleServiceConfig(config()).idleMs).toBe(300000);
+		expect(parseLxdOfficeLifecycleServiceConfig({ ...config(), idleMs: 60000 }).idleMs).toBe(60000);
+		for (const idleMs of [0, 59999, 86400001, 300000.5, "300000"])
+			expect(() => parseLxdOfficeLifecycleServiceConfig({ ...config(), idleMs })).toThrow();
+	});
 	it("accepts only a protected code-package lane reference", () => {
 		expect(
 			parseLxdOfficeLifecycleServiceConfig({ ...config(), codePackageLanePath: "/protected/package.json" })
@@ -122,6 +128,14 @@ describe("protected lifecycle service configuration", () => {
 			parseLxdOfficeLifecycleServiceConfig({ ...config(), codePackageLanePath: "../package.json" }),
 		).toThrow();
 		expect(parseLxdOfficeLifecycleServiceConfig(config()).codePackageLanePath).toBeUndefined();
+		expect(parseLxdOfficeLifecycleServiceConfig(config()).passthroughPath).toBeUndefined();
+		expect(
+			parseLxdOfficeLifecycleServiceConfig({ ...config(), passthroughPath: "/protected/passthrough.json" })
+				.passthroughPath,
+		).toBe("/protected/passthrough.json");
+		expect(() =>
+			parseLxdOfficeLifecycleServiceConfig({ ...config(), passthroughPath: "relative/passthrough.json" }),
+		).toThrow();
 	});
 	it("contains only protected references and returns detached configuration", () => {
 		const input = config(),

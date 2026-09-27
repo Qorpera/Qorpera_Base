@@ -1,9 +1,14 @@
 // @vitest-environment jsdom
 import { File as NodeFile } from "node:buffer";
 import { createHash, webcrypto } from "node:crypto";
+import type { NativeExecutionConnections } from "@qorpera/cloud-client/cloud-native-subscription-control";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createWebSessionInputWriter, type SessionExecutionSponsor } from "../src/cloud/session-input.ts";
-import { deferred, fixture, id, profileA, session, settle, userA, userB } from "./fixtures.ts";
+import {
+	createWebSessionInputWriter,
+	type SessionExecutionSponsor,
+	selectSessionExecutionSponsor,
+} from "../src/cloud/session-input.ts";
+import { deferred, fixture, id, profileA, session, settle, timestamp, userA, userB } from "./fixtures.ts";
 
 afterEach(() => {
 	vi.restoreAllMocks();
@@ -51,6 +56,49 @@ function setup() {
 	};
 }
 describe("member message transport", () => {
+	it("restricts observed execution sponsorship to the governed OpenAI Codex lane", () => {
+		const observed: NativeExecutionConnections = {
+			computeIdentity: {
+				computeIdentityId: id(82),
+				ownershipKind: "member",
+				ownerUserId: userA.id,
+				displayName: "My compute",
+				templateKey: "member",
+				templateVersion: "1",
+				capabilities: ["agent_turn"],
+				policy: {},
+				status: "active",
+				createdAt: timestamp,
+				updatedAt: timestamp,
+			},
+			connections: [
+				{
+					connectionId: id(80),
+					clientConnectionId: id(180),
+					connectionVersion: 1,
+					provider: "openai",
+					nativeHarness: "codex-cli",
+					authorizationState: "active",
+					maxNativeConcurrency: 1,
+					billingSource: "subscription",
+					consentVersion: "1",
+					consentedAt: timestamp,
+					connectionStatus: "active",
+					sponsorBindingId: id(81),
+					sponsorVersion: 1,
+					policy: { implementationStatus: "supported", enablementStatus: "enabled", policyVersion: 1 },
+				},
+			],
+		};
+		expect(selectSessionExecutionSponsor(observed, id(80), userA.id)).toEqual(sponsor);
+		observed.connections[0]!.provider = "anthropic";
+		expect(() => selectSessionExecutionSponsor(observed, id(80), userA.id)).toThrow();
+		observed.connections[0]!.nativeHarness = "claude-code";
+		expect(() => selectSessionExecutionSponsor(observed, id(80), userA.id)).toThrow();
+		observed.connections[0]!.provider = "openai";
+		expect(() => selectSessionExecutionSponsor(observed, id(80), userA.id)).toThrow();
+	});
+
 	it("uploads images against the retained input ID and retries one identical sponsored request", async () => {
 		vi.stubGlobal("crypto", webcrypto);
 		vi.stubGlobal("File", NodeFile);

@@ -16,7 +16,6 @@ import {
 import { CompanyComputerStartupControl } from "@qorpera/runtime/cloud-company-computer-startup";
 import { CompanyComputerOfficeSupervisor } from "@qorpera/runtime/cloud-company-computer-supervisor";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { nativeToolAuthorityFixture } from "../../shell/test/fixtures/native-tool-authority-fixture.ts";
 import {
 	computerBinding,
 	computerDeferred,
@@ -26,6 +25,7 @@ import {
 	computerRfbServerHello,
 	computerScope,
 } from "./fixtures/company-computer.ts";
+import { nativeToolAuthorityFixture } from "./fixtures/native-tool-authority-fixture.ts";
 
 const linuxGuest = vi.hoisted(() => ({ construct: vi.fn(), ready: vi.fn(), physical: vi.fn() }));
 vi.mock("../src/cloud-company-computer-linux-boundary.ts", () => ({
@@ -424,7 +424,7 @@ describe("headless office service lifetime (TLS listeners, synthetic physical ad
 			if (method === "qorpera_redeem_runtime_office_viewer" || method === "qorpera_check_runtime_office_viewer")
 				return Response.json(grant);
 			if (method === "qorpera_release_runtime_office_viewer") return Response.json({ state: "released" });
-			if (method === "qorpera_admit_runtime_office_viewer_input") {
+			if (method === "qorpera_admit_runtime_office_viewer_input_window") {
 				entered.resolve();
 				return admission.promise;
 			}
@@ -450,7 +450,7 @@ describe("headless office service lifetime (TLS listeners, synthetic physical ad
 		await entered.promise;
 		f.abort.abort();
 		await service.finished;
-		admission.resolve(Response.json({ state: "admitted", inputId: computerId(22), validForMs: 5000 }));
+		admission.resolve(Response.json({ state: "admitted", validForMs: 1000 }));
 		expect(Buffer.concat(received)).toEqual(hello);
 		expect(f.guest.close).toHaveBeenCalledOnce();
 	});
@@ -538,12 +538,17 @@ describe("headless office service lifetime (TLS listeners, synthetic physical ad
 			if (method === "qorpera_redeem_runtime_office_viewer") throw new Error("redeem reached SQL");
 			return original(url, init);
 		});
-		const service = await startCompanyComputerOfficeService(f.options);
+		const journal: string[] = [];
+		const capabilities: string[] = [];
+		const service = await startCompanyComputerOfficeService({
+			...f.options,
+			writeDiagnostic: (line) => journal.push(line),
+		});
 		cleanups.push(service.close);
 		const admit = () =>
 			connectCompanyComputerViewChannel({
 				url: `wss://127.0.0.1:${service.viewerPort}/office/${computerScope().companyComputerId}/view`,
-				capability: randomBytes(32).toString("base64url"),
+				capability: capabilities[capabilities.push(randomBytes(32).toString("base64url")) - 1],
 				binding: computerBinding(),
 				mode: "watch",
 				validForMs: 30000,
@@ -555,11 +560,43 @@ describe("headless office service lifetime (TLS listeners, synthetic physical ad
 		await vi.waitFor(() => expect(statusCalls).toBe(3), { timeout: 10000 });
 		await expect(admit()).rejects.toThrow();
 		expect(redeems()).toBe(0);
+		// The member saw only a closed view; this machine's journal says why, with
+		// the supervisor facts that closed admission and nothing about the member.
+		expect(journal).toHaveLength(1);
+		const refusal = JSON.parse(journal[0]);
+		expect(refusal).toEqual({
+			schema: "qorpera.office-viewer-refusal/v1",
+			stage: "redeem",
+			codes: ["OFFICE_SUPERVISOR_STATUS_STALE"],
+			categories: ["unknown"],
+			suppressed: 0,
+			serving: true,
+			supervisor: {
+				failed: false,
+				unconfirmedMs: expect.any(Number),
+				unconfirmedPolls: expect.any(Number),
+				confirmedRevision: 1,
+			},
+		});
+		expect(refusal.supervisor.unconfirmedMs).toBeGreaterThanOrEqual(0);
+		expect(refusal.supervisor.unconfirmedPolls).toBeGreaterThanOrEqual(1);
 		held.resolve(Response.json(f.state));
 		await vi.waitFor(() => expect(statusCalls).toBeGreaterThanOrEqual(4), { timeout: 10000 });
 		await expect(admit()).rejects.toThrow();
 		expect(redeems()).toBe(1);
 		expect(f.guest.close).not.toHaveBeenCalled();
+		// A different cause is a new line: admission was open, SQL refused the ticket.
+		expect(journal).toHaveLength(2);
+		expect(JSON.parse(journal[1])).toMatchObject({
+			stage: "redeem",
+			serving: true,
+			supervisor: { failed: false, unconfirmedMs: null, unconfirmedPolls: 0 },
+		});
+		expect(JSON.parse(journal[1]).codes).not.toContain("OFFICE_SUPERVISOR_STATUS_STALE");
+		const written = journal.join("\n");
+		for (const capability of capabilities) expect(written).not.toContain(capability);
+		for (const secret of ["redeem reached SQL", "app.qorpera.test", "127.0.0.1", computerScope().companyComputerId])
+			expect(written).not.toContain(secret);
 	});
 	it("keeps exact native release available when the composed service refuses stale new work", async () => {
 		const f = fixture();

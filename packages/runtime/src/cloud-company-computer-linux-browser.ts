@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { type FileHandle, lstat, mkdtemp, open, realpath, rm } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
@@ -50,8 +51,90 @@ const policy = {
 	DownloadRestrictions: 3,
 	AllowFileSelectionDialogs: false,
 	URLBlocklist: ["file://*", "chrome://*", "chrome-untrusted://*", "devtools://*", "javascript://*", "view-source:*"],
-	URLAllowlist: ["chrome://newtab/"],
+	// Chromium 151 uses this internal route for its ordinary new-tab page.
+	URLAllowlist: ["chrome://newtab/", "chrome://new-tab-page/"],
 };
+
+/**
+ * Chromium's command line. Nothing here weakens the browser: its own sandbox,
+ * site isolation and web security stay on, and no `--test-type`, which would
+ * also silence the warnings about unsafe flags.
+ */
+export const COMPANY_COMPUTER_BROWSER_ARGUMENTS: readonly string[] = Object.freeze([
+	"--remote-debugging-pipe",
+	"--user-data-dir=/profile",
+	"--no-first-run",
+	"--no-default-browser-check",
+	"--disable-extensions",
+	"--disable-component-extensions-with-background-pages",
+	"--disable-background-networking",
+	"--disable-sync",
+	"--disable-quic",
+	"--disable-gpu",
+	"--disable-dev-shm-usage",
+	"--password-store=basic",
+	// The image's browser is Playwright's Chromium, which is a Chrome for Testing
+	// build. It tells every member that it "is only for automated testing". This
+	// switch is what Playwright itself passes to hide that bar; Chrome for Testing
+	// reads it for that bar only, and Chromium, Chrome and Edge ignore it. No
+	// managed policy hides the bar.
+	"--disable-infobars",
+	// One known window class whatever the build calls itself ("Chromium",
+	// "Google-chrome-for-testing", ...): the dock finds the browser by it.
+	"--class=qorpera-browser",
+	// The first thing a member sees: maximised above the dock by the
+	// window manager. The size only matters where nothing manages windows.
+	"--start-maximized",
+	"--window-size=1920,1200",
+]);
+
+/**
+ * Only the uniquely marked command-line tab belongs to this launch. Restored
+ * blank/new-tab pages, loading popups and user documents are never candidates.
+ * Recheck targets before closing because a member can already see the desktop.
+ * If it is the only page, remove its marker without navigating the document.
+ */
+export async function tidyCompanyComputerBrowserTabs(
+	browser: Pick<Browser, "newBrowserCDPSession" | "contexts">,
+	startupUrl: string,
+	signal: AbortSignal,
+): Promise<void> {
+	await cloudToolRequest(
+		async (checked) => {
+			const control = await browser.newBrowserCDPSession();
+			try {
+				checked.throwIfAborted();
+				const { targetInfos } = await control.send("Target.getTargets");
+				checked.throwIfAborted();
+				const owned = targetInfos.find((target) => target.type === "page" && target.url === startupUrl);
+				if (!owned) return;
+				const latest = await control.send("Target.getTargets");
+				checked.throwIfAborted();
+				const tabs = latest.targetInfos.filter((target) => target.type === "page");
+				if (!tabs.some((target) => target.targetId === owned.targetId && target.url === startupUrl)) return;
+				if (tabs.length > 1) await control.send("Target.closeTarget", { targetId: owned.targetId });
+				else {
+					const page = browser
+						.contexts()
+						.flatMap((context) => context.pages())
+						.find((page) => page.url() === startupUrl);
+					await page?.evaluate((url) => {
+						const documentWindow = globalThis as unknown as {
+							location: { href: string };
+							history: { replaceState(data: null, title: string, url: string): void };
+						};
+						if (documentWindow.location.href === url)
+							documentWindow.history.replaceState(null, "", "about:blank");
+					}, startupUrl);
+				}
+			} finally {
+				await control.detach().catch(() => undefined);
+			}
+		},
+		signal,
+		3000,
+	).catch(() => undefined);
+}
 
 /** Physical browser launch selected only by the cloud guest. Persistent profile
  * bytes are mounted exclusively here; HOME is ephemeral. The workbench is the
@@ -119,6 +202,7 @@ export function createCompanyComputerLinuxBrowserLaunch(options: {
 			throw new Error("OFFICE_BROWSER_BINDING_MISMATCH");
 		const abort = new AbortController();
 		const signal = AbortSignal.any([input.signal, abort.signal]);
+		const startupUrl = `about:blank#qorpera-startup-${randomUUID()}`;
 		const files: FileHandle[] = [];
 		let temporary: string | undefined;
 		let egress: Awaited<ReturnType<typeof startCompanyComputerBrowserEgress>> | undefined;
@@ -291,19 +375,8 @@ export function createCompanyComputerLinuxBrowserLaunch(options: {
 					"/usr/local/lib/qorpera/office-browser-child.mjs",
 					"/run/qorpera/egress.sock",
 					"/usr/lib/qorpera-chromium/chrome",
-					"--remote-debugging-pipe",
-					"--user-data-dir=/profile",
-					"--no-first-run",
-					"--no-default-browser-check",
-					"--disable-extensions",
-					"--disable-component-extensions-with-background-pages",
-					"--disable-background-networking",
-					"--disable-sync",
-					"--disable-quic",
-					"--disable-gpu",
-					"--disable-dev-shm-usage",
-					"--password-store=basic",
-					"--window-size=1920,1200",
+					...COMPANY_COMPUTER_BROWSER_ARGUMENTS,
+					startupUrl,
 				],
 			});
 			exited = new Promise<void>((finished) => launched!.child.once("close", () => finished()));
@@ -330,6 +403,8 @@ export function createCompanyComputerLinuxBrowserLaunch(options: {
 				noDefaults: true,
 			});
 			await cloudToolRequest(check, signal);
+			await tidyCompanyComputerBrowserTabs(browser, startupUrl, signal);
+			signal.throwIfAborted();
 			const contexts = browser.contexts();
 			if (contexts.length !== 1) throw new Error("OFFICE_BROWSER_CONTEXT_MISMATCH");
 			return { context: contexts[0], close };

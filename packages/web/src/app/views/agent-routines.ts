@@ -9,6 +9,7 @@ import {
 	type CloudRoutineReplyPolicy,
 	type CloudRoutineTrigger,
 	type CloudRoutineWeekday,
+	cloudRoutineWeekdayName,
 	describeCloudRoutineTrigger,
 	parseCloudRoutineTrigger,
 } from "@qorpera/cloud-client/cloud-routines";
@@ -16,6 +17,7 @@ import type { WebRoutines } from "../../cloud/routines.ts";
 import type { HostedStaffAgent } from "../../cloud/types.ts";
 import { dialogPageHeader } from "../../ui/dialog.ts";
 import { badge, button, fmtTime, h, icon, replace } from "../../ui/dom.ts";
+import { phrase, presentationTimeZone, t } from "../../ui/preferences.ts";
 import type { CompanyController } from "../company.ts";
 import type { WorkspaceActions } from "../workspace-actions.ts";
 
@@ -45,6 +47,17 @@ export function routineAccessFor(
 type Shape = "interval" | "weekly" | "file";
 const UNITS = { minutes: 1, hours: 60, days: 1440 } as const;
 
+/** The cloud lists one row per connection version; the picker offers each account
+ * once, at its newest version (a consent raises the version, not the account). */
+function latestVersions(accounts: readonly NativeMemberConnection[]): NativeMemberConnection[] {
+	const newest = new Map<string, NativeMemberConnection>();
+	for (const account of accounts) {
+		const current = newest.get(account.connectionId);
+		if (!current || current.connectionVersion < account.connectionVersion) newest.set(account.connectionId, account);
+	}
+	return [...newest.values()];
+}
+
 function accountLabel(account: NativeMemberConnection): string {
 	const name =
 		account.provider === "openai" || account.provider === "openai-codex"
@@ -52,25 +65,82 @@ function accountLabel(account: NativeMemberConnection): string {
 			: account.provider === "anthropic"
 				? "Claude"
 				: account.provider;
-	return account.providerAccountReference ? `${name} · ${account.providerAccountReference}` : name;
+	const who = account.providerAccountEmail ?? account.providerAccountReference;
+	return who ? `${name} · ${who}` : name;
 }
 
+/** Option labels for the account picker. The same account connected more than once
+ * (each sign-in adds a connection) would read identically, so repeats are numbered in
+ * list order: "ChatGPT · name@example.com", "… (2)", "… (3)". */
+function accountLabels(accounts: readonly NativeMemberConnection[]): string[] {
+	const seen = new Map<string, number>();
+	return accounts.map((account) => {
+		const label = accountLabel(account);
+		const count = (seen.get(label) ?? 0) + 1;
+		seen.set(label, count);
+		return count === 1 ? label : `${label} (${count})`;
+	});
+}
+
+const RUN_LABELS: Record<string, string> = {
+	pending: phrase("Waiting to start"),
+	queued: phrase("Waiting to start"),
+	running: phrase("Running"),
+	completed: phrase("Finished"),
+	blocked: phrase("Could not start"),
+	failed: phrase("Failed"),
+	cancelled: phrase("Cancelled"),
+	superseded: phrase("Skipped"),
+};
+
 function runLabel(run: CloudRoutineOccurrence): string {
-	const words: Record<string, string> = {
-		pending: "Waiting to start",
-		queued: "Waiting to start",
-		running: "Running",
-		completed: "Finished",
-		blocked: "Could not start",
-		failed: "Failed",
-		cancelled: "Cancelled",
-		superseded: "Skipped",
-	};
-	return `${words[run.status] ?? run.status} · ${fmtTime(run.finishedAt ?? run.scheduledFor ?? run.createdAt)}`;
+	const status = Object.hasOwn(RUN_LABELS, run.status) ? t(RUN_LABELS[run.status]!) : run.status;
+	return `${status} · ${fmtTime(run.finishedAt ?? run.scheduledFor ?? run.createdAt)}`;
 }
 
 function controlLabel(control: Element): string {
 	return control.getAttribute("aria-label") ?? control.textContent ?? "";
+}
+
+/** The clock a zone shows at an instant, to the minute, written as a UTC time value. */
+function wallClock(instant: number, timeZone: string): number {
+	const parts = Object.fromEntries(
+		new Intl.DateTimeFormat("en-CA", {
+			timeZone,
+			hourCycle: "h23",
+			year: "numeric",
+			month: "2-digit",
+			day: "2-digit",
+			hour: "2-digit",
+			minute: "2-digit",
+		})
+			.formatToParts(instant)
+			.map((part) => [part.type, Number(part.value)]),
+	);
+	return Date.UTC(parts.year!, parts.month! - 1, parts.day!, parts.hour!, parts.minute!);
+}
+
+/** A weekly routine's first-run instant, moved by as much as the member moved
+ * its clock time on that day: an earlier time still runs on the chosen day
+ * instead of the next one. Unmoved when either time does not exist that day. */
+function movedStart(
+	startAt: string,
+	from: { localTime: string; timeZone: string },
+	to: { localTime: string; timeZone: string },
+): string {
+	const day = Math.floor(wallClock(Date.parse(startAt), from.timeZone) / 86_400_000) * 86_400_000;
+	const at = ({ localTime, timeZone }: { localTime: string; timeZone: string }) => {
+		const [hour, minute] = localTime.split(":").map(Number);
+		const wall = day + (hour! * 60 + minute!) * 60_000;
+		let instant = wall;
+		for (let attempt = 0; attempt < 4; attempt += 1) instant += wall - wallClock(instant, timeZone);
+		return wallClock(instant, timeZone) === wall ? instant : undefined;
+	};
+	const before = at(from),
+		after = at(to);
+	return before === undefined || after === undefined
+		? startAt
+		: new Date(Date.parse(startAt) + after - before).toISOString();
 }
 
 /** The Routines page of an agent's details: standing work the cloud starts on
@@ -121,7 +191,7 @@ export class AgentRoutines {
 			this.#message = "";
 		} catch {
 			if (this.#signal.aborted) return;
-			this.#message = "Routines could not be read. Refresh to try again.";
+			this.#message = t("Routines could not be read. Refresh to try again.");
 		}
 		this.#loaded = true;
 		if (!this.#editing) this.#list();
@@ -132,10 +202,13 @@ export class AgentRoutines {
 		const access = this.#access;
 		const manage = access?.canManage() === true;
 		const create = manage
-			? button([icon("plus"), "New routine"], () => void this.#edit(undefined), { disabled: this.#busy })
+			? button([icon("plus"), t("New routine")], () => void this.#edit(undefined), { disabled: this.#busy })
 			: null;
 		const rows = this.#routines.map((routine) => {
 			const last = this.#runs.find((run) => run.routineId === routine.routineId);
+			// A dynamic routine has one next run at a time, chosen by its agent after each run.
+			const dynamic = routine.triggers.some((trigger) => trigger.kind === "once");
+			const ended = routine.status === "expired" || routine.status === "concluded";
 			return h(
 				"article",
 				{ class: "routine-row" },
@@ -143,16 +216,36 @@ export class AgentRoutines {
 					"div",
 					{ class: "routine-row-copy" },
 					h("strong", null, routine.title),
-					h("span", null, routine.triggers.map(describeCloudRoutineTrigger).join("; ")),
-					h("small", null, last ? `Last run: ${runLabel(last)}` : "Has not run yet"),
+					h("span", null, routine.triggers.map((trigger) => describeCloudRoutineTrigger(trigger, t)).join("; ")),
+					routine.status === "concluded" && routine.conclusion
+						? h("small", null, t("Done: {reason}", { reason: routine.conclusion }))
+						: null,
+					routine.status === "active" && routine.nextRunAt
+						? h("small", null, t("Next run: {time}", { time: fmtTime(routine.nextRunAt) }))
+						: null,
+					dynamic && routine.status === "active"
+						? h("small", null, t("Runs until {name} decides it is done", { name: this.#agent().displayName }))
+						: null,
+					h("small", null, last ? t("Last run: {run}", { run: runLabel(last) }) : t("Has not run yet")),
 				),
-				routine.status === "active" ? badge("Active", "ok") : badge("Paused", "warn"),
-				manage
+				routine.status === "active"
+					? badge(t("Active"), "ok")
+					: routine.status === "concluded"
+						? badge(t("Done"))
+						: routine.status === "expired"
+							? badge(t("Ended"))
+							: badge(t("Paused"), "warn"),
+				// An ended routine is read-only: a member save keeps its end (its expiry or run
+				// limit), so neither Edit nor Resume could start it again. Its agent can. The
+				// editor has no shape for a dynamic routine: its agent changes it.
+				manage && !ended
 					? h(
 							"div",
 							{ class: "routine-row-actions" },
-							button("Edit", () => void this.#edit(routine), { small: true, disabled: this.#busy }),
-							button(routine.status === "active" ? "Pause" : "Resume", () => void this.#toggle(routine), {
+							dynamic
+								? null
+								: button(t("Edit"), () => void this.#edit(routine), { small: true, disabled: this.#busy }),
+							button(routine.status === "active" ? t("Pause") : t("Resume"), () => void this.#toggle(routine), {
 								small: true,
 								disabled: this.#busy,
 							}),
@@ -163,10 +256,10 @@ export class AgentRoutines {
 		replace(
 			this.el,
 			dialogPageHeader(
-				"Routines",
+				t("Routines"),
 				this.#back,
-				"Back to agent details",
-				"Recurring work, on a schedule or when something happens.",
+				t("Back to agent details"),
+				t("Recurring work, on a schedule or when something happens."),
 			),
 			this.#message ? h("p", { class: "surface-status", role: "status" }, this.#message) : null,
 			rows.length
@@ -175,7 +268,7 @@ export class AgentRoutines {
 						create ? h("div", { class: "routine-list-footer" }, create) : null,
 					]
 				: access && !this.#loaded
-					? h("p", { class: "agent-page-loading", role: "status" }, "Reading routines…")
+					? h("p", { class: "agent-page-loading", role: "status" }, t("Reading routines…"))
 					: h(
 							"div",
 							{ class: "agent-page-empty" },
@@ -183,7 +276,9 @@ export class AgentRoutines {
 							h(
 								"p",
 								null,
-								access ? `${this.#agent().displayName} has no routines yet.` : "Routines will appear here.",
+								access
+									? t("{name} has no routines yet.", { name: this.#agent().displayName })
+									: t("Routines will appear here."),
 							),
 							create,
 						),
@@ -203,7 +298,7 @@ export class AgentRoutines {
 		const [label, index] = focused;
 		const same = this.#controls(label);
 		// A control that changed (Pause became Resume) hands focus to the way back.
-		(same[index] ?? same[0] ?? this.#controls("Back to agent details")[0])?.focus({ preventScroll: true });
+		(same[index] ?? same[0] ?? this.#controls(t("Back to agent details"))[0])?.focus({ preventScroll: true });
 	}
 	#controls(label: string): HTMLElement[] {
 		return [...this.el.querySelectorAll<HTMLElement>("button")].filter((item) => controlLabel(item) === label);
@@ -212,13 +307,15 @@ export class AgentRoutines {
 		try {
 			const result = await this.#access!.accounts(this.#signal);
 			if (this.#signal.aborted) return false;
-			this.#accounts = result.connections.filter(
-				(item) => item.connectionStatus === "active" && item.authorizationState === "active",
+			this.#accounts = latestVersions(
+				result.connections.filter(
+					(item) => item.connectionStatus === "active" && item.authorizationState === "active",
+				),
 			);
 			return true;
 		} catch {
 			if (!this.#signal.aborted) {
-				this.#message = "Your model accounts could not be read. Try again.";
+				this.#message = t("Your model accounts could not be read. Try again.");
 				this.#list();
 			}
 			return false;
@@ -227,7 +324,7 @@ export class AgentRoutines {
 	async #toggle(routine: CloudRoutine): Promise<void> {
 		if (this.#busy || !this.#access?.canManage()) return;
 		this.#busy = true;
-		this.#message = routine.status === "active" ? "Pausing…" : "Resuming…";
+		this.#message = routine.status === "active" ? t("Pausing…") : t("Resuming…");
 		this.#list();
 		try {
 			if (!(await this.#loadAccounts())) return;
@@ -241,8 +338,10 @@ export class AgentRoutines {
 		} catch {
 			if (!this.#signal.aborted)
 				this.#message = this.#accounts.length
-					? "The routine could not be changed. Try again."
-					: "Connect a model account in Settings first; a routine runs on the account of the member who last saved it.";
+					? t("The routine could not be changed. Try again.")
+					: t(
+							"Connect a model account in Settings first; a routine runs on the account of the member who last saved it.",
+						);
 		} finally {
 			this.#busy = false;
 			if (!this.#signal.aborted) await this.#refresh();
@@ -266,33 +365,33 @@ export class AgentRoutines {
 					: "interval";
 		const clientRoutineId = routine?.clientRoutineId ?? crypto.randomUUID();
 		let saveId = crypto.randomUUID();
-		const zone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+		const zone = presentationTimeZone();
 		const title = h("input", {
 			type: "text",
 			maxlength: "160",
 			value: routine?.title ?? "",
-			"aria-label": "Routine name",
+			"aria-label": t("Routine name"),
 		});
 		const prompt = h(
 			"textarea",
-			{ rows: 5, maxlength: "8000", "aria-label": "What to do", value: routine?.prompt ?? "" },
+			{ rows: 5, maxlength: "8000", "aria-label": t("What to do"), value: routine?.prompt ?? "" },
 			routine?.prompt ?? "",
 		);
 		const when = h(
 			"select",
-			{ "aria-label": "When it runs" },
-			h("option", { value: "weekly" }, "On chosen days at a set time"),
-			h("option", { value: "interval" }, "Every so often"),
-			h("option", { value: "file" }, "When something in the Company File changes"),
+			{ "aria-label": t("When it runs") },
+			h("option", { value: "weekly" }, t("On chosen days at a set time")),
+			h("option", { value: "interval" }, t("Every so often")),
+			h("option", { value: "file" }, t("When something in the Company File changes")),
 		);
 		when.value = shape;
 		const minutes = first && first.kind === "schedule" && !("localTime" in first) ? first.intervalMinutes : 60;
 		const unit = h(
 			"select",
-			{ "aria-label": "Interval unit" },
-			h("option", { value: "minutes" }, "minutes"),
-			h("option", { value: "hours" }, "hours"),
-			h("option", { value: "days" }, "days"),
+			{ "aria-label": t("Interval unit") },
+			h("option", { value: "minutes" }, t("minutes")),
+			h("option", { value: "hours" }, t("hours")),
+			h("option", { value: "days" }, t("days")),
 		);
 		unit.value = minutes % 1440 === 0 ? "days" : minutes % 60 === 0 ? "hours" : "minutes";
 		const every = h("input", {
@@ -300,69 +399,97 @@ export class AgentRoutines {
 			min: "1",
 			max: "10080",
 			value: String(minutes / UNITS[unit.value as keyof typeof UNITS]),
-			"aria-label": "Interval",
+			"aria-label": t("Interval"),
 		});
 		const chosen = new Set<CloudRoutineWeekday>(
 			first && "localTime" in first ? first.weekdays : ["monday", "tuesday", "wednesday", "thursday", "friday"],
 		);
 		const days = h(
 			"div",
-			{ class: "routine-days", role: "group", "aria-label": "Days" },
+			{ class: "routine-days", role: "group", "aria-label": t("Days") },
 			...CLOUD_ROUTINE_WEEKDAYS.map((day) => {
 				const box = h("input", { type: "checkbox", checked: chosen.has(day) });
 				box.onchange = () => (box.checked ? chosen.add(day) : chosen.delete(day));
-				return h("label", null, box, day[0]!.toUpperCase() + day.slice(1, 3));
+				return h("label", null, box, cloudRoutineWeekdayName(day, t));
 			}),
 		);
 		const time = h("input", {
 			type: "time",
 			value: first && "localTime" in first ? first.localTime : "09:00",
-			"aria-label": "Time",
+			"aria-label": t("Time"),
 		});
 		const timeZone = h("input", {
 			type: "text",
 			value: first && "timeZone" in first ? first.timeZone : zone,
-			"aria-label": "Time zone",
+			"aria-label": t("Time zone"),
 			maxlength: "128",
 		});
 		const path = h("input", {
 			type: "text",
 			value: first?.kind === "listener" ? first.path : "",
 			placeholder: "finance/invoices",
-			"aria-label": "Company File path",
+			"aria-label": t("Company File path"),
 		});
 		const match = h(
 			"select",
-			{ "aria-label": "What counts as a change" },
-			h("option", { value: "subtree" }, "This folder and everything in it"),
-			h("option", { value: "exact" }, "Exactly this file"),
+			{ "aria-label": t("What counts as a change") },
+			h("option", { value: "subtree" }, t("This folder and everything in it")),
+			h("option", { value: "exact" }, t("Exactly this file")),
 		);
 		match.value = first?.kind === "listener" ? first.match : "subtree";
 		const reply = h(
 			"select",
-			{ "aria-label": "Reply" },
-			h("option", { value: "required" }, "Always post a reply in the conversation"),
-			h("option", { value: "optional" }, "Reply only when there is something to say"),
-			h("option", { value: "silent" }, "Work silently"),
+			{ "aria-label": t("Reply") },
+			h("option", { value: "required" }, t("Always post a reply in the conversation")),
+			h("option", { value: "optional" }, t("Reply only when there is something to say")),
+			h("option", { value: "silent" }, t("Work silently")),
 		);
 		reply.value = first?.replyPolicy ?? "required";
 		const account = h(
 			"select",
-			{ "aria-label": "Model account" },
-			...this.#accounts.map((item) => h("option", { value: item.connectionId }, accountLabel(item))),
+			{ "aria-label": t("Model account") },
+			...accountLabels(this.#accounts).map((label, index) =>
+				h("option", { value: this.#accounts[index]!.connectionId }, label),
+			),
 		);
-		const intervalFields = h("div", { class: "routine-inline" }, "Every", every, unit);
+		const intervalFields = h("div", { class: "routine-inline" }, t("Every"), every, unit);
 		const weeklyFields = h(
 			"div",
 			{ class: "routine-when" },
 			days,
-			h("div", { class: "routine-inline" }, "at", time, timeZone),
+			h("div", { class: "routine-inline" }, t("at"), time, timeZone),
 		);
 		const fileFields = h("div", { class: "routine-when" }, path, match);
+		// A first run an agent held back (firstRunAt) that is still ahead: shown, and the member may let it go.
+		const held =
+			first?.kind === "schedule" && "startAt" in first && first.startAt && Date.parse(first.startAt) > Date.now()
+				? first.startAt
+				: undefined;
+		const heldStart = () => {
+			if (!held || !first || !("localTime" in first)) return held;
+			try {
+				const moved = movedStart(held, first, { localTime: time.value, timeZone: timeZone.value.trim() });
+				// A time already past would run the routine at once, so the agent's instant stays.
+				return Date.parse(moved) > Date.now() ? moved : held;
+			} catch {
+				// A time still being typed, or a zone this browser does not know: unmoved.
+				return held;
+			}
+		};
+		const wait = h("input", { type: "checkbox", checked: true });
+		const waitText = h("span");
+		const waiting = h("label", { class: "routine-wait" }, wait, waitText);
+		const showHeld = () => {
+			if (held)
+				waitText.textContent = t("Wait until {time} before the first run", { time: fmtTime(heldStart() ?? held) });
+		};
+		time.oninput = timeZone.oninput = showHeld;
+		showHeld();
 		const sync = () => {
 			intervalFields.hidden = when.value !== "interval";
 			weeklyFields.hidden = when.value !== "weekly";
 			fileFields.hidden = when.value !== "file";
+			waiting.hidden = !held || when.value !== shape;
 		};
 		when.onchange = sync;
 		sync();
@@ -370,6 +497,8 @@ export class AgentRoutines {
 		const trigger = (): CloudRoutineTrigger => {
 			const replyPolicy = reply.value === "required" ? {} : { replyPolicy: reply.value as CloudRoutineReplyPolicy };
 			const id = first?.id ?? crypto.randomUUID();
+			// Only while the box shows: it belongs to the routine's own kind of schedule.
+			const letGo = !waiting.hidden && !wait.checked;
 			if (when.value === "file")
 				return parseCloudRoutineTrigger({
 					id,
@@ -385,6 +514,8 @@ export class AgentRoutines {
 					id,
 					kind: "schedule",
 					intervalMinutes: 1440,
+					// Once past, the scheduler ignores a weekly start, so a past one is kept as it is.
+					startAt: !letGo && first && "localTime" in first ? (heldStart() ?? first.startAt) : undefined,
 					weekdays: CLOUD_ROUTINE_WEEKDAYS.filter((day) => chosen.has(day)),
 					localTime: time.value,
 					timeZone: timeZone.value.trim(),
@@ -395,21 +526,24 @@ export class AgentRoutines {
 				first && first.kind === "schedule" && !("localTime" in first) && "startAt" in first
 					? first.startAt
 					: undefined;
-			const next = new Date(Math.ceil((Date.now() + intervalMinutes * 60_000) / 60_000) * 60_000);
+			const next = (minutes: number) =>
+				new Date(Math.ceil((Date.now() + minutes * 60_000) / 60_000) * 60_000).toISOString();
+			const soon = next(1);
 			return parseCloudRoutineTrigger({
 				id,
 				kind: "schedule",
 				intervalMinutes,
-				// The first run is one interval from now, not at once.
-				startAt: kept ?? next.toISOString(),
+				// The first run is one interval from now, not at once. Letting a held first run
+				// go starts the routine within two minutes instead, never after the held time.
+				startAt: letGo && held ? (held < soon ? held : soon) : (kept ?? next(intervalMinutes)),
 				...replyPolicy,
 			});
 		};
-		const save = button("Save routine", () => void submit(), { primary: true });
+		const save = button(t("Save routine"), () => void submit(), { primary: true });
 		const leave = () => {
 			if (!this.#busy) this.#list();
 		};
-		const cancel = button("Cancel", leave);
+		const cancel = button(t("Cancel"), leave);
 		const submit = async () => {
 			if (this.#busy || !this.#access?.canManage()) return;
 			const chosenAccount = this.#accounts.find((item) => item.connectionId === account.value);
@@ -419,23 +553,23 @@ export class AgentRoutines {
 			} catch {
 				status.textContent =
 					when.value === "interval"
-						? "Choose an interval between 5 minutes and 7 days."
+						? t("Choose an interval between 5 minutes and 7 days.")
 						: when.value === "weekly"
-							? "Choose at least one day, a time and a time zone such as Europe/Copenhagen."
-							: "Enter a Company File path such as finance/invoices.";
+							? t("Choose at least one day, a time and a time zone such as Europe/Copenhagen.")
+							: t("Enter a Company File path such as finance/invoices.");
 				return;
 			}
 			if (!title.value.trim() || !prompt.value.trim()) {
-				status.textContent = "Give the routine a name and say what to do.";
+				status.textContent = t("Give the routine a name and say what to do.");
 				return;
 			}
 			if (!chosenAccount) {
-				status.textContent = "Connect a model account in Settings first.";
+				status.textContent = t("Connect a model account in Settings first.");
 				return;
 			}
 			this.#busy = true;
 			save.disabled = cancel.disabled = true;
-			status.textContent = "Saving…";
+			status.textContent = t("Saving…");
 			try {
 				await this.#access.routines.save(
 					{
@@ -457,7 +591,8 @@ export class AgentRoutines {
 			} catch {
 				// A changed draft is a new save; the same draft may be retried as itself.
 				saveId = crypto.randomUUID();
-				if (!this.#signal.aborted) status.textContent = "The routine could not be saved. Your draft is still here.";
+				if (!this.#signal.aborted)
+					status.textContent = t("The routine could not be saved. Your draft is still here.");
 			} finally {
 				this.#busy = false;
 				save.disabled = cancel.disabled = false;
@@ -465,33 +600,39 @@ export class AgentRoutines {
 		};
 		replace(
 			this.el,
-			dialogPageHeader(routine ? "Edit routine" : "New routine", leave, "Back to routines"),
+			dialogPageHeader(routine ? t("Edit routine") : t("New routine"), leave, t("Back to routines")),
 			h(
 				"div",
 				{ class: "routine-editor" },
-				h("label", null, "Name", title),
-				h("label", null, `What should ${this.#agent().displayName} do?`, prompt),
-				h("label", null, "When", when),
+				h("label", null, t("Name"), title),
+				h("label", null, t("What should {name} do?", { name: this.#agent().displayName }), prompt),
+				h("label", null, t("When"), when),
 				intervalFields,
 				weeklyFields,
 				fileFields,
-				h("label", null, "Reply", reply),
+				waiting,
+				h("label", null, t("Reply"), reply),
 				this.#accounts.length
 					? h(
 							"label",
 							null,
-							"Runs on",
+							t("Runs on"),
 							account,
 							h(
 								"small",
 								null,
-								`Saving lets ${this.#agent().displayName} use this account for this routine while you are away. Pause the routine to stop it.`,
+								t(
+									"Saving lets {name} use this account for this routine while you are away. Pause the routine to stop it.",
+									{ name: this.#agent().displayName },
+								),
 							),
 						)
 					: h(
 							"p",
 							{ class: "muted" },
-							"Connect a model account in Settings → Connections first. A routine runs on a member's own account.",
+							t(
+								"Connect a model account in Settings → Connections first. A routine runs on a member's own account.",
+							),
 						),
 				status,
 				h("div", { class: "surface-actions" }, cancel, save),

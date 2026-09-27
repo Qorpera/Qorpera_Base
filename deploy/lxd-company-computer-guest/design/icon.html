@@ -1,0 +1,9 @@
+<!doctype html>
+<meta charset="utf-8">
+<style>html,body{margin:0;background:transparent}svg{display:block}</style>
+<body>
+<script src="dock-icons.js"></script>
+<script>
+const query = new URLSearchParams(location.search);
+document.body.innerHTML = dockIcon(query.get("name"), query.get("state") ?? "idle");
+</script>

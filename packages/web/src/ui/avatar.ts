@@ -1,5 +1,7 @@
 import type { HostedStaffAgent } from "../cloud/types.ts";
 import { type Activity, type FigureArtwork, type FigureMotion, mountFigureMotion } from "./figure-motion.ts";
+import { phrase, t } from "./preferences.ts";
+import { designPx } from "./scale.ts";
 
 /* Agent figures: the approved visual system, vendored under
  * `public/assets/avatars` and loaded by `index.html` before this bundle. This
@@ -15,7 +17,11 @@ interface MotionAvatar {
 	origin: string;
 }
 interface AvatarGlobals {
-	QORPERA_MOTION_MODEL: { avatars: MotionAvatar[]; faces: FigureArtwork["faces"] };
+	QORPERA_MOTION_MODEL: {
+		avatars: MotionAvatar[];
+		faces: FigureArtwork["faces"];
+		avatarColor(id: string, surface: "light" | "dark", selectedColor?: string): string;
+	};
 	QORPERA_AVATAR_APPEARANCE: { palette: { name: string; color: string }[] } & Pick<
 		FigureArtwork,
 		"prepare" | "drawable"
@@ -30,8 +36,43 @@ function globals(): AvatarGlobals | undefined {
 	return scope as AvatarGlobals;
 }
 
+/** Shared approved artwork for static composites, using the same recolouring
+ * and dark-surface shade as individual agent figures. */
+export function figureArtwork(): FigureArtwork | undefined {
+	const scope = globals();
+	if (
+		!scope ||
+		typeof scope.QORPERA_AVATAR_APPEARANCE.prepare !== "function" ||
+		typeof scope.QORPERA_AVATAR_APPEARANCE.drawable !== "function" ||
+		typeof scope.QORPERA_MOTION_MODEL.avatarColor !== "function"
+	)
+		return undefined;
+	return {
+		faces: scope.QORPERA_MOTION_MODEL.faces,
+		prepare: scope.QORPERA_AVATAR_APPEARANCE.prepare,
+		drawable: scope.QORPERA_AVATAR_APPEARANCE.drawable,
+		colorOnDark: (id, shade) =>
+			/^#[\da-f]{6}$/.test(shade) ? scope.QORPERA_MOTION_MODEL.avatarColor(id, "dark", shade) : shade,
+	};
+}
+
 export const FIGURE_IDS = ["planet", "acorn", "flame", "rocket", "crown", "heart", "ghost"] as const;
 export type FigureId = (typeof FIGURE_IDS)[number];
+
+const FIGURE_NAMES: Record<FigureId, string> = {
+	planet: phrase("planet"),
+	acorn: phrase("acorn"),
+	flame: phrase("flame"),
+	rocket: phrase("rocket"),
+	crown: phrase("crown"),
+	heart: phrase("heart"),
+	ghost: phrase("ghost"),
+};
+
+/** A figure's spoken name in the chosen language. */
+export function figureName(figure: FigureId): string {
+	return t(FIGURE_NAMES[figure]);
+}
 
 /* The desktop's own resolution rules (renderer.js on master), ported so a
  * company's saved appearance means the same thing in every client. */
@@ -86,6 +127,26 @@ export function PALETTE(): { name: string; color: string }[] {
 	return globals()?.QORPERA_AVATAR_APPEARANCE.palette ?? [];
 }
 
+/** The palette's names (avatar-appearance.js), so each has its Danish. */
+const COLOR_NAMES: readonly string[] = [
+	phrase("Charcoal"),
+	phrase("Brown"),
+	phrase("Coral"),
+	phrase("Orange"),
+	phrase("Gold"),
+	phrase("Green"),
+	phrase("Teal"),
+	phrase("Blue"),
+	phrase("Purple"),
+	phrase("Pink"),
+	phrase("Gray"),
+];
+
+/** A palette colour's spoken name in the chosen language. */
+export function colorName(name: string): string {
+	return COLOR_NAMES.includes(name) ? t(name) : name;
+}
+
 function palette(): string[] {
 	return PALETTE().map((entry) => entry.color);
 }
@@ -117,6 +178,23 @@ export function colorFor(
 	const distance = (hex: string) =>
 		channels(hex).reduce((sum, value, index) => sum + (value - (target[index] ?? 0)) ** 2, 0);
 	return [...choices].sort((left, right) => distance(left) - distance(right))[0] ?? nativeColor(figure);
+}
+
+/** The colour the cloud seeds every Co-Founder with (the organization kernel
+ * migrations). Nobody chose it, and a colour picked in a client is stored as a
+ * palette hex, never as this token. */
+const COFOUNDER_SEED_COLOR = "qorpera-blue";
+
+/** The colour an agent is drawn in. A Co-Founder that still carries the seeded
+ * colour wears its figure's own shade, as in the trailer; once somebody picks a
+ * colour it wears that, like every other agent. */
+export function agentColor(
+	agent: Pick<HostedStaffAgent, "id" | "displayName" | "appearance" | "templateId">,
+	figure = figureFor(agent),
+): string {
+	const stored = (agent.appearance?.color ?? "").trim().toLowerCase();
+	if (agent.templateId === "co-founder" && stored === COFOUNDER_SEED_COLOR) return nativeColor(figure);
+	return colorFor(agent, figure);
 }
 
 /* Views build and insert figures synchronously. Sweep after DOM changes so
@@ -157,7 +235,7 @@ export function figureElement(figure: FigureId, color?: string, options: FigureO
 	const host = document.createElement("span");
 	host.className = ["figure", options.className].filter(Boolean).join(" ");
 	host.setAttribute("aria-hidden", "true");
-	if (options.size) host.style.setProperty("--figure-size", `${options.size}px`);
+	if (options.size) host.style.setProperty("--figure-size", designPx(options.size));
 	if (!scope) return host;
 	const rig = mountFigureMotion(
 		host,
@@ -167,6 +245,9 @@ export function figureElement(figure: FigureId, color?: string, options: FigureO
 			faces: scope.QORPERA_MOTION_MODEL.faces,
 			prepare: scope.QORPERA_AVATAR_APPEARANCE.prepare,
 			drawable: scope.QORPERA_AVATAR_APPEARANCE.drawable,
+			// The model accepts lower-case hex only; anything else keeps its colour.
+			colorOnDark: (id, shade) =>
+				/^#[\da-f]{6}$/.test(shade) ? scope.QORPERA_MOTION_MODEL.avatarColor(id, "dark", shade) : shade,
 		},
 		options,
 	);
@@ -193,8 +274,5 @@ export function agentFigure(
 		appearance: { color: "", shape: "" },
 	};
 	const figure = figureFor(subject);
-	// The Co-Founder wears its figure's own colour, as in the trailer. The
-	// resolver stays honest about what is stored; only the rendering differs.
-	const color = subject.templateId === "co-founder" ? nativeColor(figure) : colorFor(subject, figure);
-	return figureElement(figure, color, { identity: subject.id || fallbackName, ...options });
+	return figureElement(figure, agentColor(subject, figure), { identity: subject.id || fallbackName, ...options });
 }

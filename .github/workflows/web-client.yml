@@ -5,7 +5,7 @@ name: Web client
 on:
   workflow_dispatch:
   push:
-    branches: [master, web/client-app, 'release/web-runtime-*']
+    branches: [master, web/client-app, 'release/web-runtime-*', 'release/runtime-*']
     paths:
       - '.github/workflows/web-client.yml'
       - 'packages/web/**'
@@ -13,13 +13,14 @@ on:
       - 'packages/company/**'
       - 'packages/cloud-client/**'
       - 'packages/member-web/ui/**'
-      - 'packages/shell/userland/**'
       - 'packages/runtime/src/cloud-runtime-bundle.generated.ts'
       - 'deploy/first-node/native-codex/runtime-bundle-manifest.json'
       - 'supabase/migrations/**'
       - 'supabase/functions/native-provider-login/**'
+      - 'supabase/functions/member-company-gateway/**'
       - 'scripts/check-headless-packages.mjs'
       - 'scripts/generate-cloud-runtime-bundle.mjs'
+      - 'scripts/runtime-bundle-release-train.mjs'
       - 'scripts/web-deployment.test.mjs'
       - 'package.json'
       - 'package-lock.json'
@@ -31,16 +32,23 @@ on:
       - 'packages/company/**'
       - 'packages/cloud-client/**'
       - 'packages/member-web/ui/**'
-      - 'packages/shell/userland/**'
       - 'packages/runtime/src/cloud-runtime-bundle.generated.ts'
       - 'deploy/first-node/native-codex/runtime-bundle-manifest.json'
       - 'supabase/migrations/**'
       - 'supabase/functions/native-provider-login/**'
+      - 'supabase/functions/member-company-gateway/**'
       - 'scripts/check-headless-packages.mjs'
       - 'scripts/generate-cloud-runtime-bundle.mjs'
+      - 'scripts/runtime-bundle-release-train.mjs'
       - 'scripts/web-deployment.test.mjs'
       - 'package.json'
       - 'package-lock.json'
+
+# Release train (deploy/first-node/RUNTIME-RELEASE-TRAIN.md): only release
+# branches declare the runtime bundle, so only they must carry derived files
+# that match the source. Everywhere else the freshness asserts are skipped.
+env:
+  QORPERA_ENFORCE_RUNTIME_BUNDLE: ${{ ((github.event_name == 'pull_request' && startsWith(github.head_ref, 'release/runtime-')) || (github.event_name == 'push' && startsWith(github.ref_name, 'release/runtime-'))) && '1' || '0' }}
 
 permissions:
   contents: read
@@ -71,9 +79,15 @@ jobs:
       - name: Unit tests
         run: npm test --workspace packages/web
       - name: Deployment configuration and provenance contracts
-        run: node --test scripts/web-deployment.test.mjs supabase/functions/native-provider-login/native-provider-login.test.ts
+        run: node --test scripts/web-deployment.test.mjs supabase/functions/native-provider-login/native-provider-login.test.ts supabase/functions/member-company-gateway/member-company-gateway.test.ts
       - name: Lint
         run: npx biome check packages/web/src packages/web/test
+      # Strict generator check, release branches only. build:release (the
+      # Pages command) runs the release-train check, which is strict only
+      # when QORPERA_ENFORCE_RUNTIME_BUNDLE=1.
+      - name: Runtime bundle matches its source (release branches only)
+        if: env.QORPERA_ENFORCE_RUNTIME_BUNDLE == '1'
+        run: npm run check:runtime-bundle
       - name: Build release artifact against public fixture endpoints
         env:
           QORPERA_WEB_CONFIG_JSON: >-

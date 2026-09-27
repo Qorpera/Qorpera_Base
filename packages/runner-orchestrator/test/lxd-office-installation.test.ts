@@ -119,6 +119,24 @@ describe("office provider installation boundary", () => {
 				template,
 			),
 		).toThrow("CONFIG_MISMATCH");
+		// An optional passthrough document must live beside the service document.
+		const withPassthrough = (passthroughPath: string) => {
+			const bytes = Buffer.from(JSON.stringify({ ...f.service, passthroughPath }));
+			return () =>
+				validateOfficeInstallationDocuments(
+					{
+						...spec,
+						documents: {
+							...spec.documents,
+							service: { ...spec.documents.service, bytes: bytes.length, sha256: officeInstallHash(bytes) },
+						},
+					},
+					{ ...f.documents, service: bytes },
+					template,
+				);
+		};
+		expect(withPassthrough("/etc/qorpera/other/passthrough.json")).toThrow("CONFIG_MISMATCH");
+		expect(withPassthrough(`${OFFICE_CONFIG_ROOT}/passthrough.json`)).not.toThrow();
 	});
 	it("requires an exact closed artifact list and rejects traversal or partial packages", () => {
 		const manifest = {

@@ -2,51 +2,68 @@ import { readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
 	COMPANY_COMPUTER_CONFIGURATION_FILES,
+	COMPANY_COMPUTER_GUEST_LAYOUT_KEYS,
 	companyComputerBootAdoptionReceiptPath,
 	companyComputerBootDirectory,
 } from "@qorpera/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { officeStopHash as hash } from "../src/lxd-office-stop-evidence.ts";
 import { officeBootConfigurationWorkerFixture } from "./fixtures/office-boot-configuration-worker.ts";
+import { officeFixtureLayout } from "./fixtures/office-boot-worker.ts";
 import { serviceStartId as id } from "./fixtures/office-service-start.ts";
 
 const roots: string[] = [],
 	signal = () => new AbortController().signal;
 afterEach(async () => {
+	officeFixtureLayout.version = 1;
 	vi.restoreAllMocks();
 	for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
 });
 const fixture = (resumed = true) => officeBootConfigurationWorkerFixture(roots, resumed);
 describe("resumed boot configuration", () => {
-	it("preserves original files and commands, installs one new boot and recovers after process restart", async () => {
-		const f = await fixture(),
-			originals = new Map([...f.guest].map(([path, file]) => [path, Buffer.from(file.content)]));
-		const result = await f.run();
-		expect(result).toMatchObject({ state: "awaiting_boot_admission", bootId: id(103), activationId: id(102) });
-		expect(await f.run()).toEqual(result);
-		expect(f.exec).toHaveBeenCalledOnce();
-		expect(f.stage).toHaveBeenCalledOnce();
-		expect(f.resume.submit).toHaveBeenCalledOnce();
-		for (const [path, bytes] of originals) expect(f.guest.get(path)!.content).toEqual(bytes);
-		const configured = JSON.parse(f.staged()!.toString());
-		expect(JSON.parse(configured.material.configuration).linux.attestation).toMatchObject({
-			bootId: id(103),
-			adoptionReceiptPath: companyComputerBootAdoptionReceiptPath(id(103)),
-		});
-		const retained = (
-			await Promise.all(
-				(
-					await readdir(f.root)
+	// The production office (layout version 2, five roots) went down at its first
+	// power-off/resume: the whole chain below ran only on version 1 before.
+	it.each([1, 2] as const)(
+		"layout version %i: power-off, resume, then preserves original files and commands, installs one new boot and recovers after process restart",
+		async (layoutVersion) => {
+			officeFixtureLayout.version = layoutVersion;
+			const f = await fixture(),
+				originals = new Map([...f.guest].map(([path, file]) => [path, Buffer.from(file.content)]));
+			const result = await f.run();
+			expect(result).toMatchObject({ state: "awaiting_boot_admission", bootId: id(103), activationId: id(102) });
+			expect(await f.run()).toEqual(result);
+			expect(f.exec).toHaveBeenCalledOnce();
+			expect(f.stage).toHaveBeenCalledOnce();
+			expect(f.resume.submit).toHaveBeenCalledOnce();
+			for (const [path, bytes] of originals) expect(f.guest.get(path)!.content).toEqual(bytes);
+			const configured = JSON.parse(f.staged()!.toString());
+			const admitted = [...COMPANY_COMPUTER_GUEST_LAYOUT_KEYS[layoutVersion]].sort();
+			expect(Object.keys(JSON.parse(configured.material.configuration).linux.layout).sort()).toEqual(admitted);
+			expect(
+				Object.keys(
+					JSON.parse(f.guest.get(companyComputerBootAdoptionReceiptPath(id(103)))!.content.toString()).layout,
+				).sort(),
+			).toEqual(admitted);
+			expect(admitted.includes("companyRoot")).toBe(layoutVersion === 2);
+			expect(JSON.parse(configured.material.configuration).linux.attestation).toMatchObject({
+				bootId: id(103),
+				adoptionReceiptPath: companyComputerBootAdoptionReceiptPath(id(103)),
+			});
+			const retained = (
+				await Promise.all(
+					(
+						await readdir(f.root)
+					)
+						.filter((name) => name.endsWith(".json"))
+						.map((name) => readFile(join(f.root, name), "utf8")),
 				)
-					.filter((name) => name.endsWith(".json"))
-					.map((name) => readFile(join(f.root, name), "utf8")),
-			)
-		).join("\n");
-		for (const secret of [f.secrets.registry, f.secrets.native, f.secrets.objects, f.secrets.tlsKey])
-			expect(retained).not.toContain(secret);
-		expect(f.credentialBuffers.every((bytes) => bytes.every((byte) => byte === 0))).toBe(true);
-		expect(f.stage.mock.calls[0][3].every((byte) => byte === 0)).toBe(true);
-	});
+			).join("\n");
+			for (const secret of [f.secrets.registry, f.secrets.native, f.secrets.objects, f.secrets.tlsKey])
+				expect(retained).not.toContain(secret);
+			expect(f.credentialBuffers.every((bytes) => bytes.every((byte) => byte === 0))).toBe(true);
+			expect(f.stage.mock.calls[0][3].every((byte) => byte === 0)).toBe(true);
+		},
+	);
 	it.each(["recorded", "unrecorded"])(
 		"takes a plan with replaced TLS credentials only through the %s revision chain",
 		async (kind) => {

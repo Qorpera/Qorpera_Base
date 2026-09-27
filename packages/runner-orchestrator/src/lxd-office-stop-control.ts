@@ -17,7 +17,8 @@ export interface LxdOfficeStopRegistry {
 		method:
 			| "qorpera_prepare_runtime_office_stop"
 			| "qorpera_ack_runtime_office_stop"
-			| "qorpera_runtime_office_stop_status",
+			| "qorpera_runtime_office_stop_status"
+			| "qorpera_suspend_runtime_node_machine",
 		args: Record<string, unknown>,
 		signal: AbortSignal,
 	): Promise<unknown>;

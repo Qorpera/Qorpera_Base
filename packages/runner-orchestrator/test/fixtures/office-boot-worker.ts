@@ -18,6 +18,12 @@ import { officePhysicalFixture } from "./office-physical-policy.ts";
 
 const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 const signal = (): AbortSignal => new AbortController().signal;
+/** Guest layout version of every office the fixture chain builds from here
+ * (boot -> preparation -> ... -> power-off -> resume -> boot configuration).
+ * Version 2 names `shared.company`, so the adoption plan, the preparation
+ * request and every receipt carry the fifth root, companyRoot. A test file
+ * sets it for a block and restores 1; vitest isolates modules per file. */
+export const officeFixtureLayout: { version: 1 | 2 } = { version: 1 };
 export async function officeBootWorkerFixture(roots: string[]) {
 	const { policy } = officePhysicalFixture();
 	const root = await realpath(await mkdtemp(join(tmpdir(), "office-boot-worker-")));
@@ -94,7 +100,7 @@ export async function officeBootWorkerFixture(roots: string[]) {
 	const input = {
 		schema: "qorpera.lxd-office-adoption-input/v1",
 		adoptionId: id(6),
-		shared: { workbench: null, desktopHome: null },
+		shared: { workbench: null, desktopHome: null, ...(officeFixtureLayout.version === 2 ? { company: null } : {}) },
 		legacy: null,
 		quarantine: [],
 	};

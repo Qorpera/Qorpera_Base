@@ -2,16 +2,28 @@ name: Ephemeral runner Linux boundary
 
 on:
   workflow_dispatch:
+  push:
+    branches: ['release/runtime-*']
   pull_request:
     paths:
       - '.github/workflows/ephemeral-runner-linux.yml'
+      - 'packages/runtime/src/cloud-runtime-bundle.generated.ts'
+      - 'scripts/generate-cloud-runtime-bundle.mjs'
+      - 'scripts/runtime-bundle-release-train.mjs'
+      - 'scripts/fixtures/committed-runtime-bundle/**'
       - 'deploy/ephemeral-runner/**'
-      - 'packages/shell/src/cloud-runner-*.ts'
-      - 'packages/shell/test/cloud-runner-*.test.ts'
+      - 'packages/runtime/src/cloud-runner-*.ts'
+      - 'packages/runtime/test/cloud-runner-*.test.ts'
       - 'scripts/package-ephemeral-runner.mjs'
       - 'scripts/package-ephemeral-runner.test.mjs'
       - 'scripts/export-signed-ephemeral-runner-archive.sh'
       - 'scripts/test-ephemeral-runner-linux.sh'
+
+# Release train (deploy/first-node/RUNTIME-RELEASE-TRAIN.md): only release
+# branches declare the runtime bundle, so only they must carry derived files
+# that match the source. Everywhere else the freshness asserts are skipped.
+env:
+  QORPERA_ENFORCE_RUNTIME_BUNDLE: ${{ ((github.event_name == 'pull_request' && startsWith(github.head_ref, 'release/runtime-')) || (github.event_name == 'push' && startsWith(github.ref_name, 'release/runtime-'))) && '1' || '0' }}
 
 permissions:
   contents: read
@@ -66,6 +78,10 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    env:
+      # A signed image is a release artifact: never sign one whose runtime
+      # bundle lags its source, whatever branch the export was dispatched on.
+      QORPERA_ENFORCE_RUNTIME_BUNDLE: '1'
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

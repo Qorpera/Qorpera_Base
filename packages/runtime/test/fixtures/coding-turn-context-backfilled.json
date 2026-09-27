@@ -1,0 +1,83 @@
+{
+	"input": {
+		"from": "member",
+		"text": "Yes, back off.",
+		"answers": {
+			"options": [
+				"Yes",
+				"No"
+			],
+			"question": "Should the poll also back off after errors?"
+		}
+	},
+	"schema": "qorpera.coding-turn-context/v1",
+	"sequence": 4,
+	"workerId": "00000000-0000-4000-8000-000000000000",
+	"earlierTurns": [
+		{
+			"input": {
+				"from": "dispatch",
+				"text": null
+			},
+			"outcome": {
+				"needs": null,
+				"state": "succeeded",
+				"reason": null,
+				"options": [],
+				"summary": "Composer posts first.",
+				"pullRequest": {
+					"url": "https://github.com/Qorpera/Qorpera_Base/pull/204",
+					"number": 204,
+					"headSha": "b4d8f9f1c0b6e5a2d3c4b5a69788776655443322"
+				}
+			},
+			"sequence": 1,
+			"submitted": null
+		},
+		{
+			"input": {
+				"from": "member",
+				"text": "Also fix the group chat composer."
+			},
+			"outcome": {
+				"needs": "Keep 250 ms, or raise to 500 ms?",
+				"state": "blocked",
+				"reason": null,
+				"options": [
+					"Keep 250 ms",
+					"Raise to 500 ms"
+				],
+				"summary": "Composer fixed.",
+				"pullRequest": null
+			},
+			"sequence": 2,
+			"submitted": null
+		},
+		{
+			"input": {
+				"from": "member",
+				"text": "Raise it."
+			},
+			"outcome": {
+				"needs": null,
+				"state": "failed",
+				"reason": "executor-lease-expired",
+				"options": [],
+				"summary": "The coding executor stopped responding; the workspace is kept.",
+				"pullRequest": null
+			},
+			"sequence": 3,
+			"submitted": {
+				"kind": "ask",
+				"headSha": null,
+				"options": [
+					"Yes",
+					"No"
+				],
+				"summary": "The poll interval is 500 ms now.",
+				"question": "Should the poll also back off after errors?"
+			}
+		}
+	],
+	"omittedEarlierTurns": 0
+}

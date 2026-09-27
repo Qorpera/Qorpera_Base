@@ -1,0 +1,199 @@
+// @vitest-environment jsdom
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { AuthController } from "../src/app/auth.ts";
+import { renderAccount } from "../src/app/views/account.ts";
+import { renderAppearance } from "../src/app/views/appearance.ts";
+import {
+	applyComposerColor,
+	composerColorPreference,
+	setComposerColorPreference,
+	setThemePreference,
+	watchTheme,
+} from "../src/ui/preferences.ts";
+import { fixture, userA } from "./fixtures.ts";
+
+const storageKey = "qorpera.web.composer-color";
+let stopWatching: (() => void) | undefined;
+
+beforeEach(() => {
+	localStorage.clear();
+	delete document.documentElement.dataset.composerColor;
+	delete document.documentElement.dataset.theme;
+	vi.stubGlobal("matchMedia", () => ({ matches: false, addEventListener() {}, removeEventListener() {} }));
+});
+
+afterEach(() => {
+	stopWatching?.();
+	stopWatching = undefined;
+	document.body.replaceChildren();
+	delete document.documentElement.dataset.composerColor;
+	delete document.documentElement.dataset.theme;
+	vi.restoreAllMocks();
+	vi.unstubAllGlobals();
+	localStorage.clear();
+});
+
+function appearance() {
+	const container = document.createElement("div");
+	document.body.append(container);
+	const render = () => container.replaceChildren(renderAppearance());
+	render();
+	const group = () => container.querySelector<HTMLFieldSetElement>('fieldset[aria-label="Composer color"]')!;
+	const radios = () => [...group().querySelectorAll<HTMLInputElement>("input[type=radio]")];
+	const checked = () => radios().find((radio) => radio.checked)?.value;
+	const choose = (value: string) => {
+		const radio = radios().find((item) => item.value === value)!;
+		radio.checked = true;
+		radio.dispatchEvent(new Event("change"));
+	};
+	return { container, render, group, radios, checked, choose };
+}
+
+describe("composer color preference", () => {
+	it("offers blue, green and grey as cards in Appearance and remembers changes when settings reopen", () => {
+		const view = appearance();
+		expect(view.group()).not.toBeNull();
+		expect(view.group().closest("section")?.querySelector("h1")?.textContent).toBe("Appearance");
+		expect(view.radios().map((radio) => radio.value)).toEqual(["blue", "green", "grey"]);
+		expect(view.radios().map((radio) => radio.closest("label")?.querySelector(".color-swatch")?.className)).toEqual([
+			"settings-swatch color-swatch color-swatch-blue",
+			"settings-swatch color-swatch color-swatch-green",
+			"settings-swatch color-swatch color-swatch-grey",
+		]);
+		expect(view.checked()).toBe("blue");
+		for (const color of ["green", "grey", "blue"]) {
+			view.choose(color);
+			expect(localStorage.getItem(storageKey)).toBe(color);
+			expect(document.documentElement.dataset.composerColor).toBe(color);
+			view.render();
+			expect(view.checked()).toBe(color);
+		}
+		expect(view.container.querySelector("[role=alert]")).toBeNull();
+	});
+
+	it("offers System, Light and Dark as cards, the System card showing both halves", () => {
+		const view = appearance();
+		const group = view.container.querySelector<HTMLFieldSetElement>('fieldset[aria-label="Theme"]')!;
+		const radios = [...group.querySelectorAll<HTMLInputElement>("input[type=radio]")];
+		expect(radios.map((radio) => radio.value)).toEqual(["system", "light", "dark"]);
+		expect(radios.find((radio) => radio.checked)?.value).toBe("system");
+		expect(
+			[...group.querySelectorAll(".theme-swatch-system .swatch-window")].map((window) => window.className),
+		).toEqual(["swatch-window swatch-window-light", "swatch-window swatch-window-dark"]);
+		expect(group.querySelectorAll(".theme-swatch-dark .swatch-window")).toHaveLength(1);
+		const dark = radios.find((radio) => radio.value === "dark")!;
+		dark.checked = true;
+		dark.dispatchEvent(new Event("change"));
+		expect(localStorage.getItem("qorpera.web.theme")).toBe("dark");
+		expect(document.documentElement.dataset.theme).toBe("dark");
+		view.render();
+		expect(
+			[...view.container.querySelectorAll<HTMLInputElement>('fieldset[aria-label="Theme"] input')].find(
+				(radio) => radio.checked,
+			)?.value,
+		).toBe("dark");
+		expect(view.container.querySelector("[role=alert]")).toBeNull();
+	});
+
+	it("keeps two rendered groups independent", () => {
+		const first = appearance();
+		const second = appearance();
+		expect(first.radios()[0]!.name).not.toBe(second.radios()[0]!.name);
+		second.choose("green");
+		expect(first.checked()).toBe("blue");
+		expect(second.checked()).toBe("green");
+	});
+
+	it("restores saved colors before paint and keeps the color when switching theme", () => {
+		expect(composerColorPreference()).toBe("blue");
+		applyComposerColor();
+		expect(document.documentElement.dataset.composerColor).toBe("blue");
+		localStorage.setItem(storageKey, "green");
+		applyComposerColor();
+		expect(document.documentElement.dataset.composerColor).toBe("green");
+		expect(setThemePreference("dark")).toBe(true);
+		expect(document.documentElement.dataset.composerColor).toBe("green");
+		expect(setThemePreference("light")).toBe(true);
+		expect(document.documentElement.dataset.composerColor).toBe("green");
+	});
+
+	it("rejects invalid choices and falls back to blue for invalid or inaccessible storage", () => {
+		expect(setComposerColorPreference("grey")).toBe(true);
+		expect(setComposerColorPreference("purple")).toBe(false);
+		expect(composerColorPreference()).toBe("grey");
+		expect(document.documentElement.dataset.composerColor).toBe("grey");
+		localStorage.setItem(storageKey, "purple");
+		expect(composerColorPreference()).toBe("blue");
+		applyComposerColor();
+		expect(document.documentElement.dataset.composerColor).toBe("blue");
+		vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
+			throw new Error("Storage blocked");
+		});
+		expect(composerColorPreference()).toBe("blue");
+		expect(() => applyComposerColor()).not.toThrow();
+	});
+
+	it("keeps the saved color and resets the settings control when saving fails", () => {
+		expect(setComposerColorPreference("green")).toBe(true);
+		const view = appearance();
+		vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+			throw new Error("Storage full");
+		});
+		view.choose("grey");
+		expect(view.checked()).toBe("green");
+		expect(composerColorPreference()).toBe("green");
+		expect(document.documentElement.dataset.composerColor).toBe("green");
+		expect(view.container.querySelector("[role=alert]")?.textContent).toMatch(/save.*composer.*color/i);
+	});
+
+	it("follows changes from other tabs, handles cleared storage and removes its listener on cleanup", () => {
+		localStorage.setItem(storageKey, "green");
+		stopWatching = watchTheme();
+		expect(document.documentElement.dataset.composerColor).toBe("green");
+		localStorage.setItem(storageKey, "grey");
+		window.dispatchEvent(new StorageEvent("storage", { key: storageKey }));
+		expect(document.documentElement.dataset.composerColor).toBe("grey");
+		localStorage.setItem(storageKey, "green");
+		window.dispatchEvent(new StorageEvent("storage", { key: "unrelated.preference" }));
+		expect(document.documentElement.dataset.composerColor).toBe("grey");
+		localStorage.clear();
+		window.dispatchEvent(new StorageEvent("storage", { key: null }));
+		expect(document.documentElement.dataset.composerColor).toBe("blue");
+		stopWatching();
+		stopWatching = undefined;
+		localStorage.setItem(storageKey, "grey");
+		window.dispatchEvent(new StorageEvent("storage", { key: storageKey }));
+		expect(document.documentElement.dataset.composerColor).toBe("blue");
+	});
+});
+
+describe("General settings", () => {
+	it("ends with Language & region and offers no company link or cloud endpoint override", () => {
+		const auth = new AuthController(fixture().cloud);
+		auth.store.set({ user: userA });
+		const view = { container: document.createElement("div") };
+		renderAccount(auth, view.container, {}, () => {});
+		expect(view.container.querySelector("fieldset")).toBeNull();
+		expect([...view.container.querySelectorAll("h2")].map((heading) => heading.textContent)).toEqual([
+			"Account",
+			"Language & region",
+		]);
+		expect(view.container.querySelector("a")).toBeNull();
+		expect(view.container.textContent).not.toContain("All companies");
+		expect(view.container.querySelector("details")).toBeNull();
+		expect(view.container.querySelector('input[type="url"], input[type="text"]:not(.account-name-input)')).toBeNull();
+		expect(view.container.textContent).not.toContain("Cloud endpoint");
+	});
+
+	it("shows theme, color and size as three card groups named for screen readers", () => {
+		const view = appearance();
+		const panel = view.group().closest("section")!;
+		expect([...panel.querySelectorAll("fieldset")].map((group) => group.getAttribute("aria-label"))).toEqual([
+			"Theme",
+			"Composer color",
+			"Interface size",
+		]);
+		expect([...panel.querySelectorAll(".settings-preference")].map((row) => row.children.length)).toEqual([1, 1, 1]);
+		expect(panel.textContent).toBe("AppearanceSystemLightDarkBlueGreenGreySmallBig");
+	});
+});

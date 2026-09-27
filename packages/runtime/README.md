@@ -1,6 +1,6 @@
 # Qorpera headless runtime
 
-Cloud execution services live here and run independently of the desktop application. Explicit module subpaths contain native provider execution, durable tool fencing, Company File gateways, wake processing, identity recovery, secret custody, and shared office computer components.
+Cloud execution services live here. Explicit module subpaths contain native provider execution, durable tool fencing, Company File gateways, wake processing, identity recovery, secret custody, and shared office computer components.
 
 For a repeatable standalone installation and public import/call check, see
 [`scripts/headless-runtime/README.md`](../../scripts/headless-runtime/README.md).
@@ -8,7 +8,7 @@ The installer consumes an exact local tarball closure, verifies installed bytes,
 and refuses transitive source-checkout dependencies. Its component receipts are
 separate from node-hosted release and live headless/web acceptance.
 
-The runner orchestrator remains in `@qorpera/runner-orchestrator`. Supabase owns canonical state and admission. This package consumes `@qorpera/cloud-client` wire representations and shared adapters; neither that package nor the desktop may import runtime implementation. `scripts/check-headless-packages.mjs` enforces source boundaries and bundles the runtime and browser client separately during `npm run check`.
+The runner orchestrator remains in `@qorpera/runner-orchestrator`. Supabase owns canonical state and admission. This package consumes `@qorpera/cloud-client` wire representations and shared adapters; neither that package nor the web clients may import runtime implementation. `scripts/check-headless-packages.mjs` enforces source boundaries and bundles the runtime and browser client separately during `npm run check`.
 
 Native provider credentials stay in isolated provider computers. Shared office guests contain a persistent workbench and concurrent agent desktops. Office tools must use the admitted run, existing effect ledger, exact screen/resource leases, current grants, and guest enforcement. A screen is a work coordination boundary, not a security silo.
 
@@ -70,4 +70,4 @@ Run `node scripts/test-runtime-office-linux.mjs` from the repository root for th
 
 `CloudCompanyComputerScreenshots` stages PNGs through `HttpNativeCompanyObjectTransport` and publishes them into the existing artifact catalog with the original effect receipt and a retention hold. The publisher rechecks exact operation/screen/grant authority before upload and registration. Its `read` method accepts only a completed capture from the current company-audience run, verifies immutable bytes, and rechecks authority after storage I/O. Both paths are bounded and honor cancellation. Capture limits are 8 MiB, matching direct immutable objects. Local SQL and adapter tests prove these boundaries independently; live storage and the combined physical guest/SQL/object-gateway path remain unverified.
 
-`CloudNativeCaptureImages` attaches authorized pixels to successful screenshot tool results. The native fence checks the exact issued call, text envelope and image hash; current capture authority is required before every request, including after compaction drops the original image. Audit records contain capture metadata, never pixels. Capture-enabled startup requires `qorpera.native-capture-images/v1` from the pinned executable. The isolated Darwin source build passes loopback acceptance; the Linux executable rebuild and pin remain pending. Run `node packages/shell/test/fixtures/run-native-codex-capture-images-probe.ts /absolute/native/codex` for explicit source acceptance; it fails on missing or incompatible artifacts and uses no real model or account.
+`CloudNativeCaptureImages` attaches authorized pixels to successful screenshot tool results. The native fence checks the exact issued call, text envelope and image hash; current capture authority is required before every request, including after compaction drops the original image. Audit records contain capture metadata, never pixels. Capture-enabled startup requires `qorpera.native-capture-images/v1` from the pinned executable. The isolated Darwin source build passes loopback acceptance; the Linux executable rebuild and pin remain pending. Run `node packages/runtime/test/fixtures/run-native-codex-capture-images-probe.ts /absolute/native/codex` for explicit source acceptance; it fails on missing or incompatible artifacts and uses no real model or account.
