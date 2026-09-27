@@ -2,6 +2,7 @@ import { Resolver } from "node:dns/promises";
 import { chmod, lstat, realpath } from "node:fs/promises";
 import { createConnection, createServer, isIP, type Socket } from "node:net";
 import { join } from "node:path";
+import { performance } from "node:perf_hooks";
 import { nativeEgressPublicAddress } from "./cloud-native-egress.ts";
 import { cloudToolRequest } from "./cloud-native-tool-authority.ts";
 
@@ -44,12 +45,23 @@ async function resolveBrowserHost(host: string, signal: AbortSignal): Promise<st
  * logs, host networking, redirects or client-side DNS. Browser TLS remains end
  * to end. The guest's privacy/drain owner must close this relay before ack.
  * Transport injection is for local proof, never member/model configuration. */
+/**
+ * How a failed periodic authority check is taken. `paused`: authority answered
+ * that the browser may stay but carry nothing now. `unanswered`: no answer came;
+ * nothing is carried, and the relay ends once none has come for `graceMs`.
+ * `refused`: the relay ends at once.
+ */
+export type CompanyComputerBrowserEgressCheckFailure = "paused" | "unanswered" | "refused";
+
 export async function startCompanyComputerBrowserEgress(options: {
 	root: string;
 	assertActive(signal: AbortSignal): Promise<void>;
 	signal: AbortSignal;
 	onFailure(): void;
 	transport?: CompanyComputerBrowserEgressTransport;
+	/** Absent: every failed check is a refusal. */
+	classifyFailure?(error: unknown): CompanyComputerBrowserEgressCheckFailure;
+	graceMs?: number;
 }): Promise<{ path: string; close(): Promise<void> }> {
 	const info = await lstat(options.root);
 	if (
@@ -73,7 +85,12 @@ export async function startCompanyComputerBrowserEgress(options: {
 	const pending = new Set<Promise<unknown>>();
 	let transfers = 0;
 	let attempts = 0;
-	let checking = false;
+	let checking: Promise<void> | undefined;
+	/** Why the relay carries nothing now: nobody entitled is present, or no answer came. */
+	let paused: "idle" | "unanswered" | undefined;
+	let checkedAt = 0;
+	let answeredAt = performance.now();
+	let holding = 0;
 	let closing: Promise<void> | undefined;
 	const fail = (): void => {
 		if (!signal.aborted) {
@@ -88,7 +105,7 @@ export async function startCompanyComputerBrowserEgress(options: {
 	};
 	const check = (checked: AbortSignal): Promise<void> =>
 		cloudToolRequest((s) => track(options.assertActive(s)), checked, 3000);
-	const server = createServer({ pauseOnConnect: true }, (peer) => {
+	const accept = (peer: Socket): void => {
 		if (signal.aborted || peers.size >= 64 || ++attempts > 4096) {
 			peer.destroy();
 			return;
@@ -169,6 +186,8 @@ export async function startCompanyComputerBrowserEgress(options: {
 					throw new Error("OFFICE_BROWSER_ADDRESS_DENIED");
 				await check(checked);
 				checked.throwIfAborted();
+				// A pause answered while this connection was being checked wins.
+				if (paused) throw new Error("OFFICE_BROWSER_EGRESS_PAUSED");
 				upstream = transport.connect(addresses[0]);
 				upstreams.add(upstream);
 				track(new Promise<void>((resolve) => upstream!.once("close", () => resolve())));
@@ -180,7 +199,7 @@ export async function startCompanyComputerBrowserEgress(options: {
 				upstream.on("data", account);
 				upstream.setTimeout(30000, end);
 				upstream.once("connect", () => {
-					if (checked.aborted) {
+					if (checked.aborted || paused) {
 						end();
 						return;
 					}
@@ -197,6 +216,26 @@ export async function startCompanyComputerBrowserEgress(options: {
 		};
 		peer.on("data", receive);
 		peer.resume();
+	};
+	const server = createServer({ pauseOnConnect: true }, (peer) => {
+		if (!paused) {
+			accept(peer);
+			return;
+		}
+		// A paused relay counts nothing: an idle page may retry for days. A new
+		// connection (somebody back at the screen) asks at once, at most once a
+		// second, and waits for that answer instead of failing the page.
+		peer.on("error", () => undefined);
+		if (signal.aborted || peers.size + holding >= 64 || (!checking && performance.now() - checkedAt < 1000)) {
+			peer.destroy();
+			return;
+		}
+		holding++;
+		void periodic().then(() => {
+			holding--;
+			if (paused || signal.aborted) peer.destroy();
+			else accept(peer);
+		});
 	});
 	server.maxConnections = 64;
 	const abort = (): void => {
@@ -206,14 +245,43 @@ export async function startCompanyComputerBrowserEgress(options: {
 	};
 	server.on("error", fail);
 	signal.addEventListener("abort", abort, { once: true });
+	// Every established tunnel goes and new ones wait for an authorized answer.
+	// The window stays on the desktop.
+	const pause = (reason: "idle" | "unanswered"): void => {
+		paused = reason;
+		for (const socket of [...peers, ...upstreams]) socket.destroy();
+	};
+	const periodic = (): Promise<void> => {
+		checking ??= (async () => {
+			checkedAt = performance.now();
+			try {
+				await check(signal);
+				answeredAt = performance.now();
+				if (paused) {
+					// A new period of presence: the relay's budgets were sized for one.
+					paused = undefined;
+					attempts = 0;
+					transfers = 0;
+				}
+			} catch (error) {
+				const failure = options.classifyFailure?.(error) ?? "refused";
+				if (failure === "paused") {
+					answeredAt = performance.now();
+					pause("idle");
+				} else if (failure === "unanswered" && performance.now() - answeredAt < (options.graceMs ?? 0))
+					pause("unanswered");
+				else fail();
+			}
+		})().finally(() => {
+			checking = undefined;
+		});
+		return checking;
+	};
 	const interval = setInterval(() => {
 		if (checking || signal.aborted) return;
-		checking = true;
-		void check(signal)
-			.catch(fail)
-			.finally(() => {
-				checking = false;
-			});
+		// Nobody entitled present: ask every few seconds; a connection asks at once.
+		if (paused === "idle" && performance.now() - checkedAt < 5000) return;
+		void periodic();
 	}, 1000);
 	const close = (): Promise<void> => {
 		closing ??= cloudToolRequest(
