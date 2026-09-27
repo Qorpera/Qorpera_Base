@@ -6,12 +6,10 @@
 export const SETTINGS: Record<string, string> = {
 	// Settings dialog (app/views/settings.ts)
 	"Search settings": "Søg i indstillinger",
-	"Company for settings": "Virksomhed for indstillingerne",
 	"No settings found.": "Ingen indstillinger fundet.",
 	"Settings sections": "Indstillingssektioner",
 	"Close settings": "Luk indstillinger",
-	"Choose a company": "Vælg en virksomhed",
-	"Choose a company to view these settings.": "Vælg en virksomhed for at se disse indstillinger.",
+	"Open a company to see these settings.": "Åbn en virksomhed for at se disse indstillinger.",
 
 	// Profile picture (app/views/account-picture.ts, ui/picture-file.ts)
 	"Profile picture": "Profilbillede",
@@ -116,7 +114,7 @@ export const SETTINGS: Record<string, string> = {
 	"Company storage used": "Brugt virksomhedslager",
 	"Loading storage…": "Henter lager…",
 	"Storage information unavailable": "Lageroplysninger ikke tilgængelige",
-	"Choose a company to see its storage.": "Vælg en virksomhed for at se dens lager.",
+	"Open a company to see its storage.": "Åbn en virksomhed for at se dens lager.",
 	Billing: "Betaling",
 	Price: "Pris",
 	Free: "Gratis",

@@ -21,6 +21,7 @@ import { phrase, presentationLocale, presentationTimeZone, t } from "../../ui/pr
 import { uiScale } from "../../ui/scale.ts";
 import type { CompanyController } from "../company.ts";
 import type { WorkspaceActions } from "../workspace-actions.ts";
+import { effortName } from "./composer-models.ts";
 
 export interface AgentRoutineAccess {
 	routines: WebRoutines;
@@ -47,6 +48,17 @@ export function routineAccessFor(
 
 type Shape = "interval" | "weekly" | "file";
 const UNITS = { minutes: 1, hours: 60, days: 1440 } as const;
+
+/** The editor shows a routine's one trigger: an interval, days at a time, or a file
+ * change. Anything else (more triggers, a time window) has no shape here, and a
+ * save would drop what the editor cannot show. */
+function editorShape(routine: CloudRoutine): Shape | undefined {
+	const [trigger, ...more] = routine.triggers;
+	if (!trigger || more.length) return undefined;
+	if (trigger.kind === "listener") return "file";
+	if (trigger.kind !== "schedule" || "windowStart" in trigger) return undefined;
+	return "localTime" in trigger ? "weekly" : "interval";
+}
 
 /** The cloud lists one row per connection version; the picker offers each account
  * once, at its newest version (a consent raises the version, not the account). */
@@ -359,7 +371,7 @@ export class AgentRoutines {
 				// An ended routine is read-only: a member save keeps its end (its expiry or run
 				// limit), so neither Edit nor Resume could start it again. Its agent can. The
 				// editor has no shape for a dynamic routine: its agent changes it.
-				manage && !ended && !dynamic ? edit : null,
+				manage && !ended && !dynamic && editorShape(routine) ? edit : null,
 				ended
 					? h("span", { class: "routine-card-state" }, routine.status === "concluded" ? t("Done") : t("Ended"))
 					: lever,
@@ -605,6 +617,8 @@ export class AgentRoutines {
 	}
 	async #edit(routine: CloudRoutine | undefined): Promise<void> {
 		if (this.#busy || this.#editing || !this.#access?.canManage()) return;
+		const shape = routine ? editorShape(routine) : "weekly";
+		if (!shape) return;
 		this.#editing = true;
 		if (!(await this.#loadAccounts())) {
 			this.#editing = false;
@@ -612,13 +626,9 @@ export class AgentRoutines {
 		}
 		if (this.#signal.aborted) return;
 		const first = routine?.triggers[0];
-		const shape: Shape = !first
-			? "weekly"
-			: first.kind === "listener"
-				? "file"
-				: "localTime" in first
-					? "weekly"
-					: "interval";
+		// A member's new routine runs at low effort, like a conversation; an edit keeps
+		// the routine's own, which its agent may have set to medium or high.
+		const effort = routine?.effort ?? "low";
 		const clientRoutineId = routine?.clientRoutineId ?? crypto.randomUUID();
 		let saveId = crypto.randomUUID();
 		const zone = presentationTimeZone();
@@ -834,6 +844,7 @@ export class AgentRoutines {
 						title: title.value.trim(),
 						prompt: prompt.value.trim(),
 						trigger: built,
+						effort,
 						enabled: routine ? routine.status === "active" : true,
 					},
 					chosenAccount,
@@ -868,6 +879,7 @@ export class AgentRoutines {
 				fileFields,
 				waiting,
 				h("label", null, t("Reply"), reply),
+				h("div", { class: "muted" }, t("Effort: {effort}", { effort: effortName(effort) })),
 				this.#accounts.length
 					? h(
 							"label",

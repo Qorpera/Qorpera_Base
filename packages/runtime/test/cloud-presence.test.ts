@@ -207,7 +207,10 @@ describe("cloud presence", () => {
 				teammateKeys.privateKey,
 			).toString("base64"),
 		});
-		await vi.waitFor(() => expect(activities).toEqual(["legal-agent:working", "legal-agent:writing"]));
+		// Each broadcast verifies its signature on its own async path, and only a
+		// single sender's sequence is ordered, so the two senders may land in
+		// either order. Compare them as a set.
+		await vi.waitFor(() => expect([...activities].sort()).toEqual(["legal-agent:working", "legal-agent:writing"]));
 
 		await handle.stop();
 		expect(unregisterPresenceDevice).toHaveBeenCalledOnce();

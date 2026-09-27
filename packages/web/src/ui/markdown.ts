@@ -30,6 +30,9 @@ function renderTokens(tokens: readonly MarkedToken[], depth = 0): Node[] {
 		switch (token.type) {
 			case "space":
 			case "def":
+			// The list case draws each task checkbox. marked also keeps the "[x] " marker
+			// as a token, at the start of the item or of its first paragraph.
+			case "checkbox":
 				return [];
 			case "heading":
 				return [h(token.depth <= 2 ? "h2" : "h3", { "data-heading-level": token.depth }, children())];

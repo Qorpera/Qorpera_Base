@@ -9,7 +9,7 @@
 :root[data-theme="dark"] .badge-warn { color: #f2c35d; }
 :root[data-theme="dark"] .badge-danger { color: #ff9084; }
 :root[data-theme="dark"] .btn { background: rgba(255, 255, 255, 0.05); }
-:root[data-theme="dark"] .btn:hover:not(:disabled) { background: rgba(255, 255, 255, 0.1); }
+:root[data-theme="dark"] .btn:hover:not(:disabled, [aria-disabled="true"]) { background: rgba(255, 255, 255, 0.1); }
 :root[data-theme="dark"] .btn-primary { background: var(--primary); }
 :root[data-theme="dark"] .btn-primary:hover:not(:disabled) { background: var(--primary-hover); }
 :root[data-theme="dark"] .btn-danger:hover:not(:disabled) { background: var(--danger-soft); }
@@ -136,17 +136,16 @@
 :root[data-theme="dark"] .settings-dialog { border-color: rgba(255, 255, 255, 0.1); color: var(--text); box-shadow: 0 24px 80px rgb(0 0 0 / 60%); }
 :root[data-theme="dark"] .settings-nav { border-color: rgba(255, 255, 255, 0.08); background: #232322; }
 :root[data-theme="dark"] .settings-nav input { border-color: rgba(255, 255, 255, 0.1); background: #1d1d1c; }
-:root[data-theme="dark"] .settings-nav [role=tab] { color: #d6d5d1; }
-:root[data-theme="dark"] .settings-nav [role=tab]:hover { background: rgba(255, 255, 255, 0.06); }
+:root[data-theme="dark"] .settings-nav :is([role=tab], .settings-back) { color: #d6d5d1; }
+:root[data-theme="dark"] .settings-nav :is([role=tab], .settings-back):hover { background: rgba(255, 255, 255, 0.06); }
 :root[data-theme="dark"] .settings-nav [aria-selected=true] { background: rgba(255, 255, 255, 0.1); color: #fff; }
 :root[data-theme="dark"] .settings-nav input::placeholder { color: #8f8e89; }
-:root[data-theme="dark"] .settings-nav [role=tab] > .icon { color: #9d9c97; }
+:root[data-theme="dark"] .settings-nav :is([role=tab], .settings-back) > .icon { color: #9d9c97; }
 :root[data-theme="dark"] .settings-nav [aria-selected=true] > .icon { color: var(--text); }
 :root[data-theme="dark"] .settings-tab-count { background: var(--primary); color: var(--on-primary); }
-:root[data-theme="dark"] .settings-company-label { color: #9d9c97; }
 :root[data-theme="dark"] .settings-content h2 { color: #9d9c97; }
 :root[data-theme="dark"] .settings-content .btn { border-color: rgba(255, 255, 255, 0.12); background: #3a3a38; }
-:root[data-theme="dark"] .settings-content .btn:hover:not(:disabled) { background: #444442; }
+:root[data-theme="dark"] .settings-content .btn:hover:not(:disabled, [aria-disabled="true"]) { background: #444442; }
 :root[data-theme="dark"] .settings-content .btn-danger { color: #ff9084; }
 :root[data-theme="dark"] .settings-content .btn-primary { border-color: var(--primary); background: var(--primary); color: var(--on-primary); }
 :root[data-theme="dark"] .settings-content .btn-primary:hover:not(:disabled) { background: var(--primary-hover); }

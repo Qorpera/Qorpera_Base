@@ -19,6 +19,8 @@ export interface CloudRunnerOrchestratorServiceConfig {
 	providerAdapterId: string;
 	providerServiceToken: string;
 	pollIntervalMs: number;
+	/** Control renewal, reconcilers and retained claims; defaults to 2 s. */
+	reconcileIntervalMs?: number;
 	dispatchConcurrency: number;
 }
 
@@ -60,6 +62,7 @@ export function cloudRunnerOrchestratorServiceConfigFromEnvironment(
 	const providerAdapterId = requiredEnvironmentValue(environment, "QORPERA_RUNNER_PROVIDER_ADAPTER");
 	const pollValue = environment.QORPERA_RUNNER_ORCHESTRATOR_POLL_MS?.trim() || "250";
 	const pollIntervalMs = Number(pollValue);
+	const reconcileIntervalMs = Number(environment.QORPERA_RUNNER_ORCHESTRATOR_RECONCILE_MS?.trim() || "2000");
 	const dispatchConcurrency = Number(environment.QORPERA_RUNNER_ORCHESTRATOR_CONCURRENCY?.trim() || "8");
 	if (!UUID_PATTERN.test(orchestratorId)) throw new Error("QORPERA_RUNNER_ORCHESTRATOR_ID is invalid");
 	if (!TOKEN_PATTERN.test(orchestratorControlToken)) {
@@ -73,6 +76,9 @@ export function cloudRunnerOrchestratorServiceConfigFromEnvironment(
 	}
 	if (!Number.isSafeInteger(pollIntervalMs) || pollIntervalMs < 10 || pollIntervalMs > 60_000) {
 		throw new Error("QORPERA_RUNNER_ORCHESTRATOR_POLL_MS is outside the supported range");
+	}
+	if (!Number.isSafeInteger(reconcileIntervalMs) || reconcileIntervalMs < 10 || reconcileIntervalMs > 60_000) {
+		throw new Error("QORPERA_RUNNER_ORCHESTRATOR_RECONCILE_MS is outside the supported range");
 	}
 	if (!Number.isSafeInteger(dispatchConcurrency) || dispatchConcurrency < 1 || dispatchConcurrency > 64) {
 		throw new Error("QORPERA_RUNNER_ORCHESTRATOR_CONCURRENCY is outside the supported range");
@@ -90,6 +96,7 @@ export function cloudRunnerOrchestratorServiceConfigFromEnvironment(
 		providerAdapterId,
 		providerServiceToken: requiredEnvironmentValue(environment, "QORPERA_RUNNER_PROVIDER_TOKEN"),
 		pollIntervalMs,
+		reconcileIntervalMs,
 		dispatchConcurrency,
 	};
 }
@@ -123,6 +130,9 @@ export async function runCloudRunnerOrchestratorService(options: CloudRunnerOrch
 	});
 	await orchestrator.run(options.signal, {
 		pollIntervalMs: options.config.pollIntervalMs,
+		...(options.config.reconcileIntervalMs !== undefined
+			? { reconcileIntervalMs: options.config.reconcileIntervalMs }
+			: {}),
 		...(options.onError ? { onError: options.onError } : {}),
 	});
 }

@@ -124,7 +124,8 @@ export interface CloudRoutineSaveInput {
 	title: string;
 	prompt: string;
 	triggers: CloudRoutineTrigger[];
-	effort?: CloudRoutineEffort;
+	/** Every save states it: an edit passes the routine's own, so no save resets it. */
+	effort: CloudRoutineEffort;
 	sponsorBindingId: string;
 	sponsorVersion: number;
 	enabled: boolean;
@@ -471,6 +472,7 @@ export class CloudRoutineClient {
 		if (input.triggers.length < 1 || input.triggers.length > 12) invalid("routine triggers");
 		const triggers = input.triggers.map(parseCloudRoutineTrigger);
 		if (new Set(triggers.map((trigger) => trigger.id)).size !== triggers.length) invalid("routine triggers");
+		if (!["low", "medium", "high", "xhigh", "max"].includes(input.effort)) invalid("routine effort");
 		const value = record(
 			await this.#rpc(
 				"qorpera_upsert_cloud_routine",
@@ -482,7 +484,7 @@ export class CloudRoutineClient {
 					p_title: title,
 					p_prompt: text(input.prompt, "routine prompt", 32 * 1024).trim(),
 					p_triggers: triggers,
-					p_effort: input.effort ?? "low",
+					p_effort: input.effort,
 					p_sponsor_binding_id: uuid(input.sponsorBindingId, "routine sponsor"),
 					p_sponsor_version: count(input.sponsorVersion, "routine sponsor version"),
 					p_logical_computer_id: null,
