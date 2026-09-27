@@ -190,6 +190,9 @@ export function parseCloudNativeToolAuthority(
 	});
 }
 
+/** Two cloud reads sent together that the database serialises on the run's job row. */
+export const CLOUD_PAIRED_REQUEST_TIMEOUT_MS = 10_000;
+
 /** Bounded, cancellation-aware wait, including transports which ignore AbortSignal. */
 export function cloudToolRequest<T>(
 	operation: (signal: AbortSignal) => Promise<T>,
@@ -272,8 +275,12 @@ export class CloudNativeToolRun {
 		return this.#identity;
 	}
 
-	/** Rechecks from the cloud after queuing and again before releasing tool data. */
-	async assertActive(signal: AbortSignal): Promise<void> {
+	/**
+	 * Rechecks from the cloud after queuing and again before releasing tool data.
+	 * `timeoutMs` widens the read's deadline when a caller sends it together with
+	 * another read of the same run, which the database serialises on the job row.
+	 */
+	async assertActive(signal: AbortSignal, timeoutMs?: number): Promise<void> {
 		const combined = AbortSignal.any([signal, this.signal]);
 		const check = this.#checking.then(async () => {
 			combined.throwIfAborted();
@@ -283,6 +290,7 @@ export class CloudNativeToolRun {
 				await cloudToolRequest(
 					(requestSignal) => this.#reader.describeToolAuthority(this.binding, requestSignal),
 					combined,
+					timeoutMs,
 				),
 				this.binding,
 			);

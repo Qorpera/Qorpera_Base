@@ -265,7 +265,14 @@ export interface CloudRunnerOrchestratorOptions {
 }
 
 export interface CloudRunnerOrchestratorLoopOptions {
+	/** How often the loop asks for new work. */
 	pollIntervalMs?: number;
+	/**
+	 * How often it renews control, runs the occurrence reconcilers, reconciles
+	 * expired claims and the provider, and re-reads its retained claims. These
+	 * are several round trips; asking for new work does not wait for them.
+	 */
+	reconcileIntervalMs?: number;
 	shutdownGraceMs?: number;
 	onError?: (error: unknown) => void;
 }
@@ -1599,10 +1606,13 @@ export class CloudRunnerOrchestrator {
 		limit: number,
 		signal?: AbortSignal,
 		excludedClaimIds: ReadonlySet<string> = new Set(),
+		includeRetained = true,
 	): Promise<readonly CloudRunnerOrchestrationClaim[]> {
-		const retained = signal
-			? await this.#controlPlane.retainedClaims(this.#orchestratorId, signal)
-			: await this.#controlPlane.retainedClaims(this.#orchestratorId);
+		const retained = !includeRetained
+			? []
+			: signal
+				? await this.#controlPlane.retainedClaims(this.#orchestratorId, signal)
+				: await this.#controlPlane.retainedClaims(this.#orchestratorId);
 		const claims = retained.filter((claim) => !excludedClaimIds.has(claim.claimId)).slice(0, limit);
 		while (claims.length < limit) {
 			const clientClaimId = this.#clientClaimId();
@@ -1701,11 +1711,11 @@ export class CloudRunnerOrchestrator {
 		let assignment: CloudRunnerAssignment;
 		try {
 			const capabilitySha256 = cloudRunnerAssignmentCapabilitySha256(capability);
-			/* The guest activates its runner session concurrently with
-			 * acquisition, so an assign issued immediately after acquire can
-			 * race the activation and fail its prerequisite check (423). The
-			 * worker is healthy and freshly booted; retry inside the claim
-			 * window instead of destroying it. */
+			/* A current runner activates before its inbox answers, but an older
+			 * guest activates concurrently with acquisition, so an assign issued
+			 * immediately after acquire can race the activation and fail its
+			 * prerequisite check (423). The worker is healthy and freshly booted;
+			 * retry inside the claim window instead of destroying it. */
 			for (let assignAttempt = 1; ; assignAttempt++) {
 				try {
 					assignment = signal
@@ -1735,8 +1745,11 @@ export class CloudRunnerOrchestrator {
 						throw error;
 					}
 					// A sandbox activates within a second; a booting guest within
-					// tens. Back off from 250 ms towards 3 s inside the claim window.
-					await waitForPoll(Math.min(3_000, 250 * assignAttempt), signal ?? new AbortController().signal);
+					// tens. Back off from 50 ms, doubling towards 3 s inside the claim window.
+					await waitForPoll(
+						Math.min(3_000, 50 * 2 ** (assignAttempt - 1)),
+						signal ?? new AbortController().signal,
+					);
 				}
 			}
 		} catch (error) {
@@ -1808,26 +1821,50 @@ export class CloudRunnerOrchestrator {
 		if (!Number.isSafeInteger(pollIntervalMs) || pollIntervalMs < 10 || pollIntervalMs > 60_000) {
 			throw new Error("Orchestrator poll interval is outside the supported range");
 		}
+		const reconcileIntervalMs = options.reconcileIntervalMs ?? 2_000;
+		if (!Number.isSafeInteger(reconcileIntervalMs) || reconcileIntervalMs < 10 || reconcileIntervalMs > 60_000) {
+			throw new Error("Orchestrator reconcile interval is outside the supported range");
+		}
 		const shutdownGraceMs = options.shutdownGraceMs ?? 30_000;
 		if (!Number.isSafeInteger(shutdownGraceMs) || shutdownGraceMs < 10 || shutdownGraceMs > 60_000) {
 			throw new Error("Orchestrator shutdown grace is outside the supported range");
 		}
 		const inFlight = new Set<Promise<void>>();
 		const inFlightClaimIds = new Set<string>();
+		let nextReconcileAt = 0;
+		// Set by a failed dispatch: reconcile on the next poll rather than after the interval.
+		let reconcileNow = false;
+		// Retained claims are re-read after each successful reconcile, as soon as the
+		// loop has capacity for them, and keep that priority until the read succeeds.
+		let retainedDue = false;
 		while (!signal.aborted) {
 			try {
-				const reconciliationErrors = await this.#reconcileControlPlane(signal);
-				for (const error of reconciliationErrors) options.onError?.(error);
+				// A failed reconcile still blocks claims and is retried on the next poll;
+				// only a successful one waits for its interval.
+				if (reconcileNow || performance.now() >= nextReconcileAt) {
+					reconcileNow = false;
+					nextReconcileAt = 0;
+					const reconciliationErrors = await this.#reconcileControlPlane(signal);
+					nextReconcileAt = performance.now() + reconcileIntervalMs;
+					retainedDue = true;
+					for (const error of reconciliationErrors) options.onError?.(error);
+				}
 				const available = this.#dispatchConcurrency - inFlight.size;
 				if (available > 0) {
-					const claims = await this.#claimBatch(available, signal, inFlightClaimIds);
+					const claims = await this.#claimBatch(available, signal, inFlightClaimIds, retainedDue);
+					retainedDue = false;
 					for (const claim of claims) {
 						if (inFlightClaimIds.has(claim.claimId)) continue;
 						inFlightClaimIds.add(claim.claimId);
 						let dispatch: Promise<void>;
 						dispatch = this.#dispatchClaim(claim, signal)
 							.then(() => undefined)
-							.catch((error: unknown) => options.onError?.(error))
+							.catch((error: unknown) => {
+								// A failed dispatch can leave a finished sandbox or a retained claim
+								// behind: reconcile on the next poll rather than after the interval.
+								reconcileNow = true;
+								options.onError?.(error);
+							})
 							.finally(() => {
 								inFlight.delete(dispatch);
 								inFlightClaimIds.delete(claim.claimId);

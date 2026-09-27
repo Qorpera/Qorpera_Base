@@ -90,7 +90,8 @@ function parseRequest(value: unknown): CloudNativeFenceRequest {
 /** One private Unix socket per native run; no provider URL, bearer, network listener or credential callback. */
 export async function startCloudNativeResultFence(options: {
 	root: string;
-	boundary: CloudNativeToolBoundary;
+	/** The run's boundary, or a forwarder to it when the process starts before its run. */
+	boundary: Pick<CloudNativeToolBoundary, "close" | "fenceNativeResults">;
 	assertSession: (request: CloudNativeFenceRequest) => void;
 	/** Auto-review (v130): a reviewer thread's request is answered with the host's own
 	 * verdict acknowledgements, never the agent's tool results, and is not the agent's

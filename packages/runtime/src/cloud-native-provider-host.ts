@@ -163,6 +163,38 @@ export interface NativeCloudExecutionDriver {
 		providerSessionId: string;
 		delivery: { messageCount: number; finalMessageId: string | null };
 	}>;
+	/** Warm conversations: start a spare harness for the next run that uses this identity root. */
+	prepareSpare?(identityRoot: string, idleMs: number): void;
+	/** Stop the spares that use this identity root before it is wiped. */
+	disposeSpares?(identityRoot: string): Promise<void>;
+}
+
+/** Removes everything under `root` except the capsule's own credential files. */
+async function pruneToCredentialFiles(
+	root: string,
+	durablePaths: ReadonlySet<string>,
+	directory = root,
+): Promise<boolean> {
+	let kept = false;
+	for (const entry of await readdir(directory, { withFileTypes: true })) {
+		const path = join(directory, entry.name);
+		const name = relative(root, path).split(sep).join("/");
+		if (entry.isDirectory() && !entry.isSymbolicLink()) {
+			if (await pruneToCredentialFiles(root, durablePaths, path)) kept = true;
+			else await rm(path, { recursive: true, force: true });
+		} else if (entry.isFile() && durablePaths.has(name)) kept = true;
+		else await rm(path, { force: true });
+	}
+	return kept;
+}
+
+interface WarmCredentialRoot {
+	key: string;
+	root: string;
+	durable: ReadonlySet<string>;
+	/** The capsule bytes this host last stored: reused only while the store still holds them. */
+	sealed: Uint8Array;
+	timer: ReturnType<typeof setTimeout>;
 }
 
 export interface NativeProviderExecutionAuthority {
@@ -1136,6 +1168,8 @@ export class NativeProviderHost {
 	readonly #backupIdentityKey?: (request: NativeProviderLoginRequest) => Promise<void>;
 	readonly #computeIdentityId: string;
 	readonly #temporaryRoot: string;
+	readonly #warmIdleMs?: number;
+	#warm?: WarmCredentialRoot;
 	readonly #logins = new Map<string, LoginState>();
 	readonly #metadataShutdown = new AbortController();
 	#metadataRefresh?: Promise<void>;
@@ -1149,8 +1183,20 @@ export class NativeProviderHost {
 		computeIdentityId: string;
 		temporaryRoot?: string;
 		backupIdentityKey?: (request: NativeProviderLoginRequest) => Promise<void>;
+		/**
+		 * Warm conversations (contract amendment 2026-09-27): after a successful company run
+		 * the opened capsule stays in its private root for at most this long, for the next run
+		 * this host serves. Absent: every run opens and wipes its own root.
+		 */
+		warmIdleMs?: number;
 	}) {
 		capsuleKey(options.masterKey);
+		if (
+			options.warmIdleMs !== undefined &&
+			(!Number.isSafeInteger(options.warmIdleMs) || options.warmIdleMs < 1 || options.warmIdleMs > 5 * 60_000)
+		)
+			throw new Error("Native warm window is invalid");
+		this.#warmIdleMs = options.warmIdleMs;
 		requiredUuid(options.computeIdentityId, "Native host Compute Identity id");
 		this.#controlPlane = options.controlPlane;
 		this.#capsules = options.capsules;
@@ -1160,6 +1206,28 @@ export class NativeProviderHost {
 		this.#backupIdentityKey = options.backupIdentityKey;
 		this.#computeIdentityId = options.computeIdentityId;
 		this.#temporaryRoot = resolve(options.temporaryRoot ?? tmpdir());
+	}
+
+	/** Takes the warm root for this key; a warm root for another key is wiped. */
+	async #takeWarm(key: string | undefined): Promise<WarmCredentialRoot | undefined> {
+		const warm = this.#warm;
+		if (!warm) return undefined;
+		this.#warm = undefined;
+		clearTimeout(warm.timer);
+		if (warm.key === key) return warm;
+		await this.#wipeRoot(warm.root);
+		return undefined;
+	}
+
+	async #wipeRoot(root: string): Promise<void> {
+		await this.#cloudRuntime?.disposeSpares?.(root).catch(() => undefined);
+		await rm(root, { recursive: true, force: true });
+	}
+
+	/** Wipes a kept capsule root now (service shutdown). */
+	async releaseWarm(): Promise<void> {
+		const warm = await this.#takeWarm(undefined);
+		if (warm) await this.#wipeRoot(warm.root);
 	}
 
 	/** Display metadata refreshes never modify the credential capsule or start a model turn. */
@@ -1399,7 +1467,18 @@ export class NativeProviderHost {
 		})();
 		let root: string | undefined;
 		let durableCredentialPaths: ReadonlySet<string> | undefined;
+		let sealedCapsule: Uint8Array | undefined;
 		let harnessStarted = false;
+		// Warm conversations: the capsule root this host kept from its previous company run, reused
+		// only while the stored capsule is byte for byte the one this host uploaded last.
+		const warmKey =
+			request.runtime === "company-path-v1" && this.#warmIdleMs !== undefined
+				? JSON.stringify([
+						authority.credentialCapsuleId,
+						authority.encryptedCapsuleReference,
+						authority.computeIdentityId,
+					])
+				: undefined;
 		let output: JsonValue | undefined;
 		let failure: Error | undefined;
 		const mouth = this.#cloudRuntime
@@ -1411,18 +1490,31 @@ export class NativeProviderHost {
 				);
 		try {
 			stage = "temporary-workspace";
-			root = await mkdtemp(join(this.#temporaryRoot, `qorpera-native-run-${authority.runId}-`));
+			const warm = await this.#takeWarm(warmKey);
+			// A kept root belongs to this run from here: every failure path below wipes it.
+			root = warm?.root;
 			stage = "credential-download";
 			const capsule = await this.#capsules.get(authority.encryptedCapsuleReference, executionAbort.signal);
-			stage = "credential-opening";
-			await openNativeCredentialCapsule(
-				capsule,
-				root,
-				this.#masterKey,
-				authority.credentialCapsuleId,
-				request.runtime === "company-path-v1" ? CODEX_CREDENTIAL_PATHS : undefined,
-			);
-			durableCredentialPaths = new Set((await collectCapsuleFiles(root)).files.map((file) => file.path));
+			if (warm && Buffer.from(capsule).equals(Buffer.from(warm.sealed))) {
+				durableCredentialPaths = warm.durable;
+			} else {
+				if (warm) {
+					root = undefined;
+					await this.#wipeRoot(warm.root);
+				}
+				stage = "temporary-workspace";
+				root = await mkdtemp(join(this.#temporaryRoot, `qorpera-native-run-${authority.runId}-`));
+				stage = "credential-opening";
+				await openNativeCredentialCapsule(
+					capsule,
+					root,
+					this.#masterKey,
+					authority.credentialCapsuleId,
+					request.runtime === "company-path-v1" ? CODEX_CREDENTIAL_PATHS : undefined,
+				);
+				durableCredentialPaths = new Set((await collectCapsuleFiles(root)).files.map((file) => file.path));
+			}
+			if (!root) throw new Error("Native credential root is unavailable");
 			let result: { providerSessionId?: string };
 			let delivery: { messageCount: number; finalMessageId: string | null };
 			if (request.runtime === "company-path-v1") {
@@ -1498,6 +1590,7 @@ export class NativeProviderHost {
 					executionAbort.signal.throwIfAborted();
 					stage = "credential-upload";
 					await this.#capsules.put(authority.encryptedCapsuleReference, refreshedCapsule, executionAbort.signal);
+					sealedCapsule = refreshedCapsule;
 				} catch (error) {
 					const reason = stage === "credential-sealing" ? ` (${credentialSealingFailure(error)})` : "";
 					failure ??= new Error(`Native provider execution ${stage} stage failed${reason}`, { cause: error });
@@ -1518,14 +1611,43 @@ export class NativeProviderHost {
 			 * without masking the original failure. */
 			if (failure && request.runtime !== "company-path-v1")
 				await grantWorkspaceGroupAccess(request.input.companyRoot).catch(() => undefined);
-			if (root) {
-				try {
-					await rm(root, { recursive: true, force: true });
-				} catch (error) {
-					failure ??= new Error(
-						`Native provider execution cleanup stage failed (${harnessExecutionFailureCategory(error)})`,
-						{ cause: error },
-					);
+			const usedRoot = root;
+			if (usedRoot) {
+				let kept = false;
+				if (warmKey && this.#warmIdleMs !== undefined && !failure && sealedCapsule && durableCredentialPaths) {
+					try {
+						// Only the capsule's own credential files stay; the next harness starts auth-only.
+						await pruneToCredentialFiles(usedRoot, durableCredentialPaths);
+						const keptRoot = usedRoot;
+						this.#cloudRuntime?.prepareSpare?.(keptRoot, this.#warmIdleMs);
+						const timer = setTimeout(() => {
+							if (this.#warm?.root !== keptRoot) return;
+							this.#warm = undefined;
+							void this.#wipeRoot(keptRoot).catch(() => undefined);
+						}, this.#warmIdleMs);
+						timer.unref?.();
+						this.#warm = {
+							key: warmKey,
+							root: keptRoot,
+							durable: durableCredentialPaths,
+							sealed: sealedCapsule,
+							timer,
+						};
+						kept = true;
+					} catch {
+						kept = false;
+					}
+				}
+				if (!kept) {
+					try {
+						await this.#cloudRuntime?.disposeSpares?.(usedRoot).catch(() => undefined);
+						await rm(usedRoot, { recursive: true, force: true });
+					} catch (error) {
+						failure ??= new Error(
+							`Native provider execution cleanup stage failed (${harnessExecutionFailureCategory(error)})`,
+							{ cause: error },
+						);
+					}
 				}
 			}
 		}
