@@ -1,9 +1,11 @@
 import { readFileSync } from "node:fs";
 import {
 	COMPANY_COMPUTER_BROWSER_ARGUMENTS,
+	COMPANY_COMPUTER_BROWSER_TMP_BYTES,
 	createCompanyComputerLinuxBrowserLaunch,
 	tidyCompanyComputerBrowserTabs,
 } from "@qorpera/runtime/cloud-company-computer-linux-browser";
+import { companyComputerLinuxSandboxArgs } from "@qorpera/runtime/cloud-company-computer-linux-host";
 import { describe, expect, it, vi } from "vitest";
 import { computerBinding, computerId, computerScope } from "./fixtures/company-computer.ts";
 
@@ -99,6 +101,20 @@ describe("what a member sees when the company browser opens", () => {
 				/^--(no-sandbox|disable-setuid-sandbox|disable-web-security|test-type|enable-automation|ignore-certificate-errors|allow-running-insecure-content|disable-site-isolation-trials|remote-debugging-port|kiosk)\b/,
 			);
 		expect(Object.isFrozen(COMPANY_COMPUTER_BROWSER_ARGUMENTS)).toBe(true);
+	});
+
+	it("gives Chromium's shared memory a 1 GiB /tmp while other namespaces keep 64 MiB", () => {
+		// The browser keeps --disable-dev-shm-usage, so its shared memory lives in /tmp.
+		expect(COMPANY_COMPUTER_BROWSER_ARGUMENTS).toContain("--disable-dev-shm-usage");
+		expect(companyComputerLinuxSandboxArgs(COMPANY_COMPUTER_BROWSER_TMP_BYTES).slice(-4)).toEqual([
+			"--size",
+			"1073741824",
+			"--tmpfs",
+			"/tmp",
+		]);
+		expect(companyComputerLinuxSandboxArgs().slice(-4)).toEqual(["--size", "67108864", "--tmpfs", "/tmp"]);
+		for (const size of [0, -1, 1.5, Number.NaN, 2 ** 53])
+			expect(() => companyComputerLinuxSandboxArgs(size)).toThrow();
 	});
 
 	const startupUrl = "about:blank#qorpera-startup-test";
