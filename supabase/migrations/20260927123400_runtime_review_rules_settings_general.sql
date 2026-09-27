@@ -3,8 +3,8 @@
 -- when the member's rule list is full still sent them to "Settings, Rules".
 --
 -- Patched into the live definition, not re-stated, so later changes to the
--- function stay. CREATE OR REPLACE keeps the ACL. The runtime tool text says the
--- same since this release; the old text refers members to a tab that is gone.
+-- function stay. CREATE OR REPLACE keeps the ACL. The runtime's add_review_rule
+-- description says the same from the next bundle cut.
 
 create function pg_temp.rules_place_patch(p_target regprocedure, p_old text, p_new text)
 returns void language plpgsql as $$
