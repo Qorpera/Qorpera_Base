@@ -70,6 +70,8 @@ export const CONVERSATION: Record<string, string> = {
 	"Your model account needs to be connected again.": "Din modelkonto skal forbindes igen.",
 	"No computer could be started for this run. The problem is on Qorpera's side.":
 		"Der kunne ikke startes en computer til denne kørsel. Fejlen ligger hos Qorpera.",
+	"The computer running this run stopped answering. The problem is on Qorpera's side.":
+		"Computeren bag kørslen holdt op med at svare. Fejlen ligger hos Qorpera.",
 	"The run took too long and was stopped.": "Kørslen tog for lang tid og blev stoppet.",
 	"The run started, but one of its steps was refused. The problem is on Qorpera's side.":
 		"Kørslen startede, men et af dens trin blev afvist. Fejlen ligger hos Qorpera.",

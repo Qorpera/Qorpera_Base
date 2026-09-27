@@ -22,8 +22,11 @@ describe("why a run stopped, in the member's words", () => {
 		[
 			"Runner lease expired before durable completion; durable attempt output requires review",
 			"failed",
-			/took too long/,
+			/computer running this run stopped answering/,
 		],
+		// A run has no time limit any more; only older runs carry a deadline.
+		["Execution deadline expired before durable completion", "failed", /took too long/],
+		["No computer could start the run within a day", "failed", /No computer could be started/],
 		["You have hit your usage limit. Try again later.", "failed", /usage limit/],
 		["Provider credential is invalid", "failed", /connected again/],
 		[undefined, "cancelled", /stopped before it finished/],
@@ -45,6 +48,7 @@ describe("whether a stopped run is worth trying again as it is", () => {
 			true,
 		],
 		[undefined, "cancelled", true],
+		["No computer could start the run within a day", "failed", true],
 		["You have hit your usage limit. Try again later.", "failed", false],
 		["Provider credential is invalid", "failed", false],
 		["Native provider bridge request failed (422)", "failed", false],
