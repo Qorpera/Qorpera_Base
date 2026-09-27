@@ -441,6 +441,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					command: this.#command,
 					binarySha256: this.#sha256,
 					identityRoot,
+					...(this.#spareEfforts.has(identityRoot) ? { reusedIdentityRoot: true } : {}),
 					isolation: this.#isolation,
 					prompt,
 					runtimeInstructions: compileCloudNativeCompanyInstructions(context, wake),

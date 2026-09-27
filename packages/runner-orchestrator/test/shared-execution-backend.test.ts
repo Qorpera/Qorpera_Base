@@ -926,6 +926,37 @@ describe("warm conversations", () => {
 		expect(changed.units.log[0]).toBe(`kill ${hostUnit(0)}`);
 	});
 
+	it("keeps a slot parked when its claim fails before the run's journal holds it", async () => {
+		const f = await fixture({ warmIdleMs: 300_000 });
+		const signal = new AbortController().signal;
+		await f.backend.acquire(runId, work(), signal);
+		await finishRun(f);
+		// The control plane refuses the second run's runner row (bound to another activation).
+		f.activations.set(sharedExecutionAcquisitionId(secondRun, 1), "a".repeat(64));
+		await expect(
+			f.backend.acquire(secondRun, work({ runId: secondRun, sourceId: secondRun }), signal),
+		).rejects.toThrow();
+		expect(await readdir(join(f.stateRoot, "warm"))).toEqual(["0.json"]);
+		expect(f.units.activeUnits.has(hostUnit(0))).toBe(true);
+		await f.backend.reconcile();
+		expect(f.units.activeUnits.has(hostUnit(0))).toBe(true);
+	});
+
+	it("ends a conversation's parked host when its next run differs, and stops orphaned hosts", async () => {
+		const f = await fixture({ warmIdleMs: 300_000 });
+		const signal = new AbortController().signal;
+		await f.backend.acquire(runId, work(), signal);
+		await finishRun(f);
+		f.units.log.length = 0;
+		// Same conversation and login, new agent version: the parked host must not linger.
+		await f.backend.acquire(secondRun, work({ runId: secondRun, sourceId: secondRun, staffVersion: 2 }), signal);
+		expect(f.units.log.slice(0, 1)).toEqual([`kill ${hostUnit(0)}`]);
+		// A host no journal or warm record tracks (a crash between the two) is stopped.
+		f.units.activeUnits.add(hostUnit(3));
+		await f.backend.reconcile();
+		expect(f.units.activeUnits.has(hostUnit(3))).toBe(false);
+	});
+
 	it("gives a parked host way when every slot is taken", async () => {
 		const f = await fixture({ warmIdleMs: 300_000, slotCount: 1 });
 		const signal = new AbortController().signal;

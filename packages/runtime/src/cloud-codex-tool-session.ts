@@ -1,6 +1,6 @@
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import type { BigIntStats } from "node:fs";
+import type { BigIntStats, Dirent } from "node:fs";
 import { createReadStream } from "node:fs";
 import { lstat, mkdir, mkdtemp, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -1379,10 +1379,15 @@ const spares = new Map<
 	{
 		identityRoot?: string;
 		process: Promise<CloudCodexProcess | undefined>;
+		/** Set once the handshake completed; only a ready spare is ever taken. */
+		ready?: CloudCodexProcess;
 		starting: AbortController;
 		timer?: ReturnType<typeof setTimeout>;
 	}
 >();
+
+/** The ratified warm window (contract amendment 2026-09-27). */
+const MAX_SPARE_WINDOW_MS = 5 * 60_000;
 
 function discardSpare(key: string): void {
 	const spare = spares.get(key);
@@ -1404,7 +1409,8 @@ export function prepareCloudCodexSpare(
 	},
 	idleMs: number,
 ): void {
-	if (!Number.isSafeInteger(idleMs) || idleMs < 1 || idleMs > 30 * 60_000) throw new Error("Invalid spare window");
+	if (!Number.isSafeInteger(idleMs) || idleMs < 1 || idleMs > MAX_SPARE_WINDOW_MS)
+		throw new Error("Invalid spare window");
 	const processInputs: CloudCodexProcessInputs = {
 		command: inputs.command,
 		binarySha256: inputs.binarySha256,
@@ -1431,6 +1437,7 @@ export function prepareCloudCodexSpare(
 			spares.delete(key);
 			return;
 		}
+		spare.ready = started;
 		spare.timer = setTimeout(() => {
 			if (spares.get(key) === spare) discardSpare(key);
 		}, idleMs);
@@ -1438,21 +1445,24 @@ export function prepareCloudCodexSpare(
 	});
 }
 
-/** Takes the spare for these inputs if one is ready and intact; a broken spare is closed. */
+/**
+ * Takes the spare for these inputs only if its handshake completed and it is intact.
+ * A spare still starting is never waited for: a run does not depend on a start it
+ * cannot stop. The caller disposes what it did not take.
+ */
 async function takeCloudCodexSpare(key: string): Promise<CloudCodexProcess | undefined> {
 	const spare = spares.get(key);
-	if (!spare) return undefined;
+	const started = spare?.ready;
+	if (!spare || !started) return undefined;
 	spares.delete(key);
 	clearTimeout(spare.timer);
-	// A spare still starting is awaited: it is further along than a new start.
-	const started = await spare.process;
-	if (started && started.key === key && started.healthy) return started;
-	await started?.close().catch(() => undefined);
+	if (started.key === key && started.healthy) return started;
+	await started.close().catch(() => undefined);
 	return undefined;
 }
 
 /** Stops the spares that use an identity root, before its host wipes it. With no root, stops all. */
-export async function disposeCloudCodexSpares(identityRoot?: string): Promise<void> {
+export async function disposeCloudCodexSpares(identityRoot?: string): Promise<number> {
 	const stopping: Promise<unknown>[] = [];
 	for (const [key, spare] of spares) {
 		if (identityRoot !== undefined && spare.identityRoot !== identityRoot) continue;
@@ -1462,6 +1472,21 @@ export async function disposeCloudCodexSpares(identityRoot?: string): Promise<vo
 		stopping.push(spare.process.then((started) => started?.close()).catch(() => undefined));
 	}
 	await Promise.all(stopping);
+	return stopping.length;
+}
+
+/** Removes what an earlier Codex process on this host left beside the credential in a kept home. */
+async function pruneCodexHome(codexHome: string): Promise<void> {
+	let entries: Dirent[];
+	try {
+		entries = await readdir(codexHome, { withFileTypes: true });
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+		throw error;
+	}
+	for (const entry of entries)
+		if (entry.name !== "auth.json" || !entry.isFile())
+			await rm(join(codexHome, entry.name), { recursive: true, force: true });
 }
 
 /**
@@ -1484,6 +1509,12 @@ export async function runCloudCodexToolSession(options: {
 	identityRoot?: string;
 	/** Required by the production company-path entrypoint; omitted only by synthetic/native component probes. */
 	isolation?: NativeIsolationConfiguration;
+	/**
+	 * Warm conversations: the identity root was kept from an earlier run on this host. Without
+	 * a spare to take, the files earlier Codex processes left beside the credential are removed
+	 * before a new process starts, so the auth-only check keeps its meaning.
+	 */
+	reusedIdentityRoot?: boolean;
 	/** Called after artifact/configuration checks and before thread prewarm or any model request. */
 	beforeModelStart?: (signal: AbortSignal) => Promise<void>;
 	/** Auto-review (v130): this session answers the boundary's reviews while the agent's turn runs. */
@@ -1535,9 +1566,16 @@ export async function runCloudCodexToolSession(options: {
 	const progress: { stage: NativeRuntimeFailureStage } = { stage: "codex-artifact" };
 	let started: CloudCodexProcess;
 	try {
-		started =
-			(await takeCloudCodexSpare(cloudCodexProcessKey(inputs))) ??
-			(await startCloudCodexProcess(inputs, progress, signal));
+		const spare = await takeCloudCodexSpare(cloudCodexProcessKey(inputs));
+		if (spare) started = spare;
+		else {
+			if (options.identityRoot) {
+				// No other process may share this identity home with the one that starts now.
+				const disposed = await disposeCloudCodexSpares(options.identityRoot);
+				if (disposed > 0 || options.reusedIdentityRoot) await pruneCodexHome(join(options.identityRoot, "codex"));
+			}
+			started = await startCloudCodexProcess(inputs, progress, signal);
+		}
 	} catch (error) {
 		options.boundary.close();
 		throw error;

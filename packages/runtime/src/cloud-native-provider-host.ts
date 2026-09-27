@@ -1193,7 +1193,7 @@ export class NativeProviderHost {
 		capsuleKey(options.masterKey);
 		if (
 			options.warmIdleMs !== undefined &&
-			(!Number.isSafeInteger(options.warmIdleMs) || options.warmIdleMs < 1 || options.warmIdleMs > 30 * 60_000)
+			(!Number.isSafeInteger(options.warmIdleMs) || options.warmIdleMs < 1 || options.warmIdleMs > 5 * 60_000)
 		)
 			throw new Error("Native warm window is invalid");
 		this.#warmIdleMs = options.warmIdleMs;

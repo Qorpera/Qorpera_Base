@@ -101,7 +101,11 @@ the ratified window is 5 minutes, `300000`).
   keeps the host's bridge credential and scratch, and starts only the runner.
 - A parked slot counts as busy. When no slot is free, the slot parked longest
   gives way. Reconcile ends parked slots whose window passed or whose host
-  stopped.
+  stopped, stops hosts that neither a journal nor a warm record tracks, and
+  (once per service start) wipes the scratch of every untracked slot.
+- `rebuild-exec-host.sh` refuses while any slot unit runs, parked hosts
+  included: stop the orchestrator, wait one window (5 minutes) for the parked
+  hosts to end, then rebuild.
 
 ## Installing an execution host (pilot runbook, node 2)
 

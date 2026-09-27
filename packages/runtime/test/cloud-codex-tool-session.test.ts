@@ -1032,7 +1032,8 @@ describe("warm conversations: spare Codex processes", () => {
 		const command = [process.execPath, rpcFixture, "response-first", evidence] as const;
 		prepareCloudCodexSpare({ command, binarySha256 }, 50);
 		await until(async () => (await starts(evidence)) === 1);
-		await new Promise((resolve) => setTimeout(resolve, 150));
+		// The window counts from the end of the handshake, which follows the first line here.
+		await new Promise((resolve) => setTimeout(resolve, 500));
 		await expect(run("response-first").result).resolves.toMatchObject({ providerSessionId: "thread_fixture" });
 		expect(await starts(evidence)).toBe(2);
 		prepareCloudCodexSpare({ command, binarySha256 }, 60_000);
@@ -1040,6 +1041,50 @@ describe("warm conversations: spare Codex processes", () => {
 		await disposeCloudCodexSpares();
 		await expect(run("response-first").result).resolves.toMatchObject({ providerSessionId: "thread_fixture" });
 		expect(await starts(evidence)).toBe(4);
+	});
+
+	it.each(["fence-before-bind", "tool-before-bind"])(
+		"never uses a spare that was asked for work before a run was bound (%s)",
+		async (mode) => {
+			const evidence = join(root, "evidence.json");
+			const command = [process.execPath, rpcFixture, mode, evidence] as const;
+			prepareCloudCodexSpare({ command, binarySha256 }, 60_000);
+			await until(async () => (await starts(evidence)) === 1);
+			await new Promise((resolve) => setTimeout(resolve, 100));
+			const spare = Number((await readFile(`${evidence}.starts`, "utf8")).split("\n")[0]);
+			// The spare failed closed and is not taken: the run starts its own process.
+			await run(mode).result.catch(() => undefined);
+			expect(await starts(evidence)).toBe(2);
+			expect(() => process.kill(spare, 0)).toThrow();
+		},
+	);
+
+	it("keeps a kept Codex home auth-only for a fresh start when the spare does not fit", async () => {
+		const identityRoot = join(root, "identity");
+		await mkdir(join(identityRoot, "codex"), { recursive: true, mode: 0o700 });
+		await writeFile(join(identityRoot, "codex", "auth.json"), "{}", { mode: 0o600 });
+		const evidence = join(root, "evidence.json");
+		const command = [process.execPath, rpcFixture, "writes-home", evidence] as const;
+		prepareCloudCodexSpare({ command, binarySha256, reasoningEffort: "medium", identityRoot }, 60_000);
+		await until(async () => (await starts(evidence)) === 1);
+		await until(
+			async () => (await stat(join(identityRoot, "codex", "state_5.sqlite")).catch(() => undefined)) !== undefined,
+		);
+		const spare = Number((await readFile(`${evidence}.starts`, "utf8")).split("\n")[0]);
+		await expect(run("writes-home", { identityRoot, reasoningEffort: "low" }).result).resolves.toMatchObject({
+			providerSessionId: "thread_fixture",
+		});
+		expect(await starts(evidence)).toBe(2);
+		expect(() => process.kill(spare, 0)).toThrow();
+	});
+
+	it("never waits for a spare that is still starting", async () => {
+		const evidence = join(root, "evidence.json");
+		const command = [process.execPath, rpcFixture, "stall-first", evidence] as const;
+		prepareCloudCodexSpare({ command, binarySha256 }, 60_000);
+		await until(async () => (await starts(evidence)) === 1);
+		await expect(run("stall-first").result).resolves.toMatchObject({ providerSessionId: "thread_fixture" });
+		expect(await starts(evidence)).toBe(2);
 	});
 
 	it("binds the run before any thread: the spare's handshake saw no run", async () => {

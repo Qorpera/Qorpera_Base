@@ -138,16 +138,16 @@ export function nativeCompanyRuntimeConfiguration(environment: NodeJS.ProcessEnv
 	};
 }
 
-/** Per-connection concurrency policy consented at native login (contract section 17); the cloud caps it by the global provider policy. */
-/** Warm conversations (2026-09-27): how long a successful run's opened capsule stays for the next run. */
+/** Warm conversations (2026-09-27): how long a successful run's opened capsule stays, at most 5 minutes. */
 export function nativeWarmIdleMs(value: string | undefined): number | undefined {
 	if (value === undefined || value === "") return undefined;
 	const idleMs = Number(value);
-	if (!/^[1-9][0-9]*$/.test(value) || !Number.isSafeInteger(idleMs) || idleMs > 30 * 60_000)
+	if (!/^[1-9][0-9]*$/.test(value) || !Number.isSafeInteger(idleMs) || idleMs > 5 * 60_000)
 		throw new Error("QORPERA_NATIVE_WARM_IDLE_MS is invalid");
 	return idleMs;
 }
 
+/** Per-connection concurrency policy consented at native login (contract section 17); the cloud caps it by the global provider policy. */
 function optionalConcurrency(value: string | undefined): number | undefined {
 	if (value === undefined || value === "") return undefined;
 	if (!/^[1-9][0-9]?$/.test(value) || Number(value) > 64)

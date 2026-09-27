@@ -2215,13 +2215,18 @@ pin. Any mismatch, revocation or recovery-epoch change ends the warm sandbox.
 The Codex process and its provider connection MAY be reused across those
 runs; each run starts a new provider thread.
 
-The warm host reuses a kept capsule root only while the stored capsule is
-byte for byte the one it uploaded last; otherwise it wipes the root and opens
-the stored capsule afresh. Only the capsule's own credential files remain in
-a kept root. A spare Codex process started for the next run completes its
-handshake before that run exists and accepts no thread, turn, tool call or
-provider request until the run is bound; each run still uses a process of its
-own.
+Implementation notes (not part of the ratified text): the warm host reuses a
+kept capsule root only while the stored capsule is byte for byte the one it
+uploaded last; otherwise it wipes the root and opens the stored capsule
+afresh. When a run ends, everything but the capsule's own credential files is
+removed from the kept root. A spare Codex process started for the next run
+completes its handshake before that run exists and accepts no thread, turn,
+tool call or provider request until the run is bound; its own state files in
+the Codex home are removed before any other process starts there, and no two
+processes share a Codex home. Each run still uses a process of its own. The
+execution host cannot see a run's effort before the run starts; a run whose
+effort differs from the warm process's gets a fresh process, while the kept
+capsule root (the same member's credentials) is reused.
 
 ### Current implementation checkpoint
 

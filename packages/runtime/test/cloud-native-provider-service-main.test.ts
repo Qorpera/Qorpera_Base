@@ -100,11 +100,11 @@ describe("native Company Computer service composition", () => {
 });
 
 describe("warm conversation window", () => {
-	it("is off unless set, and bounded to thirty minutes", () => {
+	it("is off unless set, and bounded to the ratified five minutes", () => {
 		expect(nativeWarmIdleMs(undefined)).toBeUndefined();
 		expect(nativeWarmIdleMs("")).toBeUndefined();
 		expect(nativeWarmIdleMs("300000")).toBe(300_000);
-		for (const value of ["0", "-1", "1.5", "1e3", " 300000", "1800001"])
+		for (const value of ["0", "-1", "1.5", "1e3", " 300000", "300001"])
 			expect(() => nativeWarmIdleMs(value)).toThrow("QORPERA_NATIVE_WARM_IDLE_MS is invalid");
 	});
 });
