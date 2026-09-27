@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { CodingMachineUnavailable } from "../src/coding-executor.ts";
 import {
 	type CodingBrokerGitCommand,
 	type CodingGitPush,
@@ -111,6 +112,49 @@ async function fixture() {
 	};
 }
 describe("credential-isolated coding Git publication", () => {
+	it("redacts foreign errors which imitate a typed work deferral", async () => {
+		const f = await fixture();
+		f.options.runGit = async () => {
+			throw new Error("CODING_MACHINE_UNAVAILABLE:COMPUTER_USAGE_NOT_READY secret-token");
+		};
+		await expect(pushCloudCodingBundle(f.input, f.bundle, f.options)).rejects.toThrow(
+			/^CODING_GIT_OPERATION_UNCONFIRMED$/,
+		);
+	});
+	it("does not turn a typed transport error into retryable authority", async () => {
+		const f = await fixture();
+		f.options.runGit = async () => {
+			throw new CodingMachineUnavailable("COMPUTER_USAGE_NOT_READY");
+		};
+		await expect(pushCloudCodingBundle(f.input, f.bundle, f.options)).rejects.toThrow(
+			/^CODING_GIT_OPERATION_UNCONFIRMED$/,
+		);
+	});
+	it("reconciles a post-push work deferral without publishing twice", async () => {
+		const f = await fixture();
+		const deferred = new CodingMachineUnavailable("COMPUTER_USAGE_NOT_READY");
+		f.options.assertAuthorized = async () => {
+			if (f.calls.some((call) => call.args.includes("push"))) throw deferred;
+		};
+		await expect(pushCloudCodingBundle(f.input, f.bundle, f.options)).rejects.toBe(deferred);
+		f.options.assertAuthorized = async () => undefined;
+		await expect(pushCloudCodingBundle(f.input, f.bundle, f.options)).resolves.toEqual({
+			branch,
+			headSha: f.input.headSha,
+		});
+		expect(f.calls.filter((call) => call.args.includes("push"))).toHaveLength(1);
+	});
+	it.each([1, 2, 3, 4, 6])("preserves typed push deferral at authority check %s", async (at) => {
+		const f = await fixture();
+		const deferred = new CodingMachineUnavailable("COMPUTER_USAGE_NOT_READY");
+		let calls = 0;
+		f.options.assertAuthorized = async () => {
+			if (++calls === at) throw deferred;
+		};
+		await expect(pushCloudCodingBundle(f.input, f.bundle, f.options)).rejects.toBe(deferred);
+		expect(f.calls.some((call) => call.args.includes("push"))).toBe(false);
+		expect((await readdir(f.root)).some((name) => name.startsWith(".git-broker-"))).toBe(false);
+	});
 	it("validates a real complete bundle in a bare broker repo and pushes only the fixed branch without force", async () => {
 		const f = await fixture();
 		expect(await pushCloudCodingBundle(f.input, f.bundle, f.options)).toEqual({ branch, headSha: f.input.headSha });

@@ -451,9 +451,20 @@ export class RuntimeComputerController {
 	}
 	async assertRunning(allocationId: string, signal: AbortSignal): Promise<void> {
 		await this.#exclusive(allocationId, async () => {
-			const current = this.#required(allocationId),
-				guarded = await this.#options.guard.latest(allocationId, signal),
-				clock = await this.#clock(),
+			const current = this.#required(allocationId);
+			let guarded = await this.#options.guard.latest(allocationId, signal);
+			if (
+				guarded?.usageRequired === true &&
+				guarded.phase === "running" &&
+				guarded.permit.permitId === current.permit.permitId &&
+				guarded.permit.generation === current.permit.generation
+			) {
+				// Publish already captured evidence before testing the work boundary.
+				// This does not capture, renew, or change physical custody.
+				await this.#drainUsage(current, guarded, signal);
+				guarded = await this.#options.guard.latest(allocationId, signal);
+			}
+			const clock = await this.#clock(),
 				sample = current.lastSample === null ? null : object(current.lastSample);
 			if (
 				current.permit.state !== "bound" ||
@@ -671,6 +682,30 @@ export class RuntimeComputerController {
 			state: "running",
 		};
 	}
+	async #drainUsage(current: ManagedRuntimeComputer, guarded: PaidComputerGuardRecord, signal: AbortSignal) {
+		const usage = await drainComputerGuardUsage({
+			permit: current.permit,
+			lastSample: current.lastSample,
+			guard: this.#options.guard,
+			recover: async () => {
+				const entry = await this.#options.guard.prestartStatus(current.permit.permitId, signal);
+				if (!entry) throw new Error("COMPUTER_GUARD_USAGE_HISTORY_MISSING");
+				const retained = await this.#history(entry, signal);
+				return { permit: retained.permit, lastSample: retained.lastSample };
+			},
+			call: (request, checked) => this.#call("qorpera_record_computer_guard_samples", request, checked),
+			signal,
+		});
+		current.permit = this.#permit(usage.permit, current.context, await this.#clock(), guarded.phase === "stopped");
+		current.lastSample = usage.sample;
+		current.lastObservationId = usage.sample?.observationId ?? null;
+		const managed = this.#computers.get(current.context.allocationId);
+		if (!managed || managed.permit.permitId === current.permit.permitId)
+			this.#computers.set(current.context.allocationId, current);
+		if (guarded.phase !== "stopped" && current.permit.generation !== guarded.permit.generation)
+			throw new Error("RUNTIME_COMPUTER_GUARD_GENERATION_DIFFERS");
+		return usage;
+	}
 	async #observe(
 		current: ManagedRuntimeComputer,
 		signal: AbortSignal,
@@ -724,27 +759,7 @@ export class RuntimeComputerController {
 		}
 		let sample: RuntimeSample;
 		if (guarded.usageRequired === true) {
-			const usage = await drainComputerGuardUsage({
-				permit: current.permit,
-				lastSample: current.lastSample,
-				guard: this.#options.guard,
-				recover: async () => {
-					const entry = await this.#options.guard.prestartStatus(current.permit.permitId, signal);
-					if (!entry) throw new Error("COMPUTER_GUARD_USAGE_HISTORY_MISSING");
-					const retained = await this.#history(entry, signal);
-					return { permit: retained.permit, lastSample: retained.lastSample };
-				},
-				call: (request, checked) => this.#call("qorpera_record_computer_guard_samples", request, checked),
-				signal,
-			});
-			current.permit = this.#permit(usage.permit, current.context, await this.#clock(), guarded.phase === "stopped");
-			current.lastSample = usage.sample;
-			current.lastObservationId = usage.sample?.observationId ?? null;
-			const managed = this.#computers.get(current.context.allocationId);
-			if (!managed || managed.permit.permitId === current.permit.permitId)
-				this.#computers.set(current.context.allocationId, current);
-			if (guarded.phase !== "stopped" && current.permit.generation !== guarded.permit.generation)
-				throw new Error("RUNTIME_COMPUTER_GUARD_GENERATION_DIFFERS");
+			const usage = await this.#drainUsage(current, guarded, signal);
 			// No first sample means no bind. A sealing/stalled terminal prefix
 			// retains its financial hold while the guard independently stops.
 			if (!usage.sample || (guarded.phase === "stopped" && !usage.sealed)) return;

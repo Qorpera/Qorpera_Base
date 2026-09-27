@@ -101,6 +101,7 @@
 
 ### Fixed
 
+- Drain already captured native, coding and office usage before work admission and preserve typed metering deferrals through Git base, seed and publication checks; exact current-sample coverage and uncertain-push reconciliation remain required.
 - Acquire inventory allocation foreign-key locks before the node lock to prevent first-binding publication from deadlocking with paid admission; retain exact snapshot checks and historical receipt replay.
 - Wait within bounded deadlines for confirmed native/coding metering readiness instead of terminalizing a brief sampling gap. Coding retries retain the original lease limit and a monotonic budget; native deferral preserves the same guarded boot without delivering work.
 - Require fresh canonical clock coverage before office activation, active office admission, and attached coding work; acknowledged running samples with rejected clock continuity cannot authorize work. Stop, detach, and command cancellation remain available.

@@ -101,16 +101,20 @@ async function fixture(providerKind: "native" | "office" = "native", usage = fal
 	};
 	const journal = new PaidComputerGuardJournal(root),
 		hostClock = async () => ({ ...clock });
+	let captureFails = false;
 	const usageOptions = usage
 		? {
 				usageCapture: {
-					capture: async () => ({
-						host: await hostClock(),
-						guestBootId,
-						guestUptimeMs: guestUptime * 1000,
-						evidenceSha256: "e".repeat(64),
-						observedAt: new Date().toISOString(),
-					}),
+					capture: async () => {
+						if (captureFails) throw new Error("clock unavailable");
+						return {
+							host: await hostClock(),
+							guestBootId,
+							guestUptimeMs: guestUptime * 1000,
+							evidenceSha256: "e".repeat(64),
+							observedAt: new Date().toISOString(),
+						};
+					},
 				},
 			}
 		: {};
@@ -319,6 +323,9 @@ async function fixture(providerKind: "native" | "office" = "native", usage = fal
 		setGuestUptime(value: number) {
 			guestUptime = value;
 		},
+		failCapture() {
+			captureFails = true;
+		},
 		losePrepare() {
 			losePrepare = true;
 		},
@@ -387,17 +394,67 @@ describe("funded runtime physical custody", () => {
 			} finally {
 				tick.mockRestore();
 			}
-			await expect(f.controller.assertRunning(f.context.allocationId, signal())).rejects.toThrow(
-				"RUNNING_PERMIT_REQUIRED",
-			);
-			await f.controller.observe(f.context.allocationId, signal());
+			const before = await f.guard.readUsage(f.permit!.permitId);
+			expect(before.head.sequence).toBeGreaterThan(before.acknowledgedThrough.sequence);
+			const guarded = await f.guard.latest(f.context.allocationId);
+			f.control.call.mockClear();
 			await expect(f.controller.assertRunning(f.context.allocationId, signal())).resolves.toBeUndefined();
+			const after = await f.guard.readUsage(f.permit!.permitId);
+			expect(after.acknowledgedThrough).toEqual(before.head);
+			expect(f.control.call.mock.calls.map(([method]) => method)).toEqual([
+				"qorpera_record_computer_guard_samples",
+				"qorpera_describe_runtime_computer_permit",
+			]);
+			expect(await f.guard.latest(f.context.allocationId)).toEqual(guarded);
+			expect(f.client.submitInstanceOperation.mock.calls.map((call) => call[1].action)).toEqual(["start"]);
 			f.clock.uptimeMs += 10001;
 			await expect(f.controller.assertRunning(f.context.allocationId, signal())).rejects.toThrow(
 				"RUNNING_PERMIT_REQUIRED",
 			);
 		},
 	);
+	it.each(["gap", "newer tip"] as const)("refuses %s at the work boundary after draining", async (race) => {
+		const f = await fixture("office", true);
+		await f.start();
+		f.guard.tickUsage();
+		await f.guard.settleUsage(f.permit!.permitId);
+		await f.controller.observe(f.context.allocationId, signal());
+		const original = f.control.call.getMockImplementation()!;
+		const capture = async () => {
+			f.clock.uptimeMs += 5000;
+			f.setGuestUptime(6);
+			if (race === "gap") f.failCapture();
+			const tick = vi.spyOn(performance, "now").mockReturnValue(performance.now() + 6000);
+			try {
+				f.guard.tickUsage();
+				await f.guard.settleUsage(f.permit!.permitId);
+			} finally {
+				tick.mockRestore();
+			}
+		};
+		if (race === "gap") await capture();
+		else
+			f.control.call.mockImplementation(async (method, args) => {
+				const result = await original(method, args);
+				if (method === "qorpera_describe_runtime_computer_permit") await capture();
+				return result;
+			});
+		const guarded = await f.guard.latest(f.context.allocationId);
+		f.control.call.mockClear();
+		await expect(f.controller.assertRunning(f.context.allocationId, signal())).rejects.toThrow(
+			"RUNNING_PERMIT_REQUIRED",
+		);
+		const usage = await f.guard.readUsage(f.permit!.permitId);
+		if (race === "gap") {
+			expect(usage.acknowledgedThrough).toEqual(usage.head);
+			expect(f.samples.at(-1)?.state).toBe("gap");
+		} else expect(usage.head.sequence).toBeGreaterThan(usage.acknowledgedThrough.sequence);
+		expect(f.control.call.mock.calls.map(([method]) => method)).toEqual([
+			race === "gap" ? "qorpera_record_computer_guard_samples" : "qorpera_describe_runtime_computer_permit",
+		]);
+		expect(await f.guard.latest(f.context.allocationId)).toEqual(guarded);
+		expect(f.client.submitInstanceOperation.mock.calls.map((call) => call[1].action)).toEqual(["start"]);
+	});
 	it("drains and archives a historical stream without replacing newer managed custody", async () => {
 		const f = await fixture("native", true);
 		await f.start();

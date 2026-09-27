@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { lstat, mkdtemp, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { type CloudCodingRepository, parseCloudCodingRepository } from "@qorpera/contracts";
+import { CodingMachineUnavailable } from "./coding-executor.ts";
 import { type CodingBrokerGitRunner, runCodingBrokerGit } from "./coding-git.ts";
 import { checkDirectory } from "./lxd-office-journal-files.ts";
 
@@ -41,9 +42,15 @@ export async function resolveCloudCodingBase(
 	options: CodingGitBaseResolutionOptions,
 ): Promise<string> {
 	const repository = parseCloudCodingRepository(value);
+	let authorityDeferral: CodingMachineUnavailable | null = null;
 	const authorize = async (): Promise<void> => {
 		options.signal.throwIfAborted();
-		await options.assertAuthorized(repository, options.signal);
+		try {
+			await options.assertAuthorized(repository, options.signal);
+		} catch (error) {
+			if (error instanceof CodingMachineUnavailable) authorityDeferral = error;
+			throw error;
+		}
 		options.signal.throwIfAborted();
 	};
 	await authorize();
@@ -118,7 +125,8 @@ export async function resolveCloudCodingBase(
 		const match = /^([0-9a-f]{40})\t([^\r\n]+)\n$/.exec(output);
 		if (!match || match[2] !== ref) throw new Error("CODING_GIT_BASE_UNCONFIRMED");
 		return match[1];
-	} catch {
+	} catch (error) {
+		if (authorityDeferral !== null && error === authorityDeferral) throw error;
 		throw new Error("CODING_GIT_BASE_UNCONFIRMED");
 	} finally {
 		await rm(scratch, { recursive: true, force: true });
@@ -144,11 +152,16 @@ export async function fetchCloudCodingSeed(
 	)
 		throw new Error("INVALID_CODING_GIT_SEED");
 	const input = Object.freeze({ ...value, repository: parseCloudCodingRepository(value.repository) });
+	let authorityDeferral: CodingMachineUnavailable | null = null;
 	const authorize = async (): Promise<void> => {
 		options.signal.throwIfAborted();
 		try {
 			await options.assertAuthorized(input, options.signal);
-		} catch {
+		} catch (error) {
+			if (error instanceof CodingMachineUnavailable) {
+				authorityDeferral = error;
+				throw error;
+			}
 			throw new Error("CODING_GIT_SEED_AUTHORITY_UNAVAILABLE");
 		}
 		options.signal.throwIfAborted();
@@ -222,7 +235,8 @@ export async function fetchCloudCodingSeed(
 				return network
 					? await options.withRepositoryToken(input.repository, invoke, options.signal)
 					: await invoke();
-			} catch {
+			} catch (error) {
+				if (authorityDeferral !== null && error === authorityDeferral) throw error;
 				throw new Error("CODING_GIT_SEED_UNCONFIRMED");
 			}
 		};

@@ -372,6 +372,65 @@ async function fixture(usage = false) {
 }
 
 describe("paid coding computer controller", () => {
+	it("acknowledges already captured usage before exact work admission without sampling or renewal", async () => {
+		const f = await fixture(true);
+		await f.start();
+		f.guard.tickUsage();
+		await f.guard.settleUsage(f.getPermit()!.permitId);
+		await f.bind();
+		f.host.uptimeMs += 5000;
+		const timer = vi.spyOn(performance, "now").mockReturnValue(performance.now() + 6000);
+		f.guard.tickUsage();
+		await f.guard.settleUsage(f.getPermit()!.permitId);
+		timer.mockRestore();
+		const before = await f.guard.readUsage(f.getPermit()!.permitId);
+		expect(before.head.sequence).toBe(2);
+		expect(before.acknowledgedThrough.sequence).toBe(1);
+		const captures = f.capture.mock.calls.length;
+		await expect(f.controller.assertRunning(f.machine.machineId, signal())).resolves.toBeUndefined();
+		expect((await f.guard.readUsage(f.getPermit()!.permitId)).acknowledgedThrough).toEqual(before.head);
+		expect(f.capture).toHaveBeenCalledTimes(captures);
+		expect(f.calls("qorpera_renew_coding_computer_permit")).toHaveLength(0);
+		expect(f.client.readInstanceClock).not.toHaveBeenCalled();
+	});
+	it.each(["gap", "concurrent tip"])(
+		"refuses a newly produced %s instead of admitting the prior sample",
+		async (change) => {
+			const f = await fixture(true);
+			await f.start();
+			f.guard.tickUsage();
+			await f.guard.settleUsage(f.getPermit()!.permitId);
+			await f.bind();
+			const capture = async () => {
+				f.host.uptimeMs += 5000;
+				const timer = vi.spyOn(performance, "now").mockReturnValue(performance.now() + 6000);
+				try {
+					f.guard.tickUsage();
+					await f.guard.settleUsage(f.getPermit()!.permitId);
+				} finally {
+					timer.mockRestore();
+				}
+			};
+			if (change === "gap") {
+				f.capture.mockRejectedValueOnce(new Error("clock unavailable"));
+				await capture();
+			} else {
+				const original = f.control.call.getMockImplementation()!;
+				f.control.call.mockImplementation(async (method, args) => {
+					const result = await original(method, args);
+					if (method === "qorpera_describe_coding_computer_permit") await capture();
+					return result;
+				});
+			}
+			await expect(f.controller.assertRunning(f.machine.machineId, signal())).rejects.toThrow(
+				"RUNNING_PERMIT_REQUIRED",
+			);
+			const usage = await f.guard.readUsage(f.getPermit()!.permitId);
+			expect(usage.head.sequence).toBe(2);
+			expect(usage.acknowledgedThrough.sequence).toBe(change === "gap" ? 2 : 1);
+			expect(f.calls("qorpera_renew_coding_computer_permit")).toHaveLength(0);
+		},
+	);
 	it("deducts readiness RPC latency from sample freshness before admitting work", async () => {
 		const f = await fixture(true);
 		await f.start();
@@ -454,10 +513,6 @@ describe("paid coding computer controller", () => {
 		);
 		release?.();
 		await f.guard.settleUsage(f.getPermit()!.permitId);
-		await expect(f.controller.assertRunning(f.machine.machineId, signal())).rejects.toThrow(
-			"RUNNING_PERMIT_REQUIRED",
-		);
-		await f.controller.observe(f.machine.machineId, signal());
 		await expect(f.controller.assertRunning(f.machine.machineId, signal())).resolves.toBeUndefined();
 		f.host.uptimeMs += 10001;
 		await expect(f.controller.assertRunning(f.machine.machineId, signal())).rejects.toThrow(

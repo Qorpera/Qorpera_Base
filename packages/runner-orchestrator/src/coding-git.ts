@@ -4,6 +4,7 @@ import { mkdtemp, open, rm, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { type CloudCodingRepository, parseCloudCodingRepository } from "@qorpera/contracts";
+import { CodingMachineUnavailable } from "./coding-executor.ts";
 import { type CodingGitSandboxOptions, codingGitSandboxPlan, codingGitSocketFilter } from "./coding-git-sandbox.ts";
 import { checkDirectory, code, publish, readRecord } from "./lxd-office-journal-files.ts";
 
@@ -160,11 +161,16 @@ export async function pushCloudCodingBundle(
 		baseRef = `refs/heads/${input.repository.baseBranch}`;
 	if (branch === input.repository.baseBranch) throw new Error("INVALID_CODING_GIT_PUSH");
 	const remote = `https://github.com/${input.repository.owner}/${input.repository.name}.git`;
+	let authorityDeferral: CodingMachineUnavailable | null = null;
 	const authorize = async (): Promise<void> => {
 		options.signal.throwIfAborted();
 		try {
 			await options.assertAuthorized(input, options.signal);
-		} catch {
+		} catch (error) {
+			if (error instanceof CodingMachineUnavailable) {
+				authorityDeferral = error;
+				throw error;
+			}
 			throw new Error("CODING_GIT_AUTHORITY_UNAVAILABLE");
 		}
 		options.signal.throwIfAborted();
@@ -263,7 +269,8 @@ export async function pushCloudCodingBundle(
 				return network
 					? await options.withRepositoryToken(input.repository, invoke, options.signal)
 					: await invoke();
-			} catch {
+			} catch (error) {
+				if (authorityDeferral !== null && error === authorityDeferral) throw error;
 				throw new Error("CODING_GIT_OPERATION_UNCONFIRMED");
 			}
 		};

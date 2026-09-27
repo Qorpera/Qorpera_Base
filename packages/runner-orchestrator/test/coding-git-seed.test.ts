@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { CodingMachineUnavailable } from "../src/coding-executor.ts";
 import { type CodingBrokerGitCommand, createCodingBrokerGitRunner } from "../src/coding-git.ts";
 import { type CodingGitSeedOptions, fetchCloudCodingSeed, resolveCloudCodingBase } from "../src/coding-git-seed.ts";
 
@@ -76,6 +77,72 @@ async function fixture() {
 	return { root, input, options, calls, git };
 }
 describe("trusted GitHub seed bundle broker", () => {
+	it.each(["seed", "base"])(
+		"redacts foreign %s failures even when their message imitates a typed deferral",
+		async (kind) => {
+			const f = await fixture();
+			const foreign = new Error("CODING_MACHINE_UNAVAILABLE:COMPUTER_USAGE_NOT_READY secret-token");
+			const runGit = async () => {
+				throw foreign;
+			};
+			const result =
+				kind === "seed"
+					? fetchCloudCodingSeed(f.input, { ...f.options, runGit })
+					: resolveCloudCodingBase(f.input.repository, {
+							...f.options,
+							assertAuthorized: async () => undefined,
+							runGit,
+						});
+			await expect(result).rejects.toThrow(
+				kind === "seed" ? /^CODING_GIT_SEED_UNCONFIRMED$/ : /^CODING_GIT_BASE_UNCONFIRMED$/,
+			);
+		},
+	);
+	it.each(["seed", "base"])("does not treat a %s transport error as an authority deferral", async (kind) => {
+		const f = await fixture();
+		const runGit = async () => {
+			throw new CodingMachineUnavailable("COMPUTER_USAGE_NOT_READY");
+		};
+		const result =
+			kind === "seed"
+				? fetchCloudCodingSeed(f.input, { ...f.options, runGit })
+				: resolveCloudCodingBase(f.input.repository, {
+						...f.options,
+						assertAuthorized: async () => undefined,
+						runGit,
+					});
+		await expect(result).rejects.toThrow(
+			kind === "seed" ? /^CODING_GIT_SEED_UNCONFIRMED$/ : /^CODING_GIT_BASE_UNCONFIRMED$/,
+		);
+	});
+	it.each([1, 2, 3, 4, 5])("preserves typed seed deferral at authority check %s", async (at) => {
+		const f = await fixture();
+		const deferred = new CodingMachineUnavailable("COMPUTER_USAGE_NOT_READY");
+		let calls = 0;
+		f.options.assertAuthorized = async () => {
+			if (++calls === at) throw deferred;
+		};
+		await expect(fetchCloudCodingSeed(f.input, f.options)).rejects.toBe(deferred);
+		expect((await readdir(f.root)).some((name) => name.startsWith(".git-seed-"))).toBe(false);
+	});
+	it.each([2, 3, 4])("preserves typed base deferral at authority check %s", async (at) => {
+		const f = await fixture();
+		const deferred = new CodingMachineUnavailable("COMPUTER_USAGE_NOT_READY");
+		let calls = 0;
+		await expect(
+			resolveCloudCodingBase(f.input.repository, {
+				...f.options,
+				assertAuthorized: async () => {
+					if (++calls === at) throw deferred;
+				},
+				runGit: async (command) =>
+					command.args.includes("ls-remote")
+						? `${f.input.baseSha}\trefs/heads/main\n`
+						: f.options.runGit!(command),
+			}),
+		).rejects.toBe(deferred);
+		expect((await readdir(f.root)).some((name) => name.startsWith(".git-base-"))).toBe(false);
+	});
 	it("resolves only the exact base ref in a clean broker process", async () => {
 		const f = await fixture();
 		const result = await resolveCloudCodingBase(f.input.repository, {
