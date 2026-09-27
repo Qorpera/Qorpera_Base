@@ -19,6 +19,18 @@ function comparePathBytes(left: string, right: string): number {
 	return a.length - b.length;
 }
 
+/** The cloud refused a change before saving anything (a bad request, no
+ * access, or a version that is no longer current). Nothing was applied, and
+ * the same intent can never apply, so a client may drop it. */
+export class CloudMemberCompanyRefusal extends Error {
+	readonly status: 400 | 401 | 403 | 412;
+	constructor(message: string, status: 400 | 401 | 403 | 412) {
+		super(message);
+		this.name = "CloudMemberCompanyRefusal";
+		this.status = status;
+	}
+}
+
 export interface CloudMemberCompanyMode {
 	companyId: string;
 	environmentId: string;
@@ -597,11 +609,21 @@ export class CloudMemberCompanyFileClient {
 					if (response.status === 409)
 						throw new Error("Company File changed. Reload this path before editing again.");
 					if (response.status === 401 || response.status === 403)
-						throw new Error("Company File access was denied. Check your membership or sign in again.");
+						throw new CloudMemberCompanyRefusal(
+							"Company File access was denied. Check your membership or sign in again.",
+							response.status,
+						);
 					// A 400 is a definite refusal before anything was saved (for example a missing folder).
 					if (response.status === 400)
-						throw new Error(
+						throw new CloudMemberCompanyRefusal(
 							"Company File did not accept this change. Check that the folder exists and the name is allowed.",
+							400,
+						);
+					// A 412 names a version that is no longer current: that intent can never apply.
+					if (response.status === 412)
+						throw new CloudMemberCompanyRefusal(
+							"Company File changed since this version was read. Reload it before editing again.",
+							412,
 						);
 					throw new Error(
 						"Company File is unavailable. A save may already have completed; check its status before retrying.",

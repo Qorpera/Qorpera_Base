@@ -928,6 +928,7 @@ export function mountApplication(
 					state.team.role,
 					state.team.capabilities.read,
 					state.team.capabilities.write,
+					state.team.capabilities.authorize,
 				]);
 				if (!liveFile || liveFile.authorityKey !== authorityKey) {
 					liveFile?.dispose();
@@ -947,7 +948,12 @@ export function mountApplication(
 								auth.userId !== controller.userId ||
 								controller.store.get().accessLost ||
 								!team?.capabilities.read ||
-								JSON.stringify([team.role, team.capabilities.read, team.capabilities.write]) !== authorityKey ||
+								JSON.stringify([
+									team.role,
+									team.capabilities.read,
+									team.capabilities.write,
+									team.capabilities.authorize,
+								]) !== authorityKey ||
 								selected.name !== "company" ||
 								selected.profileId !== controller.profile.profileId ||
 								selected.section !== "file" ||
@@ -957,19 +963,16 @@ export function mountApplication(
 						},
 						state.team.capabilities.write,
 					);
-					liveFile = new LiveCompanyFileView(
-						files,
-						stop,
-						controller.profile.profileId,
-						authorityKey,
-						() => {
+					liveFile = new LiveCompanyFileView(files, stop, controller.profile.profileId, authorityKey, {
+						reload: () => {
 							if (stop.signal.aborted) return;
 							liveFile?.dispose();
 							liveFile = undefined;
 							render();
 						},
-						() => controller.store.get().staff,
-					);
+						staff: () => controller.store.get().staff,
+						authorize: state.team.capabilities.authorize,
+					});
 				}
 				if (!main.contains(liveFile.el)) replace(main, liveFile.el);
 				return;

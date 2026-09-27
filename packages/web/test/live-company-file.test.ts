@@ -36,6 +36,10 @@ async function setup(offerProposal = false, useBridge = true) {
 	]);
 	const folders = new Map<string, string>();
 	let nextVersion = 42;
+	// Changes waiting for review, and the decisions the member sent.
+	const commands = new Map<string, { apply: () => string; command: (state: string, version?: string) => unknown }>();
+	const reviews: string[] = [];
+	let protect = false;
 	const objects = new Map<string, Uint8Array>();
 	const parent = (path: string) => (path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "");
 	const reference = async (text: string) => {
@@ -148,40 +152,54 @@ async function setup(offerProposal = false, useBridge = true) {
 				expect(init?.body).toBeInstanceOf(Uint8Array);
 			}
 			const operation = method === "uploads" ? "write" : body.operation;
-			expect(intent.expectedVersion).toBe(files.get(intent.path)?.version ?? folders.get(intent.path) ?? null);
-			const version = id(nextVersion++);
-			let entry: unknown = null;
-			if (operation === "mkdir") {
-				folders.set(intent.path, version);
-				entry = { path: intent.path, kind: "directory" };
-			} else if (operation === "delete") files.delete(intent.path);
-			else {
-				const text = method === "uploads" ? new TextDecoder().decode(init?.body as Uint8Array) : body.text;
-				files.set(intent.path, { text, version });
-				entry = { path: intent.path, kind: "file", executable: false, file: (await reference(text)).file };
-			}
-			return Response.json({
-				commandId: id(43),
+			// A version that is no longer current is refused before anything is saved.
+			if (intent.expectedVersion !== (files.get(intent.path)?.version ?? folders.get(intent.path) ?? null))
+				return new Response(null, { status: 412 });
+			const text = method === "uploads" ? new TextDecoder().decode(init?.body as Uint8Array) : body.text;
+			const entry =
+				operation === "mkdir"
+					? { path: intent.path, kind: "directory" }
+					: operation === "delete"
+						? null
+						: { path: intent.path, kind: "file", executable: false, file: (await reference(text)).file };
+			const plan = {
+				schema: "qorpera.company-path-mutation/v1",
+				path: intent.path,
+				operationKey: intent.operationKey,
+				expectedVersion: intent.expectedVersion,
+				entry,
+			};
+			const apply = () => {
+				const version = id(nextVersion++);
+				if (operation === "mkdir") folders.set(intent.path, version);
+				else if (operation === "delete") files.delete(intent.path);
+				else files.set(intent.path, { text, version });
+				return version;
+			};
+			const commandId = id(60 + commands.size);
+			const command = (state: string, version?: string) => ({
+				commandId,
 				companyId: profileA.profileId,
 				environmentId: profileA.environmentId,
-				plan: {
-					schema: "qorpera.company-path-mutation/v1",
-					path: intent.path,
-					operationKey: intent.operationKey,
-					expectedVersion: intent.expectedVersion,
-					entry,
-				},
+				plan,
 				planSha256: "a".repeat(64),
-				state: "applied",
+				state,
 				expiresAt: "2030-01-01T00:00:00Z",
-				result: {
-					state: "applied",
-					path: intent.path,
-					operationKey: intent.operationKey,
-					version,
-					snapshotId: id(41),
-				},
+				result: version
+					? { state: "applied", path: intent.path, operationKey: intent.operationKey, version, snapshotId: id(41) }
+					: null,
 			});
+			commands.set(commandId, { apply, command });
+			// Deletes are always protected; other changes when the test says so.
+			if (protect || operation === "delete") return Response.json(command("review_required"));
+			return Response.json(command("applied", apply()));
+		}
+		if (method === "review") {
+			const pending = commands.get(url.pathname.split("/").at(-2)!)!;
+			reviews.push(body.decision);
+			return Response.json(
+				body.decision === "approve" ? pending.command("applied", pending.apply()) : pending.command("rejected"),
+			);
 		}
 		throw new Error(`Unexpected fixture endpoint: ${url.pathname}`);
 	});
@@ -189,7 +207,19 @@ async function setup(offerProposal = false, useBridge = true) {
 	const current = vi.fn();
 	const company = new WebCompanyFiles(f.cloud, profileA, userA.id, "owner", stop.signal, current);
 	disposers.push(() => stop.abort());
-	return { ...f, stop, company, fetch, current, files, folders };
+	return {
+		...f,
+		stop,
+		company,
+		fetch,
+		current,
+		files,
+		folders,
+		reviews,
+		protect: (value: boolean) => {
+			protect = value;
+		},
+	};
 }
 /** A button by its words or its accessible name. */
 function button(root: ParentNode, label: string) {
@@ -230,11 +260,17 @@ async function dialogButton(label: string) {
 	await vi.waitFor(() => expect(document.querySelector(".modal")).not.toBeNull());
 	return button(document.querySelector(".modal")!, label);
 }
-async function mount(f: Awaited<ReturnType<typeof setup>>, readOnly = false) {
-	const company = readOnly
-		? new WebCompanyFiles(f.cloud, profileA, userA.id, "owner", f.stop.signal, f.current, false)
-		: f.company;
-	const view = new LiveCompanyFileView(company, f.stop, profileA.profileId, "owner", undefined, () => [staff]);
+async function mount(f: Awaited<ReturnType<typeof setup>>, access: "owner" | "contributor" | "read-only" = "owner") {
+	const company =
+		access === "read-only"
+			? new WebCompanyFiles(f.cloud, profileA, userA.id, "owner", f.stop.signal, f.current, false)
+			: access === "contributor"
+				? new WebCompanyFiles(f.cloud, profileA, userA.id, "contributor", f.stop.signal, f.current)
+				: f.company;
+	const view = new LiveCompanyFileView(company, f.stop, profileA.profileId, access, {
+		staff: () => [staff],
+		authorize: access === "owner",
+	});
 	document.body.append(view.el);
 	disposers.push(() => view.dispose());
 	await vi.waitFor(() => expect(row(view.el, "notes.txt")).toBeDefined());
@@ -489,6 +525,9 @@ describe("product governed File boundary", () => {
 		menuItem("Delete").click();
 		(await dialogButton("Delete")).click();
 		await vi.waitFor(() => expect(view.el.textContent).toContain("Deleted notes.txt."));
+		// Every delete is protected: the confirmed delete is approved without asking twice.
+		expect(f.reviews).toEqual(["approve"]);
+		expect(document.querySelector(".modal")).toBeNull();
 		const writes = f.fetch.mock.calls.filter(([url]) => String(url).endsWith("/edits"));
 		expect(JSON.parse(writes[0]![1]!.body as string)).toMatchObject({
 			operation: "delete",
@@ -496,6 +535,149 @@ describe("product governed File boundary", () => {
 			expectedVersion: id(40),
 		});
 		expect(view.el.textContent).toContain("This folder is empty.");
+	});
+	it("keeps the member's text and lets go of a save the cloud refused because the file changed", async () => {
+		const f = await setup(),
+			view = await mount(f);
+		await open(view.el, "notes.txt");
+		type(await edit(view.el), "My careful edit");
+		f.files.set("notes.txt", { text: "Written by an agent", version: id(51) });
+		button(view.el, "Save").click();
+		await vi.waitFor(() =>
+			expect(view.el.textContent).toContain("notes.txt changed since it was opened, so nothing was saved."),
+		);
+		const editor = view.el.querySelector<HTMLTextAreaElement>(".files-editor")!;
+		expect(editor.value).toBe("My careful edit");
+		expect(editor.disabled).toBe(false);
+		expect(button(view.el, "Save").textContent).toBe("Save");
+		expect(view.leaveMessage()).toBe("Discard this unsaved text?");
+		vi.spyOn(window, "confirm").mockReturnValue(true);
+		button(view.el, "Close notes.txt").click();
+		await open(view.el, "notes.txt");
+		expect(view.el.querySelector(".files-text")?.textContent).toBe("Written by an agent");
+	});
+	it("asks once before a protected save, approves it, and withdraws it when declined", async () => {
+		const f = await setup(),
+			view = await mount(f);
+		f.protect(true);
+		await open(view.el, "notes.txt");
+		type(await edit(view.el), "Protected edit");
+		button(view.el, "Save").click();
+		(await dialogButton("Cancel")).click();
+		await vi.waitFor(() => expect(view.el.textContent).toContain("Nothing was changed."));
+		expect(f.reviews).toEqual(["skip"]);
+		expect(view.el.querySelector<HTMLTextAreaElement>(".files-editor")?.value).toBe("Protected edit");
+		expect(f.files.get("notes.txt")?.text).toBe("Original text");
+		button(view.el, "Save").click();
+		(await dialogButton("Apply change")).click();
+		await vi.waitFor(() => expect(view.el.textContent).toContain("Saved notes.txt."));
+		expect(f.reviews).toEqual(["skip", "approve"]);
+		expect(f.files.get("notes.txt")?.text).toBe("Protected edit");
+	});
+	it("retries an approval with an unknown outcome on the same change instead of making a new one", async () => {
+		const f = await setup(),
+			view = await mount(f);
+		f.protect(true);
+		await open(view.el, "notes.txt");
+		type(await edit(view.el), "Approved later");
+		const passThrough = f.fetch.getMockImplementation()!;
+		f.fetch.mockImplementation(async (input, init) => {
+			if (String(input).endsWith("/review")) {
+				f.fetch.mockImplementation(passThrough);
+				throw new Error("Response lost");
+			}
+			return passThrough(input, init);
+		});
+		button(view.el, "Save").click();
+		(await dialogButton("Apply change")).click();
+		await vi.waitFor(() => expect(view.el.textContent).toContain("operation could not be confirmed"));
+		expect(view.el.querySelector<HTMLTextAreaElement>(".files-editor")?.disabled).toBe(true);
+		expect(() => button(view.el, "Save")).toThrow();
+		expect(view.leaveMessage()).toContain("may not have been saved");
+		button(view.el, "Retry").click();
+		await vi.waitFor(() => expect(view.el.textContent).toContain("Saved notes.txt."));
+		expect(f.fetch.mock.calls.filter(([url]) => String(url).endsWith("/edits"))).toHaveLength(1);
+		expect(f.files.get("notes.txt")?.text).toBe("Approved later");
+	});
+	it("keeps an upload with an unknown outcome, blocks other changes, and retries it unchanged", async () => {
+		const f = await setup(),
+			view = await mount(f);
+		const chooser = view.el.querySelector<HTMLInputElement>('input[type="file"]')!;
+		Object.defineProperty(chooser, "files", {
+			configurable: true,
+			value: [new File(["Fresh bytes"], "fresh.txt", { type: "text/plain" })],
+		});
+		const passThrough = f.fetch.getMockImplementation()!;
+		f.fetch.mockImplementation(async (input, init) => {
+			if (String(input).endsWith("/uploads")) {
+				f.fetch.mockImplementation(passThrough);
+				throw new Error("Response lost");
+			}
+			return passThrough(input, init);
+		});
+		chooser.dispatchEvent(new Event("change"));
+		await vi.waitFor(() => expect(() => button(view.el, "Retry upload")).not.toThrow());
+		expect(view.el.textContent).toContain("operation could not be confirmed");
+		expect(view.leaveMessage()).toContain("may not have been saved");
+		button(view.el, "New").click();
+		menuItem("New folder").click();
+		await vi.waitFor(() => expect(view.el.textContent).toContain("Retry it before starting another"));
+		expect(document.querySelector(".name-dialog-input")).toBeNull();
+		button(view.el, "Retry upload").click();
+		await vi.waitFor(() => expect(view.el.textContent).toContain("Uploaded fresh.txt."));
+		const uploads = f.fetch.mock.calls.filter(([url]) => String(url).endsWith("/uploads"));
+		expect(uploads.length).toBeGreaterThanOrEqual(1);
+		expect(f.files.get("fresh.txt")?.text).toBe("Fresh bytes");
+		expect(view.leaveMessage()).toBeNull();
+	});
+	it("lists the folder again when a row's file changed after it was listed", async () => {
+		const f = await setup(),
+			view = await mount(f);
+		f.files.set("notes.txt", { text: "Newer text", version: id(52) });
+		button(view.el, "Download notes.txt").click();
+		await vi.waitFor(() => expect(view.el.textContent).toContain("notes.txt changed a moment ago. Open it again."));
+		const calls = f.fetch.mock.calls.length;
+		vi.stubGlobal(
+			"URL",
+			class extends URL {
+				static override createObjectURL = vi.fn(() => "blob:fixture-download");
+				static override revokeObjectURL = vi.fn();
+			},
+		);
+		vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+		button(view.el, "Download notes.txt").click();
+		await vi.waitFor(() => expect(view.el.textContent).toContain("Downloading notes.txt."));
+		expect(f.fetch.mock.calls.length).toBeGreaterThan(calls);
+	});
+	it("uploads the files it can, names the ones it cannot, and composes decomposed names", async () => {
+		const f = await setup(),
+			view = await mount(f);
+		f.folders.set("reports", id(53));
+		const drop = new Event("drop", { bubbles: true, cancelable: true });
+		Object.defineProperty(drop, "dataTransfer", {
+			value: {
+				types: ["Files"],
+				files: [
+					new File(["Folder clash"], "reports", { type: "text/plain" }),
+					new File(["Kaffe"], "Cafe\u0301.md", { type: "text/markdown" }),
+				],
+			},
+		});
+		view.el.dispatchEvent(drop);
+		await vi.waitFor(() => expect(view.el.textContent).toContain("Uploaded Caf\u00e9.md. Not uploaded: reports."));
+		expect(f.files.get("Caf\u00e9.md")?.text).toBe("Kaffe");
+	});
+	it("shows Delete only to members who may approve it", async () => {
+		const f = await setup(),
+			view = await mount(f, "contributor");
+		await open(view.el, "notes.txt");
+		expect(() => button(view.el, "Edit")).not.toThrow();
+		expect(() => button(view.el, "Delete notes.txt")).toThrow();
+		row(view.el, "notes.txt").dispatchEvent(
+			new MouseEvent("contextmenu", { bubbles: true, clientX: 40, clientY: 40 }),
+		);
+		expect(() => menuItem("Delete")).toThrow();
+		expect(menuItem("Download")).toBeDefined();
 	});
 	it("filters the open folder by name", async () => {
 		const f = await setup();
@@ -600,7 +782,7 @@ describe("product governed File boundary", () => {
 	});
 	it("honors a read-only capability even when the member role is owner", async () => {
 		const f = await setup(),
-			view = await mount(f, true);
+			view = await mount(f, "read-only");
 		await open(view.el, "notes.txt");
 		expect(() => button(view.el, "Edit")).toThrow();
 		expect(() => button(view.el, "Delete notes.txt")).toThrow();

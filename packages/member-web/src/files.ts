@@ -1,8 +1,9 @@
 import { cloudFileBytesSha256 } from "@qorpera/cloud-client/cloud-file-bytes";
-import type {
-	CloudMemberCompanyFileClient,
-	CloudMemberCompanyUpload,
-	CloudMemberCompanyUploadSource,
+import {
+	type CloudMemberCompanyFileClient,
+	CloudMemberCompanyRefusal,
+	type CloudMemberCompanyUpload,
+	type CloudMemberCompanyUploadSource,
 } from "@qorpera/cloud-client/cloud-member-company-editor";
 import { withCloudDeadline } from "@qorpera/cloud-client/cloud-request";
 import { presenceUuid } from "@qorpera/cloud-client/company-path-presence";
@@ -111,6 +112,13 @@ export class WebFileUpload {
 			this.#intent = undefined;
 			this.#file = undefined;
 			return result;
+		} catch (error) {
+			// A refused upload saved nothing and can never apply: it is not left uncertain.
+			if (error instanceof CloudMemberCompanyRefusal) {
+				this.#intent = undefined;
+				this.#file = undefined;
+			}
+			throw error;
 		} finally {
 			this.#busy = false;
 		}

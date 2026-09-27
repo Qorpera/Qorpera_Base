@@ -134,6 +134,18 @@ export const COMPANY: Record<string, string> = {
 	"Delete {name} from the Company File?": "Vil du slette {name} fra Virksomhedsfilen?",
 	"Deleted {name}.": "{name} er slettet.",
 	"Delete {name}": "Slet {name}",
+	"{name} changed since it was opened, so nothing was saved.":
+		"{name} er ændret, siden den blev åbnet, så intet blev gemt.",
+	"You can't change {name}. Ask an owner or admin.": "Du kan ikke ændre {name}. Spørg en ejer eller administrator.",
+	"Sign in again, then try once more.": "Log ind igen, og prøv så en gang til.",
+	"The Company File did not accept this change to {name}.": "Virksomhedsfilen tog ikke imod denne ændring af {name}.",
+	"{name} changed a moment ago, so it was not deleted.":
+		"{name} blev ændret for et øjeblik siden, så den blev ikke slettet.",
+	"Not sent yet: {names}.": "Ikke sendt endnu: {names}.",
+	"Not uploaded: {names}.": "Ikke uploadet: {names}.",
+	"Applied the change to {name}.": "Ændringen af {name} er gennemført.",
+	"Wait for the current step to finish, then add the files again.":
+		"Vent, til det igangværende trin er færdigt, og tilføj så filerne igen.",
 	"Files shared from the Company Computer": "Filer delt fra virksomhedens computer",
 	"Shared from the Company Computer": "Delt fra virksomhedens computer",
 	"Nothing has been shared from the Company Computer yet.": "Der er endnu ikke delt noget fra virksomhedens computer.",
@@ -144,8 +156,6 @@ export const COMPANY: Record<string, string> = {
 	"{name} already exists in this folder.": "{name} findes allerede i denne mappe.",
 	"Use a name without slashes.": "Brug et navn uden skråstreger.",
 	"{name} can't be used as a name here.": "{name} kan ikke bruges som navn her.",
-	"The last upload may not have finished. Retry it before starting another.":
-		"Den sidste upload blev måske ikke færdig. Prøv den igen, før du starter en ny.",
 	"{name} is larger than 8 MB and was not uploaded.": "{name} er større end 8 MB og blev ikke uploadet.",
 	"{name} can't be replaced from here.": "{name} kan ikke erstattes herfra.",
 	"Replace {name} in this folder?": "Vil du erstatte {name} i denne mappe?",
@@ -155,7 +165,6 @@ export const COMPANY: Record<string, string> = {
 	"{name} goes to a protected place. Upload it anyway?":
 		"{name} skal ligge et beskyttet sted. Vil du uploade den alligevel?",
 	"The change was not accepted.": "Ændringen blev ikke godkendt.",
-	"The change is waiting to be applied.": "Ændringen venter på at blive gennemført.",
 	"Apply change": "Gennemfør ændringen",
 	"Nothing was changed.": "Intet blev ændret.",
 	"The change is approved and will apply shortly.": "Ændringen er godkendt og træder snart i kraft.",

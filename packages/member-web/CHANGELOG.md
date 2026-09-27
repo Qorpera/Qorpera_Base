@@ -10,4 +10,5 @@
 
 ### Fixed
 
+- `WebFileUpload` lets go of an upload the cloud refused (`CloudMemberCompanyRefusal`): it no longer stays uncertain and blocks every later upload.
 - Revoke each browser profile's observed consent independently in account cleanup, while refusing consent that changed after it was displayed.

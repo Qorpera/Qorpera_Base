@@ -1,10 +1,11 @@
 import type { CompanyComputerFileExportAsset } from "@qorpera/cloud-client/cloud-file-transfer";
-import type {
-	CloudMemberCompanyCommand,
-	CloudMemberCompanyEdit,
-	CloudMemberCompanyFileClient,
-	CloudMemberCompanyPage,
-	CloudMemberCompanyProposal,
+import {
+	type CloudMemberCompanyCommand,
+	type CloudMemberCompanyEdit,
+	type CloudMemberCompanyFileClient,
+	type CloudMemberCompanyPage,
+	type CloudMemberCompanyProposal,
+	CloudMemberCompanyRefusal,
 } from "@qorpera/cloud-client/cloud-member-company-editor";
 import type { CloudMemberCompanyPresence } from "@qorpera/cloud-client/cloud-member-company-presence";
 import type { CompanyPathPresenceView } from "@qorpera/cloud-client/company-path-presence";
@@ -29,6 +30,8 @@ import { listSkeleton } from "../../ui/skeleton.ts";
 
 type Item = CloudMemberCompanyPage["items"][number];
 type Settled = CloudMemberCompanyCommand | CloudMemberCompanyProposal;
+/** How a change ended: applied now, approved to apply shortly, or not at all. */
+type Outcome = "applied" | "approved" | false;
 
 /** An open file: its text when it is text, a picture's object URL when it is one. */
 interface Opened {
@@ -98,6 +101,8 @@ export class LiveCompanyFileView {
 	readonly #staff: () => readonly HostedStaffAgent[];
 	readonly #reload?: () => void;
 	readonly #canWrite: boolean;
+	/** Deleting is always a protected change, which only owners and admins may make. */
+	readonly #canDelete: boolean;
 	readonly #locale = presentationLocale();
 	readonly #root = h("div", { class: "files-root" });
 	readonly #status = h("div", { class: "files-status", role: "status" });
@@ -139,6 +144,9 @@ export class LiveCompanyFileView {
 	#pending: CloudMemberCompanyEdit | null = null;
 	/** Where an upload with an unknown outcome was going. */
 	#uploading: { path: string; expectedVersion: string | null; name: string } | null = null;
+	/** A protected change whose approval has an unknown outcome. */
+	#approving: { command: CloudMemberCompanyCommand; path: string; kind: "save" | "other" } | null = null;
+	#observeTimer?: ReturnType<typeof setTimeout>;
 	#shared: CompanyComputerFileExportAsset[] = [];
 	#sharedAfter: string | null = null;
 	#busy = false;
@@ -149,34 +157,46 @@ export class LiveCompanyFileView {
 		stop: AbortController,
 		profileId: string,
 		authorityKey: string,
-		reload?: () => void,
-		staff: () => readonly HostedStaffAgent[] = () => [],
+		options: {
+			reload?: () => void;
+			/** The company's agents, for the figures of those at work. */
+			staff?: () => readonly HostedStaffAgent[];
+			/** Whether the member may approve protected changes (owners and admins). */
+			authorize?: boolean;
+		} = {},
 	) {
 		this.#company = company;
 		this.#stop = stop;
-		this.#staff = staff;
-		this.#reload = reload;
+		this.#staff = options.staff ?? (() => []);
+		this.#reload = options.reload;
 		this.routeHash = location.hash;
 		this.role = company.company.role;
 		this.authorityKey = authorityKey;
 		this.#canWrite = company.company.role !== "viewer" && company.company.canWrite !== false;
+		this.#canDelete = this.#canWrite && options.authorize === true;
 		const signal = stop.signal;
 		const newButton = button([icon("plus"), t("New")], (event) => this.#newMenu(event.currentTarget as HTMLElement));
 		newButton.classList.add("files-new");
 		newButton.hidden = !this.#canWrite;
-		this.#search.addEventListener("input", () => this.#drawList(false));
+		this.#search.addEventListener("input", () => {
+			this.#drawList(false);
+			// The watched rows follow the filter, once typing pauses.
+			clearTimeout(this.#observeTimer);
+			this.#observeTimer = setTimeout(() => this.#observe(), 400);
+		});
 		this.#search.addEventListener("keydown", (event) => {
 			if (event.key === "Escape" && this.#search.value) {
 				event.preventDefault();
 				event.stopPropagation();
 				this.#search.value = "";
 				this.#drawList(false);
+				this.#observe();
 			}
 		});
 		this.#chooser.addEventListener("change", () => {
 			const files = [...(this.#chooser.files ?? [])];
 			this.#chooser.value = "";
-			if (files.length) void this.#run(() => this.#upload(files));
+			if (files.length) this.#uploadWhenFree(files);
 		});
 		this.#more.hidden = true;
 		this.#preview.hidden = true;
@@ -196,7 +216,9 @@ export class LiveCompanyFileView {
 							class: "files-tool",
 							title: t("Files shared from the Company Computer"),
 							"aria-label": t("Files shared from the Company Computer"),
-							onclick: () => void this.#run(() => this.#showShared()),
+							onclick: () => {
+								if (this.#client) void this.#run(() => this.#showShared());
+							},
 						},
 						icon("computer"),
 					),
@@ -249,8 +271,7 @@ export class LiveCompanyFileView {
 	}
 
 	leaveMessage(): string | null {
-		if (this.#pending || this.#uploader?.uncertain)
-			return t("The last change may not have been saved. Leave this page anyway?");
+		if (this.#unconfirmed()) return t("The last change may not have been saved. Leave this page anyway?");
 		return this.#dirty ? t("Discard this unsaved text?") : null;
 	}
 
@@ -259,11 +280,13 @@ export class LiveCompanyFileView {
 		this.#disposed = true;
 		this.#stop.abort();
 		if (this.#timer) clearInterval(this.#timer);
+		clearTimeout(this.#observeTimer);
 		void this.#observer?.close();
 		this.#downloads?.close();
 		this.#forget(this.#opened);
 		this.#opened = null;
 		this.#pending = null;
+		this.#approving = null;
 		this.#dirty = false;
 		this.el.replaceChildren();
 		this.el.remove();
@@ -293,6 +316,9 @@ export class LiveCompanyFileView {
 		} finally {
 			this.#busy = false;
 			this.#root.inert = false;
+			// An unconfirmed change keeps its Retry in view, whatever ran since.
+			if (!this.#stop.signal.aborted && this.#unconfirmed() && !this.#status.querySelector(".files-retry"))
+				this.#status.append(...this.#retries());
 			if (focus instanceof HTMLElement && focus.isConnected && !this.el.contains(document.activeElement))
 				focus.focus();
 		}
@@ -309,18 +335,8 @@ export class LiveCompanyFileView {
 			const signal = AbortSignal.any([this.#stop.signal, this.#company.signal]);
 			const live = () => this.#live();
 			this.#client = client;
-			this.#downloads = new WebFileDownloads({ signal, current: live });
-			this.#uploader = new WebFileUpload({ client, signal, current: live });
-			try {
-				this.#observer = this.#company.presence((view) => {
-					if (signal.aborted) return;
-					this.#activity = view;
-					this.#drawActivity();
-				});
-			} catch {
-				/* Activity is lossy and optional; the files work without it. */
-			}
-			this.#timer = setInterval(() => this.#drawActivity(), 2000);
+			this.#downloads ??= new WebFileDownloads({ signal, current: live });
+			this.#uploader ??= new WebFileUpload({ client, signal, current: live });
 			replace(
 				this.#root,
 				this.#crumbs,
@@ -341,6 +357,19 @@ export class LiveCompanyFileView {
 			);
 			await this.#load("");
 			replace(this.#status);
+			// Agents at work are watched only once the files are open, so a retried
+			// opening never leaves a second watcher behind.
+			try {
+				this.#observer ??= this.#company.presence((view) => {
+					if (signal.aborted) return;
+					this.#activity = view;
+					this.#drawActivity();
+				});
+			} catch {
+				/* Activity is lossy and optional; the files work without it. */
+			}
+			this.#timer ??= setInterval(() => this.#drawActivity(), 2000);
+			this.#observe();
 		} catch (error) {
 			if (this.#stop.signal.aborted) throw error;
 			replace(
@@ -358,10 +387,20 @@ export class LiveCompanyFileView {
 		this.#status.classList.toggle("has-actions", actions.length > 0);
 	}
 
+	/** The Retry for whichever change has an unknown outcome. */
+	#retries(): HTMLElement[] {
+		const retry = (label: string, action: () => Promise<void>) => {
+			const control = button(label, () => void this.#run(action), { small: true });
+			control.classList.add("files-retry");
+			return control;
+		};
+		if (this.#approving) return [retry(t("Retry"), () => this.#retryApproval())];
+		if (this.#uploading && this.#uploader?.uncertain) return [retry(t("Retry upload"), () => this.#retryUpload())];
+		return [];
+	}
+
 	#problem(error: unknown): void {
-		const actions: HTMLElement[] = [];
-		if (this.#uploading && this.#uploader?.uncertain)
-			actions.push(button(t("Retry upload"), () => void this.#run(() => this.#retryUpload()), { small: true }));
+		const actions: HTMLElement[] = [...this.#retries()];
 		if (this.#reload)
 			actions.push(
 				button(
@@ -388,10 +427,9 @@ export class LiveCompanyFileView {
 		);
 	}
 
-	/** Asks before leaving an edit. An unconfirmed save or upload blocks it. */
+	/** Asks before leaving an edit. An unconfirmed change blocks it. */
 	#leave(): boolean {
-		if (this.#pending || this.#uploader?.uncertain)
-			throw new Refusal(t("The last change may not have been saved. Retry it before starting another."));
+		this.#settled();
 		return !this.#dirty || window.confirm(t("Discard this unsaved text?"));
 	}
 
@@ -546,7 +584,7 @@ export class LiveCompanyFileView {
 						icon: "download",
 						select: () => void this.#run(() => this.#download(item.path, item.version)),
 					},
-					...(this.#canWrite
+					...(this.#canDelete
 						? ([
 								{ kind: "separator" },
 								{
@@ -571,7 +609,7 @@ export class LiveCompanyFileView {
 	}
 
 	#newMenu(opener: HTMLElement): void {
-		if (this.#busy || !this.#canWrite) return;
+		if (this.#busy || !this.#canWrite || !this.#client) return;
 		const box = opener.getBoundingClientRect();
 		openContextMenu({
 			label: t("New"),
@@ -645,33 +683,42 @@ export class LiveCompanyFileView {
 		return worker.agent?.displayName ?? t("An agent");
 	}
 
+	#key(workers: { agent?: HostedStaffAgent; writing: boolean }[]): string {
+		return workers.map((worker) => `${worker.agent?.id}:${worker.writing}`).join();
+	}
+
 	#drawActivity(): void {
 		if (this.#disposed) return;
 		const here = this.#workers(this.#dir, true);
 		const writing = here.some((worker) => worker.writing);
-		replace(
-			this.#here,
-			here.length
-				? [
-						writing ? h("span", { class: "files-pulse", "aria-hidden": "true" }) : null,
-						this.#figures(here),
-						h(
-							"span",
-							null,
-							here.length > 1
-								? t("{count} agents are working in this folder", { count: here.length })
-								: writing
-									? t("{name} is writing in this folder", { name: this.#name(here[0]!) })
-									: t("{name} is reading in this folder", { name: this.#name(here[0]!) }),
-						),
-					]
-				: null,
-		);
+		// Redrawn only when who is at work changes, so figures and pulses run on undisturbed.
+		const hereKey = `${this.#dir}|${this.#key(here)}`;
+		if (this.#here.dataset.key !== hereKey) {
+			this.#here.dataset.key = hereKey;
+			replace(
+				this.#here,
+				here.length
+					? [
+							writing ? h("span", { class: "files-pulse", "aria-hidden": "true" }) : null,
+							this.#figures(here),
+							h(
+								"span",
+								null,
+								here.length > 1
+									? t("{count} agents are working in this folder", { count: here.length })
+									: writing
+										? t("{name} is writing in this folder", { name: this.#name(here[0]!) })
+										: t("{name} is reading in this folder", { name: this.#name(here[0]!) }),
+							),
+						]
+					: null,
+			);
+		}
 		for (const slot of this.#list.querySelectorAll<HTMLElement>(".files-activity")) {
 			const path = slot.dataset.path!;
 			const item = this.#items.find((entry) => entry.path === path);
 			const workers = this.#workers(path, item?.kind === "directory");
-			const key = workers.map((worker) => `${worker.agent?.id}:${worker.writing}`).join();
+			const key = this.#key(workers);
 			if (slot.dataset.key === key) continue;
 			slot.dataset.key = key;
 			const first = workers[0];
@@ -696,6 +743,9 @@ export class LiveCompanyFileView {
 		if (line && this.#opened) {
 			const workers = this.#workers(this.#opened.path, false),
 				first = workers[0];
+			const key = this.#key(workers);
+			if (line.dataset.key === key) return;
+			line.dataset.key = key;
 			replace(
 				line,
 				first
@@ -771,7 +821,12 @@ export class LiveCompanyFileView {
 			return file.bytes;
 		} catch (error) {
 			this.#live();
-			if (!(error instanceof Error) || !/unavailable/i.test(error.message)) throw error;
+			// The listed version is no longer the file's: list the folder again.
+			if (
+				!(error instanceof Error) ||
+				!/^Selected Company File (version changed|is unavailable)$/.test(error.message)
+			)
+				throw error;
 			await this.#load(this.#dir);
 			throw new Refusal(t("{name} changed a moment ago. Open it again.", { name: baseName(path) }));
 		}
@@ -829,7 +884,8 @@ export class LiveCompanyFileView {
 				class: "files-editor",
 				"aria-label": t("File content"),
 				spellcheck: "false",
-				disabled: Boolean(this.#pending),
+				// Locked while a save or its approval has an unknown outcome.
+				disabled: Boolean(this.#pending || this.#approving),
 			});
 			editor.value = this.#pending?.operation === "write" ? this.#pending.text : this.#draft;
 			const over = h("p", { class: "files-limit" });
@@ -848,21 +904,23 @@ export class LiveCompanyFileView {
 			});
 			update();
 			body = h("div", { class: "files-edit" }, editor, over);
-			actions.push(
-				save,
-				button(t("Cancel"), () => {
-					if (this.#busy || this.#pending) return;
-					if (this.#dirty && !window.confirm(t("Discard this unsaved text?"))) return;
-					this.#dirty = false;
-					if (opened.version === null) {
-						this.#close();
-						this.#observe();
-						return;
-					}
-					this.#editing = false;
-					this.#draw();
-				}),
-			);
+			// An approval with an unknown outcome is retried from the status line.
+			if (!this.#approving)
+				actions.push(
+					save,
+					button(t("Cancel"), () => {
+						if (this.#busy || this.#pending) return;
+						if (this.#dirty && !window.confirm(t("Discard this unsaved text?"))) return;
+						this.#dirty = false;
+						if (opened.version === null) {
+							this.#close();
+							this.#observe();
+							return;
+						}
+						this.#editing = false;
+						this.#draw();
+					}),
+				);
 			queueMicrotask(() => {
 				if (editor.isConnected && !editor.disabled && !this.#busy) editor.focus();
 			});
@@ -898,7 +956,7 @@ export class LiveCompanyFileView {
 						() => void this.#run(() => this.#download(opened.path, version)),
 					),
 				);
-				if (this.#canWrite) {
+				if (this.#canDelete) {
 					const remove = this.#iconButton(
 						"trash",
 						t("Delete {name}", { name }),
@@ -1001,10 +1059,34 @@ export class LiveCompanyFileView {
 
 	// ---- changes ----------------------------------------------------------------
 
+	/** A save, approval or upload whose outcome is unknown. */
+	#unconfirmed(): boolean {
+		return Boolean(this.#pending || this.#approving || this.#uploader?.uncertain);
+	}
+
+	/** No change starts while an earlier one is unconfirmed. */
+	#settled(): void {
+		if (this.#unconfirmed())
+			throw new Refusal(t("The last change may not have been saved. Retry it before starting another."));
+	}
+
+	/** What a refused change means for the member. The cloud saved nothing and the
+	 * same change can never apply, so the page lets go of it. */
+	#refusal(error: unknown, path: string): Refusal | undefined {
+		if (!(error instanceof CloudMemberCompanyRefusal)) return undefined;
+		const name = baseName(path);
+		if (error.status === 412)
+			return new Refusal(t("{name} changed since it was opened, so nothing was saved.", { name }));
+		if (error.status === 403) return new Refusal(t("You can't change {name}. Ask an owner or admin.", { name }));
+		if (error.status === 401) return new Refusal(t("Sign in again, then try once more."));
+		return new Refusal(t("The Company File did not accept this change to {name}.", { name }));
+	}
+
 	async #save(): Promise<void> {
 		const opened = this.#opened;
 		if (!this.#canWrite || !opened || !this.#editing) return;
 		if (!this.#pending) {
+			this.#settled();
 			const text = this.#draft;
 			if (text.includes("\0") || textBytes(text) > MAX_TEXT_BYTES)
 				throw new Refusal(t("This is too long to save here. Keep it under 32 KB."));
@@ -1023,35 +1105,38 @@ export class LiveCompanyFileView {
 			result = await this.#client!.edit(pending, this.#stop.signal);
 		} catch (error) {
 			this.#live();
+			const refusal = this.#refusal(error, opened.path);
+			// Refused: the text stays in the editor for the member to keep or copy.
+			if (refusal) this.#pending = null;
 			this.#draw();
-			throw error;
+			throw refusal ?? error;
 		}
 		this.#live();
 		this.#pending = null;
-		const applied = await this.#settle(
-			result,
-			t("{name} is protected. Save your change anyway?", {
-				name: baseName(opened.path),
-			}),
-		);
-		if (!applied) {
+		let outcome: Outcome;
+		try {
+			outcome = await this.#settle(
+				result,
+				t("{name} is protected. Save your change anyway?", { name: baseName(opened.path) }),
+				opened.path,
+				"save",
+			);
+		} catch (error) {
+			if (this.#opened === opened) this.#draw();
+			throw error;
+		}
+		if (!outcome) {
 			this.#draw();
 			return;
 		}
-		this.#dirty = false;
-		this.#close();
-		await this.#load(this.#dir);
-		const item = this.#items.find((entry) => entry.path === opened.path);
-		if (item) await this.#open(item);
-		this.#say(t("Saved {name}.", { name: baseName(opened.path) }));
+		await this.#finish(opened.path, outcome, "save");
 	}
 
 	async #delete(path: string, version: string): Promise<void> {
-		if (!this.#canWrite) return;
+		if (!this.#canDelete) return;
+		this.#settled();
 		const name = baseName(path);
 		if (this.#opened?.path === path && this.#dirty && !window.confirm(t("Discard this unsaved text?"))) return;
-		if (this.#pending || this.#uploader?.uncertain)
-			throw new Refusal(t("The last change may not have been saved. Retry it before starting another."));
 		if (
 			!(await confirmDialog(
 				t("Delete {name} from the Company File?", { name }),
@@ -1063,20 +1148,29 @@ export class LiveCompanyFileView {
 		)
 			return;
 		this.#live();
-		const result = await this.#client!.edit(
-			{ operation: "delete", operationKey: crypto.randomUUID(), path, expectedVersion: version },
-			this.#stop.signal,
-		);
+		let result: CloudMemberCompanyCommand;
+		try {
+			result = await this.#client!.edit(
+				{ operation: "delete", operationKey: crypto.randomUUID(), path, expectedVersion: version },
+				this.#stop.signal,
+			);
+		} catch (error) {
+			this.#live();
+			if (error instanceof CloudMemberCompanyRefusal && error.status === 412) {
+				await this.#load(this.#dir);
+				throw new Refusal(t("{name} changed a moment ago, so it was not deleted.", { name }));
+			}
+			throw this.#refusal(error, path) ?? error;
+		}
 		this.#live();
 		// Deleting was confirmed just now; a protected delete needs no second question.
-		if (!(await this.#settle(result, null))) return;
-		if (this.#opened?.path === path) this.#close();
-		await this.#load(this.#dir);
-		this.#say(t("Deleted {name}.", { name }));
+		const outcome = await this.#settle(result, null, path, "other");
+		if (outcome) await this.#finish(path, outcome, "delete");
 	}
 
 	async #newFolder(): Promise<void> {
 		if (!this.#canWrite) return;
+		this.#settled();
 		const name = await nameDialog({
 			title: t("New folder"),
 			label: t("Folder name"),
@@ -1086,18 +1180,20 @@ export class LiveCompanyFileView {
 		});
 		this.#live();
 		if (!name) return;
-		const path = await this.#vacant(name);
-		const result = await this.#client!.edit(
-			{ operation: "mkdir", operationKey: crypto.randomUUID(), path, expectedVersion: null },
-			this.#stop.signal,
-		);
+		const path = await this.#vacant(name.normalize("NFC"));
+		let result: CloudMemberCompanyCommand;
+		try {
+			result = await this.#client!.edit(
+				{ operation: "mkdir", operationKey: crypto.randomUUID(), path, expectedVersion: null },
+				this.#stop.signal,
+			);
+		} catch (error) {
+			this.#live();
+			throw this.#refusal(error, path) ?? error;
+		}
 		this.#live();
-		if (!(await this.#settle(result, t("Create the folder {name}?", { name })))) return;
-		await this.#load(this.#dir);
-		[...this.#list.querySelectorAll<HTMLElement>(".files-row-main")]
-			.find((row) => row.dataset.path === path)
-			?.focus();
-		this.#say(t("Created {name}.", { name }));
+		const outcome = await this.#settle(result, t("Create the folder {name}?", { name }), path, "other");
+		if (outcome) await this.#finish(path, outcome, "folder");
 	}
 
 	async #newFile(): Promise<void> {
@@ -1111,7 +1207,8 @@ export class LiveCompanyFileView {
 		});
 		this.#live();
 		if (!name) return;
-		const path = await this.#vacant(name.includes(".") ? name : `${name}.md`);
+		const normal = name.normalize("NFC");
+		const path = await this.#vacant(normal.includes(".") ? normal : `${normal}.md`);
 		this.#close();
 		this.#opened = { path, version: null, bytes: 0, text: "", editable: true };
 		this.#draft = "";
@@ -1140,82 +1237,119 @@ export class LiveCompanyFileView {
 		}
 	}
 
+	/** Uploads each file into the open folder. A file that cannot go is skipped
+	 * and named at the end; an upload with an unknown outcome stops the rest. */
 	async #upload(files: File[]): Promise<void> {
 		if (!this.#canWrite) return;
+		this.#settled();
 		const uploader = this.#uploader!;
-		if (uploader.uncertain)
-			throw new Refusal(t("The last upload may not have finished. Retry it before starting another."));
-		const uploaded: string[] = [];
-		for (const file of files) {
-			if (file.size > MAX_FILE_BYTES) {
-				this.#say(t("{name} is larger than 8 MB and was not uploaded.", { name: file.name }));
-				continue;
-			}
-			const path = this.#child(file.name);
-			await uploader.select(file);
-			this.#live();
-			const target = await this.#client!.describe(path, this.#stop.signal);
-			this.#live();
-			if (target.entry?.kind === "directory" || (target.entry?.kind === "file" && target.entry.executable)) {
-				uploader.clearSelection();
-				throw new Refusal(t("{name} can't be replaced from here.", { name: file.name }));
-			}
-			if (
-				target.entry &&
-				!(await confirmDialog(
-					t("Replace {name} in this folder?", { name: file.name }),
-					t("Replace"),
-					false,
-					undefined,
-					this.#stop.signal,
-				))
-			) {
+		const uploaded: string[] = [],
+			skipped: string[] = [];
+		let approved = false;
+		for (const [index, picked] of files.entries()) {
+			// macOS hands names over decomposed; the Company File keeps them composed.
+			const name = picked.name.normalize("NFC");
+			const file = name === picked.name ? picked : new File([picked], name, { type: picked.type });
+			try {
+				if (file.size > MAX_FILE_BYTES)
+					throw new Refusal(t("{name} is larger than 8 MB and was not uploaded.", { name }));
+				const path = this.#child(name);
+				await uploader.select(file);
 				this.#live();
-				uploader.clearSelection();
-				continue;
+				const target = await this.#client!.describe(path, this.#stop.signal);
+				this.#live();
+				if (target.entry?.kind === "directory" || (target.entry?.kind === "file" && target.entry.executable)) {
+					uploader.clearSelection();
+					throw new Refusal(t("{name} can't be replaced from here.", { name }));
+				}
+				if (
+					target.entry &&
+					!(await confirmDialog(
+						t("Replace {name} in this folder?", { name }),
+						t("Replace"),
+						false,
+						undefined,
+						this.#stop.signal,
+					))
+				) {
+					this.#live();
+					uploader.clearSelection();
+					continue;
+				}
+				this.#live();
+				this.#uploading = { path, expectedVersion: target.version, name };
+				const outcome = await this.#sendUpload();
+				if (outcome) uploaded.push(name);
+				if (outcome === "approved") approved = true;
+			} catch (error) {
+				this.#live();
+				if (error instanceof Refusal && !uploader.uncertain && !this.#approving) {
+					if (uploader.selected) uploader.clearSelection();
+					skipped.push(name);
+					continue;
+				}
+				const rest = files.slice(index + 1).map((item) => item.name.normalize("NFC"));
+				await this.#load(this.#dir).catch(() => undefined);
+				if (rest.length === 0) throw error;
+				throw new Refusal(
+					`${error instanceof Refusal ? error.message : t("The operation could not be confirmed. Check the current state before retrying.")} ${t("Not sent yet: {names}.", { names: rest.join(", ") })}`,
+				);
 			}
-			this.#live();
-			this.#uploading = { path, expectedVersion: target.version, name: file.name };
-			if (await this.#sendUpload()) uploaded.push(file.name);
 		}
 		await this.#load(this.#dir);
-		if (uploaded.length > 0)
-			this.#say(
-				uploaded.length === 1
-					? t("Uploaded {name}.", { name: uploaded[0]! })
-					: t("Uploaded {count} files.", { count: uploaded.length }),
-			);
+		const lines = [
+			uploaded.length === 1
+				? t("Uploaded {name}.", { name: uploaded[0]! })
+				: uploaded.length > 1
+					? t("Uploaded {count} files.", { count: uploaded.length })
+					: "",
+			approved ? t("The change is approved and will apply shortly.") : "",
+			skipped.length ? t("Not uploaded: {names}.", { names: skipped.join(", ") }) : "",
+		];
+		this.#say(lines.filter(Boolean).join(" "));
 	}
 
 	async #retryUpload(): Promise<void> {
 		if (!this.#uploading || !this.#uploader?.uncertain) return;
 		const name = this.#uploading.name;
-		const applied = await this.#sendUpload();
+		const outcome = await this.#sendUpload();
 		await this.#load(this.#dir);
-		if (applied) this.#say(t("Uploaded {name}.", { name }));
+		if (outcome)
+			this.#say(
+				outcome === "applied"
+					? t("Uploaded {name}.", { name })
+					: t("The change is approved and will apply shortly."),
+			);
 	}
 
-	async #sendUpload(): Promise<boolean> {
+	async #sendUpload(): Promise<Outcome> {
 		const target = this.#uploading!;
-		const result = await this.#uploader!.submit(target.path, target.expectedVersion);
+		let result: Awaited<ReturnType<WebFileUpload["submit"]>>;
+		try {
+			result = await this.#uploader!.submit(target.path, target.expectedVersion);
+		} catch (error) {
+			this.#live();
+			const refusal = this.#refusal(error, target.path);
+			if (refusal) this.#uploading = null;
+			throw refusal ?? error;
+		}
 		this.#live();
 		this.#uploading = null;
 		return this.#settle(
 			result.command,
 			t("{name} goes to a protected place. Upload it anyway?", { name: target.name }),
+			target.path,
+			"other",
 		);
 	}
 
 	/** Takes a change to its end. A protected change asks once (or not at all
 	 * when the member just confirmed it) and is withdrawn when declined. */
-	async #settle(command: Settled, question: string | null): Promise<boolean> {
-		if (command.state === "applied") return true;
+	async #settle(command: Settled, question: string | null, path: string, kind: "save" | "other"): Promise<Outcome> {
+		if (command.state === "applied") return "applied";
+		if (command.state === "approved" || command.state === "ready") return "approved";
 		if (command.state !== "review_required" || !("commandId" in command)) {
-			this.#say(
-				command.state === "rejected"
-					? t("The change was not accepted.")
-					: t("The change is waiting to be applied."),
-			);
+			this.#say(t("The change was not accepted."));
 			return false;
 		}
 		const apply =
@@ -1227,14 +1361,82 @@ export class LiveCompanyFileView {
 			this.#say(t("Nothing was changed."));
 			return false;
 		}
-		const result = await this.#client!.review(command, "approve", this.#stop.signal);
+		return this.#approve(command, path, kind);
+	}
+
+	/** Approves one reviewed change. An approval with an unknown outcome is kept
+	 * and retried on the same change, never replaced by a new one. */
+	async #approve(command: CloudMemberCompanyCommand, path: string, kind: "save" | "other"): Promise<Outcome> {
+		this.#approving = { command, path, kind };
+		let result: Settled;
+		try {
+			result = await this.#client!.review(command, "approve", this.#stop.signal);
+		} catch (error) {
+			this.#live();
+			const refusal = this.#refusal(error, path);
+			if (refusal) this.#approving = null;
+			throw refusal ?? error;
+		}
 		this.#live();
-		if (result.state === "applied") return true;
-		this.#say(t("The change is approved and will apply shortly."));
+		this.#approving = null;
+		if (result.state === "applied") return "applied";
+		if (result.state === "approved" || result.state === "ready") return "approved";
+		this.#say(t("The change was not accepted."));
 		return false;
 	}
 
+	async #retryApproval(): Promise<void> {
+		const approving = this.#approving;
+		if (!approving) return;
+		const outcome = await this.#approve(approving.command, approving.path, approving.kind);
+		if (outcome) await this.#finish(approving.path, outcome, approving.kind === "save" ? "save" : "change");
+		else if (this.#opened?.path === approving.path) this.#draw();
+	}
+
+	/** After a change went through: the folder is read again and the member told. */
+	async #finish(
+		path: string,
+		outcome: "applied" | "approved",
+		kind: "save" | "delete" | "folder" | "change",
+	): Promise<void> {
+		const name = baseName(path);
+		if (kind !== "folder") {
+			this.#dirty = false;
+			if (this.#opened?.path === path || kind === "save") this.#close();
+		}
+		await this.#load(this.#dir);
+		if (kind === "save") {
+			const item = this.#items.find((entry) => entry.path === path);
+			if (item) await this.#open(item);
+		}
+		if (kind === "folder")
+			[...this.#list.querySelectorAll<HTMLElement>(".files-row-main")]
+				.find((row) => row.dataset.path === path)
+				?.focus();
+		this.#say(
+			outcome === "approved"
+				? t("The change is approved and will apply shortly.")
+				: kind === "save"
+					? t("Saved {name}.", { name })
+					: kind === "delete"
+						? t("Deleted {name}.", { name })
+						: kind === "folder"
+							? t("Created {name}.", { name })
+							: t("Applied the change to {name}.", { name }),
+		);
+	}
+
 	// ---- dropping files ---------------------------------------------------------
+
+	/** Picked or dropped files upload at once, or are refused aloud while something else runs. */
+	#uploadWhenFree(files: File[]): void {
+		if (!this.#uploader) return;
+		if (this.#busy) {
+			this.#say(t("Wait for the current step to finish, then add the files again."));
+			return;
+		}
+		void this.#run(() => this.#upload(files));
+	}
 
 	#listenForDrops(signal: AbortSignal): void {
 		const carriesFiles = (event: DragEvent) => [...(event.dataTransfer?.types ?? [])].includes("Files");
@@ -1286,7 +1488,7 @@ export class LiveCompanyFileView {
 				this.#dragDepth = 0;
 				this.el.classList.remove("is-dropping");
 				const files = [...(event.dataTransfer?.files ?? [])];
-				if (files.length && this.#uploader) void this.#run(() => this.#upload(files));
+				if (files.length) this.#uploadWhenFree(files);
 			},
 			{ signal },
 		);

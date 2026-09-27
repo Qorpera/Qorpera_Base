@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
 	type CloudMemberCompanyCommand,
 	CloudMemberCompanyFileClient,
+	CloudMemberCompanyRefusal,
 	type CloudMemberCompanyUpload,
 } from "../src/cloud-member-company-editor.ts";
 
@@ -202,6 +203,20 @@ describe("shared member upload client", () => {
 			expect(f.requests).toHaveLength(0);
 		},
 	);
+	it.each([
+		[400, true],
+		[401, true],
+		[403, true],
+		[412, true],
+		[409, false],
+		[503, false],
+	])("marks a %s answer as a definite refusal only when nothing was saved: %s", async (status, refused) => {
+		const f = fixture();
+		f.state.status = status;
+		const error = await f.client.upload(input(), new AbortController().signal).catch((caught: unknown) => caught);
+		expect(error instanceof CloudMemberCompanyRefusal).toBe(refused);
+		if (error instanceof CloudMemberCompanyRefusal) expect(error.status).toBe(status);
+	});
 	it.each([401, 403, 409, 412, 503])("never retries an uncertain or denied %s response", async (status) => {
 		const f = fixture();
 		f.state.status = status;

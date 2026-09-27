@@ -1,6 +1,7 @@
-import type {
-	CloudMemberCompanyFileClient,
-	CloudMemberCompanyUpload,
+import {
+	type CloudMemberCompanyFileClient,
+	CloudMemberCompanyRefusal,
+	type CloudMemberCompanyUpload,
 } from "@qorpera/cloud-client/cloud-member-company-editor";
 import { describe, expect, it, vi } from "vitest";
 import { WebFileUpload } from "../src/files.ts";
@@ -45,6 +46,16 @@ describe("explicit browser file selection", () => {
 		expect(Array.from(calls[1].bytes)).toEqual([0, 255, 128]);
 		expect(upload.uncertain).toBe(false);
 		expect(upload.selected).toBe(false);
+	});
+	it("lets go of an upload the cloud refused, which saved nothing and can never apply", async () => {
+		const { upload, send } = fixture();
+		send.mockRejectedValueOnce(new CloudMemberCompanyRefusal("Company File changed", 412));
+		await upload.select(new File(["bytes"], "notes.txt"));
+		await expect(upload.submit("notes.txt", null)).rejects.toThrow("Company File changed");
+		expect(upload.uncertain).toBe(false);
+		expect(upload.selected).toBe(false);
+		await upload.select(new File(["other"], "other.txt"));
+		expect(upload.selected).toBe(true);
 	});
 	it.each(["../bad", "bad\0.txt", "..", "x".repeat(256)])(
 		"rejects unsafe chooser name %s and clears a previous selection",
