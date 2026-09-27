@@ -300,6 +300,10 @@ export class PaidComputerUsageSampler {
 				stream.renewable = false;
 				stream.consecutiveFailures++;
 				await this.#gap(record, stream, "clock_unconfirmed");
+				// A slow first failure must not consume the next entire 5s cadence
+				// before retrying. The independent 10s host deadline is unchanged.
+				if (stream.lastRunning && stream.consecutiveFailures === 1)
+					stream.nextAt = Math.min(stream.nextAt, performance.now() + 1000);
 				if (stream.lastRunning && stream.consecutiveFailures >= 2) await this.#close(record, stream);
 			}
 			return;

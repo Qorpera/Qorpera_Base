@@ -243,7 +243,7 @@ jobs:
         run: npm ci --ignore-scripts --no-audit --no-fund
 
       - name: Test isolated fixture boundaries
-        run: node --test scripts/acceptance/native-postgres.test.mjs scripts/acceptance/office-rpc-server.test.mjs scripts/acceptance/office-lifecycle-credentials.test.mjs
+        run: node --test scripts/acceptance/native-postgres.test.mjs scripts/acceptance/office-rpc-server.test.mjs scripts/acceptance/office-lifecycle-credentials.test.mjs scripts/acceptance/workload-usage-guard-diagnostics.test.mjs
 
       - name: Install native PostgreSQL and NFS tools
         timeout-minutes: 8

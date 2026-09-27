@@ -600,6 +600,77 @@ describe("durable usage terminal and renewal races", () => {
 	});
 });
 describe("usage admission and bounded uncertainty", () => {
+	it.each(["recovers", "fails again", "stalls"] as const)(
+		"retries a slow transient within the unchanged evidence deadline when the retry %s",
+		async (outcome) => {
+			const f = await fixture();
+			const now = vi.spyOn(performance, "now").mockReturnValue(10000);
+			const original = await f.guard.arm(f.input);
+			await f.guard.start(f.input.permit.permitId, 1);
+			await collect(f);
+			now.mockReturnValue(15000);
+			f.host.uptimeMs = 105000;
+			f.capture.capture.mockImplementationOnce(async () => {
+				// Match the physical office trace: the first scheduled capture
+				// fails 7.33s after the last trustworthy pair, not instantly.
+				now.mockReturnValue(17330);
+				f.host.uptimeMs = 107330;
+				throw new Error("transient clock read");
+			});
+			await collect(f);
+			expect(f.physical.stop).not.toHaveBeenCalled();
+			now.mockReturnValue(18329);
+			f.host.uptimeMs = 108329;
+			await collect(f);
+			expect(f.capture.capture).toHaveBeenCalledTimes(2);
+			const blocked = deferred<Awaited<ReturnType<typeof f.capture.capture>>>();
+			if (outcome === "fails again") f.capture.capture.mockRejectedValueOnce(new Error("clock still unavailable"));
+			if (outcome === "stalls") f.capture.capture.mockImplementationOnce(() => blocked.promise);
+			now.mockReturnValue(18330);
+			f.host.uptimeMs = 108330;
+			f.guard.tickUsage();
+			await vi.waitFor(() => expect(f.capture.capture).toHaveBeenCalledTimes(3));
+			if (outcome === "stalls") {
+				now.mockReturnValue(20001);
+				f.host.uptimeMs = 110001;
+				f.guard.tickUsage();
+				await vi.waitFor(() => expect(f.physical.stop).toHaveBeenCalledOnce());
+				blocked.resolve({
+					host: { ...f.host },
+					guestBootId: randomUUID(),
+					guestUptimeMs: 1,
+					evidenceSha256: "e".repeat(64),
+					observedAt: new Date().toISOString(),
+				});
+			}
+			await f.guard.settleUsage(f.input.permit.permitId);
+			const status = await f.guard.status(f.input.permit.permitId);
+			expect(status.deadlineUptimeMs).toBe(original.deadlineUptimeMs);
+			expect(status.stopAtUptimeMs).toBe(original.stopAtUptimeMs);
+			const page = await collect(f);
+			const states = page.entries.map(
+				(frame) => parsePaidComputerUsageEntry(JSON.parse(frame.entryText)).sample.state,
+			);
+			if (outcome === "recovers") {
+				expect(states).toEqual(["running", "gap", "running"]);
+				expect(f.physical.stop).not.toHaveBeenCalled();
+				now.mockReturnValue(23329);
+				f.host.uptimeMs = 113329;
+				await collect(f);
+				expect(f.capture.capture).toHaveBeenCalledTimes(3);
+				now.mockReturnValue(23330);
+				f.host.uptimeMs = 113330;
+				await collect(f);
+				expect(f.capture.capture).toHaveBeenCalledTimes(4);
+			} else {
+				expect(status.phase).toBe("stopped");
+				expect(page.state).toBe("sealed");
+				expect(states).toEqual(
+					outcome === "fails again" ? ["running", "gap", "gap", "stopped"] : ["running", "gap", "stopped"],
+				);
+			}
+		},
+	);
 	it("revalidates a deleted anchor before dispatch and renewal", async () => {
 		for (const running of [false, true]) {
 			const f = await fixture();

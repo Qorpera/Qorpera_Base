@@ -101,6 +101,7 @@
 
 ### Fixed
 
+- Retry the first transient paid-clock capture failure within one second of recording its gap, while preserving the ten-second evidence deadline, two-failure shutdown and uncharged uncertainty.
 - Drain already captured native, coding and office usage before work admission and preserve typed metering deferrals through Git base, seed and publication checks; exact current-sample coverage and uncertain-push reconciliation remain required.
 - Acquire inventory allocation foreign-key locks before the node lock to prevent first-binding publication from deadlocking with paid admission; retain exact snapshot checks and historical receipt replay.
 - Wait within bounded deadlines for confirmed native/coding metering readiness instead of terminalizing a brief sampling gap. Coding retries retain the original lease limit and a monotonic budget; native deferral preserves the same guarded boot without delivering work.

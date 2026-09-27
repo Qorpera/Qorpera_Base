@@ -12,6 +12,7 @@ import { closeOfficeLifecycleCustody, officeCustodyMachines } from "./office-lif
 import { officeLifecycleDiagnostics, officePaidSqlDiagnostics, officeSqlFailureHistory } from "./office-lifecycle-diagnostics.mjs";
 import { startOfficeRpcServer } from "./office-rpc-server.mjs";
 import { readWorkloadUsage, verifyWorkloadUsage } from "./workload-usage-evidence.mjs";
+import { collectWorkloadGuardDiagnostics, workloadGuardDiagnosticsPlugin } from "./workload-usage-guard-diagnostics.mjs";
 
 // One retained, disposable fixture from empty storage through actual admission
 // and a guard-forced outage. Never seed guest readiness, activation, physical
@@ -37,7 +38,7 @@ const physicalSamples = [];
 const sqlFailures = officeSqlFailureHistory();
 let pg, pgReady, pgClosed = false, rpc, provider, observer, metering, mounted = false, journalMounted = false, exported = false, guardInstalled = false, fixtureCreated = false;
 let machineName, phase = "setup";
-let diagnosticAuthority;
+let diagnosticAuthority, guardInvocation;
 const hash = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const literal = (value) => `'${JSON.stringify(value).replaceAll("'", "''")}'::jsonb`;
 const service = "set request.jwt.claims='{\"role\":\"service_role\"}';";
@@ -234,11 +235,14 @@ try {
 	await until(() => query(`select count(*) from public.qorpera_runtime_node_observations where node_id='${nodeId}' and observation->>'state'='ready';`), (value) => value === "1", 30000, "actual node inventory");
 	evidence.checks.actualNodeInventory = true;
 	await build({ absWorkingDir: repository, entryPoints: ["deploy/runtime-computers/paid-computer-guard.ts"], outfile: `${root}/guard.mjs`, bundle: true, platform: "node", format: "esm", target: "node24", logLevel: "silent",
+		plugins: [workloadGuardDiagnosticsPlugin(repository)],
 		banner: { js: 'import { createRequire } from "node:module"; const require = createRequire(import.meta.url);' } });
 	const guardSource = await readFile(join(repository, "deploy/runtime-computers/qorpera-computer-guard.service.in"), "utf8");
 	const guardUnit = guardSource.replaceAll("@PROVIDER@", "office").replaceAll("@ACCOUNT@", account).replace("/usr/bin/node /opt/qorpera/computer-guard/qorpera-runtime-computer-guard.mjs", `${process.execPath} ${root}/guard.mjs`);
 	await writeFile(`/etc/systemd/system/${unit}`, guardUnit, { flag: "wx", mode: 0o644 }); guardInstalled = true;
 	run("systemctl", ["daemon-reload"]); run("systemctl", ["start", unit]);
+	guardInvocation = run("systemctl", ["show", unit, "--property=InvocationID", "--value"]);
+	assert(/^[0-9a-f]{32}$/.test(guardInvocation), "Guard service invocation unconfirmed");
 	const registryCredential = await protectedFile("registry.key", tokens.provider, true);
 	const executorCredential = await protectedFile("executor.key", executor, true);
 	await protectedFile("service.json", { schema: "qorpera.lxd-office-provider-service/v1", policyPath: `${root}/policy.json`, provenancePath: `${root}/provenance.json`, planPath: `${root}/plan.json`, registryUrl, registryCredential,
@@ -451,6 +455,18 @@ try {
 	// Diagnostics remain root-private on the ephemeral runner and are never an artifact.
 	if (fixtureCreated) await writeFile(`${root}/private-process-errors`, [provider, observer, metering, pg].map((processChild) => processChild?.privateDiagnostics() ?? "").join("\n"), { mode: 0o600 });
 } finally {
+	// Collect only this run's initial/current guard invocations before custody
+	// closure. Failure to collect diagnostics never changes the acceptance result.
+	if (guardInstalled) {
+		try {
+			const current = run("systemctl", ["show", unit, "--property=InvocationID", "--value"]);
+			const invocations = [...new Set([guardInvocation, current].filter(value => /^[0-9a-f]{32}$/.test(value ?? "")))];
+			assert(invocations.length > 0, "Guard diagnostic invocation missing");
+			const text = invocations.map(id => run("journalctl", ["--no-pager", "--output=cat", "--lines=2048", `_SYSTEMD_UNIT=${unit}`, `_SYSTEMD_INVOCATION_ID=${id}`])).join("\n");
+			evidence.guardCaptureDiagnostics = { status: "collected", serviceInvocationScope: "initial-and-current", serviceRestartObserved: invocations.length > 1,
+				...collectWorkloadGuardDiagnostics(text) };
+		} catch { evidence.guardCaptureDiagnostics = { status: "unavailable", code: "GUARD_DIAGNOSTIC_COLLECTION_FAILED" }; }
+	}
 	let cleanupPolicy, cleanupPolicySha256, databaseIdentity;
 	const inspectOwned = (machine) => {
 		const value = JSON.parse(run("lxc", ["query", `/1.0/instances/${machine.name}?project=${machine.project}`]));
