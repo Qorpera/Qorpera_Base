@@ -35,6 +35,7 @@ const children = new Set();
 const physicalSamples = [];
 let pg, pgReady, pgClosed = false, rpc, provider, observer, metering, mounted = false, journalMounted = false, exported = false, guardInstalled = false, fixtureCreated = false;
 let machineName, phase = "setup";
+let diagnosticAuthority;
 const hash = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const literal = (value) => `'${JSON.stringify(value).replaceAll("'", "''")}'::jsonb`;
 const service = "set request.jwt.claims='{\"role\":\"service_role\"}';";
@@ -191,6 +192,7 @@ try {
 		journal: { mountPoint: journal, root: "/", filesystem: "ext4", source: journalSource, path: journal } };
 	await protectedFile("policy.json", policy);
 	const { policySha256 } = JSON.parse(tool("policy", `${root}/policy.json`));
+	diagnosticAuthority = { policy, policySha256 };
 	await protectedFile("provenance.json", await readFile(context.provenancePath));
 	await protectedFile("image-manifest.json", await readFile(`${context.packageRoot}/manifest.json`));
 	const inventoryPolicy = { schema: "qorpera.runtime-node-inventory-policy/v1", nodeId, host: policy.host, operatingCpuMillis: 500, operatingMemoryBytes: 1024 ** 3, infrastructure: [] };
@@ -428,7 +430,7 @@ try {
 	evidence.passed = true;
 } catch (error) {
 	evidence.failurePhase = phase; evidence.error = String(error); process.exitCode = 1;
-	try { evidence.failureState = await officeLifecycleDiagnostics({ journal, machineName, provider }); }
+	try { evidence.failureState = await officeLifecycleDiagnostics({ journal, machineName, provider, ...diagnosticAuthority }); }
 	catch { evidence.failureState = { unavailable: true }; }
 	// Diagnostics remain root-private on the ephemeral runner and are never an artifact.
 	if (fixtureCreated) await writeFile(`${root}/private-process-errors`, [provider, observer, metering, pg].map((processChild) => processChild?.privateDiagnostics() ?? "").join("\n"), { mode: 0o600 });
