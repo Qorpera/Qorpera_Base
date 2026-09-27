@@ -240,21 +240,30 @@ describe("ephemeral cloud runner worker", () => {
 	});
 
 	it("renews the lease and heartbeat serially while a container is running", async () => {
-		const service = new RunnerService();
-		const runner = await activeRunner(service);
-		const executeJob = vi.fn(
-			async () =>
-				new Promise<CloudRunnerExecutionResult>((resolveExecution) => {
-					setTimeout(() => resolveExecution(successfulExecution()), 45);
-				}),
-		);
+		vi.useFakeTimers();
+		try {
+			const service = new RunnerService();
+			const runner = await activeRunner(service);
+			const executeJob = vi.fn(
+				async () =>
+					new Promise<CloudRunnerExecutionResult>((resolveExecution) => {
+						setTimeout(() => resolveExecution(successfulExecution()), 45);
+					}),
+			);
 
-		await worker(runner, backend(), executeJob, { leaseRenewalMs: 10, heartbeatMs: 20 }).runNext(assignment);
+			const running = worker(runner, backend(), executeJob, { leaseRenewalMs: 10, heartbeatMs: 20 }).runNext(
+				assignment,
+			);
+			await vi.advanceTimersByTimeAsync(45);
+			await running;
 
-		const actions = service.requests.map((request) => request.action);
-		expect(actions.filter((action) => action === "renew").length).toBeGreaterThanOrEqual(2);
-		expect(actions).toContain("heartbeat");
-		expect(actions.at(-1)).toBe("complete");
+			const actions = service.requests.map((request) => request.action);
+			expect(actions.filter((action) => action === "renew").length).toBeGreaterThanOrEqual(2);
+			expect(actions).toContain("heartbeat");
+			expect(actions.at(-1)).toBe("complete");
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	it("reports deterministic job-contract failures without retrying them", async () => {

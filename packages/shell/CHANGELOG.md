@@ -42,6 +42,7 @@
 
 ### Fixed
 
+- Drained Company File projection transactions and synchronization health writes before releasing the company runtime lock, preventing shutdown from leaving writes or restarted watchers behind.
 - Updated the desktop updater's YAML parser to reject repeated empty merges that bypassed its CPU-work limit (GHSA-2883-xcg3-v3hh).
 - Closed missing-member credential mutation and stale capture/grant revival, including concurrent capture admission versus membership revocation. The broker retains exactly its three custody functions after organization migrations.
 - Allowed private agent conversations to read explicitly authorized shared company state while keeping drafts private and requiring the originating member's consent for shared publication. Member removal closes execution access without deleting retained private history.

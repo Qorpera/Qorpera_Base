@@ -793,6 +793,7 @@ it("never refuses a run's operations by count; a forgotten one replays through i
 	// oldest are forgotten locally and the kernel receipt stays the authority.
 	const f = await fixture();
 	const receipts = new Map<string, Receipt>();
+	const receiptsById = new Map<string, Receipt>();
 	const control: CloudNativeToolOperationControlPlane = {
 		beginToolOperation: async (binding, input) => {
 			let receipt = receipts.get(input.logicalOperationKey);
@@ -800,6 +801,7 @@ it("never refuses a run's operations by count; a forgotten one replays through i
 			if (!receipt) {
 				receipt = { input, state: "executing", result: null, outputSnapshotId: null, proposalId: null };
 				receipts.set(input.logicalOperationKey, receipt);
+				receiptsById.set(input.receiptId, receipt);
 			}
 			return {
 				run_id: binding.runId,
@@ -811,7 +813,7 @@ it("never refuses a run's operations by count; a forgotten one replays through i
 			};
 		},
 		completeToolOperation: async (binding, input) => {
-			const receipt = [...receipts.values()].at(-1)!;
+			const receipt = receiptsById.get(input.receiptId)!;
 			expect(receipt.input.receiptId).toBe(input.receiptId);
 			receipt.state = "completed";
 			receipt.result = input.result;

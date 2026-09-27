@@ -23,6 +23,149 @@ afterEach(async () => {
 });
 
 describe("cloud Company File projection", () => {
+	it("drains an admitted refresh before lock reuse and rejects queued work without restarting its watcher", async () => {
+		const parent = await temporaryDirectory();
+		const root = join(parent, "company");
+		const projectionRoot = join(parent, "projection");
+		const userData = await temporaryDirectory();
+		scaffoldCompany(root);
+		await writeFile(join(root, "company.md"), "base\n");
+		const runtimeLock = claimCompanyRuntimeLock(root);
+		let runtimeLockReleased = false;
+		let resolveReached!: () => void;
+		const reached = {
+			promise: new Promise<void>((resolve) => {
+				resolveReached = resolve;
+			}),
+			resolve: () => resolveReached(),
+		};
+		let resolveGate!: () => void;
+		const gate = {
+			promise: new Promise<void>((resolve) => {
+				resolveGate = resolve;
+			}),
+			resolve: () => resolveGate(),
+		};
+		let block = false;
+		const onChanged = vi.fn(async () => undefined);
+		const projection = new CloudCompanyProjection({
+			companyRoot: root,
+			projectionRoot,
+			userData,
+			profileId: "11111111-1111-4111-8111-111111111111",
+			canWrite: () => true,
+			runtimeLock,
+			onChanged,
+			beforeRefreshCommit: async () => {
+				if (block) {
+					reached.resolve();
+					await gate.promise;
+				}
+			},
+		});
+		try {
+			await projection.refresh();
+			await writeFile(join(root, "company.md"), "new canonical\n");
+			block = true;
+			const refreshing = projection.refresh();
+			await reached.promise;
+			const queued = expect(projection.importChanges()).rejects.toThrow("projection is closed");
+			let closed = false;
+			const closing = projection.close();
+			void closing.then(() => {
+				closed = true;
+			});
+			expect(projection.close()).toBe(closing);
+			await Promise.resolve();
+			expect(closed).toBe(false);
+			gate.resolve();
+			await refreshing;
+			await queued;
+			await closing;
+			await expect(readFile(join(projectionRoot, "company.md"), "utf8")).resolves.toBe("new canonical\n");
+			releaseCompanyRuntimeLock(runtimeLock);
+			runtimeLockReleased = true;
+			const successorLock = claimCompanyRuntimeLock(root);
+			try {
+				await rm(userData, { recursive: true });
+				await writeFile(join(projectionRoot, "company.md"), "edit after close\n");
+				await expect(projection.importChanges()).rejects.toThrow("projection is closed");
+				await expect(projection.refresh()).rejects.toThrow("projection is closed");
+				await new Promise((resolve) => setTimeout(resolve, 600));
+				expect(onChanged).not.toHaveBeenCalled();
+				expect(projection.hasPendingChanges()).toBe(false);
+				expect(existsSync(userData)).toBe(false);
+				await expect(readFile(join(root, "company.md"), "utf8")).resolves.toBe("new canonical\n");
+			} finally {
+				releaseCompanyRuntimeLock(successorLock);
+			}
+		} finally {
+			gate.resolve();
+			await projection.close();
+			if (!runtimeLockReleased) releaseCompanyRuntimeLock(runtimeLock);
+		}
+	});
+
+	it("waits for an in-flight sync callback and its health write without allowing a late import", async () => {
+		const parent = await temporaryDirectory();
+		const root = join(parent, "company");
+		const projectionRoot = join(parent, "projection");
+		const userData = await temporaryDirectory();
+		scaffoldCompany(root);
+		await writeFile(join(root, "company.md"), "base\n");
+		const runtimeLock = claimCompanyRuntimeLock(root);
+		let resolveReached!: () => void;
+		const reached = {
+			promise: new Promise<void>((resolve) => {
+				resolveReached = resolve;
+			}),
+			resolve: () => resolveReached(),
+		};
+		let resolveGate!: () => void;
+		const gate = {
+			promise: new Promise<void>((resolve) => {
+				resolveGate = resolve;
+			}),
+			resolve: () => resolveGate(),
+		};
+		const projection = new CloudCompanyProjection({
+			companyRoot: root,
+			projectionRoot,
+			userData,
+			profileId: "11111111-1111-4111-8111-111111111111",
+			canWrite: () => true,
+			runtimeLock,
+			onChanged: async () => {
+				reached.resolve();
+				await gate.promise;
+				await projection.importChanges();
+			},
+		});
+		try {
+			await projection.refresh();
+			await writeFile(join(projectionRoot, "company.md"), "pending edit\n");
+			await reached.promise;
+			let closed = false;
+			const closing = projection.close();
+			void closing.then(() => {
+				closed = true;
+			});
+			await Promise.resolve();
+			expect(closed).toBe(false);
+			gate.resolve();
+			await closing;
+			expect(projection.health().lastError).toContain("projection is closed");
+			await expect(readFile(join(root, "company.md"), "utf8")).resolves.toBe("base\n");
+			await rm(userData, { recursive: true });
+			await new Promise((resolve) => setTimeout(resolve, 600));
+			expect(existsSync(userData)).toBe(false);
+		} finally {
+			gate.resolve();
+			await projection.close();
+			releaseCompanyRuntimeLock(runtimeLock);
+		}
+	});
+
 	it("exposes and imports only the logical Company File surface", async () => {
 		const parent = await temporaryDirectory();
 		const root = join(parent, "company");
@@ -58,7 +201,7 @@ describe("cloud Company File projection", () => {
 			await expect(readFile(join(root, "company.md"), "utf-8")).resolves.toBe("edited\n");
 			await expect(readFile(join(root, "new-file.md"), "utf-8")).resolves.toBe("new\n");
 		} finally {
-			projection.close();
+			await projection.close();
 			releaseCompanyRuntimeLock(runtimeLock);
 		}
 	});
@@ -90,7 +233,7 @@ describe("cloud Company File projection", () => {
 			await expect(readFile(join(root, "company.md"), "utf-8")).resolves.toBe("canonical\n");
 			await expect(projection.importChanges()).rejects.toThrow("read-only");
 		} finally {
-			projection.close();
+			await projection.close();
 			releaseCompanyRuntimeLock(runtimeLock);
 		}
 	});
@@ -121,7 +264,7 @@ describe("cloud Company File projection", () => {
 			await projection.importChanges();
 			await expect(readFile(join(root, "company.md"), "utf-8")).resolves.toBe("pending native edit\n");
 		} finally {
-			projection.close();
+			await projection.close();
 			releaseCompanyRuntimeLock(runtimeLock);
 		}
 	});
@@ -147,7 +290,7 @@ describe("cloud Company File projection", () => {
 		try {
 			await first.refresh();
 			await writeFile(join(projectionRoot, "company.md"), "survives restart\n", "utf-8");
-			first.close();
+			await first.close();
 			const restarted = new CloudCompanyProjection(options);
 			try {
 				await restarted.refresh();
@@ -163,10 +306,10 @@ describe("cloud Company File projection", () => {
 				await restarted.importChanges();
 				await expect(readFile(join(root, "company.md"), "utf-8")).resolves.toBe("survives restart\n");
 			} finally {
-				restarted.close();
+				await restarted.close();
 			}
 		} finally {
-			first.close();
+			await first.close();
 			releaseCompanyRuntimeLock(runtimeLock);
 		}
 	});
@@ -192,8 +335,7 @@ describe("cloud Company File projection", () => {
 		});
 		try {
 			await first.refresh();
-			first.close();
-			await new Promise((resolve) => setTimeout(resolve, 250));
+			await first.close();
 			await writeFile(join(legacyRoot, "company.md"), "pending edit\n", "utf-8");
 
 			const migrated = new CloudCompanyProjection({
@@ -216,10 +358,10 @@ describe("cloud Company File projection", () => {
 				await migrated.importChanges();
 				await expect(readFile(join(root, "company.md"), "utf-8")).resolves.toBe("pending edit\n");
 			} finally {
-				migrated.close();
+				await migrated.close();
 			}
 		} finally {
-			first.close();
+			await first.close();
 			releaseCompanyRuntimeLock(runtimeLock);
 		}
 	});
@@ -249,7 +391,7 @@ describe("cloud Company File projection", () => {
 			await expect(readFile(join(root, "a.md"), "utf-8")).resolves.toBe("explorer a\n");
 			await expect(readFile(join(root, "b.md"), "utf-8")).resolves.toBe("new agent b\n");
 		} finally {
-			projection.close();
+			await projection.close();
 			releaseCompanyRuntimeLock(runtimeLock);
 		}
 	});
@@ -296,7 +438,7 @@ describe("cloud Company File projection", () => {
 			await projection.importChanges();
 			await expect(readFile(join(root, "late.md"), "utf-8")).resolves.toBe("second edit\n");
 		} finally {
-			projection.close();
+			await projection.close();
 			releaseCompanyRuntimeLock(runtimeLock);
 		}
 	});
@@ -336,7 +478,7 @@ describe("cloud Company File projection", () => {
 			await expect(readFile(join(root, "a.md"), "utf-8")).resolves.toBe("edited a\n");
 			await expect(readFile(join(root, "b.md"), "utf-8")).resolves.toBe("edited b\n");
 		} finally {
-			projection.close();
+			await projection.close();
 			releaseCompanyRuntimeLock(runtimeLock);
 		}
 	});
@@ -366,7 +508,7 @@ describe("cloud Company File projection", () => {
 			await expect(readFile(join(projectionRoot, "company.md"), "utf-8")).resolves.toBe("explorer\n");
 			await expect(readFile(join(root, "company.md"), "utf-8")).resolves.toBe("agent\n");
 		} finally {
-			projection.close();
+			await projection.close();
 			releaseCompanyRuntimeLock(runtimeLock);
 		}
 	});
@@ -402,7 +544,7 @@ describe("cloud Company File projection", () => {
 			await projection.importChanges();
 			await expect(readFile(join(root, "records", "new.md"), "utf-8")).resolves.toBe("now a folder\n");
 		} finally {
-			projection.close();
+			await projection.close();
 			releaseCompanyRuntimeLock(runtimeLock);
 		}
 	});
@@ -454,7 +596,7 @@ describe("cloud Company File projection", () => {
 			await expect(readFile(join(projectionRoot, "second.md"), "utf-8")).resolves.toBe("new file\n");
 		} finally {
 			releaseRefresh?.();
-			projection.close();
+			await projection.close();
 			releaseCompanyRuntimeLock(runtimeLock);
 		}
 	});
@@ -506,7 +648,7 @@ describe("cloud Company File projection", () => {
 			await expect(readFile(join(root, "remote.md"), "utf-8")).resolves.toBe("remote\n");
 		} finally {
 			releaseRefresh?.();
-			projection.close();
+			await projection.close();
 			releaseCompanyRuntimeLock(runtimeLock);
 		}
 	});
@@ -543,7 +685,7 @@ describe("cloud Company File projection", () => {
 			await projection.refresh();
 			await expect(readFile(join(projectionRoot, "company.md"), "utf-8")).resolves.toBe("new cloud bytes\n");
 		} finally {
-			projection.close();
+			await projection.close();
 			releaseCompanyRuntimeLock(runtimeLock);
 		}
 	});

@@ -18,6 +18,11 @@ on:
         type: boolean
         required: false
         default: false
+      regression_only:
+        description: Run only the full isolated Linux regression suite
+        type: boolean
+        required: false
+        default: false
   push:
     branches: ['release/runtime-*']
   pull_request:
@@ -110,7 +115,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: step2-lxd-${{ github.ref }}-${{ inputs.office_physical_acceptance && (inputs.office_lifecycle_only && 'office-lifecycle' || 'office') || inputs.real_lxd_acceptance && 'physical' || 'contracts' }}
+  group: step2-lxd-${{ github.ref }}-${{ inputs.office_physical_acceptance && (inputs.regression_only && 'office-regression' || inputs.office_lifecycle_only && 'office-lifecycle' || 'office') || inputs.real_lxd_acceptance && 'physical' || 'contracts' }}
   cancel-in-progress: true
 
 jobs:
@@ -119,6 +124,7 @@ jobs:
     uses: ./.github/workflows/office-physical-acceptance.yml
     with:
       office_lifecycle_only: ${{ inputs.office_lifecycle_only }}
+      regression_only: ${{ inputs.regression_only }}
 
   contracts:
     name: Provider, guest, and package contracts

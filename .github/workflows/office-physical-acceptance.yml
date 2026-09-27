@@ -8,9 +8,18 @@ on:
         type: boolean
         required: false
         default: false
+      regression_only:
+        description: Run only the full isolated Linux regression suite
+        type: boolean
+        required: false
+        default: false
   workflow_call:
     inputs:
       office_lifecycle_only:
+        type: boolean
+        required: false
+        default: false
+      regression_only:
         type: boolean
         required: false
         default: false
@@ -24,12 +33,12 @@ env:
   QORPERA_ENFORCE_RUNTIME_BUNDLE: '0'
 
 concurrency:
-  group: office-physical-acceptance-${{ github.ref }}-${{ inputs.office_lifecycle_only && 'lifecycle' || 'all' }}
+  group: office-physical-acceptance-${{ github.ref }}-${{ inputs.regression_only && 'regression' || inputs.office_lifecycle_only && 'lifecycle' || 'all' }}
   cancel-in-progress: false
 
 jobs:
   regression:
-    if: ${{ !inputs.office_lifecycle_only }}
+    if: ${{ inputs.regression_only || !inputs.office_lifecycle_only }}
     name: Full isolated Linux regression suite
     runs-on: ubuntu-24.04
     # The complete workspace includes durable journal and stop/recovery tests;
@@ -79,7 +88,7 @@ jobs:
             sg qorpera-acceptance-test -c 'VITEST_MAX_WORKERS=2 ./test.sh'
           fi
   guard-storage:
-    if: ${{ !inputs.office_lifecycle_only }}
+    if: ${{ !inputs.office_lifecycle_only && !inputs.regression_only }}
     name: Physical guard disk exhaustion and archive recovery
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -139,7 +148,7 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
   founding:
-    if: ${{ !inputs.office_lifecycle_only }}
+    if: ${{ !inputs.office_lifecycle_only && !inputs.regression_only }}
     name: Two founders through real web client and Supabase Auth
     runs-on: ubuntu-24.04
     timeout-minutes: 25
@@ -185,6 +194,7 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
   prerequisites:
+    if: ${{ !inputs.regression_only }}
     name: Paid office lifecycle on native PostgreSQL and LXD
     runs-on: ubuntu-24.04
     timeout-minutes: 90
@@ -322,7 +332,7 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
   workloads:
-    if: ${{ !inputs.office_lifecycle_only }}
+    if: ${{ !inputs.office_lifecycle_only && !inputs.regression_only }}
     name: Small-host physical workloads, pools and sustained usage
     runs-on: ubuntu-24.04
     timeout-minutes: 150

@@ -137,6 +137,42 @@ describe("durable cloud sync loop", () => {
 		finishes[1]?.();
 		await vi.waitFor(() => expect(loop.health().phase).toBe("healthy"));
 	});
+
+	it("drains the durable write on close and never admits a queued or subsequent attempt", async () => {
+		root = mkdtempSync(join(tmpdir(), "qorpera-cloud-loop-root-"));
+		userData = mkdtempSync(join(tmpdir(), "qorpera-cloud-loop-state-"));
+		let resolveGate!: () => void;
+		const gate = {
+			promise: new Promise<void>((resolve) => {
+				resolveGate = resolve;
+			}),
+			resolve: () => resolveGate(),
+		};
+		const sync = vi.fn(() => gate.promise);
+		const loop = new DurableCloudSyncLoop({ root, userData, profileId, channel: "trail", sync });
+		const attempt = loop.syncNow();
+		loop.trigger();
+		let closed = false;
+		const closing = loop.close();
+		void closing.then(() => {
+			closed = true;
+		});
+		expect(loop.close()).toBe(closing);
+		await Promise.resolve();
+		expect(closed).toBe(false);
+		const healthPath = cloudSyncHealthPath(userData, root, profileId, "trail");
+		expect(existsSync(healthPath)).toBe(false);
+		gate.resolve();
+		await attempt;
+		await closing;
+		expect(existsSync(healthPath)).toBe(true);
+		rmSync(userData, { recursive: true });
+		loop.start();
+		await loop.trigger();
+		await loop.syncNow();
+		expect(sync).toHaveBeenCalledOnce();
+		expect(existsSync(userData)).toBe(false);
+	});
 });
 
 describe("cloud sync health outside a loop", () => {

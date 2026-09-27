@@ -3525,7 +3525,7 @@ async function closeCompany(slot: Slot): Promise<void> {
 			runtime.cloudStaffSyncLoop?.stop();
 			runtime.cloudTrailSyncLoop?.stop();
 			runtime.cloudCompanyPublication?.stop();
-			runtime.cloudCompanyProjection?.close();
+			await runtime.cloudCompanyProjection?.close();
 			await runtime.cloudRealtimeSync?.stop();
 			await runtime.cloudPresence?.stop();
 			runtime.inventoryWatcher?.close();

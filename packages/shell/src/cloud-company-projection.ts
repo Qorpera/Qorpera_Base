@@ -426,6 +426,8 @@ export class CloudCompanyProjection {
 	#dirty = true;
 	#watchGeneration = 0;
 	#operationTail: Promise<void> = Promise.resolve();
+	#closed = false;
+	#closing?: Promise<void>;
 
 	constructor(options: {
 		companyRoot: string;
@@ -479,11 +481,12 @@ export class CloudCompanyProjection {
 			steadyDelayMs: 5 * 60_000,
 			onHealth: options.onHealth,
 			sync: async () => {
+				if (this.#closed) return;
 				await this.#exclusive(async () => {
 					await this.#recover();
 					await this.#recheckDirty();
 				});
-				if (!this.hasPendingChanges()) return;
+				if (this.#closed || !this.hasPendingChanges()) return;
 				if (!this.#canWrite()) {
 					await this.#discardChanges();
 					return;
@@ -509,6 +512,7 @@ export class CloudCompanyProjection {
 	}
 
 	async #exclusive<T>(operation: () => Promise<T>): Promise<T> {
+		if (this.#closed) throw new Error("Company File projection is closed");
 		let release: (() => void) | undefined;
 		const previous = this.#operationTail;
 		this.#operationTail = new Promise<void>((resolvePromise) => {
@@ -516,6 +520,7 @@ export class CloudCompanyProjection {
 		});
 		await previous;
 		try {
+			if (this.#closed) throw new Error("Company File projection is closed");
 			return await operation();
 		} finally {
 			release?.();
@@ -523,6 +528,7 @@ export class CloudCompanyProjection {
 	}
 
 	#scheduleSync(): void {
+		if (this.#closed) return;
 		if (this.#debounce) clearTimeout(this.#debounce);
 		this.#debounce = setTimeout(() => {
 			this.#debounce = undefined;
@@ -532,7 +538,9 @@ export class CloudCompanyProjection {
 	}
 
 	#ensureWatcher(): void {
+		if (this.#closed) return;
 		this.#watcher ??= watch(this.#projectionRoot, { recursive: true }, () => {
+			if (this.#closed) return;
 			this.#watchGeneration += 1;
 			this.#dirty = true;
 			this.#scheduleSync();
@@ -926,11 +934,22 @@ export class CloudCompanyProjection {
 		});
 	}
 
-	close(): void {
+	close(): Promise<void> {
+		if (this.#closing) return this.#closing;
+		this.#closed = true;
 		if (this.#debounce) clearTimeout(this.#debounce);
 		this.#debounce = undefined;
-		this.#syncLoop.stop();
 		this.#closeWatcher();
+		this.#closing = (async () => {
+			try {
+				await this.#syncLoop.close();
+			} finally {
+				// A health-write failure must not let the owner release the runtime lock
+				// while an already-admitted projection transaction is still finishing.
+				await this.#operationTail;
+			}
+		})();
+		return this.#closing;
 	}
 }
 

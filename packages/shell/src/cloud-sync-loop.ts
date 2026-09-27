@@ -178,6 +178,7 @@ export class DurableCloudSyncLoop {
 	#timer?: ReturnType<typeof setTimeout>;
 	#started = false;
 	#triggerPending = false;
+	#closing?: Promise<void>;
 
 	constructor(options: DurableCloudSyncLoopOptions) {
 		this.#options = options;
@@ -193,7 +194,7 @@ export class DurableCloudSyncLoop {
 	}
 
 	start(): void {
-		if (this.#started) return;
+		if (this.#closing || this.#started) return;
 		this.#started = true;
 		this.#schedule();
 	}
@@ -205,7 +206,18 @@ export class DurableCloudSyncLoop {
 		this.#timer = undefined;
 	}
 
+	/** Permanently stop admission and drain the current attempt, including its durable health write. */
+	close(): Promise<void> {
+		if (this.#closing) return this.#closing;
+		this.stop();
+		this.#closing = Promise.resolve().then(async () => {
+			await this.#inFlight;
+		});
+		return this.#closing;
+	}
+
 	trigger(): Promise<CloudSyncHealth> {
+		if (this.#closing) return Promise.resolve(this.health());
 		if (this.#timer) this.#clearTimer(this.#timer);
 		this.#timer = undefined;
 		if (this.#inFlight) {
@@ -216,6 +228,7 @@ export class DurableCloudSyncLoop {
 	}
 
 	syncNow(): Promise<CloudSyncHealth> {
+		if (this.#closing) return Promise.resolve(this.health());
 		if (this.#inFlight) return this.#inFlight;
 		const operation = this.#run().finally(() => {
 			if (this.#inFlight === operation) this.#inFlight = undefined;

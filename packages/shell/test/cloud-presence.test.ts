@@ -207,7 +207,8 @@ describe("cloud presence", () => {
 				teammateKeys.privateKey,
 			).toString("base64"),
 		});
-		await vi.waitFor(() => expect(activities).toEqual(["legal-agent:working", "legal-agent:writing"]));
+		// Different members' signatures verify independently; their completion order is not a transport guarantee.
+		await vi.waitFor(() => expect([...activities].sort()).toEqual(["legal-agent:working", "legal-agent:writing"]));
 
 		await handle.stop();
 		expect(unregisterPresenceDevice).toHaveBeenCalledOnce();
