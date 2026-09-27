@@ -9,7 +9,11 @@ import {
 	CloudActionReviewChannel,
 	CloudActionReviewGate,
 } from "@qorpera/runtime/cloud-action-review";
-import { CLOUD_CODEX_BOUNDARY_CONFIG, runCloudCodexToolSession } from "@qorpera/runtime/cloud-codex-tool-session";
+import {
+	CLOUD_CODEX_BOUNDARY_CONFIG,
+	prefetchCloudCodexArtifact,
+	runCloudCodexToolSession,
+} from "@qorpera/runtime/cloud-codex-tool-session";
 import { CloudNativeCaptureImages } from "@qorpera/runtime/cloud-native-capture-images";
 import { nativeRuntimeFailureMetadata } from "@qorpera/runtime/cloud-native-failure";
 import * as nativeIsolation from "@qorpera/runtime/cloud-native-isolation";
@@ -224,6 +228,34 @@ it("rejects the older result-only patch before model admission", async () => {
 
 it("rejects an artifact digest mismatch before spawning", async () => {
 	await expect(run("response-first", { binarySha256: "0".repeat(64) }).result).rejects.toThrow("artifact mismatch");
+});
+
+it("runs with a digest hashed ahead of the session", async () => {
+	await prefetchCloudCodexArtifact(process.execPath);
+	await expect(run("response-first").result).resolves.toMatchObject({ providerSessionId: "thread_fixture" });
+});
+
+it("hashes again when the artifact changed after its early hash", async () => {
+	const artifact = join(root, "codex");
+	await writeFile(artifact, "one", { mode: 0o755 });
+	await prefetchCloudCodexArtifact(artifact);
+	await writeFile(artifact, "changed");
+	const pinned = createHash("sha256").update("one").digest("hex");
+	const session = runCloudCodexToolSession({
+		command: [artifact],
+		binarySha256: pinned,
+		boundary: new CloudNativeToolBoundary({
+			companyId: randomUUID(),
+			runId: randomUUID(),
+			signal: new AbortController().signal,
+			assertActive: async () => undefined,
+			tools: [],
+		}),
+		model: "offline-probe",
+		prompt: "Private test input",
+		signal: new AbortController().signal,
+	});
+	await expect(session).rejects.toThrow("artifact mismatch");
 });
 
 it("nests private runtime scratch below its temporary allocation and cleans it after failed containment", async () => {

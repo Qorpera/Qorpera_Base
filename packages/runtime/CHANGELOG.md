@@ -81,6 +81,10 @@
 
 - Added protected retained-workbench adoption and configuration for a distinct resumed boot, binding the original adoption, shutdown archive and pre-boot intent. Root checks retain directory descriptors and measure the current mount without comparing mutable files to their original inventory. Current-boot receipts and credentials are published under the kernel flock; acknowledged missing files are never repaired. The normal Linux boundary accepts the new receipt while preserving current SQL checks. Provider lifecycle composition and ordinary-service admission remain separate work.
 
+### Changed
+
+- A company run asks for its context and its wake together, reads its memory profile and both log months together, and runs the two reads of every authority check (run admission and the context read set) together. Every check still runs, and a failure still reports its own stage. The provider service hashes the Codex binary once when it starts, before its run arrives; the session still compares the digest with its pin before it starts Codex, and hashes again if the file changed since (device, inode, size, mtime and ctime in nanoseconds). Reads sent together that lock the same job row share a 10 s budget instead of 5 s each.
+
 ### Fixed
 
 - The company browser's /tmp is now 1 GiB instead of the 64 MiB other office namespaces keep. With `--disable-dev-shm-usage` all of Chromium's shared memory lives there, so renderers failed allocations and crashed on ordinary sites ("Aw, Snap!", reported as SIGSEGV because the crash handler's `alarm()` tripped seccomp).

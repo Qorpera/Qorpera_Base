@@ -291,22 +291,25 @@ export async function composeCloudAgentMemory(
 		profile: { path: paths.profile, version: null, facts: [] },
 		recentLog: { files: [], facts: [], moreFacts: 0 },
 	};
-	// The whole profile or none: an unreadable one degrades the block to unavailable.
-	const profile = await readFile(gateway, paths.profile, signal);
-	if (profile.state === "unreadable")
-		throw new CloudRuntimeDiagnosticError("invalid_response", "Memory profile is not notebook text");
-	block.profile.version = profile.state === "file" ? profile.version : null;
-	block.profile.facts = facts(profile, "profile");
 	const months: string[] = [];
 	for (let back = 0; back < COMPOSED_LOG_MONTHS; back++) {
 		months.push(
 			cloudMemoryLogPath(staffAgentId, new Date(Date.UTC(at.getUTCFullYear(), at.getUTCMonth() - back, 1))),
 		);
 	}
+	// The files are independent: read them together, compose them in the same order.
+	const reads = [paths.profile, ...months].map((path) => readFile(gateway, path, signal));
+	for (const read of reads) read.catch(() => undefined);
+	// The whole profile or none: an unreadable one degrades the block to unavailable.
+	const profile = await reads[0];
+	if (profile.state === "unreadable")
+		throw new CloudRuntimeDiagnosticError("invalid_response", "Memory profile is not notebook text");
+	block.profile.version = profile.state === "file" ? profile.version : null;
+	block.profile.facts = facts(profile, "profile");
 	// Newest last in a file; compose the newest first, current month first.
 	const newest: CloudMemoryFact[] = [];
-	for (const path of months) {
-		const file = await readFile(gateway, path, signal);
+	for (const [index, path] of months.entries()) {
+		const file = await reads[index + 1];
 		if (file.state === "unreadable") block.recentLog.unreadable = [...(block.recentLog.unreadable ?? []), path];
 		if (file.state !== "file") continue;
 		block.recentLog.files.push({ path, version: file.version! });
