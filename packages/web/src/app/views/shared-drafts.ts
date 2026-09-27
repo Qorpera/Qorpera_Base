@@ -7,8 +7,9 @@ import { DRAFT_TYPING_MS, type DraftStatus, type DraftSync, type RoomDraftRoom }
 import { moveIndex, type TextEdit } from "../text-merge.ts";
 
 /* Other members' unsent messages, right above the composer. Each shows as a
- * notch with the member's picture, typing while they type; pointing at it shows
- * the message as it is written, and opening it lets this member write in it.
+ * notch with the member's picture, typing while they type; pointing at it opens
+ * the notch up to show the message as it is written, and clicking it lets this
+ * member write in it.
  * Only its owner can send it. The member's own composer says who is writing in
  * it with them. */
 
@@ -178,9 +179,25 @@ export class SharedDrafts {
 		const name = this.#company.memberName(draft.ownerUserId);
 		let notch = this.#notches.get(draft.ownerUserId);
 		if (!notch) {
-			const nameEl = h("span", { class: "draft-peek-name" });
+			const nameEl = h("span");
 			const text = h("span", { class: "draft-peek-text" });
-			const peek = h("span", { class: "draft-peek", "aria-hidden": "true" }, nameEl, text);
+			// The notch opened up: it lies over the notch, picture on the picture, and grows from there.
+			const peek = h(
+				"span",
+				{ class: "draft-peek", "aria-hidden": "true" },
+				personAvatar(name, draft.ownerUserId),
+				h(
+					"span",
+					{ class: "draft-peek-body" },
+					h(
+						"span",
+						{ class: "draft-peek-name" },
+						nameEl,
+						h("span", { class: "draft-dots" }, h("i"), h("i"), h("i")),
+					),
+					text,
+				),
+			);
 			const el = h(
 				"button",
 				{
