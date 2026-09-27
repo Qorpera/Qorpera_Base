@@ -6,20 +6,34 @@ import { fileURLToPath } from "node:url";
 import { buildContainerName, expandTestFixture, POSTGRES_IMAGE, sortMigrationNames } from "./test-hosted-db.mjs";
 
 /**
- * Concurrent load on one company's profile fence and Company File row: agent tool calls, Storage uploads, NAS
- * replica copies, a node observer and a coding session's turns, all at once, in a disposable PostgreSQL built
- * like `npm run test:hosted-db`. Prints each kind's calls, errors and latency, and the errors by kind.
+ * Concurrent load on one company's profile fence and Company File row: an agent's tool calls, Storage uploads,
+ * the object gateway's NAS replica copies, a node observer and a coding session's turns, all at once, in a
+ * disposable PostgreSQL built like `npm run test:hosted-db`. Prints each kind's calls, errors and latency, and
+ * the errors by kind.
  *
  *   node scripts/load-company-file-fence.mjs [--skip <migration file>]... [--check]
  *
  * --skip leaves a migration out, to compare with the text before it. --check exits 1 when any call deadlocked
- * (40P01) or an agent tool call took longer than the native result boundary's 4 s budget.
+ * (40P01), an agent tool call took longer than the native result boundary's 4 s budget, or any call failed
+ * other than a coding turn's begin that found the company's profile row taken on every retry (reported only:
+ * the executor begins again until its lease ends).
  */
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const args = process.argv.slice(2);
-const skipped = new Set(args.flatMap((arg, index) => (args[index - 1] === "--skip" ? [arg] : [])));
-const check = args.includes("--check");
+const skipped = new Set();
+let check = false;
+for (let index = 0; index < args.length; index += 1) {
+	if (args[index] === "--check") check = true;
+	else if (args[index] === "--skip" && args[index + 1]) skipped.add(args[++index]);
+	else throw new Error(`Unknown argument ${args[index]}; use --skip <migration file> and --check`);
+}
 const containerName = buildContainerName(process.pid, randomBytes(4).toString("hex"));
+for (const signal of ["SIGINT", "SIGTERM"]) {
+	process.on(signal, () => {
+		spawnSync("docker", ["rm", "--force", containerName]);
+		process.exit(130);
+	});
+}
 const database = "qorpera_test";
 
 function run(command, commandArgs, input) {
@@ -96,8 +110,7 @@ try {
 
 	const started = Date.now();
 	await Promise.all([
-		call("call loadtest.agent(150)"),
-		call("call loadtest.agent(150)"),
+		call("call loadtest.agent(300)"),
 		...[1, 2, 3, 4].map((worker) => call(`call loadtest.storage(${worker}, 120)`)),
 		call("call loadtest.replica(60)"),
 		call("call loadtest.observer(250)"),
@@ -117,13 +130,18 @@ try {
 			select '  ' || kind || ': ' || count(*) || ' x ' || error from loadtest.latency where error is not null
 			group by kind, error order by count(*) desc;`),
 	);
-	const [deadlocks, slowAgents] = psql(`select count(*) filter (where error like '40P01%' or error like '% 40P01 %'),
-		count(*) filter (where kind = 'agent' and ms > 4000) from loadtest.latency`)
-		.trim()
-		.split("|")
-		.map(Number);
-	if (check && (deadlocks > 0 || slowAgents > 0)) {
-		process.stdout.write(`Check failed: ${deadlocks} deadlocks, ${slowAgents} agent calls over 4 s\n`);
+	const [deadlocks, slowAgents, otherErrors] =
+		psql(`select count(*) filter (where error like '40P01%' or error like '% 40P01 %'),
+		count(*) filter (where kind = 'agent' and ms > 4000),
+		count(*) filter (where error is not null and error not like '40P01%' and error not like '% 40P01 %'
+			and error not like 'begin 55P03 % "qorpera_profiles"') from loadtest.latency`)
+			.trim()
+			.split("|")
+			.map(Number);
+	if (check && (deadlocks > 0 || slowAgents > 0 || otherErrors > 0)) {
+		process.stdout.write(
+			`Check failed: ${deadlocks} deadlocks, ${slowAgents} agent calls over 4 s, ${otherErrors} other errors\n`,
+		);
 		process.exitCode = 1;
 	}
 } finally {

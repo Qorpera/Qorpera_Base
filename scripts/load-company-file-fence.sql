@@ -19,8 +19,8 @@ begin
 		commit;
 	end loop;
 end $$;
--- Supabase Storage's upload of a new object: the permission test (insert, rolled back), then the final
--- insert under the object's advisory lock, each its own transaction.
+-- Supabase Storage's upload of a new object: the permission test (an insert without the physical size yet,
+-- rolled back), then the final insert under the object's advisory lock, each its own transaction.
 create procedure loadtest.storage(p_worker integer, p_n integer) language plpgsql as $$
 declare t0 timestamptz; v_err text; v_name text; c loadtest.config;
 begin
@@ -30,7 +30,7 @@ begin
 		v_name := c.profile_id || '/' || encode(extensions.digest(p_worker || ':' || i || ':' || random()::text,'sha256'),'hex');
 		t0 := clock_timestamp(); v_err := null;
 		begin
-			insert into storage.objects(bucket_id,name,metadata) values ('qorpera-profile-objects',v_name,'{"size":64}');
+			insert into storage.objects(bucket_id,name,metadata) values ('qorpera-profile-objects',v_name,'{"contentLength":64}');
 			raise exception using errcode = 'P0001', message = 'permission test';
 		exception when sqlstate 'P0001' then null; when others then v_err := sqlstate || ' ' || left(sqlerrm, 80);
 		end;
@@ -45,7 +45,8 @@ begin
 		commit;
 	end loop;
 end $$;
--- The object gateway: confirm an object on the NAS (fence first), then copy it into Storage (replica).
+-- The object gateway: confirm an object on the NAS, authorize its replica, copy it into Storage (the
+-- permission test, then the final insert) and confirm the replica, as packages/object-gateway does.
 create procedure loadtest.replica(p_n integer) language plpgsql as $$
 declare t0 timestamptz; v_err text; v_sha text; c loadtest.config;
 begin
@@ -55,14 +56,27 @@ begin
 		v_sha := encode(extensions.digest('replica:' || i || ':' || random()::text,'sha256'),'hex');
 		t0 := clock_timestamp(); v_err := null;
 		begin perform public.qorpera_confirm_profile_object_upload(c.profile_id,v_sha,64,'nas-object-gateway');
-		exception when others then v_err := sqlstate || ' ' || left(sqlerrm, 80); end;
+		exception when others then v_err := 'confirm ' || sqlstate || ' ' || left(sqlerrm, 80); end;
+		commit;
+		begin perform public.qorpera_authorize_profile_object_replication(c.profile_id,v_sha,64);
+		exception when others then v_err := coalesce(v_err, 'authorize ' || sqlstate || ' ' || left(sqlerrm, 80)); end;
+		commit;
+		begin
+			insert into storage.objects(bucket_id,name,metadata,user_metadata) values ('qorpera-profile-objects',c.profile_id || '/' || v_sha,
+				'{"contentLength":64}','{"qorpera_nas_replica":true,"qorpera_nas_replica_bytes":64}');
+			raise exception using errcode = 'P0001', message = 'permission test';
+		exception when sqlstate 'P0001' then null; when others then v_err := coalesce(v_err, 'preflight ' || sqlstate || ' ' || left(sqlerrm, 80));
+		end;
 		commit;
 		begin
 			perform pg_advisory_xact_lock(hashtext('qorpera-profile-objects/' || v_sha));
 			insert into storage.objects(bucket_id,name,metadata,user_metadata) values ('qorpera-profile-objects',c.profile_id || '/' || v_sha,
 				'{"size":"64"}','{"qorpera_nas_replica":true,"qorpera_nas_replica_bytes":64}');
-		exception when others then v_err := coalesce(v_err, sqlstate || ' ' || left(sqlerrm, 80));
+		exception when others then v_err := coalesce(v_err, 'copy ' || sqlstate || ' ' || left(sqlerrm, 80));
 		end;
+		commit;
+		begin perform public.qorpera_confirm_profile_object_replica(c.profile_id,v_sha,64);
+		exception when others then v_err := coalesce(v_err, 'confirm-replica ' || sqlstate || ' ' || left(sqlerrm, 80)); end;
 		commit;
 		insert into loadtest.latency(kind,ms,error) values ('replica',extract(epoch from clock_timestamp()-t0)*1000,v_err);
 		commit;

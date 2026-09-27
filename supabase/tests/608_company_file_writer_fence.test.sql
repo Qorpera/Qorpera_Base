@@ -350,18 +350,28 @@ begin
 		'The object is confirmed and the copy is stored: ' || v_outcome::text);
 end $$;
 
--- 8. The fence waits until the caller may write: a viewer's save is refused without waiting for the
---    company's profile row, which another connection holds.
+-- 8. The fence waits until the caller may write: a viewer's save, publish, proposal and submission are refused
+--    without waiting for the company's profile row, which another connection holds.
 do $$
-declare v_outcome jsonb;
+declare v_call text; v_outcome jsonb;
 begin
-	v_outcome := pg_temp.lock_single(pg_temp.lock_row('qorpera_profiles', 'id', current_setting('qorpera_test.fence_profile')::uuid),
+	foreach v_call in array array[
 		format($q$select public.qorpera_prepare_company_file_revision(%L, '60700000-0000-4000-8000-000000000050', %L,
 			repeat('e', 64), 128, 3, 1, 4)$q$, current_setting('qorpera_test.fence_environment'),
 			pg_temp.fence_head(current_setting('qorpera_test.fence_environment')::uuid)),
-		'{"role":"authenticated","sub":"60700000-0000-4000-8000-000000000002"}');
-	perform pg_temp.wake_assert(v_outcome ->> 'waited' = 'false' and v_outcome ->> 'state' = '42501',
-		'A viewer is refused without taking the fence: ' || v_outcome::text);
+		format($q$select public.qorpera_publish_company_file_revision(%L, %L, %L)$q$, current_setting('qorpera_test.fence_environment'),
+			current_setting('qorpera_test.fence_unrebased'), pg_temp.fence_head(current_setting('qorpera_test.fence_environment')::uuid)),
+		format($q$select public.qorpera_prepare_company_file_proposal(%L, '60700000-0000-4000-8000-000000000051', %L,
+			repeat('e', 64), 128, 3, 1, 4)$q$, current_setting('qorpera_test.fence_environment'), current_setting('qorpera_test.fence_second')),
+		format($q$select public.qorpera_submit_company_proposal(%L, '60700000-0000-4000-8000-000000000052', %L, 'turn',
+			'60700000-0000-4000-8000-000000000053', '60700000-0000-4000-8000-000000000054', '60700000-0000-4000-8000-000000000055',
+			0, 'policy', null, 'Viewer proposal')$q$, current_setting('qorpera_test.fence_environment'), current_setting('qorpera_test.fence_unrebased'))]
+	loop
+		v_outcome := pg_temp.lock_single(pg_temp.lock_row('qorpera_profiles', 'id', current_setting('qorpera_test.fence_profile')::uuid),
+			v_call, '{"role":"authenticated","sub":"60700000-0000-4000-8000-000000000002"}');
+		perform pg_temp.wake_assert(v_outcome ->> 'waited' = 'false' and v_outcome ->> 'state' = '42501',
+			'A viewer is refused without taking the fence: ' || v_outcome::text || ' for ' || v_call);
+	end loop;
 end $$;
 
 -- 9. A member's own upload never needs the company's profile row after its Company File lock, so it does not
@@ -376,6 +386,21 @@ begin
 		pg_temp.fence_owner());
 	perform pg_temp.wake_assert(v_outcome ->> 'waited' = 'false' and v_outcome #>> '{result,name}' like '%' || repeat('9', 64),
 		'A member''s upload does not wait for the profile row: ' || v_outcome::text);
+end $$;
+
+-- 10. The owner's submission takes the fence before the Company File row too: while another connection holds
+--    the company's profile row it waits, then fails for its own reason (this proposal names no session).
+do $$
+declare v_outcome jsonb;
+begin
+	v_outcome := pg_temp.lock_single(pg_temp.lock_row('qorpera_profiles', 'id', current_setting('qorpera_test.fence_profile')::uuid),
+		format($q$select public.qorpera_submit_company_proposal(%L, '60700000-0000-4000-8000-000000000056', %L, 'turn',
+			'60700000-0000-4000-8000-000000000057', '60700000-0000-4000-8000-000000000058', '60700000-0000-4000-8000-000000000059',
+			0, 'policy', null, 'Owner proposal')$q$, current_setting('qorpera_test.fence_environment'), current_setting('qorpera_test.fence_unrebased')),
+		pg_temp.fence_owner());
+	perform pg_temp.wake_assert(v_outcome ->> 'waited' = 'true' and v_outcome ->> 'state' = '22023'
+		and v_outcome ->> 'error' = 'company proposal session is invalid',
+		'The owner''s submission waits for the profile row, then fails for its own reason: ' || v_outcome::text);
 end $$;
 
 -- Remove what this test committed.

@@ -21,9 +21,9 @@
 -- (20260927130000). Its production logs show no lock pile-up (no deadlocks, no connection-slot errors; the
 -- instance froze and restarted), but this change is narrower anyway. It never takes a new fence on a hot
 -- insert path:
---   - The quota trigger takes the fence only for a NAS replica copy, which the replica guard fences anyway. A
---     member's or the runtime's own upload keeps its old text: it locks the Company File row and never needs
---     the profile row afterwards.
+--   - The quota trigger takes the fence only for a NAS replica copy by the service role, which the replica
+--     guard fences anyway. A member's or the runtime's own upload keeps its old text: it locks the Company File
+--     row and never needs the profile row afterwards.
 --   - The member writers are occasional member actions. Each takes the fence only once the caller is known to
 --     be allowed to write, so a refused caller never locks the company's profile row.
 --   - Unchanged, as before #354: the substrate version helper (qorpera_ensure_current_company_substrate), the
@@ -145,10 +145,11 @@ select pg_temp.company_file_writer_fence_patch('public.qorpera_enforce_company_s
 	where file.profile_id = v_identity.profile_id
 	for update;
 $old$,
-	$new$	-- A NAS replica copy takes the company's profile fence first: the replica guard, the next trigger, takes it,
-	-- and every fence holder takes the fence before this Company File row. Other uploads never need the profile
-	-- row after this lock, so they do not take the fence.
-	if new.user_metadata -> 'qorpera_nas_replica' = 'true'::jsonb then
+	$new$	-- A NAS replica copy takes the company's profile fence first: the replica guard, the next trigger, takes it
+	-- (for the service role; it refuses anyone else before any fence), and every fence holder takes the fence
+	-- before this Company File row. Other uploads never need the profile row after this lock, so they do not
+	-- take the fence.
+	if new.user_metadata -> 'qorpera_nas_replica' = 'true'::jsonb and auth.role() = 'service_role' then
 		perform public.qorpera_lock_profile_gc_fence(v_identity.profile_id)
 		where exists (select 1 from public.qorpera_company_files as file where file.profile_id = v_identity.profile_id);
 	end if;
