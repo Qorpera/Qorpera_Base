@@ -91,7 +91,8 @@ describe("shared member file downloads", () => {
 	it.each([0, 6, 4194305])("downloads %i bytes with exact immutable source provenance", async (size) => {
 		const f = fixture(size),
 			result = await f.reader.download(f.selection, signal());
-		expect(result).toEqual({
+		const { bytes, ...metadata } = result;
+		expect(metadata).toEqual({
 			source: {
 				...f.selection,
 				companyId: id(1),
@@ -99,9 +100,11 @@ describe("shared member file downloads", () => {
 				sha256: f.file.fileSha256,
 				manifestSha256: f.file.manifestSha256,
 			},
-			bytes: f.bytes,
 			mediaType: "application/octet-stream",
 		});
+		// Compare every byte without constructing millions of assertion properties.
+		expect(bytes).toBeInstanceOf(Uint8Array);
+		expect(Buffer.from(bytes).equals(f.bytes)).toBe(true);
 		expect(f.token).toHaveBeenCalledOnce();
 	});
 	it("rejects a stale member selection before immutable object reads", async () => {

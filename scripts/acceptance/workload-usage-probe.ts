@@ -4,6 +4,7 @@ import { PaidComputerGuardClient } from "../../packages/runner-orchestrator/src/
 import { readPaidComputerHostClock } from "../../packages/runner-orchestrator/src/computer-paid-guard-lxd.ts";
 import { LxdUnixClient } from "../../packages/runner-orchestrator/src/lxd-client.ts";
 import { lxdResourceBytes } from "../../packages/runner-orchestrator/src/lxd-native-node-policy.ts";
+import { assertWorkloadRun } from "./workload-usage-host.mjs";
 import {
 	RuntimeComputerController,
 	type RuntimeComputerContext,
@@ -39,7 +40,7 @@ export async function exerciseRuntimeWorkloadUsage(options: {
 	lxdSocketPath: string;
 	control: RuntimeComputerControllerOptions["control"];
 	/** Fresh disposable-run provenance checked by the owning Linux harness. */
-	disposableRun: { githubHosted: true; companyId: string };
+	disposableRun: ({ githubHosted: true } | { hostReceiptPath: string }) & { companyId: string };
 	/** Stop/settle when the calling lifecycle test is finished with this VM. */
 	close: boolean;
 	/** Wait on real clocks for one production window renewal. */
@@ -47,9 +48,8 @@ export async function exerciseRuntimeWorkloadUsage(options: {
 	signal: AbortSignal;
 }) {
 	assert.equal(process.platform, "linux", "Real Linux host required");
-	assert.equal(process.env.GITHUB_ACTIONS, "true");
-	assert.equal(process.env.RUNNER_ENVIRONMENT, "github-hosted");
-	assert.equal(options.disposableRun.githubHosted, true);
+	const { companyId: _companyId, ...provenance } = options.disposableRun;
+	await assertWorkloadRun(provenance);
 	const client = new LxdUnixClient(options.lxdSocketPath);
 	const guard = new PaidComputerGuardClient(options.guardSocketPath);
 	const calls: WorkloadUsageCall[] = [];

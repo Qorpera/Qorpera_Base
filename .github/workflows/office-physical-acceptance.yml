@@ -60,7 +60,12 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install --yes bubblewrap ripgrep python3
+          sudo apt-get install --yes bubblewrap ripgrep python3 apparmor-profiles
+          # Noble keeps this upstream setup/child capability fence in extras.
+          # Enable only that shipped profile; never disable global userns/LSM policy.
+          sudo apparmor_parser -r /usr/share/apparmor/extra-profiles/bwrap-userns-restrict
+          sudo grep -Fxq 'bwrap (enforce)' /sys/kernel/security/apparmor/profiles
+          sudo grep -Fxq 'unpriv_bwrap (enforce)' /sys/kernel/security/apparmor/profiles
           # The distro bwrap profile intentionally denies every child capability.
           # Only these privileged filesystem fixtures need CHOWN/DAC_OVERRIDE/FOWNER;
           # keep the stock profile intact and install a root-only identical helper.
@@ -368,7 +373,7 @@ jobs:
         run: npm ci --ignore-scripts --no-audit --no-fund
 
       - name: Test isolated fixture boundaries
-        run: node --test scripts/acceptance/native-postgres.test.mjs scripts/acceptance/office-rpc-server.test.mjs scripts/acceptance/workload-usage-evidence.test.mjs
+        run: node --test scripts/acceptance/native-postgres.test.mjs scripts/acceptance/office-rpc-server.test.mjs scripts/acceptance/workload-usage-evidence.test.mjs scripts/acceptance/workload-usage-host.test.mjs
 
       - name: Install native PostgreSQL and NFS tools
         timeout-minutes: 8

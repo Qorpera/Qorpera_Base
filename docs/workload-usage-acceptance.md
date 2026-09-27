@@ -23,6 +23,55 @@ One standard computer is 4 CPU / 8 GiB. These cases cover the CPU- and memory-do
 
 The standalone runner records its observed CPU and memory capacity and preserves 500m CPU / 2 GiB infrastructure headroom. A 2 CPU / 8 GiB host can run the 1 CPU / 1 GiB and 1 CPU / 4 GiB cases; it cannot prove the larger requested shapes. Those cases require a larger disposable host and remain outstanding until their own evidence passes. Host admission size never changes the 4 CPU / 8 GiB billing reference.
 
+## Operator-designated disposable hosts
+
+The same runner accepts `--disposable-host /absolute/path/host.json` without GitHub environment variables. The operator must first explicitly designate an empty, disposable Linux x86-64/KVM host for these tests. The manifest establishes identity and source provenance; it does not authorize production cleanup or make an existing node disposable. The workload runner refuses unrelated LXD instances, projects, storage pools and custom volumes. It never installs packages, downloads an image, provisions a host or purchases capacity.
+
+Prepare Node 24, systemd, LXD `6.9-ab8fad2` with the existing `default` pool and `lxdbr0` network, PostgreSQL 17 at `/usr/lib/postgresql/17/bin`, Python 3, Git and a reviewed agent-enabled VM image. Supply its existing `image-context.json` containing `imageFingerprint` and `bootstrapSha256`. Image preparation/trust remains a separate prerequisite; the preflight verifies the locally installed fingerprint rather than claiming a new image build. Use a clean checkout with reviewed dependencies already installed. A 4 CPU / 16 GiB host admits the currently outstanding 2 CPU / 2, 8 and 10 GiB shapes with the unchanged reserves.
+
+For a fresh host without the reviewed image, the existing image acceptance supports the same explicit designation. Install the prerequisites above but leave LXD **uninitialized**, with no images, instances, storage pools or managed networks. Pin LXD snap revision `40424`. Create the same private root-owned manifest shown below with schema `qorpera.workload-image-host/v1` and omit `imageFingerprint` and `bootstrapSha256`; those outputs do not yet exist. Then run:
+
+```sh
+sudo node scripts/acceptance/office-image-prepare.mjs \
+  --disposable-host /etc/qorpera-acceptance/image-host.json --preflight-only \
+  --out /opt/acceptance-image
+sudo node scripts/acceptance/office-image-prepare.mjs \
+  --disposable-host /etc/qorpera-acceptance/image-host.json \
+  --out /opt/acceptance-image
+```
+
+The second command initializes only the empty LXD host, downloads the Ubuntu base and pinned guest dependencies, and performs the existing full package measurements, Secure Boot/cold-boot checks, TLS trust proofs and signed-image verification. It deletes its two owned probe VMs and retains the accepted image. Only a successful build and cleanup publishes both `image-context.json` and a root-owned `workload-host.json` containing the measured output pins. Use `/opt/acceptance-image/workload-host.json` as `--disposable-host` for the workload commands below. The signing key remains explicitly an acceptance key, not a production release signature. No GitHub flags, bypassed image checks, host purchase or automatic production deployment are involved.
+
+Create a root-owned mode `0600` manifest under root-controlled directories (for example `/etc/qorpera-acceptance/host.json`), with exactly these fields:
+
+```json
+{
+  "schema": "qorpera.workload-usage-host/v1",
+  "complete": true,
+  "disposableHost": true,
+  "hostMachineIdSha256": "SHA256 of the trimmed /etc/machine-id bytes",
+  "hostBootId": "current /proc/sys/kernel/random/boot_id",
+  "commit": "exact 40-character checkout HEAD",
+  "imageFingerprint": "existing image's 64-character fingerprint",
+  "bootstrapSha256": "existing image context's 64-character bootstrap digest"
+}
+```
+
+Run the non-installing preflight first; it performs a real KVM capability probe and immediately closes that probe VM, but creates no LXD instance, account, service, database or result directory:
+
+```sh
+sudo node scripts/acceptance/workload-usage-physical.mjs \
+  --disposable-host /etc/qorpera-acceptance/host.json --preflight-only \
+  --kind native --cpus 2 --memory-gib 10 \
+  --image-context /opt/acceptance-image/image-context.json --out /opt/acceptance-results/native-2-10
+```
+
+After successful preflight, omit `--preflight-only` to execute that case. Repeat with each `--kind native`, `coding` and `login`, and `--memory-gib 2`, `8` and `10`, using a distinct output directory for each case. Stop on failure unless its persisted report explicitly confirms both `cleanup: true` and `hostCleanup: true`. Never remove a retained independent guard or journal to force the next case through. The root parent publishes an immutable host receipt for its unprivileged child, which rechecks physical host and boot identity. Reports distinguish `operator-designated-disposable` from `github-hosted` provenance. Existing GitHub mode and its environment checks are unchanged.
+
+Coding physical cases also require `controller.assertRunning` before loading the offline guest exercise and record `confirmedRunningBeforeGuestWork`. This proves the controller gate against actual guard/SQL state, not complete executor workspace attachment or model/repository execution. The new explicit-host path requires its own successful physical run; unit-tested preflight logic is not larger-host billing evidence.
+
+## Accounting and cleanup
+
 The matrix continues after an individual assertion fails only when its report confirms both child VM/database cleanup and parent host-service cleanup (`cleanup: true`, `hostCleanup: true`). The job still fails if any case fails. Missing or uncertain cleanup stops the matrix; the independent guard, journal and service account remain available for recovery instead of being removed while a VM might still be running.
 
 `workload-usage-evidence.mjs` independently computes cumulative normalized microseconds with integer arithmetic. It joins the actual successful controller samples to SQL observations, checkpoints, reservations, settlements, and per-bucket debits. It verifies exact sample predecessors, physical/boot identities, zero-charge uncertainty gaps, reservation draw order, replay deduplication, full hold closure, and equality between the observed bucket balance changes and the sum of actual settlements. The physical idle and busy intervals use the same pinned tariff. CPU utilization is not the billed unit.

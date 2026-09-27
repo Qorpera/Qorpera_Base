@@ -9,24 +9,24 @@ import { expandTestFixture } from "../test-hosted-db.mjs";
 import { startNativePostgres } from "./native-postgres.mjs";
 import { readWorkloadUsage, verifyWorkloadUsage, verifyWorkloadActivity } from "./workload-usage-evidence.mjs";
 import { retainSecondCodingClaim, exerciseSharedCodingClaims } from "./workload-usage-shared.mjs";
+import { assertWorkloadRun, assertWorkloadShape } from "./workload-usage-host.mjs";
 import { CodingComputerController, CODING_COMPUTER_RPCS, parseCodingSessionClaim, lxdCodingMachinePlan,
  PaidComputerGuardClient, readPaidComputerHostClock, LxdUnixClient, RuntimeComputerController,
  RUNTIME_COMPUTER_RPCS, RuntimeNodeInventoryObserver, physicalHost, exerciseRuntimeWorkloadUsage, workloadUsageSamples } from "./workload-usage-tools.mjs";
 
-// This runs as the dedicated guard UID on an empty, disposable GitHub runner.
+// This runs as the dedicated guard UID on an explicitly admitted disposable host.
 // Company/model/source metadata and invoice funding are labeled SQL fixtures.
 // Every VM, inventory binding, clock, guard receipt and paid sample is physical.
 const directory = dirname(fileURLToPath(import.meta.url));
 const options = JSON.parse(await readFile(process.argv[2], "utf8"));
 assert.equal(process.platform, "linux"); assert(process.getuid() > 0);
-assert.equal(process.env.GITHUB_ACTIONS, "true"); assert.equal(process.env.RUNNER_ENVIRONMENT, "github-hosted");
+const hostProvenance = await assertWorkloadRun(options.provenance);
 const { kind, cpuCount, memoryBytes, imageFingerprint, bootstrapSha256, planKey, poolFallback, renew, sharedClaims = false, shapeMismatch = false, out } = options;
 assert(["native", "coding", "login"].includes(kind));
 assert(["basis", "dedicated"].includes(planKey) && typeof poolFallback === "boolean" && typeof renew === "boolean" && !(kind === "login" && (poolFallback || renew)));
 assert(typeof sharedClaims === "boolean" && (!sharedClaims || (kind === "coding" && !renew && !poolFallback)));
 assert(typeof shapeMismatch === "boolean" && (!shapeMismatch || (kind === "native" && !renew && !poolFallback)));
-assert(Number.isSafeInteger(cpuCount) && cpuCount > 0 && cpuCount * 1000 + 500 <= cpus().length * 1000);
-assert(Number.isSafeInteger(memoryBytes) && memoryBytes >= 1024 ** 3 && memoryBytes + 2 * 1024 ** 3 < totalmem());
+assertWorkloadShape({ cpuCount, memoryBytes }, { cpuMillis: cpus().length * 1000, memoryBytes: totalmem() });
 assert(/^[0-9a-f]{64}$/.test(imageFingerprint) && /^[0-9a-f]{64}$/.test(bootstrapSha256));
 const companyId = "30000000-0000-4000-8000-000000000010", memberId = "30000000-0000-4000-8000-000000000001";
 const environmentId = "30000000-0000-4000-8000-000000000020", nodeId = randomUUID();
@@ -36,7 +36,7 @@ const quoted = (value) => `'${String(value).replaceAll("'", "''")}'`;
 const service = `set local role service_role; set local request.jwt.claims='{"role":"service_role"}';`;
 const socketPath = "/var/snap/lxd/common/lxd/unix.socket", client = new LxdUnixClient(socketPath);
 const signal = AbortSignal.timeout(15 * 60000), executorSecret = randomBytes(48).toString("base64url");
-const evidence = { schema: "qorpera.physical-workload-usage/v1", commit: process.env.GITHUB_SHA, kind,
+const evidence = { schema: "qorpera.physical-workload-usage/v1", commit: hostProvenance.commit, hostProvenance, kind,
  hostCapacity: { observedCpuMillis: cpus().length * 1000, observedMemoryBytes: totalmem(), headroomCpuMillis: 500, headroomMemoryBytes: 2 * 1024 ** 3 },
  shape: { cpuMillis: cpuCount * 1000, memoryBytes }, planKey, poolFallback, renew, sharedClaims, shapeMismatch, funding: "test invoice through actual subscription/funding RPCs",
  sourceFixture: "396 dispatch prefix; no model, repository or login-provider operation executed. Paid guests execute the fixed offline CPU/memory/disk acceptance workload.",
@@ -275,6 +275,10 @@ try {
    idleObservationIds.push(idle.observationId);
   }
   const guestScript = `/var/tmp/qorpera-usage-${allocationId}.py`, guestMarker = `/var/tmp/qorpera-usage-${allocationId}.json`;
+  if (kind === "coding") {
+   await controller.assertRunning(allocationId, signal);
+   evidence.checks.confirmedRunningBeforeGuestWork = true;
+  }
   const payload = await readFile(join(directory, "workload-usage-guest.py"), "utf8");
   await client.pushInstanceFile("default", machineName, guestScript, payload, 0o400, signal);
   let finished = false, failure;
@@ -292,7 +296,7 @@ try {
  }
  if (kind === "native") {
   const probe = await exerciseRuntimeWorkloadUsage({ context, guardSocketPath, lxdSocketPath: socketPath, control,
-   disposableRun: { githubHosted: true, companyId }, close: true, renew, signal });
+   disposableRun: { ...options.provenance, companyId }, close: true, renew, signal });
   const accounting = await readWorkloadUsage(query, probe.permitId);
   probe.physicalSamples = workloadUsageSamples(calls);
   probe.shapeProvenance = { nodeId, providerKind: "native", policySha256 };

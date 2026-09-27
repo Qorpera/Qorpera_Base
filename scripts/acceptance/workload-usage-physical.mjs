@@ -4,21 +4,21 @@ import { chmod, chown, cp, lstat, mkdir, readFile, rm, unlink, writeFile } from 
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
+import { assertWorkloadRun, preflightWorkloadHost } from "./workload-usage-host.mjs";
 
-// One private database/guard/account per case on a disposable hosted job.
+// One private database/guard/account per case on an admitted disposable host.
 // Cases can run sequentially after cleanup, reusing the same built image.
 // The existing image preparation stage
 // owns LXD installation and a pinned, agent-enabled Ubuntu image. This runner
 // neither downloads another image nor touches a production node.
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 assert.equal(process.platform, "linux"); assert.equal(process.getuid(), 0);
-assert.equal(process.env.GITHUB_ACTIONS, "true"); assert.equal(process.env.RUNNER_ENVIRONMENT, "github-hosted");
 const args = process.argv.slice(2), options = {};
 for (let i = 0; i < args.length; i++) {
  const name = args[i]; assert(!Object.hasOwn(options, name), "Duplicate workload CLI argument");
- if (["--pool-fallback", "--renew", "--shared-claims", "--shape-mismatch"].includes(name)) options[name] = true;
+ if (["--pool-fallback", "--renew", "--shared-claims", "--shape-mismatch", "--preflight-only"].includes(name)) options[name] = true;
  else {
-  assert(["--kind", "--cpus", "--memory-gib", "--image-context", "--out", "--plan"].includes(name) && args[i + 1], "Invalid workload CLI");
+  assert(["--kind", "--cpus", "--memory-gib", "--image-context", "--out", "--plan", "--disposable-host"].includes(name) && args[i + 1], "Invalid workload CLI");
   options[name] = args[++i];
  }
 }
@@ -36,6 +36,10 @@ assert(Number.isSafeInteger(memoryBytes) && memoryBytes >= 1024 ** 3 && memoryBy
 assert(options["--out"] && options["--image-context"]);
 const out = resolve(options["--out"]), context = JSON.parse(await readFile(resolve(options["--image-context"]), "utf8"));
 assert(/^[0-9a-f]{64}$/.test(context.imageFingerprint)); assert(/^[0-9a-f]{64}$/.test(context.bootstrapSha256));
+assert(!options["--preflight-only"] || options["--disposable-host"], "Preflight-only requires an explicitly designated disposable host");
+const hostReceipt = options["--disposable-host"] ? await preflightWorkloadHost({ path: options["--disposable-host"], repository, context, cpuCount, memoryBytes }) : null;
+if (!hostReceipt) await assertWorkloadRun({ githubHosted: true });
+if (options["--preflight-only"]) { console.log(JSON.stringify(hostReceipt, null, 2)); process.exit(0); }
 const root = `/opt/qorpera-workload-usage-${kind}-${cpuCount}-${memoryBytes}-${planKey}-${poolFallback ? "pool" : "member"}-${renew ? "renew" : "short"}${sharedClaims ? "-shared" : ""}${shapeMismatch ? "-mismatch" : ""}`, source = `${root}/source`, account = "qorpera-usage-acceptance", uid = 1251;
 const unit = "qorpera-workload-usage-acceptance.service";
 const guardState = `/var/lib/${kind === "coding" ? "qorpera-paid-computer-guard" : "qorpera-native-computer-guard"}`;
@@ -52,7 +56,7 @@ try {
  run("usermod", ["--append", "--groups", "lxd", account]);
  await mkdir(`${source}/scripts/acceptance`, { recursive: true, mode: 0o755 });
  await mkdir(`${source}/supabase`, { recursive: true, mode: 0o755 });
- for (const name of ["native-postgres.mjs", "workload-usage-case.mjs", "workload-usage-evidence.mjs", "workload-usage-shared.mjs", "workload-usage-guest.py"]) await cp(join(repository, "scripts/acceptance", name), `${source}/scripts/acceptance/${name}`);
+ for (const name of ["native-postgres.mjs", "workload-usage-case.mjs", "workload-usage-host.mjs", "workload-usage-evidence.mjs", "workload-usage-shared.mjs", "workload-usage-guest.py"]) await cp(join(repository, "scripts/acceptance", name), `${source}/scripts/acceptance/${name}`);
  await cp(join(repository, "scripts/test-hosted-db.mjs"), `${source}/scripts/test-hosted-db.mjs`);
  await cp(join(repository, "supabase/migrations"), `${source}/supabase/migrations`, { recursive: true });
  await cp(join(repository, "supabase/tests"), `${source}/supabase/tests`, { recursive: true });
@@ -72,8 +76,10 @@ try {
   stateIdentity = await lstat(guardState); assert(stateIdentity.isDirectory() && !stateIdentity.isSymbolicLink() && stateIdentity.uid === uid);
  }
  await mkdir(`${root}/results`, { mode: 0o700 }); await chown(`${root}/results`, uid, uid);
+ const provenance = hostReceipt ? { hostReceiptPath: `${root}/host-receipt.json` } : { githubHosted: true };
+ if (hostReceipt) await writeFile(provenance.hostReceiptPath, `${JSON.stringify(hostReceipt)}\n`, { flag: "wx", mode: 0o444 });
  await writeFile(`${root}/case.json`, `${JSON.stringify({ kind, cpuCount, memoryBytes, planKey, poolFallback, renew, sharedClaims, shapeMismatch, imageFingerprint: context.imageFingerprint,
-  bootstrapSha256: context.bootstrapSha256, out: `${root}/results/evidence.json` })}\n`, { flag: "wx", mode: 0o444 });
+  bootstrapSha256: context.bootstrapSha256, provenance, out: `${root}/results/evidence.json` })}\n`, { flag: "wx", mode: 0o444 });
  childStarted = true;
  const code = await new Promise((done, reject) => {
   const child = spawn("runuser", ["-u", account, "--", process.execPath, `${source}/scripts/acceptance/workload-usage-case.mjs`, `${root}/case.json`], { stdio: "inherit" });
@@ -108,7 +114,7 @@ try {
   // Missing child evidence must never be mistaken for confirmed shutdown.
   if (childEvidence || installed || childStarted) {
    await writeFile(join(out, "evidence.json"), `${JSON.stringify({
-    ...(childEvidence ?? { schema: "qorpera.physical-workload-usage/v1", commit: process.env.GITHUB_SHA,
+    ...(childEvidence ?? { schema: "qorpera.physical-workload-usage/v1", commit: hostReceipt?.host.commit ?? process.env.GITHUB_SHA,
      kind, passed: false, cleanup: false, error: "Child cleanup evidence unavailable; independent guard custody retained" }),
     hostCleanup,
    }, null, 2)}\n`, { mode: 0o644 });

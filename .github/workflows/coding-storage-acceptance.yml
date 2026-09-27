@@ -1,0 +1,61 @@
+name: Coding storage physical diagnosis
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  coding-storage:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+      - name: Install reviewed harness dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Verify disposable host and install physical prerequisites
+        timeout-minutes: 8
+        run: |
+          set -euo pipefail
+          test "${RUNNER_ENVIRONMENT}" = github-hosted
+          test "$(uname -m)" = x86_64
+          test "$(cat /proc/1/comm)" = systemd
+          test -c /dev/kvm
+          sudo python3 scripts/acceptance/paid-lxd-kvm.py
+          sudo apt-get update
+          sudo apt-get install --yes nfs-kernel-server nfs-common snapd
+          sudo systemctl start snapd.socket
+          sudo snap wait system seed.loaded
+          if snap list lxd >/dev/null 2>&1; then
+            if [ "$(snap list lxd | awk 'NR==2 {print $3}')" != 40424 ]; then
+              sudo snap refresh lxd --channel=6/stable --revision=40424
+            fi
+          else
+            sudo snap install lxd --channel=6/stable --revision=40424
+          fi
+          test "$(snap list lxd | awk 'NR==2 {print $2 ":" $3}')" = 6.9-ab8fad2:40424
+          sudo snap refresh --hold=forever lxd
+          sudo /snap/bin/lxd waitready --timeout=60
+      - name: Test diagnosis boundaries
+        run: node --test scripts/acceptance/coding-storage-probe-contract.test.mjs
+      - name: Probe unchanged helpers on real root-squashed NFS and virtiofs
+        timeout-minutes: 9
+        run: |
+          set -euo pipefail
+          sudo env PATH="${PATH}:/snap/bin" GITHUB_ACTIONS=true RUNNER_ENVIRONMENT=github-hosted GITHUB_SHA="${GITHUB_SHA}" \
+            node scripts/acceptance/coding-storage-physical.mjs --out "${RUNNER_TEMP}/coding-storage-probe"
+      - name: Retain bounded storage evidence even when the boundary is incompatible
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: coding-storage-physical-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/coding-storage-probe/evidence.json
+          if-no-files-found: warn
+          retention-days: 14

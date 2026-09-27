@@ -6,21 +6,34 @@ import { dirname, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
+import { preflightWorkloadImageHost } from "./workload-usage-host.mjs";
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
-assert([4, 5].includes(process.argv.length) && process.argv[2] === "--out" && (process.argv.length === 4 || process.argv[4] === "--retain"), "Usage: node scripts/acceptance/office-image-prepare.mjs --out <evidence-directory> [--retain]");
-const retained = process.argv[4] === "--retain";
+const options = {}, args = process.argv.slice(2);
+for (let i = 0; i < args.length; i++) {
+	const key = args[i]; assert(!Object.hasOwn(options, key), "Duplicate image acceptance argument");
+	if (["--retain", "--preflight-only"].includes(key)) options[key] = true;
+	else { assert(["--out", "--disposable-host"].includes(key) && args[i + 1], "Invalid image acceptance argument"); options[key] = args[++i]; }
+}
+assert(options["--out"], "Image acceptance output directory required");
+assert(!options["--preflight-only"] || options["--disposable-host"], "Preflight-only requires a designated disposable host");
+const retained = options["--retain"] === true;
 assert(process.platform === "linux" && process.getuid() === 0 && process.arch === "x64");
-assert(process.env.GITHUB_ACTIONS === "true" && process.env.RUNNER_ENVIRONMENT === "github-hosted", "Disposable GitHub-hosted runner required");
+const hostReceipt = options["--disposable-host"] ? await preflightWorkloadImageHost({ path: options["--disposable-host"], repository }) : null;
+if (!hostReceipt) assert(process.env.GITHUB_ACTIONS === "true" && process.env.RUNNER_ENVIRONMENT === "github-hosted", "Disposable GitHub-hosted runner required");
+if (options["--preflight-only"]) { console.log(JSON.stringify(hostReceipt, null, 2)); process.exit(0); }
+const sourceCommit = hostReceipt?.host.commit ?? process.env.GITHUB_SHA;
 assert((await stat("/run/systemd/system")).isDirectory());
-const out = resolve(process.argv[3]);
+const out = resolve(options["--out"]);
 await mkdir(out, { recursive: true, mode: 0o755 });
 const work = "/opt/qorpera-office-image-acceptance";
 const vm = "qorpera-office-image-acceptance";
 const clone = "qorpera-office-image-final-proof";
 let guestName = vm;
 const alias = "qorpera-office-acceptance";
-const evidence = { schema: "qorpera.office-image-physical-acceptance/v1", commit: process.env.GITHUB_SHA ?? null, passed: false, scope: "Real KVM VM, production office package/installer/dependency measurements, actual systemd/tmpfs/preparation inspection, and cold-boot credential selection using synthetic probe credentials. No SQL office admission, real company state, NFS durability, model work or production deployment." };
+const evidence = { schema: "qorpera.office-image-physical-acceptance/v1", commit: sourceCommit ?? null,
+ hostProvenance: hostReceipt ? { mode: "operator-designated-disposable", manifestSha256: hostReceipt.manifestSha256, hostMachineIdSha256: hostReceipt.host.hostMachineIdSha256, hostBootId: hostReceipt.host.hostBootId } : { mode: "github-hosted" },
+ passed: false, scope: "Real KVM VM, production office package/installer/dependency measurements, actual systemd/tmpfs/preparation inspection, and cold-boot credential selection using synthetic probe credentials. No SQL office admission, real company state, NFS durability, model work or production deployment." };
 let created = false, cloneCreated = false;
 let trustServer;
 let context;
@@ -59,7 +72,7 @@ try {
 	assert.equal(initializedNetwork.config["ipv4.nat"], "true");
 	await mkdir(work, { mode: 0o755 });
 	assert.equal(run("git", ["status", "--porcelain", "--untracked-files=no"]), "", "Image provenance requires an unchanged checkout");
-	assert.equal(run("git", ["rev-parse", "HEAD"]), process.env.GITHUB_SHA);
+	assert.equal(run("git", ["rev-parse", "HEAD"]), sourceCommit);
 	run(process.execPath, ["scripts/package-company-computer.mjs", "--out", `${work}/package`], 180000);
 	// Root owns this fresh staging tree; source-copy metadata can retain the
 	// runner UID (observed on LICENSE). Establish host custody as well as guest custody.
@@ -236,6 +249,7 @@ try {
 	evidence.finalImageBoot = JSON.parse(guest(["cat", `${work}/trust-proof.json`]));
 	assert.notEqual(evidence.finalImageBoot.bootId, evidence.builderTrust.bootId);
 	assert.equal(run("git", ["status", "--porcelain", "--untracked-files=no"]), "");
+	assert.equal(run("git", ["rev-parse", "HEAD"]), sourceCommit);
 	const recipe = {};
 	for (const file of ["scripts/acceptance/office-image-prepare.mjs", "scripts/acceptance/office-image-dependencies.sh", "scripts/package-company-computer.mjs"]) recipe[file] = hash(await readFile(join(repository, file)));
 	const bootstrapBytes = Buffer.from(`${JSON.stringify({ schema: "qorpera.office-image-acceptance-bootstrap/v1", baseImageFingerprint: evidence.baseImageFingerprint, packageManifestSha256: evidence.packageManifestSha256, dependencies: evidence.installation.dependencies, caSha256, managerSha256, bootMode: "uefi-secureboot", recipe }, null, 2)}\n`);
@@ -245,7 +259,7 @@ try {
 	const bootstrapSha256 = evidence.installation.installationReceiptSha256;
 	const acceptanceBytes = Buffer.from(`${JSON.stringify({ schema: "qorpera.office-image-trust-acceptance/v1", imageFingerprint: image.target, baseImageFingerprint: evidence.baseImageFingerprint, imageBytes: published.size, bootstrapSha256, packageManifestSha256: evidence.packageManifestSha256, builder: evidence.builderTrust, finalImageBoot: evidence.finalImageBoot }, null, 2)}\n`);
 	await writeFile(join(out, "image-trust-evidence.json"), acceptanceBytes, { mode: 0o644, flag: "wx" });
-	const statement = { schema: "qorpera.lxd-office-image-provenance/v1", image: { fingerprint: image.target, baseFingerprint: evidence.baseImageFingerprint, architecture: "x86_64", bytes: published.size, guestPackageManifestSha256: evidence.packageManifestSha256, bootstrapSha256 }, source: { repository: "https://github.com/Qorpera/Qorpera_Base", commit: process.env.GITHUB_SHA, tree: "clean" }, acceptance: { testedAt: new Date().toISOString(), evidenceSha256: hash(acceptanceBytes), virtualization: "kvm", bootMode: "uefi-secureboot", secureBoot: true, credentials: "absent", computeIdentity: "absent", companyState: "absent", services: "fail-closed" } };
+	const statement = { schema: "qorpera.lxd-office-image-provenance/v1", image: { fingerprint: image.target, baseFingerprint: evidence.baseImageFingerprint, architecture: "x86_64", bytes: published.size, guestPackageManifestSha256: evidence.packageManifestSha256, bootstrapSha256 }, source: { repository: "https://github.com/Qorpera/Qorpera_Base", commit: sourceCommit, tree: "clean" }, acceptance: { testedAt: new Date().toISOString(), evidenceSha256: hash(acceptanceBytes), virtualization: "kvm", bootMode: "uefi-secureboot", secureBoot: true, credentials: "absent", computeIdentity: "absent", companyState: "absent", services: "fail-closed" } };
 	await writeFile(`${work}/statement.json`, JSON.stringify(statement), { mode: 0o600, flag: "wx" });
 	run(process.execPath, [`${work}/provenance.mjs`, `${work}/statement.json`, out, `${work}/reset-signing.key`]);
 	const verification = JSON.parse(await readFile(join(out, "image-verification.json"), "utf8"));
@@ -264,7 +278,11 @@ finally {
 		for (let i = 0; i < 100 && trustServer.exitCode === null && trustServer.signalCode === null; i++) await delay(50);
 		if (trustServer.exitCode === null && trustServer.signalCode === null) { evidence.trustListenerCleanupFailed = true; evidence.passed = false; process.exitCode = 1; }
 	}
-	if (evidence.passed && context) await writeFile(join(out, "image-context.json"), `${JSON.stringify(context, null, 2)}\n`, { mode: 0o644 });
+	if (evidence.passed && context) {
+		await writeFile(join(out, "image-context.json"), `${JSON.stringify(context, null, 2)}\n`, { mode: 0o644 });
+		if (hostReceipt) await writeFile(join(out, "workload-host.json"), `${JSON.stringify({ ...hostReceipt.host,
+			schema: "qorpera.workload-usage-host/v1", imageFingerprint: context.imageFingerprint, bootstrapSha256: context.bootstrapSha256 }, null, 2)}\n`, { mode: 0o600, flag: "wx" });
+	}
 	await writeFile(join(out, "evidence.json"), `${JSON.stringify(evidence, null, 2)}\n`, { mode: 0o644 });
 	console.log(JSON.stringify(evidence));
 }
