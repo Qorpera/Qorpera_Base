@@ -34,6 +34,8 @@ export class ComputerPanel {
 	readonly #setExpanded: (expanded: boolean) => void;
 	/** The attached thread's way of putting the panel away for good. */
 	#close: () => void = () => {};
+	/** Takes back the idle wakes this panel asked for and never used. */
+	#withdrawWakes: () => void = () => {};
 	#title: string;
 	#busy = false;
 
@@ -119,6 +121,12 @@ export class ComputerPanel {
 				until.addEventListener("abort", cancel, { once: true });
 			});
 		const startRequests = new Map<string, string>();
+		// Idle wakes asked for here, by the same keys; a connected screen used them.
+		const wakes = new Map<string, () => Promise<unknown>>();
+		this.#withdrawWakes = () => {
+			for (const withdraw of wakes.values()) void withdraw().catch(() => undefined);
+			wakes.clear();
+		};
 		const open = async () => {
 			const catalog = await computer.client.catalog(signal);
 			signal.throwIfAborted();
@@ -154,12 +162,32 @@ export class ComputerPanel {
 						if ((!start.intent || idle) && requestedKey !== key) {
 							requestedKey = key;
 							// An unclear reply retains the exact computer generation and idle cycle's identity.
-							let requestId = startRequests.get(key);
-							if (!requestId) {
-								requestId = crypto.randomUUID();
-								startRequests.set(key, requestId);
-							}
-							await startClient.request(start.computerGeneration, requestId, until);
+							const requestId = startRequests.get(key) ?? crypto.randomUUID();
+							startRequests.set(key, requestId);
+							// The request finishes even if the panel closes, so a withdrawal lands after it.
+							const sent = startClient.request(
+								start.computerGeneration,
+								requestId,
+								new AbortController().signal,
+							);
+							if (idle)
+								wakes.set(key, () =>
+									sent
+										.catch(() => undefined)
+										.then(() =>
+											startClient.withdraw(
+												start.computerGeneration,
+												requestId,
+												new AbortController().signal,
+											),
+										),
+								);
+							await new Promise<unknown>((resolve, reject) => {
+								const cancel = () => reject(new Error("closed"));
+								until.addEventListener("abort", cancel, { once: true });
+								sent.then(resolve, reject).finally(() => until.removeEventListener("abort", cancel));
+								if (until.aborted) cancel();
+							});
 							until.throwIfAborted();
 						}
 						this.#status.textContent = t("Starting the computer…");
@@ -209,7 +237,9 @@ export class ComputerPanel {
 							requestConnection: async (input) => {
 								for (let attempt = 0; ; attempt++) {
 									try {
-										return await views.connectScreen(input);
+										const connection = await views.connectScreen(input);
+										wakes.clear();
+										return connection;
 									} catch (error) {
 										if (attempt >= 8 || input.signal.aborted) throw error;
 										const state = await startClient.status(input.signal);
@@ -335,6 +365,9 @@ export class ComputerPanel {
 	dispose(): void {
 		if (this.#stop.signal.aborted) return;
 		this.#stop.abort();
+		// Closed before its screen came up: the wake is no longer wanted from here.
+		// Leaving the company sends nothing; its transport refuses after teardown.
+		this.#withdrawWakes();
 		this.#close = () => {};
 		replace(this.el);
 		this.el.remove();

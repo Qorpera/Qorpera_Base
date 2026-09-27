@@ -55,6 +55,7 @@ export type CompanyComputerStartRpc = (
 	method:
 		| "qorpera_request_runtime_office_start"
 		| "qorpera_cancel_runtime_office_start"
+		| "qorpera_withdraw_runtime_office_wake"
 		| "qorpera_runtime_office_start_status",
 	args: Record<string, unknown>,
 	signal: AbortSignal,
@@ -157,6 +158,28 @@ export class CloudCompanyComputerStart {
 		if (result.intentId !== intent.intentId || result.state !== "cancelled")
 			throw new Error("INVALID_OFFICE_START_RESPONSE");
 		return result;
+	}
+	/** Takes back this member's own idle wake request when nothing here needs the
+	 * computer any more. The wake stands; once every requester has withdrawn and
+	 * nothing used the computer, idle stops it sooner. "unavailable" means there
+	 * was no such pending request (never sent, replaced, or not an idle wake). */
+	async withdraw(
+		computerGeneration: number,
+		requestId: string,
+		signal: AbortSignal,
+	): Promise<"withdrawn" | "unavailable"> {
+		generation(computerGeneration);
+		if (typeof requestId !== "string" || !COMPANY_COMPUTER_UUID.test(requestId))
+			throw new Error("INVALID_OFFICE_START_REQUEST");
+		const result = await this.#request(
+			"qorpera_withdraw_runtime_office_wake",
+			{ p_scope: this.#scope, p_computer_generation: computerGeneration, p_request_id: requestId },
+			signal,
+		);
+		record(result, "state");
+		if (result.state !== "withdrawn" && result.state !== "unavailable")
+			throw new Error("INVALID_OFFICE_START_RESPONSE");
+		return result.state;
 	}
 	async status(signal: AbortSignal): Promise<CompanyComputerStartStatus> {
 		const result = await this.#request("qorpera_runtime_office_start_status", { p_scope: this.#scope }, signal);

@@ -73,9 +73,34 @@ select pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000003
 select pg_temp.wake_error($q$select public.qorpera_request_runtime_office_start(current_setting('qorpera_test.office_scope')::jsonb,1,extensions.gen_random_uuid())$q$,'42501');
 select pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001');
 select pg_temp.wake_assert(public.qorpera_runtime_office_start_status(current_setting('qorpera_test.office_scope')::jsonb)#>>'{maintenance,reason}'='idle','current idle has distinct maintenance metadata');
-select public.qorpera_request_runtime_office_start(current_setting('qorpera_test.office_scope')::jsonb,1,extensions.gen_random_uuid());
+select public.qorpera_request_runtime_office_start(current_setting('qorpera_test.office_scope')::jsonb,1,'39000000-0000-4000-8000-000000000020');
 select pg_temp.path_claims('service_role');
 select pg_temp.wake_assert(pg_temp.idle_poll()->>'wakeRequested'='true','member open during stop creates durable wake');
+
+-- Closing before the computer is up withdraws only the member's own request. The wake stands.
+create function pg_temp.idle_withdraw(p_request uuid) returns jsonb language sql as $$
+	select public.qorpera_withdraw_runtime_office_wake(current_setting('qorpera_test.office_scope')::jsonb,1,p_request)
+$$;
+select pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000002');
+select public.qorpera_request_runtime_office_start(current_setting('qorpera_test.office_scope')::jsonb,1,'39000000-0000-4000-8000-000000000021');
+select pg_temp.wake_assert(pg_temp.idle_withdraw('39000000-0000-4000-8000-000000000020')->>'state'='unavailable','a member cannot withdraw another member''s wake');
+select pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001');
+select pg_temp.wake_assert(pg_temp.idle_withdraw(extensions.gen_random_uuid())->>'state'='unavailable','withdrawal names the exact request');
+select pg_temp.wake_error($q$select public.qorpera_withdraw_runtime_office_wake(current_setting('qorpera_test.office_scope')::jsonb,2,'39000000-0000-4000-8000-000000000020')$q$,'42501');
+select pg_temp.wake_assert(pg_temp.idle_withdraw('39000000-0000-4000-8000-000000000020')->>'state'='withdrawn','member withdraws own wake');
+select pg_temp.wake_assert(pg_temp.idle_withdraw('39000000-0000-4000-8000-000000000020')->>'state'='withdrawn','withdrawal is idempotent');
+select public.qorpera_request_runtime_office_start(current_setting('qorpera_test.office_scope')::jsonb,1,'39000000-0000-4000-8000-000000000022');
+select pg_temp.wake_assert((select withdrawn_at is null and request_id='39000000-0000-4000-8000-000000000022' from public.qorpera_runtime_office_wake_requests
+	where user_id='30000000-0000-4000-8000-000000000001'),'asking again takes back a withdrawal');
+select pg_temp.wake_assert(pg_temp.idle_withdraw('39000000-0000-4000-8000-000000000020')->>'state'='unavailable','a replaced request cannot be withdrawn');
+select pg_temp.wake_assert(pg_temp.idle_withdraw('39000000-0000-4000-8000-000000000022')->>'state'='withdrawn','the latest request is withdrawn');
+select pg_temp.wake_assert(public.qorpera_runtime_office_start_status(current_setting('qorpera_test.office_scope')::jsonb)#>>'{maintenance,state}'='resumed','withdrawal never takes back the wake');
+select pg_temp.path_claims('service_role');
+select pg_temp.wake_assert(pg_temp.idle_poll()->>'wakeRequested'='true','the provider still sees the wake after a withdrawal');
+select pg_temp.wake_assert(not has_function_privilege('anon','public.qorpera_withdraw_runtime_office_wake(jsonb,bigint,uuid)','EXECUTE')
+	and not has_function_privilege('service_role','public.qorpera_withdraw_runtime_office_wake(jsonb,bigint,uuid)','EXECUTE')
+	and not has_function_privilege('authenticated','public.qorpera_runtime_office_wake_withdrawn(public.qorpera_runtime_office_idle_cycles)','EXECUTE')
+	and not has_table_privilege('authenticated','public.qorpera_runtime_office_wake_requests','SELECT'),'only signed-in members withdraw, through the function');
 
 -- Synthetic settlement advances SQL lineage without pretending to boot a VM.
 create function pg_temp.idle_successor(p_activation uuid) returns void language plpgsql as $$
@@ -99,6 +124,43 @@ end $$;
 select pg_temp.idle_successor('39000000-0000-4000-8000-000000000006');
 select pg_temp.wake_assert(pg_temp.idle_poll()->'request'=current_setting('qorpera_test.idle_first')::jsonb->'request','warm successor retains exact recovery lineage');
 select pg_temp.wake_assert((select activated_at is not null from public.qorpera_runtime_office_idle_cycles),'successor completion recorded');
+-- A wake every member withdrew stops one minute after the computer is up;
+-- one still wanted, or a computer used since, keeps the full idle window.
+create function pg_temp.idle_poll_long() returns jsonb language sql as $$
+	select public.qorpera_reconcile_runtime_office_idle(current_setting('qorpera_test.office_scope')::jsonb,1,
+		'39000000-0000-4000-8000-000000000001',repeat('f',64),300000)
+$$;
+create function pg_temp.idle_ago(p_seconds integer) returns void language sql as $$
+	update public.qorpera_runtime_office_idle_policies set idle_since=clock_timestamp()-p_seconds*interval '1 second'
+$$;
+savepoint wake_still_wanted;
+select pg_temp.idle_poll_long();
+select pg_temp.idle_ago(90);
+select pg_temp.wake_assert(pg_temp.idle_poll_long()->'request'=current_setting('qorpera_test.idle_first')::jsonb->'request','a wake another member still wants keeps the full idle window');
+rollback to savepoint wake_still_wanted;
+savepoint wake_withdrawn;
+select pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000002');
+select pg_temp.wake_assert(pg_temp.idle_withdraw('39000000-0000-4000-8000-000000000021')->>'state'='withdrawn','a member withdraws after the computer is up');
+select pg_temp.path_claims('service_role');
+select pg_temp.idle_poll_long();
+select pg_temp.idle_ago(30);
+select pg_temp.wake_assert(pg_temp.idle_poll_long()->'request'=current_setting('qorpera_test.idle_first')::jsonb->'request','a withdrawn wake still gets one minute');
+select pg_temp.idle_ago(61);
+select set_config('qorpera_test.idle_withdrawn',pg_temp.idle_poll_long()::text,true);
+select pg_temp.wake_assert(current_setting('qorpera_test.idle_withdrawn')::jsonb#>>'{request,action}'='power_off'
+	and current_setting('qorpera_test.idle_withdrawn')::jsonb#>'{request,transitionId}'<>current_setting('qorpera_test.idle_first')::jsonb#>'{request,transitionId}',
+	'a wake every member withdrew stops one minute after the computer is up');
+rollback to savepoint wake_withdrawn;
+savepoint wake_used;
+update public.qorpera_runtime_office_wake_requests set withdrawn_at=clock_timestamp();
+update public.qorpera_runtime_office_screens set drain_pending=true,drain_id=extensions.gen_random_uuid(),drain_acknowledged_at=null;
+select pg_temp.idle_poll_long();
+select pg_temp.wake_assert((select demand_seen_at is not null from public.qorpera_runtime_office_idle_cycles),'demand after the wake is recorded');
+update public.qorpera_runtime_office_screens set drain_pending=false,drain_id=null,drain_acknowledged_at=clock_timestamp();
+select pg_temp.idle_poll_long();
+select pg_temp.idle_ago(90);
+select pg_temp.wake_assert(pg_temp.idle_poll_long()->'request'=current_setting('qorpera_test.idle_first')::jsonb->'request','a computer used since its wake keeps the full idle window');
+rollback to savepoint wake_used;
 -- Historical completed host reboot cannot mask a newer idle or operator stop.
 insert into public.qorpera_runtime_office_host_reboots(transition_id,office_id,computer_generation,allocation_id,activation_id,
 	shutdown_host_boot_id,resumed_host_boot_id,successor_activation_id,requested_at,resumed_at,activated_at)
