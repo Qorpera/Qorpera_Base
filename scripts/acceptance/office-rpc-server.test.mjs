@@ -76,6 +76,7 @@ test("TLS RPC binds exact payload through stdin variables and executes the actua
 	assert.match(sql, /set local role service_role/); assert.match(sql, /request.jwt.claims='\{"role":"service_role"\}'/);
 	assert.match(sql, /public.qorpera_check_runtime_office_startup\(p_startup =>/);
 	assert(!sql.includes("p_optional"), "Omitted optional parameters must preserve SQL defaults");
+	assert.equal(options.diagnosticMethod, method);
 	assert.equal(options.maxOutputBytes, 65537); assert.equal(options.timeoutMs, 2500);
 });
 

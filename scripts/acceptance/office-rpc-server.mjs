@@ -209,7 +209,7 @@ export async function startOfficeRpcServer({ query, tls, tokens, listen, onSampl
 				const samples = args.p_request.entries.map((entry) => JSON.parse(entry.entryText).sample);
 				for (const sample of samples) onSample({ method: name, permitId: args.p_request.permitId, sample: structuredClone(sample) });
 			}
-			const output = await query(sql, { signal: lifetime.signal, timeoutMs: 2500, maxOutputBytes: RESPONSE_LIMIT + 1 });
+			const output = await query(sql, { signal: lifetime.signal, timeoutMs: 2500, maxOutputBytes: RESPONSE_LIMIT + 1, diagnosticMethod: name });
 			lifetime.signal.throwIfAborted();
 			if (Buffer.byteLength(output) > RESPONSE_LIMIT) throw unavailable();
 			const value = JSON.parse(output);

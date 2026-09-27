@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
 import { buildSync } from "esbuild";
-import { officeJournalDiagnostic, officeProcessDiagnostic, officeServiceDiagnostics, officeStartupDiagnostics, officeStartupLogDiagnostic } from "./office-lifecycle-diagnostics.mjs";
+import { officeJournalDiagnostic, officePaidDiagnostic, officePaidSqlDiagnostics, officeSqlFailureHistory, officeProcessDiagnostic, officeServiceDiagnostics, officeStartupDiagnostics, officeStartupLogDiagnostic } from "./office-lifecycle-diagnostics.mjs";
 
 const root = mkdtempSync(join(tmpdir(), "office-service-diagnostics-"));
 after(() => rmSync(root, { recursive: true, force: true }));
@@ -155,4 +155,58 @@ test("owned process summaries accept only fixed comm, numeric identity and bound
 	assert.equal(officeProcessDiagnostic(123, "x".repeat(8193), "0"), null);
 	assert.equal(officeProcessDiagnostic(123, status, "x".repeat(129)), null);
 	assert.equal(officeProcessDiagnostic(123, status, "private-token\ncredential=value").waitChannel, "unavailable");
+});
+
+
+test("guard archives and durable usage anchors preserve stop clocks without credentials", () => {
+	const permit = { permitId: "10000000-0000-4000-8000-000000000001", generation: 2, issuedAt: "2026-09-27T00:00:00Z", deadline: "2026-09-27T00:05:00Z", prestart: { prepareRequestText: "private-token" } };
+	const stopReceipt = { state: "stopped", observedUptimeMs: 14000, closedAtUptimeMs: 14500, private: "private-token" };
+	const sample = { state: "running", hostUptimeMs: 13000, guestUptimeMs: 2000, observedAt: "2026-09-27T00:00:13Z", private: "private-token" };
+	const frame = { sequence: 3, sha256: "a".repeat(64), entryText: JSON.stringify({ schema: "qorpera.computer-guard-usage-entry/v1", permit, sample, stopReceipt: null, deadlineUptimeMs: 300000 }) };
+	const archive = officeJournalDiagnostic({ schema: "qorpera.computer-guard-archive/v1", guard: { phase: "stopped", startDispatched: true, startSettled: true, startSucceeded: true, usageRequired: true, permit, stopReceipt, stopAtUptimeMs: 295000 }, closure: { ...permit, state: "closed" } });
+	assert.equal(archive.guard.phase, "stopped"); assert.equal(archive.guard.stopAtUptimeMs, 295000);
+	assert.equal(archive.stopReceipt.closedAtUptimeMs, 14500); assert.equal(archive.closure.state, "closed");
+	const anchor = officeJournalDiagnostic({ schema: "qorpera.computer-guard-usage-anchor/v1", identity: permit, sealed: true, head: frame, lastRunning: frame, acknowledged: frame });
+	assert.equal(anchor.head.sequence, 3); assert.equal(anchor.lastRunning.sample.guestUptimeMs, 2000);
+	assert.equal(anchor.head.deadlineUptimeMs, 300000); assert.equal(anchor.sealed, true);
+	assert(!JSON.stringify([anchor, archive]).includes("private-token"));
+	assert(!JSON.stringify([anchor, archive]).includes("entryText"));
+	assert.deepEqual(officePaidDiagnostic({ state: "private-token", deadline: "private-token", hostUptimeMs: -1, guestUptimeMs: Infinity }), {});
+	assert.deepEqual(officeJournalDiagnostic({ schema: "qorpera.computer-guard-usage-anchor/v1", head: { ...frame, entryText: "x".repeat(8193) } }).head, { available: false });
+});
+
+test("SQL failure history keeps the first and recent predicates with exact RPC names and no raw errors", () => {
+	const history = officeSqlFailureHistory(), method = "qorpera_record_computer_guard_samples";
+	history.record("ERROR:  42501: Captured computer identity differs\nDETAIL: private-token", method);
+	for (let i = 0; i < 40; i++) history.record("ERROR:  55000: private-token", "private-token");
+	const snapshot = history.snapshot();
+	assert.equal(snapshot.total, 41); assert.equal(snapshot.first.length, 16); assert.equal(snapshot.recent.length, 16); assert.equal(snapshot.omitted, 9);
+	assert.equal(snapshot.first[0].method, method); assert.equal(snapshot.first[0].code, "CAPTURED_IDENTITY_DIFFERS");
+	assert.equal(snapshot.first[0].sqlState, "42501");
+	assert.equal(snapshot.recent[0].method, null); assert.equal(snapshot.recent[0].code, "MESSAGE_WITHHELD");
+	assert(!JSON.stringify(snapshot).includes("private-token"));
+	snapshot.first.length = 0; assert.equal(history.snapshot().first.length, 16);
+});
+
+test("paid SQL failure snapshots use bounded columns and reproject returned sample payloads", async () => {
+	const summary = await officePaidSqlDiagnostics(async (sql, options) => {
+		assert.match(sql, /limit 64/); assert.match(sql, /limit 16/);
+		assert.equal(options.maxOutputBytes, 262144);
+		return JSON.stringify([{ state: "closed", generation: 1, cursor: { sequence: 8, sealed: true, private: "secret" },
+			samples: [{ sequence: 7, coverage: "gap", sample: { state: "gap", hostUptimeMs: 123, secret: "secret" } }] }]);
+	});
+	assert.deepEqual(summary, [{ state: "closed", generation: 1, cursor: { sequence: 8, sealed: true }, samples: [{ sequence: 7, coverage: "gap", sample: { state: "gap", hostUptimeMs: 123 } }] }]);
+});
+
+
+test("SQL timeouts, caller abort and output limits stay distinct from database rejection", () => {
+	const history = officeSqlFailureHistory();
+	for (const queryTermination of ["timeout", "caller_abort", "output_limit"])
+		history.record("", "qorpera_record_computer_guard_samples", { queryTermination, elapsedMs: 2501, exitCode: null, signal: "SIGKILL", private: "secret" });
+	const rejection = history.record("ERROR:  42501: Captured computer identity differs", "qorpera_record_computer_guard_samples", { queryTermination: "process_exit", elapsedMs: 33, exitCode: 3, signal: null });
+	assert.equal(rejection.code, "CAPTURED_IDENTITY_DIFFERS"); assert.equal(rejection.exitCode, 3);
+	assert.deepEqual(history.snapshot().first.slice(0, 3).map(row => [row.queryTermination, row.elapsedMs, row.exitCode, row.signal]),
+		["timeout", "caller_abort", "output_limit"].map(reason => [reason, 2501, null, "SIGKILL"]));
+	const hostile = history.record("", "private-token", { queryTermination: "private-token", elapsedMs: -1, exitCode: "private-token", signal: "private-token" });
+	assert(!JSON.stringify(hostile).includes("private-token")); assert(!Object.hasOwn(hostile, "elapsedMs"));
 });

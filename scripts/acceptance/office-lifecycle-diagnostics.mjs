@@ -3,6 +3,8 @@ import { createHash } from "node:crypto";
 import { constants } from "node:fs";
 import { lstat, open, readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
+import { nativePostgresDiagnostic } from "./native-postgres.mjs";
+import { OFFICE_PROVIDER_RPCS } from "./office-rpc-server.mjs";
 import { officeCustodyMachines } from "./office-lifecycle-custody.mjs";
 
 const states = new Set(["pending", "running", "stopped", "armed", "stopping", "succeeded", "failed", "unknown", "not_dispatched", "abandoned_before_dispatch", "registered", "dispatched", "accepted", "settled", "dispatch", "copied", "active", "starting", "closed", "start", "stop", "create", "delete"]);
@@ -87,6 +89,73 @@ export function officeServiceDiagnostics({ machineName, policy, policySha256, co
 	} catch { return { available: false }; }
 }
 
+const uuid = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/;
+const hash = /^[0-9a-f]{64}$/;
+const sampleStates = new Set(["prepared", "bound", "running", "gap", "stopped", "absent"]);
+const date = value => typeof value === "string" && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|\+00:00)$/.test(value) && Number.isFinite(Date.parse(value));
+const number = value => Number.isSafeInteger(value) && value >= 0;
+const object = value => value && typeof value === "object" && !Array.isArray(value);
+
+/** Diagnostic projections are deliberately not authority parsers. Never copy
+ * request text, machine configuration, errors or arbitrary nested properties. */
+export function officePaidDiagnostic(value) {
+	if (!object(value)) return {};
+	const result = {};
+	for (const key of ["permitId", "allocationId", "observationId", "previousObservationId", "hostBootId", "guestBootId", "physicalId", "closedHostBootId"])
+		if (typeof value[key] === "string" && uuid.test(value[key])) result[key] = value[key];
+	for (const key of ["generation", "sequence", "hostUptimeMs", "guestUptimeMs", "deadlineUptimeMs", "stopAtUptimeMs", "observedUptimeMs", "closedAtUptimeMs"])
+		if (number(value[key])) result[key] = value[key];
+	for (const key of ["issuedAt", "deadline", "observedAt", "closedAt"]) if (date(value[key])) result[key] = value[key];
+	for (const key of ["state", "phase"]) if (states.has(value[key]) || sampleStates.has(value[key])) result[key] = value[key];
+	if (["initial", "continuous", "gap", "terminal"].includes(value.coverage)) result.coverage = value.coverage;
+	for (const key of ["startDispatched", "startSettled", "startSucceeded", "usageRequired", "sealed"]) if (typeof value[key] === "boolean") result[key] = value[key];
+	return result;
+}
+function usageFrame(value) {
+	if (!object(value) || !number(value.sequence) || typeof value.sha256 !== "string" || !hash.test(value.sha256)
+		|| typeof value.entryText !== "string" || Buffer.byteLength(value.entryText) > 8192) return { available: false };
+	try {
+		const entry = JSON.parse(value.entryText);
+		if (entry.schema !== "qorpera.computer-guard-usage-entry/v1") return { available: false };
+		return { sequence: value.sequence, sha256: value.sha256, permit: officePaidDiagnostic(entry.permit), sample: officePaidDiagnostic(entry.sample),
+			...officePaidDiagnostic(entry), stopReceipt: officePaidDiagnostic(entry.stopReceipt) };
+	} catch { return { available: false }; }
+}
+
+/** Preserve the first failure even when later canceled status queries fail.
+ * Bounded first/recent windows expose no SQL, parameters or raw stderr. */
+export function officeSqlFailureHistory() {
+	const first = [], recent = []; let total = 0;
+	return {
+		record(stderr, method, process = {}) {
+			const value = { at: new Date().toISOString(), method: OFFICE_PROVIDER_RPCS.includes(method) ? method : null, ...nativePostgresDiagnostic(stderr) };
+			if (["timeout", "caller_abort", "output_limit", "process_exit"].includes(process.queryTermination)) value.queryTermination = process.queryTermination;
+			if (number(process.elapsedMs)) value.elapsedMs = process.elapsedMs;
+			if (process.exitCode === null || (Number.isInteger(process.exitCode) && process.exitCode >= 0 && process.exitCode <= 255)) value.exitCode = process.exitCode;
+			if (process.signal === null || ["SIGKILL", "SIGTERM", "SIGABRT", "SIGSEGV", "SIGINT"].includes(process.signal)) value.signal = process.signal;
+			total++;
+			if (first.length < 16) first.push(value); else { if (recent.length === 16) recent.shift(); recent.push(value); }
+			return value;
+		},
+		snapshot: () => ({ total, omitted: total - first.length - recent.length, first: structuredClone(first), recent: structuredClone(recent) }),
+	};
+}
+
+/** Fixed-column, bounded read of the actual committed stream, including early
+ * failures before a successful lifecycle could run the full money oracle. */
+export async function officePaidSqlDiagnostics(query) {
+	const raw = await query(`select coalesce(jsonb_agg(jsonb_build_object(
+ 'permitId',p.id,'allocationId',p.allocation_id,'generation',p.generation,'state',p.state,'issuedAt',w.issued_at,'deadline',w.deadline,'closedAt',p.closed_at,
+ 'cursor',(select jsonb_build_object('sequence',c.sequence,'sealed',c.sealed) from public.qorpera_computer_guard_sample_cursors c where c.permit_id=p.id),
+ 'samples',(select coalesce(jsonb_agg(jsonb_build_object('sequence',s.sequence,'coverage',s.coverage,'sample',s.sample) order by s.sequence),'[]') from
+ (select sequence,coverage,sample from public.qorpera_coding_computer_samples where permit_id=p.id order by sequence desc limit 64) s)
+ ) order by p.id),'[]') from (select * from public.qorpera_coding_computer_permits order by id limit 16) p join public.qorpera_coding_computer_windows w on w.permit_id=p.id and w.generation=p.generation;`, { timeoutMs: 5000, maxOutputBytes: 262144 });
+	const rows = JSON.parse(raw);
+	if (!Array.isArray(rows) || rows.length > 16) throw new Error("OFFICE_PAID_DIAGNOSTIC_UNAVAILABLE");
+	return rows.map(row => ({ ...officePaidDiagnostic(row), cursor: officePaidDiagnostic(row.cursor),
+		samples: Array.isArray(row.samples) ? row.samples.slice(-64).map(item => ({ ...officePaidDiagnostic(item), sample: officePaidDiagnostic(item.sample) })) : [] }));
+}
+
 /** Export selected state only. Journal payloads may contain bearer credentials. */
 export function officeJournalDiagnostic(value) {
 	if (!value || typeof value !== "object" || Array.isArray(value)) return {};
@@ -94,6 +163,22 @@ export function officeJournalDiagnostic(value) {
 	if (typeof value.schema === "string" && /^qorpera\.[a-z-]+\/v[1-9][0-9]*$/.test(value.schema)) result.schema = value.schema;
 	for (const key of ["state", "kind", "action", "phase"]) if (states.has(value[key])) result[key] = value[key];
 	for (const key of ["startDispatched", "startSettled", "startSucceeded", "stopped", "closed"]) if (typeof value[key] === "boolean") result[key] = value[key];
+	if (value.schema === "qorpera.computer-guard-archive/v1") {
+		result.guard = officePaidDiagnostic(value.guard);
+		result.permit = officePaidDiagnostic(value.guard?.permit);
+		result.stopReceipt = officePaidDiagnostic(value.guard?.stopReceipt);
+		result.closure = officePaidDiagnostic(value.closure);
+	}
+	if (value.schema === "qorpera.computer-guard-usage-anchor/v1") {
+		result.identity = officePaidDiagnostic(value.identity);
+		if (typeof value.sealed === "boolean") result.sealed = value.sealed;
+		for (const key of ["head", "lastRunning", "acknowledged"]) result[key] = value[key] === null ? null : usageFrame(value[key]);
+	}
+	if (value.schema === "qorpera.paid-computer-guard/v1") {
+		result.guard = officePaidDiagnostic(value);
+		result.permit = officePaidDiagnostic(value.permit);
+		result.stopReceipt = officePaidDiagnostic(value.stopReceipt);
+	}
 	return result;
 }
 

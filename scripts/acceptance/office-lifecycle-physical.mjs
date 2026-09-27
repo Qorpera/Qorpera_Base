@@ -9,7 +9,7 @@ import { isDeepStrictEqual } from "node:util";
 import { build } from "esbuild";
 import { officeLifecycleBearerToken } from "./office-lifecycle-credentials.mjs";
 import { closeOfficeLifecycleCustody, officeCustodyMachines } from "./office-lifecycle-custody.mjs";
-import { officeLifecycleDiagnostics } from "./office-lifecycle-diagnostics.mjs";
+import { officeLifecycleDiagnostics, officePaidSqlDiagnostics, officeSqlFailureHistory } from "./office-lifecycle-diagnostics.mjs";
 import { startOfficeRpcServer } from "./office-rpc-server.mjs";
 import { readWorkloadUsage, verifyWorkloadUsage } from "./workload-usage-evidence.mjs";
 
@@ -34,6 +34,7 @@ const evidence = { schema: "qorpera.office-lifecycle-physical-acceptance/v1", co
 	passed: false, checks: {}, observations: [], scope: "Actual office provider, paid SQL, LXD/KVM guest, local NFS and forced-stop recovery. Subscription is a labeled isolated test entitlement; Stripe acceptance is separate." };
 const children = new Set();
 const physicalSamples = [];
+const sqlFailures = officeSqlFailureHistory();
 let pg, pgReady, pgClosed = false, rpc, provider, observer, metering, mounted = false, journalMounted = false, exported = false, guardInstalled = false, fixtureCreated = false;
 let machineName, phase = "setup";
 let diagnosticAuthority;
@@ -78,22 +79,22 @@ async function query(sql, options = {}) {
 	return new Promise((resolveQuery, reject) => {
 		const command = spawn("/usr/lib/postgresql/17/bin/psql", ["-X", "-qAt", "-v", "ON_ERROR_STOP=1", "-v", "VERBOSITY=verbose", "-h", pgReady.socketDirectory, "-U", "postgres", "-d", "qorpera_test"],
 			{ env: { PATH: "/usr/bin:/bin", LANG: "C", PGOPTIONS: "-c statement_timeout=10000 -c lock_timeout=2000" }, stdio: ["pipe", "pipe", "pipe"] });
-		let output = "", error = "";
-		const abort = () => command.kill("SIGKILL"), timer = setTimeout(abort, options.timeoutMs ?? 15000);
-		options.signal?.addEventListener("abort", abort, { once: true });
-		command.stdout.on("data", (bytes) => { output += bytes; if (output.length > (options.maxOutputBytes ?? 4 * 1024 ** 2)) abort(); });
+		let output = "", error = "", queryTermination;
+		const startedAt = performance.now();
+		const abort = reason => { queryTermination ??= reason; command.kill("SIGKILL"); };
+		const callerAbort = () => abort("caller_abort"), timer = setTimeout(() => abort("timeout"), options.timeoutMs ?? 15000);
+		options.signal?.addEventListener("abort", callerAbort, { once: true });
+		if (options.signal?.aborted) callerAbort();
+		command.stdout.on("data", (bytes) => { output += bytes; if (output.length > (options.maxOutputBytes ?? 4 * 1024 ** 2)) abort("output_limit"); });
 		command.stderr.on("data", (bytes) => { error = (error + bytes).slice(-16384); });
 		command.stdin.on("error", () => {});
 		command.once("error", reject);
-		command.once("close", (code) => {
-			clearTimeout(timer); options.signal?.removeEventListener("abort", abort);
+		command.once("close", (code, signal) => {
+			clearTimeout(timer); options.signal?.removeEventListener("abort", callerAbort);
 			if (code === 0) resolveQuery(output.trim());
 			else {
 				void writeFile(`${root}/private-sql-error`, error, { mode: 0o600 });
-				// Public diagnostics retain only SQLSTATE and a routine identifier.
-				// Raw messages, argument values and statement text remain private.
-				evidence.lastSqlFailure = { phase, sqlState: /ERROR:\s+([0-9A-Z]{5}):/.exec(error)?.[1] ?? "unknown",
-					routine: /PL\/pgSQL function ((?:[a-z_][a-z0-9_]*\.)?[a-z_][a-z0-9_]*)\(/.exec(error)?.[1] ?? null };
+				evidence.lastSqlFailure = { phase, ...sqlFailures.record(error, options.diagnosticMethod, { queryTermination: queryTermination ?? "process_exit", elapsedMs: Math.max(0, Math.floor(performance.now() - startedAt)), exitCode: code, signal }) };
 				reject(new Error("OFFICE_ACCEPTANCE_SQL_FAILED"));
 			}
 		});
@@ -442,6 +443,9 @@ try {
 	evidence.passed = true;
 } catch (error) {
 	evidence.failurePhase = phase; evidence.error = String(error); process.exitCode = 1;
+	try { evidence.paidFailure = pgReady ? await officePaidSqlDiagnostics(query) : { available: false }; }
+	catch { evidence.paidFailure = { available: false }; }
+	evidence.sqlFailures = sqlFailures.snapshot();
 	try { evidence.failureState = await officeLifecycleDiagnostics({ journal, machineName, provider, toolsPath: `${root}/tools.mjs`, ...diagnosticAuthority }); }
 	catch { evidence.failureState = { unavailable: true }; }
 	// Diagnostics remain root-private on the ephemeral runner and are never an artifact.
