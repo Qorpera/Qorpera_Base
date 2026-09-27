@@ -647,7 +647,7 @@ strict public reference permits exactly:
 Commit `2eb7a1543` separates the private reachability helper data from the
 serialized public reference. Commit `e9a83b03f` pins the resulting guest
 package. Commit `135b4fc7b` adds the shared golden contract test
-(`packages/shell/test/cloud-company-file-contract.test.ts`) that feeds the
+(`packages/runtime/test/cloud-company-file-contract.test.ts`) that feeds the
 producer's exact serialized tree through the deployed verifier closure and
 asserts the v20 leak shape is rejected with `Invalid Company File reference`;
 step2-lxd CI runs it and the full verifier suite on every pull request.

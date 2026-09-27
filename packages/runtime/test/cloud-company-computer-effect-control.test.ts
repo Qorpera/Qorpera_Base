@@ -9,8 +9,8 @@ import { CompanyComputerScreenActionGate } from "@qorpera/runtime/cloud-company-
 import { CloudNativeToolRun } from "@qorpera/runtime/cloud-native-tool-authority";
 import { cloudNativeToolOperationEnvelope } from "@qorpera/runtime/cloud-native-tool-operations";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { nativeToolAuthorityFixture } from "../../shell/test/fixtures/native-tool-authority-fixture.ts";
 import { computerBinding, computerLease, computerOperation } from "./fixtures/company-computer.ts";
+import { nativeToolAuthorityFixture } from "./fixtures/native-tool-authority-fixture.ts";
 
 const runs: CloudNativeToolRun[] = [];
 afterEach(() => {

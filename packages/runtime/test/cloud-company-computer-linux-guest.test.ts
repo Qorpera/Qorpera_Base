@@ -13,7 +13,6 @@ import { CompanyComputerLinuxGuest } from "@qorpera/runtime/cloud-company-comput
 import { CompanyComputerScreenLifecyclePublisher } from "@qorpera/runtime/cloud-company-computer-screen-lifecycle";
 import { CloudNativeToolRun } from "@qorpera/runtime/cloud-native-tool-authority";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { nativeToolAuthorityFixture } from "../../shell/test/fixtures/native-tool-authority-fixture.ts";
 import {
 	computerBinding,
 	computerDeferred,
@@ -22,6 +21,7 @@ import {
 	computerOperation,
 	computerScope,
 } from "./fixtures/company-computer.ts";
+import { nativeToolAuthorityFixture } from "./fixtures/native-tool-authority-fixture.ts";
 import { screenReceipt, screenStartup } from "./fixtures/screen-lifecycle.ts";
 
 const physical = vi.hoisted(() => ({

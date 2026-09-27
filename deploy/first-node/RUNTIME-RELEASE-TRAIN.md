@@ -104,10 +104,10 @@ Which workflows run:
   feature PR matches no other workflow's paths, so this job is the one that
   packages its runtime.
 - The same workflow's "Unit tests" job runs every unit test file of
-  `packages/runtime`, `packages/shell` and `packages/cloud-client`, sharded
-  across runners, on the same triggers. A runtime- or shell-only feature PR is
-  therefore tested even when it matches no other workflow's paths. The workflow
-  file names each excluded test and why.
+  `packages/runtime` and `packages/cloud-client`, sharded across runners, on
+  the same triggers. A runtime-only feature PR is therefore tested even when it
+  matches no other workflow's paths. The workflow file names each excluded test
+  and why.
 - Step 2 LXD, hosted database and ephemeral runner run on every push to
   `release/runtime-*`. The web client workflow also lists `release/runtime-*`
   in its push branches, but keeps its path filter there, so a release push runs

@@ -2,6 +2,12 @@
 
 **Qorpera Base** is a hard fork of the PI coding agent.
 
+> **2026-09-25: the PI code is gone.** Every PI package (`ai`, `agent`,
+> `coding-agent`, `tui`, `client`, `protocol`, `evals`, `storage`, `server`)
+> and the desktop app built on it were deleted; the product is the cloud
+> runtime and the web app. The history below still holds them, and the
+> cherry-pick policy no longer applies.
+
 | | |
 |---|---|
 | Upstream | https://github.com/earendil-works/pi (MIT, © 2025 Mario Zechner) |

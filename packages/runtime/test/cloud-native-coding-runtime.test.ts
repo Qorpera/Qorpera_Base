@@ -1,7 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { nativeToolAuthorityFixture } from "../../shell/test/fixtures/native-tool-authority-fixture.ts";
 import type { CloudCodingCommandGateway } from "../src/cloud-coding-command-tools.ts";
 import {
 	type CloudCodingNativeControl,
@@ -17,6 +16,7 @@ import { CloudNativeToolOperations } from "../src/cloud-native-tool-operations.t
 import { CLOUD_RUNTIME_NATIVE_BINARY_SHA256 } from "../src/cloud-runtime-bundle.generated.ts";
 import { CloudRuntimeObservability, type CloudRuntimeObservation } from "../src/cloud-runtime-observability.ts";
 import type { CloudWakeEnvelope } from "../src/cloud-wake-bus.ts";
+import { nativeToolAuthorityFixture } from "./fixtures/native-tool-authority-fixture.ts";
 
 vi.mock("../src/cloud-native-run-tool-session.ts", () => ({ runCloudNativeRunToolSession: vi.fn() }));
 afterEach(() => {
