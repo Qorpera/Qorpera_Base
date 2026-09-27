@@ -153,7 +153,7 @@ describe("host-only office registry transport", () => {
 			false,
 		);
 		expect(await outcome(async () => Response.json({ code: "55000" }, { status: 500 }))).toBe(false);
-		for (const code of ["57014", "55P03", "40001", "40P01", "08006", "53300"])
+		for (const code of ["57014", "55P03", "40001", "40P01", "08006", "53300", "25006"])
 			expect(await outcome(async () => Response.json({ code }, { status: code === "40001" ? 409 : 500 }))).toBe(
 				true,
 			);

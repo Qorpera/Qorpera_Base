@@ -13,7 +13,10 @@ import {
 } from "@qorpera/cloud-client/cloud-company-computer-contract";
 import type { JsonValue } from "@qorpera/contracts";
 import type { CompanyComputerGuestAutomation } from "./cloud-company-computer-guest.ts";
-import { type CompanyComputerScreenActionGate, companyComputerActionSettled } from "./cloud-company-computer-leases.ts";
+import {
+	CompanyComputerActionSettledFailure,
+	type CompanyComputerScreenActionGate,
+} from "./cloud-company-computer-leases.ts";
 import {
 	type CompanyComputerAction,
 	type CompanyComputerCloudEndpoint,
@@ -199,8 +202,10 @@ export class CompanyComputerGuestEndpoint implements CompanyComputerCloudEndpoin
 				// an open resource makes releasing the screen drain the whole desktop.
 				// Any other error or timeout retains the resource: the guest may still
 				// be draining, and only the acknowledged supervisor reaps that.
-				if (companyComputerActionSettled(error))
+				if (error instanceof CompanyComputerActionSettledFailure) {
 					await this.#effects.finish(structuredClone(effect), new AbortController().signal).catch(() => undefined);
+					throw error.cause;
+				}
 				throw error;
 			});
 		await this.#effects.finish(structuredClone(effect), new AbortController().signal);

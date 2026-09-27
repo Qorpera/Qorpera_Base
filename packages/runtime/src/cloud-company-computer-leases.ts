@@ -221,20 +221,19 @@ export class CompanyComputerActionFailedError extends Error {
 	}
 }
 
-const settledFailures = new WeakSet<object>();
-function settledFailure(error: unknown): unknown {
-	if (error && typeof error === "object") settledFailures.add(error);
-	return error;
-}
-
 /**
- * Whether the gate returned this failure knowing that nothing of the action is
- * still running and nothing had to be stopped. Only a failure the gate itself
- * returned qualifies; a deadline that passed while the work ran never does.
- * The caller drains the action's resource only after the gate has returned.
+ * The gate returned this failure knowing that nothing of the action is still
+ * running and nothing had to be stopped; `cause` is the failure itself. Each
+ * is created for one action, so a shared error object can never carry the
+ * mark to another. A deadline that passed while the work ran never is one. The
+ * caller drains the action's resource after the gate returned, then reports
+ * the cause.
  */
-export function companyComputerActionSettled(error: unknown): boolean {
-	return !!error && typeof error === "object" && settledFailures.has(error);
+export class CompanyComputerActionSettledFailure extends Error {
+	constructor(failure: unknown) {
+		super(failure instanceof Error ? failure.message : "COMPUTER_ACTION_FAILED", { cause: failure });
+		this.name = "CompanyComputerActionSettledFailure";
+	}
 }
 
 /** A failed shutdown is not proof that effects stopped; retain the physical-slot quarantine. */
@@ -269,7 +268,7 @@ export class CompanyComputerScreenActionGate {
 		const key = `${lease.binding.companyComputerId}:${lease.binding.screenOrdinal}`;
 		const refuse = (reason: string): never => {
 			// Refused before any work: nothing of this action ran.
-			throw settledFailure(new Error(reason));
+			throw new CompanyComputerActionSettledFailure(new Error(reason));
 		};
 		if (this.#replacing.has(key)) refuse("SCREEN_REPLACEMENT_PENDING");
 		const fence = this.#fences.get(key);
@@ -349,7 +348,7 @@ export class CompanyComputerScreenActionGate {
 						throw new CompanyComputerActionDrainError();
 					}
 				}
-				throw settled ? settledFailure(failure) : failure;
+				throw settled ? new CompanyComputerActionSettledFailure(failure) : failure;
 			} finally {
 				// Stay armed through the final authority check AND any asynchronous drain.
 				signal.removeEventListener("abort", stopAutomation);

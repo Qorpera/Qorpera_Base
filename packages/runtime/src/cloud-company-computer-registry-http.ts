@@ -61,8 +61,10 @@ class CompanyComputerRegistryRefusedError extends Error {
 	}
 }
 
-/** SQLSTATE classes (and codes) that report a passing condition, not a decision. */
-const transientSqlState = /^(08|40|53|57)|^55P03$/;
+/** SQLSTATE classes (and codes) that report a passing condition, not a decision:
+ * connection, rollback, resources, operator intervention, lock wait, and a
+ * read-only transaction (seen during a database failover). */
+const transientSqlState = /^(08|40|53|57)|^(55P03|25006)$/;
 
 /** How long a desktop, or its browser, outlasts a registry that does not answer. */
 export const COMPANY_COMPUTER_UNANSWERED_GRACE_MS = 30_000;
