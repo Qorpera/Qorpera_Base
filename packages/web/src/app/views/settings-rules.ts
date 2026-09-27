@@ -80,6 +80,8 @@ export class RulesView {
 	#refreshing = false;
 	/** A change dropped a load on its way: load again once the change is done. */
 	#stale = false;
+	/** The latest load succeeded (a change's error or success says nothing about the list). */
+	#listed = false;
 
 	/** `role` is the member's current role in the company: a change reloads the rules (who may edit changes). */
 	constructor(client: WebReviewRules, signal: AbortSignal, role: () => string | undefined = () => undefined) {
@@ -110,7 +112,7 @@ export class RulesView {
 		const role = this.#role();
 		// The role arriving after a list that loaded without it changes nothing: that list already
 		// carries the cloud's answer on who may edit. A failed load is still retried when it arrives.
-		if (!this.#stale && this.#listedRole === undefined && role !== undefined && !this.#error && !this.#missing) {
+		if (!this.#stale && this.#listedRole === undefined && role !== undefined && this.#listed) {
 			this.#listedRole = role;
 			return;
 		}
@@ -130,8 +132,10 @@ export class RulesView {
 			this.#rules = listed.rules;
 			this.#canManage = listed.canManageCompanyRules;
 			this.#error = undefined;
+			this.#listed = true;
 		} catch (error) {
 			if (!current()) return;
+			this.#listed = false;
 			if (error instanceof CloudRpcError && error.missing) this.#missing = true;
 			else this.#error = describeError(error);
 		} finally {

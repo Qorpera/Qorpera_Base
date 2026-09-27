@@ -528,6 +528,26 @@ describe("Settings → General → rules", () => {
 		expect(client.list).toHaveBeenCalledTimes(2);
 	});
 
+	it("loads again when the role arrives after a failed list, even if a rule was added meanwhile", async () => {
+		let role: string | undefined;
+		const client = rulesClient(true, [rule(912, "company", "hiring agents")]);
+		vi.mocked(client.list).mockRejectedValueOnce(new Error("Network down"));
+		view = new RulesView(client, new AbortController().signal, () => role);
+		await settle();
+		expect(view.el.querySelector(".notice-danger")?.textContent).toContain("Network down");
+		// A successful add clears the error, but the list itself never loaded.
+		typeRule(view.el, "posting");
+		addButton(view.el).click();
+		await settle();
+		expect(view.el.querySelector(".notice-danger")).toBeNull();
+		role = "owner";
+		view.update();
+		await settle();
+		expect(client.list).toHaveBeenCalledTimes(2);
+		expect(view.el.textContent).toContain("hiring agents");
+		expect(view.el.querySelector('select[aria-label="Applies to:"]')).not.toBeNull();
+	});
+
 	it("does not ask again for a list that failed until the role moves", async () => {
 		let role = "member";
 		for (const failure of [
