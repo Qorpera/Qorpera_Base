@@ -1217,6 +1217,35 @@ it("starts the run without the open-work count when the kernel cannot give it", 
 	expect(JSON.parse(evidence.turnParameters.input[0].text)).not.toHaveProperty("openWork");
 });
 
+it("asks for the run's context and its wake together, and reports a context failure first", async () => {
+	const f = await fixture();
+	const original = f.pathCall.getMockImplementation()!;
+	let describing = false;
+	let overlapped = false;
+	f.pathCall.mockImplementation(async (method, args, signal) => {
+		if (method === "qorpera_describe_company_run_context") {
+			describing = true;
+			await new Promise((resolve) => setTimeout(resolve, 20));
+			describing = false;
+		}
+		if (method === "qorpera_read_native_wake" && describing) overlapped = true;
+		return original(method, args, signal);
+	});
+	await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+	expect(overlapped).toBe(true);
+	f.pathCall.mockImplementation(async (method, args, signal) => {
+		if (method === "qorpera_describe_company_run_context") {
+			await new Promise((resolve) => setTimeout(resolve, 20));
+			throw new Error("Cloud context unavailable");
+		}
+		if (method === "qorpera_read_native_wake") throw new Error("Admitted wake is unavailable");
+		return original(method, args, signal);
+	});
+	await expect(f.runtime.execute(f.request, f.identityRoot, new AbortController().signal)).rejects.toThrow(
+		"Cloud context unavailable",
+	);
+});
+
 it("does not fall back to local context or another harness when cloud context is unavailable", async () => {
 	const f = await fixture();
 	const original = f.pathCall.getMockImplementation()!;

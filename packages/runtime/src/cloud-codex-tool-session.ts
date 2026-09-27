@@ -1,5 +1,6 @@
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
+import type { Stats } from "node:fs";
 import { createReadStream } from "node:fs";
 import { lstat, mkdir, mkdtemp, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -129,6 +130,38 @@ const DISABLED_FEATURES = [
 	"current_time_reminder",
 	"sleep_tool",
 ] as const;
+
+/** Digests started ahead of a session, by artifact path. */
+const artifactDigests = new Map<string, { identity: string; digest: Promise<string> }>();
+
+function artifactIdentity(stat: Stats): string {
+	return [stat.dev, stat.ino, stat.size, stat.mtimeMs, stat.ctimeMs].join(":");
+}
+
+async function hashArtifact(path: string, signal?: AbortSignal): Promise<string> {
+	const hash = createHash("sha256");
+	for await (const chunk of createReadStream(path, signal ? { signal } : {})) hash.update(chunk);
+	return hash.digest("hex");
+}
+
+/**
+ * Starts hashing the Codex artifact while the host prepares the run (the binary is
+ * about 300 MB). A session still compares the digest with its pin before it starts
+ * the process; it reuses this hash only for the same unchanged file (device, inode,
+ * size, modification and change time), and otherwise hashes again.
+ */
+export async function prefetchCloudCodexArtifact(executable: string): Promise<void> {
+	try {
+		const path = await realpath(executable);
+		const stat = await lstat(path);
+		if (!stat.isFile()) return;
+		const digest = hashArtifact(path);
+		artifactDigests.set(path, { identity: artifactIdentity(stat), digest });
+		await digest;
+	} catch {
+		// The session hashes the artifact itself.
+	}
+}
 
 export function cloudCodexBoundaryConfig(effort: CloudRuntimeReasoningEffort): readonly string[] {
 	return Object.freeze([`model_reasoning_effort="${effort}"`, ...CLOUD_CODEX_BOUNDARY_FIXED_CONFIG]);
@@ -1113,9 +1146,13 @@ export async function runCloudCodexToolSession(options: {
 		const artifact = await lstat(command);
 		if (!artifact.isFile() || artifact.size > 512 * 1024 * 1024 || (artifact.mode & 0o022) !== 0)
 			throw new Error("Invalid native boundary artifact");
-		const hash = createHash("sha256");
-		for await (const chunk of createReadStream(command, { signal })) hash.update(chunk);
-		if (hash.digest("hex") !== options.binarySha256) throw new Error("Native boundary artifact mismatch");
+		const prefetched = artifactDigests.get(command);
+		const digest =
+			prefetched?.identity === artifactIdentity(artifact)
+				? await prefetched.digest.catch(() => hashArtifact(command, signal))
+				: await hashArtifact(command, signal);
+		signal.throwIfAborted();
+		if (digest !== options.binarySha256) throw new Error("Native boundary artifact mismatch");
 		stage = "codex-identity";
 		if (options.identityRoot && !isAbsolute(options.identityRoot))
 			throw new Error("Invalid native identity directory");

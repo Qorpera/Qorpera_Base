@@ -93,8 +93,10 @@ export async function runCloudNativeRunToolSession(options: {
 		const assertActive = async (signal: AbortSignal): Promise<void> => {
 			const observation = options.observability?.start("context_authority");
 			try {
-				await run.assertActive(signal);
-				await cloudToolRequest((requestSignal) => activeAdapters.assertContext(requestSignal), signal);
+				// Two independent reads, both required: the run's admission and its context read set.
+				const admission = run.assertActive(signal);
+				const context = cloudToolRequest((requestSignal) => activeAdapters.assertContext(requestSignal), signal);
+				await Promise.all([admission, context]);
 				observation?.finish("succeeded");
 			} catch (error) {
 				observation?.finish("denied", {

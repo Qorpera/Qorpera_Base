@@ -8,6 +8,7 @@ import {
 	cloudConnectorEffects,
 } from "./cloud-action-review.ts";
 import { CLOUD_AGENT_SEND_INSTRUCTIONS, CloudAgentMouth, parseCloudAgentSendInput } from "./cloud-agent-mouth.ts";
+import { prefetchCloudCodexArtifact } from "./cloud-codex-tool-session.ts";
 import type { CloudCompanyComputerSessionFactory } from "./cloud-company-computer-control.ts";
 import { type CloudCompanyPathControl, CloudCompanyPathGateway } from "./cloud-company-path-gateway.ts";
 import {
@@ -124,6 +125,8 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		this.#store = options.objectStore;
 		this.#command = Object.freeze([...options.command]) as readonly [string, ...string[]];
 		this.#sha256 = options.binarySha256;
+		// The host is built before its run arrives: hash the Codex binary in the meantime.
+		void prefetchCloudCodexArtifact(this.#command[0]);
 		this.#timeoutMs = options.timeoutMs;
 		this.#isolation = options.isolation ? Object.freeze({ ...options.isolation }) : undefined;
 		this.#secretBroker = options.secretBroker;
@@ -161,26 +164,25 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		let stage: NativeRuntimeFailureStage = "company-context";
 		let presence: CloudCompanyPathPresence | undefined;
 		try {
-			const context = parseCloudNativeCompanyContext(
-				await cloudToolRequest(
-					(requestSignal) =>
-						this.#paths.call("qorpera_describe_company_run_context", { p_binding: binding }, requestSignal),
-					signal,
-				),
-				binding,
+			// Both reads need only the binding: ask for them together and check them in
+			// the original order, so a failure still names its stage.
+			const contextRequest = cloudToolRequest(
+				(requestSignal) =>
+					this.#paths.call("qorpera_describe_company_run_context", { p_binding: binding }, requestSignal),
+				signal,
 			);
+			const wakeRequest = cloudToolRequest(
+				(requestSignal) => this.#paths.call("qorpera_read_native_wake", { p_binding: binding }, requestSignal),
+				signal,
+			);
+			wakeRequest.catch(() => undefined);
+			const context = parseCloudNativeCompanyContext(await contextRequest, binding);
 			stage = "bundle-compatibility";
 			assertCloudRuntimeBundle(context.identity, this.#sha256);
 			// Every activation enters through the wake bus (contract 8): the admitted
 			// occurrence's typed envelope and kernel-owned reply policy, never a job flag.
 			stage = "wake-envelope";
-			const wake = parseCloudWakeEnvelope(
-				await cloudToolRequest(
-					(requestSignal) => this.#paths.call("qorpera_read_native_wake", { p_binding: binding }, requestSignal),
-					signal,
-				),
-				context.identity,
-			);
+			const wake = parseCloudWakeEnvelope(await wakeRequest, context.identity);
 			// A coding session's turn is its own composition: three command tools in
 			// the credential-free repository VM and two ways to end the turn.
 			if (wake.kind === "agent" && wake.source.kind === "worker-dispatch" && wake.payload.species === "coding") {
