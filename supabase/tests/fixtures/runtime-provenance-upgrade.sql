@@ -10,9 +10,11 @@ begin
 	select * into strict v_run from public.qorpera_execution_runs where id = (v_history.binding ->> 'runId')::uuid;
 	select jsonb_agg(to_jsonb(input) order by input.id) into v_inputs from public.qorpera_session_inputs input
 	where input.id = any(v_run.input_ids);
-	if to_jsonb(v_run) - array['reasoning_effort','reasoning_policy_sha256'] <> v_history.run
+	if to_jsonb(v_run) - array['reasoning_effort','reasoning_policy_sha256','service_tier'] <> v_history.run
 		or v_inputs is distinct from v_history.inputs then
 		raise exception 'Upgrade rewrote historical admission provenance'; end if;
+	if to_jsonb(v_run) ? 'service_tier' and to_jsonb(v_run) -> 'service_tier' is distinct from 'null'::jsonb then
+		raise exception 'Upgrade invented the service tier of historical work'; end if;
 	if v_run.reasoning_effort is not null or v_run.reasoning_policy_sha256 is not null
 		or public.qorpera_execution_run_json(v_run) -> 'reasoning_effort' <> 'null'::jsonb then
 		raise exception 'Upgrade invented the effort of historical work'; end if;
