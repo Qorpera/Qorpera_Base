@@ -12,6 +12,7 @@ import {
 	companyComputerPreparationAdoptionReceipt,
 	parseCompanyComputerOutageAdoptionReceipt,
 	parseCompanyComputerOutageConfigurationCompletion,
+	parseCompanyComputerOutageTerminationInspection,
 	parseCompanyComputerPreparationRequest,
 } from "@qorpera/contracts";
 import { companyComputerLinuxServiceSection } from "./cloud-company-computer-boot-configuration-control.ts";
@@ -113,7 +114,7 @@ export async function readCompanyComputerOutageServiceStartEvidence(
 				0o600,
 			);
 		if (
-			!inspectionBytes.equals(encode(inspection)) ||
+			!isDeepStrictEqual(parseCompanyComputerOutageTerminationInspection(json(inspectionBytes)), inspection) ||
 			inspection.bootObservationSha256 !== configured.bootObservationSha256
 		)
 			throw new Error("outage termination proof differs");

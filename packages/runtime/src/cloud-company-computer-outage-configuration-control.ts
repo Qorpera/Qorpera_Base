@@ -15,6 +15,7 @@ import {
 	companyComputerOutageTerminationAcknowledgementCanonical,
 	companyComputerPreparationAdoptionReceipt,
 	parseCompanyComputerOutageConfigurationRequest,
+	parseCompanyComputerOutageTerminationInspection,
 	parseCompanyComputerPreparationCommand,
 	parseCompanyComputerPreparationRequest,
 } from "@qorpera/contracts";
@@ -121,6 +122,15 @@ export async function controlCompanyComputerOutageConfiguration(
 			key: contents.get("tls-key.pem"),
 			minVersion: "TLSv1.3",
 		});
+		const inspection = input.termination.request.inspection,
+			inspectionPath = `${incomingRoot}/outage-termination-inspection-${inspection.inspectionId}.json`,
+			inspectionBytes = await read(inspectionPath, 16384, 0o600);
+		buffers.push(inspectionBytes);
+		// The provider canonicalizes the packet, and SQL JSON may reorder keys.
+		// Match the complete validated inspection, then pin the original guest
+		// bytes for every subsequent custody check without rewriting the file.
+		if (!isDeepStrictEqual(parseCompanyComputerOutageTerminationInspection(decode(inspectionBytes)), inspection))
+			throw new Error("outage termination inspection differs");
 		const verifyHistory = async () => {
 			const evidence = await readCompanyComputerOutagePredecessor(
 				{
@@ -132,7 +142,6 @@ export async function controlCompanyComputerOutageConfiguration(
 				signal,
 			);
 			try {
-				const inspection = input.termination.request.inspection;
 				if (
 					evidence.originAdoptionReceiptSha256 !== inspection.originAdoptionReceiptSha256 ||
 					evidence.predecessorAdoptionReceiptSha256 !== inspection.predecessorAdoptionReceiptSha256 ||
@@ -140,13 +149,9 @@ export async function controlCompanyComputerOutageConfiguration(
 					inspection.bootObservationSha256 !== observationSha256
 				)
 					throw new Error("outage termination retained proof differs");
-				const confirmed = await read(
-					`${incomingRoot}/outage-termination-inspection-${inspection.inspectionId}.json`,
-					16384,
-					0o600,
-				);
+				const confirmed = await read(inspectionPath, 16384, 0o600);
 				try {
-					if (!confirmed.equals(encode(inspection))) throw new Error("outage termination inspection differs");
+					if (!confirmed.equals(inspectionBytes)) throw new Error("outage termination inspection differs");
 				} finally {
 					confirmed.fill(0);
 				}

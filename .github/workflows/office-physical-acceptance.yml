@@ -355,6 +355,7 @@ jobs:
             ${{ runner.temp }}/office-acceptance/image/image-provenance.json
             ${{ runner.temp }}/office-acceptance/image/image-verification.json
             ${{ runner.temp }}/office-acceptance/lifecycle/evidence.json
+            ${{ runner.temp }}/office-acceptance/lifecycle/usage-epochs.json
           if-no-files-found: warn
           retention-days: 14
   workloads:

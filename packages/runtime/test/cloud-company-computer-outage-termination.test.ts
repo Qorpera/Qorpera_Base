@@ -17,6 +17,7 @@ import {
 	parseCompanyComputerStopHistoryManifest,
 } from "@qorpera/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { officeCanonical } from "../../runner-orchestrator/src/lxd-office-image-provenance.ts";
 import {
 	bootConfigurationFixture,
 	bootFixtureEncode as encode,
@@ -321,7 +322,7 @@ describe("forced office shutdown fresh-boot termination", () => {
 	});
 });
 
-async function configuredFixture(f = fixture()) {
+async function configuredFixture(f = fixture(), canonicalPayload = false) {
 	mocks.publish.mockImplementation(async (path: string, bytes: Buffer, mode: number) => {
 		const prior = f.files.get(path);
 		if (prior && (!prior.bytes.equals(bytes) || prior.mode !== mode)) throw new Error("immutable file changed");
@@ -361,9 +362,10 @@ async function configuredFixture(f = fixture()) {
 			termination,
 			material: { ...f.f.input.material, configuration: JSON.stringify(configuration) },
 		}),
-		command = { commandId: id(912), requestSha256: hash(encode(packet)), bootId: observation.bootId };
+		packetBytes = canonicalPayload ? Buffer.from(officeCanonical(packet)) : encode(packet),
+		command = { commandId: id(912), requestSha256: hash(packetBytes), bootId: observation.bootId };
 	f.files.set(`/run/qorpera-office-preparation/outage-configuration-incoming-${command.requestSha256}.json`, {
-		bytes: encode(packet),
+		bytes: packetBytes,
 		mode: 0o400,
 	});
 	const configure = () =>
@@ -400,9 +402,10 @@ async function configuredFixture(f = fixture()) {
 			configuration: completion,
 			configurationCompletionSha256: hash(encode(completion)),
 		}),
-		startCommand = { commandId: id(913), requestSha256: hash(encode(startRequest)), bootId: observation.bootId };
+		startBytes = canonicalPayload ? Buffer.from(officeCanonical(startRequest)) : encode(startRequest),
+		startCommand = { commandId: id(913), requestSha256: hash(startBytes), bootId: observation.bootId };
 	f.files.set(`/run/qorpera-office-preparation/outage-service-start-incoming-${startCommand.requestSha256}.json`, {
-		bytes: encode(startRequest),
+		bytes: startBytes,
 		mode: 0o400,
 	});
 	const start = vi.fn().mockImplementation(async () =>
@@ -438,6 +441,92 @@ async function configuredFixture(f = fixture()) {
 	};
 }
 describe("outage retained configuration and first service invocation", () => {
+	it("starts from production canonical successor packet ordering and observes exact retries", async () => {
+		const f = await configuredFixture(fixture(), true),
+			path = `/run/qorpera-office-preparation/outage-termination-inspection-${id(910)}.json`,
+			original = Buffer.from(f.files.get(path)!.bytes),
+			started = await f.startService();
+		expect(await f.startService()).toEqual(started);
+		expect(await f.startService(id(914))).toMatchObject({ inspectionId: id(914), start: started });
+		expect(f.start).toHaveBeenCalledOnce();
+		expect(f.files.get(path)!.bytes).toEqual(original);
+	});
+	it.each(["malformed", "extra", "missing", "configuration", "command", "cgroup"])(
+		"refuses a %s retained inspection before canonical successor dispatch",
+		async (fault) => {
+			const f = await configuredFixture(fixture(), true),
+				path = `/run/qorpera-office-preparation/outage-termination-inspection-${id(910)}.json`,
+				file = f.files.get(path)!,
+				inspection = JSON.parse(file.bytes.toString());
+			if (fault === "extra") inspection.untrusted = "not part of the acknowledged inspection";
+			if (fault === "missing") delete inspection.physicalInstanceId;
+			if (fault === "configuration") inspection.predecessorConfigurationSha256 = "f".repeat(64);
+			if (fault === "command") inspection.command.commandId = id(999);
+			if (fault === "cgroup") inspection.cgroupState = "absent";
+			file.bytes = fault === "malformed" ? Buffer.from("not JSON") : encode(inspection);
+			mocks.publish.mockClear();
+			await expect(f.startService()).rejects.toThrow("OFFICE_OUTAGE_SERVICE_START_UNCONFIRMED");
+			expect(f.start).not.toHaveBeenCalled();
+			expect(mocks.publish).not.toHaveBeenCalled();
+		},
+	);
+	it("refuses a formatting-only inspection change between successor evidence read and dispatch", async () => {
+		const f = await configuredFixture(fixture(), true),
+			path = `/run/qorpera-office-preparation/outage-termination-inspection-${id(910)}.json`;
+		let reads = 0;
+		mocks.read.mockImplementation(async (name: string, limit: number, mode: number) => {
+			const bytes = await f.read(name, limit, mode);
+			if (name === path && ++reads === 1)
+				f.files.get(path)!.bytes = Buffer.concat([bytes.subarray(0, -1), Buffer.from(" ")]);
+			return bytes;
+		});
+		mocks.publish.mockClear();
+		await expect(f.startService()).rejects.toThrow("OFFICE_OUTAGE_SERVICE_START_UNCONFIRMED");
+		expect(reads).toBe(2);
+		expect(f.start).not.toHaveBeenCalled();
+		expect(mocks.publish).not.toHaveBeenCalled();
+	});
+	it("accepts production canonical packet ordering while preserving the guest inspection bytes", async () => {
+		const f = await configuredFixture(fixture(), true),
+			path = `/run/qorpera-office-preparation/outage-termination-inspection-${id(910)}.json`,
+			original = Buffer.from(f.files.get(path)!.bytes);
+		expect(original).not.toEqual(Buffer.from(`${officeCanonical(JSON.parse(original.toString()))}\n`));
+		expect(await f.configure()).toEqual(f.completion);
+		expect(f.files.get(path)!.bytes).toEqual(original);
+	});
+	it.each(["malformed", "extra", "missing", "configuration", "command", "cgroup"])(
+		"refuses a %s retained inspection even with canonical provider ordering",
+		async (fault) => {
+			const f = await configuredFixture(fixture(), true),
+				path = `/run/qorpera-office-preparation/outage-termination-inspection-${id(910)}.json`,
+				file = f.files.get(path)!,
+				inspection = JSON.parse(file.bytes.toString());
+			if (fault === "extra") inspection.untrusted = "not part of the acknowledged inspection";
+			if (fault === "missing") delete inspection.physicalInstanceId;
+			if (fault === "configuration") inspection.predecessorConfigurationSha256 = "f".repeat(64);
+			if (fault === "command") inspection.command.commandId = id(999);
+			if (fault === "cgroup") inspection.cgroupState = "absent";
+			file.bytes = fault === "malformed" ? Buffer.from("not JSON") : encode(inspection);
+			mocks.publish.mockClear();
+			await expect(f.configure()).rejects.toThrow("OFFICE_OUTAGE_CONFIGURATION_UNCONFIRMED");
+			expect(mocks.publish).not.toHaveBeenCalled();
+		},
+	);
+	it("refuses even a formatting-only change after retaining the validated guest inspection", async () => {
+		const f = await configuredFixture(fixture(), true),
+			path = `/run/qorpera-office-preparation/outage-termination-inspection-${id(910)}.json`;
+		let reads = 0;
+		mocks.read.mockImplementation(async (name: string, limit: number, mode: number) => {
+			const bytes = await f.read(name, limit, mode);
+			if (name === path && ++reads === 1)
+				f.files.get(path)!.bytes = Buffer.concat([bytes.subarray(0, -1), Buffer.from(" ")]);
+			return bytes;
+		});
+		mocks.publish.mockClear();
+		await expect(f.configure()).rejects.toThrow("OFFICE_OUTAGE_CONFIGURATION_UNCONFIRMED");
+		expect(reads).toBe(2);
+		expect(mocks.publish).not.toHaveBeenCalled();
+	});
 	it("recovers a reset-born predecessor without restoring historical credentials", async () => {
 		const base = resetPredecessorFixture(),
 			f = await configuredFixture(base);

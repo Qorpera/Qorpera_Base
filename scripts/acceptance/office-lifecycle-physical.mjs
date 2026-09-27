@@ -454,18 +454,28 @@ try {
 	evidence.epochCoverage = verifyOfficeLifecycleEpochs(evidence.physicalBoots, closures.map(row => row.permit));
 	assert.equal(evidence.finalPhysicalUsage.permitId, evidence.epochCoverage.epochs.at(-1).permitId, "Final stop belongs to another physical epoch");
 	evidence.usageReconciliation = [];
+	const usageEpochs = [];
 	let totalDebit = 0n;
 	for (const { permit } of closures) {
 		const accounting = await readWorkloadUsage(query, permit.permitId);
 		const ids = new Set(accounting.samples.map((sample) => sample.sample.observationId));
 		const samples = physicalSamples.filter((entry) => entry.permitId === permit.permitId && ids.has(entry.sample.observationId)).map((entry) => entry.sample);
 		const boot = evidence.epochCoverage.epochs.find(entry => entry.permitId === permit.permitId);
-		evidence.usageReconciliation.push(verifyWorkloadUsage(accounting, { kind: "company_computer", shape: { cpuMillis: guestCpuMillis, memoryBytes: 4294967296 },
+		const expected = { kind: "company_computer", shape: { cpuMillis: guestCpuMillis, memoryBytes: 4294967296 },
 			shapeProvenance: { nodeId, providerKind: "office", policySha256 },
 			physicalId: boot.physicalId, hostBootId: boot.hostBootId, guestBootId: boot.guestBootId,
-			physicalSamples: samples, closed: true }));
+			physicalSamples: samples, closed: true };
+		evidence.usageReconciliation.push(verifyWorkloadUsage(accounting, expected));
+		// Preserve the same credential-free committed rows and actual RPC samples
+		// consumed by the oracle, so every predecessor epoch can be replayed offline.
+		usageEpochs.push({ accounting, expected });
 		totalDebit += BigInt(evidence.usageReconciliation.at(-1).debitedUs);
 	}
+	const usageBytes = Buffer.from(`${JSON.stringify({ schema: "qorpera.office-usage-epochs/v1", commit: evidence.commit, epochs: usageEpochs })}\n`);
+	assert.equal(usageEpochs.length, 4, "Four complete office accounting epochs required");
+	assert(usageBytes.length <= 16 * 1024 ** 2, "Office accounting evidence exceeds its retention bound");
+	await writeFile(join(out, "usage-epochs.json"), usageBytes, { flag: "wx", mode: 0o644 });
+	evidence.usageEpochFile = { file: "usage-epochs.json", bytes: usageBytes.length, sha256: hash(usageBytes), epochs: usageEpochs.length };
 	evidence.accounting = JSON.parse(await query("select jsonb_build_object('buckets',(select jsonb_agg(jsonb_build_object('issuedUs',issued_us::text,'reservedUs',reserved_us::text,'debitedUs',debited_us::text)) from public.qorpera_computer_allowance_buckets),'permits',(select count(*) from public.qorpera_coding_computer_permits));"));
 	assert(evidence.accounting.buckets.every((bucket) => bucket.reservedUs === "0"), "Stopped offices retained allowance holds");
 	assert.equal(evidence.accounting.buckets.reduce((sum, bucket) => sum + BigInt(bucket.debitedUs), 0n), totalDebit, "Global balance differs from all measured office epochs");
