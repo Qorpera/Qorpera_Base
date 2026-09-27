@@ -10,7 +10,7 @@ import { startNativePostgres } from "./native-postgres.mjs";
 import { retainSecondCodingClaim } from "./workload-usage-shared.mjs";
 import { readWorkloadUsage, verifyWorkloadUsage } from "./workload-usage-evidence.mjs";
 import { assertWorkloadRun, assertWorkloadShape } from "./workload-usage-host.mjs";
-import { assertCodingExecutorCleanup, assertCodingExecutorEvidence, codingFixtureRepository, localCodingFixtureGit, waitForCodingWorkspace } from "./coding-executor-fixture.mjs";
+import { assertCodingExecutorCleanup, assertCodingExecutorEvidence, codingFixtureRepository, codingReadinessProjection, codingGuardReadinessProjection, localCodingFixtureGit, waitForCodingWorkspace } from "./coding-executor-fixture.mjs";
 import { CodingComputerController, CODING_COMPUTER_RPCS, CODING_EXECUTOR_RPCS, CODING_HOST_RPCS,
   LxdCodingExecutorHost, parseCodingSessionClaim, parseCodingTurnState, codingTurnScope,
   createCodingNasStorage, createCodingBrokerGitRunner, authorizeCodingCommand,
@@ -41,7 +41,7 @@ const evidence = { schema: "qorpera.coding-executor-physical/v1", commit: proven
   image: options.imageEvidence, exportPolicy: "identity-preserving-loopback-only", passed: false, cleanup: false,
   sessions: [], gitTransport: [], commands: [], checks: {}, rpcTrace: [] };
 let database, host, controller, observer, maintenance, maintenanceFailure, allocationId, machineName, phase = "database";
-const attached = new Set(), activeClaims = new Map(), calls = [];
+const attached = new Set(), activeClaims = new Map(), calls = [], canonicalPermits = new Map();
 async function until(read, accept, budget, label) {
   const deadline = Date.now() + budget;
   while (Date.now() < deadline) {
@@ -119,6 +119,11 @@ try {
       result = JSON.parse(await query(`begin; ${service} with input as (select * from jsonb_to_record(${literal(input)}) as args(${typed}))
         select coalesce(to_jsonb(public.${method}(${parameters})),'null'::jsonb); commit;`, { signal: checked }));
       trace.state = "completed";
+      if (["qorpera_describe_coding_computer_permit", "qorpera_record_computer_guard_samples"].includes(method)) {
+        trace.readiness = codingReadinessProjection(result);
+        trace.workAdmission = method === "qorpera_describe_coding_computer_permit" && typeof args.p_request?.permitId === "string";
+        if (typeof result?.permit?.permitId === "string") canonicalPermits.set(result.permit.permitId, result);
+      }
     } catch (error) {
       trace.state = "failed";
       if (error.diagnostic) trace.diagnostic = error.diagnostic;
@@ -287,6 +292,40 @@ try {
   assertCodingExecutorEvidence(evidence); evidence.passed = true;
 } catch (error) {
   evidence.phase = phase; evidence.error = String(error).slice(0, 4000); process.exitCode = 1;
+  // One bounded failure snapshot, not extra queries on each 500ms retry.
+  // Read-only verdicts cannot bind, settle, extend or manufacture usage.
+  if (database) {
+    try {
+      evidence.readinessFailure = { sql: JSON.parse(await database.query(`select coalesce(jsonb_agg(jsonb_build_object(
+        'permitState',p.state,'generation',p.generation,'sampleState',p.last_sample->>'state',
+        'sampleAgeMs',floor(extract(epoch from clock_timestamp()-(p.last_sample->>'observedAt')::timestamptz)*1000),
+        'coverage',s.coverage,'sampleReady',public.qorpera_computer_sample_ready(p.id,p.last_sample),
+        'workReady',public.qorpera_computer_work_ready(p.id),
+        'allocationUnreleased',a.released_at is null,'allocationIdentityMatches',a.instance_sha256=p.instance_sha256,
+        'nodeMatches',d.node_id=p.node_id,'nodeEnabled',n.enabled,
+        'demandReserved',d.reserved_at is not null,'demandUnreleased',d.released_at is null,'demandUnsuspended',d.suspended_at is null,
+        'reservationUnsettled',r.settled_at is null,'reservationAllocationMatches',r.allocation_id=p.allocation_id,
+        'reservationEpochMatches',r.epoch=p.epoch,
+        'beforeWorkDeadline',w.deadline-make_interval(secs=>w.stop_reserve_ms::double precision/1000)>clock_timestamp(),
+        'hostBootMatches',p.last_sample->>'hostBootId'=p.host_boot_id::text,
+        'guestBootMatches',p.last_sample->>'guestBootId'=p.guest_boot_id::text,
+        'physicalMatches',p.last_sample->>'physicalId'=p.physical_id::text)), '[]')
+        from (select * from public.qorpera_coding_computer_permits where profile_id='${companyId}' order by id limit 4) p
+        left join public.qorpera_runtime_machine_allocations a on a.id=p.allocation_id
+        left join public.qorpera_runtime_node_demands d on d.allocation_id=p.allocation_id
+        left join public.qorpera_runtime_nodes n on n.id=d.node_id
+        left join public.qorpera_coding_computer_windows w on w.permit_id=p.id and w.generation=p.generation
+        left join public.qorpera_computer_allowance_reservations r on r.id=w.reservation_id
+        left join public.qorpera_coding_computer_samples s on s.permit_id=p.id and s.observation_id=(p.last_sample->>'observationId')::uuid;`, {timeoutMs:10000})), guard: [] };
+      for (const [permitId, canonical] of [...canonicalPermits].slice(-4)) {
+        try {
+          const checked = AbortSignal.timeout(10000);
+          const record = await guard.status(permitId, checked), page = await guard.readUsage(permitId, {limit:1}, checked);
+          evidence.readinessFailure.guard.push(codingGuardReadinessProjection(record, page, canonical, await readPaidComputerHostClock()));
+        } catch { evidence.readinessFailure.guard.push({ unavailable: true }); }
+      }
+    } catch { evidence.readinessFailure = { unavailable: true }; }
+  }
 } finally {
   maintenanceStop.abort(); await maintenance;
   try {

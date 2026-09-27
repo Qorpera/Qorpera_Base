@@ -6,6 +6,42 @@ import { setTimeout as delay } from "node:timers/promises";
 export const codingFixtureRepository = Object.freeze({ host: "github.com", owner: "Qorpera", name: "Qorpera_Base", baseBranch: "master" });
 export const codingFixtureRemote = "https://github.com/Qorpera/Qorpera_Base.git";
 
+// Explicit projections only: RPC/guard objects also contain retained intent,
+// bindings and credentials. Never spread them into acceptance diagnostics.
+export function codingReadinessProjection(value, now = Date.now()) {
+  const permit = value?.permit, sample = value?.lastSample;
+  const age = now - Date.parse(sample?.observedAt);
+  return {
+    workReady: typeof value?.workReady === "boolean" ? value.workReady : null,
+    permitState: ["prepared", "bound", "closed"].includes(permit?.state) ? permit.state : null,
+    generation: Number.isSafeInteger(permit?.generation) && permit.generation > 0 ? permit.generation : null,
+    sampleState: ["running", "gap", "stopped", "absent"].includes(sample?.state) ? sample.state : null,
+    sampleAgeMs: Number.isSafeInteger(age) && Math.abs(age) <= 86400000 ? age : null,
+    samplePhysicalMatches: typeof sample?.physicalId === "string" && sample.physicalId === permit?.physicalId,
+    sampleHostBootMatches: typeof sample?.hostBootId === "string" && sample.hostBootId === permit?.hostBootId,
+    sampleGuestBootMatches: typeof sample?.guestBootId === "string" && sample.guestBootId === permit?.guestBootId,
+  };
+}
+
+export function codingGuardReadinessProjection(record, page, canonical, clock) {
+  const bounded = (n) => Number.isSafeInteger(n) && n >= 0 ? n : null;
+  const age = clock?.uptimeMs - canonical?.lastSample?.hostUptimeMs;
+  return {
+    phase: ["armed", "starting", "running", "stopping", "stopped"].includes(record?.phase) ? record.phase : null,
+    usageRequired: record?.usageRequired === true,
+    usageState: ["open", "sealed", "unconfirmed"].includes(page?.state) ? page.state : null,
+    headSequence: bounded(page?.head?.sequence), acknowledgedSequence: bounded(page?.acknowledgedThrough?.sequence),
+    headAcknowledged: typeof page?.head?.sha256 === "string" && page.head.sha256 === page?.acknowledgedThrough?.sha256 && page.head.sequence === page?.acknowledgedThrough?.sequence,
+    headMatchesCanonical: typeof page?.head?.observationId === "string" && page.head.observationId === canonical?.lastSample?.observationId,
+    permitMatchesCanonical: typeof record?.permit?.permitId === "string" && record.permit.permitId === canonical?.permit?.permitId,
+    generationMatchesCanonical: Number.isSafeInteger(record?.permit?.generation) && record.permit.generation === canonical?.permit?.generation,
+    physicalMatchesCanonical: typeof record?.machine?.physicalInstanceId === "string" && record.machine.physicalInstanceId === canonical?.lastSample?.physicalId,
+    hostBootMatchesCanonical: typeof clock?.hostBootId === "string" && clock.hostBootId === canonical?.permit?.hostBootId,
+    sampleHostAgeMs: Number.isSafeInteger(age) && Math.abs(age) <= 86400000 ? age : null,
+    beforeStop: Number.isSafeInteger(clock?.uptimeMs) && Number.isSafeInteger(record?.stopAtUptimeMs) && clock.uptimeMs < record.stopAtUptimeMs,
+  };
+}
+
 /** The production host separately bounds VM creation/boot. Start the metering
  * convergence budget only when that path actually reports its prerequisite. */
 export async function waitForCodingWorkspace(prepare, signal, { now = () => performance.now(), pause = (ms) => delay(ms, undefined, { signal }) } = {}) {

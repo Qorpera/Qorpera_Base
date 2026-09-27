@@ -5,9 +5,27 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
-import { assertCodingFixtureParents, assertCodingExecutorCleanup, assertCodingExecutorEvidence, codingImageAddress, codingFixtureRemote, localCodingFixtureGit, waitForCodingChild, waitForCodingWorkspace } from "./coding-executor-fixture.mjs";
+import { assertCodingFixtureParents, assertCodingExecutorCleanup, assertCodingExecutorEvidence, codingImageAddress, codingFixtureRemote, codingReadinessProjection, codingGuardReadinessProjection, localCodingFixtureGit, waitForCodingChild, waitForCodingWorkspace } from "./coding-executor-fixture.mjs";
 
 const execute = promisify(execFile);
+
+test("readiness diagnostics distinguish canonical admission from an unacknowledged guard tip without leaking source data", () => {
+  const canonical = { secret: "must-not-retain", workReady: true, permit: { permitId: "permit", state: "bound", generation: 1, physicalId: "physical", hostBootId: "host", guestBootId: "guest", credential: "must-not-retain" },
+    lastSample: { state: "running", observationId: "sample", observedAt: "2026-01-01T00:00:00.000Z", hostUptimeMs: 1000, physicalId: "physical", hostBootId: "host", guestBootId: "guest" } };
+  const result = codingReadinessProjection(canonical, Date.parse("2026-01-01T00:00:01.000Z"));
+  assert.equal(result.workReady, true); assert.equal(result.sampleAgeMs, 1000); assert.equal(result.sampleGuestBootMatches, true);
+  const record = { phase: "running", usageRequired: true, permit: canonical.permit, machine: {physicalInstanceId:"physical"}, stopAtUptimeMs:3000, prepareRequestText:"must-not-retain" };
+  const page = {state:"open",head:{sequence:2,observationId:"new",sha256:"new-sha"},acknowledgedThrough:{sequence:1,sha256:"old-sha"},entries:[{secret:"must-not-retain"}]};
+  const behind = codingGuardReadinessProjection(record,page,canonical,{uptimeMs:2000,hostBootId:"host"});
+  assert.equal(behind.headAcknowledged,false); assert.equal(behind.headMatchesCanonical,false);
+  assert.equal(behind.permitMatchesCanonical,true); assert.equal(behind.sampleHostAgeMs,1000); assert.equal(behind.beforeStop,true);
+  page.head.observationId="sample"; page.acknowledgedThrough={sequence:2,sha256:"new-sha"};
+  const caughtUp = codingGuardReadinessProjection(record,page,canonical,{uptimeMs:2000,hostBootId:"host"});
+  assert.equal(caughtUp.headAcknowledged,true); assert.equal(caughtUp.headMatchesCanonical,true);
+  const invalid = codingReadinessProjection({permit:{state:"must-not-retain",generation:"must-not-retain"},lastSample:{state:"must-not-retain",observedAt:"must-not-retain"}});
+  assert.equal(invalid.permitState,null); assert.equal(invalid.sampleState,null); assert.equal(invalid.sampleAgeMs,null);
+  for(const value of [result,behind,caughtUp,invalid]) assert(!JSON.stringify(value).includes("must-not-retain"));
+});
 
 test("metering wait begins after boot and expires without renewing its budget or swallowing other failures", async () => {
   const notReady = () => new Error("CODING_MACHINE_UNAVAILABLE:COMPUTER_USAGE_NOT_READY");
