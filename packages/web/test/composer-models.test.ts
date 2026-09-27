@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CompanyController } from "../src/app/company.ts";
 import { ConversationView } from "../src/app/views/conversation.ts";
 import type { SessionModel, SessionModelSelection } from "../src/cloud/session-model.ts";
+import { setLanguagePreference } from "../src/ui/preferences.ts";
 import { deferred, fixture, id, profileA, session, settle, staff, team, userA } from "./fixtures.ts";
 
 const cleanups: (() => void)[] = [];
@@ -42,10 +43,12 @@ async function setup(groupChat = false) {
 			_signal: AbortSignal,
 		): Promise<SessionModel> => {
 			const previous = models.get(sessionId);
+			const serviceTier = selection.serviceTier ?? previous?.serviceTier;
 			const value = {
 				sessionId,
 				modelId: selection.modelId ?? previous?.modelId ?? "gpt-6-astra",
 				reasoningEffort: selection.reasoningEffort ?? previous?.reasoningEffort ?? "low",
+				...(serviceTier ? { serviceTier } : {}),
 				version: version + 1,
 			};
 			models.set(sessionId, value);
@@ -90,6 +93,32 @@ describe("composer model selector", () => {
 		for (const name of ["GPT-6 Astra", "GPT-6 Sol", "GPT-6 Luna"])
 			expect(button(panel, name).getAttribute("aria-checked")).toBe("false");
 	});
+	it("offers a group chat's speed with no model chosen, for every agent in it", async () => {
+		const f = await setup(true);
+		f.read.mockImplementation(async (sessionId: string) => ({
+			sessionId,
+			reasoningEffort: "low",
+			serviceTier: "fast",
+			version: 0,
+		}));
+		const panel = await open(f.view);
+		expect(button(f.view.el, "Model: Each agent's own, Low effort, Fast").textContent).toContain(
+			"Each agent's own · Low · Fast",
+		);
+		const fast = panel.querySelector<HTMLButtonElement>('[role="menuitemcheckbox"]')!;
+		expect(fast.getAttribute("aria-checked")).toBe("true");
+		// With no one model, the caption names no speed-up of its own.
+		expect(fast.textContent).toBe("FastFaster replies");
+		expect(panel.textContent).toContain("Every agent in this group chat. Applies from your next message.");
+		fast.click();
+		await settle();
+		expect(f.set).toHaveBeenLastCalledWith(
+			session.sessionId,
+			{ serviceTier: "standard" },
+			0,
+			expect.any(AbortSignal),
+		);
+	});
 	it("gives a group chat one model and effort, for every agent in it", async () => {
 		const f = await setup(true);
 		const panel = await open(f.view);
@@ -126,6 +155,8 @@ describe("composer model selector", () => {
 		const panel = await open(f.view);
 		expect(button(f.view.el, "Model: GPT-6 Astra").textContent).toContain("GPT-6 Astra");
 		expect(panel.querySelector<HTMLElement>('[role="group"][aria-label="Effort"]')?.hidden).toBe(true);
+		expect(panel.querySelector<HTMLElement>('[role="group"][aria-label="Speed"]')?.hidden).toBe(true);
+		expect(panel.querySelector<HTMLButtonElement>('[role="menuitemcheckbox"]')?.disabled).toBe(true);
 		expect(button(panel, "GPT-6 Sol").disabled).toBe(true);
 		expect(button(panel, "GPT-6 Luna").disabled).toBe(true);
 		expect(button(panel, "High").disabled).toBe(true);
@@ -216,6 +247,72 @@ describe("composer model selector", () => {
 		expect(button(restored.el, "Model: GPT-6 Sol, High effort")).toBeTruthy();
 		expect(button(restored.el, "Model: GPT-6 Sol, High effort").textContent).toContain("GPT-6 Sol · High");
 		expect(f.company.conversation(session.sessionId).get().draft).toBe("Continue");
+	});
+	it("runs Fast by default and turns it off for this conversation only", async () => {
+		const f = await setup();
+		f.models.set(session.sessionId, {
+			sessionId: session.sessionId,
+			modelId: "gpt-6-astra",
+			reasoningEffort: "low",
+			serviceTier: "fast",
+			version: 0,
+		});
+		// Opening the menu re-reads the conversation.
+		const panel = await open(f.view);
+		expect(button(f.view.el, "Model: GPT-6 Astra, Low effort, Fast").textContent).toContain(
+			"GPT-6 Astra · Low · Fast",
+		);
+		expect(panel.querySelector<HTMLElement>('[role="group"][aria-label="Speed"]')?.hidden).toBe(false);
+		const fast = panel.querySelector<HTMLButtonElement>('[role="menuitemcheckbox"]')!;
+		expect(fast.getAttribute("aria-checked")).toBe("true");
+		expect(fast.textContent).toBe("Fast2x speed, uses more of your plan");
+		fast.focus();
+		fast.click();
+		await settle();
+		expect(f.set).toHaveBeenLastCalledWith(
+			session.sessionId,
+			{ serviceTier: "standard" },
+			0,
+			expect.any(AbortSignal),
+		);
+		expect(fast.getAttribute("aria-checked")).toBe("false");
+		expect(document.activeElement).toBe(fast);
+		expect(button(f.view.el, "Model: GPT-6 Astra, Low effort").textContent).toContain("GPT-6 Astra · Low");
+		// A model pick keeps the speed, and the caption follows the model.
+		button(panel, "GPT-6 Sol").click();
+		await settle();
+		expect(f.set).toHaveBeenLastCalledWith(session.sessionId, { modelId: "gpt-6-sol" }, 1, expect.any(AbortSignal));
+		expect(fast.getAttribute("aria-checked")).toBe("false");
+		expect(fast.textContent).toBe("Fast1.5x speed");
+		fast.click();
+		await settle();
+		expect(f.set).toHaveBeenLastCalledWith(session.sessionId, { serviceTier: "fast" }, 2, expect.any(AbortSignal));
+		expect(fast.getAttribute("aria-checked")).toBe("true");
+		expect(button(f.view.el, "Model: GPT-6 Sol, Low effort, Fast")).toBeTruthy();
+		// Danish writes the factor with a decimal comma.
+		setLanguagePreference("da");
+		try {
+			button(panel, "GPT-6 Luna").click();
+			await settle();
+			expect(fast.querySelector("small")?.textContent).toBe("1,5x hastighed");
+		} finally {
+			setLanguagePreference("system");
+			localStorage.clear();
+		}
+		// Another conversation keeps its own speed.
+		const otherSession = { ...session, sessionId: id(80), staffAgentId: staff.id };
+		f.models.set(otherSession.sessionId, {
+			sessionId: otherSession.sessionId,
+			modelId: "gpt-6-astra",
+			reasoningEffort: "low",
+			serviceTier: "standard",
+			version: 4,
+		});
+		f.company.store.set({ sessions: [{ ...session, staffAgentId: staff.id }, otherSession] });
+		const other = new ConversationView(f.company, otherSession.sessionId, f.actions);
+		cleanups.push(() => other.dispose());
+		await settle();
+		expect(button(other.el, "Model: GPT-6 Astra, Low effort")).toBeTruthy();
 	});
 	it("recovers an uncertain write by reading, never replaying the mutation", async () => {
 		const f = await setup();

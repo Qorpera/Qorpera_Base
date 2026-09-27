@@ -13,20 +13,27 @@ export const SESSION_MODEL_BEFORE_EFFORT = "gpt-6-astra";
 
 export const SESSION_EFFORTS = ["low", "medium", "high"] as const;
 
+/** Fast is the provider's priority tier; standard turns it off. */
+export const SESSION_SERVICE_TIERS = ["fast", "standard"] as const;
+
 export interface SessionModel {
 	sessionId: string;
 	/** Absent in a group chat where no model was chosen: each agent runs its own. */
 	modelId?: string;
 	/** Absent while the cloud predates per-conversation effort. */
 	reasoningEffort?: string;
+	/** Absent while the cloud does not run conversations on the Fast tier. */
+	serviceTier?: string;
 	version: number;
 }
 
-/** What the member changed: an omitted model or effort keeps the conversation's
- * own (a cloud without effort accepts only a model). */
+/** What the member changed: an omitted model, effort or speed keeps the
+ * conversation's own (a cloud without effort accepts only a model). The speed
+ * is saved on its own, never together with a model or an effort. */
 export interface SessionModelSelection {
 	modelId?: string;
 	reasoningEffort?: string;
+	serviceTier?: string;
 }
 
 export interface WebSessionModel {
@@ -39,8 +46,8 @@ export interface WebSessionModel {
 	): Promise<SessionModel>;
 }
 
-/** The cloud owns this conversation's override; reads retain unfamiliar models
- * and efforts so the selector never misrepresents an existing setting. */
+/** The cloud owns this conversation's override; reads retain unfamiliar models,
+ * efforts and speeds so the selector never misrepresents an existing setting. */
 export function createWebSessionModel(
 	cloud: Cloud,
 	memberId: string,
@@ -66,16 +73,26 @@ export function createWebSessionModel(
 		if (!UUID_PATTERN.test(sessionId)) throw new Error("Invalid conversation identity.");
 		if (
 			selection &&
-			((selection.modelId === undefined && selection.reasoningEffort === undefined) ||
+			((selection.modelId === undefined &&
+				selection.reasoningEffort === undefined &&
+				selection.serviceTier === undefined) ||
 				(selection.modelId !== undefined && !SESSION_MODELS.some((model) => model.id === selection.modelId)) ||
 				(selection.reasoningEffort !== undefined &&
 					!(SESSION_EFFORTS as readonly string[]).includes(selection.reasoningEffort)) ||
+				(selection.serviceTier !== undefined &&
+					(!(SESSION_SERVICE_TIERS as readonly string[]).includes(selection.serviceTier) ||
+						selection.modelId !== undefined ||
+						selection.reasoningEffort !== undefined)) ||
 				!Number.isSafeInteger(selection.expectedVersion) ||
 				selection.expectedVersion < 0 ||
 				selection.expectedVersion === Number.MAX_SAFE_INTEGER)
 		)
 			throw new Error("Invalid conversation model selection.");
-		const method = selection ? "qorpera_set_session_model" : "qorpera_get_session_model";
+		const method = !selection
+			? "qorpera_get_session_model"
+			: selection.serviceTier !== undefined
+				? "qorpera_set_session_service_tier"
+				: "qorpera_set_session_model";
 		return withCloudDeadline(
 			async (deadline) => {
 				const check = () => {
@@ -101,13 +118,15 @@ export function createWebSessionModel(
 					},
 					body: JSON.stringify({
 						p_session_id: sessionId,
-						...(selection
-							? {
-									p_model_id: selection.modelId ?? null,
-									p_expected_version: selection.expectedVersion,
-									...(selection.reasoningEffort ? { p_reasoning_effort: selection.reasoningEffort } : {}),
-								}
-							: {}),
+						...(selection?.serviceTier !== undefined
+							? { p_service_tier: selection.serviceTier, p_expected_version: selection.expectedVersion }
+							: selection
+								? {
+										p_model_id: selection.modelId ?? null,
+										p_expected_version: selection.expectedVersion,
+										...(selection.reasoningEffort ? { p_reasoning_effort: selection.reasoningEffort } : {}),
+									}
+								: {}),
 					}),
 					signal: deadline,
 					redirect: "error",
@@ -132,6 +151,7 @@ export function createWebSessionModel(
 						throw new Error("Invalid conversation model response.");
 					const result = value as Record<string, unknown>;
 					const effort = result.reasoning_effort;
+					const tier = result.service_tier;
 					if (response.status !== 200)
 						throw new CloudRpcError(
 							method,
@@ -158,19 +178,26 @@ export function createWebSessionModel(
 								!effort ||
 								effort !== effort.trim() ||
 								new TextEncoder().encode(effort).length > 64)) ||
+						(tier !== undefined &&
+							(typeof tier !== "string" ||
+								!tier ||
+								tier !== tier.trim() ||
+								new TextEncoder().encode(tier).length > 64)) ||
 						typeof result.version !== "number" ||
 						!Number.isSafeInteger(result.version) ||
 						result.version < 0 ||
 						(selection &&
 							((selection.modelId !== undefined && model !== selection.modelId) ||
 								result.version !== selection.expectedVersion + 1 ||
-								(selection.reasoningEffort !== undefined && effort !== selection.reasoningEffort)))
+								(selection.reasoningEffort !== undefined && effort !== selection.reasoningEffort) ||
+								(selection.serviceTier !== undefined && tier !== selection.serviceTier)))
 					)
 						throw new Error("Invalid conversation model response.");
 					return {
 						sessionId,
 						...(typeof model === "string" ? { modelId: model } : {}),
 						...(typeof effort === "string" ? { reasoningEffort: effort } : {}),
+						...(typeof tier === "string" ? { serviceTier: tier } : {}),
 						version: result.version,
 					};
 				} finally {

@@ -1521,6 +1521,18 @@ the effort to every sponsor. The bundle's model policy declares
 turns at the default. Routines, coworker wakes and other conversations are not
 affected. Superseded: "Attended threads keep the bundle default" above.
 
+2026-09-27 amendment: thread fast mode. A member's turn in a conversation (a
+session turn or a room delivery on a Codex sponsor) runs on the provider's
+Fast service tier by default: Codex `service_tier = "fast"`, sent as the
+priority tier, about 1.5x speed on GPT-6 Sol and Luna and 2x on Astra. The
+Model menu has a Fast switch that turns it off for that one conversation. The
+bundle's model policy declares `fastMode: thread`; the kernel pins the tier
+(`fast` or `standard`) on the run at admission, the run's company context names
+it (the shared tool identity, which company computers also read, does not), and
+the host passes it to Codex and verifies Codex applied it. Routines,
+coworker wakes, coding turns, other providers and runs under a bundle without
+fast mode run at standard speed; the latter pin no tier.
+
 2026-09-22 amendment: no turn caps. A turn is not capped by a number of tool
 calls, effectful operations, transcript events or wall-clock time. The agent
 works until the task is done or genuinely blocked. The remaining bounds are

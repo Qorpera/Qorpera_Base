@@ -85,6 +85,12 @@ export const CONVERSATION: Record<string, string> = {
 	Low: "Lav",
 	Medium: "Mellem",
 	High: "Høj",
+	Speed: "Hastighed",
+	Fast: "Hurtig",
+	"{model}, Fast": "{model}, hurtig",
+	"{speed} speed": "{speed} hastighed",
+	"{speed} speed, uses more of your plan": "{speed} hastighed, bruger mere af dit abonnement",
+	"Faster replies": "Hurtigere svar",
 	"Only this conversation. Applies from your next message.": "Kun denne samtale. Gælder fra din næste besked.",
 	"Each agent's own": "Hver agents egen",
 	"Every agent in this group chat. Applies from your next message.":
