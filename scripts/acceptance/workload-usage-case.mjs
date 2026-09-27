@@ -366,10 +366,8 @@ try {
  }
  }
  assert.equal((await client.getInstance("default", machineName, signal)).status, "Stopped");
- if (evidence.guestWorkload) {
-  evidence.activityReconciliation = verifyWorkloadActivity(evidence.accounting, evidence.guestWorkload);
-  evidence.checks.actualBusyGuestWorkload = true; evidence.checks.idleAndBusyUseSameTariff = true;
- }
+ // Preserve actual terminal bucket balances even if activity coverage fails.
+ // A missing observation must not erase the independently settled debit proof.
  evidence.balancesAfter = await balances();
  for (const before of evidence.balancesBefore) {
   const after = evidence.balancesAfter.find((bucket) => bucket.id === before.id);
@@ -383,6 +381,10 @@ try {
   assert.equal(owner.debitedUs, owner.issuedUs, "Responsible balance did not drain first");
   assert(BigInt(fallback.debitedUs) > 0n, "No measured interval reached pooled fallback");
   evidence.checks.responsibleThenPoolActuallyDebited = true;
+ }
+ if (evidence.guestWorkload) {
+  evidence.activityReconciliation = verifyWorkloadActivity(evidence.accounting, evidence.guestWorkload);
+  evidence.checks.actualBusyGuestWorkload = true; evidence.checks.idleAndBusyUseSameTariff = true;
  }
  evidence.checks.physicalStop = true; evidence.passed = true;
 } catch (error) {

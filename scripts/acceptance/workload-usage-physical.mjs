@@ -5,6 +5,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
 import { assertWorkloadRun, preflightWorkloadHost } from "./workload-usage-host.mjs";
+import { collectWorkloadGuardDiagnostics, workloadGuardDiagnosticsPlugin } from "./workload-usage-guard-diagnostics.mjs";
 
 // One private database/guard/account per case on an admitted disposable host.
 // Cases can run sequentially after cleanup, reusing the same built image.
@@ -43,7 +44,7 @@ if (options["--preflight-only"]) { console.log(JSON.stringify(hostReceipt, null,
 const root = `/opt/qorpera-workload-usage-${kind}-${cpuCount}-${memoryBytes}-${planKey}-${poolFallback ? "pool" : "member"}-${renew ? "renew" : "short"}${sharedClaims ? "-shared" : ""}${shapeMismatch ? "-mismatch" : ""}`, source = `${root}/source`, account = "qorpera-usage-acceptance", uid = 1251;
 const unit = "qorpera-workload-usage-acceptance.service";
 const guardState = `/var/lib/${kind === "coding" ? "qorpera-paid-computer-guard" : "qorpera-native-computer-guard"}`;
-let installed = false, createdUser = false, childStarted = false, childEvidence = null, stateIdentity;
+let installed = false, createdUser = false, childStarted = false, childEvidence = null, stateIdentity, guardInvocation;
 function run(command, commandArgs, timeout = 30000) {
  const result = spawnSync(command, commandArgs, { encoding: "utf8", timeout, maxBuffer: 4 * 1024 ** 2 });
  assert.equal(result.status, 0, `WORKLOAD_ACCEPTANCE_COMMAND_FAILED: ${command}`);
@@ -67,12 +68,15 @@ try {
   await assert.rejects(lstat(guardState), { code: "ENOENT" }, "Refuse pre-existing guard state");
   const coding = kind === "coding";
   await build({ absWorkingDir: repository, entryPoints: [coding ? "deploy/coding-worker/paid-computer-guard.ts" : "deploy/runtime-computers/paid-computer-guard.ts"], outfile: `${root}/guard.mjs`, bundle: true, platform: "node", format: "esm", target: "node24", logLevel: "silent",
+   plugins: [workloadGuardDiagnosticsPlugin(repository)],
    banner: { js: 'import { createRequire } from "node:module"; const require = createRequire(import.meta.url);' } });
   const template = await readFile(join(repository, coding ? "deploy/coding-worker/qorpera-paid-computer-guard.service" : "deploy/runtime-computers/qorpera-computer-guard.service.in"), "utf8");
   const bytes = template.replaceAll("qorpera-coding-executor", account).replaceAll("@ACCOUNT@", account).replaceAll("@PROVIDER@", "native")
    .replace(/ExecStart=[^\n]+/, `ExecStart=${process.execPath} ${root}/guard.mjs${coding ? "" : " --provider native"}`);
   await writeFile(`/etc/systemd/system/${unit}`, bytes, { flag: "wx", mode: 0o644 }); installed = true;
   run("systemctl", ["daemon-reload"]); run("systemctl", ["start", unit]);
+  guardInvocation = run("systemctl", ["show", unit, "--property=InvocationID", "--value"]);
+  assert(/^[0-9a-f]{32}$/.test(guardInvocation), "Guard service invocation unconfirmed");
   stateIdentity = await lstat(guardState); assert(stateIdentity.isDirectory() && !stateIdentity.isSymbolicLink() && stateIdentity.uid === uid);
  }
  await mkdir(`${root}/results`, { mode: 0o700 }); await chown(`${root}/results`, uid, uid);
@@ -92,6 +96,17 @@ try {
  assert(childEvidence.passed && childEvidence.cleanup);
 } finally {
  let hostCleanup = false;
+ let guardCaptureDiagnostics;
+ if (installed) {
+  try {
+   const current = run("systemctl", ["show", unit, "--property=InvocationID", "--value"]);
+   const invocations = [...new Set([guardInvocation, current].filter(value => /^[0-9a-f]{32}$/.test(value ?? "")))];
+   assert(invocations.length > 0, "Guard diagnostic invocation missing");
+   const text = invocations.map(id => run("journalctl", ["--no-pager", "--output=cat", "--lines=2048", `_SYSTEMD_UNIT=${unit}`, `_SYSTEMD_INVOCATION_ID=${id}`])).join("\n");
+   guardCaptureDiagnostics = { status: "collected", serviceInvocationScope: "initial-and-current", serviceRestartObserved: invocations.length > 1,
+    ...collectWorkloadGuardDiagnostics(text) };
+  } catch { guardCaptureDiagnostics = { status: "unavailable", code: "GUARD_DIAGNOSTIC_COLLECTION_FAILED" }; }
+ }
  try {
   // An unconfirmed child may still have a physical VM. Preserve its independent
   // stop authority, durable journal and service account until that is resolved.
@@ -117,6 +132,7 @@ try {
     ...(childEvidence ?? { schema: "qorpera.physical-workload-usage/v1", commit: hostReceipt?.host.commit ?? process.env.GITHUB_SHA,
      kind, passed: false, cleanup: false, error: "Child cleanup evidence unavailable; independent guard custody retained" }),
     hostCleanup,
+    ...(guardCaptureDiagnostics ? { guardCaptureDiagnostics } : {}),
    }, null, 2)}\n`, { mode: 0o644 });
   }
  }
