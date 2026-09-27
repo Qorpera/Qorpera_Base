@@ -1,9 +1,12 @@
 import { constants, realpathSync } from "node:fs";
 import { open, readFile } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { CloudContentAddressedStore } from "@qorpera/cloud-client/node/cloud-object-store";
 import { createClient } from "@supabase/supabase-js";
+import { createHttpCloudCodingCommandGateway, parseCloudCodingCommandUrl } from "./cloud-coding-command-http.ts";
+import { HttpCloudCodingControl } from "./cloud-coding-control.ts";
 import {
 	createHttpCompanyComputerSessionFactory,
 	parseCompanyComputerNativeUrl,
@@ -17,6 +20,7 @@ import {
 	fetchIdentityRecoveryRuntimeState,
 	HttpIdentityRecoveryGuestTransport,
 } from "./cloud-identity-recovery-guest.ts";
+import { CloudNativeCodingRuntime } from "./cloud-native-coding-runtime.ts";
 import { HttpNativeCompanyObjectTransport } from "./cloud-native-company-objects.ts";
 import { CloudNativeCompanyRuntime } from "./cloud-native-company-runtime.ts";
 import type { NativeIsolationConfiguration } from "./cloud-native-isolation.ts";
@@ -153,9 +157,22 @@ export function nativeCompanyComputerConfiguration(environment: NodeJS.ProcessEn
 	return { url: parseCompanyComputerNativeUrl(required(environment, "QORPERA_COMPANY_COMPUTER_URL")).url };
 }
 
+/** The coding command gateway (the executor's HTTPS origin) is deployment
+ * configuration. Without it this node carries no coding composition and a
+ * coding wake fails visibly; ordinary company jobs never select it. */
+export function nativeCodingConfiguration(environment: NodeJS.ProcessEnv): { url: string } | undefined {
+	if (environment.QORPERA_CODING_COMMAND_TOKEN !== undefined)
+		throw new Error("Coding command transport requires a systemd credential");
+	if (environment.QORPERA_CODING_COMMAND_URL === undefined) return undefined;
+	if (environment.QORPERA_NATIVE_RUNTIME !== "company-path-v1")
+		throw new Error("Coding sessions require the cloud-native runtime");
+	return { url: parseCloudCodingCommandUrl(required(environment, "QORPERA_CODING_COMMAND_URL")) };
+}
+
 export async function runNativeProviderHostServiceMain(environment: NodeJS.ProcessEnv = process.env): Promise<void> {
 	const runtimeConfiguration = nativeCompanyRuntimeConfiguration(environment);
 	const computerConfiguration = nativeCompanyComputerConfiguration(environment);
+	const codingConfiguration = nativeCodingConfiguration(environment);
 	const baseUrl = required(environment, "QORPERA_SUPABASE_URL");
 	const serviceKey = await credentialOrEnvironment(
 		environment,
@@ -248,7 +265,45 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 				[masterKey, bridgeToken, objectToken, serviceKey, secretBrokerToken].includes(computerToken))
 		)
 			throw new Error("Company Computer requires a distinct private systemd credential");
+		const codingToken = codingConfiguration
+			? await systemdCredential(environment, "qorpera-coding-command")
+			: undefined;
+		if (
+			codingConfiguration &&
+			(!codingToken ||
+				!TOKEN_PATTERN.test(codingToken) ||
+				[masterKey, bridgeToken, objectToken, serviceKey, secretBrokerToken, computerToken].includes(codingToken))
+		)
+			throw new Error("Coding command transport requires a distinct private systemd credential");
 		const pathControl = new HttpCloudCompanyPathControl({ supabaseUrl: baseUrl, serviceRoleKey: serviceKey });
+		const codingControl = codingConfiguration
+			? new HttpCloudCodingControl({ supabaseUrl: baseUrl, serviceRoleKey: serviceKey })
+			: undefined;
+		const coding =
+			codingConfiguration && codingToken && codingControl
+				? new CloudNativeCodingRuntime({
+						control: {
+							call: (method, args, checked) => codingControl.call(method, args, checked),
+							describeToolAuthority: (value, checked) => controlPlane.describeToolAuthority(value, checked),
+							beginToolOperation: (value, input, checked) =>
+								controlPlane.beginToolOperation(value, input, checked),
+							completeToolOperation: (value, input, checked) =>
+								controlPlane.completeToolOperation(value, input, checked),
+						},
+						gateway: (binding) =>
+							createHttpCloudCodingCommandGateway({
+								url: codingConfiguration.url,
+								token: codingToken,
+								binding,
+								// The executor re-authorizes every command against the turn in SQL; the
+								// runner's own check is the continuous turn authority.
+								authorize: async () => {},
+							}),
+						command: runtimeConfiguration.command,
+						binarySha256: runtimeConfiguration.binarySha256,
+						isolation: runtimeConfiguration.isolation,
+					})
+				: undefined;
 		cloudRuntime = new CloudNativeCompanyRuntime({
 			controlPlane,
 			pathControl,
@@ -267,6 +322,7 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 			command: runtimeConfiguration.command,
 			binarySha256: runtimeConfiguration.binarySha256,
 			isolation: runtimeConfiguration.isolation,
+			...(coding ? { coding } : {}),
 			...(computerConfiguration && computerToken
 				? {
 						computerSession: createHttpCompanyComputerSessionFactory({
@@ -292,15 +348,22 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 				),
 			...(secretBrokerOrigin && secretBrokerToken
 				? {
+						// The company routes the request to this company's broker behind the
+						// shared origin. It is this host's compute identity's company, read from
+						// the recovery authority and matched against the identity volume above;
+						// the SQL placement only runs a company's work on its own identities.
 						secretBroker: new HttpCloudSecretBrokerClient({
 							origin: secretBrokerOrigin,
 							runtimeToken: secretBrokerToken,
+							companyId: state.companyId,
 						}),
 					}
 				: {}),
 		});
 	} else if (environment.QORPERA_CLOUD_SECRET_BROKER_URL || environment.QORPERA_CLOUD_SECRET_BROKER_TOKEN) {
 		throw new Error("Cloud secret broker requires the cloud-native Company File runtime");
+	} else if (codingConfiguration) {
+		throw new Error("Coding sessions require the cloud-native Company File runtime");
 	}
 	const host = new NativeProviderHost({
 		controlPlane,
@@ -343,10 +406,13 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 	process.once("SIGTERM", stop);
 	try {
 		await service.start();
-		await new Promise<void>((resolveWait) =>
-			shutdown.signal.addEventListener("abort", () => resolveWait(), { once: true }),
-		);
+		while (!shutdown.signal.aborted) {
+			await host.refreshAccountMetadata(shutdown.signal);
+			await delay(60_000, undefined, { signal: shutdown.signal }).catch(() => undefined);
+		}
 	} finally {
+		shutdown.abort();
+		await host.stopAccountMetadataRefresh();
 		process.removeListener("SIGINT", stop);
 		process.removeListener("SIGTERM", stop);
 		await service.close();

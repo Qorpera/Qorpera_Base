@@ -2,16 +2,20 @@ import { chmod, lstat } from "node:fs/promises";
 import { createServer, type Socket } from "node:net";
 import { isAbsolute, join } from "node:path";
 import type { JsonValue } from "@qorpera/contracts";
-import type {
-	CloudNativeFencedResult,
-	CloudNativeResultInput,
-	CloudNativeToolBoundary,
+import {
+	CLOUD_NATIVE_FENCE_FRAME_BYTES,
+	type CloudNativeFencedResult,
+	type CloudNativeResultInput,
+	type CloudNativeToolBoundary,
 } from "./cloud-native-tool-boundary.ts";
 
 export const CLOUD_NATIVE_RESULT_FENCE_SCHEMA = "qorpera.native-result-fence/v1";
-const MAX_FRAME_BYTES = 8 * 1024 * 1024;
-const MAX_TOTAL_BYTES = 64 * 1024 * 1024;
-const MAX_REQUESTS = 256;
+// One model request carries any number of tool outputs (runtime v104; the pinned
+// Codex refused 128). The frame, the same on both sides, bounds only its size.
+const MAX_FRAME_BYTES = CLOUD_NATIVE_FENCE_FRAME_BYTES;
+// A run is not capped by its number of model requests or their total size
+// (founder, 2026-09-24); replayed request ids are tracked in a rolling window.
+const TRACKED_REQUESTS = 16_384;
 const DEADLINE_MS = 4_000;
 const ID = /^[A-Za-z0-9_:.-]{1,160}$/;
 
@@ -42,8 +46,8 @@ function parseRequest(value: unknown): CloudNativeFenceRequest {
 			!(request.purpose === "prewarm" && request.turnId === "") &&
 			(typeof request.turnId !== "string" || !ID.test(request.turnId))) ||
 		!["turn", "prewarm", "compaction"].includes(String(request.purpose)) ||
+		// No count cap on the outputs a request carries (founder, 2026-09-24).
 		!Array.isArray(request.outputs) ||
-		request.outputs.length > 128 ||
 		(request.purpose === "prewarm" && request.outputs.length !== 0)
 	)
 		throw new Error("Invalid native result frame");
@@ -88,6 +92,10 @@ export async function startCloudNativeResultFence(options: {
 	root: string;
 	boundary: CloudNativeToolBoundary;
 	assertSession: (request: CloudNativeFenceRequest) => void;
+	/** Auto-review (v130): a reviewer thread's request is answered with the host's own
+	 * verdict acknowledgements, never the agent's tool results, and is not the agent's
+	 * context. Returns undefined for every other request. */
+	releaseReviewOutputs?: (request: CloudNativeFenceRequest) => CloudNativeFencedResult[] | undefined;
 	/** Cloud runtime records exact released evidence before a provider request can leave. */
 	recordContextView?: (
 		request: CloudNativeFenceRequest,
@@ -104,8 +112,6 @@ export async function startCloudNativeResultFence(options: {
 	options.signal.throwIfAborted();
 	const sockets = new Set<Socket>();
 	const requestIds = new Set<string>();
-	let totalBytes = 0;
-	let requests = 0;
 	let stopped = false;
 	const fail = (): void => {
 		if (stopped) return;
@@ -115,7 +121,7 @@ export async function startCloudNativeResultFence(options: {
 		options.onFailure();
 	};
 	const server = createServer((socket) => {
-		if (stopped || sockets.size >= 4 || ++requests > MAX_REQUESTS) {
+		if (stopped || sockets.size >= 4) {
 			socket.destroy();
 			fail();
 			return;
@@ -134,8 +140,7 @@ export async function startCloudNativeResultFence(options: {
 		});
 		socket.on("data", (chunk: Buffer) => {
 			try {
-				totalBytes += chunk.length;
-				if (stopped || processing || totalBytes > MAX_TOTAL_BYTES) throw new Error("Native result budget exceeded");
+				if (stopped || processing) throw new Error("Native result frame after its request");
 				let offset = 0;
 				if (headerBytes < 4) {
 					const copied = chunk.copy(header, headerBytes, 0, Math.min(chunk.length, 4 - headerBytes));
@@ -154,13 +159,14 @@ export async function startCloudNativeResultFence(options: {
 				const request = parseRequest(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(frame)));
 				if (requestIds.has(request.requestId)) throw new Error("Native result request replayed");
 				requestIds.add(request.requestId);
+				if (requestIds.size > TRACKED_REQUESTS) requestIds.delete(requestIds.values().next().value as string);
 				options.assertSession(request);
-				void options.boundary
-					.fenceNativeResults(request.outputs)
+				const review = options.releaseReviewOutputs?.(request);
+				void (review ? Promise.resolve(review) : options.boundary.fenceNativeResults(request.outputs))
 					.then(async (outputs) => {
 						if (stopped || socket.destroyed || options.signal.aborted) return;
 						options.assertSession(request);
-						await options.recordContextView?.(request, outputs, options.signal);
+						if (!review) await options.recordContextView?.(request, outputs, options.signal);
 						if (stopped || socket.destroyed || options.signal.aborted) return;
 						options.assertSession(request);
 						const wire = Buffer.from(
@@ -172,9 +178,7 @@ export async function startCloudNativeResultFence(options: {
 								outputs: outputs.map(({ capture: _capture, ...output }) => output),
 							}),
 						);
-						totalBytes += wire.length + 4;
-						if (wire.length > MAX_FRAME_BYTES || totalBytes > MAX_TOTAL_BYTES)
-							throw new Error("Native result budget exceeded");
+						if (wire.length > MAX_FRAME_BYTES) throw new Error("Native result frame too large");
 						const size = Buffer.alloc(4);
 						size.writeUInt32BE(wire.length);
 						socket.end(Buffer.concat([size, wire]));

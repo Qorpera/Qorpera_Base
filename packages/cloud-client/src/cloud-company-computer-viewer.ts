@@ -11,7 +11,7 @@ export interface CompanyComputerViewerGrant {
 	binding: CompanyComputerScreenBinding;
 	viewerSessionId: string;
 	memberId: string;
-	mode: "watch" | "control";
+	mode: "watch" | "shared" | "control";
 	privacyVersion: number;
 	screenEpoch: number;
 	validForMs: number;
@@ -54,7 +54,7 @@ export function assertCompanyComputerViewerGrant(
 	if (
 		!COMPANY_COMPUTER_UUID.test(grant.viewerSessionId) ||
 		!COMPANY_COMPUTER_UUID.test(grant.memberId) ||
-		(grant.mode !== "watch" && grant.mode !== "control") ||
+		!["watch", "shared", "control"].includes(grant.mode) ||
 		!Number.isSafeInteger(grant.privacyVersion) ||
 		grant.privacyVersion < 0 ||
 		!Number.isSafeInteger(grant.screenEpoch) ||

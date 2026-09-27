@@ -14,6 +14,7 @@ import {
 	identityRecoveryEpochFilename,
 } from "./cloud-identity-recovery-guest.ts";
 import { parseEphemeralCloudRunnerServiceConfig } from "./cloud-runner-service.ts";
+import { assertGuestImageSelfUpdateMasked } from "./lxd-guest-image-updates.ts";
 
 const BOOTSTRAP_SCHEMA = "qorpera.lxd-runner-bootstrap/v1";
 const COMPANY_BOOTSTRAP_SCHEMA = "qorpera.lxd-company-runner-bootstrap/v1";
@@ -52,6 +53,7 @@ export interface LxdRunnerBootstrapConfig {
 		secretBrokerUrl: string;
 		secretBrokerCaSha256: string;
 		office?: { environmentId: string; url: string; tokenSha256: string };
+		codingCommand?: { url: string; tokenSha256: string };
 	};
 }
 
@@ -69,6 +71,7 @@ export interface LxdRunnerBootstrapPaths {
 	runnerTemporaryDirectory: string;
 	nativeProviderTemporaryDirectory: string;
 	mountInfo: string;
+	systemUnitDirectory: string;
 }
 
 export interface LxdRunnerBootstrapServiceIdentity {
@@ -97,6 +100,7 @@ export interface LxdNativeLoginBootstrapPaths {
 	identityMasterKey: string;
 	nativeProviderTemporaryDirectory: string;
 	mountInfo: string;
+	systemUnitDirectory: string;
 }
 
 export interface RunLxdNativeLoginBootstrapOptions {
@@ -133,6 +137,7 @@ const PRODUCTION_PATHS: LxdRunnerBootstrapPaths = {
 	runnerTemporaryDirectory: "/var/lib/qorpera-native-workspace",
 	nativeProviderTemporaryDirectory: "/var/lib/qorpera-native-provider/tmp",
 	mountInfo: "/proc/self/mountinfo",
+	systemUnitDirectory: "/etc/systemd/system",
 };
 
 const PRODUCTION_LOGIN_PATHS: LxdNativeLoginBootstrapPaths = {
@@ -144,11 +149,21 @@ const PRODUCTION_LOGIN_PATHS: LxdNativeLoginBootstrapPaths = {
 	identityMasterKey: "/var/lib/qorpera/identity/qorpera-native-provider-master-key",
 	nativeProviderTemporaryDirectory: "/var/lib/qorpera-native-provider/tmp",
 	mountInfo: "/proc/self/mountinfo",
+	systemUnitDirectory: "/etc/systemd/system",
 };
 
 function record(value: unknown, label: string): Record<string, unknown> {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} must be an object`);
 	return value as Record<string, unknown>;
+}
+
+/** The coding command gateway as the provider service parses it: an exact HTTPS
+ * origin, nothing else (the bootstrap bundle does not import the gateway client). */
+function codingCommandOrigin(value: string): string {
+	const url = new URL(value);
+	if (url.protocol !== "https:" || url.username || url.password || url.search || url.hash || url.pathname !== "/")
+		throw new Error("Coding command URL is invalid");
+	return url.origin;
 }
 
 function exactKeys(input: Record<string, unknown>, allowed: readonly string[], label: string): void {
@@ -207,6 +222,7 @@ export function parseLxdRunnerBootstrapConfig(value: unknown): LxdRunnerBootstra
 				"secret_broker_ca_sha256",
 				"recovery_volume_path",
 				"office",
+				"coding_command",
 			],
 			"Governed native bootstrap",
 		);
@@ -242,6 +258,15 @@ export function parseLxdRunnerBootstrapConfig(value: unknown): LxdRunnerBootstra
 				tokenSha256: text(route.token_sha256, "Office token digest", SHA256_PATTERN),
 			};
 		}
+		let codingCommand: NonNullable<LxdRunnerBootstrapConfig["companyRuntime"]>["codingCommand"];
+		if (company.coding_command !== undefined) {
+			const gateway = record(company.coding_command, "Governed coding command gateway");
+			exactKeys(gateway, ["url", "token_sha256"], "Governed coding command gateway");
+			codingCommand = {
+				url: codingCommandOrigin(text(gateway.url, "Coding command URL", /^https:\/\//)),
+				tokenSha256: text(gateway.token_sha256, "Coding command token digest", SHA256_PATTERN),
+			};
+		}
 		companyRuntime = {
 			mode: "company-path-v1",
 			runId: text(company.run_id, "Native run id", UUID_PATTERN),
@@ -253,6 +278,7 @@ export function parseLxdRunnerBootstrapConfig(value: unknown): LxdRunnerBootstra
 			secretBrokerUrl: secretBroker.origin,
 			secretBrokerCaSha256: text(company.secret_broker_ca_sha256, "Cloud secret broker CA digest", SHA256_PATTERN),
 			...(office ? { office } : {}),
+			...(codingCommand ? { codingCommand } : {}),
 		};
 	}
 	return {
@@ -578,6 +604,7 @@ function nativeProviderEnvironment(
 					"QORPERA_NATIVE_OBJECT_GATEWAY_URL",
 					"QORPERA_CLOUD_SECRET_BROKER_URL",
 					...(companyRuntime.office ? ["QORPERA_COMPANY_COMPUTER_URL"] : []),
+					...(companyRuntime.codingCommand ? ["QORPERA_CODING_COMMAND_URL"] : []),
 				]
 			: []),
 	];
@@ -612,7 +639,8 @@ function nativeProviderEnvironment(
 			environment.get("QORPERA_NATIVE_CODEX_FENCE_SHA256") !== companyRuntime.binarySha256 ||
 			environment.get("QORPERA_NATIVE_OBJECT_GATEWAY_URL") !== companyRuntime.objectGatewayUrl ||
 			environment.get("QORPERA_CLOUD_SECRET_BROKER_URL") !== companyRuntime.secretBrokerUrl ||
-			environment.get("QORPERA_COMPANY_COMPUTER_URL") !== companyRuntime.office?.url)
+			environment.get("QORPERA_COMPANY_COMPUTER_URL") !== companyRuntime.office?.url ||
+			environment.get("QORPERA_CODING_COMMAND_URL") !== companyRuntime.codingCommand?.url)
 	) {
 		throw new Error("Governed native environment does not match immutable bootstrap authority");
 	}
@@ -656,6 +684,7 @@ async function verifyCredentialSource(
 					...(boundary === "company-runner" && companyRuntime
 						? ["qorpera-cloud-secret-ca", "qorpera-cloud-secret-runtime"]
 						: []),
+					...(boundary === "company-runner" ? ["qorpera-coding-command"] : []),
 					"qorpera-native-bridge",
 					...(boundary === "company-runner" ? ["qorpera-native-object-token"] : []),
 					...(boundary === "company-runner" ? ["qorpera-office-native"] : []),
@@ -673,6 +702,7 @@ async function verifyCredentialSource(
 			entry !== "qorpera-supabase-service-key" &&
 			entry !== "qorpera-cloud-secret-ca" &&
 			entry !== "qorpera-office-native" &&
+			entry !== "qorpera-coding-command" &&
 			entry !== "qorpera-identity-recovery-ca",
 	)) {
 		const token = (
@@ -713,6 +743,23 @@ async function verifyCredentialSource(
 				throw new Error("Native office credential differs from immutable bootstrap authority");
 			tokens.add(token);
 		} else if (encoded !== "") throw new Error("Unconfigured native office credential must be empty");
+		const codingEncoded = await readOwnedFile(
+			`${path}/qorpera-coding-command`,
+			MAX_CREDENTIAL_BYTES,
+			"Coding command credential",
+			expectedUid,
+			true,
+		);
+		if (companyRuntime.codingCommand) {
+			const token = codingEncoded.trim();
+			if (
+				!TOKEN_PATTERN.test(token) ||
+				tokens.has(token) ||
+				createHash("sha256").update(token).digest("hex") !== companyRuntime.codingCommand.tokenSha256
+			)
+				throw new Error("Coding command credential differs from immutable bootstrap authority");
+			tokens.add(token);
+		} else if (codingEncoded !== "") throw new Error("Unconfigured coding command credential must be empty");
 	}
 	if (boundary === "native-login") {
 		if (!identityRecoveryCaSha256) throw new Error("Identity recovery CA authority is missing");
@@ -947,6 +994,9 @@ export async function runLxdRunnerBootstrap(options: RunLxdRunnerBootstrapOption
 	const expectedRootUid = options.expectedRootUid ?? 0;
 	const expectedRootGid = options.expectedRootGid ?? 0;
 	if ((process.getuid?.() ?? -1) !== expectedRootUid) throw new Error("LXD runner bootstrap must run as root");
+	// Before any run authority is read: an image that can upgrade itself
+	// restarts the runner mid-turn and then refuses its own poweroff.
+	await assertGuestImageSelfUpdateMasked(paths.systemUnitDirectory);
 
 	const bootstrapEncoded = await readOwnedFile(
 		paths.bootstrapConfig,
@@ -1077,6 +1127,7 @@ export async function runLxdNativeLoginBootstrap(options: RunLxdNativeLoginBoots
 	if ((process.getuid?.() ?? -1) !== expectedRootUid) {
 		throw new Error("LXD native login bootstrap must run as root");
 	}
+	await assertGuestImageSelfUpdateMasked(paths.systemUnitDirectory);
 
 	const bootstrapEncoded = await readOwnedFile(
 		paths.bootstrapConfig,

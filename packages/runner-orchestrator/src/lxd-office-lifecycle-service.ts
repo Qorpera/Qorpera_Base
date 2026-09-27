@@ -1,8 +1,15 @@
 import { createHash } from "node:crypto";
 import type { Writable } from "node:stream";
 import { runLxdOfficeControlObserver } from "./lxd-office-control-observer.ts";
+import { parseOfficeIdleMs } from "./lxd-office-idle-policy.ts";
 import { officeRecord, officeSha } from "./lxd-office-image-provenance.ts";
 import { LxdOfficeLifecycle, type LxdOfficeLifecycleResult, runLxdOfficeLifecycle } from "./lxd-office-lifecycle.ts";
+import {
+	type LxdOfficeGuestResolver,
+	type LxdOfficePassthroughConfig,
+	parseLxdOfficePassthroughConfig,
+	runLxdOfficePassthrough,
+} from "./lxd-office-passthrough.ts";
 import { readLxdOfficeCredentialFile, readLxdOfficeProtectedFile } from "./lxd-office-physical-host.ts";
 import { officePhysicalPath } from "./lxd-office-physical-policy.ts";
 import { LxdOfficeProviderHttpRegistry } from "./lxd-office-provider-registry.ts";
@@ -103,9 +110,13 @@ export function parseLxdOfficeLifecycleServiceConfig(value: unknown) {
 		"pollIntervalMs",
 	];
 	// Optional paths come only from this root-protected service document.
-	const optionalKeys = ["softwareLanePath", "resetImagePackageManifestPath", "codePackageLanePath"].filter(
-		(key) => value && typeof value === "object" && Object.hasOwn(value, key),
-	);
+	const optionalKeys = [
+		"softwareLanePath",
+		"resetImagePackageManifestPath",
+		"codePackageLanePath",
+		"idleMs",
+		"passthroughPath",
+	].filter((key) => value && typeof value === "object" && Object.hasOwn(value, key));
 	const r = officeRecord(value, [...keys, ...optionalKeys]);
 	if (r.schema !== "qorpera.lxd-office-provider-service/v1" || typeof r.registryUrl !== "string")
 		throw new Error("INVALID_OFFICE_SERVICE_CONFIG");
@@ -122,6 +133,7 @@ export function parseLxdOfficeLifecycleServiceConfig(value: unknown) {
 	// Validate the endpoint without loading a credential or sending a request.
 	new LxdOfficeProviderHttpRegistry(r.registryUrl, "validation-only-".repeat(3));
 	return {
+		idleMs: parseOfficeIdleMs(r.idleMs ?? 300000),
 		policyPath: officePhysicalPath(r.policyPath),
 		provenancePath: officePhysicalPath(r.provenancePath),
 		planPath: officePhysicalPath(r.planPath),
@@ -139,6 +151,9 @@ export function parseLxdOfficeLifecycleServiceConfig(value: unknown) {
 				: officePhysicalPath(r.resetImagePackageManifestPath),
 		codePackageLanePath: r.codePackageLanePath === undefined ? undefined : officePhysicalPath(r.codePackageLanePath),
 		softwareLanePath: r.softwareLanePath === undefined ? undefined : officePhysicalPath(r.softwareLanePath),
+		// Host passthrough for the guest viewer/native ports; absent for offices
+		// whose host still forwards through operator-managed units.
+		passthroughPath: r.passthroughPath === undefined ? undefined : officePhysicalPath(r.passthroughPath),
 	};
 }
 
@@ -182,6 +197,16 @@ export async function runLxdOfficeLifecycleService(
 						),
 						readLxdOfficeCredentialFile,
 					);
+		const passthrough =
+			config.passthroughPath === undefined
+				? undefined
+				: parseLxdOfficePassthroughConfig(
+						JSON.parse(
+							new TextDecoder("utf8", { fatal: true }).decode(
+								await readLxdOfficeProtectedFile(config.passthroughPath, 16384),
+							),
+						),
+					);
 		signal.throwIfAborted();
 		const lifecycle = await LxdOfficeLifecycle.open(
 			config.policyPath,
@@ -191,7 +216,13 @@ export async function runLxdOfficeLifecycleService(
 			signal,
 		);
 		const emit = createOfficeLifecycleReporter(lifecycle.observationIdentity, write);
-		await runOfficeLifecycleLoops(lifecycle, signal, config.pollIntervalMs, emit);
+		await runOfficeLifecycleLoops(
+			lifecycle,
+			signal,
+			config.pollIntervalMs,
+			emit,
+			passthrough && { config: passthrough, resolve: lifecycle.guestResolver() },
+		);
 	} catch {
 		if (!signal.aborted) throw new Error("OFFICE_PROVIDER_SERVICE_UNCONFIRMED");
 	} finally {
@@ -206,10 +237,18 @@ export async function runOfficeLifecycleLoops(
 	signal: AbortSignal,
 	pollIntervalMs: number,
 	emit: ReturnType<typeof createOfficeLifecycleReporter>,
+	passthrough?: { config: LxdOfficePassthroughConfig; resolve: LxdOfficeGuestResolver },
 ): Promise<void> {
 	const stop = new AbortController();
 	const running = AbortSignal.any([signal, stop.signal]);
 	const outcomes = await Promise.allSettled([
+		...(passthrough
+			? [
+					runLxdOfficePassthrough(passthrough.config, passthrough.resolve, running, (error) =>
+						emit(undefined, error),
+					).finally(() => stop.abort()),
+				]
+			: []),
 		runLxdOfficeLifecycle(
 			lifecycle,
 			running,

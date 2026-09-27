@@ -39,18 +39,51 @@ profile RPCs; RLS is the second read boundary.
 
 ## 2. Member-callable RPCs (security-definer, granted to `authenticated`)
 
-151 functions, grouped for navigation. Signatures: see the migration that defines each.
+163 functions, grouped for navigation. Signatures: see the migration that defines each.
 
 
-### Members, presence, friends, feedback (9)
+### Members, presence, friends, feedback (17)
 
+- `qorpera_can_read_member_picture(p_object_name)` — the picture bucket's
+  read policy: anything in your own folder, and another account's current
+  picture when `qorpera_can_see_member_picture` allows it.
+- `qorpera_can_see_member_picture(p_user_id)` — yourself, company colleagues,
+  accepted friends, and accounts that sent you a friend request (a request you
+  sent reveals nothing until it is accepted).
+- `qorpera_clear_member_picture` — back to initials; returns
+  `previous_object_name`, which the caller deletes from storage.
+- `qorpera_is_current_member_picture(p_object_name)` — whether an object is
+  the caller's current picture; the bucket's delete policy refuses it until
+  another picture (or none) has replaced it. It shares a per-folder lock with
+  `qorpera_set_member_picture`, so a delete and a choice of one object happen
+  one after the other.
 - `qorpera_list_friends`
 - `qorpera_list_presence_devices`
+- `qorpera_member_picture_objects()` — how many objects the caller's own
+  picture folder holds; the upload policy refuses a fifth in Storage's
+  preflight. The limit itself is enforced by a `before insert` trigger on
+  `storage.objects` (`qorpera_guard_member_picture_insert`, also on a move of
+  `bucket_id`/`name`), which covers the storage service's final write and counts
+  parallel uploads into one folder one after another.
+- `qorpera_member_pictures(p_user_ids uuid[])` — at most 200 accounts; returns
+  `[{user_id, object_name, updated_at}]` only for pictures the caller may see
+  (`qorpera_can_see_member_picture`). Migration
+  `20260924150000_member_pictures`.
+- `qorpera_own_member_picture_objects()` — the caller's own picture folder
+  (`[{object_name, created_at, age_seconds}]`, the age by the cloud's clock),
+  for tidying uploads that never became the picture; use it instead of a
+  storage `list()`, which runs the read policy over the whole bucket.
 - `qorpera_presence_topic_profile`
 - `qorpera_register_presence_device`
 - `qorpera_remove_friend`
 - `qorpera_respond_friend_request`
 - `qorpera_send_friend_request`
+- `qorpera_set_member_picture(p_object_name)` — makes an object the caller
+  uploaded to the private bucket `qorpera-member-pictures` as
+  `<own user UUID>/<sha256>.<webp|jpg|png>` (512 KiB, image types only; RLS lets
+  members write (four objects at most) and delete only in their own folder, and
+  read per `qorpera_can_read_member_picture`) their picture; returns
+  `previous_object_name` for the caller to delete.
 - `qorpera_submit_product_feedback`
 - `qorpera_unregister_presence_device`
 
@@ -61,12 +94,25 @@ profile RPCs; RLS is the second read boundary.
 - `qorpera_upsert_cloud_routine`
 
 
-### Credentials, provider connections, identity recovery (12)
+### Credentials, provider connections, identity recovery (13)
 
 - `qorpera_begin_cloud_secret_capture`
 - `qorpera_begin_native_provider_login`
+- `qorpera_grant_cloud_connector` — Step 7 (bundle v87): grants every
+  operation of one company-owned connection (Gmail, Google Drive, GitHub) to
+  all active agents (`p_staff_agent_ids` null, marks the connection shared so
+  new hires are included) or to the named agents. Owner/admin only; a
+  member-owned secret is refused (company first: connector connections belong
+  to the company, opened with `p_owner_kind = 'company'`). A share re-issues,
+  under the caller, grants whose issuer is no longer an owner or admin.
+  Since bundle v88 company connections are always shared: sealing one
+  (capture completion) shares it with every agent, so this call is only the
+  idempotent repair (it issues missing or dead grants, nothing else).
 - `qorpera_grant_cloud_secret_operation`
-- `qorpera_list_cloud_secret_connections`
+- `qorpera_list_cloud_secret_connections` — since Step 7 also returns
+  `accountLabel`, `connectedByUserId` (company-owned only; attribution, not
+  ownership), `availableToAllAgents`, `activeGrantCount`, `createdAt`,
+  `updatedAt`.
 - `qorpera_list_member_native_execution_connections`
 - `qorpera_register_provider_connection`
 - `qorpera_request_identity_recovery`
@@ -138,9 +184,82 @@ profile RPCs; RLS is the second read boundary.
 - `qorpera_list_profile_staff`
 - `qorpera_put_staff_provider_model`
 
+### Company sidebar (2) — bundle v90
 
-### Conversations, turns, wakes (27)
+- `qorpera_read_company_sidebar(p_profile_id)` → `qorpera.company-sidebar/v1`:
+  `sections` (`sectionId`, `name`, in order), `placements` (`staffAgentId`,
+  `sectionId` or null for Unassigned, `position`), and the caller's own
+  `pinned` (ordered) and `hidden` agent ids. Any member.
+- `qorpera_manage_company_sidebar(p_profile_id, p_request)` answers the same
+  shape after the change. Shared, owner/admin/contributor:
+  `create_section {sectionId, name, staffAgentId?, unpin?}`,
+  `rename_section {sectionId, name}`, `delete_section {sectionId}` (its agents
+  go to the end of Unassigned), `move_agent {staffAgentId, sectionId|null,
+  order?, unpin?}`. The member's own, any member: `set_pins {order}` (at most
+  24; pinning unhides), `set_hidden {staffAgentId, hidden}` (hiding unpins).
+  Section names are 1-60 characters, unique per company ignoring case; any
+  number of sections (at most 40 until bundle v95). The Co-Founder is never
+  placed, pinned or hidden. Agents change the same shared sections through the
+  runtime tool `organize_sidebar` (`qorpera_manage_agent_sidebar`, runner only).
 
+### Auto-review rules and approvals (4) — bundle v130
+
+- `qorpera_list_review_rules(p_profile_id)` → `qorpera.review-rules/v1`:
+  `canManageCompanyRules` (owner or admin) and `rules`: every active company
+  rule plus the caller's own (`id`, `scope` `company|member`, `memberUserId`,
+  `when`, `outcome` `ask_first|allow_automatically`, `createdVia`
+  `settings|card|agent`, `createdByUserId`, `createdByStaffAgentId`,
+  `createdAt`, `updatedAt`). Any member, viewers included. A rule with
+  `createdVia: agent` was added by an agent (`createdByStaffAgentId`) when the
+  member asked it to: always one of the member's own Ask first rules, which the
+  member removes like any other.
+- `qorpera_save_review_rule(p_profile_id, p_rule_id, p_scope, p_when,
+  p_outcome)`: the client picks `p_rule_id` (a new uuid creates, an existing
+  one changes its text or outcome; a retry is the same rule). `when` is one
+  sentence, 1-280 characters after trimming. Company rules: owners and admins
+  (42501 otherwise); a personal rule belongs to its author only. 54000 when
+  the company's rules pass 48 KiB of text or one member's pass 16 KiB (what
+  the reviewer reads for one action). Returns the rule.
+- `qorpera_archive_review_rule(p_profile_id, p_rule_id)`: removes a rule
+  (again: no change). Company rules: owners and admins; personal: its author.
+- `qorpera_answer_action_review(p_review_id, p_client_input_id, p_answer,
+  p_rule_text?, p_sponsor_binding_id?, p_sponsor_version?)` answers an approval
+  card (`authorization_request` whose `entry.data.schema` is
+  `qorpera.action-review/v1`; `p_review_id` = its `reviewId` = the event id).
+  `p_answer`: `allow_once | always_allow | deny`. Who may answer is on the
+  card: `approverScope` `member` (only `approverUserId`) or `owners_admins`
+  (any owner or admin). `always_allow` only where the card says
+  `alwaysAllow: true`; it saves `p_rule_text` (the card's `proposedRule`, as
+  the member edited it) as a company Allow automatically rule. The answer
+  joins the card's conversation as its `authorization_decision`
+  (`decision` `approved|declined`, `answer.answer` the exact answer). When the
+  agent stopped waiting, the answer also wakes it there on the answering
+  member's own account: send the selected execution sponsor as for
+  `qorpera_answer_interaction` (42501 `Room sponsor is unavailable` /
+  `Session sponsor is unavailable` otherwise; nothing is recorded). 55000 when
+  already answered; a retry with the same `p_client_input_id` returns the
+  receipt `{reviewId, answer, inputId, savedRuleId, woke}`. The answerer needs
+  write access to the card's conversation; in an agent's thread, waking also
+  needs an active thread membership. An answer whose delivery failed (its turn
+  request refused) may be given again. `qorpera_answer_interaction` refuses
+  these cards (22023).
+
+  Card facts (`entry.data`): `title`, `summary` (the reviewer's reason),
+  `operation`, `effect` `external|destructive|delegation`, `target`,
+  `details` (a few short facts), `tool` + `arguments` (the exact canonical call
+  arguments as text, up to 64 KiB) + `call` (the same arguments as a JSON object,
+  for the agent to copy; since 20260926210000; show `arguments`),
+  `builtIn` (`none|money|legal_terms|delete_outside|access_change|...`),
+  `rules` (matched, `{id, scope, when, outcome}`), `approverScope`,
+  `approverUserId`, `approverName`, `requesterUserId`, `alwaysAllow`,
+  `proposedRule`. Do not answer these cards through
+  `qorpera_answer_interaction`: its approval surface is owner/admin-only and
+  does not know the review.
+
+### Conversations, turns, wakes (28)
+
+- `qorpera_answer_interaction` (2026-09-22, bundle v75): answers a typed card
+  the agent raised in the thread. See "Thread interactions" under §6.
 - `qorpera_append_session_input`
 - `qorpera_approve_session_turn_sponsorship`
 - `qorpera_claim_wake_v2`
@@ -169,6 +288,13 @@ profile RPCs; RLS is the second read boundary.
 - `qorpera_request_session_turn_v2`
 - `qorpera_resolve_session_recovery`
 
+
+### Coding sessions (4) — Order 9, part 1 (PR #211)
+
+- `qorpera_list_coding_sessions(p_session_id)` — the coding sessions the agent dispatched from this conversation, each as `qorpera.coding-session/v1` plus `isOwner`; the thread renders each one as a centered system element (the "sandwich": a start line, a collapsible body, a status line) from this view and the session's own events, never from the agent's prose
+- `qorpera_read_coding_session(p_worker_id, p_after_event, p_limit)` — the session view plus its event stream (`phase`, `step`, `text`, `needs_input`, `input`, `delegated`, `published`, `finished`, `failed`), cursor on the event id
+- `qorpera_answer_coding_session(p_worker_id, p_text, p_client_request_id)` — owner only; idempotent on the client request id; refused while the session is working
+- `qorpera_delegate_coding_session(p_worker_id, p_client_request_id)` — owner only; "let the agent decide" a question the session asked
 
 ### Execution, sponsors, runners, computers (29)
 
@@ -235,6 +361,14 @@ profile RPCs; RLS is the second read boundary.
   (sub-channels seen in the shell: `sessions`, `staff`, `trail`,
   `company-tree`, `company-projection`, `workspace-inbox`). Hints only: the
   client re-reads through RPCs; large bodies never travel on this channel.
+- `postgres_changes` on `qorpera_company_sidebar_revisions` (filter
+  `profile_id=eq.{profileId}`, member-readable, one row per company) — the
+  shared sidebar changed, by a member or an agent: one hint per change however
+  many agents it renumbered; re-read with `qorpera_read_company_sidebar`. The
+  section and placement tables themselves are not readable or published. The web
+  subscribes on its own channel, only after the read RPC answered, so a cloud
+  without the table never degrades the company channel. Pins and hidden agents
+  are not published.
 - `qorpera-presence-{profileId}` — lossy presence (typing, who-is-viewing).
   Private channel authorized by membership through RLS on
   `realtime.messages`; never stored; must never carry durable content.
@@ -274,13 +408,99 @@ machine.
 | --- | --- | --- |
 | Auth, profiles, membership, invitations, friends, presence | live | build fully |
 | Conversations: sessions, inputs, events, replay, Realtime | live (Order 1 mouth writes the canonical transcript) | build fully; render only send operations |
-| Approvals | `authorization_decision` today; typed interaction surfaces at Order 2 | build the inbox; typed cards as Order 2 lands |
+| Approvals | `authorization_request` answered through `qorpera_answer_interaction` (bundle v75) | build the inbox; Approve and Decline call the answer RPC |
+| Auto-review rules and approval cards | kernel + runtime in bundle v130 | Settings → Rules; approval cards with Allow once / Deny / Always allow through `qorpera_answer_action_review`; show no live controls until v130 is live |
+| Thread interactions (typed cards) | kernel in bundle v75; runtime tool and web cards follow | render `interaction_request` events as cards; answer through the RPC |
 | Company File: published snapshots, objects, proposals | live | build browsing/review |
 | Company File: live logical paths with ACLs | Order 0 gateway in progress | read-only projection, then live |
 | Organization: Co-Founder, responsibilities, projects, rooms, staff | in rework (departments → responsibilities) | build against the semantic projection (contract 14.5); no department UI |
 | Screens (Company Computer viewer) | Order 4, plus a browser-facing authenticated websocket gateway (viewer traffic is private-network today) | later |
-| Routines, memory, connectors | Orders 6–8 | later |
-| Repositories, coding workers | Order 9 | later |
+| Routines, memory | Orders 6, 8 | later |
+| Connectors (Gmail, Google Drive, GitHub), company-owned | Order 7 (bundle v87) | web Settings → Connections → Services |
+| Coding sessions (thread element: list, read, answer, delegate) | Order 9 part 1 (PR #211); no executor yet, so no session exists in production until part 3 | build the thread element against the RPCs above; render nothing when the list RPC is not deployed |
+| Repositories, coding executors, preview route | Order 9 parts 3–4 | later |
+
+### Thread interactions (typed cards, bundle v75)
+
+An agent asks the member for something by appending an `interaction_request`
+event to its thread (a runner custom entry, `entry.customType =
+"interaction_request"`, `entry.data` = a `qorpera.interaction/v1` object). The
+kernel validates the data per surface and refuses anything else, so a client
+renders only these surfaces and never agent-authored HTML:
+
+| `surface` | `payload` (closed object) | Member outcomes | `answer` |
+| --- | --- | --- | --- |
+| `question` | `options[1..6]{label,value?,description?,style?}`, `multiSelect?`, `allowCustom?`, `dismissOnMoveOn?` | `answered`, `declined` | `{values: string[]}` for answered, else `{}` |
+| `secret` | `name`, `label`, `purpose`, `kind?` (`token`/`password`/`text`), `connectorId?` (default `vault`; bundle v81) | `provided`, `declined` | send `{}`; the value goes to the cloud secret custody (`qorpera_begin_cloud_secret_capture` → POST to the broker's `/v1/captures/<ticket>`), and `provided` is accepted only when an active secret with that connector and name exists (owned by the company or by you); the kernel writes `{secretId, version}` into the answer |
+| `form` | `domain`, `reason?`, `submitAfterFill?`, `fields[1..8]{id,label,type,required?,placeholder?,options?,secret?,target?,vaultName?}` | `answered`, `declined` | `{values: {id: string|boolean}, fields: {id: filled|failed|skipped}}`; values for secret fields are refused |
+| `takeover` | `instruction`, `reason?`, `domain?`, `idpDomain?` | `handed_back`, `dismissed` | `{}` |
+| `draft` | `platform`, `connectorId`, `from`, `to[]`, `cc?[]`, `subject?`, `body`, `replyTo?`, `threadRef?` | `sent`, `discarded` | `{sentSummary?}` for sent |
+| `credential` | `name`, `domain`, `purpose?` | none (the computer answers) | refused |
+| approval (an `authorization_request` event) | the request's own data | `approved`, `declined` | `{reason?}`; needs owner or admin |
+
+Common request fields: `schema`, `surface`, `title` (1–200), `body?` (≤ 2000),
+`expiresAt?` (UTC timestamp; answers after it are refused as expired).
+
+`qorpera_answer_interaction(p_session_id, p_client_input_id, p_interaction_id,
+p_outcome, p_answer, p_sponsor_binding_id?, p_sponsor_version?)` — `p_interaction_id` is the request's `event_id`. The
+answer is queued as an ordinary session input (`kind = user_message`, body
+`qorpera.interaction-answer/v1` = `{schema, interactionId, surface, outcome,
+answer}`), so it wakes the agent in its own thread like a message; the client
+sees it in `qorpera_list_session_inputs` until the run admits it, when it
+materializes as a member-authored `interaction_answer` event (or an
+`authorization_decision` for an approval) with `entry.data = {schema,
+interactionId, requestEventId, surface, outcome, answer, answeredBy}` (+
+`decision` for approvals). Rules: one answer per request (a second one is
+refused with `55000`, also while the first is still queued); author only (the
+member a private thread belongs to, or the creator of a company-visible one);
+idempotent on `p_client_input_id`; `22023` for a shape the surface does not
+allow; `42501` for authority. Expired means a client shows the card as
+expired; the kernel does not synthesize an event for it. Group chats never
+carry cards (the runtime withholds the tool there and the kernel refuses a
+card on the native path). Design: `THREAD-WIDGETS-DESIGN-20260922.md` in the takeover workspace
+outputs.
+
+*An agent's shared thread (bundle v100)* — a room bound to one agent
+(`executionScope.agentThread`). The agent raises cards there in reply to
+members' posts. Only the member the card was raised for answers it: the
+request event's `actor_user_id` (the member whose post, routine or first run
+the raising run serves), while still a member of the room; approvals still
+need owner or admin. The answer is delivered like a post, on the member's own
+model account: pass `p_sponsor_binding_id` and `p_sponsor_version` (the
+conversation's selected sponsor, as for `qorpera_post_company_room_message`).
+The kernel checks them as the wake materializer will (binding active and
+created by you, connection active, native credential present) and refuses
+with `42501` "Room sponsor is unavailable" otherwise, or `55000` while company
+execution is paused; a refused answer records nothing. An accepted answer's
+input is complete at once, its `interaction_answer` event is in the transcript
+when the RPC returns (never in the pending list), and a room wake runs the
+thread's agent. A client shows live card controls only to that member; against
+a cloud before bundle v100 (`PGRST202` for the seven named arguments) it keeps
+the card open and says answering there is not available yet (the old function
+would queue an answer that never wakes the agent).
+
+*A plain conversation (bundle v105)* — a company conversation that is not a
+room. The answer is delivered the way a message there is: pass the same two
+sponsor arguments, and the kernel queues the answer with a session turn
+request on your own model account, checked as `qorpera_request_session_turn`
+checks a `member_connection` request (sponsor kind `member_connection`, your
+connection, active binding, connection and authorization, a native credential
+whose compute identity is yours and active). It refuses with `42501` "Session
+sponsor is unavailable" otherwise, or `55000` while company execution is
+paused; a refused answer records nothing. The answer shows in the pending list
+until its turn is admitted as a human wake whose current input is the answer.
+A conversation with its own execution binding (`qorpera_configure_session_
+execution`) still queues an answer that names no sponsor. Before bundle v105
+the kernel ignored the sponsor there and queued an answer that never woke the
+agent; the v105 migration marks every answer queued where nothing admits it as
+failed. If the turn request fails at admission, the answer never reached the
+agent and no longer counts as the card's answer: the member may answer again.
+`qorpera_list_session_inputs` lists such a failed answer (`status: "failed"`,
+with its `failure_reason`) while its card has no other answer, so a client can
+show the card open again and say why; it lists no other failed input.
+
+*A group chat* (a room bound to no agent) carries no cards; an answer there is
+refused with `22023` "cards are not answered in a group chat" (bundle v105).
 
 ## 7. Desktop IPC channels → cloud equivalents
 
@@ -312,7 +532,7 @@ does locally that the contract forbids.
 | `company:scheduled-job-update` | qorpera_upsert_cloud_routine |
 | `company:set-icon` | review (profile metadata RPC) |
 | `connection:cancel` | review |
-| `connection:connect` | qorpera_begin_cloud_secret_capture / qorpera_begin_native_provider_login (+ native-provider-login Edge Function) |
+| `connection:connect` | qorpera_begin_cloud_secret_capture / qorpera_begin_native_provider_login (+ native-provider-login Edge Function). Step 7 connectors (company-owned, owner/admin): the browser posts the ticket and the SHA-256 of a tab-held proof to the broker origin (`POST <serviceOrigin>/v1/oauth/<ticketId>/start?company=<profileId>` → provider consent → `GET /v1/oauth/callback` → back to the web page with `?connector=<id>&connection=confirm&confirmation=…` or `connection=failed` in the hash → `POST /v1/oauth/<ticketId>/confirm?company=<profileId>` with the proof, which seals the account), or `POST /v1/captures/<ticketId>?company=<profileId>` for a typed GitHub token. Since bundle v88 sealing the connection shares it with every agent; qorpera_grant_cloud_connector remains only as the idempotent repair |
 | `connection:disconnect` | qorpera_revoke_cloud_secret / qorpera_revoke_native_provider_connection |
 | `feedback:submit` | qorpera_submit_product_feedback |
 | `friends:list` | qorpera_list_friends |
@@ -385,7 +605,10 @@ above.
    `etag, x-qorpera-access-mode`, and a `204` answer to preflight. Until then
    the web app cannot upload attachments or read gateway-served objects; it
    says so instead of pretending.
-2. **Approvals.** The only member-callable way to record an
+2. **Approvals.** *Answered 2026-09-22 (bundle v75): `qorpera_answer_interaction`
+   records the decision as a queued input that wakes the agent and
+   materializes as `authorization_decision`; see "Thread interactions" in §6.
+   A pending-requests read RPC is still open.* The only member-callable way to record an
    `authorization_decision` today is `qorpera_append_account_event(uuid, uuid,
    text, jsonb, bigint, text, uuid, uuid)`, which is granted to `authenticated`
    but absent from §2. Request: either list it (with the body shape a decision
@@ -535,3 +758,127 @@ above.
     Request: decide where these notices reach a member now — a surface a
     client still shows, such as the run or conversation state — or record
     in §17 that they are paused until a client shows them again.
+
+    Resolution (2026-09-19): the web workspace now presents member-addressed
+    execution updates inline, without restoring the removed inbox or unread
+    rail count. It reads usage limits, sponsor handoffs, company ceilings and
+    pause/resume notices, with an explicit acknowledgment per record. Opening
+    the workspace never acknowledges a notice; an uncertain acknowledgment
+    requires a fresh read before another attempt. Reads and writes are scoped
+    to the current member and company and stop on account or access changes.
+    The existing RPC returns the latest 50 records, including acknowledged
+    records, so this surface labels that window and does not promise a complete
+    pending backlog. Older pending records need backend filtering/pagination.
+
+### 2026-09-19 — from the web client session (`packages/web`, PR #124)
+
+13. **Request 12 understated what stops reaching members.** Replacing its
+    consequences:
+    - No notice reaches a member in any client: the usage-limit notice and the
+      "never silent" sponsor handoff of `QORPERA-RUNTIME-CONTRACT.md` §17, the
+      ceiling-trip notice of §7.4, and the founder stop notice of §21 item 30.
+      Web Settings still shows the paused state and the month's trip count,
+      but nothing tells a member when either changes.
+    - Nothing acknowledges a row. Where the dedupe key is fixed — usage limits
+      (connection and version, `20260828019980`) and spend/token trips
+      (profile, month and dimension, `20260828019995`) — the open-row unique
+      index keeps the first unacknowledged row and later notices are dropped.
+      Where the key is new each time — pause/resume, hourly wake trips,
+      machine-capacity refusals and handoffs — one unacknowledged row is added
+      per event and never cleared.
+
+    Request: decide where these notices reach a member now — a surface a
+    client still shows, such as the run or conversation state — or record in
+    §7.4, §17 and §21 that they are paused until a client shows them again,
+    and whether rows should keep being written meanwhile.
+
+    Follow-up: PR #129 restores member execution notices in the web workspace;
+    the resolution recorded under request 12 above also addresses request 13.
+
+### 2026-09-24 — from the runtime (bundle v89, `20260924080000_runtime_remove_company_ceilings.sql`)
+
+14. **Company execution ceilings are gone; the pause is operator-only.** At the
+    founder's request ("get rid of this … not just in settings, but as policy
+    configurations/settings") there are no per-company monthly spend, monthly
+    token or hourly wake ceilings. Removed, with no `_v2`:
+    - `qorpera_company_execution_ceiling_json(p_profile_id)` and
+      `qorpera_set_company_execution_ceiling(uuid,bigint,bigint,bigint,bigint)`
+      (request 8), plus the private helpers, the ceiling table and the trip
+      records. The only client, the web Settings panel, was removed first
+      (web PR #247, no bundle), so the cut must follow that deploy.
+    - `qorpera_set_company_execution_pause` is no longer granted to
+      `authenticated`. It stays as the operator brake of every runtime cut
+      (an operator session with a founder's claims), and it no longer writes
+      member notifications.
+    - Notification kinds `company_execution_paused` and
+      `company_execution_resumed` are removed, together with the open and
+      acknowledged rows of both and every `company-ceiling-tripped/v1` row.
+      `company_ceiling_tripped` remains, carrying only the machine-capacity
+      subject (`qorpera.member-notification.machine-capacity/v1`).
+
+    Per-connection provider quotas, the provider's own usage limits and the
+    running-machine limit are unchanged.
+
+### 2026-09-24 — from the runtime (bundle v92, `20260924130000_runtime_remove_run_and_machine_caps.sql`)
+
+15. **No machine limit, no API-key budget, no run deadline.** Removed, with no
+    `_v2`: `qorpera_company_machine_capacity(p_profile_id)` and
+    `qorpera_set_company_machine_limit(uuid,integer,bigint)` (no client calls
+    them) and the machine-capacity notice. Its rows go, and so does the
+    `company_ceiling_tripped` kind, so a web build that still parses that
+    notice only ever sees none. Node capacity is the only bound on company
+    computers. API-key connections keep only their concurrency. A run's
+    `deadline_at` is set a century out, and usage records runs of any
+    length. A queued run that no computer starts within a day of being queued
+    (a retry counts from its requeue) still fails, with the job error "No
+    computer could start the run within a day".
+
+    A run's work has no count either (founder, 2026-09-24). What a client may
+    see change:
+    - A wake policy's `maxPublicSends` is `null` (no limit) or `0` (the wake may
+      not speak publicly); the numbers 64, 3 and 2 are gone.
+    - Coworker messages have no hop budget and no hourly pair budget, so a send
+      no longer returns `causal-fence` for those reasons and the pair transcript
+      gets no budget line. Nothing but a member's Stop (or the operator pause)
+      ends a loop between two agents.
+    - Hiring and group chats have no per-run count ("This run reached its limit
+      for new agents/rooms" is gone), and neither do Company File reads, model
+      requests, screenshots, tool calls, worker follow-up turns or workers per
+      todo ("This todo already has eight workers" is gone).
+    - What still refuses is listed in the runtime contract, section 7.4. It
+      includes one open limit, 128 tool outputs per model request, which
+      leaves with a Codex rebuild.
+
+### 2026-09-24 — from the runtime (bundle v95, `20260924160000_runtime_remove_standing_counts.sql`)
+
+16. **No standing counts.** Removed, with no `_v2`: 32 routines per agent
+    ("Agent routine limit reached"), 64 open todos per agent ("Too many open
+    todos"), 4 active workers per agent ("Four workers are already active") and
+    40 sidebar sections per company ("A company can have at most 40 sections",
+    from `qorpera_manage_company_sidebar` as well as the agent tool). A client
+    that showed or guarded one of these limits should drop it. A Company File
+    change may now wake an agent already earlier in its causal chain; an
+    agent's own write still never wakes its own watch routine.
+
+### 2026-09-24 — from the runtime (bundle v104, `20260924230000_runtime_native_view_no_output_count.sql`)
+
+17. **No count of tool outputs per model request.** The open limit named in
+    item 15 is gone with the Codex rebuild: a model request may carry any
+    number of tool outputs (the pinned Codex refused 128 or more). Nothing a
+    client calls changes; a long run simply no longer fails after about 128
+    tool calls between compactions.
+
+### 2026-09-25 — from the runtime (bundle v130, `20260926130000_runtime_auto_review_rules.sql`)
+
+18. **Auto-review rules and approval cards.** Members write rules ("When an
+    agent wants to …, it should: Ask first | Allow automatically"), for
+    themselves or, owners and admins, for the whole company. Before an agent's
+    acting call runs (connection writes, computer steps that act, shell,
+    deletions, hiring, routines, workers), a reviewer decides allow / ask /
+    deny. An ask raises an `authorization_request` card of schema
+    `qorpera.action-review/v1` in the conversation the agent works in (its
+    own thread or a plain conversation; never a group chat). The web needs a
+    Settings → Rules tab (the three rule RPCs) and live controls on these
+    cards (`qorpera_answer_action_review`, section 2). Older approval cards
+    without `reviewId` keep the v75 path.
+

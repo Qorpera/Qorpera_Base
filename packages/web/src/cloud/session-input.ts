@@ -34,6 +34,8 @@ export function selectSessionExecutionSponsor(
 		identity.ownerUserId !== memberId ||
 		!UUID_PATTERN.test(identity.computeIdentityId) ||
 		!connection ||
+		connection.provider !== "openai" ||
+		connection.nativeHarness !== "codex-cli" ||
 		connection.connectionStatus !== "active" ||
 		connection.authorizationState !== "active" ||
 		connection.policy.implementationStatus !== "supported" ||

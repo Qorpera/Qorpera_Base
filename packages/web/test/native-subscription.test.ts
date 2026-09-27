@@ -49,6 +49,45 @@ function setup(loginBase?: string) {
 	};
 }
 describe("native subscription browser transport", () => {
+	it("selects the durable conversation account with scoped authenticated transport", async () => {
+		const f = setup();
+		f.fetch.mockResolvedValueOnce(Response.json(id(94)));
+		expect(await f.client.selectSessionAccount!(session.sessionId, f.view.signal)).toBe(id(94));
+		const [url, request] = f.fetch.mock.calls[0]!;
+		expect(url).toBe("https://fixture.invalid/rest/v1/rpc/qorpera_select_member_session_account");
+		expect(JSON.parse(String(request?.body))).toEqual({
+			p_profile_id: profileA.profileId,
+			p_session_id: session.sessionId,
+		});
+		expect(request).toMatchObject({ method: "POST", redirect: "error", cache: "no-store", credentials: "omit" });
+		expect(f.current).toHaveBeenCalledWith(session.sessionId);
+		f.fetch.mockResolvedValueOnce(Response.json(null));
+		expect(await f.client.selectSessionAccount!(session.sessionId)).toBeUndefined();
+	});
+	it("rejects malformed account selections and does not send after an account switch", async () => {
+		const f = setup();
+		f.fetch.mockResolvedValueOnce(Response.json({ access_token: "private" }));
+		await expect(f.client.selectSessionAccount!(session.sessionId)).rejects.toThrow(
+			"Invalid conversation account response",
+		);
+		await expect(f.client.selectSessionAccount!("invalid")).rejects.toThrow("Invalid conversation account request");
+		expect(f.fetch).toHaveBeenCalledTimes(1);
+		f.auth(userB);
+		await expect(f.client.selectSessionAccount!(session.sessionId)).rejects.toThrow("Refresh its status");
+		expect(f.fetch).toHaveBeenCalledTimes(1);
+	});
+	it("discards a late durable selection when its conversation changes", async () => {
+		const f = setup(),
+			response = deferred<Response>();
+		f.fetch.mockReturnValueOnce(response.promise);
+		const selected = f.client.selectSessionAccount!(session.sessionId, f.view.signal);
+		await settle();
+		f.current.mockImplementation(() => {
+			throw new Error("Conversation changed");
+		});
+		response.resolve(Response.json(id(94)));
+		await expect(selected).rejects.toThrow("Refresh its status");
+	});
 	it("submits the SDK's exact sponsored request without dispatching a local runtime", async () => {
 		const f = setup();
 		expect(await f.client.requestSessionTurn(f.input, f.view.signal)).toEqual({
@@ -81,8 +120,16 @@ describe("native subscription browser transport", () => {
 		});
 		expect(f.current).toHaveBeenCalledWith(session.sessionId);
 	});
-	it("binds profile operations despite an extra caller profile and retains explicit consent identity", async () => {
+	it("binds profile operations despite an extra caller profile, recording unattended consent first", async () => {
 		const f = setup();
+		// Unattended use is the default: the owner's consent is recorded, then the consented version is bound.
+		const rpc = vi.spyOn(f.cloud, "rpc").mockResolvedValueOnce({
+			schema: "qorpera.provider-connection-consent/v1",
+			connection_id: id(94),
+			version: 3,
+			allow_autonomous: true,
+			changed: true,
+		});
 		f.fetch.mockResolvedValueOnce(Response.json({ binding_id: id(92), version: 4 }));
 		const consent = {
 			profileId: id(999),
@@ -92,12 +139,17 @@ describe("native subscription browser transport", () => {
 			allowAutonomous: false,
 		};
 		expect(await f.client.createMemberSponsor(consent)).toEqual({ bindingId: id(92), version: 4 });
+		expect(rpc).toHaveBeenCalledWith("qorpera_consent_provider_connection_autonomous", {
+			p_profile_id: profileA.profileId,
+			p_connection_id: id(94),
+			p_allow_autonomous: true,
+		});
 		expect(JSON.parse(f.fetch.mock.calls[0]![1]!.body as string)).toEqual({
 			p_profile_id: profileA.profileId,
 			p_client_binding_id: id(92),
 			p_provider_connection_id: id(94),
-			p_provider_connection_version: 2,
-			p_allow_autonomous: false,
+			p_provider_connection_version: 3,
+			p_allow_autonomous: true,
 		});
 		f.fetch.mockResolvedValueOnce(Response.json({ connection_id: id(94), status: "revoked" }));
 		expect(await f.client.revokeConnection(consent)).toEqual({ connectionId: id(94), status: "revoked" });
@@ -305,7 +357,7 @@ describe("native provider onboarding browser adapter", () => {
 		const result = await f.client.beginProviderLogin(f.input, f.view.signal);
 		expect(result).toEqual({
 			loginId: id(105),
-			connectionId: id(103),
+			clientConnectionId: id(103),
 			status: "awaiting_member",
 			interactionUrl: "https://auth.openai.com/device",
 			userCode: "ABCD-EFGH",
@@ -374,6 +426,44 @@ describe("native provider onboarding browser adapter", () => {
 			p_native_harness: "claude-code",
 			p_client_login_id: id(102),
 		});
+	});
+	it("rechecks preparation after one second using the same admitted capability", async () => {
+		vi.useFakeTimers();
+		const f = loginSetup();
+		const preparing = deferred<Response>();
+		f.fetch
+			.mockResolvedValueOnce(Response.json({ compute_identity: f.responses.identity, connections: [] }))
+			.mockResolvedValueOnce(Response.json(f.responses.authorization))
+			.mockReturnValueOnce(preparing.promise);
+		const pending = f.client.beginProviderLogin(f.input);
+		await vi.waitFor(() => expect(f.fetch).toHaveBeenCalledTimes(3));
+		preparing.resolve(Response.json({ schema: f.responses.prompt.schema, login_id: id(105), status: "preparing" }));
+		await vi.advanceTimersByTimeAsync(0);
+		await vi.advanceTimersByTimeAsync(999);
+		expect(f.fetch).toHaveBeenCalledTimes(3);
+		await vi.advanceTimersByTimeAsync(1);
+		expect(await pending).toMatchObject({ status: "awaiting_member", userCode: "ABCD-EFGH" });
+		expect(f.fetch).toHaveBeenCalledTimes(4);
+		expect(f.fetch.mock.calls[3]![1]!.body).toBe(f.fetch.mock.calls[2]![1]!.body);
+	});
+	it("cancels the preparation delay without sending another request", async () => {
+		vi.useFakeTimers();
+		const f = loginSetup();
+		f.fetch
+			.mockResolvedValueOnce(Response.json({ compute_identity: f.responses.identity, connections: [] }))
+			.mockResolvedValueOnce(Response.json(f.responses.authorization))
+			.mockResolvedValueOnce(
+				Response.json({ schema: f.responses.prompt.schema, login_id: id(105), status: "preparing" }),
+			);
+		const rejected = expect(f.client.beginProviderLogin(f.input, f.view.signal)).rejects.toThrow(
+			"Refresh connections",
+		);
+		await vi.waitFor(() => expect(f.fetch).toHaveBeenCalledTimes(3));
+		await settle();
+		f.view.abort();
+		await rejected;
+		await vi.advanceTimersByTimeAsync(5000);
+		expect(f.fetch).toHaveBeenCalledTimes(3);
 	});
 	it.each(["owner", "disabled"] as const)("rejects %s identity mismatch before login admission", async (change) => {
 		const f = loginSetup();

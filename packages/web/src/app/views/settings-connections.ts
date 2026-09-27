@@ -3,17 +3,29 @@ import type {
 	NativeMemberConnection,
 } from "@qorpera/cloud-client/cloud-native-subscription-control";
 import type { WebNativeProviderLogin, WebNativeSubscription } from "../../cloud/native-subscription.ts";
-import { button, h, replace } from "../../ui/dom.ts";
+import { button, fmtTime, h, replace } from "../../ui/dom.ts";
+import { t } from "../../ui/preferences.ts";
 
 type ConnectionsClient = Pick<WebNativeSubscription, "listConnections" | "revokeConnection" | "createMemberSponsor"> &
-	Partial<Pick<WebNativeSubscription, "onboardingAvailable" | "beginProviderLogin">>;
+	Partial<Pick<WebNativeSubscription, "onboardingAvailable" | "beginProviderLogin" | "refreshAccountMetadata">>;
 
 type Provider = "openai" | "anthropic";
 const PROVIDERS: ReadonlyArray<{ id: Provider; label: string; logo: string }> = [
 	{ id: "openai", label: "ChatGPT / Codex", logo: "provider-openai.svg" },
 	{ id: "anthropic", label: "Claude", logo: "provider-anthropic.svg" },
 ];
-const WATCH_MS = 5000;
+const WATCH_MS = 2000;
+const USAGE_FRESH_MS = 5 * 60_000;
+const UPDATED_MS = 2000;
+
+function resetCountdown(milliseconds: number): string {
+	const minutes = Math.ceil(milliseconds / 60_000);
+	if (minutes < 60) return t("{minutes}m", { minutes });
+	const hours = Math.floor(minutes / 60);
+	return hours < 24
+		? t("{hours}h {minutes}m", { hours, minutes: minutes % 60 })
+		: t("{days}d {hours}h", { days: Math.floor(hours / 24), hours: hours % 24 });
+}
 
 interface Attempt {
 	login?: WebNativeProviderLogin;
@@ -38,8 +50,11 @@ export class ProviderSignIns {
 
 const live = (connection: NativeMemberConnection) =>
 	connection.connectionStatus === "active" && connection.authorizationState === "active";
+/** Cards with the same provider and email read the same. */
+const lookalike = (connection: NativeMemberConnection) =>
+	`${connection.provider}\n${connection.providerAccountEmail?.toLowerCase() ?? ""}`;
 
-/** One card per provider: connect, finish the provider's own sign-in, done.
+/** Accounts share one list; provider selection belongs to adding an account.
  * A connected account is enabled for the member's own messages right away. */
 export class ConnectionsView {
 	readonly el = h("div");
@@ -51,9 +66,19 @@ export class ConnectionsView {
 	readonly #enabling = new Set<string>();
 	#connections: NativeExecutionConnections | undefined;
 	#loading = true;
+	#adding = false;
 	#working: string | undefined;
 	#error: string | undefined;
 	#watch: ReturnType<typeof setTimeout> | undefined;
+	#usageClock: ReturnType<typeof setTimeout> | undefined;
+	#updatedClock: ReturnType<typeof setTimeout> | undefined;
+	#updated = false;
+	#refreshing: Promise<void> | undefined;
+	#refreshAgain = false;
+	#metadataRefresh: Promise<void> | undefined;
+	#metadataForced = false;
+	#usageUpdating = false;
+	#usageError: string | undefined;
 	/** `signIns` and `begin` come from the application when sign-ins should
 	 * outlive this page; alone, the page keeps its own. */
 	constructor(
@@ -74,35 +99,123 @@ export class ConnectionsView {
 		this.#lifetime.signal.addEventListener("abort", stop, { once: true });
 		if (signal.aborted) this.#lifetime.abort();
 		else signal.addEventListener("abort", () => this.dispose(), { once: true, signal: this.#lifetime.signal });
+		const resume = () => {
+			if (
+				!document.hidden &&
+				this.el.isConnected &&
+				([...this.#attempts.values()].some((attempt) => attempt.login) || this.#connections?.connections.some(live))
+			)
+				void this.#refreshUsage();
+		};
+		window.addEventListener("focus", resume, { signal: this.#lifetime.signal });
+		document.addEventListener("visibilitychange", resume, { signal: this.#lifetime.signal });
 		this.#draw();
-		void this.#refresh();
+		void this.#refreshUsage();
 	}
 	dispose(): void {
 		this.#lifetime.abort();
 		clearTimeout(this.#watch);
+		clearTimeout(this.#usageClock);
+		clearTimeout(this.#updatedClock);
 		this.#connections = undefined;
 		this.el.replaceChildren();
 		this.el.remove();
 	}
-	#current(provider: Provider): NativeMemberConnection | undefined {
-		const mine = (this.#connections?.connections ?? []).filter(
-			(item) => item.provider === provider && item.connectionStatus !== "revoked",
-		);
-		return mine.find(live) ?? mine[0];
-	}
-	async #refresh(): Promise<void> {
-		if (this.#lifetime.signal.aborted) return;
+	#refresh(): Promise<void> {
+		if (this.#lifetime.signal.aborted) return Promise.resolve();
 		clearTimeout(this.#watch);
+		this.#refreshAgain = true;
+		this.#refreshing ??= this.#readUntilCurrent();
+		return this.#refreshing;
+	}
+	/** `force` is the member's own Refresh: a new observation even while a
+	 * recent one would otherwise answer. A Refresh that joins a background read
+	 * makes it forced; it can only join before that read asks for usage, since
+	 * the button is greyed out from the read's first redraw. */
+	#refreshUsage(force = false): Promise<void> {
+		if (this.#lifetime.signal.aborted) return Promise.resolve();
+		if (!this.#client.refreshAccountMetadata) return this.#refresh();
+		this.#metadataForced = (this.#metadataRefresh !== undefined && this.#metadataForced) || force;
+		this.#metadataRefresh ??= this.#readUsage();
+		return this.#metadataRefresh;
+	}
+	/** The member's Refresh reads "Updated" for a moment once the new reading is
+	 * in; an unchanged reading would otherwise look as if nothing happened. */
+	async #refreshNow(): Promise<void> {
+		clearTimeout(this.#updatedClock);
+		this.#updated = false;
+		await this.#refreshUsage(true);
+		if (this.#lifetime.signal.aborted || this.#error || this.#usageError) return;
+		// A second click during the same read ends here too; keep one clock.
+		clearTimeout(this.#updatedClock);
+		this.#updated = true;
+		this.#draw();
+		this.#updatedClock = setTimeout(() => {
+			this.#updated = false;
+			if (!this.#lifetime.signal.aborted) this.#draw();
+		}, UPDATED_MS);
+	}
+	async #readUsage(): Promise<void> {
+		this.#usageUpdating = true;
+		this.#usageError = undefined;
+		// A read the member did not ask for ends an "Updated" still showing.
+		clearTimeout(this.#updatedClock);
+		if (this.#updated) {
+			this.#updated = false;
+			this.#draw();
+		}
 		try {
-			const connections = await this.#client.listConnections(this.#lifetime.signal);
+			// Show existing account identities while their isolated host refreshes
+			// allowances. No sign-in or model message is started by this read.
+			await this.#refresh();
+			if (this.#lifetime.signal.aborted || !this.#connections?.connections.some(live)) return;
+			await this.#client.refreshAccountMetadata!(this.#lifetime.signal, this.#metadataForced);
+			if (!this.#lifetime.signal.aborted) await this.#refresh();
+		} catch {
+			if (!this.#lifetime.signal.aborted) this.#usageError = t("Usage could not be refreshed. Try again.");
+		} finally {
+			this.#usageUpdating = false;
+			this.#metadataRefresh = undefined;
+			if (!this.#lifetime.signal.aborted) this.#draw();
+		}
+	}
+	async #readUntilCurrent(): Promise<void> {
+		try {
+			// Changes during a read need one fresh read afterwards. Keep a single
+			// request in flight so a slow response cannot overwrite newer accounts.
+			do {
+				this.#refreshAgain = false;
+				await this.#readConnections();
+			} while (this.#refreshAgain && !this.#lifetime.signal.aborted);
+		} finally {
+			this.#refreshing = undefined;
+			if (!this.#lifetime.signal.aborted && [...this.#attempts.values()].some((attempt) => attempt.login))
+				this.#watch = setTimeout(() => void this.#refresh(), WATCH_MS);
+		}
+	}
+	async #readConnections(): Promise<void> {
+		try {
+			const observed = await this.#client.listConnections(this.#lifetime.signal);
 			if (this.#lifetime.signal.aborted) return;
+			// Historical credential versions are not separate accounts and must
+			// not be enabled again when a newer version has replaced them.
+			const latest = new Map<string, NativeMemberConnection>();
+			for (const connection of observed.connections) {
+				const current = latest.get(connection.connectionId);
+				if (!current || connection.connectionVersion > current.connectionVersion)
+					latest.set(connection.connectionId, connection);
+			}
+			const connections = { ...observed, connections: [...latest.values()] };
 			this.#connections = connections;
 			this.#error = undefined;
 			for (const [provider, attempt] of this.#attempts)
 				if (
 					attempt.login &&
 					(connections.connections.some(
-						(item) => item.connectionId === attempt.login?.connectionId && live(item),
+						(item) =>
+							item.provider === provider &&
+							item.clientConnectionId === attempt.login?.clientConnectionId &&
+							live(item),
 					) ||
 						Date.parse(attempt.login.expiresAt) <= Date.now())
 				)
@@ -110,15 +223,10 @@ export class ConnectionsView {
 			void this.#enable();
 		} catch {
 			if (this.#lifetime.signal.aborted) return;
-			this.#error = "Your model accounts could not be read.";
+			this.#error = t("Your model accounts could not be read.");
 		} finally {
 			this.#loading = false;
-			if (!this.#lifetime.signal.aborted) {
-				this.#draw();
-				// While a provider sign-in is open, watch for it to finish.
-				if ([...this.#attempts.values()].some((attempt) => attempt.login))
-					this.#watch = setTimeout(() => void this.#refresh(), WATCH_MS);
-			}
+			if (!this.#lifetime.signal.aborted) this.#draw();
 		}
 	}
 	/** Connecting an account is the member's choice to use it for their messages. */
@@ -147,7 +255,7 @@ export class ConnectionsView {
 				);
 				if (!this.#lifetime.signal.aborted) void this.#refresh();
 			} catch {
-				// Shown as "Connected"; the conversation says so if it still cannot send.
+				// The card still lists the account; the conversation says so if it still cannot send.
 			}
 		}
 	}
@@ -159,12 +267,15 @@ export class ConnectionsView {
 			this.#lifetime.signal.aborted ||
 			!this.#client.onboardingAvailable ||
 			!begin ||
-			attempts.get(provider)?.starting
+			attempts.get(provider)?.starting ||
+			attempts.get(provider)?.login
 		)
 			return;
 		const attempt: Attempt = { starting: true };
+		this.#adding = false;
 		attempts.set(provider, attempt);
 		signIns.changed();
+		this.el.querySelector<HTMLElement>(`[data-focus-key="status:${provider}"]`)?.focus();
 		try {
 			// Every start is a new sign-in with its own identity; a start is never replayed.
 			attempt.login = await begin({
@@ -175,8 +286,9 @@ export class ConnectionsView {
 				clientConnectionId: crypto.randomUUID(),
 			});
 		} catch {
-			attempt.error =
-				"Sign-in could not be started. If you started one a moment ago, give it a few minutes to clear.";
+			attempt.error = t(
+				"Sign-in could not be started. If you started one a moment ago, give it a few minutes to clear.",
+			);
 		} finally {
 			attempt.starting = false;
 		}
@@ -201,66 +313,163 @@ export class ConnectionsView {
 			failed &&
 			!this.#lifetime.signal.aborted &&
 			!this.#error &&
-			this.#connections?.connections.some((item) => item.connectionId === connection.connectionId && live(item))
+			this.#connections?.connections.some(
+				(item) => item.connectionId === connection.connectionId && item.connectionStatus !== "revoked",
+			)
 		) {
-			this.#error = "The account could not be disconnected. Try again.";
+			this.#error = t("The account could not be disconnected. Try again.");
 			this.#draw();
 		}
 	}
-	#card(provider: (typeof PROVIDERS)[number]): HTMLElement {
-		const connection = this.#current(provider.id);
-		const attempt = this.#attempts.get(provider.id);
-		const canConnect = Boolean(this.#client.onboardingAvailable && this.#begin);
-		const connected = connection && live(connection);
-		const status = attempt?.starting
-			? "Preparing sign-in. The first time can take a minute or two."
-			: attempt?.login
-				? "Waiting for you to finish signing in…"
-				: (attempt?.error ??
-					(this.#loading
-						? "Checking…"
-						: connected
-							? `Connected${connection.providerAccountReference ? ` · ${connection.providerAccountReference}` : ""}`
-							: connection
-								? "Sign in again to keep using this account"
-								: canConnect
-									? "Not connected"
-									: "Not available yet"));
-		const action = connected
-			? button(
-					this.#working === connection.connectionId ? "Disconnecting…" : "Disconnect",
-					() => void this.#disconnect(connection),
-					{ disabled: Boolean(this.#working) },
-				)
-			: attempt?.login
-				? button("Cancel", () => {
-						this.#attempts.delete(provider.id);
-						this.#signIns.changed();
-					})
-				: button(
-						attempt?.starting ? "Connecting…" : connection ? "Sign in again" : "Connect",
-						() => void this.#connect(provider.id),
-						{
-							disabled: !canConnect || this.#loading || attempt?.starting === true,
-						},
-					);
-		const login = attempt?.login;
+	/** `showAdded`: another card reads the same, so this one says when it was added. */
+	#account(connection: NativeMemberConnection, showAdded: boolean): HTMLElement {
+		const provider = PROVIDERS.find((item) => item.id === connection.provider)!;
+		const email = connection.providerAccountEmail;
+		const signOut = button(
+			this.#working === connection.connectionId ? t("Signing out…") : t("Sign out"),
+			() => void this.#disconnect(connection),
+			{ disabled: Boolean(this.#working) },
+		);
+		signOut.dataset.focusKey = `signout:${connection.connectionId}`;
 		return h(
 			"article",
-			{ class: "connection-card" },
+			{ class: "connection-card", dataset: { connectionId: connection.connectionId } },
 			h("img", { class: "connection-logo", src: `./assets/${provider.logo}`, alt: "" }),
 			h(
 				"div",
 				{ class: "settings-copy" },
 				h("strong", null, provider.label),
-				h("small", { role: "status" }, status),
+				h("small", { class: "connection-email" }, email ?? t("Email unavailable")),
+				showAdded
+					? h(
+							"small",
+							{ class: "connection-identity", title: t("Connection {id}", { id: connection.connectionId }) },
+							t("Added {time} · {id}", {
+								time: fmtTime(connection.consentedAt),
+								id: connection.connectionId.slice(-8),
+							}),
+						)
+					: null,
+				!live(connection)
+					? h("small", { role: "status" }, t("Sign out and add this account again to reconnect."))
+					: null,
+			),
+			h("div", { class: "connection-actions" }, signOut),
+			this.#usage(connection),
+		);
+	}
+	#usage(connection: NativeMemberConnection): HTMLElement {
+		const usage = connection.providerAccountUsage;
+		const now = Date.now();
+		const limitResetIn = connection.usageLimitResetAt ? Date.parse(connection.usageLimitResetAt) - now : 0;
+		const limitReached = live(connection) && limitResetIn > 0;
+		const limitNotice = limitReached
+			? h(
+					"span",
+					{ class: "connection-usage-limit" },
+					t("Usage limit reached · resets in {time}", { time: resetCountdown(limitResetIn) }),
+				)
+			: null;
+		if (!usage || !live(connection))
+			return h("div", { class: "connection-usage muted" }, limitNotice ?? t("Usage unavailable"));
+		const stale =
+			limitReached || now - Date.parse(usage.observedAt) > USAGE_FRESH_MS || Date.parse(usage.observedAt) > now;
+		const checked = fmtTime(usage.observedAt);
+		// An old reading never says "left" (the limit may be reached since) but says
+		// when it was taken, unless the host's clock ran ahead of this one.
+		const dated = Date.parse(usage.observedAt) <= now;
+		// One bar needs no name; two (5 hours and Weekly) would look alike without one.
+		const named = usage.windows.length > 1;
+		return h(
+			"div",
+			{ class: "connection-usage" },
+			limitNotice,
+			...usage.windows.map((window) => {
+				const resetIn = window.resetAt ? Date.parse(window.resetAt) - now : undefined;
+				const expired = resetIn !== undefined && resetIn <= 0;
+				const remaining = Math.round((100 - window.usedPercent) * 10) / 10;
+				const value = expired
+					? t("Usage unavailable")
+					: stale
+						? dated
+							? t("{percent}% at last check · {time}", { percent: remaining, time: checked })
+							: t("{percent}% at last check", { percent: remaining })
+						: t("{percent}% left", { percent: remaining });
+				const fill = h("span");
+				// CSSOM property updates work with the release CSP; style attributes do not.
+				fill.style.width = `${remaining}%`;
+				return h(
+					"div",
+					{ class: "connection-usage-window" },
+					// The meter's own label names it for screen readers.
+					named ? h("span", { class: "connection-usage-label", "aria-hidden": "true" }, window.label) : null,
+					h(
+						"div",
+						{ class: "connection-usage-heading" },
+						h(
+							"span",
+							{ class: "connection-usage-reset", title: window.resetAt ? fmtTime(window.resetAt) : undefined },
+							expired
+								? t("Reset passed · awaiting updated usage")
+								: resetIn === undefined
+									? t("Reset time unavailable")
+									: t("Resets in {time}", { time: resetCountdown(resetIn) }),
+						),
+						h("span", { title: t("Last checked {time}", { time: checked }) }, value),
+					),
+					expired
+						? null
+						: h(
+								"div",
+								{
+									class: `connection-usage-meter${remaining <= 20 ? " is-low" : ""}${stale ? " is-stale" : ""}`,
+									role: "meter",
+									"aria-label": t("{label} remaining usage", { label: window.label }),
+									"aria-valuemin": 0,
+									"aria-valuemax": 100,
+									"aria-valuenow": remaining,
+									"aria-valuetext": value,
+								},
+								fill,
+							),
+				);
+			}),
+		);
+	}
+	#attempt(provider: (typeof PROVIDERS)[number], attempt: Attempt): HTMLElement {
+		const canConnect = Boolean(this.#client.onboardingAvailable && this.#begin);
+		const status = attempt.starting
+			? t("Preparing sign-in. The first time can take a minute or two.")
+			: attempt.login
+				? t("Waiting for you to finish signing in…")
+				: (attempt.error ?? t("Sign-in has not finished."));
+		const action = attempt.login
+			? button(t("Cancel"), () => {
+					this.#attempts.delete(provider.id);
+					this.#signIns.changed();
+					this.el.querySelector<HTMLButtonElement>(".connection-add")?.focus();
+				})
+			: button(attempt.starting ? t("Connecting…") : t("Try again"), () => void this.#connect(provider.id), {
+					disabled: !canConnect || this.#loading || attempt.starting,
+				});
+		action.dataset.focusKey = `attempt:${provider.id}`;
+		const login = attempt.login;
+		return h(
+			"article",
+			{ class: "connection-card connection-attempt" },
+			h("img", { class: "connection-logo", src: `./assets/${provider.logo}`, alt: "" }),
+			h(
+				"div",
+				{ class: "settings-copy" },
+				h("strong", null, provider.label),
+				h("small", { role: "status", tabindex: -1, dataset: { focusKey: `status:${provider.id}` } }, status),
 			),
 			action,
 			login && (login.interactionUrl || login.userCode)
 				? h(
 						"div",
 						{ class: "connection-sign-in" },
-						login.userCode ? h("p", null, "Your code: ", h("code", null, login.userCode)) : null,
+						login.userCode ? h("p", null, `${t("Your code:")} `, h("code", null, login.userCode)) : null,
 						login.interactionUrl
 							? h(
 									"a",
@@ -270,50 +479,132 @@ export class ConnectionsView {
 										target: "_blank",
 										rel: "noopener noreferrer",
 										referrerpolicy: "no-referrer",
+										dataset: { focusKey: `login:${provider.id}` },
 									},
-									`Open ${provider.id === "openai" ? "OpenAI" : "Anthropic"} sign-in`,
+									t("Open {provider} sign-in", {
+										provider: provider.id === "openai" ? "OpenAI" : "Anthropic",
+									}),
 								)
 							: null,
-						h("small", null, "This page updates by itself when you are done."),
+						h("small", null, t("This page updates by itself when you are done.")),
 					)
 				: null,
 		);
 	}
 	#draw(): void {
+		clearTimeout(this.#usageClock);
+		if (this.#connections?.connections.some(live))
+			this.#usageClock = setTimeout(() => {
+				if (document.hidden) this.#draw();
+				else void this.#refreshUsage();
+			}, 60_000);
+		const focusKey = this.el.contains(document.activeElement)
+			? (document.activeElement as HTMLElement).dataset.focusKey
+			: undefined;
+		const accounts = (this.#connections?.connections ?? []).filter(
+			(connection) =>
+				connection.connectionStatus !== "revoked" &&
+				PROVIDERS.some((provider) => provider.id === connection.provider) &&
+				![...this.#attempts.values()].some(
+					(attempt) => attempt.login?.clientConnectionId === connection.clientConnectionId && !live(connection),
+				),
+		);
+		const lookalikes = new Map<string, number>();
+		for (const key of accounts.map(lookalike)) lookalikes.set(key, (lookalikes.get(key) ?? 0) + 1);
+		const canConnect = Boolean(this.#client.onboardingAvailable && this.#begin);
+		const refresh = button(
+			this.#usageUpdating ? t("Refreshing…") : this.#updated ? t("Updated") : t("Refresh"),
+			() => void this.#refreshNow(),
+			{ small: true, disabled: this.#loading || this.#usageUpdating },
+		);
+		refresh.dataset.focusKey = "refresh";
+		const add = button(
+			t("Add account"),
+			() => {
+				this.#adding = !this.#adding;
+				this.#draw();
+				this.el
+					.querySelector<HTMLButtonElement>(
+						this.#adding ? ".connection-provider-picker button:not(:disabled)" : ".connection-add",
+					)
+					?.focus();
+			},
+			{ disabled: this.#loading || !canConnect },
+		);
+		add.classList.add("connection-add");
+		add.dataset.focusKey = "add";
+		add.setAttribute("aria-expanded", String(this.#adding));
+		add.setAttribute("aria-controls", "connection-provider-picker");
 		replace(
 			this.el,
-			h("h1", null, "Connections"),
+			h("h1", null, t("Connections")),
 			h(
 				"section",
 				{ class: "settings-group" },
-				h("h2", null, "Model accounts"),
+				h("div", { class: "connection-section-heading" }, h("h2", null, t("Model accounts")), refresh),
+				this.#usageError ? h("p", { class: "muted", role: "status" }, this.#usageError) : null,
 				this.#error
 					? h(
 							"p",
 							{ class: "muted", role: "status" },
 							this.#error,
 							" ",
-							button("Try again", () => void this.#refresh(), { small: true }),
+							button(t("Try again"), () => void this.#refresh(), { small: true }),
 						)
 					: null,
-				h("div", { class: "connection-list" }, ...PROVIDERS.map((provider) => this.#card(provider))),
-			),
-			h(
-				"section",
-				{ class: "settings-group" },
-				h("h2", null, "Services"),
 				h(
 					"div",
-					{ class: "settings-card" },
+					{ class: "connection-list" },
+					...accounts.map((connection) =>
+						this.#account(connection, (lookalikes.get(lookalike(connection)) ?? 0) > 1),
+					),
+					...PROVIDERS.flatMap((provider) => {
+						const attempt = this.#attempts.get(provider.id);
+						return attempt ? [this.#attempt(provider, attempt)] : [];
+					}),
+					this.#loading
+						? h("p", { class: "connection-empty muted", role: "status" }, t("Checking…"))
+						: !accounts.length && !this.#attempts.size && !this.#error
+							? h("p", { class: "connection-empty muted" }, t("No model accounts connected."))
+							: null,
 					h(
 						"div",
-						{ class: "settings-copy" },
-						h("strong", null, "Connect your tools"),
-						h("small", null, "Not available yet"),
+						{ class: "connection-add-area" },
+						add,
+						!canConnect ? h("small", { class: "muted" }, t("Adding accounts is not available yet.")) : null,
+						h(
+							"div",
+							{ id: "connection-provider-picker", class: "connection-provider-picker", hidden: !this.#adding },
+							h("p", null, t("Choose a model provider")),
+							...PROVIDERS.map((provider) => {
+								const choice = button(
+									[
+										h("img", { class: "connection-logo", src: `./assets/${provider.logo}`, alt: "" }),
+										provider.label,
+									],
+									() => void this.#connect(provider.id),
+									{
+										disabled: Boolean(
+											this.#attempts.get(provider.id)?.starting || this.#attempts.get(provider.id)?.login,
+										),
+									},
+								);
+								choice.dataset.focusKey = `provider:${provider.id}`;
+								return choice;
+							}),
+						),
 					),
-					h("button", { type: "button", class: "btn", disabled: true }, "Add service"),
 				),
 			),
 		);
+		if (focusKey) {
+			const target = [...this.el.querySelectorAll<HTMLElement>("[data-focus-key]")].find(
+				(item) => item.dataset.focusKey === focusKey,
+			);
+			(target && !target.closest("[hidden]") && !target.matches(":disabled")
+				? target
+				: this.el.querySelector<HTMLButtonElement>(".connection-add")
+			)?.focus();
+		}
 	}
 }

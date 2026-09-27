@@ -34,6 +34,15 @@ export interface CloudCompanyAgentDocument {
 
 type CompanyAgentEditor = Pick<CloudMemberCompanyFileClient, "edit" | "read" | "review">;
 
+/** The server confirmed this command cannot apply. A transport failure does
+ * not carry this guarantee and must retain the original operation identity. */
+export class CloudCompanyAgentOperationRejectedError extends Error {
+	constructor() {
+		super("Company agent lifecycle operation was rejected");
+		this.name = "CloudCompanyAgentOperationRejectedError";
+	}
+}
+
 function record(value: unknown, label: string): Record<string, unknown> {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`Invalid ${label}`);
 	return value as Record<string, unknown>;
@@ -217,10 +226,47 @@ async function applied(
 		if (!("commandId" in reviewed)) throw new Error("Company agent review changed kind");
 		result = reviewed;
 	}
+	if (result.state === "rejected") throw new CloudCompanyAgentOperationRejectedError();
 	if (result.state !== "applied" || !result.result) {
 		throw new Error("Company agent lifecycle operation did not apply");
 	}
 	return result;
+}
+
+/** A creation attempt keeps its identity and document across uncertain replies.
+ * Never turn a retry into an update of a document that has since changed. */
+export async function createCloudCompanyAgent(options: {
+	editor: CompanyAgentEditor;
+	agent: StaffAgent;
+	startupInstructions: string;
+	operationKey: string;
+	signal: AbortSignal;
+}): Promise<void> {
+	const path = cloudCompanyAgentPath(options.agent.id);
+	const text = JSON.stringify(cloudCompanyAgentDocument(options.agent, 1, options.startupInstructions));
+	const current = await options.editor.read(path, options.signal);
+	options.signal.throwIfAborted();
+	if (current.kind === "file") {
+		const document = parseCloudCompanyAgentDocument(JSON.parse(current.text));
+		if (
+			document.agentId !== options.agent.id ||
+			Date.parse(document.createdAt) !== Date.parse(options.agent.createdAt) ||
+			(document.revision === 1 && JSON.stringify(document) !== text)
+		)
+			throw new Error("Company agent creation document changed");
+		// A later governed revision may already have activated or edited this
+		// agent. Its immutable identity confirms creation without another write.
+		return;
+	}
+	if (current.kind !== "absent") throw new Error("Company agent path is not a file");
+	await applied(
+		options.editor,
+		await options.editor.edit(
+			{ operation: "write", operationKey: options.operationKey, path, expectedVersion: null, text },
+			options.signal,
+		),
+		options.signal,
+	);
 }
 
 export async function writeCloudCompanyAgent(options: {
@@ -229,7 +275,7 @@ export async function writeCloudCompanyAgent(options: {
 	startupInstructions?: string;
 	operationKey: string;
 	signal: AbortSignal;
-}): Promise<CloudMemberCompanyCommand> {
+}): Promise<CloudMemberCompanyCommand & { agentRevision: number }> {
 	const path = cloudCompanyAgentPath(options.agent.id);
 	const current = await options.editor.read(path, options.signal);
 	let revision = 1;
@@ -260,7 +306,7 @@ export async function writeCloudCompanyAgent(options: {
 	}
 	if (!startupInstructions) throw new Error("Company agent startup instructions are required");
 	const document = cloudCompanyAgentDocument({ ...options.agent, createdAt }, revision, startupInstructions, grants);
-	return applied(
+	const result = await applied(
 		options.editor,
 		await options.editor.edit(
 			{
@@ -274,6 +320,7 @@ export async function writeCloudCompanyAgent(options: {
 		),
 		options.signal,
 	);
+	return { ...result, agentRevision: document.revision };
 }
 
 export async function deleteCloudCompanyAgent(options: {

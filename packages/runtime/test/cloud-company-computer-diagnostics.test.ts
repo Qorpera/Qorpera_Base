@@ -1,7 +1,9 @@
 import {
 	CompanyComputerLifecycleFailure,
 	companyComputerFailureDiagnostic,
+	createCompanyComputerViewerRefusalReporter,
 } from "@qorpera/runtime/cloud-company-computer-diagnostics";
+import { GUEST_IMAGE_SELF_UPDATE_UNITS, guestImageSelfUpdateCode } from "@qorpera/runtime/lxd-guest-image-updates";
 import { describe, expect, it, vi } from "vitest";
 
 describe("closed office failure diagnostics", () => {
@@ -138,5 +140,103 @@ describe("closed office failure diagnostics", () => {
 			codes: ["OFFICE_REGISTRY_UNCONFIRMED"],
 			categories: ["timeout"],
 		});
+	});
+	it.each(GUEST_IMAGE_SELF_UPDATE_UNITS.map((unit) => [guestImageSelfUpdateCode(unit)]))(
+		"keeps the unit an image self-update refusal names (%s)",
+		(code) => {
+			expect(
+				companyComputerFailureDiagnostic(new CompanyComputerLifecycleFailure("image", new Error(code))),
+			).toMatchObject({ stages: ["image"], codes: [code] });
+		},
+	);
+});
+
+describe("viewer refusal journal lines (closed codes, rate limited, nothing about the member)", () => {
+	function reporter(state?: Parameters<typeof createCompanyComputerViewerRefusalReporter>[0]["state"]) {
+		const lines: string[] = [];
+		const clock = { now: 1_000_000 };
+		const report = createCompanyComputerViewerRefusalReporter({
+			write: (line) => lines.push(line),
+			now: () => clock.now,
+			state,
+		});
+		return { lines, clock, report, records: () => lines.map((line) => JSON.parse(line)) };
+	}
+
+	it("writes the closed code chain and the admission facts, and drops every free-text message", () => {
+		const f = reporter(() => ({
+			serving: true,
+			supervisor: { failed: false, unconfirmedMs: 4200, unconfirmedPolls: 4, confirmedRevision: 17 },
+		}));
+		f.report(
+			"connect",
+			new Error("SHARED_SURFACE_UNCONFIRMED", {
+				cause: Object.assign(new Error("member 7f3e token eyJhbGciOi wss://office.example.test/view"), {
+					code: "ECONNRESET",
+					cause: new Error("OFFICE_PRIVACY_FENCED"),
+				}),
+			}),
+		);
+		expect(f.records()).toEqual([
+			{
+				schema: "qorpera.office-viewer-refusal/v1",
+				stage: "connect",
+				codes: ["SHARED_SURFACE_UNCONFIRMED", "OFFICE_PRIVACY_FENCED"],
+				categories: ["transport"],
+				suppressed: 0,
+				serving: true,
+				supervisor: { failed: false, unconfirmedMs: 4200, unconfirmedPolls: 4, confirmedRevision: 17 },
+			},
+		]);
+		expect(f.lines[0]).not.toMatch(/7f3e|eyJ|office\.example|wss:/);
+	});
+
+	it("holds a retrying client to one line per stage and code per window and counts what it held", () => {
+		const f = reporter();
+		for (let attempt = 0; attempt < 500; attempt++) {
+			f.report("redeem", new Error("OFFICE_SERVICE_NOT_READY"));
+			f.clock.now += 10;
+		}
+		expect(f.lines).toHaveLength(1);
+		// Another cause, or the same cause at another stage, is not hidden by the first.
+		f.report("redeem", new Error("OFFICE_SUPERVISOR_STATUS_STALE"));
+		f.report("upgrade", new Error("VIEWER_UPGRADE_ORIGIN"));
+		f.report("handshake", new Error("anything a client could provoke"));
+		f.report("handshake", new Error("another unlisted message"));
+		expect(f.records().map((record) => [record.stage, record.codes])).toEqual([
+			["redeem", ["OFFICE_SERVICE_NOT_READY"]],
+			["redeem", ["OFFICE_SUPERVISOR_STATUS_STALE"]],
+			["upgrade", ["VIEWER_UPGRADE_ORIGIN"]],
+			["handshake", []],
+		]);
+		f.clock.now += 10_000;
+		f.report("redeem", new Error("OFFICE_SERVICE_NOT_READY"));
+		expect(f.records().at(-1)).toMatchObject({
+			codes: ["OFFICE_SERVICE_NOT_READY"],
+			suppressed: 499,
+			serving: false,
+		});
+		expect(f.records().at(-1)).not.toHaveProperty("supervisor");
+	});
+
+	it("never lets a failing writer, state reader or hostile error reach the viewer path", () => {
+		const hostile = Object.defineProperty(new Error("OFFICE_SERVICE_NOT_READY"), "cause", {
+			get() {
+				throw new Error("getter must not run");
+			},
+		});
+		const broken = createCompanyComputerViewerRefusalReporter({
+			write: () => {
+				throw new Error("journal unavailable");
+			},
+			state: () => {
+				throw new Error("state unavailable");
+			},
+		});
+		expect(() => broken("redeem", hostile)).not.toThrow();
+		expect(() => broken("not-a-stage" as "redeem", new Error("OFFICE_SERVICE_NOT_READY"))).not.toThrow();
+		expect(() => createCompanyComputerViewerRefusalReporter({ write: () => undefined, windowMs: 0 })).toThrow(
+			"INVALID_VIEWER_REFUSAL_WINDOW",
+		);
 	});
 });

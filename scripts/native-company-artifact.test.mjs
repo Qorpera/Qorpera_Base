@@ -7,6 +7,7 @@ import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { verifyNativeCompanyArtifact } from "./native-company-artifact.mjs";
+import { runtimeBundlePackagingEnvironment } from "./runtime-bundle-release-train.mjs";
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -37,7 +38,9 @@ test("packages the explicit native release artifact and retains its source and n
 		const verified = await verifyNativeCompanyArtifact(root);
 		assert.equal(verified.contract.binarySha256, artifact.artifact.sha256);
 		const result = spawnSync(process.execPath, ["scripts/package-lxd-runner-guest.mjs", "--out", output,
-			"--contract-only", "--native-company-artifact", root], { cwd: repository, encoding: "utf-8" });
+			"--contract-only", "--native-company-artifact", root], {
+			cwd: repository, encoding: "utf-8", env: runtimeBundlePackagingEnvironment(),
+		});
 		assert.equal(result.status, 0, result.stderr);
 		const manifest = JSON.parse(await readFile(join(output, "manifest.json"), "utf-8"));
 		assert.deepEqual(manifest.nativeCompany, verified.contract);

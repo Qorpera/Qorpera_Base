@@ -1,11 +1,17 @@
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { lstat, mkdir, mkdtemp, readdir, realpath, rm } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import type { JsonValue } from "@qorpera/contracts";
+import {
+	CLOUD_ACTION_REVIEW_SPECIFICATION,
+	CLOUD_ACTION_REVIEW_TOOL,
+	type CloudActionReviewChannel,
+	type CloudActionReviewer,
+} from "./cloud-action-review.ts";
 import { CLOUD_NATIVE_CAPTURE_IMAGES_CAPABILITY } from "./cloud-native-capture-images.ts";
 import {
 	type NativeRuntimeFailureStage,
@@ -29,18 +35,35 @@ import {
 	type CloudRuntimeErrorCategory,
 	type CloudRuntimeObservability,
 	type CloudRuntimeObservationSpan,
+	type CloudRuntimeOutcome,
 	cloudRuntimeErrorCategory,
 } from "./cloud-runtime-observability.ts";
-import { CLOUD_RUNTIME_MODEL_POLICY, type CloudRuntimeReasoningEffort } from "./cloud-runtime-policy.ts";
+import {
+	CLOUD_RUNTIME_MODEL_POLICY,
+	type CloudRuntimeReasoningEffort,
+	isCloudRuntimeReasoningEffort,
+} from "./cloud-runtime-policy.ts";
 
-export const CLOUD_CODEX_BOUNDARY_VERSION = "0.147.0";
+export const CLOUD_CODEX_BOUNDARY_VERSION = "0.155.1";
 const CLIENT_NAME = "qorpera_cloud_boundary";
 const DIRECT_TOOLS_CAPABILITY = "qorpera.native-direct-tools/v1";
-const MAX_WIRE_BYTES = 16 * 1024 * 1024;
+const MESSAGE_COMPOSITION_CAPABILITY = "qorpera.native-message-composition/v1";
 const MAX_MESSAGE_BYTES = 1024 * 1024;
 const MAX_CAPTURE_MESSAGE_BYTES = 12 * 1024 * 1024;
-const MAX_CAPTURE_WIRE_BYTES = 256 * 1024 * 1024;
-const MAX_REQUESTS = 256;
+// No run is capped by its output, its number of tool calls or its silence
+// (founder, 2026-09-24): OpenAI, Anthropic and xAI publish no such caps. Single
+// messages stay bounded, and request ids, fence observations and message
+// compositions are tracked only in a rolling window of this size (the oldest
+// settled entries are forgotten).
+const TRACKED_REQUESTS = 16_384;
+
+/** Forgets the oldest settled entries past the window; open ones are kept. */
+function forgetSettled<V extends { finished: boolean }>(entries: Map<string, V>): void {
+	for (const [key, value] of entries) {
+		if (entries.size <= TRACKED_REQUESTS) return;
+		if (value.finished) entries.delete(key);
+	}
+}
 const MAX_PROMPT_BYTES = 1024 * 1024;
 const TOKEN_COUNTERS = [
 	"inputTokens",
@@ -50,6 +73,30 @@ const TOKEN_COUNTERS = [
 	"reasoningOutputTokens",
 	"totalTokens",
 ] as const;
+
+/** Waits for a promise unless the signal stops the wait first. */
+function untilAborted<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+	if (signal.aborted) return Promise.reject(new Error("Native review cancelled"));
+	return new Promise<T>((resolve, reject) => {
+		const abort = () => reject(new Error("Native review cancelled"));
+		signal.addEventListener("abort", abort, { once: true });
+		promise.then(resolve, reject).finally(() => signal.removeEventListener("abort", abort));
+	});
+}
+
+/** What the reviewer's verdict call returns, and what an unknown reviewer output becomes. */
+const REVIEW_RECORDED_OUTPUT = JSON.stringify({ recorded: true });
+const REVIEW_UNAVAILABLE_OUTPUT = JSON.stringify({ recorded: false });
+
+interface ReviewThread {
+	readonly threadId: string;
+	turnId?: string;
+	verdictReceived: boolean;
+	/** Exact outputs this host issued for the reviewer's calls. */
+	readonly issued: Map<string, string>;
+	resolve(value: unknown): void;
+	reject(error: Error): void;
+}
 
 const DISABLED_FEATURES = [
 	"shell_tool",
@@ -79,10 +126,15 @@ const DISABLED_FEATURES = [
 	"tool_suggest",
 	"request_permissions_tool",
 	"guardian_approval",
+	"current_time_reminder",
+	"sleep_tool",
 ] as const;
 
-export const CLOUD_CODEX_BOUNDARY_CONFIG: readonly string[] = Object.freeze([
-	`model_reasoning_effort="${CLOUD_RUNTIME_MODEL_POLICY.effort}"`,
+export function cloudCodexBoundaryConfig(effort: CloudRuntimeReasoningEffort): readonly string[] {
+	return Object.freeze([`model_reasoning_effort="${effort}"`, ...CLOUD_CODEX_BOUNDARY_FIXED_CONFIG]);
+}
+
+export const CLOUD_CODEX_BOUNDARY_FIXED_CONFIG: readonly string[] = Object.freeze([
 	'web_search="disabled"',
 	'approval_policy="never"',
 	'approvals_reviewer="user"',
@@ -104,6 +156,11 @@ export const CLOUD_CODEX_BOUNDARY_CONFIG: readonly string[] = Object.freeze([
 	'features.code_mode={enabled=false,direct_only_tool_namespaces=["qorpera"],excluded_tool_namespaces=["skills"]}',
 	...DISABLED_FEATURES.map((feature) => `features.${feature}=false`),
 ]);
+
+/** The boundary configuration for the default (attended-thread) effort. */
+export const CLOUD_CODEX_BOUNDARY_CONFIG: readonly string[] = cloudCodexBoundaryConfig(
+	CLOUD_RUNTIME_MODEL_POLICY.effort,
+);
 
 function object(value: unknown): Record<string, unknown> {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid native boundary protocol");
@@ -198,6 +255,10 @@ class CodexBoundaryRpc {
 		{ span?: CloudRuntimeObservationSpan; contextRecorded: boolean; finished: boolean }
 	>();
 	#turnObservation?: CloudRuntimeObservationSpan;
+	readonly #compositions = new Map<
+		string,
+		{ span?: CloudRuntimeObservationSpan; timer?: ReturnType<typeof setTimeout>; finished: boolean }
+	>();
 	#failureCategory: CloudRuntimeErrorCategory = "unknown";
 	#providerErrorCategory?: CloudRuntimeErrorCategory;
 	#providerUsageSignal: NativeRuntimeUsageSignal | null = null;
@@ -210,8 +271,11 @@ class CodexBoundaryRpc {
 	#failure?: Error;
 	#sequence = 0;
 	#buffer = "";
-	#bytes = 0;
-	#serverRequests = 0;
+	#lastActivityAt = Date.now();
+
+	get lastActivityAt(): number {
+		return this.#lastActivityAt;
+	}
 	#toolCalls = 0;
 	#activeCalls = 0;
 	#threadId?: string;
@@ -220,6 +284,22 @@ class CodexBoundaryRpc {
 	#startingThread = false;
 	#startingTurn = false;
 	readonly #modelRequests = new Set<string>();
+	#modelRequestCount = 0;
+	/** Call ids whose fenced result closes the turn (a confirmed final public send). */
+	readonly #turnEndCallIds = new Set<string>();
+	/** Auto-review (v130): the reviewer's own short conversations, one fresh thread
+	 * per review, in this same app-server (a second process on the same login could
+	 * race the first on token refresh). Their only tool records the verdict; their
+	 * model requests pass the result fence on their own lane and are never recorded
+	 * as the agent's context. */
+	readonly #reviews = new Map<string, ReviewThread>();
+	/** Ended reviews keep their issued outputs: a closing request may still arrive before the interrupt lands. */
+	readonly #endedReviews = new Map<string, ReviewThread>();
+	#startingReview?: { prewarmThreadId?: string };
+	#reviewQueue: Promise<void> = Promise.resolve();
+	/** The latest reviewer thread start, settled or not: the next review waits for it. */
+	#reviewStarting: Promise<void> = Promise.resolve();
+	#turnEndRequested = false;
 	#finished = false;
 	#closed = false;
 
@@ -241,10 +321,10 @@ class CodexBoundaryRpc {
 		child.on("close", () => {
 			if (!this.#closed) this.fail("Native boundary process ended unexpectedly", "transport_unavailable");
 		});
-		child.stderr.on("data", (chunk: Buffer) => this.#accountBytes(chunk.length));
+		// Diagnostics are never kept; draining them keeps the pipe from filling.
+		child.stderr.resume();
 		child.stdout.on("data", (chunk: Buffer) => {
 			try {
-				this.#accountBytes(chunk.length);
 				if (this.#failure || this.#closed) return;
 				this.#buffer += this.#decoder.write(chunk);
 				let end = this.#buffer.indexOf("\n");
@@ -274,7 +354,7 @@ class CodexBoundaryRpc {
 		return this.#toolCalls;
 	}
 	get fencedRequests(): number {
-		return this.#modelRequests.size;
+		return this.#modelRequestCount;
 	}
 	get failureCategory(): CloudRuntimeErrorCategory {
 		return this.#failureCategory;
@@ -284,7 +364,7 @@ class CodexBoundaryRpc {
 	}
 	assertCompleted(): void {
 		if (this.#failure) throw this.#failure;
-		if (!this.#finished || this.#activeCalls > 0 || this.#modelRequests.size === 0) {
+		if (!this.#finished || this.#activeCalls > 0 || this.#modelRequestCount === 0) {
 			this.#failureCategory = "invalid_response";
 			throw new Error("Native boundary turn is incomplete");
 		}
@@ -313,6 +393,8 @@ class CodexBoundaryRpc {
 	finishObservations(succeeded: boolean, signal: AbortSignal): void {
 		const category = signal.aborted ? cloudRuntimeErrorCategory(undefined, signal) : this.#failureCategory;
 		const failureStatus = category === "cancelled" ? "cancelled" : "failed";
+		for (const callId of this.#compositions.keys())
+			this.#finishComposition(callId, succeeded ? "unconfirmed" : failureStatus);
 		for (const observation of this.#fenceObservations.values()) {
 			if (observation.finished) continue;
 			observation.finished = true;
@@ -339,6 +421,7 @@ class CodexBoundaryRpc {
 		if (!observation) {
 			observation = { contextRecorded: false, finished: false };
 			this.#fenceObservations.set(request.requestId, observation);
+			forgetSettled(this.#fenceObservations);
 			try {
 				observation.span = this.#observability.start("native_result_fence", {
 					logicalOperationSha256: createHash("sha256")
@@ -361,8 +444,237 @@ class CodexBoundaryRpc {
 		}
 	}
 
+	/** A model request of a reviewer thread (auto-review). */
+	isReviewRequest(request: CloudNativeFenceRequest): boolean {
+		return (
+			request.threadId !== this.#threadId &&
+			request.threadId !== this.#prewarmThreadId &&
+			(this.#reviews.has(request.threadId) ||
+				this.#endedReviews.has(request.threadId) ||
+				(this.#startingReview !== undefined &&
+					request.purpose === "prewarm" &&
+					(this.#startingReview.prewarmThreadId ?? request.threadId) === request.threadId))
+		);
+	}
+
+	/** The reviewer's lane: its prewarm and its one turn, nothing of the agent's. */
+	#assertReviewRequest(request: CloudNativeFenceRequest): void {
+		if (request.purpose === "prewarm") {
+			if (request.outputs.length !== 0) throw new Error("Native review binding failed");
+			if (this.#startingReview && !this.#reviews.has(request.threadId) && !this.#endedReviews.has(request.threadId))
+				this.#startingReview.prewarmThreadId = request.threadId;
+			return;
+		}
+		// A request of an ended review changes nothing: its outputs are only our own acknowledgements.
+		if (this.#endedReviews.has(request.threadId)) return;
+		const review = this.#reviews.get(request.threadId);
+		if (!review || request.turnId === null || (review.turnId !== undefined && review.turnId !== request.turnId))
+			throw new Error("Native review binding failed");
+		review.turnId = request.turnId;
+	}
+
+	/** Released outputs of a reviewer request: exactly the verdict acknowledgements this host issued. */
+	releaseReviewOutputs(request: CloudNativeFenceRequest): CloudNativeFencedResult[] {
+		const review = this.#reviews.get(request.threadId) ?? this.#endedReviews.get(request.threadId);
+		return request.outputs.map((output) => ({
+			kind: output.kind,
+			callId: output.callId,
+			output: review?.issued.get(output.callId) ?? REVIEW_UNAVAILABLE_OUTPUT,
+		}));
+	}
+
+	/** One review: a fresh reviewer thread, its turn, and the verdict its one tool call carries. */
+	review(
+		input: Parameters<CloudActionReviewer["review"]>[0] & { cwd: string },
+		signal: AbortSignal,
+	): Promise<unknown> {
+		// Reviews run one at a time, and never while an earlier reviewer thread is still
+		// starting; a review that waits longer than its caller does stops waiting. (A
+		// caller that stops while queued lets the queue move on without waiting for the
+		// review ahead of it; that is safe because the boundary runs one call at a time,
+		// so at most one review is outstanding.)
+		const run = untilAborted(this.#reviewQueue, signal).then(() => this.#review(input, signal));
+		this.#reviewQueue = run.then(
+			() => this.#reviewStarting,
+			() => this.#reviewStarting,
+		);
+		return run;
+	}
+
+	async #review(input: Parameters<CodexBoundaryRpc["review"]>[0], signal: AbortSignal): Promise<unknown> {
+		signal.throwIfAborted();
+		if (this.#failure || this.#closed || this.#finished) throw new Error("Native review is unavailable");
+		const starting = { prewarmThreadId: undefined as string | undefined };
+		this.#startingReview = starting;
+		// The start is followed to its end even when the caller stops waiting (its
+		// prewarm must stay on the reviewer's lane); a thread nobody waits for any
+		// more is ended at once, so its later messages are ignored.
+		const started = this.request("thread/start", {
+			model: input.model,
+			cwd: input.cwd,
+			runtimeWorkspaceRoots: [],
+			environments: [],
+			ephemeral: true,
+			approvalPolicy: "never",
+			approvalsReviewer: "user",
+			sandbox: "read-only",
+			developerInstructions: input.instructions,
+			dynamicTools: [CLOUD_ACTION_REVIEW_SPECIFICATION],
+		})
+			.then((result) => {
+				const id = identifier(object(object(result).thread).id);
+				if (
+					id === this.#threadId ||
+					this.#reviews.has(id) ||
+					this.#endedReviews.has(id) ||
+					(starting.prewarmThreadId !== undefined && starting.prewarmThreadId !== id)
+				)
+					throw new Error("Native review binding failed");
+				return id;
+			})
+			.finally(() => {
+				if (this.#startingReview === starting) this.#startingReview = undefined;
+			});
+		this.#reviewStarting = started.then(
+			() => undefined,
+			() => undefined,
+		);
+		let threadId: string;
+		try {
+			threadId = await untilAborted(started, signal);
+		} catch (error) {
+			void started.then(
+				(id) => {
+					this.#endedReviews.set(id, {
+						threadId: id,
+						issued: new Map(),
+						verdictReceived: true,
+						resolve: () => undefined,
+						reject: () => undefined,
+					});
+				},
+				() => undefined,
+			);
+			throw error;
+		}
+		let resolveVerdict: (value: unknown) => void = () => undefined;
+		let rejectVerdict: (error: Error) => void = () => undefined;
+		const verdict = new Promise<unknown>((resolve, reject) => {
+			resolveVerdict = resolve;
+			rejectVerdict = reject;
+		});
+		void verdict.catch(() => undefined);
+		const review: ReviewThread = {
+			threadId,
+			issued: new Map(),
+			verdictReceived: false,
+			resolve: resolveVerdict,
+			reject: (error) => {
+				rejectVerdict(error);
+				this.#endReview(threadId);
+			},
+		};
+		this.#reviews.set(threadId, review);
+		const abort = (): void => {
+			if (review.turnId)
+				void this.request("turn/interrupt", { threadId, turnId: review.turnId }).catch(() => undefined);
+			review.reject(new Error("Native review cancelled"));
+		};
+		signal.addEventListener("abort", abort, { once: true });
+		try {
+			const turn = object(
+				await this.request("turn/start", {
+					threadId,
+					input: [{ type: "text", text: input.prompt, text_elements: [] }],
+					effort: input.effort,
+					environments: [],
+					runtimeWorkspaceRoots: [],
+					sandboxPolicy: { type: "readOnly", networkAccess: false },
+				}),
+			);
+			const turnId = identifier(object(turn.turn).id);
+			if (review.turnId !== undefined && review.turnId !== turnId) throw new Error("Native review binding failed");
+			review.turnId = turnId;
+			return await verdict;
+		} catch (error) {
+			review.reject(error instanceof Error ? error : new Error("Native review failed"));
+			throw error;
+		} finally {
+			signal.removeEventListener("abort", abort);
+		}
+	}
+
+	#endReview(threadId: string): void {
+		const review = this.#reviews.get(threadId);
+		if (!review) return;
+		this.#reviews.delete(threadId);
+		this.#endedReviews.set(threadId, review);
+		if (this.#endedReviews.size > TRACKED_REQUESTS)
+			this.#endedReviews.delete(this.#endedReviews.keys().next().value as string);
+	}
+
+	/** Messages of a reviewer thread. Returns false when the message is not the reviewer's. */
+	#reviewMessage(message: Record<string, unknown>): boolean {
+		const params =
+			message.params && typeof message.params === "object" && !Array.isArray(message.params)
+				? (message.params as Record<string, unknown>)
+				: undefined;
+		const threadId = typeof params?.threadId === "string" ? params.threadId : undefined;
+		if (
+			!threadId ||
+			threadId === this.#threadId ||
+			!(this.#reviews.has(threadId) || this.#endedReviews.has(threadId))
+		)
+			return false;
+		const review = this.#reviews.get(threadId);
+		if (message.id !== undefined) {
+			// The verdict: the reviewer's only tool, called once in its turn.
+			if (
+				message.method !== "item/tool/call" ||
+				!review ||
+				review.verdictReceived ||
+				params!.namespace !== "qorpera" ||
+				params!.tool !== CLOUD_ACTION_REVIEW_TOOL ||
+				(review.turnId !== undefined && params!.turnId !== review.turnId)
+			) {
+				this.#write({
+					id: message.id,
+					error: { code: -32601, message: "Operation not available in this cloud review" },
+				});
+				return true;
+			}
+			const callId = identifier(params!.callId);
+			review.verdictReceived = true;
+			review.issued.set(callId, REVIEW_RECORDED_OUTPUT);
+			this.#write({
+				id: message.id,
+				result: { contentItems: [{ type: "inputText", text: REVIEW_RECORDED_OUTPUT }], success: true },
+			});
+			review.resolve(params!.arguments);
+			// The verdict is the review's only output: stop before a closing model round.
+			if (typeof params!.turnId === "string")
+				void this.request("turn/interrupt", { threadId, turnId: params!.turnId }).catch(() => undefined);
+			return true;
+		}
+		if (message.method === "turn/started" && review) {
+			const turnId = identifier(object(params!.turn).id);
+			if (review.turnId !== undefined && review.turnId !== turnId)
+				review.reject(new Error("Native review binding failed"));
+			else review.turnId = turnId;
+		} else if (message.method === "turn/completed" && review) {
+			if (!review.verdictReceived) review.reject(new Error("Native review ended without a verdict"));
+			this.#endReview(threadId);
+		}
+		// The reviewer's text, reasoning, usage and diagnostics are never delivered or kept.
+		return true;
+	}
+
 	assertModelRequest(request: CloudNativeFenceRequest): void {
 		if (this.#failure || this.#closed || this.#finished) throw new Error("Native result boundary stopped");
+		if (this.isReviewRequest(request)) {
+			this.#assertReviewRequest(request);
+			return;
+		}
 		if (request.purpose === "prewarm") {
 			if (
 				(!this.#startingThread && !this.#threadId) ||
@@ -383,8 +695,26 @@ class CodexBoundaryRpc {
 		)
 			throw new Error("Native result binding failed");
 		this.confirmTurn(request.turnId);
-		this.#modelRequests.add(request.requestId);
+		if (!this.#modelRequests.has(request.requestId)) {
+			this.#modelRequests.add(request.requestId);
+			this.#modelRequestCount++;
+			if (this.#modelRequests.size > TRACKED_REQUESTS)
+				this.#modelRequests.delete(this.#modelRequests.values().next().value as string);
+		}
 		this.#observeFence(request);
+		// Contract 7.1: the final send closes the turn. Once its result has been
+		// fenced, stop the provider instead of paying for a closing model round
+		// whose text is never delivered. The interrupted completion is a success.
+		if (
+			!this.#turnEndRequested &&
+			this.#activeCalls === 0 &&
+			request.outputs.some((output) => this.#turnEndCallIds.has(output.callId))
+		) {
+			this.#turnEndRequested = true;
+			void this.request("turn/interrupt", { threadId: request.threadId, turnId: request.turnId }).catch(
+				() => undefined,
+			);
+		}
 	}
 
 	fail(message: string, category: CloudRuntimeErrorCategory = "unknown"): void {
@@ -394,6 +724,7 @@ class CodexBoundaryRpc {
 		this.#boundary.close();
 		for (const pending of this.#pending.values()) pending.reject(this.#failure);
 		this.#pending.clear();
+		for (const review of this.#reviews.values()) review.reject(this.#failure);
 		this.#rejectCompleted(this.#failure);
 	}
 
@@ -429,17 +760,13 @@ class CodexBoundaryRpc {
 	}
 
 	close(): void {
+		for (const callId of this.#compositions.keys()) this.#finishComposition(callId, "unconfirmed");
 		this.#closed = true;
 		this.#boundary.close();
 		for (const pending of this.#pending.values()) pending.reject(new Error("Native boundary transport closed"));
 		this.#pending.clear();
+		for (const review of this.#reviews.values()) review.reject(new Error("Native boundary transport closed"));
 		this.#child.stdin.end();
-	}
-
-	#accountBytes(count: number): void {
-		this.#bytes += count;
-		if (this.#bytes > (this.#boundary.captureImagesEnabled ? MAX_CAPTURE_WIRE_BYTES : MAX_WIRE_BYTES))
-			this.fail("Native boundary output limit exceeded", "budget_exhausted");
 	}
 
 	#write(message: unknown): void {
@@ -451,10 +778,72 @@ class CodexBoundaryRpc {
 			this.fail("Native boundary input limit exceeded", "budget_exhausted");
 			return;
 		}
-		// Replaying the same cached image must not bypass the aggregate wire cap.
-		if (this.#boundary.captureImagesEnabled) this.#accountBytes(Buffer.byteLength(text) + 1);
-		if (this.#failure) return;
 		this.#child.stdin.write(`${text}\n`);
+	}
+
+	#finishComposition(callId: string, outcome: CloudRuntimeOutcome): void {
+		const composition = this.#compositions.get(callId);
+		if (!composition || composition.finished) return;
+		composition.finished = true;
+		clearTimeout(composition.timer);
+		try {
+			composition.span?.finish(outcome);
+		} catch {
+			// Optional presentation metadata cannot affect the native turn.
+		}
+	}
+
+	#observeComposition(value: unknown): void {
+		if (this.#finished || !this.#threadId || !this.#turnId || !this.#observability) return;
+		try {
+			const params = object(value);
+			if (
+				Object.keys(params).sort().join() !== "callId,phase,threadId,turnId" ||
+				params.threadId !== this.#threadId ||
+				params.turnId !== this.#turnId ||
+				(params.phase !== "start" && params.phase !== "finish")
+			)
+				return;
+			const callId = identifier(params.callId);
+			if (params.phase === "finish") {
+				// Remember early finishes too: replayed starts must not revive a completed item.
+				if (!this.#compositions.has(callId)) {
+					this.#compositions.set(callId, { finished: true });
+					forgetSettled(this.#compositions);
+				}
+				this.#finishComposition(callId, "succeeded");
+				return;
+			}
+			if (this.#compositions.has(callId)) return;
+			const composition: {
+				span?: CloudRuntimeObservationSpan;
+				timer?: ReturnType<typeof setTimeout>;
+				finished: boolean;
+			} = { finished: false };
+			this.#compositions.set(callId, composition);
+			forgetSettled(this.#compositions);
+			const renew = () => {
+				if (composition.finished || this.#failure || this.#closed || this.#finished) return;
+				try {
+					const previous = composition.span;
+					composition.span = this.#observability!.start("message_composition", {
+						logicalOperationSha256: createHash("sha256")
+							.update(JSON.stringify([this.#threadId, this.#turnId, callId]))
+							.digest("hex"),
+						parentAttemptId: this.#turnObservation?.attemptId,
+					});
+					// Start the next expiring pulse first so a long reply has no presentation gap.
+					previous?.finish("succeeded");
+				} catch {
+					// Missing telemetry falls back to Working in the member projection.
+				}
+				composition.timer = setTimeout(renew, 5_000);
+				composition.timer.unref?.();
+			};
+			renew();
+		} catch {
+			// Ignore malformed optional notifications without accepting their contents.
+		}
 	}
 
 	#observeDiagnostic(method: string, value: unknown): void {
@@ -506,6 +895,8 @@ class CodexBoundaryRpc {
 
 	#message(message: Record<string, unknown>): void {
 		if (this.#failure || this.#closed) return;
+		this.#lastActivityAt = Date.now();
+		if (message.method !== undefined && this.#reviewMessage(message)) return;
 		if (message.method === undefined) {
 			if (typeof message.id !== "number") throw new Error("Invalid native response id");
 			const pending = this.#pending.get(message.id);
@@ -522,14 +913,13 @@ class CodexBoundaryRpc {
 		}
 		if (typeof message.method !== "string") throw new Error("Invalid native method");
 		if (message.id !== undefined) {
-			if (
-				(typeof message.id !== "string" && !Number.isSafeInteger(message.id)) ||
-				++this.#serverRequests > MAX_REQUESTS
-			)
+			if (typeof message.id !== "string" && !Number.isSafeInteger(message.id))
 				throw new Error("Invalid native request");
 			const requestId = `${typeof message.id}:${message.id}`;
 			if (this.#requestIds.has(requestId)) throw new Error("Duplicate native request");
 			this.#requestIds.add(requestId);
+			if (this.#requestIds.size > TRACKED_REQUESTS)
+				this.#requestIds.delete(this.#requestIds.values().next().value as string);
 			if (message.method !== "item/tool/call") {
 				// No approval, process, credential-refresh or UI callback may become a second effect channel.
 				this.#write({
@@ -553,12 +943,15 @@ class CodexBoundaryRpc {
 			this.#toolCalls++;
 			this.#activeCalls++;
 			void this.#boundary.invoke(callId, params.namespace, params.tool, params.arguments).then(
-				(result) => {
+				({ completesTurn, ...result }) => {
 					this.#activeCalls--;
 					if (this.#finished) {
 						this.fail("Native turn ended with a pending tool call", "invalid_response");
 						return;
 					}
+					// The host-only marker never reaches the provider; the fence that
+					// follows this result is where the turn ends (see assertModelRequest).
+					if (completesTurn) this.#turnEndCallIds.add(callId);
 					this.#write({ id: message.id, result });
 				},
 				() => {
@@ -592,7 +985,9 @@ class CodexBoundaryRpc {
 			)
 				throw new Error("Native completion binding failed");
 			this.#finished = true;
-			if (turn.status !== "completed" || turn.error != null) {
+			if (turn.status === "interrupted" && turn.error == null && this.#turnEndRequested) {
+				this.#resolveCompleted();
+			} else if (turn.status !== "completed" || turn.error != null) {
 				const error =
 					turn.error && typeof turn.error === "object" && !Array.isArray(turn.error)
 						? (turn.error as Record<string, unknown>)
@@ -612,6 +1007,8 @@ class CodexBoundaryRpc {
 			} else this.#resolveCompleted();
 		} else if (message.method === "thread/tokenUsage/updated" || message.method === "error") {
 			this.#observeDiagnostic(message.method, message.params);
+		} else if (message.method === "qorpera/messageComposition") {
+			this.#observeComposition(message.params);
 		}
 		// Assistant text, reasoning, diffs, tool events and diagnostics are never delivered or returned.
 	}
@@ -656,6 +1053,8 @@ export async function runCloudCodexToolSession(options: {
 	isolation?: NativeIsolationConfiguration;
 	/** Called after artifact/configuration checks and before thread prewarm or any model request. */
 	beforeModelStart?: (signal: AbortSignal) => Promise<void>;
+	/** Auto-review (v130): this session answers the boundary's reviews while the agent's turn runs. */
+	reviewer?: CloudActionReviewChannel;
 	/** Optional metadata-only logical-turn/gate observations; not provider HTTP timing. */
 	observability?: CloudRuntimeObservability;
 	recordContextView?: (
@@ -665,10 +1064,19 @@ export async function runCloudCodexToolSession(options: {
 	) => Promise<void>;
 	signal: AbortSignal;
 	timeoutMs?: number;
+	idleTimeoutMs?: number;
 }): Promise<{ providerSessionId: string; toolCalls: number; codexVersion: string; fencedRequests: number }> {
-	const timeoutMs = options.timeoutMs ?? 30_000;
+	// A run has no wall-clock or silence cap (founder, 2026-09-22 and 2026-09-24);
+	// either timeout is a test or operator choice, never a default. A lapsed job
+	// lease still ends a run whose host is gone.
+	const timeoutMs = options.timeoutMs;
+	const idleTimeoutMs = options.idleTimeoutMs;
 	const effort = options.reasoningEffort ?? CLOUD_RUNTIME_MODEL_POLICY.effort;
-	if (process.platform === "win32" || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 300_000)
+	if (
+		process.platform === "win32" ||
+		(timeoutMs !== undefined && (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1)) ||
+		(idleTimeoutMs !== undefined && (!Number.isSafeInteger(idleTimeoutMs) || idleTimeoutMs < 1))
+	)
 		throw new Error("Unsupported native boundary execution");
 	if (
 		!options.model.trim() ||
@@ -678,7 +1086,7 @@ export async function runCloudCodexToolSession(options: {
 		!isAbsolute(options.command[0]) ||
 		Buffer.byteLength(options.prompt) > MAX_PROMPT_BYTES ||
 		Buffer.byteLength(options.runtimeInstructions ?? "") > 32 * 1024 ||
-		effort !== CLOUD_RUNTIME_MODEL_POLICY.effort
+		!isCloudRuntimeReasoningEffort(effort)
 	)
 		throw new Error("Invalid native boundary input");
 	options.signal.throwIfAborted();
@@ -686,10 +1094,12 @@ export async function runCloudCodexToolSession(options: {
 	// Linux commonly uses /tmp. Keep the runtime below the unique private
 	// allocation so the containment validator never receives a shallow root.
 	const root = join(allocation, "runtime");
-	const signal = AbortSignal.any([options.signal, AbortSignal.timeout(timeoutMs)]);
+	const signal =
+		timeoutMs === undefined ? options.signal : AbortSignal.any([options.signal, AbortSignal.timeout(timeoutMs)]);
 	let child: ChildProcessWithoutNullStreams | undefined;
 	let isolated: Awaited<ReturnType<typeof launchIsolatedNativeProcess>> | undefined;
 	let rpc: CodexBoundaryRpc | undefined;
+	let idleWatch: ReturnType<typeof setInterval> | undefined;
 	let fence: Awaited<ReturnType<typeof startCloudNativeResultFence>> | undefined;
 	let fenceFailed = false;
 	let stage: NativeRuntimeFailureStage = "codex-artifact";
@@ -723,6 +1133,13 @@ export async function runCloudCodexToolSession(options: {
 				mkdir(path, { mode: 0o700 }),
 			),
 		);
+		// Generate one host-owned bootstrap and explicitly load these exact bytes.
+		// Ambient project/home instruction discovery remains disabled: a Company
+		// File or restored auth home must never add a second platform prompt.
+		const nativeInstructions = [CLOUD_TOOL_RESULT_INSTRUCTIONS, options.runtimeInstructions]
+			.filter(Boolean)
+			.join("\n");
+		await writeFile(join(workspace, "AGENTS.md"), nativeInstructions, { mode: 0o400, flag: "wx" });
 		signal.throwIfAborted();
 		stage = "codex-result-fence";
 		fence = await startCloudNativeResultFence({
@@ -732,6 +1149,8 @@ export async function runCloudCodexToolSession(options: {
 				if (!rpc) throw new Error("Native result boundary not initialized");
 				rpc.assertModelRequest(request);
 			},
+			releaseReviewOutputs: (request) =>
+				rpc?.isReviewRequest(request) ? rpc.releaseReviewOutputs(request) : undefined,
 			recordContextView: async (request, outputs, contextSignal) => {
 				await options.recordContextView?.(request, outputs, contextSignal);
 				rpc?.contextRecorded(request.requestId);
@@ -748,7 +1167,7 @@ export async function runCloudCodexToolSession(options: {
 			"--strict-config",
 			"--listen",
 			"stdio://",
-			...CLOUD_CODEX_BOUNDARY_CONFIG.flatMap((config) => ["-c", config]),
+			...cloudCodexBoundaryConfig(effort).flatMap((config) => ["-c", config]),
 		];
 		stage = "codex-process-start";
 		if (options.isolation) {
@@ -779,6 +1198,17 @@ export async function runCloudCodexToolSession(options: {
 				detached: true,
 			});
 		rpc = new CodexBoundaryRpc(child, options.boundary, options.observability);
+		const watched = rpc;
+		if (idleTimeoutMs !== undefined) {
+			idleWatch = setInterval(
+				() => {
+					if (Date.now() - watched.lastActivityAt > idleTimeoutMs)
+						watched.fail("Native boundary execution stalled");
+				},
+				Math.min(idleTimeoutMs, 15_000),
+			);
+			idleWatch.unref();
+		}
 		if (fenceFailed) rpc.fail("Native result boundary unavailable", "authority_unavailable");
 		signal.addEventListener("abort", abort, { once: true });
 		if (signal.aborted) abort();
@@ -797,6 +1227,8 @@ export async function runCloudCodexToolSession(options: {
 			throw new Error("Unsupported Codex boundary version or missing native result fence");
 		if (!initialized.userAgent.endsWith(` ${CLOUD_NATIVE_RESULT_FENCE_SCHEMA} ${DIRECT_TOOLS_CAPABILITY}`))
 			throw new Error("Native boundary requires governed direct tools");
+		if (!initialized.userAgent.split(" ").includes(MESSAGE_COMPOSITION_CAPABILITY))
+			throw new Error("Native boundary requires message composition support");
 		if (
 			options.boundary.captureImagesEnabled &&
 			!initialized.userAgent.split(" ").includes(CLOUD_NATIVE_CAPTURE_IMAGES_CAPABILITY)
@@ -824,6 +1256,8 @@ export async function runCloudCodexToolSession(options: {
 		rpc.startThread();
 		const started = object(
 			await rpc.request("thread/start", {
+				// provider-default omits the model: the pinned Codex chooses its own default. An explicit
+				// name is only sent for a session override; the provider rejects names newer than the binary.
 				...(options.model === "provider-default" ? {} : { model: options.model }),
 				cwd: workspace,
 				runtimeWorkspaceRoots: [],
@@ -832,14 +1266,16 @@ export async function runCloudCodexToolSession(options: {
 				approvalPolicy: "never",
 				approvalsReviewer: "user",
 				sandbox: "read-only",
-				developerInstructions: [CLOUD_TOOL_RESULT_INSTRUCTIONS, options.runtimeInstructions]
-					.filter(Boolean)
-					.join("\n"),
+				developerInstructions: nativeInstructions,
 				dynamicTools: [options.boundary.specification],
 			}),
 		);
 		const threadId = identifier(object(started.thread).id);
 		rpc.bindThread(threadId);
+		const reviewing = rpc;
+		options.reviewer?.attach({
+			review: (input, reviewSignal) => reviewing.review({ ...input, cwd: workspace }, reviewSignal),
+		});
 		stage = "codex-turn-start";
 		rpc.startTurn();
 		rpc.observeTurnStart(Buffer.byteLength(options.prompt));
@@ -879,6 +1315,8 @@ export async function runCloudCodexToolSession(options: {
 			rpc?.usageSignal ?? null,
 		);
 	} finally {
+		options.reviewer?.attach(undefined);
+		if (idleWatch !== undefined) clearInterval(idleWatch);
 		signal.removeEventListener("abort", abort);
 		rpc?.close();
 		options.boundary.close();

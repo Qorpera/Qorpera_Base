@@ -9,10 +9,10 @@ begin
 end
 $$;
 
-insert into auth.users (id, email)
+insert into auth.users (id, email, raw_user_meta_data)
 values
-	('16000000-0000-4000-8000-000000000001', 'native-owner@example.test'),
-	('16000000-0000-4000-8000-000000000002', 'native-member@example.test');
+	('16000000-0000-4000-8000-000000000001', 'native-owner@example.test', '{"full_name":"Native Owner"}'),
+	('16000000-0000-4000-8000-000000000002', 'native-member@example.test', '{"full_name":"Native Member"}');
 
 insert into public.qorpera_profiles (id, name, created_by_user_id)
 values (
@@ -1143,6 +1143,57 @@ begin
 		perform pg_temp.send_native('wrong-audience', 'Do not deliver', 'progress', '{"run_id":"16000000-0000-4000-8000-000000000010"}');
 		raise exception 'send accepted another run audience';
 	exception when insufficient_privilege then null;
+	end;
+	-- A typed card for the member rides the same lease authority as a send (rolled back after the probe).
+	begin
+		declare
+			v_card jsonb;
+			v_card_data jsonb := jsonb_build_object('schema', 'qorpera.interaction/v1', 'surface', 'takeover',
+				'title', 'Computer', 'payload', jsonb_build_object('instruction', 'Finish the sign-in.', 'reason', 'sign_in'));
+			v_card_id uuid := '16000000-0000-4000-8000-0000000000c1';
+		begin
+			begin
+				perform public.qorpera_append_native_interaction_request(
+					(v_native_authority ->> 'lease_id')::uuid, '16000000-0000-4000-8000-000000000010', v_job_id,
+					v_runner_id, (v_assignment ->> 'assignment_id')::uuid,
+					(v_native_authority ->> 'credential_capsule_id')::uuid, (v_native_authority ->> 'compute_identity_id')::uuid,
+					'openai', 'codex-cli', v_card_id, v_card_data);
+				raise exception 'card accepted another run audience';
+			exception when insufficient_privilege then null;
+			end;
+			begin
+				perform public.qorpera_append_native_interaction_request(
+					(v_native_authority ->> 'lease_id')::uuid, v_run_id, v_job_id,
+					v_runner_id, (v_assignment ->> 'assignment_id')::uuid,
+					(v_native_authority ->> 'credential_capsule_id')::uuid, (v_native_authority ->> 'compute_identity_id')::uuid,
+					'openai', 'codex-cli', v_card_id, v_card_data || jsonb_build_object('html', '<form>'));
+				raise exception 'card accepted an unknown key';
+			exception when invalid_parameter_value then null;
+			end;
+			v_card := public.qorpera_append_native_interaction_request(
+				(v_native_authority ->> 'lease_id')::uuid, v_run_id, v_job_id,
+				v_runner_id, (v_assignment ->> 'assignment_id')::uuid,
+				(v_native_authority ->> 'credential_capsule_id')::uuid, (v_native_authority ->> 'compute_identity_id')::uuid,
+				'openai', 'codex-cli', v_card_id, v_card_data);
+			if v_card ->> 'event_type' is distinct from 'interaction_request'
+				or (v_card ->> 'event_id')::uuid is distinct from v_card_id
+				or v_card -> 'body' #>> '{entry,data,surface}' is distinct from 'takeover'
+				or v_card -> 'body' #>> '{entry,execution,runnerAssignmentId}' is distinct from v_assignment ->> 'assignment_id'
+				or v_card -> 'body' #>> '{entry,parentId}' is distinct from v_progress ->> 'messageId' then
+				raise exception 'card was not appended under the run''s authority after the progress send: %', v_card;
+			end if;
+			-- A retry replays the same card; the body it rebuilds must be identical.
+			if public.qorpera_append_native_interaction_request(
+				(v_native_authority ->> 'lease_id')::uuid, v_run_id, v_job_id,
+				v_runner_id, (v_assignment ->> 'assignment_id')::uuid,
+				(v_native_authority ->> 'credential_capsule_id')::uuid, (v_native_authority ->> 'compute_identity_id')::uuid,
+				'openai', 'codex-cli', v_card_id, v_card_data) is distinct from v_card then
+				raise exception 'card retry did not replay the original event';
+			end if;
+			raise exception 'rollback-card-probe';
+		end;
+	exception when raise_exception then
+		if sqlerrm <> 'rollback-card-probe' then raise; end if;
 	end;
 	begin
 		perform pg_temp.send_native('wrong-assignment', 'Do not deliver', 'progress', '{"assignment_id":"16000000-0000-4000-8000-000000000010"}');

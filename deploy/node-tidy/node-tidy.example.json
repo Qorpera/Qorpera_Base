@@ -1,0 +1,17 @@
+{
+	"schema": "qorpera.node-tidy/v1",
+	"lxdSocket": "/var/snap/lxd/common/lxd/unix.socket",
+	"agentRoot": "/opt/qorpera-node",
+	"unitPattern": "qorpera*",
+	"extraRoots": [
+		"/etc/qorpera-phql-office-a1/*.json",
+		"/etc/qorpera-prod-office-a1/*.json",
+		"/etc/qorpera/coding-executor.json"
+	],
+	"pinFiles": "/etc/qorpera-native25-phql-a1/provider-env*-v*.json",
+	"keepFingerprints": ["dd338d16042bc363adccb56dcb1ee161cf63e7321c669dc31f31578fbdc36594"],
+	"recentHours": 48,
+	"maxDelete": 20,
+	"staging": ["/var/tmp/qorpera-*-image-*.tar.gz", "/var/tmp/qorpera-*-image-*.tar.gz.scp-partial"],
+	"stagingMaxAgeHours": 6
+}

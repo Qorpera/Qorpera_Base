@@ -1,45 +1,16 @@
+import { DANISH } from "./danish/index.ts";
+
 /** Browser presentation preferences contain no account or company state. */
 export type LanguagePreference = "system" | "en" | "da";
+export type ThemePreference = "system" | "light" | "dark";
+export type ComposerColorPreference = "blue" | "green" | "grey";
+export type UiSizePreference = "big" | "small";
 const LANGUAGE_KEY = "qorpera.web.language";
-const DANISH: Record<string, string> = {
-	General: "Generelt",
-	Company: "Virksomhed",
-	Connections: "Forbindelser",
-	Policy: "Retningslinjer",
-	Account: "Konto",
-	"Plan & billing": "Abonnement og betaling",
-	"Current plan": "Nuværende abonnement",
-	Appearance: "Udseende",
-	Theme: "Tema",
-	Light: "Lys",
-	"Language & region": "Sprog og område",
-	Language: "Sprog",
-	"System default": "Systemstandard",
-	English: "Engelsk",
-	"Sign out": "Log ud",
-	Companies: "Virksomheder",
-	"All companies": "Alle virksomheder",
-	"Open or create a company": "Åbn eller opret en virksomhed",
-	Feedback: "Feedback",
-	"Share feedback": "Del feedback",
-	"Send feedback": "Send feedback",
-	"Search settings": "Søg i indstillinger",
-	"Staff at work": "Agenter på arbejde",
-	"Company File": "Company File",
-	Organization: "Organisation",
-	Approvals: "Godkendelser",
-	"Account and settings": "Konto og indstillinger",
-	Friends: "Venner",
-	Invitations: "Invitationer",
-	"New conversation": "Ny samtale",
-	"New agent": "Ny agent",
-	"Suggested agents": "Foreslåede agenter",
-	Open: "Åbn",
-	Cancel: "Annuller",
-	Back: "Tilbage",
-	"System default follows your browser’s language.": "Systemstandarden følger sproget i din browser.",
-	"Some screens are still shown in English.": "Nogle skærme vises stadig på engelsk.",
-};
+const TIME_ZONE_KEY = "qorpera.web.time-zone";
+const THEME_KEY = "qorpera.web.theme";
+const COMPOSER_COLOR_KEY = "qorpera.web.composer-color";
+const UI_SIZE_KEY = "qorpera.web.ui-size";
+const SYSTEM_DARK = "(prefers-color-scheme: dark)";
 
 export function languagePreference(): LanguagePreference {
 	try {
@@ -55,20 +26,64 @@ export function presentationLocale(): "da" | "en" {
 	return preference === "system" ? (navigator.language.toLowerCase().startsWith("da") ? "da" : "en") : preference;
 }
 
-/** Translate only explicitly marked interface labels, never company content. */
-export function uiText(source: string): HTMLSpanElement {
+type TextValues = Record<string, string | number>;
+const missing = new Set<string>();
+let taskLocale: "da" | "en" | undefined;
+
+/** The locale, read once per task: a render calls t() hundreds of times.
+ * A language change clears it at once (setLanguagePreference). */
+function textLocale(): "da" | "en" {
+	if (!taskLocale) {
+		taskLocale = presentationLocale();
+		queueMicrotask(() => {
+			taskLocale = undefined;
+		});
+	}
+	return taskLocale;
+}
+
+/** Interface text in the chosen language. Only interface text goes through
+ * here, never company content (names, messages, file names): that goes in
+ * `values`, which fill `{name}` placeholders untranslated. Keep a sentence
+ * whole under one key, since Danish word order differs; pick plural keys by
+ * count. Call it when rendering, not at module load: a language change
+ * reloads the page, but tests switch language in place. */
+export function t(source: string, values?: TextValues): string {
+	let text = source;
+	if (!Object.hasOwn(DANISH, source)) missing.add(source);
+	else if (textLocale() === "da") text = DANISH[source]!;
+	return values
+		? text.replace(/\{(\w+)\}/g, (field, name: string) => (name in values ? String(values[name]) : field))
+		: text;
+}
+
+/** Marks English interface text kept in a table or passed along before it
+ * is drawn with t(): it returns the text unchanged, and lets
+ * test/translations.test.ts find the key where it is written. */
+export function phrase(source: string): string {
+	return source;
+}
+
+/** Sources t() was asked for that have no Danish yet (checked after each test file). */
+export function untranslated(): string[] {
+	return [...missing];
+}
+
+/** t() as a span that follows a language change in place. */
+export function uiText(source: string, values?: TextValues): HTMLSpanElement {
 	const element = document.createElement("span");
 	element.dataset.uiText = source;
-	element.textContent = presentationLocale() === "da" ? (DANISH[source] ?? source) : source;
+	if (values) element.dataset.uiValues = JSON.stringify(values);
+	element.textContent = t(source, values);
 	return element;
 }
 
 export function applyLanguage(): void {
-	const locale = presentationLocale();
-	document.documentElement.lang = locale;
+	taskLocale = undefined;
+	document.documentElement.lang = presentationLocale();
 	for (const element of document.querySelectorAll<HTMLElement>("[data-ui-text]")) {
-		const source = element.dataset.uiText!;
-		element.textContent = locale === "da" ? (DANISH[source] ?? source) : source;
+		const values = element.dataset.uiValues ? (JSON.parse(element.dataset.uiValues) as TextValues) : undefined;
+		element.textContent = t(element.dataset.uiText!, values);
 	}
 }
 
@@ -79,7 +94,195 @@ export function setLanguagePreference(value: string): boolean {
 	} catch {
 		return false;
 	}
+	taskLocale = undefined;
 	applyLanguage();
 	window.dispatchEvent(new Event("qorpera-language-change"));
 	return true;
+}
+
+/** The device's zone, as the browser reports it. */
+export function systemTimeZone(): string {
+	return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+}
+
+const knownZones = new Set<string>();
+
+function validTimeZone(value: string): boolean {
+	if (knownZones.has(value)) return true;
+	try {
+		new Intl.DateTimeFormat("en", { timeZone: value });
+	} catch {
+		return false;
+	}
+	knownZones.add(value);
+	return true;
+}
+
+/** "system" or an IANA zone this browser knows. */
+export function timeZonePreference(): string {
+	try {
+		const value = localStorage.getItem(TIME_ZONE_KEY);
+		return value && value !== "system" && validTimeZone(value) ? value : "system";
+	} catch {
+		return "system";
+	}
+}
+
+/** The zone times are shown in: the stored choice, else the device's. */
+export function presentationTimeZone(): string {
+	const preference = timeZonePreference();
+	return preference === "system" ? systemTimeZone() : preference;
+}
+
+/** Date formatting options for the chosen zone; none while following the
+ * device, so those times format exactly as the browser's own. */
+export function timeZoneOption(): { timeZone?: string } {
+	const preference = timeZonePreference();
+	return preference === "system" ? {} : { timeZone: preference };
+}
+
+const dayFormats = new Map<string, Intl.DateTimeFormat>();
+
+/** The calendar day ("2026-09-24") a moment falls on in the shown zone; pass
+ * the zone when formatting many dates so the preference is read once.
+ * Following the device reads the local clock each time, so a device that
+ * travels moves its midnights with it. */
+export function presentationDay(date: Date, zone = timeZoneOption().timeZone): string {
+	if (!zone) {
+		const pad = (value: number) => String(value).padStart(2, "0");
+		return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+	}
+	let format = dayFormats.get(zone);
+	if (!format) {
+		format = new Intl.DateTimeFormat("en-CA", { year: "numeric", month: "2-digit", day: "2-digit", timeZone: zone });
+		dayFormats.set(zone, format);
+	}
+	const parts = Object.fromEntries(format.formatToParts(date).map((part) => [part.type, part.value]));
+	return `${parts.year}-${parts.month}-${parts.day}`;
+}
+
+/** The calendar day before a `presentationDay`, whatever the zone's clock changes. */
+export function previousDay(day: string): string {
+	const [year, month, date] = day.split("-").map(Number);
+	return new Date(Date.UTC(year!, month! - 1, date! - 1)).toISOString().slice(0, 10);
+}
+
+export function setTimeZonePreference(value: string): boolean {
+	if (value !== "system" && !validTimeZone(value)) return false;
+	try {
+		localStorage.setItem(TIME_ZONE_KEY, value);
+	} catch {
+		return false;
+	}
+	window.dispatchEvent(new Event("qorpera-time-zone-change"));
+	return true;
+}
+
+export function composerColorPreference(): ComposerColorPreference {
+	try {
+		const value = localStorage.getItem(COMPOSER_COLOR_KEY);
+		return value === "green" || value === "grey" ? value : "blue";
+	} catch {
+		return "blue";
+	}
+}
+
+export function applyComposerColor(): void {
+	document.documentElement.dataset.composerColor = composerColorPreference();
+}
+
+export function setComposerColorPreference(value: string): boolean {
+	if (value !== "blue" && value !== "green" && value !== "grey") return false;
+	try {
+		localStorage.setItem(COMPOSER_COLOR_KEY, value);
+	} catch {
+		return false;
+	}
+	applyComposerColor();
+	return true;
+}
+
+export function themePreference(): ThemePreference {
+	try {
+		const value = localStorage.getItem(THEME_KEY);
+		return value === "light" || value === "dark" ? value : "system";
+	} catch {
+		return "system";
+	}
+}
+
+export function uiSizePreference(): UiSizePreference {
+	try {
+		return localStorage.getItem(UI_SIZE_KEY) === "small" ? "small" : "big";
+	} catch {
+		return "big";
+	}
+}
+
+/** Restore before paint, then refresh measured layouts just as a window resize does. */
+export function applyUiSize(): void {
+	const size = uiSizePreference();
+	const changed = document.documentElement.dataset.uiSize !== size;
+	document.documentElement.dataset.uiSize = size;
+	for (const input of document.querySelectorAll<HTMLInputElement>("input[data-ui-size-preference]")) {
+		input.checked = input.value === size;
+	}
+	if (changed) window.dispatchEvent(new Event("resize"));
+}
+
+export function setUiSizePreference(value: string): boolean {
+	if (value !== "big" && value !== "small") return false;
+	try {
+		localStorage.setItem(UI_SIZE_KEY, value);
+	} catch {
+		return false;
+	}
+	applyUiSize();
+	return true;
+}
+
+/** The theme on screen: the stored choice, else the device's appearance. */
+export function presentationTheme(): "light" | "dark" {
+	const preference = themePreference();
+	return preference === "system" ? (window.matchMedia(SYSTEM_DARK).matches ? "dark" : "light") : preference;
+}
+
+/** Runs before the first paint (theme.ts) and again on every change. Colours
+ * come from the stylesheet; the figure painter repaints on
+ * `qorpera-theme-change`. */
+export function applyTheme(): void {
+	const theme = presentationTheme();
+	if (document.documentElement.dataset.theme === theme) return;
+	document.documentElement.dataset.theme = theme;
+	window.dispatchEvent(new Event("qorpera-theme-change"));
+}
+
+export function setThemePreference(value: string): boolean {
+	if (value !== "system" && value !== "light" && value !== "dark") return false;
+	try {
+		localStorage.setItem(THEME_KEY, value);
+	} catch {
+		return false;
+	}
+	applyTheme();
+	return true;
+}
+
+/** Follow the device's appearance and choices made in other tabs. */
+export function watchTheme(): () => void {
+	const system = window.matchMedia(SYSTEM_DARK);
+	const onStorage = (event: StorageEvent) => {
+		if (event.key === THEME_KEY || event.key === null) applyTheme();
+		if (event.key === COMPOSER_COLOR_KEY || event.key === null) applyComposerColor();
+		if (event.key === UI_SIZE_KEY || event.key === null) applyUiSize();
+	};
+	applyTheme();
+	applyComposerColor();
+	applyUiSize();
+	system.addEventListener("change", applyTheme);
+	window.addEventListener("storage", onStorage);
+	return () => {
+		system.removeEventListener("change", applyTheme);
+		window.removeEventListener("storage", onStorage);
+	};
 }

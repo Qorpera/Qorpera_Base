@@ -6,16 +6,22 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { GUEST_IMAGE_SELF_UPDATE_UNITS } from "../packages/runtime/src/lxd-guest-image-updates.ts";
+import {
+	RUNTIME_BUNDLE_NOT_ENFORCED,
+	runtimeBundleEnforced,
+	runtimeBundlePackagingEnvironment,
+} from "./runtime-bundle-release-train.mjs";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
-test("packages the complete pinned LXD runner guest contract", async () => {
+test("packages the complete pinned LXD runner guest contract", async (t) => {
 	const outputRoot = await mkdtemp(join(tmpdir(), "qorpera-lxd-runner-package-test-"));
 	try {
 		const packaged = spawnSync(
 			process.execPath,
 			["scripts/package-lxd-runner-guest.mjs", "--out", outputRoot, "--contract-only"],
-			{ cwd: repositoryRoot, encoding: "utf-8" },
+			{ cwd: repositoryRoot, encoding: "utf-8", env: runtimeBundlePackagingEnvironment() },
 		);
 		assert.equal(packaged.status, 0, packaged.stderr);
 		const manifestEncoded = await readFile(join(outputRoot, "manifest.json"), "utf-8");
@@ -112,6 +118,7 @@ test("packages the complete pinned LXD runner guest contract", async () => {
 		assert.match(companyHost, /^User=qorpera-native-company$/m);
 		assert.match(companyHost, /^LoadCredential=qorpera-native-object-token:/m);
 		assert.match(companyHost, /^LoadCredential=qorpera-office-native:\/var\/lib\/qorpera-bootstrap\/credentials\/qorpera-office-native$/m);
+		assert.match(companyHost, /^LoadCredential=qorpera-coding-command:\/var\/lib\/qorpera-bootstrap\/credentials\/qorpera-coding-command$/m);
 		assert.match(companyHost, /^LoadCredential=qorpera-cloud-secret-runtime:/m);
 		assert.match(companyHost, /^LoadCredential=qorpera-cloud-secret-ca:/m);
 		assert.match(
@@ -198,21 +205,27 @@ test("packages the complete pinned LXD runner guest contract", async () => {
 		assert.ok(acceptance.includes(`EXPECTED_RUNNER_BOOTSTRAP_SHA256="${candidate.artifacts.find((item) => item.file === "qorpera-lxd-runner-bootstrap.mjs").sha256}"`));
 		// These recipes are the frozen v56 release, whose original manifest is
 		// retained by its archive hash. Current runtime bytes have their own pin.
-		const currentCandidate = JSON.parse(await readFile(
-			join(repositoryRoot, "deploy/first-node/native-codex/guest-package-manifest.json"), "utf-8",
-		));
-		const currentArtifact = JSON.parse(await readFile(join(repositoryRoot, "deploy/first-node/native-codex/linux-x64-artifact.json"), "utf-8"));
-		assert.equal(currentCandidate.nativeCompany.binarySha256, currentArtifact.artifact.sha256);
-		assert.equal(currentCandidate.nativeCompany.sourceCommit, currentArtifact.source.commit);
-		assert.equal(currentCandidate.nativeCompany.patchSha256, currentArtifact.source.patchSha256);
-		if (process.platform === "linux" && process.arch === "x64") {
-			const { nativeCompany: _nativeCompany, ...withoutNative } = currentCandidate;
-			withoutNative.artifacts = currentCandidate.artifacts.filter((item) => !item.file.startsWith("native-company/"));
-			assert.deepEqual(
-				withoutNative,
-				manifest,
-				"governed candidate must include every current Linux x64 runtime artifact without stale or omitted bundles",
-			);
+		// A release branch re-pins it; feature branches leave it at the last
+		// release (deploy/first-node/RUNTIME-RELEASE-TRAIN.md).
+		if (runtimeBundleEnforced()) {
+			const currentCandidate = JSON.parse(await readFile(
+				join(repositoryRoot, "deploy/first-node/native-codex/guest-package-manifest.json"), "utf-8",
+			));
+			const currentArtifact = JSON.parse(await readFile(join(repositoryRoot, "deploy/first-node/native-codex/linux-x64-artifact.json"), "utf-8"));
+			assert.equal(currentCandidate.nativeCompany.binarySha256, currentArtifact.artifact.sha256);
+			assert.equal(currentCandidate.nativeCompany.sourceCommit, currentArtifact.source.commit);
+			assert.equal(currentCandidate.nativeCompany.patchSha256, currentArtifact.source.patchSha256);
+			if (process.platform === "linux" && process.arch === "x64") {
+				const { nativeCompany: _nativeCompany, ...withoutNative } = currentCandidate;
+				withoutNative.artifacts = currentCandidate.artifacts.filter((item) => !item.file.startsWith("native-company/"));
+				assert.deepEqual(
+					withoutNative,
+					manifest,
+					"governed candidate must include every current Linux x64 runtime artifact without stale or omitted bundles",
+				);
+			}
+		} else {
+			t.diagnostic(`current guest pin not compared with its source: ${RUNTIME_BUNDLE_NOT_ENFORCED}`);
 		}
 		assert.ok(builder.includes('LXD_BUILDER_PROJECT="default"'));
 		assert.ok(builder.includes('PACKAGE_ARCHIVE="/home/company41-admin/step2-lxd/lxd-runner-guest-v56-secret-proof.tar.gz"'));
@@ -222,6 +235,17 @@ test("packages the complete pinned LXD runner guest contract", async () => {
 		assert.match(installer, /apt-get install --yes[^\n]*\bcrun\b/);
 		assert.match(installer, /apt-get install --yes[^\n]*\bbubblewrap\b/);
 		assert.ok(installer.includes("/usr/bin/podman info >/dev/null"));
+		// The published image never updates itself (run d1f454e2, 2026-09-24): the
+		// units the guest bootstraps check are masked before anything is installed,
+		// with no apt job left running, and proven masked at the end.
+		assert.ok(installer.includes(`SELF_UPDATE_UNITS=(${GUEST_IMAGE_SELF_UPDATE_UNITS.join(" ")})`));
+		const masking = installer.indexOf('systemctl mask "${SELF_UPDATE_UNITS[@]}"');
+		assert.ok(masking > 0 && masking < installer.indexOf("apt-get update"));
+		assert.ok(installer.indexOf("systemctl show --property=ActiveState --value") > masking);
+		const proof = installer.indexOf('[[ $(readlink "/etc/systemd/system/${unit}") != /dev/null ]]');
+		assert.ok(proof > installer.indexOf("systemctl enable qorpera-lxd-runner-bootstrap.service"));
+		assert.ok(installer.includes('[[ $(systemctl is-enabled "${unit}" 2>/dev/null) != masked ]]'));
+		assert.ok(proof < installer.indexOf("LXD_RUNNER_IMAGE_CONTRACT_INSTALLED"));
 		assert.ok(acceptance.includes("install -d -o qorpera-runner -g qorpera-runner -m 0700 /run/qorpera-runner"));
 		assert.ok(acceptance.includes("XDG_RUNTIME_DIR=/run/qorpera-runner"));
 		assert.ok(!acceptance.includes("XDG_RUNTIME_DIR=/var/lib/qorpera-runner/tmp"));

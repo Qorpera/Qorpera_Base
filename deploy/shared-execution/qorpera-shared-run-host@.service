@@ -1,0 +1,68 @@
+[Unit]
+Description=Qorpera shared execution: native provider host for sandbox slot %i
+Documentation=https://github.com/Qorpera/Qorpera_Base
+Wants=network-online.target
+After=network-online.target
+StopWhenUnneeded=no
+
+[Service]
+Type=exec
+# One static account pair per slot, created by the installer. A slot serves one
+# run at a time; the shared execution service wipes its scratch between runs.
+User=qorpera-shared-host-%i
+Group=qorpera-shared-host-%i
+WorkingDirectory=/var/lib/qorpera-shared-execution/slots/%i/host
+Environment=HOME=/var/lib/qorpera-shared-execution/slots/%i/host
+Environment=NODE_EXTRA_CA_CERTS=%d/qorpera-cloud-secret-ca
+EnvironmentFile=/run/qorpera-shared-execution/slots/%i/native-provider.env
+# Every secret arrives from PID 1. The identity volumes, the service journals
+# and the slot material are unreachable from inside this unit.
+LoadCredential=qorpera-supabase-service-key:/run/qorpera-shared-execution/slots/%i/credentials/qorpera-supabase-service-key
+LoadCredential=qorpera-native-bridge:/run/qorpera-shared-execution/slots/%i/credentials/qorpera-native-bridge
+LoadCredential=qorpera-native-object-token:/run/qorpera-shared-execution/slots/%i/credentials/qorpera-native-object-token
+LoadCredential=qorpera-office-native:/run/qorpera-shared-execution/slots/%i/credentials/qorpera-office-native
+LoadCredential=qorpera-coding-command:/run/qorpera-shared-execution/slots/%i/credentials/qorpera-coding-command
+LoadCredential=qorpera-cloud-secret-runtime:/run/qorpera-shared-execution/slots/%i/credentials/qorpera-cloud-secret-runtime
+LoadCredential=qorpera-cloud-secret-ca:/run/qorpera-shared-execution/slots/%i/credentials/qorpera-cloud-secret-ca
+LoadCredential=qorpera-native-provider-master-key:/run/qorpera-shared-execution/slots/%i/credentials/qorpera-native-provider-master-key
+LoadCredential=qorpera-native-identity-epoch:/run/qorpera-shared-execution/slots/%i/credentials/qorpera-native-identity-epoch
+ExecStart=/usr/bin/node /opt/qorpera-runner/qorpera-native-provider-host.mjs
+Restart=no
+# The run is over when the runner unit exits; the native host has nothing left
+# to flush (the capsule is resealed inside the run). Do not hold the slot.
+TimeoutStopSec=10s
+KillMode=control-group
+KillSignal=SIGTERM
+UMask=0077
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/qorpera-shared-execution/slots/%i/host
+InaccessiblePaths=/var/lib/qorpera/identities /var/lib/qorpera-shared-execution/journals /run/qorpera-shared-execution -/var/lib/qorpera/identity -/var/lib/qorpera-bootstrap -/var/lib/qorpera-runner -/var/lib/qorpera-native-workspace
+ProtectHome=yes
+ProtectProc=invisible
+# The trusted launcher reads overflowuid/overflowgid when creating the user
+# namespace. The native child receives a fresh procfs in its own PID namespace.
+ProcSubset=all
+ProtectHostname=private
+ProtectClock=yes
+# A masked parent procfs prevents unprivileged creation of the child's fresh
+# procfs ("Mount too revealing"). Keep it readable only in this trusted host;
+# its empty capabilities/non-root UID still deny kernel writes and log reads.
+ProtectKernelTunables=no
+ProtectKernelModules=yes
+ProtectKernelLogs=no
+ProtectControlGroups=yes
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+# Only the trusted launcher creates these; bubblewrap disables nested user
+# namespaces before the native harness runs. No shared network or host proc.
+RestrictNamespaces=user mnt pid net ipc uts cgroup
+MemoryMax=2G
+MemorySwapMax=0
+TasksMax=256
+CPUQuota=200%
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+LockPersonality=yes
+RestrictSUIDSGID=yes

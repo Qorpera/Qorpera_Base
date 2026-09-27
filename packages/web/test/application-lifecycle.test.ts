@@ -1,19 +1,47 @@
 // @vitest-environment jsdom
+import { createHash, webcrypto } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mountApplication } from "../src/app/application.ts";
 import { AuthController } from "../src/app/auth.ts";
 import { CompanyController } from "../src/app/company.ts";
-import { HubController } from "../src/app/views/hub.ts";
+import { HubController, renderHub } from "../src/app/views/hub.ts";
 import { renderRail } from "../src/app/views/shell.ts";
 import { CloudRpcError } from "../src/cloud/client.ts";
 import type { HostedCompanyOrganization } from "../src/cloud/organization.ts";
 import type { AgentThreadHandle } from "../src/cloud/parse.ts";
 import type { HostedAccountEntitlement, HostedProfile } from "../src/cloud/types.ts";
-import { deferred, fixture, id, profileA, profileB, session, settle, staff, team, userA, userB } from "./fixtures.ts";
+import {
+	deferred,
+	fixture,
+	id,
+	placeholderLabel,
+	profileA,
+	profileB,
+	session,
+	settle,
+	staff,
+	team,
+	userA,
+	userB,
+	visibleText,
+} from "./fixtures.ts";
 
 let dispose: (() => void) | undefined;
 beforeEach(() => {
 	vi.useFakeTimers();
+	vi.stubGlobal("crypto", webcrypto);
+	// The usage refresh behind each account check hashes with crypto.subtle,
+	// which answers from a real thread that fake timers cannot drive. The same
+	// hash, computed at once, makes that refresh end at the same point in every
+	// run, whatever the machine's speed.
+	vi.spyOn(webcrypto.subtle, "digest").mockImplementation(async (algorithm, data) => {
+		const name = typeof algorithm === "string" ? algorithm : algorithm.name;
+		const bytes = ArrayBuffer.isView(data)
+			? new Uint8Array(data.buffer, data.byteOffset, data.byteLength)
+			: new Uint8Array(data);
+		const hash = createHash(name.replace("-", "")).update(bytes).digest();
+		return hash.buffer.slice(hash.byteOffset, hash.byteOffset + hash.byteLength) as ArrayBuffer;
+	});
 	vi.stubGlobal("matchMedia", () => ({ matches: true, addEventListener() {}, removeEventListener() {} }));
 	vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("No cloud transport in this UI fixture")));
 	history.replaceState(null, "", "/#/");
@@ -34,6 +62,9 @@ async function draw(): Promise<void> {
 function mounted(hash = "#/") {
 	history.replaceState(null, "", `/${hash}`);
 	const f = fixture();
+	f.cloud.config.publishableKey = "sb_publishable_fixturekey";
+	f.cloud.config.objectGatewayUrl = "https://objects.fixture.invalid";
+	f.cloud.config.nativeProviderLoginUrl = "https://login.fixture.invalid/";
 	const root = document.createElement("div");
 	document.body.append(root);
 	dispose = mountApplication(root, f.cloud, f.api);
@@ -56,6 +87,16 @@ function executionTransport() {
 			const method = String(input).split("/").at(-1);
 			if (method === "qorpera_request_session_turn_v2") return send(init);
 			if (method === "qorpera_list_session_turn_requests") return Response.json([]);
+			if (method === "qorpera_select_member_session_account") return Response.json(id(81));
+			if (method === "qorpera_begin_native_account_refresh")
+				return Response.json({
+					request_id: id(83),
+					profile_id: profileA.profileId,
+					compute_identity_id: id(80),
+					requested_by_user_id: userA.id,
+					expires_at: new Date(Date.now() + 300_000).toISOString(),
+					status: "completed",
+				});
 			if (method === "qorpera_list_member_native_execution_connections")
 				return Response.json({
 					compute_identity: {
@@ -74,6 +115,7 @@ function executionTransport() {
 					connections: [
 						{
 							connection_id: id(81),
+							client_connection_id: id(181),
 							connection_version: 1,
 							provider: "openai",
 							native_harness: "codex-cli",
@@ -95,25 +137,89 @@ function executionTransport() {
 	return send;
 }
 
-/** The member's one usable account is chosen for them: no picker, no prompt to connect. */
-async function modelChosen(root: HTMLElement): Promise<void> {
-	await settle();
+/** Types a draft and waits until it can be sent with the member's one usable
+ * account: no picker, no prompt to connect. */
+async function drafted(root: HTMLElement, text: string) {
+	const input = root.querySelector("textarea")!;
+	input.value = text;
+	input.dispatchEvent(new Event("input"));
+	const button = root.querySelector<HTMLButtonElement>('[aria-label="Send message"]')!;
+	await vi.waitFor(() => expect(button.disabled).toBe(false), { timeout: 3000 });
+	expect(root.querySelector(".session-execution")?.textContent).toBe("");
 	expect(root.querySelector('[aria-label="Model account for this conversation"]')).toBeNull();
-	expect(root.querySelector(".session-execution")!.textContent).toBe("");
+	return { input, button };
 }
 
 describe("account and route ownership", () => {
+	it("sends the first message from the recipient composer before navigating to the conversation", async () => {
+		const f = mounted(`#/c/${profileA.profileId}/new`);
+		vi.mocked(f.api.listSessions).mockResolvedValue([{ ...session, staffAgentId: staff.id }]);
+		const send = executionTransport();
+		await draw();
+		f.root.querySelector<HTMLElement>(`[data-choice="${staff.id}"]`)!.click();
+		expect(location.hash).toBe(`#/c/${profileA.profileId}/new`);
+		const input = f.root.querySelector("textarea")!;
+		input.value = "First message";
+		input.dispatchEvent(new Event("input"));
+		f.root.querySelector<HTMLButtonElement>('[aria-label="Send message"]')!.click();
+		await draw();
+		await vi.waitFor(() => expect(send).toHaveBeenCalledOnce());
+		await draw();
+		expect(location.hash).toBe(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
+		expect(f.root.querySelector("textarea")!.value).toBe("");
+		expect(f.root.textContent).toContain("First message");
+	});
+	it("keeps a new compose send authorized when an older compose finishes loading its transcript", async () => {
+		const f = mounted(`#/c/${profileA.profileId}/new`);
+		vi.mocked(f.api.listSessions).mockResolvedValue([{ ...session, staffAgentId: staff.id }]);
+		const send = executionTransport();
+		const events = deferred<Awaited<ReturnType<typeof f.api.readSessionEvents>>>();
+		vi.mocked(f.api.readSessionEvents).mockReturnValueOnce(events.promise);
+		await draw();
+		const submit = (text: string) => {
+			f.root.querySelector<HTMLElement>(`[data-choice="${staff.id}"]`)!.click();
+			const input = f.root.querySelector("textarea")!;
+			input.value = text;
+			input.dispatchEvent(new Event("input"));
+			f.root.querySelector<HTMLButtonElement>('[aria-label="Send message"]')!.click();
+		};
+		submit("First accepted message");
+		await draw();
+		await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+		await draw();
+		expect(f.api.readSessionEvents).toHaveBeenCalledTimes(1);
+		expect(location.hash).toBe(`#/c/${profileA.profileId}/new`);
+
+		// Leave the accepted send waiting for its transcript and start another
+		// compose for the same session, so session identity cannot distinguish them.
+		location.hash = `#/c/${profileA.profileId}/file/history`;
+		await draw();
+		location.hash = `#/c/${profileA.profileId}/new`;
+		await draw();
+		const original = await f.cloud.supabase.auth.getSession();
+		const token = deferred<typeof original>();
+		vi.mocked(f.cloud.supabase.auth.getSession).mockResolvedValueOnce(original).mockReturnValueOnce(token.promise);
+		submit("Second message");
+		await draw();
+		expect(send).toHaveBeenCalledTimes(1);
+		events.resolve([]);
+		await draw();
+		expect(location.hash).toBe(`#/c/${profileA.profileId}/new`);
+		token.resolve(original);
+		await draw();
+		await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(2));
+		await draw();
+		expect(location.hash).toBe(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
+		expect(f.root.querySelector("textarea")!.value).toBe("");
+		expect(f.root.textContent).toContain("Second message");
+		expect(f.root.textContent).not.toContain("Cloud execution could not be confirmed");
+	});
 	it("retries an uncertain product send with the same input identity and preserves its draft", async () => {
 		const f = mounted(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
 		const send = executionTransport();
 		send.mockRejectedValueOnce(new Error("Response lost"));
 		await draw();
-		await modelChosen(f.root);
-		const input = f.root.querySelector("textarea")!;
-		input.value = "One request";
-		input.dispatchEvent(new Event("input"));
-		await settle();
-		const button = f.root.querySelector<HTMLButtonElement>('[aria-label="Send message"]')!;
+		const { input, button } = await drafted(f.root, "One request");
 		button.click();
 		button.click();
 		await draw();
@@ -129,41 +235,109 @@ describe("account and route ownership", () => {
 		const f = mounted(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
 		const send = executionTransport();
 		await draw();
-		await modelChosen(f.root);
-		const input = f.root.querySelector("textarea")!;
-		input.value = "Work from the web";
-		input.dispatchEvent(new Event("input"));
-		await settle();
-		f.root.querySelector<HTMLButtonElement>('[aria-label="Send message"]')!.click();
+		const { input, button } = await drafted(f.root, "Work from the web");
+		button.click();
 		await draw();
 		expect(send).toHaveBeenCalledTimes(1);
 		expect(input.value).toBe("");
 		expect(f.root.textContent).toContain("Work from the web");
 	});
-	it.each(["route", "account"])(
+	/** Clicks Send and releases the write's token read after the given change. */
+	async function writeAfter(change?: "route" | "account") {
+		const f = mounted(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
+		const send = executionTransport();
+		await draw();
+		const { button } = await drafted(f.root, "Private draft");
+		// A click first checks the account again, then writes. Token reads are
+		// held back only once that check has read the accounts, so it is the
+		// write that waits on the token when the change happens. The usage
+		// refresh also reads the accounts; it is over before the click.
+		const calls = (method: string) =>
+			vi.mocked(fetch).mock.calls.filter(([input]) => String(input).endsWith(`/${method}`)).length;
+		const accountReads = () => calls("qorpera_list_member_native_execution_connections");
+		const selections = calls("qorpera_select_member_session_account");
+		const checked = accountReads() + 1;
+		const getSession = vi.mocked(f.cloud.supabase.auth.getSession);
+		const current = getSession.getMockImplementation()!;
+		const original = await getSession();
+		const token = deferred<typeof original>();
+		let holding = true;
+		let held = 0;
+		getSession.mockImplementation(() => {
+			if (!holding || accountReads() < checked) return current();
+			held++;
+			return token.promise;
+		});
+		button.click();
+		for (let turn = 0; turn < 10 && !held; turn++) await settle();
+		expect(held).toBe(1);
+		expect(calls("qorpera_select_member_session_account")).toBe(selections + 1);
+		expect(send).not.toHaveBeenCalled();
+		holding = false;
+		if (change === "route") history.replaceState(null, "", "/#/account");
+		if (change === "account") f.auth(userB);
+		token.resolve(original);
+		await draw();
+		return send;
+	}
+	it.each(["route", "account"] as const)(
 		"does not dispatch a composer write after %s changes during token refresh",
 		async (change) => {
-			const f = mounted(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
-			const send = executionTransport();
-			await draw();
-			await modelChosen(f.root);
-			const original = await f.cloud.supabase.auth.getSession();
-			const token = deferred<typeof original>();
-			vi.mocked(f.cloud.supabase.auth.getSession).mockReturnValueOnce(token.promise);
-			const input = f.root.querySelector("textarea")!;
-			input.value = "Private draft";
-			input.dispatchEvent(new Event("input"));
-			await settle();
-			expect(f.root.querySelector<HTMLButtonElement>('[aria-label="Send message"]')!.disabled).toBe(false);
-			f.root.querySelector<HTMLButtonElement>('[aria-label="Send message"]')!.click();
-			await settle();
-			if (change === "route") history.replaceState(null, "", "/#/account");
-			else f.auth(userB);
-			token.resolve(original);
-			await draw();
-			expect(send).not.toHaveBeenCalled();
+			expect(await writeAfter(change)).not.toHaveBeenCalled();
 		},
 	);
+	// Without this, the two cases above would also pass if the held read were not the write's.
+	it("dispatches the composer write when nothing changes during token refresh", async () => {
+		expect(await writeAfter()).toHaveBeenCalledOnce();
+	});
+	it("keeps one thread placeholder while a company opens, standing in for the phone header too", async () => {
+		const f = mounted(`#/c/${profileA.profileId}`);
+		const membership = deferred<typeof team>();
+		const organization = deferred<HostedCompanyOrganization | undefined>();
+		vi.mocked(f.api.getTeam).mockReturnValue(membership.promise);
+		vi.mocked(f.api.getOrganization).mockReturnValue(organization.promise);
+		await draw();
+		const placeholder = f.root.querySelector("main > .thread-skeleton");
+		expect(placeholder).not.toBeNull();
+		expect(f.root.querySelector(".frame")?.classList.contains("has-thread")).toBe(true);
+		// The topbar hides on a phone, so the placeholder's header carries the rail's button.
+		const toggle = placeholder!.querySelector<HTMLButtonElement>(".thread-header .mobile-navigation-toggle");
+		expect(toggle?.getAttribute("aria-controls")).toBe("company-navigation");
+		expect(toggle?.getAttribute("aria-expanded")).toBe("false");
+		toggle!.click();
+		await draw();
+		expect(f.root.querySelector(".frame")?.classList.contains("navigation-open")).toBe(true);
+		expect(
+			f.root.querySelector("main > .thread-skeleton .mobile-navigation-toggle")?.getAttribute("aria-expanded"),
+		).toBe("true");
+		toggle!.click();
+		await draw();
+		membership.resolve(team);
+		await draw();
+		// Still opening: the redraw keeps the placeholder it already shows.
+		expect(f.root.querySelector("main > .thread-skeleton")).toBe(placeholder);
+		organization.resolve(undefined);
+		await draw();
+		expect(placeholderLabel(f.root.querySelector("main"))).not.toBe("Opening company");
+	});
+	it("shows company placeholders only for the first read of the company list", async () => {
+		const f = mounted("#/");
+		const hub = new HubController(f.api, userA.id);
+		const container = document.createElement("div");
+		hub.store.set({ loading: true, loaded: false, profiles: [] });
+		renderHub(hub, container);
+		expect(placeholderLabel(container)).toBe("Loading companies");
+		expect(container.querySelector(".hub-welcome")).toBeNull();
+		// A refresh keeps the companies it shows, and a member with none keeps the welcome.
+		hub.store.set({ loading: true, loaded: true, profiles: [profileA] });
+		renderHub(hub, container);
+		expect(container.querySelector(".company-card")?.textContent).toContain(profileA.profileName);
+		expect(container.querySelector(".skeleton-companies")).toBeNull();
+		hub.store.set({ loading: true, loaded: true, profiles: [] });
+		renderHub(hub, container);
+		expect(container.querySelector(".hub-welcome")).not.toBeNull();
+		expect(container.querySelector(".skeleton-companies")).toBeNull();
+	});
 	it.each([true, false])("waits for organization loading before resolving home (seeded: %s)", async (seeded) => {
 		const home = `#/c/${profileA.profileId}`;
 		const f = mounted(home);
@@ -172,7 +346,8 @@ describe("account and route ownership", () => {
 		await draw();
 		expect(f.api.listStaff).toHaveBeenCalled();
 		expect(location.hash).toBe(home);
-		expect(f.root.querySelector("main")?.textContent).toContain("Opening company");
+		expect(placeholderLabel(f.root.querySelector("main"))).toBe("Opening company");
+		expect(visibleText(f.root.querySelector("main"))).not.toContain("Opening");
 		loading.resolve(
 			seeded
 				? {
@@ -230,7 +405,8 @@ describe("account and route ownership", () => {
 		});
 		await draw();
 		expect(create).not.toHaveBeenCalled();
-		expect(f.root.querySelector("main")?.textContent).toContain("Opening company");
+		expect(placeholderLabel(f.root.querySelector("main"))).toBe("Opening company");
+		expect(visibleText(f.root.querySelector("main"))).not.toContain("Opening");
 		loading.resolve(team);
 		await draw();
 		expect(create).toHaveBeenCalledExactlyOnceWith(profileA.environmentId, staff.id);
@@ -248,7 +424,8 @@ describe("account and route ownership", () => {
 			.mockResolvedValue({ sessionId: session.sessionId, roomId: id(31), staffAgentId: staff.id, status: "active" });
 		await draw();
 		expect(location.hash).toBe(route);
-		expect(f.root.querySelector("main")?.textContent).toContain("Opening company");
+		expect(placeholderLabel(f.root.querySelector("main"))).toBe("Opening company");
+		expect(visibleText(f.root.querySelector("main"))).not.toContain("Opening");
 		loading.resolve(team);
 		await draw();
 		expect(create).toHaveBeenCalledTimes(1);
@@ -353,7 +530,7 @@ describe("account and route ownership", () => {
 		opened.resolve({ sessionId: session.sessionId, roomId: id(31), staffAgentId: staff.id, status: "active" });
 		await draw();
 		expect(location.hash).toBe("#/account");
-		expect(root.textContent).toContain("Plan & billing");
+		expect(root.querySelector("main .account h1")?.textContent).toBe("General");
 	});
 
 	it("ignores a late company lookup after navigating away", async () => {
@@ -369,7 +546,7 @@ describe("account and route ownership", () => {
 		await draw();
 		expect(location.hash).toBe("#/account");
 		expect(f.api.getCompanyFile).not.toHaveBeenCalled();
-		expect(f.root.querySelector("main")?.textContent).toContain("Plan & billing");
+		expect(f.root.querySelector("main .account h1")?.textContent).toBe("General");
 	});
 
 	it("initializes Company File once while its response is delayed", async () => {
@@ -454,7 +631,11 @@ describe("account and route ownership", () => {
 
 	it("restores access to the page when membership is revoked with the mobile drawer open", async () => {
 		const f = mounted(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
+		vi.mocked(f.api.listSessions).mockResolvedValue([{ ...session, staffAgentId: staff.id }]);
 		await draw();
+		f.root.querySelector<HTMLButtonElement>(".thread-computer:not([hidden])")!.click();
+		const panel = f.root.querySelector<HTMLElement>(".computer-panel")!;
+		expect(panel.childElementCount).toBeGreaterThan(0);
 		f.root.querySelector<HTMLButtonElement>("main .mobile-navigation-toggle")!.click();
 		await draw();
 		expect(f.root.querySelector("main")?.inert).toBe(true);
@@ -464,10 +645,86 @@ describe("account and route ownership", () => {
 		f.hints.get("qorpera_profile_access_state")!();
 		await draw();
 		expect(f.root.querySelector("main")?.textContent).toContain("Your access to this company was revoked");
+		// The computer left open is ended, not merely set aside for a return.
+		expect(panel.isConnected).toBe(false);
+		expect(panel.childElementCount).toBe(0);
 		expect(f.root.querySelector("main")?.inert).toBe(false);
 		expect(f.root.querySelector(".frame")?.classList.contains("navigation-open")).toBe(false);
 		expect(f.root.querySelector(".topbar .account-trigger")).not.toBeNull();
 		expect(f.root.querySelector(".account-company-name")).toBeNull();
+	});
+
+	it("keeps one rail placeholder while the company's agents load, then drops it", () => {
+		const f = fixture();
+		const controller = new CompanyController(f.api, profileA, userA.id);
+		dispose = () => controller.stop();
+		const rail = document.createElement("aside");
+		const context = {
+			profiles: [profileA],
+			user: userA,
+			auth: new AuthController(f.cloud),
+			invitations: 0,
+			openSettings: () => {},
+			openFeedback: () => {},
+			route: { name: "company", profileId: profileA.profileId, section: "home" } as const,
+		};
+		renderRail(rail, controller, context);
+		const placeholder = rail.querySelector(".skeleton-rail");
+		expect(placeholderLabel(rail)).toBe("Loading agents");
+		expect(visibleText(rail.querySelector(".rail-scroll"))).toBe("");
+		controller.store.set({ team });
+		renderRail(rail, controller, context);
+		expect(rail.querySelector(".skeleton-rail")).toBe(placeholder);
+		controller.store.set({ staff: [staff], sessions: [session], loading: false });
+		renderRail(rail, controller, context);
+		expect(rail.querySelector(".skeleton")).toBeNull();
+		expect(rail.textContent).toContain(staff.displayName);
+	});
+
+	it("closes a drawer opened while a company opens when that company turns out to be unavailable", async () => {
+		const f = mounted(`#/c/${id(77)}`);
+		const profiles = deferred<HostedProfile[]>();
+		vi.mocked(f.api.listProfiles).mockReturnValue(profiles.promise);
+		await draw();
+		f.root.querySelector<HTMLButtonElement>("main > .thread-skeleton .mobile-navigation-toggle")!.click();
+		await draw();
+		expect(f.root.querySelector(".frame")?.classList.contains("navigation-open")).toBe(true);
+		profiles.resolve([profileA]);
+		await draw();
+		expect(f.root.querySelector("main")?.textContent).toContain("This company is not available to your account.");
+		expect(f.root.querySelector(".frame")?.classList.contains("navigation-open")).toBe(false);
+		expect(f.root.querySelector<HTMLElement>("main")?.inert).toBe(false);
+	});
+
+	it("says why the Company File cannot open when membership could not be read", async () => {
+		const f = mounted(`#/c/${profileA.profileId}/file`);
+		vi.mocked(f.api.getTeam).mockRejectedValue(new Error("Membership unavailable"));
+		await draw();
+		const main = f.root.querySelector("main")!;
+		expect(main.querySelector(".skeleton")).toBeNull();
+		expect(main.textContent).toContain("Membership unavailable");
+		vi.mocked(f.api.getTeam).mockResolvedValue(team);
+		const calls = vi.mocked(f.api.getTeam).mock.calls.length;
+		[...main.querySelectorAll("button")].find((button) => button.textContent === "Retry company")!.click();
+		await draw();
+		expect(vi.mocked(f.api.getTeam).mock.calls.length).toBe(calls + 1);
+	});
+
+	it("shows an error with a way to try again when the cloud session cannot be read", async () => {
+		history.replaceState(null, "", "/#/");
+		const f = fixture();
+		vi.spyOn(f.cloud.supabase.auth, "getSession").mockRejectedValue(new Error("Network unavailable"));
+		const root = document.createElement("div");
+		document.body.append(root);
+		dispose = mountApplication(root, f.cloud, f.api);
+		await draw();
+		expect(root.querySelector(".skeleton-group")).toBeNull();
+		expect(root.textContent).toContain("The cloud could not be reached. Network unavailable");
+		expect([...root.querySelectorAll("button")].some((button) => button.textContent === "Try again")).toBe(true);
+		// A redraw, such as a route change, keeps the error instead of blanking the page again.
+		location.hash = `#/c/${profileA.profileId}`;
+		await draw();
+		expect(root.textContent).toContain("The cloud could not be reached. Network unavailable");
 	});
 
 	it("keeps rail searches bound to the current company and current route", () => {

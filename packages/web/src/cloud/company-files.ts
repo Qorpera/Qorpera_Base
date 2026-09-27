@@ -51,10 +51,23 @@ export class WebCompanyFiles {
 			},
 			fetch: async (input, init) => {
 				this.current();
-				const response = await fetch(input, {
+				// Enable the public bridge only after its deployment has been accepted.
+				// This is a configured transport selection, never a fallback after a write.
+				const url = new URL(input instanceof Request ? input.url : input);
+				const target =
+					cloud.config.memberCompanyGatewayUrl &&
+					url.origin === new URL(cloud.config.objectGatewayUrl).origin &&
+					url.pathname.startsWith("/v1/member-")
+						? `${cloud.config.memberCompanyGatewayUrl}${url.pathname}${url.search}`
+						: input;
+				const response = await fetch(input instanceof Request ? new Request(target, input) : target, {
 					...init,
 					credentials: "omit",
-					signal: AbortSignal.any([signal, ...(init?.signal ? [init.signal] : [])]),
+					signal: AbortSignal.any([
+						signal,
+						...(input instanceof Request ? [input.signal] : []),
+						...(init?.signal ? [init.signal] : []),
+					]),
 				});
 				try {
 					this.current();

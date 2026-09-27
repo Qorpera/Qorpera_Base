@@ -1,6 +1,6 @@
-# Pinned native result fence, governed direct tools and capture images
+# Pinned native result fence, governed tools, images and composition
 
-This is a narrow downstream change to the official Codex 0.147.0 source, not
+This is a narrow downstream change to the official Codex 0.155.1 source, not
 an official upstream release. The user explicitly authorized this exception
 to the unmodified-harness requirement on 2026-08-28. Native GPT sign-in,
 refresh, credential storage, provider transport, model metadata and provider
@@ -22,11 +22,28 @@ The host requires both `qorpera.native-result-fence/v1` and
 `qorpera.native-direct-tools/v1` before model admission; the older result-only
 binary is no longer accepted by this governed adapter.
 
+The host also requires `qorpera.native-message-composition/v1`. In governed
+sessions the native stream emits `qorpera/messageComposition` when a
+`qorpera.send_message` output item begins, before its arguments are complete,
+and closes it before tool dispatch or when the stream ends. The notification
+contains only thread, turn, call identity and start/finish phase. It is excluded
+from durable native rollouts. The host validates the bound identities and emits
+expiring `message_composition` observations; it renews them every five seconds
+while composition continues and closes them on completion or cancellation.
+The member activity projection uses these observations for Writing. Executing
+`send_message` is delivery and does not imply that the agent is still writing.
+
 Capture-enabled sessions additionally require `qorpera.native-capture-images/v1`.
 Images must originate in an issued tool result and match its call, envelope and
 hash. The host rechecks the capture read set on every provider/compaction request,
 including when reconstruction has replaced pixels with summaries. Arbitrary
 provider-message media cannot acquire authority through this path.
+
+The result fence sends every tool output of a model request's history to the
+host, which returns each as a host-issued envelope of at most 8 KiB. Since bundle
+v104 a request may carry any number of outputs: the frame is bounded at 64 MiB
+each way (it was 8 MiB, with fewer than 128 outputs and 1 MiB of result text),
+more than any model context holds.
 
 ## Build
 
@@ -107,6 +124,14 @@ forged compaction instructions do not acquire authority, and revocation denies
 the next provider request and effect. These checks are also mandatory in the
 standalone Linux fixture for both the synthetic model and the provider default.
 
+`node packages/runtime/test/fixtures/run-native-codex-composition-probe.ts /absolute/native/codex`
+holds a scripted public-message output item open for over two seconds before
+supplying its arguments. It requires the actual native Writing signal during
+that hold, a finish before send dispatch, and cleanup when the incomplete
+stream is cancelled. Both synthetic and provider-default model configurations
+are checked. The fixture also checks the closed metadata schema and exclusion
+of public-message and private-reasoning canaries from activity telemetry.
+
 The [initial Linux proof](linux-x64-component-proof.json) records the artifact and
 fixture hashes from the isolated cloud-node VM, including both authority
 failure cases. The development artifact archive is retained at
@@ -133,7 +158,7 @@ The separate [signed v52 acceptance](../RUNTIME-STEP-2-V52-ACCEPTANCE.md)
 records the clean-image rebuild and real-GPT write/receipt replay after forced
 VM restart. Production is not enrolled; remaining Step 2 gates are explicit.
 
-The current [capture-images Linux proof](linux-x64-capture-images-proof.json)
+The historical [capture-images Linux proof](linux-x64-capture-images-proof.json)
 records the 307,464,032-byte release executable, SHA-256
 `6bbe4704774454be5aff5501bfe4bbd5e023930ff87d187ca9e5ec4c333c8e8d`.
 The actual executable passes twelve image/compaction checks across local,
@@ -143,6 +168,23 @@ plus an unissued-image refusal. The complete tool-boundary probe also passes:
 compaction checks. These run in a disposable Linux AMD64 container without
 external networking, using a scripted loopback provider. They do not establish
 real model interpretation or combined office/SQL/object-gateway readiness.
+
+The current [message-composition Linux proof](linux-x64-message-composition-proof.json)
+records the 308,143,880-byte release executable, SHA-256
+`9bd7b4e1148cb77820ea75943d03e7531757b3c74e47399df25a00477e58a7d0`.
+All four actual-binary composition scenarios pass, including early Writing
+while complete arguments are withheld and cancellation before delivery. The
+existing result-fence, authority, image and compaction probes also pass. Five
+new unit checks were run from the exact source modules using pinned `rustc
+--test` against the compiled release libraries; the complete upstream test
+harness was not run. The proof records the executed source hashes and actual
+Linux guest package manifest. These are scripted loopback checks in a dedicated
+Linux VM, with no real-model or production acceptance.
+
+The native checks also caught the namespace description exceeding the pinned
+app-server's 1,024-character bound. Its catalog summary is now compact, while
+the complete result-handling instructions remain unchanged in the trusted
+bootstrap and developer instructions.
 
 `linux-x64-artifact.json` is the accepted native input to runtime bundle generation.
 It must match `source.json` and the patch bytes. Generate that bundle before

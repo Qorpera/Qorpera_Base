@@ -29,7 +29,10 @@ try { mount = parseRecoveryDirectoryMount(await readFile("/proc/self/mountinfo",
 assert.equal(mount.mountPoint,"/var/lib/qorpera-office"); assert.notEqual(mount.filesystem,"tmpfs");
 const cert = "/run/boot-proof-cert", key = "/run/boot-proof-key";
 command("openssl",["req","-x509","-newkey","rsa:2048","-nodes","-keyout",key,"-out",cert,"-days","1","-subj","/CN=localhost"]);
-const f = bootConfigurationFixture({ bootId,mount,uid:1100,tlsCert:await readFile(cert,"utf8"),tlsKey:await readFile(key,"utf8") });
+// Layout version 2 (the production office) adds the company root to the retained receipt.
+const original = process.env.QORPERA_OFFICE_FIXTURE_LAYOUT_VERSION === "2" ? { layoutVersion:2, entries:[".","company","desktop","profiles","screens","workbench"].map(path=>({path,kind:"directory",mode:0o700,bytes:0,sha256:null})) } : {};
+const f = bootConfigurationFixture({ bootId,mount,uid:1100,tlsCert:await readFile(cert,"utf8"),tlsKey:await readFile(key,"utf8"),original });
+assert.equal("companyRoot" in f.receipt.layout, process.env.QORPERA_OFFICE_FIXTURE_LAYOUT_VERSION === "2");
 for(const [path,file] of f.originFiles) await writeFile(path,file.bytes,{mode:file.mode});
 await mkdir(f.historyDirectory,{recursive:true,mode:0o700});
 for(const [path,bytes] of f.archiveFiles) await writeFile(path,bytes,{mode:0o600});

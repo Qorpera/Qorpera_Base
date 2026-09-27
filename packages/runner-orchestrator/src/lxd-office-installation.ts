@@ -209,7 +209,8 @@ export function validateOfficeInstallationDocuments(
 		service.planPath !== `${OFFICE_CONFIG_ROOT}/review.json` ||
 		service.registryCredential.path !== `${OFFICE_CONFIG_ROOT}/registry.credential` ||
 		service.registryCredential.bytes !== spec.documents.registry.bytes ||
-		service.registryCredential.sha256 !== spec.documents.registry.sha256
+		service.registryCredential.sha256 !== spec.documents.registry.sha256 ||
+		(service.passthroughPath !== undefined && service.passthroughPath !== `${OFFICE_CONFIG_ROOT}/passthrough.json`)
 	)
 		throw new Error("OFFICE_INSTALL_CONFIG_MISMATCH");
 	new LxdOfficeProviderHttpRegistry(service.registryUrl, decode("registry"));

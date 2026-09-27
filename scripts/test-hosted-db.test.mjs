@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
 	buildContainerName,
+	expandTestFixture,
 	POSTGRES_IMAGE,
 	sortMigrationNames,
 } from "./test-hosted-db.mjs";
@@ -25,4 +26,23 @@ test("uses an exact temporary container identity and digest-pinned image", () =>
 	assert.equal(buildContainerName(42, "0123abcd"), "qorpera-hosted-db-42-0123abcd");
 	assert.match(POSTGRES_IMAGE, /^docker\.io\/library\/postgres:[^@]+@sha256:[0-9a-f]{64}$/);
 	assert.throws(() => buildContainerName(42, "../escape"), /Invalid hosted database container identity/);
+});
+
+test("a test can run after another test's fixture section", () => {
+	const files = {
+		"300_base.test.sql": "begin;\nselect 1;\n-- END FIXTURE\nselect 2;\nrollback;\n",
+		"370_next.test.sql": '-- @fixture 300_base.test.sql until "-- END FIXTURE"\nselect 3;\nrollback;\n',
+		"380_self.test.sql": '-- @fixture 380_self.test.sql until "x"\n',
+		"390_missing.test.sql": '-- @fixture 300_base.test.sql until "-- ABSENT"\n',
+		"395_chained.test.sql": '-- @fixture 370_next.test.sql until "rollback;"\nselect 4;\nrollback;\n',
+		"396_cycle_a.test.sql": '-- @fixture 397_cycle_b.test.sql until "x"\nx\n',
+		"397_cycle_b.test.sql": '-- @fixture 396_cycle_a.test.sql until "x"\nx\n',
+	};
+	const read = (name) => files[name];
+	assert.equal(expandTestFixture("300_base.test.sql", read), files["300_base.test.sql"]);
+	assert.equal(expandTestFixture("370_next.test.sql", read), "begin;\nselect 1;\nselect 3;\nrollback;\n");
+	assert.throws(() => expandTestFixture("380_self.test.sql", read), /fixture is unavailable/);
+	assert.throws(() => expandTestFixture("390_missing.test.sql", read), /fixture is unavailable/);
+	assert.equal(expandTestFixture("395_chained.test.sql", read), "begin;\nselect 1;\nselect 3;\nselect 4;\nrollback;\n");
+	assert.throws(() => expandTestFixture("396_cycle_a.test.sql", read), /fixture is unavailable/);
 });

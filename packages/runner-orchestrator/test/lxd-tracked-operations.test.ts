@@ -94,6 +94,19 @@ describe("journalable LXD operations over a real Unix HTTP socket", () => {
 				expect(calls[0].body).toEqual({ action, timeout: 30, force: false, stateful: false });
 		},
 	);
+	it("powers a VM off only when the stop asks for force (coding VMs)", async () => {
+		const calls: unknown[] = [];
+		const client = await fixture((_request, response, body) => {
+			calls.push(body);
+			send(response, accepted(), 202);
+		});
+		await client.submitInstanceOperation("offices", { action: "stop", name: "office-test", force: true }, signal());
+		await client.submitInstanceOperation("offices", { action: "stop", name: "office-test" }, signal());
+		expect(calls).toEqual([
+			{ action: "stop", timeout: 30, force: true, stateful: false },
+			{ action: "stop", timeout: 30, force: false, stateful: false },
+		]);
+	});
 	it.each([
 		[100, "Operation created", "pending"],
 		[103, "Running", "pending"],
@@ -150,6 +163,28 @@ describe("journalable LXD operations over a real Unix HTTP socket", () => {
 	it.each([301, 404, 500])("keeps an unavailable operation (%s) unconfirmed", async (status) => {
 		const client = await fixture((_request, response) => send(response, envelope(), status));
 		await expect(client.inspectInstanceOperation(reference, signal())).rejects.toThrow(/^LXD_OPERATION_UNCONFIRMED$/);
+	});
+	it("names only LXD's own 404 for an operation it no longer knows", async () => {
+		const notFound = {
+			type: "error",
+			status: "",
+			status_code: 0,
+			operation: "",
+			error_code: 404,
+			error: "Operation not found",
+		};
+		const client = await fixture((_request, response) => send(response, notFound, 404));
+		await expect(client.inspectInstanceOperation(reference, signal())).rejects.toThrow(/^LXD_OPERATION_UNKNOWN$/);
+		for (const [body, status] of [
+			[{ ...notFound, error_code: 500 }, 404],
+			[{ ...notFound, error_code: 404 }, 500],
+			[{ ...notFound, type: "sync" }, 404],
+		] as const) {
+			const other = await fixture((_request, response) => send(response, body, status));
+			await expect(other.inspectInstanceOperation(reference, signal())).rejects.toThrow(
+				/^LXD_OPERATION_UNCONFIRMED$/,
+			);
+		}
 	});
 	it("accepts the older bare resource URL for the already project-scoped operation", async () => {
 		const client = await fixture((_request, response) =>

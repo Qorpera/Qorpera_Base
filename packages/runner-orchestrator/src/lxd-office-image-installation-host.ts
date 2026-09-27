@@ -1,12 +1,13 @@
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
-import { chmod, lstat, open, readdir, readFile, realpath } from "node:fs/promises";
+import { chmod, lstat, open, readdir, readFile, readlink, realpath } from "node:fs/promises";
 import { join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import {
 	OFFICE_IMAGE_EXECUTABLES,
 	OFFICE_IMAGE_MOUNT_UNIT,
 	OFFICE_IMAGE_ROOT,
+	OFFICE_IMAGE_SELF_UPDATE_UNITS,
 	OFFICE_IMAGE_USER,
 	parseOfficeImageInstallationSpec,
 	parseOfficeImagePackage,
@@ -134,6 +135,44 @@ export async function inspectOfficeImageDependencies() {
 		browserTreeSha256: officeDigest(entries),
 		executables,
 	};
+}
+
+type OfficeImageCommand = (file: string, args: string[]) => string;
+
+/** Proves each self-update unit masked as `systemctl mask` writes it: a local
+ * link to /dev/null that systemd also reports as masked. */
+export async function assertOfficeImageSelfUpdateMasked(
+	run: OfficeImageCommand = command,
+	unitDirectory = "/etc/systemd/system",
+): Promise<void> {
+	for (const unit of OFFICE_IMAGE_SELF_UPDATE_UNITS) {
+		const target = await readlink(join(unitDirectory, unit)).catch(() => undefined);
+		if (
+			target !== "/dev/null" ||
+			run("/usr/bin/systemctl", ["show", unit, "--property=UnitFileState", "--value"]) !== "masked"
+		)
+			throw new Error("OFFICE_IMAGE_SELF_UPDATE_ENABLED");
+	}
+}
+
+/** A published office must never update itself (run d1f454e2, 2026-09-24):
+ * the timers catch up on every boot from the build's stamps, needrestart then
+ * restarts the office under members and the shutdown inhibitor refuses the
+ * VM's stop. Masking first means no timer starts a job after the check; a job
+ * already running is refused, never stopped mid-upgrade. */
+export async function maskOfficeImageSelfUpdate(
+	run: OfficeImageCommand = command,
+	unitDirectory = "/etc/systemd/system",
+): Promise<void> {
+	run("/usr/bin/systemctl", ["mask", ...OFFICE_IMAGE_SELF_UPDATE_UNITS]);
+	for (const unit of ["apt-daily.service", "apt-daily-upgrade.service"])
+		if (
+			!["inactive", "failed"].includes(
+				run("/usr/bin/systemctl", ["show", unit, "--property=ActiveState", "--value"]),
+			)
+		)
+			throw new Error("OFFICE_IMAGE_APT_JOB_RUNNING");
+	await assertOfficeImageSelfUpdateMasked(run, unitDirectory);
 }
 
 function account(uid: number, gid: number, create = false): void {
@@ -400,6 +439,7 @@ export async function installOfficeImage(stage: "--check" | "--apply" | "--locke
 		return;
 	}
 	await officeInstallLockFd(lock, 0);
+	await maskOfficeImageSelfUpdate();
 	account(loaded.spec.uid, loaded.spec.gid, true);
 	for (const target of loaded.targets) {
 		await officeInstallLockFd(lock, 0);
@@ -428,6 +468,7 @@ export async function installOfficeImage(stage: "--check" | "--apply" | "--locke
 	await preflight(loaded);
 	if (command("/usr/bin/systemctl", ["show", units[0]!, "--property=UnitFileState", "--value"]) !== "disabled")
 		throw new Error("OFFICE_IMAGE_SERVICE_NOT_DISABLED");
+	await assertOfficeImageSelfUpdateMasked();
 	console.log(
 		JSON.stringify({
 			schema: "qorpera.office-image-installation-result/v1",

@@ -65,7 +65,7 @@ function masked(payload: Buffer): Buffer {
 			: Buffer.from([130, 254, payload.length >> 8, payload.length & 255]);
 	return Buffer.concat([header, mask, Buffer.from(payload.map((byte, index) => byte ^ mask[index % 4]))]);
 }
-async function fixture() {
+async function fixture(mode: "watch" | "shared" = "watch") {
 	const received: Buffer[] = [];
 	const guest = createServer((socket) => {
 		sockets.add(socket);
@@ -81,7 +81,7 @@ async function fixture() {
 		binding: computerBinding(),
 		viewerSessionId: computerId(21),
 		memberId: computerId(8),
-		mode: "watch" as const,
+		mode,
 		privacyVersion: 0,
 		screenEpoch: 1,
 		validForMs: 30000,
@@ -94,12 +94,18 @@ async function fixture() {
 			return structuredClone(grant);
 		}),
 		check: vi.fn(async () => structuredClone(grant)),
-		forwardInput: vi.fn(async () => {
-			throw new Error("watch cannot type");
+		admitInputWindow: vi.fn(async (): Promise<{ validForMs: number; pendingReports: number }> => {
+			if (mode === "watch") throw new Error("watch cannot type");
+			return { validForMs: 1000, pendingReports: 0 };
+		}),
+		recordInput: vi.fn((): number => {
+			if (mode === "watch") throw new Error("watch cannot type");
+			return 1;
 		}),
 		release: vi.fn(async () => undefined),
 	};
 	const path = `/office/${computerBinding().companyComputerId}/view`;
+	const refusals: string[] = [];
 	const server = await startCompanyComputerViewerWebSocketGateway({
 		host: "127.0.0.1",
 		port: 0,
@@ -107,6 +113,7 @@ async function fixture() {
 		origins: ["https://app.qorpera.test"],
 		tls: { cert, key },
 		authority,
+		onRefusal: (stage, error) => refusals.push(`${stage}:${(error as Error).message}`),
 		guest: {
 			connect: async () => {
 				const socket = (await import("node:net")).connect(guestAddress.port, "127.0.0.1");
@@ -149,7 +156,7 @@ async function fixture() {
 		socket.write(Buffer.concat([Buffer.from(upgrade), masked(ticket), masked(hello)]));
 		return { socket, bytes: () => Buffer.concat(data), token };
 	}
-	return { server, authority, received, request, path, grant };
+	return { server, authority, received, request, path, grant, refusals };
 }
 
 describe("TLS WebSocket office viewer (loopback, synthetic guest/authority)", () => {
@@ -186,6 +193,8 @@ describe("TLS WebSocket office viewer (loopback, synthetic guest/authority)", ()
 			view.channel.onmessage = (event) => received.push(Buffer.from(event.data));
 			await vi.waitFor(() => expect(Buffer.concat(received).includes(Buffer.from("Test cloud screen"))).toBe(true));
 			expect(Buffer.concat(received).toString()).not.toContain("private clipboard canary");
+			// One guest chunk is one WebSocket frame, not one frame per parsed RFB field.
+			expect(received.length).toBeLessThanOrEqual(2);
 			view.channel.send(new TextEncoder().encode("RFB 003.008\n"));
 			view.channel.send(new Uint8Array([1, 1, 4, 1, 0, 0, 0, 0, 0, 65]));
 			await vi.waitFor(() =>
@@ -217,8 +226,40 @@ describe("TLS WebSocket office viewer (loopback, synthetic guest/authority)", ()
 		await vi.waitFor(() =>
 			expect(Buffer.concat(f.received)).toEqual(Buffer.concat([Buffer.from("RFB 003.008\n"), Buffer.from([1, 1])])),
 		);
-		expect(f.authority.forwardInput).not.toHaveBeenCalled();
+		expect(f.authority.admitInputWindow).not.toHaveBeenCalled();
+		expect(f.authority.recordInput).not.toHaveBeenCalled();
 		expect(f.authority.redeem).toHaveBeenCalledExactlyOnceWith(client.token, expect.any(AbortSignal));
+	});
+	it("coalesces a burst of pointer frames from a browser while press, release and key order survive", async () => {
+		const f = await fixture("shared");
+		const client = await f.request();
+		const hello = Buffer.concat([Buffer.from("RFB 003.008\n"), Buffer.from([1, 1])]);
+		const key = Buffer.from([4, 1, 0, 0, 0, 0, 0, 65]);
+		await vi.waitFor(() => expect(Buffer.concat(f.received)).toEqual(Buffer.concat([hello, key])));
+		const move = (x: number, mask = 0) => Buffer.from([5, mask, x >> 8, x & 255, 0, 9]);
+		const up = Buffer.from([4, 0, 0, 0, 0, 0, 0, 65]);
+		// noVNC sends one RFB message per WebSocket frame. One TLS write carries them all.
+		const frames = [
+			...Array.from({ length: 200 }, (_, index) => move(index)),
+			move(200, 1),
+			...Array.from({ length: 100 }, (_, index) => move(201 + index, 1)),
+			move(301),
+			up,
+			...Array.from({ length: 50 }, (_, index) => move(302 + index)),
+		];
+		client.socket.write(Buffer.concat(frames.map(masked)));
+		await vi.waitFor(() => expect(Buffer.concat(f.received).subarray(-6)).toEqual(move(351)));
+		const forwarded = Buffer.concat(f.received).subarray(hello.length + key.length);
+		const packets: Buffer[] = [];
+		for (let offset = 0; offset < forwarded.length; offset += forwarded[offset] === 4 ? 8 : 6)
+			packets.push(forwarded.subarray(offset, offset + (forwarded[offset] === 4 ? 8 : 6)));
+		// The burst collapsed, however the frames were split into reads...
+		expect(packets.length).toBeLessThan(40);
+		// ...and what may never be dropped arrives once, in order, at its own position.
+		const fixed = packets.filter((bytes) => [move(200, 1), move(301), up].some((kept) => kept.equals(bytes)));
+		expect(fixed).toEqual([move(200, 1), move(301), up]);
+		expect(packets.at(packets.indexOf(fixed[1]) - 1)).toEqual(move(300, 1));
+		expect(packets.at(-1)).toEqual(move(351));
 	});
 	it("rejects foreign origins, token-bearing URLs and untrusted certificates", async () => {
 		const f = await fixture();
@@ -228,6 +269,8 @@ describe("TLS WebSocket office viewer (loopback, synthetic guest/authority)", ()
 		await vi.waitFor(() => expect(query.socket.destroyed).toBe(true));
 		await expect(f.request("https://app.qorpera.test", f.path, false)).rejects.toThrow();
 		expect(f.authority.redeem).not.toHaveBeenCalled();
+		// The journal names which fixed check refused, never the origin or the URL that was sent.
+		expect(f.refusals).toEqual(["upgrade:VIEWER_UPGRADE_ORIGIN", "upgrade:VIEWER_UPGRADE_PATH"]);
 	});
 	it("closes the actual TLS viewer stream before a privacy fence resolves", async () => {
 		const f = await fixture();

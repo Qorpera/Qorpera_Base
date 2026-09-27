@@ -10,6 +10,7 @@ import { CloudRpcError } from "../src/cloud/client.ts";
 import type { HostedAccountEntitlement } from "../src/cloud/types.ts";
 import {
 	deferred,
+	file,
 	fixture,
 	id,
 	profileA,
@@ -55,8 +56,8 @@ function open(root: Element) {
 }
 
 function confirmCompanyRemoval(root: Element, deleting: boolean, profile = profileA) {
-	root.querySelector<HTMLDetailsElement>(".company-danger")!.open = true;
-	click(root, ".company-danger button");
+	expect(root.querySelector(".company-exit")?.textContent).toBe(deleting ? "Delete company" : "Leave company");
+	click(root, ".company-exit");
 	const dialog = document.querySelector('[role="alertdialog"]')!;
 	if (deleting) {
 		const input = dialog.querySelector("input")!;
@@ -108,7 +109,8 @@ describe("settings session lifecycle", () => {
 				await draw();
 			}
 			expect(picker.value).toBe(selected.profileId);
-			expect(f.root.querySelector("#settings-content h1")?.textContent).toBe(selected.profileName);
+			// The Company tab has no heading of its own.
+			expect(f.root.querySelector("#settings-content h1")).toBeNull();
 			expect(f.root.querySelector(`.settings-dialog a[href='#/c/${selected.profileId}/file']`)).not.toBeNull();
 			expect(f.cloud.rpc).not.toHaveBeenCalled();
 		},
@@ -181,7 +183,7 @@ describe("settings session lifecycle", () => {
 		expect(f.cloud.supabase.removeChannel).toHaveBeenLastCalledWith(channels[2]);
 		expect(f.cloud.supabase.removeChannel).not.toHaveBeenCalledWith(channels[0]);
 	});
-	it("opens all four tabs over the same conversation and restores the profile button", async () => {
+	it("opens all seven tabs over the same conversation and restores the profile button", async () => {
 		const f = await setup(),
 			composer = f.root.querySelector<HTMLTextAreaElement>("textarea")!;
 		composer.value = "Keep my conversation draft";
@@ -190,14 +192,26 @@ describe("settings session lifecycle", () => {
 		await draw();
 		expect([...f.root.querySelectorAll('[role="tab"]')].map((tab) => tab.textContent)).toEqual([
 			"General",
-			"Friends",
+			"Appearance",
 			"Company",
+			"Friends",
+			"Plan & usage",
 			"Connections",
+			"Rules",
 		]);
 		for (const tab of f.root.querySelectorAll('[role="tab"]')) expect(tab.querySelector("svg.icon")).not.toBeNull();
 		expect(f.root.querySelector<HTMLElement>(".frame")!.inert).toBe(true);
 		click(f.root, "#settings-tab-company");
 		expect(f.root.querySelector('.settings-dialog a[href$="/file"]')).not.toBeNull();
+		// No company execution controls, and no Organization or Approvals pages to link to.
+		expect(
+			f.root.querySelector(
+				'.settings-dialog :is(.company-execution, .settings-execution, a[href$="/organization"], a[href$="/approvals"])',
+			),
+		).toBeNull();
+		expect(f.root.querySelector(".settings-dialog")?.textContent).not.toMatch(
+			/Company execution|Organization|Approvals/,
+		);
 		expect(f.root.querySelector('.account-popover a[href$="/file"]')).toBeNull();
 		click(f.root, ".settings-close");
 		expect(f.root.querySelector(".settings-dialog")).toBeNull();
@@ -211,6 +225,12 @@ describe("settings session lifecycle", () => {
 		open(f.root);
 		await draw();
 		const search = f.root.querySelector<HTMLInputElement>(".settings-nav input")!;
+		search.value = "time zone";
+		search.dispatchEvent(new Event("input"));
+		const shownTabs = [...f.root.querySelectorAll<HTMLElement>(".settings-nav [role=tab]")].filter(
+			(tab) => !tab.hidden,
+		);
+		expect(shownTabs.map((tab) => tab.id)).toEqual(["settings-tab-general"]);
 		search.value = "team";
 		search.dispatchEvent(new Event("input"));
 		expect(f.root.querySelector("#settings-tab-company")?.getAttribute("aria-selected")).toBe("true");
@@ -224,13 +244,39 @@ describe("settings session lifecycle", () => {
 		expect(f.root.querySelector<HTMLDetailsElement>(".company-invite")!.open).toBe(true);
 		expect(f.root.querySelector<HTMLSelectElement>('[data-draft="invite-role"]')!.value).toBe("viewer");
 		expect(document.activeElement).toBe(f.root.querySelector('[data-draft="invite-role"]'));
+		// Each word matches on its own, so the button's own label finds its tab.
+		search.value = "Delete company";
+		search.dispatchEvent(new Event("input"));
+		expect(
+			[...f.root.querySelectorAll<HTMLElement>(".settings-nav [role=tab]")]
+				.filter((tab) => !tab.hidden)
+				.map((tab) => tab.id),
+		).toEqual(["settings-tab-company"]);
+		const exit = f.root.querySelector<HTMLButtonElement>(".company-exit")!;
+		exit.focus();
+		f.hints.get("qorpera_profile_access_state")!();
+		await draw();
+		expect(f.root.querySelector(".company-exit")).not.toBe(exit);
+		expect(document.activeElement).toBe(f.root.querySelector(".company-exit"));
 		search.value = "";
 		search.dispatchEvent(new Event("input"));
 		click(f.root, "#settings-tab-general");
 		f.root
 			.querySelector("#settings-tab-general")!
 			.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
-		expect(document.activeElement).toBe(f.root.querySelector("#settings-tab-friends"));
+		expect(document.activeElement).toBe(f.root.querySelector("#settings-tab-appearance"));
+	});
+	it("selects the top matching tab when a search hides the open one", async () => {
+		const f = await setup();
+		open(f.root);
+		await draw();
+		const search = f.root.querySelector<HTMLInputElement>(".settings-nav input")!;
+		// Company lists the invitations it sent, Friends the ones waiting for this account.
+		search.value = "invitations";
+		search.dispatchEvent(new Event("input"));
+		const shown = [...f.root.querySelectorAll<HTMLElement>('[role="tab"]')].filter((tab) => !tab.hidden);
+		expect(shown.map((tab) => tab.id)).toEqual(["settings-tab-company", "settings-tab-friends"]);
+		expect(f.root.querySelector("#settings-tab-company")?.getAttribute("aria-selected")).toBe("true");
 	});
 	it("accepts a company invitation from the Friends tab and opens that company", async () => {
 		const fixtureState = fixture();
@@ -365,6 +411,86 @@ describe("settings session lifecycle", () => {
 		expect(document.querySelector('[role="alertdialog"]')).toBeNull();
 		expect(document.querySelector(".settings-overlay")).toBeNull();
 	});
+	it("shows the plan and the chosen company's storage on the Plan & usage tab", async () => {
+		const f = await setup();
+		const loading = deferred<Awaited<ReturnType<typeof f.api.getCompanyFile>>>();
+		vi.mocked(f.api.getCompanyFile).mockReturnValueOnce(loading.promise);
+		open(f.root);
+		expect(f.root.querySelector("#settings-content")?.textContent).not.toContain("Current plan");
+		click(f.root, "#settings-tab-plan");
+		await draw();
+		const content = () => f.root.querySelector("#settings-content")!;
+		expect(content().querySelector("h1")?.textContent).toBe("Plan & usage");
+		expect(content().textContent).toContain("Current plan");
+		expect(content().textContent).toContain("Loading storage…");
+		expect(f.api.getCompanyFile).toHaveBeenCalledTimes(1);
+		loading.resolve({ ...file, storageUsedBytes: 2_000_000 });
+		await draw();
+		expect(content().querySelector(".settings-usage:not(.settings-hours) strong")?.textContent).toMatch(
+			/^1\.9 MiB used of /,
+		);
+		expect(
+			content().querySelector(".settings-usage:not(.settings-hours) small:not(.settings-eyebrow)")?.textContent,
+		).toBe(profileA.profileName);
+		expect(content().querySelector(".settings-usage:not(.settings-hours) progress")).not.toBeNull();
+		// The Company tab reuses what the Plan tab loaded.
+		click(f.root, "#settings-tab-company");
+		await draw();
+		expect(f.api.getCompanyFile).toHaveBeenCalledTimes(1);
+	});
+	it("asks to choose a company for usage and retries a failed storage lookup", async () => {
+		const f = await setup();
+		vi.mocked(f.api.listProfiles).mockResolvedValue([profileA, profileB]);
+		vi.mocked(f.api.getCompanyFile).mockRejectedValueOnce(new Error("Storage offline"));
+		open(f.root);
+		click(f.root, "#settings-tab-plan");
+		await draw();
+		const content = () => f.root.querySelector("#settings-content")!;
+		expect(content().textContent).toContain("Storage information unavailable");
+		const retry = () => [...content().querySelectorAll("button")].find((button) => button.textContent === "Retry");
+		retry()!.click();
+		// The button disables at once while the retry runs.
+		expect(retry()?.disabled).toBe(true);
+		await draw();
+		expect(f.api.getCompanyFile).toHaveBeenCalledTimes(2);
+		expect(content().textContent).not.toContain("Storage information unavailable");
+		expect(content().querySelector(".settings-usage:not(.settings-hours) progress")).not.toBeNull();
+		const picker = f.root.querySelector<HTMLSelectElement>(".settings-company-picker")!;
+		picker.value = "";
+		picker.dispatchEvent(new Event("change"));
+		await draw();
+		expect(content().textContent).toContain("Choose a company to see its storage.");
+		expect(content().querySelector(".settings-usage:not(.settings-hours)")).toBeNull();
+	});
+	it("keeps focus in General when the account plan arrives", async () => {
+		const f = await setup(),
+			pending = deferred<HostedAccountEntitlement>();
+		vi.mocked(f.api.getAccountEntitlement).mockReturnValueOnce(pending.promise);
+		open(f.root);
+		await draw();
+		const language = f.root.querySelector<HTMLButtonElement>(".preference-picker-button")!;
+		language.focus();
+		pending.resolve({
+			planKey: "free",
+			billingMode: "fixture",
+			featureSet: "fixture",
+			storageAllocation: "fixture",
+			source: "fixture",
+		});
+		await draw();
+		expect(language.isConnected).toBe(true);
+		expect(document.activeElement).toBe(language);
+	});
+	it("shows an account failure in General", async () => {
+		const f = await setup(),
+			pending = deferred<HostedAccountEntitlement>();
+		vi.mocked(f.api.getAccountEntitlement).mockReturnValueOnce(pending.promise);
+		open(f.root);
+		await draw();
+		pending.reject(new Error("Account temporarily unavailable"));
+		await draw();
+		expect(f.root.querySelector(".settings-content")!.textContent).toContain("Account temporarily unavailable");
+	});
 	it("discards a late account response after closing settings or changing account", async () => {
 		const f = await setup(),
 			pending = deferred<HostedAccountEntitlement>();
@@ -410,6 +536,8 @@ describe("settings session lifecycle", () => {
 		expect(f.api.getTeam).toHaveBeenCalledTimes(1);
 		expect(f.root.querySelector(".settings-team")!.textContent).toContain("Team temporarily unavailable");
 		expect(f.root.querySelector(".settings-team")!.textContent).not.toContain("Loading team");
+		// No Delete company while the team cannot be read; the empty slot hides.
+		expect(f.root.querySelector(".settings-company-exit")!.childElementCount).toBe(0);
 		[...f.root.querySelectorAll("button")].find((button) => button.textContent === "Retry company")!.click();
 		await draw();
 		expect(f.api.getTeam).toHaveBeenCalledTimes(2);
@@ -418,7 +546,9 @@ describe("settings session lifecycle", () => {
 		[...f.root.querySelectorAll("button")].find((button) => button.textContent === "Retry company")!.click();
 		await draw();
 		expect(f.root.querySelector(".settings-team")!.textContent).not.toContain("Team temporarily unavailable");
-		expect(f.root.querySelector(".company-danger")).not.toBeNull();
+		expect(f.root.querySelector(".settings-file + .settings-company-exit > .company-exit")?.textContent).toBe(
+			"Delete company",
+		);
 		expect(f.cloud.rpc).not.toHaveBeenCalled();
 	});
 	it.each(["delete", "leave"])("closes settings and refreshes the hub after %s", async (action) => {
@@ -481,7 +611,7 @@ describe("settings session lifecycle", () => {
 		await draw();
 		confirmCompanyRemoval(f.root, true);
 		await draw();
-		expect(f.root.querySelector(".settings-team")!.textContent).toContain("Deletion unavailable");
+		expect(f.root.querySelector(".settings-company-exit")!.textContent).toContain("Deletion unavailable");
 		expect(f.root.querySelector<HTMLElement>(".frame")!.inert).toBe(true);
 		expect(f.root.querySelector(".company-card[href]")!.textContent).toContain(profileA.profileName);
 		expect(f.api.listProfiles).toHaveBeenCalledTimes(1);
@@ -573,6 +703,25 @@ describe("settings session lifecycle", () => {
 		expect(f.cloud.supabase.removeChannel).toHaveBeenCalledTimes(1);
 		expect(f.cloud.rpc).not.toHaveBeenCalled();
 	});
+	it.each(["settings", "team page"])("shows a failed company deletion right under its button in %s", async (place) => {
+		history.replaceState(null, "", place === "settings" ? "/#/" : `/#/c/${profileA.profileId}/team`);
+		const fixtureState = fixture();
+		vi.spyOn(fixtureState.api, "deleteProfile").mockRejectedValue(new Error("Deleting is paused"));
+		const f = await setup(fixtureState);
+		if (place === "settings") {
+			open(f.root);
+			click(f.root, "#settings-tab-company");
+			await draw();
+		}
+		confirmCompanyRemoval(f.root, true);
+		await draw();
+		const exit = f.root.querySelector(".company-exit")!;
+		expect(exit.nextElementSibling?.matches(".notice-danger")).toBe(true);
+		expect(exit.nextElementSibling?.textContent).toContain("Deleting is paused");
+		// Not also at the top of the page, above the members.
+		expect(f.root.querySelectorAll(".notice-danger")).toHaveLength(1);
+		expect(location.hash).toBe(place === "settings" ? "#/" : `#/c/${profileA.profileId}/team`);
+	});
 	it("does not restore a removed company from an older company-list request", async () => {
 		history.replaceState(null, "", "/#/");
 		const fixtureState = fixture(),
@@ -615,9 +764,13 @@ describe("settings session lifecycle", () => {
 		expect(document.activeElement).toBe(control);
 	});
 	it("only reads member account state on Connections", async () => {
+		// Isolate Settings reads from an open conversation's quota polling.
+		// The Team route keeps the same company authority without a composer.
+		history.replaceState(null, "", `/#/c/${profileA.profileId}/team`);
 		const f = await setup(realtimeFixture());
 		const connectionsUrl = "https://fixture.invalid/rest/v1/rpc/qorpera_list_member_native_execution_connections";
 		const fetch = vi.fn(async (input: string | URL | Request, _init?: RequestInit) => {
+			if (String(input).endsWith("/qorpera_list_member_notifications")) return Response.json([]);
 			if (String(input) === connectionsUrl) return Response.json({ compute_identity: null, connections: [] });
 			throw new Error("Unexpected request in the settings read-only fixture");
 		});
@@ -626,15 +779,18 @@ describe("settings session lifecycle", () => {
 		click(f.root, "#settings-tab-connections");
 		await draw();
 		const cards = [...f.root.querySelectorAll<HTMLElement>("#settings-content .connection-card")];
-		expect(cards.map((card) => card.querySelector("strong")!.textContent)).toEqual(["ChatGPT / Codex", "Claude"]);
-		for (const card of cards) expect(card.querySelector('small[role="status"]')!.textContent).toMatch(/^Not /);
-		expect(
-			[...f.root.querySelectorAll<HTMLButtonElement>("#settings-content button")].find(
-				(button) => button.textContent === "Add service",
-			)!.disabled,
-		).toBe(true);
+		expect(cards).toHaveLength(0);
+		expect(f.root.querySelector<HTMLButtonElement>("#settings-content .connection-add")!.disabled).toBe(true);
+		expect(f.root.querySelector<HTMLElement>("#settings-content .connection-provider-picker")!.hidden).toBe(true);
+		// The Services section lists the Step 7 connectors with their own Connect buttons.
+		expect(f.root.querySelectorAll("#settings-content .service-card")).toHaveLength(3);
 		await vi.advanceTimersByTimeAsync(60_000);
-		expect(f.cloud.rpc).not.toHaveBeenCalled();
-		expect(fetch).toHaveBeenCalledExactlyOnceWith(connectionsUrl, expect.objectContaining({ method: "POST" }));
+		// Model accounts never go through the SDK RPC path; the services list is the only RPC.
+		expect(vi.mocked(f.cloud.rpc).mock.calls.map(([name]) => name)).toEqual([
+			"qorpera_list_cloud_secret_connections",
+		]);
+		expect(fetch.mock.calls.filter(([url]) => String(url) === connectionsUrl)).toEqual([
+			[connectionsUrl, expect.objectContaining({ method: "POST" })],
+		]);
 	});
 });

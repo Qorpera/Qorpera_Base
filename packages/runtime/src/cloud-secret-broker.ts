@@ -4,7 +4,7 @@ import {
 	supabaseServiceHeaders,
 	withCloudDeadline,
 } from "@qorpera/cloud-client/cloud-request";
-import type { JsonValue } from "@qorpera/contracts";
+import { type CloudCodingRepository, type JsonValue, parseCloudCodingRepository } from "@qorpera/contracts";
 import type { CloudNativeToolBinding } from "./cloud-native-tool-authority.ts";
 import type { CloudToolContent } from "./cloud-native-tool-boundary.ts";
 import { cloudToolJsonText } from "./cloud-native-tool-boundary.ts";
@@ -16,6 +16,9 @@ const IDENTIFIER = /^[a-z][a-z0-9_-]{0,63}$/;
 const KEY_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const OPERATION_KEY = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const CAPABILITY = /^[A-Za-z0-9_-]{32,256}$/;
+const EXECUTOR_OWNER = /^[A-Za-z0-9_.:-]{1,120}$/;
+/** GitHub OAuth, app and personal access tokens: letters, digits, underscores. */
+const REPOSITORY_TOKEN = /^[A-Za-z0-9_]{20,512}$/;
 const MAX_RPC_BYTES = 256 * 1024;
 
 export interface CloudSecretCaptureRequest {
@@ -34,6 +37,20 @@ export interface CloudSecretDescriptor {
 	readonly ownerKind: "company" | "member";
 	readonly ownerUserId: string | null;
 	readonly status: "active";
+	/** Non-secret account identity shown to members, e.g. the mailbox address
+	 * or GitHub login. Set by OAuth captures; null for typed tokens. */
+	readonly accountLabel?: string | null;
+}
+
+/** What the OAuth start route may learn about a ticket before any provider
+ * contact: the connector and owner class, never the ticket's key or scope. */
+export interface CloudSecretCaptureSummary {
+	readonly ticketId: string;
+	/** The ticket's company profile id (not a secret). */
+	readonly companyId: string;
+	readonly connectorId: string;
+	readonly ownerKind: "company" | "member";
+	readonly expiresAt: string;
 }
 
 export interface CloudSecretOperationRequest {
@@ -76,16 +93,51 @@ export interface CloudSecretOperationAuthorization extends CloudSecretEnvelopeId
 	readonly inputSha256: string;
 }
 
+/** A coding executor asking for the repository token of one session it holds
+ * (bundle v88). Naming only: the kernel checks every part against the lease. */
+export interface CodingRepositoryCredentialRequest {
+	readonly workerId: string;
+	readonly leaseToken: string;
+	readonly executorOwner: string;
+	readonly repository: CloudCodingRepository;
+}
+
+/** The only answer that ever carries a token out of the broker. It goes to the
+ * executor's Git broker, never into a repository VM, a model turn or a log. */
+export interface CodingRepositoryCredential {
+	readonly schema: "qorpera.coding-repository-credential/v1";
+	readonly token: string;
+}
+
+export interface CodingRepositoryCredentialAuthorization extends CloudSecretEnvelopeIdentity {
+	readonly schema: "qorpera.coding-repository-credential-authorization/v1";
+	readonly connectorId: "github";
+	readonly credentialName: "access_token";
+	readonly encryptedEnvelopeBase64: string;
+	readonly envelopeSha256: string;
+	readonly workerId: string;
+	readonly repository: CloudCodingRepository;
+}
+
 export interface CloudSecretBrokerAuthority {
+	claimEmailDraftAction?(actionId: string, capabilitySha256: string, signal: AbortSignal): Promise<unknown>;
+	finishEmailDraftAction?(
+		actionId: string,
+		capabilitySha256: string,
+		result: JsonValue,
+		signal: AbortSignal,
+	): Promise<unknown>;
 	describeCapture(ticketId: string, captureCapabilitySha256: string, signal: AbortSignal): Promise<unknown>;
 	completeCapture(
 		ticketId: string,
 		captureCapabilitySha256: string,
 		encryptedEnvelope: Uint8Array,
 		envelopeSha256: string,
+		accountLabel: string | null,
 		signal: AbortSignal,
 	): Promise<unknown>;
 	authorizeOperation(request: CloudSecretOperationRequest, signal: AbortSignal): Promise<unknown>;
+	authorizeRepositoryCredential(request: CodingRepositoryCredentialRequest, signal: AbortSignal): Promise<unknown>;
 }
 
 export interface CloudSecretPostgresClient {
@@ -195,13 +247,30 @@ function parseCaptureDescription(value: unknown): CloudSecretCaptureDescription 
 	};
 }
 
+const ACCOUNT_LABEL = /^[^\s\0]{1,254}$/;
+
+export function parseCloudSecretAccountLabel(value: unknown): string | null {
+	if (value === undefined || value === null) return null;
+	if (typeof value !== "string" || !ACCOUNT_LABEL.test(value))
+		throw new Error("Cloud secret account label is invalid");
+	return value;
+}
+
 function parseDescriptor(value: unknown, description: CloudSecretCaptureDescription): CloudSecretDescriptor {
 	const input = record(value, "Cloud secret descriptor");
-	exact(
-		input,
-		["schema", "secretId", "version", "connectorId", "secretName", "purpose", "ownerKind", "ownerUserId", "status"],
-		"Cloud secret descriptor",
-	);
+	const keys = [
+		"schema",
+		"secretId",
+		"version",
+		"connectorId",
+		"secretName",
+		"purpose",
+		"ownerKind",
+		"ownerUserId",
+		"status",
+	];
+	exact(input, Object.hasOwn(input, "accountLabel") ? [...keys, "accountLabel"] : keys, "Cloud secret descriptor");
+	parseCloudSecretAccountLabel(input.accountLabel);
 	if (
 		input.schema !== "qorpera.cloud-secret-descriptor/v1" ||
 		input.secretId !== description.secretId ||
@@ -281,6 +350,77 @@ function parseAuthorization(value: unknown, request: CloudSecretOperationRequest
 		envelopeSha256: input.envelopeSha256,
 		receiptId: request.receiptId,
 		inputSha256: request.inputSha256,
+	};
+}
+
+export function parseCodingRepositoryCredentialRequest(value: {
+	readonly workerId: unknown;
+	readonly leaseToken: unknown;
+	readonly executorOwner: unknown;
+	readonly repository: unknown;
+}): CodingRepositoryCredentialRequest {
+	if (typeof value.executorOwner !== "string" || !EXECUTOR_OWNER.test(value.executorOwner))
+		throw new Error("Coding repository credential request is invalid");
+	return {
+		workerId: uuid(value.workerId, "Coding worker").toLowerCase(),
+		leaseToken: uuid(value.leaseToken, "Coding lease").toLowerCase(),
+		executorOwner: value.executorOwner,
+		repository: parseCloudCodingRepository(value.repository),
+	};
+}
+
+function parseRepositoryAuthorization(
+	value: unknown,
+	request: CodingRepositoryCredentialRequest,
+): CodingRepositoryCredentialAuthorization {
+	const input = record(value, "Coding repository credential authorization");
+	exact(
+		input,
+		[
+			"schema",
+			"companyId",
+			"environmentId",
+			"secretId",
+			"secretVersion",
+			"keyId",
+			"connectorId",
+			"credentialName",
+			"encryptedEnvelopeBase64",
+			"envelopeSha256",
+			"workerId",
+			"repository",
+		],
+		"Coding repository credential authorization",
+	);
+	const repository = parseCloudCodingRepository(input.repository);
+	if (
+		input.schema !== "qorpera.coding-repository-credential-authorization/v1" ||
+		input.connectorId !== "github" ||
+		input.credentialName !== "access_token" ||
+		typeof input.workerId !== "string" ||
+		input.workerId.toLowerCase() !== request.workerId ||
+		JSON.stringify(repository) !== JSON.stringify(request.repository) ||
+		typeof input.keyId !== "string" ||
+		!KEY_ID.test(input.keyId) ||
+		typeof input.encryptedEnvelopeBase64 !== "string" ||
+		!/^[A-Za-z0-9+/=\r\n]+$/.test(input.encryptedEnvelopeBase64) ||
+		typeof input.envelopeSha256 !== "string" ||
+		!SHA.test(input.envelopeSha256)
+	)
+		throw new Error("Coding repository credential authorization differs from its request");
+	return {
+		schema: "qorpera.coding-repository-credential-authorization/v1",
+		companyId: uuid(input.companyId, "Cloud secret company"),
+		environmentId: uuid(input.environmentId, "Cloud secret environment"),
+		secretId: uuid(input.secretId, "Cloud secret id"),
+		version: integer(input.secretVersion, "Cloud secret version"),
+		keyId: input.keyId,
+		connectorId: "github",
+		credentialName: "access_token",
+		encryptedEnvelopeBase64: input.encryptedEnvelopeBase64,
+		envelopeSha256: input.envelopeSha256,
+		workerId: request.workerId,
+		repository,
 	};
 }
 
@@ -385,15 +525,42 @@ export class CloudSecretBroker {
 		}
 	}
 
-	async capture(request: CloudSecretCaptureRequest, signal: AbortSignal): Promise<CloudSecretDescriptor> {
+	async capture(
+		request: CloudSecretCaptureRequest,
+		signal: AbortSignal,
+		accountLabel: string | null = null,
+	): Promise<CloudSecretDescriptor> {
 		try {
-			return await this.#capture(request, signal);
+			return await this.#capture(request, signal, parseCloudSecretAccountLabel(accountLabel));
 		} catch {
 			throw new Error("Cloud secret capture was not confirmed");
 		}
 	}
 
-	async #capture(request: CloudSecretCaptureRequest, signal: AbortSignal): Promise<CloudSecretDescriptor> {
+	/** Lets the OAuth start route confirm a ticket and learn its connector
+	 * before sending the member to the provider. Nothing is committed. */
+	async describeCapture(
+		request: Omit<CloudSecretCaptureRequest, "fields">,
+		signal: AbortSignal,
+	): Promise<CloudSecretCaptureSummary> {
+		try {
+			const description = await this.#describe(request, signal);
+			return {
+				ticketId: description.ticketId,
+				companyId: description.companyId,
+				connectorId: description.connectorId,
+				ownerKind: description.ownerKind,
+				expiresAt: description.expiresAt,
+			};
+		} catch {
+			throw new Error("Cloud secret capture is unavailable");
+		}
+	}
+
+	async #describe(
+		request: Omit<CloudSecretCaptureRequest, "fields">,
+		signal: AbortSignal,
+	): Promise<CloudSecretCaptureDescription> {
 		if (!UUID.test(request.ticketId) || !CAPABILITY.test(request.captureCapability)) {
 			throw new Error("Cloud secret capture request is invalid");
 		}
@@ -404,11 +571,28 @@ export class CloudSecretBroker {
 		if (description.ticketId !== request.ticketId || Date.parse(description.expiresAt) <= Date.now()) {
 			throw new Error("Cloud secret capture is unavailable");
 		}
+		return description;
+	}
+
+	async #capture(
+		request: CloudSecretCaptureRequest,
+		signal: AbortSignal,
+		accountLabel: string | null,
+	): Promise<CloudSecretDescriptor> {
+		const description = await this.#describe(request, signal);
+		const capabilitySha256 = createHash("sha256").update(request.captureCapability).digest("hex");
 		const envelope = this.#keys.seal(request.fields, description);
 		try {
 			const envelopeSha256 = createHash("sha256").update(envelope).digest("hex");
 			return parseDescriptor(
-				await this.#authority.completeCapture(request.ticketId, capabilitySha256, envelope, envelopeSha256, signal),
+				await this.#authority.completeCapture(
+					request.ticketId,
+					capabilitySha256,
+					envelope,
+					envelopeSha256,
+					accountLabel,
+					signal,
+				),
 				description,
 			);
 		} finally {
@@ -422,6 +606,108 @@ export class CloudSecretBroker {
 		} catch {
 			throw new Error("Cloud secret operation outcome unconfirmed");
 		}
+	}
+
+	/** A member capability is bound by the kernel to one card and exact edits.
+	 * Claim commits before touching Gmail; a duplicate or an interrupted process
+	 * can only read its receipt, never issue a second provider mutation. */
+	async executeEmailDraft(actionId: string, capability: string, signal: AbortSignal): Promise<JsonValue> {
+		if (
+			!UUID.test(actionId) ||
+			!CAPABILITY.test(capability) ||
+			!this.#authority.claimEmailDraftAction ||
+			!this.#authority.finishEmailDraftAction
+		)
+			throw new Error("Email draft action unavailable");
+		const hash = createHash("sha256").update(capability).digest("hex");
+		const claim = record(await this.#authority.claimEmailDraftAction(actionId, hash, signal), "Email draft claim");
+		if (claim.execute === false) return claim.state as JsonValue;
+		if (claim.execute !== true || !["save", "send", "discard"].includes(String(claim.action)))
+			throw new Error("Email draft claim invalid");
+		let result: JsonValue = { status: "unconfirmed" };
+		try {
+			if (claim.action === "discard" && claim.draftId === null) result = { deleted: true };
+			else {
+				const operationId =
+					claim.action === "save"
+						? claim.draftId
+							? "update_draft"
+							: "create_draft"
+						: claim.action === "send"
+							? claim.draftId
+								? "send_draft"
+								: "send_message"
+							: "delete_draft";
+				const adapters = [...this.#adapters.values()].filter(
+					(adapter) => adapter.connectorId === "gmail" && adapter.operationId === operationId,
+				);
+				if (adapters.length !== 1) throw new Error("Gmail draft adapter unavailable");
+				const adapter = adapters[0];
+				const identity: CloudSecretEnvelopeIdentity = {
+					companyId: uuid(claim.companyId, "Email company"),
+					environmentId: uuid(claim.environmentId, "Email environment"),
+					secretId: uuid(claim.secretId, "Email secret"),
+					version: integer(claim.version, "Email secret version"),
+					keyId: String(claim.keyId),
+				};
+				const envelope = Buffer.from(String(claim.encryptedEnvelopeBase64), "base64");
+				try {
+					if (createHash("sha256").update(envelope).digest("hex") !== claim.envelopeSha256)
+						throw new Error("Email envelope invalid");
+					result = await this.#keys.use(envelope, identity, async (credentials) => {
+						const content = record(claim.content, "Email content");
+						const argumentsValue: JsonValue =
+							claim.action === "discard"
+								? { draft_id: String(claim.draftId) }
+								: {
+										...(content as Record<string, JsonValue>),
+										...(claim.draftId ? { draft_id: String(claim.draftId) } : {}),
+										...(claim.replyTo ? { reply_to_message_id: String(claim.replyTo) } : {}),
+									};
+						const output = await adapter.execute({
+							arguments: argumentsValue,
+							credentials,
+							credentialName: "refresh_token",
+							destinationOrigin: adapter.destinationOrigin,
+							idempotencyKey: actionId,
+							signal,
+						});
+						if (containsSensitiveOutput(output, sensitiveFingerprints(credentials)))
+							return { status: "unconfirmed" };
+						const response = record(output, "Gmail result");
+						if (response.status === "completed") return response.result as JsonValue;
+						// Only a definitive rejection is retryable with a NEW member action.
+						// Provider/server failures, malformed success and transport errors may have sent.
+						if (
+							response.status === "failed" &&
+							["authorization_required", "forbidden", "invalid_request", "not_found", "rate_limited"].includes(
+								String(response.reason),
+							)
+						)
+							return {
+								status: "failed",
+								error:
+									response.reason === "authorization_required" || response.reason === "forbidden"
+										? "Reconnect Gmail to allow this email action."
+										: "Gmail refused this email action. Review the draft and try again.",
+							};
+						return { status: "unconfirmed" };
+					});
+				} finally {
+					envelope.fill(0);
+				}
+			}
+		} catch {
+			result = { status: "unconfirmed" };
+		}
+		// Completion has its own deadline: aborting a browser/provider call must
+		// not skip persistence of a success or ambiguous result.
+		return (await this.#authority.finishEmailDraftAction(
+			actionId,
+			hash,
+			result,
+			AbortSignal.timeout(5000),
+		)) as JsonValue;
 	}
 
 	async #execute(request: CloudSecretOperationRequest, signal: AbortSignal): Promise<CloudToolContent> {
@@ -465,6 +751,50 @@ export class CloudSecretBroker {
 				cloudToolJsonText(result, 32 * 1024);
 				if (containsSensitiveOutput(result, sensitiveFingerprints(fields))) return structuredClone(WITHHELD_RESULT);
 				return { kind: "json", value: structuredClone(result) };
+			});
+		} finally {
+			envelope.fill(0);
+		}
+	}
+
+	/**
+	 * The coding executor's repository token (bundle v88): the company's GitHub
+	 * connection, released only for a session the kernel confirms the executor
+	 * holds right now. The token goes back to the executor's Git broker and
+	 * nowhere else; every failure is the same opaque refusal.
+	 */
+	async repositoryCredential(
+		request: CodingRepositoryCredentialRequest,
+		signal: AbortSignal,
+	): Promise<CodingRepositoryCredential> {
+		try {
+			return await this.#repositoryCredential(request, signal);
+		} catch {
+			throw new Error("Coding repository credential is unavailable");
+		}
+	}
+
+	async #repositoryCredential(
+		value: CodingRepositoryCredentialRequest,
+		signal: AbortSignal,
+	): Promise<CodingRepositoryCredential> {
+		const request = parseCodingRepositoryCredentialRequest(value);
+		const authorization = parseRepositoryAuthorization(
+			await this.#authority.authorizeRepositoryCredential(request, signal),
+			request,
+		);
+		const envelope = Buffer.from(authorization.encryptedEnvelopeBase64, "base64");
+		try {
+			if (createHash("sha256").update(envelope).digest("hex") !== authorization.envelopeSha256)
+				throw new Error("Cloud secret envelope digest differs");
+			return await this.#keys.use(envelope, authorization, async (fields) => {
+				const token = Object.hasOwn(fields, authorization.credentialName)
+					? fields[authorization.credentialName]
+					: undefined;
+				if (typeof token !== "string" || !REPOSITORY_TOKEN.test(token))
+					throw new Error("Cloud secret credential field is unavailable");
+				signal.throwIfAborted();
+				return { schema: "qorpera.coding-repository-credential/v1", token };
 			});
 		} finally {
 			envelope.fill(0);
@@ -523,6 +853,7 @@ export class SupabaseCloudSecretBrokerAuthority implements CloudSecretBrokerAuth
 		captureCapabilitySha256: string,
 		encryptedEnvelope: Uint8Array,
 		envelopeSha256: string,
+		accountLabel: string | null,
 		signal: AbortSignal,
 	): Promise<unknown> {
 		return this.#rpc(
@@ -534,6 +865,7 @@ export class SupabaseCloudSecretBrokerAuthority implements CloudSecretBrokerAuth
 				p_capture_capability_sha256: captureCapabilitySha256,
 				p_encrypted_envelope_base64: Buffer.from(encryptedEnvelope).toString("base64"),
 				p_envelope_sha256: envelopeSha256,
+				p_account_label: accountLabel,
 			},
 			signal,
 		);
@@ -555,6 +887,21 @@ export class SupabaseCloudSecretBrokerAuthority implements CloudSecretBrokerAuth
 				p_operation_version: request.operationVersion,
 				p_adapter_sha256: request.adapterSha256,
 				p_destination_origin: request.destinationOrigin,
+			},
+			signal,
+		);
+	}
+
+	authorizeRepositoryCredential(request: CodingRepositoryCredentialRequest, signal: AbortSignal): Promise<unknown> {
+		return this.#rpc(
+			"qorpera_authorize_coding_repository_credential",
+			{
+				p_broker_authority_id: this.#brokerAuthorityId,
+				p_broker_capability_sha256: this.#brokerCapabilitySha256,
+				p_worker_id: request.workerId,
+				p_lease_token: request.leaseToken,
+				p_executor_owner: request.executorOwner,
+				p_repository: request.repository,
 			},
 			signal,
 		);
@@ -590,8 +937,10 @@ export class SupabaseCloudSecretBrokerAuthority implements CloudSecretBrokerAuth
 }
 
 /** Least-privilege broker authority. The database login is the NOINHERIT
- * `qorpera_secret_broker` role and can execute only the three custody RPCs;
- * it has no table privileges and never holds a Supabase service key. */
+ * `qorpera_secret_broker` role and can execute only the custody RPCs (capture
+ * description and completion, operation and repository credential
+ * authorization); it has no table privileges and never holds a Supabase
+ * service key. */
 export class PostgresCloudSecretBrokerAuthority implements CloudSecretBrokerAuthority {
 	readonly #database: CloudSecretPostgresClient;
 	readonly #brokerAuthorityId: string;
@@ -608,6 +957,27 @@ export class PostgresCloudSecretBrokerAuthority implements CloudSecretBrokerAuth
 		this.#brokerCapabilitySha256 = createHash("sha256").update(options.brokerCapability).digest("hex");
 	}
 
+	claimEmailDraftAction(actionId: string, capabilitySha256: string, signal: AbortSignal): Promise<unknown> {
+		return this.#rpc(
+			"select public.qorpera_claim_email_draft_action($1::uuid,$2::text,$3::uuid,$4::text) as result",
+			[this.#brokerAuthorityId, this.#brokerCapabilitySha256, actionId, capabilitySha256],
+			signal,
+		);
+	}
+
+	finishEmailDraftAction(
+		actionId: string,
+		capabilitySha256: string,
+		result: JsonValue,
+		signal: AbortSignal,
+	): Promise<unknown> {
+		return this.#rpc(
+			"select public.qorpera_finish_email_draft_action($1::uuid,$2::text,$3::uuid,$4::text,$5::jsonb) as result",
+			[this.#brokerAuthorityId, this.#brokerCapabilitySha256, actionId, capabilitySha256, JSON.stringify(result)],
+			signal,
+		);
+	}
+
 	describeCapture(ticketId: string, captureCapabilitySha256: string, signal: AbortSignal): Promise<unknown> {
 		return this.#rpc(
 			"select public.qorpera_describe_cloud_secret_capture($1::uuid,$2::text,$3::uuid,$4::text) as result",
@@ -621,10 +991,11 @@ export class PostgresCloudSecretBrokerAuthority implements CloudSecretBrokerAuth
 		captureCapabilitySha256: string,
 		encryptedEnvelope: Uint8Array,
 		envelopeSha256: string,
+		accountLabel: string | null,
 		signal: AbortSignal,
 	): Promise<unknown> {
 		return this.#rpc(
-			"select public.qorpera_complete_cloud_secret_capture($1::uuid,$2::text,$3::uuid,$4::text,$5::text,$6::text) as result",
+			"select public.qorpera_complete_cloud_secret_capture($1::uuid,$2::text,$3::uuid,$4::text,$5::text,$6::text,$7::text) as result",
 			[
 				this.#brokerAuthorityId,
 				this.#brokerCapabilitySha256,
@@ -632,6 +1003,7 @@ export class PostgresCloudSecretBrokerAuthority implements CloudSecretBrokerAuth
 				captureCapabilitySha256,
 				Buffer.from(encryptedEnvelope).toString("base64"),
 				envelopeSha256,
+				accountLabel,
 			],
 			signal,
 		);
@@ -653,6 +1025,21 @@ export class PostgresCloudSecretBrokerAuthority implements CloudSecretBrokerAuth
 				request.operationVersion,
 				request.adapterSha256,
 				request.destinationOrigin,
+			],
+			signal,
+		);
+	}
+
+	authorizeRepositoryCredential(request: CodingRepositoryCredentialRequest, signal: AbortSignal): Promise<unknown> {
+		return this.#rpc(
+			"select public.qorpera_authorize_coding_repository_credential($1::uuid,$2::text,$3::uuid,$4::uuid,$5::text,$6::jsonb) as result",
+			[
+				this.#brokerAuthorityId,
+				this.#brokerCapabilitySha256,
+				request.workerId,
+				request.leaseToken,
+				request.executorOwner,
+				JSON.stringify(request.repository),
 			],
 			signal,
 		);

@@ -17,6 +17,7 @@ import { openLxdOfficeCreationIdentity } from "./lxd-office-creation-journal.ts"
 import { assertLxdOfficeGuestInstance, inspectLxdOfficeGuestBoot, lxdOfficeGuestPlan } from "./lxd-office-guest.ts";
 import { officeCanonical, officeDigest, officeRecord } from "./lxd-office-image-provenance.ts";
 import { code, publish, readRecord } from "./lxd-office-journal-files.ts";
+import { suspendLxdOfficeNodeMachine } from "./lxd-office-node-admission.ts";
 import { LxdOfficeOperationJournal } from "./lxd-office-operations.ts";
 import type { LxdOfficePhysicalGate } from "./lxd-office-physical-gate.ts";
 import { parseLxdOfficePhysicalPolicy } from "./lxd-office-physical-policy.ts";
@@ -489,6 +490,10 @@ export class LxdOfficePowerOffWorker {
 			instanceSha256,
 			hostBootId: seed.hostBootId,
 		});
+		// An explicit power-off gives the node slot back until resume re-admits it.
+		// A reboot resumes at once and keeps its slot. Replays repeat the same receipt.
+		if (recovery.action === "power_off")
+			await suspendLxdOfficeNodeMachine(this.#policy, binding, transitionId, registry, checked);
 		return { ...result, state: "powered_off" };
 	}
 }

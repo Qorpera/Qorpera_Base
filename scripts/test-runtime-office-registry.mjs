@@ -65,6 +65,8 @@ try {
 	console.log("PASS: durable member/native start intents, exact native receipts, shared reservations, cancellation/generation/grant fences and no premature activation");
 	docker(psql, `${fixtureParts[0]}\n${setupParts[0]}\n${readFileSync(join(root, "supabase/tests/fixtures/runtime-office-provider-cases.sql"), "utf8")}\nrollback;`);
 	console.log("PASS: immutable provider host/policy enrollment, restart discovery, preparation disable, private legacy APIs and retained capacity");
+	docker(psql, `${fixtureParts[0]}\n${setupParts[0]}\n${readFileSync(join(root, "supabase/tests/fixtures/runtime-office-idle-cases.sql"), "utf8")}\nrollback;`);
+	console.log("PASS: server idle demand, shared viewers, ordinary turns, repeated member/native wake, operator maintenance and retained allocation");
 	docker(psql, `${fixtureParts[0]}\n${setupParts[0]}\n${readFileSync(join(root, "supabase/tests/fixtures/runtime-office-effects-cases.sql"), "utf8")}\nrollback;`);
 	console.log("PASS: exact native effect receipts, one attempt, resource expiry, unresolved work, takeover fencing and guest drain acknowledgements");
 	docker(psql, `${fixtureParts[0]}\n${setupParts[0]}\n${readFileSync(join(root, "supabase/tests/fixtures/runtime-office-file-exports-cases.sql"), "utf8")}\nrollback;`);
@@ -85,10 +87,14 @@ try {
 	console.log("PASS: immutable screenshot publication, exact capture receipt, artifact retention, completed-result read authority and revocation");
 	docker(psql, `${fixtureParts[0]}\n${setupParts[0]}\n${readFileSync(join(root, "supabase/tests/fixtures/runtime-office-viewer-cases.sql"), "utf8")}\nrollback;`);
 	console.log("PASS: single-use member viewing, takeover ownership, input sequencing, revocation, drain/reconnect and owner-only private handoff");
+	docker(psql, `${fixtureParts[0]}\n${setupParts[0]}\n${readFileSync(join(root, "supabase/tests/fixtures/runtime-office-shared-viewer-cases.sql"), "utf8")}\nrollback;`);
+	console.log("PASS: shared member input, independent agent leases, stable viewer epochs, audit sequencing, role checks and physical fences");
+	docker(psql, `${fixtureParts[0]}\n${setupParts[0]}\n${readFileSync(join(root, "supabase/tests/fixtures/runtime-office-screen-browser-cases.sql"), "utf8")}\nrollback;`);
+	console.log("PASS: screen-owned browser authority from an agent lease or a live input viewer, company-owned profile for members alone, recorded opens and revocation");
 	docker(psql, `${fixtureParts[0]}\n${setupParts[0]}\n${readFileSync(join(root, "supabase/tests/fixtures/runtime-office-member-views-cases.sql"), "utf8")}\nrollback;`);
 	console.log("PASS: member screen discovery, exact owner cancellation, ambiguous/expired ticket recovery and retained physical drain");
 	docker(psql, `${fixtureParts[0]}\n${setupParts[0]}\n${readFileSync(join(root, "supabase/tests/fixtures/runtime-machine-capacity-cases.sql"), "utf8")}\nrollback;`);
-	console.log("PASS: native/office shared machine ceiling, founder stop, durable refusal notification, exact deletion proof, no expiry-based capacity release");
+	console.log("PASS: native and office machines with no company limit, operator stop, exact deletion proof, no expiry-based capacity release");
 	const lines = docker(psql, `${fixtureParts[0]}\n${setupParts[0]}\n${readFileSync(join(root,"supabase/tests/fixtures/runtime-office-company-file-source.sql"),"utf8")}
 		select pg_temp.wake_public_send(current_setting('qorpera_test.wake_binding')::jsonb,'progress');
 		select jsonb_build_object('binding',current_setting('qorpera_test.wake_binding')::jsonb,'companyFile',current_setting('qorpera_test.company_import_source')::jsonb,
@@ -155,8 +161,7 @@ try {
 	docker(psql, `${service} ${effectCall("finish")} ${call("release", effectLease)}`);
 	console.log("PASS: two guest dispatches consume one real native receipt exactly once");
 
-	docker(psql, `set request.jwt.claims='{"role":"authenticated","sub":"30000000-0000-4000-8000-000000000001"}';
-		set role authenticated; select public.qorpera_set_company_machine_limit('${setup.scope.companyId}',1,0);`);
+	// No company machine limit (runtime v92): concurrent office and native starts both get a machine.
 	const machines = [session(), session()];
 	machines[0].child.stdin.end(`${service} select public.qorpera_reserve_runtime_machine('${setup.runner.allocationId}',
 		${sqlText(setup.runner.provider)},repeat('a',64),'${setup.binding.runId}','${setup.binding.runnerId}');`);
@@ -164,9 +169,9 @@ try {
 		'lxd',repeat('b',64),null,null,'${setup.scope.companyComputerId}',1);`);
 	const allocations = await Promise.all(machines.map((contender) => contender.done));
 	for (const allocation of allocations) assert.equal(allocation.code, 0, allocation.error);
-	assert.deepEqual(allocations.map((result) => JSON.parse(result.output).state).sort(), ["refused", "reserved"]);
-	assert.equal(docker(psql, "select count(*) from public.qorpera_runtime_machine_allocations where released_at is null;"), "1");
-	console.log("PASS: concurrent office/native starts admit exactly one machine at the company ceiling");
+	assert.deepEqual(allocations.map((result) => JSON.parse(result.output).state).sort(), ["reserved", "reserved"]);
+	assert.equal(docker(psql, "select count(*) from public.qorpera_runtime_machine_allocations where released_at is null;"), "2");
+	console.log("PASS: concurrent office/native starts both get a machine with no company limit");
 
 	const viewerOwner = `set request.jwt.claims='{"role":"authenticated","sub":"30000000-0000-4000-8000-000000000001"}'; set role authenticated;`;
 	const viewerEpoch = () => Number(docker(psql, `select epoch from public.qorpera_runtime_office_screens where id='${effectLease.binding.screenId}';`));
@@ -174,6 +179,27 @@ try {
 		'${effectLease.binding.screenId}',${effectLease.binding.computerGeneration},${effectLease.binding.screenGeneration},${viewerEpoch()},${takeover});`));
 	const acknowledgeDrain = (drain) => docker(psql, `${service} select public.qorpera_ack_runtime_office_drain(${literal(setup.scope)},
 		'${drain.binding.screenId}',${drain.binding.computerGeneration},${drain.binding.screenGeneration},${drain.epoch},'${drain.drainId}');`);
+	const sharedLease = JSON.parse(docker(psql, `${service} ${call("acquire")}`)).lease;
+	const sharedTicket = JSON.parse(docker(psql, `${viewerOwner} select public.qorpera_create_runtime_office_viewer(${literal(sharedLease.binding)},${viewerEpoch()},'shared');`));
+	const sharedDigest = createHash("sha256").update(sharedTicket.capability).digest("hex");
+	const sharedGrant = JSON.parse(docker(psql, `${service} select public.qorpera_redeem_runtime_office_viewer(${literal(setup.scope)},'${sharedDigest}');`));
+	const sharing = [session(), session()];
+	sharing[0].child.stdin.end(`${service} ${call("renew", sharedLease)}`);
+	sharing[1].child.stdin.end(`${service} select public.qorpera_admit_runtime_office_viewer_input(${literal(sharedGrant)},1,repeat('e',64));`);
+	for (const result of await Promise.all(sharing.map((contender) => contender.done))) {
+		assert.equal(result.code, 0, result.error);
+		assert.equal(JSON.parse(result.output).state, "admitted");
+	}
+	const closingShared = [session(), session()];
+	closingShared[0].child.stdin.end(`${service} ${call("renew", sharedLease)}`);
+	closingShared[1].child.stdin.end(`${service} select public.qorpera_release_runtime_office_viewer(${literal(sharedGrant)});`);
+	const closeResults = await Promise.all(closingShared.map((contender) => contender.done));
+	for (const result of closeResults) assert.equal(result.code, 0, result.error);
+	assert.deepEqual(closeResults.map((result) => JSON.parse(result.output).state).sort(), ["admitted", "released"]);
+	assert.equal(JSON.parse(docker(psql, `${service} ${call("check", sharedLease)}`)).state, "admitted");
+	assert.equal(docker(psql, "select count(*) from public.qorpera_runtime_office_screens where drain_pending;"), "0");
+	docker(psql, `${service} ${call("release", sharedLease)}`);
+	console.log("PASS: shared input and disconnect race agent renewal without taking, fencing or draining its lease");
 	acknowledgeDrain(requestDrain(true));
 	const memberClaims = [session(), session()];
 	const memberEpoch = viewerEpoch();

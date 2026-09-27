@@ -1,7 +1,7 @@
 import type { AuthChangeEvent, Session, User } from "@supabase/supabase-js";
 import { vi } from "vitest";
 import { CloudApi } from "../src/cloud/api.ts";
-import type { Cloud } from "../src/cloud/client.ts";
+import { type Cloud, CloudRpcError } from "../src/cloud/client.ts";
 import type {
 	HostedCompanyFile,
 	HostedCompanyProposal,
@@ -13,6 +13,7 @@ import type {
 	HostedStaffAgent,
 	PendingSessionInput,
 } from "../src/cloud/types.ts";
+import * as figureMotion from "../src/ui/figure-motion.ts";
 
 export const id = (n: number): string => `11111111-1111-4111-8111-${String(n).padStart(12, "0")}`;
 export const timestamp = "2026-09-05T10:00:00Z";
@@ -162,6 +163,13 @@ export async function settle(): Promise<void> {
 	for (let i = 0; i < 30; i++) await Promise.resolve();
 }
 
+/** Stands in for the vendored figure scripts; the spy records each figure's mount options. */
+export function stubFigureMotion(dispose: () => void = () => {}) {
+	vi.stubGlobal("QORPERA_MOTION_MODEL", { avatars: [] });
+	vi.stubGlobal("QORPERA_AVATAR_APPEARANCE", { palette: [] });
+	return vi.spyOn(figureMotion, "mountFigureMotion").mockReturnValue({ dispose });
+}
+
 export function fixture() {
 	let authCallback: ((event: AuthChangeEvent, session: Session | null) => void) | undefined;
 	let currentUser: User | null = userA;
@@ -206,6 +214,7 @@ export function fixture() {
 	vi.spyOn(api, "listProfiles").mockResolvedValue([profileA]);
 	vi.spyOn(api, "listIncomingInvitations").mockResolvedValue([]);
 	vi.spyOn(api, "listFriends").mockResolvedValue([]);
+	vi.spyOn(api, "listMemberPictures").mockResolvedValue([]);
 	vi.spyOn(api, "getAccountEntitlement").mockResolvedValue({
 		planKey: "Account A private plan",
 		billingMode: "fixture",
@@ -218,8 +227,16 @@ export function fixture() {
 	vi.spyOn(api, "listSessions").mockResolvedValue([session]);
 	vi.spyOn(api, "getOrganization").mockResolvedValue(undefined);
 	vi.spyOn(api, "listStaffActivity").mockResolvedValue([]);
+	// A cloud without the sidebar RPCs: the rail shows one list, as before sections.
+	vi.spyOn(api, "readCompanySidebar").mockRejectedValue(
+		new CloudRpcError("qorpera_read_company_sidebar", { message: "missing", code: "PGRST202" }, 404),
+	);
 	vi.spyOn(api, "readSessionEvents").mockResolvedValue([]);
 	vi.spyOn(api, "listSessionInputs").mockResolvedValue({ items: [], hasMore: false, nextAfterPosition: 0 });
+	vi.spyOn(api, "listCodingSessions").mockResolvedValue([]);
+	vi.spyOn(api, "readCodingSession").mockRejectedValue(new Error("No coding session in this fixture"));
+	vi.spyOn(api, "answerCodingSession").mockRejectedValue(new Error("No coding session in this fixture"));
+	vi.spyOn(api, "delegateCodingSession").mockRejectedValue(new Error("No coding session in this fixture"));
 	vi.spyOn(api, "getCompanyFile").mockResolvedValue(file);
 	vi.spyOn(api, "listWorkspaces").mockResolvedValue([]);
 	vi.spyOn(api, "listSnapshots").mockResolvedValue([snapshot]);
@@ -238,4 +255,16 @@ export function fixture() {
 			authCallback?.(user ? "SIGNED_IN" : "SIGNED_OUT", getSession());
 		},
 	};
+}
+
+/** What the loading placeholder under `root` tells a screen reader. */
+export function placeholderLabel(root: ParentNode | null | undefined): string | undefined {
+	return root?.querySelector(".skeleton-group[role=status] > .visually-hidden")?.textContent ?? undefined;
+}
+
+/** The text a sighted member sees: everything except screen-reader-only text. */
+export function visibleText(element: Element | null | undefined): string {
+	const copy = element?.cloneNode(true) as Element | undefined;
+	for (const hidden of copy?.querySelectorAll(".visually-hidden") ?? []) hidden.remove();
+	return copy?.textContent ?? "";
 }

@@ -43,6 +43,11 @@ select set_config('qorpera_test.office_lease',(pg_temp.office_call('acquire')->'
 select pg_temp.wake_assert(public.qorpera_check_runtime_office_shared_surface(current_setting('qorpera_test.office_lease')::jsonb->'binding')->>'state'='authorized','open shared screen has independent physical lifetime authority');
 select pg_temp.wake_error($q$select public.qorpera_check_runtime_office_shared_surface(jsonb_set(current_setting('qorpera_test.office_lease')::jsonb->'binding','{screenGeneration}','999'))$q$,'42501');
 select pg_temp.wake_assert((current_setting('qorpera_test.office_lease')::jsonb->>'validForMs')::integer between 1 and 30000,'bounded screen lease');
+select pg_temp.wake_assert(public.qorpera_runtime_office_screen_appearance(current_setting('qorpera_test.office_lease')::jsonb->'binding')
+	='{"creature":null,"templateId":null}'::jsonb,'open shared screen reads exactly the agent appearance fields');
+select pg_temp.wake_error($q$select public.qorpera_runtime_office_screen_appearance(jsonb_set(current_setting('qorpera_test.office_lease')::jsonb->'binding','{screenGeneration}','999'))$q$,'42501');
+select pg_temp.wake_assert(not has_function_privilege('authenticated','public.qorpera_runtime_office_screen_appearance(jsonb)','EXECUTE')
+	and not has_function_privilege('anon','public.qorpera_runtime_office_screen_appearance(jsonb)','EXECUTE'),'screen appearance is broker only');
 select pg_temp.wake_assert(pg_temp.office_call('acquire')='{"state":"refused","reason":"SCREEN_OCCUPIED"}'::jsonb,'one driver per screen');
 select pg_temp.wake_assert(pg_temp.office_call('check',current_setting('qorpera_test.office_lease')::jsonb)->>'state'='admitted','current exact lease');
 select pg_temp.wake_assert(pg_temp.office_call('renew',current_setting('qorpera_test.office_lease')::jsonb)#>>'{lease,leaseId}'

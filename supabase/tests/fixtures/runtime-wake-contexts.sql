@@ -32,7 +32,7 @@ begin
 			'context-agent','Examine the authorized company state.');
 		perform public.qorpera_materialize_wake_execution_runs(1);
 		select run_id into strict v_run from public.qorpera_wake_occurrences where id=(v_result->>'occurrenceId')::uuid;
-	elsif p_kind='room' then
+	elsif p_kind in ('room','room-retry') then
 		select * into strict v_base from public.qorpera_execution_runs where id=(v_binding->>'runId')::uuid;
 		v_path:='organization/rooms/'||v_room::text||'.json';
 		v_doc:=jsonb_build_object('schema','qorpera.company-room/v1','roomId',v_room,'key','context-room',
@@ -60,6 +60,19 @@ begin
 		select run_id into strict v_run from public.qorpera_wake_occurrences where id=(v_result#>>'{occurrenceIds,0}')::uuid;
 	else raise exception 'Unknown context case'; end if;
 	v_binding:=pg_temp.wake_start(v_run);
+	if p_kind='room-retry' then
+		-- The first delivery fails the way a runner reports it; the author tries again. The
+		-- retried wake must read exactly like a first delivery to the runner's parser.
+		select * into strict v_base from public.qorpera_execution_runs where id=(current_setting('qorpera_test.wake_binding')::jsonb->>'runId')::uuid;
+		perform public.qorpera_fail_runner_job((v_binding->>'runnerId')::uuid,repeat('2',64),(v_binding->>'jobId')::uuid,
+			repeat('3',64),'Native provider bridge request failed (422)',false);
+		perform pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001');
+		v_result:=public.qorpera_retry_room_delivery(v_run,v_base.sponsor_binding_id,v_base.sponsor_version);
+		perform pg_temp.path_claims('service_role');
+		perform public.qorpera_materialize_wake_execution_runs(1);
+		select run_id into strict v_run from public.qorpera_wake_occurrences where id=(v_result->>'occurrenceId')::uuid;
+		v_binding:=pg_temp.wake_start(v_run);
+	end if;
 	if p_kind='room' then
 		perform pg_temp.wake_assert((select r.source_kind='room_delivery'
 			and r.company_snapshot_id<>s.company_snapshot_id from public.qorpera_execution_runs r

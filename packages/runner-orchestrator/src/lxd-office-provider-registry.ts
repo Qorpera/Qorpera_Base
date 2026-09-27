@@ -2,7 +2,9 @@ import type { LxdOfficeActivationRegistry } from "./lxd-office-activation-contro
 import type { LxdOfficeBootIntentRegistry } from "./lxd-office-boot-intent-control.ts";
 import type { LxdOfficeBootSuccessorRegistry } from "./lxd-office-boot-successor-control.ts";
 import type { LxdOfficeCodePackageRegistry } from "./lxd-office-code-package-control.ts";
+import type { OfficeFleetMethod } from "./lxd-office-fleet.ts";
 import type { LxdOfficeHostRebootRegistry } from "./lxd-office-host-reboot.ts";
+import type { LxdOfficeIdleRegistry } from "./lxd-office-idle-policy.ts";
 import type { LxdOfficeLifecycleControlRegistry } from "./lxd-office-lifecycle-control.ts";
 import type { LxdOfficeProviderRegistry } from "./lxd-office-provider-control.ts";
 import type { LxdOfficeResetRegistry, LxdOfficeResetSuccessorRegistry } from "./lxd-office-reset-control.ts";
@@ -13,6 +15,7 @@ import type { LxdOfficeStopRegistry } from "./lxd-office-stop-control.ts";
 import type { LxdOfficeSuccessorRegistry } from "./lxd-office-successor-control.ts";
 
 export type LxdOfficeProviderMethod =
+	| Parameters<LxdOfficeIdleRegistry["call"]>[0]
 	| Parameters<LxdOfficeHostRebootRegistry["call"]>[0]
 	| Parameters<LxdOfficeCodePackageRegistry["call"]>[0]
 	| Parameters<LxdOfficeProviderRegistry["call"]>[0]
@@ -30,62 +33,72 @@ export type LxdOfficeProviderMethod =
 export interface LxdOfficeLifecycleRegistry {
 	call(method: LxdOfficeProviderMethod, args: Record<string, unknown>, signal: AbortSignal): Promise<unknown>;
 }
-const METHODS = new Set<LxdOfficeProviderMethod>([
-	"qorpera_enroll_office_package_provision",
-	"qorpera_check_office_package_provision",
-	"qorpera_check_office_package_provision_observation",
-	"qorpera_ack_office_package_provision",
-	"qorpera_office_package_provision_status",
-	"qorpera_check_office_package_invocation",
-	"qorpera_ack_office_package_invocation",
-	"qorpera_reserve_runtime_node_machine",
-	"qorpera_runtime_office_provider_status",
-	"qorpera_runtime_office_provider_activation",
-	"qorpera_begin_runtime_office_host_reboot",
-	"qorpera_record_runtime_office_host_reboot_resume",
-	"qorpera_reserve_runtime_office_start",
-	"qorpera_check_runtime_office_start",
-	"qorpera_check_runtime_office_adoption",
-	"qorpera_prepare_runtime_office_activation",
-	"qorpera_runtime_office_activation_status",
-	"qorpera_activate_runtime_office",
-	"qorpera_begin_runtime_office_lifecycle",
-	"qorpera_runtime_office_lifecycle_status",
-	"qorpera_prepare_runtime_office_stop",
-	"qorpera_ack_runtime_office_stop",
-	"qorpera_runtime_office_stop_status",
-	"qorpera_prepare_runtime_office_successor",
-	"qorpera_runtime_office_successor_status",
-	"qorpera_check_runtime_office_successor",
-	"qorpera_activate_runtime_office_successor",
-	"qorpera_prepare_runtime_office_boot_successor",
-	"qorpera_runtime_office_boot_successor_status",
-	"qorpera_check_runtime_office_boot_successor",
-	"qorpera_activate_runtime_office_boot_successor",
-	"qorpera_prepare_runtime_office_boot_intent",
-	"qorpera_runtime_office_boot_intent_status",
-	"qorpera_check_runtime_office_boot_intent",
+/** The closed RPC allowlist. It is a record over the full method type, so a method any
+ * lifecycle registry can call but this list omits is a compile error, not a runtime
+ * refusal (2026-09-23: #229 added the node suspension call and the provider refused it). */
+type OfficeProviderHttpMethod = LxdOfficeProviderMethod | OfficeFleetMethod;
+const ALLOWED: Record<OfficeProviderHttpMethod, true> = {
+	qorpera_runtime_office_fleet_status: true,
+	qorpera_offer_runtime_office_fleet: true,
+	qorpera_place_runtime_office_fleet: true,
+	qorpera_reconcile_runtime_office_idle: true,
+	qorpera_enroll_office_package_provision: true,
+	qorpera_check_office_package_provision: true,
+	qorpera_check_office_package_provision_observation: true,
+	qorpera_ack_office_package_provision: true,
+	qorpera_office_package_provision_status: true,
+	qorpera_check_office_package_invocation: true,
+	qorpera_ack_office_package_invocation: true,
+	qorpera_reserve_runtime_node_machine: true,
+	qorpera_runtime_office_provider_status: true,
+	qorpera_runtime_office_provider_activation: true,
+	qorpera_begin_runtime_office_host_reboot: true,
+	qorpera_record_runtime_office_host_reboot_resume: true,
+	qorpera_reserve_runtime_office_start: true,
+	qorpera_check_runtime_office_start: true,
+	qorpera_check_runtime_office_adoption: true,
+	qorpera_prepare_runtime_office_activation: true,
+	qorpera_runtime_office_activation_status: true,
+	qorpera_activate_runtime_office: true,
+	qorpera_begin_runtime_office_lifecycle: true,
+	qorpera_runtime_office_lifecycle_status: true,
+	qorpera_prepare_runtime_office_stop: true,
+	qorpera_ack_runtime_office_stop: true,
+	qorpera_runtime_office_stop_status: true,
+	qorpera_prepare_runtime_office_successor: true,
+	qorpera_runtime_office_successor_status: true,
+	qorpera_check_runtime_office_successor: true,
+	qorpera_activate_runtime_office_successor: true,
+	qorpera_prepare_runtime_office_boot_successor: true,
+	qorpera_runtime_office_boot_successor_status: true,
+	qorpera_check_runtime_office_boot_successor: true,
+	qorpera_activate_runtime_office_boot_successor: true,
+	qorpera_prepare_runtime_office_boot_intent: true,
+	qorpera_runtime_office_boot_intent_status: true,
+	qorpera_check_runtime_office_boot_intent: true,
 	// Governed same-allocation root reset: begin/status, bounded per-phase
 	// challenges and the reset successor handoff.
-	"qorpera_begin_runtime_office_reset",
-	"qorpera_runtime_office_reset_status",
-	"qorpera_prepare_runtime_office_reset_phase",
-	"qorpera_check_runtime_office_reset_phase",
-	"qorpera_ack_runtime_office_reset_phase",
-	"qorpera_prepare_runtime_office_reset_successor",
-	"qorpera_runtime_office_reset_successor_status",
-	"qorpera_check_runtime_office_reset_successor",
-	"qorpera_activate_runtime_office_reset_successor",
+	qorpera_begin_runtime_office_reset: true,
+	qorpera_runtime_office_reset_status: true,
+	qorpera_prepare_runtime_office_reset_phase: true,
+	qorpera_check_runtime_office_reset_phase: true,
+	qorpera_ack_runtime_office_reset_phase: true,
+	qorpera_prepare_runtime_office_reset_successor: true,
+	qorpera_runtime_office_reset_successor_status: true,
+	qorpera_check_runtime_office_reset_successor: true,
+	qorpera_activate_runtime_office_reset_successor: true,
 	// Governed service-only software revisions; every call also carries the
 	// separate provider capability, which SQL requires and never returns.
-	"qorpera_enroll_office_software",
-	"qorpera_begin_office_software",
-	"qorpera_check_office_software_install",
-	"qorpera_ack_office_software_install",
-	"qorpera_office_software_status",
-	"qorpera_check_office_software_invocation",
-	"qorpera_ack_office_software_invocation",
-]);
+	qorpera_enroll_office_software: true,
+	qorpera_begin_office_software: true,
+	qorpera_check_office_software_install: true,
+	qorpera_ack_office_software_install: true,
+	qorpera_office_software_status: true,
+	qorpera_check_office_software_invocation: true,
+	qorpera_ack_office_software_invocation: true,
+	qorpera_suspend_runtime_node_machine: true,
+};
+const METHODS = new Set(Object.keys(ALLOWED) as OfficeProviderHttpMethod[]);
 const LIMIT = 65536;
 
 /** Node 22's web Response/Headers load Undici's WASM parser even when fetch
@@ -150,7 +163,8 @@ function nativeRpc(url: string, key: string, body: string, signal: AbortSignal):
 }
 
 /** Infrastructure credential boundary, separate from the guest registry.
- * Closed lifecycle/admission RPCs; no enrollment, cancellation, deletion, arbitrary REST,
+ * Closed lifecycle/admission and staged fleet-offer RPCs; no infrastructure
+ * enrollment, cancellation, deletion, arbitrary REST,
  * redirects or automatic replay after an uncertain response. SQL remains the
  * authority for every bound request. Errors never expose credentials/bodies. */
 export class LxdOfficeProviderHttpRegistry implements LxdOfficeLifecycleRegistry {
@@ -180,7 +194,7 @@ export class LxdOfficeProviderHttpRegistry implements LxdOfficeLifecycleRegistry
 			throw new Error("INVALID_OFFICE_PROVIDER_REGISTRY");
 		}
 	}
-	async call(method: LxdOfficeProviderMethod, args: Record<string, unknown>, caller: AbortSignal): Promise<unknown> {
+	async call(method: OfficeProviderHttpMethod, args: Record<string, unknown>, caller: AbortSignal): Promise<unknown> {
 		caller.throwIfAborted();
 		if (!METHODS.has(method)) throw new Error("OFFICE_PROVIDER_RPC_FORBIDDEN");
 		if (this.#pending) throw new Error("OFFICE_PROVIDER_RPC_PENDING");

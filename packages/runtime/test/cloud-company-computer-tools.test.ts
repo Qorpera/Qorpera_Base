@@ -98,6 +98,22 @@ function toolHarness(capabilities: readonly ("browser" | "desktop" | "shell")[] 
 }
 
 describe("model-facing cloud computer tools (adapter tests, not native cloud acceptance)", () => {
+	it("describes shared company sign-ins and keeps personal accounts and credential capture out of computer tools", () => {
+		const harness = toolHarness();
+		for (const tool of harness.session.tools) {
+			expect(tool.description).toContain("Company website sign-ins are shared across agents");
+			expect(tool.description).toContain("an assigned screen is not a private browser");
+			expect(tool.description).toContain("Never sign personal accounts into the Company Computer");
+			expect(tool.description).toContain("supported, authorized connector granted to the company");
+			expect(tool.description).toContain("use a supported typed handoff");
+			expect(tool.description).toContain("never request passwords or enter credential values through these tools");
+			expect(tool.description).toContain("If the required connector or handoff is unavailable, report the blocker");
+			expect(tool.description).toContain(
+				"Model-provider subscription credentials never belong on the Company Computer",
+			);
+		}
+	});
+
 	it("keeps authorization free of physical launch and prepares only after receipt admission", async () => {
 		const harness = toolHarness();
 		const order: string[] = [];

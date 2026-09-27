@@ -1,49 +1,38 @@
 import type { HostedStaffAgent } from "../../cloud/types.ts";
-import { colorFor, figureElement, figureFor, nativeColorOf } from "../../ui/avatar.ts";
-import { dialogPageHeader, SurfaceDialog } from "../../ui/dialog.ts";
+import { figureElement } from "../../ui/avatar.ts";
+import { SurfaceDialog } from "../../ui/dialog.ts";
 import { button, h, icon, replace } from "../../ui/dom.ts";
 import { type FigureChoice, FigurePicker } from "../../ui/figure-picker.ts";
 import { matchesKey } from "../../ui/keys.ts";
-import { responsibilityCard } from "../../ui/responsibilities.ts";
+import { phrase, t } from "../../ui/preferences.ts";
 import type { CompanyController } from "../company.ts";
 import type { AgentDraft, WorkspaceActions } from "../workspace-actions.ts";
+import { type AgentEdits, editsFor, savedAgentDraft } from "./agent-edits.ts";
 import { AgentRoutines, routineAccessFor } from "./agent-routines.ts";
 
-type Page = "details" | "responsibilities" | "routines";
+type Page = "details" | "routines";
 type TextKey = "displayName" | "role" | "charter";
 
 const FIELDS: Record<TextKey, { label: string; empty: string }> = {
-	displayName: { label: "Agent name", empty: "An agent needs a name." },
-	role: { label: "Agent title", empty: "An agent needs a title." },
-	charter: { label: "Agent description", empty: "An agent needs a description." },
+	displayName: { label: phrase("Agent name"), empty: phrase("An agent needs a name.") },
+	role: { label: phrase("Agent title"), empty: phrase("An agent needs a title.") },
+	// The description is the agent's responsibilities in plain prose, and what the agent works from.
+	charter: { label: phrase("Responsibilities"), empty: phrase("An agent needs its responsibilities written down.") },
 };
 
-/** What the roster says about an agent, as a draft. */
-function saved(agent: HostedStaffAgent): AgentDraft {
-	const figure = figureFor(agent);
-	return {
-		displayName: agent.displayName,
-		role: agent.role,
-		charter: agent.charter,
-		figure,
-		// The Co-Founder wears its figure's own colour; it chooses a figure only.
-		color: agent.templateId === "co-founder" ? nativeColorOf(figure) : colorFor(agent, figure),
-	};
-}
-
 /** An agent's details, anchored under the conversation title. Name, title and
- * description are edited where they stand and save on their own; the figure
- * changes from a picker under it, as on the desktop. Responsibilities and
- * routines are pages of the same panel, opened from its top-right corner. */
+ * responsibilities are edited where they stand and save on their own; the figure
+ * changes from a picker under it, as on the desktop. The responsibilities field is the
+ * agent's description in plain prose and what the agent works from; there is no separate
+ * responsibility page. Routines are a page of the same panel, opened from its top-right corner. */
 export class AgentDetails {
 	readonly dialog: SurfaceDialog;
 	readonly #company: CompanyController;
 	readonly #agent: HostedStaffAgent;
 	readonly #actions: WorkspaceActions;
 	readonly #lifetime = new AbortController();
-	/** Saves outlive the panel, so closing it keeps what was typed. Disposal
-	 * (leaving the conversation, another company, lost access) drops them. */
-	readonly #saves = new AbortController();
+	readonly #edits: AgentEdits;
+	readonly #unsubscribeEdits: () => void;
 	readonly #unsubscribe: () => void;
 	readonly #pageButtons: Record<Exclude<Page, "details">, HTMLButtonElement>;
 	readonly #details: HTMLElement;
@@ -57,13 +46,7 @@ export class AgentDetails {
 	/** The field being typed in, if any. */
 	#open: TextKey | undefined;
 	#routines: AgentRoutines | undefined;
-	#responsibilities = "";
 	#drawn = "";
-	/** Changes the roster does not show yet; they are drawn over it. */
-	#draft: Partial<AgentDraft> = {};
-	#revision = 0;
-	#written = 0;
-	#saving = false;
 	#discarded = false;
 	#statusTimer: ReturnType<typeof setTimeout> | undefined;
 	constructor(
@@ -72,11 +55,18 @@ export class AgentDetails {
 		actions: WorkspaceActions,
 		onClose: () => void,
 		anchor?: HTMLElement,
+		scope: AbortSignal = company.signal,
 	) {
 		this.#company = company;
 		this.#agent = agent;
 		this.#actions = actions;
-		this.dialog = new SurfaceDialog("Agent details", "agent-details", () => this.#closed(onClose), anchor);
+		this.#edits = editsFor(company, agent, actions, scope);
+		this.dialog = new SurfaceDialog(
+			t("Agent details"),
+			"agent-details staff-details",
+			() => this.#closed(onClose),
+			anchor,
+		);
 		const pageButton = (page: Exclude<Page, "details">, label: string, glyph: string) =>
 			h(
 				"button",
@@ -90,23 +80,16 @@ export class AgentDetails {
 				},
 				icon(glyph),
 			);
-		this.#pageButtons = {
-			responsibilities: pageButton("responsibilities", "Responsibilities", "map"),
-			routines: pageButton("routines", "Routines", "clock"),
-		};
-		this.dialog.tools.prepend(this.#pageButtons.responsibilities, this.#pageButtons.routines);
+		this.#pageButtons = { routines: pageButton("routines", t("Routines"), "clock") };
+		this.dialog.tools.prepend(this.#pageButtons.routines);
 
-		const fixedColor = agent.templateId === "co-founder";
-		this.#figures = new FigurePicker(saved(agent), (choice) => this.#choose(choice), {
-			colors: !fixedColor,
-			keepColor: true,
-		});
+		this.#figures = new FigurePicker(savedAgentDraft(agent), (choice) => this.#choose(choice), { keepColor: true });
 		this.#picker = h(
 			"div",
 			{
-				class: fixedColor ? "agent-figure-picker figures-only" : "agent-figure-picker",
+				class: "agent-figure-picker",
 				role: "dialog",
-				"aria-label": fixedColor ? "Choose a figure" : "Choose a figure and color",
+				"aria-label": t("Choose a figure and color"),
 				hidden: true,
 				onkeydown: (event: KeyboardEvent) => {
 					if (!matchesKey(event, "dismiss")) return;
@@ -115,20 +98,15 @@ export class AgentDetails {
 					this.#closePicker(true);
 				},
 			},
-			fixedColor
-				? null
-				: h(
-						"button",
-						{
-							type: "button",
-							class: "agent-figure-reset",
-							onclick: () => {
-								const { figure } = this.#current();
-								this.#choose({ figure, color: nativeColorOf(figure) });
-							},
-						},
-						"Reset",
-					),
+			h(
+				"button",
+				{
+					type: "button",
+					class: "agent-figure-reset",
+					onclick: () => this.#figures.reset(),
+				},
+				t("Reset"),
+			),
 			this.#figures.el,
 		);
 		this.#figureButton = h(
@@ -136,14 +114,14 @@ export class AgentDetails {
 			{
 				type: "button",
 				class: "agent-figure-button",
-				"aria-label": "Edit figure",
+				"aria-label": t("Edit figure"),
 				"aria-haspopup": "dialog",
 				"aria-expanded": "false",
 				onclick: () => (this.#picker.hidden ? this.#openPicker() : this.#closePicker(true)),
 			},
 			this.#stage,
 			h("span", { class: "agent-figure-pencil", "aria-hidden": "true" }, icon("edit")),
-			h("span", { class: "agent-figure-tip", "aria-hidden": "true" }, "Edit figure"),
+			h("span", { class: "agent-figure-tip", "aria-hidden": "true" }, t("Edit figure")),
 		);
 		this.#details = h(
 			"div",
@@ -156,13 +134,6 @@ export class AgentDetails {
 			),
 			this.#field("charter"),
 			this.#status,
-			h(
-				"label",
-				{ class: "agent-notifications" },
-				icon("bell"),
-				h("span", null, "Notifications", h("small", null, "Notification preferences are not available yet.")),
-				h("input", { type: "checkbox", role: "switch", "aria-label": "Agent notifications", disabled: true }),
-			),
 		);
 		// A click elsewhere in the panel puts the figure picker away.
 		this.dialog.el.addEventListener(
@@ -184,14 +155,17 @@ export class AgentDetails {
 			else this.#sync();
 		});
 		company.signal.addEventListener("abort", () => this.dispose(), { signal: this.#lifetime.signal });
+		scope.addEventListener("abort", () => this.dispose(), { signal: this.#lifetime.signal });
+		this.#unsubscribeEdits = this.#edits.store.subscribe(() => this.#syncEdits());
 		this.#sync();
+		this.#syncEdits();
 		this.#go("details", false);
 		this.dialog.open();
 	}
 
 	dispose(): void {
 		this.#discarded = true;
-		this.#saves.abort();
+		this.#edits.dispose();
 		this.dialog.close(false);
 	}
 
@@ -199,11 +173,11 @@ export class AgentDetails {
 		if (!this.#discarded) {
 			// Closing the panel with a field still open counts as leaving the field.
 			if (this.#open) this.#commit(this.#open);
-			void this.#save();
 		}
 		this.#lifetime.abort();
 		clearTimeout(this.#statusTimer);
 		this.#unsubscribe();
+		this.#unsubscribeEdits();
 		onClose();
 	}
 
@@ -212,11 +186,11 @@ export class AgentDetails {
 	}
 
 	#current(): AgentDraft {
-		return { ...saved(this.#latest()), ...this.#draft };
+		return this.#edits.current();
 	}
 
 	#canWrite(): boolean {
-		return this.#company.store.get().team?.capabilities.authorize === true && Boolean(this.#actions.updateAgent);
+		return this.#edits.canWrite();
 	}
 
 	/** A name, title or description that reads as text and is edited in place.
@@ -224,7 +198,7 @@ export class AgentDetails {
 	#field(key: TextKey): HTMLElement {
 		const multiline = key === "charter";
 		const events = {
-			"aria-label": FIELDS[key].label,
+			"aria-label": t(FIELDS[key].label),
 			oninput: () => this.#show(key, control.value),
 			onkeydown: (event: KeyboardEvent) => {
 				if (matchesKey(event, "dismiss")) {
@@ -253,7 +227,8 @@ export class AgentDetails {
 					...events,
 				});
 		this.#fields[key] = control;
-		// The sizer mirrors the text so the field is as wide (or tall) as what it holds.
+		// The sizer mirrors the text so the name and title are as wide as what they hold;
+		// the description fills the popup's static frame instead (conversation.css).
 		const sizer = h("span", { class: "agent-inline-size" }, control);
 		return h(
 			"label",
@@ -287,7 +262,7 @@ export class AgentDetails {
 		}
 		if (!value) {
 			this.#show(key, current);
-			this.#say(FIELDS[key].empty);
+			this.#say(t(FIELDS[key].empty));
 			return;
 		}
 		this.#show(key, value);
@@ -302,41 +277,14 @@ export class AgentDetails {
 	}
 
 	#change(change: Partial<AgentDraft>): void {
-		this.#draft = { ...this.#draft, ...change };
-		this.#revision++;
-		void this.#save();
+		this.#edits.change(change);
 	}
 
-	/** Writes the newest draft; changes made while a write is out follow it as
-	 * one more write, never as one write each. */
-	async #save(): Promise<void> {
-		const update = this.#actions.updateAgent;
-		if (this.#saving || !update || this.#written === this.#revision) return;
-		this.#saving = true;
-		const signal = AbortSignal.any([this.#saves.signal, this.#company.signal]);
-		this.#say("Saving…");
-		try {
-			do {
-				while (this.#written < this.#revision) {
-					if (!this.#canWrite()) throw new Error("Only an owner or admin can change agents.");
-					const revision = this.#revision;
-					await update(this.#latest(), this.#current(), signal);
-					signal.throwIfAborted();
-					this.#written = revision;
-				}
-				await this.#company.refreshStaff();
-				signal.throwIfAborted();
-			} while (this.#written < this.#revision);
-			// What the roster shows now no longer needs drawing over it.
-			const now = saved(this.#latest());
-			for (const key of Object.keys(this.#draft) as (keyof AgentDraft)[])
-				if (this.#draft[key] === now[key]) delete this.#draft[key];
-			this.#say("Saved", true);
-		} catch {
-			if (!signal.aborted) this.#say("Your changes could not be saved.", false, true);
-		} finally {
-			this.#saving = false;
-		}
+	#syncEdits(): void {
+		if (this.#lifetime.signal.aborted) return;
+		this.#sync();
+		const { status, failed, saved } = this.#edits.store.get();
+		this.#say(status, saved, failed);
 	}
 
 	#say(text: string, fade = false, retry = false): void {
@@ -345,7 +293,9 @@ export class AgentDetails {
 		replace(
 			this.#status,
 			text,
-			retry ? button("Try again", () => void this.#save(), { small: true, disabled: !this.#canWrite() }) : null,
+			retry
+				? button(t("Try again"), () => void this.#edits.save(), { small: true, disabled: !this.#canWrite() })
+				: null,
 		);
 		if (fade) this.#statusTimer = setTimeout(() => replace(this.#status), 2400);
 	}
@@ -356,9 +306,6 @@ export class AgentDetails {
 		if (this.#lifetime.signal.aborted) return;
 		const canWrite = this.#canWrite();
 		if (!canWrite) {
-			// Nothing can be saved any more, so nothing is drawn over the roster.
-			this.#draft = {};
-			this.#written = this.#revision;
 			this.#closePicker(false);
 		}
 		const current = this.#current();
@@ -366,12 +313,11 @@ export class AgentDetails {
 			const control = this.#fields[key];
 			control.readOnly = !canWrite;
 			control.closest(".agent-inline-field")?.classList.toggle("is-editable", canWrite);
-			if (key !== this.#open) this.#show(key, current[key]);
+			// Revocation discards even text that has not blurred into the shared draft.
+			if (!canWrite || key !== this.#open) this.#show(key, current[key]);
 		}
 		this.#figureButton.disabled = !canWrite;
 		this.#drawFigure();
-		if (this.#page === "responsibilities" && this.#responsibilityKey() !== this.#responsibilities)
-			this.#go("responsibilities", false);
 	}
 
 	#drawFigure(force = false): void {
@@ -414,8 +360,7 @@ export class AgentDetails {
 			replace(this.dialog.content, this.#details);
 			// Figures that left the page stop drawing; this one is drawn anew.
 			if (from !== "details") this.#drawFigure(true);
-		} else if (page === "responsibilities") replace(this.dialog.content, this.#responsibilitiesPage());
-		else {
+		} else {
 			if (this.#routines) this.#routines.refresh();
 			else
 				this.#routines = new AgentRoutines(
@@ -435,57 +380,5 @@ export class AgentDetails {
 					: this.#pageButtons[from]
 				: this.dialog.content.querySelector<HTMLButtonElement>(".dialog-page-back");
 		target?.focus({ preventScroll: true });
-	}
-
-	#assigned() {
-		return (
-			this.#company.store
-				.get()
-				.organization?.responsibilities.filter(
-					(item) => item.accountableStaffAgentId === this.#agent.id && item.status !== "retired",
-				) ?? []
-		);
-	}
-
-	#responsibilityKey(): string {
-		return JSON.stringify(this.#assigned().map((item) => [item.responsibilityId, item.name]));
-	}
-
-	#responsibilitiesPage(): HTMLElement {
-		const items = this.#assigned();
-		this.#responsibilities = this.#responsibilityKey();
-		// Following a link leaves the conversation; close first so nothing typed is lost.
-		const close = () => this.dialog.close(false);
-		return h(
-			"section",
-			{ class: "agent-page agent-responsibilities" },
-			dialogPageHeader(
-				"Responsibilities",
-				() => this.#go("details"),
-				"Back to agent details",
-				`What ${this.#latest().displayName} is accountable for.`,
-			),
-			items.length
-				? h(
-						"div",
-						{ class: "responsibility-preview" },
-						...items.map((item) => {
-							const card = responsibilityCard(this.#company, item);
-							card.addEventListener("click", close);
-							return card;
-						}),
-					)
-				: h("div", { class: "agent-page-empty" }, icon("map"), h("p", null, "No responsibilities assigned yet.")),
-			h(
-				"a",
-				{
-					class: "agent-page-link",
-					href: `#/c/${this.#company.profile.profileId}/organization`,
-					onclick: close,
-				},
-				"View the responsibility map",
-				icon("chevron"),
-			),
-		);
 	}
 }

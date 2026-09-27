@@ -227,12 +227,22 @@ select pg_temp.secret_assert(jsonb_array_length(public.qorpera_list_cloud_secret
 select pg_temp.secret_assert(position('encryptedEnvelope' in public.qorpera_list_cloud_secret_connections(
 	'30500000-0000-4000-8000-000000000010','30500000-0000-4000-8000-000000000020')::text)=0,
 	'Member descriptor exposed ciphertext');
-select set_config('qorpera_test.company_grant',public.qorpera_grant_cloud_secret_operation(
-	'30500000-0000-4000-8000-000000000010','30500000-0000-4000-8000-000000000020',
-	(current_setting('qorpera_test.company_descriptor')::jsonb->>'secretId')::uuid,
-	'30500000-0000-4000-8000-000000000030','linear','issue_create',1)::text,true);
+-- Since bundle v88 a company connection is shared with every agent as it is
+-- sealed: the capture already granted the typed operation under the owner who
+-- captured it, so a second grant of the same tool is refused.
+select pg_temp.secret_denied(format($q$select public.qorpera_grant_cloud_secret_operation(
+	'30500000-0000-4000-8000-000000000010','30500000-0000-4000-8000-000000000020',%L,
+	'30500000-0000-4000-8000-000000000030','linear','issue_create',1)$q$,
+	(current_setting('qorpera_test.company_descriptor')::jsonb->>'secretId')::uuid));
+reset role;
+select set_config('qorpera_test.company_grant',(select jsonb_build_object('grantId',grant_row.id,'toolName',grant_row.tool_name)
+	from public.qorpera_cloud_secret_operation_grants as grant_row
+	where grant_row.secret_id=(current_setting('qorpera_test.company_descriptor')::jsonb->>'secretId')::uuid
+		and grant_row.staff_agent_id='30500000-0000-4000-8000-000000000030' and grant_row.status='active'
+		and grant_row.issued_by_user_id='30500000-0000-4000-8000-000000000001')::text,true);
 select pg_temp.secret_assert((current_setting('qorpera_test.company_grant')::jsonb->>'toolName')='linear_issue_create',
-	'Grant did not bind the typed operation');
+	'Capture did not grant the typed operation');
+set local role authenticated;
 
 -- Rotation creates a new immutable version while the operation grant remains.
 select set_config('qorpera_test.rotation',public.qorpera_begin_cloud_secret_capture(

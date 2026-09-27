@@ -41,50 +41,8 @@ function fixture(overrides: Record<string, unknown> = {}, legacyObjects = new Ma
 		lifecycleState: "setup",
 		createdAt: "2026-08-29T00:00:00Z",
 	});
-	const responsibilityDocument = (id: string, slug: string): string =>
-		JSON.stringify({
-			schema: "qorpera.responsibility/v1",
-			responsibilityId: id,
-			slug,
-			name: slug,
-			outcome: "A measurable owned outcome.",
-			accountableStaffAgentId: "32000000-0000-4000-8000-000000000008",
-			accountableUserId: "32000000-0000-4000-8000-000000000009",
-			attentionCadence: "weekly",
-			escalationThreshold: {},
-			escalationTarget: { kind: "accountable_member", id: null },
-			effortPolicy: {},
-			budgetPolicy: {},
-			concurrencyPolicy: {},
-			routineIds: [],
-			listenerIds: [],
-			externalOperationGrants: [],
-			resources: [],
-			status: "active",
-			version: 1,
-			measures: [
-				{
-					measureId: "32000000-0000-4000-8000-000000000020",
-					key: "currency",
-					label: "Currency",
-					definition: "Reviewed within cadence.",
-					direction: "observe",
-					target: {},
-					guardrails: [],
-					cadence: "weekly",
-					status: "active",
-					sources: [{ path: "organization/formation.json", pathMatch: "exact" }],
-				},
-			],
-		});
-	const responsibilityPaths = [
-		"organization/responsibilities/32000000-0000-4000-8000-000000000021.json",
-		"organization/responsibilities/32000000-0000-4000-8000-000000000022.json",
-	];
-	const cofounderResponsibilityDocuments = {
-		[responsibilityPaths[0]!]: responsibilityDocument("32000000-0000-4000-8000-000000000021", "direction"),
-		[responsibilityPaths[1]!]: responsibilityDocument("32000000-0000-4000-8000-000000000022", "resourcing"),
-	};
+	// Retired 2026-09-20: a company is born without responsibility documents.
+	const cofounderResponsibilityDocuments: Record<string, string> = {};
 	const claim = {
 		schema: "qorpera.company-bootstrap-claim/v1",
 		jobId,
@@ -148,8 +106,6 @@ function fixture(overrides: Record<string, unknown> = {}, legacyObjects = new Ma
 									"organization/agents/32000000-0000-4000-8000-000000000008.json",
 									"organization/formation.json",
 									"organization/projects",
-									"organization/responsibilities",
-									...responsibilityPaths,
 								]
 							: [
 									"organization",
@@ -157,8 +113,6 @@ function fixture(overrides: Record<string, unknown> = {}, legacyObjects = new Ma
 									"organization/agents/32000000-0000-4000-8000-000000000008.json",
 									"organization/formation.json",
 									"organization/projects",
-									"organization/responsibilities",
-									...responsibilityPaths,
 								],
 				);
 			}
@@ -237,21 +191,17 @@ describe("cloud-owned company bootstrap", () => {
 		const service = fixture();
 		expect(await service.provisioner.provisionOne()).toBe(true);
 		expect(await service.provisioner.provisionOne()).toBe(false);
-		// formation + agent content and manifests, two responsibility contents
-		// and manifests, and the tree.
-		expect(service.staged.size).toBe(9);
+		// formation + agent content and manifests, and the tree.
+		expect(service.staged.size).toBe(5);
 		expect([...service.staged.values()].some((value) => value.toString() === service.formationDocument)).toBe(true);
 		expect([...service.staged.values()].some((value) => value.toString() === service.cofounderAgentDocument)).toBe(
 			true,
 		);
-		for (const [path, document] of Object.entries(service.cofounderResponsibilityDocuments)) {
-			expect([...service.staged.values()].some((value) => value.toString() === document)).toBe(true);
-			expect(service.publisher).toHaveBeenCalledWith(
-				"qorpera_stage_company_bootstrap_object",
-				expect.objectContaining({ p_kind: "cofounder_responsibility_manifest", p_path: path, p_confirm: true }),
-				expect.any(AbortSignal),
-			);
-		}
+		expect(service.publisher).not.toHaveBeenCalledWith(
+			"qorpera_stage_company_bootstrap_object",
+			expect.objectContaining({ p_kind: "cofounder_responsibility_manifest" }),
+			expect.any(AbortSignal),
+		);
 		expect(service.publisher).toHaveBeenCalledWith(
 			"qorpera_finalize_company_bootstrap",
 			expect.objectContaining({
@@ -270,6 +220,12 @@ describe("cloud-owned company bootstrap", () => {
 		{ leaseOwner: "32000000-0000-4000-8000-000000000011" },
 		{ unexpected: true },
 		{ formationDocument: "x".repeat(32 * 1024 + 1) },
+		// A cloud that has not retired responsibility documents yet: wait for it, stage nothing.
+		{
+			cofounderResponsibilityDocuments: {
+				"organization/responsibilities/32000000-0000-4000-8000-000000000021.json": "{}",
+			},
+		},
 	])("rejects malformed cloud claims before staging: %j", async (override) => {
 		const service = fixture(override);
 		await expect(service.provisioner.provisionOne()).rejects.toBeInstanceOf(ObjectDependencyError);

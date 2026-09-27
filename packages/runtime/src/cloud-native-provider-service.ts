@@ -6,6 +6,10 @@ import {
 	supabaseServiceHeaders,
 	withCloudDeadline,
 } from "@qorpera/cloud-client/cloud-request";
+import {
+	parseNativeAccountRefreshDescription,
+	parseNativeAccountRefreshRequest,
+} from "@qorpera/cloud-client/native-account-refresh";
 import type { JsonValue } from "@qorpera/contracts";
 import {
 	type CloudAgentSendInput,
@@ -13,10 +17,13 @@ import {
 	parseCloudAgentSendInput,
 	parseCloudAgentSendReceipt,
 } from "./cloud-agent-mouth.ts";
+import { codingErrorCode } from "./cloud-coding-error-code.ts";
 import { nativeRuntimeFailureMetadata } from "./cloud-native-failure.ts";
 import type {
 	CompleteNativeProviderLoginInput,
 	NativeCredentialCapsuleStore,
+	NativeProviderAccountMetadata,
+	NativeProviderAccountRefresh,
 	NativeProviderControlPlane,
 	NativeProviderExecutionRequest,
 	NativeProviderHost,
@@ -31,10 +38,17 @@ import {
 } from "./cloud-native-tool-authority.ts";
 import type { CloudNativeToolOperationControlPlane } from "./cloud-native-tool-operations.ts";
 import type { BeginCloudRunnerOperationInput, CompleteCloudRunnerOperationInput } from "./cloud-runner-broker.ts";
+import {
+	type CloudInteractionRequestInput,
+	type CloudInteractionRequestReceipt,
+	parseCloudInteractionRequestData,
+	parseCloudInteractionRequestReceipt,
+} from "./cloud-thread-interactions.ts";
 
 const LOGIN_SCHEMA = "qorpera.native-provider-login/v1";
 const EXECUTION_SCHEMA = "qorpera.native-provider-execution/v1";
 const CANCEL_SCHEMA = "qorpera.native-provider-cancel/v1";
+const EXECUTE_KEEPALIVE_MS = 60_000;
 const RESULT_SCHEMA = "qorpera.native-provider-result/v1";
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
@@ -105,22 +119,55 @@ function internalRejectionCategory(error: unknown): string {
 	return "unknown";
 }
 
+// The diagnostics this service passes on verbatim: closed lists only, so the
+// log line and the runner's code are a fixed vocabulary by construction.
+const MOUTH_STATE = / \[mouth=(?:uninitialized|initialized|ready|send-unconfirmed|delivered)\]$/;
+const HARNESS_UNAVAILABLE =
+	"authentication|model|provider allowance|provider capacity|provider context|provider network|provider policy|local sandbox|provider request|provider authorization|provider tool schema|harness configuration|harness internal|public message transport";
+const HARNESS_EXITED = new RegExp(
+	`^Provider harness exited with [A-Za-z0-9_-]{1,32}(?: \\((${HARNESS_UNAVAILABLE}) unavailable\\))?$`,
+);
+const CODEX_TURN_INCOMPLETE = new RegExp(
+	`^Codex did not complete its turn(?: \\((${HARNESS_UNAVAILABLE}) unavailable\\))?$`,
+);
+const EXECUTION_STAGE_FAILED =
+	/^Native provider execution (initial-authority-validation|temporary-workspace|credential-download|credential-opening|prompt-materialization|public-mouth-start|public-mouth-completion|harness-execution|workspace-normalization|completion-authority-validation|credential-sealing|credential-upload|authority-monitor|cleanup|internal-completion) stage failed(?: \((storage-budget|unsupported-entry|invalid-path|symbolic-link|filesystem-(?:not-found|permission|read-only|layout)|resource-(?:capacity|file-descriptors|memory)|process-pipe|cancelled|timeout|unknown)\))?$/;
+const HARNESS_OUTPUT_LIMIT = "Provider harness output exceeded its byte limit";
+
+/** The fixed code a failed request carries back to the runner: the coding
+ * runtime's own code (e.g. CODING_TURN_ENDED_WITHOUT_SUBMISSION), else its
+ * native stage and category, else a diagnostic from the closed lists above,
+ * else UNCLASSIFIED. Never free text. Each segment stays under 43 characters,
+ * so the runner's token redaction never cuts it. */
+export function nativeProviderFailureCode(error: unknown): string {
+	const fits = (code: string) => /^[A-Z][A-Z0-9_]{0,41}(:[A-Z0-9][A-Z0-9_]{0,41})?$/.test(code);
+	const upper = (value: string) => value.toUpperCase().replace(/[^A-Z0-9]+/g, "_");
+	const coded = (code: string) => (fits(code) ? code : "UNCLASSIFIED");
+	// Only the coding runtime's own codes pass; other upper-case text is not vetted.
+	const own = codingErrorCode(error);
+	if (own.startsWith("CODING_") && fits(own)) return own;
+	const failure = nativeRuntimeFailureMetadata(error);
+	if (failure) return coded(`NATIVE_${upper(failure.stage)}:${upper(failure.category)}`);
+	const message = (error instanceof Error ? error.message : "").replace(MOUTH_STATE, "");
+	const stage = EXECUTION_STAGE_FAILED.exec(message);
+	if (stage) return coded(`NATIVE_${upper(stage[1])}${stage[2] ? `:${upper(stage[2])}` : ""}`);
+	const exited = HARNESS_EXITED.exec(message);
+	if (exited) return coded(`HARNESS_EXITED${exited[1] ? `:${upper(exited[1])}` : ""}`);
+	const incomplete = CODEX_TURN_INCOMPLETE.exec(message);
+	if (incomplete) return coded(`CODEX_TURN_INCOMPLETE${incomplete[1] ? `:${upper(incomplete[1])}` : ""}`);
+	if (message === HARNESS_OUTPUT_LIMIT) return "HARNESS_OUTPUT_LIMIT";
+	return "UNCLASSIFIED";
+}
 function safeRequestDiagnostic(error: unknown): string {
 	const failure = nativeRuntimeFailureMetadata(error);
 	if (failure) return `Native provider execution failed (stage=${failure.stage}, category=${failure.category})`;
 	const message = error instanceof Error ? error.message : "";
-	const diagnostic = message.replace(/ \[mouth=(?:uninitialized|initialized|ready|send-unconfirmed|delivered)\]$/, "");
+	const diagnostic = message.replace(MOUTH_STATE, "");
 	if (
-		/^Provider harness exited with [A-Za-z0-9_-]{1,32}(?: \((?:authentication|model|provider allowance|provider capacity|provider context|provider network|provider policy|local sandbox|provider request|provider authorization|provider tool schema|harness configuration|harness internal|public message transport) unavailable\))?$/.test(
-			diagnostic,
-		) ||
-		/^Codex did not complete its turn(?: \((?:authentication|model|provider allowance|provider capacity|provider context|provider network|provider policy|local sandbox|provider request|provider authorization|provider tool schema|harness configuration|harness internal|public message transport) unavailable\))?$/.test(
-			diagnostic,
-		) ||
-		/^Native provider execution (?:initial-authority-validation|temporary-workspace|credential-download|credential-opening|prompt-materialization|public-mouth-start|public-mouth-completion|harness-execution|workspace-normalization|completion-authority-validation|credential-sealing|credential-upload|authority-monitor|cleanup|internal-completion) stage failed(?: \((?:storage-budget|unsupported-entry|invalid-path|symbolic-link|filesystem-(?:not-found|permission|read-only|layout)|resource-(?:capacity|file-descriptors|memory)|process-pipe|cancelled|timeout|unknown)\))?$/.test(
-			diagnostic,
-		) ||
-		diagnostic === "Provider harness output exceeded its byte limit"
+		HARNESS_EXITED.test(diagnostic) ||
+		CODEX_TURN_INCOMPLETE.test(diagnostic) ||
+		EXECUTION_STAGE_FAILED.test(diagnostic) ||
+		diagnostic === HARNESS_OUTPUT_LIMIT
 	) {
 		return message;
 	}
@@ -296,6 +343,97 @@ export class SupabaseNativeProviderControlPlane
 			: undefined;
 	}
 
+	async listAccountRefreshes(
+		computeIdentityId: string,
+		signal?: AbortSignal,
+	): Promise<NativeProviderAccountRefresh[]> {
+		if (!this.#identityEpoch || this.#identityEpoch.computeIdentityId !== computeIdentityId)
+			throw new Error("Native host has no matching local identity generation");
+		const result = await this.#rpc(
+			"qorpera_list_native_provider_account_refreshes",
+			{
+				p_compute_identity_id: computeIdentityId,
+				p_recovery_epoch: this.#identityEpoch.epoch,
+			},
+			signal,
+		);
+		if (!Array.isArray(result) || result.length > 64) throw new Error("Native account refresh list is invalid");
+		return result.map((entry) => {
+			const value = record(entry, "Native account refresh");
+			if (!Number.isSafeInteger(value.connection_version) || (value.connection_version as number) < 1)
+				throw new Error("Native account connection version is invalid");
+			const capsuleId = uuid(value.credential_capsule_id, "Native account capsule id");
+			if (value.encrypted_capsule_reference !== `native-capsule/${capsuleId}`)
+				throw new Error("Native account capsule reference is invalid");
+			return {
+				connectionId: uuid(value.connection_id, "Native account connection id"),
+				connectionVersion: value.connection_version as number,
+				capsuleId,
+				encryptedCapsuleReference: value.encrypted_capsule_reference,
+				nativeHarness: parseHarness(value.native_harness),
+			};
+		});
+	}
+
+	async describeAccountRefresh(requestId: string, capability: string, signal?: AbortSignal) {
+		const value = parseNativeAccountRefreshDescription(
+			await this.#rpc(
+				"qorpera_describe_native_account_refresh_route",
+				{
+					p_request_id: requestId,
+					p_capability_sha256: createHash("sha256").update(capability).digest("hex"),
+				},
+				signal,
+			),
+		);
+		if (
+			!this.#identityEpoch ||
+			value.requestId !== requestId ||
+			value.computeIdentityId !== this.#identityEpoch.computeIdentityId
+		)
+			throw new Error("Account refresh identity mismatch");
+		return value;
+	}
+
+	async completeAccountRefresh(requestId: string, capability: string, signal?: AbortSignal): Promise<boolean> {
+		if (!this.#identityEpoch) throw new Error("Account refresh identity unavailable");
+		return (
+			(await this.#rpc(
+				"qorpera_complete_native_account_refresh",
+				{
+					p_request_id: requestId,
+					p_capability_sha256: createHash("sha256").update(capability).digest("hex"),
+					p_recovery_epoch: this.#identityEpoch.epoch,
+				},
+				signal,
+			)) === true
+		);
+	}
+
+	async recordAccountMetadata(
+		computeIdentityId: string,
+		account: NativeProviderAccountRefresh,
+		metadata: NativeProviderAccountMetadata,
+		signal?: AbortSignal,
+	): Promise<void> {
+		if (!this.#identityEpoch || this.#identityEpoch.computeIdentityId !== computeIdentityId)
+			throw new Error("Native host has no matching local identity generation");
+		await this.#rpc(
+			"qorpera_record_native_provider_account_metadata",
+			{
+				p_compute_identity_id: computeIdentityId,
+				p_recovery_epoch: this.#identityEpoch.epoch,
+				p_connection_id: account.connectionId,
+				p_connection_version: account.connectionVersion,
+				p_credential_capsule_id: account.capsuleId,
+				p_provider_account_email: metadata.providerAccountEmail ?? null,
+				p_provider_account_usage: metadata.providerAccountUsage ?? null,
+				p_provider_account_identity: metadata.providerAccountIdentity ?? null,
+			},
+			signal,
+		);
+	}
+
 	async describeLogin(
 		loginId: string,
 		capability: string,
@@ -338,6 +476,7 @@ export class SupabaseNativeProviderControlPlane
 				p_encrypted_capsule_reference: input.encryptedCapsuleReference,
 				p_attestation_policy_sha256: input.attestationPolicySha256,
 				p_provider_account_reference: input.providerAccountReference ?? null,
+				p_provider_account_email: input.providerAccountEmail ?? null,
 				p_billing_source: "personal_subscription",
 				p_consent_version: "qorpera-native-subscription-v1",
 				p_quota_policy: {
@@ -450,6 +589,32 @@ export class SupabaseNativeProviderControlPlane
 			signal,
 		);
 		return parseCloudAgentSendReceipt(receipt, request.authority.runId);
+	}
+
+	async appendInteractionRequest(
+		request: NativeProviderExecutionRequest,
+		input: CloudInteractionRequestInput,
+		signal?: AbortSignal,
+	): Promise<CloudInteractionRequestReceipt> {
+		const data = parseCloudInteractionRequestData(input.data);
+		const receipt = await this.#rpc(
+			"qorpera_append_native_interaction_request",
+			{
+				p_lease_id: request.authority.leaseId,
+				p_run_id: request.authority.runId,
+				p_job_id: request.job.jobId,
+				p_runner_id: request.authority.runnerId,
+				p_assignment_id: request.authority.assignmentId,
+				p_credential_capsule_id: request.authority.credentialCapsuleId,
+				p_compute_identity_id: request.authority.computeIdentityId,
+				p_provider: request.authority.provider,
+				p_native_harness: request.authority.nativeHarness,
+				p_event_id: input.eventId,
+				p_data: data,
+			},
+			signal,
+		);
+		return parseCloudInteractionRequestReceipt(receipt, input.eventId);
 	}
 
 	async #rpc(name: string, body: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
@@ -643,7 +808,10 @@ export class HttpNativeProviderHostService {
 			response.writeHead(200, { "content-type": "application/json" }).end('{"ok":true}\n');
 			return;
 		}
-		if (request.method !== "POST" || !["/login", "/execute", "/cancel"].includes(request.url ?? "")) {
+		if (
+			request.method !== "POST" ||
+			!["/login", "/account-refresh", "/execute", "/cancel"].includes(request.url ?? "")
+		) {
 			response.writeHead(404).end();
 			return;
 		}
@@ -651,7 +819,11 @@ export class HttpNativeProviderHostService {
 			response.writeHead(403).end();
 			return;
 		}
-		if (request.url !== "/login" && !tokenMatches(this.#token, request.headers.authorization)) {
+		if (
+			request.url !== "/login" &&
+			request.url !== "/account-refresh" &&
+			!tokenMatches(this.#token, request.headers.authorization)
+		) {
 			response.writeHead(401, { connection: "close" }).end();
 			return;
 		}
@@ -659,7 +831,14 @@ export class HttpNativeProviderHostService {
 			const body = await this.#readBody(request);
 			if (!this.#server || response.destroyed) throw new Error("Native provider request stopped");
 			let value: JsonValue;
-			if (request.url === "/login") {
+			if (request.url === "/account-refresh") {
+				const parsed = parseNativeAccountRefreshRequest(body);
+				if (!tokenMatches(parsed.capability, request.headers.authorization)) {
+					response.writeHead(401).end();
+					return;
+				}
+				value = await this.#host.refreshRequestedAccountMetadata(parsed);
+			} else if (request.url === "/login") {
 				const parsed = parseLogin(body);
 				if (!tokenMatches(parsed.capability, request.headers.authorization)) {
 					response.writeHead(401).end();
@@ -680,6 +859,15 @@ export class HttpNativeProviderHostService {
 					if (!response.writableFinished) controller.abort(new Error("Native runner connection closed"));
 				};
 				response.once("close", disconnected);
+				// A run has no deadline (founder, 2026-09-24). Headers go out now and a
+				// newline every minute keeps the runner's HTTP client (whose header and
+				// idle-body timeouts are five minutes) and anything between from giving up.
+				response.writeHead(200, { "content-type": "application/json" });
+				response.flushHeaders();
+				const keepalive = setInterval(() => {
+					if (!response.destroyed && !response.writableEnded) response.write("\n");
+				}, EXECUTE_KEEPALIVE_MS);
+				keepalive.unref();
 				try {
 					value = {
 						schema: RESULT_SCHEMA,
@@ -687,6 +875,7 @@ export class HttpNativeProviderHostService {
 						result: await this.#host.execute(parsed, controller.signal),
 					};
 				} finally {
+					clearInterval(keepalive);
 					response.off("close", disconnected);
 					this.#executions.delete(parsed.authority.leaseId);
 				}
@@ -709,13 +898,16 @@ export class HttpNativeProviderHostService {
 				active?.controller.abort(new Error("Native execution cancelled"));
 				value = { cancelled: active !== undefined };
 			}
-			response.writeHead(200, { "content-type": "application/json" }).end(`${JSON.stringify(value)}\n`);
+			if (!response.headersSent) response.writeHead(200, { "content-type": "application/json" });
+			response.end(`${JSON.stringify(value)}\n`);
 		} catch (error) {
-			console.error(`Native provider request rejected: ${safeRequestDiagnostic(error)}`);
-			if (!response.destroyed)
-				response
-					.writeHead(422, { "content-type": "application/json", connection: "close" })
-					.end('{"error":"request rejected"}\n');
+			const code = nativeProviderFailureCode(error);
+			console.error(`Native provider request rejected: ${safeRequestDiagnostic(error)} [code=${code}]`);
+			// An execution already answered 200 with its keepalive; its failure is in the body.
+			const rejected = `${JSON.stringify({ error: "request rejected", code })}\n`;
+			if (!response.destroyed && response.headersSent) response.end(rejected);
+			else if (!response.destroyed)
+				response.writeHead(422, { "content-type": "application/json", connection: "close" }).end(rejected);
 		}
 	}
 }

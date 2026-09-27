@@ -3,56 +3,26 @@
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-export type CompanySection =
-	| "home"
-	| "chat"
-	| "staff"
-	| "approvals"
-	| "file"
-	| "snapshot"
-	| "proposal"
-	| "organization"
-	| "responsibility"
-	| "project"
-	| "team"
-	| "new"
-	| "meet";
+export type CompanySection = "home" | "chat" | "staff" | "file" | "snapshot" | "proposal" | "team" | "new" | "meet";
 
 export type Route =
 	| { name: "hub" }
 	| { name: "account" }
-	| { name: "cloud-check" }
 	| { name: "company"; profileId: string; section: CompanySection; id?: string };
 
 export function parseRoute(hash: string): Route {
 	const parts = hash.replace(/^#\/?/, "").split("/").filter(Boolean);
 	if (parts.length === 0) return { name: "hub" };
 	if (parts[0] === "account") return { name: "account" };
-	if (parts[0] === "cloud-check") return { name: "cloud-check" };
 	if (parts[0] === "c" && parts[1] && UUID.test(parts[1])) {
 		const profileId = parts[1].toLowerCase();
 		const section = parts[2];
 		const id = parts[3];
 		if (!section) return { name: "company", profileId, section: "home" };
-		if (
-			(section === "chat" ||
-				section === "staff" ||
-				section === "snapshot" ||
-				section === "proposal" ||
-				section === "responsibility" ||
-				section === "project") &&
-			id
-		) {
+		if ((section === "chat" || section === "staff" || section === "snapshot" || section === "proposal") && id) {
 			return { name: "company", profileId, section, id };
 		}
-		if (
-			section === "approvals" ||
-			section === "file" ||
-			section === "organization" ||
-			section === "team" ||
-			section === "new" ||
-			section === "meet"
-		) {
+		if (section === "file" || section === "team" || section === "new" || section === "meet") {
 			return { name: "company", profileId, section, ...(section === "file" && id === "history" ? { id } : {}) };
 		}
 		return { name: "company", profileId, section: "home" };
@@ -66,8 +36,6 @@ export function routeHash(route: Route): string {
 			return "#/";
 		case "account":
 			return "#/account";
-		case "cloud-check":
-			return "#/cloud-check";
 		case "company":
 			if (route.section === "home") return `#/c/${route.profileId}`;
 			return route.id

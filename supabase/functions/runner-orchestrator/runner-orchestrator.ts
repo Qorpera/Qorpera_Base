@@ -29,6 +29,15 @@ export type RunnerOrchestratorRequest =
 			nextDueAt: string;
 			payload: Record<string, unknown>;
 	  }
+	| {
+			action: "advance_next_due";
+			orchestratorId: string;
+			routineId: string;
+			expectedVersion: number;
+			triggerId: string;
+			expectedLastScheduledFor?: string;
+			nextDueAt: string;
+	  }
 	| { action: "reconcile"; orchestratorId: string }
 	| { action: "retained"; orchestratorId: string }
 	| {
@@ -166,6 +175,29 @@ export function parseRunnerOrchestratorRequest(value: unknown): RunnerOrchestrat
 				payload,
 			};
 		}
+		case "advance_next_due":
+			if (
+				(input.expectedLastScheduledFor !== undefined &&
+					(typeof input.expectedLastScheduledFor !== "string" ||
+						!Number.isFinite(Date.parse(input.expectedLastScheduledFor)))) ||
+				typeof input.nextDueAt !== "string" ||
+				!Number.isFinite(Date.parse(input.nextDueAt)) ||
+				(typeof input.expectedLastScheduledFor === "string" &&
+					Date.parse(input.nextDueAt) <= Date.parse(input.expectedLastScheduledFor))
+			) {
+				throw new Error("Invalid routine next due time");
+			}
+			return {
+				action: input.action,
+				orchestratorId,
+				routineId: uuid(input.routineId, "routine id"),
+				expectedVersion: integer(input.expectedVersion, "routine version", 1_000_000),
+				triggerId: text(input.triggerId, "trigger id", 160),
+				...(typeof input.expectedLastScheduledFor === "string"
+					? { expectedLastScheduledFor: new Date(input.expectedLastScheduledFor).toISOString() }
+					: {}),
+				nextDueAt: new Date(input.nextDueAt).toISOString(),
+			};
 		case "reconcile":
 		case "retained":
 			return { action: input.action, orchestratorId };

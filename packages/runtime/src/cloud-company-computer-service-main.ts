@@ -16,6 +16,7 @@ import { CompanyComputerScreenOutbox } from "./cloud-company-computer-screen-out
 import { parseCompanyComputerServiceConfig } from "./cloud-company-computer-service-config.ts";
 import { readCompanyComputerServiceCredential } from "./cloud-company-computer-service-credentials.ts";
 import { CompanyComputerStartupControl } from "./cloud-company-computer-startup.ts";
+import { assertGuestImageSelfUpdateMasked } from "./lxd-guest-image-updates.ts";
 
 /** One process owns the office, independent of clients. Configuration never
  * activates an office or manufactures adoption; the Linux preflight and first
@@ -41,9 +42,14 @@ export async function runCompanyComputerServiceMain(environment: NodeJS.ProcessE
 	const text = (value: Buffer): string => new TextDecoder("utf8", { fatal: true }).decode(value).trim();
 	let service: Awaited<ReturnType<typeof startCompanyComputerLinuxOfficeService>> | undefined;
 	let screenOutbox: CompanyComputerScreenOutbox | undefined;
-	let stage: CompanyComputerLifecycleStage = "credentials";
+	let stage: CompanyComputerLifecycleStage = "image";
 	let failure: CompanyComputerLifecycleFailure | undefined;
 	try {
+		// Before any credential is read: an image that can update itself has
+		// needrestart restart this service under members, and its shutdown
+		// inhibitor refuses the office VM's stop.
+		await assertGuestImageSelfUpdateMasked();
+		stage = "credentials";
 		const configBytes = await read("qorpera-office-config");
 		stage = "configuration";
 		const config = parseCompanyComputerServiceConfig(text(configBytes));

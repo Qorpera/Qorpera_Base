@@ -224,3 +224,54 @@ describe("explicit governed LXD runtime configuration", () => {
 		},
 	);
 });
+
+describe("coding command gateway (Order 9)", () => {
+	async function codingEnvironment() {
+		const current = await environment();
+		const tokenFile = join(dirname(current.QORPERA_LXD_NATIVE_OBJECT_TOKEN_FILE!), "coding-command-token");
+		await writeFile(tokenFile, `${"k".repeat(43)}\n`, { mode: 0o600 });
+		current.QORPERA_CODING_COMMAND_URL = "https://coding.example.test:8789";
+		current.QORPERA_LXD_CODING_COMMAND_TOKEN_FILE = tokenFile;
+		return { current, tokenFile };
+	}
+
+	it("is absent unless the origin and the private token file are both configured", async () => {
+		const current = await environment();
+		expect(lxdNativeCompanyRuntimeFromEnvironment(current)?.codingCommand).toBeUndefined();
+		const { current: configured } = await codingEnvironment();
+		expect(lxdNativeCompanyRuntimeFromEnvironment(configured)?.codingCommand).toEqual({
+			origin: "https://coding.example.test:8789",
+			token: "k".repeat(43),
+		});
+		expect(() =>
+			lxdNativeCompanyRuntimeFromEnvironment({ ...configured, QORPERA_LXD_CODING_COMMAND_TOKEN_FILE: undefined }),
+		).toThrow("together");
+		expect(() =>
+			lxdNativeCompanyRuntimeFromEnvironment({ ...configured, QORPERA_CODING_COMMAND_URL: undefined }),
+		).toThrow("together");
+		expect(() =>
+			lxdNativeCompanyRuntimeFromEnvironment({
+				QORPERA_CODING_COMMAND_URL: configured.QORPERA_CODING_COMMAND_URL,
+				QORPERA_LXD_CODING_COMMAND_TOKEN_FILE: configured.QORPERA_LXD_CODING_COMMAND_TOKEN_FILE,
+			}),
+		).toThrow("requires QORPERA_NATIVE_RUNTIME");
+		expect(() =>
+			lxdNativeCompanyRuntimeFromEnvironment({ ...configured, QORPERA_CODING_COMMAND_TOKEN: "k".repeat(43) }),
+		).toThrow("protected credential file");
+	});
+
+	it.each(["http", "path", "query", "readable", "shared-object", "shared-secret", "short"])(
+		"refuses an unsafe gateway or token (%s)",
+		async (kind) => {
+			const { current, tokenFile } = await codingEnvironment();
+			if (kind === "http") current.QORPERA_CODING_COMMAND_URL = "http://coding.example.test:8789";
+			if (kind === "path") current.QORPERA_CODING_COMMAND_URL = "https://coding.example.test/gateway";
+			if (kind === "query") current.QORPERA_CODING_COMMAND_URL = "https://coding.example.test/?token=leak";
+			if (kind === "readable") await chmod(tokenFile, 0o644);
+			if (kind === "shared-object") await writeFile(tokenFile, `${"q".repeat(43)}\n`);
+			if (kind === "shared-secret") await writeFile(tokenFile, `${"s".repeat(43)}\n`);
+			if (kind === "short") await writeFile(tokenFile, "short\n");
+			expect(() => lxdNativeCompanyRuntimeFromEnvironment(current)).toThrow();
+		},
+	);
+});

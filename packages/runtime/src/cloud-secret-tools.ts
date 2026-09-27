@@ -12,14 +12,14 @@ const SHA = /^[0-9a-f]{64}$/;
 const IDENTIFIER = /^[a-z][a-z0-9_-]{0,63}$/;
 const OPERATION_KEY = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 
-type ConnectorSchema = {
+export type CloudConnectorInputSchema = {
 	type: "object";
-	properties: Record<string, ConnectorSchemaNode>;
+	properties: Record<string, CloudConnectorSchemaNode>;
 	required?: string[];
 	additionalProperties: false;
 };
 
-type ConnectorSchemaNode =
+export type CloudConnectorSchemaNode =
 	| {
 			type: "string";
 			description?: string;
@@ -34,14 +34,14 @@ type ConnectorSchemaNode =
 	| {
 			type: "array";
 			description?: string;
-			items: ConnectorSchemaNode;
+			items: CloudConnectorSchemaNode;
 			minItems?: number;
 			maxItems?: number;
 	  }
 	| {
 			type: "object";
 			description?: string;
-			properties: Record<string, ConnectorSchemaNode>;
+			properties: Record<string, CloudConnectorSchemaNode>;
 			required?: string[];
 			additionalProperties: false;
 	  };
@@ -51,7 +51,7 @@ export interface CloudNativeConnectorToolDescriptor {
 	readonly grantId: string;
 	readonly toolName: string;
 	readonly description: string;
-	readonly inputSchema: ConnectorSchema;
+	readonly inputSchema: CloudConnectorInputSchema;
 	readonly connectorId: string;
 	readonly operationId: string;
 	readonly operationVersion: number;
@@ -173,7 +173,7 @@ function matchesStringPattern(value: string, pattern: string): boolean {
 	return matched?.index === 0 && matched[0] === value;
 }
 
-function parseSchemaNode(value: unknown, depth: number, budget: { remaining: number }): ConnectorSchemaNode {
+function parseSchemaNode(value: unknown, depth: number, budget: { remaining: number }): CloudConnectorSchemaNode {
 	if (depth > 6 || --budget.remaining < 0) throw new Error("Connector schema is too complex");
 	const input = record(value, "Connector schema");
 	const common = { ...(description(input.description) ? { description: input.description as string } : {}) };
@@ -300,14 +300,14 @@ function parseSchemaNode(value: unknown, depth: number, budget: { remaining: num
 	throw new Error("Connector schema type is unsupported");
 }
 
-function parseInputSchema(value: unknown): ConnectorSchema {
+export function parseCloudConnectorInputSchema(value: unknown): CloudConnectorInputSchema {
 	const schema = parseSchemaNode(value, 0, { remaining: 128 });
 	if (schema.type !== "object") throw new Error("Connector input schema must be an object");
 	cloudToolJsonText(schema, 16 * 1024);
 	return schema;
 }
 
-function validateValue(value: JsonValue, schema: ConnectorSchemaNode, depth = 0): void {
+function validateValue(value: JsonValue, schema: CloudConnectorSchemaNode, depth = 0): void {
 	if (depth > 6) throw new Error("Connector input is too deep");
 	if (schema.type === "string") {
 		if (
@@ -358,6 +358,12 @@ function validateValue(value: JsonValue, schema: ConnectorSchemaNode, depth = 0)
 		throw new Error("Connector input has extra fields");
 	if (schema.required?.some((name) => !Object.hasOwn(value, name))) throw new Error("Connector input is incomplete");
 	for (const [name, child] of Object.entries(value)) validateValue(child, schema.properties[name], depth + 1);
+}
+
+/** Re-validates business arguments against a closed connector schema. The
+ * broker's compiled adapters use it as a second check after the runtime. */
+export function validateCloudConnectorInput(value: JsonValue, schema: CloudConnectorInputSchema): void {
+	validateValue(value, schema);
 }
 
 function parseDescriptor(value: unknown): CloudNativeConnectorToolDescriptor {
@@ -417,7 +423,7 @@ function parseDescriptor(value: unknown): CloudNativeConnectorToolDescriptor {
 		grantId: input.grantId,
 		toolName: input.toolName,
 		description: input.description,
-		inputSchema: parseInputSchema(input.inputSchema),
+		inputSchema: parseCloudConnectorInputSchema(input.inputSchema),
 		connectorId: input.connectorId,
 		operationId: input.operationId,
 		operationVersion: input.operationVersion as number,

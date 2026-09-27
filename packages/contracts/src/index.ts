@@ -54,6 +54,10 @@ export const COMPANY_OPERATION_KINDS = [
 ] as const;
 
 export type CompanyOperationKind = (typeof COMPANY_OPERATION_KINDS)[number];
+export * from "./cloud-coding.ts";
+export * from "./cloud-coding-command.ts";
+export * from "./cloud-coding-session.ts";
+export * from "./cloud-coding-storage.ts";
 export * from "./company-computer-activation.ts";
 export * from "./company-computer-boot-intent.ts";
 export * from "./company-computer-boot-successor.ts";
