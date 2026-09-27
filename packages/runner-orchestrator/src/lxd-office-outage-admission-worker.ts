@@ -44,17 +44,23 @@ export type LxdOfficeOutageAdmissionPort = Pick<
 	| "readOfficeOutageServiceStartRequest"
 	| "submitOfficeOutageServiceInspection"
 >;
+interface Options {
+	/** Guest package discovery needs the funded, configured boot. Finish it
+	 * before successor effects and before starting the fresh inspection window. */
+	prepareInvocation?: (allocationId: string, signal: AbortSignal) => Promise<void>;
+	measureInvocation?: LxdOfficeInvocationMeasurement;
+}
 /** Completes one retained recovery. Root start is dispatched once; unknown
  * replies recover from exact root evidence and a new bounded inspection.
  * No earlier phase check is reused as authority for successor admission. */
 export class LxdOfficeOutageAdmissionWorker {
 	readonly configuration: LxdOfficeOutageConfigurationWorker;
 	readonly client: LxdOfficeOutageAdmissionPort;
-	readonly options: { measureInvocation?: LxdOfficeInvocationMeasurement };
+	readonly options: Options;
 	constructor(
 		configuration: LxdOfficeOutageConfigurationWorker,
 		client: LxdOfficeOutageAdmissionPort,
-		options: { measureInvocation?: LxdOfficeInvocationMeasurement } = {},
+		options: Options = {},
 	) {
 		this.configuration = configuration;
 		this.client = client;
@@ -113,6 +119,9 @@ export class LxdOfficeOutageAdmissionWorker {
 			doneName = `outage-service-start-completed-${suffix}.json`,
 			activeName = `outage-activation-completed-${suffix}.json`,
 			journalName = `outage-service-start-${suffix}`;
+		signal.throwIfAborted();
+		await this.options.prepareInvocation?.(allocationId, signal);
+		signal.throwIfAborted();
 		const absent = async (names: string[]) => {
 			for (const item of names)
 				if ((await readOptionalOutageRecord(root, item)) !== undefined)

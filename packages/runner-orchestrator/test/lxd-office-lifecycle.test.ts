@@ -425,8 +425,9 @@ describe("serialized office lifecycle", () => {
 		await f.open().reconcile(signal());
 		f.state.office = "maintenance";
 		ports.outageCoordinator.pendingGuard.mockResolvedValue(ports.stopped);
-		const dispose = vi.fn();
-		f.preparePackageInvocation.mockResolvedValue({ measure: vi.fn(), dispose });
+		// The stopped VM cannot serve package files. Its funded recovery must
+		// run before the admission worker prepares a fresh invocation.
+		f.preparePackageInvocation.mockRejectedValue(new Error("stopped guest files unavailable"));
 		await expect(f.open(undefined, undefined, undefined, ports).reconcile(signal())).resolves.toMatchObject({
 			state: "awaiting_readiness",
 			phase: "outage_recovery",
@@ -439,10 +440,7 @@ describe("serialized office lifecycle", () => {
 			f.request.serviceBootstrapPath,
 			expect.any(AbortSignal),
 		);
-		expect(f.preparePackageInvocation.mock.invocationCallOrder[0]).toBeLessThan(
-			ports.outageCoordinator.recover.mock.invocationCallOrder[0]!,
-		);
-		expect(dispose).toHaveBeenCalledOnce();
+		expect(f.preparePackageInvocation).not.toHaveBeenCalled();
 		expect(f.workers.activation.reconcileSettled).toHaveBeenCalledOnce();
 	});
 	it("registers a new forced shutdown before selecting a recovery guard and retains the old hold without capability", async () => {

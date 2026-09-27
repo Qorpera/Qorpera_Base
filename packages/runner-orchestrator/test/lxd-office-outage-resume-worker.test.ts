@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { LxdOfficeOutageAdmissionWorker } from "../src/lxd-office-outage-admission-worker.ts";
 import { officeOutageWorkerFixture } from "./fixtures/office-outage-worker.ts";
 
 const roots: string[] = [];
@@ -101,6 +102,87 @@ describe("paid outage cold boot", () => {
 			expect(await running).toBeInstanceOf(Error);
 			expect(settled).toBe(true);
 			expect(f.client.submitOfficeOutageServiceStart).not.toHaveBeenCalled();
+		},
+	);
+	it("prepares each outage invocation after funded configuration and before successor effects", async () => {
+		const f = await fixture();
+		await f.configureSources();
+		await f.stop();
+		await f.adapter().reconcileStopped(f.binding, f.registry, signal());
+		const original = await f.guard().status(f.permitId);
+		await expect(f.worker().reconcile(f.intentId, original, signal())).rejects.toThrow("RUNNING_PERMIT_REQUIRED");
+		await f.guard().sweep();
+		await f.sampleUsage();
+		await f.controller().maintain(signal());
+		const prepareInvocation = vi.fn(async (allocationId: string, checked: AbortSignal) => {
+			checked.throwIfAborted();
+			expect(allocationId).toBe(f.binding.allocationId);
+			expect(f.vm.status).toBe("Running");
+			expect(f.client.submitOfficeOutageConfiguration).toHaveBeenCalledOnce();
+			await f.adapter().assertActive(f.binding, checked);
+		});
+		const measureInvocation = vi.fn(async () => {
+			expect(prepareInvocation).toHaveBeenCalledOnce();
+		});
+		const base = f.admission();
+		const worker = new LxdOfficeOutageAdmissionWorker(base.configuration, base.client, {
+			prepareInvocation,
+			measureInvocation,
+		});
+		await expect(worker.reconcile(f.intentId, original, f.serviceBootstrapPath, signal())).resolves.toMatchObject({
+			state: "active",
+		});
+		expect(prepareInvocation).toHaveBeenCalledOnce();
+		expect(measureInvocation).toHaveBeenCalledOnce();
+		expect(prepareInvocation.mock.invocationCallOrder[0]).toBeLessThan(
+			f.client.submitOfficeOutageServiceStart.mock.invocationCallOrder[0]!,
+		);
+		expect(prepareInvocation.mock.invocationCallOrder[0]).toBeLessThan(
+			f.client.submitOfficeOutageServiceInspection.mock.invocationCallOrder[0]!,
+		);
+		await expect(worker.reconcile(f.intentId, original, f.serviceBootstrapPath, signal())).resolves.toMatchObject({
+			state: "active",
+		});
+		expect(prepareInvocation).toHaveBeenCalledTimes(2);
+		expect(f.client.submitOfficeOutageServiceStart).toHaveBeenCalledOnce();
+		expect(
+			f.client.submitInstanceOperation.mock.calls.filter(([, request]) => request.action === "start"),
+		).toHaveLength(2);
+	});
+	it.each(["rejected", "aborted"] as const)(
+		"refuses successor effects after %s package preparation",
+		async (fault) => {
+			const f = await fixture();
+			await f.configureSources();
+			await f.stop();
+			await f.adapter().reconcileStopped(f.binding, f.registry, signal());
+			const original = await f.guard().status(f.permitId);
+			await expect(f.worker().reconcile(f.intentId, original, signal())).rejects.toThrow("RUNNING_PERMIT_REQUIRED");
+			await f.guard().sweep();
+			await f.sampleUsage();
+			await f.controller().maintain(signal());
+			const caller = new AbortController();
+			const prepareInvocation = vi.fn(async () => {
+				if (fault === "rejected") throw new Error("package history unavailable");
+				// Even a late successful callback cannot outlive caller authority.
+				caller.abort(new Error("package preparation cancelled"));
+			});
+			const measureInvocation = vi.fn(async () => {});
+			const base = f.admission();
+			const worker = new LxdOfficeOutageAdmissionWorker(base.configuration, base.client, {
+				prepareInvocation,
+				measureInvocation,
+			});
+			await expect(worker.reconcile(f.intentId, original, f.serviceBootstrapPath, caller.signal)).rejects.toThrow(
+				fault === "rejected" ? "package history unavailable" : "package preparation cancelled",
+			);
+			expect(prepareInvocation).toHaveBeenCalledOnce();
+			expect(measureInvocation).not.toHaveBeenCalled();
+			expect(f.client.submitOfficeOutageServiceStart).not.toHaveBeenCalled();
+			expect(f.client.submitOfficeOutageServiceInspection).not.toHaveBeenCalled();
+			expect(f.control.call.mock.calls.some(([method]) => method.includes("runtime_office_outage_successor"))).toBe(
+				false,
+			);
 		},
 	);
 	it("admits a fresh funded boot and recovers a lost activation reply without repeating physical or guest starts", async () => {

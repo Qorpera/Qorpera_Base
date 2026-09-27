@@ -311,7 +311,10 @@ export class LxdOfficeLifecycle {
 				this.#operationClient,
 			);
 			this.#outage = new LxdOfficeOutageCoordinator(
-				new LxdOfficeOutageAdmissionWorker(configuration, this.#operationClient, { measureInvocation }),
+				new LxdOfficeOutageAdmissionWorker(configuration, this.#operationClient, {
+					prepareInvocation: (allocationId, signal) => this.#prepareMeasurement(allocationId, signal),
+					measureInvocation,
+				}),
 				options.outageRecovery.guard,
 				this.#operationClient,
 				registry,
@@ -435,7 +438,6 @@ export class LxdOfficeLifecycle {
 			this.#activeRecovery = undefined;
 			this.#activeBoot = undefined;
 			this.#activeReset = undefined;
-			await this.#prepareMeasurement(context.allocationId!, signal);
 			return this.#outage!.recover(status.intent.intentId, guard, context.request.serviceBootstrapPath, signal);
 		};
 		if (status.reservation && this.#paid) {

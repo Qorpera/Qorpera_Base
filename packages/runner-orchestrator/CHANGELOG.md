@@ -105,6 +105,7 @@
 
 ### Fixed
 
+- Discover retained office packages after the funded outage restart and configuration, before successor service dispatch and its fresh inspection. A stopped guest no longer blocks its own recovery; rejected or cancelled package preparation still prevents successor effects.
 - Keep durable supervisor-owned custody for parked shared hosts after company capacity is released, blocking billing-mode changes until physical stop is confirmed. Preserve closure authority through reuse, crashes and lost replies; serialize duplicate startup and drain in-flight starts before retirement can close custody.
 - Confirm an already completed office configuration command within its existing authority window before the first credential-read pass, avoiding redundant full preparation that exhausted physical reconciliation. New dispatch, the second complete read pass and publication still obtain fresh authority; all expiry and byte checks remain enforced.
 - Retry the first transient paid-clock capture failure within one second of recording its gap, while preserving the ten-second evidence deadline, two-failure shutdown and uncharged uncertainty.
