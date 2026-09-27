@@ -59,8 +59,8 @@ This design keeps the live folder and removes both reasons.
 **Server.**
 - A change covers one path.
 - Each change re-stages and re-verifies the whole tree and compare-and-swaps
-  the global head. `PT409` is retried four times, then the write fails as
-  "changed too frequently".
+  the global head. The commit is tried four times in all, and on a fourth
+  `PT409` the write fails as "Company File head changed".
 - There is no move and no revision feed a client can read.
 - Bytes are content-addressed objects on the NAS: 4 MiB chunks, 8 MiB
   objects, 256 MiB per file.
@@ -103,8 +103,9 @@ authority, receipts, presence and protected-path proposals.
   run box starts, and bwrap bind-mounts that mount into the box. The slot unit
   itself stays unprivileged.
 - **On a Company Computer:** a system unit.
-- **In the LXD runner guest:** its FUSE refusal
-  (`lxd-runner-bootstrap.ts:824`) is widened only for this service's mount.
+- **One-run LXD runner VMs** (the older lane) get no mount. The shared
+  execution host is the run machine for this design, and the LXD guest
+  bootstrap keeps refusing FUSE (`lxd-runner-bootstrap.ts:824`).
 
 **What it serves.**
 - Whole-subtree authorized listings.
@@ -140,17 +141,21 @@ commit. Memory holds at most one partial chunk per open file.
 ### When changes are published
 
 **In the run box**, at every tool result: when a command ends, and each time
-a running command yields output to the model. There is one boundary per box.
-Background processes are included.
+a running command yields output to the model. There is one boundary per box,
+and background processes are included. When the run ends, its processes are
+stopped first. A last boundary then publishes what they had open, and its
+report goes on the run's receipt.
 
-**On a Company Computer**, when a saved file is closed or renamed into place,
-after a quiet period of one to two seconds.
+**On a Company Computer**, per desktop, after a quiet period of one to two
+seconds following any change on the mount from that desktop. That covers an
+application's save, a file-manager copy, move or delete, and a
+desktop-terminal command. `computer_shell` sessions follow the run-box rule.
 
 **Never published:**
 - a file still open for writing by any process (it waits for a later
   boundary);
-- lock, swap and backup names: `.~lock.*#`, `~$*`, `*.swp`, `*.swo`, `.#*`,
-  `*~`;
+- lock, swap, backup and trash names: `.~lock.*#`, `~$*`, `*.swp`, `*.swo`,
+  `.#*`, `*~`, `.Trash-*`;
 - a file that is created and removed between two boundaries.
 
 ### How pending bytes are handled
@@ -158,12 +163,16 @@ after a quiet period of one to two seconds.
 Written bytes stream straight to the NAS object store as content-addressed
 chunks. They are not visible until published.
 
+**Base versions** (see below) are kept per run in the folder service's
+version map. The map is saved with each command's read record, so a
+restarted service reloads it.
+
 A change set has an operation key: the run, the box and the boundary number.
 Its manifest is staged in the object store before commit, so a restarted
 folder service commits or reports it exactly once (contract section 10).
-Bytes still held only in memory when the service dies are lost. The run's
-next tool result reports them as "not applied: the folder service
-restarted".
+Everything pending since the last boundary is lost if the service dies:
+paths, bytes and moves. The run's next tool result reports it as "not
+applied: the folder service restarted".
 
 ### What gets published
 
@@ -174,7 +183,7 @@ file renamed over its target counts as a change to the target.
 ### The base version of a path
 
 The base version is the newest version of that path the run has seen, taken
-from its read set. When the run never read the path, the base is the version
+from its version map. When the run never read the path, the base is the version
 at the moment the box first opened it. A blind `echo > f` therefore still
 cannot overwrite a version the run never saw.
 
@@ -185,7 +194,12 @@ is contract section 5.1's "atomic path set". The units are:
 - one file change;
 - one move, of a file or a whole folder: its source and destination together;
 - one new folder together with everything created inside it at the same
-  boundary.
+  boundary;
+- one deleted folder together with everything inside it (`rm -rf`).
+
+A unit whose parent comes from a parked or refused unit parks or fails with
+that unit. An example is a new file created inside a moved folder while the
+move waits for approval.
 
 All clean units of a boundary land in one revision and one head move.
 
@@ -206,7 +220,9 @@ All clean units of a boundary land in one revision and one head move.
   - **Deny:** they are restored in the mount and reported.
   - **Ask:** they are parked on the card and the other units land now. On
     approval the parked units apply without a retry, provided their base
-    versions still hold; otherwise they are reported as not applied.
+    versions still hold; otherwise they are reported as not applied. Where
+    no card can be raised (a worker or a group chat, 2026-09-25 amendment,
+    item 5), an ask counts as a deny.
 
 After every boundary the mount shows exactly the live folder. A pending
 proposal or card is visible only in the report.
@@ -228,8 +244,10 @@ These refusals happen as a file is opened or named:
 - adapter-only prefixes are refused: `.qorpera`, `.git`, `trail`, `inbox`,
   `credentials`, `secrets`, any `node_modules`, `agents/*/instructions.md`,
   and `departments/*/repository` and `departments/*/worktrees`;
-- names the Company File forbids are refused (`EINVAL`): `:`, `%`, `\`, a
-  trailing dot or space, device names, and names not in NFC;
+- names the Company File forbids are refused (`EINVAL`): control characters,
+  `:`, `%`, `\`, a trailing dot or space, device names with or without an
+  extension (`con`, `con.txt`), names not in NFC, and names whose NFKC form
+  contains `/`;
 - a file over the size limit is refused (`EFBIG`).
 
 Only conflicts, proposals and review outcomes wait for the boundary report.
@@ -255,12 +273,19 @@ rechecks. So the folder service records reads per run in two forms:
 
 - **In SQL:** one row per authorizing resource and grant, with the newest
   authority version seen. This is what is rechecked before each model
-  request, send and mutation, and what child wakes inherit.
+  request, send and mutation. Child wakes inherit these rows together with
+  the parent's path lists.
 - **As a compressed path list per command**, stored as an object on the run
   for audit. The list separates names (listed) from content (read).
 
-When a grant or resource that covers something the run read changes, the
-recheck reruns the recorded paths under it:
+The recheck reruns the recorded paths under a resource when any of these
+happens:
+- a grant or resource covering something the run read changes;
+- a new, narrower resource is created inside a covered subtree;
+- the requesting member's role changes;
+- the staff agent's employment status changes.
+
+On a recheck:
 - paths that are no longer readable leave the view;
 - open handles on them fail with `EACCES`;
 - when the run read their content, the run stops, as today's context
@@ -279,8 +304,11 @@ Each run gets a box of its own on the execution host, beside the harness's
 box.
 
 **Isolation.**
-- It runs as a second static account per slot, created by the installer, with
-  its own namespaces.
+- The slot's host unit is unprivileged and cannot start a box as another
+  account. A root-started unit per box, `qorpera-shared-box@N`, starts it
+  instead, with its own memory, CPU and task limits outside the host unit's.
+- The box runs as a third static account per slot, next to the host and
+  runner accounts the installer already creates, with its own namespaces.
 - It holds no credential files: no model login, service key or token.
 - It has no network (founder decision 7).
 - Home and `/tmp` are memory-backed and disappear when the run ends.
@@ -289,7 +317,7 @@ box.
 (`deploy/shared-execution/README.md`). Runs execute on the execution host of
 the member's identity-home node. Every such host therefore needs:
 - the per-slot folder service unit;
-- the second account per slot;
+- the box unit and the third account per slot;
 - more capacity: a box needs at least 1 vCPU and 2 GiB while its commands
   run.
 
@@ -334,13 +362,17 @@ Agents search and read through the shell and still write with today's tools.
 
 **One view per machine.** Desktops on a Company Computer are workflow
 surfaces, not security boundaries (section 12). So the machine mounts one
-view: the company-wide view, meaning the paths every agent of the company can
-read. It never includes member-private or project-restricted paths. Work on
-those runs in the run box.
+view: the company-wide view. That view is the paths of the company's
+company-wide resources under the default agent grant
+(`20260926035000_company_agent_default_write_grants.sql`). It never includes
+member-private or project-scoped resources, or anything a narrower grant
+restricts. Hiring an agent never shrinks it, and work on narrower paths runs
+in the run box.
 
-**Writes are attributed per desktop.** The folder service tells desktops
-apart through a mount namespace per desktop. A save is checked against, and
-recorded for:
+**Reads and writes are attributed per desktop.** The folder service tells
+desktops apart through a mount namespace per desktop. A desktop's reads are
+recorded in the read set of the run holding that screen. Its changes are
+checked against, and recorded for:
 - the run holding that screen; or
 - the member, while a member has taken the screen over.
 
@@ -352,6 +384,8 @@ browser profiles and caches. The rest is kept off it:
 - swap is off;
 - the desktop's Documents, Desktop and Downloads folders are the company
   folder;
+- there is no trash on the mount: a file-manager delete is a real delete,
+  which passes the automatic review;
 - the workbench holds no work files.
 
 **Shell.**
