@@ -20,7 +20,7 @@ export type CompanyComputerLinuxOfficeServiceOptions = Omit<
 	Parameters<typeof startCompanyComputerOfficeService>[0],
 	"guest" | "waitForActivation"
 > & {
-	startup?: CompanyComputerStartupControl;
+	startup: CompanyComputerStartupControl;
 	screenLifecycle: CompanyComputerScreenLifecycle;
 	/** Protected host configuration. Never mounted into desktop/browser namespaces. */
 	captureObjectGateway: { baseUrl: string; token: string; fetch?: typeof fetch };
@@ -52,11 +52,13 @@ export async function startCompanyComputerLinuxOfficeService(
 	const stop = new AbortController();
 	let failed = false;
 	let failure: unknown;
-	const boundary = new CompanyComputerLinuxBoundary({ ...options.linux, ...options });
-	if (options.startup) {
-		await options.startup.check(options.signal);
-		await boundary.assertPhysicalReady(options.signal);
-	} else await boundary.assertOfficeReady(options.signal);
+	const boundary = new CompanyComputerLinuxBoundary({
+		...options.linux,
+		...options,
+		startupIdentity: options.startup.identity,
+	});
+	await options.startup.check(options.signal);
+	await boundary.assertPhysicalReady(options.signal);
 	const guest = new CompanyComputerLinuxGuest({
 		...options.linux,
 		scope: options.scope,
@@ -86,21 +88,10 @@ export async function startCompanyComputerLinuxOfficeService(
 		...options,
 		guest,
 		signal: AbortSignal.any([options.signal, stop.signal]),
-		...(options.startup
-			? {
-					waitForActivation: async (
-						listeners: { nativePort: number; viewerPort: number },
-						signal: AbortSignal,
-					) => {
-						await options.startup!.waitForActivation(
-							listeners,
-							(checked) => boundary.assertPhysicalReady(checked),
-							signal,
-						);
-						await boundary.assertOfficeReady(signal);
-					},
-				}
-			: {}),
+		waitForActivation: async (listeners: { nativePort: number; viewerPort: number }, signal: AbortSignal) => {
+			await options.startup.waitForActivation(listeners, (checked) => boundary.assertPhysicalReady(checked), signal);
+			await boundary.assertOfficeReady(signal);
+		},
 	});
 	const finished = service.finished.then(
 		() => {

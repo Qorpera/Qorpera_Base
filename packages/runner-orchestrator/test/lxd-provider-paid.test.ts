@@ -32,6 +32,7 @@ vi.mock("../src/runtime-node-host.ts", () => ({
 }));
 const roots: string[] = [];
 afterEach(async () => {
+	vi.restoreAllMocks();
 	await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 async function fixture() {
@@ -160,7 +161,7 @@ async function fixture() {
 			throw new Error("paid path bypassed guard");
 		}),
 		pushInstanceFile: vi.fn(async () => undefined),
-		execInstance: vi.fn(async () => undefined),
+		execInstance: vi.fn<LxdClient["execInstance"]>(async () => undefined),
 		deleteInstance: vi.fn(async () => {
 			expect(instance?.status).toBe("Stopped");
 			effects.push("delete");
@@ -338,6 +339,39 @@ async function fixture() {
 	};
 }
 describe("native provider funded lifecycle", () => {
+	it("waits for a confirmed first sample without redispatching bootstrap or delivering work", async () => {
+		const f = await fixture();
+		f.usage.assertRunning.mockRejectedValueOnce(new Error("RUNTIME_COMPUTER_RUNNING_PERMIT_REQUIRED"));
+		await f.backend.acquire(f.work.runId, f.work, new AbortController().signal);
+		expect(f.usage.observe).toHaveBeenCalledTimes(2);
+		expect(f.usage.assertRunning).toHaveBeenCalledTimes(2);
+		expect(f.usage.start).toHaveBeenCalledOnce();
+		expect(f.guest.deliver).not.toHaveBeenCalled();
+		expect(JSON.parse(await readFile(join(f.config.stateRoot, f.work.runId, "journal.json"), "utf8"))).toMatchObject({
+			physicalState: "registered",
+		});
+	});
+	it("defers sustained metering uncertainty and recovers the same boot without restarting the service", async () => {
+		const f = await fixture();
+		vi.spyOn(performance, "now").mockReturnValueOnce(0).mockReturnValue(40000);
+		f.usage.assertRunning.mockRejectedValueOnce(new Error("RUNTIME_COMPUTER_RUNNING_PERMIT_REQUIRED"));
+		await expect(f.backend.acquire(f.work.runId, f.work, new AbortController().signal)).rejects.toMatchObject({
+			category: "admission_refused",
+			state: "deferred",
+			reason: "COMPUTER_USAGE_NOT_READY",
+		});
+		const path = join(f.config.stateRoot, f.work.runId, "journal.json");
+		expect(JSON.parse(await readFile(path, "utf8"))).toMatchObject({ physicalState: "bootstrapping" });
+		expect(JSON.parse(await readFile(path, "utf8"))).not.toHaveProperty("stopReason");
+		expect(f.guest.deliver).not.toHaveBeenCalled();
+		vi.restoreAllMocks();
+		await f.restart().acquire(f.work.runId, f.work, new AbortController().signal);
+		expect(f.usage.start).toHaveBeenCalledOnce();
+		expect(f.lxd.execInstance.mock.calls.filter(([, , command]) => command[0] === "/usr/bin/systemctl")).toHaveLength(
+			1,
+		);
+		expect(JSON.parse(await readFile(path, "utf8"))).toMatchObject({ physicalState: "registered" });
+	});
 	it("allows legacy shadow cleanup without an explicit autostart setting", async () => {
 		const f = await fixture(),
 			signal = new AbortController().signal;

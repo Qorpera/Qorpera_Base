@@ -9,11 +9,13 @@ import {
 	type CompanyComputerScreenBinding,
 } from "@qorpera/cloud-client/cloud-company-computer-contract";
 import {
+	type CompanyComputerStartupIdentity,
 	companyComputerBootAdoptionReceiptPath,
 	companyComputerResetAdoptionReceiptPath,
 	parseCompanyComputerBootAdoptionReceipt,
 	parseCompanyComputerOutageAdoptionReceipt,
 	parseCompanyComputerResetAdoptionReceipt,
+	parseCompanyComputerStartupIdentity,
 } from "@qorpera/contracts";
 import type { CompanyComputerGuestBoundary } from "./cloud-company-computer-guest.ts";
 import { assertCompanyComputerGuestLayout } from "./cloud-company-computer-layout.ts";
@@ -53,7 +55,7 @@ type BoundaryOptions = Pick<
 	| "browserRuntimeRoot"
 	| "captureRoot"
 	| "registry"
-> & { attestation: CompanyComputerLinuxGuestAttestation };
+> & { attestation: CompanyComputerLinuxGuestAttestation; startupIdentity?: CompanyComputerStartupIdentity };
 
 /** Current cloud allocation plus protected adoption and physical Linux checks.
  * No copying, directory creation or activation. The completed receipt records
@@ -127,6 +129,9 @@ export class CompanyComputerLinuxBoundary implements CompanyComputerGuestBoundar
 			throw new Error("INVALID_OFFICE_GUEST_ATTESTATION");
 		this.#options = {
 			...options,
+			...(options.startupIdentity
+				? { startupIdentity: parseCompanyComputerStartupIdentity(options.startupIdentity) }
+				: {}),
 			scope: { ...options.scope },
 			layout: { ...options.layout },
 			limits: { ...options.limits },
@@ -296,17 +301,22 @@ export class CompanyComputerLinuxBoundary implements CompanyComputerGuestBoundar
 					}
 					checked.throwIfAborted();
 					if (physicalOnly) return;
+					const startup = options.startupIdentity;
+					if (
+						!startup ||
+						!isDeepStrictEqual(startup.scope, options.scope) ||
+						startup.computerGeneration !== options.computerGeneration ||
+						startup.allocationId !== attestation.allocationId ||
+						startup.instanceSha256 !== attestation.instanceSha256 ||
+						startup.imageSha256 !== attestation.imageSha256 ||
+						startup.bootstrapSha256 !== attestation.bootstrapSha256 ||
+						startup.bootId !== attestation.bootId
+					)
+						throw new Error("work startup identity differs");
 					const started = performance.now();
 					const response = await options.registry.call(
-						"qorpera_check_runtime_office_guest_binding",
-						{
-							p_scope: options.scope,
-							p_computer_generation: options.computerGeneration,
-							p_allocation_id: attestation.allocationId,
-							p_instance_sha256: attestation.instanceSha256,
-							p_image_sha256: attestation.imageSha256,
-							p_bootstrap_sha256: attestation.bootstrapSha256,
-						},
+						"qorpera_check_runtime_office_work_binding",
+						{ p_startup: structuredClone(startup) },
 						checked,
 					);
 					if (

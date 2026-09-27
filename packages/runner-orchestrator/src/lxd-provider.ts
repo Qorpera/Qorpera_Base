@@ -1107,8 +1107,7 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 			const credentials = await this.#credentials(current.acquisitionId);
 			this.#validateCredentialHashes(current, credentials);
 			if (current.paidComputer || this.#paidAllocations.has(current.acquisitionId)) {
-				if (!this.#computerUsage) throw new Error("Paid native computer host is unavailable");
-				await this.#computerUsage.assertRunning(current.acquisitionId, signal ?? AbortSignal.timeout(15000));
+				await this.#waitForComputerUsage(current.acquisitionId, signal);
 			}
 			if (current.lxd.companyRuntime) {
 				const instance = await this.#lxd.getInstance(current.lxd.project, current.instanceName, signal);
@@ -1351,11 +1350,13 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 			}
 			address = await this.#readyAddress(current, signal);
 			if (this.#paidAllocations.has(current.acquisitionId) || current.paidComputer) {
-				if (!this.#computerUsage) throw new Error("Paid native computer host is unavailable");
-				await this.#computerUsage.observe(current.acquisitionId, signal ?? AbortSignal.timeout(15000));
-				await this.#computerUsage.assertRunning(current.acquisitionId, signal ?? AbortSignal.timeout(15000));
+				await this.#waitForComputerUsage(current.acquisitionId, signal);
 			}
 		} catch (error) {
+			// A first sample or a recovered clock segment can arrive after the
+			// closed assignment inbox is ready. Keep that same guarded boot
+			// retryable; no assignment has been delivered by this acquisition.
+			if (error instanceof LxdMachineAdmissionRefused && error.reason === "COMPUTER_USAGE_NOT_READY") throw error;
 			if (
 				current.physicalState === "creating" ||
 				current.physicalState === "starting" ||
@@ -1374,6 +1375,38 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 		};
 		await this.#writeJournal(current);
 		return current;
+	}
+
+	async #waitForComputerUsage(allocationId: string, signal?: AbortSignal): Promise<void> {
+		if (!this.#computerUsage) throw new Error("Paid native computer host is unavailable");
+		const budgetMs = Math.min(30000, this.#config.guestReadyTimeoutMs ?? 300000);
+		const deadline = performance.now() + budgetMs;
+		const budget = AbortSignal.timeout(budgetMs);
+		const checked = signal ? AbortSignal.any([signal, budget]) : budget;
+		while (true) {
+			signal?.throwIfAborted();
+			try {
+				checked.throwIfAborted();
+				await this.#computerUsage.observe(allocationId, checked);
+				await this.#computerUsage.assertRunning(allocationId, checked);
+				checked.throwIfAborted();
+				return;
+			} catch (error) {
+				signal?.throwIfAborted();
+				if (budget.aborted || performance.now() >= deadline)
+					throw new LxdMachineAdmissionRefused("deferred", "COMPUTER_USAGE_NOT_READY");
+				if (!(error instanceof Error) || error.message !== "RUNTIME_COMPUTER_RUNNING_PERMIT_REQUIRED") throw error;
+			}
+			// Poll only for a new canonical verdict. This never renews a stale
+			// permit or bypasses the independent guard's stop deadline.
+			try {
+				await delay(1000, undefined, { signal: checked });
+			} catch (error) {
+				signal?.throwIfAborted();
+				if (budget.aborted) throw new LxdMachineAdmissionRefused("deferred", "COMPUTER_USAGE_NOT_READY");
+				throw error;
+			}
+		}
 	}
 
 	async #readyAddress(current: LxdProviderJournal, signal?: AbortSignal): Promise<string> {

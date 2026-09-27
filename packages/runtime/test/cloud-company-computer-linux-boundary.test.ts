@@ -86,8 +86,19 @@ function fixture() {
 	physical.read.mockImplementation(async (path) =>
 		path.endsWith("boot_id") ? `${options.attestation.bootId}\n` : text,
 	);
-	const create = () => new CompanyComputerLinuxBoundary(options);
-	return { options, receipt, publish, registry, create, signal: new AbortController().signal };
+	const startupIdentity = () => ({
+		scope: options.scope,
+		computerGeneration: options.computerGeneration,
+		allocationId: options.attestation.allocationId,
+		instanceSha256: options.attestation.instanceSha256,
+		imageSha256: options.attestation.imageSha256,
+		bootstrapSha256: options.attestation.bootstrapSha256,
+		bootId: options.attestation.bootId,
+		configurationSha256: "e".repeat(64),
+		serviceInvocationId: "f".repeat(32),
+	});
+	const create = () => new CompanyComputerLinuxBoundary({ ...options, startupIdentity: startupIdentity() });
+	return { options, receipt, publish, registry, create, startupIdentity, signal: new AbortController().signal };
 }
 describe("physical office preflight (kernel/filesystem mocked; separate Linux proof)", () => {
 	it("separates read-only physical startup checks from mandatory active work authority", async () => {
@@ -286,17 +297,27 @@ describe("physical office preflight (kernel/filesystem mocked; separate Linux pr
 		expect(physical.close).toHaveBeenCalledTimes(10);
 		expect(f.registry.call).toHaveBeenCalledTimes(2);
 		expect(f.registry.call).toHaveBeenLastCalledWith(
-			"qorpera_check_runtime_office_guest_binding",
-			{
-				p_scope: computerScope(),
-				p_computer_generation: 1,
-				p_allocation_id: f.options.attestation.allocationId,
-				p_instance_sha256: "a".repeat(64),
-				p_image_sha256: "b".repeat(64),
-				p_bootstrap_sha256: "c".repeat(64),
-			},
+			"qorpera_check_runtime_office_work_binding",
+			{ p_startup: f.startupIdentity() },
 			expect.any(AbortSignal),
 		);
+	});
+	it("requires exact startup identity for work, while physical preflight and transient recovery remain possible", async () => {
+		const f = fixture();
+		const missing = new CompanyComputerLinuxBoundary(f.options);
+		await missing.assertPhysicalReady(f.signal);
+		await expect(missing.assertOfficeReady(f.signal)).rejects.toThrow("OFFICE_GUEST_READINESS_UNCONFIRMED");
+		const wrong = new CompanyComputerLinuxBoundary({
+			...f.options,
+			startupIdentity: { ...f.startupIdentity(), bootId: computerId(99) },
+		});
+		await expect(wrong.assertOfficeReady(f.signal)).rejects.toThrow("OFFICE_GUEST_READINESS_UNCONFIRMED");
+		expect(f.registry.call).not.toHaveBeenCalled();
+		const boundary = f.create();
+		f.registry.call.mockRejectedValueOnce(new Error("metering gap"));
+		await expect(boundary.assertOfficeReady(f.signal)).rejects.toThrow("OFFICE_GUEST_READINESS_UNCONFIRMED");
+		await boundary.assertOfficeReady(f.signal);
+		expect(f.registry.call).toHaveBeenCalledTimes(2);
 	});
 	it.each([
 		"/srv/workbench/adoption.json",

@@ -18,6 +18,9 @@ export class CompanyComputerStartupControl {
 		this.#identity = parseCompanyComputerStartupIdentity(identity);
 		this.#registry = registry;
 	}
+	get identity(): CompanyComputerStartupIdentity {
+		return this.#identity;
+	}
 	async check(signal: AbortSignal) {
 		return this.#call("qorpera_check_runtime_office_startup", {}, signal);
 	}

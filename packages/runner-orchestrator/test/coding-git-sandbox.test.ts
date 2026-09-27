@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import { mkdtemp, open, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { createCodingBrokerGitRunner } from "../src/coding-git.ts";
 import { codingGitSandboxPlan, codingGitSocketFilter } from "../src/coding-git-sandbox.ts";
@@ -105,8 +106,23 @@ describe("mandatory coding Git parser containment", () => {
 		}
 		expect(version).toMatch(/^git version /);
 		// Trusted fixture alias deliberately probes a compromised parser's reach.
-		const probe = `!test ! -e '${secret}' && test ! -e /run && test ! -e /home && test -e /proc/self && printf isolated`;
-		expect(await run({ ...command, args: ["-c", `alias.probe=${probe}`, "probe"] })).toBe("isolated");
+		// A scratch directory beneath /home requires empty /home ancestors in
+		// the new mount tree. Prove that actual host contents stay hidden rather
+		// than rejecting those necessary, newly created ancestor directories.
+		const probe =
+			'!test ! -e "$HOST_FIXTURE_DIRECTORY" && test ! -e "$HOST_FIXTURE_SECRET" && test ! -e "$HOST_PACKAGE_FILE" && test -e /proc/self && printf isolated';
+		expect(
+			await run({
+				...command,
+				env: {
+					...command.env,
+					HOST_FIXTURE_DIRECTORY: host,
+					HOST_FIXTURE_SECRET: secret,
+					HOST_PACKAGE_FILE: await realpath(fileURLToPath(new URL("../package.json", import.meta.url))),
+				},
+				args: ["-c", `alias.probe=${probe}`, "probe"],
+			}),
+		).toBe("isolated");
 		const socketProbe =
 			'!/usr/bin/python3 -c \'import errno,socket;\ntry: socket.socket(socket.AF_UNIX)\nexcept OSError as e: assert e.errno == errno.EPERM; print("blocked")\nelse: raise AssertionError("socket escaped")\'';
 		expect(await run({ ...command, network: true, args: ["-c", `alias.probe=${socketProbe}`, "probe"] })).toBe(

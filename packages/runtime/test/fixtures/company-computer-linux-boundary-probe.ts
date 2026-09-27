@@ -104,23 +104,27 @@ if (process.argv.includes("--prepare")) {
 	> & { wrongMountReceiptSha256: string };
 	let reads = 0;
 	let active = true;
+	const startupIdentity = {
+		scope: config.scope,
+		computerGeneration: config.computerGeneration,
+		allocationId: config.attestation.allocationId,
+		instanceSha256: config.attestation.instanceSha256,
+		imageSha256: config.attestation.imageSha256,
+		bootstrapSha256: config.attestation.bootstrapSha256,
+		bootId: config.attestation.bootId,
+		configurationSha256: "e".repeat(64),
+		serviceInvocationId: "f".repeat(32),
+	};
 	const registry = {
 		async call(method: string, args: Record<string, unknown>) {
 			reads++;
-			assert.equal(method, "qorpera_check_runtime_office_guest_binding");
-			assert.deepEqual(args, {
-				p_scope: computerScope(),
-				p_computer_generation: 1,
-				p_allocation_id: computerId(70),
-				p_instance_sha256: "a".repeat(64),
-				p_image_sha256: "b".repeat(64),
-				p_bootstrap_sha256: "c".repeat(64),
-			});
+			assert.equal(method, "qorpera_check_runtime_office_work_binding");
+			assert.deepEqual(args, { p_startup: startupIdentity });
 			if (!active) throw new Error("synthetic allocation revoked");
 			return { state: "authorized", computerGeneration: 1, validForMs: 5000 };
 		},
 	};
-	const boundary = new CompanyComputerLinuxBoundary({ ...config, registry });
+	const boundary = new CompanyComputerLinuxBoundary({ ...config, registry, startupIdentity });
 	await boundary.assertOfficeReady(signal);
 	await writeFile(`${layout.workbenchRoot}/normal-work.txt`, "work after completed empty adoption");
 	await boundary.assertReady(computerBinding(), signal);

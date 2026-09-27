@@ -80,6 +80,8 @@ jobs:
         run: npm run hydrate:model-data
       - name: Verify actual unprivileged Git containment
         working-directory: packages/runner-orchestrator
+        env:
+          TMPDIR: ${{ runner.temp }}
         run: node ../../node_modules/vitest/dist/cli.js --run --maxWorkers=1 --no-cache test/coding-git-sandbox.test.ts
       - name: Check candidate source and browser build
         run: npm run check

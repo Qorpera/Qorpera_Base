@@ -331,12 +331,137 @@ describe("the coding executor over a session turn", () => {
 		await vi.advanceTimersByTimeAsync(16000);
 		expect(await run).toBe("recovery-required");
 		expect(w.host.detachSession).toHaveBeenCalled();
+		expect(w.host.refreshLease).toHaveBeenCalledTimes(1);
 		expect(w.world.calls.some((c) => c.method === "qorpera_complete_coding_turn")).toBe(false);
 		// The log names the cause, not whichever await the abort interrupted.
 		expect(report.mock.calls.map(([stage, error]) => [stage, (error as Error).message])).toEqual([
 			["turn", "CODING_EXECUTOR_LEASE_LOST"],
 		]);
 	});
+
+	it("waits for a transient initial coverage gap before admitting the model turn", async () => {
+		const w = world();
+		vi.mocked(w.host.refreshLease).mockRejectedValueOnce(new CodingMachineUnavailable("COMPUTER_USAGE_NOT_READY"));
+		const control = withHook(w.control, endTurnOnPoll(w.world, "completed", null));
+		const executor = new CloudCodingExecutor({ control, host: w.host, owner: "exec-test", turnPollMs: 1 });
+		const run = executor.runOnce(new AbortController().signal);
+		await vi.advanceTimersByTimeAsync(200);
+		expect(w.host.refreshLease).toHaveBeenCalledTimes(1);
+		expect(w.world.calls.some((call) => call.method === "qorpera_begin_coding_turn")).toBe(false);
+		await vi.advanceTimersByTimeAsync(1000);
+		expect(await run).toBe("failed"); // The synthetic model ended without a submission.
+		expect(w.host.refreshLease).toHaveBeenCalledTimes(2);
+		expect(w.host.detachSession).toHaveBeenCalledTimes(1);
+	});
+
+	it("recovers ready-gap-ready coverage without poisoning the next heartbeat refresh", async () => {
+		const w = world();
+		const attemptedAt: number[] = [];
+		vi.mocked(w.host.refreshLease).mockImplementation(async () => {
+			attemptedAt.push(Date.now());
+			if (attemptedAt.length === 2 || attemptedAt.length === 3)
+				throw new CodingMachineUnavailable("COMPUTER_USAGE_NOT_READY");
+		});
+		const report = vi.fn();
+		const executor = new CloudCodingExecutor({
+			control: w.control,
+			host: w.host,
+			owner: "exec-test",
+			turnPollMs: 50,
+			report,
+		});
+		const run = executor.runOnce(new AbortController().signal);
+		await vi.advanceTimersByTimeAsync(32000);
+		expect(attemptedAt).toHaveLength(5); // Initial, refused twice, recovered, next heartbeat.
+		expect(attemptedAt[3]! - attemptedAt[1]!).toBe(500);
+		expect(w.host.detachSession).not.toHaveBeenCalled();
+		expect(report).not.toHaveBeenCalled();
+		w.world.jobStatus = "completed";
+		await vi.advanceTimersByTimeAsync(100);
+		expect(await run).toBe("failed");
+		expect(w.host.detachSession).toHaveBeenCalledTimes(1);
+		expect(w.world.calls.filter((call) => call.method === "qorpera_complete_coding_turn")).toHaveLength(1);
+	});
+
+	it.each([60000, 17000])(
+		"bounds a persistent coverage gap by the existing %ims lease and never claims completion",
+		async (leaseMs) => {
+			const w = world();
+			const started = Date.now();
+			w.world.claim.leaseUntil = new Date(started + leaseMs).toISOString();
+			const attemptedAt: number[] = [];
+			vi.mocked(w.host.refreshLease).mockImplementation(async () => {
+				attemptedAt.push(Date.now());
+				if (attemptedAt.length > 1) throw new CodingMachineUnavailable("COMPUTER_USAGE_NOT_READY");
+			});
+			const report = vi.fn();
+			const executor = new CloudCodingExecutor({
+				control: w.control,
+				host: w.host,
+				owner: "exec-test",
+				turnPollMs: 50,
+				report,
+			});
+			const run = executor.runOnce(new AbortController().signal);
+			await vi.advanceTimersByTimeAsync(22000);
+			expect(await run).toBe("recovery-required");
+			expect(attemptedAt.length).toBeGreaterThan(2);
+			expect(attemptedAt.at(-1)!).toBeLessThan(started + Math.min(leaseMs, 20000));
+			// The successful SQL heartbeat extends its lease; it does not extend this retry budget.
+			expect(w.world.calls.filter((call) => call.method === "qorpera_heartbeat_coding_session")).toHaveLength(1);
+			expect(w.world.calls.some((call) => call.method === "qorpera_complete_coding_turn")).toBe(false);
+			expect(w.host.detachSession).toHaveBeenCalledTimes(1);
+			expect(report.mock.calls.map(([stage, error]) => [stage, (error as Error).message])).toEqual([
+				["turn", "CODING_MACHINE_UNAVAILABLE:COMPUTER_USAGE_NOT_READY"],
+			]);
+		},
+	);
+
+	it("keeps the five-second retry bound when the wall clock moves backwards", async () => {
+		const w = world();
+		const attemptedAt: number[] = [];
+		vi.mocked(w.host.refreshLease).mockImplementation(async () => {
+			attemptedAt.push(performance.now());
+			if (attemptedAt.length === 2) vi.setSystemTime(Date.now() - 60000);
+			if (attemptedAt.length > 1) throw new CodingMachineUnavailable("COMPUTER_USAGE_NOT_READY");
+		});
+		const report = vi.fn();
+		const executor = new CloudCodingExecutor({
+			control: w.control,
+			host: w.host,
+			owner: "exec-test",
+			turnPollMs: 50,
+			report,
+		});
+		const run = executor.runOnce(new AbortController().signal);
+		await vi.advanceTimersByTimeAsync(22000);
+		expect(w.host.detachSession).toHaveBeenCalledTimes(1);
+		expect(await run).toBe("recovery-required");
+		expect(attemptedAt.length).toBeGreaterThan(2);
+		expect(attemptedAt.at(-1)! - attemptedAt[1]!).toBeLessThan(5000);
+		expect(w.world.calls.some((call) => call.method === "qorpera_complete_coding_turn")).toBe(false);
+		expect(report.mock.calls.map(([stage, error]) => [stage, (error as Error).message])).toEqual([
+			["turn", "CODING_MACHINE_UNAVAILABLE:COMPUTER_USAGE_NOT_READY"],
+		]);
+	});
+
+	it.each([new Error("CODING_LEASE_REFRESH_UNCONFIRMED"), new CodingMachineUnavailable("MACHINE_RETIRING")])(
+		"does not retry an unknown refresh or another refusal: %s",
+		async (error) => {
+			const w = world();
+			vi.mocked(w.host.refreshLease).mockRejectedValue(error);
+			const executor = new CloudCodingExecutor({
+				control: w.control,
+				host: w.host,
+				owner: "exec-test",
+				turnPollMs: 1,
+			});
+			expect(await executor.runOnce(new AbortController().signal)).toBe("recovery-required");
+			expect(w.host.refreshLease).toHaveBeenCalledTimes(1);
+			expect(w.host.detachSession).toHaveBeenCalledTimes(1);
+			expect(w.world.calls.some((call) => call.method === "qorpera_begin_coding_turn")).toBe(false);
+		},
+	);
 
 	it("a shutdown mid-turn is reported as the shutdown and still detaches the session", async () => {
 		const w = world();

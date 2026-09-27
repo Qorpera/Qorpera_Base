@@ -364,9 +364,34 @@ export class CloudCodingExecutor {
 		try {
 			const claimed = claim;
 			const args = { p_worker_id: claim.workerId, p_lease_token: claim.leaseToken };
-			const refresh = () => {
+			const refresh = (leaseDeadline = Date.parse(claimed.leaseUntil)) => {
+				// One sampling interval, capped by the lease already held when this
+				// refresh was requested. A later heartbeat cannot prolong the wait.
+				const retryUntil = performance.now() + 5000;
 				leaseRefresh = leaseRefresh.then(async () => {
-					if (workspaceReady) await this.#host.refreshLease(claimed, active);
+					let retryingCoverage = false;
+					while (workspaceReady) {
+						active.throwIfAborted();
+						if (retryingCoverage && (performance.now() >= retryUntil || Date.now() >= leaseDeadline))
+							throw new CodingMachineUnavailable("COMPUTER_USAGE_NOT_READY");
+						try {
+							await this.#host.refreshLease(claimed, active);
+							return;
+						} catch (error) {
+							// This exact refusal precedes the guest refresh effect. Unknown
+							// I/O, changed identity and real lease failures are not retried.
+							if (
+								!(error instanceof CodingMachineUnavailable) ||
+								error.reason !== "COMPUTER_USAGE_NOT_READY" ||
+								active.aborted ||
+								performance.now() + 250 >= retryUntil ||
+								Date.now() + 250 >= leaseDeadline
+							)
+								throw error;
+							retryingCoverage = true;
+							await setTimeout(250, undefined, { signal: active });
+						}
+					}
 				});
 				return leaseRefresh;
 			};
@@ -376,6 +401,7 @@ export class CloudCodingExecutor {
 				try {
 					while (!checked.aborted) {
 						await setTimeout(15000, undefined, { signal: checked });
+						const leaseDeadline = Date.parse(claimed.leaseUntil);
 						const until = await call(
 							"qorpera_heartbeat_coding_session",
 							{ ...args, p_lease_seconds: 60 },
@@ -384,10 +410,15 @@ export class CloudCodingExecutor {
 						if (typeof until !== "string") throw new Error("Coding heartbeat unconfirmed");
 						arm(until);
 						claimed.leaseUntil = until;
-						if (workspaceReady) await refresh();
+						if (workspaceReady) await refresh(leaseDeadline);
 					}
-				} catch {
-					if (!heartbeatStop.signal.aborted) stop.abort(new Error("CODING_EXECUTOR_LEASE_LOST"));
+				} catch (error) {
+					if (!heartbeatStop.signal.aborted)
+						stop.abort(
+							error instanceof CodingMachineUnavailable && error.reason === "COMPUTER_USAGE_NOT_READY"
+								? error
+								: new Error("CODING_EXECUTOR_LEASE_LOST"),
+						);
 				}
 			})();
 			const describe = async () => parseCodingTurnState(await call("qorpera_describe_coding_turn", args), claimed);

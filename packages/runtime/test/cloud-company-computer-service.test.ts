@@ -178,6 +178,28 @@ function fixture() {
 }
 
 function linuxFixture(f: ReturnType<typeof fixture>) {
+	const identity = {
+		scope: computerScope(),
+		computerGeneration: 1,
+		allocationId: computerId(70),
+		instanceSha256: "a".repeat(64),
+		imageSha256: "b".repeat(64),
+		bootstrapSha256: "c".repeat(64),
+		bootId: computerId(71),
+		configurationSha256: "d".repeat(64),
+		serviceInvocationId: "e".repeat(32),
+	};
+	const startup = new CompanyComputerStartupControl(identity, {
+		call: async () => ({
+			schema: "qorpera.office-startup-authority/v1",
+			activationId: computerId(72),
+			bootId: identity.bootId,
+			configurationSha256: identity.configurationSha256,
+			state: "active",
+			serviceInvocationId: identity.serviceInvocationId,
+			validForMs: 5000,
+		}),
+	});
 	const screenLifecycle = {
 		create: vi.fn(() => {
 			throw new Error("PHYSICAL_GUEST_MOCKED");
@@ -195,11 +217,11 @@ function linuxFixture(f: ReturnType<typeof fixture>) {
 	});
 	return {
 		fail: () => fail(new Error("synthetic idle display failure")),
-		start: (startup?: CompanyComputerStartupControl) =>
+		start: (control: CompanyComputerStartupControl = startup) =>
 			startCompanyComputerLinuxOfficeService({
 				...f.options,
 				screenLifecycle,
-				...(startup ? { startup } : {}),
+				startup: control,
 				captureObjectGateway: { baseUrl: "https://objects.example", token: "x".repeat(43) },
 				linux: {
 					layout: {
@@ -338,7 +360,7 @@ describe("headless office service lifetime (TLS listeners, synthetic physical ad
 	it("refuses startup before constructing a guest when physical adoption cannot be confirmed", async () => {
 		const f = fixture();
 		const linux = linuxFixture(f);
-		linuxGuest.ready.mockRejectedValue(new Error("OFFICE_GUEST_READINESS_UNCONFIRMED"));
+		linuxGuest.physical.mockRejectedValue(new Error("OFFICE_GUEST_READINESS_UNCONFIRMED"));
 		await expect(linux.start()).rejects.toThrow("OFFICE_GUEST_READINESS_UNCONFIRMED");
 		expect(linuxGuest.construct).not.toHaveBeenCalled();
 		expect(f.sql).not.toHaveBeenCalled();

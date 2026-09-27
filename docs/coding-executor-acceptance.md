@@ -1,0 +1,26 @@
+# Physical coding executor acceptance
+
+This sibling to the paid workload matrix exercises `LxdCodingExecutorHost` with the real LXD client, `createCodingNasStorage`, storage/Git/command/watchdog guest packages, SQL command authority, independent paid guard and the existing integer debit oracle. It has no physical pass until its retained report says `passed`, `cleanup` and `hostCleanup` are all true.
+
+Dispatch `.github/workflows/step2-lxd.yml` with `coding_executor_acceptance=true`. The dedicated concurrency group and job skip the other physical matrices. The CLI is:
+
+```sh
+sudo env PATH="$PATH:/snap/bin" GITHUB_ACTIONS=true RUNNER_ENVIRONMENT=github-hosted GITHUB_SHA="$GITHUB_SHA" \
+  node scripts/acceptance/coding-executor-physical.mjs --out "$RUNNER_TEMP/coding-executor-acceptance"
+```
+
+It requires a fresh disposable GitHub-hosted x86 Linux machine with KVM, systemd, Node24, PostgreSQL17, reviewed LXD6.9 revision40424, Git, Bubblewrap and NFS server/client utilities. It refuses existing instances, pools, exports, its service account and guard custody. The VM is one CPU and 2GiB, with unchanged 500mCPU and 2GiB host reserve. This shape's actual admitted tariff is used, not the standard computer's full rate. Allow about 20 minutes including fresh migrations and image preparation.
+
+Before any paid admission, the driver prepares an unsigned diagnostic Ubuntu image, installs and hashes the four current guest packages and actual watchdog units, installs Node/Git/systemd NSS, masks self-update services and publishes the stopped image. Its measured fingerprint and installation digest bind the admission. This is current-source diagnostic image evidence; it is not signed release-image provenance or proof of the installed production executor service.
+
+The owned NFS export is loopback-only `sync,no_root_squash,no_all_squash`. The actual executor root and intermediate ancestors remain private0700, with unique session UID ownership and root-owned guest custody unchanged. This follows the separately measured identity-preserving storage positive control; it does not attest a remote NAS export or guest-to-NAS firewall isolation.
+
+The case retains two public coding dispatches from fixture396, claims them through current SQL, and runs both on one real member machine. `prepareWorkspace` must perform physical admission, NAS provisioning, guarded start, session hot-plug, guest initialization, Git seed bundle transfer and checkout. A narrowly allowlisted Git transport substitutes only the fixture repository's exact `ls-remote` and `fetch` URLs with a private local bare repository. Every Git operation still executes, with the real unprivileged broker sandbox and network disabled. No repository credential reaches the guest, no network Git access occurs, and push/PR publication is not claimed.
+
+Commands use real native operation envelopes/receipts and `authorizeCodingCommand` before the production command transport. Each session edits, tests and commits as its own UID; the sandbox must deny access to the other session and writes to protected custody. Detaching the first session must invalidate its old transport while the second command continues. A member follow-up reclaims and reattaches the first session and must preserve its marker and commit without reseeding. The same physical machine has one permit and metering stream. Final stopped custody, sealed sample upload and SQL settlement must reconcile exactly with the existing independent paid-usage oracle, with no retained allowance hold. Total bucket balance changes must equal the independently calculated debit; every command operation receipt must also be completed.
+
+Company/model source and invoice funding are explicitly SQL fixtures. Logical model-run fixture bindings obtain actual SQL authority, but no model inference process is executed; the fixture ends those logical jobs explicitly. This acceptance therefore does not prove company connector credentials, real GitHub publication, model dispatch/follow-up, remote NAS durability, signed image distribution or the whole installed executor service. Those boundaries must retain their own evidence.
+
+The child audits all SQL reservations, permits and durable guard prestarts even if workspace preparation failed before returning a VM ID. Registered or unmatched intents forbid cleanup. A timed-out child receives bounded TERM/KILL escalation; this never counts as successful custody closure.
+
+On any unconfirmed physical stop or settlement, the child preserves its private PostgreSQL cluster. The parent preserves its independent guard, service account and NAS. Missing child evidence never authorizes cleanup. No NAS is unmounted or removed before exact physical cleanup has completed; hosted-runner destruction remains the final boundary for a failed run.

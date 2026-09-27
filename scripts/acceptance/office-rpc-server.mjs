@@ -7,6 +7,7 @@ export const OFFICE_GUEST_RPCS = Object.freeze([
 	"qorpera_check_runtime_office_startup",
 	"qorpera_report_runtime_office_ready",
 	"qorpera_check_runtime_office_guest_binding",
+	"qorpera_check_runtime_office_work_binding",
 	"qorpera_runtime_office_supervisor_status",
 	"qorpera_runtime_office_privacy_status",
 	"qorpera_ack_runtime_office_drain",
