@@ -951,6 +951,19 @@ describe("warm conversations", () => {
 		// Same conversation and login, new agent version: the parked host must not linger.
 		await f.backend.acquire(secondRun, work({ runId: secondRun, sourceId: secondRun, staffVersion: 2 }), signal);
 		expect(f.units.log.slice(0, 1)).toEqual([`kill ${hostUnit(0)}`]);
+		// The new version's run took slot 0 again. Another agent of the same room on the
+		// same login leaves that run's parked host alone.
+		await finishRun(f, 0);
+		expect(await readdir(join(f.stateRoot, "warm"))).toEqual(["0.json"]);
+		f.units.log.length = 0;
+		const thirdRun = "30000000-0000-4000-8000-000000000023";
+		await f.backend.acquire(
+			thirdRun,
+			work({ runId: thirdRun, sourceId: thirdRun, staffAgentId: "30000000-0000-4000-8000-000000000024" }),
+			signal,
+		);
+		expect(f.units.log.some((entry) => entry === `kill ${hostUnit(0)}`)).toBe(false);
+		expect(f.units.activeUnits.has(hostUnit(0))).toBe(true);
 		// A host no journal or warm record tracks (a crash between the two) is stopped.
 		f.units.activeUnits.add(hostUnit(3));
 		await f.backend.reconcile();

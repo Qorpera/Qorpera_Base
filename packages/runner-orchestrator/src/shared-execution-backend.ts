@@ -123,8 +123,9 @@ interface SharedExecutionWarmSlot {
 	/** warmConversationKey of the run that parked it. */
 	key: string;
 	computeIdentityId: string;
-	/** The conversation: a later run of it with another key ends this warm slot. */
+	/** The conversation and agent: a later run of both with another key ends this warm slot. */
 	sessionId: string;
+	staffAgentId: string;
 	/** The identity the running host was started with: a later run must find it unchanged. */
 	epoch: number;
 	masterKeySha256: string;
@@ -216,6 +217,7 @@ export interface SharedExecutionJournal {
 	/** Warm conversations: this run may park its host for the next run of the conversation. */
 	warmKey?: string;
 	warmSessionId?: string;
+	warmStaffAgentId?: string;
 	/** The identity the slot's native host runs with (set when the host was started or reused). */
 	hostIdentity?: { epoch: number; masterKeySha256: string };
 	/** This run took a warm slot: its native host was already running. */
@@ -645,7 +647,9 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 				),
 				runner,
 				physicalState: "reserving",
-				...(warmKey && work.sessionId ? { warmKey, warmSessionId: work.sessionId } : {}),
+				...(warmKey && work.sessionId
+					? { warmKey, warmSessionId: work.sessionId, warmStaffAgentId: work.staffAgentId }
+					: {}),
 				...(warm
 					? { reusedHost: true, hostIdentity: { epoch: warm.epoch, masterKeySha256: warm.masterKeySha256 } }
 					: {}),
@@ -953,6 +957,7 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 					park &&
 					current.warmKey &&
 					current.warmSessionId &&
+					current.warmStaffAgentId &&
 					current.hostIdentity &&
 					this.#config.warmIdleMs !== undefined
 				) {
@@ -962,6 +967,7 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 						key: current.warmKey,
 						computeIdentityId: current.computeIdentityId,
 						sessionId: current.warmSessionId,
+						staffAgentId: current.warmStaffAgentId,
 						epoch: current.hostIdentity.epoch,
 						masterKeySha256: current.hostIdentity.masterKeySha256,
 						nativeBridgeSha256: current.credentials.nativeBridgeSha256,
@@ -1302,8 +1308,9 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 	 * Called under the lock by acquire: the warm slot of this conversation, if its host still
 	 * runs with the identity the control plane holds now (same recovery epoch and key). Any
 	 * other state ends the warm slot, and the run starts a fresh sandbox. A warm slot of the
-	 * same conversation and login with another key (new agent version, model or sponsor)
-	 * ends too. The record stays until the run's journal holds the slot.
+	 * same conversation, agent and login with another key (new agent version, model or
+	 * sponsor) ends too; another agent's warm slot in the same room is left alone. The record
+	 * stays until the run's journal holds the slot.
 	 */
 	async #claimWarmSlot(
 		key: string,
@@ -1315,6 +1322,7 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 			if (
 				stale.key !== key &&
 				stale.sessionId === work.sessionId &&
+				stale.staffAgentId === work.staffAgentId &&
 				stale.computeIdentityId === work.computeIdentityId
 			)
 				await this.#evict(stale.slot, signal);
