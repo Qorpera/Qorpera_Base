@@ -443,7 +443,8 @@ name. It holds three things:
   tags, and it is the only place other workers' changes can meet.
 - `main/`: a worktree of the default branch that members read in the web app.
   Only the platform writes it, and it follows the default branch after each
-  published update. Coding sessions see it read-only.
+  published update. Coding sessions see it read-only. It is marked with
+  `git worktree lock` like the workers' worktrees.
 - `worktrees/<workerId>/`: one linked worktree per coding worker, on the
   worker's fixed branch `qorpera/coding/<workerId>`, with its own git files in
   `repo.git/worktrees/<workerId>/`. The platform creates it the first time the
@@ -486,7 +487,9 @@ the process.
 **Two kinds of git files.**
 - **The worker's own files.** Its worktree files, plus its git files in
   `repo.git/worktrees/<workerId>/` (`index`, `HEAD`, `ORIG_HEAD`,
-  `MERGE_HEAD`, rebase state, its reflog). Only that session writes them.
+  `MERGE_HEAD`, rebase state, its reflog). Only that worker's session and the
+  platform may write or delete anything under `worktrees/<workerId>/` and
+  `repo.git/worktrees/<workerId>/`. Everyone else reads them.
   - They publish together at the ordinary command end (section 2), and they
     never conflict.
   - Their lock files are ordinary local files: exclusive on that machine,
@@ -507,6 +510,9 @@ handles each step:
     elsewhere waits (refs and `packed-refs`, see the timeouts below) or fails
     with its usual "lock exists" message.
   - The lease is renewed while the session lives and ends when it detaches.
+  - Git never holds a lock across commands. At each command end the folder
+    service therefore drops any shared lease whose lock file is still there,
+    for example from a git that was killed, and removes that lock.
 - **Rename of `X.lock` over `X`** is the publish point, inside the syscall.
   - The unit is the session's pending objects, `X` and `X`'s reflog.
   - Objects always land, even when `X` conflicts; they are content-addressed.
@@ -547,6 +553,7 @@ unit, which outranks the repository's own config:
 | `gc.worktreePruneExpire=never` | `git gc` in a session never prunes a worktree; worktree locks also cover `git worktree prune` |
 | `core.symlinks=false` | the Company File has no symlinks |
 | `core.checkStat=minimal` and `core.trustctime=false` | git's index does not re-hash files because of how the mount reports file times |
+| `core.splitIndex=false` and `index.sparse=false` | the index file always lists every path, so the folder service can read it (it also reads index version 4, which `feature.manyFiles` turns on) |
 
 **File times.** A file the session wrote keeps, in that session's view, the
 time the session wrote it until another version arrives. Publishing therefore
@@ -554,7 +561,8 @@ does not make the next `git status` re-hash the file and republish the index.
 
 **Cleanup.**
 - `git gc`, repacking and pruning run only as a platform maintenance job per
-  repository.
+  repository. The job's host mounts the folder at `/company` too, so the
+  worktrees' absolute links resolve there.
 - The job blocks new leases in `repo.git` itself (not in workers' own git
   files) while it runs.
 - Setting a file time (`utime`) on anything under `repo.git/objects` returns
@@ -583,7 +591,8 @@ has a cache list:
   (git's documented index format). A name that now has tracked files leaves
   the list, and the files at that name are published at the same boundary.
   This covers a worker that `git add`s files under `build/` on its own
-  branch.
+  branch. A name that has left a worktree's list stays off it, so files that
+  are already published never fall back into a cache.
 
 Inside a worktree, a folder whose name is on the list lives in the session's
 own NAS cache folder:
