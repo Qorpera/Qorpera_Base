@@ -27,6 +27,7 @@ import { openLxdOfficeCreationIdentity } from "./lxd-office-creation-journal.ts"
 import { inspectLxdOfficeGuestBoot, type LxdOfficeGuestBinding, lxdOfficeGuestPlan } from "./lxd-office-guest.ts";
 import { officeCanonical, officeDigest, officeRecord, officeSha } from "./lxd-office-image-provenance.ts";
 import { code, publish, readRecord } from "./lxd-office-journal-files.ts";
+import { readLxdOfficeOutageActivationHistory } from "./lxd-office-outage-activation-history.ts";
 import type { LxdOfficePhysicalGate } from "./lxd-office-physical-gate.ts";
 import type { readLxdOfficeCredentialFile } from "./lxd-office-physical-host.ts";
 import { readLxdOfficeProtectedFile } from "./lxd-office-physical-host.ts";
@@ -126,14 +127,15 @@ export class LxdOfficeBootConfigurationWorker {
 		}
 	}
 	/** The digest the predecessor boot recorded for its plan: that boot's own
-	 * boot-configuration intent, the reset configuration of an office born from
-	 * a reset, or the origin configuration intent. */
+	 * boot-configuration intent, an accepted outage or reset configuration,
+	 * or the origin configuration intent. */
 	async #assertPlanContinuity(
 		root: string,
 		binding: LxdOfficeGuestBinding,
 		planPath: string,
 		planSha256: string,
 		predecessorBootId: string,
+		outage: Awaited<ReturnType<typeof readLxdOfficePowerOffEvidence>>["outage"],
 		read: (name: string, limit?: number) => Promise<{ value: unknown; bytes: Buffer }>,
 		signal: AbortSignal,
 	): Promise<void> {
@@ -186,6 +188,51 @@ export class LxdOfficeBootConfigurationWorker {
 			if (predecessorSha256 !== undefined) throw new Error("predecessor boot recorded twice");
 			predecessorSha256 = officeSha(value.serviceBootstrapSha256);
 		}
+		let outageRecorded = false;
+		for (const name of (await readdir(root)).sort()) {
+			const prefix = `outage-configuration-intent-${allocationId}-`;
+			if (!name.startsWith(prefix) || !name.endsWith(".json") || name.length !== prefix.length + 41) continue;
+			const value = officeRecord((await read(name)).value, [
+				"schema",
+				"intentId",
+				"allocationId",
+				"recoveryId",
+				"activationId",
+				"bootId",
+				"bootObservationSha256",
+				"originPreparationSha256",
+				"serviceBootstrapSha256",
+				"serviceBootstrapPath",
+				"requestSha256",
+				"requestBytes",
+				"commandId",
+			]);
+			if (value.bootId !== predecessorBootId) continue;
+			if (predecessorSha256 !== undefined) throw new Error("predecessor boot recorded twice");
+			if (!outage || name !== `${prefix}${outage.recovery.request.activationId}.json`)
+				throw new Error("outage predecessor differs");
+			// Reuse the admitted-history reader, including the immutable binding,
+			// configuration completion/digests, root command journal and activation.
+			// Read through the retained snapshot so later authorization rejects edits.
+			const history = await readLxdOfficeOutageActivationHistory(
+				root,
+				outage.observation.intentId,
+				binding,
+				outage.recovery.request.activationId,
+				read,
+				this.#client,
+				signal,
+			);
+			if (
+				!isDeepStrictEqual(history.recovery, outage.recovery) ||
+				!isDeepStrictEqual(history.observation, outage.observation) ||
+				history.command.bootId !== predecessorBootId
+			)
+				throw new Error("outage predecessor differs");
+			predecessorSha256 = officeSha(value.serviceBootstrapSha256);
+			outageRecorded = true;
+		}
+		if (outage && !outageRecorded) throw new Error("outage predecessor unrecorded");
 		if (predecessorSha256 === undefined) {
 			const origin = officeRecord((await read(`configuration-intent-${allocationId}.json`)).value, [
 				"schema",
@@ -230,6 +277,8 @@ export class LxdOfficeBootConfigurationWorker {
 		const records = new Map<string, { bytes: Buffer; limit: number }>();
 		const retainRead = async (name: string, limit = 65536) => {
 			const file = await read(name, limit);
+			const previous = records.get(name);
+			if (previous && !previous.bytes.equals(file.bytes)) throw new Error("retained history changed");
 			records.set(name, { bytes: file.bytes, limit });
 			return file;
 		};
@@ -406,7 +455,8 @@ export class LxdOfficeBootConfigurationWorker {
 					input.serviceBootstrapPath,
 					payload.serviceBootstrapSha256,
 					request.predecessor.startup.bootId,
-					read,
+					shutdown.outage,
+					retainRead,
 					signal,
 				);
 				const checked = await authorize();

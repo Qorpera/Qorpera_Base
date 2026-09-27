@@ -124,7 +124,64 @@ export class LxdOfficeOutageTerminationWorker {
 			termination: acknowledgement,
 			terminationSha256: hash(companyComputerOutageTerminationAcknowledgementCanonical(acknowledgement)),
 		});
+		const openJournal = (
+			attemptRoot: string,
+			command: ReturnType<typeof parseCompanyComputerPreparationCommand>,
+			existing: boolean,
+		) =>
+			LxdOfficeControlJournal.open(
+				attemptRoot,
+				{
+					intentId,
+					binding,
+					recoveryId: base.recoveryId,
+					activationId: base.activationId,
+					bootObservationSha256,
+					command,
+					originPreparationSha256,
+				},
+				{
+					submit: this.client.submitOfficeOutageTermination.bind(this.client),
+					inspect: async (reference, checked) =>
+						this.client.inspectOfficeOutageTermination(
+							reference,
+							existing ? AbortSignal.any([checked, await authorize()]) : checked,
+						),
+				},
+				existing,
+				"outage-termination",
+			);
+		const readInspection = async (
+			command: ReturnType<typeof parseCompanyComputerPreparationCommand>,
+			request: ReturnType<typeof parseCompanyComputerOutageTerminationRequest>,
+			checked: AbortSignal,
+		) => {
+			const file = await this.client.readInstanceFile(
+				binding.project,
+				plan.request.name,
+				`/run/qorpera-office-preparation/outage-termination-inspection-${request.challenge.request.inspectionId}.json`,
+				65536,
+				checked,
+			);
+			checked.throwIfAborted();
+			if (file.uid !== 0 || file.gid !== 0 || file.mode !== 0o600)
+				throw new Error("OFFICE_OUTAGE_TERMINATION_CUSTODY_INVALID");
+			const inspection = parseCompanyComputerOutageTerminationInspection(
+				JSON.parse(new TextDecoder("utf8", { fatal: true }).decode(file.content)),
+				command,
+				request,
+			);
+			if (inspection.bootObservationSha256 !== bootObservationSha256)
+				throw new Error("OFFICE_OUTAGE_TERMINATION_OBSERVATION_CHANGED");
+			return inspection;
+		};
 		const savedAck = await readOptionalOutageRecord(root, acknowledgementName);
+		const unfinished: {
+			attemptRoot: string;
+			command: ReturnType<typeof parseCompanyComputerPreparationCommand>;
+			request: ReturnType<typeof parseCompanyComputerOutageTerminationRequest>;
+			journal: LxdOfficeControlJournal;
+		}[] = [];
 		for (const name of names) {
 			const attemptRoot = join(root, name),
 				seed = officeRecord((await readRecord(join(attemptRoot, "seed.json"))).value, [
@@ -140,23 +197,40 @@ export class LxdOfficeOutageTerminationWorker {
 				seed.bootObservationSha256 !== bootObservationSha256
 			)
 				throw new Error("OFFICE_OUTAGE_TERMINATION_SEED_CHANGED");
-			const savedInspection = await readOptionalOutageRecord(attemptRoot, "inspection.json");
-			if (savedInspection === undefined) continue;
-			const packet = officeRecord(await readOptionalOutageRecord(attemptRoot, "packet.json"), [
-					"command",
-					"request",
-				]),
+			const savedPacket = await readOptionalOutageRecord(attemptRoot, "packet.json");
+			if (savedPacket === undefined) {
+				// Before packet/journal publication no guest dispatch was possible.
+				// Any further durable entry makes missing packet evidence ambiguous.
+				const entries = (await readdir(attemptRoot)).filter((entry) => !/^\.write-[0-9a-f-]{36}$/.test(entry));
+				if (entries.length === 1 && entries[0] === "seed.json") continue;
+				throw new Error("OFFICE_OUTAGE_INSPECTION_PACKET_MISSING");
+			}
+			const packet = officeRecord(savedPacket, ["command", "request"]),
 				request = parseCompanyComputerOutageTerminationRequest(packet.request),
-				command = parseCompanyComputerPreparationCommand(packet.command),
-				inspection = parseCompanyComputerOutageTerminationInspection(savedInspection, command, request);
+				command = parseCompanyComputerPreparationCommand(packet.command);
 			if (
-				request.challenge.request.inspectionId !== seed.inspectionId ||
+				!isDeepStrictEqual(request.challenge.request, {
+					recovery: base,
+					inspectionId: seed.inspectionId,
+					observation,
+					bootObservationSha256,
+				}) ||
 				command.commandId !== seed.commandId ||
+				command.bootId !== observation.bootId ||
 				command.requestSha256 !== hash(officeCanonical(request)) ||
 				request.originPreparationSha256 !== originPreparationSha256 ||
 				!isDeepStrictEqual(request.challenge.recovery, recovery)
 			)
 				throw new Error("OFFICE_OUTAGE_INSPECTION_PREFIX_CHANGED");
+			const journal = await openJournal(attemptRoot, command, true),
+				savedInspection = await readOptionalOutageRecord(attemptRoot, "inspection.json");
+			if (savedInspection === undefined) {
+				unfinished.push({ attemptRoot, command, request, journal });
+				continue;
+			}
+			if ((await journal.observe(signal)).state !== "succeeded")
+				throw new Error("OFFICE_OUTAGE_INSPECTION_COMPLETION_UNCONFIRMED");
+			const inspection = parseCompanyComputerOutageTerminationInspection(savedInspection, command, request);
 			const ackRequest = { recovery: base, inspection };
 			if (savedAck !== undefined) {
 				const parsed = parseCompanyComputerOutageTerminationAcknowledgement(savedAck);
@@ -172,12 +246,39 @@ export class LxdOfficeOutageTerminationWorker {
 				await retainOutageRecord(root, acknowledgementName, ack);
 				return result(ack);
 			} catch {
-				// Positive live authority alone permits a fresh attempt. A lost
-				// committed ACK consumes it and remains retryable with this proof.
-				await authorize();
+				// A later exact proof may already have committed its ACK and consumed
+				// base authority. Exhaust historical replay before asking for it.
+				signal.throwIfAborted();
 			}
 		}
 		if (savedAck !== undefined) throw new Error("OFFICE_OUTAGE_ACK_PREFIX_LOST");
+		for (const { attemptRoot, command, request, journal } of unfinished) {
+			// The inspect callback requires live authority only for actual polling;
+			// cached terminal failure remains recognizable after an ACK committed.
+			const operation = await journal.observe(signal);
+			signal.throwIfAborted();
+			// Zero events proves staging never reached dispatch. Abandon that
+			// challenge; only the fresh-authority path below can submit a new one.
+			if (operation.state === "failed" || operation.state === "not_dispatched") continue;
+			if (operation.state !== "succeeded") return { ...resumed, state: operation.state };
+			// Retained validForMs never starts another deadline. Current authority
+			// permits readback; SQL alone decides whether the original nonce is live.
+			const checked = await authorize(),
+				inspection = await readInspection(command, request, checked);
+			await retainOutageRecord(attemptRoot, "inspection.json", inspection);
+			checked.throwIfAborted();
+			const ackRequest = { recovery: base, inspection };
+			try {
+				const ack = parseCompanyComputerOutageTerminationAcknowledgement(
+					await registry.call("qorpera_ack_runtime_office_outage_termination", { p_request: ackRequest }, checked),
+					ackRequest,
+				);
+				await retainOutageRecord(root, acknowledgementName, ack);
+				return result(ack);
+			} catch {
+				await authorize();
+			}
+		}
 		if (names.length === 64) throw new Error("OFFICE_OUTAGE_INSPECTION_BUDGET_EXHAUSTED");
 		await authorize();
 		const attemptRoot = join(root, `${prefix}${String(names.length).padStart(3, "0")}`),
@@ -212,24 +313,7 @@ export class LxdOfficeOutageTerminationWorker {
 				bootId: observation.bootId,
 			});
 		await retainOutageRecord(attemptRoot, "packet.json", { command, request });
-		const journal = await LxdOfficeControlJournal.open(
-			attemptRoot,
-			{
-				intentId,
-				binding,
-				recoveryId: base.recoveryId,
-				activationId: base.activationId,
-				bootObservationSha256,
-				command,
-				originPreparationSha256,
-			},
-			{
-				submit: this.client.submitOfficeOutageTermination.bind(this.client),
-				inspect: this.client.inspectOfficeOutageTermination.bind(this.client),
-			},
-			false,
-			"outage-termination",
-		);
+		const journal = await openJournal(attemptRoot, command, false);
 		await this.client.pushOfficeOutageTerminationRequest(
 			binding.project,
 			plan.request.name,
@@ -247,23 +331,8 @@ export class LxdOfficeOutageTerminationWorker {
 		if (staged.uid !== 0 || staged.gid !== 0 || staged.mode !== 0o400 || !staged.content.equals(payload))
 			throw new Error("OFFICE_OUTAGE_TERMINATION_STAGE_CHANGED");
 		const operation = await journal.reconcile(checked);
-		if (operation.state === "failed" || operation.state === "pending") return { ...resumed, state: operation.state };
-		const file = await this.client.readInstanceFile(
-			binding.project,
-			plan.request.name,
-			`/run/qorpera-office-preparation/outage-termination-inspection-${inspectionId}.json`,
-			65536,
-			checked,
-		);
-		if (file.uid !== 0 || file.gid !== 0 || file.mode !== 0o600)
-			throw new Error("OFFICE_OUTAGE_TERMINATION_CUSTODY_INVALID");
-		const inspection = parseCompanyComputerOutageTerminationInspection(
-			JSON.parse(new TextDecoder("utf8", { fatal: true }).decode(file.content)),
-			command,
-			request,
-		);
-		if (inspection.bootObservationSha256 !== bootObservationSha256)
-			throw new Error("OFFICE_OUTAGE_TERMINATION_OBSERVATION_CHANGED");
+		if (operation.state !== "succeeded") return { ...resumed, state: operation.state };
+		const inspection = await readInspection(command, request, checked);
 		await retainOutageRecord(attemptRoot, "inspection.json", inspection);
 		checked.throwIfAborted();
 		const ackRequest = { recovery: base, inspection },

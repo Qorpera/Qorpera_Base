@@ -53,6 +53,15 @@ ephemeral acceptance CA is added to the resulting test image; no production
 certificate or authentication key is imported. The private CA key never enters
 the guest, package, public evidence directory or upload artifact.
 
+The retained inputs were checked again on 2026-09-27. Native artifact
+`a7531592e69dbbeeda6c11f279547e5d48328eb54beec98ac6511f67f18194df`
+matches the pinned source and patch. Cosign 3.1.3 independently verified the
+retained runner archive `c9370c825bdbd589bf0c1391e567b8f5ea8ba36161cc554b32fcfb235f046239`
+against the exact committed certificate identity, issuer, workflow source,
+repository, ref and trigger, with transparency verification enabled. This
+verifies the existing inputs; it does not build a current guest image or prove
+joined execution. Physical acceptance still requires the host described above.
+
 ## Build an isolated test package
 
 On Linux x64, with a new output directory and the verified native/signed image

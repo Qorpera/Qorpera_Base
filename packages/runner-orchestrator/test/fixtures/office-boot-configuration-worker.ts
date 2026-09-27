@@ -22,9 +22,22 @@ export async function officeBootConfigurationWorkerFixture(roots: string[], resu
 	return createOfficeBootConfigurationWorkerFixture(f);
 }
 
-export async function createOfficeBootConfigurationWorkerFixture(
-	f: Awaited<ReturnType<typeof officeResumeWorkerFixture>>,
-) {
+type BootConfigurationFixture = Pick<
+	Awaited<ReturnType<typeof officeResumeWorkerFixture>>,
+	| "root"
+	| "binding"
+	| "request"
+	| "guest"
+	| "client"
+	| "registry"
+	| "policy"
+	| "check"
+	| "kernelLock"
+	| "readProtected"
+	| "readCredential"
+> & { activation: { request: { intentId: string; serviceBootstrapPath: string } } };
+
+export async function createOfficeBootConfigurationWorkerFixture<T extends BootConfigurationFixture>(f: T) {
 	const input = {
 		intentId: f.activation.request.intentId,
 		request: f.request,

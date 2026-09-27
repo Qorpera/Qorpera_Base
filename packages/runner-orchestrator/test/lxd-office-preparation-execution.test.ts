@@ -196,6 +196,36 @@ async function fixture(
 
 for (const lane of [
 	{
+		purpose: "outage-termination",
+		submit: "submitOfficeOutageTermination",
+		inspect: "inspectOfficeOutageTermination",
+		error: "OUTAGE_TERMINATION",
+	},
+	{
+		purpose: "outage-configuration",
+		submit: "submitOfficeOutageConfiguration",
+		inspect: "inspectOfficeOutageConfiguration",
+		error: "OUTAGE_CONFIGURATION",
+	},
+	{
+		purpose: "outage-service-start",
+		submit: "submitOfficeOutageServiceStart",
+		inspect: "inspectOfficeOutageServiceStart",
+		error: "OUTAGE_SERVICE_START",
+	},
+	{
+		purpose: "reset-configuration",
+		submit: "submitOfficeResetConfiguration",
+		inspect: "inspectOfficeResetConfiguration",
+		error: "RESET_CONFIGURATION",
+	},
+	{
+		purpose: "reset-service-start",
+		submit: "submitOfficeResetServiceStart",
+		inspect: "inspectOfficeResetServiceStart",
+		error: "RESET_SERVICE_START",
+	},
+	{
 		purpose: "reset-service-restart",
 		submit: "submitOfficeResetServiceRestart",
 		inspect: "inspectOfficeResetServiceRestart",
@@ -720,6 +750,8 @@ for (const lane of [
 	{ purpose: "boot-service-start", inspect: "submitOfficeBootServiceInspection" },
 	{ purpose: "boot-service-restart", inspect: "submitOfficeBootServiceRestartInspection" },
 	{ purpose: "reset-service-restart", inspect: "submitOfficeResetServiceRestartInspection" },
+	{ purpose: "reset-service-start", inspect: "submitOfficeResetServiceInspection" },
+	{ purpose: "outage-service-start", inspect: "submitOfficeOutageServiceInspection" },
 	{ purpose: "service-stop", inspect: "submitOfficeServiceStopInspection" },
 	{ purpose: "service-restart", inspect: "submitOfficeServiceRestartInspection" },
 ] as const)

@@ -89,6 +89,7 @@
 
 ### Fixed
 
+- Admit the three packaged outage control executables through the existing protected lock launcher, including outage and reset-restart inspection nonces. Fixed executable paths, image custody, empty child environment, kernel locking and distinct nonce validation remain enforced.
 - Recover from explicitly confirmed office metering delays during closed-listener startup within a fixed 30-second budget. Each readiness retry rechecks physical custody; credential, invocation and unknown transport failures remain terminal.
 - Recheck paid metering coverage at the office work boundary using the exact boot, configuration and current service invocation. Superseded processes and coverage gaps cannot admit effects; lifecycle custody stays available.
 - The company browser's /tmp is now 1 GiB instead of the 64 MiB other office namespaces keep. With `--disable-dev-shm-usage` all of Chromium's shared memory lives there, so renderers failed allocations and crashed on ordinary sites ("Aw, Snap!", reported as SIGSEGV because the crash handler's `alarm()` tripped seccomp).

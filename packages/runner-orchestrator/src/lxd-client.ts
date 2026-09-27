@@ -1045,6 +1045,7 @@ function officeControlCommand(
 	if (
 		inspectionId !== undefined &&
 		((purpose !== "boot-service-restart" &&
+			purpose !== "outage-service-start" &&
 			purpose !== "boot-service-start" &&
 			purpose !== "service-start" &&
 			purpose !== "service-stop" &&
