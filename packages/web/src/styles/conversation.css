@@ -618,6 +618,7 @@
 .thread-coding-sessions[hidden] { display: none; }
 .coding-slot { position: relative; display: block; flex: none; width: 30px; height: 36px; padding: 0; border: 0; border-radius: 18px; background: transparent; color: var(--text); font: inherit; font-size: 13px; font-weight: 500; line-height: 16px; text-align: left; cursor: pointer; }
 .coding-slot::before { content: ""; position: absolute; top: 8px; bottom: 8px; left: -8px; width: 1px; background: var(--border); pointer-events: none; }
+@media (forced-colors: active) { .coding-slot::before { background: CanvasText; } }
 .coding-slot:hover, .coding-slot:focus-visible { z-index: 2; }
 .coding-slot:focus-visible { outline: none; }
 /* Bottom at 32px of the 36px slot: the agent's 28px figure ends on the same line in its centred 34px button. */
