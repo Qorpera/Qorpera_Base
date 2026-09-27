@@ -510,6 +510,24 @@ describe("Settings → General → rules", () => {
 		expect(view.el.querySelectorAll(".settings-rule")).toHaveLength(2);
 	});
 
+	it("does not load again when the role arrives after a list loaded without it", async () => {
+		let role: string | undefined;
+		const client = rulesClient(true, [rule(911, "company", "hiring agents")]);
+		view = new RulesView(client, new AbortController().signal, () => role);
+		await settle();
+		role = "owner";
+		view.update();
+		view.update();
+		await settle();
+		expect(client.list).toHaveBeenCalledTimes(1);
+		expect(view.el.querySelector('select[aria-label="Applies to:"]')).not.toBeNull();
+		// A later change of role still loads again.
+		role = "member";
+		view.update();
+		await settle();
+		expect(client.list).toHaveBeenCalledTimes(2);
+	});
+
 	it("does not ask again for a list that failed until the role moves", async () => {
 		let role = "member";
 		for (const failure of [

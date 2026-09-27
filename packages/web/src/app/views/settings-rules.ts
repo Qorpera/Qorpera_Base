@@ -106,7 +106,15 @@ export class RulesView {
 
 	/** The company changed: reload when the member's role did (after any change on its way). */
 	update(): void {
-		if (!this.#loading && !this.#working && (this.#stale || this.#role() !== this.#listedRole)) void this.#refresh();
+		if (this.#loading || this.#working) return;
+		const role = this.#role();
+		// The role arriving after a list that loaded without it changes nothing: that list already
+		// carries the cloud's answer on who may edit. A failed load is still retried when it arrives.
+		if (!this.#stale && this.#listedRole === undefined && role !== undefined && !this.#error && !this.#missing) {
+			this.#listedRole = role;
+			return;
+		}
+		if (this.#stale || role !== this.#listedRole) void this.#refresh();
 	}
 
 	async #refresh(): Promise<void> {

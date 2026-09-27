@@ -103,10 +103,11 @@ export class SettingsView {
 	#connections: ConnectionsView | undefined;
 	#services: ServicesView | undefined;
 	#rules: RulesView | undefined;
-	/** General: the account's settings, then the chosen company's rules. */
+	/** General: the account's settings, then the rules of the company Settings show. */
 	readonly #accountPanel = h("div");
 	readonly #rulesSlot = h("div");
-	/** In the rules' place when Settings show no company (opened from the company list, with several). */
+	/** In the rules' place when Settings show no company (opened from the company list with several,
+	 * or over a company page whose company is not available). */
 	readonly #noCompanyRules = h(
 		"section",
 		{ class: "settings-group settings-rules", "aria-label": t("Rules") },
@@ -431,7 +432,12 @@ export class SettingsView {
 			);
 		// Moved only when it changes: moving it would take the focus out of a field in use.
 		const rules = company ? this.#rules?.el : this.#noCompanyRules;
-		if (this.#rulesSlot.firstChild !== (rules ?? null)) replace(this.#rulesSlot, rules);
+		if (this.#rulesSlot.firstChild !== (rules ?? null)) {
+			const focused = this.#rulesSlot.contains(document.activeElement);
+			replace(this.#rulesSlot, rules);
+			// A field in the old company's rules had the keyboard: keep it in Settings.
+			if (focused) this.#content.focus({ preventScroll: true });
+		}
 	}
 
 	/** The plan is the account's; the usage shown is the open company's storage. */
