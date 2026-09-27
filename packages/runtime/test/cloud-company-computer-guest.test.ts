@@ -9,6 +9,7 @@ import {
 } from "@qorpera/cloud-client/cloud-company-computer-contract";
 import type { JsonValue } from "@qorpera/contracts";
 import { planCompanyComputerStateAdoption } from "@qorpera/runtime/cloud-company-computer-adoption";
+import { CompanyComputerBrowserNetworkPausedError } from "@qorpera/runtime/cloud-company-computer-browser-control";
 import { CompanyComputerGuestEndpoint } from "@qorpera/runtime/cloud-company-computer-endpoint";
 import type { CompanyComputerFileExportPublisher } from "@qorpera/runtime/cloud-company-computer-file-transfers";
 import {
@@ -24,6 +25,7 @@ import {
 	PersistentCompanyComputerBrowser,
 } from "@qorpera/runtime/cloud-company-computer-guest";
 import { CompanyComputerScreenActionGate } from "@qorpera/runtime/cloud-company-computer-leases";
+import { CompanyComputerRegistryUnansweredError } from "@qorpera/runtime/cloud-company-computer-registry-http";
 import type { CompanyComputerAction } from "@qorpera/runtime/cloud-company-computer-tools";
 import type { BrowserContext, Page } from "playwright-core";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -79,6 +81,27 @@ async function profileFixture() {
 }
 
 describe("persistent browser profile component (fake Chrome, real temporary filesystem)", () => {
+	it("keeps the window when nobody entitled is present or no answer came, and closes it on a refusal", async () => {
+		const fixture = await profileFixture();
+		const session = await fixture.manager.open(computerBinding(), fixture.grant, new AbortController().signal);
+		for (const reason of [
+			new CompanyComputerBrowserNetworkPausedError(),
+			new CompanyComputerRegistryUnansweredError(new Error("request timed out")),
+		]) {
+			fixture.access.assertGranted = vi.fn(async () => {
+				throw reason;
+			});
+			await expect(session.assertActive(new AbortController().signal)).rejects.toThrow("BROWSER_ACCESS_UNCONFIRMED");
+			expect(fixture.contexts[0].closed).toBe(false);
+			expect(session.isEnded?.()).toBe(false);
+		}
+		fixture.access.assertGranted = vi.fn(async () => {
+			throw new Error("OFFICE_REGISTRY_UNCONFIRMED", { cause: new Error("denied") });
+		});
+		await expect(session.assertActive(new AbortController().signal)).rejects.toThrow("BROWSER_ACCESS_ENDED");
+		await vi.waitFor(() => expect(fixture.contexts[0].closed).toBe(true));
+		await fixture.manager.close();
+	});
 	it("requires an explicit contained launch adapter", async () => {
 		const fixture = await profileFixture();
 		expect(() => new PersistentCompanyComputerBrowser({ ...fixture, launch: undefined } as never)).toThrow(
@@ -447,6 +470,42 @@ function automationFixture(withBrowser = true, withCommands = true) {
 }
 
 describe("Playwright/X11/shell adapters (test doubles, never the member machine)", () => {
+	it("fails a page that does not load in time on its own: the browser stays and the resource is drained", async () => {
+		const f = automationFixture();
+		f.page.goto.mockRejectedValueOnce(new Error("page.goto: Timeout 10000ms exceeded"));
+		await expect(f.perform({ kind: "browser", action: "navigate", url: "https://slow.example/" })).rejects.toThrow(
+			"page.goto: Timeout 10000ms exceeded",
+		);
+		f.locator.click.mockRejectedValueOnce(new Error("locator.click: Timeout 5000ms exceeded"));
+		await expect(f.perform({ kind: "browser", action: "click", role: "button", name: "Submit" })).rejects.toThrow(
+			"locator.click: Timeout 5000ms exceeded",
+		);
+		f.locator.getAttribute.mockResolvedValueOnce("password");
+		await expect(
+			f.perform({ kind: "browser", action: "fill", role: "textbox", name: "Password", text: "x" }),
+		).rejects.toThrow("PRIVATE_SIGN_IN_REQUIRED");
+		expect(f.locator.fill).not.toHaveBeenCalled();
+		expect(f.context.close).not.toHaveBeenCalled();
+		expect(f.effects.finish).toHaveBeenCalledTimes(3);
+	});
+
+	it("drains a command stopped at its own limit, but not one whose exit is unconfirmed", async () => {
+		const f = automationFixture();
+		vi.mocked(f.commands.run).mockRejectedValueOnce(new Error("OFFICE_COMMAND_TIMEOUT"));
+		await expect(
+			f.perform({ kind: "shell", command: "sleep 99", timeoutMs: 1000 } as CompanyComputerAction),
+		).rejects.toThrow("OFFICE_COMMAND_TIMEOUT");
+		expect(f.effects.finish).toHaveBeenCalledOnce();
+		expect(f.context.close).not.toHaveBeenCalled();
+		vi.mocked(f.commands.run).mockRejectedValueOnce(new Error("OFFICE_COMMAND_DRAIN_UNCONFIRMED"));
+		await expect(
+			f.perform({ kind: "shell", command: "sleep 99", timeoutMs: 1000 } as CompanyComputerAction),
+		).rejects.toThrow("OFFICE_COMMAND_DRAIN_UNCONFIRMED");
+		expect(f.effects.finish).toHaveBeenCalledOnce();
+		// An untyped failure keeps the old rule: automation stops, the resource stays for the supervisor.
+		expect(f.context.close).toHaveBeenCalledOnce();
+	});
+
 	it("exports binary bytes from a literal workbench path with the original receipt and no shell", async () => {
 		const f = automationFixture(false);
 		const action: CompanyComputerAction = {

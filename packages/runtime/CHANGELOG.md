@@ -83,6 +83,8 @@
 
 ### Fixed
 
+- The company computer keeps running around agents and members. An agent action whose own page or command work failed and ended (a slow page, a target that never became clickable, a command stopped at its own limit, a password field) no longer closes the screen's browser and is drained like a success, so releasing the screen no longer drains the whole desktop. One authority check that gets no answer (network, timeout, 5xx) no longer ends the desktop, its apps or the agent's session: only a clear refusal, or 30 seconds without an answer, does, recorded as `AUTHORITY_LOST`. The browser relay follows the same rule and, when SQL answers `idle` (nobody entitled present), keeps the window open with its network paused instead of closing it. A run whose desktop was ended mid-run opens a fresh guest session under the same lease. Expired screen leases that were never released are reaped by the supervisor status.
+
 - `company_write` and `company_mkdir` into a folder that does not exist are a definite `COMPANY_FILE_PARENT_MISSING` refusal (denied, `errorCategory` `parent_missing`) that tells the model to create the folder with `company_mkdir` first and repeat the call (and never to replace a file to make that folder). SQL refuses it at the check (PT424), before presence and before any bytes are uploaded, and again at prepare and commit. Previously the runner uploaded the bytes, failed while building the candidate tree and reported an unconfirmed, unknown outcome.
 
 - Preserved office startup, supervision, desktop and cleanup failure causes in bounded structured diagnostics. Logs include only allowlisted stages, error codes and categories, never raw messages, credentials, paths or stacks.

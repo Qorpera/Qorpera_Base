@@ -3,6 +3,7 @@ import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { performance } from "node:perf_hooks";
 import type { CompanyComputerPrivacyChallenge } from "@qorpera/cloud-client/cloud-company-computer-privacy";
 import type { CompanyComputerViewerGrant } from "@qorpera/cloud-client/cloud-company-computer-viewer";
 import { companyComputerFailureDiagnostic } from "@qorpera/runtime/cloud-company-computer-diagnostics";
@@ -10,6 +11,7 @@ import { CloudCompanyComputerEffectControl } from "@qorpera/runtime/cloud-compan
 import { CompanyComputerScreenActionGate } from "@qorpera/runtime/cloud-company-computer-leases";
 import { CompanyComputerLinuxCommands } from "@qorpera/runtime/cloud-company-computer-linux-commands";
 import { CompanyComputerLinuxGuest } from "@qorpera/runtime/cloud-company-computer-linux-guest";
+import { CompanyComputerRegistryUnansweredError } from "@qorpera/runtime/cloud-company-computer-registry-http";
 import { CompanyComputerScreenLifecyclePublisher } from "@qorpera/runtime/cloud-company-computer-screen-lifecycle";
 import { CloudNativeToolRun } from "@qorpera/runtime/cloud-native-tool-authority";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -361,6 +363,70 @@ describe("whole Linux guest ownership (physical adapters mocked here; separate L
 		expect(displays[0].stop).not.toHaveBeenCalled();
 		expect(physical.launch).toHaveBeenCalledOnce();
 		expect(f.failure).not.toHaveBeenCalled();
+	});
+	it("keeps the desktop, its browser and the agent's session when one authority check gets no answer", async () => {
+		const f = await fixture({ browser: true });
+		const session = await f.create();
+		await session.endpoint.perform(f.operation({ kind: "browser", action: "list_tabs" }), f.lease, f.effect());
+		await f.guest.viewer.connect(f.sharedViewer(), new AbortController().signal);
+		const original = f.call.getMockImplementation()!;
+		let lost = 0;
+		f.call.mockImplementation(async (method: string, args: Record<string, unknown>) => {
+			if (method === "qorpera_check_runtime_office_shared_surface" && lost < 1) {
+				lost++;
+				throw new CompanyComputerRegistryUnansweredError(new Error("request timed out"));
+			}
+			return original(method, args);
+		});
+		await vi.waitFor(() => expect(lost).toBe(1), { timeout: 3000 });
+		await new Promise((resolve) => setTimeout(resolve, 1500));
+		expect(displays[0].stop).not.toHaveBeenCalled();
+		expect(browsers[0].ended()).toBe(false);
+		await session.endpoint.perform(f.operation({ kind: "browser", action: "list_tabs" }), f.lease, f.effect());
+		await f.guest.viewer.connect(f.sharedViewer(), new AbortController().signal);
+		expect(physical.launch).toHaveBeenCalledOnce();
+		expect(physical.browserLaunch).toHaveBeenCalledOnce();
+		expect(f.failure).not.toHaveBeenCalled();
+	}, 15000);
+	it("ends the desktop as authority lost after the whole grace without an answer, or at once on a refusal", async () => {
+		vi.useFakeTimers();
+		// The grace is measured on the monotonic clock; let it follow the fake one.
+		vi.spyOn(performance, "now").mockImplementation(() => Date.now());
+		const f = await fixture();
+		const session = await f.create();
+		await session.endpoint.perform(f.operation({ kind: "screen", action: "open" }), f.lease, f.effect());
+		const original = f.call.getMockImplementation()!;
+		f.call.mockImplementation(async (method: string, args: Record<string, unknown>) => {
+			if (method === "qorpera_check_runtime_office_shared_surface")
+				throw new CompanyComputerRegistryUnansweredError(new Error("request timed out"));
+			return original(method, args);
+		});
+		await vi.advanceTimersByTimeAsync(28_000);
+		expect(displays[0].stop).not.toHaveBeenCalled();
+		await vi.advanceTimersByTimeAsync(4_000);
+		expect(displays[0].stop).toHaveBeenCalledOnce();
+		expect(f.events().find((event) => event.state === "closing")).toMatchObject({ reason: "AUTHORITY_LOST" });
+		expect(f.failure).not.toHaveBeenCalled();
+		expect(session.ended?.()).toBe(true);
+
+		// A clear refusal needs no grace.
+		f.call.mockImplementation(original);
+		const next = await f.create();
+		await next.endpoint.perform(f.operation({ kind: "screen", action: "open" }), f.lease, f.effect());
+		expect(displays).toHaveLength(2);
+		f.call.mockImplementation(async (method: string, args: Record<string, unknown>) => {
+			if (method === "qorpera_check_runtime_office_shared_surface")
+				throw new Error("OFFICE_REGISTRY_UNCONFIRMED", { cause: new Error("denied") });
+			return original(method, args);
+		});
+		await vi.advanceTimersByTimeAsync(1_100);
+		expect(displays[1].stop).toHaveBeenCalledOnce();
+		expect(f.failure).not.toHaveBeenCalled();
+	});
+	it("admits no new session while a private sign-in is being prepared", async () => {
+		const f = await fixture();
+		await f.guest.privacy.fence(f.challenge, new AbortController().signal);
+		await expect(f.create()).rejects.toThrow("OFFICE_PRIVACY_FENCED");
 	});
 	it("draws the screen agent's saved avatar, and an office that cannot read it still starts its desktop", async () => {
 		const f = await fixture();

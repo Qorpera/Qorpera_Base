@@ -207,6 +207,19 @@ interface ActiveScreenAction {
 	drained: Promise<void>;
 }
 
+/**
+ * The action's own work failed and has ended: a page that did not load in
+ * time, a target that never became clickable, a command stopped at its own
+ * limit and confirmed exited. Nothing of it is still running. Only the guest
+ * automation raises this, around its own calls; the message is the underlying one.
+ */
+export class CompanyComputerActionFailedError extends Error {
+	constructor(cause: unknown) {
+		super(cause instanceof Error ? cause.message : "COMPUTER_ACTION_FAILED", { cause });
+		this.name = "CompanyComputerActionFailedError";
+	}
+}
+
 /** A failed shutdown is not proof that effects stopped; retain the physical-slot quarantine. */
 export class CompanyComputerActionDrainError extends Error {
 	constructor() {
@@ -233,17 +246,29 @@ export class CompanyComputerScreenActionGate {
 		execute: (signal: AbortSignal) => Promise<T>;
 		/** Stop control channels on cancellation/failure; the slot stays occupied until this actually settles. */
 		drainOnFailure?: () => Promise<void>;
+		/**
+		 * Called before a failure is returned when nothing of this action ran or
+		 * is still running: refused before any work, or a recoverable typed
+		 * failure with its authority rechecked. Never after cancellation, an
+		 * authority failure or an untyped error. Its own failure is ignored.
+		 */
+		settledFailure?: () => Promise<void>;
 	}): Promise<T> {
 		const { lease } = options;
 		assertCompanyComputerLease(lease, lease.binding, lease.driver);
 		const key = `${lease.binding.companyComputerId}:${lease.binding.screenOrdinal}`;
-		if (this.#replacing.has(key)) throw new Error("SCREEN_REPLACEMENT_PENDING");
+		const refuse = async (reason: string): Promise<never> => {
+			// Refused before any work: nothing of this action ran.
+			await options.settledFailure?.().catch(() => undefined);
+			throw new Error(reason);
+		};
+		if (this.#replacing.has(key)) return refuse("SCREEN_REPLACEMENT_PENDING");
 		const fence = this.#fences.get(key);
 		if (fence) {
 			assertCompanyComputerScreenBinding(lease.binding, fence.binding);
-			if (lease.epoch < fence.epoch) throw new Error("SCREEN_DRIVER_FENCED");
+			if (lease.epoch < fence.epoch) return refuse("SCREEN_DRIVER_FENCED");
 		}
-		if (this.#active.has(key)) throw new Error("SCREEN_ACTION_STILL_RUNNING");
+		if (this.#active.has(key)) return refuse("SCREEN_ACTION_STILL_RUNNING");
 		const stop = new AbortController();
 		const signal = AbortSignal.any([options.signal, stop.signal]);
 		let finish = (): void => {};
@@ -277,13 +302,23 @@ export class CompanyComputerScreenActionGate {
 				signal.throwIfAborted();
 				return result;
 			} catch (error) {
-				// Only the guest's typed, pre-effect targeting error is recoverable. Authority
-				// failures (including the final check) and cancellation always stop automation.
+				// Only the guest's typed errors are recoverable: a pre-effect targeting
+				// refusal, or an action whose own work failed and ended. Such an action
+				// stops nothing and is drained, as long as its authority still holds.
+				// Any other failure, authority failures (including the final check) and
+				// cancellation stop automation and keep the resource for the supervisor.
 				let failure = error;
-				if (!signal.aborted && phase === "execute" && error instanceof CompanyComputerActionNotStartedError) {
+				let settled = false;
+				if (
+					!signal.aborted &&
+					phase === "execute" &&
+					(error instanceof CompanyComputerActionNotStartedError ||
+						error instanceof CompanyComputerActionFailedError)
+				) {
 					try {
 						await options.authorize(signal);
 						signal.throwIfAborted();
+						settled = true;
 					} catch (authorizationError) {
 						failure = authorizationError;
 						stopAutomation();
@@ -298,6 +333,7 @@ export class CompanyComputerScreenActionGate {
 						throw new CompanyComputerActionDrainError();
 					}
 				}
+				if (settled) await options.settledFailure?.().catch(() => undefined);
 				throw failure;
 			} finally {
 				// Stay armed through the final authority check AND any asynchronous drain.

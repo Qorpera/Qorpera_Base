@@ -1,6 +1,7 @@
 import {
 	CloudCompanyComputerBrowserControl,
 	CloudCompanyComputerScreenBrowserControl,
+	CompanyComputerBrowserNetworkPausedError,
 } from "@qorpera/runtime/cloud-company-computer-browser-control";
 import { CloudNativeToolRun } from "@qorpera/runtime/cloud-native-tool-authority";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -144,6 +145,19 @@ describe("screen-owned browser authority (an agent lease or a live input viewer,
 		await expect(
 			f.access.assertGranted({ ...f.grant, path: "/srv/profiles/other" } as typeof f.grant, f.binding, f.signal),
 		).rejects.toThrow("INVALID_BROWSER_GRANT");
+	});
+
+	it("reads idle as a paused network for the same grant, never as an open or for a changed grant", async () => {
+		const f = screenFixture();
+		f.call.mockResolvedValue({ state: "idle", grant: f.grant, validForMs: 5000 });
+		await expect(f.access.assertGranted(f.grant, f.binding, f.signal)).rejects.toBeInstanceOf(
+			CompanyComputerBrowserNetworkPausedError,
+		);
+		await expect(f.access.assertGranted({ ...f.grant, version: 4 }, f.binding, f.signal)).rejects.toThrow(
+			"BROWSER_GRANT_UNCONFIRMED",
+		);
+		// SQL never answers idle to an open; one that did is no authority at all.
+		await expect(f.access.open(f.binding, "desktop", f.signal)).rejects.toThrow("BROWSER_GRANT_UNCONFIRMED");
 	});
 
 	it("treats a refusal, a lost answer and every malformed answer as no authority", async () => {

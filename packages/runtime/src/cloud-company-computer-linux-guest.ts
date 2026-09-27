@@ -1,4 +1,5 @@
 import { join } from "node:path";
+import { performance } from "node:perf_hooks";
 import { isDeepStrictEqual } from "node:util";
 import {
 	assertCompanyComputerLease,
@@ -40,10 +41,15 @@ import { startCompanyComputerLinuxPrivateSurface } from "./cloud-company-compute
 import { parseCompanyComputerNativeDescriptor } from "./cloud-company-computer-native-client.ts";
 import type { CompanyComputerNativeGuestSession } from "./cloud-company-computer-native-gateway.ts";
 import { CloudCompanyComputerPrivateSurfaceControl } from "./cloud-company-computer-private-surface-control.ts";
-import type { HttpCloudCompanyComputerRegistry } from "./cloud-company-computer-registry-http.ts";
+import {
+	COMPANY_COMPUTER_UNANSWERED_GRACE_MS,
+	companyComputerAuthorityUnanswered,
+	type HttpCloudCompanyComputerRegistry,
+} from "./cloud-company-computer-registry-http.ts";
 import type {
 	CompanyComputerScreenLifecycle,
 	CompanyComputerScreenLifetime,
+	ScreenClosingReason,
 } from "./cloud-company-computer-screen-lifecycle.ts";
 import type { CompanyComputerScreenSessionHandle } from "./cloud-company-computer-screens.ts";
 import type { CompanyComputerServiceGuest } from "./cloud-company-computer-service.ts";
@@ -287,6 +293,7 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 				);
 				await current.lifecycle?.ready(startup);
 				startup.throwIfAborted();
+				let confirmedAt = performance.now();
 				const renew = (): void => {
 					if (current.closing || this.#closing) return;
 					current.timer = setTimeout(() => {
@@ -298,20 +305,33 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 							3000,
 						).then(
 							async () => {
+								confirmedAt = performance.now();
 								await current.lifecycle
 									?.heartbeat(AbortSignal.any([this.#stop.signal, current.stop.signal]))
 									.catch(() => undefined);
 								renew();
 							},
 							(pulseError) => {
-								if (this.#screens.get(binding.screenOrdinal) === current && !current.closing)
-									void this.stopResources(binding, new AbortController().signal).catch((error) =>
+								if (this.#screens.get(binding.screenOrdinal) !== current || current.closing) return;
+								// A check that got no answer keeps the desktop and its apps. It
+								// authorizes nothing meanwhile: every agent action, viewer input
+								// and browser connection asks again for itself. Only a clear
+								// refusal, or no answer for the whole grace, ends the desktop.
+								if (
+									companyComputerAuthorityUnanswered(pulseError) &&
+									performance.now() - confirmedAt < COMPANY_COMPUTER_UNANSWERED_GRACE_MS
+								) {
+									renew();
+									return;
+								}
+								void this.stopResources(binding, new AbortController().signal, "AUTHORITY_LOST").catch(
+									(error) =>
 										this.#fail(
 											new Error("OFFICE_SHARED_PULSE_FAILED", {
 												cause: new AggregateError([pulseError, error]),
 											}),
 										),
-									);
+								);
 							},
 						);
 					}, 1000);
@@ -467,6 +487,8 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 		input: Parameters<CompanyComputerServiceGuest["createSession"]>[0],
 	): Promise<CompanyComputerNativeGuestSession> {
 		this.#binding(input.lease.binding);
+		// A session would hold the physical drain a private sign-in waits for.
+		if (this.#private || this.#privacy?.state === "entering") throw new Error("OFFICE_PRIVACY_FENCED");
 		if (this.#gate && this.#gate !== input.gate) throw new Error("OFFICE_GATE_CHANGED");
 		this.#gate = input.gate;
 		const descriptor = parseCompanyComputerNativeDescriptor(input.descriptor, input.run);
@@ -482,6 +504,7 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 		const stop = new AbortController();
 		const active = new Set<Promise<unknown>>();
 		let closing: Promise<void> | undefined;
+		let ended = false;
 		let commands: CompanyComputerLinuxCommands | undefined;
 		let browser: CompanyComputerBrowserSession | undefined;
 		/** The screen browser THIS run drives (or is in the middle of joining). A run
@@ -580,6 +603,7 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 						const rejected = results.find((result) => result.status === "rejected");
 						if (rejected) throw new Error("OFFICE_SESSION_DRAIN_UNCONFIRMED", { cause: rejected.reason });
 						this.#sessions.delete(session);
+						ended = true;
 					},
 					new AbortController().signal,
 					30000,
@@ -664,6 +688,7 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 		});
 		return {
 			close: session.close,
+			ended: () => ended,
 			endpoint: {
 				capabilities: endpoint.capabilities,
 				resourceTarget: endpoint.resourceTarget,
@@ -880,7 +905,12 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 			signal.throwIfAborted();
 		},
 	};
-	async stopResources(binding: CompanyComputerScreenBinding, signal: AbortSignal): Promise<void> {
+	/** `reason` names a stop the service decided itself; a drain request or privacy fence is inferred. */
+	async stopResources(
+		binding: CompanyComputerScreenBinding,
+		signal: AbortSignal,
+		reason?: Extract<ScreenClosingReason, "AUTHORITY_LOST">,
+	): Promise<void> {
 		assertCompanyComputerScreenBinding(binding, binding);
 		assertCompanyComputerScope(binding, this.#options.scope);
 		if (binding.computerGeneration !== this.#options.computerGeneration)
@@ -902,7 +932,7 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 						? "OFFICE_SERVICE_STOPPING"
 						: this.#privacy?.state === "entering"
 							? "PRIVACY_FENCE"
-							: "SCREEN_DRAIN_REQUESTED",
+							: (reason ?? "SCREEN_DRAIN_REQUESTED"),
 					new AbortController().signal,
 				)
 				.catch(() => undefined);

@@ -1,5 +1,6 @@
 import { companyComputerRequest } from "@qorpera/cloud-client/cloud-company-computer-contract";
 import { readBoundedCloudResponse, supabaseServiceHeaders } from "@qorpera/cloud-client/cloud-request";
+import { CloudRuntimeDiagnosticError } from "./cloud-runtime-observability.ts";
 
 const methods = [
 	"qorpera_describe_native_tool_authority",
@@ -37,6 +38,46 @@ const methods = [
 	"qorpera_release_runtime_office_viewer",
 ] as const;
 export type CompanyComputerRegistryMethod = (typeof methods)[number];
+
+/**
+ * The registry gave no answer: the network, a timeout, or a server that could
+ * not serve the request (5xx, 408, 425, 429). It is not a refusal. A refusal
+ * (SQL raised, any other 4xx) keeps the plain OFFICE_REGISTRY_UNCONFIRMED.
+ */
+export class CompanyComputerRegistryUnansweredError extends Error {
+	constructor(cause: unknown) {
+		super("OFFICE_REGISTRY_UNCONFIRMED", { cause });
+		this.name = "CompanyComputerRegistryUnansweredError";
+	}
+}
+
+/** How long a desktop, or its browser, outlasts a registry that does not answer. */
+export const COMPANY_COMPUTER_UNANSWERED_GRACE_MS = 30_000;
+
+/**
+ * Whether a failed authority check only lacked an answer: an unanswered
+ * registry call, or a local deadline around one. A clear refusal, and anything
+ * this cannot recognize, is not. Nothing is authorized by an unanswered check;
+ * the caller only decides whether to wait for the next one before tearing down.
+ */
+export function companyComputerAuthorityUnanswered(error: unknown): boolean {
+	const pending = [error];
+	const seen = new Set<unknown>();
+	for (let index = 0; pending.length && index < 32; index++) {
+		const current = pending.shift();
+		if (seen.has(current) || !(current instanceof Error)) continue;
+		seen.add(current);
+		if (
+			current instanceof CompanyComputerRegistryUnansweredError ||
+			(current instanceof CloudRuntimeDiagnosticError && current.category === "timeout") ||
+			current.message === "COMPUTER_REQUEST_STOPPED"
+		)
+			return true;
+		if (current.cause !== undefined) pending.push(current.cause);
+		if (current instanceof AggregateError) pending.push(...current.errors.slice(0, 16));
+	}
+	return false;
+}
 
 /** Host-only Supabase transport. Closed RPC names, finite bodies, no redirects
  * or retries; a lost effect/ticket response remains an unknown outcome. */
@@ -83,7 +124,7 @@ export class HttpCloudCompanyComputerRegistry {
 					});
 					if (!response.ok) {
 						void response.body?.cancel().catch(() => undefined);
-						throw new Error("denied");
+						throw Object.assign(new Error("denied"), { status: response.status });
 					}
 					const bytes = await readBoundedCloudResponse(response, 64 * 1024, requestSignal);
 					requestSignal.throwIfAborted();
@@ -96,7 +137,10 @@ export class HttpCloudCompanyComputerRegistry {
 			);
 		} catch (error) {
 			// Never disclose SQL diagnostics, profile/input content or credentials.
-			throw new Error("OFFICE_REGISTRY_UNCONFIRMED", { cause: error });
+			const status = error instanceof Error && "status" in error ? error.status : undefined;
+			if (typeof status === "number" && status >= 400 && status < 500 && ![408, 425, 429].includes(status))
+				throw new Error("OFFICE_REGISTRY_UNCONFIRMED", { cause: error });
+			throw new CompanyComputerRegistryUnansweredError(error);
 		}
 	}
 }
