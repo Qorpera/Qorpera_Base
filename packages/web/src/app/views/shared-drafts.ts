@@ -216,7 +216,10 @@ export class SharedDrafts {
 					"--draft-peek-room",
 					`${Math.max(0, Math.floor(this.#row.getBoundingClientRect().right - el.getBoundingClientRect().left))}px`,
 				);
+			// Measured whenever the pointer or focus arrives, so a notch that appeared under a
+			// resting pointer, or moved since, never opens past the row.
 			el.addEventListener("pointerenter", room);
+			el.addEventListener("mouseover", room);
 			el.addEventListener("focus", room);
 			notch = { el, peek, text, name: nameEl };
 			this.#notches.set(draft.ownerUserId, notch);
