@@ -445,6 +445,40 @@ describe("settings session lifecycle", () => {
 			setTimeZonePreference("system");
 		}
 	});
+	it("draws the Friends rows again when the tab is shown again, so a company logo is live", async () => {
+		history.replaceState(null, "", "/#/");
+		const fixtureState = fixture();
+		vi.mocked(fixtureState.api.listIncomingInvitations).mockResolvedValue([
+			{
+				id: id(43),
+				profileId: profileB.profileId,
+				environmentId: profileB.environmentId,
+				profileName: profileB.profileName,
+				environmentName: profileB.environmentName,
+				email: userA.email!,
+				role: "contributor",
+				invitedByUserId: userB.id,
+				createdAt: timestamp,
+				expiresAt: "2099-01-01T00:00:00Z",
+			},
+		]);
+		const f = await setup(fixtureState);
+		open(f.root);
+		click(f.root, "#settings-tab-friends");
+		await draw();
+		const logo = () => f.root.querySelector(".settings-dialog .person-row .company-logo");
+		const first = logo();
+		expect(first?.isConnected).toBe(true);
+		// Off the page the logo's figure stops; a theme or size change would not reach it.
+		click(f.root, "#settings-tab-general");
+		await draw();
+		expect(first?.isConnected).toBe(false);
+		click(f.root, "#settings-tab-friends");
+		await draw();
+		expect(logo()).not.toBeNull();
+		expect(logo()).not.toBe(first);
+		expect(logo()?.isConnected).toBe(true);
+	});
 	it("offers accepted friends in the company invitation picker and sends Add a friend to the Friends tab", async () => {
 		const fixtureState = fixture();
 		vi.mocked(fixtureState.api.listFriends).mockResolvedValue([

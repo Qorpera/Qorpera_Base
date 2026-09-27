@@ -230,6 +230,9 @@ function partsFor(friends: FriendsController): FriendsParts {
 
 export function renderFriends(friends: FriendsController, hub: HubController, container: HTMLElement): void {
 	const parts = partsFor(friends);
+	// A tab shown again draws its results again: figures such as the company logos
+	// stop while off the page, and the theme or size may have changed meanwhile.
+	if (!parts.page.isConnected) parts.shown = "";
 	if (parts.page.parentElement !== container) replace(container, parts.page);
 	const state = friends.store.get();
 	const companies = hub.store.get();
