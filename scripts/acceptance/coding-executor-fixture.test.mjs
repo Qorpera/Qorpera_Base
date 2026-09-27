@@ -5,9 +5,27 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
-import { assertCodingFixtureParents, assertCodingExecutorCleanup, assertCodingExecutorEvidence, codingImageAddress, codingFixtureRemote, localCodingFixtureGit, waitForCodingChild } from "./coding-executor-fixture.mjs";
+import { assertCodingFixtureParents, assertCodingExecutorCleanup, assertCodingExecutorEvidence, codingImageAddress, codingFixtureRemote, localCodingFixtureGit, waitForCodingChild, waitForCodingWorkspace } from "./coding-executor-fixture.mjs";
 
 const execute = promisify(execFile);
+
+test("metering wait begins after boot and expires without renewing its budget or swallowing other failures", async () => {
+  const notReady = () => new Error("CODING_MACHINE_UNAVAILABLE:COMPUTER_USAGE_NOT_READY");
+  let clock = 0, calls = 0;
+  const timing = { now: () => clock, pause: async (ms) => { clock += ms; } };
+  const result = await waitForCodingWorkspace(async () => {
+    calls++; if (calls === 1) { clock += 120000; throw notReady(); }
+    return { vmId: "real-result" };
+  }, new AbortController().signal, timing);
+  assert.deepEqual(result, { vmId: "real-result" }); assert.equal(calls, 2);
+  const started = clock;
+  await assert.rejects(waitForCodingWorkspace(async () => { throw notReady(); }, new AbortController().signal, timing), /TIMEOUT:initial independent paid sample/);
+  assert.equal(clock - started, 45000);
+  const failure = new Error("COMPUTER_AUTHORITY_REFUSED");
+  await assert.rejects(waitForCodingWorkspace(async () => { throw failure; }, new AbortController().signal, timing), (error) => error === failure);
+  const stopped = new AbortController(); stopped.abort(); let effects = 0;
+  await assert.rejects(waitForCodingWorkspace(async () => { effects++; }, stopped.signal, timing)); assert.equal(effects, 0);
+});
 function input(scratchRoot, args) {
   return { scratchRoot, cwd: scratchRoot, network: true, args,
     env: { PATH: process.env.PATH, HOME: scratchRoot, XDG_CONFIG_HOME: scratchRoot, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null",

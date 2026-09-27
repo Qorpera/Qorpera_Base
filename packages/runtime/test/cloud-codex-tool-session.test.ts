@@ -752,10 +752,11 @@ it.each(["start", "update", "finish"])("isolates an unexpected optional observer
 
 function composing(mode: string, signal?: AbortSignal) {
 	const { rows, observability } = observationCollector();
+	const cleanup = new AbortController();
 	const execute = vi.fn<CloudNativeTool["execute"]>(async () => ({ kind: "text", value: "Delivered" }));
 	const invocation = run(mode, {
 		observability,
-		signal,
+		signal: signal ? AbortSignal.any([signal, cleanup.signal]) : cleanup.signal,
 		tools: [
 			{
 				name: "send_message",
@@ -767,12 +768,30 @@ function composing(mode: string, signal?: AbortSignal) {
 			},
 		],
 	});
+	// A startup/assertion failure must not leave an unhandled child result behind.
+	const settled = invocation.result.catch(() => undefined);
 	return {
 		...invocation,
 		execute,
 		rows,
 		observability,
+		ready: () =>
+			vi.waitFor(
+				async () => {
+					expect(JSON.parse(await readFile(invocation.evidence, "utf8"))).toEqual({ stage: "composing" });
+					if (mode !== "composition-replayed") {
+						expect(rows.some((row) => row.operation === "message_composition")).toBe(true);
+					}
+				},
+				// Includes the real binary hash, child spawn and RPC handshake on loaded CI hosts.
+				{ timeout: 5000 },
+			),
 		release: () => writeFile(`${invocation.evidence}.continue`, "continue"),
+		close: async () => {
+			cleanup.abort();
+			await settled;
+			await observability.close();
+		},
 	};
 }
 
@@ -780,7 +799,8 @@ it("exports writing before the complete send call and renews long composition wi
 	const f = composing("composition-held");
 	const phases = () => f.rows.filter((row) => row.operation === "message_composition");
 	try {
-		await vi.waitFor(() => expect(phases()).toHaveLength(1));
+		await f.ready();
+		expect(phases()).toHaveLength(1);
 		expect(f.execute).not.toHaveBeenCalled();
 		expect(phases()[0]).toMatchObject({ phase: "start", status: "started", inputBytes: null, outputBytes: null });
 		await vi.waitFor(() => expect(phases()).toHaveLength(3), { timeout: 6500 });
@@ -796,52 +816,61 @@ it("exports writing before the complete send call and renews long composition wi
 		expect(phases()[3]).toMatchObject({ phase: "finish", status: "succeeded", attemptId: phases()[1].attemptId });
 		expect(JSON.stringify(f.rows)).not.toMatch(/PRIVATE_|PUBLIC_REPLY|public_reply|thread_fixture|turn_fixture/);
 	} finally {
-		await f.release();
-		await f.result.catch(() => undefined);
-		await f.observability.close();
+		await f.close();
 	}
-}, 10000);
+}, 15000);
 
 it("does not revive a composition whose finish preceded its start", async () => {
 	const f = composing("composition-replayed");
-	await vi.waitFor(async () => expect(JSON.parse(await readFile(f.evidence, "utf8"))).toEqual({ stage: "composing" }));
-	await f.release();
-	await f.result;
-	await f.observability.close();
-	expect(f.rows.filter((row) => row.operation === "message_composition")).toEqual([]);
-});
+	try {
+		await f.ready();
+		await f.release();
+		await f.result;
+		await f.observability.close();
+		expect(f.rows.filter((row) => row.operation === "message_composition")).toEqual([]);
+	} finally {
+		await f.close();
+	}
+}, 10000);
 
 it("ends an unfinished composition when its turn completes", async () => {
 	const f = composing("composition-unfinished");
-	await vi.waitFor(() => expect(f.rows.some((row) => row.operation === "message_composition")).toBe(true));
-	await f.release();
-	await f.result;
-	await f.observability.close();
-	expect(
-		f.rows.filter((row) => row.operation === "message_composition").map((row) => [row.phase, row.status]),
-	).toEqual([
-		["start", "started"],
-		["finish", "unconfirmed"],
-	]);
-	expect(f.execute).not.toHaveBeenCalled();
-});
+	try {
+		await f.ready();
+		await f.release();
+		await f.result;
+		await f.observability.close();
+		expect(
+			f.rows.filter((row) => row.operation === "message_composition").map((row) => [row.phase, row.status]),
+		).toEqual([
+			["start", "started"],
+			["finish", "unconfirmed"],
+		]);
+		expect(f.execute).not.toHaveBeenCalled();
+	} finally {
+		await f.close();
+	}
+}, 10000);
 
 it("clears writing and its renewal timer when composition is cancelled", async () => {
 	const abort = new AbortController();
 	const f = composing("composition-held", abort.signal);
-	const failure = expect(f.result).rejects.toThrow("Native boundary execution stopped");
-	await vi.waitFor(() => expect(f.rows.some((row) => row.operation === "message_composition")).toBe(true));
-	abort.abort();
-	await failure;
-	await f.observability.close();
-	expect(
-		f.rows.filter((row) => row.operation === "message_composition").map((row) => [row.phase, row.status]),
-	).toEqual([
-		["start", "started"],
-		["finish", "cancelled"],
-	]);
-	expect(f.execute).not.toHaveBeenCalled();
-});
+	try {
+		await f.ready();
+		abort.abort();
+		await expect(f.result).rejects.toThrow("Native boundary execution stopped");
+		await f.observability.close();
+		expect(
+			f.rows.filter((row) => row.operation === "message_composition").map((row) => [row.phase, row.status]),
+		).toEqual([
+			["start", "started"],
+			["finish", "cancelled"],
+		]);
+		expect(f.execute).not.toHaveBeenCalled();
+	} finally {
+		await f.close();
+	}
+}, 10000);
 
 // Auto-review (v130): the reviewer is a second, fresh thread in the same app-server,
 // started while the agent's tool call is open. Its only output is its verdict tool

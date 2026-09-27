@@ -10,7 +10,7 @@ import { startNativePostgres } from "./native-postgres.mjs";
 import { retainSecondCodingClaim } from "./workload-usage-shared.mjs";
 import { readWorkloadUsage, verifyWorkloadUsage } from "./workload-usage-evidence.mjs";
 import { assertWorkloadRun, assertWorkloadShape } from "./workload-usage-host.mjs";
-import { assertCodingExecutorCleanup, assertCodingExecutorEvidence, codingFixtureRepository, localCodingFixtureGit } from "./coding-executor-fixture.mjs";
+import { assertCodingExecutorCleanup, assertCodingExecutorEvidence, codingFixtureRepository, localCodingFixtureGit, waitForCodingWorkspace } from "./coding-executor-fixture.mjs";
 import { CodingComputerController, CODING_COMPUTER_RPCS, CODING_EXECUTOR_RPCS, CODING_HOST_RPCS,
   LxdCodingExecutorHost, parseCodingSessionClaim, parseCodingTurnState, codingTurnScope,
   createCodingNasStorage, createCodingBrokerGitRunner, authorizeCodingCommand,
@@ -170,10 +170,10 @@ try {
   const prepare = async (claim) => {
     const args = { p_worker_id: claim.workerId, p_lease_token: claim.leaseToken };
     const turn = parseCodingTurnState(await rpc("qorpera_describe_coding_turn", args), claim);
-    const workspace = await until(async () => {
-      try { return await host.prepareWorkspace(claim, turn, signal); }
-      catch (error) { if (error.message !== "CODING_MACHINE_UNAVAILABLE:COMPUTER_USAGE_NOT_READY") throw error; return null; }
-    }, Boolean, 45000, "initial independent paid sample");
+    const workspace = await waitForCodingWorkspace(() => {
+      if (maintenanceFailure) throw maintenanceFailure;
+      return host.prepareWorkspace(claim, turn, signal);
+    }, signal);
     allocationId = workspace.vmId; machineName = `qorpera-coding-machine-${allocationId.replaceAll("-", "")}`;
     attached.add(claim.workerId); await host.refreshLease(claim, signal);
     await rpc("qorpera_record_coding_progress", { ...args, p_last_step: "Acceptance checkout ready", p_base_sha: workspace.baseSha, p_vm_allocation_id: workspace.vmId });

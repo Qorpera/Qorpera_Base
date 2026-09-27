@@ -1,9 +1,26 @@
 import assert from "node:assert/strict";
 import { cp, lstat, mkdtemp } from "node:fs/promises";
 import { isAbsolute, join, relative } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 
 export const codingFixtureRepository = Object.freeze({ host: "github.com", owner: "Qorpera", name: "Qorpera_Base", baseBranch: "master" });
 export const codingFixtureRemote = "https://github.com/Qorpera/Qorpera_Base.git";
+
+/** The production host separately bounds VM creation/boot. Start the metering
+ * convergence budget only when that path actually reports its prerequisite. */
+export async function waitForCodingWorkspace(prepare, signal, { now = () => performance.now(), pause = (ms) => delay(ms, undefined, { signal }) } = {}) {
+  let deadline = null;
+  for (;;) {
+    signal.throwIfAborted();
+    if (deadline !== null && now() >= deadline) throw new Error("CODING_EXECUTOR_ACCEPTANCE_TIMEOUT:initial independent paid sample");
+    try { return await prepare(); }
+    catch (error) {
+      if (error.message !== "CODING_MACHINE_UNAVAILABLE:COMPUTER_USAGE_NOT_READY") throw error;
+      deadline ??= now() + 45000;
+    }
+    await pause(500);
+  }
+}
 
 /** The only substitute: the fixture's two read-only remote Git operations.
  * The real broker still executes every Git operation in its Linux sandbox.
