@@ -9,6 +9,7 @@ import { button, h, icon, notice, replace } from "../../ui/dom.ts";
 import { phrase, t, uiText } from "../../ui/preferences.ts";
 import type { AuthController } from "../auth.ts";
 import { CompanyController } from "../company.ts";
+import { currentRoute } from "../router.ts";
 import { type AccountViewState, renderAccount } from "./account.ts";
 import { renderAppearance } from "./appearance.ts";
 import { FriendsController, renderFriends } from "./friends.ts";
@@ -96,8 +97,8 @@ export class SettingsView {
 	readonly #panels = new Map<SettingsTab, HTMLElement>();
 	readonly #tabs = new Map<SettingsTab, HTMLButtonElement>();
 	readonly #borrowedCompany: CompanyController | undefined;
-	readonly #companyPicker = h("select", { class: "settings-company-picker", "aria-label": t("Company for settings") });
-	readonly #companyLabel = h("label", { class: "settings-company-label" }, t("Company"), this.#companyPicker);
+	/** Opened on a company's page, even one whose company is not available. */
+	readonly #overCompany: boolean;
 	#profiles: HostedProfile[] = [];
 	#tab: SettingsTab = "general";
 	#account: AccountViewState = { loading: true };
@@ -130,6 +131,8 @@ export class SettingsView {
 		this.#close = close;
 		this.#companyRemoved = companyRemoved;
 		this.#borrowedCompany = company;
+		const route = currentRoute();
+		this.#overCompany = Boolean(company) || route.name === "company";
 		const search = this.#search;
 		const empty = h("p", { class: "muted small", hidden: true }, t("No settings found."));
 		const nav = h("nav", { class: "settings-nav", "aria-label": t("Settings sections") }, search);
@@ -184,7 +187,15 @@ export class SettingsView {
 			empty.hidden = Boolean(first);
 			if (first && this.#tabs.get(this.#tab)?.hidden) this.#select(first[0]);
 		};
-		nav.append(tablist, empty);
+		// The rail's way out of a company. The company list itself needs none;
+		// following the link closes Settings like any other in-app link.
+		const back = h(
+			"a",
+			{ class: "settings-back", href: "#/", hidden: route.name === "hub" },
+			icon("back"),
+			uiText("Back to companies"),
+		);
+		nav.append(tablist, empty, back);
 		this.el = h(
 			"div",
 			{
@@ -207,8 +218,6 @@ export class SettingsView {
 			),
 		);
 		document.addEventListener("keydown", this.#onKey, { signal: this.#lifetime.signal });
-		this.#companyPicker.onchange = () => this.#chooseCompany();
-		nav.append(this.#companyLabel);
 		this.#setCompany(company, false);
 		this.updateProfiles(profiles);
 		void api
@@ -241,24 +250,18 @@ export class SettingsView {
 		this.#tabs.get(this.#tab)?.focus();
 	}
 
+	/** Settings opened on a company's page show the company that page has open
+	 * and no other, while the account lists it; none when the page has no
+	 * company to lend (access lost, not available). Opened elsewhere, they keep
+	 * the company they show while it is listed, else show the account's only
+	 * company, and none when it has several. */
 	updateProfiles(profiles: HostedProfile[]): void {
 		if (this.#lifetime.signal.aborted || profiles === this.#profiles) return;
-		const selected =
-			profiles.find((profile) => profile.profileId === this.#company?.profile.profileId) ??
-			(!this.#company && this.#profiles.length === 0 && profiles.length === 1 ? profiles[0] : undefined);
+		const profile = this.#overCompany
+			? profiles.find((item) => item.profileId === this.#borrowedCompany?.profile.profileId)
+			: (profiles.find((item) => item.profileId === this.#company?.profile.profileId) ??
+				(profiles.length === 1 ? profiles[0] : undefined));
 		this.#profiles = profiles;
-		replace(
-			this.#companyPicker,
-			h("option", { value: "" }, t("Choose a company")),
-			...profiles.map((profile) => h("option", { value: profile.profileId }, profile.profileName)),
-		);
-		this.#companyPicker.value = selected?.profileId ?? "";
-		this.#companyLabel.hidden = profiles.length <= 1 && Boolean(this.#borrowedCompany) && Boolean(selected);
-		this.#chooseCompany();
-	}
-
-	#chooseCompany(): void {
-		const profile = this.#profiles.find((item) => item.profileId === this.#companyPicker.value);
 		if (profile?.profileId === this.#company?.profile.profileId) return;
 		if (
 			profile &&
@@ -272,6 +275,7 @@ export class SettingsView {
 				Boolean(profile),
 			);
 	}
+
 	dispose(): void {
 		this.#lifetime.abort();
 		this.#companyLifetime.abort();
@@ -395,10 +399,11 @@ export class SettingsView {
 				"div",
 				null,
 				h("h1", null, t(TABS.find((item) => item.id === tab)!.label)),
-				notice("neutral", t("Choose a company to view these settings.")),
+				notice("neutral", t("Open a company to see these settings.")),
 			);
 		this.#content.setAttribute("aria-labelledby", `settings-tab-${tab}`);
-		replace(this.#content, panel);
+		// A company change selects the open tab again; its panel, and a field being typed in, stay put.
+		if (panel.parentElement !== this.#content) replace(this.#content, panel);
 	}
 
 	/** General shows only the account's error and message, so it is redrawn only
@@ -424,7 +429,7 @@ export class SettingsView {
 		});
 	}
 
-	/** The plan is the account's; the usage shown is the chosen company's storage. */
+	/** The plan is the account's; the usage shown is the open company's storage. */
 	#plan(): void {
 		if (this.#lifetime.signal.aborted) return;
 		let panel = this.#panels.get("plan");
