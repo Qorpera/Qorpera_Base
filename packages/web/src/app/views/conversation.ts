@@ -98,6 +98,10 @@ export class ConversationView {
 	readonly #codingSlots = h("div", { class: "thread-coding-sessions" });
 	readonly #codingSlotViews = new Map<string, CodingSessionSlot>();
 	#codingPoll: ReturnType<typeof setTimeout> | undefined;
+	/** A read is on its way; the next one is scheduled when it lands, never beside it. */
+	#codingReading = false;
+	/** Reads that failed in a row; each one doubles the wait, up to eight times. */
+	#codingFailures = 0;
 	readonly #computer: HTMLButtonElement;
 	readonly #navigation: HTMLButtonElement;
 	readonly #body: HTMLElement;
@@ -932,7 +936,8 @@ export class ConversationView {
 		);
 		const key = JSON.stringify([
 			items,
-			codingSessions,
+			// Only what the line shows: the header's poll changes the rest every few seconds.
+			codingSessions.map((coding) => [coding.workerId, coding.harness, coding.title, coding.createdAt]),
 			agentName,
 			this.#isRoom,
 			answerable,
@@ -982,7 +987,6 @@ export class ConversationView {
 				const candidate = codingSessions[nextSession]!;
 				if (before !== undefined && candidate.createdAt.localeCompare(before) > 0) break;
 				nextSession += 1;
-				if (this.#codingThread?.workerId === candidate.workerId) this.#codingThread.view.update(candidate);
 				const line = this.#codingLine(candidate);
 				nodes.push(line);
 				const date = parseConversationTimestamp(candidate.createdAt);
@@ -1368,6 +1372,9 @@ export class ConversationView {
 	 * that works while its session works; the figures are kept across renders so
 	 * their motion runs on. */
 	#renderCodingSlots(sessions: readonly CodingSession[], agent: HostedStaffAgent | undefined): void {
+		// The session open as its own thread takes the fresh listing too.
+		const open = this.#codingThread && sessions.find((session) => session.workerId === this.#codingThread?.workerId);
+		if (open) this.#codingThread?.view.update(open);
 		const going = [...sessions]
 			.filter((session) => !codingSessionSettled(session.phase))
 			.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
@@ -1391,7 +1398,9 @@ export class ConversationView {
 				? (document.activeElement as HTMLElement)
 				: undefined;
 			replace(this.#codingSlots, ...slots.map((slot) => slot.el));
-			if (focused && !focused.isConnected) this.#identity.focus();
+			// Moving the nodes drops focus to the page: back to the same figure, or to the agent if it left.
+			if (focused && document.activeElement !== focused)
+				(focused.isConnected ? focused : this.#identity).focus({ preventScroll: true });
 		}
 		this.#codingSlots.hidden = !slots.length;
 		this.#watchCodingSessions();
@@ -1401,25 +1410,37 @@ export class ConversationView {
 	 * the header's figures follow them; stops once they all settled. A new session or
 	 * a follow-up starts it again from the next render. */
 	#watchCodingSessions(): void {
-		if (this.#codingPoll !== undefined || this.#disposed) return;
+		if (this.#codingPoll !== undefined || this.#codingReading || this.#disposed) return;
 		const going = (this.#company.conversation(this.#sessionId).get().codingSessions ?? []).filter(
 			(session) => !codingSessionSettled(session.phase),
 		);
 		if (!going.length) return;
-		const wait = document.hidden
+		const pace = document.hidden
 			? CODING_POLL_HIDDEN_MS
 			: going.some((session) => session.phase !== "awaiting_input" && session.phase !== "queued")
 				? CODING_POLL_WORKING_MS
 				: CODING_POLL_WAITING_MS;
-		this.#codingPoll = setTimeout(() => {
-			void this.#company
-				.refreshCodingSessions(this.#sessionId)
-				.catch(() => undefined)
-				.then(() => {
-					this.#codingPoll = undefined;
-					this.#watchCodingSessions();
-				});
-		}, wait);
+		this.#codingPoll = setTimeout(
+			() => {
+				this.#codingPoll = undefined;
+				this.#codingReading = true;
+				void this.#company
+					.refreshCodingSessions(this.#sessionId)
+					.then(
+						() => {
+							this.#codingFailures = 0;
+						},
+						() => {
+							this.#codingFailures += 1;
+						},
+					)
+					.finally(() => {
+						this.#codingReading = false;
+						this.#watchCodingSessions();
+					});
+			},
+			pace * 2 ** Math.min(this.#codingFailures, 3),
+		);
 	}
 
 	/** The names a session's captions are written with; the owner is "you" for the owner. */

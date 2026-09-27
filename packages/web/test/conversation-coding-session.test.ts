@@ -272,6 +272,81 @@ describe("coding sessions in the thread", () => {
 		expect(f.api.listCodingSessions).toHaveBeenCalledTimes(1);
 	});
 
+	it("follows the sessions without redrawing the thread, one read at a time, backing off on errors", async () => {
+		const f = mount((store) => {
+			store.set({
+				projection: { items: [message(1, "On it.", "2026-09-22T10:00:30Z")], hiddenCount: 0, lastSequence: 1 },
+				codingSessions: [codingSession()],
+			});
+		});
+		vi.mocked(f.api.readCodingSession).mockResolvedValue({ session: codingSession(), isOwner: true, events: [] });
+		let finish: (sessions: CodingSession[]) => void = () => {};
+		vi.mocked(f.api.listCodingSessions).mockImplementation(
+			() =>
+				new Promise<CodingSession[]>((resolve) => {
+					finish = resolve;
+				}),
+		);
+		await settle();
+		const messages = f.view.el.querySelector<HTMLElement>(".messages")!;
+		const line = messages.querySelector(".coding-line")!;
+		const slot = f.view.el.querySelector<HTMLButtonElement>(".thread-header .coding-slot")!;
+		slot.focus();
+		vi.mocked(f.api.listCodingSessions).mockClear();
+		await vi.advanceTimersByTimeAsync(2_500);
+		expect(f.api.listCodingSessions).toHaveBeenCalledTimes(1);
+		// Back on the tab while the read is on its way: no second loop starts beside it.
+		document.dispatchEvent(new Event("visibilitychange"));
+		await vi.advanceTimersByTimeAsync(10_000);
+		expect(f.api.listCodingSessions).toHaveBeenCalledTimes(1);
+		// The session's step changes: the header takes it and the thread keeps its nodes.
+		finish([codingSession({ lastStep: "npm test", updatedAt: "2026-09-22T10:10:01Z" })]);
+		await settle();
+		expect(messages.querySelector(".coding-line")).toBe(line);
+		expect(slot.title).toContain("npm test");
+		await vi.advanceTimersByTimeAsync(2_500);
+		expect(f.api.listCodingSessions).toHaveBeenCalledTimes(2);
+		// A second session starts: the header takes both, and the focused figure keeps focus.
+		finish([
+			codingSession({ lastStep: "npm test", updatedAt: "2026-09-22T10:10:01Z" }),
+			codingSession({ workerId: id(902), title: "Second", createdAt: "2026-09-22T10:20:00Z" }),
+		]);
+		await settle();
+		expect(f.view.el.querySelectorAll(".thread-header .coding-slot")).toHaveLength(2);
+		expect(document.activeElement).toBe(slot);
+		await vi.advanceTimersByTimeAsync(2_500);
+		expect(f.api.listCodingSessions).toHaveBeenCalledTimes(3);
+		// A failed read waits twice as long before the next one.
+		vi.mocked(f.api.listCodingSessions).mockRejectedValue(new Error("offline"));
+		finish([codingSession({ updatedAt: "2026-09-22T10:10:02Z" })]);
+		await settle();
+		await vi.advanceTimersByTimeAsync(2_500);
+		expect(f.api.listCodingSessions).toHaveBeenCalledTimes(4);
+		await vi.advanceTimersByTimeAsync(2_500);
+		expect(f.api.listCodingSessions).toHaveBeenCalledTimes(4);
+		await vi.advanceTimersByTimeAsync(2_500);
+		expect(f.api.listCodingSessions).toHaveBeenCalledTimes(5);
+	});
+
+	it("an older read never undoes a newer state the thread already has", async () => {
+		const f = mount((store) => {
+			store.set({
+				projection: { items: [], hiddenCount: 0, lastSequence: 0 },
+				codingSessions: [codingSession({ phase: "input_ready", sequence: 2, updatedAt: "2026-09-22T10:04:00Z" })],
+			});
+		});
+		vi.mocked(f.api.listCodingSessions).mockResolvedValue([
+			codingSession({ phase: "awaiting_input", workerState: "blocked", updatedAt: "2026-09-22T10:03:00Z" }),
+		]);
+		await f.company.refreshCodingSessions(session.sessionId);
+		expect(f.store.get().codingSessions?.[0]).toMatchObject({ phase: "input_ready", sequence: 2 });
+		vi.mocked(f.api.listCodingSessions).mockResolvedValue([
+			codingSession({ phase: "running", sequence: 2, updatedAt: "2026-09-22T10:05:00Z" }),
+		]);
+		await f.company.refreshCodingSessions(session.sessionId);
+		expect(f.store.get().codingSessions?.[0]).toMatchObject({ phase: "running" });
+	});
+
 	it("a cloud without coding sessions renders the thread as before", async () => {
 		const f = mount();
 		vi.mocked(f.api.readSessionEvents).mockResolvedValue([]);
