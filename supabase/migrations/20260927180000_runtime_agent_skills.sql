@@ -57,14 +57,22 @@ do $$ declare v_owner name; begin
 	end loop;
 end $$;
 
+create function pg_temp.agent_skills_replace(p_definition text, p_old text, p_new text)
+returns text language plpgsql as $$
+begin
+	if p_old = '' or (length(p_definition) - length(replace(p_definition, p_old, ''))) / length(p_old) <> 1 then
+		raise exception 'Runtime observation vocabulary differs: %', left(p_old, 80); end if;
+	return replace(p_definition, p_old, p_new);
+end
+$$;
+
 do $migration$
 declare
 	v_definition text := pg_get_functiondef('public.qorpera_record_runtime_observation(uuid,jsonb)'::regprocedure);
-	v_old constant text := $old$'update_memory','recall_memory',$old$;
 begin
-	if (length(v_definition) - length(replace(v_definition, v_old, ''))) / length(v_old) <> 1 then
-		raise exception 'Runtime observation vocabulary differs: %', v_old; end if;
-	execute replace(v_definition, v_old,
+	v_definition := pg_temp.agent_skills_replace(v_definition,
+		$old$'update_memory','recall_memory',$old$,
 		$new$'update_memory','recall_memory','read_skill','search_skills','update_skill',$new$);
+	execute v_definition;
 end
 $migration$;
