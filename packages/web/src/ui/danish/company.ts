@@ -134,15 +134,18 @@ export const COMPANY: Record<string, string> = {
 	"Delete {name} from the Company File?": "Vil du slette {name} fra Virksomhedsfilen?",
 	"Deleted {name}.": "{name} er slettet.",
 	"Delete {name}": "Slet {name}",
-	"{name} changed since it was opened, so nothing was saved.":
-		"{name} er ændret, siden den blev åbnet, så intet blev gemt.",
+	"{name} changed since it was opened, so nothing was saved. Copy your text, then open the file again.":
+		"{name} er ændret, siden den blev åbnet, så intet blev gemt. Kopiér din tekst, og åbn så filen igen.",
+	"{name} changed a moment ago, so nothing was changed.":
+		"{name} blev ændret for et øjeblik siden, så intet blev ændret.",
+	"{name} can't be uploaded.": "{name} kan ikke uploades.",
+	"{name} was not uploaded.": "{name} blev ikke uploadet.",
 	"You can't change {name}. Ask an owner or admin.": "Du kan ikke ændre {name}. Spørg en ejer eller administrator.",
 	"Sign in again, then try once more.": "Log ind igen, og prøv så en gang til.",
 	"The Company File did not accept this change to {name}.": "Virksomhedsfilen tog ikke imod denne ændring af {name}.",
 	"{name} changed a moment ago, so it was not deleted.":
 		"{name} blev ændret for et øjeblik siden, så den blev ikke slettet.",
 	"Not sent yet: {names}.": "Ikke sendt endnu: {names}.",
-	"Not uploaded: {names}.": "Ikke uploadet: {names}.",
 	"Applied the change to {name}.": "Ændringen af {name} er gennemført.",
 	"Wait for the current step to finish, then add the files again.":
 		"Vent, til det igangværende trin er færdigt, og tilføj så filerne igen.",

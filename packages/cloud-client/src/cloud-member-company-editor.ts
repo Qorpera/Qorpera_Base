@@ -19,9 +19,12 @@ function comparePathBytes(left: string, right: string): number {
 	return a.length - b.length;
 }
 
-/** The cloud refused a change before saving anything (a bad request, no
- * access, or a version that is no longer current). Nothing was applied, and
- * the same intent can never apply, so a client may drop it. */
+/** The cloud refused this request (a bad request, no access, or a version that
+ * is no longer current). The change was not applied by it, and resending it can
+ * never apply it twice: a stale version stays refused and a create finds the
+ * path taken. A 401 or 403 can still follow an earlier send that did apply, so a
+ * client that drops the intent should read the path again before telling the
+ * member nothing changed. */
 export class CloudMemberCompanyRefusal extends Error {
 	readonly status: 400 | 401 | 403 | 412;
 	constructor(message: string, status: 400 | 401 | 403 | 412) {

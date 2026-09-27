@@ -664,7 +664,9 @@ describe("product governed File boundary", () => {
 			},
 		});
 		view.el.dispatchEvent(drop);
-		await vi.waitFor(() => expect(view.el.textContent).toContain("Uploaded Caf\u00e9.md. Not uploaded: reports."));
+		await vi.waitFor(() =>
+			expect(view.el.textContent).toContain("Uploaded Caf\u00e9.md. reports can't be replaced from here."),
+		);
 		expect(f.files.get("Caf\u00e9.md")?.text).toBe("Kaffe");
 	});
 	it("shows Delete only to members who may approve it", async () => {
@@ -678,6 +680,25 @@ describe("product governed File boundary", () => {
 		);
 		expect(() => menuItem("Delete")).toThrow();
 		expect(menuItem("Download")).toBeDefined();
+	});
+	it("keeps the open file's unsaved text when another file is deleted", async () => {
+		const f = await setup();
+		f.files.set("old.txt", { text: "Old", version: id(54) });
+		const view = await mount(f);
+		await open(view.el, "notes.txt");
+		type(await edit(view.el), "Still typing");
+		row(view.el, "old.txt").dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, clientX: 40, clientY: 40 }));
+		menuItem("Delete").click();
+		(await dialogButton("Delete")).click();
+		await vi.waitFor(() => expect(view.el.textContent).toContain("Deleted old.txt."));
+		const editor = view.el.querySelector<HTMLTextAreaElement>(".files-editor")!;
+		expect(editor.value).toBe("Still typing");
+		expect(editor.disabled).toBe(false);
+		expect(view.leaveMessage()).toBe("Discard this unsaved text?");
+		const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+		button(view.el, "Close notes.txt").click();
+		expect(confirm).toHaveBeenCalledWith("Discard this unsaved text?");
+		expect(view.el.querySelector<HTMLTextAreaElement>(".files-editor")?.value).toBe("Still typing");
 	});
 	it("filters the open folder by name", async () => {
 		const f = await setup();

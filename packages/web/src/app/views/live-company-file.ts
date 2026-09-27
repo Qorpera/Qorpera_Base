@@ -824,7 +824,9 @@ export class LiveCompanyFileView {
 			// The listed version is no longer the file's: list the folder again.
 			if (
 				!(error instanceof Error) ||
-				!/^Selected Company File (version changed|is unavailable)$/.test(error.message)
+				!/^(Selected Company File (version changed|is unavailable)|Company File changed during read)$/.test(
+					error.message,
+				)
 			)
 				throw error;
 			await this.#load(this.#dir);
@@ -942,6 +944,12 @@ export class LiveCompanyFileView {
 				actions.push(
 					button([icon("edit"), t("Edit")], () => {
 						if (this.#busy) return;
+						if (this.#unconfirmed()) {
+							this.#problem(
+								new Refusal(t("The last change may not have been saved. Retry it before starting another.")),
+							);
+							return;
+						}
 						this.#draft = opened.text ?? "";
 						this.#dirty = false;
 						this.#editing = true;
@@ -1072,11 +1080,20 @@ export class LiveCompanyFileView {
 
 	/** What a refused change means for the member. The cloud saved nothing and the
 	 * same change can never apply, so the page lets go of it. */
-	#refusal(error: unknown, path: string): Refusal | undefined {
+	#refusal(error: unknown, path: string, save = false): Refusal | undefined {
 		if (!(error instanceof CloudMemberCompanyRefusal)) return undefined;
 		const name = baseName(path);
 		if (error.status === 412)
-			return new Refusal(t("{name} changed since it was opened, so nothing was saved.", { name }));
+			return new Refusal(
+				save
+					? t(
+							"{name} changed since it was opened, so nothing was saved. Copy your text, then open the file again.",
+							{
+								name,
+							},
+						)
+					: t("{name} changed a moment ago, so nothing was changed.", { name }),
+			);
 		if (error.status === 403) return new Refusal(t("You can't change {name}. Ask an owner or admin.", { name }));
 		if (error.status === 401) return new Refusal(t("Sign in again, then try once more."));
 		return new Refusal(t("The Company File did not accept this change to {name}.", { name }));
@@ -1105,7 +1122,7 @@ export class LiveCompanyFileView {
 			result = await this.#client!.edit(pending, this.#stop.signal);
 		} catch (error) {
 			this.#live();
-			const refusal = this.#refusal(error, opened.path);
+			const refusal = this.#refusal(error, opened.path, true);
 			// Refused: the text stays in the editor for the member to keep or copy.
 			if (refusal) this.#pending = null;
 			this.#draw();
@@ -1254,7 +1271,12 @@ export class LiveCompanyFileView {
 				if (file.size > MAX_FILE_BYTES)
 					throw new Refusal(t("{name} is larger than 8 MB and was not uploaded.", { name }));
 				const path = this.#child(name);
-				await uploader.select(file);
+				try {
+					await uploader.select(file);
+				} catch {
+					this.#live();
+					throw new Refusal(t("{name} can't be uploaded.", { name }));
+				}
 				this.#live();
 				const target = await this.#client!.describe(path, this.#stop.signal);
 				this.#live();
@@ -1280,12 +1302,13 @@ export class LiveCompanyFileView {
 				this.#uploading = { path, expectedVersion: target.version, name };
 				const outcome = await this.#sendUpload();
 				if (outcome) uploaded.push(name);
+				else skipped.push(t("{name} was not uploaded.", { name }));
 				if (outcome === "approved") approved = true;
 			} catch (error) {
 				this.#live();
 				if (error instanceof Refusal && !uploader.uncertain && !this.#approving) {
 					if (uploader.selected) uploader.clearSelection();
-					skipped.push(name);
+					skipped.push(error.message);
 					continue;
 				}
 				const rest = files.slice(index + 1).map((item) => item.name.normalize("NFC"));
@@ -1304,7 +1327,7 @@ export class LiveCompanyFileView {
 					? t("Uploaded {count} files.", { count: uploaded.length })
 					: "",
 			approved ? t("The change is approved and will apply shortly.") : "",
-			skipped.length ? t("Not uploaded: {names}.", { names: skipped.join(", ") }) : "",
+			...skipped,
 		];
 		this.#say(lines.filter(Boolean).join(" "));
 	}
@@ -1373,7 +1396,7 @@ export class LiveCompanyFileView {
 			result = await this.#client!.review(command, "approve", this.#stop.signal);
 		} catch (error) {
 			this.#live();
-			const refusal = this.#refusal(error, path);
+			const refusal = this.#refusal(error, path, kind === "save");
 			if (refusal) this.#approving = null;
 			throw refusal ?? error;
 		}
@@ -1388,9 +1411,13 @@ export class LiveCompanyFileView {
 	async #retryApproval(): Promise<void> {
 		const approving = this.#approving;
 		if (!approving) return;
-		const outcome = await this.#approve(approving.command, approving.path, approving.kind);
+		let outcome: Outcome = false;
+		try {
+			outcome = await this.#approve(approving.command, approving.path, approving.kind);
+		} finally {
+			if (!outcome && this.#opened?.path === approving.path && !this.#stop.signal.aborted) this.#draw();
+		}
 		if (outcome) await this.#finish(approving.path, outcome, approving.kind === "save" ? "save" : "change");
-		else if (this.#opened?.path === approving.path) this.#draw();
 	}
 
 	/** After a change went through: the folder is read again and the member told. */
@@ -1400,10 +1427,8 @@ export class LiveCompanyFileView {
 		kind: "save" | "delete" | "folder" | "change",
 	): Promise<void> {
 		const name = baseName(path);
-		if (kind !== "folder") {
-			this.#dirty = false;
-			if (this.#opened?.path === path || kind === "save") this.#close();
-		}
+		// Only the changed file closes; another file's unsaved text stays as it is.
+		if (kind !== "folder" && (this.#opened?.path === path || kind === "save")) this.#close();
 		await this.#load(this.#dir);
 		if (kind === "save") {
 			const item = this.#items.find((entry) => entry.path === path);
@@ -1424,6 +1449,8 @@ export class LiveCompanyFileView {
 							? t("Created {name}.", { name })
 							: t("Applied the change to {name}.", { name }),
 		);
+		// An editor drawn while the change was unconfirmed is drawn again, unlocked.
+		if (this.#opened && this.#editing) this.#draw();
 	}
 
 	// ---- dropping files ---------------------------------------------------------
