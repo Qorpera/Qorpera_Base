@@ -283,6 +283,23 @@ describe("shared drafts above the composer", () => {
 		expect(status.hidden).toBe(true);
 	});
 
+	it("does not share a text longer than a message can be, and says so until it is shortened", async () => {
+		const s = await setup([draft(userB.id, "Plan", 3)]);
+		s.put.mockResolvedValue({ status: "ok", draft: draft(userB.id, "Plan short", 4, { editorUserId: userA.id }) });
+		s.notches()[0]!.click();
+		await settle();
+		const status = s.panel()!.querySelector<HTMLElement>(".draft-panel-status")!;
+		type(s.panelInput(), `Plan ${"æ".repeat(33_000)}`);
+		await vi.advanceTimersByTimeAsync(20_000);
+		expect(s.put).not.toHaveBeenCalled();
+		expect(status.hidden).toBe(false);
+		expect(status.textContent).toBe("Too long to share. Shorten it to share your changes.");
+		type(s.panelInput(), "Plan short");
+		await vi.advanceTimersByTimeAsync(310);
+		expect(s.put).toHaveBeenCalledWith(roomId, userB.id, 3, "Plan short");
+		expect(status.hidden).toBe(true);
+	});
+
 	it("keeps a teammate's first words that raced a listing, and never goes back to an older version", async () => {
 		const f = await setup([]);
 		const listing = deferred<RoomDraft[]>();
@@ -503,6 +520,22 @@ describe("one draft kept in step with the cloud", () => {
 		]);
 		s.writes[1]!.answer.resolve({ status: "ok", draft: draft(userB.id, "b", 1) });
 		await vi.advanceTimersByTimeAsync(3000);
+		expect(s.writes).toHaveLength(2);
+	});
+
+	it("does not try a text the cloud refused again until the member changes it", async () => {
+		const s = sync({ revision: 1, body: "a" });
+		s.set("ab");
+		await vi.advanceTimersByTimeAsync(310);
+		s.writes[0]!.answer.reject(
+			new CloudRpcError("qorpera_put_room_draft", { message: "Draft is invalid", code: "22023" }, 400),
+		);
+		await vi.advanceTimersByTimeAsync(30_000);
+		expect(s.writes).toHaveLength(1);
+		expect(s.sync.status).toBe("too-long");
+		await s.sync.flushed();
+		s.set("abc");
+		await vi.advanceTimersByTimeAsync(310);
 		expect(s.writes).toHaveLength(2);
 	});
 

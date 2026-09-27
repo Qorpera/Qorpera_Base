@@ -143,7 +143,8 @@ begin
 		or not public.qorpera_room_draft_member_internal(p_room_id, v_user) then
 		raise exception 'Room is unavailable' using errcode = '42501';
 	end if;
-	if p_base_revision is null or p_base_revision < 0 or p_body is null
+	-- Revisions stay within what a browser counts exactly (2^53).
+	if p_base_revision is null or p_base_revision < 0 or p_base_revision > 9007199254740990 or p_body is null
 		or octet_length(convert_to(p_body, 'utf8')) > 65536 then
 		raise exception 'Draft is invalid' using errcode = '22023';
 	end if;

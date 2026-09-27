@@ -3,7 +3,7 @@ import { h, icon, personAvatar, replace } from "../../ui/dom.ts";
 import { matchesKey } from "../../ui/keys.ts";
 import { presentationLocale, t } from "../../ui/preferences.ts";
 import type { CompanyController } from "../company.ts";
-import { DRAFT_TYPING_MS, type DraftSync, type RoomDraftRoom } from "../room-drafts.ts";
+import { DRAFT_TYPING_MS, type DraftStatus, type DraftSync, type RoomDraftRoom } from "../room-drafts.ts";
 import { moveIndex, type TextEdit } from "../text-merge.ts";
 
 /* Other members' unsent messages, right above the composer. Each shows as a
@@ -246,6 +246,15 @@ export class SharedDrafts {
 			"aria-label": t("{name}'s message", { name }),
 		});
 		const status = h("p", { class: "draft-panel-status", role: "status", hidden: true });
+		const showStatus = (now: DraftStatus) => {
+			status.hidden = now === "saved";
+			status.textContent =
+				now === "retrying"
+					? t("Not saved yet. Trying again…")
+					: now === "too-long"
+						? t("Too long to share. Shorten it to share your changes.")
+						: "";
+		};
 		const state: { composing: boolean } = { composing: false };
 		const opened = this.#company.roomDrafts.edit(this.#sessionId, ownerUserId, {
 			text: () => input.value,
@@ -258,16 +267,12 @@ export class SharedDrafts {
 			gone: () => {
 				if (this.#open?.input === input) this.#close(false);
 			},
-			failing: (failing) => {
-				status.hidden = !failing;
-				status.textContent = failing ? t("Not saved yet. Trying again…") : "";
-			},
+			status: (now) => showStatus(now),
 		});
 		if (!opened) return;
 		const { sync } = opened;
 		input.value = opened.text;
-		status.hidden = !sync.failing;
-		if (sync.failing) status.textContent = t("Not saved yet. Trying again…");
+		showStatus(sync.status);
 		input.addEventListener("input", () => {
 			sync.changed();
 			this.#autosize(input);

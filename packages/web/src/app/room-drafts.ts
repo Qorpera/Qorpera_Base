@@ -1,7 +1,12 @@
 import type { CloudApi } from "../cloud/api.ts";
 import { CloudRpcError } from "../cloud/client.ts";
 import type { RealtimePhase } from "../cloud/realtime.ts";
-import type { RoomDraft, RoomDraftSubscription, RoomDraftWrite } from "../cloud/room-drafts.ts";
+import {
+	ROOM_DRAFT_BYTES,
+	type RoomDraft,
+	type RoomDraftSubscription,
+	type RoomDraftWrite,
+} from "../cloud/room-drafts.ts";
 import { Store } from "./state.ts";
 import { applyEdit, diffText, mergeText, type TextEdit, transform } from "./text-merge.ts";
 
@@ -30,6 +35,9 @@ function wellFormed(text: string): string {
 	return text.replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, "\uFFFD");
 }
 
+/** Where this browser's text stands: in the cloud, not yet (tried again), or too long to share. */
+export type DraftStatus = "saved" | "retrying" | "too-long";
+
 export interface DraftHost {
 	/** The text this browser shows for the draft. */
 	text(): string;
@@ -41,8 +49,8 @@ export interface DraftHost {
 	gone(): void;
 	/** The member is composing a letter (an input method); the text must not change under it. */
 	busy?(): boolean;
-	/** Writes are not reaching the cloud (they are retried), or reach it again. */
-	failing?(failing: boolean): void;
+	/** The text is written, is not reaching the cloud (tried again), or is too long to share. */
+	status?(status: DraftStatus): void;
 }
 
 export class DraftSync {
@@ -58,6 +66,7 @@ export class DraftSync {
 	#newest: RoomDraft | undefined;
 	#timer: ReturnType<typeof setTimeout> | undefined;
 	#failures = 0;
+	#status: DraftStatus = "saved";
 	#stopped = false;
 	#settled: (() => void)[] = [];
 	/** Its panel closed; it stops once what was typed there is written, unless it is opened again. */
@@ -92,9 +101,13 @@ export class DraftSync {
 		return this.#stopped;
 	}
 
+	get status(): DraftStatus {
+		return this.#status;
+	}
+
 	/** The last write did not reach the cloud; it is being tried again. */
 	get failing(): boolean {
-		return this.#failures > 0;
+		return this.#status === "retrying";
 	}
 
 	/** Nothing of this browser's is on its way or waiting to go. */
@@ -111,7 +124,7 @@ export class DraftSync {
 	rehost(host: DraftHost): void {
 		this.#host = host;
 		this.leaving = false;
-		host.failing?.(this.failing);
+		host.status?.(this.#status);
 	}
 
 	/** The member changed the text here, or finished composing a letter. */
@@ -131,9 +144,9 @@ export class DraftSync {
 		this.#merge(draft);
 	}
 
-	/** Resolves once this browser's changes are written, or the draft is gone. */
+	/** Resolves once this browser's changes are written, or the draft is gone, or the text is too long to share. */
 	flushed(): Promise<void> {
-		if (this.#stopped || this.settled) return Promise.resolve();
+		if (this.#stopped || this.#status === "too-long" || this.settled) return Promise.resolve();
 		return new Promise((resolve) => this.#settled.push(resolve));
 	}
 
@@ -172,30 +185,50 @@ export class DraftSync {
 		if (this.settled) for (const resolve of this.#settled.splice(0)) resolve();
 	}
 
+	#setStatus(status: DraftStatus): void {
+		if (status === this.#status) return;
+		this.#status = status;
+		this.#host.status?.(status);
+		// A text the cloud will not take is given up until the member changes it.
+		if (status === "too-long") for (const resolve of this.#settled.splice(0)) resolve();
+	}
+
 	async #flush(): Promise<void> {
 		// A letter being composed is written once it is done (changed).
 		if (this.#stopped || this.#writing || this.#host.busy?.()) return;
 		this.#mergeHeld();
 		const body = wellFormed(this.#host.text());
 		if (body === this.#server.body) {
+			this.#setStatus("saved");
 			this.#resolveSettled();
+			return;
+		}
+		// The cloud takes as much as a message holds; a longer text waits for the member to shorten it.
+		if (new TextEncoder().encode(body).length > ROOM_DRAFT_BYTES) {
+			this.#setStatus("too-long");
 			return;
 		}
 		this.#writing = true;
 		let result: RoomDraftWrite | undefined;
-		const failed = this.#failures > 0;
+		let refused = false;
 		try {
 			result = await this.#write(this.#server.revision, body);
 			this.#failures = 0;
 		} catch (error) {
-			this.#failures += 1;
 			// Refused or missing on this cloud: the draft is not this member's to write.
 			if (error instanceof CloudRpcError && (error.denied || error.missing)) result = { status: "gone" };
+			// The text itself was refused: trying it again cannot help.
+			else if (error instanceof CloudRpcError && error.code === "22023") refused = true;
+			else this.#failures += 1;
 		} finally {
 			this.#writing = false;
 		}
 		if (this.#stopped) return;
-		if (failed !== this.#failures > 0) this.#host.failing?.(this.#failures > 0);
+		if (refused) {
+			this.#setStatus("too-long");
+			return;
+		}
+		this.#setStatus(result ? "saved" : "retrying");
 		if (!result) {
 			// Unanswered: the text stays here and goes again, for as long as it takes.
 			this.#schedule(Math.min(RETRY_MAX_MS, 500 * 2 ** (this.#failures - 1)));

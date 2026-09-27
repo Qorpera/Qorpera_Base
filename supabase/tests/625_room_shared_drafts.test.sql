@@ -195,6 +195,13 @@ begin
 	if jsonb_array_length(v_result -> 'drafts') <> 1 or v_result -> 'drafts' -> 0 ->> 'body' <> '' then
 		raise exception 'owner lost the empty draft revision: %', v_result;
 	end if;
+	-- A revision past what a browser counts exactly is refused, so a draft can never break the room's listing.
+	begin
+		perform public.qorpera_put_room_draft('96250000-0000-4000-8000-000000000060',
+			'96250000-0000-4000-8000-00000000000a', 9007199254740993, 'x');
+		raise exception 'a revision past 2^53 was accepted';
+	exception when invalid_parameter_value then null;
+	end;
 	-- Too long is refused.
 	begin
 		perform public.qorpera_put_room_draft('96250000-0000-4000-8000-000000000060',
