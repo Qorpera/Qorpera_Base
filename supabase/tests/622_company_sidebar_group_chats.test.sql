@@ -226,12 +226,24 @@ begin
 	v_state := pg_temp.member_sidebar(v_owner,jsonb_build_object('action','move_agent','staffAgentId',v_carol,
 		'sectionId',null,'order',jsonb_build_array(v_carol,v_agent)));
 	perform pg_temp.wake_assert(public.qorpera_sidebar_container('30000000-0000-4000-8000-000000000010',null)
-		= array[v_carol,v_hiring,v_agent]::uuid[],'The group chat keeps its slot through an older page''s reorder');
+		= array[v_carol,v_agent,v_hiring]::uuid[],'The group chat stays after the agent it followed');
+	-- The reverse move puts everything back.
+	v_state := pg_temp.member_sidebar(v_owner,jsonb_build_object('action','move_agent','staffAgentId',v_carol,
+		'sectionId',null,'order',jsonb_build_array(v_agent,v_carol)));
+	perform pg_temp.wake_assert(public.qorpera_sidebar_container('30000000-0000-4000-8000-000000000010',null)
+		= array[v_agent,v_hiring,v_carol]::uuid[],'An older page''s move and its reverse leave the order as it was');
+	-- A group chat that led the section still leads it.
+	v_state := pg_temp.member_sidebar(v_owner,jsonb_build_object('action','move_room','roomId',v_hiring,
+		'sectionId',null,'order',jsonb_build_array(v_hiring,v_agent,v_carol)));
+	v_state := pg_temp.member_sidebar(v_owner,jsonb_build_object('action','move_agent','staffAgentId',v_carol,
+		'sectionId',null,'order',jsonb_build_array(v_carol,v_agent)));
+	perform pg_temp.wake_assert(public.qorpera_sidebar_container('30000000-0000-4000-8000-000000000010',null)
+		= array[v_hiring,v_carol,v_agent]::uuid[],'A leading group chat keeps the lead');
 	-- A current page's order places the group chat where it says.
 	v_state := pg_temp.member_sidebar(v_owner,jsonb_build_object('action','move_agent','staffAgentId',v_carol,
-		'sectionId',null,'order',jsonb_build_array(v_hiring,v_agent,v_carol),'groupChats',true));
+		'sectionId',null,'order',jsonb_build_array(v_agent,v_carol,v_hiring),'groupChats',true));
 	perform pg_temp.wake_assert(public.qorpera_sidebar_container('30000000-0000-4000-8000-000000000010',null)
-		= array[v_hiring,v_agent,v_carol]::uuid[],'A current page''s order is taken as given');
+		= array[v_agent,v_carol,v_hiring]::uuid[],'A current page''s order is taken as given');
 end $$;
 
 -- A group chat whose conversation is closed is not shown, so the sidebar does not place or pin it.

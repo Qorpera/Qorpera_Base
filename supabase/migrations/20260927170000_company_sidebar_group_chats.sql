@@ -16,7 +16,7 @@
 --    A client that places group chats says so (`groupChats: true`) on set_pins and
 --    move_agent. Without it the request comes from a page opened before this migration:
 --    its order names agents only, so the member's pinned group chats stay pinned and a
---    section's group chats keep their places among the agents it reorders.
+--    section's group chats stay after the agents they followed.
 -- 2. A group chat takes images like an agent's thread: up to 5, 8 MiB in all
 --    (contract amendment 2026-09-27; team rooms were text-only).
 -- 3. A group chat's conversation read reports no model while none was chosen: its
@@ -181,12 +181,15 @@ begin
 end $$;
 
 /** An agents-only order for a section, from a page opened before group chats were
- * placed: the section's group chats keep their slots and the agents fill the others in
- * the order given; agents it adds (one moving in) follow. */
+ * placed. Each of the section's group chats stays right after the agent it followed
+ * (first, when it led the section), and the agents take the order given; group chats
+ * whose agent the order leaves out follow at the end. So a move and its reverse leave
+ * the section as it was. */
 create function public.qorpera_sidebar_keep_room_slots(p_profile_id uuid, p_section_id uuid, p_order uuid[])
 returns uuid[] language plpgsql stable security definer set search_path = '' as $$
 declare v_before uuid[] := public.qorpera_sidebar_container(p_profile_id, p_section_id);
-	v_agents uuid[] := '{}'; v_result uuid[] := '{}'; v_id uuid; v_next integer := 1;
+	v_agents uuid[] := '{}'; v_rooms uuid[] := '{}'; v_anchors uuid[] := '{}'; v_result uuid[] := '{}';
+	v_anchor uuid; v_id uuid; v_index integer;
 begin
 	-- An order that names a group chat already covers them.
 	if exists (select 1 from unnest(p_order) item where public.qorpera_sidebar_room_placeable(p_profile_id, item)) then
@@ -196,13 +199,26 @@ begin
 	end loop;
 	foreach v_id in array v_before loop
 		if public.qorpera_sidebar_room_placeable(p_profile_id, v_id) then
-			v_result := v_result || v_id;
-		elsif v_next <= pg_catalog.cardinality(v_agents) then
-			v_result := v_result || v_agents[v_next];
-			v_next := v_next + 1;
+			v_rooms := v_rooms || v_id;
+			v_anchors := array_append(v_anchors, v_anchor);
+		else
+			v_anchor := v_id;
 		end if;
 	end loop;
-	return v_result || coalesce(v_agents[v_next:], '{}');
+	for v_index in 1..coalesce(pg_catalog.cardinality(v_rooms), 0) loop
+		if v_anchors[v_index] is null then v_result := v_result || v_rooms[v_index]; end if;
+	end loop;
+	foreach v_id in array v_agents loop
+		v_result := v_result || v_id;
+		for v_index in 1..coalesce(pg_catalog.cardinality(v_rooms), 0) loop
+			if v_anchors[v_index] = v_id then v_result := v_result || v_rooms[v_index]; end if;
+		end loop;
+	end loop;
+	for v_index in 1..coalesce(pg_catalog.cardinality(v_rooms), 0) loop
+		if v_anchors[v_index] is not null and not v_anchors[v_index] = any(v_agents) then
+			v_result := v_result || v_rooms[v_index]; end if;
+	end loop;
+	return v_result;
 end $$;
 
 /** What one member's rail is built from. */
@@ -310,6 +326,8 @@ begin
 		-- A page opened before group chats were placed orders agents only: the section's
 		-- group chats keep their slots and the agents fill the others in the order given.
 		if v_action = 'move_agent' and v_order is not null and not p_request ? 'groupChats' then
+			-- The section is read under the lock the move takes, so no change comes in between.
+			perform public.qorpera_sidebar_lock(p_profile_id);
 			v_order := public.qorpera_sidebar_keep_room_slots(p_profile_id, v_section, v_order);
 		end if;
 		if v_action = 'move_agent' then

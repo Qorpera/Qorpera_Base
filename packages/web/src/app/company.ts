@@ -279,6 +279,8 @@ export class CompanyController {
 	#sidebarRealtime: RealtimeSubscription | undefined;
 	/** Sidebar changes sent and not yet answered; each answer carries the whole sidebar. */
 	#sidebarPending = 0;
+	/** What a send's own read found about group chat images, before the sidebar had said. */
+	#groupChatImagesRead: boolean | undefined;
 	/** The group chats of the last sessions list, kept until the list is replaced. */
 	#groupRooms: { sessions: HostedSession[]; rooms: Map<string, HostedSession> } | undefined;
 	#sidebarWrites: Promise<unknown> = Promise.resolve();
@@ -527,7 +529,23 @@ export class CompanyController {
 	groupChatImages(): boolean | undefined {
 		const state = this.store.get();
 		if (state.sidebarUnavailable) return false;
-		return state.sidebar ? state.sidebar.groupChats === true : undefined;
+		return state.sidebar ? state.sidebar.groupChats === true : this.#groupChatImagesRead;
+	}
+
+	/** The same answer, read from the cloud now when the sidebar has not given it yet. The
+	 * read's own answer counts, whatever other sidebar reads are in flight. */
+	async #groupChatImagesNow(): Promise<boolean | undefined> {
+		const known = this.groupChatImages();
+		if (known !== undefined) return known;
+		try {
+			const sidebar = await this.#api.readCompanySidebar(this.profile.profileId);
+			this.#groupChatImagesRead = sidebar.groupChats === true;
+			// The rail takes the sidebar through its usual path, with its live updates.
+			void this.refreshSidebar();
+		} catch (error) {
+			if (error instanceof CloudRpcError && error.missing) this.#groupChatImagesRead = false;
+		}
+		return this.groupChatImages();
 	}
 
 	cofounderId(): string | undefined {
@@ -1482,13 +1500,13 @@ export class CompanyController {
 		// now if it has not been read (it says so), and ask for another try if it cannot be.
 		const session = this.store.get().sessions.find((item) => item.sessionId === sessionId);
 		if (files.length && isGroupChat(session) && this.groupChatImages() === undefined) {
-			await this.refreshSidebar();
+			const images = await this.#groupChatImagesNow();
 			if (this.#stopped || viewSignal?.aborted) return false;
-			if (this.groupChatImages() === undefined) {
-				store.set({
-					sendError: t("Could not check whether this group chat takes images. Try again."),
-					draft: text,
-				});
+			// An edit while the cloud was asked is a new message: this send stops, the edit stays.
+			const now = store.get();
+			if (now.sending || now.draft !== text || !sameFiles(now.attachments ?? [])) return false;
+			if (images === undefined) {
+				store.set({ sendError: t("Could not check whether this group chat takes images. Try again.") });
 				return false;
 			}
 		}

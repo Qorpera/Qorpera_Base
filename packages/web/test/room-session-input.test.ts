@@ -191,11 +191,26 @@ describe("room session input routing", () => {
 		expect(await f.controller.sendPrompt(session.sessionId, "Look")).toBe(false);
 		expect(state.get().sendError).toBe("Could not check whether this group chat takes images. Try again.");
 		expect(f.write).not.toHaveBeenCalled();
-		read.mockResolvedValueOnce({ sections: [], placements: {}, pinned: [], hidden: [], groupChats: true });
+		read.mockResolvedValue({ sections: [], placements: {}, pinned: [], hidden: [], groupChats: true });
 		f.write.mockResolvedValueOnce({ inputId: receipt.inputId } as Awaited<ReturnType<typeof f.write>>);
 		expect(await f.controller.sendPrompt(session.sessionId, "Look")).toBe(true);
-		expect(read).toHaveBeenCalledTimes(2);
 		expect(f.write.mock.calls[0]![6]).toEqual({ ...target, images: true });
+	});
+	it("drops a send whose images or text changed while the cloud was asked, keeping the edit", async () => {
+		const f = setup();
+		const file = new File(["image bytes"], "image.png", { type: "image/png" });
+		const state = f.controller.conversation(session.sessionId, false);
+		const answer = deferred<Awaited<ReturnType<typeof f.api.readCompanySidebar>>>();
+		vi.spyOn(f.api, "readCompanySidebar").mockReturnValueOnce(answer.promise);
+		state.set({ attachments: [file], draft: "Look" });
+		const sending = f.controller.sendPrompt(session.sessionId, "Look");
+		// The member takes the image out before the answer comes.
+		state.set({ attachments: [] });
+		answer.resolve({ sections: [], placements: {}, pinned: [], hidden: [], groupChats: true });
+		expect(await sending).toBe(false);
+		expect(f.write).not.toHaveBeenCalled();
+		expect(state.get()).toMatchObject({ draft: "Look", attachments: [] });
+		expect(state.get().sendError).toBeUndefined();
 	});
 	it.each([{ ...roomSession, executionScope: { roomId: "invalid" } }])(
 		"refuses a malformed canonical room scope",
