@@ -4,15 +4,18 @@ import {
 	type CompanyComputerToolContent,
 } from "@qorpera/cloud-client/cloud-company-computer-contract";
 import type { JsonValue } from "@qorpera/contracts";
+import { CloudCompanyComputerEffectControl } from "@qorpera/runtime/cloud-company-computer-effect-control";
 import {
 	type CompanyComputerGuestEffectCheck,
 	CompanyComputerGuestEndpoint,
 } from "@qorpera/runtime/cloud-company-computer-endpoint";
 import {
+	CompanyComputerActionFailedError,
 	CompanyComputerScreenActionGate,
 	CompanyComputerScreenAdmissionRefusedError,
 	type CompanyComputerScreenLeaseControl,
 } from "@qorpera/runtime/cloud-company-computer-leases";
+import { CompanyComputerRegistryUnansweredError } from "@qorpera/runtime/cloud-company-computer-registry-http";
 import {
 	createCompanyComputerTools,
 	parseCompanyComputerAction,
@@ -576,6 +579,175 @@ describe("guest dispatch adapter", () => {
 		await expect(
 			harness.endpoint.perform(computerOperation(), { ...computerLease(), epoch: 2 }, computerEffect()),
 		).rejects.toThrow("SCREEN_ACTION_STILL_RUNNING");
+	});
+
+	it("keeps the browser and drains the resource when the action's own page work fails and ends", async () => {
+		const harness = toolHarness();
+		harness.automation.perform.mockRejectedValueOnce(
+			new CompanyComputerActionFailedError(new Error("page.goto: Timeout 10000ms exceeded")),
+		);
+		await expect(harness.endpoint.perform(computerOperation(), computerLease(), computerEffect())).rejects.toThrow(
+			"page.goto: Timeout 10000ms exceeded",
+		);
+		expect(harness.automation.stopBrowser).not.toHaveBeenCalled();
+		// Drained like a success, so releasing the screen later does not drain the desktop.
+		expect(harness.effects.finish).toHaveBeenCalledOnce();
+		// Nothing of it runs: the slot is free for the next action at once.
+		await harness.endpoint.perform(computerOperation(), computerLease(), computerEffect());
+		expect(harness.automation.perform).toHaveBeenCalledTimes(2);
+		expect(harness.effects.finish).toHaveBeenCalledTimes(2);
+	});
+
+	it("with the real effect control, drains a settled failure only after the gate let go, so nothing stops", async () => {
+		const actions: string[] = [];
+		let unanswered = false;
+		const registry = {
+			call: vi.fn(async (_method: string, args: Record<string, unknown>) => {
+				actions.push(String(args.p_action));
+				if (args.p_action === "check" && unanswered)
+					throw new CompanyComputerRegistryUnansweredError(new Error("request timed out"));
+				if (args.p_action === "begin" || args.p_action === "check")
+					return { state: "admitted", resourceLeaseId: computerId(90), validForMs: 30000 };
+				if (args.p_action === "finish") return { state: "drained" };
+				return { state: "authorized" };
+			}),
+		};
+		const run = computerRun();
+		// The real control aborts the signal `begin` returned when it finishes.
+		const effects = new CloudCompanyComputerEffectControl({
+			run: { ...run, binding: { fixture: true } } as never,
+			scope: computerScope(),
+			control: registry,
+		});
+		const automation = {
+			perform: vi.fn(async (): Promise<CompanyComputerToolContent> => {
+				throw new CompanyComputerActionFailedError(new Error("page.goto: Timeout 10000ms exceeded"));
+			}),
+			stopBrowser: vi.fn(async (): Promise<void> => undefined),
+		};
+		const endpoint = new CompanyComputerGuestEndpoint({
+			binding: computerBinding(),
+			capabilities: ["browser", "desktop", "shell"],
+			resourceTarget: {},
+			effects,
+			gate: new CompanyComputerScreenActionGate(),
+			automation,
+			assertScreenAdmitted: async () => undefined,
+			prepareScreen: async () => undefined,
+		});
+		await expect(endpoint.perform(computerOperation(), computerLease(), computerEffect())).rejects.toThrow(
+			"page.goto: Timeout 10000ms exceeded",
+		);
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		expect(actions).toEqual(["begin", "check", "check", "finish"]);
+		expect(automation.stopBrowser).not.toHaveBeenCalled();
+		// An authority check before the work that gets no answer stops nothing either.
+		actions.length = 0;
+		unanswered = true;
+		const next = { ...computerEffect(), receiptId: computerId(91) };
+		await expect(endpoint.perform(computerOperation(), computerLease(), next)).rejects.toThrow(
+			"OFFICE_REGISTRY_UNCONFIRMED",
+		);
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		expect(actions).toEqual(["begin", "check", "finish"]);
+		expect(automation.stopBrowser).not.toHaveBeenCalled();
+		expect(automation.perform).toHaveBeenCalledOnce();
+	});
+
+	it("stops nothing and drains when the recheck after a typed failure, or the final check, gets no answer", async () => {
+		const harness = toolHarness();
+		const unanswered = new CompanyComputerRegistryUnansweredError(new Error("request timed out"));
+		let checks = 0;
+		harness.effects.assertAuthorized = vi.fn(async () => {
+			if (++checks === 2) throw unanswered;
+		});
+		harness.automation.perform.mockRejectedValueOnce(new CompanyComputerActionFailedError(new Error("PAGE_FAILED")));
+		await expect(harness.endpoint.perform(computerOperation(), computerLease(), computerEffect())).rejects.toBe(
+			unanswered,
+		);
+		expect(harness.automation.stopBrowser).not.toHaveBeenCalled();
+		expect(harness.effects.finish).toHaveBeenCalledOnce();
+		// The work succeeded, but its final authority check got no answer.
+		checks = 2;
+		harness.effects.assertAuthorized = vi.fn(async () => {
+			if (++checks === 4) throw unanswered;
+		});
+		await expect(harness.endpoint.perform(computerOperation(), computerLease(), computerEffect())).rejects.toBe(
+			unanswered,
+		);
+		expect(harness.automation.perform).toHaveBeenCalledTimes(2);
+		expect(harness.automation.stopBrowser).not.toHaveBeenCalled();
+		expect(harness.effects.finish).toHaveBeenCalledTimes(2);
+	});
+
+	it("drains a settled failure again before release when its first drain got no answer", async () => {
+		const harness = toolHarness();
+		harness.automation.perform.mockRejectedValueOnce(new CompanyComputerActionFailedError(new Error("PAGE_FAILED")));
+		vi.mocked(harness.effects.finish).mockRejectedValueOnce(
+			new CompanyComputerRegistryUnansweredError(new Error("request timed out")),
+		);
+		await expect(harness.endpoint.perform(computerOperation(), computerLease(), computerEffect())).rejects.toThrow(
+			"PAGE_FAILED",
+		);
+		expect(harness.effects.finish).toHaveBeenCalledOnce();
+		await harness.endpoint.drainSettled(new AbortController().signal);
+		expect(harness.effects.finish).toHaveBeenCalledTimes(2);
+		expect(vi.mocked(harness.effects.finish).mock.calls[1][0]).toEqual(
+			vi.mocked(harness.effects.finish).mock.calls[0][0],
+		);
+		// Confirmed once: nothing is left to drain.
+		await harness.endpoint.drainSettled(new AbortController().signal);
+		expect(harness.effects.finish).toHaveBeenCalledTimes(2);
+		// A successful action whose drain got no answer is reported as before and retried too.
+		vi.mocked(harness.effects.finish).mockRejectedValueOnce(
+			new CompanyComputerRegistryUnansweredError(new Error("request timed out")),
+		);
+		await expect(harness.endpoint.perform(computerOperation(), computerLease(), computerEffect())).rejects.toThrow(
+			"OFFICE_REGISTRY_UNCONFIRMED",
+		);
+		await harness.endpoint.drainSettled(new AbortController().signal);
+		expect(harness.effects.finish).toHaveBeenCalledTimes(4);
+	});
+
+	it("still stops the browser and keeps the resource when authority is refused before the work", async () => {
+		const harness = toolHarness();
+		harness.effects.assertAuthorized = vi.fn(async () => {
+			throw new Error("ACCESS_REVOKED");
+		});
+		await expect(harness.endpoint.perform(computerOperation(), computerLease(), computerEffect())).rejects.toThrow(
+			"ACCESS_REVOKED",
+		);
+		expect(harness.automation.stopBrowser).toHaveBeenCalledOnce();
+		expect(harness.effects.finish).not.toHaveBeenCalled();
+	});
+
+	it("still stops the browser and keeps the resource when authority is gone after a typed failure", async () => {
+		const harness = toolHarness();
+		let checks = 0;
+		harness.effects.assertAuthorized = vi.fn(async () => {
+			if (++checks === 2) throw new Error("ACCESS_REVOKED");
+		});
+		harness.automation.perform.mockRejectedValueOnce(new CompanyComputerActionFailedError(new Error("PAGE_FAILED")));
+		await expect(harness.endpoint.perform(computerOperation(), computerLease(), computerEffect())).rejects.toThrow(
+			"ACCESS_REVOKED",
+		);
+		expect(harness.automation.stopBrowser).toHaveBeenCalledOnce();
+		expect(harness.effects.finish).not.toHaveBeenCalled();
+	});
+
+	it("drains the resource of an action refused before it ran", async () => {
+		const harness = toolHarness();
+		const running = computerDeferred<CompanyComputerToolContent>();
+		harness.automation.perform.mockReturnValueOnce(running.promise);
+		const first = harness.endpoint.perform(computerOperation(), computerLease(), computerEffect());
+		await vi.waitFor(() => expect(harness.automation.perform).toHaveBeenCalledOnce());
+		await expect(harness.endpoint.perform(computerOperation(), computerLease(), computerEffect())).rejects.toThrow(
+			"SCREEN_ACTION_STILL_RUNNING",
+		);
+		expect(harness.effects.finish).toHaveBeenCalledOnce();
+		running.resolve({ kind: "json", value: { page: "done" } });
+		await first;
+		expect(harness.effects.finish).toHaveBeenCalledTimes(2);
 	});
 
 	it("retains the physical-slot quarantine when browser shutdown fails", async () => {
