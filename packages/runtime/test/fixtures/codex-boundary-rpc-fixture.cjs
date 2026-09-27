@@ -138,6 +138,8 @@ async function handle(message) {
 		if (mode === "unsafe-code-mode") configuration.features.code_mode.enabled = true;
 		if (mode === "nested-cloud-tools") configuration.features.code_mode.direct_only_tool_namespaces = [];
 		if (mode === "skill-route") configuration.orchestrator.skills.enabled = true;
+		if (mode === "fast-mode-off") configuration.features.fast_mode = false;
+		if (mode === "tier-dropped") delete configuration.service_tier;
 		write({ id: message.id, result: { config: configuration } });
 	} else if (message.method === "skills/list") {
 		write({ id: message.id, result: { data: [{ skills: mode === "extra-skills" ? [{ name: "PRIVATE_UNCONTROLLED_SKILL" }] : [], errors: [] }] } });

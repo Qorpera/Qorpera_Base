@@ -52,6 +52,7 @@ export function nativeToolAuthorityFixture(): { binding: CloudNativeToolBinding;
 				runtimeBundleSha256: CLOUD_RUNTIME_BUNDLE_SHA256,
 				reasoningEffort: "low",
 				reasoningPolicySha256: CLOUD_RUNTIME_MODEL_POLICY_SHA256,
+				serviceTier: "fast",
 				provider: "openai",
 				nativeHarness: "codex-cli",
 				model: binding.model,

@@ -9,16 +9,22 @@ describe("compiled runtime bundle admission", () => {
 		const { authority } = nativeToolAuthorityFixture();
 		expect(() => assertCloudRuntimeBundle(authority.identity, CLOUD_RUNTIME_NATIVE_BINARY_SHA256)).not.toThrow();
 	});
-	it.each(["runtimeBundleSha256", "reasoningPolicySha256", "reasoningEffort"] as const)(
+	it.each(["runtimeBundleSha256", "reasoningPolicySha256", "reasoningEffort", "serviceTier"] as const)(
 		"rejects changed %s before native execution",
 		(field) => {
 			const { authority } = nativeToolAuthorityFixture();
-			const changed = { ...authority.identity, [field]: field === "reasoningEffort" ? "max" : "f".repeat(64) };
+			const value = { reasoningEffort: "max", serviceTier: "priority" }[field as string] ?? "f".repeat(64);
+			const changed = { ...authority.identity, [field]: value };
 			expect(() =>
 				assertCloudRuntimeBundle(changed as CloudNativeToolIdentity, CLOUD_RUNTIME_NATIVE_BINARY_SHA256),
 			).toThrow("not supported");
 		},
 	);
+	it("requires a tier: this host's policy declares fast mode", () => {
+		const { authority } = nativeToolAuthorityFixture();
+		const { serviceTier: _named, ...older } = authority.identity;
+		expect(() => assertCloudRuntimeBundle(older, CLOUD_RUNTIME_NATIVE_BINARY_SHA256)).toThrow("not supported");
+	});
 	it("does not accept a binary just because it advertises the right protocol version", () => {
 		const { authority } = nativeToolAuthorityFixture();
 		expect(() => assertCloudRuntimeBundle(authority.identity, "0".repeat(64))).toThrow("not supported");

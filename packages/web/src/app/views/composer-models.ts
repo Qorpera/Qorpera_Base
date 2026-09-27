@@ -21,8 +21,21 @@ export function effortName(effort: string): string {
 	return Object.hasOwn(EFFORT_NAMES, effort) ? t(EFFORT_NAMES[effort as keyof typeof EFFORT_NAMES]) : effort;
 }
 
-/** Conversation-scoped model and effort; the server pins them when admitting
- * the member's next run in this conversation. */
+/** How much faster Fast runs each model, from the provider's model catalog. */
+const FAST_SPEEDS: Record<string, string> = { "gpt-6-astra": "2x", "gpt-6-sol": "1.5x", "gpt-6-luna": "1.5x" };
+
+/** The caption under the Fast switch for the conversation's model. */
+function fastCaption(modelId: string | undefined): string {
+	const speed = modelId && Object.hasOwn(FAST_SPEEDS, modelId) ? FAST_SPEEDS[modelId] : undefined;
+	if (!speed) return t("Faster replies");
+	// The catalog lists Astra's Fast tier as using more of the plan.
+	return modelId === "gpt-6-astra"
+		? t("{speed} speed, uses more of your plan", { speed })
+		: t("{speed} speed", { speed });
+}
+
+/** Conversation-scoped model, effort and speed; the server pins them when
+ * admitting the member's next run in this conversation. */
 export class ComposerModels {
 	readonly button: HTMLButtonElement;
 	readonly el: HTMLElement;
@@ -32,6 +45,9 @@ export class ComposerModels {
 	readonly #choices: HTMLButtonElement[];
 	readonly #efforts: HTMLButtonElement[];
 	readonly #effortGroup: HTMLElement;
+	readonly #fast: HTMLButtonElement;
+	readonly #fastCaption = h("small");
+	readonly #speedGroup: HTMLElement;
 	readonly #company: CompanyController;
 	readonly #sessionId: string;
 	readonly #client: WebSessionModel | undefined;
@@ -101,6 +117,29 @@ export class ComposerModels {
 			h("p", { class: "composer-model-heading", "aria-hidden": "true" }, t("Effort")),
 			...this.#efforts,
 		);
+		// Fast is on unless this conversation turned it off.
+		this.#fast = h(
+			"button",
+			{
+				type: "button",
+				role: "menuitemcheckbox",
+				"aria-checked": "false",
+				class: "composer-model-fast",
+				onclick: () =>
+					void this.#save(
+						{ serviceTier: this.#observed?.serviceTier === "fast" ? "standard" : "fast" },
+						this.#fast,
+					),
+			},
+			h("span", { class: "composer-model-label" }, t("Fast"), this.#fastCaption),
+			h("span", { class: "composer-switch", "aria-hidden": "true" }),
+		);
+		this.#speedGroup = h(
+			"div",
+			{ class: "composer-model-group", role: "group", "aria-label": t("Speed"), hidden: true },
+			h("p", { class: "composer-model-heading", "aria-hidden": "true" }, t("Speed")),
+			this.#fast,
+		);
 		this.#refresh = h(
 			"button",
 			{ type: "button", role: "menuitem", hidden: true, onclick: () => void this.refresh() },
@@ -112,6 +151,7 @@ export class ComposerModels {
 			h("button", { type: "button", role: "menuitem", onclick: back }, icon("back"), t("Model")),
 			...this.#choices,
 			this.#effortGroup,
+			this.#speedGroup,
 			h("p", { class: "composer-model-scope" }, t("Only this conversation. Applies from your next message.")),
 			this.#status,
 			this.#refresh,
@@ -234,21 +274,21 @@ export class ComposerModels {
 		const name = SESSION_MODELS.find((item) => item.id === id)?.name ?? id;
 		const effortId = this.#observed?.reasoningEffort;
 		const effort = effortId && effortName(effortId);
-		const summary = name && effort ? `${name} · ${effort}` : name;
+		const tier = this.#observed?.serviceTier;
+		const fast = tier === "fast";
+		const summary = name && [name, effort, fast && t("Fast")].filter(Boolean).join(" · ");
 		this.button.disabled = this.#locked || !this.#canRead();
 		this.#label.textContent = this.pending
 			? this.#error
 				? t("Change unconfirmed")
 				: t("Saving…")
 			: (summary ?? (this.#error ? t("Unavailable") : t("Loading…")));
-		this.button.setAttribute(
-			"aria-label",
-			name
-				? effort
-					? t("Model: {name}, {effort} effort", { name, effort })
-					: t("Model: {name}", { name })
-				: t("Model"),
-		);
+		const described = name
+			? effort
+				? t("Model: {name}, {effort} effort", { name, effort })
+				: t("Model: {name}", { name })
+			: t("Model");
+		this.button.setAttribute("aria-label", name && fast ? t("{model}, Fast", { model: described }) : described);
 		const unavailable = this.button.disabled || !this.#observed || Boolean(this.#request) || Boolean(this.#error);
 		// A cloud that does not honour per-conversation effort omits it, and
 		// accepts only GPT-6 Astra of the listed models. Hidden choices stay
@@ -264,6 +304,12 @@ export class ComposerModels {
 			choice.setAttribute("aria-checked", String(SESSION_EFFORTS[index] === effortId));
 			choice.disabled = unavailable || this.#effortGroup.hidden;
 		}
+		// A cloud that does not run conversations on the Fast tier omits the
+		// speed; an unfamiliar tier reads as off and can be switched on.
+		this.#speedGroup.hidden = tier === undefined;
+		this.#fast.setAttribute("aria-checked", String(fast));
+		this.#fast.disabled = unavailable || this.#speedGroup.hidden;
+		this.#fastCaption.textContent = fastCaption(id);
 		this.#status.textContent =
 			this.#error || (this.#request ? (this.pending ? t("Saving model…") : t("Loading model…")) : "");
 		this.#refresh.hidden = !this.#error;

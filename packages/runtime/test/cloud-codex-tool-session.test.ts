@@ -40,6 +40,7 @@ function run(
 	options: {
 		model?: string;
 		reasoningEffort?: "low" | "medium" | "high";
+		serviceTier?: "fast" | "standard";
 		timeoutMs?: number;
 		identityRoot?: string;
 		runtimeInstructions?: string;
@@ -123,6 +124,23 @@ it.each([
 		turnParameters: { effort: "low" },
 		configuration: { model_reasoning_effort: "low" },
 	});
+});
+
+it.each([
+	["fast", "fast"],
+	["standard", "default"],
+	[undefined, "default"],
+] as const)("runs a %s turn with Codex service tier %s", async (serviceTier, expected) => {
+	const { result, evidence } = run("model-selection", { serviceTier });
+	await result;
+	const recorded = JSON.parse(await readFile(evidence, "utf8"));
+	expect(recorded.configuration).toMatchObject({ service_tier: expected, features: { fast_mode: true } });
+});
+
+it("refuses a tier outside the admitted set", async () => {
+	await expect(run("model-selection", { serviceTier: "priority" as never }).result).rejects.toThrow(
+		"Invalid native boundary input",
+	);
 });
 
 it("starts a routine turn at the effort its routine chose", async () => {
@@ -270,12 +288,17 @@ it("rejects a different provider binary version before starting a thread", async
 	await expect(run("wrong-version").result).rejects.toThrow("Unsupported Codex boundary version");
 });
 
-it.each(["unsafe-config", "extra-mcp", "unsafe-code-mode", "nested-cloud-tools", "skill-route"])(
-	"rejects effective configuration drift before a model request: %s",
-	async (mode) => {
-		await expect(run(mode).result).rejects.toThrow("Native boundary configuration was not applied");
-	},
-);
+it.each([
+	"unsafe-config",
+	"extra-mcp",
+	"unsafe-code-mode",
+	"nested-cloud-tools",
+	"skill-route",
+	"fast-mode-off",
+	"tier-dropped",
+])("rejects effective configuration drift before a model request: %s", async (mode) => {
+	await expect(run(mode).result).rejects.toThrow("Native boundary configuration was not applied");
+});
 
 it("rejects provider skills outside the controlled result boundary", async () => {
 	await expect(run("extra-skills").result).rejects.toThrow("Native boundary requires an empty provider skill catalog");

@@ -124,6 +124,7 @@ export async function runCloudNativeRunToolSession(options: {
 			boundary,
 			model: run.identity.model,
 			reasoningEffort: run.identity.reasoningEffort,
+			serviceTier: run.identity.serviceTier,
 			prompt: options.prompt,
 			runtimeInstructions: options.runtimeInstructions,
 			identityRoot: options.identityRoot,

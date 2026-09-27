@@ -82,6 +82,34 @@ describe("conversation model transport", () => {
 		expect(f.fetch).toHaveBeenCalledTimes(1);
 	});
 
+	it("reads the conversation's speed and saves only a speed change", async () => {
+		const f = setup();
+		f.fetch.mockResolvedValueOnce(Response.json({ ...model, service_tier: "fast" }));
+		expect(await f.control.read(session.sessionId)).toEqual({
+			sessionId: session.sessionId,
+			modelId: "gpt-6-astra",
+			reasoningEffort: "low",
+			serviceTier: "fast",
+			version: 0,
+		});
+		f.fetch.mockResolvedValueOnce(Response.json({ ...model, service_tier: "standard", version: 1 }));
+		expect(await f.control.set(session.sessionId, { serviceTier: "standard" }, 0)).toMatchObject({
+			serviceTier: "standard",
+			version: 1,
+		});
+		expect(JSON.parse(f.fetch.mock.calls[1]![1]?.body as string)).toEqual({
+			p_session_id: session.sessionId,
+			p_model_id: null,
+			p_expected_version: 0,
+			p_service_tier: "standard",
+		});
+		// A save that did not come back at the chosen speed is not confirmed.
+		f.fetch.mockResolvedValueOnce(Response.json({ ...model, service_tier: "fast", version: 2 }));
+		await expect(f.control.set(session.sessionId, { serviceTier: "standard" }, 1)).rejects.toThrow("Refresh");
+		await expect(f.control.set(session.sessionId, { serviceTier: "priority" }, 2)).rejects.toThrow("Refresh");
+		expect(f.fetch).toHaveBeenCalledTimes(3);
+	});
+
 	it("works with a cloud that predates per-conversation effort", async () => {
 		const f = setup();
 		const { reasoning_effort: _, ...older } = model;
@@ -132,6 +160,11 @@ describe("conversation model transport", () => {
 		{ reasoning_effort: 2 },
 		{ reasoning_effort: null },
 		{ reasoning_effort: "x".repeat(65) },
+		{ service_tier: "" },
+		{ service_tier: " fast" },
+		{ service_tier: true },
+		{ service_tier: null },
+		{ service_tier: "x".repeat(65) },
 		{ version: -1 },
 		{ version: 0.5 },
 		{ version: Number.MAX_SAFE_INTEGER + 1 },
