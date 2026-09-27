@@ -537,9 +537,14 @@ describe("the element in the thread", () => {
 		);
 		await settle();
 		const body = element.el.querySelector(".coding-body")!;
+		// Fold, the first shown step's time break, then the harness's turn opening with the card.
+		expect([...body.children].slice(0, 3).map((node) => node.tagName.toLowerCase())).toEqual(["div", "time", "div"]);
 		expect(body.children[0]?.classList.contains("coding-row-fold")).toBe(true);
-		expect(body.children[1]?.querySelector(".coding-pr")).not.toBeNull();
+		expect(body.children[2]?.querySelector(".coding-turn-body > .message-author + .coding-pr")).not.toBeNull();
 		expect(body.querySelectorAll(".coding-pr")).toHaveLength(1);
+		// Opening the older steps keeps the focus in the session, off the button the redraw removed.
+		button(element.el, "3 earlier steps").click();
+		expect(document.activeElement).toBe(element.el.querySelector(".coding-log"));
 	});
 
 	it("folds older steps into one line and opens them on request", async () => {

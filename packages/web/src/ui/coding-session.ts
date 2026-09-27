@@ -247,7 +247,7 @@ export class CodingSessionElement {
 	readonly #options: CodingSessionElementOptions;
 	readonly #lifetime = new AbortController();
 	/** The transcript's scroller; the footer under it stays put, as a conversation's composer does. */
-	readonly #log = h("div", { class: "coding-log" });
+	readonly #log = h("div", { class: "coding-log", tabindex: "-1" });
 	readonly #body = h("div", { class: "coding-body" });
 	readonly #footer = h("footer", { class: "coding-footer" });
 	readonly #status = h("div", { class: "coding-status" });
@@ -608,9 +608,14 @@ export class CodingSessionElement {
 			turn = undefined;
 			steps = undefined;
 		};
-		if (cardFirst) say("harness", harness, false, this.#renderPullRequest(names));
+		// The card goes under the first shown step's time break, not above it.
+		let cardDue = cardFirst;
 		for (const event of shown) {
 			pending = parseConversationTimestamp(event.at);
+			if (cardDue) {
+				cardDue = false;
+				say("harness", harness, false, this.#renderPullRequest(names));
+			}
 			const when = fmtTime(event.at);
 			switch (event.kind) {
 				case "step": {
@@ -746,6 +751,7 @@ export class CodingSessionElement {
 					break;
 			}
 		}
+		if (cardDue) say("harness", harness, false, this.#renderPullRequest(names));
 		const quiet = !nodes.length && !this.#readError;
 		replace(
 			this.#body,
@@ -762,6 +768,8 @@ export class CodingSessionElement {
 								this.#showAll = true;
 								this.#stickToBottom = false;
 								this.#render();
+								// The button is gone with the redraw; the log keeps the focus, and with it the thread's Escape.
+								this.#log.focus({ preventScroll: true });
 								const { scrollTop, scrollHeight, clientHeight } = this.#log;
 								this.#stickToBottom = scrollHeight - scrollTop - clientHeight < STICK_DISTANCE * uiScale();
 							},

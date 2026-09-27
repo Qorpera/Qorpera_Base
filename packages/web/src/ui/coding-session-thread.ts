@@ -102,7 +102,10 @@ export class CodingSessionThreadView {
 				onkeydown: (event: KeyboardEvent) => {
 					if (!matchesKey(event, "dismiss")) return;
 					// Escape in the composer keeps a draft being written; the back arrow still leaves.
-					if (event.target instanceof HTMLTextAreaElement && event.target.value.trim()) return;
+					if (event.target instanceof HTMLTextAreaElement && event.target.value.trim()) {
+						event.stopPropagation();
+						return;
+					}
 					event.preventDefault();
 					event.stopPropagation();
 					this.close();
