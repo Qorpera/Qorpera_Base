@@ -30,6 +30,9 @@ select pg_temp.wake_assert(pg_temp.sb_grant()->'grant'=(select jsonb_build_objec
 	'grantId',d#>'{resources,browserGrantId}','version',d#>'{resources,browserGrantVersion}')
 	from (select public.qorpera_native_office_descriptor(current_setting('qorpera_test.wake_binding')::jsonb) d) described),
 	'the screen browser grant is the agent''s own descriptor grant');
+-- Read the profile once. A grant check in an UPDATE's WHERE runs per scanned row
+-- and would see the rows this same UPDATE already changed.
+select set_config('qorpera_test.sb_profile',pg_temp.sb_grant()#>>'{grant,profileId}',true);
 select pg_temp.wake_error($q$select pg_temp.sb_grant('member')$q$,'42501');
 select pg_temp.wake_error($q$select public.qorpera_office_screen_browser_grant(jsonb_set(current_setting('qorpera_test.sb_binding')::jsonb,'{screenGeneration}','999'),null)$q$,'42501');
 reset role;
@@ -44,7 +47,7 @@ select pg_temp.wake_assert((select count(*)=1 and bool_and(opener='agent' and pr
 -- A profile a member prepared privately still serves the agent that was lent it...
 savepoint sb_member_profile;
 update public.qorpera_runtime_browser_profiles set company_owned=false
-	where id=(pg_temp.sb_grant()->'grant'->>'profileId')::uuid;
+	where id=current_setting('qorpera_test.sb_profile')::uuid;
 set local role service_role;
 select pg_temp.wake_assert(pg_temp.sb_grant()->>'state'='authorized','a lent member profile still serves its agent under the lease');
 select pg_temp.wake_assert(pg_temp.sb_grant('agent')->>'state'='authorized','the agent it was lent to may open it under its own lease');
@@ -74,7 +77,7 @@ select pg_temp.wake_error($q$select pg_temp.sb_grant('desktop')$q$,'42501');
 select pg_temp.wake_error($q$select pg_temp.sb_grant('agent')$q$,'42501');
 reset role;
 savepoint sb_grace_member_profile;
-update public.qorpera_runtime_browser_profiles set company_owned=false where id=(pg_temp.sb_grant()->'grant'->>'profileId')::uuid;
+update public.qorpera_runtime_browser_profiles set company_owned=false where id=current_setting('qorpera_test.sb_profile')::uuid;
 set local role service_role;
 select pg_temp.wake_error($q$select pg_temp.sb_grant()$q$,'42501');
 reset role;

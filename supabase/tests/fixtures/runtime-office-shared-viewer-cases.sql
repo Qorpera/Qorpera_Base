@@ -69,8 +69,12 @@ select pg_temp.wake_assert(public.qorpera_admit_runtime_office_viewer_input_wind
 -- validated again and answered normally, without a second row. Anything that
 -- differs from that row is still a replay.
 select pg_temp.wake_assert(public.qorpera_admit_runtime_office_viewer_input_window(current_setting('qorpera_test.shared_other_grant')::jsonb,1,500,repeat('1',64))->>'state'='admitted','an exact replay of the last window is idempotent');
+-- The ledger is private to its owner (the gateway only reaches it through the
+-- admission functions), so read it back without the gateway role.
+reset role;
 select pg_temp.wake_assert((select count(*)=1 and max(last_sequence)=500 from public.qorpera_runtime_office_viewer_inputs i
 	join public.qorpera_runtime_office_viewers v on v.id=i.viewer_id where v.id=(current_setting('qorpera_test.shared_other_grant')::jsonb->>'viewerSessionId')::uuid),'an idempotent resend records nothing twice');
+set local role service_role;
 select pg_temp.wake_error($q$select public.qorpera_admit_runtime_office_viewer_input_window(current_setting('qorpera_test.shared_other_grant')::jsonb,1,500,repeat('9',64))$q$,'55000');
 select pg_temp.wake_error($q$select public.qorpera_admit_runtime_office_viewer_input_window(current_setting('qorpera_test.shared_other_grant')::jsonb,1,499,repeat('1',64))$q$,'55000');
 select pg_temp.wake_error($q$select public.qorpera_admit_runtime_office_viewer_input_window(current_setting('qorpera_test.shared_other_grant')::jsonb,2,499,repeat('1',64))$q$,'55000');

@@ -10,6 +10,13 @@ import { getCACertificates, setDefaultCACertificates } from "node:tls";
 import { pathToFileURL } from "node:url";
 import { build } from "esbuild";
 
+// A prepared local image, never pulled. It needs node, setpriv, Xvfb, xdotool and
+// scrot; the commands image test-runtime-office-linux.mjs builds has them. An
+// image ID is local to the machine that built it, so another prepared image can
+// be named with QORPERA_OFFICE_DESKTOP_IMAGE.
+export const DESKTOP_SOURCE_IMAGE = process.env.QORPERA_OFFICE_DESKTOP_IMAGE || "sha256:c6b95862d90e417a75e5598bff2e3671e5584718e7589054bdfea890a2014c7f";
+if (!/^[a-zA-Z0-9_./:@-]+$/.test(DESKTOP_SOURCE_IMAGE)) throw new Error("Invalid local desktop fixture image");
+
 export async function startDesktopSource(directory, container, image, sourceFile = "source.mjs") {
 	await writeFile(join(directory,"start.sh"),`#!/bin/sh
 set -eu
@@ -54,7 +61,6 @@ exec setpriv --reuid=1000 --regid=1000 --clear-groups --bounding-set=-all node /
 export async function testOfficeDesktop({ root, query, setup }) {
 	const directory = await mkdtemp(join(tmpdir(), "qorpera-office-desktop-acceptance-"));
 	const container = `qorpera-desktop-source-${randomUUID()}`;
-	const image = "sha256:c6b95862d90e417a75e5598bff2e3671e5584718e7589054bdfea890a2014c7f";
 	const sql = value => `'${String(value).replaceAll("'", "''")}'`;
 	const valueSql = value => value === null ? "null" : typeof value === "object" ? `${sql(JSON.stringify(value))}::jsonb` : sql(value);
 	const service = `set request.jwt.claims='{"role":"service_role"}'; set role service_role;`;
@@ -103,7 +109,7 @@ export async function testOfficeDesktop({ root, query, setup }) {
 			banner:{js:'import {createRequire} from "node:module"; const require=createRequire(import.meta.url);'}});
 		await build({entryPoints:[join(root,"packages/runtime/test/fixtures/company-computer-desktop-source.ts")],outfile:join(directory,"source.mjs"),bundle:true,platform:"node",format:"esm",target:"node22.19"});
 		const code = await import(pathToFileURL(join(directory,"runtime.mjs")).href);
-		physical = await startDesktopSource(directory, container, image);
+		physical = await startDesktopSource(directory, container, DESKTOP_SOURCE_IMAGE);
 		access = new code.CloudCompanyComputerAccess(setup.scope, setup.identity.staffAgentId, async (method,args)=>({data:rpc(method,args,member),error:null}));
 		originalGrant = (await access.status(new AbortController().signal)).grant; assert(originalGrant);
 		await access.configure({expectedVersion:originalGrant.version,enabled:true,capabilities:["desktop"]},new AbortController().signal);
