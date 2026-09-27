@@ -816,7 +816,7 @@ export class CodingSessionSlot {
 			badge.removeAttribute("title");
 			replace(
 				this.#avatar,
-				agentFigure(agent, names.agent, { size: 28, activity, identity: `coding:${session.workerId}` }),
+				agentFigure(agent, names.agent, { size: 22, activity, identity: `coding:${session.workerId}` }),
 				badge,
 			);
 		}
