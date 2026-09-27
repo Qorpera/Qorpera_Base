@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { once } from "node:events";
 import { chmod, mkdtemp, readFile, realpath, rm } from "node:fs/promises";
-import { createConnection, Socket } from "node:net";
+import { createConnection, createServer as createNetServer, Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer as createTlsServer, connect as tlsConnect } from "node:tls";
@@ -50,7 +50,7 @@ afterAll(async () => {
 	await rm(certificateRoot, { recursive: true, force: true });
 });
 
-async function fixture() {
+async function fixture(extra: Partial<Parameters<typeof startCompanyComputerBrowserEgress>[0]> = {}) {
 	// Leave room for the Unix socket name under macOS's isolated test TMPDIR.
 	const root = await mkdtemp(join(await realpath(tmpdir()), "oe-"));
 	cleanups.push(() => rm(root, { recursive: true, force: true }));
@@ -61,7 +61,7 @@ async function fixture() {
 		resolve: vi.fn(async (_host: string, _signal: AbortSignal) => ["93.184.216.34"]),
 		connect: vi.fn((_address: string) => new Socket()),
 	};
-	const options = { root, assertActive, signal: signal.signal, onFailure, transport };
+	const options = { root, assertActive, signal: signal.signal, onFailure, transport, ...extra };
 	const relay = await startCompanyComputerBrowserEgress(options);
 	cleanups.push(() => relay.close());
 	const peer = createConnection(relay.path);
@@ -167,6 +167,84 @@ describe("office browser public HTTPS relay", () => {
 		expect(f.onFailure).toHaveBeenCalledOnce();
 		await f.relay.close();
 	});
+	it("pauses its network without ending the browser while authority says nobody is present, and waits out no answer only for the grace", async () => {
+		const echo = createNetServer((socket) => {
+			socket.on("error", () => undefined);
+			socket.pipe(socket);
+		});
+		await new Promise<void>((resolve) => echo.listen(0, "127.0.0.1", resolve));
+		cleanups.push(() => new Promise<void>((resolve) => echo.close(() => resolve())));
+		const address = echo.address();
+		if (!address || typeof address === "string") throw new Error("Fixture listener missing");
+		const paused = new Error("fixture: nobody present");
+		const unanswered = new Error("fixture: no answer");
+		const f = await fixture({
+			classifyFailure: (error) => (error === paused ? "paused" : error === unanswered ? "unanswered" : "refused"),
+			graceMs: 2500,
+		});
+		f.transport.connect.mockImplementation(() => createConnection({ host: "127.0.0.1", port: address.port }));
+		const tunnel = async (peer: Socket) => {
+			const connected = once(peer, "data");
+			peer.write(header);
+			expect((await connected)[0].toString()).toBe("HTTP/1.1 200 Connection Established\r\n\r\n");
+		};
+		await tunnel(f.peer);
+		// Nobody entitled present: the established tunnel goes, the relay stays.
+		f.assertActive.mockRejectedValue(paused);
+		await once(f.peer, "close");
+		// While paused, a new connection is refused at once and not counted.
+		const refused = createConnection(f.relay.path);
+		refused.on("error", () => undefined);
+		await once(refused, "close");
+		await new Promise((resolve) => setTimeout(resolve, 3000));
+		expect(f.onFailure).not.toHaveBeenCalled();
+		// Somebody is back: after the next authorized answer traffic flows again.
+		f.assertActive.mockResolvedValue(undefined);
+		await new Promise((resolve) => setTimeout(resolve, 1500));
+		const again = createConnection(f.relay.path);
+		again.on("error", () => undefined);
+		cleanups.push(async () => {
+			again.destroy();
+		});
+		await once(again, "connect");
+		await tunnel(again);
+		// No answer at all: paused as well, and ended once the grace has passed.
+		f.assertActive.mockRejectedValue(unanswered);
+		await once(again, "close");
+		expect(f.onFailure).not.toHaveBeenCalled();
+		await vi.waitFor(() => expect(f.onFailure).toHaveBeenCalledOnce(), { timeout: 5000 });
+	}, 20000);
+	it("asks less often while nobody is present, and lets a returning connection through on its own answer", async () => {
+		const echo = createNetServer((socket) => {
+			socket.on("error", () => undefined);
+			socket.pipe(socket);
+		});
+		await new Promise<void>((resolve) => echo.listen(0, "127.0.0.1", resolve));
+		cleanups.push(() => new Promise<void>((resolve) => echo.close(() => resolve())));
+		const address = echo.address();
+		if (!address || typeof address === "string") throw new Error("Fixture listener missing");
+		const paused = new Error("fixture: nobody present");
+		const f = await fixture({ classifyFailure: (error) => (error === paused ? "paused" : "refused"), graceMs: 2500 });
+		f.transport.connect.mockImplementation(() => createConnection({ host: "127.0.0.1", port: address.port }));
+		f.assertActive.mockRejectedValue(paused);
+		await once(f.peer, "close");
+		const asked = f.assertActive.mock.calls.length;
+		await new Promise((resolve) => setTimeout(resolve, 3200));
+		// Every five seconds while idle, not every second.
+		expect(f.assertActive.mock.calls.length - asked).toBeLessThanOrEqual(1);
+		// Somebody is back: the connection asks at once and goes through on that answer.
+		f.assertActive.mockResolvedValue(undefined);
+		const back = createConnection(f.relay.path);
+		back.on("error", () => undefined);
+		cleanups.push(async () => {
+			back.destroy();
+		});
+		await once(back, "connect");
+		const connected = once(back, "data");
+		back.write(header);
+		expect((await connected)[0].toString()).toBe("HTTP/1.1 200 Connection Established\r\n\r\n");
+		expect(f.onFailure).not.toHaveBeenCalled();
+	}, 20000);
 	it("rechecks authority after DNS and cannot open a socket after revocation", async () => {
 		const f = await fixture();
 		f.transport.resolve.mockImplementation(async () => {
