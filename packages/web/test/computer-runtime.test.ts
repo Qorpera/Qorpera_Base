@@ -783,6 +783,56 @@ describe("web runtime member boundary", () => {
 			expect(p.el.isConnected).toBe(false);
 			expect(bodies(f, WITHDRAW)).toEqual([]);
 		});
+		it("sends nothing when the company is left while the wake request is still out", async () => {
+			const f = setup({
+				qorpera_runtime_office_start_status: idle(id(82)),
+				[WITHDRAW]: { state: "withdrawn" },
+			});
+			const reply = deferred<typeof intent>();
+			vi.spyOn(spyStart(f), "request").mockReturnValue(reply.promise);
+			await opened(f.computer, f.stop.signal);
+			f.stop.abort();
+			reply.resolve(intent);
+			await settle();
+			await settle();
+			expect(bodies(f, WITHDRAW)).toEqual([]);
+		});
+		it("withdraws a wake whose reply was lost", async () => {
+			const f = setup({ qorpera_runtime_office_start_status: idle(id(83)) });
+			const startClient = spyStart(f);
+			const request = vi.spyOn(startClient, "request").mockRejectedValue(new Error("Response lost"));
+			const withdraw = vi.spyOn(startClient, "withdraw").mockResolvedValue("withdrawn");
+			const p = await opened(f.computer);
+			expect(statusLine(p)).toBe("The computer could not be reached. Try again.");
+			p.dispose();
+			await settle();
+			expect(withdraw).toHaveBeenCalledExactlyOnceWith(1, request.mock.calls[0]![1], expect.any(AbortSignal));
+		});
+		it("withdraws a wake asked for while reconnecting a screen", async () => {
+			const f = setup();
+			const startClient = spyStart(f);
+			const request = vi.spyOn(startClient, "request").mockResolvedValue(intent);
+			const withdraw = vi.spyOn(startClient, "withdraw").mockResolvedValue("withdrawn");
+			const views = f.computer.views(scope);
+			vi.spyOn(views, "connectScreen").mockRejectedValue(new Error("Office entered idle maintenance"));
+			vi.spyOn(f.computer, "views").mockReturnValue(views);
+			const open = spyViewer();
+			const p = await opened(f.computer);
+			f.replies.qorpera_runtime_office_start_status = idle(id(84));
+			const connection = open.mock.calls[0]![0].requestConnection({
+				binding,
+				mode: "shared",
+				signal: f.stop.signal,
+			});
+			const refused = expect(connection).rejects.toThrow();
+			await settle();
+			await poll();
+			expect(request).toHaveBeenCalledOnce();
+			p.dispose();
+			await refused;
+			await settle();
+			expect(withdraw).toHaveBeenCalledExactlyOnceWith(1, request.mock.calls[0]![1], expect.any(AbortSignal));
+		});
 		it("never withdraws a first start", async () => {
 			const f = setup({
 				qorpera_runtime_office_start_status: { ...start, officeState: "provisioning" },

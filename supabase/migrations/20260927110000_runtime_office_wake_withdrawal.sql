@@ -11,6 +11,7 @@ create table public.qorpera_runtime_office_wake_requests (
 	withdrawn_at timestamptz,
 	primary key(transition_id,user_id)
 );
+create index qorpera_runtime_office_wake_requests_user on public.qorpera_runtime_office_wake_requests(user_id);
 alter table public.qorpera_runtime_office_wake_requests enable row level security;
 revoke all on public.qorpera_runtime_office_wake_requests from public,anon,authenticated,service_role;
 -- The first demand after a wake's activation makes it a used computer again.

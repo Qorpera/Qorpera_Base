@@ -161,8 +161,8 @@ export class CloudCompanyComputerStart {
 	}
 	/** Takes back this member's own idle wake request when nothing here needs the
 	 * computer any more. The wake stands; once every requester has withdrawn and
-	 * nothing used the computer, idle stops it sooner. "unavailable" means there
-	 * was no such pending request (never sent, replaced, or not an idle wake). */
+	 * nothing used the computer, idle stops it sooner. "unavailable" means this
+	 * member has no such request (never landed, replaced, or not an idle wake). */
 	async withdraw(
 		computerGeneration: number,
 		requestId: string,

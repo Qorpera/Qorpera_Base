@@ -193,8 +193,16 @@ select public.qorpera_native_office_start(current_setting('qorpera_test.wake_bin
 	'begin','39000000-0000-4000-8000-000000000010',repeat('d',64));
 select pg_temp.wake_assert(pg_temp.idle_poll()->>'wakeRequested'='true','native receipt requests idle wake');
 select pg_temp.wake_assert((select count(*)=1 from public.qorpera_runtime_office_start_waiters where state='waiting'),'native continuation waiter is durable');
+-- A member who also woke it and withdrew does not cut the agent's computer short.
+select pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001');
+select public.qorpera_request_runtime_office_start(current_setting('qorpera_test.office_scope')::jsonb,1,'39000000-0000-4000-8000-000000000023');
+select pg_temp.wake_assert(pg_temp.idle_withdraw('39000000-0000-4000-8000-000000000023')->>'state'='withdrawn','member withdraws beside an agent wake');
+select pg_temp.path_claims('service_role');
 select pg_temp.idle_successor('39000000-0000-4000-8000-000000000007');
 select pg_temp.idle_poll();
+select pg_temp.wake_assert((select demand_seen_at is not null from public.qorpera_runtime_office_idle_cycles
+	where transition_id=(current_setting('qorpera_test.idle_second')::jsonb#>>'{request,transitionId}')::uuid),
+	'the waiting agent run keeps the full idle window after a member withdraws');
 -- Later explicit maintenance supersedes idle lineage and must stay operator-owned.
 select set_config('qorpera_test.idle_manual',(current_setting('qorpera_test.idle_second')::jsonb->'request'||jsonb_build_object(
 	'transitionId',extensions.gen_random_uuid(),'activationId','39000000-0000-4000-8000-000000000007','action','service_restart',

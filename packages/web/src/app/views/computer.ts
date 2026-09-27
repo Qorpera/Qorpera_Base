@@ -122,9 +122,10 @@ export class ComputerPanel {
 			});
 		const startRequests = new Map<string, string>();
 		// Idle wakes asked for here, by the same keys; a connected screen used them.
-		const wakes = new Map<string, () => Promise<unknown>>();
+		// `sent` settles once every request for that wake has, so none lands after its withdrawal.
+		const wakes = new Map<string, { sent: Promise<unknown>; withdraw: () => Promise<unknown> }>();
 		this.#withdrawWakes = () => {
-			for (const withdraw of wakes.values()) void withdraw().catch(() => undefined);
+			for (const wake of wakes.values()) void wake.sent.then(wake.withdraw).catch(() => undefined);
 			wakes.clear();
 		};
 		const open = async () => {
@@ -171,17 +172,11 @@ export class ComputerPanel {
 								new AbortController().signal,
 							);
 							if (idle)
-								wakes.set(key, () =>
-									sent
-										.catch(() => undefined)
-										.then(() =>
-											startClient.withdraw(
-												start.computerGeneration,
-												requestId,
-												new AbortController().signal,
-											),
-										),
-								);
+								wakes.set(key, {
+									sent: Promise.allSettled([wakes.get(key)?.sent, sent]),
+									withdraw: () =>
+										startClient.withdraw(start.computerGeneration, requestId, new AbortController().signal),
+								});
 							await new Promise<unknown>((resolve, reject) => {
 								const cancel = () => reject(new Error("closed"));
 								until.addEventListener("abort", cancel, { once: true });

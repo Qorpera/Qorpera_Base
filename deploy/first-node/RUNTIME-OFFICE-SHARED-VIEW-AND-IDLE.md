@@ -27,14 +27,17 @@ an active computer, while idle wake requires company write access.
 
 A member who closes the web computer view before its screen connected
 withdraws their own wake request (`qorpera_withdraw_runtime_office_wake`,
-migration `20260927020000`). The wake itself is never taken back, since the
+migration `20260927110000`). The wake itself is never taken back, since the
 provider may already be booting. SQL keeps one request row per member and idle
-cycle; asking again replaces the request and clears its withdrawal. Once every
-member who asked for that wake has withdrawn and no demand has been seen since
-the successor activated, idle stops the computer one minute after it is up
-instead of after the full window. Demand at any point after activation (a
-viewer, a run, a lease) restores the full window for that cycle. Leaving the
-company or closing the browser sends nothing; the full window applies.
+cycle; asking again replaces the request and clears its withdrawal. Only
+members who asked for the wake count: read-only watchers never send one. Once
+every member who asked has withdrawn and no idle check since the successor
+activated found a reason to stay on (demand as above, a pause, or disabled
+preparation), idle stops the computer one minute after it is up instead of
+after the full window. The first such check restores the full window for that
+cycle. Agent wakes write no request row; their waiting run is demand, so it is
+seen at the first check after activation. Leaving the company or closing the
+browser sends nothing; the full window applies.
 
 Shared viewer grants use a stable screen fence that survives ordinary agent
 lease acquisition, renewal and release. Actual drain, privacy, takeover and
