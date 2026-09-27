@@ -45,6 +45,8 @@ export async function readCodingCommandLog(options: {
 	path: string;
 	owner: number;
 	protectedOwner: number;
+	/** The session's NAS custody mount root, the one ancestor the host service owns. */
+	mountRoot: string;
 	boundary?: string;
 	maxBytes: number;
 	read: CloudCodingCommandRead;
@@ -55,7 +57,7 @@ export async function readCodingCommandLog(options: {
 		const stat = await lstat(parent);
 		if (
 			!stat.isDirectory() ||
-			(stat.uid !== options.protectedOwner && parent !== "/var/lib/qorpera-coding") ||
+			(stat.uid !== options.protectedOwner && parent !== options.mountRoot) ||
 			(stat.mode & 0o022) !== 0
 		)
 			throw new Error("UNPROTECTED_CODING_GUEST_OUTPUT_PATH");

@@ -105,7 +105,12 @@ Per §6 and launch acceptance item 8, from `qorpera_read_session_events`:
 - `session_info`, `run_receipt`, `artifact_receipt` → never rendered.
 - Queued inputs from `qorpera_list_session_inputs` not yet in the transcript
   render as *pending* member messages; `processing` shows the agent is
-  working; `failed` shows the failure reason.
+  working; `failed` shows the failure reason. A pending message stands before
+  the first member message sent after it, else at the end, so one the cloud
+  never takes does not sink under newer messages. Agent output is no measure:
+  a taken input is written at the next sequence with its send time, so a
+  message sent while the agent works stays below the agent's output, where it
+  lands once taken.
 
 ## 2026-09-22 — Coding sessions in the thread (Order 9, part 2)
 
@@ -221,6 +226,9 @@ containers that light up, and agents moving each other into sections.
 - **Dragging has keyboard twins.** Alt+Up / Alt+Down move the focused agent one
   place in its section or in the pinned row; Move to covers sections. Shift with a
   mouse right-click keeps the browser's own link menu.
+- **Hidden agents stay reachable** (Jonas, after the live test): a "Hidden agents"
+  group with the count folds at the foot of the list and opens to list them; showing
+  one again is the menu's Show in sidebar, a pin, a Move to, or a drag out of it.
 - **Delete is permanent**, as in Grok Bot: it deletes the agent's document
   (owner or admin; the Co-Founder never), after a confirmation that says so.
 
@@ -261,3 +269,118 @@ desktop, so `ui/computer-viewer.ts` translates its fixed text inside its own
 overlay. The live Company File panel (`member-web/src/file-panel.ts`) takes
 `t` as an option so member-web stays independent.
 
+## 2026-09-24 — The web app is drawn at 130% (design pixels)
+
+**Decision.** Jonas found the app better at the browser's 125% zoom, then at
+150%; 140% shipped and was too much, so 130% is the default (2026-09-25). The stylesheets keep writing design pixels; the build
+(`scripts/design-px.mjs`, an esbuild plugin over every stylesheet) turns each
+px value of 2 or more into `calc(N * var(--px))`, and `tokens.css` sets `--px`
+to `--ui-scale` pixels: 1.3 with a mouse or trackpad, 1 on a coarse pointer
+(phones and tablets, whose layout was drawn for 100%). Each width breakpoint in
+`@media` is written by the build for each pointer: as written for a coarse one,
+multiplied out for a fine one or none (spelled out, since older browsers cannot
+parse `not (pointer: coarse)`), so layouts switch at the widths the browser's
+zoom switched them. Hairlines under 2px and SVG stroke geometry stay as written.
+
+**Keeping a size.** A part that keeps its old size sets `--px: 1px` for itself
+and everything inside it: the minimized computer preview (Jonas kept its size;
+it also pins the 14px text it used to inherit) and the picture cropper's view,
+which is laid out in its own units and scaled by script.
+
+**Scripts.** A script that sizes or places something in design pixels
+multiplies by `uiScale()` or writes `designPx(n)` into an inline style
+(`src/ui/scale.ts`); pointer positions and measured boxes are screen pixels
+already. Rail widths, stored and shown, are design pixels. The computer
+preview's drag and resize code (`computer-drag.ts`) stays in screen pixels,
+since the preview keeps its size.
+
+**Not CSS zoom, not rem.** `zoom` on the root changes what
+`getBoundingClientRect`, pointer positions, `left`/`top` and viewport units mean,
+differently in Chrome and Firefox (standardized zoom) than in Safari, which
+would put menus, drags and full-height dialogs off by the scale. Rewriting the
+stylesheets in rem would have touched every line under the open web PRs and
+left new px unscaled.
+
+**Rules.** Keep writing px in the web stylesheets. A `@media` query with pixel
+widths must be a plain condition such as `(max-width: 760px)` (the build stops
+otherwise); `@container` queries with pixel widths stop the build until they are
+needed. Pair two breakpoints on the same number (`max-width: 760px` against
+`min-width: 760px`, or range syntax), never 760/761: scaled, 761 becomes 989.3
+and leaves a gap. A script that compares a measured size with a design size
+reads that size from the computed style where the stylesheet has it (the
+composer does), and otherwise multiplies its constant by `uiScale()`; either
+way it rounds up where the browser rounds (`scrollHeight`).
+`scripts/design-px.test.mjs` checks that no design pixel in the stylesheets
+escapes the scale. Breakpoints were set for 100%; check the widths where a
+layout switches at the new scale (Settings' smaller rail moved from 1100 to
+1000 design pixels, 1300 on screen, so 13" and 14" laptops keep the large one).
+The rail's default narrowed with each step (456 → 410 → 369 design pixels); at
+369 three pinned cards share a row.
+
+## 2026-09-25 — Interface size in Appearance
+
+Settings → General → Appearance offers Big (the default, current 130% desktop
+scale) and Small (the original 100% scale). The browser stores the choice in
+`qorpera.web.ui-size`, restores it before paint, and follows changes from other
+tabs. Phones and tablets keep their 100% scale in either choice.
+
+Responsive pixel queries have two mutually exclusive, zero-specificity root
+gates: Big uses the existing pointer-aware breakpoints, Small uses the original
+breakpoints. The build lowers the generated CSS nesting. A size change also
+dispatches resize so measured rail widths, composer heights, menus, dialogs,
+and navigation accessibility state update together.
+
+An unset rail width follows the size: 369 design pixels for Big, the original
+456 for Small. An explicitly resized width is kept across size changes; resetting
+the rail clears that choice and follows the current size's default again.
+
+## 2026-09-25 — Rules and approval cards for agents' actions
+
+**Decision (Jonas).** The web client gets Settings → Rules and live approval
+cards for agents' actions (runtime bundle v130, contract amendment
+2026-09-25). Grok Bot's Auto-review is the reference; Qorpera adds the
+multiplayer scope: a rule is the member's own ("only me") or, written by an
+owner or admin, the company's. An approval card is answered by the member it
+waits for, as the card names: a personal rule's owner, or any owner or admin
+for a company rule or a built-in check. Allow once, Deny, and on a built-in
+check's card Always allow, which saves the proposed rule as a company rule.
+
+**Why.** Jonas asked for the rule behaviour "in the runtime architecture",
+with personal and global rules. This is the new decision the 2026-09-24 entry
+asked for before any approvals surface returns: approvals come back as cards
+in the thread where the agent works, not as a separate Approvals page.
+
+**Rules out.** An Approvals page or inbox; answering these cards through
+`qorpera_answer_interaction` (its approval surface is owner/admin-only and does
+not know the review); live controls on a card for a member it does not wait
+for; controls the live kernel refuses (before v130 the tab says rules are not
+available and no card has buttons, because no such card exists).
+
+## 2026-09-26 — A member's Stop is not a failure
+
+**Decision (Jonas).** A run a member stopped reads as stopped: no red disc, no
+"did not finish this run" line and no Try again. The agent shows its other
+work, or idle. To repeat a stopped message, the member sends it again. The one
+exception is a stop that left an open Company File proposal of the run's own:
+it reads as "Needs you" with Review, ranked below all of the agent's work,
+queued runs included.
+
+**Why.** The activity list keeps one run per agent and ranked a stopped member
+turn or room post above the run the agent was still working on. The agent read
+as failed, and the composer lost its Stop for the agent's other runs (a routine
+run in the same thread) until the member dismissed the line.
+
+**How.** Every cancelled job is a member's Stop: the job table requires
+`cancelled_by_user_id` whenever the status is `cancelled`. The cloud leaves a
+stopped run out of `qorpera_list_staff_execution_activity` unless its own
+proposal is open, and ranks that decision lowest (migration
+`20260926192436_member_stop_settled_activity`). A proposal review a member
+stopped (only possible through the job-id cancel) drops out too; its proposal
+still waits in the Company File. The web reads a listed stop as a decision, and
+as settled once its details show no proposal. An older cloud still lists every
+stop above the agent's live work, so there a member who can write acknowledges
+such a stop as soon as its details are read, and the work it hid shows again.
+
+**Rules out.** Try again for a stop (`qorpera_retry_room_delivery` still accepts
+one from its author; the web never offers it), and a grey "You stopped this
+run" line with Try again, the option Jonas did not pick.

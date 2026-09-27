@@ -6,6 +6,16 @@ import {
 	parseCodingSessionRead,
 	parseCodingSessions,
 } from "./coding-session.ts";
+import {
+	isMemberPictureName,
+	MEMBER_PICTURE_BUCKET,
+	type MemberPicture,
+	type MemberPictureChange,
+	type MemberPictureObject,
+	parseMemberPictureChange,
+	parseMemberPictureObjects,
+	parseMemberPictures,
+} from "./member-pictures.ts";
 import { type HostedCompanyOrganization, parseHostedCompanyOrganization } from "./organization.ts";
 import { collectPages, type PageCursor } from "./pagination.ts";
 import {
@@ -38,6 +48,7 @@ import {
 	parseTeam,
 	UUID_PATTERN,
 } from "./parse.ts";
+import { type ActionReviewAnswer, type ActionReviewReceipt, parseActionReviewReceipt } from "./review-rules.ts";
 import { type CompanySidebar, parseCompanySidebar, type SidebarRequest } from "./sidebar.ts";
 import type {
 	CreatedCompanyResult,
@@ -132,6 +143,60 @@ export class CloudApi {
 
 	async removeFriend(userId: string): Promise<void> {
 		await this.cloud.rpc("qorpera_remove_friend", { p_user_id: requiredUuid(userId, "Account id") });
+	}
+
+	// Member pictures: the photo a member chose for their account. The cloud
+	// returns only the pictures the caller may see (themselves, company
+	// colleagues, friends); the bytes are private storage objects the member
+	// uploads into their own folder.
+
+	listMemberPictures(userIds: readonly string[]): Promise<MemberPicture[]> {
+		if (userIds.length > 200) throw new Error("Ask for at most 200 pictures at a time.");
+		return this.cloud
+			.rpc("qorpera_member_pictures", { p_user_ids: userIds.map((userId) => requiredUuid(userId, "Account id")) })
+			.then(parseMemberPictures);
+	}
+
+	/** Resolves true when this call stored the object, false when those bytes were already there. */
+	async uploadMemberPicture(objectName: string, picture: Blob): Promise<boolean> {
+		if (!isMemberPictureName(objectName)) throw new Error("Invalid picture name.");
+		const { error } = await this.cloud.supabase.storage.from(MEMBER_PICTURE_BUCKET).upload(objectName, picture, {
+			contentType: picture.type,
+			// The name is the content's hash, so the bytes behind it never change.
+			cacheControl: "31536000",
+			upsert: false,
+		});
+		if (!error) return true;
+		// The same picture uploaded again already sits under its name.
+		if (error.statusCode === "409" || /already exists/i.test(error.message)) return false;
+		throw error;
+	}
+
+	/** Everything in the caller's own folder: the current picture and uploads never chosen. */
+	ownMemberPictureObjects(): Promise<MemberPictureObject[]> {
+		return this.cloud.rpc("qorpera_own_member_picture_objects").then(parseMemberPictureObjects);
+	}
+
+	async downloadMemberPicture(objectName: string): Promise<Blob> {
+		if (!isMemberPictureName(objectName)) throw new Error("Invalid picture name.");
+		const { data, error } = await this.cloud.supabase.storage.from(MEMBER_PICTURE_BUCKET).download(objectName);
+		if (error || !data) throw error ?? new Error("The picture is unavailable.");
+		return data;
+	}
+
+	async deleteMemberPicture(objectName: string): Promise<void> {
+		if (!isMemberPictureName(objectName)) throw new Error("Invalid picture name.");
+		const { error } = await this.cloud.supabase.storage.from(MEMBER_PICTURE_BUCKET).remove([objectName]);
+		if (error) throw error;
+	}
+
+	setMemberPicture(objectName: string): Promise<MemberPictureChange> {
+		if (!isMemberPictureName(objectName)) throw new Error("Invalid picture name.");
+		return this.cloud.rpc("qorpera_set_member_picture", { p_object_name: objectName }).then(parseMemberPictureChange);
+	}
+
+	clearMemberPicture(): Promise<MemberPictureChange> {
+		return this.cloud.rpc("qorpera_clear_member_picture").then(parseMemberPictureChange);
 	}
 
 	getTeam(profileId: string): Promise<HostedProfileTeam> {
@@ -451,15 +516,18 @@ export class CloudApi {
 		return parseSecretReference(await response.json());
 	}
 
-	/** Answer a typed card the agent raised (kernel bundle v70): queued like a
-	 * prompt, so the agent wakes in its own thread with the answer. Never a secret
-	 * value: a secret card answers with its outcome only. */
+	/** Answer a typed card the agent raised (kernel bundle v70). Never a secret
+	 * value: a secret card answers with its outcome only. The answer is delivered
+	 * the way a message there is and runs on the member's own model account,
+	 * which `sponsor` names: like a post in an agent's shared thread (bundle v100),
+	 * like a turn request in a plain conversation (bundle v105). */
 	answerInteraction(
 		sessionId: string,
 		clientInputId: string,
 		interactionId: string,
 		outcome: string,
 		answer: Record<string, JsonValue> = {},
+		sponsor?: { sponsorBindingId: string; sponsorVersion: number },
 	): Promise<SessionInputReceipt> {
 		return this.cloud
 			.rpc("qorpera_answer_interaction", {
@@ -468,8 +536,41 @@ export class CloudApi {
 				p_interaction_id: requiredUuid(interactionId, "Interaction id"),
 				p_outcome: outcome,
 				p_answer: answer,
+				...(sponsor
+					? {
+							p_sponsor_binding_id: requiredUuid(sponsor.sponsorBindingId, "Sponsor binding id"),
+							p_sponsor_version: sponsor.sponsorVersion,
+						}
+					: {}),
 			})
 			.then(parseSessionInputReceipt);
+	}
+
+	/** Answer an approval card of an agent's action (kernel bundle v130). Allow once,
+	 * Always allow (a built-in check's card only; saves `ruleText` as a company
+	 * Allow rule) or Deny. When the agent stopped waiting, the answer wakes it on
+	 * the member's own model account, which `sponsor` names. */
+	answerActionReview(
+		reviewId: string,
+		clientInputId: string,
+		answer: ActionReviewAnswer,
+		ruleText: string | undefined,
+		sponsor?: { sponsorBindingId: string; sponsorVersion: number },
+	): Promise<ActionReviewReceipt> {
+		return this.cloud
+			.rpc("qorpera_answer_action_review", {
+				p_review_id: requiredUuid(reviewId, "Approval id"),
+				p_client_input_id: requiredUuid(clientInputId, "Client input id"),
+				p_answer: answer,
+				...(ruleText === undefined ? {} : { p_rule_text: ruleText }),
+				...(sponsor
+					? {
+							p_sponsor_binding_id: requiredUuid(sponsor.sponsorBindingId, "Sponsor binding id"),
+							p_sponsor_version: sponsor.sponsorVersion,
+						}
+					: {}),
+			})
+			.then(parseActionReviewReceipt);
 	}
 
 	/** The one member write into a conversation: a queued prompt. The mouth is

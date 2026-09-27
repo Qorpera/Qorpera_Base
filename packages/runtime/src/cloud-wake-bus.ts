@@ -18,7 +18,8 @@ export interface CloudWakePolicy {
 	readonly initial: "required" | "optional" | "forbidden";
 	readonly final: "required" | "optional" | "forbidden";
 	readonly silenceAllowed: boolean;
-	readonly maxPublicSends: number;
+	/** 0 when the wake may not speak publicly at all; null means no limit (founder, 2026-09-24). */
+	readonly maxPublicSends: 0 | null;
 }
 
 export const REQUIRED_CLOUD_WAKE_POLICY: CloudWakePolicy = Object.freeze({
@@ -27,7 +28,7 @@ export const REQUIRED_CLOUD_WAKE_POLICY: CloudWakePolicy = Object.freeze({
 	initial: "required",
 	final: "required",
 	silenceAllowed: false,
-	maxPublicSends: 64,
+	maxPublicSends: null,
 });
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -85,6 +86,11 @@ function nullableUuid(value: unknown): string | null {
 	return value === null ? null : uuid(value);
 }
 
+/** UUID accepts either case, so a check that two ids differ (or none repeats) compares these. */
+function uuidKey(value: unknown): string {
+	return uuid(value).toLowerCase();
+}
+
 /** A validator for cloud-derived immutable policy, never a job/prompt flag resolver. */
 export function parseCloudWakePolicy(value: unknown): CloudWakePolicy {
 	try {
@@ -92,7 +98,7 @@ export function parseCloudWakePolicy(value: unknown): CloudWakePolicy {
 		if (policy.schema !== CLOUD_WAKE_POLICY_SCHEMA) return REQUIRED_CLOUD_WAKE_POLICY;
 		let initial: CloudWakePolicy["initial"] = "required";
 		let final: CloudWakePolicy["final"] = "required";
-		let maxPublicSends = 64;
+		let maxPublicSends: CloudWakePolicy["maxPublicSends"] = null;
 		switch (policy.kind) {
 			case "human":
 			case "first-run":
@@ -110,18 +116,16 @@ export function parseCloudWakePolicy(value: unknown): CloudWakePolicy {
 			case "agent":
 				// A coworker's message delivered into the agent's own thread (the kernel
 				// says pair: initial forbidden, final optional) lets the agent tell its
-				// thread something when the member should know, twice at most; it answers
-				// the coworker through the peer channel. A worker completion continues the
-				// agent's own work in its conversation (final optional): brief, or silent.
-				// Every other agent wake, a worker included, has no public mouth.
+				// thread something when the member should know; it answers the coworker
+				// through the peer channel. A worker completion continues the agent's own
+				// work in its conversation (final optional). Neither counts sends. Every
+				// other agent wake, a worker included, has no public mouth.
 				if (policy.final === "optional" && policy.initial === "forbidden") {
 					initial = "forbidden";
 					final = "optional";
-					maxPublicSends = 2;
 				} else if (policy.final === "optional") {
 					initial = "optional";
 					final = "optional";
-					maxPublicSends = 3;
 				} else {
 					initial = "forbidden";
 					final = "forbidden";
@@ -130,10 +134,9 @@ export function parseCloudWakePolicy(value: unknown): CloudWakePolicy {
 				break;
 			case "room":
 				// A team room may stay silent; an agent's shared thread (the kernel
-				// says final required) answers every post. Both keep three sends.
+				// says final required) answers every post. Neither counts sends.
 				initial = "optional";
 				final = policy.final === "required" ? "required" : "optional";
-				maxPublicSends = 3;
 				break;
 			default:
 				return REQUIRED_CLOUD_WAKE_POLICY;
@@ -156,6 +159,16 @@ export function parseCloudWakePolicy(value: unknown): CloudWakePolicy {
 	} catch {
 		return REQUIRED_CLOUD_WAKE_POLICY;
 	}
+}
+
+/**
+ * A room wake in the agent's own shared thread (contract 19), from the admitted
+ * policy alone: the kernel reports a required final for a room wake only when
+ * the room is bound to the woken agent (qorpera_runtime_wake_policy_internal,
+ * 20260918000000); a group chat's is optional. Never from model input.
+ */
+export function cloudWakeIsOwnThread(wake: Pick<CloudWakeEnvelope, "kind" | "policy">): boolean {
+	return wake.kind === "room" && wake.policy.kind === "room" && wake.policy.final === "required";
 }
 
 export interface CloudWakeEnvelope {
@@ -191,7 +204,15 @@ export interface CloudWakeEnvelope {
 		wakeSchema: typeof CLOUD_WAKE_SCHEMA;
 		runtimeBundleVersion: null;
 	}>;
-	readonly routine: Readonly<{ id: string; version: number; intent: string }> | null;
+	/** dynamic: the routine has no cadence; this run decides its next run or concludes it.
+	 * routineKey names it, so the run's own routine tool can point at the decision. */
+	readonly routine: Readonly<{
+		id: string;
+		version: number;
+		intent: string;
+		dynamic?: true;
+		routineKey?: string;
+	}> | null;
 	readonly payload: Readonly<Record<string, unknown>>;
 	readonly parentRunId: string | null;
 	readonly causal: Readonly<{ rootId: string; agentIds: readonly string[] }>;
@@ -269,8 +290,7 @@ export function parseCloudWakeEnvelope(value: unknown, identity: CloudNativeTool
 		time.timeZone.length > 128 ||
 		!Array.isArray(causal.agentIds) ||
 		causal.agentIds.length < 1 ||
-		causal.agentIds.length > 16 ||
-		new Set(causal.agentIds.map(uuid)).size !== causal.agentIds.length ||
+		new Set(causal.agentIds.map(uuidKey)).size !== causal.agentIds.length ||
 		causal.agentIds.at(-1) !== identity.staffAgentId
 	)
 		throw new Error("Cloud wake does not match its admitted run");
@@ -297,7 +317,7 @@ export function parseCloudWakeEnvelope(value: unknown, identity: CloudNativeTool
 				Buffer.byteLength(line.text) > 4096 ||
 				typeof line.at !== "string" ||
 				!Number.isFinite(Date.parse(line.at)) ||
-				uuid(line.staffAgentId) === identity.staffAgentId
+				uuidKey(line.staffAgentId) === uuidKey(identity.staffAgentId)
 			)
 				throw new Error("Invalid held coworker messages");
 			uuid(line.eventId);
@@ -306,8 +326,12 @@ export function parseCloudWakeEnvelope(value: unknown, identity: CloudNativeTool
 	}
 	let routine: CloudWakeEnvelope["routine"] = null;
 	if (wake.kind === "routine") {
-		const stored = closed(wake.routine, ["id", "version", "intent"]);
+		const stored = closedWithOptional(wake.routine, ["id", "version", "intent"], ["dynamic", "routineKey"]);
 		if (
+			(Object.hasOwn(stored, "dynamic") && stored.dynamic !== true) ||
+			Object.hasOwn(stored, "routineKey") !== (stored.dynamic === true) ||
+			(Object.hasOwn(stored, "routineKey") &&
+				(typeof stored.routineKey !== "string" || !/^[a-z0-9][a-z0-9._-]{0,95}$/.test(stored.routineKey))) ||
 			!Number.isSafeInteger(stored.version) ||
 			(stored.version as number) < 1 ||
 			typeof stored.intent !== "string" ||
@@ -315,7 +339,12 @@ export function parseCloudWakeEnvelope(value: unknown, identity: CloudNativeTool
 			Buffer.byteLength(stored.intent) > 32768
 		)
 			throw new Error("Invalid stored routine");
-		routine = Object.freeze({ id: uuid(stored.id), version: stored.version as number, intent: stored.intent });
+		routine = Object.freeze({
+			id: uuid(stored.id),
+			version: stored.version as number,
+			intent: stored.intent,
+			...(stored.dynamic === true ? { dynamic: true as const, routineKey: stored.routineKey as string } : {}),
+		});
 		if (source.kind === "schedule") {
 			if (source.id !== routine.id || parentRunId !== null || actorStaffId !== null)
 				throw new Error("Invalid schedule identity");
@@ -371,7 +400,7 @@ export function parseCloudWakeEnvelope(value: unknown, identity: CloudNativeTool
 			activation.schema !== "qorpera.office-start-continuation/v1" ||
 			policy.final !== "forbidden" ||
 			parentRunId === null ||
-			parentRunId === identity.runId ||
+			uuidKey(parentRunId) === uuidKey(identity.runId) ||
 			actorStaffId !== null ||
 			actorUserId !== null ||
 			audience.kind !== "company" ||
@@ -424,10 +453,9 @@ export function parseCloudWakeEnvelope(value: unknown, identity: CloudNativeTool
 			(coding && (work.access !== "read" || !codingScope(work.coding, work.sequence))) ||
 			!Number.isSafeInteger(work.sequence) ||
 			(work.sequence as number) < 1 ||
-			(work.sequence as number) > (coding ? 64 : 12) ||
 			source.occurrenceKey !== `worker-dispatch:${source.id}:${work.sequence}` ||
 			parentRunId === null ||
-			parentRunId === identity.runId ||
+			uuidKey(parentRunId) === uuidKey(identity.runId) ||
 			uuid(work.parentRunId) !== parentRunId ||
 			actorStaffId !== null ||
 			actorUserId !== null ||
@@ -450,7 +478,7 @@ export function parseCloudWakeEnvelope(value: unknown, identity: CloudNativeTool
 		if (
 			done.schema !== "qorpera.worker-completion/v1" ||
 			parentRunId === null ||
-			parentRunId === identity.runId ||
+			uuidKey(parentRunId) === uuidKey(identity.runId) ||
 			uuid(done.parentRunId) !== parentRunId ||
 			actorStaffId !== null ||
 			actorUserId !== null ||
@@ -536,7 +564,7 @@ export function parseCloudWakeEnvelope(value: unknown, identity: CloudNativeTool
 			!Array.isArray(input.inputIds) ||
 			input.inputIds.length < 1 ||
 			input.inputIds.length > 32 ||
-			new Set(input.inputIds.map(uuid)).size !== input.inputIds.length ||
+			new Set(input.inputIds.map(uuidKey)).size !== input.inputIds.length ||
 			!input.inputIds.includes(source.id) ||
 			(wake.kind === "first-run" && input.inputIds.length !== 1) ||
 			parentRunId !== null ||
@@ -669,8 +697,8 @@ function makeCoworkerTool(
 			"already have committed and requires receipt reconciliation. Text must be nonblank and at most 4096 UTF-8 bytes. " +
 			"priority false (for status, an FYI or anything that needs no answer now) writes the message the same way but " +
 			"does not wake the coworker: it reads it at its next turn, whatever causes that turn; a held receipt confirms " +
-			"that. A queued receipt confirms durable delivery, not completed work. A causal-fence receipt means the exchange " +
-			"has reached its limit and no wake was created: say what is still needed in your own thread, or stop. There is " +
+			"that. A queued receipt confirms durable delivery, not completed work. A causal-fence receipt means no wake " +
+			"was created for this message: say what is still needed in your own thread, or stop. There is " +
 			"no room, private-member or cross-company destination. The result is data under the existing tool-result fence.",
 		inputSchema: {
 			type: "object",

@@ -315,7 +315,13 @@ Every logical object has an opaque current version. Disjoint writes may proceed
 independently. Competing writes to the same object or atomic path set are
 serialized or return a typed stale-version result. The agent re-reads and
 retries, narrows the change, or creates a proposal. Silent last-writer-wins is
-forbidden; automatic semantic merging is optional future machinery.
+forbidden; automatic semantic merging is optional future machinery. In the
+cloud tools the typed result is `COMPANY_FILE_VERSION_CHANGED` (nothing was
+written), never the unconfirmed outcome kept for results that may have
+happened (2026-09-25). The gateway never invents parent folders: a write or
+mkdir whose folder does not exist is refused, normally before any bytes are
+staged, as `COMPANY_FILE_PARENT_MISSING` (nothing was written; create the
+folder, then repeat the call) (2026-09-26).
 
 The Company File is worked on as one live document. Every agent and member
 edits the same live objects in place through the live mount or Company File
@@ -337,7 +343,10 @@ Every committed mutation emits a durable file-change event with canonical
 paths or object identities, prior and resulting versions, operation provenance,
 and causal ancestry. Exact-object, prefix, and semantic subscriptions enter the
 normal wake bus after current read authority is checked. The bus deduplicates,
-coalesces per policy, and fences self-trigger and multi-agent cycles. Agents do
+coalesces per policy, and fences self-trigger: an agent's own write never wakes
+its own subscription. (Since bundle v95 a change may wake an agent already
+earlier in its causal chain again, which moves it to the end of the chain; only
+a member's Stop or the operator pause ends a loop between agents.) Agents do
 not poll synchronized folders to observe their company.
 
 ### 5.4 Memory and transcript relationship
@@ -450,6 +459,19 @@ The runtime MUST NOT hold an agent process or visible chat hostage to one long
 tool call. New input may steer, cancel, supersede, or coexist with existing
 work according to explicit run state.
 
+2026-09-26 amendment: a member's Stop. The Stop in a conversation reaches the
+agent's runs there: a member's message (in a plain conversation or in the
+agent's own thread), a routine run, the answer to a coworker message, and the
+continuation after a worker's report. It stops one run. A scheduled routine
+keeps its schedule; stopping a worker report's continuation also stops that
+agent's workers still running for it, as stopping their parent does. Work with
+no conversation (a worker's own run, a Company Computer start) is not stopped
+here. Who may stop is unchanged: a member who can write the conversation and
+started the run's work (for a routine, the member who saved it, or for whom its
+agent set it up) or an owner or admin. With several runs live, the Stop names
+one the member may stop, the working one first. Before this amendment the Stop
+only reached a member's turns in a plain conversation.
+
 ### 7.4 Ceilings and brake
 
 Intelligence is not deterministic, so the kernel bounds the damage a loop can
@@ -476,6 +498,57 @@ subscriptions, which self-limit.
 > stop is no longer a member operation: it remains the operator brake that
 > pauses a company during a runtime cut (no new wakes, running work fenced),
 > and it notifies no one.
+>
+> **Amended again 2026-09-24 (bundle v92,
+> `20260924130000_runtime_remove_run_and_machine_caps.sql`).** The
+> running-machine limit is gone too: a company starts as many computers as
+> the nodes have room for. API-key connections have no monthly budget and no
+> per-run call, token or cost cap; like a subscription account (64 at once)
+> they keep only their concurrency. A run has no deadline and no silence or
+> output cap, because OpenAI, Anthropic and xAI publish none: it ends when it
+> completes, is stopped, or its host is lost (a lapsed lease). Idle company
+> computers still power off after 5 minutes.
+>
+> A run also has no count on its work: no cap on tools, tool calls, model
+> requests (company and coding), Company File reads, screenshots, follow-up
+> turns of a worker, worker dispatches per hour, workers per todo, hires or
+> group chats, and no count on a wake's public messages or on agent-to-agent
+> messages (no hop budget, no hourly pair budget, no chain length; see 14.6).
+> A provider that limits these enforces its own limit. **Nothing stops two
+> agents messaging each other in a loop except a member's Stop or the
+> operator pause.**
+>
+> What remains:
+> - crash detection (job, connection and session leases) and retry limits
+>   (8 dispatch failures; 8 attempts for a pristine retry or a sponsor
+>   handoff);
+> - one machine per run, one coding machine per member and environment
+>   (carrying any number of that member's sessions; amended 2026-09-24), and
+>   account concurrency (64 per subscription);
+> - a queued run that no computer starts within a day of being queued fails;
+> - input validation and per-call size bounds (message, argument, result,
+>   batch, catalog text up to 1 MiB);
+> - 50,000 Company File entries per company (the tree's storage bound). The
+>   standing counts (32 routines, 64 open todos and 4 active workers per agent,
+>   40 sidebar sections) went in bundle v95;
+> - no stall detection: a run whose harness hangs without crashing keeps its
+>   machine until Stop, as in Codex CLI and Claude Code;
+> - a continuation (a worker report, a computer start, a sponsor handoff)
+>   carries the newest results and sends of the earlier run that fit, and
+>   counts the rest;
+> - the API-key sandbox runner (not company work) keeps its per-job totals:
+>   64 MiB transcript, 100 output artifacts and 64 MiB of output.
+>
+> Bundle v95 also lets a Company File change wake an agent already earlier in
+> its causal chain (it moves to the end of the chain, like a coworker message).
+> An agent's own write still never wakes its own watch routine.
+>
+> The last count went with bundle v104 and its Codex rebuild: the pinned Codex
+> build refused a model request carrying 128 or more tool outputs or over 1 MiB
+> of result text, and the kernel refused a context view with more than 128
+> outputs or over 128 KiB. A request now carries any number of outputs within a
+> 64 MiB fence frame (more than any model context holds), and a view row is
+> bounded at 16 MiB as storage.
 
 ## 8. Wake bus
 
@@ -507,7 +580,7 @@ Provider-native session IDs are resumability hints, not wake identity.
 | First run | Greet and learn when no assignment exists; otherwise begin the supplied startup assignment. |
 | Routine | Execute the stored intent. Silence is valid when policy permits and there is nothing useful to report. |
 | Agent | Treat the sender as a coworker. Answer through the peer channel when asked or useful; never acknowledge an acknowledgement; silence is valid. Speak in your own thread only when the member should know (pair policy, 14.6). |
-| Room | Act as yourself for the room audience. Keep sends bounded. Silence is allowed. Private member communication remains a separate authorized send. |
+| Room | Act as yourself for the room audience. Speak when the room needs it. Silence is allowed. Private member communication remains a separate authorized send. |
 
 Scheduled and listener-triggered jobs both use the routine entrypoint with a
 different trigger subtype. A worker revival targets the parent run or creates a
@@ -844,8 +917,14 @@ Worker species have separate lifecycle contracts:
 
 - **In-house worker:** runs a bounded internal stream and publishes a durable
   completion event that revives or continues the parent.
-- **Coding worker:** owns an isolated VM, repository, worker identity, and
-  branch. Follow-up MUST address the same worker and branch. If the coding
+- **Coding worker:** owns an isolated repository workspace (its own NAS
+  folders and guest user), worker identity, and branch, and runs on its
+  member's coding machine (amended 2026-09-24: one machine per member and
+  environment carries all that member's sessions; asleep when idle, it holds
+  no node capacity, and it is removed later, its allocation released only on a
+  proven delete).
+  Follow-up MUST address the same worker and branch; it may run on a later
+  machine of the same member. If the coding
   provider lacks a completion callback, Qorpera uses an explicit durable
   listener; it MUST NOT pretend the in-house revival bus will fire.
 - **Media worker:** receives immutable media assets and returns asset
@@ -883,13 +962,23 @@ Authorized agents may create coworkers with startup instructions through the
 same cloud operation. The creating agent cannot grant authority it does not
 possess.
 
-Ratified 2026-09-02: a staff agent reads the company's shared Company File by
-default. Creation, reactivation, genesis, and migration of a company give each
-active agent a read grant on the shared root of every environment, recorded as
-an ordinary revocable grant attributed to the company owner and carried forward
-across root resource versions until an owner revokes it. Writes, protected
-paths, private scopes, and responsibility- or project-scoped resources keep
-their own rules; the default never widens them.
+Amended 2026-09-26 (superseding the 2026-09-02 read-only default): a staff
+agent reads and writes ordinary shared Company File paths by default, so work
+can become durable files. Creation, reactivation, genesis, and migration give
+active agents a read/write grant on the shared root of every environment,
+recorded as an ordinary revocable grant attributed to the company owner.
+Explicit restrictions, expiry and revocation MUST survive reactivation and
+root resource version changes. Protected paths, private scopes, and narrower
+responsibility- or project-scoped resources keep their own rules; the default
+never overrides them.
+
+Automatic hiring MUST verify that the creator can delegate the child's entire
+default: current, nonexpiring read/write authority on every live shared root
+in the company. Verify this both at policy approval and before publication.
+Restricted creators may propose hires for an authorized member to approve.
+Member consent MUST be distinguished durably from policy approval in that
+member's name; an agent retry MUST NOT manufacture or renew member consent.
+Completed operations retain their receipt replay semantics.
 
 Agent templates MUST NOT create dedicated prebuilt artifacts. Artifacts are
 ordinary Company File objects created when useful. Permanent deletion of an
@@ -1101,22 +1190,23 @@ company-visible and answerable:
   B" in the sender's thread, "Message from A" in the receiver's) that opens the
   pair transcript. The chip carries no message text.
 - The receiver wakes **in its own shared thread** under the pair policy:
-  initial send forbidden, final send optional, silence allowed, at most two
-  public sends. It answers the coworker through the same peer channel, which
+  initial send forbidden, final send optional, silence allowed (no count on
+  public sends since bundle v92). It answers the coworker through the same peer channel, which
   puts the answer in the pair transcript and wakes the sender in the sender's
   thread under the same policy. A member post in either thread is a human wake
   and starts a new causal root.
-- The kernel bounds an exchange by **hops**, not by "agent already visited":
-  at most 6 peer messages per causal root and 20 per pair per rolling hour, on
-  top of the company wake ceiling and the founder stop. A tripped budget
-  refuses the wake (causal-fence receipt) and leaves one line in the pair
-  transcript. File-event and routine fences are unchanged.
+- An exchange is not bounded by "agent already visited". Until bundle v92 the
+  kernel bounded it by **hops** (at most 6 peer messages per causal root and 20
+  per pair per rolling hour). Since v92 (founder, 2026-09-24) there is no hop
+  or hourly budget: a chain records its root and the agents it reached, and
+  only a member's Stop or the operator pause ends a loop between two agents.
+  File-event and routine fences are unchanged.
 - Workers (13) are not messaging: they have no mouth and report to their parent.
   Group chats (14.7) remain the place for handoffs that need several agents.
 - A message may be sent **held** (`priority: false`): written and shown the
   same way, it wakes nobody; the recipient reads it, as data, at the start of
-  its next wake of any kind. Held messages extend no chain but count toward
-  the pair's hourly budget. Thanks, status and FYIs are sent held.
+  its next wake of any kind. Held messages extend no chain. Thanks, status
+  and FYIs are sent held.
 
 ### 14.7 Rooms
 
@@ -1140,7 +1230,8 @@ it.
 
 ### 15.1 Memory
 
-Amended 2026-09-22; company first since 2026-09-24. Memory follows the Grok
+Amended 2026-09-22; company first since 2026-09-24; notebook-wide dedupe,
+forget and search since 2026-09-25. Memory follows the Grok
 Bot notebook layout, so a Grok Bot's memory export can be imported into a
 Qorpera company and a hired Grok Bot keeps its notebook. Memory is separate
 from the transcript and from the company's own records: it is what an agent
@@ -1171,13 +1262,30 @@ forget goes through the mutation gateway with the exact expected version
 ledger exists.
 
 Tools: `update_memory` with `action` `write` (`fact`, optional `tier`) or
-`forget` (`fact` = the exact recorded text), and `recall_memory` (`query`,
-optional `limit` 1–50). Writes deduplicate; a correction is forget then write.
-Recall ranks by shared distinctive words and falls back to a case-insensitive
-substring match; results carry each fact's date and tier and are untrusted
-data.
+`forget` (`fact` = the recorded text), and `recall_memory` (`query`,
+optional `limit` 1–50). A fact is one fact wherever it sits: a write that is
+already recorded anywhere in the notebook, in any tier or month, is a
+duplicate and says where; `forget` removes every current copy (compared as
+writes compare, case and spacing aside) and says how many. A correction is
+forget then write. "Forget" governs the current notebook and future
+composition; immutable revision history is kept (5.2). Recall and forget read
+the profile and every monthly log file, with no search horizon, and report how
+many months they read and the oldest. Recall ranks by shared distinctive words
+and falls back to a case-insensitive substring match; results carry each
+fact's date and tier and are untrusted data.
 
-Composition (9.1): every turn composes the whole profile and a bounded
+A notebook write that loses a same-object race gets the typed stale-version
+refusal (5.2) and re-reads and retries; when it keeps losing, the receipt says
+nothing was saved. A write past the profile or monthly file size answers
+`full` and saves nothing. A notebook file that is not notes (larger than a
+text write, or not UTF-8) is a named gap: search reports it, forget answers
+`partial` rather than claim every copy is gone, and only a write into that
+file is refused (`unreadable`). None of these is an unconfirmed outcome. A
+deleted notebook file or folder is recreated against the version its deletion
+left.
+
+Composition (9.1): every turn composes the whole profile (every fact a write
+accepted) and a bounded
 newest-first slice of the current and previous month's log with faded notes
 removed, plus a count of facts not shown. The
 block records the exact object versions it read. Composition uses the trusted
@@ -1284,6 +1392,106 @@ admits the same occurrence. Agents are told to start a new responsibility on a
 dense cadence and loosen it under the same routine key once the work is
 understood.
 
+2026-09-25 amendment: expiry and edits close future scheduling only. A finite
+watch's last permitted occurrence expires the routine when it is queued, and
+that occurrence still starts and completes; so does an occurrence queued
+before a time expiry, including one that quiet hours, a company pause or
+missing capacity hold past the end (it is not dropped). This holds only for a
+routine that was running normally when it ended: one that was paused (by its
+agent, a member, the authorization-failure suspension or its agent's
+archiving) runs nothing more, and archiving an agent also stops its ended
+routines, so a restore does not revive them. A removal stops pending work
+too. A new version applies to the next run: a run that has started keeps the
+version it started with while its job is live and the routine stays with its
+agent (a routine run may save its own routine), while a queued occurrence of
+an older version, work that continues after the job ended, and a run whose
+routine a member moved to another agent follow the current version.
+
+2026-09-25 amendment: dynamic routines (founder request). An agent's routine
+may have no cadence: its trigger holds exactly one next run (kind `once`: an
+instant, a time zone and a reply policy), and the run it wakes decides what
+follows. Before its final message (or a card), and before it can complete,
+that run either sets the next run at a time it chooses, optionally with
+changed instructions, title, effort or reply policy, which is a new version of
+the same routine so its history stays, or concludes the routine with a
+one-sentence reason that members see (status `concluded`). A run that hands
+work to workers or waits for the Company Computer decides before it ends; the
+continuation cannot. The kernel refuses the final send and the completion of
+an undecided run; the host shows the model that reason first. A change made
+in another conversation during the run, or the routine's end date passing,
+settles the decision; a pause or a conclusion by someone else stops the
+started run as a pause does, and a member's Stop of the run pauses the
+routine once (a resume runs it again). An active dynamic routine always has exactly one pending run, and
+runs of one routine never overlap: an agent's save inserts it (a save without
+a time keeps the routine's next run if it is still ahead, or runs now); while
+a run owes its decision it cannot save, pause or remove its own routine, only
+decide (conclude ends it); a new version cancels the
+older one's queued run; a run already admitted before an edit still runs once
+with the instructions it was admitted with; the next run a run chose is
+inserted when that run ends; and the control-plane tick restores a run that
+ended without deciding (failed, crashed or refused), three times at once, then
+after 15 minutes, doubling to at most a day, never giving up by count. A
+member's save through the web (pause, resume) keeps the routine's one next
+run and cannot create a dynamic routine. There is no minimum gap between runs
+and no cap on how often a routine reschedules. Quiet hours, expiry (a next
+run after the routine's end is refused with that reason), the unattended
+sponsor and the three-refusal authorization suspension apply as to every
+routine; a dynamic routine takes no occurrence limit. Fixed triggers
+(schedule, listener) stay; agents are told to prefer a dynamic routine when
+the right time for the next look depends on what they find (learning a
+responsibility, follow-ups, watches), and fixed times for work tied to the
+clock. The agent's own tool also concludes a fixed routine from inside its
+run.
+
+2026-09-25 amendment: a member's save keeps the schedule position. A member's
+save no longer gives the new version a fresh schedule cursor, so renaming or
+pausing a routine does not run it at once. Each schedule trigger is decided by
+its id. The same timing (the trigger unchanged apart from its reply policy,
+the order of its days or months, and an interval a wall-clock trigger does not
+use) keeps the exact position, while the routine is active or its next slot is
+still ahead. A run still waiting for its start when the routine is saved is
+offered again to the new version, so the edit applies to that run instead of
+losing it (a slot counts once toward a finite routine's limit; a slot that
+waited while a later one ran is not run again). Changed timing restarts the
+schedule at the save: nothing runs at once, the slots of the new cadence
+before the save are not caught up, a waiting run of the old schedule is
+replaced, and the first run is the new schedule's first slot after the save. A
+save of a paused or ended routine whose next slot passed (typically switching
+it back on) restarts it the same way, so the slots it missed while it was off
+are skipped; so does switching a routine back on without a new version (an
+agent's resume). A trigger that never scheduled anything, whose kickoff is
+still waiting, or a new trigger id, stays fresh and keeps its kickoff. A
+restart position is not a run time and is not shown as the next run; the next
+run shows again once the scheduler has taken the first new slot.
+
+2026-09-25 amendment: an agent's changed timing restarts the schedule. An
+agent's save decides each new version's schedule position by the same rule as
+a member's save (above): the same timing keeps the position while the routine
+is active or its next slot is still ahead, and a run still waiting for its
+start is offered again; changed timing restarts the schedule at the save, so
+nothing runs at once, the slots of the new cadence before the save are not
+caught up, and the new cadence applies from the save instead of after the old
+next slot; a save that switches a routine back on after its next slot passed
+restarts it the same way; a routine that never ran keeps its kickoff. An
+agent's resume, also after the authorization-failure suspension, switches a
+routine back on as described above. For both saves, the start of a wall-clock
+trigger that the routine has already reached is not part of its timing: it
+only holds back the first run, so saving the routine again without it changes
+nothing. An interval trigger's start anchors its grid and stays part of its
+timing.
+
+2026-09-25 amendment: a routine waiting for its first slot shows it. When the
+scheduler finds a routine with nothing due that waits for its first slot (a
+restart position, or a routine that never ran whose trigger names a later
+start or a window), it sets the routine's next due time to that slot, and only
+if the routine is still active, on the same version and at the exact position
+it read; nothing runs and the position does not move. The routine is then not
+offered to the scheduler again before that slot, and the next run shown to
+agents and members is that slot. A restart position shows no next run only
+until the scheduler's next poll. A routine that may still owe its kickoff is
+left as it is, and one that never ran stays never run, so the kickoff rules
+above do not change.
+
 ## 17. Model and reasoning policy
 
 An attended agent thread defaults to low reasoning effort. The resolved
@@ -1316,6 +1524,8 @@ works until the task is done or genuinely blocked. The remaining bounds are
 safety limits far outside any real turn: the run deadline (24 hours), the job
 lease that a live runner renews, the transcript byte bound and protocol flood
 bounds in the native boundary. The prompt no longer advertises a call budget.
+(Superseded by the second 2026-09-24 amendment in 7.4, bundle v92: there is no
+run deadline and no protocol flood bound; see that list of what remains.)
 
 Company-formation and other research projects MAY dispatch higher-effort
 workers under a bounded, attributed project policy while the attended
@@ -1379,13 +1589,13 @@ Company File, rather than chat or a machine disk, is what that brain operates.
 | 0 | Live Company File, path authority, and provenance | With all clients offline, one cloud company remains readable and mutable through atomic versioned path operations. Two members and one agent obey exact/private/subtree ACLs; protected paths propose; revocation and stale versions fence effects; receipts retain exact actor/requester/sponsor/approver attribution. |
 | 1 | Loop plus mouth | Model input and cloud tools work over an exact Company File read view; only send is visible; provider thinking and final assistant text never render; completion links a live operation, proposal, or explicit no-change result. |
 | 2 | Inbound fences, outbound effect check, and cloud secret custody | A fake instruction inside a tool or Company File result is ignored; an unauthorized, stale, protected, or ambiguous write is blocked independently; and a canary credential survives capture, use, rotation, revocation, response reflection, restart, and encrypted recovery without entering any model-visible or company-visible surface. |
-| 3 | Wake bus | One agent enters through all five wake kinds; each applies its silence rule; a routine finishes with no send; an authorized Company File event wakes once without creating a causal loop. |
+| 3 | Wake bus | One agent enters through all five wake kinds; each applies its silence rule; a routine finishes with no send; an authorized Company File event wakes once, and an agent's own write never wakes itself (amended v95: no multi-agent cycle fence). |
 | 4 | Shared office VM | Persistent cloud workbench, live Company File mount, shell, browser with sticky granted sessions, one company machine (additional machines are later capacity work), and several agent desktops work with every member device offline; resetting the VM leaves company state intact. |
 | 5 | Workers and todos | Parent remains interruptible; blank child receives a complete dispatch; durable completion reaches the parent; todos and accepted worker outputs become Company File state and survive restart. |
-| 6 | Agent memory (amended 2026-09-22, company first 2026-09-24) | An agent's profile, monthly log, and notes are its own Company File objects in the Grok Bot layout; `update_memory` write/forget and `recall_memory` work through the versioned mutation gateway with dedupe, exact-text forget, and head-conflict retry; every turn composes the profile and the recent log slice through the trusted read lane; a worker of the same agent recalls but writes only with write access; notebooks are company-owned and there is no member memory; a Grok Bot export imports unchanged. |
+| 6 | Agent memory (amended 2026-09-22, company first 2026-09-24) | An agent's profile, monthly log, and notes are its own Company File objects in the Grok Bot layout; `update_memory` write/forget and `recall_memory` work through the versioned mutation gateway with notebook-wide dedupe, forget of every copy, a search of every month, and stale-version retry; every turn composes the whole profile and the recent log slice through the trusted read lane; a worker of the same agent recalls but writes only with write access; notebooks are company-owned and there is no member memory; a Grok Bot export imports unchanged. |
 | 7 | Connectors | Install, authenticate out of band, call through scoped RPC, and apply the connector-to-browser escalation path. |
-| 8 | Scheduler and listeners | Company File intent plus one compiled trigger wakes the same agent; deterministic deduplication, timezone, expiry, quiet policy, auth suspension, and projection consistency pass. |
-| 9 | Isolated coding VMs and PRs | Worker, VM, repository, branch, follow-up identity, publication, and completion listener retain continuity. |
+| 8 | Scheduler and listeners | Company File intent plus one compiled trigger wakes the same agent; deterministic deduplication, timezone, expiry, quiet policy, auth suspension, and projection consistency pass. Dynamic routines (2026-09-25 amendment in 16.3): one next run per version, and each run sets the next run or concludes the routine. |
+| 9 | Isolated coding VMs and PRs | Worker, repository workspace, branch, follow-up identity, publication, and completion listener retain continuity; every turn is recorded once (what started it, its submission bound to its own sequence, its outcome) and the next turn reads the session's own earlier turns, including the exact question and choices a reply answers (amended 2026-09-25); a member's sessions share one coding machine that holds no node capacity while asleep and is removed later, its allocation released only on a proven delete (amended 2026-09-24). |
 | 10 | Constitution and hire overlays | Compile a short constitution over the proven loop; add a name and job spec last, without creating a second brain. |
 | Post-build (deferred) | Azure backup/overflow compute | After Orders 0–10 are built, separately approve and prove the optional capacity integration and its placement, failover, isolation, recovery, release, and usage records before enabling it for users. This is not a gate on the preceding orders or initial launch. |
 
@@ -1862,13 +2072,17 @@ Founder decisions, 2026-09-19 and 2026-09-20.
    leases and custody bind to them, but they are granted by default when an
    account is bound and when standing work needs them. A member who does not
    want an account used disconnects it.
-3. **Hiring a coworker and opening a group chat need no member approval.** Any
-   active agent may create a new agent (14.1) or a new room (14.7). The
+3. **Authorized hiring and opening a group chat need no member approval.** Any
+   active agent may propose a new agent (14.1) or create a new room (14.7). The
    governed write, its receipt, the projection and the rule that a creator
    cannot delegate authority it lacks are unchanged; the approval of a NEW
    agent or room is given by policy in the name of the requesting member, or of
-   the company owner, and is bounded per run. A change to an existing agent or
-   room stays proposed by the Co-Founder (14.2) and approved by a member.
+   the company owner. The 2026-09-24 amendment below removes per-run counts.
+   As amended 2026-09-26, automatic
+   hiring requires the creator to cover the full default grants in 14.1;
+   otherwise the proposal waits for member approval. The room policy is
+   unchanged. A change to an existing agent or room stays proposed by the
+   Co-Founder (14.2) and approved by a member.
 4. **The gate is authority, never the client.** A capability a signed-in member
    has through one client is a cloud operation. Whether an agent may perform it
    is decided by the authority chain of its run, not by which surface first
@@ -2123,7 +2337,9 @@ returns at admission and the parent ends its run, so a new human message is
 admitted while the child works. Todos and worker handles are durable kernel
 objects; each change publishes the canonical todo document to the Company File
 under `work/todos/<agent>/`, and an accepted output is a Company File revision
-the worker's own run wrote. Disposable-database proofs, runtime tests and a
+the worker's own run wrote. A todo document is written only as the current
+revision's exact bytes and counts as published only while the file still holds
+them (bundle v111), so a late publication can never replace a newer one. Disposable-database proofs, runtime tests and a
 live-model behavior screen pass. Deployed acceptance on the nodes remains the
 gate before Order 5 is closed; coding, media and listener workers remain in
 Orders 9, 7 and 8. See
@@ -2149,6 +2365,87 @@ Founder decision, 2026-09-24 (Grok Bot's rail). Extends 14.1 and the
    rail are that member's view only. No agent and no other member changes them.
 4. **Arrangement is not authority.** A section grants nothing and carries no
    content; deleting one moves its agents to Unassigned.
+
+### 2026-09-25 amendment: auto-review rules and approvals
+
+Founder decisions, 2026-09-24/25 (Grok Bot's Auto-review, multiplayer).
+Implements the "destructive or external-action approval" and "safety-check
+review or retry" surfaces of 16.2 and the classification of section 10.
+
+1. **Rules.** A rule is one plain-language sentence, "When an agent wants to
+   ..., it should: Ask first | Allow automatically". A member writes rules for
+   themself ("only me"); owners and admins write company rules, which every
+   member reads and no one else edits. An agent may add an Ask first rule for
+   the member it works for, when that member asks it to (the tool
+   add_review_rule; the rule is the member's own, listed and removable in
+   Settings); agents never add Allow rules or company rules. An Allow rule an
+   agent suggests becoming a card the member confirms is not built in bundle
+   v130.
+2. **What is reviewed.** Every call is classified: reads, and changes that
+   stay inside the company (its versioned Company File, notes, messages,
+   todos, cards, a dynamic routine's own decision at the end of its run unless
+   it rewrites the routine's instructions or title, an Ask first rule an agent
+   adds), run at once. Outside effects (connector
+   writes, acting computer steps, the computer shell), Company File deletion
+   and delegation (hiring, group chats, setting up or changing routines,
+   starting workers or coding jobs) pass a review first. Coding sessions
+   themselves are not reviewed; starting one is.
+3. **The reviewer.** A separate model (GPT-6 Luna at low effort) in a fresh,
+   tool-less conversation on the run's own model account, inside the same
+   harness process, never a separate credential path. It reads the action,
+   what the member or routine asked for (a card answer in plain words, and,
+   when members started the run, their latest earlier messages in the
+   conversation), and the rules that apply (all company rules and the
+   personal rules of the member the run works for), never the agent's own
+   words or any tool result, and answers allow, ask or deny. A review that cannot
+   run is never an approval: the call does not run.
+4. **Layering.** Built-in checks (money, legal terms, deleting outside data,
+   access changes: ask; an action that plainly does not serve the request:
+   deny), then company rules, then personal rules. Ask first wins; an Allow
+   rule never undoes an Ask first rule. Only a company Allow rule lifts a
+   built-in check, and only when it covers the action: the checks are the
+   company's to answer, so a member's own Allow rule never lifts one (a
+   member's rules only add care). Delegating to the company's own agents
+   (hiring, group chats, routines, workers, coding jobs) is never a built-in
+   check. As in Grok, the reviewer may also ask on its
+   own when it is unsure the member wants this exact action (an irreversible
+   step the request only loosely describes); the member the run works for
+   answers that card. It denies only an action that clearly works against or
+   outside the request. The kernel enforces this ordering over the rules and
+   checks the reviewer cites; which rules apply to an action is the reviewer's
+   judgement, so a reviewer that is itself misled can still let an action
+   through. The reviewer reads the whole call, never a cut of it.
+5. **Approval cards.** An ask raises a card in the conversation the agent
+   works in (its own thread or a member's conversation; never a group chat or
+   a worker, and never a card for owners and admins in one member's private
+   conversation, which they cannot read: there the call is refused instead). A personal rule's card is
+   answered only by that member; a company rule's or a built-in check's card
+   by any owner or admin, who need write access to the conversation. Allow
+   once, Deny, and Always allow (a built-in check's card only; saves a narrow
+   company Allow rule). A card never expires; dismissal is never consent. These
+   cards are answered only through their own answer path, never the general
+   card answer. A card may quote the matched rules, a member's own included:
+   the thread shows why the action waits.
+6. **Waiting.** A call a member is likely watching holds on its card for about
+   five minutes and runs at once when approved. After that, and at once for
+   routines and coworker wakes, it parks: the agent is told, keeps working,
+   and the card keeps waiting. A holding call renews a short heartbeat; an
+   answer to a card no call is holding (parked, stopped, or its run ended)
+   wakes the agent in that conversation on the answering member's account.
+   The agent repeats the identical call (the card carries it, as text and as
+   an object the agent copies value for value), which runs once without a
+   second review. A Deny, the member's or the
+   reviewer's, stands for that exact call in the run it was given in, and in
+   its conversation until a member writes there again: retrying gets the agent
+   no second opinion. When the member asks for it again, the retried call runs
+   only on a click on a card, whatever the fresh review says: a "yes" in chat
+   is not enough by itself. Who clicks never goes down: the member when the
+   fresh review lets it through, the owners and admins when it is still not
+   asked for or when they answered this call before. A card still waiting holds the same call only in its own
+   conversation; elsewhere a new card is raised where it can be seen.
+7. **Record.** Every reviewed call is recorded with its verdict, reason,
+   matched rules, answer and use. Reviews are not a cap on work: no number of
+   reviews, calls or approvals is limited.
 
 ## 20. Enforcement matrix
 
@@ -2177,7 +2474,7 @@ Founder decision, 2026-09-24 (Grok Bot's rail). Extends 14.1 and the
 | Projects remain bounded and distinct from rooms | Project registry, team membership, todos, outcome, and room lifecycle | Coordinate in the room; finish in durable company state. |
 | Routine policy is real | Scheduler and listener services | Author sensible schedules and intent. |
 | Dismissal is not consent | Interaction state machine | Treat dismissal as skip or decline. |
-| Coding follow-up keeps continuity | Worker identity, VM, branch contract | Steer the existing worker. |
+| Coding follow-up keeps continuity | Worker identity, VM, branch contract, the session's own turn record | Steer the existing worker. |
 | Member machines are not agent tools | Capability compiler and cloud-only execution policy | Request an explicit upload when a member-held file is needed. |
 | Secrets stay out of context | Company-centered cloud secret broker, operation grants, credential bridge, and result fence | Refer to purpose and handle, never value. |
 | Low effort is the thread default | Run admission policy | Escalate effort only for a reason. |
@@ -2213,8 +2510,9 @@ while Azure backup/overflow remains disabled.
 8. Provider reasoning, ordinary assistant output, tool logs, and wake envelopes
    never appear in the product; only idempotent send operations do.
 9. The same agent passes all five wake tests, including a silent routine. A
-   subscribed Company File change wakes exactly once and causal loop fencing
-   prevents recursive agent churn.
+   subscribed Company File change wakes exactly once, and an agent's own write
+   never wakes itself. (Amended for bundle v95: a chain may revisit an agent;
+   see 5.3.)
 10. Injected instructions inside connector, browser, Company File, worker, and
     coworker results do not gain authority.
 11. An agent can message a coworker, create a coworker with startup
@@ -2287,8 +2585,8 @@ while Azure backup/overflow remains disabled.
 30. A company's ceilings hold without agent cooperation: a deliberately
     runaway loop is stopped at its wake-rate or spend ceiling, the founder
     stop operation pauses the company, and the founder is notified from the
-    control plane. (Amended 2026-09-24, see 7.4: only the machine limit and
-    the operator stop remain.)
+    control plane. (Amended 2026-09-24, see 7.4: only the operator stop
+    remains; since bundle v92 there is no machine limit either.)
 31. **Deferred post-build enablement gate, not a launch prerequisite:** before
     Azure backup/overflow is enabled, demand beyond local capacity is attributable
     to Azure placements and rented allocation intervals. The view distinguishes

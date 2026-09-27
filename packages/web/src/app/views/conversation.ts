@@ -1,10 +1,24 @@
 import type { CodingSession } from "../../cloud/coding-session.ts";
+import type { EmailDraftAction, EmailDraftContent } from "../../cloud/email-drafts.ts";
+import {
+	ACTION_REVIEW_SCHEMA,
+	type ActionReviewAnswer,
+	type ActionReviewCard,
+	actionReviewCard,
+	answersActionReview,
+} from "../../cloud/review-rules.ts";
 import { sessionAttachmentProblem } from "../../cloud/session-attachments.ts";
 import type { TranscriptCard, TranscriptItem } from "../../cloud/transcript.ts";
 import type { HostedSession, HostedStaffAgent, JsonValue } from "../../cloud/types.ts";
 import { AGENT_LOOK, activityCaption, syncCaption } from "../../ui/agent-activity.ts";
 import { AttachmentTray, attachmentProblemText } from "../../ui/attachments.ts";
-import { authorizationRequestId, renderAuthorizationCard } from "../../ui/authorization-card.ts";
+import {
+	type ActionReviewDraft,
+	authorizationData,
+	authorizationRequestId,
+	renderActionReviewCard,
+	renderAuthorizationCard,
+} from "../../ui/authorization-card.ts";
 import { agentFigure } from "../../ui/avatar.ts";
 import { CodingSessionElement } from "../../ui/coding-session.ts";
 import { CodingSessionThreadView } from "../../ui/coding-session-thread.ts";
@@ -23,8 +37,9 @@ import { t } from "../../ui/preferences.ts";
 import { quietScroll } from "../../ui/quiet-scroll.ts";
 import { ReceivedAttachments } from "../../ui/received-attachments.ts";
 import { runFailureCard, runFailureInterrupted, runFailureReason } from "../../ui/run-failure.ts";
+import { uiScale } from "../../ui/scale.ts";
 import { composerSkeleton, messagesSkeleton, threadIdentitySkeleton } from "../../ui/skeleton.ts";
-import type { AgentState, CompanyController, ConversationState } from "../company.ts";
+import { type AgentState, answersInteraction, type CompanyController, type ConversationState } from "../company.ts";
 import type { WorkspaceActions } from "../workspace-actions.ts";
 import { AgentDetails } from "./agent-details.ts";
 import { ComposerModels } from "./composer-models.ts";
@@ -116,6 +131,11 @@ export class ConversationView {
 	/** The coding sessions shown in this thread, one element per session, kept
 	 * across renders so each keeps its stream, its cursor and its open state. */
 	readonly #codingElements = new Map<string, CodingSessionElement>();
+	/** An approval card's Always allow editor, by review id: kept across re-renders. */
+	readonly #reviewDrafts = new Map<string, ActionReviewDraft>();
+	/** The approval card to give focus after the thread redraws (it was just answered). */
+	#focusReview: string | undefined;
+	readonly #emailCards = new Map<string, { key: string; element: HTMLElement }>();
 	/** A coding session opened as its own thread over this one, from its chip. */
 	#codingThread: { workerId: string; view: CodingSessionThreadView } | undefined;
 	readonly #timestampTimer: number;
@@ -342,7 +362,7 @@ export class ConversationView {
 				this.#pinnedTop = -1;
 				return;
 			}
-			this.#stickToBottom = scrollHeight - scrollTop - clientHeight < 48;
+			this.#stickToBottom = scrollHeight - scrollTop - clientHeight < 48 * uiScale();
 		});
 		if (typeof ResizeObserver !== "undefined") {
 			this.#sizes = new ResizeObserver(() => this.#pinToBottom());
@@ -405,6 +425,7 @@ export class ConversationView {
 		this.#closeCodingSession();
 		for (const element of this.#codingElements.values()) element.dispose();
 		this.#codingElements.clear();
+		this.#emailCards.clear();
 		for (const unsubscribe of this.#unsubscribe) unsubscribe();
 		this.#company.setOpenSession(undefined);
 	}
@@ -442,14 +463,25 @@ export class ConversationView {
 		// field changes its padding and can clip a two-line draft.
 		this.#composerShell.classList.toggle("is-expanded", this.#attachments.count > 0);
 		this.#composer.style.height = "auto";
+		// The sizes come from the stylesheet, so they follow the app's scale: one line is the field's
+		// min-height, the tallest draft its max-height. scrollHeight is a whole number, so one line
+		// at 42 × 1.3 = 54.6 reads 55; round the line up before comparing.
+		const field = getComputedStyle(this.#composer);
+		const oneLine = Math.ceil(Number.parseFloat(field.minHeight) || 0);
+		const tallest = Number.parseFloat(field.maxHeight) || Number.POSITIVE_INFINITY;
 		this.#composerShell.classList.toggle(
 			"is-expanded",
-			this.#composer.scrollHeight > 42 || this.#attachments.count > 0,
+			this.#composer.scrollHeight > oneLine || this.#attachments.count > 0,
 		);
-		this.#composer.style.height = `${Math.min(this.#composer.scrollHeight, 112)}px`;
-		this.#composer.style.overflowY = this.#composer.scrollHeight > 112 ? "auto" : "hidden";
-		const expanded = this.#composerShell.classList.contains("is-expanded");
-		this.#composerShell.style.height = `${this.#composer.getBoundingClientRect().height + (expanded ? 44 : 2) + this.#attachments.el.getBoundingClientRect().height}px`;
+		this.#composer.style.height = `${Math.min(this.#composer.scrollHeight, tallest)}px`;
+		this.#composer.style.overflowY = this.#composer.scrollHeight > tallest ? "auto" : "hidden";
+		// The shell is border-box: its height is the field's, the attachments' and its own padding and borders.
+		const shell = getComputedStyle(this.#composerShell);
+		const frame = [shell.paddingTop, shell.paddingBottom, shell.borderTopWidth, shell.borderBottomWidth].reduce(
+			(sum, value) => sum + (Number.parseFloat(value) || 0),
+			0,
+		);
+		this.#composerShell.style.height = `${this.#composer.getBoundingClientRect().height + frame + this.#attachments.el.getBoundingClientRect().height}px`;
 	}
 
 	#setMenu(open: boolean, restoreFocus = true): void {
@@ -563,6 +595,18 @@ export class ConversationView {
 			await this.#company.answerInteraction(this.#sessionId, interactionId, outcome, answer);
 		} catch {
 			// The controller keeps the reason in the conversation state.
+		}
+	}
+
+	/** Record an answer to an approval card of an agent's action; the card shows it at once. */
+	async #answerActionReview(reviewId: string, answer: ActionReviewAnswer, ruleText?: string): Promise<void> {
+		this.#focusReview = reviewId.toLowerCase();
+		try {
+			await this.#company.answerActionReview(this.#sessionId, reviewId, answer, ruleText);
+			this.#reviewDrafts.delete(reviewId.toLowerCase());
+		} catch {
+			// The controller keeps the reason in the conversation state; a refused
+			// Always allow keeps the rule as the member edited it.
 		}
 	}
 
@@ -855,13 +899,15 @@ export class ConversationView {
 			),
 		];
 		const session = this.#company.store.get().sessions.find((item) => item.sessionId === this.#sessionId);
-		const canAnswer =
-			this.#company.store.get().team?.capabilities.write === true &&
-			session?.status === "open" &&
-			(session.audience.kind === "member_private"
-				? session.audience.userId === this.#company.userId
-				: session.createdByUserId === this.#company.userId);
-		const canDecide = canAnswer && ["owner", "admin"].includes(this.#company.store.get().team?.role ?? "");
+		// Group chats carry no cards; elsewhere the kernel's answerer, per card.
+		const canWrite = this.#company.store.get().team?.capabilities.write === true && !this.#isRoom;
+		const role = this.#company.store.get().team?.role ?? "";
+		const canAnswer = (actorUserId: string) =>
+			canWrite && !!session && answersInteraction(session, actorUserId, this.#company.userId);
+		const canDecide = (actorUserId: string) => canAnswer(actorUserId) && ["owner", "admin"].includes(role);
+		const answerable = items.flatMap((item) =>
+			item.kind === "interaction" || item.kind === "authorization_request" ? [canAnswer(item.actorUserId)] : [],
+		);
 		const codingSessions = [...(conversation.codingSessions ?? [])].sort((a, b) =>
 			a.createdAt.localeCompare(b.createdAt),
 		);
@@ -870,8 +916,15 @@ export class ConversationView {
 			codingSessions,
 			agentName,
 			this.#isRoom,
-			canAnswer,
-			canDecide,
+			answerable,
+			items.flatMap((item) =>
+				item.kind === "interaction" && item.request.expiresAt
+					? [Date.parse(item.request.expiresAt) <= Date.now()]
+					: [],
+			),
+			role,
+			session?.status,
+			canWrite,
 			conversation.interactionAnswers,
 			conversation.interactionError,
 			this.#company.store.get().team?.members,
@@ -892,6 +945,13 @@ export class ConversationView {
 			if (item.kind === "authorization_decision") {
 				const request = authorizationRequestId(item.body);
 				if (request) decisions.set(request, item);
+			}
+		// Approval cards of agents' actions (auto-review, v130) show their own outcome.
+		const reviews = new Map<string, ActionReviewCard>();
+		for (const item of items)
+			if (item.kind === "authorization_request") {
+				const review = actionReviewCard(authorizationData(item.body));
+				if (review) reviews.set(item.id.toLowerCase(), review);
 			}
 		const nodes: HTMLElement[] = [];
 		this.#timestampRows = [];
@@ -958,13 +1018,6 @@ export class ConversationView {
 								: null,
 						...bodies.map((body) => h("div", { class: "bubble" }, body)),
 						attachments?.el,
-						item.phase === "progress"
-							? h(
-									"div",
-									{ class: "message-caption", title: t("The agent's turn is not finished") },
-									t("Progress"),
-								)
-							: null,
 						item.pending
 							? h(
 									"div",
@@ -1026,6 +1079,37 @@ export class ConversationView {
 				);
 			} else if (item.kind === "note") {
 				nodes.push(h("div", { class: "conversation-note", role: "note" }, item.text));
+			} else if (item.kind === "authorization_request" && reviews.has(item.id.toLowerCase())) {
+				const review = reviews.get(item.id.toLowerCase())!;
+				// A decided card needs no editor any more.
+				if (decisions.has(item.id.toLowerCase())) this.#reviewDrafts.delete(review.reviewId);
+				// The decision in the transcript, or an answer on its way (this browser's, or queued).
+				const given = conversation.interactionAnswers?.[item.id.toLowerCase()] ?? item.answer;
+				nodes.push(
+					renderActionReviewCard(
+						review,
+						item.createdAt,
+						decisions.get(item.id.toLowerCase())?.body ??
+							(given
+								? { decision: given.outcome, answer: given.answer, answeredBy: given.answeredBy ?? null }
+								: undefined),
+						{
+							answerFailed: item.answerFailed === true && !given,
+							draft: this.#reviewDrafts.get(review.reviewId),
+							onDraft: (draft) => this.#reviewDrafts.set(review.reviewId, draft),
+							answer:
+								canWrite &&
+								session?.status === "open" &&
+								answersActionReview(review, this.#company.userId, role)
+									? (answer, ruleText) => void this.#answerActionReview(item.id, answer, ruleText)
+									: undefined,
+							memberName: (userId) => this.#company.memberName(userId),
+						},
+					),
+				);
+			} else if (item.kind === "authorization_decision" && reviews.has(authorizationRequestId(item.body) ?? "")) {
+				// Its approval card already shows this decision; it draws nothing, so it marks no time either.
+				continue;
 			} else if (item.kind === "authorization_request" || item.kind === "authorization_decision") {
 				const optimistic =
 					item.kind === "authorization_request"
@@ -1041,36 +1125,72 @@ export class ConversationView {
 							? (decisions.get(item.id.toLowerCase())?.body ??
 									(optimistic ? { decision: optimistic.outcome, requestEventId: item.id } : undefined))
 							: undefined,
-						item.kind === "authorization_request" && canDecide && !this.#isRoom
+						// A card of an agent's action the web cannot read is shown read-only: the general
+						// answer refuses those (kernel v130), so it offers no controls.
+						item.kind === "authorization_request" &&
+							canDecide(item.actorUserId) &&
+							authorizationData(item.body).schema !== ACTION_REVIEW_SCHEMA
 							? (decision) => void this.#answerInteraction(item.id, decision)
 							: undefined,
 					),
 				);
 			} else if (item.kind === "interaction") {
-				nodes.push(
-					renderInteractionCard(
-						{ ...item, answer: item.answer ?? conversation.interactionAnswers?.[item.id.toLowerCase()] },
-						{
-							agentName,
-							memberName: (userId) => this.#company.memberName(userId),
-							canAnswer: canAnswer && !this.#isRoom,
-							answer: (outcome, answer) => this.#answerInteraction(item.id, outcome, answer),
-							...(agent && item.request.surface === "takeover" ? { takeOver: () => this.#takeOver(agent) } : {}),
-							...(item.request.surface === "secret" && canAnswer && !this.#isRoom
-								? {
-										provideSecret: (value: string) =>
-											this.#company.provideSecret(this.#sessionId, item.id, item.request, value),
-									}
-								: {}),
-						},
-					),
-				);
+				const email =
+					item.request.surface === "draft" &&
+					item.request.payload.platform === "email" &&
+					item.request.payload.connectorId === "gmail";
+				const answer = item.answer ?? conversation.interactionAnswers?.[item.id.toLowerCase()];
+				const cardKey = JSON.stringify([
+					item.request,
+					answer,
+					canAnswer(item.actorUserId),
+					item.answerFailed,
+					item.request.expiresAt ? Date.parse(item.request.expiresAt) <= Date.now() : false,
+				]);
+				const cached = email ? this.#emailCards.get(item.id) : undefined;
+				const element =
+					cached?.key === cardKey
+						? cached.element
+						: renderInteractionCard(
+								{ ...item, answer },
+								{
+									agentName,
+									memberName: (userId) => this.#company.memberName(userId),
+									canAnswer: canAnswer(item.actorUserId),
+									answer: (outcome, answer) => this.#answerInteraction(item.id, outcome, answer),
+									...(email
+										? {
+												emailDraft: this.#company.emailDraftEditor(item.id),
+												loadEmailDraft: () => this.#company.loadEmailDraft(this.#sessionId, item.id),
+											}
+										: {}),
+									...(email && canAnswer(item.actorUserId)
+										? {
+												actEmailDraft: (action: EmailDraftAction, content: EmailDraftContent) =>
+													this.#company.actEmailDraft(this.#sessionId, item.id, action, content),
+											}
+										: {}),
+									...(agent && item.request.surface === "takeover"
+										? { takeOver: () => this.#takeOver(agent) }
+										: {}),
+									...(item.request.surface === "secret" && canAnswer(item.actorUserId)
+										? {
+												provideSecret: (value: string) =>
+													this.#company.provideSecret(this.#sessionId, item.id, item.request, value),
+											}
+										: {}),
+								},
+							);
+				if (email) this.#emailCards.set(item.id, { key: cardKey, element });
+				nodes.push(element);
 			}
 			const date = parseConversationTimestamp(item.createdAt);
 			const node = nodes[nodes.length - 1];
 			if (date && node) this.#timestampRows.push({ date, node });
 		}
 		placeSessions(undefined);
+		for (const id of this.#emailCards.keys())
+			if (!items.some((item) => item.kind === "interaction" && item.id === id)) this.#emailCards.delete(id);
 		for (const [workerId, element] of this.#codingElements) {
 			if (!codingSessions.some((session) => session.workerId === workerId)) {
 				element.dispose();
@@ -1106,12 +1226,53 @@ export class ConversationView {
 			nodes.push(row);
 		}
 		const rowFocus = document.activeElement?.classList.contains("thread-activity") ?? false;
+		// Read before the redraw: a browser blurs an input as it leaves the page.
+		const active =
+			document.activeElement instanceof HTMLElement && this.#messages.contains(document.activeElement)
+				? document.activeElement
+				: undefined;
+		const reviewInput = active instanceof HTMLInputElement ? active : undefined;
+		const reviewCard = active?.closest<HTMLElement>("[data-review-id]")?.dataset.reviewId;
 		// Nodes already in place stay put: a live log re-reads what is taken out and put back.
 		const kept = this.#messages.childNodes;
-		if (nodes.length !== kept.length || nodes.some((node, index) => node !== kept[index]))
-			replace(this.#messages, ...nodes);
+		if (nodes.length !== kept.length || nodes.some((node, index) => node !== kept[index])) {
+			// Keep existing editors attached: replaceChildren removes even retained
+			// nodes and loses keyboard focus, selection and an in-progress IME edit.
+			const desired = new Set(nodes);
+			for (const child of [...this.#messages.children]) if (!desired.has(child as HTMLElement)) child.remove();
+			let cursor = this.#messages.firstChild;
+			for (const node of nodes) {
+				if (node !== cursor) this.#messages.insertBefore(node, cursor);
+				cursor = node.nextSibling;
+			}
+		}
 		// A keyboard user reading the row keeps it through a state change or a new message.
 		if (rowFocus) this.#messages.querySelector<HTMLElement>(".thread-activity")?.focus({ preventScroll: true });
+		// An approval card keeps the keyboard through a redraw: the Always allow editor a member is
+		// typing in (caret and all), else the card itself, also once it is answered.
+		const editor = reviewInput?.dataset.reviewRule
+			? [...this.#messages.querySelectorAll<HTMLInputElement>("input[data-review-rule]")].find(
+					(input) => input.dataset.reviewRule === reviewInput.dataset.reviewRule,
+				)
+			: undefined;
+		if (editor && reviewInput && document.activeElement !== editor) {
+			const { selectionStart, selectionEnd, selectionDirection } = reviewInput;
+			editor.focus({ preventScroll: true });
+			if (selectionStart !== null && selectionEnd !== null)
+				editor.setSelectionRange(selectionStart, selectionEnd, selectionDirection ?? undefined);
+		} else if (!editor) {
+			// Safari does not focus a clicked button: the card just answered is named here too.
+			const target = active && !active.isConnected ? (reviewCard ?? this.#focusReview) : this.#focusReview;
+			const card = target
+				? [...this.#messages.querySelectorAll<HTMLElement>("[data-review-id]")].find(
+						(element) => element.dataset.reviewId === target,
+					)
+				: undefined;
+			if (card) {
+				if (!card.contains(document.activeElement)) card.focus({ preventScroll: true });
+				this.#focusReview = undefined;
+			}
+		}
 		this.#refreshTimestamps(false);
 		this.#pinToBottom();
 	}

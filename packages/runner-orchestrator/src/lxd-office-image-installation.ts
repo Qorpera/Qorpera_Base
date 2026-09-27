@@ -5,6 +5,17 @@ import { officePhysicalPath } from "./lxd-office-physical-policy.ts";
 export const OFFICE_IMAGE_ROOT = "/opt/qorpera-office";
 export const OFFICE_IMAGE_MOUNT_UNIT = "run-qorpera\\x2doffice-private.mount";
 export const OFFICE_IMAGE_USER = "qorpera-office";
+/** The apt units through which an image upgrades itself. The office service
+ * and preparation refuse unless all are masked. This list must equal the
+ * guests' (lxd-guest-image-updates.ts); scripts/office-image-self-update.test.mjs
+ * checks it. */
+export const OFFICE_IMAGE_SELF_UPDATE_UNITS = Object.freeze([
+	"apt-daily.timer",
+	"apt-daily-upgrade.timer",
+	"apt-daily.service",
+	"apt-daily-upgrade.service",
+	"unattended-upgrades.service",
+] as const);
 export const OFFICE_IMAGE_EXECUTABLES = [
 	"/usr/bin/node",
 	"/usr/bin/flock",

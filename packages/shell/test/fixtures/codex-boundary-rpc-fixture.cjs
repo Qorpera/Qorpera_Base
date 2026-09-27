@@ -26,6 +26,34 @@ const companyCalls = mode === "company-office"
 			{ tool: "ask_member", arguments: { idempotencyKey: "channel", text: "One thing to decide first.", surface: "question", title: "Which channel should the digest go to?", payload: { options: [{ label: "#general", value: "general" }, { label: "#finance", value: "finance", style: "primary" }] } } },
 			{ tool: "ask_member", arguments: { idempotencyKey: "channel", text: "One thing to decide first.", surface: "question", title: "Which channel should the digest go to?", payload: { options: [{ label: "#general", value: "general" }, { label: "#finance", value: "finance", style: "primary" }] } } },
 		]
+	: mode === "company-cards-long-key"
+	? [
+			// The longest key ask_member accepts, then its retry: both must finish the turn.
+			{ tool: "ask_member", arguments: { idempotencyKey: `digest-channel-${"k".repeat(113)}`, text: "One thing to decide first.", surface: "question", title: "Which channel should the digest go to?", payload: { options: [{ label: "#general" }, { label: "#finance" }] } } },
+			{ tool: "ask_member", arguments: { idempotencyKey: `digest-channel-${"k".repeat(113)}`, text: "One thing to decide first.", surface: "question", title: "Which channel should the digest go to?", payload: { options: [{ label: "#general" }, { label: "#finance" }] } } },
+		]
+	: mode === "company-cards-retry"
+	? [
+			// What the live model sent (options as plain strings), then the card its refusal asked for.
+			{ tool: "ask_member", arguments: { idempotencyKey: "fruit", text: "Pick one.", surface: "question", title: "Apples or pears?", payload: { options: ["Apples", "Pears"] } } },
+			{ tool: "ask_member", arguments: { idempotencyKey: "fruit", text: "Pick one.", surface: "question", title: "Apples or pears?", payload: { options: [{ label: "Apples" }, { label: "Pears" }] } } },
+		]
+	: mode === "company-dynamic"
+	? [
+			// A dynamic routine run: the early final is refused with the reason, the run decides, then speaks.
+			{ tool: "send_message", arguments: { idempotencyKey: "progress", text: "Checking invoice 42.", phase: "progress" } },
+			{ tool: "send_message", arguments: { idempotencyKey: "early", text: "Invoice 42 is still open.", phase: "final" } },
+			{ tool: "manage_routine", arguments: { action: "upsert", operationKey: "self", routineKey: "invoice-watch", title: "Invoice follow-up", intent: "Look again at noon.", trigger: { kind: "dynamic", timeZone: "Europe/Copenhagen" } } },
+			{ tool: "decide_routine", arguments: { action: "next", operationKey: "next-1", at: "2026-09-02T12:00:00+02:00", intent: "Invoice 42 was still open at 10:00. Look again at noon." } },
+			{ tool: "send_message", arguments: { idempotencyKey: "final", text: "Invoice 42 is still open; I will look again at noon.", phase: "final" } },
+		]
+	: mode === "company-cards-unavailable"
+	? [
+			// Valid protocol shapes with no executor: neither may publish a card or end the turn.
+			{ tool: "ask_member", arguments: { idempotencyKey: "page-form", text: "Enter your email.", surface: "form", title: "Sign in", payload: { domain: "app.example.com", fields: [{ id: "email", label: "Email", type: "email" }] } } },
+			{ tool: "ask_member", arguments: { idempotencyKey: "vault-login", text: "Signing in.", surface: "credential", title: "Company account", payload: { name: "example-login", domain: "app.example.com" } } },
+			{ tool: "send_message", arguments: { idempotencyKey: "fallback", text: "This app cannot fill the page or sign in from the vault. No sign-in was performed.", phase: "final" } },
+		]
 	: mode === "company-silent" || mode === "company-no-send" || mode === "company-worker"
 	? [{ tool: "company_read", arguments: { path: "note.md", offset: 0, limit: 256 } }]
 	: mode === "company-secret"
@@ -57,6 +85,10 @@ for (let index = 0; index < args.length; index++) {
 }
 const done = () => write({ method: "turn/completed", params: { threadId, turn: { id: turnId, status: "completed", error: null } } });
 const sendEvidence = { reply: null, fenced: null, interrupt: null, pending: null };
+// Auto-review (v130): a reviewer thread started while the agent's tool call is open.
+const reviewThreadId = "thread_review";
+const reviewTurnId = "turn_review";
+const reviewEvidence = { reviewerThread: null, reviewerTurn: null, prewarm: null, verdictReply: null, closingFence: null, interrupt: null };
 const usage = (total = {}, last = {}) => ({
 	total: { inputTokens: 23, outputTokens: 7, cachedInputTokens: 3, cacheWriteInputTokens: 5, reasoningOutputTokens: 2, totalTokens: 30, ...total },
 	last: { inputTokens: 2, outputTokens: 1, cachedInputTokens: 0, cacheWriteInputTokens: 0, reasoningOutputTokens: 0, totalTokens: 3, ...last },
@@ -96,7 +128,8 @@ async function handle(message) {
 		if (mode === "stalled" || mode === "descendant") return;
 		if (mode === "invalid-json") { process.stdout.write("PRIVATE_BAD_WIRE\n"); return; }
 		if (mode === "oversized") { process.stdout.write("x".repeat(1024 * 1024 + 1)); return; }
-		if (mode === "wire-budget") { process.stderr.write("x".repeat(17 * 1024 * 1024)); return; }
+		// Far more diagnostics than the removed 16 MiB output cap; the turn still completes.
+		if (mode === "wire-flood") process.stderr.write("x".repeat(17 * 1024 * 1024));
 		if (mode === "missing-result") { write({ id: message.id }); return; }
 		write({ id: message.id, result: { userAgent: `qorpera_cloud_boundary/${mode === "wrong-version" ? "0.146.0" : "0.155.1"} (fixture)${mode === "capture-image" ? " qorpera.native-capture-images/v1" : ""}${mode === "missing-composition" ? "" : " qorpera.native-message-composition/v1"}${mode === "missing-fence" ? "" : " qorpera.native-result-fence/v1"}${mode === "missing-fence" || mode === "missing-direct-tools" ? "" : " qorpera.native-direct-tools/v1"}` } });
 	} else if (message.method === "config/read") {
@@ -108,6 +141,32 @@ async function handle(message) {
 		write({ id: message.id, result: { config: configuration } });
 	} else if (message.method === "skills/list") {
 		write({ id: message.id, result: { data: [{ skills: mode === "extra-skills" ? [{ name: "PRIVATE_UNCONTROLLED_SKILL" }] : [], errors: [] }] } });
+	} else if (message.method === "thread/start" && mode.startsWith("review") && threadParameters) {
+		reviewEvidence.reviewerThread = message.params;
+		reviewEvidence.prewarm = await fence([], { threadId: reviewThreadId, turnId: "", purpose: "prewarm" });
+		write({ id: message.id, result: { thread: { id: reviewThreadId } } });
+	} else if (message.method === "turn/start" && mode.startsWith("review") && message.params.threadId === reviewThreadId) {
+		reviewEvidence.reviewerTurn = message.params;
+		write({ id: message.id, result: { turn: { id: reviewTurnId } } });
+		write({ method: "turn/started", params: { threadId: reviewThreadId, turn: { id: reviewTurnId } } });
+		await fence([], { threadId: reviewThreadId, turnId: reviewTurnId });
+		// The reviewer's text never matters; only its verdict tool call does.
+		write({ method: "item/agentMessage/delta", params: { threadId: reviewThreadId, turnId: reviewTurnId, delta: "PRIVATE_REVIEW_CANARY" } });
+		if (mode === "review-no-verdict") {
+			write({ method: "turn/completed", params: { threadId: reviewThreadId, turn: { id: reviewTurnId, status: "completed", error: null } } });
+			return;
+		}
+		if (mode === "review-wrong-tool") {
+			// The reviewer reaches for the agent's tool: refused, and no verdict follows.
+			write({ id: "reviewer_wrong_tool", method: "item/tool/call", params: {
+				threadId: reviewThreadId, turnId: reviewTurnId, callId: "wrong_1", namespace: "qorpera", tool: "send_email", arguments: { to: "x@evil.test" },
+			} });
+			return;
+		}
+		write({ id: "verdict_request", method: "item/tool/call", params: {
+			threadId: reviewThreadId, turnId: reviewTurnId, callId: "verdict_1", namespace: "qorpera", tool: "review_verdict",
+			arguments: { decision: "allow", ruleIds: [], builtIn: "none", reason: "Fine.", proposedRule: "" },
+		} });
 	} else if (message.method === "thread/start") {
 		threadParameters = message.params;
 		if (mode === "bootstrap") {
@@ -211,6 +270,8 @@ async function handle(message) {
 			failed();
 		} else if (mode === "interrupted-turn") {
 			write({ method: "turn/completed", params: { threadId, turn: { id: turnId, status: "interrupted", error: null } } });
+		} else if (mode.startsWith("review")) {
+			write({ id: "review_tool", method: "item/tool/call", params: { threadId, turnId, callId: "email_1", namespace: "qorpera", tool: "send_email", arguments: { to: "bob@acme.test" } } });
 		} else if (mode === "capture-image") {
 			write({ id: "capture_request", method: "item/tool/call", params: { threadId, turnId, callId: "capture_1", namespace: "qorpera", tool: "computer_screenshot", arguments: {} } });
 		} else if (mode.startsWith("company-")) {
@@ -229,9 +290,11 @@ async function handle(message) {
 			write({ id: "public_send", method: "item/tool/call", params: { threadId, turnId, callId: "send_1", namespace: "qorpera", tool: "send_message", arguments: { idempotencyKey: "k1", text: "Done.", phase: mode === "progress-send-no-end" ? "progress" : "final" } } });
 		} else if (mode === "failed-turn") {
 			failed();
-		} else if (mode === "duplicate-id" || mode === "callback-budget") {
-			for (let index = 0; index < (mode === "duplicate-id" ? 2 : 16_385); index++)
+		} else if (mode === "duplicate-id" || mode === "callback-flood") {
+			// Past the removed 16,384-request cap, each callback is still answered and the turn completes.
+			for (let index = 0; index < (mode === "duplicate-id" ? 2 : 20_000); index++)
 				write({ id: mode === "duplicate-id" ? "duplicate" : `denied_${index}`, method: "item/commandExecution/requestApproval", params: {} });
+			if (mode === "callback-flood") done();
 		} else {
 			write({ method: "item/agentMessage/delta", params: { threadId, turnId, delta: "PRIVATE_OUTPUT_CANARY" } });
 			write({ method: "item/reasoning/summaryTextDelta", params: { threadId, turnId, delta: "PRIVATE_REASONING_CANARY" } });
@@ -267,6 +330,21 @@ async function handle(message) {
 			if (mode === "progress-send-no-end" && sendEvidence.interrupt) { failed({ message: "PRIVATE_UNEXPECTED_INTERRUPT" }); return; }
 			done();
 		}
+	} else if (message.method === "turn/interrupt" && mode.startsWith("review") && message.params.threadId === reviewThreadId) {
+		reviewEvidence.interrupt = message.params;
+		write({ id: message.id, result: {} });
+		write({ method: "turn/completed", params: { threadId: reviewThreadId, turn: { id: reviewTurnId, status: "interrupted", error: null } } });
+	} else if (message.id === "reviewer_wrong_tool") {
+		reviewEvidence.wrongTool = message;
+		write({ method: "turn/completed", params: { threadId: reviewThreadId, turn: { id: reviewTurnId, status: "completed", error: null } } });
+	} else if (message.id === "verdict_request") {
+		reviewEvidence.verdictReply = message;
+		// A closing request of the reviewer can still arrive before the interrupt lands.
+		reviewEvidence.closingFence = await fence([{ kind: "function_call_output", callId: "verdict_1", output: message.result.contentItems[0].text }], { threadId: reviewThreadId, turnId: reviewTurnId });
+	} else if (message.id === "review_tool") {
+		const mainFenced = await fence([{ kind: "function_call_output", callId: "email_1", output: message.result.contentItems[0].text }]);
+		writeFileSync(evidencePath, JSON.stringify({ ...reviewEvidence, mainThread: threadParameters, reply: message, mainFenced }));
+		done();
 	} else if (message.method === "turn/interrupt") {
 		sendEvidence.interrupt = message.params;
 		write({ id: message.id, result: {} });

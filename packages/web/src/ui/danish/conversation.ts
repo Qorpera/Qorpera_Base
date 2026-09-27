@@ -32,8 +32,6 @@ export const CONVERSATION: Record<string, string> = {
 	"Agent {id}": "Agent {id}",
 	"Agent reply · speaker unavailable": "Agentsvar · afsender ukendt",
 	"(empty)": "(tom)",
-	"The agent's turn is not finished": "Agentens tur er ikke færdig",
-	Progress: "Undervejs",
 	Failed: "Mislykkedes",
 	"Failed · {reason}": "Mislykkedes · {reason}",
 	Processing: "Behandles",
@@ -184,6 +182,7 @@ export const CONVERSATION: Record<string, string> = {
 	Sending: "Sender",
 	"This card is past its time. The agent will ask again if it still needs it.":
 		"Kortet er udløbet. Agenten spørger igen, hvis den stadig har brug for det.",
+	"Your answer did not reach the agent. Answer again.": "Dit svar nåede ikke frem til agenten. Svar igen.",
 	"Something else…": "Noget andet…",
 	"Your own answer": "Dit eget svar",
 	Skip: "Spring over",
@@ -193,18 +192,45 @@ export const CONVERSATION: Record<string, string> = {
 	"Save securely": "Gem sikkert",
 	"Encrypted in the company vault. The agent never sees the value, only that it was saved.":
 		"Krypteret i virksomhedens boks. Agenten ser aldrig værdien, kun at den blev gemt.",
-	"Entering a secret here needs a newer version of the app. The value would go to the company vault, never to the agent.":
-		"Du skal have en nyere version af appen for at indtaste en hemmelighed her. Værdien ville gå til virksomhedens boks, aldrig til agenten.",
-	"Filled on the computer at {domain} only": "Udfyldes kun på computeren på {domain}",
-	"Filling this form here needs a newer version of the app.":
-		"Du skal have en nyere version af appen for at udfylde formularen her.",
+	"Saving a secret to the company vault is unavailable here. Do not paste it into chat.":
+		"Du kan ikke gemme en hemmelighed i virksomhedens boks her. Indsæt den ikke i chatten.",
+	"Website: {domain}": "Websted: {domain}",
+	"Filling a webpage through this card is unavailable.": "Du kan ikke udfylde en webside via dette kort.",
+	Discard: "Kassér",
 	"Sending this draft from here needs a newer version of the app.":
 		"Du skal have en nyere version af appen for at sende kladden herfra.",
-	Discard: "Kassér",
-	"The computer signs in at {domain} with the company account. Nothing to do here.":
-		"Computeren logger ind på {domain} med virksomhedens konto. Du skal ikke gøre noget her.",
-	"The computer signs in with the company account. Nothing to do here.":
-		"Computeren logger ind med virksomhedens konto. Du skal ikke gøre noget her.",
+	"Email draft from {name}": "Mailkladde fra {name}",
+	"Email sent by {name}": "Mail sendt af {name}",
+	"Email sent": "Mail sendt",
+	"View email": "Vis mail",
+	"The email draft could not be loaded.": "Mailkladden kunne ikke hentes.",
+	"The email action could not be confirmed.": "Mailhandlingen kunne ikke bekræftes.",
+	"Loading email…": "Henter mail…",
+	"Saving to Gmail…": "Gemmer i Gmail…",
+	"Discarding…": "Kasserer…",
+	"Send unconfirmed": "Afsendelse ikke bekræftet",
+	"Action unconfirmed": "Handling ikke bekræftet",
+	"Refresh to confirm the previous email action before making changes.":
+		"Opdater for at bekræfte den forrige mailhandling, før du foretager ændringer.",
+	"Saved to Gmail": "Gemt i Gmail",
+	"Account unavailable": "Konto ikke tilgængelig",
+	"Ready to send": "Klar til afsendelse",
+	"Send email": "Send mail",
+	"Save to Gmail": "Gem i Gmail",
+	"Email body": "Mailtekst",
+	Cc: "Cc",
+	To: "Til",
+	From: "Fra",
+	Subject: "Emne",
+	"New email": "Ny mail",
+	"Checking connected account…": "Tjekker tilsluttet konto…",
+	"Your email action is complete. The agent has not been notified yet.":
+		"Din mailhandling er gennemført. Agenten har endnu ikke fået besked.",
+	"Retry notifying agent": "Prøv at give agenten besked igen",
+	"Check Gmail before sending again. Delivery has not been confirmed.":
+		"Tjek Gmail, før du sender igen. Leveringen er ikke bekræftet.",
+	"Signing in to {domain} through this card is unavailable.": "Du kan ikke logge ind på {domain} via dette kort.",
+	"Signing in through this card is unavailable.": "Du kan ikke logge ind via dette kort.",
 	"{kind} from {name}: {title}": "{kind} fra {name}: {title}",
 
 	// Approval cards (ui/authorization-card.ts)
@@ -221,6 +247,34 @@ export const CONVERSATION: Record<string, string> = {
 	"Only an owner or admin of this company can decide.": "Kun en ejer eller administrator i virksomheden kan beslutte.",
 	Approve: "Godkend",
 	"Event details": "Hændelsesdetaljer",
+
+	// Approval cards of agents' actions, auto-review (ui/authorization-card.ts, app/company.ts)
+	"It moves money.": "Den flytter penge.",
+	"It accepts terms or signs for the company.": "Den accepterer vilkår eller skriver under for virksomheden.",
+	"It deletes data outside Qorpera.": "Den sletter data uden for Qorpera.",
+	"It changes who can access something.": "Den ændrer, hvem der har adgang til noget.",
+	"It does not match what was asked.": "Den passer ikke til det, der blev bedt om.",
+	"Waiting for {name} to approve.": "Venter på, at {name} godkender.",
+	"the member": "medlemmet",
+	"Waiting for an owner or admin to approve.": "Venter på, at en ejer eller administrator godkender.",
+	"Company rule: {rule}": "Virksomhedsregel: {rule}",
+	"Personal rule: {rule}": "Personlig regel: {rule}",
+	"Always allow when an agent wants to": "Tillad altid, når en agent vil",
+	"Save rule and allow": "Gem regel og tillad",
+	Waiting: "Venter",
+	Allowed: "Tilladt",
+	"Exact action": "Præcis handling",
+	Deny: "Afvis",
+	"Always allow…": "Tillad altid…",
+	"Allow once": "Tillad én gang",
+	"Always allowed by {name}.": "Altid tilladt af {name}.",
+	"The safety check could not run.": "Sikkerhedstjekket kunne ikke køre.",
+	"That answer did not reach the agent. Answer again.": "Svaret nåede ikke frem til agenten. Svar igen.",
+	"Allowed once by {name}.": "Tilladt én gang af {name}.",
+	"Declined by {name}.": "Afvist af {name}.",
+	"a member": "et medlem",
+	"Approvals are not available here yet. Reply in a message instead.":
+		"Godkendelser er ikke tilgængelige her endnu. Svar i en besked i stedet.",
 	"No details provided.": "Ingen detaljer angivet.",
 
 	// Message formatting (ui/markdown.ts)

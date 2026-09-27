@@ -7,7 +7,7 @@ import { test } from "node:test";
 import { runInNewContext } from "node:vm";
 import { build } from "esbuild";
 import { DEFAULT_CLOUD_CONFIG, parseCloudConfig } from "../src/cloud/deployment-config.ts";
-import { prepareDeployment } from "./deployment.mjs";
+import { longCachedDirectories, prepareDeployment } from "./deployment.mjs";
 
 const headersTemplate = readFileSync(new URL("../public/_headers", import.meta.url), "utf8");
 const config = { ...DEFAULT_CLOUD_CONFIG, officeViewerOrigin: "wss://office.example.invalid:8443" };
@@ -84,6 +84,21 @@ test("explicit login bridge base is locked into configuration and matching CSP",
 	]) assert.throws(() => parseCloudConfig({ ...config, nativeProviderLoginUrl: value }), undefined, value);
 });
 
+test("member gateway activation requires the exact configured project bridge", t => {
+	const memberCompanyGatewayUrl = `${config.projectUrl}/functions/v1/member-company-gateway`;
+	const deployment = prepareDeployment(fixture(t, { ...config, memberCompanyGatewayUrl }));
+	assert.equal(deployment.config.memberCompanyGatewayUrl, memberCompanyGatewayUrl);
+	assert.equal(deployment.manifest.config.memberCompanyGatewayUrl, memberCompanyGatewayUrl);
+	assert.equal(parseCloudConfig(config).memberCompanyGatewayUrl, undefined);
+	assert.equal(DEFAULT_CLOUD_CONFIG.memberCompanyGatewayUrl, undefined);
+	for (const value of [
+		"https://other-project.supabase.co/functions/v1/member-company-gateway",
+		`${memberCompanyGatewayUrl}/`, `${memberCompanyGatewayUrl}?upstream=other`,
+		`${config.projectUrl}/functions/v1/other`, "https://user:secret@project.invalid/",
+		true, null, "",
+	]) assert.throws(() => parseCloudConfig({ ...config, memberCompanyGatewayUrl: value }), /exact project member gateway/);
+});
+
 test("compiled builds use their own endpoints and never read browser storage", async t => {
 	for (const [deployment, expected] of [
 		[prepareDeployment(fixture(t)), config],
@@ -116,4 +131,25 @@ test("Pages environment configuration binds release CSP without writing source f
   assert.throws(() => prepareDeployment({ configJson: invalid, release: true, headersTemplate }));
  }
  assert.throws(() => prepareDeployment({ configJson: JSON.stringify({ ...JSON.parse(configJson), officeViewerOrigin: undefined }), release: true, headersTemplate }), /viewer/);
+});
+
+test("every long-cached directory gets a 404 page, so a missing file there is never kept as the app page", t => {
+	assert.deepEqual(prepareDeployment(fixture(t)).notFoundPages, ["assets/404.html", "build/404.html"]);
+	assert.deepEqual(prepareDeployment({ headersTemplate }).notFoundPages, ["assets/404.html", "build/404.html"]);
+	const rules = (path, value, name = "Cache-Control") => `/*\n  ${name}: public, max-age=0, must-revalidate\n${path}\n  ! ${name}\n  ${name}: ${value}\n`;
+	assert.deepEqual(longCachedDirectories(rules("/build/*", "public, max-age=31536000, immutable")), ["build"]);
+	assert.deepEqual(longCachedDirectories(rules("/assets/avatars/*", "s-maxage=60")), ["assets/avatars"]);
+	assert.deepEqual(longCachedDirectories(rules("/fonts/*", 'max-age="600"')), ["fonts"]);
+	assert.deepEqual(longCachedDirectories("/build/*\n\tCache-Control : max-age=60\r\n"), ["build"]);
+	// Pages ignores indentation: a header may start the line, and an indented path is still a rule.
+	assert.deepEqual(longCachedDirectories("/build/*\nCache-Control: max-age=31536000\n"), ["build"]);
+	assert.deepEqual(longCachedDirectories("/assets/*\n  Cache-Control: max-age=60\n  /build/*\n  Cache-Control: max-age=31536000\n"), ["assets", "build"]);
+	assert.deepEqual(longCachedDirectories(rules("/build/*", "no-store")), []);
+	assert.deepEqual(longCachedDirectories(rules("/build/*", "public, max-age=00, must-revalidate")), []);
+	for (const path of ["/*", "/*.css", "/build/app.css", "/build/:name", "https://app.qorpera.com/build/*", "/../*", "/./*", "/build/../*"])
+		assert.throws(() => longCachedDirectories(rules(path, "public, max-age=86400")), /must cover one directory/, path);
+	// A 404 keeps these, and the edge obeys CDN-Cache-Control over the no-store Pages sets.
+	for (const name of ["CDN-Cache-Control", "Cloudflare-CDN-Cache-Control", "Surrogate-Control", "Expires"])
+		assert.throws(() => longCachedDirectories(`/build/*\n  ${name}: max-age=0\n`), /keeps .+ on a 404/, name);
+	assert.throws(() => prepareDeployment({ headersTemplate: `${headersTemplate}/build/*\n  CDN-Cache-Control: max-age=31536000\n` }), /keeps CDN-Cache-Control on a 404/);
 });

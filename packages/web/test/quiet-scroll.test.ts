@@ -49,8 +49,11 @@ describe("quiet scrollers", () => {
 	it("hides the bar in the stylesheet and draws the fade at the helper's size", () => {
 		const css = readFileSync(resolve("src/styles/app.css"), "utf8");
 		const rule = css.match(/\.scroll-quiet \{([^}]*)\}/)?.[1] ?? "";
+		// A hint that more sits above, not a band over the first message or the Co-Founder card.
+		expect(QUIET_SCROLL_FADE).toBe(8);
 		expect(rule).toContain("scrollbar-width: none");
 		expect(rule).toContain(`mask-image: linear-gradient(to bottom, transparent, #000 ${QUIET_SCROLL_FADE}px)`);
+		expect(rule).toContain(`mask-size: 100% calc(100% + ${QUIET_SCROLL_FADE}px)`);
 		expect(rule).toContain(`mask-position: 0 -${QUIET_SCROLL_FADE}px`);
 		expect(css).toContain(".scroll-quiet::-webkit-scrollbar { display: none; }");
 		expect(css).toContain(".scroll-quiet[data-scrolled] { -webkit-mask-position: 0 0; mask-position: 0 0; }");

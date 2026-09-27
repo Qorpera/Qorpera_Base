@@ -98,29 +98,29 @@ begin
 	perform pg_temp.worker('{"action":"cancel","operationKey":"c2-cancel","todoKey":"composer-latency","workerKey":"notes"}');
 	perform pg_temp.wake_assert((pg_temp.worker_row('notes')).state = 'cancelled','The in-house helper leaves the queue');
 end $$;
-select pg_temp.wake_error($q$select pg_temp.worker('{"action":"dispatch","operationKey":"c3","todoKey":"composer-latency","workerKey":"fix-send-2",
-	"title":"Second","goal":"g","definitionOfDone":"d","access":"read","species":"coding","harness":"codex",
-	"repository":{"host":"github.com","owner":"Qorpera","name":"Qorpera_Base","baseBranch":"master"}}')$q$,'54000',
-	'The owner already has a coding session running in codex; wait for it or follow it up');
+-- A member's sessions run side by side on their coding machine: a second one in the same harness is not refused.
+do $$
+begin
+	perform pg_temp.worker('{"action":"dispatch","operationKey":"c3","todoKey":"composer-latency","workerKey":"fix-send-2",
+		"title":"Second","goal":"g","definitionOfDone":"d","access":"read","species":"coding","harness":"codex",
+		"repository":{"host":"github.com","owner":"Qorpera","name":"Qorpera_Base","baseBranch":"master"}}');
+	perform pg_temp.wake_assert((pg_temp.session_row('fix-send-2')).phase = 'queued'
+		and (pg_temp.worker_row('fix-send-2')).owner_user_id = (pg_temp.worker_row('fix-send')).owner_user_id,
+		'The owner may start a second coding session in the same harness while the first runs');
+	perform pg_temp.worker('{"action":"cancel","operationKey":"c3-cancel","todoKey":"composer-latency","workerKey":"fix-send-2"}');
+	perform pg_temp.wake_assert((pg_temp.session_row('fix-send-2')).phase = 'cancelled','The second session leaves the queue');
+end $$;
 
 
--- 1. Deployment policies belong to the executor; without them no machine is admitted.
+-- 1. Deployment policies belong to the executor; without them no machine is planned. The session's
+--    turn runs on its member's coding machine, admitted with a short receipt.
 do $$
 declare v_claim jsonb; v_worker public.qorpera_runtime_workers; v_turn jsonb; v_plan jsonb; v_nas jsonb; v_storage jsonb; v_root text;
 	v_binding text; v_env uuid := '30000000-0000-4000-8000-000000000020'; v_profile uuid := '30000000-0000-4000-8000-000000000010';
-	v_vm uuid; v_machine jsonb; v_plan_row public.qorpera_coding_vm_plans; v_allocation public.qorpera_runtime_machine_allocations;
+	v_vm uuid; v_planned jsonb; v_machine jsonb; v_row public.qorpera_coding_machines; v_allocation public.qorpera_runtime_machine_allocations;
 begin
-	v_claim := public.qorpera_claim_coding_session('exec-test',60);
 	v_worker := pg_temp.worker_row('fix-send');
-	v_turn := public.qorpera_describe_coding_turn(v_worker.id,(v_claim ->> 'leaseToken')::uuid);
-	perform pg_temp.wake_assert(v_turn ->> 'phase' = 'preparing' and v_turn ->> 'vmAllocationId' is null and v_turn -> 'submission' = 'null'::jsonb
-		and (v_turn ->> 'turnId')::uuid = public.qorpera_coding_turn_id(v_worker.id,1) and v_turn ->> 'occurrenceId' is null,
-		'The executor reads the turn it holds: preparing, no machine, no submission, a derived turn id');
-	perform set_config('qorpera_test.coding_claim',v_claim::text,true);
-	perform pg_temp.wake_assert(public.qorpera_coding_turn_id(v_worker.id,1) <> public.qorpera_coding_turn_id(v_worker.id,2)
-		and public.qorpera_coding_turn_id(v_worker.id,1)::text ~ '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-8[0-9a-f]{3}-[0-9a-f]{12}$',
-		'Turn ids are per sequence and well formed');
-	v_vm := '30000000-0000-4000-8000-000000000300';
+	perform pg_temp.wake_assert(public.qorpera_claim_coding_session('exec-test',60) is null,'An unconfigured target leaves work queued');
 	v_plan := jsonb_build_object('providerId','coding-fixture','providerPolicySha256',repeat('f',64),'project','coding','imageFingerprint',repeat('a',64),
 		'bootstrapSha256',repeat('b',64),'storagePool','coding','network','coding','cpus',2,'memoryBytes',2147483648,'rootDiskBytes',4294967296);
 	v_nas := jsonb_build_object('schema','qorpera.coding-nas-policy/v1','mountPoint','/srv/coding','rootPath','/srv/coding/executor',
@@ -130,19 +130,11 @@ begin
 		'companyId',v_profile,'environmentId',v_env,'writerGeneration',1,'machineIdSha256',repeat('c',64),
 		'policy',v_nas,'dataSource',v_root || '/data','custodySource',v_root || '/guest-state',
 		'dataTarget','/workspace','custodyTarget','/var/lib/qorpera-coding');
-	v_binding := (v_plan || jsonb_build_object('storage',v_storage,'schema','qorpera.lxd-coding-vm/v2','workerId',v_worker.id,'allocationId',v_vm,
-		'companyId',v_profile,'environmentId',v_env,'repository',(pg_temp.session_row('fix-send')).repository))::text;
-	perform set_config('qorpera_test.coding_binding',v_binding,true);
-	begin perform public.qorpera_authorize_coding_machine(v_worker.id,(v_claim ->> 'leaseToken')::uuid,v_binding,repeat('c',64),'run');
-		raise exception 'Missing coding deployment policy admitted'; exception when insufficient_privilege then null; end;
+	perform set_config('qorpera_test.coding_storage',v_storage::text,true);
 	perform public.qorpera_configure_coding_vm_policy(v_env,'exec-test',v_plan);
-	begin perform public.qorpera_authorize_coding_machine(v_worker.id,(v_claim ->> 'leaseToken')::uuid,v_binding,repeat('c',64),'run');
-		raise exception 'Missing NAS policy admitted'; exception when insufficient_privilege then null; end;
+	perform pg_temp.wake_assert(public.qorpera_claim_coding_session('exec-test',60) is null,'A VM policy alone is not an eligible target');
 	perform public.qorpera_configure_coding_nas_policy(v_env,'exec-test',repeat('c',64),v_nas);
-	begin perform public.qorpera_authorize_coding_machine(v_worker.id,extensions.gen_random_uuid(),v_binding,repeat('c',64),'run');
-		raise exception 'Foreign lease admitted a machine'; exception when insufficient_privilege then null; end;
-	v_machine := public.qorpera_authorize_coding_machine(v_worker.id,(v_claim ->> 'leaseToken')::uuid,v_binding,repeat('c',64),'run');
-	perform pg_temp.wake_assert(v_machine ->> 'reason' = 'NODE_PROVIDER_UNCONFIGURED','No coding node yet: refused, not invented');
+	perform pg_temp.wake_assert(public.qorpera_claim_coding_session('exec-test',60) is null,'No coding node yet: no claim is invented');
 	perform public.qorpera_configure_runtime_node(jsonb_build_object('schema','qorpera.runtime-node-policy/v1',
 		'nodeId','30000000-0000-4000-8000-000000000310','machineIdSha256',repeat('c',64),'label','coding-fixture',
 		'cpuMillis',6000,'memoryBytes',8589934592,'headroomCpuMillis',2000,'headroomMemoryBytes',1073741824,
@@ -159,30 +151,63 @@ begin
 		'cpuMillis',6000,'memoryBytes',8589934592,'state','ready'),
 		public.qorpera_runtime_node_inventory_context('30000000-0000-4000-8000-000000000310') ->> 'contextSha256',
 		jsonb_build_object('schema','qorpera.runtime-node-inventory/v1','bootId',extensions.gen_random_uuid(),'entries','[]'::jsonb));
-	v_machine := public.qorpera_authorize_coding_machine(v_worker.id,(v_claim ->> 'leaseToken')::uuid,v_binding,repeat('c',64),'run');
-	perform pg_temp.wake_assert(v_machine ->> 'schema' = 'qorpera.coding-vm-admission/v1' and v_machine ->> 'allocationId' = v_vm::text
-		and v_machine ->> 'intent' = 'run' and (v_machine ->> 'validForMs')::int between 1 and 5000,'The machine is admitted with a short receipt: '||v_machine::text);
-	select * into v_plan_row from public.qorpera_coding_vm_plans where worker_id = v_worker.id;
+	v_claim := public.qorpera_claim_coding_session('exec-test',60);
+	v_turn := public.qorpera_describe_coding_turn(v_worker.id,(v_claim ->> 'leaseToken')::uuid);
+	perform pg_temp.wake_assert(v_turn ->> 'phase' = 'preparing' and v_turn ->> 'vmAllocationId' is null and v_turn -> 'submission' = 'null'::jsonb
+		and (v_turn ->> 'turnId')::uuid = public.qorpera_coding_turn_id(v_worker.id,1) and v_turn ->> 'occurrenceId' is null,
+		'The executor reads the turn it holds: preparing, no machine, no submission, a derived turn id');
+	perform set_config('qorpera_test.coding_claim',v_claim::text,true);
+	perform pg_temp.wake_assert(public.qorpera_coding_turn_id(v_worker.id,1) <> public.qorpera_coding_turn_id(v_worker.id,2)
+		and public.qorpera_coding_turn_id(v_worker.id,1)::text ~ '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-8[0-9a-f]{3}-[0-9a-f]{12}$',
+		'Turn ids are per sequence and well formed');
+	begin perform public.qorpera_plan_coding_machine(v_worker.id,extensions.gen_random_uuid(),repeat('c',64));
+		raise exception 'Foreign lease planned a machine'; exception when insufficient_privilege then null; end;
+	begin perform public.qorpera_plan_coding_machine(v_worker.id,(v_claim ->> 'leaseToken')::uuid,repeat('d',64));
+		raise exception 'Foreign node planned a machine'; exception when insufficient_privilege then null; end;
+	v_planned := public.qorpera_plan_coding_machine(v_worker.id,(v_claim ->> 'leaseToken')::uuid,repeat('c',64));
+	v_vm := (v_planned ->> 'machineId')::uuid;
+	perform pg_temp.wake_assert(v_planned ->> 'state' = 'planned' and v_planned #>> '{binding,schema}' = 'qorpera.lxd-coding-machine/v1'
+		and v_planned #>> '{binding,memberUserId}' = v_worker.owner_user_id::text and v_planned #>> '{binding,companyId}' = v_profile::text
+		and (v_planned -> 'binding') - array['schema','machineId','companyId','environmentId','memberUserId'] = v_plan
+		and public.qorpera_plan_coding_machine(v_worker.id,(v_claim ->> 'leaseToken')::uuid,repeat('c',64)) = v_planned,
+		'The member''s machine is planned from the environment''s policy, once');
+	v_binding := v_planned ->> 'bindingText';
+	perform set_config('qorpera_test.coding_binding',v_binding,true);
+	perform set_config('qorpera_test.coding_vm',v_vm::text,true);
+	v_machine := public.qorpera_authorize_coding_machine_run(v_worker.id,(v_claim ->> 'leaseToken')::uuid,v_binding,v_storage,repeat('c',64));
+	perform pg_temp.wake_assert(v_machine ->> 'schema' = 'qorpera.coding-machine-admission/v1' and v_machine ->> 'machineId' = v_vm::text
+		and v_machine ->> 'workerId' = v_worker.id::text and v_machine ->> 'intent' = 'run' and (v_machine ->> 'guestUid')::int = 200000
+		and v_machine ->> 'instanceSha256' = encode(extensions.digest(convert_to(v_binding,'utf8'),'sha256'),'hex')
+		and (v_machine ->> 'validForMs')::int between 1 and 5000,'The machine is admitted with a short receipt: '||v_machine::text);
+	select * into v_row from public.qorpera_coding_machines where id = v_vm;
 	select * into v_allocation from public.qorpera_runtime_machine_allocations where id = v_vm;
-	perform pg_temp.wake_assert(v_plan_row.owner = 'exec-test' and v_plan_row.allocation_id = v_vm and v_allocation.coding_worker_id = v_worker.id
+	perform pg_temp.wake_assert(v_row.owner = 'exec-test' and v_row.kind = 'member' and v_row.member_user_id = v_worker.owner_user_id
+		and v_row.instance_sha256 = v_machine ->> 'instanceSha256' and v_allocation.coding_machine_id = v_vm and v_allocation.coding_worker_id is null
 		and v_allocation.run_id is null and v_allocation.runner_id is null and (pg_temp.session_row('fix-send')).vm_allocation_id = v_vm
 		and (pg_temp.session_row('fix-send')).storage_volume_id = v_worker.id
-		and exists (select 1 from public.qorpera_coding_storage_volumes where worker_id = v_worker.id and owner = 'exec-test'),
-		'The plan, the ledger allocation, the storage volume and the session agree on the machine');
-	begin perform public.qorpera_authorize_coding_machine(v_worker.id,(v_claim ->> 'leaseToken')::uuid,(v_binding::jsonb || jsonb_build_object('network','drift'))::text,repeat('c',64),'run');
-		raise exception 'Plan drift accepted'; exception when insufficient_privilege then null; end;
-	begin perform public.qorpera_authorize_coding_machine(v_worker.id,(v_claim ->> 'leaseToken')::uuid,v_binding,repeat('d',64),'run');
-		raise exception 'Foreign host acquired the plan'; exception when insufficient_privilege then null; end;
+		and exists (select 1 from public.qorpera_coding_storage_volumes where worker_id = v_worker.id and owner = 'exec-test'
+			and guest_uid = 200000 and member_user_id = v_worker.owner_user_id),
+		'The machine, the ledger allocation, the storage volume with its guest uid, and the session agree');
+	begin perform public.qorpera_authorize_coding_machine_run(v_worker.id,(v_claim ->> 'leaseToken')::uuid,(v_binding::jsonb || jsonb_build_object('network','drift'))::text,v_storage,repeat('c',64));
+		raise exception 'Binding drift accepted'; exception when insufficient_privilege then null; end;
+	begin perform public.qorpera_authorize_coding_machine_run(v_worker.id,(v_claim ->> 'leaseToken')::uuid,v_binding,v_storage,repeat('d',64));
+		raise exception 'Foreign host acquired the machine'; exception when insufficient_privilege then null; end;
+	begin perform public.qorpera_authorize_coding_machine_run(v_worker.id,(v_claim ->> 'leaseToken')::uuid,v_binding,
+			v_storage || jsonb_build_object('dataSource','/srv/coding/executor/elsewhere/data'),repeat('c',64));
+		raise exception 'Foreign storage attached'; exception when insufficient_privilege then null; end;
 	begin perform public.qorpera_configure_coding_nas_policy(v_env,'exec-test',repeat('d',64),v_nas);
 		raise exception 'NAS writer host replaced without physical fence'; exception when sqlstate '55000' then null; end;
-	-- Cleanup custody is the plan's owner on the plan's node, lease or no lease.
-	perform pg_temp.wake_assert(public.qorpera_authorize_coding_cleanup(v_worker.id,'exec-test',v_binding,repeat('c',64)) ->> 'intent' = 'stop'
-		and public.qorpera_describe_coding_cleanup(v_worker.id,'exec-test',repeat('c',64)) ->> 'schema' = 'qorpera.coding-cleanup/v1',
-		'Cleanup authority and the retained binding are available to the planning executor');
-	begin perform public.qorpera_authorize_coding_cleanup(v_worker.id,'someone-else',v_binding,repeat('c',64));
+	-- Custody is the planning executor on the planning node, lease or no lease; a machine with a leased turn is never stopped.
+	perform pg_temp.wake_assert(public.qorpera_authorize_coding_machine_custody(v_vm,'exec-test',v_binding,repeat('c',64),'stop') ->> 'reason' = 'MACHINE_IN_USE'
+		and public.qorpera_authorize_coding_machine_custody(v_vm,'exec-test',v_binding,repeat('c',64),'delete') ->> 'reason' = 'MACHINE_IN_USE'
+		and public.qorpera_authorize_coding_machine_custody(v_vm,'exec-test',v_binding,repeat('c',64),'detach',v_worker.id) ->> 'reason' = 'SESSION_IN_USE'
+		and public.qorpera_authorize_coding_machine_custody(v_vm,'exec-test',v_binding,repeat('c',64),'detach',v_worker.id,
+			(v_claim ->> 'leaseToken')::uuid) ->> 'intent' = 'detach',
+		'A leased turn keeps its machine awake; only its own lease may detach it');
+	begin perform public.qorpera_authorize_coding_machine_custody(v_vm,'someone-else',v_binding,repeat('c',64),'stop');
 		raise exception 'Foreign owner may stop the machine'; exception when insufficient_privilege then null; end;
-	begin perform public.qorpera_describe_coding_cleanup(v_worker.id,'exec-test',repeat('d',64));
-		raise exception 'Foreign node may read the binding'; exception when insufficient_privilege then null; end;
+	begin perform public.qorpera_authorize_coding_machine_custody(v_vm,'exec-test',v_binding,repeat('d',64),'stop');
+		raise exception 'Foreign node may stop the machine'; exception when insufficient_privilege then null; end;
 	perform public.qorpera_record_coding_progress(v_worker.id,(v_claim ->> 'leaseToken')::uuid,null,'Workspace ready',0,
 		'[{"kind":"step","actor":"executor","body":{"text":"Prepared the repository VM"}}]',null,'a4d8f9f1c0b6e5a2d3c4b5a69788776655443322',v_vm,null,null);
 end $$;
@@ -191,7 +216,8 @@ end $$;
 --    a durable submission, and the executor's view of the run's end.
 do $$
 declare v_claim jsonb := current_setting('qorpera_test.coding_claim')::jsonb; v_worker public.qorpera_runtime_workers := pg_temp.worker_row('fix-send');
-	v_turn jsonb; v_wake public.qorpera_wake_occurrences; v_binding jsonb; v_authority jsonb; v_submission jsonb; v_replay jsonb; v_vm uuid := '30000000-0000-4000-8000-000000000300';
+	v_turn jsonb; v_wake public.qorpera_wake_occurrences; v_binding jsonb; v_authority jsonb; v_submission jsonb; v_replay jsonb; v_vm uuid := current_setting('qorpera_test.coding_vm')::uuid;
+	v_command uuid := extensions.gen_random_uuid(); v_scope jsonb; v_route jsonb;
 begin
 	begin perform public.qorpera_authorize_coding_turn(current_setting('qorpera_test.parent_binding')::jsonb);
 		raise exception 'The parent run passed as a coding turn'; exception when insufficient_privilege then null; end;
@@ -210,6 +236,18 @@ begin
 		and v_authority #>> '{coding,harness}' = 'codex' and v_authority #> '{coding,submission}' = 'null'::jsonb
 		and v_authority #>> '{identity,staffAgentId}' = '30000000-0000-4000-8000-000000000030' and v_authority #> '{identity,sessionId}' = 'null'::jsonb,
 		'The runner''s authority is the ordinary one, bounded by the session lease, with the coding scope');
+	-- A receipted command resolves the machine's executor, never an address
+	-- supplied by the harness. The same turn/receipt guards protect routing.
+	v_scope := jsonb_build_object('workerId',v_worker.id,'vmId',v_vm,'requestId',public.qorpera_coding_turn_id(v_worker.id,1),'turn',1);
+	perform public.qorpera_begin_native_tool_operation(v_binding,v_command,'coding_run_command:fleet-route',repeat('a',64),repeat('b',64),false);
+	v_route := public.qorpera_route_coding_command(v_binding,v_scope,'start',v_command,repeat('a',64));
+	perform pg_temp.wake_assert(v_route = jsonb_build_object('schema','qorpera.coding-command-route/v1','executorOwner','exec-test',
+		'providerId','coding-fixture','machineId',v_vm),'A valid command follows the persisted physical placement');
+	begin perform public.qorpera_route_coding_command(v_binding,v_scope,'start',v_command,repeat('c',64));
+		raise exception 'Changed command bytes routed'; exception when insufficient_privilege then null; end;
+	begin perform public.qorpera_route_coding_command(v_binding,v_scope||jsonb_build_object('vmId',extensions.gen_random_uuid()),'start',v_command,repeat('a',64));
+		raise exception 'Foreign VM routed'; exception when insufficient_privilege then null; end;
+	perform public.qorpera_complete_native_tool_operation(v_binding,v_command,repeat('a',64),'{}'::jsonb);
 	-- Commands: the scope must be this turn's, and the receipt the run's own.
 	begin perform public.qorpera_authorize_coding_command(v_binding,jsonb_build_object('workerId',v_worker.id,'vmId',v_vm,
 			'requestId',public.qorpera_coding_turn_id(v_worker.id,2),'turn',2),'start',extensions.gen_random_uuid(),repeat('a',64));
@@ -228,8 +266,9 @@ begin
 	v_replay := public.qorpera_submit_coding_turn(v_binding,jsonb_build_object('kind','finish','operationKey','done',
 		'summary','Composer posts first; the send test covers it.','headSha','b4d8f9f1c0b6e5a2d3c4b5a69788776655443322'));
 	perform pg_temp.wake_assert(v_submission = v_replay and v_submission ->> 'kind' = 'finish' and v_submission ->> 'state' = 'submitted'
-		and (pg_temp.session_row('fix-send')).submission = v_submission and (pg_temp.session_row('fix-send')).submission_receipt_id is not null
-		and pg_temp.events('fix-send','text') >= 1,'The submission is durable, receipted and replay-stable');
+		and (select turn.submission = v_submission and turn.submission_receipt_id is not null from public.qorpera_coding_session_turns turn
+			where turn.worker_id = v_worker.id and turn.sequence = 1)
+		and pg_temp.events('fix-send','text') >= 1,'The submission is durable, receipted, replay-stable and the turn''s own');
 	begin perform public.qorpera_submit_coding_turn(v_binding,jsonb_build_object('kind','finish','operationKey','done','summary','other','headSha','b4d8f9f1c0b6e5a2d3c4b5a69788776655443322'));
 		raise exception 'A differing replay was accepted'; exception when unique_violation then null; end;
 	begin perform public.qorpera_authorize_coding_command(v_binding,jsonb_build_object('workerId',v_worker.id,'vmId',v_vm,
@@ -257,20 +296,23 @@ begin
 	v_view := public.qorpera_complete_coding_turn(v_worker.id,(v_claim ->> 'leaseToken')::uuid,'succeeded','Composer posts first; the send test covers it.',null,
 		'{"url":"https://github.com/Qorpera/Qorpera_Base/pull/204","number":204,"headSha":"b4d8f9f1c0b6e5a2d3c4b5a69788776655443322"}',
 		'[{"name":"web client","status":"passed"}]',null,'sess-1',3,null);
-	perform pg_temp.wake_assert(v_view ->> 'phase' = 'completed' and (pg_temp.session_row('fix-send')).submission is null
-		and (pg_temp.session_row('fix-send')).submission_receipt_id is null and (pg_temp.session_row('fix-send')).vm_allocation_id = '30000000-0000-4000-8000-000000000300',
-		'Completion clears the submission and keeps the machine');
+	perform pg_temp.wake_assert(v_view ->> 'phase' = 'completed' and (select turn.outcome ->> 'state' = 'succeeded' and turn.submission ->> 'kind' = 'finish'
+			from public.qorpera_coding_session_turns turn where turn.worker_id = v_worker.id and turn.sequence = 1)
+		and (pg_temp.session_row('fix-send')).vm_allocation_id = current_setting('qorpera_test.coding_vm')::uuid,
+		'Completion settles the turn with its submission and keeps the machine');
 	-- The owner follows up; the second turn is a new claim on the same machine.
 	perform pg_temp.as_user('30000000-0000-4000-8000-000000000001');
 	perform public.qorpera_answer_coding_session(v_worker.id,'Also fix the group chat composer.','30000000-0000-4000-8000-000000000201');
 	perform pg_temp.path_claims('service_role');
 	v_next := public.qorpera_claim_coding_session('exec-test',60);
 	v_turn := public.qorpera_describe_coding_turn(v_worker.id,(v_next ->> 'leaseToken')::uuid);
-	perform pg_temp.wake_assert((v_next ->> 'sequence')::int = 2 and v_turn ->> 'vmAllocationId' = '30000000-0000-4000-8000-000000000300'
+	perform pg_temp.wake_assert((v_next ->> 'sequence')::int = 2 and v_turn ->> 'vmAllocationId' = current_setting('qorpera_test.coding_vm')
 		and (v_turn ->> 'turnId')::uuid = public.qorpera_coding_turn_id(v_worker.id,2) and v_turn -> 'submission' = 'null'::jsonb
 		and v_turn ->> 'baseSha' = 'a4d8f9f1c0b6e5a2d3c4b5a69788776655443322','The next turn keeps the machine and the base and starts without a submission');
-	perform pg_temp.wake_assert(public.qorpera_authorize_coding_machine(v_worker.id,(v_next ->> 'leaseToken')::uuid,current_setting('qorpera_test.coding_binding'),repeat('c',64),'run') ->> 'allocationId'
-		= '30000000-0000-4000-8000-000000000300','The same plan is admitted again for the next turn');
+	perform pg_temp.wake_assert(public.qorpera_plan_coding_machine(v_worker.id,(v_next ->> 'leaseToken')::uuid,repeat('c',64)) ->> 'machineId'
+		= current_setting('qorpera_test.coding_vm') and public.qorpera_authorize_coding_machine_run(v_worker.id,(v_next ->> 'leaseToken')::uuid,
+			current_setting('qorpera_test.coding_binding'),current_setting('qorpera_test.coding_storage')::jsonb,repeat('c',64)) ->> 'machineId'
+		= current_setting('qorpera_test.coding_vm'),'The next turn runs on the same member machine');
 	begin perform public.qorpera_complete_coding_turn(v_worker.id,(v_next ->> 'leaseToken')::uuid,'blocked','Composer fixed.','Keep 250 ms?',null,null,null,null,null,'["a","b","c","d","e","f","g"]');
 		raise exception 'Seven options accepted'; exception when sqlstate '22023' then null; end;
 	begin perform public.qorpera_complete_coding_turn(v_worker.id,(v_next ->> 'leaseToken')::uuid,'succeeded','Done.',null,null,null,null,null,null,'["a"]');
@@ -286,12 +328,16 @@ end $$;
 -- 4. Control plane only.
 select pg_temp.as_user('30000000-0000-4000-8000-000000000001');
 select pg_temp.wake_error($q$select public.qorpera_configure_coding_vm_policy('30000000-0000-4000-8000-000000000020','exec-test','{}')$q$,'42501');
-select pg_temp.wake_error($q$select public.qorpera_authorize_coding_cleanup((pg_temp.worker_row('fix-send')).id,'exec-test',current_setting('qorpera_test.coding_binding'),repeat('c',64))$q$,'42501');
+select pg_temp.wake_error($q$select public.qorpera_authorize_coding_machine_custody(current_setting('qorpera_test.coding_vm')::uuid,'exec-test',current_setting('qorpera_test.coding_binding'),repeat('c',64),'stop')$q$,'42501');
+select pg_temp.wake_error($q$select public.qorpera_list_coding_machines('exec-test',repeat('c',64))$q$,'42501');
 select pg_temp.wake_error($q$select public.qorpera_describe_coding_turn((pg_temp.worker_row('fix-send')).id,extensions.gen_random_uuid())$q$,'42501');
 select pg_temp.wake_error($q$select public.qorpera_authorize_coding_turn(current_setting('qorpera_test.coding_turn_binding')::jsonb)$q$,'42501');
 select pg_temp.wake_error($q$select public.qorpera_submit_coding_turn(current_setting('qorpera_test.coding_turn_binding')::jsonb,'{}')$q$,'42501');
 select pg_temp.path_claims('service_role');
-select pg_temp.wake_assert(not has_function_privilege('authenticated','public.qorpera_authorize_coding_machine(uuid,uuid,text,text,text)','EXECUTE')
+select pg_temp.wake_assert(not has_function_privilege('authenticated','public.qorpera_authorize_coding_machine_run(uuid,uuid,text,jsonb,text)','EXECUTE')
+	and not has_function_privilege('authenticated','public.qorpera_release_coding_machine(uuid,text,text,text)','EXECUTE')
+	and not has_function_privilege('service_role','public.qorpera_coding_machine_custody(uuid,text,text,text)','EXECUTE')
+	and not has_table_privilege('service_role','public.qorpera_coding_machines','INSERT,UPDATE,DELETE')
 	and not has_function_privilege('service_role','public.qorpera_assert_coding_storage(uuid,text,jsonb,text)','EXECUTE')
 	and not has_table_privilege('service_role','public.qorpera_coding_vm_plans','INSERT,UPDATE,DELETE')
 	and not has_table_privilege('service_role','public.qorpera_coding_storage_volumes','INSERT,UPDATE,DELETE'),

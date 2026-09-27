@@ -2,7 +2,7 @@
 .settings-dialog { position: relative; display: grid; grid-template-columns: 320px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); width: min(1200px, calc(100vw - 72px)); height: min(816px, calc(100dvh - 72px)); overflow: hidden; border: 1px solid #d9d9d6; border-radius: 16px; background: var(--overlay); color: #1d1d1b; box-shadow: 0 24px 80px rgb(0 0 0 / 24%); }
 /* The rail's font size sets the whole rail: search, tabs, count and the way
    back to the companies are sized in em from it. 20px is half again the old 13px; windows
-   up to 1100px wide keep 13px (below). A window too short for the rail
+   up to 1000px wide keep 13px (below). A window too short for the rail
    scrolls it, and the 320px width fits the longest label, Danish
    "Abonnement og forbrug". */
 .settings-nav { display: flex; flex-direction: column; gap: 3px; overflow-y: auto; padding: 16px 12px; border-right: 1px solid #dededb; background: #f1f1ef; min-width: 0; font-size: 20px; }
@@ -32,23 +32,100 @@
 .settings-content .btn-primary:hover:not(:disabled) { background: #3a3a37; }
 .settings-content .btn-danger { color: #ac3934; }
 .settings-content .notice { font-size: 12px; overflow-wrap: anywhere; }
-.settings-content .advanced { font-size: 12px; margin-top: 24px; }
 .settings-content .row { flex-wrap: wrap; }
 .settings-group { margin: 28px 0; }
+/* Settings → Rules (auto-review, v130): one row per rule, the form below. */
+.settings-rule-list { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.settings-rule { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 12px; padding: 11px 13px; border-radius: 13px; background: #f1f1ef; }
+.settings-rule .settings-copy { display: grid; gap: 2px; min-width: 0; overflow-wrap: anywhere; }
+.settings-rule .settings-copy small { color: var(--text-muted); }
+.settings-rule-form label { display: grid; gap: 6px; margin: 10px 0; color: var(--text-muted); font-size: 13px; }
+.settings-rule-form input, .settings-rule-form select { padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; background: transparent; color: var(--text); font: inherit; font-size: 14px; }
+.settings-rule-choices { display: flex; flex-wrap: wrap; align-items: end; gap: 12px; }
+.settings-rule-choices label { margin: 0; }
+.settings-rule-choices .btn { margin-left: auto; }
 .settings-card { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 11px; min-height: 72px; padding: 11px 13px; border-radius: 13px; background: #f1f1ef; }
+/* The account card leads with the member's picture: a camera badge says it can
+ * be changed, a click picks a photo, and once there is one a small menu offers
+ * another or initials again. */
+.settings-account { grid-template-columns: auto minmax(0, 1fr) auto; gap: 14px; }
+.account-picture { position: relative; display: grid; }
+.account-picture .person-avatar { width: 48px; height: 48px; font-size: 16px; }
+.account-picture-button { position: relative; display: grid; padding: 0; border: 0; border-radius: 50%; background: none; color: inherit; cursor: pointer; }
+.account-picture-button:disabled { cursor: default; }
+.account-picture-button::after { content: ""; position: absolute; inset: 0; border-radius: 50%; background: transparent; transition: background 120ms ease; pointer-events: none; }
+.account-picture.is-changeable .account-picture-button:not(:disabled, [aria-busy]):is(:hover, [aria-expanded="true"])::after { background: rgba(0, 0, 0, 0.16); }
+.account-picture.is-busy .account-picture-button { cursor: progress; }
+.account-picture-badge { position: absolute; right: -4px; bottom: -4px; display: grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; background: var(--overlay); color: var(--text); box-shadow: 0 0 0 2px #f1f1ef, 0 1px 3px rgba(0, 0, 0, 0.2); pointer-events: none; }
+.account-picture-badge[hidden] { display: none; }
+.account-picture-badge .icon { width: 13px; height: 13px; stroke-width: 2; }
+.account-picture.is-busy .person-avatar { opacity: 0.5; }
+.account-picture.is-busy .account-picture-button::before { content: ""; position: absolute; inset: -3px; z-index: 1; border: 2px solid transparent; border-top-color: var(--text-soft); border-radius: 50%; animation: account-picture-spin 800ms linear infinite; }
+@keyframes account-picture-spin { to { transform: rotate(1turn); } }
+@media (prefers-reduced-motion: reduce) { .account-picture.is-busy .account-picture-button::before { animation: none; border-color: var(--text-soft); } }
+.account-picture-menu {
+	position: absolute; top: calc(100% + 8px); left: -6px; z-index: 5; width: 224px;
+	display: flex; flex-direction: column; gap: 1px; padding: 6px;
+	border: 1px solid var(--border); border-radius: 14px; background: var(--overlay);
+	box-shadow: 0 22px 48px rgba(11, 11, 11, 0.14), 0 2px 8px rgba(11, 11, 11, 0.06);
+}
+.account-picture-menu[hidden] { display: none; }
+.account-picture-item {
+	display: flex; align-items: center; gap: 10px; width: 100%; padding: 8px 12px;
+	border: 0; border-radius: 9px; background: transparent; color: var(--text);
+	font: inherit; font-size: 13px; font-weight: 550; text-align: left; cursor: pointer;
+}
+.account-picture-item:hover { background: var(--hover); }
+.account-picture-item .icon { width: 16px; height: 16px; flex: none; color: var(--text-soft); }
+.account-picture-remove, .account-picture-remove .icon { color: #ac3934; }
+.account-picture-menu:focus { outline: none; }
+/* Fitting a picture to the circle before it is saved (ui/picture-cropper.ts): the
+ * view is laid out at 288 units and scaled to the stage; outside the circle is dimmed. */
+.modal-backdrop.picture-crop-backdrop { z-index: 600; overflow-y: auto; place-items: safe center; padding: 12px 0; }
+.picture-crop:focus { outline: none; }
+.picture-crop { width: min(360px, 92vw); display: flex; flex-direction: column; gap: 14px; padding: 20px; border-radius: var(--radius-xl); background: var(--overlay); box-shadow: 0 20px 60px rgba(0, 0, 0, 0.25); }
+.picture-crop h2 { margin: 0; font-size: 16px; font-weight: 600; }
+/* Sized by the height too, so Save stays on screen on a short or zoomed window. */
+.picture-crop-stage { position: relative; width: min(288px, 100%, max(160px, calc(100dvh - 240px))); aspect-ratio: 1; margin: 0 auto; overflow: hidden; border-radius: 14px; background: #1d1d1b; cursor: grab; touch-action: none; user-select: none; -webkit-user-select: none; }
+.picture-crop-stage.is-dragging { cursor: grabbing; }
+.picture-crop-stage:focus-visible { outline: 2px solid #5b84c4; outline-offset: 2px; }
+/* The view is laid out in the cropper's own units (CROP_STAGE) and scaled to the stage by script, so its pixels stay unscaled. */
+.picture-crop-view { --px: 1px; position: absolute; left: 0; top: 0; width: 288px; height: 288px; transform-origin: 0 0; }
+.picture-crop-image { position: absolute; left: 0; top: 0; max-width: none; transform-origin: 0 0; pointer-events: none; user-select: none; -webkit-user-drag: none; }
+.picture-crop-circle { position: absolute; left: 24px; top: 24px; width: 240px; height: 240px; border-radius: 50%; box-shadow: 0 0 0 999px rgba(0, 0, 0, 0.55), inset 0 0 0 2px rgba(255, 255, 255, 0.9); pointer-events: none; }
+.picture-crop-zoom-row { display: flex; align-items: center; gap: 10px; color: var(--text-soft); }
+.picture-crop-zoom { flex: 1; min-width: 0; accent-color: var(--primary); }
+.picture-crop-zoom-small .icon { width: 14px; height: 14px; }
+.picture-crop-zoom-large .icon { width: 20px; height: 20px; }
+.picture-crop-zoom-small, .picture-crop-zoom-large { display: grid; place-items: center; width: 20px; }
+.picture-crop-help { margin: 0; color: var(--text-muted); font-size: 12px; text-align: center; }
+
+.account-picture-error { margin-top: 8px; }
+.account-picture-error[hidden] { display: none; }
 .settings-copy { display: grid; gap: 2px; min-width: 0; overflow-wrap: anywhere; }
 .settings-copy strong { font-size: 13px; font-weight: 600; }
 .settings-copy small { font-size: 11.5px; color: #797975; }
+.settings-account .account-name-input { width: 100%; min-width: 0; min-height: 0; padding: 0; border: 0; border-radius: 3px; background: transparent; color: inherit; font: inherit; font-size: 13px; font-weight: 600; line-height: inherit; text-overflow: ellipsis; box-shadow: none; }
+.settings-account .account-name-input::placeholder { color: var(--text-muted); opacity: 1; }
+.settings-account .account-name-input:is(:hover, :focus) { box-shadow: 0 1px 0 var(--border-strong); }
+.settings-account .account-name-input:focus-visible { outline: 2px solid #5b84c4; outline-offset: 3px; }
+.settings-account .account-name-input[aria-busy=true] { opacity: .6; }
+.account-name-error { margin-top: 8px; }
+.account-name-error[hidden] { display: none; }
 .settings-plan { min-height: 82px; }
 .settings-preference-row { display: flex; flex-direction: row; align-items: center; justify-content: space-between; gap: 16px; min-height: 46px; padding: 5px 12px; font-size: 12.5px; font-weight: 500; }
 .settings-help { color: #797975; font-size: 11.5px; margin: 4px 12px; }
 /* Appearance: each choice is a picture of the result under a native radio.
    The theme pictures keep their own colours in both themes (they show a
    theme, not the page); the composer pictures follow the page. */
+/* Center the rows below the heading; short panels grow and scroll from the top. */
+.settings-appearance { display: flex; flex-direction: column; min-height: 100%; }
+.settings-appearance-choices { flex: none; margin-block: auto; }
 .settings-preference { padding: 8px 12px 10px; }
-.settings-preference > .settings-copy { font-size: 12.5px; font-weight: 500; margin-bottom: 12px; }
-.settings-preference > .settings-copy small { font-weight: 400; }
-.settings-choices { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px; max-width: 880px; margin: 0; padding: 0; border: 0; min-width: 0; }
+/* No titles: extra room keeps the theme and colour rows reading as two groups. */
+.settings-preference + .settings-preference { padding-top: 22px; }
+/* Scale the card rows and their gaps together so each preview is 25% smaller. */
+.settings-choices { --appearance-preview-scale: .75; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 13.5px; width: 75%; max-width: 660px; margin: 0 auto; padding: 0; border: 0; min-width: 0; }
 .settings-choice { position: relative; display: grid; gap: 9px; justify-items: center; min-width: 0; cursor: pointer; }
 .settings-choice > input { position: absolute; width: 1px; height: 1px; margin: 0; opacity: 0; pointer-events: none; }
 .settings-choice-label { font-size: 12.5px; color: #73736f; }
@@ -57,9 +134,15 @@
 .settings-choice:hover .settings-swatch { box-shadow: inset 0 0 0 1px rgb(18 18 17 / 10%), 0 0 0 2px #c9c9c5; }
 .settings-choice > input:checked ~ .settings-swatch { box-shadow: 0 0 0 2px #1d1d1b; }
 .settings-choice > input:focus-visible ~ .settings-swatch { outline: 2px solid #5b84c4; outline-offset: 3px; }
-.swatch-window { position: absolute; inset: 0; display: grid; grid-template-rows: auto auto minmax(0, 1fr); gap: 5px; padding: 16% 12% 0; background: var(--w-bg); }
+/* Two wider size cards span the same row as the three theme/colour cards. */
+.settings-size-choices { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.size-swatch { display: grid; place-items: center; aspect-ratio: 15 / 7; background: var(--sidebar-surface); color: var(--text); }
+.size-swatch::before { content: "Aa"; font-size: calc(32px * var(--appearance-preview-scale)); font-weight: 500; line-height: 1; }
+.size-swatch-big::before { font-size: calc(41.6px * var(--appearance-preview-scale)); }
+/* Keep the miniature's fixed details proportional as the cards shrink; labels stay readable. */
+.swatch-window { position: absolute; inset: 0; width: calc(100% / var(--appearance-preview-scale)); height: calc(100% / var(--appearance-preview-scale)); transform: scale(var(--appearance-preview-scale)); transform-origin: top left; display: grid; grid-template-rows: auto auto minmax(0, 1fr); gap: 5px; padding: 16% 12% 0; background: var(--w-bg); }
 .swatch-window-light { --w-bg: #e9e7e6; --w-bar: #c6c4c2; --w-panel: #ffffff; --w-pill: #dedddb; --w-line: #ececea; }
-.swatch-window-dark { --w-bg: #1f1f1e; --w-bar: #5e5d5a; --w-panel: #2f2f2e; --w-pill: #4f4f4d; --w-line: #3c3c3a; }
+.swatch-window-dark { --w-bg: #3c3c3c; --w-bar: #5e5d5a; --w-panel: #1f2120; --w-pill: #4f4f4d; --w-line: #3c3c3a; }
 .swatch-bar { justify-self: center; width: 46%; height: 7px; border-radius: 999px; background: var(--w-bar); }
 .swatch-bar-sub { width: 68%; height: 5px; opacity: .65; }
 .swatch-panel { display: grid; grid-auto-rows: minmax(0, 1fr); margin-top: 5px; padding: 0 7%; border-radius: 12px 12px 0 0; background: var(--w-panel); }
@@ -68,15 +151,15 @@
 .swatch-pill { width: 34%; height: 8px; background: var(--w-pill); }
 .swatch-line { width: 50%; height: 3px; background: var(--w-line); }
 .theme-swatch-system > .swatch-window-dark { clip-path: inset(0 0 0 50%); }
-.color-swatch .swatch-window { grid-template-rows: auto auto minmax(0, 1fr) auto; align-items: start; gap: 8px; padding: 10% 8% 8%; background: var(--bg); }
+.color-swatch .swatch-window { grid-template-rows: minmax(0, 2fr) minmax(0, 2fr) minmax(0, 1fr) minmax(0, 3fr); align-items: start; gap: 6%; padding: 10% 8% 8%; background: var(--bg); }
 .color-swatch-blue { --swatch-accent: #0a84ff; }
 .color-swatch-green { --swatch-accent: #30d158; }
 .color-swatch-grey { --swatch-accent: #5b5b5b; }
-.swatch-bubble { height: 20px; border-radius: 12px; }
+.swatch-bubble { height: 100%; border-radius: 12px; }
 .swatch-bubble-agent { width: 58%; justify-self: start; background: var(--pane-strong); }
 .swatch-bubble-member { width: 46%; justify-self: end; background: var(--swatch-accent); }
-.swatch-composer { grid-row: 4; display: flex; align-items: center; justify-content: flex-end; height: 30px; padding: 0 5px; border: 1px solid var(--border-strong); border-radius: 999px; background: var(--overlay); }
-.swatch-send { display: block; width: 20px; height: 20px; border-radius: 50%; background: var(--swatch-accent); }
+.swatch-composer { grid-row: 4; display: flex; align-items: center; justify-content: flex-end; height: 100%; padding: 0 5px; border: 1px solid var(--border-strong); border-radius: 999px; background: var(--overlay); }
+.swatch-send { display: block; height: 70%; aspect-ratio: 1; border-radius: 50%; background: var(--swatch-accent); }
 .settings-plan > .btn { align-self: center; }
 /* Plans: the three cards qorpera.com sells, opened under the current plan. */
 .settings-plan-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-top: 12px; }
@@ -106,7 +189,7 @@
 .settings-usage progress::-webkit-progress-value { background: #93938e; }
 .settings-usage progress::-moz-progress-bar { background: #93938e; }
 .settings-staff-group { border-top: 1px solid var(--border); padding-top: 18px; }
-.settings-content .settings-staff-group h2 { font-size: 10px; text-transform: uppercase; letter-spacing: .09em; margin-bottom: 12px; }
+.settings-content .settings-staff-group h2 { font-size: 10px; text-transform: uppercase; letter-spacing: .09em; margin-bottom: 12px; text-align: center; }
 .settings-file-card { min-height: 92px; grid-template-columns: 38px minmax(0, 1fr) 18px; gap: 16px; }
 .settings-file-card > .icon:first-child { width: 36px; height: 44px; color: #8c8c87; }
 .settings-file-card progress { width: 100%; height: 3px; margin-top: 8px; border: 0; border-radius: 3px; overflow: hidden; appearance: none; }
@@ -116,15 +199,21 @@
 .settings-copy .settings-eyebrow { font-size: 9.5px; text-transform: uppercase; letter-spacing: .08em; }
 .settings-link { color: inherit; text-decoration: none; margin-top: 12px; }
 .settings-link:hover { background: #e8e8e5; }
-.company-people { display: grid; gap: 5px; }
-.company-person { display: grid; grid-template-columns: 42px minmax(0, 1fr) auto; gap: 14px; align-items: center; min-height: 56px; padding: 4px 0; }
+.company-people { display: grid; gap: 6px; }
+/* Member rows run 25% larger than other people rows (70px rows, 52px
+   avatars, 16/14px text); the invite row that ends the list matches them. */
+.company-person { display: grid; grid-template-columns: 52px minmax(0, 1fr) auto; gap: 18px; align-items: center; min-height: 70px; padding: 5px 0; }
+.company-person .person-avatar, .company-invite summary .person-avatar { width: 52px; height: 52px; }
+.company-person .person-avatar { font-size: 17px; }
+.company-person .settings-copy strong, .company-invite summary strong { font-size: 16px; }
+.company-person .settings-copy small, .company-invite summary small { font-size: 14px; }
 .person-avatar { display: grid; place-items: center; width: 42px; height: 42px; flex: none; border-radius: 50%; background: var(--person-color, #9685b5); color: #fff; font-size: 14px; font-weight: 500; }
 .company-person .person-actions { display: flex; align-items: center; gap: 6px; opacity: 0; }
 .company-person:hover .person-actions, .company-person:focus-within .person-actions { opacity: 1; }
 .company-person .person-actions select { min-height: 30px; max-width: 115px; padding: 3px; border: 0; background: transparent; font-size: 11px; }
 .company-invite { margin-top: 12px; }
-.company-invite summary { display: flex; gap: 12px; align-items: center; cursor: pointer; list-style: none; }
-.invite-plus { background: transparent; border: 1px dashed #bcbcb8; color: #777; font-size: 20px; }
+.company-invite summary { display: flex; gap: 18px; align-items: center; cursor: pointer; list-style: none; }
+.invite-plus { background: transparent; border: 1px dashed #bcbcb8; color: #777; font-size: 25px; }
 .company-invite form { margin: 14px 0 8px; }
 .company-invite .link-button { padding: 0; border: 0; background: none; color: var(--blue); font: inherit; font-size: 12px; cursor: pointer; }
 .company-invite .link-button:hover { text-decoration: underline; }
@@ -135,7 +224,9 @@
 .invite-friend:hover { background: #f1f1ef; }
 .invite-picker form { display: grid; grid-template-columns: minmax(0, 1fr) auto; }
 .invite-picker form input { grid-column: 1 / -1; min-width: 0; width: 100%; }
-.settings-staff { display: flex; gap: 20px; flex-wrap: wrap; }
+.settings-company-exit { margin-top: 24px; }
+.settings-company-exit:empty { display: none; }
+.settings-staff { display: flex; gap: 20px; flex-wrap: wrap; justify-content: center; }
 .settings-staff .figure { width: 46px; height: 46px; }
 .settings-staff a { display: grid; justify-items: center; gap: 6px; max-width: 100px; color: inherit; text-decoration: none; text-align: center; }
 .settings-staff small { font-size: 11px; }
@@ -170,6 +261,7 @@
 .connection-section-heading h2 { margin: 0; }
 .connection-usage { grid-column: 2 / -1; display: grid; gap: 14px; min-width: 0; font-size: 11.5px; }
 .connection-usage-window { display: grid; gap: 7px; }
+.connection-usage-label { font-weight: 500; }
 .connection-usage-heading { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 4px 16px; color: #73736f; }
 .connection-usage-limit { color: #af4b16; }
 .connection-usage-meter { height: 6px; overflow: hidden; border-radius: 999px; background: #dededb; }
@@ -192,8 +284,9 @@
 .settings-dialog :focus-visible:not(:where(input, textarea)) { outline: 2px solid #5b84c4; outline-offset: 2px; }
 .settings-dialog [hidden] { display: none; }
 @media (hover: none) { .company-person .person-actions { opacity: 1; } }
-/* Tablets and small laptops keep the earlier rail, so the content keeps its width. */
-@media (max-width: 1100px) {
+/* Narrow windows and tablets keep the earlier rail, so the content keeps its width. 1000 design
+ * pixels is 1300 on a mouse screen at 130%: a 13" or 14" laptop keeps the large rail. */
+@media (max-width: 1000px) {
  .settings-dialog { grid-template-columns: 228px minmax(0, 1fr); }
  .settings-nav { font-size: 13px; }
 }
@@ -207,9 +300,12 @@
  .settings-tab-count { margin-left: 0; }
  .settings-nav .settings-back { justify-content: center; margin-top: 8px; }
  .settings-content { padding: 24px 20px; }
- .settings-choices { gap: 10px; }
+ .settings-choices { --appearance-preview-scale: 1; width: 100%; gap: 10px; }
  .settings-plan-grid { grid-template-columns: minmax(0, 1fr); }
  .billing-row { grid-template-columns: minmax(0, 1fr) auto; }
+ /* The picture takes the room the email needs: Sign out moves under the email. */
+ .settings-account { grid-template-columns: auto minmax(0, 1fr); row-gap: 8px; }
+ .settings-account > .btn { grid-column: 2; justify-self: start; }
  .billing-value { grid-column: 1 / -1; }
  .swatch-window { gap: 3px; padding-top: 14%; }
  .swatch-bar { height: 4px; }
@@ -219,12 +315,10 @@
  .swatch-row:nth-child(3) { display: none; }
  .swatch-pill { height: 5px; }
  .swatch-line { height: 2px; }
- .color-swatch .swatch-window { gap: 5px; padding: 8% 7% 6%; }
- .swatch-bubble { height: 12px; }
- .swatch-composer { height: 20px; padding: 0 3px; }
- .swatch-send { width: 14px; height: 14px; }
+ .color-swatch .swatch-window { padding: 8% 7% 6%; }
+ .swatch-composer { padding: 0 3px; }
  .company-person .person-actions { opacity: 1; flex-wrap: wrap; justify-content: end; }
- .company-person { grid-template-columns: 42px minmax(0, 1fr); gap: 12px; }
+ .company-person { grid-template-columns: 52px minmax(0, 1fr); gap: 15px; }
  .company-person .person-actions { grid-column: 2; justify-content: start; }
  .connection-card { grid-template-columns: 42px minmax(0, 1fr); }
  .connection-card > .btn { grid-column: 2; justify-self: start; }

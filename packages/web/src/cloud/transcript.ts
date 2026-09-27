@@ -61,6 +61,10 @@ export interface TranscriptCard {
 	actorUserId: string;
 	body: JsonValue;
 	createdAt: string;
+	/** An approval card's answer still on its way (queued, not yet in the transcript). */
+	answer?: InteractionAnswer;
+	/** An answer was given and its delivery failed: the card is open again. */
+	answerFailed?: boolean;
 }
 
 export interface TranscriptPeerLink {
@@ -92,6 +96,8 @@ export interface TranscriptInteraction {
 	actorUserId: string;
 	request: InteractionRequest;
 	answer?: InteractionAnswer;
+	/** An answer was sent and its delivery failed, so it never reached the agent: the card is open again. */
+	answerFailed?: boolean;
 	createdAt: string;
 }
 
@@ -307,20 +313,24 @@ export function projectTranscript(
 	let lastSequence = 0;
 	const inputIds = new Set<string>();
 	const interactions = new Map<string, TranscriptInteraction>();
+	const cards = new Map<string, TranscriptCard>();
 	const answers = new Map<string, InteractionAnswer>();
+	const failedAnswers = new Set<string>();
 	const legacyParts = new Map<string, { count: number; parts: (string | null)[]; event: HostedSessionEvent }>();
 	for (const event of events) {
 		lastSequence = Math.max(lastSequence, event.sequence);
 		if (event.sessionInputId) inputIds.add(event.sessionInputId);
 		if (event.eventType === "authorization_request" || event.eventType === "authorization_decision") {
-			items.push({
+			const card: TranscriptCard = {
 				kind: event.eventType,
 				id: event.eventId,
 				sequence: event.sequence,
 				actorUserId: event.actorUserId,
 				body: event.body,
 				createdAt: event.createdAt,
-			});
+			};
+			if (event.eventType === "authorization_request") cards.set(event.eventId.toLowerCase(), card);
+			items.push(card);
 			continue;
 		}
 		if (event.eventType === "interaction_request") {
@@ -435,14 +445,17 @@ export function projectTranscript(
 		hiddenCount++;
 	}
 	hiddenCount += legacyParts.size;
+	const waiting: TranscriptMessage[] = [];
 	for (const input of pending) {
 		if (input.kind !== "user_message" || inputIds.has(input.inputId)) continue;
 		const body = asRecord(input.body);
 		if (body?.schema === "qorpera.staff-intro-retry/v1") continue;
 		const queuedAnswer = parseInteractionAnswerInput(input.body);
 		if (queuedAnswer) {
-			// A queued answer shows on its card, never as a message bubble.
-			if (!answers.has(queuedAnswer.interactionId))
+			// A queued answer shows on its card, never as a message bubble. One whose
+			// delivery failed never reached the agent and settles nothing.
+			if (input.status === "failed") failedAnswers.add(queuedAnswer.interactionId);
+			else if (!answers.has(queuedAnswer.interactionId))
 				answers.set(queuedAnswer.interactionId, {
 					...queuedAnswer.answer,
 					answeredBy: input.authorUserId,
@@ -455,7 +468,7 @@ export function projectTranscript(
 			typeof body?.displayText === "string" ? body.displayText : typeof body?.text === "string" ? body.text : "";
 		const images = Array.isArray(body?.images) ? body.images : [];
 		const attachments = images.map((image) => attachmentMetadata({ ...asRecord(image), type: "image" }));
-		items.push({
+		waiting.push({
 			kind: "member",
 			id: input.inputId,
 			sequence: Number.MAX_SAFE_INTEGER,
@@ -469,9 +482,26 @@ export function projectTranscript(
 		});
 	}
 	for (const [interactionId, answer] of answers) {
-		const interaction = interactions.get(interactionId);
+		const interaction = interactions.get(interactionId) ?? cards.get(interactionId);
 		if (interaction) interaction.answer = answer;
 	}
+	for (const interactionId of failedAnswers) {
+		const interaction = interactions.get(interactionId) ?? cards.get(interactionId);
+		if (interaction && !interaction.answer) interaction.answerFailed = true;
+	}
 	items.sort((a, b) => (a.sequence === b.sequence ? a.createdAt.localeCompare(b.createdAt) : a.sequence - b.sequence));
+	// A waiting message stands before the first member message sent after it, else at
+	// the end. At the end always, one the cloud never takes would sink under days of
+	// newer messages. Agent output is no measure: a message sent while the agent works
+	// stays below it, where it lands once taken (a taken input keeps its send time).
+	let from = 0;
+	for (const message of waiting) {
+		const sent = Date.parse(message.createdAt);
+		let at = from;
+		// Waiting messages placed so far all stand before `from`.
+		while (at < items.length && !(items[at]!.kind === "member" && Date.parse(items[at]!.createdAt) > sent)) at++;
+		items.splice(at, 0, message);
+		from = at + 1;
+	}
 	return { items, hiddenCount, lastSequence };
 }

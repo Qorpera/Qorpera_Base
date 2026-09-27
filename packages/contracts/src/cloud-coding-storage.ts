@@ -8,6 +8,10 @@ export interface CloudCodingNasPolicy {
 	readonly rootPath: string;
 }
 
+/** One session's NAS volume. `dataTarget` and `custodyTarget` name the guest
+ * roots; a member's coding machine mounts the session beneath them at
+ * `<root>/<workerId>` (cloudCodingSessionLayout), so the binding and its marker
+ * on the NAS are the same for every machine the session ever runs on. */
 export interface CloudCodingStorageBinding {
 	readonly schema: "qorpera.coding-storage/v1";
 	readonly volumeId: string;

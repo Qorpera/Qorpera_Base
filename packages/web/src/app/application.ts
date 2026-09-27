@@ -15,11 +15,13 @@ import { createWebSessionRunControl } from "../cloud/session-run-control.ts";
 import type { HostedProfile } from "../cloud/types.ts";
 import { button, h, notice, replace } from "../ui/dom.ts";
 import { isPhoneLayout } from "../ui/layout.ts";
+import { personPictures, setPersonPictures } from "../ui/person-pictures.ts";
 import { applyLanguage, presentationLocale, t, watchTheme } from "../ui/preferences.ts";
 import { RailLayout } from "../ui/rail-layout.ts";
 import { blankSkeleton, pageSkeleton, railSkeleton, threadSkeleton } from "../ui/skeleton.ts";
 import { AuthController } from "./auth.ts";
 import { CompanyController } from "./company.ts";
+import { MemberPictures } from "./member-pictures.ts";
 import { currentRoute, navigate, type Route } from "./router.ts";
 import { createConversationStarter } from "./start-conversation.ts";
 import { debounce } from "./state.ts";
@@ -39,7 +41,7 @@ import { type SettingsTab, SettingsView } from "./views/settings.ts";
 import { noteConnectorReturn } from "./views/settings-services.ts";
 import { renderRail, renderTopbar, type ShellContext } from "./views/shell.ts";
 import { renderSignIn } from "./views/signin.ts";
-import { renderTeam } from "./views/team.ts";
+import { renderTeam, type TeamFeedback } from "./views/team.ts";
 import type { WorkspaceActions } from "./workspace-actions.ts";
 
 /* Entry point. One cloud client, one auth controller, one company controller
@@ -54,6 +56,9 @@ export function mountApplication(
 ): () => void {
 	const auth = new AuthController(cloud);
 	let hub = new HubController(api);
+	// Every initials disc on the page shows the person's own picture through this store.
+	const pictures = new MemberPictures(api);
+	setPersonPictures(pictures);
 
 	const topbar = h("header", { class: "topbar" });
 	const rail = h("aside", { id: "company-navigation", class: "rail", "aria-label": t("Company navigation") });
@@ -182,7 +187,7 @@ export function mountApplication(
 	let newConversation: NewConversationView | undefined;
 	let startingSession: { sessionId: string } | undefined;
 	let profiles: HostedProfile[] = [];
-	let teamFeedback: { message?: string; error?: string } = {};
+	let teamFeedback: TeamFeedback = {};
 	let accountState: AccountViewState = {};
 	const accountPlan = h("div");
 	let meetState: MeetState = {};
@@ -207,6 +212,7 @@ export function mountApplication(
 			closeSettings(false);
 			closeFeedback(false);
 			accountUserId = userId;
+			pictures.reset();
 			accountRevision++;
 			routeRevision++;
 			teardownCompany();
@@ -987,6 +993,7 @@ export function mountApplication(
 						meetState = next;
 						render();
 					},
+					current,
 				);
 				return;
 			case "team":
@@ -1032,6 +1039,8 @@ export function mountApplication(
 		auth.dispose();
 		hub.dispose();
 		teardownCompany();
+		pictures.reset();
+		if (personPictures() === pictures) setPersonPictures(undefined);
 		window.removeEventListener("hashchange", onRouteChange);
 		window.removeEventListener("keydown", onEscape);
 		window.removeEventListener("resize", syncNavigation);

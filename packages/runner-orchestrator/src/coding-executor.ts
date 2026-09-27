@@ -8,6 +8,10 @@ import {
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const SHA40 = /^[0-9a-f]{40}$/;
+/** Failure-path cleanup: the custody lookups (normally well under a second)
+ * plus stopping the session's commands in the guest and unplugging its
+ * folders. The executor unit's TimeoutStopSec must stay well above it. */
+export const CLEANUP_STOP_BUDGET_MS = 45_000;
 export const CODING_EXECUTOR_RPCS = [
 	"qorpera_claim_coding_session",
 	"qorpera_heartbeat_coding_session",
@@ -15,7 +19,33 @@ export const CODING_EXECUTOR_RPCS = [
 	"qorpera_begin_coding_turn",
 	"qorpera_describe_coding_turn",
 	"qorpera_complete_coding_turn",
+	"qorpera_defer_coding_session",
 ] as const;
+/** The turn cannot have its member's machine yet (a full node, a machine being
+ * removed, the session still on another machine): it waits in the queue. */
+export class CodingMachineUnavailable extends Error {
+	readonly reason: string;
+	constructor(reason: string) {
+		super(`CODING_MACHINE_UNAVAILABLE:${reason}`);
+		this.reason = reason;
+	}
+}
+/** The kernel refused a call on a busy row (SQLSTATE 55P03, lock_not_available)
+ * and rolled its transaction back whole: the call wrote nothing. A control
+ * rejects with this only for a complete PostgREST error with that SQLSTATE. */
+export class CodingControlBusy extends Error {
+	constructor() {
+		super("CODING_CONTROL_BUSY");
+	}
+}
+/** One housekeeping step on one machine, for the executor's log. */
+export interface CodingHousekeepingOutcome {
+	machineId: string;
+	/** release: the machine was deleted but its capacity release failed. */
+	step: "sleep" | "delete" | "release";
+	state: "done" | "not-now" | "failed";
+	code?: string;
+}
 export interface CodingExecutorControl {
 	call(
 		method: (typeof CODING_EXECUTOR_RPCS)[number],
@@ -82,9 +112,11 @@ export interface CodingExecutorPublication {
 	readonly noChange: boolean;
 }
 export interface CodingExecutorHost {
-	/** Reserve genuine company/node capacity, reconcile the retained LXD VM and
-	 * seed a credential-free checkout exactly once. Resolves with the allocation
-	 * and the pinned base; nothing calls the model before this resolves. */
+	/** Plan and wake the member's coding machine on genuine node capacity, attach
+	 * the session's NAS folders and seed a credential-free checkout exactly once.
+	 * Resolves with the machine and the pinned base; nothing calls the model
+	 * before this resolves. Throws CodingMachineUnavailable when the turn must
+	 * wait for its machine. */
 	prepareWorkspace(claim: CodingSessionClaim, turn: CodingTurnState, signal: AbortSignal): Promise<CodingWorkspace>;
 	/** Refresh the guest monotonic lease only from the confirmed SQL deadline;
 	 * never beyond the remaining session lease. */
@@ -97,9 +129,13 @@ export interface CodingExecutorHost {
 		submission: Extract<CodingSubmission, { kind: "finish" }>,
 		signal: AbortSignal,
 	): Promise<CodingExecutorPublication>;
-	/** Independent cleanup custody: stop the actual VM and verify it, even after
-	 * the session lease is gone. Retains the disk; never releases capacity. */
-	stopWorkspace(claim: CodingSessionClaim, signal: AbortSignal): Promise<void>;
+	/** The end of the turn: stop the session's commands, flush the guest and
+	 * unplug the session's folders, with or without the lease. The machine keeps
+	 * running for the member's other sessions and sleeps later. */
+	detachSession(claim: CodingSessionClaim, signal: AbortSignal): Promise<void>;
+	/** Sleep idle machines, remove the ones due, retire kept per-session VMs and
+	 * close released ones; every failure is recorded and returned. */
+	housekeep(signal: AbortSignal): Promise<CodingHousekeepingOutcome[]>;
 }
 
 function record(value: unknown, label: string): Record<string, unknown> {
@@ -127,7 +163,6 @@ export function parseCodingSessionClaim(value: unknown): CodingSessionClaim {
 		Date.parse(item.leaseUntil) <= Date.now() ||
 		!Number.isSafeInteger(item.sequence) ||
 		Number(item.sequence) < 1 ||
-		Number(item.sequence) > 64 ||
 		(item.harness !== "codex" && item.harness !== "claude-code") ||
 		typeof item.branch !== "string" ||
 		item.branch !== `qorpera/coding/${item.workerId}` ||
@@ -236,32 +271,79 @@ function turnEnded(turn: CodingTurnState): boolean {
 	return ["failed", "cancelled", "refused", "expired", "skipped"].includes(turn.occurrenceStatus ?? "");
 }
 
-/** Serial owner of one session turn at a time. Native model activity, VM custody,
- * Git publication and the kernel's completion have different receipts; none is
- * inferred from another. The host composes the real LXD/Git adapters. A lost
- * lease aborts work and independently requests physical stop. */
+export type CodingTurnOutcome = "completed" | "blocked" | "failed" | "deferred" | "recovery-required";
+
+/** Claims coding session turns and runs each to its end, many at once: every
+ * member's sessions share that member's machine, and the node's capacity is
+ * the only bound. Native model activity, machine custody, Git publication and
+ * the kernel's completion have different receipts; none is inferred from
+ * another. The host composes the real LXD/Git adapters. A lost lease aborts a
+ * turn's work, and its session is detached under separate custody. */
 export class CloudCodingExecutor {
 	readonly #control: CodingExecutorControl;
 	readonly #host: CodingExecutorHost;
 	readonly #owner: string;
 	readonly #turnPollMs: number;
-	#active = false;
+	readonly #report: ((stage: "turn" | "stop" | "defer", error: unknown) => void) | undefined;
+	readonly #turns = new Set<Promise<CodingTurnOutcome>>();
 	constructor(options: {
 		control: CodingExecutorControl;
 		host: CodingExecutorHost;
 		owner: string;
 		turnPollMs?: number;
+		/** Observability only: which stage failed and with what error, before
+		 * recovery. Never decides anything; the kernel receipts do. */
+		report?: (stage: "turn" | "stop" | "defer", error: unknown) => void;
 	}) {
 		if (!/^[A-Za-z0-9_.:-]{1,120}$/.test(options.owner)) throw new Error("Invalid coding executor owner");
 		this.#control = options.control;
 		this.#host = options.host;
 		this.#owner = options.owner;
 		this.#turnPollMs = options.turnPollMs ?? 2000;
+		this.#report = options.report;
 	}
-	async runOnce(signal: AbortSignal): Promise<"idle" | "completed" | "blocked" | "failed" | "recovery-required"> {
-		if (this.#active) throw new Error("Coding executor already active");
-		this.#active = true;
-		let claim: CodingSessionClaim | undefined;
+	/** Observability must never change the outcome: a throwing reporter is ignored. */
+	#reported(stage: "turn" | "stop" | "defer", error: unknown): void {
+		try {
+			this.#report?.(stage, error);
+		} catch {
+			/* ignored */
+		}
+	}
+	/** The turns still running. */
+	get active(): number {
+		return this.#turns.size;
+	}
+	/** Claims one turn and starts it; it runs on beside the others. Resolves
+	 * "idle" when nothing is claimable, else with the running turn's outcome. */
+	async claim(
+		signal: AbortSignal,
+	): Promise<{ state: "idle" } | { state: "claimed"; turn: Promise<CodingTurnOutcome> }> {
+		const value = await this.#control.call(
+			"qorpera_claim_coding_session",
+			{ p_owner: this.#owner, p_lease_seconds: 60 },
+			AbortSignal.any([signal, AbortSignal.timeout(10000)]),
+		);
+		if (value === null) return { state: "idle" };
+		const claim = parseCodingSessionClaim(value);
+		const turn = this.#turn(claim, signal);
+		this.#turns.add(turn);
+		void turn.finally(() => this.#turns.delete(turn)).catch(() => undefined);
+		return { state: "claimed", turn };
+	}
+	/** Every running turn has ended (after a shutdown, each detaches its session). */
+	async drain(): Promise<void> {
+		await Promise.allSettled([...this.#turns]);
+	}
+	housekeep(signal: AbortSignal): Promise<CodingHousekeepingOutcome[]> {
+		return this.#host.housekeep(signal);
+	}
+	/** One turn, serially: it claims nothing else. */
+	async runOnce(signal: AbortSignal): Promise<"idle" | CodingTurnOutcome> {
+		const claimed = await this.claim(signal);
+		return claimed.state === "idle" ? "idle" : claimed.turn;
+	}
+	async #turn(claim: CodingSessionClaim, signal: AbortSignal): Promise<CodingTurnOutcome> {
 		const stop = new AbortController();
 		const heartbeatStop = new AbortController();
 		const active = AbortSignal.any([signal, stop.signal]);
@@ -274,14 +356,12 @@ export class CloudCodingExecutor {
 			if (!Number.isFinite(milliseconds) || milliseconds < 1 || milliseconds > 305000)
 				throw new Error("Invalid coding lease deadline");
 			clearTimeout(watchdog);
-			watchdog = globalThis.setTimeout(() => stop.abort(), milliseconds);
+			// Coded reasons: whatever the abort interrupts reports why (errorCode).
+			watchdog = globalThis.setTimeout(() => stop.abort(new Error("CODING_EXECUTOR_LEASE_EXPIRED")), milliseconds);
 		};
 		const call = (method: (typeof CODING_EXECUTOR_RPCS)[number], args: Record<string, unknown>, checked = active) =>
 			this.#control.call(method, args, AbortSignal.any([checked, AbortSignal.timeout(10000)]));
 		try {
-			const value = await call("qorpera_claim_coding_session", { p_owner: this.#owner, p_lease_seconds: 60 });
-			if (value === null) return "idle";
-			claim = parseCodingSessionClaim(value);
 			const claimed = claim;
 			const args = { p_worker_id: claim.workerId, p_lease_token: claim.leaseToken };
 			const refresh = () => {
@@ -307,7 +387,7 @@ export class CloudCodingExecutor {
 						if (workspaceReady) await refresh();
 					}
 				} catch {
-					if (!heartbeatStop.signal.aborted) stop.abort();
+					if (!heartbeatStop.signal.aborted) stop.abort(new Error("CODING_EXECUTOR_LEASE_LOST"));
 				}
 			})();
 			const describe = async () => parseCodingTurnState(await call("qorpera_describe_coding_turn", args), claimed);
@@ -337,11 +417,37 @@ export class CloudCodingExecutor {
 				);
 				if (view.workerId !== claimed.workerId) throw new Error("Coding completion unconfirmed");
 			};
+			// The end of every turn: stop the session's commands and unplug its
+			// folders before the kernel hears the outcome.
+			const detach = async () => {
+				workspaceReady = false;
+				await leaseRefresh;
+				await this.#host.detachSession(claimed, active);
+			};
 
-			// 1. The workspace: retained VM, NAS volume, pinned base, seeded checkout.
+			// 1. The workspace: the member's machine, the session's NAS folders, pinned base, seeded checkout.
 			let turn = await describe();
 			if (turn.phase !== "preparing") throw new Error("Coding turn is not preparing");
-			const workspace = await this.#host.prepareWorkspace(claimed, turn, active);
+			let workspace: CodingWorkspace;
+			try {
+				workspace = await this.#host.prepareWorkspace(claimed, turn, active);
+			} catch (error) {
+				if (!(error instanceof CodingMachineUnavailable) || active.aborted) throw error;
+				// Nothing ran yet: unplug whatever was attached, then wait in the queue.
+				try {
+					await this.#host.detachSession(claimed, active);
+				} catch (detachError) {
+					this.#reported("stop", detachError);
+				}
+				try {
+					await call("qorpera_defer_coding_session", { ...args, p_reason: error.reason });
+				} catch (deferError) {
+					// The lease lapses; the session then fails visibly, never silently.
+					this.#reported("defer", deferError);
+					return "recovery-required";
+				}
+				return "deferred";
+			}
 			workspaceReady = true;
 			await refresh();
 			await progress({
@@ -352,18 +458,27 @@ export class CloudCodingExecutor {
 					{
 						kind: "step",
 						actor: "executor",
-						body: { text: `Prepared the repository VM at ${workspace.baseSha.slice(0, 7)}` },
+						body: { text: `Prepared the repository at ${workspace.baseSha.slice(0, 7)}` },
 					},
 				],
 			});
 			// 2. The model turn: admitted through the wake bus under the owner's sponsor.
-			const begun = record(
-				await call("qorpera_begin_coding_turn", {
-					...args,
-					p_coding: { vmId: workspace.vmId, turnId: turn.turnId },
-				}),
-				"Coding turn admission unconfirmed",
-			);
+			// Wake admission never waits for its company's row, and every agent tool
+			// call holds that row for its whole transaction, so begin is refused as
+			// busy while one runs. A busy refusal wrote nothing: begin again after a
+			// short pause, until the lease this turn held at the first try ends.
+			const admission = { ...args, p_coding: { vmId: workspace.vmId, turnId: turn.turnId } };
+			const admitBy = Date.parse(claimed.leaseUntil);
+			let begun: Record<string, unknown> | undefined;
+			for (let attempt = 0; !begun; attempt++) {
+				try {
+					begun = record(await call("qorpera_begin_coding_turn", admission), "Coding turn admission unconfirmed");
+				} catch (error) {
+					const pause = Math.min(2000, 250 * 2 ** attempt) * (0.5 + Math.random() / 2);
+					if (!(error instanceof CodingControlBusy) || Date.now() + pause >= admitBy) throw error;
+					await setTimeout(pause, undefined, { signal: active });
+				}
+			}
 			if (begun.workerId !== claimed.workerId || begun.sequence !== claimed.sequence)
 				throw new Error("Coding turn admission unconfirmed");
 			for (;;) {
@@ -377,18 +492,14 @@ export class CloudCodingExecutor {
 				await progress({ p_phase: "publishing", p_last_step: "Publishing the draft pull request" });
 				const publication = await this.#host.publish(claimed, submission, active);
 				if (!publication.pullRequest && !publication.noChange) throw new Error("Coding publication unconfirmed");
-				workspaceReady = false;
-				await leaseRefresh;
-				await this.#host.stopWorkspace(claimed, active);
+				await detach();
 				await complete("succeeded", submission.summary, {
 					p_pull_request: publication.pullRequest,
 					p_harness_session_ref: claimed.harnessSessionRef,
 				});
 				return "completed";
 			}
-			workspaceReady = false;
-			await leaseRefresh;
-			await this.#host.stopWorkspace(claimed, active);
+			await detach();
 			if (submission?.kind === "ask" && turn.jobStatus === "completed") {
 				await complete("blocked", submission.summary, {
 					p_needs: submission.question,
@@ -406,23 +517,26 @@ export class CloudCodingExecutor {
 			await complete("failed", reason);
 			return "failed";
 		} catch (error) {
+			// A lost or expired lease, or shutdown, is the cause, whatever await
+			// it interrupted.
+			const cause = active.aborted ? active.reason : error;
 			workspaceReady = false;
 			stop.abort();
 			await leaseRefresh.catch(() => undefined);
-			if (!claim) throw error;
-			// A separate cleanup custody must permit physical stop after work
-			// authority disappears. Never claim capacity released or completion.
+			this.#reported("turn", cause);
+			// A separate custody must permit unplugging the session after work
+			// authority disappears. Never claim completion.
 			try {
-				await this.#host.stopWorkspace(claim, AbortSignal.timeout(30000));
-			} catch {
+				await this.#host.detachSession(claim, AbortSignal.timeout(CLEANUP_STOP_BUDGET_MS));
+			} catch (stopError) {
 				/* recovery still required */
+				this.#reported("stop", stopError);
 			}
 			return "recovery-required";
 		} finally {
 			heartbeatStop.abort();
 			clearTimeout(watchdog);
 			await heartbeat;
-			this.#active = false;
 		}
 	}
 }

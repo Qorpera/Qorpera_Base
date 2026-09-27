@@ -14,6 +14,11 @@ ExecStart=/usr/bin/node /opt/qorpera-coding-executor/qorpera-coding-executor.mjs
 LoadCredential=qorpera-coding-executor-config:/etc/qorpera/coding-executor.json
 LoadCredential=qorpera-coding-registry:/etc/qorpera/coding-registry.key
 LoadCredential=qorpera-coding-command:/etc/qorpera/coding-command.key
+# v6: a distinct token for this node's local-only peer command listener.
+LoadCredential=qorpera-coding-peer-command:/etc/qorpera/coding-peer-command.key
+# Every commandPeers entry also needs a reviewed drop-in LoadCredential for
+# its tokenCredential. Peer HTTPS proxies target peerCommandPort, never the
+# public commandPort. Each node's peer token must be unique.
 # The executor's own broker token (config "broker.executorTokenCredential"): the
 # value company brokers load as qorpera-cloud-secret-coding-executor. Never the
 # runtime token guests hold. Repository tokens come from each company's GitHub
@@ -23,17 +28,24 @@ LoadCredential=qorpera-coding-broker-executor:/etc/qorpera/coding-broker-executo
 # LoadCredential=qorpera-coding-repository-NAME:<file> in a reviewed drop-in.
 Restart=on-failure
 RestartSec=5s
-TimeoutStopSec=45s
+# A SIGTERM mid-turn still detaches each running session from its member's
+# machine (45 s budget, CLEANUP_STOP_BUDGET_MS); a kill during a machine's
+# lifecycle step would leave it recovery-required. Keep this well above the budget.
+TimeoutStopSec=75s
 KillMode=control-group
 NoNewPrivileges=yes
 PrivateTmp=yes
 PrivateDevices=yes
 ProtectSystem=strict
 ProtectHome=yes
-ProtectKernelTunables=yes
+# The Git broker's bubblewrap sandbox mounts a fresh /proc, which a masked
+# parent /proc (ProtectKernelTunables) forbids; the executor has no
+# capabilities, so /proc/sys stays unwritable anyway.
+ProtectKernelTunables=no
 ProtectKernelModules=yes
 ProtectControlGroups=yes
-RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+# AF_NETLINK: bubblewrap brings up the sandbox's loopback over NETLINK_ROUTE.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
 CapabilityBoundingSet=
 UMask=0077
 MemoryMax=2G

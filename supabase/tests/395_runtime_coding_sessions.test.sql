@@ -95,10 +95,45 @@ begin
 	perform pg_temp.worker('{"action":"cancel","operationKey":"c2-cancel","todoKey":"composer-latency","workerKey":"notes"}');
 	perform pg_temp.wake_assert((pg_temp.worker_row('notes')).state = 'cancelled','The in-house helper leaves the queue');
 end $$;
-select pg_temp.wake_error($q$select pg_temp.worker('{"action":"dispatch","operationKey":"c3","todoKey":"composer-latency","workerKey":"fix-send-2",
-	"title":"Second","goal":"g","definitionOfDone":"d","access":"read","species":"coding","harness":"codex",
-	"repository":{"host":"github.com","owner":"Qorpera","name":"Qorpera_Base","baseBranch":"master"}}')$q$,'54000',
-	'The owner already has a coding session running in codex; wait for it or follow it up');
+-- A member's sessions run side by side on their coding machine: a second one in the same harness is not refused.
+do $$
+begin
+	perform pg_temp.worker('{"action":"dispatch","operationKey":"c3","todoKey":"composer-latency","workerKey":"fix-send-2",
+		"title":"Second","goal":"g","definitionOfDone":"d","access":"read","species":"coding","harness":"codex",
+		"repository":{"host":"github.com","owner":"Qorpera","name":"Qorpera_Base","baseBranch":"master"}}');
+	perform pg_temp.wake_assert((pg_temp.session_row('fix-send-2')).phase = 'queued'
+		and (pg_temp.worker_row('fix-send-2')).owner_user_id = (pg_temp.worker_row('fix-send')).owner_user_id,
+		'The owner may start a second coding session in the same harness while the first runs');
+	perform pg_temp.worker('{"action":"cancel","operationKey":"c3-cancel","todoKey":"composer-latency","workerKey":"fix-send-2"}');
+	perform pg_temp.wake_assert((pg_temp.session_row('fix-send-2')).phase = 'cancelled','The second session leaves the queue');
+end $$;
+
+create function pg_temp.fleet_node(p_node uuid, p_owner text, p_host text, p_provider text) returns void language plpgsql as $$
+begin
+	perform public.qorpera_configure_coding_executor('30000000-0000-4000-8000-000000000020',p_owner,true,array['codex']);
+	perform public.qorpera_configure_coding_vm_policy('30000000-0000-4000-8000-000000000020',p_owner,
+		jsonb_build_object('providerId',p_provider,'providerPolicySha256',repeat('f',64),'project','coding','imageFingerprint',repeat('a',64),
+		'bootstrapSha256',repeat('b',64),'storagePool','coding','network','coding','cpus',2,'memoryBytes',2147483648,'rootDiskBytes',4294967296));
+	perform public.qorpera_configure_coding_nas_policy('30000000-0000-4000-8000-000000000020',p_owner,p_host,
+		jsonb_build_object('schema','qorpera.coding-nas-policy/v1','mountPoint','/srv/coding','rootPath','/srv/coding/executor',
+		'source','192.168.1.40:/coding','serverAddress','192.168.1.40'));
+	perform public.qorpera_configure_runtime_node(jsonb_build_object('schema','qorpera.runtime-node-policy/v1',
+		'nodeId',p_node,'machineIdSha256',p_host,'label',p_provider,'cpuMillis',6000,'memoryBytes',8589934592,
+		'headroomCpuMillis',2000,'headroomMemoryBytes',1073741824,'standardCpuMillis',2000,'standardMemoryBytes',2147483648,'enabled',true),0);
+	perform public.qorpera_enroll_runtime_node_provider(p_node,p_host,'coding',p_provider,repeat('f',64),2000,2147483648);
+	perform public.qorpera_enroll_runtime_node_inventory(jsonb_build_object('schema','qorpera.runtime-node-inventory-policy/v1',
+		'nodeId',p_node,'host',jsonb_build_object('machineIdSha256',p_host,'socketPath','/var/snap/lxd/common/lxd/unix.socket',
+		'socketGid',0,'certificateSha256',repeat('e',64),'serverName','lxd','serverVersion','5.21','architecture','x86_64'),
+		'operatingCpuMillis',500,'operatingMemoryBytes',536870912,'infrastructure','[]'::jsonb));
+	perform public.qorpera_observe_runtime_node_inventory(jsonb_build_object('schema','qorpera.runtime-node-observation/v1',
+		'nodeId',p_node,'machineIdSha256',p_host,'observationId',extensions.gen_random_uuid(),
+		'observedAt',to_char(clock_timestamp() at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"'),'cpuMillis',6000,'memoryBytes',8589934592,'state','ready'),
+		public.qorpera_runtime_node_inventory_context(p_node) ->> 'contextSha256',
+		jsonb_build_object('schema','qorpera.runtime-node-inventory/v1','bootId',extensions.gen_random_uuid(),'entries','[]'::jsonb));
+end $$;
+
+select pg_temp.wake_assert(public.qorpera_claim_coding_session('exec-test',60) is null,'An unconfigured executor keeps sessions queued');
+select pg_temp.fleet_node('30000000-0000-4000-8000-000000000310','exec-test',repeat('c',64),'coding-fixture');
 
 -- 2. The executor claims the session, prepares, admits the turn under the owner's sponsor, and the
 --    finished run is not mistaken for the worker's report.
@@ -192,10 +227,12 @@ begin
 	perform pg_temp.wake_assert(v_read ->> 'isOwner' = 'true' and v_read #>> '{session,phase}' = 'input_ready'
 		and jsonb_array_length(v_read -> 'events') >= 5 and v_read #>> '{events,0,kind}' = 'phase','The thread reads the session and its stream');
 	v_read := public.qorpera_list_coding_sessions('30000000-0000-4000-8000-000000000040');
-	perform pg_temp.wake_assert(jsonb_array_length(v_read -> 'sessions') = 1 and v_read #>> '{sessions,0,workerId}' = v_worker.id::text
-		and v_read #>> '{sessions,0,isOwner}' = 'true' and v_read #>> '{sessions,0,sessionId}' = '30000000-0000-4000-8000-000000000040'
-		and v_read #>> '{sessions,0,agentId}' = '30000000-0000-4000-8000-000000000030',
-		'The conversation lists the coding session its agent dispatched from it');
+	-- Both sessions the agent dispatched here, the cancelled second one included.
+	perform pg_temp.wake_assert(jsonb_array_length(v_read -> 'sessions') = 2 and exists (select 1 from jsonb_array_elements(v_read -> 'sessions') listed
+		where listed.value ->> 'workerId' = v_worker.id::text and listed.value ->> 'isOwner' = 'true'
+			and listed.value ->> 'sessionId' = '30000000-0000-4000-8000-000000000040'
+			and listed.value ->> 'agentId' = '30000000-0000-4000-8000-000000000030'),
+		'The conversation lists the coding sessions its agent dispatched from it');
 end $$;
 select pg_temp.wake_error($q$select public.qorpera_answer_coding_session((pg_temp.worker_row('fix-send')).id,'Again','30000000-0000-4000-8000-000000000102')$q$,
 	'55000','The session is still working; wait for its question or its result');
@@ -206,8 +243,9 @@ declare v_read jsonb := public.qorpera_read_coding_session((pg_temp.worker_row('
 begin
 	perform pg_temp.wake_assert(v_read ->> 'isOwner' = 'false' and v_read #>> '{session,harness}' = 'codex','Other members read the session and are told they are not the owner');
 	v_read := public.qorpera_list_coding_sessions('30000000-0000-4000-8000-000000000040');
-	perform pg_temp.wake_assert(jsonb_array_length(v_read -> 'sessions') = 1 and v_read #>> '{sessions,0,isOwner}' = 'false',
-		'Other members see the session in the thread too');
+	perform pg_temp.wake_assert(jsonb_array_length(v_read -> 'sessions') = 2
+		and not exists (select 1 from jsonb_array_elements(v_read -> 'sessions') listed where listed.value ->> 'isOwner' <> 'false'),
+		'Other members see the sessions in the thread too');
 end $$;
 select pg_temp.path_claims('anon');
 select pg_temp.wake_error($q$select public.qorpera_list_coding_sessions('30000000-0000-4000-8000-000000000040')$q$,'22023');

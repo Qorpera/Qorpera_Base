@@ -8,6 +8,7 @@ import { badge, button, confirmDialog, h, icon, initials, notice, replace } from
 import { groupChatAvatar, isGroupChat } from "../../ui/group-chat.ts";
 import { matchesKey } from "../../ui/keys.ts";
 import { nameDialog } from "../../ui/name-dialog.ts";
+import { attachPersonPicture, personPicturesEpoch } from "../../ui/person-pictures.ts";
 import { phrase, presentationLocale, t, uiText } from "../../ui/preferences.ts";
 import { quietScroll } from "../../ui/quiet-scroll.ts";
 import { RailDrag, type RailDrop } from "../../ui/rail-drag.ts";
@@ -120,7 +121,14 @@ function accountMenuElement(context: ShellContext, company?: CompanyController):
 	accountMenu.classList.toggle("account-menu-rail", Boolean(company));
 	accountContext = context;
 	const name = displayName(context.user);
-	const shown = JSON.stringify([name, context.invitations, Boolean(company), presentationLocale()]);
+	const shown = JSON.stringify([
+		name,
+		context.user?.id,
+		personPicturesEpoch(),
+		context.invitations,
+		Boolean(company),
+		presentationLocale(),
+	]);
 	if (shown === accountShown) return accountMenu;
 	accountTrigger!.setAttribute("aria-label", t("Profile: {name}", { name }));
 	accountTrigger!.title = name;
@@ -142,9 +150,11 @@ function accountMenuElement(context: ShellContext, company?: CompanyController):
 			h("span", { class: "account-item-label" }, uiText(label)),
 			count > 0 ? h("span", { class: "account-count" }, String(count)) : null,
 		);
+	const chip = h("span", { class: "account-chip", "aria-hidden": "true" }, initials(name));
+	if (context.user) attachPersonPicture(chip, context.user.id);
 	replace(
 		accountTrigger!,
-		h("span", { class: "account-chip", "aria-hidden": "true" }, initials(name)),
+		chip,
 		h("span", { class: "account-trigger-name" }, name),
 		company ? null : h("span", { class: "account-chevron", "aria-hidden": "true" }),
 	);
@@ -252,6 +262,8 @@ interface RailParts {
 	/** The company's sections by id, and Unassigned, each built once and kept. */
 	sections: Map<string, SectionParts>;
 	readonly unassigned: SectionParts;
+	/** Grok Bot's "Hidden Bots": this member's hidden agents, folded at the foot of the list. */
+	readonly hiddenGroup: HiddenParts;
 	/** The list's placeholder, built when first shown so it breathes with the page's. */
 	loading: HTMLElement | undefined;
 	readonly empty: HTMLElement;
@@ -269,6 +281,54 @@ interface RailParts {
 	context?: ShellContext;
 	readonly drag: RailDrag;
 	redraw: () => void;
+}
+interface HiddenParts {
+	readonly el: HTMLElement;
+	readonly toggle: HTMLButtonElement;
+	readonly label: HTMLElement;
+	readonly count: HTMLElement;
+	readonly chevron: HTMLElement;
+	readonly list: HTMLElement;
+	open: boolean;
+}
+const HIDDEN_OPEN_KEY = "qorpera.web.rail-hidden-open";
+function hiddenParts(redraw: () => void): HiddenParts {
+	let open = false;
+	try {
+		open = localStorage.getItem(HIDDEN_OPEN_KEY) === "1";
+	} catch {
+		/* Storage may be unavailable; the group starts folded. */
+	}
+	const label = h("span", { class: "rail-hidden-label" });
+	const count = h("span", { class: "rail-hidden-count" });
+	const chevron = h("span", { class: "rail-hidden-chevron", "aria-hidden": "true" }, icon("chevron-down"));
+	const list = h("div", { class: "rail-section-list rail-hidden-list", id: "rail-hidden-list" });
+	const toggle = h(
+		"button",
+		{ type: "button", class: "rail-hidden-toggle", "aria-controls": "rail-hidden-list" },
+		label,
+		count,
+		chevron,
+	);
+	const parts: HiddenParts = {
+		el: h("div", { class: "rail-hidden" }, toggle, list),
+		toggle,
+		label,
+		count,
+		chevron,
+		list,
+		open,
+	};
+	toggle.addEventListener("click", () => {
+		parts.open = !parts.open;
+		try {
+			localStorage.setItem(HIDDEN_OPEN_KEY, parts.open ? "1" : "0");
+		} catch {
+			/* The choice lasts this visit. */
+		}
+		redraw();
+	});
+	return parts;
 }
 interface SectionParts {
 	readonly el: HTMLElement;
@@ -334,6 +394,7 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 			),
 			sections: new Map(),
 			unassigned: sectionParts("unassigned"),
+			hiddenGroup: hiddenParts(() => created.redraw()),
 			loading: undefined,
 			empty: h("p", { class: "rail-empty" }),
 			rows: new Map(),
@@ -393,6 +454,7 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 		const slot = parts.pinnedGroup.querySelector<HTMLElement>(".rail-drop-slot");
 		if (slot) slot.textContent = t("Drop here to pin");
 		parts.unassigned.title.textContent = t("Unassigned");
+		parts.hiddenGroup.label.textContent = t("Hidden agents");
 		parts.input.setAttribute("aria-label", t("Search agents"));
 		parts.close.setAttribute("aria-label", t("Close company navigation"));
 		parts.add.setAttribute("aria-label", t("New conversation or agent"));
@@ -644,6 +706,35 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	});
 	for (const [sectionId] of parts.sections)
 		if (!sidebar?.sections.some((item) => item.sectionId === sectionId)) parts.sections.delete(sectionId);
+	// Hidden agents fold at the foot of the list, where they can be shown again. A search
+	// already lists the matching ones in their places.
+	const hiddenAgents = railQuery
+		? []
+		: roster
+				.filter((agentId) => hidden.has(agentId))
+				.map((agentId) => company.staffById(agentId))
+				.filter((agent): agent is HostedStaffAgent => Boolean(agent));
+	const hiddenGroup = parts.hiddenGroup;
+	hiddenGroup.count.textContent = String(hiddenAgents.length);
+	hiddenGroup.count.hidden = hiddenGroup.open;
+	hiddenGroup.chevron.hidden = !hiddenGroup.open;
+	hiddenGroup.toggle.setAttribute("aria-expanded", String(hiddenGroup.open));
+	hiddenGroup.toggle.setAttribute("aria-label", t("Hidden agents: {count}", { count: hiddenAgents.length }));
+	hiddenGroup.list.hidden = !hiddenGroup.open;
+	reconcile(
+		hiddenGroup.list,
+		hiddenGroup.open
+			? hiddenAgents.map((agent) =>
+					row(
+						`hidden:#/c/${profileId}/staff/${agent.id}`,
+						`#/c/${profileId}/staff/${agent.id}`,
+						agentModel(agent),
+						isActive(agent.id),
+						agentRow,
+					),
+				)
+			: [],
+	);
 	const unassignedRows = [
 		...inContainer(undefined),
 		// Conversations that are not one agent's own thread: rooms and group work.
@@ -687,7 +778,11 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 		notices.set(about, entry);
 		return entry.element;
 	};
-	const anyRows = pinnedElements.length + unassignedRows.length + sectionGroups.reduce((n, g) => n + g.rows.length, 0);
+	const anyRows =
+		pinnedElements.length +
+		unassignedRows.length +
+		hiddenAgents.length +
+		sectionGroups.reduce((n, g) => n + g.rows.length, 0);
 	if (!state.loading || state.staff.length) parts.loading = undefined;
 	else parts.loading ??= railListSkeleton();
 	const empty =
@@ -767,6 +862,7 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 			// A section shows while it has rows, and always when nothing is being searched.
 			...sectionGroups.filter(({ rows: r }) => r.length || !railQuery).map(({ group }) => group.el),
 			unassignedRows.length || (sectioned && !railQuery) ? parts.unassigned.el : null,
+			hiddenAgents.length ? hiddenGroup.el : null,
 			empty ? parts.empty : null,
 		].filter((element) => element !== null),
 	);
@@ -826,8 +922,11 @@ async function askSectionName(company: CompanyController, agentId?: string): Pro
 	});
 	const sidebar = company.store.get().sidebar;
 	if (!name || !sidebar) return;
-	// A pinned agent leaves the pinned row for its section, as when it is dragged there.
+	// A pinned agent leaves the pinned row for its section, as when it is dragged there;
+	// a hidden one is shown again.
 	const unpin = agentId && sidebar.pinned.includes(agentId) ? { unpin: true } : {};
+	if (agentId && sidebar.hidden.includes(agentId))
+		void company.changeSidebar({ action: "set_hidden", staffAgentId: agentId, hidden: false });
 	const existing = sameName(sidebar, name);
 	if (existing && agentId) {
 		// Naming a section that exists moves the agent there.
@@ -893,7 +992,10 @@ function agentMenu(company: CompanyController, parts: RailParts, agent: HostedSt
 			const current = placed && known.has(placed) ? placed : undefined;
 			// Choosing the section it is in keeps a row where it is; a pinned agent moves out
 			// of the pinned row into the section it is given, as when it is dragged there.
+			const isHidden = sidebar.hidden.includes(agent.id);
 			const move = (sectionId: string | null) => () => {
+				// A hidden agent given a section is shown again, where it was sent.
+				if (isHidden) void company.changeSidebar({ action: "set_hidden", staffAgentId: agent.id, hidden: false });
 				if (!pinned && (sectionId ?? undefined) === current) return;
 				void company.changeSidebar({
 					action: "move_agent",
@@ -1197,6 +1299,9 @@ function dragHooks(company: CompanyController, parts: RailParts) {
 				return;
 			}
 			const sectionId = zone === "unassigned" ? undefined : zone.slice("section:".length);
+			// Dragged out of Hidden agents, the agent is shown again where it lands.
+			const wasHidden = sidebar.hidden.includes(agentId);
+			if (wasHidden) void company.changeSidebar({ action: "set_hidden", staffAgentId: agentId, hidden: false });
 			// The rail shows no hidden or pinned agents; the new order keeps them where they stood.
 			const roster = company.sidebarRoster();
 			const before = containerOrder(sidebar, sectionId, roster);
@@ -1204,7 +1309,7 @@ function dragHooks(company: CompanyController, parts: RailParts) {
 			const following = order[order.indexOf(agentId) + 1];
 			const at = following ? next.indexOf(following) : -1;
 			next.splice(at < 0 ? next.length : at, 0, agentId);
-			if (!pinned && next.join() === before.join()) return;
+			if (!pinned && !wasHidden && next.join() === before.join()) return;
 			void company.changeSidebar({
 				action: "move_agent",
 				staffAgentId: agentId,
@@ -1224,6 +1329,8 @@ function nudgeAgent(company: CompanyController, agentId: string, delta: number):
 	const sidebar = state.sidebarUnavailable ? undefined : state.sidebar;
 	if (!sidebar) return;
 	const roster = company.sidebarRoster();
+	// Hidden agents keep no visible place to move from.
+	if (sidebar.hidden.includes(agentId)) return;
 	if (sidebar.pinned.includes(agentId)) {
 		const order = sidebar.pinned.filter((pinned) => roster.includes(pinned));
 		const from = order.indexOf(agentId);

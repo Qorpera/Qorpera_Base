@@ -241,6 +241,50 @@ describe("projectTranscript", () => {
 		expect(item && item.kind === "member" ? item.pending : undefined).toBe("processing");
 	});
 
+	it("places a waiting input before the next member message sent after it, else last", () => {
+		const input = (inputId: string, position: number, createdAt: string): PendingSessionInput => ({
+			inputId,
+			position,
+			kind: "user_message",
+			authorUserId: USER,
+			authorDisplayName: "Jonas",
+			body: { schema: "qorpera.session-prompt/v1", text: inputId, images: [] },
+			createdAt,
+			status: "queued",
+		});
+		const id = (sequence: number) => `44444444-4444-4444-8444-${String(sequence).padStart(12, "0")}`;
+		const member = (sequence: number, text: string) =>
+			event(sequence, { sessionInputId: id(sequence), body: runnerEntry("user", text, { id: id(sequence) }) });
+		const agent = (sequence: number, text: string) => {
+			const execution = { kind: "run" as const, id: RUN, claimantId: RUN, runnerAssignmentId: RUN };
+			return event(sequence, {
+				execution,
+				body: runnerEntry("assistant", text, {
+					id: id(sequence),
+					execution,
+					delivery: { schema: AGENT_SEND_SCHEMA, phase: "final" },
+				}),
+			});
+		};
+		// One the cloud never took, and one sent while the agent is still writing.
+		const stuck = "66666666-6666-4666-8666-666666666666";
+		const busy = "77777777-7777-4777-8777-777777777777";
+		const projection = projectTranscript(
+			[
+				member(1, "before"),
+				agent(2, "reply to before"),
+				agent(3, "routine note"),
+				member(4, "after"),
+				agent(5, "reply to after"),
+				agent(6, "still working"),
+			],
+			[input(stuck, 1, "2026-09-02T10:00:03.500Z"), input(busy, 2, "2026-09-02T10:00:05.500Z")],
+		);
+		expect(
+			projection.items.map((item) => (item.kind === "member" || item.kind === "agent" ? item.text : item.kind)),
+		).toEqual(["before", "reply to before", "routine note", stuck, "after", "reply to after", "still working", busy]);
+	});
+
 	it("surfaces authorization events as cards", () => {
 		const projection = projectTranscript([
 			event(1, { eventType: "authorization_request", body: { operation: "send-email", to: "x@y.z" } }),
@@ -330,6 +374,37 @@ describe("interaction cards in the transcript", () => {
 		const card = projection.items[0];
 		if (card?.kind !== "interaction") throw new Error("card expected");
 		expect(card.answer).toMatchObject({ outcome: "answered", pending: true, answeredBy: USER });
+	});
+
+	it("opens a card again when its answer's delivery failed, and settles it with a later answer", () => {
+		const failed: PendingSessionInput = {
+			inputId: "55555555-5555-4555-8555-000000000004",
+			position: 4,
+			kind: "user_message",
+			authorUserId: USER,
+			authorDisplayName: "Jonas",
+			body: answerData,
+			createdAt: "2026-09-02T10:00:04Z",
+			status: "failed",
+			failureReason: "The selected sponsor quota or model authority is unavailable",
+		};
+		const card = [event(1, { eventId: CARD, eventType: "interaction_request", body: request })];
+		const reopened = projectTranscript(card, [failed]).items;
+		expect(reopened).toHaveLength(1);
+		if (reopened[0]?.kind !== "interaction") throw new Error("card expected");
+		expect(reopened[0].answer).toBeUndefined();
+		expect(reopened[0].answerFailed).toBe(true);
+
+		const again = {
+			...failed,
+			inputId: "55555555-5555-4555-8555-000000000005",
+			position: 5,
+			status: "queued" as const,
+		};
+		const settled = projectTranscript(card, [failed, again]).items;
+		if (settled[0]?.kind !== "interaction") throw new Error("card expected");
+		expect(settled[0].answer).toMatchObject({ outcome: "answered", pending: true });
+		expect(settled[0].answerFailed).toBeUndefined();
 	});
 
 	it("hides a card it cannot read and an answer whose card is not loaded", () => {

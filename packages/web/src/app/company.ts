@@ -2,6 +2,13 @@ import type { NativeExecutionConnections } from "@qorpera/cloud-client/cloud-nat
 import type { CloudApi } from "../cloud/api.ts";
 import { CloudRpcError, describeError } from "../cloud/client.ts";
 import type { CodingSession, CodingSessionRead } from "../cloud/coding-session.ts";
+import {
+	type EmailDraftAction,
+	EmailDraftClient,
+	type EmailDraftContent,
+	type EmailDraftEditor,
+	type EmailDraftState,
+} from "../cloud/email-drafts.ts";
 import { type GroupChatDetails, listGroupChatDetails, readGroupChatDetails } from "../cloud/group-details.ts";
 import type { InteractionAnswer, InteractionOutcome, InteractionRequest } from "../cloud/interactions.ts";
 import { buildCompanyHierarchy, type CompanyHierarchy, type HostedCompanyOrganization } from "../cloud/organization.ts";
@@ -13,6 +20,7 @@ import {
 	subscribeProfileRealtime,
 	subscribeSidebarRealtime,
 } from "../cloud/realtime.ts";
+import type { ActionReviewAnswer } from "../cloud/review-rules.ts";
 import { sessionAttachmentProblem } from "../cloud/session-attachments.ts";
 import {
 	type RoomMessageTarget,
@@ -99,6 +107,15 @@ function retryRefusal(error: unknown): string {
 	return t("It could not be tried again. Send the message again instead.");
 }
 
+/** Why the cloud would not take a card's answer, in the member's words. */
+function answerRefusal(error: unknown): string {
+	const message = error instanceof Error ? error.message : "";
+	// In an agent's thread an answer runs the agent on the member's own model account.
+	if (/sponsor|model account/i.test(message)) return t("Select an active model account, then try again.");
+	if (/paused/i.test(message)) return t("Agents are paused for a moment while Qorpera updates. Try again shortly.");
+	return describeError(error);
+}
+
 export interface CompanyState {
 	profile: HostedProfile;
 	team?: HostedProfileTeam;
@@ -176,16 +193,23 @@ export interface ConversationState {
 	interactionError?: string;
 }
 
-/** Drop optimistic card answers once the projection carries them. */
+/** Drop optimistic card answers once the projection carries them, or once their
+ * input failed: that answer never reached the agent, so the card is open again. */
 function reconcileInteractionAnswers(
 	answers: Record<string, InteractionAnswer> | undefined,
 	projection: TranscriptProjection,
+	pending: readonly PendingSessionInput[],
 ): Record<string, InteractionAnswer> | undefined {
 	if (!answers) return undefined;
 	const settled = new Set(
 		projection.items.flatMap((item) => (item.kind === "interaction" && item.answer ? [item.id.toLowerCase()] : [])),
 	);
-	const kept = Object.fromEntries(Object.entries(answers).filter(([id]) => !settled.has(id)));
+	const failed = new Set(pending.flatMap((input) => (input.status === "failed" ? [input.inputId] : [])));
+	const kept = Object.fromEntries(
+		Object.entries(answers).filter(
+			([id, answer]) => !settled.has(id) && !(answer.inputId && failed.has(answer.inputId)),
+		),
+	);
 	return Object.keys(kept).length ? kept : undefined;
 }
 
@@ -214,6 +238,19 @@ export function isAgentThreadSession(session: HostedSession): boolean {
 		scope.agentThread === true
 	);
 }
+/** Who answers a card, as the kernel's qorpera_answer_interaction checks it: the
+ * member a private conversation belongs to, the creator of a company one, and in
+ * an agent's shared thread the member the card was raised for, whom the card's
+ * event names as its actor. Nobody in a group chat: an answer there reaches no
+ * single agent (bundle v105). */
+export function answersInteraction(session: HostedSession, actorUserId: string, userId: string): boolean {
+	if (session.status !== "open") return false;
+	if (isAgentThreadSession(session)) return actorUserId === userId;
+	if (session.executionScope && "roomId" in session.executionScope) return false;
+	return session.audience.kind === "member_private"
+		? session.audience.userId === userId
+		: session.createdByUserId === userId;
+}
 /** The transcript of two agents' messages to each other (contract 14.6): a
  * company-audience session bound to the pair, view-only, opened from a chip. */
 export function isAgentPairSession(session: HostedSession | undefined): boolean {
@@ -231,6 +268,8 @@ export class CompanyController {
 	readonly store: Store<CompanyState>;
 	readonly conversations = new Map<string, Store<ConversationState>>();
 	readonly #api: CloudApi;
+	#emailDraftClient: EmailDraftClient | undefined;
+	readonly #emailDraftEditors = new Map<string, EmailDraftEditor>();
 	readonly #userId: string;
 	readonly #writeInput: SessionInputWriter;
 	#realtime: RealtimeSubscription | undefined;
@@ -303,6 +342,7 @@ export class CompanyController {
 		if (this.#stopped) return;
 		this.#stopped = true;
 		this.#abort.abort();
+		this.#emailDraftEditors.clear();
 		for (const store of this.conversations.values())
 			store.set({ draft: "", attachments: [], retrySend: undefined, executionSponsor: undefined });
 		this.#realtime?.stop();
@@ -502,6 +542,7 @@ export class CompanyController {
 			if (this.#stopped || version !== this.#versions.activity) return;
 			this.store.set((state) => ({ activity, recoveries: stillFailed(state.recoveries, activity) }));
 			if (activity.some((item) => item.activity !== "needs_attention")) this.#watchWork(6_000);
+			this.#settleStops();
 			void this.#readRecoveries(activity);
 		} catch {
 			/* Activity is an indicator; its absence must not block the company. */
@@ -546,12 +587,33 @@ export class CompanyController {
 		}
 		const known = this.store.get().recoveries;
 		const changed = read.filter((recovery) => JSON.stringify(known[recovery.runId]) !== JSON.stringify(recovery));
-		if (!changed.length) return;
-		this.store.set((state) => {
-			const recoveries = { ...state.recoveries };
-			for (const recovery of changed) recoveries[recovery.runId] = recovery;
-			return { recoveries: stillFailed(recoveries, state.activity) };
-		});
+		if (changed.length)
+			this.store.set((state) => {
+				const recoveries = { ...state.recoveries };
+				for (const recovery of changed) recoveries[recovery.runId] = recovery;
+				return { recoveries: stillFailed(recoveries, state.activity) };
+			});
+		this.#settleStops();
+	}
+
+	/* A run a member stopped is no failure. A cloud before 20260926192436 still lists
+	 * a stop, ranked above the agent's live work, which it then hides (and that work's
+	 * Stop with it). Once the stop's details show it left no decision, a member who can
+	 * write acknowledges it for the company, and the live work shows again. A newer
+	 * cloud lists a stop only while its proposal waits, so this finds nothing there. A
+	 * refused acknowledgment is tried again on a later activity read. */
+	#settleStops(): void {
+		const { activity, recoveries, acknowledgedRuns, team, accessLost } = this.store.get();
+		if (!team?.capabilities.write || accessLost) return;
+		for (const row of activity) {
+			const recovery = recoveries[row.runId];
+			if (row.jobStatus !== "cancelled" || !isFailedRun(row) || !recovery || recovery.proposalId) continue;
+			if (acknowledgedRuns?.[row.runId]) continue;
+			void this.dismissFailedRun(row.runId, { refresh: false }).then(
+				() => this.refreshActivity(),
+				() => undefined,
+			);
+		}
 	}
 
 	/** The next activity read asks again for a run's details. */
@@ -700,47 +762,64 @@ export class CompanyController {
 		return this.store.get().team?.members.find((member) => member.userId === userId)?.displayName ?? t("Member");
 	}
 
-	activityFor(staffAgentId: string | undefined): HostedStaffExecutionActivity | undefined {
+	/** The agent's newest run as the server reports it, settled or not. */
+	#newestActivity(staffAgentId: string | undefined): HostedStaffExecutionActivity | undefined {
 		if (!staffAgentId) return undefined;
-		const state = this.store.get();
-		const row = state.activity
-			.filter((item) => item.staffAgentId === staffAgentId)
+		return this.store
+			.get()
+			.activity.filter((item) => item.staffAgentId === staffAgentId)
 			.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
+	}
+
+	activityFor(staffAgentId: string | undefined): HostedStaffExecutionActivity | undefined {
+		const row = this.#newestActivity(staffAgentId);
+		if (!row || !isFailedRun(row)) return row;
+		const state = this.store.get();
+		const recovery = state.recoveries[row.runId];
+		// An open proposal is a decision, not a failure, and stays until it is decided.
+		if (recovery?.proposalId) return row;
 		// A dismissed failure is settled for this member even before the cloud's next
-		// activity read; the agent reads as idle until newer work is reported. An open
-		// proposal is a decision, not a failure, and stays until it is decided.
-		return row && isFailedRun(row) && state.acknowledgedRuns?.[row.runId] && !state.recoveries[row.runId]?.proposalId
-			? undefined
-			: row;
+		// activity read; the agent reads as idle until newer work is reported. A run a
+		// member stopped is no failure at all: once its details show it left no
+		// decision, it is settled too (a cloud before 20260926192436 still lists it).
+		return state.acknowledgedRuns?.[row.runId] || (row.jobStatus === "cancelled" && recovery) ? undefined : row;
 	}
 
 	/** What the member sees of an agent's execution. A queued run is already the
 	 * agent's work from the member's side of the screen. needs_attention is either
 	 * a decision (a run's Company File proposal is open) or a run that did not
 	 * finish. The server reports one run per agent and ranks an undismissed failure
-	 * above newer work, so "failed" stands until the member dismisses it. */
+	 * above newer work, so "failed" stands until the member dismisses it. A run a
+	 * member stopped (every cancelled job is one) is never "failed": the server
+	 * lists it only while its proposal waits, below all of the agent's work. */
 	agentState(staffAgentId: string | undefined): AgentState {
 		const row = this.activityFor(staffAgentId);
 		if (!row) return "idle";
 		if (row.activity !== "needs_attention")
 			return row.jobStatus === "leased" && row.phase === "writing" ? "writing" : "working";
 		if (!isFailedRun(row)) return "decision";
-		return this.store.get().recoveries[row.runId]?.proposalId ? "decision" : "failed";
+		return row.jobStatus === "cancelled" || this.store.get().recoveries[row.runId]?.proposalId
+			? "decision"
+			: "failed";
 	}
 
 	failedRunFor(staffAgentId: string | undefined): FailedRun | undefined {
 		const row = this.activityFor(staffAgentId);
 		if (!row || !isFailedRun(row)) return undefined;
 		const recovery = this.store.get().recoveries[row.runId];
+		// A stopped run's line only ever asks for its decision, so it waits for the details that name it.
+		if (row.jobStatus === "cancelled" && !recovery?.proposalId) return undefined;
 		return recovery ? { activity: row, recovery } : { activity: row };
 	}
 
 	/** Whether Try again can be offered for this run. A session turn is re-queued by the
 	 * recovery RPC; a post into a room needs qorpera_retry_room_delivery (20260920080000).
-	 * Routine and agent wakes, and proposal reviews, are not the member's to repeat. */
+	 * Routine and agent wakes, and proposal reviews, are not the member's to repeat, and
+	 * neither is a run a member stopped: to repeat the message, they send it again. */
 	canRetryFailedRun(failed: FailedRun): boolean {
 		const state = this.store.get();
 		if (!state.team?.capabilities.write || state.accessLost || failed.recovery?.proposalId) return false;
+		if (failed.activity.jobStatus === "cancelled") return false;
 		if ((failed.recovery?.unsettledOperations ?? 0) > 0) return false;
 		if (failed.activity.sourceKind === "session_turn") return true;
 		return failed.activity.sourceKind === "room_delivery" && !state.roomRetryUnavailable;
@@ -826,13 +905,23 @@ export class CompanyController {
 
 	/** A new message supersedes the agent's last failure: dismiss it on the member's behalf. */
 	#dismissFailureFor(sessionId: string): void {
-		const session = this.store.get().sessions.find((item) => item.sessionId === sessionId);
-		const failed = this.failedRunFor(session?.staffAgentId);
+		const state = this.store.get();
+		const session = state.sessions.find((item) => item.sessionId === sessionId);
+		const row = this.#newestActivity(session?.staffAgentId);
+		const recovery = row && isFailedRun(row) ? state.recoveries[row.runId] : undefined;
 		// Only a failure whose details are known and that left no decision behind; a
 		// run with an open proposal is the member's to decide, not to dismiss by sending.
-		if (failed?.recovery && failed.activity.sourceKind !== "proposal_review" && !failed.recovery.proposalId)
+		// A stop reads as settled already, but a cloud before 20260926192436 still ranks
+		// it above the new message's run, so it is dismissed the same way.
+		if (
+			row &&
+			recovery &&
+			row.sourceKind !== "proposal_review" &&
+			!recovery.proposalId &&
+			!state.acknowledgedRuns?.[row.runId]
+		)
 			// sendPrompt reads activity again right after; no second read here.
-			void this.dismissFailedRun(failed.activity.runId, { refresh: false }).catch(() => undefined);
+			void this.dismissFailedRun(row.runId, { refresh: false }).catch(() => undefined);
 	}
 
 	primarySessionFor(staffAgentId: string): HostedSession | undefined {
@@ -971,7 +1060,7 @@ export class CompanyController {
 					complete: true,
 					error: undefined,
 					optimistic,
-					interactionAnswers: reconcileInteractionAnswers(store.get().interactionAnswers, projection),
+					interactionAnswers: reconcileInteractionAnswers(store.get().interactionAnswers, projection, pending),
 					codingSessions,
 				});
 			} catch (error) {
@@ -1066,9 +1155,77 @@ export class CompanyController {
 		});
 	}
 
-	/** Answer a card the agent raised in this thread. The answer is queued like a
+	/** Editors are company/member scoped and survive navigation and transcript polling. */
+	emailDraftEditor(interactionId: string): EmailDraftEditor {
+		let editor = this.#emailDraftEditors.get(interactionId);
+		if (!editor) {
+			editor = {};
+			this.#emailDraftEditors.set(interactionId, editor);
+		}
+		return editor;
+	}
+
+	async loadEmailDraft(sessionId: string, interactionId: string): Promise<EmailDraftState> {
+		this.signal.throwIfAborted();
+		if (this.store.get().accessLost || !this.store.get().team?.capabilities.read)
+			throw new Error(t("This conversation is not available for sending."));
+		this.#emailDraftClient ??= new EmailDraftClient(this.#api.cloud, this.#userId, this.signal);
+		return this.#notifyEmailDraft(
+			sessionId,
+			interactionId,
+			await this.#emailDraftClient.read(sessionId, interactionId),
+		);
+	}
+
+	async actEmailDraft(
+		sessionId: string,
+		interactionId: string,
+		action: EmailDraftAction,
+		content: EmailDraftContent,
+	): Promise<EmailDraftState> {
+		this.assertCanSend(sessionId);
+		this.#emailDraftClient ??= new EmailDraftClient(this.#api.cloud, this.#userId, this.signal);
+		const result = await this.#notifyEmailDraft(
+			sessionId,
+			interactionId,
+			await this.#emailDraftClient.act(sessionId, interactionId, action, content, this.#answerSponsor(sessionId)),
+		);
+		// The broker records delivery before the answer. Never optimistically mark an email sent.
+		if (!this.#stopped && (result.status === "sent" || result.status === "discarded")) {
+			void this.loadConversation(sessionId);
+			void this.refreshActivity();
+			this.#watchWork(20_000);
+		}
+		return result;
+	}
+
+	async #notifyEmailDraft(sessionId: string, interactionId: string, state: EmailDraftState): Promise<EmailDraftState> {
+		if (!state.notificationPending || !state.actionId || (state.status !== "sent" && state.status !== "discarded"))
+			return state;
+		try {
+			this.assertCanSend(sessionId);
+			// The kernel replaces this empty answer with its durable provider receipt.
+			// Retrying only the notification cannot invoke Gmail again.
+			await this.#api.answerInteraction(
+				sessionId,
+				state.actionId,
+				interactionId,
+				state.status,
+				{},
+				this.#answerSponsor(sessionId),
+			);
+			void this.loadConversation(sessionId);
+			void this.refreshActivity();
+			this.#watchWork(20_000);
+			return { ...state, notificationPending: false };
+		} catch {
+			return state; // Keep the confirmed delivery visible while notification is pending.
+		}
+	}
+
+	/** Answer a card the agent raised in this thread. The answer is sent like a
 	 * message and shows on the card at once; the kernel refuses a second answer,
-	 * an expired card, or a member the thread does not belong to. */
+	 * an expired card, or a member who does not answer it (answersInteraction). */
 	async answerInteraction(
 		sessionId: string,
 		interactionId: string,
@@ -1087,16 +1244,114 @@ export class CompanyController {
 			interactionError: undefined,
 		});
 		try {
-			await this.#api.answerInteraction(sessionId, crypto.randomUUID(), interactionId, outcome, answer);
+			const sponsor = this.#answerSponsor(sessionId);
+			const receipt = await this.#api
+				.answerInteraction(sessionId, crypto.randomUUID(), interactionId, outcome, answer, sponsor)
+				.catch((error: unknown) => {
+					// A cloud before bundle v100 cannot deliver an answer in an agent's thread:
+					// it would queue one that never wakes the agent. Keep the card open.
+					if (error instanceof CloudRpcError && error.missing)
+						throw new Error(t("Answering cards here is not available yet. Reply in a message instead."));
+					throw error;
+				});
+			// Remembered so a delivery that fails later opens the card again (reconcileInteractionAnswers).
+			const sent = store.get().interactionAnswers?.[key];
+			if (sent)
+				store.set({
+					interactionAnswers: { ...store.get().interactionAnswers, [key]: { ...sent, inputId: receipt.inputId } },
+				});
 		} catch (error) {
 			const { [key]: _dropped, ...rest } = store.get().interactionAnswers ?? {};
 			store.set({
 				interactionAnswers: Object.keys(rest).length ? rest : undefined,
-				interactionError: describeError(error),
+				interactionError: answerRefusal(error),
 			});
 			throw error;
 		}
 		void this.loadConversation(sessionId);
+		// The answer wakes the agent, as a message does; watch for its run.
+		void this.refreshActivity();
+		this.#watchWork(20_000);
+	}
+
+	/** Answer an approval card of an agent's action (bundle v130): Allow once,
+	 * Always allow (saves `ruleText` as a company rule) or Deny. The card shows the
+	 * answer at once; the kernel refuses a member the card does not wait for
+	 * (answersActionReview). If the agent stopped waiting, the answer wakes it on
+	 * the member's selected model account; while it still waits, none is needed. */
+	async answerActionReview(
+		sessionId: string,
+		reviewId: string,
+		answer: ActionReviewAnswer,
+		ruleText?: string,
+	): Promise<void> {
+		const store = this.conversation(sessionId);
+		const key = reviewId.toLowerCase();
+		if (store.get().interactionAnswers?.[key]) return;
+		try {
+			this.assertCanSend(sessionId);
+		} catch (error) {
+			// Say why on the thread (an archived conversation, no write access), not silently.
+			store.set({ interactionError: answerRefusal(error) });
+			throw error;
+		}
+		store.set({
+			interactionAnswers: {
+				...store.get().interactionAnswers,
+				[key]: {
+					outcome: answer === "deny" ? "declined" : "approved",
+					answer: { answer },
+					answeredBy: this.#userId,
+					answeredAt: new Date().toISOString(),
+					pending: true,
+				},
+			},
+			interactionError: undefined,
+		});
+		try {
+			const selected = this.conversation(sessionId).get().executionSponsor;
+			const receipt = await this.#api
+				.answerActionReview(
+					reviewId,
+					crypto.randomUUID(),
+					answer,
+					ruleText,
+					selected
+						? { sponsorBindingId: selected.sponsorBindingId, sponsorVersion: selected.sponsorVersion }
+						: undefined,
+				)
+				.catch((error: unknown) => {
+					if (error instanceof CloudRpcError && error.missing)
+						throw new Error(t("Approvals are not available here yet. Reply in a message instead."));
+					throw error;
+				});
+			const sent = store.get().interactionAnswers?.[key];
+			if (sent)
+				store.set({
+					interactionAnswers: { ...store.get().interactionAnswers, [key]: { ...sent, inputId: receipt.inputId } },
+				});
+		} catch (error) {
+			const { [key]: _dropped, ...rest } = store.get().interactionAnswers ?? {};
+			store.set({
+				interactionAnswers: Object.keys(rest).length ? rest : undefined,
+				interactionError: answerRefusal(error),
+			});
+			// Someone else may have answered first: show the card as it is now.
+			void this.loadConversation(sessionId);
+			throw error;
+		}
+		void this.loadConversation(sessionId);
+		void this.refreshActivity();
+		this.#watchWork(20_000);
+	}
+
+	/** An answer runs the agent the way a message there does, on the member's
+	 * selected model account: like a post in an agent's shared thread (bundle
+	 * v100), like a turn request in a plain conversation (bundle v105). */
+	#answerSponsor(sessionId: string): { sponsorBindingId: string; sponsorVersion: number } {
+		const sponsor = this.conversation(sessionId).get().executionSponsor;
+		if (!sponsor) throw new Error(t("Select an active model account, then try again."));
+		return { sponsorBindingId: sponsor.sponsorBindingId, sponsorVersion: sponsor.sponsorVersion };
 	}
 
 	/** Put a secret card's value into the company's cloud custody and answer the
@@ -1119,6 +1374,8 @@ export class CompanyController {
 		const company = role === "owner" || role === "admin";
 		store.set({ interactionError: undefined });
 		try {
+			// Never store a value whose answer could not be sent.
+			this.#answerSponsor(sessionId);
 			const existing = (
 				await this.#api.listSecretConnections(this.profile.profileId, this.profile.environmentId)
 			).find(

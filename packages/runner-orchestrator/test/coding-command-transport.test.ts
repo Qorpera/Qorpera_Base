@@ -1,44 +1,14 @@
 import { createHash, randomUUID } from "node:crypto";
-import { createCloudCodingStorageBinding, parseCloudCodingCommandRead } from "@qorpera/contracts";
+import { parseCloudCodingCommandRead } from "@qorpera/contracts";
 import { describe, expect, it, vi } from "vitest";
 import { LxdCodingCommandTransport } from "../src/coding-command-transport.ts";
-import { type LxdCodingVmBinding, lxdCodingVmPlan } from "../src/coding-vm.ts";
 import type { LxdInspectableClient } from "../src/lxd-client.ts";
+import { codingMachineFixture, codingMachineInstance, codingMachineStorage } from "./helpers/coding-machine.ts";
 
 function fixture() {
-	const workerId = randomUUID(),
-		companyId = randomUUID(),
-		environmentId = randomUUID();
-	const vm: LxdCodingVmBinding = {
-		schema: "qorpera.lxd-coding-vm/v2",
-		workerId,
-		allocationId: randomUUID(),
-		companyId,
-		environmentId,
-		providerId: "coding",
-		providerPolicySha256: "a".repeat(64),
-		repository: { host: "github.com", owner: "Qorpera", name: "test", baseBranch: "main" },
-		project: "coding",
-		imageFingerprint: "b".repeat(64),
-		bootstrapSha256: "c".repeat(64),
-		storagePool: "coding",
-		network: "coding",
-		cpus: 2,
-		memoryBytes: 4 * 1024 ** 3,
-		rootDiskBytes: 32 * 1024 ** 3,
-		storage: createCloudCodingStorageBinding(
-			{
-				schema: "qorpera.coding-nas-policy/v1",
-				mountPoint: "/mnt/coding",
-				source: "10.0.0.2:/coding",
-				serverAddress: "10.0.0.2",
-				rootPath: "/mnt/coding",
-			},
-			{ workerId, companyId, environmentId, machineIdSha256: "d".repeat(64), writerGeneration: 1 },
-		),
-	};
-	const plan = lxdCodingVmPlan(vm);
-	const scope = { workerId: vm.workerId, vmId: vm.allocationId, requestId: randomUUID(), turn: 1 };
+	const workerId = randomUUID();
+	const machine = codingMachineFixture();
+	const scope = { workerId, vmId: machine.machineId, requestId: randomUUID(), turn: 1 };
 	const bootId = randomUUID();
 	const input = {
 		commandId: randomUUID(),
@@ -48,7 +18,7 @@ function fixture() {
 	};
 	const receipt = {
 		schema: "qorpera.coding-command-result/v2",
-		workerId: vm.workerId,
+		workerId,
 		commandId: input.commandId,
 		inputSha256: input.inputSha256,
 		state: "running",
@@ -61,17 +31,7 @@ function fixture() {
 	const config = Buffer.from("pinned configuration");
 	let request = "";
 	let readQuery: unknown;
-	const instance = {
-		name: plan.request.name,
-		type: "virtual-machine" as const,
-		status: "Running",
-		statusCode: 103,
-		profiles: [],
-		config: { ...plan.request.config, "volatile.base_image": vm.imageFingerprint },
-		expandedConfig: { ...plan.request.config, "volatile.base_image": vm.imageFingerprint },
-		devices: plan.request.devices,
-		expandedDevices: plan.request.devices,
-	};
+	const instance = codingMachineInstance(machine, [workerId, randomUUID()]);
 	const client = {
 		getInstance: vi.fn<LxdInspectableClient["getInstance"]>().mockResolvedValue(instance),
 		pushInstanceFile: vi.fn<LxdInspectableClient["pushInstanceFile"]>(async (_project, _name, _path, content) => {
@@ -80,9 +40,9 @@ function fixture() {
 		execInstance: vi.fn<LxdInspectableClient["execInstance"]>(async (_project, _name, args) => {
 			if (args[2] === "read")
 				readQuery = parseCloudCodingCommandRead({
-					commandId: args[3],
-					...(args[4] === "tail" ? { tail: true } : { offset: Number(args[4]) }),
-					limit: Number(args[5]),
+					commandId: args[4],
+					...(args[5] === "tail" ? { tail: true } : { offset: Number(args[5]) }),
+					limit: Number(args[6]),
 				});
 		}),
 		readInstanceFile: vi.fn<LxdInspectableClient["readInstanceFile"]>(async (_project, _name, path, maximum) => {
@@ -113,7 +73,8 @@ function fixture() {
 		.fn<ConstructorParameters<typeof LxdCodingCommandTransport>[0]["authorize"]>()
 		.mockResolvedValue(undefined);
 	const transport = new LxdCodingCommandTransport({
-		vm,
+		machine,
+		storage: codingMachineStorage,
 		scope,
 		bootId,
 		helperSha256: createHash("sha256").update(helper).digest("hex"),
@@ -122,7 +83,8 @@ function fixture() {
 		authorize,
 	});
 	return {
-		vm,
+		machine,
+		workerId,
 		scope,
 		bootId,
 		input,
@@ -139,13 +101,23 @@ describe("fixed coding guest transport", () => {
 		const f = fixture();
 		expect(await f.transport.start(f.scope, f.input, f.signal)).toEqual(f.receipt);
 		expect(f.client.execInstance).toHaveBeenCalledExactlyOnceWith(
-			f.vm.project,
+			f.machine.project,
 			f.instance.name,
-			["/usr/bin/node", "/opt/qorpera-coding/cloud-coding-command-guest.mjs", "start", f.input.commandId],
+			[
+				"/usr/bin/node",
+				"/opt/qorpera-coding/cloud-coding-command-guest.mjs",
+				"start",
+				f.workerId,
+				f.input.commandId,
+			],
 			f.signal,
 		);
 		const push = f.client.pushInstanceFile.mock.calls[0];
-		expect(push[2]).toBe(`/var/lib/qorpera-coding/inbox/${f.input.commandId}.json`);
+		expect(push[2]).toBe(`/var/lib/qorpera-coding/${f.workerId}/inbox/${f.input.commandId}.json`);
+		// The session's own configuration, on its member's machine.
+		expect(f.client.readInstanceFile.mock.calls.map((call) => call[2])).toContain(
+			`/run/qorpera-coding/${f.workerId}/configuration/guest.json`,
+		);
 		expect(push[4]).toBe(0o444);
 		expect(JSON.parse(push[3])).toEqual({ schema: "qorpera.coding-command-request/v1", ...f.scope, ...f.input });
 		expect(f.authorize).toHaveBeenCalledWith("start", f.scope, f.input.commandId, f.input.inputSha256, f.signal);
@@ -156,6 +128,14 @@ describe("fixed coding guest transport", () => {
 			"SCOPE_DIFFERS",
 		);
 		expect(f.client.getInstance).not.toHaveBeenCalled();
+	});
+	it("refuses a session whose folders are not attached to the machine", async () => {
+		const f = fixture();
+		f.client.getInstance.mockResolvedValue(codingMachineInstance(f.machine, [randomUUID()]));
+		await expect(f.transport.start(f.scope, f.input, f.signal)).rejects.toThrow("CODING_SESSION_DETACHED");
+		expect(f.client.pushInstanceFile).not.toHaveBeenCalled();
+		f.client.getInstance.mockResolvedValue({ ...f.instance, status: "Stopped", statusCode: 102 });
+		await expect(f.transport.start(f.scope, f.input, f.signal)).rejects.toThrow("CODING_MACHINE_NOT_RUNNING");
 	});
 	it("refuses a rebooted guest before command staging", async () => {
 		const f = fixture();
@@ -206,6 +186,7 @@ describe("fixed coding guest transport", () => {
 			"/usr/bin/node",
 			"/opt/qorpera-coding/cloud-coding-command-guest.mjs",
 			"read",
+			f.workerId,
 			f.input.commandId,
 			"3",
 			"4",

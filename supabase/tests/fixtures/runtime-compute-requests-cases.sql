@@ -85,10 +85,7 @@ select pg_temp.wake_assert(public.qorpera_reserve_runtime_login_machine('3900000
 select pg_temp.wake_assert(pg_temp.request('login')#>>'{details,lastAdmissionRefusal}'='COMPUTE_IDENTITY_OCCUPIED'
  and pg_temp.request('login')->'placements'='[]'::jsonb,'refused login has request but no placement');
 reset role;
-select pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001');
-set local role authenticated;
-select public.qorpera_set_company_machine_limit('30000000-0000-4000-8000-000000000010',1,0);
-reset role;
+-- There is no company machine limit (runtime v92), so an office demand is never refused for capacity.
 select pg_temp.path_claims('service_role');
 set local role service_role;
 create function pg_temp.reserve_request_office() returns jsonb language sql as $$
@@ -96,19 +93,6 @@ create function pg_temp.reserve_request_office() returns jsonb language sql as $
  '39000000-0000-4000-8000-000000000020',repeat('c',64),repeat('a',64),repeat('b',64),repeat('d',64),
  '39000000-0000-4000-8000-000000000070',repeat('f',64))
 $$;
-select pg_temp.wake_assert(pg_temp.reserve_request_office()->>'reason'='MACHINE_CAPACITY_EXHAUSTED','real company capacity refusal');
-select pg_temp.wake_assert(pg_temp.request('capacity_refusal')->>'requestId'='39000000-0000-4000-8000-000000000020'
- and pg_temp.request('capacity_refusal')#>'{details,currentWaitState}'='null'::jsonb,'unallocated refusal has no invented current wait state');
-select set_config('qorpera_test.refusal_time',pg_temp.request('capacity_refusal')->>'requestedAt',true);
-select pg_temp.reserve_request_office();
-select pg_temp.wake_assert(pg_temp.request('capacity_refusal')->>'requestedAt'=current_setting('qorpera_test.refusal_time'),'repeated capacity refusal retains original time');
-reset role;
-select pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001');
-set local role authenticated;
-select public.qorpera_set_company_machine_limit('30000000-0000-4000-8000-000000000010',2,1);
-reset role;
-select pg_temp.path_claims('service_role');
-set local role service_role;
 select pg_temp.wake_assert(pg_temp.reserve_request_office()->>'state'='reserved','office demand receives company allocation');
 select pg_temp.wake_assert(pg_temp.request('capacity_refusal') is null,'allocated refusal leaves unallocated list');
 select pg_temp.wake_assert(pg_temp.request('office')#>>'{placements,0,nodePlacementState}'='unassigned','company reservation does not invent node placement');
