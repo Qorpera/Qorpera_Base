@@ -117,6 +117,8 @@
 :root[data-theme="dark"] .composer-send:disabled { background: #353534; color: #71706c; }
 :root[data-theme="dark"] .composer-send:not(:disabled):hover { background: var(--composer-accent-hover); }
 :root[data-theme="dark"] .composer-menu { box-shadow: 0 12px 30px rgb(0 0 0 / 45%); }
+/* The Fast switch when off: a soft grey knob, not a white one, on the dim track. */
+:root[data-theme="dark"] .composer-model-fast:not([aria-checked="true"]) .composer-switch::after { background: #c4c3be; box-shadow: none; }
 :root[data-theme="dark"] .attachment-chip { background: #2c2c2b; }
 :root[data-theme="dark"] .attachment-remove { background: #3a3a38; box-shadow: 0 1px 4px rgb(0 0 0 / 40%); }
 :root[data-theme="dark"] .auth-card { border-color: var(--border); background: #262625; }
