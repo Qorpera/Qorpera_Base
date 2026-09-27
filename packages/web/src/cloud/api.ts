@@ -21,6 +21,7 @@ import { collectPages, type PageCursor } from "./pagination.ts";
 import {
 	type AgentThreadHandle,
 	parseAccountEntitlement,
+	parseAccountMatch,
 	parseAgentThreadHandle,
 	parseCompanyFile,
 	parseCompanyProposal,
@@ -53,6 +54,7 @@ import { type CompanySidebar, parseCompanySidebar, type SidebarRequest } from ".
 import type {
 	CreatedCompanyResult,
 	HostedAccountEntitlement,
+	HostedAccountMatch,
 	HostedCompanyFile,
 	HostedCompanyProposal,
 	HostedCompanyProposalComment,
@@ -128,6 +130,13 @@ export class CloudApi {
 
 	listFriends(): Promise<HostedFriend[]> {
 		return this.cloud.rpc("qorpera_list_friends").then(parseFriends);
+	}
+
+	/** The account that has confirmed exactly this address, or null when none has. */
+	findAccountByEmail(email: string): Promise<HostedAccountMatch | null> {
+		return this.cloud
+			.rpc("qorpera_find_account_by_email", { p_email: email.trim().toLowerCase() })
+			.then(parseAccountMatch);
 	}
 
 	async sendFriendRequest(email: string): Promise<void> {

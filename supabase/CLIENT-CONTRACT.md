@@ -39,10 +39,10 @@ profile RPCs; RLS is the second read boundary.
 
 ## 2. Member-callable RPCs (security-definer, granted to `authenticated`)
 
-163 functions, grouped for navigation. Signatures: see the migration that defines each.
+164 functions, grouped for navigation. Signatures: see the migration that defines each.
 
 
-### Members, presence, friends, feedback (17)
+### Members, presence, friends, feedback (18)
 
 - `qorpera_can_read_member_picture(p_object_name)` — the picture bucket's
   read policy: anything in your own folder, and another account's current
@@ -52,6 +52,12 @@ profile RPCs; RLS is the second read boundary.
   sent reveals nothing until it is accepted).
 - `qorpera_clear_member_picture` — back to initials; returns
   `previous_object_name`, which the caller deletes from storage.
+- `qorpera_find_account_by_email(p_email)` — the Friends search: the account
+  whose confirmed address is exactly `p_email` (case-insensitive, never a
+  prefix) as `{user_id, email, display_name, self}`, or `null` when no
+  account holds it. `qorpera_send_friend_request` uses the same rule, so an
+  address that finds nobody cannot be sent a request. Migration
+  `20260927171000_friend_account_lookup`.
 - `qorpera_is_current_member_picture(p_object_name)` — whether an object is
   the caller's current picture; the bucket's delete policy refuses it until
   another picture (or none) has replaced it. It shares a per-folder lock with

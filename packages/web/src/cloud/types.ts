@@ -45,6 +45,16 @@ export interface HostedFriend {
 	since: string;
 }
 
+/* The account `qorpera_find_account_by_email` found for a whole address. The
+ * Friends search shows a person to add only when an account has confirmed the
+ * address typed; `self` marks the caller's own address. */
+export interface HostedAccountMatch {
+	userId: string;
+	email: string;
+	displayName: string;
+	self: boolean;
+}
+
 export interface HostedInvitationDelivery {
 	status: string;
 	attemptCount: number;
