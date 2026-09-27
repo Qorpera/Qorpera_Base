@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { afterEach, describe, expect, it } from "vitest";
 import type { LxdNativeCompanyRuntimeConfig } from "../src/lxd-company-runtime.ts";
-import type { CloudRunnerAssignmentDelivery, CloudRunnerWork } from "../src/orchestrator.ts";
+import type { CloudRunnerAssignmentDelivery, CloudRunnerInstance, CloudRunnerWork } from "../src/orchestrator.ts";
 import { ProviderAdmissionRefused } from "../src/provider-shared.ts";
 import {
 	parseUnitStates,
@@ -140,6 +140,11 @@ interface Fixture {
 	provisioned: number;
 	activations: Map<string, string>;
 	clock: { now: number };
+	restart(): void;
+	allocations: Set<string>;
+	custody: Map<string, { identity: Record<string, unknown>; state: "open" | "closed" }>;
+	custodyOpen: "ok" | "error" | "lost";
+	custodyClose: "ok" | "error" | "lost";
 }
 
 async function fixture(
@@ -149,6 +154,7 @@ async function fixture(
 		codingCommand?: { origin: string; token: string };
 		mountInfoPath?: string;
 		warmIdleMs?: number;
+		capacityLimit?: number;
 	} = {},
 ): Promise<Fixture> {
 	const stateRoot = join(await root(), "state");
@@ -214,6 +220,11 @@ async function fixture(
 		provisioned: 0,
 		activations: new Map<string, string>(),
 		clock: { now: Date.parse("2026-09-22T12:00:00Z") },
+		restart: () => undefined,
+		allocations: new Set(),
+		custody: new Map(),
+		custodyOpen: "ok",
+		custodyClose: "ok",
 	};
 	const config: SharedExecutionProviderConfig = {
 		adapterId: "native26-test",
@@ -270,6 +281,12 @@ async function fixture(
 			}
 			if (name === "qorpera_reserve_runtime_machine") {
 				if (state.reservation.state !== "reserved") return Response.json(state.reservation);
+				if (
+					!state.allocations.has(String(body.p_allocation_id)) &&
+					state.allocations.size >= (options.capacityLimit ?? 64)
+				)
+					return Response.json({ state: "refused", reason: "MACHINE_CAPACITY_EXHAUSTED" });
+				state.allocations.add(String(body.p_allocation_id));
 				return Response.json({
 					state: "reserved",
 					allocationId: body.p_allocation_id,
@@ -279,11 +296,30 @@ async function fixture(
 			if (name === "qorpera_release_runtime_machine") {
 				if (state.release === "error") return new Response("no allocation", { status: 404 });
 				if (state.release === "unconfirmed") return Response.json({ state: "refused" });
+				state.allocations.delete(String(body.p_allocation_id));
 				return Response.json({
 					state: "released",
 					allocationId: body.p_allocation_id,
 					instanceSha256: body.p_instance_sha256,
 				});
+			}
+			if (name === "qorpera_open_shared_host_custody" || name === "qorpera_close_shared_host_custody") {
+				const closing = name === "qorpera_close_shared_host_custody";
+				const mode = closing ? state.custodyClose : state.custodyOpen;
+				if (mode === "error") return new Response("unavailable", { status: 503 });
+				const identity = body.p_identity as Record<string, unknown>;
+				if (closing && sha256(String(body.p_close_secret)) !== identity.closeSecretSha256)
+					return new Response("closure authority", { status: 403 });
+				const prior = state.custody.get(String(identity.allocationId));
+				if (prior && JSON.stringify(prior.identity) !== JSON.stringify(identity))
+					return new Response("identity differs", { status: 409 });
+				const result = {
+					identity,
+					state: closing || prior?.state === "closed" ? ("closed" as const) : ("open" as const),
+				};
+				state.custody.set(String(identity.allocationId), result);
+				if (mode === "lost") return new Response("reply lost", { status: 503 });
+				return Response.json(result);
 			}
 			return new Response("unknown rpc", { status: 404 });
 		}
@@ -308,17 +344,20 @@ async function fixture(
 		}
 		return new Response("not found", { status: 404 });
 	};
-	state.backend = new SharedExecutionProviderBackend(config, {
-		fetch: fakeFetch as typeof fetch,
-		units: state.units,
-		identityAuthority: async () => state.identityState,
-		account: async () => ({ uid: process.getuid?.() ?? 0, gid: process.getgid?.() ?? 0 }),
-		...(options.mountInfoPath
-			? { requireIdentityMount: true, mountInfoPath: options.mountInfoPath }
-			: { requireIdentityMount: false }),
-		identityOwnerUid: process.getuid?.() ?? 0,
-		now: () => state.clock.now,
-	});
+	state.restart = () => {
+		state.backend = new SharedExecutionProviderBackend(config, {
+			fetch: fakeFetch as typeof fetch,
+			units: state.units,
+			identityAuthority: async () => state.identityState,
+			account: async () => ({ uid: process.getuid?.() ?? 0, gid: process.getgid?.() ?? 0 }),
+			...(options.mountInfoPath
+				? { requireIdentityMount: true, mountInfoPath: options.mountInfoPath }
+				: { requireIdentityMount: false }),
+			identityOwnerUid: process.getuid?.() ?? 0,
+			now: () => state.clock.now,
+		});
+	};
+	state.restart();
 	return state;
 }
 
@@ -842,7 +881,7 @@ describe("shared execution provider backend", () => {
 		const otherRun = "30000000-0000-4000-8000-000000000061";
 		const started = await Promise.race([
 			f.backend.acquire(otherRun, work({ runId: otherRun, sourceId: otherRun }), signal).then(() => "acquired"),
-			new Promise<string>((resolveWait) => setTimeout(() => resolveWait("blocked"), 500)),
+			new Promise<string>((resolveWait) => setTimeout(() => resolveWait("blocked"), 5000)),
 		]);
 		expect(started).toBe("acquired");
 		releaseStop();
@@ -862,7 +901,7 @@ describe("warm conversations", () => {
 	}
 
 	it("parks the host of an attended run and serves the conversation's next run with it", async () => {
-		const f = await fixture({ warmIdleMs: 300_000 });
+		const f = await fixture({ warmIdleMs: 300_000, capacityLimit: 1 });
 		const signal = new AbortController().signal;
 		await f.backend.acquire(runId, work(), signal);
 		const environment = await readFile(join(f.runRoot, "slots", "0", "native-provider.env"), "utf-8");
@@ -872,6 +911,13 @@ describe("warm conversations", () => {
 		const kept = join(f.stateRoot, "slots", "0", "host", "kept-capsule-root");
 		await writeFile(kept, "kept");
 		await finishRun(f);
+		expect(f.allocations.size).toBe(0);
+		const custody = [...f.custody.values()][0];
+		expect(custody.state).toBe("open");
+		expect(f.rpc.findIndex((call) => call.name === "qorpera_open_shared_host_custody")).toBeLessThan(
+			f.rpc.findIndex((call) => call.name === "qorpera_release_runtime_machine"),
+		);
+		f.restart();
 		expect(f.units.activeUnits.has(hostUnit(0))).toBe(true);
 		expect(f.rpc.map((call) => call.name)).toContain("qorpera_release_runtime_machine");
 		f.units.log.length = 0;
@@ -882,7 +928,183 @@ describe("warm conversations", () => {
 			bridge,
 		);
 		expect(await readFile(kept, "utf-8")).toBe("kept");
+		expect(f.allocations.size).toBe(1);
+		await finishRun(f);
+		expect([...f.custody.values()]).toEqual([custody]);
+		expect(f.allocations.size).toBe(0);
 	});
+
+	it("stops reused hosts on paid admission refusal before any new runner starts", async () => {
+		const f = await fixture({ warmIdleMs: 300_000 });
+		const signal = new AbortController().signal;
+		await f.backend.acquire(runId, work(), signal);
+		await finishRun(f);
+		f.reservation = { state: "refused", reason: "PAID_COMPUTER_PATH_UNSUPPORTED" };
+		f.units.log.length = 0;
+		await expect(
+			f.backend.acquire(secondRun, work({ runId: secondRun, sourceId: secondRun }), signal),
+		).rejects.toThrow();
+		expect(f.units.log.some((entry) => entry.startsWith("start "))).toBe(false);
+		expect(f.units.activeUnits.size).toBe(0);
+		expect([...f.custody.values()].map((entry) => entry.state)).toEqual(["closed"]);
+	});
+
+	it("drains an in-flight start and its duplicate before closing reused custody", async () => {
+		const f = await fixture({ warmIdleMs: 300_000 });
+		const signal = new AbortController().signal;
+		await f.backend.acquire(runId, work(), signal);
+		await finishRun(f);
+		let enterStart = (): void => undefined;
+		let releaseStart = (): void => undefined;
+		const entered = new Promise<void>((resolve) => {
+			enterStart = resolve;
+		});
+		const held = new Promise<void>((resolve) => {
+			releaseStart = resolve;
+		});
+		const start = f.units.start.bind(f.units);
+		let runnerStarts = 0;
+		f.units.start = async (unit) => {
+			if (unit === runnerUnit(0) && ++runnerStarts === 1) {
+				enterStart();
+				await held;
+			}
+			await start(unit);
+		};
+		const nextWork = work({ runId: secondRun, sourceId: secondRun });
+		const first = f.backend.acquire(secondRun, nextWork, signal).then(
+			() => "ready",
+			() => "retired",
+		);
+		await entered;
+		const duplicate = f.backend.acquire(secondRun, nextWork, signal).then(
+			() => "ready",
+			() => "retired",
+		);
+		const runner = (await journal(f, secondRun)).runner as CloudRunnerInstance;
+		let stopped = false;
+		const stopping = f.backend.stop(runner, "revoked").then(() => {
+			stopped = true;
+		});
+		for (let attempts = 0; attempts < 100 && (await journal(f, secondRun)).physicalState !== "stopping"; attempts++)
+			await delay(1);
+		expect((await journal(f, secondRun)).physicalState).toBe("stopping");
+		expect(stopped).toBe(false);
+		expect([...f.custody.values()].map((entry) => entry.state)).toEqual(["open"]);
+		releaseStart();
+		expect(await Promise.all([first, duplicate])).toEqual(["retired", "retired"]);
+		await stopping;
+		expect(runnerStarts).toBe(1);
+		expect(f.units.activeUnits.size).toBe(0);
+		expect([...f.custody.values()].map((entry) => entry.state)).toEqual(["closed"]);
+		expect(await liveJournalNames(f)).toEqual([]);
+	});
+
+	it.each(["error", "lost"] as const)(
+		"retains uncertain %s registration across restart until physical stop",
+		async (failure) => {
+			const f = await fixture({ warmIdleMs: 300_000 });
+			await f.backend.acquire(runId, work(), new AbortController().signal);
+			f.custodyOpen = failure;
+			await expect(finishRun(f)).rejects.toThrow();
+			expect(f.allocations.size).toBe(1);
+			expect(f.rpc.some((call) => call.name === "qorpera_release_runtime_machine")).toBe(false);
+			const pending = await journal(f);
+			expect(pending).toMatchObject({ physicalState: "stopping", warmCustodyPending: true });
+			f.restart();
+			await f.backend.reconcile();
+			expect(f.units.activeUnits.size).toBe(0);
+			expect(f.allocations.size).toBe(0);
+			expect([...f.custody.values()].map((entry) => entry.state)).toEqual(["closed"]);
+		},
+	);
+
+	it.each([false, true])(
+		"recovers a crash after capacity release (warm marker written: %s)",
+		async (markerWritten) => {
+			const f = await fixture({ warmIdleMs: 300_000 });
+			await f.backend.acquire(runId, work(), new AbortController().signal);
+			await finishRun(f);
+			const stopped = await journal(f);
+			await writeFile(
+				join(f.stateRoot, "journals", `${runId}.json`),
+				JSON.stringify({ ...stopped, physicalState: "stopping", capacityReleased: false }),
+			);
+			if (!markerWritten) await rm(join(f.stateRoot, "warm", "0.json"));
+			f.restart();
+			await f.backend.reconcile();
+			expect(f.units.activeUnits.size).toBe(0);
+			expect([...f.custody.values()].map((entry) => entry.state)).toEqual(["closed"]);
+			expect(await liveJournalNames(f)).toEqual([]);
+		},
+	);
+
+	it.each(["error", "lost"] as const)(
+		"retains %s closure for retry after restart without wiping its proof",
+		async (failure) => {
+			const f = await fixture({ warmIdleMs: 60_000 });
+			await f.backend.acquire(runId, work(), new AbortController().signal);
+			await finishRun(f);
+			f.clock.now += 61_000;
+			f.custodyClose = failure;
+			await expect(f.backend.reconcile()).rejects.toThrow();
+			expect(f.units.activeUnits.size).toBe(0);
+			expect(await readdir(join(f.stateRoot, "warm"))).toEqual(["0.json"]);
+			f.restart();
+			f.custodyClose = "ok";
+			await f.backend.reconcile();
+			expect(await readdir(join(f.stateRoot, "warm"))).toEqual([]);
+			expect([...f.custody.values()].map((entry) => entry.state)).toEqual(["closed"]);
+		},
+	);
+
+	it("cannot close custody while the parked host still runs", async () => {
+		const f = await fixture({ warmIdleMs: 60_000 });
+		await f.backend.acquire(runId, work(), new AbortController().signal);
+		await finishRun(f);
+		f.clock.now += 61_000;
+		f.units.unkillable.add(hostUnit(0));
+		await expect(f.backend.reconcile()).rejects.toThrow("did not stop");
+		expect(f.rpc.some((call) => call.name === "qorpera_close_shared_host_custody")).toBe(false);
+		expect([...f.custody.values()].map((entry) => entry.state)).toEqual(["open"]);
+		f.units.unkillable.clear();
+		await f.backend.reconcile();
+		expect([...f.custody.values()].map((entry) => entry.state)).toEqual(["closed"]);
+	});
+
+	it.each([false, true])(
+		"drains legacy markers before unrelated new claims (reconcile first: %s)",
+		async (reconcileFirst) => {
+			const f = await fixture({ warmIdleMs: 300_000 });
+			const signal = new AbortController().signal;
+			await f.backend.acquire(runId, work(), signal);
+			await finishRun(f);
+			const path = join(f.stateRoot, "warm", "0.json");
+			const legacy = JSON.parse(await readFile(path, "utf-8"));
+			delete legacy.custody;
+			await writeFile(path, JSON.stringify(legacy));
+			f.custody.clear(); // The previous binary never registered SQL custody.
+			f.restart();
+			f.units.log.length = 0;
+			f.units.unkillable.add(hostUnit(0));
+			await expect(f.backend.reconcile()).rejects.toThrow("did not stop");
+			const provisioned = f.provisioned;
+			await expect(
+				f.backend.acquire(secondRun, work({ runId: secondRun, sourceId: secondRun, sessionId: secondRun }), signal),
+			).rejects.toThrow("did not stop");
+			expect(f.provisioned).toBe(provisioned);
+			f.units.unkillable.clear();
+			if (reconcileFirst) await f.backend.reconcile();
+			await f.backend.acquire(
+				secondRun,
+				work({ runId: secondRun, sourceId: secondRun, sessionId: secondRun }),
+				signal,
+			);
+			expect(f.units.log[0]).toBe(`kill ${hostUnit(0)}`);
+			expect(f.units.log).toContain(`start ${hostUnit(0)}`);
+			expect(f.custody.size).toBe(0); // Stopping legacy hosts never invents SQL closure evidence.
+		},
+	);
 
 	it("never gives a parked host to another conversation, and parks nothing for unattended work", async () => {
 		const f = await fixture({ warmIdleMs: 300_000 });
@@ -904,6 +1126,22 @@ describe("warm conversations", () => {
 		);
 		await finishRun(cold);
 		expect(cold.units.activeUnits.has(hostUnit(0))).toBe(false);
+	});
+
+	it("cold-retires legacy active journals with their original allocation identity", async () => {
+		const f = await fixture({ warmIdleMs: 300_000 });
+		await f.backend.acquire(runId, work(), new AbortController().signal);
+		const legacy = await journal(f);
+		delete legacy.warmCustody;
+		await writeFile(join(f.stateRoot, "journals", `${runId}.json`), JSON.stringify(legacy));
+		f.restart();
+		await finishRun(f);
+		expect(f.units.activeUnits.size).toBe(0);
+		expect(f.rpc.some((call) => call.name.endsWith("shared_host_custody"))).toBe(false);
+		expect(f.rpc.find((call) => call.name === "qorpera_release_runtime_machine")?.body.p_instance_sha256).toBe(
+			legacy.instanceSha256,
+		);
+		expect(await liveJournalNames(f)).toEqual([]);
 	});
 
 	it("ends a parked host when its window passes or the login changed", async () => {
