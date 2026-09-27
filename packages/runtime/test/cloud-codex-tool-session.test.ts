@@ -991,6 +991,18 @@ async function starts(evidence: string): Promise<number> {
 	}
 }
 
+/** A spare is taken only once ready: its last handshake answer was sent and handled. */
+async function spareReady(evidence: string, count = 1): Promise<void> {
+	await until(async () => {
+		try {
+			return (await readFile(`${evidence}.handshakes`, "utf8")).split("\n").filter(Boolean).length >= count;
+		} catch {
+			return false;
+		}
+	});
+	await new Promise((resolve) => setTimeout(resolve, 200));
+}
+
 async function until(check: () => Promise<boolean>): Promise<void> {
 	for (let attempt = 0; attempt < 400; attempt++) {
 		if (await check()) return;
@@ -1008,7 +1020,7 @@ describe("warm conversations: spare Codex processes", () => {
 		const evidence = join(root, "evidence.json");
 		const command = [process.execPath, rpcFixture, "response-first", evidence] as const;
 		prepareCloudCodexSpare({ command, binarySha256 }, 60_000);
-		await until(async () => (await starts(evidence)) === 1);
+		await spareReady(evidence);
 		await expect(run("response-first").result).resolves.toMatchObject({ providerSessionId: "thread_fixture" });
 		expect(await starts(evidence)).toBe(1);
 		// The spare was taken: the following run starts a process of its own.
@@ -1091,7 +1103,7 @@ describe("warm conversations: spare Codex processes", () => {
 		const evidence = join(root, "evidence.json");
 		const command = [process.execPath, rpcFixture, "bootstrap", evidence] as const;
 		prepareCloudCodexSpare({ command, binarySha256 }, 60_000);
-		await until(async () => (await starts(evidence)) === 1);
+		await spareReady(evidence);
 		await expect(run("bootstrap", { runtimeInstructions: "Spare-run law" }).result).resolves.toMatchObject({
 			providerSessionId: "thread_fixture",
 		});

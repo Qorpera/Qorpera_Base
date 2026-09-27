@@ -150,6 +150,8 @@ async function handle(message) {
 		write({ id: message.id, result: { config: configuration } });
 	} else if (message.method === "skills/list") {
 		write({ id: message.id, result: { data: [{ skills: mode === "extra-skills" ? [{ name: "PRIVATE_UNCONTROLLED_SKILL" }] : [], errors: [] }] } });
+		// The last handshake answer: tests wait for it before counting on a ready spare.
+		if (evidencePath) appendFileSync(`${evidencePath}.handshakes`, `${process.pid}\n`);
 		// Requests before any run is bound: the host must refuse both.
 		if (mode === "fence-before-bind") fence([], { turnId: "", purpose: "prewarm" }).catch(() => undefined);
 		if (mode === "tool-before-bind")
