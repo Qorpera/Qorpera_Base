@@ -235,33 +235,22 @@ begin
 		'A repeated release answers the same');
 	begin perform pg_temp.custody(v_old,v_binding,'stop');
 		raise exception 'A removed machine was stopped'; exception when insufficient_privilege then null; end;
-	-- The waiting turn now gets a new machine with the new policy; a plan never admitted closes without a deletion.
+	-- The waiting turn now atomically reserves a new machine with the new policy.
 	update public.qorpera_coding_sessions set claim_after = clock_timestamp() - interval '1 second' where worker_id = v_worker.id;
 	v_claim := public.qorpera_claim_coding_session('exec-test',60);
-	v_plan := pg_temp.plan(v_worker.id,(v_claim ->> 'leaseToken')::uuid);
-	perform pg_temp.wake_assert(v_plan ->> 'state' = 'planned' and v_plan ->> 'machineId' <> v_old::text
-		and v_plan #>> '{binding,imageFingerprint}' = repeat('e',64) and (pg_temp.machine((v_plan ->> 'machineId')::uuid)).instance_sha256 is null,
-		'After the removal the member gets a new machine on the new policy');
-	-- A plan never admitted follows another policy change; a turn holding the old plan waits and plans again.
-	perform public.qorpera_configure_coding_vm_policy('30000000-0000-4000-8000-000000000020','exec-test',
-		(v_plan -> 'binding') - array['schema','machineId','companyId','environmentId','memberUserId'] || jsonb_build_object('bootstrapSha256',repeat('f',64)));
-	perform pg_temp.wake_assert(pg_temp.plan(v_worker.id,(v_claim ->> 'leaseToken')::uuid) #>> '{binding,bootstrapSha256}' = repeat('f',64)
-		and pg_temp.run(v_worker.id,(v_claim ->> 'leaseToken')::uuid,(v_plan -> 'binding')::text) ->> 'reason' = 'MACHINE_PLAN_CHANGED'
-		and (pg_temp.machine((v_plan ->> 'machineId')::uuid)).instance_sha256 is null,
-		'A turn whose plan was replaced before admission waits instead of failing');
-	perform public.qorpera_configure_coding_vm_policy('30000000-0000-4000-8000-000000000020','exec-test',
-		(v_plan -> 'binding') - array['schema','machineId','companyId','environmentId','memberUserId']);
-	v_plan := pg_temp.plan(v_worker.id,(v_claim ->> 'leaseToken')::uuid);
-	perform pg_temp.wake_assert(public.qorpera_release_coding_machine((v_plan ->> 'machineId')::uuid,'exec-test',(v_plan -> 'binding')::text,repeat('c',64)) ->> 'state' = 'released'
-		and (pg_temp.machine((v_plan ->> 'machineId')::uuid)).removed_at is not null,'A plan never admitted closes at once');
 	v_next := pg_temp.plan(v_worker.id,(v_claim ->> 'leaseToken')::uuid);
-	perform pg_temp.observe();
-	v_run := pg_temp.run(v_worker.id,(v_claim ->> 'leaseToken')::uuid,(v_next -> 'binding')::text);
-	perform pg_temp.wake_assert(v_next ->> 'machineId' not in (v_old::text, v_plan ->> 'machineId') and v_run ->> 'intent' = 'run'
-		and (v_run ->> 'guestUid')::int = 200000 and pg_temp.node_cpu() = 2000,
+	perform pg_temp.wake_assert(v_next ->> 'state' = 'planned' and v_next ->> 'machineId' <> v_old::text
+		and v_next #>> '{binding,imageFingerprint}' = repeat('e',64)
+		and (pg_temp.machine((v_next ->> 'machineId')::uuid)).instance_sha256 is not null
+		and (pg_temp.demand((v_next ->> 'machineId')::uuid)).reserved_at is not null and pg_temp.node_cpu() = 2000,
+		'After removal the new plan and its physical capacity reservation are atomic');
+	begin perform public.qorpera_release_coding_machine((v_next ->> 'machineId')::uuid,'exec-test',v_next ->> 'bindingText',repeat('c',64));
+		raise exception 'An admitted plan was released without physical custody'; exception when insufficient_privilege then null; end;
+	v_run := pg_temp.run(v_worker.id,(v_claim ->> 'leaseToken')::uuid,v_next ->> 'bindingText');
+	perform pg_temp.wake_assert(v_run ->> 'intent' = 'run' and (v_run ->> 'guestUid')::int = 200000 and pg_temp.node_cpu() = 2000,
 		'The session runs on its new machine as the same guest user');
 	perform set_config('qorpera_test.coding_vm',v_next ->> 'machineId',true);
-	perform set_config('qorpera_test.coding_binding',(v_next -> 'binding')::text,true);
+	perform set_config('qorpera_test.coding_binding',v_next ->> 'bindingText',true);
 	perform public.qorpera_complete_coding_turn(v_worker.id,(v_claim ->> 'leaseToken')::uuid,'failed','Stopped for the test.');
 end $$;
 

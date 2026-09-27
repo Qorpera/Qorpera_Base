@@ -3,7 +3,11 @@ import {
 	type CloudCompanyPathControl,
 	type CloudCompanyPathRpc,
 } from "./cloud-company-path-gateway.ts";
-import { CloudCompanyPathRpcRefusal } from "./cloud-company-path-refusal.ts";
+import {
+	CloudCompanyPathRpcParentMissing,
+	CloudCompanyPathRpcPrecondition,
+	CloudCompanyPathRpcRefusal,
+} from "./cloud-company-path-refusal.ts";
 import { cloudToolRequest } from "./cloud-native-tool-authority.ts";
 import { CloudRuntimeDiagnosticError } from "./cloud-runtime-observability.ts";
 
@@ -34,11 +38,13 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 	call(method: CloudCompanyPathRpc, argumentsValue: Record<string, unknown>, signal: AbortSignal): Promise<unknown> {
 		const permitted: readonly CloudCompanyPathRpc[] = [
 			"qorpera_manage_agent_routine",
+			"qorpera_decide_agent_routine",
 			"qorpera_manage_agent_sidebar",
 			"qorpera_manage_agent_todo",
 			"qorpera_confirm_agent_todo_publication",
 			"qorpera_manage_agent_worker",
 			"qorpera_report_worker_result",
+			"qorpera_describe_agent_open_work",
 			"qorpera_record_runtime_observation",
 			"qorpera_record_provider_usage_signal",
 			"qorpera_begin_native_company_execution_v2",
@@ -74,6 +80,11 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 			"qorpera_runtime_wake_policy",
 			"qorpera_assert_wake_work_allowed",
 			"qorpera_assert_wake_completion",
+			// Auto-review (v130).
+			"qorpera_begin_action_review",
+			"qorpera_record_action_review",
+			"qorpera_await_action_review",
+			"qorpera_add_agent_review_rule",
 		];
 		if (!permitted.includes(method)) throw new Error("Unknown Company File control operation");
 		const body = JSON.stringify(argumentsValue);
@@ -154,21 +165,22 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 					throw new CloudRuntimeDiagnosticError("invalid_response", "Company File authority unavailable");
 				}
 				if (!response.ok) {
-					if (
-						response.status === 403 &&
-						value &&
+					// A complete PostgREST error body with exactly this SQLSTATE.
+					const postgrestError = (code: string): boolean =>
+						!!value &&
 						typeof value === "object" &&
 						!Array.isArray(value) &&
 						Object.keys(value).sort().join() === "code,details,hint,message" &&
-						(value as Record<string, unknown>).code === "42501" &&
+						(value as Record<string, unknown>).code === code &&
 						typeof (value as Record<string, unknown>).message === "string" &&
 						["details", "hint"].every(
 							(key) =>
 								(value as Record<string, unknown>)[key] === null ||
 								typeof (value as Record<string, unknown>)[key] === "string",
-						)
-					)
-						throw new CloudCompanyPathRpcRefusal();
+						);
+					if (response.status === 403 && postgrestError("42501")) throw new CloudCompanyPathRpcRefusal();
+					if (response.status === 412 && postgrestError("PT412")) throw new CloudCompanyPathRpcPrecondition();
+					if (response.status === 424 && postgrestError("PT424")) throw new CloudCompanyPathRpcParentMissing();
 					if (
 						response.status === 409 &&
 						value &&

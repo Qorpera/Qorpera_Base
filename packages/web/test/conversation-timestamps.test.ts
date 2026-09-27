@@ -340,3 +340,47 @@ describe("conversation timestamp rendering", () => {
 		}
 	});
 });
+
+describe("approval cards of agents' actions in the timeline", () => {
+	function reviewCard(sequence: number, createdAt: string): TranscriptItem {
+		return {
+			kind: "authorization_request",
+			id: id(700 + sequence),
+			sequence,
+			actorUserId: userA.id,
+			createdAt,
+			body: {
+				schema: "qorpera.action-review/v1",
+				reviewId: id(700 + sequence),
+				title: "Send an email",
+				summary: "Asks first.",
+				approverScope: "owners_admins",
+				alwaysAllow: false,
+			},
+		};
+	}
+
+	it("puts no time of a card's late decision on the message before it", () => {
+		const card = reviewCard(1, new Date(2026, 8, 20, 10).toISOString());
+		const reply = message(2, new Date(2026, 8, 20, 10, 1).toISOString());
+		const decision: TranscriptItem = {
+			kind: "authorization_decision",
+			id: id(799),
+			sequence: 3,
+			actorUserId: userA.id,
+			createdAt: new Date(2026, 8, 20, 14, 30).toISOString(),
+			body: {
+				requestEventId: id(701),
+				decision: "approved",
+				answer: { answer: "allow_once" },
+				answeredBy: userA.id,
+			},
+		};
+		const { view } = setup([card, reply, decision]);
+		const times = [...view.el.querySelectorAll<HTMLTimeElement>("time.conversation-timestamp")].map((time) =>
+			new Date(time.dateTime).getHours(),
+		);
+		expect(times).toEqual([10]);
+		expect(view.el.querySelector(".action-review-card")?.getAttribute("data-decision-state")).toBe("approved");
+	});
+});

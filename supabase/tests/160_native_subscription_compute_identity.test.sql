@@ -9,10 +9,10 @@ begin
 end
 $$;
 
-insert into auth.users (id, email)
+insert into auth.users (id, email, raw_user_meta_data)
 values
-	('16000000-0000-4000-8000-000000000001', 'native-owner@example.test'),
-	('16000000-0000-4000-8000-000000000002', 'native-member@example.test');
+	('16000000-0000-4000-8000-000000000001', 'native-owner@example.test', '{"full_name":"Native Owner"}'),
+	('16000000-0000-4000-8000-000000000002', 'native-member@example.test', '{"full_name":"Native Member"}');
 
 insert into public.qorpera_profiles (id, name, created_by_user_id)
 values (

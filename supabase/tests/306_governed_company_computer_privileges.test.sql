@@ -27,7 +27,8 @@ begin
 	-- Exact signatures, not names: Step 7 added a second signature of the
 	-- capture completion (account label), and a name-only check would also pass
 	-- any other overload the broker inherited. Bundle v88 added the coding
-	-- executor's repository credential.
+	-- executor's repository credential. Member-reviewed email adds only the
+	-- capability-bound claim and provider-receipt completion functions.
 	select array_agg(function.oid::regprocedure::text order by function.oid::regprocedure::text collate "C") into v_functions
 	from pg_proc as function
 	join pg_namespace as namespace on namespace.oid = function.pronamespace
@@ -37,9 +38,11 @@ begin
 	if v_functions is distinct from array[
 		'qorpera_authorize_cloud_secret_operation(uuid,text,jsonb,uuid,text,text,uuid,text,text,bigint,text,text)',
 		'qorpera_authorize_coding_repository_credential(uuid,text,uuid,uuid,text,jsonb)',
+		'qorpera_claim_email_draft_action(uuid,text,uuid,text)',
 		'qorpera_complete_cloud_secret_capture(uuid,text,uuid,text,text,text)',
 		'qorpera_complete_cloud_secret_capture(uuid,text,uuid,text,text,text,text)',
-		'qorpera_describe_cloud_secret_capture(uuid,text,uuid,text)'
+		'qorpera_describe_cloud_secret_capture(uuid,text,uuid,text)',
+		'qorpera_finish_email_draft_action(uuid,text,uuid,text,jsonb)'
 	]::text[] then
 		raise exception 'Broker inherited a function outside its fixed custody calls';
 	end if;

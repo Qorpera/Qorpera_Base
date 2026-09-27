@@ -310,9 +310,10 @@ export class CloudNativeToolRun {
 		});
 		try {
 			await check;
-		} catch {
+		} catch (error) {
 			this.close();
-			throw new Error("Cloud tool authority unavailable");
+			// The cause only tells a timed-out check apart in observations.
+			throw new Error("Cloud tool authority unavailable", { cause: error });
 		}
 	}
 

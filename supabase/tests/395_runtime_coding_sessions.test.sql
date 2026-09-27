@@ -108,6 +108,33 @@ begin
 	perform pg_temp.wake_assert((pg_temp.session_row('fix-send-2')).phase = 'cancelled','The second session leaves the queue');
 end $$;
 
+create function pg_temp.fleet_node(p_node uuid, p_owner text, p_host text, p_provider text) returns void language plpgsql as $$
+begin
+	perform public.qorpera_configure_coding_executor('30000000-0000-4000-8000-000000000020',p_owner,true,array['codex']);
+	perform public.qorpera_configure_coding_vm_policy('30000000-0000-4000-8000-000000000020',p_owner,
+		jsonb_build_object('providerId',p_provider,'providerPolicySha256',repeat('f',64),'project','coding','imageFingerprint',repeat('a',64),
+		'bootstrapSha256',repeat('b',64),'storagePool','coding','network','coding','cpus',2,'memoryBytes',2147483648,'rootDiskBytes',4294967296));
+	perform public.qorpera_configure_coding_nas_policy('30000000-0000-4000-8000-000000000020',p_owner,p_host,
+		jsonb_build_object('schema','qorpera.coding-nas-policy/v1','mountPoint','/srv/coding','rootPath','/srv/coding/executor',
+		'source','192.168.1.40:/coding','serverAddress','192.168.1.40'));
+	perform public.qorpera_configure_runtime_node(jsonb_build_object('schema','qorpera.runtime-node-policy/v1',
+		'nodeId',p_node,'machineIdSha256',p_host,'label',p_provider,'cpuMillis',6000,'memoryBytes',8589934592,
+		'headroomCpuMillis',2000,'headroomMemoryBytes',1073741824,'standardCpuMillis',2000,'standardMemoryBytes',2147483648,'enabled',true),0);
+	perform public.qorpera_enroll_runtime_node_provider(p_node,p_host,'coding',p_provider,repeat('f',64),2000,2147483648);
+	perform public.qorpera_enroll_runtime_node_inventory(jsonb_build_object('schema','qorpera.runtime-node-inventory-policy/v1',
+		'nodeId',p_node,'host',jsonb_build_object('machineIdSha256',p_host,'socketPath','/var/snap/lxd/common/lxd/unix.socket',
+		'socketGid',0,'certificateSha256',repeat('e',64),'serverName','lxd','serverVersion','5.21','architecture','x86_64'),
+		'operatingCpuMillis',500,'operatingMemoryBytes',536870912,'infrastructure','[]'::jsonb));
+	perform public.qorpera_observe_runtime_node_inventory(jsonb_build_object('schema','qorpera.runtime-node-observation/v1',
+		'nodeId',p_node,'machineIdSha256',p_host,'observationId',extensions.gen_random_uuid(),
+		'observedAt',to_char(clock_timestamp() at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"'),'cpuMillis',6000,'memoryBytes',8589934592,'state','ready'),
+		public.qorpera_runtime_node_inventory_context(p_node) ->> 'contextSha256',
+		jsonb_build_object('schema','qorpera.runtime-node-inventory/v1','bootId',extensions.gen_random_uuid(),'entries','[]'::jsonb));
+end $$;
+
+select pg_temp.wake_assert(public.qorpera_claim_coding_session('exec-test',60) is null,'An unconfigured executor keeps sessions queued');
+select pg_temp.fleet_node('30000000-0000-4000-8000-000000000310','exec-test',repeat('c',64),'coding-fixture');
+
 -- 2. The executor claims the session, prepares, admits the turn under the owner's sponsor, and the
 --    finished run is not mistaken for the worker's report.
 do $$
