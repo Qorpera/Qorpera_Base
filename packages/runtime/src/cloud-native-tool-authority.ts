@@ -190,10 +190,10 @@ export function parseCloudNativeToolAuthority(
 	});
 }
 
-/** Bounded, cancellation-aware wait, including transports which ignore AbortSignal. */
 /** Two cloud reads sent together that the database serialises on the run's job row. */
 export const CLOUD_PAIRED_REQUEST_TIMEOUT_MS = 10_000;
 
+/** Bounded, cancellation-aware wait, including transports which ignore AbortSignal. */
 export function cloudToolRequest<T>(
 	operation: (signal: AbortSignal) => Promise<T>,
 	signal: AbortSignal,
