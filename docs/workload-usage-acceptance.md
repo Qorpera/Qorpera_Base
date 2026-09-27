@@ -4,6 +4,12 @@ The disposable `office-physical-acceptance.yml` workload job joins actual Linux/
 
 The financial setup uses explicitly synthetic invoice proofs passed through the real privileged funding kernels. These are test entitlements, not evidence of a new Stripe payment. Source agents, repositories and model accounts are fixtures. The separate Stripe acceptance evidence establishes payment integration; it must not be inferred from these VM tests.
 
+Run only this matrix, without duplicating an ongoing office lifecycle or full regression run:
+
+```sh
+gh workflow run step2-lxd.yml --ref <reviewed-branch> -f office_physical_acceptance=true -f workloads_only=true
+```
+
 ## Cases and assertions
 
 | Case | Physical operation | Required financial result |
