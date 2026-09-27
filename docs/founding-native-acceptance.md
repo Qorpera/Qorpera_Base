@@ -80,6 +80,20 @@ sign or activate a runtime release, or satisfy joined founding/VM acceptance.
 It can exercise the component cases skipped by the ordinary Linux suite while
 the larger physical host remains unavailable.
 
+The first bounded run, [36338972810](https://github.com/Qorpera/Qorpera_Base/actions/runs/36338972810)
+at `16a8a5cc7`, compiled the pinned development executable successfully in
+14 minutes 14 seconds on the existing 2-CPU/8-GiB runner, with approximately
+3.4 GiB maximum build RSS. All 19 component cases then failed during setup:
+the acceptance TMPDIR produced a 115-byte Unix socket path, exceeding the
+unchanged production limit of less than 104 bytes. No native model request or
+passing component behavior was established. The failed evidence remains intact.
+
+The corrected harness gives tests a separate short private directory, checks
+the actual production socket bind/connect before testing and verifies removal
+on success or failure. Nine focused harness tests pass, including the original
+long-path refusal. Build provenance, deadlines and the required 19-case result
+are unchanged. A Linux rerun is still required before claiming component success.
+
 ## Build an isolated test package
 
 On Linux x64, with a new output directory and the verified native/signed image

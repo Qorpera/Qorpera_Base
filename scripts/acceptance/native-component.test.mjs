@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { chmod, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, readdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -11,7 +11,9 @@ import {
 	runNativeComponentCommand,
 	verifyNativeComponentArtifact,
 	verifyNativeComponentTests,
+	verifyNativeComponentTestSocket,
 	verifyNativeV8Manifest,
+	withNativeComponentTestIsolation,
 } from "./native-component.mjs";
 
 const digest = (bytes) => createHash("sha256").update(bytes).digest("hex");
@@ -64,6 +66,41 @@ test("the test environment is closed and admits only the explicit component bina
 	assert.equal(env.HOME, "/fixture/isolation/home");
 	for (const key of ["NODE_OPTIONS", "OPENAI_API_KEY", "GH_TOKEN", "GITHUB_TOKEN", "RUSTFLAGS", "SUPABASE_URL", "QORPERA_ENFORCE_RUNTIME_BUNDLE"]) assert.equal(env[key], undefined);
 	assert.equal(nativeComponentEnvironment("/fixture/isolation", "/usr/bin").QORPERA_CODEX_FENCE_BINARY, undefined);
+});
+
+test("the production socket guard rejects long CI paths and preflight removes its failed allocation", async () => {
+	const previousPath = "/home/runner/work/_temp/native-component-acceptance/isolation/tmp/qorpera-codex-boundary-XXXXXX/runtime/result.sock";
+	assert.equal(Buffer.byteLength(previousPath), 115);
+	const directory = await realpath(await mkdtemp(join(tmpdir(), "native-component-long-socket-")));
+	try {
+		const longTmp = join(directory, "nested".repeat(20));
+		await mkdir(longTmp, { mode: 0o700 });
+		await assert.rejects(verifyNativeComponentTestSocket(longTmp), /Native result boundary requires a private Unix directory/);
+		assert.deepEqual(await readdir(longTmp), []);
+	} finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test("short private test isolation binds the real fence socket and cleans successful or failed operations", async () => {
+	for (const fail of [false, true]) {
+		const evidence = {}, failure = new Error("synthetic test command failure");
+		const run = withNativeComponentTestIsolation(evidence, async (root) => {
+			const env = nativeComponentEnvironment(root, "/usr/bin", "/fixture/codex");
+			assert.equal(await realpath(root), root);
+			for (const path of [root, env.HOME, env.TMPDIR, env.XDG_CONFIG_HOME, env.XDG_CACHE_HOME]) assert.equal((await lstat(path)).mode & 0o777, 0o700);
+			assert(evidence.socketPreflight.socketBytes < 104);
+			assert.equal(evidence.socketPreflight.bindConnectPassed, true);
+			assert.equal(evidence.socketPreflight.socketMode, "0600");
+			assert.deepEqual(await readdir(env.TMPDIR), []);
+			await writeFile(join(env.HOME, "private-test-state"), "discard after test");
+			if (fail) throw failure;
+			return "passed";
+		});
+		if (fail) await assert.rejects(run, (error) => error === failure);
+		else assert.equal(await run, "passed");
+		assert.equal(evidence.removed, true);
+		assert.equal(evidence.cleanupError, undefined);
+		await assert.rejects(lstat(evidence.root), { code: "ENOENT" });
+	}
 });
 
 test("component provenance accepts dev bytes and rejects source drift, substitution and symlinks", async () => {

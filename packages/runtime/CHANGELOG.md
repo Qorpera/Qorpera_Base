@@ -89,6 +89,7 @@
 
 ### Fixed
 
+- Preserve monotonic company bootstrap attempts through prolonged dependency outages. An expired job can recover past the old 1,000-attempt constraint without blocking later companies, resetting publication operation keys or admitting stale workers.
 - Admit shared-office outage recovery when its absent privacy challenge is stored as SQL NULL and retained as JSON null. Configuration, successor preparation and startup still reject changed privacy state, version, challenge, revision or a missing snapshot field.
 - Admit the three packaged outage control executables through the existing protected lock launcher, including outage and reset-restart inspection nonces. Fixed executable paths, image custody, empty child environment, kernel locking and distinct nonce validation remain enforced.
 - Recover from explicitly confirmed office metering delays during closed-listener startup within a fixed 30-second budget. Each readiness retry rechecks physical custody; credential, invocation and unknown transport failures remain terminal.

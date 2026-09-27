@@ -2,11 +2,13 @@ import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { closeSync, createReadStream, ftruncateSync, openSync, writeSync } from "node:fs";
-import { lstat, mkdir, readFile, realpath, rename, statfs, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, realpath, rename, rm, statfs, writeFile } from "node:fs/promises";
+import { createConnection } from "node:net";
 import { availableParallelism, totalmem } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { startCloudNativeResultFence } from "../../packages/runtime/src/cloud-native-result-fence.ts";
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const execute = promisify(execFile);
@@ -77,6 +79,55 @@ export function verifyNativeComponentTests(report, root = repository) {
 export function nativeComponentEnvironment(root, path, binary) {
 	assert(isAbsolute(root) && typeof path === "string" && path.length > 0);
 	return { PATH: path, HOME: join(root, "home"), TMPDIR: join(root, "tmp"), XDG_CONFIG_HOME: join(root, "config"), XDG_CACHE_HOME: join(root, "cache"), LANG: "C", LC_ALL: "C", TZ: "UTC", CI: "true", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_TERMINAL_PROMPT: "0", AWS_EC2_METADATA_DISABLED: "true", ...(binary ? { QORPERA_CODEX_FENCE_BINARY: binary } : {}) };
+}
+
+/** Exercise the production socket guard at the exact per-session directory depth. */
+export async function verifyNativeComponentTestSocket(tempDirectory) {
+	const allocation = await mkdtemp(join(tempDirectory, "qorpera-codex-boundary-"));
+	let service;
+	try {
+		const root = join(allocation, "runtime");
+		await mkdir(root, { mode: 0o700 });
+		service = await startCloudNativeResultFence({ root, boundary: { close() {}, async fenceNativeResults() { return []; } }, assertSession() {}, onFailure() {}, signal: new AbortController().signal });
+		assert.equal((await lstat(service.path)).mode & 0o777, 0o600);
+		await new Promise((resolve, reject) => {
+			const socket = createConnection(service.path);
+			socket.setTimeout(5000, () => socket.destroy(new Error("Native component socket preflight timed out")));
+			socket.once("error", reject);
+			socket.once("connect", () => { socket.destroy(); resolve(); });
+		});
+		return { socketBytes: Buffer.byteLength(service.path), privateDirectory: true, socketMode: "0600", bindConnectPassed: true };
+	} finally {
+		try { await service?.close(); }
+		finally { await rm(allocation, { recursive: true, force: true }); }
+	}
+}
+
+/** The build/evidence path may be long; native Unix IPC needs a separate short private home. */
+export async function withNativeComponentTestIsolation(evidence, run) {
+	const root = await mkdtemp(join(await realpath("/tmp"), "qnc-"));
+	evidence.root = root;
+	evidence.removed = false;
+	let operationError;
+	try {
+		assert.equal((await lstat(root)).mode & 0o777, 0o700);
+		for (const part of ["home", "tmp", "config", "cache"]) await mkdir(join(root, part), { mode: 0o700 });
+		evidence.socketPreflight = await verifyNativeComponentTestSocket(join(root, "tmp"));
+		return await run(root);
+	} catch (error) {
+		operationError = error;
+		throw error;
+	} finally {
+		try {
+			await rm(root, { recursive: true, force: true });
+			await lstat(root).then(() => { throw new Error("Native component test isolation remains after cleanup"); }, (error) => { if (error.code !== "ENOENT") throw error; });
+			evidence.removed = true;
+		} catch (error) {
+			evidence.cleanupError = error instanceof Error ? error.message : String(error);
+			if (operationError) throw new AggregateError([operationError, error], "Native component operation and isolation cleanup both failed");
+			throw error;
+		}
+	}
 }
 
 async function digestFile(path) {
@@ -222,10 +273,15 @@ export async function runNativeComponentAcceptance(options) {
 		assert(evidence.build.code === 0 && !evidence.build.timedOut && !evidence.build.spawnError, "Pinned native component build failed; retained build/resource logs describe the failure");
 		evidence.artifact = await verifyNativeComponentArtifact(join(options.out, "build"), contract);
 		evidence.retainedArtifactFiles = await artifactFiles(join(options.out, "build"));
-		evidence.stage = "testing";
+		evidence.stage = "test-isolation-preflight";
+		evidence.testIsolation = {};
 		await save();
 		const binary = join(options.out, "build/codex"), reportPath = join(options.out, "vitest.json");
-		evidence.execution = await runNativeComponentCommand(process.execPath, [join(repository, "node_modules/vitest/dist/cli.js"), "--run", "--maxWorkers=1", "--no-file-parallelism", "--no-cache", "--reporter=default", "--reporter=json", `--outputFile=${reportPath}`, ...[...cases.keys()].map((file) => `test/${file}`)], { cwd: join(repository, "packages/runtime"), env: nativeComponentEnvironment(isolated, process.env.PATH, binary), log: join(options.out, "tests"), timeoutMs: 15 * 60_000 });
+		await withNativeComponentTestIsolation(evidence.testIsolation, async (testRoot) => {
+			evidence.stage = "testing";
+			await save();
+			evidence.execution = await runNativeComponentCommand(process.execPath, [join(repository, "node_modules/vitest/dist/cli.js"), "--run", "--maxWorkers=1", "--no-file-parallelism", "--no-cache", "--reporter=default", "--reporter=json", `--outputFile=${reportPath}`, ...[...cases.keys()].map((file) => `test/${file}`)], { cwd: join(repository, "packages/runtime"), env: nativeComponentEnvironment(testRoot, process.env.PATH, binary), log: join(options.out, "tests"), timeoutMs: 15 * 60_000 });
+		});
 		await save();
 		assert(evidence.execution.code === 0 && !evidence.execution.timedOut && !evidence.execution.spawnError, "Native component tests failed; retained test logs describe the failure");
 		evidence.tests = verifyNativeComponentTests(JSON.parse(await readFile(reportPath, "utf8")));
