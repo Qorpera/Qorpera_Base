@@ -5,7 +5,10 @@ import {
 	parseCompanyComputerStartupAuthority,
 	parseCompanyComputerStartupIdentity,
 } from "@qorpera/contracts";
-import type { HttpCloudCompanyComputerRegistry } from "./cloud-company-computer-registry-http.ts";
+import {
+	type HttpCloudCompanyComputerRegistry,
+	OfficeComputerMeteringPending,
+} from "./cloud-company-computer-registry-http.ts";
 
 /** A service invocation can report readiness, never activate itself. Both
  * listeners stay closed to work while this controller waits for the provider.
@@ -22,7 +25,41 @@ export class CompanyComputerStartupControl {
 		return this.#identity;
 	}
 	async check(signal: AbortSignal) {
-		return this.#call("qorpera_check_runtime_office_startup", {}, signal);
+		return this.#waitForMetering(
+			(checked) => this.#call("qorpera_check_runtime_office_startup", {}, checked),
+			signal,
+		);
+	}
+	/** Used only while both listeners remain closed to work. Ordinary effects
+	 * fail immediately on a metering gap and are never replayed here. */
+	async waitForWorkReady(verify: (signal: AbortSignal) => Promise<void>, signal: AbortSignal): Promise<void> {
+		await this.#waitForMetering(verify, signal);
+	}
+	async #waitForMetering<T>(operation: (signal: AbortSignal) => Promise<T>, signal: AbortSignal): Promise<T> {
+		const deadline = performance.now() + 30000;
+		const budget = AbortSignal.timeout(30000);
+		const checked = AbortSignal.any([signal, budget]);
+		while (true) {
+			signal.throwIfAborted();
+			try {
+				checked.throwIfAborted();
+				const result = await operation(checked);
+				checked.throwIfAborted();
+				return result;
+			} catch (error) {
+				signal.throwIfAborted();
+				if (budget.aborted) throw new Error("OFFICE_STARTUP_METERING_TIMEOUT");
+				if (!(error instanceof OfficeComputerMeteringPending)) throw error;
+				if (performance.now() >= deadline) throw new Error("OFFICE_STARTUP_METERING_TIMEOUT");
+			}
+			try {
+				await delay(1000, undefined, { signal: checked });
+			} catch (error) {
+				signal.throwIfAborted();
+				if (budget.aborted) throw new Error("OFFICE_STARTUP_METERING_TIMEOUT");
+				throw error;
+			}
+		}
 	}
 	async #call(
 		method: "qorpera_check_runtime_office_startup" | "qorpera_report_runtime_office_ready",
@@ -64,13 +101,19 @@ export class CompanyComputerStartupControl {
 		const ports = { ...listeners };
 		while (true) {
 			signal.throwIfAborted();
-			await verifyPhysical(signal);
-			signal.throwIfAborted();
-			const authority = await this.#call(
-				"qorpera_report_runtime_office_ready",
-				{ p_activation_id: this.#activationId, p_native_port: ports.nativePort, p_viewer_port: ports.viewerPort },
-				signal,
-			);
+			const authority = await this.#waitForMetering(async (checked) => {
+				await verifyPhysical(checked);
+				checked.throwIfAborted();
+				return this.#call(
+					"qorpera_report_runtime_office_ready",
+					{
+						p_activation_id: this.#activationId,
+						p_native_port: ports.nativePort,
+						p_viewer_port: ports.viewerPort,
+					},
+					checked,
+				);
+			}, signal);
 			if (authority.state === "prepared") throw new Error("OFFICE_STARTUP_READINESS_UNCONFIRMED");
 			if (authority.state === "active") return;
 			await delay(1000, undefined, { signal });

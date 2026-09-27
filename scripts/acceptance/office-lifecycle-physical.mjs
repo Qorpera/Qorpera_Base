@@ -7,6 +7,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 import { build } from "esbuild";
+import { officeLifecycleBearerToken } from "./office-lifecycle-credentials.mjs";
 import { closeOfficeLifecycleCustody, officeCustodyMachines } from "./office-lifecycle-custody.mjs";
 import { officeLifecycleDiagnostics } from "./office-lifecycle-diagnostics.mjs";
 import { startOfficeRpcServer } from "./office-rpc-server.mjs";
@@ -255,8 +256,8 @@ try {
 	await protectedFile("review-input.json", { binding: creation.binding, observation });
 	const review = JSON.parse(tool("review", `${root}/review-input.json`));
 	await protectedFile("maintenance.json", review.maintenanceBytes); await protectedFile("review.json", review.review);
-	const credentials = { registry: await protectedFile("guest-registry.key", tokens.guest, true), native: await protectedFile("native.key", randomBytes(48).toString("base64url"), true),
-		objects: await protectedFile("objects.key", randomBytes(48).toString("base64url"), true), tlsCert: await protectedFile("guest.pem", await readFile(trust.serverCertificatePath), true), tlsKey: await protectedFile("guest-key.pem", await readFile(trust.serverPrivateKeyPath), true) };
+	const credentials = { registry: await protectedFile("guest-registry.key", tokens.guest, true), native: await protectedFile("native.key", officeLifecycleBearerToken(), true),
+		objects: await protectedFile("objects.key", officeLifecycleBearerToken(), true), tlsCert: await protectedFile("guest.pem", await readFile(trust.serverCertificatePath), true), tlsKey: await protectedFile("guest-key.pem", await readFile(trust.serverPrivateKeyPath), true) };
 	await protectedFile("bootstrap.json", { schema: "qorpera.lxd-office-service-bootstrap/v1", providerBindingSha256: review.providerBindingSha256, registryUrl, captureObjectGatewayUrl: registryUrl,
 		native: { host: "0.0.0.0", port: 9443 }, viewer: { host: "0.0.0.0", port: 9444, origins: [registryUrl] }, credentials });
 	await protectedFile("plan.json", { schema: "qorpera.lxd-office-lifecycle-plan/v1", request: { intentId, observationSha256: reviewed.observationSha256,

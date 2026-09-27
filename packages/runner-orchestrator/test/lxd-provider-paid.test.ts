@@ -339,6 +339,33 @@ async function fixture() {
 	};
 }
 describe("native provider funded lifecycle", () => {
+	it("never delivers an assignment during a coverage gap and proceeds only after a fresh canonical verdict", async () => {
+		const f = await fixture(),
+			signal = new AbortController().signal;
+		const runner = await f.backend.acquire(f.work.runId, f.work, signal);
+		f.usage.assertRunning.mockImplementationOnce(async () => {
+			expect(f.guest.deliver).not.toHaveBeenCalled();
+			throw new Error("RUNTIME_COMPUTER_RUNNING_PERMIT_REQUIRED");
+		});
+		const delivery = {
+			work: f.work,
+			capability: "a".repeat(43),
+			assignment: {
+				assignmentId: randomUUID(),
+				claimId: randomUUID(),
+				runId: f.work.runId,
+				jobId: f.work.jobId,
+				runnerId: runner.runnerId,
+				capabilitySha256: "b".repeat(64),
+				expiresAt: new Date(Date.now() + 60000).toISOString(),
+			},
+		};
+		await f.backend.deliver(runner, delivery, signal);
+		expect(f.usage.assertRunning).toHaveBeenCalledTimes(3);
+		expect(f.usage.observe).toHaveBeenCalledTimes(3);
+		expect(f.guest.deliver).toHaveBeenCalledOnce();
+		expect(f.usage.start).toHaveBeenCalledOnce();
+	});
 	it("waits for a confirmed first sample without redispatching bootstrap or delivering work", async () => {
 		const f = await fixture();
 		f.usage.assertRunning.mockRejectedValueOnce(new Error("RUNTIME_COMPUTER_RUNNING_PERMIT_REQUIRED"));

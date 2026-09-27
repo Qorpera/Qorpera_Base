@@ -83,6 +83,7 @@
 
 ### Fixed
 
+- Recover from explicitly confirmed office metering delays during closed-listener startup within a fixed 30-second budget. Each readiness retry rechecks physical custody; credential, invocation and unknown transport failures remain terminal.
 - Recheck paid metering coverage at the office work boundary using the exact boot, configuration and current service invocation. Superseded processes and coverage gaps cannot admit effects; lifecycle custody stays available.
 - `company_write` and `company_mkdir` into a folder that does not exist are a definite `COMPANY_FILE_PARENT_MISSING` refusal (denied, `errorCategory` `parent_missing`) that tells the model to create the folder with `company_mkdir` first and repeat the call (and never to replace a file to make that folder). SQL refuses it at the check (PT424), before presence and before any bytes are uploaded, and again at prepare and commit. Previously the runner uploaded the bytes, failed while building the candidate tree and reported an unconfirmed, unknown outcome.
 

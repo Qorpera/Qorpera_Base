@@ -3,6 +3,7 @@ import {
 	parseCompanyComputerStartupAuthority,
 	parseCompanyComputerStartupIdentity,
 } from "@qorpera/contracts";
+import { OfficeComputerMeteringPending } from "@qorpera/runtime/cloud-company-computer-registry-http";
 import { CompanyComputerStartupControl } from "@qorpera/runtime/cloud-company-computer-startup";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { computerId, computerScope } from "./fixtures/company-computer.ts";
@@ -95,6 +96,62 @@ describe("closed office activation and service startup contracts", () => {
 	});
 });
 describe("provider-controlled startup wait", () => {
+	it("rechecks physical identity before each readiness retry and refuses a changed guest", async () => {
+		const call = vi.fn().mockResolvedValueOnce(response()).mockRejectedValueOnce(new OfficeComputerMeteringPending());
+		const control = new CompanyComputerStartupControl(identity(), { call });
+		await control.check(signal());
+		const physical = vi
+			.fn()
+			.mockResolvedValueOnce(undefined)
+			.mockRejectedValueOnce(new Error("physical identity differs"));
+		await expect(
+			control.waitForActivation({ nativePort: 9443, viewerPort: 9444 }, physical, signal()),
+		).rejects.toThrow("physical identity differs");
+		expect(physical).toHaveBeenCalledTimes(2);
+		expect(call).toHaveBeenCalledTimes(2);
+	});
+	it("waits for confirmed metering during check, activation refresh and final closed-listener preflight", async () => {
+		const call = vi
+			.fn()
+			.mockRejectedValueOnce(new OfficeComputerMeteringPending())
+			.mockResolvedValueOnce(response())
+			.mockRejectedValueOnce(new OfficeComputerMeteringPending())
+			.mockResolvedValueOnce(response("active"));
+		const control = new CompanyComputerStartupControl(identity(), { call });
+		await control.check(signal());
+		await control.waitForActivation({ nativePort: 9443, viewerPort: 9444 }, async () => {}, signal());
+		const verify = vi.fn().mockRejectedValueOnce(new OfficeComputerMeteringPending()).mockResolvedValue(undefined);
+		await control.waitForWorkReady(verify, signal());
+		expect(call).toHaveBeenCalledTimes(4);
+		expect(verify).toHaveBeenCalledTimes(2);
+	});
+	it("never retries invocation, credential, malformed response or transport refusal", async () => {
+		for (const error of [
+			new Error("OFFICE_REGISTRY_UNCONFIRMED"),
+			new Error("Office computer metering not ready"),
+			new Error("OFFICE_STARTUP_AUTHORITY_EXPIRED"),
+		]) {
+			const call = vi.fn().mockRejectedValue(error);
+			const control = new CompanyComputerStartupControl(identity(), { call });
+			await expect(control.check(signal())).rejects.toBe(error);
+			expect(call).toHaveBeenCalledOnce();
+		}
+	});
+	it("bounds a persistent metering gap and refuses work on cancellation", async () => {
+		const control = new CompanyComputerStartupControl(identity(), { call: vi.fn() });
+		const verify = vi.fn().mockRejectedValue(new OfficeComputerMeteringPending());
+		vi.spyOn(performance, "now").mockReturnValueOnce(0).mockReturnValue(30001);
+		await expect(control.waitForWorkReady(verify, signal())).rejects.toThrow("OFFICE_STARTUP_METERING_TIMEOUT");
+		expect(verify).toHaveBeenCalledOnce();
+		vi.restoreAllMocks();
+		const abort = new AbortController();
+		verify.mockImplementationOnce(async () => {
+			abort.abort();
+			throw new OfficeComputerMeteringPending();
+		});
+		await expect(control.waitForWorkReady(verify, abort.signal)).rejects.toThrow();
+		expect(verify).toHaveBeenCalledTimes(2);
+	});
 	it("reports actual ports while closed and waits for matching provider activation", async () => {
 		const call = vi
 			.fn()
@@ -164,8 +221,13 @@ describe("provider-controlled startup wait", () => {
 		expect(call).toHaveBeenCalledTimes(2);
 	});
 	it("deducts request time and refuses an expired authority response", async () => {
-		vi.spyOn(performance, "now").mockReturnValueOnce(0).mockReturnValue(5001);
-		const control = new CompanyComputerStartupControl(identity(), { call: vi.fn().mockResolvedValue(response()) });
+		const now = vi.spyOn(performance, "now").mockReturnValue(0);
+		const control = new CompanyComputerStartupControl(identity(), {
+			call: vi.fn(async () => {
+				now.mockReturnValue(5001);
+				return response();
+			}),
+		});
 		await expect(control.check(signal())).rejects.toThrow("OFFICE_STARTUP_AUTHORITY_EXPIRED");
 	});
 });

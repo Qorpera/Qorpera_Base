@@ -51,3 +51,5 @@ The database stages also exercise real concurrent row-lock ordering and the rest
 Review the uploaded `evidence.json` files against the run's exact commit. Require `passed: true`, successful owned-resource cleanup and the expected options for each case. Raw credentials, signing material, access tokens and private service logs are not uploaded. Retain failed reports rather than rewriting them as passed after a later correction. A green SQL or image stage must never substitute for a missing browser or physical lifecycle result.
 
 See [computer billing setup](computer-billing-setup.md) for the agreed plans, authority boundaries and remaining launch gates.
+
+Run `36284793096` at `9c346704f` passed actual paid VM boot and preparation with the identity-preserving fixture export. It then failed before service configuration because the fixture supplied 48-byte bearer tokens where the closed material contract requires 32 bytes. The fixture now generates the required format, with a regression against the production parser; production credential validation is unchanged. This run does not establish service activation or lifecycle completion.

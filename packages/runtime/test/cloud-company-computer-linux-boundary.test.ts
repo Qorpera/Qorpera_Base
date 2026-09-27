@@ -7,6 +7,7 @@ import {
 	parseCompanyComputerPreparationRequest,
 } from "@qorpera/contracts";
 import { CompanyComputerLinuxBoundary } from "@qorpera/runtime/cloud-company-computer-linux-boundary";
+import { OfficeComputerMeteringPending } from "@qorpera/runtime/cloud-company-computer-registry-http";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { computerBinding, computerId, computerScope } from "./fixtures/company-computer.ts";
 import { bootConfigurationFixture } from "./fixtures/company-computer-boot-configuration.ts";
@@ -314,8 +315,8 @@ describe("physical office preflight (kernel/filesystem mocked; separate Linux pr
 		await expect(wrong.assertOfficeReady(f.signal)).rejects.toThrow("OFFICE_GUEST_READINESS_UNCONFIRMED");
 		expect(f.registry.call).not.toHaveBeenCalled();
 		const boundary = f.create();
-		f.registry.call.mockRejectedValueOnce(new Error("metering gap"));
-		await expect(boundary.assertOfficeReady(f.signal)).rejects.toThrow("OFFICE_GUEST_READINESS_UNCONFIRMED");
+		f.registry.call.mockRejectedValueOnce(new OfficeComputerMeteringPending());
+		await expect(boundary.assertOfficeReady(f.signal)).rejects.toBeInstanceOf(OfficeComputerMeteringPending);
 		await boundary.assertOfficeReady(f.signal);
 		expect(f.registry.call).toHaveBeenCalledTimes(2);
 	});

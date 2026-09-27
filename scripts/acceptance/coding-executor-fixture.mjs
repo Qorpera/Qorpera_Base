@@ -91,3 +91,26 @@ export function waitForCodingChild(child, { timeoutMs, graceMs = 10000, kill = (
     child.once("error", onError); child.once("close", onClose);
   });
 }
+
+/** VM device names are selected by the guest; do not assume container eth0. */
+export function codingImageAddress(addresses, routes, bridgeCidr) {
+  const defaults = routes.filter((route) => route.dst === "default");
+  if (defaults.length === 0) return null;
+  assert.equal(defaults.length, 1, "Ambiguous guest default route");
+  const device = defaults[0].dev;
+  assert(typeof device === "string" && /^[a-zA-Z0-9_.:-]{1,32}$/.test(device));
+  const candidates = addresses.filter((link) => link.ifname === device).flatMap((link) => link.addr_info ?? [])
+    .filter((entry) => entry.family === "inet" && entry.scope === "global");
+  if (candidates.length === 0) return null;
+  assert.equal(candidates.length, 1, "Ambiguous guest IPv4 address");
+  const numeric = (ip) => {
+    assert(typeof ip === "string" && /^(?:\d{1,3}\.){3}\d{1,3}$/.test(ip));
+    const bytes = ip.split(".").map(Number); assert(bytes.every((b) => b >= 0 && b <= 255));
+    return bytes.reduce((sum, byte) => sum * 256 + byte, 0);
+  };
+  const [bridge, prefix] = bridgeCidr.split("/");
+  assert(/^\d+$/.test(prefix) && Number(prefix) >= 8 && Number(prefix) <= 30);
+  assert.equal(Math.floor(numeric(candidates[0].local) / 2 ** (32 - Number(prefix))),
+    Math.floor(numeric(bridge) / 2 ** (32 - Number(prefix))), "Guest address is outside the managed bridge");
+  return { device, address: candidates[0].local };
+}

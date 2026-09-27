@@ -8,7 +8,10 @@ import { getCACertificates, setDefaultCACertificates } from "node:tls";
 import { connectCompanyComputerViewChannel } from "@qorpera/cloud-client/cloud-company-computer-view-channel";
 import type { CompanyComputerLinuxGuestOptions } from "@qorpera/runtime/cloud-company-computer-linux-guest";
 import { startCompanyComputerLinuxOfficeService } from "@qorpera/runtime/cloud-company-computer-linux-service";
-import { HttpCloudCompanyComputerRegistry } from "@qorpera/runtime/cloud-company-computer-registry-http";
+import {
+	HttpCloudCompanyComputerRegistry,
+	OfficeComputerMeteringPending,
+} from "@qorpera/runtime/cloud-company-computer-registry-http";
 import {
 	type CompanyComputerServiceGuest,
 	startCompanyComputerOfficeService,
@@ -251,6 +254,62 @@ function linuxFixture(f: ReturnType<typeof fixture>) {
 }
 
 describe("headless office service lifetime (TLS listeners, synthetic physical adapters)", () => {
+	it("keeps actual listeners closed during a post-activation metering gap and recovers without replacing the invocation", async () => {
+		const f = fixture(),
+			linux = linuxFixture(f),
+			recovered = computerDeferred<void>();
+		let nativePort = 0;
+		const identity = {
+			scope: computerScope(),
+			computerGeneration: 1,
+			allocationId: computerId(70),
+			instanceSha256: "a".repeat(64),
+			imageSha256: "b".repeat(64),
+			bootstrapSha256: "c".repeat(64),
+			bootId: computerId(71),
+			configurationSha256: "d".repeat(64),
+			serviceInvocationId: "e".repeat(32),
+		};
+		const startup = new CompanyComputerStartupControl(identity, {
+			call: async (_method, args) => {
+				if (typeof args.p_native_port === "number") nativePort = args.p_native_port;
+				return {
+					schema: "qorpera.office-startup-authority/v1",
+					activationId: computerId(72),
+					bootId: identity.bootId,
+					configurationSha256: identity.configurationSha256,
+					state: "active",
+					serviceInvocationId: identity.serviceInvocationId,
+					validForMs: 5000,
+				};
+			},
+		});
+		linuxGuest.ready
+			.mockRejectedValueOnce(new OfficeComputerMeteringPending())
+			.mockImplementationOnce(() => recovered.promise);
+		const starting = linux.start(startup);
+		cleanups.push(async () => {
+			recovered.resolve();
+			await (await starting).close();
+		});
+		await vi.waitFor(() => expect(linuxGuest.ready).toHaveBeenCalledOnce());
+		const reply = await fetch(`https://127.0.0.1:${nativePort}/office/${computerScope().companyComputerId}/native`, {
+			method: "POST",
+			headers: {
+				authorization: `Bearer ${f.options.native.token}`,
+				"content-type": "application/json",
+				connection: "close",
+			},
+			body: "{}",
+		});
+		expect(reply.status).toBe(503);
+		expect(f.guest.createSession).not.toHaveBeenCalled();
+		expect(f.guest.close).not.toHaveBeenCalled();
+		recovered.resolve();
+		await starting;
+		expect(linuxGuest.construct).toHaveBeenCalledOnce();
+		expect(linuxGuest.ready).toHaveBeenCalledTimes(2);
+	});
 	it("keeps both actual TLS listeners closed to work until provider activation", async () => {
 		const f = fixture(),
 			bound = computerDeferred<{ nativePort: number; viewerPort: number }>(),

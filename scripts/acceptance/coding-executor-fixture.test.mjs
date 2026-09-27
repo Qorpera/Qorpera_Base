@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
-import { assertCodingExecutorCleanup, assertCodingExecutorEvidence, codingFixtureRemote, localCodingFixtureGit, waitForCodingChild } from "./coding-executor-fixture.mjs";
+import { assertCodingExecutorCleanup, assertCodingExecutorEvidence, codingImageAddress, codingFixtureRemote, localCodingFixtureGit, waitForCodingChild } from "./coding-executor-fixture.mjs";
 
 const execute = promisify(execFile);
 function input(scratchRoot, args) {
@@ -89,4 +89,14 @@ test("timed out child escalates without treating its later exit as successful cl
   const signals = [];
   await assert.rejects(waitForCodingChild(child, { timeoutMs: 20, graceMs: 30, kill: (signal) => { signals.push(signal); child.kill(signal); } }), /custody retained/);
   assert.deepEqual(signals, ["SIGTERM", "SIGKILL"]);
+});
+
+test("image address follows the guest default-route device and remains inside the managed bridge", () => {
+  const link = (name, ip) => ({ ifname: name, addr_info: [{ family: "inet", scope: "global", local: ip }] });
+  const route = (name) => ({ dst: "default", dev: name });
+  assert.equal(codingImageAddress([link("enp5s0", "10.22.1.2")], [], "10.22.1.1/24"), null);
+  for (const name of ["eth0", "enp5s0"]) assert.deepEqual(codingImageAddress([link("lo", "127.0.0.1"), link(name, "10.22.1.2")], [route(name)], "10.22.1.1/24"), { device: name, address: "10.22.1.2" });
+  assert.equal(codingImageAddress([link("eth0", "10.22.1.2")], [route("enp5s0")], "10.22.1.1/24"), null);
+  assert.throws(() => codingImageAddress([link("enp5s0", "10.23.1.2")], [route("enp5s0")], "10.22.1.1/24"), /outside/);
+  assert.throws(() => codingImageAddress([link("enp5s0", "10.22.1.2")], [route("eth0"), route("enp5s0")], "10.22.1.1/24"), /Ambiguous/);
 });

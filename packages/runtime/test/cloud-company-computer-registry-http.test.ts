@@ -1,4 +1,7 @@
-import { HttpCloudCompanyComputerRegistry } from "@qorpera/runtime/cloud-company-computer-registry-http";
+import {
+	HttpCloudCompanyComputerRegistry,
+	OfficeComputerMeteringPending,
+} from "@qorpera/runtime/cloud-company-computer-registry-http";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 afterEach(() => vi.useRealTimers());
@@ -12,6 +15,39 @@ function fixture() {
 	return { fetcher, registry, signal: new AbortController().signal };
 }
 describe("host-only office registry transport", () => {
+	it("classifies only the exact metering prerequisite on startup and work reads", async () => {
+		const f = fixture();
+		for (const method of [
+			"qorpera_check_runtime_office_startup",
+			"qorpera_report_runtime_office_ready",
+			"qorpera_check_runtime_office_work_binding",
+		] as const) {
+			f.fetcher.mockResolvedValueOnce(
+				Response.json(
+					{ code: "55000", message: "Office computer metering not ready", details: null, hint: null },
+					{ status: 400 },
+				),
+			);
+			await expect(f.registry.call(method, {}, f.signal)).rejects.toBeInstanceOf(OfficeComputerMeteringPending);
+		}
+		for (const error of [
+			{ code: "42501", message: "Office computer metering not ready" },
+			{ code: "55000", message: "Office startup binding differs" },
+			{ message: "Office computer metering not ready" },
+		]) {
+			f.fetcher.mockResolvedValueOnce(Response.json(error, { status: 400 }));
+			await expect(f.registry.call("qorpera_check_runtime_office_startup", {}, f.signal)).rejects.toThrow(
+				"OFFICE_REGISTRY_UNCONFIRMED",
+			);
+		}
+		f.fetcher.mockResolvedValueOnce(
+			Response.json({ code: "55000", message: "Office computer metering not ready" }, { status: 400 }),
+		);
+		await expect(f.registry.call("qorpera_native_office_operation", {}, f.signal)).rejects.toThrow(
+			"OFFICE_REGISTRY_UNCONFIRMED",
+		);
+		expect(f.fetcher).toHaveBeenCalledTimes(7);
+	});
 	it("sends the exact retained record through the bounded service-only recovery port", async () => {
 		const f = fixture(),
 			record = '{"schema":"synthetic-closed-record"}\n';

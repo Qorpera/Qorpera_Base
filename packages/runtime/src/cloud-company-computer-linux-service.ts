@@ -90,7 +90,7 @@ export async function startCompanyComputerLinuxOfficeService(
 		signal: AbortSignal.any([options.signal, stop.signal]),
 		waitForActivation: async (listeners: { nativePort: number; viewerPort: number }, signal: AbortSignal) => {
 			await options.startup.waitForActivation(listeners, (checked) => boundary.assertPhysicalReady(checked), signal);
-			await boundary.assertOfficeReady(signal);
+			await options.startup.waitForWorkReady((checked) => boundary.assertOfficeReady(checked), signal);
 		},
 	});
 	const finished = service.finished.then(

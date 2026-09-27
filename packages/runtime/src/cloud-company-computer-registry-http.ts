@@ -39,6 +39,14 @@ const methods = [
 ] as const;
 export type CompanyComputerRegistryMethod = (typeof methods)[number];
 
+/** A confirmed readiness gap, never a credential or invocation refusal. */
+export class OfficeComputerMeteringPending extends Error {
+	constructor() {
+		super("OFFICE_COMPUTER_METERING_PENDING");
+		this.name = "OfficeComputerMeteringPending";
+	}
+}
+
 /** Host-only Supabase transport. Closed RPC names, finite bodies, no redirects
  * or retries; a lost effect/ticket response remains an unknown outcome. */
 export class HttpCloudCompanyComputerRegistry {
@@ -83,6 +91,26 @@ export class HttpCloudCompanyComputerRegistry {
 						body,
 					});
 					if (!response.ok) {
+						if (
+							[
+								"qorpera_check_runtime_office_startup",
+								"qorpera_report_runtime_office_ready",
+								"qorpera_check_runtime_office_work_binding",
+							].includes(method)
+						) {
+							const bytes = await readBoundedCloudResponse(response, 4096, requestSignal);
+							const error: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+							if (
+								error &&
+								typeof error === "object" &&
+								!Array.isArray(error) &&
+								"code" in error &&
+								error.code === "55000" &&
+								"message" in error &&
+								error.message === "Office computer metering not ready"
+							)
+								throw new OfficeComputerMeteringPending();
+						}
 						void response.body?.cancel().catch(() => undefined);
 						throw new Error("denied");
 					}
@@ -96,6 +124,7 @@ export class HttpCloudCompanyComputerRegistry {
 				3000,
 			);
 		} catch (error) {
+			if (error instanceof OfficeComputerMeteringPending) throw error;
 			// Never disclose SQL diagnostics, profile/input content or credentials.
 			throw new Error("OFFICE_REGISTRY_UNCONFIRMED", { cause: error });
 		}

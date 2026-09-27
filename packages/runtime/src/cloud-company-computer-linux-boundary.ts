@@ -27,6 +27,7 @@ import {
 	openCompanyComputerLinuxDirectory,
 	readCompanyComputerLinuxMetadata,
 } from "./cloud-company-computer-linux-host.ts";
+import { OfficeComputerMeteringPending } from "./cloud-company-computer-registry-http.ts";
 import { cloudToolRequest } from "./cloud-native-tool-authority.ts";
 
 const SHA256 = /^[0-9a-f]{64}$/;
@@ -340,7 +341,8 @@ export class CompanyComputerLinuxBoundary implements CompanyComputerGuestBoundar
 				signal,
 				5000,
 			);
-		} catch {
+		} catch (error) {
+			if (error instanceof OfficeComputerMeteringPending) throw error;
 			throw new Error("OFFICE_GUEST_READINESS_UNCONFIRMED");
 		}
 	}

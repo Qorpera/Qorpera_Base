@@ -94,6 +94,18 @@ test("SQL diagnostics and excessive responses are redacted", async (t) => {
 	}
 });
 
+test("only exact metering-read envelopes become retryable prerequisite responses", async (t) => {
+	const f = await fixture(t, async () => '{"__qorpera_acceptance_metering_pending":true}');
+	const reply = await call(f.server);
+	assert.equal(reply.status, 400);
+	assert.deepEqual(JSON.parse(reply.body), { code: "55000", message: "Office computer metering not ready", details: null, hint: null });
+	assert.match(f.calls[0].sql, /exception when sqlstate '55000'/);
+	assert.match(f.calls[0].sql, /if sqlerrm <> 'Office computer metering not ready' then raise/);
+	assert.match(f.calls[0].sql, /jsonb_to_record\(p_payload\)/);
+	assert.equal((await call(f.server, { path: "/rest/v1/rpc/qorpera_runtime_office_supervisor_status" })).status, 200);
+	assert(!f.calls[1].sql.includes("exception when"));
+});
+
 test("an untrusted TLS certificate is rejected by the client", async (t) => {
 	const f = await fixture(t);
 	await assert.rejects(call(f.server, { ca: [] }));

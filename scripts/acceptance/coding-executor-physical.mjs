@@ -7,7 +7,7 @@ import { join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
-import { waitForCodingChild } from "./coding-executor-fixture.mjs";
+import { codingImageAddress, waitForCodingChild } from "./coding-executor-fixture.mjs";
 import { assertWorkloadRun, assertWorkloadShape } from "./workload-usage-host.mjs";
 
 // Fresh GitHub-hosted diagnostic infrastructure only. No production host,
@@ -74,18 +74,29 @@ try {
   assert(ready, "Diagnostic image agent unavailable");
   // The hosted runner may retain a container firewall with FORWARD DROP.
   // Pin exceptions to this image-building VM and web egress only.
-  let address;
+  let selected;
+  const bridge = JSON.parse(run("lxc", ["query", "/1.0/networks/lxdbr0"]));
+  assert(bridge.managed && bridge.type === "bridge" && bridge.config["ipv4.nat"] === "true");
+  evidence.imageNetwork = { bridgeCidr: bridge.config["ipv4.address"], guestAddresses: [], guestRoutes: [] };
   const addressDeadline = Date.now() + 30000;
   while (Date.now() < addressDeadline) {
-    const result = command("lxc", ["exec", imageVm, "--", "ip", "-j", "-4", "address", "show", "dev", "eth0"], Math.min(3000, addressDeadline - Date.now()));
-    if (result.status === 0) address = JSON.parse(result.stdout)[0]?.addr_info?.find((a) => a.scope === "global")?.local;
-    if (address) break;
+    const read = (kind) => command("lxc", ["exec", imageVm, "--", "ip", "-j", "-4", kind], Math.max(1, Math.min(3000, addressDeadline - Date.now())));
+    const addresses = read("address"), routes = read("route");
+    evidence.imageNetwork.lastProbe = { addressStatus: addresses.status, routeStatus: routes.status,
+      addressError: addresses.stderr.slice(0, 500), routeError: routes.stderr.slice(0, 500) };
+    if (addresses.status === 0 && routes.status === 0) {
+      evidence.imageNetwork.guestAddresses = JSON.parse(addresses.stdout);
+      evidence.imageNetwork.guestRoutes = JSON.parse(routes.stdout);
+      selected = codingImageAddress(evidence.imageNetwork.guestAddresses, evidence.imageNetwork.guestRoutes, bridge.config["ipv4.address"]);
+    }
+    if (selected) break;
     await delay(Math.min(1000, Math.max(0, addressDeadline - Date.now())));
   }
-  assert(address, "Diagnostic image DHCP unavailable after 30 seconds");
+  assert(selected, "Diagnostic image DHCP unavailable after 30 seconds");
+  const { address } = selected;
   const outward = JSON.parse(run("ip", ["-j", "-4", "route", "get", "1.1.1.1"]))[0].dev;
   assert(/^\d+\.\d+\.\d+\.\d+$/.test(address) && /^[a-zA-Z0-9_.-]+$/.test(outward) && outward !== "lxdbr0");
-  evidence.imageNetwork = { address, outward, beforeForwardRules: run("iptables", ["-S", "FORWARD"]) };
+  Object.assign(evidence.imageNetwork, selected, { outward, beforeForwardRules: run("iptables", ["-S", "FORWARD"]) });
   for (const rule of [
     ["FORWARD", "-i", "lxdbr0", "-s", `${address}/32`, "-o", outward, "-p", "tcp", "-m", "multiport", "--dports", "80,443", "-m", "conntrack", "--ctstate", "NEW,ESTABLISHED", "-m", "comment", "--comment", "qorpera-coding-executor-image", "-j", "ACCEPT"],
     ["FORWARD", "-i", outward, "-o", "lxdbr0", "-d", `${address}/32`, "-p", "tcp", "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-m", "comment", "--comment", "qorpera-coding-executor-image", "-j", "ACCEPT"],
