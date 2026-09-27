@@ -92,7 +92,26 @@ The corrected harness gives tests a separate short private directory, checks
 the actual production socket bind/connect before testing and verifies removal
 on success or failure. Nine focused harness tests pass, including the original
 long-path refusal. Build provenance, deadlines and the required 19-case result
-are unchanged. A Linux rerun is still required before claiming component success.
+are unchanged.
+
+The corrected run, [36340543068](https://github.com/Qorpera/Qorpera_Base/actions/runs/36340543068)
+at exact `ece5a4585`, passes all **19 component tests with zero skips or failures**:
+six result-boundary, nine capture-image and four compaction cases. Its pinned
+serial development build completed in 14 minutes 31 seconds on the existing
+2-CPU/8-GiB runner. The production socket preflight bound and connected a
+69-byte mode0600 socket; private test-root removal passed. All source/input
+hashes remained unchanged, and independent download verification confirmed the
+four exact post-test artifact files, all 45 retained originals and all ZIP
+digests/CRCs. The development executable is 565,551,168 bytes with SHA256
+`0918ac08b9358057469c88dcd6931cd6790cb8a6641e0bb01eb0a759245bc52c`.
+
+These tests exercise real native processes with scripted loopback providers.
+They close the component coverage gap while leaving `cloudAcceptance` as
+`not_performed`; they do not replace the release executable or prove founding
+inside a governed VM. Fixture cleanup and private-root removal were checked,
+but no separate exhaustive final process inventory was captured. Later Office
+source corrections at `90e9d448c` leave these component execution inputs
+unchanged; this result remains attributed to `ece5a4585`.
 
 ## Build an isolated test package
 

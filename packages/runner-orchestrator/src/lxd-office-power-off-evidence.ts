@@ -9,11 +9,19 @@ import {
 	parseCompanyComputerServiceStopRequest,
 	parseCompanyComputerStopHistoryManifest,
 } from "@qorpera/contracts";
+import type {
+	LxdOfficeOutageConfigurationClient,
+	LxdOfficeOutageServiceStartClient,
+	LxdOfficeResetSuccessorClient,
+	LxdOfficeServiceStartClient,
+} from "./lxd-client.ts";
 import type { LxdOfficeCreationIdentity } from "./lxd-office-creation-journal.ts";
 import { lxdOfficeGuestPlan } from "./lxd-office-guest.ts";
 import { officeDigest, officeRecord } from "./lxd-office-image-provenance.ts";
 import { readRecord } from "./lxd-office-journal-files.ts";
+import { readLxdOfficeOutageActivationHistory } from "./lxd-office-outage-activation-history.ts";
 import { readLxdOfficeOutageBootEvidence } from "./lxd-office-outage-history.ts";
+import { readLxdOfficeResetActivationHistory } from "./lxd-office-reset-activation-history.ts";
 import { readLxdOfficeResetVmHistory } from "./lxd-office-reset-vm-history.ts";
 import { readLxdOfficeResumeEvidence } from "./lxd-office-resume-evidence.ts";
 import { officeStopHash } from "./lxd-office-stop-evidence.ts";
@@ -242,6 +250,67 @@ async function readShutdown(
 
 export type LxdOfficeVmCommand = LxdOfficeVmLineageCommand;
 
+export type LxdOfficePreparationLineage =
+	| { kind: "original" }
+	| {
+			kind: "outage" | "reset";
+			activationId: string;
+			bootId: string;
+			preparationObservationSha256: string;
+	  };
+
+export type LxdOfficePreparationLineageClient = LxdOfficeServiceStartClient &
+	Partial<LxdOfficeOutageConfigurationClient & LxdOfficeOutageServiceStartClient & LxdOfficeResetSuccessorClient>;
+
+/** Ordinary boots retain the admitted lineage's preparation anchor. An outage
+ * replaces that anchor with its recovery observation; it never replaces the
+ * immutable preparation document, which the caller must independently verify.
+ * Resolve only the bounded shutdown walk's selected origin, with no fallback
+ * or recursive boot-history search when admitted evidence is absent. */
+export async function readLxdOfficePreparationAnchor(
+	root: string,
+	creation: LxdOfficeCreationIdentity,
+	lineage: LxdOfficePreparationLineage,
+	original: { requestSha256: string; observationSha256: string },
+	client: LxdOfficePreparationLineageClient,
+	signal: AbortSignal,
+	readSource: (name: string, limit?: number) => ReturnType<typeof readRecord>,
+) {
+	if (lineage.kind === "original") return original.observationSha256;
+	const { intentId, binding } = creation;
+	const history =
+		lineage.kind === "outage"
+			? await readLxdOfficeOutageActivationHistory(
+					root,
+					intentId,
+					binding,
+					lineage.activationId,
+					readSource,
+					client,
+					signal,
+				)
+			: await readLxdOfficeResetActivationHistory(
+					root,
+					intentId,
+					binding,
+					lineage.activationId,
+					async (name) => (await readSource(name)).value,
+					client,
+					signal,
+				);
+	const request = history.kind === "outage" ? history.request.successor.request : history.request.request,
+		configuration = history.kind === "outage" ? history.request.configuration : history.configuration;
+	if (
+		history.command.bootId !== lineage.bootId ||
+		request.attestation.activationId !== lineage.activationId ||
+		request.attestation.preparationObservationSha256 !== lineage.preparationObservationSha256 ||
+		configuration.originPreparationSha256 !== original.requestSha256
+	)
+		throw new Error("shutdown preparation lineage differs");
+	signal.throwIfAborted();
+	return request.attestation.preparationObservationSha256;
+}
+
 /** Walk immutable shutdown/resume links, never a mutable latest pointer.
  * Each v3 shutdown names the boot intent that produced its stopped boot.
  * Old v2 shutdowns terminate at the permanent original boot. The operation
@@ -309,8 +378,24 @@ export async function readLxdOfficePowerOffEvidence(
 			original.createCommandId !== creation.createCommandId)
 	)
 		throw new Error("outage original VM history differs");
+	const preparationLineage: LxdOfficePreparationLineage = selected.outage
+		? {
+				kind: "outage",
+				activationId: selected.outage.recovery.request.activationId,
+				bootId: selected.outage.observation.bootId,
+				preparationObservationSha256: officeDigest(selected.outage.observation),
+			}
+		: selected.reset
+			? {
+					kind: "reset",
+					activationId: selected.reset.plan.successorActivationId,
+					bootId: selected.reset.observation.bootId,
+					preparationObservationSha256: selected.reset.plan.preparationObservationSha256,
+				}
+			: { kind: "original" };
 	return {
 		...evidence,
+		preparationLineage,
 		commands,
 		bootIds: [...boots],
 		originalBootId: selected.reset?.originalBootId ?? original?.bootId ?? selected.predecessorBootId,

@@ -21,12 +21,18 @@ import type { LxdOfficeCreationIdentity } from "./lxd-office-creation-journal.ts
 import { officeDigest, officeRecord, officeSha } from "./lxd-office-image-provenance.ts";
 import { readRecord } from "./lxd-office-journal-files.ts";
 import { openLxdOfficeCurrentOperationJournal } from "./lxd-office-outage-history.ts";
-import { readLxdOfficePowerOffEvidence } from "./lxd-office-power-off-evidence.ts";
+import {
+	type LxdOfficePreparationLineageClient,
+	readLxdOfficePowerOffEvidence,
+	readLxdOfficePreparationAnchor,
+} from "./lxd-office-power-off-evidence.ts";
 import { LxdOfficePreparationJournal } from "./lxd-office-preparation-journal.ts";
 import { readLxdOfficePreparationRecovery } from "./lxd-office-preparation-recovery.ts";
 import { officeStopHash as hash } from "./lxd-office-stop-evidence.ts";
 
-export type LxdOfficeBootActivationEvidenceClient = LxdOfficeBootConfigurationClient & LxdOfficePreparationClient;
+export type LxdOfficeBootActivationEvidenceClient = LxdOfficeBootConfigurationClient &
+	LxdOfficePreparationClient &
+	LxdOfficePreparationLineageClient;
 /** Read acknowledged resume/configuration without any boot-intent authority
  * call, reconcile, publication or guest effect. This remains usable after SQL
  * admits the intent. Callers separately require current physical/SQL authority
@@ -55,7 +61,7 @@ export async function readLxdOfficeBootActivationEvidence(
 		resumeSeed = await read(`resume-request-${suffix}.json`),
 		bootIntent = parseCompanyComputerBootIntent((await read(`resume-prepared-${suffix}.json`)).value, request),
 		resume = parseCompanyComputerResumeObservation((await read(`resume-observation-${suffix}.json`)).value, request),
-		shutdown = await readLxdOfficePowerOffEvidence(root, creation, request, signal);
+		shutdown = await readLxdOfficePowerOffEvidence(root, creation, request, signal, read);
 	if (
 		bootIntent.state !== "prepared" ||
 		!isDeepStrictEqual(resumeSeed.value, {
@@ -120,7 +126,7 @@ export async function readLxdOfficeBootActivationEvidence(
 			bootId: prep.bootId,
 			requestSha256: prep.requestSha256,
 		}),
-		preparationObservationSha256 = officeDigest(prep),
+		originalPreparationObservationSha256 = officeDigest(prep),
 		originalReceiptSha256 = hash(
 			Buffer.from(`${JSON.stringify(companyComputerPreparationAdoptionReceipt(original))}\n`),
 		);
@@ -138,7 +144,7 @@ export async function readLxdOfficeBootActivationEvidence(
 			schema: "qorpera.lxd-office-preparation-completion/v1",
 			allocationId,
 			commandId: preparation.commandId,
-			observationSha256: preparationObservationSha256,
+			observationSha256: originalPreparationObservationSha256,
 		})
 	)
 		throw new Error("original preparation differs");
@@ -173,6 +179,15 @@ export async function readLxdOfficeBootActivationEvidence(
 	);
 	if (!isDeepStrictEqual(recovery.operation, { state: "succeeded", operationId: prep.operationId }))
 		throw new Error("preparation operation unconfirmed");
+	const preparationObservationSha256 = await readLxdOfficePreparationAnchor(
+		root,
+		creation,
+		shutdown.preparationLineage,
+		{ requestSha256: preparation.requestSha256, observationSha256: originalPreparationObservationSha256 },
+		client,
+		signal,
+		read,
+	);
 	const power = await read(`power-off-completed-${suffix}.json`),
 		payload = await createLxdOfficeBootConfigurationPayload(
 			input.serviceBootstrapPath,

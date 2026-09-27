@@ -248,6 +248,7 @@ jobs:
           test/lxd-office-computer-outage.test.ts
           test/lxd-office-outage-resume-worker.test.ts
           test/lxd-office-outage-successor-control.test.ts
+          test/lxd-office-outage-control-observer.test.ts
           test/lxd-office-outage-lineage.test.ts
           test/lxd-office-outage-coordinator.test.ts
           test/lxd-office-outage-lifecycle.test.ts
@@ -258,6 +259,7 @@ jobs:
           test/lxd-office-operations.test.ts
           test/lxd-office-creation-worker.test.ts
           test/lxd-office-boot-worker.test.ts
+          test/lxd-office-boot-preparation-continuity.test.ts
           test/lxd-office-lifecycle.test.ts
           test/lxd-office-lifecycle-service.test.ts
           test/lxd-office-resume-worker.test.ts

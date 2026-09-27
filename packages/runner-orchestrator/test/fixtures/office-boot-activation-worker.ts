@@ -19,9 +19,23 @@ export async function officeBootActivationWorkerFixture(roots: string[]) {
 	return createOfficeBootActivationWorkerFixture(f);
 }
 
-export async function createOfficeBootActivationWorkerFixture(
-	f: Awaited<ReturnType<typeof officeBootConfigurationWorkerFixture>>,
-) {
+type BootActivationFixture = Pick<
+	Awaited<ReturnType<typeof officeBootConfigurationWorkerFixture>>,
+	| "root"
+	| "binding"
+	| "request"
+	| "guest"
+	| "client"
+	| "intent"
+	| "policy"
+	| "check"
+	| "kernelLock"
+	| "readProtected"
+	| "readCredential"
+	| "input"
+> & { names: { observation: string } };
+
+export async function createOfficeBootActivationWorkerFixture<T extends BootActivationFixture>(f: T) {
 	const configured = JSON.parse(await readFile(f.names.observation, "utf8")),
 		configuration = configured.completion;
 	for (const path of f.guest.keys()) if (path.startsWith("/run/qorpera-office-preparation/")) f.guest.delete(path);
@@ -178,8 +192,7 @@ export async function createOfficeBootActivationWorkerFixture(
 				...ports,
 			},
 		);
-	return {
-		...f,
+	const controls = {
 		configuration: f,
 		state,
 		registry,
@@ -193,4 +206,5 @@ export async function createOfficeBootActivationWorkerFixture(
 		completionPath,
 		run: (signal: AbortSignal = new AbortController().signal) => create().reconcile(f.input, signal),
 	};
+	return { ...(f as Omit<T, keyof typeof controls>), ...controls };
 }

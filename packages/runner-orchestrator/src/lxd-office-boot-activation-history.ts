@@ -25,10 +25,15 @@ import type { LxdOfficeGuestBinding } from "./lxd-office-guest.ts";
 import { officeCanonical, officeDigest, officeRecord, officeSha } from "./lxd-office-image-provenance.ts";
 import type { readRecord } from "./lxd-office-journal-files.ts";
 import { openLxdOfficeCurrentOperationJournal } from "./lxd-office-outage-history.ts";
-import { readLxdOfficePowerOffEvidence } from "./lxd-office-power-off-evidence.ts";
+import {
+	type LxdOfficePreparationLineageClient,
+	readLxdOfficePowerOffEvidence,
+	readLxdOfficePreparationAnchor,
+} from "./lxd-office-power-off-evidence.ts";
 import { officeStopHash } from "./lxd-office-stop-evidence.ts";
 
 export type LxdOfficeBootActivationHistoryClient = LxdOfficeServiceStartClient &
+	LxdOfficePreparationLineageClient &
 	Partial<LxdOfficeBootConfigurationClient & LxdOfficeBootServiceStartClient & LxdOfficeServiceRestartClient>;
 /** Historical acknowledgements only, after boot activation. This deliberately
  * does not resolve bootstrap credentials, inspect the mutable workbench or
@@ -152,9 +157,21 @@ export async function readLxdOfficeBootActivationHistory(
 		throw new Error("boot resume acknowledgement differs");
 
 	const original = await readLxdOfficeInitialActivationHistory(root, intentId, binding, read, client, signal);
+	const preparationObservationSha256 = await readLxdOfficePreparationAnchor(
+		root,
+		creation,
+		shutdown.preparationLineage,
+		{
+			requestSha256: original.request.configuration.preparation.requestSha256,
+			observationSha256: original.request.attestation.preparationObservationSha256,
+		},
+		client,
+		signal,
+		readSource,
+	);
 	if (
 		original.command.bootId !== shutdown.originalBootId ||
-		original.request.attestation.preparationObservationSha256 !== attestation.preparationObservationSha256 ||
+		preparationObservationSha256 !== attestation.preparationObservationSha256 ||
 		original.request.configuration.preparation.requestSha256 !== configuration.originPreparationSha256
 	)
 		throw new Error("boot origin differs");

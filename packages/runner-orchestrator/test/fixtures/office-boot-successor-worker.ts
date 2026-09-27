@@ -14,6 +14,15 @@ import { serviceStartId as id } from "./office-service-start.ts";
 export async function officeBootSuccessorWorkerFixture(roots: string[]) {
 	const f = await officeBootStopWorkerFixture(roots);
 	await f.run();
+	return createOfficeBootSuccessorWorkerFixture(f);
+}
+
+type BootSuccessorFixture = Pick<
+	Awaited<ReturnType<typeof officeBootStopWorkerFixture>>,
+	"root" | "binding" | "request" | "guest" | "client" | "policy" | "check" | "kernelLock"
+> & { activation: { input: { intentId: string }; paths: { completion: string } } };
+
+export async function createOfficeBootSuccessorWorkerFixture<T extends BootSuccessorFixture>(f: T) {
 	const state = {
 		current: undefined as CompanyComputerServiceSuccessor | undefined,
 		enabled: true,
@@ -186,8 +195,7 @@ export async function officeBootSuccessorWorkerFixture(roots: string[]) {
 			completion: join(f.root, `successor-completed-${suffix}.json`),
 		};
 	};
-	return {
-		...f,
+	const controls = {
 		intentId: f.activation.input.intentId,
 		originCompletion: f.activation.paths.completion,
 		stop: f,
@@ -202,4 +210,5 @@ export async function officeBootSuccessorWorkerFixture(roots: string[]) {
 		worker: create(),
 		paths,
 	};
+	return { ...(f as Omit<T, keyof typeof controls>), ...controls };
 }

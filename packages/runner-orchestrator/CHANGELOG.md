@@ -105,6 +105,8 @@
 
 ### Fixed
 
+- Preserve the verified admitted preparation anchor through ordinary office resumes and same-boot restarts after outage recovery. The bounded shutdown lineage selects the exact outage or reset origin while the original preparation document, completion and operation remain independently verified; missing or changed admitted proof refuses activation.
+- Retain completed outage configuration, service-start and nested termination-control results in the background before LXD expires them. Recovery keeps the exact command and terminal outcome without redispatching, traversing symlinks or inferring missing completion.
 - Allow the existing outage service-inspection command to carry its distinct nonce through the fixed LXD argv builder, matching the guest's protected entrypoint.
 - Resume the exact asynchronous office outage inspection after a pending result or provider restart. Replay committed acknowledgements before requesting new authority, retain failed attempts, and preserve original challenge expiry, the attempt budget and refusal to repeat ambiguous dispatches.
 - Preserve ordinary resume after an outage-recovered office boot by resolving its exact admitted configuration history. Keep the original preparation and protected plan revisions intact, and reject changed or conflicting retained evidence before configuration effects.
