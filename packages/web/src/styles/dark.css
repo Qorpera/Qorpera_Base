@@ -111,6 +111,7 @@
 :root[data-theme="dark"] .mine .bubble { background: var(--composer-accent); color: var(--composer-on-accent); box-shadow: none; }
 :root[data-theme="dark"] .message-progress .bubble { color: #dedcd8; }
 :root[data-theme="dark"] .composer-shell { background: #242423; }
+:root[data-theme="dark"] .draft-panel { background: #242423; }
 :root[data-theme="dark"] .composer-shell.is-dragging { border-color: var(--composer-accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--composer-accent) 22%, transparent); }
 :root[data-theme="dark"] .composer-send:disabled { background: #353534; color: #71706c; }
 :root[data-theme="dark"] .composer-send:not(:disabled):hover { background: var(--composer-accent-hover); }

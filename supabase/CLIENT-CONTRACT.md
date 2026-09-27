@@ -374,6 +374,20 @@ profile RPCs; RLS is the second read boundary.
   `realtime.messages`; never stored; must never carry durable content.
   Topic name from `qorpera_presence_topic_profile`. Agent presence over the
   live Company File (contract 5.2) will extend this channel at Order 4.
+- `qorpera-room-drafts-{roomId}` — shared drafts (migration
+  `20260927180000_room_shared_drafts`): a room member's unsent message, which
+  the room's other members see and edit live. Private broadcast channel, event
+  `draft`, payload `qorpera.room-draft/v1` (`ownerUserId`, `body`, `revision`,
+  `editorUserId`, `contributors`, `updatedAt`). Members of the room receive it
+  (RLS on `realtime.messages` via `qorpera_can_share_room_draft`); nobody
+  publishes: only `qorpera_put_room_draft` sends, through `realtime.send`, so a
+  change always names the editor the token did. Lossy: `qorpera_list_room_drafts`
+  re-reads, and a write from a stale revision returns the current draft.
+  `qorpera_put_room_draft(room, owner, base revision, body)` writes only from the
+  current revision (0 starts the caller's own draft; only the owner starts one);
+  any active member of the room edits an existing draft. Access is the room post
+  rule: an active member of an active room. Drafts never send, wake or sponsor
+  anything; the owner sends with `qorpera_post_company_room_message` as before.
 
 ## 4. Object gateway (HTTP, `packages/object-gateway`)
 

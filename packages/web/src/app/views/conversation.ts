@@ -48,6 +48,7 @@ import { GroupDetails } from "./group-details.ts";
 import { PairTranscriptView } from "./pair-transcript.ts";
 import { SessionExecutionView } from "./session-execution.ts";
 import { SessionRunView } from "./session-run.ts";
+import { SharedDrafts } from "./shared-drafts.ts";
 
 // Popup dismissal lasts for this company controller, including conversation navigation.
 // It does not settle or discard work whose outcome still needs review.
@@ -80,6 +81,8 @@ export class ConversationView {
 	/** The messages' placeholder, one per load, so the log does not read it out again on each redraw. */
 	#messagesPlaceholder: HTMLElement | undefined;
 	readonly #composerShell: HTMLElement;
+	/** Other members' unsent messages above the composer, and who writes in this member's own. */
+	readonly #sharedDrafts: SharedDrafts;
 	readonly #attachments: AttachmentTray;
 	readonly #more: HTMLButtonElement;
 	readonly #menu: HTMLElement;
@@ -184,6 +187,7 @@ export class ConversationView {
 			oninput: () => {
 				this.#autosize();
 				company.conversation(sessionId).set({ draft: this.#composer.value });
+				this.#sharedDrafts.input();
 			},
 		});
 		this.#send = h(
@@ -320,7 +324,14 @@ export class ConversationView {
 			this.#composerShell.classList.remove("is-dragging");
 			if (!this.#composer.disabled && !this.#isRoom) this.#attachments.add([...(event.dataTransfer?.files ?? [])]);
 		});
-		this.#composerWrap = h("footer", { class: "composer" }, this.#composerShell, this.#attachments.status);
+		this.#sharedDrafts = new SharedDrafts(company, sessionId, this.#composer, () => this.#autosize());
+		this.#composerWrap = h(
+			"footer",
+			{ class: "composer" },
+			this.#sharedDrafts.el,
+			this.#composerShell,
+			this.#attachments.status,
+		);
 		this.#identity = h("button", {
 			type: "button",
 			class: "thread-identity",
@@ -421,6 +432,7 @@ export class ConversationView {
 		else this.#panel?.detach();
 		this.#panel = undefined;
 		this.#attachments.dispose();
+		this.#sharedDrafts.dispose();
 		for (const attachments of this.#receivedAttachments) attachments.dispose();
 		this.#closeCodingSession();
 		for (const element of this.#codingElements.values()) element.dispose();
@@ -778,6 +790,7 @@ export class ConversationView {
 			this.#composer.value = conversation.draft ?? "";
 			this.#autosize();
 		}
+		this.#sharedDrafts.update();
 	}
 
 	#renderHeader(session: HostedSession | undefined, agent: HostedStaffAgent | undefined): void {

@@ -22,7 +22,7 @@
 .thread-body { position: relative; display: flex; flex: 1; min-width: 0; min-height: 0; }
 .thread-conversation { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; }
 /* Bubbles wrap and tables and code scroll on their own, so the thread never scrolls sideways; its bar is hidden (quietScroll). */
-.messages { flex: 1; overflow: hidden auto; overscroll-behavior: contain; padding: 16px; display: flex; flex-direction: column; gap: 4px; font-family: var(--font-sans); font-size: 16px; line-height: 21px; letter-spacing: 0; font-optical-sizing: auto; font-synthesis: none; text-rendering: optimizeLegibility; }
+.messages { flex: 1; overflow: hidden auto; overscroll-behavior: contain; padding: 16px 16px 40px; display: flex; flex-direction: column; gap: 4px; font-family: var(--font-sans); font-size: 16px; line-height: 21px; letter-spacing: 0; font-optical-sizing: auto; font-synthesis: none; text-rendering: optimizeLegibility; }
 .messages > .empty { margin: auto; text-align: center; font-size: 16px; }
 .conversation-timestamp { flex: none; align-self: center; max-width: 100%; margin: 20px 0 14px; color: var(--text-muted); font-size: 11px; font-weight: 500; line-height: 1.5; text-align: center; overflow-wrap: anywhere; }
 .conversation-timestamp:first-child { margin-top: 4px; }
@@ -146,6 +146,40 @@
 .composer-model-scope, .composer-model-status, .composer-menu-note { margin: 5px 9px; color: var(--text-muted); font-size: 11px; line-height: 1.5; }
 .composer-model-scope { border-top: 1px solid var(--border); padding-top: 10px; }
 .composer-model-status:empty { display: none; }
+/* Shared drafts: other members' unsent messages as notches above the composer; a
+ * notch shows its message on hover and opens it to write in (app/views/shared-drafts.ts). */
+.composer-drafts { display: grid; gap: 8px; padding: 0 0 8px; }
+.composer-drafts[hidden] { display: none; }
+.draft-notches { display: flex; flex-wrap: wrap; gap: 6px; }
+.draft-notches:empty { display: none; }
+.draft-notch { position: relative; display: inline-flex; align-items: center; gap: 7px; height: 32px; padding: 3px 12px 3px 3px; border: 1px solid var(--border-strong); border-radius: 16px; background: var(--bg); color: var(--text-muted); cursor: pointer; }
+.draft-notch:hover { background: var(--hover); }
+.draft-notch:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+.draft-notch > .person-avatar, .draft-panel-head > .person-avatar, .draft-helpers > .person-avatar { width: 24px; height: 24px; font-size: 9.5px; }
+.draft-dots { display: inline-flex; align-items: center; gap: 3px; }
+.draft-dots i { width: 5px; height: 5px; border-radius: 50%; background: currentColor; opacity: .45; }
+.draft-notch.is-typing .draft-dots i { animation: draft-dot 1.2s ease-in-out infinite; }
+.draft-notch.is-typing .draft-dots i:nth-child(2) { animation-delay: .15s; }
+.draft-notch.is-typing .draft-dots i:nth-child(3) { animation-delay: .3s; }
+@keyframes draft-dot { 0%, 60%, 100% { transform: translateY(0); opacity: .35; } 30% { transform: translateY(-3px); opacity: 1; } }
+.draft-peek { position: absolute; z-index: 25; left: 0; bottom: calc(100% + 8px); display: none; gap: 4px; width: max-content; min-width: 180px; max-width: min(460px, calc(100vw - 48px)); padding: 10px 12px; border: 1px solid var(--border); border-radius: 12px; background: var(--overlay); box-shadow: 0 12px 30px rgb(0 0 0 / 14%); color: var(--text); text-align: left; cursor: default; pointer-events: none; }
+.draft-peek-name { color: var(--text-muted); font-size: 12px; line-height: 16px; }
+/* The end of the message, where it is being written, stays in view. */
+.draft-peek-text { display: flex; flex-direction: column; justify-content: flex-end; max-height: 126px; overflow: hidden; font-size: 14px; line-height: 21px; white-space: pre-wrap; overflow-wrap: anywhere; }
+@media (hover: hover) { .draft-notch:hover .draft-peek, .draft-notch:focus-visible .draft-peek { display: grid; } }
+.draft-helpers { display: flex; align-items: center; gap: 8px; min-height: 24px; color: var(--text-muted); font-size: 12px; }
+.draft-helpers[hidden] { display: none; }
+.draft-helpers > .person-avatar + .person-avatar { margin-left: -14px; box-shadow: 0 0 0 2px var(--bg); }
+.draft-helpers.is-typing > span { color: var(--text); }
+.draft-panel { display: grid; gap: 6px; padding: 8px 8px 10px 12px; border: 1px solid var(--border-strong); border-radius: 16px; background: #fff; }
+.draft-panel:focus-within { border-color: var(--composer-accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--composer-accent) 18%, transparent); }
+.draft-panel-head { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 12px; line-height: 16px; }
+/* On a narrow screen the note goes to a second line rather than being cut. */
+.draft-panel-label { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.draft-panel-title { margin-right: 4px; color: var(--text); font-weight: 600; }
+.draft-panel-note { color: var(--text-muted); white-space: nowrap; }
+.draft-panel-close { flex: none; width: 28px; height: 28px; min-height: 28px; }
+.draft-panel-input { display: block; width: 100%; min-height: 21px; max-height: 147px; padding: 0 4px 0 0; border: 0; border-radius: 0; background: transparent; outline: 0; resize: none; font-family: var(--font-sans); font-size: 16px; line-height: 21px; letter-spacing: 0; }
 .attachment-tray { display: flex; gap: 8px; overflow-x: auto; padding: 3px 0 9px; }
 .attachment-tray[hidden] { display: none; }
 .attachment-chip { position: relative; flex: none; width: 112px; border: 1px solid var(--border); border-radius: 10px; background: #f5f4f2; }
@@ -513,7 +547,7 @@
 	.recipient-menu { left: 8px; right: 8px; width: auto; }
 }
 @keyframes computer-enter { from { opacity: 0; transform: translateX(18px); } to { opacity: 1; transform: translateX(0); } }
-@media (prefers-reduced-motion: reduce) { .computer-panel, .agent-page, .agent-figure-picker { animation: none; } .composer-shell { transition: none; } }
+@media (prefers-reduced-motion: reduce) { .computer-panel, .agent-page, .agent-figure-picker { animation: none; } .composer-shell { transition: none; } .draft-notch.is-typing .draft-dots i { animation: none; opacity: 1; } }
 
 /* Group details use the same anchored frame as an agent's details. */
 .group-details-stage { display: grid; place-items: center; min-width: 0; }
