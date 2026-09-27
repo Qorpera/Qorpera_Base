@@ -5,7 +5,8 @@
 -- whole address, case-insensitive, never a prefix, so the search cannot list
 -- accounts. Sending a request has always told the caller whether an address
 -- has an account; the lookup says so before they send, and both now use the
--- same rule.
+-- same rule. It also returns the account's display name, which the sender
+-- saw on the Sent row once a request was out.
 
 create function public.qorpera_confirmed_account(p_email text)
 returns uuid

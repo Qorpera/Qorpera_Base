@@ -46,13 +46,17 @@ export interface AddressLookup {
 
 /** How long typing pauses before a whole address is looked up. */
 const LOOKUP_DELAY_MS = 250;
+/** How long "no account holds it" is trusted: its owner may confirm the address meanwhile. */
+const NO_ACCOUNT_KEPT_MS = 60_000;
 
 export class FriendsController {
 	readonly store = new Store<FriendsState>({ loading: true, friends: [] });
 	readonly #api: CloudApi;
 	#disposed = false;
-	/** Addresses already looked up, and what each found. */
-	readonly #found = new Map<string, HostedAccountMatch | null>();
+	/** Addresses already looked up, what each found, and when. */
+	readonly #found = new Map<string, { account: HostedAccountMatch | null; at: number }>();
+	/** Lookups on their way, so an address typed again waits for the same answer. */
+	readonly #asking = new Map<string, Promise<HostedAccountMatch | null>>();
 	#lookupTimer: ReturnType<typeof setTimeout> | undefined;
 	#lookupTurn = 0;
 
@@ -70,33 +74,56 @@ export class FriendsController {
 	 * looked up once typing pauses; only the answer for what the field holds now
 	 * is shown. */
 	type(query: string): void {
-		if (this.#disposed) return;
+		void this.#take(query, false);
+	}
+
+	/** Looks the typed address up at once (Enter before the answer came, or Try
+	 * again after a failure); resolves when its answer is shown. */
+	lookUpNow(): Promise<void> {
+		return this.#take(this.store.get().query ?? "", true);
+	}
+
+	#take(query: string, now: boolean): Promise<void> {
+		if (this.#disposed) return Promise.resolve();
 		clearTimeout(this.#lookupTimer);
 		const turn = ++this.#lookupTurn;
 		const state = this.store.get();
 		const address = query.trim().toLowerCase();
 		if (!EMAIL.test(address) || state.lookupMissing || isFriend(state, address)) {
 			this.store.set({ query, lookup: undefined });
-			return;
+			return Promise.resolve();
 		}
-		if (this.#found.has(address)) {
-			this.store.set({ query, lookup: { address, account: this.#found.get(address) } });
-			return;
+		const answer = this.#found.get(address);
+		if (answer && (answer.account || Date.now() - answer.at < NO_ACCOUNT_KEPT_MS)) {
+			this.store.set({ query, lookup: { address, account: answer.account } });
+			return Promise.resolve();
 		}
 		this.store.set({ query, lookup: { address } });
+		if (now || this.#asking.has(address)) return this.#lookUp(address, turn);
 		this.#lookupTimer = setTimeout(() => void this.#lookUp(address, turn), LOOKUP_DELAY_MS);
+		return Promise.resolve();
 	}
 
 	async #lookUp(address: string, turn: number): Promise<void> {
+		let asking = this.#asking.get(address);
+		if (!asking) {
+			asking = this.#api.findAccountByEmail(address);
+			this.#asking.set(address, asking);
+			// Answers are kept; failures are not, so the address is asked again.
+			void asking
+				.then(
+					(account) => void this.#found.set(address, { account, at: Date.now() }),
+					() => {},
+				)
+				.finally(() => this.#asking.delete(address));
+		}
 		try {
-			const account = await this.#api.findAccountByEmail(address);
-			this.#found.set(address, account);
+			const account = await asking;
 			if (!this.#disposed && turn === this.#lookupTurn) this.store.set({ lookup: { address, account } });
 		} catch (error) {
 			if (this.#disposed || turn !== this.#lookupTurn) return;
 			if (error instanceof CloudRpcError && error.missing)
 				this.store.set({ lookupMissing: true, lookup: undefined });
-			// Not kept: typing the address again asks again.
 			else this.store.set({ lookup: { address, failed: describeError(error) } });
 		}
 	}
@@ -110,10 +137,10 @@ export class FriendsController {
 			this.store.set({ loading: false, error: describeError(error) });
 			return;
 		}
-		// The typed address may have become a friend's, or stopped being one.
+		// The typed address may have become a friend's, or stopped being one; a failed lookup is asked again.
 		const { query = "", lookup } = this.store.get();
 		const address = query.trim().toLowerCase();
-		if (lookup?.address !== address || isFriend(this.store.get(), address)) this.type(query);
+		if (lookup?.address !== address || lookup.failed || isFriend(this.store.get(), address)) this.type(query);
 	}
 
 	async request(email: string): Promise<void> {
@@ -261,8 +288,7 @@ function partsFor(friends: FriendsController): FriendsParts {
 		});
 		// Every keystroke filters, composed text included; drawing never moves the field.
 		input.addEventListener("input", () => friends.type(input.value));
-		const send = (event: Event) => {
-			event.preventDefault();
+		const sendTyped = () => {
 			const { query, invitable } = typed(friends.store.get());
 			if (!invitable) return;
 			void friends.request(query).then(() => {
@@ -271,9 +297,24 @@ function partsFor(friends: FriendsController): FriendsParts {
 				friends.type("");
 			});
 		};
+		const send = (event: Event) => {
+			event.preventDefault();
+			sendTyped();
+		};
+		const submit = h("button", { type: "submit", class: "btn btn-primary" }, t("Send request"));
+		// Enter before the address has its answer, while Send request is still off: look
+		// it up at once, and send if it finds someone and the field still holds it.
+		input.addEventListener("keydown", (event) => {
+			if (event.key !== "Enter" || event.isComposing || !submit.disabled) return;
+			const { query, lookup } = typed(friends.store.get());
+			if (!lookup || lookup.account !== undefined) return;
+			event.preventDefault();
+			void friends.lookUpNow().then(() => {
+				if (typed(friends.store.get()).query === query) sendTyped();
+			});
+		});
 		const title = h("h1");
 		const notices = h("div");
-		const submit = h("button", { type: "submit", class: "btn btn-primary" }, t("Send request"));
 		const results = h("div");
 		parts = {
 			page: h(
@@ -364,7 +405,7 @@ export function renderFriends(friends: FriendsController, hub: HubController, co
 		[incoming, outgoing, accepted].map((list) => list.map((friend) => [friend, busy(friend)])),
 		loading,
 		empty,
-		[found, checking, outcome, lookup?.failed],
+		[found, checking && query, outcome, lookup?.failed],
 	]);
 	if (shown === parts.shown) return;
 	parts.shown = shown;
@@ -372,7 +413,14 @@ export function renderFriends(friends: FriendsController, hub: HubController, co
 		parts.results,
 		found ? group(t("Add a friend"), [personRow(found, "")]) : null,
 		checking ? listSkeleton(t("Looking up {email}", { email: query }), 1) : null,
-		lookup?.failed ? notice("danger", lookup.failed) : null,
+		lookup?.failed
+			? notice(
+					"danger",
+					lookup.failed,
+					" ",
+					button(t("Try again"), () => void friends.lookUpNow(), { small: true }),
+				)
+			: null,
 		outcome ? h("p", { class: "panel-empty muted" }, outcome) : null,
 		group(
 			t("Company invitations"),
