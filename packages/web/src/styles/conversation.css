@@ -224,9 +224,10 @@
  * margin, 16px padding and 8 lines of 1.6 x 13px. The save status sits in
  * the bottom padding and takes no row. A short description or a short
  * routine list never shrinks it; only a short viewport does, through the
- * max-height above. The group popup, which shares the frame, keeps sizing
- * itself to its content. */
-.staff-details { --agent-details-height: calc(2px + 28px + 28px + 132px + 6px + 16px + 8 * 1.6 * 13px); height: var(--agent-details-height); }
+ * max-height above. It is as wide on every page too, wide enough that an open
+ * routine reads its instruction beside its facts. The group popup, which
+ * shares the frame, keeps its width and sizes itself to its content. */
+.staff-details { --agent-details-height: calc(2px + 28px + 28px + 132px + 6px + 16px + 8 * 1.6 * 13px); width: min(880px, calc(100vw - 24px)); height: var(--agent-details-height); }
 .staff-details > .surface-dialog-content { position: relative; padding-bottom: 28px; }
 .agent-details:not([data-page="details"]) > .surface-dialog-content { padding-top: 0; }
 /* The figure picker may reach past the card, as on the desktop. */
@@ -412,13 +413,56 @@
 	.computer-loading-spinner, .computer-panel .screen-viewer-progress { animation: none; }
 	.computer-panel .screen-viewer-titlebar, .computer-panel .screen-viewer-enter, .computer-panel .computer-close, .computer-panel .screen-viewer-embedded::after { transition: none; }
 }
-.routine-list { border-top: 1px solid var(--border); }
-.routine-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 8px 14px; padding: 14px 0; border-bottom: 1px solid var(--border); }
-.routine-row-copy { display: grid; gap: 3px; min-width: 0; overflow-wrap: anywhere; }
-.routine-row-copy strong { font-size: 13px; }
-.routine-row-copy span { color: var(--text-muted); font-size: 12px; }
-.routine-row-copy small { color: var(--text-soft); font-size: 11px; }
-.routine-row-actions { display: flex; gap: 6px; }
+/* Routines: one card each, its name, when it runs and a switch that pauses it.
+ * A click opens the card in place: the instruction on the left, the facts on
+ * the right, Edit by the switch. An open card fits the page under its heading
+ * (1px border, 66px head, 1px rule, 14px + 20px above the instruction, 16px
+ * below it and 1px border around 8 lines of it), so the instruction scrolls
+ * inside the card and Edit and the facts stay in view. */
+@property --routine-above { syntax: "<length>"; inherits: false; initial-value: 0px; }
+@property --routine-below { syntax: "<length>"; inherits: false; initial-value: 0px; }
+.routine-list { display: grid; gap: 8px; }
+.routine-card { border: 1px solid var(--border); border-radius: var(--radius-lg); transition: border-color 160ms ease; }
+.routine-card.is-open { border-color: var(--border-strong); }
+.routine-card-head { display: flex; align-items: center; gap: 10px; padding-right: 16px; border-radius: calc(var(--radius-lg) - 1px); cursor: pointer; transition: background-color 120ms ease; }
+.routine-card-head:has(> .routine-card-summary:hover) { background: var(--hover); }
+.routine-card.is-open > .routine-card-head { border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
+.routine-card-summary { display: grid; flex: 1 1 auto; gap: 2px; min-width: 0; padding: 13px 0 13px 16px; border: 0; border-radius: inherit; background: none; color: inherit; text-align: left; cursor: pointer; }
+.routine-card-summary:focus-visible { outline-offset: -2px; }
+.routine-card-summary strong { font-size: 13.5px; font-weight: 600; line-height: 20px; overflow-wrap: anywhere; }
+.routine-card-summary span { color: var(--text-muted); font-size: 12.5px; line-height: 18px; overflow-wrap: anywhere; }
+.routine-card-state { flex: none; color: var(--text-soft); font-size: 12px; }
+/* Edit keeps its room while the card is shut, so opening never rewraps the name. */
+.routine-card-edit { flex: none; transition: opacity 160ms ease, visibility 0s; }
+.routine-card:not(.is-open) .routine-card-edit { visibility: hidden; opacity: 0; transition: opacity 120ms ease, visibility 0s 120ms; }
+.routine-switch { position: relative; flex: none; width: 38px; height: 22px; padding: 0; border: 0; border-radius: var(--radius-pill); background: var(--border-strong); cursor: pointer; transition: background-color 180ms ease; }
+.routine-switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 18px; height: 18px; border-radius: 50%; background: #ffffff; box-shadow: 0 1px 2px rgb(0 0 0 / 22%); transition: translate 200ms cubic-bezier(.2, .7, .2, 1), background-color 180ms ease; }
+.routine-switch[aria-checked="true"] { background: var(--primary); }
+.routine-switch[aria-checked="true"]::after { translate: 16px 0; background: var(--on-primary); }
+.routine-switch[aria-disabled="true"] { cursor: default; opacity: .45; }
+.routine-card-body { display: grid; grid-template-rows: 0fr; transition: grid-template-rows 220ms cubic-bezier(.2, .7, .2, 1); }
+.routine-card.is-open > .routine-card-body { grid-template-rows: 1fr; }
+.routine-card-clip { min-height: 0; overflow: hidden; }
+.routine-card-inner { display: grid; grid-template-columns: minmax(0, 1fr) 232px; gap: 32px; margin: 0 16px; padding: 14px 0 16px; border-top: 1px solid var(--border); opacity: 0; transition: opacity 140ms ease; }
+.routine-card.is-open .routine-card-inner { opacity: 1; transition-delay: 60ms; }
+.routine-card-instruction { min-width: 0; border-radius: 4px; }
+.routine-card-instruction:has(> .routine-card-prompt:focus-visible) { outline: 2px solid var(--ring); outline-offset: 4px; }
+.routine-card-instruction h3, .routine-card-fact dt { margin: 0 0 4px; color: var(--text-soft); font-size: 11.5px; font-weight: 500; line-height: 16px; }
+.routine-card-prompt {
+	max-height: calc(8 * 1.6 * 13px); overflow: auto; overscroll-behavior: contain; scrollbar-width: none; outline: none;
+	white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; line-height: 1.6;
+	-webkit-mask-image: linear-gradient(to bottom, transparent, #000 var(--routine-above), #000 calc(100% - var(--routine-below)), transparent);
+	mask-image: linear-gradient(to bottom, transparent, #000 var(--routine-above), #000 calc(100% - var(--routine-below)), transparent);
+	transition: --routine-above 160ms ease, --routine-below 160ms ease;
+}
+.routine-card-prompt::-webkit-scrollbar { display: none; }
+.routine-card-prompt[data-above] { --routine-above: 14px; }
+.routine-card-prompt[data-below] { --routine-below: 28px; }
+.routine-card-facts { display: grid; align-content: start; gap: 12px; min-width: 0; margin: 0; }
+.routine-card-fact dd { margin: 0; font-size: 12.5px; line-height: 18px; overflow-wrap: anywhere; }
+.routine-card-when { display: flex; gap: 6px; }
+.routine-card-when > .icon { flex: none; width: 14px; height: 14px; margin-top: 2px; color: var(--text-muted); }
+.routine-card-when small { display: block; color: var(--text-muted); font-size: 11.5px; line-height: 17px; }
 .routine-list-footer { padding-top: 16px; }
 .agent-routines > .surface-status { margin: 0 0 12px; }
 .routine-editor { display: grid; gap: 14px; font-size: 12px; }
@@ -506,14 +550,18 @@
 	.agent-figure-picker { left: -4px; }
 	.agent-figure-picker::before { left: 38px; }
 	.agent-inline-name { font-size: 22px; }
-	.routine-row { grid-template-columns: minmax(0, 1fr) auto; }
-	.routine-row-actions { grid-column: 1 / -1; }
+	/* On a phone the instruction flows and the page alone scrolls. */
+	.routine-card-inner { grid-template-columns: minmax(0, 1fr); gap: 16px; }
+	.routine-card-prompt { max-height: none; overflow: visible; -webkit-mask-image: none; mask-image: none; }
 	/* The list spans the header on a phone. */
 	.recipient-entry { position: static; }
 	.recipient-menu { left: 8px; right: 8px; width: auto; }
 }
 @keyframes computer-enter { from { opacity: 0; transform: translateX(18px); } to { opacity: 1; transform: translateX(0); } }
-@media (prefers-reduced-motion: reduce) { .computer-panel, .agent-page, .agent-figure-picker { animation: none; } .composer-shell { transition: none; } }
+@media (prefers-reduced-motion: reduce) {
+	.computer-panel, .agent-page, .agent-figure-picker { animation: none; }
+	.composer-shell, .routine-card-body, .routine-card-inner, .routine-switch, .routine-switch::after { transition: none; }
+}
 
 /* Group details use the same anchored frame as an agent's details. */
 .group-details-stage { display: grid; place-items: center; min-width: 0; }
