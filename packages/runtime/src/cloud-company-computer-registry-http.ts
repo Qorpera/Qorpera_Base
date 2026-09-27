@@ -1,5 +1,6 @@
 import { companyComputerRequest } from "@qorpera/cloud-client/cloud-company-computer-contract";
 import { readBoundedCloudResponse, supabaseServiceHeaders } from "@qorpera/cloud-client/cloud-request";
+import { CloudRuntimeDiagnosticError } from "./cloud-runtime-observability.ts";
 
 const methods = [
 	"qorpera_describe_native_tool_authority",
@@ -47,6 +48,66 @@ export class OfficeComputerMeteringPending extends Error {
 	}
 }
 
+/**
+ * The registry gave no answer: the network, a timeout, a server that could not
+ * serve the request (5xx, 408, 425, 429 without a database error), a body cut
+ * off or over its bound, or a
+ * database error that says "try again" (connection, rollback, resources, lock
+ * wait, cancelled statement). It is not a refusal. Both keep the code
+ * OFFICE_REGISTRY_UNCONFIRMED.
+ */
+export class CompanyComputerRegistryUnansweredError extends Error {
+	constructor(cause: unknown) {
+		super("OFFICE_REGISTRY_UNCONFIRMED", { cause });
+		this.name = "CompanyComputerRegistryUnansweredError";
+	}
+}
+
+/** The registry answered and refused: SQL raised, or any other 4xx. */
+class CompanyComputerRegistryRefusedError extends Error {
+	constructor(cause: unknown) {
+		super("OFFICE_REGISTRY_UNCONFIRMED", { cause });
+		this.name = "CompanyComputerRegistryRefusedError";
+	}
+}
+
+/** SQLSTATE classes (and codes) that report a passing condition, not a decision:
+ * connection, rollback, resources, operator intervention, lock wait, and a
+ * read-only transaction (seen during a database failover). */
+const transientSqlState = /^(08|40|53|57)|^(55P03|25006)$/;
+
+/** How long a desktop, or its browser, outlasts a registry that does not answer. */
+export const COMPANY_COMPUTER_UNANSWERED_GRACE_MS = 30_000;
+
+/**
+ * Whether a failed authority check only lacked an answer: an unanswered
+ * registry call, or a local deadline around one. A clear refusal, and anything
+ * this cannot recognize, is not. Nothing is authorized by an unanswered check;
+ * the caller only decides whether to wait for the next one before tearing down.
+ */
+export function companyComputerAuthorityUnanswered(error: unknown): boolean {
+	const pending = [error];
+	const seen = new Set<unknown>();
+	let unanswered = false;
+	for (let index = 0; pending.length && index < 32; index++) {
+		const current = pending.shift();
+		if (seen.has(current) || !(current instanceof Error)) continue;
+		seen.add(current);
+		// A refusal or confirmed metering gap wins over a missing answer elsewhere.
+		if (current instanceof CompanyComputerRegistryRefusedError || current instanceof OfficeComputerMeteringPending)
+			return false;
+		if (
+			current instanceof CompanyComputerRegistryUnansweredError ||
+			(current instanceof CloudRuntimeDiagnosticError && current.category === "timeout") ||
+			current.message === "COMPUTER_REQUEST_STOPPED"
+		)
+			unanswered = true;
+		if (current.cause !== undefined) pending.push(current.cause);
+		if (current instanceof AggregateError) pending.push(...current.errors.slice(0, 16));
+	}
+	return unanswered;
+}
+
 /** Host-only Supabase transport. Closed RPC names, finite bodies, no redirects
  * or retries; a lost effect/ticket response remains an unknown outcome. */
 export class HttpCloudCompanyComputerRegistry {
@@ -91,33 +152,48 @@ export class HttpCloudCompanyComputerRegistry {
 						body,
 					});
 					if (!response.ok) {
-						if (
-							[
-								"qorpera_check_runtime_office_startup",
-								"qorpera_report_runtime_office_ready",
-								"qorpera_check_runtime_office_work_binding",
-							].includes(method)
-						) {
-							const bytes = await readBoundedCloudResponse(response, 4096, requestSignal);
-							const error: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
-							if (
-								error &&
-								typeof error === "object" &&
-								!Array.isArray(error) &&
-								"code" in error &&
-								error.code === "55000" &&
-								"message" in error &&
-								error.message === "Office computer metering not ready"
-							)
-								throw new OfficeComputerMeteringPending();
+						// Only the SQLSTATE is kept from the body, never its message or details.
+						let sqlState: string | undefined;
+						let meteringPending = false;
+						try {
+							const failure: unknown = JSON.parse(
+								new TextDecoder("utf-8", { fatal: true }).decode(
+									await readBoundedCloudResponse(response, 4096, requestSignal),
+								),
+							);
+							const code =
+								failure && typeof failure === "object" && "code" in failure ? failure.code : undefined;
+							if (typeof code === "string" && /^[0-9A-Z]{5}$/.test(code)) sqlState = code;
+							meteringPending = Boolean(
+								[
+									"qorpera_check_runtime_office_startup",
+									"qorpera_report_runtime_office_ready",
+									"qorpera_check_runtime_office_work_binding",
+								].includes(method) &&
+									failure &&
+									typeof failure === "object" &&
+									!Array.isArray(failure) &&
+									code === "55000" &&
+									"message" in failure &&
+									failure.message === "Office computer metering not ready",
+							);
+						} catch {
+							void response.body?.cancel().catch(() => undefined);
 						}
-						void response.body?.cancel().catch(() => undefined);
-						throw new Error("denied");
+						if (meteringPending) throw new OfficeComputerMeteringPending();
+						throw Object.assign(new Error("denied"), { status: response.status, sqlState });
 					}
 					const bytes = await readBoundedCloudResponse(response, 64 * 1024, requestSignal);
 					requestSignal.throwIfAborted();
-					const value: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
-					if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("invalid response");
+					// A complete body that is not an object is still the registry's answer.
+					let value: unknown;
+					try {
+						value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+					} catch {
+						value = undefined;
+					}
+					if (!value || typeof value !== "object" || Array.isArray(value))
+						throw Object.assign(new Error("invalid response"), { answered: true });
 					return value;
 				},
 				signal,
@@ -126,7 +202,17 @@ export class HttpCloudCompanyComputerRegistry {
 		} catch (error) {
 			if (error instanceof OfficeComputerMeteringPending) throw error;
 			// Never disclose SQL diagnostics, profile/input content or credentials.
-			throw new Error("OFFICE_REGISTRY_UNCONFIRMED", { cause: error });
+			const status = error instanceof Error && "status" in error ? error.status : undefined;
+			const sqlState = error instanceof Error && "sqlState" in error ? error.sqlState : undefined;
+			if (typeof sqlState === "string" && transientSqlState.test(sqlState))
+				throw new CompanyComputerRegistryUnansweredError(error);
+			if (
+				(error instanceof Error && "answered" in error) ||
+				typeof sqlState === "string" ||
+				(typeof status === "number" && status >= 400 && status < 500 && ![408, 425, 429].includes(status))
+			)
+				throw new CompanyComputerRegistryRefusedError(error);
+			throw new CompanyComputerRegistryUnansweredError(error);
 		}
 	}
 }

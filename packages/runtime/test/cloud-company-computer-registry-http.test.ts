@@ -1,7 +1,10 @@
 import {
+	CompanyComputerRegistryUnansweredError,
+	companyComputerAuthorityUnanswered,
 	HttpCloudCompanyComputerRegistry,
 	OfficeComputerMeteringPending,
 } from "@qorpera/runtime/cloud-company-computer-registry-http";
+import { cloudToolRequest } from "@qorpera/runtime/cloud-native-tool-authority";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 afterEach(() => vi.useRealTimers());
@@ -28,7 +31,19 @@ describe("host-only office registry transport", () => {
 					{ status: 400 },
 				),
 			);
-			await expect(f.registry.call(method, {}, f.signal)).rejects.toBeInstanceOf(OfficeComputerMeteringPending);
+			const pending = await f.registry.call(method, {}, f.signal).catch((error: unknown) => error);
+			expect(pending).toBeInstanceOf(OfficeComputerMeteringPending);
+			expect(companyComputerAuthorityUnanswered(pending)).toBe(false);
+			expect(
+				companyComputerAuthorityUnanswered(
+					new Error("PULSE", {
+						cause: new AggregateError([
+							new CompanyComputerRegistryUnansweredError(new Error("timeout")),
+							pending,
+						]),
+					}),
+				),
+			).toBe(false);
 		}
 		for (const error of [
 			{ code: "42501", message: "Office computer metering not ready" },
@@ -154,5 +169,88 @@ describe("host-only office registry transport", () => {
 		await vi.advanceTimersByTimeAsync(3001);
 		await pending;
 		expect(f.fetcher).toHaveBeenCalledTimes(2);
+	});
+	it("tells a refusal apart from no answer, with the same code either way", async () => {
+		const f = fixture();
+		const outcome = async (respond: () => Promise<Response>) => {
+			f.fetcher.mockImplementationOnce(respond);
+			const error = await f.registry.call("qorpera_check_runtime_office_shared_surface", {}, f.signal).then(
+				() => undefined,
+				(failure: unknown) => failure,
+			);
+			expect(error).toMatchObject({ message: "OFFICE_REGISTRY_UNCONFIRMED" });
+			return companyComputerAuthorityUnanswered(error);
+		};
+		// SQL raised (PostgREST 403 for 42501, 400 for other errors): a refusal.
+		expect(await outcome(async () => Response.json({ code: "42501" }, { status: 403 }))).toBe(false);
+		expect(await outcome(async () => Response.json({ code: "22023" }, { status: 400 }))).toBe(false);
+		expect(await outcome(async () => Response.json({}, { status: 401 }))).toBe(false);
+		// The network, an overloaded or failing server, a throttle: no answer.
+		for (const status of [500, 502, 503, 504, 408, 425, 429])
+			expect(await outcome(async () => new Response("", { status }))).toBe(true);
+		expect(
+			await outcome(async () => {
+				throw Object.assign(new TypeError("fetch failed"), { cause: { code: "ECONNRESET" } });
+			}),
+		).toBe(true);
+		// A complete body that is not an object is still an answer; one over the bound is not.
+		expect(await outcome(async () => new Response("not json"))).toBe(false);
+		expect(await outcome(async () => new Response("null"))).toBe(false);
+		expect(await outcome(async () => new Response("x".repeat(65537)))).toBe(true);
+		// A database error in a 5xx is an answer, unless it says "try again".
+		expect(await outcome(async () => Response.json({ code: "P0002", message: "secret" }, { status: 500 }))).toBe(
+			false,
+		);
+		expect(await outcome(async () => Response.json({ code: "55000" }, { status: 500 }))).toBe(false);
+		for (const code of ["57014", "55P03", "40001", "40P01", "08006", "53300", "25006"])
+			expect(await outcome(async () => Response.json({ code }, { status: code === "40001" ? 409 : 500 }))).toBe(
+				true,
+			);
+		expect(await outcome(async () => Response.json({ code: "PGRST000" }, { status: 503 }))).toBe(true);
+		vi.useFakeTimers();
+		const late = f.registry.call("qorpera_check_runtime_office_shared_surface", {}, f.signal).catch((error) => error);
+		f.fetcher.mockImplementationOnce(() => new Promise<Response>(() => undefined));
+		await vi.advanceTimersByTimeAsync(3001);
+		expect(companyComputerAuthorityUnanswered(await late)).toBe(true);
+	});
+	it("finds no answer through wrapping causes and local deadlines, and nothing else", async () => {
+		const unanswered = new CompanyComputerRegistryUnansweredError(new Error("socket hang up"));
+		expect(unanswered.message).toBe("OFFICE_REGISTRY_UNCONFIRMED");
+		expect(
+			companyComputerAuthorityUnanswered(
+				new Error("SHARED_SURFACE_UNCONFIRMED", {
+					cause: new Error("OFFICE_GUEST_READINESS_UNCONFIRMED", { cause: unanswered }),
+				}),
+			),
+		).toBe(true);
+		expect(companyComputerAuthorityUnanswered(new AggregateError([new Error("x"), unanswered]))).toBe(true);
+		// A registry refusal anywhere wins over a missing answer elsewhere.
+		const f = fixture();
+		f.fetcher.mockResolvedValueOnce(Response.json({ code: "42501" }, { status: 403 }));
+		const refusal = await f.registry
+			.call("qorpera_check_runtime_office_shared_surface", {}, f.signal)
+			.catch((error: unknown) => error);
+		expect(companyComputerAuthorityUnanswered(refusal)).toBe(false);
+		expect(companyComputerAuthorityUnanswered(new AggregateError([unanswered, refusal]))).toBe(false);
+		expect(
+			companyComputerAuthorityUnanswered(new Error("PULSE", { cause: new AggregateError([refusal, unanswered]) })),
+		).toBe(false);
+		vi.useFakeTimers();
+		const deadline = cloudToolRequest(
+			() => new Promise<void>(() => undefined),
+			new AbortController().signal,
+			10,
+		).catch((error: unknown) => error);
+		await vi.advanceTimersByTimeAsync(11);
+		expect(companyComputerAuthorityUnanswered(new Error("PULSE", { cause: await deadline }))).toBe(true);
+		expect(companyComputerAuthorityUnanswered(new Error("COMPUTER_REQUEST_STOPPED"))).toBe(true);
+		for (const refused of [
+			new Error("OFFICE_REGISTRY_UNCONFIRMED", { cause: new Error("denied") }),
+			new Error("OFFICE_PRIVACY_FENCED"),
+			new Error("OFFICE_GUEST_READINESS_UNCONFIRMED", { cause: new Error("boot differs") }),
+			"not an error",
+			undefined,
+		])
+			expect(companyComputerAuthorityUnanswered(refused)).toBe(false);
 	});
 });
