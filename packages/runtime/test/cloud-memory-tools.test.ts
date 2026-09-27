@@ -776,6 +776,25 @@ describe("composed agent memory", () => {
 		expect(store.listTrusted).not.toHaveBeenCalled();
 	});
 
+	it("reads the profile and both months together", async () => {
+		const agent = randomUUID();
+		const store = companyFile({
+			[`agents/${agent}/memory/profile.md`]: "# Profile\n- (2026-07-01) I report to Jonas.\n",
+		});
+		const read = store.readTrusted.getMockImplementation()!;
+		let inFlight = 0;
+		let most = 0;
+		store.readTrusted.mockImplementation(async (path, signal) => {
+			most = Math.max(most, ++inFlight);
+			await new Promise((resolve) => setTimeout(resolve, 10));
+			inFlight--;
+			return read(path, signal);
+		});
+		const block = await composeCloudAgentMemory(store.gateway, agent, NOW, new AbortController().signal);
+		expect(most).toBe(3);
+		expect(block.profile.facts).toHaveLength(1);
+	});
+
 	it("is an empty notebook for a new agent and an unavailable block when the read lane fails", async () => {
 		const agent = randomUUID();
 		const block = await composeCloudAgentMemory(companyFile().gateway, agent, NOW, new AbortController().signal);

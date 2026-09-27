@@ -55,12 +55,15 @@ jobs:
       - name: Runtime bundle check (strict on release branches only)
         run: npm run check:runtime-bundle:release-train
 
-      - name: Packaged host pins, ephemeral runner package and the guard
+      # The observation vocabulary check reads migration and TypeScript source
+      # only (no database, no network): a name on one side only is dropped live.
+      - name: Packaged host pins, ephemeral runner package, the guard and the observation vocabulary
         run: >-
           node --test
           scripts/generate-cloud-runtime-bundle.test.mjs
           scripts/package-ephemeral-runner.test.mjs
           scripts/check-release-train-derived-files.test.mjs
+          scripts/check-runtime-observation-vocabulary.test.mjs
 
   # A runtime change no longer regenerates the bundle, so it may match no
   # path-filtered workflow. This job runs every unit test file of

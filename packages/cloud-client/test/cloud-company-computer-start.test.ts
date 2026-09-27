@@ -86,6 +86,32 @@ describe("shared member office startup API", () => {
 			intent: { state: "cancelled" },
 		});
 	});
+	it("withdraws only the exact own wake request and reports a missing one plainly", async () => {
+		const f = fixture();
+		f.rpc.mockResolvedValueOnce({ data: { state: "withdrawn" }, error: null });
+		await expect(f.client.withdraw(1, id(9), signal())).resolves.toBe("withdrawn");
+		expect(f.rpc).toHaveBeenCalledExactlyOnceWith(
+			"qorpera_withdraw_runtime_office_wake",
+			{ p_scope: f.scope, p_computer_generation: 1, p_request_id: id(9) },
+			expect.any(AbortSignal),
+		);
+		f.rpc.mockResolvedValueOnce({ data: { state: "unavailable" }, error: null });
+		await expect(f.client.withdraw(1, id(9), signal())).resolves.toBe("unavailable");
+	});
+	it.each([{ state: "cancelled" }, { state: "withdrawn", intentId: id(5) }, null])(
+		"rejects an altered withdrawal reply %j",
+		async (data) => {
+			const f = fixture();
+			f.rpc.mockResolvedValueOnce({ data, error: null });
+			await expect(f.client.withdraw(1, id(9), signal())).rejects.toThrow();
+		},
+	);
+	it("rejects a malformed withdrawal before RPC", async () => {
+		const f = fixture();
+		await expect(f.client.withdraw(0, id(9), signal())).rejects.toThrow("INVALID_OFFICE_START_GENERATION");
+		await expect(f.client.withdraw(1, "invalid", signal())).rejects.toThrow("INVALID_OFFICE_START_REQUEST");
+		expect(f.rpc).not.toHaveBeenCalled();
+	});
 	it("accepts an empty status for a new generation without reviving the old request", async () => {
 		const f = fixture();
 		f.status.computerGeneration = 2;

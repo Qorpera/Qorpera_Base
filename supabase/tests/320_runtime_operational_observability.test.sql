@@ -639,7 +639,7 @@ begin
 	foreach v_operation in array array['model_turn','model_request','company_read','company_list','company_write',
 		'company_mkdir','company_delete','send_message','ask_member','read_context','send_coworker_message','computer_start','computer_screen',
 		'computer_browser','computer_desktop','computer_shell','computer_screenshot','computer_transfer','hire_agent',
-		'create_group_chat','manage_routine','report_work','manage_todo','manage_worker','company_context','message_composition',
+		'create_group_chat','manage_routine','decide_routine','report_work','manage_todo','manage_worker','company_context','message_composition',
 		'connector','unknown_tool','run_authority',
 		'context_authority','native_result_fence','diagnostic_export','action_review',
 		'coding_run_command','coding_read_command','coding_cancel_command','coding_finish','coding_ask',

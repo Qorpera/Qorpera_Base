@@ -79,6 +79,34 @@ retiring, or a later attempt while the prior one still holds a slot, is
 deferred (`SANDBOX_RETIRING`) rather than failed; an older attempt than the
 one holding the slot is refused.
 
+## Warm conversations (contract amendment 2026-09-27)
+
+Off unless `QORPERA_SHARED_EXECUTION_WARM_IDLE_MS` is set (at most 30 minutes;
+the ratified window is 5 minutes, `300000`).
+
+- An attended run (`session_turn` or `room_delivery` with a session) carries a
+  conversation key: member login, company, agent and version, session, sponsor
+  connection, model and compute template. Its native host gets
+  `QORPERA_NATIVE_WARM_IDLE_MS` and keeps the run's opened capsule afterwards
+  (see `packages/runtime`), and readies one spare Codex process.
+- When such a run's runner exits, the slot **parks** instead of retiring: the
+  runner stops, its state and one-run credentials are wiped, the company
+  ceiling is released, the journal is archived `stopped`, and
+  `warm/<slot>.json` records the key, the host's identity epoch and key digest,
+  its bridge digest and the end of the window. The host unit keeps running.
+- The next run with the same key claims the slot under the lock after the
+  identity is read again exactly as for a new sandbox; a changed epoch or key,
+  a stopped host or a passed window evicts the slot (SIGKILL, full wipe) and
+  the run starts a fresh sandbox. A claimed slot gets new runner credentials,
+  keeps the host's bridge credential and scratch, and starts only the runner.
+- A parked slot counts as busy. When no slot is free, the slot parked longest
+  gives way. Reconcile ends parked slots whose window passed or whose host
+  stopped, stops hosts that neither a journal nor a warm record tracks, and
+  (once per service start) wipes the scratch of every untracked slot.
+- `rebuild-exec-host.sh` refuses while any slot unit runs, parked hosts
+  included: stop the orchestrator, wait one window (5 minutes) for the parked
+  hosts to end, then rebuild.
+
 ## Installing an execution host (pilot runbook, node 2)
 
 ```sh

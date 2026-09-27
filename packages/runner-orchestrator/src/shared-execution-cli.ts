@@ -97,6 +97,10 @@ export async function sharedExecutionConfigFromEnvironment(): Promise<{
 		claudePath: process.env.QORPERA_CLAUDE_PATH ?? "/usr/local/bin/claude",
 		nativeCompanyRuntime,
 		startTimeoutMs: integer("QORPERA_SHARED_EXECUTION_START_TIMEOUT_MS", 30_000, 1000, 600_000),
+		// Warm conversations (2026-09-27): off unless set.
+		...(process.env.QORPERA_SHARED_EXECUTION_WARM_IDLE_MS
+			? { warmIdleMs: integer("QORPERA_SHARED_EXECUTION_WARM_IDLE_MS", 300_000, 1, 5 * 60_000) }
+			: {}),
 	};
 	return { config, providerToken, host, port: integer("QORPERA_RUNNER_PROVIDER_PORT", 18_450, 1, 65_535) };
 }
