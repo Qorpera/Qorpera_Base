@@ -294,8 +294,9 @@ function verifyConfiguration(value: unknown, effort: CloudRuntimeReasoningEffort
 
 class CodexBoundaryRpc {
 	readonly #child: ChildProcessWithoutNullStreams;
-	readonly #boundary: CloudNativeToolBoundary;
-	readonly #observability?: CloudRuntimeObservability;
+	/** Bound once, when the run arrives: a spare process is started before its run exists. */
+	#boundary?: CloudNativeToolBoundary;
+	#observability?: CloudRuntimeObservability;
 	readonly #fenceObservations = new Map<
 		string,
 		{ span?: CloudRuntimeObservationSpan; contextRecorded: boolean; finished: boolean }
@@ -351,7 +352,7 @@ class CodexBoundaryRpc {
 
 	constructor(
 		child: ChildProcessWithoutNullStreams,
-		boundary: CloudNativeToolBoundary,
+		boundary?: CloudNativeToolBoundary,
 		observability?: CloudRuntimeObservability,
 	) {
 		this.#child = child;
@@ -379,7 +380,7 @@ class CodexBoundaryRpc {
 					this.#buffer = this.#buffer.slice(end + 1);
 					if (
 						Buffer.byteLength(line) >
-						(boundary.captureImagesEnabled ? MAX_CAPTURE_MESSAGE_BYTES : MAX_MESSAGE_BYTES)
+						(this.#boundary?.captureImagesEnabled ? MAX_CAPTURE_MESSAGE_BYTES : MAX_MESSAGE_BYTES)
 					)
 						throw new Error("Native boundary message too large");
 					if (line.trim()) this.#message(object(JSON.parse(line)));
@@ -387,13 +388,30 @@ class CodexBoundaryRpc {
 				}
 				if (
 					Buffer.byteLength(this.#buffer) >
-					(boundary.captureImagesEnabled ? MAX_CAPTURE_MESSAGE_BYTES : MAX_MESSAGE_BYTES)
+					(this.#boundary?.captureImagesEnabled ? MAX_CAPTURE_MESSAGE_BYTES : MAX_MESSAGE_BYTES)
 				)
 					throw new Error("Native boundary message too large");
 			} catch {
 				this.fail("Invalid native boundary protocol", "invalid_response");
 			}
 		});
+	}
+
+	/** Attaches the run: its tool boundary and observations. Before this only the
+	 * handshake runs; no thread, turn, tool call or provider request is accepted. */
+	bind(boundary: CloudNativeToolBoundary, observability?: CloudRuntimeObservability): void {
+		if (this.#boundary || this.#failure || this.#closed) throw new Error("Native boundary binding failed");
+		this.#boundary = boundary;
+		this.#observability = observability;
+	}
+
+	get bound(): boolean {
+		return this.#boundary !== undefined;
+	}
+
+	/** Neither failed nor closed. */
+	get usable(): boolean {
+		return !this.#failure && !this.#closed;
 	}
 
 	get toolCalls(): number {
@@ -767,7 +785,7 @@ class CodexBoundaryRpc {
 		if (this.#failure || this.#closed) return;
 		this.#failure = new CloudRuntimeDiagnosticError(category, message);
 		this.#failureCategory = category;
-		this.#boundary.close();
+		this.#boundary?.close();
 		for (const pending of this.#pending.values()) pending.reject(this.#failure);
 		this.#pending.clear();
 		for (const review of this.#reviews.values()) review.reject(this.#failure);
@@ -788,6 +806,7 @@ class CodexBoundaryRpc {
 		this.#write({ method: "initialized", params: {} });
 	}
 	startThread(): void {
+		if (!this.#boundary) throw new Error("Native thread binding failed");
 		this.#startingThread = true;
 	}
 	bindThread(threadId: string): void {
@@ -808,7 +827,7 @@ class CodexBoundaryRpc {
 	close(): void {
 		for (const callId of this.#compositions.keys()) this.#finishComposition(callId, "unconfirmed");
 		this.#closed = true;
-		this.#boundary.close();
+		this.#boundary?.close();
 		for (const pending of this.#pending.values()) pending.reject(new Error("Native boundary transport closed"));
 		this.#pending.clear();
 		for (const review of this.#reviews.values()) review.reject(new Error("Native boundary transport closed"));
@@ -819,7 +838,8 @@ class CodexBoundaryRpc {
 		if (this.#closed || this.#failure) return;
 		const text = JSON.stringify(message);
 		if (
-			Buffer.byteLength(text) > (this.#boundary.captureImagesEnabled ? MAX_CAPTURE_MESSAGE_BYTES : MAX_MESSAGE_BYTES)
+			Buffer.byteLength(text) >
+			(this.#boundary?.captureImagesEnabled ? MAX_CAPTURE_MESSAGE_BYTES : MAX_MESSAGE_BYTES)
 		) {
 			this.fail("Native boundary input limit exceeded", "budget_exhausted");
 			return;
@@ -988,7 +1008,9 @@ class CodexBoundaryRpc {
 			const callId = identifier(params.callId);
 			this.#toolCalls++;
 			this.#activeCalls++;
-			void this.#boundary.invoke(callId, params.namespace, params.tool, params.arguments).then(
+			const boundary = this.#boundary;
+			if (!boundary) throw new Error("Native tool binding failed");
+			void boundary.invoke(callId, params.namespace, params.tool, params.arguments).then(
 				({ completesTurn, ...result }) => {
 					this.#activeCalls--;
 					if (this.#finished) {
@@ -1077,6 +1099,371 @@ async function stopProcessGroup(child: ChildProcessWithoutNullStreams): Promise<
 	}
 }
 
+/** What shapes a Codex app-server before any run. A spare is used only for identical inputs. */
+interface CloudCodexProcessInputs {
+	command: readonly [string, ...string[]];
+	binarySha256: string;
+	effort: CloudRuntimeReasoningEffort;
+	identityRoot?: string;
+	isolation?: NativeIsolationConfiguration;
+}
+
+/** What the result fence reaches once a run is bound to the process. */
+interface CloudCodexRunBinding {
+	boundary?: CloudNativeToolBoundary;
+	recordContextView?: (
+		frame: CloudNativeFenceRequest,
+		outputs: readonly CloudNativeFencedResult[],
+		signal: AbortSignal,
+	) => Promise<void>;
+}
+
+/** A started, handshaken Codex app-server that no run has used: no thread, no provider request. */
+interface CloudCodexProcess {
+	readonly key: string;
+	readonly identityRoot?: string;
+	readonly workspace: string;
+	readonly rpc: CodexBoundaryRpc;
+	readonly userAgent: string;
+	readonly binding: CloudCodexRunBinding;
+	readonly fenceFailed: boolean;
+	/** True while the process, its fence and its handshake state are intact. */
+	readonly healthy: boolean;
+	close(): Promise<void>;
+}
+
+function cloudCodexProcessKey(inputs: CloudCodexProcessInputs): string {
+	return createHash("sha256")
+		.update(
+			JSON.stringify([
+				inputs.command,
+				inputs.binarySha256,
+				cloudCodexBoundaryConfig(inputs.effort),
+				inputs.identityRoot ?? null,
+				inputs.isolation ?? null,
+			]),
+		)
+		.digest("hex");
+}
+
+/**
+ * Starts a Codex app-server and completes its handshake: artifact pin, auth-only
+ * identity, result fence, isolation, initialize, configuration and skill checks.
+ * Nothing of a run is involved; the result fence refuses every request until a
+ * run is bound. `progress.stage` names the step a failure happened in.
+ */
+async function startCloudCodexProcess(
+	inputs: CloudCodexProcessInputs,
+	progress: { stage: NativeRuntimeFailureStage },
+	signal: AbortSignal,
+): Promise<CloudCodexProcess> {
+	signal.throwIfAborted();
+	// The process outlives the caller's start signal when it becomes a spare.
+	const lifetime = new AbortController();
+	const allocation = await mkdtemp(join(tmpdir(), "qorpera-codex-boundary-"));
+	// Linux commonly uses /tmp. Keep the runtime below the unique private
+	// allocation so the containment validator never receives a shallow root.
+	const root = join(allocation, "runtime");
+	const binding: CloudCodexRunBinding = {};
+	const state = { fenceFailed: false, closed: false };
+	let child: ChildProcessWithoutNullStreams | undefined;
+	let isolated: Awaited<ReturnType<typeof launchIsolatedNativeProcess>> | undefined;
+	let rpc: CodexBoundaryRpc | undefined;
+	let fence: Awaited<ReturnType<typeof startCloudNativeResultFence>> | undefined;
+	const close = async (): Promise<void> => {
+		if (state.closed) return;
+		state.closed = true;
+		lifetime.abort();
+		rpc?.close();
+		binding.boundary?.close();
+		await fence?.close();
+		if (isolated) await isolated.close();
+		else if (child) await stopProcessGroup(child);
+		await rm(allocation, { recursive: true, force: true });
+	};
+	const stop = (): void => {
+		rpc?.fail("Native boundary execution stopped");
+		lifetime.abort(signal.reason);
+	};
+	signal.addEventListener("abort", stop, { once: true });
+	try {
+		progress.stage = "codex-artifact";
+		await mkdir(root, { mode: 0o700 });
+		const [executable, ...prefix] = inputs.command;
+		const command = await realpath(executable);
+		const artifact = await lstat(command);
+		if (!artifact.isFile() || artifact.size > 512 * 1024 * 1024 || (artifact.mode & 0o022) !== 0)
+			throw new Error("Invalid native boundary artifact");
+		const prefetched = artifactDigests.get(command);
+		const digest =
+			prefetched?.identity === (await artifactIdentity(command))
+				? await abortableDigest(
+						prefetched.digest.catch(() => hashArtifact(command, signal)),
+						signal,
+					)
+				: await hashArtifact(command, signal);
+		signal.throwIfAborted();
+		if (digest !== inputs.binarySha256) throw new Error("Native boundary artifact mismatch");
+		progress.stage = "codex-identity";
+		if (inputs.identityRoot && !isAbsolute(inputs.identityRoot)) throw new Error("Invalid native identity directory");
+		const codexHome = join(inputs.identityRoot ?? root, "codex");
+		await mkdir(codexHome, { recursive: true, mode: 0o700 });
+		if (!(await lstat(codexHome)).isDirectory()) throw new Error("Invalid native identity directory");
+		for (const entry of await readdir(codexHome, { withFileTypes: true })) {
+			if (entry.name !== "auth.json" || !entry.isFile())
+				throw new Error("Native boundary requires an auth-only identity");
+		}
+		const workspace = join(root, "workspace");
+		const home = join(root, "home");
+		await Promise.all(
+			[workspace, home, join(root, "config"), join(root, "data"), join(root, "cache")].map((path) =>
+				mkdir(path, { mode: 0o700 }),
+			),
+		);
+		signal.throwIfAborted();
+		progress.stage = "codex-result-fence";
+		fence = await startCloudNativeResultFence({
+			root,
+			// A request before the run is bound finds no thread and fails the fence.
+			boundary: {
+				close: () => binding.boundary?.close(),
+				fenceNativeResults: (outputs) =>
+					binding.boundary
+						? binding.boundary.fenceNativeResults(outputs)
+						: Promise.reject(new Error("Native result boundary is not bound")),
+			},
+			assertSession: (request) => {
+				if (!rpc?.bound) throw new Error("Native result boundary not initialized");
+				rpc.assertModelRequest(request);
+			},
+			releaseReviewOutputs: (request) =>
+				rpc?.isReviewRequest(request) ? rpc.releaseReviewOutputs(request) : undefined,
+			recordContextView: async (request, outputs, contextSignal) => {
+				await binding.recordContextView?.(request, outputs, contextSignal);
+				rpc?.contextRecorded(request.requestId);
+			},
+			onFailure: () => {
+				state.fenceFailed = true;
+				rpc?.fail("Native result boundary unavailable", "authority_unavailable");
+			},
+			signal: lifetime.signal,
+		});
+		const commandArgs = [
+			...prefix,
+			"app-server",
+			"--strict-config",
+			"--listen",
+			"stdio://",
+			...cloudCodexBoundaryConfig(inputs.effort).flatMap((config) => ["-c", config]),
+		];
+		progress.stage = "codex-process-start";
+		if (inputs.isolation) {
+			isolated = await launchIsolatedNativeProcess({
+				configuration: inputs.isolation,
+				command,
+				args: commandArgs,
+				scratchRoot: root,
+				codexHome,
+				fenceSocket: fence.path,
+				signal: lifetime.signal,
+			});
+			child = isolated.child;
+		} else
+			child = spawn(command, commandArgs, {
+				cwd: workspace,
+				env: {
+					HOME: home,
+					CODEX_HOME: codexHome,
+					XDG_CONFIG_HOME: join(root, "config"),
+					XDG_DATA_HOME: join(root, "data"),
+					XDG_CACHE_HOME: join(root, "cache"),
+					PATH: process.env.PATH ?? "/usr/bin:/bin",
+					NO_COLOR: "1",
+					QORPERA_NATIVE_RESULT_FENCE_SOCKET: fence.path,
+				},
+				stdio: ["pipe", "pipe", "pipe"],
+				detached: true,
+			});
+		rpc = new CodexBoundaryRpc(child);
+		const handshake = rpc;
+		if (state.fenceFailed) handshake.fail("Native result boundary unavailable", "authority_unavailable");
+		if (signal.aborted) stop();
+		progress.stage = "codex-initialize";
+		const initialized = object(
+			await handshake.request("initialize", {
+				clientInfo: { name: CLIENT_NAME, version: "1" },
+				capabilities: { experimentalApi: true },
+			}),
+		);
+		if (
+			typeof initialized.userAgent !== "string" ||
+			!initialized.userAgent.startsWith(`${CLIENT_NAME}/${CLOUD_CODEX_BOUNDARY_VERSION} `) ||
+			!initialized.userAgent.split(" ").includes(CLOUD_NATIVE_RESULT_FENCE_SCHEMA)
+		)
+			throw new Error("Unsupported Codex boundary version or missing native result fence");
+		if (!initialized.userAgent.endsWith(` ${CLOUD_NATIVE_RESULT_FENCE_SCHEMA} ${DIRECT_TOOLS_CAPABILITY}`))
+			throw new Error("Native boundary requires governed direct tools");
+		if (!initialized.userAgent.split(" ").includes(MESSAGE_COMPOSITION_CAPABILITY))
+			throw new Error("Native boundary requires message composition support");
+		const userAgent = initialized.userAgent;
+		handshake.initialized();
+		progress.stage = "codex-configuration";
+		verifyConfiguration(
+			await handshake.request("config/read", { includeLayers: false, cwd: workspace }),
+			inputs.effort,
+		);
+		progress.stage = "codex-skills";
+		const skills = object(await handshake.request("skills/list", { cwds: [workspace], forceReload: true }));
+		if (!Array.isArray(skills.data) || skills.data.length !== 1)
+			throw new Error("Native skill catalog could not be verified");
+		const catalog = object(skills.data[0]);
+		if (
+			!Array.isArray(catalog.skills) ||
+			catalog.skills.length !== 0 ||
+			!Array.isArray(catalog.errors) ||
+			catalog.errors.length !== 0
+		)
+			throw new Error("Native boundary requires an empty provider skill catalog");
+		signal.throwIfAborted();
+		const launched = child;
+		return {
+			key: cloudCodexProcessKey(inputs),
+			...(inputs.identityRoot ? { identityRoot: inputs.identityRoot } : {}),
+			workspace,
+			rpc: handshake,
+			userAgent,
+			binding,
+			get fenceFailed() {
+				return state.fenceFailed;
+			},
+			get healthy() {
+				return (
+					!state.closed &&
+					!state.fenceFailed &&
+					!lifetime.signal.aborted &&
+					handshake.usable &&
+					launched.exitCode === null &&
+					launched.signalCode === null
+				);
+			},
+			close,
+		};
+	} catch (error) {
+		const category = signal.aborted
+			? cloudRuntimeErrorCategory(error, signal)
+			: rpc && rpc.failureCategory !== "unknown"
+				? rpc.failureCategory
+				: cloudRuntimeErrorCategory(error);
+		const usageSignal = rpc?.usageSignal ?? null;
+		await close().catch(() => undefined);
+		throw tagNativeRuntimeFailure(
+			signal.aborted ? new Error("Native boundary execution stopped") : error,
+			progress.stage,
+			category,
+			usageSignal,
+		);
+	} finally {
+		signal.removeEventListener("abort", stop);
+	}
+}
+
+/**
+ * Warm conversations (contract amendment 2026-09-27): after a run, its host may
+ * start one spare Codex process for the next run of the same conversation. A
+ * spare has completed its handshake and seen no run; the next run with identical
+ * process inputs takes it instead of starting one, and every run still uses a
+ * process of its own. A spare that is not taken within its idle window stops.
+ */
+const spares = new Map<
+	string,
+	{
+		identityRoot?: string;
+		process: Promise<CloudCodexProcess | undefined>;
+		starting: AbortController;
+		timer?: ReturnType<typeof setTimeout>;
+	}
+>();
+
+function discardSpare(key: string): void {
+	const spare = spares.get(key);
+	if (!spare) return;
+	spares.delete(key);
+	clearTimeout(spare.timer);
+	spare.starting.abort();
+	void spare.process.then((started) => started?.close()).catch(() => undefined);
+}
+
+/** Starts a spare for the given process inputs, replacing an older one for the same inputs. */
+export function prepareCloudCodexSpare(
+	inputs: {
+		command: readonly [string, ...string[]];
+		binarySha256: string;
+		reasoningEffort?: CloudRuntimeReasoningEffort;
+		identityRoot?: string;
+		isolation?: NativeIsolationConfiguration;
+	},
+	idleMs: number,
+): void {
+	if (!Number.isSafeInteger(idleMs) || idleMs < 1 || idleMs > 30 * 60_000) throw new Error("Invalid spare window");
+	const processInputs: CloudCodexProcessInputs = {
+		command: inputs.command,
+		binarySha256: inputs.binarySha256,
+		effort: inputs.reasoningEffort ?? CLOUD_RUNTIME_MODEL_POLICY.effort,
+		...(inputs.identityRoot ? { identityRoot: inputs.identityRoot } : {}),
+		...(inputs.isolation ? { isolation: inputs.isolation } : {}),
+	};
+	const key = cloudCodexProcessKey(processInputs);
+	discardSpare(key);
+	const starting = new AbortController();
+	const process = startCloudCodexProcess(processInputs, { stage: "codex-artifact" }, starting.signal).catch(
+		() => undefined,
+	);
+	const spare: NonNullable<ReturnType<typeof spares.get>> = {
+		...(inputs.identityRoot ? { identityRoot: inputs.identityRoot } : {}),
+		process,
+		starting,
+	};
+	spares.set(key, spare);
+	// The idle window counts from when the spare is ready; a failed start leaves nothing behind.
+	void process.then((started) => {
+		if (spares.get(key) !== spare) return;
+		if (!started) {
+			spares.delete(key);
+			return;
+		}
+		spare.timer = setTimeout(() => {
+			if (spares.get(key) === spare) discardSpare(key);
+		}, idleMs);
+		spare.timer.unref?.();
+	});
+}
+
+/** Takes the spare for these inputs if one is ready and intact; a broken spare is closed. */
+async function takeCloudCodexSpare(key: string): Promise<CloudCodexProcess | undefined> {
+	const spare = spares.get(key);
+	if (!spare) return undefined;
+	spares.delete(key);
+	clearTimeout(spare.timer);
+	// A spare still starting is awaited: it is further along than a new start.
+	const started = await spare.process;
+	if (started && started.key === key && started.healthy) return started;
+	await started?.close().catch(() => undefined);
+	return undefined;
+}
+
+/** Stops the spares that use an identity root, before its host wipes it. With no root, stops all. */
+export async function disposeCloudCodexSpares(identityRoot?: string): Promise<void> {
+	const stopping: Promise<unknown>[] = [];
+	for (const [key, spare] of spares) {
+		if (identityRoot !== undefined && spare.identityRoot !== identityRoot) continue;
+		spares.delete(key);
+		clearTimeout(spare.timer);
+		spare.starting.abort();
+		stopping.push(spare.process.then((started) => started?.close()).catch(() => undefined));
+	}
+	await Promise.all(stopping);
+}
+
 /**
  * Cloud-host adapter selected only by the explicit company-path-v1 runtime lane.
  * No Company File directory is passed to Codex. The caller supplies the cloud tools.
@@ -1136,183 +1523,73 @@ export async function runCloudCodexToolSession(options: {
 	)
 		throw new Error("Invalid native boundary input");
 	options.signal.throwIfAborted();
-	const allocation = await mkdtemp(join(tmpdir(), "qorpera-codex-boundary-"));
-	// Linux commonly uses /tmp. Keep the runtime below the unique private
-	// allocation so the containment validator never receives a shallow root.
-	const root = join(allocation, "runtime");
 	const signal =
 		timeoutMs === undefined ? options.signal : AbortSignal.any([options.signal, AbortSignal.timeout(timeoutMs)]);
-	let child: ChildProcessWithoutNullStreams | undefined;
-	let isolated: Awaited<ReturnType<typeof launchIsolatedNativeProcess>> | undefined;
-	let rpc: CodexBoundaryRpc | undefined;
+	const inputs: CloudCodexProcessInputs = {
+		command: options.command,
+		binarySha256: options.binarySha256,
+		effort,
+		...(options.identityRoot ? { identityRoot: options.identityRoot } : {}),
+		...(options.isolation ? { isolation: options.isolation } : {}),
+	};
+	const progress: { stage: NativeRuntimeFailureStage } = { stage: "codex-artifact" };
+	let started: CloudCodexProcess;
+	try {
+		started =
+			(await takeCloudCodexSpare(cloudCodexProcessKey(inputs))) ??
+			(await startCloudCodexProcess(inputs, progress, signal));
+	} catch (error) {
+		options.boundary.close();
+		throw error;
+	}
+	const rpc = started.rpc;
 	let idleWatch: ReturnType<typeof setInterval> | undefined;
-	let fence: Awaited<ReturnType<typeof startCloudNativeResultFence>> | undefined;
-	let fenceFailed = false;
-	let stage: NativeRuntimeFailureStage = "codex-artifact";
+	let stage: NativeRuntimeFailureStage = "codex-initialize";
 	const abort = (): void => {
-		rpc?.fail("Native boundary execution stopped");
+		rpc.fail("Native boundary execution stopped");
 	};
 	try {
-		await mkdir(root, { mode: 0o700 });
-		const [executable, ...prefix] = options.command;
-		const command = await realpath(executable);
-		const artifact = await lstat(command);
-		if (!artifact.isFile() || artifact.size > 512 * 1024 * 1024 || (artifact.mode & 0o022) !== 0)
-			throw new Error("Invalid native boundary artifact");
-		const prefetched = artifactDigests.get(command);
-		const digest =
-			prefetched?.identity === (await artifactIdentity(command))
-				? await abortableDigest(
-						prefetched.digest.catch(() => hashArtifact(command, signal)),
-						signal,
-					)
-				: await hashArtifact(command, signal);
-		signal.throwIfAborted();
-		if (digest !== options.binarySha256) throw new Error("Native boundary artifact mismatch");
+		// The run arrives: its boundary, observations and context recorder. Until
+		// now the fence refused every request and no thread could start.
+		rpc.bind(options.boundary, options.observability);
+		started.binding.boundary = options.boundary;
+		if (options.recordContextView) started.binding.recordContextView = options.recordContextView;
+		if (
+			options.boundary.captureImagesEnabled &&
+			!started.userAgent.split(" ").includes(CLOUD_NATIVE_CAPTURE_IMAGES_CAPABILITY)
+		)
+			throw new Error("Native boundary requires capture image support");
 		stage = "codex-identity";
-		if (options.identityRoot && !isAbsolute(options.identityRoot))
-			throw new Error("Invalid native identity directory");
-		const codexHome = join(options.identityRoot ?? root, "codex");
-		await mkdir(codexHome, { recursive: true, mode: 0o700 });
-		if (!(await lstat(codexHome)).isDirectory()) throw new Error("Invalid native identity directory");
-		for (const entry of await readdir(codexHome, { withFileTypes: true })) {
-			if (entry.name !== "auth.json" || !entry.isFile())
-				throw new Error("Native boundary requires an auth-only identity");
-		}
-		const workspace = join(root, "workspace");
-		const home = join(root, "home");
-		await Promise.all(
-			[workspace, home, join(root, "config"), join(root, "data"), join(root, "cache")].map((path) =>
-				mkdir(path, { mode: 0o700 }),
-			),
-		);
 		// Generate one host-owned bootstrap and explicitly load these exact bytes.
 		// Ambient project/home instruction discovery remains disabled: a Company
 		// File or restored auth home must never add a second platform prompt.
 		const nativeInstructions = [CLOUD_TOOL_RESULT_INSTRUCTIONS, options.runtimeInstructions]
 			.filter(Boolean)
 			.join("\n");
-		await writeFile(join(workspace, "AGENTS.md"), nativeInstructions, { mode: 0o400, flag: "wx" });
-		signal.throwIfAborted();
-		stage = "codex-result-fence";
-		fence = await startCloudNativeResultFence({
-			root,
-			boundary: options.boundary,
-			assertSession: (request) => {
-				if (!rpc) throw new Error("Native result boundary not initialized");
-				rpc.assertModelRequest(request);
-			},
-			releaseReviewOutputs: (request) =>
-				rpc?.isReviewRequest(request) ? rpc.releaseReviewOutputs(request) : undefined,
-			recordContextView: async (request, outputs, contextSignal) => {
-				await options.recordContextView?.(request, outputs, contextSignal);
-				rpc?.contextRecorded(request.requestId);
-			},
-			onFailure: () => {
-				fenceFailed = true;
-				rpc?.fail("Native result boundary unavailable", "authority_unavailable");
-			},
-			signal,
-		});
-		const commandArgs = [
-			...prefix,
-			"app-server",
-			"--strict-config",
-			"--listen",
-			"stdio://",
-			...cloudCodexBoundaryConfig(effort).flatMap((config) => ["-c", config]),
-		];
-		stage = "codex-process-start";
-		if (options.isolation) {
-			isolated = await launchIsolatedNativeProcess({
-				configuration: options.isolation,
-				command,
-				args: commandArgs,
-				scratchRoot: root,
-				codexHome,
-				fenceSocket: fence.path,
-				signal,
-			});
-			child = isolated.child;
-		} else
-			child = spawn(command, commandArgs, {
-				cwd: workspace,
-				env: {
-					HOME: home,
-					CODEX_HOME: codexHome,
-					XDG_CONFIG_HOME: join(root, "config"),
-					XDG_DATA_HOME: join(root, "data"),
-					XDG_CACHE_HOME: join(root, "cache"),
-					PATH: process.env.PATH ?? "/usr/bin:/bin",
-					NO_COLOR: "1",
-					QORPERA_NATIVE_RESULT_FENCE_SOCKET: fence.path,
-				},
-				stdio: ["pipe", "pipe", "pipe"],
-				detached: true,
-			});
-		rpc = new CodexBoundaryRpc(child, options.boundary, options.observability);
-		const watched = rpc;
+		await writeFile(join(started.workspace, "AGENTS.md"), nativeInstructions, { mode: 0o400, flag: "wx" });
 		if (idleTimeoutMs !== undefined) {
 			idleWatch = setInterval(
 				() => {
-					if (Date.now() - watched.lastActivityAt > idleTimeoutMs)
-						watched.fail("Native boundary execution stalled");
+					if (Date.now() - rpc.lastActivityAt > idleTimeoutMs) rpc.fail("Native boundary execution stalled");
 				},
 				Math.min(idleTimeoutMs, 15_000),
 			);
 			idleWatch.unref();
 		}
-		if (fenceFailed) rpc.fail("Native result boundary unavailable", "authority_unavailable");
+		if (started.fenceFailed) rpc.fail("Native result boundary unavailable", "authority_unavailable");
 		signal.addEventListener("abort", abort, { once: true });
 		if (signal.aborted) abort();
-		stage = "codex-initialize";
-		const initialized = object(
-			await rpc.request("initialize", {
-				clientInfo: { name: CLIENT_NAME, version: "1" },
-				capabilities: { experimentalApi: true },
-			}),
-		);
-		if (
-			typeof initialized.userAgent !== "string" ||
-			!initialized.userAgent.startsWith(`${CLIENT_NAME}/${CLOUD_CODEX_BOUNDARY_VERSION} `) ||
-			!initialized.userAgent.split(" ").includes(CLOUD_NATIVE_RESULT_FENCE_SCHEMA)
-		)
-			throw new Error("Unsupported Codex boundary version or missing native result fence");
-		if (!initialized.userAgent.endsWith(` ${CLOUD_NATIVE_RESULT_FENCE_SCHEMA} ${DIRECT_TOOLS_CAPABILITY}`))
-			throw new Error("Native boundary requires governed direct tools");
-		if (!initialized.userAgent.split(" ").includes(MESSAGE_COMPOSITION_CAPABILITY))
-			throw new Error("Native boundary requires message composition support");
-		if (
-			options.boundary.captureImagesEnabled &&
-			!initialized.userAgent.split(" ").includes(CLOUD_NATIVE_CAPTURE_IMAGES_CAPABILITY)
-		)
-			throw new Error("Native boundary requires capture image support");
-		rpc.initialized();
-		stage = "codex-configuration";
-		verifyConfiguration(await rpc.request("config/read", { includeLayers: false, cwd: workspace }), effort);
-		stage = "codex-skills";
-		const skills = object(await rpc.request("skills/list", { cwds: [workspace], forceReload: true }));
-		if (!Array.isArray(skills.data) || skills.data.length !== 1)
-			throw new Error("Native skill catalog could not be verified");
-		const catalog = object(skills.data[0]);
-		if (
-			!Array.isArray(catalog.skills) ||
-			catalog.skills.length !== 0 ||
-			!Array.isArray(catalog.errors) ||
-			catalog.errors.length !== 0
-		)
-			throw new Error("Native boundary requires an empty provider skill catalog");
 		stage = "execution-admission";
 		await options.beforeModelStart?.(signal);
 		signal.throwIfAborted();
 		stage = "codex-thread-start";
 		rpc.startThread();
-		const started = object(
+		const thread = object(
 			await rpc.request("thread/start", {
 				// provider-default omits the model: the pinned Codex chooses its own default. An explicit
 				// name is only sent for a session override; the provider rejects names newer than the binary.
 				...(options.model === "provider-default" ? {} : { model: options.model }),
-				cwd: workspace,
+				cwd: started.workspace,
 				runtimeWorkspaceRoots: [],
 				environments: [],
 				ephemeral: true,
@@ -1323,11 +1600,11 @@ export async function runCloudCodexToolSession(options: {
 				dynamicTools: [options.boundary.specification],
 			}),
 		);
-		const threadId = identifier(object(started.thread).id);
+		const threadId = identifier(object(thread.thread).id);
 		rpc.bindThread(threadId);
 		const reviewing = rpc;
 		options.reviewer?.attach({
-			review: (input, reviewSignal) => reviewing.review({ ...input, cwd: workspace }, reviewSignal),
+			review: (input, reviewSignal) => reviewing.review({ ...input, cwd: started.workspace }, reviewSignal),
 		});
 		stage = "codex-turn-start";
 		rpc.startTurn();
@@ -1354,7 +1631,7 @@ export async function runCloudCodexToolSession(options: {
 			fencedRequests: rpc.fencedRequests,
 		};
 	} catch (error) {
-		rpc?.finishObservations(false, signal);
+		rpc.finishObservations(false, signal);
 		if (signal.aborted)
 			throw tagNativeRuntimeFailure(
 				new Error("Native boundary execution stopped"),
@@ -1364,18 +1641,15 @@ export async function runCloudCodexToolSession(options: {
 		throw tagNativeRuntimeFailure(
 			error,
 			stage,
-			rpc && rpc.failureCategory !== "unknown" ? rpc.failureCategory : cloudRuntimeErrorCategory(error),
-			rpc?.usageSignal ?? null,
+			rpc.failureCategory !== "unknown" ? rpc.failureCategory : cloudRuntimeErrorCategory(error),
+			rpc.usageSignal ?? null,
 		);
 	} finally {
 		options.reviewer?.attach(undefined);
 		if (idleWatch !== undefined) clearInterval(idleWatch);
 		signal.removeEventListener("abort", abort);
-		rpc?.close();
 		options.boundary.close();
-		await fence?.close();
-		if (isolated) await isolated.close();
-		else if (child) await stopProcessGroup(child);
-		await rm(allocation, { recursive: true, force: true });
+		// One run per process: the next run takes a spare or starts its own.
+		await started.close();
 	}
 }

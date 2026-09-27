@@ -139,6 +139,15 @@ export function nativeCompanyRuntimeConfiguration(environment: NodeJS.ProcessEnv
 }
 
 /** Per-connection concurrency policy consented at native login (contract section 17); the cloud caps it by the global provider policy. */
+/** Warm conversations (2026-09-27): how long a successful run's opened capsule stays for the next run. */
+export function nativeWarmIdleMs(value: string | undefined): number | undefined {
+	if (value === undefined || value === "") return undefined;
+	const idleMs = Number(value);
+	if (!/^[1-9][0-9]*$/.test(value) || !Number.isSafeInteger(idleMs) || idleMs > 30 * 60_000)
+		throw new Error("QORPERA_NATIVE_WARM_IDLE_MS is invalid");
+	return idleMs;
+}
+
 function optionalConcurrency(value: string | undefined): number | undefined {
 	if (value === undefined || value === "") return undefined;
 	if (!/^[1-9][0-9]?$/.test(value) || Number(value) > 64)
@@ -365,6 +374,7 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 	} else if (codingConfiguration) {
 		throw new Error("Coding sessions require the cloud-native Company File runtime");
 	}
+	const warmIdleMs = cloudRuntime ? nativeWarmIdleMs(environment.QORPERA_NATIVE_WARM_IDLE_MS) : undefined;
 	const host = new NativeProviderHost({
 		controlPlane,
 		capsules: new SupabaseNativeCredentialCapsuleStore(baseUrl, serviceKey),
@@ -389,6 +399,7 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 			});
 		},
 		...(cloudRuntime ? { cloudRuntime } : {}),
+		...(warmIdleMs !== undefined ? { warmIdleMs } : {}),
 		...(environment.QORPERA_NATIVE_PROVIDER_TEMPORARY_ROOT
 			? { temporaryRoot: environment.QORPERA_NATIVE_PROVIDER_TEMPORARY_ROOT }
 			: {}),
@@ -413,6 +424,7 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 	} finally {
 		shutdown.abort();
 		await host.stopAccountMetadataRefresh();
+		await host.releaseWarm();
 		process.removeListener("SIGINT", stop);
 		process.removeListener("SIGTERM", stop);
 		await service.close();

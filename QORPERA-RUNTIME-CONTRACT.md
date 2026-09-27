@@ -2200,6 +2200,29 @@ nodes symmetric for any member) is a separate, later amendment.
 Proposal review keeps its copy-isolated one-run guest. Company Computers
 remain shared virtual machines under section 12.
 
+### 2026-09-27 amendment: warm conversations
+
+Ratified by the founder on 2026-09-27. After a run of an attended
+conversation ends, its sandbox MAY stay warm for at most 5 minutes of idle
+time and serve the next run with the same compute identity and recovery
+epoch, company, staff agent and version, session, runtime bundle, model,
+effort and service tier. The warm native host keeps the capsule master key it
+was given and keeps the credential capsule open inside its private scratch
+root for that window. It reseals and uploads the capsule after every run, as
+today, and wipes the root when the window ends or the sandbox retires. Every
+run keeps its own runner, authority, admission, fences, receipts and bundle
+pin. Any mismatch, revocation or recovery-epoch change ends the warm sandbox.
+The Codex process and its provider connection MAY be reused across those
+runs; each run starts a new provider thread.
+
+The warm host reuses a kept capsule root only while the stored capsule is
+byte for byte the one it uploaded last; otherwise it wipes the root and opens
+the stored capsule afresh. Only the capsule's own credential files remain in
+a kept root. A spare Codex process started for the next run completes its
+handshake before that run exists and accepts no thread, turn, tool call or
+provider request until the run is bound; each run still uses a process of its
+own.
+
 ### Current implementation checkpoint
 
 The NAS-backed live Company File and native cloud runner path already exist.

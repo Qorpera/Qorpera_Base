@@ -1,6 +1,6 @@
 const { spawn } = require("node:child_process");
 const { createHash, randomUUID } = require("node:crypto");
-const { existsSync, readFileSync, statSync, writeFileSync } = require("node:fs");
+const { appendFileSync, existsSync, readFileSync, statSync, writeFileSync } = require("node:fs");
 const { join } = require("node:path");
 const { connect } = require("node:net");
 const { createInterface } = require("node:readline");
@@ -125,6 +125,8 @@ if (mode === "descendant") {
 
 async function handle(message) {
 	if (message.method === "initialize") {
+		// Warm conversations: tests count started processes (spares included).
+		if (evidencePath) appendFileSync(`${evidencePath}.starts`, `${process.pid}\n`);
 		if (mode === "stalled" || mode === "descendant") return;
 		if (mode === "invalid-json") { process.stdout.write("PRIVATE_BAD_WIRE\n"); return; }
 		if (mode === "oversized") { process.stdout.write("x".repeat(1024 * 1024 + 1)); return; }
