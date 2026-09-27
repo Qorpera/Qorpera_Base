@@ -250,7 +250,10 @@ export class CodingSessionElement {
 	readonly #log = h("div", { class: "coding-log" });
 	readonly #body = h("div", { class: "coding-body" });
 	readonly #footer = h("footer", { class: "coding-footer" });
-	readonly #status = h("div", { class: "coding-status", role: "status" });
+	readonly #status = h("div", { class: "coding-status" });
+	/** Read out when the phase changes, not at every step the visible status line shows. */
+	readonly #announce = h("span", { class: "visually-hidden", role: "status" });
+	#announcedPhase = "";
 	readonly #extras = h("div", { class: "coding-extras", hidden: true });
 	readonly #field: HTMLTextAreaElement;
 	readonly #sendButton: HTMLButtonElement;
@@ -308,7 +311,7 @@ export class CodingSessionElement {
 		this.#shell = h("div", { class: "composer-shell coding-composer" }, this.#field, this.#sendButton);
 		this.#talk = h("div", { class: "coding-talk" }, this.#shell);
 		this.#log.append(this.#body);
-		this.#footer.append(this.#status, this.#extras);
+		this.#footer.append(this.#announce, this.#status, this.#extras);
 		this.el = h(
 			"section",
 			{
@@ -402,7 +405,7 @@ export class CodingSessionElement {
 
 	/** Put the caret in the composer, when the viewer may type now. */
 	focusComposer(): boolean {
-		if (!this.#talk.isConnected || this.#field.disabled) return false;
+		if (!this.#talk.isConnected || !codingSessionTakesInput(this.#session)) return false;
 		this.#field.focus();
 		return true;
 	}
@@ -437,44 +440,43 @@ export class CodingSessionElement {
 	/** Sends an answer or a follow-up. `typed` says the text is the composer's, which then empties. */
 	async #send(text: string, typed = false): Promise<void> {
 		const value = text.trim();
-		if (!value || this.#busy || this.disposed || this.#field.disabled) return;
+		if (!value || this.#busy || this.disposed || !codingSessionTakesInput(this.#session)) return;
+		await this.#act(
+			(requestId) => this.#options.api.answer(this.#session.workerId, value, requestId),
+			typed
+				? () => {
+						this.#field.value = "";
+						this.#autosize();
+					}
+				: undefined,
+		);
+	}
+
+	async #delegate(): Promise<void> {
+		if (this.#busy || this.disposed) return;
+		await this.#act((requestId) => this.#options.api.delegate(this.#session.workerId, requestId));
+	}
+
+	/** One answer or delegation under one request id, kept for a retry after a refusal. The controls stay busy
+	 * until the session has been read again after it, so a second click cannot send it twice. */
+	async #act(call: (requestId: string) => Promise<void>, sent?: () => void): Promise<void> {
 		this.#requestId ??= crypto.randomUUID();
 		this.#busy = true;
 		this.#error = undefined;
 		this.#stickToBottom = true;
 		this.#render();
 		try {
-			await this.#options.api.answer(this.#session.workerId, value, this.#requestId);
+			await call(this.#requestId);
 			this.#requestId = undefined;
-			if (typed) {
-				this.#field.value = "";
-				this.#autosize();
-			}
+			sent?.();
 		} catch (error) {
 			this.#error = describeError(error);
-		} finally {
-			this.#busy = false;
 		}
-		this.#render();
+		// A read already on its way may predate the answer; the one after it does not.
+		await this.#refreshing;
 		await this.refresh();
-	}
-
-	async #delegate(): Promise<void> {
-		if (this.#busy || this.disposed) return;
-		this.#requestId ??= crypto.randomUUID();
-		this.#busy = true;
-		this.#error = undefined;
+		this.#busy = false;
 		this.#render();
-		try {
-			await this.#options.api.delegate(this.#session.workerId, this.#requestId);
-			this.#requestId = undefined;
-		} catch (error) {
-			this.#error = describeError(error);
-		} finally {
-			this.#busy = false;
-		}
-		this.#render();
-		await this.refresh();
 	}
 
 	#render(): void {
@@ -528,16 +530,40 @@ export class CodingSessionElement {
 		const events = this.#events.filter((event) => event.kind !== "phase");
 		const folded = !this.#showAll && events.length > RECENT_EVENTS ? events.length - RECENT_EVENTS : 0;
 		const shown = folded ? events.slice(folded) : events;
-		// The card stands where the pull request was last published; earlier publishes are a line.
+		// The card stands where the pull request was last published; earlier publishes are a line. A publish folded
+		// away (or never read) leaves the card at the top of what is shown.
 		const cardAt = session.pullRequest ? lastOf(events, "published")?.id : undefined;
-		let cardPlaced = false;
-		// The harness's closing summary often repeats what it just said; it is said once.
+		const cardFirst = Boolean(session.pullRequest) && !shown.some((event) => event.id === cardAt);
+		// The harness's closing summary often repeats what it just said in the same turn; it is said once.
 		let lastSaid = "";
 		const nodes: HTMLElement[] = [];
 		let turn: { side: CodingSide; author: string; body: HTMLElement } | undefined;
 		let steps: HTMLElement | undefined;
 		let previous: Date | undefined;
+		/** The current event's time, until it draws something: a skipped event leaves no day or time break. */
+		let pending: Date | undefined;
+		const drawn = () => {
+			if (!pending) return;
+			if (needsConversationTimestamp(pending, previous)) {
+				nodes.push(
+					h(
+						"time",
+						{
+							class: "conversation-timestamp",
+							datetime: pending.toISOString(),
+							title: conversationTimestampTitle(pending),
+						},
+						conversationTimestampLabel(pending),
+					),
+				);
+				turn = undefined;
+				steps = undefined;
+			}
+			previous = pending;
+			pending = undefined;
+		};
 		const open = (side: CodingSide, author: string, figure = false): HTMLElement => {
+			drawn();
 			if (turn && turn.side === side && turn.author === author) return turn.body;
 			const body = h(
 				"div",
@@ -577,25 +603,14 @@ export class CodingSessionElement {
 			steps = undefined;
 		};
 		const note = (node: HTMLElement) => {
+			drawn();
 			nodes.push(node);
 			turn = undefined;
 			steps = undefined;
 		};
+		if (cardFirst) say("harness", harness, false, this.#renderPullRequest(names));
 		for (const event of shown) {
-			const date = parseConversationTimestamp(event.at);
-			if (date && needsConversationTimestamp(date, previous))
-				note(
-					h(
-						"time",
-						{
-							class: "conversation-timestamp",
-							datetime: date.toISOString(),
-							title: conversationTimestampTitle(date),
-						},
-						conversationTimestampLabel(date),
-					),
-				);
-			if (date) previous = date;
+			pending = parseConversationTimestamp(event.at);
 			const when = fmtTime(event.at);
 			switch (event.kind) {
 				case "step": {
@@ -655,12 +670,14 @@ export class CodingSessionElement {
 				case "input": {
 					const value = text(event.body, "text") ?? "";
 					const bubble = h("div", { class: "bubble", title: when }, h("div", { class: "text" }, value));
+					lastSaid = "";
 					if (event.actor === "agent") say("steer", names.agent, true, bubble);
 					else if (names.ownerIsViewer) say("mine", t("You"), false, bubble);
 					else say("steer", names.owner, false, bubble);
 					break;
 				}
 				case "delegated":
+					lastSaid = "";
 					note(
 						h(
 							"div",
@@ -673,7 +690,6 @@ export class CodingSessionElement {
 					break;
 				case "published": {
 					if (event.id === cardAt) {
-						cardPlaced = true;
 						say("harness", harness, false, this.#renderPullRequest(names));
 						break;
 					}
@@ -730,8 +746,6 @@ export class CodingSessionElement {
 					break;
 			}
 		}
-		// A pull request whose publish is not in the stream (folded, or read before it) still has its card.
-		if (session.pullRequest && !cardPlaced) say("harness", harness, false, this.#renderPullRequest(names));
 		const quiet = !nodes.length && !this.#readError;
 		replace(
 			this.#body,
@@ -744,9 +758,12 @@ export class CodingSessionElement {
 								? t("{count} earlier step", { count: folded })
 								: t("{count} earlier steps", { count: folded }),
 							() => {
+								// Reading older steps: the view stays where it is, unless it all fits and so is at the bottom.
 								this.#showAll = true;
 								this.#stickToBottom = false;
 								this.#render();
+								const { scrollTop, scrollHeight, clientHeight } = this.#log;
+								this.#stickToBottom = scrollHeight - scrollTop - clientHeight < STICK_DISTANCE * uiScale();
 							},
 							{ small: true },
 						),
@@ -901,6 +918,10 @@ export class CodingSessionElement {
 		if (key === this.#footerKey) return;
 		this.#footerKey = key;
 		this.#status.className = `coding-status coding-tone-${status.tone}`;
+		if (this.#announcedPhase !== session.phase) {
+			this.#announcedPhase = session.phase;
+			this.#announce.textContent = status.text;
+		}
 		replace(
 			this.#status,
 			h("span", { class: `coding-dot coding-dot-${status.tone}`, "aria-hidden": "true" }),
@@ -916,7 +937,7 @@ export class CodingSessionElement {
 							button(choice, () => void this.#send(choice), {
 								small: true,
 								primary: index === 0,
-								disabled: this.#busy,
+								disabled: this.#busy || !takesInput,
 							}),
 						),
 						button(t("Let {name} decide", { name: names.agent }), () => void this.#delegate(), {
@@ -958,9 +979,10 @@ export class CodingSessionElement {
 					: t("{harness} is working", { harness });
 		this.#field.placeholder = placeholder;
 		this.#field.setAttribute("aria-label", asking ? t("Answer the session") : t("Follow up on the session"));
-		// Disabled until the session takes input; read-only while an answer is on its way, so the caret stays.
-		this.#field.disabled = !takesInput;
-		this.#field.readOnly = this.#busy;
+		// Read-only, never disabled, until the session takes input and while an answer is on its way: a disabled
+		// field would drop the caret, and with it the thread's Escape.
+		this.#field.readOnly = !takesInput || this.#busy;
+		this.#field.setAttribute("aria-disabled", String(!takesInput));
 		const label = asking ? t("Answer") : t("Send");
 		this.#sendButton.setAttribute("aria-label", label);
 		this.#sendButton.title = label;
@@ -968,7 +990,7 @@ export class CodingSessionElement {
 	}
 
 	#syncSend(): void {
-		this.#sendButton.disabled = this.#field.disabled || this.#busy || !this.#field.value.trim();
+		this.#sendButton.disabled = !codingSessionTakesInput(this.#session) || this.#busy || !this.#field.value.trim();
 	}
 
 	/** One line tall until the draft wraps, then the shell opens up to the stylesheet's tallest draft (its

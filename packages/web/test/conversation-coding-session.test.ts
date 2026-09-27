@@ -451,7 +451,12 @@ describe("coding sessions in the thread", () => {
 		f.view.el.querySelector<HTMLButtonElement>(".coding-line .peer-chip")!.click();
 		await settle();
 		const field = f.view.el.querySelector<HTMLTextAreaElement>(".coding-thread .coding-field-input")!;
+		// The session asks, so the caret lands in its composer when it opens.
+		expect(document.activeElement).toBe(field);
+		// Escape keeps a draft being written in the composer.
 		field.value = "Keep it.";
+		field.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+		expect(f.view.el.querySelector(".coding-thread")).not.toBeNull();
 		field.dispatchEvent(new Event("input", { bubbles: true }));
 		field.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
 		await settle();

@@ -3,7 +3,7 @@
  * with its own header ("Bo ⇄ Claude Code", the session's title under it) and the
  * session as a conversation under it, its composer pinned to the bottom. The owner
  * types into the session here; everyone else reads it behind a lock line. The back
- * arrow and Escape return to the conversation. */
+ * arrow and Escape return to the conversation (Escape not while a draft is in the composer). */
 import type { CodingSession } from "../cloud/coding-session.ts";
 import type { HostedStaffAgent } from "../cloud/types.ts";
 import { agentFigure } from "./avatar.ts";
@@ -101,6 +101,8 @@ export class CodingSessionThreadView {
 				"aria-label": `${names.agent} ⇄ ${harness} · ${session.title}`,
 				onkeydown: (event: KeyboardEvent) => {
 					if (!matchesKey(event, "dismiss")) return;
+					// Escape in the composer keeps a draft being written; the back arrow still leaves.
+					if (event.target instanceof HTMLTextAreaElement && event.target.value.trim()) return;
 					event.preventDefault();
 					event.stopPropagation();
 					this.close();

@@ -301,10 +301,17 @@ describe("the element in the thread", () => {
 		]);
 		// The session is working: the owner's field, under the transcript, waits and says so.
 		const field = element.el.querySelector<HTMLTextAreaElement>(".coding-footer .coding-field-input")!;
-		expect(field.disabled).toBe(true);
+		// Read-only, never disabled: a disabled field would drop the caret and the thread's Escape with it.
+		expect(field.disabled).toBe(false);
+		expect(field.readOnly).toBe(true);
+		expect(field.getAttribute("aria-disabled")).toBe("true");
 		expect(field.placeholder).toBe("Claude Code is working");
 		expect(element.el.querySelector(".coding-hint")).toBeNull();
 		expect(element.el.querySelector(".coding-footer .coding-status")?.textContent).toContain("Working · 4 min");
+		// The visible line changes with every step; only a phase change is read out.
+		expect(element.el.querySelector(".coding-status")?.hasAttribute("role")).toBe(false);
+		const announced = element.el.querySelector<HTMLElement>(".coding-footer .visually-hidden[role=status]")!;
+		expect(announced.textContent).toContain("Working · 4 min");
 		// No fold in the session's own thread: it is always open.
 		expect(element.el.querySelector(".coding-chip, .coding-link")).toBeNull();
 	});
@@ -346,7 +353,8 @@ describe("the element in the thread", () => {
 		await settle();
 		expect(delegate).toHaveBeenCalledWith(WORKER, expect.stringMatching(uuid));
 		const field = element.el.querySelector<HTMLTextAreaElement>(".coding-field-input")!;
-		expect(field.disabled).toBe(false);
+		expect(field.getAttribute("aria-disabled")).toBe("false");
+		expect(field.readOnly).toBe(false);
 		expect(field.placeholder).toBe("Or answer in your own words");
 		field.value = "Keep it, and add a comment why.";
 		field.dispatchEvent(new Event("input", { bubbles: true }));
@@ -444,11 +452,94 @@ describe("the element in the thread", () => {
 		button(element.el, "Ask Mark to review").click();
 		expect(ask).toHaveBeenCalledWith(expect.stringContaining("draft PR #204"));
 		const field = element.el.querySelector<HTMLTextAreaElement>(".coding-field-input")!;
-		expect(field.disabled).toBe(false);
+		expect(field.getAttribute("aria-disabled")).toBe("false");
 		expect(field.placeholder).toBe("Follow up on this session");
 		expect([...element.el.querySelectorAll(".coding-body .coding-row")].map((row) => row.textContent)).toEqual([
 			"Draft PR opened.",
 		]);
+	});
+
+	it("keeps the caret in the composer after a follow-up, and sends once until the session is read again", async () => {
+		const { element, answer, read, state } = mount(
+			codingSession({ phase: "completed", workerState: "succeeded", finishedAt: "2026-09-22T10:03:00Z" }),
+		);
+		await settle();
+		const field = element.el.querySelector<HTMLTextAreaElement>(".coding-field-input")!;
+		field.focus();
+		field.value = "Also cover the retry.";
+		field.dispatchEvent(new Event("input", { bubbles: true }));
+		// The read after the answer is slow: until it lands, the controls stay busy.
+		let land: (() => void) | undefined;
+		read.mockImplementationOnce(async () => {
+			await new Promise<void>((resolve) => {
+				land = resolve;
+			});
+			return { session: state.session, isOwner: true, events: [] };
+		});
+		state.session = codingSession({ phase: "running", sequence: 2, updatedAt: "2026-09-22T10:05:00Z" });
+		field.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+		await settle();
+		expect(answer).toHaveBeenCalledTimes(1);
+		expect(field.value).toBe("");
+		field.value = "Again";
+		field.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+		await settle();
+		expect(answer).toHaveBeenCalledTimes(1);
+		land?.();
+		await settle();
+		// Working again: the field turns read-only in place and keeps the caret.
+		expect(element.session.phase).toBe("running");
+		expect(field.readOnly).toBe(true);
+		expect(document.activeElement).toBe(field);
+	});
+
+	it("draws a time break only over a step that shows, and dedupes a summary within its turn", async () => {
+		const later = "2026-09-22T10:20:00Z";
+		const { element } = mount(codingSession({ phase: "completed", workerState: "succeeded" }), {
+			events: [
+				{ ...event(1, "text", { text: "Done: the send waits no more." }), at: "2026-09-22T10:00:00Z" },
+				// The same words as the harness's last message, ten minutes on: no bare time break for it.
+				{ ...event(2, "finished", { summary: "Done: the send waits no more." }, "executor"), at: later },
+			],
+		});
+		await settle();
+		expect(element.el.querySelectorAll(".coding-body time")).toHaveLength(1);
+		expect(element.el.querySelector(".coding-row-done")).toBeNull();
+		// After the owner's follow-up the same words are the new turn's own summary, and show.
+		const again = mount(codingSession({ phase: "completed", workerState: "succeeded" }), {
+			events: [
+				event(1, "text", { text: "Done." }),
+				event(2, "input", { text: "And the retry?" }, "member"),
+				event(3, "finished", { summary: "Done." }, "executor"),
+			],
+		});
+		await settle();
+		expect([...again.element.el.querySelectorAll(".coding-body .coding-turn")].map((turn) => turn.className)).toEqual(
+			["coding-turn coding-turn-harness", "coding-turn coding-turn-mine mine", "coding-turn coding-turn-harness"],
+		);
+		expect(again.element.el.querySelector(".coding-row-done")?.textContent).toBe("Done.");
+	});
+
+	it("keeps the pull request's card at the top of what is shown when its publish is folded away", async () => {
+		const url = "https://github.com/Qorpera/Qorpera_Base/pull/204";
+		const { element } = mount(
+			codingSession({
+				phase: "running",
+				sequence: 2,
+				pullRequest: { url, number: 204 },
+			}),
+			{
+				events: [
+					event(1, "published", { url, number: 204 }, "executor"),
+					...Array.from({ length: 12 }, (_, index) => event(index + 2, "step", { text: `Step ${index + 1}` })),
+				],
+			},
+		);
+		await settle();
+		const body = element.el.querySelector(".coding-body")!;
+		expect(body.children[0]?.classList.contains("coding-row-fold")).toBe(true);
+		expect(body.children[1]?.querySelector(".coding-pr")).not.toBeNull();
+		expect(body.querySelectorAll(".coding-pr")).toHaveLength(1);
 	});
 
 	it("folds older steps into one line and opens them on request", async () => {
