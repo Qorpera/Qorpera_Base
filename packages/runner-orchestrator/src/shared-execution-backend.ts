@@ -53,6 +53,7 @@ const ACCOUNT_PREFIX_PATTERN = /^[a-z][a-z0-9-]{0,24}$/;
 const TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 const RESERVING_RETIREMENT_MS = 10 * 60_000;
 const MAX_JOURNAL_BYTES = 64 * 1024;
+const WARM_SCHEMA = "qorpera.shared-execution-warm-slot/v1";
 /** After this many failed retirements a sandbox is recorded as lost and its
  * slot is handed back; the reason stays in the archived journal. */
 const MAX_RETIRE_ATTEMPTS = 12;
@@ -107,6 +108,56 @@ export interface SharedExecutionProviderConfig {
 	claudePath: string;
 	nativeCompanyRuntime: LxdNativeCompanyRuntimeConfig;
 	startTimeoutMs?: number;
+	/**
+	 * Warm conversations (contract amendment 2026-09-27): after an attended run, its
+	 * native host stays up this long for the next run of the same conversation, and the
+	 * host keeps the run's opened capsule for as long. Absent: every run retires its slot.
+	 */
+	warmIdleMs?: number;
+}
+
+/** A slot whose native host outlived its run, waiting for the same conversation's next run. */
+interface SharedExecutionWarmSlot {
+	schema: typeof WARM_SCHEMA;
+	slot: number;
+	/** warmConversationKey of the run that parked it. */
+	key: string;
+	computeIdentityId: string;
+	/** The conversation and agent: a later run of both with another key ends this warm slot. */
+	sessionId: string;
+	staffAgentId: string;
+	/** The identity the running host was started with: a later run must find it unchanged. */
+	epoch: number;
+	masterKeySha256: string;
+	nativeBridgeSha256: string;
+	warmUntil: string;
+}
+
+/**
+ * The runs one warm native host may serve in turn: the same member login, company,
+ * agent version, conversation, sponsor connection, model and compute template.
+ */
+function warmConversationKey(work: CloudRunnerWork): string | undefined {
+	if (!work.sessionId || (work.sourceKind !== "session_turn" && work.sourceKind !== "room_delivery")) return undefined;
+	return sha256(
+		JSON.stringify([
+			work.computeIdentityId ?? null,
+			work.profileId,
+			work.environmentId,
+			work.staffAgentId,
+			work.staffVersion,
+			work.sessionId,
+			work.sponsor.bindingId,
+			work.sponsor.version,
+			work.sponsor.providerConnectionId,
+			work.sponsor.providerConnectionVersion,
+			work.modelPolicy.model,
+			work.computeTemplateKey ?? null,
+			work.computeTemplateVersion ?? null,
+			work.computePolicySha256 ?? null,
+			work.jobType,
+		]),
+	);
 }
 
 export interface SharedExecutionUnitControl {
@@ -163,6 +214,14 @@ export interface SharedExecutionJournal {
 	retireAttempts?: number;
 	assignmentId?: string;
 	stopReason?: string;
+	/** Warm conversations: this run may park its host for the next run of the conversation. */
+	warmKey?: string;
+	warmSessionId?: string;
+	warmStaffAgentId?: string;
+	/** The identity the slot's native host runs with (set when the host was started or reused). */
+	hostIdentity?: { epoch: number; masterKeySha256: string };
+	/** This run took a warm slot: its native host was already running. */
+	reusedHost?: boolean;
 	createdAt: string;
 	updatedAt: string;
 }
@@ -301,6 +360,11 @@ function validateConfig(config: SharedExecutionProviderConfig): void {
 		(!Number.isSafeInteger(config.startTimeoutMs) || config.startTimeoutMs < 1000 || config.startTimeoutMs > 600_000)
 	)
 		throw new Error("Start timeout is outside the supported range");
+	if (
+		config.warmIdleMs !== undefined &&
+		(!Number.isSafeInteger(config.warmIdleMs) || config.warmIdleMs < 1 || config.warmIdleMs > 5 * 60_000)
+	)
+		throw new Error("Warm window is outside the supported range");
 }
 
 /** Work this host can run. Malformed work is an error; well-formed work this
@@ -390,6 +454,8 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 	readonly #accounts = new Map<string, SharedExecutionAccount>();
 	/** When each run attempt first found its identity volume missing (this process's view). */
 	readonly #identityWaits = new Map<string, number>();
+	/** Set after the first reconcile has swept untracked slots of this service process. */
+	#swept = false;
 	/** Acquisitions whose retirement is in flight; a second retire of the same one is a no-op. */
 	readonly #retiring = new Set<string>();
 	#serial: Promise<void> = Promise.resolve();
@@ -437,6 +503,12 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 				if (signal?.aborted) throw error;
 				failures.push(error);
 			}
+		}
+		try {
+			await this.#expireWarmSlots(signal);
+		} catch (error) {
+			if (signal?.aborted) throw error;
+			failures.push(error);
 		}
 		try {
 			await this.#releaseOwed(signal);
@@ -511,10 +583,17 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 				);
 			}
 			this.#identityWaits.delete(acquisitionId);
-			const slot = await this.#freeSlot();
+			const warmKey = this.#config.warmIdleMs === undefined ? undefined : warmConversationKey(work);
+			const warm = warmKey ? await this.#claimWarmSlot(warmKey, work, signal) : undefined;
+			const slot = warm?.slot ?? (await this.#freeSlot()) ?? (await this.#evictWarmSlot(signal));
 			if (slot === undefined)
 				throw new ProviderAdmissionRefused("deferred", REFUSAL_CAPACITY, "Every sandbox slot is busy");
-			const credentials = await this.#slotCredentials(slot, true);
+			// A warm slot keeps the native bridge its running host was started with.
+			const credentials = await this.#slotCredentials(slot, true, warm !== undefined);
+			if (warm && sha256(credentials.nativeBridgeToken) !== warm.nativeBridgeSha256) {
+				await this.#evict(warm.slot, signal);
+				throw new Error("Warm slot bridge credential differs from its record");
+			}
 			// A retry of an attempt whose sandbox already retired finds its runner
 			// row bound to the old activation: the control plane keeps a pending
 			// runner's activation and refuses a second token for an active one.
@@ -568,6 +647,12 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 				),
 				runner,
 				physicalState: "reserving",
+				...(warmKey && work.sessionId
+					? { warmKey, warmSessionId: work.sessionId, warmStaffAgentId: work.staffAgentId }
+					: {}),
+				...(warm
+					? { reusedHost: true, hostIdentity: { epoch: warm.epoch, masterKeySha256: warm.masterKeySha256 } }
+					: {}),
 				credentials: {
 					activationSha256: sha256(credentials.activationToken),
 					assignmentSha256: sha256(credentials.assignmentToken),
@@ -577,6 +662,9 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 				updatedAt: now,
 			};
 			await this.#writeJournal(created);
+			// The warm record goes only once this run's journal holds the slot: a failure
+			// before (the provision call, a crash) leaves the slot parked, not untracked.
+			if (warm) await rm(this.#warmPath(warm.slot), { force: true });
 			return created;
 		});
 		return this.#ensureReady(journal, work, signal);
@@ -653,12 +741,24 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 				await this.#reserveMachine(current, timeout);
 				current = await this.#exclusive(async () => {
 					const reserved = (await this.#readJournal(current.acquisitionId)) ?? current;
-					await this.#writeMaterial(reserved, work, timeout);
-					const next = { ...reserved, physicalState: "starting" as const };
+					// A new sandbox never inherits a host it did not start (one orphaned by a crash
+					// between claiming a warm slot and journaling the run).
+					if (!reserved.reusedHost && (await this.#units.active(this.#unit("host", reserved.slot), timeout)))
+						await this.#units.kill(this.#unit("host", reserved.slot), timeout);
+					const hostIdentity = await this.#writeMaterial(reserved, work, timeout);
+					const next = {
+						...reserved,
+						...(hostIdentity ? { hostIdentity } : {}),
+						physicalState: "starting" as const,
+					};
 					await this.#writeJournal(next);
 					return next;
 				});
 			}
+			// A warm slot's host is already running; if it stopped meanwhile, the run fails
+			// its start and its retry starts a fresh sandbox.
+			if (current.reusedHost && !(await this.#units.active(this.#unit("host", current.slot), timeout)))
+				throw new Error("The warm slot's native host is no longer running");
 			// A replay after a restart may find either unit not yet started. The runner
 			// unit is ordered after the host unit's start (After=, BindsTo=), not after its
 			// health: it boots and activates while the host loads. The assignment is
@@ -790,7 +890,12 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 	 * while one is in flight is a no-op. After MAX_RETIRE_ATTEMPTS failures the
 	 * sandbox is recorded as lost: the slot returns to service and the archived
 	 * journal keeps the reason. */
-	async #retire(acquisitionId: string, reason: string, signal?: AbortSignal): Promise<void> {
+	async #retire(
+		acquisitionId: string,
+		reason: string,
+		signal?: AbortSignal,
+		options: { park?: boolean } = {},
+	): Promise<void> {
 		if (this.#retiring.has(acquisitionId)) return;
 		this.#retiring.add(acquisitionId);
 		try {
@@ -802,10 +907,14 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 				return next;
 			});
 			if (!marked) return;
+			// Parking keeps the host for the conversation's next run: only the runner stops.
+			const park = options.park === true;
 			await this.#units.stop(this.#unit("runner", marked.slot), signal).catch(() => undefined);
-			await this.#units.stop(this.#unit("host", marked.slot), signal).catch(() => undefined);
+			if (!park) await this.#units.stop(this.#unit("host", marked.slot), signal).catch(() => undefined);
 			signal?.throwIfAborted();
-			const slotUnits = [this.#unit("runner", marked.slot), this.#unit("host", marked.slot)];
+			const slotUnits = park
+				? [this.#unit("runner", marked.slot)]
+				: [this.#unit("runner", marked.slot), this.#unit("host", marked.slot)];
 			let stillActive = await this.#units.activeSet(slotUnits, signal);
 			if (stillActive.size > 0) {
 				// A stop the unit ignored is answered with SIGKILL before the slot
@@ -824,7 +933,8 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 					await this.#writeJournal({ ...current, retireAttempts: (current.retireAttempts ?? 0) + 1 });
 					throw new Error("Sandbox units are still running; the slot stays quarantined");
 				}
-				await this.#wipeSlot(current.slot);
+				if (park) await this.#wipeRunner(current.slot);
+				else await this.#wipeSlot(current.slot);
 				try {
 					await this.#releaseMachine(current, signal);
 				} catch (error) {
@@ -842,6 +952,27 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 						stopReason: `${current.stopReason ?? reason}: ${error instanceof Error ? error.message : String(error)}`,
 					});
 					return;
+				}
+				if (
+					park &&
+					current.warmKey &&
+					current.warmSessionId &&
+					current.warmStaffAgentId &&
+					current.hostIdentity &&
+					this.#config.warmIdleMs !== undefined
+				) {
+					await this.#writeWarm({
+						schema: WARM_SCHEMA,
+						slot: current.slot,
+						key: current.warmKey,
+						computeIdentityId: current.computeIdentityId,
+						sessionId: current.warmSessionId,
+						staffAgentId: current.warmStaffAgentId,
+						epoch: current.hostIdentity.epoch,
+						masterKeySha256: current.hostIdentity.masterKeySha256,
+						nativeBridgeSha256: current.credentials.nativeBridgeSha256,
+						warmUntil: new Date(this.#now() + this.#config.warmIdleMs).toISOString(),
+					});
 				}
 				await this.#archive({ ...current, physicalState: "stopped", capacityReleased: true });
 			});
@@ -870,10 +1001,17 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 			}
 			case "registered":
 			case "assigned": {
-				// One sandbox serves exactly one run: when its runner unit has
-				// exited (success or failure), the run is over and the slot is free.
+				// One runner serves exactly one run: when its runner unit has exited
+				// (success or failure), the run is over. Its host either parks for the
+				// conversation's next run or retires with it.
 				if (!active.has(this.#unit("runner", current.slot)))
-					await this.#retire(current.acquisitionId, "idle", signal);
+					await this.#retire(current.acquisitionId, "idle", signal, {
+						park:
+							this.#config.warmIdleMs !== undefined &&
+							current.warmKey !== undefined &&
+							current.hostIdentity !== undefined &&
+							active.has(this.#unit("host", current.slot)),
+					});
 				return;
 			}
 		}
@@ -882,6 +1020,7 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 	async #freeSlot(): Promise<number | undefined> {
 		const busy = new Set<number>();
 		for (const journal of await this.#journals()) if (!terminal(journal.physicalState)) busy.add(journal.slot);
+		for (const warm of await this.#warmSlots()) busy.add(warm.slot);
 		for (let slot = 0; slot < this.#config.slotCount; slot++) if (!busy.has(slot)) return slot;
 		return undefined;
 	}
@@ -930,13 +1069,13 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 
 	/** Slot credentials live on the tmpfs run root for the sandbox's lifetime.
 	 * A fresh sandbox mints new ones; a replay reuses the journaled ones. */
-	async #slotCredentials(slot: number, fresh: boolean): Promise<SlotCredentials> {
+	async #slotCredentials(slot: number, fresh: boolean, keepNativeBridge = false): Promise<SlotCredentials> {
 		const directory = join(this.#slotRun(slot), "credentials");
 		await mkdir(directory, { recursive: true, mode: 0o700 });
 		await chmod(directory, 0o700);
 		const read = async (name: string): Promise<string> => {
 			const path = join(directory, name);
-			if (fresh) {
+			if (fresh && !(keepNativeBridge && name === "qorpera-native-bridge")) {
 				const value = token();
 				await rm(path, { force: true });
 				await writePrivateFile(path, `${value}\n`);
@@ -955,8 +1094,14 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 
 	/** Everything PID 1 hands to the two units: credentials (LoadCredential=)
 	 * and the native host environment (EnvironmentFile=), plus the runner
-	 * configuration written into the runner account's own state directory. */
-	async #writeMaterial(current: SharedExecutionJournal, work: CloudRunnerWork, signal: AbortSignal): Promise<void> {
+	 * configuration written into the runner account's own state directory.
+	 * Returns the identity the native host starts with; a reused host keeps its
+	 * own and gets only the runner's part. */
+	async #writeMaterial(
+		current: SharedExecutionJournal,
+		work: CloudRunnerWork,
+		signal: AbortSignal,
+	): Promise<{ epoch: number; masterKeySha256: string } | undefined> {
 		const runtime = this.#config.nativeCompanyRuntime;
 		const credentials = await this.#slotCredentials(current.slot, false);
 		if (
@@ -979,16 +1124,22 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 			)
 		)
 			throw new Error("Governed native runtime credentials must be independent");
-		const identity = await readSharedExecutionIdentity({
-			identityRoot: this.#config.identityRoot,
-			computeIdentityId: current.computeIdentityId,
-			authority: this.#identityAuthority,
-			signal,
-			...(this.#requireIdentityMount === undefined ? {} : { requireMount: this.#requireIdentityMount }),
-			mountInfoPath: this.#mountInfoPath,
-			...(this.#identityOwnerUid === undefined ? {} : { expectedUid: this.#identityOwnerUid }),
-		});
-		if (identity.masterKey === credentials.nativeBridgeToken || identity.masterKey === credentials.activationToken)
+		// A reused host was verified when its warm slot was claimed and keeps its credentials.
+		const identity = current.reusedHost
+			? undefined
+			: await readSharedExecutionIdentity({
+					identityRoot: this.#config.identityRoot,
+					computeIdentityId: current.computeIdentityId,
+					authority: this.#identityAuthority,
+					signal,
+					...(this.#requireIdentityMount === undefined ? {} : { requireMount: this.#requireIdentityMount }),
+					mountInfoPath: this.#mountInfoPath,
+					...(this.#identityOwnerUid === undefined ? {} : { expectedUid: this.#identityOwnerUid }),
+				});
+		if (
+			identity &&
+			(identity.masterKey === credentials.nativeBridgeToken || identity.masterKey === credentials.activationToken)
+		)
 			throw new Error("Native identity key must be independent of slot credentials");
 		const hostAccount = await this.#slotAccount("host", current.slot);
 		const runnerAccount = await this.#slotAccount("runner", current.slot);
@@ -1006,7 +1157,8 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 			await chmod(path, 0o700);
 			await chown(path, account.uid, account.gid);
 		}
-		await emptyDirectory(hostState);
+		// A reused host's scratch holds its kept capsule root; only a new host starts empty.
+		if (!current.reusedHost) await emptyDirectory(hostState);
 		await emptyDirectory(join(runnerState, "state"));
 		await emptyDirectory(join(runnerState, "workspace"));
 		const runnerConfig = JSON.stringify(
@@ -1048,10 +1200,19 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 			`QORPERA_NATIVE_CODEX_FENCE_SHA256=${runtime.binarySha256}`,
 			`QORPERA_NATIVE_OBJECT_GATEWAY_URL=${runtime.objectGatewayUrl}`,
 			`QORPERA_CLOUD_SECRET_BROKER_URL=${runtime.secretBroker.origin}`,
+			...(current.warmKey && this.#config.warmIdleMs !== undefined
+				? [`QORPERA_NATIVE_WARM_IDLE_MS=${this.#config.warmIdleMs}`]
+				: []),
 			...(office ? [`QORPERA_COMPANY_COMPUTER_URL=${office.url}`] : []),
 			...(coding ? [`QORPERA_CODING_COMMAND_URL=${coding.origin}`] : []),
 			"",
 		].join("\n");
+		// The runner reads its configuration from a file it owns, as the one-run
+		// guest bootstrap installs it under the runner account.
+		const runnerConfigPath = join(runnerState, "config.json");
+		await rm(runnerConfigPath, { force: true });
+		await writePrivateFile(runnerConfigPath, `${runnerConfig}\n`, runnerAccount);
+		if (!identity) return undefined;
 		const slotRun = this.#slotRun(current.slot);
 		const credentialDirectory = join(slotRun, "credentials");
 		const files: Array<[string, string]> = [
@@ -1070,16 +1231,18 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 			await rm(path, { force: true });
 			await writePrivateFile(path, content);
 		}
-		// The runner reads its configuration from a file it owns, as the one-run
-		// guest bootstrap installs it under the runner account.
-		const runnerConfigPath = join(runnerState, "config.json");
-		await rm(runnerConfigPath, { force: true });
-		await writePrivateFile(runnerConfigPath, `${runnerConfig}\n`, runnerAccount);
+		return { epoch: identity.epoch, masterKeySha256: sha256(identity.masterKey) };
 	}
 
 	async #wipeSlot(slot: number): Promise<void> {
+		await rm(this.#warmPath(slot), { force: true });
 		await rm(this.#slotRun(slot), { recursive: true, force: true });
 		await emptyDirectory(join(this.#slotState(slot), "host"));
+		await this.#wipeRunner(slot);
+	}
+
+	/** The runner's part of a slot; a parked host keeps its own scratch and credentials. */
+	async #wipeRunner(slot: number): Promise<void> {
 		await emptyDirectory(join(this.#slotState(slot), "runner", "state"));
 		await emptyDirectory(join(this.#slotState(slot), "runner", "workspace"));
 		// Podman keeps container storage and caches under the runner home; a
@@ -1087,6 +1250,154 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 		// next tenant of the same account can read.
 		await rm(join(this.#slotState(slot), "runner", ".local"), { recursive: true, force: true });
 		await rm(join(this.#slotState(slot), "runner", ".cache"), { recursive: true, force: true });
+		for (const name of ["qorpera-runner-activation", "qorpera-runner-assignment"])
+			await rm(join(this.#slotRun(slot), "credentials", name), { force: true });
+	}
+
+	#warmPath(slot: number): string {
+		return join(this.#config.stateRoot, "warm", `${slot}.json`);
+	}
+
+	async #warmSlots(): Promise<SharedExecutionWarmSlot[]> {
+		const directory = join(this.#config.stateRoot, "warm");
+		let entries: string[];
+		try {
+			entries = await readdir(directory);
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+			throw error;
+		}
+		const slots: SharedExecutionWarmSlot[] = [];
+		for (const entry of entries.sort()) {
+			if (!/^[0-9]{1,2}\.json$/.test(entry)) continue;
+			const warm = JSON.parse(await readFile(join(directory, entry), "utf-8")) as SharedExecutionWarmSlot;
+			if (warm.schema !== WARM_SCHEMA || `${warm.slot}.json` !== entry || warm.slot >= this.#config.slotCount)
+				throw new Error("Shared execution warm slot record is invalid");
+			slots.push(warm);
+		}
+		return slots;
+	}
+
+	async #writeWarm(warm: SharedExecutionWarmSlot): Promise<void> {
+		const directory = join(this.#config.stateRoot, "warm");
+		await mkdir(directory, { recursive: true, mode: 0o700 });
+		await chmod(directory, 0o700);
+		const path = this.#warmPath(warm.slot);
+		const temporary = `${path}.${process.pid}.tmp`;
+		await writeFile(temporary, `${JSON.stringify(warm, null, 2)}\n`, { encoding: "utf-8", mode: 0o600, flag: "w" });
+		await rename(temporary, path);
+	}
+
+	/** Stops a warm slot's host and wipes the slot. Callers hold the lock or own the slot. */
+	async #evict(slot: number, signal?: AbortSignal): Promise<void> {
+		const host = this.#unit("host", slot);
+		if (await this.#units.active(host, signal)) await this.#units.kill(host, signal);
+		if (await this.#units.active(host, signal)) throw new Error("A warm slot's native host did not stop");
+		await this.#wipeSlot(slot);
+	}
+
+	/** Warm records on slots no live journal holds (a crash can leave both on one slot). */
+	async #parkedSlots(): Promise<SharedExecutionWarmSlot[]> {
+		const held = new Set(
+			(await this.#journals()).filter((journal) => !terminal(journal.physicalState)).map((journal) => journal.slot),
+		);
+		return (await this.#warmSlots()).filter((warm) => !held.has(warm.slot));
+	}
+
+	/**
+	 * Called under the lock by acquire: the warm slot of this conversation, if its host still
+	 * runs with the identity the control plane holds now (same recovery epoch and key). Any
+	 * other state ends the warm slot, and the run starts a fresh sandbox. A warm slot of the
+	 * same conversation, agent and login with another key (new agent version, model or
+	 * sponsor) ends too; another agent's warm slot in the same room is left alone. The record
+	 * stays until the run's journal holds the slot.
+	 */
+	async #claimWarmSlot(
+		key: string,
+		work: CloudRunnerWork & { computeIdentityId: string },
+		signal: AbortSignal,
+	): Promise<SharedExecutionWarmSlot | undefined> {
+		const parked = await this.#parkedSlots();
+		for (const stale of parked)
+			if (
+				stale.key !== key &&
+				stale.sessionId === work.sessionId &&
+				stale.staffAgentId === work.staffAgentId &&
+				stale.computeIdentityId === work.computeIdentityId
+			)
+				await this.#evict(stale.slot, signal);
+		const warm = parked.find((candidate) => candidate.key === key);
+		if (!warm) return undefined;
+		try {
+			if (
+				warm.computeIdentityId !== work.computeIdentityId ||
+				Date.parse(warm.warmUntil) <= this.#now() ||
+				!(await this.#units.active(this.#unit("host", warm.slot), signal))
+			)
+				throw new Error("Warm slot expired");
+			const identity = await readSharedExecutionIdentity({
+				identityRoot: this.#config.identityRoot,
+				computeIdentityId: work.computeIdentityId,
+				authority: this.#identityAuthority,
+				signal,
+				...(this.#requireIdentityMount === undefined ? {} : { requireMount: this.#requireIdentityMount }),
+				mountInfoPath: this.#mountInfoPath,
+				...(this.#identityOwnerUid === undefined ? {} : { expectedUid: this.#identityOwnerUid }),
+			});
+			if (identity.epoch !== warm.epoch || sha256(identity.masterKey) !== warm.masterKeySha256)
+				throw new Error("Warm slot identity changed");
+		} catch {
+			signal.throwIfAborted();
+			await this.#evict(warm.slot, signal);
+			return undefined;
+		}
+		return warm;
+	}
+
+	/** Under capacity pressure (called under the lock): the warm slot waiting longest gives way. */
+	async #evictWarmSlot(signal: AbortSignal): Promise<number | undefined> {
+		const [oldest] = (await this.#parkedSlots()).sort((a, b) => Date.parse(a.warmUntil) - Date.parse(b.warmUntil));
+		if (!oldest) return undefined;
+		await this.#evict(oldest.slot, signal);
+		return oldest.slot;
+	}
+
+	/**
+	 * Reconcile: a warm slot ends when its window passes or its host stopped. A host with
+	 * neither a live journal nor a warm record is an orphan (a crash between the two) and
+	 * stops; once per service process, the scratch of every such slot is wiped, so a kept
+	 * capsule root never outlives a host restart.
+	 */
+	async #expireWarmSlots(signal?: AbortSignal): Promise<void> {
+		const [warmSlots, live] = await this.#exclusive(async () => [
+			await this.#warmSlots(),
+			(await this.#journals()).filter((journal) => !terminal(journal.physicalState)),
+		]);
+		const tracked = new Set([...warmSlots.map((warm) => warm.slot), ...live.map((journal) => journal.slot)]);
+		const hosts = Array.from({ length: this.#config.slotCount }, (_, slot) => this.#unit("host", slot));
+		const active = await this.#units.activeSet(hosts, signal);
+		for (let slot = 0; slot < this.#config.slotCount; slot++) {
+			if (tracked.has(slot) || (this.#swept && !active.has(this.#unit("host", slot)))) continue;
+			await this.#exclusive(async () => {
+				const held =
+					(await this.#journals()).some((journal) => !terminal(journal.physicalState) && journal.slot === slot) ||
+					(await this.#warmSlots()).some((warm) => warm.slot === slot);
+				if (!held) await this.#evict(slot, signal);
+			});
+		}
+		this.#swept = true;
+		for (const warm of warmSlots) {
+			const taken = live.some((journal) => journal.slot === warm.slot);
+			if (!taken && Date.parse(warm.warmUntil) > this.#now() && active.has(this.#unit("host", warm.slot))) continue;
+			await this.#exclusive(async () => {
+				const current = (await this.#warmSlots()).find((candidate) => candidate.slot === warm.slot);
+				// Another pass may have replaced the record meanwhile: act on this exact one only.
+				if (!current || JSON.stringify(current) !== JSON.stringify(warm)) return;
+				// A slot a live run holds keeps its host; only the stale record goes.
+				if (taken) await rm(this.#warmPath(warm.slot), { force: true });
+				else await this.#evict(warm.slot, signal);
+			});
+		}
 	}
 
 	/** Live journals only: terminal ones move to `journals/archive/`. */

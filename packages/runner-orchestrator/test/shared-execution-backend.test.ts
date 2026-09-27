@@ -148,6 +148,7 @@ async function fixture(
 		epoch?: number;
 		codingCommand?: { origin: string; token: string };
 		mountInfoPath?: string;
+		warmIdleMs?: number;
 	} = {},
 ): Promise<Fixture> {
 	const stateRoot = join(await root(), "state");
@@ -237,6 +238,7 @@ async function fixture(
 		claudePath: "/usr/local/bin/claude",
 		nativeCompanyRuntime: runtime,
 		startTimeoutMs: 5000,
+		...(options.warmIdleMs === undefined ? {} : { warmIdleMs: options.warmIdleMs }),
 	};
 	const fakeFetch = async (input: string | URL, init?: RequestInit): Promise<Response> => {
 		const url = new URL(String(input));
@@ -846,5 +848,139 @@ describe("shared execution provider backend", () => {
 		releaseStop();
 		await stopping;
 		expect(await journal(f)).toMatchObject({ physicalState: "stopped", stopReason: "revoked" });
+	});
+});
+
+describe("warm conversations", () => {
+	const secondRun = "30000000-0000-4000-8000-000000000021";
+	const hostUnit = (slot: number) => `qorpera-shared-run-host@${slot}.service`;
+	const runnerUnit = (slot: number) => `qorpera-shared-runner@${slot}.service`;
+
+	async function finishRun(f: Fixture, slot = 0): Promise<void> {
+		f.units.activeUnits.delete(runnerUnit(slot));
+		await f.backend.reconcile();
+	}
+
+	it("parks the host of an attended run and serves the conversation's next run with it", async () => {
+		const f = await fixture({ warmIdleMs: 300_000 });
+		const signal = new AbortController().signal;
+		await f.backend.acquire(runId, work(), signal);
+		const environment = await readFile(join(f.runRoot, "slots", "0", "native-provider.env"), "utf-8");
+		expect(environment).toContain("QORPERA_NATIVE_WARM_IDLE_MS=300000\n");
+		const bridge = await readFile(join(f.runRoot, "slots", "0", "credentials", "qorpera-native-bridge"), "utf-8");
+		// The host keeps its opened capsule in its own scratch between runs.
+		const kept = join(f.stateRoot, "slots", "0", "host", "kept-capsule-root");
+		await writeFile(kept, "kept");
+		await finishRun(f);
+		expect(f.units.activeUnits.has(hostUnit(0))).toBe(true);
+		expect(f.rpc.map((call) => call.name)).toContain("qorpera_release_runtime_machine");
+		f.units.log.length = 0;
+		await f.backend.acquire(secondRun, work({ runId: secondRun, sourceId: secondRun }), signal);
+		// Only the new run's runner starts; the host, its bridge and its scratch are the parked ones.
+		expect(f.units.log).toEqual([`start ${runnerUnit(0)}`]);
+		expect(await readFile(join(f.runRoot, "slots", "0", "credentials", "qorpera-native-bridge"), "utf-8")).toBe(
+			bridge,
+		);
+		expect(await readFile(kept, "utf-8")).toBe("kept");
+	});
+
+	it("never gives a parked host to another conversation, and parks nothing for unattended work", async () => {
+		const f = await fixture({ warmIdleMs: 300_000 });
+		const signal = new AbortController().signal;
+		await f.backend.acquire(runId, work(), signal);
+		await finishRun(f);
+		f.units.log.length = 0;
+		await f.backend.acquire(
+			secondRun,
+			work({ runId: secondRun, sourceId: secondRun, sessionId: "30000000-0000-4000-8000-000000000022" }),
+			signal,
+		);
+		expect(f.units.log).toEqual([`start ${hostUnit(1)}`, `start ${runnerUnit(1)}`]);
+		const cold = await fixture({ warmIdleMs: 300_000 });
+		await cold.backend.acquire(
+			runId,
+			work({ sourceKind: "wake", inputIds: [], sponsor: { ...work().sponsor, allowAutonomous: true } }),
+			signal,
+		);
+		await finishRun(cold);
+		expect(cold.units.activeUnits.has(hostUnit(0))).toBe(false);
+	});
+
+	it("ends a parked host when its window passes or the login changed", async () => {
+		const f = await fixture({ warmIdleMs: 60_000 });
+		const signal = new AbortController().signal;
+		await f.backend.acquire(runId, work(), signal);
+		await finishRun(f);
+		f.clock.now += 61_000;
+		await f.backend.reconcile();
+		expect(f.units.activeUnits.has(hostUnit(0))).toBe(false);
+		const changed = await fixture({ warmIdleMs: 300_000 });
+		await changed.backend.acquire(runId, work(), signal);
+		await finishRun(changed);
+		// A recovery moved the login to a new epoch: the parked host holds the old one.
+		changed.identityState = { ...changed.identityState, epoch: changed.identityState.epoch + 1 };
+		changed.units.log.length = 0;
+		await changed.backend
+			.acquire(secondRun, work({ runId: secondRun, sourceId: secondRun }), signal)
+			.catch(() => undefined);
+		expect(changed.units.log[0]).toBe(`kill ${hostUnit(0)}`);
+	});
+
+	it("keeps a slot parked when its claim fails before the run's journal holds it", async () => {
+		const f = await fixture({ warmIdleMs: 300_000 });
+		const signal = new AbortController().signal;
+		await f.backend.acquire(runId, work(), signal);
+		await finishRun(f);
+		// The control plane refuses the second run's runner row (bound to another activation).
+		f.activations.set(sharedExecutionAcquisitionId(secondRun, 1), "a".repeat(64));
+		await expect(
+			f.backend.acquire(secondRun, work({ runId: secondRun, sourceId: secondRun }), signal),
+		).rejects.toThrow();
+		expect(await readdir(join(f.stateRoot, "warm"))).toEqual(["0.json"]);
+		expect(f.units.activeUnits.has(hostUnit(0))).toBe(true);
+		await f.backend.reconcile();
+		expect(f.units.activeUnits.has(hostUnit(0))).toBe(true);
+	});
+
+	it("ends a conversation's parked host when its next run differs, and stops orphaned hosts", async () => {
+		const f = await fixture({ warmIdleMs: 300_000 });
+		const signal = new AbortController().signal;
+		await f.backend.acquire(runId, work(), signal);
+		await finishRun(f);
+		f.units.log.length = 0;
+		// Same conversation and login, new agent version: the parked host must not linger.
+		await f.backend.acquire(secondRun, work({ runId: secondRun, sourceId: secondRun, staffVersion: 2 }), signal);
+		expect(f.units.log.slice(0, 1)).toEqual([`kill ${hostUnit(0)}`]);
+		// The new version's run took slot 0 again. Another agent of the same room on the
+		// same login leaves that run's parked host alone.
+		await finishRun(f, 0);
+		expect(await readdir(join(f.stateRoot, "warm"))).toEqual(["0.json"]);
+		f.units.log.length = 0;
+		const thirdRun = "30000000-0000-4000-8000-000000000023";
+		await f.backend.acquire(
+			thirdRun,
+			work({ runId: thirdRun, sourceId: thirdRun, staffAgentId: "30000000-0000-4000-8000-000000000024" }),
+			signal,
+		);
+		expect(f.units.log.some((entry) => entry === `kill ${hostUnit(0)}`)).toBe(false);
+		expect(f.units.activeUnits.has(hostUnit(0))).toBe(true);
+		// A host no journal or warm record tracks (a crash between the two) is stopped.
+		f.units.activeUnits.add(hostUnit(3));
+		await f.backend.reconcile();
+		expect(f.units.activeUnits.has(hostUnit(3))).toBe(false);
+	});
+
+	it("gives a parked host way when every slot is taken", async () => {
+		const f = await fixture({ warmIdleMs: 300_000, slotCount: 1 });
+		const signal = new AbortController().signal;
+		await f.backend.acquire(runId, work(), signal);
+		await finishRun(f);
+		f.units.log.length = 0;
+		await f.backend.acquire(
+			secondRun,
+			work({ runId: secondRun, sourceId: secondRun, sessionId: "30000000-0000-4000-8000-000000000022" }),
+			signal,
+		);
+		expect(f.units.log).toEqual([`kill ${hostUnit(0)}`, `start ${hostUnit(0)}`, `start ${runnerUnit(0)}`]);
 	});
 });

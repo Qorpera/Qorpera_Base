@@ -8,7 +8,11 @@ import {
 	cloudConnectorEffects,
 } from "./cloud-action-review.ts";
 import { CLOUD_AGENT_SEND_INSTRUCTIONS, CloudAgentMouth, parseCloudAgentSendInput } from "./cloud-agent-mouth.ts";
-import { prefetchCloudCodexArtifact } from "./cloud-codex-tool-session.ts";
+import {
+	disposeCloudCodexSpares,
+	prefetchCloudCodexArtifact,
+	prepareCloudCodexSpare,
+} from "./cloud-codex-tool-session.ts";
 import type { CloudCompanyComputerSessionFactory } from "./cloud-company-computer-control.ts";
 import { type CloudCompanyPathControl, CloudCompanyPathGateway } from "./cloud-company-path-gateway.ts";
 import {
@@ -57,6 +61,7 @@ import {
 	type CloudRuntimeToolOperation,
 	cloudRuntimeErrorCategory,
 } from "./cloud-runtime-observability.ts";
+import type { CloudRuntimeReasoningEffort } from "./cloud-runtime-policy.ts";
 import { type CloudSecretOperationClient, cloudSecretTools, describeCloudSecretTools } from "./cloud-secret-tools.ts";
 import { cloudSidebarTools } from "./cloud-sidebar-tools.ts";
 import {
@@ -133,6 +138,30 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		this.#secretBroker = options.secretBroker;
 		this.#computerSession = options.computerSession;
 		this.#coding = options.coding;
+	}
+
+	/** The effort of the last successful run per identity root: a spare starts with it. */
+	readonly #spareEfforts = new Map<string, CloudRuntimeReasoningEffort>();
+
+	/** Warm conversations: starts a spare Codex process for the next run on this identity root. */
+	prepareSpare(identityRoot: string, idleMs: number): void {
+		const reasoningEffort = this.#spareEfforts.get(identityRoot);
+		if (!reasoningEffort) return;
+		prepareCloudCodexSpare(
+			{
+				command: this.#command,
+				binarySha256: this.#sha256,
+				reasoningEffort,
+				identityRoot,
+				...(this.#isolation ? { isolation: this.#isolation } : {}),
+			},
+			idleMs,
+		);
+	}
+
+	async disposeSpares(identityRoot: string): Promise<void> {
+		this.#spareEfforts.delete(identityRoot);
+		await disposeCloudCodexSpares(identityRoot);
 	}
 
 	async execute(request: NativeCompanyExecutionRequest, identityRoot: string, signal: AbortSignal) {
@@ -412,6 +441,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					command: this.#command,
 					binarySha256: this.#sha256,
 					identityRoot,
+					...(this.#spareEfforts.has(identityRoot) ? { reusedIdentityRoot: true } : {}),
 					isolation: this.#isolation,
 					prompt,
 					runtimeInstructions: compileCloudNativeCompanyInstructions(context, wake),
@@ -521,10 +551,9 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					},
 				});
 				stage = "public-completion";
-				return {
-					providerSessionId: result.providerSessionId,
-					delivery: await mouth.finish(wake.policy.final === "required"),
-				};
+				const delivery = await mouth.finish(wake.policy.final === "required");
+				this.#spareEfforts.set(identityRoot, context.identity.reasoningEffort);
+				return { providerSessionId: result.providerSessionId, delivery };
 			} finally {
 				await mouth.close();
 			}

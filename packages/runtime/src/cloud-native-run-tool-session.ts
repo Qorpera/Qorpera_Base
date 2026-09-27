@@ -59,6 +59,8 @@ export async function runCloudNativeRunToolSession(options: {
 	prompt: string;
 	runtimeInstructions?: string;
 	identityRoot?: string;
+	/** Warm conversations: the identity root was kept from an earlier run on this host. */
+	reusedIdentityRoot?: boolean;
 	isolation?: NativeIsolationConfiguration;
 	signal: AbortSignal;
 	timeoutMs?: number;
@@ -135,6 +137,7 @@ export async function runCloudNativeRunToolSession(options: {
 			prompt: options.prompt,
 			runtimeInstructions: options.runtimeInstructions,
 			identityRoot: options.identityRoot,
+			...(options.reusedIdentityRoot ? { reusedIdentityRoot: true } : {}),
 			isolation: options.isolation,
 			signal: run.signal,
 			timeoutMs: options.timeoutMs,
