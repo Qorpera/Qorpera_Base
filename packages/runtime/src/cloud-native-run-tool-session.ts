@@ -23,6 +23,9 @@ import {
 } from "./cloud-native-tool-operations.ts";
 import { type CloudRuntimeObservability, cloudRuntimeErrorCategory } from "./cloud-runtime-observability.ts";
 
+/** Two cloud reads sent together that the database serialises on the run's job row. */
+const PAIRED_REQUEST_TIMEOUT_MS = 10_000;
+
 export interface CloudNativeRunToolAdapters {
 	tools: readonly CloudNativeTool[];
 	captures?: CloudNativeCaptureImages;
@@ -94,8 +97,13 @@ export async function runCloudNativeRunToolSession(options: {
 			const observation = options.observability?.start("context_authority");
 			try {
 				// Two independent reads, both required: the run's admission and its context read set.
-				const admission = run.assertActive(signal);
-				const context = cloudToolRequest((requestSignal) => activeAdapters.assertContext(requestSignal), signal);
+				// Both lock the run's job row, so each gets the pair's budget, not one read's.
+				const admission = run.assertActive(signal, PAIRED_REQUEST_TIMEOUT_MS);
+				const context = cloudToolRequest(
+					(requestSignal) => activeAdapters.assertContext(requestSignal),
+					signal,
+					PAIRED_REQUEST_TIMEOUT_MS,
+				);
 				await Promise.all([admission, context]);
 				observation?.finish("succeeded");
 			} catch (error) {

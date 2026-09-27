@@ -239,7 +239,7 @@ it("hashes again when the artifact changed after its early hash", async () => {
 	const artifact = join(root, "codex");
 	await writeFile(artifact, "one", { mode: 0o755 });
 	await prefetchCloudCodexArtifact(artifact);
-	await writeFile(artifact, "two");
+	await writeFile(artifact, "changed");
 	const pinned = createHash("sha256").update("one").digest("hex");
 	const session = runCloudCodexToolSession({
 		command: [artifact],

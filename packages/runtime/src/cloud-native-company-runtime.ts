@@ -125,7 +125,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		this.#store = options.objectStore;
 		this.#command = Object.freeze([...options.command]) as readonly [string, ...string[]];
 		this.#sha256 = options.binarySha256;
-		// The host is built before its run arrives: hash the Codex binary in the meantime.
+		// Hash the Codex binary once per service process, while it waits for its run.
 		void prefetchCloudCodexArtifact(this.#command[0]);
 		this.#timeoutMs = options.timeoutMs;
 		this.#isolation = options.isolation ? Object.freeze({ ...options.isolation }) : undefined;
@@ -165,15 +165,18 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		let presence: CloudCompanyPathPresence | undefined;
 		try {
 			// Both reads need only the binding: ask for them together and check them in
-			// the original order, so a failure still names its stage.
+			// the original order, so a failure still names its stage. Both lock the run's
+			// job row, so each gets the pair's budget (the database serialises them).
 			const contextRequest = cloudToolRequest(
 				(requestSignal) =>
 					this.#paths.call("qorpera_describe_company_run_context", { p_binding: binding }, requestSignal),
 				signal,
+				10_000,
 			);
 			const wakeRequest = cloudToolRequest(
 				(requestSignal) => this.#paths.call("qorpera_read_native_wake", { p_binding: binding }, requestSignal),
 				signal,
+				10_000,
 			);
 			wakeRequest.catch(() => undefined);
 			const context = parseCloudNativeCompanyContext(await contextRequest, binding);

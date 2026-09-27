@@ -83,7 +83,7 @@
 
 ### Changed
 
-- A company run asks for its context and its wake together, reads its memory profile and both log months together, and runs the two reads of every authority check (run admission and the context read set) together. Every check still runs, and a failure still reports its own stage. The host starts hashing the Codex binary as soon as it is built; the session still compares the digest with its pin before it starts Codex, and hashes again if the file changed since.
+- A company run asks for its context and its wake together, reads its memory profile and both log months together, and runs the two reads of every authority check (run admission and the context read set) together. Every check still runs, and a failure still reports its own stage. The provider service hashes the Codex binary once when it starts, before its run arrives; the session still compares the digest with its pin before it starts Codex, and hashes again if the file changed since (device, inode, size, mtime and ctime in nanoseconds). Reads sent together that lock the same job row share a 10 s budget instead of 5 s each.
 
 ### Fixed
 
