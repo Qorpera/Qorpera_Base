@@ -103,6 +103,7 @@ export const AGENTS: Record<string, string> = {
 	"What should {name} do?": "Hvad skal {name} gøre?",
 	When: "Hvornår",
 	"Runs on": "Kører på",
+	"Effort: {effort}": "Indsats: {effort}",
 	"Saving lets {name} use this account for this routine while you are away. Pause the routine to stop it.":
 		"Når du gemmer, kan {name} bruge kontoen til rutinen, mens du er væk. Sæt rutinen på pause for at stoppe den.",
 	"Connect a model account in Settings → Connections first. A routine runs on a member's own account.":
