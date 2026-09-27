@@ -12,7 +12,7 @@ type ConnectionsClient = Pick<WebNativeSubscription, "listConnections" | "revoke
 type Provider = "openai" | "anthropic";
 const PROVIDERS: ReadonlyArray<{ id: Provider; label: string; logo: string }> = [
 	{ id: "openai", label: "ChatGPT / Codex", logo: "provider-openai.svg" },
-	{ id: "anthropic", label: "Claude", logo: "provider-anthropic.svg" },
+	{ id: "anthropic", label: "Claude", logo: "provider-claude.svg" },
 ];
 const WATCH_MS = 2000;
 const USAGE_FRESH_MS = 5 * 60_000;

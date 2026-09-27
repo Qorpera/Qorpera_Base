@@ -13,10 +13,13 @@ import {
 import {
 	CodingSessionElement,
 	type CodingSessionNames,
-	codingSessionCaption,
-	codingSessionCaptionParts,
+	CodingSessionSlot,
+	codingSessionActivity,
+	codingSessionLine,
 	codingSessionStatus,
 	fmtDuration,
+	harnessBadge,
+	harnessMark,
 	shortBranch,
 } from "../src/ui/coding-session.ts";
 import { setLanguagePreference } from "../src/ui/preferences.ts";
@@ -66,50 +69,41 @@ const other: CodingSessionNames = { agent: "Mark", owner: "Jonas", ownerIsViewer
 const NOW = Date.parse("2026-09-22T10:04:00Z");
 
 describe("the captions the kernel state produces", () => {
-	it("draws the agent and the harness apart where Danish puts them", () => {
+	it("is one plain sentence around the harness, in English and in Danish", () => {
+		expect(codingSessionLine("codex")).toEqual({ before: "Started a coding session in ", name: "Codex", after: "" });
+		expect(codingSessionLine("claude-code").name).toBe("Claude Code");
 		setLanguagePreference("da");
 		try {
-			expect(codingSessionCaptionParts(codingSession({ phase: "awaiting_input" }), other)).toEqual([
-				{ kind: "text", text: "Kodesessionen mellem " },
-				{ kind: "agent", text: "Mark" },
-				{ kind: "text", text: " og Jonas i " },
-				{ kind: "harness", text: "Claude Code" },
-				{ kind: "text", text: " venter på svar fra Jonas" },
-			]);
-			expect(codingSessionCaption(codingSession(), owner)).toBe(
-				"Mark startede en kodesession med dig i Claude Code",
-			);
+			expect(codingSessionLine("codex")).toEqual({ before: "Startede en kodesession i ", name: "Codex", after: "" });
 		} finally {
 			setLanguagePreference("system");
 			localStorage.clear();
 		}
 	});
 
-	it("names the agent, the owner and the harness, and says what the session needs", () => {
-		expect(codingSessionCaption(codingSession(), owner)).toBe(
-			"Mark started a coding session with you in Claude Code",
-		);
-		expect(codingSessionCaption(codingSession({ harness: "codex" }), other)).toBe(
-			"Mark started a coding session with Jonas in Codex",
-		);
-		expect(codingSessionCaption(codingSession({ phase: "awaiting_input" }), owner)).toBe(
-			"Mark's coding session with you in Claude Code needs your answer",
-		);
-		expect(codingSessionCaption(codingSession({ phase: "awaiting_input" }), other)).toBe(
-			"Mark's coding session with Jonas in Claude Code needs an answer from Jonas",
-		);
-		expect(
-			codingSessionCaption(
-				codingSession({
-					phase: "completed",
-					pullRequest: { url: "https://github.com/Qorpera/Qorpera_Base/pull/204", number: 204 },
-				}),
-				owner,
-			),
-		).toBe("Mark's coding session with you in Claude Code opened a draft PR");
-		expect(codingSessionCaption(codingSession({ phase: "completed" }), owner)).toMatch(/finished$/);
-		expect(codingSessionCaption(codingSession({ phase: "failed" }), owner)).toMatch(/failed$/);
-		expect(codingSessionCaption(codingSession({ phase: "cancelled" }), owner)).toMatch(/was cancelled$/);
+	it("draws each harness with its maker's own mark", () => {
+		// OpenAI's mark for Codex (as on the Connections card), the Claude spark for Claude Code.
+		const codex = harnessMark("codex", 14);
+		expect(codex.getAttribute("viewBox")).toBe("146.694 227.042 267.198 264.812");
+		expect(codex.querySelector("path")?.getAttribute("d")).toMatch(/^M249\.176 323\.434V298\.276/);
+		expect(codex.getAttribute("width")).toBe("14");
+		const claude = harnessMark("claude-code", 14);
+		expect(claude.getAttribute("viewBox")).toBe("0 0 24 24");
+		expect(claude.querySelector("path")?.getAttribute("d")).toMatch(/^m4\.7144 15\.9555/);
+		expect(claude.classList.contains("coding-mark-claude-code")).toBe(true);
+		const badge = harnessBadge("claude-code");
+		expect(badge.className).toBe("coding-badge coding-badge-claude-code");
+		expect(badge.querySelector(".coding-mark-claude-code")).not.toBeNull();
+	});
+
+	it("moves the header's figure as an agent's: working, waiting on an answer, still in the queue", () => {
+		expect(codingSessionActivity("running")).toBe("Working");
+		expect(codingSessionActivity("preparing")).toBe("Working");
+		expect(codingSessionActivity("input_ready")).toBe("Working");
+		expect(codingSessionActivity("publishing")).toBe("Working");
+		expect(codingSessionActivity("awaiting_input")).toBe("Waiting");
+		expect(codingSessionActivity("queued")).toBe("Idle");
+		expect(codingSessionActivity("completed")).toBe("Idle");
 	});
 
 	it("writes the status from the phase, the clock, the last step and the diff size", () => {
@@ -237,7 +231,6 @@ describe("the element in the thread", () => {
 			viewer?: "owner" | "other";
 			events?: CodingSessionEvent[];
 			askAgent?: (text: string) => void;
-			open?: () => void;
 		} = {},
 	) {
 		const events = options.events ?? [];
@@ -253,13 +246,11 @@ describe("the element in the thread", () => {
 		const delegate = vi.fn(async (_workerId: string, _clientRequestId: string): Promise<void> => {});
 		const names = options.viewer === "other" ? other : owner;
 		const element = new CodingSessionElement(session, {
-			agent: staff,
 			names: () => names,
 			viewerOwns: () => options.viewer !== "other",
 			api: { read, answer, delegate },
 			signal: disposeAll.signal,
 			askAgent: options.askAgent,
-			open: options.open,
 		});
 		document.body.append(element.el);
 		return { element, read, answer, delegate, state };
@@ -273,38 +264,16 @@ describe("the element in the thread", () => {
 		return found;
 	};
 
-	it("collapsed, it is the chip and the status, nothing more", async () => {
-		const open = vi.fn();
-		const { element, read } = mount(codingSession(), { open });
-		await settle();
-		expect(read).toHaveBeenCalledWith(WORKER, 0);
-		const chip = element.el.querySelector<HTMLButtonElement>(".coding-chip")!;
-		expect(chip.textContent).toBe("Mark started a coding session with you in Claude Code");
-		// The agent's name and the harness carry weight; the harness wears its mark.
-		expect(chip.querySelector(".coding-agent")?.textContent).toBe("Mark");
-		expect(chip.querySelector(".coding-harness .coding-badge-claude-code")).not.toBeNull();
-		expect(chip.querySelector(".figure")).not.toBeNull();
-		const status = element.el.querySelector(".coding-status")!;
-		expect(status.querySelector(".coding-status-title")?.textContent).toBe("Fix the delay after send");
-		expect(status.textContent).toContain("Working · 4 min · running vitest");
-		expect(element.el.querySelector(".coding-body")).toBeNull();
-		expect(element.el.querySelector(".coding-rule")).toBeNull();
-		// The chip opens the session as its own thread; Show unfolds it here.
-		chip.click();
-		expect(open).toHaveBeenCalledTimes(1);
-		expect(element.el.querySelector(".coding-body")).toBeNull();
-	});
-
-	it("expanded, it shows the session's own steps and voice, the input and the status", async () => {
+	it("shows the session's own steps and voice, the input and the status", async () => {
 		const events = [
 			event(1, "phase", { phase: "queued" }, "kernel"),
 			event(2, "step", { text: "Cloning Qorpera_Base" }, "executor"),
 			event(3, "text", { text: "The delay came from the composer.\n\nMoving the refresh after the post." }),
 			event(4, "step", { text: "npx vitest run test/composer-send.test.ts", status: "passed" }),
 		];
-		const { element } = mount(codingSession(), { events });
+		const { element, read } = mount(codingSession(), { events });
 		await settle();
-		button(element.el, "Show").click();
+		expect(read).toHaveBeenCalledWith(WORKER, 0);
 		expect(element.el.querySelector(".coding-title")?.textContent).toBe("Fix the delay after send");
 		expect(element.el.querySelector(".coding-meta")?.textContent).toContain("managed by Mark");
 		const rows = [...element.el.querySelectorAll(".coding-body .coding-row")].map((row) => row.textContent);
@@ -318,13 +287,12 @@ describe("the element in the thread", () => {
 		const field = element.el.querySelector<HTMLInputElement>(".coding-field-input")!;
 		expect(field.disabled).toBe(true);
 		expect(element.el.querySelector(".coding-hint")?.textContent).toContain("Uses your Claude Code plan");
-		const statuses = element.el.querySelectorAll(".coding-status");
-		expect(statuses[statuses.length - 1]?.textContent).toContain("Working · 4 min");
-		button(element.el, "Hide").click();
-		expect(element.el.querySelector(".coding-body")).toBeNull();
+		expect(element.el.querySelector(".coding-status")?.textContent).toContain("Working · 4 min");
+		// No fold in the session's own thread: it is always open.
+		expect(element.el.querySelector(".coding-chip, .coding-link")).toBeNull();
 	});
 
-	it("a question opens the body for the owner, with the choices, 'Let Mark decide' and a free answer", async () => {
+	it("a question gives the owner the choices, 'Let Mark decide' and a free answer", async () => {
 		const events = [
 			event(1, "step", { text: "Cloning" }, "executor"),
 			event(
@@ -341,7 +309,6 @@ describe("the element in the thread", () => {
 			},
 		);
 		await settle();
-		expect(element.el.classList.contains("coding-session-expanded")).toBe(true);
 		expect(element.el.querySelector(".coding-question")?.textContent).toContain("Claude Code asks");
 		expect(element.el.querySelector(".coding-question")?.textContent).toContain("Keep 250 ms or raise to 500 ms?");
 		const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -386,12 +353,8 @@ describe("the element in the thread", () => {
 			events: [event(1, "needs_input", { needs: "Which?" }, "executor")],
 		});
 		await settle();
-		// Not the viewer's question: the body stays closed until asked for.
-		expect(element.el.classList.contains("coding-session-expanded")).toBe(false);
-		expect(element.el.querySelector(".coding-chip")?.textContent).toBe(
-			"Mark's coding session with Jonas in Claude Code needs an answer from Jonas",
-		);
-		button(element.el, "Show").click();
+		expect(element.el.querySelector(".coding-question")?.textContent).toContain("Which?");
+		expect(element.el.querySelector(".coding-status")?.textContent).toBe("Needs Jonas · paused 1 min");
 		expect(element.el.querySelector(".coding-field-input")).toBeNull();
 		expect(element.el.querySelector(".coding-talk-locked")?.textContent).toContain(
 			"Only Jonas can type here. Everyone else steers through Mark. Uses Jonas's Claude Code plan.",
@@ -433,7 +396,6 @@ describe("the element in the thread", () => {
 		expect(element.el.querySelector(".coding-status")?.textContent).toContain(
 			"Draft PR ready · session kept for follow-ups",
 		);
-		button(element.el, "Show").click();
 		expect(element.el.querySelector(".coding-pr-title")?.textContent).toBe("Draft pull request #204");
 		expect(element.el.querySelector(".coding-pr-meta")?.textContent).toBe(
 			"Qorpera/Qorpera_Base · qorpera/coding/1111… → master · 3 files · 1 artifact",
@@ -467,7 +429,6 @@ describe("the element in the thread", () => {
 		);
 		const { element } = mount(codingSession(), { events });
 		await settle();
-		button(element.el, "Show").click();
 		expect(element.el.querySelector(".coding-row-fold")?.textContent).toBe("4 earlier steps");
 		expect(element.el.querySelectorAll(".coding-row-step")).toHaveLength(10);
 		button(element.el, "4 earlier steps").click();
@@ -511,6 +472,54 @@ describe("the element in the thread", () => {
 			codingSession({ phase: "awaiting_input", workerState: "blocked", updatedAt: "2026-09-22T10:05:00Z" }),
 		);
 		expect(element.session.phase).toBe("awaiting_input");
-		expect(element.el.querySelector(".coding-chip")?.textContent).toContain("needs your answer");
+		expect(element.el.querySelector(".coding-status")?.textContent).toBe(
+			"Needs you · your answer is recorded in this thread",
+		);
+	});
+});
+
+describe("the session in the header", () => {
+	beforeEach(() => {
+		vi.useFakeTimers({ now: NOW });
+	});
+	afterEach(() => {
+		document.body.replaceChildren();
+		vi.useRealTimers();
+		vi.restoreAllMocks();
+	});
+
+	it("is the agent's figure wearing the harness mark, on its own clock, and unfolds the title", () => {
+		const motion = stubFigureMotion();
+		const open = vi.fn();
+		const slot = new CodingSessionSlot(WORKER, open);
+		document.body.append(slot.el);
+		slot.update(codingSession({ harness: "codex" }), staff, owner);
+		expect(slot.el.querySelector(".coding-slot-avatar .figure")).not.toBeNull();
+		expect(slot.el.querySelector(".coding-slot-avatar .coding-badge-codex")).not.toBeNull();
+		// The button names the session; the badge carries no title of its own over it.
+		expect(slot.el.querySelector(".coding-badge")?.hasAttribute("title")).toBe(false);
+		expect(slot.el.querySelector(".coding-slot-name")?.textContent).toBe("Fix the delay after send");
+		expect(slot.el.title).toBe(
+			"Fix the delay after send · Working · 4 min · running vitest in packages/web · 3 files changed",
+		);
+		expect(slot.el.getAttribute("aria-label")).toBe(
+			"Fix the delay after send · Working · 4 min · running vitest in packages/web · 3 files changed. Open the session",
+		);
+		expect(motion).toHaveBeenCalledTimes(1);
+		expect(motion.mock.calls[0]?.[4]).toMatchObject({ activity: "Working", identity: `coding:${WORKER}` });
+		// A new listing with the same motion keeps the figure (and its motion) as it is.
+		slot.update(
+			codingSession({ harness: "codex", lastStep: "npm test", updatedAt: "2026-09-22T10:03:30Z" }),
+			staff,
+			owner,
+		);
+		expect(motion).toHaveBeenCalledTimes(1);
+		// A question makes it wait, as an agent waits on the member.
+		slot.update(codingSession({ harness: "codex", phase: "awaiting_input" }), staff, owner);
+		expect(motion).toHaveBeenCalledTimes(2);
+		expect(motion.mock.calls[1]?.[4]).toMatchObject({ activity: "Waiting" });
+		expect(slot.el.dataset.tone).toBe("attention");
+		slot.el.click();
+		expect(open).toHaveBeenCalledWith(slot.el);
 	});
 });

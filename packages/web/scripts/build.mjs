@@ -60,6 +60,7 @@ for (const icon of [
 	"provider-github.svg",
 	"provider-openai.svg",
 	"provider-anthropic.svg",
+	"provider-claude.svg",
 ]) {
 	cpSync(join(userland, icon), join(dist, "assets", icon));
 }

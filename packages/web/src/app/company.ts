@@ -1077,6 +1077,14 @@ export class CompanyController {
 		return this.#api.readCodingSession(workerId, afterEvent);
 	}
 
+	/** The thread's sessions read again, for the header's figures while one is still going. */
+	async refreshCodingSessions(sessionId: string): Promise<void> {
+		const store = this.conversations.get(sessionId);
+		if (!store || this.#stopped) return;
+		const codingSessions = await this.#api.listCodingSessions(sessionId);
+		if (!this.#stopped) store.set({ codingSessions });
+	}
+
 	async answerCodingSession(
 		sessionId: string,
 		workerId: string,

@@ -114,8 +114,10 @@ function mount(prepare: (store: ReturnType<CompanyController["conversation"]>) =
 	return { ...f, company, view, store };
 }
 
+const rows = (messages: HTMLElement) => [...messages.children].filter((node) => node.tagName !== "TIME");
+
 describe("coding sessions in the thread", () => {
-	it("stands where the agent started it and keeps its element across renders", async () => {
+	it("is one line where the agent started it, like a message to a coworker, and opens the session", async () => {
 		const f = mount((store) => {
 			store.set({
 				projection: {
@@ -127,59 +129,147 @@ describe("coding sessions in the thread", () => {
 					hiddenCount: 0,
 					lastSequence: 3,
 				},
-				codingSessions: [codingSession()],
+				codingSessions: [codingSession({ phase: "completed", workerState: "succeeded" })],
 			});
 		});
-		vi.mocked(f.api.readCodingSession).mockResolvedValue({ session: codingSession(), isOwner: true, events: [] });
+		vi.mocked(f.api.readCodingSession).mockResolvedValue({
+			session: codingSession({ ownerUserId: userB.id, isOwner: false, phase: "completed" }),
+			isOwner: false,
+			events: [],
+		});
 		const store = f.store;
 		await settle();
 		const messages = f.view.el.querySelector<HTMLElement>(".messages")!;
 		// Date separators (<time>) are not part of the order under test.
-		const rows = () => [...messages.children].filter((node) => node.tagName !== "TIME");
-		const order = rows().map((node) =>
-			node.classList.contains("coding-session")
+		const order = rows(messages).map((node) =>
+			node.classList.contains("coding-line")
 				? "coding"
 				: node.classList.contains("message")
 					? "message"
 					: node.tagName,
 		);
 		expect(order).toEqual(["message", "message", "coding", "message"]);
-		const element = messages.querySelector(".coding-session")!;
-		expect(element.querySelector(".coding-chip")?.textContent).toBe(
-			"Fixture agent started a coding session with you in Codex",
-		);
-		expect(element.querySelector(".coding-status-title")?.textContent).toBe("Fix the delay after send");
-		// A new message re-renders the thread; the session's element is the same node.
+		const line = messages.querySelector<HTMLElement>(".coding-line")!;
+		const chip = line.querySelector<HTMLButtonElement>(".peer-chip")!;
+		// No subject (the agent is the thread's own), no status, no fold: the harness with its mark.
+		expect(chip.textContent).toBe("Started a coding session inCodex");
+		expect([...chip.children].map((node) => node.tagName.toLowerCase())).toEqual(["span", "svg", "span"]);
+		expect(chip.querySelector("svg.coding-mark-codex")).not.toBeNull();
+		expect(chip.getAttribute("aria-label")).toBe("Started a coding session in Codex. Open the session");
+		expect(chip.title).toContain("Fix the delay after send");
+		expect(line.querySelector(".coding-status, .coding-body, .coding-field-input")).toBeNull();
+		// Another owner reads the same line.
 		store.set({
-			projection: {
-				items: [...store.get().projection.items, message(4, "Done with the other thing.", "2026-09-22T10:08:00Z")],
-				hiddenCount: 0,
-				lastSequence: 4,
-			},
+			codingSessions: [
+				codingSession({
+					ownerUserId: userB.id,
+					isOwner: false,
+					phase: "completed",
+					workerState: "succeeded",
+					updatedAt: "2026-09-22T10:09:00Z",
+				}),
+			],
 		});
 		await settle();
-		expect(messages.querySelector(".coding-session")).toBe(element);
-		expect(rows()).toHaveLength(5);
-		// The listing names the owner by the roster when it is someone else.
-		store.set({
-			codingSessions: [codingSession({ ownerUserId: userB.id, isOwner: false, updatedAt: "2026-09-22T10:09:00Z" })],
-		});
-		await settle();
-		expect(messages.querySelector(".coding-chip")?.textContent).toContain("with Sofie Lund in Codex");
-		// The chip opens the session as its own thread over the conversation; Close comes back.
-		messages.querySelector<HTMLButtonElement>(".coding-chip")!.click();
+		const again = messages.querySelector<HTMLButtonElement>(".coding-line .peer-chip")!;
+		expect(again.textContent).toBe("Started a coding session inCodex");
+		// The line opens the session as its own thread over the conversation; Close comes back to it.
+		again.click();
 		await settle();
 		const thread = f.view.el.querySelector(".coding-thread")!;
 		expect(thread).not.toBeNull();
 		expect(thread.querySelector("h1")?.textContent).toBe("Fixture agent ⇄ Codex");
+		expect(thread.getAttribute("aria-label")).toBe("Fixture agent ⇄ Codex · Fix the delay after send");
 		expect(thread.querySelector(".coding-thread-subtitle")?.textContent).toBe("Fix the delay after send");
-		expect(thread.querySelector(".coding-session-thread .coding-body")).not.toBeNull();
+		expect(thread.querySelector(".coding-session .coding-body")).not.toBeNull();
 		expect(thread.querySelector(".coding-thread-footer")?.textContent).toContain(
 			"This session is view-only. Only Sofie Lund can type",
 		);
 		[...thread.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent === "Close")!.click();
 		expect(f.view.el.querySelector(".coding-thread")).toBeNull();
-		expect(document.activeElement).toBe(messages.querySelector(".coding-chip"));
+		expect(document.activeElement).toBe(messages.querySelector(".coding-line .peer-chip"));
+	});
+
+	it("a session still going sits beside the agent in the header, working, and leaves when it settles", async () => {
+		const f = mount((store) => {
+			store.set({
+				projection: { items: [message(1, "On it.", "2026-09-22T10:00:30Z")], hiddenCount: 0, lastSequence: 1 },
+				codingSessions: [
+					codingSession(),
+					codingSession({
+						workerId: id(901),
+						title: "Older work",
+						phase: "completed",
+						createdAt: "2026-09-22T09:00:00Z",
+					}),
+				],
+			});
+		});
+		const running = codingSession({ lastStep: "npm test", updatedAt: "2026-09-22T10:10:01Z" });
+		vi.mocked(f.api.listCodingSessions).mockResolvedValue([running]);
+		vi.mocked(f.api.readCodingSession).mockResolvedValue({ session: running, isOwner: true, events: [] });
+		await settle();
+		const header = f.view.el.querySelector<HTMLElement>(".thread-header")!;
+		const slots = header.querySelector<HTMLElement>(".thread-coding-sessions")!;
+		// Right after the agent, before the computer button; only the session still going.
+		expect([...header.children].map((node) => node.className)).toEqual([
+			"mobile-navigation-toggle icon-button",
+			"thread-identity",
+			"thread-coding-sessions",
+			"icon-button thread-computer",
+		]);
+		expect(slots.hidden).toBe(false);
+		const slot = slots.querySelector<HTMLButtonElement>(".coding-slot")!;
+		expect(slots.querySelectorAll(".coding-slot")).toHaveLength(1);
+		expect(slot.dataset.workerId).toBe(id(900));
+		expect(slot.querySelector(".coding-slot-name")?.textContent).toBe("Fix the delay after send");
+		expect(slot.querySelector(".coding-badge-codex")).not.toBeNull();
+		expect(slot.dataset.tone).toBe("working");
+		// It re-reads the sessions on the working clock while one is going.
+		vi.mocked(f.api.listCodingSessions).mockClear();
+		await vi.advanceTimersByTimeAsync(2_500);
+		expect(f.api.listCodingSessions).toHaveBeenCalledWith(session.sessionId);
+		await settle();
+		expect(header.querySelector(".coding-slot")).toBe(slot);
+		expect(slot.title).toContain("npm test");
+		// The figure opens the session; Close gives focus back to it.
+		slot.click();
+		await settle();
+		expect(f.view.el.querySelector(".coding-thread")).not.toBeNull();
+		[...f.view.el.querySelectorAll<HTMLButtonElement>(".coding-thread button")]
+			.find((b) => b.textContent === "Close")!
+			.click();
+		expect(document.activeElement).toBe(slot);
+		// Settled: the figure leaves the header and the reads stop.
+		vi.mocked(f.api.listCodingSessions).mockResolvedValue([
+			codingSession({ phase: "completed", workerState: "succeeded", updatedAt: "2026-09-22T10:12:00Z" }),
+		]);
+		await vi.advanceTimersByTimeAsync(2_500);
+		await settle();
+		expect(header.querySelector(".coding-slot")).toBeNull();
+		expect(slots.hidden).toBe(true);
+		const reads = vi.mocked(f.api.listCodingSessions).mock.calls.length;
+		await vi.advanceTimersByTimeAsync(60_000);
+		expect(f.api.listCodingSessions).toHaveBeenCalledTimes(reads);
+		// The line stays in the thread.
+		expect(f.view.el.querySelector(".coding-line")).not.toBeNull();
+	});
+
+	it("a session waiting on its owner waits in the header at the slower pace", async () => {
+		const asked = codingSession({ phase: "awaiting_input", workerState: "blocked" });
+		const f = mount((store) => {
+			store.set({ projection: { items: [], hiddenCount: 0, lastSequence: 0 }, codingSessions: [asked] });
+		});
+		vi.mocked(f.api.listCodingSessions).mockResolvedValue([asked]);
+		await settle();
+		const slot = f.view.el.querySelector<HTMLElement>(".thread-header .coding-slot")!;
+		expect(slot.dataset.tone).toBe("attention");
+		expect(slot.title).toBe("Fix the delay after send · Needs you · your answer is recorded in this thread");
+		vi.mocked(f.api.listCodingSessions).mockClear();
+		await vi.advanceTimersByTimeAsync(2_500);
+		expect(f.api.listCodingSessions).not.toHaveBeenCalled();
+		await vi.advanceTimersByTimeAsync(3_500);
+		expect(f.api.listCodingSessions).toHaveBeenCalledTimes(1);
 	});
 
 	it("a cloud without coding sessions renders the thread as before", async () => {
@@ -197,11 +287,12 @@ describe("coding sessions in the thread", () => {
 		const state = f.company.conversation(session.sessionId).get();
 		expect(state.error).toBeUndefined();
 		expect(state.codingSessions).toEqual([]);
-		expect(f.view.el.querySelector(".coding-session")).toBeNull();
+		expect(f.view.el.querySelector(".coding-line")).toBeNull();
+		expect(f.view.el.querySelector<HTMLElement>(".thread-coding-sessions")?.hidden).toBe(true);
 		expect(f.view.el.querySelector(".messages")?.textContent).toContain("No messages yet.");
 	});
 
-	it("the owner's answer goes through the controller and refreshes the listing", async () => {
+	it("the owner's answer in the session's thread goes through the controller and refreshes the listing", async () => {
 		const asked = codingSession({
 			phase: "awaiting_input",
 			workerState: "blocked",
@@ -210,6 +301,7 @@ describe("coding sessions in the thread", () => {
 		const f = mount((store) => {
 			store.set({ projection: { items: [], hiddenCount: 0, lastSequence: 0 }, codingSessions: [asked] });
 		});
+		vi.mocked(f.api.listCodingSessions).mockResolvedValue([asked]);
 		vi.mocked(f.api.readCodingSession).mockResolvedValue({
 			session: asked,
 			isOwner: true,
@@ -228,12 +320,15 @@ describe("coding sessions in the thread", () => {
 		vi.mocked(f.api.answerCodingSession).mockResolvedValue(answered);
 		const store = f.store;
 		await settle();
-		const field = f.view.el.querySelector<HTMLInputElement>(".coding-field-input")!;
+		f.view.el.querySelector<HTMLButtonElement>(".coding-line .peer-chip")!.click();
+		await settle();
+		const field = f.view.el.querySelector<HTMLInputElement>(".coding-thread .coding-field-input")!;
 		field.value = "Keep it.";
 		field.dispatchEvent(new Event("input", { bubbles: true }));
 		field.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
 		await settle();
 		expect(f.api.answerCodingSession).toHaveBeenCalledWith(id(900), "Keep it.", expect.any(String));
 		expect(store.get().codingSessions?.[0]).toMatchObject({ phase: "input_ready", sequence: 2, isOwner: true });
+		expect(f.view.el.querySelector<HTMLElement>(".thread-header .coding-slot")?.dataset.tone).toBe("working");
 	});
 });
