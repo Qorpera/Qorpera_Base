@@ -83,6 +83,7 @@
 
 ### Fixed
 
+- Agents create a Company File folder only as the home for a category of files, never to hold a single file. The run instructions no longer forbid folders nobody requested, and the `COMPANY_FILE_PARENT_MISSING` result and the `company_write`/`company_mkdir` descriptions now tell the model to put a single file in an existing folder where it fits instead of creating the missing folder for it.
 - `company_write` and `company_mkdir` into a folder that does not exist are a definite `COMPANY_FILE_PARENT_MISSING` refusal (denied, `errorCategory` `parent_missing`) that tells the model to create the folder with `company_mkdir` first and repeat the call (and never to replace a file to make that folder). SQL refuses it at the check (PT424), before presence and before any bytes are uploaded, and again at prepare and commit. Previously the runner uploaded the bytes, failed while building the candidate tree and reported an unconfirmed, unknown outcome.
 
 - Preserved office startup, supervision, desktop and cleanup failure causes in bounded structured diagnostics. Logs include only allowlisted stages, error codes and categories, never raw messages, credentials, paths or stacks.
