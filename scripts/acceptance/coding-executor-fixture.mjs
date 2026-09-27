@@ -6,6 +6,45 @@ import { setTimeout as delay } from "node:timers/promises";
 export const codingFixtureRepository = Object.freeze({ host: "github.com", owner: "Qorpera", name: "Qorpera_Base", baseBranch: "master" });
 export const codingFixtureRemote = "https://github.com/Qorpera/Qorpera_Base.git";
 
+/** Match the executor's bounded retry only for a complete PostgreSQL busy
+ * refusal. The native adapter already parsed the one actual ERROR record;
+ * timeout/transport uncertainty and other SQL failures never enter this lane. */
+export async function beginCodingFixtureTurn(begin, leaseUntil, signal, {
+  now = Date.now, pause = (ms) => delay(ms, undefined, {signal}), random = Math.random,
+} = {}) {
+  const admitBy = Date.parse(leaseUntil);
+  assert(Number.isFinite(admitBy), "Invalid original coding lease");
+  for(let attempt=0;;attempt++) {
+    signal.throwIfAborted();
+    if(now() >= admitBy) throw new Error("CODING_EXECUTOR_ACCEPTANCE_TIMEOUT:turn admission");
+    try { return await begin(); }
+    catch(error) {
+      const wait = Math.min(2000,250 * 2 ** Math.min(attempt,3)) * (0.5 + random()/2);
+      if(error?.diagnostic?.sqlState !== "55P03" || now() + wait >= admitBy) throw error;
+      await pause(wait);
+    }
+  }
+}
+
+/** Accepted stop dispatch is not physical or financial closure. Observe the
+ * same guard until stopped; only the controller's sealed-prefix ACK/finish
+ * may release its managed permit. No synthetic stop or settlement is added. */
+export async function settleCodingFixtureStop({allocationId,permitId,guard,controller},signal,{
+  now = () => performance.now(), pause = (ms) => delay(ms,undefined,{signal}),
+}={}) {
+  const deadline=now()+60000, checked=AbortSignal.any([signal,AbortSignal.timeout(60000)]);
+  while(controller.manages(allocationId)) {
+    checked.throwIfAborted();
+    if(now()>=deadline) throw new Error("CODING_EXECUTOR_ACCEPTANCE_TIMEOUT:sealed stop settlement");
+    const record=await guard.status(permitId,checked);
+    assert.equal(record.permit.permitId,permitId,"Stop permit changed");
+    assert.equal(record.machine.allocationId,allocationId,"Stop allocation changed");
+    assert(["stopping","stopped"].includes(record.phase),"Stop custody is not terminalizing");
+    if(record.phase==="stopped") await controller.observe(allocationId,checked);
+    if(controller.manages(allocationId)) await pause(500);
+  }
+}
+
 /** A fresh scan is required after this exact stale-context publication. The
  * production observer service retries scans; one rejected snapshot must not
  * permanently stop this harness's inventory loop. No stale result is ready. */

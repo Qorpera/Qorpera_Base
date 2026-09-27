@@ -10,7 +10,7 @@ import { startNativePostgres } from "./native-postgres.mjs";
 import { retainSecondCodingClaim } from "./workload-usage-shared.mjs";
 import { readWorkloadUsage, verifyWorkloadUsage } from "./workload-usage-evidence.mjs";
 import { assertWorkloadRun, assertWorkloadShape } from "./workload-usage-host.mjs";
-import { assertCodingExecutorCleanup, assertCodingExecutorEvidence, codingFixtureRepository, codingReadinessProjection, codingGuardReadinessProjection, createCodingInventoryRefresh, localCodingFixtureGit, waitForCodingWorkspace } from "./coding-executor-fixture.mjs";
+import { assertCodingExecutorCleanup, assertCodingExecutorEvidence, beginCodingFixtureTurn, settleCodingFixtureStop, codingFixtureRepository, codingReadinessProjection, codingGuardReadinessProjection, createCodingInventoryRefresh, localCodingFixtureGit, waitForCodingWorkspace } from "./coding-executor-fixture.mjs";
 import { CodingComputerController, CODING_COMPUTER_RPCS, CODING_EXECUTOR_RPCS, CODING_HOST_RPCS,
   LxdCodingExecutorHost, parseCodingSessionClaim, parseCodingTurnState, codingTurnScope,
   createCodingNasStorage, createCodingBrokerGitRunner, authorizeCodingCommand,
@@ -204,8 +204,9 @@ try {
   const wakeStart = wake.slice(wake.indexOf("create function pg_temp.wake_start("), wake.indexOf("create function pg_temp.wake_public_send("));
   assert(wakeStart.startsWith("create function pg_temp.wake_start(") && wakeStart.includes("qorpera_accept_runner_assignment"));
   const begin = async (session) => {
-    const begun = await rpc("qorpera_begin_coding_turn", { p_worker_id: session.claim.workerId, p_lease_token: session.claim.leaseToken,
-      p_coding: { vmId: session.workspace.vmId, turnId: session.turn.turnId } });
+    const admission=Object.freeze({ p_worker_id: session.claim.workerId, p_lease_token: session.claim.leaseToken,
+      p_coding: Object.freeze({ vmId: session.workspace.vmId, turnId: session.turn.turnId }) });
+    const begun = await beginCodingFixtureTurn(()=>rpc("qorpera_begin_coding_turn",admission),session.claim.leaseUntil,signal);
     const value = await query(`begin; ${service}
       create function pg_temp.wake_assert(ok boolean,message text) returns void language plpgsql as $$ begin if not coalesce(ok,false) then raise exception '%',message; end if; end $$;
       ${wakeStart}
@@ -293,8 +294,10 @@ try {
     await finishSource(session, "failed"); activeClaims.delete(session.claim.workerId);
   }
   phase = "settlement";
+  maintenanceStop.abort(); await maintenance;
+  if(maintenanceFailure) throw maintenanceFailure;
   await controller.stop(allocationId, signal);
-  await until(async () => { await controller.observe(allocationId, signal); return controller.manages(allocationId); }, (v) => !v, 60000, "sealed stop settlement");
+  await settleCodingFixtureStop({allocationId,permitId:permit.permit.permitId,guard,controller},signal);
   evidence.accounting = await readWorkloadUsage(query, permit.permit.permitId);
   const observed = workloadUsageSamples(calls), initial = observed.find((sample) => sample.state === "running"); assert(initial);
   evidence.reconciliation = verifyWorkloadUsage(evidence.accounting, { kind: "coding_machine", shape: { cpuMillis: 1000, memoryBytes },
@@ -345,9 +348,10 @@ try {
   try {
     for (const claim of activeClaims.values()) await host?.detachSession(claim, AbortSignal.timeout(45000));
     if (allocationId && controller?.manages(allocationId)) {
+      const record=await guard.latest(allocationId,AbortSignal.timeout(10000));
+      assert(record && record.machine.allocationId===allocationId,"Stop custody missing");
       await controller.stop(allocationId, AbortSignal.timeout(45000));
-      const deadline = Date.now() + 60000;
-      while (controller.manages(allocationId) && Date.now() < deadline) { await controller.observe(allocationId, AbortSignal.timeout(10000)); await delay(1000); }
+      await settleCodingFixtureStop({allocationId,permitId:record.permit.permitId,guard,controller},AbortSignal.timeout(60000));
       assert(!controller.manages(allocationId), "Retain unsettled custody");
     }
     // A failed prepare may have reserved usage before returning its VM ID.

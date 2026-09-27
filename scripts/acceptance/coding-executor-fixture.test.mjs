@@ -5,9 +5,49 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
-import { assertCodingFixtureParents, assertCodingExecutorCleanup, assertCodingExecutorEvidence, codingImageAddress, codingFixtureRemote, codingReadinessProjection, codingGuardReadinessProjection, createCodingInventoryRefresh, localCodingFixtureGit, observeCodingInventory, waitForCodingChild, waitForCodingWorkspace } from "./coding-executor-fixture.mjs";
+import { assertCodingFixtureParents, assertCodingExecutorCleanup, assertCodingExecutorEvidence, beginCodingFixtureTurn, settleCodingFixtureStop, codingImageAddress, codingFixtureRemote, codingReadinessProjection, codingGuardReadinessProjection, createCodingInventoryRefresh, localCodingFixtureGit, observeCodingInventory, waitForCodingChild, waitForCodingWorkspace } from "./coding-executor-fixture.mjs";
 
 const execute = promisify(execFile);
+
+test("begin retries only complete native busy refusals under the original lease and cancellation", async () => {
+  const busy=Object.assign(new Error("SQL output withheld"),{diagnostic:{sqlState:"55P03"}});
+  let clock=0,calls=0;
+  const waits=[], timing={now:()=>clock,random:()=>1,pause:async(ms)=>{waits.push(ms);clock+=ms;}};
+  const admission=Object.freeze({workerId:"retained",turnId:"same"}), received=[];
+  const result=await beginCodingFixtureTurn(async()=>{received.push(admission);if(++calls<4)throw busy;return {started:true};},new Date(5000).toISOString(),new AbortController().signal,timing);
+  assert.deepEqual(result,{started:true});assert.deepEqual(waits,[250,500,1000]);assert(received.every(value=>value===admission));
+  for(const error of [new Error("55P03"),null,Object.assign(new Error("other"),{diagnostic:{sqlState:"42501"}}),Object.assign(new Error("deadlock"),{diagnostic:{sqlState:"40P01"}})]) {
+    let attempts=0;
+    await assert.rejects(beginCodingFixtureTurn(async()=>{attempts++;throw error;},new Date(5000).toISOString(),new AbortController().signal,timing),value=>value===error);
+    assert.equal(attempts,1);
+  }
+  clock=0;calls=0;
+  await assert.rejects(beginCodingFixtureTurn(async()=>{calls++;throw busy;},new Date(1000).toISOString(),new AbortController().signal,timing),error=>error===busy);
+  assert.equal(clock,750);assert.equal(calls,3);
+  const abort=new AbortController();abort.abort();calls=0;
+  await assert.rejects(beginCodingFixtureTurn(async()=>{calls++;},new Date(5000).toISOString(),abort.signal,timing));assert.equal(calls,0);
+});
+
+test("stop settlement waits for exact physical stop and sealed controller closure", async () => {
+  let phase="stopping",managed=true,observed=0,clock=0;
+  const observedPhases=[];
+  const target={allocationId:"allocation",permitId:"permit",guard:{status:async()=>({phase,permit:{permitId:"permit"},machine:{allocationId:"allocation"}})},
+    controller:{manages:()=>managed,observe:async()=>{observedPhases.push(phase);if(++observed===2)managed=false;}}};
+  await settleCodingFixtureStop(target,new AbortController().signal,{now:()=>clock,pause:async(ms)=>{clock+=ms;phase="stopped";}});
+  assert.deepEqual(observedPhases,["stopped","stopped"]);assert.equal(managed,false);assert.equal(clock,1000);
+  for(const record of [{phase:"running",permit:{permitId:"permit"},machine:{allocationId:"allocation"}},
+    {phase:"stopped",permit:{permitId:"foreign"},machine:{allocationId:"allocation"}},
+    {phase:"stopped",permit:{permitId:"permit"},machine:{allocationId:"foreign"}}]) {
+    managed=true;observed=0;
+    await assert.rejects(settleCodingFixtureStop({...target,guard:{status:async()=>record}},new AbortController().signal));assert.equal(observed,0);
+  }
+  phase="stopped";managed=true;
+  const failure=new Error("unconfirmed sample upload");
+  await assert.rejects(settleCodingFixtureStop({...target,controller:{manages:()=>true,observe:async()=>{throw failure;}}},new AbortController().signal),error=>error===failure);
+  phase="stopping";clock=0;observed=0;
+  await assert.rejects(settleCodingFixtureStop(target,new AbortController().signal,{now:()=>clock,pause:async(ms)=>{clock+=ms;}}),/TIMEOUT:sealed stop settlement/);
+  assert.equal(clock,60000);assert.equal(observed,0);assert.equal(managed,true);
+});
 
 test("inventory context contention needs a fresh successful scan and never retries arbitrary authority failures", async () => {
   const stale = {sqlState:"PGRST",messageSha256:"cdb872cf2da33ad6c9453e77b61887bf8435e859185e086dbe5b3ab3faaa3099"};
