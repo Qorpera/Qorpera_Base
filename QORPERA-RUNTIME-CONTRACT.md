@@ -2524,17 +2524,19 @@ section 12.2 and the 2026-09-16 storage rule. Design:
    of files, never to hold a single file.
 9. **Code lives in the company folder.**
    - Coding agents keep repositories under `code/<owner>/<name>/`. Each has a
-     main checkout and one linked worktree per coding worker, with git's
-     metadata inside the repository. Coding agents search across all company
-     data.
+     shared git directory, a default-branch worktree that only the platform
+     writes, and one linked worktree per coding worker. Coding agents search
+     across all company data.
    - A coding worker's repository workspace (13.1) becomes its worktree in
      the company folder. Its own NAS folders keep only its dependency and
      build caches and custody; these are never company files.
    - Section 5.2's "no per-agent worktrees" is about copies of the Company
      File. These worktrees are company files themselves.
-   - Git's lock files are locks across machines, and a ref or index update is
-     published at the moment git commits it. A conflicting update fails
-     inside git before git reports success.
+   - Git's lock files on shared git files are locks across machines, and an
+     update of a shared ref is published at the moment git commits it. A
+     conflicting update fails inside git before git reports success.
+   - Old versions of a repository's git objects are kept for 7 days, the one
+     exception to item 6's restore.
    - Coding sessions keep their open network and stay unreviewed (2026-09-25
      amendment, item 2), so item 6's review of deletes and moves and item 7's
      review of a networked shell do not apply to them.
