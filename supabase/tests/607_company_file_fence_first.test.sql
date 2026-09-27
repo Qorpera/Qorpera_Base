@@ -250,6 +250,65 @@ begin
 		'The rebase waits for the review job with the profile row free, then ends the job and lands: ' || v_outcome::text);
 end $$;
 
+-- 5b. A review job can still appear while the rebase waits for the fence: the materializer takes the
+--    profile row without waiting and never locks the proposal. If a job holder takes that job and waits for
+--    the fence, the rebase takes the job without waiting after the fence and refuses (409); the job holder
+--    then gets the fence.
+do $$
+declare v_replacement jsonb;
+begin
+	perform pg_temp.path_claims('authenticated','60700000-0000-4000-8000-000000000001');
+	v_replacement := public.qorpera_prepare_company_file_proposal(current_setting('qorpera_test.fence_environment')::uuid,
+		'60700000-0000-4000-8000-000000000048',current_setting('qorpera_test.fence_second')::uuid,repeat('e',64),128,3,1,4);
+	perform pg_temp.fence_verify((v_replacement ->> 'snapshot_id')::uuid,'e','60700000-0000-4000-8000-000000000049');
+	perform set_config('qorpera_test.fence_unrebased',v_replacement ->> 'snapshot_id',false);
+end $$;
+do $$
+declare v_first integer := current_setting('qorpera_test.lock_first_pid')::integer; v_second integer := current_setting('qorpera_test.lock_second_pid')::integer;
+	v_parent uuid := (current_setting('qorpera_test.parent_binding')::jsonb ->> 'runId')::uuid;
+	v_run uuid := extensions.gen_random_uuid(); v_job uuid := extensions.gen_random_uuid(); v_outcome jsonb;
+begin
+	perform dblink_exec('lock_holder', 'begin');
+	perform * from dblink('lock_holder', pg_temp.lock_row('qorpera_profiles', 'id', current_setting('qorpera_test.fence_profile')::uuid)) as held(held integer);
+	perform pg_temp.lock_as('lock_first', pg_temp.fence_owner());
+	perform dblink_send_query('lock_first', format($q$select public.qorpera_rebase_company_proposal(%L, %L, %L, %L)$q$,
+		current_setting('qorpera_test.fence_proposal'), current_setting('qorpera_test.fence_replacement'),
+		current_setting('qorpera_test.fence_second'), current_setting('qorpera_test.fence_unrebased')));
+	for attempt in 1..200 loop exit when cardinality(pg_blocking_pids(v_first)) > 0; perform pg_sleep(0.025); end loop;
+	perform pg_temp.wake_assert(cardinality(pg_blocking_pids(v_first)) > 0, 'The rebase waits for the fence');
+	-- The materializer starts a review for the proposal (fixture rows, as for check 5), and a job holder takes its job.
+	perform dblink_exec('lock_second', 'reset role');
+	perform dblink_exec('lock_second', format($q$begin; set local session_replication_role = replica;
+		insert into public.qorpera_execution_runs select (jsonb_populate_record(null::public.qorpera_execution_runs, to_jsonb(run)
+			|| jsonb_build_object('id',%1$L,'profile_id',%3$L,'environment_id',%4$L,'source_kind','proposal_review',
+				'source_id',extensions.gen_random_uuid(),'input_ids','[]'::jsonb,'job_id',%2$L,'session_id',null))).*
+		from public.qorpera_execution_runs run where run.id = %5$L;
+		insert into public.qorpera_runner_jobs select (jsonb_populate_record(null::public.qorpera_runner_jobs, to_jsonb(job)
+			|| jsonb_build_object('id',%2$L,'profile_id',%3$L,'environment_id',%4$L,'run_id',%1$L,'session_id',null,
+				'client_job_id',extensions.gen_random_uuid(),'client_lease_id',extensions.gen_random_uuid()))).*
+		from public.qorpera_runner_jobs job where job.run_id = %5$L;
+		insert into public.qorpera_company_proposal_review_assignments(profile_id,proposal_id,proposal_revision,reviewer_staff_agent_id,
+			reviewer_sponsor_binding_id,reviewer_sponsor_version,status,run_id,started_at)
+		select proposal.profile_id,proposal.id,(select max(revision) from public.qorpera_company_proposal_revisions where proposal_id = proposal.id),
+			extensions.gen_random_uuid(),extensions.gen_random_uuid(),1,'running',%1$L,clock_timestamp()
+		from public.qorpera_company_proposals proposal where proposal.id = %6$L;
+		commit;$q$, v_run, v_job, current_setting('qorpera_test.fence_profile'), current_setting('qorpera_test.fence_environment'),
+		v_parent, current_setting('qorpera_test.fence_proposal')));
+	perform dblink_exec('lock_second', 'begin');
+	perform * from dblink('lock_second', pg_temp.lock_row('qorpera_runner_jobs', 'id', v_job)) as held(held integer);
+	perform dblink_send_query('lock_second', format($q$select jsonb_build_object('fenced', true)
+		from (select public.qorpera_lock_profile_gc_fence(%L)) fence$q$, current_setting('qorpera_test.fence_profile')));
+	for attempt in 1..200 loop exit when cardinality(pg_blocking_pids(v_second)) > 0; perform pg_sleep(0.025); end loop;
+	perform pg_temp.wake_assert(cardinality(pg_blocking_pids(v_second)) > 0, 'The job holder waits for the fence');
+	perform dblink_exec('lock_holder', 'rollback');
+	v_outcome := jsonb_build_object('first', pg_temp.lock_collect('lock_first'), 'second', pg_temp.lock_collect('lock_second'));
+	perform dblink_exec('lock_second', 'rollback');
+	perform pg_temp.wake_assert(v_outcome #>> '{first,state}' = 'PGRST'
+		and v_outcome #>> '{first,error}' like '%company proposal review changed before rebase%'
+		and v_outcome #>> '{second,result,fenced}' = 'true',
+		'The rebase refuses and the job holder gets the fence: ' || v_outcome::text);
+end $$;
+
 -- 6. The object gateway confirms an upload while the owner accepts the proposal: acceptance publishes it,
 --    which locked the Company File row before the fence.
 do $$

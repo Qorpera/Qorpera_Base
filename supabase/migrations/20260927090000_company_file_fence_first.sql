@@ -26,7 +26,7 @@
 -- fence is re-entrant, so a trigger that takes it again later finds it held. A rebase takes it after its
 -- proposal row and the jobs of the reviews its new revision ends, and before the Company File row. Accepting
 -- a proposal keeps the same order: its status trigger ends those jobs, then publish takes the fence. No call
--- here locks a runner job after the fence.
+-- here waits for a runner job after the fence.
 --
 -- Unchanged: the path gateway's actors and cutover, upload confirmation, object promotion and wake
 -- admission already take the fence (or its NOWAIT form) first; claiming a bootstrap job locks the Company
