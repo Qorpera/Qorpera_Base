@@ -4,6 +4,7 @@ import {
 	type CompanyComputerToolContent,
 } from "@qorpera/cloud-client/cloud-company-computer-contract";
 import type { JsonValue } from "@qorpera/contracts";
+import { CloudCompanyComputerEffectControl } from "@qorpera/runtime/cloud-company-computer-effect-control";
 import {
 	type CompanyComputerGuestEffectCheck,
 	CompanyComputerGuestEndpoint,
@@ -14,6 +15,7 @@ import {
 	CompanyComputerScreenAdmissionRefusedError,
 	type CompanyComputerScreenLeaseControl,
 } from "@qorpera/runtime/cloud-company-computer-leases";
+import { CompanyComputerRegistryUnansweredError } from "@qorpera/runtime/cloud-company-computer-registry-http";
 import {
 	createCompanyComputerTools,
 	parseCompanyComputerAction,
@@ -594,6 +596,74 @@ describe("guest dispatch adapter", () => {
 		await harness.endpoint.perform(computerOperation(), computerLease(), computerEffect());
 		expect(harness.automation.perform).toHaveBeenCalledTimes(2);
 		expect(harness.effects.finish).toHaveBeenCalledTimes(2);
+	});
+
+	it("with the real effect control, drains a settled failure only after the gate let go, so nothing stops", async () => {
+		const actions: string[] = [];
+		let unanswered = false;
+		const registry = {
+			call: vi.fn(async (_method: string, args: Record<string, unknown>) => {
+				actions.push(String(args.p_action));
+				if (args.p_action === "check" && unanswered)
+					throw new CompanyComputerRegistryUnansweredError(new Error("request timed out"));
+				if (args.p_action === "begin" || args.p_action === "check")
+					return { state: "admitted", resourceLeaseId: computerId(90), validForMs: 30000 };
+				if (args.p_action === "finish") return { state: "drained" };
+				return { state: "authorized" };
+			}),
+		};
+		const run = computerRun();
+		// The real control aborts the signal `begin` returned when it finishes.
+		const effects = new CloudCompanyComputerEffectControl({
+			run: { ...run, binding: { fixture: true } } as never,
+			scope: computerScope(),
+			control: registry,
+		});
+		const automation = {
+			perform: vi.fn(async (): Promise<CompanyComputerToolContent> => {
+				throw new CompanyComputerActionFailedError(new Error("page.goto: Timeout 10000ms exceeded"));
+			}),
+			stopBrowser: vi.fn(async (): Promise<void> => undefined),
+		};
+		const endpoint = new CompanyComputerGuestEndpoint({
+			binding: computerBinding(),
+			capabilities: ["browser", "desktop", "shell"],
+			resourceTarget: {},
+			effects,
+			gate: new CompanyComputerScreenActionGate(),
+			automation,
+			assertScreenAdmitted: async () => undefined,
+			prepareScreen: async () => undefined,
+		});
+		await expect(endpoint.perform(computerOperation(), computerLease(), computerEffect())).rejects.toThrow(
+			"page.goto: Timeout 10000ms exceeded",
+		);
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		expect(actions).toEqual(["begin", "check", "check", "finish"]);
+		expect(automation.stopBrowser).not.toHaveBeenCalled();
+		// An authority check before the work that gets no answer stops nothing either.
+		actions.length = 0;
+		unanswered = true;
+		const next = { ...computerEffect(), receiptId: computerId(91) };
+		await expect(endpoint.perform(computerOperation(), computerLease(), next)).rejects.toThrow(
+			"OFFICE_REGISTRY_UNCONFIRMED",
+		);
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		expect(actions).toEqual(["begin", "check", "finish"]);
+		expect(automation.stopBrowser).not.toHaveBeenCalled();
+		expect(automation.perform).toHaveBeenCalledOnce();
+	});
+
+	it("still stops the browser and keeps the resource when authority is refused before the work", async () => {
+		const harness = toolHarness();
+		harness.effects.assertAuthorized = vi.fn(async () => {
+			throw new Error("ACCESS_REVOKED");
+		});
+		await expect(harness.endpoint.perform(computerOperation(), computerLease(), computerEffect())).rejects.toThrow(
+			"ACCESS_REVOKED",
+		);
+		expect(harness.automation.stopBrowser).toHaveBeenCalledOnce();
+		expect(harness.effects.finish).not.toHaveBeenCalled();
 	});
 
 	it("still stops the browser and keeps the resource when authority is gone after a typed failure", async () => {

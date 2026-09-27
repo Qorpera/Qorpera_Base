@@ -35,6 +35,13 @@ export interface CompanyComputerNativeGuestSession {
 	 * and finished reaping it. The same lease may then open a fresh one. */
 	ended?(): boolean;
 }
+/** The guest refused to create a session and created nothing; the gateway keeps no capacity for it. */
+export class CompanyComputerGuestSessionRefusedError extends Error {
+	constructor(reason: string) {
+		super(reason);
+		this.name = "CompanyComputerGuestSessionRefusedError";
+	}
+}
 export type CompanyComputerNativeGuestSessionFactory = (options: {
 	run: CloudNativeToolRun;
 	descriptor: CompanyComputerNativeDescriptor;
@@ -242,22 +249,16 @@ export class CompanyComputerNativeGateway {
 				scope: this.#scope,
 				control: this.#registry,
 			});
-			const previous = session.guest;
-			const guest = await this.#createSession({
+			// The fresh session takes the old one's place at once, whatever happens
+			// next, so the run's own close reaps it. A changed configuration needs no
+			// check here: its endpoint refuses every operation the run was admitted with.
+			session.guest = await this.#createSession({
 				run: session.run,
 				descriptor,
 				lease: structuredClone(session.lease),
 				effects,
 			});
-			if (
-				session.closed ||
-				!isDeepStrictEqual(guest.endpoint.resourceTarget, previous.endpoint.resourceTarget) ||
-				!isDeepStrictEqual(guest.endpoint.capabilities, previous.endpoint.capabilities)
-			) {
-				await guest.close();
-				throw new Error(session.closed ? "OFFICE_NATIVE_CLOSED" : "OFFICE_GUEST_CONFIGURATION_DIFFERS");
-			}
-			session.guest = guest;
+			if (session.closed) throw new Error("OFFICE_NATIVE_CLOSED");
 		})().finally(() => {
 			session.reopening = undefined;
 		});
@@ -320,10 +321,11 @@ export class CompanyComputerNativeGateway {
 				guestOwned = true;
 			});
 			this.#sessions.set(key, pending);
-			void pending.catch(() => {
-				// Rejected authority did not create any guest resources. Unknown
-				// factory/cleanup outcomes retain capacity until service recovery.
-				if (!guestOwned) {
+			void pending.catch((error: unknown) => {
+				// Rejected authority did not create any guest resources, nor did a
+				// guest that refused to create a session. Unknown factory/cleanup
+				// outcomes retain capacity until service recovery.
+				if (!guestOwned || error instanceof CompanyComputerGuestSessionRefusedError) {
 					this.#sessions.delete(key);
 					this.#activeSessions--;
 				}

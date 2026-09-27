@@ -18,6 +18,7 @@ import {
 	parseCompanyComputerNativeUrl,
 } from "@qorpera/runtime/cloud-company-computer-native-client";
 import {
+	CompanyComputerGuestSessionRefusedError,
 	CompanyComputerNativeGateway,
 	startCompanyComputerNativeGateway,
 } from "@qorpera/runtime/cloud-company-computer-native-gateway";
@@ -392,7 +393,8 @@ describe("native runtime to office transport (real TLS, synthetic SQL and guest 
 		expect(await f.endpoint.perform(f.operation, f.lease, next)).toEqual({ kind: "text", value: "test" });
 		expect(f.createSession).toHaveBeenCalledTimes(2);
 		expect(f.perform).toHaveBeenCalledTimes(2);
-		// A changed configuration is not a reopen: the fresh session is closed at once.
+		// A changed configuration still takes the old session's place, so the run's
+		// close reaps it, but its endpoint refuses what the run was admitted with.
 		f.guests[1].ended = true;
 		const original = f.sql.getMockImplementation()!;
 		f.sql.mockImplementation(async (input, init) =>
@@ -403,9 +405,24 @@ describe("native runtime to office transport (real TLS, synthetic SQL and guest 
 		await expect(
 			f.endpoint.perform(f.operation, f.lease, { ...f.context, receiptId: randomUUID() }),
 		).rejects.toThrow();
+		await expect(
+			f.endpoint.perform(f.operation, f.lease, { ...f.context, receiptId: randomUUID() }),
+		).rejects.toThrow();
 		expect(f.createSession).toHaveBeenCalledTimes(3);
 		expect(f.perform).toHaveBeenCalledTimes(2);
+		expect(f.physicalClose).not.toHaveBeenCalled();
+		await f.endpoint.close();
 		expect(f.physicalClose).toHaveBeenCalledOnce();
+	});
+	it("keeps no capacity for a session the guest refused to create", async () => {
+		const f = await fixture();
+		f.createSession.mockRejectedValueOnce(new CompanyComputerGuestSessionRefusedError("OFFICE_PRIVACY_FENCED"));
+		await expect(f.endpoint.perform(f.operation, f.lease, f.context)).rejects.toThrow();
+		expect(await f.endpoint.perform(f.operation, f.lease, { ...f.context, receiptId: randomUUID() })).toEqual({
+			kind: "text",
+			value: "test",
+		});
+		expect(f.createSession).toHaveBeenCalledTimes(2);
 	});
 	it("releases only the exact existing session while stale status blocks all new work", async () => {
 		let stale = false;

@@ -39,7 +39,10 @@ import { CompanyComputerLinuxDesktopLauncher } from "./cloud-company-computer-li
 import type { CompanyComputerCommandLimits } from "./cloud-company-computer-linux-host.ts";
 import { startCompanyComputerLinuxPrivateSurface } from "./cloud-company-computer-linux-private-surface.ts";
 import { parseCompanyComputerNativeDescriptor } from "./cloud-company-computer-native-client.ts";
-import type { CompanyComputerNativeGuestSession } from "./cloud-company-computer-native-gateway.ts";
+import {
+	CompanyComputerGuestSessionRefusedError,
+	type CompanyComputerNativeGuestSession,
+} from "./cloud-company-computer-native-gateway.ts";
 import { CloudCompanyComputerPrivateSurfaceControl } from "./cloud-company-computer-private-surface-control.ts";
 import {
 	COMPANY_COMPUTER_UNANSWERED_GRACE_MS,
@@ -64,7 +67,8 @@ interface NativeSession {
 }
 /** The screen's one browser. It belongs to the desktop, like any window on it:
  * agent runs attach to it and detach, members use it through their viewer. It
- * stays open only while SQL authorizes it (see `#ensureBrowser`). */
+ * stays open while SQL keeps its grant; its network only while somebody
+ * entitled is present (see `#ensureBrowser`). */
 interface ScreenBrowser {
 	manager: PersistentCompanyComputerBrowser;
 	opening?: Promise<CompanyComputerBrowserSession>;
@@ -396,12 +400,14 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 
 	/**
 	 * Open, or join, the one browser of this screen. No run and no viewer owns the
-	 * process, so a run ending or a viewer closing does not by itself stop it. It
-	 * lives exactly as long as SQL keeps authorizing it: the egress relay asks
-	 * every second, and once no agent holds the lease and no member with input
-	 * permission is live on the screen (after SQL's tolerance of at most a minute
-	 * for a network blip) the next check is refused and the browser closes. It
-	 * also ends with a drain, the privacy fence, a lost grant and the service.
+	 * process, so a run ending or a viewer closing does not by itself stop it. The
+	 * egress relay asks SQL every second. Once no agent holds the lease and no
+	 * member with input permission is live on the screen (after SQL's tolerance of
+	 * at most a minute for a network blip), SQL answers `idle`: the window stays
+	 * on the desktop, like any app between runs, with its network paused until
+	 * somebody entitled is back. A refusal closes it, and so do a drain, the
+	 * privacy fence, a lost grant and the service. A check that gets no answer
+	 * pauses the network too, and closes the browser only after the grace.
 	 * Chromium locks a profile to one process, and the manager keeps exactly one
 	 * per profile, so an agent run arriving while it is open gets the same context.
 	 */
@@ -488,7 +494,8 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 	): Promise<CompanyComputerNativeGuestSession> {
 		this.#binding(input.lease.binding);
 		// A session would hold the physical drain a private sign-in waits for.
-		if (this.#private || this.#privacy?.state === "entering") throw new Error("OFFICE_PRIVACY_FENCED");
+		if (this.#private || this.#privacy?.state === "entering")
+			throw new CompanyComputerGuestSessionRefusedError("OFFICE_PRIVACY_FENCED");
 		if (this.#gate && this.#gate !== input.gate) throw new Error("OFFICE_GATE_CHANGED");
 		this.#gate = input.gate;
 		const descriptor = parseCompanyComputerNativeDescriptor(input.descriptor, input.run);
@@ -587,8 +594,8 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 					async () => {
 						await Promise.allSettled([...active]);
 						// The run lets go of the screen's browser instead of closing it. It
-						// stays open only while somebody entitled remains (the relay's
-						// per-second SQL check decides). Every action of this run has settled
+						// stays on the desktop; its network pauses once nobody entitled
+						// remains (the relay's per-second SQL check decides). Every action of this run has settled
 						// above, so no automation command of the run is still in flight.
 						// Drop local handles without closing any shared desktop tab.
 						const leaving = automation;

@@ -86,6 +86,7 @@ export async function startCompanyComputerBrowserEgress(options: {
 	let transfers = 0;
 	let attempts = 0;
 	let checking = false;
+	let paused = false;
 	let closing: Promise<void> | undefined;
 	const fail = (): void => {
 		if (!signal.aborted) {
@@ -101,7 +102,8 @@ export async function startCompanyComputerBrowserEgress(options: {
 	const check = (checked: AbortSignal): Promise<void> =>
 		cloudToolRequest((s) => track(options.assertActive(s)), checked, 3000);
 	const server = createServer({ pauseOnConnect: true }, (peer) => {
-		if (signal.aborted || peers.size >= 64 || ++attempts > 4096) {
+		// A paused relay refuses at once, without counting: an idle page may retry for days.
+		if (signal.aborted || paused || peers.size >= 64 || ++attempts > 4096) {
 			peer.destroy();
 			return;
 		}
@@ -181,6 +183,8 @@ export async function startCompanyComputerBrowserEgress(options: {
 					throw new Error("OFFICE_BROWSER_ADDRESS_DENIED");
 				await check(checked);
 				checked.throwIfAborted();
+				// A pause answered while this connection was being checked wins.
+				if (paused) throw new Error("OFFICE_BROWSER_EGRESS_PAUSED");
 				upstream = transport.connect(addresses[0]);
 				upstreams.add(upstream);
 				track(new Promise<void>((resolve) => upstream!.once("close", () => resolve())));
@@ -192,7 +196,7 @@ export async function startCompanyComputerBrowserEgress(options: {
 				upstream.on("data", account);
 				upstream.setTimeout(30000, end);
 				upstream.once("connect", () => {
-					if (checked.aborted) {
+					if (checked.aborted || paused) {
 						end();
 						return;
 					}
@@ -218,8 +222,10 @@ export async function startCompanyComputerBrowserEgress(options: {
 	};
 	server.on("error", fail);
 	signal.addEventListener("abort", abort, { once: true });
-	// Every established tunnel goes; new ones are refused by their own checks.
+	// Every established tunnel goes and new ones are refused until the next
+	// authorized periodic answer. The window stays on the desktop.
 	const pause = (): void => {
+		paused = true;
 		for (const socket of [...peers, ...upstreams]) socket.destroy();
 	};
 	let answeredAt = performance.now();
@@ -230,6 +236,12 @@ export async function startCompanyComputerBrowserEgress(options: {
 			.then(
 				() => {
 					answeredAt = performance.now();
+					if (paused) {
+						// A new period of presence: the relay's budgets were sized for one.
+						paused = false;
+						attempts = 0;
+						transfers = 0;
+					}
 				},
 				(error: unknown) => {
 					const failure = options.classifyFailure?.(error) ?? "refused";

@@ -40,9 +40,11 @@ const methods = [
 export type CompanyComputerRegistryMethod = (typeof methods)[number];
 
 /**
- * The registry gave no answer: the network, a timeout, or a server that could
- * not serve the request (5xx, 408, 425, 429). It is not a refusal. A refusal
- * (SQL raised, any other 4xx) keeps the plain OFFICE_REGISTRY_UNCONFIRMED.
+ * The registry gave no answer: the network, a timeout, a server that could not
+ * serve the request (5xx, 408, 425, 429 without a database error), or a
+ * database error that says "try again" (connection, rollback, resources, lock
+ * wait, cancelled statement). It is not a refusal. Both keep the code
+ * OFFICE_REGISTRY_UNCONFIRMED.
  */
 export class CompanyComputerRegistryUnansweredError extends Error {
 	constructor(cause: unknown) {
@@ -50,6 +52,17 @@ export class CompanyComputerRegistryUnansweredError extends Error {
 		this.name = "CompanyComputerRegistryUnansweredError";
 	}
 }
+
+/** The registry answered and refused: SQL raised, or any other 4xx. */
+class CompanyComputerRegistryRefusedError extends Error {
+	constructor(cause: unknown) {
+		super("OFFICE_REGISTRY_UNCONFIRMED", { cause });
+		this.name = "CompanyComputerRegistryRefusedError";
+	}
+}
+
+/** SQLSTATE classes (and codes) that report a passing condition, not a decision. */
+const transientSqlState = /^(08|40|53|57)|^55P03$/;
 
 /** How long a desktop, or its browser, outlasts a registry that does not answer. */
 export const COMPANY_COMPUTER_UNANSWERED_GRACE_MS = 30_000;
@@ -63,20 +76,23 @@ export const COMPANY_COMPUTER_UNANSWERED_GRACE_MS = 30_000;
 export function companyComputerAuthorityUnanswered(error: unknown): boolean {
 	const pending = [error];
 	const seen = new Set<unknown>();
+	let unanswered = false;
 	for (let index = 0; pending.length && index < 32; index++) {
 		const current = pending.shift();
 		if (seen.has(current) || !(current instanceof Error)) continue;
 		seen.add(current);
+		// A refusal anywhere in the chain wins over a missing answer elsewhere.
+		if (current instanceof CompanyComputerRegistryRefusedError) return false;
 		if (
 			current instanceof CompanyComputerRegistryUnansweredError ||
 			(current instanceof CloudRuntimeDiagnosticError && current.category === "timeout") ||
 			current.message === "COMPUTER_REQUEST_STOPPED"
 		)
-			return true;
+			unanswered = true;
 		if (current.cause !== undefined) pending.push(current.cause);
 		if (current instanceof AggregateError) pending.push(...current.errors.slice(0, 16));
 	}
-	return false;
+	return unanswered;
 }
 
 /** Host-only Supabase transport. Closed RPC names, finite bodies, no redirects
@@ -123,8 +139,21 @@ export class HttpCloudCompanyComputerRegistry {
 						body,
 					});
 					if (!response.ok) {
-						void response.body?.cancel().catch(() => undefined);
-						throw Object.assign(new Error("denied"), { status: response.status });
+						// Only the SQLSTATE is kept from the body, never its message or details.
+						let sqlState: string | undefined;
+						try {
+							const failure: unknown = JSON.parse(
+								new TextDecoder("utf-8", { fatal: true }).decode(
+									await readBoundedCloudResponse(response, 4096, requestSignal),
+								),
+							);
+							const code =
+								failure && typeof failure === "object" && "code" in failure ? failure.code : undefined;
+							if (typeof code === "string" && /^[0-9A-Z]{5}$/.test(code)) sqlState = code;
+						} catch {
+							void response.body?.cancel().catch(() => undefined);
+						}
+						throw Object.assign(new Error("denied"), { status: response.status, sqlState });
 					}
 					const bytes = await readBoundedCloudResponse(response, 64 * 1024, requestSignal);
 					requestSignal.throwIfAborted();
@@ -138,8 +167,14 @@ export class HttpCloudCompanyComputerRegistry {
 		} catch (error) {
 			// Never disclose SQL diagnostics, profile/input content or credentials.
 			const status = error instanceof Error && "status" in error ? error.status : undefined;
-			if (typeof status === "number" && status >= 400 && status < 500 && ![408, 425, 429].includes(status))
-				throw new Error("OFFICE_REGISTRY_UNCONFIRMED", { cause: error });
+			const sqlState = error instanceof Error && "sqlState" in error ? error.sqlState : undefined;
+			if (typeof sqlState === "string" && transientSqlState.test(sqlState))
+				throw new CompanyComputerRegistryUnansweredError(error);
+			if (
+				typeof sqlState === "string" ||
+				(typeof status === "number" && status >= 400 && status < 500 && ![408, 425, 429].includes(status))
+			)
+				throw new CompanyComputerRegistryRefusedError(error);
 			throw new CompanyComputerRegistryUnansweredError(error);
 		}
 	}
