@@ -18,9 +18,9 @@ import {
 
 const digest = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const root = "/fixture/repository";
-const counts = [["patched-codex-boundary.test.ts", 6], ["native-codex-capture-images.test.ts", 9], ["native-codex-compaction.test.ts", 4]];
+const counts = [["patched-codex-boundary.test.ts", 7], ["native-codex-capture-images.test.ts", 9], ["native-codex-compaction.test.ts", 4]];
 function passingReport() {
-	return { success: true, numTotalTests: 19, numPassedTests: 19, numFailedTests: 0, numPendingTests: 0, numTodoTests: 0, numFailedTestSuites: 0, numPendingTestSuites: 0, testResults: counts.map(([file, count]) => ({ name: join(root, "packages/runtime/test", file), status: "passed", message: "", assertionResults: Array.from({ length: count }, () => ({ status: "passed", failureMessages: [] })) })) };
+	return { success: true, numTotalTests: 20, numPassedTests: 20, numFailedTests: 0, numPendingTests: 0, numTodoTests: 0, numFailedTestSuites: 0, numPendingTestSuites: 0, testResults: counts.map(([file, count]) => ({ name: join(root, "packages/runtime/test", file), status: "passed", message: "", assertionResults: Array.from({ length: count }, () => ({ status: "passed", failureMessages: [] })) })) };
 }
 
 test("only canonical, separate new output and exact source paths are accepted", () => {
@@ -41,8 +41,8 @@ test("V8 downloads require the exact pinned manifest and both closed input names
 	assert.throws(() => nativeV8Plan('v8 = "=150.4.0"\n', `${digest(bytes)}  ${manifest}\n${digest(bytes)}  ${manifest}\n`));
 });
 
-test("all 19 actual assertions in the three exact files must pass", () => {
-	assert.deepEqual(verifyNativeComponentTests(passingReport(), root), { passed: 19, skipped: 0, failed: 0, files: 3 });
+test("all 20 actual assertions in the three exact files must pass", () => {
+	assert.deepEqual(verifyNativeComponentTests(passingReport(), root), { passed: 20, skipped: 0, failed: 0, files: 3 });
 	for (const key of ["numFailedTests", "numPendingTests", "numTodoTests", "numFailedTestSuites", "numPendingTestSuites"]) {
 		const report = passingReport(); report[key] = 1;
 		assert.throws(() => verifyNativeComponentTests(report, root));
@@ -58,6 +58,16 @@ test("all 19 actual assertions in the three exact files must pass", () => {
 		(report) => { report.testResults[0].assertionResults.pop(); },
 		(report) => { report.testResults[0].name = "/foreign/patched-codex-boundary.test.ts"; },
 	]) { const report = passingReport(); mutate(report); assert.throws(() => verifyNativeComponentTests(report, root)); }
+});
+
+test("the old 19-case report cannot omit the added Fast case or substitute another file's assertion", () => {
+	const old = passingReport();
+	old.numTotalTests = 19; old.numPassedTests = 19;
+	old.testResults[0].assertionResults.pop();
+	assert.throws(() => verifyNativeComponentTests(old, root));
+	const shifted = passingReport();
+	shifted.testResults[1].assertionResults.push(shifted.testResults[0].assertionResults.pop());
+	assert.throws(() => verifyNativeComponentTests(shifted, root));
 });
 
 test("the test environment is closed and admits only the explicit component binary", () => {

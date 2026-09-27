@@ -14,7 +14,7 @@ const repository = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const execute = promisify(execFile);
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const cases = new Map([
-	["patched-codex-boundary.test.ts", 6],
+	["patched-codex-boundary.test.ts", 7],
 	["native-codex-capture-images.test.ts", 9],
 	["native-codex-compaction.test.ts", 4],
 ]);
@@ -56,8 +56,8 @@ export function verifyNativeComponentTests(report, root = repository) {
 	assert.equal(report.success, true, "Native component report did not succeed");
 	for (const key of ["numFailedTests", "numPendingTests", "numTodoTests", "numFailedTestSuites", "numPendingTestSuites"])
 		assert.equal(report[key], 0, `Native component ${key} must be zero`);
-	assert.equal(report.numTotalTests, 19);
-	assert.equal(report.numPassedTests, 19);
+	assert.equal(report.numTotalTests, 20);
+	assert.equal(report.numPassedTests, 20);
 	assert.equal(report.testResults?.length, 3);
 	const expected = new Map([...cases].map(([name, count]) => [join(root, "packages/runtime/test", name), count]));
 	for (const file of report.testResults) {
@@ -73,7 +73,7 @@ export function verifyNativeComponentTests(report, root = repository) {
 		}
 	}
 	assert.equal(expected.size, 0);
-	return { passed: 19, skipped: 0, failed: 0, files: 3 };
+	return { passed: 20, skipped: 0, failed: 0, files: 3 };
 }
 
 export function nativeComponentEnvironment(root, path, binary) {

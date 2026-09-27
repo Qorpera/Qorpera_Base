@@ -18,6 +18,7 @@ import {
 	CloudNativeToolBoundary,
 	type CloudToolResult,
 } from "@qorpera/runtime/cloud-native-tool-boundary";
+import type { CloudRuntimeServiceTier } from "@qorpera/runtime/cloud-runtime-policy";
 import { nativeCodexFixtureCommand } from "./native-codex-fixture-command.ts";
 
 export interface CodexBoundaryProof {
@@ -43,6 +44,7 @@ export interface CodexBoundaryProof {
 export async function runOfficialCodexBoundaryProbe(
 	codexCommand: readonly [string, ...string[]],
 	model = "offline-probe",
+	serviceTier: CloudRuntimeServiceTier = "standard",
 ): Promise<CodexBoundaryProof> {
 	const root = await mkdtemp(join(tmpdir(), "qorpera-native-boundary-proof-"));
 	const companyId = randomUUID();
@@ -117,12 +119,16 @@ export async function runOfficialCodexBoundaryProbe(
 				tools?: Array<{ type: string; name?: string; tools?: Array<{ name: string; description: string }> }>;
 				input: Array<Record<string, unknown>>;
 				reasoning?: { effort?: string };
+				service_tier?: string;
 			};
 			// Codex 0.155.1 defaults to GPT-6 Astra; provider-default sends no model name.
 			assert.equal(parsed.model, model === "provider-default" ? "gpt-6-astra" : model);
 			if (providerModel) assert.equal(parsed.model, providerModel);
 			providerModel = parsed.model;
 			assert.equal(parsed.reasoning?.effort, "low");
+			// The pinned native serializer omits explicit standard routing and maps Fast to priority.
+			if (serviceTier === "standard") assert.equal(Object.hasOwn(parsed, "service_tier"), false);
+			else assert.equal(parsed.service_tier, "priority");
 			const additionalTools = parsed.input.filter((item) => item.type === "additional_tools");
 			// The 0.155.1 catalog enables Responses Lite for Sol and for Astra (the pinned binary's own default).
 			const responsesLite = parsed.model === "gpt-5.6-sol" || parsed.model === "gpt-6-astra";
@@ -414,6 +420,7 @@ export async function runOfficialCodexBoundaryProbe(
 				...command,
 				boundary,
 				model,
+				serviceTier,
 				prompt:
 					"Offline scripted boundary proof. Only explicit send_message is visible; all other output is private.",
 				signal: abort.signal,

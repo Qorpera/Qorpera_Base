@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       native_component_acceptance:
-        description: Build pinned native source serially and require all 19 offline component tests
+        description: Build pinned native source serially and require all 20 offline component tests
         type: boolean
         required: false
         default: false
