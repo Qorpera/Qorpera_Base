@@ -433,9 +433,9 @@
 .routine-card-summary span { color: var(--text-muted); font-size: 12.5px; line-height: 18px; overflow-wrap: anywhere; }
 .routine-card-state { flex: none; color: var(--text-soft); font-size: 12px; }
 /* Edit keeps its room while the card is shut, so opening never rewraps the name. */
-.routine-card-edit { flex: none; transition: opacity 160ms ease, visibility 0s; }
-.routine-card:not(.is-open) .routine-card-edit { visibility: hidden; opacity: 0; transition: opacity 120ms ease, visibility 0s 120ms; }
-.routine-switch { position: relative; flex: none; width: 38px; height: 22px; padding: 0; border: 0; border-radius: var(--radius-pill); background: var(--border-strong); cursor: pointer; transition: background-color 180ms ease; }
+.routine-card .routine-card-edit { flex: none; transition: background 120ms ease, border-color 120ms ease, opacity 160ms ease, visibility 0s; }
+.routine-card:not(.is-open) .routine-card-edit { visibility: hidden; opacity: 0; transition: background 120ms ease, border-color 120ms ease, opacity 120ms ease, visibility 0s 120ms; }
+.routine-switch { position: relative; flex: none; width: 38px; height: 22px; padding: 0; border: 0; border-radius: var(--radius-pill); background: var(--border-strong); cursor: pointer; transition: background-color 180ms ease, opacity 160ms ease; }
 .routine-switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 18px; height: 18px; border-radius: 50%; background: #ffffff; box-shadow: 0 1px 2px rgb(0 0 0 / 22%); transition: translate 200ms cubic-bezier(.2, .7, .2, 1), background-color 180ms ease; }
 .routine-switch[aria-checked="true"] { background: var(--primary); }
 .routine-switch[aria-checked="true"]::after { translate: 16px 0; background: var(--on-primary); }
@@ -462,6 +462,7 @@
 .routine-card-fact dd { margin: 0; font-size: 12.5px; line-height: 18px; overflow-wrap: anywhere; }
 .routine-card-when { display: flex; gap: 6px; }
 .routine-card-when > .icon { flex: none; width: 14px; height: 14px; margin-top: 2px; color: var(--text-muted); }
+.routine-card-trigger { display: block; }
 .routine-card-when small { display: block; color: var(--text-muted); font-size: 11.5px; line-height: 17px; }
 .routine-list-footer { padding-top: 16px; }
 .agent-routines > .surface-status { margin: 0 0 12px; }

@@ -356,9 +356,13 @@ describe("agent routines section", () => {
 	it("pauses a routine with its switch and offers no controls to a member who cannot manage", async () => {
 		const f = mount([routine()]);
 		await settle();
+		const lever = f.view.el.querySelector('[role="switch"]')!;
 		click(f.view.el, "Morning brief");
-		// The switch moves at once, before the cloud answers.
+		// The switch moves at once, before the cloud answers, and in place, so it slides.
+		expect(f.view.el.querySelector('[role="switch"]')).toBe(lever);
 		expect(controls(cards(f.view.el)[0]!)).toEqual(["Edit", "switch:false"]);
+		expect(lever.getAttribute("aria-busy")).toBe("");
+		expect(lever.getAttribute("title")).toBe("Resume routine");
 		await settle();
 		expect(f.routines.setEnabled).toHaveBeenCalledWith(
 			expect.objectContaining({ title: "Morning brief" }),
@@ -370,14 +374,115 @@ describe("agent routines section", () => {
 		await settle();
 		const card = cards(readOnly.view.el)[0]!;
 		expect(controls(card)).toEqual(["switch:true"]);
-		const lever = card.querySelector('[role="switch"]')!;
-		expect(lever.getAttribute("aria-disabled")).toBe("true");
-		expect(lever.getAttribute("title")).toBe("Only owners and admins can pause routines.");
-		(lever as HTMLButtonElement).click();
+		const locked = card.querySelector('[role="switch"]')!;
+		expect(locked.getAttribute("aria-disabled")).toBe("true");
+		expect(locked.getAttribute("title")).toBe("Only owners and admins can pause or resume routines.");
+		(locked as HTMLButtonElement).click();
 		await settle();
 		expect(readOnly.routines.setEnabled).not.toHaveBeenCalled();
 		expect([...readOnly.view.el.querySelectorAll("button")].map((item) => item.textContent)).not.toContain(
 			"New routine",
+		);
+	});
+	it("shows the switch as the cloud reads it after a change, and where it was moved while no read has come back", async () => {
+		const other = routine({
+			routineId: "10000000-0000-4000-8000-000000000017",
+			clientRoutineId: "10000000-0000-4000-8000-000000000018",
+			title: "Evening wrap",
+		});
+		const f = mount([routine(), other]);
+		await settle();
+		let release!: () => void;
+		f.routines.setEnabled.mockImplementationOnce(
+			() =>
+				new Promise<void>((resolve) => {
+					release = resolve;
+				}),
+		);
+		click(f.view.el, "Morning brief");
+		await settle();
+		// While one switch moves, the others and Edit wait; clicking another does nothing.
+		const [, second] = cards(f.view.el);
+		expect(second!.querySelector('[role="switch"]')?.getAttribute("aria-disabled")).toBe("true");
+		expect(second!.querySelector<HTMLButtonElement>(".routine-card-edit")?.disabled).toBe(true);
+		click(f.view.el, "Evening wrap");
+		expect(f.routines.setEnabled).toHaveBeenCalledTimes(1);
+		// The change went through, but the read after it failed: the switch stays where it was moved.
+		f.routines.list.mockRejectedValueOnce(new Error("offline"));
+		release();
+		await settle();
+		expect(controls(cards(f.view.el)[0]!)).toEqual(["Edit", "switch:false"]);
+		expect(controls(cards(f.view.el)[1]!)).toEqual(["Edit", "switch:true"]);
+		expect(f.view.el.querySelector(".surface-status")?.textContent).toBe(
+			"Routines could not be read. Refresh to try again.",
+		);
+		// The next read that answers decides.
+		f.routines.list.mockResolvedValue([routine({ status: "paused" }), other]);
+		f.view.refresh();
+		await settle();
+		expect(controls(cards(f.view.el)[0]!)).toEqual(["Edit", "switch:false"]);
+		expect(cards(f.view.el)[0]!.querySelector('[role="switch"]')?.getAttribute("title")).toBe("Resume routine");
+		f.routines.list.mockResolvedValue([routine(), other]);
+		f.view.refresh();
+		await settle();
+		expect(controls(cards(f.view.el)[0]!)).toEqual(["Edit", "switch:true"]);
+	});
+	it("keeps a moved switch through a list read that went out before the change", async () => {
+		const f = mount([routine()]);
+		await settle();
+		let answer!: (items: CloudRoutine[]) => void;
+		f.routines.list.mockImplementationOnce(
+			() =>
+				new Promise<CloudRoutine[]>((resolve) => {
+					answer = resolve;
+				}),
+		);
+		f.view.refresh();
+		let saved!: () => void;
+		f.routines.setEnabled.mockImplementationOnce(
+			() =>
+				new Promise<void>((resolve) => {
+					saved = resolve;
+				}),
+		);
+		click(f.view.el, "Morning brief");
+		// The earlier read answers with the routine as it was before the change.
+		answer([routine()]);
+		await settle();
+		expect(controls(cards(f.view.el)[0]!)).toEqual(["Edit", "switch:false"]);
+		// The read after the change decides.
+		f.routines.list.mockResolvedValue([routine({ status: "paused" })]);
+		saved();
+		await settle();
+		expect(controls(cards(f.view.el)[0]!)).toEqual(["Edit", "switch:false"]);
+		expect(f.routines.list).toHaveBeenCalledTimes(3);
+	});
+	it("keeps saying why when the model accounts could not be read for a switch", async () => {
+		const routines = {
+			list: vi.fn(async () => [routine()]),
+			runs: vi.fn(async (): Promise<CloudRoutineOccurrence[]> => []),
+			save: vi.fn(async () => {}),
+			setEnabled: vi.fn(async () => {}),
+		} satisfies WebRoutines;
+		const view = new AgentRoutines(
+			() => staff,
+			{
+				routines,
+				accounts: async () => {
+					throw new Error("offline");
+				},
+				canManage: () => true,
+			},
+			new AbortController().signal,
+		);
+		document.body.append(view.el);
+		await settle();
+		click(view.el, "Morning brief");
+		await settle();
+		expect(routines.setEnabled).not.toHaveBeenCalled();
+		expect(controls(cards(view.el)[0]!)).toEqual(["Edit", "switch:true"]);
+		expect(view.el.querySelector(".surface-status")?.textContent).toBe(
+			"Your model accounts could not be read. Try again.",
 		);
 	});
 	it("puts a switch that could not be changed back, and keeps saying why", async () => {
@@ -432,11 +537,18 @@ describe("agent routines section", () => {
 		expect(facts).toMatch(/When to runMon at 8:30\sAMEurope\/Copenhagen/);
 		expect(facts).toContain("Next run");
 		expect(facts).toMatch(/Last runFinished · /);
+		// The switch and Edit act without opening or closing the card.
+		second!.querySelector<HTMLElement>('[role="switch"]')!.click();
+		first!.querySelector<HTMLElement>('[role="switch"]')!.click();
+		await settle();
+		const [firstAgain, secondAgain] = cards(f.view.el);
+		expect(firstAgain!.classList.contains("is-open")).toBe(false);
+		expect(secondAgain!.classList.contains("is-open")).toBe(true);
 		// Opening another closes the first; the open one stays open through a refresh.
-		first!.querySelector<HTMLElement>(".routine-card-head")!.click();
-		expect(first!.classList.contains("is-open")).toBe(true);
-		expect(second!.classList.contains("is-open")).toBe(false);
-		expect(body(second!).hasAttribute("inert")).toBe(true);
+		firstAgain!.querySelector<HTMLElement>(".routine-card-head")!.click();
+		expect(firstAgain!.classList.contains("is-open")).toBe(true);
+		expect(secondAgain!.classList.contains("is-open")).toBe(false);
+		expect(body(secondAgain!).hasAttribute("inert")).toBe(true);
 		f.view.refresh();
 		await settle();
 		expect(cards(f.view.el).map((card) => card.classList.contains("is-open"))).toEqual([true, false]);
@@ -468,13 +580,30 @@ describe("agent routines section", () => {
 		await settle();
 		expect(f.view.el.querySelector(".routine-card-summary span")?.textContent).toMatch(new RegExp(`^${words}\\sAM$`));
 	});
-	it("names the routine's zone when the viewer's clock is another", async () => {
+	it("names the routine's zone when the viewer's clock is another, beside the time it belongs to", async () => {
 		localStorage.setItem("qorpera.web.time-zone", "America/New_York");
-		const f = mount([routine()]);
+		const f = mount([
+			routine({
+				triggers: [
+					routine().triggers[0]!,
+					{
+						id: "f",
+						kind: "listener",
+						source: "company-file",
+						path: "finance/invoices",
+						match: "exact",
+						timeZone: "Europe/Copenhagen",
+					},
+				],
+			}),
+		]);
 		await settle();
 		expect(f.view.el.querySelector(".routine-card-summary span")?.textContent).toMatch(
-			/^Mon at 8:30\sAM \(Europe\/Copenhagen\)$/,
+			/^Mon at 8:30\sAM \(Europe\/Copenhagen\); When finance\/invoices changes$/,
 		);
+		expect(
+			[...f.view.el.querySelectorAll(".routine-card-trigger")].map((item) => item.textContent?.replace(/\s/g, " ")),
+		).toEqual(["Mon at 8:30 AMEurope/Copenhagen", "When finance/invoices changes"]);
 	});
 	it("steps back from the editor to the list, and from the list to the page it was opened from", async () => {
 		const back = vi.fn();

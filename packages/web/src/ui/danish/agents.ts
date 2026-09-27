@@ -48,7 +48,8 @@ export const AGENTS: Record<string, string> = {
 	"Last run": "Seneste kørsel",
 	"Pause routine": "Sæt rutinen på pause",
 	"Resume routine": "Genoptag rutinen",
-	"Only owners and admins can pause routines.": "Kun ejere og administratorer kan sætte rutiner på pause.",
+	"Only owners and admins can pause or resume routines.":
+		"Kun ejere og administratorer kan sætte rutiner på pause eller genoptage dem.",
 	"{every} between {start} and {end}, {days} ({zone})": "{every} mellem {start} og {end}, {days} ({zone})",
 	"{every} between {start} and {end} ({zone})": "{every} mellem {start} og {end} ({zone})",
 	"Routines could not be read. Refresh to try again.": "Rutinerne kunne ikke hentes. Opdater for at prøve igen.",

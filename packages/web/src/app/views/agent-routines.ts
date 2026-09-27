@@ -130,9 +130,12 @@ function whenWords(trigger: CloudRoutineTrigger): string {
 	});
 }
 
-/** The zone a weekly time is read on, when it is not the viewer's own. */
-function foreignZone(trigger: CloudRoutineTrigger): string | undefined {
-	return "localTime" in trigger && trigger.timeZone !== presentationTimeZone() ? trigger.timeZone : undefined;
+/** A trigger in few words, naming a weekly time's zone when it is not the viewer's own. */
+function whenShort(trigger: CloudRoutineTrigger): string {
+	const words = whenWords(trigger);
+	return "localTime" in trigger && trigger.timeZone !== presentationTimeZone()
+		? `${words} (${trigger.timeZone})`
+		: words;
 }
 
 /** Fades the prompt's edges where more of it lies above or below. */
@@ -201,8 +204,15 @@ export class AgentRoutines {
 	#message = "";
 	/** The one routine whose card is open. */
 	#open: string | undefined;
-	/** A switch that was flipped, shown in its new place until the cloud answers. */
-	#flipped: { routineId: string; enabled: boolean } | undefined;
+	/** Switches the member moved, shown where they were moved until a list read
+	 * after the change comes back; a change that failed moves its switch back. */
+	readonly #flipped = new Map<string, boolean>();
+	/** The routine whose switch is being changed now. */
+	#moving: string | undefined;
+	/** Counts switch changes, so a read that went out before one does not undo it. */
+	#changes = 0;
+	/** Stops waiting for the last opened card to finish growing. */
+	#opening: AbortController | undefined;
 	readonly #prompts =
 		typeof ResizeObserver === "function"
 			? new ResizeObserver((entries) => {
@@ -231,6 +241,8 @@ export class AgentRoutines {
 	async #refresh(): Promise<void> {
 		const access = this.#access;
 		if (!access || this.#signal.aborted) return;
+		// A read that went out before a switch was moved may predate the change.
+		const changes = this.#changes;
 		try {
 			const [routines, runs] = await Promise.all([access.routines.list(), access.routines.runs()]);
 			if (this.#signal.aborted) return;
@@ -238,6 +250,7 @@ export class AgentRoutines {
 				(item) => item.staffAgentId === this.#agent().id && item.status !== "retired",
 			);
 			this.#runs = runs;
+			if (changes === this.#changes && !this.#busy) this.#flipped.clear();
 			this.#message = "";
 		} catch {
 			if (this.#signal.aborted) return;
@@ -254,6 +267,8 @@ export class AgentRoutines {
 		const create = manage
 			? button([icon("plus"), t("New routine")], () => void this.#edit(undefined), { disabled: this.#busy })
 			: null;
+		// The open instruction keeps its place through a redraw.
+		const scrolled = this.#cardFor(this.#open)?.querySelector(".routine-card-prompt")?.scrollTop ?? 0;
 		const cards = this.#routines.map((routine) => this.#card(routine, manage));
 		replace(
 			this.el,
@@ -285,6 +300,8 @@ export class AgentRoutines {
 							create,
 						),
 		);
+		const kept = this.#cardFor(this.#open)?.querySelector(".routine-card-prompt");
+		if (kept) kept.scrollTop = scrolled;
 		this.#prompts?.disconnect();
 		for (const prompt of this.el.querySelectorAll<HTMLElement>(".routine-card-prompt")) {
 			markOverflow(prompt);
@@ -303,14 +320,16 @@ export class AgentRoutines {
 		const ended = routine.status === "expired" || routine.status === "concluded";
 		// A concluded routine plans no more runs; its agent's reason says why.
 		const concluded = routine.status === "concluded" ? routine.conclusion : null;
-		const on = this.#flipped?.routineId === id ? this.#flipped.enabled : routine.status === "active";
-		const zone = routine.triggers.map(foreignZone).find(Boolean);
-		const when = routine.triggers.map(whenWords).join("; ");
 		const fact = (label: string, ...value: (Node | string | null)[]) =>
 			h("div", { class: "routine-card-fact" }, h("dt", null, label), h("dd", null, ...value));
-		const zones = [
-			...new Set(routine.triggers.flatMap((trigger) => ("localTime" in trigger ? [trigger.timeZone] : []))),
-		];
+		const lever = h("button", {
+			type: "button",
+			role: "switch",
+			class: "routine-switch",
+			"aria-label": routine.title,
+			onclick: () => void this.#toggle(routine),
+		});
+		this.#setLever(lever, routine, manage);
 		const edit = button(t("Edit"), () => void this.#edit(routine), { small: true, disabled: this.#busy });
 		edit.classList.add("routine-card-edit");
 		return h(
@@ -335,7 +354,7 @@ export class AgentRoutines {
 						onclick: () => this.#expand(id),
 					},
 					h("strong", null, routine.title),
-					h("span", null, concluded ?? (zone ? `${when} (${zone})` : when)),
+					h("span", null, concluded ?? routine.triggers.map(whenShort).join("; ")),
 				),
 				// An ended routine is read-only: a member save keeps its end (its expiry or run
 				// limit), so neither Edit nor Resume could start it again. Its agent can. The
@@ -343,20 +362,7 @@ export class AgentRoutines {
 				manage && !ended && !dynamic ? edit : null,
 				ended
 					? h("span", { class: "routine-card-state" }, routine.status === "concluded" ? t("Done") : t("Ended"))
-					: h("button", {
-							type: "button",
-							role: "switch",
-							class: "routine-switch",
-							"aria-checked": String(on),
-							"aria-label": routine.title,
-							"aria-disabled": manage ? null : "true",
-							title: manage
-								? on
-									? t("Pause routine")
-									: t("Resume routine")
-								: t("Only owners and admins can pause routines."),
-							onclick: () => void this.#toggle(routine),
-						}),
+					: lever,
 			),
 			h(
 				"div",
@@ -375,6 +381,7 @@ export class AgentRoutines {
 								"div",
 								{
 									class: "routine-card-prompt",
+									role: "region",
 									tabindex: "0",
 									"aria-label": t("Instruction"),
 									onscroll: (event: Event) => markOverflow(event.currentTarget as HTMLElement),
@@ -396,8 +403,14 @@ export class AgentRoutines {
 											h(
 												"span",
 												null,
-												when,
-												...zones.map((item) => h("small", null, item)),
+												...routine.triggers.map((trigger) =>
+													h(
+														"span",
+														{ class: "routine-card-trigger" },
+														whenWords(trigger),
+														"localTime" in trigger ? h("small", null, trigger.timeZone) : null,
+													),
+												),
 												dynamic && routine.status === "active"
 													? h(
 															"small",
@@ -433,17 +446,55 @@ export class AgentRoutines {
 			item.querySelector(".routine-card-summary")?.setAttribute("aria-expanded", String(open));
 			item.querySelector(".routine-card-body")?.toggleAttribute("inert", !open);
 		}
+		this.#opening?.abort();
 		if (!card) return;
 		this.#reveal(card, previous);
 		// The page cannot scroll past its end while the card is still growing, so a
 		// card near the end is brought the rest of the way once it is open.
-		const body = card.querySelector(".routine-card-body");
-		const opened = (event: Event) => {
-			if (event.target !== body || (event as TransitionEvent).propertyName !== "grid-template-rows") return;
-			body?.removeEventListener("transitionend", opened);
-			if (this.#open === id && card.isConnected) this.#reveal(card, undefined);
-		};
-		body?.addEventListener("transitionend", opened);
+		const body = card.querySelector<HTMLElement>(".routine-card-body");
+		if (!body || window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return;
+		const opening = new AbortController();
+		this.#opening = opening;
+		body.addEventListener(
+			"transitionend",
+			(event) => {
+				if (event.target !== body || event.propertyName !== "grid-template-rows") return;
+				opening.abort();
+				if (this.#open === id && card.isConnected) this.#reveal(card, undefined);
+			},
+			{ signal: opening.signal },
+		);
+	}
+	/** A switch as the routine stands, or where the member moved it. While one
+	 * switch moves, the others wait. */
+	#setLever(lever: HTMLElement, routine: CloudRoutine, manage: boolean): void {
+		const id = routine.routineId;
+		const on = this.#flipped.get(id) ?? routine.status === "active";
+		lever.setAttribute("aria-checked", String(on));
+		lever.title = manage
+			? on
+				? t("Pause routine")
+				: t("Resume routine")
+			: t("Only owners and admins can pause or resume routines.");
+		lever.toggleAttribute("aria-busy", this.#moving === id);
+		if (!manage || (this.#busy && this.#moving !== id)) lever.setAttribute("aria-disabled", "true");
+		else lever.removeAttribute("aria-disabled");
+	}
+	/** Brings the switches and buttons up to date in place, so a moved switch slides
+	 * instead of being drawn anew in its new place. */
+	#setControls(): void {
+		const manage = this.#access?.canManage() === true;
+		for (const lever of this.el.querySelectorAll<HTMLElement>(".routine-switch")) {
+			const routine = this.#routines.find(
+				(item) => item.routineId === lever.closest<HTMLElement>(".routine-card")?.dataset.routineId,
+			);
+			if (routine) this.#setLever(lever, routine, manage);
+		}
+		for (const control of this.el.querySelectorAll<HTMLButtonElement>(
+			".routine-card-edit, .routine-list-footer .btn",
+		))
+			control.disabled = this.#busy;
+		if (!this.#message) this.el.querySelector(":scope > .surface-status")?.remove();
 	}
 	#cardFor(id: string | undefined): HTMLElement | undefined {
 		return id
@@ -489,7 +540,9 @@ export class AgentRoutines {
 		(same[index] ?? same[0] ?? this.#controls(t("Back to agent details"))[0])?.focus({ preventScroll: true });
 	}
 	#controls(label: string): HTMLElement[] {
-		return [...this.el.querySelectorAll<HTMLElement>("button")].filter((item) => controlLabel(item) === label);
+		return [...this.el.querySelectorAll<HTMLElement>("button, .routine-card-prompt")].filter(
+			(item) => controlLabel(item) === label,
+		);
 	}
 	async #loadAccounts(): Promise<boolean> {
 		try {
@@ -511,12 +564,15 @@ export class AgentRoutines {
 	}
 	async #toggle(routine: CloudRoutine): Promise<void> {
 		if (this.#busy || !this.#access?.canManage()) return;
-		const enabled = routine.status !== "active";
+		const id = routine.routineId;
+		const enabled = !(this.#flipped.get(id) ?? routine.status === "active");
 		this.#busy = true;
-		// The switch moves at once; the list read after the call shows where it landed.
-		this.#flipped = { routineId: routine.routineId, enabled };
+		this.#moving = id;
+		this.#changes += 1;
+		// The switch moves at once and stays there until a list read after the change.
+		this.#flipped.set(id, enabled);
 		this.#message = "";
-		this.#list();
+		this.#setControls();
 		let failure = "";
 		try {
 			if (await this.#loadAccounts())
@@ -530,8 +586,10 @@ export class AgentRoutines {
 					);
 		} finally {
 			this.#busy = false;
-			this.#flipped = undefined;
+			this.#moving = undefined;
+			if (failure) this.#flipped.delete(id);
 			if (!this.#signal.aborted) {
+				this.#setControls();
 				await this.#refresh();
 				// The read clears the line; a failed change keeps saying why.
 				if (failure && !this.#signal.aborted && !this.#editing) {
