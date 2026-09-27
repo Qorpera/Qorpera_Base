@@ -233,6 +233,10 @@ home.
 and run at once. Only deletes and moves in a change set are reviewed (see
 section 2).
 
+**Before writes are built.** Until step 5 of the build order, the mount is
+read-only. Agents search and read through the shell and still write with
+today's tools.
+
 **Retired after acceptance:**
 - the five `company_*` tools;
 - the Company File realm of `computer_transfer`.
@@ -319,19 +323,30 @@ validates every path.
 ## 9. Build order
 
 Everything runs on the release train. Every PR gets an independent review.
+Reading comes first, so agents can search the whole company early. Writing
+keeps using today's tools until step 5.
 
-1. **Server:** path sets, move, binary, revision feed, and read sets through
-   the new front, with SQL and gateway tests.
+1. **Server, reading side:**
+   - a run-authorized listing of a whole subtree;
+   - byte-range reads of any content;
+   - the revision feed;
+   - read sets recorded in batches.
 2. **Folder service and FUSE mount**, read-only. Spike numbers first.
-3. **Run box:** `exec_command` and `apply_patch` over the read-only mount,
-   and the prompt change (see Folders). First live acceptance: an agent
-   searches the whole company.
-4. **Writes through the mount:** change sets, reports, conflicts, proposals,
-   and deletes through review.
-5. **Company Computer and coding-machine mounts.** Work files leave the
+3. **Run box:** `exec_command` over the read-only mount, and the prompt
+   change (see Folders). First live acceptance: an agent searches the whole
+   company.
+4. **Server, writing side:**
+   - path sets;
+   - move and rename;
+   - streamed binary writes;
+   - the delete policy of decision 6;
+   - restore of earlier versions.
+5. **Writes through the mount:** change sets, reports, conflicts, proposals,
+   deletes through review, and `apply_patch`.
+6. **Company Computer and coding-machine mounts.** Work files leave the
    workbench, and the `company_*` tools and the Company File realm of
    `computer_transfer` are retired.
-6. **Per-folder trees** and lifting the entry limit.
+7. **Per-folder trees** and lifting the entry limit.
 
 ## 10. Live acceptance
 
