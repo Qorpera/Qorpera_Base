@@ -1832,6 +1832,8 @@ export class CloudRunnerOrchestrator {
 		const inFlight = new Set<Promise<void>>();
 		const inFlightClaimIds = new Set<string>();
 		let nextReconcileAt = 0;
+		// Set by a failed dispatch: reconcile on the next poll rather than after the interval.
+		let reconcileNow = false;
 		// Retained claims are re-read after each successful reconcile, as soon as the
 		// loop has capacity for them, and keep that priority until the read succeeds.
 		let retainedDue = false;
@@ -1839,7 +1841,9 @@ export class CloudRunnerOrchestrator {
 			try {
 				// A failed reconcile still blocks claims and is retried on the next poll;
 				// only a successful one waits for its interval.
-				if (performance.now() >= nextReconcileAt) {
+				if (reconcileNow || performance.now() >= nextReconcileAt) {
+					reconcileNow = false;
+					nextReconcileAt = 0;
 					const reconciliationErrors = await this.#reconcileControlPlane(signal);
 					nextReconcileAt = performance.now() + reconcileIntervalMs;
 					retainedDue = true;
@@ -1858,7 +1862,7 @@ export class CloudRunnerOrchestrator {
 							.catch((error: unknown) => {
 								// A failed dispatch can leave a finished sandbox or a retained claim
 								// behind: reconcile on the next poll rather than after the interval.
-								nextReconcileAt = 0;
+								reconcileNow = true;
 								options.onError?.(error);
 							})
 							.finally(() => {

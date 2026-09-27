@@ -1570,7 +1570,7 @@ describe("cloud runner orchestrator", () => {
 		});
 		const waits: number[] = [];
 		const setTimer = globalThis.setTimeout;
-		vi.spyOn(globalThis, "setTimeout").mockImplementation(((callback: () => void, delay?: number) => {
+		const timers = vi.spyOn(globalThis, "setTimeout").mockImplementation(((callback: () => void, delay?: number) => {
 			if (attempts > 0 && attempts < 3) waits.push(delay ?? 0);
 			return setTimer(callback, delay);
 		}) as typeof setTimeout);
@@ -1584,7 +1584,11 @@ describe("cloud runner orchestrator", () => {
 			createCapability: () => capability,
 		});
 
-		await expect(orchestrator.runOnce()).resolves.toMatchObject({ status: "assigned" });
+		try {
+			await expect(orchestrator.runOnce()).resolves.toMatchObject({ status: "assigned" });
+		} finally {
+			timers.mockRestore();
+		}
 		expect(attempts).toBe(3);
 		// 50 ms, then 100 ms (the former first wait was 250 ms).
 		expect(waits).toEqual([50, 100]);

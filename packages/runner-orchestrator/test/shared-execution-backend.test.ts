@@ -656,6 +656,20 @@ describe("shared execution provider backend", () => {
 		expect(refused).toMatchObject({ reason: "NODE_IDENTITY_ELSEWHERE" });
 		expect(f.rpc).toEqual([]);
 		expect(f.units.log).toEqual([]);
+		// The wait is bounded: after two minutes the start fails like any other, visibly.
+		f.clock.now += 60_000;
+		await expect(f.backend.acquire(runId, work(), new AbortController().signal)).rejects.toBeInstanceOf(
+			ProviderAdmissionRefused,
+		);
+		f.clock.now += 60_000;
+		const expired = await f.backend.acquire(runId, work(), new AbortController().signal).then(
+			() => undefined,
+			(error: unknown) => error,
+		);
+		expect(expired).toBeInstanceOf(Error);
+		expect(expired).not.toBeInstanceOf(ProviderAdmissionRefused);
+		expect(String(expired)).toContain("not attached to this execution host in time");
+		expect(f.rpc).toEqual([]);
 		const volume = join(f.identityRoot, computeIdentityId).replaceAll(" ", "\\040");
 		await writeFile(mountInfo, `22 1 0:21 / / rw - ext4 /dev/sda1 rw\n90 22 0:50 / ${volume} rw - virtiofs id rw\n`);
 		await expect(f.backend.acquire(runId, work(), new AbortController().signal)).resolves.toMatchObject({ runnerId });

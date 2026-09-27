@@ -65,6 +65,10 @@ const REFUSAL_RETIRING = "SANDBOX_RETIRING";
 /** The run's Compute Identity volume is not attached here (yet): this orchestrator
  * defers, and takes the job once the volume is attached. */
 const REFUSAL_IDENTITY_ABSENT = "NODE_IDENTITY_ELSEWHERE";
+/** How long a run attempt waits for its identity volume before that becomes a counted
+ * failure: the deferral has no bound of its own (the run deadline is a century). */
+const IDENTITY_WAIT_MS = 120_000;
+const TRACKED_IDENTITY_WAITS = 256;
 
 export type SharedExecutionPhysicalState =
 	| "reserving"
@@ -384,6 +388,8 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 	readonly #mountInfoPath: string;
 	readonly #identityOwnerUid: number | undefined;
 	readonly #accounts = new Map<string, SharedExecutionAccount>();
+	/** When each run attempt first found its identity volume missing (this process's view). */
+	readonly #identityWaits = new Map<string, number>();
 	/** Acquisitions whose retirement is in flight; a second retire of the same one is a no-op. */
 	readonly #retiring = new Set<string>();
 	#serial: Promise<void> = Promise.resolve();
@@ -481,7 +487,8 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 				);
 			}
 			// Before any slot, runner row or reservation: a run whose identity volume is not
-			// attached yet (a login that just moved here) waits instead of failing.
+			// attached yet (a login that just moved here) waits instead of failing, for at
+			// most IDENTITY_WAIT_MS; then it fails like any other start, visibly.
 			if (
 				work.computeIdentityId &&
 				(this.#requireIdentityMount ?? process.platform === "linux") &&
@@ -489,12 +496,21 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 					await readFile(this.#mountInfoPath, "utf-8"),
 					join(this.#config.identityRoot, work.computeIdentityId),
 				)
-			)
+			) {
+				const firstSeen = this.#identityWaits.get(acquisitionId) ?? this.#now();
+				this.#identityWaits.delete(acquisitionId);
+				if (this.#now() - firstSeen >= IDENTITY_WAIT_MS)
+					throw new Error("The run's Compute Identity volume was not attached to this execution host in time");
+				this.#identityWaits.set(acquisitionId, firstSeen);
+				if (this.#identityWaits.size > TRACKED_IDENTITY_WAITS)
+					this.#identityWaits.delete(this.#identityWaits.keys().next().value as string);
 				throw new ProviderAdmissionRefused(
 					"deferred",
 					REFUSAL_IDENTITY_ABSENT,
 					"The run's Compute Identity volume is not attached to this execution host",
 				);
+			}
+			this.#identityWaits.delete(acquisitionId);
 			const slot = await this.#freeSlot();
 			if (slot === undefined)
 				throw new ProviderAdmissionRefused("deferred", REFUSAL_CAPACITY, "Every sandbox slot is busy");
