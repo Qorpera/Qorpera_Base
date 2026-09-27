@@ -237,7 +237,12 @@ export class ComposerModels {
 	#render(): void {
 		const focused = this.el.contains(document.activeElement) ? document.activeElement : null;
 		const id = this.#observed?.modelId;
-		const name = SESSION_MODELS.find((item) => item.id === id)?.name ?? id;
+		// A group chat with no model chosen runs each agent on its own model; nothing is ticked.
+		const name = id
+			? (SESSION_MODELS.find((item) => item.id === id)?.name ?? id)
+			: this.#observed
+				? t("Each agent's own")
+				: undefined;
 		const effortId = this.#observed?.reasoningEffort;
 		const effort = effortId && effortName(effortId);
 		const summary = name && effort ? `${name} · ${effort}` : name;

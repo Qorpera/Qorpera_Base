@@ -86,6 +86,7 @@ export const CONVERSATION: Record<string, string> = {
 	Medium: "Mellem",
 	High: "Høj",
 	"Only this conversation. Applies from your next message.": "Kun denne samtale. Gælder fra din næste besked.",
+	"Each agent's own": "Hver agents egen",
 	"Every agent in this group chat. Applies from your next message.":
 		"Alle agenter i denne gruppechat. Gælder fra din næste besked.",
 	"The model is unavailable. Refresh to try again.": "Modellen er ikke tilgængelig. Opdater for at prøve igen.",

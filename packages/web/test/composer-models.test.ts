@@ -79,6 +79,17 @@ async function open(view: ConversationView, label = "Model: GPT-6 Astra, Low eff
 }
 
 describe("composer model selector", () => {
+	it("names each agent's own model in a group chat where none was chosen", async () => {
+		const f = await setup(true);
+		f.read.mockImplementation(async (sessionId: string) => ({ sessionId, reasoningEffort: "low", version: 0 }));
+		// Opening the menu reads the conversation again.
+		const panel = await open(f.view);
+		expect(button(f.view.el, "Model: Each agent's own, Low effort").textContent).toContain("Each agent's own");
+		expect(panel.querySelectorAll('[role="menuitemradio"][aria-checked="true"]').length).toBe(1);
+		expect(button(panel, "Low").getAttribute("aria-checked")).toBe("true");
+		for (const name of ["GPT-6 Astra", "GPT-6 Sol", "GPT-6 Luna"])
+			expect(button(panel, name).getAttribute("aria-checked")).toBe("false");
+	});
 	it("gives a group chat one model and effort, for every agent in it", async () => {
 		const f = await setup(true);
 		const panel = await open(f.view);

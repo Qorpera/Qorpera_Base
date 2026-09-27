@@ -62,7 +62,7 @@ export interface RoomMessageTarget {
 	readonly environmentId: string;
 	/** True for an agent's shared thread (one bound agent). */
 	readonly agentThread: boolean;
-	/** Whether the room takes images: an agent's thread always, a group chat since 20260927140000. */
+	/** Whether the room takes images: an agent's thread always, a group chat since 20260927170000. */
 	readonly images: boolean;
 }
 

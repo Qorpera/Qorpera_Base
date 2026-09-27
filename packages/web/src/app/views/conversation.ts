@@ -440,9 +440,10 @@ export class ConversationView {
 		return isGroupChat(session);
 	}
 
-	/** A group chat on a cloud that keeps group chats text-only (before 20260927140000). */
+	/** A group chat on a cloud that keeps group chats text-only (before 20260927170000).
+	 * While that is not known yet, images may be chosen; sending checks. */
 	get #noImages(): boolean {
-		return this.#isRoom && !this.#company.groupChatImages();
+		return this.#isRoom && this.#company.groupChatImages() === false;
 	}
 
 	focus(): void {

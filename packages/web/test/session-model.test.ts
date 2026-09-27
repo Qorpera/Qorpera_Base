@@ -82,6 +82,27 @@ describe("conversation model transport", () => {
 		expect(f.fetch).toHaveBeenCalledTimes(1);
 	});
 
+	it("reads a group chat with no model chosen as none, and saves an effort there", async () => {
+		const f = setup();
+		f.fetch.mockResolvedValueOnce(Response.json({ ...model, model_id: null }));
+		expect(await f.control.read(session.sessionId)).toEqual({
+			sessionId: session.sessionId,
+			reasoningEffort: "low",
+			version: 0,
+		});
+		f.fetch.mockResolvedValueOnce(Response.json({ ...model, model_id: null, reasoning_effort: "high", version: 1 }));
+		expect(await f.control.set(session.sessionId, { reasoningEffort: "high" }, 0)).toEqual({
+			sessionId: session.sessionId,
+			reasoningEffort: "high",
+			version: 1,
+		});
+		// A missing or empty model is still a broken answer.
+		const { model_id: _, ...missing } = model;
+		f.fetch.mockResolvedValueOnce(Response.json(missing));
+		await expect(f.control.read(session.sessionId)).rejects.toThrow("Invalid conversation model response.");
+		f.fetch.mockResolvedValueOnce(Response.json({ ...model, model_id: "" }));
+		await expect(f.control.read(session.sessionId)).rejects.toThrow("Invalid conversation model response.");
+	});
 	it("works with a cloud that predates per-conversation effort", async () => {
 		const f = setup();
 		const { reasoning_effort: _, ...older } = model;

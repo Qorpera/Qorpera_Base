@@ -4,7 +4,7 @@ import { UUID_PATTERN } from "./parse.ts";
  * member and changed by agents too; pins and hidden agents are this member's own.
  * qorpera_read_company_sidebar answers the member's whole sidebar and every change
  * through qorpera_manage_company_sidebar answers it again.
- * Since 20260927140000 group chats are placed, pinned and hidden like agents, named by
+ * Since 20260927170000 group chats are placed, pinned and hidden like agents, named by
  * their room id; agents and group chats share one order in each section. */
 
 export interface SidebarSection {
@@ -43,10 +43,18 @@ export type SidebarRequest =
 	  }
 	| { action: "rename_section"; sectionId: string; name: string }
 	| { action: "delete_section"; sectionId: string }
-	| { action: "move_agent"; staffAgentId: string; sectionId: string | null; order?: string[]; unpin?: boolean }
+	| {
+			action: "move_agent";
+			staffAgentId: string;
+			sectionId: string | null;
+			order?: string[];
+			unpin?: boolean;
+			/** Sent where the cloud places group chats: the order names them too. */
+			groupChats?: true;
+	  }
 	| { action: "move_room"; roomId: string; sectionId: string | null; order?: string[]; unpin?: boolean }
-	/** Agents and group chats, in one order. */
-	| { action: "set_pins"; order: string[] }
+	/** Agents and group chats, in one order; groupChats says the order names group chats too. */
+	| { action: "set_pins"; order: string[]; groupChats?: true }
 	| { action: "set_hidden"; staffAgentId: string; hidden: boolean }
 	| { action: "set_hidden"; roomId: string; hidden: boolean };
 

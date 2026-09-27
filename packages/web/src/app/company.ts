@@ -279,6 +279,8 @@ export class CompanyController {
 	#sidebarRealtime: RealtimeSubscription | undefined;
 	/** Sidebar changes sent and not yet answered; each answer carries the whole sidebar. */
 	#sidebarPending = 0;
+	/** The group chats of the last sessions list, kept until the list is replaced. */
+	#groupRooms: { sessions: HostedSession[]; rooms: Map<string, HostedSession> } | undefined;
 	#sidebarWrites: Promise<unknown> = Promise.resolve();
 	#poll: ReturnType<typeof setInterval> | undefined;
 	#openSessionId: string | undefined;
@@ -498,25 +500,34 @@ export class CompanyController {
 		return this.store.get().sidebar?.groupChats ? [...agents, ...this.groupChatRooms().keys()] : agents;
 	}
 
-	/** The open group chats by room id, oldest first, each with its conversation. */
-	groupChatRooms(): Map<string, HostedSession> {
+	/** The open group chats by room id, oldest first (by their conversations, as the cloud
+	 * orders them), each with its conversation. Read-only: it is kept until the sessions change. */
+	groupChatRooms(): ReadonlyMap<string, HostedSession> {
+		const sessions = this.store.get().sessions;
+		if (this.#groupRooms?.sessions === sessions) return this.#groupRooms.rooms;
 		const rooms = new Map<string, HostedSession>();
-		const chats = this.store
-			.get()
-			.sessions.filter((session) => session.status === "open" && isGroupChat(session))
-			.sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.sessionId.localeCompare(b.sessionId));
+		const chats = sessions
+			.filter((session) => session.status === "open" && isGroupChat(session))
+			.sort(
+				(a, b) =>
+					Date.parse(a.createdAt) - Date.parse(b.createdAt) ||
+					(a.sessionId < b.sessionId ? -1 : a.sessionId > b.sessionId ? 1 : 0),
+			);
 		for (const session of chats) {
 			const roomId = String(session.executionScope?.roomId).toLowerCase();
 			if (UUID_PATTERN.test(roomId) && !rooms.has(roomId)) rooms.set(roomId, session);
 		}
+		this.#groupRooms = { sessions, rooms };
 		return rooms;
 	}
 
 	/** Whether this cloud takes images in group chats: the migration that places group
-	 * chats in the sidebar (20260927140000) lifted the text-only rule too. */
-	groupChatImages(): boolean {
+	 * chats in the sidebar (20260927170000) lifted the text-only rule too. Undefined until
+	 * the sidebar has been read; a cloud without the sidebar predates it. */
+	groupChatImages(): boolean | undefined {
 		const state = this.store.get();
-		return Boolean(state.sidebar?.groupChats && !state.sidebarUnavailable);
+		if (state.sidebarUnavailable) return false;
+		return state.sidebar ? state.sidebar.groupChats === true : undefined;
 	}
 
 	cofounderId(): string | undefined {
@@ -529,9 +540,15 @@ export class CompanyController {
 
 	/** Draws a sidebar change at once and sends it; changes go one at a time, in order.
 	 * A refusal puts back what the cloud has and says why. */
-	async changeSidebar(request: SidebarRequest): Promise<boolean> {
+	async changeSidebar(change: SidebarRequest): Promise<boolean> {
 		const current = this.store.get();
 		if (this.#stopped || !current.sidebar || current.sidebarUnavailable) return false;
+		// Where the cloud places group chats, pin rows and section orders name them too; a
+		// request without the flag is taken as one from a page that predates them.
+		const request: SidebarRequest =
+			current.sidebar.groupChats && (change.action === "set_pins" || change.action === "move_agent")
+				? { ...change, groupChats: true }
+				: change;
 		this.store.set({
 			sidebar: applySidebarRequest(current.sidebar, request, this.sidebarRoster()),
 			railError: undefined,
@@ -1179,7 +1196,7 @@ export class CompanyController {
 			roomId: scope.roomId,
 			environmentId: session.environmentId,
 			agentThread,
-			images: agentThread || this.groupChatImages(),
+			images: agentThread || this.groupChatImages() === true,
 		});
 	}
 
@@ -1460,6 +1477,20 @@ export class CompanyController {
 				),
 			});
 			return false;
+		}
+		// Images wait until the cloud is known to take them in a group chat: read the sidebar
+		// now if it has not been read (it says so), and ask for another try if it cannot be.
+		const session = this.store.get().sessions.find((item) => item.sessionId === sessionId);
+		if (files.length && isGroupChat(session) && this.groupChatImages() === undefined) {
+			await this.refreshSidebar();
+			if (this.#stopped || viewSignal?.aborted) return false;
+			if (this.groupChatImages() === undefined) {
+				store.set({
+					sendError: t("Could not check whether this group chat takes images. Try again."),
+					draft: text,
+				});
+				return false;
+			}
 		}
 		let roomTarget: RoomMessageTarget | undefined;
 		try {

@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AuthController } from "../src/app/auth.ts";
 import { CompanyController } from "../src/app/company.ts";
 import type { Route } from "../src/app/router.ts";
-import { GroupUpdateNotWrittenError } from "../src/app/update-group.ts";
+import { GroupParticipantsError, GroupUpdateNotWrittenError } from "../src/app/update-group.ts";
 import { renderRail, type ShellContext } from "../src/app/views/shell.ts";
 import { CloudRpcError } from "../src/cloud/client.ts";
 import type { GroupChatDetails } from "../src/cloud/group-details.ts";
@@ -783,7 +783,11 @@ describe("dragging agents in the rail", () => {
 		drag(groupRow(rail), boxes.get(rail.querySelector(".rail-pin")!)!, rail);
 		await ready;
 		await settle();
-		expect(manage).toHaveBeenLastCalledWith(profileA.profileId, { action: "set_pins", order: [launchRoom, dee.id] });
+		expect(manage).toHaveBeenLastCalledWith(profileA.profileId, {
+			action: "set_pins",
+			order: [launchRoom, dee.id],
+			groupChats: true,
+		});
 		expect(names(rail.querySelectorAll(".rail-pin"))).toEqual(["Launch", "Dee"]);
 		// The drop's click guard lasts one task; let it go before the next test clicks.
 		await new Promise((resolve) => setTimeout(resolve, 0));
@@ -890,7 +894,11 @@ describe("group chats in the rail", () => {
 		choose("Pin");
 		await ready;
 		await settle();
-		expect(manage).toHaveBeenLastCalledWith(profileA.profileId, { action: "set_pins", order: [dee.id, launchRoom] });
+		expect(manage).toHaveBeenLastCalledWith(profileA.profileId, {
+			action: "set_pins",
+			order: [dee.id, launchRoom],
+			groupChats: true,
+		});
 		expect(names(rail.querySelectorAll(".rail-pin"))).toEqual(["Dee", "Launch"]);
 		expect(rail.querySelector(".rail-hidden")).toBeNull();
 		localStorage.removeItem("qorpera.web.rail-hidden-open");
@@ -911,6 +919,42 @@ describe("group chats in the rail", () => {
 			order: [launchRoom, cy.id, dee.id],
 		});
 		expect(groups(rail).at(-1)).toEqual(["Unassigned", "Launch", "Cy", "Fixture conversation"]);
+	});
+	it("keeps a group chat a group chat when its conversation leaves the list before the choice", async () => {
+		const { company, rail, manage, ready } = companyWith(...launchCompany());
+		await ready;
+		await settle();
+		rightClick(groupRow(rail));
+		const hide = [...document.querySelectorAll<HTMLElement>(".context-menu [role^=menuitem]")].find(
+			(item) => item.textContent === "Hide from sidebar",
+		)!;
+		// Another member deleted it; the sessions list no longer has it.
+		company.store.set({ sessions: [session] });
+		hide.click();
+		await ready;
+		await settle();
+		expect(manage).toHaveBeenLastCalledWith(profileA.profileId, {
+			action: "set_hidden",
+			roomId: launchRoom,
+			hidden: true,
+		});
+	});
+	it("sends an agent's move with the group chat flag where the cloud places group chats", async () => {
+		const { rail, manage, ready } = companyWith(...launchCompany());
+		await ready;
+		await settle();
+		rowOf(rail, "Cy").focus();
+		rowOf(rail, "Cy").dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", altKey: true, bubbles: true }));
+		await ready;
+		await settle();
+		expect(manage).toHaveBeenLastCalledWith(profileA.profileId, {
+			action: "move_agent",
+			staffAgentId: cy.id,
+			sectionId: null,
+			// Dee is pinned: it keeps its place in the company's order.
+			order: [dee.id, launchRoom, cy.id],
+			groupChats: true,
+		});
 	});
 	it("keeps rename, copy and delete on a cloud that places agents only", async () => {
 		const { rail, manage, ready } = companyWith(
@@ -972,9 +1016,9 @@ describe("group chats in the rail", () => {
 	});
 	it("sends a rename refused for its participants to the group details", async () => {
 		const updateGroup = vi.fn(async () => {
-			throw new GroupUpdateNotWrittenError(
-				"Choose at least two active agents and current company members, with no duplicate participants.",
-			);
+			throw new GroupUpdateNotWrittenError("Choose at least two active agents…", {
+				cause: new GroupParticipantsError("Choose at least two active agents…"),
+			});
 		});
 		const { rail, ready } = companyWith(...launchCompany({ updateGroup, deleteGroup: vi.fn() }));
 		await ready;

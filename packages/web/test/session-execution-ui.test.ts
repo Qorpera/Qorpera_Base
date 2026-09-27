@@ -473,7 +473,7 @@ describe("conversation execution account", () => {
 
 	it("takes picked, pasted and dropped images in group chats once the cloud does", async () => {
 		const f = setup(true);
-		// The cloud that places group chats in the sidebar also takes their images (20260927140000).
+		// The cloud that places group chats in the sidebar also takes their images (20260927170000).
 		f.company.store.set({ sidebar: { sections: [], placements: {}, pinned: [], hidden: [], groupChats: true } });
 		await settle();
 		const image = new File(["image"], "local.png", { type: "image/png" });
@@ -504,8 +504,24 @@ describe("conversation execution account", () => {
 			"Images stay on this device until you send. Up to 5 images, 8 MiB total.",
 		);
 	});
+	it("lets images be chosen in a group chat while the cloud's answer is not known yet", async () => {
+		const f = setup(true);
+		await settle();
+		expect(f.company.groupChatImages()).toBeUndefined();
+		const image = new File(["image"], "local.png", { type: "image/png" });
+		const input = f.view.el.querySelector<HTMLInputElement>('input[type="file"]')!;
+		Object.defineProperty(input, "files", { value: [image] });
+		input.dispatchEvent(new Event("change"));
+		await settle();
+		expect(f.company.conversation(session.sessionId).get().attachments).toEqual([image]);
+		expect(f.view.el.querySelector<HTMLElement>(".composer-menu-note")!.hidden).toBe(true);
+		// With no text yet, the images wait for a message.
+		expect(f.view.el.querySelector(".composer")!.textContent).toContain("Add a message to send with the images.");
+	});
 	it("rejects picker, pasted and dropped images in group chats on a cloud that keeps them text-only", async () => {
 		const f = setup(true);
+		// The sidebar read answered without group chats: this cloud keeps them text-only.
+		f.company.store.set({ sidebar: { sections: [], placements: {}, pinned: [], hidden: [] } });
 		await settle();
 		f.company.conversation(session.sessionId).set({ draft: "Keep team text" });
 		await settle();

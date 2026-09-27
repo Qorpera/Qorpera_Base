@@ -13,8 +13,14 @@
 --    kinds of id, which an older client simply does not find in its roster.
 --    The agent tool organize_sidebar is unchanged: it still lists and moves agents
 --    only, and group chats keep their places around the agents it moves.
+--    A client that places group chats says so (`groupChats: true`) on set_pins and
+--    move_agent. Without it the request comes from a page opened before this migration:
+--    its order names agents only, so the member's pinned group chats stay pinned and a
+--    section's group chats keep their places among the agents it reorders.
 -- 2. A group chat takes images like an agent's thread: up to 5, 8 MiB in all
 --    (contract amendment 2026-09-27; team rooms were text-only).
+-- 3. A group chat's conversation read reports no model while none was chosen: its
+--    runs keep each agent's own model (the read used to name the default model).
 begin;
 
 create table public.qorpera_company_sidebar_room_placements (
@@ -50,10 +56,12 @@ alter table public.qorpera_member_sidebar_rooms enable row level security;
 revoke all on public.qorpera_company_sidebar_room_placements from public, anon, authenticated, service_role;
 revoke all on public.qorpera_member_sidebar_rooms from public, anon, authenticated, service_role;
 
-/** A group chat the sidebar can place: an active room of the company that is not an agent's own thread. */
+/** A group chat the sidebar can place: an active room of the company that is not an
+ * agent's own thread, with an open conversation (what a client's rail shows). */
 create function public.qorpera_sidebar_room_placeable(p_profile_id uuid, p_room_id uuid)
 returns boolean language sql stable security definer set search_path = '' as $$
 	select exists (select 1 from public.qorpera_company_rooms room
+		join public.qorpera_shared_sessions session on session.id = room.session_id and session.status = 'open'
 		where room.id = p_room_id and room.profile_id = p_profile_id
 			and room.bound_staff_agent_id is null and room.status = 'active')
 $$;
@@ -80,7 +88,8 @@ end $$;
 
 /** The agents and group chats a section (null: Unassigned) shows, in order. Positioned
  * ones first; then agents in roster order, then group chats oldest first, by their
- * conversations as a client sees them (created_at, then session id). */
+ * conversations as a client sees them (created_at, then session id). A group chat
+ * without an open conversation is not shown, as in qorpera_sidebar_room_placeable. */
 create or replace function public.qorpera_sidebar_container(p_profile_id uuid, p_section_id uuid)
 returns uuid[] language sql stable security definer set search_path = '' as $$
 	select coalesce(array_agg(item.id order by item.position nulls last, item.kind, item.created_at, item.tiebreak), '{}')
@@ -93,9 +102,9 @@ returns uuid[] language sql stable security definer set search_path = '' as $$
 			and not public.qorpera_sidebar_is_cofounder(staff.profile_id, staff.staff_agent_id)
 			and placement.section_id is not distinct from p_section_id
 		union all
-		select room.id, placement.position, 1, coalesce(session.created_at, room.created_at), coalesce(session.id, room.id)
+		select room.id, placement.position, 1, session.created_at, session.id
 		from public.qorpera_company_rooms room
-		left join public.qorpera_shared_sessions session on session.id = room.session_id
+		join public.qorpera_shared_sessions session on session.id = room.session_id and session.status = 'open'
 		left join public.qorpera_company_sidebar_room_placements placement
 			on placement.profile_id = room.profile_id and placement.room_id = room.id
 		where room.profile_id = p_profile_id and room.bound_staff_agent_id is null and room.status = 'active'
@@ -171,6 +180,31 @@ begin
 	return true;
 end $$;
 
+/** An agents-only order for a section, from a page opened before group chats were
+ * placed: the section's group chats keep their slots and the agents fill the others in
+ * the order given; agents it adds (one moving in) follow. */
+create function public.qorpera_sidebar_keep_room_slots(p_profile_id uuid, p_section_id uuid, p_order uuid[])
+returns uuid[] language plpgsql stable security definer set search_path = '' as $$
+declare v_before uuid[] := public.qorpera_sidebar_container(p_profile_id, p_section_id);
+	v_agents uuid[] := '{}'; v_result uuid[] := '{}'; v_id uuid; v_next integer := 1;
+begin
+	-- An order that names a group chat already covers them.
+	if exists (select 1 from unnest(p_order) item where public.qorpera_sidebar_room_placeable(p_profile_id, item)) then
+		return p_order; end if;
+	foreach v_id in array p_order loop
+		if v_id is not null and not v_id = any(v_agents) then v_agents := v_agents || v_id; end if;
+	end loop;
+	foreach v_id in array v_before loop
+		if public.qorpera_sidebar_room_placeable(p_profile_id, v_id) then
+			v_result := v_result || v_id;
+		elsif v_next <= pg_catalog.cardinality(v_agents) then
+			v_result := v_result || v_agents[v_next];
+			v_next := v_next + 1;
+		end if;
+	end loop;
+	return v_result || coalesce(v_agents[v_next:], '{}');
+end $$;
+
 /** What one member's rail is built from. */
 create or replace function public.qorpera_sidebar_state(p_profile_id uuid, p_user_id uuid)
 returns jsonb language sql stable security definer set search_path = '' as $$
@@ -229,8 +263,11 @@ declare
 	v_agent uuid; v_room uuid; v_section uuid; v_order uuid[]; v_id uuid; v_index integer := 0;
 begin
 	if jsonb_typeof(p_request) is distinct from 'object' or jsonb_typeof(p_request -> 'action') is distinct from 'string'
-		or p_request - array['action','sectionId','name','staffAgentId','roomId','order','unpin','hidden'] <> '{}'::jsonb
-		or (p_request ? 'staffAgentId' and p_request ? 'roomId') then
+		or p_request - array['action','sectionId','name','staffAgentId','roomId','order','unpin','hidden','groupChats']
+			<> '{}'::jsonb
+		or (p_request ? 'staffAgentId' and p_request ? 'roomId')
+		or (p_request ? 'groupChats' and (p_request -> 'groupChats' <> 'true'::jsonb
+			or v_action not in ('set_pins','move_agent'))) then
 		raise exception 'Sidebar request is invalid' using errcode = '22023'; end if;
 	if p_request ? 'unpin' and jsonb_typeof(p_request -> 'unpin') is distinct from 'boolean' then
 		raise exception 'Sidebar request is invalid' using errcode = '22023'; end if;
@@ -265,11 +302,16 @@ begin
 			public.qorpera_sidebar_uuid(p_request -> 'sectionId', 'The section id'), v_user, null);
 	elsif v_action in ('move_agent','move_room') then
 		if p_request - array['action','sectionId',case when v_action = 'move_agent' then 'staffAgentId' else 'roomId' end,
-			'order','unpin'] <> '{}'::jsonb or not p_request ? 'sectionId' then
+			'order','unpin','groupChats'] <> '{}'::jsonb or not p_request ? 'sectionId' then
 			raise exception 'Sidebar request is invalid' using errcode = '22023'; end if;
 		v_section := case when p_request -> 'sectionId' = 'null'::jsonb then null
 			else public.qorpera_sidebar_uuid(p_request -> 'sectionId', 'The section id') end;
 		if p_request ? 'order' then v_order := public.qorpera_sidebar_uuid_list(p_request -> 'order', 500); end if;
+		-- A page opened before group chats were placed orders agents only: the section's
+		-- group chats keep their slots and the agents fill the others in the order given.
+		if v_action = 'move_agent' and v_order is not null and not p_request ? 'groupChats' then
+			v_order := public.qorpera_sidebar_keep_room_slots(p_profile_id, v_section, v_order);
+		end if;
 		if v_action = 'move_agent' then
 			v_agent := public.qorpera_sidebar_uuid(p_request -> 'staffAgentId', 'The agent');
 			perform public.qorpera_sidebar_place(p_profile_id, v_agent, v_section, v_order, v_user, null);
@@ -278,9 +320,20 @@ begin
 			perform public.qorpera_sidebar_place_room(p_profile_id, v_room, v_section, v_order, v_user, null);
 		end if;
 	elsif v_action = 'set_pins' then
-		if p_request - array['action','order'] <> '{}'::jsonb then
+		if p_request - array['action','order','groupChats'] <> '{}'::jsonb then
 			raise exception 'Sidebar request is invalid' using errcode = '22023'; end if;
 		v_order := public.qorpera_sidebar_uuid_list(p_request -> 'order', 24);
+		-- A page opened before group chats were placed pins agents only: the member's
+		-- pinned group chats stay, after the agents, in their order.
+		if not p_request ? 'groupChats' then
+			v_order := v_order || coalesce((select array_agg(mine.room_id order by mine.pinned_position, mine.updated_at, mine.room_id)
+				from public.qorpera_member_sidebar_rooms mine
+				where mine.profile_id = p_profile_id and mine.user_id = v_user and mine.pinned_position is not null
+					and public.qorpera_sidebar_room_placeable(p_profile_id, mine.room_id)
+					and not mine.room_id = any(v_order)), '{}');
+			if pg_catalog.cardinality(v_order) > 24 then
+				raise exception 'The order must be a list of at most 24 agent ids' using errcode = '22023'; end if;
+		end if;
 		if (select count(distinct item) from unnest(v_order) item) <> pg_catalog.cardinality(v_order) then
 			raise exception 'An agent or group chat is pinned once' using errcode = '22023'; end if;
 		update public.qorpera_member_sidebar_agents set pinned_position = null, updated_at = clock_timestamp()
@@ -384,6 +437,22 @@ begin
 end
 $$;
 
+-- A group chat has no single agent: while no model was chosen its runs keep each agent's
+-- own model (qorpera_execution_run_model_authority), so the read reports none rather
+-- than the default model of an agent it does not have. Patched by exact text so other
+-- changes to the read (thread fast mode) compose with this one.
+do $$
+declare v_definition text := pg_get_functiondef('public.qorpera_get_session_model(uuid)'::regprocedure);
+	v_old text := $old$'model_id',coalesce(v_model,'gpt-6-astra'),$old$;
+	v_new text := $new$'model_id',case when v_model is null and v_session.staff_agent_id is null then null
+			else coalesce(v_model,'gpt-6-astra') end,$new$;
+begin
+	if (length(v_definition) - length(replace(v_definition, v_old, ''))) / length(v_old) <> 1 then
+		raise exception 'Conversation model read differs'; end if;
+	execute replace(v_definition, v_old, v_new);
+end
+$$;
+
 -- CREATE OR REPLACE keeps each replaced function's ACL; it is restated with the new ones.
 revoke all on function public.qorpera_sidebar_room_placeable(uuid, uuid),
 	public.qorpera_sidebar_assert_room(uuid, uuid),
@@ -391,6 +460,7 @@ revoke all on function public.qorpera_sidebar_room_placeable(uuid, uuid),
 	public.qorpera_sidebar_container(uuid, uuid),
 	public.qorpera_sidebar_write_order(uuid, uuid, uuid[], uuid, uuid),
 	public.qorpera_sidebar_place_room(uuid, uuid, uuid, uuid[], uuid, uuid),
+	public.qorpera_sidebar_keep_room_slots(uuid, uuid, uuid[]),
 	public.qorpera_sidebar_state(uuid, uuid),
 	public.qorpera_manage_company_sidebar(uuid, jsonb)
 	from public, anon, authenticated, service_role, qorpera_secret_broker;

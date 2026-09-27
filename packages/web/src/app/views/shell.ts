@@ -24,7 +24,7 @@ import { railListSkeleton } from "../../ui/skeleton.ts";
 import { type AuthController, displayName } from "../auth.ts";
 import { type AgentState, type CompanyController, isAgentPairSession } from "../company.ts";
 import type { Route } from "../router.ts";
-import { GroupUpdateNotWrittenError } from "../update-group.ts";
+import { GroupParticipantsError, GroupUpdateNotWrittenError } from "../update-group.ts";
 import type { WorkspaceActions } from "../workspace-actions.ts";
 import { savedAgentDraft } from "./agent-edits.ts";
 import type { SettingsTab } from "./settings.ts";
@@ -425,11 +425,10 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 			"keydown",
 			(event) => {
 				const delta = matchesKey(event, "previous") ? -1 : matchesKey(event, "next") ? 1 : 0;
-				const dataset = (event.target as HTMLElement).dataset;
-				const itemId = dataset?.agentId ?? dataset?.roomId;
-				if (!event.altKey || !delta || !itemId) return;
+				const item = railItemOf(event.target as HTMLElement);
+				if (!event.altKey || !delta || !item) return;
 				event.preventDefault();
-				nudgeItem(company, itemId, delta);
+				nudgeItem(company, item, delta);
 			},
 			{ signal: company.signal },
 		);
@@ -699,7 +698,7 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	const roster = company.sidebarRoster();
 	const rooms = company.groupChatRooms();
 	// Group chats the sidebar places; the others stand after the Unassigned agents.
-	const placedRooms = sidebar?.groupChats ? rooms : new Map<string, HostedSession>();
+	const placedRooms: ReadonlyMap<string, HostedSession> = sidebar?.groupChats ? rooms : new Map();
 	const pinned = (sidebar?.pinned ?? []).filter((itemId) => roster.includes(itemId));
 	const hidden = new Set(sidebar?.hidden ?? []);
 	const shown = (agent: HostedStaffAgent | undefined): agent is HostedStaffAgent =>
@@ -815,19 +814,19 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 			)
 			.map((session) => {
 				const roomId = isGroupChat(session) ? String(session.executionScope?.roomId).toLowerCase() : undefined;
+				const href = `#/c/${profileId}/chat/${session.sessionId}`;
 				return row(
-					`#/c/${profileId}/chat/${session.sessionId}`,
-					`#/c/${profileId}/chat/${session.sessionId}`,
-					{
-						title: session.title,
-						subtitle: isGroupChat(session)
-							? (state.groups?.[String(session.executionScope?.roomId)]?.subtitle ?? t("Group chat"))
-							: t("company"),
-						kind: isGroupChat(session) ? ("Group chat" as const) : ("company" as const),
-						agents: company.groupAgents(session.sessionId),
-						selected: activeSessionId === session.sessionId,
-						...(roomId && UUID_PATTERN.test(roomId) ? { roomId } : {}),
-					},
+					href,
+					href,
+					roomId && UUID_PATTERN.test(roomId)
+						? roomModel(session, roomId)
+						: {
+								title: session.title,
+								subtitle: t("company"),
+								kind: "company" as const,
+								agents: company.groupAgents(session.sessionId),
+								selected: activeSessionId === session.sessionId,
+							},
 					activeSessionId === session.sessionId,
 					sessionRow,
 				);
@@ -974,27 +973,39 @@ function sameName(sidebar: CompanySidebar, name: string, except?: string) {
 	);
 }
 
+/** What the rail places: an agent or a group chat, known by the row it was picked from. */
+interface RailItem {
+	id: string;
+	kind: "agent" | "room";
+}
+
+/** The item a rail element stands for, by its data attribute. */
+function railItemOf(element: HTMLElement | undefined): RailItem | undefined {
+	const agentId = element?.dataset.agentId;
+	const roomId = element?.dataset.roomId;
+	return agentId ? { id: agentId, kind: "agent" } : roomId ? { id: roomId, kind: "room" } : undefined;
+}
+
 /** Moves an agent or a group chat: the sidebar names each by its own kind of id. */
 function moveRequest(
-	company: CompanyController,
-	itemId: string,
+	item: RailItem,
 	sectionId: string | null,
 	options: { order?: string[]; unpin?: boolean } = {},
 ): SidebarRequest {
-	return company.groupChatRooms().has(itemId)
-		? { action: "move_room", roomId: itemId, sectionId, ...options }
-		: { action: "move_agent", staffAgentId: itemId, sectionId, ...options };
+	return item.kind === "room"
+		? { action: "move_room", roomId: item.id, sectionId, ...options }
+		: { action: "move_agent", staffAgentId: item.id, sectionId, ...options };
 }
 
-function hideRequest(company: CompanyController, itemId: string, hidden: boolean): SidebarRequest {
-	return company.groupChatRooms().has(itemId)
-		? { action: "set_hidden", roomId: itemId, hidden }
-		: { action: "set_hidden", staffAgentId: itemId, hidden };
+function hideRequest(item: RailItem, hidden: boolean): SidebarRequest {
+	return item.kind === "room"
+		? { action: "set_hidden", roomId: item.id, hidden }
+		: { action: "set_hidden", staffAgentId: item.id, hidden };
 }
 
 /** Asks for a new section's name and makes it; with an agent or a group chat, moves it
  * into the section (a name that already exists moves it there instead). */
-async function askSectionName(company: CompanyController, itemId?: string): Promise<void> {
+async function askSectionName(company: CompanyController, item?: RailItem): Promise<void> {
 	const name = await nameDialog({
 		title: t("New section"),
 		label: t("Section name"),
@@ -1006,24 +1017,24 @@ async function askSectionName(company: CompanyController, itemId?: string): Prom
 	if (!name || !sidebar) return;
 	// A pinned item leaves the pinned row for its section, as when it is dragged there;
 	// a hidden one is shown again.
-	const unpin = itemId && sidebar.pinned.includes(itemId) ? { unpin: true } : {};
-	if (itemId && sidebar.hidden.includes(itemId)) void company.changeSidebar(hideRequest(company, itemId, false));
+	const unpin = item && sidebar.pinned.includes(item.id) ? { unpin: true } : {};
+	if (item && sidebar.hidden.includes(item.id)) void company.changeSidebar(hideRequest(item, false));
 	const existing = sameName(sidebar, name);
-	if (existing && itemId) {
+	if (existing && item) {
 		// Naming a section that exists moves the item there.
-		void company.changeSidebar(moveRequest(company, itemId, existing.sectionId, unpin));
+		void company.changeSidebar(moveRequest(item, existing.sectionId, unpin));
 		return;
 	}
 	if (existing) {
 		company.reportRailError(t("A section called {name} already exists.", { name: `"${existing.name}"` }));
 		return;
 	}
-	const item = !itemId
+	const placed = !item
 		? {}
-		: company.groupChatRooms().has(itemId)
-			? { roomId: itemId, ...unpin }
-			: { staffAgentId: itemId, ...unpin };
-	void company.changeSidebar({ action: "create_section", sectionId: newSectionId(), name, ...item });
+		: item.kind === "room"
+			? { roomId: item.id, ...unpin }
+			: { staffAgentId: item.id, ...unpin };
+	void company.changeSidebar({ action: "create_section", sectionId: newSectionId(), name, ...placed });
 }
 
 function canOrganize(company: CompanyController): boolean {
@@ -1032,7 +1043,8 @@ function canOrganize(company: CompanyController): boolean {
 }
 
 /** Pin or unpin, and Move to: the same for an agent and a group chat. */
-function placementEntries(company: CompanyController, sidebar: CompanySidebar, itemId: string): MenuEntry[] {
+function placementEntries(company: CompanyController, sidebar: CompanySidebar, item: RailItem): MenuEntry[] {
+	const itemId = item.id;
 	const pinned = sidebar.pinned.includes(itemId);
 	// A pin list can still name an item deleted since it was read; the cloud refuses those.
 	const livePins = () => {
@@ -1062,9 +1074,9 @@ function placementEntries(company: CompanyController, sidebar: CompanySidebar, i
 		const isHidden = sidebar.hidden.includes(itemId);
 		const move = (sectionId: string | null) => () => {
 			// A hidden item given a section is shown again, where it was sent.
-			if (isHidden) void company.changeSidebar(hideRequest(company, itemId, false));
+			if (isHidden) void company.changeSidebar(hideRequest(item, false));
 			if (!pinned && (sectionId ?? undefined) === current) return;
-			void company.changeSidebar(moveRequest(company, itemId, sectionId, pinned ? { unpin: true } : {}));
+			void company.changeSidebar(moveRequest(item, sectionId, pinned ? { unpin: true } : {}));
 		};
 		entries.push({
 			kind: "submenu",
@@ -1081,19 +1093,19 @@ function placementEntries(company: CompanyController, sidebar: CompanySidebar, i
 				),
 				{ label: t("Unassigned"), icon: "folder", checked: current === undefined, select: move(null) },
 				{ kind: "separator" },
-				{ label: t("New section"), icon: "folder_plus", select: () => void askSectionName(company, itemId) },
+				{ label: t("New section"), icon: "folder_plus", select: () => void askSectionName(company, item) },
 			],
 		});
 	}
 	return entries;
 }
 
-function hideEntry(company: CompanyController, sidebar: CompanySidebar, itemId: string): MenuEntry {
-	const isHidden = sidebar.hidden.includes(itemId);
+function hideEntry(company: CompanyController, sidebar: CompanySidebar, item: RailItem): MenuEntry {
+	const isHidden = sidebar.hidden.includes(item.id);
 	return {
 		label: isHidden ? t("Show in sidebar") : t("Hide from sidebar"),
 		icon: isHidden ? "show" : "hide",
-		select: () => void company.changeSidebar(hideRequest(company, itemId, !isHidden)),
+		select: () => void company.changeSidebar(hideRequest(item, !isHidden)),
 	};
 }
 
@@ -1123,13 +1135,13 @@ function agentMenu(company: CompanyController, parts: RailParts, agent: HostedSt
 	const placeable = Boolean(sidebar) && !isCofounder;
 	const sessionId = company.primarySessionFor(agent.id)?.sessionId;
 	return joinMenu([
-		placeable ? placementEntries(company, sidebar!, agent.id) : [],
+		placeable ? placementEntries(company, sidebar!, { id: agent.id, kind: "agent" }) : [],
 		canAuthorize && actions?.updateAgent
 			? [{ label: t("Rename"), icon: "edit", select: () => void renameAgent(company, parts, agent) }]
 			: [],
 		sessionId ? [copyIdEntry(company, sessionId)] : [],
 		[
-			...(placeable ? [hideEntry(company, sidebar!, agent.id)] : []),
+			...(placeable ? [hideEntry(company, sidebar!, { id: agent.id, kind: "agent" })] : []),
 			...(!isCofounder && canAuthorize && actions?.deleteAgent
 				? [
 						{
@@ -1154,13 +1166,13 @@ function groupMenu(company: CompanyController, parts: RailParts, session: Hosted
 	const canAuthorize = state.team?.capabilities.authorize === true && state.team.capabilities.write === true;
 	const details = groupDetailsOf(company, roomId);
 	return joinMenu([
-		placeable ? placementEntries(company, sidebar!, roomId) : [],
+		placeable ? placementEntries(company, sidebar!, { id: roomId, kind: "room" }) : [],
 		canAuthorize && actions?.updateGroup && details?.status === "active" && session.status === "open"
 			? [{ label: t("Rename"), icon: "edit", select: () => void renameGroup(company, parts, session, roomId) }]
 			: [],
 		[copyIdEntry(company, session.sessionId)],
 		[
-			...(placeable ? [hideEntry(company, sidebar!, roomId)] : []),
+			...(placeable ? [hideEntry(company, sidebar!, { id: roomId, kind: "room" })] : []),
 			...(canAuthorize && actions?.deleteGroup
 				? [
 						{
@@ -1220,8 +1232,7 @@ async function renameGroup(
 		company.reportRailError(
 			!(error instanceof GroupUpdateNotWrittenError) || !error.message
 				? t("{name} could not be renamed.", { name: latest.name })
-				: error.message ===
-						t("Choose at least two active agents and current company members, with no duplicate participants.")
+				: error.cause instanceof GroupParticipantsError
 					? t("{name} could not be renamed. Update its participants in the group details first.", {
 							name: latest.name,
 						})
@@ -1505,7 +1516,8 @@ function dragHooks(company: CompanyController, parts: RailParts) {
 			if (zone === "pinned") return sidebar.pinned.includes(itemId) || sidebar.pinned.length < PIN_LIMIT;
 			return canOrganize(company);
 		},
-		drop: ({ itemId, zone, order }: RailDrop) => {
+		drop: ({ itemId, kind, zone, order }: RailDrop) => {
+			const item: RailItem = { id: itemId, kind };
 			const sidebar = sidebarOf();
 			if (!sidebar) return;
 			const pinned = sidebar.pinned.includes(itemId);
@@ -1516,7 +1528,7 @@ function dragHooks(company: CompanyController, parts: RailParts) {
 			const sectionId = zone === "unassigned" ? undefined : zone.slice("section:".length);
 			// Dragged out of Hidden, the item is shown again where it lands.
 			const wasHidden = sidebar.hidden.includes(itemId);
-			if (wasHidden) void company.changeSidebar(hideRequest(company, itemId, false));
+			if (wasHidden) void company.changeSidebar(hideRequest(item, false));
 			// The rail shows no hidden or pinned items; the new order keeps them where they stood.
 			const roster = company.sidebarRoster();
 			const before = containerOrder(sidebar, sectionId, roster);
@@ -1526,7 +1538,7 @@ function dragHooks(company: CompanyController, parts: RailParts) {
 			next.splice(at < 0 ? next.length : at, 0, itemId);
 			if (!pinned && !wasHidden && next.join() === before.join()) return;
 			void company.changeSidebar(
-				moveRequest(company, itemId, sectionId ?? null, { order: next, ...(pinned ? { unpin: true } : {}) }),
+				moveRequest(item, sectionId ?? null, { order: next, ...(pinned ? { unpin: true } : {}) }),
 			);
 		},
 	};
@@ -1535,7 +1547,8 @@ function dragHooks(company: CompanyController, parts: RailParts) {
 /** Moves an agent or a group chat one place up or down among what the member sees: in
  * the pinned row (the member's own order) or in its section (the company's; hidden and
  * pinned items keep their places). */
-function nudgeItem(company: CompanyController, itemId: string, delta: number): void {
+function nudgeItem(company: CompanyController, item: RailItem, delta: number): void {
+	const itemId = item.id;
 	const state = company.store.get();
 	const sidebar = state.sidebarUnavailable ? undefined : state.sidebar;
 	if (!sidebar) return;
@@ -1562,5 +1575,5 @@ function nudgeItem(company: CompanyController, itemId: string, delta: number): v
 	if (!neighbour) return;
 	order.splice(order.indexOf(itemId), 1);
 	order.splice(order.indexOf(neighbour) + (delta > 0 ? 1 : 0), 0, itemId);
-	void company.changeSidebar(moveRequest(company, itemId, sectionId ?? null, { order }));
+	void company.changeSidebar(moveRequest(item, sectionId ?? null, { order }));
 }

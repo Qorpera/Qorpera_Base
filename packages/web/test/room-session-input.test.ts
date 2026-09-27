@@ -182,6 +182,21 @@ describe("room session input routing", () => {
 		expect(state.get().attachments?.[0]).toBe(file);
 		expect(f.write).toHaveBeenCalledTimes(1);
 	});
+	it("reads the sidebar before sending a group chat's images when it has not been read", async () => {
+		const f = setup();
+		const file = new File(["image bytes"], "image.png", { type: "image/png" });
+		const state = f.controller.conversation(session.sessionId, false);
+		const read = vi.spyOn(f.api, "readCompanySidebar").mockRejectedValueOnce(new Error("offline"));
+		state.set({ attachments: [file], draft: "Look" });
+		expect(await f.controller.sendPrompt(session.sessionId, "Look")).toBe(false);
+		expect(state.get().sendError).toBe("Could not check whether this group chat takes images. Try again.");
+		expect(f.write).not.toHaveBeenCalled();
+		read.mockResolvedValueOnce({ sections: [], placements: {}, pinned: [], hidden: [], groupChats: true });
+		f.write.mockResolvedValueOnce({ inputId: receipt.inputId } as Awaited<ReturnType<typeof f.write>>);
+		expect(await f.controller.sendPrompt(session.sessionId, "Look")).toBe(true);
+		expect(read).toHaveBeenCalledTimes(2);
+		expect(f.write.mock.calls[0]![6]).toEqual({ ...target, images: true });
+	});
 	it.each([{ ...roomSession, executionScope: { roomId: "invalid" } }])(
 		"refuses a malformed canonical room scope",
 		async (invalidSession) => {

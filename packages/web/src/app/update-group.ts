@@ -11,6 +11,42 @@ const ROOM_FIELDS = ["schema", "roomId", "key", "name", "purpose", "status", "pr
 /** This invocation failed before sending a write; an earlier invocation may still be uncertain. */
 export class GroupUpdateNotWrittenError extends Error {}
 
+/** The group's participants would not pass: fewer than two active agents, someone who left, or a duplicate. */
+export class GroupParticipantsError extends Error {}
+
+type GroupEditor = Pick<CloudMemberCompanyFileClient, "read" | "edit" | "review">;
+
+/** Every room change is an owner's or admin's (a protected Company File path). */
+function assertGroupEditor(company: CompanyController): void {
+	const state = company.store.get();
+	if (
+		state.accessLost ||
+		!state.team?.capabilities.write ||
+		!state.team.capabilities.authorize ||
+		!["owner", "admin"].includes(state.team.role) ||
+		state.team.profileId !== company.profile.profileId
+	)
+		throw new Error(t("Only an owner or admin can change group chats."));
+}
+
+/** A room document change is protected: its author approves the review, then it must have applied. */
+async function applyGroupCommand(
+	editor: GroupEditor,
+	command: Awaited<ReturnType<GroupEditor["edit"]>>,
+	signal: AbortSignal,
+	check: () => void,
+	failure: string,
+): Promise<void> {
+	let result = command;
+	if (result.state === "review_required") {
+		const reviewed = await editor.review(result, "approve", signal);
+		check();
+		if (!("commandId" in reviewed)) throw new Error(t("Group chat review changed kind."));
+		result = reviewed;
+	}
+	if (result.state !== "applied" || !result.result) throw new Error(failure);
+}
+
 function memberKey(members: GroupChatDraft["members"]): string {
 	return JSON.stringify(members.map(({ kind, id }) => `${kind}:${id}`).sort());
 }
@@ -18,7 +54,7 @@ function memberKey(members: GroupChatDraft["members"]): string {
 /** Edits the canonical room document with both its File and room revision checks. */
 export function createGroupUpdater(options: {
 	company: CompanyController;
-	editor: (signal: AbortSignal) => Promise<Pick<CloudMemberCompanyFileClient, "read" | "edit" | "review">>;
+	editor: (signal: AbortSignal) => Promise<GroupEditor>;
 	current: () => void;
 }): NonNullable<WorkspaceActions["updateGroup"]> {
 	const company = options.company;
@@ -38,15 +74,8 @@ export function createGroupUpdater(options: {
 			const check = () => {
 				signal.throwIfAborted();
 				options.current();
+				assertGroupEditor(company);
 				const state = company.store.get();
-				if (
-					state.accessLost ||
-					!state.team?.capabilities.write ||
-					!state.team.capabilities.authorize ||
-					!["owner", "admin"].includes(state.team.role) ||
-					state.team.profileId !== company.profile.profileId
-				)
-					throw new Error(t("Only an owner or admin can change group chats."));
 				const session = state.sessions.find((item) => item.sessionId === sessionId);
 				if (
 					!session ||
@@ -78,7 +107,7 @@ export function createGroupUpdater(options: {
 						return !agent || agent.profileId !== session.profileId || agent.employmentStatus !== "active";
 					})
 				)
-					throw new Error(
+					throw new GroupParticipantsError(
 						t("Choose at least two active agents and current company members, with no duplicate participants."),
 					);
 			};
@@ -146,7 +175,7 @@ export function createGroupUpdater(options: {
 			if (new TextEncoder().encode(text).length > 32768)
 				throw new Error(t("The group details are too long. Shorten the description."));
 			writeStarted = true;
-			let command = await editor.edit(
+			const command = await editor.edit(
 				{
 					operation: "write",
 					operationKey: `group-update:${observed.roomId}:${crypto.randomUUID()}`,
@@ -157,14 +186,7 @@ export function createGroupUpdater(options: {
 				signal,
 			);
 			check();
-			if (command.state === "review_required") {
-				const reviewed = await editor.review(command, "approve", signal);
-				check();
-				if (!("commandId" in reviewed)) throw new Error(t("Group chat review changed kind."));
-				command = reviewed;
-			}
-			if (command.state !== "applied" || !command.result)
-				throw new Error(t("The group chat changes could not be saved."));
+			await applyGroupCommand(editor, command, signal, check, t("The group chat changes could not be saved."));
 		} catch (error) {
 			if (!writeStarted) throw new GroupUpdateNotWrittenError(describeError(error), { cause: error });
 			throw error;
@@ -179,7 +201,7 @@ export function createGroupUpdater(options: {
  * admins only, as for every room change. */
 export function createGroupDeleter(options: {
 	company: CompanyController;
-	editor: (signal: AbortSignal) => Promise<Pick<CloudMemberCompanyFileClient, "read" | "edit" | "review">>;
+	editor: (signal: AbortSignal) => Promise<GroupEditor>;
 	current: () => void;
 }): NonNullable<WorkspaceActions["deleteGroup"]> {
 	const company = options.company;
@@ -188,16 +210,8 @@ export function createGroupDeleter(options: {
 			signal.throwIfAborted();
 			company.signal.throwIfAborted();
 			options.current();
-			const state = company.store.get();
-			if (
-				state.accessLost ||
-				!state.team?.capabilities.write ||
-				!state.team.capabilities.authorize ||
-				!["owner", "admin"].includes(state.team.role) ||
-				state.team.profileId !== company.profile.profileId
-			)
-				throw new Error(t("Only an owner or admin can change group chats."));
-			const session = state.sessions.find((item) => item.sessionId === sessionId);
+			assertGroupEditor(company);
+			const session = company.store.get().sessions.find((item) => item.sessionId === sessionId);
 			if (
 				!session ||
 				session.staffAgentId ||
@@ -223,7 +237,7 @@ export function createGroupDeleter(options: {
 			String(document.roomId).toLowerCase() !== roomId.toLowerCase()
 		)
 			throw new Error(t("This group chat is no longer available."));
-		let command = await editor.edit(
+		const command = await editor.edit(
 			{
 				operation: "delete",
 				operationKey: `group-delete:${roomId.toLowerCase()}:${crypto.randomUUID()}`,
@@ -233,12 +247,6 @@ export function createGroupDeleter(options: {
 			signal,
 		);
 		check();
-		if (command.state === "review_required") {
-			const reviewed = await editor.review(command, "approve", signal);
-			check();
-			if (!("commandId" in reviewed)) throw new Error(t("Group chat review changed kind."));
-			command = reviewed;
-		}
-		if (command.state !== "applied" || !command.result) throw new Error(t("The group chat could not be deleted."));
+		await applyGroupCommand(editor, command, signal, check, t("The group chat could not be deleted."));
 	};
 }

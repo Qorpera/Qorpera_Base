@@ -15,7 +15,8 @@ export const SESSION_EFFORTS = ["low", "medium", "high"] as const;
 
 export interface SessionModel {
 	sessionId: string;
-	modelId: string;
+	/** Absent in a group chat where no model was chosen: each agent runs its own. */
+	modelId?: string;
 	/** Absent while the cloud predates per-conversation effort. */
 	reasoningEffort?: string;
 	version: number;
@@ -143,12 +144,15 @@ export function createWebSessionModel(
 							},
 							response.status,
 						);
+					// A group chat with no model chosen reports none: each agent runs its own (20260927170000).
+					const model = result.model_id;
 					if (
 						result.session_id !== sessionId ||
-						typeof result.model_id !== "string" ||
-						!result.model_id ||
-						result.model_id !== result.model_id.trim() ||
-						new TextEncoder().encode(result.model_id).length > 256 ||
+						(model !== null &&
+							(typeof model !== "string" ||
+								!model ||
+								model !== model.trim() ||
+								new TextEncoder().encode(model).length > 256)) ||
 						(effort !== undefined &&
 							(typeof effort !== "string" ||
 								!effort ||
@@ -158,14 +162,14 @@ export function createWebSessionModel(
 						!Number.isSafeInteger(result.version) ||
 						result.version < 0 ||
 						(selection &&
-							((selection.modelId !== undefined && result.model_id !== selection.modelId) ||
+							((selection.modelId !== undefined && model !== selection.modelId) ||
 								result.version !== selection.expectedVersion + 1 ||
 								(selection.reasoningEffort !== undefined && effort !== selection.reasoningEffort)))
 					)
 						throw new Error("Invalid conversation model response.");
 					return {
 						sessionId,
-						modelId: result.model_id,
+						...(typeof model === "string" ? { modelId: model } : {}),
 						...(typeof effort === "string" ? { reasoningEffort: effort } : {}),
 						version: result.version,
 					};

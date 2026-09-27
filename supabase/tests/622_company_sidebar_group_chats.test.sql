@@ -70,6 +70,19 @@ values
 		'chat-hiring','Hiring','Hire the team','active',1,'organization/rooms/62200000-0000-4000-8000-000000000002.json',
 		extensions.gen_random_uuid(),extensions.gen_random_uuid(),repeat('b',64),'30000000-0000-4000-8000-000000000001',
 		'2026-09-27 11:00:00+00');
+-- Each group chat has its open conversation, as the projection creates it; the rail
+-- shows a group chat through its conversation.
+insert into public.qorpera_shared_sessions(id,client_session_id,profile_id,environment_id,title,status,
+	created_by_user_id,staff_agent_id,execution_scope,created_at)
+values
+	('62200000-0000-4000-8000-000000000021',extensions.gen_random_uuid(),'30000000-0000-4000-8000-000000000010',
+		'30000000-0000-4000-8000-000000000020','Launch','open','30000000-0000-4000-8000-000000000001',null,
+		'{"roomId":"62200000-0000-4000-8000-000000000001"}','2026-09-27 10:00:01+00'),
+	('62200000-0000-4000-8000-000000000022',extensions.gen_random_uuid(),'30000000-0000-4000-8000-000000000010',
+		'30000000-0000-4000-8000-000000000020','Hiring','open','30000000-0000-4000-8000-000000000001',null,
+		'{"roomId":"62200000-0000-4000-8000-000000000002"}','2026-09-27 11:00:01+00');
+update public.qorpera_company_rooms set session_id = ('62200000-0000-4000-8000-00000000002' || right(id::text,1))::uuid
+where id in ('62200000-0000-4000-8000-000000000001','62200000-0000-4000-8000-000000000002');
 select set_config('qorpera_test.bob_thread',(select id::text from public.qorpera_company_rooms
 	where profile_id = '30000000-0000-4000-8000-000000000010'
 		and bound_staff_agent_id = '30000000-0000-4000-8000-000000000031'),true);
@@ -100,7 +113,7 @@ begin
 		'Create with a group chat places the group chat');
 	-- A contributor drags an agent above the group chat: one order for both kinds.
 	v_state := pg_temp.member_sidebar(v_contributor,jsonb_build_object('action','move_agent','staffAgentId',v_carol,
-		'sectionId',v_research,'order',jsonb_build_array(v_carol,v_launch)));
+		'sectionId',v_research,'order',jsonb_build_array(v_carol,v_launch),'groupChats',true));
 	perform pg_temp.wake_assert(pg_temp.container(v_state,v_research::text) = array[v_carol,v_launch],
 		'An agent lands above a group chat');
 	v_state := pg_temp.member_sidebar(v_contributor,jsonb_build_object('action','move_room','roomId',v_hiring,
@@ -126,13 +139,13 @@ begin
 
 	-- A viewer cannot place a group chat but pins and hides for themself, agents and group chats in one row.
 	perform pg_temp.member_error(v_viewer,jsonb_build_object('action','move_room','roomId',v_launch,'sectionId',v_research),'42501');
-	v_state := pg_temp.member_sidebar(v_viewer,jsonb_build_object('action','set_pins','order',jsonb_build_array(v_launch,v_bob,v_hiring)));
+	v_state := pg_temp.member_sidebar(v_viewer,jsonb_build_object('action','set_pins','groupChats',true,'order',jsonb_build_array(v_launch,v_bob,v_hiring)));
 	perform pg_temp.wake_assert(v_state -> 'pinned' = jsonb_build_array(v_launch,v_bob,v_hiring),'Pins mix agents and group chats in order');
 	perform pg_temp.wake_assert(pg_temp.member_read(v_owner) -> 'pinned' = '[]','Pins stay with their member');
 	v_state := pg_temp.member_sidebar(v_viewer,jsonb_build_object('action','set_hidden','roomId',v_launch,'hidden',true));
 	perform pg_temp.wake_assert(v_state -> 'hidden' = jsonb_build_array(v_launch)
 		and v_state -> 'pinned' = jsonb_build_array(v_bob,v_hiring),'Hiding a group chat unpins it');
-	v_state := pg_temp.member_sidebar(v_viewer,jsonb_build_object('action','set_pins','order',jsonb_build_array(v_launch)));
+	v_state := pg_temp.member_sidebar(v_viewer,jsonb_build_object('action','set_pins','groupChats',true,'order',jsonb_build_array(v_launch)));
 	perform pg_temp.wake_assert(v_state -> 'hidden' = '[]' and v_state -> 'pinned' = jsonb_build_array(v_launch),
 		'Pinning a hidden group chat shows it and the new order replaces the old');
 	v_state := pg_temp.member_sidebar(v_viewer,jsonb_build_object('action','set_hidden','roomId',v_hiring,'hidden',true));
@@ -141,7 +154,7 @@ begin
 		and not exists (select 1 from public.qorpera_member_sidebar_rooms where user_id = v_viewer and room_id = v_hiring::uuid),
 		'Showing a group chat again leaves no row behind');
 	-- A drag out of the pinned row into a section unpins in the same call.
-	v_state := pg_temp.member_sidebar(v_contributor,jsonb_build_object('action','set_pins','order',jsonb_build_array(v_hiring)));
+	v_state := pg_temp.member_sidebar(v_contributor,jsonb_build_object('action','set_pins','groupChats',true,'order',jsonb_build_array(v_hiring)));
 	v_state := pg_temp.member_sidebar(v_contributor,jsonb_build_object('action','move_room','roomId',v_hiring,
 		'sectionId',null,'unpin',true));
 	perform pg_temp.wake_assert(v_state -> 'pinned' = '[]' and pg_temp.room_section(v_state,v_hiring) is null,
@@ -149,9 +162,9 @@ begin
 
 	-- An agent's own thread, an unknown room and mixed-up requests are refused.
 	perform pg_temp.member_error(v_owner,jsonb_build_object('action','move_room','roomId',v_thread,'sectionId',null),'P0002');
-	perform pg_temp.member_error(v_owner,jsonb_build_object('action','set_pins','order',jsonb_build_array(v_thread)),'P0002');
+	perform pg_temp.member_error(v_owner,jsonb_build_object('action','set_pins','groupChats',true,'order',jsonb_build_array(v_thread)),'P0002');
 	begin
-		perform pg_temp.member_sidebar(v_owner,jsonb_build_object('action','set_pins','order',
+		perform pg_temp.member_sidebar(v_owner,jsonb_build_object('action','set_pins','groupChats',true,'order',
 			jsonb_build_array('62200000-0000-4000-8000-000000000099')));
 		raise exception 'an unknown id was pinned';
 	exception when sqlstate 'P0002' then
@@ -167,7 +180,7 @@ begin
 	perform pg_temp.member_error(v_owner,jsonb_build_object('action','move_room','staffAgentId',v_bob,'sectionId',null),'22023');
 	perform pg_temp.member_error(v_owner,jsonb_build_object('action','set_hidden','staffAgentId',v_bob,'roomId',v_launch,
 		'hidden',true),'22023');
-	perform pg_temp.member_error(v_owner,jsonb_build_object('action','set_pins','order',jsonb_build_array(v_launch,v_launch)),'22023');
+	perform pg_temp.member_error(v_owner,jsonb_build_object('action','set_pins','groupChats',true,'order',jsonb_build_array(v_launch,v_launch)),'22023');
 	perform pg_temp.member_error(v_owner,'{"action":"set_hidden","hidden":true}','22023');
 	perform pg_temp.member_error(v_owner,jsonb_build_object('action','move_room','roomId',v_launch),'22023');
 
@@ -187,6 +200,72 @@ begin
 		= array[v_agent,v_hiring,v_carol]::uuid[],'A deleted section''s group chats are Unassigned, in their order');
 	perform pg_temp.wake_assert((select section_id is null and position = 1
 		from public.qorpera_company_sidebar_room_placements where room_id = v_hiring::uuid),'Its placement was renumbered');
+end $$;
+
+-- A page opened before this migration sends agents-only orders without groupChats: the
+-- member's pinned group chats stay pinned, and a section's group chats keep their slots.
+do $$
+declare v_state jsonb; v_owner uuid := '30000000-0000-4000-8000-000000000001';
+	v_agent text := '30000000-0000-4000-8000-000000000030'; v_carol text := '30000000-0000-4000-8000-000000000032';
+	v_launch text := '62200000-0000-4000-8000-000000000001'; v_hiring text := '62200000-0000-4000-8000-000000000002';
+begin
+	v_state := pg_temp.member_sidebar(v_owner,jsonb_build_object('action','set_pins','groupChats',true,
+		'order',jsonb_build_array(v_launch,v_agent)));
+	v_state := pg_temp.member_sidebar(v_owner,jsonb_build_object('action','set_pins','order',jsonb_build_array(v_carol,v_agent)));
+	perform pg_temp.wake_assert(v_state -> 'pinned' = jsonb_build_array(v_carol,v_agent,v_launch),
+		'An older page''s pins keep the group chats pinned, after its agents');
+	v_state := pg_temp.member_sidebar(v_owner,jsonb_build_object('action','set_pins','groupChats',true,
+		'order',jsonb_build_array(v_carol)));
+	perform pg_temp.wake_assert(v_state -> 'pinned' = jsonb_build_array(v_carol),'A current page''s pins are the whole row');
+	perform pg_temp.member_error(v_owner,jsonb_build_object('action','set_pins','groupChats',false,'order','[]'::jsonb),'22023');
+	perform pg_temp.member_error(v_owner,jsonb_build_object('action','move_room','roomId',v_launch,'sectionId',null,
+		'groupChats',true),'22023');
+	-- Unassigned is Agent, Hiring, Carol (Launch is in Operations). An older page drags Carol above Agent.
+	perform pg_temp.wake_assert(public.qorpera_sidebar_container('30000000-0000-4000-8000-000000000010',null)
+		= array[v_agent,v_hiring,v_carol]::uuid[],'Unassigned before the older page''s drag');
+	v_state := pg_temp.member_sidebar(v_owner,jsonb_build_object('action','move_agent','staffAgentId',v_carol,
+		'sectionId',null,'order',jsonb_build_array(v_carol,v_agent)));
+	perform pg_temp.wake_assert(public.qorpera_sidebar_container('30000000-0000-4000-8000-000000000010',null)
+		= array[v_carol,v_hiring,v_agent]::uuid[],'The group chat keeps its slot through an older page''s reorder');
+	-- A current page's order places the group chat where it says.
+	v_state := pg_temp.member_sidebar(v_owner,jsonb_build_object('action','move_agent','staffAgentId',v_carol,
+		'sectionId',null,'order',jsonb_build_array(v_hiring,v_agent,v_carol),'groupChats',true));
+	perform pg_temp.wake_assert(public.qorpera_sidebar_container('30000000-0000-4000-8000-000000000010',null)
+		= array[v_hiring,v_agent,v_carol]::uuid[],'A current page''s order is taken as given');
+end $$;
+
+-- A group chat whose conversation is closed is not shown, so the sidebar does not place or pin it.
+do $$
+begin
+	update public.qorpera_shared_sessions set status = 'closed' where id = '62200000-0000-4000-8000-000000000022';
+	perform pg_temp.wake_assert(not ('62200000-0000-4000-8000-000000000002'::uuid = any(
+		public.qorpera_sidebar_container('30000000-0000-4000-8000-000000000010',null))),'A closed conversation is not in the rail');
+	perform pg_temp.member_error('30000000-0000-4000-8000-000000000001',jsonb_build_object('action','set_pins','groupChats',true,
+		'order',jsonb_build_array('62200000-0000-4000-8000-000000000002')),'P0002');
+	update public.qorpera_shared_sessions set status = 'open' where id = '62200000-0000-4000-8000-000000000022';
+end $$;
+
+-- A group chat's conversation reports no model while none was chosen: each agent runs its own.
+do $$
+declare v_read jsonb;
+begin
+	perform pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001');
+	set local role authenticated;
+	v_read := public.qorpera_get_session_model('62200000-0000-4000-8000-000000000021');
+	perform pg_temp.wake_assert(v_read ? 'model_id' and v_read -> 'model_id' = 'null'::jsonb
+		and (v_read ->> 'version')::int = 0,'A group chat with no model chosen names none');
+	perform pg_temp.wake_assert(public.qorpera_get_session_model('30000000-0000-4000-8000-000000000040') ->> 'model_id'
+		is not null,'An agent''s conversation still names its model');
+	reset role;
+	perform pg_temp.path_claims('service_role');
+	insert into public.qorpera_session_models(session_id,model_id,version,updated_by_user_id)
+	values ('62200000-0000-4000-8000-000000000021','gpt-6-sol',1,'30000000-0000-4000-8000-000000000001');
+	perform pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001');
+	set local role authenticated;
+	v_read := public.qorpera_get_session_model('62200000-0000-4000-8000-000000000021');
+	reset role;
+	perform pg_temp.path_claims('service_role');
+	perform pg_temp.wake_assert(v_read ->> 'model_id' = 'gpt-6-sol','A chosen model is reported');
 end $$;
 
 -- An archived group chat leaves every list but keeps its place; a deleted one takes its rows with it.

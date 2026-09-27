@@ -10,6 +10,7 @@ import { uiScale } from "./scale.ts";
 export interface RailDrop {
 	/** The agent or group chat dropped. */
 	itemId: string;
+	kind: "agent" | "room";
 	zone: string;
 	/** The zone's agents and group chats after the drop, the dragged one included, in order. */
 	order: string[];
@@ -33,6 +34,7 @@ const EDGE = 40;
 
 interface Active {
 	itemId: string;
+	kind: "agent" | "room";
 	pointerId: number;
 	start: { x: number; y: number };
 	offset: { x: number; y: number };
@@ -141,6 +143,7 @@ export class RailDrag {
 		const rect = source.getBoundingClientRect();
 		this.#active = {
 			itemId,
+			kind: source.dataset.roomId ? "room" : "agent",
 			pointerId: event.pointerId,
 			start: { x: event.clientX, y: event.clientY },
 			offset: { x: event.clientX - rect.left, y: event.clientY - rect.top },
@@ -320,6 +323,6 @@ export class RailDrag {
 			.map((item) => itemIdOf(item)!)
 			.filter((itemId) => itemId !== active.itemId);
 		order.splice(index, 0, active.itemId);
-		this.#hooks().drop({ itemId: active.itemId, zone: zone.dataset.dropZone!, order });
+		this.#hooks().drop({ itemId: active.itemId, kind: active.kind, zone: zone.dataset.dropZone!, order });
 	}
 }
