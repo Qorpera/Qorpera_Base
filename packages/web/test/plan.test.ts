@@ -77,7 +77,7 @@ describe("Plan & usage", () => {
 		expect(hours.querySelector("strong")?.textContent).toBe("Not measured yet");
 		expect(hours.textContent).toContain("Included in your free trial");
 		expect(hours.querySelector("progress")).toBeNull();
-		expect(text()).toContain("Choose a company to see its storage.");
+		expect(text()).toContain("Open a company to see its storage.");
 		const rows = [...container.querySelectorAll(".billing-row")].map((row) => row.textContent);
 		expect(rows[0]).toBe("PriceFree");
 		expect(rows[1]).toBe("Next paymentNone during your free trial");
