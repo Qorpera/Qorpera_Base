@@ -32,6 +32,15 @@ it("derives the agent, requester and company from closed cloud context, not a su
 	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toMatch(/not a second platform prompt/);
 });
 
+it("tells agents to make folders for a category of files while a member's or assignment's folder always stands", () => {
+	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toContain("Create a folder only as the home for a category of files");
+	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toContain("Never create a folder on your own just to hold a single file");
+	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toContain(
+		"a folder a member asks for, or one your assignment names (such as a worker's output folder), is always fine",
+	);
+	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).not.toContain("Do not add files, folders");
+});
+
 it("preserves legacy member-private source provenance without promoting startup data to a human request", () => {
 	const f = nativeCompanyContextFixture();
 	f.context.identity = {

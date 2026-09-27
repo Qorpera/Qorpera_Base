@@ -440,7 +440,7 @@ describe("cloud Company File path gateway", () => {
 				expect(response.success).toBe(false);
 				expect(envelope).toMatchObject({ status: "denied" });
 				expect(envelope.content.text).toMatch(
-					/^COMPANY_FILE_PARENT_MISSING: nothing was written; the folder this path goes in does not exist\. For a single file, choose an existing folder where it fits.*create it with company_mkdir first/,
+					/^COMPANY_FILE_PARENT_MISSING: nothing was written; the folder this path goes in does not exist\. When a member or your assignment named this folder, or a category of files needs it as its home, create it with company_mkdir first.*Otherwise, for a single file, choose an existing folder where it fits/,
 				);
 				expect(envelope.content.text).toContain("do not replace the file");
 				expect(envelope.content.text).not.toContain("Company File parent folder is missing");
