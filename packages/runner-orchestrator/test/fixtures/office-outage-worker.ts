@@ -285,7 +285,20 @@ export async function officeOutageWorkerFixture(roots: string[]) {
 				};
 			}
 			if (method === "qorpera_describe_runtime_computer_permit")
-				return { mode: "paid", permit: permit?.state === "closed" ? null : permit, lastSample };
+				return {
+					mode: "paid",
+					permit: permit?.state === "closed" ? null : permit,
+					lastSample,
+					workReady:
+						permit?.state === "bound" &&
+						lastSample?.state === "running" &&
+						lastSample.physicalId === permit.physicalId &&
+						lastSample.guestBootId === permit.guestBootId &&
+						lastSample.hostBootId === clock.hostBootId &&
+						typeof lastSample.hostUptimeMs === "number" &&
+						lastSample.hostUptimeMs <= clock.uptimeMs &&
+						clock.uptimeMs - lastSample.hostUptimeMs <= 10000,
+				};
 			if (method === "qorpera_prepare_runtime_computer_permit") {
 				expect(request).toMatchObject({ schema: "qorpera.runtime-computer-prepare/v3", usageProducer: "guard-v1" });
 				if (permit && permit.state !== "closed") throw new Error("duplicate reservation");

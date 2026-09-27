@@ -18,6 +18,24 @@ function deferred() {
 	return { promise, resolve };
 }
 describe("paid outage cold boot", () => {
+	it.each([false, undefined])(
+		"refuses paid work when authoritative readiness is %s despite a running guarded VM",
+		async (workReady) => {
+			const f = await fixture();
+			await expect(f.adapter().assertActive(f.binding, signal())).resolves.toBeUndefined();
+			const original = f.control.call.getMockImplementation()!;
+			f.control.call.mockImplementation(async (method, args) => {
+				const result = await original(method, args);
+				return method === "qorpera_describe_runtime_computer_permit"
+					? { ...(result as Record<string, unknown>), workReady }
+					: result;
+			});
+			await expect(f.adapter().assertActive(f.binding, signal())).rejects.toThrow("RUNNING_PERMIT_REQUIRED");
+			expect((await f.guard().latest(f.binding.allocationId))?.phase).toBe("running");
+			expect(f.client.submitOfficeOutageServiceStart).not.toHaveBeenCalled();
+		},
+	);
+
 	it.each(["resume", "admission"] as const)(
 		"retains %s ownership after cancellation until the underlying RPC settles",
 		async (phase) => {
