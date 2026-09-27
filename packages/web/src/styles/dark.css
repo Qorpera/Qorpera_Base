@@ -13,9 +13,9 @@
 :root[data-theme="dark"] .btn-primary { background: var(--primary); }
 :root[data-theme="dark"] .btn-primary:hover:not(:disabled) { background: var(--primary-hover); }
 :root[data-theme="dark"] .btn-danger:hover:not(:disabled) { background: var(--danger-soft); }
-/* The black provider marks (GitHub, OpenAI, Anthropic) turn to white; Google's
+/* The black provider marks (GitHub, OpenAI) turn to white; Google's and Claude's
  * colours stay. */
-:root[data-theme="dark"] :is(img[src$="provider-github.svg"], img[src$="provider-openai.svg"], img[src$="provider-anthropic.svg"]) { filter: invert(1); }
+:root[data-theme="dark"] :is(img[src$="provider-github.svg"], img[src$="provider-openai.svg"]) { filter: invert(1); }
 
 /* ---- account menu ---------------------------------------------------------- */
 :root[data-theme="dark"] .account-chip { background: #5c5b58; }
@@ -115,6 +115,8 @@
 :root[data-theme="dark"] .composer-send:disabled { background: #353534; color: #71706c; }
 :root[data-theme="dark"] .composer-send:not(:disabled):hover { background: var(--composer-accent-hover); }
 :root[data-theme="dark"] .composer-menu { box-shadow: 0 12px 30px rgb(0 0 0 / 45%); }
+/* The Fast switch when off: a soft grey knob, not a white one, on the dim track. */
+:root[data-theme="dark"] .composer-model-fast:not([aria-checked="true"]) .composer-switch::after { background: #c4c3be; box-shadow: none; }
 :root[data-theme="dark"] .attachment-chip { background: #2c2c2b; }
 :root[data-theme="dark"] .attachment-remove { background: #3a3a38; box-shadow: 0 1px 4px rgb(0 0 0 / 40%); }
 :root[data-theme="dark"] .auth-card { border-color: var(--border); background: #262625; }
@@ -218,8 +220,8 @@
 :root[data-theme="dark"] .feedback-submit:disabled { border-color: #3a3a38; background: #3a3a38; color: #7f7e7a; }
 
 /* ---- coding session in the thread ------------------------------------------ */
-:root[data-theme="dark"] .coding-tone-attention .coding-status-label, :root[data-theme="dark"] .coding-tone-attention .coding-caption, :root[data-theme="dark"] .coding-step-status.coding-tone-attention { color: #f2c35d; }
-:root[data-theme="dark"] .coding-tone-done .coding-status-label, :root[data-theme="dark"] .coding-tone-done .coding-caption, :root[data-theme="dark"] .coding-step-status.coding-tone-done, :root[data-theme="dark"] .coding-glyph.coding-tone-done { color: #5ed6a9; }
+:root[data-theme="dark"] .coding-tone-attention .coding-status-text, :root[data-theme="dark"] .coding-step-status.coding-tone-attention { color: #f2c35d; }
+:root[data-theme="dark"] .coding-tone-done .coding-status-text, :root[data-theme="dark"] .coding-step-status.coding-tone-done, :root[data-theme="dark"] .coding-glyph.coding-tone-done { color: #5ed6a9; }
 :root[data-theme="dark"] .coding-badge-codex { background: #f4f3f0; color: #161615; }
 :root[data-theme="dark"] .coding-dot-working { background: #30d158; }
 :root[data-theme="dark"] .coding-question { background: #262624; }

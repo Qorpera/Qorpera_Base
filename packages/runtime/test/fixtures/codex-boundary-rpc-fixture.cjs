@@ -147,6 +147,8 @@ async function handle(message) {
 		if (mode === "unsafe-code-mode") configuration.features.code_mode.enabled = true;
 		if (mode === "nested-cloud-tools") configuration.features.code_mode.direct_only_tool_namespaces = [];
 		if (mode === "skill-route") configuration.orchestrator.skills.enabled = true;
+		if (mode === "fast-mode-off") configuration.features.fast_mode = false;
+		if (mode === "tier-dropped") delete configuration.service_tier;
 		write({ id: message.id, result: { config: configuration } });
 	} else if (message.method === "skills/list") {
 		write({ id: message.id, result: { data: [{ skills: mode === "extra-skills" ? [{ name: "PRIVATE_UNCONTROLLED_SKILL" }] : [], errors: [] }] } });
@@ -321,7 +323,7 @@ async function handle(message) {
 		const fenced = await fence(companyOutputs);
 		if (index + 1 < companyCalls.length) companyCall(index + 1);
 		else {
-			writeFileSync(evidencePath, JSON.stringify({ threadParameters, turnParameters, fenced, outputs: companyOutputs, cwd: process.cwd(), environmentKeys: Object.keys(process.env) }));
+			writeFileSync(evidencePath, JSON.stringify({ threadParameters, turnParameters, configuration, fenced, outputs: companyOutputs, cwd: process.cwd(), environmentKeys: Object.keys(process.env) }));
 			write({ method: "item/agentMessage/delta", params: { threadId, turnId, delta: "PRIVATE_OUTPUT_CANARY" } });
 			write({ method: "item/reasoning/summaryTextDelta", params: { threadId, turnId, delta: "PRIVATE_REASONING_CANARY" } });
 			done();
