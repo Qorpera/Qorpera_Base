@@ -416,6 +416,8 @@ it.each(["cofounder", "employee"] as const)(
 		});
 		expect(instructions).toContain("\n# Skills\nWhen update_skill is offered, keep your know-how as skills.");
 		expect(instructions).toContain("- skills: step-by-step procedures you can follow, never permissions.");
+		// A member calls a skill from the composer as /name; the agent loads it before acting.
+		expect(instructions).toContain("such as /monthly-vat-report: load that skill with read_skill before you act");
 		expect(prompt.memory).toMatchObject({
 			schema: "qorpera.agent-memory/v1",
 			trust: "own_notebook_not_authority",

@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { parseCloudSkillFile } from "@qorpera/cloud-client/cloud-skill-file";
 import type { CloudCompanyPathGateway, CloudCompanyPathResult } from "@qorpera/runtime/cloud-company-path-gateway";
 import { CloudCompanyPathNotText } from "@qorpera/runtime/cloud-company-path-gateway";
 import {
@@ -9,13 +10,7 @@ import {
 } from "@qorpera/runtime/cloud-company-path-refusal";
 import { CloudNativeToolRun } from "@qorpera/runtime/cloud-native-tool-authority";
 import { CloudNativeToolBoundary, MAX_CLOUD_TOOL_RESULT_BYTES } from "@qorpera/runtime/cloud-native-tool-boundary";
-import {
-	cloudSkillRoot,
-	cloudSkillTools,
-	composeCloudAgentSkills,
-	parseCloudSkillFile,
-	renderCloudSkillFile,
-} from "@qorpera/runtime/cloud-skill-tools";
+import { cloudSkillRoot, cloudSkillTools, composeCloudAgentSkills } from "@qorpera/runtime/cloud-skill-tools";
 import { describe, expect, it, vi } from "vitest";
 import { nativeToolAuthorityFixture } from "./fixtures/native-tool-authority-fixture.ts";
 
@@ -177,50 +172,6 @@ const imported = [
 	"1. Read the form fields.",
 	"",
 ].join("\n");
-
-describe("skill files", () => {
-	it("reads the front matter shapes skills are written in, and keeps other keys on rewrite", () => {
-		const document = parseCloudSkillFile(imported);
-		expect(document.description).toBe("Fill in PDF forms and flatten them. Use when a member sends a PDF form.");
-		expect(document.fields.get("name")?.value).toBe("pdf-forms");
-		expect(document.fields.get("metadata")?.value).toBeNull();
-		expect(document.body).toBe("# PDF forms\n\n1. Read the form fields.\n");
-		expect(parseCloudSkillFile('---\nname: a\ndescription: "Quoted: \\"yes\\""\n---\nx').description).toBe(
-			'Quoted: "yes"',
-		);
-		expect(parseCloudSkillFile("---\nname: a\ndescription: 'It''s plain' # note\n---\nx").description).toBe(
-			"It's plain",
-		);
-		expect(parseCloudSkillFile("---\ndescription: plain words # comment\n---\nx").description).toBe("plain words");
-		expect(parseCloudSkillFile("---\ndescription: |\n  line one\n  line two\n---\n").description).toBe(
-			"line one line two",
-		);
-		expect(parseCloudSkillFile("---\ndescription:\n  Starts on the next line.\n---\n").description).toBe(
-			"Starts on the next line.",
-		);
-		expect(parseCloudSkillFile("\uFEFF---\nname: a\ndescription: After a byte order mark.\n---\nx").description).toBe(
-			"After a byte order mark.",
-		);
-		// No front matter: the whole file is the body, and it has no description.
-		expect(parseCloudSkillFile("# Steps\n1. Do it.\n")).toMatchObject({
-			front: null,
-			description: null,
-			body: "# Steps\n1. Do it.\n",
-		});
-		// A body change keeps the front matter line for line; a new description replaces the old block.
-		expect(renderCloudSkillFile("pdf-forms", { body: "New steps." }, document)).toBe(
-			`${imported.split("---\n\n")[0]}---\n\nNew steps.\n`,
-		);
-		const described = renderCloudSkillFile("pdf-forms", { description: "Fill PDF forms.", body: "x" }, document);
-		expect(described).toBe(
-			'---\nname: pdf-forms\ndescription: "Fill PDF forms."\nlicense: Apache-2.0\nmetadata:\n  author: someone\n---\n\nx\n',
-		);
-		expect(parseCloudSkillFile(described).description).toBe("Fill PDF forms.");
-		expect(renderCloudSkillFile("new-one", { description: 'Say "hi".', body: "\n\nSteps\n\n" })).toBe(
-			'---\nname: new-one\ndescription: "Say \\"hi\\"."\n---\n\nSteps\n',
-		);
-	});
-});
 
 describe("agent skills", () => {
 	it("creates an own skill in the shared SKILL.md layout, with its folders, and refuses a second of the same name", async () => {
