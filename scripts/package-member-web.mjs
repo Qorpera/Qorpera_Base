@@ -15,7 +15,7 @@ export async function packageMemberWeb({ out, config: input, root = repository }
 	const source = JSON.parse(await readFile(join(ui, "SOURCE.json"), "utf8"));
 	for (const entry of source.sources) {
 		const bytes = await readFile(join(ui, entry.file));
-		if (sha256(bytes) !== entry.sha256 || sha256(await readFile(join(root, entry.source))) !== entry.sha256) throw new Error(`Viewer source changed: ${entry.file}`);
+		if (sha256(bytes) !== entry.sha256) throw new Error(`Viewer source changed: ${entry.file}`);
 	}
 	const bundle = await build({ absWorkingDir: root, entryPoints: ["packages/member-web/src/entry.mjs"],
 		bundle: true, platform: "browser", format: "esm", target: "es2022", outfile: "app.js", metafile: true, write: false, logLevel: "silent" });

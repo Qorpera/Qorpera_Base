@@ -51,7 +51,7 @@ test("headless boundary rejects client imports of runtime authority, including t
 	for (const source of ["import type { CloudNativeToolRun } from '@qorpera/runtime/cloud-native-tool-authority';", "export { executeNativeCloudRunnerJob } from '../../runtime/src/cloud-native-provider.ts';"]) {
 		const fixture = await mkdtemp(join(tmpdir(), "qorpera-boundary-denial-"));
 		try {
-			for (const name of ["shell", "runtime", "cloud-client", "member-web", "web"]) await mkdir(join(fixture, `packages/${name}/src`), { recursive: true });
+			for (const name of ["runtime", "cloud-client", "member-web", "web"]) await mkdir(join(fixture, `packages/${name}/src`), { recursive: true });
 			await writeFile(join(fixture, "packages/cloud-client/src/index.ts"), source);
 			await assert.rejects(checkHeadlessPackages(fixture), /Headless package boundary failed/);
 		} finally { await rm(fixture, { recursive: true, force: true }); }
@@ -71,7 +71,7 @@ test("product web refuses direct provider, runtime and Node imports", async () =
 	for (const source of ["import type { CompanyOfficeHost } from '@qorpera/runtime/company-office-host';", "import { readFile } from 'node:fs/promises';", "export * from '../../shell/src/main.ts';"]) {
 		const fixture = await mkdtemp(join(tmpdir(), "qorpera-product-web-boundary-"));
 		try {
-			for (const name of ["shell", "runtime", "cloud-client", "member-web", "web"]) await mkdir(join(fixture, `packages/${name}/src`), { recursive: true });
+			for (const name of ["runtime", "cloud-client", "member-web", "web"]) await mkdir(join(fixture, `packages/${name}/src`), { recursive: true });
 			await writeFile(join(fixture, "packages/web/src/main.ts"), source);
 			await assert.rejects(checkHeadlessPackages(fixture), /Headless package boundary failed/);
 		} finally { await rm(fixture, { recursive: true, force: true }); }

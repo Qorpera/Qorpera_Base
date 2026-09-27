@@ -22,9 +22,6 @@
 *.woff binary
 *.woff2 binary
 
-# Pinned model data for CI: generated, so fold it in GitHub diffs.
-.github/model-data/*.json linguist-generated=true
-
 # Unified-diff blank context lines retain their required leading space.
 # The native artifact verifier pins this patch's exact bytes separately.
 deploy/first-node/native-codex/0001-cloud-result-fence.patch whitespace=-blank-at-eol
