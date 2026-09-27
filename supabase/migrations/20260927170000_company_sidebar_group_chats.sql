@@ -323,8 +323,8 @@ begin
 		v_section := case when p_request -> 'sectionId' = 'null'::jsonb then null
 			else public.qorpera_sidebar_uuid(p_request -> 'sectionId', 'The section id') end;
 		if p_request ? 'order' then v_order := public.qorpera_sidebar_uuid_list(p_request -> 'order', 500); end if;
-		-- A page opened before group chats were placed orders agents only: the section's
-		-- group chats keep their slots and the agents fill the others in the order given.
+		-- A page opened before group chats were placed orders agents only: each of the
+		-- section's group chats stays after the agent it followed.
 		if v_action = 'move_agent' and v_order is not null and not p_request ? 'groupChats' then
 			-- The section is read under the lock the move takes, so no change comes in between.
 			perform public.qorpera_sidebar_lock(p_profile_id);
