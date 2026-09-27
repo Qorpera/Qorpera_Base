@@ -75,6 +75,9 @@ export class SharedDrafts {
 		});
 		composer.addEventListener("compositionend", () => {
 			this.#composing = false;
+			// A browser may end the letter without another input event: take the text as it stands.
+			company.conversation(sessionId).set({ draft: composer.value });
+			this.input();
 		});
 		// Another member's words arrive in the member's own draft without moving their caret.
 		this.#stopShown = company.roomDrafts.onShown(sessionId, (text, edit) => {
@@ -242,9 +245,9 @@ export class SharedDrafts {
 			rows: 1,
 			"aria-label": t("{name}'s message", { name }),
 		});
-		input.value = draft.body;
+		const status = h("p", { class: "draft-panel-status", role: "status", hidden: true });
 		const state: { composing: boolean } = { composing: false };
-		const sync = this.#company.roomDrafts.edit(this.#sessionId, ownerUserId, {
+		const opened = this.#company.roomDrafts.edit(this.#sessionId, ownerUserId, {
 			text: () => input.value,
 			caret: () => (document.activeElement === input ? input.selectionEnd : undefined),
 			busy: () => state.composing,
@@ -255,8 +258,16 @@ export class SharedDrafts {
 			gone: () => {
 				if (this.#open?.input === input) this.#close(false);
 			},
+			failing: (failing) => {
+				status.hidden = !failing;
+				status.textContent = failing ? t("Not saved yet. Trying again…") : "";
+			},
 		});
-		if (!sync) return;
+		if (!opened) return;
+		const { sync } = opened;
+		input.value = opened.text;
+		status.hidden = !sync.failing;
+		if (sync.failing) status.textContent = t("Not saved yet. Trying again…");
 		input.addEventListener("input", () => {
 			sync.changed();
 			this.#autosize(input);
@@ -266,6 +277,7 @@ export class SharedDrafts {
 		});
 		input.addEventListener("compositionend", () => {
 			state.composing = false;
+			sync.changed();
 		});
 		input.addEventListener("keydown", (event) => {
 			if (matchesKey(event, "dismiss")) {
@@ -301,6 +313,7 @@ export class SharedDrafts {
 				),
 			),
 			input,
+			status,
 		);
 		this.#open = { ownerUserId, sync, el, input };
 		this.el.append(el);

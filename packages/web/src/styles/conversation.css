@@ -179,6 +179,8 @@
 .draft-panel-title { margin-right: 4px; color: var(--text); font-weight: 600; }
 .draft-panel-note { color: var(--text-muted); white-space: nowrap; }
 .draft-panel-close { flex: none; width: 28px; height: 28px; min-height: 28px; }
+.draft-panel-status { margin: 0; color: var(--text-muted); font-size: 12px; line-height: 16px; }
+.draft-panel-status[hidden] { display: none; }
 .draft-panel-input { display: block; width: 100%; min-height: 21px; max-height: 147px; padding: 0 4px 0 0; border: 0; border-radius: 0; background: transparent; outline: 0; resize: none; font-family: var(--font-sans); font-size: 16px; line-height: 21px; letter-spacing: 0; }
 .attachment-tray { display: flex; gap: 8px; overflow-x: auto; padding: 3px 0 9px; }
 .attachment-tray[hidden] { display: none; }

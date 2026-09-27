@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CompanyController } from "../src/app/company.ts";
 import { DraftSync } from "../src/app/room-drafts.ts";
 import { ConversationView } from "../src/app/views/conversation.ts";
+import { CloudRpcError } from "../src/cloud/client.ts";
 import type { RoomDraft, RoomDraftWrite } from "../src/cloud/room-drafts.ts";
 import type { HostedProfileMember, HostedSession } from "../src/cloud/types.ts";
 import { deferred, fixture, id, profileA, session, settle, staff, team, timestamp, userA, userB } from "./fixtures.ts";
@@ -139,7 +140,7 @@ describe("shared drafts above the composer", () => {
 		type(s.panelInput(), "Plan the launch now");
 		// Enter writes a line; it never sends.
 		s.panelInput().dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
-		await vi.advanceTimersByTimeAsync(130);
+		await vi.advanceTimersByTimeAsync(310);
 		expect(s.put).toHaveBeenCalledTimes(1);
 		expect(s.put).toHaveBeenCalledWith(roomId, userB.id, 3, "Plan the launch now");
 		await settle();
@@ -169,10 +170,10 @@ describe("shared drafts above the composer", () => {
 		s.notches()[0]!.click();
 		await settle();
 		type(s.panelInput(), "Plan the launch today");
-		await vi.advanceTimersByTimeAsync(130);
+		await vi.advanceTimersByTimeAsync(310);
 		await settle();
 		expect(s.panelInput().value).toBe("Please plan the launch today");
-		await vi.advanceTimersByTimeAsync(130);
+		await vi.advanceTimersByTimeAsync(310);
 		expect(s.put).toHaveBeenNthCalledWith(2, roomId, userB.id, 4, "Please plan the launch today");
 	});
 
@@ -198,26 +199,131 @@ describe("shared drafts above the composer", () => {
 			draft: draft(userA.id, "Hey there team", 4, { contributors: [userB.id] }),
 		});
 		type(s.composer(), "Hey there team", 9);
-		await vi.advanceTimersByTimeAsync(130);
+		await vi.advanceTimersByTimeAsync(310);
 		expect(s.put).toHaveBeenCalledWith(roomId, userA.id, 3, "Hey there team");
 	});
 
-	it("holds others' words while the member composes a letter, then merges them", async () => {
+	it("holds others' words while the member composes a letter, then merges them when it ends", async () => {
 		const s = await setup([draft(userA.id, "Hi", 2)]);
 		const composer = s.composer();
-		composer.focus();
+		s.put.mockResolvedValue({ status: "ok", draft: draft(userA.id, "Hi é all", 4) });
 		composer.dispatchEvent(new CompositionEvent("compositionstart"));
-		composer.value = "Hi ´";
+		// As a browser does: input events while composing, and none after compositionend.
+		type(composer, "Hi ´");
 		s.live(draft(userA.id, "Hi all", 3, { editorUserId: userB.id }));
 		await settle();
 		expect(composer.value).toBe("Hi ´");
-		composer.dispatchEvent(new CompositionEvent("compositionend"));
 		type(composer, "Hi é");
+		await vi.advanceTimersByTimeAsync(1000);
+		expect(composer.value).toBe("Hi é");
+		// Nothing half composed is written.
+		expect(s.put).not.toHaveBeenCalled();
+		composer.dispatchEvent(new CompositionEvent("compositionend"));
 		await settle();
 		expect(composer.value).toBe("Hi é all");
-		s.put.mockResolvedValue({ status: "ok", draft: draft(userA.id, "Hi é all", 4) });
-		await vi.advanceTimersByTimeAsync(130);
+		await vi.advanceTimersByTimeAsync(310);
+		expect(s.put).toHaveBeenCalledTimes(1);
 		expect(s.put).toHaveBeenCalledWith(roomId, userA.id, 3, "Hi é all");
+	});
+
+	it("merges a teammate's words into their draft once a letter composed in it ends, without another input", async () => {
+		const s = await setup([draft(userB.id, "Plan", 3)]);
+		s.put.mockResolvedValue({ status: "ok", draft: draft(userB.id, "Well, Plan é", 5, { editorUserId: userA.id }) });
+		s.notches()[0]!.click();
+		await settle();
+		const input = s.panelInput();
+		input.dispatchEvent(new CompositionEvent("compositionstart"));
+		type(input, "Plan é");
+		s.live(draft(userB.id, "Well, Plan", 4));
+		await vi.advanceTimersByTimeAsync(1000);
+		expect(input.value).toBe("Plan é");
+		expect(s.put).not.toHaveBeenCalled();
+		input.dispatchEvent(new CompositionEvent("compositionend"));
+		await settle();
+		expect(input.value).toBe("Well, Plan é");
+		await vi.advanceTimersByTimeAsync(310);
+		expect(s.put).toHaveBeenCalledWith(roomId, userB.id, 4, "Well, Plan é");
+	});
+
+	it("keeps what was typed when the same draft is opened again before it was written", async () => {
+		const s = await setup([draft(userB.id, "Plan", 3)]);
+		s.put.mockResolvedValue({ status: "ok", draft: draft(userB.id, "Plan x", 4, { editorUserId: userA.id }) });
+		s.notches()[0]!.click();
+		await settle();
+		type(s.panelInput(), "Plan x");
+		s.panelInput().dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+		await settle();
+		expect(s.panel()).toBeNull();
+		s.notches()[0]!.click();
+		await settle();
+		expect(s.panelInput().value).toBe("Plan x");
+		await vi.advanceTimersByTimeAsync(310);
+		expect(s.put).toHaveBeenCalledTimes(1);
+		expect(s.put).toHaveBeenCalledWith(roomId, userB.id, 3, "Plan x");
+		// Emptying it now empties what was written, too.
+		type(s.panelInput(), "");
+		await vi.advanceTimersByTimeAsync(310);
+		expect(s.put).toHaveBeenLastCalledWith(roomId, userB.id, 4, "");
+	});
+
+	it("says when what was typed in a teammate's draft is not saved yet, and saves it once the cloud answers", async () => {
+		const s = await setup([draft(userB.id, "Plan", 3)]);
+		s.put.mockRejectedValueOnce(new Error("offline"));
+		s.put.mockResolvedValueOnce({ status: "ok", draft: draft(userB.id, "Plan it", 4, { editorUserId: userA.id }) });
+		s.notches()[0]!.click();
+		await settle();
+		const status = s.panel()!.querySelector<HTMLElement>(".draft-panel-status")!;
+		expect(status.hidden).toBe(true);
+		type(s.panelInput(), "Plan it");
+		await vi.advanceTimersByTimeAsync(310);
+		expect(status.hidden).toBe(false);
+		expect(status.textContent).toBe("Not saved yet. Trying again…");
+		await vi.advanceTimersByTimeAsync(600);
+		expect(s.put).toHaveBeenCalledTimes(2);
+		expect(status.hidden).toBe(true);
+	});
+
+	it("keeps a teammate's first words that raced a listing, and never goes back to an older version", async () => {
+		const f = await setup([]);
+		const listing = deferred<RoomDraft[]>();
+		vi.mocked(f.f.api.listRoomDrafts).mockReturnValue(listing.promise);
+		await vi.advanceTimersByTimeAsync(30_000);
+		f.live(draft(userB.id, "Hi", 1));
+		await settle();
+		listing.resolve([]);
+		await settle();
+		expect(f.notches()).toHaveLength(1);
+		f.live(draft(userB.id, "Hi there", 3));
+		f.live(draft(userB.id, "Hi th", 2));
+		await settle();
+		expect(f.notches()[0]!.querySelector(".draft-peek-text")?.textContent).toBe("Hi there");
+	});
+
+	it("asks a room that refused again after a minute", async () => {
+		const f = fixture();
+		vi.mocked(f.api.listRoomDrafts)
+			.mockReset()
+			.mockRejectedValueOnce(
+				new CloudRpcError("qorpera_list_room_drafts", { message: "denied", code: "42501" }, 403),
+			)
+			.mockResolvedValue([draft(userB.id, "Back again", 2)]);
+		vi.spyOn(f.api, "subscribeRoomDrafts").mockReturnValue({ stop: async () => {} });
+		const company = new CompanyController(f.api, profileA, userA.id);
+		company.store.set({ team: { ...team, members }, staff: [staff], sessions: [group], loading: false });
+		const view = new ConversationView(company, session.sessionId);
+		document.body.append(view.el);
+		view.update();
+		await settle();
+		dispose = () => {
+			view.dispose();
+			company.stop();
+		};
+		expect(view.el.querySelector(".draft-notch")).toBeNull();
+		await vi.advanceTimersByTimeAsync(61_000);
+		view.update();
+		await settle();
+		expect(f.api.listRoomDrafts).toHaveBeenCalledTimes(2);
+		expect(view.el.querySelector(".draft-notch")).not.toBeNull();
 	});
 
 	it("keeps words another member added while the message was being sent, and removes the sent text", async () => {
@@ -329,13 +435,13 @@ describe("one draft kept in step with the cloud", () => {
 		const s = sync({ revision: 3, body: "a" });
 		s.set("ab");
 		s.set("abc");
-		await vi.advanceTimersByTimeAsync(130);
+		await vi.advanceTimersByTimeAsync(310);
 		expect(s.writes.map(({ base, body }) => [base, body])).toEqual([[3, "abc"]]);
 		s.set("abcd");
 		await vi.advanceTimersByTimeAsync(500);
 		expect(s.writes).toHaveLength(1);
 		s.writes[0]!.answer.resolve({ status: "ok", draft: draft(userB.id, "abc", 4) });
-		await vi.advanceTimersByTimeAsync(130);
+		await vi.advanceTimersByTimeAsync(310);
 		expect(s.writes.map(({ base, body }) => [base, body])).toEqual([
 			[3, "abc"],
 			[4, "abcd"],
@@ -351,7 +457,7 @@ describe("one draft kept in step with the cloud", () => {
 	it("merges a change announced while its own write was on its way, once the write is answered", async () => {
 		const s = sync({ revision: 1, body: "one" });
 		s.set("one two");
-		await vi.advanceTimersByTimeAsync(130);
+		await vi.advanceTimersByTimeAsync(310);
 		s.sync.remote(draft(userB.id, "zero one two", 3));
 		expect(s.host.show).not.toHaveBeenCalled();
 		s.writes[0]!.answer.resolve({ status: "ok", draft: draft(userB.id, "one two", 2) });
@@ -365,12 +471,47 @@ describe("one draft kept in step with the cloud", () => {
 		expect(s.text()).toBe("zero one two");
 	});
 
+	it("keeps trying through a long outage and writes the text once, never twice", async () => {
+		const s = sync({ revision: 1, body: "hello" });
+		s.set("hello world");
+		await vi.advanceTimersByTimeAsync(310);
+		for (let attempt = 0; attempt < 12; attempt++) {
+			s.writes.at(-1)!.answer.reject(new Error("offline"));
+			await vi.advanceTimersByTimeAsync(8000);
+		}
+		expect(s.sync.stopped).toBe(false);
+		expect(s.sync.failing).toBe(true);
+		expect(s.writes).toHaveLength(13);
+		s.set("hello world!");
+		s.writes.at(-1)!.answer.resolve({ status: "ok", draft: draft(userB.id, "hello world!", 2) });
+		await settle();
+		expect(s.writes.every(({ base }) => base === 1)).toBe(true);
+		expect(s.text()).toBe("hello world!");
+		expect(s.sync.failing).toBe(false);
+		expect(s.sync.settled).toBe(true);
+	});
+
+	it("takes a stale answer as the draft even at a revision it thought it had passed, and writes once more", async () => {
+		const s = sync({ revision: 3, body: "a" });
+		s.set("ab");
+		await vi.advanceTimersByTimeAsync(310);
+		s.writes[0]!.answer.resolve({ status: "stale", draft: draft(userB.id, "", 0) });
+		await vi.advanceTimersByTimeAsync(310);
+		expect(s.writes.map(({ base, body }) => [base, body])).toEqual([
+			[3, "ab"],
+			[0, "b"],
+		]);
+		s.writes[1]!.answer.resolve({ status: "ok", draft: draft(userB.id, "b", 1) });
+		await vi.advanceTimersByTimeAsync(3000);
+		expect(s.writes).toHaveLength(2);
+	});
+
 	it("tries again later when the cloud does not answer, and stops when the draft is gone", async () => {
 		const s = sync({ revision: 1, body: "a" });
 		s.set("ab");
-		await vi.advanceTimersByTimeAsync(130);
+		await vi.advanceTimersByTimeAsync(310);
 		s.writes[0]!.answer.reject(new Error("offline"));
-		await vi.advanceTimersByTimeAsync(900);
+		await vi.advanceTimersByTimeAsync(400);
 		expect(s.writes).toHaveLength(1);
 		await vi.advanceTimersByTimeAsync(200);
 		expect(s.writes.map(({ base, body }) => [base, body])).toEqual([
@@ -389,7 +530,7 @@ describe("one draft kept in step with the cloud", () => {
 	it("keeps a stale answer for after the letter being composed", async () => {
 		const s = sync({ revision: 1, body: "hi" });
 		s.set("hi ");
-		await vi.advanceTimersByTimeAsync(130);
+		await vi.advanceTimersByTimeAsync(310);
 		s.busy(true);
 		s.writes[0]!.answer.resolve({ status: "stale", draft: draft(userB.id, "hi all", 2) });
 		await settle();
@@ -397,7 +538,7 @@ describe("one draft kept in step with the cloud", () => {
 		s.busy(false);
 		s.set("hi é");
 		expect(s.text()).toBe("hi é all");
-		await vi.advanceTimersByTimeAsync(130);
+		await vi.advanceTimersByTimeAsync(310);
 		expect(s.writes.at(-1)).toMatchObject({ base: 2, body: "hi é all" });
 	});
 });

@@ -3,7 +3,7 @@
 -- pushed on a private topic that members receive and nobody publishes.
 
 -- A owns the company; B and D are contributors in the room; C is a contributor
--- outside it; V is a viewer in the room (a room member posts, whatever the role);
+-- outside it; V is a viewer in the room (reads the conversation, shares no drafts);
 -- O is not in the company.
 insert into auth.users (id, email, email_confirmed_at)
 values
@@ -215,39 +215,38 @@ begin
 	if jsonb_array_length(v_result -> 'drafts') <> 0 then
 		raise exception 'an empty draft was listed to another member: %', v_result;
 	end if;
-	-- A member's own first write from a revision that no longer exists is told to start from 0.
-	v_result := public.qorpera_put_room_draft('96250000-0000-4000-8000-000000000060',
-		'96250000-0000-4000-8000-00000000000b', 4, 'Mine');
-	if v_result ->> 'status' <> 'stale' or (v_result -> 'draft' ->> 'revision')::bigint <> 0
-		or v_result -> 'draft' ->> 'body' <> '' then
-		raise exception 'a write to a missing draft was not sent back to revision 0: %', v_result;
-	end if;
 	v_result := public.qorpera_put_room_draft('96250000-0000-4000-8000-000000000060',
 		'96250000-0000-4000-8000-00000000000b', 0, 'Mine');
-	if v_result ->> 'status' <> 'ok' then
+	if v_result ->> 'status' <> 'ok' or (v_result -> 'draft' ->> 'revision')::bigint <> 1 then
 		raise exception 'member could not start their own draft: %', v_result;
 	end if;
 end
 $$;
 reset role;
 
--- A viewer in the room posts there, so it shares drafts too.
-select pg_temp.as_user('96250000-0000-4000-8000-0000000000e1');
+-- A draft cleared away (a month untouched) starts again from the revision its owner
+-- last knew, so the revisions others saw never repeat.
+delete from public.qorpera_room_drafts where owner_user_id = '96250000-0000-4000-8000-00000000000b';
 set role authenticated;
 do $$
+declare v_result jsonb;
 begin
-	if jsonb_array_length(public.qorpera_list_room_drafts('96250000-0000-4000-8000-000000000060') -> 'drafts') <> 1 then
-		raise exception 'room viewer did not see the member draft';
+	v_result := public.qorpera_put_room_draft('96250000-0000-4000-8000-000000000060',
+		'96250000-0000-4000-8000-00000000000b', 7, 'Mine');
+	if v_result ->> 'status' <> 'ok' or (v_result -> 'draft' ->> 'revision')::bigint <> 8
+		or v_result -> 'draft' ->> 'body' <> 'Mine' then
+		raise exception 'owner could not start a cleared-away draft again: %', v_result;
 	end if;
 end
 $$;
 reset role;
 
--- A company member outside the room, and an outsider, see and change nothing.
+-- A viewer in the room, a company member outside it, and an outsider see and change nothing.
 do $$
 declare v_user text; v_ok boolean;
 begin
-	foreach v_user in array array['96250000-0000-4000-8000-00000000000c', '96250000-0000-4000-8000-0000000000f0'] loop
+	foreach v_user in array array['96250000-0000-4000-8000-0000000000e1', '96250000-0000-4000-8000-00000000000c',
+		'96250000-0000-4000-8000-0000000000f0'] loop
 		perform pg_temp.as_user(v_user);
 		set local role authenticated;
 		v_ok := false;

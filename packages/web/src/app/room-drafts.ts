@@ -15,15 +15,19 @@ import { applyEdit, diffText, mergeText, type TextEdit, transform } from "./text
 /** A change keeps showing as typing for this long. */
 export const DRAFT_TYPING_MS = 4000;
 /** Keystrokes within this long go to the cloud as one write. */
-const WRITE_DELAY_MS = 120;
+const WRITE_DELAY_MS = 300;
+/** Unanswered writes are tried again after 0.5, 1, 2, 4, then every 8 seconds. */
+const RETRY_MAX_MS = 8000;
 /** How often a room re-reads its drafts: while live updates run, and while they do not. */
 const LIVE_POLL_MS = 30_000;
 const FALLBACK_POLL_MS = 4000;
 /** How long a room stays subscribed after its last view closed, for a quick return. */
 const LINGER_MS = 60_000;
+/** A room that refused this member is asked again after this long (a refreshed token, a room made active again). */
+const REFUSED_RETRY_MS = 60_000;
 
 function wellFormed(text: string): string {
-	return text.replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, "�");
+	return text.replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, "\uFFFD");
 }
 
 export interface DraftHost {
@@ -37,6 +41,8 @@ export interface DraftHost {
 	gone(): void;
 	/** The member is composing a letter (an input method); the text must not change under it. */
 	busy?(): boolean;
+	/** Writes are not reaching the cloud (they are retried), or reach it again. */
+	failing?(failing: boolean): void;
 }
 
 export class DraftSync {
@@ -44,16 +50,18 @@ export class DraftSync {
 	readonly ownerUserId: string;
 	readonly #write: (base: number, body: string) => Promise<RoomDraftWrite>;
 	readonly #written: (draft: RoomDraft) => void;
-	readonly #host: DraftHost;
+	#host: DraftHost;
 	/** The draft as the cloud last confirmed it; every change of this browser is diffed from it. */
 	#server: { revision: number; body: string };
 	#writing = false;
-	/** The newest draft the cloud announced while a write was on its way. */
+	/** The newest draft the cloud announced while this browser could not merge it (writing, composing). */
 	#newest: RoomDraft | undefined;
 	#timer: ReturnType<typeof setTimeout> | undefined;
 	#failures = 0;
 	#stopped = false;
 	#settled: (() => void)[] = [];
+	/** Its panel closed; it stops once what was typed there is written, unless it is opened again. */
+	leaving = false;
 
 	constructor(
 		roomId: string,
@@ -75,23 +83,41 @@ export class DraftSync {
 		return this.#server.revision;
 	}
 
+	/** The draft as the cloud last confirmed it. */
+	get confirmed(): { revision: number; body: string } {
+		return { ...this.#server };
+	}
+
 	get stopped(): boolean {
 		return this.#stopped;
 	}
 
-	/** Nothing of this browser's is on its way or waiting to go. */
-	get settled(): boolean {
-		return !this.#writing && !this.#timer && wellFormed(this.#host.text()) === this.#server.body;
+	/** The last write did not reach the cloud; it is being tried again. */
+	get failing(): boolean {
+		return this.#failures > 0;
 	}
 
-	/** The member changed the text here. */
+	/** Nothing of this browser's is on its way or waiting to go. */
+	get settled(): boolean {
+		return !this.#writing && !this.#timer && !this.#newest && wellFormed(this.#host.text()) === this.#server.body;
+	}
+
+	/** The text shown where this draft is edited now. */
+	text(): string {
+		return this.#host.text();
+	}
+
+	/** Edit the draft somewhere else from now on (the same draft opened again). */
+	rehost(host: DraftHost): void {
+		this.#host = host;
+		this.leaving = false;
+		host.failing?.(this.failing);
+	}
+
+	/** The member changed the text here, or finished composing a letter. */
 	changed(): void {
 		// Words that arrived while the member composed a letter join now.
-		const newest = this.#newest;
-		if (newest && !this.#writing && !this.#host.busy?.()) {
-			this.#newest = undefined;
-			if (newest.revision > this.#server.revision) this.#merge(newest);
-		}
+		this.#mergeHeld();
 		this.#schedule(WRITE_DELAY_MS);
 	}
 
@@ -105,7 +131,7 @@ export class DraftSync {
 		this.#merge(draft);
 	}
 
-	/** Resolves once this browser's changes are written, or given up. */
+	/** Resolves once this browser's changes are written, or the draft is gone. */
 	flushed(): Promise<void> {
 		if (this.#stopped || this.settled) return Promise.resolve();
 		return new Promise((resolve) => this.#settled.push(resolve));
@@ -118,6 +144,14 @@ export class DraftSync {
 		for (const resolve of this.#settled.splice(0)) resolve();
 	}
 
+	#mergeHeld(): void {
+		const newest = this.#newest;
+		if (!newest || this.#writing || this.#host.busy?.()) return;
+		this.#newest = undefined;
+		if (newest.revision > this.#server.revision) this.#merge(newest);
+	}
+
+	/** Take the cloud's draft as the base and replay this browser's own change on it. */
 	#merge(draft: { revision: number; body: string }): void {
 		const shown = this.#host.text();
 		const { text, edit } = mergeText(this.#server.body, shown, draft.body, this.#host.caret());
@@ -134,30 +168,37 @@ export class DraftSync {
 		}, delay);
 	}
 
+	#resolveSettled(): void {
+		if (this.settled) for (const resolve of this.#settled.splice(0)) resolve();
+	}
+
 	async #flush(): Promise<void> {
-		if (this.#stopped || this.#writing) return;
+		// A letter being composed is written once it is done (changed).
+		if (this.#stopped || this.#writing || this.#host.busy?.()) return;
+		this.#mergeHeld();
 		const body = wellFormed(this.#host.text());
 		if (body === this.#server.body) {
-			for (const resolve of this.#settled.splice(0)) resolve();
+			this.#resolveSettled();
 			return;
 		}
 		this.#writing = true;
 		let result: RoomDraftWrite | undefined;
+		const failed = this.#failures > 0;
 		try {
 			result = await this.#write(this.#server.revision, body);
 			this.#failures = 0;
 		} catch (error) {
 			this.#failures += 1;
-			// Refused or missing on this cloud: nothing to retry.
+			// Refused or missing on this cloud: the draft is not this member's to write.
 			if (error instanceof CloudRpcError && (error.denied || error.missing)) result = { status: "gone" };
 		} finally {
 			this.#writing = false;
 		}
 		if (this.#stopped) return;
+		if (failed !== this.#failures > 0) this.#host.failing?.(this.#failures > 0);
 		if (!result) {
-			// Unanswered: the text stays here, and goes again a little later.
-			if (this.#failures > 6) this.stop();
-			else this.#schedule(Math.min(8000, 500 * 2 ** this.#failures));
+			// Unanswered: the text stays here and goes again, for as long as it takes.
+			this.#schedule(Math.min(RETRY_MAX_MS, 500 * 2 ** (this.#failures - 1)));
 			return;
 		}
 		if (result.status === "gone") {
@@ -168,18 +209,21 @@ export class DraftSync {
 		this.#written(result.draft);
 		let head = this.#newest;
 		this.#newest = undefined;
-		if (result.status === "ok") this.#server = { revision: result.draft.revision, body: result.draft.body };
-		else if (!head || result.draft.revision > head.revision) head = result.draft;
-		if (head && head.revision > this.#server.revision) {
+		if (result.status === "ok") {
+			this.#server = { revision: result.draft.revision, body: result.draft.body };
+			if (head && head.revision <= this.#server.revision) head = undefined;
+		} else if (!head || result.draft.revision >= head.revision) head = result.draft;
+		if (head) {
 			if (this.#host.busy?.()) {
 				// Merged, and written, once the member's letter is done (changed).
 				this.#newest = head;
 				return;
 			}
+			// A stale answer is the cloud's draft now, even at a revision this browser thought it had passed.
 			this.#merge(head);
 		}
 		if (wellFormed(this.#host.text()) !== this.#server.body) this.#schedule(WRITE_DELAY_MS);
-		else for (const resolve of this.#settled.splice(0)) resolve();
+		else this.#resolveSettled();
 	}
 }
 
@@ -208,6 +252,14 @@ export class RoomDraftRoom {
 	#linger: ReturnType<typeof setTimeout> | undefined;
 	#poll: ReturnType<typeof setTimeout> | undefined;
 	#listing = 0;
+	/** Counts every draft change taken in; a listing drops only drafts untouched since it was asked for. */
+	#changes = 0;
+	readonly #touched = new Map<string, number>();
+	/** The newest version of each owner's draft taken in, kept after the draft leaves the list,
+	 * so a late, older announcement never brings back what was already replaced. */
+	readonly #seen = new Map<string, { revision: number; at: number }>();
+	/** When a refused room may be asked again; never, when the cloud has no shared drafts. */
+	#retryAt = 0;
 
 	constructor(api: CloudApi, roomId: string, signal: AbortSignal, missing: () => void) {
 		this.#api = api;
@@ -236,12 +288,25 @@ export class RoomDraftRoom {
 		};
 	}
 
+	/** The room shares drafts with this member now. A refused room is asked again after a while. */
+	usable(): boolean {
+		const state = this.store.get();
+		if (state.unavailable && Number.isFinite(this.#retryAt) && Date.now() >= this.#retryAt)
+			this.store.set({ unavailable: false });
+		return !this.store.get().unavailable;
+	}
+
 	/** A draft as the cloud now has it: shown, and handed to the sync editing it.
 	 * `live`: a change announced as it happened; `listing`: read back; `own`: this browser wrote it. */
 	apply(draft: RoomDraft, source: "live" | "listing" | "own"): void {
 		if (this.#signal.aborted) return;
+		// Newer: a later revision, or a draft started again after the old one was cleared away.
+		const seen = this.#seen.get(draft.ownerUserId);
+		const at = Date.parse(draft.updatedAt);
+		if (seen && draft.revision <= seen.revision && at <= seen.at) return;
+		this.#seen.set(draft.ownerUserId, { revision: draft.revision, at });
+		this.#touched.set(draft.ownerUserId, ++this.#changes);
 		const current = this.draft(draft.ownerUserId);
-		if (current && current.revision >= draft.revision) return;
 		const changed = current ? current.body !== draft.body : Boolean(draft.body);
 		// Someone is typing: a live change, or a listing that moved a draft already shown.
 		// This browser's own writes are not news to it.
@@ -258,17 +323,21 @@ export class RoomDraftRoom {
 	async refresh(): Promise<void> {
 		if (this.#signal.aborted || this.store.get().unavailable) return;
 		const listing = ++this.#listing;
+		const asked = this.#changes;
 		try {
 			const drafts = await this.#api.listRoomDrafts(this.roomId);
 			if (this.#signal.aborted || listing !== this.#listing) return;
 			for (const draft of drafts) this.apply(draft, "listing");
-			// Drafts the listing no longer carries (sent, abandoned, their owner left) leave the room.
+			// Drafts the listing no longer carries (sent, abandoned, their owner left) leave the room,
+			// unless they changed after the listing was asked for (a first write racing it).
 			const listed = new Set(drafts.map((draft) => draft.ownerUserId));
-			if (this.store.get().drafts.some((draft) => !listed.has(draft.ownerUserId)))
-				this.store.set((state) => ({ drafts: state.drafts.filter((draft) => listed.has(draft.ownerUserId)) }));
+			const keep = (draft: RoomDraft) =>
+				listed.has(draft.ownerUserId) || (this.#touched.get(draft.ownerUserId) ?? 0) > asked;
+			if (!this.store.get().drafts.every(keep)) this.store.set((state) => ({ drafts: state.drafts.filter(keep) }));
 		} catch (error) {
 			if (this.#signal.aborted) return;
 			if (error instanceof CloudRpcError && (error.missing || error.denied)) {
+				this.#retryAt = error.missing ? Number.POSITIVE_INFINITY : Date.now() + REFUSED_RETRY_MS;
 				this.store.set({ unavailable: true });
 				if (error.missing) this.#missing();
 				this.#close();
@@ -381,7 +450,7 @@ export class RoomDrafts {
 				}
 			});
 		}
-		return room.store.get().unavailable ? undefined : room;
+		return room.usable() ? room : undefined;
 	}
 
 	/** A view shows the conversation: its room's drafts are followed live. */
@@ -440,12 +509,18 @@ export class RoomDrafts {
 		if (room) this.#own(sessionId, room)?.changed();
 	}
 
-	/** Open another member's draft to write in it. Nothing here sends it. */
-	edit(sessionId: string, ownerUserId: string, host: DraftHost): DraftSync | undefined {
+	/** Open another member's draft to write in it, starting from `text`. Nothing here sends it. */
+	edit(sessionId: string, ownerUserId: string, host: DraftHost): { sync: DraftSync; text: string } | undefined {
 		const room = this.room(sessionId);
 		const draft = room?.draft(ownerUserId);
 		if (!room || !draft || ownerUserId === this.#userId) return undefined;
-		// A sync still writing what was typed the last time finishes on its own (leave).
+		// Opened again while what was typed the last time is still on its way: carry on with it.
+		const current = room.syncs.get(ownerUserId);
+		if (current && !current.stopped) {
+			const text = current.text();
+			current.rehost(host);
+			return { sync: current, text };
+		}
 		const sync = new DraftSync(
 			room.roomId,
 			ownerUserId,
@@ -455,12 +530,15 @@ export class RoomDrafts {
 			(written) => room.apply(written, "own"),
 		);
 		room.syncs.set(ownerUserId, sync);
-		return sync;
+		return { sync, text: draft.body };
 	}
 
 	/** Stop editing another member's draft once what was typed there is written. */
 	async leave(sync: DraftSync): Promise<void> {
+		sync.leaving = true;
 		await sync.flushed();
+		// Opened again meanwhile: the new panel carries on with it.
+		if (!sync.leaving) return;
 		sync.stop();
 		const room = this.#rooms.get(sync.roomId);
 		if (room?.syncs.get(sync.ownerUserId) === sync) room.syncs.delete(sync.ownerUserId);
@@ -474,10 +552,13 @@ export class RoomDrafts {
 	#own(sessionId: string, room: RoomDraftRoom): DraftSync | undefined {
 		const existing = room.syncs.get(this.#userId);
 		if (existing && !existing.stopped) return existing;
+		// Started again (the draft was gone): from what the cloud last confirmed, never from nothing,
+		// which would add the whole composer to it once more. A first start takes the cloud's draft
+		// in as a change (a reloaded browser gets it back).
 		const sync = new DraftSync(
 			room.roomId,
 			this.#userId,
-			{ revision: 0, body: "" },
+			existing?.confirmed ?? { revision: 0, body: "" },
 			{
 				text: () => this.#hooks.draft(sessionId),
 				caret: () => this.#editors.get(sessionId)?.caret(),

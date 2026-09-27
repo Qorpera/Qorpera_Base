@@ -291,7 +291,6 @@ export class CloudApi {
 			.then(parseHostedCompanyOrganization);
 	}
 
-	/** Sections are the company's; pins and hidden agents are the signed-in member's. */
 	// Shared drafts: a member's unsent message in a room, which the room's other
 	// members see and edit live (20260927180000). Only its owner sends it.
 
@@ -318,6 +317,7 @@ export class CloudApi {
 		return subscribeRoomDrafts(this.cloud, requiredUuid(roomId, "Room id").toLowerCase(), onDraft, onHealth);
 	}
 
+	/** Sections are the company's; pins and hidden agents are the signed-in member's. */
 	readCompanySidebar(profileId: string): Promise<CompanySidebar> {
 		return this.cloud
 			.rpc("qorpera_read_company_sidebar", { p_profile_id: requiredUuid(profileId, "Profile id") })

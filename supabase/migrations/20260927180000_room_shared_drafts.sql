@@ -8,8 +8,12 @@
 -- merges and retries), names the editor from the caller's token, and pushes every
 -- change on a private Realtime topic that members receive and nobody publishes.
 -- Access follows posting: an active member of an active room (the same test as
--- qorpera_post_company_room_message). Drafts are not execution, so a paused
--- company still lets members write them.
+-- qorpera_post_company_room_message), and, as in the clients, not a viewer.
+-- Drafts are not execution, so a paused company still lets members write them.
+--
+-- Cost: one short row per member and room, updated in place (no index covers a
+-- changing column, so updates stay HOT); each change is one realtime.messages
+-- row, kept by Realtime for its own retention like any broadcast.
 
 create table public.qorpera_room_drafts (
 	room_id uuid not null references public.qorpera_company_rooms(id) on delete cascade,
@@ -25,17 +29,18 @@ create table public.qorpera_room_drafts (
 	updated_at timestamptz not null default clock_timestamp(),
 	primary key (room_id, owner_user_id)
 );
-create index qorpera_room_drafts_updated on public.qorpera_room_drafts (room_id, updated_at);
 alter table public.qorpera_room_drafts enable row level security;
 revoke all on public.qorpera_room_drafts from public, anon, authenticated, service_role;
 
--- True when the user may post in the room, and so may see and edit its drafts.
+-- True when the user may post in the room, and so may see and edit its drafts. Viewers
+-- read the room's conversation; its drafts are for the members who write in it.
 create function public.qorpera_room_draft_member_internal(p_room_id uuid, p_user_id uuid)
 returns boolean language sql stable security definer set search_path = '' as $$
 	select p_room_id is not null and p_user_id is not null and exists (
 		select 1 from public.qorpera_company_rooms room
 		join public.qorpera_profile_members profile_member
 			on profile_member.profile_id = room.profile_id and profile_member.user_id = p_user_id
+				and profile_member.role <> 'viewer'
 		join public.qorpera_company_room_members room_member
 			on room_member.room_id = room.id and room_member.principal_kind = 'member'
 				and room_member.principal_id = p_user_id and room_member.status = 'active'
@@ -120,10 +125,11 @@ $$;
 revoke all on function public.qorpera_list_room_drafts(uuid) from public, anon;
 grant execute on function public.qorpera_list_room_drafts(uuid) to authenticated;
 
--- Replace a draft's text, only from its current revision (0: the owner's first
--- write). A stale revision changes nothing and returns the current draft, so the
--- editor merges its own change into it and writes again. Only the owner starts a
--- draft; any member of the room edits one that exists.
+-- Replace a draft's text, only from its current revision. A stale revision changes
+-- nothing and returns the current draft, so the editor merges its own change into it
+-- and writes again. Only the owner starts a draft (from revision 0, or from the
+-- revision it last knew when the old one was cleared away, so revisions never go
+-- back); any member of the room edits one that exists.
 create function public.qorpera_put_room_draft(
 	p_room_id uuid, p_owner_user_id uuid, p_base_revision bigint, p_body text
 )
@@ -151,14 +157,8 @@ begin
 		if p_owner_user_id <> v_user then
 			return jsonb_build_object('schema', 'qorpera.room-draft-write/v1', 'status', 'gone');
 		end if;
-		if p_base_revision <> 0 then
-			return jsonb_build_object('schema', 'qorpera.room-draft-write/v1', 'status', 'stale',
-				'draft', jsonb_build_object('schema', 'qorpera.room-draft/v1', 'roomId', p_room_id,
-					'ownerUserId', p_owner_user_id, 'body', '', 'revision', 0, 'editorUserId', p_owner_user_id,
-					'contributors', '[]'::jsonb, 'updatedAt', clock_timestamp()));
-		end if;
 		insert into public.qorpera_room_drafts (room_id, owner_user_id, body, revision, editor_user_id)
-		values (p_room_id, p_owner_user_id, p_body, 1, v_user)
+		values (p_room_id, p_owner_user_id, p_body, p_base_revision + 1, v_user)
 		on conflict (room_id, owner_user_id) do nothing
 		returning * into v_draft;
 		if not found then
@@ -190,7 +190,7 @@ begin
 	end if;
 	perform realtime.send(public.qorpera_room_draft_json_internal(v_draft), 'draft',
 		public.qorpera_room_drafts_topic(p_room_id), true);
-	-- Drafts nobody touched for a month leave the room.
+	-- Drafts nobody touched for a month leave the room (one row per member: the key's room prefix finds them).
 	delete from public.qorpera_room_drafts
 	where room_id = p_room_id and updated_at < clock_timestamp() - interval '30 days';
 	return jsonb_build_object('schema', 'qorpera.room-draft-write/v1', 'status', 'ok',

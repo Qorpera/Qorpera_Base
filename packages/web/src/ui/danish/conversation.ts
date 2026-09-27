@@ -29,6 +29,7 @@ export const CONVERSATION: Record<string, string> = {
 	"Only {name} can send it": "Kun {name} kan sende den",
 	"{name} is writing with you": "{name} skriver med",
 	"Written with {names}": "Skrevet sammen med {names}",
+	"Not saved yet. Trying again…": "Ikke gemt endnu. Prøver igen…",
 	"Messages support PNG, JPEG, GIF and WebP images. Upload other files through Company File.":
 		"Beskeder understøtter billeder i PNG, JPEG, GIF og WebP. Upload andre filer via Virksomhedsfilen.",
 	"Choose up to 5 images totaling no more than 8 MiB.": "Vælg op til 5 billeder på højst 8 MiB i alt.",
