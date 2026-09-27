@@ -1,10 +1,167 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { cp, lstat, mkdtemp } from "node:fs/promises";
 import { isAbsolute, join, relative } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
 export const codingFixtureRepository = Object.freeze({ host: "github.com", owner: "Qorpera", name: "Qorpera_Base", baseBranch: "master" });
 export const codingFixtureRemote = "https://github.com/Qorpera/Qorpera_Base.git";
+
+const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const sha256 = /^[a-f0-9]{64}$/;
+const uuidValue = (value) => { assert(typeof value === "string" && uuid.test(value), "CODING_EVIDENCE_UUID_INVALID"); return value; };
+const hashValue = (value) => { assert(typeof value === "string" && sha256.test(value), "CODING_EVIDENCE_HASH_INVALID"); return value; };
+const integerValue = (value) => { assert(Number.isSafeInteger(value) && value >= 0, "CODING_EVIDENCE_COUNTER_INVALID"); return value; };
+const booleanValue = (value) => { assert(typeof value === "boolean", "CODING_EVIDENCE_BOOLEAN_INVALID"); return value; };
+const boundedRows = (value) => { assert(Array.isArray(value) && value.length <= 8, "CODING_EVIDENCE_ROW_LIMIT"); return value; };
+const exactFields = (value, fields) => {
+  assert(value && typeof value === "object" && !Array.isArray(value) && Object.keys(value).sort().join() === fields.sort().join(), "CODING_EVIDENCE_FIELDS_INVALID");
+};
+
+/** Invoke the real retained transport. Count only this command's attempted
+ * effects, so concurrent commands/maintenance do not manufacture a refusal.
+ * Delegates retain their receiver, arguments, values and errors unchanged. */
+export async function assertDetachedCodingTransport({ client, transport, scope, input }, signal) {
+  uuidValue(scope.workerId); uuidValue(scope.vmId); uuidValue(scope.requestId); uuidValue(input.commandId); hashValue(input.inputSha256);
+  const originalPush = client.pushInstanceFile, originalExec = client.execInstance;
+  let staged = 0, dispatched = 0;
+  client.pushInstanceFile = function(...args) {
+    if (args[2] === `/var/lib/qorpera-coding/${scope.workerId}/inbox/${input.commandId}.json`) staged++;
+    return originalPush.apply(this, args);
+  };
+  client.execInstance = function(...args) {
+    if (Array.isArray(args[2]) && args[2][1] === "/opt/qorpera-coding/cloud-coding-command-guest.mjs" && args[2][4] === input.commandId) dispatched++;
+    return originalExec.apply(this, args);
+  };
+  try {
+    await assert.rejects(transport.start(scope, input, signal), (error) => error instanceof Error && error.message === "CODING_HOST_TURN_NOT_PREPARED");
+    assert(staged === 0 && dispatched === 0, "CODING_DETACHED_TRANSPORT_EFFECT_ATTEMPTED");
+    return { schema: "qorpera.coding-detached-transport/v1", workerId: scope.workerId, vmId: scope.vmId,
+      requestId: scope.requestId, turn: integerValue(scope.turn), commandId: input.commandId, inputSha256: input.inputSha256,
+      refusal: "CODING_HOST_TURN_NOT_PREPARED", stagingAttempts: staged, dispatchAttempts: dispatched };
+  } finally { client.pushInstanceFile = originalPush; client.execInstance = originalExec; }
+}
+
+/** Query only the exact exercised command IDs, with a fixed projection. Raw
+ * result text, logical bindings, lease material and arbitrary JSON stay in SQL. */
+export async function readCodingOperationEvidence(query, commands) {
+  boundedRows(commands); assert(commands.length > 0, "CODING_OPERATION_EVIDENCE_MISSING");
+  const ids = commands.map((command) => uuidValue(command.commandId));
+  assert(new Set(ids).size === ids.length, "CODING_OPERATION_EVIDENCE_DUPLICATE");
+  const rows = JSON.parse(await query(`select coalesce(jsonb_agg(jsonb_build_object(
+    'id',id,'runId',run_id,'jobId',job_id,'assignmentId',assignment_id,'operationKind',operation_kind,
+    'inputSha256',input_sha256,'status',status,'completedAt',completed_at,
+    'resultSchema',result->>'schema','resultInputSha256',result->>'inputSha256','contentKind',result#>>'{content,kind}',
+    'receiptSchema',result#>>'{content,value,schema}','workerId',result#>>'{content,value,workerId}',
+    'commandId',result#>>'{content,value,commandId}','receiptInputSha256',result#>>'{content,value,inputSha256}',
+    'receiptState',result#>>'{content,value,state}','exitCode',result#>'{content,value,exitCode}',
+    'outputSha256',encode(extensions.digest(convert_to(result#>>'{content,value,output}','UTF8'),'sha256'),'hex')
+    ) order by id),'[]') from public.qorpera_run_operation_receipts where id in (${ids.map(id => `'${id}'::uuid`).join(",")});`));
+  boundedRows(rows); assert(rows.length === commands.length, "CODING_OPERATION_EVIDENCE_MISSING");
+  assert(new Set(rows.map(row => row.id)).size === rows.length, "CODING_OPERATION_EVIDENCE_DUPLICATE");
+  for (const row of rows) {
+    exactFields(row, ["id","runId","jobId","assignmentId","operationKind","inputSha256","status","completedAt",
+      "resultSchema","resultInputSha256","contentKind","receiptSchema","workerId","commandId","receiptInputSha256","receiptState","exitCode","outputSha256"]);
+    const command = commands.find(value => value.commandId === row.id);
+    assert(command, "CODING_OPERATION_EVIDENCE_FOREIGN");
+    for (const key of ["runId","jobId","assignmentId","workerId"]) assert(uuidValue(row[key]) === uuidValue(command[key]), "CODING_OPERATION_IDENTITY_DIFFERS");
+    assert(row.commandId === row.id && row.operationKind === "cloud_tool" && row.status === "completed", "CODING_OPERATION_NOT_COMPLETED");
+    assert(typeof row.completedAt === "string" && row.completedAt.length <= 40 && Number.isFinite(Date.parse(row.completedAt)), "CODING_OPERATION_COMPLETION_TIME_INVALID");
+    assert([row.inputSha256,row.resultInputSha256,row.receiptInputSha256].every(value => hashValue(value) === command.inputSha256), "CODING_OPERATION_INPUT_DIFFERS");
+    assert(row.resultSchema === "qorpera.cloud-tool-operation-result/v1" && row.contentKind === "json" && row.receiptSchema === "qorpera.coding-command-result/v2", "CODING_OPERATION_RESULT_INVALID");
+    assert(row.receiptState === "succeeded" && row.exitCode === 0 && command.receipt.state === "succeeded" && command.receipt.exitCode === 0, "CODING_OPERATION_RESULT_FAILED");
+    assert(hashValue(row.outputSha256) === createHash("sha256").update(command.receipt.output).digest("hex"), "CODING_OPERATION_OUTPUT_DIFFERS");
+  }
+  return { schema: "qorpera.coding-operation-evidence/v1", rows };
+}
+
+/** Captured immediately before successful controller archival removes the
+ * active guard state. Every exported field has a bounded, closed type. */
+export function codingTerminalGuardProjection(permitId, closure, prestart, record, page) {
+  assert(closure.state === "closed" && record.phase === "stopped" && record.usageRequired === true, "CODING_TERMINAL_GUARD_NOT_STOPPED");
+  assert(page.state === "sealed" && page.finalSequence > 0, "CODING_TERMINAL_USAGE_NOT_SEALED");
+  for (const id of [closure.permitId,record.permit.permitId,prestart.intent.permitId,page.permitId]) assert(uuidValue(id) === uuidValue(permitId), "CODING_TERMINAL_PERMIT_DIFFERS");
+  const cursor = (value) => ({ sequence: integerValue(value.sequence), sha256: hashValue(value.sha256), observationId: uuidValue(value.observationId) });
+  const head = cursor(page.head), acknowledgedThrough = cursor(page.acknowledgedThrough);
+  assert(JSON.stringify(head) === JSON.stringify(acknowledgedThrough) && head.sequence === page.finalSequence, "CODING_TERMINAL_USAGE_UNACKNOWLEDGED");
+  assert(["dispatched","retired"].includes(prestart.state), "CODING_TERMINAL_PRESTART_INVALID");
+  const stop = record.stopReceipt;
+  assert(stop && ["stopped","absent"].includes(stop.state), "CODING_TERMINAL_STOP_RECEIPT_MISSING");
+  const result = { schema: "qorpera.coding-terminal-guard/v1", permitId: uuidValue(permitId),
+    allocationId: uuidValue(closure.allocationId), epoch: uuidValue(closure.epoch), generation: integerValue(closure.generation),
+    reservationId: uuidValue(closure.reservationId), instanceSha256: hashValue(closure.instanceSha256),
+    physicalId: uuidValue(record.machine.physicalInstanceId), hostBootId: uuidValue(closure.hostBootId),
+    phase: "stopped", sqlState: "closed", startDispatched: booleanValue(record.startDispatched),
+    startSettled: booleanValue(record.startSettled), startSucceeded: booleanValue(record.startSucceeded),
+    prestart: { state: prestart.state, guardIncarnationId: uuidValue(prestart.guardIncarnationId), prepareSha256: hashValue(prestart.intent.prepareSha256) },
+    stopReceipt: { permitId: uuidValue(stop.permitId), allocationId: uuidValue(stop.allocationId), generation: integerValue(stop.generation),
+      instanceSha256: hashValue(stop.instanceSha256), physicalInstanceId: uuidValue(stop.physicalInstanceId),
+      hostBootId: uuidValue(stop.hostBootId), closedHostBootId: uuidValue(stop.closedHostBootId),
+      observedUptimeMs: integerValue(stop.observedUptimeMs), closedAtUptimeMs: integerValue(stop.closedAtUptimeMs),
+      state: stop.state, operationId: stop.operationId === null ? null : uuidValue(stop.operationId) },
+    usage: { state: "sealed", permitId: uuidValue(page.permitId), epoch: uuidValue(page.epoch), finalSequence: integerValue(page.finalSequence), head, acknowledgedThrough } };
+  assert(result.startDispatched && result.startSettled && result.startSucceeded && result.generation > 0, "CODING_TERMINAL_START_UNCONFIRMED");
+  assert(result.allocationId === record.machine.allocationId && result.allocationId === prestart.intent.allocationId && result.allocationId === stop.allocationId &&
+    result.instanceSha256 === prestart.intent.instanceSha256 && result.instanceSha256 === stop.instanceSha256 && result.physicalId === stop.physicalInstanceId &&
+    result.hostBootId === prestart.intent.hostBootId && result.hostBootId === stop.hostBootId && result.epoch === page.epoch &&
+    result.permitId === stop.permitId && result.generation === stop.generation && closure.prestart?.guardIncarnationId === result.prestart.guardIncarnationId &&
+    closure.prestart?.prepareSha256 === result.prestart.prepareSha256, "CODING_TERMINAL_IDENTITY_DIFFERS");
+  return result;
+}
+
+/** Diagnostics never change archive authority, its arguments, result or error.
+ * A capture failure is remembered and fails acceptance after real closure. */
+export function observeCodingGuardArchive(guard) {
+  const archive = guard.archive;
+  const observations = new Map(); let failed = false;
+  guard.archive = async function(permitId, closure, signal) {
+    let observation;
+    if (closure?.state === "closed") {
+      try {
+        uuidValue(permitId); assert(observations.size < 8 || observations.has(permitId), "CODING_EVIDENCE_ROW_LIMIT");
+        observation = observations.get(permitId);
+        if (!observation) {
+          const checked = AbortSignal.any([signal, AbortSignal.timeout(10000)]);
+          observation = { ...codingTerminalGuardProjection(permitId, closure, await guard.prestartStatus(permitId, checked),
+            await guard.status(permitId, checked), await guard.readUsage(permitId, { limit: 1 }, checked)), archiveAcknowledged: false };
+          observations.set(permitId, observation);
+        }
+      } catch { failed = true; }
+    }
+    const result = await archive.call(this, permitId, closure, signal);
+    if (observation) observation.archiveAcknowledged = true;
+    return result;
+  };
+  return { evidence: () => ({ schema: "qorpera.coding-guard-archives/v1", captureFailed: failed, records: [...observations.values()] }) };
+}
+
+export function codingCleanupProjection(sql, intents, records) {
+  assertCodingExecutorCleanup(sql, intents, records);
+  assert(intents.every(value => ["dispatched","retired","abandoned"].includes(value.state)), "CODING_FINAL_PRESTART_STATE_INVALID");
+  return { schema: "qorpera.coding-final-custody/v1", openReservations: integerValue(sql.openReservations), openPermits: integerValue(sql.openPermits),
+    closedPermitIds: boundedRows(sql.closedPermitIds).map(uuidValue), closedAttemptIds: boundedRows(sql.closedAttemptIds).map(uuidValue),
+    activePrestarts: boundedRows(intents).map(value => ({ permitId: uuidValue(value.intent.permitId), allocationId: uuidValue(value.intent.allocationId), state: value.state })),
+    activeRecords: boundedRows(records).map(value => ({ permitId: uuidValue(value.permit.permitId), allocationId: uuidValue(value.machine.allocationId), phase: value.phase })) };
+}
+
+export function assertCodingExecutorRetainedEvidence(value) {
+  const { accounting, operationEvidence, guardArchives, finalCustody } = value;
+  for (const proof of [value.detach?.retainedTransportAfterDetach, value.reuse?.retainedTransportAfterReattach]) {
+    assert(proof?.schema === "qorpera.coding-detached-transport/v1" && proof.refusal === "CODING_HOST_TURN_NOT_PREPARED" &&
+      proof.stagingAttempts === 0 && proof.dispatchAttempts === 0, "CODING_RETAINED_TRANSPORT_PROOF_MISSING");
+    assert(value.commands.some(command => command.workerId === proof.workerId && command.commandId === proof.commandId && command.inputSha256 === proof.inputSha256), "CODING_RETAINED_TRANSPORT_IDENTITY_DIFFERS");
+  }
+  assert(JSON.stringify(value.detach.retainedTransportAfterDetach) === JSON.stringify(value.reuse.retainedTransportAfterReattach), "CODING_RETAINED_TRANSPORT_CHANGED");
+  assert(operationEvidence?.schema === "qorpera.coding-operation-evidence/v1" && operationEvidence.rows.length === 4 && value.commands.length === 4, "CODING_OPERATION_EVIDENCE_MISSING");
+  assert(guardArchives?.schema === "qorpera.coding-guard-archives/v1" && !guardArchives.captureFailed && guardArchives.records.length === 1, "CODING_TERMINAL_GUARD_EVIDENCE_MISSING");
+  const terminal = guardArchives.records[0], sample = accounting.samples.at(-1);
+  assert(terminal.archiveAcknowledged && terminal.permitId === accounting.permit.id && terminal.allocationId === accounting.permit.allocation_id &&
+    terminal.epoch === accounting.permit.epoch && terminal.generation === accounting.permit.generation && terminal.physicalId === accounting.permit.physical_id &&
+    terminal.hostBootId === accounting.permit.host_boot_id && terminal.usage.head.sequence === sample.sequence &&
+    terminal.usage.head.observationId === sample.sample.observationId && terminal.stopReceipt.state === sample.sample.state, "CODING_TERMINAL_SQL_IDENTITY_DIFFERS");
+  assert(finalCustody?.schema === "qorpera.coding-final-custody/v1" && finalCustody.openReservations === 0 && finalCustody.openPermits === 0 &&
+    finalCustody.activePrestarts.length === 0 && finalCustody.activeRecords.length === 0 && finalCustody.closedPermitIds.includes(terminal.permitId), "CODING_FINAL_CUSTODY_NOT_EMPTY");
+}
 
 /** Match the executor's bounded retry only for a complete PostgreSQL busy
  * refusal. The native adapter already parsed the one actual ERROR record;

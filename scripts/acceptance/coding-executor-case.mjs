@@ -10,7 +10,7 @@ import { startNativePostgres } from "./native-postgres.mjs";
 import { retainSecondCodingClaim } from "./workload-usage-shared.mjs";
 import { readWorkloadUsage, verifyWorkloadUsage } from "./workload-usage-evidence.mjs";
 import { assertWorkloadRun, assertWorkloadShape } from "./workload-usage-host.mjs";
-import { assertCodingExecutorCleanup, assertCodingExecutorEvidence, beginCodingFixtureTurn, settleCodingFixtureStop, codingFixtureRepository, codingReadinessProjection, codingGuardReadinessProjection, createCodingInventoryRefresh, localCodingFixtureGit, waitForCodingWorkspace } from "./coding-executor-fixture.mjs";
+import { assertCodingExecutorEvidence, assertCodingExecutorRetainedEvidence, assertDetachedCodingTransport, beginCodingFixtureTurn, settleCodingFixtureStop, codingCleanupProjection, codingFixtureRepository, codingReadinessProjection, codingGuardReadinessProjection, createCodingInventoryRefresh, localCodingFixtureGit, observeCodingGuardArchive, readCodingOperationEvidence, waitForCodingWorkspace } from "./coding-executor-fixture.mjs";
 import { CodingComputerController, CODING_COMPUTER_RPCS, CODING_EXECUTOR_RPCS, CODING_HOST_RPCS,
   LxdCodingExecutorHost, parseCodingSessionClaim, parseCodingTurnState, codingTurnScope,
   createCodingNasStorage, createCodingBrokerGitRunner, authorizeCodingCommand,
@@ -36,6 +36,7 @@ const service = `set local role service_role; set local request.jwt.claims='{"ro
 const signal = AbortSignal.timeout(16 * 60000), maintenanceStop = new AbortController();
 const client = new LxdUnixClient(), executorSecret = randomBytes(48).toString("base64url");
 const guard = new PaidComputerGuardClient("/run/qorpera-paid-computer-guard/control.sock");
+const guardArchives = observeCodingGuardArchive(guard);
 const evidence = { schema: "qorpera.coding-executor-physical/v1", commit: provenance.commit,
   scope: "Production executor host, real NFS/virtiofs Git checkout and sandboxed session commands; fixture repository transport, logical model bindings and invoice funding. No model, GitHub publication, signed release-image or installed whole-service claim.",
   image: options.imageEvidence, exportPolicy: "identity-preserving-loopback-only", passed: false, cleanup: false,
@@ -236,6 +237,7 @@ try {
     const request = { binding: session.binding, scope: session.scope, action: "start", input: { commandId, inputSha256, command: text, timeoutMs } };
     const transport = await host.commandTransport(session.scope, (action, scope, id, digest, checked) => authorizeCodingCommand(control,
       { binding: session.binding, scope, action, input: action === "start" ? request.input : action === "read" ? { commandId: id, offset: 0, limit: 16384 } : { commandId: id } }, checked), signal);
+    session.retainedCommand = { client, transport, scope: session.scope, input: request.input };
     const started = await transport.start(session.scope, request.input, signal);
     const finish = async () => {
       const result = await until(() => transport.read(session.scope, { commandId, offset: 0, limit: 16384 }, signal),
@@ -246,7 +248,8 @@ try {
       const completed = await rpc("qorpera_complete_native_tool_operation", { p_binding: session.binding, p_receipt_id: commandId, p_input_sha256: inputSha256, p_result: stored });
       assert.equal(completed.run_id, session.binding.runId); assert.equal(completed.receipt_id, commandId);
       assert.equal(completed.state, "completed"); assert.deepEqual(completed.result, stored);
-      evidence.commands.push({ operationCompleted: true, workerId: session.claim.workerId, commandId, inputSha256, receipt: result });
+      evidence.commands.push({ operationCompleted: true, workerId: session.claim.workerId, runId: session.binding.runId,
+        jobId: session.binding.jobId, assignmentId: session.binding.assignmentId, commandId, inputSha256, receipt: result });
       return result;
     };
     return wait ? finish() : { started, finish, transport };
@@ -268,8 +271,9 @@ try {
   phase = "detach_and_reuse";
   attached.delete(first.claim.workerId); await host.detachSession(first.claim, signal);
   await assert.rejects(host.commandTransport(first.scope, async () => { throw new Error("Must not authorize detached session"); }, signal), /CODING_HOST_TURN_NOT_PREPARED/);
+  const retainedTransportAfterDetach = await assertDetachedCodingTransport(first.retainedCommand, signal);
   const other = await running.finish();
-  evidence.detach = { otherSessionContinued: other.output.includes("continued-after-detach"), oldTransportRefused: true };
+  evidence.detach = { otherSessionContinued: other.output.includes("continued-after-detach"), oldTransportRefused: true, retainedTransportAfterDetach };
   const finishSource = async (session, outcome) => {
     activeClaims.delete(session.claim.workerId);
     // This only terminates the explicitly synthetic model-run fixture. All
@@ -285,10 +289,12 @@ try {
     select public.qorpera_answer_coding_session('${first.claim.workerId}','Continue acceptance','${randomUUID()}'); commit;`);
   const beforeSeeds = evidence.gitTransport.filter((r) => r.operation === "fetch").length;
   const reused = await prepare(await claimOne()); assert.equal(reused.claim.workerId, first.claim.workerId); await begin(reused);
+  const retainedTransportAfterReattach = await assertDetachedCodingTransport(first.retainedCommand, signal);
   const recovered = await command(reused, "set -eu\ngit rev-parse HEAD\ntest \"$(cat value.txt)\" = changed-0\necho reuse-ok");
   evidence.reuse = { sameVm: reused.workspace.vmId === first.workspace.vmId,
     sameStorageMarker: retainedMarker === await readFile(`${nas.rootPath}/workers/${companyId}/${environmentId}/${first.claim.workerId}/data/.qorpera-volume.json`, "utf8"),
-    sameCommit: recovered.output.includes(evidence.sessions[0].headSha), reseeded: evidence.gitTransport.filter((r) => r.operation === "fetch").length !== beforeSeeds };
+    sameCommit: recovered.output.includes(evidence.sessions[0].headSha), reseeded: evidence.gitTransport.filter((r) => r.operation === "fetch").length !== beforeSeeds,
+    retainedTransportAfterReattach };
   for (const session of [reused, second]) {
     attached.delete(session.claim.workerId); await host.detachSession(session.claim, signal);
     await finishSource(session, "failed"); activeClaims.delete(session.claim.workerId);
@@ -306,6 +312,7 @@ try {
     firstPayerByReservation: Object.fromEntries(evidence.accounting.reservations.map((r) => [r.id, memberId])) });
   evidence.balanceAfter = await balance();
   evidence.reservedUsAfter = await query("select sum(reserved_us)::text from public.qorpera_computer_allowance_buckets;");
+  evidence.operationEvidence = await readCodingOperationEvidence(query, evidence.commands);
   assertCodingExecutorEvidence(evidence); evidence.passed = true;
 } catch (error) {
   evidence.phase = phase; evidence.error = String(error).slice(0, 4000); process.exitCode = 1;
@@ -360,9 +367,9 @@ try {
       const custody = JSON.parse(await database.query(`select jsonb_build_object(
         'openReservations',(select count(*) from public.qorpera_computer_allowance_reservations where settled_at is null),
         'openPermits',(select count(*) from public.qorpera_coding_computer_permits where state<>'closed'),
-        'closedPermitIds',coalesce((select jsonb_agg(id) from public.qorpera_coding_computer_permits where state='closed'),'[]'),
-        'closedAttemptIds',coalesce((select jsonb_agg(permit_id) from public.qorpera_computer_prestart_attempts where closure is not null),'[]'));`));
-      assertCodingExecutorCleanup(custody, await guard.listPrestarts(AbortSignal.timeout(10000)), await guard.list(AbortSignal.timeout(10000)));
+        'closedPermitIds',coalesce((select jsonb_agg(id order by id) from (select id from public.qorpera_coding_computer_permits where state='closed' order by id limit 9) p),'[]'),
+        'closedAttemptIds',coalesce((select jsonb_agg(permit_id order by permit_id) from (select permit_id from public.qorpera_computer_prestart_attempts where closure is not null order by permit_id limit 9) a),'[]'));`));
+      evidence.finalCustody = codingCleanupProjection(custody, await guard.listPrestarts(AbortSignal.timeout(10000)), await guard.list(AbortSignal.timeout(10000)));
       evidence.custodyClosed = true;
     }
     const instances = (await client.inspectHostInventory(AbortSignal.timeout(10000))).instances;
@@ -376,6 +383,11 @@ try {
   } catch (error) {
     await database?.close({ keepFiles: true });
     evidence.cleanupError = String(error).slice(0, 2000); evidence.cleanup = false; evidence.passed = false; process.exitCode = 1;
+  }
+  evidence.guardArchives = guardArchives.evidence();
+  if (evidence.passed) {
+    try { assertCodingExecutorRetainedEvidence(evidence); }
+    catch { evidence.retainedEvidenceError = "CODING_RETAINED_EVIDENCE_UNCONFIRMED"; evidence.passed = false; process.exitCode = 1; }
   }
   await writeFile(out, `${JSON.stringify(evidence, null, 2)}\n`, { flag: "wx", mode: 0o600 });
   console.log(JSON.stringify({ phase, passed: evidence.passed, cleanup: evidence.cleanup, error: evidence.error }));
