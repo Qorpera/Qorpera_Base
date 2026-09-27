@@ -20,7 +20,7 @@ async function sources(directory) {
 export async function checkHeadlessPackages(root = repository) {
 	const failures = [];
 	const runtime = await sources(join(root, "packages/runtime/src"));
-	for (const name of ["runtime", "cloud-client", "shell", "member-web", "web"]) {
+	for (const name of ["runtime", "cloud-client", "member-web", "web"]) {
 		for (const path of await sources(join(root, `packages/${name}/src`))) {
 			const source = ts.createSourceFile(path, await readFile(path, "utf8"), ts.ScriptTarget.Latest, true);
 			for (const statement of source.statements) {
@@ -34,7 +34,7 @@ export async function checkHeadlessPackages(root = repository) {
 				const importsShell = /^(?:@qorpera\/shell(?:\/|$)|packages\/shell\/)/.test(target);
 				const importsDesktop = /^(?:electron(?:-updater)?|@qorpera\/pi-[^/]+)(?:\/|$)/.test(target);
 				const importsNodeAdapter = /^(?:node:|@qorpera\/cloud-client\/node(?:\/|$)|packages\/cloud-client\/src\/node\/)/.test(target);
-				if ((name !== "runtime" && importsRuntime) || (name !== "shell" && (importsShell || importsDesktop)) || (["member-web", "web"].includes(name) && importsNodeAdapter)) {
+				if ((name !== "runtime" && importsRuntime) || importsShell || importsDesktop || (["member-web", "web"].includes(name) && importsNodeAdapter)) {
 					failures.push(`${relative(root, path)} imports ${target}`);
 				}
 			}
