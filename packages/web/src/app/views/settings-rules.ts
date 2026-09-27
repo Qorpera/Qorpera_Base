@@ -367,7 +367,7 @@ export class RulesView {
 			return;
 		}
 		// A load can take away the rule being edited, or the right to edit it: the edit ends,
-		// and a keyboard in it moves to that row's pencil, or to the form.
+		// and a keyboard in it moves to the form (the row has no pencil any more, if any row).
 		const edited = this.#editing && this.#rules.find((rule) => rule.id === this.#editing?.id);
 		const dropped = this.#editing && (!edited || !this.#editable(edited)) ? this.#editing.id : undefined;
 		if (dropped) this.#editing = undefined;
@@ -395,6 +395,6 @@ export class RulesView {
 			h("p", { class: "settings-rule-note" }, t("Built-in safety checks always apply.")),
 		);
 		if (focused instanceof HTMLElement && this.el.contains(focused)) focused.focus({ preventScroll: true });
-		else if (dropped && focused?.closest(`tr[data-rule-id="${dropped}"]`)) this.#focusRow(dropped);
+		else if (dropped && focused?.closest(`tr[data-rule-id="${dropped}"]`)) this.#when.focus({ preventScroll: true });
 	}
 }

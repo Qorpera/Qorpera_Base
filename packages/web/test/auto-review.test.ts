@@ -432,7 +432,7 @@ describe("Settings → General → rules", () => {
 		view.update();
 		await settle();
 		expect(view.el.querySelector(".settings-rule-table input")).toBeNull();
-		expect(view.el.querySelector('tr[data-rule-id="' + id(909) + '"] .settings-rule-locked')).not.toBeNull();
+		expect(view.el.querySelector(`tr[data-rule-id="${id(909)}"] .settings-rule-locked`)).not.toBeNull();
 		expect(document.activeElement).toBe(view.el.querySelector('input[aria-label="When an agent wants to:"]'));
 		vi.mocked(client.list).mockResolvedValue({
 			canManageCompanyRules: true,
