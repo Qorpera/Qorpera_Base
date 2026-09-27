@@ -518,9 +518,15 @@ describe("settings session lifecycle", () => {
 		expect(names()).toEqual(["Émile"]);
 		// The company list arriving mid-composition selects the open tab again; nothing it shows changed.
 		const row = f.root.querySelector(".settings-dialog .person-row");
+		const back = f.root.querySelector<HTMLAnchorElement>(".settings-nav .settings-back")!;
+		expect(f.api.getTeam).not.toHaveBeenCalled();
 		profiles.resolve([profileA]);
 		await draw();
-		expect(f.root.querySelector<HTMLSelectElement>(".settings-company-picker")!.value).toBe(profileA.profileId);
+		// Settings took up the account's only company (they start it: no picker shows it any more),
+		// and the rail still ends with its way back, hidden here on the company list.
+		expect(f.api.getTeam).toHaveBeenCalledExactlyOnceWith(profileA.profileId);
+		expect(f.root.querySelector(".settings-nav")!.lastElementChild).toBe(back);
+		expect(back.hidden).toBe(true);
 		expect(fieldRemovals()).toEqual([]);
 		expect(document.activeElement).toBe(field);
 		expect(field.value).toBe("é");
