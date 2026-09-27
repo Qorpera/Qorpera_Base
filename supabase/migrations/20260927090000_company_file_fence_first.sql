@@ -2,8 +2,8 @@
 -- needs the company's profile row.
 --
 -- Every agent tool call takes the company's profile fence (qorpera_lock_profile_gc_fence: the profile row
--- FOR UPDATE, then the company's wake admission fence) and then locks the Company File row, and so does the
--- object gateway's upload confirmation. Coding machine admission is getting the same order (the fence, then
+-- FOR UPDATE, then the company's wake admission fence) and then locks the Company File row. So do the
+-- object gateway's upload confirmation and, since 20260925123000, coding machine admission (the fence, then
 -- a storage volume whose key check locks the Company File row). The calls below did it the other way
 -- round. They locked the Company File row (FOR UPDATE, or FOR SHARE to pin its head) and then waited for
 -- the profile row, either for the fence itself (a snapshot or substrate version insert takes it in a
