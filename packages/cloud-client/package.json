@@ -3,7 +3,7 @@
 	"version": "0.83.0",
 	"private": true,
 	"type": "module",
-	"description": "Qorpera cloud client APIs and wire contracts for desktop and web.",
+	"description": "Qorpera cloud client APIs and wire contracts.",
 	"exports": {
 		".": {
 			"types": "./dist/index.d.ts",

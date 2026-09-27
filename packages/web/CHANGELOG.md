@@ -93,6 +93,7 @@
 - Open an agent's routines and responsibilities as pages of its details popup, from two buttons beside the close button, each with a way back; routines left the Computer panel.
 - Edit an agent's name, title and description in place, saving on Enter or when leaving the field, and change the figure from a picker under it that saves each choice, as on the desktop; the Edit agent button is gone and the description is taller.
 - Replace the new-conversation page (agent cards, heading, Open/Cancel footer) with one list under the To: field: New agent, New group chat, then the agents. The field searches agent names, picking an agent opens its conversation, New group chat gathers agents as chips, and a name typed into the field carries into a new agent. Group conversations still cannot be started.
+- The sign-in page no longer says it uses the same account as the desktop app, which is gone; it keeps the line about the session in this browser. The fonts and provider logos now live in `packages/web/public/assets` and ship at the same paths; the nine icons the app never used are no longer shipped.
 
 ### Removed
 
