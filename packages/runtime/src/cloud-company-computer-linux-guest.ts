@@ -628,6 +628,13 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 						browser = undefined;
 						driving = undefined;
 						automation = undefined;
+						// Settled failures whose drain got no answer mid-run get one more try
+						// before the lease is released, so an outage does not drain the desktop.
+						await cloudToolRequest(
+							(checked) => endpoint.drainSettled(checked),
+							new AbortController().signal,
+							5000,
+						).catch(() => undefined);
 						const results = await Promise.allSettled([commands?.close()]);
 						const rejected = results.find((result) => result.status === "rejected");
 						if (rejected) throw new Error("OFFICE_SESSION_DRAIN_UNCONFIRMED", { cause: rejected.reason });
