@@ -207,12 +207,16 @@ published only by the agent's next list or change of that todo.
   SQL test 603 races those, the pairs a partial fix would break, and two new
   members planning at once. One late touch remains: the executor's begin takes
   the profile row NOWAIT (it refuses with 55P03 rather than wait; the coding
-  executor begins again until its lease ends). Until
-  `20260927090000_company_file_fence_first`, a member saving, proposing or
+  executor begins again until its lease ends). A member saving, proposing or
   accepting, and the object gateway copying an object into the company's
-  bucket, locked the Company File row before the fence, so they could meet a
-  session's first admission as they met every agent tool call. They now take
-  the fence first; SQL test 607 races them.
+  bucket, lock the Company File row before the fence, so they can meet a
+  session's first admission as they meet every agent tool call.
+  `20260927090000_company_file_fence_first` made them take the fence first, but
+  it went live with v133 on 2026-09-27 and within minutes a coding turn's
+  completion failed (AUTHORITY_UNAVAILABLE) and the database stopped accepting
+  connections until a restart; `20260927130000_revert_company_file_fence_first`
+  puts the eleven functions back. The hazard stays open until a redesign is
+  proven under load (test 607 was removed with the revert).
 - A revival whose admission is refused when its run is created (the agent lost
   its model account or its conversation) is not retried: the result stays in
   the todo, which the agent lists the next time it continues that work.
