@@ -367,6 +367,94 @@ describe("Settings → General → rules", () => {
 		}
 	});
 
+	it("leaves the edit on Escape from its tick or cross too, never closing Settings", async () => {
+		const client = rulesClient(false, [rule(907, "member", "buying anything")]);
+		view = new RulesView(client, new AbortController().signal);
+		document.body.append(view.el);
+		await settle();
+		const closeSettings = vi.fn();
+		document.addEventListener("keydown", closeSettings);
+		try {
+			for (const label of ["Save", "Cancel"]) {
+				view.el.querySelector<HTMLButtonElement>(".settings-rule-edit")!.click();
+				const control = view.el.querySelector<HTMLButtonElement>(
+					`.settings-rule-table button[aria-label="${label}"]`,
+				)!;
+				control.focus();
+				control.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+				expect(closeSettings).not.toHaveBeenCalled();
+				expect(view.el.querySelector(".settings-rule-table input")).toBeNull();
+				expect(document.activeElement).toBe(view.el.querySelector(".settings-rule-edit"));
+			}
+			expect(client.save).not.toHaveBeenCalled();
+		} finally {
+			document.removeEventListener("keydown", closeSettings);
+		}
+	});
+
+	it("never writes the version an edit started from over a newer one", async () => {
+		let role = "member";
+		const client = rulesClient(false, [rule(908, "member", "buying anything")]);
+		view = new RulesView(client, new AbortController().signal, () => role);
+		document.body.append(view.el);
+		await settle();
+		view.el.querySelector<HTMLButtonElement>(".settings-rule-edit")!.click();
+		// A load while editing brings a newer sentence; the draft still holds the old one.
+		vi.mocked(client.list).mockResolvedValue({
+			canManageCompanyRules: false,
+			rules: [{ ...rule(908, "member", "buying anything online"), outcome: "allow_automatically" }],
+		});
+		role = "contributor";
+		view.update();
+		await settle();
+		expect(view.el.querySelector<HTMLInputElement>('.settings-rule-table input[aria-label="Action"]')!.value).toBe(
+			"buying anything",
+		);
+		view.el.querySelector<HTMLButtonElement>('.settings-rule-table button[aria-label="Save"]')!.click();
+		await settle();
+		expect(client.save).not.toHaveBeenCalled();
+		expect(tableRows(view.el)).toEqual([["buying anything online", "Allow automatically", "Only me"]]);
+	});
+
+	it("ends an edit whose rule a load took away, or the right to edit it, and keeps the keyboard in the view", async () => {
+		let role = "owner";
+		const client = rulesClient(true, [rule(909, "company", "hiring agents"), rule(910, "member", "posting")]);
+		view = new RulesView(client, new AbortController().signal, () => role);
+		document.body.append(view.el);
+		await settle();
+		// Demoted while editing a company rule: the edit ends and does not come back with the role.
+		view.el.querySelector<HTMLButtonElement>('button[aria-label="Edit the rule: hiring agents"]')!.click();
+		vi.mocked(client.list).mockResolvedValue({
+			canManageCompanyRules: false,
+			rules: [rule(909, "company", "hiring agents"), rule(910, "member", "posting")],
+		});
+		role = "member";
+		view.update();
+		await settle();
+		expect(view.el.querySelector(".settings-rule-table input")).toBeNull();
+		expect(view.el.querySelector('tr[data-rule-id="' + id(909) + '"] .settings-rule-locked')).not.toBeNull();
+		expect(document.activeElement).toBe(view.el.querySelector('input[aria-label="When an agent wants to:"]'));
+		vi.mocked(client.list).mockResolvedValue({
+			canManageCompanyRules: true,
+			rules: [rule(909, "company", "hiring agents"), rule(910, "member", "posting")],
+		});
+		role = "owner";
+		view.update();
+		await settle();
+		expect(view.el.querySelector(".settings-rule-table input")).toBeNull();
+		// The rule removed elsewhere while it is edited: the edit ends, the keyboard goes to the form.
+		view.el.querySelector<HTMLButtonElement>('button[aria-label="Edit the rule: posting"]')!.click();
+		vi.mocked(client.list).mockResolvedValue({
+			canManageCompanyRules: true,
+			rules: [rule(909, "company", "hiring agents")],
+		});
+		role = "admin";
+		view.update();
+		await settle();
+		expect(view.el.querySelector(".settings-rule-table input")).toBeNull();
+		expect(document.activeElement).toBe(view.el.querySelector('input[aria-label="When an agent wants to:"]'));
+	});
+
 	it("keeps an edit and its draft when the save is refused", async () => {
 		const client = rulesClient(false, [rule(906, "member", "buying anything")]);
 		client.save = vi.fn(async () => {

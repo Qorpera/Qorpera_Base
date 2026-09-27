@@ -154,6 +154,38 @@ describe("settings session lifecycle", () => {
 		expect(f.api.getTeam).not.toHaveBeenCalled();
 		expect(company.signal.aborted).toBe(false);
 	});
+	it("loads the rules only once General is shown", async () => {
+		const f = fixture(),
+			auth = new AuthController(f.cloud);
+		await auth.start();
+		const company = new CompanyController(f.api, profileA, userA.id);
+		const hub = new HubController(f.api);
+		const view = new SettingsView(
+			f.api,
+			auth,
+			hub,
+			[profileA],
+			company,
+			() => {},
+			() => {},
+			"friends",
+		);
+		document.body.append(view.el);
+		dispose = () => {
+			view.dispose();
+			hub.dispose();
+			company.stop();
+			auth.dispose();
+		};
+		await draw();
+		const rulesLists = () =>
+			vi.mocked(f.cloud.rpc).mock.calls.filter(([name]) => name === "qorpera_list_review_rules").length;
+		expect(rulesLists()).toBe(0);
+		view.el.querySelector<HTMLButtonElement>("#settings-tab-general")!.click();
+		await draw();
+		expect(rulesLists()).toBe(1);
+		expect(view.el.querySelector("#settings-content .settings-rules")).not.toBeNull();
+	});
 	it("borrows the open company again without removing its conversation subscription", async () => {
 		const f = await setup(realtimeFixture());
 		const composer = f.root.querySelector("textarea");

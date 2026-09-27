@@ -345,7 +345,8 @@
  .connection-account { flex-wrap: wrap; }
  .person-meta { display: none; }
  /* Rules: each row stacks, the sentence over its behaviour and scope, the icons beside. */
- .settings-rule-table thead { display: none; }
+ /* Headers stay for screen readers (as .visually-hidden), and the table keeps its roles. */
+ .settings-rule-table thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
  .settings-rule-table :is(table, tbody) { display: block; }
  .settings-rule-table tr { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; grid-template-areas: "when when actions" "outcome scope actions"; align-items: center; column-gap: 4px; row-gap: 3px; padding: 10px 6px 10px 14px; }
  .settings-rule-table td { height: auto; padding: 0; }

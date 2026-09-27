@@ -54,8 +54,15 @@ export class RulesView {
 	#missing = false;
 	#error: string | undefined;
 	#working = false;
-	/** The rule being edited in its row, with its draft (kept across redraws). */
-	#editing: { id: string; when: HTMLInputElement; outcome: HTMLSelectElement } | undefined;
+	/** The rule being edited in its row: its draft (kept across redraws) and the text and outcome it started from. */
+	#editing:
+		| {
+				id: string;
+				when: HTMLInputElement;
+				outcome: HTMLSelectElement;
+				from: { when: string; outcome: ReviewRuleOutcome };
+		  }
+		| undefined;
 	readonly #when = ruleInput(t("When an agent wants to:"));
 	readonly #outcome = outcomeSelect(t("It should:"));
 	readonly #scope = h(
@@ -155,20 +162,13 @@ export class RulesView {
 	#edit(rule: HostedReviewRule): void {
 		const when = ruleInput(t("Action"), rule.when);
 		const outcome = outcomeSelect(t("Behavior"), rule.outcome);
-		const keys = (event: KeyboardEvent) => {
-			if (event.key === "Escape") {
-				// Escape leaves the edit, not Settings.
+		when.onkeydown = (event: KeyboardEvent) => {
+			if (event.key === "Enter" && !event.isComposing) {
 				event.preventDefault();
-				event.stopPropagation();
-				this.#stopEditing(rule.id);
-			} else if (event.key === "Enter" && event.target === when && !event.isComposing) {
-				event.preventDefault();
-				void this.#saveEdit(rule);
+				void this.#saveEdit(rule.id);
 			}
 		};
-		when.onkeydown = keys;
-		outcome.onkeydown = keys;
-		this.#editing = { id: rule.id, when, outcome };
+		this.#editing = { id: rule.id, when, outcome, from: { when: rule.when, outcome: rule.outcome } };
 		this.#draw();
 		when.focus();
 		when.setSelectionRange(when.value.length, when.value.length);
@@ -180,22 +180,25 @@ export class RulesView {
 		this.#focusRow(id);
 	}
 
-	async #saveEdit(rule: HostedReviewRule): Promise<void> {
+	async #saveEdit(id: string): Promise<void> {
 		const editing = this.#editing;
-		if (!editing || editing.id !== rule.id || this.#working) return;
+		// The rule as listed now: a load while editing may have brought a newer one.
+		const rule = this.#rules.find((item) => item.id === id);
+		if (!editing || editing.id !== id || !rule || this.#working) return;
 		const when = editing.when.value.trim();
 		if (!when) {
 			editing.when.focus();
 			return;
 		}
 		const outcome = editing.outcome.value as ReviewRuleOutcome;
-		if (when === rule.when && outcome === rule.outcome) {
-			this.#stopEditing(rule.id);
+		// Nothing edited: never write the version the edit started from over a newer one.
+		if (when === editing.from.when && outcome === editing.from.outcome) {
+			this.#stopEditing(id);
 			return;
 		}
 		let saved = false;
 		await this.#change(async () => {
-			const next = await this.#client.save({ id: rule.id, scope: rule.scope, when, outcome });
+			const next = await this.#client.save({ id, scope: rule.scope, when, outcome });
 			this.#rules = this.#rules.map((item) => (item.id === next.id ? next : item));
 			if (this.#editing === editing) this.#editing = undefined;
 			saved = true;
@@ -242,8 +245,12 @@ export class RulesView {
 		(edit ?? this.#when).focus({ preventScroll: true });
 	}
 
+	#editable(rule: HostedReviewRule): boolean {
+		return rule.scope === "member" || this.#canManage;
+	}
+
 	#row(rule: HostedReviewRule): HTMLElement {
-		const editable = rule.scope === "member" || this.#canManage;
+		const editable = this.#editable(rule);
 		const editing = editable && this.#editing?.id === rule.id ? this.#editing : undefined;
 		const iconButton = (name: string, label: string, onclick: () => void, className = "") =>
 			h(
@@ -264,16 +271,29 @@ export class RulesView {
 		}
 		return h(
 			"tr",
-			{ class: editing ? "settings-rule is-editing" : "settings-rule", "data-rule-id": rule.id },
-			h("td", { class: "settings-rule-when" }, editing ? editing.when : rule.when),
-			h("td", null, editing ? editing.outcome : outcomeText(rule.outcome)),
-			h("td", null, rule.scope === "company" ? t("Everyone in the company") : t("Only me")),
+			{
+				class: editing ? "settings-rule is-editing" : "settings-rule",
+				role: "row",
+				"data-rule-id": rule.id,
+				// Escape anywhere in the row being edited leaves the edit, not Settings.
+				onkeydown: editing
+					? (event: KeyboardEvent) => {
+							if (event.key !== "Escape") return;
+							event.preventDefault();
+							event.stopPropagation();
+							this.#stopEditing(rule.id);
+						}
+					: undefined,
+			},
+			h("td", { class: "settings-rule-when", role: "cell" }, editing ? editing.when : rule.when),
+			h("td", { role: "cell" }, editing ? editing.outcome : outcomeText(rule.outcome)),
+			h("td", { role: "cell" }, rule.scope === "company" ? t("Everyone in the company") : t("Only me")),
 			h(
 				"td",
-				{ class: "settings-rule-actions" },
+				{ class: "settings-rule-actions", role: "cell" },
 				editing
 					? [
-							iconButton("check", t("Save"), () => void this.#saveEdit(rule)),
+							iconButton("check", t("Save"), () => void this.#saveEdit(rule.id)),
 							iconButton("close", t("Cancel"), () => this.#stopEditing(rule.id)),
 						]
 					: editable
@@ -314,26 +334,27 @@ export class RulesView {
 		return h(
 			"div",
 			{ class: "settings-rule-table" },
+			// Explicit roles: on a phone the rows are laid out as grids, which drops a table's own roles.
 			h(
 				"table",
-				null,
+				{ role: "table" },
 				h(
 					"thead",
-					null,
+					{ role: "rowgroup" },
 					h(
 						"tr",
-						null,
-						h("th", { scope: "col" }, t("Action")),
-						h("th", { scope: "col", class: "settings-rule-outcome" }, t("Behavior")),
-						h("th", { scope: "col", class: "settings-rule-scope" }, t("Applies to")),
+						{ role: "row" },
+						h("th", { scope: "col", role: "columnheader" }, t("Action")),
+						h("th", { scope: "col", role: "columnheader", class: "settings-rule-outcome" }, t("Behavior")),
+						h("th", { scope: "col", role: "columnheader", class: "settings-rule-scope" }, t("Applies to")),
 						h(
 							"th",
-							{ scope: "col", class: "settings-rule-actions" },
+							{ scope: "col", role: "columnheader", class: "settings-rule-actions" },
 							h("span", { class: "visually-hidden" }, t("Edit or remove")),
 						),
 					),
 				),
-				h("tbody", null, ...rules.map((rule) => this.#row(rule))),
+				h("tbody", { role: "rowgroup" }, ...rules.map((rule) => this.#row(rule))),
 			),
 		);
 	}
@@ -345,7 +366,11 @@ export class RulesView {
 			replace(this.el, notice("neutral", t("Rules are not available on this cloud yet.")));
 			return;
 		}
-		if (this.#editing && !this.#rules.some((rule) => rule.id === this.#editing?.id)) this.#editing = undefined;
+		// A load can take away the rule being edited, or the right to edit it: the edit ends,
+		// and a keyboard in it moves to that row's pencil, or to the form.
+		const edited = this.#editing && this.#rules.find((rule) => rule.id === this.#editing?.id);
+		const dropped = this.#editing && (!edited || !this.#editable(edited)) ? this.#editing.id : undefined;
+		if (dropped) this.#editing = undefined;
 		this.#scope.hidden = !this.#canManage;
 		this.#when.disabled = this.#working;
 		this.#syncAdd();
@@ -370,5 +395,6 @@ export class RulesView {
 			h("p", { class: "settings-rule-note" }, t("Built-in safety checks always apply.")),
 		);
 		if (focused instanceof HTMLElement && this.el.contains(focused)) focused.focus({ preventScroll: true });
+		else if (dropped && focused?.closest(`tr[data-rule-id="${dropped}"]`)) this.#focusRow(dropped);
 	}
 }

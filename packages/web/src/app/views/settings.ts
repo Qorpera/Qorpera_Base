@@ -206,6 +206,8 @@ export class SettingsView {
 		document.addEventListener("keydown", this.#onKey, { signal: this.#lifetime.signal });
 		this.#companyPicker.onchange = () => this.#chooseCompany();
 		nav.append(this.#companyLabel);
+		// The tab asked for is drawn first: General's rules load only if Settings opens on General.
+		this.#tab = tab;
 		this.#setCompany(company, false);
 		this.updateProfiles(profiles);
 		void api
@@ -408,7 +410,7 @@ export class SettingsView {
 			this.#account = { ...this.#account, ...next };
 			this.#general();
 		});
-		// The chosen company's rules sit under the account's settings, loaded once General is open.
+		// The chosen company's rules sit under the account's settings, loaded once General is shown.
 		const company = this.#company;
 		if (company && !this.#rules && this.#tab === "general")
 			this.#rules = new RulesView(
