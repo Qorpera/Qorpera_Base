@@ -222,9 +222,11 @@ All clean units of a boundary land in one revision and one head move.
   immutable object on the run's receipt. It is shown read-only in the box
   under `~/conflicts/` and can be restored from the receipt after the run.
 - **Protected.** The unit becomes a proposal and waits for a member.
-- **Delete or move of an ordinary path.** All such units of the boundary go
-  to the automatic review together, as one reviewed action that lists them
-  all (2026-09-25 amendment). The folder service asks the harness host of the
+- **Delete or move of an ordinary path, or a delegation unit.** All such units
+  of the boundary go to the automatic review together, as one reviewed action
+  that lists them all (2026-09-25 amendment). Since 2026-09-27 (contract 5.6)
+  delegation units are: a new agent folder, an agent's archive or
+  reactivation, a new `group.md`, and any change to a routine file. The folder service asks the harness host of the
   run that made the change; a Company Computer reaches it through that screen
   holder's run.
   - **Allow:** the units land with the clean ones.
@@ -367,7 +369,8 @@ Long output keeps its head and tail, and the full output is saved in the
 run's home.
 
 **Review.** The box has no network, so its commands stay inside the company
-and run at once. Only deletes and moves are reviewed (section 2).
+and run at once. Only deletes, moves and delegation units are reviewed
+(section 2, contract 5.6).
 
 **Before writes are built.** Until build step 5 the mount is read-only.
 Agents search and read through the shell and still write with today's tools.
@@ -445,7 +448,9 @@ virtiofs device. `COMMAND-GUEST.md` is amended when this is built.
 **Review.** Coding sessions are not reviewed (2026-09-25 amendment, item 2).
 Their deletes and moves, in `code/` and elsewhere, therefore apply without
 the automatic review, and nothing a coding session does is ever partly
-parked.
+parked. Because of that, a coding session's mount shows `agents/` and
+`rules/` read-only (contract 5.6): it cannot hire, create a group chat,
+touch routines or rules, or archive an agent.
 
 **What the session's own NAS folders keep:** the per-session cache (see
 below) and custody.
@@ -734,8 +739,9 @@ is unchanged.
 4. **Server, writing side.**
    - Per-folder trees and a version per file, lifting the manifest and entry
      caps (moved here from step 8).
-   - Structured-file saves with their index update, and the refusals for
-     seeded folders and `rules/` (contract 5.6).
+   - Structured-file saves with their index update, the refusals for seeded
+     folders and `rules/`, and review by path for delegation units on every
+     write path, including today's Company File tools (contract 5.6).
    - Today's state moved into the layout of contract 5.6.
    - Change sets and units.
    - Move and rename.
@@ -745,7 +751,7 @@ is unchanged.
    - Restore, plus a file history view in the web app.
    - The upload binding.
 5. **Writes through the mount.** Boundaries, reports, conflicts, proposals,
-   reviewed deletes and moves, and `apply_patch`.
+   reviewed deletes, moves and delegation units, and `apply_patch`.
 6. **Company Computer mount.**
    - Per-desktop attribution.
    - Memory-backed caches.
@@ -757,7 +763,8 @@ is unchanged.
      spike).
    - `/company` bound in every command unit.
    - Company data read, written and searched from coding sessions.
-   - Coding sessions' changes skip review.
+   - Coding sessions' changes skip review; `agents/` and `rules/` are
+     read-only in them.
    - The repository stays in the session's private workspace until step 9.
 8. *(Moved into step 4 on 2026-09-27.)*
 9. **Code areas.**

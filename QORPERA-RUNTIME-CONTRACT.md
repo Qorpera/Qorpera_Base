@@ -350,8 +350,8 @@ Ordinary paths update live by default. Configured money, identity, membership,
 destructive, production, and other high-impact paths use a durable proposal or
 action-specific grant. Review policy belongs to those paths, not to every
 Company File write. Since 2026-09-27 no path is configured this way by
-default: everything is approved by default, and only the seeded folders and
-`rules/` have their own rules (5.6). The automatic review of the 2026-09-25
+default: everything is approved by default, and the seeded folders, `rules/`
+and the structured files have their own rules (5.6). The automatic review of the 2026-09-25
 amendment is a separate layer and still applies.
 
 ### 5.3 Change events
@@ -404,11 +404,11 @@ machine is logical path `<p>`.
 The database holds only what is not company state:
 
 - members, sign-in and invitations, and each member's own settings (pins,
-  hidden agents, a conversation's model, personal review rules);
+  hidden agents, personal review rules);
 - plan, usage and billing;
 - runtime state: runs, queues, wakes, leases, locks, presence, receipts, read
   sets, schedule positions and message delivery;
-- conversations;
+- conversations and their settings, such as a thread's model;
 - the folder's versions, heads, authority and path grants; and
 - indexes of the folder.
 
@@ -459,10 +459,14 @@ folder and its `agent.md`.
 
 The folder name is the agent's handle:
 - It is made from the agent's name when the agent is hired: lowercase letters
-  a–z, digits and hyphens, with æ, ø and å written as ae, oe and aa, and other
-  characters dropped.
+  a–z, digits and hyphens. Letters are written in plain Latin (é as e, ü as
+  u, æ, ø and å as ae, oe and aa). Spaces become hyphens, and other characters
+  are dropped.
 - It is unique among the agents, ignoring case. `groups` and `sections.md` are
-  reserved.
+  reserved. A handle that is taken or reserved gets `-2`, `-3` and so on. A
+  name that leaves nothing becomes `agent`, numbered the same way.
+- An agent's folder can only be renamed within `agents/`. Moving it anywhere
+  else is refused.
 - `name` in `agent.md` is how the agent is shown, and may use any characters.
   Renaming an agent changes both and moves its folder. Editing `name` alone
   does not move the folder.
@@ -481,27 +485,34 @@ plain prose, its voice, and how it works (9.3).
 The Co-Founder is the agent the platform seeded when it created the company,
 and the platform keeps that agent's `id`. A save is refused if it:
 - changes any agent's `id`;
-- gives `kind: co-founder` to another agent; or
-- takes it from the Co-Founder.
+- gives `kind: co-founder` to another agent;
+- takes it from the Co-Founder; or
+- archives the Co-Founder.
 
 An agent leaves in one of three ways:
 
 - **Archive:** `status: archived`. The agent stops, and its folder stays.
-  Setting it back to `active` restores it.
+  Setting it back to `active` restores it. Archiving and reactivating pass the
+  automatic review, because reactivation gives the agent its default grants
+  again (14.1).
 - **Delete:** deleting the folder. This retires the agent: its runs are
   fenced, its conversations stay, and its files can be restored from the
-  version history. The Co-Founder cannot be deleted.
-- **Permanent erasure:** purging a deleted agent's history. This is a separate
-  operation that only owners and admins perform (14.1).
+  version history. The Co-Founder cannot be deleted. Deleting an `agent.md`
+  on its own is refused; the folder is deleted instead.
+- **Permanent erasure:** purging a deleted agent's files and their stored
+  versions from the folder. This is a separate operation that only owners and
+  admins perform (14.1). Receipts and audit records keep their attribution.
 
 **`agents/sections.md`.** The sidebar's sections in order, each with its agents
-in order. A section may be empty. An agent that no section lists sits in
+in order, listed by `id` (a name beside an id is only for reading). A section
+may be empty. An agent that no section lists sits in
 Unassigned, and the Co-Founder is never listed (2026-09-24 amendment).
 
 **`agents/groups/<group-name>/group.md`.** A group chat must have a name, and
 its folder is named from it by the same rules as an agent's folder. The front
 matter holds the group's stable `id`, its `name`, and its members, both people
-and agents. The body states its purpose. An agent's own conversation thread
+and agents, listed by id (a name beside an id is only for reading). The body
+states its purpose. An agent's own conversation thread
 follows the agent's folder and has no file of its own.
 
 **`connections/<connection>.md`.** Each file describes one connected account,
@@ -526,24 +537,34 @@ settings. An agent may still add an Ask first personal rule for the member it
 works for when that member asks (2026-09-25 amendment, item 1).
 
 **Approval.** Everything is approved by default:
-- No path needs a member's approval or a proposal, and none is configured to
-  need one. The mechanism for protected paths stays, unused.
-- Seeded folders and files cannot be deleted or moved: `vision/`, `vision/vision.md`,
-  `agents/`, `agents/sections.md`, `agents/groups/`, `connections/`, `skills/`
-  and `rules/`. The Co-Founder's folder cannot be deleted; it moves only when
-  the Co-Founder is renamed.
+- No path needs a member's approval or a proposal. The mechanism for protected
+  paths stays, but nothing is configured by default. The one standing
+  exception is 14.1: an agent whose own authority is restricted cannot hire
+  unassisted, and its hire waits for a member.
+- Seeded folders and files cannot be deleted or moved: `vision/`,
+  `vision/vision.md`, `agents/`, `agents/sections.md`, `agents/groups/`,
+  `connections/`, `skills/` and `rules/`. The Co-Founder's folder and its
+  `agent.md` cannot be deleted; the folder is only renamed within `agents/`
+  when the Co-Founder is renamed.
 - Only owners and admins write `rules/`.
 
 The automatic review (2026-09-25 amendment) is unchanged:
 - Outside effects pass it first.
 - So do the folder changes it counts as delegation or deletion:
   - creating an agent's folder (hiring);
+  - archiving or reactivating an agent;
   - creating a `group.md`;
-  - creating a routine file, or changing a routine's instructions or title;
+  - creating, changing or deleting a routine file (a dynamic routine's choice
+    of its next run is a schedule position in the database, as today);
   - deleting or moving paths.
 
   They pass it as one unit per change set (the 2026-09-27 amendment "every
   machine works in the company folder", item 6).
+- A write is classified by its path, whatever makes it: a tool, the mount, a
+  desktop application or the web app. A tool that writes these paths is not
+  "internal" because it is a file write.
+- Coding sessions stay unreviewed, so in a coding session `agents/` and
+  `rules/` are read-only.
 - Everything else applies at once, and any change can be restored from the
   version history.
 
@@ -2863,7 +2884,8 @@ A review of master at bundle v137 found three problems:
 
 The file formats in 5.6 are design that follows from these decisions, and so
 are the tools, computers and migration below. They may be refined without a
-new founder decision, as long as the decisions hold.
+new founder decision, as long as the decisions and the authority and review
+rules of 5.6 hold.
 
 **What this supersedes.** Where these passages conflict with 5.6, 5.6
 governs:
@@ -2878,8 +2900,9 @@ governs:
 - **§13:** todos as "durable code objects".
 - **§14, opening:** agents and rooms as "cloud state".
 - **§14.1:** protected agent documents. "Permanent deletion" is now the
-  owners' and admins' erasure of a deleted agent's history (5.6); deleting an
-  agent's folder retires it.
+  owners' and admins' erasure of a deleted agent's files and versions (5.6);
+  deleting an agent's folder retires it. A restricted creator's hire still
+  waits for a member, the one standing exception to "no member approval".
 - **§14.2:** the protected direction proposal and its ratification. The
   Co-Founder writes the vision; members edit it like any file.
 - **§14.4:** projects.
@@ -2888,8 +2911,8 @@ governs:
 - **§14.7:** rooms as control-plane objects.
 - **§15.1:** the notebook path `agents/<staffAgentId>/memory/`. It becomes
   `agents/<agent-name>/memory/`.
-- **§15.2:** an agent's own skills at `agents/<staffAgentId>/skills/`. They
-  become `agents/<agent-name>/skills/`.
+- **§15.2 (once #387 has merged):** an agent's own skills at
+  `agents/<staffAgentId>/skills/`. They become `agents/<agent-name>/skills/`.
 - **§16.3:** routines as control-plane rows. The routine is its file; schedule
   positions and occurrences stay runtime state.
 - **2026-09-19/20 amendment, item 3:** "A change to an existing agent or room
@@ -2898,8 +2921,9 @@ governs:
   `organize_sidebar`. Sections are `agents/sections.md`.
 - **2026-09-25 amendment, item 1:** where company rules are stored. They are
   files in `rules/`, written only by owners and admins. Personal rules stay in
-  the database. Its item 2 (what is reviewed) is unchanged. It now applies to
-  folder changes as 5.6 lists them.
+  the database. Its item 2 (what is reviewed) is unchanged. It applies to
+  folder changes on every write path as 5.6 lists them, and coding sessions
+  see `agents/` and `rules/` read-only.
 - **`supabase/COMPANY-FILE.md`:** rewritten for the folder model on this date.
 
 **Tools.** Folder state is changed by editing files: through the shell and
