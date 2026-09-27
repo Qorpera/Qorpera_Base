@@ -1,6 +1,6 @@
 const { spawn } = require("node:child_process");
 const { createHash, randomUUID } = require("node:crypto");
-const { existsSync, readFileSync, statSync, writeFileSync } = require("node:fs");
+const { appendFileSync, existsSync, readFileSync, statSync, writeFileSync } = require("node:fs");
 const { join } = require("node:path");
 const { connect } = require("node:net");
 const { createInterface } = require("node:readline");
@@ -125,6 +125,15 @@ if (mode === "descendant") {
 
 async function handle(message) {
 	if (message.method === "initialize") {
+		// Warm conversations: tests count started processes (spares included).
+		if (evidencePath) appendFileSync(`${evidencePath}.starts`, `${process.pid}\n`);
+		// Like the real harness, a process writes its own state into its Codex home.
+		if (mode === "writes-home" && process.env.CODEX_HOME)
+			writeFileSync(join(process.env.CODEX_HOME, "state_5.sqlite"), "fixture state");
+		if (mode === "stall-first" && !existsSync(`${evidencePath}.stalled`)) {
+			writeFileSync(`${evidencePath}.stalled`, "");
+			return;
+		}
 		if (mode === "stalled" || mode === "descendant") return;
 		if (mode === "invalid-json") { process.stdout.write("PRIVATE_BAD_WIRE\n"); return; }
 		if (mode === "oversized") { process.stdout.write("x".repeat(1024 * 1024 + 1)); return; }
@@ -141,6 +150,12 @@ async function handle(message) {
 		write({ id: message.id, result: { config: configuration } });
 	} else if (message.method === "skills/list") {
 		write({ id: message.id, result: { data: [{ skills: mode === "extra-skills" ? [{ name: "PRIVATE_UNCONTROLLED_SKILL" }] : [], errors: [] }] } });
+		// The last handshake answer: tests wait for it before counting on a ready spare.
+		if (evidencePath) appendFileSync(`${evidencePath}.handshakes`, `${process.pid}\n`);
+		// Requests before any run is bound: the host must refuse both.
+		if (mode === "fence-before-bind") fence([], { turnId: "", purpose: "prewarm" }).catch(() => undefined);
+		if (mode === "tool-before-bind")
+			write({ id: "early_tool", method: "item/tool/call", params: { threadId, turnId, callId: "early", namespace: "qorpera", tool: "read_document", arguments: {} } });
 	} else if (message.method === "thread/start" && mode.startsWith("review") && threadParameters) {
 		reviewEvidence.reviewerThread = message.params;
 		reviewEvidence.prewarm = await fence([], { threadId: reviewThreadId, turnId: "", purpose: "prewarm" });

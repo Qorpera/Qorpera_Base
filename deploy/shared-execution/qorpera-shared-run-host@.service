@@ -8,7 +8,8 @@ StopWhenUnneeded=no
 [Service]
 Type=exec
 # One static account pair per slot, created by the installer. A slot serves one
-# run at a time; the shared execution service wipes its scratch between runs.
+# run at a time; the shared execution service wipes its scratch between runs,
+# except while a warm conversation's host stays parked for its next run.
 User=qorpera-shared-host-%i
 Group=qorpera-shared-host-%i
 WorkingDirectory=/var/lib/qorpera-shared-execution/slots/%i/host

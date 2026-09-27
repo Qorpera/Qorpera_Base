@@ -9,7 +9,13 @@ import {
 	CloudActionReviewChannel,
 	CloudActionReviewGate,
 } from "@qorpera/runtime/cloud-action-review";
-import { CLOUD_CODEX_BOUNDARY_CONFIG, runCloudCodexToolSession } from "@qorpera/runtime/cloud-codex-tool-session";
+import {
+	CLOUD_CODEX_BOUNDARY_CONFIG,
+	disposeCloudCodexSpares,
+	prefetchCloudCodexArtifact,
+	prepareCloudCodexSpare,
+	runCloudCodexToolSession,
+} from "@qorpera/runtime/cloud-codex-tool-session";
 import { CloudNativeCaptureImages } from "@qorpera/runtime/cloud-native-capture-images";
 import { nativeRuntimeFailureMetadata } from "@qorpera/runtime/cloud-native-failure";
 import * as nativeIsolation from "@qorpera/runtime/cloud-native-isolation";
@@ -20,7 +26,7 @@ import {
 	CloudNativeToolBoundary,
 } from "@qorpera/runtime/cloud-native-tool-boundary";
 import { CloudRuntimeObservability, type CloudRuntimeObservation } from "@qorpera/runtime/cloud-runtime-observability";
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const rpcFixture = fileURLToPath(new URL("./fixtures/codex-boundary-rpc-fixture.cjs", import.meta.url));
 const binarySha256 = createHash("sha256")
@@ -224,6 +230,34 @@ it("rejects the older result-only patch before model admission", async () => {
 
 it("rejects an artifact digest mismatch before spawning", async () => {
 	await expect(run("response-first", { binarySha256: "0".repeat(64) }).result).rejects.toThrow("artifact mismatch");
+});
+
+it("runs with a digest hashed ahead of the session", async () => {
+	await prefetchCloudCodexArtifact(process.execPath);
+	await expect(run("response-first").result).resolves.toMatchObject({ providerSessionId: "thread_fixture" });
+});
+
+it("hashes again when the artifact changed after its early hash", async () => {
+	const artifact = join(root, "codex");
+	await writeFile(artifact, "one", { mode: 0o755 });
+	await prefetchCloudCodexArtifact(artifact);
+	await writeFile(artifact, "changed");
+	const pinned = createHash("sha256").update("one").digest("hex");
+	const session = runCloudCodexToolSession({
+		command: [artifact],
+		binarySha256: pinned,
+		boundary: new CloudNativeToolBoundary({
+			companyId: randomUUID(),
+			runId: randomUUID(),
+			signal: new AbortController().signal,
+			assertActive: async () => undefined,
+			tools: [],
+		}),
+		model: "offline-probe",
+		prompt: "Private test input",
+		signal: new AbortController().signal,
+	});
+	await expect(session).rejects.toThrow("artifact mismatch");
 });
 
 it("nests private runtime scratch below its temporary allocation and cleans it after failed containment", async () => {
@@ -947,4 +981,134 @@ it("refuses the reviewer any tool but its verdict, and never runs the call witho
 	const recorded = JSON.parse(await readFile(evidence, "utf8"));
 	expect(recorded.wrongTool.error).toMatchObject({ code: -32601 });
 	expect(JSON.parse(recorded.reply.result.contentItems[0].text).content.text).toMatch(/^REVIEW_UNAVAILABLE: /);
+});
+
+async function starts(evidence: string): Promise<number> {
+	try {
+		return (await readFile(`${evidence}.starts`, "utf8")).split("\n").filter(Boolean).length;
+	} catch {
+		return 0;
+	}
+}
+
+/** A spare is taken only once ready: its last handshake answer was sent and handled. */
+async function spareReady(evidence: string, count = 1): Promise<void> {
+	await until(async () => {
+		try {
+			return (await readFile(`${evidence}.handshakes`, "utf8")).split("\n").filter(Boolean).length >= count;
+		} catch {
+			return false;
+		}
+	});
+	await new Promise((resolve) => setTimeout(resolve, 200));
+}
+
+async function until(check: () => Promise<boolean>): Promise<void> {
+	for (let attempt = 0; attempt < 400; attempt++) {
+		if (await check()) return;
+		await new Promise((resolve) => setTimeout(resolve, 10));
+	}
+	throw new Error("Condition not reached");
+}
+
+describe("warm conversations: spare Codex processes", () => {
+	afterEach(async () => {
+		await disposeCloudCodexSpares();
+	});
+
+	it("gives the next run with identical inputs a started process, once", async () => {
+		const evidence = join(root, "evidence.json");
+		const command = [process.execPath, rpcFixture, "response-first", evidence] as const;
+		prepareCloudCodexSpare({ command, binarySha256 }, 60_000);
+		await spareReady(evidence);
+		await expect(run("response-first").result).resolves.toMatchObject({ providerSessionId: "thread_fixture" });
+		expect(await starts(evidence)).toBe(1);
+		// The spare was taken: the following run starts a process of its own.
+		await expect(run("response-first").result).resolves.toMatchObject({ providerSessionId: "thread_fixture" });
+		expect(await starts(evidence)).toBe(2);
+	});
+
+	it("never gives a spare to a run with other process inputs", async () => {
+		const evidence = join(root, "evidence.json");
+		const command = [process.execPath, rpcFixture, "response-first", evidence] as const;
+		prepareCloudCodexSpare({ command, binarySha256, reasoningEffort: "medium" }, 60_000);
+		await until(async () => (await starts(evidence)) === 1);
+		await expect(run("response-first", { reasoningEffort: "low" }).result).resolves.toMatchObject({
+			providerSessionId: "thread_fixture",
+		});
+		expect(await starts(evidence)).toBe(2);
+	});
+
+	it("stops a spare nobody takes within its window, and one whose root is released", async () => {
+		const evidence = join(root, "evidence.json");
+		const command = [process.execPath, rpcFixture, "response-first", evidence] as const;
+		prepareCloudCodexSpare({ command, binarySha256 }, 50);
+		await until(async () => (await starts(evidence)) === 1);
+		// The window counts from the end of the handshake, which follows the first line here.
+		await new Promise((resolve) => setTimeout(resolve, 500));
+		await expect(run("response-first").result).resolves.toMatchObject({ providerSessionId: "thread_fixture" });
+		expect(await starts(evidence)).toBe(2);
+		prepareCloudCodexSpare({ command, binarySha256 }, 60_000);
+		await until(async () => (await starts(evidence)) === 3);
+		await disposeCloudCodexSpares();
+		await expect(run("response-first").result).resolves.toMatchObject({ providerSessionId: "thread_fixture" });
+		expect(await starts(evidence)).toBe(4);
+	});
+
+	it.each(["fence-before-bind", "tool-before-bind"])(
+		"never uses a spare that was asked for work before a run was bound (%s)",
+		async (mode) => {
+			const evidence = join(root, "evidence.json");
+			const command = [process.execPath, rpcFixture, mode, evidence] as const;
+			prepareCloudCodexSpare({ command, binarySha256 }, 60_000);
+			await until(async () => (await starts(evidence)) === 1);
+			await new Promise((resolve) => setTimeout(resolve, 100));
+			const spare = Number((await readFile(`${evidence}.starts`, "utf8")).split("\n")[0]);
+			// The spare failed closed and is not taken: the run starts its own process.
+			await run(mode).result.catch(() => undefined);
+			expect(await starts(evidence)).toBe(2);
+			expect(() => process.kill(spare, 0)).toThrow();
+		},
+	);
+
+	it("keeps a kept Codex home auth-only for a fresh start when the spare does not fit", async () => {
+		const identityRoot = join(root, "identity");
+		await mkdir(join(identityRoot, "codex"), { recursive: true, mode: 0o700 });
+		await writeFile(join(identityRoot, "codex", "auth.json"), "{}", { mode: 0o600 });
+		const evidence = join(root, "evidence.json");
+		const command = [process.execPath, rpcFixture, "writes-home", evidence] as const;
+		prepareCloudCodexSpare({ command, binarySha256, reasoningEffort: "medium", identityRoot }, 60_000);
+		await until(async () => (await starts(evidence)) === 1);
+		await until(
+			async () => (await stat(join(identityRoot, "codex", "state_5.sqlite")).catch(() => undefined)) !== undefined,
+		);
+		const spare = Number((await readFile(`${evidence}.starts`, "utf8")).split("\n")[0]);
+		await expect(run("writes-home", { identityRoot, reasoningEffort: "low" }).result).resolves.toMatchObject({
+			providerSessionId: "thread_fixture",
+		});
+		expect(await starts(evidence)).toBe(2);
+		expect(() => process.kill(spare, 0)).toThrow();
+	});
+
+	it("never waits for a spare that is still starting", async () => {
+		const evidence = join(root, "evidence.json");
+		const command = [process.execPath, rpcFixture, "stall-first", evidence] as const;
+		prepareCloudCodexSpare({ command, binarySha256 }, 60_000);
+		await until(async () => (await starts(evidence)) === 1);
+		await expect(run("stall-first").result).resolves.toMatchObject({ providerSessionId: "thread_fixture" });
+		expect(await starts(evidence)).toBe(2);
+	});
+
+	it("binds the run before any thread: the spare's handshake saw no run", async () => {
+		const evidence = join(root, "evidence.json");
+		const command = [process.execPath, rpcFixture, "bootstrap", evidence] as const;
+		prepareCloudCodexSpare({ command, binarySha256 }, 60_000);
+		await spareReady(evidence);
+		await expect(run("bootstrap", { runtimeInstructions: "Spare-run law" }).result).resolves.toMatchObject({
+			providerSessionId: "thread_fixture",
+		});
+		expect(await starts(evidence)).toBe(1);
+		const bootstrap = JSON.parse(await readFile(evidence, "utf8")) as { bootstrap: string };
+		expect(bootstrap.bootstrap).toContain("Spare-run law");
+	});
 });
