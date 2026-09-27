@@ -10,7 +10,7 @@ import { startNativePostgres } from "./native-postgres.mjs";
 import { retainSecondCodingClaim } from "./workload-usage-shared.mjs";
 import { readWorkloadUsage, verifyWorkloadUsage } from "./workload-usage-evidence.mjs";
 import { assertWorkloadRun, assertWorkloadShape } from "./workload-usage-host.mjs";
-import { assertCodingExecutorCleanup, assertCodingExecutorEvidence, codingFixtureRepository, codingReadinessProjection, codingGuardReadinessProjection, localCodingFixtureGit, waitForCodingWorkspace } from "./coding-executor-fixture.mjs";
+import { assertCodingExecutorCleanup, assertCodingExecutorEvidence, codingFixtureRepository, codingReadinessProjection, codingGuardReadinessProjection, createCodingInventoryRefresh, localCodingFixtureGit, waitForCodingWorkspace } from "./coding-executor-fixture.mjs";
 import { CodingComputerController, CODING_COMPUTER_RPCS, CODING_EXECUTOR_RPCS, CODING_HOST_RPCS,
   LxdCodingExecutorHost, parseCodingSessionClaim, parseCodingTurnState, codingTurnScope,
   createCodingNasStorage, createCodingBrokerGitRunner, authorizeCodingCommand,
@@ -40,7 +40,7 @@ const evidence = { schema: "qorpera.coding-executor-physical/v1", commit: proven
   scope: "Production executor host, real NFS/virtiofs Git checkout and sandboxed session commands; fixture repository transport, logical model bindings and invoice funding. No model, GitHub publication, signed release-image or installed whole-service claim.",
   image: options.imageEvidence, exportPolicy: "identity-preserving-loopback-only", passed: false, cleanup: false,
   sessions: [], gitTransport: [], commands: [], checks: {}, rpcTrace: [] };
-let database, host, controller, observer, maintenance, maintenanceFailure, allocationId, machineName, phase = "database";
+let database, host, controller, observer, refreshInventory, maintenance, maintenanceFailure, allocationId, machineName, inventoryPublicationDiagnostic, phase = "database";
 const attached = new Set(), activeClaims = new Map(), calls = [], canonicalPermits = new Map();
 async function until(read, accept, budget, label) {
   const deadline = Date.now() + budget;
@@ -127,6 +127,7 @@ try {
     } catch (error) {
       trace.state = "failed";
       if (error.diagnostic) trace.diagnostic = error.diagnostic;
+      if (method === "qorpera_observe_runtime_node_inventory") inventoryPublicationDiagnostic = error.diagnostic;
       throw error;
     }
     if (args.p_request?.sample || Array.isArray(args.p_request?.entries)) calls.push({ method, args: structuredClone(args) });
@@ -134,9 +135,22 @@ try {
   } };
   await physicalHost(inventory, signal);
   observer = new RuntimeNodeInventoryObserver(inventory, control);
-  assert.equal((await observer.observe(signal)).state, "ready");
+  refreshInventory = createCodingInventoryRefresh((checked) => {
+    inventoryPublicationDiagnostic = undefined;
+    return observer.observe(checked);
+  }, () => inventoryPublicationDiagnostic, {onRetry:()=>{evidence.inventoryContextRetries=(evidence.inventoryContextRetries??0)+1;}});
+  await refreshInventory(signal);
   const storage = createCodingNasStorage(nas), journalRoot = await storage.prepareControl(signal);
-  controller = new CodingComputerController({ control, guard, client, clock: readPaidComputerHostClock,
+  // The standalone case composes the independently deployed inventory service.
+  // Before the host's post-boot sample upload, require a NEW physical scan,
+  // rather than racing first enrollment against its background 5s interval.
+  class InventoryObservedCodingController extends CodingComputerController {
+    async observe(machineId, checked) {
+      await refreshInventory(checked);
+      return super.observe(machineId, checked);
+    }
+  }
+  controller = new InventoryObservedCodingController({ control, guard, client, clock: readPaidComputerHostClock,
     storage: { policy: nas, machineIdSha256: physical.machineIdSha256 }, owner });
   await controller.initialize(signal);
   host = new LxdCodingExecutorHost({ control, owner, machineIdSha256: physical.machineIdSha256,
@@ -151,7 +165,7 @@ try {
     const checked = AbortSignal.any([signal, maintenanceStop.signal]);
     try {
       while (!checked.aborted) {
-        assert.equal((await observer.observe(checked)).state, "ready");
+        await refreshInventory(checked);
         await controller.maintain(checked);
         for (const claim of activeClaims.values()) {
           let until;

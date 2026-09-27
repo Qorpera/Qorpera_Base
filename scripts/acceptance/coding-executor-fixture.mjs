@@ -6,6 +6,43 @@ import { setTimeout as delay } from "node:timers/promises";
 export const codingFixtureRepository = Object.freeze({ host: "github.com", owner: "Qorpera", name: "Qorpera_Base", baseBranch: "master" });
 export const codingFixtureRemote = "https://github.com/Qorpera/Qorpera_Base.git";
 
+/** A fresh scan is required after this exact stale-context publication. The
+ * production observer service retries scans; one rejected snapshot must not
+ * permanently stop this harness's inventory loop. No stale result is ready. */
+export async function observeCodingInventory(observe, publicationDiagnostic) {
+  try {
+    assert.equal((await observe()).state, "ready");
+    return "ready";
+  } catch (error) {
+    const diagnostic = publicationDiagnostic();
+    if (error.message === "NODE_OBSERVER_UNCONFIRMED" && diagnostic?.sqlState === "PGRST" &&
+      diagnostic?.messageSha256 === "cdb872cf2da33ad6c9453e77b61887bf8435e859185e086dbe5b3ab3faaa3099") return "retry";
+    throw error;
+  }
+}
+
+/** Every requester gets a new serialized physical scan. A post-boot caller
+ * cannot reuse the successful empty-host scan from before VM creation. */
+export function createCodingInventoryRefresh(observe, publicationDiagnostic, {
+  now = () => performance.now(), pause = (ms, signal) => delay(ms, undefined, {signal}), onRetry = () => {},
+} = {}) {
+  let pending = Promise.resolve();
+  return (caller) => {
+    const signal = AbortSignal.any([caller, AbortSignal.timeout(30000)]), deadline = now() + 30000;
+    const work = pending.catch(() => undefined).then(async () => {
+      for (;;) {
+        signal.throwIfAborted();
+        if(now() >= deadline) throw new Error("CODING_INVENTORY_REFRESH_TIMEOUT");
+        if(await observeCodingInventory(()=>observe(signal), publicationDiagnostic)==="ready") return;
+        onRetry();
+        await pause(5000,signal);
+      }
+    });
+    pending = work;
+    return work;
+  };
+}
+
 // Explicit projections only: RPC/guard objects also contain retained intent,
 // bindings and credentials. Never spread them into acceptance diagnostics.
 export function codingReadinessProjection(value, now = Date.now()) {

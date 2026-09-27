@@ -5,9 +5,52 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
-import { assertCodingFixtureParents, assertCodingExecutorCleanup, assertCodingExecutorEvidence, codingImageAddress, codingFixtureRemote, codingReadinessProjection, codingGuardReadinessProjection, localCodingFixtureGit, waitForCodingChild, waitForCodingWorkspace } from "./coding-executor-fixture.mjs";
+import { assertCodingFixtureParents, assertCodingExecutorCleanup, assertCodingExecutorEvidence, codingImageAddress, codingFixtureRemote, codingReadinessProjection, codingGuardReadinessProjection, createCodingInventoryRefresh, localCodingFixtureGit, observeCodingInventory, waitForCodingChild, waitForCodingWorkspace } from "./coding-executor-fixture.mjs";
 
 const execute = promisify(execFile);
+
+test("inventory context contention needs a fresh successful scan and never retries arbitrary authority failures", async () => {
+  const stale = {sqlState:"PGRST",messageSha256:"cdb872cf2da33ad6c9453e77b61887bf8435e859185e086dbe5b3ab3faaa3099"};
+  const failure = new Error("NODE_OBSERVER_UNCONFIRMED");
+  let scans=0, admission=0;
+  const scan = async () => { scans++; if(scans===1) throw failure; return {state:"ready"}; };
+  for(let attempt=0;attempt<2;attempt++) {
+    if(await observeCodingInventory(scan,()=>attempt===0?stale:undefined)==="ready") admission++;
+    assert.equal(admission,attempt);
+  }
+  assert.equal(scans,2); assert.equal(admission,1);
+  for(const diagnostic of [undefined,{...stale,sqlState:"42501"},{...stale,messageSha256:"different"}])
+    await assert.rejects(observeCodingInventory(async()=>{throw failure;},()=>diagnostic),error=>error===failure);
+  await assert.rejects(observeCodingInventory(async()=>({state:"unavailable"}),()=>stale));
+  const aborted=new Error("ABORTED");
+  await assert.rejects(observeCodingInventory(async()=>{throw aborted;},()=>stale),error=>error===aborted);
+});
+
+test("post-boot refresh queues a new scan behind background work, retries only stale context and stays bounded", async () => {
+  let release, entered;
+  const blocking=new Promise(resolve=>{release=resolve;}), started=new Promise(resolve=>{entered=resolve;});
+  let scans=0, clock=0, retries=0;
+  const stale={sqlState:"PGRST",messageSha256:"cdb872cf2da33ad6c9453e77b61887bf8435e859185e086dbe5b3ab3faaa3099"};
+  const options={now:()=>clock,pause:async(ms)=>{clock+=ms;},onRetry:()=>{retries++;}};
+  const refresh=createCodingInventoryRefresh(async()=>{
+    scans++;
+    if(scans===1){entered();await blocking;}
+    if(scans===2)throw new Error("NODE_OBSERVER_UNCONFIRMED");
+    return {state:"ready"};
+  },()=>stale,options);
+  const signal=new AbortController().signal;
+  const background=refresh(signal); await started;
+  let uploaded=false;
+  const postBoot=refresh(signal).then(()=>{uploaded=true;});
+  await Promise.resolve(); assert.equal(scans,1); assert.equal(uploaded,false);
+  release(); await Promise.all([background,postBoot]);
+  assert.equal(scans,3); assert.equal(retries,1); assert.equal(uploaded,true);
+  const never=createCodingInventoryRefresh(async()=>{throw new Error("NODE_OBSERVER_UNCONFIRMED");},()=>stale,options);
+  const before=clock;
+  await assert.rejects(never(signal),/REFRESH_TIMEOUT/);assert.equal(clock-before,30000);
+  const abort=new AbortController();abort.abort();const previous=scans;
+  await assert.rejects(refresh(abort.signal));assert.equal(scans,previous);
+});
 
 test("readiness diagnostics distinguish canonical admission from an unacknowledged guard tip without leaking source data", () => {
   const canonical = { secret: "must-not-retain", workReady: true, permit: { permitId: "permit", state: "bound", generation: 1, physicalId: "physical", hostBootId: "host", guestBootId: "guest", credential: "must-not-retain" },
