@@ -61,6 +61,12 @@ jobs:
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install --yes bubblewrap ripgrep python3
+          # The distro bwrap profile intentionally denies every child capability.
+          # Only these privileged filesystem fixtures need CHOWN/DAC_OVERRIDE/FOWNER;
+          # keep the stock profile intact and install a root-only identical helper.
+          sudo install -d -o root -g root -m 0755 /usr/local/libexec
+          sudo install -o root -g root -m 0700 /usr/bin/bwrap /usr/local/libexec/qorpera-test-root-bwrap
+          sudo cmp /usr/bin/bwrap /usr/local/libexec/qorpera-test-root-bwrap
           node_binary="$(node -p 'require("node:fs").realpathSync(process.execPath)')"
           chmod go-w "$node_binary" || sudo chmod go-w "$node_binary"
           /usr/bin/bwrap --version

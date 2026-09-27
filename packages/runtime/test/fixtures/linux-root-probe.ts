@@ -1,5 +1,8 @@
 import { execFileSync } from "node:child_process";
+import { lstatSync, type Stats } from "node:fs";
 import { isAbsolute } from "node:path";
+
+const rootProbeHelper = "/usr/local/libexec/qorpera-test-root-bwrap";
 
 export const linuxRootProbeEnabled = process.platform === "linux" && process.env.QORPERA_LINUX_ROOT_PROBES === "1";
 
@@ -12,7 +15,7 @@ export function linuxRootProbeArguments(bundle: string, executable: string): str
 	}
 	return [
 		"-n",
-		"/usr/bin/bwrap",
+		rootProbeHelper,
 		"--unshare-pid",
 		"--unshare-net",
 		"--unshare-ipc",
@@ -71,8 +74,23 @@ export function linuxRootProbeArguments(bundle: string, executable: string): str
 	];
 }
 
+export function assertLinuxRootProbeHelper(helper: Pick<Stats, "isFile" | "uid" | "gid" | "nlink" | "mode">): void {
+	if (
+		!helper.isFile() ||
+		helper.uid !== 0 ||
+		helper.gid !== 0 ||
+		helper.nlink !== 1 ||
+		(helper.mode & 0o7777) !== 0o700
+	)
+		throw new Error("INVALID_LINUX_ROOT_PROBE_HELPER_CUSTODY");
+}
+
 export function runLinuxRootProbe(bundle: string): string {
 	if (!linuxRootProbeEnabled) throw new Error("LINUX_ROOT_PROBE_NOT_ENABLED");
+	// Ubuntu's ordinary bwrap profile deliberately denies all child capabilities.
+	// CI installs this separate byte-identical root-only helper, preserving the
+	// system profile and every ordinary/unprivileged bwrap consumer unchanged.
+	assertLinuxRootProbeHelper(lstatSync(rootProbeHelper));
 	return execFileSync("/usr/bin/sudo", linuxRootProbeArguments(bundle, process.execPath), {
 		env: { PATH: "/usr/bin:/bin", LANG: "C" },
 		encoding: "utf8",
