@@ -773,6 +773,18 @@ describe("cloud Company File path gateway", () => {
 			vi.useRealTimers();
 		}
 	});
+	it("describes folders as homes for a category of files, with a member's or assignment's folder always allowed", () => {
+		const tools = fixture().gateway.tools();
+		const description = (name: string) => tools.find((tool) => tool.name === name)!.description;
+		expect(description("company_mkdir")).toMatch(
+			/^Create one directory \(the home for a category of files, or a folder a member or your assignment names; never one you invent for a single file\)/,
+		);
+		expect(description("company_mkdir")).toContain("create missing folders above it first, outermost first");
+		expect(description("company_write")).toContain(
+			"Put a single file in an existing folder where it fits; create missing folders with company_mkdir (outermost first) for a category of files, or when a member or your assignment names them.",
+		);
+		expect(description("company_delete")).not.toContain("COMPANY_FILE_PARENT_MISSING");
+	});
 	it("exposes only closed path operations with cloud-derived identity", async () => {
 		const f = fixture();
 		expect(f.gateway.tools().map((tool) => tool.name)).toEqual([

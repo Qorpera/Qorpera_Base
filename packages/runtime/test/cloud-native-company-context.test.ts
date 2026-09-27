@@ -9,7 +9,7 @@ import {
 	composeCloudNativeCompanyPrompt,
 	parseCloudNativeCompanyContext,
 } from "@qorpera/runtime/cloud-native-company-context";
-import { CloudNativeToolBoundary } from "@qorpera/runtime/cloud-native-tool-boundary";
+import { CLOUD_TOOL_RESULT_INSTRUCTIONS, CloudNativeToolBoundary } from "@qorpera/runtime/cloud-native-tool-boundary";
 import { type CloudWakeKind, parseCloudWakeEnvelope } from "@qorpera/runtime/cloud-wake-bus";
 import { expect, it, vi } from "vitest";
 import { nativeCompanyContextFixture } from "./fixtures/native-company-context-fixture.ts";
@@ -39,6 +39,15 @@ it("tells agents to make folders for a category of files while a member's or ass
 		"a folder a member asks for, or one your assignment names (such as a worker's output folder), is always fine",
 	);
 	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).not.toContain("Do not add files, folders");
+	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toContain(
+		"When no folder fits, even for one file, create one named for the file's category",
+	);
+	expect(CLOUD_TOOL_RESULT_INSTRUCTIONS).toContain(
+		"When a member or your assignment named that folder, or a category of files needs it as its home, create it with company_mkdir",
+	);
+	expect(CLOUD_TOOL_RESULT_INSTRUCTIONS).toContain(
+		"if none fits, create one named for its category (contracts/, not acme-nda/)",
+	);
 });
 
 it("preserves legacy member-private source provenance without promoting startup data to a human request", () => {
