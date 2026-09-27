@@ -3,10 +3,10 @@ import type { CompanyPresenceIdentity } from "@qorpera/cloud-client/company-path
 import { PresenceSignatures } from "@qorpera/cloud-client/presence-signatures";
 import type { RealtimeChannel, SupabaseClient } from "@supabase/supabase-js";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { nativeToolAuthorityFixture } from "../../shell/test/fixtures/native-tool-authority-fixture.ts";
 import type { CloudCompanyPathControl, CloudCompanyPathRpc } from "../src/cloud-company-path-gateway.ts";
 import { CloudNativeCompanyPresence } from "../src/cloud-company-path-presence.ts";
 import type { CloudNativeToolBinding } from "../src/cloud-native-tool-authority.ts";
+import { nativeToolAuthorityFixture } from "./fixtures/native-tool-authority-fixture.ts";
 
 function deferred<T>() {
 	let resolve!: (value: T) => void;

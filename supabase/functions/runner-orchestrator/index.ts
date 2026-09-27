@@ -89,6 +89,16 @@ Deno.serve(async (request) => {
 				p_payload: action.payload,
 			};
 			break;
+		case "advance_next_due":
+			rpc = "qorpera_advance_routine_next_due";
+			args = {
+				p_routine_id: action.routineId,
+				p_expected_version: action.expectedVersion,
+				p_trigger_id: action.triggerId,
+				p_expected_last_scheduled_for: action.expectedLastScheduledFor ?? null,
+				p_next_due_at: action.nextDueAt,
+			};
+			break;
 		case "reconcile":
 			rpc = "qorpera_reconcile_runner_orchestrator";
 			args = { p_orchestrator_id: action.orchestratorId };

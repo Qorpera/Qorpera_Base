@@ -1,6 +1,6 @@
 # Qorpera member web client
 
-An independent static browser application for the governed Company File and shared Company Computer. Desktop and web use `@qorpera/cloud-client`; the headless runtime, cloud authority and object/view gateways own execution, grants, bytes and machine lifetime. This package contains no Electron bridge, native runner, provider credentials or service key.
+An independent static browser application for the governed Company File and shared Company Computer. It uses `@qorpera/cloud-client`; the headless runtime, cloud authority and object/view gateways own execution, grants, bytes and machine lifetime. This package contains no Electron bridge, native runner, provider credentials or service key.
 
 The app supplies public-project sign-in with PKCE, company selection, bounded File browsing and text edits, explicit browser uploads/downloads, protected binary review, shared exports, read-only agent activity, computer start/status/cancel, agent grants, browser profile consent, private sign-in and account-level cleanup after membership removal. File mode is checked independently of computer access. Screens require explicitly configured WSS transport. Closing the app preserves durable office and privacy state.
 
@@ -24,7 +24,7 @@ Create a public JSON configuration with exactly these fields:
 
 Use `null` for `officeViewerOrigin` when screen viewing is unavailable. These are canonical origins without a trailing slash, path, credential, fragment or query. Remote origins require HTTPS/WSS; HTTP is accepted only for disposable `127.0.0.1` proofs. Service keys and member tokens are refused.
 
-From the repository root, run `node scripts/package-member-web.mjs --out NEW_DIRECTORY --config PUBLIC_CONFIG_JSON`. This only writes a new local directory. It emits self-contained JS, styles, HTML, public config, the noVNC license, deployment headers and an asset hash manifest. It checks the vendored viewer against its recorded source and refuses runtime/desktop/Node adapters or external modules in the artifact. The HTML and header CSP limit requests to configured origins. The static server must apply `_headers` (or equivalent HTTP headers); `frame-ancestors` requires an HTTP header.
+From the repository root, run `node scripts/package-member-web.mjs --out NEW_DIRECTORY --config PUBLIC_CONFIG_JSON`. This only writes a new local directory. It emits self-contained JS, styles, HTML, public config, the noVNC license, deployment headers and an asset hash manifest. It checks the vendored viewer against its recorded checksums and refuses runtime/desktop/Node adapters or external modules in the artifact. The HTML and header CSP limit requests to configured origins. The static server must apply `_headers` (or equivalent HTTP headers); `frame-ancestors` requires an HTTP header.
 
 Before hosting, register the exact HTTPS app root as the Auth redirect destination, enable the chosen login providers, and configure member object/view gateways and Realtime for that origin. OAuth redirects and email delivery require hosted acceptance. Never infer these endpoints from desktop defaults. No hosting, login-provider setup, production activation or release is performed by the packager.
 

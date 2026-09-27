@@ -81,6 +81,7 @@ function controlPlane(claimed: CloudRunnerOrchestrationClaim | undefined = claim
 			status: "queued" as const,
 			scheduledFor: input.scheduledFor,
 		})),
+		advanceRoutineNextDue: vi.fn(async (input) => ({ status: "advanced" as const, nextDueAt: input.nextDueAt })),
 		reconcileExpired: vi.fn(async () => undefined),
 		retainedClaims: vi.fn(async () => []),
 		claimNext: vi.fn(async () => claimed),
@@ -299,6 +300,75 @@ describe("cloud runner orchestrator", () => {
 				payload: { coalesced: 0 },
 			}),
 		).resolves.toEqual({ occurrenceId, status: "deferred", scheduledFor });
+	});
+
+	it("raises a first slot through the private control plane with the position the orchestrator read", async () => {
+		const routineId = "12121212-1212-4212-8212-121212121212";
+		const requests: unknown[] = [];
+		const fakeFetch = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+			const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+			requests.push(body);
+			return Response.json({
+				value:
+					body.triggerId === "gone"
+						? { status: "stale", next_due_at: null }
+						: { status: "advanced", next_due_at: "2026-08-28T09:00:00+00:00" },
+			});
+		});
+		const control = new SupabaseCloudRunnerOrchestratorControlPlane(
+			"https://project.supabase.co",
+			"publishable-key",
+			orchestratorId,
+			"c".repeat(43),
+			fakeFetch as typeof fetch,
+		);
+
+		await expect(
+			control.advanceRoutineNextDue({
+				routineId,
+				expectedVersion: 2,
+				triggerId: "brief",
+				expectedLastScheduledFor: "2026-08-27T12:15:30.123+02:00",
+				nextDueAt: "2026-08-28T09:00:00Z",
+			}),
+		).resolves.toEqual({ status: "advanced", nextDueAt: "2026-08-28T09:00:00.000Z" });
+		await expect(
+			control.advanceRoutineNextDue({
+				routineId,
+				expectedVersion: 2,
+				triggerId: "gone",
+				nextDueAt: "2026-08-28T09:00:00Z",
+			}),
+		).resolves.toEqual({ status: "stale" });
+		expect(requests).toEqual([
+			{
+				action: "advance_next_due",
+				orchestratorId,
+				routineId,
+				expectedVersion: 2,
+				triggerId: "brief",
+				expectedLastScheduledFor: "2026-08-27T10:15:30.123Z",
+				nextDueAt: "2026-08-28T09:00:00.000Z",
+			},
+			{
+				action: "advance_next_due",
+				orchestratorId,
+				routineId,
+				expectedVersion: 2,
+				triggerId: "gone",
+				nextDueAt: "2026-08-28T09:00:00.000Z",
+			},
+		]);
+		await expect(
+			control.advanceRoutineNextDue({
+				routineId,
+				expectedVersion: 2,
+				triggerId: "brief",
+				expectedLastScheduledFor: "2026-08-28T09:00:00.000Z",
+				nextDueAt: "2026-08-28T09:00:00.000Z",
+			}),
+		).rejects.toThrow("Routine next due time is invalid");
+		expect(fakeFetch).toHaveBeenCalledTimes(2);
 	});
 
 	it.each(["optional", "required", "silent"])("enqueues %s interval wakes", async (replyPolicy) => {
@@ -810,6 +880,267 @@ describe("cloud runner orchestrator", () => {
 			nextDueAt: "2026-08-31T09:00:00.000Z",
 			payload: { schema: "qorpera.routine-schedule-occurrence/v1", coalesced: 0 },
 		});
+	});
+
+	it("raises a restart position to the new cadence's first slot, so the routine is not listed until then", async () => {
+		// An hourly routine that last ran on Wednesday at 14:00 was loosened to weekly on
+		// Monday 09:00; the kernel restarted its schedule at the save (to the millisecond),
+		// due one millisecond later. Nothing is due for five days, so the scheduler raises
+		// the next due time to that Monday instead of finding nothing on every poll.
+		const control = controlPlane(undefined);
+		const head: CloudRoutineScheduleHead = {
+			...scheduleHead(),
+			version: 4,
+			triggers: [
+				{
+					id: "watch",
+					kind: "schedule",
+					intervalMinutes: 10_080,
+					weekdays: ["monday"],
+					localTime: "09:00",
+					timeZone: "UTC",
+				},
+			],
+			scheduleCursors: [
+				{
+					triggerId: "watch",
+					lastScheduledFor: "2026-08-26T14:07:12.345Z",
+					nextDueAt: "2026-08-26T14:07:12.346Z",
+				},
+			],
+			effectiveAt: "2026-08-26T14:07:12.345Z",
+		};
+		vi.mocked(control.listRoutineScheduleHeads).mockResolvedValue({ items: [head], hasMore: false });
+		let now = new Date("2026-08-26T14:07:20.000Z");
+		const reconciler = new CloudRoutineScheduleReconciler({ now: () => now });
+
+		await reconciler.reconcile(control);
+		expect(control.enqueueRoutineWake).not.toHaveBeenCalled();
+		expect(control.advanceRoutineNextDue).toHaveBeenCalledOnce();
+		expect(control.advanceRoutineNextDue).toHaveBeenCalledWith({
+			routineId: head.routineId,
+			expectedVersion: 4,
+			triggerId: "watch",
+			expectedLastScheduledFor: "2026-08-26T14:07:12.345Z",
+			nextDueAt: "2026-08-31T09:00:00.000Z",
+		});
+
+		// Listed again before the slot (say beside another trigger that is due): the
+		// cursor already waits for that slot, so there is nothing to raise.
+		head.scheduleCursors = [
+			{
+				triggerId: "watch",
+				lastScheduledFor: "2026-08-26T14:07:12.345Z",
+				nextDueAt: "2026-08-31T09:00:00.000Z",
+			},
+		];
+		now = new Date("2026-08-28T10:00:00.000Z");
+		await reconciler.reconcile(control);
+		expect(control.advanceRoutineNextDue).toHaveBeenCalledOnce();
+		expect(control.enqueueRoutineWake).not.toHaveBeenCalled();
+
+		// At the slot the same position is compared, as before the raise.
+		now = new Date("2026-08-31T09:00:30.000Z");
+		await reconciler.reconcile(control);
+		expect(control.advanceRoutineNextDue).toHaveBeenCalledOnce();
+		expect(control.enqueueRoutineWake).toHaveBeenCalledOnce();
+		expect(vi.mocked(control.enqueueRoutineWake).mock.calls[0]?.[0]).toMatchObject({
+			scheduledFor: "2026-08-31T09:00:00.000Z",
+			expectedLastScheduledFor: "2026-08-26T14:07:12.345Z",
+			nextDueAt: "2026-09-07T09:00:00.000Z",
+			payload: { schema: "qorpera.routine-schedule-occurrence/v1", coalesced: 0 },
+		});
+	});
+
+	it("raises a fresh cursor that waits for a later start or a window, and never one that may still owe its kickoff", async () => {
+		const control = controlPlane(undefined);
+		const weekly = {
+			kind: "schedule",
+			intervalMinutes: 10_080,
+			weekdays: ["monday"],
+			localTime: "09:00",
+			timeZone: "UTC",
+		};
+		const laterStart: CloudRoutineScheduleHead = {
+			...scheduleHead("21212121-2121-4121-8121-212121212121"),
+			version: 1,
+			triggers: [{ id: "later-start", ...weekly, startAt: "2026-09-07T09:00:00.000Z" }],
+			scheduleCursors: [{ triggerId: "later-start" }],
+			effectiveAt: "2026-08-25T10:00:00.000Z",
+		};
+		const window: CloudRoutineScheduleHead = {
+			...scheduleHead("31313131-3131-4131-8131-313131313131"),
+			version: 1,
+			triggers: [
+				{
+					id: "office-hours",
+					kind: "schedule",
+					intervalMinutes: 30,
+					weekdays: ["monday", "tuesday", "wednesday", "thursday", "friday"],
+					windowStart: "09:00",
+					windowEnd: "10:00",
+					timeZone: "UTC",
+				},
+			],
+			scheduleCursors: [{ triggerId: "office-hours" }],
+			effectiveAt: "2026-08-25T11:00:00.000Z",
+		};
+		// Saved a minute ahead of this orchestrator's clock: its kickoff is still owed.
+		const notYetEffective: CloudRoutineScheduleHead = {
+			...scheduleHead("41414141-4141-4141-8141-414141414141"),
+			version: 1,
+			triggers: [{ id: "not-yet", ...weekly }],
+			scheduleCursors: [{ triggerId: "not-yet" }],
+			effectiveAt: "2026-08-25T12:01:00.000Z",
+		};
+		// A start already reached when it was saved: the kickoff runs now.
+		const kickoff: CloudRoutineScheduleHead = {
+			...scheduleHead("51515151-5151-4151-8151-515151515151"),
+			version: 1,
+			triggers: [{ id: "kickoff", ...weekly, startAt: "2026-08-24T09:00:00.000Z" }],
+			scheduleCursors: [{ triggerId: "kickoff" }],
+			effectiveAt: "2026-08-25T10:00:00.000Z",
+		};
+		vi.mocked(control.listRoutineScheduleHeads).mockResolvedValue({
+			items: [laterStart, window, notYetEffective, kickoff],
+			hasMore: false,
+		});
+		let now = new Date("2026-08-25T12:00:00.000Z");
+		const reconciler = new CloudRoutineScheduleReconciler({ now: () => now });
+
+		await reconciler.reconcile(control);
+		const advanced = vi.mocked(control.advanceRoutineNextDue).mock.calls.map(([input]) => input);
+		expect(advanced).toEqual([
+			{
+				routineId: laterStart.routineId,
+				expectedVersion: 1,
+				triggerId: "later-start",
+				nextDueAt: "2026-09-07T09:00:00.000Z",
+			},
+			{
+				routineId: window.routineId,
+				expectedVersion: 1,
+				triggerId: "office-hours",
+				nextDueAt: "2026-08-26T09:00:00.000Z",
+			},
+		]);
+		expect(vi.mocked(control.enqueueRoutineWake).mock.calls.map(([input]) => input)).toMatchObject([
+			{ routineId: kickoff.routineId, scheduledFor: "2026-08-25T10:00:00.000Z" },
+		]);
+
+		// The cursor stays fresh, so at its first slot it runs that slot, not a kickoff.
+		vi.mocked(control.enqueueRoutineWake).mockClear();
+		vi.mocked(control.advanceRoutineNextDue).mockClear();
+		vi.mocked(control.listRoutineScheduleHeads).mockResolvedValue({ items: [laterStart], hasMore: false });
+		now = new Date("2026-09-07T09:00:30.000Z");
+		await reconciler.reconcile(control);
+		expect(control.advanceRoutineNextDue).not.toHaveBeenCalled();
+		expect(control.enqueueRoutineWake).toHaveBeenCalledOnce();
+		expect(vi.mocked(control.enqueueRoutineWake).mock.calls[0]?.[0]).not.toHaveProperty("expectedLastScheduledFor");
+		expect(vi.mocked(control.enqueueRoutineWake).mock.calls[0]?.[0]).toMatchObject({
+			scheduledFor: "2026-09-07T09:00:00.000Z",
+			nextDueAt: "2026-09-14T09:00:00.000Z",
+		});
+	});
+
+	it("reports a failed first-slot advance without holding up other routines, and pauses asking a control plane that does not know it", async () => {
+		const control = controlPlane(undefined);
+		const restarted: CloudRoutineScheduleHead = {
+			...scheduleHead(),
+			scheduleCursors: [
+				{
+					triggerId: "schedule-main",
+					lastScheduledFor: "2026-08-20T12:10:00.123Z",
+					nextDueAt: "2026-08-20T12:10:00.124Z",
+				},
+			],
+		};
+		const due: CloudRoutineScheduleHead = {
+			...scheduleHead("13131313-1313-4313-8313-131313131313"),
+			scheduleCursors: [
+				{
+					triggerId: "schedule-main",
+					lastScheduledFor: "2026-08-20T11:00:00.000Z",
+					nextDueAt: "2026-08-20T12:00:00.000Z",
+				},
+			],
+		};
+		vi.mocked(control.listRoutineScheduleHeads).mockResolvedValue({ items: [restarted, due], hasMore: false });
+		const unavailable = new CloudRunnerOrchestratorRequestError(503);
+		vi.mocked(control.advanceRoutineNextDue).mockRejectedValue(unavailable);
+		let now = new Date("2026-08-20T12:30:00.000Z");
+		const reconciler = new CloudRoutineScheduleReconciler({ now: () => now });
+
+		await expect(reconciler.reconcile(control)).rejects.toMatchObject({ errors: [unavailable] });
+		expect(control.advanceRoutineNextDue).toHaveBeenCalledWith(
+			expect.objectContaining({
+				routineId: restarted.routineId,
+				expectedLastScheduledFor: "2026-08-20T12:10:00.123Z",
+				nextDueAt: "2026-08-20T13:00:00.000Z",
+			}),
+		);
+		expect(vi.mocked(control.enqueueRoutineWake).mock.calls.map(([input]) => input)).toMatchObject([
+			{ routineId: due.routineId, scheduledFor: "2026-08-20T12:00:00.000Z" },
+		]);
+
+		// A transient failure is asked again at the next poll.
+		await expect(reconciler.reconcile(control)).rejects.toMatchObject({ errors: [unavailable] });
+		expect(control.advanceRoutineNextDue).toHaveBeenCalledTimes(2);
+
+		// An edge function that predates the action answers 400: reported, then the routine
+		// is listed as before without an error on every poll, and asked again ten minutes
+		// later in case the edge function was deployed meanwhile.
+		const unknown = new CloudRunnerOrchestratorRequestError(400);
+		vi.mocked(control.advanceRoutineNextDue).mockRejectedValue(unknown);
+		await expect(reconciler.reconcile(control)).rejects.toMatchObject({ errors: [unknown] });
+		now = new Date("2026-08-20T12:39:59.999Z");
+		await expect(reconciler.reconcile(control)).resolves.toBeUndefined();
+		expect(control.advanceRoutineNextDue).toHaveBeenCalledTimes(3);
+		vi.mocked(control.advanceRoutineNextDue).mockResolvedValue({
+			status: "advanced",
+			nextDueAt: "2026-08-20T13:00:00.000Z",
+		});
+		now = new Date("2026-08-20T12:40:00.000Z");
+		await expect(reconciler.reconcile(control)).resolves.toBeUndefined();
+		expect(control.advanceRoutineNextDue).toHaveBeenCalledTimes(4);
+		expect(control.enqueueRoutineWake).toHaveBeenCalledTimes(5);
+	});
+
+	it("raises a fresh window cursor to its first slot at or after the effective time when the database clock runs ahead", async () => {
+		// The version was saved at 09:10 by the database's clock; this orchestrator reads
+		// 08:58. The 09:00 slot is before the version, so its first slot is 09:30.
+		const control = controlPlane(undefined);
+		vi.mocked(control.listRoutineScheduleHeads).mockResolvedValue({
+			items: [
+				{
+					...scheduleHead(),
+					version: 1,
+					triggers: [
+						{
+							id: "office-hours",
+							kind: "schedule",
+							intervalMinutes: 30,
+							windowStart: "09:00",
+							windowEnd: "10:00",
+							timeZone: "UTC",
+						},
+					],
+					scheduleCursors: [{ triggerId: "office-hours" }],
+					effectiveAt: "2026-08-25T09:10:00.000Z",
+				},
+			],
+			hasMore: false,
+		});
+		const reconciler = new CloudRoutineScheduleReconciler({ now: () => new Date("2026-08-25T08:58:00.000Z") });
+
+		await reconciler.reconcile(control);
+		expect(control.enqueueRoutineWake).not.toHaveBeenCalled();
+		expect(control.advanceRoutineNextDue).toHaveBeenCalledWith(
+			expect.objectContaining({ triggerId: "office-hours", nextDueAt: "2026-08-25T09:30:00.000Z" }),
+		);
+		expect(vi.mocked(control.advanceRoutineNextDue).mock.calls[0]?.[0]).not.toHaveProperty(
+			"expectedLastScheduledFor",
+		);
 	});
 
 	it.each(["optional", "required", "silent"])("enqueues %s weekday wakes", async (replyPolicy) => {

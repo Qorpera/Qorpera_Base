@@ -146,7 +146,7 @@ export function renderSignIn(auth: AuthController, container: HTMLElement): void
 			h(
 				"footer",
 				{ class: "auth-foot" },
-				t("Same account as the desktop app. Only your own session lives in this browser; agents run in the cloud."),
+				t("Only your own session lives in this browser; agents run in the cloud."),
 			),
 		),
 		art,

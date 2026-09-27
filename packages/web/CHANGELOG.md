@@ -23,6 +23,7 @@
 
 ### Fixed
 
+- A message still waiting for the agent now stands before the first message sent after it. Before, every waiting message sat below the whole conversation, so one the cloud never took (a "Queued" message from days ago) stayed at the bottom under every newer message and reply, with its old day break in the wrong place. A message sent while the agent is still writing stays at the bottom, below the agent's output, as before.
 - A message the member stopped no longer shows the agent as failed. Before, Stop left a red disc and a "did not finish this run" line with Try again, and the composer lost its Stop for the agent's other work (such as a routine run in the same thread) until the line was dismissed. A stopped run now just ends: the agent shows what it is still doing, or idle, and Try again is not offered (to repeat the message, send it again). If Stop cut off Company File changes midway, the agent shows "Needs you" with Review, below any work still running or queued. The cloud side is migration `20260926192436_member_stop_settled_activity`; until it is live, the web marks such a stop as seen for the company once it has read the stop's details (members who can write only), so the work it hid, and that work's Stop, show again.
 - A new stylesheet, script or picture that a Cloudflare edge did not have yet during a deploy is now answered with a "not found" that no cache keeps. Before, the edge kept the app page under that file's name, for up to a year under `/build/` (the app loaded without its styles on that edge until the file was renamed) and a day under `/assets/`. The build writes a small `404.html` into both folders, and fails if `_headers` lets caches keep files anywhere it cannot guard the same way. Every other path still opens the app.
 - The app loads styled again where Cloudflare's edge had cached the page's HTML under the stylesheet's address (`build/app-QUCAFXYX.css`, requested while the #296 deploy was still spreading); the stylesheet now ships under a new name.
@@ -97,6 +98,7 @@
 - Open an agent's routines and responsibilities as pages of its details popup, from two buttons beside the close button, each with a way back; routines left the Computer panel.
 - Edit an agent's name, title and description in place, saving on Enter or when leaving the field, and change the figure from a picker under it that saves each choice, as on the desktop; the Edit agent button is gone and the description is taller.
 - Replace the new-conversation page (agent cards, heading, Open/Cancel footer) with one list under the To: field: New agent, New group chat, then the agents. The field searches agent names, picking an agent opens its conversation, New group chat gathers agents as chips, and a name typed into the field carries into a new agent. Group conversations still cannot be started.
+- The sign-in page no longer says it uses the same account as the desktop app, which is gone; it keeps the line about the session in this browser. The fonts and provider logos now live in `packages/web/public/assets` and ship at the same paths; the nine icons the app never used are no longer shipped.
 
 ### Removed
 
