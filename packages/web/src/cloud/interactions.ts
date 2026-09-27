@@ -46,6 +46,8 @@ export interface InteractionAnswer {
 	answeredAt?: string;
 	/** True until the kernel has written the answer to the transcript. */
 	pending?: boolean;
+	/** The input the cloud queued for an answer this browser sent. */
+	inputId?: string;
 }
 
 export const OUTCOMES: Record<InteractionSurface, readonly InteractionOutcome[]> = {

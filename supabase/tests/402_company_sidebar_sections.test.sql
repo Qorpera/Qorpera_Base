@@ -243,4 +243,16 @@ begin
 	perform pg_temp.path_claims('service_role');
 end $$;
 
+-- Runtime v95: a company keeps any number of sections (was 40).
+do $$
+declare v_index integer; v_state jsonb;
+begin
+	for v_index in 1..41 loop
+		v_state := pg_temp.member_sidebar('30000000-0000-4000-8000-000000000001',jsonb_build_object('action','create_section',
+			'sectionId',extensions.gen_random_uuid(),'name','Team ' || v_index));
+	end loop;
+	perform pg_temp.wake_assert((select count(*) > 41 from public.qorpera_company_sidebar_sections
+		where profile_id = '30000000-0000-4000-8000-000000000010'),'A company keeps more than forty-one sections');
+end $$;
+
 rollback;

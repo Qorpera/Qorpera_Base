@@ -155,7 +155,11 @@ export interface LxdInspectableClient extends LxdClient {
 
 export type LxdTrackedInstanceAction =
 	| { action: "create"; request: LxdCreateInstanceRequest }
-	| { action: "start" | "stop" | "delete"; name: string };
+	| { action: "start" | "delete"; name: string }
+	/** `force` powers the VM off instead of asking the guest to shut down. Only
+	 * for machines whose state lives outside the VM (coding VMs keep all work on
+	 * the NAS); offices and login machines keep the graceful stop. */
+	| { action: "stop"; name: string; force?: true };
 
 export interface LxdOperationReference {
 	project: string;
@@ -165,9 +169,24 @@ export interface LxdOperationReference {
 
 export type LxdOperationState = "pending" | "succeeded" | "failed";
 
+/** A coding machine's session folders are its only devices that change after
+ * creation (lxd-client replaceInstanceDevices). */
+export interface LxdInstanceDeviceClient {
+	replaceInstanceDevices(
+		project: string,
+		name: string,
+		devices: Readonly<Record<string, Readonly<Record<string, string>>>>,
+		signal: AbortSignal,
+	): Promise<void>;
+}
+
 /** Submission and observation are separate so an office provider can persist
  * the operation ID before polling. A rejected submission has an UNKNOWN
- * physical outcome; neither a timeout nor a 404 authorizes a retry/release. */
+ * physical outcome; neither a timeout nor a 404 authorizes a retry/release.
+ * Observation reports LXD's own 404 as LXD_OPERATION_UNKNOWN (LXD keeps a
+ * finished operation only briefly): still no outcome. Only a caller whose
+ * effect is idempotent may act on it, and then only from the instance's own
+ * physical state (a coding VM's forced stop). */
 export interface LxdTrackedClient extends LxdInspectableClient {
 	submitInstanceOperation(
 		project: string,
@@ -1121,9 +1140,24 @@ function storageVolume(value: unknown): LxdStorageVolumeRecord {
 	};
 }
 
+/** LXD's error while a VM's lxd-agent is not (yet) up: errQemuAgentOffline
+ * "LXD VM agent is not currently running" (older: "isn't"), possibly wrapped. */
+const AGENT_OFFLINE = /\bVM agent (?:is not|isn't) currently running\b/;
+/** A failed operation as a fixed code: the agent being offline is its own
+ * case (a starting VM), anything else is a plain failure. */
+function operationFailure(message: unknown): Error {
+	return new Error(
+		typeof message === "string" && AGENT_OFFLINE.test(message)
+			? "LXD instance agent not running"
+			: "LXD operation failed",
+	);
+}
+
 function lxdError(result: HttpResult, fallback: string): Error {
 	try {
 		const envelope = record(result.body, "LXD response");
+		if (typeof envelope.error === "string" && AGENT_OFFLINE.test(envelope.error))
+			return operationFailure(envelope.error);
 		if (typeof envelope.error === "string" && envelope.error.trim()) return new Error(`LXD: ${envelope.error}`);
 	} catch {
 		// Use the bounded status-only error below for malformed daemon responses.
@@ -1143,6 +1177,7 @@ function projectPath(path: string, project: string): string {
 
 export class LxdUnixClient
 	implements
+		LxdInstanceDeviceClient,
 		LxdOfficeConfigurationClient,
 		LxdOfficeServiceStartClient,
 		LxdOfficeBootServiceStartClient,
@@ -1421,6 +1456,46 @@ export class LxdUnixClient
 		return instance(envelopeMetadata(result));
 	}
 
+	/** Replaces the instance's own devices and nothing else: the rest of its
+	 * configuration is written back exactly as read, under that read's ETag, so
+	 * a change between this method's read and its write fails instead of being
+	 * overwritten. The caller builds `devices` from an earlier read: callers
+	 * must serialize their device changes (the coding host holds the machine's
+	 * lifecycle lock). On a running VM LXD hot-plugs and hot-unplugs the
+	 * difference. Any failure leaves the outcome to be observed again from the
+	 * instance. */
+	async replaceInstanceDevices(
+		project: string,
+		name: string,
+		devices: Readonly<Record<string, Readonly<Record<string, string>>>>,
+		signal: AbortSignal,
+	): Promise<void> {
+		if (!INSTANCE_NAME.test(project) || !INSTANCE_NAME.test(name)) throw new Error("LXD instance scope is invalid");
+		const path = projectPath(`/1.0/instances/${encodeURIComponent(name)}`, project);
+		const current = await this.#request("GET", path, undefined, signal);
+		const metadata = record(envelopeMetadata(current), "LXD instance");
+		const etag = current.headers?.etag;
+		if (typeof etag !== "string" || !etag) throw new Error("LXD instance version is unavailable");
+		const body = {
+			architecture: metadata.architecture,
+			config: stringRecord(metadata.config, "LXD instance config"),
+			devices,
+			ephemeral: metadata.ephemeral,
+			profiles: strings(metadata.profiles, "LXD instance profiles"),
+			stateful: metadata.stateful,
+			description: metadata.description,
+		};
+		const payload = Buffer.from(JSON.stringify(body), "utf-8");
+		const result = await this.#requestPayload(
+			"PUT",
+			path,
+			payload,
+			{ "content-type": "application/json", "if-match": etag },
+			signal,
+		);
+		await this.#waitForOperation(result, signal);
+	}
+
 	async getInstanceState(project: string, name: string, signal?: AbortSignal): Promise<LxdInstanceStateRecord> {
 		const result = await this.#request(
 			"GET",
@@ -1501,7 +1576,12 @@ export class LxdUnixClient
 				result = await this.#request(
 					"PUT",
 					projectPath(`/1.0/instances/${name}/state`, project),
-					{ action: action.action, timeout: this.#operationTimeoutSeconds, force: false, stateful: false },
+					{
+						action: action.action,
+						timeout: this.#operationTimeoutSeconds,
+						force: action.action === "stop" && action.force === true,
+						stateful: false,
+					},
 					checked,
 				);
 			} else throw new Error("invalid action");
@@ -1526,6 +1606,7 @@ export class LxdUnixClient
 	}
 
 	async inspectInstanceOperation(reference: LxdOperationReference, signal: AbortSignal): Promise<LxdOperationState> {
+		let unknown = false;
 		try {
 			if (
 				!INSTANCE_NAME.test(reference.project) ||
@@ -1543,11 +1624,12 @@ export class LxdUnixClient
 			);
 			checked.throwIfAborted();
 			const envelope = record(result.body, "LXD response");
+			if (result.status === 404 && envelope.type === "error" && envelope.error_code === 404) unknown = true;
 			if (result.status !== 200 || envelope.type !== "sync" || envelope.status_code !== 200)
 				throw new Error("operation unavailable");
 			return trackedOperation(envelope.metadata, reference);
 		} catch {
-			throw new Error("LXD_OPERATION_UNCONFIRMED");
+			throw new Error(unknown ? "LXD_OPERATION_UNKNOWN" : "LXD_OPERATION_UNCONFIRMED");
 		}
 	}
 
@@ -2898,6 +2980,12 @@ export class LxdUnixClient
 		}
 		const waitPath = `${envelope.operation}/wait?timeout=${this.#operationTimeoutSeconds}`;
 		const wait = await this.#request("GET", waitPath, undefined, signal);
+		// LXD 5.21-6.x write the wait's 200 header before the operation ends, so a
+		// failed operation arrives as an error envelope under HTTP 200
+		// ({"type":"error","error_code":500,"error":"...","metadata":null}). Newer
+		// LXD renders the failed operation itself (status_code 400, err "...").
+		const waited = record(wait.body, "LXD response");
+		if (wait.status >= 200 && wait.status < 300 && waited.type === "error") throw operationFailure(waited.error);
 		const operation = record(envelopeMetadata(wait), "LXD operation");
 		if (
 			typeof operation.status_code !== "number" ||
@@ -2905,7 +2993,7 @@ export class LxdUnixClient
 			operation.status_code >= 300 ||
 			(typeof operation.err === "string" && operation.err.length > 0)
 		) {
-			throw new Error("LXD operation failed");
+			throw operationFailure(operation.err);
 		}
 		return operation;
 	}

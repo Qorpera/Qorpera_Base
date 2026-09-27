@@ -2,9 +2,16 @@ name: Step 2 LXD contracts
 
 on:
   workflow_dispatch:
+  push:
+    branches: ['release/runtime-*']
   pull_request:
     paths:
       - '.github/workflows/step2-lxd.yml'
+      - 'packages/runtime/src/cloud-runtime-bundle.generated.ts'
+      - 'scripts/generate-cloud-runtime-bundle.mjs'
+      - 'scripts/generate-cloud-runtime-bundle.test.mjs'
+      - 'scripts/runtime-bundle-release-train.mjs'
+      - 'scripts/fixtures/committed-runtime-bundle/**'
       - 'deploy/first-node/**'
       - 'deploy/lxd-runner-guest/**'
       - 'packages/runner-orchestrator/src/lxd-*.ts'
@@ -29,9 +36,26 @@ on:
       - 'packages/shell/test/cloud-company-file-contract.test.ts'
       - 'packages/shell/test/lxd-runner-*.test.ts'
       - 'packages/runtime/src/cloud-connector-*.ts'
+      - 'packages/runtime/src/cloud-coding-*.ts'
+      - 'packages/runtime/test/cloud-coding-*.test.ts'
+      - 'packages/runtime/src/lxd-*.ts'
+      - 'packages/runtime/test/lxd-*.test.ts'
+      - 'packages/runtime/src/cloud-company-computer-service-main.ts'
+      - 'packages/runtime/src/cloud-company-computer-preparation-main.ts'
+      - 'packages/runtime/src/cloud-company-computer-diagnostics.ts'
+      - 'packages/runtime/test/cloud-company-computer-service-main.test.ts'
+      - 'packages/runtime/test/cloud-company-computer-preparation-main.test.ts'
+      - 'packages/runtime/test/cloud-company-computer-diagnostics.test.ts'
+      - 'scripts/office-image-self-update.test.mjs'
+      - 'deploy/lxd-company-computer-guest/office-*.ts'
+      - 'packages/runner-orchestrator/test/office-*.test.ts'
+      - 'scripts/package-office-service-software-control*.mjs'
+      - 'deploy/coding-worker/**'
       - 'packages/runtime/src/cloud-secret-*.ts'
       - 'packages/shell/test/cloud-connector-*.test.ts'
       - 'packages/shell/test/cloud-secret-*.test.ts'
+      - 'packages/shell/test/cloud-email-draft*.test.ts'
+      - 'packages/web/src/cloud/email-drafts.ts'
       - 'scripts/package-lxd-*.mjs'
       - 'scripts/package-lxd-*.test.mjs'
       - 'scripts/package-runtime-node-updater*.mjs'
@@ -50,6 +74,12 @@ on:
       - 'supabase/functions/runner-orchestrator/**'
       - 'package-lock.json'
       - 'package.json'
+
+# Release train (deploy/first-node/RUNTIME-RELEASE-TRAIN.md): only release
+# branches declare the runtime bundle, so only they must carry derived files
+# that match the source. Everywhere else the freshness asserts are skipped.
+env:
+  QORPERA_ENFORCE_RUNTIME_BUNDLE: ${{ ((github.event_name == 'pull_request' && startsWith(github.head_ref, 'release/runtime-')) || (github.event_name == 'push' && startsWith(github.ref_name, 'release/runtime-'))) && '1' || '0' }}
 
 permissions:
   contents: read
@@ -86,6 +116,7 @@ jobs:
         run: >-
           node ../../node_modules/vitest/dist/cli.js --run
           test/lxd-client.test.ts
+          test/lxd-tracked-operations.test.ts
           test/lxd-guest-network.test.ts
           test/lxd-image-provenance.test.ts
           test/lxd-login-gateway.test.ts
@@ -100,6 +131,7 @@ jobs:
           test/runtime-node-update-host.test.ts
           test/coding-executor.test.ts
           test/coding-executor-host.test.ts
+          test/coding-machine.test.ts
           test/coding-vm.test.ts
           test/coding-storage.test.ts
           test/coding-workspace.test.ts
@@ -108,12 +140,17 @@ jobs:
           test/coding-git.test.ts
           test/coding-git-seed.test.ts
           test/coding-git-transfer.test.ts
+          test/lxd-office-image-installation.test.ts
+          test/lxd-office-image-self-update.test.ts
+          test/office-self-update-mask.test.ts
+          test/office-service-software-control.test.ts
 
       - name: Test coding session runtime contracts
         working-directory: packages/runtime
         run: >-
           node ../../node_modules/vitest/dist/cli.js --run
           test/cloud-native-coding-runtime.test.ts
+          test/cloud-native-failure-code.test.ts
           test/cloud-coding-command-http.test.ts
           test/cloud-coding-command-tools.test.ts
           test/cloud-coding-command-log.test.ts
@@ -126,6 +163,34 @@ jobs:
           test/cloud-coding-guest-package.test.ts
           test/cloud-coding-watchdog.test.ts
           test/cloud-coding-storage-guest.test.ts
+          test/cloud-coding-session-guest.test.ts
+          test/cloud-coding-configuration-install.test.ts
+          test/cloud-coding-command-guest-execute.test.ts
+          test/lxd-guest-image-updates.test.ts
+
+      - name: Test the office guest image guard
+        working-directory: packages/runtime
+        run: >-
+          node ../../node_modules/vitest/dist/cli.js --run
+          test/cloud-company-computer-service-main.test.ts
+          test/cloud-company-computer-preparation-main.test.ts
+          test/cloud-company-computer-diagnostics.test.ts
+
+      - name: Test the coding command supervisor
+        # Its fixtures chown each command log to the coding gid, which must be
+        # >= 1000 and one the test user holds: run under such a group when the
+        # runner's primary group is a system group.
+        working-directory: packages/runtime
+        run: |
+          id
+          supervisor="node ../../node_modules/vitest/dist/cli.js --run test/cloud-coding-command-guest.test.ts"
+          if [ "$(id -g)" -ge 1000 ]; then
+            $supervisor
+          else
+            sudo groupadd qorpera-coding-test
+            sudo usermod -aG qorpera-coding-test "$(id -un)"
+            sg qorpera-coding-test -c "$supervisor"
+          fi
 
       - name: Test runner guest contracts
         working-directory: packages/shell
@@ -152,15 +217,20 @@ jobs:
           test/cloud-secret-broker.test.ts
           test/cloud-secret-broker-http.test.ts
           test/cloud-secret-tools.test.ts
+          test/cloud-email-draft.test.ts
+          test/cloud-email-draft-integration.test.ts
 
       - name: Test deterministic packaging
         run: >-
           node --test
+          scripts/generate-cloud-runtime-bundle.test.mjs
           scripts/package-lxd-provider.test.mjs
           scripts/package-lxd-runner-guest.test.mjs
           scripts/package-runner-orchestrator.test.mjs
           scripts/package-runtime-node-updater.test.mjs
           scripts/package-shared-execution-service.test.mjs
+          scripts/office-image-self-update.test.mjs
+          scripts/package-office-service-software-control.test.mjs
 
       - name: Test node tidy-up
         run: node --test deploy/node-tidy/qorpera-node-tidy.test.mjs

@@ -2,6 +2,7 @@ import type { CloudApi } from "../../cloud/api.ts";
 import { describeError } from "../../cloud/client.ts";
 import { createWebConnectors } from "../../cloud/connectors.ts";
 import { createWebNativeSubscription } from "../../cloud/native-subscription.ts";
+import { createWebReviewRules } from "../../cloud/review-rules.ts";
 import type { HostedCompanyFile, HostedProfile } from "../../cloud/types.ts";
 import { agentFigure } from "../../ui/avatar.ts";
 import { button, h, icon, notice, replace } from "../../ui/dom.ts";
@@ -9,28 +10,36 @@ import { phrase, t, uiText } from "../../ui/preferences.ts";
 import type { AuthController } from "../auth.ts";
 import { CompanyController } from "../company.ts";
 import { type AccountViewState, renderAccount } from "./account.ts";
+import { renderAppearance } from "./appearance.ts";
 import { FriendsController, renderFriends } from "./friends.ts";
 import type { HubController } from "./hub.ts";
 import { renderPlan } from "./plan.ts";
 import { ConnectionsView, ProviderSignIns } from "./settings-connections.ts";
+import { RulesView } from "./settings-rules.ts";
 import { ServicesView } from "./settings-services.ts";
 import { storageSummary } from "./storage-summary.ts";
-import { renderTeam } from "./team.ts";
+import { renderTeam, type TeamFeedback } from "./team.ts";
 
 const TABS = [
 	{
 		id: "general",
 		label: phrase("General"),
 		icon: "settings",
+		keywords: "account language region time zone timezone generelt konto sprog dansk engelsk område tidszone",
+	},
+	{
+		id: "appearance",
+		label: phrase("Appearance"),
+		icon: "appearance",
 		keywords:
-			"account appearance theme composer color colour blue green grey gray language region time zone timezone generelt konto udseende tema lys mørk skrivefelt farve blå grøn grå sprog dansk engelsk område tidszone",
+			"theme composer color colour blue green grey gray interface size big small udseende tema lys mørk skrivefelt farve blå grøn grå grænseflade størrelse stor lille",
 	},
 	{
 		id: "company",
 		label: phrase("Company"),
 		icon: "company",
 		keywords:
-			"people team members invitations staff file virksomhed personer medlemmer invitationer agenter virksomhedsfilen roller",
+			"people team members invitations staff file delete leave virksomhed personer medlemmer invitationer agenter virksomhedsfilen roller slet forlad",
 	},
 	{
 		id: "friends",
@@ -52,6 +61,13 @@ const TABS = [
 		icon: "connections",
 		keywords:
 			"providers subscriptions openai codex anthropic claude secrets forbindelser udbydere modelkonti konti tjenester gmail google drive github hemmeligheder",
+	},
+	{
+		id: "rules",
+		label: phrase("Rules"),
+		icon: "lock",
+		keywords:
+			"auto-review review approval approve ask first allow automatically safety agents actions permissions regler godkendelse godkend spørg først tillad automatisk sikkerhed agenter handlinger tilladelser",
 	},
 ] as const;
 export type SettingsTab = (typeof TABS)[number]["id"];
@@ -91,7 +107,8 @@ export class SettingsView {
 	#companyLifetime = new AbortController();
 	#connections: ConnectionsView | undefined;
 	#services: ServicesView | undefined;
-	#feedback: { message?: string; error?: string } = {};
+	#rules: RulesView | undefined;
+	#feedback: TeamFeedback = {};
 	#file: HostedCompanyFile | undefined;
 	#fileLoading = false;
 	#fileError: string | undefined;
@@ -157,9 +174,12 @@ export class SettingsView {
 			}
 		};
 		search.oninput = () => {
-			const query = search.value.trim().toLowerCase();
-			for (const tab of TABS)
-				this.#tabs.get(tab.id)!.hidden = !`${tab.label} ${tab.keywords}`.toLowerCase().includes(query);
+			// Every word must match, so "delete company" finds the tab its button is on.
+			const words = search.value.trim().toLowerCase().split(/\s+/).filter(Boolean);
+			for (const tab of TABS) {
+				const text = `${tab.label} ${tab.keywords}`.toLowerCase();
+				this.#tabs.get(tab.id)!.hidden = !words.every((word) => text.includes(word));
+			}
 			const first = [...this.#tabs.entries()].find(([, button]) => !button.hidden);
 			empty.hidden = Boolean(first);
 			if (first && this.#tabs.get(this.#tab)?.hidden) this.#select(first[0]);
@@ -258,6 +278,7 @@ export class SettingsView {
 		this.#unsubscribe?.();
 		this.#connections?.dispose();
 		this.#services?.dispose();
+		this.#rules?.dispose();
 		this.#friends.dispose();
 		if (this.#ownsCompany) this.#company?.stop();
 		this.el.remove();
@@ -298,6 +319,7 @@ export class SettingsView {
 			button.tabIndex = tab === id ? 0 : -1;
 		}
 		if (tab === "general") this.#general();
+		else if (tab === "appearance") this.#panels.set(tab, renderAppearance());
 		else if (tab === "plan") this.#plan();
 		else if (tab === "friends") this.#drawFriends();
 		else if (tab === "company") this.#drawCompany();
@@ -357,6 +379,14 @@ export class SettingsView {
 					);
 					this.#panels.set(tab, h("div", null, this.#connections.el, this.#services.el));
 				}
+			} else if (tab === "rules" && !this.#rules) {
+				const company = this.#company;
+				this.#rules = new RulesView(
+					createWebReviewRules(this.#api.cloud, company.profile.profileId),
+					AbortSignal.any([this.#companyLifetime.signal, this.#lifetime.signal, company.signal]),
+					() => company.store.get().team?.role,
+				);
+				this.#panels.set(tab, this.#rules.el);
 			}
 		}
 		const panel =
@@ -444,6 +474,8 @@ export class SettingsView {
 		this.#connections = undefined;
 		this.#services?.dispose();
 		this.#services = undefined;
+		this.#rules?.dispose();
+		this.#rules = undefined;
 		if (this.#ownsCompany) this.#company?.stop();
 		this.#company = company;
 		this.#ownsCompany = owned;
@@ -451,7 +483,7 @@ export class SettingsView {
 		this.#file = undefined;
 		this.#fileLoading = false;
 		this.#fileError = undefined;
-		for (const tab of ["company", "connections"] as const) this.#panels.delete(tab);
+		for (const tab of ["company", "connections", "rules"] as const) this.#panels.delete(tab);
 		if (company) {
 			this.#unsubscribe = company.store.subscribe(() => {
 				if (company.store.get().accessLost) {
@@ -459,6 +491,7 @@ export class SettingsView {
 					return;
 				}
 				this.#services?.update();
+				this.#rules?.update();
 				this.#drawCompany();
 			});
 			if (owned) void company.start();
@@ -480,7 +513,6 @@ export class SettingsView {
 			team = h("div", { class: "settings-team" });
 			replace(
 				panel,
-				h("h1", null, company.profile.profileName),
 				team,
 				h(
 					"section",
@@ -489,6 +521,7 @@ export class SettingsView {
 					h("div", { class: "settings-staff" }),
 				),
 				h("div", { class: "settings-file" }),
+				h("div", { class: "settings-company-exit" }),
 			);
 		}
 		const staffList = panel.querySelector<HTMLElement>(".settings-staff")!;
@@ -547,6 +580,7 @@ export class SettingsView {
 				friends: this.#friends.store.get().loaded ? this.#friends.store.get().friends : undefined,
 				signal: this.#companyLifetime.signal,
 				embedded: true,
+				exit: panel.querySelector<HTMLElement>(".settings-company-exit")!,
 				addFriend: () => {
 					// A settings search can hide the Friends tab; clear it so the open tab shows in the menu.
 					if (this.#tabs.get("friends")?.hidden) {

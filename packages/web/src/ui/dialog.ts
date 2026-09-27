@@ -2,6 +2,7 @@ import { h, icon } from "./dom.ts";
 import { matchesKey } from "./keys.ts";
 import { isPhoneLayout } from "./layout.ts";
 import { t } from "./preferences.ts";
+import { uiScale } from "./scale.ts";
 
 /** Anchored desktop details are nonmodal; mobile sheets and previews retain
  * native modal containment. Disposal never restores focus into another route. */
@@ -103,9 +104,10 @@ export class SurfaceDialog {
 		}
 		if (this.#anchor && !modal) {
 			const rect = this.#anchor.getBoundingClientRect();
-			this.el.style.left = `${Math.max(12, Math.min(rect.left, window.innerWidth - this.el.getBoundingClientRect().width - 12))}px`;
-			this.el.style.top = `${rect.bottom + 8}px`;
-			this.el.style.maxHeight = `${Math.max(0, window.innerHeight - rect.bottom - 24)}px`;
+			const scale = uiScale();
+			this.el.style.left = `${Math.max(12 * scale, Math.min(rect.left, window.innerWidth - this.el.getBoundingClientRect().width - 12 * scale))}px`;
+			this.el.style.top = `${rect.bottom + 8 * scale}px`;
+			this.el.style.maxHeight = `${Math.max(0, window.innerHeight - rect.bottom - 24 * scale)}px`;
 		} else {
 			this.el.style.removeProperty("left");
 			this.el.style.removeProperty("top");

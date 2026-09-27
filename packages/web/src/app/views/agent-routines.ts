@@ -102,6 +102,47 @@ function controlLabel(control: Element): string {
 	return control.getAttribute("aria-label") ?? control.textContent ?? "";
 }
 
+/** The clock a zone shows at an instant, to the minute, written as a UTC time value. */
+function wallClock(instant: number, timeZone: string): number {
+	const parts = Object.fromEntries(
+		new Intl.DateTimeFormat("en-CA", {
+			timeZone,
+			hourCycle: "h23",
+			year: "numeric",
+			month: "2-digit",
+			day: "2-digit",
+			hour: "2-digit",
+			minute: "2-digit",
+		})
+			.formatToParts(instant)
+			.map((part) => [part.type, Number(part.value)]),
+	);
+	return Date.UTC(parts.year!, parts.month! - 1, parts.day!, parts.hour!, parts.minute!);
+}
+
+/** A weekly routine's first-run instant, moved by as much as the member moved
+ * its clock time on that day: an earlier time still runs on the chosen day
+ * instead of the next one. Unmoved when either time does not exist that day. */
+function movedStart(
+	startAt: string,
+	from: { localTime: string; timeZone: string },
+	to: { localTime: string; timeZone: string },
+): string {
+	const day = Math.floor(wallClock(Date.parse(startAt), from.timeZone) / 86_400_000) * 86_400_000;
+	const at = ({ localTime, timeZone }: { localTime: string; timeZone: string }) => {
+		const [hour, minute] = localTime.split(":").map(Number);
+		const wall = day + (hour! * 60 + minute!) * 60_000;
+		let instant = wall;
+		for (let attempt = 0; attempt < 4; attempt += 1) instant += wall - wallClock(instant, timeZone);
+		return wallClock(instant, timeZone) === wall ? instant : undefined;
+	};
+	const before = at(from),
+		after = at(to);
+	return before === undefined || after === undefined
+		? startAt
+		: new Date(Date.parse(startAt) + after - before).toISOString();
+}
+
 /** The Routines page of an agent's details: standing work the cloud starts on
  * a schedule or when a Company File path changes. */
 export class AgentRoutines {
@@ -165,6 +206,9 @@ export class AgentRoutines {
 			: null;
 		const rows = this.#routines.map((routine) => {
 			const last = this.#runs.find((run) => run.routineId === routine.routineId);
+			// A dynamic routine has one next run at a time, chosen by its agent after each run.
+			const dynamic = routine.triggers.some((trigger) => trigger.kind === "once");
+			const ended = routine.status === "expired" || routine.status === "concluded";
 			return h(
 				"article",
 				{ class: "routine-row" },
@@ -173,14 +217,34 @@ export class AgentRoutines {
 					{ class: "routine-row-copy" },
 					h("strong", null, routine.title),
 					h("span", null, routine.triggers.map((trigger) => describeCloudRoutineTrigger(trigger, t)).join("; ")),
+					routine.status === "concluded" && routine.conclusion
+						? h("small", null, t("Done: {reason}", { reason: routine.conclusion }))
+						: null,
+					routine.status === "active" && routine.nextRunAt
+						? h("small", null, t("Next run: {time}", { time: fmtTime(routine.nextRunAt) }))
+						: null,
+					dynamic && routine.status === "active"
+						? h("small", null, t("Runs until {name} decides it is done", { name: this.#agent().displayName }))
+						: null,
 					h("small", null, last ? t("Last run: {run}", { run: runLabel(last) }) : t("Has not run yet")),
 				),
-				routine.status === "active" ? badge(t("Active"), "ok") : badge(t("Paused"), "warn"),
-				manage
+				routine.status === "active"
+					? badge(t("Active"), "ok")
+					: routine.status === "concluded"
+						? badge(t("Done"))
+						: routine.status === "expired"
+							? badge(t("Ended"))
+							: badge(t("Paused"), "warn"),
+				// An ended routine is read-only: a member save keeps its end (its expiry or run
+				// limit), so neither Edit nor Resume could start it again. Its agent can. The
+				// editor has no shape for a dynamic routine: its agent changes it.
+				manage && !ended
 					? h(
 							"div",
 							{ class: "routine-row-actions" },
-							button(t("Edit"), () => void this.#edit(routine), { small: true, disabled: this.#busy }),
+							dynamic
+								? null
+								: button(t("Edit"), () => void this.#edit(routine), { small: true, disabled: this.#busy }),
 							button(routine.status === "active" ? t("Pause") : t("Resume"), () => void this.#toggle(routine), {
 								small: true,
 								disabled: this.#busy,
@@ -396,10 +460,36 @@ export class AgentRoutines {
 			h("div", { class: "routine-inline" }, t("at"), time, timeZone),
 		);
 		const fileFields = h("div", { class: "routine-when" }, path, match);
+		// A first run an agent held back (firstRunAt) that is still ahead: shown, and the member may let it go.
+		const held =
+			first?.kind === "schedule" && "startAt" in first && first.startAt && Date.parse(first.startAt) > Date.now()
+				? first.startAt
+				: undefined;
+		const heldStart = () => {
+			if (!held || !first || !("localTime" in first)) return held;
+			try {
+				const moved = movedStart(held, first, { localTime: time.value, timeZone: timeZone.value.trim() });
+				// A time already past would run the routine at once, so the agent's instant stays.
+				return Date.parse(moved) > Date.now() ? moved : held;
+			} catch {
+				// A time still being typed, or a zone this browser does not know: unmoved.
+				return held;
+			}
+		};
+		const wait = h("input", { type: "checkbox", checked: true });
+		const waitText = h("span");
+		const waiting = h("label", { class: "routine-wait" }, wait, waitText);
+		const showHeld = () => {
+			if (held)
+				waitText.textContent = t("Wait until {time} before the first run", { time: fmtTime(heldStart() ?? held) });
+		};
+		time.oninput = timeZone.oninput = showHeld;
+		showHeld();
 		const sync = () => {
 			intervalFields.hidden = when.value !== "interval";
 			weeklyFields.hidden = when.value !== "weekly";
 			fileFields.hidden = when.value !== "file";
+			waiting.hidden = !held || when.value !== shape;
 		};
 		when.onchange = sync;
 		sync();
@@ -407,6 +497,8 @@ export class AgentRoutines {
 		const trigger = (): CloudRoutineTrigger => {
 			const replyPolicy = reply.value === "required" ? {} : { replyPolicy: reply.value as CloudRoutineReplyPolicy };
 			const id = first?.id ?? crypto.randomUUID();
+			// Only while the box shows: it belongs to the routine's own kind of schedule.
+			const letGo = !waiting.hidden && !wait.checked;
 			if (when.value === "file")
 				return parseCloudRoutineTrigger({
 					id,
@@ -422,6 +514,8 @@ export class AgentRoutines {
 					id,
 					kind: "schedule",
 					intervalMinutes: 1440,
+					// Once past, the scheduler ignores a weekly start, so a past one is kept as it is.
+					startAt: !letGo && first && "localTime" in first ? (heldStart() ?? first.startAt) : undefined,
 					weekdays: CLOUD_ROUTINE_WEEKDAYS.filter((day) => chosen.has(day)),
 					localTime: time.value,
 					timeZone: timeZone.value.trim(),
@@ -432,13 +526,16 @@ export class AgentRoutines {
 				first && first.kind === "schedule" && !("localTime" in first) && "startAt" in first
 					? first.startAt
 					: undefined;
-			const next = new Date(Math.ceil((Date.now() + intervalMinutes * 60_000) / 60_000) * 60_000);
+			const next = (minutes: number) =>
+				new Date(Math.ceil((Date.now() + minutes * 60_000) / 60_000) * 60_000).toISOString();
+			const soon = next(1);
 			return parseCloudRoutineTrigger({
 				id,
 				kind: "schedule",
 				intervalMinutes,
-				// The first run is one interval from now, not at once.
-				startAt: kept ?? next.toISOString(),
+				// The first run is one interval from now, not at once. Letting a held first run
+				// go starts the routine within two minutes instead, never after the held time.
+				startAt: letGo && held ? (held < soon ? held : soon) : (kept ?? next(intervalMinutes)),
 				...replyPolicy,
 			});
 		};
@@ -513,6 +610,7 @@ export class AgentRoutines {
 				intervalFields,
 				weeklyFields,
 				fileFields,
+				waiting,
 				h("label", null, t("Reply"), reply),
 				this.#accounts.length
 					? h(

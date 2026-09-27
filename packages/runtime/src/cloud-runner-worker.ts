@@ -88,7 +88,8 @@ function safeFailure(error: unknown): string {
 }
 
 export function cloudRunnerJobFailureIsRetryable(error: unknown): boolean {
-	const message = error instanceof Error ? error.message : String(error);
+	// A provider's fixed code ("[code=…]") never changes whether a failure retries.
+	const message = (error instanceof Error ? error.message : String(error)).replace(/ \[code=[A-Z0-9_:]{1,85}\]$/, "");
 	return !/invalid|inconsistent|outside (?:its|the) immutable|exceeds (?:its|the) byte limit|cannot contain credentials|does not support|failed content verification|changed before publication|required isolation guarantees/i.test(
 		message,
 	);

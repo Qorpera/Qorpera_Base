@@ -2,6 +2,7 @@
  * Text always goes through textContent, never innerHTML. */
 
 import { figureElement } from "./avatar.ts";
+import { attachPersonPicture } from "./person-pictures.ts";
 import { presentationDay, presentationLocale, t, timeZoneOption } from "./preferences.ts";
 
 export type Child = Node | string | number | boolean | null | undefined | Child[];
@@ -107,6 +108,8 @@ export function personAvatar(name: string, identity: string): HTMLElement {
 	for (const character of identity) hash = (hash * 31 + (character.codePointAt(0) ?? 0)) >>> 0;
 	const avatar = h("span", { class: "person-avatar", "aria-hidden": "true" }, initials(name));
 	avatar.style.setProperty("--person-color", colors[hash % colors.length]!);
+	// An account id brings the person's own picture, when they chose one.
+	attachPersonPicture(avatar, identity);
 	return avatar;
 }
 
@@ -149,7 +152,12 @@ export function button(
 const ICON_PATHS: Record<string, string[]> = {
 	navigation: ["M3 5h18v14H3Z", "M9 5v14"],
 	check: ["m5 12 4 4L19 6"],
+	appearance: ["M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z", "M12 3v18", "M12 7h7M12 12h9M12 17h7"],
 	image: ["M3 3h18v18H3Z", "m3 16 5-5 4 4 3-3 6 6", "M15 7h.01"],
+	camera: [
+		"M9 4h6l2 3h3a1 1 0 0 1 1 1v11a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V8a1 1 0 0 1 1-1h3Z",
+		"M15 13a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z",
+	],
 	bell: ["M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4"],
 	plus: ["M12 5v14M5 12h14"],
 	feedback: ["M21 15a4 4 0 0 1-4 4H7l-4 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4Z"],

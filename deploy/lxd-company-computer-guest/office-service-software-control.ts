@@ -37,6 +37,7 @@ import {
 } from "../../packages/runtime/src/cloud-company-computer-service-stop-systemd.ts";
 import { readCompanyComputerStopHistory } from "../../packages/runtime/src/cloud-company-computer-stop-history.ts";
 import { readCompanyComputerStopInvocation } from "../../packages/runtime/src/cloud-company-computer-stop-invocation.ts";
+import { maskOfficeSelfUpdateUnits } from "./office-self-update-mask.ts";
 import { OFFICE_SOFTWARE_TOOLS, runPinnedOfficeSoftwareTool } from "./office-software-control-launcher.ts";
 
 export const OFFICE_SOFTWARE_CONTROL_TOOL = OFFICE_SOFTWARE_TOOLS.install;
@@ -284,6 +285,10 @@ async function lockedInstall(input: ReturnType<typeof parseOfficeSoftwareControl
 		const files: Record<string, Buffer> = {};
 		for (const entry of companyComputerServiceSoftwareChangedFiles(statement))
 			files[entry.file] = await readServiceCandidate(`${root}/software-file-${entry.sha256}`, entry.bytes);
+		// After every local check and before this tool's own challenge check (the
+		// provider's 5 s install challenge is already running; the helper keeps
+		// its work small): the image stops updating itself before any service lands.
+		await maskOfficeSelfUpdateUnits();
 		const manager = createCompanyComputerServiceStopSystemdManager();
 		const verifyLocal = async (checked: AbortSignal) => {
 			checked.throwIfAborted();
@@ -359,7 +364,7 @@ export async function runOfficeSoftwareControl(args: readonly string[]): Promise
 if (process.argv[1] && realpathSync(resolve(process.argv[1])) === realpathSync(fileURLToPath(import.meta.url))) {
 	if (process.argv.length === 3 && process.argv[2] === "--help")
 		console.log(
-			"Pinned temporary root software installation control. Requires independent provider capability, exact stopped history and continuous preparation flock. Does not start or activate a service.",
+			"Pinned temporary root software installation control. Requires independent provider capability, exact stopped history and continuous preparation flock. Masks the image's apt self-update units first. Does not start or activate a service.",
 		);
 	else
 		runOfficeSoftwareControl(process.argv.slice(2)).catch(() => {

@@ -107,14 +107,12 @@ declare v_alice jsonb := current_setting('qorpera_test.alice_binding')::jsonb; v
 	v_bob_id uuid := '30000000-0000-4000-8000-000000000031';
 begin
 	perform pg_temp.wake_public_send(v_alice,'progress');
-	-- Held messages count toward the pair's hourly budget, and the hop rule does not apply to them.
-	for v_n in 1..20 loop
+	-- No hourly limit per pair (runtime v92): twenty-five held messages all wait, and a priority message still goes.
+	for v_n in 1..25 loop
 		perform pg_temp.wake_assert(public.qorpera_send_coworker_message(v_alice,v_bob_id,'held-' || v_n::text,'Held ' || v_n::text,false) ->> 'status' = 'held','Held ' || v_n::text);
 	end loop;
-	v_send := public.qorpera_send_coworker_message(v_alice,v_bob_id,'held-21','Held 21',false);
-	perform pg_temp.wake_assert(v_send ->> 'status' = 'causal-fence','Twenty-one held messages in an hour are too many');
-	perform pg_temp.wake_assert(public.qorpera_send_coworker_message(v_alice,v_bob_id,'ask-after','A question.') ->> 'status' = 'causal-fence','The pair is paused for priority messages too');
-	perform pg_temp.wake_assert((select count(*) = 20 from public.qorpera_pending_peer_messages),'Only twenty wait');
+	perform pg_temp.wake_assert(public.qorpera_send_coworker_message(v_alice,v_bob_id,'ask-after','A question.') ->> 'status' = 'queued','A priority message after many held ones is queued');
+	perform pg_temp.wake_assert((select count(*) = 25 from public.qorpera_pending_peer_messages),'All twenty-five wait');
 end
 $$;
 rollback to held_budget;

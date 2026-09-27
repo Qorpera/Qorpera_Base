@@ -2,10 +2,17 @@ import { createHash } from "node:crypto";
 import {
 	type CloudCodingCommandRead,
 	type CloudCodingCommandScope,
+	cloudCodingSessionLayout,
 	parseCloudCodingCommandRead,
 	parseCloudCodingCommandReceipt,
 } from "@qorpera/contracts";
-import { assertLxdCodingVmInstance, type LxdCodingVmBinding, lxdCodingVmPlan } from "./coding-vm.ts";
+import {
+	assertLxdCodingMachineInstance,
+	type CodingMachineStorage,
+	type LxdCodingMachineBinding,
+	lxdCodingMachineName,
+	lxdCodingMachinePlan,
+} from "./coding-machine.ts";
 import type { LxdInspectableClient } from "./lxd-client.ts";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -14,23 +21,42 @@ const HELPER = "/opt/qorpera-coding/cloud-coding-command-guest.mjs";
 type Action = "start" | "read" | "cancel";
 type Client = Pick<LxdInspectableClient, "getInstance" | "readInstanceFile" | "pushInstanceFile" | "execInstance">;
 
+/** One attached session on a member's machine, as the host knows it for this
+ * boot: the machine, its NAS placement, the session, the guest's boot and the
+ * digests of the session's guest configuration and the helper in use. */
 export interface CodingCommandGuestPins {
-	vm: Readonly<LxdCodingVmBinding>;
+	machine: Readonly<LxdCodingMachineBinding>;
+	storage: CodingMachineStorage;
+	workerId: string;
 	bootId: string;
 	helperSha256: string;
 	guestConfigSha256: string;
 	client: Client;
 }
-export async function inspectCodingCommandGuest(options: CodingCommandGuestPins, signal: AbortSignal): Promise<void> {
-	if (!UUID.test(options.bootId) || !SHA.test(options.helperSha256) || !SHA.test(options.guestConfigSha256))
+/** The machine runs this boot, is exactly this machine, has this session's
+ * folders attached, and serves the pinned helper and session configuration. */
+export async function inspectCodingSessionGuest(
+	options: CodingCommandGuestPins,
+	helper: string,
+	modes: readonly number[],
+	signal: AbortSignal,
+): Promise<void> {
+	if (
+		!UUID.test(options.workerId) ||
+		!UUID.test(options.bootId) ||
+		!SHA.test(options.helperSha256) ||
+		!SHA.test(options.guestConfigSha256)
+	)
 		throw new Error("CODING_COMMAND_BINDING_INVALID");
-	const name = lxdCodingVmPlan(options.vm).request.name;
-	const instance = await options.client.getInstance(options.vm.project, name, signal);
+	const machine = lxdCodingMachinePlan(options.machine).binding,
+		name = lxdCodingMachineName(machine.machineId);
+	const instance = await options.client.getInstance(machine.project, name, signal);
 	if (!instance || instance.status !== "Running" || instance.statusCode !== 103)
-		throw new Error("CODING_VM_NOT_RUNNING");
-	assertLxdCodingVmInstance(options.vm, instance);
+		throw new Error("CODING_MACHINE_NOT_RUNNING");
+	if (!assertLxdCodingMachineInstance(machine, options.storage, instance).includes(options.workerId))
+		throw new Error("CODING_SESSION_DETACHED");
 	const boot = await options.client.readInstanceFile(
-		options.vm.project,
+		machine.project,
 		name,
 		"/proc/sys/kernel/random/boot_id",
 		64,
@@ -42,20 +68,23 @@ export async function inspectCodingCommandGuest(options: CodingCommandGuestPins,
 		boot.mode !== 0o444 ||
 		boot.content.toString("utf8") !== `${options.bootId}\n`
 	)
-		throw new Error("CODING_VM_BOOT_CHANGED");
+		throw new Error("CODING_MACHINE_BOOT_CHANGED");
 	for (const [path, digest, maximumBytes] of [
-		[HELPER, options.helperSha256, 65536],
-		["/etc/qorpera-coding/guest.json", options.guestConfigSha256, 8192],
+		[helper, options.helperSha256, 65536],
+		[`${cloudCodingSessionLayout(options.workerId).configurationRoot}/guest.json`, options.guestConfigSha256, 8192],
 	] as const) {
-		const file = await options.client.readInstanceFile(options.vm.project, name, path, maximumBytes, signal);
+		const file = await options.client.readInstanceFile(machine.project, name, path, maximumBytes, signal);
 		if (
 			file.uid !== 0 ||
 			file.gid !== 0 ||
-			![0o400, 0o444].includes(file.mode) ||
+			!modes.includes(file.mode) ||
 			createHash("sha256").update(file.content).digest("hex") !== digest
 		)
 			throw new Error("CODING_GUEST_ARTIFACT_DIFFERS");
 	}
+}
+export async function inspectCodingCommandGuest(options: CodingCommandGuestPins, signal: AbortSignal): Promise<void> {
+	await inspectCodingSessionGuest(options, HELPER, [0o400, 0o444], signal);
 }
 
 /** Only a trusted provider constructs this transport. The authorization
@@ -63,12 +92,11 @@ export async function inspectCodingCommandGuest(options: CodingCommandGuestPins,
  * retained allocation and node/network admission before each effect. Matching
  * labels or a command UUID are not authorization. */
 export class LxdCodingCommandTransport {
-	readonly #vm: Readonly<LxdCodingVmBinding>;
+	readonly #pins: CodingCommandGuestPins;
 	readonly #scope: Readonly<CloudCodingCommandScope>;
+	readonly #project: string;
 	readonly #name: string;
-	readonly #bootId: string;
-	readonly #helperSha256: string;
-	readonly #guestConfigSha256: string;
+	readonly #custody: string;
 	readonly #client: Client;
 	readonly #authorize: (
 		action: Action,
@@ -78,7 +106,8 @@ export class LxdCodingCommandTransport {
 		signal: AbortSignal,
 	) => Promise<void>;
 	constructor(options: {
-		vm: LxdCodingVmBinding;
+		machine: LxdCodingMachineBinding;
+		storage: CodingMachineStorage;
 		scope: CloudCodingCommandScope;
 		bootId: string;
 		helperSha256: string;
@@ -92,11 +121,11 @@ export class LxdCodingCommandTransport {
 			signal: AbortSignal,
 		) => Promise<void>;
 	}) {
-		const plan = lxdCodingVmPlan(options.vm);
+		const machine = lxdCodingMachinePlan(options.machine).binding;
 		if (
 			Object.keys(options.scope).sort().join() !== "requestId,turn,vmId,workerId" ||
-			options.scope.workerId !== plan.binding.workerId ||
-			options.scope.vmId !== plan.binding.allocationId ||
+			!UUID.test(options.scope.workerId) ||
+			options.scope.vmId !== machine.machineId ||
 			!UUID.test(options.scope.requestId) ||
 			!Number.isSafeInteger(options.scope.turn) ||
 			options.scope.turn < 1 ||
@@ -105,12 +134,19 @@ export class LxdCodingCommandTransport {
 			!SHA.test(options.guestConfigSha256)
 		)
 			throw new Error("CODING_COMMAND_BINDING_INVALID");
-		this.#vm = plan.binding;
-		this.#name = plan.request.name;
+		this.#pins = {
+			machine,
+			storage: options.storage,
+			workerId: options.scope.workerId,
+			bootId: options.bootId,
+			helperSha256: options.helperSha256,
+			guestConfigSha256: options.guestConfigSha256,
+			client: options.client,
+		};
+		this.#project = machine.project;
+		this.#name = lxdCodingMachineName(machine.machineId);
+		this.#custody = cloudCodingSessionLayout(options.scope.workerId).custodyRoot;
 		this.#scope = Object.freeze({ ...options.scope });
-		this.#bootId = options.bootId;
-		this.#helperSha256 = options.helperSha256;
-		this.#guestConfigSha256 = options.guestConfigSha256;
 		this.#client = options.client;
 		this.#authorize = options.authorize;
 	}
@@ -130,16 +166,7 @@ export class LxdCodingCommandTransport {
 			throw new Error("CODING_COMMAND_SCOPE_DIFFERS");
 		signal.throwIfAborted();
 		await this.#authorize(action, this.#scope, commandId, inputSha256, signal);
-		await inspectCodingCommandGuest(
-			{
-				vm: this.#vm,
-				bootId: this.#bootId,
-				helperSha256: this.#helperSha256,
-				guestConfigSha256: this.#guestConfigSha256,
-				client: this.#client,
-			},
-			signal,
-		);
+		await inspectCodingCommandGuest(this.#pins, signal);
 		signal.throwIfAborted();
 		await this.#authorize(action, this.#scope, commandId, inputSha256, signal);
 		signal.throwIfAborted();
@@ -159,21 +186,22 @@ export class LxdCodingCommandTransport {
 		// The command text is never interpolated into exec argv. The reviewed
 		// root helper is the only executable selectable at this boundary.
 		await this.#client.execInstance(
-			this.#vm.project,
+			this.#project,
 			this.#name,
 			[
 				"/usr/bin/node",
 				HELPER,
 				action,
+				this.#scope.workerId,
 				commandId,
 				...(read ? [read.tail ? "tail" : String(read.offset ?? 0), String(read.limit ?? 4096)] : []),
 			],
 			signal,
 		);
 		const file = await this.#client.readInstanceFile(
-			this.#vm.project,
+			this.#project,
 			this.#name,
-			`/var/lib/qorpera-coding/commands/${commandId}/${read ? `read-page-${slot}.json` : "status.json"}`,
+			`${this.#custody}/commands/${commandId}/${read ? `read-page-${slot}.json` : "status.json"}`,
 			65536,
 			signal,
 		);
@@ -223,9 +251,9 @@ export class LxdCodingCommandTransport {
 		await this.#gate("start", scope, input.commandId, input.inputSha256, signal);
 		const request = `${JSON.stringify({ schema: "qorpera.coding-command-request/v1", ...this.#scope, ...input })}\n`;
 		if (Buffer.byteLength(request) > 65536) throw new Error("CODING_COMMAND_INPUT_TOO_LARGE");
-		const path = `/var/lib/qorpera-coding/inbox/${input.commandId}.json`;
-		await this.#client.pushInstanceFile(this.#vm.project, this.#name, path, request, 0o444, signal);
-		const staged = await this.#client.readInstanceFile(this.#vm.project, this.#name, path, 65536, signal);
+		const path = `${this.#custody}/inbox/${input.commandId}.json`;
+		await this.#client.pushInstanceFile(this.#project, this.#name, path, request, 0o444, signal);
+		const staged = await this.#client.readInstanceFile(this.#project, this.#name, path, 65536, signal);
 		if (staged.uid !== 0 || staged.gid !== 0 || staged.mode !== 0o444 || !staged.content.equals(Buffer.from(request)))
 			throw new Error("CODING_COMMAND_STAGING_UNCONFIRMED");
 		return this.#invoke("start", input.commandId, input.inputSha256, signal);

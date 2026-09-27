@@ -17,6 +17,7 @@ import {
 	parseCloudAgentSendInput,
 	parseCloudAgentSendReceipt,
 } from "./cloud-agent-mouth.ts";
+import { codingErrorCode } from "./cloud-coding-error-code.ts";
 import { nativeRuntimeFailureMetadata } from "./cloud-native-failure.ts";
 import type {
 	CompleteNativeProviderLoginInput,
@@ -47,6 +48,7 @@ import {
 const LOGIN_SCHEMA = "qorpera.native-provider-login/v1";
 const EXECUTION_SCHEMA = "qorpera.native-provider-execution/v1";
 const CANCEL_SCHEMA = "qorpera.native-provider-cancel/v1";
+const EXECUTE_KEEPALIVE_MS = 60_000;
 const RESULT_SCHEMA = "qorpera.native-provider-result/v1";
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
@@ -117,22 +119,55 @@ function internalRejectionCategory(error: unknown): string {
 	return "unknown";
 }
 
+// The diagnostics this service passes on verbatim: closed lists only, so the
+// log line and the runner's code are a fixed vocabulary by construction.
+const MOUTH_STATE = / \[mouth=(?:uninitialized|initialized|ready|send-unconfirmed|delivered)\]$/;
+const HARNESS_UNAVAILABLE =
+	"authentication|model|provider allowance|provider capacity|provider context|provider network|provider policy|local sandbox|provider request|provider authorization|provider tool schema|harness configuration|harness internal|public message transport";
+const HARNESS_EXITED = new RegExp(
+	`^Provider harness exited with [A-Za-z0-9_-]{1,32}(?: \\((${HARNESS_UNAVAILABLE}) unavailable\\))?$`,
+);
+const CODEX_TURN_INCOMPLETE = new RegExp(
+	`^Codex did not complete its turn(?: \\((${HARNESS_UNAVAILABLE}) unavailable\\))?$`,
+);
+const EXECUTION_STAGE_FAILED =
+	/^Native provider execution (initial-authority-validation|temporary-workspace|credential-download|credential-opening|prompt-materialization|public-mouth-start|public-mouth-completion|harness-execution|workspace-normalization|completion-authority-validation|credential-sealing|credential-upload|authority-monitor|cleanup|internal-completion) stage failed(?: \((storage-budget|unsupported-entry|invalid-path|symbolic-link|filesystem-(?:not-found|permission|read-only|layout)|resource-(?:capacity|file-descriptors|memory)|process-pipe|cancelled|timeout|unknown)\))?$/;
+const HARNESS_OUTPUT_LIMIT = "Provider harness output exceeded its byte limit";
+
+/** The fixed code a failed request carries back to the runner: the coding
+ * runtime's own code (e.g. CODING_TURN_ENDED_WITHOUT_SUBMISSION), else its
+ * native stage and category, else a diagnostic from the closed lists above,
+ * else UNCLASSIFIED. Never free text. Each segment stays under 43 characters,
+ * so the runner's token redaction never cuts it. */
+export function nativeProviderFailureCode(error: unknown): string {
+	const fits = (code: string) => /^[A-Z][A-Z0-9_]{0,41}(:[A-Z0-9][A-Z0-9_]{0,41})?$/.test(code);
+	const upper = (value: string) => value.toUpperCase().replace(/[^A-Z0-9]+/g, "_");
+	const coded = (code: string) => (fits(code) ? code : "UNCLASSIFIED");
+	// Only the coding runtime's own codes pass; other upper-case text is not vetted.
+	const own = codingErrorCode(error);
+	if (own.startsWith("CODING_") && fits(own)) return own;
+	const failure = nativeRuntimeFailureMetadata(error);
+	if (failure) return coded(`NATIVE_${upper(failure.stage)}:${upper(failure.category)}`);
+	const message = (error instanceof Error ? error.message : "").replace(MOUTH_STATE, "");
+	const stage = EXECUTION_STAGE_FAILED.exec(message);
+	if (stage) return coded(`NATIVE_${upper(stage[1])}${stage[2] ? `:${upper(stage[2])}` : ""}`);
+	const exited = HARNESS_EXITED.exec(message);
+	if (exited) return coded(`HARNESS_EXITED${exited[1] ? `:${upper(exited[1])}` : ""}`);
+	const incomplete = CODEX_TURN_INCOMPLETE.exec(message);
+	if (incomplete) return coded(`CODEX_TURN_INCOMPLETE${incomplete[1] ? `:${upper(incomplete[1])}` : ""}`);
+	if (message === HARNESS_OUTPUT_LIMIT) return "HARNESS_OUTPUT_LIMIT";
+	return "UNCLASSIFIED";
+}
 function safeRequestDiagnostic(error: unknown): string {
 	const failure = nativeRuntimeFailureMetadata(error);
 	if (failure) return `Native provider execution failed (stage=${failure.stage}, category=${failure.category})`;
 	const message = error instanceof Error ? error.message : "";
-	const diagnostic = message.replace(/ \[mouth=(?:uninitialized|initialized|ready|send-unconfirmed|delivered)\]$/, "");
+	const diagnostic = message.replace(MOUTH_STATE, "");
 	if (
-		/^Provider harness exited with [A-Za-z0-9_-]{1,32}(?: \((?:authentication|model|provider allowance|provider capacity|provider context|provider network|provider policy|local sandbox|provider request|provider authorization|provider tool schema|harness configuration|harness internal|public message transport) unavailable\))?$/.test(
-			diagnostic,
-		) ||
-		/^Codex did not complete its turn(?: \((?:authentication|model|provider allowance|provider capacity|provider context|provider network|provider policy|local sandbox|provider request|provider authorization|provider tool schema|harness configuration|harness internal|public message transport) unavailable\))?$/.test(
-			diagnostic,
-		) ||
-		/^Native provider execution (?:initial-authority-validation|temporary-workspace|credential-download|credential-opening|prompt-materialization|public-mouth-start|public-mouth-completion|harness-execution|workspace-normalization|completion-authority-validation|credential-sealing|credential-upload|authority-monitor|cleanup|internal-completion) stage failed(?: \((?:storage-budget|unsupported-entry|invalid-path|symbolic-link|filesystem-(?:not-found|permission|read-only|layout)|resource-(?:capacity|file-descriptors|memory)|process-pipe|cancelled|timeout|unknown)\))?$/.test(
-			diagnostic,
-		) ||
-		diagnostic === "Provider harness output exceeded its byte limit"
+		HARNESS_EXITED.test(diagnostic) ||
+		CODEX_TURN_INCOMPLETE.test(diagnostic) ||
+		EXECUTION_STAGE_FAILED.test(diagnostic) ||
+		diagnostic === HARNESS_OUTPUT_LIMIT
 	) {
 		return message;
 	}
@@ -824,6 +859,15 @@ export class HttpNativeProviderHostService {
 					if (!response.writableFinished) controller.abort(new Error("Native runner connection closed"));
 				};
 				response.once("close", disconnected);
+				// A run has no deadline (founder, 2026-09-24). Headers go out now and a
+				// newline every minute keeps the runner's HTTP client (whose header and
+				// idle-body timeouts are five minutes) and anything between from giving up.
+				response.writeHead(200, { "content-type": "application/json" });
+				response.flushHeaders();
+				const keepalive = setInterval(() => {
+					if (!response.destroyed && !response.writableEnded) response.write("\n");
+				}, EXECUTE_KEEPALIVE_MS);
+				keepalive.unref();
 				try {
 					value = {
 						schema: RESULT_SCHEMA,
@@ -831,6 +875,7 @@ export class HttpNativeProviderHostService {
 						result: await this.#host.execute(parsed, controller.signal),
 					};
 				} finally {
+					clearInterval(keepalive);
 					response.off("close", disconnected);
 					this.#executions.delete(parsed.authority.leaseId);
 				}
@@ -853,13 +898,16 @@ export class HttpNativeProviderHostService {
 				active?.controller.abort(new Error("Native execution cancelled"));
 				value = { cancelled: active !== undefined };
 			}
-			response.writeHead(200, { "content-type": "application/json" }).end(`${JSON.stringify(value)}\n`);
+			if (!response.headersSent) response.writeHead(200, { "content-type": "application/json" });
+			response.end(`${JSON.stringify(value)}\n`);
 		} catch (error) {
-			console.error(`Native provider request rejected: ${safeRequestDiagnostic(error)}`);
-			if (!response.destroyed)
-				response
-					.writeHead(422, { "content-type": "application/json", connection: "close" })
-					.end('{"error":"request rejected"}\n');
+			const code = nativeProviderFailureCode(error);
+			console.error(`Native provider request rejected: ${safeRequestDiagnostic(error)} [code=${code}]`);
+			// An execution already answered 200 with its keepalive; its failure is in the body.
+			const rejected = `${JSON.stringify({ error: "request rejected", code })}\n`;
+			if (!response.destroyed && response.headersSent) response.end(rejected);
+			else if (!response.destroyed)
+				response.writeHead(422, { "content-type": "application/json", connection: "close" }).end(rejected);
 		}
 	}
 }

@@ -1,3 +1,4 @@
+import type { EmailDraftContent, EmailDraftEditor, EmailDraftState } from "../cloud/email-drafts.ts";
 import {
 	type InteractionAnswer,
 	type InteractionOutcome,
@@ -7,15 +8,15 @@ import {
 } from "../cloud/interactions.ts";
 import type { JsonValue } from "../cloud/types.ts";
 import { badge, button, fmtTime, h, icon } from "./dom.ts";
+import { renderEmailDraftCard } from "./email-draft-card.ts";
 import { phrase, t } from "./preferences.ts";
 
 /* Cards an agent raises in its thread (THREAD-WIDGETS-DESIGN-20260922.md).
  * One shell for every surface: a quiet header with the agent's name, the
  * title, a state badge; the body per surface; pills at the foot, primary on
  * the left, Skip on the right, as the failed-run line does it. Once answered a
- * card stays in the thread, inert, showing what was chosen. A secret card never
- * has an input here: the value goes to the vault through the broker, which
- * this version does not have yet, so it can only be declined. */
+ * card stays in the thread, inert, showing what was chosen. Secret inputs go
+ * directly to the vault broker through provideSecret, never into an answer. */
 
 export interface InteractionCardContext {
 	agentName: string;
@@ -27,8 +28,11 @@ export interface InteractionCardContext {
 	/** Opens the agent's computer for a takeover; absent when the thread has none. */
 	takeOver?: () => void;
 	/** Saves a secret card's value into the company vault and marks the card provided;
-	 * absent while this version cannot reach the vault. */
+	 * absent when this context cannot reach the vault. */
 	provideSecret?: (value: string) => Promise<void>;
+	emailDraft?: EmailDraftEditor;
+	loadEmailDraft?: () => Promise<EmailDraftState>;
+	actEmailDraft?: (action: "save" | "send" | "discard", content: EmailDraftContent) => Promise<EmailDraftState>;
 	now?: number;
 }
 
@@ -37,6 +41,8 @@ export interface InteractionCardItem {
 	actorUserId: string;
 	request: InteractionRequest;
 	answer?: InteractionAnswer;
+	/** An answer was sent but never reached the agent; the card is open again. */
+	answerFailed?: boolean;
 	createdAt: string;
 }
 
@@ -94,6 +100,8 @@ function pill(label: string, onClick: () => void, kind: "primary" | "secondary" 
 
 export function renderInteractionCard(item: InteractionCardItem, context: InteractionCardContext): HTMLElement {
 	const { request } = item;
+	if (request.surface === "draft" && request.payload.platform === "email" && request.payload.connectorId === "gmail")
+		return renderEmailDraftCard(item, context);
 	const state = interactionState(request, item.answer, context.now);
 	let busy = false;
 	let card: HTMLElement;
@@ -145,6 +153,8 @@ export function renderInteractionCard(item: InteractionCardItem, context: Intera
 				t("This card is past its time. The agent will ask again if it still needs it."),
 			),
 		);
+	} else if (state === "waiting" && item.answerFailed && context.canAnswer) {
+		result.push(h("p", { class: "interaction-result" }, t("Your answer did not reach the agent. Answer again.")));
 	}
 
 	if (request.surface === "question") {
@@ -261,28 +271,18 @@ export function renderInteractionCard(item: InteractionCardItem, context: Intera
 					"p",
 					{ class: "interaction-note" },
 					icon("lock"),
-					` ${t("Entering a secret here needs a newer version of the app. The value would go to the company vault, never to the agent.")}`,
+					` ${t("Saving a secret to the company vault is unavailable here. Do not paste it into chat.")}`,
 				),
 			);
 			actions.push(pill(t("Decline"), () => answer("declined"), "quiet", busy));
 		}
 	} else if (request.surface === "form") {
 		const domain = typeof request.payload.domain === "string" ? request.payload.domain : "";
-		if (domain)
-			body.push(
-				h(
-					"p",
-					{ class: "interaction-note" },
-					icon("lock"),
-					` ${t("Filled on the computer at {domain} only", { domain })}`,
-				),
-			);
-		if (open) {
-			body.push(
-				h("p", { class: "interaction-note" }, t("Filling this form here needs a newer version of the app.")),
-			);
-			actions.push(pill(t("Skip"), () => answer("declined"), "quiet", busy));
+		if (domain) body.push(h("p", { class: "interaction-note" }, t("Website: {domain}", { domain })));
+		if (state === "waiting") {
+			body.push(h("p", { class: "interaction-note" }, t("Filling a webpage through this card is unavailable.")));
 		}
+		if (open) actions.push(pill(t("Skip"), () => answer("declined"), "quiet", busy));
 	} else if (request.surface === "draft") {
 		const subject = typeof request.payload.subject === "string" ? request.payload.subject : "";
 		const text = typeof request.payload.body === "string" ? request.payload.body : "";
@@ -300,11 +300,10 @@ export function renderInteractionCard(item: InteractionCardItem, context: Intera
 			h(
 				"p",
 				{ class: "interaction-note" },
-				icon("lock"),
 				` ${
 					domain
-						? t("The computer signs in at {domain} with the company account. Nothing to do here.", { domain })
-						: t("The computer signs in with the company account. Nothing to do here.")
+						? t("Signing in to {domain} through this card is unavailable.", { domain })
+						: t("Signing in through this card is unavailable.")
 				}`,
 			),
 		);

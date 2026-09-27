@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import * as esbuild from "esbuild";
 import { assertMemberWebInputs } from "../../../scripts/check-headless-packages.mjs";
 import { prepareDeployment } from "./deployment.mjs";
+import { designPxPlugin, readUiScale } from "./design-px.mjs";
 import { webSourceProvenance } from "./provenance.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -34,6 +35,12 @@ rmSync(dist, { recursive: true, force: true });
 mkdirSync(join(dist, "assets"), { recursive: true });
 cpSync(join(root, "public"), dist, { recursive: true });
 writeFileSync(join(dist, "_headers"), deployment.headers);
+// A missing file under a long-cached directory must be a no-store 404, never
+// the app page kept as that file (scripts/deployment.mjs).
+for (const page of deployment.notFoundPages) {
+	mkdirSync(dirname(join(dist, page)), { recursive: true });
+	writeFileSync(join(dist, page), '<!doctype html>\n<meta charset="utf-8">\n<title>Not found</title>\n<p>Not found.</p>\n');
+}
 cpSync(join(viewerRoot, "vendor/NOVNC_LICENSE.txt"), join(dist, "assets/NOVNC_LICENSE.txt"));
 // Reused desktop art. The web app never reads these at build time beyond copying.
 cpSync(join(userland, "fonts"), join(dist, "assets/fonts"), { recursive: true });
@@ -48,6 +55,8 @@ for (const icon of [
 	"icon-clock.svg",
 	"icon-attach.svg",
 	"provider-google.svg",
+	"provider-gmail.svg",
+	"provider-drive.svg",
 	"provider-github.svg",
 	"provider-openai.svg",
 	"provider-anthropic.svg",
@@ -89,7 +98,10 @@ const options = {
 	// stale main.js across deploys; the HTML is rewritten to point at them.
 	entryNames: serve ? "[name]" : "build/[name]-[hash]",
 	metafile: true,
-	plugins: [boundary],
+	// Stylesheets are written in design pixels and drawn at tokens.css's --ui-scale (scripts/design-px.mjs).
+	plugins: [boundary, designPxPlugin(readUiScale(join(root, "src/styles/tokens.css")))],
+	// Lower the size gates emitted by design-px for browsers without CSS nesting.
+	supported: { nesting: false },
 	sourcemap: true,
 	// Fonts and art are copied into dist/assets above; leave their URLs untouched.
 	external: ["*.woff2", "*.png", "*.svg"],
@@ -123,7 +135,7 @@ if (serve) {
 		.replace('href="./app.css"', `href="./${style}"`)
 		.replace('src="./main.js"', `src="./${script}"`);
 	writeFileSync(join(dist, "index.html"), html);
-	const files = ["index.html", "_headers", theme, script, style];
+	const files = ["index.html", "_headers", ...deployment.notFoundPages, theme, script, style];
 	writeFileSync(join(dist, "web-deployment.json"), `${JSON.stringify({
 		...deployment.manifest,
 		...provenance,

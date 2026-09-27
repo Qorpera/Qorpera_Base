@@ -3,6 +3,12 @@ import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+	CLOUD_ACTION_REVIEW_INSTRUCTIONS,
+	CLOUD_ACTION_REVIEW_SPECIFICATION,
+	CloudActionReviewChannel,
+	CloudActionReviewGate,
+} from "@qorpera/runtime/cloud-action-review";
 import { CLOUD_CODEX_BOUNDARY_CONFIG, runCloudCodexToolSession } from "@qorpera/runtime/cloud-codex-tool-session";
 import { CloudNativeCaptureImages } from "@qorpera/runtime/cloud-native-capture-images";
 import { nativeRuntimeFailureMetadata } from "@qorpera/runtime/cloud-native-failure";
@@ -323,14 +329,22 @@ it("bounds a stalled startup and preserves no raw diagnostics", async () => {
 	expect(Date.now() - started).toBeLessThan(2500);
 });
 
-it.each(["duplicate-id", "callback-budget"])("rejects native callback replay or floods: %s", async (mode) => {
-	const { result, execute } = run(mode);
+it("rejects a replayed native callback", async () => {
+	const { result, execute } = run("duplicate-id");
 	await expect(result).rejects.toThrow("Invalid native boundary protocol");
 	expect(execute).not.toHaveBeenCalled();
 });
 
-it("bounds total private diagnostics independently of individual protocol messages", async () => {
-	await expect(run("wire-budget").result).rejects.toThrow("Native boundary output limit exceeded");
+it("answers native callbacks far past the removed request cap without failing the run", async () => {
+	// No run is capped by its number of tool calls or requests (founder, 2026-09-24).
+	const { result, execute } = run("callback-flood");
+	await expect(result).resolves.toMatchObject({ toolCalls: 0 });
+	expect(execute).not.toHaveBeenCalled();
+});
+
+it("keeps no cap on total private diagnostics", async () => {
+	// The old 16 MiB output cap is gone; each protocol message stays bounded on its own.
+	await expect(run("wire-flood").result).resolves.toMatchObject({ toolCalls: 0 });
 });
 
 it("kills the process group, including a descendant that ignores graceful shutdown", async () => {
@@ -827,4 +841,110 @@ it("clears writing and its renewal timer when composition is cancelled", async (
 		["finish", "cancelled"],
 	]);
 	expect(f.execute).not.toHaveBeenCalled();
+});
+
+// Auto-review (v130): the reviewer is a second, fresh thread in the same app-server,
+// started while the agent's tool call is open. Its only output is its verdict tool
+// call; its model requests pass the fence on their own lane, never as the agent's.
+function reviewRun(mode: "review" | "review-no-verdict" | "review-wrong-tool") {
+	const execute = vi.fn<CloudNativeTool["execute"]>(async () => ({ kind: "text", value: "Sent." }));
+	const reviewer = new CloudActionReviewChannel();
+	const signal = new AbortController().signal;
+	const boundary = new CloudNativeToolBoundary({
+		companyId: randomUUID(),
+		runId: randomUUID(),
+		signal,
+		assertActive: async () => undefined,
+		tools: [
+			{
+				name: "send_email",
+				description: "Send an email",
+				source: "connector",
+				inputSchema: { type: "object", properties: { to: { type: "string" } }, additionalProperties: false },
+				parseArguments: (value) => value,
+				execute,
+			},
+		],
+		review: new CloudActionReviewGate({
+			binding: { runId: randomUUID() } as never,
+			control: {
+				call: async (method) =>
+					method === "qorpera_begin_action_review"
+						? { state: "review", agent: { name: "Tina" }, company: { name: "Acme" }, requester: null, rules: [] }
+						: { reviewId: "review-1", decision: "allow", card: false, reason: "Fine." },
+			},
+			reviewer,
+			request: "Email Bob.",
+			holdMs: 0,
+		}),
+	});
+	const contextViews: string[] = [];
+	const evidence = join(root, "evidence.json");
+	const result = runCloudCodexToolSession({
+		command: [process.execPath, rpcFixture, mode, evidence],
+		binarySha256,
+		boundary,
+		model: "offline-probe",
+		prompt: "Private test input",
+		reviewer,
+		recordContextView: async (frame) => {
+			contextViews.push(frame.threadId);
+		},
+		signal,
+	});
+	return { result, execute, evidence, contextViews };
+}
+
+it("reviews an acting call in a second thread of the same app-server before running it", async () => {
+	const { result, execute, evidence, contextViews } = reviewRun("review");
+	await expect(result).resolves.toMatchObject({ providerSessionId: "thread_fixture", toolCalls: 1 });
+	expect(execute).toHaveBeenCalledOnce();
+	const recorded = JSON.parse(await readFile(evidence, "utf8"));
+	expect(recorded.reviewerThread).toMatchObject({
+		model: "gpt-6-luna",
+		ephemeral: true,
+		approvalPolicy: "never",
+		sandbox: "read-only",
+		developerInstructions: CLOUD_ACTION_REVIEW_INSTRUCTIONS,
+		dynamicTools: [CLOUD_ACTION_REVIEW_SPECIFICATION],
+	});
+	expect(recorded.reviewerThread.cwd).toBe(recorded.mainThread.cwd);
+	expect(recorded.reviewerTurn).toMatchObject({ threadId: "thread_review", effort: "low" });
+	expect(JSON.parse(recorded.reviewerTurn.input[0].text)).toMatchObject({
+		request: "Email Bob.",
+		action: { tool: "send_email", target: "bob@acme.test" },
+	});
+	// The verdict is acknowledged, the reviewer's turn is stopped, and its closing
+	// request releases only that acknowledgement, never an agent tool result.
+	expect(recorded.verdictReply.result).toEqual({
+		contentItems: [{ type: "inputText", text: '{"recorded":true}' }],
+		success: true,
+	});
+	expect(recorded.interrupt).toEqual({ threadId: "thread_review", turnId: "turn_review" });
+	expect(recorded.closingFence.outputs).toEqual([
+		{ kind: "function_call_output", callId: "verdict_1", output: '{"recorded":true}' },
+	]);
+	expect(recorded.prewarm).toMatchObject({ threadId: "thread_review", outputs: [] });
+	// Only the agent's own requests are recorded as its context.
+	expect(contextViews.every((threadId) => threadId === "thread_fixture")).toBe(true);
+	expect(JSON.parse(recorded.reply.result.contentItems[0].text)).toMatchObject({ status: "ok" });
+});
+
+it("never runs an acting call when the reviewer ends without a verdict", async () => {
+	const { result, execute, evidence } = reviewRun("review-no-verdict");
+	await expect(result).resolves.toMatchObject({ providerSessionId: "thread_fixture" });
+	expect(execute).not.toHaveBeenCalled();
+	const recorded = JSON.parse(await readFile(evidence, "utf8"));
+	const envelope = JSON.parse(recorded.reply.result.contentItems[0].text);
+	expect(envelope).toMatchObject({ status: "denied" });
+	expect(envelope.content.text).toMatch(/^REVIEW_UNAVAILABLE: /);
+});
+
+it("refuses the reviewer any tool but its verdict, and never runs the call without one", async () => {
+	const { result, execute, evidence } = reviewRun("review-wrong-tool");
+	await expect(result).resolves.toMatchObject({ providerSessionId: "thread_fixture" });
+	expect(execute).not.toHaveBeenCalled();
+	const recorded = JSON.parse(await readFile(evidence, "utf8"));
+	expect(recorded.wrongTool.error).toMatchObject({ code: -32601 });
+	expect(JSON.parse(recorded.reply.result.contentItems[0].text).content.text).toMatch(/^REVIEW_UNAVAILABLE: /);
 });

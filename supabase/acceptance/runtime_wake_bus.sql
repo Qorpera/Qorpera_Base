@@ -217,15 +217,16 @@ begin
 end $$;
 $test$);
 
-select pg_temp.wake_acceptance_case('public_send_budget_enforced_at_admission',$test$
+select pg_temp.wake_acceptance_case('public_sends_have_no_count_at_admission',$test$
 do $$
 declare v_binding jsonb; v_count integer;
 begin
+	-- Runtime v92: no send limit per wake (was 64).
 	v_binding := pg_temp.wake_acceptance_routine('optional');
-	for v_count in 1..64 loop perform pg_temp.wake_public_send(v_binding,'progress','bounded-' || v_count); end loop;
-	perform pg_temp.wake_error(format('select pg_temp.wake_public_send(%L,''final'')',v_binding),'55000');
-	perform pg_temp.wake_assert((select count(*)=64 from public.qorpera_agent_sends
-		where run_id=(v_binding ->> 'runId')::uuid),'Budget denial does not append a 65th event');
+	for v_count in 1..70 loop perform pg_temp.wake_public_send(v_binding,'progress','many-' || v_count); end loop;
+	perform pg_temp.wake_public_send(v_binding,'final');
+	perform pg_temp.wake_assert((select count(*)=71 from public.qorpera_agent_sends
+		where run_id=(v_binding ->> 'runId')::uuid),'Seventy progress messages and a final are admitted');
 end $$;
 $test$);
 
@@ -283,7 +284,7 @@ begin
 end $$;
 $test$);
 
-select pg_temp.wake_acceptance_case('room_post_fans_out_bounded_sends_and_silent_completion',$test$
+select pg_temp.wake_acceptance_case('room_post_fans_out_sends_and_silent_completion',$test$
 do $$
 declare v_binding jsonb := current_setting('qorpera_test.wake_binding')::jsonb; v_base public.qorpera_execution_runs%rowtype;
 	v_room uuid := '30000000-0000-4000-8000-000000000080'; v_path text; v_doc text; v_entry jsonb; v_post jsonb;
@@ -317,16 +318,17 @@ begin
 	perform pg_temp.wake_assert((select count(*) = 1 from public.qorpera_session_events
 		where session_id = (v_post ->> 'sessionId')::uuid and session_input_id = (v_post ->> 'inputId')::uuid),
 		'The post enters the room conversation once');
-	-- First agent: the room policy bounds public sends to three; a fourth is refused at admission.
+	-- First agent: a room wake has no send limit (runtime v92); four progress messages and a final are admitted.
 	v_first := pg_temp.wake_start(null);
 	v_wake := public.qorpera_read_native_wake(v_first);
-	perform pg_temp.wake_assert(v_wake ->> 'kind' = 'room' and (v_wake #>> '{policy,maxPublicSends}') = '3'
+	perform pg_temp.wake_assert(v_wake ->> 'kind' = 'room' and v_wake -> 'policy' -> 'maxPublicSends' = 'null'::jsonb
 		and (v_wake #>> '{payload,roomId}') = v_room::text and (v_wake #>> '{audience,sessionId}') = v_post ->> 'sessionId','Room envelope');
 	perform public.qorpera_begin_native_company_execution(v_first,repeat('7',64));
 	perform pg_temp.wake_public_send(v_first,'progress','room-1');
 	perform pg_temp.wake_public_send(v_first,'progress','room-2');
-	perform pg_temp.wake_public_send(v_first,'final','room-3');
-	perform pg_temp.wake_error(format('select pg_temp.wake_public_send(%L,''progress'',''room-4'')',v_first),'55000');
+	perform pg_temp.wake_public_send(v_first,'progress','room-3');
+	perform pg_temp.wake_public_send(v_first,'progress','room-4');
+	perform pg_temp.wake_public_send(v_first,'final','room-5');
 	perform pg_temp.wake_acceptance_finish(v_first);
 	-- Second agent: silence is a valid room result.
 	v_second := pg_temp.wake_start(null);

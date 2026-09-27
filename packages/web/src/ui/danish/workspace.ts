@@ -143,8 +143,13 @@ export const WORKSPACE: Record<string, string> = {
 	"Create an agent": "Opret en agent",
 	"Enter a name and title.": "Skriv et navn og en titel.",
 	"Creating agent…": "Opretter agent…",
-	"The agent could not be created. Your draft is still here.":
-		"Agenten kunne ikke oprettes. Din kladde er her stadig.",
+	"Creation could not be confirmed. Retry to check the same agent.":
+		"Oprettelsen kunne ikke bekræftes. Prøv igen for at kontrollere den samme agent.",
+	"Check agent creation": "Kontroller agentoprettelse",
+	"Agent creation was rejected. Your draft is still here and can be edited.":
+		"Agentoprettelsen blev afvist. Din kladde er her stadig og kan redigeres.",
+	"Agent details are too long or invalid. Shorten them and try again.":
+		"Agentoplysningerne er for lange eller ugyldige. Gør dem kortere, og prøv igen.",
 
 	// app/views/signin.ts
 	"Continue with {provider}": "Fortsæt med {provider}",
@@ -173,6 +178,8 @@ export const WORKSPACE: Record<string, string> = {
 	"Choose a figure": "Vælg en figur",
 	"Saving…": "Gemmer…",
 	"Save appearance and continue": "Gem udseende og fortsæt",
+	"The appearance change could not be confirmed. Open the company to check it before saving again.":
+		"Ændringen af udseendet kunne ikke bekræftes. Åbn virksomheden og tjek det, før du gemmer igen.",
 	"Open the company without changing appearance": "Åbn virksomheden uden at ændre udseende",
 
 	// app/views/computer.ts
@@ -286,6 +293,8 @@ export const WORKSPACE: Record<string, string> = {
 	"Copy conversation ID": "Kopiér samtale-id",
 	"The conversation ID could not be copied.": "Samtale-id’et kunne ikke kopieres.",
 	"Show in sidebar": "Vis i sidepanelet",
+	"Hidden agents": "Skjulte agenter",
+	"Hidden agents: {count}": "Skjulte agenter: {count}",
 	"Hide from sidebar": "Skjul fra sidepanelet",
 	Delete: "Slet",
 	"Rename agent": "Omdøb agent",

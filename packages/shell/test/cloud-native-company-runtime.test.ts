@@ -39,6 +39,7 @@ import {
 	parseCloudRuntimeObservation,
 } from "@qorpera/runtime/cloud-runtime-observability";
 import type { CloudSecretOperationClient } from "@qorpera/runtime/cloud-secret-tools";
+import { CLOUD_ASK_MEMBER_PAYLOAD_SCHEMA } from "@qorpera/runtime/cloud-thread-interactions";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { nativeCompanyContextFixture } from "./fixtures/native-company-context-fixture.ts";
 
@@ -72,8 +73,10 @@ async function fixture(mode = "company-runtime", httpPathControl = false, presen
 	const wakeIdentity = f.context.identity;
 	const wakeInputId = randomUUID();
 	const wakeRoutineId = randomUUID();
+	// A dynamic routine run keeps its conversation so its reply rules can be shown.
+	const dynamic = mode === "company-dynamic";
 	const wake =
-		wakeIdentity.sessionId === null
+		wakeIdentity.sessionId === null || dynamic
 			? {
 					schema: "qorpera.wake-envelope/v1",
 					id: randomUUID(),
@@ -85,7 +88,11 @@ async function fixture(mode = "company-runtime", httpPathControl = false, presen
 					requesterUserId: wakeIdentity.requesterUserId,
 					actorStaffId: null,
 					actorUserId: null,
-					audience: { kind: wakeIdentity.audienceKind, userId: wakeIdentity.audienceUserId, sessionId: null },
+					audience: {
+						kind: wakeIdentity.audienceKind,
+						userId: wakeIdentity.audienceUserId,
+						sessionId: wakeIdentity.sessionId,
+					},
 					source: {
 						kind: "schedule",
 						id: wakeRoutineId,
@@ -97,7 +104,7 @@ async function fixture(mode = "company-runtime", httpPathControl = false, presen
 						initial: "optional",
 						final: "optional",
 						silenceAllowed: true,
-						maxPublicSends: 64,
+						maxPublicSends: null,
 					},
 					time: {
 						utc: "2026-09-02T08:00:00.000000Z",
@@ -110,7 +117,12 @@ async function fixture(mode = "company-runtime", httpPathControl = false, presen
 						wakeSchema: "qorpera.wake-envelope/v1",
 						runtimeBundleVersion: null,
 					},
-					routine: { id: wakeRoutineId, version: 1, intent: "Check the inbox and file anything new." },
+					routine: {
+						id: wakeRoutineId,
+						version: 1,
+						intent: "Check the inbox and file anything new.",
+						...(dynamic ? { dynamic: true, routineKey: "invoice-watch" } : {}),
+					},
 					payload: {
 						schema: "qorpera.routine-schedule-occurrence/v1",
 						triggerId: "tick",
@@ -142,7 +154,7 @@ async function fixture(mode = "company-runtime", httpPathControl = false, presen
 						initial: "required",
 						final: "required",
 						silenceAllowed: false,
-						maxPublicSends: 64,
+						maxPublicSends: null,
 					},
 					time: {
 						utc: "2026-09-02T08:00:00.000000Z",
@@ -240,6 +252,8 @@ async function fixture(mode = "company-runtime", httpPathControl = false, presen
 		adapterSha256: "b".repeat(64),
 		destinationOrigin: "https://api.linear.app",
 	};
+	const decisions: Record<string, unknown>[] = [];
+	const reviewedTools: string[] = [];
 	const pathCall = vi.fn<CloudCompanyPathControl["call"]>(async (method, args) => {
 		if (method === "qorpera_record_runtime_observation") {
 			expect(args.p_run_id).toBe(f.binding.runId);
@@ -276,7 +290,36 @@ async function fixture(mode = "company-runtime", httpPathControl = false, presen
 			};
 		}
 		if (method === "qorpera_describe_company_run_context") return structuredClone(f.context);
+		// Auto-review (v130): these fixtures approve every acting call up front; the review
+		// step itself is covered in cloud-action-review.test.ts and cloud-codex-tool-session.test.ts.
+		if (method === "qorpera_begin_action_review") {
+			expect(args.p_call).toEqual({
+				tool: expect.any(String),
+				argumentSha256: expect.stringMatching(/^[0-9a-f]{64}$/),
+			});
+			reviewedTools.push((args.p_call as { tool: string }).tool);
+			return { schema: "qorpera.action-review-begin/v1", state: "approved", reviewId: randomUUID() };
+		}
 		if (method === "qorpera_read_native_wake") return structuredClone(mode === "company-worker" ? workerWake : wake);
+		if (method === "qorpera_decide_agent_routine") {
+			decisions.push(args.p_request as Record<string, unknown>);
+			return {
+				schema: "qorpera.agent-routine-receipt/v1",
+				runId: f.binding.runId,
+				receiptId: randomUUID(),
+				action: "upsert",
+				routine: { routineKey: "invoice-watch", status: "active", version: 2, nextRunAt: "2026-09-02T10:00:00Z" },
+			};
+		}
+		if (method === "qorpera_describe_agent_open_work") {
+			if (mode === "company-worker") throw new Error("A worker keeps no todos");
+			return {
+				schema: "qorpera.agent-open-work/v1",
+				runId: f.binding.runId,
+				todos: { open: 40, blocked: 2 },
+				workers: { active: 5, blocked: 1 },
+			};
+		}
 		if (method === "qorpera_list_native_connector_tools") {
 			return mode === "company-secret" ? [structuredClone(connectorDescriptor)] : [];
 		}
@@ -516,6 +559,8 @@ async function fixture(mode = "company-runtime", httpPathControl = false, presen
 		runtime,
 		control,
 		pathCall,
+		decisions,
+		reviewedTools,
 		store,
 		deliveries,
 		evidence,
@@ -623,6 +668,8 @@ it.each(["available", "unavailable"])(
 it("composes office tools with the actual admitted native run and existing effect ledger, then releases occupancy", async () => {
 	const f = await fixture("company-office");
 	const result = await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+	// The office command is an acting call: it passed the review step (approved in this fixture).
+	expect(f.reviewedTools).toEqual(["computer_shell"]);
 	expect(result.delivery.messageCount).toBe(2);
 	expect(f.officeSession).toHaveBeenCalledTimes(1);
 	expect(f.officeEndpoint.perform).toHaveBeenCalledTimes(1);
@@ -703,6 +750,7 @@ it.each([
 				"manage_todo",
 				"manage_worker",
 				"organize_sidebar",
+				"add_review_rule",
 				"read_context",
 				"recall_memory",
 				"send_coworker_message",
@@ -718,7 +766,7 @@ it.each([
 		);
 		const prompt = JSON.parse(evidence.turnParameters.input[0].text);
 		expect(prompt.hireOverlay).toEqual({
-			schema: "qorpera.hire-overlay/v1",
+			schema: "qorpera.hire-overlay/v2",
 			trust: "job_specification_not_authority",
 			kind: agentKind,
 			agentId: f.context.identity.staffAgentId,
@@ -729,6 +777,8 @@ it.each([
 			startupAssignment: [],
 		});
 		expect(Object.keys(prompt).at(-1)).toBe("hireOverlay");
+		// Open work is counted, not listed: the list stays behind manage_todo and manage_worker.
+		expect(prompt.openWork).toEqual({ todos: { open: 40, blocked: 2 }, workers: { active: 5, blocked: 1 } });
 		expect(prompt).not.toHaveProperty("jobSpecification");
 		expect(prompt.currentInputs[0].authorUserId).toBe(f.context.identity.requesterUserId);
 		expect(prompt.history[0].kind).toBe("historical_data");
@@ -800,6 +850,8 @@ it("projects only native auth from a login capsule without materializing local c
 it("exposes only a named typed connector operation and keeps its grant and destination outside model arguments", async () => {
 	const f = await fixture("company-secret");
 	const result = await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+	// A connector write is reviewed; reads and the agent's own sends are not.
+	expect(f.reviewedTools).toEqual(["linear_issue_create"]);
 	expect(result.delivery).toEqual({ messageCount: 2, finalMessageId: f.deliveries.get("final")?.messageId });
 	expect(f.secretBroker?.execute).toHaveBeenCalledTimes(1);
 	expect(f.control.beginToolOperation).toHaveBeenCalledTimes(1);
@@ -925,6 +977,46 @@ it("requires a final send when there is an audience, but does not invent one for
 	expect(JSON.stringify(evidence.threadParameters.dynamicTools)).not.toContain('"name":"send_message"');
 });
 
+it("has a dynamic routine run decide its next run before its final message", async () => {
+	const f = await fixture("company-dynamic");
+	const result = await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+	expect(result.delivery).toEqual({ messageCount: 2, finalMessageId: f.deliveries.get("final")?.messageId });
+	// The early final and the save of its own routine never reached the kernel: the host showed the model why.
+	expect(f.pathCall.mock.calls.some(([method]) => method === "qorpera_manage_agent_routine")).toBe(false);
+	const sends = f.control.sendMessage.mock.calls.map(([, input]) => input);
+	expect(sends.map((input) => input.idempotencyKey)).toEqual(["progress", "final"]);
+	expect(f.decisions).toEqual([
+		{
+			action: "next",
+			operationKey: "next-1",
+			at: "2026-09-02T10:00:00.000Z",
+			intent: "Invoice 42 was still open at 10:00. Look again at noon.",
+		},
+	]);
+	const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
+	const names = evidence.threadParameters.dynamicTools[0].tools.map((tool: { name: string }) => tool.name);
+	expect(names).toContain("decide_routine");
+	expect(names).toContain("manage_routine");
+	const early = evidence.fenced.outputs
+		.map((output: { output: string }) => output.output)
+		.find((text: string) => text.includes("INVALID_ARGUMENTS"));
+	expect(early).toContain("decide this dynamic routine first");
+	const ownSave = evidence.fenced.outputs
+		.map((output: { output: string }) => output.output)
+		.find((text: string) => text.includes("this is the routine you are running"));
+	expect(ownSave).toContain("use decide_routine");
+	expect(evidence.threadParameters.developerInstructions).toContain("# This routine is dynamic");
+	// A fixed routine run is not offered the decision. A distinct private identity and
+	// company root keep the first fixture's state out of the second (as for the silent run).
+	await rm(f.identityRoot, { recursive: true, force: true });
+	await rm(f.companyRoot, { recursive: true, force: true });
+	const fixed = await fixture("company-silent");
+	await fixed.runtime.execute(fixed.request, fixed.identityRoot, new AbortController().signal);
+	const fixedEvidence = JSON.parse(await readFile(fixed.evidence, "utf8"));
+	expect(JSON.stringify(fixedEvidence.threadParameters.dynamicTools)).not.toContain('"name":"decide_routine"');
+	expect(fixedEvidence.threadParameters.developerInstructions).not.toContain("# This routine is dynamic");
+});
+
 it("raises one typed card for the member, appended before the final sentence, and ends the turn", async () => {
 	const f = await fixture("company-cards");
 	const result = await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
@@ -959,6 +1051,137 @@ it("raises one typed card for the member, appended before the final sentence, an
 	expect(JSON.stringify(f.observations)).not.toContain("digest");
 });
 
+it("finishes the turn for the longest card key ask_member accepts, and its retry replays both effects", async () => {
+	const f = await fixture("company-cards-long-key");
+	const result = await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+	const sends = f.control.sendMessage.mock.calls.map(([, input]) => input);
+	expect(sends.map((input) => input.phase)).toEqual(["final", "final"]);
+	// A bounded key derived from the card's key: the send accepts it and the retry reuses it.
+	const finalKey = sends[0]!.idempotencyKey;
+	expect(finalKey).toMatch(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/);
+	expect(sends[1]!.idempotencyKey).toBe(finalKey);
+	expect(result.delivery).toEqual({ messageCount: 1, finalMessageId: f.deliveries.get(finalKey)?.messageId });
+	expect(f.control.appendInteractionRequest).toHaveBeenCalledTimes(2);
+	const [first, second] = f.control.appendInteractionRequest.mock.calls.map(([, card]) => card.eventId);
+	expect(second).toBe(first);
+	const asks = f.observations.filter((row) => row.operation === "ask_member" && row.phase === "finish");
+	expect(asks.map((row) => row.status)).toEqual(["succeeded", "replayed"]);
+});
+
+it("tells the model the card shape and why a card was refused, so it can fix the card and retry", async () => {
+	const f = await fixture("company-cards-retry");
+	const result = await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+	expect(result.delivery).toEqual({ messageCount: 1, finalMessageId: f.deliveries.get("fruit:final")?.messageId });
+	const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
+	const ask = evidence.threadParameters.dynamicTools[0].tools.find(
+		(tool: { name: string }) => tool.name === "ask_member",
+	);
+	expect(ask.inputSchema.properties.payload).toEqual(CLOUD_ASK_MEMBER_PAYLOAD_SCHEMA);
+	const refused = JSON.parse(evidence.fenced.outputs[0].output);
+	expect(refused.status).toBe("denied");
+	expect(refused.content.text).toMatch(
+		/^INVALID_ARGUMENTS: the question payload must be \{options: \[\{label, value\?/,
+	);
+	expect(refused.content.text).toContain("never a plain string");
+	// Only the corrected card reached the kernel; the refusal is recorded as invalid arguments.
+	expect(f.control.appendInteractionRequest).toHaveBeenCalledOnce();
+	expect(f.control.appendInteractionRequest.mock.calls[0]![1].data.payload).toEqual({
+		options: [{ label: "Apples" }, { label: "Pears" }],
+	});
+	const asks = f.observations.filter((row) => row.operation === "ask_member" && row.phase === "finish");
+	expect(asks.map((row) => [row.status, row.errorCategory])).toEqual([
+		["denied", "invalid_arguments"],
+		["succeeded", null],
+	]);
+});
+
+it("refuses unavailable form and credential cards without effects and lets the model recover", async () => {
+	const f = await fixture("company-cards-unavailable");
+	const result = await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+	expect(f.control.appendInteractionRequest).not.toHaveBeenCalled();
+	expect(f.control.beginToolOperation).not.toHaveBeenCalled();
+	expect(f.control.completeToolOperation).not.toHaveBeenCalled();
+	expect(f.control.sendMessage).toHaveBeenCalledExactlyOnceWith(
+		f.request,
+		{
+			idempotencyKey: "fallback",
+			text: "This app cannot fill the page or sign in from the vault. No sign-in was performed.",
+			phase: "final",
+		},
+		expect.any(AbortSignal),
+	);
+	expect(result.delivery).toEqual({ messageCount: 1, finalMessageId: f.deliveries.get("fallback")?.messageId });
+	const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
+	const ask = evidence.threadParameters.dynamicTools[0].tools.find(
+		(tool: { name: string }) => tool.name === "ask_member",
+	);
+	expect(ask.inputSchema.properties.surface.enum).toEqual(["question", "secret", "takeover", "draft"]);
+	expect(ask.inputSchema.properties.payload).toEqual(CLOUD_ASK_MEMBER_PAYLOAD_SCHEMA);
+	expect(ask.inputSchema.properties.payload.oneOf.map((branch: { required: string[] }) => branch.required)).toEqual([
+		["options"],
+		["name", "label", "purpose"],
+		["instruction"],
+		["platform", "connectorId", "from", "to", "body"],
+	]);
+	for (const index of [0, 1]) {
+		const refused = JSON.parse(evidence.fenced.outputs[index].output);
+		expect(refused.status).toBe("denied");
+		expect(refused.content.text).toMatch(/^INVALID_ARGUMENTS:/);
+		expect(refused.content.text).toContain("No card was created");
+		expect(refused.content.text).toMatch(/unavailable|not supported/);
+	}
+	const asks = f.observations.filter((row) => row.operation === "ask_member" && row.phase === "finish");
+	expect(asks.map((row) => [row.status, row.errorCategory])).toEqual([
+		["denied", "invalid_arguments"],
+		["denied", "invalid_arguments"],
+	]);
+});
+
+/** A member's post in a room, as the kernel admits it: final required only in the agent's own thread. */
+function roomWake(f: Awaited<ReturnType<typeof fixture>>, final: "required" | "optional") {
+	const inputId = randomUUID();
+	const roomId = randomUUID();
+	Object.assign(f.wake, {
+		kind: "room",
+		actorUserId: f.wake.requesterUserId,
+		source: { kind: "room", id: inputId, occurrenceKey: `room:${roomId}:${inputId}:${f.wake.staffAgentId}` },
+		policy: {
+			schema: "qorpera.wake-policy/v1",
+			kind: "room",
+			initial: "optional",
+			final,
+			silenceAllowed: final !== "required",
+			maxPublicSends: null,
+		},
+		payload: { roomId, inputIds: [inputId], recipientStaffId: f.wake.staffAgentId },
+	});
+}
+
+it("raises a card in reply to a member's post in the agent's own thread", async () => {
+	const f = await fixture("company-cards");
+	roomWake(f, "required");
+	const result = await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+	expect(result.delivery).toEqual({ messageCount: 2, finalMessageId: f.deliveries.get("channel:final")?.messageId });
+	expect(f.control.appendInteractionRequest).toHaveBeenCalledTimes(2);
+	const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
+	const names = evidence.threadParameters.dynamicTools[0].tools.map((tool: { name: string }) => tool.name);
+	expect(names).toContain("ask_member");
+	expect(evidence.threadParameters.developerInstructions).toContain("# This wake: a post in a conversation");
+	expect(evidence.threadParameters.developerInstructions).toContain("a card from ask_member counts as one");
+});
+
+it("offers no card in a group chat, where the kernel lets the agent stay silent", async () => {
+	const f = await fixture("company-runtime");
+	roomWake(f, "optional");
+	const result = await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+	expect(result.delivery).toEqual({ messageCount: 2, finalMessageId: f.deliveries.get("final")?.messageId });
+	const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
+	const names = evidence.threadParameters.dynamicTools[0].tools.map((tool: { name: string }) => tool.name);
+	expect(names).toContain("send_message");
+	expect(names).not.toContain("ask_member");
+	expect(f.control.appendInteractionRequest).not.toHaveBeenCalled();
+});
+
 it("runs a background worker blank: reading tools and its report, no mouth, no coworkers, no delegation", async () => {
 	const f = await fixture("company-worker");
 	const result = await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
@@ -972,8 +1195,26 @@ it("runs a background worker blank: reading tools and its report, no mouth, no c
 		"recall_memory",
 		"report_work",
 	]);
-	expect(evidence.threadParameters.developerInstructions).toContain("Agent wakes with source.kind worker-dispatch");
-	expect(evidence.threadParameters.developerInstructions).not.toContain("Agent wakes with source.kind coworker:");
+	expect(evidence.threadParameters.developerInstructions).toContain("# This wake: you are a background worker");
+	expect(evidence.threadParameters.developerInstructions).toContain("# Before you stop\nCall report_work once");
+	// A worker keeps no todos: its prompt carries no open-work count, and the kernel is not asked for one.
+	expect(JSON.parse(evidence.turnParameters.input[0].text)).not.toHaveProperty("openWork");
+	expect(f.pathCall.mock.calls.map(([method]) => method)).not.toContain("qorpera_describe_agent_open_work");
+	expect(evidence.threadParameters.developerInstructions).not.toContain("# Standing work");
+	expect(evidence.threadParameters.developerInstructions).not.toContain("# This wake: a message from a coworker");
+});
+
+it("starts the run without the open-work count when the kernel cannot give it", async () => {
+	const f = await fixture("company-runtime");
+	const original = f.pathCall.getMockImplementation()!;
+	f.pathCall.mockImplementation(async (method, args, signal) => {
+		if (method === "qorpera_describe_agent_open_work") throw new Error("Open work unavailable");
+		return original(method, args, signal);
+	});
+	const result = await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+	expect(result.delivery.finalMessageId).toBe(f.deliveries.get("final")?.messageId);
+	const evidence = JSON.parse(await readFile(f.evidence, "utf8"));
+	expect(JSON.parse(evidence.turnParameters.input[0].text)).not.toHaveProperty("openWork");
 });
 
 it("does not fall back to local context or another harness when cloud context is unavailable", async () => {

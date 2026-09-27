@@ -1,7 +1,7 @@
 import { performance } from "node:perf_hooks";
-import type { CloudCodingCommandScope } from "@qorpera/contracts";
+import { type CloudCodingCommandScope, cloudCodingSessionLayout } from "@qorpera/contracts";
 import { type CodingCommandGuestPins, inspectCodingCommandGuest } from "./coding-command-transport.ts";
-import { lxdCodingVmPlan } from "./coding-vm.ts";
+import { lxdCodingMachineName, lxdCodingMachinePlan } from "./coding-machine.ts";
 import { parseLxdProcUptime } from "./lxd-proc-uptime.ts";
 
 const HASH = /^[0-9a-f]{64}$/;
@@ -19,7 +19,7 @@ export class LxdCodingLeaseTransport {
 		signal: AbortSignal,
 	) => Promise<void>;
 	constructor(
-		options: CodingCommandGuestPins & {
+		options: Omit<CodingCommandGuestPins, "workerId"> & {
 			scope: CloudCodingCommandScope;
 			authorize: (
 				scope: CloudCodingCommandScope,
@@ -29,18 +29,26 @@ export class LxdCodingLeaseTransport {
 			) => Promise<void>;
 		},
 	) {
-		const vm = lxdCodingVmPlan(options.vm).binding;
+		const machine = lxdCodingMachinePlan(options.machine).binding;
 		if (
 			Object.keys(options.scope).sort().join() !== "requestId,turn,vmId,workerId" ||
-			options.scope.workerId !== vm.workerId ||
-			options.scope.vmId !== vm.allocationId ||
+			!UUID.test(options.scope.workerId) ||
+			options.scope.vmId !== machine.machineId ||
 			!UUID.test(options.scope.requestId) ||
 			!Number.isSafeInteger(options.scope.turn) ||
 			options.scope.turn < 1
 		)
 			throw new Error("CODING_LEASE_SCOPE_INVALID");
 		this.#scope = Object.freeze({ ...options.scope });
-		this.#pins = { ...options, vm };
+		this.#pins = {
+			machine,
+			storage: options.storage,
+			workerId: options.scope.workerId,
+			bootId: options.bootId,
+			helperSha256: options.helperSha256,
+			guestConfigSha256: options.guestConfigSha256,
+			client: options.client,
+		};
 		this.#authorize = options.authorize;
 	}
 	async refresh(
@@ -62,9 +70,11 @@ export class LxdCodingLeaseTransport {
 		const started = performance.now();
 		await this.#authorize(this.#scope, leaseTokenSha256, ttlMs, signal);
 		await inspectCodingCommandGuest(this.#pins, signal);
-		const name = lxdCodingVmPlan(this.#pins.vm).request.name;
-		const path = "/var/lib/qorpera-coding/inbox/lease-refresh.json";
-		const clock = await this.#pins.client.readInstanceFile(this.#pins.vm.project, name, "/proc/uptime", 128, signal);
+		const name = lxdCodingMachineName(this.#pins.machine.machineId),
+			project = this.#pins.machine.project,
+			layout = cloudCodingSessionLayout(this.#scope.workerId);
+		const path = `${layout.custodyRoot}/inbox/lease-refresh.json`;
+		const clock = await this.#pins.client.readInstanceFile(project, name, "/proc/uptime", 128, signal);
 		const uptime = parseLxdProcUptime(clock.content);
 		if (clock.uid !== 0 || clock.gid !== 0 || clock.mode !== 0o444 || !Number.isSafeInteger(uptime) || uptime < 0)
 			throw new Error("CODING_GUEST_CLOCK_UNAVAILABLE");
@@ -73,22 +83,22 @@ export class LxdCodingLeaseTransport {
 		const notAfterMonoMs = uptime + remaining;
 		if (remaining < 1) throw new Error("CODING_LEASE_REFRESH_EXPIRED");
 		const input = `${JSON.stringify({ schema: "qorpera.coding-guest-lease-refresh/v1", ...this.#scope, leaseTokenSha256, ttlMs: remaining, notAfterMonoMs })}\n`;
-		await this.#pins.client.pushInstanceFile(this.#pins.vm.project, name, path, input, 0o444, signal);
-		const staged = await this.#pins.client.readInstanceFile(this.#pins.vm.project, name, path, 4096, signal);
+		await this.#pins.client.pushInstanceFile(project, name, path, input, 0o444, signal);
+		const staged = await this.#pins.client.readInstanceFile(project, name, path, 4096, signal);
 		if (staged.uid !== 0 || staged.gid !== 0 || staged.mode !== 0o444 || !staged.content.equals(Buffer.from(input)))
 			throw new Error("CODING_LEASE_STAGING_UNCONFIRMED");
 		await this.#authorize(this.#scope, leaseTokenSha256, remaining, signal);
 		signal.throwIfAborted();
 		await this.#pins.client.execInstance(
-			this.#pins.vm.project,
+			project,
 			name,
-			["/usr/bin/node", "/opt/qorpera-coding/cloud-coding-command-guest.mjs", "refresh-lease"],
+			["/usr/bin/node", "/opt/qorpera-coding/cloud-coding-command-guest.mjs", "refresh-lease", this.#scope.workerId],
 			signal,
 		);
 		const file = await this.#pins.client.readInstanceFile(
-			this.#pins.vm.project,
+			project,
 			name,
-			"/run/qorpera-coding/lease.json",
+			`${layout.runtimeRoot}/lease.json`,
 			4096,
 			signal,
 		);

@@ -6,12 +6,15 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual, promisify } from "node:util";
-import { type CloudCodingRepository, parseCloudCodingRepository } from "@qorpera/contracts";
-import { type CodingGuestConfiguration, parseCodingGuestConfiguration } from "./cloud-coding-guest-configuration.ts";
+import { type CloudCodingRepository, cloudCodingSessionLayout, parseCloudCodingRepository } from "@qorpera/contracts";
+import {
+	type CodingGuestConfiguration,
+	type CodingGuestFolders,
+	parseCodingGuestConfiguration,
+} from "./cloud-coding-guest-configuration.ts";
 import { assertCloudCodingGuestStorage } from "./cloud-coding-storage-guest.ts";
 
 const exec = promisify(execFile);
-const ROOT = "/var/lib/qorpera-coding";
 const ENTRY = "/opt/qorpera-coding/cloud-coding-git-guest.mjs";
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 export const CODING_GIT_CHUNK_BYTES = 32768;
@@ -41,9 +44,11 @@ export interface CodingGitGuestReceipt {
 }
 export type CodingGitGuestConfiguration = CodingGuestConfiguration;
 export interface CodingGitGuestPorts {
-	/** Trusted test composition only; production paths and subprocess are fixed. */
+	/** Trusted test composition only; production uses the session's fixed layout
+	 * (cloudCodingSessionLayout) and subprocess. */
 	root?: string;
 	configurationPath?: string;
+	folders?: CodingGuestFolders;
 	protectedUid?: number;
 	protectedDirectoryRoot?: string;
 	inspectMachine?: () => Promise<string>;
@@ -52,7 +57,10 @@ export interface CodingGitGuestPorts {
 	assertStorage?: (guest: CodingGuestConfiguration) => Promise<void>;
 }
 
-async function assertCommandQuiescence(ports: CodingGitGuestPorts): Promise<void> {
+/** No command of this session is running: its own units only. Other sessions
+ * of the member's machine keep working while this one exports. */
+async function assertCommandQuiescence(ports: CodingGitGuestPorts, workerId: string): Promise<void> {
+	const prefix = cloudCodingSessionLayout(workerId).unitPrefix;
 	const system =
 		ports.system ??
 		(async (executable: string, args: readonly string[]) => {
@@ -76,7 +84,7 @@ async function assertCommandQuiescence(ports: CodingGitGuestPorts): Promise<void
 		"--no-legend",
 		"--no-pager",
 		"--type=service",
-		"qorpera-coding-*.service",
+		`${prefix}*.service`,
 	]);
 	const units = output.trim()
 		? output
@@ -87,8 +95,8 @@ async function assertCommandQuiescence(ports: CodingGitGuestPorts): Promise<void
 	if (units.length > 1024 || new Set(units).size !== units.length)
 		throw new Error("CODING_GIT_COMMAND_STATE_UNCONFIRMED");
 	for (const unit of units) {
-		const match = /^qorpera-coding-([0-9a-f-]{36})\.service$/.exec(unit);
-		if (!match || !UUID.test(match[1])) throw new Error("CODING_GIT_COMMAND_STATE_UNCONFIRMED");
+		const command = unit.startsWith(prefix) && unit.endsWith(".service") ? unit.slice(prefix.length, -8) : "";
+		if (!UUID.test(command)) throw new Error("CODING_GIT_COMMAND_STATE_UNCONFIRMED");
 		const status = await system("/usr/bin/systemctl", [
 			"show",
 			unit,
@@ -155,10 +163,17 @@ export function parseCodingGitGuestRequest(value: unknown): CodingGitGuestReques
 		repository: parseCloudCodingRepository(record.repository),
 	}) as unknown as CodingGitGuestRequest;
 }
-async function protectedRead(path: string, owner: number, limit: number, boundary = "/"): Promise<Buffer> {
+async function protectedRead(
+	path: string,
+	owner: number,
+	limit: number,
+	boundary = "/",
+	mountRoot?: string,
+): Promise<Buffer> {
 	for (let parent = dirname(path); ; parent = dirname(parent)) {
 		const stat = await lstat(parent);
-		if (!stat.isDirectory() || (stat.uid !== owner && parent !== ROOT) || (stat.mode & 0o022) !== 0)
+		// Only the session's verified NAS custody mount root is the host service's.
+		if (!stat.isDirectory() || (stat.uid !== owner && parent !== mountRoot) || (stat.mode & 0o022) !== 0)
 			throw new Error("UNPROTECTED_CODING_GIT_PATH");
 		if (parent === boundary || parent === dirname(parent)) break;
 	}
@@ -206,16 +221,20 @@ async function machine(): Promise<string> {
 }
 async function load(
 	ports: CodingGitGuestPorts,
+	workerId: string,
 	transferId: string,
 ): Promise<{ request: CodingGitGuestRequest; guest: CodingGitGuestConfiguration; root: string }> {
 	if (!UUID.test(transferId)) throw new Error("INVALID_CODING_GIT_TRANSFER_ID");
+	const layout = cloudCodingSessionLayout(workerId);
 	const owner = ports.protectedUid ?? 0,
-		root = ports.root ?? ROOT;
-	const path = ports.configurationPath ?? "/etc/qorpera-coding/guest.json";
+		root = ports.root ?? layout.custodyRoot;
+	const path = ports.configurationPath ?? `${layout.configurationRoot}/guest.json`;
 	if (((await lstat(path)).mode & 0o777) !== 0o444) throw new Error("CODING_GIT_GUEST_CONFIG_MODE");
 	const guest = parseCodingGuestConfiguration(
 		JSON.parse((await protectedRead(path, owner, 8192, ports.protectedDirectoryRoot)).toString("utf8")),
+		ports.folders,
 	);
+	if (guest.workerId !== workerId) throw new Error("CODING_GIT_GUEST_SCOPE_CHANGED");
 	await (ports.assertStorage ?? assertCloudCodingGuestStorage)(guest);
 	if ((await (ports.inspectMachine ?? machine)()) !== guest.bootId) throw new Error("CODING_GIT_GUEST_BOOT_CHANGED");
 	const request = parseCodingGitGuestRequest(
@@ -226,6 +245,7 @@ async function load(
 					owner,
 					8192,
 					ports.protectedDirectoryRoot,
+					root,
 				)
 			).toString("utf8"),
 		),
@@ -239,11 +259,12 @@ async function load(
  * one fixed unprivileged child, then copies bounded bytes into protected files. */
 export async function runCodingGitGuest(
 	action: "prepare" | "seed" | "export",
+	workerId: string,
 	transferId: string,
 	ports: CodingGitGuestPorts = {},
 ): Promise<CodingGitGuestReceipt | null> {
 	if (!ports.inspectMachine && process.getuid?.() !== 0) throw new Error("CODING_GIT_GUEST_REQUIRES_ROOT");
-	const { request, guest, root } = await load(ports, transferId);
+	const { request, guest, root } = await load(ports, workerId, transferId);
 	if (action !== "prepare" && action !== request.action) throw new Error("CODING_GIT_GUEST_ACTION_CHANGED");
 	const directory = join(root, "git", transferId);
 	await mkdir(join(root, "git"), { recursive: true, mode: 0o755 });
@@ -253,7 +274,7 @@ export async function runCodingGitGuest(
 		if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
 	}
 	const read = (name: string, limit: number) =>
-		protectedRead(join(directory, name), ports.protectedUid ?? 0, limit, ports.protectedDirectoryRoot);
+		protectedRead(join(directory, name), ports.protectedUid ?? 0, limit, ports.protectedDirectoryRoot, root);
 	try {
 		const intent = JSON.parse((await read("intent.json", 8192)).toString("utf8"));
 		if (!isDeepStrictEqual(intent, request)) throw new Error("CODING_GIT_GUEST_INTENT_CHANGED");
@@ -263,7 +284,7 @@ export async function runCodingGitGuest(
 	}
 	if (action === "prepare") return null;
 	if (action === "export") {
-		await assertCommandQuiescence(ports);
+		await assertCommandQuiescence(ports, workerId);
 		const seed = parseCodingGitGuestRequest(
 			JSON.parse(
 				(
@@ -272,15 +293,14 @@ export async function runCodingGitGuest(
 						ports.protectedUid ?? 0,
 						8192,
 						ports.protectedDirectoryRoot,
+						root,
 					)
 				).toString("utf8"),
 			),
 		);
-		if (
-			seed.workerId !== request.workerId ||
-			seed.vmId !== request.vmId ||
-			!isDeepStrictEqual(seed.repository, request.repository)
-		)
+		// The claim belongs to the session's volume, which outlives every machine
+		// the session runs on: the seeding machine may be gone.
+		if (seed.workerId !== request.workerId || !isDeepStrictEqual(seed.repository, request.repository))
 			throw new Error("CODING_GIT_GUEST_REPOSITORY_CHANGED");
 	}
 	try {
@@ -322,7 +342,7 @@ export async function runCodingGitGuest(
 	// No automatic retry after an uncertain child, even under a new process.
 	await retain(join(directory, "dispatched.json"), Buffer.from(JSON.stringify({ transferId, bootId: guest.bootId })));
 	const output = await (ports.execute ?? child)(request, guest, root);
-	if (action === "export") await assertCommandQuiescence(ports);
+	if (action === "export") await assertCommandQuiescence(ports, workerId);
 	if (action === "seed" && output.toString("utf8") !== "seeded\n") throw new Error("CODING_GIT_SEED_UNCONFIRMED");
 	if (action === "export" && (output.length < 1 || output.length > CODING_GIT_BUNDLE_BYTES))
 		throw new Error("CODING_GIT_EXPORT_TOO_LARGE");
@@ -368,6 +388,7 @@ async function child(request: CodingGitGuestRequest, guest: CodingGitGuestConfig
 				"--max-old-space-size=128",
 				ENTRY,
 				"execute",
+				request.workerId,
 				request.transferId,
 			],
 			{
@@ -409,8 +430,8 @@ async function child(request: CodingGitGuestRequest, guest: CodingGitGuestConfig
 
 /** Executed only as the coding uid. A fresh Git directory isolates export
  * from workspace configuration and hooks; root sees only the resulting bytes. */
-export async function executeCodingGitGuest(transferId: string): Promise<Buffer> {
-	const { request, guest, root } = await load({}, transferId);
+export async function executeCodingGitGuest(workerId: string, transferId: string): Promise<Buffer> {
+	const { request, guest, root } = await load({}, workerId, transferId);
 	if (process.getuid?.() !== guest.uid || process.getgid?.() !== guest.gid)
 		throw new Error("CODING_GIT_CHILD_IDENTITY_CHANGED");
 	return executeCodingGitGuestRepository(request, guest, root);
@@ -523,12 +544,12 @@ export async function executeCodingGitGuestRepository(
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-	const [action, transferId, extra] = process.argv.slice(2);
+	const [action, workerId, transferId, extra] = process.argv.slice(2);
 	try {
-		if (!transferId || extra) throw new Error("INVALID_CODING_GIT_ARGUMENTS");
-		if (action === "execute") process.stdout.write(await executeCodingGitGuest(transferId));
+		if (!workerId || !transferId || extra) throw new Error("INVALID_CODING_GIT_ARGUMENTS");
+		if (action === "execute") process.stdout.write(await executeCodingGitGuest(workerId, transferId));
 		else if (action === "prepare" || action === "seed" || action === "export")
-			process.stdout.write(`${JSON.stringify(await runCodingGitGuest(action, transferId))}\n`);
+			process.stdout.write(`${JSON.stringify(await runCodingGitGuest(action, workerId, transferId))}\n`);
 		else throw new Error("INVALID_CODING_GIT_ARGUMENTS");
 	} catch {
 		process.stderr.write("CODING_GIT_GUEST_REFUSED\n");

@@ -78,6 +78,8 @@ const finalInterfaces = `${activeBundle}=${q(F.bundle)}
   and to_regprocedure('public.qorpera_set_company_execution_ceiling(uuid,bigint,bigint,bigint)') is null
   and to_regclass('public.qorpera_company_execution_ceilings') is null
   and to_regclass('public.qorpera_company_ceiling_trips') is null
+  and to_regclass('public.qorpera_company_machine_limits') is null
+  and to_regprocedure('public.qorpera_set_company_machine_limit(uuid,integer,bigint)') is null
   and to_regprocedure('public.qorpera_consent_provider_connection_autonomous(uuid,uuid,boolean)') is not null
   and to_regprocedure('public.qorpera_handoff_run_sponsor(uuid,text)') is not null
   and to_regprocedure('public.qorpera_ensure_default_agent_read_grants(uuid,uuid)') is not null

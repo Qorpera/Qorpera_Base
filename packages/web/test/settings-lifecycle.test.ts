@@ -56,8 +56,8 @@ function open(root: Element) {
 }
 
 function confirmCompanyRemoval(root: Element, deleting: boolean, profile = profileA) {
-	root.querySelector<HTMLDetailsElement>(".company-danger")!.open = true;
-	click(root, ".company-danger button");
+	expect(root.querySelector(".company-exit")?.textContent).toBe(deleting ? "Delete company" : "Leave company");
+	click(root, ".company-exit");
 	const dialog = document.querySelector('[role="alertdialog"]')!;
 	if (deleting) {
 		const input = dialog.querySelector("input")!;
@@ -109,7 +109,8 @@ describe("settings session lifecycle", () => {
 				await draw();
 			}
 			expect(picker.value).toBe(selected.profileId);
-			expect(f.root.querySelector("#settings-content h1")?.textContent).toBe(selected.profileName);
+			// The Company tab has no heading of its own.
+			expect(f.root.querySelector("#settings-content h1")).toBeNull();
 			expect(f.root.querySelector(`.settings-dialog a[href='#/c/${selected.profileId}/file']`)).not.toBeNull();
 			expect(f.cloud.rpc).not.toHaveBeenCalled();
 		},
@@ -182,7 +183,7 @@ describe("settings session lifecycle", () => {
 		expect(f.cloud.supabase.removeChannel).toHaveBeenLastCalledWith(channels[2]);
 		expect(f.cloud.supabase.removeChannel).not.toHaveBeenCalledWith(channels[0]);
 	});
-	it("opens all five tabs over the same conversation and restores the profile button", async () => {
+	it("opens all seven tabs over the same conversation and restores the profile button", async () => {
 		const f = await setup(),
 			composer = f.root.querySelector<HTMLTextAreaElement>("textarea")!;
 		composer.value = "Keep my conversation draft";
@@ -191,10 +192,12 @@ describe("settings session lifecycle", () => {
 		await draw();
 		expect([...f.root.querySelectorAll('[role="tab"]')].map((tab) => tab.textContent)).toEqual([
 			"General",
+			"Appearance",
 			"Company",
 			"Friends",
 			"Plan & usage",
 			"Connections",
+			"Rules",
 		]);
 		for (const tab of f.root.querySelectorAll('[role="tab"]')) expect(tab.querySelector("svg.icon")).not.toBeNull();
 		expect(f.root.querySelector<HTMLElement>(".frame")!.inert).toBe(true);
@@ -241,13 +244,27 @@ describe("settings session lifecycle", () => {
 		expect(f.root.querySelector<HTMLDetailsElement>(".company-invite")!.open).toBe(true);
 		expect(f.root.querySelector<HTMLSelectElement>('[data-draft="invite-role"]')!.value).toBe("viewer");
 		expect(document.activeElement).toBe(f.root.querySelector('[data-draft="invite-role"]'));
+		// Each word matches on its own, so the button's own label finds its tab.
+		search.value = "Delete company";
+		search.dispatchEvent(new Event("input"));
+		expect(
+			[...f.root.querySelectorAll<HTMLElement>(".settings-nav [role=tab]")]
+				.filter((tab) => !tab.hidden)
+				.map((tab) => tab.id),
+		).toEqual(["settings-tab-company"]);
+		const exit = f.root.querySelector<HTMLButtonElement>(".company-exit")!;
+		exit.focus();
+		f.hints.get("qorpera_profile_access_state")!();
+		await draw();
+		expect(f.root.querySelector(".company-exit")).not.toBe(exit);
+		expect(document.activeElement).toBe(f.root.querySelector(".company-exit"));
 		search.value = "";
 		search.dispatchEvent(new Event("input"));
 		click(f.root, "#settings-tab-general");
 		f.root
 			.querySelector("#settings-tab-general")!
 			.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
-		expect(document.activeElement).toBe(f.root.querySelector("#settings-tab-company"));
+		expect(document.activeElement).toBe(f.root.querySelector("#settings-tab-appearance"));
 	});
 	it("selects the top matching tab when a search hides the open one", async () => {
 		const f = await setup();
@@ -519,6 +536,8 @@ describe("settings session lifecycle", () => {
 		expect(f.api.getTeam).toHaveBeenCalledTimes(1);
 		expect(f.root.querySelector(".settings-team")!.textContent).toContain("Team temporarily unavailable");
 		expect(f.root.querySelector(".settings-team")!.textContent).not.toContain("Loading team");
+		// No Delete company while the team cannot be read; the empty slot hides.
+		expect(f.root.querySelector(".settings-company-exit")!.childElementCount).toBe(0);
 		[...f.root.querySelectorAll("button")].find((button) => button.textContent === "Retry company")!.click();
 		await draw();
 		expect(f.api.getTeam).toHaveBeenCalledTimes(2);
@@ -527,7 +546,9 @@ describe("settings session lifecycle", () => {
 		[...f.root.querySelectorAll("button")].find((button) => button.textContent === "Retry company")!.click();
 		await draw();
 		expect(f.root.querySelector(".settings-team")!.textContent).not.toContain("Team temporarily unavailable");
-		expect(f.root.querySelector(".company-danger")).not.toBeNull();
+		expect(f.root.querySelector(".settings-file + .settings-company-exit > .company-exit")?.textContent).toBe(
+			"Delete company",
+		);
 		expect(f.cloud.rpc).not.toHaveBeenCalled();
 	});
 	it.each(["delete", "leave"])("closes settings and refreshes the hub after %s", async (action) => {
@@ -590,7 +611,7 @@ describe("settings session lifecycle", () => {
 		await draw();
 		confirmCompanyRemoval(f.root, true);
 		await draw();
-		expect(f.root.querySelector(".settings-team")!.textContent).toContain("Deletion unavailable");
+		expect(f.root.querySelector(".settings-company-exit")!.textContent).toContain("Deletion unavailable");
 		expect(f.root.querySelector<HTMLElement>(".frame")!.inert).toBe(true);
 		expect(f.root.querySelector(".company-card[href]")!.textContent).toContain(profileA.profileName);
 		expect(f.api.listProfiles).toHaveBeenCalledTimes(1);
@@ -681,6 +702,25 @@ describe("settings session lifecycle", () => {
 		expect(f.api.listProfiles).toHaveBeenCalledTimes(2);
 		expect(f.cloud.supabase.removeChannel).toHaveBeenCalledTimes(1);
 		expect(f.cloud.rpc).not.toHaveBeenCalled();
+	});
+	it.each(["settings", "team page"])("shows a failed company deletion right under its button in %s", async (place) => {
+		history.replaceState(null, "", place === "settings" ? "/#/" : `/#/c/${profileA.profileId}/team`);
+		const fixtureState = fixture();
+		vi.spyOn(fixtureState.api, "deleteProfile").mockRejectedValue(new Error("Deleting is paused"));
+		const f = await setup(fixtureState);
+		if (place === "settings") {
+			open(f.root);
+			click(f.root, "#settings-tab-company");
+			await draw();
+		}
+		confirmCompanyRemoval(f.root, true);
+		await draw();
+		const exit = f.root.querySelector(".company-exit")!;
+		expect(exit.nextElementSibling?.matches(".notice-danger")).toBe(true);
+		expect(exit.nextElementSibling?.textContent).toContain("Deleting is paused");
+		// Not also at the top of the page, above the members.
+		expect(f.root.querySelectorAll(".notice-danger")).toHaveLength(1);
+		expect(location.hash).toBe(place === "settings" ? "#/" : `#/c/${profileA.profileId}/team`);
 	});
 	it("does not restore a removed company from an older company-list request", async () => {
 		history.replaceState(null, "", "/#/");

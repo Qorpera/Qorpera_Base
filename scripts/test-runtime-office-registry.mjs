@@ -94,7 +94,7 @@ try {
 	docker(psql, `${fixtureParts[0]}\n${setupParts[0]}\n${readFileSync(join(root, "supabase/tests/fixtures/runtime-office-member-views-cases.sql"), "utf8")}\nrollback;`);
 	console.log("PASS: member screen discovery, exact owner cancellation, ambiguous/expired ticket recovery and retained physical drain");
 	docker(psql, `${fixtureParts[0]}\n${setupParts[0]}\n${readFileSync(join(root, "supabase/tests/fixtures/runtime-machine-capacity-cases.sql"), "utf8")}\nrollback;`);
-	console.log("PASS: native/office shared machine ceiling, founder stop, durable refusal notification, exact deletion proof, no expiry-based capacity release");
+	console.log("PASS: native and office machines with no company limit, operator stop, exact deletion proof, no expiry-based capacity release");
 	const lines = docker(psql, `${fixtureParts[0]}\n${setupParts[0]}\n${readFileSync(join(root,"supabase/tests/fixtures/runtime-office-company-file-source.sql"),"utf8")}
 		select pg_temp.wake_public_send(current_setting('qorpera_test.wake_binding')::jsonb,'progress');
 		select jsonb_build_object('binding',current_setting('qorpera_test.wake_binding')::jsonb,'companyFile',current_setting('qorpera_test.company_import_source')::jsonb,
@@ -161,8 +161,7 @@ try {
 	docker(psql, `${service} ${effectCall("finish")} ${call("release", effectLease)}`);
 	console.log("PASS: two guest dispatches consume one real native receipt exactly once");
 
-	docker(psql, `set request.jwt.claims='{"role":"authenticated","sub":"30000000-0000-4000-8000-000000000001"}';
-		set role authenticated; select public.qorpera_set_company_machine_limit('${setup.scope.companyId}',1,0);`);
+	// No company machine limit (runtime v92): concurrent office and native starts both get a machine.
 	const machines = [session(), session()];
 	machines[0].child.stdin.end(`${service} select public.qorpera_reserve_runtime_machine('${setup.runner.allocationId}',
 		${sqlText(setup.runner.provider)},repeat('a',64),'${setup.binding.runId}','${setup.binding.runnerId}');`);
@@ -170,9 +169,9 @@ try {
 		'lxd',repeat('b',64),null,null,'${setup.scope.companyComputerId}',1);`);
 	const allocations = await Promise.all(machines.map((contender) => contender.done));
 	for (const allocation of allocations) assert.equal(allocation.code, 0, allocation.error);
-	assert.deepEqual(allocations.map((result) => JSON.parse(result.output).state).sort(), ["refused", "reserved"]);
-	assert.equal(docker(psql, "select count(*) from public.qorpera_runtime_machine_allocations where released_at is null;"), "1");
-	console.log("PASS: concurrent office/native starts admit exactly one machine at the company ceiling");
+	assert.deepEqual(allocations.map((result) => JSON.parse(result.output).state).sort(), ["reserved", "reserved"]);
+	assert.equal(docker(psql, "select count(*) from public.qorpera_runtime_machine_allocations where released_at is null;"), "2");
+	console.log("PASS: concurrent office/native starts both get a machine with no company limit");
 
 	const viewerOwner = `set request.jwt.claims='{"role":"authenticated","sub":"30000000-0000-4000-8000-000000000001"}'; set role authenticated;`;
 	const viewerEpoch = () => Number(docker(psql, `select epoch from public.qorpera_runtime_office_screens where id='${effectLease.binding.screenId}';`));

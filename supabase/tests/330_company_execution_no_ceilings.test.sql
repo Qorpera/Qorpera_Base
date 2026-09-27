@@ -211,36 +211,52 @@ begin
 end
 $$;
 
--- Without company ceilings an API-billing connection still enforces its own
--- monetary quota. The first run holds 300,000,000 units of a now 300,000,000
--- monthly quota; concurrency still has three slots.
+-- An API-billing connection has no monthly budget either (runtime v92): the
+-- first run already holds the whole 300,000,000-unit monthly figure of
+-- version 2, and a second run is still admitted. Its concurrency still holds:
+-- version 3 allows two runs at once, and a third request is refused.
 insert into public.qorpera_provider_connection_versions
 select (jsonb_populate_record(null::public.qorpera_provider_connection_versions,
  to_jsonb(v)||jsonb_build_object('version',2,'quota_policy',v.quota_policy||'{"monthly_microusd":300000000}'::jsonb))).*
 from public.qorpera_provider_connection_versions v
 where connection_id='29000000-0000-4000-8000-000000000160' and version=1;
+insert into public.qorpera_provider_connection_versions
+select (jsonb_populate_record(null::public.qorpera_provider_connection_versions,
+ to_jsonb(v)||jsonb_build_object('version',3,'quota_policy',v.quota_policy||'{"max_concurrent_runs":2}'::jsonb))).*
+from public.qorpera_provider_connection_versions v
+where connection_id='29000000-0000-4000-8000-000000000160' and version=1;
 insert into public.qorpera_execution_sponsor_versions
 select (jsonb_populate_record(null::public.qorpera_execution_sponsor_versions,
- to_jsonb(v)||'{"version":2,"provider_connection_version":2}'::jsonb)).*
-from public.qorpera_execution_sponsor_versions v
+ to_jsonb(v)||jsonb_build_object('version',n,'provider_connection_version',n))).*
+from public.qorpera_execution_sponsor_versions v, generate_series(2,3) n
 where binding_id='29000000-0000-4000-8000-000000000170' and version=1;
 insert into public.qorpera_profile_staff(profile_id,staff_agent_id,display_name,role,charter,
  appearance_color,appearance_shape,employment_status,lifecycle_state,model_provider,model_id,created_at,updated_at,updated_by_user_id)
 values('29000000-0000-4000-8000-000000000010','29000000-0000-4000-8000-000000000031','Quota agent','Research','Check API quota.',
+ 'blue','round','active','active','openai','gpt-native',clock_timestamp(),clock_timestamp(),'29000000-0000-4000-8000-000000000001'),
+ ('29000000-0000-4000-8000-000000000010','29000000-0000-4000-8000-000000000032','Second quota agent','Research','Check API concurrency.',
  'blue','round','active','active','openai','gpt-native',clock_timestamp(),clock_timestamp(),'29000000-0000-4000-8000-000000000001');
 insert into public.qorpera_shared_sessions(id,client_session_id,profile_id,environment_id,title,status,
  created_by_user_id,staff_agent_id,staff_version,execution_scope)
 values ('29000000-0000-4000-8000-000000000190','29000000-0000-4000-8000-000000000191',
  '29000000-0000-4000-8000-000000000010','29000000-0000-4000-8000-000000000020','Quota session','open',
- '29000000-0000-4000-8000-000000000001','29000000-0000-4000-8000-000000000031',1,'{}');
+ '29000000-0000-4000-8000-000000000001','29000000-0000-4000-8000-000000000031',1,'{}'),
+ ('29000000-0000-4000-8000-000000000192','29000000-0000-4000-8000-000000000193',
+ '29000000-0000-4000-8000-000000000010','29000000-0000-4000-8000-000000000020','Concurrency session','open',
+ '29000000-0000-4000-8000-000000000001','29000000-0000-4000-8000-000000000032',1,'{}');
+create function pg_temp.quota_turn(p_session uuid,p_sponsor_version bigint)
+returns jsonb language sql as $$
+	select public.qorpera_request_session_turn_v2(
+		p_session,extensions.gen_random_uuid(),extensions.gen_random_uuid(),
+		'{"schema":"qorpera.session-prompt/v1","text":"Check API quota.","images":[]}','company_connection',
+		'29000000-0000-4000-8000-000000000170',p_sponsor_version,null,
+		(current_setting('qorpera_test.company_identity')::jsonb->>'compute_identity_id')::uuid,
+		null,'managed_sandbox','agent_turn','agent_turn','automatic',null,'{}')
+$$;
 select pg_temp.path_claims('authenticated','29000000-0000-4000-8000-000000000001');
 set local role authenticated;
-select set_config('qorpera_test.connection_quota_request',public.qorpera_request_session_turn_v2(
- '29000000-0000-4000-8000-000000000190',extensions.gen_random_uuid(),extensions.gen_random_uuid(),
- '{"schema":"qorpera.session-prompt/v1","text":"Check API quota.","images":[]}','company_connection',
- '29000000-0000-4000-8000-000000000170',2,null,
- (current_setting('qorpera_test.company_identity')::jsonb->>'compute_identity_id')::uuid,
- null,'managed_sandbox','agent_turn','agent_turn','automatic',null,'{}')::text,true);
+select set_config('qorpera_test.connection_quota_request',
+ pg_temp.quota_turn('29000000-0000-4000-8000-000000000190',2)::text,true);
 reset role;
 select pg_temp.path_claims('service_role');
 set local role service_role;
@@ -249,11 +265,30 @@ reset role;
 do $$
 declare v_request uuid:=(current_setting('qorpera_test.connection_quota_request')::jsonb->>'turn_request_id')::uuid;
 begin
+ if not exists(select 1 from public.qorpera_execution_runs run
+   join public.qorpera_execution_sponsor_reservations reservation on reservation.run_id=run.id
+   where run.source_id=v_request and reservation.status='reserved')
+  or (select count(*) from public.qorpera_execution_sponsor_reservations
+   where provider_connection_id='29000000-0000-4000-8000-000000000160' and status='reserved')<>2 then
+  raise exception 'An API connection still refused a run over its monthly figure'; end if;
+end $$;
+select pg_temp.path_claims('authenticated','29000000-0000-4000-8000-000000000001');
+set local role authenticated;
+select set_config('qorpera_test.connection_concurrency_request',
+ pg_temp.quota_turn('29000000-0000-4000-8000-000000000192',3)::text,true);
+reset role;
+select pg_temp.path_claims('service_role');
+set local role service_role;
+select public.qorpera_materialize_session_turn_requests(32);
+reset role;
+do $$
+declare v_request uuid:=(current_setting('qorpera_test.connection_concurrency_request')::jsonb->>'turn_request_id')::uuid;
+begin
  if not exists(select 1 from public.qorpera_session_turn_requests where id=v_request and status='failed')
   or exists(select 1 from public.qorpera_execution_runs where source_id=v_request)
   or (select count(*) from public.qorpera_execution_sponsor_reservations
-   where provider_connection_id='29000000-0000-4000-8000-000000000160' and status='reserved')<>1 then
-  raise exception 'API connection monetary quota was bypassed despite spare concurrency'; end if;
+   where provider_connection_id='29000000-0000-4000-8000-000000000160' and status='reserved')<>2 then
+  raise exception 'API connection concurrency was bypassed'; end if;
 end $$;
 
 -- The pause is an operator brake. No API role may call it; an operator

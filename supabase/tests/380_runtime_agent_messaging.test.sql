@@ -2,7 +2,8 @@
 -- Contract 14.6 (amended 2026-09-22): a coworker message is one event in the
 -- pair's transcript, a chip in both agents' own threads, and a wake of the
 -- recipient in its own thread under the pair policy; the reply is the same
--- thing the other way; the hop budget, not "seen before", ends an exchange.
+-- thing the other way. Since runtime v92 nothing ends an exchange but a member's
+-- Stop (or the company pause): no hop budget and no hourly limit per pair.
 select pg_temp.path_claims('service_role');
 select set_config('qorpera_test.alice_binding',current_setting('qorpera_test.wake_binding'),true);
 
@@ -64,7 +65,7 @@ begin
 	v_bob := pg_temp.wake_run_binding(v_occurrence.id);
 	v_wake := public.qorpera_read_native_wake(v_bob);
 	perform pg_temp.wake_assert(v_wake #>> '{audience,sessionId}' = v_bob_thread::text and v_wake #>> '{policy,initial}' = 'forbidden'
-		and v_wake #>> '{policy,final}' = 'optional' and v_wake #>> '{policy,maxPublicSends}' = '2' and (v_wake #>> '{policy,silenceAllowed}')::boolean
+		and v_wake #>> '{policy,final}' = 'optional' and v_wake -> 'policy' -> 'maxPublicSends' = 'null'::jsonb and (v_wake #>> '{policy,silenceAllowed}')::boolean
 		and v_wake #>> '{actorStaffId}' = '30000000-0000-4000-8000-000000000030','Recipient wakes in its own thread under the pair policy');
 	perform pg_temp.wake_assert(jsonb_array_length(v_wake #> '{payload,transcript}') = 1
 		and v_wake #>> '{payload,transcript,0,text}' = 'Could you check the note?'
@@ -90,8 +91,8 @@ declare v_binding jsonb := current_setting('qorpera_test.alice_binding')::jsonb;
 	v_alice uuid := '30000000-0000-4000-8000-000000000030'; v_bob uuid := '30000000-0000-4000-8000-000000000031';
 begin
 	perform pg_temp.wake_public_send(v_binding,'progress');
-	-- Six hops back and forth are one exchange; the seventh is refused with a line in the transcript.
-	for v_hop in 1..6 loop
+	-- No hop budget (runtime v92): eight hops back and forth all go through (the old stop was after six).
+	for v_hop in 1..8 loop
 		v_to := case when v_hop % 2 = 1 then v_bob else v_alice end;
 		v_send := public.qorpera_send_coworker_message(v_binding,v_to,'hop-' || v_hop::text,'Hop ' || v_hop::text);
 		perform pg_temp.wake_assert(v_send ->> 'status' = 'queued','Hop ' || v_hop::text || ' is queued');
@@ -101,13 +102,9 @@ begin
 		perform public.qorpera_assert_wake_completion((v_binding ->> 'runId')::uuid);
 	end loop;
 	v_pair := pg_temp.pair_session();
-	perform pg_temp.wake_assert((select count(*) = 6 from public.qorpera_session_events where session_id = v_pair and event_type = 'message'),'Six messages in the transcript');
-	v_send := public.qorpera_send_coworker_message(v_binding,v_bob,'hop-7','Hop 7');
-	perform pg_temp.wake_assert(v_send ->> 'status' = 'causal-fence' and v_send -> 'occurrenceId' = 'null'::jsonb,'Seventh hop is refused');
-	perform pg_temp.wake_assert((select count(*) = 1 from public.qorpera_session_events where session_id = v_pair and event_type = 'session_info'
-		and body ->> 'schema' = 'qorpera.peer-budget/v1' and body ->> 'text' like 'This exchange paused after 6 messages%'),'The transcript says why it stopped');
-	perform pg_temp.wake_assert((select count(*) = 6 from public.qorpera_session_events where session_id = v_pair and event_type = 'message'),'The refused text is not delivered');
-	perform pg_temp.wake_assert(public.qorpera_send_coworker_message(v_binding,v_bob,'hop-7','Hop 7') = v_send,'The refusal is a durable receipt');
+	perform pg_temp.wake_assert((select count(*) = 8 from public.qorpera_session_events where session_id = v_pair and event_type = 'message'),'Eight messages in the transcript');
+	perform pg_temp.wake_assert(not exists(select 1 from public.qorpera_session_events where session_id = v_pair and event_type = 'session_info'
+		and body ->> 'schema' = 'qorpera.peer-budget/v1'),'No budget line stops the exchange');
 	-- An agent cannot message itself, and a departed agent closes the transcript.
 	perform pg_temp.wake_error(format('select public.qorpera_send_coworker_message(%L,%L,%L,%L)',v_binding,v_alice,'self','Hello me'),'42501');
 end
@@ -135,17 +132,15 @@ declare v_binding jsonb := current_setting('qorpera_test.alice_binding')::jsonb;
 	v_bob uuid := '30000000-0000-4000-8000-000000000031';
 begin
 	perform pg_temp.wake_public_send(v_binding,'progress');
-	-- Twenty messages between one pair in an hour are the limit, whatever the chain; the twenty-first waits.
-	for v_n in 1..20 loop
+	-- No limit per pair per hour (runtime v92): twenty-five messages in an hour all go through (was twenty).
+	for v_n in 1..25 loop
 		v_send := public.qorpera_send_coworker_message(v_binding,v_bob,'burst-' || v_n::text,'Burst ' || v_n::text);
 		perform pg_temp.wake_assert(v_send ->> 'status' = 'queued','Burst ' || v_n::text || ' is queued');
 	end loop;
 	v_pair := pg_temp.pair_session();
-	v_send := public.qorpera_send_coworker_message(v_binding,v_bob,'burst-21','Burst 21');
-	perform pg_temp.wake_assert(v_send ->> 'status' = 'causal-fence','Twenty-first message this hour is refused');
-	perform pg_temp.wake_assert((select count(*) = 20 from public.qorpera_session_events where session_id = v_pair and event_type = 'message'),'Twenty messages in the transcript');
-	perform pg_temp.wake_assert((select count(*) = 1 from public.qorpera_session_events where session_id = v_pair and event_type = 'session_info'
-		and body ->> 'text' like 'These two agents have exchanged 20 messages this hour%'),'The transcript says the pair is paused for the hour');
+	perform pg_temp.wake_assert((select count(*) = 25 from public.qorpera_session_events where session_id = v_pair and event_type = 'message'),'Twenty-five messages in the transcript');
+	perform pg_temp.wake_assert(not exists(select 1 from public.qorpera_session_events where session_id = v_pair and event_type = 'session_info'
+		and body ->> 'schema' = 'qorpera.peer-budget/v1'),'No hourly pause line');
 end
 $$;
 rollback to messaging_hourly;
@@ -164,9 +159,9 @@ begin
 	perform pg_temp.wake_assert(v_ancestry -> 'agentIds' = to_jsonb(v_wake.causal_agent_ids) and (v_ancestry ->> 'rootId')::uuid = v_wake.causal_root_id,
 		'A pre-v70 coworker occurrence keeps its ancestry');
 	perform pg_temp.wake_assert(public.qorpera_wake_authorized(v_legacy),'A pre-v70 coworker occurrence stays authorized');
-	-- Under the old rule a reply to a visited agent was fenced; a hop-0 row addressed to one still is.
+	-- A hop-0 row addressed to the sending agent itself is refused: an agent never messages itself.
 	v_legacy := jsonb_populate_record(v_wake,jsonb_build_object('causal_hop_count',0,'staff_agent_id','30000000-0000-4000-8000-000000000030'));
-	perform pg_temp.wake_assert(public.qorpera_coworker_wake_ancestry(v_legacy) is null,'A pre-v70 revisit stays fenced');
+	perform pg_temp.wake_assert(public.qorpera_coworker_wake_ancestry(v_legacy) is null,'A pre-v70 message to oneself stays refused');
 	-- A wake naming a session that is not the receiver's own thread is refused at admission.
 	perform pg_temp.wake_error(format($sql$insert into public.qorpera_wake_occurrences(id,profile_id,environment_id,wake_kind,source_kind,staff_agent_id,
 		parent_run_id,sponsor_binding_id,sponsor_version,session_id,trigger_id,occurrence_key,scheduled_for,not_before,payload)
@@ -182,13 +177,14 @@ do $$
 declare v_sixteen uuid[] := array(select ('30000000-0000-4000-8000-0000000001' || lpad(n::text,2,'0'))::uuid from generate_series(1,16) n);
 	v_new uuid := '30000000-0000-4000-8000-000000000199'; v_chain uuid[];
 begin
-	-- One rule for the send's receipt and admission's fence: a seventeenth agent cannot join a chain,
-	-- an agent already in it moves to the end, and the seventh hop ends every chain.
-	perform pg_temp.wake_assert(public.qorpera_coworker_chain(v_sixteen,v_new,2) is null,'A seventeenth agent cannot join a chain');
+	-- One rule for the send's receipt and admission's fence (runtime v92: no hop or agent count ends a
+	-- chain): a seventeenth agent joins, an agent already in it moves to the end, and hops go on.
+	perform pg_temp.wake_assert(public.qorpera_coworker_chain(v_sixteen,v_new,2) = v_sixteen || v_new,'A seventeenth agent joins a chain');
 	v_chain := public.qorpera_coworker_chain(v_sixteen,v_sixteen[3],2);
-	perform pg_temp.wake_assert(cardinality(v_chain) = 16 and v_chain[16] = v_sixteen[3] and v_chain[3] = v_sixteen[4],'A revisit moves the agent to the end of a full chain');
-	perform pg_temp.wake_assert(public.qorpera_coworker_chain(v_sixteen[1:2],v_new,7) is null,'The seventh hop ends a chain');
-	perform pg_temp.wake_assert(public.qorpera_coworker_chain(v_sixteen[1:2],v_new,6) = v_sixteen[1:2] || v_new,'The sixth hop still continues a chain');
+	perform pg_temp.wake_assert(cardinality(v_chain) = 16 and v_chain[16] = v_sixteen[3] and v_chain[3] = v_sixteen[4],'A revisit moves the agent to the end of a chain');
+	perform pg_temp.wake_assert(public.qorpera_coworker_chain(v_sixteen[1:2],v_new,70) = v_sixteen[1:2] || v_new,'The seventieth hop still continues a chain');
+	perform pg_temp.wake_assert(public.qorpera_coworker_chain(v_sixteen[1:2],v_new,0) is null
+		and public.qorpera_coworker_chain(v_sixteen[1:2],null,1) is null,'A chain still needs a recipient and a hop');
 	perform pg_temp.wake_assert(public.qorpera_coworker_chain(null,v_new,1) = array[v_new],'A chain without a parent starts with the recipient');
 end
 $$;
@@ -196,13 +192,13 @@ rollback to messaging_chain_rule;
 
 savepoint messaging_cross_pair;
 do $$
-declare v_binding jsonb := current_setting('qorpera_test.alice_binding')::jsonb; v_send jsonb; v_hop integer;
+declare v_binding jsonb := current_setting('qorpera_test.alice_binding')::jsonb; v_send jsonb; v_hop integer; v_wake jsonb;
 	v_alice uuid := '30000000-0000-4000-8000-000000000030'; v_bob uuid := '30000000-0000-4000-8000-000000000031';
 	v_carol uuid := '30000000-0000-4000-8000-000000000032'; v_sender_thread uuid; v_sender uuid;
 begin
 	perform pg_temp.wake_public_send(v_binding,'progress');
-	-- Six hops between Alice and Bob, then the run at hop six writes to Carol: the chain is spent,
-	-- Alice and Carol have no transcript, so the explanation lands in the sender's own thread.
+	-- Six hops between Alice and Bob, then the run at hop six writes to Carol: with no hop budget
+	-- (runtime v92) the chain goes on, a new pair transcript opens and Carol wakes at hop seven.
 	for v_hop in 1..6 loop
 		v_send := public.qorpera_send_coworker_message(v_binding,case when v_hop % 2 = 1 then v_bob else v_alice end,'relay-' || v_hop::text,'Relay ' || v_hop::text);
 		v_binding := pg_temp.wake_run_binding((v_send ->> 'occurrenceId')::uuid);
@@ -210,14 +206,27 @@ begin
 	end loop;
 	select staff_agent_id into strict v_sender from public.qorpera_execution_runs where id = (v_binding ->> 'runId')::uuid;
 	v_send := public.qorpera_send_coworker_message(v_binding,v_carol,'relay-7','Relay 7');
-	perform pg_temp.wake_assert(v_send ->> 'status' = 'causal-fence','A spent chain cannot start a new pair');
-	perform pg_temp.wake_assert(not exists (select 1 from public.qorpera_shared_sessions where profile_id = '30000000-0000-4000-8000-000000000010'
-		and execution_scope ->> 'agentPairKey' = public.qorpera_agent_pair_key(v_sender,v_carol)),'No transcript is created for a refused first message');
-	v_sender_thread := pg_temp.thread_session(v_sender);
-	perform pg_temp.wake_assert((select count(*) = 1 from public.qorpera_session_events where session_id = v_sender_thread and event_type = 'session_info'
-		and body ->> 'schema' = 'qorpera.peer-budget/v1' and body ->> 'recipientStaffId' = v_carol::text
-		and body ->> 'text' like 'This exchange paused after 6 messages%'),'The sender''s own thread says why the chain stopped');
-	perform pg_temp.wake_assert(not exists (select 1 from public.qorpera_wake_occurrences where staff_agent_id = v_carol and source_kind = 'coworker'),'Carol is not woken');
+	perform pg_temp.wake_assert(v_send ->> 'status' = 'queued','A long chain can start a new pair');
+	perform pg_temp.wake_assert(exists (select 1 from public.qorpera_shared_sessions where profile_id = '30000000-0000-4000-8000-000000000010'
+		and execution_scope ->> 'agentPairKey' = public.qorpera_agent_pair_key(v_sender,v_carol)),'The new pair has a transcript');
+	perform pg_temp.wake_assert((select causal_hop_count = 7 from public.qorpera_wake_occurrences
+		where id = (v_send ->> 'occurrenceId')::uuid and staff_agent_id = v_carol),'Carol wakes at hop seven');
+	-- A run at the end of a chain of more than sixteen agents still reads a valid wake and policy.
+	-- (Admitted identity is immutable, so the fixture puts twenty more agents at the front of both the
+	-- sender's and Carol's chains with triggers off; Carol's chain still derives from the sender's.)
+	v_binding := pg_temp.wake_run_binding((v_send ->> 'occurrenceId')::uuid);
+	reset role;
+	set local session_replication_role = replica;
+	update public.qorpera_wake_occurrences
+	set causal_agent_ids = array(select ('30000000-0000-4000-8000-0000000002' || lpad(n::text,2,'0'))::uuid from generate_series(1,20) n)
+		|| causal_agent_ids
+	where id = (v_send ->> 'occurrenceId')::uuid
+		or run_id = (select parent_run_id from public.qorpera_wake_occurrences where id = (v_send ->> 'occurrenceId')::uuid);
+	set local session_replication_role = origin;
+	set local role service_role;
+	v_wake := public.qorpera_read_native_wake(v_binding);
+	perform pg_temp.wake_assert(v_wake #>> '{policy,kind}' = 'agent' and jsonb_array_length(v_wake #> '{causal,agentIds}') > 20,
+		'A chain of more than twenty agents wakes its last agent with a valid policy');
 end
 $$;
 rollback to messaging_cross_pair;

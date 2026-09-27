@@ -27,12 +27,14 @@ the current runtime; the draft's acceptance list was used as a checklist.
 | Todos and worker handles are durable code objects | `qorpera_runtime_agent_todos`, `qorpera_runtime_workers`, `qorpera_runtime_worker_events`. Every change is idempotent by operation key through the existing run operation ledger. |
 | Todos and accepted outputs become Company File state | Every change advances the todo revision and returns the canonical document (`qorpera.agent-todo/v1`), which the run writes to `work/todos/<agent>/<todoKey>.json` through the governed path gateway and confirms against the revision it wrote. An output is a Company File revision the worker's own run wrote; the kernel refuses any other path. The parent's accept or reject is recorded on the worker and appears in the document. |
 | Cancellation policy | A worker lives no longer than its todo; the parent can cancel it; a person stopping the parent run stops its workers. A queued child never starts; a running child is fenced at its next governed effect and cannot report. |
-| Completion or revival policy | `batch` (default): one revival when every worker dispatched by the same run has reported, carrying up to four results. `each`: at once. A blocked worker always revives at once. The parent's own run is never raced: revival waits until it has ended. |
+| Completion or revival policy | `batch` (default): revival when every worker dispatched by the same run has reported, four results per revival, one revival at a time (since v95 the next four wait until the previous revival's run has ended; `stillActive` counts the results still to come). `each`: at once. A blocked worker revives at once. Since v95 "at once" means once no revival of the same parent is running, and a person stopping a revival stops that parent's running workers and holds back its remaining reports (readable through status), as stopping the parent does. The parent's own run is never raced: revival waits until it has ended. |
 
-Limits, enforced in SQL: four active workers per agent, eight workers per todo,
-twelve sequences per worker, twenty-four dispatches and follow-ups per agent per
-hour, sixty-four open todos per agent. Dispatch and revival wakes count against
-the company wake ceiling and honor the founder stop (7.4).
+Limits (superseded): this step shipped with four active workers per agent,
+eight workers per todo, twelve sequences per worker, twenty-four dispatches and
+follow-ups per agent per hour and sixty-four open todos per agent. Bundle v92
+removed the turn, dispatch-rate and per-todo counts and v95 the active-worker
+and open-todo counts; the company wake ceiling went in v89. Only the operator
+pause (7.4) still holds dispatch and revival wakes.
 
 Coding, media and listener workers are refused here (`species = 'in-house'`);
 they belong to Orders 9, 7 and 8.
@@ -132,6 +134,50 @@ source that tries to redirect it.
 The migration and the runtime sources are bundle inputs: bundle v47 (its registry slot) at the time of writing (the next free version when it merges). A later
 change to any migration needs a new activation, never an edit of this one.
 
+## 2026-09-25: a late publication can no longer regress a todo document (bundle v111)
+
+Review of 2a5c8f67e, finding 2. A run that received revision n's document,
+paused, and then wrote it against the file version a newer revision had just
+published replaced the newer document, and confirmation kept counting the newer
+revision as published, so no list repaired it (reproduced after all 391
+migrations). `20260925111000_runtime_todo_publication_binding.sql` binds the
+revision, the exact bytes and the file state:
+
+- The document is the same bytes for the same revision: an active worker is
+  `active` (its queued/running lease state changes without a revision), and
+  timestamps are written in UTC whatever the session.
+- A run writes a todo's document path only with the current revision's exact
+  bytes. `qorpera_check_company_path_mutation` refuses anything else (42501)
+  before bytes are staged, so the agent gets a plain refusal, not "read it
+  again". A trigger on `qorpera_company_path_revisions` checks again after the
+  Company File head lock, holding the todo's row until the write commits, so
+  once a revision's document is written no later write brings back an older one.
+- Confirmation accepts only the current revision, only when the bytes the run
+  wrote are that revision's document, and only while the live file still holds
+  them; revision, version and sha256 are recorded together.
+- Anything else that lands on the path afterwards (a member's edit, an approved
+  delete) clears the recorded sha256 in the same trigger, so "published" is a
+  stored fact again and cheap to ask. The list repairs open and blocked todos
+  first, newest first; a finished todo is republished only when the kernel
+  changed it, so a member can still tidy away finished work.
+- At migration, a confirmed todo keeps its record only if its live file holds
+  exactly its current document; every other one is republished once (this also
+  heals any regression the race already caused).
+- The runtime's write key names the version it replaces
+  (`todo-doc:<todoKey>:<revision>:<version|absent>`), so a run can republish a
+  revision its file has lost since, while a retry still replays.
+
+Every publisher (todo and worker receipts, the worker's report, the list
+repair) goes through the same checks. Proof: `supabase/tests/387_runtime_todo_publication_race.test.sql`
+(two runs: the worker's report against the parent's newer change; the review's
+reproduction, including the replayed receipt; a writer the run checks do not
+stop, detected and repaired; byte-bound confirmation; the write-time check on
+its own; repair order and finished work; where the checks and locks sit). The
+lock itself is asserted from the function bodies: dblink sessions cannot see the
+test's uncommitted fixture. Still open: a revision the kernel makes on its own
+(a worker that ends without a report, coding session answers and claims) is
+published only by the agent's next list or change of that todo.
+
 ## Not built; what keeps Order 5 open
 
 - **Live acceptance on the nodes.** Nothing here is deployed. The gates: a real
@@ -143,7 +189,28 @@ change to any migration needs a new activation, never an edit of this one.
   raced against a running child.
 - Locks are taken todo first, then worker, in every operation, and the drain
   never waits for either, so a parent cancelling while its worker reports cannot
-  deadlock. This is by construction; a concurrent-session race test is not built.
+  deadlock. A coding session (Step 9) extends the order: todo, worker, coding
+  session, then the session's turn or machine. Five coding calls broke it until
+  runtime v117 (`20260925117000_runtime_coding_lock_order`): the owner's answer,
+  the executor's begin and completion, and machine admission and detach. SQL
+  test 602 races each of those pairs across two connections. The company's
+  profile row comes before all of these, and after the machine come its storage
+  volume, allocation, node and demand. A call that needs the profile row at all
+  takes it first: machine admission, a machine plan, sleep and release take
+  the fence; the secret broker's repository credential takes a key-share lock
+  (its audit insert only needs the company to exist). A plan takes the fence,
+  not a key-share lock, because it takes the fence anyway before it inserts a
+  member's new machine: two members planning their first machines would each
+  hold a key share while waiting to upgrade it. Until runtime v123
+  (`20260925123000_runtime_coding_machine_lock_order`) they took it last, so an
+  agent cancelling a session deadlocked with its admission, plan or credential.
+  SQL test 603 races those, the pairs a partial fix would break, and two new
+  members planning at once. Two late touches remain: the executor's begin takes
+  the profile row NOWAIT (it refuses with 55P03 rather than wait; the coding
+  executor begins again until its lease ends), and
+  `qorpera_prepare_company_file_revision` locks the
+  Company File row before the fence, so it can meet a session's first
+  admission as it meets every agent tool call.
 - A revival whose admission is refused when its run is created (the agent lost
   its model account or its conversation) is not retried: the result stays in
   the todo, which the agent lists the next time it continues that work.
@@ -152,7 +219,39 @@ change to any migration needs a new activation, never an edit of this one.
 - Todos and workers do not yet appear in the member clients. The documents are
   visible in the Company File.
 - The composed run context does not list open todos (contract 9.1); the agent
-  lists them when a run continues earlier work. A revived parent receives its
-  todos in the continuation.
+  lists them when a run continues earlier work. Since the listing pages
+  (2026-09-25) it carries `openWork`, the counts of open and blocked todos and
+  of active and blocked workers (on open todos), so the agent knows how much
+  there is. A revived parent receives the todos its workers belong to in the
+  continuation.
+
+## Listing pages (2026-09-25, runtime review of v106)
+
+With no standing counts (v95), `manage_todo list` showed 32 todos and
+`manage_worker status` 16 workers, and asking again returned the same page.
+Migration `*_runtime_todo_worker_pages.sql` makes both listings pages:
+
+- `cursor` in, `nextCursor` out (null at the end); `moreTodos` / `moreWorkers`
+  count exactly what the same filters still hold after the page. The page size
+  is a response size, not a limit: the kernel returns up to 32 todos or 16
+  workers, each with its own cursor, and the runtime shows the longest prefix
+  that reaches the model whole (a tool result is cut at 8 KiB), counting the
+  rest and continuing after the last item shown.
+- Keyset on creation order, newest first: `(created_at, id)`. Creation never
+  changes, so a todo or worker that changes between two pages keeps its place
+  and is neither skipped nor shown twice. The former order (most recently
+  changed first) moved an item on every change.
+- Filters: `todoKey`, `state` and `search` for todos (`includeClosed` stays);
+  `todoKey`, `workerKey`, `state` and `search` for workers. `search` is a
+  case-insensitive text match in titles and keys.
+- A listing keeps items short: the first 200 characters of a todo's detail and
+  its latest 4 workers (key and state, plus `moreWorkers`); the first 200
+  characters of a worker's summary, question and review note. A todo named with
+  `todoKey`, or a worker named with `todoKey` and `workerKey`, is shown in full.
+- `qorpera_describe_agent_open_work` gives the runtime the counts for
+  `openWork`; a failure leaves it out and never blocks the run.
+- Proof: `supabase/tests/388_runtime_todo_worker_pages.test.sql` walks 60 and
+  70 todos and 26 workers to the end with exact counts, pages through todos
+  created in one instant, and changes items between pages.
 - Company formation research and project teams (contract 14.2, 14.4) use this
   machinery but are not built here.

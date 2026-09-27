@@ -1,16 +1,24 @@
 import { type BigIntStats, constants } from "node:fs";
 import { type FileHandle, lstat, mkdir, open } from "node:fs/promises";
 import { isDeepStrictEqual } from "node:util";
-import { type CloudCodingStorageBinding, parseCloudCodingStorageBinding } from "@qorpera/contracts";
+import {
+	CLOUD_CODING_GUEST_ROOTS,
+	type CloudCodingSessionLayout,
+	type CloudCodingStorageBinding,
+	cloudCodingSessionLayout,
+	parseCloudCodingStorageBinding,
+} from "@qorpera/contracts";
 import { type CodingGuestConfiguration, parseCodingGuestConfiguration } from "./cloud-coding-guest-configuration.ts";
+import { registerCodingSessionUser } from "./cloud-coding-session-guest.ts";
+import { assertGuestImageSelfUpdateMasked } from "./lxd-guest-image-updates.ts";
 
-const CONFIG = "/etc/qorpera-coding/storage.json";
 const MARKER = ".qorpera-volume.json";
-const DATA = "/workspace";
-const CUSTODY = "/var/lib/qorpera-coding";
 const O_PATH = 0x200000;
 interface Mount {
 	id: number;
+	parent: number;
+	/** major:minor of the superblock; a bind mount shares it with its source. */
+	device: string;
 	root: string;
 	target: string;
 	filesystem: string;
@@ -38,15 +46,20 @@ function mounts(input: string): Mount[] {
 			if (
 				!/^[1-9][0-9]*$/.test(fields[0]) ||
 				!Number.isSafeInteger(id) ||
+				!/^(0|[1-9][0-9]*)$/.test(fields[1]) ||
+				!Number.isSafeInteger(Number(fields[1])) ||
 				seen.has(id) ||
 				separator < 6 ||
 				fields.length !== separator + 4 ||
+				!/^(0|[1-9][0-9]{0,9}):(0|[1-9][0-9]{0,9})$/.test(fields[2]) ||
 				fields.some((field) => !field)
 			)
 				throw new Error("CODING_GUEST_STORAGE_MOUNT_INVALID");
 			seen.add(id);
 			return {
 				id,
+				parent: Number(fields[1]),
+				device: fields[2],
 				root: decode(fields[3]),
 				target: decode(fields[4]),
 				filesystem: fields[separator + 1],
@@ -56,28 +69,124 @@ function mounts(input: string): Mount[] {
 			};
 		});
 }
-function mounted(entries: Mount[], target: string, filesystem: string, noDescendants = true): number {
+const only = (options: string[], wanted: "rw" | "ro") =>
+	options.filter((option) => option === wanted).length === 1 && !options.includes(wanted === "rw" ? "ro" : "rw");
+const writable = (options: string[]) => only(options, "rw");
+/** `below`: "none" refuses any mount beneath the target, "any" ignores them,
+ * and a list requires exactly those paths as binds of the target's own
+ * filesystem (the command unit's ReadWritePaths). Inside that unit the target
+ * is the unit's BindReadOnlyPaths mount, read-only per mount (seen on a real
+ * unit, systemd 255), so a list also requires that: the sandboxed check
+ * refuses a unit whose roots are writable (a plain BindPaths, as in bundles
+ * v101–v105) and fails closed outside the unit. */
+function mounted(
+	entries: Mount[],
+	target: string,
+	filesystem: string,
+	below: "none" | "any" | readonly string[],
+): number {
 	const matches = entries.filter((entry) => entry.target === target);
-	if (matches.length !== 1 || (noDescendants && entries.some((entry) => entry.target.startsWith(`${target}/`))))
-		throw new Error("CODING_GUEST_STORAGE_MOUNT_INVALID");
-	const mount = matches[0];
+	if (matches.length !== 1) throw new Error("CODING_GUEST_STORAGE_MOUNT_INVALID");
+	const mount = matches[0],
+		sandboxed = typeof below !== "string";
 	if (
 		mount.root !== "/" ||
 		mount.filesystem !== filesystem ||
-		[mount.options, mount.superOptions].some(
-			(options) => options.filter((option) => option === "rw").length !== 1 || options.includes("ro"),
+		!writable(mount.superOptions) ||
+		!only(mount.options, sandboxed ? "ro" : "rw") ||
+		(sandboxed && below.some((path) => !entries.some((entry) => entry.target === path)))
+	)
+		throw new Error("CODING_GUEST_STORAGE_MOUNT_INVALID");
+	for (const entry of entries.filter((candidate) => candidate.target.startsWith(`${target}/`))) {
+		if (below === "any") continue;
+		if (
+			below === "none" ||
+			!below.includes(entry.target) ||
+			entries.filter((other) => other.target === entry.target).length !== 1 ||
+			entry.device !== mount.device ||
+			entry.filesystem !== mount.filesystem ||
+			entry.source !== mount.source ||
+			entry.root !== entry.target.slice(target.length) ||
+			!writable(entry.options) ||
+			!writable(entry.superOptions)
+		)
+			throw new Error("CODING_GUEST_STORAGE_MOUNT_INVALID");
+	}
+	return mount.id;
+}
+/** A systemd unit's view of the two roots: the exact ReadWritePaths it
+ * declares, each strictly inside the session's data or custody root. */
+export interface CodingGuestSandbox {
+	readonly writablePaths: readonly string[];
+}
+function sandboxPaths(sandbox: CodingGuestSandbox, root: string): string[] {
+	return sandbox.writablePaths.filter((path) => path.startsWith(`${root}/`));
+}
+/** Inside a command unit the guest roots are private tmpfs covers
+ * (TemporaryFileSystem) with only this session bound beneath. A mount of
+ * another session that propagated in after the unit started lies under the
+ * cover, unreachable by path; one reachable beside this session is refused. */
+function covered(entries: Mount[], root: string, session: string): void {
+	const covers = entries.filter((entry) => entry.target === root);
+	if (covers.length !== 1 || covers[0].filesystem !== "tmpfs" || covers[0].root !== "/")
+		throw new Error("CODING_GUEST_STORAGE_MOUNT_INVALID");
+	for (const entry of entries)
+		if (entry.parent === covers[0].id && entry.target !== session)
+			throw new Error("CODING_GUEST_STORAGE_MOUNT_INVALID");
+	const own = entries.filter((entry) => entry.target === session);
+	if (own.length !== 1 || own[0].parent !== covers[0].id) throw new Error("CODING_GUEST_STORAGE_MOUNT_INVALID");
+}
+/** Kernel observation only. Host admission separately pins NFS identity and
+ * excludes every previous writer; virtiofs does not expose the NFS server.
+ * Other sessions of the member's machine have their own mounts beside this
+ * one and are not judged here. Without `sandbox` (root, the host's view): no
+ * mount at the guest roots themselves, and each of the session's two roots is
+ * one whole rw mount with nothing mounted beneath it. With `sandbox` (inside
+ * the command unit): the guest roots are private covers holding only this
+ * session, whose roots are the same superblocks, still rw, with their own
+ * mounts read-only, and beneath them exactly the declared writable paths as rw
+ * binds of those superblocks. */
+export function assertCodingGuestMounts(
+	mountInfo: string,
+	workerId: string,
+	sandbox?: CodingGuestSandbox,
+): Readonly<Record<string, number>> {
+	const layout = cloudCodingSessionLayout(workerId),
+		DATA = layout.dataRoot,
+		CUSTODY = layout.custodyRoot;
+	const entries = mounts(mountInfo);
+	if (sandbox) {
+		const paths = sandbox.writablePaths;
+		if (
+			!Array.isArray(paths) ||
+			paths.length < 1 ||
+			paths.length > 8 ||
+			new Set(paths).size !== paths.length ||
+			paths.some(
+				(path) =>
+					typeof path !== "string" ||
+					!/^\/[A-Za-z0-9._/-]{1,255}$/.test(path) ||
+					path
+						.split("/")
+						.slice(1)
+						.some((part) => !part || part === "." || part === "..") ||
+					![DATA, CUSTODY].some((root) => path.startsWith(`${root}/`)),
+			)
+		)
+			throw new Error("CODING_GUEST_STORAGE_SANDBOX_INVALID");
+		covered(entries, CLOUD_CODING_GUEST_ROOTS.data, DATA);
+		covered(entries, CLOUD_CODING_GUEST_ROOTS.custody, CUSTODY);
+	} else if (
+		// A root caller sees the machine's own view: a command unit's covers
+		// there mean it is not, and the unit's view never passes as the host's.
+		entries.some(
+			(entry) => entry.target === CLOUD_CODING_GUEST_ROOTS.data || entry.target === CLOUD_CODING_GUEST_ROOTS.custody,
 		)
 	)
 		throw new Error("CODING_GUEST_STORAGE_MOUNT_INVALID");
-	return mount.id;
-}
-/** Kernel observation only. Host admission separately pins NFS identity and
- * excludes every previous writer; virtiofs does not expose the NFS server. */
-export function assertCodingGuestMounts(mountInfo: string): Readonly<Record<string, number>> {
-	const entries = mounts(mountInfo);
 	return Object.freeze({
-		[DATA]: mounted(entries, DATA, "virtiofs"),
-		[CUSTODY]: mounted(entries, CUSTODY, "virtiofs"),
+		[DATA]: mounted(entries, DATA, "virtiofs", sandbox ? sandboxPaths(sandbox, DATA) : "none"),
+		[CUSTODY]: mounted(entries, CUSTODY, "virtiofs", sandbox ? sandboxPaths(sandbox, CUSTODY) : "none"),
 	});
 }
 async function readBounded(handle: FileHandle, maximum: number): Promise<Buffer> {
@@ -143,8 +252,9 @@ async function checkRoot(
 	root: Root,
 	guest: CodingGuestConfiguration,
 	binding: CloudCodingStorageBinding,
+	sandbox?: CodingGuestSandbox,
 ): Promise<void> {
-	const expected = assertCodingGuestMounts(await metadata("/proc/self/mountinfo", 1048576));
+	const expected = assertCodingGuestMounts(await metadata("/proc/self/mountinfo", 1048576), guest.workerId, sandbox);
 	const fdInfo = await metadata(`/proc/self/fdinfo/${root.handle.fd}`, 4096);
 	const ids = [...fdInfo.matchAll(/^mnt_id:\s+([1-9][0-9]*)$/gm)];
 	const stat = await root.handle.stat({ bigint: true }),
@@ -166,26 +276,42 @@ async function checkRoot(
 }
 async function inspect(
 	guest: CodingGuestConfiguration,
-): Promise<{ binding: CloudCodingStorageBinding; roots: Root[] }> {
+	sandbox?: CodingGuestSandbox,
+): Promise<{ binding: CloudCodingStorageBinding; roots: Root[]; layout: CloudCodingSessionLayout }> {
 	if (process.platform !== "linux") throw new Error("CODING_GUEST_STORAGE_LINUX_REQUIRED");
+	// Every action refuses on an image that can upgrade itself: needrestart
+	// would restart the sessions' units and the shutdown inhibitor would keep
+	// the machine, and its node slot, from stopping.
+	await assertGuestImageSelfUpdateMasked();
+	const layout = cloudCodingSessionLayout(guest.workerId);
 	if (
-		guest.workspacePath !== `${DATA}/repository` ||
-		guest.homePath !== `${DATA}/home` ||
-		guest.cachePath !== `${DATA}/cache` ||
-		guest.outputRoot !== `${CUSTODY}/logs`
+		guest.workspacePath !== layout.workspacePath ||
+		guest.homePath !== layout.homePath ||
+		guest.cachePath !== layout.cachePath ||
+		guest.outputRoot !== layout.outputRoot
 	)
 		throw new Error("CODING_GUEST_STORAGE_PATHS_CHANGED");
-	for (const path of ["/", "/etc", "/etc/qorpera-coding", "/var", "/var/lib"]) {
+	for (const path of [
+		"/",
+		"/run",
+		CLOUD_CODING_GUEST_ROOTS.runtime,
+		layout.runtimeRoot,
+		layout.configurationRoot,
+		"/var",
+		"/var/lib",
+		CLOUD_CODING_GUEST_ROOTS.custody,
+		CLOUD_CODING_GUEST_ROOTS.data,
+	]) {
 		const stat = await lstat(path, { bigint: true });
 		if (!stat.isDirectory() || stat.uid !== 0n || (stat.mode & 0o022n) !== 0n)
 			throw new Error("CODING_GUEST_STORAGE_CONFIGURATION_UNPROTECTED");
 	}
-	const binding = parseCloudCodingStorageBinding(await readConfiguration(CONFIG));
+	const binding = parseCloudCodingStorageBinding(await readConfiguration(`${layout.configurationRoot}/storage.json`));
 	if (binding.workerId !== guest.workerId) throw new Error("CODING_GUEST_STORAGE_SCOPE_CHANGED");
-	const observed = assertCodingGuestMounts(await metadata("/proc/self/mountinfo", 1048576)),
+	const observed = assertCodingGuestMounts(await metadata("/proc/self/mountinfo", 1048576), guest.workerId, sandbox),
 		roots: Root[] = [];
 	try {
-		for (const path of [DATA, CUSTODY]) {
+		for (const path of [layout.dataRoot, layout.custodyRoot]) {
 			const handle = await open(path, O_PATH | constants.O_DIRECTORY | constants.O_NOFOLLOW);
 			let identity: BigIntStats;
 			try {
@@ -196,16 +322,21 @@ async function inspect(
 			}
 			const root = { path, handle, identity, mountId: observed[path] };
 			roots.push(root);
-			await checkRoot(root, guest, binding);
+			await checkRoot(root, guest, binding, sandbox);
 		}
-		return { binding, roots };
+		return { binding, roots, layout };
 	} catch (error) {
 		await Promise.allSettled(roots.map((root) => root.handle.close()));
 		throw error;
 	}
 }
-export async function assertCloudCodingGuestStorage(guest: CodingGuestConfiguration): Promise<void> {
-	const { roots } = await inspect(guest);
+/** Root callers pass no sandbox. The command unit passes its exact
+ * ReadWritePaths; ownership and binding checks are the same either way. */
+export async function assertCloudCodingGuestStorage(
+	guest: CodingGuestConfiguration,
+	sandbox?: CodingGuestSandbox,
+): Promise<void> {
+	const { roots } = await inspect(guest, sandbox);
 	await Promise.all(roots.map((root) => root.handle.close()));
 }
 async function initializeChild(
@@ -214,12 +345,13 @@ async function initializeChild(
 	uid: number,
 	gid: number,
 	check: () => Promise<void>,
+	mode = 0o755,
 ): Promise<void> {
 	await check();
 	const path = `/proc/self/fd/${parent.fd}/${name}`;
 	let created = false;
 	try {
-		await mkdir(path, { mode: 0o755 });
+		await mkdir(path, { mode });
 		created = true;
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
@@ -256,39 +388,50 @@ async function initializeChild(
 		await handle.close();
 	}
 }
-/** Fixed root bootstrap. Descriptor-relative effects stay on the verified
- * filesystem if a pathname mount disappears. No existing ownership repairs. */
-export async function initializeCloudCodingGuestStorage(): Promise<void> {
+/** Fixed root bootstrap of one attached session. Descriptor-relative effects
+ * stay on the verified filesystem if a pathname mount disappears. No existing
+ * ownership repairs. The session's data folders are private to its own guest
+ * user (0700; volumes from before per-member machines keep their 0755). */
+export async function initializeCloudCodingGuestStorage(workerId: string): Promise<void> {
 	if (process.getuid?.() !== 0) throw new Error("CODING_GUEST_STORAGE_ROOT_REQUIRED");
-	const guest = parseCodingGuestConfiguration(await readConfiguration("/etc/qorpera-coding/guest.json"));
-	const { binding, roots } = await inspect(guest);
+	const session = cloudCodingSessionLayout(workerId);
+	const guest = parseCodingGuestConfiguration(await readConfiguration(`${session.configurationRoot}/guest.json`));
+	if (guest.workerId !== workerId) throw new Error("CODING_GUEST_STORAGE_SCOPE_CHANGED");
+	const { binding, roots, layout } = await inspect(guest);
 	try {
+		await registerCodingSessionUser(guest);
 		for (const root of roots) {
 			const check = () => checkRoot(root, guest, binding);
 			const children =
-				root.path === DATA
+				root.path === layout.dataRoot
 					? ([
 							["repository", guest.uid, guest.gid],
 							["home", guest.uid, guest.gid],
 							["cache", guest.uid, guest.gid],
 						] as const)
 					: ([
-							["logs", guest.uid, guest.gid],
+							// Root-owned like every custody child: the root supervisor creates
+							// each command's log directory and reads its log through
+							// root-owned ancestors only (see COMMAND-GUEST.md).
+							["logs", 0, 0],
 							["inbox", 0, 0],
 							["commands", 0, 0],
 							["git", 0, 0],
 						] as const);
-			for (const [name, uid, gid] of children) await initializeChild(root.handle, name, uid, gid, check);
+			for (const [name, uid, gid] of children)
+				await initializeChild(root.handle, name, uid, gid, check, root.path === layout.dataRoot ? 0o700 : 0o755);
 		}
 		const run = await open("/run", O_PATH | constants.O_DIRECTORY | constants.O_NOFOLLOW);
 		try {
 			const original = await run.stat({ bigint: true });
 			const check = async () => {
 				const entries = mounts(await metadata("/proc/self/mountinfo", 1048576));
-				const expected = mounted(entries, "/run", "tmpfs", false);
+				const expected = mounted(entries, "/run", "tmpfs", "any");
 				if (
 					entries.some(
-						(entry) => entry.target === "/run/qorpera-coding" || entry.target.startsWith("/run/qorpera-coding/"),
+						(entry) =>
+							entry.target === CLOUD_CODING_GUEST_ROOTS.runtime ||
+							entry.target.startsWith(`${CLOUD_CODING_GUEST_ROOTS.runtime}/`),
 					)
 				)
 					throw new Error("CODING_GUEST_STORAGE_RUNTIME_UNPROTECTED");

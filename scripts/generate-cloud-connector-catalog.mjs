@@ -9,7 +9,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-export const CATALOG_MIGRATION = "supabase/migrations/20260924040000_cloud_connector_catalog.sql";
+export const CATALOG_MIGRATION = "supabase/migrations/20260925125900_gmail_draft_catalog.sql";
 const BEGIN = "-- BEGIN GENERATED CONNECTOR CATALOG (scripts/generate-cloud-connector-catalog.mjs)";
 const END = "-- END GENERATED CONNECTOR CATALOG";
 
@@ -38,13 +38,27 @@ export async function renderCatalogSql() {
 			literal(row.adapterSha256),
 		].join(",");
 	});
+	const columns = "connector_id,operation_id,version,tool_name,description,input_schema,destination_origin,credential_name,adapter_sha256";
 	return [
 		BEGIN,
 		`-- Catalog version ${catalog.CLOUD_CONNECTOR_CATALOG_VERSION}: ${rows.length} operations.`,
-		"insert into public.qorpera_cloud_connector_operations",
-		"\t(connector_id,operation_id,version,tool_name,description,input_schema,destination_origin,credential_name,adapter_sha256)",
+		"create temporary table qorpera_connector_catalog_release (like public.qorpera_cloud_connector_operations including defaults) on commit drop;",
+		"insert into pg_temp.qorpera_connector_catalog_release",
+		`\t(${columns})`,
 		"values",
 		values.map((value, index) => `\t(${value})${index === values.length - 1 ? ";" : ","}`).join("\n"),
+		"-- An existing version is immutable: refuse drift rather than updating a shipped row.",
+		"do $$ begin",
+		"\tif exists (select 1 from pg_temp.qorpera_connector_catalog_release as proposed",
+		"\t\tjoin public.qorpera_cloud_connector_operations as existing using (connector_id,operation_id,version)",
+		`\t\twhere row(${columns.split(",").map((column) => `proposed.${column}`).join(",")})`,
+		`\t\t\tis distinct from row(${columns.split(",").map((column) => `existing.${column}`).join(",")})) then`,
+		"\t\traise exception 'Existing connector operation changed without a new version';",
+		"\tend if;",
+		"end $$;",
+		`insert into public.qorpera_cloud_connector_operations (${columns})`,
+		`select ${columns} from pg_temp.qorpera_connector_catalog_release`,
+		"on conflict (connector_id,operation_id,version) do nothing;",
 		END,
 	].join("\n");
 }

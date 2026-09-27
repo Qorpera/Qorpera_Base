@@ -142,6 +142,7 @@
 .composer-models button[role=menuitemradio] { justify-content: space-between; padding-left: 14px; }
 .composer-models button[aria-checked=false] > .icon { visibility: hidden; }
 .composer-models button[aria-checked=true] > .icon { color: var(--text); width: 15px; height: 15px; }
+.composer-model-heading { margin: 5px 9px 0; padding: 10px 5px 4px; border-top: 1px solid var(--border); color: var(--text-muted); font-size: 11px; }
 .composer-model-scope, .composer-model-status, .composer-menu-note { margin: 5px 9px; color: var(--text-muted); font-size: 11px; line-height: 1.5; }
 .composer-model-scope { border-top: 1px solid var(--border); padding-top: 10px; }
 .composer-model-status:empty { display: none; }
@@ -166,6 +167,17 @@
 .decision-facts dt, .decision-attribution { color: var(--text-muted); font-size: 11px; }
 .decision-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; padding-top: 8px; }
 .decision-actions p { flex-basis: 100%; color: var(--text-muted); font-size: 11px; }
+/* Approval cards of agents' actions (auto-review, v130). */
+.action-review-card .review-target { margin: 0 0 6px; font-weight: 600; }
+.review-reasons { margin: 8px 0; padding-left: 18px; color: var(--text-muted); }
+.review-reasons li + li { margin-top: 3px; }
+.review-call { max-height: 180px; margin: 8px 0 0; padding: 10px; overflow: auto; border-radius: 8px; background: #f1f1ef; font-size: 11px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.review-failed { margin: 10px 0 0; color: var(--danger, #b3261e); font-size: 12px; }
+.action-review-card:focus { outline: none; }
+.action-review-card:focus-visible { outline: 2px solid var(--focus, #3478f6); outline-offset: 2px; }
+.review-always label { display: grid; gap: 6px; margin-top: 10px; color: var(--text-muted); font-size: 11px; }
+.review-rule-input { width: 100%; padding: 8px 10px; border: 1px solid #dfdfdb; border-radius: 8px; background: #fff; color: var(--text); font: inherit; font-size: 13px; }
+.review-waiting, .review-outcome { margin: 10px 0 0; font-size: 12px; }
 .decision-details { border-top: 1px solid var(--border); margin-top: 14px; padding-top: 4px; font-size: 11px; }
 .decision-details > summary { color: var(--text-muted); font-weight: 400; }
 .decision-details .kv { grid-template-columns: minmax(0, 1fr); }
@@ -313,7 +325,8 @@
 .computer-panel { position: absolute; top: var(--computer-top, calc(var(--titlebar-height) + 20px)); left: var(--computer-left, auto); right: 20px; z-index: 20; width: var(--computer-width, min(400px, calc(100% - 40px))); aspect-ratio: 16 / 9; min-height: 0; overflow: hidden; border: 1px solid rgb(255 255 255 / 12%); border-radius: 8px; background: #24262a; box-shadow: 0 8px 28px rgb(0 0 0 / 32%), 0 2px 6px rgb(0 0 0 / 24%); animation: computer-enter 180ms ease both; }
 /* The hover controls of the preview: the shade along its edges and the ink of the buttons over it, light on the light theme and dark on the dark one (dark.css). */
 .computer-panel { --computer-hover-shade: rgb(255 255 255 / 84%); --computer-hover-ink: #2b2b29; --computer-hover-ink-strong: #131312; --computer-hover-ink-shadow: drop-shadow(0 1px 2px rgb(255 255 255 / 85%)) drop-shadow(0 0 1px rgb(255 255 255 / 70%)); --computer-hover-button-bg: rgb(0 0 0 / 9%); }
-.computer-panel:not(.is-entered) { cursor: grab; touch-action: none; }
+/* The minimized preview keeps the size it had before the app was drawn larger (tokens.css --ui-scale): its pixels stay screen pixels (tokens.css), and so does the body text size it used to inherit. */
+.computer-panel:not(.is-entered) { --px: 1px; font-size: 14px; cursor: grab; touch-action: none; }
 .computer-panel.is-dragging { cursor: grabbing; user-select: none; }
 /* An 8px band inside each edge resizes the preview; the cursor names the edge under the pointer. */
 .computer-panel:not(.is-entered):is([data-resize=n], [data-resize=s]) { cursor: ns-resize; }
@@ -420,7 +433,10 @@
 .routine-inline input[type=text] { flex: 1; min-width: 140px; }
 .routine-days { display: flex; flex-wrap: wrap; gap: 6px; }
 .routine-editor .routine-days label { display: inline-flex; flex-direction: row; align-items: center; gap: 5px; padding: 5px 9px; border: 1px solid var(--border); border-radius: 8px; font-weight: 400; cursor: pointer; }
-.routine-days input[type=checkbox] { width: 14px; height: 14px; min-height: 0; margin: 0; padding: 0; }
+.routine-days input[type=checkbox], .routine-wait input[type=checkbox] { width: 14px; height: 14px; min-height: 0; margin: 0; padding: 0; }
+.routine-editor .routine-wait { display: flex; flex-direction: row; align-items: center; gap: 6px; font-weight: 400; }
+/* Its own `display` beats the dialog's [hidden] rule, so restore it. */
+.routine-editor .routine-wait[hidden] { display: none; }
 .routine-editor .surface-actions { margin: 4px 0 0; }
 
 /* New conversation: a "To:" field with one short list hanging from it. */
@@ -615,7 +631,7 @@
 .coding-thread-header { gap: 8px; }
 .coding-thread-identity { display: flex; align-items: center; gap: 9px; min-width: 0; }
 .coding-thread-identity .figure { width: 28px; height: 28px; flex: none; }
-.coding-thread-swap { flex: none; color: var(--text-soft); }
+.coding-thread-swap { flex: none; width: 14px; height: 14px; color: var(--text-soft); }
 .coding-thread-harness { display: inline-flex; flex: none; }
 .coding-thread-harness .coding-badge { position: static; width: 26px; height: 26px; border: 0; border-radius: 50%; box-sizing: border-box; }
 .coding-thread-harness .coding-badge svg { width: 12px; height: 12px; }
@@ -687,3 +703,54 @@
 .interaction-card.state-answered .interaction-title, .interaction-card.state-declined .interaction-title { color: var(--text-muted); }
 .interaction-secret-row { display: flex; gap: 8px; align-items: center; margin: 6px 0 8px; }
 .interaction-secret { flex: 1 1 200px; }
+
+/* Email drafts are editable letters. The sender comes from the connected account. */
+.interaction-card.email-draft-card { width: min(660px, 100%); min-width: 0; box-sizing: border-box; padding: 16px; border-radius: 22px; background: color-mix(in srgb, var(--text) 5%, var(--bg)); color: var(--text); font-family: var(--font-sans); }
+.email-draft-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+.email-draft-heading h3 { margin: 0; color: var(--text); font-size: 20px; line-height: 1.4; font-weight: 500; }
+.email-draft-status { display: inline-flex; align-items: center; gap: 7px; flex: none; padding: 4px 11px; border-radius: 999px; background: color-mix(in srgb, var(--text) 5%, transparent); color: var(--text-muted); font-size: 16px; line-height: 1.5; }
+.email-draft-status::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+.email-draft-panel { overflow: hidden; border-radius: 12px; background: var(--bg); }
+.email-draft-row { display: flex; flex-direction: row; align-items: center; gap: 10px; min-width: 0; min-height: 46px; margin: 0 16px; padding: 7px 0; border-bottom: 1px solid var(--border-strong); color: var(--text-muted); font-size: 18px; font-weight: 400; line-height: 1.5; }
+.email-draft-label { flex: none; color: var(--text-soft); }
+.email-draft-from { min-width: 0; overflow-wrap: anywhere; }
+.email-draft-card .email-draft-input { flex: 1; min-width: 0; width: 100%; min-height: 30px; padding: 0; border: 0; border-radius: 3px; background: transparent; color: var(--text-muted); font: inherit; text-overflow: ellipsis; }
+.email-draft-card .email-draft-body { display: block; box-sizing: border-box; width: 100%; min-width: 0; min-height: 210px; max-height: 540px; margin: 0; padding: 13px 16px 18px; border: 0; border-radius: 0; background: transparent; color: var(--text); resize: vertical; font: inherit; font-size: 18px; line-height: 1.5; }
+.email-draft-card :is(.email-draft-input, .email-draft-body):focus-visible { outline: 2px solid var(--text-muted); outline-offset: -2px; }
+.email-draft-card :is(.email-draft-input, .email-draft-body)[readonly] { cursor: default; }
+.email-draft-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-top: 14px; }
+.email-draft-actions .btn { min-height: 40px; padding: 8px 13px; border: 0; border-radius: 10px; background: color-mix(in srgb, var(--text) 6%, transparent); color: var(--text); font-size: 18px; font-weight: 500; line-height: 1.4; }
+.email-draft-card .email-draft-actions .email-draft-send { background: var(--text); color: var(--bg); }
+.email-draft-actions .email-draft-save { margin-left: auto; background: transparent; color: var(--text-muted); font-size: 13px; }
+.email-draft-actions .btn:hover:not(:disabled) { filter: brightness(.92); }
+.email-draft-actions .btn:disabled { opacity: .45; cursor: default; }
+.email-draft-card .email-draft-add-cc { min-height: 25px; padding: 2px 4px; border: 0; background: transparent; color: var(--text-soft); font: inherit; font-size: 12px; }
+.email-draft-card [hidden] { display: none; }
+.email-draft-note, .email-draft-error { margin: 10px 0 0; font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.email-draft-note { color: var(--text-muted); }
+.email-draft-error { color: var(--danger); }
+.email-draft-card[data-email-state="sent"] .email-draft-status { color: #08734e; background: color-mix(in srgb, var(--ok) 12%, transparent); }
+[data-theme="dark"] .email-draft-card[data-email-state="sent"] .email-draft-status { color: var(--ok); }
+.email-sent-to, .email-sent-cc { margin: 0 0 4px; font-size: 14px; line-height: 1.5; color: var(--text-muted); overflow-wrap: anywhere; }
+.email-sent-subject { margin: 8px 0 12px; font-size: 17px; font-weight: 500; line-height: 1.4; overflow-wrap: anywhere; }
+.email-sent-details summary { width: fit-content; cursor: pointer; color: var(--text-muted); font-size: 13px; line-height: 1.5; border-radius: 4px; }
+.email-sent-details summary:hover { color: var(--text); }
+.email-sent-details summary:focus-visible { outline: 2px solid var(--text-muted); outline-offset: 4px; }
+.email-sent-from { display: flex; gap: 8px; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border); color: var(--text-muted); font-size: 13px; line-height: 1.5; }
+.email-sent-body { margin-top: 12px; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 16px; line-height: 1.5; }
+[data-theme="dark"] .email-draft-card { background: #292929; border-color: #424242; }
+[data-theme="dark"] .email-draft-panel { background: #202020; }
+[data-theme="dark"] .email-draft-card .email-draft-actions .email-draft-send { background: #fafafa; color: #191919; }
+.email-draft-card .email-draft-actions .email-draft-send:hover:not(:disabled) { background: color-mix(in srgb, var(--text) 90%, var(--bg)); }
+[data-theme="dark"] .email-draft-card .email-draft-actions .email-draft-send:hover:not(:disabled) { background: #e8e8e8; }
+@media (max-width: 480px) {
+	.interaction-card.email-draft-card { padding: 12px; border-radius: 18px; }
+	.email-draft-heading { gap: 8px; flex-wrap: wrap; }
+	.email-draft-heading h3 { font-size: 17px; }
+	.email-draft-status { font-size: 12px; }
+	.email-draft-row { margin-inline: 12px; }
+	.email-draft-card .email-draft-body { padding-inline: 12px; }
+	.email-draft-actions { gap: 7px; }
+	.email-draft-actions .btn { font-size: 14px; }
+	.email-draft-actions .email-draft-save { font-size: 12px; }
+}

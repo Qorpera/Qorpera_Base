@@ -214,6 +214,7 @@ export function fixture() {
 	vi.spyOn(api, "listProfiles").mockResolvedValue([profileA]);
 	vi.spyOn(api, "listIncomingInvitations").mockResolvedValue([]);
 	vi.spyOn(api, "listFriends").mockResolvedValue([]);
+	vi.spyOn(api, "listMemberPictures").mockResolvedValue([]);
 	vi.spyOn(api, "getAccountEntitlement").mockResolvedValue({
 		planKey: "Account A private plan",
 		billingMode: "fixture",

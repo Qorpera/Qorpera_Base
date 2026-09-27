@@ -59,6 +59,26 @@ select pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001
 select pg_temp.wake_error($q$select public.qorpera_manage_agent_routine(current_setting('qorpera_test.routine_binding')::jsonb,'{"action":"list"}')$q$,'42501');
 select pg_temp.path_claims('service_role');
 
+-- Runtime v95: an agent keeps any number of routines (was 32 active or paused).
+-- Probed in a subtransaction.
+do $$
+declare v_index integer;
+begin
+	begin
+		for v_index in 1..33 loop
+			perform pg_temp.routine(jsonb_build_object('action','upsert','operationKey','many-' || v_index,'routineKey','many-' || v_index,
+				'title','Check ' || v_index,'intent','Read support/queue.json.',
+				'trigger','{"kind":"schedule","intervalMinutes":1440,"weekdays":["monday","tuesday","wednesday","thursday","friday"],
+					"localTime":"08:00","timeZone":"Europe/Copenhagen","replyPolicy":"optional"}'::jsonb));
+		end loop;
+		perform pg_temp.wake_assert((select count(*) from public.qorpera_cloud_routines where origin = 'agent'
+			and status in ('active','paused')) >= 34,'An agent keeps thirty-four routines');
+		raise exception 'rollback-routine-count-probe';
+	exception when raise_exception then
+		if sqlerrm <> 'rollback-routine-count-probe' then raise; end if;
+	end;
+end $$;
+
 -- Pause, resume, remove.
 do $$
 begin
@@ -109,7 +129,7 @@ begin
 	where run.source_kind = 'wake' and wake.routine_id = v_row.id order by run.created_at desc limit 1;
 	perform pg_temp.wake_assert(v_run.id is not null,'The routine occurrence materialized a run');
 	v_manifest := public.qorpera_execution_runtime_manifest(v_run);
-	v_expected := case when v_manifest #>> '{modelPolicy,overrides}' = 'routine' and (v_manifest #> '{modelPolicy,allowed}') ? 'high'
+	v_expected := case when v_manifest #>> '{modelPolicy,overrides}' in ('routine','routine-and-thread') and (v_manifest #> '{modelPolicy,allowed}') ? 'high'
 		then 'high' else v_manifest #>> '{modelPolicy,effort}' end;
 	perform pg_temp.wake_assert(v_run.reasoning_effort = v_expected
 		and public.qorpera_manifest_allows_reasoning_effort(v_manifest, v_run.reasoning_effort),
