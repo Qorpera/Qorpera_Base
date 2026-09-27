@@ -223,6 +223,9 @@ export class AgentRoutines {
 	#moving: string | undefined;
 	/** Counts switch changes, so a read that went out before one does not undo it. */
 	#changes = 0;
+	/** Numbers each list read, so an answer older than one already shown is dropped. */
+	#reads = 0;
+	#shown = 0;
 	/** Stops waiting for the last opened card to finish growing. */
 	#opening: AbortController | undefined;
 	readonly #prompts =
@@ -253,11 +256,13 @@ export class AgentRoutines {
 	async #refresh(): Promise<void> {
 		const access = this.#access;
 		if (!access || this.#signal.aborted) return;
+		const read = ++this.#reads;
 		// A read that went out before a switch was moved may predate the change.
 		const changes = this.#changes;
 		try {
 			const [routines, runs] = await Promise.all([access.routines.list(), access.routines.runs()]);
-			if (this.#signal.aborted) return;
+			if (this.#signal.aborted || read < this.#shown) return;
+			this.#shown = read;
 			this.#routines = routines.filter(
 				(item) => item.staffAgentId === this.#agent().id && item.status !== "retired",
 			);
@@ -265,7 +270,7 @@ export class AgentRoutines {
 			if (changes === this.#changes && !this.#busy) this.#flipped.clear();
 			this.#message = "";
 		} catch {
-			if (this.#signal.aborted) return;
+			if (this.#signal.aborted || read < this.#shown) return;
 			this.#message = t("Routines could not be read. Refresh to try again.");
 		}
 		this.#loaded = true;
@@ -481,16 +486,26 @@ export class AgentRoutines {
 	 * switch moves, the others wait. */
 	#setLever(lever: HTMLElement, routine: CloudRoutine, manage: boolean): void {
 		const id = routine.routineId;
-		const on = this.#flipped.get(id) ?? routine.status === "active";
+		const on = this.#runsNow(routine);
 		lever.setAttribute("aria-checked", String(on));
 		lever.title = manage
 			? on
 				? t("Pause routine")
 				: t("Resume routine")
 			: t("Only owners and admins can pause or resume routines.");
-		lever.toggleAttribute("aria-busy", this.#moving === id);
+		if (this.#moving === id) lever.setAttribute("aria-busy", "true");
+		else lever.removeAttribute("aria-busy");
+		lever.classList.toggle("is-locked", !manage);
 		if (!manage || (this.#busy && this.#moving !== id)) lever.setAttribute("aria-disabled", "true");
 		else lever.removeAttribute("aria-disabled");
+	}
+	/** Whether a routine runs, as the member sees it: where its switch was moved,
+	 * else the last read. An editor save keeps this, not the state it opened with. */
+	#runsNow(routine: CloudRoutine): boolean {
+		const id = routine.routineId;
+		return (
+			this.#flipped.get(id) ?? (this.#routines.find((item) => item.routineId === id) ?? routine).status === "active"
+		);
 	}
 	/** Brings the switches and buttons up to date in place, so a moved switch slides
 	 * instead of being drawn anew in its new place. */
@@ -580,7 +595,7 @@ export class AgentRoutines {
 		// Where the switch stood: a failed change puts it back there, even if that was a
 		// place it was moved to whose change no read has confirmed yet.
 		const previous = this.#flipped.get(id);
-		const enabled = !(previous ?? routine.status === "active");
+		const enabled = !this.#runsNow(routine);
 		this.#busy = true;
 		this.#moving = id;
 		this.#changes += 1;
@@ -845,7 +860,7 @@ export class AgentRoutines {
 						prompt: prompt.value.trim(),
 						trigger: built,
 						effort,
-						enabled: routine ? routine.status === "active" : true,
+						enabled: routine ? this.#runsNow(routine) : true,
 					},
 					chosenAccount,
 					saveId,

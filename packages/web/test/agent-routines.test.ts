@@ -473,7 +473,7 @@ describe("agent routines section", () => {
 		// The switch moves at once, before the cloud answers, and in place, so it slides.
 		expect(f.view.el.querySelector('[role="switch"]')).toBe(lever);
 		expect(controls(cards(f.view.el)[0]!)).toEqual(["Edit", "switch:false"]);
-		expect(lever.getAttribute("aria-busy")).toBe("");
+		expect(lever.getAttribute("aria-busy")).toBe("true");
 		expect(lever.getAttribute("title")).toBe("Resume routine");
 		await settle();
 		expect(f.routines.setEnabled).toHaveBeenCalledWith(
@@ -488,6 +488,7 @@ describe("agent routines section", () => {
 		expect(controls(card)).toEqual(["switch:true"]);
 		const locked = card.querySelector('[role="switch"]')!;
 		expect(locked.getAttribute("aria-disabled")).toBe("true");
+		expect(locked.classList.contains("is-locked")).toBe(true);
 		expect(locked.getAttribute("title")).toBe("Only owners and admins can pause or resume routines.");
 		(locked as HTMLButtonElement).click();
 		await settle();
@@ -585,6 +586,66 @@ describe("agent routines section", () => {
 		expect(f.view.el.querySelector(".surface-status")?.textContent).toBe(
 			"The routine could not be changed. Try again.",
 		);
+	});
+	it("drops a list read that answers after a newer one", async () => {
+		const f = mount([routine()]);
+		await settle();
+		const held: Array<(items: CloudRoutine[]) => void> = [];
+		f.routines.list.mockImplementationOnce(
+			() =>
+				new Promise<CloudRoutine[]>((resolve) => {
+					held.push(resolve);
+				}),
+		);
+		f.view.refresh();
+		// The change and the read after it both answer before the older read does.
+		f.routines.list.mockResolvedValue([routine({ status: "paused" })]);
+		click(f.view.el, "Morning brief");
+		await settle();
+		expect(controls(cards(f.view.el)[0]!)).toEqual(["Edit", "switch:false"]);
+		held[0]!([routine()]);
+		await settle();
+		expect(controls(cards(f.view.el)[0]!)).toEqual(["Edit", "switch:false"]);
+	});
+	it.each([
+		["while the read after the change is still out", "held"],
+		["when the read after the change failed", "failed"],
+	] as const)("an editor save keeps a switch the member just turned off, %s", async (_, read) => {
+		const f = mount([routine()]);
+		await settle();
+		const held: Array<(items: CloudRoutine[]) => void> = [];
+		if (read === "held")
+			f.routines.list.mockImplementationOnce(
+				() =>
+					new Promise<CloudRoutine[]>((resolve) => {
+						held.push(resolve);
+					}),
+			);
+		else f.routines.list.mockRejectedValueOnce(new Error("offline"));
+		click(f.view.el, "Morning brief");
+		await settle();
+		click(f.view.el, "Edit");
+		await settle();
+		f.view.el.querySelector<HTMLTextAreaElement>('[aria-label="What to do"]')!.value =
+			"Summarise what changed, briefly.";
+		click(f.view.el, "Save routine");
+		await settle();
+		expect(f.routines.save).toHaveBeenCalledTimes(1);
+		const [draft] = f.routines.save.mock.calls[0] as unknown as [{ enabled: boolean; prompt: string }];
+		expect(draft).toMatchObject({ enabled: false, prompt: "Summarise what changed, briefly." });
+	});
+	it("keeps focus on a switch through the redraw after its change", async () => {
+		const f = mount([routine()]);
+		await settle();
+		f.view.el.querySelector<HTMLElement>('[role="switch"]')!.focus();
+		click(f.view.el, "Morning brief");
+		await settle();
+		f.routines.list.mockResolvedValue([routine({ status: "paused" })]);
+		f.view.refresh();
+		await settle();
+		const lever = f.view.el.querySelector('[role="switch"]');
+		expect(document.activeElement).toBe(lever);
+		expect(lever?.getAttribute("aria-checked")).toBe("false");
 	});
 	it("keeps saying why when the model accounts could not be read for a switch", async () => {
 		const routines = {
