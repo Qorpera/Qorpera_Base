@@ -1062,6 +1062,28 @@ describe("warm conversations: spare Codex processes", () => {
 		expect(await starts(evidence)).toBe(2);
 	});
 
+	it("gives a spare only to a run on the same service tier", async () => {
+		const evidence = join(root, "evidence.json");
+		const command = [process.execPath, rpcFixture, "response-first", evidence] as const;
+		prepareCloudCodexSpare({ command, binarySha256, serviceTier: "fast" }, 60_000);
+		await until(async () => (await starts(evidence)) === 1);
+		// A standard run does not take the Fast spare: it starts its own process.
+		await expect(run("response-first", { serviceTier: "standard" }).result).resolves.toMatchObject({
+			providerSessionId: "thread_fixture",
+		});
+		expect(await starts(evidence)).toBe(2);
+		prepareCloudCodexSpare({ command, binarySha256, serviceTier: "fast" }, 60_000);
+		await until(async () => (await starts(evidence)) === 3);
+		// A Fast run takes it.
+		await expect(run("response-first", { serviceTier: "fast" }).result).resolves.toMatchObject({
+			providerSessionId: "thread_fixture",
+		});
+		expect(await starts(evidence)).toBe(3);
+		expect(() => prepareCloudCodexSpare({ command, binarySha256, serviceTier: "priority" as never }, 60_000)).toThrow(
+			"Invalid spare service tier",
+		);
+	});
+
 	it("stops a spare nobody takes within its window, and one whose root is released", async () => {
 		const evidence = join(root, "evidence.json");
 		const command = [process.execPath, rpcFixture, "response-first", evidence] as const;
