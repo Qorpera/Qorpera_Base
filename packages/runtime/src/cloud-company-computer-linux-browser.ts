@@ -56,6 +56,16 @@ const policy = {
 };
 
 /**
+ * The browser namespace's /tmp. `--disable-dev-shm-usage` puts all of
+ * Chromium's shared memory there, and its software compositor keeps tile and
+ * frame buffers in it: far more than the 64 MiB other namespaces get. At 64 MiB
+ * renderers died on ordinary sites ("Aw, Snap!"); their crash handler's alarm()
+ * then tripped seccomp, so the page reported SIGSEGV. A tmpfs size is only a
+ * cap: pages are used when written and stay within the service's memory limit.
+ */
+export const COMPANY_COMPUTER_BROWSER_TMP_BYTES = 1073741824;
+
+/**
  * Chromium's command line. Nothing here weakens the browser: its own sandbox,
  * site isolation and web security stay on, and no `--test-type`, which would
  * also silence the warnings about unsafe flags.
@@ -321,7 +331,7 @@ export function createCompanyComputerLinuxBrowserLaunch(options: {
 			});
 			// Chromium creates its own nested user/PID sandbox. Only the browser
 			// namespace permits that; shell/desktop namespaces still disable it.
-			const args = companyComputerLinuxSandboxArgs().filter(
+			const args = companyComputerLinuxSandboxArgs(COMPANY_COMPUTER_BROWSER_TMP_BYTES).filter(
 				(arg) => !["--disable-userns", "--assert-userns-disabled"].includes(arg),
 			);
 			args.push(
