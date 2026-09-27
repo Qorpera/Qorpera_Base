@@ -20,6 +20,7 @@ import {
 	workSha256,
 } from "./provider-shared.ts";
 import {
+	mountInfoHasMountPoint,
 	readSharedExecutionIdentity,
 	type SharedExecutionIdentityAuthority,
 	supabaseSharedExecutionIdentityAuthority,
@@ -61,6 +62,9 @@ const MAX_RETIRE_ATTEMPTS = 12;
 const REFUSAL_JOB_UNSUPPORTED = "NODE_NOT_PREFERRED";
 const REFUSAL_CAPACITY = "SANDBOX_CAPACITY_EXHAUSTED";
 const REFUSAL_RETIRING = "SANDBOX_RETIRING";
+/** The run's Compute Identity volume is not attached here (yet): this orchestrator
+ * defers, and takes the job once the volume is attached. */
+const REFUSAL_IDENTITY_ABSENT = "NODE_IDENTITY_ELSEWHERE";
 
 export type SharedExecutionPhysicalState =
 	| "reserving"
@@ -125,6 +129,8 @@ export interface SharedExecutionProviderDependencies {
 	now?: () => number;
 	/** Tests only: skip the identity mount-point requirement. */
 	requireIdentityMount?: boolean;
+	/** Tests only: the mount table read for the identity mount-point requirement. */
+	mountInfoPath?: string;
 	/** Tests only: owner of the identity volume files (root in production). */
 	identityOwnerUid?: number;
 }
@@ -375,6 +381,7 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 	readonly #account: (name: string) => Promise<SharedExecutionAccount>;
 	readonly #now: () => number;
 	readonly #requireIdentityMount: boolean | undefined;
+	readonly #mountInfoPath: string;
 	readonly #identityOwnerUid: number | undefined;
 	readonly #accounts = new Map<string, SharedExecutionAccount>();
 	/** Acquisitions whose retirement is in flight; a second retire of the same one is a no-op. */
@@ -393,6 +400,7 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 		this.#account = dependencies.account ?? systemAccount;
 		this.#now = dependencies.now ?? Date.now;
 		this.#requireIdentityMount = dependencies.requireIdentityMount;
+		this.#mountInfoPath = dependencies.mountInfoPath ?? "/proc/self/mountinfo";
 		this.#identityOwnerUid = dependencies.identityOwnerUid;
 	}
 
@@ -472,6 +480,21 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 					"Shared execution prior run attempt has not retired its sandbox",
 				);
 			}
+			// Before any slot, runner row or reservation: a run whose identity volume is not
+			// attached yet (a login that just moved here) waits instead of failing.
+			if (
+				work.computeIdentityId &&
+				(this.#requireIdentityMount ?? process.platform === "linux") &&
+				!mountInfoHasMountPoint(
+					await readFile(this.#mountInfoPath, "utf-8"),
+					join(this.#config.identityRoot, work.computeIdentityId),
+				)
+			)
+				throw new ProviderAdmissionRefused(
+					"deferred",
+					REFUSAL_IDENTITY_ABSENT,
+					"The run's Compute Identity volume is not attached to this execution host",
+				);
 			const slot = await this.#freeSlot();
 			if (slot === undefined)
 				throw new ProviderAdmissionRefused("deferred", REFUSAL_CAPACITY, "Every sandbox slot is busy");
@@ -946,6 +969,7 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 			authority: this.#identityAuthority,
 			signal,
 			...(this.#requireIdentityMount === undefined ? {} : { requireMount: this.#requireIdentityMount }),
+			mountInfoPath: this.#mountInfoPath,
 			...(this.#identityOwnerUid === undefined ? {} : { expectedUid: this.#identityOwnerUid }),
 		});
 		if (identity.masterKey === credentials.nativeBridgeToken || identity.masterKey === credentials.activationToken)

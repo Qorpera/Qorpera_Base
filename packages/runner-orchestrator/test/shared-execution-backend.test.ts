@@ -143,7 +143,12 @@ interface Fixture {
 }
 
 async function fixture(
-	options: { slotCount?: number; epoch?: number; codingCommand?: { origin: string; token: string } } = {},
+	options: {
+		slotCount?: number;
+		epoch?: number;
+		codingCommand?: { origin: string; token: string };
+		mountInfoPath?: string;
+	} = {},
 ): Promise<Fixture> {
 	const stateRoot = join(await root(), "state");
 	const runRoot = join(await root(), "run");
@@ -306,7 +311,9 @@ async function fixture(
 		units: state.units,
 		identityAuthority: async () => state.identityState,
 		account: async () => ({ uid: process.getuid?.() ?? 0, gid: process.getgid?.() ?? 0 }),
-		requireIdentityMount: false,
+		...(options.mountInfoPath
+			? { requireIdentityMount: true, mountInfoPath: options.mountInfoPath }
+			: { requireIdentityMount: false }),
 		identityOwnerUid: process.getuid?.() ?? 0,
 		now: () => state.clock.now,
 	});
@@ -635,6 +642,23 @@ describe("shared execution provider backend", () => {
 		const retry = await f.backend.acquire(runId, work(), signal).catch((value) => value);
 		expect(retry).toMatchObject({ category: "admission_refused", state: "deferred", reason: "SANDBOX_RETIRING" });
 		expect(f.provisioned).toBe(1);
+	});
+
+	it("defers a run whose identity volume is not attached yet, before any runner row or unit", async () => {
+		const mountInfo = join(await root(), "mountinfo");
+		await writeFile(mountInfo, "22 1 0:21 / / rw,relatime shared:1 - ext4 /dev/sda1 rw\n");
+		const f = await fixture({ mountInfoPath: mountInfo });
+		const refused = await f.backend.acquire(runId, work(), new AbortController().signal).then(
+			() => undefined,
+			(error: unknown) => error,
+		);
+		expect(refused).toBeInstanceOf(ProviderAdmissionRefused);
+		expect(refused).toMatchObject({ reason: "NODE_IDENTITY_ELSEWHERE" });
+		expect(f.rpc).toEqual([]);
+		expect(f.units.log).toEqual([]);
+		const volume = join(f.identityRoot, computeIdentityId).replaceAll(" ", "\\040");
+		await writeFile(mountInfo, `22 1 0:21 / / rw - ext4 /dev/sda1 rw\n90 22 0:50 / ${volume} rw - virtiofs id rw\n`);
+		await expect(f.backend.acquire(runId, work(), new AbortController().signal)).resolves.toMatchObject({ runnerId });
 	});
 
 	it("starts the runner while the host is still loading and returns only once both answer", async () => {
