@@ -7,7 +7,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { expandTestFixture } from "../test-hosted-db.mjs";
 import { startNativePostgres } from "./native-postgres.mjs";
-import { readWorkloadUsage, verifyWorkloadUsage, verifyWorkloadActivity } from "./workload-usage-evidence.mjs";
+import { readWorkloadUsage, verifyWorkloadUsage, verifyWorkloadActivity, verifyGuestWorkloadCoverage } from "./workload-usage-evidence.mjs";
 import { retainSecondCodingClaim, exerciseSharedCodingClaims } from "./workload-usage-shared.mjs";
 import { assertWorkloadRun, assertWorkloadShape } from "./workload-usage-host.mjs";
 import { CodingComputerController, CODING_COMPUTER_RPCS, parseCodingSessionClaim, lxdCodingMachinePlan,
@@ -385,6 +385,11 @@ try {
  if (evidence.guestWorkload) {
   evidence.activityReconciliation = verifyWorkloadActivity(evidence.accounting, evidence.guestWorkload);
   evidence.checks.actualBusyGuestWorkload = true; evidence.checks.idleAndBusyUseSameTariff = true;
+ }
+ if (evidence.sharedCoding) {
+  evidence.sharedActivityCoverage = evidence.sharedCoding.processes.map(({ workerId, completion }) => ({
+   workerId, ...verifyGuestWorkloadCoverage(evidence.accounting, completion),
+  }));
  }
  evidence.checks.physicalStop = true; evidence.passed = true;
 } catch (error) {

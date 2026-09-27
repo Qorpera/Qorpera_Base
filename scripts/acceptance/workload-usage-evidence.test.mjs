@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { normalizedUsageUs, readWorkloadUsage, verifyWorkloadUsage, verifyWorkloadActivity } from "./workload-usage-evidence.mjs";
+import { normalizedUsageUs, readWorkloadUsage, verifyWorkloadUsage, verifyWorkloadActivity, verifyGuestWorkloadCoverage } from "./workload-usage-evidence.mjs";
 
 const tariff = { reference_cpu_millis: 4000, reference_memory_bytes: 8589934592 };
 function fixture() {
@@ -201,10 +201,47 @@ test("idle and completed busy guest intervals allocate the same pinned shape tar
 		checkpoints: Array.from({ length: 13 }, (_, sequence) => ({ sequence, active_ms: String(Math.max(sequence - 1, 0) * 1000) })) };
 	const activity = { idleObservationIds: ["phase-1", "phase-2"], completion: { startedGuestUptimeMs: 2500, finishedGuestUptimeMs: 10500 } };
 	const result = verifyWorkloadActivity(evidence, activity);
+	assert.deepEqual(result.coverage, { schema: "qorpera.guest-workload-coverage/v1", startedGuestUptimeMs: 2500,
+		finishedGuestUptimeMs: 10500, coveringSequences: [4, 5, 6, 7, 8, 9, 10, 11, 12], passed: true });
 	assert.equal(result.phases.idle.activeMs, "2000"); assert.equal(result.phases.idle.allocatedStandardUs, "1000000");
 	assert.equal(result.phases.busy.activeMs, "7000"); assert.equal(result.phases.busy.allocatedStandardUs, "3500000");
 	const bad = structuredClone(activity); bad.completion.finishedGuestUptimeMs = 4500;
 	assert.throws(() => verifyWorkloadActivity(evidence, bad), /Insufficient/);
 	evidence.samples[6].coverage = "gap";
 	assert.throws(() => verifyWorkloadActivity(evidence, activity), /continuous physical coverage/);
+});
+
+test("complete workload coverage permits partial boundary intervals and irrelevant outside gaps", () => {
+	const { evidence } = fixture();
+	assert.deepEqual(verifyGuestWorkloadCoverage(evidence, { startedGuestUptimeMs: 13250, finishedGuestUptimeMs: 13750 }), {
+		schema: "qorpera.guest-workload-coverage/v1", startedGuestUptimeMs: 13250, finishedGuestUptimeMs: 13750,
+		coveringSequences: [5], passed: true,
+	});
+	// A gap ending at the exact start and a stop after the exact end are outside
+	// the covered execution; neither endpoint requires invented elapsed time.
+	assert.equal(verifyGuestWorkloadCoverage(evidence, { startedGuestUptimeMs: 13000, finishedGuestUptimeMs: 14000 }).passed, true);
+});
+
+test("complete workload coverage refuses missing start, end and overlapping gaps", () => {
+	const { evidence } = fixture();
+	for (const [start, end] of [[9999, 10500], [11000, 14000], [10500, 13500], [13250, 15000]]) {
+		assert.throws(() => verifyGuestWorkloadCoverage(evidence, { startedGuestUptimeMs: start, finishedGuestUptimeMs: end }), /continuous physical coverage/);
+	}
+	const tail = structuredClone(evidence); tail.samples.pop();
+	assert.throws(() => verifyGuestWorkloadCoverage(tail, { startedGuestUptimeMs: 13250, finishedGuestUptimeMs: 15000 }), /end lacks/);
+	const rejectedPair = structuredClone(evidence); rejectedPair.samples[4].coverage = "gap";
+	assert.throws(() => verifyGuestWorkloadCoverage(rejectedPair, { startedGuestUptimeMs: 13250, finishedGuestUptimeMs: 13750 }), /start lacks/);
+});
+
+test("sufficient busy time elsewhere cannot hide a partial boundary gap", () => {
+	const evidence = { tariff, stream: { resource_kind: "agent_sandbox", resource_shape: { cpuMillis: 2000, memoryBytes: 1073741824 }, tariff_version: 1 },
+		samples: Array.from({ length: 15 }, (_, index) => ({ sequence: index + 1, coverage: index ? "continuous" : "initial",
+			sample: { observationId: `phase-${index}`, state: "running", guestUptimeMs: index * 1000 } })),
+		checkpoints: Array.from({ length: 16 }, (_, sequence) => ({ sequence, active_ms: String(Math.max(sequence - 1, 0) * 1000) })) };
+	const activity = { idleObservationIds: ["phase-1", "phase-2"], completion: { startedGuestUptimeMs: 2500, finishedGuestUptimeMs: 13500 } };
+	assert.equal(verifyWorkloadActivity(evidence, activity).passed, true);
+	for (const index of [3, 14]) {
+		const gap = structuredClone(evidence); gap.samples[index].coverage = "gap";
+		assert.throws(() => verifyWorkloadActivity(gap, activity), /continuous physical coverage/);
+	}
 });

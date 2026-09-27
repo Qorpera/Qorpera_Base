@@ -195,11 +195,40 @@ export function verifyWorkloadUsage(evidence, expected) {
 		}, passed: true };
 }
 
+/** After verifyWorkloadUsage validates clocks and physical identity, cover the
+ * complete guest execution using adjacent, already reconciled SQL
+ * intervals. Partial boundary intervals are valid; an interior gap cannot be
+ * hidden by enough continuous activity elsewhere in the same execution. */
+export function verifyGuestWorkloadCoverage(evidence, completion) {
+	const { startedGuestUptimeMs: start, finishedGuestUptimeMs: end } = completion;
+	assert(Number.isSafeInteger(start) && start >= 0 && Number.isSafeInteger(end) && end > start, "Guest workload clock required");
+	const { samples } = evidence;
+	const first = samples.findIndex((current, index) => index > 0 && current.coverage === "continuous"
+		&& current.sample.state === "running" && samples[index - 1].sample.state === "running"
+		&& Number.isSafeInteger(samples[index - 1].sample.guestUptimeMs) && Number.isSafeInteger(current.sample.guestUptimeMs)
+		&& samples[index - 1].sample.guestUptimeMs <= start && current.sample.guestUptimeMs > start);
+	assert(first > 0, "Guest workload start lacks continuous physical coverage");
+	const sequences = [];
+	for (let index = first; index < samples.length; index++) {
+		const previous = samples[index - 1], current = samples[index];
+		assert(current.coverage === "continuous" && current.sample.state === "running" && previous.sample.state === "running"
+			&& current.sequence === previous.sequence + 1
+			&& current.sample.physicalId === previous.sample.physicalId && current.sample.guestBootId === previous.sample.guestBootId
+			&& Number.isSafeInteger(current.sample.guestUptimeMs) && current.sample.guestUptimeMs > previous.sample.guestUptimeMs,
+			"Guest workload crosses an interval without continuous physical coverage");
+		sequences.push(current.sequence);
+		if (current.sample.guestUptimeMs >= end) return { schema: "qorpera.guest-workload-coverage/v1",
+			startedGuestUptimeMs: start, finishedGuestUptimeMs: end, coveringSequences: sequences, passed: true };
+	}
+	assert.fail("Guest workload end lacks continuous physical coverage");
+}
+
 /** Attribute already reconciled physical intervals to idle and busy phases.
  * These are cumulative-tariff allocations of the final debit, not separate
  * settlements. Busy boundaries come from the completed guest process's actual
  * Linux boot clock; both endpoints must be inside that observed execution. */
 export function verifyWorkloadActivity(evidence, activity) {
+	const coverage = verifyGuestWorkloadCoverage(evidence, activity.completion);
 	const { samples, checkpoints, stream, tariff } = evidence;
 	const { startedGuestUptimeMs: start, finishedGuestUptimeMs: end } = activity.completion;
 	assert(Number.isSafeInteger(start) && Number.isSafeInteger(end) && end > start, "Guest workload clock required");
@@ -227,7 +256,7 @@ export function verifyWorkloadActivity(evidence, activity) {
 	assert.equal(phases.idle.observations.length, 2, "Idle observations missing from actual SQL samples");
 	assert(phases.idle.active >= 1000n && phases.busy.active >= 5000n, "Insufficient observed idle/busy physical time");
 	return { schema: "qorpera.workload-activity-reconciliation/v1", tariffVersion: stream.tariff_version,
-		shape: stream.resource_shape, phases: Object.fromEntries(Object.entries(phases).map(([name, phase]) => [name,
+		shape: stream.resource_shape, coverage, phases: Object.fromEntries(Object.entries(phases).map(([name, phase]) => [name,
 			{ activeMs: phase.active.toString(), allocatedStandardUs: phase.charge.toString(), observationIds: phase.observations }])),
 		passed: true };
 }
