@@ -1307,14 +1307,56 @@ versioning, and deletion.
 
 ### 15.2 Skills
 
-The turn receives a skill catalog, not every skill body. A skill description
-states when to use it. The body is loaded on demand and its version is recorded
-in the run.
+Amended 2026-09-27. A skill is a reusable procedure an agent loads when a task
+calls for it. Skills use the `SKILL.md` shape that Grok Bots, Claude and Codex
+share, so a skill written elsewhere is imported by copying its folder: a folder
+named for the skill holds `SKILL.md`, whose YAML front matter gives `name` and
+`description` (what the skill does and when to use it) and whose Markdown body
+holds the steps. Supporting files such as templates or scripts may sit beside
+it. A name is lowercase words joined by hyphens, at most 64 characters.
 
-Platform-owned skills are read-only runtime-bundle assets. Company and agent
-skills are Company File playbooks with explicit paths, owners, permissions,
-and mutation rules. A skill is not a place to hide member credentials, private
-channel names, or runtime authority.
+Two libraries, both ordinary versioned Company File objects:
+
+| Library | Path | Who writes it |
+| --- | --- | --- |
+| company | `skills/<name>/SKILL.md` | members and agents under the usual path authority; a protected path proposes |
+| agent (own) | `agents/<staffAgentId>/skills/<name>/SKILL.md` | the agent itself under the notebook's rule (15.1), and members as for any company object |
+
+A flat `skills/<name>.md` is read as a skill too; a new skill is always a
+folder. An agent's own skill wins over a company skill of the same name.
+
+The turn receives a catalog, not the bodies (9.1). Every turn composes a
+`skills` block beside memory: the agent's own skills with their descriptions
+(at most 24), and the company library, described while it holds at most 16
+skills and named (up to 200) once it has grown. Composition reads through the
+trusted lane, beside the notebook, and never blocks a run: a library that
+cannot be read degrades the block to unavailable. A skill file that cannot
+guide anyone yet is named with its problem (`no_description`, `unreadable`).
+
+Tools:
+
+- `read_skill` (`name`, optional `scope` agent or company, `offset`) loads a
+  body on demand in pages that fit one tool result, with the exact version it
+  read; the first page names the supporting files.
+- `search_skills` (optional `query`, `scope` agent, company or all, `limit`
+  1–50, `offset`) ranks names and descriptions by shared words, falls back to a
+  substring match, and pages its results.
+- `update_skill` (`action` create, update or delete; `name`; `scope`, default
+  agent; `description`; `body`) writes through the mutation gateway with the
+  exact expected version (5.2). An update keeps the rest of the file, including
+  front-matter keys it does not own. A write that lost a race to another change
+  in the company is redone from a fresh read only while the skill itself is
+  unchanged; when someone else changed the skill, nothing is saved (`changed`).
+  A delete is proposal-gated like every delete.
+
+A worker reads and searches skills and gets `update_skill` only when its
+dispatch allows Company File writes. Skills are guidance: the catalog and every
+body are untrusted data, a skill grants nothing and never overrides
+instructions or a current source, and it is not a place to hide member
+credentials, private channel names, or runtime authority. Facts about the
+company belong in the Company File and what an agent learned about people in
+its notebook. Platform-owned, read-only skills shipped in the runtime bundle
+are not built yet.
 
 Plugins, connectors, and skills are separate:
 

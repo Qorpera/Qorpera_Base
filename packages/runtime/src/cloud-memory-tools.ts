@@ -347,8 +347,11 @@ function conflicted(error: unknown): boolean {
 
 /** Runs a change from a fresh read, again after each definite conflict. Null
  * when every attempt lost the race, so this change wrote nothing. Any other
- * error, including an unknown outcome, is never retried here. */
-async function retrying<T>(change: (attempt: number) => Promise<T>, signal: AbortSignal): Promise<T | null> {
+ * error, including an unknown outcome, is never retried here. Skills share it. */
+export async function retryingCloudCompanyChange<T>(
+	change: (attempt: number) => Promise<T>,
+	signal: AbortSignal,
+): Promise<T | null> {
 	for (let attempt = 1; ; attempt++) {
 		try {
 			return await change(attempt);
@@ -356,6 +359,45 @@ async function retrying<T>(change: (attempt: number) => Promise<T>, signal: Abor
 			signal.throwIfAborted();
 			if (!conflicted(error)) throw error;
 			if (attempt >= CONFLICT_ATTEMPTS) return null;
+		}
+	}
+}
+
+/** The gateway never invents parent folders (the todo publication does the same): this creates each
+ * missing folder on the way to path, naming the version a deleted folder left. A folder another run
+ * created meanwhile refuses this mkdir as a version change and is simply there on the re-read. The
+ * operation key is `<keyPrefix>-folder-<digest of folder and version>`. Skills share it. */
+export async function ensureCloudCompanyFolders(
+	gateway: CloudMemoryGateway,
+	path: string,
+	context: CloudToolContext,
+	keyPrefix: string,
+): Promise<void> {
+	const parts = path.split("/").slice(0, -1);
+	for (let depth = 1; depth <= parts.length; depth++) {
+		const folder = parts.slice(0, depth).join("/");
+		for (let attempt = 1; ; attempt++) {
+			const seen = await gateway.readTrusted(folder, context.signal);
+			if (seen.kind === "directory") break;
+			if (seen.kind !== "absent") throw new Error("Company File folder is not a directory");
+			try {
+				await gateway.mutate(
+					"mkdir",
+					{
+						path: folder,
+						operationKey: `${keyPrefix}-folder-${createHash("sha256")
+							.update(`${folder}\n${seen.version ?? ""}\n`)
+							.digest("hex")
+							.slice(0, 40)}`,
+						expectedVersion: seen.version,
+					},
+					context.signal,
+					context.observation,
+				);
+				break;
+			} catch (error) {
+				if (!conflicted(error) || attempt >= CONFLICT_ATTEMPTS) throw error;
+			}
 		}
 	}
 }
@@ -385,36 +427,6 @@ export function cloudMemoryTools(
 			.update(`${path}\n${version ?? ""}\n${fact}`)
 			.digest("hex")
 			.slice(0, 40)}`;
-	// The gateway never invents parent folders (the todo publication does the same): a first fact
-	// creates agents/, agents/<staffAgentId>/, memory/ and memory/log/ as needed, naming the version
-	// a deleted folder left. A folder another run created meanwhile refuses this mkdir as a version
-	// change and is simply there on the re-read.
-	const ensureFolders = async (path: string, context: CloudToolContext) => {
-		const parts = path.split("/").slice(0, -1);
-		for (let depth = 1; depth <= parts.length; depth++) {
-			const folder = parts.slice(0, depth).join("/");
-			for (let attempt = 1; ; attempt++) {
-				const seen = await gateway.readTrusted(folder, context.signal);
-				if (seen.kind === "directory") break;
-				if (seen.kind !== "absent") throw new Error("Memory folder is not a directory");
-				try {
-					await gateway.mutate(
-						"mkdir",
-						{
-							path: folder,
-							operationKey: operationKey("folder", folder, seen.version, ""),
-							expectedVersion: seen.version,
-						},
-						context.signal,
-						context.observation,
-					);
-					break;
-				} catch (error) {
-					if (!conflicted(error) || attempt >= CONFLICT_ATTEMPTS) throw error;
-				}
-			}
-		}
-	};
 	const update: CloudNativeTool = {
 		name: "update_memory" satisfies CloudRuntimeToolOperation,
 		source: "runtime",
@@ -466,7 +478,7 @@ export function cloudMemoryTools(
 				const path = tier === "profile" ? paths.profile : cloudMemoryLogPath(expected.staffAgentId, at);
 				const line = renderLine(request.fact, tier, at);
 				const key = factIdentity(request.fact);
-				const written = await retrying(async () => {
+				const written = await retryingCloudCompanyChange(async () => {
 					const notebook = await readNotebook(gateway, paths, context.signal);
 					// A file that is not notebook text is skipped here: at worst this writes a second copy.
 					for (const { file, tier: kind } of notebookFiles(notebook))
@@ -503,7 +515,7 @@ export function cloudMemoryTools(
 									? "Your profile is full; keep it small: forget stale profile facts first."
 									: "This month's log file is full; forget stale facts first.",
 						});
-					if (current.state === "absent") await ensureFolders(path, context);
+					if (current.state === "absent") await ensureCloudCompanyFolders(gateway, path, context, "memory");
 					const result = await gateway.mutate(
 						"write",
 						{
@@ -547,7 +559,7 @@ export function cloudMemoryTools(
 			let unsaved = 0;
 			for (const { file, tier } of notebookFiles(notebook)) {
 				if (!file.lines.some((line) => hit(line, tier))) continue;
-				const outcome = await retrying(async (attempt) => {
+				const outcome = await retryingCloudCompanyChange(async (attempt) => {
 					const current = attempt === 1 ? file : await readFile(gateway, file.path, context.signal);
 					const kept = current.lines.filter((line) => !hit(line, tier));
 					const count = current.lines.length - kept.length;

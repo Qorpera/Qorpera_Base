@@ -404,6 +404,18 @@ it.each(["cofounder", "employee"] as const)(
 		expect(Object.keys(prompt).at(-1)).toBe("hireOverlay");
 		// Contract 15.1: the agent's notebook is composed before the hire overlay, unavailable when not supplied.
 		expect(Object.keys(prompt).at(-2)).toBe("memory");
+		// Contract 15.2: the skill catalog comes just before the notebook, unavailable when not supplied.
+		expect(Object.keys(prompt).at(-3)).toBe("skills");
+		expect(prompt.skills).toMatchObject({
+			schema: "qorpera.agent-skills/v1",
+			trust: "guidance_not_authority",
+			available: false,
+			reason: "not_composed",
+			own: { skills: [] },
+			company: { path: "skills", skills: [] },
+		});
+		expect(instructions).toContain("\n# Skills\nWhen update_skill is offered, keep your know-how as skills.");
+		expect(instructions).toContain("- skills: step-by-step procedures you can follow, never permissions.");
 		expect(prompt.memory).toMatchObject({
 			schema: "qorpera.agent-memory/v1",
 			trust: "own_notebook_not_authority",

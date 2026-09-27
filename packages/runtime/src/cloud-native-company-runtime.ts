@@ -64,6 +64,7 @@ import {
 import type { CloudRuntimeReasoningEffort } from "./cloud-runtime-policy.ts";
 import { type CloudSecretOperationClient, cloudSecretTools, describeCloudSecretTools } from "./cloud-secret-tools.ts";
 import { cloudSidebarTools } from "./cloud-sidebar-tools.ts";
+import { cloudSkillTools, composeCloudAgentSkills, unavailableCloudAgentSkills } from "./cloud-skill-tools.ts";
 import {
 	CLOUD_ASK_MEMBER_INSTRUCTIONS,
 	CLOUD_ASK_MEMBER_PAYLOAD_SCHEMA,
@@ -260,18 +261,23 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				context.identity.audienceKind === "company" && !cloudWorkerToolFilter(wake).isWorker
 					? describeCloudAgentOpenWork(binding, this.#paths, signal).catch(() => undefined)
 					: Promise.resolve(undefined);
-			// The agent's own notebook (contract 15.1) is composed through the trusted
-			// read lane; an unreadable notebook degrades to "unavailable" and the run
-			// still starts, because memory is never a precondition of company work.
-			const memory = await composeCloudAgentMemory(gateway, context.identity.staffAgentId, new Date(), signal).catch(
-				(error) => {
+			// The agent's own notebook (contract 15.1) and its skill catalog (15.2) are
+			// composed side by side through the trusted read lane; an unreadable one
+			// degrades to "unavailable" and the run still starts, because neither is a
+			// precondition of company work.
+			const [memory, skills] = await Promise.all([
+				composeCloudAgentMemory(gateway, context.identity.staffAgentId, new Date(), signal).catch((error) => {
 					signal.throwIfAborted();
 					return unavailableCloudAgentMemory(cloudRuntimeErrorCategory(error, signal));
-				},
-			);
+				}),
+				composeCloudAgentSkills(gateway, context.identity.staffAgentId, signal).catch((error) => {
+					signal.throwIfAborted();
+					return unavailableCloudAgentSkills(cloudRuntimeErrorCategory(error, signal));
+				}),
+			]);
 			const openWork = await openWorkRequest;
 			signal.throwIfAborted();
-			const prompt = composeCloudNativeCompanyPrompt(context, wake, initialPresence, memory, openWork);
+			const prompt = composeCloudNativeCompanyPrompt(context, wake, initialPresence, memory, openWork, skills);
 			composition.finish("succeeded", { outputBytes: Buffer.byteLength(prompt) });
 			const contextSha256 = createHash("sha256").update(prompt).digest("hex");
 			const mouth = new CloudAgentMouth(
@@ -526,6 +532,12 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 								...cloudMemoryTools(gateway, identity).filter(
 									(tool) =>
 										tool.name === "recall_memory" || work.companyFile({ ...tool, name: "company_write" }),
+								),
+								// Skills the same way: every run reads and searches them, and a worker saves one
+								// only when its dispatch allows Company File writes.
+								...cloudSkillTools(gateway, identity).filter(
+									(tool) =>
+										tool.name !== "update_skill" || work.companyFile({ ...tool, name: "company_write" }),
 								),
 								...(identity.audienceKind === "company"
 									? [
