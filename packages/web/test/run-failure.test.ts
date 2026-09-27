@@ -27,6 +27,9 @@ describe("why a run stopped, in the member's words", () => {
 		// A run has no time limit any more; only older runs carry a deadline.
 		["Execution deadline expired before durable completion", "failed", /took too long/],
 		["No computer could start the run within a day", "failed", /No computer could be started/],
+		// One request inside the run timed out, not the run.
+		["Runner model socket request timed out", "failed", /steps got no answer in time/],
+		["Cloud secret broker request timed out", "failed", /steps got no answer in time/],
 		["You have hit your usage limit. Try again later.", "failed", /usage limit/],
 		["Provider credential is invalid", "failed", /connected again/],
 		[undefined, "cancelled", /stopped before it finished/],
@@ -49,6 +52,7 @@ describe("whether a stopped run is worth trying again as it is", () => {
 		],
 		[undefined, "cancelled", true],
 		["No computer could start the run within a day", "failed", true],
+		["Runner model socket request timed out", "failed", true],
 		["You have hit your usage limit. Try again later.", "failed", false],
 		["Provider credential is invalid", "failed", false],
 		["Native provider bridge request failed (422)", "failed", false],

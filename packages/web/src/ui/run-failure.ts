@@ -10,6 +10,7 @@ export type RunFailureKind =
 	| "credential"
 	| "dispatch"
 	| "lost"
+	| "step_timeout"
 	| "timeout"
 	| "bridge"
 	| "cancelled"
@@ -27,8 +28,11 @@ export function classifyRunFailure(lastError: string | undefined, jobStatus: "fa
 	// A run has no time limit (2026-09-24): a lapsed lease means the computer running it
 	// stopped renewing it, from a crash or a lost connection, never that it ran too long.
 	if (/lease expired/i.test(error)) return "lost";
+	// One request inside the run got no answer in time (the model socket, the secret
+	// broker): the run itself was not too long.
+	if (/timed? ?out/i.test(error)) return "step_timeout";
 	// Only runs from before the time limit was removed carry a deadline.
-	if (/deadline|timed? ?out/i.test(error)) return "timeout";
+	if (/deadline/i.test(error)) return "timeout";
 	if (/bridge request failed/i.test(error)) return "bridge";
 	if (jobStatus === "cancelled") return "cancelled";
 	return "other";
@@ -39,6 +43,7 @@ const REASONS: Record<RunFailureKind, string> = {
 	credential: phrase("Your model account needs to be connected again."),
 	dispatch: phrase("No computer could be started for this run. The problem is on Qorpera's side."),
 	lost: phrase("The computer running this run stopped answering. The problem is on Qorpera's side."),
+	step_timeout: phrase("One of the run's steps got no answer in time. The problem is on Qorpera's side."),
 	timeout: phrase("The run took too long and was stopped."),
 	bridge: phrase("The run started, but one of its steps was refused. The problem is on Qorpera's side."),
 	cancelled: phrase("The run was stopped before it finished."),
@@ -51,13 +56,15 @@ export function runFailureReason(lastError: string | undefined, jobStatus: "fail
 }
 
 /** Whether the run was interrupted rather than refused: its computer stopped
- * answering, it was stopped for time, cancelled, or never got a computer. Those
- * are worth trying again as they are.
+ * answering, a step got no answer in time, it was stopped for time, cancelled, or
+ * never got a computer. Those are worth trying again as they are.
  * A reached usage limit or a disconnected account need the member to act first,
  * so their card offers Dismiss only and says what to do. */
 export function runFailureInterrupted(lastError: string | undefined, jobStatus: "failed" | "cancelled"): boolean {
 	const kind = classifyRunFailure(lastError, jobStatus);
-	return kind === "lost" || kind === "timeout" || kind === "dispatch" || kind === "cancelled";
+	return (
+		kind === "lost" || kind === "step_timeout" || kind === "timeout" || kind === "dispatch" || kind === "cancelled"
+	);
 }
 
 export interface RunFailureCard {
