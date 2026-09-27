@@ -25,46 +25,36 @@ function runSyncVersions(root) {
 	});
 }
 
-test("synchronizes private dependencies without touching registry aliases, generated manifests, or published lockstep", async () => {
-	const root = await mkdtemp(join(tmpdir(), "pi-sync-versions-"));
+test("synchronizes private dependencies without touching registry aliases or published lockstep", async () => {
+	const root = await mkdtemp(join(tmpdir(), "qorpera-sync-versions-"));
 	try {
-		await writeManifest(root, "packages/ai", {
-			name: "@qorpera/pi-ai",
+		await writeManifest(root, "packages/contracts", {
+			name: "@qorpera/contracts",
 			version: "2.0.0",
 		});
-		await writeManifest(root, "packages/coding-agent", {
-			name: "@qorpera/pi-coding-agent",
+		await writeManifest(root, "packages/company", {
+			name: "@qorpera/company",
 			version: "2.0.0",
 		});
-		await writeManifest(root, "packages/evals", {
-			name: "@qorpera/pi-evals",
+		await writeManifest(root, "packages/web", {
+			name: "@qorpera/web",
 			version: "9.9.9",
 			private: true,
 			dependencies: {
-				"@qorpera/pi-coding-agent": "^1.0.0",
-				"@mariozechner/pi-ai": "npm:@qorpera/pi-ai@1.0.0",
-			},
-		});
-		await writeManifest(root, "packages/coding-agent/install-lock", {
-			name: "generated-install-lock",
-			version: "0.0.0",
-			private: true,
-			dependencies: {
-				"@qorpera/pi-coding-agent": "^1.0.0",
+				"@qorpera/company": "^1.0.0",
+				"@example/contracts": "npm:@qorpera/contracts@1.0.0",
 			},
 		});
 
 		const result = runSyncVersions(root);
 		assert.equal(result.status, 0, result.stderr);
 
-		const evalsManifest = await readManifest(root, "packages/evals");
-		assert.equal(evalsManifest.dependencies["@qorpera/pi-coding-agent"], "^2.0.0");
-		assert.equal(evalsManifest.dependencies["@mariozechner/pi-ai"], "npm:@qorpera/pi-ai@1.0.0");
-		const generatedManifest = await readManifest(root, "packages/coding-agent/install-lock");
-		assert.equal(generatedManifest.dependencies["@qorpera/pi-coding-agent"], "^1.0.0");
+		const webManifest = await readManifest(root, "packages/web");
+		assert.equal(webManifest.dependencies["@qorpera/company"], "^2.0.0");
+		assert.equal(webManifest.dependencies["@example/contracts"], "npm:@qorpera/contracts@1.0.0");
 
-		await writeManifest(root, "packages/ai", {
-			name: "@qorpera/pi-ai",
+		await writeManifest(root, "packages/contracts", {
+			name: "@qorpera/contracts",
 			version: "3.0.0",
 		});
 		const lockstepFailure = runSyncVersions(root);

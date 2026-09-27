@@ -4,6 +4,8 @@
 
 ### Added
 
+- `CloudCompanyComputerStart.withdraw(generation, requestId, signal)` takes back the member's own idle wake request (`qorpera_withdraw_runtime_office_wake`). It never cancels the wake or a first start; it lets idle stop the computer one minute after it is up once every requester has withdrawn and nothing used it.
+
 - Browser-safe member session-image upload and canonical-input download transport with Web Crypto integrity checks, immutable selections, bounded responses and no automatic mutation retries.
 
 - Shared browser-profile and account-cleanup session controllers, reused by desktop and the independent member web application without Node crypto or runtime imports.

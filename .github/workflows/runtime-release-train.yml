@@ -55,23 +55,23 @@ jobs:
       - name: Runtime bundle check (strict on release branches only)
         run: npm run check:runtime-bundle:release-train
 
-      - name: Packaged host pins, ephemeral runner package and the guard
+      # The observation vocabulary check reads migration and TypeScript source
+      # only (no database, no network): a name on one side only is dropped live.
+      - name: Packaged host pins, ephemeral runner package, the guard and the observation vocabulary
         run: >-
           node --test
           scripts/generate-cloud-runtime-bundle.test.mjs
           scripts/package-ephemeral-runner.test.mjs
           scripts/check-release-train-derived-files.test.mjs
+          scripts/check-runtime-observation-vocabulary.test.mjs
 
-  # A runtime or shell change no longer regenerates the bundle, so it may match
-  # no path-filtered workflow. This job runs every unit test file of
-  # packages/runtime, packages/shell and packages/cloud-client on every run,
-  # sharded across runners. New test files join automatically.
+  # A runtime change no longer regenerates the bundle, so it may match no
+  # path-filtered workflow. This job runs every unit test file of
+  # packages/runtime and packages/cloud-client on every run, sharded across
+  # runners. New test files join automatically.
   #
   # Tests that need podman, a source-built Codex binary or Windows skip
   # themselves when their environment is absent. Excluded here:
-  # - shell test/staff-conception-e2e.test.ts: it imports @qorpera/pi-ai, whose
-  #   model data (packages/ai/src/providers/data, gitignored) exists only after
-  #   `npm run hydrate:model-data` downloads public model catalogs (network).
   # - runtime test/cloud-coding-command-guest.test.ts: its fixtures chown each
   #   command log to a coding group the test user holds (gid >= 1000). It runs
   #   in its own step below, under such a group as in the Step 2 LXD workflow.
@@ -83,12 +83,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { suite: runtime, shard: 1/2, supervisor: true }
-          - { suite: runtime, shard: 2/2 }
-          - { suite: shell, shard: 1/4 }
-          - { suite: shell, shard: 2/4 }
-          - { suite: shell, shard: 3/4 }
-          - { suite: shell, shard: 4/4 }
+          - { suite: runtime, shard: 1/5, supervisor: true }
+          - { suite: runtime, shard: 2/5 }
+          - { suite: runtime, shard: 3/5 }
+          - { suite: runtime, shard: 4/5 }
+          - { suite: runtime, shard: 5/5 }
           - { suite: cloud-client, shard: 1/1 }
     env:
       TMPDIR: /tmp
@@ -125,7 +124,6 @@ jobs:
         run: >-
           node ../../node_modules/vitest/dist/cli.js --run
           --shard=${{ matrix.shard }}
-          --exclude test/staff-conception-e2e.test.ts
           --exclude test/cloud-coding-command-guest.test.ts
 
       - name: Coding command supervisor

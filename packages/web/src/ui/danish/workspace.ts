@@ -1,7 +1,7 @@
 /* Danish interface text, keyed by the English source exactly as the code
  * passes it to t() / uiText(). One file per area of the app; a key lives in
  * one file only (test/translations.test.ts checks). Wording follows
- * qorpera.com and the desktop app (packages/shell/userland/localization.js). */
+ * qorpera.com. */
 /** The frame: rail, hub, new conversation, sign-in, approvals, computer, dialogs. */
 export const WORKSPACE: Record<string, string> = {
 	// app/application.ts
@@ -165,8 +165,8 @@ export const WORKSPACE: Record<string, string> = {
 	"One moment…": "Et øjeblik…",
 	"Sign in": "Log ind",
 	"Your companies and agents, in one place.": "Dine virksomheder og agenter samlet ét sted.",
-	"Same account as the desktop app. Only your own session lives in this browser; agents run in the cloud.":
-		"Samme konto som i desktop-appen. Kun din egen session ligger i denne browser; agenter kører i skyen.",
+	"Only your own session lives in this browser; agents run in the cloud.":
+		"Kun din egen session ligger i denne browser; agenter kører i skyen.",
 
 	// app/views/approvals.ts
 

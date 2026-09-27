@@ -4,7 +4,7 @@ import { CloudCompanyComputerScreenControl } from "@qorpera/runtime/cloud-compan
 import { CompanyComputerScreenAdmissionRefusedError } from "@qorpera/runtime/cloud-company-computer-leases";
 import { CloudNativeToolRun } from "@qorpera/runtime/cloud-native-tool-authority";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { nativeToolAuthorityFixture } from "../../shell/test/fixtures/native-tool-authority-fixture.ts";
+import { nativeToolAuthorityFixture } from "./fixtures/native-tool-authority-fixture.ts";
 
 const runs: CloudNativeToolRun[] = [];
 afterEach(() => {

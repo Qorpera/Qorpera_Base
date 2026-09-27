@@ -5,6 +5,7 @@ import type { CloudNativeCaptureImages } from "./cloud-native-capture-images.ts"
 import type { NativeIsolationConfiguration } from "./cloud-native-isolation.ts";
 import type { CloudNativeFenceRequest } from "./cloud-native-result-fence.ts";
 import {
+	CLOUD_PAIRED_REQUEST_TIMEOUT_MS,
 	type CloudNativeToolAuthorityReader,
 	type CloudNativeToolBinding,
 	type CloudNativeToolIdentity,
@@ -58,6 +59,8 @@ export async function runCloudNativeRunToolSession(options: {
 	prompt: string;
 	runtimeInstructions?: string;
 	identityRoot?: string;
+	/** Warm conversations: the identity root was kept from an earlier run on this host. */
+	reusedIdentityRoot?: boolean;
 	isolation?: NativeIsolationConfiguration;
 	signal: AbortSignal;
 	timeoutMs?: number;
@@ -93,8 +96,15 @@ export async function runCloudNativeRunToolSession(options: {
 		const assertActive = async (signal: AbortSignal): Promise<void> => {
 			const observation = options.observability?.start("context_authority");
 			try {
-				await run.assertActive(signal);
-				await cloudToolRequest((requestSignal) => activeAdapters.assertContext(requestSignal), signal);
+				// Two independent reads, both required: the run's admission and its context read set.
+				// Both lock the run's job row, so each gets the pair's budget, not one read's.
+				const admission = run.assertActive(signal, CLOUD_PAIRED_REQUEST_TIMEOUT_MS);
+				const context = cloudToolRequest(
+					(requestSignal) => activeAdapters.assertContext(requestSignal),
+					signal,
+					CLOUD_PAIRED_REQUEST_TIMEOUT_MS,
+				);
+				await Promise.all([admission, context]);
 				observation?.finish("succeeded");
 			} catch (error) {
 				observation?.finish("denied", {
@@ -127,6 +137,7 @@ export async function runCloudNativeRunToolSession(options: {
 			prompt: options.prompt,
 			runtimeInstructions: options.runtimeInstructions,
 			identityRoot: options.identityRoot,
+			...(options.reusedIdentityRoot ? { reusedIdentityRoot: true } : {}),
 			isolation: options.isolation,
 			signal: run.signal,
 			timeoutMs: options.timeoutMs,
