@@ -7,6 +7,13 @@ coding machines mount the folder too and keep repositories and worktrees in
 it, is part of that amendment. This document is the design those decisions
 refer to.
 
+
+> **Note, 2026-09-27 (evening).** The contract's company folder layout (section
+> 5.6 and the layout amendment in section 19) fixes the folder's seeded tree,
+> makes everything approved by default, and moves per-folder trees ahead of
+> writes through the mount (section 9). Where this design speaks of reviewed
+> deletes and moves, or of protected paths producing proposals by default,
+> the layout amendment governs.
 ## Goal
 
 The Company File is the company's whole folder: its full digital state, not
@@ -245,9 +252,15 @@ These refusals happen as a file is opened or named:
 - a path the authority may read but not write is mounted read-only
   (`EACCES`);
 - adapter-only prefixes are refused: `.qorpera`, `.git`, `trail`, `inbox`,
-  `credentials`, `secrets`, any `node_modules`, `agents/*/instructions.md`,
-  and `departments/*/repository` and `departments/*/worktrees`. Code areas
-  are the exception (section 6);
+  `credentials`, `secrets` and any `node_modules`. Code areas are the
+  exception (section 6). (Amended 2026-09-27: `agents/*/instructions.md` and
+  the retired `departments/*` prefixes are no longer refused; an agent's
+  instructions are its `agents/<agent-name>/agent.md`, contract 5.6);
+- deleting or moving a seeded folder is refused (`EPERM`): `vision/`,
+  `vision/vision.md`, `agents/`, the Co-Founder's folder and its `agent.md`,
+  `agents/groups/`, `connections/`, `skills/` and `rules/` (contract 5.6);
+- a write under `rules/` from an agent is refused (`EACCES`) unless it only
+  adds a stricter rule (contract 5.6);
 - names the Company File forbids are refused (`EINVAL`; under `code/`, git's
   rules apply instead, section 6): control characters,
   `:`, `%`, `\`, a trailing dot or space, device names with or without an
@@ -690,6 +703,14 @@ Everything runs on the release train, and every PR gets an independent review.
 Reading comes first, so agents can search the whole company early. Writing
 keeps using today's tools until step 5.
 
+Amended 2026-09-27 (contract, company folder layout amendment): per-folder
+trees move from step 8 into step 4. One head per company would make writes
+through the mount conflict constantly, so the storage core changes before any
+machine writes through the folder. The folder layout of contract 5.6 is
+seeded and today's state moves into it alongside these steps. Decision 6's
+reviewed deletes and moves is superseded: everything is approved by default,
+and a delete or move applies at once and can be restored.
+
 1. **Server, reading side.**
    - A run-authorized listing of a whole subtree.
    - Byte-range reads.
@@ -706,10 +727,13 @@ keeps using today's tools until step 5.
    and the capacity decision. First live acceptance: an agent searches the
    whole company.
 4. **Server, writing side.**
+   - Per-folder trees and a version per file, lifting the manifest and entry
+     caps, with no company-wide lock for reads (moved here from step 8).
    - Change sets and units.
    - Move and rename.
    - Streamed binary writes.
-   - The delete policy of decision 6, with parked units.
+   - Deletes and moves apply at once (amended 2026-09-27); seeded folders are
+     refused.
    - Restore, plus a file history view in the web app.
    - The upload binding.
 5. **Writes through the mount.** Boundaries, reports, conflicts, proposals,
@@ -727,7 +751,7 @@ keeps using today's tools until step 5.
    - Company data read, written and searched from coding sessions.
    - Coding sessions' changes skip review.
    - The repository stays in the session's private workspace until step 9.
-8. **Per-folder trees**, and lifting the manifest and entry caps.
+8. *(Moved into step 4 on 2026-09-27.)*
 9. **Code areas.**
    - The layout `code/<owner>/<name>/`, with `repo.git`, `main` and
      `worktrees/<workerId>`.
