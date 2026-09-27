@@ -69,7 +69,7 @@ bounded serial development build on a disposable GitHub Linux runner. It uses
 the exact reviewed upstream commit, patch, normalized lock and Rust toolchain,
 verifies the prebuilt V8 dependency against the upstream-pinned checksum chain,
 and runs the three actual-binary component suites in an isolated environment.
-Acceptance requires all 19 cases to execute and pass with zero skips. Build
+Acceptance requires all 20 cases to execute and pass with zero skips. Build
 failures, resource measurements and bounded logs are retained. Successful runs
 also retain the four exact component artifact files privately, with their hashes
 verified again after testing.
@@ -112,6 +112,25 @@ inside a governed VM. Fixture cleanup and private-root removal were checked,
 but no separate exhaustive final process inventory was captured. Later Office
 source corrections at `90e9d448c` leave these component execution inputs
 unchanged; this result remains attributed to `ece5a4585`.
+
+After integrating Fast mode from pinned master `a1ddffbf4`, run
+[36354584678](https://github.com/Qorpera/Qorpera_Base/actions/runs/36354584678)
+at exact `fa909875a` passes **20 component tests with zero skips or failures**:
+seven result-boundary, nine capture-image and four compaction cases, plus ten
+harness tests. The new boundary case inspects the actual outgoing request:
+Fast sends `service_tier: "priority"`, while all three standard model cases
+omit that field. Existing tool, private-output and image-authority assertions
+remain enforced. An old nineteen-case result cannot satisfy this lane.
+
+The pinned serial development build took 989,903ms with 3,600,544KiB maximum RSS
+on the 2-CPU/8-GiB runner. Its executable has the same measured size and SHA256
+as the earlier development build; it was rebuilt and all current tests ran.
+Independent verification covers all 75 retained hashes, 31 ZIP members and
+three matching complete job logs. The 69-byte mode0600 socket preflight and
+private-root removal pass. This still uses scripted loopback providers and
+leaves release and physical joined acceptance outstanding. Subsequent
+acceptance-only Office context changes do not enter these native execution
+inputs.
 
 ## Build an isolated test package
 

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { writeFile } from "node:fs/promises";
 import { chromium } from "playwright-core";
 import { setTimeout as delay } from "node:timers/promises";
 import { join } from "node:path";
@@ -21,7 +22,7 @@ export async function runFoundingBrowser({ origin, publicKey, cluster, mail, out
 	const browser = await chromium.launch({ headless: true });
 	const network = foundingNetworkScope(origin);
 	const contexts = [], errors = [], blocked = [], memberTokens = new Map();
-	const evidence = { steps: [], boundaries: {
+	const evidence = { steps: [], convergence: { phases: [], documentsUnchanged: false }, boundaries: {
 		auth: "Real pinned Supabase Auth, SMTP OTP verification and signed sessions",
 		database: "Real isolated PostgreSQL17, complete repository migrations, real PostgREST member role/JWT authority",
 		client: "Actual production web entry, styles, auth, controllers and views; separate browser contexts",
@@ -29,7 +30,7 @@ export async function runFoundingBrowser({ origin, publicKey, cluster, mail, out
 		modelAccounts: "Separate member-owned native-login completion/sponsor fixtures; no external ChatGPT OAuth or model execution",
 		computerCapacity: "Canonical invoice-funded Basis/Standard balances, actual readiness-gated rollout enrollment and each founder's UI pool consent; Stripe payment itself is fixture, no live checkout or capacity",
 		runtime: "Actual launch, turn materialization, wake and immutable startup context; no inference or physical VM dispatch",
-		realtime: "Not hosted; production polling/reload paths provide shared state",
+		realtime: "Not hosted; visible multiplayer pages converge through unchanged production 4-second founding and 5-second hub polling without reload; solo setup still uses a reload",
 	} };
 	try {
 		async function member(email) {
@@ -41,6 +42,14 @@ export async function runFoundingBrowser({ origin, publicKey, cluster, mail, out
 				blocked.push(url.origin); return route.abort("blockedbyclient");
 			});
 			const page = await context.newPage(); page.setDefaultTimeout(20000);
+			const reads = { founding: 0, invitations: 0 };
+			page.on("request", request => {
+				if (request.method() !== "POST") return;
+				const url = new URL(request.url());
+				if (url.origin !== origin) return;
+				if (url.pathname === "/rest/v1/rpc/qorpera_read_company_founding") reads.founding++;
+				if (url.pathname === "/rest/v1/rpc/qorpera_list_company_founding_invitations") reads.invitations++;
+			});
 			page.on("pageerror", error => errors.push(error.message));
 			page.on("response", async response => {
 				if (response.url().startsWith(`${origin}/auth/v1/verify`) && response.ok()) {
@@ -67,12 +76,32 @@ export async function runFoundingBrowser({ origin, publicKey, cluster, mail, out
 			await page.getByRole("heading", { name: "Start your first company", exact: true }).waitFor();
 			const userId = await cluster.query(`select id from auth.users where email='${email}' and email_confirmed_at is not null;`);
 			sqlUuid(userId); assert(memberTokens.has(email), "Real Auth session not observed");
-			return { page, context, email, userId };
+			return { page, context, email, userId, reads };
 		}
 		const first = await member("founder-a@founding.example.test"), second = await member("founder-b@founding.example.test");
 		assert.notEqual(first.userId, second.userId);
 		const nonmember = await member("nonmember@founding.example.test");
 		assert(![first.userId, second.userId].includes(nonmember.userId));
+		const founders = [first, second];
+		let documents;
+		async function converge(phase, expectedReads, action, observe) {
+			const started = Date.now(), before = founders.map(member => ({ ...member.reads }));
+			const receipt = { phase, passed: false, elapsedMs: null, pageReads: null };
+			evidence.convergence.phases.push(receipt);
+			try {
+				await action();
+				await eventually(observe, `Production polling did not converge: ${phase}`);
+				const current = await Promise.all(founders.map(member => member.page.evaluate(() => ({ timeOrigin: performance.timeOrigin, visible: !document.hidden }))));
+				assert.deepEqual(current, documents, "Multiplayer document reloaded or became hidden");
+				for (const [index, kind] of expectedReads) assert(founders[index].reads[kind] > before[index][kind], `${phase} did not observe a peer page ${kind} read`);
+				receipt.passed = true;
+			} finally {
+				receipt.elapsedMs = Date.now() - started;
+				receipt.pageReads = founders.map((member, index) => ({ founding: member.reads.founding - before[index].founding, invitations: member.reads.invitations - before[index].invitations }));
+			}
+		}
+		const badge = (member, peer, state) => member.page.locator(".founding .person-row").filter({ hasText: peer.email }).locator(".badge").filter({ hasText: new RegExp(`^${state}$`) }).isVisible();
+		const bothBadges = async state => (await Promise.all(founders.flatMap(member => founders.map(peer => badge(member, peer, state))))).every(Boolean);
 		evidence.nonmemberAccess = { userId: nonmember.userId, phases: [] };
 		if (computerPlanSetup) {
 			// Trusted acceptance composition, not a client API. The hook receives
@@ -169,17 +198,24 @@ export async function runFoundingBrowser({ origin, publicKey, cluster, mail, out
 		await submit(first.page, "qorpera_update_company_founding", () => first.page.getByRole("button", { name: "Save company details", exact: true }).click());
 		await eventually(() => first.page.getByRole("button", { name: "Save company details", exact: true }).isEnabled(), "Company edit did not finish");
 		await first.page.getByLabel("Choose a co-founder", { exact: true }).selectOption(second.userId);
-		await submit(first.page, "qorpera_invite_company_founder", () => first.page.getByRole("button", { name: "Invite co-founder", exact: true }).click());
-		await first.page.getByText("Invited", { exact: true }).waitFor();
-		await second.page.reload();
-		await second.page.getByRole("button", { name: "Join setup", exact: true }).click();
-		await second.page.getByRole("heading", { name: "Set up your company", exact: true }).waitFor();
+		documents = await Promise.all(founders.map(member => member.page.evaluate(() => ({ timeOrigin: performance.timeOrigin, visible: !document.hidden }))));
+		assert(documents.every(document => document.visible), "Polling proof requires visible founder pages");
+		evidence.convergence.documents = documents;
+		await converge("invitation", [[1, "invitations"]], async () => {
+			await submit(first.page, "qorpera_invite_company_founder", () => first.page.getByRole("button", { name: "Invite co-founder", exact: true }).click());
+			await first.page.getByText("Invited", { exact: true }).waitFor();
+		}, () => second.page.getByRole("button", { name: "Join setup", exact: true }).isVisible());
+		await converge("join", [[0, "founding"]], async () => {
+			await second.page.getByRole("button", { name: "Join setup", exact: true }).click();
+			await second.page.getByRole("heading", { name: "Set up your company", exact: true }).waitFor();
+		}, () => badge(first, second, "Not ready"));
 		await verifyNonmemberAccess(profileId, "after_join");
 		const prelaunchRoles = lastJson(await cluster.query(`select jsonb_object_agg(user_id,role) from public.qorpera_profile_members where profile_id=${sqlUuid(profileId)};`));
 		assert.equal(prelaunchRoles[first.userId], "owner"); assert.equal(prelaunchRoles[second.userId], "contributor");
 		assert(await second.page.getByRole("button", { name: "I'm Ready", exact: true }).isDisabled());
 		evidence.steps.push("Company created/bootstrap finalized; second founder explicitly joined as contributor; early launch and unconnected Ready blocked");
-		await setupModels(profileId, [first, second]);
+		await converge("model-readiness", [[0, "founding"], [1, "founding"]], () => setupModels(profileId, [first, second]), async () =>
+			(await Promise.all(founders.map(member => member.page.getByRole("button", { name: "I'm Ready", exact: true }).isEnabled()))).every(Boolean));
 		if (!computerPlanSetup) await cluster.query(computerPlansSql([first.userId, second.userId]));
 		// This isolated deployment explicitly publishes readiness. Ordinary
 		// production refresh/creation enrolls paid enforcement; no per-company
@@ -188,15 +224,18 @@ export async function runFoundingBrowser({ origin, publicKey, cluster, mail, out
 		const unfundedPool = await rpc(first, "qorpera_read_company_founding", { p_profile_id: profileId });
 		assert.equal(unfundedPool.body.computerUsage.meterMode, "paid", "Published rollout did not enroll existing open setup");
 		assert.equal(unfundedPool.body.computerUsage.canStart, false, "Paid plan or Computer Usage owner implied pool consent");
-		await Promise.all([first.page.reload(), second.page.reload()]);
 		await first.page.getByLabel("Your role (optional)", { exact: true }).fill("Product and customer discovery");
 		await first.page.getByLabel("Contribute my Qorpera computer allowance to this company", { exact: true }).check();
-		await first.page.getByRole("button", { name: "I'm Ready", exact: true }).click();
-		await first.page.getByRole("button", { name: "Not ready yet", exact: true }).waitFor();
+		await converge("creator-ready", [[1, "founding"]], async () => {
+			await first.page.getByRole("button", { name: "I'm Ready", exact: true }).click();
+			await first.page.getByRole("button", { name: "Not ready yet", exact: true }).waitFor();
+		}, () => badge(second, first, "Ready"));
 		await second.page.getByLabel("Your role (optional)", { exact: true }).fill("Engineering and delivery");
 		await second.page.getByLabel("Contribute my Qorpera computer allowance to this company", { exact: true }).check();
-		await second.page.getByRole("button", { name: "I'm Ready", exact: true }).click();
-		await second.page.getByRole("button", { name: "Not ready yet", exact: true }).waitFor();
+		await converge("cofounder-ready", [[0, "founding"]], async () => {
+			await second.page.getByRole("button", { name: "I'm Ready", exact: true }).click();
+			await second.page.getByRole("button", { name: "Not ready yet", exact: true }).waitFor();
+		}, () => bothBadges("Ready"));
 		const ready = await rpc(second, "qorpera_read_company_founding", { p_profile_id: profileId });
 		assert.equal(ready.status, 200); assert(ready.body.seats.every(seat => seat.readyRevision === ready.body.revision));
 		assert(ready.body.seats.every(seat => seat.computerPoolEnabled));
@@ -207,16 +246,22 @@ export async function runFoundingBrowser({ origin, publicKey, cluster, mail, out
 		assert.equal(secondUsage.body.balance.availableUs, String(286 * 3600000000));
 		evidence.steps.push("Invoice-funded Basis and Standard plans retained separate member balances; each founder explicitly contributed through UI; combined company pool matched 360 standard hours");
 		// An edit after both signatures invalidates the exact shared revision.
-		await first.page.getByLabel("A little about the company").fill("Build practical tools for local businesses. Agree on the vision, validate with customers, and ship useful prototypes.");
-		await first.page.getByRole("button", { name: "Save company details", exact: true }).click();
-		await first.page.getByRole("button", { name: "I'm Ready", exact: true }).waitFor();
+		const revisedVision = "Build practical tools for local businesses. Agree on the vision, validate with customers, and ship useful prototypes.";
+		await converge("vision-and-signature-invalidation", [[1, "founding"]], async () => {
+			await first.page.getByLabel("A little about the company").fill(revisedVision);
+			await first.page.getByRole("button", { name: "Save company details", exact: true }).click();
+			await first.page.getByRole("button", { name: "I'm Ready", exact: true }).waitFor();
+		}, async () => await second.page.getByLabel("A little about the company").inputValue() === revisedVision && await bothBadges("Not ready"));
 		const stale = await rpc(second, "qorpera_set_founder_ready", { p_profile_id: profileId, p_expected_revision: ready.body.revision, p_ready: true, p_role_description: "Engineering" });
 		assert.equal(stale.status, 412, "Stale co-signature accepted");
-		await second.page.reload();
-		await first.page.getByRole("button", { name: "I'm Ready", exact: true }).click();
-		await first.page.getByRole("button", { name: "Not ready yet", exact: true }).waitFor();
-		await second.page.getByRole("button", { name: "I'm Ready", exact: true }).click();
-		await second.page.getByRole("button", { name: "Not ready yet", exact: true }).waitFor();
+		await converge("creator-resigned", [[1, "founding"]], async () => {
+			await first.page.getByRole("button", { name: "I'm Ready", exact: true }).click();
+			await first.page.getByRole("button", { name: "Not ready yet", exact: true }).waitFor();
+		}, () => badge(second, first, "Ready"));
+		await converge("cofounder-resigned", [[0, "founding"]], async () => {
+			await second.page.getByRole("button", { name: "I'm Ready", exact: true }).click();
+			await second.page.getByRole("button", { name: "Not ready yet", exact: true }).waitFor();
+		}, () => bothBadges("Ready"));
 		await eventually(() => second.page.getByRole("button", { name: "Start company", exact: true }).isEnabled(), "Ready founders were not allowed to start");
 		await Promise.all([first.page.screenshot({ path: join(out, "founder-a-ready.png"), fullPage: true }), second.page.screenshot({ path: join(out, "founder-b-ready.png"), fullPage: true })]);
 		evidence.steps.push("Both members co-signed; later company edit invalidated signatures; stale revision refused; both re-signed current vision");
@@ -226,17 +271,19 @@ export async function runFoundingBrowser({ origin, publicKey, cluster, mail, out
 			const response = await route.fetch(); assert.equal(response.status(), 200);
 			if (!lost) { lost = true; await route.abort("connectionreset"); } else await route.fulfill({ response });
 		});
-		await second.page.getByRole("button", { name: "Start company", exact: true }).click();
-		await eventually(async () => (await rpc(second, "qorpera_read_company_founding", { p_profile_id: profileId })).body.phase === "launched", "Launch not committed");
-		assert(lost && launchRequest, "Lost launch reply was not exercised");
-		const [exactReplay, otherTab] = await Promise.all([
-			rpc(second, "qorpera_launch_company_founding", launchRequest),
-			rpc(first, "qorpera_launch_company_founding", { p_profile_id: profileId, p_expected_revision: 0, p_client_launch_id: randomUUID() }),
-		]);
-		assert.equal(exactReplay.status, 200); assert.equal(otherTab.status, 200);
-		assert.deepEqual(exactReplay.body.launch, otherTab.body.launch);
-		await Promise.all([first.page.reload(), second.page.reload()]);
-		await eventually(async () => !first.page.url().endsWith("/founding") && !second.page.url().endsWith("/founding"), "Launched clients did not open the company");
+		await converge("launch", [[0, "founding"], [1, "founding"]], async () => {
+			await second.page.getByRole("button", { name: "Start company", exact: true }).click();
+			await eventually(async () => (await rpc(second, "qorpera_read_company_founding", { p_profile_id: profileId })).body.phase === "launched", "Launch not committed");
+			assert(lost && launchRequest, "Lost launch reply was not exercised");
+			const [exactReplay, otherTab] = await Promise.all([
+				rpc(second, "qorpera_launch_company_founding", launchRequest),
+				rpc(first, "qorpera_launch_company_founding", { p_profile_id: profileId, p_expected_revision: 0, p_client_launch_id: randomUUID() }),
+			]);
+			assert.equal(exactReplay.status, 200); assert.equal(otherTab.status, 200);
+			assert.deepEqual(exactReplay.body.launch, otherTab.body.launch);
+		}, async () => !first.page.url().endsWith("/founding") && !second.page.url().endsWith("/founding"));
+		evidence.convergence.documentsUnchanged = true;
+		evidence.steps.push("Nine multiplayer phases converged on existing visible documents through real page reads and unchanged production polling; no reload or synthetic focus/visibility events");
 		const runtime = await materialized(profileId);
 		assert.equal(runtime.phase, "launched"); assert.equal(runtime.requestCount, 1);
 		assert.deepEqual(runtime.owners.sort(), [first.userId, second.userId].sort());
@@ -300,5 +347,8 @@ export async function runFoundingBrowser({ origin, publicKey, cluster, mail, out
 		}
 		if (error instanceof Error) error.message += `\nCompleted acceptance steps: ${evidence.steps.join("; ")}`;
 		throw error;
-	} finally { await Promise.all(contexts.map(context => context.close())); await browser.close(); memberTokens.clear(); }
+	} finally {
+		await Promise.all(contexts.map(context => context.close())); await browser.close(); memberTokens.clear();
+		await writeFile(join(out, "founding-convergence.json"), `${JSON.stringify(evidence.convergence, null, 2)}\n`, { mode: 0o600 });
+	}
 }
