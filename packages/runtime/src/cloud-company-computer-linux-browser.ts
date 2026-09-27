@@ -65,6 +65,15 @@ const policy = {
  */
 export const COMPANY_COMPUTER_BROWSER_TMP_BYTES = 1073741824;
 
+/** The browser namespace's base Bubblewrap arguments. Chromium creates its own
+ * nested user/PID sandbox, so only this namespace permits nested user
+ * namespaces; shell/desktop namespaces still disable them. */
+export function companyComputerBrowserSandboxArgs(): string[] {
+	return companyComputerLinuxSandboxArgs(COMPANY_COMPUTER_BROWSER_TMP_BYTES).filter(
+		(arg) => !["--disable-userns", "--assert-userns-disabled"].includes(arg),
+	);
+}
+
 /**
  * Chromium's command line. Nothing here weakens the browser: its own sandbox,
  * site isolation and web security stay on, and no `--test-type`, which would
@@ -329,11 +338,7 @@ export function createCompanyComputerLinuxBrowserLaunch(options: {
 				onFailure: () => abort.abort(),
 				transport: options.egressTransport,
 			});
-			// Chromium creates its own nested user/PID sandbox. Only the browser
-			// namespace permits that; shell/desktop namespaces still disable it.
-			const args = companyComputerLinuxSandboxArgs(COMPANY_COMPUTER_BROWSER_TMP_BYTES).filter(
-				(arg) => !["--disable-userns", "--assert-userns-disabled"].includes(arg),
-			);
+			const args = companyComputerBrowserSandboxArgs();
 			args.push(
 				"--bind-fd",
 				"5",
