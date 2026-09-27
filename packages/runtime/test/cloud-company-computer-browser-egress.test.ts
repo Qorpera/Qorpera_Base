@@ -214,6 +214,37 @@ describe("office browser public HTTPS relay", () => {
 		expect(f.onFailure).not.toHaveBeenCalled();
 		await vi.waitFor(() => expect(f.onFailure).toHaveBeenCalledOnce(), { timeout: 5000 });
 	}, 20000);
+	it("asks less often while nobody is present, and lets a returning connection through on its own answer", async () => {
+		const echo = createNetServer((socket) => {
+			socket.on("error", () => undefined);
+			socket.pipe(socket);
+		});
+		await new Promise<void>((resolve) => echo.listen(0, "127.0.0.1", resolve));
+		cleanups.push(() => new Promise<void>((resolve) => echo.close(() => resolve())));
+		const address = echo.address();
+		if (!address || typeof address === "string") throw new Error("Fixture listener missing");
+		const paused = new Error("fixture: nobody present");
+		const f = await fixture({ classifyFailure: (error) => (error === paused ? "paused" : "refused"), graceMs: 2500 });
+		f.transport.connect.mockImplementation(() => createConnection({ host: "127.0.0.1", port: address.port }));
+		f.assertActive.mockRejectedValue(paused);
+		await once(f.peer, "close");
+		const asked = f.assertActive.mock.calls.length;
+		await new Promise((resolve) => setTimeout(resolve, 3200));
+		// Every five seconds while idle, not every second.
+		expect(f.assertActive.mock.calls.length - asked).toBeLessThanOrEqual(1);
+		// Somebody is back: the connection asks at once and goes through on that answer.
+		f.assertActive.mockResolvedValue(undefined);
+		const back = createConnection(f.relay.path);
+		back.on("error", () => undefined);
+		cleanups.push(async () => {
+			back.destroy();
+		});
+		await once(back, "connect");
+		const connected = once(back, "data");
+		back.write(header);
+		expect((await connected)[0].toString()).toBe("HTTP/1.1 200 Connection Established\r\n\r\n");
+		expect(f.onFailure).not.toHaveBeenCalled();
+	}, 20000);
 	it("rechecks authority after DNS and cannot open a socket after revocation", async () => {
 		const f = await fixture();
 		f.transport.resolve.mockImplementation(async () => {

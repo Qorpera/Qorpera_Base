@@ -32,7 +32,11 @@ import {
 	PersistentCompanyComputerBrowser,
 } from "./cloud-company-computer-guest.ts";
 import { assertCompanyComputerGuestLayout, type CompanyComputerGuestLayout } from "./cloud-company-computer-layout.ts";
-import type { CompanyComputerScreenActionGate } from "./cloud-company-computer-leases.ts";
+import {
+	CompanyComputerActionFailedError,
+	type CompanyComputerScreenActionGate,
+	companyComputerActionCheck,
+} from "./cloud-company-computer-leases.ts";
 import { createCompanyComputerLinuxBrowserLaunch } from "./cloud-company-computer-linux-browser.ts";
 import { CompanyComputerLinuxCommands } from "./cloud-company-computer-linux-commands.ts";
 import { CompanyComputerLinuxDesktopLauncher } from "./cloud-company-computer-linux-desktop.ts";
@@ -544,11 +548,26 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 		const attach = async (checked: AbortSignal): Promise<CompanyComputerBrowserSession> => {
 			const grant = runGrant();
 			// First the run's authority; a run without a current grant starts nothing.
-			await boundary.assertReady(binding, checked);
-			await access.assertGranted(grant, binding, checked);
+			await companyComputerActionCheck(boundary.assertReady(binding, checked));
+			await companyComputerActionCheck(access.assertGranted(grant, binding, checked));
 			// From here on this run may have automation in flight against the browser.
 			driving = "attaching";
-			const shared = await this.#ensureBrowser(binding, "agent", checked);
+			let shared: CompanyComputerBrowserSession;
+			try {
+				shared = await this.#ensureBrowser(binding, "agent", checked);
+			} catch (error) {
+				// Joining the open window only checked it, and that check got no answer:
+				// this run started nothing there, so it has nothing to stop.
+				if (
+					error instanceof Error &&
+					error.message === "BROWSER_ACCESS_UNCONFIRMED" &&
+					companyComputerAuthorityUnanswered(error)
+				) {
+					driving = undefined;
+					throw new CompanyComputerActionFailedError(error);
+				}
+				throw error;
+			}
 			driving = shared;
 			if (
 				shared.grant.profileId !== grant.profileId ||
@@ -566,8 +585,11 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 					try {
 						await boundary.assertReady(binding, current);
 						await access.assertGranted(grant, binding, current);
-					} catch {
-						throw new Error("BROWSER_ACCESS_ENDED");
+					} catch (cause) {
+						throw new Error(
+							companyComputerAuthorityUnanswered(cause) ? "BROWSER_ACCESS_UNCONFIRMED" : "BROWSER_ACCESS_ENDED",
+							{ cause },
+						);
 					}
 					// Screen authority and physical liveness; a lost grant closes the browser.
 					await shared.assertActive(current);

@@ -1,6 +1,7 @@
 import { timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { createServer } from "node:https";
+import { performance } from "node:perf_hooks";
 import type { Duplex } from "node:stream";
 import { isDeepStrictEqual } from "node:util";
 import {
@@ -57,6 +58,8 @@ interface Session {
 	active: Set<Promise<unknown>>;
 	closing?: Promise<void>;
 	reopening?: Promise<void>;
+	/** A failed reopen is not retried before this time; the action fails as the old session would. */
+	reopenAfter?: number;
 	closed: boolean;
 	released: boolean;
 }
@@ -263,9 +266,14 @@ export class CompanyComputerNativeGateway {
 				await session.guest.close().catch(() => undefined);
 				throw new Error("OFFICE_NATIVE_CLOSED");
 			}
-		})().finally(() => {
-			session.reopening = undefined;
-		});
+		})()
+			.catch((error: unknown) => {
+				session.reopenAfter = performance.now() + 3000;
+				throw error;
+			})
+			.finally(() => {
+				session.reopening = undefined;
+			});
 		return session.reopening;
 	}
 	async #dispatch(value: unknown, signal: AbortSignal): Promise<unknown> {
@@ -341,7 +349,10 @@ export class CompanyComputerNativeGateway {
 		const result = (async () => {
 			const combined = AbortSignal.any([signal, session.run.signal]);
 			await session.run.assertActive(combined);
-			if (session.guest.ended?.()) await cloudToolRequest(() => this.#reopen(session), combined);
+			if (session.guest.ended?.()) {
+				if ((session.reopenAfter ?? 0) > performance.now()) throw new Error("OFFICE_SESSION_CLOSED");
+				await cloudToolRequest(() => this.#reopen(session), combined);
+			}
 			await session.guest.endpoint.authorize(operation, session.run.identity, lease, combined);
 			const content = await session.guest.endpoint.perform(operation, lease, {
 				identity: session.run.identity,

@@ -85,8 +85,12 @@ export async function startCompanyComputerBrowserEgress(options: {
 	const pending = new Set<Promise<unknown>>();
 	let transfers = 0;
 	let attempts = 0;
-	let checking = false;
-	let paused = false;
+	let checking: Promise<void> | undefined;
+	/** Why the relay carries nothing now: nobody entitled is present, or no answer came. */
+	let paused: "idle" | "unanswered" | undefined;
+	let checkedAt = 0;
+	let answeredAt = performance.now();
+	let holding = 0;
 	let closing: Promise<void> | undefined;
 	const fail = (): void => {
 		if (!signal.aborted) {
@@ -101,9 +105,8 @@ export async function startCompanyComputerBrowserEgress(options: {
 	};
 	const check = (checked: AbortSignal): Promise<void> =>
 		cloudToolRequest((s) => track(options.assertActive(s)), checked, 3000);
-	const server = createServer({ pauseOnConnect: true }, (peer) => {
-		// A paused relay refuses at once, without counting: an idle page may retry for days.
-		if (signal.aborted || paused || peers.size >= 64 || ++attempts > 4096) {
+	const accept = (peer: Socket): void => {
+		if (signal.aborted || peers.size >= 64 || ++attempts > 4096) {
 			peer.destroy();
 			return;
 		}
@@ -213,6 +216,26 @@ export async function startCompanyComputerBrowserEgress(options: {
 		};
 		peer.on("data", receive);
 		peer.resume();
+	};
+	const server = createServer({ pauseOnConnect: true }, (peer) => {
+		if (!paused) {
+			accept(peer);
+			return;
+		}
+		// A paused relay counts nothing: an idle page may retry for days. A new
+		// connection (somebody back at the screen) asks at once, at most once a
+		// second, and waits for that answer instead of failing the page.
+		peer.on("error", () => undefined);
+		if (signal.aborted || peers.size + holding >= 64 || (!checking && performance.now() - checkedAt < 1000)) {
+			peer.destroy();
+			return;
+		}
+		holding++;
+		void periodic().then(() => {
+			holding--;
+			if (paused || signal.aborted) peer.destroy();
+			else accept(peer);
+		});
 	});
 	server.maxConnections = 64;
 	const abort = (): void => {
@@ -222,41 +245,43 @@ export async function startCompanyComputerBrowserEgress(options: {
 	};
 	server.on("error", fail);
 	signal.addEventListener("abort", abort, { once: true });
-	// Every established tunnel goes and new ones are refused until the next
-	// authorized periodic answer. The window stays on the desktop.
-	const pause = (): void => {
-		paused = true;
+	// Every established tunnel goes and new ones wait for an authorized answer.
+	// The window stays on the desktop.
+	const pause = (reason: "idle" | "unanswered"): void => {
+		paused = reason;
 		for (const socket of [...peers, ...upstreams]) socket.destroy();
 	};
-	let answeredAt = performance.now();
+	const periodic = (): Promise<void> => {
+		checking ??= (async () => {
+			checkedAt = performance.now();
+			try {
+				await check(signal);
+				answeredAt = performance.now();
+				if (paused) {
+					// A new period of presence: the relay's budgets were sized for one.
+					paused = undefined;
+					attempts = 0;
+					transfers = 0;
+				}
+			} catch (error) {
+				const failure = options.classifyFailure?.(error) ?? "refused";
+				if (failure === "paused") {
+					answeredAt = performance.now();
+					pause("idle");
+				} else if (failure === "unanswered" && performance.now() - answeredAt < (options.graceMs ?? 0))
+					pause("unanswered");
+				else fail();
+			}
+		})().finally(() => {
+			checking = undefined;
+		});
+		return checking;
+	};
 	const interval = setInterval(() => {
 		if (checking || signal.aborted) return;
-		checking = true;
-		void check(signal)
-			.then(
-				() => {
-					answeredAt = performance.now();
-					if (paused) {
-						// A new period of presence: the relay's budgets were sized for one.
-						paused = false;
-						attempts = 0;
-						transfers = 0;
-					}
-				},
-				(error: unknown) => {
-					const failure = options.classifyFailure?.(error) ?? "refused";
-					if (failure === "paused") answeredAt = performance.now();
-					if (
-						failure === "paused" ||
-						(failure === "unanswered" && performance.now() - answeredAt < (options.graceMs ?? 0))
-					)
-						pause();
-					else fail();
-				},
-			)
-			.finally(() => {
-				checking = false;
-			});
+		// Nobody entitled present: ask every few seconds; a connection asks at once.
+		if (paused === "idle" && performance.now() - checkedAt < 5000) return;
+		void periodic();
 	}, 1000);
 	const close = (): Promise<void> => {
 		closing ??= cloudToolRequest(

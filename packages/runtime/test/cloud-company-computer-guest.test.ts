@@ -489,6 +489,29 @@ describe("Playwright/X11/shell adapters (test doubles, never the member machine)
 		expect(f.effects.finish).toHaveBeenCalledTimes(3);
 	});
 
+	it("fails an action as its own when an authority check between its steps gets no answer, and stops nothing", async () => {
+		const f = automationFixture();
+		const unanswered = new CompanyComputerRegistryUnansweredError(new Error("request timed out"));
+		vi.mocked(f.browser.assertActive).mockResolvedValueOnce(undefined).mockRejectedValueOnce(unanswered);
+		await expect(f.perform({ kind: "browser", action: "navigate", url: "https://example.com/" })).rejects.toThrow(
+			"OFFICE_REGISTRY_UNCONFIRMED",
+		);
+		expect(f.page.goto).toHaveBeenCalledOnce();
+		vi.mocked(f.boundary.assertReady).mockRejectedValueOnce(
+			new Error("OFFICE_GUEST_READINESS_UNCONFIRMED", { cause: unanswered }),
+		);
+		await expect(f.perform({ kind: "browser", action: "snapshot" })).rejects.toThrow(
+			"OFFICE_GUEST_READINESS_UNCONFIRMED",
+		);
+		expect(f.context.close).not.toHaveBeenCalled();
+		expect(f.effects.finish).toHaveBeenCalledTimes(2);
+		// A refusal between steps still stops the browser and keeps the resource.
+		vi.mocked(f.browser.assertActive).mockRejectedValueOnce(new Error("PROFILE_GRANT_REVOKED"));
+		await expect(f.perform({ kind: "browser", action: "snapshot" })).rejects.toThrow("PROFILE_GRANT_REVOKED");
+		expect(f.context.close).toHaveBeenCalledOnce();
+		expect(f.effects.finish).toHaveBeenCalledTimes(2);
+	});
+
 	it("drains a command stopped at its own limit, but not one whose exit is unconfirmed", async () => {
 		const f = automationFixture();
 		vi.mocked(f.commands.run).mockRejectedValueOnce(new Error("OFFICE_COMMAND_TIMEOUT"));
