@@ -418,6 +418,15 @@ describe("agent skills", () => {
 				expect(result.success, JSON.stringify(args)).toBe(false);
 			}
 			expect(f.store.gateway.readTrusted).not.toHaveBeenCalled();
+			// The model learns why: a missing version names itself.
+			const unversioned = await f.boundary.invoke(randomUUID(), "qorpera", "update_skill", {
+				action: "update",
+				name: "some-skill",
+				body: "x",
+			} as never);
+			expect(JSON.parse(unversioned.contentItems[0].text).content.text).toBe(
+				"INVALID_ARGUMENTS: Name the version read_skill gave you, so nobody's change is overwritten unseen",
+			);
 		} finally {
 			f.run.close();
 		}
@@ -709,7 +718,12 @@ describe("refusals and protected libraries", () => {
 					: { path, version: null, kind: "absent", text: "", fileSha256: null };
 			});
 			const read = await f.call("read_skill", { name: "refund" });
-			expect(read).toMatchObject({ state: "found", scope: "company", body: { text: "Steps.\n" } });
+			expect(read).toMatchObject({
+				state: "found",
+				scope: "company",
+				ownUnavailable: true,
+				body: { text: "Steps.\n" },
+			});
 			const stale = await f.call("read_skill", {
 				name: "refund",
 				offset: 3,
@@ -770,6 +784,14 @@ describe("refusals and protected libraries", () => {
 			expect(f.store.files.get(`${f.own}/windows/SKILL.md`)?.text).toBe(
 				"---\r\nname: windows\r\ndescription: Made on Windows.\r\n---\r\n\r\nNew.\r\nSteps.\r\n",
 			);
+			// A version is matched whatever its letter case.
+			const upper = await f.call("update_skill", {
+				action: "update",
+				name: "windows",
+				version: updated.version.toUpperCase(),
+				body: "Newer.",
+			});
+			expect(upper.state).toBe("updated");
 		} finally {
 			f.run.close();
 		}
@@ -780,5 +802,10 @@ describe("refusals and protected libraries", () => {
 		expect(
 			parseCloudSkillFile("---\ndescription: first part\n  # a comment line\n  second part\n---\n").description,
 		).toBe("first part second part");
+		// Inside quotes a # line is text.
+		expect(parseCloudSkillFile('---\ndescription: "first\n  # second"\n---\n').description).toBe("first # second");
+		// One stray CRLF does not turn a whole LF file into CRLF, and a byte order mark never lands in a body.
+		expect(parseCloudSkillFile("---\nname: a\r\ndescription: b\n---\nx\n").newline).toBe("\n");
+		expect(parseCloudSkillFile("\uFEFF# Steps\n").body).toBe("# Steps\n");
 	});
 });

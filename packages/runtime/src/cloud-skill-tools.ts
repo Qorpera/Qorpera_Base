@@ -32,6 +32,7 @@ import { ensureCloudCompanyFolders, retryingCloudCompanyChange } from "./cloud-m
 import type { CloudNativeToolIdentity } from "./cloud-native-tool-authority.ts";
 import {
 	type CloudNativeTool,
+	CloudToolArgumentRefusal,
 	type CloudToolContext,
 	cloudToolJsonText,
 	MAX_CLOUD_TOOL_RESULT_BYTES,
@@ -62,7 +63,8 @@ const SEARCH_DEFAULT_LIMIT = 20;
 const SEARCH_MAX_LIMIT = 50;
 /** Skill files one search reads; past this the result says how many it skipped. */
 const SEARCH_MAX_FILES = 400;
-const SEARCH_READ_CONCURRENCY = 16;
+/** Skill files read at once, for the catalog and a search. */
+const READ_CONCURRENCY = 16;
 const DISTINCTIVE_WORD_CHARS = 3;
 /** Room for the result fence's provenance around a page (read_context keeps the same). */
 const RESULT_FENCE_RESERVE_BYTES = 3072;
@@ -207,9 +209,10 @@ function frontScalar(raw: string, more: readonly string[]): string | null {
 			.map((paragraph) => paragraph.replace(/\s*\n\s*/g, " "))
 			.join("\n");
 	}
-	// Continuation lines of a flow scalar, without comment lines.
-	const continued = more.map((line) => line.trim()).filter((line) => line && !line.startsWith("#"));
-	const quoted = [raw, ...continued].join(" ");
+	// Continuation lines of a flow scalar; inside quotes a line starting with # is text, not a comment.
+	const lines = more.map((line) => line.trim()).filter(Boolean);
+	const continued = lines.filter((line) => !line.startsWith("#"));
+	const quoted = [raw, ...lines].join(" ");
 	if (raw.startsWith('"')) return doubleQuoted(quoted);
 	if (raw.startsWith("'")) {
 		// Inside single quotes '' is one quote; the first lone quote closes the scalar.
@@ -235,13 +238,15 @@ function oneLine(text: string): string {
 
 /** Reads a SKILL.md: YAML front matter between --- lines, then the body. */
 export function parseCloudSkillFile(text: string): CloudSkillDocument {
-	const newline = text.includes("\r\n") ? "\r\n" : "\n";
-	const lines = (text.charCodeAt(0) === 0xfeff ? text.slice(1) : text).split(/\r?\n/);
+	// A file keeps CRLF only when every line ends that way.
+	const newline = text.includes("\r\n") && !/(^|[^\r])\n/.test(text) ? "\r\n" : "\n";
+	const unmarked = text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
+	const lines = unmarked.split(/\r?\n/);
 	const close =
 		lines[0]?.trimEnd() === "---"
 			? lines.findIndex((line, index) => index > 0 && /^(---|\.\.\.)\s*$/.test(line))
 			: -1;
-	if (close < 0) return { front: null, fields: new Map(), description: null, body: text, newline };
+	if (close < 0) return { front: null, fields: new Map(), description: null, body: unmarked, newline };
 	const front = lines.slice(1, close);
 	const fields = new Map<string, FrontField>();
 	for (let index = 0; index < front.length; index++) {
@@ -431,7 +436,7 @@ function budget(entries: CloudSkillEntry[]): CloudSkillEntry[] {
 /** Contract 15.2: the skill catalog for one turn, never the bodies. The agent's own
  * skills carry their descriptions; the company library carries descriptions while
  * it is small and names once it has grown (search_skills then reads descriptions).
- * Reads use the trusted lane, all at once, so this runs before the first
+ * Reads use the trusted lane, side by side, so this runs before the first
  * acknowledgement beside the notebook. A library that cannot be listed is named
  * unavailable and the other still composes; only when neither can is this a failure. */
 export async function composeCloudAgentSkills(
@@ -453,7 +458,7 @@ export async function composeCloudAgentSkills(
 	const described = companyListed.length <= COMPOSED_DESCRIBED_COMPANY_SKILLS;
 	const ownShown = ownListed.slice(0, COMPOSED_OWN_SKILLS);
 	const reading = [...ownShown, ...(described ? companyListed : [])];
-	const files = await readAll(gateway, reading, reading.length, signal);
+	const files = await readAll(gateway, reading, READ_CONCURRENCY, signal);
 	const entries = (from: number, to?: number) =>
 		files
 			.slice(from, to)
@@ -488,7 +493,11 @@ export async function composeCloudAgentSkills(
 
 /** Whether a tool result carrying value still fits the fence with its provenance. */
 function fitsResult(value: JsonValue): boolean {
-	return fencedBytes(cloudToolJsonText(value)) <= MAX_CLOUD_TOOL_RESULT_BYTES - RESULT_FENCE_RESERVE_BYTES;
+	// The tool's JSON text is one string inside the fence's JSON, with markup escaped.
+	return (
+		Buffer.byteLength(JSON.stringify(cloudToolJsonText(value)).replace(FENCE_ESCAPED, "\\u0000")) <=
+		MAX_CLOUD_TOOL_RESULT_BYTES - RESULT_FENCE_RESERVE_BYTES
+	);
 }
 
 function normalize(text: string): string {
@@ -496,18 +505,19 @@ function normalize(text: string): string {
 }
 
 function skillName(value: unknown): string {
-	if (typeof value !== "string" || !validName(value)) throw new Error("Invalid skill name");
+	if (typeof value !== "string" || !validName(value)) throw new CloudToolArgumentRefusal("Invalid skill name");
 	return value;
 }
 
 function skillScope(value: unknown): CloudSkillScope {
-	if (!CLOUD_SKILL_SCOPES.includes(value as CloudSkillScope)) throw new Error("Invalid skill scope");
+	if (!CLOUD_SKILL_SCOPES.includes(value as CloudSkillScope))
+		throw new CloudToolArgumentRefusal("Invalid skill scope");
 	return value as CloudSkillScope;
 }
 
 function skillVersion(value: unknown): string {
-	if (typeof value !== "string" || !VERSION.test(value)) throw new Error("Invalid skill version");
-	return value;
+	if (typeof value !== "string" || !VERSION.test(value)) throw new CloudToolArgumentRefusal("Invalid skill version");
+	return value.toLowerCase();
 }
 
 function closedArguments(value: JsonValue, keys: readonly string[], label: string): Record<string, unknown> {
@@ -517,7 +527,7 @@ function closedArguments(value: JsonValue, keys: readonly string[], label: strin
 		Array.isArray(value) ||
 		Object.keys(value).some((key) => !keys.includes(key))
 	)
-		throw new Error(`Invalid ${label} request`);
+		throw new CloudToolArgumentRefusal(`Invalid ${label} request`);
 	return value as Record<string, unknown>;
 }
 
@@ -590,7 +600,7 @@ export function cloudSkillTools(
 		parseArguments(value) {
 			const a = closedArguments(value, ["name", "scope", "offset", "version"], "skill read");
 			if (a.offset !== undefined && (!Number.isSafeInteger(a.offset) || (a.offset as number) < 0))
-				throw new Error("Invalid skill offset");
+				throw new CloudToolArgumentRefusal("Invalid skill offset");
 			return {
 				name: skillName(a.name),
 				...(a.scope !== undefined ? { scope: skillScope(a.scope) } : {}),
@@ -620,8 +630,11 @@ export function cloudSkillTools(
 			);
 			context.signal.throwIfAborted();
 			let file: SkillFile | undefined;
+			// A company skill found while the own library could not be read may stand in for an own one.
+			let ownUnavailable = false;
 			for (const outcome of outcomes) {
-				if (outcome.status === "fulfilled" && outcome.value.state !== "absent") {
+				if (outcome.status === "rejected") ownUnavailable = true;
+				else if (outcome.value.state !== "absent") {
 					file = outcome.value;
 					break;
 				}
@@ -678,6 +691,12 @@ export function cloudSkillTools(
 				scope,
 				path,
 				version,
+				...(ownUnavailable
+					? {
+							ownUnavailable: true,
+							hint: "Your own library could not be read just now, so your own skill of this name, if any, was not checked.",
+						}
+					: {}),
 				description: document.description === null ? null : boundedDescription(document.description),
 				...(listed ? { folder, files, moreFiles: listed - files.length } : {}),
 				body: {
@@ -729,15 +748,15 @@ export function cloudSkillTools(
 				a.query !== undefined &&
 				(typeof a.query !== "string" || Buffer.byteLength(a.query) > 512 || !wellFormed(a.query))
 			)
-				throw new Error("Invalid skill query");
+				throw new CloudToolArgumentRefusal("Invalid skill query");
 			if (a.scope !== undefined && a.scope !== "all") skillScope(a.scope);
 			if (
 				a.limit !== undefined &&
 				(!Number.isSafeInteger(a.limit) || (a.limit as number) < 1 || (a.limit as number) > SEARCH_MAX_LIMIT)
 			)
-				throw new Error("Invalid skill limit");
+				throw new CloudToolArgumentRefusal("Invalid skill limit");
 			if (a.offset !== undefined && (!Number.isSafeInteger(a.offset) || (a.offset as number) < 0))
-				throw new Error("Invalid skill offset");
+				throw new CloudToolArgumentRefusal("Invalid skill offset");
 			const query = typeof a.query === "string" ? oneLine(a.query) : "";
 			return {
 				...(query ? { query } : {}),
@@ -759,7 +778,7 @@ export function cloudSkillTools(
 			if (failed && listings.every((listing) => listing.status === "rejected")) throw failed.reason;
 			const listed = listings.flatMap((listing) => (listing.status === "fulfilled" ? listing.value : []));
 			const reading = listed.slice(0, SEARCH_MAX_FILES);
-			const files = await readAll(gateway, reading, SEARCH_READ_CONCURRENCY, context.signal);
+			const files = await readAll(gateway, reading, READ_CONCURRENCY, context.signal);
 			const skills = files.flatMap((file) => {
 				const entry = catalogEntry(file);
 				return entry ? [{ ...entry, scope: file.scope }] : [];
@@ -836,7 +855,7 @@ export function cloudSkillTools(
 				"skill change",
 			);
 			if (a.action !== "create" && a.action !== "update" && a.action !== "delete")
-				throw new Error("Invalid skill action");
+				throw new CloudToolArgumentRefusal("Invalid skill action");
 			if (
 				a.description !== undefined &&
 				(typeof a.description !== "string" ||
@@ -844,7 +863,7 @@ export function cloudSkillTools(
 					Buffer.byteLength(oneLine(a.description)) > MAX_DESCRIPTION_BYTES ||
 					!wellFormed(a.description))
 			)
-				throw new Error("Invalid skill description");
+				throw new CloudToolArgumentRefusal("Invalid skill description");
 			if (
 				a.body !== undefined &&
 				(typeof a.body !== "string" ||
@@ -852,16 +871,19 @@ export function cloudSkillTools(
 					Buffer.byteLength(a.body) > MAX_BODY_BYTES ||
 					!wellFormed(a.body))
 			)
-				throw new Error("Invalid skill body");
+				throw new CloudToolArgumentRefusal("Invalid skill body");
 			if (a.action === "create" && (a.description === undefined || a.body === undefined))
-				throw new Error("A new skill needs a description and a body");
-			if (a.action === "create" && a.version !== undefined) throw new Error("A new skill has no version yet");
+				throw new CloudToolArgumentRefusal("A new skill needs a description and a body");
+			if (a.action === "create" && a.version !== undefined)
+				throw new CloudToolArgumentRefusal("A new skill has no version yet");
 			if (a.action !== "create" && a.version === undefined)
-				throw new Error("Name the version read_skill gave you, so nobody's change is overwritten unseen");
+				throw new CloudToolArgumentRefusal(
+					"Name the version read_skill gave you, so nobody's change is overwritten unseen",
+				);
 			if (a.action === "update" && a.description === undefined && a.body === undefined)
-				throw new Error("A skill update changes the description, the body or both");
+				throw new CloudToolArgumentRefusal("A skill update changes the description, the body or both");
 			if (a.action === "delete" && (a.description !== undefined || a.body !== undefined))
-				throw new Error("Delete names the skill only");
+				throw new CloudToolArgumentRefusal("Delete names the skill only");
 			return {
 				action: a.action,
 				name: skillName(a.name),
