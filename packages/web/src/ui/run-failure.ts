@@ -29,10 +29,10 @@ export function classifyRunFailure(lastError: string | undefined, jobStatus: "fa
 	// stopped renewing it, from a crash or a lost connection, never that it ran too long.
 	if (/lease expired/i.test(error)) return "lost";
 	// One request inside the run got no answer in time (the model socket, the secret
-	// broker): the run itself was not too long.
-	if (/timed? ?out/i.test(error)) return "step_timeout";
-	// Only runs from before the time limit was removed carry a deadline.
-	if (/deadline/i.test(error)) return "timeout";
+	// broker, a cloud call's own request deadline): the run itself was not too long.
+	if (/timed? ?out|did not respond/i.test(error)) return "step_timeout";
+	// Only runs from before the time limit was removed carry an expired run deadline.
+	if (/deadline expired/i.test(error)) return "timeout";
 	if (/bridge request failed/i.test(error)) return "bridge";
 	if (jobStatus === "cancelled") return "cancelled";
 	return "other";

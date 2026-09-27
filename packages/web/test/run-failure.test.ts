@@ -30,6 +30,12 @@ describe("why a run stopped, in the member's words", () => {
 		// One request inside the run timed out, not the run.
 		["Runner model socket request timed out", "failed", /steps got no answer in time/],
 		["Cloud secret broker request timed out", "failed", /steps got no answer in time/],
+		[
+			"Cloud service did not respond before the request deadline. Retry when the service recovers.",
+			"failed",
+			/steps got no answer in time/,
+		],
+		["Execution deadline expired before runner acceptance", "failed", /took too long/],
 		["You have hit your usage limit. Try again later.", "failed", /usage limit/],
 		["Provider credential is invalid", "failed", /connected again/],
 		[undefined, "cancelled", /stopped before it finished/],
