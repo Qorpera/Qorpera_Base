@@ -46,6 +46,7 @@ function run(
 	options: {
 		model?: string;
 		reasoningEffort?: "low" | "medium" | "high";
+		serviceTier?: "fast" | "standard";
 		timeoutMs?: number;
 		identityRoot?: string;
 		runtimeInstructions?: string;
@@ -129,6 +130,23 @@ it.each([
 		turnParameters: { effort: "low" },
 		configuration: { model_reasoning_effort: "low" },
 	});
+});
+
+it.each([
+	["fast", "fast"],
+	["standard", "default"],
+	[undefined, "default"],
+] as const)("runs a %s turn with Codex service tier %s", async (serviceTier, expected) => {
+	const { result, evidence } = run("model-selection", { serviceTier });
+	await result;
+	const recorded = JSON.parse(await readFile(evidence, "utf8"));
+	expect(recorded.configuration).toMatchObject({ service_tier: expected, features: { fast_mode: true } });
+});
+
+it("refuses a tier outside the admitted set", async () => {
+	await expect(run("model-selection", { serviceTier: "priority" as never }).result).rejects.toThrow(
+		"Invalid native boundary input",
+	);
 });
 
 it("starts a routine turn at the effort its routine chose", async () => {
@@ -304,12 +322,17 @@ it("rejects a different provider binary version before starting a thread", async
 	await expect(run("wrong-version").result).rejects.toThrow("Unsupported Codex boundary version");
 });
 
-it.each(["unsafe-config", "extra-mcp", "unsafe-code-mode", "nested-cloud-tools", "skill-route"])(
-	"rejects effective configuration drift before a model request: %s",
-	async (mode) => {
-		await expect(run(mode).result).rejects.toThrow("Native boundary configuration was not applied");
-	},
-);
+it.each([
+	"unsafe-config",
+	"extra-mcp",
+	"unsafe-code-mode",
+	"nested-cloud-tools",
+	"skill-route",
+	"fast-mode-off",
+	"tier-dropped",
+])("rejects effective configuration drift before a model request: %s", async (mode) => {
+	await expect(run(mode).result).rejects.toThrow("Native boundary configuration was not applied");
+});
 
 it("rejects provider skills outside the controlled result boundary", async () => {
 	await expect(run("extra-skills").result).rejects.toThrow("Native boundary requires an empty provider skill catalog");
@@ -1066,6 +1089,28 @@ describe("warm conversations: spare Codex processes", () => {
 			providerSessionId: "thread_fixture",
 		});
 		expect(await starts(evidence)).toBe(2);
+	});
+
+	it("gives a spare only to a run on the same service tier", async () => {
+		const evidence = join(root, "evidence.json");
+		const command = [process.execPath, rpcFixture, "response-first", evidence] as const;
+		prepareCloudCodexSpare({ command, binarySha256, serviceTier: "fast" }, 60_000);
+		await spareReady(evidence);
+		// A standard run does not take the Fast spare: it starts its own process.
+		await expect(run("response-first", { serviceTier: "standard" }).result).resolves.toMatchObject({
+			providerSessionId: "thread_fixture",
+		});
+		expect(await starts(evidence)).toBe(2);
+		prepareCloudCodexSpare({ command, binarySha256, serviceTier: "fast" }, 60_000);
+		await spareReady(evidence, 3);
+		// A Fast run takes it.
+		await expect(run("response-first", { serviceTier: "fast" }).result).resolves.toMatchObject({
+			providerSessionId: "thread_fixture",
+		});
+		expect(await starts(evidence)).toBe(3);
+		expect(() => prepareCloudCodexSpare({ command, binarySha256, serviceTier: "priority" as never }, 60_000)).toThrow(
+			"Invalid spare service tier",
+		);
 	});
 
 	it("stops a spare nobody takes within its window, and one whose root is released", async () => {
