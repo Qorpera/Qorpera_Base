@@ -209,14 +209,19 @@ published only by the agent's next list or change of that todo.
   the profile row NOWAIT (it refuses with 55P03 rather than wait; the coding
   executor begins again until its lease ends). A member saving, proposing or
   accepting, and the object gateway copying an object into the company's
-  bucket, lock the Company File row before the fence, so they can meet a
-  session's first admission as they meet every agent tool call.
-  `20260927090000_company_file_fence_first` made them take the fence first, but
-  it went live with v133 on 2026-09-27 and within minutes a coding turn's
-  completion failed (AUTHORITY_UNAVAILABLE) and the database stopped accepting
-  connections until a restart; `20260927130000_revert_company_file_fence_first`
-  puts the eleven functions back. The hazard stays open until a redesign is
-  proven under load (test 607 was removed with the revert).
+  bucket, locked the Company File row before the fence, so they could meet a
+  session's first admission as they met every agent tool call.
+  `20260927090000_company_file_fence_first` made eleven functions take the fence
+  first; it went live with v133 on 2026-09-27, the instance froze minutes later
+  (the logs show no deadlocks or connection-slot errors; the cause is open), and
+  `20260927130000_revert_company_file_fence_first` put them back.
+  `20260927150000_company_file_writer_fence` takes the fence first only in the
+  member writers (save, publish, propose, submit, rebase) and for a NAS replica
+  copy (which the replica guard fences anyway); no hot insert path takes a new
+  fence. SQL test 608 races each, and `scripts/load-company-file-fence.mjs` runs
+  agent tool calls, Storage uploads, replica copies, a node observer and coding
+  turns at once: on the text before it, about two deadlocks a second and agent
+  calls near the native result boundary's 4 s budget; with it, none.
 - A revival whose admission is refused when its run is created (the agent lost
   its model account or its conversation) is not retried: the result stays in
   the todo, which the agent lists the next time it continues that work.
