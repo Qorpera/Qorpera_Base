@@ -9,6 +9,7 @@ import { isDeepStrictEqual } from "node:util";
 import { build } from "esbuild";
 import { officeLifecycleBearerToken } from "./office-lifecycle-credentials.mjs";
 import { closeOfficeLifecycleCustody, officeCustodyMachines } from "./office-lifecycle-custody.mjs";
+import { assertOfficePathAbsent, officeOwnedDirectoryIdentity, removeOfficeOwnedDirectory, verifyOfficeLifecycleEpochs } from "./office-lifecycle-evidence.mjs";
 import { officeLifecycleDiagnostics, officePaidSqlDiagnostics, officeSqlFailureHistory } from "./office-lifecycle-diagnostics.mjs";
 import { startOfficeRpcServer } from "./office-rpc-server.mjs";
 import { readWorkloadUsage, verifyWorkloadUsage } from "./workload-usage-evidence.mjs";
@@ -30,15 +31,17 @@ assert(context.provenanceSigned && context.builderVmDeleted && context.finalClon
 // live beneath the same protected /etc ancestry as the actual node observer.
 const out = resolve(process.argv[5]), root = "/etc/qorpera-office-lifecycle-acceptance";
 const storage = "/srv/qorpera-office-lifecycle-acceptance", journal = `${storage}/journal`, workbench = `${storage}/workbench`, custodyRoot = `${storage}/reset-custody`;
+const guardStateDirectory = "/var/lib/qorpera-office-computer-guard", observerUsageDirectory = "/var/lib/qorpera-computer-usage";
 const account = "qorpera-office-provider", unit = "qorpera-office-computer-guard.service";
 const evidence = { schema: "qorpera.office-lifecycle-physical-acceptance/v1", commit: process.env.GITHUB_SHA,
-	passed: false, checks: {}, observations: [], scope: "Actual office provider, paid SQL, LXD/KVM guest, local NFS and forced-stop recovery. Subscription is a labeled isolated test entitlement; Stripe acceptance is separate." };
+	passed: false, checks: {}, observations: [], physicalBoots: [], scope: "Actual office provider, paid SQL, LXD/KVM guest, local NFS and forced-stop recovery. Subscription is a labeled isolated test entitlement; Stripe acceptance is separate." };
 const children = new Set();
 const physicalSamples = [];
 const sqlFailures = officeSqlFailureHistory();
 let pg, pgReady, pgClosed = false, rpc, provider, observer, metering, mounted = false, journalMounted = false, exported = false, guardInstalled = false, fixtureCreated = false;
 let machineName, phase = "setup";
 let diagnosticAuthority, guardInvocation;
+let storageIdentity, guardDirectoryIdentity, observerUsageIdentity;
 const hash = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const literal = (value) => `'${JSON.stringify(value).replaceAll("'", "''")}'::jsonb`;
 const service = "set request.jwt.claims='{\"role\":\"service_role\"}';";
@@ -129,6 +132,8 @@ try {
 	await mkdir(out, { recursive: true, mode: 0o755 });
 	await mkdir(root, { mode: 0o755 });
 	await mkdir(storage, { mode: 0o755 }); fixtureCreated = true;
+	storageIdentity = await officeOwnedDirectoryIdentity(storage, 0, 0o755);
+	await assertOfficePathAbsent(guardStateDirectory);
 	assert.deepEqual(JSON.parse(run("lxc", ["list", "--all-projects", "--format=json"])), [], "Refuse unrelated VMs");
 	assert.equal(run("exportfs", []), "", "Refuse unrelated NFS exports");
 	run("useradd", ["--uid", "1100", "--user-group", "--no-create-home", "--shell", "/usr/sbin/nologin", account]);
@@ -229,7 +234,8 @@ try {
 	await mkdir("/etc/qorpera", { recursive: true, mode: 0o755 });
 	await writeFile("/etc/qorpera/node-observer.json", `${JSON.stringify({ registryUrl, policy: inventoryPolicy })}\n`, { flag: "wx", mode: 0o444 });
 	await writeFile("/etc/qorpera/node-observer.key", tokens.provider, { flag: "wx", mode: 0o440 }); await chown("/etc/qorpera/node-observer.key", 0, 1100);
-	await mkdir("/var/lib/qorpera-computer-usage", { mode: 0o700 }); await chown("/var/lib/qorpera-computer-usage", 1100, 1100);
+	await mkdir(observerUsageDirectory, { mode: 0o700 }); await chown(observerUsageDirectory, 1100, 1100);
+	observerUsageIdentity = await officeOwnedDirectoryIdentity(observerUsageDirectory, 1100, 0o700);
 	phase = "node_inventory";
 	observer = child("runuser", ["-u", account, "--", process.execPath, `${root}/tools.mjs`, "observer"], () => {}, { NODE_EXTRA_CA_CERTS: ca.path });
 	await until(() => query(`select count(*) from public.qorpera_runtime_node_observations where node_id='${nodeId}' and observation->>'state'='ready';`), (value) => value === "1", 30000, "actual node inventory");
@@ -241,6 +247,7 @@ try {
 	const guardUnit = guardSource.replaceAll("@PROVIDER@", "office").replaceAll("@ACCOUNT@", account).replace("/usr/bin/node /opt/qorpera/computer-guard/qorpera-runtime-computer-guard.mjs", `${process.execPath} ${root}/guard.mjs`);
 	await writeFile(`/etc/systemd/system/${unit}`, guardUnit, { flag: "wx", mode: 0o644 }); guardInstalled = true;
 	run("systemctl", ["daemon-reload"]); run("systemctl", ["start", unit]);
+	guardDirectoryIdentity = await officeOwnedDirectoryIdentity(guardStateDirectory, 1100, 0o700);
 	guardInvocation = run("systemctl", ["show", unit, "--property=InvocationID", "--value"]);
 	assert(/^[0-9a-f]{32}$/.test(guardInvocation), "Guard service invocation unconfirmed");
 	const registryCredential = await protectedFile("registry.key", tokens.provider, true);
@@ -274,6 +281,17 @@ try {
 	const physical = JSON.parse(run("lxc", ["query", `/1.0/instances/${machineName}`]));
 	evidence.physicalInstanceId = physical.config["volatile.uuid"];
 	evidence.physicalInstanceIds = [evidence.physicalInstanceId];
+	const captureBoot = async (bootPhase, activationId, allocationId, expectedBootId) => {
+		const inspect = () => officeCustodyMachines([{ ...JSON.parse(run("lxc", ["query", `/1.0/instances/${machineName}`])), project: "default" }], policy, policySha256)[0];
+		const before = inspect();
+		assert.equal(before.name, `qorpera-office-${allocationId.replaceAll("-", "")}`, "Physical boot allocation differs");
+		const guestBootId = run("lxc", ["exec", machineName, "--project", "default", "--", "cat", "/proc/sys/kernel/random/boot_id"], 10000);
+		const hostBootId = (await readFile("/proc/sys/kernel/random/boot_id", "utf8")).trim();
+		assert.deepEqual(inspect(), before, "Physical office changed during boot observation");
+		assert.equal(guestBootId, expectedBootId, "SQL activation differs from actual Linux guest boot");
+		evidence.physicalBoots.push({ phase: bootPhase, activationId, allocationId, physicalId: before.physicalId, hostBootId, guestBootId });
+	};
+	await captureBoot("initial", before[0].activationId, creation.binding.allocationId, before[0].attestation.bootId);
 	// Retained file goes into the adopted company-owned workbench after adoption.
 	const sentinel = join(workbench, review.plan.destinationName, "workbench", "physical-acceptance.txt");
 	const sentinelContents = `Company workbench retained across boot and root replacement: ${randomUUID()}`;
@@ -289,6 +307,7 @@ try {
 	const after = await activations();
 	assert.notEqual(after[0].invocation, after[1].invocation); assert.notEqual(after[0].attestation.bootId, after[1].attestation.bootId);
 	assert.equal(JSON.parse(run("lxc", ["query", `/1.0/instances/${machineName}`])).config["volatile.uuid"], evidence.physicalInstanceId);
+	await captureBoot("outage_recovery", after[1].activationId, creation.binding.allocationId, after[1].attestation.bootId);
 	// Prove access as the workbench owner, without relying on host root authority.
 	assertWorkbench();
 	evidence.checks.outageRecovery = { predecessorSuperseded: true, freshBoot: true, freshInvocation: true, samePhysicalVm: true, retainedWorkbench: true };
@@ -340,6 +359,7 @@ try {
 	assert.equal(resumed.activationId, resume.activationId);
 	assert.notEqual(resumed.startup.bootId, powerOff.startup.bootId);
 	assert.equal(JSON.parse(run("lxc", ["query", `/1.0/instances/${machineName}`])).config["volatile.uuid"], evidence.physicalInstanceId);
+	await captureBoot("ordinary_resume", resumed.activationId, resumed.startup.allocationId, resumed.startup.bootId);
 	assertWorkbench();
 	evidence.checks.ordinaryResumeRetainedVmAndWorkbench = true;
 	await completedRecovery(powerOff);
@@ -354,6 +374,7 @@ try {
 	assert.equal(restarted.startup.bootId, restart.startup.bootId);
 	assert.notEqual(restarted.startup.serviceInvocationId, restart.startup.serviceInvocationId);
 	assert.equal(JSON.parse(run("lxc", ["query", `/1.0/instances/${machineName}`])).config["volatile.uuid"], evidence.physicalInstanceId);
+	await captureBoot("service_restart", restarted.activationId, restarted.startup.allocationId, restarted.startup.bootId);
 	evidence.checks.ordinaryServiceRestartRetainedVm = true;
 	await completedRecovery(restart);
 	phase = "ordinary_root_reset";
@@ -408,6 +429,7 @@ try {
 	const replacementPhysicalId = JSON.parse(run("lxc", ["query", `/1.0/instances/${machineName}`])).config["volatile.uuid"];
 	assert.notEqual(replacementPhysicalId, evidence.physicalInstanceId);
 	evidence.physicalInstanceIds.push(replacementPhysicalId);
+	await captureBoot("root_reset", replacement.activationId, replacement.startup.allocationId, replacement.startup.bootId);
 	assertWorkbench();
 	evidence.checks.ordinaryResetReplacedRootAndRetainedWorkbench = true;
 	await completedRecovery(replace);
@@ -423,26 +445,34 @@ try {
 	assert.equal(metering.exitCode, 0, "Successor metering process failed");
 	assert(evidence.finalPhysicalUsage?.closed && evidence.finalPhysicalUsage.stopReceipt, "Successor stop receipt missing");
 	assert.equal(JSON.parse(run("lxc", ["query", `/1.0/instances/${machineName}/state`])).status, "Stopped");
-	const permits = JSON.parse(await query("select jsonb_agg(jsonb_build_object('id',id,'state',state) order by id) from public.qorpera_coding_computer_permits;"));
-	assert(permits.length >= 2 && permits.every((permit) => permit.state === "closed"), "Every physical epoch must settle");
+	const closures = JSON.parse(await query(`select jsonb_agg(jsonb_build_object(
+ 'permit',public.qorpera_computer_permit_receipt(p.id,p.generation),
+ 'cursor',(select jsonb_build_object('sequence',c.sequence,'sha256',c.sha256,'observationId',c.observation_id,'sealed',c.sealed)
+   from public.qorpera_computer_guard_sample_cursors c where c.permit_id=p.id),
+ 'sampleCount',(select count(*) from public.qorpera_coding_computer_samples s where s.permit_id=p.id),
+ 'terminalSample',p.last_sample) order by p.id) from public.qorpera_coding_computer_permits p;`));
+	evidence.epochCoverage = verifyOfficeLifecycleEpochs(evidence.physicalBoots, closures.map(row => row.permit));
+	assert.equal(evidence.finalPhysicalUsage.permitId, evidence.epochCoverage.epochs.at(-1).permitId, "Final stop belongs to another physical epoch");
 	evidence.usageReconciliation = [];
 	let totalDebit = 0n;
-	for (const permit of permits) {
-		const accounting = await readWorkloadUsage(query, permit.id);
+	for (const { permit } of closures) {
+		const accounting = await readWorkloadUsage(query, permit.permitId);
 		const ids = new Set(accounting.samples.map((sample) => sample.sample.observationId));
-		const samples = physicalSamples.filter((entry) => entry.permitId === permit.id && ids.has(entry.sample.observationId)).map((entry) => entry.sample);
-		const first = samples.find((sample) => sample.state === "running");
-		assert(first, "No actual office guest clock was sampled");
-		assert(evidence.physicalInstanceIds.includes(first.physicalId), "Metered VM was not independently observed by the lifecycle harness");
+		const samples = physicalSamples.filter((entry) => entry.permitId === permit.permitId && ids.has(entry.sample.observationId)).map((entry) => entry.sample);
+		const boot = evidence.epochCoverage.epochs.find(entry => entry.permitId === permit.permitId);
 		evidence.usageReconciliation.push(verifyWorkloadUsage(accounting, { kind: "company_computer", shape: { cpuMillis: guestCpuMillis, memoryBytes: 4294967296 },
 			shapeProvenance: { nodeId, providerKind: "office", policySha256 },
-			physicalId: first.physicalId, hostBootId: first.hostBootId, guestBootId: first.guestBootId,
+			physicalId: boot.physicalId, hostBootId: boot.hostBootId, guestBootId: boot.guestBootId,
 			physicalSamples: samples, closed: true }));
 		totalDebit += BigInt(evidence.usageReconciliation.at(-1).debitedUs);
 	}
 	evidence.accounting = JSON.parse(await query("select jsonb_build_object('buckets',(select jsonb_agg(jsonb_build_object('issuedUs',issued_us::text,'reservedUs',reserved_us::text,'debitedUs',debited_us::text)) from public.qorpera_computer_allowance_buckets),'permits',(select count(*) from public.qorpera_coding_computer_permits));"));
 	assert(evidence.accounting.buckets.every((bucket) => bucket.reservedUs === "0"), "Stopped offices retained allowance holds");
 	assert.equal(evidence.accounting.buckets.reduce((sum, bucket) => sum + BigInt(bucket.debitedUs), 0n), totalDebit, "Global balance differs from all measured office epochs");
+	phase = "archive_reconciliation";
+	const archiveExpectation = await protectedFile("settled-office-epochs.json", closures);
+	evidence.guardArchives = JSON.parse(run("runuser", ["-u", account, "--", process.execPath, `${root}/tools.mjs`, "guard-audit", archiveExpectation.path], 60000));
+	assert.equal(evidence.guardArchives.passed, true, "Office guard archival closure unconfirmed");
 	evidence.checks.allPhysicalEpochsSettled = true;
 	evidence.passed = true;
 } catch (error) {
@@ -498,7 +528,13 @@ try {
 			run("lxc", ["delete", machine.name, "--project", machine.project], 60000);
 		},
 		confirmEmpty: async () => assert.deepEqual(JSON.parse(run("lxc", ["list", "--all-projects", "--format=json"])), [], "Unfinished VM custody remains"),
-		stopGuard: async () => { if (guardInstalled) run("systemctl", ["stop", unit]); },
+		stopGuard: async () => {
+			if (guardInstalled) {
+				run("systemctl", ["stop", unit]);
+				assert.equal(run("systemctl", ["show", unit, "--property=ActiveState", "--value"]), "inactive");
+				assert.equal(run("systemctl", ["show", unit, "--property=MainPID", "--value"]), "0");
+			}
+		},
 		closeRpc: async () => rpc?.close(),
 		stopDatabaseRetainingFiles: async () => {
 			try {
@@ -514,13 +550,18 @@ try {
 			if (mounted) run("umount", [workbench]);
 			if (journalMounted) run("umount", [journal]);
 			if (exported) { await unlink("/etc/exports.d/qorpera-office-lifecycle-acceptance.exports"); run("exportfs", ["-ra"]); }
-			if (fixtureCreated) await rm(storage, { recursive: true });
+			assert.equal(run("exportfs", []), "", "Owned office export remains active");
+			await removeOfficeOwnedDirectory(storageIdentity);
+			await removeOfficeOwnedDirectory(guardDirectoryIdentity);
+			await removeOfficeOwnedDirectory(observerUsageIdentity);
+			evidence.directoryCleanup = { storageAndResetCustodyRemoved: true, guardStateAndArchivesRemoved: true, observerUsageRemoved: true };
 		},
 		removeDatabase: async () => {
 			if (!pgReady) return;
 			const current = await lstat(pgReady.root);
 			assert(current.isDirectory() && !current.isSymbolicLink() && current.dev === databaseIdentity.dev && current.ino === databaseIdentity.ino && current.uid === databaseIdentity.uid, "Private cluster identity changed");
 			await rm(pgReady.root, { recursive: true });
+			await assertOfficePathAbsent(pgReady.root);
 		},
 		retainDiagnostic: async (state) => {
 			if (fixtureCreated) await writeFile(`${root}/private-retained-custody.json`, `${JSON.stringify({ ...state, phase, storage, journal, guardUnit: guardInstalled ? unit : null, database: pgReady ?? null })}\n`, { mode: 0o600, flag: "wx" });

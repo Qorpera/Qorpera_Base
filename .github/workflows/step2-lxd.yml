@@ -3,6 +3,11 @@ name: Step 2 LXD contracts
 on:
   workflow_dispatch:
     inputs:
+      native_component_acceptance:
+        description: Build pinned native source serially and require all 19 offline component tests
+        type: boolean
+        required: false
+        default: false
       workloads_only:
         description: Run only the small-host physical workload and exact usage matrix
         type: boolean
@@ -136,22 +141,26 @@ permissions:
   contents: read
 
 concurrency:
-  group: step2-lxd-${{ github.ref }}-${{ inputs.coding_executor_acceptance && 'coding-executor' || inputs.coding_storage_probe && 'coding-storage' || inputs.office_physical_acceptance && (inputs.workloads_only && 'office-workloads' || inputs.regression_only && 'office-regression' || inputs.office_lifecycle_only && 'office-lifecycle' || 'office') || inputs.real_lxd_acceptance && 'physical' || 'contracts' }}
+  group: step2-lxd-${{ github.ref }}-${{ inputs.native_component_acceptance && 'native-component' || inputs.coding_executor_acceptance && 'coding-executor' || inputs.coding_storage_probe && 'coding-storage' || inputs.office_physical_acceptance && (inputs.workloads_only && 'office-workloads' || inputs.regression_only && 'office-regression' || inputs.office_lifecycle_only && 'office-lifecycle' || 'office') || inputs.real_lxd_acceptance && 'physical' || 'contracts' }}
   cancel-in-progress: true
 
 jobs:
+  native-component-acceptance:
+    if: github.event_name == 'workflow_dispatch' && inputs.native_component_acceptance
+    uses: ./.github/workflows/native-component-acceptance.yml
+
   coding-executor-acceptance:
-    if: github.event_name == 'workflow_dispatch' && inputs.coding_executor_acceptance
+    if: github.event_name == 'workflow_dispatch' && inputs.coding_executor_acceptance && !inputs.native_component_acceptance
     uses: ./.github/workflows/coding-executor-acceptance.yml
 
   coding-storage-probe:
-    if: github.event_name == 'workflow_dispatch' && inputs.coding_storage_probe && !inputs.coding_executor_acceptance
+    if: github.event_name == 'workflow_dispatch' && inputs.coding_storage_probe && !inputs.coding_executor_acceptance && !inputs.native_component_acceptance
     uses: ./.github/workflows/coding-storage-acceptance.yml
     with:
       export_policy: ${{ inputs.coding_storage_export_policy }}
 
   office-physical-acceptance:
-    if: github.event_name == 'workflow_dispatch' && inputs.office_physical_acceptance && !inputs.coding_storage_probe && !inputs.coding_executor_acceptance
+    if: github.event_name == 'workflow_dispatch' && inputs.office_physical_acceptance && !inputs.coding_storage_probe && !inputs.coding_executor_acceptance && !inputs.native_component_acceptance
     uses: ./.github/workflows/office-physical-acceptance.yml
     with:
       workloads_only: ${{ inputs.workloads_only }}
@@ -160,7 +169,7 @@ jobs:
 
   contracts:
     name: Provider, guest, and package contracts
-    if: github.event_name != 'workflow_dispatch' || (!inputs.real_lxd_acceptance && !inputs.office_physical_acceptance && !inputs.coding_storage_probe && !inputs.coding_executor_acceptance)
+    if: github.event_name != 'workflow_dispatch' || (!inputs.real_lxd_acceptance && !inputs.office_physical_acceptance && !inputs.coding_storage_probe && !inputs.coding_executor_acceptance && !inputs.native_component_acceptance)
     runs-on: ubuntu-26.04
     timeout-minutes: 20
     env:
@@ -376,7 +385,7 @@ jobs:
 
   real-lxd-acceptance:
     name: Disposable nested-KVM paid guard acceptance
-    if: github.event_name == 'workflow_dispatch' && inputs.real_lxd_acceptance && !inputs.office_physical_acceptance && !inputs.coding_storage_probe && !inputs.coding_executor_acceptance
+    if: github.event_name == 'workflow_dispatch' && inputs.real_lxd_acceptance && !inputs.office_physical_acceptance && !inputs.coding_storage_probe && !inputs.coding_executor_acceptance && !inputs.native_component_acceptance
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:

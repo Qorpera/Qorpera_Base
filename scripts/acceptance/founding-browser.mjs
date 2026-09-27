@@ -71,6 +71,9 @@ export async function runFoundingBrowser({ origin, publicKey, cluster, mail, out
 		}
 		const first = await member("founder-a@founding.example.test"), second = await member("founder-b@founding.example.test");
 		assert.notEqual(first.userId, second.userId);
+		const nonmember = await member("nonmember@founding.example.test");
+		assert(![first.userId, second.userId].includes(nonmember.userId));
+		evidence.nonmemberAccess = { userId: nonmember.userId, phases: [] };
 		if (computerPlanSetup) {
 			// Trusted acceptance composition, not a client API. The hook receives
 			// real member browsers but no database or service-role credentials.
@@ -79,10 +82,29 @@ export async function runFoundingBrowser({ origin, publicKey, cluster, mail, out
 			assert.equal(await cluster.query("select count(*) from public.qorpera_computer_allowance_buckets;"), "2", "Hosted setup must fund exactly two member invoice buckets");
 			evidence.boundaries.computerCapacity = payment.boundary;
 		}
-		evidence.steps.push("Two independent users signed in through real email OTP UI");
+		evidence.steps.push("Two independent founders and a never-invited third user signed in through real email OTP UI");
 		async function rpc(member, name, args) {
 			const result = await member.context.request.post(`${origin}/rest/v1/rpc/${name}`, { headers: { apikey: publicKey, authorization: `Bearer ${memberTokens.get(member.email)}` }, data: args });
 			return { status: result.status(), body: await result.json() };
+		}
+		async function verifyNonmemberAccess(profileId, phase) {
+			assert.equal(await cluster.query(`select not exists(select 1 from public.qorpera_profile_members where profile_id=${sqlUuid(profileId)} and user_id=${sqlUuid(nonmember.userId)}) and not exists(select 1 from public.qorpera_company_founder_seats where profile_id=${sqlUuid(profileId)} and user_id=${sqlUuid(nonmember.userId)});`), "t", "Third-user proof requires a never-invited nonmember");
+			const denied = await rpc(nonmember, "qorpera_read_company_founding", { p_profile_id: profileId });
+			assert.equal(denied.status, 403, "Third user could read joined founding company");
+			assert.equal(denied.body.code, "42501", "Third-user refusal was not an authorization denial");
+			for (const founder of [first, second]) {
+				const allowed = await rpc(founder, "qorpera_read_company_founding", { p_profile_id: profileId });
+				assert.equal(allowed.status, 200, "Founder lost company access");
+				assert.equal(allowed.body.phase, phase === "after_join" ? "open" : "launched");
+			}
+			let objects = null;
+			if (bootstrap) {
+				objects = await bootstrap.verifyMemberReads(profileId, [memberTokens.get(first.email), memberTokens.get(second.email)], memberTokens.get(nonmember.email));
+				assert.deepEqual(objects, { memberCount: 2, verifiedReads: 4, nonmemberDenied: true });
+				evidence.bootstrapReads.push({ phase, ...objects });
+			}
+			evidence.nonmemberAccess.phases.push({ phase, neverInvited: true, foundingStatus: denied.status, foundingCode: denied.body.code, founderReads: 2, objects });
+			evidence.steps.push(`Never-invited third user denied founding${bootstrap ? " and both immutable bootstrap files" : ""} ${phase}; both founders retained access`);
 		}
 		async function setupModels(profileId, members) {
 			if (!modelAccountSetup) return cluster.query(modelAccountsSql(profileId, members.map(member => member.userId)));
@@ -152,7 +174,7 @@ export async function runFoundingBrowser({ origin, publicKey, cluster, mail, out
 		await second.page.reload();
 		await second.page.getByRole("button", { name: "Join setup", exact: true }).click();
 		await second.page.getByRole("heading", { name: "Set up your company", exact: true }).waitFor();
-		if (bootstrap) evidence.bootstrapReads.push(await bootstrap.verifyMemberReads(profileId, [memberTokens.get(first.email), memberTokens.get(second.email)]));
+		await verifyNonmemberAccess(profileId, "after_join");
 		const prelaunchRoles = lastJson(await cluster.query(`select jsonb_object_agg(user_id,role) from public.qorpera_profile_members where profile_id=${sqlUuid(profileId)};`));
 		assert.equal(prelaunchRoles[first.userId], "owner"); assert.equal(prelaunchRoles[second.userId], "contributor");
 		assert(await second.page.getByRole("button", { name: "I'm Ready", exact: true }).isDisabled());
@@ -232,6 +254,7 @@ export async function runFoundingBrowser({ origin, publicKey, cluster, mail, out
 		evidence.runtime = { profileId, receiptId: runtime.receipt.receiptId, requester: second.userId, author: first.userId,
 			ownerCount: runtime.owners.length, requestCount: runtime.requestCount, status: runtime.request.status,
 			sourceKind: runtime.source.kind, rosterCount: startup.founding.roster.length };
+		await verifyNonmemberAccess(profileId, "after_launch");
 		if (afterMaterialized) {
 			// Trusted host composition receives only immutable authority pins. It
 			// must dispatch this existing run before the solo run enters the queue.

@@ -62,6 +62,24 @@ repository, ref and trigger, with transparency verification enabled. This
 verifies the existing inputs; it does not build a current guest image or prove
 joined execution. Physical acceptance still requires the host described above.
 
+## Separate native component checks
+
+The existing Step 2 dispatch accepts `native_component_acceptance=true` for a
+bounded serial development build on a disposable GitHub Linux runner. It uses
+the exact reviewed upstream commit, patch, normalized lock and Rust toolchain,
+verifies the prebuilt V8 dependency against the upstream-pinned checksum chain,
+and runs the three actual-binary component suites in an isolated environment.
+Acceptance requires all 19 cases to execute and pass with zero skips. Build
+failures, resource measurements and bounded logs are retained. Successful runs
+also retain the four exact component artifact files privately, with their hashes
+verified again after testing.
+
+This lane builds and hashes a separate development executable. It does not
+replace the retained release binary, modify its manifest's acceptance status,
+sign or activate a runtime release, or satisfy joined founding/VM acceptance.
+It can exercise the component cases skipped by the ordinary Linux suite while
+the larger physical host remains unavailable.
+
 ## Build an isolated test package
 
 On Linux x64, with a new output directory and the verified native/signed image

@@ -3,6 +3,8 @@ import { createHash, randomUUID } from "node:crypto";
 import { readFile, stat } from "node:fs/promises";
 import { cpus, totalmem } from "node:os";
 import { LxdUnixClient } from "../../packages/runner-orchestrator/src/lxd-client.ts";
+import { PaidComputerGuardClient } from "../../packages/runner-orchestrator/src/computer-paid-guard-ipc.ts";
+import { PaidComputerGuardJournal, parsePaidComputerPermit } from "../../packages/runner-orchestrator/src/computer-paid-guard.ts";
 import { planLxdOfficeAdoption } from "../../packages/runner-orchestrator/src/lxd-office-adoption-plan.ts";
 import { lxdOfficeGuestPlan } from "../../packages/runner-orchestrator/src/lxd-office-guest.ts";
 import { captureLxdOfficeHostNamespace } from "../../packages/runner-orchestrator/src/lxd-office-host-namespace.ts";
@@ -15,6 +17,7 @@ import { runRuntimeNodeObserver } from "../../packages/runner-orchestrator/src/r
 import { RuntimeComputerHttpControl, readRuntimeComputerExecutorSecret } from "../../packages/runner-orchestrator/src/runtime-computer-http-control.ts";
 import { exerciseRuntimeWorkloadUsage } from "./workload-usage-probe.ts";
 import { officeServiceFailureDiagnostics } from "./office-service-diagnostics.ts";
+import { verifyOfficeGuardArchives } from "./office-lifecycle-evidence.mjs";
 
 // This executable composes the real production components. It supplies no
 // replacement physical, registry, journal, clock, or worker ports.
@@ -41,6 +44,29 @@ if (action === "service-diagnostics") {
 	await runRuntimeNodeObserver(abort.signal, (state) => report({ observer: state }));
 } else if (action === "namespace") {
 	await captureLxdOfficeHostNamespace();
+} else if (action === "guard-audit") {
+	// Run as the actual provider UID. Production parsers verify protected disk
+	// custody and socket identity; this action never acknowledges or archives.
+	const raw: unknown = JSON.parse((await readLxdOfficeProtectedFile(process.argv[3], 65536)).toString("utf8"));
+	assert(Array.isArray(raw) && raw.length === 4, "Four closed office epochs required");
+	const expected = raw.map((entry: unknown) => {
+		assert(entry && typeof entry === "object" && !Array.isArray(entry));
+		const row = entry as Record<string, unknown>;
+		return { ...row, permit: parsePaidComputerPermit(row.permit) };
+	});
+	const guard = new PaidComputerGuardClient("/run/qorpera-office-computer-guard/control.sock");
+	const journal = new PaidComputerGuardJournal("/var/lib/qorpera-office-computer-guard");
+	const signal = AbortSignal.any([abort.signal, AbortSignal.timeout(30000)]);
+	const [activeGuards, activePrestarts, journalGuards, anchor, names] = await Promise.all([
+		guard.list(signal), guard.listPrestarts(signal), journal.load(), journal.loadPrestarts(), journal.archiveNames(),
+	]);
+	assert.deepEqual(names, expected.map((_, index) => `${String(index + 1).padStart(16, "0")}.json`), "Office archive inventory differs");
+	const archives = await Promise.all(expected.map((_, index) => journal.readArchive(index + 1)));
+	const usage = await Promise.all(expected.map(async ({ permit }) => ({ permitId: permit.permitId,
+		status: await guard.status(permit.permitId, signal), page: await guard.readUsage(permit.permitId, {}, signal) })));
+	assert.deepEqual(await journal.loadPrestarts(), anchor, "Office archive anchor changed during audit");
+	assert.deepEqual(await journal.archiveNames(), names, "Office archive inventory changed during audit");
+	report(verifyOfficeGuardArchives(expected, { activeGuards, activePrestarts, journalGuards, anchor, archives, usage }));
 } else if (action === "finish-usage") {
 	const config = parseLxdOfficeLifecycleServiceConfig(JSON.parse((await readLxdOfficeProtectedFile(process.argv[3], 16384)).toString("utf8")));
 	assert(config.computerExecutorCredentialPath);
