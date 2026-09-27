@@ -362,12 +362,14 @@ Agents search and read through the shell and still write with today's tools.
 
 **One view per machine.** Desktops on a Company Computer are workflow
 surfaces, not security boundaries (section 12). So the machine mounts one
-view: the company-wide view. That view is the paths of the company's
-company-wide resources under the default agent grant
-(`20260926035000_company_agent_default_write_grants.sql`). It never includes
-member-private or project-scoped resources, or anything a narrower grant
-restricts. Hiring an agent never shrinks it, and work on narrower paths runs
-in the run box.
+view: the company-wide view. That view is the paths whose covering resource is
+the root shared resource (`path=''`, subtree, company-wide), which the default
+agent grant targets (`20260926035000_company_agent_default_write_grants.sql`).
+Grants never inherit, so it excludes every path under a narrower resource, of
+any scope, and hiring an agent never shrinks it. Screen admission checks that
+the holding run's authority covers the machine view; a run whose default
+grant was revoked or held back gets no Company Computer screen. Work on
+narrower paths runs in the run box.
 
 **Reads and writes are attributed per desktop.** The folder service tells
 desktops apart through a mount namespace per desktop. A desktop's reads are
