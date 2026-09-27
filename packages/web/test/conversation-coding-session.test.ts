@@ -453,17 +453,7 @@ describe("coding sessions in the thread", () => {
 		const field = f.view.el.querySelector<HTMLTextAreaElement>(".coding-thread .coding-field-input")!;
 		// The session asks, so the caret lands in its composer when it opens.
 		expect(document.activeElement).toBe(field);
-		// Escape keeps a draft being written in the composer.
-		field.value = "Keep it.";
-		field.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
-		expect(f.view.el.querySelector(".coding-thread")).not.toBeNull();
-		field.dispatchEvent(new Event("input", { bubbles: true }));
-		field.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
-		await settle();
-		expect(f.api.answerCodingSession).toHaveBeenCalledWith(id(900), "Keep it.", expect.any(String));
-		expect(store.get().codingSessions?.[0]).toMatchObject({ phase: "input_ready", sequence: 2, isOwner: true });
-		expect(f.view.el.querySelector<HTMLElement>(".thread-header .coding-slot")?.dataset.tone).toBe("working");
-		// On a touch screen the session opens on its back arrow: the caret would bring up the keyboard.
+		// On a touch screen the same session opens on its back arrow: the caret would bring up the keyboard.
 		f.view.el.querySelector<HTMLButtonElement>(".coding-thread-back")!.click();
 		vi.stubGlobal("matchMedia", (query: string) => ({
 			matches: query === "(pointer: coarse)",
@@ -477,5 +467,20 @@ describe("coding sessions in the thread", () => {
 		} finally {
 			vi.unstubAllGlobals();
 		}
+		f.view.el.querySelector<HTMLButtonElement>(".coding-thread-back")!.click();
+		f.view.el.querySelector<HTMLButtonElement>(".coding-line .peer-chip")!.click();
+		await settle();
+		const reopened = f.view.el.querySelector<HTMLTextAreaElement>(".coding-thread .coding-field-input")!;
+		expect(document.activeElement).toBe(reopened);
+		// Escape keeps a draft being written in the composer.
+		reopened.value = "Keep it.";
+		reopened.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+		expect(f.view.el.querySelector(".coding-thread")).not.toBeNull();
+		reopened.dispatchEvent(new Event("input", { bubbles: true }));
+		reopened.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+		await settle();
+		expect(f.api.answerCodingSession).toHaveBeenCalledWith(id(900), "Keep it.", expect.any(String));
+		expect(store.get().codingSessions?.[0]).toMatchObject({ phase: "input_ready", sequence: 2, isOwner: true });
+		expect(f.view.el.querySelector<HTMLElement>(".thread-header .coding-slot")?.dataset.tone).toBe("working");
 	});
 });

@@ -252,7 +252,7 @@ export class CodingSessionElement {
 	readonly #options: CodingSessionElementOptions;
 	readonly #lifetime = new AbortController();
 	/** The transcript's scroller; the footer under it stays put, as a conversation's composer does. */
-	readonly #log = h("div", { class: "coding-log", tabindex: "-1" });
+	readonly #log = h("div", { class: "coding-log", tabindex: "-1", "aria-label": t("Session transcript") });
 	readonly #body = h("div", { class: "coding-body" });
 	readonly #footer = h("footer", { class: "coding-footer" });
 	readonly #status = h("div", { class: "coding-status" });
@@ -351,10 +351,11 @@ export class CodingSessionElement {
 		// The log keeps the latest in view when it grows (a step, a card) or shrinks (the footer grew).
 		if (typeof ResizeObserver !== "undefined") {
 			this.#sizes = new ResizeObserver(() => {
-				// A kept draft gets its height once the field is laid out.
+				// A kept draft gets its height once the field is laid out, in the next frame: resizing inside this
+				// callback would resize the observed log again within the same delivery.
 				if (!this.#draftSized && this.#field.isConnected && this.#field.value) {
 					this.#draftSized = true;
-					this.#autosize();
+					requestAnimationFrame(() => this.#autosize());
 				}
 				this.#pinToBottom();
 			});
@@ -572,12 +573,13 @@ export class CodingSessionElement {
 		this.#transcriptKey = key;
 		const harness = HARNESS_NAMES[session.harness];
 		const events = this.#events.filter((event) => event.kind !== "phase");
-		// The fold hides all but the latest steps, and only when that is worth a line. Once the stream is caught up its
-		// edge stays put: new steps join the end instead of pushing the oldest shown one under the fold.
+		// The fold hides all but the latest steps, and only when that is worth a line. Its edge is set once the stream
+		// is caught up and stays put: new steps join the end, never pushing shown ones under the fold (a session
+		// watched from its start folds nothing).
 		const edge =
 			this.#foldFrom ??
 			(events.length >= RECENT_EVENTS + FOLD_AT_LEAST ? events[events.length - RECENT_EVENTS]?.id : undefined);
-		if (this.#caughtUp) this.#foldFrom ??= edge;
+		if (this.#caughtUp) this.#foldFrom ??= edge ?? 0;
 		const shown = this.#showAll || edge === undefined ? events : events.filter((event) => event.id >= edge);
 		const folded = events.length - shown.length;
 		const live = this.#liveQuestion();

@@ -97,6 +97,9 @@ export class CodingSessionThreadView {
 			{
 				class: "coding-thread",
 				role: "dialog",
+				// A click on something that takes no focus (a choice in Safari or Firefox) leaves it here, not on the
+				// page's body, so Escape still reaches the thread.
+				tabindex: "-1",
 				"aria-modal": "false",
 				"aria-label": `${names.agent} ⇄ ${harness} · ${session.title}`,
 				onkeydown: (event: KeyboardEvent) => {

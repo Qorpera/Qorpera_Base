@@ -170,6 +170,7 @@ export const AGENTS: Record<string, string> = {
 	"Failed · workspace kept": "Mislykkedes · arbejdsområdet er gemt",
 	"Cancelled · workspace kept": "Annulleret · arbejdsområdet er gemt",
 	"Coding session": "Kodesession",
+	"Session transcript": "Sessionens forløb",
 	"{count} earlier steps": "{count} tidligere trin",
 	"Waiting for a computer to start the session.": "Venter på en computer, der kan starte sessionen.",
 	"Nothing reported yet.": "Intet meldt endnu.",
