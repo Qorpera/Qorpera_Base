@@ -16,6 +16,11 @@ const EFFORT_NAMES: Record<(typeof SESSION_EFFORTS)[number], string> = {
 	high: phrase("High"),
 };
 
+/** An effort's name in the interface language; one without a name here (xhigh, max) reads as its id. */
+export function effortName(effort: string): string {
+	return Object.hasOwn(EFFORT_NAMES, effort) ? t(EFFORT_NAMES[effort as keyof typeof EFFORT_NAMES]) : effort;
+}
+
 /** Conversation-scoped model and effort; the server pins them when admitting
  * the member's next run in this conversation. */
 export class ComposerModels {
@@ -228,10 +233,7 @@ export class ComposerModels {
 		const id = this.#observed?.modelId;
 		const name = SESSION_MODELS.find((item) => item.id === id)?.name ?? id;
 		const effortId = this.#observed?.reasoningEffort;
-		const effort =
-			effortId && Object.hasOwn(EFFORT_NAMES, effortId)
-				? t(EFFORT_NAMES[effortId as keyof typeof EFFORT_NAMES])
-				: effortId;
+		const effort = effortId && effortName(effortId);
 		const summary = name && effort ? `${name} · ${effort}` : name;
 		this.button.disabled = this.#locked || !this.#canRead();
 		this.#label.textContent = this.pending
