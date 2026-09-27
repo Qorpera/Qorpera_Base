@@ -15,7 +15,7 @@
 :root[data-theme="dark"] .btn-danger:hover:not(:disabled) { background: var(--danger-soft); }
 /* The black provider marks (GitHub, OpenAI, Anthropic) turn to white; Google's
  * colours stay. */
-:root[data-theme="dark"] :is(img[src$="provider-github.svg"], img[src$="provider-openai.svg"], img[src$="provider-anthropic.svg"]) { filter: invert(1); }
+:root[data-theme="dark"] :is(img[src$="provider-github.svg"], img[src$="provider-openai.svg"]) { filter: invert(1); }
 
 /* ---- account menu ---------------------------------------------------------- */
 :root[data-theme="dark"] .account-chip { background: #5c5b58; }

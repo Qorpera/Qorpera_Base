@@ -620,7 +620,8 @@
 .coding-slot::before { content: ""; position: absolute; top: 8px; bottom: 8px; left: -8px; width: 1px; background: var(--border); pointer-events: none; }
 @media (forced-colors: active) { .coding-slot::before { background: CanvasText; } }
 .coding-slot:hover, .coding-slot:focus-visible { z-index: 2; }
-.coding-slot:focus-visible { outline: none; }
+/* The ring is the pill's inset shadow; the clear outline stands in where forced colours drop shadows. */
+.coding-slot:focus-visible { outline: 2px solid transparent; outline-offset: 1px; }
 /* Bottom at 32px of the 36px slot: the agent's 28px figure ends on the same line in its centred 34px button. */
 .coding-slot-avatar { position: absolute; z-index: 1; top: 10px; left: 4px; display: block; width: 22px; height: 22px; pointer-events: none; }
 .coding-slot-avatar .figure { width: 22px; height: 22px; }
@@ -631,6 +632,7 @@
 /* Under the pointer the open pill takes it, so moving onto the title keeps it open and a click there opens the
  * session. Opened by the keyboard it stays see-through to clicks on what lies under it. */
 .coding-slot:hover .coding-slot-name { pointer-events: auto; }
+.coding-slot.coding-slot-yield .coding-slot-name { pointer-events: none; }
 .coding-slot:focus-visible .coding-slot-name { box-shadow: inset 0 0 0 2px var(--text); }
 @media (prefers-reduced-motion: reduce) { .coding-slot-name { transition: none; } }
 /* The session as its own thread: over the conversation, with its own header and footer, as a bot's message to

@@ -147,6 +147,8 @@ export class ConversationView {
 	/** The approval card to give focus after the thread redraws (it was just answered). */
 	#focusReview: string | undefined;
 	readonly #emailCards = new Map<string, { key: string; element: HTMLElement }>();
+	/** Each coding session's line, kept while what it shows is the same, so a redraw keeps its focus. */
+	readonly #codingLines = new Map<string, { key: string; element: HTMLElement }>();
 	/** A coding session opened as its own thread over this one, from its line or its
 	 * figure in the header; focus returns to the opener when it closes. */
 	#codingThread: { workerId: string; view: CodingSessionThreadView } | undefined;
@@ -367,6 +369,29 @@ export class ConversationView {
 			icon("navigation"),
 		);
 		this.#header.append(this.#navigation, this.#identity, this.#codingSlots, this.#computer);
+		// An open title pill lies over the figures after it; over one of them it steps aside,
+		// so that figure opens and a click there opens its own session.
+		const yieldTo = (event: PointerEvent) => {
+			const over = [...this.#codingSlots.children].find((slot) => {
+				const box = slot.getBoundingClientRect();
+				return (
+					event.clientX >= box.left &&
+					event.clientX < box.right &&
+					event.clientY >= box.top &&
+					event.clientY < box.bottom
+				);
+			});
+			for (const slot of this.#codingSlots.children)
+				slot.classList.toggle("coding-slot-yield", over !== undefined && slot !== over);
+		};
+		this.#codingSlots.addEventListener("pointermove", yieldTo, { signal: this.#lifetime.signal });
+		this.#codingSlots.addEventListener(
+			"pointerleave",
+			() => {
+				for (const slot of this.#codingSlots.children) slot.classList.remove("coding-slot-yield");
+			},
+			{ signal: this.#lifetime.signal },
+		);
 		this.#refreshFade = quietScroll(this.#messages);
 		this.#messages.addEventListener("scroll", () => {
 			const { scrollTop, scrollHeight, clientHeight } = this.#messages;
@@ -404,7 +429,7 @@ export class ConversationView {
 		window.addEventListener("qorpera-language-change", refreshTimestamps, { signal: this.#lifetime.signal });
 		window.addEventListener("qorpera-time-zone-change", refreshTimestamps, { signal: this.#lifetime.signal });
 		document.addEventListener("visibilitychange", refreshTimestamps, { signal: this.#lifetime.signal });
-		// Back on the tab: the header's coding figures catch up now, not at the hidden tab's slower pace.
+		// Back on the tab: the next read of the header's coding figures comes at the visible pace, not the hidden tab's.
 		document.addEventListener(
 			"visibilitychange",
 			() => {
@@ -448,6 +473,7 @@ export class ConversationView {
 		this.#closeCodingSession();
 		clearTimeout(this.#codingPoll);
 		this.#emailCards.clear();
+		this.#codingLines.clear();
 		for (const unsubscribe of this.#unsubscribe) unsubscribe();
 		this.#company.setOpenSession(undefined);
 	}
@@ -1213,6 +1239,8 @@ export class ConversationView {
 		placeSessions(undefined);
 		for (const id of this.#emailCards.keys())
 			if (!items.some((item) => item.kind === "interaction" && item.id === id)) this.#emailCards.delete(id);
+		for (const workerId of this.#codingLines.keys())
+			if (!codingSessions.some((session) => session.workerId === workerId)) this.#codingLines.delete(workerId);
 		if (conversation.loading && !items.length) {
 			this.#messagesPlaceholder ??= messagesSkeleton();
 			nodes.push(this.#messagesPlaceholder);
@@ -1343,11 +1371,16 @@ export class ConversationView {
 	}
 
 	/** A coding session in the thread: "Started a coding session in (mark) Codex",
-	 * one centered line that opens the session as its own thread. */
+	 * one centered line that opens the session as its own thread. The node is kept
+	 * while its words are the same, so a keyboard user on it keeps focus. */
 	#codingLine(session: CodingSession): HTMLElement {
 		const { before, name, after } = codingSessionLine(session.harness);
 		const label = `${before}${name}${after}`;
-		return h(
+		const time = fmtTime(session.createdAt);
+		const key = JSON.stringify([label, session.title, time]);
+		const cached = this.#codingLines.get(session.workerId);
+		if (cached?.key === key) return cached.element;
+		const element = h(
 			"div",
 			{ class: "peer-link coding-line", dataset: { workerId: session.workerId } },
 			h(
@@ -1355,8 +1388,9 @@ export class ConversationView {
 				{
 					type: "button",
 					class: "peer-chip",
-					title: `${session.title} · ${fmtTime(session.createdAt)}`,
-					"aria-label": t("{label}. Open the session", { label }),
+					title: `${session.title} · ${time}`,
+					// The title tells two sessions in one thread apart for a screen reader too.
+					"aria-label": t("{label}. Open the session", { label: `${label} · ${session.title}` }),
 					onclick: (event: MouseEvent) =>
 						this.#openCodingSession(session.workerId, event.currentTarget as HTMLElement),
 				},
@@ -1366,6 +1400,8 @@ export class ConversationView {
 				after.trim() ? h("span", null, after.trim()) : null,
 			),
 		);
+		this.#codingLines.set(session.workerId, { key, element });
+		return element;
 	}
 
 	/** The sessions still going sit beside the agent in the header, each a figure

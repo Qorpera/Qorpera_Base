@@ -155,7 +155,9 @@ describe("coding sessions in the thread", () => {
 		expect(chip.textContent).toBe("Started a coding session inCodex");
 		expect([...chip.children].map((node) => node.tagName.toLowerCase())).toEqual(["span", "svg", "span"]);
 		expect(chip.querySelector("svg.coding-mark-codex")).not.toBeNull();
-		expect(chip.getAttribute("aria-label")).toBe("Started a coding session in Codex. Open the session");
+		expect(chip.getAttribute("aria-label")).toBe(
+			"Started a coding session in Codex · Fix the delay after send. Open the session",
+		);
 		expect(chip.title).toContain("Fix the delay after send");
 		expect(line.querySelector(".coding-status, .coding-body, .coding-field-input")).toBeNull();
 		// Another owner reads the same line.
@@ -173,6 +175,18 @@ describe("coding sessions in the thread", () => {
 		await settle();
 		const again = messages.querySelector<HTMLButtonElement>(".coding-line .peer-chip")!;
 		expect(again.textContent).toBe("Started a coding session inCodex");
+		// A keyboard user on the line keeps it through a redraw (a new message here).
+		again.focus();
+		store.set({
+			projection: {
+				items: [...store.get().projection.items, message(4, "Done.", "2026-09-22T10:09:30Z")],
+				hiddenCount: 0,
+				lastSequence: 4,
+			},
+		});
+		await settle();
+		expect(messages.querySelector(".coding-line .peer-chip")).toBe(again);
+		expect(document.activeElement).toBe(again);
 		// The line opens the session as its own thread over the conversation; Close comes back to it.
 		again.click();
 		await settle();
@@ -253,6 +267,42 @@ describe("coding sessions in the thread", () => {
 		expect(f.api.listCodingSessions).toHaveBeenCalledTimes(reads);
 		// The line stays in the thread.
 		expect(f.view.el.querySelector(".coding-line")).not.toBeNull();
+	});
+
+	it("an open title pill steps aside over the next figure, so that figure opens its own session", async () => {
+		const f = mount((store) => {
+			store.set({
+				projection: { items: [], hiddenCount: 0, lastSequence: 0 },
+				codingSessions: [
+					codingSession(),
+					codingSession({ workerId: id(902), title: "Second", createdAt: "2026-09-22T10:05:00Z" }),
+				],
+			});
+		});
+		vi.mocked(f.api.listCodingSessions).mockImplementation(async () => f.store.get().codingSessions ?? []);
+		await settle();
+		const slots = f.view.el.querySelector<HTMLElement>(".thread-coding-sessions")!;
+		const [first, second] = [...slots.querySelectorAll<HTMLElement>(".coding-slot")];
+		// jsdom lays nothing out: the figures stand 30 px wide, 14 px apart, at the header's height.
+		const box = (left: number) => ({ left, right: left + 30, top: 6, bottom: 42 }) as DOMRect;
+		vi.spyOn(first!, "getBoundingClientRect").mockReturnValue(box(100));
+		vi.spyOn(second!, "getBoundingClientRect").mockReturnValue(box(144));
+		const move = (x: number) =>
+			first!.dispatchEvent(new PointerEvent("pointermove", { bubbles: true, clientX: x, clientY: 20 }));
+		// Over the first figure: it keeps the pointer (the others step aside, which changes nothing here).
+		move(120);
+		expect(first!.classList.contains("coding-slot-yield")).toBe(false);
+		expect(second!.classList.contains("coding-slot-yield")).toBe(true);
+		// Over the second figure, under the first one's pill: the first steps aside.
+		move(150);
+		expect(first!.classList.contains("coding-slot-yield")).toBe(true);
+		expect(second!.classList.contains("coding-slot-yield")).toBe(false);
+		// Beyond the figures, on the first pill's title: it takes the pointer again.
+		move(260);
+		expect(first!.classList.contains("coding-slot-yield")).toBe(false);
+		move(150);
+		slots.dispatchEvent(new PointerEvent("pointerleave"));
+		expect(first!.classList.contains("coding-slot-yield")).toBe(false);
 	});
 
 	it("a session waiting on its owner waits in the header at the slower pace", async () => {
