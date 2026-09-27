@@ -268,10 +268,11 @@ export class CodingSessionElement {
 	update(session: CodingSession): void {
 		if (this.disposed) return;
 		const newer = session.updatedAt.localeCompare(this.#session.updatedAt) >= 0;
+		const moved = session.phase !== this.#session.phase;
 		if (newer) this.#session = { ...session, isOwner: session.isOwner ?? this.#session.isOwner };
 		this.#render();
 		// A phase the poll did not see yet (an answer landed, the executor took it) shortens the wait.
-		if (newer && session.phase !== this.#session.phase) void this.refresh();
+		if (newer && moved) void this.refresh();
 	}
 
 	/** Reads the events after the cursor and the current view; reschedules itself. */

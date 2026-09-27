@@ -464,14 +464,21 @@ describe("the element in the thread", () => {
 	});
 
 	it("takes a newer listing from the thread and keeps the older of two", async () => {
-		const { element } = mount(codingSession());
+		const { element, read, state } = mount(codingSession());
 		await settle();
 		element.update(codingSession({ phase: "queued", updatedAt: "2026-09-22T09:59:30Z" }));
 		expect(element.session.phase).toBe("running");
-		element.update(
-			codingSession({ phase: "awaiting_input", workerState: "blocked", updatedAt: "2026-09-22T10:05:00Z" }),
-		);
+		const reads = read.mock.calls.length;
+		state.session = codingSession({
+			phase: "awaiting_input",
+			workerState: "blocked",
+			updatedAt: "2026-09-22T10:05:00Z",
+		});
+		element.update(state.session);
 		expect(element.session.phase).toBe("awaiting_input");
+		// A new phase from the listing reads the stream at once, not at the next poll.
+		await settle();
+		expect(read).toHaveBeenCalledTimes(reads + 1);
 		expect(element.el.querySelector(".coding-status")?.textContent).toBe(
 			"Needs you · your answer is recorded in this thread",
 		);

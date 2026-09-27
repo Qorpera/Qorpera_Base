@@ -1400,7 +1400,9 @@ export class ConversationView {
 			replace(this.#codingSlots, ...slots.map((slot) => slot.el));
 			// Moving the nodes drops focus to the page: back to the same figure, or to the agent if it left.
 			if (focused && document.activeElement !== focused)
-				(focused.isConnected ? focused : this.#identity).focus({ preventScroll: true });
+				(focused.isConnected ? focused : this.#identity.disabled ? this.#composer : this.#identity).focus({
+					preventScroll: true,
+				});
 		}
 		this.#codingSlots.hidden = !slots.length;
 		this.#watchCodingSessions();
