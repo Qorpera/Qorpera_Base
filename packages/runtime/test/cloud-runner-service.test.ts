@@ -190,7 +190,7 @@ describe("ephemeral cloud runner service", () => {
 		expect(stored).toMatchObject({ schema: "qorpera.runner-authority/v3", runner_id: runnerId });
 	});
 
-	it("activates the runner before its assignment inbox answers", async () => {
+	it("activates the runner before its assignment inbox answers, without a second round trip", async () => {
 		const root = await serviceRoot();
 		const credentialsDirectory = join(root, "credentials");
 		await mkdir(credentialsDirectory, { mode: 0o700 });
@@ -206,8 +206,10 @@ describe("ephemeral cloud runner service", () => {
 			assignment_port: port,
 		});
 		let inboxAnsweredBeforeActivation: boolean | undefined;
+		const actions: string[] = [];
 		vi.stubGlobal("fetch", async (_url: string, init: RequestInit) => {
 			const body = JSON.parse(String(init.body)) as { action: string };
+			actions.push(body.action);
 			if (body.action !== "activate")
 				return new Promise<Response>((_resolve, reject) =>
 					init.signal?.addEventListener("abort", () => reject(new Error("stopped")), { once: true }),
@@ -246,6 +248,9 @@ describe("ephemeral cloud runner service", () => {
 			await delay(10);
 		}
 		expect(inboxAnsweredBeforeActivation).toBe(false);
+		await delay(50);
+		// A fresh session needs no heartbeat before the first assignment.
+		expect(actions).toEqual(["activate"]);
 		controller.abort();
 		await service.catch(() => undefined);
 	});

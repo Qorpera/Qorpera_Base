@@ -1832,26 +1832,35 @@ export class CloudRunnerOrchestrator {
 		const inFlight = new Set<Promise<void>>();
 		const inFlightClaimIds = new Set<string>();
 		let nextReconcileAt = 0;
+		// Retained claims are re-read after each successful reconcile, as soon as the
+		// loop has capacity for them, and keep that priority until the read succeeds.
+		let retainedDue = false;
 		while (!signal.aborted) {
 			try {
 				// A failed reconcile still blocks claims and is retried on the next poll;
 				// only a successful one waits for its interval.
-				const reconciling = performance.now() >= nextReconcileAt;
-				if (reconciling) {
+				if (performance.now() >= nextReconcileAt) {
 					const reconciliationErrors = await this.#reconcileControlPlane(signal);
 					nextReconcileAt = performance.now() + reconcileIntervalMs;
+					retainedDue = true;
 					for (const error of reconciliationErrors) options.onError?.(error);
 				}
 				const available = this.#dispatchConcurrency - inFlight.size;
 				if (available > 0) {
-					const claims = await this.#claimBatch(available, signal, inFlightClaimIds, reconciling);
+					const claims = await this.#claimBatch(available, signal, inFlightClaimIds, retainedDue);
+					retainedDue = false;
 					for (const claim of claims) {
 						if (inFlightClaimIds.has(claim.claimId)) continue;
 						inFlightClaimIds.add(claim.claimId);
 						let dispatch: Promise<void>;
 						dispatch = this.#dispatchClaim(claim, signal)
 							.then(() => undefined)
-							.catch((error: unknown) => options.onError?.(error))
+							.catch((error: unknown) => {
+								// A failed dispatch can leave a finished sandbox or a retained claim
+								// behind: reconcile on the next poll rather than after the interval.
+								nextReconcileAt = 0;
+								options.onError?.(error);
+							})
 							.finally(() => {
 								inFlight.delete(dispatch);
 								inFlightClaimIds.delete(claim.claimId);

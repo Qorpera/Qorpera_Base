@@ -83,7 +83,7 @@
 
 ### Changed
 
-- The ephemeral runner service activates its runner before its assignment inbox answers, so a provider that reports a runner ready on a healthy inbox never offers the control plane an inactive runner (which refused the assignment with 423 and cost a retry).
+- The ephemeral runner service activates its runner before its assignment inbox answers, so a provider that reports a runner ready on a healthy inbox never offers the control plane an inactive runner (which refused the assignment with 423 and cost a retry). A freshly activated runner skips the heartbeat its worker used to send straight after.
 
 ### Fixed
 

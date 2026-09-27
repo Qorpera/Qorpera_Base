@@ -1563,12 +1563,17 @@ describe("cloud runner orchestrator", () => {
 		const control = controlPlane();
 		const assign = control.assign;
 		const racing = new CloudRunnerOrchestratorRequestError(423);
-		const attempts: number[] = [];
+		let attempts = 0;
 		control.assign = vi.fn(async (...args: Parameters<typeof assign>) => {
-			attempts.push(performance.now());
-			if (attempts.length < 3) throw racing;
+			if (++attempts < 3) throw racing;
 			return assign(...args);
 		});
+		const waits: number[] = [];
+		const setTimer = globalThis.setTimeout;
+		vi.spyOn(globalThis, "setTimeout").mockImplementation(((callback: () => void, delay?: number) => {
+			if (attempts > 0 && attempts < 3) waits.push(delay ?? 0);
+			return setTimer(callback, delay);
+		}) as typeof setTimeout);
 		const local = localAdapter();
 		const orchestrator = new CloudRunnerOrchestrator({
 			orchestratorId,
@@ -1580,11 +1585,9 @@ describe("cloud runner orchestrator", () => {
 		});
 
 		await expect(orchestrator.runOnce()).resolves.toMatchObject({ status: "assigned" });
-		expect(attempts).toHaveLength(3);
-		// 50 ms, then 100 ms: well under the former 250 ms first wait.
-		expect(attempts[1] - attempts[0]).toBeGreaterThanOrEqual(45);
-		expect(attempts[1] - attempts[0]).toBeLessThan(240);
-		expect(attempts[2] - attempts[1]).toBeGreaterThanOrEqual(95);
+		expect(attempts).toBe(3);
+		// 50 ms, then 100 ms (the former first wait was 250 ms).
+		expect(waits).toEqual([50, 100]);
 		expect(local.deliver).toHaveBeenCalledOnce();
 	});
 
@@ -1616,6 +1619,34 @@ describe("cloud runner orchestrator", () => {
 		expect(local.reconcile).toHaveBeenCalledOnce();
 		expect(control.retainedClaims).toHaveBeenCalledOnce();
 		expect(local.deliver).toHaveBeenCalledOnce();
+	});
+
+	it("reconciles on the next poll after a dispatch fails instead of waiting for the interval", async () => {
+		const control = controlPlane(undefined);
+		vi.mocked(control.claimNext).mockResolvedValueOnce(claim()).mockResolvedValue(undefined);
+		const local = localAdapter();
+		local.acquire.mockRejectedValueOnce(new Error("Sandbox start failed"));
+		const controller = new AbortController();
+		vi.mocked(control.reconcileExpired).mockImplementation(async () => {
+			if (vi.mocked(control.reconcileExpired).mock.calls.length >= 2) controller.abort();
+		});
+		const onError = vi.fn();
+		const orchestrator = new CloudRunnerOrchestrator({
+			orchestratorId,
+			controlPlane: control,
+			providerAdapter: local.adapter,
+			clientClaimId: () => claimId,
+			clientAssignmentId: () => assignmentId,
+			createCapability: () => capability,
+		});
+
+		const started = performance.now();
+		await orchestrator.run(controller.signal, { pollIntervalMs: 10, reconcileIntervalMs: 60_000, onError });
+		expect(control.reconcileExpired).toHaveBeenCalledTimes(2);
+		expect(performance.now() - started).toBeLessThan(30_000);
+		expect(onError).toHaveBeenCalled();
+		// The retained claims are read again with that reconcile.
+		expect(control.retainedClaims).toHaveBeenCalledTimes(2);
 	});
 
 	it("retries a failed reconcile on the next poll and claims nothing until it succeeds", async () => {
