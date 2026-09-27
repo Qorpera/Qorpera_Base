@@ -17,8 +17,11 @@ import {
 import { COMPANY_COMPUTER_SERVICE_SOFTWARE_PATH as path } from "@qorpera/contracts";
 import { openCompanyComputerInstalledServiceSoftware } from "../../src/cloud-company-computer-service-software-file.ts";
 
+import { assertLinuxRootProbeCustody } from "./linux-root-probe-custody.ts";
+
 assert.equal(process.platform, "linux", "Physical filesystem probe requires Linux");
 assert.equal(process.getuid?.(), 0, "Physical ownership probe requires isolated root");
+await assertLinuxRootProbeCustody();
 
 const directory = "/opt/qorpera-office",
 	body = Buffer.from("export const reviewed = 1;\n");

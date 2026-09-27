@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { linuxRootProbeArguments, linuxRootProbeEnabled, runLinuxRootProbe } from "./fixtures/linux-root-probe.ts";
+import { linuxRootProbeStatus } from "./fixtures/linux-root-probe-custody.ts";
 
 describe("explicit disposable Linux root filesystem probes", () => {
 	it("isolates physical custody checks without Docker, host writable mounts or network", () => {
@@ -13,6 +14,13 @@ describe("explicit disposable Linux root filesystem probes", () => {
 		expect(args).not.toContain("/run");
 		expect(args).not.toContain("CAP_SYS_ADMIN");
 		expect(args.slice(-3)).toEqual(["--", "/probe-node", "/probe.mjs"]);
+	});
+	it("diagnostics retain only kernel custody fields, excluding paths and unrelated process data", () => {
+		expect(
+			linuxRootProbeStatus(
+				"Name:\tprivate-path\nUid:\t0\t0\t0\t0\nCapEff:\t000000000000000b\nNoNewPrivs:\t1\nVmSize:\t123 kB\nGid:\tinvalid\n",
+			),
+		).toEqual({ Uid: "0 0 0 0", CapEff: "000000000000000b", NoNewPrivs: "1" });
 	});
 	it("rejects ambiguous paths before invoking a privileged process", () => {
 		for (const path of ["relative", "/tmp/probe\nfile", "\0"])

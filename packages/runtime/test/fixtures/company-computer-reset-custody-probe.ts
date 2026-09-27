@@ -28,10 +28,12 @@ import {
 import type { CompanyComputerScreenObservation } from "../../src/cloud-company-computer-screen-lifecycle.ts";
 import { CompanyComputerScreenOutbox } from "../../src/cloud-company-computer-screen-outbox.ts";
 import { computerBinding } from "./company-computer.ts";
+import { assertLinuxRootProbeCustody } from "./linux-root-probe-custody.ts";
 import { screenStartup } from "./screen-lifecycle.ts";
 
 assert.equal(process.platform, "linux", "Physical filesystem probe requires Linux");
 assert.equal(process.getuid?.(), 0, "Physical ownership probe requires isolated root");
+await assertLinuxRootProbeCustody();
 
 const signal = () => new AbortController().signal;
 const roots: string[] = [];
