@@ -83,6 +83,8 @@
 
 ### Fixed
 
+- The company computer keeps running around agents and members. An agent action whose own page or command work failed and ended (a slow page, a target that never became clickable, a command stopped at its own limit, a password field) no longer closes the screen's browser and is drained like a success, so releasing the screen no longer drains the whole desktop. One authority check that gets no answer (network, timeout, 5xx) no longer ends the desktop, its apps or the agent's session: only a clear refusal, or 30 seconds without an answer, does, recorded as `AUTHORITY_LOST`. The browser relay follows the same rule and, when SQL answers `idle` (nobody entitled present), keeps the window open with its network paused instead of closing it. A run whose desktop was ended mid-run opens a fresh guest session under the same lease. Expired screen leases that were never released are reaped by the supervisor status.
+
 - Preserved office startup, supervision, desktop and cleanup failure causes in bounded structured diagnostics. Logs include only allowlisted stages, error codes and categories, never raw messages, credentials, paths or stacks.
 
 - Loaded Chrome for Testing's managed browser policies from its actual Linux path. The browser uses a measured dedicated Bubblewrap copy and enforcing AppArmor profile so Chromium's nested sandbox can start on Ubuntu without changing the shell/desktop profile or granting host capabilities. Browser startup refuses a missing or different enforcing profile when AppArmor is enabled.

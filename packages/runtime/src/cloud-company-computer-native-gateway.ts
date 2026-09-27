@@ -31,6 +31,9 @@ export interface CompanyComputerNativeGuestSession {
 	/** Stop and reap this session's resources, including idle browser channels.
 	 * No screen/VM power change or profile-byte deletion. */
 	close(): Promise<void>;
+	/** True once the guest itself ended this session (its screen was drained)
+	 * and finished reaping it. The same lease may then open a fresh one. */
+	ended?(): boolean;
 }
 export type CompanyComputerNativeGuestSessionFactory = (options: {
 	run: CloudNativeToolRun;
@@ -46,6 +49,7 @@ interface Session {
 	guest: CompanyComputerNativeGuestSession;
 	active: Set<Promise<unknown>>;
 	closing?: Promise<void>;
+	reopening?: Promise<void>;
 	closed: boolean;
 	released: boolean;
 }
@@ -215,6 +219,50 @@ export class CompanyComputerNativeGateway {
 		);
 		return session.closing;
 	}
+	/**
+	 * The guest ended this run's session under a lease that is still the run's
+	 * (its desktop went away mid-run). Open a fresh one with the same lease and
+	 * configuration, so the run keeps its computer. It grants nothing: the next
+	 * action still passes the endpoint's authorization and effect receipt.
+	 */
+	#reopen(session: Session): Promise<void> {
+		session.reopening ??= (async () => {
+			const descriptor = parseCompanyComputerNativeDescriptor(
+				await this.#registry.call(
+					"qorpera_native_office_descriptor",
+					{ p_binding: session.run.binding },
+					session.run.signal,
+				),
+				session.run,
+			);
+			if (!descriptor) throw new Error("OFFICE_UNAVAILABLE");
+			assertCompanyComputerScope(descriptor.scope, this.#scope);
+			const effects = new CloudCompanyComputerEffectControl({
+				run: session.run,
+				scope: this.#scope,
+				control: this.#registry,
+			});
+			const previous = session.guest;
+			const guest = await this.#createSession({
+				run: session.run,
+				descriptor,
+				lease: structuredClone(session.lease),
+				effects,
+			});
+			if (
+				session.closed ||
+				!isDeepStrictEqual(guest.endpoint.resourceTarget, previous.endpoint.resourceTarget) ||
+				!isDeepStrictEqual(guest.endpoint.capabilities, previous.endpoint.capabilities)
+			) {
+				await guest.close();
+				throw new Error(session.closed ? "OFFICE_NATIVE_CLOSED" : "OFFICE_GUEST_CONFIGURATION_DIFFERS");
+			}
+			session.guest = guest;
+		})().finally(() => {
+			session.reopening = undefined;
+		});
+		return session.reopening;
+	}
 	async #dispatch(value: unknown, signal: AbortSignal): Promise<unknown> {
 		const action = value && typeof value === "object" && "action" in value ? value.action : undefined;
 		const body = officeNativeRecord(
@@ -287,6 +335,7 @@ export class CompanyComputerNativeGateway {
 		const result = (async () => {
 			const combined = AbortSignal.any([signal, session.run.signal]);
 			await session.run.assertActive(combined);
+			if (session.guest.ended?.()) await cloudToolRequest(() => this.#reopen(session), combined);
 			await session.guest.endpoint.authorize(operation, session.run.identity, lease, combined);
 			const content = await session.guest.endpoint.perform(operation, lease, {
 				identity: session.run.identity,

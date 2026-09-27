@@ -11,6 +11,7 @@ import {
 	type CompanyComputerScope,
 } from "@qorpera/cloud-client/cloud-company-computer-contract";
 import { type Browser, chromium } from "playwright-core";
+import { CompanyComputerBrowserNetworkPausedError } from "./cloud-company-computer-browser-control.ts";
 import {
 	type CompanyComputerBrowserEgressTransport,
 	startCompanyComputerBrowserEgress,
@@ -34,6 +35,10 @@ import {
 	readCompanyComputerLinuxMetadata,
 } from "./cloud-company-computer-linux-host.ts";
 import { spawnCompanyComputerLinuxProcess } from "./cloud-company-computer-linux-process.ts";
+import {
+	COMPANY_COMPUTER_UNANSWERED_GRACE_MS,
+	companyComputerAuthorityUnanswered,
+} from "./cloud-company-computer-registry-http.ts";
 import { companyComputerScreenDisplay } from "./cloud-company-computer-screens.ts";
 import type { RecoveryDirectoryMount } from "./cloud-identity-recovery-filesystems.ts";
 import { cloudToolRequest } from "./cloud-native-tool-authority.ts";
@@ -337,6 +342,16 @@ export function createCompanyComputerLinuxBrowserLaunch(options: {
 				assertActive: check,
 				onFailure: () => abort.abort(),
 				transport: options.egressTransport,
+				// With nobody entitled present the window stays on the desktop and
+				// only its network pauses; a check that got no answer pauses it too,
+				// for a while. A refusal still closes the browser.
+				classifyFailure: (error) =>
+					error instanceof CompanyComputerBrowserNetworkPausedError
+						? "paused"
+						: companyComputerAuthorityUnanswered(error)
+							? "unanswered"
+							: "refused",
+				graceMs: COMPANY_COMPUTER_UNANSWERED_GRACE_MS,
 			});
 			const args = companyComputerBrowserSandboxArgs();
 			args.push(

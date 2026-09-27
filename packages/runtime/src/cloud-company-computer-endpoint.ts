@@ -30,7 +30,7 @@ import {
 export interface CompanyComputerGuestEffectCheck {
 	/** Consume this receipt once before guest dispatch; repeated attempts must fail. */
 	begin(input: CompanyComputerGuestEffectInput, signal: AbortSignal): Promise<AbortSignal>;
-	/** Called only after confirmed successful guest drain, using a fresh cleanup signal. */
+	/** Called only after a confirmed guest drain (success, or a failure that left nothing running), using a fresh cleanup signal. */
 	finish(input: CompanyComputerGuestEffectInput, signal: AbortSignal): Promise<void>;
 	assertAuthorized(input: CompanyComputerGuestEffectInput, signal: AbortSignal): Promise<void>;
 }
@@ -162,6 +162,10 @@ export class CompanyComputerGuestEndpoint implements CompanyComputerCloudEndpoin
 			operation,
 			signal: AbortSignal.any([context.signal, resourceSignal]),
 			drainOnFailure: () => this.#automation.stopBrowser(),
+			// A failed action that left nothing running is drained like a successful
+			// one. Otherwise its resource would stay open, and releasing the screen
+			// with an open resource makes SQL drain the whole desktop.
+			settledFailure: () => this.#effects.finish(structuredClone(effect), new AbortController().signal),
 			authorize: async (signal) => {
 				await this.#effects.assertAuthorized(
 					{

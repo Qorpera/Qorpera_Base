@@ -163,6 +163,8 @@ async function fixture(options: { unavailable?: boolean; admitWork?: () => void 
 		order.push("guest:stop-browser");
 	});
 	const gate = new CompanyComputerScreenActionGate();
+	/** Whether the guest itself ended each session it handed out, in order. */
+	const guests: { ended: boolean }[] = [];
 	const createSession = vi.fn(
 		async ({
 			run: bound,
@@ -171,6 +173,8 @@ async function fixture(options: { unavailable?: boolean; admitWork?: () => void 
 			effects,
 		}: Parameters<ConstructorParameters<typeof CompanyComputerNativeGateway>[0]["createSession"]>[0]) => {
 			expect(bound.identity).toEqual(run.identity);
+			const guest = { ended: false };
+			guests.push(guest);
 			return {
 				endpoint: new CompanyComputerGuestEndpoint({
 					binding: screen.binding,
@@ -183,6 +187,7 @@ async function fixture(options: { unavailable?: boolean; admitWork?: () => void 
 					prepareScreen: async () => undefined,
 				}),
 				close: physicalClose,
+				ended: () => guest.ended,
 			};
 		},
 	);
@@ -245,6 +250,7 @@ async function fixture(options: { unavailable?: boolean; admitWork?: () => void 
 		physicalClose,
 		stopBrowser,
 		createSession,
+		guests,
 		endpoint,
 		context,
 		body,
@@ -376,6 +382,30 @@ describe("native runtime to office transport (real TLS, synthetic SQL and guest 
 		await f.endpoint.close();
 		expect(f.physicalClose).toHaveBeenCalledOnce();
 		expect(f.order.indexOf("guest:close")).toBeLessThan(f.order.indexOf("qorpera_native_office_screen:release"));
+	});
+	it("opens a fresh guest session under the same lease after the guest ended the old one", async () => {
+		const f = await fixture();
+		await f.endpoint.perform(f.operation, f.lease, f.context);
+		// The screen was drained mid-run (for example after a lost authority grace).
+		f.guests[0].ended = true;
+		const next = { ...f.context, receiptId: randomUUID() };
+		expect(await f.endpoint.perform(f.operation, f.lease, next)).toEqual({ kind: "text", value: "test" });
+		expect(f.createSession).toHaveBeenCalledTimes(2);
+		expect(f.perform).toHaveBeenCalledTimes(2);
+		// A changed configuration is not a reopen: the fresh session is closed at once.
+		f.guests[1].ended = true;
+		const original = f.sql.getMockImplementation()!;
+		f.sql.mockImplementation(async (input, init) =>
+			String(input).endsWith("/qorpera_native_office_descriptor")
+				? Response.json({ ...f.descriptor, resources: { ...f.descriptor.resources, officeGrantVersion: 2 } })
+				: original(input, init),
+		);
+		await expect(
+			f.endpoint.perform(f.operation, f.lease, { ...f.context, receiptId: randomUUID() }),
+		).rejects.toThrow();
+		expect(f.createSession).toHaveBeenCalledTimes(3);
+		expect(f.perform).toHaveBeenCalledTimes(2);
+		expect(f.physicalClose).toHaveBeenCalledOnce();
 	});
 	it("releases only the exact existing session while stale status blocks all new work", async () => {
 		let stale = false;

@@ -9,6 +9,7 @@ import {
 	CompanyComputerGuestEndpoint,
 } from "@qorpera/runtime/cloud-company-computer-endpoint";
 import {
+	CompanyComputerActionFailedError,
 	CompanyComputerScreenActionGate,
 	CompanyComputerScreenAdmissionRefusedError,
 	type CompanyComputerScreenLeaseControl,
@@ -576,6 +577,52 @@ describe("guest dispatch adapter", () => {
 		await expect(
 			harness.endpoint.perform(computerOperation(), { ...computerLease(), epoch: 2 }, computerEffect()),
 		).rejects.toThrow("SCREEN_ACTION_STILL_RUNNING");
+	});
+
+	it("keeps the browser and drains the resource when the action's own page work fails and ends", async () => {
+		const harness = toolHarness();
+		harness.automation.perform.mockRejectedValueOnce(
+			new CompanyComputerActionFailedError(new Error("page.goto: Timeout 10000ms exceeded")),
+		);
+		await expect(harness.endpoint.perform(computerOperation(), computerLease(), computerEffect())).rejects.toThrow(
+			"page.goto: Timeout 10000ms exceeded",
+		);
+		expect(harness.automation.stopBrowser).not.toHaveBeenCalled();
+		// Drained like a success, so releasing the screen later does not drain the desktop.
+		expect(harness.effects.finish).toHaveBeenCalledOnce();
+		// Nothing of it runs: the slot is free for the next action at once.
+		await harness.endpoint.perform(computerOperation(), computerLease(), computerEffect());
+		expect(harness.automation.perform).toHaveBeenCalledTimes(2);
+		expect(harness.effects.finish).toHaveBeenCalledTimes(2);
+	});
+
+	it("still stops the browser and keeps the resource when authority is gone after a typed failure", async () => {
+		const harness = toolHarness();
+		let checks = 0;
+		harness.effects.assertAuthorized = vi.fn(async () => {
+			if (++checks === 2) throw new Error("ACCESS_REVOKED");
+		});
+		harness.automation.perform.mockRejectedValueOnce(new CompanyComputerActionFailedError(new Error("PAGE_FAILED")));
+		await expect(harness.endpoint.perform(computerOperation(), computerLease(), computerEffect())).rejects.toThrow(
+			"ACCESS_REVOKED",
+		);
+		expect(harness.automation.stopBrowser).toHaveBeenCalledOnce();
+		expect(harness.effects.finish).not.toHaveBeenCalled();
+	});
+
+	it("drains the resource of an action refused before it ran", async () => {
+		const harness = toolHarness();
+		const running = computerDeferred<CompanyComputerToolContent>();
+		harness.automation.perform.mockReturnValueOnce(running.promise);
+		const first = harness.endpoint.perform(computerOperation(), computerLease(), computerEffect());
+		await vi.waitFor(() => expect(harness.automation.perform).toHaveBeenCalledOnce());
+		await expect(harness.endpoint.perform(computerOperation(), computerLease(), computerEffect())).rejects.toThrow(
+			"SCREEN_ACTION_STILL_RUNNING",
+		);
+		expect(harness.effects.finish).toHaveBeenCalledOnce();
+		running.resolve({ kind: "json", value: { page: "done" } });
+		await first;
+		expect(harness.effects.finish).toHaveBeenCalledTimes(2);
 	});
 
 	it("retains the physical-slot quarantine when browser shutdown fails", async () => {

@@ -2,6 +2,7 @@ import { Resolver } from "node:dns/promises";
 import { chmod, lstat, realpath } from "node:fs/promises";
 import { createConnection, createServer, isIP, type Socket } from "node:net";
 import { join } from "node:path";
+import { performance } from "node:perf_hooks";
 import { nativeEgressPublicAddress } from "./cloud-native-egress.ts";
 import { cloudToolRequest } from "./cloud-native-tool-authority.ts";
 
@@ -44,12 +45,23 @@ async function resolveBrowserHost(host: string, signal: AbortSignal): Promise<st
  * logs, host networking, redirects or client-side DNS. Browser TLS remains end
  * to end. The guest's privacy/drain owner must close this relay before ack.
  * Transport injection is for local proof, never member/model configuration. */
+/**
+ * How a failed periodic authority check is taken. `paused`: authority answered
+ * that the browser may stay but carry nothing now. `unanswered`: no answer came;
+ * nothing is carried, and the relay ends once none has come for `graceMs`.
+ * `refused`: the relay ends at once.
+ */
+export type CompanyComputerBrowserEgressCheckFailure = "paused" | "unanswered" | "refused";
+
 export async function startCompanyComputerBrowserEgress(options: {
 	root: string;
 	assertActive(signal: AbortSignal): Promise<void>;
 	signal: AbortSignal;
 	onFailure(): void;
 	transport?: CompanyComputerBrowserEgressTransport;
+	/** Absent: every failed check is a refusal. */
+	classifyFailure?(error: unknown): CompanyComputerBrowserEgressCheckFailure;
+	graceMs?: number;
 }): Promise<{ path: string; close(): Promise<void> }> {
 	const info = await lstat(options.root);
 	if (
@@ -206,11 +218,30 @@ export async function startCompanyComputerBrowserEgress(options: {
 	};
 	server.on("error", fail);
 	signal.addEventListener("abort", abort, { once: true });
+	// Every established tunnel goes; new ones are refused by their own checks.
+	const pause = (): void => {
+		for (const socket of [...peers, ...upstreams]) socket.destroy();
+	};
+	let answeredAt = performance.now();
 	const interval = setInterval(() => {
 		if (checking || signal.aborted) return;
 		checking = true;
 		void check(signal)
-			.catch(fail)
+			.then(
+				() => {
+					answeredAt = performance.now();
+				},
+				(error: unknown) => {
+					const failure = options.classifyFailure?.(error) ?? "refused";
+					if (failure === "paused") answeredAt = performance.now();
+					if (
+						failure === "paused" ||
+						(failure === "unanswered" && performance.now() - answeredAt < (options.graceMs ?? 0))
+					)
+						pause();
+					else fail();
+				},
+			)
 			.finally(() => {
 				checking = false;
 			});
