@@ -2461,8 +2461,10 @@ section 12.2 and the 2026-09-16 storage rule. Design:
    - No machine keeps the company's files on its own disk. A Company
      Computer's disk and workbench hold only the system, installed
      applications, browser profiles and caches.
-   - Coding machines, whose sessions have open network and are not reviewed,
-     get the mount only once that is settled.
+   - Coding machines mount it too, per session, with the session's authority.
+     Coding sessions keep their open network and stay unreviewed. The founder
+     accepted that company data a coding session reads can leave through that
+     network (27 September, later decision).
    - The mount replaces the explicit transfer of section 12.2 between the
      Company File and these machines.
 2. **The same as a local disk.** Agents work in the mounted folder exactly as
@@ -2515,6 +2517,17 @@ section 12.2 and the 2026-09-16 storage rule. Design:
      the shell's commands become outside effects and pass review.
 8. **Folders.** An agent creates a folder when it needs a home for a category
    of files, never to hold a single file.
+9. **Code lives in the company folder.**
+   - Coding agents create and keep repositories and their worktrees under
+     `code/`, with git metadata inside them, and search across all company
+     data.
+   - A coding worker's repository workspace (13.1) becomes a worktree in the
+     company folder. Its own NAS folders keep only dependencies, build output
+     the repository ignores, and custody. These are machine caches, never
+     company files.
+   - Git's lock files act as locks across machines.
+   - One git command lands whole or not at all.
+   - Branches still leave the company only as pull requests (5.1).
 
 ## 20. Enforcement matrix
 

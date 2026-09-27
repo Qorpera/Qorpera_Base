@@ -2,7 +2,9 @@
 
 Status: design, not built. Founder decisions of 27 September 2026 are recorded
 in the contract as the 2026-09-27 amendment "every machine works in the
-company folder" (section 19). This document is the design those decisions
+company folder" (section 19). The founder's later decision the same day, that
+coding machines mount the folder too and keep repositories and worktrees in
+it, is part of that amendment. This document is the design those decisions
 refer to.
 
 ## Goal
@@ -13,10 +15,11 @@ computer's files. They list, search, read, edit, write, create folders, move,
 rename, copy, delete and run scripts over it with ordinary tools.
 
 The folder lives once, on the NAS. Machines are scalable compute that are
-bolted onto it. Agent run machines and Company Computers each mount the same
-live folder at `/company`. File explorers show it and shells work in it. No
-machine keeps the company's files on its own disk. Coding machines follow once
-open question 1 is settled.
+bolted onto it. Agent run machines, Company Computers and coding machines each
+mount the same live folder at `/company`. File explorers show it and shells
+work in it. No machine keeps the company's files on its own disk. Code lives
+in the folder too: coding agents create and keep repositories and worktrees
+there, and search across all company data.
 
 ## What exists today (master 14baeadd7)
 
@@ -79,13 +82,13 @@ This design keeps the live folder and removes both reasons.
           ┌───────────┴──────────────────────────────┴───────────┐
           │ folder service (trusted, outside every model box)     │
           │ authority · read sets · presence · publish · reports  │
-          └───────────┬───────────────────────────────┬──────────┘
-                 /company                          /company
-          ┌───────────┴─────────┐           ┌──────────┴──────────┐
-          │ run box (per run)   │           │ Company Computer(s) │
-          │ shell + apply_patch │           │ file explorer,      │
-          │ no logins, no net   │           │ terminal, apps      │
-          └─────────────────────┘           └─────────────────────┘
+          └──────┬──────────────────────┬───────────────────┬────┘
+            /company               /company              /company
+     ┌───────────┴─────────┐ ┌──────────┴──────────┐ ┌──────┴──────────────┐
+     │ run box (per run)   │ │ Company Computer(s) │ │ coding machine      │
+     │ shell + apply_patch │ │ file explorer,      │ │ per-session mounts, │
+     │ no logins, no net   │ │ terminal, apps      │ │ worktrees in code/  │
+     └─────────────────────┘ └─────────────────────┘ └─────────────────────┘
 
   model harness (Codex and the member's login): its own box, no mount, no shell
 ```
@@ -399,7 +402,68 @@ browser profiles and caches. The rest is kept off it:
 **Many machines.** A company's Company Computers all mount the same folder.
 A save on one appears on the others within about a second.
 
-## 6. Server work (SQL and gateway)
+## 6. Coding machines and code in the company folder
+
+**The mount.** A coding machine belongs to one member and carries that
+member's sessions. Each session runs as its own uid and gets its own mount
+namespace, holding the view of the session's run authority: the coding agent
+plus the member.
+
+- Coding agents read, search and write company data like any agent. Their
+  commands (`coding_run_command`) publish at the end of each command, using
+  the run-box rule of section 2.
+- The session's working directory is its worktree inside `/company`.
+- The coding machine's existing NAS session folders keep only machine-local
+  data (see below) and custody.
+
+**Repositories and worktrees live in the company folder.**
+- A repository is a folder under `code/`, for example `code/<repo>/`, with
+  its `.git` inside it.
+- Coding agents create worktrees there with ordinary git (`git worktree add`)
+  and keep them as company files, for example under
+  `code/<repo>-worktrees/<branch>/`.
+- Members see the code and its history in the web app like any other part of
+  the company.
+- Branches still reach GitHub as pull requests (contract section 5.1): that
+  is how code leaves the company, not how it is stored.
+
+**What changes for git.**
+- **Git metadata is allowed in `code/`.** Today `.git` is an adapter-only
+  prefix and generic writes are refused. Under `code/` the gateway accepts
+  `.git` directories and git's own files, and the mount shows them like any
+  file. Everywhere else `.git` stays refused.
+- **Git's lock files are real locks across machines.** Git takes
+  `index.lock`, `HEAD.lock`, `packed-refs.lock` and the like by creating them
+  exclusively. Inside a `.git` directory, the folder service turns an
+  exclusive create of a `*.lock` name into a short-lived lease in SQL. Two
+  machines therefore cannot both hold it. Lock files are never published.
+- **One git command is one unit.** Everything a git command changes inside
+  one `.git` directory (objects, refs, index, logs) is one unit and lands
+  whole or not at all. A ref that moved on another machine makes the unit a
+  conflict: nothing is written and the command's report says so. Objects are
+  content-addressed, so they never conflict.
+- **Git's housekeeping stays out of the history view.** `.git` internals are
+  versioned like any file. The web app's history view shows the worktree's
+  files and folds `.git` changes into one line per command.
+
+**Machine-local data.** Dependencies and build output are machine caches,
+not company files:
+- `node_modules` always;
+- anything the repository's `.gitignore` ignores, by git's own
+  `check-ignore` rules.
+
+These live on the session's NAS folder on the coding machine and are shown at
+their place inside the worktree. They are never published, and they can be
+rebuilt at any time. This keeps a repository's company footprint at the size
+of its source and history, and it matches today's rule that `node_modules`
+never enters the Company File. Everything else in a worktree, including
+untracked files git does not ignore, is company data.
+
+**Sizes.** A repository adds its tracked files plus its `.git` files. Large
+repositories need per-folder trees and the lifted caps (build step 8). Pack
+files over 256 MiB need open question 4.
+
+## 7. Server work (SQL and gateway)
 
 1. **Change sets and units.**
    - One check and one commit cover many units, with an operation key.
@@ -424,8 +488,10 @@ A save on one appears on the others within about a second.
    - Any earlier version of a path can be restored, by a member or by an
      agent.
 8. **Upload binding** for the folder service (section 1).
+9. **Code areas** (section 6): `.git` accepted under `code/`, lock leases,
+   one unit per git command, and `.git` folded in the history view.
 
-## 7. Security
+## 8. Security
 
 **Credentials.**
 - The harness box keeps the model login.
@@ -438,12 +504,16 @@ publish. Mount file modes are a convenience, not the boundary.
 **Untrusted content.** File content is data. The run box and the Company
 Computer shell have no network, so the mount opens no new way out of the
 company. The existing exits are connectors and the browser (both reviewed),
-and coding machines, which get no mount until open question 1 is settled.
+and coding machines, whose sessions keep open network and are not reviewed.
+With the mount, company data a coding session reads can leave through that
+network. The founder accepted this on 27 September so that coding agents can
+work over company data; every read is still recorded, and every write still
+passes the gateway.
 
 **Paths.** The kernel resolves `..`, there are no symlinks, and the service
 validates every path.
 
-## 8. Build order
+## 9. Build order
 
 Everything runs on the release train, and every PR gets an independent review.
 Reading comes first, so agents can search the whole company early. Writing
@@ -456,7 +526,8 @@ keeps using today's tools until step 5.
    - Read sets by covering resource.
 2. **Folder service and FUSE mount**, read-only, on an execution host: the
    unit, the account, and the `/dev/fuse` placement. Spike numbers come
-   first.
+   first, and the spike includes `git status`, `git commit` and
+   `git worktree add` on a real repository in the mount.
 3. **Run box.** `exec_command` over the read-only mount, the prompt change,
    and the capacity decision. First live acceptance: an agent searches the
    whole company.
@@ -475,9 +546,20 @@ keeps using today's tools until step 5.
    - Work files leave the workbench.
    - The `company_*` tools and the Company File realm of `computer_transfer`
      are retired.
-7. **Per-folder trees**, and lifting the manifest and entry caps.
+7. **Coding-machine mount.**
+   - Per-session mount namespaces with the session's authority.
+   - Worktrees in `/company`.
+   - Machine-local dependencies and build output on the session folder.
+8. **Per-folder trees**, and lifting the manifest and entry caps.
+9. **Code areas.**
+   - `.git` under `code/`.
+   - Lock leases.
+   - Git commands as units.
+   - The history view fold.
+   - A coding session moves its repository from its private NAS workspace
+     into `code/`.
 
-## 9. Live acceptance
+## 10. Live acceptance
 
 - **Search.** An agent runs `rg -l refund` over all of `/company` and opens
   what it found. The run's SQL read set stays a handful of rows.
@@ -496,6 +578,13 @@ keeps using today's tools until step 5.
   - LibreOffice saves a document into it, and the lock file is never
     published.
   - A second Company Computer sees the save within about a second.
+- **Coding.**
+  - A coding agent searches company data from its session.
+  - It creates a worktree under `code/`, commits, and opens a pull request.
+  - A member sees the worktree's files in the web app.
+  - `node_modules` never appears in the Company File.
+  - Two sessions on different machines commit to the same repository, and
+    neither corrupts it.
 - **Credentials.** A probe from the run box finds no credential file.
 - **Machine disks.** After a run, the disk and the workbench of each machine
   contain none of the company folder's content hashes.
@@ -508,12 +597,10 @@ folder that fits. This wording ships ahead of the mount, in PR #366.
 
 ## Open questions
 
-1. **Coding machines.** A coding session has open internet and is not
-   reviewed. A mount there would be a way out of the company that no reviewer
-   sees. Options:
-   - no mount (proposed for now);
-   - a mount only while the session's network is closed;
-   - reviewing coding commands.
+1. **Coding network.** Coding sessions keep open network (founder decision,
+   27 September). A cheap mitigation that keeps coding working would be to
+   limit coding machines to the sites coding needs: GitHub, package
+   registries and the model providers. Not decided.
 2. **Company Computer shell review.** Its shell has no network either. Should
    it run without review once it touches only the mount and the machine?
    Proposed: yes.
