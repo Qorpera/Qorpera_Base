@@ -290,7 +290,8 @@ function partsFor(friends: FriendsController): FriendsParts {
 		input.addEventListener("input", () => friends.type(input.value));
 		const sendTyped = () => {
 			const { query, invitable } = typed(friends.store.get());
-			if (!invitable) return;
+			// A second Enter while the request is out must not clear the field before it lands.
+			if (!invitable || friends.store.get().sending) return;
 			void friends.request(query).then(() => {
 				if (friends.store.get().error) return;
 				input.value = "";
@@ -305,7 +306,8 @@ function partsFor(friends: FriendsController): FriendsParts {
 		// Enter before the address has its answer, while Send request is still off: look
 		// it up at once, and send if it finds someone and the field still holds it.
 		input.addEventListener("keydown", (event) => {
-			if (event.key !== "Enter" || event.isComposing || !submit.disabled) return;
+			// Safari reports the Enter that ends a composition as keyCode 229, not isComposing.
+			if (event.key !== "Enter" || event.isComposing || event.keyCode === 229 || !submit.disabled) return;
 			const { query, lookup } = typed(friends.store.get());
 			if (!lookup || lookup.account !== undefined) return;
 			event.preventDefault();

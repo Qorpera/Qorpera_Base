@@ -636,6 +636,27 @@ describe("settings session lifecycle", () => {
 		expect(find).toHaveBeenCalledTimes(2);
 		expect(send).toHaveBeenCalledExactlyOnceWith("new@example.invalid");
 		expect(field.value).toBe("");
+		// Enter twice before a slow answer: one request, and the field keeps the address if it fails.
+		const refused = deferred<void>();
+		send.mockReturnValueOnce(refused.promise);
+		find.mockClear();
+		field.value = "second@example.invalid";
+		field.dispatchEvent(new Event("input"));
+		find.mockResolvedValueOnce({
+			userId: id(47),
+			email: "second@example.invalid",
+			displayName: "Second",
+			self: false,
+		});
+		enter();
+		enter();
+		await draw();
+		expect(send).toHaveBeenCalledTimes(2);
+		expect(field.value).toBe("second@example.invalid");
+		refused.reject(new Error("The cloud refused it."));
+		await draw();
+		expect(f.root.querySelector("#settings-content")?.textContent).toContain("The cloud refused it.");
+		expect(field.value).toBe("second@example.invalid");
 	});
 	it("looks up a friend's address again once they are no longer a friend", async () => {
 		const fixtureState = fixture();
