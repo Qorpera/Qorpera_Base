@@ -55,6 +55,8 @@ export class CompanyComputerGuestEndpoint implements CompanyComputerCloudEndpoin
 	readonly #automation: Pick<CompanyComputerGuestAutomation, "perform" | "stopBrowser">;
 	readonly #assertScreenAdmitted: (binding: CompanyComputerScreenBinding, signal: AbortSignal) => Promise<void>;
 	readonly #prepareScreen: (binding: CompanyComputerScreenBinding, signal: AbortSignal) => Promise<void>;
+	/** Settled failures whose drain got no confirmation yet, by receipt. */
+	readonly #undrained = new Map<string, CompanyComputerGuestEffectInput>();
 
 	constructor(options: {
 		binding: CompanyComputerScreenBinding;
@@ -82,6 +84,23 @@ export class CompanyComputerGuestEndpoint implements CompanyComputerCloudEndpoin
 		this.#automation = options.automation;
 		this.#assertScreenAdmitted = options.assertScreenAdmitted;
 		this.#prepareScreen = options.prepareScreen;
+	}
+
+	/**
+	 * Drain again the settled failures whose first drain got no confirmation.
+	 * Called before the run's screen lease is released: an open resource at
+	 * release makes SQL drain the whole desktop. What still fails stays open.
+	 */
+	async drainSettled(signal: AbortSignal): Promise<void> {
+		for (const [receiptId, effect] of this.#undrained) {
+			signal.throwIfAborted();
+			try {
+				await this.#effects.finish(structuredClone(effect), signal);
+				this.#undrained.delete(receiptId);
+			} catch {
+				/* Retained: the supervisor reaps what cannot be confirmed. */
+			}
+		}
 	}
 
 	get resourceTarget(): { [key: string]: JsonValue } {
@@ -203,7 +222,10 @@ export class CompanyComputerGuestEndpoint implements CompanyComputerCloudEndpoin
 				// Any other error or timeout retains the resource: the guest may still
 				// be draining, and only the acknowledged supervisor reaps that.
 				if (error instanceof CompanyComputerActionSettledFailure) {
-					await this.#effects.finish(structuredClone(effect), new AbortController().signal).catch(() => undefined);
+					await this.#effects.finish(structuredClone(effect), new AbortController().signal).catch(() => {
+						// Often the same outage that failed the action: try again before release.
+						this.#undrained.set(receipt.receiptId, structuredClone(effect));
+					});
 					throw error.cause;
 				}
 				throw error;

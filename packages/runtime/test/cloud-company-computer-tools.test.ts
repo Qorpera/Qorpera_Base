@@ -680,6 +680,26 @@ describe("guest dispatch adapter", () => {
 		expect(harness.effects.finish).toHaveBeenCalledTimes(2);
 	});
 
+	it("drains a settled failure again before release when its first drain got no answer", async () => {
+		const harness = toolHarness();
+		harness.automation.perform.mockRejectedValueOnce(new CompanyComputerActionFailedError(new Error("PAGE_FAILED")));
+		vi.mocked(harness.effects.finish).mockRejectedValueOnce(
+			new CompanyComputerRegistryUnansweredError(new Error("request timed out")),
+		);
+		await expect(harness.endpoint.perform(computerOperation(), computerLease(), computerEffect())).rejects.toThrow(
+			"PAGE_FAILED",
+		);
+		expect(harness.effects.finish).toHaveBeenCalledOnce();
+		await harness.endpoint.drainSettled(new AbortController().signal);
+		expect(harness.effects.finish).toHaveBeenCalledTimes(2);
+		expect(vi.mocked(harness.effects.finish).mock.calls[1][0]).toEqual(
+			vi.mocked(harness.effects.finish).mock.calls[0][0],
+		);
+		// Confirmed once: nothing is left to drain.
+		await harness.endpoint.drainSettled(new AbortController().signal);
+		expect(harness.effects.finish).toHaveBeenCalledTimes(2);
+	});
+
 	it("still stops the browser and keeps the resource when authority is refused before the work", async () => {
 		const harness = toolHarness();
 		harness.effects.assertAuthorized = vi.fn(async () => {
