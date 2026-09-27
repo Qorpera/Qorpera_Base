@@ -1,5 +1,6 @@
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
+import type { BigIntStats } from "node:fs";
 import { createReadStream } from "node:fs";
 import { lstat, mkdir, mkdtemp, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -129,6 +130,51 @@ const DISABLED_FEATURES = [
 	"current_time_reminder",
 	"sleep_tool",
 ] as const;
+
+/** Digests started ahead of a session, by artifact path. */
+const artifactDigests = new Map<string, { identity: string; digest: Promise<string> }>();
+
+async function artifactIdentity(path: string): Promise<string> {
+	const stat: BigIntStats = await lstat(path, { bigint: true });
+	return [stat.dev, stat.ino, stat.size, stat.mtimeNs, stat.ctimeNs].join(":");
+}
+
+/** A run that stops does not wait for a digest another caller started. */
+function abortableDigest(value: Promise<string>, signal: AbortSignal): Promise<string> {
+	let onAbort: () => void = () => undefined;
+	const aborted = new Promise<never>((_resolve, reject) => {
+		onAbort = () => reject(signal.reason);
+		if (signal.aborted) onAbort();
+		else signal.addEventListener("abort", onAbort, { once: true });
+	});
+	// The race handles both promises, so neither can reject unobserved.
+	return Promise.race([value, aborted]).finally(() => signal.removeEventListener("abort", onAbort));
+}
+
+async function hashArtifact(path: string, signal?: AbortSignal): Promise<string> {
+	const hash = createHash("sha256");
+	for await (const chunk of createReadStream(path, signal ? { signal } : {})) hash.update(chunk);
+	return hash.digest("hex");
+}
+
+/**
+ * Starts hashing the Codex artifact (about 300 MB) once per service process, before
+ * its run arrives. A session still compares the digest with its pin before it starts
+ * the process; it reuses this hash only for the same unchanged file (device, inode,
+ * size, modification and change time in nanoseconds), and otherwise hashes again.
+ */
+export async function prefetchCloudCodexArtifact(executable: string): Promise<void> {
+	try {
+		const path = await realpath(executable);
+		if (!(await lstat(path)).isFile()) return;
+		const identity = await artifactIdentity(path);
+		const digest = hashArtifact(path);
+		artifactDigests.set(path, { identity, digest });
+		await digest;
+	} catch {
+		// The session hashes the artifact itself.
+	}
+}
 
 export function cloudCodexBoundaryConfig(effort: CloudRuntimeReasoningEffort): readonly string[] {
 	return Object.freeze([`model_reasoning_effort="${effort}"`, ...CLOUD_CODEX_BOUNDARY_FIXED_CONFIG]);
@@ -1113,9 +1159,16 @@ export async function runCloudCodexToolSession(options: {
 		const artifact = await lstat(command);
 		if (!artifact.isFile() || artifact.size > 512 * 1024 * 1024 || (artifact.mode & 0o022) !== 0)
 			throw new Error("Invalid native boundary artifact");
-		const hash = createHash("sha256");
-		for await (const chunk of createReadStream(command, { signal })) hash.update(chunk);
-		if (hash.digest("hex") !== options.binarySha256) throw new Error("Native boundary artifact mismatch");
+		const prefetched = artifactDigests.get(command);
+		const digest =
+			prefetched?.identity === (await artifactIdentity(command))
+				? await abortableDigest(
+						prefetched.digest.catch(() => hashArtifact(command, signal)),
+						signal,
+					)
+				: await hashArtifact(command, signal);
+		signal.throwIfAborted();
+		if (digest !== options.binarySha256) throw new Error("Native boundary artifact mismatch");
 		stage = "codex-identity";
 		if (options.identityRoot && !isAbsolute(options.identityRoot))
 			throw new Error("Invalid native identity directory");
