@@ -210,6 +210,14 @@ export class SharedDrafts {
 				h("span", { class: "draft-dots", "aria-hidden": "true" }, h("i"), h("i"), h("i")),
 				peek,
 			);
+			// The opened notch never runs past the end of the row (or the window).
+			const room = () =>
+				el.style.setProperty(
+					"--draft-peek-room",
+					`${Math.max(0, Math.floor(this.#row.getBoundingClientRect().right - el.getBoundingClientRect().left))}px`,
+				);
+			el.addEventListener("pointerenter", room);
+			el.addEventListener("focus", room);
 			notch = { el, peek, text, name: nameEl };
 			this.#notches.set(draft.ownerUserId, notch);
 		}
