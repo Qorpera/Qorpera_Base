@@ -533,11 +533,14 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 									(tool) =>
 										tool.name === "recall_memory" || work.companyFile({ ...tool, name: "company_write" }),
 								),
-								// Skills the same way: every run reads and searches them, and a worker saves one
-								// only when its dispatch allows Company File writes.
+								// Skills the same way: every run reads and searches them. Only a company run saves one
+								// (a member's private conversation never feeds a shared library), and a worker only
+								// when its dispatch allows Company File writes.
 								...cloudSkillTools(gateway, identity).filter(
 									(tool) =>
-										tool.name !== "update_skill" || work.companyFile({ ...tool, name: "company_write" }),
+										tool.name !== "update_skill" ||
+										(identity.audienceKind === "company" &&
+											work.companyFile({ ...tool, name: "company_write" })),
 								),
 								...(identity.audienceKind === "company"
 									? [

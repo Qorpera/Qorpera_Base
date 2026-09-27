@@ -1,7 +1,12 @@
 import { randomUUID } from "node:crypto";
 import type { CloudCompanyPathGateway, CloudCompanyPathResult } from "@qorpera/runtime/cloud-company-path-gateway";
 import { CloudCompanyPathNotText } from "@qorpera/runtime/cloud-company-path-gateway";
-import { CloudCompanyPathVersionChanged } from "@qorpera/runtime/cloud-company-path-refusal";
+import {
+	CloudCompanyPathParentMissing,
+	CloudCompanyPathRpcRefusal,
+	CloudCompanyPathToolRefusal,
+	CloudCompanyPathVersionChanged,
+} from "@qorpera/runtime/cloud-company-path-refusal";
 import { CloudNativeToolRun } from "@qorpera/runtime/cloud-native-tool-authority";
 import { CloudNativeToolBoundary, MAX_CLOUD_TOOL_RESULT_BYTES } from "@qorpera/runtime/cloud-native-tool-boundary";
 import {
@@ -21,6 +26,15 @@ function companyFile(initial: Record<string, string> = {}) {
 	const files = new Map<string, { version: string; text: string }>();
 	const folders = new Set<string>();
 	const unreadable = new Set<string>();
+	/** Paths a narrower grant keeps from this run: refused reads, and refused changes. */
+	const deniedReads = new Set<string>();
+	const deniedChanges = new Set<string>();
+	/** Protected folders: a new folder inside one is proposed, not created. */
+	const protectedFolders = new Set<string>();
+	/** Listings that fail (the library cannot be read). */
+	const unlistable = new Set<string>();
+	/** One write whose folder vanished before its commit. */
+	let parentVanishes = false;
 	const parent = (path: string) => path.split("/").slice(0, -1).join("/");
 	const addFolders = (path: string) => {
 		for (let folder = parent(path); folder; folder = parent(folder)) folders.add(folder);
@@ -45,6 +59,7 @@ function companyFile(initial: Record<string, string> = {}) {
 	});
 	const readTrusted = vi.fn<CloudCompanyPathGateway["readTrusted"]>(async (path) => {
 		if (unreadable.has(path)) throw new CloudCompanyPathNotText();
+		if (deniedReads.has(path)) throw new CloudCompanyPathRpcRefusal();
 		const file = files.get(path);
 		if (file) return { path, version: file.version, kind: "file", text: file.text, fileSha256: "a".repeat(64) };
 		return folders.has(path)
@@ -52,6 +67,7 @@ function companyFile(initial: Record<string, string> = {}) {
 			: { path, version: null, kind: "absent", text: "", fileSha256: null };
 	});
 	const listTrusted = vi.fn<CloudCompanyPathGateway["listTrusted"]>(async (path) => {
+		if (unlistable.has(path)) throw new Error("Company File listing unavailable");
 		const child = (key: string) => key.startsWith(`${path}/`) && !key.slice(path.length + 1).includes("/");
 		return [
 			...[...folders].filter(child).map((key) => ({
@@ -72,10 +88,16 @@ function companyFile(initial: Record<string, string> = {}) {
 	});
 	const mutate = vi.fn<CloudCompanyPathGateway["mutate"]>(async (operation, input) => {
 		if (parent(input.path) && !folders.has(parent(input.path))) throw new Error("Company File parent is absent");
+		if (deniedChanges.has(input.path)) throw new CloudCompanyPathToolRefusal();
 		if (operation === "mkdir") {
 			if (folders.has(input.path) || files.has(input.path)) throw new CloudCompanyPathVersionChanged();
+			if (protectedFolders.has(parent(input.path))) return result(input.path, null, "proposed");
 			folders.add(input.path);
 			return result(input.path, randomUUID());
+		}
+		if (parentVanishes) {
+			parentVanishes = false;
+			throw new CloudCompanyPathParentMissing();
 		}
 		const current = files.get(input.path) ?? null;
 		if ((current?.version ?? null) !== input.expectedVersion) throw new CloudCompanyPathVersionChanged();
@@ -88,7 +110,22 @@ function companyFile(initial: Record<string, string> = {}) {
 		files.set(input.path, { version, text: input.text as string });
 		return result(input.path, version);
 	});
-	return { files, folders, unreadable, races, gateway: { readTrusted, listTrusted, mutate }, mutate, listTrusted };
+	return {
+		files,
+		folders,
+		unreadable,
+		deniedReads,
+		deniedChanges,
+		protectedFolders,
+		unlistable,
+		races,
+		vanishParent: () => {
+			parentVanishes = true;
+		},
+		gateway: { readTrusted, listTrusted, mutate },
+		mutate,
+		listTrusted,
+	};
 }
 
 async function fixture(initial: Record<string, string> = {}) {
@@ -119,7 +156,9 @@ async function fixture(initial: Record<string, string> = {}) {
 		expect(Buffer.byteLength(result.contentItems[0].text)).toBeLessThanOrEqual(MAX_CLOUD_TOOL_RESULT_BYTES);
 		return JSON.parse(fenced.content.text);
 	};
-	return { run, agent, own, store, boundary, call };
+	/** The current version of a stored file, as read_skill or a receipt would give it. */
+	const version = (path: string) => store.files.get(path.replace("<own>", own))!.version;
+	return { run, agent, own, store, boundary, call, version };
 }
 
 const imported = [
@@ -253,25 +292,35 @@ describe("agent skills", () => {
 	it("updates the body or the description and keeps the rest of an imported file", async () => {
 		const f = await fixture({ "skills/pdf-forms/SKILL.md": imported });
 		try {
+			const read = await f.call("read_skill", { name: "pdf-forms" });
 			const body = await f.call("update_skill", {
 				action: "update",
 				scope: "company",
 				name: "pdf-forms",
+				version: read.version,
 				body: "1. Read the fields.\n2. Flatten.",
 			});
-			expect(body).toMatchObject({ state: "updated", path: "skills/pdf-forms/SKILL.md" });
+			expect(body).toMatchObject({ state: "updated", saved: true, path: "skills/pdf-forms/SKILL.md" });
+			expect(body.version).toBe(f.version("skills/pdf-forms/SKILL.md"));
 			const text = f.store.files.get("skills/pdf-forms/SKILL.md")!.text;
 			expect(text).toContain("license: Apache-2.0\nmetadata:\n  author: someone\n");
 			expect(text).toContain("description: >-\n  Fill in PDF forms and flatten them.");
 			expect(text.endsWith("---\n\n1. Read the fields.\n2. Flatten.\n")).toBe(true);
+			// The receipt's version is the one to name next.
 			const unchanged = await f.call("update_skill", {
 				action: "update",
 				scope: "company",
 				name: "pdf-forms",
+				version: body.version,
 				body: "1. Read the fields.\n2. Flatten.",
 			});
-			expect(unchanged).toMatchObject({ state: "unchanged" });
-			const missing = await f.call("update_skill", { action: "update", name: "pdf-forms", body: "x" });
+			expect(unchanged).toMatchObject({ state: "unchanged", saved: true });
+			const missing = await f.call("update_skill", {
+				action: "update",
+				name: "pdf-forms",
+				version: body.version,
+				body: "x",
+			});
 			// scope defaults to the agent's own library, which has no such skill.
 			expect(missing).toMatchObject({ state: "not_found", saved: false, scope: "agent" });
 		} finally {
@@ -281,18 +330,42 @@ describe("agent skills", () => {
 
 	it("redoes a change after the company head moved, but never overwrites another writer's edit", async () => {
 		const f = await fixture({ "<own>/triage/SKILL.md": "---\nname: triage\ndescription: Triage.\n---\n\nOld.\n" });
+		const path = "<own>/triage/SKILL.md";
 		try {
 			f.store.races.push("head");
-			const redone = await f.call("update_skill", { action: "update", name: "triage", body: "New." });
+			const redone = await f.call("update_skill", {
+				action: "update",
+				name: "triage",
+				version: f.version(path),
+				body: "New.",
+			});
 			expect(redone).toMatchObject({ state: "updated" });
 			expect(f.store.files.get(`${f.own}/triage/SKILL.md`)?.text).toContain("\n\nNew.\n");
 			f.store.races.push("edit");
-			const raced = await f.call("update_skill", { action: "update", name: "triage", body: "Mine." });
-			expect(raced).toMatchObject({ state: "changed", saved: false });
+			const raced = await f.call("update_skill", {
+				action: "update",
+				name: "triage",
+				version: redone.version,
+				body: "Mine.",
+			});
+			expect(raced).toMatchObject({ state: "changed", saved: false, version: f.version(path) });
 			expect(f.store.files.get(`${f.own}/triage/SKILL.md`)?.text).toContain("edited");
 			expect(f.store.files.get(`${f.own}/triage/SKILL.md`)?.text).not.toContain("Mine.");
+			// An edit between the agent's read and its update: the stale version saves nothing.
+			const stale = await f.call("update_skill", {
+				action: "update",
+				name: "triage",
+				version: redone.version,
+				body: "Stale.",
+			});
+			expect(stale).toMatchObject({ state: "changed", saved: false });
 			f.store.races.push("head", "head", "head");
-			const lost = await f.call("update_skill", { action: "update", name: "triage", body: "Again." });
+			const lost = await f.call("update_skill", {
+				action: "update",
+				name: "triage",
+				version: f.version(path),
+				body: "Again.",
+			});
 			expect(lost).toMatchObject({ state: "conflict", saved: false });
 		} finally {
 			f.run.close();
@@ -302,7 +375,11 @@ describe("agent skills", () => {
 	it("deletes through the governed gateway, where a member approves it", async () => {
 		const f = await fixture({ "<own>/old-way/SKILL.md": "---\nname: old-way\ndescription: Old.\n---\n\nx\n" });
 		try {
-			const deleted = await f.call("update_skill", { action: "delete", name: "old-way" });
+			const deleted = await f.call("update_skill", {
+				action: "delete",
+				name: "old-way",
+				version: f.version("<own>/old-way/SKILL.md"),
+			});
 			expect(deleted).toMatchObject({ state: "proposed", proposalId: expect.any(String) });
 			expect(deleted.hint).toMatch(/member's approval/);
 			const [, input] = f.store.mutate.mock.calls.find(([operation]) => operation === "delete")!;
@@ -322,8 +399,18 @@ describe("agent skills", () => {
 				{ action: "create", name: "Bad Name", description: "x", body: "x" },
 				{ action: "create", name: "a--b", description: "x", body: "x" },
 				{ action: "create", name: "no-body", description: "x" },
-				{ action: "update", name: "nothing-to-change" },
-				{ action: "delete", name: "with-body", body: "x" },
+				{ action: "update", name: "nothing-to-change", version: "10000000-0000-4000-8000-000000000001" },
+				{ action: "delete", name: "with-body", version: "10000000-0000-4000-8000-000000000001", body: "x" },
+				{ action: "update", name: "no-version", body: "x" },
+				{ action: "delete", name: "no-version" },
+				{ action: "update", name: "bad-version", version: "v1", body: "x" },
+				{
+					action: "create",
+					name: "has-version",
+					version: "10000000-0000-4000-8000-000000000001",
+					description: "x",
+					body: "x",
+				},
 				{ action: "create", name: "own", scope: "member", description: "x", body: "x" },
 				{ action: "create", name: "long", description: "x".repeat(1025), body: "x" },
 			]) {
@@ -447,7 +534,7 @@ describe("imported skills with long descriptions", () => {
 		try {
 			const block = await composeCloudAgentSkills(f.store.gateway, f.agent, new AbortController().signal);
 			const [entry] = block.company.skills;
-			expect(Buffer.byteLength(entry.description!)).toBeLessThanOrEqual(1024);
+			expect(Buffer.byteLength(entry.description!)).toBeLessThanOrEqual(1100);
 			expect(entry.description!.endsWith("…")).toBe(true);
 			expect(long.startsWith(entry.description!.slice(0, -1))).toBe(true);
 			const found = await f.call("search_skills", { query: "beskrivelse" });
@@ -519,15 +606,179 @@ describe("skill catalog composition", () => {
 		}
 	});
 
-	it("fails as a whole when a library cannot be listed, so the runtime degrades it", async () => {
-		const f = await fixture();
+	it("keeps one library when the other cannot be listed, and fails only when neither can", async () => {
+		const f = await fixture({
+			"<own>/triage/SKILL.md": "---\nname: triage\ndescription: Triage.\n---\n\nx\n",
+			"skills/refund/SKILL.md": "---\nname: refund\ndescription: Refund.\n---\n\nx\n",
+		});
 		try {
-			f.store.listTrusted.mockRejectedValueOnce(new Error("listing refused"));
+			f.store.unlistable.add("skills");
+			const block = await composeCloudAgentSkills(f.store.gateway, f.agent, new AbortController().signal);
+			expect(block.available).toBe(true);
+			expect(block.own.skills).toEqual([{ name: "triage", description: "Triage." }]);
+			expect(block.own).not.toHaveProperty("unavailable");
+			expect(block.company).toMatchObject({ skills: [], unavailable: "unknown" });
+			// A search still covers the library it can read, and says which one it could not.
+			const found = await f.call("search_skills", {});
+			expect(found).toMatchObject({ total: 1, searched: { agent: 1 }, unavailable: ["company"] });
+			f.store.unlistable.add(f.own);
 			await expect(composeCloudAgentSkills(f.store.gateway, f.agent, new AbortController().signal)).rejects.toThrow(
-				"listing refused",
+				"Company File listing unavailable",
 			);
 		} finally {
 			f.run.close();
 		}
+	});
+});
+
+describe("refusals and protected libraries", () => {
+	it("proposes the folder of a new skill in a protected library and saves nothing yet", async () => {
+		const f = await fixture({ "skills/": "" });
+		try {
+			f.store.protectedFolders.add("skills");
+			const created = await f.call("update_skill", {
+				action: "create",
+				scope: "company",
+				name: "refund",
+				description: "Refund a customer.",
+				body: "Steps.",
+			});
+			expect(created).toMatchObject({
+				state: "proposed",
+				saved: false,
+				path: "skills/refund",
+				proposalId: expect.any(String),
+			});
+			expect(created.hint).toMatch(/approve/);
+			expect(f.store.mutate.mock.calls.some(([operation]) => operation === "write")).toBe(false);
+		} finally {
+			f.run.close();
+		}
+	});
+
+	it("answers refused and interrupted saves with receipts, never an unknown outcome", async () => {
+		const f = await fixture({
+			"skills/refund/SKILL.md": "---\nname: refund\ndescription: Refund.\n---\n\nx\n",
+		});
+		try {
+			f.store.deniedChanges.add("skills/new-one");
+			const refused = await f.call("update_skill", {
+				action: "create",
+				scope: "company",
+				name: "new-one",
+				description: "New.",
+				body: "Steps.",
+			});
+			expect(refused).toMatchObject({ state: "denied", saved: false });
+			f.store.deniedReads.add("skills/other/SKILL.md");
+			const unreadFolder = await f.call("update_skill", {
+				action: "create",
+				scope: "company",
+				name: "other",
+				description: "Other.",
+				body: "Steps.",
+			});
+			expect(unreadFolder).toMatchObject({ state: "denied", saved: false, path: "skills/other/SKILL.md" });
+			f.store.vanishParent();
+			const vanished = await f.call("update_skill", {
+				action: "update",
+				scope: "company",
+				name: "refund",
+				version: f.version("skills/refund/SKILL.md"),
+				body: "New steps.",
+			});
+			expect(vanished).toMatchObject({ state: "parent_missing", saved: false });
+			expect(f.store.files.get("skills/refund/SKILL.md")?.text).toContain("\n\nx\n");
+			f.store.deniedReads.add("skills/refund/SKILL.md");
+			expect(await f.call("read_skill", { name: "refund", scope: "company" })).toMatchObject({ state: "no_access" });
+			const block = await composeCloudAgentSkills(f.store.gateway, f.agent, new AbortController().signal);
+			expect(block.company.skills).toEqual([{ name: "refund", problem: "no_access" }]);
+		} finally {
+			f.run.close();
+		}
+	});
+
+	it("reads the company skill when the own library cannot be read, and says changed between pages", async () => {
+		const f = await fixture({ "skills/refund/SKILL.md": "---\nname: refund\ndescription: Refund.\n---\n\nSteps.\n" });
+		try {
+			f.store.gateway.readTrusted.mockImplementation(async (path) => {
+				if (path.startsWith(f.own)) throw new Error("Company File read unavailable");
+				const file = f.store.files.get(path);
+				return file
+					? { path, version: file.version, kind: "file", text: file.text, fileSha256: "a".repeat(64) }
+					: { path, version: null, kind: "absent", text: "", fileSha256: null };
+			});
+			const read = await f.call("read_skill", { name: "refund" });
+			expect(read).toMatchObject({ state: "found", scope: "company", body: { text: "Steps.\n" } });
+			const stale = await f.call("read_skill", {
+				name: "refund",
+				offset: 3,
+				version: "10000000-0000-4000-8000-000000000001",
+			});
+			expect(stale).toMatchObject({ state: "changed", version: read.version });
+		} finally {
+			f.run.close();
+		}
+	});
+
+	it("keeps paging when descriptions are full of markup the fence escapes", async () => {
+		const markup = "<&>".repeat(300);
+		const f = await fixture(
+			Object.fromEntries(
+				Array.from({ length: 6 }, (_, index) => [
+					`skills/markup-${index}/SKILL.md`,
+					`---\nname: markup-${index}\ndescription: "${markup}"\n---\n\n${"<b>&amp;</b>\n".repeat(400)}`,
+				]),
+			),
+		);
+		try {
+			let offset: number | null = 0;
+			const seen: string[] = [];
+			while (offset !== null) {
+				const page = await f.call("search_skills", { offset });
+				expect(page.skills.length).toBeGreaterThan(0);
+				seen.push(...page.skills.map((skill: { name: string }) => skill.name));
+				offset = page.nextOffset;
+			}
+			expect(seen).toHaveLength(6);
+			let text = "";
+			offset = 0;
+			while (offset !== null) {
+				const page = await f.call("read_skill", { name: "markup-0", offset });
+				expect(page.state).toBe("found");
+				expect(page.description.endsWith("…")).toBe(true);
+				text += page.body.text;
+				offset = page.body.nextOffset;
+			}
+			expect(text).toBe("<b>&amp;</b>\n".repeat(400));
+		} finally {
+			f.run.close();
+		}
+	});
+
+	it("keeps a file's own line endings and reads YAML escapes and comment lines", async () => {
+		const crlf = "---\r\nname: windows\r\ndescription: Made on Windows.\r\n---\r\n\r\nOld.\r\n";
+		const f = await fixture({ "<own>/windows/SKILL.md": crlf });
+		try {
+			const updated = await f.call("update_skill", {
+				action: "update",
+				name: "windows",
+				version: f.version("<own>/windows/SKILL.md"),
+				body: "New.\nSteps.",
+			});
+			expect(updated.state).toBe("updated");
+			expect(f.store.files.get(`${f.own}/windows/SKILL.md`)?.text).toBe(
+				"---\r\nname: windows\r\ndescription: Made on Windows.\r\n---\r\n\r\nNew.\r\nSteps.\r\n",
+			);
+		} finally {
+			f.run.close();
+		}
+		expect(parseCloudSkillFile('---\ndescription: "Tab\\there, \\x41 and \\u00e6"\n---\n').description).toBe(
+			// \\t is a tab, which a description folds into one space.
+			"Tab here, A and æ",
+		);
+		expect(
+			parseCloudSkillFile("---\ndescription: first part\n  # a comment line\n  second part\n---\n").description,
+		).toBe("first part second part");
 	});
 });

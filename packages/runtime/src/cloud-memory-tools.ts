@@ -31,6 +31,7 @@ import {
 	CloudCompanyHeadConflict,
 	type CloudCompanyPathGateway,
 	CloudCompanyPathNotText,
+	type CloudCompanyPathResult,
 } from "./cloud-company-path-gateway.ts";
 import { CloudCompanyPathVersionChanged } from "./cloud-company-path-refusal.ts";
 import type { CloudNativeToolIdentity } from "./cloud-native-tool-authority.ts";
@@ -366,13 +367,14 @@ export async function retryingCloudCompanyChange<T>(
 /** The gateway never invents parent folders (the todo publication does the same): this creates each
  * missing folder on the way to path, naming the version a deleted folder left. A folder another run
  * created meanwhile refuses this mkdir as a version change and is simply there on the re-read. The
- * operation key is `<keyPrefix>-folder-<digest of folder and version>`. Skills share it. */
+ * operation key is `<keyPrefix>-folder-<digest of folder and version>`. Returns the receipt of a
+ * folder a member must approve first (a protected path proposes), else null. Skills share it. */
 export async function ensureCloudCompanyFolders(
 	gateway: CloudMemoryGateway,
 	path: string,
 	context: CloudToolContext,
 	keyPrefix: string,
-): Promise<void> {
+): Promise<CloudCompanyPathResult | null> {
 	const parts = path.split("/").slice(0, -1);
 	for (let depth = 1; depth <= parts.length; depth++) {
 		const folder = parts.slice(0, depth).join("/");
@@ -381,7 +383,7 @@ export async function ensureCloudCompanyFolders(
 			if (seen.kind === "directory") break;
 			if (seen.kind !== "absent") throw new Error("Company File folder is not a directory");
 			try {
-				await gateway.mutate(
+				const result = await gateway.mutate(
 					"mkdir",
 					{
 						path: folder,
@@ -394,12 +396,15 @@ export async function ensureCloudCompanyFolders(
 					context.signal,
 					context.observation,
 				);
+				// A protected folder is proposed, not created: nothing can land inside it yet.
+				if (result.state === "proposed") return result;
 				break;
 			} catch (error) {
 				if (!conflicted(error) || attempt >= CONFLICT_ATTEMPTS) throw error;
 			}
 		}
 	}
+	return null;
 }
 
 /** The cloud derives the owner from the run: a notebook is always the executing agent's own. */

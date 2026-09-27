@@ -1330,27 +1330,35 @@ The turn receives a catalog, not the bodies (9.1). Every turn composes a
 (at most 24), and the company library, described while it holds at most 16
 skills and named (up to 200) once it has grown. Composition reads through the
 trusted lane, beside the notebook, and never blocks a run: a library that
-cannot be read degrades the block to unavailable. A skill file that cannot
-guide anyone yet is named with its problem (`no_description`, `unreadable`).
+cannot be listed is marked unavailable while the other still composes, and
+only when neither can is the block unavailable. A skill file that cannot guide
+the agent yet is named with its problem (`no_description`, `unreadable`,
+`no_access`).
 
 Tools:
 
-- `read_skill` (`name`, optional `scope` agent or company, `offset`) loads a
-  body on demand in pages that fit one tool result, with the exact version it
-  read; the first page names the supporting files.
+- `read_skill` (`name`, optional `scope` agent or company, `offset`,
+  `version`) loads a body on demand in pages that fit one tool result, with
+  the exact version it read; the first page names the supporting files, and a
+  later page asked for with an older version answers `changed`.
 - `search_skills` (optional `query`, `scope` agent, company or all, `limit`
   1–50, `offset`) ranks names and descriptions by shared words, falls back to a
   substring match, and pages its results.
 - `update_skill` (`action` create, update or delete; `name`; `scope`, default
-  agent; `description`; `body`) writes through the mutation gateway with the
-  exact expected version (5.2). An update keeps the rest of the file, including
-  front-matter keys it does not own. A write that lost a race to another change
-  in the company is redone from a fresh read only while the skill itself is
-  unchanged; when someone else changed the skill, nothing is saved (`changed`).
-  A delete is proposal-gated like every delete.
+  agent; `version`; `description`; `body`) writes through the mutation gateway
+  with the exact expected version (5.2). Update and delete name the version the
+  agent read (from `read_skill` or its last receipt): when the skill changed
+  since, nothing is saved (`changed`), so no edit is overwritten unseen. A write
+  that lost a race to another change in the company is redone from a fresh
+  read while the skill itself is unchanged. An update keeps the rest of the
+  file, including front-matter keys it does not own. A new skill in a protected
+  library first proposes its folder; a delete is proposal-gated like every
+  delete. A refusal, a folder that vanished and a lost race are typed receipts
+  that saved nothing, never an unconfirmed outcome.
 
-A worker reads and searches skills and gets `update_skill` only when its
-dispatch allows Company File writes. Skills are guidance: the catalog and every
+Every run reads and searches skills. Only a company-audience run gets
+`update_skill`, so a member's private conversation never feeds a shared
+library; a worker gets it only when its dispatch allows Company File writes. Skills are guidance: the catalog and every
 body are untrusted data, a skill grants nothing and never overrides
 instructions or a current source, and it is not a place to hide member
 credentials, private channel names, or runtime authority. Facts about the
