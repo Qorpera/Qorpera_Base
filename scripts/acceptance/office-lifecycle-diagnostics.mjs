@@ -200,11 +200,23 @@ export function officeJournalDiagnostic(value) {
 export async function officeJournalDiagnostics(journal, guardRoot = "/var/lib/qorpera-office-computer-guard") {
 	const result = { journal: [] };
 	const operations = new Set();
-	const visit = async (directory, depth) => {
-		for (const entry of (await readdir(directory, { withFileTypes: true })).slice(0, 256)) {
-			if (result.journal.length >= 128) return;
+	// Select lifecycle records before repetitive package history. Names only
+	// prioritize reads; the existing schema projection still controls export.
+	const priority = name => /^reset-service(?:-restart)?-inspection-/.test(name) ? 0
+		: /^(?:service|boot-service|boot-service-restart|outage-service)-inspection-/.test(name) ? 1
+		: /^reset-/.test(name) ? 2 : 3;
+	const visit = async (directory, depth, limit, limited) => {
+		const entries = (await readdir(directory, { withFileTypes: true }))
+			.sort((left, right) => priority(left.name) - priority(right.name) || left.name.localeCompare(right.name));
+		if (entries.length > 256) result[limited] = true;
+		for (const entry of entries.slice(0, 256)) {
+			if (result.journal.length >= limit) { result[limited] = true; return; }
 			const path = join(directory, entry.name);
-			if (entry.isDirectory() && depth < 2) { await visit(path, depth + 1); continue; }
+			if (entry.isDirectory()) {
+				if (depth < 2) await visit(path, depth + 1, limit, limited);
+				else result[limited] = true;
+				continue;
+			}
 			if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
 			try {
 				if ((await lstat(path)).size > 131072) continue;
@@ -216,8 +228,10 @@ export async function officeJournalDiagnostics(journal, guardRoot = "/var/lib/qo
 			} catch { /* A concurrent publication or malformed record is not authority. */ }
 		}
 	};
-	try { await visit(journal, 0); } catch { result.journalUnavailable = true; }
-	try { await visit(guardRoot, 0); } catch { result.guardUnavailable = true; }
+	// Guard custody must survive a crowded provider journal, while a crowded
+	// guard archive must leave room for the provider's reset/inspection records.
+	try { await visit(guardRoot, 0, 32, "guardLimited"); } catch { result.guardUnavailable = true; }
+	try { await visit(journal, 0, 128, "journalLimited"); } catch { result.journalUnavailable = true; }
 	return { ...result, operationIds: [...operations] };
 }
 

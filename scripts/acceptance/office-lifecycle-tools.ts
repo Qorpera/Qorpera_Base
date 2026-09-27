@@ -19,6 +19,7 @@ import { exerciseRuntimeWorkloadUsage } from "./workload-usage-probe.ts";
 import { officeServiceFailureDiagnostics } from "./office-service-diagnostics.ts";
 import { verifyOfficeGuardArchives } from "./office-lifecycle-evidence.mjs";
 import { officeLifecycleMeteringFailure, type OfficeMeteringStage, readOfficeLifecycleMeteringContext } from "./office-lifecycle-metering-context.ts";
+import { installOfficeLifecycleTiming } from "./office-lifecycle-timing.ts";
 
 // This executable composes the real production components. It supplies no
 // replacement physical, registry, journal, clock, or worker ports.
@@ -35,12 +36,13 @@ if (action === "service-diagnostics") {
 	}
 	report(officeServiceFailureDiagnostics(text));
 } else if (action === "provider") {
+	const stopTiming = installOfficeLifecycleTiming(report);
 	try {
 		await runLxdOfficeLifecycleService(process.argv[3], abort.signal, (line) => { process.stdout.write(`${line}\n`); });
 	} catch (error) {
 		report({ schema: "qorpera.office-acceptance-provider-failure/v1", state: "startup_failed", errorCode: officeLifecycleErrorCode(error) });
 		process.exitCode = 1;
-	}
+	} finally { stopTiming(); }
 } else if (action === "observer") {
 	await runRuntimeNodeObserver(abort.signal, (state) => report({ observer: state }));
 } else if (action === "namespace") {

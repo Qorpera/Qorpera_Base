@@ -91,6 +91,10 @@ jobs:
         run: node ../../node_modules/vitest/dist/cli.js --run --maxWorkers=1 --no-cache test/coding-git-sandbox.test.ts
       - name: Check candidate source and browser build
         run: npm run check
+      - name: Check bounded Office diagnostic collection
+        run: >-
+          node --test scripts/acceptance/office-lifecycle-diagnostics.test.mjs
+          scripts/acceptance/office-lifecycle-timing-evidence.test.mjs
       - name: Run all non-e2e tests with isolated credentials and a guest-compatible group
         env:
           TMPDIR: ${{ runner.temp }}
@@ -249,8 +253,18 @@ jobs:
           scripts/acceptance/office-lifecycle-credentials.test.mjs
           scripts/acceptance/office-lifecycle-evidence.test.mjs
           scripts/acceptance/office-lifecycle-custody.test.mjs
+          scripts/acceptance/office-lifecycle-diagnostics.test.mjs
+          scripts/acceptance/office-lifecycle-timing-evidence.test.mjs
           scripts/acceptance/workload-usage-evidence.test.mjs
           scripts/acceptance/workload-usage-guard-diagnostics.test.mjs
+
+      - name: Check composed reset authority and transparent timing observers
+        working-directory: packages/runner-orchestrator
+        run: >-
+          node ../../node_modules/vitest/dist/cli.js --run --maxWorkers=1
+          test/lxd-office-reset-activation-profile.test.ts
+          test/lxd-office-lifecycle-timing.test.ts
+          test/lxd-office-code-package-provision-lane.test.ts
 
       - name: Install native PostgreSQL and NFS tools
         timeout-minutes: 8

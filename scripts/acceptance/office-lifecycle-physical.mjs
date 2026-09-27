@@ -14,6 +14,7 @@ import { officeLifecycleDiagnostics, officePaidSqlDiagnostics, officeSqlFailureH
 import { startOfficeRpcServer } from "./office-rpc-server.mjs";
 import { readWorkloadUsage, verifyWorkloadUsage } from "./workload-usage-evidence.mjs";
 import { collectWorkloadGuardDiagnostics, workloadGuardDiagnosticsPlugin } from "./workload-usage-guard-diagnostics.mjs";
+import { officeResetTimingHistory } from "./office-lifecycle-timing-evidence.mjs";
 
 // One retained, disposable fixture from empty storage through actual admission
 // and a guard-forced outage. Never seed guest readiness, activation, physical
@@ -38,6 +39,7 @@ const evidence = { schema: "qorpera.office-lifecycle-physical-acceptance/v1", co
 const children = new Set();
 const physicalSamples = [];
 const sqlFailures = officeSqlFailureHistory();
+const resetTimings = officeResetTimingHistory();
 let pg, pgReady, pgClosed = false, rpc, provider, observer, metering, mounted = false, journalMounted = false, exported = false, guardInstalled = false, fixtureCreated = false;
 let machineName, phase = "setup";
 let diagnosticAuthority, guardInvocation;
@@ -123,6 +125,7 @@ function startProvider(ca) {
 	// UID alone does not set the kernel flag required by storage adoption.
 	return child("runuser", ["-u", account, "--", "setpriv", "--no-new-privs", "flock", "--no-fork", `${journal}/adoption.lock`, process.execPath, `${root}/tools.mjs`, "provider", `${root}/service.json`], (line) => {
 		const observation = JSON.parse(line);
+		if (resetTimings.accept(observation)) return;
 		if (evidence.observations.length >= 200) evidence.observations.shift();
 		evidence.observations.push(observation);
 		console.log(JSON.stringify({ phase, provider: observation.state, step: observation.phase, error: observation.errorCode }));
@@ -580,6 +583,7 @@ try {
 	evidence.cleanup = closure.cleanup;
 	evidence.custodyRetained = closure.custodyRetained;
 	evidence.cleanupErrors = closure.errors;
+	evidence.resetTimings = resetTimings.snapshot();
 	if (!closure.cleanup) { evidence.passed = false; process.exitCode = 1; }
 	// Unconfirmed owned children remain a failure, never a cleanup claim. Let
 	// the disposable runner reap them without blocking publication indefinitely;

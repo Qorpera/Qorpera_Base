@@ -107,6 +107,43 @@ test("bounded journal scan selects accepted nested inspection operations without
 	assert(!JSON.stringify(result).includes(ignored));
 });
 
+test("crowded package history cannot hide reset inspection or independent guard custody", async () => {
+	const journal = mkdtempSync(join(root, "crowded-journal-")), guards = mkdtempSync(join(root, "crowded-guards-"));
+	for (let i = 0; i < 300; i++) writeFileSync(join(journal, `code-package-${String(i).padStart(4, "0")}.json`),
+		JSON.stringify({ schema: "qorpera.lxd-office-code-package-completed/v1", private: "private-token" }));
+	const inspectionId = "10000000-0000-4000-8000-000000000001", operationId = "10000000-0000-4000-8000-000000000002";
+	writeFileSync(join(journal, `reset-service-inspection-${inspectionId}-accepted.json`),
+		JSON.stringify({ schema: "qorpera.lxd-office-reset-service-inspection-accepted/v1", inspectionId, reference: { operationId, private: "private-token" } }));
+	writeFileSync(join(guards, "guard.json"), JSON.stringify({ schema: "qorpera.paid-computer-guard/v1", phase: "stopped", private: "private-token" }));
+	const result = await officeJournalDiagnostics(journal, guards);
+	assert.equal(result.journal.length, 128);
+	assert(result.journal.some(record => record.schema === "qorpera.paid-computer-guard/v1" && record.guard.phase === "stopped"));
+	assert(result.journal.some(record => record.inspectionId === inspectionId && record.operationId === operationId));
+	assert.deepEqual(result.operationIds, [operationId]);
+	assert.equal(result.journalLimited, true);
+	assert(!JSON.stringify(result).includes("private-token"));
+});
+
+test("crowded guard archives preserve a bounded provider share and priority names do not authorize payloads", async () => {
+	const journal = mkdtempSync(join(root, "guard-share-journal-")), guards = mkdtempSync(join(root, "guard-share-guards-"));
+	for (let i = 0; i < 150; i++) writeFileSync(join(guards, `guard-${String(i).padStart(4, "0")}.json`),
+		JSON.stringify({ schema: "qorpera.paid-computer-guard/v1", phase: "stopped", private: "private-token" }));
+	for (let i = 0; i < 150; i++) writeFileSync(join(journal, `code-package-${String(i).padStart(4, "0")}.json`),
+		JSON.stringify({ schema: "qorpera.lxd-office-code-package-completed/v1" }));
+	const ignored = "10000000-0000-4000-8000-000000000001";
+	writeFileSync(join(journal, "reset-service-inspection-private-token.json"), JSON.stringify({ schema: "qorpera.unrelated/v1",
+		inspectionId: ignored, reference: { operationId: ignored }, private: "private-token" }));
+	const result = await officeJournalDiagnostics(journal, guards);
+	assert.equal(result.journal.length, 128);
+	assert.equal(result.journal.filter(record => record.schema === "qorpera.paid-computer-guard/v1").length, 32);
+	assert.deepEqual(result.journal[32], { schema: "qorpera.unrelated/v1" });
+	assert.equal(result.guardLimited, true);
+	assert.equal(result.journalLimited, true);
+	assert.deepEqual(result.operationIds, []);
+	assert(!JSON.stringify(result).includes("private-token"));
+	assert(!JSON.stringify(result).includes(ignored));
+});
+
 test("startup logs expose bounded fingerprints and fixed error classes, never arbitrary log text", () => {
 	const secret = "credential-not-for-artifacts";
 	const value = `Error entering sandbox: ChdirNewRoot Permission denied (os error 13) token=${secret}`;

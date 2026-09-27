@@ -21,8 +21,8 @@ const roots: string[] = [],
 export async function cleanupOfficeCodePackagePipelineFixtures() {
 	for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
 }
-export async function officeCodePackagePipelineFixture() {
-	const f = officeCodePackageMaterialFixture(),
+export async function officeCodePackagePipelineFixture(supplied?: ReturnType<typeof officeCodePackageMaterialFixture>) {
+	const f = supplied ?? officeCodePackageMaterialFixture(),
 		root = await realpath(await mkdtemp(join(tmpdir(), "package-lane-")));
 	roots.push(root);
 	const material = await loadLxdOfficeCodePackageMaterial(f.document, f.policy, f.resetPlan, signal(), f.ports),
