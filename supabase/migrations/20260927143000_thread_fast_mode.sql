@@ -8,8 +8,9 @@
 -- The bundle's model policy declares `fastMode: thread` when its host passes
 -- the tier to Codex. The kernel resolves the tier when it admits the run and
 -- pins it, like the effort. Runs admitted under a bundle without fast mode keep
--- a null tier, and their tool authority does not name one, so an older host
--- never sees the new identity field.
+-- a null tier. The host learns the tier from the run's company context, which
+-- only the agent host reads. The shared tool identity is unchanged: company
+-- computers update on their own schedule and refuse any field they do not know.
 
 create function pg_temp.fast_patch(p_target regprocedure, p_old text, p_new text)
 returns void language plpgsql as $$
@@ -69,19 +70,22 @@ create trigger qorpera_execution_run_service_tier
 before insert or update of service_tier on public.qorpera_execution_runs
 for each row execute function public.qorpera_pin_execution_service_tier();
 
--- The host learns the tier with the rest of the run's identity. A tier that
--- disagrees with the admitted bundle is refused like a changed effort.
+-- A tier that disagrees with the admitted bundle is refused like a changed
+-- effort. The authority's output does not change.
 select pg_temp.fast_patch('public.qorpera_describe_native_tool_authority(jsonb)'::regprocedure,
 	$old$	if not public.qorpera_manifest_allows_reasoning_effort(v_manifest, v_run.reasoning_effort)
 		or v_run.reasoning_policy_sha256 is distinct from$old$,
 	$new$	if not public.qorpera_manifest_allows_reasoning_effort(v_manifest, v_run.reasoning_effort)
 		or (v_run.service_tier is null) <> (v_manifest #>> '{modelPolicy,fastMode}' is null)
 		or v_run.reasoning_policy_sha256 is distinct from$new$);
-select pg_temp.fast_patch('public.qorpera_describe_native_tool_authority(jsonb)'::regprocedure,
-	$old$			'provider',v_run.model_provider,'nativeHarness','codex-cli','model',v_run.model_id));$old$,
-	$new$			'provider',v_run.model_provider,'nativeHarness','codex-cli','model',v_run.model_id)
-			|| case when v_run.service_tier is null then '{}'::jsonb
-				else jsonb_build_object('serviceTier',v_run.service_tier) end);$new$);
+
+-- The agent host reads the tier with the run's company context, before it
+-- starts Codex. Only runs that have a tier name one.
+select pg_temp.fast_patch('public.qorpera_describe_company_run_context(jsonb)'::regprocedure,
+	$old$'jobSpecification',v_spec,'continuation',v_continuation);$old$,
+	$new$'jobSpecification',v_spec,'continuation',v_continuation)
+		|| case when v_run.service_tier is null then '{}'::jsonb
+			else jsonb_build_object('serviceTier',v_run.service_tier) end;$new$);
 
 -- The speed is reported only while the active bundle honours it, so a client
 -- never shows a switch that runs would ignore.

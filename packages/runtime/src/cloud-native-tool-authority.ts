@@ -1,11 +1,6 @@
 import { performance } from "node:perf_hooks";
 import { CloudRuntimeDiagnosticError } from "./cloud-runtime-observability.ts";
-import {
-	type CloudRuntimeReasoningEffort,
-	type CloudRuntimeServiceTier,
-	isCloudRuntimeReasoningEffort,
-	isCloudRuntimeServiceTier,
-} from "./cloud-runtime-policy.ts";
+import { type CloudRuntimeReasoningEffort, isCloudRuntimeReasoningEffort } from "./cloud-runtime-policy.ts";
 
 export const CLOUD_NATIVE_TOOL_AUTHORITY_SCHEMA = "qorpera.native-tool-authority/v1";
 export const CLOUD_NATIVE_TOOL_AUTHORITY_WINDOW_MS = 30_000;
@@ -53,8 +48,6 @@ export interface CloudNativeToolIdentity {
 	readonly runtimeBundleSha256: string;
 	readonly reasoningEffort: CloudRuntimeReasoningEffort;
 	readonly reasoningPolicySha256: string;
-	/** Named only for runs admitted under a bundle with fast mode. */
-	readonly serviceTier?: CloudRuntimeServiceTier;
 	readonly provider: "openai";
 	readonly nativeHarness: "codex-cli";
 	readonly model: string;
@@ -144,7 +137,6 @@ export function parseCloudNativeToolAuthority(
 		!isCloudRuntimeReasoningEffort(identity.reasoningEffort) ||
 		typeof identity.reasoningPolicySha256 !== "string" ||
 		!SHA256.test(identity.reasoningPolicySha256) ||
-		(Object.hasOwn(identity, "serviceTier") && !isCloudRuntimeServiceTier(identity.serviceTier)) ||
 		(identity.audienceKind === "company" && identity.audienceUserId !== null) ||
 		(identity.audienceKind === "member_private" &&
 			(identity.audienceUserId === null || identity.audienceUserId !== identity.requesterUserId)) ||
@@ -158,7 +150,6 @@ export function parseCloudNativeToolAuthority(
 					"runtimeBundleSha256",
 					"reasoningEffort",
 					"reasoningPolicySha256",
-					"serviceTier",
 					"provider",
 					"nativeHarness",
 					"model",
@@ -187,7 +178,6 @@ export function parseCloudNativeToolAuthority(
 			"runtimeBundleSha256",
 			"reasoningEffort",
 			"reasoningPolicySha256",
-			...(Object.hasOwn(identity, "serviceTier") ? ["serviceTier"] : []),
 			"provider",
 			"nativeHarness",
 			"model",

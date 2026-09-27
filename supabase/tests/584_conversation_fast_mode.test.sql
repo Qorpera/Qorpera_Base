@@ -4,18 +4,28 @@
 -- work runs at standard speed, and a bundle without fast mode pins no tier.
 reset role;
 
--- The fixture's runs were admitted under the active bundle. Until a release
--- declares fast mode, this test admits later runs under a copy of the active
--- bundle that does; after that release the copy only adds a version.
+-- Two copies of the active bundle, one declaring fast mode and one not, so
+-- the test holds both before and after the release that declares it.
 insert into public.qorpera_runtime_bundles(bundle_key,version,manifest,sha256)
-select bundle.bundle_key,bundle.version + 1000,fast.manifest,
-	encode(extensions.digest(convert_to(fast.manifest::text,'utf8'),'sha256'),'hex')
+select 'qorpera.fast-mode-test',copy.version,copy.manifest,
+	encode(extensions.digest(convert_to(copy.manifest::text,'utf8'),'sha256'),'hex')
 from public.qorpera_active_runtime_bundle active
 join public.qorpera_runtime_bundles bundle on bundle.id = active.runtime_bundle_id
-cross join lateral (select jsonb_set(bundle.manifest,'{modelPolicy,fastMode}','"thread"') as manifest) fast
+cross join lateral (values
+	(1,jsonb_set(bundle.manifest,'{modelPolicy,fastMode}','"thread"')),
+	(2,bundle.manifest #- '{modelPolicy,fastMode}')) copy(version,manifest)
 where active.singleton;
 select set_config('qorpera_test.fast_bundle',(select id::text from public.qorpera_runtime_bundles
-	where manifest #>> '{modelPolicy,fastMode}' = 'thread' order by version desc limit 1),false);
+	where bundle_key = 'qorpera.fast-mode-test' and version = 1),false);
+select set_config('qorpera_test.plain_bundle',(select id::text from public.qorpera_runtime_bundles
+	where bundle_key = 'qorpera.fast-mode-test' and version = 2),false);
+create function pg_temp.fast_activate(p_setting text)
+returns void language sql as $$
+	update public.qorpera_active_runtime_bundle active
+	set runtime_bundle_id = bundle.id,runtime_bundle_sha256 = bundle.sha256
+	from public.qorpera_runtime_bundles bundle
+	where active.singleton and bundle.id = current_setting(p_setting)::uuid;
+$$;
 
 -- A bundle declares fast mode for thread turns or not at all.
 do $$
@@ -23,13 +33,14 @@ declare v_run public.qorpera_execution_runs%rowtype; v_manifest jsonb; v_bundle 
 begin
 	select * into strict v_run from public.qorpera_execution_runs
 	where id = (current_setting('qorpera_test.own_turn')::jsonb ->> 'turn_request_id')::uuid;
-	if v_run.service_tier is not null then
-		raise exception 'a run admitted without fast mode pinned a tier: %', v_run.service_tier; end if;
+	if (v_run.service_tier is null)
+		<> (public.qorpera_execution_runtime_manifest(v_run) #>> '{modelPolicy,fastMode}' is null) then
+		raise exception 'the fixture run''s tier disagrees with its bundle: %', v_run.service_tier; end if;
 	select manifest into strict v_manifest from public.qorpera_runtime_bundles
 	where id = current_setting('qorpera_test.fast_bundle')::uuid;
 	v_manifest := jsonb_set(v_manifest,'{modelPolicy,fastMode}','"always"');
 	insert into public.qorpera_runtime_bundles(bundle_key,version,manifest,sha256)
-	values('qorpera.fast-mode-test',1,v_manifest,
+	values('qorpera.fast-mode-test',3,v_manifest,
 		encode(extensions.digest(convert_to(v_manifest::text,'utf8'),'sha256'),'hex'))
 	returning id,sha256 into v_run.runtime_bundle_id,v_run.runtime_bundle_sha256;
 	begin
@@ -49,6 +60,8 @@ select set_config('qorpera_test.fast_room_session',(
 	select session_id::text from public.qorpera_company_rooms
 	where profile_id = '16000000-0000-4000-8000-000000000010'
 		and bound_staff_agent_id = '16000000-0000-4000-8000-000000000030'),false);
+reset role;
+select pg_temp.fast_activate('qorpera_test.plain_bundle');
 set role authenticated;
 do $$
 declare v_session uuid := current_setting('qorpera_test.fast_room_session')::uuid; v_result jsonb;
@@ -57,9 +70,7 @@ begin
 		raise exception 'a bundle without fast mode reported a conversation speed'; end if;
 end $$;
 reset role;
-update public.qorpera_active_runtime_bundle active set runtime_bundle_id = bundle.id,runtime_bundle_sha256 = bundle.sha256
-from public.qorpera_runtime_bundles bundle
-where active.singleton and bundle.id = current_setting('qorpera_test.fast_bundle')::uuid;
+select pg_temp.fast_activate('qorpera_test.fast_bundle');
 set role authenticated;
 do $$
 declare v_session uuid := current_setting('qorpera_test.fast_room_session')::uuid; v_result jsonb;
@@ -149,12 +160,16 @@ begin
 	-- Claim this run before the fixture's older queued turn.
 	update public.qorpera_runner_jobs set created_at = created_at - interval '2 hours' where run_id = v_run.id;
 end $$;
+-- The run context is read through the Company File path gateway.
+update public.qorpera_company_files set path_gateway_version = 1,path_index_snapshot_id = head_snapshot_id
+where environment_id = '16000000-0000-4000-8000-000000000020';
 select set_config('request.jwt.claims',
 	'{"sub":"00000000-0000-4000-8000-000000000000","role":"service_role"}',false);
 set role service_role;
 do $$
 declare v_run_id uuid := (current_setting('qorpera_test.fast_turn')::jsonb ->> 'turn_request_id')::uuid;
 	v_claim jsonb; v_runner jsonb; v_assignment jsonb; v_native jsonb; v_binding jsonb; v_identity jsonb;
+	v_context jsonb;
 	v_runner_id uuid; v_job_id uuid;
 begin
 	v_claim := public.qorpera_claim_runner_job_for_orchestrator(
@@ -175,10 +190,30 @@ begin
 		'assignmentId',v_assignment ->> 'assignment_id','leaseId',v_native ->> 'lease_id',
 		'credentialCapsuleId',v_native ->> 'credential_capsule_id','computeIdentityId',v_native ->> 'compute_identity_id',
 		'provider','openai','nativeHarness','codex-cli','model','gpt-native');
+	-- The shared tool identity is unchanged (company computers read it and
+	-- refuse unknown fields); the tier travels in the run's company context.
 	v_identity := public.qorpera_describe_native_tool_authority(v_binding) -> 'identity';
-	if v_identity ->> 'serviceTier' is distinct from 'fast'
+	if v_identity ? 'serviceTier'
 		or v_identity ->> 'runtimeBundleId' <> current_setting('qorpera_test.fast_bundle') then
-		raise exception 'the run identity did not carry its tier: %', v_identity; end if;
+		raise exception 'the shared tool identity changed: %', v_identity; end if;
+	v_context := public.qorpera_describe_company_run_context(v_binding);
+	if v_context ->> 'serviceTier' is distinct from 'fast' or v_context -> 'identity' <> v_identity then
+		raise exception 'the run context did not carry its tier: %', v_context ->> 'serviceTier'; end if;
+	perform set_config('qorpera_test.fast_binding',v_binding::text,false);
+end $$;
+reset role;
+
+-- A tier that disagrees with the run's bundle is refused.
+alter table public.qorpera_execution_runs disable trigger qorpera_execution_run_service_tier;
+update public.qorpera_execution_runs set service_tier = null
+where id = (current_setting('qorpera_test.fast_turn')::jsonb ->> 'turn_request_id')::uuid;
+alter table public.qorpera_execution_runs enable trigger qorpera_execution_run_service_tier;
+set role service_role;
+do $$ begin
+	begin
+		perform public.qorpera_describe_native_tool_authority(current_setting('qorpera_test.fast_binding')::jsonb);
+		raise exception 'a run without a tier under a fast mode bundle kept its authority';
+	exception when insufficient_privilege then null; end;
 end $$;
 reset role;
 
@@ -228,10 +263,15 @@ begin
 	v_result := pg_temp.fast_copy('qorpera_test.fast_turn', '{"service_tier":"standard"}');
 	if v_result.service_tier <> 'fast' then
 		raise exception 'a caller hint chose the tier: %', v_result.service_tier; end if;
-	-- The fixture's own turn was admitted under the bundle without fast mode.
-	v_result := pg_temp.fast_copy('qorpera_test.own_turn', '{}');
-	if v_result.model_provider <> 'openai' or v_result.service_tier is not null
-		or v_result.runtime_bundle_id = current_setting('qorpera_test.fast_bundle')::uuid then
+end $$;
+-- Work admitted under a bundle without fast mode pins no tier.
+select pg_temp.fast_activate('qorpera_test.plain_bundle');
+do $$
+declare v_result public.qorpera_execution_runs%rowtype;
+begin
+	v_result := pg_temp.fast_copy('qorpera_test.own_turn', '{"source_kind":"wake","input_ids":[]}');
+	if v_result.runtime_bundle_id <> current_setting('qorpera_test.plain_bundle')::uuid
+		or v_result.service_tier is not null then
 		raise exception 'a bundle without fast mode pinned a tier: %', v_result.service_tier; end if;
 end $$;
 rollback;

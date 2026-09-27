@@ -97,22 +97,6 @@ it("rejects undeclared identity fields and non-integer versions", () => {
 	}
 });
 
-it("carries the run's service tier, which only a fast mode bundle names", () => {
-	const { binding, authority } = nativeToolAuthorityFixture();
-	for (const serviceTier of ["fast", "standard"])
-		expect(
-			parseCloudNativeToolAuthority({ ...authority, identity: { ...authority.identity, serviceTier } }, binding)
-				.identity.serviceTier,
-		).toBe(serviceTier);
-	const { serviceTier: _named, ...older } = authority.identity;
-	const parsed = parseCloudNativeToolAuthority({ ...authority, identity: older }, binding);
-	expect(Object.hasOwn(parsed.identity, "serviceTier")).toBe(false);
-	for (const serviceTier of ["priority", "default", null, true])
-		expect(() =>
-			parseCloudNativeToolAuthority({ ...authority, identity: { ...authority.identity, serviceTier } }, binding),
-		).toThrow();
-});
-
 it("rechecks the cloud instead of trusting an admitted description", async () => {
 	const { run, reader } = await admit();
 	await run.assertActive(run.signal);

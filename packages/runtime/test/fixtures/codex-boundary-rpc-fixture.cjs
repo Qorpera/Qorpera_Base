@@ -308,7 +308,7 @@ async function handle(message) {
 		const fenced = await fence(companyOutputs);
 		if (index + 1 < companyCalls.length) companyCall(index + 1);
 		else {
-			writeFileSync(evidencePath, JSON.stringify({ threadParameters, turnParameters, fenced, outputs: companyOutputs, cwd: process.cwd(), environmentKeys: Object.keys(process.env) }));
+			writeFileSync(evidencePath, JSON.stringify({ threadParameters, turnParameters, configuration, fenced, outputs: companyOutputs, cwd: process.cwd(), environmentKeys: Object.keys(process.env) }));
 			write({ method: "item/agentMessage/delta", params: { threadId, turnId, delta: "PRIVATE_OUTPUT_CANARY" } });
 			write({ method: "item/reasoning/summaryTextDelta", params: { threadId, turnId, delta: "PRIVATE_REASONING_CANARY" } });
 			done();

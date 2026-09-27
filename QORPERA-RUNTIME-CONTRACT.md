@@ -1524,8 +1524,9 @@ Fast service tier by default: Codex `service_tier = "fast"`, sent as the
 priority tier, about 1.5x speed on GPT-6 Sol and Luna and 2x on Astra. The
 Model menu has a Fast switch that turns it off for that one conversation. The
 bundle's model policy declares `fastMode: thread`; the kernel pins the tier
-(`fast` or `standard`) on the run at admission, the run's tool authority names
-it, and the host passes it to Codex and verifies Codex applied it. Routines,
+(`fast` or `standard`) on the run at admission, the run's company context names
+it (the shared tool identity, which company computers also read, does not), and
+the host passes it to Codex and verifies Codex applied it. Routines,
 coworker wakes, coding turns, other providers and runs under a bundle without
 fast mode run at standard speed; the latter pin no tier.
 

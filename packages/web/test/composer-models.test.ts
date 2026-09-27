@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CompanyController } from "../src/app/company.ts";
 import { ConversationView } from "../src/app/views/conversation.ts";
 import type { SessionModel, SessionModelSelection } from "../src/cloud/session-model.ts";
+import { setLanguagePreference } from "../src/ui/preferences.ts";
 import { deferred, fixture, id, profileA, session, settle, staff, team, userA } from "./fixtures.ts";
 
 const cleanups: (() => void)[] = [];
@@ -227,6 +228,16 @@ describe("composer model selector", () => {
 		expect(f.set).toHaveBeenLastCalledWith(session.sessionId, { serviceTier: "fast" }, 2, expect.any(AbortSignal));
 		expect(fast.getAttribute("aria-checked")).toBe("true");
 		expect(button(f.view.el, "Model: GPT-6 Sol, Low effort, Fast")).toBeTruthy();
+		// Danish writes the factor with a decimal comma.
+		setLanguagePreference("da");
+		try {
+			button(panel, "GPT-6 Luna").click();
+			await settle();
+			expect(fast.querySelector("small")?.textContent).toBe("1,5x hastighed");
+		} finally {
+			setLanguagePreference("system");
+			localStorage.clear();
+		}
 		// Another conversation keeps its own speed.
 		const otherSession = { ...session, sessionId: id(80), staffAgentId: staff.id };
 		f.models.set(otherSession.sessionId, {

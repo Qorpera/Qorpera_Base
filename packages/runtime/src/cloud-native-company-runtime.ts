@@ -55,6 +55,7 @@ import {
 	type CloudRuntimeToolOperation,
 	cloudRuntimeErrorCategory,
 } from "./cloud-runtime-observability.ts";
+import { isCloudRuntimeServiceTier } from "./cloud-runtime-policy.ts";
 import { type CloudSecretOperationClient, cloudSecretTools, describeCloudSecretTools } from "./cloud-secret-tools.ts";
 import { cloudSidebarTools } from "./cloud-sidebar-tools.ts";
 import {
@@ -171,6 +172,9 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			);
 			stage = "bundle-compatibility";
 			assertCloudRuntimeBundle(context.identity, this.#sha256);
+			// This host's policy declares fast mode, so every run admitted under it names its tier.
+			if (!isCloudRuntimeServiceTier(context.serviceTier))
+				throw new Error("Admitted runtime bundle is not supported by this host");
 			// Every activation enters through the wake bus (contract 8): the admitted
 			// occurrence's typed envelope and kernel-owned reply policy, never a job flag.
 			stage = "wake-envelope";
@@ -363,6 +367,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				const result = await runCloudNativeRunToolSession({
 					observability,
 					binding,
+					serviceTier: context.serviceTier,
 					controlPlane: this.#control,
 					beginExecution: async (specification, requestSignal) => {
 						const toolCatalogText = cloudToolJsonText(specification, CLOUD_NATIVE_TOOL_CATALOG_BYTES);
