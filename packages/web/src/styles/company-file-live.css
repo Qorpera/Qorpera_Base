@@ -13,8 +13,8 @@
 }
 .files-search-input::placeholder { color: var(--text-soft); }
 .files-tool {
-	display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px;
-	border-radius: var(--radius-sm); color: var(--text-muted);
+	display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; padding: 0;
+	border: 0; border-radius: var(--radius-sm); background: none; color: var(--text-muted); cursor: pointer;
 }
 .files-tool:hover { background: var(--hover); color: var(--text); }
 .files-tool .icon, .files-new .icon { width: 16px; height: 16px; }
