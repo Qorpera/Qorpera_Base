@@ -64,6 +64,7 @@ test("pins every packaged entrypoint and detects code, generated-output and arti
 			effort: "low",
 			overrides: "routine-and-thread",
 			allowed: ["low", "medium", "high"],
+			fastMode: "thread",
 		});
 		for (const path of Object.values(CLOUD_RUNTIME_ENTRY_POINTS)) assert.match(initial.manifest.implementation[path], /^[0-9a-f]{64}$/);
 		assert.match(initial.manifest.implementation["supabase/migrations/20260828020000_runtime_wake_bus.sql"], /^[0-9a-f]{64}$/);

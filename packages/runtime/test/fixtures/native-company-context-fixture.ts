@@ -71,6 +71,7 @@ export function nativeCompanyContextFixture() {
 		job: source("job", identity.runId, '{"schema":"qorpera.session-turn-run/v1"}'),
 		jobSpecification: source("job_spec", identity.staffAgentId, "Own the company onboarding."),
 		continuation: null,
+		serviceTier: "fast",
 	};
 	return { ...fixture, context, source };
 }
