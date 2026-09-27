@@ -18,6 +18,7 @@ import { RuntimeComputerHttpControl, readRuntimeComputerExecutorSecret } from ".
 import { exerciseRuntimeWorkloadUsage } from "./workload-usage-probe.ts";
 import { officeServiceFailureDiagnostics } from "./office-service-diagnostics.ts";
 import { verifyOfficeGuardArchives } from "./office-lifecycle-evidence.mjs";
+import { officeLifecycleMeteringFailure, type OfficeMeteringStage, readOfficeLifecycleMeteringContext } from "./office-lifecycle-metering-context.ts";
 
 // This executable composes the real production components. It supplies no
 // replacement physical, registry, journal, clock, or worker ports.
@@ -68,23 +69,32 @@ if (action === "service-diagnostics") {
 	assert.deepEqual(await journal.archiveNames(), names, "Office archive inventory changed during audit");
 	report(verifyOfficeGuardArchives(expected, { activeGuards, activePrestarts, journalGuards, anchor, archives, usage }));
 } else if (action === "finish-usage") {
-	const config = parseLxdOfficeLifecycleServiceConfig(JSON.parse((await readLxdOfficeProtectedFile(process.argv[3], 16384)).toString("utf8")));
-	assert(config.computerExecutorCredentialPath);
-	const credential = await readLxdOfficeCredentialFile(config.registryCredential.path, 4096);
+	let stage: OfficeMeteringStage = "configuration";
 	try {
-		assert.equal(credential.byteLength, config.registryCredential.bytes);
-		assert.equal(createHash("sha256").update(credential).digest("hex"), config.registryCredential.sha256);
-		const policy = parseLxdOfficePhysicalPolicy(JSON.parse((await readLxdOfficeProtectedFile(config.policyPath, 65536)).toString("utf8")));
-		const journal = JSON.parse(await readFile(process.argv[4], "utf8"));
-		const plan = lxdOfficeGuestPlan(journal.binding), binding = plan.binding;
-		const control = new RuntimeComputerHttpControl({ supabaseUrl: config.registryUrl, supabaseServiceKey: credential.toString("utf8"),
-			executorSecret: await readRuntimeComputerExecutorSecret(config.computerExecutorCredentialPath) });
-		report(await exerciseRuntimeWorkloadUsage({ context: { allocationId: binding.allocationId, providerKind: "office", providerId: binding.providerId,
-			policySha256: binding.providerPolicySha256, instanceSha256: plan.instanceSha256, bootstrapSha256: binding.bootstrapSha256,
-			runId: null, runnerId: null, officeId: binding.companyComputerId, computerGeneration: binding.computerGeneration },
-			guardSocketPath: "/run/qorpera-office-computer-guard/control.sock", lxdSocketPath: policy.host.socketPath, control,
-			disposableRun: { githubHosted: true, companyId: binding.companyId }, close: true, signal: abort.signal }));
-	} finally { credential.fill(0); }
+		const config = parseLxdOfficeLifecycleServiceConfig(JSON.parse((await readLxdOfficeProtectedFile(process.argv[3], 16384)).toString("utf8")));
+		assert(config.computerExecutorCredentialPath);
+		stage = "credential";
+		const credential = await readLxdOfficeCredentialFile(config.registryCredential.path, 4096);
+		try {
+			assert.equal(credential.byteLength, config.registryCredential.bytes);
+			assert.equal(createHash("sha256").update(credential).digest("hex"), config.registryCredential.sha256);
+			const policy = parseLxdOfficePhysicalPolicy(JSON.parse((await readLxdOfficeProtectedFile(config.policyPath, 65536)).toString("utf8")));
+			const journal = JSON.parse(await readFile(process.argv[4], "utf8"));
+			const { binding } = lxdOfficeGuestPlan(journal.binding);
+			const control = new RuntimeComputerHttpControl({ supabaseUrl: config.registryUrl, supabaseServiceKey: credential.toString("utf8"),
+				executorSecret: await readRuntimeComputerExecutorSecret(config.computerExecutorCredentialPath) });
+			stage = "paid-context";
+			const context = await readOfficeLifecycleMeteringContext({ binding, journalRoot: policy.journal.path,
+				guard: new PaidComputerGuardClient("/run/qorpera-office-computer-guard/control.sock"), signal: abort.signal });
+			stage = "workload-probe";
+			report(await exerciseRuntimeWorkloadUsage({ context,
+				guardSocketPath: "/run/qorpera-office-computer-guard/control.sock", lxdSocketPath: policy.host.socketPath, control,
+				disposableRun: { githubHosted: true, companyId: binding.companyId }, close: true, signal: abort.signal }));
+		} finally { credential.fill(0); }
+	} catch (error) {
+		report(officeLifecycleMeteringFailure(stage, error));
+		process.exitCode = 1;
+	}
 } else if (action === "infrastructure") {
 	const socketPath = "/var/snap/lxd/common/lxd/unix.socket";
 	const client = new LxdUnixClient(socketPath);
