@@ -9,7 +9,7 @@ case "${OSTYPE-}" in
 	darwin*) temp_parent="/private/tmp" ;;
 esac
 temp_parent="${temp_parent%/}"
-test_root="$(mktemp -d "$temp_parent/pi-test.XXXXXX")"
+test_root="$(mktemp -d "$temp_parent/qorpera-test.XXXXXX")"
 # Darwin inherits the temporary parent's group. Keep fixtures aligned with the
 # process identity before creating their private directories.
 case "${OSTYPE-}" in
@@ -20,14 +20,13 @@ readonly temp_parent test_root git_askpass
 
 mkdir -p "$test_root/home/.config" "$test_root/tmp" "$test_root/cache/npm"
 # Mark the generated root so cleanup can verify ownership before deleting it.
-touch "$test_root/.pi-test-owned" "$test_root/npm-userconfig" "$test_root/npm-globalconfig"
+touch "$test_root/.qorpera-test-owned" "$test_root/npm-userconfig" "$test_root/npm-globalconfig"
 
 test_home="$test_root/home"
 test_tmp="$test_root/tmp"
 test_config="$test_root/home/.config"
 test_cache="$test_root/cache"
 test_npm_cache="$test_root/cache/npm"
-test_agent_dir="$test_root/home/.qorpera/agent"
 test_npm_userconfig="$test_root/npm-userconfig"
 test_npm_globalconfig="$test_root/npm-globalconfig"
 if [[ ${OS-} == "Windows_NT" ]] && command -v cygpath >/dev/null 2>&1; then
@@ -36,11 +35,10 @@ if [[ ${OS-} == "Windows_NT" ]] && command -v cygpath >/dev/null 2>&1; then
 	test_config="$(cygpath -w "$test_config")"
 	test_cache="$(cygpath -w "$test_cache")"
 	test_npm_cache="$(cygpath -w "$test_npm_cache")"
-	test_agent_dir="$(cygpath -w "$test_agent_dir")"
 	test_npm_userconfig="$(cygpath -w "$test_npm_userconfig")"
 	test_npm_globalconfig="$(cygpath -w "$test_npm_globalconfig")"
 fi
-readonly test_home test_tmp test_config test_cache test_npm_cache test_agent_dir test_npm_userconfig test_npm_globalconfig
+readonly test_home test_tmp test_config test_cache test_npm_cache test_npm_userconfig test_npm_globalconfig
 
 # Only remove the marked directory created above, never an unverified path.
 cleanup() {
@@ -48,8 +46,8 @@ cleanup() {
 	trap - EXIT
 
 	case "$test_root" in
-		"$temp_parent"/pi-test.*)
-			if [[ -d "$test_root" && ! -L "$test_root" && -f "$test_root/.pi-test-owned" ]]; then
+		"$temp_parent"/qorpera-test.*)
+			if [[ -d "$test_root" && ! -L "$test_root" && -f "$test_root/.qorpera-test-owned" ]]; then
 				rm -rf -- "$test_root"
 			else
 				printf "Refusing to remove unverified test directory: %s\n" "$test_root" >&2
@@ -77,7 +75,6 @@ test_env=(
 	"TEMP=$test_tmp"
 	"XDG_CONFIG_HOME=$test_config"
 	"XDG_CACHE_HOME=$test_cache"
-	"QORPERA_CODING_AGENT_DIR=$test_agent_dir"
 	"LANG=C"
 	"LC_ALL=C"
 	"TZ=UTC"
@@ -90,7 +87,6 @@ test_env=(
 	"NPM_CONFIG_USERCONFIG=$test_npm_userconfig"
 	"NPM_CONFIG_GLOBALCONFIG=$test_npm_globalconfig"
 	"NPM_CONFIG_CACHE=$test_npm_cache"
-	"QORPERA_NO_LOCAL_LLM=1"
 	"AWS_EC2_METADATA_DISABLED=true"
 )
 

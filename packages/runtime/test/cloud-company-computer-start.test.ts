@@ -8,7 +8,7 @@ import {
 	CloudNativeToolOperations,
 } from "@qorpera/runtime/cloud-native-tool-operations";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { nativeToolAuthorityFixture } from "../../shell/test/fixtures/native-tool-authority-fixture.ts";
+import { nativeToolAuthorityFixture } from "./fixtures/native-tool-authority-fixture.ts";
 
 const cleanups: Array<() => void | Promise<void>> = [];
 afterEach(async () => {

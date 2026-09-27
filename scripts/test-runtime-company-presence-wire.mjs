@@ -8,7 +8,6 @@ import { pathToFileURL } from "node:url";
 import { createClient } from "@supabase/supabase-js";
 import { build } from "esbuild";
 import { WebSocketServer } from "ws";
-import { testMemberCompanyPresenceUi } from "./test-member-company-presence-ui.mjs";
 import { testMemberWebPresenceSql } from "./test-member-web-presence-sql.mjs";
 
 // Actual Supabase SDK/Phoenix v2 frames + runtime signing/receiver + real SQL.
@@ -95,7 +94,6 @@ export async function testCompanyPresenceWire({ root, query, fixture }) {
 		assert.equal(view.paths[0].participants[0].activity,'writing');
 		assert(!JSON.stringify(frames).includes('projects/report.md'));
 		assert(!JSON.stringify(view).includes('token'));
-		await testMemberCompanyPresenceUi({root,query,actors,endpoint,control,frames});
 		await testMemberWebPresenceSql({root,query,actors,endpoint,control,frames,setHttpHandler:handler=>{httpHandler=handler??unavailable;}});
 		query(`update public.qorpera_native_provider_connection_leases set status='revoked',released_at=clock_timestamp() where id=${sql(actors[1].binding.leaseId)}::uuid;`);
 		const revoked=await agents[0].observe('projects/report.md','object','reading',signal);

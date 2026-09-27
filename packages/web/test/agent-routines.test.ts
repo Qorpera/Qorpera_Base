@@ -3,6 +3,7 @@ import type { NativeMemberConnection } from "@qorpera/cloud-client/cloud-native-
 import {
 	type CloudRoutine,
 	CloudRoutineClient,
+	type CloudRoutineSaveInput,
 	describeCloudRoutineTrigger,
 	parseCloudRoutine,
 	parseCloudRoutineTrigger,
@@ -310,6 +311,122 @@ describe("agent routines section", () => {
 				localTime: "09:00",
 			},
 		});
+	});
+	it("keeps the effort an agent chose when a member edits the routine", async () => {
+		// An agent may set a routine up at medium or high; a member edit used to save it as low.
+		const upserts: Record<string, unknown>[] = [];
+		const cloud = {
+			rpc: vi.fn(async (name: string, args: Record<string, unknown> = {}) => {
+				if (name === "qorpera_consent_provider_connection_autonomous")
+					return { connection_id: account.connectionId, allow_autonomous: true, version: 2 };
+				if (name === "qorpera_create_member_execution_sponsor")
+					return { binding_id: "10000000-0000-4000-8000-000000000005", version: 1 };
+				if (name !== "qorpera_upsert_cloud_routine") throw new Error(`Unexpected call ${name}`);
+				upserts.push(args);
+				return {
+					routine_id: "10000000-0000-4000-8000-000000000002",
+					client_routine_id: args.p_client_routine_id,
+					version: upserts.length + 1,
+					status: "active",
+				};
+			}),
+		} as unknown as Cloud;
+		const stop = new AbortController();
+		const cloudRoutines = createWebRoutines(cloud, profileA, stop.signal, () => {});
+		const routines = {
+			list: vi.fn(async () => [routine({ effort: "high" })]),
+			runs: vi.fn(async () => []),
+			save: vi.fn(cloudRoutines.save),
+			setEnabled: vi.fn(cloudRoutines.setEnabled),
+		} satisfies WebRoutines;
+		const view = new AgentRoutines(
+			() => staff,
+			{ routines, accounts: async () => ({ connections: [account] }), canManage: () => true },
+			stop.signal,
+		);
+		document.body.append(view.el);
+		await settle();
+		click(view.el, "Edit");
+		await settle();
+		expect(view.el.textContent).toContain("Effort: High");
+		view.el.querySelector<HTMLInputElement>('[aria-label="Routine name"]')!.value = "Morning brief, shorter";
+		click(view.el, "Save routine");
+		await vi.waitFor(() => expect(upserts).toHaveLength(1), { timeout: 3000 });
+		expect(routines.save).toHaveBeenCalledWith(
+			expect.objectContaining({ title: "Morning brief, shorter", effort: "high" }),
+			account,
+			expect.any(String),
+		);
+		expect(upserts[0]).toMatchObject({
+			p_client_routine_id: routine().clientRoutineId,
+			p_title: "Morning brief, shorter",
+			p_effort: "high",
+		});
+		// A routine a member starts from scratch keeps the low default.
+		await vi.waitFor(() => expect(view.el.querySelector("h2")?.textContent).toBe("Routines"));
+		click(view.el, "New routine");
+		await settle();
+		expect(view.el.textContent).toContain("Effort: Low");
+		view.el.querySelector<HTMLInputElement>('[aria-label="Routine name"]')!.value = "Weekly close";
+		view.el.querySelector<HTMLTextAreaElement>('[aria-label="What to do"]')!.value = "Close the week.";
+		click(view.el, "Save routine");
+		await vi.waitFor(() => expect(upserts).toHaveLength(2), { timeout: 3000 });
+		expect(upserts[1]).toMatchObject({ p_title: "Weekly close", p_effort: "low" });
+		expect(upserts[1]!.p_client_routine_id).not.toBe(routine().clientRoutineId);
+		stop.abort();
+	});
+	it("refuses a routine save that does not say its effort, before asking the cloud", async () => {
+		const rpc = vi.fn(async () => ({}));
+		const { effort: _, ...unsaid } = {
+			environmentId: profileA.environmentId,
+			clientRoutineId: routine().clientRoutineId,
+			clientVersionId: routine().routineId,
+			staffAgentId: staff.id,
+			title: "Morning brief",
+			prompt: "Summarise what changed.",
+			triggers: routine().triggers,
+			effort: "high" as const,
+			sponsorBindingId: routine().sponsorBindingId,
+			sponsorVersion: 1,
+			enabled: true,
+		};
+		await expect(
+			new CloudRoutineClient(rpc).save(unsaid as CloudRoutineSaveInput, new AbortController().signal),
+		).rejects.toThrow("Invalid routine effort");
+		expect(rpc).not.toHaveBeenCalled();
+	});
+	it("offers no Edit for a routine the editor cannot show, so a save cannot drop part of it", async () => {
+		const windowed = routine({
+			routineId: "10000000-0000-4000-8000-000000000010",
+			title: "Office hours",
+			triggers: [
+				{
+					id: "w",
+					kind: "schedule",
+					intervalMinutes: 30,
+					weekdays: ["monday"],
+					windowStart: "09:00",
+					windowEnd: "17:00",
+					timeZone: "Europe/Copenhagen",
+				},
+			],
+		});
+		const two = routine({
+			routineId: "10000000-0000-4000-8000-000000000011",
+			title: "Twice",
+			triggers: [
+				routine().triggers[0]!,
+				{ id: "f", kind: "listener", source: "company-file", path: "finance", match: "subtree", timeZone: "UTC" },
+			],
+		});
+		const f = mount([routine(), windowed, two]);
+		await settle();
+		const rows = [...f.view.el.querySelectorAll(".routine-row")];
+		expect(rows.map((row) => [...row.querySelectorAll("button")].map((item) => item.textContent))).toEqual([
+			["Edit", "Pause"],
+			["Pause"],
+			["Pause"],
+		]);
 	});
 	it("offers each account once, by email, and numbers a repeated account", async () => {
 		const connections = [

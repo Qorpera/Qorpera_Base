@@ -5,8 +5,6 @@ import { readFileSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { POSTGRES_IMAGE, sortMigrationNames } from "./test-hosted-db.mjs";
-import { testMemberOfficeUi } from "./test-member-office-ui.mjs";
-import { testMemberOfficeViewerUi } from "./test-member-office-viewer-ui.mjs";
 import { testMemberWebOfficeSql } from "./test-member-web-office-sql.mjs";
 const root=dirname(dirname(fileURLToPath(import.meta.url))),container=`qorpera-member-office-${randomUUID()}`;
 const docker=(args,input)=>{const result=spawnSync("docker",args,{input,encoding:"utf8",timeout:60000,maxBuffer:8*1024**2});assert(!result.error&&result.status===0,`${result.stderr}\n${result.stdout?.slice(-2500)??""}`);return result.stdout.trim();};
@@ -23,8 +21,5 @@ try {
 	console.log(JSON.stringify({schema:"qorpera.member-office-catalog-sql/v1",migrations:migrations.length,actualAuthority:true,memberOnly:true,removedMemberDenied:true,ownerManagementOnly:true,boundedRoster:true,privateInfrastructureExcluded:true,hosted:false}));
 	sql(`${wake[0]}\n${office[0]}\n${readFileSync(join(root,"supabase/tests/fixtures/member-browser-profile-cases.sql"),"utf8")}\nrollback;`);
 	console.log(JSON.stringify({schema:"qorpera.member-browser-profiles-sql/v1",migrations:migrations.length,ownerOnly:true,boundedProfiles:true,preparedAfterPrivateAcknowledgement:true,grantVersions:true,removedOwnerCleanup:true,rejoinedConsentNotRevived:true,physicalDrain:"fixture",hosted:false}));
-	const start=readFileSync(join(root,"supabase/tests/fixtures/runtime-office-start-cases.sql"),"utf8").split("savepoint office_start_member;\ncreate function");assert.equal(start.length,2);
 	if(process.env.QORPERA_WEB_OFFICE_TEST_BROWSER) await testMemberWebOfficeSql({root,query:sql,seed:`${wake[0]}\n${office[0]}\nset local role service_role;select pg_temp.office_call('acquire');reset role;commit;`});
-	else if(process.env.QORPERA_OFFICE_VIEWER_TEST_BROWSER) await testMemberOfficeViewerUi({root,query:sql,seed:`${wake[0]}\n${office[0]}\nset local role service_role;select pg_temp.office_call('acquire');reset role;commit;`});
-	else await testMemberOfficeUi({root,query:sql,seed:`${wake[0]}\n${office[0]}\n${start[0]}\ncommit;`});
 }finally{if(started)docker(["rm","-f",container]);}

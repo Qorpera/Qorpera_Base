@@ -28,7 +28,6 @@ import {
 	CloudNativeToolOperations,
 } from "@qorpera/runtime/cloud-native-tool-operations";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { nativeToolAuthorityFixture } from "../../shell/test/fixtures/native-tool-authority-fixture.ts";
 import {
 	computerBinding,
 	computerDeferred,
@@ -36,6 +35,7 @@ import {
 	computerOperation,
 	computerScope,
 } from "./fixtures/company-computer.ts";
+import { nativeToolAuthorityFixture } from "./fixtures/native-tool-authority-fixture.ts";
 
 let directory: string;
 let cert: Buffer;

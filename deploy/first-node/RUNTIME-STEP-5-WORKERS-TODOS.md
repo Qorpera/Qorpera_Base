@@ -98,7 +98,7 @@ the full migration chain):
 
 The rest of the SQL suite is unchanged by this migration.
 
-Runtime (`packages/shell/test`): `cloud-worker-tools.test.ts` (tool surface per
+Runtime (`packages/runtime/test`): `cloud-worker-tools.test.ts` (tool surface per
 wake, publication and confirmation, retained change on a failed publication,
 closed parsers against widened or hostile requests, report rules),
 `cloud-wake-bus.test.ts` (closed envelopes and the speaking policy),
@@ -205,12 +205,14 @@ published only by the agent's next list or change of that todo.
   (`20260925123000_runtime_coding_machine_lock_order`) they took it last, so an
   agent cancelling a session deadlocked with its admission, plan or credential.
   SQL test 603 races those, the pairs a partial fix would break, and two new
-  members planning at once. Two late touches remain: the executor's begin takes
+  members planning at once. One late touch remains: the executor's begin takes
   the profile row NOWAIT (it refuses with 55P03 rather than wait; the coding
-  executor begins again until its lease ends), and
-  `qorpera_prepare_company_file_revision` locks the
-  Company File row before the fence, so it can meet a session's first
-  admission as it meets every agent tool call.
+  executor begins again until its lease ends). Until
+  `20260927090000_company_file_fence_first`, a member saving, proposing or
+  accepting, and the object gateway copying an object into the company's
+  bucket, locked the Company File row before the fence, so they could meet a
+  session's first admission as they met every agent tool call. They now take
+  the fence first; SQL test 607 races them.
 - A revival whose admission is refused when its run is created (the agent lost
   its model account or its conversation) is not retried: the result stays in
   the todo, which the agent lists the next time it continues that work.

@@ -402,7 +402,8 @@ export class SettingsView {
 				notice("neutral", t("Open a company to see these settings.")),
 			);
 		this.#content.setAttribute("aria-labelledby", `settings-tab-${tab}`);
-		replace(this.#content, panel);
+		// A company change selects the open tab again; its panel, and a field being typed in, stay put.
+		if (panel.parentElement !== this.#content) replace(this.#content, panel);
 	}
 
 	/** General shows only the account's error and message, so it is redrawn only

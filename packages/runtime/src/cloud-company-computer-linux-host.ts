@@ -199,7 +199,9 @@ export async function assertCompanyComputerWorkbenchMount(
 	}
 }
 
-export function companyComputerLinuxSandboxArgs(): string[] {
+/** `tmpBytes` caps the namespace's private /tmp; tmpfs pages are only used when written. */
+export function companyComputerLinuxSandboxArgs(tmpBytes = 67108864): string[] {
+	if (!Number.isSafeInteger(tmpBytes) || tmpBytes < 1) throw new Error("INVALID_OFFICE_SANDBOX_TMP_SIZE");
 	return [
 		"--unshare-user",
 		"--unshare-pid",
@@ -231,7 +233,7 @@ export function companyComputerLinuxSandboxArgs(): string[] {
 		"--dev",
 		"/dev",
 		"--size",
-		"67108864",
+		String(tmpBytes),
 		"--tmpfs",
 		"/tmp",
 	];

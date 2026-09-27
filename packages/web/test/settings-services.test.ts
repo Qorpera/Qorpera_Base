@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -137,12 +137,11 @@ describe("services", () => {
 			"./assets/provider-drive.svg",
 			"./assets/provider-github.svg",
 		]);
-		const build = readFileSync(join(here, "../scripts/build.mjs"), "utf8");
-		// The sign-in buttons build their logo name from the provider (signin.ts).
+		// The build copies public/ whole. The sign-in buttons build their logo
+		// name from the provider (signin.ts).
 		const signIn = ["google", "github"].map((provider) => `provider-${provider}.svg`);
 		for (const logo of [...HOSTED_CONNECTORS.map((connector) => connector.logo), ...signIn]) {
-			expect(build).toContain(`"${logo}"`);
-			expect(existsSync(join(here, "../../shell/userland", logo))).toBe(true);
+			expect(existsSync(join(here, "../public/assets", logo))).toBe(true);
 		}
 	});
 
