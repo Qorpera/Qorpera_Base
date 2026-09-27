@@ -414,6 +414,28 @@ describe("native runtime to office transport (real TLS, synthetic SQL and guest 
 		await f.endpoint.close();
 		expect(f.physicalClose).toHaveBeenCalledOnce();
 	});
+	it("backs off after a refused reopen, then reopens", async () => {
+		const f = await fixture();
+		await f.endpoint.perform(f.operation, f.lease, f.context);
+		f.guests[0].ended = true;
+		f.createSession.mockRejectedValueOnce(new CompanyComputerGuestSessionRefusedError("OFFICE_PRIVACY_FENCED"));
+		await expect(
+			f.endpoint.perform(f.operation, f.lease, { ...f.context, receiptId: randomUUID() }),
+		).rejects.toThrow();
+		expect(f.createSession).toHaveBeenCalledTimes(2);
+		// Within the back-off the action fails at once, without another attempt.
+		await expect(
+			f.endpoint.perform(f.operation, f.lease, { ...f.context, receiptId: randomUUID() }),
+		).rejects.toThrow();
+		expect(f.createSession).toHaveBeenCalledTimes(2);
+		await new Promise((resolve) => setTimeout(resolve, 3100));
+		expect(await f.endpoint.perform(f.operation, f.lease, { ...f.context, receiptId: randomUUID() })).toEqual({
+			kind: "text",
+			value: "test",
+		});
+		expect(f.createSession).toHaveBeenCalledTimes(3);
+		expect(f.perform).toHaveBeenCalledTimes(2);
+	}, 15000);
 	it("keeps no capacity for a session the guest refused to create", async () => {
 		const f = await fixture();
 		f.createSession.mockRejectedValueOnce(new CompanyComputerGuestSessionRefusedError("OFFICE_PRIVACY_FENCED"));

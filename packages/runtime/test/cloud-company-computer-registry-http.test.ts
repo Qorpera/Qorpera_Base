@@ -147,7 +147,10 @@ describe("host-only office registry transport", () => {
 				throw Object.assign(new TypeError("fetch failed"), { cause: { code: "ECONNRESET" } });
 			}),
 		).toBe(true);
-		expect(await outcome(async () => new Response("not json"))).toBe(true);
+		// A complete body that is not an object is still an answer; one over the bound is not.
+		expect(await outcome(async () => new Response("not json"))).toBe(false);
+		expect(await outcome(async () => new Response("null"))).toBe(false);
+		expect(await outcome(async () => new Response("x".repeat(65537)))).toBe(true);
 		// A database error in a 5xx is an answer, unless it says "try again".
 		expect(await outcome(async () => Response.json({ code: "P0002", message: "secret" }, { status: 500 }))).toBe(
 			false,

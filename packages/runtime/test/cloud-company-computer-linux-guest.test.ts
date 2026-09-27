@@ -423,6 +423,33 @@ describe("whole Linux guest ownership (physical adapters mocked here; separate L
 		expect(displays[1].stop).toHaveBeenCalledOnce();
 		expect(f.failure).not.toHaveBeenCalled();
 	});
+	it("keeps the open browser when a new run's join check gets no answer, and joins it on the next action", async () => {
+		// Frozen timers keep the browser double's per-second relay check out of the way.
+		vi.useFakeTimers();
+		const f = await fixture({ browser: true });
+		const first = await f.create();
+		await first.endpoint.perform(f.operation({ kind: "browser", action: "list_tabs" }), f.lease, f.effect());
+		await first.close();
+		const original = f.call.getMockImplementation()!;
+		let lost = 0;
+		f.call.mockImplementation(async (method: string, args: Record<string, unknown>) => {
+			if (method === "qorpera_office_screen_browser_grant" && args.p_opener === null && lost < 1) {
+				lost++;
+				throw new CompanyComputerRegistryUnansweredError(new Error("request timed out"));
+			}
+			return original(method, args);
+		});
+		const next = await f.create();
+		await expect(
+			next.endpoint.perform(f.operation({ kind: "browser", action: "list_tabs" }), f.lease, f.effect()),
+		).rejects.toThrow("BROWSER_ACCESS_UNCONFIRMED");
+		expect(lost).toBe(1);
+		expect(browsers[0].ended()).toBe(false);
+		expect(browsers[0].close).not.toHaveBeenCalled();
+		await next.endpoint.perform(f.operation({ kind: "browser", action: "list_tabs" }), f.lease, f.effect());
+		expect(physical.browserLaunch).toHaveBeenCalledOnce();
+		expect(f.failure).not.toHaveBeenCalled();
+	});
 	it("admits no new session while a private sign-in is being prepared", async () => {
 		const f = await fixture();
 		await f.guest.privacy.fence(f.challenge, new AbortController().signal);

@@ -41,7 +41,8 @@ export type CompanyComputerRegistryMethod = (typeof methods)[number];
 
 /**
  * The registry gave no answer: the network, a timeout, a server that could not
- * serve the request (5xx, 408, 425, 429 without a database error), or a
+ * serve the request (5xx, 408, 425, 429 without a database error), a body cut
+ * off or over its bound, or a
  * database error that says "try again" (connection, rollback, resources, lock
  * wait, cancelled statement). It is not a refusal. Both keep the code
  * OFFICE_REGISTRY_UNCONFIRMED.
@@ -159,8 +160,15 @@ export class HttpCloudCompanyComputerRegistry {
 					}
 					const bytes = await readBoundedCloudResponse(response, 64 * 1024, requestSignal);
 					requestSignal.throwIfAborted();
-					const value: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
-					if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("invalid response");
+					// A complete body that is not an object is still the registry's answer.
+					let value: unknown;
+					try {
+						value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+					} catch {
+						value = undefined;
+					}
+					if (!value || typeof value !== "object" || Array.isArray(value))
+						throw Object.assign(new Error("invalid response"), { answered: true });
 					return value;
 				},
 				signal,
@@ -173,6 +181,7 @@ export class HttpCloudCompanyComputerRegistry {
 			if (typeof sqlState === "string" && transientSqlState.test(sqlState))
 				throw new CompanyComputerRegistryUnansweredError(error);
 			if (
+				(error instanceof Error && "answered" in error) ||
 				typeof sqlState === "string" ||
 				(typeof status === "number" && status >= 400 && status < 500 && ![408, 425, 429].includes(status))
 			)

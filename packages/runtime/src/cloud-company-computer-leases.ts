@@ -211,13 +211,29 @@ interface ActiveScreenAction {
 /**
  * The action's own work failed and has ended: a page that did not load in
  * time, a target that never became clickable, a command stopped at its own
- * limit and confirmed exited. Nothing of it is still running. Only the guest
- * automation raises this, around its own calls; the message is the underlying one.
+ * limit and confirmed exited, an authority check between its steps that got no
+ * answer. Nothing of it is still running. Only the guest automation raises
+ * this, around its own calls; the message is the underlying one.
  */
 export class CompanyComputerActionFailedError extends Error {
 	constructor(cause: unknown) {
 		super(cause instanceof Error ? cause.message : "COMPUTER_ACTION_FAILED", { cause });
 		this.name = "CompanyComputerActionFailedError";
+	}
+}
+
+/**
+ * An authority check between an action's own steps. If it got no answer, the
+ * action fails as its own (every earlier step has returned, so nothing is left
+ * running) and the gate rechecks before deciding anything; a refusal stays
+ * untyped, so the gate stops automation.
+ */
+export async function companyComputerActionCheck(check: Promise<void>): Promise<void> {
+	try {
+		await check;
+	} catch (error) {
+		if (companyComputerAuthorityUnanswered(error)) throw new CompanyComputerActionFailedError(error);
+		throw error;
 	}
 }
 

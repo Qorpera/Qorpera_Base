@@ -654,6 +654,32 @@ describe("guest dispatch adapter", () => {
 		expect(automation.perform).toHaveBeenCalledOnce();
 	});
 
+	it("stops nothing and drains when the recheck after a typed failure, or the final check, gets no answer", async () => {
+		const harness = toolHarness();
+		const unanswered = new CompanyComputerRegistryUnansweredError(new Error("request timed out"));
+		let checks = 0;
+		harness.effects.assertAuthorized = vi.fn(async () => {
+			if (++checks === 2) throw unanswered;
+		});
+		harness.automation.perform.mockRejectedValueOnce(new CompanyComputerActionFailedError(new Error("PAGE_FAILED")));
+		await expect(harness.endpoint.perform(computerOperation(), computerLease(), computerEffect())).rejects.toBe(
+			unanswered,
+		);
+		expect(harness.automation.stopBrowser).not.toHaveBeenCalled();
+		expect(harness.effects.finish).toHaveBeenCalledOnce();
+		// The work succeeded, but its final authority check got no answer.
+		checks = 2;
+		harness.effects.assertAuthorized = vi.fn(async () => {
+			if (++checks === 4) throw unanswered;
+		});
+		await expect(harness.endpoint.perform(computerOperation(), computerLease(), computerEffect())).rejects.toBe(
+			unanswered,
+		);
+		expect(harness.automation.perform).toHaveBeenCalledTimes(2);
+		expect(harness.automation.stopBrowser).not.toHaveBeenCalled();
+		expect(harness.effects.finish).toHaveBeenCalledTimes(2);
+	});
+
 	it("still stops the browser and keeps the resource when authority is refused before the work", async () => {
 		const harness = toolHarness();
 		harness.effects.assertAuthorized = vi.fn(async () => {
