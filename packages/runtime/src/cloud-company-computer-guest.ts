@@ -337,9 +337,10 @@ export class CompanyComputerGuestAutomation {
 	}
 
 	/**
-	 * A page call that fails has ended (Playwright awaits its own timeouts), so
-	 * its failure is the action's own, not a sign that automation is still in
-	 * flight. Authority checks stay outside this wrapper.
+	 * A page call that failed has returned (Playwright awaits its own timeouts),
+	 * so its failure is the action's own, not a sign that automation is still in
+	 * flight. The page itself may still be loading; its network goes through the
+	 * relay like any other. Authority checks stay outside this wrapper.
 	 */
 	async #pageCall<T>(work: () => Promise<T>): Promise<T> {
 		try {
@@ -499,9 +500,17 @@ export class CompanyComputerGuestAutomation {
 				if ((await this.#pageCall(() => locator.count())) !== 1)
 					throw new CompanyComputerActionNotStartedError("BROWSER_TARGET_AMBIGUOUS");
 				if (action.action === "fill") {
-					const [type, autocomplete] = await this.#pageCall(() =>
-						Promise.all([locator.getAttribute("type"), locator.getAttribute("autocomplete")]),
-					);
+					// Both reads settle before either failure counts, so none is left in flight.
+					const [type, autocomplete] = await this.#pageCall(async () => {
+						const reads = await Promise.allSettled([
+							locator.getAttribute("type"),
+							locator.getAttribute("autocomplete"),
+						]);
+						return reads.map((read) => {
+							if (read.status === "rejected") throw read.reason;
+							return read.value;
+						});
+					});
 					if (type?.toLowerCase() === "password" || /password|one-time-code|cc-/.test(autocomplete ?? ""))
 						throw new CompanyComputerActionFailedError(new Error("PRIVATE_SIGN_IN_REQUIRED"));
 					await this.#browser.assertActive(signal);

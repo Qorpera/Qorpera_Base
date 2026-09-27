@@ -192,14 +192,15 @@ describe("office browser public HTTPS relay", () => {
 		// Nobody entitled present: the established tunnel goes, the relay stays.
 		f.assertActive.mockRejectedValue(paused);
 		await once(f.peer, "close");
+		// While paused, a new connection is refused at once and not counted.
 		const refused = createConnection(f.relay.path);
 		refused.on("error", () => undefined);
-		await once(refused, "connect");
-		await denied(refused, header);
+		await once(refused, "close");
 		await new Promise((resolve) => setTimeout(resolve, 3000));
 		expect(f.onFailure).not.toHaveBeenCalled();
-		// Somebody is back: traffic flows again through the same relay.
+		// Somebody is back: after the next authorized answer traffic flows again.
 		f.assertActive.mockResolvedValue(undefined);
+		await new Promise((resolve) => setTimeout(resolve, 1500));
 		const again = createConnection(f.relay.path);
 		again.on("error", () => undefined);
 		cleanups.push(async () => {

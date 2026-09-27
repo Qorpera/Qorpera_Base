@@ -12,6 +12,7 @@ import {
 	type CompanyComputerScreenLease,
 	companyComputerRequest,
 } from "@qorpera/cloud-client/cloud-company-computer-contract";
+import { companyComputerAuthorityUnanswered } from "./cloud-company-computer-registry-http.ts";
 
 /**
  * Only the authenticated screen registry adapter may emit this after a definitive
@@ -220,6 +221,22 @@ export class CompanyComputerActionFailedError extends Error {
 	}
 }
 
+const settledFailures = new WeakSet<object>();
+function settledFailure(error: unknown): unknown {
+	if (error && typeof error === "object") settledFailures.add(error);
+	return error;
+}
+
+/**
+ * Whether the gate returned this failure knowing that nothing of the action is
+ * still running and nothing had to be stopped. Only a failure the gate itself
+ * returned qualifies; a deadline that passed while the work ran never does.
+ * The caller drains the action's resource only after the gate has returned.
+ */
+export function companyComputerActionSettled(error: unknown): boolean {
+	return !!error && typeof error === "object" && settledFailures.has(error);
+}
+
 /** A failed shutdown is not proof that effects stopped; retain the physical-slot quarantine. */
 export class CompanyComputerActionDrainError extends Error {
 	constructor() {
@@ -246,29 +263,21 @@ export class CompanyComputerScreenActionGate {
 		execute: (signal: AbortSignal) => Promise<T>;
 		/** Stop control channels on cancellation/failure; the slot stays occupied until this actually settles. */
 		drainOnFailure?: () => Promise<void>;
-		/**
-		 * Called before a failure is returned when nothing of this action ran or
-		 * is still running: refused before any work, or a recoverable typed
-		 * failure with its authority rechecked. Never after cancellation, an
-		 * authority failure or an untyped error. Its own failure is ignored.
-		 */
-		settledFailure?: () => Promise<void>;
 	}): Promise<T> {
 		const { lease } = options;
 		assertCompanyComputerLease(lease, lease.binding, lease.driver);
 		const key = `${lease.binding.companyComputerId}:${lease.binding.screenOrdinal}`;
-		const refuse = async (reason: string): Promise<never> => {
+		const refuse = (reason: string): never => {
 			// Refused before any work: nothing of this action ran.
-			await options.settledFailure?.().catch(() => undefined);
-			throw new Error(reason);
+			throw settledFailure(new Error(reason));
 		};
-		if (this.#replacing.has(key)) return refuse("SCREEN_REPLACEMENT_PENDING");
+		if (this.#replacing.has(key)) refuse("SCREEN_REPLACEMENT_PENDING");
 		const fence = this.#fences.get(key);
 		if (fence) {
 			assertCompanyComputerScreenBinding(lease.binding, fence.binding);
-			if (lease.epoch < fence.epoch) return refuse("SCREEN_DRIVER_FENCED");
+			if (lease.epoch < fence.epoch) refuse("SCREEN_DRIVER_FENCED");
 		}
-		if (this.#active.has(key)) return refuse("SCREEN_ACTION_STILL_RUNNING");
+		if (this.#active.has(key)) refuse("SCREEN_ACTION_STILL_RUNNING");
 		const stop = new AbortController();
 		const signal = AbortSignal.any([options.signal, stop.signal]);
 		let finish = (): void => {};
@@ -302,11 +311,15 @@ export class CompanyComputerScreenActionGate {
 				signal.throwIfAborted();
 				return result;
 			} catch (error) {
-				// Only the guest's typed errors are recoverable: a pre-effect targeting
-				// refusal, or an action whose own work failed and ended. Such an action
-				// stops nothing and is drained, as long as its authority still holds.
-				// Any other failure, authority failures (including the final check) and
-				// cancellation stop automation and keep the resource for the supervisor.
+				// Nothing of this action is still running, and nothing is stopped, when:
+				// - its work failed with one of the guest's typed errors (a pre-effect
+				//   targeting refusal, or its own page or command work failed and ended)
+				//   and its authority, checked again, holds or got no answer;
+				// - an authority check outside the work (before it, or the final one)
+				//   got no answer: a revocation is a refusal, and is handled below.
+				// Such a failure is marked settled, so its resource can be drained.
+				// Anything else, refusals and cancellation stop automation and keep
+				// the resource for the supervisor.
 				let failure = error;
 				let settled = false;
 				if (
@@ -321,8 +334,11 @@ export class CompanyComputerScreenActionGate {
 						settled = true;
 					} catch (authorizationError) {
 						failure = authorizationError;
-						stopAutomation();
+						settled = !signal.aborted && companyComputerAuthorityUnanswered(authorizationError);
+						if (!settled) stopAutomation();
 					}
+				} else if (!signal.aborted && phase !== "execute" && companyComputerAuthorityUnanswered(error)) {
+					settled = true;
 				} else {
 					stopAutomation();
 				}
@@ -333,8 +349,7 @@ export class CompanyComputerScreenActionGate {
 						throw new CompanyComputerActionDrainError();
 					}
 				}
-				if (settled) await options.settledFailure?.().catch(() => undefined);
-				throw failure;
+				throw settled ? settledFailure(failure) : failure;
 			} finally {
 				// Stay armed through the final authority check AND any asynchronous drain.
 				signal.removeEventListener("abort", stopAutomation);

@@ -13,7 +13,7 @@ import {
 } from "@qorpera/cloud-client/cloud-company-computer-contract";
 import type { JsonValue } from "@qorpera/contracts";
 import type { CompanyComputerGuestAutomation } from "./cloud-company-computer-guest.ts";
-import type { CompanyComputerScreenActionGate } from "./cloud-company-computer-leases.ts";
+import { type CompanyComputerScreenActionGate, companyComputerActionSettled } from "./cloud-company-computer-leases.ts";
 import {
 	type CompanyComputerAction,
 	type CompanyComputerCloudEndpoint,
@@ -157,47 +157,52 @@ export class CompanyComputerGuestEndpoint implements CompanyComputerCloudEndpoin
 		const receipt = { receiptId: context.receiptId, idempotencyKey: context.idempotencyKey };
 		const effect = { operation, identity, lease, receipt };
 		const resourceSignal = await this.#effects.begin(structuredClone(effect), context.signal);
-		const result = await this.#gate.perform({
-			lease,
-			operation,
-			signal: AbortSignal.any([context.signal, resourceSignal]),
-			drainOnFailure: () => this.#automation.stopBrowser(),
-			// A failed action that left nothing running is drained like a successful
-			// one. Otherwise its resource would stay open, and releasing the screen
-			// with an open resource makes SQL drain the whole desktop.
-			settledFailure: () => this.#effects.finish(structuredClone(effect), new AbortController().signal),
-			authorize: async (signal) => {
-				await this.#effects.assertAuthorized(
-					{
-						operation: structuredClone(operation),
-						identity: structuredClone(identity),
-						lease: structuredClone(lease),
-						receipt: { ...receipt },
-					},
-					signal,
-				);
-				await this.#assertScreenAdmitted(this.#binding, signal);
-			},
-			execute: async (signal): Promise<CompanyComputerToolContent> => {
-				if (action.kind !== "screen" || action.action === "open") {
-					await this.#prepareScreen(this.#binding, signal);
-					signal.throwIfAborted();
-				}
-				if (action.kind === "screen") {
-					// Resource cleanup follows the durable result's final check in createCompanyComputerTools.
-					return {
-						kind: "json",
-						value: {
-							screenId: this.#binding.screenId,
-							status: action.action === "open" ? "open" : "release_requested",
+		const result = await this.#gate
+			.perform({
+				lease,
+				operation,
+				signal: AbortSignal.any([context.signal, resourceSignal]),
+				drainOnFailure: () => this.#automation.stopBrowser(),
+				authorize: async (signal) => {
+					await this.#effects.assertAuthorized(
+						{
+							operation: structuredClone(operation),
+							identity: structuredClone(identity),
+							lease: structuredClone(lease),
+							receipt: { ...receipt },
 						},
-					};
-				}
-				return this.#automation.perform(action, lease, { identity, ...receipt, signal }, operation);
-			},
-		});
-		// An error/timeout must retain the resource: the guest may still be
-		// draining. Only the acknowledged supervisor can reap that uncertainty.
+						signal,
+					);
+					await this.#assertScreenAdmitted(this.#binding, signal);
+				},
+				execute: async (signal): Promise<CompanyComputerToolContent> => {
+					if (action.kind !== "screen" || action.action === "open") {
+						await this.#prepareScreen(this.#binding, signal);
+						signal.throwIfAborted();
+					}
+					if (action.kind === "screen") {
+						// Resource cleanup follows the durable result's final check in createCompanyComputerTools.
+						return {
+							kind: "json",
+							value: {
+								screenId: this.#binding.screenId,
+								status: action.action === "open" ? "open" : "release_requested",
+							},
+						};
+					}
+					return this.#automation.perform(action, lease, { identity, ...receipt, signal }, operation);
+				},
+			})
+			.catch(async (error: unknown) => {
+				// A failure the gate returned knowing nothing of the action still runs
+				// is drained like a success, once the gate has let go of the action:
+				// an open resource makes releasing the screen drain the whole desktop.
+				// Any other error or timeout retains the resource: the guest may still
+				// be draining, and only the acknowledged supervisor reaps that.
+				if (companyComputerActionSettled(error))
+					await this.#effects.finish(structuredClone(effect), new AbortController().signal).catch(() => undefined);
+				throw error;
+			});
 		await this.#effects.finish(structuredClone(effect), new AbortController().signal);
 		return result;
 	}

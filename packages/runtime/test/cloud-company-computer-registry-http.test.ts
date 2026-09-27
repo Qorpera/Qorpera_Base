@@ -148,6 +148,16 @@ describe("host-only office registry transport", () => {
 			}),
 		).toBe(true);
 		expect(await outcome(async () => new Response("not json"))).toBe(true);
+		// A database error in a 5xx is an answer, unless it says "try again".
+		expect(await outcome(async () => Response.json({ code: "P0002", message: "secret" }, { status: 500 }))).toBe(
+			false,
+		);
+		expect(await outcome(async () => Response.json({ code: "55000" }, { status: 500 }))).toBe(false);
+		for (const code of ["57014", "55P03", "40001", "40P01", "08006", "53300"])
+			expect(await outcome(async () => Response.json({ code }, { status: code === "40001" ? 409 : 500 }))).toBe(
+				true,
+			);
+		expect(await outcome(async () => Response.json({ code: "PGRST000" }, { status: 503 }))).toBe(true);
 		vi.useFakeTimers();
 		const late = f.registry.call("qorpera_check_runtime_office_shared_surface", {}, f.signal).catch((error) => error);
 		f.fetcher.mockImplementationOnce(() => new Promise<Response>(() => undefined));
@@ -165,6 +175,17 @@ describe("host-only office registry transport", () => {
 			),
 		).toBe(true);
 		expect(companyComputerAuthorityUnanswered(new AggregateError([new Error("x"), unanswered]))).toBe(true);
+		// A registry refusal anywhere wins over a missing answer elsewhere.
+		const f = fixture();
+		f.fetcher.mockResolvedValueOnce(Response.json({ code: "42501" }, { status: 403 }));
+		const refusal = await f.registry
+			.call("qorpera_check_runtime_office_shared_surface", {}, f.signal)
+			.catch((error: unknown) => error);
+		expect(companyComputerAuthorityUnanswered(refusal)).toBe(false);
+		expect(companyComputerAuthorityUnanswered(new AggregateError([unanswered, refusal]))).toBe(false);
+		expect(
+			companyComputerAuthorityUnanswered(new Error("PULSE", { cause: new AggregateError([refusal, unanswered]) })),
+		).toBe(false);
 		vi.useFakeTimers();
 		const deadline = cloudToolRequest(
 			() => new Promise<void>(() => undefined),
