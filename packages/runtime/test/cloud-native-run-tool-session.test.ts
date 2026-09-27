@@ -122,6 +122,26 @@ it("uses server-owned identity and model at the native RPC callback boundary", a
 	expect(encoded).not.toContain(f.binding.credentialCapsuleId);
 });
 
+it("asks for the run's admission and its context read set together", async () => {
+	const f = fixture();
+	let inFlight = 0;
+	let overlapped = false;
+	const slow = async <T>(read: () => Promise<T>): Promise<T> => {
+		if (++inFlight > 1) overlapped = true;
+		try {
+			await new Promise((resolve) => setTimeout(resolve, 20));
+			return await read();
+		} finally {
+			inFlight--;
+		}
+	};
+	const describe = f.control.describeToolAuthority.getMockImplementation()!;
+	f.control.describeToolAuthority.mockImplementation(() => slow(describe));
+	f.assertContext.mockImplementation(() => slow(async () => undefined));
+	await expect(f.start()).resolves.toMatchObject({ providerSessionId: "thread_fixture" });
+	expect(overlapped).toBe(true);
+});
+
 it("does not release a provider request when durable context-view recording fails", async () => {
 	const f = fixture();
 	f.recordContextView.mockRejectedValue(new Error("Context receipt unavailable"));
