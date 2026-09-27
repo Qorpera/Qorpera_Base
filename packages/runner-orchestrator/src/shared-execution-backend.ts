@@ -20,6 +20,7 @@ import {
 	workSha256,
 } from "./provider-shared.ts";
 import {
+	mountInfoHasMountPoint,
 	readSharedExecutionIdentity,
 	type SharedExecutionIdentityAuthority,
 	supabaseSharedExecutionIdentityAuthority,
@@ -61,6 +62,13 @@ const MAX_RETIRE_ATTEMPTS = 12;
 const REFUSAL_JOB_UNSUPPORTED = "NODE_NOT_PREFERRED";
 const REFUSAL_CAPACITY = "SANDBOX_CAPACITY_EXHAUSTED";
 const REFUSAL_RETIRING = "SANDBOX_RETIRING";
+/** The run's Compute Identity volume is not attached here (yet): this orchestrator
+ * defers, and takes the job once the volume is attached. */
+const REFUSAL_IDENTITY_ABSENT = "NODE_IDENTITY_ELSEWHERE";
+/** How long a run attempt waits for its identity volume before that becomes a counted
+ * failure: the deferral has no bound of its own (the run deadline is a century). */
+const IDENTITY_WAIT_MS = 120_000;
+const TRACKED_IDENTITY_WAITS = 256;
 
 export type SharedExecutionPhysicalState =
 	| "reserving"
@@ -125,6 +133,8 @@ export interface SharedExecutionProviderDependencies {
 	now?: () => number;
 	/** Tests only: skip the identity mount-point requirement. */
 	requireIdentityMount?: boolean;
+	/** Tests only: the mount table read for the identity mount-point requirement. */
+	mountInfoPath?: string;
 	/** Tests only: owner of the identity volume files (root in production). */
 	identityOwnerUid?: number;
 }
@@ -375,8 +385,11 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 	readonly #account: (name: string) => Promise<SharedExecutionAccount>;
 	readonly #now: () => number;
 	readonly #requireIdentityMount: boolean | undefined;
+	readonly #mountInfoPath: string;
 	readonly #identityOwnerUid: number | undefined;
 	readonly #accounts = new Map<string, SharedExecutionAccount>();
+	/** When each run attempt first found its identity volume missing (this process's view). */
+	readonly #identityWaits = new Map<string, number>();
 	/** Acquisitions whose retirement is in flight; a second retire of the same one is a no-op. */
 	readonly #retiring = new Set<string>();
 	#serial: Promise<void> = Promise.resolve();
@@ -393,6 +406,7 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 		this.#account = dependencies.account ?? systemAccount;
 		this.#now = dependencies.now ?? Date.now;
 		this.#requireIdentityMount = dependencies.requireIdentityMount;
+		this.#mountInfoPath = dependencies.mountInfoPath ?? "/proc/self/mountinfo";
 		this.#identityOwnerUid = dependencies.identityOwnerUid;
 	}
 
@@ -472,6 +486,31 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 					"Shared execution prior run attempt has not retired its sandbox",
 				);
 			}
+			// Before any slot, runner row or reservation: a run whose identity volume is not
+			// attached yet (a login that just moved here) waits instead of failing, for at
+			// most IDENTITY_WAIT_MS; then it fails like any other start, visibly.
+			if (
+				work.computeIdentityId &&
+				(this.#requireIdentityMount ?? process.platform === "linux") &&
+				!mountInfoHasMountPoint(
+					await readFile(this.#mountInfoPath, "utf-8"),
+					join(this.#config.identityRoot, work.computeIdentityId),
+				)
+			) {
+				const firstSeen = this.#identityWaits.get(acquisitionId) ?? this.#now();
+				this.#identityWaits.delete(acquisitionId);
+				if (this.#now() - firstSeen >= IDENTITY_WAIT_MS)
+					throw new Error("The run's Compute Identity volume was not attached to this execution host in time");
+				this.#identityWaits.set(acquisitionId, firstSeen);
+				if (this.#identityWaits.size > TRACKED_IDENTITY_WAITS)
+					this.#identityWaits.delete(this.#identityWaits.keys().next().value as string);
+				throw new ProviderAdmissionRefused(
+					"deferred",
+					REFUSAL_IDENTITY_ABSENT,
+					"The run's Compute Identity volume is not attached to this execution host",
+				);
+			}
+			this.#identityWaits.delete(acquisitionId);
 			const slot = await this.#freeSlot();
 			if (slot === undefined)
 				throw new ProviderAdmissionRefused("deferred", REFUSAL_CAPACITY, "Every sandbox slot is busy");
@@ -620,13 +659,17 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 					return next;
 				});
 			}
-			// A replay after a restart may find either unit not yet started.
-			if (!(await this.#units.active(this.#unit("host", current.slot), timeout)))
-				await this.#units.start(this.#unit("host", current.slot), timeout);
-			await this.#waitHealthy(current.hostPort, timeout, "native provider host");
-			if (!(await this.#units.active(this.#unit("runner", current.slot), timeout)))
-				await this.#units.start(this.#unit("runner", current.slot), timeout);
-			await this.#waitHealthy(current.inboxPort, timeout, "runner assignment inbox");
+			// A replay after a restart may find either unit not yet started. The runner
+			// unit is ordered after the host unit's start (After=, BindsTo=), not after its
+			// health: it boots and activates while the host loads. The assignment is
+			// delivered only once both answer, so no job reaches a host that is not ready.
+			for (const kind of ["host", "runner"] as const)
+				if (!(await this.#units.active(this.#unit(kind, current.slot), timeout)))
+					await this.#units.start(this.#unit(kind, current.slot), timeout);
+			await Promise.all([
+				this.#waitHealthy(current.hostPort, timeout, "native provider host"),
+				this.#waitHealthy(current.inboxPort, timeout, "runner assignment inbox"),
+			]);
 			return this.#exclusive(async () => {
 				const latest = (await this.#readJournal(current.acquisitionId)) ?? current;
 				if (latest.physicalState === "starting")
@@ -651,7 +694,8 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 			} catch (error) {
 				if (signal.aborted) throw new Error(`Shared execution ${label} did not become ready`, { cause: error });
 			}
-			await delay(100, signal).catch(() => {
+			// Loopback polls are cheap; a sandbox answers within a second.
+			await delay(25, signal).catch(() => {
 				throw new Error(`Shared execution ${label} did not become ready`);
 			});
 		}
@@ -941,6 +985,7 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 			authority: this.#identityAuthority,
 			signal,
 			...(this.#requireIdentityMount === undefined ? {} : { requireMount: this.#requireIdentityMount }),
+			mountInfoPath: this.#mountInfoPath,
 			...(this.#identityOwnerUid === undefined ? {} : { expectedUid: this.#identityOwnerUid }),
 		});
 		if (identity.masterKey === credentials.nativeBridgeToken || identity.masterKey === credentials.activationToken)

@@ -217,7 +217,8 @@ export class EphemeralCloudRunnerWorker {
 	async run(
 		assignments: CloudRunnerAssignmentSource,
 		signal: AbortSignal,
-		options: { maxAssignments?: number } = {},
+		/** `activated`: the caller activated this runner just before; its session is fresh. */
+		options: { maxAssignments?: number; activated?: boolean } = {},
 	): Promise<void> {
 		if (signal.aborted) return;
 		const maxAssignments = options.maxAssignments;
@@ -225,7 +226,7 @@ export class EphemeralCloudRunnerWorker {
 			throw new Error("Worker assignment limit is invalid");
 		}
 		if (this.#options.runner.snapshot().active) {
-			await this.#options.runner.heartbeat();
+			if (!options.activated) await this.#options.runner.heartbeat();
 		} else {
 			await this.#options.runner.activate(this.#options.platform, this.#options.runnerVersion);
 		}
