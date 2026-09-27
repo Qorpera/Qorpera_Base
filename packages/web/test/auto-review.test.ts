@@ -131,6 +131,73 @@ describe("the approval card", () => {
 		expect(el.textContent).not.toContain("Only an owner or admin");
 	});
 
+	it("leads with the action and the change itself, with the exact call folded away", () => {
+		const el = renderActionReviewCard(
+			{
+				...card,
+				details: [
+					["subject", "Meeting moved"],
+					["body", "Tuesday 10:00 instead."],
+					["count", "3"],
+				],
+			},
+			timestamp,
+			undefined,
+			{ answer: vi.fn(), memberName: names },
+		);
+		expect(el.querySelector(".review-headline")?.textContent).toBe("Send an email");
+		expect(el.querySelector(".review-target")?.textContent).toBe("bob@acme.test");
+		expect(el.querySelector(".review-name")?.textContent).toBe("Meeting moved");
+		expect(el.querySelector(".review-quote")?.textContent).toBe("Tuesday 10:00 instead.");
+		expect(el.querySelector(".decision-facts")?.textContent).toBe("count3");
+		const technical = el.querySelector<HTMLDetailsElement>(".review-technical")!;
+		expect(technical.open).toBe(false);
+		expect(technical.querySelector("summary")?.textContent).toBe("Technical details");
+		expect(technical.contains(el.querySelector(".review-call"))).toBe(true);
+	});
+
+	it("names a Company File deletion as people say it, never by its path", () => {
+		const el = renderActionReviewCard(
+			{
+				...card,
+				title: "Delete from the Company File",
+				target: "work/old-offer.md",
+				details: [["path", "work/old-offer.md"]],
+				tool: "company_delete",
+				arguments: '{"path":"work/old-offer.md"}',
+			},
+			timestamp,
+			undefined,
+			{ answer: vi.fn(), memberName: names },
+		);
+		expect(el.querySelector(".review-headline")?.textContent).toBe("Delete “Old offer”");
+		const visible = [...el.children].filter((child) => !child.matches(".review-foot"));
+		expect(visible.map((child) => child.textContent).join(" ")).not.toContain("work/old-offer.md");
+		expect(el.querySelector(".review-call")?.textContent).toContain("work/old-offer.md");
+	});
+
+	it("folds an answered card to one line naming what was decided", () => {
+		const el = renderActionReviewCard(
+			{ ...card, title: "Delete from the Company File", target: "work/old-offer.md", tool: "company_delete" },
+			timestamp,
+			{ decision: "approved", answer: { answer: "allow_once" }, answeredBy: id(1) },
+			{ answer: vi.fn(), memberName: names },
+		);
+		expect(el.classList.contains("is-folded")).toBe(true);
+		expect(el.textContent).toBe("Allowed once by Jonas. Delete “Old offer”");
+		expect(el.querySelector(".review-quote, .review-why, button")).toBeNull();
+	});
+
+	it("names who or what an answered action reached", () => {
+		const el = renderActionReviewCard(
+			card,
+			timestamp,
+			{ decision: "declined", answer: { answer: "deny" }, answeredBy: id(2) },
+			{ memberName: names },
+		);
+		expect(el.querySelector(".review-folded-what")?.textContent).toBe("Send an email · bob@acme.test");
+	});
+
 	it("shows the answer once given", () => {
 		const allowed = renderActionReviewCard(
 			card,

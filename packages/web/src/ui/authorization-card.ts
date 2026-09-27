@@ -147,6 +147,53 @@ const BUILT_IN_LABELS = new Map<string, string>([
 	["unavailable", phrase("The safety check could not run.")],
 ]);
 
+/** A Company File path as people say it: "work/old-offer.md" is "Old offer". */
+export function readableFileName(path: string): string {
+	const base = path.split("/").filter(Boolean).at(-1) ?? path;
+	const words = base
+		.replace(/\.[a-z0-9]{1,8}$/i, "")
+		.replace(/[-_]+/g, " ")
+		.trim();
+	return words ? words.charAt(0).toLocaleUpperCase() + words.slice(1) : base;
+}
+
+/** What the agent wants to do, as one plain line. A Company File path never leads: the
+ * file is named as people say it. */
+function reviewHeadline(card: ActionReviewCard): string {
+	if (card.tool === "company_delete" && card.target)
+		return t("Delete “{name}”", { name: readableFileName(card.target) });
+	return card.title || t("Approval requested");
+}
+
+/** Keys whose value is the content itself (what would be said or written). */
+const CONTENT_KEYS = new Set(["body", "text", "message", "content", "instructions", "intent"]);
+/** Keys whose value names the thing (a subject, a title, a name). */
+const NAME_KEYS = new Set(["subject", "title", "name", "displayName"]);
+
+/** The change itself: who or what it reaches, what it is called, and what it says.
+ * Paths stay out of view; the exact call is under Technical details. */
+function reviewChange(card: ActionReviewCard): HTMLElement | null {
+	const fileTool = card.tool?.startsWith("company_") === true;
+	const names = card.details.filter(([key]) => NAME_KEYS.has(key));
+	const content = card.details.filter(([key]) => CONTENT_KEYS.has(key));
+	const other = card.details.filter(
+		([key]) => !NAME_KEYS.has(key) && !CONTENT_KEYS.has(key) && key !== "path" && !(fileTool && key === "target"),
+	);
+	const parts: (HTMLElement | null)[] = [
+		card.target && !fileTool ? h("p", { class: "review-target" }, card.target) : null,
+		...names.map(([, value]) => h("p", { class: "review-name" }, value)),
+		...content.map(([, value]) => h("blockquote", { class: "review-quote" }, value)),
+		other.length
+			? h(
+					"dl",
+					{ class: "decision-facts" },
+					...other.flatMap(([key, value]) => [h("dt", null, key), h("dd", null, value)]),
+				)
+			: null,
+	];
+	return parts.some(Boolean) ? h("div", { class: "review-change" }, ...parts) : null;
+}
+
 /** The Always allow editor of one card, kept by the thread across re-renders. */
 export interface ActionReviewDraft {
 	open: boolean;
@@ -228,6 +275,43 @@ export function renderActionReviewCard(
 			h("button", { type: "button", class: "btn btn-primary", onclick: saveRule }, t("Save rule and allow")),
 		),
 	);
+	const what = reviewHeadline(card);
+	// Answered: the card folds to one line that names what was decided.
+	if (state !== "pending")
+		return h(
+			"article",
+			{
+				class: "auth-card action-review-card is-folded",
+				"data-decision-state": state,
+				"data-review-id": card.reviewId,
+				tabindex: "-1",
+			},
+			h(
+				"span",
+				{ class: `review-mark is-${state}`, "aria-hidden": "true" },
+				icon(state === "approved" ? "check" : "close"),
+			),
+			h(
+				"p",
+				{ class: "review-folded" },
+				h(
+					"span",
+					{ class: "review-outcome" },
+					state === "approved"
+						? exact === "always_allow"
+							? t("Always allowed by {name}.", { name: answeredBy || t("a member") })
+							: t("Allowed once by {name}.", { name: answeredBy || t("a member") })
+						: t("Declined by {name}.", { name: answeredBy || t("a member") }),
+				),
+				" ",
+				h(
+					"span",
+					{ class: "review-folded-what" },
+					card.target && !card.tool?.startsWith("company_") ? `${what} · ${card.target}` : what,
+				),
+			),
+		);
+	const why = [...card.rules.map(rule), builtIn ? h("li", null, t(builtIn)) : null].filter(Boolean);
 	return h(
 		"article",
 		{
@@ -236,85 +320,66 @@ export function renderActionReviewCard(
 			"data-review-id": card.reviewId,
 			tabindex: "-1",
 		},
-		h(
-			"header",
-			{ class: "decision-heading" },
-			icon(state === "approved" ? "check" : "lock"),
-			h("span", null, t("Approval")),
-			badge(
-				state === "pending" ? t("Waiting") : state === "approved" ? t("Allowed") : t("Declined"),
-				state === "pending" ? "warn" : state === "approved" ? "ok" : "neutral",
-			),
-		),
-		h("h3", null, card.title || t("Approval requested")),
-		card.target ? h("p", { class: "review-target" }, card.target) : null,
-		card.summary ? h("p", null, card.summary) : null,
-		card.rules.length || builtIn
-			? h("ul", { class: "review-reasons" }, ...card.rules.map(rule), builtIn ? h("li", null, t(builtIn)) : null)
-			: null,
-		card.details.length
+		h("h3", { class: "review-headline" }, what),
+		reviewChange(card),
+		card.summary || why.length
 			? h(
-					"dl",
-					{ class: "decision-facts" },
-					...card.details.flatMap(([key, value]) => [h("dt", null, key), h("dd", null, value)]),
+					"div",
+					{ class: "review-why" },
+					card.summary ? h("p", null, card.summary) : null,
+					why.length ? h("ul", { class: "review-reasons" }, ...why) : null,
 				)
 			: null,
-		card.tool
-			? h(
-					"details",
-					{ class: "decision-details" },
-					h("summary", null, t("Exact action")),
-					h("pre", { class: "review-call" }, `${card.tool}(${card.arguments ?? ""})`),
-				)
-			: null,
-		h("p", { class: "decision-attribution" }, fmtTime(createdAt)),
-		state === "pending" && options.answerFailed && options.answer
+		options.answerFailed && options.answer
 			? h("p", { class: "review-failed" }, t("That answer did not reach the agent. Answer again."))
 			: null,
-		state === "pending"
-			? options.answer
-				? h(
+		options.answer
+			? h(
+					"div",
+					{ class: "review-answer" },
+					h(
 						"div",
-						{ class: "review-answer" },
-						h(
-							"div",
-							{ class: "decision-actions" },
-							h("button", { type: "button", class: "btn", onclick: () => options.answer?.("deny") }, t("Deny")),
-							card.alwaysAllow
-								? h(
-										"button",
-										{
-											type: "button",
-											class: "btn",
-											"aria-expanded": String(Boolean(options.draft?.open)),
-											"aria-controls": editorId,
-											onclick: (event: MouseEvent) => {
-												always.hidden = false;
-												(event.currentTarget as HTMLElement).setAttribute("aria-expanded", "true");
-												draft({ open: true });
-												ruleInput.focus();
-											},
+						{ class: "decision-actions" },
+						h("button", { type: "button", class: "btn", onclick: () => options.answer?.("deny") }, t("Deny")),
+						card.alwaysAllow
+							? h(
+									"button",
+									{
+										type: "button",
+										class: "btn",
+										"aria-expanded": String(Boolean(options.draft?.open)),
+										"aria-controls": editorId,
+										onclick: (event: MouseEvent) => {
+											always.hidden = false;
+											(event.currentTarget as HTMLElement).setAttribute("aria-expanded", "true");
+											draft({ open: true });
+											ruleInput.focus();
 										},
-										t("Always allow…"),
-									)
-								: null,
-							h(
-								"button",
-								{ type: "button", class: "btn btn-primary", onclick: () => options.answer?.("allow_once") },
-								t("Allow once"),
-							),
+									},
+									t("Always allow…"),
+								)
+							: null,
+						h(
+							"button",
+							{ type: "button", class: "btn btn-primary", onclick: () => options.answer?.("allow_once") },
+							t("Allow once"),
 						),
-						card.alwaysAllow ? always : null,
+					),
+					card.alwaysAllow ? always : null,
+				)
+			: h("p", { class: "review-waiting" }, waitingFor),
+		h(
+			"footer",
+			{ class: "review-foot" },
+			h("span", { class: "decision-attribution" }, fmtTime(createdAt)),
+			card.tool
+				? h(
+						"details",
+						{ class: "review-technical" },
+						h("summary", null, t("Technical details")),
+						h("pre", { class: "review-call" }, `${card.tool}(${card.arguments ?? ""})`),
 					)
-				: h("p", { class: "review-waiting muted" }, waitingFor)
-			: h(
-					"p",
-					{ class: "review-outcome muted" },
-					state === "approved"
-						? exact === "always_allow"
-							? t("Always allowed by {name}.", { name: answeredBy || t("a member") })
-							: t("Allowed once by {name}.", { name: answeredBy || t("a member") })
-						: t("Declined by {name}.", { name: answeredBy || t("a member") }),
-				),
+				: null,
+		),
 	);
 }

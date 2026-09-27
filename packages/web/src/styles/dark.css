@@ -123,6 +123,8 @@
 :root[data-theme="dark"] .attachment-remove { background: #3a3a38; box-shadow: 0 1px 4px rgb(0 0 0 / 40%); }
 :root[data-theme="dark"] .auth-card { border-color: var(--border); background: #262625; }
 :root[data-theme="dark"] .review-call { background: #1e1e1d; }
+:root[data-theme="dark"] .review-mark.is-approved { color: #5ed6a9; }
+:root[data-theme="dark"] .action-review-card.is-folded { border-color: transparent; background: none; }
 :root[data-theme="dark"] .review-rule-input { border-color: var(--border); background: #1e1e1d; }
 :root[data-theme="dark"] .settings-rule { background: #333332; }
 :root[data-theme="dark"] .received-file { border-color: var(--border); background: #262625; }
