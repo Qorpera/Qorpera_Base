@@ -404,64 +404,163 @@ A save on one appears on the others within about a second.
 
 ## 6. Coding machines and code in the company folder
 
-**The mount.** A coding machine belongs to one member and carries that
-member's sessions. Each session runs as its own uid and gets its own mount
-namespace, holding the view of the session's run authority: the coding agent
-plus the member.
+### The mount
 
-- Coding agents read, search and write company data like any agent. Their
-  commands (`coding_run_command`) publish at the end of each command, using
+A coding machine belongs to one member and carries that member's sessions.
+Each session runs as its own uid. It sees the view of its run authority: the
+paths both the coding agent and the member may use (contract section 4.3).
+
+**Where the folder service runs.** Command units see only their own binds
+(`deploy/coding-worker/COMMAND-GUEST.md`), and the guest holds no service
+credential. The FUSE adapter therefore runs in the guest, one per attached
+session. It talks over vsock to a folder service on the node host, and that
+service holds the credentials. The mount is bound at `/company` in every
+command unit of that session. The step-2 spike checks this against the other
+option: the host folder service exported per session as a third hot-plugged
+virtiofs device. `COMMAND-GUEST.md` is amended when this is built.
+
+**Publishing.**
+- Commands (`coding_run_command`) publish at the end of each command, using
   the run-box rule of section 2.
-- The session's working directory is its worktree inside `/company`.
-- The coding machine's existing NAS session folders keep only machine-local
-  data (see below) and custody.
+- Inside `.git` directories, publishing also happens at git's own commit
+  points (see below).
 
-**Repositories and worktrees live in the company folder.**
-- A repository is a folder under `code/`, for example `code/<repo>/`, with
-  its `.git` inside it.
-- Coding agents create worktrees there with ordinary git (`git worktree add`)
-  and keep them as company files, for example under
-  `code/<repo>-worktrees/<branch>/`.
-- Members see the code and its history in the web app like any other part of
-  the company.
+**Review.** Coding sessions are not reviewed (2026-09-25 amendment, item 2).
+Their deletes and moves, in `code/` and elsewhere, therefore apply without
+the automatic review, and nothing a coding session does is ever partly
+parked.
+
+**What the session's own NAS folders keep:** the per-session cache (see
+below) and custody.
+
+### Layout
+
+- A repository lives at `code/<owner>/<name>/`, named after its GitHub owner
+  and name.
+  - `main/` is the repository's main checkout, holding the shared git
+    directory (`main/.git`).
+  - `worktrees/<workerId>/` is one linked worktree per coding worker, on the
+    worker's fixed branch `qorpera/coding/<workerId>`.
+- A repository and its worktrees stay under one covering resource, so no
+  session sees a worktree whose git directory it cannot see.
+- The platform seeds `main/` once, from the company's GitHub connection. It
+  adds a worker's worktree the first time that worker runs.
+- The existing seed and export (`cloud-coding-git-guest.ts`) change to work
+  through the shared git directory (git's `commondir`), not a private
+  `<workspace>/.git`.
 - Branches still reach GitHub as pull requests (contract section 5.1): that
   is how code leaves the company, not how it is stored.
+- Members see the code and its history in the web app like any other part of
+  the company.
 
-**What changes for git.**
-- **Git metadata is allowed in `code/`.** Today `.git` is an adapter-only
-  prefix and generic writes are refused. Under `code/` the gateway accepts
-  `.git` directories and git's own files, and the mount shows them like any
-  file. Everywhere else `.git` stays refused.
-- **Git's lock files are real locks across machines.** Git takes
-  `index.lock`, `HEAD.lock`, `packed-refs.lock` and the like by creating them
-  exclusively. Inside a `.git` directory, the folder service turns an
-  exclusive create of a `*.lock` name into a short-lived lease in SQL. Two
-  machines therefore cannot both hold it. Lock files are never published.
-- **One git command is one unit.** Everything a git command changes inside
-  one `.git` directory (objects, refs, index, logs) is one unit and lands
-  whole or not at all. A ref that moved on another machine makes the unit a
-  conflict: nothing is written and the command's report says so. Objects are
-  content-addressed, so they never conflict.
-- **Git's housekeeping stays out of the history view.** `.git` internals are
-  versioned like any file. The web app's history view shows the worktree's
-  files and folds `.git` changes into one line per command.
+### Git on the mount
 
-**Machine-local data.** Dependencies and build output are machine caches,
-not company files:
-- `node_modules` always;
-- anything the repository's `.gitignore` ignores, by git's own
-  `check-ignore` rules.
+**`.git` only under `code/`.**
+- Today SQL refuses `.git` only as the first path segment, so `x/.git/…` is
+  accepted.
+- The new rule refuses a `.git` segment at any depth outside
+  `code/<owner>/<name>/`, in SQL and in the folder service, and accepts it
+  inside.
+- Only coding sessions may write a repository's `.git/config` and hook
+  scripts. Other agents and members cannot, so nobody can plant code that
+  runs in someone else's session on a plain `git status`.
 
-These live on the session's NAS folder on the coding machine and are shown at
-their place inside the worktree. They are never published, and they can be
-rebuilt at any time. This keeps a repository's company footprint at the size
-of its source and history, and it matches today's rule that `node_modules`
-never enters the Company File. Everything else in a worktree, including
-untracked files git does not ignore, is company data.
+**Git's commit points publish synchronously.** Git changes a ref or the index
+in three steps:
+1. it creates `X.lock` exclusively;
+2. it writes the lock;
+3. it renames the lock over `X`, or removes the lock to abort.
 
-**Sizes.** A repository adds its tracked files plus its `.git` files. Large
-repositories need per-folder trees and the lifted caps (build step 8). Pack
-files over 256 MiB need open question 4.
+Inside a `.git` directory the folder service follows that protocol:
+- **Exclusive create of `*.lock`** takes a lease in SQL for that path. While
+  the lease is held, the lock file exists on every machine, so git elsewhere
+  waits or fails with its usual "lock exists" message.
+  - The lease is renewed while the process that holds it lives.
+  - It ends when the process dies or the session detaches.
+- **Rename of the lock over its target** is the publish point, and it runs
+  inside the syscall:
+  - the folder service publishes one unit: that git directory's pending
+    changes (new objects, the target, reflog lines) plus the pending changes
+    of the worktree this git process works in;
+  - every path is checked against its base version;
+  - on a conflict the rename fails, so git reports an error instead of
+    success, and the command's report names the conflict;
+  - a later `&& git push` in the same command line therefore never sees an
+    unpublished commit.
+- **Removal of the lock** (git aborting) drops the lease without publishing
+  the lock.
+- **Other `.git` files** (`FETCH_HEAD`, `ORIG_HEAD`, `MERGE_HEAD`, rebase
+  state) follow the ordinary command boundary. Most of them sit in the
+  worker's own `.git/worktrees/<id>/`, where no one else writes.
+
+**Settings every session runs with**, set by the platform in the session's
+git configuration:
+
+| Setting | Why |
+|---|---|
+| `core.filesRefLockTimeout=10000` and `core.packedRefsTimeout=10000` | git waits on a held lease rather than failing at once |
+| `gc.auto=0` and `maintenance.auto=false` | no automatic cleanup from a session |
+| `gc.worktreePruneExpire=never` | a session never prunes another worker's worktree |
+| `worktree.useRelativePaths=true` | worktree links do not depend on where `/company` is mounted (it is `/company` everywhere anyway) |
+| `core.symlinks=false` | the Company File has no symlinks |
+| `core.checkStat=minimal` and `core.trustctime=false` | git's index does not re-hash every file because of how the mount reports file times |
+
+**Stable inode numbers.** The mount keeps inode numbers stable per path and
+version, which git's index also relies on.
+
+**Cleanup.**
+- `git gc` and repacking run only as a platform maintenance job per
+  repository. The job holds a lease on the whole repository and blocks new
+  lock leases in that git directory while it runs.
+- Setting a file time (`utime`) on anything under `.git/objects` returns
+  `EPERM`. Git then writes the object again instead of "freshening" it, so
+  cleanup can never prune an object a commit is about to reference.
+- Old versions of `.git/objects/**`, meaning packs a repack replaced, are not
+  kept in history beyond 7 days. The history view shows a worktree's files
+  and folds `.git` changes into one line per publish.
+
+### The per-session cache
+
+Dependencies and build output are caches, not company files. Each repository
+has a cache list, kept by the platform in `main/.git/info/qorpera-cache`:
+
+- It starts from a fixed set of folder names: `node_modules`, `.venv`,
+  `venv`, `target`, `dist`, `build`, `.next`, `.nuxt`, `__pycache__`,
+  `.gradle`, `.cache`, `.turbo`, `.pytest_cache`, `coverage`.
+- It drops any name under which the repository tracks files (`git ls-files`).
+  The list is recomputed when the repository is seeded and after each
+  published ref update of its default branch.
+
+Inside a worktree, a folder whose name is on the list lives in the session's
+own NAS cache folder:
+- It is never published.
+- Other views and machines see nothing at that path.
+- It can be rebuilt at any time.
+- When a name leaves the list because the repository started tracking files
+  there, the files at that name are published at the next boundary and
+  become company files.
+
+Everything else in a worktree, including untracked output such as `out/` or
+reports, is company data that members see. There is no ignore-pattern
+matching in the folder service; `.gitignore` decides only what git commits.
+
+### Names
+
+Under `code/` the name rules follow git's, not the Company File's:
+- `%`, `:` and device names (`aux.go`, `con.ts`) are allowed there.
+- Two rules are kept, because they are the Company File's identity rules:
+  - names are in NFC;
+  - no two sibling names differ only by case.
+
+The platform refuses to seed a repository that breaks either rule, and says
+which paths are the problem.
+
+### Sizes
+
+A repository adds its tracked files and its `.git` files. This repository
+alone is about 9,500 entries before any worktree. Code areas therefore come
+after per-folder trees and the lifted caps (build step 8). Pack files over
+256 MiB need open question 4.
 
 ## 7. Server work (SQL and gateway)
 
@@ -488,8 +587,15 @@ files over 256 MiB need open question 4.
    - Any earlier version of a path can be restored, by a member or by an
      agent.
 8. **Upload binding** for the folder service (section 1).
-9. **Code areas** (section 6): `.git` accepted under `code/`, lock leases,
-   one unit per git command, and `.git` folded in the history view.
+9. **Code areas** (section 6):
+   - the `.git` rule at any depth;
+   - lock leases and synchronous publish at lock rename;
+   - `.git/config` and hooks writable only by coding sessions;
+   - relaxed names under `code/`;
+   - `utime` refused under `.git/objects`;
+   - `.git/objects` history retention;
+   - the history view fold;
+   - the per-repository gc job.
 
 ## 8. Security
 
@@ -526,8 +632,11 @@ keeps using today's tools until step 5.
    - Read sets by covering resource.
 2. **Folder service and FUSE mount**, read-only, on an execution host: the
    unit, the account, and the `/dev/fuse` placement. Spike numbers come
-   first, and the spike includes `git status`, `git commit` and
-   `git worktree add` on a real repository in the mount.
+   first. The spike also covers, on a real repository in the mount:
+   - `git status`, `git commit`, `git fetch` and `git worktree add`;
+   - memory-mapped pack reads;
+   - lock contention between two machines;
+   - names with `%`, `:` and device names.
 3. **Run box.** `exec_command` over the read-only mount, the prompt change,
    and the capacity decision. First live acceptance: an agent searches the
    whole company.
@@ -547,17 +656,20 @@ keeps using today's tools until step 5.
    - The `company_*` tools and the Company File realm of `computer_transfer`
      are retired.
 7. **Coding-machine mount.**
-   - Per-session mount namespaces with the session's authority.
-   - Worktrees in `/company`.
-   - Machine-local dependencies and build output on the session folder.
+   - The FUSE adapter in the guest with its vsock link, or virtiofs (from the
+     spike).
+   - `/company` bound in every command unit.
+   - Company data read, written and searched from coding sessions.
+   - Coding sessions' changes skip review.
+   - The repository stays in the session's private workspace until step 9.
 8. **Per-folder trees**, and lifting the manifest and entry caps.
 9. **Code areas.**
-   - `.git` under `code/`.
-   - Lock leases.
-   - Git commands as units.
-   - The history view fold.
-   - A coding session moves its repository from its private NAS workspace
-     into `code/`.
+   - The layout `code/<owner>/<name>/main` and `worktrees/<workerId>`.
+   - Seeding.
+   - Seed and export through the shared git directory.
+   - The session git settings.
+   - The per-session cache.
+   - Worktrees move from the private NAS workspace into `/company`.
 
 ## 10. Live acceptance
 
@@ -583,11 +695,15 @@ keeps using today's tools until step 5.
   - It creates a worktree under `code/`, commits, and opens a pull request.
   - A member sees the worktree's files in the web app.
   - `node_modules` never appears in the Company File.
-  - Two sessions on different machines commit to the same repository, and
-    neither corrupts it.
+  - Two sessions on different machines commit to the same repository at the
+    same time. Neither corrupts it, and a conflicting ref update fails inside
+    git before git reports success.
+  - The gc job repacks while sessions work, and no commit is lost.
 - **Credentials.** A probe from the run box finds no credential file.
 - **Machine disks.** After a run, the disk and the workbench of each machine
-  contain none of the company folder's content hashes.
+  contain none of the company folder's content hashes. The one exception is a
+  coding session's cache folders, which hold only dependencies and build
+  output.
 
 ## Folders
 
