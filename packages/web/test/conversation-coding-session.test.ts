@@ -187,7 +187,7 @@ describe("coding sessions in the thread", () => {
 		await settle();
 		expect(messages.querySelector(".coding-line .peer-chip")).toBe(again);
 		expect(document.activeElement).toBe(again);
-		// The line opens the session as its own thread over the conversation; Close comes back to it.
+		// The line opens the session as its own thread over the conversation; the back arrow comes back to it.
 		again.click();
 		await settle();
 		const thread = f.view.el.querySelector(".coding-thread")!;
@@ -196,10 +196,13 @@ describe("coding sessions in the thread", () => {
 		expect(thread.getAttribute("aria-label")).toBe("Fixture agent ⇄ Codex · Fix the delay after send");
 		expect(thread.querySelector(".coding-thread-subtitle")?.textContent).toBe("Fix the delay after send");
 		expect(thread.querySelector(".coding-session .coding-body")).not.toBeNull();
-		expect(thread.querySelector(".coding-thread-footer")?.textContent).toContain(
-			"This session is view-only. Only Sofie Lund can type",
+		// No footer and no Close: the lock line stands where the owner's composer would, the back arrow returns.
+		expect(thread.querySelector(".coding-thread-footer")).toBeNull();
+		expect([...thread.querySelectorAll("button")].some((b) => b.textContent === "Close")).toBe(false);
+		expect(thread.querySelector(".coding-footer .coding-talk-locked")?.textContent).toBe(
+			"Only Sofie Lund can write to this session. Steer it through Fixture agent.",
 		);
-		[...thread.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent === "Close")!.click();
+		thread.querySelector<HTMLButtonElement>(".coding-thread-back")!.click();
 		expect(f.view.el.querySelector(".coding-thread")).toBeNull();
 		expect(document.activeElement).toBe(messages.querySelector(".coding-line .peer-chip"));
 	});
@@ -246,13 +249,13 @@ describe("coding sessions in the thread", () => {
 		await settle();
 		expect(header.querySelector(".coding-slot")).toBe(slot);
 		expect(slot.title).toContain("npm test");
-		// The figure opens the session; Close gives focus back to it.
+		// The figure opens the session; Escape gives focus back to it.
 		slot.click();
 		await settle();
 		expect(f.view.el.querySelector(".coding-thread")).not.toBeNull();
-		[...f.view.el.querySelectorAll<HTMLButtonElement>(".coding-thread button")]
-			.find((b) => b.textContent === "Close")!
-			.click();
+		f.view.el
+			.querySelector(".coding-thread")!
+			.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
 		expect(document.activeElement).toBe(slot);
 		// Settled: the figure leaves the header and the reads stop.
 		vi.mocked(f.api.listCodingSessions).mockResolvedValue([
@@ -447,7 +450,7 @@ describe("coding sessions in the thread", () => {
 		await settle();
 		f.view.el.querySelector<HTMLButtonElement>(".coding-line .peer-chip")!.click();
 		await settle();
-		const field = f.view.el.querySelector<HTMLInputElement>(".coding-thread .coding-field-input")!;
+		const field = f.view.el.querySelector<HTMLTextAreaElement>(".coding-thread .coding-field-input")!;
 		field.value = "Keep it.";
 		field.dispatchEvent(new Event("input", { bubbles: true }));
 		field.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));

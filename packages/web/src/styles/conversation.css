@@ -544,8 +544,8 @@
 .group-save-status:empty { display: none; }
 /* A coding session (Order 9). In the thread it is one line like a message to a coworker (.peer-link, below),
  * "Started a coding session in (mark) Codex"; while it runs, the header carries it beside the agent. Opened, it is its
- * own thread over the conversation (.coding-thread). */
-.coding-session { display: flex; flex: none; flex-direction: column; align-items: center; width: 100%; font-size: 14px; line-height: 20px; }
+ * own thread over the conversation (.coding-thread), read like one: the transcript scrolls, the composer stays under it. */
+.coding-session { display: flex; flex: 1; flex-direction: column; min-width: 0; min-height: 0; }
 .coding-line .peer-chip { gap: 4px; }
 /* The makers' marks: OpenAI's in the text colour, Claude's spark in its own orange. */
 .coding-mark { flex: none; display: block; }
@@ -554,7 +554,6 @@
 .coding-badge-codex { background: #161615; }
 .coding-badge-claude-code { background: #d97757; }
 .coding-badge-claude-code .coding-mark { color: #fff; }
-.coding-status { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 6px; width: 100%; min-width: 0; margin-top: 6px; padding: 0 12px; font-size: 12px; line-height: 16px; font-weight: 500; color: var(--text-muted); text-align: center; }
 .coding-dot { display: inline-block; width: 7px; height: 7px; flex: none; border-radius: 50%; background: var(--text-soft); }
 .coding-dot-working { background: #00c887; }
 .coding-dot-attention { background: var(--warning); }
@@ -563,54 +562,76 @@
 .coding-tone-attention .coding-status-text, .coding-step-status.coding-tone-attention { color: #8a5a00; }
 .coding-tone-done .coding-status-text, .coding-step-status.coding-tone-done, .coding-glyph.coding-tone-done { color: #0f7a55; }
 .coding-tone-failed .coding-status-text, .coding-step-status.coding-tone-failed { color: var(--danger); }
-.coding-session > .coding-status:last-child { margin-top: 2px; padding-bottom: 6px; }
-.coding-head { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 10px 0 6px; text-align: center; }
-.coding-title { font-size: 15px; font-weight: 600; line-height: 19px; }
-.coding-meta { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; font-size: 12px; line-height: 15px; color: var(--text-muted); }
+/* The transcript: the conversation's own type and measures, its bar hidden (quietScroll). */
+.coding-log { display: flex; flex: 1; flex-direction: column; min-height: 0; overflow: hidden auto; overscroll-behavior: contain; padding: 16px 16px 8px; font-family: var(--font-sans); font-size: 16px; line-height: 21px; letter-spacing: 0; }
+.coding-intro { display: flex; flex: none; flex-direction: column; align-items: center; gap: 4px; max-width: min(100%, 560px); margin: 12px auto 14px; text-align: center; }
+.coding-intro-mark { display: block; margin-bottom: 6px; }
+.coding-intro-mark .coding-badge { position: static; width: 44px; height: 44px; border: 0; border-radius: 50%; box-sizing: border-box; }
+.coding-intro-mark .coding-badge svg { width: 22px; height: 22px; }
+.coding-title { font-size: 17px; font-weight: 600; line-height: 22px; overflow-wrap: anywhere; }
+.coding-meta { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; font-size: 12px; line-height: 16px; color: var(--text-muted); }
 .coding-mono { font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace); font-size: 11.5px; }
-.coding-body { display: flex; flex-direction: column; gap: 2px; width: 640px; max-width: 100%; padding: 4px 0; }
-.coding-row { display: flex; align-items: flex-start; gap: 9px; padding: 4px 8px; font-size: 13.5px; line-height: 19px; color: var(--text); overflow-wrap: anywhere; }
+.coding-body { display: flex; flex: none; flex-direction: column; gap: 4px; min-width: 0; }
+/* Turns, as in a message between two agents: the harness on the left behind its mark, the agent's and other
+ * members' input on the right, the viewer's own in the composer's colour without a figure. */
+.coding-turn { display: flex; flex: none; align-items: flex-end; align-self: flex-start; gap: 8px; min-width: 0; max-width: min(88%, 780px); margin: 6px 0; }
+.coding-turn-steer, .coding-turn-mine { flex-direction: row-reverse; align-self: flex-end; }
+.coding-turn-mine { max-width: min(68%, 720px); }
+/* On a phone the harness takes the full width; its steps are long paths and commands. */
+@media (max-width: 600px) { .coding-turn-harness, .coding-turn-steer { max-width: 100%; } }
+.coding-avatar { display: block; flex: none; width: 28px; height: 28px; margin-bottom: 2px; }
+.coding-avatar .figure { width: 28px; height: 28px; }
+.coding-avatar .coding-badge { position: static; width: 28px; height: 28px; border: 0; border-radius: 50%; box-sizing: border-box; }
+.coding-avatar .coding-badge svg { width: 14px; height: 14px; }
+.coding-turn-body { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; min-width: 0; }
+.coding-turn-steer .coding-turn-body, .coding-turn-mine .coding-turn-body { align-items: flex-end; }
+.coding-turn-steer .message-author { text-align: right; }
+.coding-turn .bubble { max-width: 100%; }
+.coding-turn-harness .bubble + .bubble { border-top-left-radius: 8px; }
+.coding-turn-steer .bubble { border-radius: 18px 18px 5px 18px; }
+.coding-turn-mine .bubble + .bubble { border-top-right-radius: 8px; }
+.coding-question-live { box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--warning) 80%, transparent); }
+/* The harness's steps: quiet lines between its bubbles, in step with their text. */
+.coding-steps { display: flex; flex-direction: column; gap: 3px; padding: 3px 12px; }
+.coding-row { display: flex; align-items: flex-start; gap: 8px; font-size: 13px; line-height: 18px; color: var(--text-muted); overflow-wrap: anywhere; }
 .coding-row > div { min-width: 0; }
-.coding-glyph { flex: none; width: 14px; height: 14px; margin-top: 2.5px; color: var(--text-soft); }
+.coding-row a { color: var(--blue); text-decoration: none; }
+.coding-row a:hover { text-decoration: underline dotted; text-underline-offset: 3px; }
+.coding-row-done { color: var(--text); }
+.coding-glyph { flex: none; width: 14px; height: 14px; margin-top: 2px; color: var(--text-soft); }
 .coding-row-fold { justify-content: center; }
 .coding-row-fold .btn { border: 0; background: transparent; color: var(--text-soft); font-size: 12px; }
-.coding-row-quiet { justify-content: center; color: var(--text-soft); font-size: 12.5px; }
-.coding-row-error { color: var(--danger); }
-.coding-row-voice { align-items: flex-start; padding-top: 8px; padding-bottom: 8px; }
-.coding-voice { position: relative; display: inline-block; width: 20px; height: 20px; flex: none; }
-.coding-voice .coding-badge { position: static; width: 20px; height: 20px; border-radius: 50%; border: 0; box-sizing: border-box; }
-.coding-voice .coding-badge svg { width: 10px; height: 10px; }
-.coding-voice-text p { margin: 0; }
-.coding-voice-text p + p { margin-top: 6px; }
-.coding-row-input .coding-who { flex: none; font-weight: 600; color: var(--text-muted); }
-.coding-row-question { padding: 6px 0; }
-.coding-question { width: 100%; padding: 12px 14px; border-radius: 14px; border: 1px solid var(--border); background: var(--header-surface); font-size: 14px; line-height: 20px; text-align: left; box-sizing: border-box; }
-.coding-question-from { display: flex; align-items: center; gap: 7px; margin-bottom: 6px; font-size: 11px; font-weight: 600; color: var(--text-muted); }
-.coding-question-from .coding-badge { position: static; width: 16px; height: 16px; border-radius: 50%; border: 0; box-sizing: border-box; }
-.coding-question-from .coding-badge svg { width: 8px; height: 8px; }
-.coding-talk { display: flex; flex-direction: column; align-items: stretch; gap: 8px; width: 640px; max-width: 100%; padding: 6px 0 8px; }
-.coding-options { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; }
-.coding-options .btn { border-radius: 999px; min-height: 32px; padding: 0 14px; font-size: 13.5px; font-weight: 500; }
-.coding-field { display: flex; align-items: center; gap: 8px; min-height: 40px; padding: 0 5px 0 14px; border: 1px solid var(--border-strong); border-radius: 20px; background: var(--bg); box-sizing: border-box; }
-.coding-field-input { flex: 1; min-width: 0; border: 0; background: transparent; padding: 0; font: inherit; font-size: 15px; color: var(--text); outline: none; }
-.coding-field-input::placeholder { color: var(--text-soft); }
-.coding-field-input:disabled { color: var(--text-soft); }
-.coding-send { border-radius: 999px; min-height: 30px; }
-.coding-hint { display: flex; align-items: center; justify-content: center; gap: 6px; font-size: 11.5px; line-height: 15px; color: var(--text-soft); text-align: center; }
-.coding-hint .coding-glyph { margin: 0; width: 12px; height: 12px; }
-.coding-talk-locked { padding-top: 4px; }
-.coding-pr { display: flex; flex-direction: column; align-items: stretch; gap: 8px; width: 640px; max-width: 100%; padding: 6px 0 4px; }
-.coding-pr-card { display: flex; gap: 12px; padding: 12px 14px; border: 1px solid var(--border); border-radius: 14px; background: var(--bg); }
-.coding-pr-glyph { flex: none; width: 22px; height: 22px; margin-top: 1px; color: var(--text-muted); }
-.coding-pr-body { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
-.coding-pr-title { font-size: 15px; font-weight: 600; line-height: 19px; overflow-wrap: anywhere; }
+.coding-row-quiet { justify-content: center; margin: 12px 0; color: var(--text-soft); font-size: 12.5px; }
+.coding-row-error, .conversation-note.coding-row-error { color: var(--danger); }
+/* The pull request: a card in the harness's turn, its links as pills under it. */
+.coding-pr { display: flex; flex-direction: column; gap: 10px; width: min(520px, 100%); padding: 12px 14px; border: 1px solid var(--border); border-radius: 18px; background: var(--bg); box-sizing: border-box; }
+.coding-pr-head { display: flex; gap: 10px; min-width: 0; }
+.coding-pr-glyph { flex: none; width: 20px; height: 20px; margin-top: 1px; color: var(--text-muted); }
+.coding-pr-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.coding-pr-title { font-size: 15px; font-weight: 600; line-height: 20px; overflow-wrap: anywhere; }
 .coding-pr-number { font-weight: 500; color: var(--text-muted); }
 .coding-pr-meta { font-size: 12.5px; line-height: 16px; color: var(--text-muted); overflow-wrap: anywhere; }
-.coding-checks { display: flex; flex-direction: column; gap: 4px; margin-top: 4px; font-size: 12.5px; line-height: 16px; }
+.coding-checks { display: flex; flex-direction: column; gap: 4px; padding-left: 30px; font-size: 12.5px; line-height: 16px; }
 .coding-check { display: flex; align-items: center; gap: 7px; }
-.coding-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; }
-.coding-actions .btn { border-radius: 999px; min-height: 32px; padding: 0 14px; font-size: 13.5px; font-weight: 500; text-decoration: none; color: inherit; }
+.coding-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.coding-actions .btn { border-radius: 999px; min-height: 30px; padding: 0 13px; font-size: 13px; font-weight: 500; text-decoration: none; color: inherit; }
 .coding-actions .btn-primary { color: var(--on-primary); }
+/* Under the transcript, where a conversation's composer stands: the status, the question's choices, the field. */
+.coding-footer { display: flex; flex: none; flex-direction: column; gap: 8px; padding: 4px 16px 10px; }
+.coding-status { display: flex; align-items: center; justify-content: center; gap: 6px; min-width: 0; font-size: 12px; line-height: 16px; font-weight: 500; color: var(--text-muted); text-align: center; }
+.coding-status-text { min-width: 0; overflow-wrap: anywhere; }
+.coding-status .coding-dot-working { animation: pulse 1.6s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) { .coding-status .coding-dot-working { animation: none; } }
+.coding-extras { display: flex; flex-direction: column; gap: 6px; }
+.coding-extras[hidden] { display: none; }
+.coding-extras .coding-row-error { font-size: 12.5px; line-height: 16px; overflow-wrap: anywhere; }
+.coding-options { display: flex; flex-wrap: wrap; gap: 8px; }
+.coding-options .btn { border-radius: 999px; min-height: 32px; padding: 0 14px; font-size: 13.5px; font-weight: 500; }
+/* The conversation's composer without its menu button, so the field starts at the shell's left edge. */
+.composer-shell.coding-composer:not(.is-expanded) { padding-left: 16px; }
+.coding-composer:has(.coding-field-input:disabled) { background: var(--hover); }
+.coding-talk-locked { display: flex; align-items: center; justify-content: center; gap: 6px; min-height: 44px; padding: 6px 16px; border-radius: 22px; background: var(--hover); box-sizing: border-box; font-size: 12.5px; line-height: 16px; color: var(--text-muted); text-align: center; }
+.coding-talk-locked .coding-glyph { margin: 0; width: 12px; height: 12px; }
 /* A session still going, beside the agent in the header: the agent's figure wearing the harness mark, a little
  * smaller than the agent's own and standing on the same line (bottoms aligned), with a thin rule before each.
  * Hover or focus unfolds the session's title into a pill that floats over the header, so nothing beside it moves. */
@@ -635,8 +656,7 @@
 .coding-slot.coding-slot-yield .coding-slot-name { pointer-events: none; }
 .coding-slot:focus-visible .coding-slot-name { box-shadow: inset 0 0 0 2px var(--text); }
 @media (prefers-reduced-motion: reduce) { .coding-slot-name { transition: none; } }
-/* The session as its own thread: over the conversation, with its own header and footer, as a bot's message to
- * another bot opens. */
+/* The session as its own thread: over the conversation with its own header, as a message to a coworker opens. */
 .coding-thread { position: absolute; inset: 0; z-index: 25; display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--bg); animation: computer-enter 160ms ease both; }
 .coding-thread-header { gap: 8px; }
 .coding-thread-identity { display: flex; align-items: center; gap: 9px; min-width: 0; }
@@ -648,12 +668,6 @@
 .coding-thread-names { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
 .coding-thread-names h1 { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 600; letter-spacing: 0; }
 .coding-thread-subtitle { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; line-height: 13px; color: var(--text-muted); }
-.coding-thread-body { flex: 1; min-height: 0; overflow: hidden auto; padding: 8px 16px 16px; }
-.coding-thread-body .coding-session { margin: 0; }
-.coding-thread-body .coding-body, .coding-thread-body .coding-talk, .coding-thread-body .coding-pr { width: 760px; }
-.coding-thread-footer { display: flex; flex: none; align-items: center; justify-content: center; gap: 10px; min-height: 44px; padding: 8px 16px; border-top: 1px solid var(--border); font-size: 12px; line-height: 16px; color: var(--text-muted); }
-.coding-thread-note { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
-.coding-thread-footer .btn { border-radius: 999px; }
 
 /* A message between two agents: a chip in each agent's thread, the transcript behind it (contract 14.6). */
 .peer-link { display: flex; flex: none; align-self: center; justify-content: center; max-width: 100%; margin: 6px 0; }

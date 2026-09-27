@@ -274,20 +274,37 @@ describe("the element in the thread", () => {
 		const { element, read } = mount(codingSession(), { events });
 		await settle();
 		expect(read).toHaveBeenCalledWith(WORKER, 0);
-		expect(element.el.querySelector(".coding-title")?.textContent).toBe("Fix the delay after send");
-		expect(element.el.querySelector(".coding-meta")?.textContent).toContain("managed by Mark");
-		const rows = [...element.el.querySelectorAll(".coding-body .coding-row")].map((row) => row.textContent);
-		expect(rows).toEqual([
-			"Cloning Qorpera_Base",
-			"The delay came from the composer.Moving the refresh after the post.",
-			"npx vitest run test/composer-send.test.ts passed",
+		expect(element.el.querySelector(".coding-intro .coding-title")?.textContent).toBe("Fix the delay after send");
+		expect(element.el.querySelector(".coding-meta")?.textContent).toBe(
+			`Qorpera_Base·qorpera/coding/1111…·claude-sonnet-5`,
+		);
+		// One turn for the harness, behind its mark: its steps, then what it said, a bubble a paragraph, then a step.
+		const turns = [...element.el.querySelectorAll<HTMLElement>(".coding-body .coding-turn")];
+		expect(turns.map((turn) => turn.className)).toEqual(["coding-turn coding-turn-harness"]);
+		const turn = turns[0]!;
+		expect(turn.querySelector(".coding-avatar .coding-badge-claude-code")).not.toBeNull();
+		expect(turn.querySelector(".message-author")?.textContent).toBe("Claude Code");
+		expect(
+			[...turn.querySelectorAll(".coding-turn-body > *")].map((node) =>
+				node.classList.contains("coding-steps")
+					? `steps: ${[...node.children].map((row) => row.textContent).join(" | ")}`
+					: node.classList.contains("bubble")
+						? `bubble: ${node.textContent}`
+						: node.className,
+			),
+		).toEqual([
+			"message-author",
+			"steps: Cloning Qorpera_Base",
+			"bubble: The delay came from the composer.",
+			"bubble: Moving the refresh after the post.",
+			"steps: npx vitest run test/composer-send.test.ts passed",
 		]);
-		expect(element.el.querySelector(".coding-row-voice .coding-badge-claude-code")).not.toBeNull();
-		// The session is working: the owner's field waits, and says so.
-		const field = element.el.querySelector<HTMLInputElement>(".coding-field-input")!;
+		// The session is working: the owner's field, under the transcript, waits and says so.
+		const field = element.el.querySelector<HTMLTextAreaElement>(".coding-footer .coding-field-input")!;
 		expect(field.disabled).toBe(true);
-		expect(element.el.querySelector(".coding-hint")?.textContent).toContain("Uses your Claude Code plan");
-		expect(element.el.querySelector(".coding-status")?.textContent).toContain("Working · 4 min");
+		expect(field.placeholder).toBe("Claude Code is working");
+		expect(element.el.querySelector(".coding-hint")).toBeNull();
+		expect(element.el.querySelector(".coding-footer .coding-status")?.textContent).toContain("Working · 4 min");
 		// No fold in the session's own thread: it is always open.
 		expect(element.el.querySelector(".coding-chip, .coding-link")).toBeNull();
 	});
@@ -309,8 +326,13 @@ describe("the element in the thread", () => {
 			},
 		);
 		await settle();
-		expect(element.el.querySelector(".coding-question")?.textContent).toContain("Claude Code asks");
-		expect(element.el.querySelector(".coding-question")?.textContent).toContain("Keep 250 ms or raise to 500 ms?");
+		// The question is the harness's bubble, marked while it waits; the choices stand over the composer.
+		const question = element.el.querySelector(".coding-turn-harness .coding-question")!;
+		expect(question.textContent).toBe("Keep 250 ms or raise to 500 ms?");
+		expect(question.classList.contains("coding-question-live")).toBe(true);
+		expect(
+			[...element.el.querySelectorAll(".coding-footer .coding-options button")].map((item) => item.textContent),
+		).toEqual(["Keep 250 ms", "Raise to 500 ms", "Let Mark decide"]);
 		const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 		button(element.el, "Keep 250 ms").click();
 		await settle();
@@ -323,13 +345,17 @@ describe("the element in the thread", () => {
 		button(element.el, "Let Mark decide").click();
 		await settle();
 		expect(delegate).toHaveBeenCalledWith(WORKER, expect.stringMatching(uuid));
-		const field = element.el.querySelector<HTMLInputElement>(".coding-field-input")!;
+		const field = element.el.querySelector<HTMLTextAreaElement>(".coding-field-input")!;
 		expect(field.disabled).toBe(false);
+		expect(field.placeholder).toBe("Or answer in your own words");
 		field.value = "Keep it, and add a comment why.";
 		field.dispatchEvent(new Event("input", { bubbles: true }));
 		field.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
 		await settle();
 		expect(answer).toHaveBeenLastCalledWith(WORKER, "Keep it, and add a comment why.", expect.stringMatching(uuid));
+		// A typed answer empties the composer; the same field stays in place for the next.
+		expect(field.value).toBe("");
+		expect(element.el.querySelector(".coding-field-input")).toBe(field);
 	});
 
 	it("a failed answer keeps the same request id for the retry and shows why", async () => {
@@ -353,11 +379,11 @@ describe("the element in the thread", () => {
 			events: [event(1, "needs_input", { needs: "Which?" }, "executor")],
 		});
 		await settle();
-		expect(element.el.querySelector(".coding-question")?.textContent).toContain("Which?");
+		expect(element.el.querySelector(".coding-question")?.textContent).toBe("Which?");
 		expect(element.el.querySelector(".coding-status")?.textContent).toBe("Needs Jonas · paused 1 min");
-		expect(element.el.querySelector(".coding-field-input")).toBeNull();
-		expect(element.el.querySelector(".coding-talk-locked")?.textContent).toContain(
-			"Only Jonas can type here. Everyone else steers through Mark. Uses Jonas's Claude Code plan.",
+		expect(element.el.querySelector(".coding-field-input, .coding-options")).toBeNull();
+		expect(element.el.querySelector(".coding-footer .coding-talk-locked")?.textContent).toBe(
+			"Only Jonas can write to this session. Steer it through Mark.",
 		);
 	});
 
@@ -396,7 +422,10 @@ describe("the element in the thread", () => {
 		expect(element.el.querySelector(".coding-status")?.textContent).toContain(
 			"Draft PR ready · session kept for follow-ups",
 		);
-		expect(element.el.querySelector(".coding-pr-title")?.textContent).toBe("Draft pull request #204");
+		// The card stands in the harness's turn where the pull request was published, not as a line as well.
+		expect(element.el.querySelector(".coding-turn-harness .coding-pr .coding-pr-title")?.textContent).toBe(
+			"Draft pull request #204",
+		);
 		expect(element.el.querySelector(".coding-pr-meta")?.textContent).toBe(
 			"Qorpera/Qorpera_Base · qorpera/coding/1111… → master · 3 files · 1 artifact",
 		);
@@ -414,11 +443,10 @@ describe("the element in the thread", () => {
 		]);
 		button(element.el, "Ask Mark to review").click();
 		expect(ask).toHaveBeenCalledWith(expect.stringContaining("draft PR #204"));
-		const field = element.el.querySelector<HTMLInputElement>(".coding-field-input")!;
+		const field = element.el.querySelector<HTMLTextAreaElement>(".coding-field-input")!;
 		expect(field.disabled).toBe(false);
 		expect(field.placeholder).toBe("Follow up on this session");
 		expect([...element.el.querySelectorAll(".coding-body .coding-row")].map((row) => row.textContent)).toEqual([
-			"Draft PR #204 opened",
 			"Draft PR opened.",
 		]);
 	});

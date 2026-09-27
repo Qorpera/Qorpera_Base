@@ -222,7 +222,7 @@
 :root[data-theme="dark"] .coding-tone-done .coding-status-text, :root[data-theme="dark"] .coding-step-status.coding-tone-done, :root[data-theme="dark"] .coding-glyph.coding-tone-done { color: #5ed6a9; }
 :root[data-theme="dark"] .coding-badge-codex { background: #f4f3f0; color: #161615; }
 :root[data-theme="dark"] .coding-dot-working { background: #30d158; }
-:root[data-theme="dark"] .coding-question { background: #262624; }
+:root[data-theme="dark"] .coding-composer:has(.coding-field-input:disabled) { background: var(--hover); }
 :root[data-theme="dark"] .service-card .service-agents, :root[data-theme="dark"] .service-token-form small { color: #a3a39e; }
 :root[data-theme="dark"] .service-outcome.is-ok { color: #8fc7b3; }
 :root[data-theme="dark"] .service-outcome.is-error { color: #ff8a4c; }

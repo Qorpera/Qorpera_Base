@@ -170,14 +170,12 @@ export const AGENTS: Record<string, string> = {
 	"Failed · workspace kept": "Mislykkedes · arbejdsområdet er gemt",
 	"Cancelled · workspace kept": "Annulleret · arbejdsområdet er gemt",
 	"Coding session": "Kodesession",
-	"managed by {name}": "styret af {name}",
 	"{count} earlier step": "{count} tidligere trin",
 	"{count} earlier steps": "{count} tidligere trin",
 	"Waiting for a computer to start the session.": "Venter på en computer, der kan starte sessionen.",
 	"Nothing reported yet.": "Intet meldt endnu.",
 	Step: "Trin",
 	"The session has a question.": "Sessionen har et spørgsmål.",
-	"{harness} asks": "{harness} spørger",
 	"You left it to {agent}": "Du overlod det til {agent}",
 	"{owner} left it to {agent}": "{owner} overlod det til {agent}",
 	"Draft PR #{number} opened": "PR-kladde #{number} åbnet",
@@ -199,23 +197,13 @@ export const AGENTS: Record<string, string> = {
 	"Follow up on the session": "Følg op på sessionen",
 	"Or answer in your own words": "Eller svar med dine egne ord",
 	"Follow up on this session": "Følg op på denne session",
-	"The session is working": "Sessionen arbejder",
 	Answer: "Svar",
-	"Your answer goes to {harness} and is recorded in this thread.":
-		"Dit svar går til {harness} og gemmes i denne tråd.",
-	"A follow-up starts the session again on the same branch. Uses your {harness} plan.":
-		"En opfølgning starter sessionen igen på samme branch. Bruger dit {harness}-abonnement.",
-	"You can talk to the session once it starts. Uses your {harness} plan.":
-		"Du kan tale med sessionen, når den starter. Bruger dit {harness}-abonnement.",
-	"The session is working; you can answer when it asks or follow up when it is done. Uses your {harness} plan.":
-		"Sessionen arbejder; du kan svare, når den spørger, eller følge op, når den er færdig. Bruger dit {harness}-abonnement.",
 	"Let {name} decide": "Lad {name} bestemme",
-	"Only {owner} can type here. Everyone else steers through {agent}. Uses {ownerName}'s {harness} plan.":
-		"Kun {owner} kan skrive her. Alle andre styrer via {agent}. Bruger {harness}-abonnementet hos {ownerName}.",
+	"Answer {harness}": "Svar {harness}",
+	"The session has not started yet": "Sessionen er ikke startet endnu",
+	"{harness} is working": "{harness} arbejder",
+	"Only {owner} can write to this session. Steer it through {agent}.":
+		"Kun {owner} kan skrive til sessionen. Styr den via {agent}.",
 	"Back to the conversation": "Tilbage til samtalen",
-	"Your answers and follow-ups go to {harness}. Uses your {harness} plan.":
-		"Dine svar og opfølgninger går til {harness}. Bruger dit {harness}-abonnement.",
-	"This session is view-only. Only {owner} can type; steer it through {agent}.":
-		"Sessionen er skrivebeskyttet. Kun {owner} kan skrive; styr den via {agent}.",
 	"Loading group details": "Henter gruppedetaljer",
 };
