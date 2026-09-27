@@ -1,5 +1,16 @@
 import assert from "node:assert/strict";
 
+export function parseCodingStorageProbeArguments(args) {
+  assert(args.length === 2 || args.length === 4, "Expected --out PATH [--export-policy root-squashed|identity-preserving]");
+  assert.equal(args[0], "--out");
+  assert.equal(typeof args[1], "string");
+  assert(args[1].length > 0);
+  const exportPolicy = args.length === 4 ? args[3] : "root-squashed";
+  if (args.length === 4) assert.equal(args[2], "--export-policy");
+  assert(["root-squashed", "identity-preserving"].includes(exportPolicy), "Unsupported diagnostic export policy");
+  return { out: args[1], exportPolicy, squashOption: exportPolicy === "root-squashed" ? "root_squash" : "no_root_squash" };
+}
+
 /** No infrastructure failure is classified as proof of root-squash behavior. */
 export function classifyCodingStorageProbe(report) {
   assert.equal(report.schema, "qorpera.coding-storage-guest-probe/v1");
@@ -20,7 +31,7 @@ export function classifyCodingStorageProbe(report) {
   if (rootCustodyCreate.succeeded === false && ["EACCES", "EPERM"].includes(rootCustodyCreate.code) &&
     initialize.status === 1 && /^CODING_GUEST_STORAGE_REFUSED ERRNO:(EACCES|EPERM)$/.test(initialize.stderr) &&
     gitPrepare.status === 1 && gitPrepare.stderr === "CODING_GIT_GUEST_REFUSED") {
-    return { observed: true, compatible: false, code: "ROOT_SQUASHED_CODING_CUSTODY_UNWRITABLE" };
+    return { observed: true, compatible: false, code: "ROOT_CODING_CUSTODY_UNWRITABLE" };
   }
   if (rootCustodyCreate.succeeded === true && rootCustodyCreate.uid === 0 && initialize.status === 0 && gitPrepare.status === 0)
     return { observed: true, compatible: true, code: "PRODUCTION_HELPERS_ACCEPTED" };

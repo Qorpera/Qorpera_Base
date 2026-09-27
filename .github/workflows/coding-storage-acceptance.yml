@@ -2,6 +2,11 @@ name: Coding storage physical diagnosis
 
 on:
   workflow_call:
+    inputs:
+      export_policy:
+        type: string
+        required: false
+        default: root-squashed
 
 permissions:
   contents: read
@@ -45,12 +50,14 @@ jobs:
           sudo /snap/bin/lxd waitready --timeout=60
       - name: Test diagnosis boundaries
         run: node --test scripts/acceptance/coding-storage-probe-contract.test.mjs
-      - name: Probe unchanged helpers on real root-squashed NFS and virtiofs
+      - name: Probe unchanged helpers on the explicit diagnostic NFS policy and virtiofs
         timeout-minutes: 9
+        env:
+          EXPORT_POLICY: ${{ inputs.export_policy }}
         run: |
           set -euo pipefail
           sudo env PATH="${PATH}:/snap/bin" GITHUB_ACTIONS=true RUNNER_ENVIRONMENT=github-hosted GITHUB_SHA="${GITHUB_SHA}" \
-            node scripts/acceptance/coding-storage-physical.mjs --out "${RUNNER_TEMP}/coding-storage-probe"
+            node scripts/acceptance/coding-storage-physical.mjs --out "${RUNNER_TEMP}/coding-storage-probe" --export-policy "${EXPORT_POLICY}"
       - name: Retain bounded storage evidence even when the boundary is incompatible
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

@@ -4,10 +4,18 @@ on:
   workflow_dispatch:
     inputs:
       coding_storage_probe:
-        description: Run only the bounded real root-squashed NFS and coding guest helper diagnosis
+        description: Run only the bounded real NFS and coding guest helper diagnosis
         type: boolean
         required: false
         default: false
+      coding_storage_export_policy:
+        description: Loopback-only diagnostic export policy (no production changes)
+        type: choice
+        required: false
+        default: root-squashed
+        options:
+          - root-squashed
+          - identity-preserving
       real_lxd_acceptance:
         description: Run the disposable nested-KVM paid guard acceptance instead of mock contracts
         type: boolean
@@ -127,6 +135,8 @@ jobs:
   coding-storage-probe:
     if: github.event_name == 'workflow_dispatch' && inputs.coding_storage_probe
     uses: ./.github/workflows/coding-storage-acceptance.yml
+    with:
+      export_policy: ${{ inputs.coding_storage_export_policy }}
 
   office-physical-acceptance:
     if: github.event_name == 'workflow_dispatch' && inputs.office_physical_acceptance && !inputs.coding_storage_probe

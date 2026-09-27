@@ -7,22 +7,23 @@ import { cpus, totalmem } from "node:os";
 import { join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
-import { classifyCodingStorageProbe } from "./coding-storage-probe-contract.mjs";
+import { classifyCodingStorageProbe, parseCodingStorageProbeArguments } from "./coding-storage-probe-contract.mjs";
 
 // Diagnostic infrastructure only. No company, model, GitHub, paid admission,
 // repository execution or production deployment is represented by this VM.
 assert.equal(process.platform, "linux"); assert.equal(process.getuid(), 0);
 assert.equal(process.env.GITHUB_ACTIONS, "true"); assert.equal(process.env.RUNNER_ENVIRONMENT, "github-hosted");
-assert(process.argv.length === 4 && process.argv[2] === "--out");
+const options = parseCodingStorageProbeArguments(process.argv.slice(2));
 assert(cpus().length >= 2 && totalmem() > 3 * 1024 ** 3);
 assert((await stat("/dev/kvm")).isCharacterDevice());
-const repository = fileURLToPath(new URL("../../", import.meta.url)), out = resolve(process.argv[3]);
+const repository = fileURLToPath(new URL("../../", import.meta.url)), out = resolve(options.out);
 const root = "/srv/qorpera-coding-storage-probe", exported = `${root}/export`, mount = `${root}/mount`;
 const exportsFile = "/etc/exports.d/qorpera-coding-storage-probe.exports", vm = "qorpera-coding-storage-probe";
 const workerId = randomUUID(), companyId = randomUUID(), environmentId = randomUUID(), vmId = randomUUID(), transferId = randomUUID();
 const hash = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const evidence = { schema: "qorpera.coding-storage-physical-probe/v1", commit: process.env.GITHUB_SHA ?? null,
-  scope: "Diagnostic real root-squashed NFSv4 + LXD virtiofs + unchanged production coding storage/Git helpers. No executor, repository, billing, model or GitHub acceptance.",
+  scope: "Diagnostic loopback-only NFSv4 + LXD virtiofs + unchanged production coding storage/Git helpers. No executor, repository, billing, model or GitHub acceptance.",
+  exportPolicy: options.exportPolicy,
   diagnosticCompleted: false, compatible: false, cleanup: false, phase: "preflight" };
 const startedAt = new Date().toISOString();
 let ownsRoot = false, exportedNow = false, mounted = false, createdVm = false;
@@ -82,11 +83,18 @@ try {
   await directory(`${exported}/coding/executor`, 1100, 0o700);
   await file(`${exported}/coding/executor/traversal-sentinel`, "executor-readable\n", 1100, 0o600);
   await mkdir("/etc/exports.d", { recursive: true, mode: 0o755 });
-  const exports = `${exported} 127.0.0.1(rw,sync,root_squash,no_subtree_check,fsid=0)\n${exported}/coding 127.0.0.1(rw,sync,root_squash,no_subtree_check,fsid=1)\n`;
+  const exports = `${exported} 127.0.0.1(rw,sync,${options.squashOption},no_all_squash,no_subtree_check,fsid=0)\n${exported}/coding 127.0.0.1(rw,sync,${options.squashOption},no_all_squash,no_subtree_check,fsid=1)\n`;
   await writeFile(exportsFile, exports, { mode: 0o644, flag: "wx" }); exportedNow = true;
   run("systemctl", ["start", "nfs-server"]); run("exportfs", ["-ra"]);
   evidence.exports = run("exportfs", ["-v"]);
-  assert(evidence.exports.includes("root_squash") && !evidence.exports.includes("no_root_squash"));
+  const exportLines = evidence.exports.split("\n").filter((line) => line.includes("("));
+  assert.equal(exportLines.length, 2);
+  for (const line of exportLines) {
+    assert(line.trim().startsWith("127.0.0.1("));
+    const flags = line.slice(line.indexOf("(") + 1, line.lastIndexOf(")")).split(",");
+    assert(flags.includes(options.squashOption) && flags.includes("no_all_squash"));
+    assert(!flags.includes(options.squashOption === "root_squash" ? "no_root_squash" : "root_squash"));
+  }
   run("mount", ["-t", "nfs4", "-o", "vers=4.2,proto=tcp,hard,nosuid,nodev", "127.0.0.1:/coding", mount]); mounted = true;
   evidence.hostMountInfo = (await readFile("/proc/self/mountinfo", "utf8")).split("\n").filter((line) => line.includes(` ${mount} `));
   assert.equal(evidence.hostMountInfo.length, 1); assert(evidence.hostMountInfo[0].includes(" - nfs4 "));
@@ -101,7 +109,7 @@ try {
   // host ancestors traversable to isolate guest dynamic custody semantics.
   // Session roots, data/custody children and helper ownership remain exact.
   await chmod(`${exported}/coding/executor`, 0o755);
-  evidence.helperIsolation = { hostAncestorsMode: "0755", productionHostAdmissionClaimed: false, rootSquashUnchanged: true };
+  evidence.helperIsolation = { hostAncestorsMode: "0755", productionHostAdmissionClaimed: false, exportPolicyUnchanged: true };
   let cursor = `${exported}/coding/executor`;
   for (const name of ["workers", companyId, environmentId, workerId]) { cursor += `/${name}`; await directory(cursor, 1100, 0o755); }
   await directory(`${cursor}/data`, 1100, 0o755); await directory(`${cursor}/guest-state`, 1100, 0o755);

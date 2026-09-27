@@ -1,6 +1,19 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { classifyCodingStorageProbe } from "./coding-storage-probe-contract.mjs";
+import { classifyCodingStorageProbe, parseCodingStorageProbeArguments } from "./coding-storage-probe-contract.mjs";
+
+test("keeps root-squashed default and requires explicit bounded positive-control policy", () => {
+  assert.deepEqual(parseCodingStorageProbeArguments(["--out", "/tmp/probe"]), {
+    out: "/tmp/probe", exportPolicy: "root-squashed", squashOption: "root_squash",
+  });
+  assert.deepEqual(parseCodingStorageProbeArguments(["--out", "/tmp/probe", "--export-policy", "identity-preserving"]), {
+    out: "/tmp/probe", exportPolicy: "identity-preserving", squashOption: "no_root_squash",
+  });
+  for (const args of [[], ["--out", ""], ["--out", "/tmp/probe", "--export-policy"],
+    ["--out", "/tmp/probe", "--export-policy", "no_root_squash,all_squash"],
+    ["--out", "/tmp/probe", "--server", "identity-preserving"]])
+    assert.throws(() => parseCodingStorageProbeArguments(args));
+});
 
 function report() {
   const workerId = "11111111-1111-4111-8111-111111111111", data = `/workspace/${workerId}`, custody = `/var/lib/qorpera-coding/${workerId}`;
@@ -15,7 +28,7 @@ function report() {
     } };
 }
 test("classifies root-only refusal only alongside actual session write and exact protected ownership", () => {
-  assert.deepEqual(classifyCodingStorageProbe(report()), { observed: true, compatible: false, code: "ROOT_SQUASHED_CODING_CUSTODY_UNWRITABLE" });
+  assert.deepEqual(classifyCodingStorageProbe(report()), { observed: true, compatible: false, code: "ROOT_CODING_CUSTODY_UNWRITABLE" });
 });
 test("does not turn unrelated helper or mount failures into a proven storage diagnosis", () => {
   for (const mutate of [
