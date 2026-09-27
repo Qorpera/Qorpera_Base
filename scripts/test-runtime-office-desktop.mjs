@@ -15,7 +15,7 @@ import { build } from "esbuild";
 // image ID is local to the machine that built it, so another prepared image can
 // be named with QORPERA_OFFICE_DESKTOP_IMAGE.
 export const DESKTOP_SOURCE_IMAGE = process.env.QORPERA_OFFICE_DESKTOP_IMAGE || "sha256:c6b95862d90e417a75e5598bff2e3671e5584718e7589054bdfea890a2014c7f";
-if (!/^[a-zA-Z0-9_./:@-]+$/.test(DESKTOP_SOURCE_IMAGE)) throw new Error("Invalid local desktop fixture image");
+if (!/^[a-zA-Z0-9][a-zA-Z0-9_./:@-]*$/.test(DESKTOP_SOURCE_IMAGE)) throw new Error("Invalid local desktop fixture image");
 
 export async function startDesktopSource(directory, container, image, sourceFile = "source.mjs") {
 	await writeFile(join(directory,"start.sh"),`#!/bin/sh
