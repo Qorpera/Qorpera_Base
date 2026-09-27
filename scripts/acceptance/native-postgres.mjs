@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { lstat, mkdir, mkdtemp, open, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -13,6 +14,32 @@ const username = "postgres";
 const port = 5432; // The private socket directory isolates this from every other cluster.
 
 class NativePostgresCleanupError extends AggregateError {}
+
+// Exact static production messages only. Detail, context, statements, hints,
+// paths and arbitrary RAISE text may contain credentials and never escape.
+const safeSqlErrors = new Map([
+	["Enrolled physical boot required", "PHYSICAL_BOOT_NOT_ENROLLED"],
+	["Computer executor identity differs", "EXECUTOR_IDENTITY_DIFFERS"],
+	["Computer sample clock or terminal state differs", "SAMPLE_CLOCK_DIFFERS"],
+	["Sample exceeds captured authority", "SAMPLE_AUTHORITY_EXCEEDED"],
+	["Captured computer identity differs", "CAPTURED_IDENTITY_DIFFERS"],
+	["Guard sample chain differs", "GUARD_CHAIN_DIFFERS"],
+	["Paid observation predecessor differs", "OBSERVATION_PREDECESSOR_DIFFERS"],
+	["deadlock detected", "DEADLOCK"],
+	["canceling statement due to lock timeout", "LOCK_TIMEOUT"],
+	["canceling statement due to statement timeout", "STATEMENT_TIMEOUT"],
+]);
+
+export function nativePostgresDiagnostic(stderr) {
+	const errors = String(stderr).split("\n").flatMap((line) => {
+		const match = /^(?:psql:<stdin>:\d+: )?ERROR: {1,2}([0-9A-Z]{5}): ([^\r\n]+)$/.exec(line);
+		return match ? [match] : [];
+	});
+	if (errors.length !== 1) return { sqlState: null, code: "DIAGNOSTIC_WITHHELD" };
+	const [, sqlState, message] = errors[0];
+	return { sqlState, code: safeSqlErrors.get(message) ?? "MESSAGE_WITHHELD",
+		messageSha256: createHash("sha256").update(message).digest("hex") };
+}
 
 export function nativePostgresOptions(value) {
 	assert(value && typeof value === "object" && !Array.isArray(value), "PostgreSQL options required");
@@ -51,6 +78,8 @@ async function command(executable, args, environment, input, timeoutMs = 30000, 
 	return new Promise((resolveCommand, reject) => {
 		const child = spawn(executable, args, { env: environment, stdio: ["pipe", "pipe", "pipe"] });
 		const stdout = [];
+		const stderr = [];
+		let stderrBytes = 0;
 		let bytes = 0;
 		let failure;
 		const abort = () => { failure = new Error("Native PostgreSQL command aborted"); child.kill("SIGKILL"); };
@@ -67,13 +96,18 @@ async function command(executable, args, environment, input, timeoutMs = 30000, 
 					failure = new Error("Native PostgreSQL command output exceeded limit");
 					child.kill("SIGKILL");
 				} else if (retain) stdout.push(chunk);
+				else if (stderrBytes < 65536) { stderr.push(chunk.subarray(0, 65536 - stderrBytes)); stderrBytes += chunk.length; }
 			});
 		}
 		child.stdin.on("error", () => {}); // Early initdb/psql refusal can close stdin.
 		child.once("close", (code) => {
 			clearTimeout(timer);
 			signal?.removeEventListener("abort", abort);
-			if (failure || code !== 0) reject(failure ?? new Error(`Native PostgreSQL ${executable.split("/").at(-1)} failed (${code}); SQL output withheld`));
+			if (failure || code !== 0) {
+				const error = failure ?? new Error(`Native PostgreSQL ${executable.split("/").at(-1)} failed (${code}); SQL output withheld`);
+				if (!failure && executable.split("/").at(-1) === "psql") error.diagnostic = nativePostgresDiagnostic(Buffer.concat(stderr).toString("utf8"));
+				reject(error);
+			}
 			else resolveCommand(Buffer.concat(stdout).toString("utf8").trim());
 		});
 		child.stdin.end(input);
@@ -124,7 +158,7 @@ export async function startNativePostgres(options) {
 		assert(Number.isSafeInteger(timeoutMs) && timeoutMs >= 1 && timeoutMs <= 120000, "Command timeout outside acceptance bounds");
 		return command(join(binDirectory, "psql"), ["--no-psqlrc", "--no-password", "--host", socketDirectory,
 			"--port", String(port), "--username", username, "--dbname", databaseName,
-			"--set", "ON_ERROR_STOP=1", "--quiet", "--tuples-only", "--no-align"],
+			"--set", "ON_ERROR_STOP=1", "--set", "VERBOSITY=verbose", "--quiet", "--tuples-only", "--no-align"],
 			{ ...environment, PGOPTIONS: `-c statement_timeout=${timeoutMs} -c lock_timeout=${timeoutMs}` }, sql, timeoutMs, signal, maxOutputBytes);
 	};
 	const close = ({ keepFiles = false } = {}) => {

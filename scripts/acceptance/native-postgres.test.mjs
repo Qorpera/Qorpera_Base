@@ -8,11 +8,27 @@ import {
 	nativePostgresArguments,
 	nativePostgresEnvironment,
 	nativePostgresOptions,
+	nativePostgresDiagnostic,
 	parseNativePostgresCli,
 	startNativePostgres,
 } from "./native-postgres.mjs";
 
 const binDirectory = "/usr/lib/postgresql/17/bin";
+
+test("SQL failure diagnostics retain only one invocation's SQLSTATE and exact static error code", () => {
+	const secret = "fixture-secret-never-retained";
+	const safe = nativePostgresDiagnostic(`ERROR:  42501: Enrolled physical boot required\nDETAIL: ${secret}\nCONTEXT: SQL statement ${secret}\nLOCATION: secret, secret:1\n`);
+	assert.equal(safe.sqlState, "42501"); assert.equal(safe.code, "PHYSICAL_BOOT_NOT_ENROLLED");
+	assert(!JSON.stringify(safe).includes(secret));
+	const hidden = nativePostgresDiagnostic(`psql:<stdin>:12: ERROR:  P0001: ${secret}\nCONTEXT: secret\n`);
+	assert.equal(hidden.sqlState, "P0001"); assert.equal(hidden.code, "MESSAGE_WITHHELD");
+	assert.match(hidden.messageSha256, /^[a-f0-9]{64}$/); assert(!JSON.stringify(hidden).includes(secret));
+	for (const input of [`DETAIL: ERROR:  42501: ${secret}`, `ERROR:  42501: Enrolled physical boot required ${secret}`,
+		`ERROR:  42501: Enrolled physical boot required\nERROR:  P0001: ${secret}`]) {
+		const result = nativePostgresDiagnostic(input); assert.notEqual(result.code, "PHYSICAL_BOOT_NOT_ENROLLED");
+		assert(!JSON.stringify(result).includes(secret));
+	}
+});
 
 test("acceptance options cannot target an existing cluster, remote server or SQL database", () => {
 	assert.deepEqual(nativePostgresOptions({ binDirectory }), { binDirectory, tempParent: "/tmp", onProgress: undefined, bootstrap: undefined });

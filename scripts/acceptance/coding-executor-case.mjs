@@ -39,7 +39,7 @@ const guard = new PaidComputerGuardClient("/run/qorpera-paid-computer-guard/cont
 const evidence = { schema: "qorpera.coding-executor-physical/v1", commit: provenance.commit,
   scope: "Production executor host, real NFS/virtiofs Git checkout and sandboxed session commands; fixture repository transport, logical model bindings and invoice funding. No model, GitHub publication, signed release-image or installed whole-service claim.",
   image: options.imageEvidence, exportPolicy: "identity-preserving-loopback-only", passed: false, cleanup: false,
-  sessions: [], gitTransport: [], commands: [], checks: {} };
+  sessions: [], gitTransport: [], commands: [], checks: {}, rpcTrace: [] };
 let database, host, controller, observer, maintenance, maintenanceFailure, allocationId, machineName, phase = "database";
 const attached = new Set(), activeClaims = new Map(), calls = [];
 async function until(read, accept, budget, label) {
@@ -112,8 +112,18 @@ try {
     assert(supplied.every((arg) => /^[a-z_][a-z0-9_]*$/.test(arg.name) && ["uuid", "jsonb", "text", "integer", "bigint", "boolean"].includes(arg.type)));
     const typed = supplied.map((arg) => `${arg.name} ${arg.type}`).join(",");
     const parameters = supplied.map((arg) => `${arg.name}=>(select ${arg.name} from input)`).join(",");
-    const result = JSON.parse(await query(`begin; ${service} with input as (select * from jsonb_to_record(${literal(input)}) as args(${typed}))
-      select coalesce(to_jsonb(public.${method}(${parameters})),'null'::jsonb); commit;`, { signal: checked }));
+    const trace = { method, state: "pending" }; evidence.rpcTrace.push(trace);
+    if (evidence.rpcTrace.length > 128) evidence.rpcTrace.shift();
+    let result;
+    try {
+      result = JSON.parse(await query(`begin; ${service} with input as (select * from jsonb_to_record(${literal(input)}) as args(${typed}))
+        select coalesce(to_jsonb(public.${method}(${parameters})),'null'::jsonb); commit;`, { signal: checked }));
+      trace.state = "completed";
+    } catch (error) {
+      trace.state = "failed";
+      if (error.diagnostic) trace.diagnostic = error.diagnostic;
+      throw error;
+    }
     if (args.p_request?.sample || Array.isArray(args.p_request?.entries)) calls.push({ method, args: structuredClone(args) });
     return result;
   } };
