@@ -2,6 +2,7 @@ import type { NativeMemberConnection } from "@qorpera/cloud-client/cloud-native-
 import {
 	type CloudRoutine,
 	CloudRoutineClient,
+	type CloudRoutineEffort,
 	type CloudRoutineOccurrence,
 	type CloudRoutineTrigger,
 } from "@qorpera/cloud-client/cloud-routines";
@@ -15,6 +16,8 @@ export interface WebRoutineDraft {
 	title: string;
 	prompt: string;
 	trigger: CloudRoutineTrigger;
+	/** An edit keeps the routine's own (an agent may have chosen medium or high). */
+	effort: CloudRoutineEffort;
 	enabled: boolean;
 }
 
@@ -114,6 +117,7 @@ export function createWebRoutines(
 					title: draft.title,
 					prompt: draft.prompt,
 					triggers: [draft.trigger],
+					effort: draft.effort,
 					enabled: draft.enabled,
 					...authority,
 				},

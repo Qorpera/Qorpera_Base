@@ -1,16 +1,17 @@
 -- @fixture 602_runtime_coding_lock_order.test.sql until "-- 1. The owner answers"
--- The company's profile fence before its Company File row (20260927090000_company_file_fence_first). An
--- agent tool call takes the fence (the profile row, then the company's wake admission fence) and then locks
--- the Company File row; so do the object gateway's upload confirmation and a session's first coding machine
--- admission. A member saving, proposing or accepting, and the object gateway copying an object into the
--- company's bucket, locked the Company File row first and then waited for the profile row. Each race below
--- makes the two meet in that order: a third connection holds the company's wake admission fence row, the
--- fence-first call starts, takes the profile row and waits there, the other call starts and waits too, and
--- the holder lets go. On the previous function text each race ends in "deadlock detected" (40P01): the
--- other call held the Company File row the fence-first call needed next. Now it waits for the profile row
--- before it locks anything, and both land. Races 1-2 use the path gateway company of 602's committed
--- fixture and an agent listing a folder; the rest use a company that is not on the path gateway (publishing
--- a revision needs one), created here and removed with the fixture at the end.
+-- A member's Company File writes and a NAS replica copy take the company's profile fence first
+-- (20260927150000_company_file_writer_fence). An agent tool call takes the fence (the profile row, then the
+-- company's wake admission fence) and then locks the Company File row; so do the object gateway's upload
+-- confirmation and a session's first coding machine admission. A member saving, proposing or accepting, and
+-- the object gateway copying an object into the company's bucket, locked the Company File row first and then
+-- waited for the profile row. Each race below makes the two meet in that order: a third connection holds the
+-- company's wake admission fence row, the fence-first call starts, takes the profile row and waits there, the
+-- other call starts and waits too, and the holder lets go. On the previous function text each race ends in
+-- "deadlock detected" (40P01): the other call held the Company File row the fence-first call needed next. Now
+-- it waits for the profile row before it locks anything, and both land. Races 1-2 use the path gateway
+-- company of 602's committed fixture and an agent listing a folder; the rest use a company that is not on the
+-- path gateway (publishing a revision needs one), created here and removed with the fixture at the end.
+-- Check 9 shows what stays out: a member's own upload does not take the fence.
 
 -- A company that is not on the path gateway: its owner, the company, and the stored objects its revisions
 -- and proposals name (fixture bytes only, as in 300).
@@ -349,18 +350,72 @@ begin
 		'The object is confirmed and the copy is stored: ' || v_outcome::text);
 end $$;
 
--- 8. The fence waits until the caller may write: a viewer's save is refused without waiting for the
+-- 8. The fence waits until the caller may write: a viewer's save, publish, proposal and submission are refused
+--    without waiting for the company's profile row, which another connection holds.
+do $$
+declare v_call text; v_outcome jsonb;
+begin
+	foreach v_call in array array[
+		format($q$select public.qorpera_prepare_company_file_revision(%L, '60700000-0000-4000-8000-000000000050', %L,
+			repeat('e', 64), 128, 3, 1, 4)$q$, current_setting('qorpera_test.fence_environment'),
+			pg_temp.fence_head(current_setting('qorpera_test.fence_environment')::uuid)),
+		format($q$select public.qorpera_publish_company_file_revision(%L, %L, %L)$q$, current_setting('qorpera_test.fence_environment'),
+			current_setting('qorpera_test.fence_unrebased'), pg_temp.fence_head(current_setting('qorpera_test.fence_environment')::uuid)),
+		format($q$select public.qorpera_prepare_company_file_proposal(%L, '60700000-0000-4000-8000-000000000051', %L,
+			repeat('e', 64), 128, 3, 1, 4)$q$, current_setting('qorpera_test.fence_environment'), current_setting('qorpera_test.fence_second')),
+		format($q$select public.qorpera_submit_company_proposal(%L, '60700000-0000-4000-8000-000000000052', %L, 'turn',
+			'60700000-0000-4000-8000-000000000053', '60700000-0000-4000-8000-000000000054', '60700000-0000-4000-8000-000000000055',
+			0, 'policy', null, 'Viewer proposal')$q$, current_setting('qorpera_test.fence_environment'), current_setting('qorpera_test.fence_unrebased'))]
+	loop
+		v_outcome := pg_temp.lock_single(pg_temp.lock_row('qorpera_profiles', 'id', current_setting('qorpera_test.fence_profile')::uuid),
+			v_call, '{"role":"authenticated","sub":"60700000-0000-4000-8000-000000000002"}');
+		perform pg_temp.wake_assert(v_outcome ->> 'waited' = 'false' and v_outcome ->> 'state' = '42501',
+			'A viewer is refused without taking the fence: ' || v_outcome::text || ' for ' || v_call);
+	end loop;
+end $$;
+
+-- 9. A member's own upload never needs the company's profile row after its Company File lock, so it does not
+--    take the fence: it lands while another connection holds the profile row. (Only a NAS replica copy, which
+--    the replica guard fences anyway, takes it first.)
+do $$
+declare v_outcome jsonb;
+begin
+	v_outcome := pg_temp.lock_single(pg_temp.lock_row('qorpera_profiles', 'id', current_setting('qorpera_test.fence_profile')::uuid),
+		format($q$insert into storage.objects(bucket_id, name, metadata) values ('qorpera-profile-objects', %L, '{"size":64}')
+			returning jsonb_build_object('name', name)$q$, current_setting('qorpera_test.fence_profile') || '/' || repeat('9', 64)),
+		pg_temp.fence_owner());
+	perform pg_temp.wake_assert(v_outcome ->> 'waited' = 'false' and v_outcome #>> '{result,name}' like '%' || repeat('9', 64),
+		'A member''s upload does not wait for the profile row: ' || v_outcome::text);
+end $$;
+
+-- 10. The owner's submission takes the fence before the Company File row too: while another connection holds
+--    the company's profile row it waits, then fails for its own reason (this proposal names no session).
+do $$
+declare v_outcome jsonb;
+begin
+	v_outcome := pg_temp.lock_single(pg_temp.lock_row('qorpera_profiles', 'id', current_setting('qorpera_test.fence_profile')::uuid),
+		format($q$select public.qorpera_submit_company_proposal(%L, '60700000-0000-4000-8000-000000000056', %L, 'turn',
+			'60700000-0000-4000-8000-000000000057', '60700000-0000-4000-8000-000000000058', '60700000-0000-4000-8000-000000000059',
+			0, 'policy', null, 'Owner proposal')$q$, current_setting('qorpera_test.fence_environment'), current_setting('qorpera_test.fence_unrebased')),
+		pg_temp.fence_owner());
+	perform pg_temp.wake_assert(v_outcome ->> 'waited' = 'true' and v_outcome ->> 'state' = '22023'
+		and v_outcome ->> 'error' = 'company proposal session is invalid',
+		'The owner''s submission waits for the profile row, then fails for its own reason: ' || v_outcome::text);
+end $$;
+
+-- 11. Only the service role's replica copy takes the fence in the quota trigger, as only the service role passes
+--    the replica guard: a member's upload flagged as a replica is refused by the guard without waiting for the
 --    company's profile row, which another connection holds.
 do $$
 declare v_outcome jsonb;
 begin
 	v_outcome := pg_temp.lock_single(pg_temp.lock_row('qorpera_profiles', 'id', current_setting('qorpera_test.fence_profile')::uuid),
-		format($q$select public.qorpera_prepare_company_file_revision(%L, '60700000-0000-4000-8000-000000000050', %L,
-			repeat('e', 64), 128, 3, 1, 4)$q$, current_setting('qorpera_test.fence_environment'),
-			pg_temp.fence_head(current_setting('qorpera_test.fence_environment')::uuid)),
-		'{"role":"authenticated","sub":"60700000-0000-4000-8000-000000000002"}');
+		format($q$insert into storage.objects(bucket_id, name, metadata, user_metadata) values ('qorpera-profile-objects', %L,
+			'{"size":"64"}', '{"qorpera_nas_replica":true,"qorpera_nas_replica_bytes":64}') returning jsonb_build_object('name', name)$q$,
+			current_setting('qorpera_test.fence_profile') || '/' || repeat('8', 64)),
+		pg_temp.fence_owner());
 	perform pg_temp.wake_assert(v_outcome ->> 'waited' = 'false' and v_outcome ->> 'state' = '42501',
-		'A viewer is refused without taking the fence: ' || v_outcome::text);
+		'A member''s replica-flagged upload is refused without taking the fence: ' || v_outcome::text);
 end $$;
 
 -- Remove what this test committed.

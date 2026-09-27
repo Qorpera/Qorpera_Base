@@ -21,9 +21,9 @@ LoadCredential=qorpera-runner-activation:/run/qorpera-shared-execution/slots/%i/
 LoadCredential=qorpera-runner-assignment:/run/qorpera-shared-execution/slots/%i/credentials/qorpera-runner-assignment
 LoadCredential=qorpera-native-bridge:/run/qorpera-shared-execution/slots/%i/credentials/qorpera-native-bridge
 ExecStart=/usr/bin/node /opt/qorpera-runner/qorpera-ephemeral-runner.mjs
-# A sandbox serves exactly one run: once the runner has exited (success or
-# failure) the shared execution service retires the slot and releases its
-# company-ceiling reservation.
+# A runner serves exactly one run: once it has exited (success or failure)
+# the shared execution service releases its company-ceiling reservation and
+# either retires the slot or, for a warm conversation, parks its native host.
 Restart=no
 TimeoutStopSec=45s
 KillMode=control-group
