@@ -1,5 +1,5 @@
-/* A coding session as its own thread, opened from its chip in the agent's
- * conversation the way a bot's message to another bot opens: over the thread,
+/* A coding session as its own thread, opened from its line in the agent's
+ * conversation (or its figure in the header) the way a message to a coworker opens: over the thread,
  * with its own header ("Bo ⇄ Claude Code", the session's title under it), the
  * session unfolded, and a footer that says who may type. The owner types into
  * the session here; everyone else reads it ("This session is view-only"). */
@@ -10,7 +10,6 @@ import {
 	type CodingSessionApi,
 	CodingSessionElement,
 	type CodingSessionNames,
-	codingSessionCaption,
 	HARNESS_NAMES,
 	harnessBadge,
 } from "./coding-session.ts";
@@ -59,8 +58,6 @@ export class CodingSessionThreadView {
 		const owns = options.viewerOwns(session);
 		const harness = HARNESS_NAMES[session.harness];
 		this.element = new CodingSessionElement(session, {
-			mode: "thread",
-			agent: options.agent,
 			names: options.names,
 			viewerOwns: options.viewerOwns,
 			api: options.api,
@@ -123,7 +120,7 @@ export class CodingSessionThreadView {
 				class: "coding-thread",
 				role: "dialog",
 				"aria-modal": "false",
-				"aria-label": codingSessionCaption(session, names),
+				"aria-label": `${names.agent} ⇄ ${harness} · ${session.title}`,
 				onkeydown: (event: KeyboardEvent) => {
 					if (!matchesKey(event, "dismiss")) return;
 					event.preventDefault();

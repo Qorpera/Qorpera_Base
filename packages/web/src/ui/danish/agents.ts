@@ -150,29 +150,8 @@ export const AGENTS: Record<string, string> = {
 	"The group chat changes could not be saved.": "Ændringerne i gruppechatten kunne ikke gemmes.",
 
 	// Coding sessions (ui/coding-session.ts, ui/coding-session-thread.ts)
-	"{agent}'s coding session with you in {harness} needs your answer":
-		"Kodesessionen mellem {agent} og dig i {harness} venter på dit svar",
-	"{agent}'s coding session with {owner} in {harness} needs an answer from {owner}":
-		"Kodesessionen mellem {agent} og {owner} i {harness} venter på svar fra {owner}",
-	"{agent}'s coding session with you in {harness} opened a draft PR":
-		"Kodesessionen mellem {agent} og dig i {harness} åbnede en PR-kladde",
-	"{agent}'s coding session with {owner} in {harness} opened a draft PR":
-		"Kodesessionen mellem {agent} og {owner} i {harness} åbnede en PR-kladde",
-	"{agent}'s coding session with you in {harness} finished":
-		"Kodesessionen mellem {agent} og dig i {harness} er færdig",
-	"{agent}'s coding session with {owner} in {harness} finished":
-		"Kodesessionen mellem {agent} og {owner} i {harness} er færdig",
-	"{agent}'s coding session with you in {harness} failed":
-		"Kodesessionen mellem {agent} og dig i {harness} mislykkedes",
-	"{agent}'s coding session with {owner} in {harness} failed":
-		"Kodesessionen mellem {agent} og {owner} i {harness} mislykkedes",
-	"{agent}'s coding session with you in {harness} was cancelled":
-		"Kodesessionen mellem {agent} og dig i {harness} blev annulleret",
-	"{agent}'s coding session with {owner} in {harness} was cancelled":
-		"Kodesessionen mellem {agent} og {owner} i {harness} blev annulleret",
-	"{agent} started a coding session with you in {harness}": "{agent} startede en kodesession med dig i {harness}",
-	"{agent} started a coding session with {owner} in {harness}":
-		"{agent} startede en kodesession med {owner} i {harness}",
+	"Started a coding session in {harness}": "Startede en kodesession i {harness}",
+	"{label}. Open the session": "{label}. Åbn sessionen",
 	"less than a minute": "under et minut",
 	"{minutes} min": "{minutes} min",
 	"{hours} h {minutes} min": "{hours} t {minutes} min",
@@ -191,9 +170,6 @@ export const AGENTS: Record<string, string> = {
 	"Failed · workspace kept": "Mislykkedes · arbejdsområdet er gemt",
 	"Cancelled · workspace kept": "Annulleret · arbejdsområdet er gemt",
 	"Coding session": "Kodesession",
-	Hide: "Skjul",
-	Show: "Vis",
-	"Open the session as its own thread": "Åbn sessionen som sin egen tråd",
 	"managed by {name}": "styret af {name}",
 	"{count} earlier step": "{count} tidligere trin",
 	"{count} earlier steps": "{count} tidligere trin",

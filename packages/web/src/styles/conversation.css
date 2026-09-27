@@ -578,27 +578,19 @@
 .group-member-choice small { color: var(--text-muted); }
 .group-edit-fields:disabled .group-member-choice { cursor: default; opacity: .6; }
 .group-save-status:empty { display: none; }
-/* A coding session in the thread (Order 9), in the shape of a bot-to-bot handoff line: a centered chip with the
- * agent's figure, "Bo started a coding session with you in ✳ Claude Code", and the live status under it. The chip
- * opens the session as its own thread; Show unfolds it in place. */
-.coding-session { display: flex; flex: none; flex-direction: column; align-items: center; width: 100%; margin: 12px 0 4px; font-size: 14px; line-height: 20px; }
-.coding-chip { display: inline-flex; align-items: center; gap: 8px; max-width: 100%; min-height: 34px; padding: 5px 14px 5px 6px; border: 1px solid var(--border); border-radius: 999px; background: var(--hover); color: var(--text-muted); font: inherit; font-size: 12.5px; line-height: 16px; font-weight: 500; text-align: left; cursor: pointer; transition: background 120ms ease, border-color 120ms ease; }
-.coding-chip:hover { background: var(--pane-strong); border-color: var(--border-strong); color: var(--text); }
-.coding-chip:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
-.coding-chip .figure { width: 22px; height: 22px; flex: none; }
-.coding-chip-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.coding-agent { font-weight: 600; color: var(--text); }
-.coding-harness { display: inline-flex; align-items: center; gap: 4px; font-weight: 600; color: var(--text); white-space: nowrap; }
-.coding-harness .coding-badge { position: static; width: 13px; height: 13px; border: 0; border-radius: 4px; box-sizing: border-box; }
-.coding-harness .coding-badge svg { width: 8px; height: 8px; }
-.coding-badge { position: absolute; right: -4px; bottom: -4px; display: grid; place-items: center; width: 12px; height: 12px; border-radius: 3.5px; border: 1.5px solid var(--bg); color: #fff; box-sizing: content-box; }
+/* A coding session (Order 9). In the thread it is one line like a message to a coworker (.peer-link, below),
+ * "Started a coding session in (mark) Codex"; while it runs, the header carries it beside the agent. Opened, it is its
+ * own thread over the conversation (.coding-thread). */
+.coding-session { display: flex; flex: none; flex-direction: column; align-items: center; width: 100%; font-size: 14px; line-height: 20px; }
+.coding-line .peer-chip { gap: 4px; }
+/* The makers' marks: OpenAI's in the text colour, Claude's spark in its own orange. */
+.coding-mark { flex: none; display: block; }
+.coding-mark-claude-code { color: #d97757; }
+.coding-badge { position: absolute; right: -4px; bottom: -4px; display: grid; place-items: center; width: 13px; height: 13px; border-radius: 50%; border: 1.5px solid var(--header-surface); color: #fff; box-sizing: content-box; }
 .coding-badge-codex { background: #161615; }
 .coding-badge-claude-code { background: #d97757; }
-.coding-link { min-height: 0; padding: 0; border: 0; background: transparent; font: inherit; font-size: 12px; font-weight: 600; color: var(--blue); cursor: pointer; }
-.coding-link:hover { text-decoration: underline; }
+.coding-badge-claude-code .coding-mark { color: #fff; }
 .coding-status { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 6px; width: 100%; min-width: 0; margin-top: 6px; padding: 0 12px; font-size: 12px; line-height: 16px; font-weight: 500; color: var(--text-muted); text-align: center; }
-.coding-status-title { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
-.coding-dot-sep { color: var(--border-strong); }
 .coding-dot { display: inline-block; width: 7px; height: 7px; flex: none; border-radius: 50%; background: var(--text-soft); }
 .coding-dot-working { background: #00c887; }
 .coding-dot-attention { background: var(--warning); }
@@ -607,7 +599,7 @@
 .coding-tone-attention .coding-status-text, .coding-step-status.coding-tone-attention { color: #8a5a00; }
 .coding-tone-done .coding-status-text, .coding-step-status.coding-tone-done, .coding-glyph.coding-tone-done { color: #0f7a55; }
 .coding-tone-failed .coding-status-text, .coding-step-status.coding-tone-failed { color: var(--danger); }
-.coding-session-expanded > .coding-status:last-child { margin-top: 2px; padding-bottom: 6px; }
+.coding-session > .coding-status:last-child { margin-top: 2px; padding-bottom: 6px; }
 .coding-head { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 10px 0 6px; text-align: center; }
 .coding-title { font-size: 15px; font-weight: 600; line-height: 19px; }
 .coding-meta { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; font-size: 12px; line-height: 15px; color: var(--text-muted); }
@@ -655,12 +647,30 @@
 .coding-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; }
 .coding-actions .btn { border-radius: 999px; min-height: 32px; padding: 0 14px; font-size: 13.5px; font-weight: 500; text-decoration: none; color: inherit; }
 .coding-actions .btn-primary { color: var(--on-primary); }
-/* A narrow pane: the caption wraps instead of hiding, and the rules give way first. */
-@media (max-width: 640px) {
-	.coding-chip { border-radius: 18px; padding-right: 12px; white-space: normal; }
-	.coding-chip-text { white-space: normal; }
-	.coding-status-title { white-space: normal; }
-}
+/* A session still going, beside the agent in the header: the agent's figure wearing the harness mark, a little
+ * smaller than the agent's own and standing on the same line (bottoms aligned), with a thin rule before each.
+ * Hover or focus unfolds the session's title into a pill that floats over the header, so nothing beside it moves. */
+.thread-coding-sessions { display: flex; flex: none; align-items: center; gap: 14px; margin-left: 4px; }
+.thread-coding-sessions[hidden] { display: none; }
+.coding-slot { position: relative; display: block; flex: none; width: 30px; height: 36px; padding: 0; border: 0; border-radius: 18px; background: transparent; color: var(--text); font: inherit; font-size: 13px; font-weight: 500; line-height: 16px; text-align: left; cursor: pointer; }
+.coding-slot::before { content: ""; position: absolute; top: 8px; bottom: 8px; left: -8px; width: 1px; background: var(--border); pointer-events: none; }
+@media (forced-colors: active) { .coding-slot::before { background: CanvasText; } }
+.coding-slot:hover, .coding-slot:focus-visible { z-index: 2; }
+/* The ring is the pill's inset shadow; the clear outline stands in where forced colours drop shadows. */
+.coding-slot:focus-visible { outline: 2px solid transparent; outline-offset: 1px; }
+/* Bottom at 32px of the 36px slot: the agent's 28px figure ends on the same line in its centred 34px button. */
+.coding-slot-avatar { position: absolute; z-index: 1; top: 10px; left: 4px; display: block; width: 22px; height: 22px; pointer-events: none; }
+.coding-slot-avatar .figure { width: 22px; height: 22px; }
+.coding-slot-avatar .coding-badge { right: -3px; bottom: -2px; width: 11px; height: 11px; border-width: 1.25px; }
+.coding-slot-avatar .coding-badge svg { width: 6.5px; height: 6.5px; }
+.coding-slot-name { position: absolute; top: 0; left: 0; display: block; box-sizing: border-box; width: max-content; max-width: 30px; height: 36px; padding: 10px 14px 10px 36px; border-radius: 18px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: transparent; background: transparent; pointer-events: none; transition: max-width 200ms ease, background-color 140ms ease, color 140ms ease; }
+.coding-slot:hover .coding-slot-name, .coding-slot:focus-visible .coding-slot-name { max-width: 280px; color: var(--text); background: color-mix(in srgb, var(--text) 8%, var(--header-surface)); }
+/* Under the pointer the open pill takes it, so moving onto the title keeps it open and a click there opens the
+ * session. Opened by the keyboard it stays see-through to clicks on what lies under it. */
+.coding-slot:hover .coding-slot-name { pointer-events: auto; }
+.coding-slot.coding-slot-yield .coding-slot-name { pointer-events: none; }
+.coding-slot:focus-visible .coding-slot-name { box-shadow: inset 0 0 0 2px var(--text); }
+@media (prefers-reduced-motion: reduce) { .coding-slot-name { transition: none; } }
 /* The session as its own thread: over the conversation, with its own header and footer, as a bot's message to
  * another bot opens. */
 .coding-thread { position: absolute; inset: 0; z-index: 25; display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--bg); animation: computer-enter 160ms ease both; }

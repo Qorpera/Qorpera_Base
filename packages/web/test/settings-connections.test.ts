@@ -381,7 +381,7 @@ describe("member model account settings", () => {
 		expect(accounts.map((item) => item.querySelector("img")!.getAttribute("src"))).toEqual([
 			"./assets/provider-openai.svg",
 			"./assets/provider-openai.svg",
-			"./assets/provider-anthropic.svg",
+			"./assets/provider-claude.svg",
 		]);
 		for (const account of accounts) expect(account.querySelector("button")!.textContent).toBe("Sign out");
 		expect(view.el.textContent).not.toContain("opaque-account");

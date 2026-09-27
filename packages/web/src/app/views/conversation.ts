@@ -1,4 +1,4 @@
-import type { CodingSession } from "../../cloud/coding-session.ts";
+import { type CodingSession, codingSessionSettled } from "../../cloud/coding-session.ts";
 import type { EmailDraftAction, EmailDraftContent } from "../../cloud/email-drafts.ts";
 import {
 	ACTION_REVIEW_SCHEMA,
@@ -20,7 +20,7 @@ import {
 	renderAuthorizationCard,
 } from "../../ui/authorization-card.ts";
 import { agentFigure } from "../../ui/avatar.ts";
-import { CodingSessionElement } from "../../ui/coding-session.ts";
+import { CodingSessionSlot, codingSessionLine, harnessMark } from "../../ui/coding-session.ts";
 import { CodingSessionThreadView } from "../../ui/coding-session-thread.ts";
 import {
 	conversationTimestampLabel,
@@ -49,6 +49,12 @@ import { PairTranscriptView } from "./pair-transcript.ts";
 import { SessionExecutionView } from "./session-execution.ts";
 import { SessionRunView } from "./session-run.ts";
 import { SharedDrafts } from "./shared-drafts.ts";
+
+/* How often the thread re-reads its coding sessions while one is still going: the
+ * header's figures follow them. Nothing is read once they all settled. */
+const CODING_POLL_WORKING_MS = 2_500;
+const CODING_POLL_WAITING_MS = 6_000;
+const CODING_POLL_HIDDEN_MS = 20_000;
 
 // Popup dismissal lasts for this company controller, including conversation navigation.
 // It does not settle or discard work whose outcome still needs review.
@@ -91,6 +97,14 @@ export class ConversationView {
 	readonly #attach: HTMLButtonElement;
 	readonly #attachNote: HTMLElement;
 	readonly #identity: HTMLButtonElement;
+	/** The coding sessions still going, beside the agent in the header. */
+	readonly #codingSlots = h("div", { class: "thread-coding-sessions" });
+	readonly #codingSlotViews = new Map<string, CodingSessionSlot>();
+	#codingPoll: ReturnType<typeof setTimeout> | undefined;
+	/** A read is on its way; the next one is scheduled when it lands, never beside it. */
+	#codingReading = false;
+	/** Reads that failed in a row; each one doubles the wait, up to eight times. */
+	#codingFailures = 0;
 	readonly #computer: HTMLButtonElement;
 	readonly #navigation: HTMLButtonElement;
 	readonly #body: HTMLElement;
@@ -131,15 +145,15 @@ export class ConversationView {
 	readonly #runNotification = h("div", { class: "thread-run-failure", hidden: true });
 	#runNotificationKey = "";
 	#receivedAttachments: ReceivedAttachments[] = [];
-	/** The coding sessions shown in this thread, one element per session, kept
-	 * across renders so each keeps its stream, its cursor and its open state. */
-	readonly #codingElements = new Map<string, CodingSessionElement>();
 	/** An approval card's Always allow editor, by review id: kept across re-renders. */
 	readonly #reviewDrafts = new Map<string, ActionReviewDraft>();
 	/** The approval card to give focus after the thread redraws (it was just answered). */
 	#focusReview: string | undefined;
 	readonly #emailCards = new Map<string, { key: string; element: HTMLElement }>();
-	/** A coding session opened as its own thread over this one, from its chip. */
+	/** Each coding session's line, kept while what it shows is the same, so a redraw keeps its focus. */
+	readonly #codingLines = new Map<string, { key: string; element: HTMLElement }>();
+	/** A coding session opened as its own thread over this one, from its line or its
+	 * figure in the header; focus returns to the opener when it closes. */
 	#codingThread: { workerId: string; view: CodingSessionThreadView } | undefined;
 	readonly #timestampTimer: number;
 	#timestampRows: { date: Date; node: HTMLElement; separator?: HTMLTimeElement }[] = [];
@@ -365,7 +379,30 @@ export class ConversationView {
 			},
 			icon("navigation"),
 		);
-		this.#header.append(this.#navigation, this.#identity, this.#computer);
+		this.#header.append(this.#navigation, this.#identity, this.#codingSlots, this.#computer);
+		// An open title pill lies over the figures after it; over one of them it steps aside,
+		// so that figure opens and a click there opens its own session.
+		const yieldTo = (event: PointerEvent) => {
+			const over = [...this.#codingSlots.children].find((slot) => {
+				const box = slot.getBoundingClientRect();
+				return (
+					event.clientX >= box.left &&
+					event.clientX < box.right &&
+					event.clientY >= box.top &&
+					event.clientY < box.bottom
+				);
+			});
+			for (const slot of this.#codingSlots.children)
+				slot.classList.toggle("coding-slot-yield", over !== undefined && slot !== over);
+		};
+		this.#codingSlots.addEventListener("pointermove", yieldTo, { signal: this.#lifetime.signal });
+		this.#codingSlots.addEventListener(
+			"pointerleave",
+			() => {
+				for (const slot of this.#codingSlots.children) slot.classList.remove("coding-slot-yield");
+			},
+			{ signal: this.#lifetime.signal },
+		);
 		this.#refreshFade = quietScroll(this.#messages);
 		this.#messages.addEventListener("scroll", () => {
 			const { scrollTop, scrollHeight, clientHeight } = this.#messages;
@@ -403,6 +440,17 @@ export class ConversationView {
 		window.addEventListener("qorpera-language-change", refreshTimestamps, { signal: this.#lifetime.signal });
 		window.addEventListener("qorpera-time-zone-change", refreshTimestamps, { signal: this.#lifetime.signal });
 		document.addEventListener("visibilitychange", refreshTimestamps, { signal: this.#lifetime.signal });
+		// Back on the tab: the next read of the header's coding figures comes at the visible pace, not the hidden tab's.
+		document.addEventListener(
+			"visibilitychange",
+			() => {
+				if (document.hidden || this.#codingPoll === undefined) return;
+				clearTimeout(this.#codingPoll);
+				this.#codingPoll = undefined;
+				this.#watchCodingSessions();
+			},
+			{ signal: this.#lifetime.signal },
+		);
 		document.addEventListener(
 			"click",
 			(event) => {
@@ -435,9 +483,9 @@ export class ConversationView {
 		this.#sharedDrafts.dispose();
 		for (const attachments of this.#receivedAttachments) attachments.dispose();
 		this.#closeCodingSession();
-		for (const element of this.#codingElements.values()) element.dispose();
-		this.#codingElements.clear();
+		clearTimeout(this.#codingPoll);
 		this.#emailCards.clear();
+		this.#codingLines.clear();
 		for (const unsubscribe of this.#unsubscribe) unsubscribe();
 		this.#company.setOpenSession(undefined);
 	}
@@ -756,6 +804,7 @@ export class ConversationView {
 		this.#agentState = room ? "idle" : this.#company.agentState(session?.staffAgentId);
 		this.#working = this.#agentState === "working" || this.#agentState === "writing";
 		this.#renderHeader(session, agent);
+		this.#renderCodingSlots(conversation.codingSessions ?? [], agent);
 		this.#renderMessages(
 			conversation,
 			room ? t("Agent reply") : (agent?.displayName ?? session?.title ?? t("Agent")),
@@ -926,7 +975,8 @@ export class ConversationView {
 		);
 		const key = JSON.stringify([
 			items,
-			codingSessions,
+			// Only what the line shows: the header's poll changes the rest every few seconds.
+			codingSessions.map((coding) => [coding.workerId, coding.harness, coding.title, coding.createdAt]),
 			agentName,
 			this.#isRoom,
 			answerable,
@@ -968,20 +1018,18 @@ export class ConversationView {
 			}
 		const nodes: HTMLElement[] = [];
 		this.#timestampRows = [];
-		// A coding session stands where the agent started it: before the first
-		// message written after it. Its element is reused, so the stream it
-		// follows and the body the member opened survive every re-render.
+		// A coding session stands where the agent started it, before the first
+		// message written after it: one line, like a message to a coworker.
 		let nextSession = 0;
 		const placeSessions = (before: string | undefined) => {
 			while (nextSession < codingSessions.length) {
 				const candidate = codingSessions[nextSession]!;
 				if (before !== undefined && candidate.createdAt.localeCompare(before) > 0) break;
 				nextSession += 1;
-				const element = this.#codingElement(candidate, agent, agentName);
-				if (this.#codingThread?.workerId === candidate.workerId) this.#codingThread.view.update(candidate);
-				nodes.push(element.el);
+				const line = this.#codingLine(candidate);
+				nodes.push(line);
 				const date = parseConversationTimestamp(candidate.createdAt);
-				if (date) this.#timestampRows.push({ date, node: element.el });
+				if (date) this.#timestampRows.push({ date, node: line });
 			}
 		};
 		for (const item of items) {
@@ -1204,12 +1252,8 @@ export class ConversationView {
 		placeSessions(undefined);
 		for (const id of this.#emailCards.keys())
 			if (!items.some((item) => item.kind === "interaction" && item.id === id)) this.#emailCards.delete(id);
-		for (const [workerId, element] of this.#codingElements) {
-			if (!codingSessions.some((session) => session.workerId === workerId)) {
-				element.dispose();
-				this.#codingElements.delete(workerId);
-			}
-		}
+		for (const workerId of this.#codingLines.keys())
+			if (!codingSessions.some((session) => session.workerId === workerId)) this.#codingLines.delete(workerId);
 		if (conversation.loading && !items.length) {
 			this.#messagesPlaceholder ??= messagesSkeleton();
 			nodes.push(this.#messagesPlaceholder);
@@ -1339,38 +1383,137 @@ export class ConversationView {
 		if (refocus) this.#status.querySelector<HTMLElement>(`[data-action="${refocus}"]`)?.focus();
 	}
 
-	#codingElement(
-		session: CodingSession,
-		agent: HostedStaffAgent | undefined,
-		agentName: string,
-	): CodingSessionElement {
-		const existing = this.#codingElements.get(session.workerId);
-		if (existing && !existing.disposed) {
-			existing.update(session);
-			return existing;
-		}
-		const element = new CodingSessionElement(session, {
-			...this.#codingOptions(agent, agentName),
-			open: () => this.#openCodingSession(session.workerId),
-		});
-		this.#codingElements.set(session.workerId, element);
+	/** A coding session in the thread: "Started a coding session in (mark) Codex",
+	 * one centered line that opens the session as its own thread. The node is kept
+	 * while its words are the same, so a keyboard user on it keeps focus. */
+	#codingLine(session: CodingSession): HTMLElement {
+		const { before, name, after } = codingSessionLine(session.harness);
+		const label = `${before}${name}${after}`;
+		const time = fmtTime(session.createdAt);
+		const key = JSON.stringify([label, session.title, time]);
+		const cached = this.#codingLines.get(session.workerId);
+		if (cached?.key === key) return cached.element;
+		const element = h(
+			"div",
+			{ class: "peer-link coding-line", dataset: { workerId: session.workerId } },
+			h(
+				"button",
+				{
+					type: "button",
+					class: "peer-chip",
+					title: `${session.title} · ${time}`,
+					// The title tells two sessions in one thread apart for a screen reader too.
+					"aria-label": t("{label}. Open the session", { label: `${label} · ${session.title}` }),
+					onclick: (event: MouseEvent) =>
+						this.#openCodingSession(session.workerId, event.currentTarget as HTMLElement),
+				},
+				before.trim() ? h("span", null, before.trim()) : null,
+				harnessMark(session.harness, 14),
+				h("span", null, name),
+				after.trim() ? h("span", null, after.trim()) : null,
+			),
+		);
+		this.#codingLines.set(session.workerId, { key, element });
 		return element;
 	}
 
-	/** What both the chip and the session's own thread need to render and act. */
+	/** The sessions still going sit beside the agent in the header, each a figure
+	 * that works while its session works; the figures are kept across renders so
+	 * their motion runs on. */
+	#renderCodingSlots(sessions: readonly CodingSession[], agent: HostedStaffAgent | undefined): void {
+		// The session open as its own thread takes the fresh listing too.
+		const open = this.#codingThread && sessions.find((session) => session.workerId === this.#codingThread?.workerId);
+		if (open) this.#codingThread?.view.update(open);
+		const going = [...sessions]
+			.filter((session) => !codingSessionSettled(session.phase))
+			.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+		const names = this.#codingNames(agent?.displayName ?? t("Agent"));
+		const slots = going.map((session) => {
+			let slot = this.#codingSlotViews.get(session.workerId);
+			if (!slot) {
+				slot = new CodingSessionSlot(session.workerId, (opener) =>
+					this.#openCodingSession(session.workerId, opener),
+				);
+				this.#codingSlotViews.set(session.workerId, slot);
+			}
+			slot.update(session, this.#company.staffById(session.agentId) ?? agent, names(session));
+			return slot;
+		});
+		for (const workerId of this.#codingSlotViews.keys())
+			if (!going.some((session) => session.workerId === workerId)) this.#codingSlotViews.delete(workerId);
+		const current = [...this.#codingSlots.children];
+		if (current.length !== slots.length || slots.some((slot, index) => current[index] !== slot.el)) {
+			const focused = this.#codingSlots.contains(document.activeElement)
+				? (document.activeElement as HTMLElement)
+				: undefined;
+			replace(this.#codingSlots, ...slots.map((slot) => slot.el));
+			// Moving the nodes drops focus to the page: back to the same figure, or to the agent if it left.
+			if (focused && document.activeElement !== focused)
+				(focused.isConnected ? focused : this.#identity.disabled ? this.#composer : this.#identity).focus({
+					preventScroll: true,
+				});
+		}
+		this.#codingSlots.hidden = !slots.length;
+		this.#watchCodingSessions();
+	}
+
+	/** Re-reads the thread's coding sessions on a clock while one is still going, so
+	 * the header's figures follow them; stops once they all settled. A new session or
+	 * a follow-up starts it again from the next render. */
+	#watchCodingSessions(): void {
+		if (this.#codingPoll !== undefined || this.#codingReading || this.#disposed) return;
+		const going = (this.#company.conversation(this.#sessionId).get().codingSessions ?? []).filter(
+			(session) => !codingSessionSettled(session.phase),
+		);
+		if (!going.length) return;
+		const pace = document.hidden
+			? CODING_POLL_HIDDEN_MS
+			: going.some((session) => session.phase !== "awaiting_input" && session.phase !== "queued")
+				? CODING_POLL_WORKING_MS
+				: CODING_POLL_WAITING_MS;
+		this.#codingPoll = setTimeout(
+			() => {
+				this.#codingPoll = undefined;
+				this.#codingReading = true;
+				void this.#company
+					.refreshCodingSessions(this.#sessionId)
+					.then(
+						() => {
+							this.#codingFailures = 0;
+						},
+						() => {
+							this.#codingFailures += 1;
+						},
+					)
+					.finally(() => {
+						this.#codingReading = false;
+						this.#watchCodingSessions();
+					});
+			},
+			pace * 2 ** Math.min(this.#codingFailures, 3),
+		);
+	}
+
+	/** The names a session's captions are written with; the owner is "you" for the owner. */
+	#codingNames(agentName: string) {
+		const company = this.#company;
+		return (current: CodingSession) => {
+			const ownerIsViewer = current.ownerUserId === company.userId;
+			return {
+				agent: company.staffById(current.agentId)?.displayName ?? agentName,
+				owner: ownerIsViewer ? t("you") : company.memberName(current.ownerUserId),
+				ownerIsViewer,
+			};
+		};
+	}
+
+	/** What the session's own thread needs to render and act. */
 	#codingOptions(agent: HostedStaffAgent | undefined, agentName: string) {
 		const sessionId = this.#sessionId;
 		const company = this.#company;
 		return {
 			agent,
-			names: (current: CodingSession) => {
-				const ownerIsViewer = current.ownerUserId === company.userId;
-				return {
-					agent: company.staffById(current.agentId)?.displayName ?? agentName,
-					owner: ownerIsViewer ? t("you") : company.memberName(current.ownerUserId),
-					ownerIsViewer,
-				};
-			},
+			names: this.#codingNames(agentName),
 			viewerOwns: (current: CodingSession) => current.ownerUserId === company.userId,
 			api: {
 				read: (workerId: string, afterEvent: number) => company.readCodingSession(workerId, afterEvent),
@@ -1380,7 +1523,6 @@ export class ConversationView {
 					company.delegateCodingSession(sessionId, workerId, clientRequestId),
 			},
 			signal: AbortSignal.any([this.#lifetime.signal, company.signal]),
-			changed: () => this.#pinToBottom(),
 			askAgent: this.#actions.sendMessage
 				? (text: string) => {
 						this.#closeCodingSession();
@@ -1392,9 +1534,9 @@ export class ConversationView {
 		};
 	}
 
-	/** Open a coding session as its own thread over this one, as a bot's message to
-	 * another bot opens; the chip stays in the conversation. */
-	#openCodingSession(workerId: string): void {
+	/** Open a coding session as its own thread over this one, as a message to a
+	 * coworker opens; the line stays in the conversation. */
+	#openCodingSession(workerId: string, opener?: HTMLElement): void {
 		if (this.#codingThread?.workerId === workerId) return;
 		this.#closeCodingSession();
 		const conversation = this.#company.conversation(this.#sessionId).get();
@@ -1407,7 +1549,11 @@ export class ConversationView {
 			...this.#codingOptions(agent, agent?.displayName ?? t("Agent")),
 			close: () => {
 				if (this.#codingThread?.view === view) this.#codingThread = undefined;
-				this.#codingElements.get(workerId)?.el.querySelector<HTMLButtonElement>(".coding-chip")?.focus();
+				// Back where the member opened it; the line if the header's figure went away meanwhile.
+				(opener?.isConnected
+					? opener
+					: this.#messages.querySelector<HTMLElement>(`.coding-line[data-worker-id="${workerId}"] .peer-chip`)
+				)?.focus();
 			},
 		});
 		this.#codingThread = { workerId, view };
