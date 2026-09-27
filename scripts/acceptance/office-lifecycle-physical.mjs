@@ -442,7 +442,7 @@ try {
 	evidence.passed = true;
 } catch (error) {
 	evidence.failurePhase = phase; evidence.error = String(error); process.exitCode = 1;
-	try { evidence.failureState = await officeLifecycleDiagnostics({ journal, machineName, provider, ...diagnosticAuthority }); }
+	try { evidence.failureState = await officeLifecycleDiagnostics({ journal, machineName, provider, toolsPath: `${root}/tools.mjs`, ...diagnosticAuthority }); }
 	catch { evidence.failureState = { unavailable: true }; }
 	// Diagnostics remain root-private on the ephemeral runner and are never an artifact.
 	if (fixtureCreated) await writeFile(`${root}/private-process-errors`, [provider, observer, metering, pg].map((processChild) => processChild?.privateDiagnostics() ?? "").join("\n"), { mode: 0o600 });

@@ -14,6 +14,7 @@ import { lxdOfficeProviderBindingSha256 } from "../../packages/runner-orchestrat
 import { runRuntimeNodeObserver } from "../../packages/runner-orchestrator/src/runtime-node-observer-service.ts";
 import { RuntimeComputerHttpControl, readRuntimeComputerExecutorSecret } from "../../packages/runner-orchestrator/src/runtime-computer-http-control.ts";
 import { exerciseRuntimeWorkloadUsage } from "./workload-usage-probe.ts";
+import { officeServiceFailureDiagnostics } from "./office-service-diagnostics.ts";
 
 // This executable composes the real production components. It supplies no
 // replacement physical, registry, journal, clock, or worker ports.
@@ -22,7 +23,14 @@ const abort = new AbortController();
 process.once("SIGTERM", () => abort.abort());
 process.once("SIGINT", () => abort.abort());
 const report = (value: unknown) => process.stdout.write(`${JSON.stringify(value)}\n`);
-if (action === "provider") {
+if (action === "service-diagnostics") {
+	let text = "";
+	for await (const bytes of process.stdin) {
+		text += bytes.toString();
+		if (Buffer.byteLength(text) > 65536) throw new Error("OFFICE_SERVICE_DIAGNOSTIC_LIMIT");
+	}
+	report(officeServiceFailureDiagnostics(text));
+} else if (action === "provider") {
 	try {
 		await runLxdOfficeLifecycleService(process.argv[3], abort.signal, (line) => { process.stdout.write(`${line}\n`); });
 	} catch (error) {

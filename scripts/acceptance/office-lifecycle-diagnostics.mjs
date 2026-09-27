@@ -67,6 +67,26 @@ export function officeStartupDiagnostics({ machineName, policy, policySha256, co
 	} catch { return { available: false, logs: [] }; }
 }
 
+/** Read only the owned service's current-boot journal. Even schema-shaped
+ * guest input is reprojected by the production diagnostic allowlist. */
+export function officeServiceDiagnostics({ machineName, policy, policySha256, command, project }) {
+	if (!/^qorpera-office-[0-9a-f]{32}$/.test(machineName ?? "") || policy?.guest?.project !== "default") return { available: false };
+	const inspect = () => {
+		const reply = command(["query", `/1.0/instances/${machineName}?project=default`]);
+		if (reply.status !== 0) throw new Error("Office diagnostic ownership unavailable");
+		return officeCustodyMachines([{ ...JSON.parse(reply.stdout), project: "default" }], policy, policySha256)[0];
+	};
+	try {
+		const before = inspect();
+		if (before.name !== machineName) return { available: false };
+		const reply = command(["exec", machineName, "--project", "default", "--", "journalctl", "--boot=0", "--unit=qorpera-company-computer.service", "--lines=64", "--output=cat", "--no-pager"], 65536);
+		const after = inspect();
+		if (before.physicalId !== after.physicalId || after.name !== machineName) return { available: false, identityChanged: true };
+		if (reply.status !== 0 || reply.error || Buffer.byteLength(reply.stdout ?? "") > 65536) return { available: false, complete: false };
+		return { available: true, complete: true, failures: project(reply.stdout) };
+	} catch { return { available: false }; }
+}
+
 /** Export selected state only. Journal payloads may contain bearer credentials. */
 export function officeJournalDiagnostic(value) {
 	if (!value || typeof value !== "object" || Array.isArray(value)) return {};
@@ -78,7 +98,7 @@ export function officeJournalDiagnostic(value) {
 }
 
 /** Bounded read-only failure snapshot before physical cleanup changes state. */
-export async function officeLifecycleDiagnostics({ journal, machineName, provider, policy, policySha256 }) {
+export async function officeLifecycleDiagnostics({ journal, machineName, provider, policy, policySha256, toolsPath }) {
 	const result = { provider: { exitCode: provider?.exitCode ?? null, signalCode: provider?.signalCode ?? null }, journal: [] };
 	const operations = new Set();
 	const visit = async (directory, depth) => {
@@ -107,6 +127,11 @@ export async function officeLifecycleDiagnostics({ journal, machineName, provide
 			encoding: "utf8", timeout: Math.max(1, Math.min(3000, Math.floor(remaining))), maxBuffer, killSignal: "SIGKILL" });
 	};
 	result.startup = officeStartupDiagnostics({ machineName, policy, policySha256, command });
+	result.serviceFailure = officeServiceDiagnostics({ machineName, policy, policySha256, command, project: text => {
+		const projected = spawnSync(process.execPath, [toolsPath, "service-diagnostics"], { input: text, encoding: "utf8", timeout: 3000, maxBuffer: 16384, killSignal: "SIGKILL" });
+		if (projected.status !== 0 || projected.error) throw new Error("Office service diagnostic unavailable");
+		return JSON.parse(projected.stdout);
+	} });
 	result.operations = [];
 	for (const operationId of [...operations].slice(0, 16)) {
 		const inspected = command(["query", `/1.0/operations/${operationId}`]);
