@@ -13,7 +13,10 @@ import {
 } from "@qorpera/cloud-client/cloud-company-computer-contract";
 import type { JsonValue } from "@qorpera/contracts";
 import type { CompanyComputerGuestAutomation } from "./cloud-company-computer-guest.ts";
-import type { CompanyComputerScreenActionGate } from "./cloud-company-computer-leases.ts";
+import {
+	CompanyComputerActionSettledFailure,
+	type CompanyComputerScreenActionGate,
+} from "./cloud-company-computer-leases.ts";
 import {
 	type CompanyComputerAction,
 	type CompanyComputerCloudEndpoint,
@@ -30,7 +33,7 @@ import {
 export interface CompanyComputerGuestEffectCheck {
 	/** Consume this receipt once before guest dispatch; repeated attempts must fail. */
 	begin(input: CompanyComputerGuestEffectInput, signal: AbortSignal): Promise<AbortSignal>;
-	/** Called only after confirmed successful guest drain, using a fresh cleanup signal. */
+	/** Called only after a confirmed guest drain (success, or a failure that left nothing running), using a fresh cleanup signal. */
 	finish(input: CompanyComputerGuestEffectInput, signal: AbortSignal): Promise<void>;
 	assertAuthorized(input: CompanyComputerGuestEffectInput, signal: AbortSignal): Promise<void>;
 }
@@ -52,6 +55,8 @@ export class CompanyComputerGuestEndpoint implements CompanyComputerCloudEndpoin
 	readonly #automation: Pick<CompanyComputerGuestAutomation, "perform" | "stopBrowser">;
 	readonly #assertScreenAdmitted: (binding: CompanyComputerScreenBinding, signal: AbortSignal) => Promise<void>;
 	readonly #prepareScreen: (binding: CompanyComputerScreenBinding, signal: AbortSignal) => Promise<void>;
+	/** Settled actions (failed or successful) whose drain got no confirmation yet, by receipt. */
+	readonly #undrained = new Map<string, CompanyComputerGuestEffectInput>();
 
 	constructor(options: {
 		binding: CompanyComputerScreenBinding;
@@ -79,6 +84,23 @@ export class CompanyComputerGuestEndpoint implements CompanyComputerCloudEndpoin
 		this.#automation = options.automation;
 		this.#assertScreenAdmitted = options.assertScreenAdmitted;
 		this.#prepareScreen = options.prepareScreen;
+	}
+
+	/**
+	 * Drain again the settled actions whose first drain got no confirmation.
+	 * Called before the run's screen lease is released: an open resource at
+	 * release makes SQL drain the whole desktop. What still fails stays open.
+	 */
+	async drainSettled(signal: AbortSignal): Promise<void> {
+		for (const [receiptId, effect] of this.#undrained) {
+			signal.throwIfAborted();
+			try {
+				await this.#effects.finish(structuredClone(effect), signal);
+				this.#undrained.delete(receiptId);
+			} catch {
+				/* Retained: the supervisor reaps what cannot be confirmed. */
+			}
+		}
 	}
 
 	get resourceTarget(): { [key: string]: JsonValue } {
@@ -157,44 +179,62 @@ export class CompanyComputerGuestEndpoint implements CompanyComputerCloudEndpoin
 		const receipt = { receiptId: context.receiptId, idempotencyKey: context.idempotencyKey };
 		const effect = { operation, identity, lease, receipt };
 		const resourceSignal = await this.#effects.begin(structuredClone(effect), context.signal);
-		const result = await this.#gate.perform({
-			lease,
-			operation,
-			signal: AbortSignal.any([context.signal, resourceSignal]),
-			drainOnFailure: () => this.#automation.stopBrowser(),
-			authorize: async (signal) => {
-				await this.#effects.assertAuthorized(
-					{
-						operation: structuredClone(operation),
-						identity: structuredClone(identity),
-						lease: structuredClone(lease),
-						receipt: { ...receipt },
-					},
-					signal,
-				);
-				await this.#assertScreenAdmitted(this.#binding, signal);
-			},
-			execute: async (signal): Promise<CompanyComputerToolContent> => {
-				if (action.kind !== "screen" || action.action === "open") {
-					await this.#prepareScreen(this.#binding, signal);
-					signal.throwIfAborted();
-				}
-				if (action.kind === "screen") {
-					// Resource cleanup follows the durable result's final check in createCompanyComputerTools.
-					return {
-						kind: "json",
-						value: {
-							screenId: this.#binding.screenId,
-							status: action.action === "open" ? "open" : "release_requested",
+		const result = await this.#gate
+			.perform({
+				lease,
+				operation,
+				signal: AbortSignal.any([context.signal, resourceSignal]),
+				drainOnFailure: () => this.#automation.stopBrowser(),
+				authorize: async (signal) => {
+					await this.#effects.assertAuthorized(
+						{
+							operation: structuredClone(operation),
+							identity: structuredClone(identity),
+							lease: structuredClone(lease),
+							receipt: { ...receipt },
 						},
-					};
+						signal,
+					);
+					await this.#assertScreenAdmitted(this.#binding, signal);
+				},
+				execute: async (signal): Promise<CompanyComputerToolContent> => {
+					if (action.kind !== "screen" || action.action === "open") {
+						await this.#prepareScreen(this.#binding, signal);
+						signal.throwIfAborted();
+					}
+					if (action.kind === "screen") {
+						// Resource cleanup follows the durable result's final check in createCompanyComputerTools.
+						return {
+							kind: "json",
+							value: {
+								screenId: this.#binding.screenId,
+								status: action.action === "open" ? "open" : "release_requested",
+							},
+						};
+					}
+					return this.#automation.perform(action, lease, { identity, ...receipt, signal }, operation);
+				},
+			})
+			.catch(async (error: unknown) => {
+				// A failure the gate returned knowing nothing of the action still runs
+				// is drained like a success, once the gate has let go of the action:
+				// an open resource makes releasing the screen drain the whole desktop.
+				// Any other error or timeout retains the resource: the guest may still
+				// be draining, and only the acknowledged supervisor reaps that.
+				if (error instanceof CompanyComputerActionSettledFailure) {
+					await this.#effects.finish(structuredClone(effect), new AbortController().signal).catch(() => {
+						// Often the same outage that failed the action: try again before release.
+						this.#undrained.set(receipt.receiptId, structuredClone(effect));
+					});
+					throw error.cause;
 				}
-				return this.#automation.perform(action, lease, { identity, ...receipt, signal }, operation);
-			},
+				throw error;
+			});
+		await this.#effects.finish(structuredClone(effect), new AbortController().signal).catch((error: unknown) => {
+			// Reported as before, and tried again before release.
+			this.#undrained.set(receipt.receiptId, structuredClone(effect));
+			throw error;
 		});
-		// An error/timeout must retain the resource: the guest may still be
-		// draining. Only the acknowledged supervisor can reap that uncertainty.
-		await this.#effects.finish(structuredClone(effect), new AbortController().signal);
 		return result;
 	}
 }

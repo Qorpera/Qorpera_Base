@@ -13,7 +13,10 @@ import {
 	companyComputerRequest,
 } from "@qorpera/cloud-client/cloud-company-computer-contract";
 import type { BrowserContext, Page } from "playwright-core";
+import { CompanyComputerBrowserNetworkPausedError } from "./cloud-company-computer-browser-control.ts";
 import { assertCompanyComputerGuestLayout, type CompanyComputerGuestLayout } from "./cloud-company-computer-layout.ts";
+import { CompanyComputerActionFailedError, companyComputerActionCheck } from "./cloud-company-computer-leases.ts";
+import { companyComputerAuthorityUnanswered } from "./cloud-company-computer-registry-http.ts";
 import { companyComputerScreenDisplay } from "./cloud-company-computer-screens.ts";
 import { type CompanyComputerAction, parseCompanyComputerAction } from "./cloud-company-computer-tools.ts";
 
@@ -217,7 +220,14 @@ export class PersistentCompanyComputerBrowser {
 						await this.#boundary.assertReady(binding, checked);
 						await this.#access.assertGranted(grant, binding, checked);
 					}, combined);
-				} catch {
+				} catch (error) {
+					// Nobody entitled present, or no answer: this use is refused, but the
+					// window stays on the desktop. Only a refusal closes it.
+					if (
+						error instanceof CompanyComputerBrowserNetworkPausedError ||
+						companyComputerAuthorityUnanswered(error)
+					)
+						throw new Error("BROWSER_ACCESS_UNCONFIRMED", { cause: error });
 					void close().catch(() => undefined);
 					throw new Error("BROWSER_ACCESS_ENDED");
 				}
@@ -326,6 +336,22 @@ export class CompanyComputerGuestAutomation {
 		this.#fileImports = options.fileImports;
 	}
 
+	/**
+	 * A page call that failed has returned (Playwright awaits its own timeouts),
+	 * so its failure is the action's own, not a sign that automation is still in
+	 * flight. The page itself may still be loading; its network goes through the
+	 * relay like any other. Authority checks stay outside this wrapper.
+	 */
+	async #pageCall<T>(work: () => Promise<T>): Promise<T> {
+		try {
+			return await work();
+		} catch (error) {
+			if (error instanceof CompanyComputerActionNotStartedError || error instanceof CompanyComputerActionFailedError)
+				throw error;
+			throw new CompanyComputerActionFailedError(error);
+		}
+	}
+
 	/** Cancellation closes the automation channel, not the persistent profile bytes. */
 	async stopBrowser(): Promise<void> {
 		await this.#browser?.close();
@@ -359,9 +385,9 @@ export class CompanyComputerGuestAutomation {
 		)
 			throw new Error("COMPUTER_RUN_MISMATCH");
 		const { signal } = effect;
-		await this.#boundary.assertReady(this.#binding, signal);
+		await companyComputerActionCheck(this.#boundary.assertReady(this.#binding, signal));
 		// Even pixels/shell can observe the granted browser. Sign-in handoffs suspend all agent access.
-		await this.#browser?.assertActive(signal);
+		await companyComputerActionCheck(this.#browser?.assertActive(signal) ?? Promise.resolve());
 		signal.throwIfAborted();
 		if (action.kind === "screen") throw new Error("SCREEN_LIFECYCLE_REQUIRES_CLOUD_REGISTRY");
 		if (action.kind === "transfer") {
@@ -406,7 +432,7 @@ export class CompanyComputerGuestAutomation {
 					if (page.isClosed()) continue;
 					let title: string;
 					try {
-						title = await page.title();
+						title = await this.#pageCall(() => page.title());
 					} catch (error) {
 						if (page.isClosed()) continue;
 						throw error;
@@ -418,7 +444,7 @@ export class CompanyComputerGuestAutomation {
 						urlPreview: tabPreview(page.url(), 256),
 					});
 				}
-				await this.#browser.assertActive(signal);
+				await companyComputerActionCheck(this.#browser.assertActive(signal));
 				signal.throwIfAborted();
 				return {
 					kind: "json",
@@ -433,11 +459,11 @@ export class CompanyComputerGuestAutomation {
 			if (action.kind === "browser" && action.action === "select_tab") {
 				const page = pages.find((candidate) => this.#tabIds.get(candidate) === action.tabId);
 				if (!page) throw new CompanyComputerActionNotStartedError("BROWSER_TAB_UNAVAILABLE");
-				await this.#browser.assertActive(signal);
+				await companyComputerActionCheck(this.#browser.assertActive(signal));
 				signal.throwIfAborted();
 				if (page.isClosed()) throw new CompanyComputerActionNotStartedError("BROWSER_TAB_UNAVAILABLE");
-				await page.bringToFront();
-				await this.#browser.assertActive(signal);
+				await this.#pageCall(() => page.bringToFront());
+				await companyComputerActionCheck(this.#browser.assertActive(signal));
 				signal.throwIfAborted();
 				this.#page = page;
 				return { kind: "json", value: { action: "select_tab", tabId: action.tabId, completed: true } };
@@ -447,17 +473,20 @@ export class CompanyComputerGuestAutomation {
 			if (!this.#page) {
 				// Never silently choose a different tab after a popup or close.
 				if (pages.length > 1) throw new CompanyComputerActionNotStartedError("BROWSER_TAB_AMBIGUOUS");
-				this.#page = pages[0] ?? (await this.#browser.context.newPage());
+				const context = this.#browser.context;
+				this.#page = pages[0] ?? (await this.#pageCall(() => context.newPage()));
 				if (!this.#tabIds.has(this.#page)) this.#tabIds.set(this.#page, randomUUID());
 			}
 			const page = this.#page;
 			if (action.kind === "screenshot") {
 				return this.#publish(
-					await page.screenshot({
-						type: "png",
-						timeout: 5_000,
-						mask: [page.locator('input[type="password"],input[autocomplete="one-time-code"]')],
-					}),
+					await this.#pageCall(() =>
+						page.screenshot({
+							type: "png",
+							timeout: 5_000,
+							mask: [page.locator('input[type="password"],input[autocomplete="one-time-code"]')],
+						}),
+					),
 					lease,
 					effect,
 					"browser",
@@ -465,29 +494,40 @@ export class CompanyComputerGuestAutomation {
 				);
 			}
 			if (action.action === "navigate")
-				await page.goto(action.url, { waitUntil: "domcontentloaded", timeout: 10_000 });
+				await this.#pageCall(() => page.goto(action.url, { waitUntil: "domcontentloaded", timeout: 10_000 }));
 			else if (action.action === "click" || action.action === "fill") {
 				const locator = page.getByRole(action.role, { name: action.name, exact: true });
-				if ((await locator.count()) !== 1)
+				if ((await this.#pageCall(() => locator.count())) !== 1)
 					throw new CompanyComputerActionNotStartedError("BROWSER_TARGET_AMBIGUOUS");
 				if (action.action === "fill") {
-					const [type, autocomplete] = await Promise.all([
-						locator.getAttribute("type"),
-						locator.getAttribute("autocomplete"),
-					]);
+					// Both reads settle before either failure counts, so none is left in flight.
+					const [type, autocomplete] = await this.#pageCall(async () => {
+						const reads = await Promise.allSettled([
+							locator.getAttribute("type"),
+							locator.getAttribute("autocomplete"),
+						]);
+						return reads.map((read) => {
+							if (read.status === "rejected") throw read.reason;
+							return read.value;
+						});
+					});
 					if (type?.toLowerCase() === "password" || /password|one-time-code|cc-/.test(autocomplete ?? ""))
-						throw new Error("PRIVATE_SIGN_IN_REQUIRED");
-					await this.#browser.assertActive(signal);
+						throw new CompanyComputerActionFailedError(new Error("PRIVATE_SIGN_IN_REQUIRED"));
+					await companyComputerActionCheck(this.#browser.assertActive(signal));
 					signal.throwIfAborted();
-					await locator.fill(action.text, { timeout: 5_000 });
-				} else await locator.click({ timeout: 5_000 });
-			} else if (action.action === "press") await page.keyboard.press(action.key);
-			await this.#browser.assertActive(signal);
+					const text = action.text;
+					await this.#pageCall(() => locator.fill(text, { timeout: 5_000 }));
+				} else await this.#pageCall(() => locator.click({ timeout: 5_000 }));
+			} else if (action.action === "press") {
+				const key = action.key;
+				await this.#pageCall(() => page.keyboard.press(key));
+			}
+			await companyComputerActionCheck(this.#browser.assertActive(signal));
 			signal.throwIfAborted();
 			if (action.action === "snapshot") {
-				const snapshot = await page.locator("body").ariaSnapshot({ timeout: 5_000 });
-				const title = await page.title();
-				await this.#browser.assertActive(signal);
+				const snapshot = await this.#pageCall(() => page.locator("body").ariaSnapshot({ timeout: 5_000 }));
+				const title = await this.#pageCall(() => page.title());
+				await companyComputerActionCheck(this.#browser.assertActive(signal));
 				signal.throwIfAborted();
 				return {
 					kind: "json",
@@ -549,19 +589,30 @@ export class CompanyComputerGuestAutomation {
 					.join("+"),
 			];
 		}
-		const output = await this.#commands.run({
-			program: action.kind === "shell" ? "/bin/bash" : "/usr/bin/xdotool",
-			args,
-			...(action.kind === "desktop" && action.action === "type" ? { stdin: action.text } : {}),
-			environment: { DISPLAY: display, PATH: "/usr/local/bin:/usr/bin:/bin", LANG: "C.UTF-8" },
-			workingDirectory: this.#layout.workbenchRoot,
-			timeoutMs: action.kind === "shell" ? action.timeoutMs : 5_000,
-			maxOutputBytes: 16_384,
-			signal,
-		});
+		const output = await this.#commands
+			.run({
+				program: action.kind === "shell" ? "/bin/bash" : "/usr/bin/xdotool",
+				args,
+				...(action.kind === "desktop" && action.action === "type" ? { stdin: action.text } : {}),
+				environment: { DISPLAY: display, PATH: "/usr/local/bin:/usr/bin:/bin", LANG: "C.UTF-8" },
+				workingDirectory: this.#layout.workbenchRoot,
+				timeoutMs: action.kind === "shell" ? action.timeoutMs : 5_000,
+				maxOutputBytes: 16_384,
+				signal,
+			})
+			.catch((error: unknown) => {
+				// Reported only once the command's namespace has exited: it stopped at
+				// its own limit and nothing of it runs. Any other failure is not typed.
+				if (
+					error instanceof Error &&
+					["OFFICE_COMMAND_TIMEOUT", "OFFICE_COMMAND_OUTPUT_LIMIT"].includes(error.message)
+				)
+					throw new CompanyComputerActionFailedError(error);
+				throw error;
+			});
 		signal.throwIfAborted();
-		await this.#boundary.assertReady(this.#binding, signal);
-		await this.#browser?.assertActive(signal);
+		await companyComputerActionCheck(this.#boundary.assertReady(this.#binding, signal));
+		await companyComputerActionCheck(this.#browser?.assertActive(signal) ?? Promise.resolve());
 		signal.throwIfAborted();
 		if (
 			!Number.isInteger(output.code) ||
@@ -600,8 +651,8 @@ export class CompanyComputerGuestAutomation {
 			(surface === "desktop" && (width !== 1920 || height !== 1200))
 		)
 			throw new Error("INVALID_SCREENSHOT");
-		await this.#boundary.assertReady(this.#binding, effect.signal);
-		await this.#browser?.assertActive(effect.signal);
+		await companyComputerActionCheck(this.#boundary.assertReady(this.#binding, effect.signal));
+		await companyComputerActionCheck(this.#browser?.assertActive(effect.signal) ?? Promise.resolve());
 		effect.signal.throwIfAborted();
 		const digest = createHash("sha256").update(bytes).digest("hex");
 		const asset = await this.#screenshots.publish(Uint8Array.from(bytes), lease, effect, operation);
@@ -613,8 +664,8 @@ export class CompanyComputerGuestAutomation {
 		) {
 			throw new Error("INVALID_SCREENSHOT_RECEIPT");
 		}
-		await this.#boundary.assertReady(this.#binding, effect.signal);
-		await this.#browser?.assertActive(effect.signal);
+		await companyComputerActionCheck(this.#boundary.assertReady(this.#binding, effect.signal));
+		await companyComputerActionCheck(this.#browser?.assertActive(effect.signal) ?? Promise.resolve());
 		effect.signal.throwIfAborted();
 		return { kind: "json", value: { ...asset, screenId: this.#binding.screenId, surface, width, height } };
 	}

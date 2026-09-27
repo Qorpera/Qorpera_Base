@@ -1,4 +1,5 @@
 import { join } from "node:path";
+import { performance } from "node:perf_hooks";
 import { isDeepStrictEqual } from "node:util";
 import {
 	assertCompanyComputerLease,
@@ -31,19 +32,31 @@ import {
 	PersistentCompanyComputerBrowser,
 } from "./cloud-company-computer-guest.ts";
 import { assertCompanyComputerGuestLayout, type CompanyComputerGuestLayout } from "./cloud-company-computer-layout.ts";
-import type { CompanyComputerScreenActionGate } from "./cloud-company-computer-leases.ts";
+import {
+	CompanyComputerActionFailedError,
+	type CompanyComputerScreenActionGate,
+	companyComputerActionCheck,
+} from "./cloud-company-computer-leases.ts";
 import { createCompanyComputerLinuxBrowserLaunch } from "./cloud-company-computer-linux-browser.ts";
 import { CompanyComputerLinuxCommands } from "./cloud-company-computer-linux-commands.ts";
 import { CompanyComputerLinuxDesktopLauncher } from "./cloud-company-computer-linux-desktop.ts";
 import type { CompanyComputerCommandLimits } from "./cloud-company-computer-linux-host.ts";
 import { startCompanyComputerLinuxPrivateSurface } from "./cloud-company-computer-linux-private-surface.ts";
 import { parseCompanyComputerNativeDescriptor } from "./cloud-company-computer-native-client.ts";
-import type { CompanyComputerNativeGuestSession } from "./cloud-company-computer-native-gateway.ts";
+import {
+	CompanyComputerGuestSessionRefusedError,
+	type CompanyComputerNativeGuestSession,
+} from "./cloud-company-computer-native-gateway.ts";
 import { CloudCompanyComputerPrivateSurfaceControl } from "./cloud-company-computer-private-surface-control.ts";
-import type { HttpCloudCompanyComputerRegistry } from "./cloud-company-computer-registry-http.ts";
+import {
+	COMPANY_COMPUTER_UNANSWERED_GRACE_MS,
+	companyComputerAuthorityUnanswered,
+	type HttpCloudCompanyComputerRegistry,
+} from "./cloud-company-computer-registry-http.ts";
 import type {
 	CompanyComputerScreenLifecycle,
 	CompanyComputerScreenLifetime,
+	ScreenClosingReason,
 } from "./cloud-company-computer-screen-lifecycle.ts";
 import type { CompanyComputerScreenSessionHandle } from "./cloud-company-computer-screens.ts";
 import type { CompanyComputerServiceGuest } from "./cloud-company-computer-service.ts";
@@ -58,7 +71,8 @@ interface NativeSession {
 }
 /** The screen's one browser. It belongs to the desktop, like any window on it:
  * agent runs attach to it and detach, members use it through their viewer. It
- * stays open only while SQL authorizes it (see `#ensureBrowser`). */
+ * stays open while SQL keeps its grant; its network only while somebody
+ * entitled is present (see `#ensureBrowser`). */
 interface ScreenBrowser {
 	manager: PersistentCompanyComputerBrowser;
 	opening?: Promise<CompanyComputerBrowserSession>;
@@ -287,6 +301,7 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 				);
 				await current.lifecycle?.ready(startup);
 				startup.throwIfAborted();
+				let confirmedAt = performance.now();
 				const renew = (): void => {
 					if (current.closing || this.#closing) return;
 					current.timer = setTimeout(() => {
@@ -298,20 +313,33 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 							3000,
 						).then(
 							async () => {
+								confirmedAt = performance.now();
 								await current.lifecycle
 									?.heartbeat(AbortSignal.any([this.#stop.signal, current.stop.signal]))
 									.catch(() => undefined);
 								renew();
 							},
 							(pulseError) => {
-								if (this.#screens.get(binding.screenOrdinal) === current && !current.closing)
-									void this.stopResources(binding, new AbortController().signal).catch((error) =>
+								if (this.#screens.get(binding.screenOrdinal) !== current || current.closing) return;
+								// A check that got no answer keeps the desktop and its apps. It
+								// authorizes nothing meanwhile: every agent action, viewer input
+								// and browser connection asks again for itself. Only a clear
+								// refusal, or no answer for the whole grace, ends the desktop.
+								if (
+									companyComputerAuthorityUnanswered(pulseError) &&
+									performance.now() - confirmedAt < COMPANY_COMPUTER_UNANSWERED_GRACE_MS
+								) {
+									renew();
+									return;
+								}
+								void this.stopResources(binding, new AbortController().signal, "AUTHORITY_LOST").catch(
+									(error) =>
 										this.#fail(
 											new Error("OFFICE_SHARED_PULSE_FAILED", {
 												cause: new AggregateError([pulseError, error]),
 											}),
 										),
-									);
+								);
 							},
 						);
 					}, 1000);
@@ -376,12 +404,14 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 
 	/**
 	 * Open, or join, the one browser of this screen. No run and no viewer owns the
-	 * process, so a run ending or a viewer closing does not by itself stop it. It
-	 * lives exactly as long as SQL keeps authorizing it: the egress relay asks
-	 * every second, and once no agent holds the lease and no member with input
-	 * permission is live on the screen (after SQL's tolerance of at most a minute
-	 * for a network blip) the next check is refused and the browser closes. It
-	 * also ends with a drain, the privacy fence, a lost grant and the service.
+	 * process, so a run ending or a viewer closing does not by itself stop it. The
+	 * egress relay asks SQL every second. Once no agent holds the lease and no
+	 * member with input permission is live on the screen (after SQL's tolerance of
+	 * at most a minute for a network blip), SQL answers `idle`: the window stays
+	 * on the desktop, like any app between runs, with its network paused until
+	 * somebody entitled is back. A refusal closes it, and so do a drain, the
+	 * privacy fence, a lost grant and the service. A check that gets no answer
+	 * pauses the network too, and closes the browser only after the grace.
 	 * Chromium locks a profile to one process, and the manager keeps exactly one
 	 * per profile, so an agent run arriving while it is open gets the same context.
 	 */
@@ -467,6 +497,9 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 		input: Parameters<CompanyComputerServiceGuest["createSession"]>[0],
 	): Promise<CompanyComputerNativeGuestSession> {
 		this.#binding(input.lease.binding);
+		// A session would hold the physical drain a private sign-in waits for.
+		if (this.#private || this.#privacy?.state === "entering")
+			throw new CompanyComputerGuestSessionRefusedError("OFFICE_PRIVACY_FENCED");
 		if (this.#gate && this.#gate !== input.gate) throw new Error("OFFICE_GATE_CHANGED");
 		this.#gate = input.gate;
 		const descriptor = parseCompanyComputerNativeDescriptor(input.descriptor, input.run);
@@ -482,6 +515,7 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 		const stop = new AbortController();
 		const active = new Set<Promise<unknown>>();
 		let closing: Promise<void> | undefined;
+		let ended = false;
 		let commands: CompanyComputerLinuxCommands | undefined;
 		let browser: CompanyComputerBrowserSession | undefined;
 		/** The screen browser THIS run drives (or is in the middle of joining). A run
@@ -514,11 +548,26 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 		const attach = async (checked: AbortSignal): Promise<CompanyComputerBrowserSession> => {
 			const grant = runGrant();
 			// First the run's authority; a run without a current grant starts nothing.
-			await boundary.assertReady(binding, checked);
-			await access.assertGranted(grant, binding, checked);
+			await companyComputerActionCheck(boundary.assertReady(binding, checked));
+			await companyComputerActionCheck(access.assertGranted(grant, binding, checked));
 			// From here on this run may have automation in flight against the browser.
 			driving = "attaching";
-			const shared = await this.#ensureBrowser(binding, "agent", checked);
+			let shared: CompanyComputerBrowserSession;
+			try {
+				shared = await this.#ensureBrowser(binding, "agent", checked);
+			} catch (error) {
+				// Joining the open window only checked it, and that check got no answer:
+				// this run started nothing there, so it has nothing to stop.
+				if (
+					error instanceof Error &&
+					error.message === "BROWSER_ACCESS_UNCONFIRMED" &&
+					companyComputerAuthorityUnanswered(error)
+				) {
+					driving = undefined;
+					throw new CompanyComputerActionFailedError(error);
+				}
+				throw error;
+			}
 			driving = shared;
 			if (
 				shared.grant.profileId !== grant.profileId ||
@@ -536,8 +585,11 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 					try {
 						await boundary.assertReady(binding, current);
 						await access.assertGranted(grant, binding, current);
-					} catch {
-						throw new Error("BROWSER_ACCESS_ENDED");
+					} catch (cause) {
+						throw new Error(
+							companyComputerAuthorityUnanswered(cause) ? "BROWSER_ACCESS_UNCONFIRMED" : "BROWSER_ACCESS_ENDED",
+							{ cause },
+						);
 					}
 					// Screen authority and physical liveness; a lost grant closes the browser.
 					await shared.assertActive(current);
@@ -564,8 +616,8 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 					async () => {
 						await Promise.allSettled([...active]);
 						// The run lets go of the screen's browser instead of closing it. It
-						// stays open only while somebody entitled remains (the relay's
-						// per-second SQL check decides). Every action of this run has settled
+						// stays on the desktop; its network pauses once nobody entitled
+						// remains (the relay's per-second SQL check decides). Every action of this run has settled
 						// above, so no automation command of the run is still in flight.
 						// Drop local handles without closing any shared desktop tab.
 						const leaving = automation;
@@ -576,10 +628,18 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 						browser = undefined;
 						driving = undefined;
 						automation = undefined;
+						// Settled failures whose drain got no answer mid-run get one more try
+						// before the lease is released, so an outage does not drain the desktop.
+						await cloudToolRequest(
+							(checked) => endpoint.drainSettled(checked),
+							new AbortController().signal,
+							5000,
+						).catch(() => undefined);
 						const results = await Promise.allSettled([commands?.close()]);
 						const rejected = results.find((result) => result.status === "rejected");
 						if (rejected) throw new Error("OFFICE_SESSION_DRAIN_UNCONFIRMED", { cause: rejected.reason });
 						this.#sessions.delete(session);
+						ended = true;
 					},
 					new AbortController().signal,
 					30000,
@@ -664,6 +724,7 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 		});
 		return {
 			close: session.close,
+			ended: () => ended,
 			endpoint: {
 				capabilities: endpoint.capabilities,
 				resourceTarget: endpoint.resourceTarget,
@@ -880,7 +941,12 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 			signal.throwIfAborted();
 		},
 	};
-	async stopResources(binding: CompanyComputerScreenBinding, signal: AbortSignal): Promise<void> {
+	/** `reason` names a stop the service decided itself; a drain request or privacy fence is inferred. */
+	async stopResources(
+		binding: CompanyComputerScreenBinding,
+		signal: AbortSignal,
+		reason?: Extract<ScreenClosingReason, "AUTHORITY_LOST">,
+	): Promise<void> {
 		assertCompanyComputerScreenBinding(binding, binding);
 		assertCompanyComputerScope(binding, this.#options.scope);
 		if (binding.computerGeneration !== this.#options.computerGeneration)
@@ -902,7 +968,7 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 						? "OFFICE_SERVICE_STOPPING"
 						: this.#privacy?.state === "entering"
 							? "PRIVACY_FENCE"
-							: "SCREEN_DRAIN_REQUESTED",
+							: (reason ?? "SCREEN_DRAIN_REQUESTED"),
 					new AbortController().signal,
 				)
 				.catch(() => undefined);

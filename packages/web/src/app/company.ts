@@ -226,6 +226,21 @@ function reconcileOptimistic(state: Pick<ConversationState, "optimistic" | "pend
 	});
 }
 
+/** A fresh listing of a thread's coding sessions, keeping any session the thread
+ * already knows in a newer state (an answer merged while an older read was on its way). */
+function newerCodingSessions(
+	listed: readonly CodingSession[],
+	known: readonly CodingSession[] | undefined,
+): CodingSession[] {
+	const byWorker = new Map((known ?? []).map((session) => [session.workerId, session]));
+	return listed.map((session) => {
+		const current = byWorker.get(session.workerId);
+		return current && Date.parse(current.updatedAt) > Date.parse(session.updatedAt)
+			? { ...current, isOwner: session.isOwner ?? current.isOwner }
+			: session;
+	});
+}
+
 const EVENT_PAGE = 500;
 
 /** Company-audience staff conversations, as the desktop arbiter selects them. */
@@ -1108,7 +1123,10 @@ export class CompanyController {
 				// RPC, and a refused or failed listing keeps what the thread already shows.
 				let codingSessions = store.get().codingSessions;
 				try {
-					codingSessions = await this.#api.listCodingSessions(sessionId);
+					codingSessions = newerCodingSessions(
+						await this.#api.listCodingSessions(sessionId),
+						store.get().codingSessions,
+					);
 				} catch {
 					codingSessions ??= [];
 				}
@@ -1136,6 +1154,14 @@ export class CompanyController {
 
 	readCodingSession(workerId: string, afterEvent = 0): Promise<CodingSessionRead> {
 		return this.#api.readCodingSession(workerId, afterEvent);
+	}
+
+	/** The thread's sessions read again, for the header's figures while one is still going. */
+	async refreshCodingSessions(sessionId: string): Promise<void> {
+		const store = this.conversations.get(sessionId);
+		if (!store || this.#stopped) return;
+		const listed = await this.#api.listCodingSessions(sessionId);
+		if (!this.#stopped) store.set({ codingSessions: newerCodingSessions(listed, store.get().codingSessions) });
 	}
 
 	async answerCodingSession(
