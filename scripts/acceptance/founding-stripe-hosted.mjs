@@ -247,7 +247,7 @@ export async function prepareHostedFoundingScenario(platform, configuration) {
 		assert.deepEqual(failures, [], "Owned Stripe test-object cleanup failed");
 	};
 	try {
-		bootstrap = await prepareFoundingBootstrap(platform);
+		bootstrap = configuration.bootstrap ?? (await prepareFoundingBootstrap(platform));
 		await cluster.query(`insert into public.qorpera_computer_billing_keys(key_sha256,label) values('${createHash("sha256").update(bridge).digest("hex")}','Hosted Checkout acceptance');
    update public.qorpera_computer_billing_readiness set runtime_accounting_ready=true,checkout_enabled=true where singleton;
    update public.qorpera_computer_plan_versions set active_for_checkout=true where plan_key in ('basis','standard') and version=1;`);

@@ -10,9 +10,12 @@ tests prove Auth, member operations, real bootstrap publication and exact normal
 orchestrator claim. TLS/DNS/capsule tests prove the local protocol boundaries.
 They do not prove guest boot, native inference transport or physical settlement.
 
-The computer plans in this CLI use the disclosed canonical test-invoice funding
-fixtures from the browser scenario. Real hosted Stripe checkout and genuine
-webhook acceptance are a separate retained scenario. External model OAuth is
+By default, the computer plans in this CLI use disclosed canonical test-invoice
+funding fixtures. The optional hosted-payment mode below instead purchases both
+plans through the real member UI and Stripe test Checkout, then carries those
+same members, funded balances, company, bootstrap store and materialized run
+through physical execution and debit. Its physical result is still pending;
+the separately retained hosted scenario proves purchase through founding only. External model OAuth is
 synthetic: each member still creates its own identity/login/sponsor through real
 member-authenticated RPCs, then the test completes that login with a synthetic
 credential. The fresh identity volume receives its matching marker/key before
@@ -109,6 +112,27 @@ sudo -u acceptance env NODE_EXTRA_CA_CERTS=/opt/qorpera-founding-one/ca.pem \
   node scripts/acceptance/founding-native-joined.mjs \
   --host /opt/qorpera-founding-one/host.json
 ```
+
+For one continuous hosted purchase → founding → native execution → paid debit,
+add both explicit payment arguments to the second command:
+
+```sh
+sudo -u acceptance env NODE_EXTRA_CA_CERTS=/opt/qorpera-founding-one/ca.pem \
+  node scripts/acceptance/founding-native-joined.mjs \
+  --host /opt/qorpera-founding-one/host.json \
+  --stripe-cli /opt/private/stripe \
+  --stripe-key /home/acceptance/private/stripe-test-key
+```
+
+Use the protected Stripe CLI 1.52.0 and current-user-owned mode0600 `sk_test_…`
+key described in [hosted acceptance](founding-hosted-acceptance.md). Live keys,
+an incomplete argument pair, unsafe executables and wrong versions are refused.
+Host/CA/resource preflight runs before payment setup. No payment is made by the
+preparation command or by fixture mode. Hosted mode reuses the production
+Checkout/webhook handler and never falls back to invoice fixtures on failure.
+Native closure and settlement precede owned subscription cancellation and
+listener shutdown; failed payment cleanup also retains the accounting database.
+Private keys, raw webhook bodies and signatures never enter public evidence.
 
 Preparation first verifies the actual `/usr/bin/node` used by the guard and
 captures the protected host mount-namespace record as root; the observer gets
