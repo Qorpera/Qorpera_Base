@@ -92,6 +92,7 @@
 
 ### Changed
 
+- Distinguish inspection-window expiry from parent cancellation and retain a closed phase code for Office service inspection failures, without including backend error details or extending authority deadlines.
 - Report closed configuration phases and bounded monotonic timing counters on office reconciliation timeout, without exposing credential material or changing authority deadlines.
 - Warm conversations (contract amendment 2026-09-27), off unless `QORPERA_SHARED_EXECUTION_WARM_IDLE_MS` is set: after an attended run the shared execution service parks its slot (runner stopped and wiped, capacity released, native host kept with its scratch and bridge credential) for the conversation's next run, which claims it after the identity is verified again and starts only its runner. A changed identity, a stopped host or a passed window evicts the slot; under capacity pressure the slot parked longest gives way.
 - The orchestrator asks for new work on every poll (250 ms) and reconciles (control renewal, occurrence reconcilers, expired claims, provider, retained claims) every `QORPERA_RUNNER_ORCHESTRATOR_RECONCILE_MS` (default 2 s) instead of before every claim; a failed reconcile still blocks claims and is retried on the next poll, a failed dispatch brings the next reconcile forward to the next poll, and retained claims keep their priority until they have been re-read. An assignment that races a runner's activation is retried after 50 ms, doubling to 3 s, instead of after 250 ms.
@@ -105,6 +106,7 @@
 
 ### Fixed
 
+- Read independent sealed stop-history blobs and resumed-boot credential evidence in bounded batches of four. Every custody, byte and hash check remains required; started reads settle before a failed batch returns, and live physical and SQL authority are still checked within the original inspection window.
 - Preserve the verified admitted preparation anchor through ordinary office resumes and same-boot restarts after outage recovery. The bounded shutdown lineage selects the exact outage or reset origin while the original preparation document, completion and operation remain independently verified; missing or changed admitted proof refuses activation.
 - Retain completed outage configuration, service-start and nested termination-control results in the background before LXD expires them. Recovery keeps the exact command and terminal outcome without redispatching, traversing symlinks or inferring missing completion.
 - Allow the existing outage service-inspection command to carry its distinct nonce through the fixed LXD argv builder, matching the guest's protected entrypoint.

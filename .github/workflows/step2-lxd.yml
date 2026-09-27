@@ -260,6 +260,8 @@ jobs:
           test/lxd-office-creation-worker.test.ts
           test/lxd-office-boot-worker.test.ts
           test/lxd-office-boot-preparation-continuity.test.ts
+          test/lxd-office-boot-service-inspection.test.ts
+          test/lxd-office-stop-history.test.ts
           test/lxd-office-lifecycle.test.ts
           test/lxd-office-lifecycle-service.test.ts
           test/lxd-office-resume-worker.test.ts

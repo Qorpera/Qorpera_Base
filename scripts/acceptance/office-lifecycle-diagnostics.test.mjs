@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
 import { buildSync } from "esbuild";
-import { officeJournalDiagnostic, officePaidDiagnostic, officePaidSqlDiagnostics, officeSqlFailureHistory, officeProcessDiagnostic, officeServiceDiagnostics, officeStartupDiagnostics, officeStartupLogDiagnostic } from "./office-lifecycle-diagnostics.mjs";
+import { officeJournalDiagnostic, officeJournalDiagnostics, officePaidDiagnostic, officePaidSqlDiagnostics, officeSqlFailureHistory, officeProcessDiagnostic, officeServiceDiagnostics, officeStartupDiagnostics, officeStartupLogDiagnostic } from "./office-lifecycle-diagnostics.mjs";
 
 const root = mkdtempSync(join(tmpdir(), "office-service-diagnostics-"));
 after(() => rmSync(root, { recursive: true, force: true }));
@@ -63,6 +63,48 @@ test("office failure diagnostics export fixed states without journal credentials
 		{ schema: "qorpera.lxd-office-operation-event/v2", state: "pending", kind: "accepted", action: "start", startSettled: false });
 	assert.deepEqual(officeJournalDiagnostic({ schema: "private-token", state: "private-token", kind: "private-token", startSettled: "private-token" }), {});
 	assert.deepEqual(officeJournalDiagnostic(null), {});
+});
+
+test("known service inspection records retain only validated correlation identities", () => {
+	const inspectionId = "10000000-0000-4000-8000-000000000001", commandId = "10000000-0000-4000-8000-000000000002",
+		bootId = "10000000-0000-4000-8000-000000000003", operationId = "10000000-0000-4000-8000-000000000004";
+	for (const purpose of ["service", "boot-service", "boot-service-restart", "reset-service", "reset-service-restart", "outage-service"]) {
+		const dispatch = `qorpera.lxd-office-${purpose}-inspection-dispatch/v1`, accepted = `qorpera.lxd-office-${purpose}-inspection-accepted/v1`;
+		assert.deepEqual(officeJournalDiagnostic({ schema: dispatch, inspectionId, command: { commandId, bootId, requestSha256: "private-token" },
+			completion: { private: "private-token" }, request: "private-token", startedAt: "private-token" }),
+			{ schema: dispatch, inspectionId, commandId, bootId });
+		assert.deepEqual(officeJournalDiagnostic({ schema: accepted, inspectionId,
+			reference: { operationId, project: "private-token", instanceName: "private-token" }, error: "private-token" }),
+			{ schema: accepted, inspectionId, operationId });
+	}
+});
+
+test("inspection identities never generalize to unknown schemas or arbitrary strings", () => {
+	const id = "10000000-0000-4000-8000-000000000001";
+	assert.deepEqual(officeJournalDiagnostic({ schema: { toString: "private-token" }, inspectionId: id }), {});
+	for (const schema of ["qorpera.lxd-office-unknown-inspection-accepted/v1", "qorpera.lxd-office-boot-service-inspection-accepted/v2", "qorpera.unrelated/v1"])
+		assert.deepEqual(officeJournalDiagnostic({ schema, inspectionId: id, command: { commandId: id, bootId: id }, reference: { operationId: id } }), { schema });
+	for (const kind of ["accepted", "dispatch"]) {
+		const schema = `qorpera.lxd-office-boot-service-inspection-${kind}/v1`;
+		assert.deepEqual(officeJournalDiagnostic({ schema, inspectionId: "private-token", command: { commandId: "private-token", bootId: "private-token" }, reference: { operationId: "private-token" } }), { schema });
+	}
+});
+
+test("bounded journal scan selects accepted nested inspection operations without exporting private records", async () => {
+	const journal = mkdtempSync(join(root, "inspection-journal-")), guards = join(journal, "guards");
+	mkdirSync(guards);
+	const inspectionId = "10000000-0000-4000-8000-000000000001", operationId = "10000000-0000-4000-8000-000000000002",
+		ignored = "10000000-0000-4000-8000-000000000003";
+	writeFileSync(join(journal, "000-accepted.json"), JSON.stringify({ schema: "qorpera.lxd-office-boot-service-inspection-accepted/v1", inspectionId,
+		reference: { operationId, token: "private-token" } }));
+	writeFileSync(join(journal, "001-unknown.json"), JSON.stringify({ schema: "qorpera.unrelated/v1", reference: { operationId: ignored } }));
+	for (let i = 2; i < 130; i++) writeFileSync(join(journal, `${String(i).padStart(3, "0")}.json`), JSON.stringify({ schema: "qorpera.unrelated/v1", private: "private-token" }));
+	const result = await officeJournalDiagnostics(journal, guards);
+	assert.equal(result.journal.length, 128);
+	assert.deepEqual(result.operationIds, [operationId]);
+	assert.deepEqual(result.journal[0], { schema: "qorpera.lxd-office-boot-service-inspection-accepted/v1", inspectionId, operationId });
+	assert(!JSON.stringify(result).includes("private-token"));
+	assert(!JSON.stringify(result).includes(ignored));
 });
 
 test("startup logs expose bounded fingerprints and fixed error classes, never arbitrary log text", () => {

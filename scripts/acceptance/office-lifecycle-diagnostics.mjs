@@ -163,6 +163,18 @@ export function officeJournalDiagnostic(value) {
 	if (typeof value.schema === "string" && /^qorpera\.[a-z-]+\/v[1-9][0-9]*$/.test(value.schema)) result.schema = value.schema;
 	for (const key of ["state", "kind", "action", "phase"]) if (states.has(value[key])) result[key] = value[key];
 	for (const key of ["startDispatched", "startSettled", "startSucceeded", "stopped", "closed"]) if (typeof value[key] === "boolean") result[key] = value[key];
+	const inspection = typeof value.schema === "string"
+		? /^qorpera\.lxd-office-(?:service|boot-service|boot-service-restart|reset-service|reset-service-restart|outage-service)-inspection-(dispatch|accepted)\/v1$/.exec(value.schema) : null;
+	if (inspection) {
+		if (typeof value.inspectionId === "string" && uuid.test(value.inspectionId)) result.inspectionId = value.inspectionId;
+		if (inspection[1] === "accepted") {
+			const operationId = value.reference?.operationId;
+			if (typeof operationId === "string" && uuid.test(operationId)) result.operationId = operationId;
+		} else {
+			for (const key of ["commandId", "bootId"])
+				if (typeof value.command?.[key] === "string" && uuid.test(value.command[key])) result[key] = value.command[key];
+		}
+	}
 	if (value.schema === "qorpera.computer-guard-archive/v1") {
 		result.guard = officePaidDiagnostic(value.guard);
 		result.permit = officePaidDiagnostic(value.guard?.permit);
@@ -182,9 +194,11 @@ export function officeJournalDiagnostic(value) {
 	return result;
 }
 
-/** Bounded read-only failure snapshot before physical cleanup changes state. */
-export async function officeLifecycleDiagnostics({ journal, machineName, provider, policy, policySha256, toolsPath }) {
-	const result = { provider: { exitCode: provider?.exitCode ?? null, signalCode: provider?.signalCode ?? null }, journal: [] };
+/** Bounded projection shared by the failure snapshot and its private-file
+ * regression. Nested references are selected only through known inspection
+ * schemas; no journal request, completion or credential text is exported. */
+export async function officeJournalDiagnostics(journal, guardRoot = "/var/lib/qorpera-office-computer-guard") {
+	const result = { journal: [] };
 	const operations = new Set();
 	const visit = async (directory, depth) => {
 		for (const entry of (await readdir(directory, { withFileTypes: true })).slice(0, 256)) {
@@ -196,14 +210,21 @@ export async function officeLifecycleDiagnostics({ journal, machineName, provide
 				if ((await lstat(path)).size > 131072) continue;
 				const value = JSON.parse(await readFile(path, "utf8"));
 				const summary = officeJournalDiagnostic(value);
-				const operationId = value?.startReference?.operationId ?? value?.operationId;
+				const operationId = summary.operationId ?? value?.startReference?.operationId ?? value?.operationId;
 				if (typeof operationId === "string" && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(operationId)) operations.add(operationId);
 				if (Object.keys(summary).length) result.journal.push(summary);
 			} catch { /* A concurrent publication or malformed record is not authority. */ }
 		}
 	};
 	try { await visit(journal, 0); } catch { result.journalUnavailable = true; }
-	try { await visit("/var/lib/qorpera-office-computer-guard", 0); } catch { result.guardUnavailable = true; }
+	try { await visit(guardRoot, 0); } catch { result.guardUnavailable = true; }
+	return { ...result, operationIds: [...operations] };
+}
+
+/** Bounded read-only failure snapshot before physical cleanup changes state. */
+export async function officeLifecycleDiagnostics({ journal, machineName, provider, policy, policySha256, toolsPath }) {
+	const { operationIds, ...snapshot } = await officeJournalDiagnostics(journal);
+	const result = { provider: { exitCode: provider?.exitCode ?? null, signalCode: provider?.signalCode ?? null }, ...snapshot };
 	if (!/^qorpera-office-[0-9a-f]{32}$/.test(machineName ?? "")) return result;
 	const deadline = performance.now() + 30000;
 	const command = (args, maxBuffer = 262144) => {
@@ -218,13 +239,13 @@ export async function officeLifecycleDiagnostics({ journal, machineName, provide
 		return JSON.parse(projected.stdout);
 	} });
 	result.operations = [];
-	for (const operationId of [...operations].slice(0, 16)) {
+	for (const operationId of operationIds.slice(0, 16)) {
 		const inspected = command(["query", `/1.0/operations/${operationId}`]);
 		try {
 			const value = JSON.parse(inspected.stdout);
-			result.operations.push({ statusCode: Number.isSafeInteger(value.status_code) ? value.status_code : null,
+			result.operations.push({ operationId, statusCode: Number.isSafeInteger(value.status_code) ? value.status_code : null,
 				status: ["Pending", "Running", "Success", "Failure", "Cancelled", "Cancelling"].includes(value.status) ? value.status : "unknown" });
-		} catch { result.operations.push({ available: false }); }
+		} catch { result.operations.push({ operationId, available: false }); }
 	}
 	const physical = command(["query", `/1.0/instances/${machineName}/state?project=default`]);
 	try {

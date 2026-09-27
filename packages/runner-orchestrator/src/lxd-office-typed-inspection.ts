@@ -112,8 +112,10 @@ export class LxdOfficeTypedInspectionControl<Request, Completion> {
 		const request = this.#protocol.parseRequest(requestValue);
 		const completion = this.#protocol.parseCompletion(completionValue, command, request);
 		this.#busy = true;
-		const signal = AbortSignal.any([caller, AbortSignal.timeout(WINDOW_MS)]);
+		const window = AbortSignal.timeout(WINDOW_MS);
+		const signal = AbortSignal.any([caller, window]);
 		const started = performance.now();
+		let phase = "AUTHORIZATION";
 		const fresh = () => {
 			signal.throwIfAborted();
 			const elapsed = performance.now() - started;
@@ -123,7 +125,11 @@ export class LxdOfficeTypedInspectionControl<Request, Completion> {
 		const stopped = new Promise<never>((_resolve, reject) => {
 			abort = () =>
 				reject(
-					new Error(`OFFICE_${this.#protocol.purpose.replaceAll("-", "_").toUpperCase()}_INSPECTION_UNCONFIRMED`),
+					new Error(`OFFICE_${this.#protocol.purpose.replaceAll("-", "_").toUpperCase()}_INSPECTION_UNCONFIRMED`, {
+						cause: new Error(
+							`OFFICE_INSPECTION_${caller.aborted ? "CALLER_ABORTED" : "WINDOW_EXPIRED"}_DURING_${phase}`,
+						),
+					}),
 				);
 			signal.addEventListener("abort", abort, { once: true });
 		});
@@ -132,7 +138,10 @@ export class LxdOfficeTypedInspectionControl<Request, Completion> {
 			const checked = async () => {
 				fresh();
 				retainedAuthority.throwIfAborted();
+				const previousPhase = phase;
+				phase = "AUTHORIZATION";
 				const authority = AbortSignal.any([retainedAuthority, await authorize(signal)]);
+				phase = previousPhase;
 				retainedAuthority = authority;
 				fresh();
 				authority.throwIfAborted();
@@ -149,6 +158,7 @@ export class LxdOfficeTypedInspectionControl<Request, Completion> {
 				completion,
 			};
 			await checked();
+			phase = "JOURNAL";
 			await assertInspectionBudget(this.#root, this.#binding.allocationId, signal, this.#protocol.purpose);
 			fresh();
 			if (!(await publish(this.#root, `${prefix}.json`, Buffer.from(officeCanonical(dispatch)))))
@@ -160,6 +170,7 @@ export class LxdOfficeTypedInspectionControl<Request, Completion> {
 				return checked();
 			};
 			const name = lxdOfficeGuestPlan(this.#binding).request.name;
+			phase = "SUBMISSION";
 			const reference = await this.#client.submit(
 				this.#binding.project,
 				name,
@@ -178,6 +189,7 @@ export class LxdOfficeTypedInspectionControl<Request, Completion> {
 			)
 				throw new Error("operation differs");
 			// Retain acceptance even if cancellation arrived with the response.
+			phase = "ACCEPTANCE";
 			if (
 				!(await publish(
 					this.#root,
@@ -193,12 +205,14 @@ export class LxdOfficeTypedInspectionControl<Request, Completion> {
 			)
 				throw new Error("acceptance changed");
 			for (;;) {
+				phase = "POLL";
 				const state = await this.#client.inspect(reference, await verifyDispatch());
 				fresh();
 				if (state === "succeeded") break;
 				if (state !== "pending") throw new Error("inspection failed");
 				await delay(50, undefined, { signal });
 			}
+			phase = "READBACK";
 			const file = await this.#client.readInstanceFile(
 				this.#binding.project,
 				name,
@@ -220,6 +234,7 @@ export class LxdOfficeTypedInspectionControl<Request, Completion> {
 				fresh();
 				authority.throwIfAborted();
 			};
+			phase = "ACTIVATION";
 			const result = await use(observation.start, authority, assertFresh, started + WINDOW_MS);
 			fresh();
 			authority.throwIfAborted();

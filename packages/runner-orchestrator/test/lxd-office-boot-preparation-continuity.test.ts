@@ -1,7 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import {
+	COMPANY_COMPUTER_CONFIGURATION_FILES,
 	companyComputerBootDirectory,
 	companyComputerPreparationAdoptionReceipt,
 	parseCompanyComputerBootIntentRequest,
@@ -365,6 +367,141 @@ async function resumeFixture(f: Awaited<ReturnType<typeof outageFixture>>, compl
 }
 
 describe("preparation anchor continuity after an admitted outage", () => {
+	it("keeps ordinary resume inspection fresh with bounded guest and SQL read latency", async () => {
+		const origin = await outageFixture(),
+			f = await resumeFixture(origin),
+			read = vi.mocked(f.client.readInstanceFile).getMockImplementation()!,
+			call = f.registry.getMockImplementation()!,
+			lock = f.kernelLock.getMockImplementation()!,
+			directory = companyComputerBootDirectory((await f.readEvidence()).bootId),
+			currentPaths = [
+				`${directory}/configuration-completion.json`,
+				`${directory}/configuration-claim.json`,
+				`${directory}/adoption.json`,
+				...Object.values(COMPANY_COMPUTER_CONFIGURATION_FILES).map((name) => `${directory}/credentials/${name}`),
+			],
+			currentReads = new Map<string, number>();
+		let inspectionStarted = 0,
+			guestReads = 0,
+			activeGuestReads = 0,
+			peakGuestReads = 0,
+			authorizationPasses = 0,
+			sqlChecks = 0;
+		const guestReadMs = 50,
+			sqlReadMs = 20;
+		vi.mocked(f.client.readInstanceFile).mockImplementation(async (...args) => {
+			if (!inspectionStarted) {
+				const value = await read(...args);
+				if (args[2] === f.completionPath) inspectionStarted = performance.now();
+				return value;
+			}
+			guestReads++;
+			if (currentPaths.includes(args[2])) currentReads.set(args[2], (currentReads.get(args[2]) ?? 0) + 1);
+			activeGuestReads++;
+			peakGuestReads = Math.max(peakGuestReads, activeGuestReads);
+			try {
+				await delay(guestReadMs, undefined, { signal: args[4] });
+				return await read(...args);
+			} finally {
+				activeGuestReads--;
+			}
+		});
+		f.kernelLock.mockImplementation(async (...args) => {
+			if (inspectionStarted) authorizationPasses++;
+			return lock(...args);
+		});
+		f.registry.mockImplementation(async (...args) => {
+			if (inspectionStarted) {
+				sqlChecks++;
+				await delay(sqlReadMs, undefined, { signal: args[2] });
+			}
+			return call(...args);
+		});
+		try {
+			await expect(f.run()).resolves.toMatchObject({ state: "active" });
+			expect(f.exec).toHaveBeenCalledOnce();
+			expect(f.inspect).toHaveBeenCalledOnce();
+			expect(f.state.activations).toBe(1);
+			expect(f.state.current!.request.attestation.preparationObservationSha256).toBe(origin.anchor);
+			expect(activeGuestReads).toBe(0);
+			expect(peakGuestReads).toBe(4);
+			expect(authorizationPasses).toBe(5);
+			expect(currentPaths.map((path) => currentReads.get(path))).toEqual(Array(9).fill(authorizationPasses));
+		} finally {
+			console.info(
+				"BOOT_INSPECTION_LATENCY",
+				JSON.stringify({
+					guestReadMs,
+					sqlReadMs,
+					guestReads,
+					peakGuestReads,
+					authorizationPasses,
+					sqlChecks,
+					inspectionElapsedMs: inspectionStarted ? Math.round(performance.now() - inspectionStarted) : null,
+					inspectionDispatches: f.inspect.mock.calls.length,
+					activations: f.state.activations,
+					outstandingGuestReads: activeGuestReads,
+				}),
+			);
+		}
+	}, 60000);
+	it.each(["configuration-claim.json", "credentials/tls-key.pem"])(
+		"settles and wipes started guest-read siblings before refusing changed %s",
+		async (changed) => {
+			const origin = await outageFixture(),
+				f = await resumeFixture(origin),
+				directory = companyComputerBootDirectory((await f.readEvidence()).bootId),
+				paths = [
+					"configuration-completion.json",
+					"configuration-claim.json",
+					"adoption.json",
+					...Object.values(COMPANY_COMPUTER_CONFIGURATION_FILES).map((name) => `credentials/${name}`),
+				].map((path) => `${directory}/${path}`),
+				fault = paths.indexOf(`${directory}/${changed}`),
+				read = vi.mocked(f.client.readInstanceFile).getMockImplementation()!,
+				started: number[] = [],
+				completed: number[] = [],
+				buffers: Buffer[] = [];
+			let armed = false,
+				active = 0,
+				peak = 0;
+			vi.mocked(f.client.readInstanceFile).mockImplementation(async (...args) => {
+				if (!armed) {
+					const file = await read(...args);
+					if (args[2] === f.completionPath) armed = true;
+					return file;
+				}
+				const index = paths.indexOf(args[2]);
+				if (index < 0) return read(...args);
+				started.push(index);
+				peak = Math.max(peak, ++active);
+				try {
+					await delay(index === fault ? 5 : 60 + index * 10, undefined, { signal: args[4] });
+					const file = await read(...args);
+					buffers.push(file.content);
+					if (index === fault) file.uid = 1000;
+					return file;
+				} finally {
+					active--;
+					completed.push(index);
+				}
+			});
+			await expect(f.run()).rejects.toThrow("OFFICE_BOOT_ACTIVATION_UNCONFIRMED");
+			expect(peak).toBe(4);
+			expect(active).toBe(0);
+			expect(started).toEqual(
+				Array.from({ length: Math.min(paths.length, 4 * (Math.floor(fault / 4) + 1)) }, (_, i) => i),
+			);
+			expect([...completed].sort((a, b) => a - b)).toEqual(started);
+			if (fault === 1) expect(completed[0]).toBe(fault);
+			expect(buffers).toHaveLength(started.length);
+			for (const bytes of buffers) expect(bytes.every((byte) => byte === 0)).toBe(true);
+			expect(f.exec).toHaveBeenCalledOnce();
+			expect(f.inspect).not.toHaveBeenCalled();
+			expect(f.state.activations).toBe(0);
+		},
+		60000,
+	);
 	it("activates and reads retained ordinary resume history using the admitted outage anchor", async () => {
 		const origin = await outageFixture(),
 			f = await resumeFixture(origin),

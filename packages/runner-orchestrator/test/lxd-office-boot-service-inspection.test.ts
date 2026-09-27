@@ -239,4 +239,44 @@ describe("provider fresh inspection through the activation deadline", () => {
 		await expect(f.run()).rejects.toThrow(/^OFFICE_BOOT_SERVICE_INSPECTION_UNCONFIRMED$/);
 		expect(f.use).not.toHaveBeenCalled();
 	});
+	it.each([
+		["caller", "POLL"],
+		["window", "POLL"],
+		["caller", "AUTHORIZATION"],
+		["window", "AUTHORIZATION"],
+	] as const)("identifies %s cancellation during %s without exposing backend details", async (source, phase) => {
+		const f = await fixture(),
+			caller = new AbortController(),
+			window = new AbortController();
+		const timeout = vi.spyOn(AbortSignal, "timeout").mockReturnValue(window.signal);
+		if (phase === "AUTHORIZATION")
+			f.authorize.mockImplementation(async () => {
+				(source === "caller" ? caller : window).abort(new Error("private backend detail"));
+				return signal();
+			});
+		else
+			f.poll.mockImplementation(async () => {
+				(source === "caller" ? caller : window).abort(new Error("private backend detail"));
+				return "succeeded";
+			});
+		await expect(
+			f.control.inspectAndUse(
+				f.data.command,
+				f.data.request,
+				f.data.completion,
+				f.authorize,
+				f.use,
+				caller.signal,
+				true,
+			),
+		).rejects.toMatchObject({
+			message: "OFFICE_BOOT_SERVICE_INSPECTION_UNCONFIRMED",
+			cause: {
+				message: `OFFICE_INSPECTION_${source === "caller" ? "CALLER_ABORTED" : "WINDOW_EXPIRED"}_DURING_${phase}`,
+			},
+		});
+		expect(timeout).toHaveBeenCalledExactlyOnceWith(5000);
+		expect(f.read).not.toHaveBeenCalled();
+		expect(f.use).not.toHaveBeenCalled();
+	});
 });

@@ -217,35 +217,54 @@ export class LxdOfficeBootActivationWorker {
 			if (archive.manifestSha256 !== bootIntent.stopHistorySha256) throw new Error("root shutdown history changed");
 			const directory = companyComputerBootDirectory(evidence.bootId),
 				{ configuration } = evidence;
-			await guest(
-				`${directory}/configuration-completion.json`,
-				16384,
-				0o600,
-				caller,
-				(bytes) =>
-					hash(bytes) === evidence.configurationCompletionSha256 &&
-					isDeepStrictEqual(officeStopDecode(bytes), configuration),
-			);
-			await guest(`${directory}/configuration-claim.json`, 4096, 0o600, caller, (bytes) =>
-				isDeepStrictEqual(officeStopDecode(bytes), {
-					schema: "qorpera.office-boot-configuration-claim/v1",
-					command: configuration.command,
-					bootIntentId: bootIntent.bootIntentId,
-					activationId: bootIntent.activationId,
-				}),
-			);
-			await guest(companyComputerBootAdoptionReceiptPath(evidence.bootId), 16384, 0o444, caller, (bytes) =>
-				bytes.equals(evidence.receiptBytes),
-			);
-			for (const [key, file] of Object.entries(COMPANY_COMPUTER_CONFIGURATION_FILES))
-				await guest(
-					`${directory}/credentials/${file}`,
-					COMPANY_COMPUTER_CONFIGURATION_LIMITS[key as keyof typeof COMPANY_COMPUTER_CONFIGURATION_LIMITS],
-					0o400,
-					caller,
-					(bytes) =>
-						bytes.length === configuration.files[file].bytes && hash(bytes) === configuration.files[file].sha256,
-				);
+			const guestChecks = [
+				() =>
+					guest(
+						`${directory}/configuration-completion.json`,
+						16384,
+						0o600,
+						caller,
+						(bytes) =>
+							hash(bytes) === evidence.configurationCompletionSha256 &&
+							isDeepStrictEqual(officeStopDecode(bytes), configuration),
+					),
+				() =>
+					guest(`${directory}/configuration-claim.json`, 4096, 0o600, caller, (bytes) =>
+						isDeepStrictEqual(officeStopDecode(bytes), {
+							schema: "qorpera.office-boot-configuration-claim/v1",
+							command: configuration.command,
+							bootIntentId: bootIntent.bootIntentId,
+							activationId: bootIntent.activationId,
+						}),
+					),
+				() =>
+					guest(companyComputerBootAdoptionReceiptPath(evidence.bootId), 16384, 0o444, caller, (bytes) =>
+						bytes.equals(evidence.receiptBytes),
+					),
+				...Object.entries(COMPANY_COMPUTER_CONFIGURATION_FILES).map(
+					([key, file]) =>
+						() =>
+							guest(
+								`${directory}/credentials/${file}`,
+								COMPANY_COMPUTER_CONFIGURATION_LIMITS[
+									key as keyof typeof COMPANY_COMPUTER_CONFIGURATION_LIMITS
+								],
+								0o400,
+								caller,
+								(bytes) =>
+									bytes.length === configuration.files[file].bytes &&
+									hash(bytes) === configuration.files[file].sha256,
+							),
+				),
+			];
+			// These exact-byte reads are independent. Settle each bounded batch
+			// before proceeding, including on refusal, so no late I/O escapes
+			// the serialized physical/SQL authority check.
+			for (let offset = 0; offset < guestChecks.length; offset += 4) {
+				caller.throwIfAborted();
+				const results = await Promise.allSettled(guestChecks.slice(offset, offset + 4).map((check) => check()));
+				for (const result of results) if (result.status === "rejected") throw result.reason;
+			}
 			const checked = await this.#gate.check(binding, caller);
 			if (checked.hostBootId !== evidence.hostBootId) throw new Error("host changed");
 			const bounded = AbortSignal.any([caller, checked.signal]),

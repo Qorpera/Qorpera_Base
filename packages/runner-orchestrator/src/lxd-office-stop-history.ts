@@ -51,14 +51,22 @@ export async function readLxdOfficeStopHistory(
 	for (const [path, sha] of Object.entries(expected))
 		if (!manifest.entries.some((entry) => entry.path === path && entry.sha256 === sha))
 			throw new Error("history source differs");
-	for (const entry of manifest.entries) {
-		const content = await read(`${root}/${entry.sha256}.json`, entry.bytes);
-		try {
-			if (content.length !== entry.bytes || officeStopHash(content) !== entry.sha256)
-				throw new Error("history blob differs");
-		} finally {
-			content.fill(0);
-		}
+	for (let offset = 0; offset < manifest.entries.length; offset += 4) {
+		// Independent sealed blobs share one bounded batch. Do not return on a
+		// failure or abort until every started read has settled and wiped its bytes.
+		const results = await Promise.allSettled(
+			manifest.entries.slice(offset, offset + 4).map(async (entry) => {
+				const content = await read(`${root}/${entry.sha256}.json`, entry.bytes);
+				try {
+					if (content.length !== entry.bytes || officeStopHash(content) !== entry.sha256)
+						throw new Error("history blob differs");
+				} finally {
+					content.fill(0);
+				}
+			}),
+		);
+		const failure = results.find((result) => result.status === "rejected");
+		if (failure) throw failure.reason;
 	}
 	for (const path of ["claim.json", "manifest.json"])
 		if (!(await read(`${root}/${path}`, 65536)).equals(bytes)) throw new Error("history changed");

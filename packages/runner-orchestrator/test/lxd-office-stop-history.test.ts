@@ -1,5 +1,10 @@
 import { companyComputerStopHistoryDirectory, parseCompanyComputerStopHistoryManifest } from "@qorpera/contracts";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import type { LxdInstanceFile, LxdOfficeServiceStartClient } from "../src/lxd-client.ts";
+import { lxdOfficeGuestPlan } from "../src/lxd-office-guest.ts";
+import { officeStopHash } from "../src/lxd-office-stop-evidence.ts";
+import { readLxdOfficeStopHistory } from "../src/lxd-office-stop-history.ts";
+import { officePhysicalFixture } from "./fixtures/office-physical-policy.ts";
 
 const bootId = "11111111-1111-4111-8111-111111111111",
 	activationId = "22222222-2222-4222-8222-222222222222";
@@ -100,5 +105,188 @@ describe("portable root stop history", () => {
 		expect(() => parseCompanyComputerStopHistoryManifest(input, bootId, activationId)).toThrow(
 			"INVALID_OFFICE_STOP_HISTORY_MANIFEST",
 		);
+	});
+});
+
+function deferred() {
+	let release = () => {};
+	const promise = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	return { promise, release: () => release() };
+}
+
+function readerFixture() {
+	const { binding } = officePhysicalFixture(),
+		input = fixture(),
+		root = companyComputerStopHistoryDirectory(bootId, activationId),
+		sources = Array.from({ length: 10 }, (_, index) => ({
+			path:
+				index === 9
+					? input.completionPath
+					: `/run/qorpera-office-preparation/entry-${String(index).padStart(3, "0")}.json`,
+			content: Buffer.from(JSON.stringify({ index })),
+		}));
+	input.entries = sources.map(({ path, content }) => ({
+		path,
+		bytes: content.length,
+		mode: 0o600,
+		sha256: officeStopHash(content),
+	}));
+	const manifest = parseCompanyComputerStopHistoryManifest(input, bootId, activationId),
+		bytes = Buffer.from(JSON.stringify(manifest)),
+		files = new Map<string, LxdInstanceFile>(
+			[
+				{ path: `${root}/manifest.json`, content: bytes },
+				{ path: `${root}/claim.json`, content: bytes },
+				...sources.map(({ content }) => ({ path: `${root}/${officeStopHash(content)}.json`, content })),
+			].map(({ path, content }) => [path, { uid: 0, gid: 0, mode: 0o600, content }]),
+		),
+		blobs = manifest.entries.map((entry) => `${root}/${entry.sha256}.json`),
+		returned: Buffer[] = [],
+		requests: string[] = [],
+		hooks = { read: async (_path: string, _signal: AbortSignal) => {} };
+	const client: Pick<LxdOfficeServiceStartClient, "readInstanceFile"> = {
+		readInstanceFile: vi.fn(async (project, name, path, limit, signal) => {
+			expect(project).toBe(binding.project);
+			expect(name).toBe(lxdOfficeGuestPlan(binding).request.name);
+			requests.push(path);
+			await hooks.read(path, signal);
+			const file = files.get(path);
+			if (!file) throw new Error("missing archive file");
+			expect(limit).toBe(manifest.entries.find((entry) => `${root}/${entry.sha256}.json` === path)?.bytes ?? 65536);
+			const content = Buffer.from(file.content);
+			returned.push(content);
+			return { ...file, content };
+		}),
+	};
+	return {
+		root,
+		manifest,
+		bytes,
+		files,
+		blobs,
+		returned,
+		requests,
+		hooks,
+		run: (signal = new AbortController().signal) =>
+			readLxdOfficeStopHistory(
+				client,
+				binding,
+				manifest.command,
+				activationId,
+				manifest.completionPath,
+				Object.fromEntries(manifest.entries.map((entry) => [entry.path, entry.sha256])),
+				signal,
+			),
+	};
+}
+
+describe("sealed stop history reader", () => {
+	it("requires the exact manifest claim before reading any blobs", async () => {
+		const f = readerFixture();
+		f.files.get(`${f.root}/claim.json`)!.content = Buffer.from("{}");
+		await expect(f.run()).rejects.toThrow("history binding differs");
+		expect(f.requests).toEqual([`${f.root}/manifest.json`, `${f.root}/claim.json`]);
+		expect(f.returned.every((bytes) => bytes.every((byte) => byte === 0))).toBe(true);
+	});
+	it("does not start a read after caller cancellation", async () => {
+		const f = readerFixture(),
+			failure = new Error("cancelled before history");
+		await expect(f.run(AbortSignal.abort(failure))).rejects.toBe(failure);
+		expect(f.requests).toEqual([]);
+	});
+	it("reads at most four blobs concurrently between serial manifest and claim checks", async () => {
+		const f = readerFixture(),
+			gate = deferred();
+		let active = 0,
+			peak = 0;
+		f.hooks.read = async (path) => {
+			if (!f.blobs.includes(path)) return;
+			peak = Math.max(peak, ++active);
+			try {
+				await gate.promise;
+			} finally {
+				active--;
+			}
+		};
+		const result = f.run();
+		try {
+			await vi.waitFor(() => expect(active).toBe(4));
+			expect(f.requests).toEqual([`${f.root}/manifest.json`, `${f.root}/claim.json`, ...f.blobs.slice(0, 4)]);
+		} finally {
+			gate.release();
+			await result;
+		}
+		expect(peak).toBe(4);
+		expect(await result).toEqual({ bytes: f.bytes, manifest: f.manifest, manifestSha256: officeStopHash(f.bytes) });
+		expect(f.requests).toEqual([
+			`${f.root}/manifest.json`,
+			`${f.root}/claim.json`,
+			...f.blobs,
+			`${f.root}/claim.json`,
+			`${f.root}/manifest.json`,
+		]);
+		expect(f.returned.every((bytes) => bytes.every((byte) => byte === 0))).toBe(true);
+	});
+
+	it.each(["read failure", "abort"])("settles and wipes late siblings before reporting %s", async (fault) => {
+		const f = readerFixture(),
+			gate = deferred(),
+			controller = new AbortController(),
+			failure = new Error(fault);
+		let settled = false;
+		f.hooks.read = async (path) => {
+			if (!f.blobs.includes(path)) return;
+			if (fault === "read failure" && path === f.blobs[0]) throw failure;
+			await gate.promise;
+		};
+		const outcome = f.run(controller.signal).then(
+			() => {
+				settled = true;
+				return undefined;
+			},
+			(error: unknown) => {
+				settled = true;
+				return error;
+			},
+		);
+		try {
+			await vi.waitFor(() => expect(f.requests.filter((path) => f.blobs.includes(path))).toHaveLength(4));
+			if (fault === "abort") controller.abort(failure);
+			await new Promise<void>((resolve) => setImmediate(resolve));
+			expect(settled).toBe(false);
+		} finally {
+			gate.release();
+			await outcome;
+		}
+		expect(await outcome).toBe(failure);
+		expect(f.requests).toHaveLength(6);
+		expect(f.returned).toHaveLength(fault === "read failure" ? 5 : 6);
+		expect(f.returned.every((bytes) => bytes.every((byte) => byte === 0))).toBe(true);
+	});
+
+	it.each(["uid", "gid", "mode", "length", "hash", "missing"])("refuses blob %s corruption", async (fault) => {
+		const f = readerFixture(),
+			file = f.files.get(f.blobs[2])!;
+		if (fault === "uid") file.uid = 1000;
+		if (fault === "gid") file.gid = 1000;
+		if (fault === "mode") file.mode = 0o644;
+		if (fault === "length") file.content = Buffer.from("{}");
+		if (fault === "hash") file.content = Buffer.alloc(file.content.length, 0x61);
+		if (fault === "missing") f.files.delete(f.blobs[2]);
+		await expect(f.run()).rejects.toThrow();
+		expect(f.requests).not.toContain(f.blobs[4]);
+		expect(f.returned.every((bytes) => bytes.every((byte) => byte === 0))).toBe(true);
+	});
+
+	it.each(["claim.json", "manifest.json"])("refuses %s mutation after blob reads", async (name) => {
+		const f = readerFixture();
+		f.hooks.read = async (path) => {
+			if (path === f.blobs.at(-1)) f.files.get(`${f.root}/${name}`)!.content = Buffer.from("{}");
+		};
+		await expect(f.run()).rejects.toThrow("history changed");
+		expect(f.requests.filter((path) => f.blobs.includes(path))).toHaveLength(10);
+		expect(f.returned.every((bytes) => bytes.every((byte) => byte === 0))).toBe(true);
 	});
 });
