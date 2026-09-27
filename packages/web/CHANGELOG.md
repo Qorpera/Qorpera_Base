@@ -44,6 +44,7 @@
 - Submit team-room messages through the public room-post contract, preserve room retry identity, and match room attachments/run displays to the supported interfaces.
 - Keep the rail's search field, keyboard focus and scroll position when the rail refreshes: dead-key, IME and phone-keyboard typing is no longer broken, and a collapsed rail stops filtering by a search it hides until it opens again. A refresh rebuilds only the rows that changed, so moving between agents keeps their figures and an error notice is not announced again, and figures repaint sharp when the window moves to a screen of another pixel density.
 - Make primary buttons inside Settings readable; they rendered white text on the light grey settings button.
+- Draw Markdown task-list items in messages with one checkbox; they also printed their `[x]` or `[ ]` marker as text.
 
 ### Added
 
