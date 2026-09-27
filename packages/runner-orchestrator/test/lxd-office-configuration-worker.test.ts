@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { officeDigest } from "../src/lxd-office-image-provenance.ts";
 import { readRecord } from "../src/lxd-office-journal-files.ts";
+import { officeLifecycleErrorCode } from "../src/lxd-office-lifecycle-service.ts";
 import { LxdOfficeStartControl } from "../src/lxd-office-start-control.ts";
 import { officeConfigurationWorkerFixture } from "./fixtures/office-configuration-worker.ts";
 
@@ -15,6 +16,52 @@ afterEach(async () => {
 });
 
 describe("provider configuration of an acknowledged prepared boot", () => {
+	it.each(["CREDENTIALS", "CREDENTIAL_READ"] as const)(
+		"reports only bounded phase counters when %s stalls and preserves pending custody",
+		async (phase) => {
+			const f = await fixture(),
+				abort = new AbortController();
+			let enter!: () => void, release!: () => void;
+			const entered = new Promise<void>((resolve) => {
+				enter = resolve;
+			});
+			const pending = new Promise<void>((resolve) => {
+				release = resolve;
+			});
+			if (phase === "CREDENTIALS") {
+				f.readCredential.mockImplementationOnce(async () => {
+					enter();
+					await pending;
+					throw new Error(f.secrets.registry);
+				});
+			} else {
+				const read = f.file.getMockImplementation()!;
+				f.file.mockImplementation(async (...args) => {
+					if (args[2] === "/etc/qorpera-office/credentials/config.json") {
+						enter();
+						await pending;
+					}
+					return read(...args);
+				});
+			}
+			const result = f.worker.reconcileSettled(f.request, abort.signal).catch((error: unknown) => error);
+			await entered;
+			abort.abort();
+			await expect(f.worker.reconcile(f.request, signal())).rejects.toThrow(
+				"OFFICE_CONFIGURATION_RECONCILIATION_PENDING",
+			);
+			release();
+			const error = await result;
+			const diagnostic = officeLifecycleErrorCode(error);
+			expect(diagnostic).toMatch(
+				new RegExp(`^OFFICE_CONFIG_${phase}_N1_MS[0-9]{1,5} <- OFFICE_CONFIGURATION_RECONCILIATION_ABORTED$`),
+			);
+			for (const secret of Object.values(f.secrets)) expect(diagnostic).not.toContain(secret);
+			expect(diagnostic).not.toContain(f.root);
+			expect(await readdir(f.root)).not.toContain(f.names.completion);
+			expect(f.exec).toHaveBeenCalledTimes(phase === "CREDENTIAL_READ" ? 1 : 0);
+		},
+	);
 	it.each(["missing", "changed", "mode", "owner"])(
 		"refuses %s selected boot credentials while original credentials are intact",
 		async (fault) => {

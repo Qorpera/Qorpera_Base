@@ -33,6 +33,22 @@ import { LxdOfficeStartControl, type LxdOfficeStartRegistry } from "./lxd-office
 const hash = (bytes: Buffer | string) => createHash("sha256").update(bytes).digest("hex");
 const json = (bytes: Buffer): unknown => JSON.parse(new TextDecoder("utf8", { fatal: true }).decode(bytes));
 type Gate = Pick<LxdOfficePhysicalGate, "policy" | "check">;
+type ConfigurationPhase =
+	| "IDENTITY"
+	| "PREPARATION"
+	| "CREDENTIALS"
+	| "AUTH_PREPARATION"
+	| "AUTH_CREDENTIALS"
+	| "AUTH_PHYSICAL"
+	| "AUTH_CLOUD"
+	| "AUTH_BOOT"
+	| "JOURNAL"
+	| "STAGE"
+	| "STAGE_READ"
+	| "DISPATCH"
+	| "COMPLETION_READ"
+	| "CREDENTIAL_READ"
+	| "PUBLISH";
 interface Ports {
 	client?: LxdOfficeConfigurationClient;
 	readProtected?: typeof readLxdOfficeProtectedFile;
@@ -91,12 +107,36 @@ export class LxdOfficeConfigurationWorker {
 		const input = structuredClone(request);
 		this.#busy = true;
 		const signal = AbortSignal.any([caller, AbortSignal.timeout(30000)]);
+		let phase: ConfigurationPhase = "IDENTITY",
+			phaseStarted = performance.now();
+		const phases = new Map<ConfigurationPhase, { calls: number; elapsed: number }>([
+			[phase, { calls: 1, elapsed: 0 }],
+		]);
+		const mark = (next: ConfigurationPhase) => {
+			const now = performance.now();
+			phases.get(phase)!.elapsed += Math.max(0, now - phaseStarted);
+			phase = next;
+			phaseStarted = now;
+			const previous = phases.get(next) ?? { calls: 0, elapsed: 0 };
+			previous.calls += 1;
+			phases.set(next, previous);
+		};
 		let abort = () => {};
 		const stopped = new Promise<never>((_resolve, reject) => {
-			abort = () => reject(new Error("OFFICE_CONFIGURATION_RECONCILIATION_ABORTED"));
+			abort = () => {
+				const current = phases.get(phase)!;
+				// Closed phase names and bounded monotonic counters only. No paths,
+				// commands, credentials or external exception text enter this cause.
+				const elapsed = Math.min(
+					30000,
+					Math.max(0, Math.floor(current.elapsed + performance.now() - phaseStarted)),
+				);
+				const cause = new Error(`OFFICE_CONFIG_${phase}_N${Math.min(current.calls, 65535)}_MS${elapsed}`);
+				reject(new Error("OFFICE_CONFIGURATION_RECONCILIATION_ABORTED", { cause }));
+			};
 			signal.addEventListener("abort", abort, { once: true });
 		});
-		const operation = this.#run(input, signal)
+		const operation = this.#run(input, signal, mark)
 			.catch((error) => {
 				throw new Error("OFFICE_CONFIGURATION_UNCONFIRMED", { cause: error });
 			})
@@ -110,7 +150,7 @@ export class LxdOfficeConfigurationWorker {
 			if (settle) await operation.catch(() => {});
 		}
 	}
-	async #run(input: LxdOfficeConfigurationRequest, signal: AbortSignal) {
+	async #run(input: LxdOfficeConfigurationRequest, signal: AbortSignal, mark: (phase: ConfigurationPhase) => void) {
 		const root = this.#policy.journal.path;
 		await this.#kernelLock(root);
 		signal.throwIfAborted();
@@ -121,6 +161,7 @@ export class LxdOfficeConfigurationWorker {
 		// Read acknowledged evidence first: configuration cannot initiate preparation.
 		const originalMarker = (await readRecord(preparationMarkerPath)).value;
 		const originalObservation = (await readRecord(preparationObservationPath, 65536)).value;
+		mark("PREPARATION");
 		const prepared = await this.#preparation.reconcileSettled(input, signal);
 		if (
 			prepared.state !== "awaiting_activation" ||
@@ -160,6 +201,7 @@ export class LxdOfficeConfigurationWorker {
 			bootId: prepared.bootId,
 		});
 		if (hash(retainedRequest.bytes) !== preparation.requestSha256) throw new Error("preparation request");
+		mark("CREDENTIALS");
 		const payload = await createLxdOfficeConfigurationPayload(
 			input.serviceBootstrapPath,
 			binding,
@@ -184,6 +226,7 @@ export class LxdOfficeConfigurationWorker {
 			}));
 			const control = new LxdOfficeStartControl(input.intentId, binding, this.#registry);
 			const authorize = async () => {
+				mark("AUTH_PREPARATION");
 				signal.throwIfAborted();
 				await this.#kernelLock(root);
 				if (
@@ -192,6 +235,7 @@ export class LxdOfficeConfigurationWorker {
 					!isDeepStrictEqual(await this.#preparation.reconcileSettled(input, signal), prepared)
 				)
 					throw new Error("preparation changed");
+				mark("AUTH_CREDENTIALS");
 				const current = await createLxdOfficeConfigurationPayload(
 					input.serviceBootstrapPath,
 					binding,
@@ -206,11 +250,14 @@ export class LxdOfficeConfigurationWorker {
 				} finally {
 					current.bytes.fill(0);
 				}
+				mark("AUTH_PHYSICAL");
 				const physical = await this.#gate.check(binding, signal);
 				if (physical.hostBootId !== observation.hostBootId) throw new Error("host changed");
 				const checked = AbortSignal.any([signal, physical.signal]);
+				mark("AUTH_CLOUD");
 				const cloud = await control.checkAdoption(mappings, checked);
 				const authorized = AbortSignal.any([checked, cloud.signal]);
+				mark("AUTH_BOOT");
 				const boot = await inspectLxdOfficeGuestBoot(this.#client, binding, authorized);
 				if (boot.bootId !== preparation.bootId || boot.instanceSha256 !== request.instanceSha256)
 					throw new Error("boot changed");
@@ -331,6 +378,7 @@ export class LxdOfficeConfigurationWorker {
 				return checked;
 			};
 			let checked = await authorizeCommand();
+			mark("JOURNAL");
 			let operation = await journal.observe(checked);
 			const name = lxdOfficeGuestPlan(binding).request.name;
 			if (operation.state === "not_dispatched") {
@@ -344,6 +392,7 @@ export class LxdOfficeConfigurationWorker {
 				if (lock.uid !== 0 || lock.gid !== 0 || lock.mode !== 0o600 || lock.content.length !== 0)
 					throw new Error("guest lock");
 				checked = await authorizeCommand();
+				mark("STAGE");
 				await this.#client.pushOfficeConfigurationRequest(
 					binding.project,
 					name,
@@ -352,6 +401,7 @@ export class LxdOfficeConfigurationWorker {
 					checked,
 				);
 				checked = await authorizeCommand();
+				mark("STAGE_READ");
 				const staged = await this.#client.readOfficeConfigurationRequest(
 					binding.project,
 					name,
@@ -370,7 +420,9 @@ export class LxdOfficeConfigurationWorker {
 				} finally {
 					staged.content.fill(0);
 				}
-				operation = await journal.reconcile(await authorizeCommand());
+				checked = await authorizeCommand();
+				mark("DISPATCH");
+				operation = await journal.reconcile(checked);
 			}
 			const result = {
 				intentId: input.intentId,
@@ -397,6 +449,7 @@ export class LxdOfficeConfigurationWorker {
 				files,
 			};
 			const readCompletion = async (authority: AbortSignal) => {
+				mark("COMPLETION_READ");
 				const file = await this.#client.readInstanceFile(
 					binding.project,
 					name,
@@ -422,6 +475,7 @@ export class LxdOfficeConfigurationWorker {
 					`${companyComputerBootDirectory(command.bootId)}/credentials`,
 				]) {
 					for (const [key, file] of Object.entries(COMPANY_COMPUTER_CONFIGURATION_FILES)) {
+						mark("CREDENTIAL_READ");
 						const property = key as keyof typeof COMPANY_COMPUTER_CONFIGURATION_FILES;
 						const installed = await this.#client.readInstanceFile(
 							binding.project,
@@ -475,6 +529,7 @@ export class LxdOfficeConfigurationWorker {
 			)
 				throw new Error("retained evidence");
 			checked = await authorizeCommand();
+			mark("PUBLISH");
 			await publish(root, names.observation, Buffer.from(officeCanonical(configured)));
 			if (!isDeepStrictEqual((await readRecord(join(root, names.observation))).value, configured))
 				throw new Error("retained observation");

@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chown, cp, lstat, mkdir, readFile, rm, stat, unlink, writeFile } from "node:fs/promises";
+import { chown, cp, lstat, mkdir, readFile, realpath, rm, stat, unlink, writeFile } from "node:fs/promises";
 import { cpus, totalmem } from "node:os";
 import { join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
-import { codingImageAddress, waitForCodingChild } from "./coding-executor-fixture.mjs";
+import { assertCodingFixtureParents, codingImageAddress, waitForCodingChild } from "./coding-executor-fixture.mjs";
 import { assertWorkloadRun, assertWorkloadShape } from "./workload-usage-host.mjs";
 
 // Fresh GitHub-hosted diagnostic infrastructure only. No production host,
@@ -18,7 +18,7 @@ assert.equal(process.argv.length, 4); assert.equal(process.argv[2], "--out");
 assertWorkloadShape({ cpuCount: 1, memoryBytes: 2 * 1024 ** 3 }, { cpuMillis: cpus().length * 1000, memoryBytes: totalmem() });
 assert((await stat("/dev/kvm")).isCharacterDevice());
 const repository = fileURLToPath(new URL("../../", import.meta.url)), out = resolve(process.argv[3]);
-const root = "/opt/qorpera-coding-executor-acceptance", source = `${root}/source`, account = "qorpera-usage-acceptance", uid = 1251;
+const root = "/var/lib/qorpera-coding-executor-acceptance", source = `${root}/source`, account = "qorpera-usage-acceptance", uid = 1251;
 const imageVm = "qorpera-coding-executor-image", imageAlias = "qorpera-coding-executor-diagnostic";
 const unit = "qorpera-coding-executor-acceptance-guard.service", guardState = "/var/lib/qorpera-paid-computer-guard";
 const exportRoot = `${root}/export`, mount = `${root}/nas`, exportsFile = "/etc/exports.d/qorpera-coding-executor-acceptance.exports";
@@ -39,6 +39,14 @@ function run(executable, args, timeout) {
 const guest = (args, timeout) => run("lxc", ["exec", imageVm, "--", ...args], timeout);
 try {
   await mkdir(out, { recursive: true, mode: 0o755 });
+  const parents = [];
+  for (const path of ["/", "/var", "/var/lib", "/opt"]) {
+    const info = await lstat(path);
+    parents.push({ path, directory: info.isDirectory(), symlink: info.isSymbolicLink(), uid: info.uid, gid: info.gid, mode: info.mode & 0o7777, canonical: await realpath(path) });
+  }
+  // /opt is diagnostic only: do not repair an existing hosted-runner directory.
+  evidence.hostParents = parents;
+  assertCodingFixtureParents(parents.filter((entry) => entry.path !== "/opt"));
   assert.deepEqual(JSON.parse(run("lxc", ["list", "--all-projects", "--format=json"])), []);
   assert.deepEqual(JSON.parse(run("lxc", ["storage", "list", "--format=json"])), []);
   assert.equal(run("exportfs", []), "");
@@ -150,6 +158,13 @@ try {
   assert(exports.every((e) => ["rw", "sync", "no_root_squash", "no_all_squash"].every((f) => e.flags.has(f)) && !e.flags.has("root_squash") && !e.flags.has("all_squash")));
   run("mount", ["-t", "nfs4", "-o", "vers=4.2,proto=tcp,hard,nosuid,nodev", "127.0.0.1:/coding", mount]); mounted = true;
   const nas = { schema: "qorpera.coding-nas-policy/v1", mountPoint: mount, rootPath: `${mount}/executor`, source: "127.0.0.1:/coding", serverAddress: "127.0.0.1" };
+  evidence.storageAncestry = [];
+  let prefix = "";
+  for (const name of nas.rootPath.slice(1).split("/")) {
+    prefix += `/${name}`;
+    const info = await lstat(prefix);
+    evidence.storageAncestry.push({ path: prefix, directory: info.isDirectory(), symlink: info.isSymbolicLink(), uid: info.uid, gid: info.gid, mode: info.mode & 0o7777 });
+  }
   evidence.privateRoot = { uid: (await stat(nas.rootPath)).uid, mode: (await stat(nas.rootPath)).mode & 0o7777 };
   assert.deepEqual(evidence.privateRoot, { uid, mode: 0o700 });
   await mkdir(`${root}/fixture`, { mode: 0o755 });

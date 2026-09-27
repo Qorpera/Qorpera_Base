@@ -114,3 +114,13 @@ export function codingImageAddress(addresses, routes, bridgeCidr) {
     Math.floor(numeric(bridge) / 2 ** (32 - Number(prefix))), "Guest address is outside the managed bridge");
   return { device, address: candidates[0].local };
 }
+
+/** Select an already protected task parent; never repair global host paths. */
+export function assertCodingFixtureParents(parents) {
+  assert.deepEqual(parents.map((entry) => entry.path), ["/", "/var", "/var/lib"]);
+  for (const entry of parents) {
+    assert(entry.directory && !entry.symlink && entry.canonical === entry.path, "Fixture ancestor must be a canonical directory");
+    assert.equal(entry.uid, 0, "Fixture ancestor must remain root owned");
+    assert.equal(entry.mode & 0o022, 0, "Fixture ancestor must not be group/world writable");
+  }
+}

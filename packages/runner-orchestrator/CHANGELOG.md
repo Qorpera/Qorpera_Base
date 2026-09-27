@@ -92,6 +92,7 @@
 
 ### Changed
 
+- Report closed configuration phases and bounded monotonic timing counters on office reconciliation timeout, without exposing credential material or changing authority deadlines.
 - Shared preparation/configuration journal mechanics while preserving existing preparation authority and event bytes. Configuration records additionally bind the acknowledged preparation observation and use separate schemas and directories.
 - Connected the adoption copier to repeated creation-journal, stopped-VM, physical-policy and cloud mapping checks. A root-protected, boot/plan-bound infrastructure maintenance handoff is required at each checkpoint; it records operator responsibility for excluding other NAS writers and does not acquire a remote lock. Copy completion still grants no boot or activation.
 

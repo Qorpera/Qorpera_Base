@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
-import { assertCodingExecutorCleanup, assertCodingExecutorEvidence, codingImageAddress, codingFixtureRemote, localCodingFixtureGit, waitForCodingChild } from "./coding-executor-fixture.mjs";
+import { assertCodingFixtureParents, assertCodingExecutorCleanup, assertCodingExecutorEvidence, codingImageAddress, codingFixtureRemote, localCodingFixtureGit, waitForCodingChild } from "./coding-executor-fixture.mjs";
 
 const execute = promisify(execFile);
 function input(scratchRoot, args) {
@@ -99,4 +99,13 @@ test("image address follows the guest default-route device and remains inside th
   assert.equal(codingImageAddress([link("eth0", "10.22.1.2")], [route("enp5s0")], "10.22.1.1/24"), null);
   assert.throws(() => codingImageAddress([link("enp5s0", "10.23.1.2")], [route("enp5s0")], "10.22.1.1/24"), /outside/);
   assert.throws(() => codingImageAddress([link("enp5s0", "10.22.1.2")], [route("eth0"), route("enp5s0")], "10.22.1.1/24"), /Ambiguous/);
+});
+
+test("fixture preflight rejects writable, foreign-owned and symlinked system ancestry", () => {
+  const parents = () => ["/", "/var", "/var/lib"].map((path) => ({ path, canonical: path, directory: true, symlink: false, uid: 0, gid: 0, mode: 0o755 }));
+  assert.doesNotThrow(() => assertCodingFixtureParents(parents()));
+  for (const mutation of [{ mode: 0o777 }, { mode: 0o775 }, { uid: 1001 }, { symlink: true }, { canonical: "/elsewhere" }]) {
+    const value = parents(); Object.assign(value[2], mutation);
+    assert.throws(() => assertCodingFixtureParents(value));
+  }
 });
