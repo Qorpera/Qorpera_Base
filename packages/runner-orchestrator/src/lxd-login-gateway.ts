@@ -24,6 +24,7 @@ import type {
 	LxdStorageVolumeRecord,
 	LxdTrackedClient,
 } from "./lxd-client.ts";
+import type { LxdExecutionHostIdentities } from "./lxd-execution-host-identity.ts";
 import { lxdGuestIpv4 } from "./lxd-guest-network.ts";
 import { LxdLoginJournal } from "./lxd-login-journal.ts";
 import { LOGIN_UUID, type LxdLoginBinding, lxdLoginNodePolicy, lxdLoginPlan } from "./lxd-login-plan.ts";
@@ -43,6 +44,9 @@ const MAX_REQUEST_BYTES = 64 * 1024;
 const MAX_RESPONSE_BYTES = 64 * 1024;
 /** Released journals move here, inside the state root, out of every scan. */
 const JOURNAL_ARCHIVE = "archive";
+/** How long a sign-in waits for its identity volume's hot-plug into the
+ * node's execution host before it goes on (the sweep finishes the attach). */
+const EXECUTION_HOST_ATTACH_MS = 30_000;
 
 type NativeComputeOwnershipKind = "member" | "company" | "department" | "security_boundary";
 
@@ -543,16 +547,30 @@ export class LxdNativeLoginGateway {
 	 * pass (23 Sep 2026: 1 084 of them kept node 1's provider busy on one core), and
 	 * reconcile archives it once it is old. */
 	readonly #released = new Map<string, { computeIdentityId: string; releasedAt: number }>();
+	/** The node's shared execution host, when it has one: every identity volume
+	 * this gateway creates is attached to it (lxd-execution-host-identity.ts). */
+	readonly #executionHost?: LxdExecutionHostIdentities;
 
 	constructor(
 		config: LxdNativeLoginGatewayConfig,
 		lxd: LxdClient & Pick<LxdTrackedClient, "submitInstanceOperation" | "inspectInstanceOperation">,
 		fetchImplementation: ServiceHttpFetch = fetch,
+		executionHost?: LxdExecutionHostIdentities,
 	) {
 		validateConfig(config);
+		// The host mounts exactly the volumes this gateway creates: same project
+		// (identity volumes are per project), pool and name prefix.
+		if (
+			executionHost &&
+			(executionHost.host.project !== config.project ||
+				executionHost.volumes.pool !== config.storagePool ||
+				executionHost.volumes.sourcePrefix !== config.identityVolumePrefix)
+		)
+			throw new Error("Execution host must mount this gateway's own identity volumes");
 		this.#config = { ...config, stateRoot: resolve(config.stateRoot) };
 		this.#lxd = lxd;
 		this.#fetch = fetchImplementation;
+		this.#executionHost = executionHost;
 	}
 
 	async handle(request: ServiceHttpRequest): Promise<ServiceHttpResponse> {
@@ -747,6 +765,15 @@ export class LxdNativeLoginGateway {
 		// additional fresh gate after any intervening storage/inspection work.
 		await this.#admit(journal, signal);
 		await this.#ensureIdentityVolume(login.computeIdentityId, signal);
+		// The member's next run on this node reads this volume on the node's
+		// execution host: attach it now, before the login machine. A failure or a
+		// slow hot-plug (bounded here) never fails or stalls the login; the
+		// reconcile sweep attaches it on a later pass.
+		await this.#attachToExecutionHost(
+			[login.computeIdentityId],
+			AbortSignal.any([signal, AbortSignal.timeout(EXECUTION_HOST_ATTACH_MS)]),
+		);
+		signal.throwIfAborted();
 		let instance = await this.#lxd.getInstance(binding.policy.project, plan.request.name, signal);
 		const created = await journal.observe("create", signal);
 		if (created.state === "not_dispatched") {
@@ -1038,7 +1065,59 @@ export class LxdNativeLoginGateway {
 				unconfirmed++;
 			}
 		}
+		if (this.#executionHost && !(await this.#sweepExecutionHost(signal))) unconfirmed++;
 		return { scanned, unconfirmed };
+	}
+
+	async #attachToExecutionHost(computeIdentityIds: readonly string[], signal: AbortSignal): Promise<boolean> {
+		if (!this.#executionHost) return true;
+		try {
+			const { attached, refused } = await this.#executionHost.attach(computeIdentityIds, signal);
+			for (const id of attached)
+				console.error(
+					`LXD native login attached Compute Identity ${id} to execution host ${this.#executionHost.host.instance}`,
+				);
+			for (const id of refused)
+				console.error(
+					`LXD native login refused to attach Compute Identity ${id}: execution host ${this.#executionHost.host.instance} has another device named identity-${id}`,
+				);
+			return refused.length === 0;
+		} catch (error) {
+			if (!signal.aborted)
+				console.error(
+					`LXD native login could not attach Compute Identity ${computeIdentityIds.join(", ")} to execution host ${this.#executionHost.host.instance}: ${error instanceof Error ? error.message : "unknown"}`,
+				);
+			return false;
+		}
+	}
+
+	/** Every identity volume this gateway created (exact name, markers and size,
+	 * as #assertIdentityVolumeAuthority) is attached to the execution host.
+	 * Catches an attach that failed during a login and volumes from before the
+	 * host attached them itself. Nothing is ever detached. */
+	async #sweepExecutionHost(signal: AbortSignal): Promise<boolean> {
+		if (!this.#executionHost) return true;
+		let ids: string[];
+		try {
+			const prefix = this.#config.identityVolumePrefix;
+			ids = (await this.#executionHost.volumeCandidates(signal)).flatMap((volume) => {
+				const id = volume.name.startsWith(prefix) ? volume.name.slice(prefix.length) : "";
+				if (!LOGIN_UUID.test(id)) return [];
+				try {
+					this.#assertIdentityVolumeAuthority(volume, id);
+					return [id];
+				} catch {
+					return [];
+				}
+			});
+		} catch (error) {
+			signal.throwIfAborted();
+			console.error(
+				`LXD native login could not list identity volumes for execution host ${this.#executionHost.host.instance}: ${error instanceof Error ? error.message : "unknown"}`,
+			);
+			return false;
+		}
+		return this.#attachToExecutionHost(ids, signal);
 	}
 
 	#remember(name: string, journal: LxdLoginJournal, releasedAt: string) {

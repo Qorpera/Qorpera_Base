@@ -1,11 +1,15 @@
+import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
+import { executionHostIdentityDevice } from "../src/execution-host-identity.ts";
 import type { LxdHostInventory, LxdHostInventoryInstance } from "../src/lxd-client.ts";
 import {
 	parseRuntimeNodeInventoryPolicy,
 	type RuntimeNodeInventoryContext,
 	type RuntimeNodeInventoryPolicy,
 	reconcileRuntimeNodeInventory,
+	runtimeNodeInstanceConfiguration,
 	runtimeNodeInstanceConfigurationSha256,
 } from "../src/runtime-node-inventory.ts";
 import {
@@ -300,6 +304,182 @@ describe("complete host inventory reconciliation", () => {
 		expect(() => parseRuntimeNodeInventoryPolicy({ ...f.policy, operatingCpuMillis: [1000] })).toThrow();
 		f.inventory.server.serverName = "other";
 		expect(() => reconcileRuntimeNodeInventory(f.inventory, f.context)).toThrow("HOST_DIFFERS");
+	});
+});
+
+describe("shared execution host identity devices (2026-09-27)", () => {
+	const volumes = { pool: "qorpera-vm", sourcePrefix: "phql-a1-identity-" };
+	/** Node 2's exec host as LXD reports it: a VM on a profile, its root and nic, no user.qorpera.* tag. */
+	function execHost(declared = true) {
+		const f = fixture();
+		const config = {
+			"limits.cpu": "4",
+			"limits.memory": "8GiB",
+			"boot.mode": "uefi-secureboot",
+			"image.os": "Ubuntu",
+			"volatile.uuid": randomUUID(),
+			"volatile.base_image": "c".repeat(64),
+		};
+		const i: TestInstance = {
+			name: "qorpera-exec-node02",
+			project: "qn25b2",
+			location: "none",
+			type: "virtual-machine",
+			config,
+			expandedConfig: { ...config, "security.secureboot": "true" },
+			devices: {
+				root: { type: "disk", path: "/", pool: "qorpera-vm", size: "80GiB" },
+				eth0: { type: "nic", network: "qorpera0", name: "eth0", "security.port_isolation": "true" },
+			},
+			expandedDevices: {},
+			profiles: ["native25-job-a1"],
+			status: "Running",
+			statusCode: 103,
+		};
+		i.expandedDevices = structuredClone(i.devices);
+		f.inventory.instances.push(i);
+		f.policy.infrastructure.push({
+			project: i.project,
+			name: i.name,
+			type: "virtual-machine",
+			physicalId: config["volatile.uuid"],
+			cpuMillis: 4000,
+			memoryBytes: 8 * 1024 ** 3,
+			configurationSha256: runtimeNodeInstanceConfigurationSha256(i, declared ? volumes : undefined),
+			...(declared ? { identityVolumes: volumes } : {}),
+		});
+		f.context.headroomCpuMillis = 8000;
+		f.context.headroomMemoryBytes = 16 * 1024 ** 3;
+		const attach = (id: string, device = executionHostIdentityDevice(volumes, id).device) => {
+			i.devices[`identity-${id}`] = { ...device };
+			i.expandedDevices[`identity-${id}`] = { ...device };
+		};
+		return { ...f, i, attach };
+	}
+	it("keeps the node ready while the login gateway attaches identities, and reports them sorted", () => {
+		const f = execHost(),
+			before = reconcileRuntimeNodeInventory(f.inventory, f.context);
+		expect(before.state).toBe("ready");
+		expect(before.entries[4]).toMatchObject({ category: "infrastructure", reason: null, identities: [] });
+		const ids = [randomUUID(), randomUUID(), randomUUID()];
+		for (const id of ids) f.attach(id);
+		const after = reconcileRuntimeNodeInventory(f.inventory, f.context);
+		expect(after.state).toBe("ready");
+		expect(after.entries[4].configurationSha256).toBe(before.entries[4].configurationSha256);
+		expect(after.entries[4].identities).toEqual([...ids].sort());
+		// Only the declared entry reports identities; every other entry keeps its shape.
+		expect(after.entries.slice(0, 4).every((e) => !Object.hasOwn(e, "identities"))).toBe(true);
+	});
+	it("without the declaration an attach is still a change of enrollment, as before", () => {
+		const f = execHost(false);
+		expect(reconcileRuntimeNodeInventory(f.inventory, f.context).state).toBe("ready");
+		expect(Object.hasOwn(reconcileRuntimeNodeInventory(f.inventory, f.context).entries[4], "identities")).toBe(false);
+		f.attach(randomUUID());
+		expect(reconcileRuntimeNodeInventory(f.inventory, f.context).state).toBe("unavailable");
+	});
+	it.each([
+		["a writable-flag", (id: string) => ({ ...executionHostIdentityDevice(volumes, id).device, readonly: "false" })],
+		["another pool", (id: string) => ({ ...executionHostIdentityDevice(volumes, id).device, pool: "default" })],
+		["a host path", (id: string) => ({ ...executionHostIdentityDevice(volumes, id).device, source: "/var/lib/lxd" })],
+		[
+			"another identity's volume",
+			(id: string) => ({
+				...executionHostIdentityDevice(volumes, id).device,
+				source: `phql-a1-identity-${randomUUID()}`,
+			}),
+		],
+		["another mount point", (id: string) => ({ ...executionHostIdentityDevice(volumes, id).device, path: "/root" })],
+	])("an identity-named device with %s is a change of enrollment", (_label, shape) => {
+		const f = execHost(),
+			id = randomUUID();
+		f.attach(id, shape(id));
+		const result = reconcileRuntimeNodeInventory(f.inventory, f.context);
+		expect(result.state).toBe("unavailable");
+		expect(result.entries[4]).toMatchObject({ reason: "INSTANCE_AUTHORITY_DIFFERS", identities: [] });
+	});
+	it("a profile can neither add nor alter an identity device, and every other difference stays exact", () => {
+		const f = execHost(),
+			id = randomUUID();
+		f.i.expandedDevices[`identity-${id}`] = executionHostIdentityDevice(volumes, id).device;
+		expect(reconcileRuntimeNodeInventory(f.inventory, f.context).state).toBe("unavailable");
+		f.attach(id);
+		f.i.expandedDevices[`identity-${id}`] = { ...f.i.expandedDevices[`identity-${id}`], readonly: "true" };
+		expect(reconcileRuntimeNodeInventory(f.inventory, f.context).state).toBe("unavailable");
+		f.attach(id);
+		expect(reconcileRuntimeNodeInventory(f.inventory, f.context).state).toBe("ready");
+		for (const change of [
+			(i: TestInstance) => {
+				i.devices.data = { type: "disk", source: "/srv", path: "/srv" };
+				i.expandedDevices.data = { ...i.devices.data };
+			},
+			(i: TestInstance) => {
+				i.config["image.os"] = "Debian";
+				i.expandedConfig["image.os"] = "Debian";
+			},
+			(i: TestInstance) => {
+				i.expandedConfig["user.qorpera.schema"] = "qorpera.native-job-vm/v1";
+			},
+			(i: TestInstance) => {
+				i.config["limits.cpu"] = "8";
+				i.expandedConfig["limits.cpu"] = "8";
+			},
+		]) {
+			const g = execHost();
+			g.attach(randomUUID());
+			change(g.i);
+			expect(reconcileRuntimeNodeInventory(g.inventory, g.context).state).toBe("unavailable");
+		}
+	});
+	it("declares identity volumes only for a virtual machine, with exactly pool and source prefix", () => {
+		const f = execHost();
+		expect(parseRuntimeNodeInventoryPolicy(structuredClone(f.policy))).toEqual(f.policy);
+		for (const identityVolumes of [
+			{ pool: "qorpera-vm" },
+			{ ...volumes, path: "/var/lib/qorpera/identities" },
+			{ pool: "qorpera-vm", sourcePrefix: "../" },
+			"qorpera-vm",
+		]) {
+			const policy = structuredClone(f.policy) as unknown as { infrastructure: Record<string, unknown>[] };
+			policy.infrastructure[0].identityVolumes = identityVolumes;
+			expect(() => parseRuntimeNodeInventoryPolicy(policy)).toThrow("INVALID_NODE_INVENTORY_POLICY");
+		}
+		const container = structuredClone(f.policy);
+		container.infrastructure[0].type = "container";
+		expect(() => parseRuntimeNodeInventoryPolicy(container)).toThrow("INVALID_NODE_INVENTORY_POLICY");
+	});
+	it("the operators' Python digest (deploy/shared-execution/exec-host-inventory-digest.py) agrees", () => {
+		const python = spawnSync("python3", ["--version"]);
+		if (python.status !== 0) return;
+		const f = execHost();
+		f.attach(randomUUID());
+		f.attach(randomUUID());
+		f.i.devices.odd = f.i.expandedDevices.odd = { type: "disk", source: "/srv/ünïcode", path: "/mnt" };
+		const lxdQuery = {
+			name: f.i.name,
+			project: f.i.project,
+			type: f.i.type,
+			profiles: f.i.profiles,
+			config: f.i.config,
+			expanded_config: f.i.expandedConfig,
+			devices: f.i.devices,
+			expanded_devices: f.i.expandedDevices,
+		};
+		const script = fileURLToPath(
+			new URL("../../../deploy/shared-execution/exec-host-inventory-digest.py", import.meta.url),
+		);
+		for (const declared of [true, false]) {
+			const run = spawnSync(
+				"python3",
+				[script, ...(declared ? ["--pool", volumes.pool, "--source-prefix", volumes.sourcePrefix] : [])],
+				{ input: JSON.stringify(lxdQuery), encoding: "utf-8" },
+			);
+			expect(run.status, run.stderr).toBe(0);
+			const expected = runtimeNodeInstanceConfiguration(f.i, declared ? volumes : undefined);
+			expect(JSON.parse(run.stdout)).toEqual({
+				configurationSha256: expected.configurationSha256,
+				identities: expected.identities ?? [],
+			});
+		}
 	});
 });
 

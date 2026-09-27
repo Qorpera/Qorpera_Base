@@ -1,5 +1,11 @@
 import { isDeepStrictEqual } from "node:util";
 import { cloudCodingSessionLayout } from "@qorpera/contracts";
+import {
+	type ExecutionHostIdentityVolumes,
+	executionHostIdentityDevices,
+	MAX_EXECUTION_HOST_IDENTITIES,
+	parseExecutionHostIdentityVolumes,
+} from "./execution-host-identity.ts";
 import type { LxdHostInventory, LxdHostInventoryInstance } from "./lxd-client.ts";
 import { lxdResourceBytes } from "./lxd-native-node-policy.ts";
 import { officeDigest, officeRecord, officeSha } from "./lxd-office-image-provenance.ts";
@@ -27,6 +33,12 @@ export interface RuntimeNodeInfrastructure {
 	configurationSha256: string;
 	cpuMillis: number;
 	memoryBytes: number;
+	/** A shared execution host (deploy/shared-execution): the node's login
+	 * gateway hot-plugs each Compute Identity volume into it. Only devices of
+	 * exactly that shape are left out of its digest (execution-host-identity.ts)
+	 * and reported as the entry's `identities`; the registry accepts only
+	 * identities whose login machine this node reserved. */
+	identityVolumes?: ExecutionHostIdentityVolumes;
 }
 export interface RuntimeNodeInventoryPolicy {
 	schema: "qorpera.runtime-node-inventory-policy/v1";
@@ -58,8 +70,19 @@ export function parseRuntimeNodeInventoryPolicy(value: unknown): RuntimeNodeInve
 	)
 		throw new Error("INVALID_NODE_INVENTORY_POLICY");
 	const infrastructure = p.infrastructure.map((value): RuntimeNodeInfrastructure => {
-		const i = record(value, "project,name,physicalId,type,configurationSha256,cpuMillis,memoryBytes");
-		if (i.type !== "virtual-machine" && i.type !== "container") throw new Error("INVALID_NODE_INVENTORY_POLICY");
+		const hosting = !!value && typeof value === "object" && Object.hasOwn(value, "identityVolumes");
+		const i = record(
+			value,
+			`project,name,physicalId,type,configurationSha256,cpuMillis,memoryBytes${hosting ? ",identityVolumes" : ""}`,
+		);
+		if ((i.type !== "virtual-machine" && i.type !== "container") || (hosting && i.type !== "virtual-machine"))
+			throw new Error("INVALID_NODE_INVENTORY_POLICY");
+		let identityVolumes: ExecutionHostIdentityVolumes | undefined;
+		try {
+			identityVolumes = hosting ? parseExecutionHostIdentityVolumes(i.identityVolumes) : undefined;
+		} catch {
+			throw new Error("INVALID_NODE_INVENTORY_POLICY");
+		}
 		return {
 			project: text(i.project, NAME),
 			name: text(i.name, NAME),
@@ -68,6 +91,7 @@ export function parseRuntimeNodeInventoryPolicy(value: unknown): RuntimeNodeInve
 			configurationSha256: officeSha(i.configurationSha256),
 			cpuMillis: integer(i.cpuMillis, MAX_CPU),
 			memoryBytes: integer(i.memoryBytes, MAX_MEMORY),
+			...(identityVolumes ? { identityVolumes } : {}),
 		};
 	});
 	if (
@@ -164,6 +188,9 @@ export interface RuntimeNodeInventoryEntry {
 	allocation: RuntimeNodeInventoryAllocation | null;
 	category: "managed" | "infrastructure" | "unmanaged";
 	reason: "UNREGISTERED_INSTANCE" | "INSTANCE_AUTHORITY_DIFFERS" | "INSTANCE_STATE_UNAVAILABLE" | null;
+	/** Only on an infrastructure entry whose policy declares identityVolumes:
+	 * the identities of its identity devices, sorted. */
+	identities?: string[];
 }
 
 const SESSION_DEVICE = /^(data|custody)-([0-9a-f]{32})$/;
@@ -200,8 +227,13 @@ function sessionFolder(name: string, device: Readonly<Record<string, string>>): 
  * that session's turn runs (data-<worker>, custody-<worker>); they are not its
  * enrollment, so its digest covers everything else. Only a device of exactly
  * that shape is left out (sessionFolder); the coding executor checks the
- * folders' NAS placement itself. */
-export function runtimeNodeInstanceConfigurationSha256(i: LxdHostInventoryInstance): string {
+ * folders' NAS placement itself. Likewise a shared execution host enrolled
+ * with identityVolumes: its identity devices are left out of the digest and
+ * returned as `identities`, which the registry checks one by one. */
+export function runtimeNodeInstanceConfiguration(
+	i: LxdHostInventoryInstance,
+	identityVolumes?: ExecutionHostIdentityVolumes,
+): { configurationSha256: string; identities?: string[] } {
 	const stable = (value: Record<string, string>) =>
 		Object.fromEntries(Object.entries(value).filter(([k]) => !k.startsWith("volatile.")));
 	const machine =
@@ -209,14 +241,29 @@ export function runtimeNodeInstanceConfigurationSha256(i: LxdHostInventoryInstan
 		i.expandedConfig["user.qorpera.schema"] === "qorpera.lxd-coding-machine/v1";
 	const enrolled = (value: Record<string, Readonly<Record<string, string>>>) =>
 		machine ? Object.fromEntries(Object.entries(value).filter(([k, device]) => !sessionFolder(k, device))) : value;
-	return officeDigest({
-		type: i.type,
-		profiles: i.profiles,
-		config: stable(i.config),
-		expandedConfig: stable(i.expandedConfig),
-		devices: enrolled(i.devices),
-		expandedDevices: enrolled(i.expandedDevices),
-	});
+	const hosted: Partial<ReturnType<typeof executionHostIdentityDevices>> &
+		Pick<LxdHostInventoryInstance, "devices" | "expandedDevices"> = identityVolumes
+		? executionHostIdentityDevices(identityVolumes, i.devices, i.expandedDevices)
+		: { devices: i.devices, expandedDevices: i.expandedDevices };
+	if (hosted.identities && hosted.identities.length > MAX_EXECUTION_HOST_IDENTITIES)
+		throw new Error("NODE_INVENTORY_IDENTITIES_EXCEEDED");
+	return {
+		configurationSha256: officeDigest({
+			type: i.type,
+			profiles: i.profiles,
+			config: stable(i.config),
+			expandedConfig: stable(i.expandedConfig),
+			devices: enrolled(hosted.devices),
+			expandedDevices: enrolled(hosted.expandedDevices),
+		}),
+		...(hosted.identities ? { identities: hosted.identities } : {}),
+	};
+}
+export function runtimeNodeInstanceConfigurationSha256(
+	i: LxdHostInventoryInstance,
+	identityVolumes?: ExecutionHostIdentityVolumes,
+): string {
+	return runtimeNodeInstanceConfiguration(i, identityVolumes).configurationSha256;
 }
 function state(i: LxdHostInventoryInstance): RuntimeNodePhysicalState {
 	const states: Record<number, [string, RuntimeNodePhysicalState]> = {
@@ -312,9 +359,10 @@ export function reconcileRuntimeNodeInventory(inventory: LxdHostInventory, conte
 				: null;
 		if (physicalId && physical.has(physicalId)) throw new Error("NODE_INVENTORY_DUPLICATE_INSTANCE");
 		if (physicalId) physical.add(physicalId);
-		const configurationSha256 = runtimeNodeInstanceConfigurationSha256(i),
+		const a = allocation(i, c),
+			infra = a ? undefined : p.infrastructure.find((v) => v.project === i.project && v.name === i.name),
+			{ configurationSha256, identities } = runtimeNodeInstanceConfiguration(i, infra?.identityVolumes),
 			resources = cost(i),
-			a = allocation(i, c),
 			s = state(i);
 		let category: RuntimeNodeInventoryEntry["category"] = "unmanaged",
 			reason: RuntimeNodeInventoryEntry["reason"] = "UNREGISTERED_INSTANCE";
@@ -330,25 +378,23 @@ export function reconcileRuntimeNodeInventory(inventory: LxdHostInventory, conte
 					isDeepStrictEqual(a.physical, { project: i.project, name: i.name, physicalId, configurationSha256 }))
 					? null
 					: "INSTANCE_AUTHORITY_DIFFERS";
-		} else {
-			const infra = p.infrastructure.find((v) => v.project === i.project && v.name === i.name);
-			if (infra) {
-				category = "infrastructure";
-				reason =
-					isDeepStrictEqual(infra, {
-						project: i.project,
-						name: i.name,
-						physicalId,
-						type: i.type,
-						configurationSha256,
-						...resources,
-					}) &&
-					!Object.keys(i.expandedConfig).some(
-						(k) => k.startsWith("user.qorpera.") && k !== "user.qorpera.management_vm",
-					)
-						? null
-						: "INSTANCE_AUTHORITY_DIFFERS";
-			}
+		} else if (infra) {
+			category = "infrastructure";
+			reason =
+				isDeepStrictEqual(infra, {
+					project: i.project,
+					name: i.name,
+					physicalId,
+					type: i.type,
+					configurationSha256,
+					...resources,
+					...(infra.identityVolumes ? { identityVolumes: infra.identityVolumes } : {}),
+				}) &&
+				!Object.keys(i.expandedConfig).some(
+					(k) => k.startsWith("user.qorpera.") && k !== "user.qorpera.management_vm",
+				)
+					? null
+					: "INSTANCE_AUTHORITY_DIFFERS";
 		}
 		if (!reason && s === "unavailable") reason = "INSTANCE_STATE_UNAVAILABLE";
 		return {
@@ -362,6 +408,7 @@ export function reconcileRuntimeNodeInventory(inventory: LxdHostInventory, conte
 			allocation: a,
 			category,
 			reason,
+			...(identities ? { identities } : {}),
 		};
 	});
 	const headroomValid =
