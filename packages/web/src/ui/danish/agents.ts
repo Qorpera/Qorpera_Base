@@ -170,7 +170,6 @@ export const AGENTS: Record<string, string> = {
 	"Failed · workspace kept": "Mislykkedes · arbejdsområdet er gemt",
 	"Cancelled · workspace kept": "Annulleret · arbejdsområdet er gemt",
 	"Coding session": "Kodesession",
-	"{count} earlier step": "{count} tidligere trin",
 	"{count} earlier steps": "{count} tidligere trin",
 	"Waiting for a computer to start the session.": "Venter på en computer, der kan starte sessionen.",
 	"Nothing reported yet.": "Intet meldt endnu.",
@@ -202,6 +201,7 @@ export const AGENTS: Record<string, string> = {
 	"Answer {harness}": "Svar {harness}",
 	"The session has not started yet": "Sessionen er ikke startet endnu",
 	"{harness} is working": "{harness} arbejder",
+	"This session takes no more messages": "Sessionen tager ikke imod flere beskeder",
 	"Only {owner} can write to this session. Steer it through {agent}.":
 		"Kun {owner} kan skrive til sessionen. Styr den via {agent}.",
 	"Back to the conversation": "Tilbage til samtalen",

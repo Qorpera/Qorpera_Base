@@ -124,11 +124,13 @@ export class CodingSessionThreadView {
 		this.element.update(session);
 	}
 
-	/** Over the conversation, with the caret in the composer when the viewer may type now; otherwise on the back
-	 * arrow. */
+	/** Over the conversation, with the caret in the composer when the viewer may type now; otherwise, and on a
+	 * touch screen (where the caret would open the keyboard over a session opened to be read), on the back arrow. */
 	attach(body: HTMLElement): void {
 		body.append(this.el);
-		if (!this.element.focusComposer()) this.el.querySelector<HTMLButtonElement>(".coding-thread-back")?.focus();
+		const touch = typeof matchMedia === "function" && matchMedia("(pointer: coarse)").matches;
+		if (touch || !this.element.focusComposer())
+			this.el.querySelector<HTMLButtonElement>(".coding-thread-back")?.focus();
 	}
 
 	close(): void {

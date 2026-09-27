@@ -53,8 +53,13 @@ const POLL_WORKING_MS = 2_500;
 const POLL_WAITING_MS = 6_000;
 const POLL_SETTLED_MS = 30_000;
 const POLL_HIDDEN_MS = 20_000;
-/** Steps shown in the transcript; older ones fold into one line at its top. */
+/** Steps shown in the transcript; older ones fold into one line at its top, when there are at least a few. */
 const RECENT_EVENTS = 10;
+const FOLD_AT_LEAST = 3;
+/** The cloud's page of events per read (api.ts readCodingSession); a full page means more wait. */
+const READ_PAGE = 200;
+/** What the owner was writing to a session, kept while the app is open so going back does not lose it. */
+const drafts = new Map<string, string>();
 
 /** qorpera/coding/<worker uuid> reads as qorpera/coding/7f3a… */
 export function shortBranch(branch: string): string {
@@ -281,6 +286,11 @@ export class CodingSessionElement {
 	#stickToBottom = true;
 	/** Where the last pin put the scroller, so its own scroll event is not read as the reader's. */
 	#pinnedTop = -1;
+	/** The first step shown under the fold, fixed once the stream is caught up so new steps do not shift it. */
+	#foldFrom: number | undefined;
+	/** Whether the last read returned less than a page, so every event there is has been read. */
+	#caughtUp = false;
+	#draftSized = false;
 
 	constructor(session: CodingSession, options: CodingSessionElementOptions) {
 		this.#session = session;
@@ -289,6 +299,8 @@ export class CodingSessionElement {
 			class: "composer-input coding-field-input",
 			rows: 1,
 			oninput: () => {
+				if (this.#field.value) drafts.set(this.#session.workerId, this.#field.value);
+				else drafts.delete(this.#session.workerId);
 				this.#autosize();
 				this.#syncSend();
 			},
@@ -308,6 +320,7 @@ export class CodingSessionElement {
 			},
 			icon("send"),
 		);
+		this.#field.value = drafts.get(session.workerId) ?? "";
 		this.#shell = h("div", { class: "composer-shell coding-composer" }, this.#field, this.#sendButton);
 		this.#talk = h("div", { class: "coding-talk" }, this.#shell);
 		this.#log.append(this.#body);
@@ -337,7 +350,14 @@ export class CodingSessionElement {
 		);
 		// The log keeps the latest in view when it grows (a step, a card) or shrinks (the footer grew).
 		if (typeof ResizeObserver !== "undefined") {
-			this.#sizes = new ResizeObserver(() => this.#pinToBottom());
+			this.#sizes = new ResizeObserver(() => {
+				// A kept draft gets its height once the field is laid out.
+				if (!this.#draftSized && this.#field.isConnected && this.#field.value) {
+					this.#draftSized = true;
+					this.#autosize();
+				}
+				this.#pinToBottom();
+			});
 			this.#sizes.observe(this.#log);
 			this.#sizes.observe(this.#body);
 		}
@@ -378,9 +398,12 @@ export class CodingSessionElement {
 		const request = new AbortController();
 		this.#request = request;
 		this.#refreshing = (async () => {
+			let more = false;
 			try {
 				const read = await this.#options.api.read(this.#session.workerId, this.#cursor);
 				if (request.signal.aborted || this.disposed) return;
+				more = read.events.length >= READ_PAGE;
+				this.#caughtUp = !more;
 				const known = new Set(this.#events.map((event) => event.id));
 				for (const event of read.events) if (!known.has(event.id)) this.#events.push(event);
 				this.#events.sort((a, b) => a.id - b.id);
@@ -396,7 +419,11 @@ export class CodingSessionElement {
 				this.#refreshing = undefined;
 				if (!this.disposed) {
 					this.#render();
-					this.#schedule();
+					// A full page: the rest is read at once, so a long session does not open in its middle.
+					if (more) {
+						clearTimeout(this.#poll);
+						this.#poll = setTimeout(() => void this.refresh(), 0);
+					} else this.#schedule();
 				}
 			}
 		})();
@@ -446,6 +473,7 @@ export class CodingSessionElement {
 			typed
 				? () => {
 						this.#field.value = "";
+						drafts.delete(this.#session.workerId);
 						this.#autosize();
 					}
 				: undefined,
@@ -486,9 +514,24 @@ export class CodingSessionElement {
 		const status = codingSessionStatus(session, names);
 		this.el.dataset.phase = session.phase;
 		this.el.dataset.tone = status.tone;
+		const active = document.activeElement;
+		const focused = active instanceof HTMLElement && this.el.contains(active) ? active : undefined;
 		this.#renderTranscript(names);
 		this.#renderFooter(names, status);
+		// A redraw that took or disabled the focused control (a choice just used, the fold, the send button while
+		// the answer is on its way) keeps the focus in the session, not on the page's body, so Escape still reaches
+		// the thread: the field for the send button, else the log (where a phone opens no keyboard).
+		if (focused && (!focused.isConnected || focused.matches(":disabled")))
+			(focused === this.#sendButton ? this.#field : this.#log).focus({ preventScroll: true });
 		this.#pinToBottom();
+	}
+
+	/** The question the session waits on now: the last one asked in its current turn. An older question (the
+	 * listing may say "asks" before the new question is read) is never answered from here. */
+	#liveQuestion(): CodingSessionEvent | undefined {
+		if (this.#session.phase !== "awaiting_input") return undefined;
+		const question = lastOf(this.#events, "needs_input");
+		return question?.sequence === this.#session.sequence ? question : undefined;
 	}
 
 	/** Shows the latest step unless the reader has scrolled up to read older ones. */
@@ -518,7 +561,8 @@ export class CodingSessionElement {
 			session.repository,
 			session.branch,
 			session.model,
-			session.phase,
+			session.phase === "queued",
+			this.#liveQuestion()?.id,
 			session.pullRequest,
 			session.checks,
 			session.artifacts.length,
@@ -528,8 +572,15 @@ export class CodingSessionElement {
 		this.#transcriptKey = key;
 		const harness = HARNESS_NAMES[session.harness];
 		const events = this.#events.filter((event) => event.kind !== "phase");
-		const folded = !this.#showAll && events.length > RECENT_EVENTS ? events.length - RECENT_EVENTS : 0;
-		const shown = folded ? events.slice(folded) : events;
+		// The fold hides all but the latest steps, and only when that is worth a line. Once the stream is caught up its
+		// edge stays put: new steps join the end instead of pushing the oldest shown one under the fold.
+		const edge =
+			this.#foldFrom ??
+			(events.length >= RECENT_EVENTS + FOLD_AT_LEAST ? events[events.length - RECENT_EVENTS]?.id : undefined);
+		if (this.#caughtUp) this.#foldFrom ??= edge;
+		const shown = this.#showAll || edge === undefined ? events : events.filter((event) => event.id >= edge);
+		const folded = events.length - shown.length;
+		const live = this.#liveQuestion();
 		// The card stands where the pull request was last published; earlier publishes are a line. A publish folded
 		// away (or never read) leaves the card at the top of what is shown.
 		const cardAt = session.pullRequest ? lastOf(events, "published")?.id : undefined;
@@ -656,7 +707,6 @@ export class CodingSessionElement {
 					const question =
 						text(event.body, "needs", "question") ?? this.#session.needs ?? t("The session has a question.");
 					lastSaid = question.trim();
-					const live = session.phase === "awaiting_input" && lastOf(events, "needs_input")?.id === event.id;
 					say(
 						"harness",
 						harness,
@@ -664,7 +714,10 @@ export class CodingSessionElement {
 						h(
 							"div",
 							{
-								class: live ? "bubble coding-question coding-question-live" : "bubble coding-question",
+								class:
+									live?.id === event.id
+										? "bubble coding-question coding-question-live"
+										: "bubble coding-question",
 								title: `${harness} · ${when}`,
 							},
 							h("div", { class: "text" }, question),
@@ -735,7 +788,7 @@ export class CodingSessionElement {
 					note(
 						h(
 							"div",
-							{ class: "conversation-note coding-note coding-row-error", role: "alert" },
+							{ class: "conversation-note coding-note coding-row-error", role: "note" },
 							reason === "executor-lease-expired"
 								? t(
 										"The computer running this session stopped answering. The workspace is kept; a follow-up starts it again.",
@@ -760,16 +813,12 @@ export class CodingSessionElement {
 						"div",
 						{ class: "coding-row coding-row-fold" },
 						button(
-							folded === 1
-								? t("{count} earlier step", { count: folded })
-								: t("{count} earlier steps", { count: folded }),
+							t("{count} earlier steps", { count: folded }),
 							() => {
 								// Reading older steps: the view stays where it is, unless it all fits and so is at the bottom.
 								this.#showAll = true;
 								this.#stickToBottom = false;
 								this.#render();
-								// The button is gone with the redraw; the log keeps the focus, and with it the thread's Escape.
-								this.#log.focus({ preventScroll: true });
 								const { scrollTop, scrollHeight, clientHeight } = this.#log;
 								this.#stickToBottom = scrollHeight - scrollTop - clientHeight < STICK_DISTANCE * uiScale();
 							},
@@ -920,7 +969,7 @@ export class CodingSessionElement {
 		const harness = HARNESS_NAMES[session.harness];
 		const takesInput = codingSessionTakesInput(session);
 		const asking = session.phase === "awaiting_input";
-		const question = asking ? lastOf(this.#events, "needs_input") : undefined;
+		const question = this.#liveQuestion();
 		const choices = question ? options(question.body) : [];
 		const key = JSON.stringify([status, owns, harness, takesInput, asking, choices, this.#busy, this.#error, names]);
 		if (key === this.#footerKey) return;
@@ -976,15 +1025,18 @@ export class CodingSessionElement {
 		}
 		this.#lock.remove();
 		if (this.#talk.parentElement !== this.#footer) this.#footer.append(this.#talk);
-		const placeholder = asking
-			? choices.length
-				? t("Or answer in your own words")
-				: t("Answer {harness}", { harness })
-			: takesInput
-				? t("Follow up on this session")
-				: session.phase === "queued"
-					? t("The session has not started yet")
-					: t("{harness} is working", { harness });
+		const placeholder =
+			!takesInput && (asking || codingSessionSettled(session.phase))
+				? t("This session takes no more messages")
+				: asking
+					? choices.length
+						? t("Or answer in your own words")
+						: t("Answer {harness}", { harness })
+					: takesInput
+						? t("Follow up on this session")
+						: session.phase === "queued"
+							? t("The session has not started yet")
+							: t("{harness} is working", { harness });
 		this.#field.placeholder = placeholder;
 		this.#field.setAttribute("aria-label", asking ? t("Answer the session") : t("Follow up on the session"));
 		// Read-only, never disabled, until the session takes input and while an answer is on its way: a disabled

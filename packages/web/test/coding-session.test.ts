@@ -231,6 +231,8 @@ describe("the element in the thread", () => {
 			viewer?: "owner" | "other";
 			events?: CodingSessionEvent[];
 			askAgent?: (text: string) => void;
+			/** How many events one read returns at most, as the cloud's page does. */
+			page?: number;
 		} = {},
 	) {
 		const events = options.events ?? [];
@@ -239,7 +241,7 @@ describe("the element in the thread", () => {
 			async (_workerId: string, afterEvent: number): Promise<CodingSessionRead> => ({
 				session: state.session,
 				isOwner: options.viewer !== "other",
-				events: state.events.filter((event) => event.id > afterEvent),
+				events: state.events.filter((event) => event.id > afterEvent).slice(0, options.page),
 			}),
 		);
 		const answer = vi.fn(async (_workerId: string, _text: string, _clientRequestId: string): Promise<void> => {});
@@ -341,8 +343,12 @@ describe("the element in the thread", () => {
 			[...element.el.querySelectorAll(".coding-footer .coding-options button")].map((item) => item.textContent),
 		).toEqual(["Keep 250 ms", "Raise to 500 ms", "Let Mark decide"]);
 		const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
-		button(element.el, "Keep 250 ms").click();
+		// A used choice goes with the redraw; the focus stays in the session's log, not on the page's body.
+		const keep = button(element.el, "Keep 250 ms");
+		keep.focus();
+		keep.click();
 		await settle();
+		expect(document.activeElement).toBe(element.el.querySelector(".coding-log"));
 		expect(answer).toHaveBeenCalledTimes(1);
 		expect(answer.mock.calls[0]?.[0]).toBe(WORKER);
 		expect(answer.mock.calls[0]?.[1]).toBe("Keep 250 ms");
@@ -543,8 +549,83 @@ describe("the element in the thread", () => {
 		expect(body.children[2]?.querySelector(".coding-turn-body > .message-author + .coding-pr")).not.toBeNull();
 		expect(body.querySelectorAll(".coding-pr")).toHaveLength(1);
 		// Opening the older steps keeps the focus in the session, off the button the redraw removed.
-		button(element.el, "3 earlier steps").click();
+		const fold = button(element.el, "3 earlier steps");
+		fold.focus();
+		fold.click();
 		expect(document.activeElement).toBe(element.el.querySelector(".coding-log"));
+	});
+
+	it("answers only the question of the session's current turn", async () => {
+		// The listing already says the session asks again (turn 2); the new question is not read yet.
+		const { element } = mount(codingSession({ phase: "awaiting_input", workerState: "blocked", sequence: 2 }), {
+			events: [{ ...event(1, "needs_input", { needs: "Which?", options: ["A", "B"] }, "executor"), sequence: 1 }],
+		});
+		await settle();
+		expect(element.el.querySelector(".coding-question-live")).toBeNull();
+		expect([...element.el.querySelectorAll(".coding-options button")].map((item) => item.textContent)).toEqual([
+			"Let Mark decide",
+		]);
+	});
+
+	it("says when a session takes no more messages", async () => {
+		const { element } = mount(codingSession({ phase: "completed", workerState: "succeeded", sequence: 64 }));
+		await settle();
+		const field = element.el.querySelector<HTMLTextAreaElement>(".coding-field-input")!;
+		expect(field.getAttribute("aria-disabled")).toBe("true");
+		expect(field.placeholder).toBe("This session takes no more messages");
+	});
+
+	it("keeps a draft when the session is left and opened again", async () => {
+		const first = mount(codingSession({ phase: "completed", workerState: "succeeded" }));
+		await settle();
+		const field = first.element.el.querySelector<HTMLTextAreaElement>(".coding-field-input")!;
+		field.value = "Half a thought";
+		field.dispatchEvent(new Event("input", { bubbles: true }));
+		first.element.dispose();
+		first.element.el.remove();
+		const again = mount(codingSession({ phase: "completed", workerState: "succeeded" }));
+		await settle();
+		const kept = again.element.el.querySelector<HTMLTextAreaElement>(".coding-field-input")!;
+		expect(kept.value).toBe("Half a thought");
+		expect(again.element.el.querySelector<HTMLButtonElement>(".coding-send")?.disabled).toBe(false);
+		kept.value = "";
+		kept.dispatchEvent(new Event("input", { bubbles: true }));
+	});
+
+	it("reads a long session to its end at once, one page after another", async () => {
+		const events = Array.from({ length: 230 }, (_, index) => event(index + 1, "step", { text: `Step ${index + 1}` }));
+		const { element, read } = mount(codingSession({ phase: "completed", workerState: "succeeded" }), {
+			events,
+			page: 200,
+		});
+		await settle();
+		await vi.advanceTimersByTimeAsync(0);
+		await settle();
+		expect(read.mock.calls.map((call) => call[1])).toEqual([0, 200]);
+		// The latest steps are the ones shown; the fold holds the rest.
+		expect(element.el.querySelector(".coding-row-fold")?.textContent).toBe("220 earlier steps");
+		expect(element.el.querySelector(".coding-row-step:last-child")?.textContent).toBe("Step 230");
+	});
+
+	it("folds only when it hides a few steps, and keeps its edge as new steps arrive", async () => {
+		const few = mount(codingSession(), {
+			events: Array.from({ length: 12 }, (_, index) => event(index + 1, "step", { text: `Step ${index + 1}` })),
+		});
+		await settle();
+		expect(few.element.el.querySelector(".coding-row-fold")).toBeNull();
+		few.element.dispose();
+		few.element.el.remove();
+		const { element, state } = mount(codingSession(), {
+			events: Array.from({ length: 14 }, (_, index) => event(index + 1, "step", { text: `Step ${index + 1}` })),
+		});
+		await settle();
+		expect(element.el.querySelector(".coding-row-fold")?.textContent).toBe("4 earlier steps");
+		state.events.push(event(15, "step", { text: "Step 15" }));
+		await vi.advanceTimersByTimeAsync(2_500);
+		await settle();
+		// The new step joins the end; the oldest shown one does not slide under the fold.
+		expect(element.el.querySelector(".coding-row-fold")?.textContent).toBe("4 earlier steps");
+		expect(element.el.querySelectorAll(".coding-row-step")).toHaveLength(11);
 	});
 
 	it("folds older steps into one line and opens them on request", async () => {

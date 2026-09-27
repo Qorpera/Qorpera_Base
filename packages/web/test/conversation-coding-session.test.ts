@@ -463,5 +463,19 @@ describe("coding sessions in the thread", () => {
 		expect(f.api.answerCodingSession).toHaveBeenCalledWith(id(900), "Keep it.", expect.any(String));
 		expect(store.get().codingSessions?.[0]).toMatchObject({ phase: "input_ready", sequence: 2, isOwner: true });
 		expect(f.view.el.querySelector<HTMLElement>(".thread-header .coding-slot")?.dataset.tone).toBe("working");
+		// On a touch screen the session opens on its back arrow: the caret would bring up the keyboard.
+		f.view.el.querySelector<HTMLButtonElement>(".coding-thread-back")!.click();
+		vi.stubGlobal("matchMedia", (query: string) => ({
+			matches: query === "(pointer: coarse)",
+			addEventListener() {},
+			removeEventListener() {},
+		}));
+		try {
+			f.view.el.querySelector<HTMLButtonElement>(".coding-line .peer-chip")!.click();
+			await settle();
+			expect(document.activeElement).toBe(f.view.el.querySelector(".coding-thread-back"));
+		} finally {
+			vi.unstubAllGlobals();
+		}
 	});
 });
