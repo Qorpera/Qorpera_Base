@@ -384,3 +384,24 @@ such a stop as soon as its details are read, and the work it hid shows again.
 **Rules out.** Try again for a stop (`qorpera_retry_room_delivery` still accepts
 one from its author; the web never offers it), and a grey "You stopped this
 run" line with Try again, the option Jonas did not pick.
+
+## 2026-09-27 — Routines as cards with a switch, opened in place
+
+**Decision (Jonas).** An agent's routines show as Grok Bot's do: one card per
+routine with its name, when it runs and a switch. Clicking a card opens it for
+more: the instruction and the actions. Height is short in the popup, so the
+open card uses width instead, and scrolls.
+
+**How.** The card opens in place (one at a time) rather than as its own page:
+the instruction on the left, when it runs, the next run and the last run on the
+right, Edit beside the switch. An open card is exactly as tall as the page under
+its heading, so the instruction scrolls inside it (8 lines at 13px) and Edit and
+the facts never leave view; the list scrolls the card into view as it opens.
+The popup keeps one size on every page (the 2026-09-22 rule) and is now
+880 design px wide instead of 720 on the details page too. On a phone the card
+stacks and the page alone scrolls.
+
+**Rules out.** A separate detail page per routine (Grok Bot's phone layout), a
+Pause button beside the switch, and a delete button: the cloud has no member
+delete for a routine (`CloudRoutineClient.save` says so), so trash waits for
+that call.
