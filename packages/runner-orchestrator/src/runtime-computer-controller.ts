@@ -450,18 +450,73 @@ export class RuntimeComputerController {
 		return this.#options.guard.latest(allocationId, signal);
 	}
 	async assertRunning(allocationId: string, signal: AbortSignal): Promise<void> {
-		const current = this.#required(allocationId),
-			guarded = await this.#options.guard.latest(allocationId, signal),
-			clock = await this.#clock();
-		if (
-			current.permit.state !== "bound" ||
-			!guarded ||
-			guarded.permit.permitId !== current.permit.permitId ||
-			guarded.phase !== "running" ||
-			clock.hostBootId !== current.permit.hostBootId ||
-			clock.uptimeMs >= guarded.stopAtUptimeMs
-		)
-			throw new Error("RUNTIME_COMPUTER_RUNNING_PERMIT_REQUIRED");
+		await this.#exclusive(allocationId, async () => {
+			const current = this.#required(allocationId),
+				guarded = await this.#options.guard.latest(allocationId, signal),
+				clock = await this.#clock(),
+				sample = current.lastSample === null ? null : object(current.lastSample);
+			if (
+				current.permit.state !== "bound" ||
+				!guarded ||
+				guarded.permit.permitId !== current.permit.permitId ||
+				guarded.permit.generation !== current.permit.generation ||
+				guarded.phase !== "running" ||
+				clock.hostBootId !== current.permit.hostBootId ||
+				clock.uptimeMs >= guarded.stopAtUptimeMs ||
+				!sample ||
+				sample.state !== "running" ||
+				sample.hostBootId !== clock.hostBootId ||
+				sample.physicalId !== guarded.machine.physicalInstanceId ||
+				sample.guestBootId !== current.permit.guestBootId ||
+				typeof sample.hostUptimeMs !== "number" ||
+				!Number.isSafeInteger(sample.hostUptimeMs) ||
+				sample.hostUptimeMs > clock.uptimeMs ||
+				clock.uptimeMs - sample.hostUptimeMs > 10000
+			)
+				throw new Error("RUNTIME_COMPUTER_RUNNING_PERMIT_REQUIRED");
+			const confirmed = object(
+				await this.#call(
+					"qorpera_describe_runtime_computer_permit",
+					{
+						...current.context,
+						permitId: current.permit.permitId,
+						machineIdSha256: clock.hostMachineIdSha256,
+						hostBootId: clock.hostBootId,
+					},
+					signal,
+				),
+			);
+			const canonical = this.#permit(confirmed.permit, current.context, clock, false);
+			if (
+				confirmed.mode !== "paid" ||
+				confirmed.workReady !== true ||
+				!isDeepStrictEqual(confirmed.lastSample, sample) ||
+				!isDeepStrictEqual({ ...canonical, validForMs: current.permit.validForMs }, current.permit)
+			)
+				throw new Error("RUNTIME_COMPUTER_RUNNING_PERMIT_REQUIRED");
+			if (guarded.usageRequired) {
+				const usage = await this.#options.guard.readUsage(current.permit.permitId, { limit: 1 }, signal);
+				if (
+					usage.state !== "open" ||
+					usage.head.observationId !== sample.observationId ||
+					usage.acknowledgedThrough.sequence !== usage.head.sequence ||
+					usage.acknowledgedThrough.sha256 !== usage.head.sha256
+				)
+					throw new Error("RUNTIME_COMPUTER_RUNNING_PERMIT_REQUIRED");
+			}
+			const after = await this.#clock(),
+				latest = await this.#options.guard.latest(allocationId, signal);
+			if (
+				after.hostBootId !== clock.hostBootId ||
+				after.uptimeMs < clock.uptimeMs ||
+				after.uptimeMs - sample.hostUptimeMs > 10000 ||
+				after.uptimeMs >= guarded.stopAtUptimeMs ||
+				latest?.phase !== "running" ||
+				latest.permit.permitId !== current.permit.permitId ||
+				latest.permit.generation !== current.permit.generation
+			)
+				throw new Error("RUNTIME_COMPUTER_RUNNING_PERMIT_REQUIRED");
+		});
 	}
 	async recover(context: RuntimeComputerContext, signal: AbortSignal): Promise<"shadow" | "paid"> {
 		return this.#exclusive(context.allocationId, async () => {

@@ -470,6 +470,32 @@ const reconciled = () =>
 	mocked.reconcile.mock.calls.map((call) => (call[0] as CodingMachineReconcileOptions).desiredState);
 
 describe("a coding turn on its member's machine", () => {
+	it("blocks already attached commands on a metering gap, recovers, and keeps detach available", async () => {
+		const f = await fixture(),
+			usage = paidUsage(f);
+		const host = new LxdCodingExecutorHost({ ...f.options, computerUsage: usage });
+		await host.prepareWorkspace(f.claim, f.turn(), f.signal);
+		const authorize = vi.fn(async () => undefined);
+		await host.commandTransport(f.scope(), authorize, f.signal);
+		const transport = mocked.commandTransports.at(-1)!;
+		usage.assertRunning.mockRejectedValue(new Error("CODING_COMPUTER_RUNNING_PERMIT_REQUIRED"));
+		// A paid receipt cannot fall back to free work if local management was lost.
+		usage.manages.mockReturnValue(false);
+		await expect(
+			transport.authorize("start", f.scope(), randomUUID(), "a".repeat(64), f.signal),
+		).rejects.toMatchObject({ reason: "COMPUTER_USAGE_NOT_READY" });
+		expect(authorize).not.toHaveBeenCalled();
+		await host.commandTransport(f.scope(), authorize, f.signal);
+		await transport.authorize("cancel", f.scope(), randomUUID(), "a".repeat(64), f.signal);
+		expect(authorize).toHaveBeenCalledOnce();
+		authorize.mockClear();
+		usage.assertRunning.mockResolvedValue(undefined);
+		await transport.authorize("start", f.scope(), randomUUID(), "a".repeat(64), f.signal);
+		expect(authorize).toHaveBeenCalledOnce();
+		usage.assertRunning.mockRejectedValue(new Error("CODING_COMPUTER_RUNNING_PERMIT_REQUIRED"));
+		await host.detachSession(f.claim, f.signal);
+		expect(f.lxd.devices).toEqual(f.plan.request.devices);
+	});
 	it("refuses paid admission before any VM effect when the independent guard is missing", async () => {
 		const f = await fixture();
 		const call = f.call.getMockImplementation()!;

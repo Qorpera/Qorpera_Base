@@ -137,8 +137,19 @@ try {
 	for (const path of ["export", "workbench", "journal"]) await mkdir(`${storage}/${path}`, { mode: 0o700 });
 	await chown(`${storage}/export`, 1100, 1100);
 	await mkdir(custodyRoot, { mode: 0o700 }); await chown(custodyRoot, 1100, 1100);
-	await writeFile("/etc/exports.d/qorpera-office-lifecycle-acceptance.exports", `${storage}/export 127.0.0.1(rw,sync,root_squash,no_subtree_check,fsid=0)\n`, { mode: 0o644, flag: "wx" }); exported = true;
+	// The trusted VM filesystem proxy must retain numeric identities and root
+	// traversal of the owner's private workbench. This dedicated loopback export
+	// grants that authority only to this disposable host; it is not a production
+	// NAS/network admission proof. Guest and provider ownership checks stay exact.
+	await writeFile("/etc/exports.d/qorpera-office-lifecycle-acceptance.exports", `${storage}/export 127.0.0.1(rw,sync,no_root_squash,no_all_squash,no_subtree_check,fsid=0)\n`, { mode: 0o644, flag: "wx" }); exported = true;
 	run("systemctl", ["start", "nfs-server"]); run("exportfs", ["-ra"]);
+	const effectiveExports = run("exportfs", ["-v"]);
+	const exportEntries = effectiveExports.split("\n").filter(line => line.includes("("));
+	assert.equal(exportEntries.length, 1, "Only the owned loopback export may be active");
+	assert(exportEntries[0].trim().startsWith("127.0.0.1("));
+	const exportFlags = exportEntries[0].slice(exportEntries[0].indexOf("(") + 1, exportEntries[0].lastIndexOf(")")).split(",");
+	assert(exportFlags.includes("no_root_squash") && exportFlags.includes("no_all_squash") && !exportFlags.includes("root_squash") && !exportFlags.includes("all_squash"));
+	evidence.storageExport = { policy: "identity-preserving-loopback", effectiveSha256: hash(effectiveExports), productionNetworkAdmission: false };
 	run("mount", ["-t", "nfs4", "-o", "vers=4.2,proto=tcp,hard,nosuid,nodev", "127.0.0.1:/", workbench]); mounted = true;
 	run("truncate", ["-s", "256M", `${storage}/journal.ext4`]); run("mkfs.ext4", ["-q", "-F", `${storage}/journal.ext4`]);
 	run("mount", ["-o", "loop,nosuid,nodev", `${storage}/journal.ext4`, journal]); journalMounted = true;
@@ -272,7 +283,7 @@ try {
 	const after = await activations();
 	assert.notEqual(after[0].invocation, after[1].invocation); assert.notEqual(after[0].attestation.bootId, after[1].attestation.bootId);
 	assert.equal(JSON.parse(run("lxc", ["query", `/1.0/instances/${machineName}`])).config["volatile.uuid"], evidence.physicalInstanceId);
-	// root_squash deliberately prevents host root from traversing this export.
+	// Prove access as the workbench owner, without relying on host root authority.
 	assertWorkbench();
 	evidence.checks.outageRecovery = { predecessorSuperseded: true, freshBoot: true, freshInvocation: true, samePhysicalVm: true, retainedWorkbench: true };
 	phase = "replay"; await stop(provider); provider = startProvider(ca.path); await delay(15000);

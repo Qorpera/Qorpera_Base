@@ -142,7 +142,12 @@ async function fixture(providerKind: "native" | "office" = "native", usage = fal
 				};
 			if (method.includes("describe")) {
 				if (sourceUnavailable) throw new Error("native run no longer exists");
-				return { mode, permit: permit?.state === "closed" ? null : permit, lastSample };
+				return {
+					mode,
+					permit: permit?.state === "closed" ? null : permit,
+					lastSample,
+					workReady: lastSample?.state === "running",
+				};
 			}
 			if (method.includes("prepare")) {
 				if (permit) throw new Error("duplicate reservation");
@@ -349,6 +354,50 @@ async function fixture(providerKind: "native" | "office" = "native", usage = fal
 }
 const signal = () => new AbortController().signal;
 describe("funded runtime physical custody", () => {
+	it.each(["native", "office"] as const)(
+		"requires current SQL coverage and acknowledged guard tip for %s work",
+		async (kind) => {
+			const f = await fixture(kind, true);
+			await f.start();
+			await expect(f.controller.assertRunning(f.context.allocationId, signal())).rejects.toThrow(
+				"RUNNING_PERMIT_REQUIRED",
+			);
+			f.guard.tickUsage();
+			await f.guard.settleUsage(f.permit!.permitId);
+			await f.controller.observe(f.context.allocationId, signal());
+			const original = f.control.call.getMockImplementation()!;
+			let verdict = false;
+			f.control.call.mockImplementation(async (method, args) => {
+				const result = await original(method, args);
+				return method === "qorpera_describe_runtime_computer_permit"
+					? { ...(result as object), workReady: verdict }
+					: result;
+			});
+			await expect(f.controller.assertRunning(f.context.allocationId, signal())).rejects.toThrow(
+				"RUNNING_PERMIT_REQUIRED",
+			);
+			verdict = true;
+			await expect(f.controller.assertRunning(f.context.allocationId, signal())).resolves.toBeUndefined();
+			f.clock.uptimeMs += 5000;
+			f.setGuestUptime(6);
+			const tick = vi.spyOn(performance, "now").mockReturnValue(performance.now() + 6000);
+			try {
+				f.guard.tickUsage();
+				await f.guard.settleUsage(f.permit!.permitId);
+			} finally {
+				tick.mockRestore();
+			}
+			await expect(f.controller.assertRunning(f.context.allocationId, signal())).rejects.toThrow(
+				"RUNNING_PERMIT_REQUIRED",
+			);
+			await f.controller.observe(f.context.allocationId, signal());
+			await expect(f.controller.assertRunning(f.context.allocationId, signal())).resolves.toBeUndefined();
+			f.clock.uptimeMs += 10001;
+			await expect(f.controller.assertRunning(f.context.allocationId, signal())).rejects.toThrow(
+				"RUNNING_PERMIT_REQUIRED",
+			);
+		},
+	);
 	it("drains and archives a historical stream without replacing newer managed custody", async () => {
 		const f = await fixture("native", true);
 		await f.start();

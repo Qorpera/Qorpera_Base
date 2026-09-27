@@ -361,6 +361,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		storage: Readonly<CloudCodingStorageBinding>,
 		signal: AbortSignal,
 		prepareStorage = false,
+		requireMetering = true,
 	): Promise<CodingMachineAdmissionReceipt> {
 		const started = performance.now();
 		const plan = lxdCodingMachinePlan(machine);
@@ -397,6 +398,23 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		if (value.schema === "qorpera.coding-machine-admission/v2") {
 			if (!this.#options.computerUsage) throw new Error("CODING_PAID_COMPUTER_GUARD_REQUIRED");
 			await this.#options.computerUsage.ensure(claim, machine, signal);
+		}
+		// Preboot funding remains possible. Once this turn owns an attachment,
+		// every new effect and lease refresh needs current metering authority.
+		if (
+			requireMetering &&
+			this.#attached.has(claim.workerId) &&
+			this.#options.computerUsage &&
+			(value.schema === "qorpera.coding-machine-admission/v2" ||
+				this.#options.computerUsage.manages(machine.machineId))
+		) {
+			try {
+				await this.#options.computerUsage.assertRunning(machine.machineId, signal);
+			} catch (error) {
+				if (error instanceof Error && error.message === "CODING_COMPUTER_RUNNING_PERMIT_REQUIRED")
+					throw new CodingMachineUnavailable("COMPUTER_USAGE_NOT_READY");
+				throw error;
+			}
 		}
 		const guestUid = value.guestUid as number | null;
 		if (guestUid !== null && guestUid < CODING_SESSION_UID_BASE)
@@ -1141,7 +1159,9 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 	): Promise<LxdCodingCommandTransport> {
 		const ready = this.#prepared.get(scope.workerId);
 		if (!ready || !isDeepStrictEqual(scope, ready.scope)) throw new Error("CODING_HOST_TURN_NOT_PREPARED");
-		await this.#run(ready.claim, ready.machine, ready.storage, signal);
+		// Constructing a transport must not prevent reading/cancelling an existing
+		// command during a metering gap. Its start action checks coverage below.
+		await this.#run(ready.claim, ready.machine, ready.storage, signal, false, false);
 		return new LxdCodingCommandTransport({
 			machine: ready.machine,
 			storage: this.#placement,
@@ -1152,7 +1172,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			client: this.#options.client,
 			authorize: async (action, checkedScope, commandId, inputSha256, checked) => {
 				this.#current(ready);
-				await this.#run(ready.claim, ready.machine, ready.storage, checked);
+				await this.#run(ready.claim, ready.machine, ready.storage, checked, false, action === "start");
 				await authorize(action, checkedScope, commandId, inputSha256, checked);
 			},
 		});

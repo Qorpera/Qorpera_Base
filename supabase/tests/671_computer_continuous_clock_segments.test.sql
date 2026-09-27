@@ -43,6 +43,14 @@ begin
                 where permit_id=id and observation_id=(meter.sample->>'observationId')::uuid),'Coverage differs for '||(scenario->>'name'));
             perform pg_temp.wake_assert(public.qorpera_computer_sample_ready(id,sample)=((coverages->>(sample_index-1)) in ('initial','continuous')),
                 'Unconfirmed clock admitted new work for '||(scenario->>'name'));
+            receipt:=public.qorpera_describe_coding_computer_permit(request,repeat('K',64));
+            perform pg_temp.wake_assert(receipt->'lastSample'=sample and receipt#>>'{permit,permitId}'=id::text,
+                'Host describe returned readiness for a different sample or permit');
+            if coverages->>(sample_index-1)='gap' then
+                perform pg_temp.wake_assert(receipt->'workReady'='false','Acknowledged running gap admitted coding work');
+            elsif sample_index=jsonb_array_length(offsets) then
+                perform pg_temp.wake_assert(receipt->'workReady'='true','Fresh continuous recovery did not restore coding admission');
+            end if;
             renew:=jsonb_build_object('requestId',extensions.gen_random_uuid(),'permitId',id,'generation',permit->'generation',
                 'sample',sample,'windowMs',300000,'stopReserveMs',30000);
             if coverages->>(sample_index-1)='gap' then

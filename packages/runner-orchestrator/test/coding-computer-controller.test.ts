@@ -137,7 +137,11 @@ async function fixture(usage = false) {
 				if (sourceUnavailable) throw new Error("machine owner moved");
 				return permit?.state === "closed" || !permit
 					? null
-					: { permit: receipt(), lastSample: structuredClone(lastSample) };
+					: {
+							permit: receipt(),
+							lastSample: structuredClone(lastSample),
+							workReady: lastSample?.state === "running",
+						};
 			}
 			if (method === "qorpera_prepare_coding_computer_permit") {
 				permit = {
@@ -368,6 +372,69 @@ async function fixture(usage = false) {
 }
 
 describe("paid coding computer controller", () => {
+	it("deducts readiness RPC latency from sample freshness before admitting work", async () => {
+		const f = await fixture(true);
+		await f.start();
+		f.guard.tickUsage();
+		await f.guard.settleUsage(f.getPermit()!.permitId);
+		await f.bind();
+		const original = f.control.call.getMockImplementation()!;
+		f.control.call.mockImplementation(async (method, args) => {
+			const result = await original(method, args);
+			if (method === "qorpera_describe_coding_computer_permit") f.host.uptimeMs += 10001;
+			return result;
+		});
+		await expect(f.controller.assertRunning(f.machine.machineId, signal())).rejects.toThrow(
+			"RUNNING_PERMIT_REQUIRED",
+		);
+	});
+	it("requires fresh SQL coverage for the exact acknowledged running sample", async () => {
+		const f = await fixture(true);
+		await f.start();
+		f.guard.tickUsage();
+		await f.guard.settleUsage(f.getPermit()!.permitId);
+		await f.bind();
+		const original = f.control.call.getMockImplementation()!;
+		let verdict = false;
+		f.control.call.mockImplementation(async (method, args) => {
+			const result = await original(method, args);
+			return method === "qorpera_describe_coding_computer_permit"
+				? { ...(result as object), workReady: verdict }
+				: result;
+		});
+		expect((await f.guard.readUsage(f.getPermit()!.permitId)).acknowledgedThrough.sequence).toBe(1);
+		await expect(f.controller.assertRunning(f.machine.machineId, signal())).rejects.toThrow(
+			"RUNNING_PERMIT_REQUIRED",
+		);
+		verdict = true;
+		await expect(f.controller.assertRunning(f.machine.machineId, signal())).resolves.toBeUndefined();
+		verdict = false;
+		await expect(f.controller.assertRunning(f.machine.machineId, signal())).rejects.toThrow(
+			"RUNNING_PERMIT_REQUIRED",
+		);
+	});
+	it.each(["sample", "generation"])("rejects SQL readiness for another %s", async (different) => {
+		const f = await fixture(true);
+		await f.start();
+		f.guard.tickUsage();
+		await f.guard.settleUsage(f.getPermit()!.permitId);
+		await f.bind();
+		const original = f.control.call.getMockImplementation()!;
+		f.control.call.mockImplementation(async (method, args) => {
+			const result = (await original(method, args)) as Record<string, unknown>;
+			if (method !== "qorpera_describe_coding_computer_permit") return result;
+			return {
+				...result,
+				workReady: true,
+				...(different === "sample"
+					? { lastSample: { ...(result.lastSample as object), observationId: randomUUID() } }
+					: { permit: { ...(result.permit as object), generation: 2 } }),
+			};
+		});
+		await expect(f.controller.assertRunning(f.machine.machineId, signal())).rejects.toThrow(
+			"RUNNING_PERMIT_REQUIRED",
+		);
+	});
 	it("requires a committed running observation after a delayed first capture", async () => {
 		const f = await fixture(true);
 		await f.start();

@@ -401,6 +401,28 @@ export class CodingComputerController implements CodingComputerUsage {
 				clock.uptimeMs - sample.hostUptimeMs > 10000
 			)
 				throw new Error("CODING_COMPUTER_RUNNING_PERMIT_REQUIRED");
+			// Running bytes and a durable ACK are not SQL's clock-coverage verdict.
+			// Re-read under the enrolled host credential for this exact admission.
+			const confirmed = object(
+				await this.#call(
+					"qorpera_describe_coding_computer_permit",
+					{
+						machineId,
+						permitId: current.permit.permitId,
+						owner: this.#options.owner,
+						machineIdSha256: clock.hostMachineIdSha256,
+						hostBootId: clock.hostBootId,
+					},
+					signal,
+				),
+			);
+			const canonical = this.#checkedPermit(confirmed.permit, current.machine, clock);
+			if (
+				confirmed.workReady !== true ||
+				!isDeepStrictEqual(confirmed.lastSample, sample) ||
+				!isDeepStrictEqual({ ...canonical, validForMs: current.permit.validForMs }, current.permit)
+			)
+				throw new Error("CODING_COMPUTER_RUNNING_PERMIT_REQUIRED");
 			if (guarded.usageRequired) {
 				const usage = await this.#options.guard.readUsage(current.permit.permitId, { limit: 1 }, signal);
 				if (
@@ -411,6 +433,18 @@ export class CodingComputerController implements CodingComputerUsage {
 				)
 					throw new Error("CODING_COMPUTER_RUNNING_PERMIT_REQUIRED");
 			}
+			const after = await this.#clock(),
+				latest = await this.#options.guard.latest(machineId, signal);
+			if (
+				after.hostBootId !== clock.hostBootId ||
+				after.uptimeMs < clock.uptimeMs ||
+				after.uptimeMs - sample.hostUptimeMs > 10000 ||
+				after.uptimeMs >= guarded.stopAtUptimeMs ||
+				latest?.phase !== "running" ||
+				latest.permit.permitId !== current.permit.permitId ||
+				latest.permit.generation !== current.permit.generation
+			)
+				throw new Error("CODING_COMPUTER_RUNNING_PERMIT_REQUIRED");
 		});
 	}
 	async ownsStart(machineId: string, signal: AbortSignal): Promise<boolean> {
