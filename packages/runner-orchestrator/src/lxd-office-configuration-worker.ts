@@ -381,6 +381,7 @@ export class LxdOfficeConfigurationWorker {
 			mark("JOURNAL");
 			let operation = await journal.observe(checked);
 			const name = lxdOfficeGuestPlan(binding).request.name;
+			const dispatching = operation.state === "not_dispatched";
 			if (operation.state === "not_dispatched") {
 				const lock = await this.#client.readInstanceFile(
 					binding.project,
@@ -462,14 +463,18 @@ export class LxdOfficeConfigurationWorker {
 				parseCompanyComputerConfigurationCompletion(json(file.content), expectedCompletion);
 				return file.content;
 			};
-			const completionBytes = await readCompletion(await authorizeCommand());
+			// A new mutating dispatch requires fresh authority before confirmation.
+			// For a settled command, journal observation and the first read-only
+			// confirmation pass share the same still-live five-second window.
+			if (dispatching) checked = await authorizeCommand();
+			const completionBytes = await readCompletion(checked);
 			// Independently verify the installed protected bytes twice. The helper's
 			// receipt alone is insufficient to acknowledge later activation evidence.
-			// Each whole pass shares one fresh five-second authority window. Repeating
+			// Each whole pass stays within one five-second authority window. Repeating
 			// full preparation for every file made read-only confirmation exceed the
 			// bounded reconciliation time; expiry still refuses the entire pass.
 			for (let pass = 0; pass < 2; pass++) {
-				const inspection = await authorizeCommand();
+				const inspection = pass === 0 ? checked : await authorizeCommand();
 				for (const credentialsRoot of [
 					"/etc/qorpera-office/credentials",
 					`${companyComputerBootDirectory(command.bootId)}/credentials`,

@@ -105,6 +105,7 @@
 
 ### Fixed
 
+- Confirm an already completed office configuration command within its existing authority window before the first credential-read pass, avoiding redundant full preparation that exhausted physical reconciliation. New dispatch, the second complete read pass and publication still obtain fresh authority; all expiry and byte checks remain enforced.
 - Retry the first transient paid-clock capture failure within one second of recording its gap, while preserving the ten-second evidence deadline, two-failure shutdown and uncharged uncertainty.
 - Drain already captured native, coding and office usage before work admission and preserve typed metering deferrals through Git base, seed and publication checks; exact current-sample coverage and uncertain-push reconciliation remain required.
 - Acquire inventory allocation foreign-key locks before the node lock to prevent first-binding publication from deadlocking with paid admission; retain exact snapshot checks and historical receipt replay.

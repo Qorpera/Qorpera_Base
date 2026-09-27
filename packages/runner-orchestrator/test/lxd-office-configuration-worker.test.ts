@@ -1,9 +1,11 @@
 import { readdir, readFile, rm, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { officeDigest } from "../src/lxd-office-image-provenance.ts";
 import { readRecord } from "../src/lxd-office-journal-files.ts";
 import { officeLifecycleErrorCode } from "../src/lxd-office-lifecycle-service.ts";
+import { LxdOfficePreparationWorker } from "../src/lxd-office-preparation-worker.ts";
 import { LxdOfficeStartControl } from "../src/lxd-office-start-control.ts";
 import { officeConfigurationWorkerFixture } from "./fixtures/office-configuration-worker.ts";
 
@@ -16,6 +18,28 @@ afterEach(async () => {
 });
 
 describe("provider configuration of an acknowledged prepared boot", () => {
+	it("confirms a settled command within the reconciliation deadline when preparation checks are slow", async () => {
+		const f = await fixture();
+		f.poll.mockResolvedValueOnce("pending");
+		const dispatched = await f.worker.reconcile(f.request, signal());
+		expect(dispatched.state).toBe("pending");
+		const prepare = LxdOfficePreparationWorker.prototype.reconcileSettled;
+		vi.spyOn(LxdOfficePreparationWorker.prototype, "reconcileSettled").mockImplementation(async function (
+			this: LxdOfficePreparationWorker,
+			...args
+		) {
+			// Real preparation, physical and cloud checks still run. Their latency
+			// must fit the unchanged outer deadline without reusing expired authority.
+			await delay(6000, undefined, { signal: args[1] });
+			return prepare.apply(this, args);
+		});
+		await expect(f.create().reconcileSettled(f.request, signal())).resolves.toMatchObject({
+			state: "awaiting_activation",
+			commandId: dispatched.commandId,
+		});
+		expect(f.exec).toHaveBeenCalledOnce();
+		expect(f.stage).toHaveBeenCalledOnce();
+	}, 45000);
 	it.each(["CREDENTIALS", "CREDENTIAL_READ"] as const)(
 		"reports only bounded phase counters when %s stalls and preserves pending custody",
 		async (phase) => {
@@ -148,6 +172,19 @@ describe("provider configuration of an acknowledged prepared boot", () => {
 		});
 		await expect(f.worker.reconcile(f.request, signal())).rejects.toThrow("OFFICE_CONFIGURATION_UNCONFIRMED");
 		expect(passes).toBe(2);
+		expect(await readdir(f.root)).not.toContain(f.names.completion);
+		expect(f.exec).toHaveBeenCalledOnce();
+	});
+	it("obtains fresh authority after a new dispatch before reading its completion", async () => {
+		const f = await fixture(),
+			execute = f.exec.getMockImplementation()!;
+		f.exec.mockImplementation(async (...args) => {
+			const operation = await execute(...args);
+			f.call.mockRejectedValue(new Error("provider disabled after dispatch"));
+			return operation;
+		});
+		await expect(f.worker.reconcileSettled(f.request, signal())).rejects.toThrow("OFFICE_CONFIGURATION_UNCONFIRMED");
+		expect(f.file.mock.calls.some(([, , path]) => path.endsWith("/configuration-completion.json"))).toBe(false);
 		expect(await readdir(f.root)).not.toContain(f.names.completion);
 		expect(f.exec).toHaveBeenCalledOnce();
 	});
