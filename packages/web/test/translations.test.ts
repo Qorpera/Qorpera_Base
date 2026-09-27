@@ -21,9 +21,8 @@ function sourceFiles(dir: string): string[] {
 	});
 }
 
-// Shared code that takes t() as an option: the live Company File panel
-// (member-web) and the routine trigger words (cloud-client).
-const SHARED = ["../../member-web/src/file-panel.ts", "../../cloud-client/src/cloud-routines.ts"].map((path) =>
+// Shared code that takes t() as an option: the routine trigger words (cloud-client).
+const SHARED = ["../../cloud-client/src/cloud-routines.ts"].map((path) =>
 	fileURLToPath(new URL(path, import.meta.url)),
 );
 const sources = [...sourceFiles(SRC), ...SHARED].map((path) => ({

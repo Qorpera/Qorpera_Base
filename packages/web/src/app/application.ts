@@ -957,12 +957,19 @@ export function mountApplication(
 						},
 						state.team.capabilities.write,
 					);
-					liveFile = new LiveCompanyFileView(files, stop, controller.profile.profileId, authorityKey, () => {
-						if (stop.signal.aborted) return;
-						liveFile?.dispose();
-						liveFile = undefined;
-						render();
-					});
+					liveFile = new LiveCompanyFileView(
+						files,
+						stop,
+						controller.profile.profileId,
+						authorityKey,
+						() => {
+							if (stop.signal.aborted) return;
+							liveFile?.dispose();
+							liveFile = undefined;
+							render();
+						},
+						() => controller.store.get().staff,
+					);
 				}
 				if (!main.contains(liveFile.el)) replace(main, liveFile.el);
 				return;

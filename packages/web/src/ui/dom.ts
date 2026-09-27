@@ -173,6 +173,8 @@ const ICON_PATHS: Record<string, string[]> = {
 	send: ["M12 19V5m-6 6 6-6 6 6"],
 	edit: ["m4 16 11-11a2 2 0 0 1 4 4L8 20H4v-4Z", "m13 7 4 4"],
 	file: ["M14 2H5v20h14V7l-5-5ZM14 2v6h5", "M8 12h8M8 16h6"],
+	download: ["M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4", "m7 10 5 5 5-5", "M12 15V3"],
+	upload: ["M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4", "m17 8-5-5-5 5", "M12 3v12"],
 	copy: ["M8 8h12v13H8Z", "M16 8V3H3v13h5"],
 	map: ["M12 7v5M5 12h14M5 12v5M19 12v5", "M9 2h6v5H9ZM2 17h6v5H2ZM16 17h6v5h-6Z"],
 	clock: ["M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z", "M12 7v5l3 2"],

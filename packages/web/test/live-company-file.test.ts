@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mountApplication } from "../src/app/application.ts";
 import { LiveCompanyFileView } from "../src/app/views/live-company-file.ts";
 import { WebCompanyFiles } from "../src/cloud/company-files.ts";
-import { deferred, fixture, id, profileA, settle, team, userA, userB, visibleText } from "./fixtures.ts";
+import { deferred, fixture, id, profileA, settle, staff, team, userA, userB, visibleText } from "./fixtures.ts";
 
 const disposers: (() => void)[] = [];
 beforeEach(() => {
@@ -30,25 +30,16 @@ async function setup(offerProposal = false, useBridge = true) {
 	f.cloud.config.objectGatewayUrl = "https://objects.fixture.invalid";
 	if (useBridge)
 		f.cloud.config.memberCompanyGatewayUrl = `${f.cloud.config.projectUrl}/functions/v1/member-company-gateway`;
-	let contents = "Original text",
-		version = id(40),
-		exists = true;
+	// The live company: files with their text and version, and folders with theirs.
+	const files = new Map<string, { text: string; version: string }>([
+		["notes.txt", { text: "Original text", version: id(40) }],
+	]);
+	const folders = new Map<string, string>();
+	let nextVersion = 42;
 	const objects = new Map<string, Uint8Array>();
-	const proposal = {
-		proposalId: id(44),
-		plan: {
-			schema: "qorpera.company-path-mutation/v1",
-			operationKey: "fixture-proposal",
-			path: "notes.txt",
-			expectedVersion: version,
-			entry: null,
-		},
-		planSha256: "b".repeat(64),
-		state: "open",
-		snapshotId: null,
-	};
-	const reference = async () => {
-		const bytes = new TextEncoder().encode(contents),
+	const parent = (path: string) => (path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "");
+	const reference = async (text: string) => {
+		const bytes = new TextEncoder().encode(text),
 			hash = await cloudFileBytesSha256(bytes);
 		const manifest = new TextEncoder().encode(
 			JSON.stringify({
@@ -95,24 +86,39 @@ async function setup(offerProposal = false, useBridge = true) {
 		if (method === "qorpera_list_company_paths")
 			return Response.json({
 				snapshotId: id(41),
-				items: exists
-					? [{ path: "notes.txt", version, kind: "file", bytes: new TextEncoder().encode(contents).length }]
-					: [],
+				items: [
+					...[...folders]
+						.filter(([path]) => parent(path) === body.p_path)
+						.map(([path, version]) => ({ path, version, kind: "directory", bytes: null })),
+					...[...files]
+						.filter(([path]) => parent(path) === body.p_path)
+						.map(([path, file]) => ({
+							path,
+							version: file.version,
+							kind: "file",
+							bytes: new TextEncoder().encode(file.text).length,
+						})),
+				].sort((a, b) => (a.path < b.path ? -1 : 1)),
 				hasMore: false,
 				nextAfter: null,
 			});
 		if (method === "qorpera_list_company_path_proposals" && offerProposal)
-			return Response.json({ items: [proposal], nextAfter: null });
+			return Response.json({ items: [], nextAfter: null });
+		if (method === "qorpera_list_member_file_exports") return Response.json({ items: [], nextAfter: null });
 		if (["qorpera_list_member_company_path_commands", "qorpera_list_company_path_proposals"].includes(method))
 			return Response.json({ items: [], nextAfter: null });
-		if (url.pathname.endsWith(`/proposals/${proposal.proposalId}/review`)) {
-			expect(body).toEqual({ planSha256: proposal.planSha256, decision: "approve" });
-			offerProposal = false;
-			exists = false;
-			return Response.json({ ...proposal, state: "applied", snapshotId: id(41) });
-		}
 		if (method === "qorpera_read_company_path") {
-			if (!exists || body.p_path !== "notes.txt")
+			const file = files.get(body.p_path),
+				folder = folders.get(body.p_path);
+			if (folder)
+				return Response.json({
+					companyId: profileA.profileId,
+					path: body.p_path,
+					version: folder,
+					entry: { path: body.p_path, kind: "directory" },
+					manifestBytes: null,
+				});
+			if (!file)
 				return Response.json({
 					companyId: profileA.profileId,
 					path: body.p_path,
@@ -120,12 +126,12 @@ async function setup(offerProposal = false, useBridge = true) {
 					entry: null,
 					manifestBytes: null,
 				});
-			const ref = await reference();
+			const ref = await reference(file.text);
 			return Response.json({
 				companyId: profileA.profileId,
-				path: "notes.txt",
-				version,
-				entry: { path: "notes.txt", kind: "file", executable: false, file: ref.file },
+				path: body.p_path,
+				version: file.version,
+				entry: { path: body.p_path, kind: "file", executable: false, file: ref.file },
 				manifestBytes: ref.manifestBytes,
 			});
 		}
@@ -141,11 +147,19 @@ async function setup(offerProposal = false, useBridge = true) {
 				expect(init?.method).toBe("PUT");
 				expect(init?.body).toBeInstanceOf(Uint8Array);
 			}
-			expect(intent.expectedVersion).toBe(version);
-			contents = method === "uploads" ? new TextDecoder().decode(init?.body as Uint8Array) : body.text;
-			version = id(42);
-			exists = body.operation !== "delete";
-			const ref = await reference();
+			const operation = method === "uploads" ? "write" : body.operation;
+			expect(intent.expectedVersion).toBe(files.get(intent.path)?.version ?? folders.get(intent.path) ?? null);
+			const version = id(nextVersion++);
+			let entry: unknown = null;
+			if (operation === "mkdir") {
+				folders.set(intent.path, version);
+				entry = { path: intent.path, kind: "directory" };
+			} else if (operation === "delete") files.delete(intent.path);
+			else {
+				const text = method === "uploads" ? new TextDecoder().decode(init?.body as Uint8Array) : body.text;
+				files.set(intent.path, { text, version });
+				entry = { path: intent.path, kind: "file", executable: false, file: (await reference(text)).file };
+			}
 			return Response.json({
 				commandId: id(43),
 				companyId: profileA.profileId,
@@ -155,7 +169,7 @@ async function setup(offerProposal = false, useBridge = true) {
 					path: intent.path,
 					operationKey: intent.operationKey,
 					expectedVersion: intent.expectedVersion,
-					entry: exists ? { path: intent.path, kind: "file", executable: false, file: ref.file } : null,
+					entry,
 				},
 				planSha256: "a".repeat(64),
 				state: "applied",
@@ -175,18 +189,55 @@ async function setup(offerProposal = false, useBridge = true) {
 	const current = vi.fn();
 	const company = new WebCompanyFiles(f.cloud, profileA, userA.id, "owner", stop.signal, current);
 	disposers.push(() => stop.abort());
-	return { ...f, stop, company, fetch, current };
+	return { ...f, stop, company, fetch, current, files, folders };
 }
-function button(root: HTMLElement, label: string) {
-	const found = [...root.querySelectorAll("button")].find((node) => node.textContent === label);
-	if (!found) throw new Error(`Missing ${label}: ${root.textContent}`);
+/** A button by its words or its accessible name. */
+function button(root: ParentNode, label: string) {
+	const found = [...root.querySelectorAll("button")].find(
+		(node) => node.textContent?.trim() === label || node.getAttribute("aria-label") === label,
+	);
+	if (!found) throw new Error(`Missing ${label}: ${(root as Element).textContent ?? ""}`);
 	return found;
 }
-async function mount(f: Awaited<ReturnType<typeof setup>>) {
-	const view = new LiveCompanyFileView(f.company, f.stop, profileA.profileId, "owner");
+function row(root: ParentNode, name: string) {
+	const found = [...root.querySelectorAll<HTMLButtonElement>(".files-row-main")].find(
+		(node) => node.querySelector(".files-name")?.textContent === name,
+	);
+	if (!found) throw new Error(`Missing row ${name}: ${(root as Element).textContent ?? ""}`);
+	return found;
+}
+async function open(root: ParentNode, name: string) {
+	row(root, name).click();
+	await vi.waitFor(() => expect(root.querySelector(".files-preview h2")?.textContent).toBe(name));
+}
+async function edit(root: ParentNode) {
+	button(root, "Edit").click();
+	await vi.waitFor(() => expect(root.querySelector(".files-editor")).not.toBeNull());
+	return root.querySelector<HTMLTextAreaElement>(".files-editor")!;
+}
+function type(field: HTMLTextAreaElement | HTMLInputElement, value: string) {
+	field.value = value;
+	field.dispatchEvent(new Event("input"));
+}
+function menuItem(label: string) {
+	const found = [...document.querySelectorAll<HTMLElement>(".context-menu [role^=menuitem]")].find(
+		(node) => node.textContent?.trim() === label,
+	);
+	if (!found) throw new Error(`Missing menu item ${label}`);
+	return found;
+}
+async function dialogButton(label: string) {
+	await vi.waitFor(() => expect(document.querySelector(".modal")).not.toBeNull());
+	return button(document.querySelector(".modal")!, label);
+}
+async function mount(f: Awaited<ReturnType<typeof setup>>, readOnly = false) {
+	const company = readOnly
+		? new WebCompanyFiles(f.cloud, profileA, userA.id, "owner", f.stop.signal, f.current, false)
+		: f.company;
+	const view = new LiveCompanyFileView(company, f.stop, profileA.profileId, "owner", undefined, () => [staff]);
 	document.body.append(view.el);
 	disposers.push(() => view.dispose());
-	await vi.waitFor(() => expect(button(view.el, "notes.txt")).toBeDefined());
+	await vi.waitFor(() => expect(row(view.el, "notes.txt")).toBeDefined());
 	await settle();
 	return view;
 }
@@ -194,8 +245,8 @@ describe("product governed File boundary", () => {
 	it("keeps the configured direct transport until bridge activation", async () => {
 		const f = await setup(false, false),
 			view = await mount(f);
-		button(view.el, "notes.txt").click();
-		await vi.waitFor(() => expect(view.el.querySelector("textarea")?.value).toBe("Original text"));
+		await open(view.el, "notes.txt");
+		expect(view.el.querySelector(".files-text")?.textContent).toBe("Original text");
 		const objects = f.fetch.mock.calls.filter(([url]) => String(url).includes("/v1/member-company-objects/"));
 		expect(objects.length).toBeGreaterThan(0);
 		for (const [url] of objects) expect(new URL(String(url)).origin).toBe(f.cloud.config.objectGatewayUrl);
@@ -203,36 +254,35 @@ describe("product governed File boundary", () => {
 			false,
 		);
 	});
-	it("says what is opening in its status line, outside the inert panel, until the panel has read the files", async () => {
+	it("says what is opening in its status line, outside the inert list, until the list has been read", async () => {
 		const f = await setup();
 		const view = new LiveCompanyFileView(f.company, f.stop, profileA.profileId, "owner");
 		document.body.append(view.el);
 		disposers.push(() => view.dispose());
-		const status = view.el.querySelector("p[role=status]")!;
+		const status = view.el.querySelector("[role=status]")!;
 		expect(status.querySelector(".visually-hidden")?.textContent).toBe("Opening Company File");
 		expect(visibleText(status)).toBe("");
 		expect(view.el.querySelector(".skeleton-list")).not.toBeNull();
-		await vi.waitFor(() => expect(button(view.el, "notes.txt")).toBeDefined());
+		await vi.waitFor(() => expect(row(view.el, "notes.txt")).toBeDefined());
 		await vi.waitFor(() => expect(status.textContent).toBe(""));
 		expect(view.el.querySelector(".skeleton")).toBeNull();
 	});
-	it("mounts the live File page, preserves a cancelled navigation draft, and drops edit controls on role downgrade", async () => {
+	it("mounts the File page, preserves a cancelled navigation draft, and drops edit controls on role downgrade", async () => {
 		const f = await setup(),
 			root = document.createElement("div");
 		history.replaceState(null, "", `/#/c/${profileA.profileId}/file`);
 		document.body.append(root);
 		disposers.push(mountApplication(root, f.cloud, f.api));
-		await vi.waitFor(() => expect(button(root, "notes.txt")).toBeDefined());
-		button(root, "notes.txt").click();
-		await vi.waitFor(() => expect(root.querySelector("textarea")?.value).toBe("Original text"));
-		const text = root.querySelector("textarea")!;
-		text.value = "Unsaved draft";
-		text.dispatchEvent(new Event("input"));
+		await vi.waitFor(() => expect(row(root, "notes.txt")).toBeDefined());
+		await open(root, "notes.txt");
+		const text = await edit(root);
+		expect(text.value).toBe("Original text");
+		type(text, "Unsaved draft");
 		const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
 		location.hash = `#/c/${profileA.profileId}/file/history`;
 		await vi.waitFor(() => expect(confirm).toHaveBeenCalled());
 		expect(location.hash).toBe(`#/c/${profileA.profileId}/file`);
-		expect(root.querySelector("textarea")).toBe(text);
+		expect(root.querySelector(".files-editor")).toBe(text);
 		expect(text.value).toBe("Unsaved draft");
 		vi.mocked(f.api.getTeam).mockResolvedValue({
 			...team,
@@ -240,24 +290,26 @@ describe("product governed File boundary", () => {
 			capabilities: { ...team.capabilities, write: false, authorize: false },
 		});
 		f.hints.get("qorpera_profile_access_state")!();
-		await vi.waitFor(() => expect(root.querySelector("textarea")).not.toBe(text));
-		await vi.waitFor(() => expect(button(root, "notes.txt")).toBeDefined());
-		expect(button(root, "Save to company").disabled).toBe(true);
+		await vi.waitFor(() => expect(root.querySelector(".files-editor")).toBeNull());
+		await vi.waitFor(() => expect(row(root, "notes.txt")).toBeDefined());
+		await open(root, "notes.txt");
+		expect(() => button(root, "Edit")).toThrow();
+		expect(() => button(root, "Delete notes.txt")).toThrow();
+		expect(root.querySelector<HTMLButtonElement>(".files-new")?.hidden).toBe(true);
 		expect(f.api.getCompanyFile).not.toHaveBeenCalled();
 		expect(f.cloud.rpc).not.toHaveBeenCalled();
 	});
 	it("uses live path reads and writes the observed version through the member gateway", async () => {
 		const f = await setup(),
 			view = await mount(f);
-		button(view.el, "notes.txt").click();
-		const text = view.el.querySelector<HTMLTextAreaElement>('[aria-label="File content"]')!;
-		await vi.waitFor(() => expect(text.value).toBe("Original text"));
-		text.value = "Updated by member";
-		text.dispatchEvent(new Event("input"));
+		await open(view.el, "notes.txt");
+		const text = await edit(view.el);
+		type(text, "Updated by member");
 		expect(view.leaveMessage()).toContain("unsaved");
-		button(view.el, "Save to company").click();
-		await vi.waitFor(() => expect(view.el.textContent).toContain("Saved to the live company"));
+		button(view.el, "Save").click();
+		await vi.waitFor(() => expect(view.el.textContent).toContain("Saved notes.txt."));
 		expect(view.leaveMessage()).toBeNull();
+		expect(view.el.querySelector(".files-text")?.textContent).toBe("Updated by member");
 		const writes = f.fetch.mock.calls.filter(([url]) => String(url).endsWith("/edits"));
 		expect(writes).toHaveLength(1);
 		expect(JSON.parse(writes[0]![1]!.body as string)).toMatchObject({
@@ -276,84 +328,186 @@ describe("product governed File boundary", () => {
 		history.replaceState(null, "", `/#/c/${profileA.profileId}/file`);
 		document.body.append(root);
 		disposers.push(mountApplication(root, f.cloud, f.api));
-		await vi.waitFor(() => expect(button(root, "notes.txt")).toBeDefined());
-		button(root, "notes.txt").click();
-		await vi.waitFor(() => expect(root.querySelector("textarea")?.value).toBe("Original text"));
-		const text = root.querySelector("textarea")!;
-		text.value = "Conflicting edit";
-		text.dispatchEvent(new Event("input"));
+		await vi.waitFor(() => expect(row(root, "notes.txt")).toBeDefined());
+		await open(root, "notes.txt");
+		const text = await edit(root);
+		type(text, "Conflicting edit");
 		f.fetch.mockResolvedValueOnce(new Response(null, { status: 409 }));
-		button(root, "Save to company").click();
+		button(root, "Save").click();
 		await vi.waitFor(() => expect(root.textContent).toContain("operation could not be confirmed"));
+		const kept = root.querySelector<HTMLTextAreaElement>(".files-editor")!;
+		expect(kept.value).toBe("Conflicting edit");
 		const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
-		button(root, "Reload Company File").click();
-		expect(root.querySelector("textarea")).toBe(text);
-		expect(text.value).toBe("Conflicting edit");
-		expect(confirm).toHaveBeenCalledWith(expect.stringContaining("submitted change may still apply"));
+		button(root, "Reload").click();
+		expect(root.querySelector(".files-editor")).toBe(kept);
+		expect(kept.value).toBe("Conflicting edit");
+		expect(confirm).toHaveBeenCalledWith(expect.stringContaining("A change you sent may still apply"));
 		confirm.mockReturnValue(true);
-		button(root, "Reload Company File").click();
-		await vi.waitFor(() => expect(button(root, "notes.txt")).toBeDefined());
-		button(root, "notes.txt").click();
-		await vi.waitFor(() => expect(root.querySelector("textarea")?.value).toBe("Original text"));
-		expect(root.querySelector("textarea")).not.toBe(text);
-		expect(root.querySelector("textarea")?.disabled).toBe(false);
+		button(root, "Reload").click();
+		await vi.waitFor(() => expect(row(root, "notes.txt")).toBeDefined());
+		await open(root, "notes.txt");
+		const fresh = await edit(root);
+		expect(fresh).not.toBe(kept);
+		expect(fresh.value).toBe("Original text");
+		expect(fresh.disabled).toBe(false);
 		expect(f.fetch.mock.calls.filter(([url]) => String(url).endsWith("/edits"))).toHaveLength(1);
 	});
-	it.each(["Up", "New file"])("clears an accepted discarded draft when choosing %s", async (label) => {
+	it("asks before closing an edited file and forgets the draft once the member agrees", async () => {
 		const f = await setup(),
 			view = await mount(f);
-		button(view.el, "notes.txt").click();
-		const text = view.el.querySelector<HTMLTextAreaElement>('[aria-label="File content"]')!;
-		await vi.waitFor(() => expect(text.value).toBe("Original text"));
-		text.value = "Discard me";
-		text.dispatchEvent(new Event("input"));
-		vi.spyOn(window, "confirm").mockReturnValue(true);
-		button(view.el, label).click();
-		await vi.waitFor(() => expect(text.value).toBe(""));
+		await open(view.el, "notes.txt");
+		type(await edit(view.el), "Discard me");
+		const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+		button(view.el, "Close notes.txt").click();
+		expect(view.el.querySelector<HTMLTextAreaElement>(".files-editor")?.value).toBe("Discard me");
+		confirm.mockReturnValue(true);
+		button(view.el, "Close notes.txt").click();
+		expect(view.el.querySelector(".files-preview")?.hasAttribute("hidden")).toBe(true);
 		expect(view.leaveMessage()).toBeNull();
-		expect(text.disabled).toBe(true);
-		expect(view.el.textContent).not.toContain("Loaded the current company version");
+		await open(view.el, "notes.txt");
+		expect(view.el.querySelector(".files-text")?.textContent).toBe("Original text");
 	});
 	it("keeps the exact edit across an uncertain response and does not replay automatically", async () => {
 		const f = await setup(),
 			view = await mount(f);
-		button(view.el, "notes.txt").click();
-		const text = view.el.querySelector<HTMLTextAreaElement>('[aria-label="File content"]')!;
-		await vi.waitFor(() => expect(text.value).toBe("Original text"));
-		text.value = "One edit";
-		text.dispatchEvent(new Event("input"));
+		await open(view.el, "notes.txt");
+		type(await edit(view.el), "One edit");
 		f.fetch.mockRejectedValueOnce(new Error("Response lost"));
-		button(view.el, "Save to company").click();
+		button(view.el, "Save").click();
 		await vi.waitFor(() => expect(view.el.textContent).toContain("operation could not be confirmed"));
-		expect(text.disabled).toBe(true);
-		expect(view.leaveMessage()).toContain("unconfirmed");
-		button(view.el, "Retry this exact save").click();
-		await vi.waitFor(() => expect(view.el.textContent).toContain("Saved to the live company"));
+		expect(view.el.querySelector<HTMLTextAreaElement>(".files-editor")?.disabled).toBe(true);
+		expect(view.leaveMessage()).toContain("may not have been saved");
+		row(view.el, "notes.txt").click();
+		await vi.waitFor(() => expect(view.el.textContent).toContain("Retry it before starting another"));
+		button(view.el, "Retry save").click();
+		await vi.waitFor(() => expect(view.el.textContent).toContain("Saved notes.txt."));
 		const writes = f.fetch.mock.calls.filter(([url]) => String(url).endsWith("/edits"));
 		expect(writes).toHaveLength(2);
 		expect(writes[0]![1]!.body).toBe(writes[1]![1]!.body);
 	});
-	it("uploads only the selected bytes to the explicitly checked destination", async () => {
+	it("uploads chosen bytes into the open folder and asks before replacing a file", async () => {
 		const f = await setup(),
 			view = await mount(f);
 		const chooser = view.el.querySelector<HTMLInputElement>('input[type="file"]')!;
 		Object.defineProperty(chooser, "files", {
+			configurable: true,
 			value: [new File(["Selected bytes"], "notes.txt", { type: "text/plain" })],
 		});
 		chooser.dispatchEvent(new Event("change"));
-		await vi.waitFor(() => expect(view.el.textContent).toContain("Check the destination before uploading"));
-		expect(button(view.el, "Upload to company").disabled).toBe(true);
-		button(view.el, "Check destination").click();
-		await vi.waitFor(() => expect(button(view.el, "Upload to company").disabled).toBe(false));
-		expect(view.el.textContent).toContain("Replace notes.txt at the checked version");
-		button(view.el, "Upload to company").click();
-		await vi.waitFor(() => expect(view.el.textContent).toContain("Upload submitted to the live company"));
+		(await dialogButton("Replace")).click();
+		await vi.waitFor(() => expect(view.el.textContent).toContain("Uploaded notes.txt."));
 		const writes = f.fetch.mock.calls.filter(([url]) => String(url).endsWith("/uploads"));
 		expect(writes).toHaveLength(1);
 		expect(new TextDecoder().decode(writes[0]![1]!.body as Uint8Array)).toBe("Selected bytes");
 		expect(view.leaveMessage()).toBeNull();
-		button(view.el, "notes.txt").click();
-		await vi.waitFor(() => expect(view.el.querySelector("textarea")?.value).toBe("Selected bytes"));
+		await open(view.el, "notes.txt");
+		expect(view.el.querySelector(".files-text")?.textContent).toBe("Selected bytes");
+	});
+	it("uploads dropped files as new files without asking", async () => {
+		const f = await setup(),
+			view = await mount(f);
+		const drop = (type: string, files: File[] = []) => {
+			const event = new Event(type, { bubbles: true, cancelable: true });
+			Object.defineProperty(event, "dataTransfer", { value: { types: ["Files"], files, dropEffect: "none" } });
+			view.el.dispatchEvent(event);
+		};
+		drop("dragenter");
+		expect(view.el.classList.contains("is-dropping")).toBe(true);
+		expect(view.el.querySelector(".files-drop")?.textContent).toContain("Drop to upload to Company");
+		drop("drop", [new File(["Plan"], "plan.md", { type: "text/markdown" })]);
+		expect(view.el.classList.contains("is-dropping")).toBe(false);
+		await vi.waitFor(() => expect(view.el.textContent).toContain("Uploaded plan.md."));
+		expect(document.querySelector(".modal")).toBeNull();
+		expect(f.files.get("plan.md")?.text).toBe("Plan");
+		await open(view.el, "plan.md");
+		expect(view.el.querySelector(".files-doc")?.textContent).toContain("Plan");
+	});
+	it("creates a folder, walks into it and back out by the breadcrumb", async () => {
+		const f = await setup(),
+			view = await mount(f);
+		button(view.el, "New").click();
+		menuItem("New folder").click();
+		await vi.waitFor(() => expect(document.querySelector(".name-dialog-input")).not.toBeNull());
+		type(document.querySelector<HTMLInputElement>(".name-dialog-input")!, "reports");
+		document.querySelector("form.name-dialog")!.dispatchEvent(new Event("submit", { cancelable: true }));
+		await vi.waitFor(() => expect(view.el.textContent).toContain("Created reports."));
+		const writes = f.fetch.mock.calls.filter(([url]) => String(url).endsWith("/edits"));
+		expect(JSON.parse(writes[0]![1]!.body as string)).toMatchObject({
+			operation: "mkdir",
+			path: "reports",
+			expectedVersion: null,
+		});
+		const names = [...view.el.querySelectorAll(".files-name")].map((node) => node.textContent);
+		expect(names).toEqual(["reports", "notes.txt"]);
+		row(view.el, "reports").click();
+		await vi.waitFor(() => expect(view.el.querySelector(".files-crumb.is-current")?.textContent).toBe("reports"));
+		expect(view.el.textContent).toContain("This folder is empty.");
+		button(view.el, "Company").click();
+		await vi.waitFor(() => expect(row(view.el, "notes.txt")).toBeDefined());
+	});
+	it("writes a new text file against no earlier version", async () => {
+		const f = await setup(),
+			view = await mount(f);
+		button(view.el, "New").click();
+		menuItem("New text file").click();
+		await vi.waitFor(() => expect(document.querySelector(".name-dialog-input")).not.toBeNull());
+		type(document.querySelector<HTMLInputElement>(".name-dialog-input")!, "plan");
+		document.querySelector("form.name-dialog")!.dispatchEvent(new Event("submit", { cancelable: true }));
+		await vi.waitFor(() => expect(view.el.querySelector(".files-preview h2")?.textContent).toBe("plan.md"));
+		type(view.el.querySelector<HTMLTextAreaElement>(".files-editor")!, "# Plan");
+		button(view.el, "Save").click();
+		await vi.waitFor(() => expect(view.el.textContent).toContain("Saved plan.md."));
+		expect(f.files.get("plan.md")?.text).toBe("# Plan");
+		const writes = f.fetch.mock.calls.filter(([url]) => String(url).endsWith("/edits"));
+		expect(JSON.parse(writes[0]![1]!.body as string)).toMatchObject({ path: "plan.md", expectedVersion: null });
+		expect(row(view.el, "plan.md")).toBeDefined();
+	});
+	it("refuses a new name that is already taken without writing", async () => {
+		const f = await setup(),
+			view = await mount(f);
+		button(view.el, "New").click();
+		menuItem("New text file").click();
+		await vi.waitFor(() => expect(document.querySelector(".name-dialog-input")).not.toBeNull());
+		type(document.querySelector<HTMLInputElement>(".name-dialog-input")!, "notes.txt");
+		document.querySelector("form.name-dialog")!.dispatchEvent(new Event("submit", { cancelable: true }));
+		await vi.waitFor(() => expect(view.el.textContent).toContain("notes.txt already exists in this folder."));
+		expect(f.fetch.mock.calls.filter(([url]) => String(url).endsWith("/edits"))).toHaveLength(0);
+	});
+	it("deletes a file at its listed version only after the member confirms", async () => {
+		const f = await setup(),
+			view = await mount(f);
+		row(view.el, "notes.txt").dispatchEvent(
+			new MouseEvent("contextmenu", { bubbles: true, clientX: 40, clientY: 40 }),
+		);
+		menuItem("Delete").click();
+		(await dialogButton("Cancel")).click();
+		await settle();
+		expect(f.fetch.mock.calls.filter(([url]) => String(url).endsWith("/edits"))).toHaveLength(0);
+		row(view.el, "notes.txt").dispatchEvent(
+			new MouseEvent("contextmenu", { bubbles: true, clientX: 40, clientY: 40 }),
+		);
+		menuItem("Delete").click();
+		(await dialogButton("Delete")).click();
+		await vi.waitFor(() => expect(view.el.textContent).toContain("Deleted notes.txt."));
+		const writes = f.fetch.mock.calls.filter(([url]) => String(url).endsWith("/edits"));
+		expect(JSON.parse(writes[0]![1]!.body as string)).toMatchObject({
+			operation: "delete",
+			path: "notes.txt",
+			expectedVersion: id(40),
+		});
+		expect(view.el.textContent).toContain("This folder is empty.");
+	});
+	it("filters the open folder by name", async () => {
+		const f = await setup();
+		f.files.set("plan.md", { text: "Plan", version: id(50) });
+		const view = await mount(f);
+		const search = view.el.querySelector<HTMLInputElement>(".files-search-input")!;
+		type(search, "PLA");
+		expect([...view.el.querySelectorAll(".files-name")].map((node) => node.textContent)).toEqual(["plan.md"]);
+		type(search, "zzz");
+		expect(view.el.textContent).toContain("Nothing in this folder matches “zzz”.");
+		search.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+		expect(view.el.querySelectorAll(".files-row")).toHaveLength(2);
 	});
 	it("hands verified live bytes to a browser download and releases its object URL on close", async () => {
 		const f = await setup(),
@@ -371,35 +525,38 @@ describe("product governed File boundary", () => {
 		vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function (this: HTMLAnchorElement) {
 			clicks.push({ href: this.href, filename: this.download });
 		});
-		button(view.el, "Download…").click();
-		await vi.waitFor(() => expect(view.el.textContent).toContain("Download handed to your browser"));
+		button(view.el, "Download notes.txt").click();
+		await vi.waitFor(() => expect(view.el.textContent).toContain("Downloading notes.txt."));
 		expect(clicks).toEqual([{ href: "blob:fixture-download", filename: "notes.txt" }]);
 		expect(create).toHaveBeenCalledWith(expect.objectContaining({ size: 13 }));
 		view.dispose();
 		expect(revoke).toHaveBeenCalledWith("blob:fixture-download");
 	});
-	it("reviews the exact agent proposal and submits its digest only after explicit confirmation", async () => {
+	it("lists files shared from the Company Computer beside the folder", async () => {
+		const f = await setup(),
+			view = await mount(f);
+		button(view.el, "Files shared from the Company Computer").click();
+		await vi.waitFor(() =>
+			expect(view.el.querySelector(".files-preview")?.textContent).toContain(
+				"Nothing has been shared from the Company Computer yet.",
+			),
+		);
+		expect(f.fetch.mock.calls.some(([url]) => String(url).endsWith("/qorpera_list_member_file_exports"))).toBe(true);
+		button(view.el, "Close Shared from the Company Computer").click();
+		expect(view.el.querySelector(".files-preview")?.hasAttribute("hidden")).toBe(true);
+	});
+	it("leaves agent proposals to their conversations", async () => {
 		const f = await setup(true),
 			view = await mount(f);
-		button(view.el, "Agent proposal · notes.txt").click();
-		await vi.waitFor(() => expect(view.el.textContent).toContain("Review exact change"));
-		const previews = [...view.el.querySelectorAll("textarea[readonly]")];
-		expect(previews.map((node) => (node as HTMLTextAreaElement).value)).toEqual([
-			"Original text",
-			"This path will be deleted.",
-		]);
-		const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
-		button(view.el, "Apply exact change…").click();
-		await settle();
-		expect(f.fetch.mock.calls.filter(([url]) => String(url).endsWith("/review"))).toHaveLength(0);
-		confirm.mockReturnValue(true);
-		button(view.el, "Apply exact change…").click();
-		await vi.waitFor(() => expect(view.el.textContent).toContain("Applied the exact approved change"));
-		const calls = f.fetch.mock.calls.filter(([url]) => String(url).endsWith("/review"));
-		expect(calls).toHaveLength(1);
-		expect(JSON.parse(calls[0]![1]!.body as string)).toEqual({ planSha256: "b".repeat(64), decision: "approve" });
+		await open(view.el, "notes.txt");
+		expect(
+			f.fetch.mock.calls.some(([url]) =>
+				/qorpera_list_company_path_proposals|qorpera_list_member_company_path_commands/.test(String(url)),
+			),
+		).toBe(false);
+		expect(view.el.textContent).not.toMatch(/proposal/i);
 	});
-	it("shows lossy activity for the selected file and clears it on company close", async () => {
+	it("shows the agents at work on their rows and in the folder, and clears them on company close", async () => {
 		const f = await setup();
 		let onChange: ((view: CompanyPathPresenceView) => void) | undefined;
 		vi.mocked(WebCompanyFiles.prototype.presence).mockImplementation((callback) => {
@@ -407,38 +564,53 @@ describe("product governed File boundary", () => {
 			throw new Error("Fixture callback only");
 		});
 		const view = await mount(f);
-		button(view.el, "notes.txt").click();
-		await vi.waitFor(() => expect(view.el.querySelector("textarea")?.value).toBe("Original text"));
+		const now = Date.now();
 		onChange!({
 			schema: "qorpera.company-path-presence-view/v1",
 			state: "partial",
-			observedAt: Date.now(),
-			paths: [{ path: "notes.txt", participants: [] }],
-		});
-		expect(view.el.textContent).toContain("No recent shared activity observed. Some activity could not be checked.");
+			observedAt: now,
+			paths: [
+				{
+					path: "",
+					participants: [
+						{ staffAgentId: staff.id, activity: "writing", overlap: "within_subtree", expiresAt: now + 30000 },
+					],
+				},
+				{
+					path: "notes.txt",
+					participants: [
+						{ staffAgentId: staff.id, activity: "writing", overlap: "same_object", expiresAt: now + 30000 },
+					],
+				},
+			],
+		} as CompanyPathPresenceView);
+		expect(view.el.querySelector(".files-here")?.textContent).toBe("Fixture agent is writing in this folder");
+		expect(row(view.el, "notes.txt").querySelector(".files-activity")?.textContent).toBe("Fixture agent is writing");
+		expect(row(view.el, "notes.txt").querySelector(".files-pulse")).not.toBeNull();
 		onChange!({
 			schema: "qorpera.company-path-presence-view/v1",
 			state: "unavailable",
 			observedAt: Date.now(),
 			paths: [],
 		});
-		expect(view.el.textContent).toContain("Recent agent activity · notes.txt: unavailable.");
+		expect(view.el.querySelector(".files-here")?.textContent).toBe("");
+		expect(row(view.el, "notes.txt").querySelector(".files-activity")?.textContent).toBe("");
 		f.stop.abort();
 		expect(view.el.textContent).toBe("");
 	});
 	it("honors a read-only capability even when the member role is owner", async () => {
-		const f = await setup();
-		const company = new WebCompanyFiles(f.cloud, profileA, userA.id, "owner", f.stop.signal, f.current, false);
-		const view = new LiveCompanyFileView(company, f.stop, profileA.profileId, "owner-read-only");
-		document.body.append(view.el);
-		disposers.push(() => view.dispose());
-		await vi.waitFor(() => expect(button(view.el, "notes.txt")).toBeDefined());
-		button(view.el, "notes.txt").click();
-		await vi.waitFor(() => expect(view.el.querySelector("textarea")?.value).toBe("Original text"));
-		expect(view.el.querySelector("textarea")?.disabled).toBe(true);
-		expect(button(view.el, "Save to company").disabled).toBe(true);
-		expect(button(view.el, "Delete…").disabled).toBe(true);
-		expect(view.el.querySelector<HTMLInputElement>('input[type="file"]')?.disabled).toBe(true);
+		const f = await setup(),
+			view = await mount(f, true);
+		await open(view.el, "notes.txt");
+		expect(() => button(view.el, "Edit")).toThrow();
+		expect(() => button(view.el, "Delete notes.txt")).toThrow();
+		expect(view.el.querySelector<HTMLButtonElement>(".files-new")?.hidden).toBe(true);
+		expect(view.el.querySelector(".files-drop-hint")).toBeNull();
+		row(view.el, "notes.txt").dispatchEvent(
+			new MouseEvent("contextmenu", { bubbles: true, clientX: 40, clientY: 40 }),
+		);
+		expect(() => menuItem("Delete")).toThrow();
+		expect(menuItem("Download")).toBeDefined();
 	});
 	it.each(["legacy", "foreign"])("refuses %s File mode before listing or fetching objects", async (mode) => {
 		const f = await setup();
@@ -475,8 +647,7 @@ describe("product governed File boundary", () => {
 	it("clears displayed content synchronously when its company lifetime ends", async () => {
 		const f = await setup(),
 			view = await mount(f);
-		button(view.el, "notes.txt").click();
-		await vi.waitFor(() => expect(view.el.querySelector("textarea")?.value).toBe("Original text"));
+		await open(view.el, "notes.txt");
 		f.stop.abort();
 		expect(view.el.textContent).toBe("");
 		expect(document.body.contains(view.el)).toBe(false);
