@@ -220,7 +220,7 @@ All clean units of a boundary land in one commit with one sequence number
 
 ### The outcome of each unit
 
-- **Clean.** It is committed in that revision.
+- **Clean.** It is committed in that change set's commit.
 - **Conflict.** A base version moved, so the unit is not written; nobody's
   work is overwritten (no last-writer-wins). The run's version is kept as an
   immutable object on the run's receipt. It is shown read-only in the box
@@ -671,12 +671,14 @@ The storage core behind this section is designed in
 3. **Binary.** Byte-range reads of any content. Streamed chunk writes with no
    8 MiB export detour. The executable flag and media type are kept.
 4. **Feed.** An authorized, cursor-based feed of file changes and authority
-   changes per mount, woken by the existing Realtime head signal.
+   changes per mount, woken by the company clock's Realtime hint
+   ([the core](RUNTIME-COMPANY-FOLDER-CORE.md) §5).
 5. **Read sets by covering resource** (section 3), with the recheck and wake
    inheritance moved to that form.
 6. **Cost per change.** A change stops re-staging and re-verifying the whole
-   tree: per-folder tree manifests make its cost follow its depth. After that
-   the 8 MiB manifest cap and the 50,000-entry cap are lifted; the contract
+   tree: each path has its own version, so a commit's cost follows only its
+   own units ([the core](RUNTIME-COMPANY-FOLDER-CORE.md) §2). The 8 MiB
+   manifest cap and the 50,000-entry cap go with the manifest; the contract
    already calls such caps defects.
 7. **Deletes and restore.**
    - An ordinary delete or move is a normal unit after the automatic review.
@@ -725,8 +727,12 @@ Everything runs on the release train, and every PR gets an independent review.
 Reading comes first, so agents can search the whole company early. Writing
 keeps using today's tools until step 5.
 
-Amended 2026-09-27 (contract, company folder layout amendment): per-folder
-trees move from step 8 into step 4. One head per company would make writes
+Amended 2026-09-27 (contract, company folder layout amendment): the storage
+core's version per file (formerly "per-folder trees") moves from step 8 into
+step 4, and is designed in
+[RUNTIME-COMPANY-FOLDER-CORE.md](RUNTIME-COMPANY-FOLDER-CORE.md). Its rollout
+behind a per-company flag, the proof company and the reset are in that
+document's §10. One head per company would make writes
 through the mount conflict constantly, so the storage core changes before any
 machine writes through the folder. Removing the company-wide lock for reads
 moves into step 1, because steps 1–3 ship whole-company reads. The

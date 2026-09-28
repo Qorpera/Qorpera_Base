@@ -95,8 +95,8 @@ second permanent authority. Admission must:
 2. inventory its paths without trusting archive names, and without allowing
    traversal, links, device files or platform path collisions;
 3. classify durable content without silently discarding unknown items;
-4. upload the content through the authenticated object gateway and register
-   server-verified reachability and retention roots;
+4. upload the content through the authenticated object gateway under upload
+   intents, and hold it with a retention hold until it is published;
 5. publish the admitted content into the folder; and
 6. prove an independent restore before the source archive can be retired.
 

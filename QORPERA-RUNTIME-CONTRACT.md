@@ -308,9 +308,10 @@ without replaying old conversations.
 
 Ordinary authorized mutations become live immediately after one durable cloud
 transaction succeeds. The product does not require members or agents to check
-out, commit, merge, or publish normal company work. Immutable objects,
-compare-and-swap heads, revisions, and snapshots MAY implement the operation
-log and recovery layer internally. Code repositories and coding workers are the
+out, commit, merge, or publish normal company work. Immutable objects, path
+versions, commits and a journal implement the operation log and recovery
+layer internally; since 2026-09-28 there is no single head per company
+(`deploy/first-node/RUNTIME-COMPANY-FOLDER-CORE.md`). Code repositories and coding workers are the
 explicit branch-and-PR exception. General Company File merge and commit UX is a
 backlog feature, not a launch dependency.
 
@@ -409,7 +410,8 @@ The database holds only what is not company state:
 - runtime state: runs, queues, wakes, leases, locks, presence, receipts, read
   sets, schedule positions and message delivery;
 - conversations and their settings, such as a thread's model;
-- the folder's versions, heads, authority and path grants; and
+- the folder's path versions, commits and journal, authority and path grants;
+  and
 - indexes of the folder.
 
 An index is rebuilt from the files. It never decides anything the files do not
@@ -1514,7 +1516,7 @@ One fact per line: `- (YYYY-MM-DD) <fact>`; a note is
 `- (YYYY-MM-DD) [note] <fact>`. Facts are single self-contained sentences.
 Notebook files are ordinary versioned Company File objects: every write and
 forget goes through the mutation gateway with the exact expected version
-(5.2), history stays in the revision ledger, and no separate memory store or
+(5.2), history stays in the path versions, and no separate memory store or
 ledger exists.
 
 Tools: `update_memory` with `action` `write` (`fact`, optional `tier`) or
@@ -2800,7 +2802,8 @@ section 12.2 and the 2026-09-16 storage rule. Design:
      published as one change set when the command ends or the file is saved.
    - The set is made of units: a file change, a move, or a new folder with
      its contents. Each unit is an atomic path set (5.1) that applies whole
-     or not at all. All clean units land in one revision.
+     or not at all. All clean units land in one commit with one sequence
+     number (2026-09-28: there is no head).
    - Nothing bypasses the mutation gateway, and silent last-writer-wins stays
      forbidden.
    - The result reports each changed path: saved, waiting for approval,
