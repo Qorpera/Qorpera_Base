@@ -262,10 +262,11 @@ export class SkillMentions {
 				(skills) => {
 					// Written messages are marked again only when the names changed, not for every read.
 					const before = this.names();
+					const after = new Set(skills.map((skill) => skill.name));
 					const changed =
 						this.#skills === undefined ||
-						skills.length !== before.size ||
-						skills.some((skill) => !before.has(skill.name));
+						after.size !== before.size ||
+						[...after].some((name) => !before.has(name));
 					this.#skills = skills;
 					this.#loadedAt = Date.now();
 					if (changed && !this.#signal.aborted) this.#listed();
