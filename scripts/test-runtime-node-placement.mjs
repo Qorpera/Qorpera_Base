@@ -228,12 +228,60 @@ try {
 		assert(def.includes("r.last_refusal is distinct from 'NODE_NOT_PREFERRED'"), `${fn} does not pin a request to a node that refused it`);
 	}
 	// Job dispatch is competitive and keeps its least-loaded preference among homes, and its refusal of a node that is no home.
+	// Observations count for 60 seconds; a slow host would otherwise see both nodes go stale here.
+	sql(`${service} ${observe(nodeA, mA)} ${observe(nodeB, mB)}`);
 	const jobLoaded = decide("native", "lxd", identity);
 	assert.equal(jobLoaded.decision, "refused"); assert.equal(jobLoaded.reason, "NODE_NOT_PREFERRED"); assert.equal(jobLoaded.preferredNodeId, nodeB);
 	const jobLeast = decide("native", "native-b", identity);
 	assert.equal(jobLeast.decision, "placed"); assert.equal(jobLeast.reason, "IDENTITY_HOME_LEAST_LOADED");
 	const jobAway = decide("native", "native-a", identity);
 	assert.equal(jobAway.decision, "refused"); assert.equal(jobAway.reason, "NODE_IDENTITY_ELSEWHERE");
+	// Stateless Compute step 1, change 3: an identity whose login is in the vault has no home. While
+	// any capsule still needs a node's key it keeps the home rule; once only vault logins are
+	// active, placement is least loaded and any orchestrator may claim its runs.
+	const inVault = () => sql(`${service} select public.qorpera_compute_identity_login_in_vault('${identity}');`);
+	assert.equal(inVault(), "f");
+	assert(!("loginCustody" in JSON.parse(sql(`${service} select public.qorpera_identity_recovery_runtime_state('${identity}');`))), "the runtime state keeps its shape");
+	sql(`insert into public.qorpera_cloud_secret_broker_authorities(id,profile_id,service_origin,key_id,capability_sha256)
+	 select '38000000-0000-4000-8000-000000000301','30000000-0000-4000-8000-000000000010','https://secrets.example','kek-1',repeat('c',64)
+	 where not exists (select 1 from public.qorpera_cloud_secret_broker_authorities where profile_id='30000000-0000-4000-8000-000000000010');
+	 insert into public.qorpera_native_credential_capsules(id,profile_id,compute_identity_id,ownership_kind,owner_user_id,owner_scope_key,provider,native_harness,encrypted_capsule_reference,attestation_policy_sha256,created_by_user_id)
+	 select '38000000-0000-4000-8000-000000000302',profile_id,compute_identity_id,ownership_kind,owner_user_id,owner_scope_key,'openai','codex-cli','model-login/38000000-0000-4000-8000-000000000303',attestation_policy_sha256,created_by_user_id
+	 from public.qorpera_native_credential_capsules where compute_identity_id='${identity}' and status='active' order by created_at limit 1;
+	 insert into public.qorpera_model_logins(id,profile_id,compute_identity_id,credential_capsule_id,broker_authority_id,provider,native_harness,current_version,access_issued_at,access_expires_at)
+	 select '38000000-0000-4000-8000-000000000303','30000000-0000-4000-8000-000000000010','${identity}','38000000-0000-4000-8000-000000000302',
+	  (select id from public.qorpera_cloud_secret_broker_authorities where profile_id='30000000-0000-4000-8000-000000000010'),'openai','codex-cli',1,clock_timestamp(),clock_timestamp()+interval '10 days';`);
+	assert.equal(inVault(), "f", "a node capsule still active keeps the identity on its home");
+	// A queued job of the identity, created while its node login still backs the sponsor (run creation checks it).
+	const vaultJob = randomUUID(), vaultRun = randomUUID();
+	sql(`insert into public.qorpera_runner_jobs(id,profile_id,environment_id,session_id,substrate_version_id,client_job_id,required_capability,job_type,payload,created_by_user_id)
+	 select '${vaultJob}',profile_id,environment_id,session_id,substrate_version_id,'${vaultRun}','agent_turn','agent_turn','{}',requested_by_user_id from public.qorpera_execution_runs where id='${baseRun}';
+	 insert into public.qorpera_execution_runs(id,profile_id,environment_id,source_kind,source_id,session_id,job_id,substrate_version_id,company_snapshot_id,staff_agent_id,staff_version,input_ids,sponsor_binding_id,sponsor_version,required_capability,job_type,payload_sha256,compute_identity_id,compute_recovery_epoch,logical_computer_id,transcript_start_sequence,created_by_user_id,deadline_at)
+	 select '${vaultRun}',profile_id,environment_id,'session_turn','${vaultRun}',session_id,'${vaultJob}',substrate_version_id,company_snapshot_id,staff_agent_id,staff_version,input_ids,sponsor_binding_id,sponsor_version,'agent_turn','agent_turn',repeat('e',64),compute_identity_id,compute_recovery_epoch,logical_computer_id,0,requested_by_user_id,statement_timestamp()+interval '10 minutes' from public.qorpera_execution_runs where id='${baseRun}';
+	 update public.qorpera_runner_jobs set run_id='${vaultRun}', created_at=created_at-interval '1 day' where id='${vaultJob}';
+	 update public.qorpera_runner_jobs set status='cancelled', cancelled_at=clock_timestamp(), cancelled_by_user_id=created_by_user_id where id='${jobId}' and status='queued';
+	 select public.qorpera_reserve_execution_sponsor_authority('${vaultRun}');`);
+	if (sql(`select count(*) from public.qorpera_runner_model_policies where job_id='${vaultJob}';`) === "0") sql(`insert into public.qorpera_runner_model_policies select * from jsonb_populate_record(null::public.qorpera_runner_model_policies,(select to_jsonb(p)||jsonb_build_object('job_id','${vaultJob}') from public.qorpera_runner_model_policies p join public.qorpera_execution_runs r on r.job_id=p.job_id where r.id='${baseRun}' limit 1));`);
+	const vaultCapsules = "encrypted_capsule_reference not like 'model-login/%'";
+	sql(`update public.qorpera_native_credential_capsules set status='disabled' where compute_identity_id='${identity}' and status='active' and ${vaultCapsules};`);
+	assert.equal(inVault(), "t");
+	sql(`${service} ${observe(nodeA, mA)} ${observe(nodeB, mB)}`);
+	const vaultLoaded = decide("native", "lxd", identity);
+	const vaultLeast = decide("native", "native-b", identity);
+	assert.equal(vaultLeast.decision, "placed", JSON.stringify(vaultLeast)); assert.equal(vaultLeast.reason, "LEAST_LOADED");
+	assert.equal(vaultLoaded.decision, "refused"); assert.equal(vaultLoaded.reason, "NODE_NOT_PREFERRED");
+	const vaultAway = decide("native", "native-a", identity);
+	assert.notEqual(vaultAway.reason, "NODE_IDENTITY_ELSEWHERE");
+	// Claim: the orchestrator on an adapter that was never a home now sees that job.
+	const vaultClaim = sql(`${service} select public.qorpera_claim_runner_job_for_orchestrator('6a000000-0000-4000-8000-000000000002','${randomUUID()}',60);`);
+	assert(vaultClaim !== "null" && vaultClaim.includes(vaultJob), `an orchestrator away from every home claims a vault identity's job: ${vaultClaim}`);
+	// Back to the node login for the rest of this proof.
+	sql(`${service} select public.qorpera_release_runner_job_claim('6a000000-0000-4000-8000-000000000002','${JSON.parse(vaultClaim).claim_id}','${randomUUID()}','ADMISSION_REFUSED:NODE_NOT_PREFERRED');`);
+	sql(`update public.qorpera_runner_jobs set status='cancelled', cancelled_at=clock_timestamp(), cancelled_by_user_id=created_by_user_id where id='${vaultJob}';
+	 update public.qorpera_model_logins set status='revoked' where id='38000000-0000-4000-8000-000000000303';
+	 update public.qorpera_native_credential_capsules set status='active' where compute_identity_id='${identity}' and status='disabled' and ${vaultCapsules};`);
+	assert.equal(inVault(), "f");
+	assert.equal(decide("native", "native-a", identity).reason, "NODE_IDENTITY_ELSEWHERE");
 	// A home that is not eligible is refused as before while another home is routable, and named as not preferred.
 	sql(`update public.qorpera_runtime_node_observations set observed_at=clock_timestamp()-interval '5 minutes' where node_id='${nodeA}';`);
 	const staleHome = decide("login", "login-a", identity);
@@ -269,7 +317,7 @@ try {
 	// Non-service callers are refused.
 	const denied = spawnSync("docker", psql, { input: `set request.jwt.claims='{"role":"authenticated"}'; set role authenticated; select public.qorpera_runtime_node_placement_decide('${randomUUID()}','native','native-a');`, encoding: "utf8" });
 	assert.notEqual(denied.status, 0); assert.match(denied.stderr, /authority required|permission denied/);
-	console.log(JSON.stringify({ schema: "qorpera.runtime-node-placement-sql-proof/v1", migrations: migrations.length, twoNodePreference: true, identityHome: true, claimTimeHome: true, loginGateways: true, completedLoginsOnly: true, placementDeferral: true, inventoryReplace: true, refusalRecorded: true, routedReservationAdmitted: true, staleObservationExcluded: true, unboundAdapterUntouched: true, reservationsPatched: true, passed: true }));
+	console.log(JSON.stringify({ schema: "qorpera.runtime-node-placement-sql-proof/v1", migrations: migrations.length, twoNodePreference: true, identityHome: true, claimTimeHome: true, loginGateways: true, completedLoginsOnly: true, placementDeferral: true, inventoryReplace: true, refusalRecorded: true, routedReservationAdmitted: true, staleObservationExcluded: true, unboundAdapterUntouched: true, reservationsPatched: true, vaultLoginUnpinned: true, passed: true }));
 } finally {
 	if (started) spawnSync("docker", ["rm", "-f", container], { timeout: 30_000 });
 }

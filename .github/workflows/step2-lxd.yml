@@ -61,6 +61,7 @@ on:
       - 'scripts/jitless-service-bundle.mjs'
       - 'deploy/shared-execution/**'
       - 'deploy/node-tidy/**'
+      - 'deploy/node-parity/**'
       - 'deploy/node-agent/**'
       - 'packages/runner-orchestrator/src/**'
       - 'packages/contracts/src/**'
@@ -107,7 +108,7 @@ jobs:
         run: npm ci --ignore-scripts --no-audit --no-fund
 
       - name: Validate deployment shell
-        run: bash -n deploy/first-node/*.sh deploy/lxd-runner-guest/*.sh
+        run: for script in deploy/first-node/*.sh deploy/lxd-runner-guest/*.sh deploy/shared-execution/*.sh; do bash -n "$script"; done
 
       - name: Test LXD provider contracts
         working-directory: packages/runner-orchestrator
@@ -231,6 +232,9 @@ jobs:
 
       - name: Test node tidy-up
         run: node --test deploy/node-tidy/qorpera-node-tidy.test.mjs
+
+      - name: Test node parity check
+        run: node --test deploy/node-parity/qorpera-node-parity.test.mjs
 
       - name: Test node agent and launcher
         run: |

@@ -184,15 +184,46 @@ no database login and no service key; it sees a login only for one operation and
    cannot start Codex records `codex_launch_failed`, and a binary changed since start records
    `codex_changed` and restarts the helper.
 
-## Runs (change 3, migration `20260928161000`)
+## Runs (change 3, migration `20260928180600`)
 
-- The native host asks `/v1/model-logins` at run start instead of opening a capsule, writes the copy
-  as `codex/auth.json` in the run's private root, asks again every minute once the pass is past half
-  its life, and replaces the file atomically (temporary file and rename in the same directory) when a
-  newer version arrives. It never uploads. Warm roots keep the copy and re-ask at the next run.
-- The shared execution service and one-run guests skip the identity volume, master key and epoch
-  credential for vault logins.
-- Placement and claim skip the identity home rule for a run whose capsule is a vault pointer.
+- An identity's login is in the vault when it has an active vault login behind an active pointer
+  capsule `model-login/<login id>` and no other active capsule (one that still needs a node key):
+  `qorpera_compute_identity_login_in_vault(identity)`, service role only, stable, no locks.
+- Claim: `qorpera_claim_runner_job_for_orchestrator`'s identity-home predicate gains
+  `or qorpera_compute_identity_login_in_vault(run.compute_identity_id)` as its last arm (asked only
+  for a run whose home is elsewhere), so any orchestrator may claim such a run. Placement: the native identity-home branch of `qorpera_runtime_node_placement_decide`
+  is skipped for such an identity, so it falls through to the least-loaded choice. Both patches are
+  anchor-checked (exactly one match). The identity runtime state keeps its exact shape (older nodes
+  parse it with a fixed field list).
+- The native host: a run whose authority names a `model-login/` capsule asks `POST /v1/model-logins`
+  (binding = its lease, run, job, runner, assignment, capsule and identity) instead of opening a
+  capsule, refuses a copy that carries a renewal token, writes the copy as `codex/auth.json` in the
+  run's private root (staged beside the Codex home, which must hold `auth.json` alone, then renamed
+  into it), asks again every minute with the version it holds, and swaps the file whenever the vault
+  answers with a copy. It never uploads a login; the lease is still validated at the start, every
+  15 s and at the end. A warm root keeps its vault version and asks for the current one at the next
+  run. The account usage list accepts vault logins and the host skips them (the vault reads usage,
+  change 2B).
+- Host start-up (`cloud-native-provider-service-main.ts`): `QORPERA_NATIVE_LOGIN_CUSTODY=vault` means
+  no capsule key, no epoch file and no key backup. The key credential must be empty; the host starts
+  only when the identity is not fenced and the cloud confirms the vault custody, and needs the
+  company runtime and the broker address.
+- Node 2 (shared execution service): at acquire the service asks the vault custody check. For a
+  vault identity it attaches no identity volume and hands the run host empty key and epoch credential
+  files with `QORPERA_NATIVE_LOGIN_CUSTODY=vault`; a warm slot is reused only for the same custody.
+- Node 1 (one-run VMs): the custody is decided once per acquisition and sealed into the journal
+  (`lxd.loginCustody`) and the bootstrap digest. A vault guest has no `compute-identity` device (a
+  guest that gains one is refused as drifted) and no identity volume is created. The bootstrap
+  carries `company_runtime.login_custody = "vault"` and the host environment line; the guest's
+  start-up refuses a mounted identity volume or any identity material, checks the identity is not
+  fenced, and writes empty key and epoch credential sources for the unchanged host unit. The guest
+  bootstrap unit no longer has a mount condition on the identity path (it would skip the bootstrap
+  silently); the bootstrap requires the mount for a node login itself.
+- Deploy order: free. A database without the check answers 404, and the orchestrator, exec host and
+  LXD provider then keep the node path, as before.
+- Activation: move no login into the vault until every node's orchestrator, exec host and guest
+  image carry this change. Before that, `qorpera_compute_identity_login_in_vault` is false for every
+  identity and nothing changes.
 
 ## Failure cases
 
@@ -202,8 +233,8 @@ no database login and no service key; it sees a login only for one operation and
 | Helper dies before asking the provider | The lock expires after 5 minutes; the next caller renews. |
 | Helper dies after the provider answered, before the commit | The stored renewal token is used up; the next renewal is refused and the login asks for a new sign-in. Passes already handed out work until they end. |
 | Commit fails three times | Lock released as `renewal_unsaved`, permanent: the login asks for a new sign-in; this run keeps the new pass. |
-| One broker copy down | The other node's copy serves runs (the vault runs on both nodes from change 3). |
-| Provider refuses a renewal | `needs_sign_in`; new runs on the login stop. Today every refusal of the route is the same 403; change 3 lets the host tell "sign in again" from an outage. |
+| One broker copy down | The other node's copy serves runs (the vault must run on both nodes before any login moves). |
+| Provider refuses a renewal | `needs_sign_in`; the vault refuses new runs on the login (they fail at the credential download) until the member signs in again (change 2B). Runs already going keep their pass until it ends. |
 | Member signs out or leaves | The pointer capsule and lease checks refuse at once; running work is stopped by the existing checks. |
 
 ## Moving and retiring
