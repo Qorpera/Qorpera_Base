@@ -50,7 +50,12 @@ Founders (2026-09-28, migration 20260928248100): every member with the role
 - `qorpera_leave_hosted_profile`: anyone leaves, except the last member (who
   deletes instead), the last founder while others remain, and a founder while
   company setup runs for them (42501).
-- `qorpera_delete_hosted_profile`: only the last member.
+- `qorpera_delete_hosted_profile`: only the last member. Since 20260929150000 it
+  requests the deletion: the company disappears at once (no role for anyone, gone
+  from `qorpera_list_hosted_profiles` and the founding lobby, the member's access
+  state turns `revoked`) and all its work stops. Its rows are removed later, once
+  the servers hold nothing of it (deploy/first-node/RUNTIME-COMPANY-DELETE.md). A
+  second call answers 42501, like any call for a company the caller is not in.
 - Deleting an account (operators only; no client RPC; migration
   20260929180000) takes the person's memberships as a leave does, with the
   same refusals, and is also refused for the only member of a company that is
