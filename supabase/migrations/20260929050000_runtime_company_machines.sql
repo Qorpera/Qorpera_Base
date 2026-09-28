@@ -1266,7 +1266,7 @@ $$;
 create function public.qorpera_abandon_machine_executor(p_owner text, p_machine_id_sha256 text)
 returns integer language plpgsql security definer set search_path = '' as $$
 declare v_placement public.qorpera_company_machine_placements%rowtype; v_machine public.qorpera_company_machines%rowtype; v_count integer := 0;
-	v_released uuid[] := '{}';
+	v_released uuid[] := '{}'; v_profile uuid;
 begin
 	if auth.role() is distinct from 'service_role' then raise exception 'Machine operator authority required' using errcode = '42501'; end if;
 	if not exists (select 1 from public.qorpera_machine_executors where owner = p_owner and machine_id_sha256 = p_machine_id_sha256 and not enabled) then
@@ -1279,7 +1279,6 @@ begin
 		select * into strict v_machine from public.qorpera_company_machines where id = v_placement.machine_id for update;
 		select * into strict v_placement from public.qorpera_company_machine_placements where id = v_placement.id for update;
 		if v_placement.removed_at is not null then continue; end if;
-		perform public.qorpera_lock_profile_gc_fence(v_placement.profile_id);
 		v_released := v_released || v_placement.id;
 		if v_placement.retired_at is null then perform public.qorpera_end_company_machine_commands(v_machine, 'lost'); end if;
 		update public.qorpera_company_machine_placements set retired_at = coalesce(retired_at, clock_timestamp()),
@@ -1288,10 +1287,15 @@ begin
 		perform public.qorpera_close_company_machine(v_machine);
 		v_count := v_count + 1;
 	end loop;
-	-- The allocations last: every one locked in id order, then released in one statement, whose
-	-- release trigger locks each node after all of them. An allocation row always comes before its
-	-- node row (the inventory observation's order, 20260928242000); a loop would lock a node and
-	-- then the next allocation.
+	-- The allocations last. First each company's fence, in id order, after every machine row (as
+	-- custody takes them: machine, then fence); then every allocation locked in id order and released
+	-- in one statement, whose release trigger locks each node after all of them. An allocation row
+	-- always comes before its node row (the inventory observation's order, 20260928242000); a loop
+	-- would lock a node, or a fence, and then the next machine or allocation.
+	for v_profile in select distinct placement.profile_id from public.qorpera_company_machine_placements placement
+		where placement.id = any(v_released) order by 1 loop
+		perform public.qorpera_lock_profile_gc_fence(v_profile);
+	end loop;
 	perform 1 from public.qorpera_runtime_machine_allocations where id = any(v_released) order by id for update;
 	update public.qorpera_runtime_machine_allocations set released_at = clock_timestamp()
 	where id = any(v_released) and released_at is null;
