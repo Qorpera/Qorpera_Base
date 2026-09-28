@@ -115,21 +115,67 @@ begin
 	perform pg_temp.wake_assert(pg_temp.ask() = 0 and (select count(*) from pg_temp.asks(v_worker.id)) = 4, 'An archived session is not asked');
 end $$;
 
--- 4. A new turn withdraws a question no run has taken yet; stopping a question stops only that run.
+-- 4. The question's run archives the session as it was when asked.
+-- The question is taken by a run (materialized and leased as a runner would); returns the run's binding.
+create function pg_temp.take_question(p_ask uuid) returns jsonb language plpgsql as $$
+declare v_run uuid;
+begin
+	perform public.qorpera_materialize_wake_execution_runs(32);
+	select run_id into strict v_run from public.qorpera_wake_occurrences where id = p_ask and status = 'materialized';
+	return pg_temp.wake_start(v_run);
+end
+$$;
 do $$
-declare v_worker public.qorpera_runtime_workers := pg_temp.worker_row('fix-send'); v_ask public.qorpera_wake_occurrences;
+declare v_worker public.qorpera_runtime_workers := pg_temp.worker_row('fix-send'); v_ask public.qorpera_wake_occurrences; v_receipt jsonb;
+	v_binding jsonb;
 begin
 	update public.qorpera_coding_sessions set archived_at = null, archived_by = null, updated_at = clock_timestamp() - interval '30 hours'
 	where worker_id = v_worker.id;
-	perform pg_temp.wake_assert(pg_temp.ask() = 1, 'Asked again for a new quiet period');
+	perform pg_temp.wake_assert(pg_temp.ask() = 1, 'Asked for a new quiet period');
 	select * into strict v_ask from pg_temp.asks(v_worker.id) where status = 'queued';
-	-- The owner answers the session's question before the agent's run took the check-in.
+	v_binding := pg_temp.take_question(v_ask.id);
+	v_receipt := pg_temp.worker('{"action":"archive","operationKey":"quiet-archive-a","todoKey":"composer-latency","workerKey":"fix-send"}',
+		v_binding);
+	perform pg_temp.wake_assert(v_receipt #>> '{coding,archivedBy}' = 'agent', 'The question''s run archives the quiet session: '||v_receipt::text);
+	-- That run ends.
+	perform pg_temp.finish_job((v_binding ->> 'runId')::uuid, 'failed');
+	update public.qorpera_wake_occurrences set status = 'failed', finished_at = clock_timestamp() where id = v_ask.id;
+end $$;
+
+-- 5. A new turn withdraws a question no run has taken yet, and a question already taken archives nothing after it.
+do $$
+declare v_worker public.qorpera_runtime_workers := pg_temp.worker_row('fix-send'); v_ask public.qorpera_wake_occurrences; v_binding jsonb;
+begin
+	update public.qorpera_coding_sessions set archived_at = null, archived_by = null, updated_at = clock_timestamp() - interval '4 days'
+	where worker_id = v_worker.id;
+	perform pg_temp.wake_assert(pg_temp.ask() = 1, 'Asked again');
+	select * into strict v_ask from pg_temp.asks(v_worker.id) where status = 'queued';
+	-- The owner answers before any run took the question: it is withdrawn.
 	perform pg_temp.as_user('30000000-0000-4000-8000-000000000001');
 	perform public.qorpera_answer_coding_session(v_worker.id, 'Keep 250 ms.', '30000000-0000-4000-8000-000000000655');
 	perform pg_temp.path_claims('service_role');
 	perform pg_temp.wake_assert((select status from public.qorpera_wake_occurrences where id = v_ask.id) = 'cancelled'
-		and (pg_temp.worker_row('fix-send')).state = 'active',
-		'A new turn withdraws the question');
+		and (pg_temp.worker_row('fix-send')).state = 'active', 'A new turn withdraws the question');
+	-- That turn is stopped (as the drain stops a stopped parent's workers) and its report settles; the session is quiet
+	-- again, and this time a run takes the question first.
+	perform public.qorpera_cancel_worker(pg_temp.worker_row('fix-send'), null, 'parent_stopped');
+	perform public.qorpera_drain_worker_wakes(32);
+	update public.qorpera_wake_occurrences set status = 'cancelled', finished_at = clock_timestamp()
+	where id = (pg_temp.worker_row('fix-send')).completion_occurrence_id and status = 'queued';
+	update public.qorpera_coding_sessions set updated_at = clock_timestamp() - interval '4 days' where worker_id = v_worker.id;
+	perform pg_temp.wake_assert(pg_temp.ask() = 1, 'Asked after the stopped turn');
+	select * into strict v_ask from pg_temp.asks(v_worker.id) where status = 'queued';
+	v_binding := pg_temp.take_question(v_ask.id);
+	perform pg_temp.as_user('30000000-0000-4000-8000-000000000001');
+	perform public.qorpera_answer_coding_session(v_worker.id, 'Raise it to 500 ms.', '30000000-0000-4000-8000-000000000656');
+	perform pg_temp.path_claims('service_role');
+	begin
+		perform pg_temp.worker('{"action":"archive","operationKey":"quiet-archive-b","todoKey":"composer-latency","workerKey":"fix-send"}', v_binding);
+		raise exception 'A question taken before the new turn archived the session';
+	exception when object_not_in_prerequisite_state then null;
+	end;
+	perform pg_temp.wake_assert((pg_temp.worker_row('fix-send')).state = 'active' and (pg_temp.session_row('fix-send')).archived_at is null,
+		'The new turn goes on');
 	-- A person who stops a question run stops only that run: the parent's reports and workers are held back only by a
 	-- stopped report run (the function the drain and the ask consult).
 	perform pg_temp.wake_assert(pg_get_functiondef('public.qorpera_worker_revival_stopped(uuid)'::regprocedure)
@@ -137,7 +183,7 @@ begin
 		'A stopped question is no stopped revival');
 end $$;
 
--- 5. Only the executor asks.
+-- 6. Only the executor asks.
 select pg_temp.wake_assert(not has_function_privilege('authenticated','public.qorpera_ask_quiet_coding_sessions(text)','EXECUTE')
 	and has_function_privilege('service_role','public.qorpera_ask_quiet_coding_sessions(text)','EXECUTE')
 	and not has_function_privilege('authenticated','public.qorpera_coding_quiet_mark(timestamptz)','EXECUTE'),

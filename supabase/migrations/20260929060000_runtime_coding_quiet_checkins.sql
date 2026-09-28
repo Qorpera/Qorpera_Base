@@ -27,6 +27,12 @@ alter table public.qorpera_coding_sessions
 	add column quiet_asked_for timestamptz,
 	add constraint qorpera_coding_sessions_quiet_asked_check check (num_nulls(quiet_asked_days, quiet_asked_for) in (0,2));
 
+-- Sessions already quiet when this ships are asked from their next mark on, not all at once.
+update public.qorpera_coding_sessions set quiet_asked_for = greatest(updated_at, coalesce(busy_at, updated_at)),
+	quiet_asked_days = case when greatest(updated_at, coalesce(busy_at, updated_at)) <= clock_timestamp() - interval '7 days' then 7
+		when greatest(updated_at, coalesce(busy_at, updated_at)) <= clock_timestamp() - interval '3 days' then 3 else 1 end
+where archived_at is null and greatest(updated_at, coalesce(busy_at, updated_at)) <= clock_timestamp() - interval '1 day';
+
 create function pg_temp.checkin_patch(p_target regprocedure, p_old text, p_new text)
 returns void language plpgsql as $$
 declare v_definition text := pg_get_functiondef(p_target);
@@ -72,7 +78,7 @@ begin
 				or session.quiet_asked_days < public.qorpera_coding_quiet_mark(session.quiet_asked_for))
 			-- What would only be held back is left out here, so it never crowds out the sessions that can be asked:
 			-- a paused company, a parent still running, a revival of the parent on its way.
-			and not public.qorpera_company_execution_paused(worker.profile_id)
+			and not exists (select 1 from public.qorpera_company_execution_pauses pause where pause.profile_id = worker.profile_id)
 			and exists (select 1 from public.qorpera_execution_runs parent join public.qorpera_runner_jobs job on job.id = parent.job_id
 				where parent.id = worker.steering_run_id and job.status not in ('queued','leased'))
 			and not exists (select 1 from public.qorpera_wake_occurrences pending
@@ -104,6 +110,15 @@ begin
 				update public.qorpera_coding_sessions set quiet_asked_days = v_mark, quiet_asked_for = v_since where worker_id = v_worker.id;
 				continue;
 			end if;
+			-- A person who stopped a question of this quiet period is not asked again in it.
+			if exists (select 1 from public.qorpera_wake_occurrences asked
+				join public.qorpera_execution_runs asked_run on asked_run.id = asked.run_id
+				join public.qorpera_runner_jobs asked_job on asked_job.id = asked_run.job_id
+				where asked.parent_run_id = v_worker.steering_run_id and asked_job.status = 'cancelled'
+					and asked.occurrence_key like 'coding-quiet:' || v_worker.id::text || ':' || (extract(epoch from v_since) * 1000)::bigint::text || ':%') then
+				update public.qorpera_coding_sessions set quiet_asked_days = 7, quiet_asked_for = v_since where worker_id = v_worker.id;
+				continue;
+			end if;
 			-- One revival of a parent at a time, as the report drain.
 			perform public.qorpera_serialize_wake_admission(v_worker.profile_id);
 			if exists (select 1 from public.qorpera_wake_occurrences pending
@@ -123,7 +138,8 @@ begin
 				'(todoKey and workerKey as below): its programs stop, its files are kept, and a later followup reopens it. '
 				'If it is still needed, or its state is active again, leave it: do not decide, follow up or post anything, and end this turn. '
 				'Left alone, it is archived automatically after %s quiet days.',
-				to_json(left(v_worker.title, 160))::text, v_session.repository ->> 'owner', v_session.repository ->> 'name', left(v_session.branch, 120),
+				to_json(left(regexp_replace(v_worker.title, '[[:cntrl:]]+', ' ', 'g'), 160))::text,
+				v_session.repository ->> 'owner', v_session.repository ->> 'name', left(regexp_replace(v_session.branch, '[[:cntrl:]]+', ' ', 'g'), 120),
 				v_mark, case when v_mark = 1 then 'day' else 'days' end,
 				case when v_session.attachment_until > clock_timestamp() and jsonb_array_length(v_session.running_commands) > 0
 					then format(', with %s command%s still running on its machine', jsonb_array_length(v_session.running_commands),
@@ -197,7 +213,19 @@ select pg_temp.checkin_patch('public.qorpera_open_coding_turn(public.qorpera_run
 	$new$		perform public.qorpera_coding_event(p_worker.id, p_worker.sequence, 'step', 'kernel', jsonb_build_object('text', 'Reopened', 'reopened', true));
 	end if;
 	update public.qorpera_wake_occurrences set status = 'cancelled', finished_at = clock_timestamp()
-	where parent_run_id = p_worker.steering_run_id and status = 'queued' and occurrence_key like 'coding-quiet:' || p_worker.id::text || ':%';$new$);
+	where status = 'queued' and source_kind = 'worker-completion' and source_id = p_worker.id and occurrence_key like 'coding-quiet:%';$new$);
+
+-- A question's run archives the session only as it was when asked: never after a
+-- new turn started (the owner answered, or someone followed up meanwhile).
+select pg_temp.checkin_patch('public.qorpera_manage_agent_worker(jsonb,jsonb)',
+	$old$		if v_worker.species <> 'coding' then raise exception 'Only a coding session can be archived' using errcode = '22023'; end if;
+		perform public.qorpera_archive_coding_worker(v_worker, 'agent', v_run.id, null);$old$,
+	$new$		if v_worker.species <> 'coding' then raise exception 'Only a coding session can be archived' using errcode = '22023'; end if;
+		if exists (select 1 from public.qorpera_wake_occurrences asked where asked.run_id = v_run.id
+			and asked.occurrence_key like 'coding-quiet:%' and asked.source_id = v_worker.id
+			and (v_worker.state = 'active' or v_worker.sequence is distinct from (asked.payload #>> '{completions,0,sequence}')::integer)) then
+			raise exception 'The session has a new turn since you were asked; leave it' using errcode = '55000'; end if;
+		perform public.qorpera_archive_coding_worker(v_worker, 'agent', v_run.id, null);$new$);
 
 -- ---------------------------------------------------------------------------
 -- 3. Grants
