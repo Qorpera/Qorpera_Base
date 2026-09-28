@@ -408,8 +408,8 @@ profile RPCs; RLS is the second read boundary.
   (`YYYY-MM`, the calendar month in `timeZone` `Europe/Copenhagen`; default
   the current one), `usedStandardSeconds` (whole standard seconds; one
   computer hour = 3600), `byKind` (`companyMachines`, `agentMachines`,
-  `codingMachines`, `runs`, standard seconds rounded per kind, so they may
-  differ from the total by a second or two), `awakeNow` (the same kinds,
+  `codingMachines`, `runs`, standard seconds rounded per kind, so their sum
+  may differ from the total by a few seconds), `awakeNow` (the same kinds,
   counted now) and `meteredUntil` (the meter counts up to about a minute
   ago). Any member of the company, viewers included; anyone else gets 42501.
   A client shows "Not measured yet" while the function is missing (PGRST202).

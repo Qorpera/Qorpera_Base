@@ -13,7 +13,9 @@
 --   or gone pauses its count, a report that shows it running resumes it, and a node silent for more
 --   than five minutes pauses the machines on it.
 -- qorpera_meter_computer_hours() turns these into per-company usage rows. An operator schedules it
--- once a minute (Supabase Cron); it is idempotent and serialised by an advisory lock.
+-- once a minute with pg_cron; it is idempotent and serialised by an advisory lock. Per node, the
+-- meter walks transitions and reports in time order, so a stop or a silence between two passes
+-- is never billed.
 --
 -- Billing records outlive the company (bookkeeping), so none of these tables has a foreign key to
 -- qorpera_profiles: qorpera_delete_hosted_profile hard-deletes that row with cascades.
@@ -65,6 +67,7 @@ create table public.qorpera_computer_hour_subjects (
 );
 create index qorpera_computer_hour_subjects_node on public.qorpera_computer_hour_subjects (node_id)
 	where node_id is not null;
+create index qorpera_computer_hour_subjects_profile on public.qorpera_computer_hour_subjects (profile_id);
 
 -- Per node: how far its inventory receipts have been read.
 create table public.qorpera_computer_hour_nodes (
@@ -89,9 +92,9 @@ create table public.qorpera_computer_hour_meter (
 	metered_until timestamptz not null
 );
 
--- One row per company per meter pass that counted anything. Seconds are standard seconds (seconds
--- times the size factor), exact per kind; standard_seconds is what the pass adds after rounding up
--- the company's running total once.
+-- One row per company per meter pass that counted anything, written once at the end of the pass.
+-- Seconds are standard seconds (seconds times the size factor), exact per kind; standard_seconds is
+-- what the pass adds after rounding up the company's running total once.
 create table public.qorpera_computer_hour_usage (
 	id bigint generated always as identity primary key,
 	profile_id uuid not null,
@@ -110,7 +113,7 @@ create table public.qorpera_computer_hour_totals (
 	charged_standard_seconds bigint not null check (charged_standard_seconds >= 0)
 );
 
--- The log and the usage rows are append-only records.
+-- The log and the usage rows are append-only records; nothing updates or deletes them.
 create function public.qorpera_computer_hour_append_only()
 returns trigger
 language plpgsql
@@ -125,7 +128,7 @@ create trigger qorpera_computer_hour_log_append_only
 	before update or delete on public.qorpera_computer_hour_log
 	for each row execute function public.qorpera_computer_hour_append_only();
 create trigger qorpera_computer_hour_usage_append_only
-	before delete on public.qorpera_computer_hour_usage
+	before update or delete on public.qorpera_computer_hour_usage
 	for each row execute function public.qorpera_computer_hour_append_only();
 
 alter table public.qorpera_computer_hour_log enable row level security;
@@ -143,6 +146,8 @@ grant select on public.qorpera_computer_hour_log, public.qorpera_computer_hour_s
 	public.qorpera_computer_hour_nodes, public.qorpera_computer_hour_meter, public.qorpera_computer_hour_inbox,
 	public.qorpera_computer_hour_usage, public.qorpera_computer_hour_totals
 	to service_role;
+revoke all on sequence public.qorpera_computer_hour_log_id_seq, public.qorpera_computer_hour_usage_id_seq
+	from public, anon, authenticated, service_role;
 
 -- Appends one transition to the log and queues it for the meter.
 create function public.qorpera_computer_hour_record(
@@ -219,10 +224,6 @@ begin
 end
 $$;
 revoke all on function public.qorpera_computer_hour_log_demand() from public, anon, authenticated, service_role;
-create trigger qorpera_computer_hour_log_demand
-	after insert or update of reserved_at, suspended_at, released_at, cpu_millis, memory_bytes
-	on public.qorpera_runtime_node_demands
-	for each row execute function public.qorpera_computer_hour_log_demand();
 
 -- A run counts from its runner's acceptance to the earlier of the assignment's end and its expiry.
 create function public.qorpera_computer_hour_log_assignment()
@@ -263,48 +264,33 @@ begin
 end
 $$;
 revoke all on function public.qorpera_computer_hour_log_assignment() from public, anon, authenticated, service_role;
-create trigger qorpera_computer_hour_log_assignment
-	after insert or update of status, accepted_at, finished_at
-	on public.qorpera_runner_assignments
-	for each row execute function public.qorpera_computer_hour_log_assignment();
 
--- Adds the standard seconds of [p_from, p_to) of one subject to its company's row for this pass.
-create function public.qorpera_computer_hour_credit(
+-- Adds the standard seconds of [p_from, p_to) of one subject to the pass's per-company totals.
+create function public.qorpera_computer_hour_add(
+	p_totals jsonb,
 	p_subject public.qorpera_computer_hour_subjects,
 	p_from timestamptz,
-	p_to timestamptz,
-	p_metered_at timestamptz
+	p_to timestamptz
 )
-returns void
+returns jsonb
 language plpgsql
-security definer
+immutable
 set search_path = ''
 as $$
 declare
 	v_amount numeric;
+	v_company text := p_subject.profile_id::text;
 begin
 	if p_to is null or p_from is null or p_to <= p_from then
-		return;
+		return p_totals;
 	end if;
 	v_amount := round(extract(epoch from (p_to - p_from)) * p_subject.size_factor, 6);
-	insert into public.qorpera_computer_hour_usage as usage (
-		profile_id, metered_at, company_machine_seconds, agent_machine_seconds, coding_machine_seconds, run_seconds
-	)
-	values (
-		p_subject.profile_id, p_metered_at,
-		case when p_subject.subject_kind = 'company_machine' then v_amount else 0 end,
-		case when p_subject.subject_kind = 'agent_machine' then v_amount else 0 end,
-		case when p_subject.subject_kind = 'coding_machine' then v_amount else 0 end,
-		case when p_subject.subject_kind = 'run' then v_amount else 0 end
-	)
-	on conflict (profile_id, metered_at) do update set
-		company_machine_seconds = usage.company_machine_seconds + excluded.company_machine_seconds,
-		agent_machine_seconds = usage.agent_machine_seconds + excluded.agent_machine_seconds,
-		coding_machine_seconds = usage.coding_machine_seconds + excluded.coding_machine_seconds,
-		run_seconds = usage.run_seconds + excluded.run_seconds;
+	return jsonb_set(p_totals, array[v_company], coalesce(p_totals -> v_company, '{}'::jsonb)
+		|| jsonb_build_object(p_subject.subject_kind,
+			coalesce((p_totals -> v_company ->> p_subject.subject_kind)::numeric, 0) + v_amount));
 end
 $$;
-revoke all on function public.qorpera_computer_hour_credit(public.qorpera_computer_hour_subjects, timestamptz, timestamptz, timestamptz)
+revoke all on function public.qorpera_computer_hour_add(jsonb, public.qorpera_computer_hour_subjects, timestamptz, timestamptz)
 	from public, anon, authenticated, service_role;
 
 -- Where a node's inventory receipts start being read: its newest one, never its history.
@@ -317,6 +303,9 @@ as $$
 declare
 	v_newest record;
 begin
+	if exists (select 1 from public.qorpera_computer_hour_nodes where node_id = p_node_id) then
+		return;
+	end if;
 	select observation.observed_at, observation.observation_id, observation.received_at into v_newest
 	from public.qorpera_runtime_node_observation_receipts observation
 	join public.qorpera_runtime_node_inventory_receipts inventory
@@ -337,37 +326,42 @@ end
 $$;
 revoke all on function public.qorpera_computer_hour_track_node(uuid, timestamptz) from public, anon, authenticated, service_role;
 
--- One meter pass. p_now exists for tests; production passes nothing.
-create function public.qorpera_meter_computer_hours(p_now timestamptz default null)
+-- One meter pass counting up to p_now minus 30 seconds. Internal: only the owner calls it (tests
+-- pass a time; qorpera_meter_computer_hours() passes the clock).
+create function public.qorpera_meter_computer_hours_at(p_now timestamptz)
 returns jsonb
 language plpgsql
 security definer
 set search_path = ''
 as $$
 declare
-	v_now timestamptz := coalesce(p_now, clock_timestamp());
 	-- Count up to 30 seconds ago, so node reports and late transitions of that time have arrived.
-	v_until timestamptz := coalesce(p_now, clock_timestamp()) - interval '30 seconds';
+	v_until timestamptz := p_now - interval '30 seconds';
 	v_meter public.qorpera_computer_hour_meter%rowtype;
 	v_ids bigint[];
+	v_totals jsonb := '{}'::jsonb;
 	v_log public.qorpera_computer_hour_log%rowtype;
 	v_subject public.qorpera_computer_hour_subjects%rowtype;
+	v_node_id uuid;
 	v_node public.qorpera_computer_hour_nodes%rowtype;
-	v_current public.qorpera_computer_hour_nodes%rowtype;
+	v_last timestamptz;
 	v_from timestamptz;
-	v_receipt record;
+	v_event record;
 	v_entry jsonb;
 	v_physical uuid;
 	v_running boolean;
 	v_end timestamptz;
 	v_expires timestamptz;
 	v_status text;
-	v_usage record;
-	v_old public.qorpera_computer_hour_totals%rowtype;
+	v_company text;
 	v_exact numeric;
+	v_old public.qorpera_computer_hour_totals%rowtype;
 	v_charged bigint;
 	v_profiles integer := 0;
 begin
+	if p_now is null then
+		raise exception 'A meter pass needs a time' using errcode = '22023';
+	end if;
 	if not pg_try_advisory_xact_lock(hashtextextended('qorpera.computer-hour-meter', 0)) then
 		return jsonb_build_object('schema', 'qorpera.computer-hour-meter/v1', 'state', 'busy');
 	end if;
@@ -376,124 +370,179 @@ begin
 		return jsonb_build_object('schema', 'qorpera.computer-hour-meter/v1', 'state', 'current',
 			'meteredUntil', v_meter.metered_until);
 	end if;
-
-	-- 1. Transitions not read yet, in the order they were written.
 	with taken as (delete from public.qorpera_computer_hour_inbox returning log_id)
-	select array_agg(log_id order by log_id) into v_ids from taken;
-	for v_log in
-		select * from public.qorpera_computer_hour_log where id = any(coalesce(v_ids, '{}'::bigint[])) order by id
+	select coalesce(array_agg(log_id order by log_id), '{}'::bigint[]) into v_ids from taken;
+
+	-- 1. Every transition, in time order: runs have no node reports; machines are walked per node
+	-- below together with that node's reports.
+	for v_event in
+		select log.id as log_id, log.node_id
+		from public.qorpera_computer_hour_log log
+		where log.id = any(v_ids) and log.node_id is null
+		order by log.at, log.id
 	loop
+		select * into strict v_log from public.qorpera_computer_hour_log where id = v_event.log_id;
 		select * into v_subject from public.qorpera_computer_hour_subjects where subject_id = v_log.subject_id for update;
 		if v_log.state = 'awake' then
-			if found and v_subject.paused_at is null then
-				-- Count the previous stretch up to its end (asleep in this same pass) or up to this
-				-- size change.
-				perform public.qorpera_computer_hour_credit(v_subject, v_subject.counted_until,
-					least(v_log.at, coalesce(v_subject.ended_at, v_log.at)), v_until);
+			if found and v_subject.ended_at is null then
+				v_totals := public.qorpera_computer_hour_add(v_totals, v_subject, v_subject.counted_until, v_log.at);
 			end if;
 			insert into public.qorpera_computer_hour_subjects as subject (
 				subject_id, subject_kind, profile_id, node_id, size_factor, awake_since, counted_until
 			)
-			values (v_log.subject_id, v_log.subject_kind, v_log.profile_id, v_log.node_id, v_log.size_factor, v_log.at, v_log.at)
+			values (v_log.subject_id, v_log.subject_kind, v_log.profile_id, null, v_log.size_factor, v_log.at, v_log.at)
 			on conflict (subject_id) do update set
-				node_id = excluded.node_id,
-				size_factor = excluded.size_factor,
-				awake_since = excluded.awake_since,
-				counted_until = greatest(subject.counted_until, excluded.counted_until),
-				ended_at = null,
-				paused_at = null,
-				pause_reason = null;
-			if v_log.node_id is not null then
-				perform public.qorpera_computer_hour_track_node(v_log.node_id, v_now);
-			end if;
+				size_factor = excluded.size_factor, awake_since = excluded.awake_since,
+				counted_until = greatest(subject.counted_until, excluded.counted_until), ended_at = null;
 		elsif found and v_subject.ended_at is null then
-			update public.qorpera_computer_hour_subjects set ended_at = v_log.at where subject_id = v_log.subject_id;
+			v_totals := public.qorpera_computer_hour_add(v_totals, v_subject, v_subject.counted_until, v_log.at);
+			update public.qorpera_computer_hour_subjects
+			set counted_until = greatest(counted_until, v_log.at), ended_at = v_log.at
+			where subject_id = v_log.subject_id;
 		end if;
 	end loop;
 
-	-- 2. Node reports: pause a machine a report shows not running, resume it when one shows it running.
-	for v_node in
-		select * from public.qorpera_computer_hour_nodes node
-		where exists (select 1 from public.qorpera_computer_hour_subjects subject where subject.node_id = node.node_id)
-		order by node.node_id
-		for update
+	-- 2. Machines, node by node: transitions and reports in time order. A report that shows a
+	-- machine stopped, failed or absent pauses it, one that shows it running resumes it, and a gap of
+	-- more than five minutes between reports pauses every machine counted on the node.
+	for v_node_id in
+		select log.node_id from public.qorpera_computer_hour_log log where log.id = any(v_ids) and log.node_id is not null
+		union
+		select subject.node_id from public.qorpera_computer_hour_subjects subject where subject.node_id is not null
+		order by 1
 	loop
-		-- Reports older than every machine counted on the node are never read.
-		select min(subject.awake_since) into v_from
-		from public.qorpera_computer_hour_subjects subject where subject.node_id = v_node.node_id;
-		for v_receipt in
-			-- Ordered by the node's own clock (strictly increasing per node); acted on at the database's
-			-- receipt time.
-			select observation.observed_at, observation.observation_id, observation.received_at,
-				inventory.inventory -> 'entries' as entries
+		perform public.qorpera_computer_hour_track_node(v_node_id, p_now);
+		select * into strict v_node from public.qorpera_computer_hour_nodes where node_id = v_node_id for update;
+		v_last := v_node.last_inventory_at;
+		-- Reports older than every machine counted on the node are never read: the read position
+		-- moves up to a minute before the oldest of them (observed_at is the node's clock, accepted
+		-- at most a minute behind the database's).
+		select least(
+			(select min(subject.awake_since) from public.qorpera_computer_hour_subjects subject where subject.node_id = v_node_id),
+			(select min(log.at) from public.qorpera_computer_hour_log log where log.id = any(v_ids) and log.node_id = v_node_id)
+		) - interval '1 minute' into v_from;
+		if v_node.cursor_observed_at < v_from then
+			v_node.cursor_observed_at := v_from;
+			v_node.cursor_observation_id := '00000000-0000-0000-0000-000000000000';
+		end if;
+		for v_event in
+			select 0 as source, log.at as event_at, log.id as log_id,
+				null::timestamptz as observed_at, null::uuid as observation_id, null::jsonb as entries
+			from public.qorpera_computer_hour_log log
+			where log.id = any(v_ids) and log.node_id = v_node_id
+			union all
+			-- Read in the node's own order (observed_at only increases per node) and acted on at the
+			-- database's receipt time.
+			select 1, observation.received_at, null, observation.observed_at, observation.observation_id,
+				inventory.inventory -> 'entries'
 			from public.qorpera_runtime_node_observation_receipts observation
 			join public.qorpera_runtime_node_inventory_receipts inventory
 				on inventory.node_id = observation.node_id and inventory.observation_id = observation.observation_id
-			where observation.node_id = v_node.node_id
+			where observation.node_id = v_node_id
 				and (observation.observed_at, observation.observation_id) > (v_node.cursor_observed_at, v_node.cursor_observation_id)
-				-- observed_at is the node's clock, accepted at most a minute behind the database's.
-				and observation.observed_at >= v_from - interval '1 minute'
-			order by observation.observed_at, observation.observation_id
+			order by 2, 1, 3
 		loop
-			for v_subject in
-				select * from public.qorpera_computer_hour_subjects subject
-				where subject.node_id = v_node.node_id and subject.awake_since <= v_receipt.received_at
-					and (subject.ended_at is null or subject.ended_at > v_receipt.received_at)
-				order by subject.subject_id
-				for update
-			loop
-				v_entry := null;
-				v_physical := null;
-				select entry into v_entry from jsonb_array_elements(v_receipt.entries) entry
-				where entry -> 'allocation' ->> 'allocationId' = v_subject.subject_id::text;
-				if v_entry is null then
-					-- A running machine can be reported as unmanaged when its tags or limits differ.
-					select binding.physical_id into v_physical
-					from public.qorpera_runtime_node_instance_bindings binding
-					where binding.allocation_id = v_subject.subject_id;
-					if v_physical is not null then
-						select entry into v_entry from jsonb_array_elements(v_receipt.entries) entry
-						where entry ->> 'physicalId' = v_physical::text;
+			if v_event.source = 0 then
+				select * into strict v_log from public.qorpera_computer_hour_log where id = v_event.log_id;
+				select * into v_subject from public.qorpera_computer_hour_subjects where subject_id = v_log.subject_id for update;
+				if v_log.state = 'awake' and found and v_subject.ended_at is null then
+					-- A size change: count the old size up to here; a pause stays.
+					if v_subject.paused_at is null then
+						v_totals := public.qorpera_computer_hour_add(v_totals, v_subject, v_subject.counted_until, v_log.at);
 					end if;
-				end if;
-				-- Unknown ('unavailable') changes nothing.
-				v_running := case
-					when v_entry is null then false
-					when v_entry ->> 'state' in ('running', 'starting', 'stopping') then true
-					when v_entry ->> 'state' in ('suspended', 'failed') then false
-				end;
-				if v_running is false and v_subject.paused_at is null then
-					perform public.qorpera_computer_hour_credit(v_subject, v_subject.counted_until, v_receipt.received_at, v_until);
 					update public.qorpera_computer_hour_subjects
-					set counted_until = greatest(counted_until, v_receipt.received_at),
-						paused_at = v_receipt.received_at, pause_reason = 'observed_stopped'
-					where subject_id = v_subject.subject_id;
-				elsif v_running is true and v_subject.paused_at is not null then
+					set size_factor = v_log.size_factor, node_id = v_log.node_id,
+						counted_until = greatest(counted_until, v_log.at)
+					where subject_id = v_log.subject_id;
+				elsif v_log.state = 'awake' then
+					insert into public.qorpera_computer_hour_subjects as subject (
+						subject_id, subject_kind, profile_id, node_id, size_factor, awake_since, counted_until
+					)
+					values (v_log.subject_id, v_log.subject_kind, v_log.profile_id, v_log.node_id, v_log.size_factor, v_log.at, v_log.at)
+					on conflict (subject_id) do update set
+						node_id = excluded.node_id, size_factor = excluded.size_factor, awake_since = excluded.awake_since,
+						counted_until = greatest(subject.counted_until, excluded.counted_until),
+						ended_at = null, paused_at = null, pause_reason = null;
+				elsif found and v_subject.ended_at is null then
+					if v_subject.paused_at is null then
+						v_totals := public.qorpera_computer_hour_add(v_totals, v_subject, v_subject.counted_until, v_log.at);
+					end if;
 					update public.qorpera_computer_hour_subjects
-					set counted_until = greatest(counted_until, v_receipt.received_at), paused_at = null, pause_reason = null
-					where subject_id = v_subject.subject_id;
+					set counted_until = greatest(counted_until, v_log.at), ended_at = v_log.at
+					where subject_id = v_log.subject_id;
 				end if;
-			end loop;
-			update public.qorpera_computer_hour_nodes
-			set cursor_observed_at = v_receipt.observed_at, cursor_observation_id = v_receipt.observation_id,
-				last_inventory_at = greatest(last_inventory_at, v_receipt.received_at)
-			where node_id = v_node.node_id;
+			else
+				-- A silence of more than five minutes before this report.
+				if v_event.event_at > v_last + interval '5 minutes' then
+					for v_subject in
+						select * from public.qorpera_computer_hour_subjects
+						where node_id = v_node_id and ended_at is null and paused_at is null
+							and awake_since <= v_event.event_at
+						order by subject_id
+						for update
+					loop
+						v_end := greatest(v_subject.counted_until, v_last + interval '5 minutes');
+						v_totals := public.qorpera_computer_hour_add(v_totals, v_subject, v_subject.counted_until, v_end);
+						update public.qorpera_computer_hour_subjects
+						set counted_until = v_end, paused_at = v_end, pause_reason = 'node_silent'
+						where subject_id = v_subject.subject_id;
+					end loop;
+				end if;
+				for v_subject in
+					select * from public.qorpera_computer_hour_subjects
+					where node_id = v_node_id and ended_at is null and awake_since <= v_event.event_at
+					order by subject_id
+					for update
+				loop
+					v_entry := null;
+					v_physical := null;
+					select entry into v_entry from jsonb_array_elements(v_event.entries) entry
+					where entry -> 'allocation' ->> 'allocationId' = v_subject.subject_id::text;
+					if v_entry is null then
+						-- A running machine can be reported as unmanaged when its tags or limits differ.
+						select binding.physical_id into v_physical
+						from public.qorpera_runtime_node_instance_bindings binding
+						where binding.allocation_id = v_subject.subject_id;
+						if v_physical is not null then
+							select entry into v_entry from jsonb_array_elements(v_event.entries) entry
+							where entry ->> 'physicalId' = v_physical::text;
+						end if;
+					end if;
+					-- Unknown ('unavailable') changes nothing.
+					v_running := case
+						when v_entry is null then false
+						when v_entry ->> 'state' in ('running', 'starting', 'stopping') then true
+						when v_entry ->> 'state' in ('suspended', 'failed') then false
+					end;
+					if v_running is false and v_subject.paused_at is null then
+						v_totals := public.qorpera_computer_hour_add(v_totals, v_subject, v_subject.counted_until, v_event.event_at);
+						update public.qorpera_computer_hour_subjects
+						set counted_until = greatest(counted_until, v_event.event_at),
+							paused_at = v_event.event_at, pause_reason = 'observed_stopped'
+						where subject_id = v_subject.subject_id;
+					elsif v_running is true and v_subject.paused_at is not null then
+						update public.qorpera_computer_hour_subjects
+						set counted_until = greatest(counted_until, v_event.event_at), paused_at = null, pause_reason = null
+						where subject_id = v_subject.subject_id;
+					end if;
+				end loop;
+				v_last := greatest(v_last, v_event.event_at);
+				update public.qorpera_computer_hour_nodes
+				set cursor_observed_at = v_event.observed_at, cursor_observation_id = v_event.observation_id,
+					last_inventory_at = v_last
+				where node_id = v_node_id;
+			end if;
 		end loop;
-		select * into strict v_current from public.qorpera_computer_hour_nodes where node_id = v_node.node_id;
-		-- A node that published no inventory for five minutes: its machines stop counting from then on,
-		-- until a report shows them running again.
-		if v_current.last_inventory_at + interval '5 minutes' < v_until then
+		-- Silent until now: machines stop counting five minutes after the last report.
+		if v_last + interval '5 minutes' < v_until then
 			for v_subject in
 				select * from public.qorpera_computer_hour_subjects
-				where node_id = v_node.node_id and paused_at is null
+				where node_id = v_node_id and ended_at is null and paused_at is null
 				order by subject_id
 				for update
 			loop
-				v_end := greatest(v_subject.counted_until, v_current.last_inventory_at + interval '5 minutes');
-				if v_subject.ended_at is not null then
-					v_end := least(v_end, greatest(v_subject.counted_until, v_subject.ended_at));
-				end if;
-				perform public.qorpera_computer_hour_credit(v_subject, v_subject.counted_until, v_end, v_until);
+				v_end := greatest(v_subject.counted_until, v_last + interval '5 minutes');
+				v_totals := public.qorpera_computer_hour_add(v_totals, v_subject, v_subject.counted_until, v_end);
 				update public.qorpera_computer_hour_subjects
 				set counted_until = v_end, paused_at = v_end, pause_reason = 'node_silent'
 				where subject_id = v_subject.subject_id;
@@ -501,49 +550,63 @@ begin
 		end if;
 	end loop;
 
-	-- 3. Count every machine and run up to now (a run no further than its assignment's expiry), and
-	-- drop the ones that are fully counted.
+	-- 3. Count what is still awake up to now (a run no further than its assignment's expiry), and
+	-- drop what has ended: its time was counted at its end.
 	for v_subject in select * from public.qorpera_computer_hour_subjects order by subject_id for update loop
-		v_end := v_until;
 		if v_subject.ended_at is not null then
-			v_end := least(v_end, v_subject.ended_at);
-		elsif v_subject.subject_kind = 'run' then
+			delete from public.qorpera_computer_hour_subjects where subject_id = v_subject.subject_id;
+			continue;
+		end if;
+		v_end := v_until;
+		if v_subject.subject_kind = 'run' then
+			v_status := null;
 			select assignment.expires_at, assignment.status into v_expires, v_status
 			from public.qorpera_runner_assignments assignment where assignment.id = v_subject.subject_id;
+			if v_status is null then
+				-- The assignment is gone: nothing more can be known about the run.
+				delete from public.qorpera_computer_hour_subjects where subject_id = v_subject.subject_id;
+				continue;
+			end if;
 			-- An assignment that has just ended counts on the next pass, from its end record.
 			v_end := case when v_status = 'accepted' then least(v_end, v_expires) else v_subject.counted_until end;
 		end if;
 		if v_subject.paused_at is null and v_end > v_subject.counted_until then
-			perform public.qorpera_computer_hour_credit(v_subject, v_subject.counted_until, v_end, v_until);
-			v_subject.counted_until := v_end;
+			v_totals := public.qorpera_computer_hour_add(v_totals, v_subject, v_subject.counted_until, v_end);
 			update public.qorpera_computer_hour_subjects set counted_until = v_end where subject_id = v_subject.subject_id;
-		end if;
-		if v_subject.ended_at is not null and (v_subject.paused_at is not null or v_subject.counted_until >= v_subject.ended_at) then
-			delete from public.qorpera_computer_hour_subjects where subject_id = v_subject.subject_id;
 		end if;
 	end loop;
 
-	-- 4. Round each company's running total up once, and record what this pass adds.
-	for v_usage in
-		select usage.profile_id,
-			usage.company_machine_seconds + usage.agent_machine_seconds + usage.coding_machine_seconds + usage.run_seconds as exact
-		from public.qorpera_computer_hour_usage usage
-		where usage.metered_at = v_until
-		order by usage.profile_id
-	loop
-		select * into v_old from public.qorpera_computer_hour_totals where profile_id = v_usage.profile_id for update;
-		v_exact := coalesce(v_old.exact_standard_seconds, 0) + v_usage.exact;
-		v_charged := ceil(v_exact)::bigint;
+	-- 4. One usage row per company: exact seconds per kind, and what the pass adds once the
+	-- company's running total is rounded up to whole seconds.
+	for v_company in select key from jsonb_each(v_totals) order by key loop
+		v_exact := coalesce((v_totals -> v_company ->> 'company_machine')::numeric, 0)
+			+ coalesce((v_totals -> v_company ->> 'agent_machine')::numeric, 0)
+			+ coalesce((v_totals -> v_company ->> 'coding_machine')::numeric, 0)
+			+ coalesce((v_totals -> v_company ->> 'run')::numeric, 0);
+		if v_exact <= 0 then
+			continue;
+		end if;
+		v_old := null;
+		select * into v_old from public.qorpera_computer_hour_totals where profile_id = v_company::uuid for update;
+		v_charged := ceil(coalesce(v_old.exact_standard_seconds, 0) + v_exact)::bigint;
 		insert into public.qorpera_computer_hour_totals as total (profile_id, exact_standard_seconds, charged_standard_seconds)
-		values (v_usage.profile_id, v_exact, v_charged)
+		values (v_company::uuid, coalesce(v_old.exact_standard_seconds, 0) + v_exact, v_charged)
 		on conflict (profile_id) do update set
 			exact_standard_seconds = excluded.exact_standard_seconds,
 			charged_standard_seconds = excluded.charged_standard_seconds;
-		update public.qorpera_computer_hour_usage
-		set standard_seconds = v_charged - coalesce(v_old.charged_standard_seconds, 0)
-		where profile_id = v_usage.profile_id and metered_at = v_until;
+		insert into public.qorpera_computer_hour_usage (
+			profile_id, metered_at, company_machine_seconds, agent_machine_seconds, coding_machine_seconds, run_seconds,
+			standard_seconds
+		)
+		values (
+			v_company::uuid, v_until,
+			coalesce((v_totals -> v_company ->> 'company_machine')::numeric, 0),
+			coalesce((v_totals -> v_company ->> 'agent_machine')::numeric, 0),
+			coalesce((v_totals -> v_company ->> 'coding_machine')::numeric, 0),
+			coalesce((v_totals -> v_company ->> 'run')::numeric, 0),
+			v_charged - coalesce(v_old.charged_standard_seconds, 0)
+		);
 		v_profiles := v_profiles + 1;
-		v_old := null;
 	end loop;
 
 	update public.qorpera_computer_hour_meter set metered_until = v_until;
@@ -552,8 +615,20 @@ begin
 		'subjects', (select count(*) from public.qorpera_computer_hour_subjects));
 end
 $$;
-revoke all on function public.qorpera_meter_computer_hours(timestamptz) from public, anon, authenticated;
-grant execute on function public.qorpera_meter_computer_hours(timestamptz) to service_role;
+revoke all on function public.qorpera_meter_computer_hours_at(timestamptz) from public, anon, authenticated, service_role;
+
+-- The pass pg_cron runs once a minute (as the owner). service_role may run it by hand; nobody can
+-- choose its time.
+create function public.qorpera_meter_computer_hours()
+returns jsonb
+language sql
+security definer
+set search_path = ''
+as $$
+	select public.qorpera_meter_computer_hours_at(clock_timestamp())
+$$;
+revoke all on function public.qorpera_meter_computer_hours() from public, anon, authenticated;
+grant execute on function public.qorpera_meter_computer_hours() to service_role;
 
 -- What a company used in one calendar month (Danish time). Any member may read it.
 create function public.qorpera_read_company_computer_hours(p_profile_id uuid, p_month date default null)
@@ -619,22 +694,42 @@ $$;
 revoke all on function public.qorpera_read_company_computer_hours(uuid, date) from public, anon;
 grant execute on function public.qorpera_read_company_computer_hours(uuid, date) to authenticated;
 
--- Start counting now: what is awake now is logged as awake from this moment, and each node's
--- reports are read from its newest one.
-select public.qorpera_computer_hour_record(allocation.profile_id,
-	case demand.provider_kind when 'office' then 'company_machine' when 'coding' then 'coding_machine' else 'agent_machine' end,
-	demand.allocation_id, demand.node_id, 'awake',
-	public.qorpera_computer_hour_size_factor(demand.cpu_millis, demand.memory_bytes), null)
-from public.qorpera_runtime_node_demands demand
-join public.qorpera_runtime_machine_allocations allocation on allocation.id = demand.allocation_id
-where demand.provider_kind in ('office', 'coding', 'machine')
-	and demand.reserved_at is not null and demand.suspended_at is null and demand.released_at is null
-order by demand.allocation_id;
-select public.qorpera_computer_hour_record(run.profile_id, 'run', assignment.id, null, 'awake', 1, null)
-from public.qorpera_runner_assignments assignment
-join public.qorpera_execution_runs run on run.id = assignment.run_id
-where assignment.status = 'accepted'
-order by assignment.id;
-select public.qorpera_computer_hour_track_node(node.id, clock_timestamp())
-from public.qorpera_runtime_nodes node;
+-- Start counting now. Node read positions first, before anything locks a hot table.
+do $$
+begin
+	perform public.qorpera_computer_hour_track_node(node.id, clock_timestamp()) from public.qorpera_runtime_nodes node;
+end
+$$;
 insert into public.qorpera_computer_hour_meter (id, metered_until) values (true, clock_timestamp());
+
+-- The triggers lock their tables until the migration commits; the backfill right after them sees
+-- a state no transition can change meanwhile. What is awake now is logged awake from this moment.
+set local lock_timeout = '10s';
+create trigger qorpera_computer_hour_log_demand
+	after insert or update of reserved_at, suspended_at, released_at, cpu_millis, memory_bytes
+	on public.qorpera_runtime_node_demands
+	for each row execute function public.qorpera_computer_hour_log_demand();
+do $$
+begin
+	perform public.qorpera_computer_hour_record(allocation.profile_id,
+		case demand.provider_kind when 'office' then 'company_machine' when 'coding' then 'coding_machine' else 'agent_machine' end,
+		demand.allocation_id, demand.node_id, 'awake',
+		public.qorpera_computer_hour_size_factor(demand.cpu_millis, demand.memory_bytes), null)
+	from public.qorpera_runtime_node_demands demand
+	join public.qorpera_runtime_machine_allocations allocation on allocation.id = demand.allocation_id
+	where demand.provider_kind in ('office', 'coding', 'machine')
+		and demand.reserved_at is not null and demand.suspended_at is null and demand.released_at is null;
+end
+$$;
+create trigger qorpera_computer_hour_log_assignment
+	after insert or update of status, accepted_at, finished_at
+	on public.qorpera_runner_assignments
+	for each row execute function public.qorpera_computer_hour_log_assignment();
+do $$
+begin
+	perform public.qorpera_computer_hour_record(run.profile_id, 'run', assignment.id, null, 'awake', 1, null)
+	from public.qorpera_runner_assignments assignment
+	join public.qorpera_execution_runs run on run.id = assignment.run_id
+	where assignment.status = 'accepted';
+end
+$$;

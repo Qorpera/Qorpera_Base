@@ -26,10 +26,13 @@ select public.qorpera_manage_agent_todo(current_setting('qorpera_test.wake_bindi
 reset role;
 
 -- Only the operator meters; members only read.
-select pg_temp.wake_assert(not has_function_privilege(role_name, 'public.qorpera_meter_computer_hours(timestamptz)', 'EXECUTE'),
+select pg_temp.wake_assert(not has_function_privilege(role_name, 'public.qorpera_meter_computer_hours()', 'EXECUTE'),
 	'The meter is not callable by ' || role_name) from unnest(array['anon', 'authenticated']) role_name;
-select pg_temp.wake_assert(has_function_privilege('service_role', 'public.qorpera_meter_computer_hours(timestamptz)', 'EXECUTE'),
+select pg_temp.wake_assert(has_function_privilege('service_role', 'public.qorpera_meter_computer_hours()', 'EXECUTE'),
 	'The service role may run the meter');
+-- Nobody but the owner chooses a pass's time: a far-future pass would stop measuring.
+select pg_temp.wake_assert(not has_function_privilege(role_name, 'public.qorpera_meter_computer_hours_at(timestamptz)', 'EXECUTE'),
+	'A timed pass is not callable by ' || role_name) from unnest(array['anon', 'authenticated', 'service_role']) role_name;
 select pg_temp.wake_assert(not has_table_privilege(role_name, 'public.qorpera_computer_hour_usage', 'SELECT'),
 	'Usage rows are not readable by ' || role_name) from unnest(array['anon', 'authenticated']) role_name;
 select pg_temp.wake_assert(not has_function_privilege('anon', 'public.qorpera_read_company_computer_hours(uuid,date)', 'EXECUTE'),
@@ -42,7 +45,7 @@ select pg_temp.wake_assert(not exists (
 ), 'The meter''s helpers and triggers are callable by no API role');
 
 create function pg_temp.hours_meter(p_now timestamptz) returns jsonb language sql as $$
-	select public.qorpera_meter_computer_hours(p_now)
+	select public.qorpera_meter_computer_hours_at(p_now)
 $$;
 create function pg_temp.hours_usage(p_profile uuid, p_until timestamptz) returns public.qorpera_computer_hour_usage language sql as $$
 	select * from public.qorpera_computer_hour_usage where profile_id = p_profile and metered_at = p_until
@@ -162,6 +165,8 @@ select public.qorpera_computer_hour_record('71000000-0000-4000-8000-0000000000f1
 	'71000000-0000-4000-8000-000000000302', null, 'awake', 1, pg_temp.hours_b('100 milliseconds'));
 select public.qorpera_computer_hour_record('71000000-0000-4000-8000-0000000000f1', 'run',
 	'71000000-0000-4000-8000-000000000302', null, 'gone', null, pg_temp.hours_b('1350 milliseconds'));
+-- The node reported just before the machine woke, and every four minutes after.
+select pg_temp.hours_report('-1 minute', 'unavailable');
 select pg_temp.hours_report(n * interval '4 minutes', 'running') from generate_series(1, 7) n;
 
 select pg_temp.wake_assert(usage.coding_machine_seconds = 3600 and usage.run_seconds = 1.25 and usage.standard_seconds = 3602,
@@ -187,6 +192,7 @@ from public.qorpera_computer_hour_subjects where subject_id = '71000000-0000-400
 
 -- A report at B+55 shows it running: counting resumes from there.
 select pg_temp.hours_report('55 minutes', 'running');
+select pg_temp.hours_report('58 minutes', 'running');
 select pg_temp.wake_assert(usage.coding_machine_seconds = 600,
 	'Resumed at the report that shows it running: ' || row_to_json(usage)::text)
 from pg_temp.hours_pass('60 minutes') usage;
@@ -217,6 +223,58 @@ from public.qorpera_computer_hour_usage where profile_id = '71000000-0000-4000-8
 select pg_temp.hours_report('75 minutes', 'running');
 select pg_temp.wake_assert(pg_temp.hours_pass('80 minutes') is null, 'An asleep machine counts nothing, whatever the reports say');
 
+-- A second machine (one standard machine) whose node goes silent between two passes: the silence is
+-- found in the reports themselves, not only at pass time. Its reports carry it as an unmanaged
+-- instance, matched by its bound physical id.
+insert into public.qorpera_runtime_workers(id,profile_id,environment_id,staff_agent_id,todo_id,worker_key,species,title,access,revival,
+	dispatch,requested_by_user_id,steering_run_id,owner_user_id,owner_sponsor_binding_id,owner_sponsor_version)
+select '71000000-0000-4000-8000-000000000102',todo.profile_id,todo.environment_id,todo.staff_agent_id,todo.id,'hours-2',
+	'coding','Hours 2','read','each','{}'::jsonb,'30000000-0000-4000-8000-000000000001',todo.created_by_run_id,
+	'30000000-0000-4000-8000-000000000001',(current_setting('qorpera_test.wake_sponsor')::jsonb ->> 'binding_id')::uuid,1
+from public.qorpera_runtime_agent_todos todo where todo.todo_key = 'hours';
+insert into public.qorpera_runtime_machine_allocations(id,profile_id,coding_worker_id,provider_adapter,instance_sha256)
+select '71000000-0000-4000-8000-000000000303',worker.profile_id,worker.id,'coding-hours',encode(extensions.digest('hours-vm-3','sha256'),'hex')
+from public.qorpera_runtime_workers worker where worker.id = '71000000-0000-4000-8000-000000000102';
+insert into public.qorpera_runtime_node_instance_bindings(allocation_id,node_id,physical_id,binding)
+values ('71000000-0000-4000-8000-000000000303','71000000-0000-4000-8000-000000000010','71000000-0000-4000-8000-0000000000a3','{}');
+create function pg_temp.hours_unmanaged(p_offset interval, p_state text) returns void language sql as $$
+	with observation as (
+		insert into public.qorpera_runtime_node_observation_receipts (node_id, observation_id, observed_at, received_at, observation)
+		values ('71000000-0000-4000-8000-000000000010', extensions.gen_random_uuid(), pg_temp.hours_b(p_offset),
+			pg_temp.hours_b(p_offset), '{"state":"unavailable"}'::jsonb)
+		returning node_id, observation_id
+	)
+	insert into public.qorpera_runtime_node_inventory_receipts (node_id, observation_id, node_version, policy_sha256, context_sha256, inventory)
+	select node_id, observation_id, 1, repeat('0', 64), repeat('0', 64), jsonb_build_object('schema', 'qorpera.runtime-node-inventory/v1',
+		'bootId', extensions.gen_random_uuid(), 'entries', jsonb_build_array(jsonb_build_object('allocation', null,
+			'state', p_state, 'category', 'unmanaged', 'physicalId', '71000000-0000-4000-8000-0000000000a3')))
+	from observation
+$$;
+create function pg_temp.hours_pass2(p_offset interval) returns public.qorpera_computer_hour_usage language plpgsql as $$
+begin
+	perform pg_temp.wake_assert(pg_temp.hours_meter(pg_temp.hours_b(p_offset) + interval '30 seconds') ->> 'state' = 'metered',
+		'Meter pass at B + ' || p_offset::text);
+	return pg_temp.hours_usage('71000000-0000-4000-8000-0000000000f2', pg_temp.hours_b(p_offset));
+end
+$$;
+select pg_temp.hours_unmanaged('89 minutes', 'running');
+select public.qorpera_computer_hour_record('71000000-0000-4000-8000-0000000000f2', 'coding_machine',
+	'71000000-0000-4000-8000-000000000303', '71000000-0000-4000-8000-000000000010', 'awake', 1, pg_temp.hours_b('90 minutes'));
+select pg_temp.hours_unmanaged('92 minutes', 'running');
+select pg_temp.hours_unmanaged('94 minutes', 'stopping');
+-- Nothing from B+94 to B+105; no pass ran in between.
+select pg_temp.hours_unmanaged('105 minutes', 'running');
+select pg_temp.hours_unmanaged('108 minutes', 'running');
+select pg_temp.wake_assert(usage.coding_machine_seconds = 840,
+	'B+90..99 (five minutes after the last report before the gap) and B+105..110: ' || row_to_json(usage)::text)
+from pg_temp.hours_pass2('110 minutes') usage;
+-- 'failed' pauses, 'starting' resumes.
+select pg_temp.hours_unmanaged('112 minutes', 'failed');
+select pg_temp.hours_unmanaged('115 minutes', 'starting');
+select pg_temp.hours_unmanaged('118 minutes', 'running');
+select pg_temp.wake_assert(usage.coding_machine_seconds = 420, 'B+110..112 and B+115..120: ' || row_to_json(usage)::text)
+from pg_temp.hours_pass2('120 minutes') usage;
+
 -- 4. Members read their company's month.
 select set_config('qorpera_test.hours_month', coalesce(sum(standard_seconds), 0)::text, true)
 from public.qorpera_computer_hour_usage
@@ -232,6 +290,11 @@ select pg_temp.wake_assert(hours ->> 'schema' = 'qorpera.company-computer-hours/
 	'A viewer reads the company''s month: ' || hours::text)
 from (select public.qorpera_read_company_computer_hours('30000000-0000-4000-8000-000000000010') hours) read;
 reset role;
+select pg_temp.wake_assert(hours ->> 'month' = to_char(date_trunc('month', clock_timestamp() at time zone 'Europe/Copenhagen')
+		+ interval '1 month', 'YYYY-MM') and (hours ->> 'usedStandardSeconds')::bigint = 0,
+	'A later month reads empty: ' || hours::text)
+from (select public.qorpera_read_company_computer_hours('30000000-0000-4000-8000-000000000010',
+	(date_trunc('month', clock_timestamp() at time zone 'Europe/Copenhagen') + interval '1 month 3 days')::date) hours) read;
 select pg_temp.path_claims('authenticated', '71000000-0000-4000-8000-0000000000e1');
 set local role authenticated;
 select pg_temp.wake_error('select public.qorpera_read_company_computer_hours(''30000000-0000-4000-8000-000000000010'')', '42501');
@@ -240,4 +303,5 @@ reset role;
 -- 5. The records are append-only.
 select pg_temp.wake_error('update public.qorpera_computer_hour_log set state = ''gone''', '42501');
 select pg_temp.wake_error('delete from public.qorpera_computer_hour_usage', '42501');
+select pg_temp.wake_error('update public.qorpera_computer_hour_usage set standard_seconds = 0', '42501');
 rollback;
