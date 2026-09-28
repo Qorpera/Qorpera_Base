@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { type FileHandle, lstat, mkdir, mkdtemp, readdir, realpath, rm, statfs, writeFile } from "node:fs/promises";
+import { type FileHandle, lstat, mkdtemp, readdir, realpath, rm, statfs, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import type { Duplex } from "node:stream";
 import {
@@ -23,19 +23,18 @@ import {
 	openCompanyComputerLinuxDirectory,
 	readCompanyComputerLinuxMetadata,
 } from "./cloud-company-computer-linux-host.ts";
+import {
+	COMPANY_COMPUTER_HOSTS,
+	COMPANY_COMPUTER_RESOLV_CONF,
+	plumbCompanyComputerNetwork,
+} from "./cloud-company-computer-linux-network.ts";
 import { spawnCompanyComputerLinuxProcess } from "./cloud-company-computer-linux-process.ts";
 import { companyComputerScreenDisplay } from "./cloud-company-computer-screens.ts";
 import {
-	type CompanyComputerShellEgressTransport,
-	startCompanyComputerShellEgress,
-} from "./cloud-company-computer-shell-egress.ts";
-import {
 	COMPANY_COMPUTER_NAMESPACE_CHILD,
 	COMPANY_COMPUTER_SHELL_LINE_LIMIT,
-	COMPANY_COMPUTER_SHELL_RELAY_PATH,
 	type CompanyComputerShellHostEvent,
 	type CompanyComputerShellHostRequest,
-	companyComputerShellProxyEnvironment,
 	parseCompanyComputerShellHostEvent,
 } from "./cloud-company-computer-shell-host.ts";
 import type { RecoveryDirectoryMount } from "./cloud-identity-recovery-filesystems.ts";
@@ -255,7 +254,8 @@ export class CompanyComputerLinuxShell implements CompanyComputerGuestShell {
 		if (this.#environment) return this.#environment;
 		const cancel = new AbortController();
 		const environment: Promise<CompanyComputerShellEnvironment> = this.#launch(
-			(event) => this.#event(environment, event),
+			// A launcher may report before this call has returned; its events keep their order.
+			(event) => queueMicrotask(() => this.#event(environment, event)),
 			AbortSignal.any([this.#stop.signal, cancel.signal]),
 		);
 		this.#environment = environment;
@@ -552,8 +552,10 @@ export class CompanyComputerLinuxShell implements CompanyComputerGuestShell {
  * The real shell namespace of one screen. Same sandbox as today's commands:
  * no host network device, PID view, capabilities or privileges; the workbench
  * and the desktop home read-write, the screen's X socket, a read-only image.
- * Its only way out is a broker relay that dials public addresses; browser
- * profiles, sign-ins, service credentials and the NAS are not mounted.
+ * Its network is its own: the root plumber adds a veth as it starts, and the
+ * machine's firewall lets it reach the public internet on any port and
+ * protocol but nothing private, the machine itself or other computers.
+ * Browser profiles, sign-ins, service credentials and the NAS are not mounted.
  * Its processes are the machine's first choice when memory runs out.
  */
 export function createCompanyComputerLinuxShellLauncher(options: {
@@ -566,7 +568,8 @@ export function createCompanyComputerLinuxShellLauncher(options: {
 	xSocket: () => string;
 	boundary: CompanyComputerGuestBoundary;
 	timeZone?: string;
-	egressTransport?: CompanyComputerShellEgressTransport;
+	/** Test seam for the root plumber's socket. */
+	plumbSocket?: string;
 }): CompanyComputerShellEnvironmentLauncher {
 	assertCompanyComputerScreenBinding(options.binding, options.binding);
 	assertCompanyComputerGuestLayout(options.layout);
@@ -585,9 +588,7 @@ export function createCompanyComputerLinuxShellLauncher(options: {
 	return async (onEvent, lifetime) => {
 		const files: FileHandle[] = [];
 		let temporary: string | undefined;
-		let relay: Awaited<ReturnType<typeof startCompanyComputerShellEgress>> | undefined;
 		const release = async (): Promise<void> => {
-			await relay?.close().catch(() => undefined);
 			await Promise.all(files.map((file) => file.close().catch(() => undefined)));
 			if (temporary) await rm(temporary, { recursive: true, force: true });
 		};
@@ -637,22 +638,8 @@ export function createCompanyComputerLinuxShellLauncher(options: {
 			} finally {
 				await runtime.close();
 			}
-			await mkdir(join(temporary, "network"), { mode: 0o700 });
-			relay = await startCompanyComputerShellEgress({
-				root: join(temporary, "network"),
-				assertActive: () => lifetime.throwIfAborted(),
-				signal: lifetime,
-				transport: options.egressTransport,
-			});
-			// `localhost` must resolve without DNS, which the namespace does not have.
-			await writeFile(
-				join(temporary, "hosts"),
-				"127.0.0.1\tlocalhost\n::1\tlocalhost ip6-localhost ip6-loopback\n",
-				{
-					mode: 0o444,
-					flag: "wx",
-				},
-			);
+			await writeFile(join(temporary, "hosts"), COMPANY_COMPUTER_HOSTS, { mode: 0o444, flag: "wx" });
+			await writeFile(join(temporary, "resolv.conf"), COMPANY_COMPUTER_RESOLV_CONF, { mode: 0o444, flag: "wx" });
 			const args = [
 				// Package builds unpack into /tmp; tmpfs pages are only used when written,
 				// and they are memory: the pressure guard counts them.
@@ -667,11 +654,11 @@ export function createCompanyComputerLinuxShellLauncher(options: {
 				xSocket,
 				`/tmp/.X11-unix/X${binding.screenOrdinal}`,
 				"--ro-bind",
-				relay.path,
-				COMPANY_COMPUTER_SHELL_RELAY_PATH,
-				"--ro-bind",
 				join(temporary, "hosts"),
 				"/etc/hosts",
+				"--ro-bind",
+				join(temporary, "resolv.conf"),
+				"/etc/resolv.conf",
 			];
 			for (const [paths, directory] of [
 				[SHELL_IMAGE_FILES, false],
@@ -682,14 +669,6 @@ export function createCompanyComputerLinuxShellLauncher(options: {
 					await assertCompanyComputerImageArtifact(path, directory);
 					args.push("--ro-bind", path, path);
 				}
-			if (await lstat("/usr/bin/ssh").catch(() => undefined)) {
-				await writeFile(
-					join(temporary, "ssh_config"),
-					`Host *\n\tProxyCommand /usr/bin/node ${COMPANY_COMPUTER_NAMESPACE_CHILD} --connect %h %p\n`,
-					{ mode: 0o444, flag: "wx" },
-				);
-				args.push("--ro-bind", join(temporary, "ssh_config"), "/etc/ssh/ssh_config");
-			}
 			for (const [name, value] of Object.entries({
 				HOME: "/home/qorpera",
 				PATH: "/usr/local/bin:/usr/bin:/bin",
@@ -698,7 +677,6 @@ export function createCompanyComputerLinuxShellLauncher(options: {
 				TERM: "dumb",
 				DISPLAY: companyComputerScreenDisplay(binding.screenOrdinal),
 				...(options.timeZone ? { TZ: options.timeZone } : {}),
-				...companyComputerShellProxyEnvironment(),
 			}))
 				args.push("--setenv", name, value);
 			args.push("--chdir", companyComputerShellWorkingDirectory(layout), "--remount-ro", "/");
@@ -708,6 +686,16 @@ export function createCompanyComputerLinuxShellLauncher(options: {
 				files,
 				stdin: "ignore",
 				pipeCount: 2,
+				// The computer's own network, before anything in the namespace runs.
+				// Without the plumber it starts with loopback only.
+				beforeStart: async (pid) => {
+					await plumbCompanyComputerNetwork({
+						ordinal: binding.screenOrdinal,
+						role: "shell",
+						pid,
+						...(options.plumbSocket ? { socket: options.plumbSocket } : {}),
+					});
+				},
 				// The machine's out-of-memory choice falls on the shell before the
 				// service, the desktops and the browsers; commands inherit it.
 				command: [

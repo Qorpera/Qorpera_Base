@@ -1,10 +1,9 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { lstat, open, readdir, readFile, rename, writeFile } from "node:fs/promises";
-import { createServer as createHttpServer } from "node:http";
-import { createConnection, createServer } from "node:net";
+import { createServer } from "node:net";
 import { setTimeout as delay } from "node:timers/promises";
 import {
 	CompanyComputerLinuxShell,
@@ -16,9 +15,10 @@ import { parseRecoveryDirectoryMount } from "../../src/cloud-identity-recovery-f
 import { computerBinding } from "./company-computer.ts";
 
 // Disposable Linux fixture only: the real shell namespace (Bubblewrap, Tini,
-// the office's namespace entry file, the broker relay) as the unprivileged
-// office account. The container has no network; "public" hosts are local
-// servers the relay's injected transport dials instead of the internet.
+// the office's namespace entry file) as the unprivileged office account, with
+// the image's own firewall and root plumber set up by the runner. The
+// container has no internet: "public" (93.184.216.34) and "private"
+// (10.9.9.9, 169.254.169.254) hosts are stand-ins behind this machine.
 assert.equal(process.platform, "linux");
 assert.equal(process.getuid?.(), 1000);
 const status = await readFile("/proc/self/status", "utf8");
@@ -51,25 +51,10 @@ async function until(check: () => Promise<boolean> | boolean, what: string) {
 	throw new Error(`LINUX_FIXTURE_WAIT_TIMEOUT: ${what}`);
 }
 
-// The stand-in for every public host, and a canary for the office's own
-// loopback listeners (the service, viewer and native gateways).
-const publicHost = createHttpServer((request, response) =>
-	response.end(`public:${request.method} ${request.url} ${request.headers.host}`),
-);
-publicHost.on("connect", (_request, socket) => socket.end("HTTP/1.1 400 Bad Request\r\n\r\n"));
-await new Promise<void>((resolve) => publicHost.listen(0, "127.0.0.1", resolve));
-const publicPort = (publicHost.address() as { port: number }).port;
+// This machine's own listener, which no computer may reach.
 const canary = createServer((socket) => socket.end("HOST_NETWORK_CANARY"));
-await new Promise<void>((resolve) => canary.listen(0, "127.0.0.1", resolve));
+await new Promise<void>((resolve) => canary.listen(0, "0.0.0.0", resolve));
 const canaryPort = (canary.address() as { port: number }).port;
-const dialled: string[] = [];
-const egressTransport = {
-	resolve: async (host: string) => (host === "private.example.com" ? ["10.42.0.1"] : ["93.184.216.34"]),
-	connect: (address: string, port: number) => {
-		dialled.push(`${address}:${port}`);
-		return createConnection({ host: "127.0.0.1", port: publicPort });
-	},
-};
 
 const xvfb = spawn("/usr/bin/Xvfb", [":1", "-screen", "0", "1920x1200x24", "-nolisten", "tcp", "-ac", "-noreset"], {
 	env: { PATH: "/usr/bin:/bin" },
@@ -91,7 +76,6 @@ try {
 			runtimeRoot: "/run/office-screens",
 			xSocket: () => "/tmp/office-x/X1",
 			boundary: { assertReady: async () => undefined },
-			egressTransport,
 		}),
 	);
 	const signal = new AbortController().signal;
@@ -137,16 +121,16 @@ trap 'echo "failed at line $LINENO"' ERR
 test -z "\${QORPERA_SYNTHETIC_SECRET-}"
 test "$HOME" = /home/qorpera
 test "$(pwd)" = /srv/workbench
-test "$HTTPS_PROXY" = http://127.0.0.1:3128
+test -z "\${HTTPS_PROXY-}\${http_proxy-}"
+test "$(head -n 1 /etc/resolv.conf)" = "nameserver 1.1.1.1"
 test ! -e /srv/profiles/credential-canary
 test ! -e /run/office-screens
 test ! -e /sys/fs/cgroup
-test -S /run/qorpera-network/egress.sock
-# No route out of the namespace: only loopback, no default or any other route
-# (a kernel's inactive tunnel placeholders may still be listed as devices).
-test "$(wc -l < /proc/net/route)" = 1
-test -z "$(tail -n +3 /proc/net/dev | grep -v -E '^ *(lo|tunl0|sit0|ip6tnl0|ip6_vti0|ip_vti0|gre0|gretap0|erspan0|ip6gre0):' || true)"
+# Its own network card and route out, from the plumber.
+grep -q '^ *eth0:' /proc/net/dev
+test -n "$(awk '$2 == "00000000"' /proc/net/route)"
 if timeout 1 bash -c 'echo canary >/dev/tcp/127.0.0.1/${canaryPort}' 2>/dev/null; then exit 19; fi
+if timeout 3 bash -c 'echo canary >/dev/tcp/10.253.1.1/${canaryPort}' 2>/dev/null; then exit 22; fi
 if unshare --user --map-root-user true 2>/dev/null; then exit 20; fi
 if touch /usr/office-write-canary 2>/dev/null; then exit 21; fi
 getent hosts localhost >/dev/null
@@ -159,53 +143,55 @@ printf isolated`),
 		"isolated",
 	);
 
-	// Internet through the relay: plain HTTP, and CONNECT to any port.
+	// The real network: any port and protocol to public addresses, no proxy.
+	assert.equal(await done("curl -sS --max-time 10 http://93.184.216.34/hello"), "public:/hello");
+	assert.equal(await done("timeout 10 bash -c 'exec 3<>/dev/tcp/93.184.216.34/22; head -c 14 <&3'"), "SSH-2.0-public");
 	assert.equal(
-		await done("curl -sS --max-time 10 http://files.example.com/hello"),
-		"public:GET /hello files.example.com",
+		await done(
+			"node -e \"const s=require('dgram').createSocket('udp4');s.on('message',m=>{console.log(String(m));s.close()});s.send('ping',5353,'93.184.216.34');setTimeout(()=>process.exit(3),8000).unref()\"",
+		),
+		"public:ping\n",
 	);
-	assert.equal(
-		await done("curl -sS --max-time 10 -p http://tunnel.example.com:7000/via-connect"),
-		"public:GET /via-connect tunnel.example.com:7000",
+	assert.match(await done("ping -c 1 -W 5 93.184.216.34"), /1 received/);
+	// Never private, metadata or this machine, whichever port or protocol.
+	for (const address of ["10.9.9.9", "169.254.169.254"]) {
+		const fetching = await run(`curl -sS --max-time 4 http://${address}/`);
+		const blocked = await settled(fetching.sessionId, fetching);
+		assert.notEqual(blocked.exitCode, 0, `${address}: ${blocked.output}`);
+		const pinging = await run(`ping -c 1 -W 3 ${address}`);
+		const pinged = await settled(pinging.sessionId, pinging);
+		assert.notEqual(pinged.exitCode, 0, `${address}: ${pinged.output}`);
+	}
+
+	// Computers are separate: another computer's server is out of reach, its own is not.
+	const other = new CompanyComputerLinuxShell(
+		createCompanyComputerLinuxShellLauncher({
+			binding: { ...computerBinding(), screenId: "00000000-0000-4000-8000-0000000000b2", screenOrdinal: 2 },
+			layout,
+			workbenchMount,
+			limits,
+			runtimeRoot: "/run/office-screens",
+			xSocket: () => "/tmp/office-x/X1",
+			boundary: { assertReady: async () => undefined },
+		}),
 	);
-	assert.deepEqual(dialled, ["93.184.216.34:80", "93.184.216.34:7000"]);
-	// Never around the relay, and never to local, private or metadata addresses.
-	for (const [command, expected] of [
-		// Loopback skips the proxy (NO_PROXY), so force it for this one.
-		[
-			`curl -sS --max-time 5 --noproxy '' http://127.0.0.1:${canaryPort}/`,
-			"local and private network addresses are not reachable",
-		],
-		[
-			"curl -sS --max-time 5 http://169.254.169.254/latest/meta-data/",
-			"local and private network addresses are not reachable",
-		],
-		["curl -sS --max-time 5 http://private.example.com/", "points at a local or private address"],
-	]) {
-		const output = await done(command);
-		assert.ok(output.includes(expected), `${command}: ${output}`);
-	}
-	for (const command of [
-		"curl -sS --max-time 5 --noproxy '*' http://93.184.216.34/",
-		`curl -sS --max-time 5 http://127.0.0.1:${canaryPort}/`,
-	]) {
-		const started = await run(command);
-		const direct = await settled(started.sessionId, started);
-		assert.notEqual(direct.exitCode, 0, direct.output);
-	}
-	assert.equal(dialled.length, 2);
-	if (await exists("/usr/bin/ssh")) {
-		// The stand-in host is not an SSH server: ssh fails after the relay dialled port 22.
-		let ssh = await run(
-			"ssh -v -o BatchMode=yes -o StrictHostKeyChecking=no -o ConnectTimeout=20 git@code.example.com true > /tmp/ssh.log 2>&1; grep -m1 'Executing proxy command' /tmp/ssh.log",
-			15000,
-		);
-		for (let attempt = 0; ssh.state === "running" && attempt < 4; attempt++) {
-			const next = await read(ssh.sessionId, 10000);
-			ssh = { ...next, output: ssh.output + next.output };
-		}
-		assert.match(ssh.output, /office-browser-child\.mjs --connect code\.example\.com 22/);
-		assert.ok(dialled.includes("93.184.216.34:22"), dialled.join(","));
+	try {
+		const otherServer = (
+			await other.start({
+				key: randomUUID(),
+				command:
+					"node -e \"require('http').createServer((q,s)=>s.end('other')).listen(8001,'0.0.0.0',()=>console.log('listening'))\"",
+				signal,
+			})
+		).sessionId;
+		let heard = "";
+		for (let attempt = 0; !heard.includes("listening") && attempt < 15; attempt++)
+			heard += (await other.result({ sessionId: otherServer, waitMs: 2000, signal })).output;
+		assert.match(heard, /listening/);
+		const reaching = await run("curl -sS --max-time 4 http://10.253.2.2:8001/");
+		assert.notEqual((await settled(reaching.sessionId, reaching)).exitCode, 0);
+	} finally {
+		await other.close();
 	}
 
 	// Commands share the shell's localhost: a server from one is reachable from the next.
@@ -292,12 +278,13 @@ printf isolated`),
 		if (/sleep|--shell-host|bwrap|tini/.test(command)) survivors.push(command.replaceAll("\0", " "));
 	}
 	assert.deepEqual(survivors, []);
+	// The computers' network cards went with their namespaces.
+	assert.doesNotMatch(execFileSync("ip", ["-o", "link"], { encoding: "utf8" }), /qcmp/);
 	assert.deepEqual(await readdir("/run/office-screens"), []);
 	process.stdout.write("Company Computer shell Linux proof passed\n");
 } finally {
 	await shell?.close().catch(() => undefined);
 	xvfb.kill("SIGTERM");
 	await xExited;
-	publicHost.close();
 	canary.close();
 }

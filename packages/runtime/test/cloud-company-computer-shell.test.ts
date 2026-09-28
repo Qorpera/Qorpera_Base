@@ -39,8 +39,6 @@ function fixture(processes = { count: 0 }) {
 			runCompanyComputerShellHost({
 				input: toHost,
 				output: fromHost,
-				relayPath: "/nonexistent/egress.sock",
-				port: 0,
 				countProcesses: async () => processes.count,
 				processIntervalMs: 50,
 				bash: "/bin/bash",

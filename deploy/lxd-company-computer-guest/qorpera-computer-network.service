@@ -1,0 +1,16 @@
+# Qorpera computers' networks: forwarding and the firewall of
+# qorpera-computer-network.nft, before the office service starts shells and
+# desktops. Pulled in by qorpera-company-computer.service (Wants=): without it
+# computers start without a network, never with an unfiltered one.
+[Unit]
+Description=Qorpera computers' network firewall
+Before=qorpera-company-computer.service qorpera-computer-plumb.socket
+ConditionPathExists=/usr/local/share/qorpera/computer-network.nft
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/nft -f /usr/local/share/qorpera/computer-network.nft
+ExecStart=/usr/sbin/sysctl -q -w net.ipv4.ip_forward=1
+ExecStop=/usr/sbin/sysctl -q -w net.ipv4.ip_forward=0
+ExecStop=-/usr/sbin/nft delete table inet qorpera_computers

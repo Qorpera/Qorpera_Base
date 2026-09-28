@@ -250,20 +250,24 @@ The owned startup placeholder also changes `office-browser-child.mjs`; include
 that entry together with the service and three desktop scripts in the guest-code
 revision. The dock matches the browser window with or without the new class.
 
-**Shell and Terminal internet (2026-09-28).** A computer (an agent's screen)
-has a long-running shell and a Terminal with internet; the machine (this VM)
-hosts the computers. `office-browser-child.mjs` is the
-image's one namespace entry file, so it also carries the long-running shell's
-init (`--shell-host`), the desktop's loopback proxy (`--network-proxy`) and the
-SSH connector (`--connect`). The service passes `http_proxy`/`HTTPS_PROXY` and
-`NO_PROXY` into each desktop, and `qorpera-screen-session` hands exactly those
-through its `env -i` to XFCE, so the Terminal and what it starts use the
-desktop's relay. The revision that ships this replaces three entries: the
-service, `office-browser-child.mjs` and `qorpera-screen-session`. An older
-session script leaves the Terminal offline. With an older entry file the new
-service's shell commands fail to start (the entry refuses the mode) and the
-Terminal stays offline; the desktop itself is unaffected. Desktops pick up the
-Terminal change at their next start.
+**Each computer's own network (2026-09-28).** A computer (an agent's screen)
+has a long-running shell and a desktop Terminal with a real network of their
+own; the machine (this VM) hosts the computers. The office service still
+creates one network namespace for each computer's shell and one for its
+desktop, and asks the root plumber (`qorpera-computer-plumb`, one request per
+connection on `qorpera-computer-plumb.socket`, which only the office account
+can reach) to add a veth `qcmp<ordinal><s|d>` into it before its program
+starts. `qorpera-computer-network.service` loads
+`qorpera-computer-network.nft` at boot: the computers reach the public
+internet on any port and protocol, and never a private, shared, link-local,
+loopback or special range (the NAS, nodes, Tailscale, cloud metadata, the LXD
+bridges), the machine itself or each other; nothing comes in. Name servers are
+public. The browser keeps its own device-less namespace and relay, so
+profiles, sign-ins and credentials stay out of the shell. This needs a new
+image (the units, the firewall, the plumber, and the `iproute2`, `nftables`
+and `iputils-ping` packages). The shell's init is a mode (`--shell-host`) of
+`office-browser-child.mjs`. Without the plumber a computer starts with
+loopback only, never with an unfiltered network.
 
 The wrapper is not an authorization or sandbox implementation. Directory-name
 validation cannot detect bind mounts, NAS aliases, unsafe inherited image

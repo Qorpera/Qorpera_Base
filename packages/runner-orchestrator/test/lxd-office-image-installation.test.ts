@@ -119,6 +119,21 @@ describe("office image installation contract", () => {
 			path: "/usr/local/bin/qorpera-screen-browser",
 			mode: 0o555,
 		});
+		// Each computer's own network: the root plumber, its firewall and units.
+		expect(officeImageDestination("qorpera-computer-plumb")).toEqual({
+			path: "/usr/local/lib/qorpera/qorpera-computer-plumb",
+			mode: 0o555,
+		});
+		expect(officeImageDestination("qorpera-computer-network.nft")).toEqual({
+			path: "/usr/local/share/qorpera/computer-network.nft",
+			mode: 0o444,
+		});
+		for (const unit of [
+			"qorpera-computer-network.service",
+			"qorpera-computer-plumb.socket",
+			"qorpera-computer-plumb@.service",
+		])
+			expect(officeImageDestination(unit)).toEqual({ path: `/etc/systemd/system/${unit}`, mode: 0o644 });
 		for (const frame of ["qorpera-screen-brain.png", "qorpera-screen-brain-00.png", "qorpera-screen-brain-23.png"])
 			expect(officeImageDestination(`wallpapers/${frame}`)).toEqual({
 				path: `/usr/share/backgrounds/${frame}`,

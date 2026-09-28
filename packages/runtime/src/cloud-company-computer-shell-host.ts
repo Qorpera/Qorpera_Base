@@ -1,32 +1,11 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { readdir } from "node:fs/promises";
-import { createConnection, createServer, type Server, type Socket } from "node:net";
 import type { Readable, Writable } from "node:stream";
 
-/** The broker relay's socket inside a shell or desktop namespace. */
-export const COMPANY_COMPUTER_SHELL_RELAY_PATH = "/run/qorpera-network/egress.sock";
-/** Loopback proxy port inside the namespace's own, otherwise empty, network. */
-export const COMPANY_COMPUTER_SHELL_PROXY_PORT = 3128;
 /** The office code's copy of this module inside the image (the browser child entry). */
 export const COMPANY_COMPUTER_NAMESPACE_CHILD = "/usr/local/lib/qorpera/office-browser-child.mjs";
 /** One control line in either direction; an output line carries at most 64 KiB of bytes. */
 export const COMPANY_COMPUTER_SHELL_LINE_LIMIT = 262144;
-
-/** Proxy settings for programs in a shell or desktop namespace. Local names bypass the proxy. */
-export function companyComputerShellProxyEnvironment(): Record<string, string> {
-	const proxy = `http://127.0.0.1:${COMPANY_COMPUTER_SHELL_PROXY_PORT}`;
-	const local = "localhost,127.0.0.1,::1";
-	return {
-		http_proxy: proxy,
-		https_proxy: proxy,
-		HTTP_PROXY: proxy,
-		HTTPS_PROXY: proxy,
-		no_proxy: local,
-		NO_PROXY: local,
-		// Node's own fetch ignores the variables above unless asked.
-		NODE_USE_ENV_PROXY: "1",
-	};
-}
 
 /** Service to shell namespace. `data` is base64. */
 export type CompanyComputerShellHostRequest =
@@ -138,35 +117,6 @@ function lines(stream: Readable, onLine: (line: string) => void, onOverflow: () 
 	});
 }
 
-/**
- * Loopback HTTP proxy port inside a namespace whose only way out is the Unix
- * relay: each connection is piped to it unchanged. The relay decides where a
- * connection may go; this listener holds no authority.
- */
-export async function listenCompanyComputerShellProxy(relayPath: string, port: number): Promise<Server> {
-	const server = createServer((peer) => {
-		const upstream = createConnection(relayPath);
-		const close = (): void => {
-			peer.destroy();
-			upstream.destroy();
-		};
-		for (const socket of [peer, upstream]) {
-			socket.on("error", close);
-			socket.once("close", close);
-		}
-		peer.pipe(upstream);
-		upstream.pipe(peer);
-	});
-	await new Promise<void>((ready, reject) => {
-		server.once("error", reject);
-		server.listen(port, "127.0.0.1", () => {
-			server.removeListener("error", reject);
-			ready();
-		});
-	});
-	return server;
-}
-
 /** Processes in this PID namespace other than its init and this host. */
 async function countNamespaceProcesses(): Promise<number> {
 	const entries = await readdir("/proc");
@@ -174,26 +124,19 @@ async function countNamespaceProcesses(): Promise<number> {
 }
 
 /**
- * The shell namespace's own init process (under Tini). It keeps the loopback
- * proxy, starts each command in a process group of its own, and streams its
- * output. It runs as the same account as every command, so it holds nothing a
+ * The shell namespace's own init process (under Tini). It starts each command
+ * in a process group of its own and streams its output. It runs as the same account as every command, so it holds nothing a
  * command may not see: the service treats all it reports as untrusted data.
  */
 export async function runCompanyComputerShellHost(options: {
 	input: Readable;
 	output: Writable;
-	relayPath?: string;
-	port?: number;
 	countProcesses?: () => Promise<number>;
 	processIntervalMs?: number;
 	/** The image's Bash; a local proof on another system names its own. */
 	bash?: string;
 }): Promise<void> {
 	const bash = options.bash ?? "/usr/bin/bash";
-	const proxy = await listenCompanyComputerShellProxy(
-		options.relayPath ?? COMPANY_COMPUTER_SHELL_RELAY_PATH,
-		options.port ?? COMPANY_COMPUTER_SHELL_PROXY_PORT,
-	).catch(() => undefined);
 	const children = new Map<string, ChildProcess>();
 	const count = options.countProcesses ?? countNamespaceProcesses;
 	let blocked = false;
@@ -311,49 +254,4 @@ export async function runCompanyComputerShellHost(options: {
 	});
 	clearInterval(timer);
 	for (const id of children.keys()) stop(id);
-	proxy?.close();
-}
-
-/** Desktop namespace: only the loopback proxy, for the Terminal and what it starts. */
-export async function runCompanyComputerNetworkProxy(): Promise<void> {
-	const server = await listenCompanyComputerShellProxy(
-		COMPANY_COMPUTER_SHELL_RELAY_PATH,
-		COMPANY_COMPUTER_SHELL_PROXY_PORT,
-	);
-	await new Promise<void>((closed) => server.once("close", () => closed()));
-}
-
-/** SSH `ProxyCommand`: one CONNECT through the relay, then the raw stream on stdin/stdout. */
-export async function runCompanyComputerShellConnect(host: string, port: string): Promise<void> {
-	if (!/^[A-Za-z0-9.-]{1,253}$/.test(host) || !/^[0-9]{1,5}$/.test(port))
-		throw new Error("INVALID_OFFICE_SHELL_TARGET");
-	const socket: Socket = createConnection(COMPANY_COMPUTER_SHELL_RELAY_PATH);
-	await new Promise<void>((ready, reject) => {
-		socket.once("error", reject);
-		socket.once("connect", () => {
-			socket.write(`CONNECT ${host}:${port} HTTP/1.1\r\nHost: ${host}:${port}\r\n\r\n`);
-			let head = Buffer.alloc(0);
-			const receive = (bytes: Buffer): void => {
-				head = Buffer.concat([head, bytes]);
-				const separator = head.indexOf("\r\n\r\n");
-				if (separator < 0) {
-					if (head.length > 65536) reject(new Error("OFFICE_SHELL_PROXY_REFUSED"));
-					return;
-				}
-				socket.removeListener("data", receive);
-				if (!/^HTTP\/1\.[01] 200 /.test(head.toString("latin1"))) {
-					process.stderr.write(head.subarray(separator + 4));
-					reject(new Error("OFFICE_SHELL_PROXY_REFUSED"));
-					return;
-				}
-				const rest = head.subarray(separator + 4);
-				if (rest.length) process.stdout.write(rest);
-				ready();
-			};
-			socket.on("data", receive);
-		});
-	});
-	process.stdin.pipe(socket);
-	socket.pipe(process.stdout);
-	await new Promise<void>((closed) => socket.once("close", () => closed()));
 }

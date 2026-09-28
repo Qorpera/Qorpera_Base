@@ -457,7 +457,20 @@ export async function installOfficeImage(stage: "--check" | "--apply" | "--locke
 	]);
 	await officeInstallParents("/var/lib/qorpera-office/.placeholder", true);
 	await chmod("/var/lib/qorpera-office", 0o755);
-	command("/usr/bin/systemd-analyze", ["verify", ...units.map((n) => `/etc/systemd/system/${n}`)]);
+	// Each computer's network units come with newer packages only.
+	const networkUnits: string[] = [];
+	for (const name of ["qorpera-computer-network.service", "qorpera-computer-plumb.socket", "qorpera-computer-plumb@.service"])
+		if (
+			await lstat(`/etc/systemd/system/${name}`).then(
+				() => true,
+				(error: unknown) => {
+					if (absent(error)) return false;
+					throw error;
+				},
+			)
+		)
+			networkUnits.push(`/etc/systemd/system/${name}`);
+	command("/usr/bin/systemd-analyze", ["verify", ...units.map((n) => `/etc/systemd/system/${n}`), ...networkUnits]);
 	command("/usr/bin/systemd-tmpfiles", [
 		"--create",
 		"/usr/lib/tmpfiles.d/qorpera-office-preparation.conf",

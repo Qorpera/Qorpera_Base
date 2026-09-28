@@ -92,4 +92,21 @@ reset role;
 select pg_temp.wake_assert(not pg_temp.demand(),'nothing running is no demand');
 select pg_temp.wake_assert(not exists(select 1 from public.qorpera_runtime_office_shell_activity),'the report rows are gone');
 
+-- 20260929020000: a running command also keeps the agent's seat.
+create function pg_temp.seat() returns boolean language sql as $$
+	select public.qorpera_runtime_office_screen_in_use(s) from public.qorpera_runtime_office_screens s
+	where s.id=current_setting('qorpera_test.screen')::uuid
+$$;
+update public.qorpera_runtime_office_screens set touched_at=clock_timestamp()-interval '3 minutes'
+where id=current_setting('qorpera_test.screen')::uuid;
+select pg_temp.wake_assert(not pg_temp.seat(),'an idle screen is free');
+select pg_temp.path_claims('service_role');
+set local role service_role;
+select pg_temp.report(pg_temp.busy());
+reset role;
+select pg_temp.wake_assert(pg_temp.seat(),'a running command keeps the seat');
+update public.qorpera_runtime_office_shell_activity set busy_until=clock_timestamp()-interval '1 second';
+select pg_temp.wake_assert(not pg_temp.seat(),'a stale report keeps no seat');
+
+
 rollback;

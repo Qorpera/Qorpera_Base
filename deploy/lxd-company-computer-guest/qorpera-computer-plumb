@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+# Root, one request per connection on the office account's private socket
+# (qorpera-computer-plumb.socket). Gives one computer's freshly created shell
+# or desktop network namespace its own way out: a veth whose machine end is
+# qcmp<ordinal><s|d>, filtered by qorpera-computer-network.nft.
+#
+#   request: plumb <ordinal 1-32> <shell|desktop> <pid in that namespace>
+#   answer:  ok <address>   or   refused <reason>
+#
+# The office service runs unprivileged and cannot create network devices; it
+# creates the namespace with Bubblewrap and asks here before the namespace's
+# program starts. Only a namespace of the office account that is not this
+# machine's own and has no veth yet is plumbed. A computer's previous link of
+# the same kind (a shell or desktop being replaced) is removed first.
+set -euo pipefail
+export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+office_user=${QORPERA_OFFICE_USER:-qorpera-office}
+refuse() {
+	printf 'refused %s\n' "$1"
+	exit 0
+}
+IFS= read -r -t 5 request || refuse request
+[[ ${request} =~ ^plumb\ ([1-9]|[12][0-9]|3[0-2])\ (shell|desktop)\ ([1-9][0-9]{0,9})$ ]] || refuse request
+ordinal=${BASH_REMATCH[1]}
+role=${BASH_REMATCH[2]}
+pid=${BASH_REMATCH[3]}
+office_uid=$(id -u "${office_user}") || refuse account
+[[ -d /proc/${pid} ]] || refuse process
+[[ $(stat -c %u "/proc/${pid}") == "${office_uid}" ]] || refuse owner
+own=$(readlink /proc/1/ns/net)
+target=$(readlink "/proc/${pid}/ns/net") || refuse process
+[[ ${target} != "${own}" ]] || refuse namespace
+# A fresh namespace only: nothing of ours in it yet.
+if [[ -n $(nsenter -t "${pid}" -n ip -o link show type veth) ]]; then refuse namespace; fi
+if [[ ${role} == shell ]]; then
+	host=qcmp${ordinal}s
+	host_ip=10.253.${ordinal}.1
+	peer_ip=10.253.${ordinal}.2
+else
+	host=qcmp${ordinal}d
+	host_ip=10.253.${ordinal}.5
+	peer_ip=10.253.${ordinal}.6
+fi
+ip link del "${host}" 2>/dev/null || true
+ip link add "${host}" type veth peer name eth0 netns "${pid}"
+ip addr add "${host_ip}/30" dev "${host}"
+ip link set "${host}" up
+# Inside: the address and route, ping for the namespace's own users, no IPv6.
+nsenter -t "${pid}" -n ip addr add "${peer_ip}/30" dev eth0
+nsenter -t "${pid}" -n ip link set eth0 up
+nsenter -t "${pid}" -n ip route add default via "${host_ip}"
+nsenter -t "${pid}" -n sysctl -q -w net.ipv4.ping_group_range="0 2147483647"
+nsenter -t "${pid}" -n sysctl -q -w net.ipv6.conf.all.disable_ipv6=1
+# The process must still be the one asked about.
+if [[ $(readlink "/proc/${pid}/ns/net" 2>/dev/null) != "${target}" ]]; then
+	ip link del "${host}" 2>/dev/null || true
+	refuse namespace
+fi
+printf 'ok %s\n' "${peer_ip}"

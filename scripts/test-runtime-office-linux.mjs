@@ -60,7 +60,7 @@ async function run(args, rpc = false) {
 }
 try {
 	if (!process.env.QORPERA_OFFICE_TEST_IMAGE) {
-		await writeFile(join(root, "Dockerfile"), `FROM ${base}\nRUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends nodejs bubblewrap tini xvfb xdotool scrot x11-xserver-utils xauth${shell ? " curl ca-certificates openssh-client" : ""}${desktop ? " tigervnc-standalone-server xfce4-session xfwm4 xfdesktop4 xfconf xfce4-panel xfce4-terminal thunar dbus-x11 x11-utils procps" : ""}${browser ? " curl ca-certificates unzip libnss3 libasound2t64 libgbm1 libcups2t64" : ""} && rm -rf /var/lib/apt/lists/*\n${browser ? `RUN case "$(dpkg --print-architecture)" in arm64) browser_url=https://cdn.playwright.dev/dbazure/download/playwright/builds/chromium/1234/chromium-linux-arm64.zip; browser_dir=chrome-linux;; amd64) browser_url=https://cdn.playwright.dev/builds/cft/151.0.7922.34/linux64/chrome-linux64.zip; browser_dir=chrome-linux64;; *) exit 1;; esac && curl --fail --location --retry 2 "$browser_url" -o /tmp/chromium.zip && unzip -q /tmp/chromium.zip -d /usr/lib && mv "/usr/lib/$browser_dir" /usr/lib/qorpera-chromium && rm /tmp/chromium.zip\n` : ""}`);
+		await writeFile(join(root, "Dockerfile"), `FROM ${base}\nRUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends nodejs bubblewrap tini xvfb xdotool scrot x11-xserver-utils xauth${shell ? " curl ca-certificates iproute2 nftables iputils-ping" : ""}${desktop ? " tigervnc-standalone-server xfce4-session xfwm4 xfdesktop4 xfconf xfce4-panel xfce4-terminal thunar dbus-x11 x11-utils procps" : ""}${browser ? " curl ca-certificates unzip libnss3 libasound2t64 libgbm1 libcups2t64" : ""} && rm -rf /var/lib/apt/lists/*\n${browser ? `RUN case "$(dpkg --print-architecture)" in arm64) browser_url=https://cdn.playwright.dev/dbazure/download/playwright/builds/chromium/1234/chromium-linux-arm64.zip; browser_dir=chrome-linux;; amd64) browser_url=https://cdn.playwright.dev/builds/cft/151.0.7922.34/linux64/chrome-linux64.zip; browser_dir=chrome-linux64;; *) exit 1;; esac && curl --fail --location --retry 2 "$browser_url" -o /tmp/chromium.zip && unzip -q /tmp/chromium.zip -d /usr/lib && mv "/usr/lib/$browser_dir" /usr/lib/qorpera-chromium && rm /tmp/chromium.zip\n` : ""}`);
 		await run(["build", "--tag", image, root]);
 	}
 	if (desktop) {
@@ -88,7 +88,37 @@ try {
 	if (shell) {
 		await build({ absWorkingDir: repository, entryPoints: ["packages/runtime/src/cloud-company-computer-browser-child.ts"],
 			outfile: join(root, "office-browser-child.mjs"), platform: "node", format: "esm", target: "node22.19", bundle: true });
-		await writeFile(join(root, "Dockerfile"), `FROM ${image}\nRUN mkdir -p /usr/local/lib/qorpera && chmod 0755 /usr/local/lib/qorpera\nCOPY --chmod=0444 office-browser-child.mjs /usr/local/lib/qorpera/office-browser-child.mjs\n`);
+		// The image's network pieces exactly as packaged: the firewall and the root plumber.
+		await copyFile(join(repository, "deploy/lxd-company-computer-guest/qorpera-computer-network.nft"), join(root, "computer-network.nft"));
+		await copyFile(join(repository, "deploy/lxd-company-computer-guest/qorpera-computer-plumb"), join(root, "qorpera-computer-plumb"));
+		await writeFile(join(root, "Dockerfile"), `FROM ${image}\nRUN mkdir -p /usr/local/lib/qorpera /usr/local/share/qorpera && chmod 0755 /usr/local/lib/qorpera /usr/local/share/qorpera\nCOPY --chmod=0444 office-browser-child.mjs /usr/local/lib/qorpera/office-browser-child.mjs\nCOPY --chmod=0555 qorpera-computer-plumb /usr/local/lib/qorpera/qorpera-computer-plumb\nCOPY --chmod=0444 computer-network.nft /usr/local/share/qorpera/computer-network.nft\n`);
+		// Stand-ins, as root in the container: systemd's socket activation of the
+		// plumber (one script per connection), and hosts behind the machine.
+		await writeFile(join(root, "plumb-socket.mjs"), `import { spawn } from "node:child_process";
+import { chownSync, mkdirSync } from "node:fs";
+import { createServer } from "node:net";
+mkdirSync("/run/qorpera-computer-network", { recursive: true, mode: 0o755 });
+const server = createServer((socket) => {
+	const plumb = spawn("/usr/local/lib/qorpera/qorpera-computer-plumb", [], { env: { QORPERA_OFFICE_USER: process.argv[2] }, stdio: ["pipe", "pipe", "inherit"] });
+	socket.pipe(plumb.stdin);
+	plumb.stdout.pipe(socket);
+	socket.on("error", () => plumb.kill());
+});
+server.listen("/run/qorpera-computer-network/plumb.sock", () => {
+	chownSync("/run/qorpera-computer-network/plumb.sock", 1000, 1000);
+	console.log("plumber listening");
+});
+`);
+		await writeFile(join(root, "stand-in.mjs"), `import { createSocket } from "node:dgram";
+import { createServer as createHttp } from "node:http";
+import { createServer } from "node:net";
+const name = process.argv[2];
+createHttp((request, response) => response.end(name + ":" + request.url)).listen(80, "0.0.0.0");
+createServer((socket) => socket.end("SSH-2.0-" + name + "\\r\\n")).listen(22, "0.0.0.0");
+const udp = createSocket("udp4");
+udp.on("message", (message, from) => udp.send(Buffer.concat([Buffer.from(name + ":"), message]), from.port, from.address));
+udp.bind(5353, "0.0.0.0");
+`);
 		runningImage = `qorpera-office-shell-probe:${randomUUID()}`;
 		await run(["build", "--tag", runningImage, root]);
 	}
@@ -140,13 +170,39 @@ dpkg-query -W nodejs bubblewrap tini xvfb xdotool scrot
 ${desktop ? "dpkg-query -W tigervnc-standalone-server xfce4-session xfwm4 xfdesktop4" : ""}
 ${browser ? "/usr/lib/qorpera-chromium/chrome --version" : ""}
 ${boundary ? "node /opt/probe/probe.mjs --prepare" : ""}
-exec setpriv --reuid=1000 --regid=1000 --clear-groups --bounding-set=-all node /opt/probe/probe.mjs
+${shell ? `# The machine: the computers' firewall, a public and a private host behind it, the plumber.
+nft -f /usr/local/share/qorpera/computer-network.nft
+sysctl -q -w net.ipv4.ip_forward=1
+ip link set lo up
+for side in pub:1:93.184.216.34 priv:5:10.9.9.9; do
+	netns=\${side%%:*}; rest=\${side#*:}; low=\${rest%%:*}; address=\${rest#*:}
+	ip netns add "\$netns"
+	ip link add "\${netns}net" type veth peer name eth0 netns "\$netns"
+	ip addr add "192.0.2.\$low/30" dev "\${netns}net"
+	ip link set "\${netns}net" up
+	ip -n "\$netns" link set lo up
+	ip -n "\$netns" addr add "192.0.2.\$((low + 1))/30" dev eth0
+	ip -n "\$netns" link set eth0 up
+	ip -n "\$netns" addr add "\$address/32" dev lo
+	ip -n "\$netns" route add default via "192.0.2.\$low"
+	ip route add "\$address/32" via "192.0.2.\$((low + 1))"
+done
+ip -n priv addr add 169.254.169.254/32 dev lo
+ip route add 169.254.169.254/32 via 192.0.2.6
+ip netns exec pub node /opt/probe/stand-in.mjs public &
+ip netns exec priv node /opt/probe/stand-in.mjs private &
+node /opt/probe/plumb-socket.mjs "$(getent passwd 1000 | cut -d: -f1)" &
+sleep 1
+` : ""}exec setpriv --reuid=1000 --regid=1000 --clear-groups --bounding-set=-all node /opt/probe/probe.mjs
 `);
 	// Docker's default seccomp and proc masks block nested user/PID namespaces.
 	// The outer container permits that setup; the real bwrap boundary then runs
 	// as uid 1000 with no capabilities, no network, and finite cgroup ceilings.
 	const guestArgs = ["run", ...(combined ? ["-i"] : []), "--rm", "--name", container, "--network", "none", "--read-only", "--memory", browser ? "2g" : desktop ? "1g" : shell ? "768m" : "512m", "--memory-swap", browser ? "2g" : desktop ? "1g" : shell ? "768m" : "512m",
 		"--pids-limit", browser ? "512" : desktop || shell ? "256" : "128", "--cpus", desktop ? "2" : "1", "--cap-drop", "ALL", "--cap-add", "CHOWN", "--cap-add", "SETUID", "--cap-add", "SETGID", "--cap-add", "SETPCAP",
+		// The shell proof's root plumber and machine firewall; the probe itself drops them.
+		...(shell ? ["--cap-add", "NET_ADMIN", "--cap-add", "SYS_ADMIN", "--cap-add", "SYS_PTRACE", "--security-opt", "apparmor=unconfined",
+			"--tmpfs", "/run/netns:rw,nosuid,nodev,size=1m,mode=755", "--tmpfs", "/run/qorpera-computer-network:rw,nosuid,nodev,size=1m,mode=755"] : []),
 		// Root attester reads uid-1000 private mounts; setpriv drops this before the broker probe.
 		...(boundary ? ["--cap-add", "DAC_READ_SEARCH"] : []),
 		"--security-opt", "no-new-privileges", "--security-opt", "seccomp=unconfined", "--security-opt", "systempaths=unconfined",

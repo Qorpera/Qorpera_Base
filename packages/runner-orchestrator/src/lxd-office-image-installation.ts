@@ -64,6 +64,15 @@ export const OFFICE_IMAGE_PACKAGE_FILES = [
 /** Desktop helpers admitted by newer packages; historical packages without them remain valid. */
 export const OFFICE_IMAGE_DESKTOP_PACKAGE_FILES = ["qorpera-screen-browser"] as const;
 
+/** Each computer's own filtered network (2026-09-28), admitted by newer packages. */
+export const OFFICE_IMAGE_NETWORK_PACKAGE_FILES = [
+	"qorpera-computer-network.nft",
+	"qorpera-computer-network.service",
+	"qorpera-computer-plumb",
+	"qorpera-computer-plumb.socket",
+	"qorpera-computer-plumb@.service",
+] as const;
+
 export const OFFICE_IMAGE_RESET_PACKAGE_FILES = [
 	"qorpera-company-computer-reset-configuration-control.mjs",
 	"qorpera-company-computer-reset-service-start-control.mjs",
@@ -136,6 +145,15 @@ export function officeImageDestination(file: string): { path: string; mode: numb
 		return { path: "/usr/local/share/qorpera/browser-policy.json", mode: 0o444 };
 	if (file === "office-browser-child.mjs")
 		return { path: "/usr/local/lib/qorpera/office-browser-child.mjs", mode: 0o444 };
+	if (file === "qorpera-computer-network.nft")
+		return { path: "/usr/local/share/qorpera/computer-network.nft", mode: 0o444 };
+	if (file === "qorpera-computer-plumb") return { path: "/usr/local/lib/qorpera/qorpera-computer-plumb", mode: 0o555 };
+	if (
+		["qorpera-computer-network.service", "qorpera-computer-plumb.socket", "qorpera-computer-plumb@.service"].includes(
+			file,
+		)
+	)
+		return { path: `/etc/systemd/system/${file}`, mode: 0o644 };
 	// Static figure plus the optional hourly tone-on-tone frames (-00 .. -23).
 	if (/^wallpapers\/qorpera-screen-[a-z]+(?:-(?:[01][0-9]|2[0-3]))?\.png$/.test(file))
 		return { path: `/usr/share/backgrounds/${posix.basename(file)}`, mode: 0o444 };
