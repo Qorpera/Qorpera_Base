@@ -537,9 +537,13 @@ of the body, for readers that should not reach the storage server.
     chat's room is taken at rank 4 `FOR NO KEY UPDATE`: posting's `FOR SHARE` waits for it, a run's
     `FOR KEY SHARE` does not. Deleting or moving a folder takes the rooms of the chats in it. Test
     703 races a chat rename against posting.
-  - Known, not F2's: the email-draft finish locks the chat's session and then the gc fence, the
-    other way round from posting, so it can lose a deadlock to a chat rename (or an agent rename,
-    as found in F2-1). It retries nothing; its owner should take the gc fence first.
+  - Known, not F2's: the email-draft finish (agent threads only) locks the thread's session and
+    then the gc fence, the other way round from posting, so it can lose a deadlock to an agent
+    rename (found in F2-1's review). Its owner should take the gc fence first. It never reaches a
+    group chat: claiming a draft is refused outside agent threads.
+  - A `group.md` or `sections.md` parse stored under F2-1 alone was only kind-checked. A malformed
+    one is not trusted as a base; a well-formed one is. No folder-v2 company exists before C5, so
+    nothing is stored in between.
   - The sidebar tables take no lock of their own: `agents/sections.md`'s path lock orders their only
     writer. The member RPC's section and move actions refuse for `folder-v2` companies (55000), and
     the sidebar's revision row is not bumped; the web reads the folder feed (C4).

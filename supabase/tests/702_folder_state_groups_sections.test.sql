@@ -158,19 +158,19 @@ begin
 		pg_temp.new_group('launch', '70200000-0000-4000-8000-0000000000b1', 'Launch', array['70200000-0000-4000-8000-0000000000a1','70200000-0000-4000-8000-0000000000a2']::uuid[], array['70200000-0000-4000-8000-000000000001']::uuid[])));
 	perform pg_temp.expect(r, 1, 'saved');
 	g := pg_temp.room('70200000-0000-4000-8000-0000000000b1');
-	if g.folder_path <> 'agents/groups/launch/group.md' or g.folder_path_version <> pg_temp.version('agents/groups/launch/group.md')
-		or g.room_key <> 'chat-70200000-0000-4000-8000-0000000000b1' or g.name <> 'Launch' or g.subtitle is not null or g.purpose <> 'Plan the launch.'
-		or g.status <> 'active' or g.version <> 1 or g.bound_staff_agent_id is not null or g.source_snapshot_id is not null
-		or g.created_by_user_id <> '70200000-0000-4000-8000-000000000001' then
+	if g.folder_path is distinct from 'agents/groups/launch/group.md' or g.folder_path_version is distinct from pg_temp.version('agents/groups/launch/group.md')
+		or g.room_key is distinct from 'chat-70200000-0000-4000-8000-0000000000b1' or g.name is distinct from 'Launch' or g.subtitle is not null or g.purpose is distinct from 'Plan the launch.'
+		or g.status is distinct from 'active' or g.version is distinct from 1 or g.bound_staff_agent_id is not null or g.source_snapshot_id is not null
+		or g.created_by_user_id is distinct from '70200000-0000-4000-8000-000000000001' then
 		raise exception 'A new group.md is a room pointing at it: %', to_jsonb(g); end if;
 	select * into s from public.qorpera_shared_sessions where id = g.session_id;
-	if s.status <> 'open' or s.title <> 'Launch' or s.staff_agent_id is not null or s.execution_scope <> jsonb_build_object('roomId', g.id)
-		or s.audience_kind <> 'company' then
+	if s.status is distinct from 'open' or s.title is distinct from 'Launch' or s.staff_agent_id is not null or s.execution_scope is distinct from jsonb_build_object('roomId', g.id)
+		or s.audience_kind is distinct from 'company' then
 		raise exception 'A new group chat has its conversation: %', to_jsonb(s); end if;
-	if pg_temp.members('70200000-0000-4000-8000-0000000000b1') <> 'member:01,staff_agent:a1,staff_agent:a2' then
+	if pg_temp.members('70200000-0000-4000-8000-0000000000b1') is distinct from 'member:01,staff_agent:a1,staff_agent:a2' then
 		raise exception 'Members follow the lists: %', pg_temp.members('70200000-0000-4000-8000-0000000000b1'); end if;
 	if public.qorpera_folder_structured_review_class('70200000-0000-4000-8000-000000000020', pg_temp.owner(), pg_temp.new_group('other', '70200000-0000-4000-8000-0000000000b2', 'Other',
-		array['70200000-0000-4000-8000-0000000000a1','70200000-0000-4000-8000-0000000000a2']::uuid[], null), 'agents/groups/other', null) <> 'delegation' then
+		array['70200000-0000-4000-8000-0000000000a1','70200000-0000-4000-8000-0000000000a2']::uuid[], null), 'agents/groups/other', null) is distinct from 'delegation' then
 		raise exception 'A new group.md is delegation for an in-house run'; end if;
 end $$;
 
@@ -183,11 +183,11 @@ begin
 		pg_temp.group_parse('70200000-0000-4000-8000-0000000000b1', 'Launch team', array['70200000-0000-4000-8000-0000000000a1','70200000-0000-4000-8000-0000000000a3']::uuid[], array['70200000-0000-4000-8000-000000000002']::uuid[], ''))));
 	perform pg_temp.expect(r, 1, 'saved');
 	g := pg_temp.room('70200000-0000-4000-8000-0000000000b1');
-	if g.name <> 'Launch team' or g.subtitle <> '' or g.version <> 2 or g.folder_path_version <> pg_temp.version('agents/groups/launch/group.md') then
+	if g.name is distinct from 'Launch team' or g.subtitle is distinct from '' or g.version is distinct from 2 or g.folder_path_version is distinct from pg_temp.version('agents/groups/launch/group.md') then
 		raise exception 'An edit reaches the room: %', to_jsonb(g); end if;
-	if (select title from public.qorpera_shared_sessions where id = g.session_id) <> 'Launch team' then
+	if (select title from public.qorpera_shared_sessions where id = g.session_id) is distinct from 'Launch team' then
 		raise exception 'The conversation takes the new name'; end if;
-	if pg_temp.members('70200000-0000-4000-8000-0000000000b1') <> 'member:02,staff_agent:a1,staff_agent:a3' then
+	if pg_temp.members('70200000-0000-4000-8000-0000000000b1') is distinct from 'member:02,staff_agent:a1,staff_agent:a3' then
 		raise exception 'Members follow the lists: %', pg_temp.members('70200000-0000-4000-8000-0000000000b1'); end if;
 	if not exists (select 1 from public.qorpera_company_room_members where room_id = '70200000-0000-4000-8000-0000000000b1' and principal_id = '70200000-0000-4000-8000-0000000000a2'
 		and status = 'removed' and source_path_version = g.folder_path_version) then
@@ -202,26 +202,26 @@ begin
 	-- The id never changes.
 	r := pg_temp.commit(pg_temp.owner(), 'group-rule-01', jsonb_build_array(pg_temp.edit_group('launch',
 		pg_temp.group_parse('70200000-0000-4000-8000-0000000000b2', 'Launch team', array['70200000-0000-4000-8000-0000000000a1','70200000-0000-4000-8000-0000000000a3']::uuid[], array['70200000-0000-4000-8000-000000000002']::uuid[], ''))));
-	if pg_temp.rule(r, 1) <> 'structured_rule' then raise exception 'The id never changes: %', r; end if;
+	if pg_temp.rule(r, 1) is distinct from 'structured_rule' then raise exception 'The id never changes: %', r; end if;
 	-- Added agents are active agents of this company, added people its members.
 	r := pg_temp.commit(pg_temp.owner(), 'group-rule-02', jsonb_build_array(pg_temp.edit_group('launch',
 		pg_temp.group_parse('70200000-0000-4000-8000-0000000000b1', 'Launch team', array['70200000-0000-4000-8000-0000000000a1','70200000-0000-4000-8000-0000000000a3','70200000-0000-4000-8000-0000000000ff']::uuid[], array['70200000-0000-4000-8000-000000000002']::uuid[], ''))));
-	if pg_temp.rule(r, 1) <> 'structured_rule' then raise exception 'An unknown agent is refused: %', r; end if;
+	if pg_temp.rule(r, 1) is distinct from 'structured_rule' then raise exception 'An unknown agent is refused: %', r; end if;
 	r := pg_temp.commit(pg_temp.owner(), 'group-rule-03', jsonb_build_array(pg_temp.edit_group('launch',
 		pg_temp.group_parse('70200000-0000-4000-8000-0000000000b1', 'Launch team', array['70200000-0000-4000-8000-0000000000a1','70200000-0000-4000-8000-0000000000a3']::uuid[], array['70200000-0000-4000-8000-000000000002','70200000-0000-4000-8000-000000000003']::uuid[], ''))));
-	if pg_temp.rule(r, 1) <> 'structured_rule' then raise exception 'A person outside the company is refused: %', r; end if;
+	if pg_temp.rule(r, 1) is distinct from 'structured_rule' then raise exception 'A person outside the company is refused: %', r; end if;
 	-- A new chat's id belongs to no other conversation, agent or chat.
 	select id into thread from public.qorpera_company_rooms where bound_staff_agent_id = '70200000-0000-4000-8000-0000000000a1';
 	r := pg_temp.commit(pg_temp.owner(), 'group-rule-04', jsonb_build_array(
 		pg_temp.new_group('thread', thread, 'Thread', array['70200000-0000-4000-8000-0000000000a1','70200000-0000-4000-8000-0000000000a2']::uuid[], null),
 		pg_temp.new_group('agent', '70200000-0000-4000-8000-0000000000a2', 'Agent', array['70200000-0000-4000-8000-0000000000a1','70200000-0000-4000-8000-0000000000a2']::uuid[], null),
 		pg_temp.new_group('twin', '70200000-0000-4000-8000-0000000000b1', 'Twin', array['70200000-0000-4000-8000-0000000000a1','70200000-0000-4000-8000-0000000000a2']::uuid[], null)));
-	if pg_temp.rule(r, 1) <> 'structured_rule' or pg_temp.rule(r, 2) <> 'structured_rule' or pg_temp.rule(r, 3) <> 'structured_rule' then
+	if pg_temp.rule(r, 1) is distinct from 'structured_rule' or pg_temp.rule(r, 2) is distinct from 'structured_rule' or pg_temp.rule(r, 3) is distinct from 'structured_rule' then
 		raise exception 'A chat id belongs to one chat: %', r; end if;
 	-- The parse's shape: at least two agents.
 	r := pg_temp.commit(pg_temp.owner(), 'group-rule-06', jsonb_build_array(pg_temp.edit_group('launch',
 		pg_temp.group_parse('70200000-0000-4000-8000-0000000000b1', 'Launch team', array['70200000-0000-4000-8000-0000000000a1']::uuid[], array['70200000-0000-4000-8000-000000000002']::uuid[], ''))));
-	if pg_temp.rule(r, 1) <> 'structured_invalid' then raise exception 'One agent is not a group chat: %', r; end if;
+	if pg_temp.rule(r, 1) is distinct from 'structured_invalid' then raise exception 'One agent is not a group chat: %', r; end if;
 	-- group.md never goes alone, and the folder never leaves agents/groups/.
 	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'group-rule-07', jsonb_build_array(jsonb_build_object('op','delete',
 		'path','agents/groups/launch/group.md','expectedVersion',pg_temp.version('agents/groups/launch/group.md')))), 1, 'refused', 'lone_structured_file');
@@ -255,8 +255,8 @@ begin
 		'from','agents/groups/launch','to','agents/groups/launch-team','expectedVersion',pg_temp.version('agents/groups/launch'),
 		'asOfSeq',pg_temp.seq()))), 1, 'saved');
 	g := pg_temp.room('70200000-0000-4000-8000-0000000000b1');
-	if g.folder_path <> 'agents/groups/launch-team/group.md' or g.folder_path_version <> pg_temp.version('agents/groups/launch-team/group.md')
-		or g.status <> 'active' then
+	if g.folder_path is distinct from 'agents/groups/launch-team/group.md' or g.folder_path_version is distinct from pg_temp.version('agents/groups/launch-team/group.md')
+		or g.status is distinct from 'active' then
 		raise exception 'A chat follows its folder: %', to_jsonb(g); end if;
 	-- Deleting the folder closes the chat and its conversation; its lock target is the room.
 	select jsonb_agg(to_jsonb(x)) into t from public.qorpera_folder_structured_targets('70200000-0000-4000-8000-000000000020', pg_temp.owner(), jsonb_build_array(
@@ -267,15 +267,15 @@ begin
 	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'group-delete-01', jsonb_build_array(jsonb_build_object('op','delete',
 		'path','agents/groups/launch-team','expectedVersion',pg_temp.version('agents/groups/launch-team'),'asOfSeq',pg_temp.seq()))), 1, 'saved');
 	g := pg_temp.room('70200000-0000-4000-8000-0000000000b1');
-	if g.status <> 'archived' or g.folder_retired_at is null
-		or (select status from public.qorpera_shared_sessions where id = g.session_id) <> 'closed' then
+	if g.status is distinct from 'archived' or g.folder_retired_at is null
+		or (select status from public.qorpera_shared_sessions where id = g.session_id) is distinct from 'closed' then
 		raise exception 'Deleting the folder closes the chat: %', to_jsonb(g); end if;
 	-- A restore reopens both, with the same conversation.
 	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'group-restore-01', jsonb_build_array(
 		pg_temp.new_group('launch', '70200000-0000-4000-8000-0000000000b1', 'Launch', array['70200000-0000-4000-8000-0000000000a1','70200000-0000-4000-8000-0000000000a2']::uuid[], array['70200000-0000-4000-8000-000000000001']::uuid[]))), 1, 'saved');
-	if (pg_temp.room('70200000-0000-4000-8000-0000000000b1')).status <> 'active' or (pg_temp.room('70200000-0000-4000-8000-0000000000b1')).folder_retired_at is not null
-		or (pg_temp.room('70200000-0000-4000-8000-0000000000b1')).session_id <> g.session_id
-		or (select status from public.qorpera_shared_sessions where id = g.session_id) <> 'open' then
+	if (pg_temp.room('70200000-0000-4000-8000-0000000000b1')).status is distinct from 'active' or (pg_temp.room('70200000-0000-4000-8000-0000000000b1')).folder_retired_at is not null
+		or (pg_temp.room('70200000-0000-4000-8000-0000000000b1')).session_id is distinct from g.session_id
+		or (select status from public.qorpera_shared_sessions where id = g.session_id) is distinct from 'open' then
 		raise exception 'A restore reopens the chat: %', to_jsonb(pg_temp.room('70200000-0000-4000-8000-0000000000b1')); end if;
 end $$;
 
@@ -311,15 +311,15 @@ begin
 	r := pg_temp.commit(pg_temp.owner(), 'sections-0003', jsonb_build_array(
 		pg_temp.sections(jsonb_build_object('kind','sections','sections',jsonb_build_array(jsonb_build_object('name','Top','line',3,
 			'members',jsonb_build_array(jsonb_build_object('id','70200000-0000-4000-8000-0000000000c0','line',4))))))));
-	if pg_temp.rule(r, 1) <> 'structured_rule' then raise exception 'The Co-Founder is never in a section: %', r; end if;
+	if pg_temp.rule(r, 1) is distinct from 'structured_rule' then raise exception 'The Co-Founder is never in a section: %', r; end if;
 	r := pg_temp.commit(pg_temp.owner(), 'sections-0004', jsonb_build_array(
 		pg_temp.sections(jsonb_build_object('kind','sections','sections',jsonb_build_array(jsonb_build_object('name','Top','line',3,
 			'members',jsonb_build_array(jsonb_build_object('id','70200000-0000-4000-8000-0000000000ff','line',4))))))));
-	if pg_temp.rule(r, 1) <> 'structured_rule' then raise exception 'An unknown id is refused: %', r; end if;
+	if pg_temp.rule(r, 1) is distinct from 'structured_rule' then raise exception 'An unknown id is refused: %', r; end if;
 	r := pg_temp.commit(pg_temp.owner(), 'sections-0005', jsonb_build_array(
 		pg_temp.sections(jsonb_build_object('kind','sections','sections',jsonb_build_array(
 			jsonb_build_object('name','Top','line',3,'members','[]'::jsonb), jsonb_build_object('name','TOP','line',5,'members','[]'::jsonb))))));
-	if pg_temp.rule(r, 1) <> 'structured_invalid' then raise exception 'Section names are unique ignoring case: %', r; end if;
+	if pg_temp.rule(r, 1) is distinct from 'structured_invalid' then raise exception 'Section names are unique ignoring case: %', r; end if;
 	-- An id already listed never blocks a save when its agent is gone: it keeps its place, which the sidebar hides.
 	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'sections-0006', jsonb_build_array(jsonb_build_object('op','delete',
 		'path','agents/vera','expectedVersion',pg_temp.version('agents/vera'),'asOfSeq',pg_temp.seq()))), 1, 'saved');
@@ -345,11 +345,11 @@ begin
 		raise exception 'A group edit locks the company row and its room: %', t; end if;
 	select jsonb_agg(to_jsonb(x)) into t from public.qorpera_folder_structured_targets('70200000-0000-4000-8000-000000000020', pg_temp.owner(), jsonb_build_array(
 		pg_temp.new_group('fresh', '70200000-0000-4000-8000-0000000000b2', 'Fresh', array['70200000-0000-4000-8000-0000000000a1','70200000-0000-4000-8000-0000000000a2']::uuid[], null))) x;
-	if t <> '[{"rank":2,"tbl":"qorpera_profiles","key":"70200000-0000-4000-8000-000000000010","mode":"keyshare"}]' then
+	if t is distinct from '[{"rank":2,"tbl":"qorpera_profiles","key":"70200000-0000-4000-8000-000000000010","mode":"keyshare"}]' then
 		raise exception 'A new chat locks the company row only: %', t; end if;
 	select jsonb_agg(to_jsonb(x)) into t from public.qorpera_folder_structured_targets('70200000-0000-4000-8000-000000000020', pg_temp.owner(), jsonb_build_array(
 		pg_temp.sections('{"kind":"sections","sections":[]}'))) x;
-	if t <> '[{"rank":2,"tbl":"qorpera_profiles","key":"70200000-0000-4000-8000-000000000010","mode":"keyshare"}]' then
+	if t is distinct from '[{"rank":2,"tbl":"qorpera_profiles","key":"70200000-0000-4000-8000-000000000010","mode":"keyshare"}]' then
 		raise exception 'sections.md locks the company row only: %', t; end if;
 end $$;
 
@@ -376,19 +376,19 @@ declare r jsonb; ops uuid;
 begin
 	-- An agent never takes a conversation's id; a chat never takes a snapshot-v1 chat's key.
 	r := pg_temp.commit(pg_temp.owner(), 'ids-0001', jsonb_build_array(pg_temp.hire('clash', '70200000-0000-4000-8000-0000000000b1', 'Clash')));
-	if pg_temp.rule(r, 1) <> 'structured_rule' then raise exception 'An agent cannot take a chat''s id: %', r; end if;
+	if pg_temp.rule(r, 1) is distinct from 'structured_rule' then raise exception 'An agent cannot take a chat''s id: %', r; end if;
 	insert into public.qorpera_company_rooms(id, profile_id, environment_id, room_key, name, purpose, status, version, source_path,
 		source_path_version, source_snapshot_id, source_file_sha256, created_by_user_id)
 	values ('70200000-0000-4000-8000-0000000000b4', '70200000-0000-4000-8000-000000000010', '70200000-0000-4000-8000-000000000020', 'chat-70200000-0000-4000-8000-0000000000b3', 'Legacy', 'Old.', 'active', 1, 'organization/rooms/70200000-0000-4000-8000-0000000000b4.json',
 		extensions.gen_random_uuid(), extensions.gen_random_uuid(), repeat('c', 64), '70200000-0000-4000-8000-000000000001');
 	r := pg_temp.commit(pg_temp.owner(), 'ids-0002', jsonb_build_array(
 		pg_temp.new_group('legacy', '70200000-0000-4000-8000-0000000000b3', 'Legacy', array['70200000-0000-4000-8000-0000000000a1','70200000-0000-4000-8000-0000000000a2']::uuid[], null)));
-	if pg_temp.rule(r, 1) <> 'structured_rule' then raise exception 'A chat cannot take a legacy chat''s key: %', r; end if;
+	if pg_temp.rule(r, 1) is distinct from 'structured_rule' then raise exception 'A chat cannot take a legacy chat''s key: %', r; end if;
 	-- The case rule names itself.
 	r := pg_temp.commit(pg_temp.owner(), 'ids-0003', jsonb_build_array(
 		pg_temp.sections(jsonb_build_object('kind','sections','sections',jsonb_build_array(
 			jsonb_build_object('name','Top','line',3,'members','[]'::jsonb), jsonb_build_object('name','TOP','line',5,'members','[]'::jsonb))))));
-	if r -> 'units' -> 0 -> 'problems' -> 0 ->> 'message' not like '%case is ignored%' then
+	if coalesce(r -> 'units' -> 0 -> 'problems' -> 0 ->> 'message', '') not like '%case is ignored%' then
 		raise exception 'Names equal ignoring case are named as such: %', r; end if;
 
 	-- A crew chat and its place in a section; then its folder, and otto's, go.
@@ -420,12 +420,12 @@ begin
 	delete from public.qorpera_profile_members where profile_id = '70200000-0000-4000-8000-000000000010' and user_id = '70200000-0000-4000-8000-000000000002';
 	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'away-0007', jsonb_build_array(
 		pg_temp.new_group('crew', '70200000-0000-4000-8000-0000000000b5', 'Crew', array['70200000-0000-4000-8000-0000000000a1','70200000-0000-4000-8000-0000000000a2']::uuid[], array['70200000-0000-4000-8000-000000000002']::uuid[]))), 1, 'saved');
-	if (pg_temp.room('70200000-0000-4000-8000-0000000000b5')).status <> 'active' or pg_temp.members('70200000-0000-4000-8000-0000000000b5') <> 'member:02,staff_agent:a1,staff_agent:a2' then
+	if (pg_temp.room('70200000-0000-4000-8000-0000000000b5')).status is distinct from 'active' or pg_temp.members('70200000-0000-4000-8000-0000000000b5') is distinct from 'member:02,staff_agent:a1,staff_agent:a2' then
 		raise exception 'The crew chat restores as it was: % %', to_jsonb(pg_temp.room('70200000-0000-4000-8000-0000000000b5')), pg_temp.members('70200000-0000-4000-8000-0000000000b5'); end if;
 	-- A new id in the same file would still be checked.
 	r := pg_temp.commit(pg_temp.owner(), 'away-0008', jsonb_build_array(pg_temp.edit_group('crew',
 		pg_temp.group_parse('70200000-0000-4000-8000-0000000000b5', 'Crew', array['70200000-0000-4000-8000-0000000000a1','70200000-0000-4000-8000-0000000000a2']::uuid[], array['70200000-0000-4000-8000-000000000002','70200000-0000-4000-8000-000000000003']::uuid[]))));
-	if pg_temp.rule(r, 1) <> 'structured_rule' then raise exception 'A new person is still checked: %', r; end if;
+	if pg_temp.rule(r, 1) is distinct from 'structured_rule' then raise exception 'A new person is still checked: %', r; end if;
 end $$;
 
 -- Pins and hidden agents stay member settings on folder-v2.
@@ -433,14 +433,19 @@ do $$
 begin
 	perform set_config('request.jwt.claims', '{"role":"authenticated","sub":"70200000-0000-4000-8000-000000000001"}', true);
 	set local role authenticated;
-	perform public.qorpera_manage_company_sidebar('70200000-0000-4000-8000-000000000010', jsonb_build_object('action','set_hidden','staffAgentId','70200000-0000-4000-8000-0000000000a1','hidden',true));
 	perform public.qorpera_manage_company_sidebar('70200000-0000-4000-8000-000000000010', jsonb_build_object('action','set_pins','order',jsonb_build_array('70200000-0000-4000-8000-0000000000a1'),
 		'groupChats',true));
 	reset role;
-	perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
 	if not exists (select 1 from public.qorpera_member_sidebar_agents where profile_id = '70200000-0000-4000-8000-000000000010' and user_id = '70200000-0000-4000-8000-000000000001'
-		and staff_agent_id = '70200000-0000-4000-8000-0000000000a1') then
-		raise exception 'Pins and hiding work on folder-v2'; end if;
+		and staff_agent_id = '70200000-0000-4000-8000-0000000000a1' and pinned_position = 0 and not hidden) then
+		raise exception 'Pins work on folder-v2'; end if;
+	set local role authenticated;
+	perform public.qorpera_manage_company_sidebar('70200000-0000-4000-8000-000000000010', jsonb_build_object('action','set_hidden','staffAgentId','70200000-0000-4000-8000-0000000000a1','hidden',true));
+	reset role;
+	if not exists (select 1 from public.qorpera_member_sidebar_agents where profile_id = '70200000-0000-4000-8000-000000000010' and user_id = '70200000-0000-4000-8000-000000000001'
+		and staff_agent_id = '70200000-0000-4000-8000-0000000000a1' and hidden) then
+		raise exception 'Hiding works on folder-v2'; end if;
+	perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
 end $$;
 
 rollback;

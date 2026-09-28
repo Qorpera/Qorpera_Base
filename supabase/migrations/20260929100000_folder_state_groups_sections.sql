@@ -48,7 +48,7 @@ create index qorpera_company_rooms_folder_path on public.qorpera_company_rooms(f
 create or replace function public.qorpera_company_state_parse_problems(p_kind text, p_parse jsonb)
 returns jsonb language plpgsql immutable set search_path = '' as $$
 declare
-	v_bad text[] := '{}';
+	v_bad text[] := '{}'; v_named jsonb;
 	c_uuid constant text := '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$';
 begin
 	if jsonb_typeof(p_parse) is distinct from 'object' or p_parse ->> 'kind' is distinct from p_kind then
@@ -119,18 +119,22 @@ begin
 			v_bad := array_append(v_bad, 'sections');
 		-- Names are unique ignoring case as the database compares them (lower(), the index's unique key), which can
 		-- join two names the parser keeps apart; and an id is listed once in the whole file.
-		elsif (select count(distinct lower(s ->> 'name')) from jsonb_array_elements(p_parse -> 'sections') s)
-				<> jsonb_array_length(p_parse -> 'sections') then
-			return jsonb_build_array(public.qorpera_company_state_problem('value', null, null,
-				'two sections have the same name when case is ignored; rename one'));
-		elsif (select count(*) <> count(distinct m ->> 'id') from jsonb_array_elements(p_parse -> 'sections') s,
-				jsonb_array_elements(s -> 'members') m) then
-			v_bad := array_append(v_bad, 'sections');
+		else
+			if (select count(distinct lower(s ->> 'name')) from jsonb_array_elements(p_parse -> 'sections') s)
+					<> jsonb_array_length(p_parse -> 'sections') then
+				v_named := public.qorpera_company_state_problem('value', null, null,
+					'two sections have the same name when case is ignored; rename one');
+			end if;
+			if (select count(*) <> count(distinct m ->> 'id') from jsonb_array_elements(p_parse -> 'sections') s,
+					jsonb_array_elements(s -> 'members') m) then
+				v_bad := array_append(v_bad, 'sections');
+			end if;
 		end if;
 	end if;
-	if cardinality(v_bad) = 0 then return '[]'::jsonb; end if;
-	return jsonb_build_array(public.qorpera_company_state_problem('value', null, null,
-		'the platform read this file differently from its rules (' || array_to_string(v_bad, ', ') || ')'));
+	if cardinality(v_bad) = 0 and v_named is null then return '[]'::jsonb; end if;
+	return case when v_named is null then '[]'::jsonb else jsonb_build_array(v_named) end
+		|| case when cardinality(v_bad) = 0 then '[]'::jsonb else jsonb_build_array(public.qorpera_company_state_problem('value', null, null,
+			'the platform read this file differently from its rules (' || array_to_string(v_bad, ', ') || ')')) end;
 end $$;
 
 -- The checked parse of one structured file a unit writes (F2-1), now with the shape of group chats and sections.
@@ -185,13 +189,16 @@ declare
 begin
 	select * into v_room from public.qorpera_company_rooms where id = v_id;
 	v_exists := found;
+	-- A parse stored before its kind's shape was checked (F2-1 alone) is not trusted: its id is not held against the
+	-- save, and every id counts as added. A well-formed one is trusted; no folder-v2 company exists before C5.
+	if v_base is not null and jsonb_array_length(public.qorpera_company_state_parse_problems('group', v_base)) > 0 then
+		v_base := null; end if;
 	v_prev := v_base;
 	if v_prev is null and v_exists and v_room.profile_id = p_profile_id and v_room.folder_path is not null then
 		select v.structured -> 'parse' into v_prev from public.qorpera_folder_path_versions v where v.version = v_room.folder_path_version;
+		if v_prev is not null and jsonb_array_length(public.qorpera_company_state_parse_problems('group', v_prev)) > 0 then
+			v_prev := null; end if;
 	end if;
-	-- A parse stored before its kind's shape was checked (F2-1 alone) is not trusted: every id counts as added.
-	if v_prev is not null and jsonb_array_length(public.qorpera_company_state_parse_problems('group', v_prev)) > 0 then
-		v_prev := null; end if;
 	if v_base is not null and v_base ->> 'id' is distinct from p_parse ->> 'id' then
 		v_problem := 'id never changes; it is ' || (v_base ->> 'id');
 	elsif v_exists and (v_room.profile_id <> p_profile_id or v_room.folder_path is null) then

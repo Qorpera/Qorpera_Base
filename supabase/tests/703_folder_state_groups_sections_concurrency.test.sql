@@ -170,8 +170,8 @@ begin
 	perform dblink_exec('srace_post', 'rollback');
 	select r into v from dblink_get_result('srace_save') as t(r jsonb);
 	perform * from dblink_get_result('srace_save') as t(r jsonb);
-	if v -> 'units' -> 0 ->> 'outcome' <> 'saved' then raise exception 'The rename saves once posting is done: %', v; end if;
-	if (select name from public.qorpera_company_rooms where id = '70300000-0000-4000-8000-0000000000b1') <> 'Launch team' then
+	if v -> 'units' -> 0 ->> 'outcome' is distinct from 'saved' then raise exception 'The rename saves once posting is done: %', v; end if;
+	if (select name from public.qorpera_company_rooms where id = '70300000-0000-4000-8000-0000000000b1') is distinct from 'Launch team' then
 		raise exception 'The rename reaches the room'; end if;
 end $$;
 
@@ -195,7 +195,7 @@ begin
 	perform dblink_exec('srace_hold', 'rollback');
 	select r into v from dblink_get_result('srace_save') as t(r jsonb);
 	perform * from dblink_get_result('srace_save') as t(r jsonb);
-	if v -> 'units' -> 0 ->> 'outcome' <> 'saved' then raise exception 'The rename saves before the post: %', v; end if;
+	if v -> 'units' -> 0 ->> 'outcome' is distinct from 'saved' then raise exception 'The rename saves before the post: %', v; end if;
 	perform * from dblink_get_result('srace_post') as t(x text);
 	perform * from dblink_get_result('srace_post') as t(x text);
 	-- The post goes on to the room and the clock at once.
@@ -204,7 +204,7 @@ begin
 	perform * from dblink('srace_post', $q$select 1 from public.qorpera_profile_operation_clocks
 		where profile_id = '70300000-0000-4000-8000-000000000010' for update nowait$q$) as t(x integer);
 	perform dblink_exec('srace_post', 'rollback');
-	if (select name from public.qorpera_company_rooms where id = '70300000-0000-4000-8000-0000000000b1') <> 'Launch' then
+	if (select name from public.qorpera_company_rooms where id = '70300000-0000-4000-8000-0000000000b1') is distinct from 'Launch' then
 		raise exception 'The rename back reaches the room'; end if;
 end $$;
 
