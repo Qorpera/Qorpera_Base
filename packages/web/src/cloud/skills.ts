@@ -68,13 +68,14 @@ async function library(files: CloudMemberCompanyFileClient, root: string, signal
  * company's, each by name. Descriptions come from the same SKILL.md parser agents use. */
 export async function loadSkillSuggestions(
 	files: CloudMemberCompanyFileClient,
+	companyId: string,
 	agentId: string | null,
 	signal: AbortSignal,
 ): Promise<SkillSuggestion[]> {
 	const libraries = [
 		// The agent's folder comes from the one resolver the runtime uses too (contract 5.6).
 		...(agentId && UUID.test(agentId)
-			? [{ root: `${cloudAgentFolder({ id: agentId })}/skills`, scope: "agent" as const }]
+			? [{ root: `${cloudAgentFolder(companyId, agentId)}/skills`, scope: "agent" as const }]
 			: []),
 		{ root: COMPANY_LIBRARY, scope: "company" as const },
 	];

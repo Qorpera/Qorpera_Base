@@ -573,14 +573,14 @@ describe("reading the skill list", () => {
 			"skills/empty/notes.txt": "not a skill",
 			"skills/README.md": "Not a skill name.",
 		});
-		expect(await loadSkillSuggestions(client, staff.id, new AbortController().signal)).toEqual([
+		expect(await loadSkillSuggestions(client, profileA.profileId, staff.id, new AbortController().signal)).toEqual([
 			{ name: "triage", description: "Sort new tickets.", scope: "agent" },
 			{ name: "broken", description: null, scope: "company" },
 			{ name: "customer-refund", description: "Refund a customer.", scope: "company" },
 			{ name: "weekly-note", description: "A flat skill file.", scope: "company" },
 		]);
 		// A group chat, or a thread without an agent, offers only the company's.
-		const company = await loadSkillSuggestions(client, null, new AbortController().signal);
+		const company = await loadSkillSuggestions(client, profileA.profileId, null, new AbortController().signal);
 		expect(company.every((skill) => skill.scope === "company")).toBe(true);
 	});
 
@@ -590,16 +590,21 @@ describe("reading the skill list", () => {
 			[],
 			[`agents/${staff.id}/skills`],
 		);
-		expect(await loadSkillSuggestions(client, staff.id, new AbortController().signal)).toEqual([
+		expect(await loadSkillSuggestions(client, profileA.profileId, staff.id, new AbortController().signal)).toEqual([
 			{ name: "customer-refund", description: "Refund.", scope: "company" },
 		]);
 		// Never "no skills" for a failed listing: the composer keeps its last list and reads again.
-		await expect(loadSkillSuggestions(files({}, ["skills"]), staff.id, new AbortController().signal)).rejects.toThrow(
-			"Company File is unavailable.",
-		);
+		await expect(
+			loadSkillSuggestions(files({}, ["skills"]), profileA.profileId, staff.id, new AbortController().signal),
+		).rejects.toThrow("Company File is unavailable.");
 		// An outage of the agent's folder is not a closed folder: the agent's skills are not dropped quietly.
 		await expect(
-			loadSkillSuggestions(files({}, [`agents/${staff.id}/skills`]), staff.id, new AbortController().signal),
+			loadSkillSuggestions(
+				files({}, [`agents/${staff.id}/skills`]),
+				profileA.profileId,
+				staff.id,
+				new AbortController().signal,
+			),
 		).rejects.toThrow("Company File is unavailable.");
 	});
 
@@ -629,7 +634,9 @@ describe("reading the skill list", () => {
 		}));
 		const client = { list, read } as unknown as CloudMemberCompanyFileClient;
 		expect(
-			(await loadSkillSuggestions(client, null, new AbortController().signal)).map((skill) => skill.name),
+			(await loadSkillSuggestions(client, profileA.profileId, null, new AbortController().signal)).map(
+				(skill) => skill.name,
+			),
 		).toEqual(["a-one", "b-two"]);
 		expect(list).toHaveBeenCalledTimes(4);
 	});

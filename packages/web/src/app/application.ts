@@ -820,7 +820,7 @@ export function mountApplication(
 										controller.signal,
 										current,
 									).files();
-									return loadSkillSuggestions(files, agentId, controller.signal);
+									return loadSkillSuggestions(files, controller.profile.profileId, agentId, controller.signal);
 								});
 							},
 							sessionModel: createWebSessionModel(
