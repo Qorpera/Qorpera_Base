@@ -355,6 +355,24 @@ profile RPCs; RLS is the second read boundary.
 - `qorpera_update_profile_member_role`
 
 
+### Mentions (20260928010000_runtime_room_mentions)
+
+- The cloud reads mentions from a room post's text: "@" at the start or after a
+  space, an opening bracket or a quote; a room member's or agent's name; then the
+  end, a space or punctuation. Only A-Z fold case and every Unicode space counts as
+  a space (`qorpera_mention_fold`), so the rule does not depend on the database's
+  locale. Longer names first; everyone who shares a name named is named. Clients
+  follow the same rule (`packages/web/src/ui/mentions.ts`, `mentionFold`) to
+  suggest names and say who will answer.
+- `qorpera_post_company_room_message` is unchanged in shape. A post that names
+  agents wakes only those agents; a named agent's room wake has a required
+  reply. A post that names no agent wakes every agent in the room, as before.
+- `qorpera_list_member_mentions(p_profile_id)` → `qorpera.member-mentions/v1`:
+  the caller's unseen mentions by conversation (`sessionId`, `count`,
+  `latestAt`). `qorpera_mark_member_mentions_seen(p_session_id)` marks the
+  caller's mentions in a conversation seen. The author is never told about
+  their own post.
+
 ## 3. Realtime
 
 - `qorpera-profile-{profileId}` — durable-lane invalidation hints for a profile
@@ -427,7 +445,7 @@ machine.
 | Auth, profiles, membership, invitations, friends, presence | live | build fully |
 | Conversations: sessions, inputs, events, replay, Realtime | live (Order 1 mouth writes the canonical transcript) | build fully; render only send operations |
 | Approvals | `authorization_request` answered through `qorpera_answer_interaction` (bundle v75) | build the inbox; Approve and Decline call the answer RPC |
-| Auto-review rules and approval cards | kernel + runtime in bundle v130 | Settings → Rules; approval cards with Allow once / Deny / Always allow through `qorpera_answer_action_review`; show no live controls until v130 is live |
+| Auto-review rules and approval cards | kernel + runtime in bundle v130 | rules at the bottom of Settings → General; approval cards with Allow once / Deny / Always allow through `qorpera_answer_action_review`; show no live controls until v130 is live |
 | Thread interactions (typed cards) | kernel in bundle v75; runtime tool and web cards follow | render `interaction_request` events as cards; answer through the RPC |
 | Company File: published snapshots, objects, proposals | live | build browsing/review |
 | Company File: live logical paths with ACLs | Order 0 gateway in progress | read-only projection, then live |
@@ -895,8 +913,9 @@ above.
     deletions, hiring, routines, workers), a reviewer decides allow / ask /
     deny. An ask raises an `authorization_request` card of schema
     `qorpera.action-review/v1` in the conversation the agent works in (its
-    own thread or a plain conversation; never a group chat). The web needs a
-    Settings → Rules tab (the three rule RPCs) and live controls on these
-    cards (`qorpera_answer_action_review`, section 2). Older approval cards
-    without `reviewId` keep the v75 path.
+    own thread or a plain conversation; never a group chat). The web needs the
+    rules at the bottom of Settings → General (the three rule RPCs; web #360
+    replaced the first Rules tab) and live controls on these cards
+    (`qorpera_answer_action_review`, section 2). Older approval cards without
+    `reviewId` keep the v75 path.
 

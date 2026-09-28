@@ -16,6 +16,7 @@ import {
 	parseMemberPictureObjects,
 	parseMemberPictures,
 } from "./member-pictures.ts";
+import { listMemberMentions, type MemberMentions, markMentionsSeen } from "./mentions.ts";
 import { type HostedCompanyOrganization, parseHostedCompanyOrganization } from "./organization.ts";
 import { collectPages, type PageCursor } from "./pagination.ts";
 import {
@@ -325,6 +326,15 @@ export class CloudApi {
 		onHealth: (health: PresenceHealth) => void,
 	): CloudPresenceHandle {
 		return joinCompanyPresence(this.cloud, requiredUuid(profileId, "Profile id"), onMembers, onHealth);
+	}
+
+	/** The conversations where the signed-in member was mentioned and has not looked yet. */
+	listMemberMentions(profileId: string): Promise<MemberMentions[]> {
+		return listMemberMentions(this.cloud, requiredUuid(profileId, "Profile id"));
+	}
+
+	markMentionsSeen(sessionId: string): Promise<void> {
+		return markMentionsSeen(this.cloud, requiredUuid(sessionId, "Session id"));
 	}
 
 	/** Sections are the company's; pins and hidden agents are the signed-in member's. */
