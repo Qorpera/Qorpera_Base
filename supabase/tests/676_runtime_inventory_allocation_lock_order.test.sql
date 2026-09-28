@@ -57,12 +57,16 @@ begin
     perform pg_temp.wake_assert(public.qorpera_observe_runtime_node_inventory(observation,context->>'contextSha256',inventory)=result->'result','Exact inventory replay changed');
     perform pg_temp.wake_error(format('select public.qorpera_observe_runtime_node_inventory(%L,%L,%L)',
         observation,context->>'contextSha256',jsonb_set(inventory,'{entries,0,name}','"other"')),'42501');
-    -- A missing allocation takes no lock and is refused by the allocation check, as before. The
-    -- binding recorded above changed the context, so take a fresh one; a stale one would refuse
-    -- with 409 before the allocation check.
-    context:=public.qorpera_runtime_node_inventory_context(v_node_id);
+    -- A missing allocation takes no lock. With the context the report was made from (stale now: the
+    -- binding recorded above changed it) the report is refused as a changed ledger (409); with a fresh
+    -- one it is refused by the allocation check, as before.
     observation:=observation||jsonb_build_object('observationId',extensions.gen_random_uuid());
     inventory:=jsonb_set(inventory,'{entries,0,allocation,allocationId}','"67600000-0000-4000-8000-000000000099"');
-    perform pg_temp.wake_error(format('select public.qorpera_observe_runtime_node_inventory(%L,%L,%L)',observation,context->>'contextSha256',inventory),'42501');
+    perform pg_temp.wake_error(format('select public.qorpera_observe_runtime_node_inventory(%L,%L,%L)',observation,context->>'contextSha256',inventory),
+        'PGRST','{"code": "QRC01", "hint": null, "details": null, "message": "Node inventory ledger changed"}');
+    context:=public.qorpera_runtime_node_inventory_context(v_node_id);
+    observation:=observation||jsonb_build_object('observationId',extensions.gen_random_uuid());
+    perform pg_temp.wake_error(format('select public.qorpera_observe_runtime_node_inventory(%L,%L,%L)',observation,context->>'contextSha256',inventory),
+        '42501','Node inventory allocation differs');
 end $$;
 select pg_temp.lock_order_cleanup();

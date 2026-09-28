@@ -9,7 +9,9 @@
 -- names an allocation that does not exist takes no lock and is refused by the existing checks, as
 -- before: it cannot match the context, and an allocation created after the observer read its context
 -- changes the context digest, which refuses the report with 409 before any binding is inserted.
--- Admission, the node lock and every check after it are unchanged.
+-- An entry that is not an object, or a managed entry without a well-formed allocation id, is refused
+-- before the node lock ("Invalid node inventory allocation identity", 42501); the real observer never
+-- sends one. Admission, the node lock and every check after it are unchanged.
 
 do $guard$ begin
 	if encode(extensions.digest(pg_get_functiondef('public.qorpera_observe_runtime_node_inventory(jsonb,text,jsonb)'::regprocedure), 'sha256'), 'hex') <> '06ab808a35dad39a1b435bde92a1671e6b9e9f2118f25a3e3d3c5837e50aef91' then
