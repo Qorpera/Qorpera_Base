@@ -10,6 +10,8 @@
 --     (qorpera_declare_runner_orchestrator_bundle, service role). A declared orchestrator claims only
 --     runs of that bundle. An undeclared orchestrator claims as before, so nothing changes until an
 --     operator declares, and a normal paused cut needs no declaration at all.
+--   * Re-registering an orchestrator (every fast-host rebuild does) clears its declaration: a rebuilt
+--     host may run another bundle, so it is undeclared until the operator declares it again.
 --   * qorpera_runtime_bundle_roll_status (service role): the active bundle, and for every bundle with
 --     work (queued or running runs, inputs not yet turned into a run) or a declared orchestrator:
 --     that work, which orchestrators may claim it and on which nodes, and whether a serving node can.
@@ -52,6 +54,23 @@ begin
 end
 $$;
 
+do $register$
+declare v_def text; v_old text; v_new text;
+begin
+	v_def := pg_get_functiondef('public.qorpera_register_runner_orchestrator(uuid,text,text,text,integer)'::regprocedure);
+	v_old := '		last_heartbeat_at = statement_timestamp()
+	where public.qorpera_runner_orchestrators.status <> ''revoked''';
+	v_new := '		last_heartbeat_at = statement_timestamp(),
+		runtime_bundle_sha256 = null,
+		runtime_bundle_declared_at = null
+	where public.qorpera_runner_orchestrators.status <> ''revoked''';
+	if (length(v_def) - length(replace(v_def, v_old, ''))) / length(v_old) <> 1 then
+		raise exception 'register_runner_orchestrator conflict update differs';
+	end if;
+	execute replace(v_def, v_old, v_new);
+end
+$register$;
+
 do $claim$
 declare v_def text; v_old text; v_new text;
 begin
@@ -88,11 +107,11 @@ begin
 		-- Queued: nobody holds it yet. Running: claimed by an orchestrator, leased or running.
 		select run.runtime_bundle_sha256 sha,
 			count(*) filter (where job.status = 'queued' and not claimed.held) queued,
-			count(*) filter (where job.status in ('leased', 'running') or claimed.held) running
+			count(*) filter (where job.status = 'leased' or claimed.held) running
 		from public.qorpera_runner_jobs job join public.qorpera_execution_runs run on run.id = job.run_id
 		cross join lateral (select exists (select 1 from public.qorpera_runner_job_claims claim
 			where claim.job_id = job.id and claim.status in ('claimed', 'assigned')) held) claimed
-		where job.status in ('queued', 'leased', 'running')
+		where job.status in ('queued', 'leased')
 		group by run.runtime_bundle_sha256
 	), inputs as (
 		select input.runtime_bundle_sha256 sha, count(*) pending, min(input.created_at) oldest
@@ -118,6 +137,8 @@ begin
 			from orchestrators o where o.sha = shas.sha), '[]'::jsonb),
 		-- Claimable now by: live (heartbeat within 2 minutes) active orchestrators declaring this bundle or
 		-- none, on a serving node or with no node row (the serving switch cannot stop those, 20260928180000).
+		-- An upper bound: an undeclared orchestrator refuses bundles its hosts do not run, the identity-home
+		-- rule still applies, and a just re-registered orchestrator counts as live before it starts.
 		'servedBy', coalesce((select jsonb_agg(distinct o.id) from orchestrators o where o.live and coalesce(o.enabled, true)
 			and (o.sha is null or o.sha = shas.sha)), '[]'::jsonb),
 		'servedOnServingNode', exists (select 1 from orchestrators o where o.live and coalesce(o.enabled, true)
@@ -128,9 +149,15 @@ begin
 	left join public.qorpera_runtime_bundles bundle on bundle.sha256 = shas.sha and bundle.bundle_key = 'qorpera.cloud-runtime'
 	left join work on work.sha = shas.sha
 	left join inputs on inputs.sha = shas.sha;
+	-- Live orchestrators that declare nothing claim every bundle, but their hosts run only one and
+	-- refuse the rest: during a roll every live orchestrator should be declared.
 	return jsonb_build_object('schema', 'qorpera.runtime-bundle-roll-status/v1', 'activeVersion',
 		(select version from public.qorpera_runtime_bundles where id = v_active.runtime_bundle_id),
-		'activeSha256', v_active.runtime_bundle_sha256, 'bundles', v_bundles);
+		'activeSha256', v_active.runtime_bundle_sha256, 'bundles', v_bundles,
+		'undeclaredLive', (select coalesce(jsonb_agg(orchestrator.id order by orchestrator.id), '[]'::jsonb)
+			from public.qorpera_runner_orchestrators orchestrator
+			where orchestrator.status = 'active' and orchestrator.runtime_bundle_sha256 is null
+				and orchestrator.last_heartbeat_at > clock_timestamp() - interval '2 minutes'));
 end
 $$;
 

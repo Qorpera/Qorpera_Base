@@ -69,14 +69,16 @@ select pg_temp.wake_assert(pg_temp.kv_entry(pg_temp.kv_status(),current_setting(
 		= '64200000-0000-4000-8000-000000000012',
 	'Roll status before the switch: ' || pg_temp.kv_status()::text);
 
--- An input accepted before the switch but not yet turned into a run keeps the old bundle and is counted.
+-- An input accepted before the switch but not yet turned into a run keeps the old bundle and is counted;
+-- an input already turned into a run is not.
+select set_config('qorpera_test.kv_pending',coalesce(pg_temp.kv_entry(pg_temp.kv_status(),current_setting('qorpera_test.kv_old')) ->> 'pendingInputs','0'),true);
 reset role;
 insert into public.qorpera_session_inputs(id,session_id,client_input_id,kind,author_user_id,body)
 values('64200000-0000-4000-8000-000000000102','30000000-0000-4000-8000-000000000043',extensions.gen_random_uuid(),
 	'user_message','30000000-0000-4000-8000-000000000001','{"schema":"qorpera.session-prompt/v1","text":"Later","images":[]}');
 set local role service_role;
-select pg_temp.wake_assert((pg_temp.kv_entry(pg_temp.kv_status(),current_setting('qorpera_test.kv_old')) ->> 'pendingInputs')::bigint >= 1,
-	'Old-bundle inputs not yet turned into runs are counted');
+select pg_temp.wake_assert((pg_temp.kv_entry(pg_temp.kv_status(),current_setting('qorpera_test.kv_old')) ->> 'pendingInputs')::bigint
+	= current_setting('qorpera_test.kv_pending')::bigint + 1,'Old-bundle inputs not yet turned into runs are counted, exactly');
 reset role;
 
 -- The switch: new runs get the new bundle. The old node now declares the old bundle and finishes it.
@@ -92,6 +94,9 @@ select pg_temp.wake_assert((select runtime_bundle_sha256 from public.qorpera_exe
 set local role service_role;
 select pg_temp.wake_assert(pg_temp.kv_claim('64200000-0000-4000-8000-000000000012') #>> '{work,run_id}' = current_setting('qorpera_test.kv_run_new'),
 	'The new-bundle node takes the new run, although an older run waits ahead of it');
+select pg_temp.wake_assert(pg_temp.kv_entry(pg_temp.kv_status(),current_setting('qorpera_test.kv_new')) ->> 'runningRuns' = '1'
+	and pg_temp.kv_entry(pg_temp.kv_status(),current_setting('qorpera_test.kv_new')) ->> 'queuedRuns' = '0',
+	'A claimed run counts as running');
 select pg_temp.wake_assert(pg_temp.kv_claim('64200000-0000-4000-8000-000000000012') = 'null'::jsonb,
 	'The new-bundle node still leaves the old run');
 select pg_temp.wake_assert(pg_temp.kv_claim('30000000-0000-4000-8000-000000000092') #>> '{work,run_id}' = current_setting('qorpera_test.kv_run_old'),
@@ -117,6 +122,42 @@ select pg_temp.wake_assert(not (pg_temp.kv_entry(pg_temp.kv_status(),current_set
 reset role;
 update public.qorpera_runner_orchestrators set last_heartbeat_at = clock_timestamp() where id = '30000000-0000-4000-8000-000000000092';
 set local role service_role;
+
+-- Undeclared live runners are listed. A runner on a switched-off node, or a revoked one, serves nothing.
+select pg_temp.wake_assert(not (pg_temp.kv_status() -> 'undeclaredLive') ? '64200000-0000-4000-8000-000000000012'
+	and not (pg_temp.kv_status() -> 'undeclaredLive') ? '30000000-0000-4000-8000-000000000092','Both fixture runners are declared');
+savepoint served;
+select public.qorpera_configure_runtime_node(jsonb_build_object('schema','qorpera.runtime-node-policy/v1',
+	'nodeId','64200000-0000-4000-8000-00000000000b','machineIdSha256',repeat('b',64),'label','node-b','cpuMillis',32000,
+	'memoryBytes',68719476736,'headroomCpuMillis',8000,'headroomMemoryBytes',17179869184,'standardCpuMillis',4000,
+	'standardMemoryBytes',8589934592,'enabled',true),0);
+select public.qorpera_enroll_runtime_node_provider('64200000-0000-4000-8000-00000000000b',repeat('b',64),'native','native-b',repeat('2',64),4000,8589934592);
+select pg_temp.wake_assert((pg_temp.kv_entry(pg_temp.kv_status(),current_setting('qorpera_test.kv_new')) -> 'servedBy') ? '64200000-0000-4000-8000-000000000012',
+	'Serving node B''s runner serves the new bundle');
+select public.qorpera_set_runtime_node_serving('64200000-0000-4000-8000-00000000000b',false,1,'roll');
+select pg_temp.wake_assert(not (pg_temp.kv_entry(pg_temp.kv_status(),current_setting('qorpera_test.kv_new')) -> 'servedBy') ? '64200000-0000-4000-8000-000000000012'
+	and pg_temp.kv_entry(pg_temp.kv_status(),current_setting('qorpera_test.kv_new')) -> 'declaredBy' -> 0 ->> 'serving' = 'false',
+	'An emptying node''s runner serves nothing');
+rollback to savepoint served;
+savepoint revoked;
+reset role;
+update public.qorpera_runner_orchestrators set status = 'revoked' where id = '64200000-0000-4000-8000-000000000012';
+set local role service_role;
+select pg_temp.wake_assert(pg_temp.kv_entry(pg_temp.kv_status(),current_setting('qorpera_test.kv_new')) -> 'declaredBy' = '[]'::jsonb
+	and not (pg_temp.kv_entry(pg_temp.kv_status(),current_setting('qorpera_test.kv_new')) -> 'servedBy') ? '64200000-0000-4000-8000-000000000012',
+	'A revoked runner neither declares nor serves');
+rollback to savepoint revoked;
+
+-- Re-registering a runner (a rebuilt fast host) clears its declaration: it is undeclared until declared again.
+savepoint reregister;
+select public.qorpera_register_runner_orchestrator('64200000-0000-4000-8000-000000000012','Updated node','native-b',repeat('6',64),3600);
+reset role;
+select pg_temp.wake_assert((select runtime_bundle_sha256 is null and runtime_bundle_declared_at is null from public.qorpera_runner_orchestrators
+	where id = '64200000-0000-4000-8000-000000000012'),'Re-registration clears the declaration');
+set local role service_role;
+select pg_temp.wake_assert((pg_temp.kv_status() -> 'undeclaredLive') ? '64200000-0000-4000-8000-000000000012',
+	'A re-registered runner shows as undeclared and live');
+rollback to savepoint reregister;
 
 -- Clearing the declaration restores the old behaviour.
 select pg_temp.wake_assert(public.qorpera_declare_runner_orchestrator_bundle('64200000-0000-4000-8000-000000000012',null) -> 'runtimeBundleSha256'
