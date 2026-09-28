@@ -109,6 +109,10 @@ declare
 	v_authority public.qorpera_cloud_secret_broker_authorities%rowtype;
 	v_created boolean := false;
 begin
+	-- The race handling below re-reads the other copy's committed row: only a read committed snapshot sees it.
+	if current_setting('transaction_isolation') <> 'read committed' then
+		raise exception 'company registration runs at read committed' using errcode = '25000';
+	end if;
 	v_principal := public.qorpera_broker_principal(p_principal_id, p_capability_sha256);
 	if p_profile_id is null or coalesce(p_authority_capability_sha256, '') !~ '^[0-9a-f]{64}$'
 		or p_authority_capability_sha256 = v_principal.capability_sha256 then

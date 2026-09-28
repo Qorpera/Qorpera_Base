@@ -289,7 +289,8 @@ new stored); new companies only; node 1 serves, node 2 stands ready with the sam
     copy of the shared vault and at the same moment too, answers the same authority and changes nothing
     (an operator's later switch-off stays). Another capability, another principal, a company created at or
     before the start time, or a company with a vault of its own (retired included) is refused (`23505` or
-    `42501`); a capability hash that names another company's authority is refused with `22023`.
+    `42501`); a capability hash that names another company's authority is refused with `22023`. It runs at
+    read committed only (`25000` otherwise): its race handling re-reads the other copy's committed row.
   - Every existing broker function then serves the company unchanged: each call names the company's own
     authority and capability. Locks: the new authority row and the switch row, plus the key-share locks
     their foreign keys take on the company's profile row and the principal row (a registration waits at
@@ -323,9 +324,11 @@ new stored); new companies only; node 1 serves, node 2 stands ready with the sam
     (accounts, switch-off, idle renewals) in turn every 5 minutes. The database pool has 8 connections.
     A stop ends the company pass in hand after its current renewal and save, inside the unit's 90 s.
   - A member's sign-in marks its company for frequent collection only once the database accepted it.
-  - Connector sign-ins: one set of pending starts for all companies (256), at most 32 per company; a
-    confirm routed to one company refuses another company's flow before anything is exchanged.
-  - One-company brokers (config v2) are unchanged.
+  - Connector sign-ins: one set of flows for all companies (256 started, 256 back from the provider), at
+    most 32 per company across both; a confirm routed to one company refuses another company's flow
+    before anything is exchanged.
+  - One-company brokers (config v2) are unchanged, except that the 32-per-company share of connector
+    sign-ins applies to them too.
 - **Part 3, deploy**: the shared vault's unit and private files, a default route on the fronts for every
   company without a map line of its own, and node 2 as a warm standby. No secret passes through the
   coordinator's machine or a chat: each is made or copied on a vault host, node 2 takes them from node 1
