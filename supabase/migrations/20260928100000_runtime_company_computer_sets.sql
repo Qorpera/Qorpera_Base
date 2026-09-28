@@ -127,7 +127,23 @@ begin
 		where office.environment_id = added.environment_id and office.id <> new.office_id and office.state <> 'retired'
 			and other.staff_agent_id = new.staff_agent_id
 		order by office.computer_number limit 1;
-	if found and (v_sibling.state is distinct from new.state or v_sibling.capabilities is distinct from new.capabilities) then
+	if not found then return null; end if;
+	if current_setting('qorpera.runtime_office_access_explicit', true) = 'on' then
+		-- An owner's explicit grant on a computer that had no row for the agent:
+		-- the owner's state wins and spreads to the other computers; only the
+		-- capabilities come from them (the new row keeps version 1, as returned).
+		if v_sibling.capabilities is distinct from new.capabilities then
+			update public.qorpera_runtime_office_access set capabilities = v_sibling.capabilities
+				where office_id = new.office_id and staff_agent_id = new.staff_agent_id;
+		end if;
+		update public.qorpera_runtime_office_access other
+			set state = new.state, version = other.version + 1, configured_by_user_id = new.configured_by_user_id
+		from public.qorpera_runtime_offices changed, public.qorpera_runtime_offices office
+		where changed.id = new.office_id and office.environment_id = changed.environment_id
+			and office.id <> new.office_id and office.state <> 'retired'
+			and other.office_id = office.id and other.staff_agent_id = new.staff_agent_id
+			and other.state is distinct from new.state;
+	elsif v_sibling.state is distinct from new.state or v_sibling.capabilities is distinct from new.capabilities then
 		update public.qorpera_runtime_office_access
 			set state = v_sibling.state, capabilities = v_sibling.capabilities, version = version + 1,
 				configured_by_user_id = v_sibling.configured_by_user_id
@@ -145,6 +161,33 @@ create trigger qorpera_runtime_office_access_company_wide
 create trigger qorpera_runtime_office_access_inherit
 	after insert on public.qorpera_runtime_office_access
 	for each row execute function public.qorpera_runtime_office_access_inherit();
+
+-- An owner's explicit grant marks its insert, so the inherit trigger keeps the
+-- owner's choice instead of copying the other computers'.
+do $patch$
+declare
+	v_definition text := pg_get_functiondef('public.qorpera_set_runtime_office_access(uuid,uuid,bigint,boolean)'::regprocedure);
+	v_old text;
+	v_new text;
+begin
+	v_old := $old$	insert into public.qorpera_runtime_office_access(office_id,staff_agent_id,profile_id,state,capabilities,configured_by_user_id)
+	values(p_office_id,$old$;
+	v_new := $new$	perform set_config('qorpera.runtime_office_access_explicit', 'on', true);
+	insert into public.qorpera_runtime_office_access(office_id,staff_agent_id,profile_id,state,capabilities,configured_by_user_id)
+	values(p_office_id,$new$;
+	if (length(v_definition) - length(replace(v_definition, v_old, ''))) / length(v_old) <> 1 then
+		raise exception 'Office access grant insert differs'; end if;
+	v_definition := replace(v_definition, v_old, v_new);
+	v_old := $old$	returning * into v_access;
+	return jsonb_build_object('grantId',v_access.grant_id,'version',v_access.version,'state',v_access.state);$old$;
+	v_new := $new$	returning * into v_access;
+	perform set_config('qorpera.runtime_office_access_explicit', 'off', true);
+	return jsonb_build_object('grantId',v_access.grant_id,'version',v_access.version,'state',v_access.state);$new$;
+	if (length(v_definition) - length(replace(v_definition, v_old, ''))) / length(v_old) <> 1 then
+		raise exception 'Office access grant return differs'; end if;
+	execute replace(v_definition, v_old, v_new);
+end
+$patch$;
 
 -- Registration and the member catalog keep meaning "the company's first
 -- computer": an owner registers computer 1, and clients that predate several

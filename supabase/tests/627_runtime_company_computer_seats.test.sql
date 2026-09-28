@@ -226,6 +226,27 @@ select pg_temp.wake_assert((select state='revoked' from public.qorpera_runtime_o
 	where office_id=(pg_temp.office(4)).id and staff_agent_id='30000000-0000-4000-8000-000000000034'),
 	'a grant created again for a re-hired agent takes her revoked grant on the other computers');
 
+-- An owner's explicit grant on a computer with no row for the agent keeps the owner's choice and
+-- spreads it. On a computer 5, Dan's default grant (and its company browser grant) is removed, so
+-- he has no row there, as when a grant was never made.
+select public.qorpera_add_runtime_office_computer('30000000-0000-4000-8000-000000000020','member',
+	'30000000-0000-4000-8000-000000000030',null,'30000000-0000-4000-8000-000000000001');
+delete from public.qorpera_runtime_browser_grants
+where office_id=(pg_temp.office(5)).id and staff_agent_id='30000000-0000-4000-8000-000000000033';
+delete from public.qorpera_runtime_office_access
+where office_id=(pg_temp.office(5)).id and staff_agent_id='30000000-0000-4000-8000-000000000033';
+select pg_temp.wake_assert(not exists(select 1 from public.qorpera_runtime_office_access
+	where office_id=(pg_temp.office(5)).id and staff_agent_id='30000000-0000-4000-8000-000000000033'),'Dan has no row on computer 5');
+select set_config('qorpera_test.dan_grant',pg_temp.member(format('select public.qorpera_set_runtime_office_access(%L::uuid,%L::uuid,0,false)',
+	(pg_temp.office(5)).id,'30000000-0000-4000-8000-000000000033'))::text,true);
+select pg_temp.wake_assert(current_setting('qorpera_test.dan_grant')::jsonb->>'state'='revoked'
+	and current_setting('qorpera_test.dan_grant')::jsonb->>'version'='1'
+	and (select state='revoked' and version=1 from public.qorpera_runtime_office_access
+		where office_id=(pg_temp.office(5)).id and staff_agent_id='30000000-0000-4000-8000-000000000033')
+	and (select count(*)=5 from public.qorpera_runtime_office_access
+		where staff_agent_id='30000000-0000-4000-8000-000000000033' and state='revoked'),
+	'the owner''s revocation on computer 5 stands, as returned, and reaches every computer');
+
 -- 7. A computer never holds more screen rows than screens: the guest keeps a desktop for each.
 select pg_temp.wake_assert(not exists(select 1 from public.qorpera_runtime_office_screens s
 	join public.qorpera_runtime_offices o on o.id=s.office_id
