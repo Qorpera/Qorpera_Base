@@ -187,6 +187,10 @@ export const AGENTS: Record<string, string> = {
 	"You archived the session": "Du arkiverede sessionen",
 	"{owner} archived the session": "{owner} arkiverede sessionen",
 	Reopened: "Genåbnet",
+	"Quiet for a day · asked {agent} whether it can be archived":
+		"Stille i en dag · spurgte {agent}, om den kan arkiveres",
+	"Quiet for {days} days · asked {agent} whether it can be archived":
+		"Stille i {days} dage · spurgte {agent}, om den kan arkiveres",
 	"The machine went to sleep": "Maskinen gik i dvale",
 	"The machine was replaced with a newer one": "Maskinen blev skiftet ud med en nyere",
 	"The session lost its machine": "Sessionen mistede sin maskine",

@@ -247,6 +247,26 @@ it.each([
 		expect(instructions.includes(staff)).toBe(continues);
 });
 
+it("asks only whether a quiet coding session can be archived on its check-in", () => {
+	const f = nativeCompanyContextFixture();
+	const instructions = cloudCompanyRuntimeInstructions(
+		{
+			kind: "agent",
+			source: {
+				kind: "worker-completion",
+				id: f.context.identity.runId,
+				occurrenceKey: `coding-quiet:${f.context.identity.runId}:1759000000000:3`,
+			},
+		} as never,
+		false,
+	);
+	expect(instructions).toContain("# This wake: a quiet coding session");
+	expect(instructions).toContain("archive it with manage_worker action archive");
+	expect(instructions).not.toContain("# This wake: your workers reported");
+	expect(instructions).not.toContain("record your judgement with manage_worker decide");
+	expect(instructions).toContain("qorpera.worker-completion-continuation/v1");
+});
+
 it.each(["human", "office-activation"] as const)("does not restart a prior startup assignment on a %s wake", (kind) => {
 	const f = nativeCompanyContextFixture();
 	const startup = {

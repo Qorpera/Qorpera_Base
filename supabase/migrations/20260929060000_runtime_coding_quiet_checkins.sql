@@ -16,6 +16,9 @@
 -- one revival of a parent runs at a time, a stopped revival or a paused company
 -- holds it back. The executor's quiet-session scan asks, a few per call.
 
+-- A busy sessions table fails the migration fast instead of holding every coding call behind it.
+set local lock_timeout = '5s';
+
 -- ---------------------------------------------------------------------------
 -- 1. State: which mark of which quiet period has been asked
 -- ---------------------------------------------------------------------------
@@ -54,6 +57,7 @@ returns integer language plpgsql security definer set search_path = '' as $$
 declare v_candidate record; v_worker public.qorpera_runtime_workers%rowtype; v_session public.qorpera_coding_sessions%rowtype;
 	v_parent public.qorpera_execution_runs%rowtype; v_status text; v_since timestamptz; v_mark smallint; v_id uuid;
 	v_inserted public.qorpera_wake_occurrences%rowtype; v_last text; v_question text; v_payload jsonb; v_count integer := 0;
+	v_archive_days integer;
 begin
 	if auth.role() is distinct from 'service_role' or coalesce(p_owner,'') !~ '^[A-Za-z0-9_.:-]{1,120}$' then
 		raise exception 'Coding executor authority required' using errcode = '42501'; end if;
@@ -66,6 +70,17 @@ begin
 			and public.qorpera_coding_quiet_mark(greatest(session.updated_at, coalesce(session.busy_at, session.updated_at))) is not null
 			and (session.quiet_asked_for is distinct from greatest(session.updated_at, coalesce(session.busy_at, session.updated_at))
 				or session.quiet_asked_days < public.qorpera_coding_quiet_mark(session.quiet_asked_for))
+			-- What would only be held back is left out here, so it never crowds out the sessions that can be asked:
+			-- a paused company, a parent still running, a revival of the parent on its way.
+			and not public.qorpera_company_execution_paused(worker.profile_id)
+			and exists (select 1 from public.qorpera_execution_runs parent join public.qorpera_runner_jobs job on job.id = parent.job_id
+				where parent.id = worker.steering_run_id and job.status not in ('queued','leased'))
+			and not exists (select 1 from public.qorpera_wake_occurrences pending
+				left join public.qorpera_execution_runs pending_run on pending_run.id = pending.run_id
+				left join public.qorpera_runner_jobs pending_job on pending_job.id = pending_run.job_id
+				where pending.parent_run_id = worker.steering_run_id and pending.source_kind = 'worker-completion'
+					and (pending.status = 'queued' or (pending.status = 'materialized'
+						and (pending_job.id is null or pending_job.status in ('queued','leased')))))
 		-- In todo order, as the archive scan, so executors lock todos the same way round.
 		order by worker.todo_id, worker.id limit 8
 	loop
@@ -101,17 +116,20 @@ begin
 					then 'finished with a draft pull request' else 'finished' end
 				when 'blocked' then 'asked its owner a question that is still unanswered'
 				when 'failed' then 'failed' else 'was cancelled' end;
+			select ceil(min(executor.session_archive_after_seconds) / 86400.0)::integer into v_archive_days
+			from public.qorpera_coding_executors executor where executor.environment_id = v_session.environment_id and executor.owner = p_owner;
 			v_question := left(format('This is not a new report. The coding session %s (repository %s/%s, branch %s) has had no turn for %s %s%s. '
 				'Its last turn %s. If the session is no longer needed, archive it now with manage_worker action archive '
 				'(todoKey and workerKey as below): its programs stop, its files are kept, and a later followup reopens it. '
-				'If it is still needed, leave it: do not decide, follow up or post anything, and end this turn.',
-				to_json(v_worker.title)::text, v_session.repository ->> 'owner', v_session.repository ->> 'name', v_session.branch,
+				'If it is still needed, or its state is active again, leave it: do not decide, follow up or post anything, and end this turn. '
+				'Left alone, it is archived automatically after %s quiet days.',
+				to_json(left(v_worker.title, 160))::text, v_session.repository ->> 'owner', v_session.repository ->> 'name', left(v_session.branch, 120),
 				v_mark, case when v_mark = 1 then 'day' else 'days' end,
 				case when v_session.attachment_until > clock_timestamp() and jsonb_array_length(v_session.running_commands) > 0
 					then format(', with %s command%s still running on its machine', jsonb_array_length(v_session.running_commands),
 						case when jsonb_array_length(v_session.running_commands) = 1 then '' else 's' end)
 					else '' end,
-				v_last), 1200);
+				v_last, v_archive_days), 1200);
 			-- The report shape the agent already reads, its summary the question.
 			v_payload := public.qorpera_worker_completion_payload(v_worker.steering_run_id, array[v_worker.id]);
 			v_payload := jsonb_set(v_payload, '{completions,0}', (v_payload #> '{completions,0}') || jsonb_build_object(
@@ -156,8 +174,30 @@ select pg_temp.checkin_patch('public.qorpera_archive_quiet_coding_sessions(text)
 	$old$	end loop;
 	return v_count;$old$,
 	$new$	end loop;
-	perform public.qorpera_ask_quiet_coding_sessions(p_owner);
+	-- An unexpected failure of the questions never undoes the archive; it is reported and tried at the next scan.
+	begin
+		perform public.qorpera_ask_quiet_coding_sessions(p_owner);
+	exception when others then
+		raise warning 'Coding quiet check-ins failed: % (%)', sqlerrm, sqlstate;
+	end;
 	return v_count;$new$);
+
+-- A member who stops a question run stops only that run: it is no revival of
+-- the parent's work, so the parent's other workers and reports go on.
+select pg_temp.checkin_patch('public.qorpera_worker_revival_stopped(uuid)',
+	$old$		where revival.parent_run_id = p_steering_run_id and revival.source_kind = 'worker-completion'$old$,
+	$new$		where revival.parent_run_id = p_steering_run_id and revival.source_kind = 'worker-completion'
+			and revival.occurrence_key not like 'coding-quiet:%'$new$);
+
+-- A new turn (the owner's answer, the agent's followup or dispatch) withdraws
+-- a question about the session that no run has taken yet.
+select pg_temp.checkin_patch('public.qorpera_open_coding_turn(public.qorpera_runtime_workers,text,text,uuid,uuid)',
+	$old$		perform public.qorpera_coding_event(p_worker.id, p_worker.sequence, 'step', 'kernel', jsonb_build_object('text', 'Reopened', 'reopened', true));
+	end if;$old$,
+	$new$		perform public.qorpera_coding_event(p_worker.id, p_worker.sequence, 'step', 'kernel', jsonb_build_object('text', 'Reopened', 'reopened', true));
+	end if;
+	update public.qorpera_wake_occurrences set status = 'cancelled', finished_at = clock_timestamp()
+	where parent_run_id = p_worker.steering_run_id and status = 'queued' and occurrence_key like 'coding-quiet:' || p_worker.id::text || ':%';$new$);
 
 -- ---------------------------------------------------------------------------
 -- 3. Grants

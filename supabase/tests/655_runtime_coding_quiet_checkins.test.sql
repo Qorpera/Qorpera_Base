@@ -50,6 +50,7 @@ begin
 		and v_completion ->> 'summary' like 'This is not a new report. The coding session "%" (repository %/%, branch %) has had no turn for 1 day. %'
 		and v_completion ->> 'summary' like '%asked its owner a question that is still unanswered%'
 		and v_completion ->> 'summary' like '%archive it now with manage_worker action archive%'
+		and v_completion ->> 'summary' like '%Left alone, it is archived automatically after 30 quiet days.'
 		and length(v_completion ->> 'summary') <= 1200,
 		'The question is one worker-completion report: '||v_wake.payload::text);
 	perform pg_temp.wake_assert((pg_temp.session_row('fix-send')).quiet_asked_days = 1
@@ -114,7 +115,29 @@ begin
 	perform pg_temp.wake_assert(pg_temp.ask() = 0 and (select count(*) from pg_temp.asks(v_worker.id)) = 4, 'An archived session is not asked');
 end $$;
 
--- 4. Only the executor asks.
+-- 4. A new turn withdraws a question no run has taken yet; stopping a question stops only that run.
+do $$
+declare v_worker public.qorpera_runtime_workers := pg_temp.worker_row('fix-send'); v_ask public.qorpera_wake_occurrences;
+begin
+	update public.qorpera_coding_sessions set archived_at = null, archived_by = null, updated_at = clock_timestamp() - interval '30 hours'
+	where worker_id = v_worker.id;
+	perform pg_temp.wake_assert(pg_temp.ask() = 1, 'Asked again for a new quiet period');
+	select * into strict v_ask from pg_temp.asks(v_worker.id) where status = 'queued';
+	-- The owner answers the session's question before the agent's run took the check-in.
+	perform pg_temp.as_user('30000000-0000-4000-8000-000000000001');
+	perform public.qorpera_answer_coding_session(v_worker.id, 'Keep 250 ms.', '30000000-0000-4000-8000-000000000655');
+	perform pg_temp.path_claims('service_role');
+	perform pg_temp.wake_assert((select status from public.qorpera_wake_occurrences where id = v_ask.id) = 'cancelled'
+		and (pg_temp.worker_row('fix-send')).state = 'active',
+		'A new turn withdraws the question');
+	-- A person who stops a question run stops only that run: the parent's reports and workers are held back only by a
+	-- stopped report run (the function the drain and the ask consult).
+	perform pg_temp.wake_assert(pg_get_functiondef('public.qorpera_worker_revival_stopped(uuid)'::regprocedure)
+		like '%revival.source_kind = ''worker-completion''%and revival.occurrence_key not like ''coding-quiet:%''%',
+		'A stopped question is no stopped revival');
+end $$;
+
+-- 5. Only the executor asks.
 select pg_temp.wake_assert(not has_function_privilege('authenticated','public.qorpera_ask_quiet_coding_sessions(text)','EXECUTE')
 	and has_function_privilege('service_role','public.qorpera_ask_quiet_coding_sessions(text)','EXECUTE')
 	and not has_function_privilege('authenticated','public.qorpera_coding_quiet_mark(timestamptz)','EXECUTE'),
