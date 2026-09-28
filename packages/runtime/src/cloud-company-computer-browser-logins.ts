@@ -79,13 +79,13 @@ interface LoginEvent {
 interface Source {
 	identity: string;
 	events: Map<string, LoginEvent>;
-	/** The single-file store of an office service that predates several computers: what it held last time. */
-	snapshot?: Map<string, CompanyComputerLoginCookie>;
 }
 interface Attached {
 	context: CompanyComputerLoginContext;
 	seen: Map<string, CompanyComputerLoginCookie>;
 }
+/** A store file's content; undefined when unchanged since the last read, null when absent. */
+type StoreFile = { value: unknown; identity: string; at: number } | null | undefined;
 const newer = (a: LoginEvent, b: LoginEvent | undefined): boolean =>
 	!b || a.at > b.at || (a.at === b.at && a.source > b.source);
 
@@ -103,9 +103,14 @@ const newer = (a: LoginEvent, b: LoginEvent | undefined): boolean =>
  * (`browser-logins.<computer id>.json`) and reads the others' on every pass:
  * for each sign-in the newest change wins, sign-outs included, so two
  * computers never overwrite each other and a sign-in on one reaches the open
- * browsers on the others within a pass. The single file of an office service
- * that predates this (`path`) is read, never written: what it held when first
- * read is the starting point, and a later change to it counts as that change.
+ * browsers on the others within a pass. Changes carry a logical time (the
+ * wall clock, but always after every change this computer has seen), so a
+ * computer whose clock runs behind cannot lose a change it made later. A
+ * sign-out is kept for as long as any file still holds the sign-in it removed.
+ * The single file of an office service that predates this (`path`) is read,
+ * never written: everything in it counts as a change at the time it was
+ * written. A file another computer left unsafe or unreadable is skipped (its
+ * last good content still counts); only this computer's own file is fatal.
  *
  * The files sit in the company directory on the workbench with the same
  * protection; they never enter a browser's namespace, a log, a transcript or
@@ -123,6 +128,11 @@ export class CompanyComputerBrowserLogins {
 	readonly #events = new Map<string, LoginEvent>();
 	/** The other files, by name, with what each last held. */
 	readonly #sources = new Map<string, Source>();
+	readonly #computerId: string;
+	/** The latest change time seen in any file: the next change of this computer comes after it. */
+	#highest = 0;
+	/** This computer has a change its file does not hold yet. */
+	#dirty = false;
 	#loaded = false;
 	#timer: ReturnType<typeof setTimeout> | undefined;
 	#work: Promise<void> = Promise.resolve();
@@ -135,6 +145,7 @@ export class CompanyComputerBrowserLogins {
 		this.#path = options.path;
 		this.#directory = dirname(options.path);
 		this.#own = `browser-logins.${options.computerId}.json`;
+		this.#computerId = options.computerId;
 		this.#intervalMs = options.intervalMs ?? 5000;
 		this.#now = options.now ?? Date.now;
 	}
@@ -218,10 +229,30 @@ export class CompanyComputerBrowserLogins {
 		return jar;
 	}
 
+	/** A logical time for a change of this computer: never before a change it has seen. */
+	#tick(now: number): number {
+		this.#highest = Math.max(now, this.#highest + 1);
+		return this.#highest;
+	}
+
+	#seen(events: Map<string, LoginEvent>): Map<string, LoginEvent> {
+		for (const event of events.values()) if (event.at > this.#highest) this.#highest = event.at;
+		return events;
+	}
+
+	/** A sign-out of this computer still hides a sign-in another file holds. */
+	#shadows(k: string, now: number): boolean {
+		for (const source of this.#sources.values()) {
+			const other = source.events.get(k);
+			if (other?.cookie && !expired(other.cookie, now)) return true;
+		}
+		return false;
+	}
+
 	async #sync(): Promise<void> {
 		await this.#refresh();
 		const now = this.#now();
-		let changed = false;
+		let changed = this.#dirty;
 		// What changed in this computer's open browsers since the last pass becomes
 		// this computer's change, unless the company already holds exactly that.
 		for (const entry of this.#attached.values()) {
@@ -237,7 +268,7 @@ export class CompanyComputerBrowserLogins {
 				if (before && same(before, cookie)) continue;
 				const held = jar.get(k);
 				if (!held || !same(held, cookie)) {
-					this.#events.set(k, { cookie, at: now, source: this.#own });
+					this.#events.set(k, { cookie, at: this.#tick(now), source: this.#own });
 					changed = true;
 				}
 			}
@@ -246,14 +277,17 @@ export class CompanyComputerBrowserLogins {
 				const held = jar.get(k);
 				// Removed here while the company still held the same value: a sign-out.
 				if (held && same(held, before)) {
-					this.#events.set(k, { cookie: null, at: now, source: this.#own });
+					this.#events.set(k, { cookie: null, at: this.#tick(now), source: this.#own });
 					changed = true;
 				}
 			}
 			entry.seen = current;
 		}
 		for (const [k, event] of this.#events)
-			if ((event.cookie && expired(event.cookie, now)) || (!event.cookie && event.at <= now - SIGN_OUT_KEPT_MS)) {
+			if (
+				(event.cookie && expired(event.cookie, now)) ||
+				(!event.cookie && event.at <= now - SIGN_OUT_KEPT_MS && !this.#shadows(k, now))
+			) {
 				this.#events.delete(k);
 				changed = true;
 			}
@@ -282,7 +316,11 @@ export class CompanyComputerBrowserLogins {
 				}
 			}
 		}
-		if (changed) await this.#save();
+		if (changed) {
+			this.#dirty = true;
+			await this.#save(now);
+			this.#dirty = false;
+		}
 	}
 
 	/** Reads this computer's own file once, and every other computer's file (and
@@ -290,7 +328,8 @@ export class CompanyComputerBrowserLogins {
 	async #refresh(): Promise<void> {
 		if (!this.#loaded) {
 			const own = await this.#file(join(this.#directory, this.#own));
-			if (own) for (const [k, event] of this.#computerEvents(own.value, this.#own)) this.#events.set(k, event);
+			if (own)
+				for (const [k, event] of this.#seen(this.#computerEvents(own.value, this.#own))) this.#events.set(k, event);
 			this.#loaded = true;
 		}
 		let names: string[];
@@ -304,40 +343,36 @@ export class CompanyComputerBrowserLogins {
 			.filter((name) => name !== this.#own && /^browser-logins\.[0-9a-f-]{36}\.json$/.test(name))
 			.sort()
 			.slice(0, MAX_COMPUTERS);
-		for (const name of [basename(this.#path), ...others]) {
-			const file = await this.#file(join(this.#directory, name), this.#sources.get(name)?.identity);
-			if (file === undefined) continue; // unchanged since the last pass
-			if (file === null) {
-				// Gone: what it said still happened. Keep its last word.
+		const legacy = basename(this.#path);
+		for (const name of [legacy, ...others]) {
+			let file: StoreFile;
+			let events: Map<string, LoginEvent>;
+			try {
+				file = await this.#file(join(this.#directory, name), this.#sources.get(name)?.identity);
+				// Unchanged since the last pass, or gone: what it said still happened.
+				if (!file) continue;
+				events = name === legacy ? this.#legacy(file.value, file.at, name) : this.#computerEvents(file.value, name);
+			} catch (error) {
+				// The old single file keeps its old strictness. Another computer's bad
+				// file must not stop this one: its last good content still counts.
+				if (name === legacy) throw error;
 				continue;
 			}
-			if (name === basename(this.#path)) this.#legacy(name, file.value, file.identity, file.at);
-			else this.#sources.set(name, { identity: file.identity, events: this.#computerEvents(file.value, name) });
+			this.#sources.set(name, { identity: file.identity, events: this.#seen(events) });
 		}
 	}
 
-	/** The old single file. The first read is the starting point (older than
-	 * anything a computer saw); a later change counts as a change at its write. */
-	#legacy(name: string, value: unknown, identity: string, at: number): void {
-		const cookies = new Map<string, CompanyComputerLoginCookie>();
+	/** The old single file: every sign-in in it is a change at the time it was written. */
+	#legacy(value: unknown, at: number, source: string): Map<string, LoginEvent> {
 		const list =
 			value && typeof value === "object" && (value as { schema?: unknown }).schema === SCHEMA
 				? (value as { cookies?: unknown }).cookies
 				: undefined;
 		if (!Array.isArray(list)) throw new Error("INVALID_BROWSER_LOGIN_STORE");
-		for (const cookie of list.slice(0, MAX_COOKIES)) if (valid(cookie)) cookies.set(key(cookie), plain(cookie));
-		const previous = this.#sources.get(name);
-		const events = previous?.events ?? new Map<string, LoginEvent>();
-		if (!previous?.snapshot) {
-			for (const [k, cookie] of cookies) events.set(k, { cookie, at: 0, source: name });
-		} else {
-			for (const [k, cookie] of cookies) {
-				const held = previous.snapshot.get(k);
-				if (!held || !same(held, cookie)) events.set(k, { cookie, at, source: name });
-			}
-			for (const [k] of previous.snapshot) if (!cookies.has(k)) events.set(k, { cookie: null, at, source: name });
-		}
-		this.#sources.set(name, { identity, events, snapshot: cookies });
+		const events = new Map<string, LoginEvent>();
+		for (const cookie of list.slice(0, MAX_COOKIES))
+			if (valid(cookie)) events.set(key(cookie), { cookie: plain(cookie), at, source });
+		return events;
 	}
 
 	#computerEvents(value: unknown, source: string): Map<string, LoginEvent> {
@@ -356,10 +391,7 @@ export class CompanyComputerBrowserLogins {
 	}
 
 	/** A protected store file: undefined when unchanged since `identity`, null when absent. */
-	async #file(
-		path: string,
-		identity?: string,
-	): Promise<{ value: unknown; identity: string; at: number } | null | undefined> {
+	async #file(path: string, identity?: string): Promise<StoreFile> {
 		let info: Stats;
 		try {
 			info = await lstat(path);
@@ -371,17 +403,24 @@ export class CompanyComputerBrowserLogins {
 			throw new Error("UNSAFE_BROWSER_LOGIN_STORE");
 		const current = `${info.ino}:${info.size}:${info.mtimeMs}`;
 		if (current === identity) return undefined;
-		const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+		const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
 		try {
+			const opened = await file.stat();
+			if (!opened.isFile() || opened.ino !== info.ino || opened.size > MAX_FILE_BYTES)
+				throw new Error("UNSAFE_BROWSER_LOGIN_STORE");
 			return { value: JSON.parse(await file.readFile("utf8")), identity: current, at: Math.trunc(info.mtimeMs) };
 		} finally {
 			await file.close();
 		}
 	}
 
-	async #save(): Promise<void> {
-		// Newest sign-ins win the space when a company collects more than the store holds.
-		const events = [...this.#events.entries()].sort(([, a], [, b]) => a.at - b.at).slice(-MAX_COOKIES);
+	async #save(now: number): Promise<void> {
+		// Newest sign-ins win the space when a company collects more than the store
+		// holds; a sign-out that still hides another file's sign-in is always kept.
+		const all = [...this.#events.entries()].sort(([, a], [, b]) => a.at - b.at);
+		const kept = all.filter(([k, event]) => !event.cookie && this.#shadows(k, now));
+		const rest = all.filter(([k, event]) => event.cookie || !this.#shadows(k, now));
+		const events = [...kept, ...rest.slice(-Math.max(0, MAX_COOKIES - kept.length))];
 		const bytes = Buffer.from(
 			JSON.stringify({
 				schema: COMPUTER_SCHEMA,
@@ -406,7 +445,7 @@ export class CompanyComputerBrowserLogins {
 			}),
 		);
 		if (bytes.length > MAX_FILE_BYTES) throw new Error("BROWSER_LOGIN_STORE_TOO_LARGE");
-		const temporary = join(this.#directory, `.company-logins.${process.pid}.${this.#now()}.tmp`);
+		const temporary = join(this.#directory, `.company-logins.${this.#computerId}.${process.pid}.${now}.tmp`);
 		const file = await open(
 			temporary,
 			constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,

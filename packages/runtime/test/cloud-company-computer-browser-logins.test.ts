@@ -14,6 +14,7 @@ afterEach(async () => {
 });
 const COMPUTER_1 = "00000000-0000-4000-8000-000000000001";
 const COMPUTER_2 = "00000000-0000-4000-8000-000000000002";
+const COMPUTER_3 = "00000000-0000-4000-8000-000000000003";
 async function store(now = () => 1_000_000) {
 	const root = await mkdtemp(join(tmpdir(), "qorpera-logins-"));
 	roots.push(root);
@@ -238,7 +239,7 @@ describe("sign-ins across the company's computers", () => {
 		// It is only read: the older file is never rewritten.
 		expect(JSON.parse(await readFile(f.path, "utf8")).cookies).toHaveLength(1);
 	});
-	it("refuses another computer's file that others can read", async () => {
+	it("skips another computer's unsafe or broken file and keeps working", async () => {
 		const f = await store(),
 			two = f.logins(COMPUTER_2),
 			b = browser();
@@ -246,8 +247,69 @@ describe("sign-ins across the company's computers", () => {
 		b.set(cookie("session", "x"));
 		await two.close();
 		await chmod(f.own(COMPUTER_2), 0o644);
-		await expect(f.logins(COMPUTER_1).attach("agent-a", browser().context)).rejects.toThrow(
+		const one = f.logins(COMPUTER_1),
+			a = browser();
+		await one.attach("agent-a", a.context);
+		expect(a.value("session")).toBeUndefined();
+		a.set(cookie("mail", "inbox"));
+		await one.sync();
+		expect(JSON.parse(await readFile(f.own(COMPUTER_1), "utf8")).events).toHaveLength(1);
+		await writeFile(join(f.root, `browser-logins.${COMPUTER_3}.json`), "{not json", { mode: 0o600 });
+		await one.sync();
+		await one.close();
+		// This computer's own file stays strict.
+		await chmod(f.own(COMPUTER_1), 0o644);
+		await expect(f.logins(COMPUTER_1).attach("agent-c", browser().context)).rejects.toThrow(
 			"UNSAFE_BROWSER_LOGIN_STORE",
 		);
+	});
+	it("never brings back a sign-out, however long ago, while an older file still holds the sign-in", async () => {
+		let time = Date.now();
+		const f = await store(() => time);
+		await writeFile(
+			f.path,
+			JSON.stringify({
+				schema: "qorpera.company-browser-logins/v1",
+				cookies: [cookie("session", "before-upgrade")],
+			}),
+			{ mode: 0o600 },
+		);
+		const one = f.logins(COMPUTER_1, () => time),
+			a = browser();
+		await one.attach("agent-a", a.context);
+		expect(a.value("session")).toBe("before-upgrade");
+		a.remove("session");
+		await one.sync();
+		time += 90 * 24 * 60 * 60 * 1000;
+		await one.sync();
+		await one.close();
+		const again = f.logins(COMPUTER_1, () => time),
+			c = browser();
+		await again.attach("agent-c", c.context);
+		expect(c.value("session")).toBeUndefined();
+		await again.close();
+	});
+	it("lets a later change win even when its computer's clock runs behind", async () => {
+		let fast = 5_000_000;
+		const slow = 1_000_000;
+		const f = await store(),
+			one = f.logins(COMPUTER_1, () => fast),
+			two = f.logins(COMPUTER_2, () => slow),
+			a = browser(),
+			b = browser();
+		await one.attach("agent-a", a.context);
+		await two.attach("agent-b", b.context);
+		a.set(cookie("session", "first"));
+		await one.sync();
+		await two.sync();
+		expect(b.value("session")).toBe("first");
+		// Computer 2 changes it after seeing computer 1's change, on a clock far behind.
+		b.set(cookie("session", "second"));
+		await two.sync();
+		fast += 1000;
+		await one.sync();
+		expect(a.value("session")).toBe("second");
+		await one.close();
+		await two.close();
 	});
 });
