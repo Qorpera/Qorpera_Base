@@ -329,6 +329,15 @@ Order, inside the usual pause:
    lists the exec host entry with `identities` = the devices on the host at
    that moment (the pre-checked ones, plus any login attached since). Resume,
    start the exec host orchestrator.
+   Older volumes: the sweep only retries logins whose journal is still in the
+   gateway's state root (released less than a day ago), so a volume from an
+   older login that nobody attached stays unattached, and that member's runs
+   keep failing until their next sign-in or refresh on node 2. List them
+   (`lxc storage volume list qorpera-vm --project qn25b2 -f csv -c n | grep
+   '^phql-a1-identity-'`, minus the host's `identity-*` devices), run the
+   pre-check query on their uuids, and attach each accepted one by hand in the
+   exact shape (now safe: the digest does not change and the identity is
+   accepted) or ask that member to refresh. Leave any not-accepted one alone.
 6. Acceptance: the next sign-in or account refresh on node 2 logs `attached
    Compute Identity <uuid>` (new identity) or nothing (already attached); node
    2 stays `ready` throughout; that member's first run is accepted on the exec
