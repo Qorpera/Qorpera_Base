@@ -7,7 +7,7 @@ import { t } from "../../ui/preferences.ts";
 import { listSkeleton } from "../../ui/skeleton.ts";
 import type { CompanyController } from "../company.ts";
 
-const ROLES: Exclude<HostedProfileRole, "owner">[] = ["viewer", "contributor", "admin"];
+const ROLES: HostedProfileRole[] = ["viewer", "contributor", "admin", "owner"];
 
 /** `exitError` is a failed Delete/Leave company, shown under that button rather than at the top. */
 export type TeamFeedback = { message?: string; error?: string; exitError?: string };
@@ -16,7 +16,7 @@ export type TeamFeedback = { message?: string; error?: string; exitError?: strin
 export function roleLabel(role: HostedProfileRole): string {
 	switch (role) {
 		case "owner":
-			return t("owner");
+			return t("founder");
 		case "admin":
 			return t("admin");
 		case "contributor":
@@ -93,6 +93,11 @@ export function renderTeam(
 		else if (!state.error) content.append(listSkeleton(t("Loading team")));
 	} else {
 		const people = h("div", { class: "company-people", "aria-label": t("Company members") });
+		// Founders make founders and manage admins; admins manage contributors and viewers.
+		const founder = team.role === "owner";
+		const assignable = ROLES.filter((role) =>
+			role === "owner" ? team.capabilities.manageFounders === true : role !== "admin" || founder,
+		);
 		for (const member of team.members) {
 			const editable =
 				team.capabilities.manageMembers &&
@@ -102,18 +107,33 @@ export function renderTeam(
 			const select = h(
 				"select",
 				{ "aria-label": t("Role for {name}", { name: member.displayName }), disabled: !editable },
-				...ROLES.filter((role) => role !== "admin" || team.role === "owner").map((role) =>
-					h("option", { value: role, selected: role === member.role }, roleLabel(role)),
-				),
+				...assignable.map((role) => h("option", { value: role, selected: role === member.role }, roleLabel(role))),
 			);
-			select.onchange = () => {
-				const role = select.value as HostedProfileRole;
-				select.disabled = true;
-				void run(
-					() => api.updateMemberRole(profile.profileId, member.userId, role),
-					t("{name} is now {role}.", { name: member.displayName, role: roleLabel(role) }),
-				);
-			};
+			select.onchange = () =>
+				void (async () => {
+					const role = select.value as HostedProfileRole;
+					// A founder cannot be removed or changed by anyone else afterwards.
+					if (
+						role === "owner" &&
+						!(await confirmDialog(
+							t("Make {name} a founder? Founders can only step down or leave on their own.", {
+								name: member.displayName,
+							}),
+							t("Make founder"),
+							false,
+							undefined,
+							signal,
+						))
+					) {
+						select.value = member.role;
+						return;
+					}
+					select.disabled = true;
+					await run(
+						() => api.updateMemberRole(profile.profileId, member.userId, role),
+						t("{name} is now {role}.", { name: member.displayName, role: roleLabel(role) }),
+					);
+				})();
 			people.append(
 				h(
 					"div",
@@ -123,8 +143,37 @@ export function renderTeam(
 						"div",
 						{ class: "settings-copy" },
 						h("strong", null, member.displayName),
-						h("small", null, member.role === "owner" ? t("Started it") : t("Building")),
+						h("small", null, member.role === "owner" ? t("Founder") : t("Building")),
 					),
+					// A founder steps down on their own while another founder stays.
+					member.userId === company.userId && member.role === "owner" && team.capabilities.leave === true
+						? h(
+								"div",
+								{ class: "person-actions" },
+								button(
+									t("Step down"),
+									() =>
+										void (async () => {
+											if (
+												await confirmDialog(
+													t("Step down as founder of {company}? You stay as an admin.", {
+														company: profile.profileName,
+													}),
+													t("Step down"),
+													true,
+													undefined,
+													signal,
+												)
+											)
+												await run(
+													() => api.updateMemberRole(profile.profileId, member.userId, "admin"),
+													t("You stepped down as founder."),
+												);
+										})(),
+									{ small: true },
+								),
+							)
+						: null,
 					editable
 						? h(
 								"div",
@@ -283,7 +332,7 @@ export function renderTeam(
 			const role = h(
 				"select",
 				{ "aria-label": t("Invitation role"), "data-draft": "invite-role" },
-				...ROLES.filter((value) => value !== "admin" || team.role === "owner").map((value) =>
+				...ROLES.filter((value) => value !== "owner" && (value !== "admin" || team.role === "owner")).map((value) =>
 					h("option", { value, selected: value === "contributor" }, roleLabel(value)),
 				),
 			);
@@ -322,14 +371,17 @@ export function renderTeam(
 			);
 			content.append(picker);
 		}
+		// Only the last member deletes; the last founder stays while others remain (2026-09-28). A
+		// cloud without several founders sends neither flag: its one owner deletes, others leave.
+		const deleting = team.capabilities.deleteCompany ?? team.role === "owner";
+		const canLeave = deleting || (team.capabilities.leave ?? team.role !== "owner");
 		exit = button(
-			team.role === "owner" ? t("Delete company") : t("Leave company"),
+			deleting ? t("Delete company") : t("Leave company"),
 			() =>
 				void (async () => {
-					const deleting = team.role === "owner";
 					const confirmed = await confirmDialog(
 						deleting
-							? t("Delete {company} for every member? Type the company name to confirm.", {
+							? t("Delete {company}? Type the company name to confirm.", {
 									company: profile.profileName,
 								})
 							: t("Leave {company}? You lose access until someone invites you again.", {
@@ -350,7 +402,11 @@ export function renderTeam(
 						if (current()) setFeedback({ exitError: describeError(error) });
 					}
 				})(),
-			{ danger: true },
+			{
+				danger: true,
+				disabled: !canLeave,
+				...(canLeave ? {} : { title: t("Make someone else a founder before you leave.") }),
+			},
 		);
 		exit.classList.add("company-exit");
 	}

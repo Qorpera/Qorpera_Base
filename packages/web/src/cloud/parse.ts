@@ -252,10 +252,22 @@ export function parseTeam(value: unknown): HostedProfileTeam {
 	}
 	const manageMembers =
 		typeof capabilities.manage_members === "boolean" ? capabilities.manage_members : capabilities.authorize;
+	const flag = (value: unknown) => (typeof value === "boolean" ? value : undefined);
+	const manageFounders = flag(capabilities.manage_founders);
+	const leave = flag(capabilities.leave);
+	const deleteCompany = flag(capabilities.delete_company);
 	return {
 		profileId: uuid(input.profile_id, "team profile id"),
 		role: teamRole,
-		capabilities: { read: true, write: capabilities.write, authorize: capabilities.authorize, manageMembers },
+		capabilities: {
+			read: true,
+			write: capabilities.write,
+			authorize: capabilities.authorize,
+			manageMembers,
+			...(manageFounders === undefined ? {} : { manageFounders }),
+			...(leave === undefined ? {} : { leave }),
+			...(deleteCompany === undefined ? {} : { deleteCompany }),
+		},
 		members: array(input.members, "profile member list").map(parseMember),
 		invitations: array(input.invitations, "profile invitation list").map(parseInvitation),
 	};

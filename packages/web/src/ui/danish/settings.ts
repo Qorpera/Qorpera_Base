@@ -165,7 +165,15 @@ export const SETTINGS: Record<string, string> = {
 	"Company members": "Virksomhedens medlemmer",
 	"Role for {name}": "Rolle for {name}",
 	"{name} is now {role}.": "{name} er nu {role}.",
-	"Started it": "Startede den",
+	Founder: "Stifter",
+	"Step down": "Træd tilbage",
+	"Step down as founder of {company}? You stay as an admin.":
+		"Træd tilbage som stifter af {company}? Du bliver administrator.",
+	"You stepped down as founder.": "Du er trådt tilbage som stifter.",
+	"Make founder": "Gør til stifter",
+	"Make {name} a founder? Founders can only step down or leave on their own.":
+		"Gør {name} til stifter? En stifter kan kun selv træde tilbage eller forlade virksomheden.",
+	"Make someone else a founder before you leave.": "Gør en anden til stifter, før du forlader virksomheden.",
 	Building: "Bygger",
 	"Remove {name} from {company}?": "Fjern {name} fra {company}?",
 	"{name} was removed.": "{name} blev fjernet.",
@@ -189,8 +197,7 @@ export const SETTINGS: Record<string, string> = {
 	"Add a friend": "Tilføj en ven",
 	"Delete company": "Slet virksomhed",
 	"Leave company": "Forlad virksomhed",
-	"Delete {company} for every member? Type the company name to confirm.":
-		"Slet {company} for alle medlemmer? Skriv virksomhedens navn for at bekræfte.",
+	"Delete {company}? Type the company name to confirm.": "Slet {company}? Skriv virksomhedens navn for at bekræfte.",
 	"Leave {company}? You lose access until someone invites you again.":
 		"Forlad {company}? Du mister adgangen, indtil nogen inviterer dig igen.",
 	Leave: "Forlad",

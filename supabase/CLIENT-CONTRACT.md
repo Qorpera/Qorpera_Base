@@ -37,6 +37,22 @@ sign-in, OTP, OAuth providers, and authorization-code exchange
 (`viewer`, `contributor`, `admin`, `owner`) are cloud state read through the
 profile RPCs; RLS is the second read boundary.
 
+Founders (2026-09-28, migration 20260929030000): every member with the role
+`owner` is a founder, and a company may have several. Clients name the role
+"founder".
+- `qorpera_update_profile_member_role`: a founder may make a member `owner`.
+  A founder may step down (change their own role) while another founder
+  remains. Nobody else changes a founder. Admins still change contributors and
+  viewers only.
+- `qorpera_remove_profile_member`: founders remove any member except a fellow
+  founder, admins included. Admins remove contributors and viewers.
+- `qorpera_leave_hosted_profile`: anyone leaves, except the last member (who
+  deletes instead) and the last founder while others remain (42501).
+- `qorpera_delete_hosted_profile`: only the last member.
+- `qorpera_profile_team_info` capabilities add `manage_founders`, `leave` and
+  `delete_company` for the caller. A cloud without several founders omits
+  them; a client then falls back to "the owner deletes, others leave".
+
 ## 2. Member-callable RPCs (security-definer, granted to `authenticated`)
 
 164 functions, grouped for navigation. Signatures: see the migration that defines each.
