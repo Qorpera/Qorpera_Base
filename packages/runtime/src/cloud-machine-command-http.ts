@@ -260,9 +260,17 @@ export async function serveCloudMachineCommand(
 		throw new Error(ERROR);
 	signal.throwIfAborted();
 	const receipt = checkCloudMachineCommandReceipt(admitted, await options.execute(admitted, signal));
-	const after = await options.authorize(admitted, signal);
+	if (receipt.inputSha256 !== authority.inputSha256) throw new Error(ERROR);
+	let after: { inputSha256: string };
+	try {
+		after = await options.authorize(admitted, signal);
+	} catch (error) {
+		// The machine stopped (or the command ended) after the guest answered: its answer stands,
+		// so a start that happened is never reported as one that did not.
+		if (cloudMachineCommandRefusal(error)) return receipt;
+		throw error;
+	}
 	signal.throwIfAborted();
-	if (after.inputSha256 !== authority.inputSha256 || receipt.inputSha256 !== authority.inputSha256)
-		throw new Error(ERROR);
+	if (after.inputSha256 !== authority.inputSha256) throw new Error(ERROR);
 	return receipt;
 }

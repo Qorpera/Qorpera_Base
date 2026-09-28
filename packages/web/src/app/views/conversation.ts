@@ -40,6 +40,7 @@ import { ReceivedAttachments } from "../../ui/received-attachments.ts";
 import { runFailureCard, runFailureInterrupted, runFailureReason } from "../../ui/run-failure.ts";
 import { uiScale } from "../../ui/scale.ts";
 import { composerSkeleton, messagesSkeleton, threadIdentitySkeleton } from "../../ui/skeleton.ts";
+import { markSkillNames, SkillMentions } from "../../ui/skill-mentions.ts";
 import { type AgentState, answersInteraction, type CompanyController, type ConversationState } from "../company.ts";
 import type { WorkspaceActions } from "../workspace-actions.ts";
 import { AgentDetails } from "./agent-details.ts";
@@ -76,6 +77,8 @@ export class ConversationView {
 	readonly #messages = h("div", { class: "messages", role: "log", "aria-live": "polite" });
 	readonly #status = h("div", { class: "thread-status" });
 	readonly #composer: HTMLTextAreaElement;
+	/** "/" in the composer: the conversation's skills, and their names in blue. */
+	readonly #skills: SkillMentions;
 	readonly #send: HTMLButtonElement;
 	#stopMode = false;
 	#cannotSend = true;
@@ -214,6 +217,7 @@ export class ConversationView {
 			"aria-label": t("Message"),
 			onkeydown: (event: KeyboardEvent) => {
 				if (this.#mentionKey(event)) return;
+				if (this.#skills.keydown(event)) return;
 				if (matchesKey(event, "accept") && !event.shiftKey) {
 					event.preventDefault();
 					this.#submit();
@@ -239,6 +243,34 @@ export class ConversationView {
 			hidden: true,
 			"aria-label": t("People and agents to mention"),
 		});
+		const skills = actions.skills;
+		this.#skills = new SkillMentions(this.#composer, {
+			load: skills
+				? (signal) => {
+						// An agent's own thread offers its own skills too; a group chat, the company's.
+						const session = company.store.get().sessions.find((item) => item.sessionId === sessionId);
+						return skills(this.#isRoom ? null : (session?.staffAgentId ?? null), signal);
+					}
+				: undefined,
+			signal: this.#lifetime.signal,
+			ownerName: () => {
+				const session = company.store.get().sessions.find((item) => item.sessionId === sessionId);
+				return company.staffById(session?.staffAgentId)?.displayName;
+			},
+			// The skills take the place of "···" and of the "@" names above the field; they never stand
+			// together. (Opening "···" moves focus off the field, which closes the skills.)
+			opened: () => {
+				if (!this.#menu.hidden) this.#setMenu(false, false);
+				this.#closeMention();
+			},
+			// Messages already written mark the names of skills once the list is known: through a
+			// redraw, so the marks land with the messages (the live log reads nothing twice) and the
+			// thread stays pinned to its end if a name re-wraps a line.
+			listed: () => {
+				this.#renderedKey = "";
+				this.update();
+			},
+		});
 		this.#send = h(
 			"button",
 			{
@@ -259,7 +291,7 @@ export class ConversationView {
 		});
 		const fileInput = h("input", { type: "file", multiple: true, hidden: true, "aria-label": t("Attach files") });
 		fileInput.onchange = () => {
-			if (!this.#composer.disabled && !this.#isRoom) this.#attachments.add([...(fileInput.files ?? [])]);
+			if (!this.#composer.disabled && !this.#noImages) this.#attachments.add([...(fileInput.files ?? [])]);
 			fileInput.value = "";
 		};
 		this.#more = h(
@@ -282,7 +314,7 @@ export class ConversationView {
 				role: "menuitem",
 				onclick: () => {
 					this.#setMenu(false);
-					if (!this.#isRoom) fileInput.click();
+					if (!this.#noImages) fileInput.click();
 				},
 			},
 			icon("attach"),
@@ -347,32 +379,33 @@ export class ConversationView {
 			"div",
 			{ class: "composer-shell" },
 			this.#attachments.el,
-			this.#composer,
+			this.#skills.field,
 			this.#more,
 			this.#send,
 			fileInput,
 			this.#menu,
 			this.#mentionPicker,
+			this.#skills.menu,
 		);
 		this.#composerShell.addEventListener("paste", (event) => {
 			if (this.#composer.disabled) return;
 			const files = [...(event.clipboardData?.files ?? [])];
 			if (files.length) {
 				event.preventDefault();
-				if (!this.#isRoom) this.#attachments.add(files);
+				if (!this.#noImages) this.#attachments.add(files);
 			}
 		});
 		this.#composerShell.addEventListener("dragover", (event) => {
 			if (!this.#composer.disabled && event.dataTransfer?.types.includes("Files")) {
 				event.preventDefault();
-				if (!this.#isRoom) this.#composerShell.classList.add("is-dragging");
+				if (!this.#noImages) this.#composerShell.classList.add("is-dragging");
 			}
 		});
 		this.#composerShell.addEventListener("dragleave", () => this.#composerShell.classList.remove("is-dragging"));
 		this.#composerShell.addEventListener("drop", (event) => {
 			event.preventDefault();
 			this.#composerShell.classList.remove("is-dragging");
-			if (!this.#composer.disabled && !this.#isRoom) this.#attachments.add([...(event.dataTransfer?.files ?? [])]);
+			if (!this.#composer.disabled && !this.#noImages) this.#attachments.add([...(event.dataTransfer?.files ?? [])]);
 		});
 		this.#sharedDrafts = new SharedDrafts(company, sessionId, this.#composer, () => this.#autosize());
 		this.#composerWrap = h(
@@ -544,6 +577,12 @@ export class ConversationView {
 		return isGroupChat(session);
 	}
 
+	/** A group chat on a cloud that keeps group chats text-only (before 20260928030000).
+	 * While that is not known yet, images may be chosen; sending checks. */
+	get #noImages(): boolean {
+		return this.#isRoom && this.#company.groupChatImages() === false;
+	}
+
 	focus(): void {
 		this.#autosize();
 		this.#composer.focus();
@@ -586,6 +625,16 @@ export class ConversationView {
 			0,
 		);
 		this.#composerShell.style.height = `${this.#composer.getBoundingClientRect().height + frame + this.#attachments.el.getBoundingClientRect().height}px`;
+		// A new size can show or hide the field's scrollbar, which moves where its lines wrap.
+		this.#skills.sync();
+	}
+
+	/** Written messages show skill names as the composer does. Only message text is marked:
+	 * markSkillNames leaves code and links alone, and marked text is not marked twice. */
+	#markSkills(): void {
+		const names = this.#skills.names();
+		if (!names.size) return;
+		for (const bubble of this.#messages.querySelectorAll(".message .bubble")) markSkillNames(bubble, names);
 	}
 
 	#setMenu(open: boolean, restoreFocus = true): void {
@@ -813,6 +862,7 @@ export class ConversationView {
 				),
 			),
 		);
+		this.#skills.close();
 		this.#mentionPicker.hidden = false;
 		this.#composer.setAttribute("aria-autocomplete", "list");
 		this.#composer.setAttribute("aria-controls", this.#mentionPicker.id);
@@ -982,9 +1032,12 @@ export class ConversationView {
 		const agent = this.#company.staffById(session?.staffAgentId);
 		const canWrite = company.team?.capabilities.write === true && session?.status === "open";
 		const room = this.#isRoom;
+		const noImages = this.#noImages;
+		// A group chat has one model and effort for every agent in it.
 		this.#models.update(
-			Boolean(agent) && !room,
+			Boolean(agent) || room,
 			!canWrite || conversation.sending || this.#submitting || Boolean(conversation.retrySend),
+			room,
 		);
 		this.#execution?.update();
 		this.#run?.update(
@@ -993,20 +1046,28 @@ export class ConversationView {
 		);
 		const problem = sessionAttachmentProblem(conversation.attachments ?? []);
 		const attachmentIssue =
-			room && conversation.attachments?.length
+			noImages && conversation.attachments?.length
 				? t("Images are not supported in group chats. Use Company File.")
 				: problem && attachmentProblemText(problem);
+		// A post into a room (an agent's thread or a group chat) carries text: the cloud
+		// refuses images without a message, so they wait for one.
+		const needsText =
+			typeof session?.executionScope?.roomId === "string" &&
+			Boolean(conversation.attachments?.length) &&
+			!conversation.draft?.trim();
 		this.#attachments.sync(
 			conversation.attachments ?? [],
 			!canWrite || conversation.sending,
-			room
+			noImages
 				? t("Images are not supported in group chats. Use Company File.")
 				: this.#actions.sendMessage
 					? attachmentIssue
 						? t("Attachments stay on this device. {issue}", { issue: attachmentIssue })
 						: conversation.sending
 							? t("Uploading images and sending message…")
-							: t("Images stay on this device until you send. Up to 5 images, 8 MiB total.")
+							: needsText
+								? t("Add a message to send with the images.")
+								: t("Images stay on this device until you send. Up to 5 images, 8 MiB total.")
 					: undefined,
 		);
 		// The agent's run is watched quietly; a change in who is working re-reads it.
@@ -1030,6 +1091,7 @@ export class ConversationView {
 		);
 		this.#renderStatus(conversation, canWrite, session);
 		this.#composer.disabled = !canWrite || conversation.sending;
+		if (this.#composer.disabled) this.#skills.close();
 		this.#cannotSend =
 			!this.#actions.sendMessage ||
 			this.#models.pending ||
@@ -1037,10 +1099,11 @@ export class ConversationView {
 			!canWrite ||
 			conversation.sending ||
 			(!conversation.draft?.trim() && !this.#attachments.count) ||
+			needsText ||
 			Boolean(attachmentIssue);
 		this.#syncSend();
-		this.#attach.disabled = this.#composer.disabled || room;
-		this.#attachNote.hidden = !room;
+		this.#attach.disabled = this.#composer.disabled || noImages;
+		this.#attachNote.hidden = !noImages;
 		this.#more.disabled = this.#composer.disabled;
 		if (this.#composer.disabled && !this.#menu.hidden) this.#setMenu(false, false);
 		this.#composerWrap.hidden = !canWrite;
@@ -1054,6 +1117,8 @@ export class ConversationView {
 			this.#composerPlaceholder = undefined;
 		}
 		if (this.#composer.value !== (conversation.draft ?? "")) {
+			// The text changed under any open menu (a send, another tab's draft): it closes.
+			this.#skills.close();
 			this.#composer.value = conversation.draft ?? "";
 			this.#autosize();
 		}
@@ -1061,6 +1126,8 @@ export class ConversationView {
 		// A teammate's words can land in this composer (shared drafts) while names are shown:
 		// where the name being typed now starts is read again, or the names close.
 		else if (this.#mention && document.activeElement === this.#composer) this.#updateMention();
+		// The same for an open skill menu.
+		this.#skills.refresh();
 		this.#renderMentionNote();
 		this.#sharedDrafts.update();
 	}
@@ -1566,6 +1633,8 @@ export class ConversationView {
 				cursor = node.nextSibling;
 			}
 		}
+		this.#markSkills();
+		for (const item of items) if (item.kind === "member" || item.kind === "agent") this.#skills.want(item.text);
 		// A keyboard user reading the row keeps it through a state change or a new message.
 		if (rowFocus) this.#messages.querySelector<HTMLElement>(".thread-activity")?.focus({ preventScroll: true });
 		// An approval card keeps the keyboard through a redraw: the Always allow editor a member is

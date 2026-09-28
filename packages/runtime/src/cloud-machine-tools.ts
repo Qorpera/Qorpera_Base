@@ -40,7 +40,7 @@ export const CLOUD_MACHINE_START_DESCRIPTION =
 	"You are root inside. Docker with Compose, Node 24, Python 3, Git and build tools are installed; install anything else. " +
 	"Pick its size: cpus, memoryGiB and diskGiB (defaults 2, 4 and 40); only what one server holds limits it. " +
 	"lifetime task (the default) sleeps after an hour with no command running and no use, and is deleted after 30 days asleep; always-on keeps running until an agent or a member stops it. " +
-	"Its disk is scratch space: it is kept while the machine sleeps, but a machine that wakes when its server is full or gone starts fresh on another server with an empty disk. Keep what matters in the company's files. " +
+	"Its disk is scratch space: it is kept while the machine sleeps, but a machine that wakes when its server is full or gone, or after its disk was given to another machine, starts fresh with an empty disk. Keep what matters in the company's files. " +
 	"repositoryWorker attaches a coding session's repository read-only at /mnt/repository: copy it to the machine's own disk before you build. " +
 	"To wake a stopped machine, pass only machine with its name. " +
 	"The machine belongs to the company: every member sees it and can stop it, and any agent of the company may use it. It holds no credentials or logins. It can reach the internet, but not private networks, and nothing can reach it from outside. " +
@@ -59,7 +59,7 @@ export const CLOUD_MACHINE_READ_DESCRIPTION =
 export const CLOUD_MACHINE_CANCEL_DESCRIPTION =
 	"Stop a running machine command and everything it started. Files on the machine stay. Keep operationKey stable after an uncertain result.";
 export const CLOUD_MACHINE_STOP_DESCRIPTION =
-	"Stop a machine: every program on it stops and it no longer takes room on the servers. Its disk is kept for a wake on the same server; if that server is full or gone then, it starts fresh elsewhere with an empty disk. Wake it again with machine_start and its name. A task machine is deleted after 30 days asleep.";
+	"Stop a machine: every program on it stops and it no longer takes room on the servers. Its disk is kept for a wake on the same server, unless a waiting machine needs that disk; otherwise, or if that server is full or gone, it starts fresh with an empty disk. Wake it again with machine_start and its name. A task machine is deleted after 30 days asleep.";
 export const CLOUD_MACHINE_DELETE_DESCRIPTION =
 	"Delete a machine and its disk. This cannot be undone. Save what you need first.";
 export const CLOUD_MACHINE_LIST_DESCRIPTION =

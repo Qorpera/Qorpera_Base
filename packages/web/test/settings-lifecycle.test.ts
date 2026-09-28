@@ -7,7 +7,7 @@ import { CompanyController } from "../src/app/company.ts";
 import { HubController } from "../src/app/views/hub.ts";
 import { SettingsView } from "../src/app/views/settings.ts";
 import { type Cloud, CloudRpcError } from "../src/cloud/client.ts";
-import type { HostedAccountEntitlement } from "../src/cloud/types.ts";
+import type { HostedAccountEntitlement, HostedAccountMatch } from "../src/cloud/types.ts";
 import { setTimeZonePreference } from "../src/ui/preferences.ts";
 import {
 	deferred,
@@ -507,24 +507,243 @@ describe("settings session lifecycle", () => {
 		expect(f.root.querySelector<HTMLElement>("#settings-tab-friends .settings-tab-count")!.hidden).toBe(true);
 		expect(f.root.querySelector(".settings-dialog")?.textContent).not.toContain(profileB.profileName);
 	});
-	it("sends a friend request from the Friends tab", async () => {
+	it("sends a friend request only to an address an account holds", async () => {
 		const f = await setup();
 		const send = vi.spyOn(f.api, "sendFriendRequest").mockResolvedValue();
+		const find = vi
+			.mocked(f.api.findAccountByEmail)
+			.mockImplementation(async (email) =>
+				email === "new@example.invalid" ? { userId: id(45), email, displayName: "New Person", self: false } : null,
+			);
 		open(f.root);
 		click(f.root, "#settings-tab-friends");
 		await draw();
-		const field = f.root.querySelector<HTMLInputElement>(".panel-search input")!;
-		field.value = "New@Example.invalid";
-		field.dispatchEvent(new Event("input"));
+		const field = f.root.querySelector<HTMLInputElement>(".panel-search input")!,
+			submit = f.root.querySelector<HTMLButtonElement>('.panel-search button[type="submit"]')!,
+			panel = () => f.root.querySelector(".settings-dialog .panel")!,
+			names = () => [...panel().querySelectorAll(".person-row strong")].map((name) => name.textContent),
+			typeIn = async (value: string) => {
+				field.value = value;
+				field.dispatchEvent(new Event("input"));
+				await draw();
+			};
+		// A whole address no account holds finds nobody, and no request can go to it.
+		await typeIn("nobody@example.invalid");
+		expect(panel().querySelector(".skeleton-list")).not.toBeNull();
+		expect(submit.disabled).toBe(true);
+		await vi.advanceTimersByTimeAsync(250);
 		await draw();
-		const submit = f.root.querySelector<HTMLButtonElement>('.panel-search button[type="submit"]')!;
+		expect(find).toHaveBeenCalledExactlyOnceWith("nobody@example.invalid");
+		expect(panel().querySelector(".skeleton-list")).toBeNull();
+		expect(panel().textContent).toContain("No Qorpera account uses nobody@example.invalid.");
+		expect(names()).toEqual([]);
+		expect(submit.disabled).toBe(true);
+		field.form!.dispatchEvent(new Event("submit", { cancelable: true }));
+		await draw();
+		expect(send).not.toHaveBeenCalled();
+		// An address still being typed is not looked up; the one typing stops at is.
+		await typeIn("new@example.inv");
+		await typeIn("New@Example.invalid");
+		await vi.advanceTimersByTimeAsync(250);
+		await draw();
+		expect(find).toHaveBeenCalledTimes(2);
+		expect(find).toHaveBeenLastCalledWith("new@example.invalid");
+		expect(names()).toEqual(["New Person"]);
+		expect(panel().textContent).toContain("Add a friend");
 		expect(submit.disabled).toBe(false);
 		submit.click();
 		await draw();
 		expect(send).toHaveBeenCalledExactlyOnceWith("new@example.invalid");
 		expect(f.api.listFriends).toHaveBeenCalledTimes(2);
 		expect(f.root.querySelector("#settings-content")?.textContent).toContain("Request sent to new@example.invalid.");
-		expect(f.root.querySelector<HTMLInputElement>(".panel-search input")!.value).toBe("");
+		expect(field.value).toBe("");
+		expect(names()).toEqual([]);
+		// An address already answered is not asked again, until "no account" may have changed.
+		await typeIn("nobody@example.invalid");
+		expect(panel().textContent).toContain("No Qorpera account uses nobody@example.invalid.");
+		expect(find).toHaveBeenCalledTimes(2);
+		await typeIn("");
+		await vi.advanceTimersByTimeAsync(60_000);
+		await typeIn("nobody@example.invalid");
+		await vi.advanceTimersByTimeAsync(250);
+		await draw();
+		expect(find).toHaveBeenCalledTimes(3);
+		expect(panel().textContent).toContain("No Qorpera account uses nobody@example.invalid.");
+	});
+	it("shows only the answer for the address the field holds now, and says when it is your own", async () => {
+		const f = await setup();
+		const slow = deferred<HostedAccountMatch | null>();
+		const find = vi
+			.mocked(f.api.findAccountByEmail)
+			.mockImplementation((email) =>
+				email === "slow@example.invalid"
+					? slow.promise
+					: Promise.resolve({ userId: userA.id, email, displayName: "Me", self: true }),
+			);
+		open(f.root);
+		click(f.root, "#settings-tab-friends");
+		await draw();
+		const field = f.root.querySelector<HTMLInputElement>(".panel-search input")!,
+			submit = f.root.querySelector<HTMLButtonElement>('.panel-search button[type="submit"]')!,
+			panel = () => f.root.querySelector(".settings-dialog .panel")!,
+			names = () => [...panel().querySelectorAll(".person-row strong")].map((name) => name.textContent),
+			typeIn = async (value: string) => {
+				field.value = value;
+				field.dispatchEvent(new Event("input"));
+				await draw();
+			};
+		await typeIn("slow@example.invalid");
+		await vi.advanceTimersByTimeAsync(250);
+		await draw();
+		await typeIn("me@example.invalid");
+		await vi.advanceTimersByTimeAsync(250);
+		await draw();
+		expect(panel().textContent).toContain("That is your own address.");
+		expect(submit.disabled).toBe(true);
+		// Typed again while its answer is on the way, an address waits for that answer instead of asking twice.
+		await typeIn("slow@example.invalid");
+		await vi.advanceTimersByTimeAsync(250);
+		await draw();
+		expect(panel().querySelector(".skeleton-list")).not.toBeNull();
+		await typeIn("me@example.invalid");
+		expect(find).toHaveBeenCalledTimes(2);
+		// The first address's answer arrives late: the field has moved on.
+		slow.resolve({ userId: id(46), email: "slow@example.invalid", displayName: "Slow", self: false });
+		await draw();
+		expect(names()).toEqual([]);
+		expect(panel().textContent).toContain("That is your own address.");
+		// It was kept, so that address shows its account at once.
+		await typeIn("slow@example.invalid");
+		expect(names()).toEqual(["Slow"]);
+		expect(submit.disabled).toBe(false);
+		expect(find).toHaveBeenCalledTimes(2);
+	});
+	it("asks again after a failed lookup, and lets any address through on a cloud without the lookup", async () => {
+		const f = await setup();
+		const send = vi.spyOn(f.api, "sendFriendRequest").mockResolvedValue();
+		const find = vi.mocked(f.api.findAccountByEmail).mockRejectedValueOnce(new Error("The network is down."));
+		open(f.root);
+		click(f.root, "#settings-tab-friends");
+		await draw();
+		const field = f.root.querySelector<HTMLInputElement>(".panel-search input")!,
+			submit = f.root.querySelector<HTMLButtonElement>('.panel-search button[type="submit"]')!,
+			panel = () => f.root.querySelector(".settings-dialog .panel")!,
+			typeIn = async (value: string) => {
+				field.value = value;
+				field.dispatchEvent(new Event("input"));
+				await draw();
+			};
+		await typeIn("new@example.invalid");
+		await vi.advanceTimersByTimeAsync(250);
+		await draw();
+		expect(panel().textContent).toContain("The network is down.");
+		expect(submit.disabled).toBe(true);
+		// Until the release that adds the lookup is live, the cloud refuses an address no account holds.
+		find.mockRejectedValue(
+			new CloudRpcError("qorpera_find_account_by_email", { message: "missing", code: "PGRST202" }, 404),
+		);
+		[...panel().querySelectorAll("button")].find((button) => button.textContent === "Try again")!.click();
+		await draw();
+		expect(find).toHaveBeenCalledTimes(2);
+		expect(panel().textContent).toContain("Nobody here by that address. Send new@example.invalid a friend request.");
+		expect(submit.disabled).toBe(false);
+		await typeIn("other@example.invalid");
+		await vi.advanceTimersByTimeAsync(250);
+		await draw();
+		expect(find).toHaveBeenCalledTimes(2);
+		expect(submit.disabled).toBe(false);
+		submit.click();
+		await draw();
+		expect(send).toHaveBeenCalledExactlyOnceWith("other@example.invalid");
+	});
+	it("sends on Enter pressed before the answer came, once the address finds someone", async () => {
+		const f = await setup();
+		const send = vi.spyOn(f.api, "sendFriendRequest").mockResolvedValue();
+		const find = vi
+			.mocked(f.api.findAccountByEmail)
+			.mockImplementation(async (email) =>
+				email === "new@example.invalid" ? { userId: id(45), email, displayName: "New Person", self: false } : null,
+			);
+		open(f.root);
+		click(f.root, "#settings-tab-friends");
+		await draw();
+		const field = f.root.querySelector<HTMLInputElement>(".panel-search input")!,
+			enter = () =>
+				field.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+		field.value = "nobody@example.invalid";
+		field.dispatchEvent(new Event("input"));
+		enter();
+		await draw();
+		expect(find).toHaveBeenCalledExactlyOnceWith("nobody@example.invalid");
+		expect(send).not.toHaveBeenCalled();
+		field.value = "new@example.invalid";
+		field.dispatchEvent(new Event("input"));
+		enter();
+		await draw();
+		expect(find).toHaveBeenCalledTimes(2);
+		expect(send).toHaveBeenCalledExactlyOnceWith("new@example.invalid");
+		expect(field.value).toBe("");
+		// Enter twice before a slow answer: one request, and the field keeps the address if it fails.
+		const refused = deferred<void>();
+		send.mockReturnValueOnce(refused.promise);
+		find.mockClear();
+		field.value = "second@example.invalid";
+		field.dispatchEvent(new Event("input"));
+		find.mockResolvedValueOnce({
+			userId: id(47),
+			email: "second@example.invalid",
+			displayName: "Second",
+			self: false,
+		});
+		enter();
+		enter();
+		await draw();
+		expect(send).toHaveBeenCalledTimes(2);
+		expect(field.value).toBe("second@example.invalid");
+		refused.reject(new Error("The cloud refused it."));
+		await draw();
+		expect(f.root.querySelector("#settings-content")?.textContent).toContain("The cloud refused it.");
+		expect(field.value).toBe("second@example.invalid");
+	});
+	it("looks up a friend's address again once they are no longer a friend", async () => {
+		const fixtureState = fixture();
+		vi.mocked(fixtureState.api.listFriends).mockResolvedValueOnce([
+			{
+				userId: userB.id,
+				email: userB.email!,
+				displayName: "Friend B",
+				status: "accepted",
+				direction: "outgoing",
+				since: timestamp,
+			},
+		]);
+		const f = await setup(fixtureState);
+		const remove = vi.spyOn(f.api, "removeFriend").mockResolvedValue();
+		const find = vi
+			.mocked(f.api.findAccountByEmail)
+			.mockImplementation(async (email) => ({ userId: userB.id, email, displayName: "Friend B", self: false }));
+		open(f.root);
+		click(f.root, "#settings-tab-friends");
+		await draw();
+		const field = f.root.querySelector<HTMLInputElement>(".panel-search input")!,
+			submit = f.root.querySelector<HTMLButtonElement>('.panel-search button[type="submit"]')!,
+			panel = () => f.root.querySelector(".settings-dialog .panel")!;
+		// A friend's address shows the friend, and is not looked up.
+		field.value = userB.email!;
+		field.dispatchEvent(new Event("input"));
+		await vi.advanceTimersByTimeAsync(250);
+		await draw();
+		expect(find).not.toHaveBeenCalled();
+		expect(submit.disabled).toBe(true);
+		[...panel().querySelectorAll("button")].find((button) => button.textContent === "Remove")!.click();
+		await draw();
+		expect(remove).toHaveBeenCalledExactlyOnceWith(userB.id);
+		await vi.advanceTimersByTimeAsync(250);
+		await draw();
+		expect(find).toHaveBeenCalledExactlyOnceWith(userB.email!.toLowerCase());
+		expect(panel().querySelector(".skeleton-list")).toBeNull();
+		expect(panel().textContent).toContain("Add a friend");
+		expect(submit.disabled).toBe(false);
 	});
 	it("never moves the Friends field: composed text filters the list and the field keeps focus", async () => {
 		history.replaceState(null, "", "/#/");

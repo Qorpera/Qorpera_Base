@@ -123,7 +123,8 @@ begin
 		where session.archived_at is null and worker.state <> 'active'
 			and greatest(session.updated_at, coalesce(session.busy_at, session.updated_at))
 				< clock_timestamp() - make_interval(secs => executor.session_archive_after_seconds)
-		order by session.updated_at limit 8
+		-- In todo order, so two executors of one environment lock todos the same way round.
+		order by worker.todo_id, worker.id limit 8
 	loop
 		-- The todo and worker first, as every other writer of a coding worker.
 		v_worker := public.qorpera_lock_coding_worker(v_candidate.worker_id);
@@ -197,7 +198,7 @@ create function public.qorpera_attach_coding_session(p_worker_id uuid, p_lease_t
 	p_machine_id_sha256 text, p_guest_generation text)
 returns jsonb language plpgsql security definer set search_path = '' as $$
 declare v_admission jsonb; v_session public.qorpera_coding_sessions%rowtype; v_worker public.qorpera_runtime_workers%rowtype;
-	v_machine_id uuid; v_token uuid;
+	v_machine_id uuid; v_token uuid; v_refusal text;
 begin
 	if p_guest_generation is not null and p_guest_generation !~ '^[0-9a-f]{64}$' then
 		raise exception 'Coding attachment input invalid' using errcode = '22023'; end if;
@@ -208,6 +209,11 @@ begin
 	select * into strict v_worker from public.qorpera_runtime_workers where id = p_worker_id;
 	select * into strict v_session from public.qorpera_coding_sessions where worker_id = p_worker_id for update;
 	if v_session.archived_at is not null then raise exception 'Coding session is archived' using errcode = '55000'; end if;
+	-- A session the keeper would release for a lasting reason is not attached again, even under a live turn.
+	v_refusal := public.qorpera_coding_attachment_refusal(v_session, v_worker,
+		(select machine from public.qorpera_coding_machines machine where machine.id = v_machine_id));
+	if v_refusal in ('OWNER_LEFT','REPOSITORY_WITHDRAWN','EXECUTOR_DISABLED') then
+		return jsonb_build_object('state','refused','reason',v_refusal); end if;
 	if v_session.attached_machine_id is distinct from v_machine_id and v_session.attachment_until > clock_timestamp() then
 		raise exception 'Coding session is attached to another machine' using errcode = '42501'; end if;
 	v_token := case when v_session.attached_machine_id = v_machine_id and v_session.attachment_until > clock_timestamp()
@@ -265,21 +271,23 @@ begin
 end
 $$;
 
--- Internal: why a session may not stay attached, or null. Archived, its
--- attachment expired, its owner no longer a member, its repository grant
--- withdrawn, or no enabled executor for its environment on this machine's owner.
+-- Internal: why a session may not stay attached, or null. Archived, its owner
+-- no longer a member, its repository grant withdrawn, no enabled executor for
+-- its environment on this machine's owner, or its attachment expired. A lasting
+-- reason comes before EXPIRED, so an ended attachment is never taken for one a
+-- running turn may simply attach again.
 create function public.qorpera_coding_attachment_refusal(p_session public.qorpera_coding_sessions, p_worker public.qorpera_runtime_workers,
 	p_machine public.qorpera_coding_machines)
 returns text language sql stable security definer set search_path = '' as $$
 	select case
 		when p_session.archived_at is not null then 'ARCHIVED'
-		when p_session.attachment_until is null or p_session.attachment_until <= clock_timestamp() then 'EXPIRED'
 		when not exists (select 1 from public.qorpera_profile_members member where member.profile_id = p_worker.profile_id
 			and member.user_id = p_worker.owner_user_id) then 'OWNER_LEFT'
 		when not exists (select 1 from public.qorpera_coding_repository_grants grant_row where grant_row.environment_id = p_session.environment_id
 			and grant_row.staff_agent_id = p_worker.staff_agent_id and grant_row.repository = p_session.repository and grant_row.enabled) then 'REPOSITORY_WITHDRAWN'
 		when not exists (select 1 from public.qorpera_coding_executors executor where executor.environment_id = p_machine.environment_id
 			and executor.owner = p_machine.owner and executor.enabled) then 'EXECUTOR_DISABLED'
+		when p_session.attachment_until is null or p_session.attachment_until <= clock_timestamp() then 'EXPIRED'
 	end
 $$;
 

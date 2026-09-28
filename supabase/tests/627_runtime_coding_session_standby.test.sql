@@ -174,9 +174,13 @@ begin
 		'An ended attachment is never renewed: the next attach starts a new generation and records what stopped');
 	v_token := v_attach ->> 'attachmentToken';
 
-	-- A withdrawn repository grant ends the attachment at the keeper's next pass; granting it again does not revive it.
+	-- A withdrawn repository grant ends the attachment at the keeper's next pass, and stays the reason while it lasts:
+	-- the running turn may not attach the session again. Granting it again does not revive the attachment.
 	update public.qorpera_coding_repository_grants set enabled = false where environment_id = '30000000-0000-4000-8000-000000000020';
 	v_keep := pg_temp.keep(null);
+	perform pg_temp.wake_assert(pg_temp.kept(pg_temp.keep(null),'fix-send') ->> 'reason' = 'REPOSITORY_WITHDRAWN'
+		and pg_temp.attach('fix-send',v_turn) = '{"state":"refused","reason":"REPOSITORY_WITHDRAWN"}'::jsonb,
+		'A lasting reason is never read as an expiry a running turn may attach past');
 	update public.qorpera_coding_repository_grants set enabled = true where environment_id = '30000000-0000-4000-8000-000000000020';
 	perform pg_temp.wake_assert(pg_temp.kept(v_keep,'fix-send') ->> 'reason' = 'REPOSITORY_WITHDRAWN'
 		and pg_temp.kept(pg_temp.keep(null),'fix-send') ->> 'reason' = 'EXPIRED',

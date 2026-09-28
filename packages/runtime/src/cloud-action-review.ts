@@ -184,6 +184,8 @@ export function cloudActionEffect(
 		case "company_list":
 		case "read_context":
 		case "recall_memory":
+		case "read_skill":
+		case "search_skills":
 		case "computer_screenshot":
 		case "machine_read":
 		case "machine_list":
@@ -191,6 +193,8 @@ export function cloudActionEffect(
 		case "company_write":
 		case "company_mkdir":
 		case "update_memory":
+		// A skill is guidance in the Company File, written through the same governed gateway.
+		case "update_skill":
 		case "organize_sidebar":
 		// An Ask first rule only makes agents more careful.
 		case "add_review_rule":
