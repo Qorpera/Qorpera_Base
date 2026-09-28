@@ -1,18 +1,29 @@
 -- The driver clones the pre-19700 database and admits a real native v1 run
--- before applying the remaining migration chain. No producer or authority helper is substituted.
+-- before applying the remaining migration chain. No producer or authority helper is substituted;
+-- only the run's own lease windows are renewed before the wake refusal below.
 begin;
 set local "request.jwt.claims" = '{"role":"service_role"}';
 do $$
 declare v_history public.qorpera_test_provenance_history%rowtype;
-	v_run public.qorpera_execution_runs%rowtype; v_inputs jsonb; v_message text;
+	v_run public.qorpera_execution_runs%rowtype; v_inputs jsonb; v_message text; v_now jsonb; v_added text[];
 begin
 	select * into strict v_history from public.qorpera_test_provenance_history;
 	select * into strict v_run from public.qorpera_execution_runs where id = (v_history.binding ->> 'runId')::uuid;
 	select jsonb_agg(to_jsonb(input) order by input.id) into v_inputs from public.qorpera_session_inputs input
 	where input.id = any(v_run.input_ids);
-	if to_jsonb(v_run) - array['reasoning_effort','reasoning_policy_sha256'] <> v_history.run
-		or v_inputs is distinct from v_history.inputs then
+	if coalesce(cardinality(v_run.input_ids),0) = 0
+		or jsonb_array_length(v_history.inputs) is distinct from cardinality(v_run.input_ids) then
+		raise exception 'History fixture must record the run''s admitted inputs'; end if;
+	-- Every recorded column keeps its exact value. Columns added after the history
+	-- was recorded (reasoning effort and its policy, the fast mode service tier
+	-- of 20260927161500, ...) must stay empty on historical work.
+	v_now := to_jsonb(v_run);
+	select coalesce(array_agg(key),'{}') into v_added from jsonb_object_keys(v_now) key where not v_history.run ? key;
+	if v_now - v_added <> v_history.run or v_inputs is distinct from v_history.inputs then
 		raise exception 'Upgrade rewrote historical admission provenance'; end if;
+	if exists(select 1 from unnest(v_added) key where v_now -> key <> 'null'::jsonb) then
+		raise exception 'Upgrade invented provenance for historical work: %',
+			(select jsonb_object_agg(key,v_now -> key) from unnest(v_added) key where v_now -> key <> 'null'::jsonb); end if;
 	if v_run.reasoning_effort is not null or v_run.reasoning_policy_sha256 is not null
 		or public.qorpera_execution_run_json(v_run) -> 'reasoning_effort' <> 'null'::jsonb then
 		raise exception 'Upgrade invented the effort of historical work'; end if;
@@ -34,6 +45,18 @@ begin
 	-- reach the later executable-bundle check exercised independently above.
 	if exists(select 1 from public.qorpera_wake_occurrences where run_id = v_run.id) then
 		raise exception 'Upgrade invented wake authority for historical work'; end if;
+	-- The migration chain after the history can outlast the fixture's 120 s job,
+	-- assignment and connection leases. Renew the binding's own windows so that
+	-- its missing wake authority, not an expired lease, is what refuses it.
+	update public.qorpera_runner_jobs set lease_expires_at = statement_timestamp() + interval '5 minutes'
+	where id = v_run.job_id and status = 'leased';
+	if not found then raise exception 'Historical run lost its job lease in the upgrade'; end if;
+	update public.qorpera_runner_assignments set expires_at = statement_timestamp() + interval '5 minutes'
+	where id = (v_history.binding ->> 'assignmentId')::uuid and status = 'accepted';
+	if not found then raise exception 'Historical run lost its accepted assignment in the upgrade'; end if;
+	update public.qorpera_native_provider_connection_leases set expires_at = statement_timestamp() + interval '5 minutes'
+	where id = (v_history.binding ->> 'leaseId')::uuid and status = 'active';
+	if not found then raise exception 'Historical run lost its connection lease in the upgrade'; end if;
 	set local role service_role;
 	begin
 		perform public.qorpera_describe_native_tool_authority(v_history.binding);
@@ -45,8 +68,8 @@ begin
 	reset role;
 	if v_run.audience_kind <> 'member_private' or v_run.audience_user_id <> v_run.requested_by_user_id then
 		raise exception 'Upgrade fixture must retain an admitted private audience'; end if;
-	update public.qorpera_profile_members set role = 'admin' where user_id = v_run.requested_by_user_id;
 	update public.qorpera_profile_members set role = 'owner' where user_id = '29000000-0000-4000-8000-000000000002';
+	update public.qorpera_profile_members set role = 'admin' where user_id = v_run.requested_by_user_id;
 	perform set_config('request.jwt.claims',jsonb_build_object('role','authenticated','sub',v_run.requested_by_user_id)::text,true);
 	set local role authenticated;
 	perform public.qorpera_cancel_session_run(v_run.session_id,v_run.id);

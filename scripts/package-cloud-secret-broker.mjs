@@ -34,10 +34,22 @@ await copyFile(
 	join(root, "deploy/cloud-secret-broker/supabase-prod-ca-2021.crt"),
 	join(output, "supabase-prod-ca-2021.crt"),
 );
+// The shared vault (Vault By Default) runs the same program under its own unit, with the tool that makes
+// and moves its secrets on the vault hosts.
+await copyFile(
+	join(root, "deploy/cloud-secret-broker/qorpera-shared-vault.service"),
+	join(output, "qorpera-shared-vault.service"),
+);
+await copyFile(
+	join(root, "deploy/cloud-secret-broker/shared-vault-secrets.py"),
+	join(output, "shared-vault-secrets.py"),
+);
 const artifacts = [];
 for (const file of [
 	"qorpera-cloud-secret-broker-service.mjs",
 	"qorpera-cloud-secret-broker.service",
+	"qorpera-shared-vault.service",
+	"shared-vault-secrets.py",
 	"supabase-prod-ca-2021.crt",
 ]) {
 	const bytes = await readFile(join(output, file));

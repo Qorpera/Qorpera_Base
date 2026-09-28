@@ -116,9 +116,9 @@ no database login and no service key; it sees a login only for one operation and
     directory, the pinned binary checked before each launch) in a private home. A sign-in is bound
     to its company, identity and capability digest; a newer sign-in of the same identity ends the
     older one (also when two members share a company identity: the second sign-in ends the first);
-    at most 6 run at once, 2 per company. The binding is a consistency check: the brokers on one
-    host share the helper's token (one broker per host today; give each its own token before a
-    helper serves several companies). Codex stops after 10 minutes at the latest;
+    at most 6 run at once, 2 per company. The binding is a consistency check: the company brokers on
+    one host share the helper's token; the shared vault has its own (Vault By Default, part 3), and the
+    helper answers a sign-in only to the client that began it. Codex stops after 10 minutes at the latest;
     its home is wiped as soon as it stops. The answer is the node gateway's
     `qorpera.native-provider-login-result/v1`: `preparing`, `awaiting_member` with the link and code,
     or `completed`.
@@ -270,6 +270,231 @@ no database login and no service key; it sees a login only for one operation and
   image carry this change. Before that, `qorpera_compute_identity_login_in_vault` is false for every
   identity and nothing changes.
 
+## Vault by default for new companies (founder decisions 2026-09-28)
+
+Every company created after the shared vault starts serves from it by itself: no hand-made authority, key
+or switch. Existing companies keep their own brokers (or none) and are switched one by one as before.
+Picks: one shared vault; each company's capability and key derived from the vault's own secrets (nothing
+new stored); new companies only; node 1 serves, node 2 stands ready with the same secrets.
+
+- **Part 1, database** (migration `20260928248930`): `qorpera_cloud_secret_broker_principals` is the
+  shared vault's identity (service origin, the key id its companies get, a capability hash, and the time
+  after which the companies it registers were created). Broker role only:
+  - `qorpera_broker_principal_companies`: the principal's key id, the companies it serves (authorities
+    with its `principal_id`) and, at most 50 at a time, the companies created after its start time that
+    have no authority at all. The served list is not paged: about 1 MB at 8,000 companies, fine until then.
+  - `qorpera_register_company_with_broker_principal`: creates the company's authority row (the
+    principal's origin and key id, the capability hash the broker derived for the company, `principal_id`)
+    and its row in `qorpera_model_login_sign_in_companies`. A repeat with the same capability, by either
+    copy of the shared vault and at the same moment too, answers the same authority and changes nothing
+    (an operator's later switch-off stays). Another capability, another principal, a company created at or
+    before the start time, or a company with a vault of its own (retired included) is refused (`23505` or
+    `42501`); a capability hash that names another company's authority is refused with `22023`. It runs at
+    read committed only (`25000` otherwise): its race handling re-reads the other copy's committed row.
+  - Every existing broker function then serves the company unchanged: each call names the company's own
+    authority and capability. Locks: the new authority row and the switch row, plus the key-share locks
+    their foreign keys take on the company's profile row and the principal row (a registration waits at
+    most 2 s behind a lock on the company's profile).
+  - An operator creates the principal once (`insert` with the capability hash and the start time). One
+    principal is active at a time; a second with an overlapping start time is harmless (the two race to
+    register each new company and the loser is refused) but serves no purpose. Retiring a principal stops
+    its vault; its companies' authorities stay active until each is retired too.
+- **Part 2, the broker** (`cloud-secret-broker-shared.ts`): config `qorpera.cloud-secret-broker-service/v3`
+  names the principal (`principalId`, `port`, optional `memberOrigins`) and loads two credentials instead
+  of one company's capability and keyring: `qorpera-cloud-secret-principal` (32 random bytes, base64url)
+  and `qorpera-cloud-secret-master-keys` (`{"schema":"qorpera.cloud-secret-master-keys/v1","keys":[{"keyId":
+  "<the principal's key id>","keyBase64url":"<32 bytes>"}]}`). The runtime token, database login, CA,
+  login helper, connectors and coding executor credentials are the same as a one-company broker's.
+  - Capabilities: the principal's is HMAC-SHA256(principal secret, `qorpera.broker-principal/v1`), a
+    company's HMAC-SHA256(principal secret, `qorpera.broker-authority/v1:<company>`), both base64url
+    (`sharedBrokerCapability`); the database holds only their sha256. Keys: a company's wrapping key is
+    HKDF-SHA256(master key, salt `qorpera.company-kek/v1`, info `<company>`). Both copies of the vault
+    derive the same ones, and nothing new is stored.
+  - Every 10 s it registers the companies the principal lists and serves every registered company with
+    its own broker, login vault, sign-ins and usage on that company's authority. It registers only while
+    it holds the principal's key (registering switches a company to vault sign-in), and it serves a
+    company only while it can derive that company's key. A company it does not know yet (created a moment
+    ago) is looked up again at most every 2 s; a request that arrives while a refresh runs (the first one
+    after a start included) waits for it. A refused registration logs one fixed line.
+  - Each request's company comes from the path (sign-in, account refresh) or the `?company=` every
+    client adds; a company it does not serve gets 404. Every database call still names the company's
+    own authority and capability.
+  - Background work per company: finished sign-ins every 2 s for a company whose member is signing in
+    (20 minutes after the member's last poll) and every 30 s for all; each company's upkeep pass
+    (accounts, switch-off, idle renewals) in turn every 5 minutes. The database pool has 8 connections.
+    A stop ends the company pass in hand after its current renewal and save, inside the unit's 90 s.
+  - A member's sign-in marks its company for frequent collection only once the database accepted it.
+  - Connector sign-ins: one set of flows for all companies (256 started, 256 back from the provider), at
+    most 32 per company across both; a confirm routed to one company refuses another company's flow
+    before anything is exchanged.
+  - One-company brokers (config v2) are unchanged, except that the 32-per-company share of connector
+    sign-ins applies to them too.
+- **Part 3, deploy**: the shared vault's unit and private files, a default route on the fronts for every
+  company without a map line of its own, and node 2 as a warm standby. No secret passes through the
+  coordinator's machine or a chat: each is made or copied on a vault host, node 2 takes them from node 1
+  host to host, and only hashes and "match"/"mismatch" come back.
+
+### Installing the shared vault (coordinator, through the root helper)
+
+The package (`npm run pack:cloud-secret-broker`) also carries `qorpera-shared-vault.service` and
+`shared-vault-secrets.py`. The vault runs the same service file as the company brokers
+(`/opt/qorpera-secret-broker`), so the host needs the broker build with part 2, under its own system
+user `qorpera-shared-vault` (a company broker's process cannot read the vault's credentials). Its files
+live in `/etc/qorpera-shared-vault` (root, 0700; every file root-owned 0400). Every step below writes
+under temporary names and renames only when all is written, so a failed step leaves nothing behind and
+can simply be run again.
+
+| File | From |
+|---|---|
+| `principal-secret`, `master-keys.json` | made on node 1 by `shared-vault-secrets.py generate` |
+| `database-url`, `runtime`, `connectors.json`, `coding-executor` | the company brokers' own files on node 1 (one database login, one runtime token, the same OAuth clients and coding executor token for every broker) |
+| `login-helper.json` | each host's own, by `shared-vault-secrets.py helper-token` |
+| `config.json` | written by the coordinator; holds no secret |
+
+The vault uses the host's login helper with a token of its own: `helper-token` writes it both as the
+helper's `vault-token` credential and as the vault's `login-helper.json`. The helper answers a sign-in only
+to the client that began it, so the company brokers on the host (which share the helper's other token)
+never see the vault's members' sign-ins, nor it theirs. Every new company shares that helper; its config
+takes `signInLimit` (default 6) and `signInCompanyLimit` (default 2, at most the total), each 1–64. Raise
+them only with the helper unit's memory, task and CPU limits, once a real sign-in is measured.
+
+Prerequisites on each host: the broker build and the CA file
+(`/etc/qorpera-secret-broker/supabase-prod-ca-2021.crt`); the `qorpera-shared-vault` user and group
+(`useradd --system --no-create-home --shell /usr/sbin/nologin qorpera-shared-vault`); the login helper
+reinstalled from this build **first** (an older helper refuses a config with the new limit keys and a
+vault token, and stops for every broker on the host); a host without a helper installs it as in
+"Installing the helper" above, its own token included (`helper-token` refuses on a host without one).
+Reinstalling node 1's helper restarts it: renewals in flight finish (its stop waits up to 40 s), but a
+member in the middle of a sign-in has to start again, so pick a moment with none pending (no
+`qorpera_native_provider_login_sessions` row with status `pending` and `expires_at` in the future).
+
+Node 1:
+
+1. Install the package, the unit at `/etc/systemd/system/qorpera-shared-vault.service` and the script at
+   `/opt/qorpera-secret-broker/shared-vault-secrets.py` (root, 0500).
+2. `python3 -I /opt/qorpera-secret-broker/shared-vault-secrets.py generate --key-id vault-root-1`. It prints
+   the key id, `principalCapabilitySha256` (for the principal row; with the broker's database login it is
+   the principal's proof, so keep it out of pages and PRs) and fingerprints; it never overwrites.
+3. Copy the company brokers' files on the host, for example
+   `install -m 0400 -o root -g root <a company broker's database-url> /etc/qorpera-shared-vault/database-url`,
+   and the same for `runtime`, the connectors credential (as `connectors.json`) and the coding executor
+   token (as `coding-executor`). Then `shared-vault-secrets.py fingerprint`: keep its `fingerprintsSha256`
+   for node 2.
+4. `shared-vault-secrets.py helper-token`. Only then (systemd refuses to start a unit whose credential
+   file is missing, which would stop the helper for every broker on the host) the helper's drop-in
+   `/etc/systemd/system/qorpera-model-login-helper.service.d/vault-token.conf`, `systemctl daemon-reload`,
+   and a helper restart (like its reinstall, at a moment with no sign-in pending):
+
+   ```ini
+   [Service]
+   LoadCredential=qorpera-model-login-helper-vault-token:/etc/qorpera-model-login-helper/vault-token
+   ```
+5. `config.json`: `{"schema": "qorpera.cloud-secret-broker-service/v3", "principalId": "<a new uuid>",
+   "port": 18660, "memberOrigins": ["https://app.qorpera.com"]}` (any free loopback port; 18660 below).
+6. nginx, before the vault starts: every map that picks a company's broker sends a company it has no line
+   for to the vault. Every existing company keeps an explicit line; a company that rides on a map's
+   fallback today (the acceptance company) gets its own line first.
+   Regex keys hold `{}`, so each stays quoted (Step 7 doc); nginx tries exact keys first and regex keys in
+   order.
+   - `?company=` maps (`$qorpera_capture_broker` for captures, email drafts and connector sign-in start and
+     confirm; `$qorpera_operations_broker` for `/v1/operations` and `/v1/repository-credentials`;
+     `$qorpera_model_login_run_broker` for runs' `/v1/model-logins`):
+     `"~(^|&)company=[0-9a-fA-F-]{36}(&|$)" 127.0.0.1:18660;`. Keep any `""` line that routes requests
+     without `company=` where they go today.
+   - `$qorpera_model_login_broker` (vault sign-in and account refresh, by path):
+     `"~^/v1/model-logins/[0-9a-fA-F-]{36}/(login|account-refresh)$" 127.0.0.1:18660;`.
+   - `$qorpera_oauth_broker` (the connector callback): it is keyed on the bare company id that
+     `$qorpera_oauth_state_company` takes from the state, so `"~^[0-9a-f-]{36}$" 127.0.0.1:18660;`. Keep
+     `default "";`: a state without a valid company prefix leaves the id empty, which matches no line and
+     belongs to no broker.
+   `nginx -t`, then reload. Check one request per map for a company without its own line (it reaches the
+   vault) and one without a company (it goes where it went before).
+7. Node 2's hand-over (below), so the keys never live on one host alone once anything is sealed under them.
+8. The principal row (a database write, the coordinator's):
+   `insert into public.qorpera_cloud_secret_broker_principals(id, service_origin, key_id, capability_sha256,
+   registers_companies_created_after) values ('<principalId>', 'https://company41-node-01.tailbb15c7.ts.net:10000',
+   'vault-root-1', '<principalCapabilitySha256>', statement_timestamp());`. Every company created after this
+   moment is the vault's.
+9. `systemctl daemon-reload`, `systemctl enable --now qorpera-shared-vault`. Within 10 s every company
+   created after the start time has an authority row with this `principal_id` and a sign-in switch row.
+   At start the unit logs its connectors line; after that, each `Shared vault:` line names a fact (a
+   refused registration, a missing key, a failed pass).
+10. Acceptance: a test company created after the start time; an owner connects a connector, a member signs
+    in to Codex from the web client, usage shows, and one agent run uses the vault login. Nobody handles a
+    login or a secret.
+
+Node 2 baseline (before its standby steps). In September 2026 the company brokers and the login helper
+run on node 1 only, so node 2 first gets the rest of a vault host, from the same release as node 1. Each
+command runs as a plain argv (no shell needed):
+
+1. Accounts: `qorpera-login-helper` and `qorpera-shared-vault` system users and groups (no home, no login
+   shell).
+2. Folders: `install -d -o root -g root -m 0755 /opt/qorpera-model-login-helper` (the helper's user must
+   enter it) and `install -d -o root -g root -m 0700 /etc/qorpera-model-login-helper`.
+3. Codex: copy node 1's `/opt/qorpera-model-login-helper/codex` host to host (no new download; the binary
+   is public and its hash is the check, so any copy path will do), check its SHA-256 equals node 1's helper
+   config `codexSha256`, and install it root-owned 0555 at the same path.
+4. Isolation: root-owned `/usr/bin/bwrap` (0.8 or later) and `/usr/bin/node` (the version node 1 runs),
+   and unprivileged user namespaces allowed for bubblewrap as on node 1. The helper checks bubblewrap,
+   the namespaces, Codex, the isolation child, its config and its token at start; it does not check the
+   Node version.
+5. The helper from the release (`node scripts/package-model-login-helper.mjs --out <dir>`, its
+   `manifest.json` lists each file's SHA-256): `qorpera-model-login-helper.mjs` and
+   `qorpera-native-isolation-child.mjs` to `/opt/qorpera-model-login-helper/` (root, 0444), the unit to
+   `/etc/systemd/system/`.
+6. The helper's config: node 1's `config.json` as is (same paths, same `codexSha256`), and a token of its
+   own for company brokers, made on the host, never shown and never over an existing file, although no
+   company broker runs there (the helper requires one):
+   `python3 -I -c 'import base64, os; fd = os.open("/etc/qorpera-model-login-helper/token", os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o400); os.write(fd, base64.urlsafe_b64encode(os.urandom(32)).rstrip(b"=") + b"\n"); os.close(fd)'`.
+7. `systemctl daemon-reload`, `systemctl enable --now qorpera-model-login-helper` (enabled: after a
+   reboot without it, node 2's vault copy would count every idle renewal it tries as failed, which delays
+   those logins' renewals on both nodes). It logs `Model login helper: sandbox self-check ok (…)` or stops
+   visibly. The self-check does not reach OpenAI: watch node 2's first renewal after its vault starts.
+8. The broker package from the release: `install -d -o root -g root -m 0755 /opt/qorpera-secret-broker`
+   and `install -d -o root -g root -m 0755 /etc/qorpera-secret-broker`, then
+   `qorpera-cloud-secret-broker-service.mjs` to `/opt/qorpera-secret-broker/` (root, 0444),
+   `shared-vault-secrets.py` beside it (root, 0500), and the CA to
+   `/etc/qorpera-secret-broker/supabase-prod-ca-2021.crt` (root, 0444).
+
+Node 2 (warm standby), between node 1's steps 6 and 8:
+
+1. The prerequisites above, the package, the unit and the script as on node 1; then `helper-token`,
+   node 1 step 4's drop-in, `systemctl daemon-reload` and a helper restart on node 2 (node 2's own helper
+   and token; without the drop-in node 2's helper refuses the vault, and each refusal delays that login's
+   renewals on both nodes).
+2. The hand-over, host to host over the two nodes' Tailscale addresses:
+   1. node 2: `shared-vault-secrets.py ticket`. It keeps a one-time ticket as a root-only file (replacing an
+      unused one) and prints only `ticketSha256`.
+   2. node 1: a one-shot transient unit bound to node 1's address that answers node 2's only:
+      `systemd-run --unit=qorpera-shared-vault-handover --collect --property=RuntimeMaxSec=180
+      --property=NoNewPrivileges=yes --property=ProtectSystem=strict --property=ProtectHome=yes
+      --property=PrivateTmp=yes --property=LimitCORE=0 --property=IPAddressDeny=any
+      --property=IPAddressAllow=100.80.160.64 -- /usr/bin/python3 -I
+      /opt/qorpera-secret-broker/shared-vault-secrets.py serve --bind 100.75.4.70 --peer 100.80.160.64
+      --port 39579 --ticket-sha256 <ticketSha256> --ttl 120`.
+      It reads the files as root, then serves as nobody: it closes any other address before reading a
+      byte, gives a connection 5 s to ask, answers once, and stops (or stops after 120 s). Its one output
+      line (in the unit's journal) repeats `fingerprintsSha256`.
+   3. node 2: `shared-vault-secrets.py fetch --source 100.75.4.70 --port 39579 --expect <node 1's
+      fingerprintsSha256>`. The ticket is used up either way. It checks what arrived against node 1's
+      digest before writing anything and answers `"match": "match"`; a mismatch or any failure leaves
+      nothing written (start again from 1).
+3. The same `config.json` as node 1's (same principal, same port). After node 1's step 9:
+   `systemctl daemon-reload`, `systemctl enable --now qorpera-shared-vault` (enabled, so the standby comes
+   back after a reboot). Check the unit is active and logs no `Shared vault:` failure line after its first
+   pass.
+   Both copies register new companies (the same row; the loser gets the same answer) and run the
+   background work (every renewal takes the login's own lock); node 1's copy serves every request.
+4. Failover. Requests reach the vault only through node 1's front. If node 1's copy stops, systemd
+   restarts it and node 2's keeps renewals going. If node 1 is lost, node 2 still holds both secrets and
+   keeps renewing; serving requests from node 2 needs a front there with the same maps, the run hosts'
+   broker address and the authorities' service origin moved to it, and the web app allowed to reach the
+   new origin (its content security policy names node 1's today): part of a node 1 recovery, not built
+   here. To rebuild node 1, run the hand-over the other way (ticket on node 1, serve on node 2).
+5. The two secrets live on node 1 and node 2 only. Losing both nodes loses them: every vault company's
+   stored secrets, connector connections and model logins can then no longer be opened, and members sign
+   in and reconnect again. A copy beyond the two nodes is the founder's choice (pending).
+
 ## Failure cases
 
 | Case | Result |
@@ -278,7 +503,7 @@ no database login and no service key; it sees a login only for one operation and
 | Helper dies before asking the provider | The lock expires after 5 minutes; the next caller renews. |
 | Helper dies after the provider answered, before the commit | The stored renewal token is used up; the next renewal is refused and the login asks for a new sign-in. Passes already handed out work until they end. |
 | Commit fails three times | Lock released as `renewal_unsaved`, permanent: the login asks for a new sign-in; this run keeps the new pass. |
-| One broker copy down | The other node's copy serves runs (the vault must run on both nodes before any login moves). |
+| One broker copy down | A company broker: the other node's copy serves runs (the vault must run on both nodes before any login moves). The shared vault: systemd restarts node 1's copy; node 2's keeps renewing but serves no requests (see its failover). |
 | Provider refuses a renewal | `needs_sign_in`; the vault refuses new runs on the login (they fail at the credential download) until the member signs in again (change 2B). Runs already going keep their pass until it ends. |
 | Member signs out or leaves | The pointer capsule and lease checks refuse at once; running work is stopped by the existing checks. |
 

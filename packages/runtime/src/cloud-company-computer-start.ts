@@ -73,9 +73,40 @@ export function createCompanyComputerStartSession(options: {
 	operations: CloudNativeToolOperations;
 	descriptor: CompanyComputerStartDescriptor;
 	registry: CompanyComputerStartRegistry;
+	/** Whether this run's native route reaches a computer; every one of the company's when omitted. */
+	reaches?: (companyComputerId: string) => boolean;
 }): { tools: readonly CompanyComputerTool[]; close(): Promise<void> } {
-	const descriptor = parseCompanyComputerStartDescriptor(options.descriptor, options.run);
-	if (!descriptor) throw new Error("OFFICE_START_UNAVAILABLE");
+	const offered = parseCompanyComputerStartDescriptor(options.descriptor, options.run);
+	if (!offered) throw new Error("OFFICE_START_UNAVAILABLE");
+	// The computer to start is the one placement picks when the agent asks, not when the
+	// run began: other agents may have taken its seats since, and placement then adds
+	// another computer. A request key keeps the computer it was first sent for, so a
+	// replay is the same request. With nothing to start now, or a computer this run's
+	// route cannot reach, the request names the computer the run was offered.
+	const targets = new Map<string, CompanyComputerStartDescriptor>();
+	const target = async (operationKey: string, signal: AbortSignal): Promise<CompanyComputerStartDescriptor> => {
+		const known = targets.get(operationKey);
+		if (known) return known;
+		const current = parseCompanyComputerStartDescriptor(
+			await cloudToolRequest(
+				(checked) =>
+					options.registry.call(
+						"qorpera_native_office_start_descriptor",
+						{ p_binding: options.run.binding },
+						checked,
+					),
+				signal,
+			),
+			options.run,
+		);
+		const chosen = current && (options.reaches?.(current.scope.companyComputerId) ?? true) ? current : offered;
+		if (targets.size >= 64) {
+			const oldest = targets.keys().next();
+			if (!oldest.done) targets.delete(oldest.value);
+		}
+		targets.set(operationKey, chosen);
+		return chosen;
+	};
 	const lifetime = new AbortController();
 	const pattern = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,191}$/;
 	const parse = (value: JsonValue): { operationKey: string } => {
@@ -105,6 +136,7 @@ export function createCompanyComputerStartSession(options: {
 				throw new Error("COMPUTER_RUN_MISMATCH");
 			const signal = AbortSignal.any([context.signal, options.run.signal, lifetime.signal]);
 			signal.throwIfAborted();
+			const descriptor = await target(args.operationKey, signal);
 			return options.operations.execute({
 				operation: {
 					tool: "computer_start",

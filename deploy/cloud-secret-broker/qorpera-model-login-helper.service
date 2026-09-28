@@ -26,6 +26,9 @@ UMask=0077
 RuntimeDirectory=qorpera-model-login-helper
 RuntimeDirectoryMode=0750
 InaccessiblePaths=-/etc/qorpera-secret-broker
+InaccessiblePaths=-/etc/qorpera-shared-vault
+# On a shared vault host, a drop-in adds the vault's own token (RUNTIME-LOGIN-VAULT.md):
+# LoadCredential=qorpera-model-login-helper-vault-token:/etc/qorpera-model-login-helper/vault-token
 PrivateTmp=yes
 PrivateDevices=yes
 ProtectSystem=strict
