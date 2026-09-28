@@ -302,14 +302,21 @@ new stored); new companies only; node 1 serves, node 2 stands ready with the sam
     HKDF-SHA256(master key, salt `qorpera.company-kek/v1`, info `<company>`). Both copies of the vault
     derive the same ones, and nothing new is stored.
   - Every 10 s it registers the companies the principal lists and serves every registered company with
-    its own broker, login vault, sign-ins and usage on that company's authority. A company it does not
-    know yet (created a moment ago) is looked up again at most every 2 s.
+    its own broker, login vault, sign-ins and usage on that company's authority. It registers only while
+    it holds the principal's key (registering switches a company to vault sign-in), and it serves a
+    company only while it can derive that company's key. A company it does not know yet (created a moment
+    ago) is looked up again at most every 2 s; a request that arrives while a refresh runs (the first one
+    after a start included) waits for it. A refused registration logs one fixed line.
   - Each request's company comes from the path (sign-in, account refresh) or the `?company=` every
     client adds; a company it does not serve gets 404. Every database call still names the company's
     own authority and capability.
   - Background work per company: finished sign-ins every 2 s for a company whose member is signing in
     (20 minutes after the member's last poll) and every 30 s for all; each company's upkeep pass
     (accounts, switch-off, idle renewals) in turn every 5 minutes. The database pool has 8 connections.
+    A stop ends the company pass in hand after its current renewal and save, inside the unit's 90 s.
+  - A member's sign-in marks its company for frequent collection only once the database accepted it.
+  - Connector sign-ins: one set of pending starts for all companies (256), at most 32 per company; a
+    confirm routed to one company refuses another company's flow before anything is exchanged.
   - One-company brokers (config v2) are unchanged.
 - **Part 3, deploy** (next change): the shared broker's unit and secrets, and a default route on both
   fronts for any company without a map line of its own; node 2 as a warm standby.

@@ -378,3 +378,26 @@ it("composes the broker's connector service from one credential and refuses inco
 		),
 	).toThrow("invalid");
 });
+
+it("gives each company its own share of the pending sign-ins, and a shared vault's confirm only its own flows", async () => {
+	const fetchImplementation = vi.fn<typeof fetch>();
+	const oauth = flows(fetchImplementation);
+	for (let started = 0; started < 32; started += 1) begin(oauth);
+	// One company's admin cannot hold every slot: the next start for it is busy, another company's is not.
+	expect(() => begin(oauth)).toThrow("Connector OAuth is busy");
+	const other = begin(oauth, "gmail", otherCompanyId);
+	// A confirm routed to another company is refused before anything is exchanged.
+	const receipt = oauth.receive({ state: other.state, code: "4/0AbCdEf" });
+	await expect(
+		oauth.confirm(
+			{
+				ticketId: other.ticketId,
+				confirmation: receipt.confirmation,
+				browserProof: other.browserProof,
+				companyId,
+			},
+			signal,
+		),
+	).rejects.toMatchObject({ reason: "state_unknown" });
+	expect(fetchImplementation).not.toHaveBeenCalled();
+});
