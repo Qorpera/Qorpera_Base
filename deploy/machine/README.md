@@ -54,6 +54,7 @@ The steps below need root on the node and a maintenance window. The coordinator 
    - `deploy/machine/setup-machine-network.sh machine-net 10.88.0.1/22`
    - Keep the printed network and ACL as evidence.
    - The storage pool is the node's VM pool (ZFS), for example `qorpera-vm`. Machines get their own root disks.
+   - The host must forward the bridge's traffic. Nodes 1 and 2 run no Docker. On a host that does, Docker sets the FORWARD policy to drop, and machines resolve names but reach nothing. Allow the bridge there (`iptables -I DOCKER-USER -i machine-net -j ACCEPT` and `iptables -I DOCKER-USER -o machine-net -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT`, repeated after a reboot). The ACL still applies, because LXD's rules live in their own table.
 3. **Build the image** in a quiet window. The builder VM makes the node "unavailable" until it is deleted.
    `deploy/machine/build-machine-image.sh /task-owned/machine-guest <node-version> <node-sha256> machines machine-net > image-build.json`
    Take the Node.js tarball's sha-256 from nodejs.org's `SHASUMS256.txt`.

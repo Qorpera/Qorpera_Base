@@ -17,9 +17,10 @@ import { LxdUnixClient } from "../../packages/runner-orchestrator/src/lxd-client
 // Run as the coding executor's account (LXD socket, NAS control directory):
 //   node prove-machine-node.mjs <proof.json>
 // proof.json: { policy, helperSha256, storagePolicy, journalRoot, cpus, memoryGiB, diskGiB,
-//               repositoryBundle?: "/path/qorpera.tar.gz", blockedTargets?: ["host[:port]", ...] }
-// blockedTargets are what must stay out of reach; the default is node 2's NAS, router,
-// Tailscale, cloud metadata and the bridge gateway's SSH.
+//               repositoryBundle?: "/path/qorpera.tar.gz", blockedTargets?: ["host:port", ...] }
+// blockedTargets must stay out of reach: a TCP connect to each must time out (the ACL drops
+// it), where an open port would connect and a closed one refuse. The default is node 2's NAS,
+// router, Tailscale, cloud metadata and the bridge gateway's SSH.
 // The machine is an unregistered instance while it exists: the node's
 // observer reports the node unavailable for the few minutes the proof runs.
 // Run it in an agreed quiet window.
@@ -171,13 +172,20 @@ async function main(path: string): Promise<void> {
 		"docker compose stack",
 	);
 	expect((await command("curl -fsS -o /dev/null -w '%{http_code}' https://github.com")).state === "succeeded", "internet out");
-	const blocked = proof.blockedTargets ?? ["192.168.1.40", "192.168.1.1", "100.100.100.100", "169.254.169.254", "10.88.0.1:22"];
-	if (!blocked.every((target) => /^[0-9.]+(:[0-9]{1,5})?$/.test(target))) throw new Error("invalid blocked target");
+	const blocked = proof.blockedTargets ?? [
+		"192.168.1.40:22",
+		"192.168.1.40:2049",
+		"192.168.1.1:80",
+		"100.100.100.100:53",
+		"169.254.169.254:80",
+		"10.88.0.1:22",
+	];
+	if (!blocked.every((target) => /^[0-9.]+:[0-9]{1,5}$/.test(target))) throw new Error("invalid blocked target");
+	const connect = (target: string) => `timeout 5 bash -c '</dev/tcp/${target.replace(":", "/")}' 2>/dev/null`;
+	// The method sees an open port: without this, a broken probe would pass every drop below.
+	expect((await command(connect("1.1.1.1:443"))).state === "succeeded", "open port connects: 1.1.1.1:443");
 	for (const target of blocked)
-		expect(
-			(await command(`! curl -sS -m 5 -o /dev/null http://${target}/`)).state === "succeeded",
-			`blocked: ${target}`,
-		);
+		expect((await command(`${connect(target)}; test $? -eq 124`)).state === "succeeded", `dropped: ${target}`);
 	note("nested-kvm", {
 		result: (await command("ls -l /dev/kvm && grep -cE 'vmx|svm' /proc/cpuinfo", 60000)).state,
 	});
