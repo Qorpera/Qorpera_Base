@@ -227,9 +227,12 @@ sandbox runs, rebuilds the instance in place, reinstalls the package, takes
 the fence digest from the image, pushes the staged configuration and starts
 the service; the orchestrator is started by hand once the cut is live.
 
-The node's inventory observer pins the host's configuration digest (it
-includes the `image.*` keys), so a rebuild makes the node `unavailable` for
-placement and logins until the inventory policy is re-enrolled: recompute the
+When the policy lists the host exactly, the node's inventory observer pins the
+host's configuration digest (it includes the `image.*` keys), so a rebuild makes
+the node `unavailable` for placement and logins until the inventory policy is
+re-enrolled. A host listed by role (`"role": "execution-host"`, #436,
+`deploy/first-node/NODE-EXEC-HOST-BY-ROLE.md`) needs no re-enrol while the
+release that pins its image is staged on the node. Re-enrolling: recompute the
 digest with `exec-host-inventory-digest.py` (below) from
 `lxc query /1.0/instances/<vm>?project=<project>`, replace the policy with
 `qorpera_replace_runtime_node_inventory(policy, previous_sha256)`, write the

@@ -213,8 +213,9 @@ except Exception:
 fi
 echo "image=${FINGERPRINT} fence=${fence} slots=${SLOTS} bundle=${BUNDLE:-any} service=${status} healthz=${health} orchestrator=stopped"
 if [[ -z ${FRESH} ]]; then
-	echo "Re-enrol the node inventory digest (image.* keys changed); identity devices are not part of it when the"
-	echo "policy entry declares identityVolumes: lxc query '/1.0/instances/${VM}?project=${PROJECT}' | exec-host-inventory-digest.py --pool <pool> --source-prefix <prefix>"
+	echo "If the node's inventory policy lists this host exactly (no \"role\": \"execution-host\", #436), re-enrol its digest (image.* keys changed);"
+	echo "identity devices are not part of it when the entry declares identityVolumes: lxc query '/1.0/instances/${VM}?project=${PROJECT}' | exec-host-inventory-digest.py --pool <pool> --source-prefix <prefix>"
+	echo "A host listed by role needs no re-enrol while the release that pins this image is staged on the node."
 fi
 echo "Start the orchestrator when the cut is live: lxc exec ${VM} --project ${PROJECT} -- systemctl enable --now qorpera-runner-orchestrator.service"
 if [[ -n ${declaration_failed:-} ]]; then
