@@ -2926,6 +2926,24 @@ section 12.2 and the 2026-09-16 storage rule. Design:
      review of a networked shell do not apply to them.
    - Branches still leave the company only as pull requests (5.1).
 
+**Founder decisions of 28 September 2026 on how machines reach the folder.**
+Design: the section "Decided on 28 September 2026" of
+`deploy/first-node/RUNTIME-COMPANY-FOLDER.md`.
+
+- **A folder program in each machine.** Each machine shows the folder
+  through a program of its own. That program reaches the folder service of
+  the node the machine runs on over a private link that is not the machine's
+  network. Every node runs the same folder service, so a machine sees the
+  folder the same way on any node. The folder service does every check.
+- **Company machines show what every agent may see.** A company machine's
+  computers are not walls between agents, so it shows only the company-wide
+  part of the folder. A folder shared with only some agents is worked on from
+  the agent's own run box. Each computer's saves are attributed to its
+  holder.
+- **A crash loses only what was not yet published.** When a machine or a
+  node dies, the changes it had not yet published are lost and reported.
+  Nothing a company owns is kept on a node or a machine disk to rescue them.
+
 ### 2026-09-27 amendment: the company folder layout
 
 Founder decisions of 27 September 2026 (evening). They complete section 5 and

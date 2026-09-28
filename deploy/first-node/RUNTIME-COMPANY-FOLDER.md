@@ -17,6 +17,121 @@ refer to.
 > this design speaks of protected paths producing proposals, none are
 > configured by default.
 
+> **Note, 2026-09-28.** The founder decided how machines reach the folder
+> (F3 design page, https://claude.ai/artifact/FovWsxGxvjByUnaUKmhc8r). Three
+> other changes took effect since this design was written:
+> - Stateless Compute: nodes are interchangeable, and runs no longer follow a
+>   member's login home.
+> - The compute amendment (#409): company machines' shells have internet.
+> - Coding sessions now stand by between turns.
+>
+> The section [Decided on 28 September 2026](#decided-on-28-september-2026)
+> records the result. Where it differs from a later section, it governs, and
+> the later sections carry "amended 2026-09-28" markers.
+
+## Decided on 28 September 2026
+
+### How a machine reaches the folder (founder decision 1)
+
+- **One folder service per node host.** It is the same program on every
+  node. It holds the platform's service credential and takes the checks of
+  section 1: authority, read records, publishing and reports. It keeps no
+  state beyond memory: recent listings and chunks, and the small buffers of
+  bytes not yet sent. It reads chunks straight from the NAS object share,
+  which both nodes already mount at `/srv/qorpera/canonical`, after the core
+  has authorized the path and named the manifest. It writes new chunks
+  through an object writer on the same node (one per node, each with its own
+  journal folder; S3).
+- **A folder program in every machine.** A FUSE adapter inside each machine
+  shows `/company` and talks to the folder service of the node the machine
+  runs on, over the machine's vsock link. That link is not the machine's
+  network, so a machine whose shell has internet stays blocked from the NAS,
+  the nodes and private addresses (#409, item 2). LXD gives every VM a vsock
+  link (`volatile.vsock_id`), so no device is added and the machine's device
+  set is unchanged.
+- **Views.** Each mount is a view with one owner. In the core it is a
+  `qorpera_folder_views` row (C1b-3), with a pass (32 random bytes; SQL keeps
+  its sha256) and a lease of 120 s that the folder service renews every 40 s.
+  - The node's folder service checks that a call comes from the machine the
+    view names, by the calling vsock CID, which the node assigns and the
+    machine cannot choose.
+  - Commands, shells and desktops inside the machine cannot open the vsock
+    link themselves (`RestrictAddressFamilies` without `AF_VSOCK` in their
+    units).
+- **Not chosen.**
+  - A virtiofs disk per view, shared from the host: a disk for every computer
+    and every coding session, no way to tell desktops apart behind
+    virtiofsd, and slow invalidation.
+  - NFS from the NAS: it bypasses versions, review and authority (the two
+    reasons the live tree was retired in August).
+
+### Which view each machine gets (founder decision 2)
+
+| Machine | View | Owner of saves |
+| --- | --- | --- |
+| Run box (section 4) | the run's authority | the run |
+| Company machine, one mount per computer (section 5) | the company-wide view: paths whose covering resource is the root `company_shared` resource, plus `rules/` read-only | the computer's holder: the run holding it, or a member who took it over |
+| Coding machine, one mount per attached session (section 6) | the coding agent ∩ the session owner, `agents/**` and `rules/**` read-only | the session |
+| Test machine, one mount per machine | the agent that started it, for that run's requesting member | that agent |
+
+- A company machine never shows a narrower folder, even to an agent that may
+  read it. Its computers are not walls between agents. Such folders are
+  worked on from the agent's own run box.
+- After the owner's run ends, a view stays open while its programs run.
+  - Saves are attributed to the view's agent and to the last holder's
+    member.
+  - A unit that needs the automatic review waits for that agent's next
+    turn, and the agent is told.
+  - Reads are recorded on the view, and the agent's next run inherits them.
+- Test machines have internet, so their commands are outside effects and
+  pass the automatic review, like a company machine's shell (#409, item 2).
+
+### What a crash loses (founder decision 3)
+
+- When a machine or node dies, the changes of a command or save that were
+  not yet published are lost: paths, bytes and moves. The owner is told
+  "not applied: the machine was lost" at its next turn.
+- Nothing a company owns is kept on a node or a machine disk to rescue them.
+- Published changes are on the NAS and in the database.
+- The window is one publish boundary (section 2).
+
+### Nothing on a node
+
+- The folder service keeps memory caches only.
+- Machines keep their page cache and the folder program's memory cache.
+- Bytes a program writes go to the NAS as chunks that are not part of the
+  folder until published, under an upload intent (core §2, C1d). The
+  machine's memory holds at most one partial chunk per open file.
+- A coding session's cache folders are rebuildable, and a test machine's disk
+  is throwaway. Neither ever holds company files.
+
+### Build order (replaces section 9's mount steps)
+
+The storage core delivers the server side:
+- C1a: reads and lists;
+- C1f: the feed and the clock hint, built by F3;
+- C1b: run, computer-holder and coding-session actors, read records and
+  review in SQL;
+- C1c and C1d: the byte-route fence, upload intents and GC;
+- C2 and C3: structured files and writers.
+
+The machine side follows, each step its own release-train PR, accepted live
+before the next:
+
+| Step | What | Waits on | Retires |
+| --- | --- | --- | --- |
+| 0 | Spike: the folder program over vsock on a throwaway VM in node 2's build space, against a synthetic tree on the NAS. It measures `rg`/`fd` at about 27,000 and 50,000 files, single-file latency, git on the mount and invalidation time, and picks the adapter language | the build space on node 2 (S3) | — |
+| 1 | Folder service on both nodes, and the folder program. The proof company is mounted read-only on the execution host, outside any box | C1a, C1f | — |
+| 2 | Run box with `exec_command`/`write_stdin` over the read-only mount | step 1; C1b run actors and read records | — |
+| 3 | Writes: boundaries, change sets, reports, conflicts, reviewed units, `apply_patch` | C1b–C1d, C2, C3 | the five `company_*` tools, for folder-v2 companies |
+| 4 | Company machines: a new office image with the folder program, one mount per computer, desktop folders in `/company`, saves after a quiet period, shell commands per command and reviewed. Unblocks the scale-out switch (#414) | step 3; #411 in the same image | the Company File part of `computer_transfer`; work files in the scratch area |
+| 5 | Coding machines: one mount per attached session, code areas (section 6), a final publish before sleep and archive | step 3; coding standby (#430) | the private repository folder, its seed and export chain, the 64 MiB bundle |
+| 6 | Test machines: one view per machine, publishing at command end | step 3; test machines (C4) | `/mnt/repository` and copies to the machine's disk |
+
+Steps 4, 5 and 6 do not depend on each other. Milestone M3 of the Rebuild Map
+is reached when two machines on two nodes edit the same folder live and
+launch items 6 and 13 pass without copies.
+
 ## Goal
 
 The Company File is the company's whole folder: its full digital state, not
@@ -110,12 +225,15 @@ reach and holds the machine's service credentials. It is a new front on
 today's gateway, not a second authority: the same code decides path
 authority, receipts, presence and protected-path proposals.
 
-**Where it runs.**
-- **On an execution host:** a host-level unit per slot, beside the slot's
-  host unit. It holds `/dev/fuse` and mounts with `allow_other` before the
-  run box starts, and bwrap bind-mounts that mount into the box. The slot unit
-  itself stays unprivileged.
-- **On a Company Computer:** a system unit.
+**Where it runs.** (Amended 2026-09-28: the folder service runs once per
+node host, and each machine runs a folder program that reaches it over vsock;
+see [Decided on 28 September 2026](#decided-on-28-september-2026).)
+- **On an execution host:** the folder program, as a host-level unit outside
+  the slot units. It holds `/dev/fuse` and mounts each run's view with
+  `allow_other` before the run box starts, and the box unit binds that mount.
+  The slot unit itself stays unprivileged.
+- **On a Company Computer:** the folder program as a system unit with its own
+  memory budget, one mount per computer.
 - **One-run LXD runner VMs** (the older lane) get no mount. The shared
   execution host is the run machine for this design, and the LXD guest
   bootstrap keeps refusing FUSE (`lxd-runner-bootstrap.ts:824`).
@@ -129,7 +247,8 @@ authority, receipts, presence and protected-path proposals.
 **What it accepts:** change sets (section 2).
 
 **Kernel side.** A Linux FUSE filesystem, as a thin adapter that talks to the
-TypeScript folder service over a local socket. The adapter's language (a
+folder service of its node over vsock (amended 2026-09-28; it was a local
+socket). The adapter's language (a
 maintained TypeScript binding, Rust `fuser` or Go `go-fuse`) is chosen in
 build step 2, after a spike on node 2 against the real NAS. The spike measures
 `rg` over a tree at today's real limit (about 27,000 files) and over a
@@ -183,9 +302,10 @@ restarted service reloads it.
 A change set has an operation key: the run, the box and the boundary number.
 Its manifest is staged in the object store before commit, so a restarted
 folder service commits or reports it exactly once (contract section 10).
-Everything pending since the last boundary is lost if the service dies:
-paths, bytes and moves. The run's next tool result reports it as "not
-applied: the folder service restarted".
+Everything pending since the last boundary is lost if the service, the
+machine or the node dies: paths, bytes and moves (founder decision,
+2026-09-28). The run's next tool result reports it as "not applied", with the
+reason.
 
 ### What gets published
 
@@ -351,8 +471,9 @@ box.
 - Home and `/tmp` are memory-backed and disappear when the run ends.
 
 **Sizing.** Node 2's execution host is 4 vCPU and 8 GiB with two slots today
-(`deploy/shared-execution/README.md`). Runs execute on the execution host of
-the member's identity-home node. Every such host therefore needs:
+(`deploy/shared-execution/README.md`). (Amended 2026-09-28: since v144 runs no
+longer follow a member's login home, and node 1 gets an execution host with
+Identical Nodes change 4; until then the run box exists on node 2 only.) Every such host therefore needs:
 - the per-slot folder service unit;
 - the box unit and the third account per slot;
 - more capacity: a box needs at least 1 vCPU and 2 GiB while its commands
@@ -432,7 +553,9 @@ browser profiles and caches. The rest is kept off it:
 - `computer_shell` works in `/company`.
 - The 15-second stop is replaced by long-running sessions like the run
   box's.
-- It keeps its current review status (open question 2).
+- It keeps the automatic review: since the compute amendment (#409, item 2)
+  it has internet, so its commands are outside effects (amended 2026-09-28;
+  this answers open question 2).
 
 **Many machines.** A company's Company Computers all mount the same folder.
 A save on one appears on the others within about a second.
@@ -450,9 +573,14 @@ paths both the coding agent and the member may use (contract section 4.3).
 credential. The FUSE adapter therefore runs in the guest, one per attached
 session. It talks over vsock to a folder service on the node host, and that
 service holds the credentials. The mount is bound at `/company` in every
-command unit of that session. The step-2 spike checks this against the other
-option: the host folder service exported per session as a third hot-plugged
-virtiofs device. `COMMAND-GUEST.md` is amended when this is built.
+command unit of that session. The founder chose this over a third
+hot-plugged virtiofs device on 2026-09-28. Command units get
+`RestrictAddressFamilies` without `AF_VSOCK`, so a session's command cannot
+reach the folder service itself. Under coding standby a session's view lives
+as long as its attachment. Changes publish at command end, at git's commit
+points and after a quiet period between turns, and once more before
+`#takeOff`, sleep or archive. `COMMAND-GUEST.md` is amended when this is
+built.
 
 **Publishing.**
 - Commands (`coding_run_command`) publish at the end of each command, using
@@ -712,9 +840,11 @@ The storage core behind this section is designed in
 **Authority.** It is enforced in the folder service at every lookup, read and
 publish. Mount file modes are a convenience, not the boundary.
 
-**Untrusted content.** File content is data. The run box and the Company
-Computer shell have no network, so the mount opens no new way out of the
-company. The existing exits are connectors and the browser (both reviewed),
+**Untrusted content.** File content is data. The run box has no network, so
+its mount opens no new way out of the company. (Amended 2026-09-28: a Company
+Computer's shell and a test machine have internet, so company data read there
+can leave, as #409 item 2 accepts. Their commands are outside effects and
+pass the automatic review.) The existing exits are connectors and the browser (both reviewed),
 and coding machines, whose sessions keep open network and are not reviewed.
 With the mount, company data a coding session reads can leave through that
 network. The founder accepted this on 27 September so that coding agents can
@@ -725,6 +855,13 @@ passes the gateway.
 validates every path.
 
 ## 9. Build order
+
+Amended 2026-09-28: the machine side now builds in the steps of
+[Decided on 28 September 2026](#decided-on-28-september-2026). Steps 1 and 4
+below are delivered by the storage core's slices (C1–C4, with C1f for the
+feed). The rest map to the new steps: old 2 is new 1, old 3 is new 2, old 5
+is new 3, old 6 is new 4, and old 7 with old 9 is new 5. Test machines are the
+new step 6. The text below is kept for what each step contains.
 
 Everything runs on the release train, and every PR gets an independent review.
 Reading comes first, so agents can search the whole company early. Writing
@@ -855,9 +992,8 @@ folder that fits. This wording ships ahead of the mount, in PR #366.
    27 September). A cheap mitigation that keeps coding working would be to
    limit coding machines to the sites coding needs: GitHub, package
    registries and the model providers. Not decided.
-2. **Company Computer shell review.** Its shell has no network either. Should
-   it run without review once it touches only the mount and the machine?
-   Proposed: yes.
+2. **Company Computer shell review.** Answered 2026-09-28: its shell has
+   internet (#409, item 2), so it keeps the automatic review.
 3. **Internet in the run box.** Founder decision 7 leaves this for later. If
    it opens, shell commands become outside effects and pass review.
 4. **Large files.** Files over 256 MiB.
