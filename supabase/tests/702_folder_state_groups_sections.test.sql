@@ -251,6 +251,12 @@ end $$;
 do $$
 declare r jsonb; g public.qorpera_company_rooms; t jsonb;
 begin
+	-- Moving a chat's folder takes the company row and its room, as deleting does.
+	select coalesce(jsonb_agg(to_jsonb(x)), '[]'::jsonb) into t from public.qorpera_folder_structured_targets('70200000-0000-4000-8000-000000000020',
+		pg_temp.owner(), jsonb_build_array(jsonb_build_object('op','move','from','agents/groups/launch','to','agents/groups/launch-team'))) x;
+	if not t @> jsonb_build_array(jsonb_build_object('rank', 4, 'tbl', 'qorpera_company_rooms', 'key', '70200000-0000-4000-8000-0000000000b1', 'mode', 'nokeyupdate'))
+		or not t @> '[{"rank":2,"tbl":"qorpera_profiles","mode":"keyshare"}]' then
+		raise exception 'Moving a chat locks the company row and its room: %', t; end if;
 	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'group-move-01', jsonb_build_array(jsonb_build_object('op','move',
 		'from','agents/groups/launch','to','agents/groups/launch-team','expectedVersion',pg_temp.version('agents/groups/launch'),
 		'asOfSeq',pg_temp.seq()))), 1, 'saved');
