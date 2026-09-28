@@ -362,7 +362,8 @@ Prerequisites on each host: the broker build and the CA file
 (`/etc/qorpera-secret-broker/supabase-prod-ca-2021.crt`); the `qorpera-shared-vault` user and group
 (`useradd --system --no-create-home --shell /usr/sbin/nologin qorpera-shared-vault`); the login helper
 reinstalled from this build **first** (an older helper refuses a config with the new limit keys and a
-vault token, and stops for every broker on the host).
+vault token, and stops for every broker on the host); a host without a helper installs it as in
+"Installing the helper" above, its own token included (`helper-token` refuses on a host without one).
 
 Node 1:
 
@@ -442,7 +443,10 @@ Node 2 (warm standby), between node 1's steps 6 and 8:
       fingerprintsSha256>`. The ticket is used up either way. It checks what arrived against node 1's
       digest before writing anything and answers `"match": "match"`; a mismatch or any failure leaves
       nothing written (start again from 1).
-3. The same `config.json` as node 1's (same principal, same port). Start the unit after node 1's step 9.
+3. The same `config.json` as node 1's (same principal, same port). After node 1's step 9:
+   `systemctl daemon-reload`, `systemctl enable --now qorpera-shared-vault` (enabled, so the standby comes
+   back after a reboot). Check the unit is active and logs no `Shared vault:` failure line after its first
+   pass.
    Both copies register new companies (the same row; the loser gets the same answer) and run the
    background work (every renewal takes the login's own lock); node 1's copy serves every request.
 4. Failover. Requests reach the vault only through node 1's front. If node 1's copy stops, systemd
