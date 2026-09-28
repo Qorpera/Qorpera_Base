@@ -20,7 +20,7 @@
 -- * A refund withdraws the unused hours of its purchase (credits, a plan period or an upgrade); a
 --   dispute freezes only that purchase, and is unfrozen when won or withdrawn when lost.
 -- * Test-mode payments, and any payment before the live switch, only make dry-run sources. Before
---   the switch, test-mode checkout is open only to members on an internal account, and live
+--   the switch, test-mode checkout is open only to test accounts an operator enrolled, and live
 --   checkout is closed.
 -- Card data never reaches Qorpera: Stripe's checkout page and billing page handle it.
 
@@ -115,6 +115,15 @@ create table public.qorpera_computer_hour_billing_keys (
 create unique index qorpera_computer_hour_sources_reference on public.qorpera_computer_hour_sources (reference, dry_run)
 	where reference is not null;
 
+-- Accounts an operator enrolled to try payments in Stripe's test mode before the live switch. A
+-- tester's company is charged like any other (unlike a company with a founder on an internal
+-- account, which is complimentary), so test purchases show plans and credits being drawn.
+create table public.qorpera_computer_hour_testers (
+	user_id uuid primary key,
+	note text check (note is null or char_length(note) <= 200),
+	created_at timestamptz not null default clock_timestamp()
+);
+
 -- The Stripe invoices behind plan sources, so a refund or dispute of an invoice's payment finds its hours.
 create table public.qorpera_computer_hour_invoice_sources (
 	stripe_invoice_id text not null check (stripe_invoice_id ~ '^in_[A-Za-z0-9]{1,250}$'),
@@ -131,10 +140,11 @@ alter table public.qorpera_computer_hour_checkouts enable row level security;
 alter table public.qorpera_computer_hour_stripe_events enable row level security;
 alter table public.qorpera_computer_hour_billing_keys enable row level security;
 alter table public.qorpera_computer_hour_invoice_sources enable row level security;
+alter table public.qorpera_computer_hour_testers enable row level security;
 revoke all on public.qorpera_computer_hour_catalog, public.qorpera_computer_hour_customers,
 	public.qorpera_computer_hour_subscriptions, public.qorpera_computer_hour_checkouts,
 	public.qorpera_computer_hour_stripe_events, public.qorpera_computer_hour_billing_keys,
-	public.qorpera_computer_hour_invoice_sources
+	public.qorpera_computer_hour_invoice_sources, public.qorpera_computer_hour_testers
 	from public, anon, authenticated, service_role;
 grant select on public.qorpera_computer_hour_catalog, public.qorpera_computer_hour_customers,
 	public.qorpera_computer_hour_subscriptions, public.qorpera_computer_hour_checkouts,
@@ -170,23 +180,20 @@ as $$
 $$;
 revoke all on function public.qorpera_computer_billing_dry_run(boolean) from public, anon, authenticated, service_role;
 
--- Members on an internal account (the team) may try payments in test mode before the live switch.
-create function public.qorpera_computer_billing_internal(p_user_id uuid)
+-- Whether an account is enrolled to try payments in test mode before the live switch.
+create function public.qorpera_computer_billing_tester(p_user_id uuid)
 returns boolean
 language sql
 stable
 security definer
 set search_path = ''
 as $$
-	select exists (
-		select 1 from public.qorpera_account_entitlements entitlement
-		where entitlement.user_id = p_user_id and entitlement.plan_key = 'internal'
-	)
+	select exists (select 1 from public.qorpera_computer_hour_testers tester where tester.user_id = p_user_id)
 $$;
-revoke all on function public.qorpera_computer_billing_internal(uuid) from public, anon, authenticated, service_role;
+revoke all on function public.qorpera_computer_billing_tester(uuid) from public, anon, authenticated, service_role;
 
 -- Whether a member may start a checkout in a mode now: live checkout opens with the live switch;
--- before it, test-mode checkout is open to the team only, so members never meet a test page.
+-- before it, test-mode checkout is open to enrolled testers only, so members never meet a test page.
 create function public.qorpera_computer_billing_open(p_user_id uuid, p_livemode boolean)
 returns boolean
 language sql
@@ -196,7 +203,7 @@ set search_path = ''
 as $$
 	select case
 		when p_livemode then not public.qorpera_computer_hour_dry_run(clock_timestamp())
-		else public.qorpera_computer_hour_dry_run(clock_timestamp()) and public.qorpera_computer_billing_internal(p_user_id)
+		else public.qorpera_computer_hour_dry_run(clock_timestamp()) and public.qorpera_computer_billing_tester(p_user_id)
 	end
 $$;
 revoke all on function public.qorpera_computer_billing_open(uuid, boolean) from public, anon, authenticated, service_role;
@@ -499,8 +506,8 @@ revoke all on function public.qorpera_computer_billing(text, text, jsonb) from p
 grant execute on function public.qorpera_computer_billing(text, text, jsonb) to service_role;
 
 -- What a member can buy: the plans and credit packs on sale, excluding VAT. `available` says whether
--- this member can start a checkout for it now: live prices from the live switch; before it, test
--- prices, for the team only.
+-- the item is on sale to this member now: live prices from the live switch; before it, test prices,
+-- for enrolled testers only. Credits still need a founder of the company (checked at checkout).
 create function public.qorpera_list_computer_hour_offers()
 returns jsonb
 language sql
@@ -510,12 +517,12 @@ set search_path = ''
 as $$
 	with mode as (
 		select public.qorpera_computer_hour_dry_run(clock_timestamp()) as dry_run,
-			public.qorpera_computer_billing_internal(auth.uid()) as internal
+			public.qorpera_computer_billing_tester(auth.uid()) as tester
 	)
 	select jsonb_build_object('schema', 'qorpera.computer-hour-offers/v1', 'items', coalesce(jsonb_agg(jsonb_build_object(
 		'itemKey', item.item_key, 'kind', item.kind, 'name', item.name, 'priceMinor', item.price_minor,
 		'currency', item.currency, 'hours', item.hours,
-		'available', case when mode.dry_run then mode.internal and item.stripe_price_test is not null
+		'available', case when mode.dry_run then mode.tester and item.stripe_price_test is not null
 			else item.stripe_price_live is not null end
 	) order by item.sort, item.item_key), '[]'::jsonb))
 	from public.qorpera_computer_hour_catalog item

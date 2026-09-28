@@ -1,7 +1,7 @@
 -- @fixture 300_runtime_wake_bus.test.sql until "-- END WAKE FIXTURE"
 -- Computer hours, build step 4a (20260929110000_runtime_computer_hours_payments): paid Stripe facts
 -- become sources of hours through one dispatcher that only an enrolled billing key opens. Test-mode
--- payments make dry-run sources, and before the live switch only the team may start a checkout.
+-- payments make dry-run sources, and before the live switch only enrolled testers may start a checkout.
 -- Founders buy credits; a member with a plan changes it on Stripe's billing page. A refund or
 -- dispute reaches the purchase behind the payment, credits or plan hours. The Edge Function that
 -- talks to Stripe is covered by its own unit tests.
@@ -11,9 +11,8 @@ values (encode(extensions.digest('test-billing-key-0123456789', 'sha256'), 'hex'
 insert into public.qorpera_computer_hour_billing_keys (key_sha256, revoked_at)
 values (encode(extensions.digest('revoked-billing-key-0123456789', 'sha256'), 'hex'), clock_timestamp());
 update public.qorpera_computer_hour_catalog set stripe_price_test = 'price_' || replace(item_key, '_', '');
--- The founder is on the team (an internal account) and may try payments in test mode.
-insert into public.qorpera_account_entitlements (user_id, plan_key, billing_mode, feature_set, storage_allocation, operator_reference, reason)
-values ('30000000-0000-4000-8000-000000000001', 'internal', 'complimentary', 'all', 'unlimited', 'test', 'Company41 staff');
+-- An operator enrolled the founder to try payments in test mode.
+insert into public.qorpera_computer_hour_testers (user_id, note) values ('30000000-0000-4000-8000-000000000001', 'test founder');
 create function pg_temp.bill(p_method text, p_args jsonb) returns jsonb language sql as $$
 	select public.qorpera_computer_billing('test-billing-key-0123456789', p_method, p_args)
 $$;
@@ -37,6 +36,9 @@ select pg_temp.wake_assert(not exists (
 select pg_temp.wake_assert(not has_table_privilege(role_name, 'public.qorpera_computer_hour_invoice_sources', 'INSERT'),
 	'Invoice links are written only through the door, not by ' || role_name)
 from unnest(array['anon', 'authenticated', 'service_role']) role_name;
+select pg_temp.wake_assert(not has_table_privilege(role_name, 'public.qorpera_computer_hour_testers', privilege),
+	'Testers are enrolled by an operator only, not by ' || role_name || ' (' || privilege || ')')
+from unnest(array['anon', 'authenticated', 'service_role']) role_name, unnest(array['SELECT', 'INSERT']) privilege;
 select pg_temp.wake_assert(pg_temp.bill('catalog_price', '{"itemKey":"standard"}') = '{"itemKey":"standard","kind":"plan",
 	"priceMinor":63000,"currency":"dkk","hours":286,"active":true,"priceId":"price_standard"}'::jsonb, 'The catalog price');
 select pg_temp.wake_assert(pg_temp.bill('catalog_price', '{"itemKey":"basis","livemode":true}') ->> 'priceId' is null,
@@ -47,19 +49,18 @@ select pg_temp.wake_assert(pg_temp.bill('catalog_item_by_price', '{"priceId":"pr
 select pg_temp.wake_error($$update public.qorpera_computer_hour_catalog set stripe_price_test = 'price_basis' where item_key = 'standard'$$,
 	'23505');
 
--- Checkout. Before the live switch, test mode is for the team only and live mode is closed.
+-- Checkout. Before the live switch, test mode is for enrolled testers only and live mode is closed.
 select pg_temp.wake_assert(pg_temp.bill('checkout_begin', '{"userId":"30000000-0000-4000-8000-000000000002","itemKey":"basis"}')
-	= '{"refused":"item_unavailable"}', 'A member outside the team meets no test checkout');
+	= '{"refused":"item_unavailable"}', 'A member who is not a tester meets no test checkout');
 update public.qorpera_computer_hour_catalog set stripe_price_live = 'price_live' || replace(item_key, '_', '');
 select pg_temp.wake_assert(pg_temp.bill('checkout_begin', '{"userId":"30000000-0000-4000-8000-000000000001","itemKey":"hours_20",
 	"profileId":"30000000-0000-4000-8000-000000000010","livemode":true}') = '{"refused":"item_unavailable"}',
 	'No live checkout before the live switch: it would take money for dry-run hours');
--- Founders buy credits for their company; a contributor may not, even one on the team.
-insert into public.qorpera_account_entitlements (user_id, plan_key, billing_mode, feature_set, storage_allocation, operator_reference, reason)
-values ('30000000-0000-4000-8000-000000000002', 'internal', 'complimentary', 'all', 'unlimited', 'test', 'Company41 staff');
+-- Founders buy credits for their company; a contributor may not, even a tester.
+insert into public.qorpera_computer_hour_testers (user_id) values ('30000000-0000-4000-8000-000000000002');
 select pg_temp.wake_assert(pg_temp.bill('checkout_begin', '{"userId":"30000000-0000-4000-8000-000000000002","itemKey":"hours_20",
 	"profileId":"30000000-0000-4000-8000-000000000010"}') = '{"refused":"not_a_founder"}', 'A contributor cannot buy credits');
-delete from public.qorpera_account_entitlements where user_id = '30000000-0000-4000-8000-000000000002';
+delete from public.qorpera_computer_hour_testers where user_id = '30000000-0000-4000-8000-000000000002';
 select set_config('qorpera_test.cr', pg_temp.bill('checkout_begin', '{"userId":"30000000-0000-4000-8000-000000000001",
 	"itemKey":"hours_20","profileId":"30000000-0000-4000-8000-000000000010"}')::text, true);
 select pg_temp.wake_assert((current_setting('qorpera_test.cr')::jsonb ->> 'priceId') = 'price_hours20'
@@ -191,6 +192,11 @@ select pg_temp.wake_assert(frozen_at is not null, 'A disputed plan payment freez
 from pg_temp.source(current_setting('qorpera_test.sep'));
 select pg_temp.bill('dispute', '{"paymentIntentId":"pi_plan_c1","invoiceId":"in_c1","status":"won"}');
 select pg_temp.wake_assert(frozen_at is null, 'Won, the period is unfrozen') from pg_temp.source(current_setting('qorpera_test.sep'));
+select pg_temp.bill('dispute', '{"paymentIntentId":"pi_plan_c1","invoiceId":"in_c1","status":"lost"}');
+select pg_temp.wake_assert(withdrawn_at is not null, 'Lost, the period is withdrawn') from pg_temp.source(current_setting('qorpera_test.sep'));
+select pg_temp.wake_assert(pg_temp.bill('plan_upgrade', '{"subscriptionId":"sub_1","fromItemKey":"basis","toItemKey":"standard",
+	"periodEnd":"2026-10-01T00:00:00Z","paidAt":"2026-09-26T00:00:00Z","invoiceId":"in_up6"}') = '{"refused":"period_withdrawn"}',
+	'No top-up of a withdrawn period');
 
 -- October's payment fails for good: its unused hours are withdrawn; a payment after that is for review.
 select pg_temp.wake_assert((pg_temp.bill('plan_failed', '{"subscriptionId":"sub_1","periodStart":"2026-10-01T00:00:00Z"}')
@@ -206,14 +212,29 @@ select pg_temp.bill('subscription_state', '{"subscriptionId":"sub_1","userId":"3
 select pg_temp.wake_assert(pg_temp.bill('plan_period', '{"subscriptionId":"sub_1","itemKey":"standard",
 	"periodStart":"2026-11-01T00:00:00Z","periodEnd":"2026-12-01T00:00:00Z","invoiceId":"in_c3"}') = '{"skipped":"subscription unpaid"}',
 	'No period for an unpaid subscription');
+-- Nor for a cancelled or paused one (a late payment of its open invoice goes to review in the function).
+create function pg_temp.period_when(p_status text, p_event text) returns jsonb language plpgsql as $$
+begin
+	perform pg_temp.bill('subscription_state', jsonb_build_object('subscriptionId', 'sub_1',
+		'userId', '30000000-0000-4000-8000-000000000001', 'itemKey', 'standard', 'status', p_status,
+		'periodStart', '2026-11-01T00:00:00Z', 'periodEnd', '2026-12-01T00:00:00Z', 'eventCreated', p_event));
+	return pg_temp.bill('plan_period', '{"subscriptionId":"sub_1","itemKey":"standard",
+		"periodStart":"2026-11-01T00:00:00Z","periodEnd":"2026-12-01T00:00:00Z","invoiceId":"in_c3"}');
+end
+$$;
+select pg_temp.wake_assert(pg_temp.period_when('canceled', '2026-11-02T00:00:01Z') = '{"skipped":"subscription canceled"}'
+	and pg_temp.period_when('paused', '2026-11-02T00:00:02Z') = '{"skipped":"subscription paused"}'
+	and pg_temp.period_when('incomplete_expired', '2026-11-02T00:00:03Z') = '{"skipped":"subscription incomplete_expired"}'
+	and pg_temp.period_when('unpaid', '2026-11-02T00:00:04Z') = '{"skipped":"subscription unpaid"}',
+	'No period for a cancelled, paused or expired subscription');
 
--- Members read the offers and their own plan. Before the live switch only the team can buy, and
+-- Members read the offers and their own plan. Before the live switch only testers can buy, and
 -- members see only measured hours: the plan's hours are left out.
 select pg_temp.path_claims('authenticated', '30000000-0000-4000-8000-000000000001');
 set local role authenticated;
 select pg_temp.wake_assert(jsonb_array_length(offers -> 'items') = 5 and position('price_' in offers::text) = 0
 	and not exists (select 1 from jsonb_array_elements(offers -> 'items') item where not (item ->> 'available')::boolean),
-	'Five offers for the team, without Stripe ids: ' || offers::text)
+	'Five offers for a tester, without Stripe ids: ' || offers::text)
 from (select public.qorpera_list_computer_hour_offers() offers) o;
 select pg_temp.wake_assert(plan -> 'plan' ->> 'itemKey' = 'standard' and plan -> 'plan' ->> 'status' = 'unpaid'
 	and plan ->> 'mode' = 'dry_run' and plan -> 'hours' = 'null'::jsonb, 'My plan in the dry run: ' || plan::text)
@@ -222,7 +243,7 @@ reset role;
 select pg_temp.path_claims('authenticated', '30000000-0000-4000-8000-000000000002');
 set local role authenticated;
 select pg_temp.wake_assert(not exists (select 1 from jsonb_array_elements(public.qorpera_list_computer_hour_offers() -> 'items') item
-	where (item ->> 'available')::boolean), 'Nothing is for sale to a member outside the team before the live switch');
+	where (item ->> 'available')::boolean), 'Nothing is for sale to a member who is not a tester before the live switch');
 reset role;
 
 -- From the live switch: live prices for everyone, live sources, and members see their plan's hours.
@@ -235,14 +256,29 @@ select pg_temp.bill('checkout_attach', jsonb_build_object('checkoutId', pg_temp.
 select pg_temp.bill('credits_paid', '{"sessionId":"cs_live_credits1","paymentIntentId":"pi_live1","paidAt":"2026-09-28T12:00:00Z",
 	"livemode":true}');
 select pg_temp.wake_assert(not dry_run and granted_seconds = 72000, 'A live payment makes a live source') from pg_temp.source('pi_live1');
+select pg_temp.wake_assert(pg_temp.bill('checkout_begin', '{"userId":"30000000-0000-4000-8000-000000000002","itemKey":"basis",
+	"livemode":true}') ->> 'kind' = 'plan', 'Live: any member may start a plan checkout');
+-- A live plan for the other member, in its first period now.
+select set_config('qorpera_test.live_start', to_jsonb(date_trunc('second', clock_timestamp()) - interval '1 day') #>> '{}', true);
+select set_config('qorpera_test.live_end', to_jsonb(date_trunc('second', clock_timestamp()) + interval '29 days') #>> '{}', true);
+select pg_temp.bill('subscription_state', jsonb_build_object('subscriptionId', 'sub_live1',
+	'userId', '30000000-0000-4000-8000-000000000002', 'itemKey', 'basis', 'status', 'active',
+	'periodStart', current_setting('qorpera_test.live_start'), 'periodEnd', current_setting('qorpera_test.live_end'),
+	'eventCreated', current_setting('qorpera_test.live_start'), 'livemode', true));
+select pg_temp.bill('plan_period', jsonb_build_object('subscriptionId', 'sub_live1', 'itemKey', 'basis',
+	'periodStart', current_setting('qorpera_test.live_start'), 'periodEnd', current_setting('qorpera_test.live_end'),
+	'invoiceId', 'in_live1', 'livemode', true));
+select pg_temp.wake_assert(not dry_run and user_id = '30000000-0000-4000-8000-000000000002' and granted_seconds = 74 * 3600,
+	'A live plan period') from pg_temp.source('sub_live1:' || extract(epoch from current_setting('qorpera_test.live_start')::timestamptz)::bigint);
 select pg_temp.path_claims('authenticated', '30000000-0000-4000-8000-000000000002');
 set local role authenticated;
 select pg_temp.wake_assert((select array_agg(item ->> 'itemKey' order by item ->> 'itemKey') from jsonb_array_elements(offers -> 'items') item
 	where (item ->> 'available')::boolean) = array['basis', 'hours_100', 'hours_20', 'standard'],
 	'Live: what has a live price is for sale to every member: ' || offers::text)
 from (select public.qorpera_list_computer_hour_offers() offers) o;
-select pg_temp.wake_assert(plan = '{"schema":"qorpera.my-computer-plan/v1","mode":"live","plan":null,
-	"hours":{"grantedSeconds":0,"companies":[]}}'::jsonb, 'Live: my plan with its hours: ' || plan::text)
+select pg_temp.wake_assert(plan ->> 'mode' = 'live' and plan -> 'plan' ->> 'itemKey' = 'basis'
+	and plan -> 'hours' = jsonb_build_object('grantedSeconds', 74 * 3600, 'companies', '[]'::jsonb),
+	'Live: my plan with its hours: ' || plan::text)
 from (select public.qorpera_read_my_computer_plan() plan) p;
 reset role;
 select pg_temp.path_claims('anon');

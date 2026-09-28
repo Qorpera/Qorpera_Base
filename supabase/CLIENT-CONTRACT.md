@@ -490,10 +490,11 @@ wake), so no agent runs and nothing is charged before it.
   `qorpera_list_computer_hour_offers()` → `qorpera.computer-hour-offers/v1`:
   `items` (`itemKey`, `kind` `plan` | `credits`, `name`, `priceMinor` in
   øre excluding VAT, `currency` `dkk`, `hours`: a plan's hours a month or a
-  pack's hours, `available`: whether this member can start a checkout for it
-  now). Before live payments only members on an internal account (the team)
-  see anything available, in Stripe's test mode; a client shows an item that
-  is not available as not for sale. Any signed-in member.
+  pack's hours, `available`: whether it is on sale to this member now; credits
+  still need a founder of the company, which checkout checks). Before live
+  payments only test accounts an operator enrolled see anything available, in
+  Stripe's test mode; a client shows an item that is not available as not for
+  sale. Any signed-in member.
   `qorpera_read_my_computer_plan()` → `qorpera.my-computer-plan/v1`: `mode`
   (`dry_run` until live payments), `plan` (null, or `itemKey`, `status`,
   `periodStart`, `periodEnd`, `cancelAtPeriodEnd`) and `hours` (null until

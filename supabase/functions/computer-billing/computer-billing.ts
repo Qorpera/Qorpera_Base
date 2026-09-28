@@ -448,6 +448,9 @@ async function applyInvoice(
 	const lines = invoiceLines(invoice);
 	if (reason === "subscription_create" || reason === "subscription_cycle") {
 		if (type === "invoice.paid" && invoice.status !== "paid") return ignored("invoice not paid");
+		// A renewal whose invoice already failed (a resent event, say) gets no period.
+		if (invoice.status === "uncollectible" || invoice.status === "void")
+			return ignored(`${reason} invoice ${invoice.status}`);
 		// The service period comes from the plan's line, not the invoice's own window.
 		const line = lines.find((candidate) => candidate.priceId && !candidate.proration && candidate.amount >= 0);
 		const itemKey = (await itemKeyOf(line?.priceId, deps)) ?? facts.itemKey;
@@ -459,7 +462,12 @@ async function applyInvoice(
 			invoiceId,
 			livemode,
 		});
-		if (string(result.skipped)) return ignored(`${reason} period: ${result.skipped}`);
+		// Stripe keeps invoicing an unpaid subscription and leaves a cancelled one's invoice open:
+		// no new period. Paying such an invoice is for review, so the member is not left without hours.
+		if (string(result.skipped))
+			return type === "invoice.paid"
+				? review(`${reason} invoice ${invoiceId} was paid, but the ${String(result.skipped)} gets no period`)
+				: ignored(`${reason} period: ${result.skipped}`);
 		// A renewal withdrawn after its payment failed stays withdrawn; paying it later is for review.
 		if (result.withdrawn === true && type === "invoice.paid")
 			return review(`${reason} period ${String(result.reference)} was paid after it was withdrawn`);
@@ -511,6 +519,7 @@ async function invoiceOfPayment(paymentIntentId: string, deps: BillingDependenci
 	const query = new URLSearchParams({
 		"payment[type]": "payment_intent",
 		"payment[payment_intent]": paymentIntentId,
+		status: "paid",
 		limit: "10",
 	});
 	const payments = (await deps.stripe.get(`/v1/invoice_payments?${query}`)).data;

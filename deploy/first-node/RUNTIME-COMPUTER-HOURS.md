@@ -220,7 +220,9 @@ every request.
 - The database's one billing door is `qorpera_computer_billing(key, method, args)`: service_role
   may call it, but only with a billing key whose SHA-256 is enrolled in
   `qorpera_computer_hour_billing_keys` (nodes hold the service role key and must not be able to add
-  paid hours). Writing methods take `qorpera_computer_hour_lock_billing()` first. Paid Stripe facts
+  paid hours). Methods that write sources take `qorpera_computer_hour_lock_billing()` first (the
+  ledger's statement trigger enforces it); the others (checkouts, customers, events, subscription
+  state) do not wait for the meter. Paid Stripe facts
   become sources; test-mode payments, and any payment before the live switch, make dry-run
   sources only.
 - The catalog (`qorpera_computer_hour_catalog`) holds Basis (185 kr, 74 h a month), Standard (630
@@ -259,22 +261,29 @@ every request.
       sources). One that matches nothing goes to review.
   - Everything else, or anything it cannot use, is recorded (`ignored` or `needs_review`) and
     answered 2xx; only a passing failure (Stripe or the database unreachable, a 20-second
-    timeout, or Stripe refusing our key: 401, 403) answers 5xx, and Stripe retries. An event left
+    timeout, Stripe refusing our key with 401 or 403, or Stripe's 409 and 429) answers non-2xx,
+    and Stripe retries. An event left
     for review runs again when it is resent from Stripe's dashboard, once its cause is fixed.
     Returning from Checkout adds nothing.
-  - Before the live switch, test-mode checkout is open only to members on an internal account
-    (the team), so members never meet a test page, and live checkout is closed (it would take
-    money for dry-run hours). `qorpera_list_computer_hour_offers()` marks what the member can buy
+  - Before the live switch, test-mode checkout is open only to test accounts an operator enrolled
+    in `qorpera_computer_hour_testers`, so members never meet a test page, and live checkout is
+    closed (it would take money for dry-run hours). Testers, not internal accounts: a company
+    with a founder on an internal account is complimentary and never draws, so test purchases
+    must come from a test founder without one to show plans and credits being drawn
+    (acceptance, section 21 item 31). The function's key must follow the switch: test key
+    before it, live key from it. `qorpera_list_computer_hour_offers()` marks what the member can buy
     now; `qorpera_read_my_computer_plan()` leaves the plan's hours out until then, since members
     see only measured hours (contract item 12).
 - Hours arrive as new source rows (a period whose start has come, a credit) or an unfreeze, so
   what the company owes is repaid at once (step 3's trigger). A member made founder repays owed
   time at the company's next use instead. Webhook writes run under READ COMMITTED through the
-  billing door, which takes the billing lock first.
+  billing door, which takes the billing lock before it writes sources.
 - Refunds remove the unused hours of their purchase. A dispute freezes only its purchase.
 - Known limits, for review rather than code: a failed renewal is found through the subscription's
-  latest invoice; a partial refund withdraws the whole purchase; two open tabs can start two
-  subscriptions (the member pays for both, and one is cancelled on the billing page).
+  latest invoice; a partial refund withdraws the whole purchase, and a failed refund
+  (`refund.failed`) does not give it back; two open tabs can start two subscriptions (the member
+  pays for both, and one is cancelled on the billing page); the subscription state kept is the
+  newest by event time.
 
 ### Setting up Stripe (Jonas; test mode first)
 
@@ -289,13 +298,15 @@ every request.
    Standard products with "invoice immediately" for prorations and the billing date unchanged
    (`billing_cycle_anchor=unchanged`), downgrades scheduled at the period end, cancel at the
    period end, payment method update, invoice history. Check in the sandbox that Standard →
-   Basis waits for the period end. If Stripe cannot schedule it (the plans are two products),
-   leave plan switching off in the portal and tell the billing session: members then cancel
-   and choose the other plan, and a downgrade that took effect at once would only go to review.
-   Optionally send the configuration id (`bpc_...`).
+   Basis waits for the period end, and that the first Basis invoice after it arrives as a
+   renewal (`invoice.created` with `billing_reason=subscription_cycle`). If Stripe cannot
+   schedule it (the plans are two products), leave plan switching off in the portal (upgrades
+   too) and tell the billing session: members then cancel and choose the other plan, and a
+   downgrade that took effect at once would only go to review. Optionally send the
+   configuration id (`bpc_...`).
 5. Failed payments (Settings → Billing → Subscriptions and emails): after the last retry, cancel
    the subscription. Receipts and invoice emails on.
-6. After the coordinator deploys `computer-billing`: a webhook endpoint at
+6. A webhook endpoint (the address is fixed, so before or after the deploy) at
    `https://<project>.supabase.co/functions/v1/computer-billing/webhook`, API version
    `2026-08-26.dahlia`, events `checkout.session.completed`,
    `checkout.session.async_payment_succeeded`, `invoice.created`, `invoice.paid`,
@@ -308,6 +319,9 @@ every request.
    (`https://app.qorpera.com/#/account`), `QORPERA_WEB_ORIGINS` (`["https://app.qorpera.com"]`) and
    optionally `QORPERA_STRIPE_PORTAL_CONFIGURATION`. The coordinator enrolls the SHA-256 of the
    billing key.
+8. Test accounts: the coordinator enrolls the accounts that may buy in test mode in
+   `qorpera_computer_hour_testers`. To see plans and credits being drawn, a tester founds a test
+   company with no founder on an internal account.
 
 Live keys come later, with the live switch (step 7).
 

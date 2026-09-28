@@ -116,7 +116,7 @@ async function webhook(f: Fixture, body: string, signature = sign(body)): Promis
 
 const methods = (f: Fixture) => f.calls.map((call) => call.method);
 const invoicePayments = (paymentIntent: string) =>
-	`/v1/invoice_payments?payment%5Btype%5D=payment_intent&payment%5Bpayment_intent%5D=${paymentIntent}&limit=10`;
+	`/v1/invoice_payments?payment%5Btype%5D=payment_intent&payment%5Bpayment_intent%5D=${paymentIntent}&status=paid&limit=10`;
 const subscriptionInvoice = (id: string, reason: string, status: string, lines: Json[], extra: Json = {}) => ({
 	id,
 	status,
@@ -274,6 +274,26 @@ describe("Stripe webhook", () => {
 		);
 		await webhook(late, event("invoice.paid", { id: "in_2" }));
 		assert.equal(finished(late)?.outcome, "needs_review");
+		// A cancelled subscription's open renewal paid from its invoice link: no period, but for review.
+		const cancelled = fixture(
+			{
+				"/v1/invoices/in_2": subscriptionInvoice("in_2", "subscription_cycle", "paid", [planLine("price_basis", 18500)]),
+				"/v1/subscriptions/sub_1": subscription("canceled"),
+			},
+			{ plan_period: () => ({ skipped: "subscription canceled" }) },
+		);
+		await webhook(cancelled, event("invoice.paid", { id: "in_2" }));
+		assert.equal(finished(cancelled)?.outcome, "needs_review");
+		// A resent "created" for a renewal that already failed adds nothing.
+		const failed = fixture({
+			"/v1/invoices/in_2": subscriptionInvoice("in_2", "subscription_cycle", "uncollectible", [
+				planLine("price_basis", 18500),
+			]),
+			"/v1/subscriptions/sub_1": subscription("active"),
+		});
+		await webhook(failed, event("invoice.created", { id: "in_2" }));
+		assert.equal(finished(failed)?.outcome, "ignored");
+		assert.ok(!methods(failed).includes("plan_period"));
 	});
 
 	it("adds an upgrade's extra hours from the paid proration invoice", async () => {
