@@ -252,7 +252,8 @@ Founders (2026-09-28, migration 20260928248100): every member with the role
   `canManageCompanyRules` (owner or admin) and `rules`: every active company
   rule plus the caller's own (`id`, `scope` `company|member`, `memberUserId`,
   `when`, `outcome` `ask_first|allow_automatically`, `createdVia`
-  `settings|card|agent`, `createdByUserId`, `createdByStaffAgentId`,
+  `settings|card|agent|folder` (`folder`: a company rule from the company's
+  `rules/` files, folder-v2 companies only), `createdByUserId`, `createdByStaffAgentId`,
   `createdAt`, `updatedAt`). Any member, viewers included. A rule with
   `createdVia: agent` was added by an agent (`createdByStaffAgentId`) when the
   member asked it to: always one of the member's own Ask first rules, which the
@@ -263,9 +264,13 @@ Founders (2026-09-28, migration 20260928248100): every member with the role
   sentence, 1-280 characters after trimming. Company rules: owners and admins
   (42501 otherwise); a personal rule belongs to its author only. 54000 when
   the company's rules pass 48 KiB of text or one member's pass 16 KiB (what
-  the reviewer reads for one action). Returns the rule.
+  the reviewer reads for one action). Returns the rule. A folder-v2 company
+  keeps its company rules in `rules/` files: saving a company rule there is
+  refused with 55000; personal rules are unchanged.
 - `qorpera_archive_review_rule(p_profile_id, p_rule_id)`: removes a rule
   (again: no change). Company rules: owners and admins; personal: its author.
+  A rule that comes from a `rules/` file (`createdVia: folder`) is refused with
+  55000: delete the file instead.
 - `qorpera_answer_action_review(p_review_id, p_client_input_id, p_answer,
   p_rule_text?, p_sponsor_binding_id?, p_sponsor_version?)` answers an approval
   card (`authorization_request` whose `entry.data.schema` is

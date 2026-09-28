@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- The rules list in Settings → General reads company rules that come from a company's `rules/` files (`createdVia: "folder"`, migration `20260929190000_folder_state_rules`). Before, one such rule made the whole list fail with "Rule is invalid.".
+
 ### Added
 
 - Buy computer hours in Settings → Plan & usage (and on the account page) once payments open (migration `20260929110000_runtime_computer_hours_payments`, Edge Function `computer-billing`). A plan on sale says "Choose Basis" or "Choose Standard" and opens Stripe's checkout page; a member who pays switches plan ("Switch to Standard"), changes the card and finds invoices on Stripe's billing page ("Payments and invoices"). Plan prices and hours come from the cloud's catalog, which is what Stripe charges (qorpera.com's prices until the cloud has one). The plan card then shows the paid plan, when it renews or ends, that it is paused, or that its payment failed; the hours card shows the plan's hours used of the period's hours, by company. Founders get "Buy hours" on the company's hours card: packs of 20, 100 or 500 hours for the company, valid for 12 months. Stripe sends the member back to the account page, which thanks them and reads the plan again a moment later; the note goes when they leave the page. Card data never passes through the app, and only Stripe's own checkout and billing pages are opened. Before live payments only test accounts an operator enrolled see anything for sale, marked "Test mode: nothing is charged", and a plan's hours stay hidden, since members see only measured hours until then. Members who are not founders now read "Computer hours are paid by the founders. You are never charged." on the company's hours card.

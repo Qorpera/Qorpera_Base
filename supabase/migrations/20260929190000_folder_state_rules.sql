@@ -10,13 +10,14 @@
 -- * Who writes: the core's company_rules resource scope (C1b-1) lets only owners and admins write rules/. A card's
 --   "Always allow" writing the file is core C3's writer; until then that path still saves a row.
 -- * Rules: the id never changes and belongs to this file's rule only; the company budget (48 KiB of rule text,
---   qorpera_review_rules_assert_room) holds after the save. It is checked in decide against the rules as they are, so
---   two concurrent saves of different files can each pass it and overshoot by at most one rule each: serializing them
---   would take a company-wide lock. Never reviewed.
+--   qorpera_review_rules_assert_room) holds after the save. It is checked in decide against the rules as they are, with
+--   the unit's rule files counted by their new text, so two concurrent saves of different files can each pass it and
+--   overshoot by at most one unit each: serializing them would take a company-wide lock. Never reviewed.
 -- * Index: a new rule inserts a row (created_via 'folder'), an edit updates it, deleting the file archives it and a
 --   restore brings it back; a move repoints it. The row's foreign key to the company row takes it KEY SHARE, so every
 --   rule save takes the company row at rank 2 first, as the roster and group chats do.
--- * The Settings RPCs refuse company rules for folder-v2 companies: their rules change as file edits.
+-- * Settings refuses saving a company rule, and removing a rule that comes from a file, for folder-v2 companies: their
+--   rules change as file edits. A company rule saved as a row (the card, until C3) can still be removed there.
 --
 -- Builds on F2-3 (20260929140000) and replaces the hook functions with the rule branches added.
 
@@ -199,7 +200,8 @@ end $$;
 -- One rules/<name>.md (§2): the id never changes and belongs to this file's rule only (never a personal rule, a row
 -- saved outside the folder, another company's rule or another file's); the company's rule text stays within its budget.
 -- A file saved before this slice is the saved version only when the index points at its path.
-create function public.qorpera_company_state_rule_rules(p_environment_id uuid, p_profile_id uuid, p_key text, p_parse jsonb)
+create function public.qorpera_company_state_rule_rules(p_environment_id uuid, p_profile_id uuid, p_key text, p_parse jsonb,
+	p_unit_ids text[], p_unit_bytes bigint)
 returns jsonb language plpgsql stable set search_path = '' as $$
 declare
 	v_base jsonb := public.qorpera_company_state_base(p_environment_id, p_key); v_row public.qorpera_review_rules%rowtype;
@@ -220,9 +222,11 @@ begin
 	elsif v_exists and v_row.archived_at is null and public.qorpera_folder_key(v_row.folder_path) <> p_key then
 		v_problem := 'this id belongs to the rule at ' || left(v_row.folder_path, 100) || '; give this rule a new id';
 	else
+		-- The rules as they are, with the ones this unit writes (earlier files, and this one) counted by their new text.
 		select coalesce(sum(octet_length(r.when_text)), 0) into v_bytes from public.qorpera_review_rules r
-		where r.profile_id = p_profile_id and r.scope = 'company' and r.archived_at is null and r.id <> (p_parse ->> 'id')::uuid;
-		if v_bytes + octet_length(p_parse ->> 'text') > 49152 then
+		where r.profile_id = p_profile_id and r.scope = 'company' and r.archived_at is null
+			and not (r.id::text = any (p_unit_ids) or r.id = (p_parse ->> 'id')::uuid);
+		if v_bytes + p_unit_bytes + octet_length(p_parse ->> 'text') > 49152 then
 			v_problem := 'the company''s rules are too long to review an action (48 KiB); remove some first';
 		end if;
 	end if;
@@ -341,7 +345,7 @@ declare
 	v_op text := p_unit ->> 'op'; v_profile uuid; v_key text; v_row public.qorpera_folder_entries%rowtype;
 	v_file record; v_checked jsonb; v_rule jsonb; v_problems jsonb; v_cofounder_path text; v_content jsonb;
 	v_entries jsonb; v_ids text[] := '{}'; v_cofounders integer := 0; v_groups text[] := '{}'; v_connections text[] := '{}';
-	v_rules text[] := '{}';
+	v_rules text[] := '{}'; v_rule_bytes bigint := 0;
 begin
 	select profile_id into v_profile from public.qorpera_company_files where environment_id = p_environment_id;
 	v_key := public.qorpera_folder_key(p_eff_path);
@@ -443,9 +447,11 @@ begin
 			if (v_checked -> 'parse' ->> 'id') = any (v_rules) then
 				return jsonb_build_object('ok', false, 'reason', 'structured_rule', 'problems', jsonb_build_array(
 					public.qorpera_company_state_problem('value', null, null, 'two rule files in one change carry the same id'))); end if;
-			v_rules := array_append(v_rules, v_checked -> 'parse' ->> 'id');
-			v_rule := public.qorpera_company_state_rule_rules(p_environment_id, v_profile, v_file.key, v_checked -> 'parse');
+			v_rule := public.qorpera_company_state_rule_rules(p_environment_id, v_profile, v_file.key, v_checked -> 'parse',
+				v_rules, v_rule_bytes);
 			if v_rule is not null then return v_rule; end if;
+			v_rules := array_append(v_rules, v_checked -> 'parse' ->> 'id');
+			v_rule_bytes := v_rule_bytes + octet_length(v_checked -> 'parse' ->> 'text');
 		end if;
 	end loop;
 	return jsonb_build_object('ok', true);
@@ -654,8 +660,9 @@ end $$;
 
 -- 5. The Settings RPCs on folder-v2 ------------------------------------------------------------------------------------
 
--- A folder-v2 company's rules live in rules/; saving or removing a company rule through Settings refuses. Personal rules
--- stay rows.
+-- A folder-v2 company's rules live in rules/: saving a company rule through Settings refuses, and so does removing a rule
+-- that comes from a file. A company rule saved as a row (a card's "Always allow" until core C3, or one from before the
+-- company became folder-v2) can still be removed there. Personal rules stay rows.
 do $$
 declare v_definition text;
 	v_old constant text := $old$	if p_scope = 'company' and not public.qorpera_can_authorize_profile(p_profile_id) then
@@ -676,9 +683,8 @@ do $$
 declare v_definition text;
 	v_old constant text := $old$		raise exception 'This rule cannot be removed here' using errcode = '42501'; end if;$old$;
 	v_new constant text := $new$		raise exception 'This rule cannot be removed here' using errcode = '42501'; end if;
-	if v_rule.scope = 'company'
-		and exists (select 1 from public.qorpera_company_files f where f.profile_id = p_profile_id and f.core = 'folder-v2') then
-		raise exception 'This company keeps its rules in rules/; delete the file' using errcode = '55000'; end if;$new$;
+	if v_rule.folder_path is not null then
+		raise exception 'This rule comes from a file in rules/; delete the file' using errcode = '55000'; end if;$new$;
 begin
 	v_definition := pg_get_functiondef('public.qorpera_archive_review_rule(uuid,uuid)'::regprocedure);
 	if (length(v_definition) - length(replace(v_definition, v_old, ''))) / length(v_old) <> 1 then
@@ -689,5 +695,5 @@ $$;
 
 -- 6. Grants ------------------------------------------------------------------------------------------------------------
 
-revoke all on function public.qorpera_company_state_rule_rules(uuid, uuid, text, jsonb) from public, anon, authenticated, service_role;
+revoke all on function public.qorpera_company_state_rule_rules(uuid, uuid, text, jsonb, text[], bigint) from public, anon, authenticated, service_role;
 revoke all on function public.qorpera_company_state_index_rule(uuid, uuid, uuid, uuid, text, uuid, jsonb) from public, anon, authenticated, service_role;

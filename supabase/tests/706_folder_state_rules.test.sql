@@ -6,12 +6,13 @@ begin;
 insert into auth.users(id,email) values
 	('70600000-0000-4000-8000-000000000001','rules-owner@example.test'),
 	('70600000-0000-4000-8000-000000000002','rules-member@example.test');
-insert into public.qorpera_profiles(id,name,created_by_user_id) values ('70600000-0000-4000-8000-000000000010','Nordlys Rules','70600000-0000-4000-8000-000000000001');
+insert into public.qorpera_profiles(id,name,created_by_user_id) values ('70600000-0000-4000-8000-000000000010','Nordlys Rules','70600000-0000-4000-8000-000000000001'), ('70600000-0000-4000-8000-000000000011','Second','70600000-0000-4000-8000-000000000001');
 insert into public.qorpera_profile_members(profile_id,user_id,email,display_name,role) values
 	('70600000-0000-4000-8000-000000000010','70600000-0000-4000-8000-000000000001','rules-owner@example.test','Owner','owner'),
-	('70600000-0000-4000-8000-000000000010','70600000-0000-4000-8000-000000000002','rules-member@example.test','Member','contributor');
+	('70600000-0000-4000-8000-000000000010','70600000-0000-4000-8000-000000000002','rules-member@example.test','Member','contributor'),
+	('70600000-0000-4000-8000-000000000011','70600000-0000-4000-8000-000000000001','rules-owner@example.test','Owner','owner');
 insert into public.qorpera_company_environments(id,profile_id,name,contract_version,created_by_user_id) values
-	('70600000-0000-4000-8000-000000000020','70600000-0000-4000-8000-000000000010','Environment',1,'70600000-0000-4000-8000-000000000001');
+	('70600000-0000-4000-8000-000000000020','70600000-0000-4000-8000-000000000010','Environment',1,'70600000-0000-4000-8000-000000000001'), ('70600000-0000-4000-8000-000000000021','70600000-0000-4000-8000-000000000011','Environment',1,'70600000-0000-4000-8000-000000000001'), ('70600000-0000-4000-8000-000000000022','70600000-0000-4000-8000-000000000010','Other environment',1,'70600000-0000-4000-8000-000000000001');
 
 select set_config('request.jwt.claims', '{"role":"service_role"}', true) \g /dev/null
 select public.qorpera_folder_enable('70600000-0000-4000-8000-000000000020') \g /dev/null
@@ -170,6 +171,26 @@ begin
 	if not pg_temp.refused(pg_temp.commit(pg_temp.owner(), 'rule-0007', jsonb_build_array(
 		pg_temp.rule('maybe', '70600000-0000-4000-8000-0000000000f4', 'maybe', 'send a file'))), 'structured_invalid') then
 		raise exception 'An outcome is ask-first or allow'; end if;
+	-- The parse has exactly the rule's keys.
+	if not pg_temp.refused(pg_temp.commit(pg_temp.owner(), 'rule-0008', jsonb_build_array(pg_temp.write('rules/keys.md', 'rule',
+		pg_temp.rule_text('70600000-0000-4000-8000-0000000000f6', 'ask-first', 'send a file'),
+		jsonb_build_object('kind','rule','id','70600000-0000-4000-8000-0000000000f6','outcome','ask-first','text','send a file','extra',1), null))), 'structured_invalid') then
+		raise exception 'A rule''s parse has exactly its keys'; end if;
+	-- An id held by a rule file of the company's other environment is refused.
+	insert into public.qorpera_review_rules(id, profile_id, scope, when_text, outcome, created_via, created_by_user_id,
+		folder_environment_id, folder_path, folder_path_version, folder_commit_id)
+	values ('70600000-0000-4000-8000-0000000000f7', '70600000-0000-4000-8000-000000000010', 'company', 'print a page', 'ask_first', 'folder', '70600000-0000-4000-8000-000000000001', '70600000-0000-4000-8000-000000000022', 'rules/print.md',
+		extensions.gen_random_uuid(), extensions.gen_random_uuid());
+	if not pg_temp.refused(pg_temp.commit(pg_temp.owner(), 'rule-0009', jsonb_build_array(
+		pg_temp.rule('print', '70600000-0000-4000-8000-0000000000f7', 'ask-first', 'print a page')))) then
+		raise exception 'Another environment''s rule id is refused'; end if;
+	delete from public.qorpera_review_rules where id = '70600000-0000-4000-8000-0000000000f7';
+	-- A file the index does not point at is not the saved version: a new id there is a new rule.
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'rule-0010', jsonb_build_array(
+		pg_temp.rule('trust', '70600000-0000-4000-8000-0000000000f8', 'ask-first', 'share a folder'))), 1, 'saved');
+	delete from public.qorpera_review_rules where id = '70600000-0000-4000-8000-0000000000f8';
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'rule-0011', jsonb_build_array(
+		pg_temp.rule('trust', '70600000-0000-4000-8000-0000000000f9', 'ask-first', 'share a folder'))), 1, 'saved');
 end $$;
 
 -- 3. The company budget of 48 KiB --------------------------------------------------------------------------------------
@@ -188,7 +209,20 @@ begin
 	-- Editing a rule counts its new text in place of its old.
 	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'budget-0003', jsonb_build_array(
 		pg_temp.rule('small', '70600000-0000-4000-8000-0000000000f4', 'ask-first', repeat('z', 110)))), 1, 'saved');
+	-- Exactly 48 KiB is within the budget.
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'budget-0004', jsonb_build_array(
+		pg_temp.rule('edge', '70600000-0000-4000-8000-0000000000fa', 'ask-first', repeat('e', 49152 - (select sum(octet_length(when_text))::integer
+			from public.qorpera_review_rules where profile_id = '70600000-0000-4000-8000-000000000010' and scope = 'company' and archived_at is null))))), 1, 'saved');
+	-- An archived rule does not count.
+	update public.qorpera_review_rules set archived_at = clock_timestamp()
+	where id = (select id from public.qorpera_review_rules where profile_id = '70600000-0000-4000-8000-000000000010' and created_via = 'settings' and scope = 'company'
+		and archived_at is null limit 1);
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'budget-0005', jsonb_build_array(
+		pg_temp.rule('after', '70600000-0000-4000-8000-0000000000fb', 'ask-first', repeat('a', 200)))), 1, 'saved');
 	delete from public.qorpera_review_rules where profile_id = '70600000-0000-4000-8000-000000000010' and created_via = 'settings' and scope = 'company';
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'budget-0006', jsonb_build_array(
+		jsonb_build_object('op','delete','path','rules/edge.md','expectedVersion',pg_temp.version('rules/edge.md')),
+		jsonb_build_object('op','delete','path','rules/after.md','expectedVersion',pg_temp.version('rules/after.md')))), 2, 'saved');
 end $$;
 
 -- 4. Moving, deleting and restoring ------------------------------------------------------------------------------------
@@ -205,6 +239,8 @@ begin
 		'path','rules/money.md','expectedVersion',pg_temp.version('rules/money.md')))), 1, 'saved');
 	if (pg_temp.row('70600000-0000-4000-8000-0000000000f1')).archived_at is null or pg_temp.reviewed('70600000-0000-4000-8000-0000000000f1') then
 		raise exception 'Deleting the file archives the rule'; end if;
+	if (pg_temp.row('70600000-0000-4000-8000-0000000000f4')).archived_at is not null or (pg_temp.row('70600000-0000-4000-8000-0000000000f9')).archived_at is not null then
+		raise exception 'Deleting one file archives only its rule'; end if;
 	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'restore-0001', jsonb_build_array(
 		pg_temp.rule('money', '70600000-0000-4000-8000-0000000000f1', 'ask-first', 'refund a customer'))), 1, 'saved');
 	if (pg_temp.row('70600000-0000-4000-8000-0000000000f1')).archived_at is not null or not pg_temp.reviewed('70600000-0000-4000-8000-0000000000f1') then
@@ -224,14 +260,51 @@ begin
 	end;
 	begin
 		perform public.qorpera_archive_review_rule('70600000-0000-4000-8000-000000000010', '70600000-0000-4000-8000-0000000000f1');
-		raise exception 'Removing a company rule through Settings must be refused' using errcode = 'QTF05';
+		raise exception 'Removing a file''s rule through Settings must be refused' using errcode = 'QTF05';
 	exception when sqlstate '55000' then null;
 	end;
+	-- A company rule saved as a row (a card's "Always allow" until C3) can still be removed there.
+	reset role;
+	insert into public.qorpera_review_rules(id, profile_id, scope, when_text, outcome, created_via, created_by_user_id)
+	values ('70600000-0000-4000-8000-0000000000fc', '70600000-0000-4000-8000-000000000010', 'company', 'pay an invoice', 'allow_automatically', 'card', '70600000-0000-4000-8000-000000000001');
+	set local role authenticated;
+	perform public.qorpera_archive_review_rule('70600000-0000-4000-8000-000000000010', '70600000-0000-4000-8000-0000000000fc');
 	perform public.qorpera_save_review_rule('70600000-0000-4000-8000-000000000010', '70600000-0000-4000-8000-0000000000f5', 'member', 'delete a file', 'ask_first');
 	reset role;
 	perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
-	if (pg_temp.row('70600000-0000-4000-8000-0000000000f5')).scope is distinct from 'member' or (pg_temp.row('70600000-0000-4000-8000-0000000000f1')).archived_at is not null then
-		raise exception 'Personal rules stay rows; the company rule is untouched'; end if;
+	if (pg_temp.row('70600000-0000-4000-8000-0000000000f5')).scope is distinct from 'member' or (pg_temp.row('70600000-0000-4000-8000-0000000000f1')).archived_at is not null
+		or (pg_temp.row('70600000-0000-4000-8000-0000000000fc')).archived_at is null then
+		raise exception 'Personal rules stay rows; the file''s rule is untouched; a row rule is removed'; end if;
+end $$;
+
+-- 6. One new folder of rules: one id per file, and the budget counts the unit's files together -------------------------
+
+do $$
+declare r jsonb;
+begin
+	perform public.qorpera_folder_enable('70600000-0000-4000-8000-000000000021');
+	r := public.qorpera_folder_commit('70600000-0000-4000-8000-000000000021', '{"kind":"platform"}', 'pair-0001', jsonb_build_array(jsonb_build_object('op','new_folder',
+		'path','rules','contents',jsonb_build_array(
+			jsonb_build_object('path','a.md','kind','file','file',pg_temp.stage(pg_temp.rule_text('70600000-0000-4000-8000-0000000000e1', 'ask-first', 'one'), '70600000-0000-4000-8000-000000000011')),
+			jsonb_build_object('path','b.md','kind','file','file',pg_temp.stage(pg_temp.rule_text('70600000-0000-4000-8000-0000000000e1', 'ask-first', 'one'), '70600000-0000-4000-8000-000000000011'))),
+		'structured',jsonb_build_array(
+			pg_temp.entry('rules/a.md','rule',pg_temp.rule_text('70600000-0000-4000-8000-0000000000e1', 'ask-first', 'one'),jsonb_build_object('kind','rule','id','70600000-0000-4000-8000-0000000000e1','outcome','ask-first','text','one')),
+			pg_temp.entry('rules/b.md','rule',pg_temp.rule_text('70600000-0000-4000-8000-0000000000e1', 'ask-first', 'one'),jsonb_build_object('kind','rule','id','70600000-0000-4000-8000-0000000000e1','outcome','ask-first','text','one'))))));
+	if not pg_temp.refused(r) then raise exception 'Two files with one rule id in one unit are refused: %', r; end if;
+	insert into public.qorpera_review_rules(id, profile_id, scope, when_text, outcome, created_via, created_by_user_id)
+	select extensions.gen_random_uuid(), '70600000-0000-4000-8000-000000000011', 'company', repeat('x', 280), 'ask_first', 'settings', '70600000-0000-4000-8000-000000000001' from generate_series(1, 175);
+	-- 49000 bytes, then two files of 100: each fits alone, not together.
+	r := public.qorpera_folder_commit('70600000-0000-4000-8000-000000000021', '{"kind":"platform"}', 'pair-0002', jsonb_build_array(jsonb_build_object('op','new_folder',
+		'path','rules','contents',jsonb_build_array(
+			jsonb_build_object('path','a.md','kind','file','file',pg_temp.stage(pg_temp.rule_text('70600000-0000-4000-8000-0000000000e1', 'ask-first', repeat('a', 100)), '70600000-0000-4000-8000-000000000011')),
+			jsonb_build_object('path','b.md','kind','file','file',pg_temp.stage(pg_temp.rule_text('70600000-0000-4000-8000-0000000000e2', 'ask-first', repeat('b', 100)), '70600000-0000-4000-8000-000000000011'))),
+		'structured',jsonb_build_array(
+			pg_temp.entry('rules/a.md','rule',pg_temp.rule_text('70600000-0000-4000-8000-0000000000e1', 'ask-first', repeat('a', 100)),
+				jsonb_build_object('kind','rule','id','70600000-0000-4000-8000-0000000000e1','outcome','ask-first','text',repeat('a', 100))),
+			pg_temp.entry('rules/b.md','rule',pg_temp.rule_text('70600000-0000-4000-8000-0000000000e2', 'ask-first', repeat('b', 100)),
+				jsonb_build_object('kind','rule','id','70600000-0000-4000-8000-0000000000e2','outcome','ask-first','text',repeat('b', 100)))))));
+	if not pg_temp.refused(r) or r -> 'units' -> 0 -> 'problems' -> 0 ->> 'message' not like '%too long%' then
+		raise exception 'The budget counts the unit''s files together: %', r; end if;
 end $$;
 
 rollback;

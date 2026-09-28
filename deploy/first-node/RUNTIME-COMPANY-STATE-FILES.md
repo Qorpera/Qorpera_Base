@@ -326,15 +326,17 @@ closes the conversation; a restore reopens both, with the same conversation.
 - **Who writes:** only owners and admins write `rules/` (members' commits; the core's
   `company_rules` resource scope). A card's "Always allow" writes as the answering owner or admin
   (core C3's writer; until then that path still saves a row). Agents never write it. Personal rules
-  stay rows. For folder-v2 companies the Settings RPCs refuse company rules (55000): they change as
-  file edits.
+  stay rows. For folder-v2 companies Settings refuses saving a company rule and removing a rule
+  that comes from a file (55000): they change as file edits. A company rule saved as a row (a
+  card's "Always allow" until C3) can still be removed there. The web's rules list reads
+  `createdVia: folder`.
 - **Database rules:** the id never changes and belongs to this file's rule only: never a personal
   rule, a row saved outside the folder, another company's or another file's rule. A file saved
   before this slice is the saved version only once the index points at its path.
 - **Budget:** the company rule budget of 48 KiB (`qorpera_review_rules_assert_room`) stays a
-  database rule. `decide` checks it against the rules as they are, so two concurrent saves of
-  different files can each pass and overshoot by at most one rule each: serializing them would
-  take a company-wide lock.
+  database rule. `decide` checks it against the rules as they are, with every rule file of the
+  same unit counted by its new text, so two concurrent saves of different files can each pass and
+  overshoot by at most one unit each: serializing them would take a company-wide lock.
 - **Index:** a new rule inserts a company row (`created_via` `folder`, the file's id); an edit
   updates it; deleting the file archives it (review records keep citing it) and a restore brings
   it back; a move repoints it. The row's foreign key to the company row takes it `KEY SHARE`, so a
