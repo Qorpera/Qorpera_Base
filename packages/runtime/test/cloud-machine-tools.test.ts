@@ -218,6 +218,21 @@ describe("machine tools", () => {
 				command: "npm test",
 			});
 			expect(stopped.contentItems[0].text).toContain("MACHINE_NOT_RUNNING");
+			// A command from before the machine moved: its log went with the old disk.
+			f.gateway.read.mockRejectedValueOnce(new Error("MACHINE_COMMAND_ENDED"));
+			const gone = await f.boundary.invoke("r3", "qorpera", "machine_read", {
+				machine: "build-a",
+				commandId: randomUUID(),
+			});
+			expect(gone.success).toBe(true);
+			expect(gone.contentItems[0].text).toContain("MACHINE_COMMAND_ENDED");
+			f.gateway.cancel.mockRejectedValueOnce(new CloudMachineCommandRefusal("MACHINE_COMMAND_ENDED"));
+			const cancelled = await f.boundary.invoke("r4", "qorpera", "machine_cancel", {
+				operationKey: "stop:1",
+				machine: "build-a",
+				commandId: randomUUID(),
+			});
+			expect(cancelled.contentItems[0].text).toContain("MACHINE_COMMAND_ENDED");
 		} finally {
 			f.boundary.close();
 		}

@@ -138,7 +138,7 @@ begin
 		and not exists (select 1 from public.qorpera_company_machines),'Refused as unavailable, nothing kept: '||v_result::text);
 end $$;
 
--- 2. One node makes machines up to 8 CPUs / 32 GiB; its executor holds the policy.
+-- 2. One node makes machines up to 8 CPUs / 32 GiB and gives them 300 GiB of disk; its executor holds the policy.
 do $$
 declare v_policy jsonb := jsonb_build_object('providerId','machine-fixture','providerPolicySha256',repeat('f',64),'project','machines',
 	'imageFingerprint',repeat('a',64),'bootstrapSha256',repeat('b',64),'storagePool','machines','network','machine-net');
@@ -146,11 +146,13 @@ begin
 	perform pg_temp.node('30000000-0000-4000-8000-000000000410',repeat('c',64),'machine-a',16000,68719476736);
 	perform public.qorpera_enroll_runtime_node_provider('30000000-0000-4000-8000-000000000410',repeat('c',64),'machine','machine-fixture',
 		repeat('f',64),8000,34359738368);
-	perform pg_temp.wake_error($sql$select public.qorpera_configure_machine_executor('mx-a',repeat('c',64),true,null)$sql$,'22023');
-	perform pg_temp.wake_error($sql$select public.qorpera_configure_machine_executor('mx-a',repeat('c',64),true,'{"providerId":"x"}')$sql$,'22023');
-	perform public.qorpera_configure_machine_executor('mx-a',repeat('c',64),true,v_policy);
-	perform pg_temp.wake_error($sql$select public.qorpera_configure_machine_executor('mx-a',repeat('d',64),true,null)$sql$,'22023');
-	perform pg_temp.wake_error(format($sql$select public.qorpera_configure_machine_executor('mx-a',repeat('d',64),true,%L)$sql$,v_policy),'42501');
+	perform pg_temp.wake_error($sql$select public.qorpera_configure_machine_executor('mx-a',repeat('c',64),true,null,322122547200)$sql$,'22023');
+	perform pg_temp.wake_error($sql$select public.qorpera_configure_machine_executor('mx-a',repeat('c',64),true,'{"providerId":"x"}',322122547200)$sql$,'22023');
+	-- The disk the node's pool gives machines is part of enabling it.
+	perform pg_temp.wake_error(format($sql$select public.qorpera_configure_machine_executor('mx-a',repeat('c',64),true,%L,null)$sql$,v_policy),'22023');
+	perform public.qorpera_configure_machine_executor('mx-a',repeat('c',64),true,v_policy,322122547200);
+	perform pg_temp.wake_error($sql$select public.qorpera_configure_machine_executor('mx-a',repeat('d',64),true,null,322122547200)$sql$,'22023');
+	perform pg_temp.wake_error(format($sql$select public.qorpera_configure_machine_executor('mx-a',repeat('d',64),true,%L,322122547200)$sql$,v_policy),'42501');
 end $$;
 
 -- 3. A start places the machine on the node with room, reserving its own size; a replay answers the same.
@@ -202,8 +204,11 @@ begin
 		and (select count(*) from public.qorpera_company_machines) = 1,'Name taken: '||v_again::text);
 	v_again := pg_temp.start('m-huge','{"name":"huge","purpose":"Too big","cpus":16,"memoryGiB":8,"diskGiB":40,"lifetime":"task"}');
 	perform pg_temp.wake_assert(v_again #>> '{refused,reason}' = 'MACHINE_TOO_LARGE'
-		and v_again #>> '{refused,message}' = 'the largest machine a node makes is 8 CPUs and 32 GiB'
+		and v_again #>> '{refused,message}' = 'the largest machine a node makes is 8 CPUs, 32 GiB memory and 300 GiB disk'
 		and pg_temp.machine('huge') is null,'A machine that can never fit is refused and not kept: '||v_again::text);
+	v_again := pg_temp.start('m-deep','{"name":"deep","purpose":"More disk than a node gives","cpus":1,"memoryGiB":1,"diskGiB":400,"lifetime":"task"}');
+	perform pg_temp.wake_assert(v_again #>> '{refused,reason}' = 'MACHINE_TOO_LARGE' and pg_temp.machine('deep') is null,
+		'Disk counts too: '||v_again::text);
 end $$;
 
 -- 4. Full: the next machine waits in line, unplaced, with its place and its reason.
@@ -320,7 +325,15 @@ begin
 	perform pg_temp.wake_assert(v_auth ->> 'state' = 'authorized' and (v_recorded ->> 'ended')::int = 0
 		and exists (select 1 from public.qorpera_company_machine_commands where id = '30000000-0000-4000-8000-000000000504' and ended_at is null),
 		'A new command the guest has not seen yet stays open');
-	update public.qorpera_company_machine_commands set started_at = clock_timestamp() - interval '3 minutes'
+	-- A retry sends the start again: the guest's two minutes start over.
+	update public.qorpera_company_machine_commands set sent_at = clock_timestamp() - interval '3 minutes'
+	where id = '30000000-0000-4000-8000-000000000504';
+	perform public.qorpera_authorize_machine_command(pg_temp.binding(),v_scope,'start','30000000-0000-4000-8000-000000000504',repeat('8',64),
+		'{"commandHead":"./flaky.sh","notify":false}');
+	v_recorded := pg_temp.record('build-a',current_setting('qorpera_test.boot_a')::uuid,
+		'[{"commandId":"30000000-0000-4000-8000-000000000504","state":"lost"}]',false);
+	perform pg_temp.wake_assert((v_recorded ->> 'ended')::int = 0,'A start sent again gets its two minutes again');
+	update public.qorpera_company_machine_commands set sent_at = clock_timestamp() - interval '3 minutes'
 	where id = '30000000-0000-4000-8000-000000000504';
 	v_recorded := pg_temp.record('build-a',current_setting('qorpera_test.boot_a')::uuid,
 		'[{"commandId":"30000000-0000-4000-8000-000000000504","state":"lost"}]',false);
@@ -330,6 +343,12 @@ begin
 		and v_auth ->> 'commandState' = 'lost'
 		and public.qorpera_authorize_machine_command(pg_temp.binding(),v_scope,'read','30000000-0000-4000-8000-000000000504') ->> 'state' = 'authorized',
 		'Lost after the grace, and its start is never retried: '||v_auth::text);
+	-- A command that ran to its end is answered by the guest on a retry, never refused or run again.
+	v_auth := public.qorpera_authorize_machine_command(pg_temp.binding(),v_scope,'start','30000000-0000-4000-8000-000000000502',repeat('4',64),
+		'{"commandHead":"npm test","notify":true}');
+	perform pg_temp.wake_assert(v_auth ->> 'state' = 'authorized'
+		and (select state from public.qorpera_company_machine_commands where id = '30000000-0000-4000-8000-000000000502') = 'failed',
+		'An ended start is answered, not refused: '||v_auth::text);
 	perform pg_temp.wake_assert(public.qorpera_machine_text_tail(repeat('é',3000),4000) = repeat('é',2000)
 		and public.qorpera_machine_text_tail('abc' || repeat('😀',10),9) = repeat('😀',2)
 		and public.qorpera_machine_text_tail(null,10) is null,'Tails are cut on a character');
@@ -345,6 +364,9 @@ begin
 		and (pg_temp.listed('mx-a',repeat('c',64),'big') ->> 'stopDue')::boolean,'Stopping: '||v_changed::text);
 	v_stop := pg_temp.custody('big','stop');
 	perform pg_temp.wake_assert(v_stop ->> 'intent' = 'stop' and (pg_temp.placement('big')).stop_authorized_at is not null,'Stop custody');
+	perform pg_temp.wake_assert((select count(*) from public.qorpera_company_machine_events where kind = 'stopped'
+			and machine_id = (pg_temp.machine('big')).id and parent_run_id = (pg_temp.binding() ->> 'runId')::uuid) = 1
+		and cardinality((pg_temp.machine('big')).notify_run_ids) = 0,'The run waiting for it hears it was stopped before it ran');
 	v_stop := pg_temp.suspend('big');
 	perform pg_temp.wake_assert(v_stop ->> 'state' = 'suspended'
 		and public.qorpera_company_machine_state(pg_temp.machine('big')) = 'stopped'
@@ -379,7 +401,7 @@ begin
 	perform pg_temp.node('30000000-0000-4000-8000-000000000420',repeat('d',64),'machine-b',16000,68719476736);
 	perform public.qorpera_enroll_runtime_node_provider('30000000-0000-4000-8000-000000000420',repeat('d',64),'machine','machine-fixture-b',
 		repeat('e',64),8000,34359738368);
-	perform public.qorpera_configure_machine_executor('mx-b',repeat('d',64),true,v_policy);
+	perform public.qorpera_configure_machine_executor('mx-b',repeat('d',64),true,v_policy,322122547200);
 	update public.qorpera_runtime_node_observations set observed_at = clock_timestamp() - interval '2 minutes'
 	where node_id = '30000000-0000-4000-8000-000000000410';
 	perform pg_temp.wake_assert(public.qorpera_admit_executor_machines('mx-b',repeat('d',64)) = '[]'::jsonb
@@ -463,13 +485,19 @@ begin
 		'A deleted machine''s placement is retired, and stops before it is deleted');
 	perform pg_temp.start('m-filler','{"name":"filler","purpose":"Takes the room","cpus":8,"memoryGiB":32,"diskGiB":40,"lifetime":"task"}');
 	perform pg_temp.start('m-lonely','{"name":"lonely","purpose":"Never placed","cpus":8,"memoryGiB":32,"diskGiB":40,"lifetime":"task"}');
+	perform pg_temp.start('m-wide','{"name":"wide","purpose":"Room for it, but not disk","cpus":1,"memoryGiB":1,"diskGiB":250,"lifetime":"task"}');
 	perform pg_temp.wake_assert(public.qorpera_company_machine_state(pg_temp.machine('filler')) = 'starting'
-		and public.qorpera_company_machine_state(pg_temp.machine('lonely')) = 'waiting','One fits; the other waits unplaced');
+		and public.qorpera_company_machine_state(pg_temp.machine('lonely')) = 'waiting'
+		and public.qorpera_company_machine_state(pg_temp.machine('wide')) = 'waiting'
+		and public.qorpera_admit_executor_machines('mx-a',repeat('c',64)) = '[]'::jsonb,
+		'One fits; one waits for processors, one for disk (asleep and retired placements keep theirs)');
 	perform public.qorpera_native_machine_manage(pg_temp.binding(),'{"action":"delete","machine":"lonely"}');
-	perform pg_temp.wake_assert(pg_temp.machine('lonely') is null,'An unplaced machine is deleted at once');
+	perform pg_temp.wake_assert(pg_temp.machine('lonely') is null
+		and exists (select 1 from public.qorpera_company_machine_events event join public.qorpera_company_machines machine on machine.id = event.machine_id
+			where machine.name = 'lonely' and event.kind = 'stopped'),'An unplaced machine is deleted at once, and its run is told');
 	perform pg_temp.wake_assert(public.qorpera_native_machine_manage(pg_temp.binding(),'{"action":"stop","machine":"nobody"}') #>> '{refused,reason}' = 'MACHINE_NOT_FOUND',
 		'An unknown machine is a refusal the agent reads');
-	perform pg_temp.wake_assert(jsonb_array_length(public.qorpera_native_machine_manage(pg_temp.binding(),'{"action":"list"}') -> 'machines') = 3,
+	perform pg_temp.wake_assert(jsonb_array_length(public.qorpera_native_machine_manage(pg_temp.binding(),'{"action":"list"}') -> 'machines') = 4,
 		'The agent lists the company''s machines');
 end $$;
 
@@ -498,13 +526,14 @@ begin
 	perform pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001');
 	v_list := public.qorpera_list_company_machines('30000000-0000-4000-8000-000000000010');
 	perform pg_temp.wake_assert(v_list ->> 'schema' = 'qorpera.company-machines/v1'
-		and (select count(*) from jsonb_array_elements(v_list -> 'machines')) = 6
+		and (select count(*) from jsonb_array_elements(v_list -> 'machines')) = 7
 		and exists (select 1 from jsonb_array_elements(v_list -> 'machines') m where m ->> 'name' = 'build-a'
-			and m #>> '{commands,0,command}' = 'npm test' and m #>> '{commands,0,state}' = 'failed' and m #>> '{startedBy,name}' = 'Agent')
+			and m #>> '{startedBy,name}' = 'Agent' and exists (select 1 from jsonb_array_elements(m -> 'commands') c
+				where c ->> 'command' = 'npm test' and c ->> 'state' = 'failed'))
 		and not exists (select 1 from jsonb_array_elements(v_list -> 'machines') m where m ? 'binding' or m ? 'instanceSha256' or m ? 'placementId'),
 		'Members see the machines, their commands and who started them: '||v_list::text);
 	perform pg_temp.wake_assert(public.qorpera_list_session_machines('30000000-0000-4000-8000-000000000040') ->> 'schema' = 'qorpera.session-machines/v1'
-		and jsonb_array_length(public.qorpera_list_session_machines('30000000-0000-4000-8000-000000000040') -> 'machines') = 6
+		and jsonb_array_length(public.qorpera_list_session_machines('30000000-0000-4000-8000-000000000040') -> 'machines') = 7
 		and jsonb_array_length(public.qorpera_list_session_machines('30000000-0000-4000-8000-000000000042') -> 'machines') = 0,
 		'The conversation that started them shows its machines');
 	v_view := public.qorpera_member_manage_company_machine('30000000-0000-4000-8000-000000000010',(pg_temp.machine('big')).id,'stop');
@@ -514,7 +543,7 @@ begin
 	perform pg_temp.suspend('big');
 	perform pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001');
 	v_view := public.qorpera_member_manage_company_machine('30000000-0000-4000-8000-000000000010',(pg_temp.machine('big')).id,'start');
-	perform pg_temp.wake_assert(v_view ->> 'state' = 'waiting' and (v_view ->> 'queuePosition')::int = 1,
+	perform pg_temp.wake_assert(v_view ->> 'state' = 'waiting' and (v_view ->> 'queuePosition')::int = 2,
 		'A member wakes an asleep machine: it takes its place in line: '||v_view::text);
 	perform pg_temp.wake_error(format($sql$select public.qorpera_member_manage_company_machine('30000000-0000-4000-8000-000000000010',%L,'start')$sql$,
 		(select id from public.qorpera_company_machines where name = 'build-a' and removed_at is null)),'55000');
@@ -554,17 +583,20 @@ end $$;
 
 -- 15. The events wait for the parent run to end, then wake it as a continuation in its conversation.
 --     A wake holds 8 KiB: it carries as many events as fit (never more than eight, each with the
---     end of its output), and the rest follow.
+--     end of its output), and the rest follow. Six events are waiting: build-a running, its failed
+--     command, big stopped before it ran, wait running, lonely deleted before it ran, big stopped again.
 do $$
 declare v_wake public.qorpera_wake_occurrences; v_parent public.qorpera_execution_runs; v_count integer;
 begin
 	select * into strict v_parent from public.qorpera_execution_runs where id = (pg_temp.binding() ->> 'runId')::uuid;
+	perform pg_temp.wake_assert((select count(*) from public.qorpera_company_machine_events where delivery = 'waiting') = 6,
+		'Six events wait for the parent');
 	-- Eight test shards that ended together, each with 4000 bytes of output and a long command.
 	with shards as (
-		insert into public.qorpera_company_machine_commands(id, machine_id, run_id, staff_agent_id, command_head, notify, ended_at, state,
-			exit_code, output_tail)
+		insert into public.qorpera_company_machine_commands(id, machine_id, run_id, staff_agent_id, placement_id, command_head, notify, ended_at,
+			state, exit_code, output_tail)
 		select extensions.gen_random_uuid(), (pg_temp.machine('filler')).id, v_parent.id, v_parent.staff_agent_id,
-			'shard ' || n || ' ' || repeat('x', 280), true, clock_timestamp(), 'succeeded', 0, repeat('é', 2000)
+			(pg_temp.placement('filler')).id, 'shard ' || n || ' ' || repeat('é', 280), true, clock_timestamp(), 'succeeded', 0, repeat('é', 2000)
 		from generate_series(1, 8) n returning id)
 	insert into public.qorpera_company_machine_events(machine_id, profile_id, environment_id, staff_agent_id, parent_run_id, kind, command_id)
 	select (pg_temp.machine('filler')).id, v_parent.profile_id, v_parent.environment_id, v_parent.staff_agent_id, v_parent.id, 'command', id
@@ -581,17 +613,20 @@ begin
 	perform pg_temp.wake_assert(v_wake.status = 'materialized' and v_wake.wake_kind = 'agent' and v_wake.parent_run_id = v_parent.id
 		and v_wake.staff_agent_id = v_parent.staff_agent_id and v_wake.session_id = v_parent.session_id
 		and v_wake.occurrence_key = 'machine-event:' || v_wake.id::text
-		and v_wake.payload ->> 'schema' = 'qorpera.machine-event/v1' and v_count between 4 and 7
+		and v_wake.payload ->> 'schema' = 'qorpera.machine-event/v1' and v_count between 7 and 8
 		and pg_column_size(v_wake.payload) <= 6144
 		and v_wake.payload #>> '{events,0,kind}' = 'running' and v_wake.payload #>> '{events,0,machine}' = 'build-a'
 		and v_wake.payload #>> '{events,1,commandState}' = 'failed' and v_wake.payload #>> '{events,1,command}' = 'npm test'
 		and v_wake.payload #>> '{events,1,outputTail}' = '1 test failed' and (v_wake.payload #>> '{events,1,exitCode}')::int = 2
-		and v_wake.payload #>> '{events,2,kind}' = 'running' and v_wake.payload #>> '{events,2,machine}' = 'wait'
-		and v_wake.payload #>> '{events,3,outputTail}' = repeat('é', 300)
-		and (v_wake.payload ->> 'stillWaiting')::int = 11 - v_count
-		and (select count(*) from public.qorpera_company_machine_events where delivery = 'waiting') = 11 - v_count
+		and v_wake.payload #>> '{events,2,kind}' = 'stopped' and v_wake.payload #>> '{events,2,machine}' = 'big'
+		and v_wake.payload #>> '{events,3,kind}' = 'running' and v_wake.payload #>> '{events,3,machine}' = 'wait'
+		and v_wake.payload #>> '{events,4,kind}' = 'stopped' and v_wake.payload #>> '{events,4,machine}' = 'lonely'
+		and v_wake.payload #>> '{events,5,kind}' = 'stopped' and v_wake.payload #>> '{events,5,machine}' = 'big'
+		and v_wake.payload #>> '{events,6,outputTail}' = repeat('é', 300)
+		and (v_wake.payload ->> 'stillWaiting')::int = 14 - v_count
+		and (select count(*) from public.qorpera_company_machine_events where delivery = 'waiting') = 14 - v_count
 		and public.qorpera_wake_authorized(v_wake),
-		'One continuation carries what fits: '||v_count||' '||pg_column_size(v_wake.payload));
+		'One continuation carries what fits: '||v_count||' events, '||pg_column_size(v_wake.payload)||' bytes');
 	perform set_config('qorpera_test.first_count',v_count::text,true);
 end $$;
 
@@ -607,16 +642,17 @@ begin
 		and v_run.session_id = v_wake.session_id and v_continuation ->> 'schema' = 'qorpera.machine-event-continuation/v1'
 		and v_continuation ->> 'parentRunId' = v_wake.parent_run_id::text
 		and jsonb_array_length(v_continuation -> 'events') = current_setting('qorpera_test.first_count')::int
-		and v_continuation #>> '{events,3,outputTail}' = repeat('é', 2000)
+		and v_continuation #>> '{events,6,outputTail}' = repeat('é', 2000)
 		and exists (select 1 from jsonb_array_elements(v_continuation -> 'receipts') r where r ->> 'logicalOperationKey' = 'machine_start:m-build-a')
 		and (public.qorpera_runtime_wake_policy(v_run.id) ->> 'final') is not null,
 		'The continuation run: '||left(v_continuation::text, 2000));
 end $$;
 
--- 17. The rest follow once that continuation has ended, one continuation at a time; a person who
---     stops a continuation hears nothing more from that run's machines.
+-- 17. The rest follow once that continuation has ended, one continuation at a time and never more
+--     than a wake holds; a person who stops a continuation hears nothing more from that run's machines.
 do $$
-declare v_first public.qorpera_wake_occurrences; v_second public.qorpera_wake_occurrences; v_event uuid;
+declare v_first public.qorpera_wake_occurrences; v_second public.qorpera_wake_occurrences; v_event uuid; v_count integer;
+	v_left integer;
 begin
 	select * into strict v_first from public.qorpera_wake_occurrences where source_kind = 'machine-event';
 	perform public.qorpera_drain_machine_wakes(32);
@@ -626,11 +662,13 @@ begin
 		lease_token_sha256 = null, lease_expires_at = null where run_id = v_first.run_id;
 	perform public.qorpera_materialize_wake_execution_runs(32);
 	select * into strict v_second from public.qorpera_wake_occurrences where source_kind = 'machine-event' and id <> v_first.id;
+	v_count := jsonb_array_length(v_second.payload -> 'events');
+	v_left := 14 - current_setting('qorpera_test.first_count')::int - v_count;
 	perform pg_temp.wake_assert(v_second.status = 'materialized' and v_second.parent_run_id = v_first.parent_run_id
-		and jsonb_array_length(v_second.payload -> 'events') = 11 - current_setting('qorpera_test.first_count')::int
-		and (v_second.payload ->> 'stillWaiting')::int = 0 and pg_column_size(v_second.payload) <= 6144
-		and not exists (select 1 from public.qorpera_company_machine_events where delivery = 'waiting'),
-		'The rest follow in the next continuation');
+		and v_count between 2 and 5 and v_left > 0 and pg_column_size(v_second.payload) <= 6144
+		and (v_second.payload ->> 'stillWaiting')::int = v_left
+		and (select count(*) from public.qorpera_company_machine_events where delivery = 'waiting') = v_left,
+		'Six long reports do not fit one wake: '||v_count||' events, '||pg_column_size(v_second.payload)||' bytes');
 	perform pg_temp.path_claims('authenticated','30000000-0000-4000-8000-000000000001');
 	perform pg_temp.wake_assert(public.qorpera_cancel_session_run('30000000-0000-4000-8000-000000000040',v_second.run_id) ->> 'status' = 'cancelled',
 		'A person stops the continuation');
@@ -642,6 +680,8 @@ begin
 	perform public.qorpera_drain_machine_wakes(32);
 	perform pg_temp.wake_assert(public.qorpera_machine_revival_stopped(v_first.parent_run_id)
 		and exists (select 1 from public.qorpera_company_machine_events where id = v_event and delivery = 'suppressed')
+		and not exists (select 1 from public.qorpera_company_machine_events where delivery = 'waiting')
+		and (select count(*) from public.qorpera_company_machine_events where delivery = 'suppressed') = v_left + 1
 		and (select count(*) from public.qorpera_wake_occurrences where source_kind = 'machine-event') = 2,
-		'Later events of that run are held back');
+		'That run''s later events are held back');
 end $$;

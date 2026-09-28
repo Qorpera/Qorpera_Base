@@ -220,7 +220,8 @@ function machineWakeFixture() {
 		commandId = randomUUID();
 	const machineWake: CloudWakeEnvelope = {
 		...wake,
-		source: { kind: "machine-event", id: eventId, occurrenceKey: `machine-event:${eventId}` },
+		// The key names the wake itself: every drain attempt is its own occurrence.
+		source: { kind: "machine-event", id: eventId, occurrenceKey: `machine-event:${randomUUID()}` },
 		policy: continuation,
 		payload: {
 			schema: "qorpera.machine-event/v1",
@@ -249,6 +250,18 @@ function machineWakeFixture() {
 					commandState: "failed",
 					exitCode: 2,
 					outputTail: "1 test failed",
+				},
+				{
+					machine: "build-b",
+					machineId: randomUUID(),
+					kind: "stopped",
+					at: "2026-09-28T05:56:00.000000+00:00",
+					machineState: "stopped",
+					command: null,
+					commandId: null,
+					commandState: null,
+					exitCode: null,
+					outputTail: null,
 				},
 			],
 			stillWaiting: 0,

@@ -91,10 +91,17 @@ describe("coding executor service configuration", () => {
 			helperSha256: "b".repeat(64),
 		};
 		expect(parseCodingExecutorConfiguration(fixture()).machines).toBeNull();
-		expect(parseCodingExecutorConfiguration({ ...fixture(), machines }).machines).toEqual(machines);
-		expect(parseCodingExecutorConfiguration({ ...fixture(), broker, machines }).machines).toEqual(machines);
+		expect(parseCodingExecutorConfiguration({ ...fixture(), machines }).machines).toEqual({
+			...machines,
+			previousHelperSha256s: [],
+		});
+		// The helpers of earlier images whose machines still run on this node.
+		const upgraded = { ...machines, previousHelperSha256s: ["c".repeat(64)] };
+		expect(parseCodingExecutorConfiguration({ ...fixture(), broker, machines: upgraded }).machines).toEqual(upgraded);
 		for (const bad of [
 			{ ...machines, helperSha256: "x" },
+			{ ...machines, previousHelperSha256s: ["b".repeat(64)] },
+			{ ...machines, previousHelperSha256s: "c".repeat(64) },
 			{ ...machines, policy: { ...machines.policy, providerId: "other-node" } },
 			{ ...machines, policy: { ...machines.policy, cpus: 4 } },
 			{ ...machines, extra: true },
