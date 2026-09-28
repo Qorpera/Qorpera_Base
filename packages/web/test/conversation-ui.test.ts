@@ -351,7 +351,10 @@ describe("conversation UI boundaries", () => {
 		expect(
 			vi.mocked(fetch).mock.calls.filter(([url]) => !String(url).endsWith("/qorpera_list_member_notifications")),
 		).toHaveLength(0);
-		expect(f.cloud.rpc).not.toHaveBeenCalled();
+		// Only the thread's own reads (the machines its agent started) reach the server; no attachment does.
+		expect(
+			vi.mocked(f.cloud.rpc).mock.calls.filter(([name]) => name !== "qorpera_list_session_machines"),
+		).toHaveLength(0);
 	});
 	it("keeps attachment drafts scoped to their conversation and releases previews on disposal", () => {
 		const f = setup();
