@@ -187,9 +187,13 @@ test("an onlyOn entry that excuses nothing is listed, without changing the verdi
 	const onlyOn = { schema: CLASS_SCHEMA, mayDiffer: [], onlyOn: { node01: ["lxd › projects › gone"] } };
 	const result = compareSetups(onlyOn, raw("node01", 1), raw("node02", 2));
 	assert.equal(result.identical, true);
-	assert.deepEqual(result.unusedOnlyOn, [{ label: "node01", prefix: "lxd › projects › gone" }]);
+	assert.deepEqual(result.unusedOnlyOn, [{ label: "node01", prefix: "lxd › projects › gone", compared: true }]);
 	const a = raw("node01", 1, (o) => o.projects.push({ name: "gone", config: {} }));
 	assert.deepEqual(compareSetups(onlyOn, a, raw("node02", 2)).unusedOnlyOn, []);
+	const typo = { ...onlyOn, onlyOn: { "company41-node-01": ["lxd"] } };
+	assert.deepEqual(compareSetups(typo, raw("node01", 1), raw("node02", 2)).unusedOnlyOn, [
+		{ label: "company41-node-01", prefix: "lxd", compared: false },
+	]);
 });
 
 test("refuses malformed input", () => {

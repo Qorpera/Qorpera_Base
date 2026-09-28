@@ -7,7 +7,8 @@
 // A node's setup here is what the runtime depends on: the Qorpera and LXD systemd units and whether they
 // run, the storage server (NFS) mounts and their options, the LXD projects, networks and storage pools,
 // the non-managed LXD instances (fast host, company machines' hosts), and the node agent's roles and the
-// NAMES of each role's fixed settings. It never reads a setting's value, a credential or an env file.
+// NAMES of each role's fixed settings. It never prints or stores a setting's value or a credential, and
+// never reads an env file.
 // The node's own label is replaced by "<node>" everywhere, so qorpera-exec-node01 and
 // qorpera-exec-node02 compare equal. The class file lists what may differ on purpose.
 
@@ -213,17 +214,27 @@ export function compareSetups(klass, a, b) {
 	return {
 		identical: differences.every((difference) => difference.allowed),
 		differences,
-		unusedOnlyOn: [a.label, b.label].flatMap((label) =>
-			(c.onlyOn[label] ?? [])
-				.filter((prefix) => !used.has(JSON.stringify([label, prefix])))
-				.map((prefix) => ({ label, prefix })),
-		),
+		// An entry for a label that is neither node (a typo, or a third node) is listed too.
+		unusedOnlyOn: Object.keys(c.onlyOn)
+			.sort()
+			.flatMap((label) =>
+				c.onlyOn[label]
+					.filter((prefix) => !used.has(JSON.stringify([label, prefix])))
+					.map((prefix) => ({ label, prefix, compared: label === a.label || label === b.label })),
+			),
 	};
 }
 
 const exec = promisify(execFile);
 // Every command is read-only and quick; one that hangs (a stuck NFS mount under findmnt) is stopped.
-const run = (command, args, options) => exec(command, args, { ...options, timeout: 60000 });
+// Its error names the command (the arguments carry no secret), never its output.
+async function run(command, args, options) {
+	try {
+		return await exec(command, args, { ...options, timeout: 60000 });
+	} catch (error) {
+		throw new Error(`${error?.killed ? "COMMAND_TIMED_OUT" : "COMMAND_FAILED"}: ${command} ${args.join(" ")}`);
+	}
+}
 // A JSON.parse error quotes part of its input, so it is replaced by a fixed message.
 function parse(text, what) {
 	try {
@@ -233,7 +244,7 @@ function parse(text, what) {
 	}
 }
 async function json(command, args) {
-	return parse((await run(command, args, { maxBuffer: 64 * 1024 * 1024 })).stdout, `${command} ${args[0]}`);
+	return parse((await run(command, args, { maxBuffer: 64 * 1024 * 1024 })).stdout, `${command} ${args.join(" ")}`);
 }
 async function lines(command, args) {
 	return (await run(command, args, { maxBuffer: 16 * 1024 * 1024 })).stdout.split("\n").filter(Boolean);
@@ -285,8 +296,12 @@ async function main(argv) {
 			process.stdout.write(
 				`${difference.allowed ? "allowed " : "DIFFERS "} ${difference.path}\n    ${a.label}: ${difference[a.label]}\n    ${b.label}: ${difference[b.label]}\n`,
 			);
-		for (const { label, prefix } of result.unusedOnlyOn)
-			process.stdout.write(`note     onlyOn ${label}: "${prefix}" excuses nothing; remove it from the class.\n`);
+		for (const { label, prefix, compared } of result.unusedOnlyOn)
+			process.stdout.write(
+				compared
+					? `note     onlyOn ${label}: "${prefix}" excuses nothing; remove it from the class.\n`
+					: `note     onlyOn ${label}: not one of the compared nodes; "${prefix}" was not used.\n`,
+			);
 		process.stdout.write(result.identical ? "Same setup (allowed differences only).\n" : "Setups differ.\n");
 		return result.identical ? 0 : 1;
 	}
