@@ -1076,11 +1076,13 @@ capacity work after it.
 
 > **Amended 2026-09-28.** In newer text a *computer* is one agent's screen and
 > a *machine* is the virtual machine that hosts up to six computers; this
-> section's "Company Computer" is the machine. An additional machine is no
-> longer optional or later work: it starts when every computer in use is
-> taken, and computers are seats that free up. A computer's shell and
-> terminal have internet, and commands have no fixed time limit (2026-09-28
-> amendment "compute for agents", section 19, items 1 and 2).
+> section's "Company Computer" is the machine. Machines start on any node
+> with room, and their files are the company folder: the workbench below
+> holds scratch only, never company work. An additional machine is no longer
+> optional or later work: it starts when every computer in use is taken, and
+> computers are seats that free up. A computer's shell and terminal have
+> internet, and commands have no fixed time limit (2026-09-28 amendment
+> "compute for agents", section 19).
 
 One computer-use task holds one lease per screen. Concurrent shell and service
 work uses explicit resource leases and provenance. Every screen action is
@@ -3075,6 +3077,35 @@ a coding machine carries a member's coding sessions. Older text calls the
 company machine the "Company Computer" and a computer a "screen", and keeps
 those words until it is rewritten.
 
+**Every machine.** These rules hold for company machines, coding machines and
+the machines agents start. They follow two founder decisions: the company
+folder (5.6, 27 September) and stateless compute (28 September).
+- **Any node.** A machine starts on any node with room, and placement picks
+  the node by free capacity. Nodes hold nothing a company owns, so losing a
+  node loses capacity, not company work. A company's machines need not share
+  a node.
+- **The files are the company folder.** A machine's files are the company
+  folder, projected from the storage server (5.6). A machine keeps no copy of
+  company files, and company work never lives in a machine's own storage or
+  in a shared workbench. Section 12's "shared NAS-backed workbench" is read
+  this way: in-progress work is saved in the company folder.
+- **Scratch only.** What a machine keeps of its own is scratch: its system,
+  installed tools and their settings, caches, and browser history. Scratch
+  can be rebuilt, and losing it loses no company work.
+- **Gaps, not rules.** Where today's build ties a machine to one node or works
+  through copies, that is a gap to close, not the rule. At the time of this
+  amendment:
+  - the production company machine runs on one node, with its disk and
+    workbench tied to it;
+  - a coding machine stays on the node it was created on, with its own
+    storage;
+  - company machines do not mount the company folder yet: files reach it
+    through transfers, and a coding session's repository lives in its own
+    NAS folders until the code moves into the company folder (2026-09-27
+    amendment "every machine works in the company folder", item 9);
+  - a member's model login sits on one node (the identity-home rule of the
+    2026-09-16 amendment).
+
 1. **More than one company machine per company.** Section 12's additional
    machine is no longer later capacity work, and it is not optional.
    - An agent that needs a computer gets one in this order: its own open
@@ -3124,10 +3155,13 @@ those words until it is rewritten.
      still stops its sessions' programs; that is crash detection, not a
      limit.
    - A coding machine sleeps after 10 minutes with no turn and nothing
-     running. Sleep powers it off: files stay, programs stop, and the agent
-     and the member are told what stopped.
+     running. Sleep powers it off: the session's files stay in the company
+     folder, programs stop, and the agent and the member are told what
+     stopped. A machine that wakes may start on another node; only its
+     scratch is rebuilt.
    - Archiving a session is the real stop. It stops the session's programs
-     and detaches it. Its files are kept, and a new message reopens it. A
+     and detaches it. Its files in the company folder are kept, and a new
+     message reopens it. A
      coding machine is removed only when all its sessions are archived and it
      is asleep.
    - Coding machines do not run containers. Heavier tests belong on the
