@@ -6,12 +6,13 @@
 -- * An account deletion never deletes company data. The company, its folder, its conversations and
 --   the messages in them, runs and everything else made for the company stay with the company.
 -- * What goes is the person's own: their memberships (as if they pressed Leave), settings, drafts,
---   notifications, picture, friends, devices, pending invitations and an open founding-table seat.
+--   notifications, picture, friends, devices, pending invitations and founding-table seats.
 -- * The last founder of a company with other members cannot be deleted, the same as Leave.
 -- * The only member of a company cannot be deleted until they delete the company themselves.
 -- * Plan and usage records are kept for bookkeeping (contract section 19, "computer hours", item 9).
 -- * Accounts will be closed (Supabase's soft delete keeps an empty auth.users row), never erased,
---   once a Delete account button exists. Not built here.
+--   once a Delete account button exists. Not built here. A soft delete is an update: none of the
+--   links or the guard below act on it, so the close must remove and refuse the same things itself.
 --
 -- Before this, seven links from those rows to auth.users were ON DELETE CASCADE. The company's own
 -- link fired first, so the founder guard below saw "the company is being deleted" and let the
@@ -58,6 +59,12 @@ begin
 	end loop;
 end
 $$;
+
+-- The seven tables first, in one statement, so the migration never holds auth.users (each drop below
+-- takes it) while it waits for one of them behind a member's write.
+lock table public.qorpera_profiles, public.qorpera_company_environments, public.qorpera_company_foundings,
+	public.qorpera_shared_sessions, public.qorpera_session_inputs, public.qorpera_account_entitlements,
+	public.qorpera_account_entitlement_changes in access exclusive mode;
 
 alter table public.qorpera_profiles
 	drop constraint qorpera_profiles_created_by_user_id_fkey,

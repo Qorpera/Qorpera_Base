@@ -39,6 +39,8 @@ where link.confrelid = 'auth.users'::regclass and link.conname in ('qorpera_prof
 	'qorpera_company_environments_created_by_user_id_fkey', 'qorpera_company_foundings_created_by_user_id_fkey',
 	'qorpera_shared_sessions_created_by_user_id_fkey', 'qorpera_session_inputs_author_user_id_fkey',
 	'qorpera_account_entitlements_user_id_fkey', 'qorpera_account_entitlement_changes_user_id_fkey');
+-- An account deletion reaches only these tables of the person's own; a new cascade from an account
+-- must be classified here (company data or plan records never cascade).
 with recursive reached(table_id) as (
 	select link.conrelid from pg_catalog.pg_constraint as link
 	where link.contype = 'f' and link.confrelid = 'auth.users'::regclass and link.confdeltype = 'c'
@@ -47,14 +49,48 @@ with recursive reached(table_id) as (
 	join reached on link.confrelid = reached.table_id
 	where link.contype = 'f' and link.confdeltype = 'c'
 )
-select pg_temp.acct_assert(not exists (select 1 from reached where reached.table_id in (
-	'public.qorpera_profiles'::regclass, 'public.qorpera_company_environments'::regclass,
-	'public.qorpera_company_foundings'::regclass, 'public.qorpera_shared_sessions'::regclass,
-	'public.qorpera_session_inputs'::regclass, 'public.qorpera_execution_runs'::regclass,
-	'public.qorpera_company_files'::regclass, 'public.qorpera_account_entitlements'::regclass,
-	'public.qorpera_account_entitlement_changes'::regclass)), 'a cascade from an account reaches company data');
+select pg_temp.acct_assert(not exists (
+	select table_id::regclass::text from reached
+	except
+	select unnest(array['qorpera_company_creation_requests', 'qorpera_company_founder_seats', 'qorpera_friendships',
+		'qorpera_member_email_actions', 'qorpera_member_email_drafts', 'qorpera_member_notifications',
+		'qorpera_member_pictures', 'qorpera_member_session_accounts', 'qorpera_member_sidebar_agents',
+		'qorpera_member_sidebar_rooms', 'qorpera_native_presence_devices', 'qorpera_presence_devices',
+		'qorpera_product_feedback', 'qorpera_profile_access_state', 'qorpera_profile_invitation_deliveries',
+		'qorpera_profile_invitations', 'qorpera_profile_members', 'qorpera_review_rules', 'qorpera_room_drafts',
+		'qorpera_runtime_browser_membership_revocations', 'qorpera_runtime_office_wake_requests'])
+), 'an account deletion reaches a table that is not the person''s own');
 select pg_temp.acct_assert(not has_function_privilege(role_name, 'public.qorpera_guard_founder_departure()', 'EXECUTE'),
 	'the founder guard is callable by no API role') from unnest(array['anon', 'authenticated', 'service_role']) role_name;
+
+-- A member whose only trace is one message in a conversation: refused, and the message stays (before,
+-- the message went with the account).
+insert into auth.users(id, email) values
+	('72000000-0000-4000-8000-000000000006', 'acct-talker@example.test'),
+	('72000000-0000-4000-8000-000000000007', 'acct-left@example.test'),
+	('72000000-0000-4000-8000-000000000008', 'acct-stays@example.test');
+insert into public.qorpera_profile_members(profile_id, user_id, email, display_name, role)
+values ('30000000-0000-4000-8000-000000000010', '72000000-0000-4000-8000-000000000006', 'acct-talker@example.test', 'Talker', 'contributor');
+insert into public.qorpera_session_inputs(session_id, client_input_id, author_user_id, body)
+values ('30000000-0000-4000-8000-000000000040', '72000000-0000-4000-8000-000000000042', '72000000-0000-4000-8000-000000000006',
+	'{"text":"Hello"}');
+select pg_temp.acct_refused($q$delete from auth.users where id = '72000000-0000-4000-8000-000000000006'$q$, array['23503'],
+	'update or delete on table "users" violates foreign key constraint "qorpera_session_inputs_author_user_id_fkey"',
+	'deleting a member whose message is in a conversation');
+select pg_temp.acct_assert(exists (select 1 from public.qorpera_session_inputs
+	where author_user_id = '72000000-0000-4000-8000-000000000006'), 'the message stays');
+
+-- A company whose creator has left and has nothing else in it: refused, and the company stays (before,
+-- the company went with the account).
+insert into public.qorpera_profiles(id, name, created_by_user_id)
+values ('72000000-0000-4000-8000-000000000011', 'Creator left', '72000000-0000-4000-8000-000000000007');
+insert into public.qorpera_profile_members(profile_id, user_id, email, display_name, role)
+values ('72000000-0000-4000-8000-000000000011', '72000000-0000-4000-8000-000000000008', 'acct-stays@example.test', 'Stays', 'owner');
+select pg_temp.acct_refused($q$delete from auth.users where id = '72000000-0000-4000-8000-000000000007'$q$, array['23503'],
+	'update or delete on table "users" violates foreign key constraint "qorpera_profiles_created_by_user_id_fkey"',
+	'deleting the creator of a company they have left');
+select pg_temp.acct_assert(exists (select 1 from public.qorpera_profile_members
+	where profile_id = '72000000-0000-4000-8000-000000000011'), 'the company stays with its founder');
 
 -- The creator and only founder, with others in the company and a history in it: refused, and the
 -- company keeps everything.
