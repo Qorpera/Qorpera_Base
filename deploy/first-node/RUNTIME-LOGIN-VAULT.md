@@ -421,8 +421,10 @@ Node 1:
 
 Node 2 (warm standby), between node 1's steps 6 and 8:
 
-1. The prerequisites above, the package, the unit and the script as on node 1; `helper-token` and a
-   helper restart on node 2 (node 2's own helper and token).
+1. The prerequisites above, the package, the unit and the script as on node 1; then `helper-token`,
+   node 1 step 4's drop-in, `systemctl daemon-reload` and a helper restart on node 2 (node 2's own helper
+   and token; without the drop-in node 2's helper refuses the vault, and each refusal delays that login's
+   renewals on both nodes).
 2. The hand-over, host to host over the two nodes' Tailscale addresses:
    1. node 2: `shared-vault-secrets.py ticket`. It keeps a one-time ticket as a root-only file (replacing an
       unused one) and prints only `ticketSha256`.
