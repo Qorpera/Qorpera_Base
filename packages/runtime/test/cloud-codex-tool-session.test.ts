@@ -1073,7 +1073,8 @@ describe("warm conversations: spare Codex processes", () => {
 		});
 		expect(await starts(evidence)).toBe(2);
 		prepareCloudCodexSpare({ command, binarySha256, serviceTier: "fast" }, 60_000);
-		await until(async () => (await starts(evidence)) === 3);
+		// Wait for the spare's handshake, not just its process: a spare still starting is never handed over.
+		await spareReady(evidence, 3);
 		// A Fast run takes it.
 		await expect(run("response-first", { serviceTier: "fast" }).result).resolves.toMatchObject({
 			providerSessionId: "thread_fixture",
