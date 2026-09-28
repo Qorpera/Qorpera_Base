@@ -36,27 +36,38 @@ export interface SkillMentionOptions {
 	readonly listed?: () => void;
 }
 
+/** Blocks that end a word: text in two of them never runs together. */
+const WORD_BLOCKS = "p, li, div, h1, h2, h3, h4, h5, h6, blockquote, td, th, dd, dt, pre";
+
 /** Marks the names of known skills in rendered message text: whole "/name" words in text
- * outside code and links become spans. Running it again over text it marked changes nothing. */
+ * outside code and links become spans. A word runs on across inline elements, so a name glued
+ * to bold text or code before or after it is not a name, as it would not be in the composer.
+ * Running it again over text it marked changes nothing. */
 export function markSkillNames(root: ParentNode, names: ReadonlySet<string>): void {
 	if (!names.size) return;
 	const texts: Text[] = [];
-	const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
-		acceptNode: (node) =>
-			node.parentElement?.closest("code, pre, a, kbd, .message-skill")
-				? NodeFilter.FILTER_REJECT
-				: NodeFilter.FILTER_ACCEPT,
-	});
+	const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
 	for (let node = walker.nextNode(); node; node = walker.nextNode()) texts.push(node as Text);
-	for (const text of texts) {
+	const block = (node: Node) => node.parentElement?.closest(WORD_BLOCKS) ?? null;
+	for (const [index, text] of texts.entries()) {
+		if (text.parentElement?.closest("code, pre, a, kbd, .message-skill")) continue;
+		const previous = texts[index - 1];
+		const next = texts[index + 1];
+		const before = previous && block(previous) === block(text) ? previous.data.slice(-1) : "";
+		const after = next && block(next) === block(text) ? next.data.slice(0, 1) : "";
 		const value = text.data;
 		const parts: (Node | string)[] = [];
 		let last = 0;
 		for (const match of value.matchAll(TOKEN)) {
-			const [, before = "", name = ""] = match;
-			if (!names.has(name)) continue;
-			const start = match.index + before.length;
+			const [, lead = "", name = ""] = match;
+			const start = match.index + lead.length;
 			const end = start + name.length + 1;
+			if (
+				!names.has(name) ||
+				(start === 0 && before !== "" && !/\s/.test(before)) ||
+				(end === value.length && after !== "" && !/[\s.,;:!?)]/.test(after))
+			)
+				continue;
 			parts.push(value.slice(last, start), h("span", { class: "message-skill" }, value.slice(start, end)));
 			last = end;
 		}
@@ -177,10 +188,11 @@ export class SkillMentions {
 		return new Set(this.#skills?.map((skill) => skill.name));
 	}
 
-	/** Reads the list when text elsewhere (a written message) may name a skill; a list that is
-	 * fresh, being read or failed a moment ago is left as it is. */
+	/** Reads the list once when text elsewhere (a written message) may name a skill; a list
+	 * being read or failed a moment ago is left as it is. */
 	want(text: string): void {
-		if (MAY_NAME_SKILL.test(text)) void this.#fetch();
+		// Only the first read: later reads follow a typed "/", so an open thread reads nothing by itself.
+		if (this.#skills === undefined && MAY_NAME_SKILL.test(text)) void this.#fetch();
 	}
 
 	/** Moves through the open menu, picks or closes it. True when the key was the menu's. */

@@ -10,6 +10,8 @@ import { ConversationView } from "../src/app/views/conversation.ts";
 import type { WorkspaceActions } from "../src/app/workspace-actions.ts";
 import { loadSkillSuggestions, SkillLists, type SkillSuggestion } from "../src/cloud/skills.ts";
 import type { TranscriptItem } from "../src/cloud/transcript.ts";
+import { markdown } from "../src/ui/markdown.ts";
+import { markSkillNames } from "../src/ui/skill-mentions.ts";
 import { fixture, id, profileA, session, settle, staff, team, timestamp, userA } from "./fixtures.ts";
 
 const SKILLS: SkillSuggestion[] = [
@@ -400,6 +402,34 @@ describe("calling a skill from the composer", () => {
 		await settle();
 		expect(marked(".mine .bubble")).toEqual(["/monthly-vat-report", "/customer-refund"]);
 		expect(skills).toHaveBeenCalledOnce();
+		// Later redraws of an open thread read nothing by themselves: only a typed "/" refreshes.
+		vi.advanceTimersByTime(25_000);
+		f.company.conversation(session.sessionId).set({
+			projection: {
+				items: [...items, { ...items[0]!, id: id(87), sequence: 4, text: "Also /triage." }] as TranscriptItem[],
+				hiddenCount: 0,
+				lastSequence: 4,
+			},
+		});
+		await settle();
+		expect(skills).toHaveBeenCalledOnce();
+		expect(marked(".mine .bubble")).toEqual(["/monthly-vat-report", "/triage"]);
+		f.type("/");
+		await Promise.resolve();
+		expect(skills).toHaveBeenCalledTimes(2);
+	});
+
+	it("marks a name only where it stands as a word, as the composer does", () => {
+		const root = markdown("**done**/triage, /triage**bold**, `x`/triage and\n\n/triage (/weekly-report) /triage.");
+		markSkillNames(root, new Set(["triage", "weekly-report"]));
+		expect([...root.querySelectorAll(".message-skill")].map((span) => span.textContent)).toEqual([
+			"/triage",
+			"/triage",
+		]);
+		expect(root.textContent).toBe("done/triage, /triagebold, x/triage and/triage (/weekly-report) /triage.");
+		// Marking again changes nothing.
+		markSkillNames(root, new Set(["triage", "weekly-report"]));
+		expect(root.querySelectorAll(".message-skill")).toHaveLength(2);
 	});
 
 	it("leaves the composer as it was without a skills adapter", () => {

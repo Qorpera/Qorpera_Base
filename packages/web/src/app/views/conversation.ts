@@ -223,8 +223,13 @@ export class ConversationView {
 			opened: () => {
 				if (!this.#menu.hidden) this.#setMenu(false, false);
 			},
-			// Messages already written mark the names of skills once the list is known.
-			listed: () => this.#markSkills(),
+			// Messages already written mark the names of skills once the list is known: through a
+			// redraw, so the marks land with the messages (the live log reads nothing twice) and the
+			// thread stays pinned to its end if a name re-wraps a line.
+			listed: () => {
+				this.#renderedKey = "";
+				this.update();
+			},
 		});
 		this.#send = h(
 			"button",
