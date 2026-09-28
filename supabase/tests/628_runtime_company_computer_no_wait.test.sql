@@ -43,6 +43,19 @@ create function pg_temp.staff(p_id uuid,p_name text) returns void language sql a
 		model_provider,model_id,created_at,updated_at,updated_by_user_id from public.qorpera_profile_staff
 	where staff_agent_id='30000000-0000-4000-8000-000000000030'
 $$;
+-- Changes a synthetic row. A row inserted in replica mode is checked against its
+-- foreign keys again on any later update in the same transaction, so updates stay
+-- in replica mode too.
+create function pg_temp.synthetic(p_sql text) returns void language plpgsql as $$
+begin
+	perform set_config('session_replication_role','replica',true);
+	execute p_sql;
+	perform set_config('session_replication_role','origin',true);
+end $$;
+create function pg_temp.stop_waiting(p_staff uuid) returns void language sql as $$
+	select pg_temp.synthetic(format('update public.qorpera_runtime_office_start_waiters w set state=''cancelled''
+		from public.qorpera_execution_runs r where r.id=w.parent_run_id and r.staff_agent_id=%L and w.state=''waiting''',p_staff))
+$$;
 -- An agent waiting for computer p_number, as a native start records it: a start
 -- waiter on the computer's current start intent. 'delivered' waiters were woken
 -- p_woken ago.
@@ -115,8 +128,7 @@ select pg_temp.wake_assert(public.qorpera_runtime_office_seat_claims((pg_temp.of
 
 -- 2. The agent's own seat first. Dan stops waiting: computer 2 has a free seat again,
 -- yet Erin stays placed on computer 3, where she waits; Finn takes computer 2's seat.
-update public.qorpera_runtime_office_start_waiters w set state='cancelled'
-from public.qorpera_execution_runs r where r.id=w.parent_run_id and r.staff_agent_id='30000000-0000-4000-8000-000000000033';
+select pg_temp.stop_waiting('30000000-0000-4000-8000-000000000033');
 select pg_temp.wake_assert(pg_temp.place('30000000-0000-4000-8000-000000000034')=pg_temp.at('starting',3),
 	'Erin is placed on computer 3, where she holds a seat, not on computer 2 with its lower number');
 select pg_temp.wake_assert(pg_temp.place('30000000-0000-4000-8000-000000000035')=pg_temp.at('starting',2),
@@ -124,8 +136,7 @@ select pg_temp.wake_assert(pg_temp.place('30000000-0000-4000-8000-000000000035')
 
 -- 3. A woken agent's seat is held for two minutes. Computer 2 comes up (synthetic
 -- readiness) and Carol's wait is delivered.
-update public.qorpera_runtime_office_start_waiters w set state='cancelled'
-from public.qorpera_execution_runs r where r.id=w.parent_run_id and r.staff_agent_id='30000000-0000-4000-8000-000000000032';
+select pg_temp.stop_waiting('30000000-0000-4000-8000-000000000032');
 select pg_temp.hold(2,'30000000-0000-4000-8000-000000000032','delivered',interval '30 seconds');
 update public.qorpera_runtime_offices set state='active' where id=(pg_temp.office(2)).id;
 select pg_temp.wake_assert(pg_temp.place('30000000-0000-4000-8000-000000000035')=pg_temp.at('room',2)
@@ -181,22 +192,22 @@ select pg_temp.wake_assert(public.qorpera_runtime_office_idle_pending(pg_temp.of
 	and not public.qorpera_runtime_office_can_wake(pg_temp.office(4)),'computer 4 sleeps, and its node has no room to wake it');
 select pg_temp.wake_assert(pg_temp.place('30000000-0000-4000-8000-000000000037')=pg_temp.at('starting',3),
 	'Ivy is not placed on sleeping computer 4 but on computer 3''s free seat');
-update public.qorpera_runtime_node_demands set cpu_millis=11000 where allocation_id='62800000-0000-4000-8000-000000000003';
+select pg_temp.synthetic('update public.qorpera_runtime_node_demands set cpu_millis=11000 where allocation_id=''62800000-0000-4000-8000-000000000003''');
 select pg_temp.wake_assert(public.qorpera_runtime_office_can_wake(pg_temp.office(4))
 	and pg_temp.place('30000000-0000-4000-8000-000000000037')=pg_temp.at('stopped',4),
 	'with room on its node, sleeping computer 4 is woken for Ivy, before a starting computer');
-update public.qorpera_runtime_node_demands set suspended_at=null where allocation_id='62800000-0000-4000-8000-000000000002';
-update public.qorpera_runtime_node_demands set cpu_millis=14000 where allocation_id='62800000-0000-4000-8000-000000000003';
+select pg_temp.synthetic('update public.qorpera_runtime_node_demands set suspended_at=null where allocation_id=''62800000-0000-4000-8000-000000000002''');
+select pg_temp.synthetic('update public.qorpera_runtime_node_demands set cpu_millis=14000 where allocation_id=''62800000-0000-4000-8000-000000000003''');
 select pg_temp.wake_assert(public.qorpera_runtime_office_can_wake(pg_temp.office(4)),
 	'a sleeping computer that still holds its node slot can always wake');
-update public.qorpera_runtime_node_demands set suspended_at=clock_timestamp() where allocation_id='62800000-0000-4000-8000-000000000002';
-update public.qorpera_runtime_node_demands set cpu_millis=11000 where allocation_id='62800000-0000-4000-8000-000000000003';
-update public.qorpera_runtime_nodes set enabled=false where id='62800000-0000-4000-8000-000000000001';
+select pg_temp.synthetic('update public.qorpera_runtime_node_demands set suspended_at=clock_timestamp() where allocation_id=''62800000-0000-4000-8000-000000000002''');
+select pg_temp.synthetic('update public.qorpera_runtime_node_demands set cpu_millis=11000 where allocation_id=''62800000-0000-4000-8000-000000000003''');
+select pg_temp.synthetic('update public.qorpera_runtime_nodes set enabled=false where id=''62800000-0000-4000-8000-000000000001''');
 select pg_temp.wake_assert(not public.qorpera_runtime_office_can_wake(pg_temp.office(4)),
 	'a node that is emptying wakes no sleeping computer');
-update public.qorpera_runtime_nodes set enabled=true where id='62800000-0000-4000-8000-000000000001';
-update public.qorpera_runtime_node_observations set observed_at=clock_timestamp()-interval '5 minutes'
-where node_id='62800000-0000-4000-8000-000000000001';
+select pg_temp.synthetic('update public.qorpera_runtime_nodes set enabled=true where id=''62800000-0000-4000-8000-000000000001''');
+select pg_temp.synthetic('update public.qorpera_runtime_node_observations set observed_at=clock_timestamp()-interval ''5 minutes''
+where node_id=''62800000-0000-4000-8000-000000000001''');
 select pg_temp.wake_assert(not public.qorpera_runtime_office_can_wake(pg_temp.office(4)),
 	'nor does a node not seen for five minutes');
 
