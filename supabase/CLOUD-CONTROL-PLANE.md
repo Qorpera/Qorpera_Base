@@ -3,6 +3,14 @@
 **Status:** Normative architecture contract. Existing desktop execution paths
 are transitional and must not be used to claim autonomous cloud operation.
 
+> **Note, 2026-09-27.** The runtime contract's company folder layout (section
+> 5.6 and its 2026-09-27 amendments) supersedes this file wherever it describes
+> the Company File as a pinned snapshot, a job-private checkout, or something
+> that is never a shared NAS tree. Every machine now projects onto the one
+> company folder on the NAS. Supabase holds only non-company data plus the
+> folder's versions, authority and indexes. Runs, leases, sponsors, receipts
+> and the rest of this file's runtime rules are unchanged.
+
 ## Authority boundary
 
 Supabase and object storage are the durable company control plane. They remain

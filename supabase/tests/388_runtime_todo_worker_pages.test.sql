@@ -71,6 +71,13 @@ begin
 			'title',case when v_index % 7 = 0 then 'Invoice follow-up ' else 'Market research ' end || v_index,
 			'state',case when v_index % 5 = 0 then 'blocked' else 'open' end));
 	end loop;
+	perform pg_temp.wake_assert((select count(distinct created_at) from public.qorpera_runtime_agent_todos
+		where staff_agent_id = '30000000-0000-4000-8000-000000000030' and todo_key ~ '^t-[0-9]{2}$') = 70,
+		'Todos created in one transaction each get their own creation time');
+	-- The listing is newest first by created_at, which is clock_timestamp() and steps back when
+	-- the system clock is adjusted; one distinct second per todo, in key order, keeps the order exact.
+	update public.qorpera_runtime_agent_todos set created_at = now() - interval '1 day' + substr(todo_key,3)::integer * interval '1 second'
+	where staff_agent_id = '30000000-0000-4000-8000-000000000030' and todo_key ~ '^t-[0-9]{2}$';
 	for v_index in 61..66 loop
 		perform pg_temp.todo(jsonb_build_object('action','done','operationKey','done-' || v_index,'todoKey','t-' || v_index));
 	end loop;
@@ -194,6 +201,13 @@ begin
 		perform pg_temp.dispatch('t-' || v_index,'side-a','Side task A');
 		perform pg_temp.dispatch('t-' || v_index,'side-b','Side task B');
 	end loop;
+	perform pg_temp.wake_assert((select count(distinct created_at) from public.qorpera_runtime_workers
+		where staff_agent_id = '30000000-0000-4000-8000-000000000030') = 26,
+		'Workers dispatched in one transaction each get their own creation time');
+	-- The large todo's workers are pinned to dispatch order the same way (see 1).
+	update public.qorpera_runtime_workers worker set created_at = now() - interval '1 day' + substr(worker.worker_key,3)::integer * interval '1 second'
+	from public.qorpera_runtime_agent_todos todo
+	where todo.id = worker.todo_id and todo.todo_key = 'big' and worker.staff_agent_id = '30000000-0000-4000-8000-000000000030';
 	select array_agg(todo.todo_key || '/' || worker.worker_key order by worker.created_at desc, worker.id desc) into v_expected
 	from public.qorpera_runtime_workers worker join public.qorpera_runtime_agent_todos todo on todo.id = worker.todo_id
 	where worker.staff_agent_id = '30000000-0000-4000-8000-000000000030';

@@ -88,6 +88,7 @@ const sendEvidence = { reply: null, fenced: null, interrupt: null, pending: null
 // Auto-review (v130): a reviewer thread started while the agent's tool call is open.
 const reviewThreadId = "thread_review";
 const reviewTurnId = "turn_review";
+let reviewClosingFence;
 const reviewEvidence = { reviewerThread: null, reviewerTurn: null, prewarm: null, verdictReply: null, closingFence: null, interrupt: null };
 const usage = (total = {}, last = {}) => ({
 	total: { inputTokens: 23, outputTokens: 7, cachedInputTokens: 3, cacheWriteInputTokens: 5, reasoningOutputTokens: 2, totalTokens: 30, ...total },
@@ -357,9 +358,12 @@ async function handle(message) {
 	} else if (message.id === "verdict_request") {
 		reviewEvidence.verdictReply = message;
 		// A closing request of the reviewer can still arrive before the interrupt lands.
-		reviewEvidence.closingFence = await fence([{ kind: "function_call_output", callId: "verdict_1", output: message.result.contentItems[0].text }], { threadId: reviewThreadId, turnId: reviewTurnId });
+		reviewClosingFence = fence([{ kind: "function_call_output", callId: "verdict_1", output: message.result.contentItems[0].text }], { threadId: reviewThreadId, turnId: reviewTurnId });
+		reviewEvidence.closingFence = await reviewClosingFence;
 	} else if (message.id === "review_tool") {
 		const mainFenced = await fence([{ kind: "function_call_output", callId: "email_1", output: message.result.contentItems[0].text }]);
+		// Readline handlers run concurrently: record the reviewer's closing fence before writing the evidence.
+		if (reviewClosingFence) reviewEvidence.closingFence = await reviewClosingFence;
 		writeFileSync(evidencePath, JSON.stringify({ ...reviewEvidence, mainThread: threadParameters, reply: message, mainFenced }));
 		done();
 	} else if (message.method === "turn/interrupt") {
