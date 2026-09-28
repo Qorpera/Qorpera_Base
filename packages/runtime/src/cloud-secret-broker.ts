@@ -1105,6 +1105,14 @@ export class PostgresCloudSecretBrokerAuthority
 		);
 	}
 
+	takeIdleModelLoginRenewal(signal: AbortSignal): Promise<unknown> {
+		return this.#rpc(
+			"select public.qorpera_take_idle_model_login_renewal($1::uuid,$2::text) as result",
+			[this.#brokerAuthorityId, this.#brokerCapabilitySha256],
+			signal,
+		);
+	}
+
 	describeModelLoginSignIn(
 		request: Parameters<ModelLoginSignInAuthority["describeModelLoginSignIn"]>[0],
 		signal: AbortSignal,
