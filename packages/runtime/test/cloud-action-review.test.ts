@@ -13,15 +13,18 @@ import {
 	describeCloudAction,
 	parseCloudActionVerdict,
 } from "@qorpera/runtime/cloud-action-review";
+import { cloudHiringTools } from "@qorpera/runtime/cloud-hiring-tools";
 import type { CloudNativeCompanyContext } from "@qorpera/runtime/cloud-native-company-context";
-import type { CloudNativeToolBinding } from "@qorpera/runtime/cloud-native-tool-authority";
+import { type CloudNativeToolBinding, CloudNativeToolRun } from "@qorpera/runtime/cloud-native-tool-authority";
 import {
 	type CloudNativeTool,
 	CloudNativeToolBoundary,
 	type CloudToolResult,
 } from "@qorpera/runtime/cloud-native-tool-boundary";
+import { cloudRoutineDecisionTool, cloudRoutineTools } from "@qorpera/runtime/cloud-routine-tools";
 import type { CloudWakeEnvelope } from "@qorpera/runtime/cloud-wake-bus";
 import { describe, expect, it, vi } from "vitest";
+import { nativeToolAuthorityFixture } from "./fixtures/native-tool-authority-fixture.ts";
 
 const binding = { runId: randomUUID(), leaseId: randomUUID() } as unknown as CloudNativeToolBinding;
 /** The boundary's exact canonical arguments (raw, before parsing normalises them). */
@@ -111,15 +114,305 @@ describe("what the card shows", () => {
 			});
 	});
 
-	it("shows an email's recipient and subject", () => {
+	it("shows an email's recipient and subject, and quotes its text with its lines", () => {
 		expect(
 			describeCloudAction(tool("gmail_send_message", "connector"), {
-				input: { to: "bob@acme.test", subject: "Meeting moved", body: "Hi\nBob" },
+				input: {
+					to: "bob@acme.test",
+					subject: "Meeting \nmoved",
+					body: "Hi\r\nBob,\n\n\n\nsee you\u0007 at 10.  ",
+				},
 			}),
 		).toEqual({
 			title: "Send an email",
 			target: "bob@acme.test",
-			details: { subject: "Meeting moved", body: "Hi Bob" },
+			details: { subject: "Meeting moved", body: "Hi\nBob,\n\nsee you  at 10." },
+		});
+	});
+
+	it("shows the text a Drive file gets, and names the file by its id only when nothing else names it", () => {
+		const content = `# Q3 plan\n\n- Grow sales\n${"Detail of the plan. ".repeat(4000)}`;
+		const created = describeCloudAction(tool("google_drive_create_file", "connector"), {
+			idempotencyKey: "k",
+			input: { name: "Q3 plan", content, mime_type: "application/vnd.google-apps.document", folder_id: "f1" },
+		});
+		expect(created).toMatchObject({ title: "Create a Google Drive file", target: "Q3 plan" });
+		expect(Object.keys(created.details)).toEqual(["text"]);
+		// An excerpt of what the member approves, with its lines, marked where it is cut.
+		expect(created.details.text.startsWith("# Q3 plan\n\n- Grow sales\nDetail of the plan.")).toBe(true);
+		expect(created.details.text.endsWith(" [...]")).toBe(true);
+		expect(Buffer.byteLength(created.details.text)).toBeLessThanOrEqual(1200);
+		expect(
+			describeCloudAction(tool("google_drive_update_file", "connector"), {
+				idempotencyKey: "k",
+				input: { file_id: "1AbCdEf", content: "Budget: 12,000 kr" },
+			}),
+		).toEqual({
+			title: "Change a Google Drive file",
+			target: null,
+			details: { "file id": "1AbCdEf", text: "Budget: 12,000 kr" },
+		});
+		// Replacing a file with nothing says so.
+		expect(
+			describeCloudAction(tool("google_drive_update_file", "connector"), {
+				idempotencyKey: "k",
+				input: { file_id: "1AbCdEf", content: " \n" },
+			}).details,
+		).toEqual({ "file id": "1AbCdEf", text: "(empty)" });
+	});
+
+	it("names a GitHub issue by its repository and number, with its title, text and labels", () => {
+		expect(
+			describeCloudAction(tool("github_create_issue", "connector"), {
+				idempotencyKey: "k",
+				input: {
+					owner: "acme",
+					repository: "shop",
+					title: "Checkout fails on Safari",
+					body: "Steps:\n1. Open the cart\n2. Pay",
+					labels: ["bug", "urgent"],
+				},
+			}),
+		).toEqual({
+			title: "Open a GitHub issue",
+			target: "acme/shop",
+			details: {
+				title: "Checkout fails on Safari",
+				body: "Steps:\n1. Open the cart\n2. Pay",
+				labels: "bug, urgent",
+			},
+		});
+		expect(
+			describeCloudAction(tool("github_comment_on_issue", "connector"), {
+				idempotencyKey: "k",
+				input: { owner: "acme", repository: "shop", number: 42, body: "Fixed in the latest release." },
+			}),
+		).toEqual({
+			title: "Comment on a GitHub issue",
+			target: "acme/shop#42",
+			details: { body: "Fixed in the latest release." },
+		});
+	});
+
+	it("quotes a command with its lines and indentation", () => {
+		expect(
+			describeCloudAction(tool("computer_shell"), { action: { kind: "shell", command: "cd /srv\n  ls -la\t" } })
+				.details,
+		).toEqual({ command: "cd /srv\n  ls -la" });
+	});
+});
+
+describe("what the card shows for delegation", () => {
+	const COPENHAGEN = "Europe/Copenhagen";
+	/** The tools' own parsing, so the card reads the shapes the boundary hands the review. */
+	async function parser() {
+		const { binding, authority } = nativeToolAuthorityFixture();
+		const run = await CloudNativeToolRun.open(
+			binding,
+			{ describeToolAuthority: async () => authority },
+			new AbortController().signal,
+		);
+		const control = { call: vi.fn() };
+		const tools = [
+			...cloudRoutineTools(binding, run.identity, control),
+			cloudRoutineDecisionTool(binding, run.identity, control, { decisionOwed: () => true, decided: () => {} }),
+			...cloudHiringTools({ mutate: vi.fn(), applyOwnOrganizationDocument: vi.fn() }, run.identity),
+		];
+		return (name: string, value: Record<string, unknown>) => {
+			const found = tools.find((item) => item.name === name);
+			if (!found) throw new Error(`No ${name} tool`);
+			return found.parseArguments(value as JsonValue) as JsonValue;
+		};
+	}
+
+	it("says when a routine runs in plain words, on the routine's own clock", async () => {
+		const parse = await parser();
+		const routine = (trigger: Record<string, unknown>, extra: Record<string, unknown> = {}) =>
+			parse("manage_routine", {
+				action: "upsert",
+				operationKey: "k",
+				routineKey: "weekly-sales-report",
+				title: "Weekly sales report",
+				intent: "Read the pipeline.\n\nTell Jonas when a deal slips.",
+				trigger,
+				...extra,
+			});
+		expect(
+			describeCloudAction(
+				tool("manage_routine"),
+				routine(
+					{ kind: "weekly", localTime: "09:00", timeZone: COPENHAGEN, firstRunAt: "2026-10-06T09:00:00+02:00" },
+					{ expiresAt: "2026-12-31T23:00:00Z", maxOccurrences: 10 },
+				),
+			),
+		).toEqual({
+			title: "Set up or change a routine",
+			target: "Weekly sales report",
+			details: {
+				schedule:
+					"Weekdays at 09:00 (Europe/Copenhagen), starting 6 Oct 2026 at 09:00, until 1 Jan 2027 at 00:00, at most 10 runs",
+				intent: "Read the pipeline.\n\nTell Jonas when a deal slips.",
+			},
+		});
+		const schedule = (trigger: Record<string, unknown>, timeZone?: string) =>
+			describeCloudAction(tool("manage_routine"), routine(trigger), timeZone ? { timeZone } : {}).details.schedule;
+		expect(
+			schedule({ kind: "weekly", weekdays: ["friday", "monday"], localTime: "17:30", timeZone: COPENHAGEN }),
+		).toBe("Mondays and Fridays at 17:30 (Europe/Copenhagen)");
+		expect(schedule({ kind: "weekly", weekdays: ["sunday", "saturday"], localTime: "08:00", timeZone: "UTC" })).toBe(
+			"Weekends at 08:00 (UTC)",
+		);
+		expect(schedule({ kind: "every", minutes: 120 })).toBe("Every 2 hours");
+		expect(schedule({ kind: "every", minutes: 45 })).toBe("Every 45 minutes");
+		// A time without a zone of its own reads on the member's clock, else in UTC.
+		expect(schedule({ kind: "every", minutes: 1440, firstRunAt: "2026-10-02T05:00:00Z" }, COPENHAGEN)).toBe(
+			"Every day, starting 2 Oct 2026 at 07:00 (Europe/Copenhagen)",
+		);
+		expect(schedule({ kind: "every", minutes: 2880, firstRunAt: "2026-10-02T05:00:00Z" }, "Not/AZone")).toBe(
+			"Every 2 days, starting 2 Oct 2026 at 05:00 (UTC)",
+		);
+		expect(schedule({ kind: "dynamic", timeZone: COPENHAGEN, firstRunAt: "2026-10-01T09:00:00+02:00" })).toBe(
+			"The agent picks each next run, starting 1 Oct 2026 at 09:00 (Europe/Copenhagen)",
+		);
+		// A file is named as people say it, never by its path.
+		expect(schedule({ kind: "file_change", path: "sales/leads", match: "subtree", timeZone: COPENHAGEN })).toBe(
+			"When anything in “Leads” changes",
+		);
+		expect(schedule({ kind: "file_change", path: "reports/weekly-report.md", timeZone: COPENHAGEN })).toBe(
+			"When “Weekly report” changes",
+		);
+		// Pausing names the routine by its key.
+		expect(
+			describeCloudAction(
+				tool("manage_routine"),
+				parse("manage_routine", { action: "pause", operationKey: "k", routineKey: "weekly-sales-report" }),
+			),
+		).toEqual({ title: "Pause a routine", target: "Weekly sales report", details: {} });
+	});
+
+	it("says when a dynamic routine runs next when its run rewrites it", async () => {
+		const parse = await parser();
+		const decision = parse("decide_routine", {
+			action: "next",
+			operationKey: "k",
+			at: "2026-10-01T09:00:00Z",
+			title: "Invoices",
+			intent: "Check the new invoices.",
+		});
+		expect(describeCloudAction(tool("decide_routine"), decision, { timeZone: COPENHAGEN })).toEqual({
+			title: "Change what a routine does",
+			target: "Invoices",
+			details: {
+				schedule: "Next run 1 Oct 2026 at 11:00 (Europe/Copenhagen)",
+				intent: "Check the new invoices.",
+			},
+		});
+		expect(describeCloudAction(tool("decide_routine"), decision).details.schedule).toBe(
+			"Next run 1 Oct 2026 at 09:00 (UTC)",
+		);
+	});
+
+	it("names a new agent with its role, charter and first assignment", async () => {
+		const parse = await parser();
+		expect(
+			describeCloudAction(
+				tool("hire_agent"),
+				parse("hire_agent", {
+					operationKey: "k",
+					name: "Maja",
+					role: "Sales lead",
+					jobDescription: "Owns the pipeline.\n\nEscalates lost deals to Jonas.",
+					firstAssignment: "Call back the three leads\nfrom Monday's fair.",
+					figure: "rocket",
+				}),
+			),
+		).toEqual({
+			title: "Hire a new agent",
+			target: "Maja",
+			details: {
+				role: "Sales lead",
+				intent: "Owns the pipeline.\n\nEscalates lost deals to Jonas.",
+				"first task": "Call back the three leads from Monday's fair.",
+			},
+		});
+	});
+
+	it("names who a group chat invites, never by id", async () => {
+		const parse = await parser();
+		const [maja, oskar, unlisted, other] = [randomUUID(), randomUUID(), randomUUID(), randomUUID()];
+		const coworkers = new Map([
+			[maja, "Maja"],
+			[oskar, "Oskar"],
+		]);
+		const chat = (coworkerIds: string[], includeRequestingMember?: boolean) =>
+			parse("create_group_chat", {
+				operationKey: "k",
+				name: "Fair follow-up",
+				purpose: "Split the leads from the fair.",
+				coworkerIds,
+				...(includeRequestingMember === undefined ? {} : { includeRequestingMember }),
+			});
+		expect(
+			describeCloudAction(tool("create_group_chat"), chat([oskar, maja]), { coworkers, requester: "Jonas" }),
+		).toEqual({
+			title: "Start a group chat",
+			target: "Fair follow-up",
+			details: { invited: "Maja, Oskar and Jonas", purpose: "Split the leads from the fair." },
+		});
+		const invited = (ids: string[], include?: boolean, requester?: string) =>
+			describeCloudAction(tool("create_group_chat"), chat(ids, include), { coworkers, requester }).details.invited;
+		expect(invited([maja, unlisted], false)).toBe("Maja and 1 other coworker");
+		expect(invited([unlisted, other])).toBe("2 other coworkers and the member who asked");
+	});
+
+	it("shows what a worker or coding job is asked to do", () => {
+		expect(
+			describeCloudAction(tool("manage_worker"), {
+				action: "dispatch",
+				operationKey: "k",
+				todoKey: "fair",
+				workerKey: "leads",
+				title: "Sort the fair leads",
+				goal: "Rank the leads by size.\nSave the list.",
+				definitionOfDone: "A ranked list exists.",
+				context: "",
+				access: "write",
+				revival: "batch",
+			}),
+		).toEqual({
+			title: "Start a background worker",
+			target: null,
+			details: { title: "Sort the fair leads", task: "Rank the leads by size.\nSave the list." },
+		});
+		expect(
+			describeCloudAction(tool("manage_worker"), {
+				action: "dispatch",
+				operationKey: "k",
+				todoKey: "shop",
+				workerKey: "safari",
+				title: "Fix Safari checkout",
+				goal: "Make checkout work on Safari.",
+				definitionOfDone: "A draft PR.",
+				context: "",
+				access: "read",
+				revival: "batch",
+				species: "coding",
+				harness: "codex",
+				repository: { host: "github.com", owner: "acme", name: "shop", baseBranch: "main" },
+			}),
+		).toMatchObject({ title: "Start a coding job", target: "acme/shop" });
+		expect(
+			describeCloudAction(tool("manage_worker"), {
+				action: "followup",
+				operationKey: "k",
+				todoKey: "fair",
+				workerKey: "leads",
+				text: "Also add phone numbers.",
+			}),
+		).toEqual({
+			title: "Give a worker new instructions",
+			target: null,
+			details: { task: "Also add phone numbers." },
 		});
 	});
 });
@@ -444,6 +737,63 @@ describe("the review step", () => {
 					action: { title: "Send an email", arguments: ARGUMENTS },
 				},
 			},
+		});
+	});
+
+	it("names a group chat's coworkers and the member it acts for on the card and to the reviewer", async () => {
+		const maja = randomUUID();
+		const calls: Array<{ method: CloudActionReviewRpc; args: Record<string, unknown> }> = [];
+		const review = vi.fn<CloudActionReviewer["review"]>(async () => ({
+			decision: "allow",
+			ruleIds: [],
+			builtIn: "none",
+			reason: "Fine.",
+			proposedRule: "",
+		}));
+		const instance = new CloudActionReviewGate({
+			binding,
+			control: {
+				call: async (method, args) => {
+					calls.push({ method, args });
+					return method === "qorpera_begin_action_review"
+						? {
+								state: "review",
+								agent: { name: "Tina" },
+								requester: { userId: randomUUID(), name: "Jonas" },
+								rules: [],
+							}
+						: { reviewId: "review-1", decision: "allow", card: false, reason: "Fine." };
+				},
+			},
+			reviewer: { review },
+			request: "Get Maja on the fair leads.",
+			holdMs: 0,
+			facts: { coworkers: new Map([[maja, "Maja"]]), timeZone: "Europe/Copenhagen" },
+		});
+		const parsed = {
+			operationKey: "k",
+			name: "Fair follow-up",
+			purpose: "Split the leads.",
+			coworkerIds: [maja],
+			includeRequestingMember: true,
+		};
+		await expect(
+			instance.check(
+				{
+					tool: tool("create_group_chat"),
+					parsed,
+					argumentsText: JSON.stringify(parsed),
+					argumentSha256: "b".repeat(64),
+					callId: "call_2",
+				},
+				new AbortController().signal,
+			),
+		).resolves.toEqual({ run: true });
+		const details = { invited: "Maja and Jonas", purpose: "Split the leads." };
+		expect(JSON.parse(review.mock.calls[0][0].prompt).action).toMatchObject({ target: "Fair follow-up", details });
+		expect(calls[1]).toMatchObject({
+			method: "qorpera_record_action_review",
+			args: { p_review: { action: { title: "Start a group chat", target: "Fair follow-up", details } } },
 		});
 	});
 
