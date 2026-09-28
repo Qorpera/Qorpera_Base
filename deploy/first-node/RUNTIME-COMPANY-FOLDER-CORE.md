@@ -921,6 +921,18 @@ function and code path runs only for `folder-v2` companies (§1).
     re-resolution, and the post-commit worker against archive;
   - GC race tests.
 
+C1 ships as slices (agreed 2026-09-28 with the structured-files session F2
+and the machine-side session F3, on #408):
+
+| Slice | Contents | Owner |
+| --- | --- | --- |
+| C1a | the flag; the tables; the change-set commit for members and the platform; reads and listings (with each entry's version time); today's object and artifact GC skipping `folder-v2` | storage core |
+| C1f | `qorpera_folder_feed` (the paths each change set touched, filtered by read authority, with `asOfSeq`) and a service-only Realtime clock hint, so the read-only mount can follow changes before C4 | F3, reviewed by the storage core |
+| C1b | run actors (job, lease, fence, causal wake, session kind, requester), computer holders (the company-wide view plus the holder's own authority) and coding sessions (agent ∩ member, `agents/**` and `rules/**` read-only); authority revisions; read sets and records; explicit resources and bases; review classification in SQL; the call sites and inert stubs of the §5 hook that F2 fills | storage core |
+| C1c | the actor's `folder-v2` branch and the per-caller decisions; the raw `/v1/profile-objects` fallback refusing `folder-v2`; the activation checks | a separate session |
+| C1d | GC G1–G4; upload intents; the object gateway's put and remove; a `folder-v2` byte check that never locks the profile row; the storage usage row and the quota trigger | a separate session |
+| C1e | the load test of §9 on a real disk | storage core |
+
 ### C2. Structured files, seeding and erasure
 
 - The hook of §5: schemas, indexes, the refusals and the converging queue.
