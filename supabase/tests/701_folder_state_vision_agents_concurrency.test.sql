@@ -1,7 +1,7 @@
 -- Company state files, F2-1, under concurrency (deploy/first-node/RUNTIME-COMPANY-STATE-FILES.md §4, "Lock order
 -- with the triggers"). A save that writes a roster row takes the company row FOR KEY SHARE before the agent's thread
 -- room and the company's operation clock, as posting takes the company row (qorpera_lock_profile_gc_fence) before
--- both. The fixture is committed so other connections see it, and removed at the end. Waits are detected with
+-- both; posting is played here by its first locks, in its order. Either may start first. The fixture is committed so other connections see it, and removed at the end. Waits are detected with
 -- pg_blocking_pids, never by wall-clock time.
 
 insert into auth.users(id,email) values
@@ -110,10 +110,10 @@ select set_config('qorpera_test.state_rename', format('select public.qorpera_fol
 		pg_temp.agent_parse('70100000-0000-4000-8000-0000000000a1', 'Nora Skov'),
 		pg_temp.version('agents/nora-dahl/agent.md')))::text), false) \g /dev/null
 
-select dblink_connect(name, 'dbname=qorpera_test') from unnest(array['srace_post','srace_save']) name;
-select dblink_exec(name, $q$set request.jwt.claims = '{"role":"service_role"}'$q$) from unnest(array['srace_post','srace_save']) name;
+select dblink_connect(name, 'dbname=qorpera_test') from unnest(array['srace_post','srace_save','srace_hold']) name;
+select dblink_exec(name, $q$set request.jwt.claims = '{"role":"service_role"}'$q$) from unnest(array['srace_post','srace_save','srace_hold']) name;
 select set_config('qorpera_test.pid_' || name, pid::text, false)
-from unnest(array['srace_post','srace_save']) name, lateral dblink(name, 'select pg_backend_pid()') as t(pid integer);
+from unnest(array['srace_post','srace_save','srace_hold']) name, lateral dblink(name, 'select pg_backend_pid()') as t(pid integer);
 
 create function pg_temp.waits_for(p_waiter text, p_holder text) returns boolean language plpgsql as $$
 declare v_until timestamptz := clock_timestamp() + interval '60 seconds';
@@ -177,7 +177,43 @@ begin
 		raise exception 'The edit reaches the roster'; end if;
 end $$;
 
-select dblink_disconnect(name) from unnest(array['srace_post','srace_save']) name;
+-- C. The other order: the save holds its room (it waits on a path another connection holds) and a post
+-- starts. The post waits for the save at the company row, before the room, and both finish.
+select set_config('qorpera_test.state_rename_back', format('select public.qorpera_folder_commit(%L, %L, %L, %L)', '70100000-0000-4000-8000-000000000020',
+	pg_temp.owner()::text, 'race-rename-0002', jsonb_build_array(pg_temp.write('agents/nora-dahl/agent.md', 'agent',
+		replace(pg_temp.agent_text('70100000-0000-4000-8000-0000000000a1', 'Nora Dahl'), 'Sell.', 'Sell more.'),
+		pg_temp.agent_parse('70100000-0000-4000-8000-0000000000a1', 'Nora Dahl') || '{"instructions":"Sell more."}',
+		pg_temp.version('agents/nora-dahl/agent.md')))::text), false) \g /dev/null
+do $$
+declare v jsonb;
+begin
+	perform dblink_exec('srace_hold', 'begin');
+	perform * from dblink('srace_hold', $q$select 1 from public.qorpera_folder_entries
+		where environment_id = '70100000-0000-4000-8000-000000000020' and key_text = 'agents/nora-dahl/agent.md' for update$q$) as t(x integer);
+	perform dblink_send_query('srace_save', current_setting('qorpera_test.state_rename_back'));
+	if not pg_temp.waits_for('srace_save', 'srace_hold') then raise exception 'The rename must wait on the held path'; end if;
+	-- The save now holds the company row KEY SHARE and the room FOR UPDATE.
+	perform dblink_exec('srace_post', 'begin');
+	perform dblink_send_query('srace_post', $q$select public.qorpera_lock_profile_gc_fence('70100000-0000-4000-8000-000000000010')::text$q$);
+	if not pg_temp.waits_for('srace_post', 'srace_save') then raise exception 'The post must wait for the save at the company row'; end if;
+	perform dblink_exec('srace_hold', 'rollback');
+	select r into v from dblink_get_result('srace_save') as t(r jsonb);
+	perform * from dblink_get_result('srace_save') as t(r jsonb);
+	if v -> 'units' -> 0 ->> 'outcome' <> 'saved' then raise exception 'The rename saves before the post: %', v; end if;
+	perform * from dblink_get_result('srace_post') as t(x text);
+	perform * from dblink_get_result('srace_post') as t(x text);
+	-- The post goes on to the room and the clock at once.
+	perform * from dblink('srace_post', format('select 1 from public.qorpera_company_rooms where id = %L for share nowait',
+		current_setting('qorpera_test.state_room'))) as t(x integer);
+	perform * from dblink('srace_post', $q$select 1 from public.qorpera_profile_operation_clocks
+		where profile_id = '70100000-0000-4000-8000-000000000010' for update nowait$q$) as t(x integer);
+	perform dblink_exec('srace_post', 'rollback');
+	if (select display_name from public.qorpera_profile_staff where profile_id = '70100000-0000-4000-8000-000000000010'
+		and staff_agent_id = '70100000-0000-4000-8000-0000000000a1') <> 'Nora Dahl' then
+		raise exception 'The rename back reaches the roster'; end if;
+end $$;
+
+select dblink_disconnect(name) from unnest(array['srace_post','srace_save','srace_hold']) name;
 
 -- The committed fixture leaves the shared suite database.
 set session_replication_role = replica;

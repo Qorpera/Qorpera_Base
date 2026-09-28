@@ -311,7 +311,9 @@ begin
 		v_clause := public.qorpera_folder_lock_clause((array['keyshare','share','nokeyupdate','update'])[v_target.strength]);
 		if v_clause is null then raise exception 'Folder lock mode is unknown' using errcode = 'XX000'; end if;
 		if v_target.tbl = 'qorpera_profiles' then
-			-- key: the profile id.
+			-- key: the profile id. The core never locks the company row more strongly (core §3).
+			if v_target.strength <> 1 then
+				raise exception 'The company row is locked FOR KEY SHARE only' using errcode = 'XX000'; end if;
 			execute 'select 1 from public.qorpera_profiles where id = $1' || v_clause using v_target.key::uuid;
 		elsif v_target.tbl = 'qorpera_profile_staff' then
 			-- key: 'profile_id:staff_agent_id'.

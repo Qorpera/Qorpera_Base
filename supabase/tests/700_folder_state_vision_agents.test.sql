@@ -373,6 +373,13 @@ begin
 		or not t @> jsonb_build_array(jsonb_build_object('rank', 2, 'tbl', 'qorpera_profiles', 'key', '70000000-0000-4000-8000-000000000010',
 			'mode', 'keyshare')) then
 		raise exception 'Retiring an active agent locks the company row and its thread room: %', t; end if;
+	-- The company row is never locked more strongly than KEY SHARE.
+	begin
+		perform public.qorpera_folder_structured_lock(env, jsonb_build_array(jsonb_build_object('rank', 2,
+			'tbl', 'qorpera_profiles', 'key', '70000000-0000-4000-8000-000000000010', 'mode', 'nokeyupdate')), 2::smallint, 2::smallint);
+		raise exception 'A stronger lock on the company row must be refused' using errcode = 'QTF02';
+	exception when sqlstate 'XX000' then null;
+	end;
 end $$;
 
 -- 9. A roster row removed outside its folder (the legacy roster delete) is refused, and never repointed.
