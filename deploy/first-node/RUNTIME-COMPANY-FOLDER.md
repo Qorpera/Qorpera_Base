@@ -57,8 +57,8 @@ read that login. The run's slot unit has `PrivateDevices=yes`,
   `computer_transfer`.
 - All desktops share one workbench.
 
-**The coding machine** has a shell with commands of up to 30 minutes and open
-network egress. Sessions are not reviewed, and it sees only the repository
+**The coding machine** has a shell whose commands have no time limit of their
+own and keep running between turns, and open network egress. Sessions are not reviewed, and it sees only the repository
 workspace.
 
 **The retired live tree.** `e0b75fd04` (26 August) passed the NAS-backed live

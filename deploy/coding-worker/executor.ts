@@ -227,12 +227,15 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 				if (!claimed) await setTimeout(2000, undefined, { signal: stop.signal }).catch(() => undefined);
 			}
 		})();
-		// The keeper renews every attached session (standing by or in a turn) every
-		// 10 s, well inside the guest lease's 45 s: a session's commands run as long
-		// as this process keeps its attachment, and stop within a minute after it
-		// cannot. Released sessions (archived, revoked, lost) are taken off here.
+		// The keeper renews every attached session (standing by or in a turn) in a
+		// pass every 10 s from the start of the last one, each machine within 15 s,
+		// so well inside the guest lease's 45 s: a session's commands run as long as
+		// this process keeps its attachment, and stop within a minute after it
+		// cannot. Released sessions (archived, revoked, lost) are taken off beside
+		// the passes.
 		const keeping = (async () => {
 			while (!stop.signal.aborted) {
+				const started = performance.now();
 				try {
 					for (const outcome of await running.keep(stop.signal))
 						if (outcome.state === "failed") console.error(JSON.stringify({ event: "coding-session-error", ...outcome }));
@@ -241,7 +244,9 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 				} catch (error) {
 					if (!stop.signal.aborted) console.error(JSON.stringify({ event: "coding-session-error", code: errorCode(error) }));
 				}
-				await setTimeout(10_000, undefined, { signal: stop.signal }).catch(() => undefined);
+				await setTimeout(Math.max(0, 10_000 - (performance.now() - started)), undefined, {
+					signal: stop.signal,
+				}).catch(() => undefined);
 			}
 		})();
 		// Housekeeping (quiet sessions archived, sleep, removal, release) runs beside
@@ -264,6 +269,9 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 	} finally {
 		stop.abort();
 		await executor?.drain();
+		// A take-off the keeper started settles before the process ends.
+		for (const outcome of await host.settled())
+			console.log(JSON.stringify({ event: outcome.state === "failed" ? "coding-session-error" : "coding-session", ...outcome }));
 		await commands.close();
 		await peerCommands.close();
 		process.off("SIGTERM", shutdown);

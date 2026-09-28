@@ -123,7 +123,8 @@ begin
 		where session.archived_at is null and worker.state <> 'active'
 			and greatest(session.updated_at, coalesce(session.busy_at, session.updated_at))
 				< clock_timestamp() - make_interval(secs => executor.session_archive_after_seconds)
-		order by session.updated_at limit 8
+		-- In todo order, so two executors of one environment lock todos the same way round.
+		order by worker.todo_id, worker.id limit 8
 	loop
 		-- The todo and worker first, as every other writer of a coding worker.
 		v_worker := public.qorpera_lock_coding_worker(v_candidate.worker_id);
