@@ -4,7 +4,7 @@
 -- (binding, version) at dispatch. When a member signs in again (a new connection) and the old
 -- connection is revoked, those pins stopped working: routines were cancelled and paused after
 -- three refusals, and a coding session could not take another turn. Agent follow-up work already
--- resolves the starter's live login when it is created (20260928170000).
+-- resolves the starter's live login when it is created (20260928230000).
 --
 -- qorpera_move_member_login_pins moves every binding that currently pays with the member's old
 -- connection to their new one, as a new version of the same binding (the shape of the

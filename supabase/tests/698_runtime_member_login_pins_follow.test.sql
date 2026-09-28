@@ -1,5 +1,5 @@
 -- @fixture 300_runtime_wake_bus.test.sql until "-- END WAKE FIXTURE"
--- A member's pinned login follows them to their new login (20260928189000). The owner's routine
+-- A member's pinned login follows them to their new login (20260928231000). The owner's routine
 -- pins the owner's first login; the owner signs in again (a second connection) and the vault
 -- moves the pins: the binding gains a new version on the new login, routine wakes created
 -- afterwards take it, and they are still admitted after the old login is revoked.
