@@ -57,10 +57,16 @@ try {
 	const fixtureParts = readFileSync(join(root, "supabase/tests/300_runtime_wake_bus.test.sql"), "utf8").split("-- END WAKE FIXTURE");
 	assert.equal(fixtureParts.length, 2);
 	const cases = readFileSync(join(root, "supabase/tests/fixtures/runtime-office-registry-cases.sql"), "utf8");
-	docker(psql, `${fixtureParts[0]}\n${cases}\nrollback;`);
-	console.log("PASS: real native authority, private SQL grants, immutable office binding, bounded leases, revocation, exact cleanup and expiry fences");
-	const setupParts = cases.split("set local role service_role;\nselect set_config('qorpera_test.office_lease'");
+	const leaseCases = "set local role service_role;\nselect set_config('qorpera_test.office_lease'";
+	const setupParts = cases.split(leaseCases);
 	assert.equal(setupParts.length, 2);
+	// Every SQL case, and the setup committed for the concurrency cases, holds
+	// the fixture run's native deadlines; the SQL cases also hold the screen
+	// leases they take through office_call. A loaded machine cannot expire those
+	// mid-case. The concurrency cases below still take unheld screen leases.
+	setupParts[0] += `\n${readFileSync(join(root, "supabase/tests/fixtures/runtime-office-clock-hold.sql"), "utf8")}`;
+	docker(psql, `${fixtureParts[0]}\n${setupParts[0]}\n${leaseCases}${setupParts[1]}\nrollback;`);
+	console.log("PASS: real native authority, private SQL grants, immutable office binding, bounded leases, revocation, exact cleanup and expiry fences");
 	docker(psql, `${fixtureParts[0]}\n${setupParts[0]}\n${readFileSync(join(root, "supabase/tests/fixtures/runtime-office-start-cases.sql"), "utf8")}\nrollback;`);
 	console.log("PASS: durable member/native start intents, exact native receipts, shared reservations, cancellation/generation/grant fences and no premature activation");
 	docker(psql, `${fixtureParts[0]}\n${setupParts[0]}\n${readFileSync(join(root, "supabase/tests/fixtures/runtime-office-provider-cases.sql"), "utf8")}\nrollback;`);

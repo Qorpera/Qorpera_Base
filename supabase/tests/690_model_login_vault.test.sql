@@ -169,16 +169,16 @@ select pg_temp.expect(current_setting('qorpera_test.vault_issue')::jsonb ->> 're
 
 -- Only the holder may save, only on the version it renewed from, only with a matching digest.
 select pg_temp.expect(pg_temp.commit_renewal(repeat('c',64),'69000000-0000-4000-8000-0000000000ee',1,'envelope-v2'::bytea),
-	'40001:model login renewal lock is not held','a caller without the lock');
+	'55000:model login renewal lock is not held','a caller without the lock');
 select pg_temp.expect(pg_temp.commit_renewal(repeat('c',64),
 	(current_setting('qorpera_test.vault_renewal')::jsonb ->> 'token')::uuid,2,'envelope-v2'::bytea),
-	'40001:model login renewal lock is not held','the wrong base version');
+	'55000:model login renewal lock is not held','the wrong base version');
 select pg_temp.expect(pg_temp.commit_renewal(repeat('c',64),
 	(current_setting('qorpera_test.vault_renewal')::jsonb ->> 'token')::uuid,1,'envelope-v2'::bytea),
 	'committed','the lock holder saves version 2');
 select pg_temp.expect(pg_temp.commit_renewal(repeat('c',64),
 	(current_setting('qorpera_test.vault_renewal')::jsonb ->> 'token')::uuid,1,'envelope-v2b'::bytea),
-	'40001:model login renewal lock is not held','the same lock cannot save a second, different login');
+	'55000:model login renewal lock is not held','the same lock cannot save a second, different login');
 select pg_temp.expect(pg_temp.commit_renewal(repeat('c',64),
 	(current_setting('qorpera_test.vault_renewal')::jsonb ->> 'token')::uuid,1,'envelope-v2'::bytea),
 	'committed','repeating the save after a lost answer finds it saved');
@@ -246,7 +246,7 @@ select set_config('qorpera_test.new_token',current_setting('qorpera_test.vault_i
 select pg_temp.expect((current_setting('qorpera_test.new_token') <> current_setting('qorpera_test.old_token'))::text,'true',
 	'a lapsed lock is taken with a new token');
 select pg_temp.expect(pg_temp.commit_renewal(repeat('c',64),current_setting('qorpera_test.old_token')::uuid,2,'envelope-v3-old'::bytea),
-	'40001:model login renewal lock is not held','the old holder cannot save');
+	'55000:model login renewal lock is not held','the old holder cannot save');
 select pg_temp.expect(pg_temp.release_renewal(current_setting('qorpera_test.old_token')::uuid,false),'false',
 	'the old holder cannot give the lock back');
 reset session authorization;

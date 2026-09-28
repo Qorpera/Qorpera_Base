@@ -1570,14 +1570,69 @@ versioning, and deletion.
 
 ### 15.2 Skills
 
-The turn receives a skill catalog, not every skill body. A skill description
-states when to use it. The body is loaded on demand and its version is recorded
-in the run.
+Amended 2026-09-27. A skill is a reusable procedure an agent loads when a task
+calls for it. Skills use the `SKILL.md` shape that Grok Bots, Claude and Codex
+share, so a skill written elsewhere is imported by copying its folder: a folder
+named for the skill holds `SKILL.md`, whose YAML front matter gives `name` and
+`description` (what the skill does and when to use it) and whose Markdown body
+holds the steps. Supporting files such as templates or scripts may sit beside
+it. A name is lowercase words joined by hyphens, at most 64 characters.
 
-Platform-owned skills are read-only runtime-bundle assets. Company and agent
-skills are Company File playbooks with explicit paths, owners, permissions,
-and mutation rules. A skill is not a place to hide member credentials, private
-channel names, or runtime authority.
+Two libraries, both ordinary versioned Company File objects:
+
+| Library | Path | Who writes it |
+| --- | --- | --- |
+| company | `skills/<name>/SKILL.md` | members and agents under the usual path authority; a protected path proposes |
+| agent (own) | `agents/<agent-name>/skills/<name>/SKILL.md` in the agent's folder (5.6) | the agent itself, and members, under the usual path authority |
+
+Skill files have no path rule of their own. Every reader and writer finds an
+agent's folder through one resolver (`cloudAgentFolder`). Until agents live in
+named folders with an `agent.md` and its index, that folder is
+`agents/<staffAgentId>`, and only the resolver changes when they do.
+
+A flat `skills/<name>.md` is read as a skill too; a new skill is always a
+folder. An agent's own skill wins over a company skill of the same name.
+
+The turn receives a catalog, not the bodies (9.1). Every turn composes a
+`skills` block beside memory: the agent's own skills with their descriptions
+(at most 24), and the company library, described while it holds at most 16
+skills and named (up to 200) once it has grown. Composition reads through the
+trusted lane, beside the notebook, and never blocks a run: a library that
+cannot be listed is marked unavailable while the other still composes, and
+only when neither can is the block unavailable. A skill file that cannot guide
+the agent yet is named with its problem (`no_description`, `unreadable`,
+`no_access`).
+
+Tools:
+
+- `read_skill` (`name`, optional `scope` agent or company, `offset`,
+  `version`) loads a body on demand in pages that fit one tool result, with
+  the exact version it read; the first page names the supporting files, and a
+  later page asked for with an older version answers `changed`.
+- `search_skills` (optional `query`, `scope` agent, company or all, `limit`
+  1–50, `offset`) ranks names and descriptions by shared words, falls back to a
+  substring match, and pages its results.
+- `update_skill` (`action` create, update or delete; `name`; `scope`, default
+  agent; `version`; `description`; `body`) writes through the mutation gateway
+  with the exact expected version (5.2). Update and delete name the version the
+  agent read (from `read_skill` or its last receipt): when the skill changed
+  since, nothing is saved (`changed`), so no edit is overwritten unseen. A write
+  that lost a race to another change in the company is redone from a fresh
+  read while the skill itself is unchanged. An update keeps the rest of the
+  file, including front-matter keys it does not own. A new skill in a protected
+  library first proposes its folder; a delete is proposal-gated like every
+  delete. A refusal, a folder that vanished and a lost race are typed receipts
+  that saved nothing, never an unconfirmed outcome.
+
+Every run reads and searches skills. Only a company-audience run gets
+`update_skill`, so a member's private conversation never feeds a shared
+library; a worker gets it only when its dispatch allows Company File writes. Skills are guidance: the catalog and every
+body are untrusted data, a skill grants nothing and never overrides
+instructions or a current source, and it is not a place to hide member
+credentials, private channel names, or runtime authority. Facts about the
+company belong in the Company File and what an agent learned about people in
+its notebook. Platform-owned, read-only skills shipped in the runtime bundle
+are not built yet.
 
 Plugins, connectors, and skills are separate:
 
@@ -2306,7 +2361,8 @@ removal; until it is removed it MUST NOT be reachable from any member client.
   and MUST NOT repeat them into a shared thread. §14.2's separate one-to-one
   Co-Founder conversation no longer exists: the Co-Founder's thread is shared.
 - **Images.** An agent thread accepts the same attachments as an agent
-  session did; team rooms stay text-only.
+  session did. Team rooms (group chats) accept the same since 2026-09-27
+  (migration `20260928030000`); before, they were text-only.
 - **The thread outlives edits of its agent (added 2026-09-19).** A wake or
   room delivery is admitted at the agent's current version and MAY use a
   session that records an earlier version of the same agent. This holds for
@@ -2501,11 +2557,21 @@ pin. Any mismatch, revocation or recovery-epoch change ends the warm sandbox.
 The Codex process and its provider connection MAY be reused across those
 runs; each run starts a new provider thread.
 
+> **Amended 2026-09-28** (founder's approval of "Logins in the Vault", its
+> quick fix). A run saves the capsule back only when the run changed the
+> login, and only while the store still holds the login the run started from;
+> otherwise the newer stored login is kept. Several runs may use one login at
+> once and a renewal token works once, so saving after every run let an older
+> copy undo a renewal. Stateless Compute step 1 later removes saving from runs
+> entirely.
+
 Implementation notes (not part of the ratified text): the warm host reuses a
-kept capsule root only while the stored capsule is byte for byte the one it
-uploaded last; otherwise it wipes the root and opens the stored capsule
-afresh. When a run ends, everything but the capsule's own credential files is
-removed from the kept root. A spare Codex process started for the next run
+kept capsule root only while the stored capsule is byte for byte the one that
+root was opened from or last saved as; otherwise it wipes the root and opens
+the stored capsule afresh. A change to the kept root between runs (a spare
+renewing its login) counts as the next run's change. When a run ends,
+everything but the capsule's own credential files is removed from the kept
+root. A spare Codex process started for the next run
 completes its handshake before that run exists and accepts no thread, turn,
 tool call or provider request until the run is bound; its own state files in
 the Codex home are removed before any other process starts there, and no two

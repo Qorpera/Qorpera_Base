@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { getCACertificates, setDefaultCACertificates } from "node:tls";
 import { pathToFileURL } from "node:url";
 import { build } from "esbuild";
-import { startDesktopSource } from "./test-runtime-office-desktop.mjs";
+import { DESKTOP_SOURCE_IMAGE, startDesktopSource } from "./test-runtime-office-desktop.mjs";
 import { testMemberFileExportGateway } from "./test-member-file-export-gateway.mjs";
 import { testMemberWebExportsSql } from "./test-member-web-exports-sql.mjs";
 import { createNativeBinaryReviewProposal, testMemberWebNativeReviewSql } from "./test-member-web-native-review-sql.mjs";
@@ -75,7 +75,7 @@ export async function testOfficeFileExport({ root, query, setup }) {
 		await build({entryPoints:[join(root,"packages/runtime/test/fixtures/company-computer-file-export-source.ts")],outfile:join(directory,"source.mjs"),bundle:true,platform:"node",format:"esm",target:"node22.19"});
 		const code = await import(pathToFileURL(join(directory,"runtime.mjs")).href);
 		await build({entryPoints:[join(root,"packages/runtime/test/fixtures/company-computer-desktop-source.ts")],outfile:join(directory,"import-source.mjs"),bundle:true,platform:"node",format:"esm",target:"node22.19"});
-		importedSource = await startDesktopSource(directory, `${container}-import`, "sha256:c6b95862d90e417a75e5598bff2e3671e5584718e7589054bdfea890a2014c7f", "import-source.mjs");
+		importedSource = await startDesktopSource(directory, `${container}-import`, DESKTOP_SOURCE_IMAGE, "import-source.mjs");
 		const authorize = code.HttpCompanyComputerNativeEndpoint.prototype.authorize;
 		code.HttpCompanyComputerNativeEndpoint.prototype.authorize = async function(...args) {
 			try {return await authorize.apply(this,args);}
