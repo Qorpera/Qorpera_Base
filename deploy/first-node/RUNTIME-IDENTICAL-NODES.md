@@ -33,14 +33,18 @@ change.
   - `qorpera_runtime_node_placement_candidates`, used by the node chooser, the login route pick
     and the company machine fleet;
   - the fresh branch of `qorpera_coding_executor_pick`;
-  - `qorpera_reserve_runtime_node_machine`, which refuses a new reservation, a sleeping machine's
-    wake and a repeated admission with `NODE_DISABLED`. The existing reservation stays.
+  - `qorpera_reserve_runtime_node_machine`, which refuses a new reservation and a sleeping
+    machine's wake with `NODE_DISABLED`. A reservation the node already holds (reserved and awake)
+    passes admission again, because coding turns and sign-ins re-ask it before each step, so they
+    finish.
+  - `qorpera_claim_coding_session`: an executor on an emptying node starts no new coding turn. A
+    turn it is running keeps its lease and finishes.
 - **Work pinned to the node by a disk stays pinned.** It waits for the node to return:
   - runs of a member whose login lives on the node (the identity-home rule, until logins move
     into the vault, `20260928161000`);
   - a sleeping machine's wake;
-  - new coding sessions on an awake member machine there (the sticky branches of the executor
-    pick);
+  - a new coding turn for a member whose machine is there (the sticky branches of the executor
+    pick send it to that node's executor, which does not start it while the node empties);
   - a sign-in the gateway chooser already routed there.
 
   The switch needs no pause, but for those members emptying acts like one. Queued runs fail after
@@ -50,14 +54,14 @@ change.
   flips only `enabled`:
   - It takes the same node-only locks as `qorpera_configure_runtime_node`: the advisory lock,
     then the node row.
-  - It writes the next policy version with the same values and `enabled` changed, and records
-    `(node, version, serving, reason)` in `qorpera_runtime_node_serving_changes`.
+  - It keeps the node's policy version and records `(node, version, serving, reason)` in
+    `qorpera_runtime_node_serving_changes`, one row per switch. The observer's inventory receipt
+    names the node version; a new version would refuse every admission, held ones included, until
+    the next scan. `enabled` is not part of the inventory context.
   - It needs no company pause and locks no company row.
   - It refuses with 55000 while the older signed updater (`20260921010000`) has any unresumed
     target for the node, because a prepared update pins the node's version.
   - Asking for the current state returns `changed: false`.
-- **Version bump.** The observer's next inventory receipt is needed before the node is
-  inventory-ready again (about 5 s). This matters only when the node returns to service.
 - **Claim.** The orchestrator claim returns nothing when the orchestrator's adapter maps, through
   `qorpera_runtime_node_providers` of kind native, only to switched-off nodes. Claim replays still
   work. Adapters with no node row behave as before. An adapter that also maps to a serving node
@@ -106,7 +110,14 @@ migration can go in any cut without a pause.
    where o.status <> 'revoked' and not n.enabled;
    ```
 
-   It must return no rows, or only nodes that should stay empty.
+   It must return no rows, or only nodes that should stay empty. Also check for unfinished
+   signed-updater targets; the switch refuses on a node that has one, and nothing cancels a
+   target:
+
+   ```sql
+   select node_id, revision, disabled_version, resumed_version
+   from public.qorpera_node_update_targets where resumed_version is null;
+   ```
 1. Apply `20260928180000` (dry run first). Guard marker for the release branch:
    `qorpera_runtime_orchestrator_nodes(v_adapter)` present in
    `qorpera_claim_runner_job_for_orchestrator`. Check that it is ABSENT live first.
@@ -182,3 +193,72 @@ stacked on change 1 (`20260928180000`, #424).
 3. Check: `qorpera_runtime_run_placement` on a few queued runs, and the claim latency of member
    runs, which should be about 2 s. To undo, clear the roles (`null`).
 
+## Change 4: each run keeps its version (migration `20260928182000`)
+
+- **How a run gets its bundle.** A run is bound to a runtime bundle when it is created: its
+  inputs' bundle, else the active bundle (`20260828019300`). The run's host refuses any other
+  bundle (`assertCloudRuntimeBundle`). Today every cut pauses all companies, so that no run of
+  the old bundle remains when the new one activates.
+- **Where old-bundle runs come from after a switch:**
+  - inputs accepted before the switch;
+  - the retry of a run that failed (it keeps its run);
+  - a sponsorship request approved later.
+- **Declaring a bundle.** `qorpera_declare_runner_orchestrator_bundle(orchestrator, sha | null)`
+  (service role) records the bundle an orchestrator's hosts run. The bundle must be registered,
+  and the orchestrator not revoked.
+  - A declared orchestrator claims only runs whose `runtime_bundle_sha256` equals its
+    declaration. The claim reads the declaration by primary key.
+  - An undeclared orchestrator claims as before.
+  - **Re-registering an orchestrator clears its declaration.** Every fast-host rebuild does
+    that, and the rebuilt host may run another bundle. So a leftover declaration cannot outlive
+    the host it described; after a rebuild, declare again.
+- **`qorpera_runtime_bundle_roll_status()`** (service role) lists the active bundle and, for
+  every bundle with work or a declaring orchestrator:
+  - queued runs (unclaimed) and running runs (claimed or leased);
+  - inputs not yet turned into a run, with the oldest one's time;
+  - the declaring orchestrators with their nodes, serving state and heartbeats;
+  - `servedBy` and `servedOnServingNode`: live orchestrators on a serving node, or with no node
+    row, that declare this bundle or nothing.
+
+  It also lists `undeclaredLive`, the live orchestrators that declare nothing. `servedBy` is an
+  upper bound: an undeclared orchestrator's host refuses bundles it does not run, the
+  identity-home rule still applies, and a just re-registered orchestrator counts as live for up
+  to 2 minutes before it starts. During a roll `undeclaredLive` should be empty.
+- **Things read from the active bundle.** Old-bundle runs themselves are not affected: a run's
+  model policy comes from its own bundle, and only a conversation's displayed defaults follow the
+  active one. Two cases need care:
+  - The office package install requires an exact match with the active bundle, so a release that
+    changes the office package installs it after the switch, or pauses.
+  - A release whose migrations change what the old host reads or sends pauses (see
+    `RUNTIME-ROLLING-UPDATE.md`).
+
+### Use in a rolling update (change 7 writes the full procedure)
+
+1. Apply the release's migrations. They must be safe for the running bundle N.
+2. Empty node A (`qorpera_set_runtime_node_serving`), wait for `readyForUpdate`, then update it:
+   node release, image, rebuild the fast host. The rebuild re-registers the fast host's
+   orchestrator, which clears any declaration.
+3. Declare **every** orchestrator on node A as N+1, the rebuilt fast host included, and every
+   orchestrator on node B as N. `undeclaredLive` must be empty. Return node A to serving.
+4. Activate N+1: new inputs and runs bind to N+1, and only node A takes them. Node B finishes N.
+5. When `qorpera_runtime_bundle_roll_status()` shows no queued or running N runs, and no N input
+   that can still run, empty node B and update it. Its rebuild clears its fast host's
+   declaration; declare all of node B's orchestrators as N+1 and return it.
+6. Clear every declaration.
+
+### Rollout (coordinator)
+
+SQL only, safe for the running bundle, and nothing changes until an operator declares.
+- **Activation guard** for the release branch: `declared.runtime_bundle_sha256` present in the
+  claim function. Check that it is ABSENT live first.
+- **Stacking.** This PR is stacked on change 1 (#424) and needs `20260928180000` first
+  (`qorpera_runtime_orchestrator_nodes`).
+- **Every cut's preflight**, paused or rolling: no declaration may be left over. A leftover
+  declaration stops that orchestrator from claiming runs of the new bundle.
+
+  ```sql
+  select id, provider_adapter, runtime_bundle_sha256 from public.qorpera_runner_orchestrators
+  where runtime_bundle_sha256 is not null and status <> 'revoked';
+  ```
+
+  This must return no rows before a paused cut.

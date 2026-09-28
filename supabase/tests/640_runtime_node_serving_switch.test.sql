@@ -66,22 +66,33 @@ select pg_temp.wake_assert((pg_temp.sw_status('64000000-0000-4000-8000-000000000
 	'Node A serves, with the fixture run on it: ' || pg_temp.sw_status('64000000-0000-4000-8000-000000000001')::text);
 select pg_temp.wake_assert((pg_temp.sw_status('64000000-0000-4000-8000-000000000002') ->> 'runs')::bigint = 0,
 	'Node B has no run yet');
+-- An older accepted claim of the same job by node B (a retry moved the job) never counts: only the newest one does.
+savepoint older_claim;
+reset role;
+insert into public.qorpera_runner_job_claims(id,orchestrator_id,client_claim_id,job_id,run_id,lease_expires_at,status,created_at)
+select extensions.gen_random_uuid(),'64000000-0000-4000-8000-000000000012',extensions.gen_random_uuid(),job.id,job.run_id,
+	clock_timestamp() + interval '1 minute','accepted',clock_timestamp() - interval '1 hour'
+from public.qorpera_runner_jobs job where job.run_id = (current_setting('qorpera_test.wake_binding')::jsonb ->> 'runId')::uuid;
+set local role service_role;
+select pg_temp.wake_assert((pg_temp.sw_status('64000000-0000-4000-8000-000000000002') ->> 'runs')::bigint = 0
+	and (pg_temp.sw_status('64000000-0000-4000-8000-000000000001') ->> 'runs')::bigint = 1,'Only the newest accepted claim counts');
+rollback to savepoint older_claim;
 
 -- Empty node A.
 select pg_temp.wake_assert(public.qorpera_set_runtime_node_serving('64000000-0000-4000-8000-000000000001',false,1,'update to v142')
-	= '{"nodeId":"64000000-0000-4000-8000-000000000001","version":2,"serving":false,"changed":true}'::jsonb,'Node A switched off');
-select pg_temp.wake_assert(public.qorpera_set_runtime_node_serving('64000000-0000-4000-8000-000000000001',false,2,'again')
-	= '{"nodeId":"64000000-0000-4000-8000-000000000001","version":2,"serving":false,"changed":false}'::jsonb,
+	= '{"nodeId":"64000000-0000-4000-8000-000000000001","version":1,"serving":false,"changed":true}'::jsonb,'Node A switched off');
+select pg_temp.wake_assert(public.qorpera_set_runtime_node_serving('64000000-0000-4000-8000-000000000001',false,1,'again')
+	= '{"nodeId":"64000000-0000-4000-8000-000000000001","version":1,"serving":false,"changed":false}'::jsonb,
 	'Switching off again changes nothing');
-select pg_temp.wake_error($q$select public.qorpera_set_runtime_node_serving('64000000-0000-4000-8000-000000000001',true,1,'stale')$q$,
+select pg_temp.wake_error($q$select public.qorpera_set_runtime_node_serving('64000000-0000-4000-8000-000000000001',true,7,'stale')$q$,
 	'PGRST');
 reset role;
-select pg_temp.wake_assert((select not enabled and version = 2 from public.qorpera_runtime_nodes where id = '64000000-0000-4000-8000-000000000001')
-	and (select policy ->> 'enabled' = 'false' and policy ->> 'label' = 'node-a' from public.qorpera_runtime_node_policies
-		where node_id = '64000000-0000-4000-8000-000000000001' and version = 2)
+-- The node keeps its policy version, so its inventory receipt stays valid; the switch has its own record.
+select pg_temp.wake_assert((select not enabled and version = 1 from public.qorpera_runtime_nodes where id = '64000000-0000-4000-8000-000000000001')
+	and (select count(*) = 1 from public.qorpera_runtime_node_policies where node_id = '64000000-0000-4000-8000-000000000001')
 	and (select count(*) = 1 from public.qorpera_runtime_node_serving_changes where node_id = '64000000-0000-4000-8000-000000000001'
-		and version = 2 and not serving and reason = 'update to v142'),
-	'The node, its policy history and the change record agree');
+		and version = 1 and not serving and reason = 'update to v142'),
+	'The node keeps its version and the change record says why');
 set local role service_role;
 select pg_temp.wake_assert(not (pg_temp.sw_status('64000000-0000-4000-8000-000000000001') ->> 'serving')::boolean
 	and (pg_temp.sw_status('64000000-0000-4000-8000-000000000001') ->> 'runs')::bigint = 1
@@ -111,7 +122,7 @@ select pg_temp.wake_assert((pg_temp.sw_job(current_setting('qorpera_test.sw_run'
 	'Only the refusing orchestrator waits, for 15 s');
 set local role service_role;
 select pg_temp.wake_assert(pg_temp.sw_claim('64000000-0000-4000-8000-000000000012') = 'null'::jsonb,'Node B waits');
-select pg_temp.wake_assert(public.qorpera_set_runtime_node_serving('64000000-0000-4000-8000-000000000001',true,2,'update done') ->> 'version' = '3',
+select pg_temp.wake_assert(public.qorpera_set_runtime_node_serving('64000000-0000-4000-8000-000000000001',true,1,'update done') ->> 'serving' = 'true',
 	'Node A serves again');
 select set_config('qorpera_test.sw_claim',pg_temp.sw_claim('30000000-0000-4000-8000-000000000092')::text,true);
 select pg_temp.wake_assert(current_setting('qorpera_test.sw_claim')::jsonb #>> '{work,run_id}' = current_setting('qorpera_test.sw_run'),
@@ -185,15 +196,39 @@ select pg_temp.wake_assert(pg_temp.sw_status('64000000-0000-4000-8000-0000000000
 	and not (pg_temp.sw_status('64000000-0000-4000-8000-000000000003') ->> 'readyForUpdate')::boolean,
 	'A serving node is never ready for an update: ' || pg_temp.sw_status('64000000-0000-4000-8000-000000000003')::text);
 select public.qorpera_set_runtime_node_serving('64000000-0000-4000-8000-000000000003',false,1,'restart the host');
-select pg_temp.sw_observe();
 select pg_temp.wake_assert(pg_temp.sw_reserve(2) ->> 'reason' = 'NODE_DISABLED','An emptying node admits no new machine');
--- Asking again is refused like any admission on a node that cannot admit (as with a late observation),
--- but the reservation itself stays: the machine keeps its node share and keeps running.
-select pg_temp.wake_assert(pg_temp.sw_reserve(1) ->> 'reason' = 'NODE_DISABLED','A repeated admission is refused');
+-- The machine already there keeps its reservation and passes admission again (its coding turn re-asks
+-- before each step), with no new observation: the switch kept the node's version.
+select pg_temp.wake_assert(pg_temp.sw_reserve(1) ->> 'state' = 'reserved','A held reservation keeps passing admission');
 reset role;
 select pg_temp.wake_assert((select reserved_at is not null and released_at is null and suspended_at is null
 	from public.qorpera_runtime_node_demands where allocation_id = '64000000-0000-4000-8000-000000000401'),
 	'The machine already there keeps its reservation');
+-- A coding turn running on node C's executor keeps the node from being ready; a new turn does not start there.
+insert into public.qorpera_coding_executors(environment_id,owner,enabled,harnesses,nas_machine_id_sha256)
+select environment_id,'coding-node-c',true,array['codex'],repeat('c',64) from public.qorpera_runtime_workers
+where id = '64000000-0000-4000-8000-000000000301';
+insert into public.qorpera_coding_sessions(worker_id,profile_id,environment_id,harness,repository,branch,phase,lease_owner,lease_token,lease_until,started_at)
+select id,profile_id,environment_id,'codex','{"host":"github.com","owner":"acme","name":"app","baseBranch":"main"}'::jsonb,'main','running','coding-node-c',extensions.gen_random_uuid(),
+	clock_timestamp() + interval '1 minute',clock_timestamp()
+from public.qorpera_runtime_workers where id = '64000000-0000-4000-8000-000000000301';
+insert into public.qorpera_coding_sessions(worker_id,profile_id,environment_id,harness,repository,branch)
+select id,profile_id,environment_id,'codex','{"host":"github.com","owner":"acme","name":"app","baseBranch":"main"}'::jsonb,'second' from public.qorpera_runtime_workers
+where id = '64000000-0000-4000-8000-000000000302';
+set local role service_role;
+select pg_temp.wake_assert((pg_temp.sw_status('64000000-0000-4000-8000-000000000003') ->> 'codingTurns')::bigint = 1
+	and not (pg_temp.sw_status('64000000-0000-4000-8000-000000000003') ->> 'readyForUpdate')::boolean,
+	'A running coding turn blocks the update: ' || pg_temp.sw_status('64000000-0000-4000-8000-000000000003')::text);
+select pg_temp.wake_assert(public.qorpera_claim_coding_session('coding-node-c',60) is null,
+	'The emptying node''s executor starts no new coding turn');
+savepoint coding_serving;
+select public.qorpera_set_runtime_node_serving('64000000-0000-4000-8000-000000000003',true,1,'serving again');
+select pg_temp.wake_assert(public.qorpera_claim_coding_session('coding-node-c',60) is not null,
+	'Serving again, the executor starts the member''s next turn');
+rollback to savepoint coding_serving;
+reset role;
+update public.qorpera_coding_sessions set phase = 'completed', lease_owner = null, lease_token = null, lease_until = null,
+	finished_at = clock_timestamp() where worker_id = '64000000-0000-4000-8000-000000000301';
 set local role service_role;
 select pg_temp.wake_assert(not exists(select 1 from jsonb_array_elements(public.qorpera_runtime_node_placement_candidates('coding')) c
 	where c ->> 'nodeId' = '64000000-0000-4000-8000-000000000003' and (c ->> 'eligible')::boolean),'Placement skips the emptying node');
@@ -207,6 +242,7 @@ select pg_temp.wake_assert(pg_temp.sw_status('64000000-0000-4000-8000-0000000000
 	and (pg_temp.sw_status('64000000-0000-4000-8000-000000000003') ->> 'machinesAsleep')::bigint = 1
 	and (pg_temp.sw_status('64000000-0000-4000-8000-000000000003') ->> 'readyForRestart')::boolean,
 	'A sleeping machine keeps its disk on the node and does not block a restart');
+select pg_temp.wake_assert(pg_temp.sw_reserve(1) ->> 'reason' = 'NODE_DISABLED','A sleeping machine does not wake on an emptying node');
 
 -- Replays still work on an emptying node: a claim taken before the switch comes back after it.
 savepoint replay;
@@ -218,7 +254,7 @@ select set_config('qorpera_test.sw_replay_run',pg_temp.wake_input_run(array['640
 set local role service_role;
 select pg_temp.wake_assert(public.qorpera_claim_runner_job_for_orchestrator('30000000-0000-4000-8000-000000000092',
 	'64000000-0000-4000-8000-0000000000aa',120) #>> '{work,run_id}' = current_setting('qorpera_test.sw_replay_run'),'Claimed before the switch');
-select public.qorpera_set_runtime_node_serving('64000000-0000-4000-8000-000000000001',false,3,'replay check');
+select public.qorpera_set_runtime_node_serving('64000000-0000-4000-8000-000000000001',false,1,'replay check');
 select pg_temp.wake_assert(public.qorpera_claim_runner_job_for_orchestrator('30000000-0000-4000-8000-000000000092',
 	'64000000-0000-4000-8000-0000000000aa',120) #>> '{work,run_id}' = current_setting('qorpera_test.sw_replay_run'),
 	'The same claim replays on the emptying node');
@@ -226,15 +262,20 @@ select pg_temp.wake_assert(pg_temp.sw_claim('30000000-0000-4000-8000-00000000009
 rollback to savepoint replay;
 
 -- An adapter enrolled on a second, serving node is not stopped by the switch: the drain status says so.
+-- Node B holds no run, so the doubled adapter is the only thing between it and an update.
 savepoint elsewhere;
 select public.qorpera_configure_runtime_node(pg_temp.sw_policy('64000000-0000-4000-8000-000000000004',repeat('d',64),'node-d'),0);
-select public.qorpera_enroll_runtime_node_provider('64000000-0000-4000-8000-000000000004',repeat('d',64),'native','process',repeat('5',64),4000,8589934592);
-select public.qorpera_set_runtime_node_serving('64000000-0000-4000-8000-000000000001',false,3,'drain with a doubled adapter');
-select pg_temp.wake_assert(pg_temp.sw_status('64000000-0000-4000-8000-000000000001') -> 'orchestratorsServingElsewhere'
-		= '["30000000-0000-4000-8000-000000000092"]'::jsonb
-	and not (pg_temp.sw_status('64000000-0000-4000-8000-000000000001') ->> 'readyForUpdate')::boolean
-	and (pg_temp.sw_status('64000000-0000-4000-8000-000000000001') ->> 'codingTurns')::bigint = 0,
-	'A doubled adapter blocks readiness: ' || pg_temp.sw_status('64000000-0000-4000-8000-000000000001')::text);
+select public.qorpera_enroll_runtime_node_provider('64000000-0000-4000-8000-000000000004',repeat('d',64),'native','native-b',repeat('5',64),4000,8589934592);
+select public.qorpera_set_runtime_node_serving('64000000-0000-4000-8000-000000000002',false,1,'drain with a doubled adapter');
+select pg_temp.wake_assert(pg_temp.sw_status('64000000-0000-4000-8000-000000000002') -> 'orchestratorsServingElsewhere'
+		= '["64000000-0000-4000-8000-000000000012"]'::jsonb
+	and (pg_temp.sw_status('64000000-0000-4000-8000-000000000002') ->> 'runs')::bigint = 0
+	and (pg_temp.sw_status('64000000-0000-4000-8000-000000000002') ->> 'codingTurns')::bigint = 0
+	and not (pg_temp.sw_status('64000000-0000-4000-8000-000000000002') ->> 'readyForUpdate')::boolean,
+	'A doubled adapter alone blocks readiness: ' || pg_temp.sw_status('64000000-0000-4000-8000-000000000002')::text);
+select public.qorpera_set_runtime_node_serving('64000000-0000-4000-8000-000000000004',false,1,'drain the other node too');
+select pg_temp.wake_assert((pg_temp.sw_status('64000000-0000-4000-8000-000000000002') ->> 'readyForUpdate')::boolean,
+	'With the other node empty too, node B is ready for its update');
 rollback to savepoint elsewhere;
 
 -- The older signed updater keeps `enabled` while it holds a node, and while an update is prepared.
