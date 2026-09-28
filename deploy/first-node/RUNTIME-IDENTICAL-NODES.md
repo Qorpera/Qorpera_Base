@@ -131,3 +131,49 @@ migration can go in any cut without a pause.
    Until logins are in the vault, runs of members whose login lives on the node wait while it is
    empty. Keep that window short.
 
+## Change 4: each run keeps its version (migration `20260928182000`)
+
+- **How a run gets its bundle.** A run is bound to a runtime bundle when it is created: its
+  inputs' bundle, else the active bundle (`20260828019300`). The run's host refuses any other
+  bundle (`assertCloudRuntimeBundle`). Today every cut pauses all companies, so that no run of
+  the old bundle remains when the new one activates.
+- **Declaring a bundle.** `qorpera_declare_runner_orchestrator_bundle(orchestrator, sha | null)`
+  (service role) records the bundle an orchestrator's hosts run. The bundle must be registered,
+  and the orchestrator not revoked.
+  - A declared orchestrator claims only runs whose `runtime_bundle_sha256` equals its
+    declaration. The claim reads the declaration by primary key.
+  - An undeclared orchestrator claims as before. A paused cut therefore needs no declaration.
+  - Clear the declarations after a roll.
+- **`qorpera_runtime_bundle_roll_status()`** (service role) lists the active bundle and, for
+  every bundle with work or a declaring orchestrator:
+  - queued runs (unclaimed) and running runs (claimed, leased or running);
+  - inputs not yet turned into a run, with the oldest one's time;
+  - which active orchestrators declare it, on which nodes, and whether they are serving;
+  - `servedOnServingNode`: an orchestrator that declares it, or declares none, is on a serving
+    node or has no node row.
+
+  Inputs keep the bundle they were accepted under, so a message sent just before the switch
+  still runs on the old bundle.
+- **Other reads of the active bundle.** Old-bundle runs still read some things from the active
+  bundle. The model policy is read from the active manifest when a conversation's model is
+  described. The office package install asserts the active bundle. A rolling release must keep
+  those compatible for the old bundle, or it declares a pause.
+
+### Use in a rolling update (change 7 writes the full procedure)
+
+1. Apply the release's migrations. They must be safe for the running bundle N.
+2. Empty node A (`qorpera_set_runtime_node_serving`), wait for `readyForUpdate`, then update it:
+   node release, image, rebuild the fast host.
+3. Declare node A's orchestrators as N+1 and node B's as N. Return node A to serving.
+4. Activate N+1: new inputs and runs bind to N+1, and only node A takes them. Node B finishes N.
+5. When `qorpera_runtime_bundle_roll_status()` shows no queued or running N runs, and no N inputs
+   that can still run, empty node B, update it, declare it N+1, and return it.
+6. Clear every declaration.
+
+### Rollout (coordinator)
+
+SQL only, safe for the running bundle, and nothing changes until an operator declares.
+- **Activation guard** for the release branch: `declared.runtime_bundle_sha256` present in the
+  claim function. Check that it is ABSENT live first.
+- **Stacking.** This PR is stacked on change 1 (#424) and needs `20260928180000` first
+  (`qorpera_runtime_orchestrator_nodes`).
