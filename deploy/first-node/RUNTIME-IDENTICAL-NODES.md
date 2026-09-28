@@ -33,14 +33,18 @@ change.
   - `qorpera_runtime_node_placement_candidates`, used by the node chooser, the login route pick
     and the company machine fleet;
   - the fresh branch of `qorpera_coding_executor_pick`;
-  - `qorpera_reserve_runtime_node_machine`, which refuses a new reservation, a sleeping machine's
-    wake and a repeated admission with `NODE_DISABLED`. The existing reservation stays.
+  - `qorpera_reserve_runtime_node_machine`, which refuses a new reservation and a sleeping
+    machine's wake with `NODE_DISABLED`. A reservation the node already holds (reserved and awake)
+    passes admission again, because coding turns and sign-ins re-ask it before each step, so they
+    finish.
+  - `qorpera_claim_coding_session`: an executor on an emptying node starts no new coding turn. A
+    turn it is running keeps its lease and finishes.
 - **Work pinned to the node by a disk stays pinned.** It waits for the node to return:
   - runs of a member whose login lives on the node (the identity-home rule, until logins move
     into the vault, `20260928161000`);
   - a sleeping machine's wake;
-  - new coding sessions on an awake member machine there (the sticky branches of the executor
-    pick);
+  - a new coding turn for a member whose machine is there (the sticky branches of the executor
+    pick send it to that node's executor, which does not start it while the node empties);
   - a sign-in the gateway chooser already routed there.
 
   The switch needs no pause, but for those members emptying acts like one. Queued runs fail after
@@ -50,14 +54,14 @@ change.
   flips only `enabled`:
   - It takes the same node-only locks as `qorpera_configure_runtime_node`: the advisory lock,
     then the node row.
-  - It writes the next policy version with the same values and `enabled` changed, and records
-    `(node, version, serving, reason)` in `qorpera_runtime_node_serving_changes`.
+  - It keeps the node's policy version and records `(node, version, serving, reason)` in
+    `qorpera_runtime_node_serving_changes`, one row per switch. The observer's inventory receipt
+    names the node version; a new version would refuse every admission, held ones included, until
+    the next scan. `enabled` is not part of the inventory context.
   - It needs no company pause and locks no company row.
   - It refuses with 55000 while the older signed updater (`20260921010000`) has any unresumed
     target for the node, because a prepared update pins the node's version.
   - Asking for the current state returns `changed: false`.
-- **Version bump.** The observer's next inventory receipt is needed before the node is
-  inventory-ready again (about 5 s). This matters only when the node returns to service.
 - **Claim.** The orchestrator claim returns nothing when the orchestrator's adapter maps, through
   `qorpera_runtime_node_providers` of kind native, only to switched-off nodes. Claim replays still
   work. Adapters with no node row behave as before. An adapter that also maps to a serving node
@@ -106,7 +110,14 @@ migration can go in any cut without a pause.
    where o.status <> 'revoked' and not n.enabled;
    ```
 
-   It must return no rows, or only nodes that should stay empty.
+   It must return no rows, or only nodes that should stay empty. Also check for unfinished
+   signed-updater targets; the switch refuses on a node that has one, and nothing cancels a
+   target:
+
+   ```sql
+   select node_id, revision, disabled_version, resumed_version
+   from public.qorpera_node_update_targets where resumed_version is null;
+   ```
 1. Apply `20260928180000` (dry run first). Guard marker for the release branch:
    `qorpera_runtime_orchestrator_nodes(v_adapter)` present in
    `qorpera_claim_runner_job_for_orchestrator`. Check that it is ABSENT live first.
