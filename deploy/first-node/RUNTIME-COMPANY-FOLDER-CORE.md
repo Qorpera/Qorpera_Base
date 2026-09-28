@@ -17,7 +17,8 @@ Founder decisions it relies on:
 
 The design rests on three read-only mapping reports of master at bundle v139
 (write path, reads and wakes, projections and the reset), and on two review
-rounds. File references point to the live definitions they found.
+rounds, one on concurrency and one on contract fit. File references point to
+the live definitions they found.
 
 ## Goal
 
@@ -32,77 +33,144 @@ rounds. File references point to the live definitions they found.
 - A saved structured file (contract 5.6) updates its index in the same step,
   and the automatic review is enforced in the database whatever carries the
   change.
+- Today's companies keep working, unchanged, until the reset.
 
 ## What changes
 
-| Today | In this design |
+| Today | In this design (for `folder-v2` companies) |
 | --- | --- |
 | One head per company (`qorpera_company_files.head_snapshot_id`); every write checks and moves it, and fails with PT409 after 4 tries | Each path has its own version; a change checks only the versions of the paths it touches |
 | Every write rebuilds the full tree manifest (`qorpera.company-tree/v1`, 8 MiB, about 25,000 files), verifies it with an O(n²) parent check, stores a full jsonb copy, and records a reachability graph of every object in the company | A commit touches only its own paths. No manifest, tree copy or per-write graph exists |
-| One path per operation (`qorpera.company-path-mutation/v1`) | A change set of units: write, mkdir, delete, move, copy, and a new folder with its contents |
-| Every call, reads included, locks the profile row, the wake-admission fence and the Company File row `FOR UPDATE` (`qorpera_company_path_actor`, 20260920030500:371, 53 callers) | Reads take no company-wide lock. Effects take the fence row `FOR KEY SHARE`; stop, resume and GC take it `FOR UPDATE` |
-| Each run rechecks every path it read, one by one, under that lock (`qorpera_company_path_assert_context`) | Read sets are kept by covering resource with an authority revision, a few rows per run |
+| One path per operation (`qorpera.company-path-mutation/v1`) | A change set of units: write, mkdir, new folder with contents, delete, move, copy |
+| Every call, reads included, locks the profile row, the wake-admission fence and the Company File row `FOR UPDATE` (`qorpera_company_path_actor`, 20260920030500:371, 53 callers) | Reads take no company-wide lock. Nothing locks the profile row exclusively. Effects take the company's folder fence `FOR KEY SHARE`; stop and resume take it `FOR UPDATE` |
+| Each run rechecks every path it read, one by one, under that lock (`qorpera_company_path_assert_context`) | Read sets are kept by covering resource and grant, each with a revision, a few rows per run |
 | Change events walk a linear chain of revisions, one path per event (`qorpera_drain_company_file_wakes`) | A journal with a per-company sequence number; one event lists all its units |
 | Review is chosen by tool name in the runtime (`cloud-action-review.ts:148-209`) | Folder units are classified by path and by what changes, and SQL refuses an agent's reviewed unit without its review |
-| Structured documents project only through proposals; side effects run inside the publish | One commit-time hook for every structured file; side effects converge after the commit |
+| Structured documents project only through proposals; side effects run inside the publish | One commit-time hook for every structured file; the first run is written in the commit, and other side effects converge after it |
 
-## 1. Data model
+## 1. Two cores side by side until the reset
+
+Master goes live at every release cut (RUNTIME-RELEASE-TRAIN.md). So the new
+core must be inert for today's companies until the reset.
+
+**The core flag.** `qorpera_company_files.core` is `snapshot-v1` or
+`folder-v2`. It is set when the company is created and never changes. Until
+C5, creation makes `folder-v2` companies only when an operator asks for one.
+So one proof company can run on the new core in production before the reset.
+
+**Separate tables.** The folder core uses its own tables (§2). Today's
+Company File tables stay exactly as they are and keep serving `snapshot-v1`:
+entries with their jsonb and tombstones, snapshots, revisions, and the
+deferred triggers on them. So nothing that `snapshot-v1` relies on is
+reshaped.
+
+Tables that both cores must share, because runs and sessions reference them,
+gain separate source columns for `folder-v2`:
+- `qorpera_profile_staff`;
+- `qorpera_company_rooms` and room members;
+- `qorpera_profile_objects`.
+
+For example, a staff row's source for `folder-v2` points at
+`qorpera_folder_path_versions`. The old source foreign key and the old
+deferred triggers (20260828019200:662-664, 20260828019600:698-700) skip
+`folder-v2` rows through a narrow guard on the core flag.
+
+**One dispatch point.** The 53 SQL callers of `qorpera_company_path_actor`
+(sends, workers, escalation, presence, context views,
+`begin_native_company_execution`, `complete_runner_job_v6` and the rest) reach
+the Company File through that actor. The actor branches on the core flag:
+- for `snapshot-v1` it is unchanged;
+- for `folder-v2` it follows the lock rules of §3 and §9, and resolves
+  authority from the folder core's tables.
+
+C1 inventories every caller and records one decision for each:
+- **Unchanged:** the actor's branch is enough.
+- **Branches:** it touches snapshots, revisions or old organization paths
+  directly, so it gets its own `folder-v2` branch.
+- **Refuses:** it writes company state as rows with no file behind them.
+  Examples:
+  - `qorpera_manage_agent_routine` (20260922151000:201);
+  - the review-rule RPCs (20260926130000:190,227);
+  - the sidebar and room RPCs;
+  - the object gateway's member `applyCommand`.
+
+  For `folder-v2` these refuse, because contract 5.6 makes such a row
+  invalid. Their callers write files instead (§11).
+
+A SQL test calls every old writer on a `folder-v2` company and expects a
+refusal.
+
+**Locks follow the core.** Every lock change in this design applies only on
+`folder-v2` paths. `snapshot-v1` paths keep today's exact lock text, and an
+activation check compares that text with today's definitions.
+
+This is a temporary code-level dual mode, not a data migration. The reset
+(§11, C5) removes every `snapshot-v1` company, and C6 removes the old code,
+the old tables and the flag.
+
+## 2. Data model (folder-v2)
 
 All tables are keyed by company environment.
 
-- **Entries** (`qorpera_company_path_entries`, reshaped) hold the current
-  folder, one row per live path.
-  - Each row has: the path; its casefolded key text; the parent's key; `kind`
-    (file or folder); an opaque `version`; the commit that wrote it (`seq`);
-    and, for files, the file manifest hash, the file hash, the size, the media
-    type and the executable bit.
-  - A folder row may be a **claim**: a placeholder that step 4 inserts for a
-    path about to be created (§2). A claim that does not become live is
-    removed in the same transaction.
-  - An index on (parent key, name) serves listings. The key text in collation
-    "C" gives ancestors-first order and whole-subtree ranges.
-  - The primary key is the casefolded path, as today
-    (20260828005000:8,68,74), so two spellings of one name collide.
-- **Path versions** (`qorpera_company_path_versions`) are immutable history,
+- **Entries** (`qorpera_folder_entries`) hold the current folder, one row per
+  live path.
+  - Each row has: the path as written; `key_text`, the casefolded path with
+    its own "C"-collation index, which gives ancestors-first order and
+    subtree ranges; `key_sha256`, the primary key (as today's key: the sha256
+    of the casefolded path, 20260828005000:68,74); the parent's key; `kind`
+    (file or folder); an opaque `version`; the id of the commit that wrote
+    it; and, for files, the file manifest hash, the file hash, the size, the
+    media type and the executable bit.
+  - A row may be a **claim**: a placeholder that §3 step 5 inserts for a path
+    about to be created. A claim that does not become live is removed in the
+    same transaction.
+  - An index on (parent key, name) serves listings.
+- **Path versions** (`qorpera_folder_path_versions`) are immutable history,
   one row per version of a path.
   - Each row has: the operation (write, mkdir, delete, move out, move in,
-    copy), the prior version, the file columns, the commit, and the unit
+    copy), the prior version, the file columns, the commit id and the unit
     number.
   - They are kept for good: every change can be restored (the 2026-09-27
     amendment "every machine works in the company folder", item 6).
-  - The one exception is git's own files under `code/` (the same amendment,
-    item 9), whose old versions are pruned after 7 days.
-  - Permanent erasure (contract 5.6) is the only other way a version goes.
-- **Commits** (`qorpera_company_commits`), one row per change set. Each row
-  holds:
-  - the attribution of contract 4.2: actor, requester, approver, audience,
-    run, causal wake, sponsor, provider connection, operation key, receipt or
-    proposal, and runtime bundle;
-  - each unit's outcome, and each unit's covering resource and authority
-    revision.
-
-  A unique index on (company, operation key) makes replay exact.
-- **Journal** (`qorpera_company_journal`) gives each commit, and each authority
-  change, a per-company sequence number `seq`, unique per company.
-- **Clock** (`qorpera_company_clocks`) is one row per company holding
+  - The one exception is git's objects: the old versions of paths under
+    `code/<owner>/<name>/repo.git/objects/` are pruned after 7 days (the same
+    amendment, item 9; RUNTIME-COMPANY-FOLDER.md §6).
+  - Permanent erasure (§8) is the only other way a version goes.
+- **Commits** (`qorpera_folder_commits`), one row per change set. Its id is
+  assigned at the start of the transaction.
+  - Each row holds the attribution of contract 4.2: actor, requester,
+    approver, audience, run, causal wake, sponsor, provider connection,
+    operation key, receipt or proposal, and runtime bundle.
+  - It also holds each unit's outcome, covering resource and authority
+    revisions.
+  - Its sequence number `seq` is written at the end (§3 step 10).
+- **Operation keys** (`qorpera_folder_operation_keys`) hold one row per
+  (company, operation key), with no foreign key to runs. The row is claimed at
+  the start (§3 step 1).
+- **Journal** (`qorpera_folder_journal`) gives each commit, and each authority
+  change, a per-company `seq`, unique per company. The journal is kept for
+  good.
+- **Clock** (`qorpera_folder_clocks`) is one row per company holding
   `last_seq`. It is not indexed on `last_seq`, which keeps its updates HOT.
-- **Upload intents** (`qorpera_company_upload_intents`) record bytes a writer is
+- **Fence** (`qorpera_folder_fences`) is one row per company: the stop, resume
+  and admission fence for `folder-v2`. It replaces the profile row and the
+  wake-admission fence on `folder-v2` paths (§3, §9).
+- **Proposals** (`qorpera_folder_proposals`) hold parked units: units waiting
+  on a review card, a restricted creator's hire (contract 14.1), or a
+  protected path if one is ever configured. Each proposal keeps its unit list
+  and its upload intents open until it is decided.
+- **Upload intents** (`qorpera_folder_upload_intents`) record bytes a writer is
   about to commit: the file manifest and its chunks, the size, the run or
   member command, the operation key, and an expiry that long uploads renew.
-- **Objects** (`qorpera_profile_objects`, kept) gain two columns:
-  `unreferenced_since`, and a `deleting` mark that GC sets (§7).
-- **Storage usage** (`qorpera_company_storage_usage`) moves off
-  `qorpera_company_files`. It is updated outside the commit transaction, and
-  the upload quota trigger reads it there (today it locks the Company File
-  row, 20260927150000:142-160).
-- **The core flag.** `qorpera_company_files.core` is `snapshot-v1` or
-  `folder-v2` (§10).
+- **Read sets** (`qorpera_folder_run_reads`) are keyed by covering resource and
+  grant (§4). Read paths (`qorpera_folder_run_read_paths`) are an append-only
+  record of the exact reads, which SQL consults only when it re-resolves.
+- **Objects** (`qorpera_profile_objects`, shared) gain two columns:
+  `unreferenced_since`, and a `deleting` mark (§8).
+- **Storage usage** (`qorpera_folder_storage_usage`) is updated outside the
+  commit transaction, and the upload quota trigger reads it for `folder-v2`.
 
-No table keeps whole-company snapshots, publications, tree caches, revisions,
-workspaces, substrate pins or company-root graphs once the legacy code goes
-(§9).
-
-## 2. Commits
+## 3. Commits
 
 ### Units
 
@@ -114,19 +182,18 @@ whole or not at all.
 | write | the path is absent, or at its expected version |
 | mkdir | the path is absent |
 | new folder with contents | the folder is absent; its contents are written with it |
-| delete | the path is at its expected version. A folder takes its subtree, and every entry in it must be no newer than the unit's `asOfSeq` |
+| delete | the path is at its expected version. A folder takes its subtree, and no entry in it may be newer than the unit's `asOfSeq` |
 | move | the source is at its expected version and the target is absent. A folder takes its subtree, under the same `asOfSeq` rule |
 | copy | the target is absent. Copying an `agent.md` or `group.md` whose `id` already exists is refused |
 
 - **Unseen changes.** A subtree unit carries the `asOfSeq` at which its writer
   saw the subtree. A change it did not see makes the unit a conflict and
-  nothing is deleted, so a delete never removes files its writer or reviewer
-  never saw.
-- **Case-only renames.** Renaming `Report.md` to `report.md` keeps the same
-  key. It is a move within one row.
+  nothing is deleted.
+- **Case-only renames.** Renaming a file changes only its written spelling.
+  Renaming a folder is a subtree unit, because every descendant's written
+  path changes.
 - **Bounds.** A subtree unit has an implementation bound of 50,000 entries.
-  It is a defect in the sense of contract 5.5, and open question 1 says how it
-  is lifted.
+  It is a defect in the sense of contract 5.5 (open question 1).
 
 ### Before the transaction
 
@@ -146,75 +213,93 @@ check that matters:
 ### The transaction
 
 Locks are taken in one fixed order, and nothing is locked after the clock.
-Every function on the read, commit and effect paths uses explicit-mode
-helpers: `qorpera_lock_company_fence(profile, mode)` and
-`qorpera_lock_run_job(job, mode)`. They replace the implicit `FOR UPDATE`
-helpers that are reachable today (`native_tool_locked_run` 20260828004000:31,
-lease validation 20260912000400:24, `runner_broker_locked_job`
-20260820002000:1529, and `qorpera_lock_profile_gc_fence` 20260907000700:7-27,
-which about 79 migrations call). A transaction that needs an exclusive lock
-takes it first. An activation check refuses any function that takes
-`FOR UPDATE` on the fence row, a profile or a job after a shared lock.
+Within each row, the strongest mode a transaction needs is taken first; a lock
+is never upgraded. The steps:
 
-The order:
-
-1. **Claim the operation key**, through the unique index, so a replay stops
-   here and returns the stored outcomes.
-2. **The run.** The job is taken `FOR KEY SHARE`. Lease renewal takes
-   `FOR NO KEY UPDATE`, which does not conflict with it, so renewal is never
-   starved.
-3. **The company fence.** The fence row is taken `FOR KEY SHARE`, never the
-   profile row. Stop, resume and GC take the fence row `FOR UPDATE`. Wake
-   admission becomes a plain update (`FOR NO KEY UPDATE`), so an effect in
-   flight no longer makes admission skip (20260907000200:15-18).
-4. **Principals and authority.** These are taken once, in one global order
-   used everywhere: members, staff, resources, grants, each sorted by id.
-   Each is taken in the strongest mode this transaction needs, because the
-   structured units are known before BEGIN. A staff row the commit will
-   rewrite as an index is taken `FOR UPDATE` here, never upgraded later. The
-   commit then re-resolves every unit's covering resource and authorization
-   after these locks; the pre-transaction check was only advisory.
-5. **Paths.** One pass in ancestors-first order (casefolded key text,
-   collation "C"):
-   - Existing targets are taken `FOR UPDATE`, and parent folders `FOR SHARE`.
+1. **Commit id and operation key.** The commit id is assigned and the
+   operation key claimed. A replay stops here and returns the stored outcomes.
+2. **The run.** The job is taken `FOR KEY SHARE`.
+   - Lease renewal takes `FOR NO KEY UPDATE`, which does not conflict with
+     it, so renewal is never starved.
+   - Every change that ends a lease (requeue, cancel, handoff, completion)
+     takes `FOR UPDATE`, which waits for commits that checked the old lease.
+     An activation check enforces this.
+   - An approval applied after its run ended (a parked unit) takes no job
+     lock. It reads the run's attribution plainly and acts under the
+     approver's authority.
+3. **The folder fence.** The company's fence row is taken `FOR KEY SHARE`.
+   - Stop and resume take it `FOR UPDATE`.
+   - Wake admission keeps `FOR UPDATE NOWAIT` on the fence and skips a busy
+     company until the next tick, as today. Effects hold only KEY SHARE, so
+     only a stop in progress makes it skip.
+   - A loop that admits wakes for many companies handles one company per
+     transaction, in sorted order.
+   - A transaction that may admit a wake (the post-commit worker, for a new
+     agent's first run) takes the fence here, before any staff row.
+   - The profile row is never locked `FOR UPDATE` or `NOWAIT` on any
+     `folder-v2` path (§9).
+4. **Principals, authority and uniques.** These are taken once, in one global
+   order used everywhere: members, staff, resources, grants, then vault rows,
+   each sorted by id.
+   - A staff row the commit rewrites as an index is taken
+     `FOR NO KEY UPDATE`, which does not block foreign-key inserts into the
+     tables that reference staff. Rows the commit only references are taken
+     `FOR KEY SHARE`.
+   - Unique keys a unit introduces (a new agent `id`, a new handle) are
+     claimed here with `INSERT … ON CONFLICT DO NOTHING`, so a clash becomes
+     an outcome at step 7, not an exception.
+   - The vault calls the commit inside its own transaction, and its secret
+     rows are locked here, not before step 1.
+   - The commit then re-resolves every unit's covering resource and
+     authorization after these locks. The check before the transaction was
+     only advisory.
+5. **Paths.** Every row this change set locks is taken in one global
+   ancestors-first order by `key_text`. That covers targets, sources, parents,
+   claims and subtree members.
+   - Existing targets and sources are taken `FOR UPDATE`, and parent folders
+     `FOR SHARE`.
    - Absent targets are claimed in the same order, by inserting a claim row
      with `ON CONFLICT DO NOTHING`, then locking it.
-   - A subtree unit locks its root `FOR UPDATE` at its place in the order,
-     then lists and locks the children, repeating until no new entry
-     appears. So a grandchild created under the subtree cannot escape it.
+   - A subtree is expanded in place. At its root's place in the order, the
+     root is locked `FOR UPDATE`, then its descendants top-down, each folder's
+     children listed only after the folder is held. Every descendant sorts
+     right after its root, so the global order holds. A grandchild created
+     under the subtree cannot escape it.
+   - The index rows of structured files inside a subtree unit are locked
+     here, from the unit's `asOfSeq` listing.
    - A missing parent is refused (PT424) unless an earlier unit of the same
      change set creates it.
-   - The parent's spelling is re-read after its lock.
-6. **Objects.** Every object row a unit references, manifest and chunks, is
-   taken `FOR KEY SHARE`, sorted by hash. A row that is absent or marked
-   deleting is refused (§7).
+   - The parent's written spelling is re-read after its lock.
+6. **Objects.** Every object a unit newly references (writes, copies, conflict
+   copies) is taken `FOR KEY SHARE`, manifest and chunks, sorted by hash. A
+   row that is absent or marked deleting is refused (§8). A move references
+   nothing new and takes no object locks.
 7. **Decide.** Each unit's outcome is decided from the locked rows, with no
    exception blocks. More than 64 subtransactions would overflow the snapshot
    cache, so failures are values, not errors. Here SQL also:
-   - recomputes each agent unit's review class and refuses one without its
-     review record (§3, *Review in SQL*);
-   - applies the refusals of 5.6 (§4);
+   - recomputes each agent unit's review class (§4, *Review in SQL*);
+   - applies the refusals of 5.6 (§5);
    - checks each structured unit's parse against its schema and database
-     rules (§4).
+     rules (§5).
 8. **Apply.** Only the clean units are applied: entries, path versions, index
-   rows (§4), the post-commit queue entries (§4) and the commit row. A unit
-   whose version check failed is not applied: nobody's work is overwritten,
-   and its bytes stay on the receipt as a conflict copy.
+   rows (§5), the queue rows (§5) and the commit row. A unit whose version
+   check failed is not applied: nobody's work is overwritten, and its bytes
+   stay on the receipt as a conflict copy.
 9. **Check.** An explicit check over the structured units confirms that every
-   index row written points at its entry's current version. These tables have
-   no deferred constraints or deferred triggers (an activation check verifies
-   this), so nothing heavy runs at COMMIT.
-10. **The clock.** `last_seq` is incremented, and the journal row is inserted
-    with that number.
+   index row written points at its entry's current version. The folder core's
+   tables have no deferred constraints or deferred triggers; an activation
+   check verifies this for them. So nothing heavy runs at COMMIT.
+10. **The clock.** `last_seq` is incremented. The commit row gets its `seq`,
+    and the journal row is inserted with it.
 
 The clock row stays locked from step 10 until the transaction ends, which is
-only the length of the final insert and the commit. A second committer can
+only the length of two small writes and the commit. A second committer can
 read `last_seq` only after the first commit is visible, and an abort rolls its
 increment back. So sequence order is commit order, and a reader following the
 journal never skips an event.
 
 What the transaction does not do:
-- take the Company File row lock;
+- lock the profile row or any whole-company row exclusively;
 - compare any whole table;
 - touch storage usage; or
 - read the NAS.
@@ -227,8 +312,9 @@ Each unit reports one of:
 - saved;
 - conflict;
 - refused (a rule of 5.6, or a structured file that fails its schema);
-- denied (authority or review);
-- waiting for review; or
+- denied (authority, or a reviewed unit without its review);
+- waiting for review (its review record is a pending ask, and the unit is
+  parked as a proposal);
 - not applied (RUNTIME-COMPANY-FOLDER.md §2).
 
 ### Who calls it
@@ -237,27 +323,26 @@ Every writer uses the same commit function, as service_role:
 - the runtime's Company File tools, until the mount's writes are accepted;
 - the folder service (the mount);
 - members through the object gateway, including the web editors for rules,
-  sections, agent details, routines and group chats, which write files;
+  sections, agent details, routines and group chats, which write files for
+  `folder-v2`;
 - the Company Computer's saves;
-- the vault, when it writes a connection file in the same transaction as its
-  secret record;
+- the vault, for connection files;
 - the reviewed-card approvals; and
 - company creation.
 
-## 3. Reads, authority, review and read sets
+## 4. Reads, authority, review and read sets
 
 ### Reads without the company lock
 
 The read path:
-- takes no job lock, and checks the job, membership, employment, sponsor and
-  pause with plain reads;
-- answers from one statement snapshot; and
-- takes no profile, fence or Company File lock.
+- takes no job, fence, profile or other company-wide lock;
+- checks the job, membership, employment, sponsor and pause with plain reads;
+  and
+- answers from one statement snapshot.
 
 The bytes are fetched after the transaction, as today, so no lock ever
 covered them. Model requests and sends recheck release anyway. Taking no job
-lock also stops a run's own parallel reads (memory reads 8 at a time,
-`cloud-memory-tools.ts:60`) from waiting on each other.
+lock also stops a run's own parallel reads from waiting on each other.
 
 - **Listings** page by (parent, name) with a key cursor, and can walk a whole
   subtree. Each page returns `asOfSeq`, read in the same statement as the
@@ -268,43 +353,51 @@ lock also stops a run's own parallel reads (memory reads 8 at a time,
 
 ### Authority revisions
 
-Every resource gets an `authority_revision`. It is separate from `version`,
-because grants are keyed by version (20260926035000:27). The revision is
-bumped by:
-- every revocation or grant removal;
-- a policy change; and
-- inserting a narrower resource under it, which bumps the covering parent.
+Authority carries two kinds of revision:
+- **structural**, on each resource: bumped by a policy change and by inserting
+  a narrower resource under it (which bumps the covering parent); and
+- **grant**, on each grant row: bumped when that principal's grant is
+  narrowed or removed.
 
-A resource or grant change takes `FOR UPDATE` on the resource it changes, and
-on the covering parent when it narrows, in the global order of §2 step 4. It
-also writes an authority journal row.
+Removing one agent's grant therefore touches only that agent's runs.
+
+A resource or grant change takes `FOR NO KEY UPDATE` on the rows it changes,
+and on the covering parent when it narrows, in the global order of §3 step 4.
+It also writes an authority journal row.
 
 ### Effects keep a narrow fence
 
-Model requests, sends, writes and wakes across agents take `FOR SHARE` on the
-covering resource rows in the run's read set (§2 step 4), and compare each
-row's recorded `authority_revision` with the current one.
+Before locking, an effect reads the pause flag and refuses at once if the
+company is paused. Otherwise, model requests, sends, writes and wakes across
+agents take `FOR SHARE` on the read set's covering resource and grant rows
+(§3 step 4), and compare the revisions recorded in the run's read set with
+the current ones.
 
 - If they match, the effect goes ahead.
-- If one changed, the effect re-resolves the paths recorded under that row
-  (in the per-command audit object) against current authority, and refuses
-  if any is no longer readable.
+- If one changed, SQL re-resolves the paths recorded under that row in
+  `qorpera_folder_run_read_paths` against current authority:
+  - it refuses if any path is no longer readable;
+  - it adds a row for any newly found narrower resource, locking it in the
+    same transaction; and
+  - it re-stamps the rows with the new revisions, so the work is done once
+    per change.
 
-So a read that resolved an old covering resource can never carry past a
-narrowing or revocation. And no resource change needs to write other runs'
-rows, so the old fix-up scan and its reversed lock order go away.
+A read therefore never carries past a narrowing or revocation. No resource
+change writes other runs' rows, so the old fix-up scan and its reversed lock
+order go away.
 
 ### Explicit resources and bases
 
 Every basis becomes an explicit resource or named basis, seeded when the
 company or member is created:
 - the root, with the default agent read/write grant (2026-09-26);
-- `members/<id>/private`, which today is an implicit rule
-  (`qorpera_company_path_resource`);
+- `members/<id>/private`, which today is an implicit rule;
 - `rules/`: owners and admins write it, every member and agent reads it;
 - the code rules, each becoming a named basis that follows the agent's folder
-  by `id`: the notebook rule, the worker/todo rule, and the hiring rule, whose
-  create-only basis is the precondition "absent", enforced by the primary key;
+  by `id`:
+  - the notebook rule;
+  - the worker/todo rule;
+  - the hiring rule, whose create-only basis is the precondition "absent";
 - **by session kind:** in a coding session, `agents/**` and `rules/**` are
   read-only (contract 5.6).
 
@@ -315,43 +408,48 @@ change. So the commit recomputes each unit's class at step 7 from the path,
 the actor and session kind, and a diff of the base parse against the new
 parse. The class is one of:
 
-- **plain:** applies at once. This includes every member change, which is
-  never reviewed;
+- **plain:** applies at once. This covers:
+  - every member change;
+  - every coding-session change that passes the `agents/**` and `rules/**`
+    refusal (coding sessions are never reviewed, contract 5.6);
+  - a routine run's own end-of-run decision: the run's wake is that routine's
+    occurrence, and only the decision fields (next run, conclusion, effort,
+    reply policy) differ;
 - **delegation:**
   - a new agent folder;
   - an `agent.md` whose `status` changes to or from `archived`;
   - a new `group.md`;
-  - creating, changing or deleting a routine file.
-
-  The exception is the routine run's own end-of-run decision: the run's wake
-  is that routine's occurrence, and only the decision fields (next run,
-  conclusion, effort, reply policy) differ. That decision is plain unless it
-  changes the instructions or the title;
+  - creating or deleting a routine file, or changing it other than by its own
+    end-of-run decision;
 - **deletion:** deleting or moving paths.
 
-An agent's delegation or deletion unit without a matching review record
-(allow, or an approved card, bound to the run, the change set's digest and the
-unit numbers) is denied. One review covers a change set. Tools that act
-outside the folder (connectors, the computer, workers, coding) keep their
-tool-name classes in `cloud-action-review.ts`.
+An agent's delegation or deletion unit is handled by its review record:
+- **allow**, or an approved card: the unit applies;
+- **pending ask:** the unit waits for review and is parked as a proposal;
+- **none, or deny:** the unit is denied.
 
-### Read sets and provenance
+One review covers a change set. Tools that act outside the folder
+(connectors, the computer, workers, coding) keep their tool-name classes in
+`cloud-action-review.ts`.
 
-- **Rows.** A run's read set is one row per (run, resource, authority
-  revision, basis, names only).
-- **Provenance.** The exact reads go into a per-command audit object with
-  what contract 9.1 requires: path, version, content hash, byte range or
-  page, and output digest. `qorpera_company_read_observations`,
-  `_read_confirmations` and `qorpera_native_context_views` are re-keyed from
-  snapshots to path versions and commit numbers.
-- **Cost of a recheck.** It grows with the number of rows. Under the default
-  grant, a whole-company search is one to three rows.
+### Read provenance
+
+The exact reads go into `qorpera_folder_run_read_paths` with what contract 9.1
+requires: path, version, content hash, byte range or page, and output digest.
+The read observations, read confirmations and context views
+(`qorpera_company_read_observations`, `_read_confirmations`,
+`qorpera_native_context_views`) gain `folder-v2` columns that point at path
+versions and commit ids instead of snapshots.
+
+- **Cost of a recheck.** Without a change, it grows with the number of
+  read-set rows. Under the default grant, a whole-company search is one to
+  three rows.
 - **Per-row checks.** The wake, message, escalation and proposal checks
   (`wake_authorized`, `send_coworker_message`, `escalate_responsibility`,
   `list_company_path_proposals`) check per row, with the same revision
   comparison.
 
-## 4. Structured files and their indexes
+## 5. Structured files and their indexes
 
 `qorpera_structured_path_kind(path)` recognises the files that contract 5.6
 gives a fixed format:
@@ -368,6 +466,7 @@ pattern match and nothing else.
 ### Parsing and schemas
 
 The writer passes each structured file's text and parse into the commit.
+
 - **Limits:** 64 KiB per file, 64 parsed files and 1 MiB of parsed text per
   change set. Moves do not count. The limits are defects in the sense of
   contract 5.5.
@@ -376,7 +475,9 @@ The writer passes each structured file's text and parse into the commit.
   database state:
   - an agent's `id` never changes;
   - the Co-Founder rules;
-  - folder handles are unique, casefolded;
+  - a new agent folder's name follows the handle rule of 5.6, whoever
+    creates it;
+  - handles are unique, casefolded;
   - referenced member and agent ids exist;
   - routine triggers are valid;
   - connection fields only the platform may write.
@@ -396,8 +497,8 @@ The writer passes each structured file's text and parse into the commit.
 - Changing any agent's `id`, or copying one into a second folder.
 - Deleting a connection file while its account is connected. Writing a
   connection's platform-only fields from anywhere but the vault.
-- Writing `rules/` other than as an owner or admin. An agent may add only an
-  Ask first personal rule, and that stays in the database.
+- Writing `rules/` other than as an owner or admin. An agent's Ask first
+  personal rule stays in the database.
 - Writing `agents/**` or `rules/**` from a coding session.
 
 ### Index effect of each unit
@@ -408,7 +509,7 @@ The writer passes each structured file's text and parse into the commit.
   rows to the new paths and versions, with no re-parse. An agent rename moves
   its routines and todos with it.
 - **Delete:** mark the index row retired, pointing at the last version.
-  Deleting an agent's folder retires its staff row: runs and sessions still
+  Deleting an agent's folder retires its staff row. Runs and sessions still
   reference it, and a retired row is exempt from the current-version check.
 - **Restore:** re-parse, and bring the row back.
 - **Copy:** parse as a new file; a duplicate `id` is refused.
@@ -417,18 +518,31 @@ The indexes cover the agent roster (`qorpera_profile_staff`), group chats
 (rooms and members), sidebar sections, routines, todos, connections, company
 rules, and the company name read from `vision/vision.md`.
 
+### Company creation is one commit
+
+Company creation for `folder-v2` seeds the tree of contract 5.6 in one commit:
+- the Co-Founder's folder and `agent.md`;
+- `vision/vision.md` and `agents/sections.md`;
+- the empty seeded folders.
+
+The same transaction writes the Co-Founder's staff row and exactly one silent
+first-run wake (launch item 3). The company stays hidden until the queue has
+converged its other side effects, as today's bootstrap job keeps a company
+hidden (`qorpera_finalize_company_bootstrap`).
+
 ### After the commit
 
-Side effects are the agent's session, first run and grants, pausing an
-archived agent's routines, and revoking its secret grants. Today they run
-inside the publish (20260828019600:528-615). In this design they converge
-after the commit:
+Other side effects converge after the commit:
+- an agent's session, grants and first run, for hires after creation;
+- pausing an archived agent's routines;
+- revoking its secret grants.
 
+Today they run inside the publish (20260828019600:528-615). In this design:
 - The commit writes a queue row per (company, subject).
-- A worker locks the subject in the global order of §2 step 4, and converges
-  it to the subject's current index row. It never replays events. A hire at
-  sequence 10 processed after an archive at sequence 11 therefore leaves the
-  agent archived.
+- A worker takes the fence (§3 step 3), then locks the subject in the global
+  order of §3 step 4, and converges it to the subject's current index row.
+  It never replays events. A hire at sequence 10 processed after an archive
+  at sequence 11 leaves the agent archived.
 - The worker is idempotent and runs at least once.
 
 Some consumers must see a status change at once. They read the index row
@@ -441,15 +555,17 @@ archived agent is fenced at once.
 A rebuild operation recomputes every index from the folder, and a periodic
 check reports drift.
 
-## 5. The journal, wakes and clients
+## 6. The journal, wakes and clients
 
 - **Journal kinds.** A journal row is a change set (its units are the path
   versions of that commit) or an authority change.
-- **The feed.** `qorpera_company_feed(after_seq, limit)`:
+- **The feed.** `qorpera_folder_feed(after_seq, limit)`:
   - returns the units the caller may read now;
-  - hides names the caller cannot read;
-  - returns "resync" past retention; and
+  - hides names the caller cannot read; and
   - never uses serialization error 40001, which PostgREST retries forever.
+
+  The journal is kept for good, so "resync" is returned only for an invalid
+  cursor.
 - **Wakes.**
   - Listener cursors hold `processed_seq`. The drain reads a batch of journal
     rows after it and matches every unit, including a move's source path.
@@ -464,20 +580,19 @@ check reports drift.
 - **The pin.** A wake's `companySnapshotId` becomes `companySeq`: the run was
   composed as of at least this commit. Reads stay live, as today. The
   transcript check (`qorpera_run_head_follows_session_pin`, which walks up to
-  4,096 revisions) becomes a comparison of sequence numbers. Substrate
-  versions are no longer created per commit.
+  4,096 revisions) becomes a comparison of sequence numbers. No substrate
+  version is created per commit.
 - **Clients.**
-  - The clock row replaces `qorpera_company_files` as the Realtime hint, and
-    the hints are coalesced. `last_seq` reveals only that something changed.
+  - The clock row is the Realtime hint, and the hints are coalesced.
+    `last_seq` reveals only that something changed.
   - On a hint, the web client asks the feed what changed instead of listing
     everything again.
-  - A saved `agents/sections.md` updates the sidebar index in the same step,
-    which replaces today's separate counter row.
+  - A saved `agents/sections.md` updates the sidebar index in the same step.
 - **Presence** already keys by covering resource
-  (`presence_path_routes`, 20260908002700:28-63). It only loses its company
-  locks.
+  (`presence_path_routes`, 20260908002700:28-63). It uses the actor's
+  `folder-v2` branch and takes no company locks.
 
-## 6. Content storage
+## 7. Content storage
 
 These stay:
 - the flat content-addressed layout on the NAS (`<root>/<profileId>/<sha256>`,
@@ -494,54 +609,55 @@ These change:
   full authority calls per chunk (20260828008000:4-45).
 - The object gateway's limit of two NAS operations in flight per process
   (`object-store.ts:126`) is raised.
-- A member upload with `p_tree=true`, which admits any hash, goes away with
-  tree manifests.
+- For `folder-v2`, a member upload with `p_tree=true`, which admits any hash,
+  does not exist.
 
-## 7. Garbage collection and erasure
+## 8. Garbage collection and erasure
 
 ### Roots
 
 An object is retained while it is referenced by any of:
 - a live entry;
-- a path version (versions are kept for good, apart from the `code/` git
-  exception and erasure);
+- a path version (kept for good, apart from the git-object exception and
+  erasure);
 - an open upload intent;
 - a conflict copy on a receipt;
-- an open proposal or a unit parked on a review card (these never expire,
-  2026-09-25 amendment, item 5); or
+- an open proposal, including units parked on a review card, which never
+  expire (2026-09-25 amendment, item 5); or
 - a retention hold.
 
 ### Invariants
 
-- **G1. References lock the object.** Every reference (intent, unit, conflict
-  copy, proposal, hold, restore) takes `FOR KEY SHARE` on the manifest row and
-  on every chunk row, and refuses rows that are absent or marked deleting.
-  Intents list their chunks.
+- **G1. References lock the object.** Every new reference (intent, write,
+  copy, conflict copy, proposal, hold, restore) takes `FOR KEY SHARE` on the
+  manifest row and every chunk row, and refuses rows that are absent or
+  marked deleting. Intents list their chunks.
 - **G2. GC marks before it unlinks.** GC locks the object row `FOR UPDATE`,
   re-checks every root in a new statement, and commits the `deleting` mark
   before any unlink.
-- **G3. A deleting object is never "already there".** An upload never answers
-  that a deleting or absent object exists: `put` asks the catalog first,
-  unlike today's `object-store.ts:60`. The unlink goes through a quarantine
-  rename and a final re-check, instead of today's unconditional `remove`
-  (`:110-113`).
+- **G3. A deleting object is never "already there".** An upload of a hash
+  marked deleting waits for GC to finish, then writes the bytes again. `put`
+  asks the catalog first, unlike today's `object-store.ts:60`. The unlink goes
+  through a quarantine rename and a final re-check. If the re-check finds a
+  root, GC clears the mark and restores the bytes from quarantine; otherwise
+  it removes them. There is no unconditional `remove` as at `:110-113`.
 - **G4. Grace is measured from the last reference.** Each object keeps
   `unreferenced_since`, set when its last root ends and cleared on reuse. GC
   considers only objects past a grace window measured from that time, not
   from `created_at` (today's cutoff, 20260913000100:76). Long uploads renew
   their intents.
-- **G5. The old gate goes last.** Today's company-wide gate
-  (`qorpera_profile_gc_deletion_active`, 20260821009000:335-352) goes only
-  once G1–G4 are built and tested.
 
-Until C5, today's GC must never claim a `folder-v2` company's objects. From
-C1, `qorpera_claim_company_object_gc` (20260913000100:68-130) skips them.
+With G1–G4 in place, GC for `folder-v2` takes no company fence and needs no
+company-wide gate. Today's gate (`qorpera_profile_gc_deletion_active`,
+20260821009000:335-352) stays for `snapshot-v1`. From C1, today's GC
+(`qorpera_claim_company_object_gc`, 20260913000100:68-130) never claims a
+`folder-v2` company's objects.
 
 ### Erasure
 
 Permanent erasure (contract 5.6) is an owner or admin operation on a deleted
 agent's folder. It removes that folder's path versions and marks the commits'
-units erased, keeping their attribution. The bytes then lose their roots and
+units erased, keeping their attribution. The bytes then lose their roots, and
 GC collects them.
 
 ### Tests
@@ -550,39 +666,66 @@ GC is the largest correctness risk of the design, so it gets its own tests:
 - a read that races GC;
 - an upload that races GC;
 - the reuse of an old chunk;
+- a quarantine re-check that finds a root;
 - a restore of an old version; and
 - erasure.
 
-## 8. Locks, summarised
+## 9. Locks, summarised (folder-v2)
 
-| Lock | Today | Here |
+| Lock | Today | folder-v2 |
 | --- | --- | --- |
 | Company File row | every call, `FOR UPDATE` | never |
-| Profile row | every call, `FOR UPDATE` | never on the read, commit or effect paths |
-| Fence row | every call, `FOR UPDATE` | effects `FOR KEY SHARE`; wake admission `FOR NO KEY UPDATE`; stop, resume and GC `FOR UPDATE`; reads never |
-| Job row | `FOR UPDATE`, which also serializes a run's own reads | commits and effects `FOR KEY SHARE`; renewal `FOR NO KEY UPDATE`; reads never |
-| Members, staff, resources, grants | various, unordered | once, in one global order by id, in the strongest mode needed |
-| Entry rows | the one path, after the head | every path of the change set, ancestors first; absent targets claimed in order |
+| Profile row | every call, `FOR UPDATE` | never `FOR UPDATE` or `NOWAIT`, on any path. Foreign-key inserts take their KEY SHARE, which nothing now blocks |
+| Folder fence row | not present (the wake-admission fence, `FOR UPDATE`) | effects and the post-commit worker `FOR KEY SHARE`; stop and resume `FOR UPDATE`; admission `FOR UPDATE NOWAIT`, one company per transaction; reads and GC never |
+| Job row | `FOR UPDATE`, which also serializes a run's own reads | commits and effects `FOR KEY SHARE`; renewal `FOR NO KEY UPDATE`; lease-ending changes `FOR UPDATE`; reads never |
+| Members, staff, resources, grants, vault rows | various, unordered | once, in one global order by id: `FOR NO KEY UPDATE` for rows rewritten, `FOR KEY SHARE` for rows referenced |
+| Entry rows | the one path, after the head | every row of the change set, ancestors first; absent targets claimed in order; subtrees expanded in place |
 | Clock | none | last, from the increment to the end of the commit |
 
-**Stop, in two phases.** Stop first commits the pause, so new effects see it
-and refuse. It then takes the fence row `FOR UPDATE`, which waits out the
-effects in flight, and bumps the revision. A stream of shared lockers can
-therefore not starve it.
+**No exclusive lock on the profile row.** Effects insert rows whose foreign
+keys point at `qorpera_profiles`, so a function that locked the profile row
+`FOR UPDATE` and then the fence would deadlock against them (the pattern in
+20260927150000:4-9). So on a `folder-v2` company, no path takes the profile
+row `FOR UPDATE` or `NOWAIT`, whether new or old. That covers:
+- `qorpera_lock_profile_gc_fence` (20260907000700:7,14), which about 79
+  migrations call;
+- the direct sites: 20260926130000:204,806, 20260907000200:15,
+  20260908001900:39 and 20260920030500:540.
 
-**This is a broad lock-order change.** The incident notes of 27 September
-warn against exactly that (20260927150000:1-37, 20260927130000). So:
-- it applies only to `folder-v2` companies (§10);
-- it ships behind activation checks that verify lock text
-  (20260927162900:89-110);
-- the explicit-mode helpers replace, rather than add, fence takers; and
+On `folder-v2`, each of these uses the folder fence in the mode its caller
+needs.
+
+C1 records a decision for each fence caller:
+- **shared** (effects);
+- **exclusive** (stop, resume, and callers whose own rules need
+  serialization, such as the wake count, 20260907000200:30-31, or rule
+  inserts); or
+- **moved** to a narrower lock of its own.
+
+An activation check follows call chains and triggers, not single functions.
+It refuses any `folder-v2` path that:
+- locks the profile row exclusively;
+- takes an exclusive lock on a row after a shared lock on the same row; or
+- ends a lease without `FOR UPDATE`.
+
+**Stop, in two phases.** Stop first commits the pause, and effects read the
+pause before they lock, so new ones refuse without queueing. Stop then takes
+the fence row `FOR UPDATE`, which waits out the effects in flight, and bumps
+the revision.
+
+**This is a broad lock-order change.** The incident notes of 27 September warn
+against exactly that (20260927150000:1-37, 20260927130000). So:
+- it applies only to `folder-v2` companies;
+- `snapshot-v1` keeps today's exact lock text, verified by activation checks;
+- the new paths ship behind activation checks that verify their lock text
+  (as 20260927162900:89-110 does); and
 - it is load-tested before any company uses it.
 
 **The load test.** It extends `scripts/load-company-file-fence.mjs`, which
 today runs on tmpfs, drives one sequential agent and excuses 55P03, to:
 - run on a real disk;
 - drive 32 to 64 concurrent runs mixing change sets, reads, listings, stop,
-  wakes, ACL narrowing, subtree deletes and GC;
+  wakes, ACL narrowing, subtree deletes, the post-commit worker and GC;
 - count deadlocks, lock waits and multixact use (`pg_stat_slru`);
 - check for authority leaks, missing parents and lost bytes; and
 - measure stop latency and admission skips.
@@ -590,17 +733,18 @@ today runs on tmpfs, drives one sequential agent and excuses 55P03, to:
 It passes only with no deadlocks, no leaks or losses, and tool-call waits well
 under the 4-second result fence (`cloud-native-result-fence.ts`).
 
-## 9. What goes, and when
+## 10. What goes, and when
 
-Because of the clean reset, nothing is migrated. Old code is removed in C6,
-after the reset (§10), because until then `snapshot-v1` companies still use
-it:
+Because of the clean reset, nothing is migrated. `snapshot-v1` companies use
+the old code until the reset, so it is removed in C6:
 
 - **Company File columns:** the head, the path-index snapshot and the
   canonical workspace columns on `qorpera_company_files`.
-- **Snapshot and revision tables:** company snapshots, publications, the tree
-  cache, path revisions, workspaces, company-root graphs and restore proofs,
-  and substrate snapshot pins.
+- **Old tables:**
+  - today's `qorpera_company_path_entries` and path revisions;
+  - company snapshots, publications and the tree cache;
+  - workspaces, company-root graphs and restore proofs, and substrate
+    snapshot pins.
 - **Snapshot columns** on sessions, runs, turns, wake claims, receipts and
   proposals. They are replaced by commit or sequence references.
 - **The legacy snapshot lane:**
@@ -616,58 +760,61 @@ it:
   - the legacy-lane functions patched by 20260927150000.
 
   The same migration also patched the upload quota trigger
-  (`qorpera_enforce_company_storage_quota`), which stays, re-pointed at the
-  usage row.
+  (`qorpera_enforce_company_storage_quota`), which stays and serves both
+  cores until C6.
 - **The old organization paths** `organization/agents|rooms|projects/*.json`
   and `organization/formation.json`, with their projectors.
-- **Rewritten, not dropped:**
-  - the observability functions on revisions (20260828019970:244,367);
+- **The dual-mode scaffolding:** the core flag, the actor's branch, the
+  `folder-v2` guards on shared tables, and the refusals in old writers.
+
+Some things are rewritten earlier, because the reset or the proof company
+needs them:
+- **By C4:** the observability functions on revisions
+  (20260828019970:244,367), so the proof company is visible.
+- **By C5:**
+  - the Company File acceptance gates that launch item 19 names;
   - the SQL tests in `scripts/test-*.mjs` that use snapshots;
-  - the rollout templates that read the head
+  - the rollout templates pinned to Company41's head
     (`scripts/runtime-rollout/templates/sql-packet.mjs:10-13`,
-    `rehearse-wrapper.mjs:85-90`); and
-  - the activation-template guards on dropped functions
+    `rehearse-wrapper.mjs:85-90`), which break at the first cut after the
+    reset; and
+  - the activation-template guards on functions this design changes
     (`scripts/generate-cloud-runtime-bundle.mjs:169`).
 
-## 10. Rollout and build plan
+## 11. Build plan
 
-Master goes live at every release cut (RUNTIME-RELEASE-TRAIN.md), so new code
-must be inert for today's companies until the reset. The per-company flag
-`qorpera_company_files.core` does this:
-
-- Every new function and code path runs only for `folder-v2` companies, and
-  every existing path keeps serving `snapshot-v1` companies unchanged.
-- Company creation makes `folder-v2` companies only when an operator asks for
-  one, until C5.
-- So one proof company can run on the new core in production before the reset.
-
-This is a temporary code-level dual mode; there is still no data migration.
-
-Every PR rides the release train and gets an independent review.
+Every PR rides the release train and gets an independent review. Every new
+function and code path runs only for `folder-v2` companies (§1).
 
 ### C1. The core
 
-- The schema of §1, with the flag.
-- The change-set commit, with explicit-mode lock helpers and the activation
-  checks of §8.
+- The flag, the folder core's tables, and the `folder-v2` source columns and
+  guards on the shared tables.
+- The change-set commit with the lock rules of §3 and §9, the folder fence,
+  and the activation checks.
+- The actor's `folder-v2` branch, and the per-caller decisions: unchanged,
+  branches, refuses.
 - Reads without the company lock.
-- Authority revisions, read sets by covering resource, explicit resources
-  and bases, and read provenance re-keyed.
+- Authority revisions, read sets by covering resource and grant, explicit
+  resources and bases, and read provenance.
 - Review classification in SQL.
-- GC for `folder-v2` (§7, G1–G4) and today's GC skipping `folder-v2`.
+- GC for `folder-v2` (G1–G4), and today's GC skipping `folder-v2`.
 - Tests:
-  - SQL tests for every unit and outcome;
+  - SQL tests for every unit and outcome, and for every old writer refusing
+    `folder-v2`;
   - concurrency tests: disjoint writes, same-path conflicts, absent-target
-    claims, subtree moves and deletes with `asOfSeq`, fence and stop,
-    admission and lease renewal, and ACL narrowing against sends;
+    claims, subtree moves and deletes with `asOfSeq`, move against subtree
+    delete, fence and two-phase stop, admission, lease renewal and
+    lease-ending changes, ACL narrowing against sends, and the post-commit
+    worker against archive;
   - GC race tests.
 
-### C2. Structured files and seeding
+### C2. Structured files, seeding and erasure
 
-- The hook of §4: schemas, indexes, the refusals and the converging queue.
-- For `folder-v2` companies, creation seeds the tree of contract 5.6 in one
-  commit: the Co-Founder's folder and `agent.md`, `vision/vision.md`,
-  `agents/sections.md`, and the empty seeded folders.
+- The hook of §5: schemas, indexes, the refusals and the converging queue.
+- Company creation as one commit with the first-run wake.
+- Proposals for parked units and the restricted hire.
+- Erasure.
 
 ### C3. Runtime and writers
 
@@ -682,42 +829,50 @@ For `folder-v2` companies:
 
 - The wake drain works on sequence numbers, and the pin becomes `companySeq`.
 - The feed and the Realtime hint.
+- The observability views.
 - The web client's file page, history view and editors (rules, sections,
-  agent details, routines, group chats) write and read files.
-- Tolerant readers go out first:
+  agent details, routines, group chats) branch on the core flag, and write
+  and read files for `folder-v2`.
+- Tolerant readers and writers go out first:
   - the runner orchestrator accepts runs without snapshot or substrate ids
     (`orchestrator.ts:640-641`);
   - the object gateway serves `folder-v2` without tree manifests
     (`member-company-file.ts:794`, `company-bootstrap.ts:252`);
   - the edge functions handle `folder-v2` (runner-broker's verifier call
     `index.ts:348`, runner-control's `outputSnapshotId` `runner-control.ts:155`,
-    member-company-gateway's snapshot route).
+    member-company-gateway's snapshot route);
+  - the secret broker, deployed separately, writes connection files.
 
 ### C5. Proof, reset and switch
 
-1. An operator creates one `folder-v2` proof company and runs the core
-   acceptance below. The load test of §8 passes.
-2. The reset procedure is written as a service-role function. Today's product
+1. The rewrites of §10 due by C5 land.
+2. An operator creates one `folder-v2` proof company and runs the core
+   acceptance below. The load test of §9 passes.
+3. The reset procedure is written as a service-role function. Today's product
    delete (`qorpera_delete_hosted_profile`, 20260818006000:41-68) fails for any
    company that has had a run: restrict foreign keys and triggers refuse
    deletes.
-3. Its exact scope goes to the founder for confirmation.
-4. One owner runs it in a short maintenance pause, and company creation
+4. Its exact scope goes to the founder for confirmation, including whether the
+   proof company is deleted too.
+5. One owner runs it in a short maintenance pause, and company creation
    switches to `folder-v2` by default.
 
 **Core acceptance (C5).** On a new company:
-- the seeded tree exists;
+- the seeded tree exists, and creation wrote exactly one first-run wake;
 - agents read, list, search and write through change sets, and disjoint
   writes never conflict;
 - a same-path conflict keeps a conflict copy;
-- a move and a subtree delete work;
+- a move and a subtree delete work, and a subtree delete refuses a change it
+  did not see;
 - hiring, archiving, a routine file, a group chat and sections each update
   their index, and pass or skip review as 5.6 says;
-- a coding session cannot write `agents/`;
+- a coding session cannot write `agents/`, and is never reviewed;
 - a file change wakes a listener exactly once;
 - the web file page and history show the change;
-- revocation stops a send;
-- GC races lose nothing; and
+- revocation of one agent's grant stops that agent's send and no other;
+- stop takes effect under load;
+- GC races lose nothing;
+- erasure removes a deleted agent's history; and
 - the launch items of the layout amendment that do not need the mount pass:
   3, 4, 5, 11, 15, 17, 19 and 21.
 
@@ -726,8 +881,7 @@ the mount steps.
 
 ### C6. Removal
 
-Once no `snapshot-v1` company remains, the old code and tables of §9 are
-removed, and the flag with them.
+Once no `snapshot-v1` company remains, everything in §10 goes.
 
 After C5, the mount's build steps continue from RUNTIME-COMPANY-FOLDER.md §9.
 - Step 1's reading side is largely delivered by C1 and C4.
