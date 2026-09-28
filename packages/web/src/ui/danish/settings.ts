@@ -135,6 +135,36 @@ export const SETTINGS: Record<string, string> = {
 	"No card on file": "Intet kort tilføjet",
 	Invoices: "Fakturaer",
 	"No invoices yet": "Ingen fakturaer endnu",
+	// Payments through Stripe (app/views/plan.ts, app/plan-payments.ts)
+	"Choose {plan}": "Vælg {plan}",
+	"Switch plan": "Skift abonnement",
+	"Opening…": "Åbner…",
+	"Prices are ex. VAT. You pay on Stripe's secure page.": "Priserne er ekskl. moms. Du betaler på Stripes sikre side.",
+	"Test mode: nothing is charged.": "Testtilstand: intet bliver opkrævet.",
+	"Renews {date}": "Fornyes {date}",
+	"Ends {date}": "Slutter {date}",
+	"Paid through Stripe": "Betalt via Stripe",
+	"Waiting for the first payment": "Venter på første betaling",
+	"Payment failed. Update your card under Payments and invoices.":
+		"Betalingen mislykkedes. Opdater dit kort under Betalinger og fakturaer.",
+	"Other companies": "Andre virksomheder",
+	"Buy hours": "Køb timer",
+	"For {company}, valid for 12 months. Prices are ex. VAT.":
+		"Til {company}, gælder i 12 måneder. Priserne er ekskl. moms.",
+	"Computer hours are paid by the founders. You are never charged.":
+		"Computertimer betales af stifterne. Du bliver aldrig opkrævet.",
+	"Payments and invoices": "Betalinger og fakturaer",
+	"None scheduled": "Ingen planlagt",
+	"On Stripe's billing page": "På Stripes betalingsside",
+	"Thank you. Your hours are added as soon as Stripe confirms the payment.":
+		"Tak. Dine timer bliver tilføjet, så snart Stripe bekræfter betalingen.",
+	"Payments are unavailable right now. Try again in a moment.":
+		"Betaling er ikke tilgængelig lige nu. Prøv igen om lidt.",
+	"You already have a plan. Change it under Payments and invoices.":
+		"Du har allerede et abonnement. Skift det under Betalinger og fakturaer.",
+	"Only the company's founders can buy computer hours.": "Kun virksomhedens stiftere kan købe computertimer.",
+	"This offer is not available right now.": "Tilbuddet er ikke tilgængeligt lige nu.",
+	"No payments yet.": "Ingen betalinger endnu.",
 
 	// Friends (app/views/friends.ts)
 	"Request sent to {email}.": "Anmodning sendt til {email}.",

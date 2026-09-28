@@ -24,6 +24,7 @@ import { AuthController } from "./auth.ts";
 import { CompanyController } from "./company.ts";
 import { FoundingController } from "./founding.ts";
 import { MemberPictures } from "./member-pictures.ts";
+import { PlanPayments, takeCheckoutReturn } from "./plan-payments.ts";
 import { currentRoute, navigate, type Route } from "./router.ts";
 import { createConversationStarter } from "./start-conversation.ts";
 import { debounce } from "./state.ts";
@@ -138,6 +139,8 @@ export function mountApplication(
 	// Taken from the page hash once at startup and on every route change; the
 	// broker appends it after the provider consent (see cloud/connectors.ts).
 	let connectorReturn = takeConnectorReturn();
+	// Stripe's checkout page sends the member back to the account page.
+	let checkoutReturn = takeCheckoutReturn();
 	let accountUserId: string | undefined;
 	let navigationOpen = false;
 	let navigationFocus: "rail" | "toggle" | undefined;
@@ -172,6 +175,7 @@ export function mountApplication(
 	}
 	function onRouteChange(): void {
 		connectorReturn = takeConnectorReturn() ?? connectorReturn;
+		checkoutReturn = takeCheckoutReturn() ?? checkoutReturn;
 		if (liveFile && liveFile.routeHash !== location.hash) {
 			const message = liveFile.leaveMessage();
 			if (message && !window.confirm(message)) {
@@ -205,6 +209,7 @@ export function mountApplication(
 	let teamFeedback: TeamFeedback = {};
 	let accountState: AccountViewState = {};
 	const accountPlan = h("div");
+	let accountPayments: PlanPayments | undefined;
 	let meetState: MeetState = {};
 	let unsubscribeCompany: (() => void) | undefined;
 	let homeReason: string | undefined;
@@ -235,6 +240,8 @@ export function mountApplication(
 			hub.dispose();
 			profiles = [];
 			accountState = {};
+			accountPayments?.dispose();
+			accountPayments = undefined;
 			meetState = {};
 			resolvingRoute = undefined;
 			routeError = undefined;
@@ -566,7 +573,28 @@ export function mountApplication(
 				// The standalone account page shows the plan below the general settings.
 				// One panel across renders keeps an opened plan grid open; the general
 				// panel above already shows the account error.
-				renderPlan(accountPlan, accountState, undefined, {}, { showError: false });
+				if (checkoutReturn) {
+					accountPayments?.dispose();
+					accountPayments = undefined;
+				}
+				accountPayments ??= new PlanPayments(api, render, checkoutReturn === "done" ? "done" : undefined);
+				checkoutReturn = undefined;
+				accountPayments.load();
+				const payments = accountPayments;
+				renderPlan(
+					accountPlan,
+					accountState,
+					undefined,
+					{
+						payments: {
+							state: payments.state,
+							checkout: (itemKey) => payments.checkout(itemKey),
+							portal: () => payments.portal(),
+							companyName: (profileId) => profiles.find((item) => item.profileId === profileId)?.profileName,
+						},
+					},
+					{ showError: false },
+				);
 				main.append(accountPlan);
 			}
 			return;
@@ -1143,6 +1171,7 @@ export function mountApplication(
 		hub.dispose();
 		teardownFounding();
 		teardownCompany();
+		accountPayments?.dispose();
 		pictures.reset();
 		if (personPictures() === pictures) setPersonPictures(undefined);
 		window.removeEventListener("hashchange", onRouteChange);
