@@ -66,8 +66,10 @@ path an entry is actually stored under, its parent folder's stored spelling incl
 So a rename can never leave a file that no later save could pass. Renaming
 `routines/daily.md` to `Daily report.md`, or case-only to `Daily.md`, is refused. So is
 creating an ordinary folder `agents/anna/Routines/`, which would give a later routine the
-wrong spelling. A subtree move checks the moved folder's new name; the names inside it do not
-change. A failed path check refuses the unit as `structured_invalid` with `name` problems.
+wrong spelling. A subtree move checks every folder it carries whose new path is a structured
+place, not only the moved folder itself: an ordinary folder holding `Todos/`, moved to
+`agents/x`, is refused. A failed path check refuses the unit as `structured_invalid` with
+`name` problems.
 
 `companyStateName` makes a name from a display name: NFC first, then æ → ae, ø → oe,
 å → aa, accents dropped, spaces to hyphens, the rest dropped. `freeCompanyStateName` adds `-2`,
@@ -83,8 +85,8 @@ Today's routine, todo and worker keys allow `.`, `_` and up to 96 characters
 A strict subset of YAML 1.2. A YAML 1.2 core-schema reader reads the same values from any file
 the parser accepts. YAML 1.1 readers (js-yaml, PyYAML) may read some plain values differently:
 an unquoted instant as a timestamp, or, depending on the reader, forms such as `yes`, `8:00`,
-`010`, `0b101`, `0x1F` or `1_000` as a boolean or a number. The canonical writers quote forms
-like these, but not instants.
+`010`, `0b101`, `0x1F` or `1_000` as a boolean or a number. The canonical writers and
+`companyStateValue` quote forms like these, but leave a canonical instant plain.
 
 - The file starts with a line `---`; the block ends at the next line `---`. A UTF-8
   byte-order mark and CRLF line ends are accepted.
@@ -542,8 +544,10 @@ of today's `revision`.
 
 ## 7. The hook interface with the storage core
 
-Proposed to F1 on #408 (comment 5864281465). F1 owns the commit, its lock order, and the
-follow-up queue table and its drain loop. F2 owns the functions it calls. All are plpgsql,
+Agreed with F1 on #408 (comments 5864281465 and 5865135113; F1's answers). C1b adds the call
+sites to `qorpera_folder_commit` with inert stubs of exactly these signatures, and F2's SQL
+slices replace the stub bodies with `create or replace`, never touching the commit. F1 owns the
+commit, its lock order, and the follow-up queue table and its drain loop. F2 owns the functions it calls. All are plpgsql,
 security definer, `search_path = ''`, and called only from the commit or the rebuild. They
 raise only for malformed calls. `decide` checks every index constraint, so `apply` never raises
 on a unit that `decide` passed.
@@ -552,12 +556,12 @@ on a unit that `decide` passed.
 | --- | --- | --- |
 | before tx (TS) | `parseCompanyStateFile(path, text)` | Each structured path of a unit gets an entry in `structured: [{path, kind, text, parse, parserVersion}]`, or `[{path, kind, problems}]` without the text when refused. A `new_folder` lists every structured file inside it. SQL re-hashes each parsed file's text against its file hash. |
 | any | `qorpera_structured_path_kind(path)` | The pattern table, on the key. |
-| 4, plan | `qorpera_folder_structured_targets(env, actor, units)` | Takes no locks. Returns the rows to lock, each with its rank and mode: index rows by parse id, index rows by path prefix for a subtree unit as of its `asOfSeq`, referenced member rows (`people`, `requested_by`, `connected_by`: rank 1, KEY SHARE), and unique claims. |
-| 4, lock | `qorpera_folder_structured_lock(env, targets, from_rank, to_rank)` | Locks through a closed list of tables. Rank 1 is merged with the actor's own member row in member-id order. Called for ranks 1–2, 4–5 and 8–9. |
-| 7, per unit | `qorpera_folder_structured_decide(env, actor, unit_no, unit, base)` | Runs after F1's own checks. Covers the database rules, the dependency rule and the 5.6 refusals, and returns `{ok, reason, problems}`. `base` is the index as the earlier units left it. |
-| 7, review | `qorpera_folder_structured_review_class(kind, base_parse, new_parse, actor, op)` | Returns plain, delegation or deletion. The TS proposal before the transaction applies the units in the same order, so both sides agree. |
-| 8, per clean unit | `qorpera_folder_structured_apply(env, commit_id, unit_no, unit)` | Writes the index rows, the parse and the follow-up rows. It finds each file's new version in `qorpera_folder_path_versions` by (commit, unit, key). |
-| 9 | `qorpera_folder_structured_verify(env, commit_id)` | Checks that each index row written points at its entry's current version. |
+| 4, plan | `qorpera_folder_structured_targets(p_environment_id uuid, p_actor jsonb, p_units jsonb) returns table(rank smallint, tbl text, key text, mode text)` | Takes no locks. Returns the rows to lock, each with its rank and mode: index rows by parse id, index rows by path prefix for a subtree unit as of its `asOfSeq`, referenced member rows (`people`, `requested_by`, `connected_by`: rank 1, KEY SHARE), and unique claims (`key` is a uuid as text, or a claim key). Rows of F1's tables (members, execution authorities, resources, grants) are merged into F1's own pass at their rank, the stronger mode winning. |
+| 4, lock | `qorpera_folder_structured_lock(p_environment_id uuid, p_targets jsonb, p_from_rank smallint, p_to_rank smallint) returns void` | Locks F2's tables through a closed list, in key order. F1 calls it for ranks 2, 4–5 and 8–9, between its own ranks 1, 3, 6 and 7. |
+| 7, per unit | `qorpera_folder_structured_decide(p_environment_id uuid, p_actor jsonb, p_commit_id uuid, p_unit_no integer, p_unit jsonb, p_eff_path text, p_eff_to text) returns jsonb` | Runs after F1's own checks, on the effective (stored) paths. Covers the path checks, the database rules, the dependency rule and the 5.6 refusals, and returns `{ok, reason, problems}`. It reads the index as the earlier units of the commit left it. |
+| 7, review | `qorpera_folder_structured_review_class(p_environment_id uuid, p_actor jsonb, p_unit jsonb, p_eff_path text, p_eff_to text) returns text` | Returns plain, delegation or deletion, from the base parse (the current entry's path version) and the new one. The TS proposal before the transaction applies the units in the same order, so both sides agree. |
+| 8, per clean unit | `qorpera_folder_structured_apply(p_environment_id uuid, p_commit_id uuid, p_unit_no integer, p_unit jsonb, p_eff_path text, p_eff_to text) returns void` | Writes the index rows, the parse and the follow-up rows. It finds each file's new version in `qorpera_folder_path_versions` by (commit, unit, key). |
+| 9 | `qorpera_folder_structured_verify(p_environment_id uuid, p_commit_id uuid) returns void` | Checks that each index row written points at its entry's current version; raises XX000 on a mismatch. |
 | after | `qorpera_folder_converge_<kind>(env, subject)` | The follow-ups, safe to repeat. |
 | any | `qorpera_folder_index_rebuild(env, kind, rows)` | Rebuild and drift check. |
 
@@ -566,13 +570,21 @@ on a unit that `decide` passed.
   until the clock step, so a unit's own earlier writes never count. Writing a child does not
   change the folder's version, so the move's `expectedVersion` holds.
 - The reverse order (move, then write with the old version) conflicts.
-- Asked of F1: make the exclusion explicit (`c.id <> v_commit_id`) and cover it with a test.
+- F1 kept this on purpose and covers it with test 630 (`r2-edit-then-rename`).
 
-**Open with F1:**
-- where the parse is stored: `structured jsonb` on the path version;
-- who wires the dispatch (C2);
-- the company index row, so the profile row is never locked;
-- which slice brings agent actors and the session kind.
+**Lock ranks** are core §3 step 4 as written: 1 members (commit), 2 staff (F2), 3 execution
+authorities (commit), 4 rooms then room members (F2), 5 the other index rows by table then id
+(F2), 6 resources ancestors first (commit), 7 grants (commit), 8 vault rows (F2), 9 unique-key
+claims by kind then key (F2). All nine come before paths, objects, admission and the clock.
+
+**Agreed with F1:**
+- The parse is stored as a nullable `structured jsonb` on `qorpera_folder_path_versions`, added
+  by F2's first SQL slice and set only for structured kinds.
+- The company name index is `qorpera_folder_company_index`; the follow-up queue copies the name
+  to `qorpera_profiles.name` for old readers, and commits never lock the profile row.
+- C1b brings `staff_agent` actors with the run and its lease, the fence revision, the causal
+  wake (routine id and version for a routine run) and the session kind (`in_house`, `coding`).
+- New-folder content paths are spelled with `qorpera_folder_spelled_contents(root, contents)`.
 
 ## 8. Build order
 

@@ -1367,7 +1367,7 @@ export function companyStateValue(text: string): string {
 		!/^[-?:](?:\s|$)/.test(text) &&
 		!/: |:$| #/.test(text) &&
 		!ambiguousPlain(text) &&
-		!yaml11Ambiguous(text) &&
+		(!yaml11Ambiguous(text) || canonicalCompanyStateInstant(text) === text) &&
 		!WRITER_ESCAPED.test(text);
 	return plain ? text : quote(text);
 }

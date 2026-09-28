@@ -177,6 +177,7 @@ describe("companyStatePath", () => {
 		expect(codes("agents/Anna/", true)).toEqual(["name"]);
 		expect(companyStatePathProblems("agents/a/todos/T", true)[0]?.message).toContain("for example t");
 		expect(companyStatePathProblems("agents/a/todos/t/日本", true)[0]?.message).toContain("for example worker");
+		expect(companyStatePathProblems("agents/a/todos/日本", true)[0]?.message).toContain("for example todo");
 	});
 
 	it("leaves ordinary files alone", () => {
@@ -935,6 +936,9 @@ describe("companyStateValue", () => {
 		);
 		expect(ok("agents/groups/l/group.md", group)).toMatchObject({ agents: [ANNA, IDA] });
 		for (const text of ["2026-09-30", "2026-9-3", "._5"]) expect(companyStateValue(text)).toBe(`"${text}"`);
+		// A canonical instant stays plain, as the file writers write it.
+		expect(companyStateValue("2026-09-30T07:00:00Z")).toBe("2026-09-30T07:00:00Z");
+		expect(companyStateValue("2026-09-30T07:00Z")).toBe('"2026-09-30T07:00Z"');
 	});
 });
 
