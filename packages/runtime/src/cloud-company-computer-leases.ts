@@ -12,6 +12,7 @@ import {
 	type CompanyComputerScreenLease,
 	companyComputerRequest,
 } from "@qorpera/cloud-client/cloud-company-computer-contract";
+import { companyComputerAuthorityUnanswered } from "./cloud-company-computer-registry-http.ts";
 
 /**
  * Only the authenticated screen registry adapter may emit this after a definitive
@@ -207,6 +208,50 @@ interface ActiveScreenAction {
 	drained: Promise<void>;
 }
 
+/**
+ * The action's own work failed and has ended: a page that did not load in
+ * time, a target that never became clickable, a command stopped at its own
+ * limit and confirmed exited, an authority check between its steps that got no
+ * answer. Nothing of it is still running. Only the guest automation raises
+ * this, around its own calls; the message is the underlying one.
+ */
+export class CompanyComputerActionFailedError extends Error {
+	constructor(cause: unknown) {
+		super(cause instanceof Error ? cause.message : "COMPUTER_ACTION_FAILED", { cause });
+		this.name = "CompanyComputerActionFailedError";
+	}
+}
+
+/**
+ * An authority check between an action's own steps. If it got no answer, the
+ * action fails as its own (every earlier step has returned, so nothing is left
+ * running) and the gate rechecks before deciding anything; a refusal stays
+ * untyped, so the gate stops automation.
+ */
+export async function companyComputerActionCheck(check: Promise<void>): Promise<void> {
+	try {
+		await check;
+	} catch (error) {
+		if (companyComputerAuthorityUnanswered(error)) throw new CompanyComputerActionFailedError(error);
+		throw error;
+	}
+}
+
+/**
+ * The gate returned this failure knowing that nothing of the action is still
+ * running and nothing had to be stopped; `cause` is the failure itself. Each
+ * is created for one action, so a shared error object can never carry the
+ * mark to another. A deadline that passed while the work ran never is one. The
+ * caller drains the action's resource after the gate returned, then reports
+ * the cause.
+ */
+export class CompanyComputerActionSettledFailure extends Error {
+	constructor(failure: unknown) {
+		super(failure instanceof Error ? failure.message : "COMPUTER_ACTION_FAILED", { cause: failure });
+		this.name = "CompanyComputerActionSettledFailure";
+	}
+}
+
 /** A failed shutdown is not proof that effects stopped; retain the physical-slot quarantine. */
 export class CompanyComputerActionDrainError extends Error {
 	constructor() {
@@ -237,13 +282,17 @@ export class CompanyComputerScreenActionGate {
 		const { lease } = options;
 		assertCompanyComputerLease(lease, lease.binding, lease.driver);
 		const key = `${lease.binding.companyComputerId}:${lease.binding.screenOrdinal}`;
-		if (this.#replacing.has(key)) throw new Error("SCREEN_REPLACEMENT_PENDING");
+		const refuse = (reason: string): never => {
+			// Refused before any work: nothing of this action ran.
+			throw new CompanyComputerActionSettledFailure(new Error(reason));
+		};
+		if (this.#replacing.has(key)) refuse("SCREEN_REPLACEMENT_PENDING");
 		const fence = this.#fences.get(key);
 		if (fence) {
 			assertCompanyComputerScreenBinding(lease.binding, fence.binding);
-			if (lease.epoch < fence.epoch) throw new Error("SCREEN_DRIVER_FENCED");
+			if (lease.epoch < fence.epoch) refuse("SCREEN_DRIVER_FENCED");
 		}
-		if (this.#active.has(key)) throw new Error("SCREEN_ACTION_STILL_RUNNING");
+		if (this.#active.has(key)) refuse("SCREEN_ACTION_STILL_RUNNING");
 		const stop = new AbortController();
 		const signal = AbortSignal.any([options.signal, stop.signal]);
 		let finish = (): void => {};
@@ -277,17 +326,34 @@ export class CompanyComputerScreenActionGate {
 				signal.throwIfAborted();
 				return result;
 			} catch (error) {
-				// Only the guest's typed, pre-effect targeting error is recoverable. Authority
-				// failures (including the final check) and cancellation always stop automation.
+				// Nothing of this action is still running, and nothing is stopped, when:
+				// - its work failed with one of the guest's typed errors (a pre-effect
+				//   targeting refusal, or its own page or command work failed and ended)
+				//   and its authority, checked again, holds or got no answer;
+				// - an authority check outside the work (before it, or the final one)
+				//   got no answer: a revocation is a refusal, and is handled below.
+				// Such a failure is marked settled, so its resource can be drained.
+				// Anything else, refusals and cancellation stop automation and keep
+				// the resource for the supervisor.
 				let failure = error;
-				if (!signal.aborted && phase === "execute" && error instanceof CompanyComputerActionNotStartedError) {
+				let settled = false;
+				if (
+					!signal.aborted &&
+					phase === "execute" &&
+					(error instanceof CompanyComputerActionNotStartedError ||
+						error instanceof CompanyComputerActionFailedError)
+				) {
 					try {
 						await options.authorize(signal);
 						signal.throwIfAborted();
+						settled = true;
 					} catch (authorizationError) {
 						failure = authorizationError;
-						stopAutomation();
+						settled = !signal.aborted && companyComputerAuthorityUnanswered(authorizationError);
+						if (!settled) stopAutomation();
 					}
+				} else if (!signal.aborted && phase !== "execute" && companyComputerAuthorityUnanswered(error)) {
+					settled = true;
 				} else {
 					stopAutomation();
 				}
@@ -298,7 +364,7 @@ export class CompanyComputerScreenActionGate {
 						throw new CompanyComputerActionDrainError();
 					}
 				}
-				throw failure;
+				throw settled ? new CompanyComputerActionSettledFailure(failure) : failure;
 			} finally {
 				// Stay armed through the final authority check AND any asynchronous drain.
 				signal.removeEventListener("abort", stopAutomation);

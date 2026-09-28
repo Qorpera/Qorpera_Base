@@ -42,7 +42,9 @@ import {
 import {
 	CLOUD_RUNTIME_MODEL_POLICY,
 	type CloudRuntimeReasoningEffort,
+	type CloudRuntimeServiceTier,
 	isCloudRuntimeReasoningEffort,
+	isCloudRuntimeServiceTier,
 } from "./cloud-runtime-policy.ts";
 
 export const CLOUD_CODEX_BOUNDARY_VERSION = "0.155.1";
@@ -176,8 +178,22 @@ export async function prefetchCloudCodexArtifact(executable: string): Promise<vo
 	}
 }
 
-export function cloudCodexBoundaryConfig(effort: CloudRuntimeReasoningEffort): readonly string[] {
-	return Object.freeze([`model_reasoning_effort="${effort}"`, ...CLOUD_CODEX_BOUNDARY_FIXED_CONFIG]);
+/** Codex's own names: "fast" is sent as the provider's priority tier, and
+ * "default" explicitly asks for standard routing, so no model catalog default
+ * can apply. */
+function codexServiceTier(tier: CloudRuntimeServiceTier): "fast" | "default" {
+	return tier === "fast" ? "fast" : "default";
+}
+
+export function cloudCodexBoundaryConfig(
+	effort: CloudRuntimeReasoningEffort,
+	serviceTier: CloudRuntimeServiceTier = "standard",
+): readonly string[] {
+	return Object.freeze([
+		`model_reasoning_effort="${effort}"`,
+		`service_tier="${codexServiceTier(serviceTier)}"`,
+		...CLOUD_CODEX_BOUNDARY_FIXED_CONFIG,
+	]);
 }
 
 export const CLOUD_CODEX_BOUNDARY_FIXED_CONFIG: readonly string[] = Object.freeze([
@@ -198,6 +214,8 @@ export const CLOUD_CODEX_BOUNDARY_FIXED_CONFIG: readonly string[] = Object.freez
 	"analytics.enabled=false",
 	"feedback.enabled=false",
 	"tool_output_token_limit=65536",
+	// Codex drops a "fast" service tier unless this (default-on) feature is enabled.
+	"features.fast_mode=true",
 	// Defense in depth: the pinned native capability also prevents model metadata from enabling Code Mode.
 	'features.code_mode={enabled=false,direct_only_tool_namespaces=["qorpera"],excluded_tool_namespaces=["skills"]}',
 	...DISABLED_FEATURES.map((feature) => `features.${feature}=false`),
@@ -264,7 +282,11 @@ function nativeErrorCategory(value: unknown): CloudRuntimeErrorCategory | undefi
 	return keys[0] === "responseTooManyFailedAttempts" ? "provider_failed" : "transport_unavailable";
 }
 
-function verifyConfiguration(value: unknown, effort: CloudRuntimeReasoningEffort): void {
+function verifyConfiguration(
+	value: unknown,
+	effort: CloudRuntimeReasoningEffort,
+	serviceTier: CloudRuntimeServiceTier,
+): void {
 	const config = object(object(value).config);
 	const features = object(config.features);
 	const skills = object(config.skills);
@@ -278,6 +300,8 @@ function verifyConfiguration(value: unknown, effort: CloudRuntimeReasoningEffort
 		config.sandbox_mode !== "read-only" ||
 		config.web_search !== "disabled" ||
 		config.model_reasoning_effort !== effort ||
+		config.service_tier !== codexServiceTier(serviceTier) ||
+		features.fast_mode !== true ||
 		config.project_doc_max_bytes !== 0 ||
 		config.tool_output_token_limit !== 65536 ||
 		object(skills.bundled).enabled !== false ||
@@ -1104,6 +1128,7 @@ interface CloudCodexProcessInputs {
 	command: readonly [string, ...string[]];
 	binarySha256: string;
 	effort: CloudRuntimeReasoningEffort;
+	serviceTier: CloudRuntimeServiceTier;
 	identityRoot?: string;
 	isolation?: NativeIsolationConfiguration;
 }
@@ -1138,7 +1163,7 @@ function cloudCodexProcessKey(inputs: CloudCodexProcessInputs): string {
 			JSON.stringify([
 				inputs.command,
 				inputs.binarySha256,
-				cloudCodexBoundaryConfig(inputs.effort),
+				cloudCodexBoundaryConfig(inputs.effort, inputs.serviceTier),
 				inputs.identityRoot ?? null,
 				inputs.isolation ?? null,
 			]),
@@ -1254,7 +1279,7 @@ async function startCloudCodexProcess(
 			"--strict-config",
 			"--listen",
 			"stdio://",
-			...cloudCodexBoundaryConfig(inputs.effort).flatMap((config) => ["-c", config]),
+			...cloudCodexBoundaryConfig(inputs.effort, inputs.serviceTier).flatMap((config) => ["-c", config]),
 		];
 		progress.stage = "codex-process-start";
 		if (inputs.isolation) {
@@ -1311,6 +1336,7 @@ async function startCloudCodexProcess(
 		verifyConfiguration(
 			await handshake.request("config/read", { includeLayers: false, cwd: workspace }),
 			inputs.effort,
+			inputs.serviceTier,
 		);
 		progress.stage = "codex-skills";
 		const skills = object(await handshake.request("skills/list", { cwds: [workspace], forceReload: true }));
@@ -1404,6 +1430,8 @@ export function prepareCloudCodexSpare(
 		command: readonly [string, ...string[]];
 		binarySha256: string;
 		reasoningEffort?: CloudRuntimeReasoningEffort;
+		/** The tier of the run the spare is for; a run on another tier starts its own process. */
+		serviceTier?: CloudRuntimeServiceTier;
 		identityRoot?: string;
 		isolation?: NativeIsolationConfiguration;
 	},
@@ -1411,10 +1439,13 @@ export function prepareCloudCodexSpare(
 ): void {
 	if (!Number.isSafeInteger(idleMs) || idleMs < 1 || idleMs > MAX_SPARE_WINDOW_MS)
 		throw new Error("Invalid spare window");
+	const serviceTier = inputs.serviceTier ?? "standard";
+	if (!isCloudRuntimeServiceTier(serviceTier)) throw new Error("Invalid spare service tier");
 	const processInputs: CloudCodexProcessInputs = {
 		command: inputs.command,
 		binarySha256: inputs.binarySha256,
 		effort: inputs.reasoningEffort ?? CLOUD_RUNTIME_MODEL_POLICY.effort,
+		serviceTier,
 		...(inputs.identityRoot ? { identityRoot: inputs.identityRoot } : {}),
 		...(inputs.isolation ? { isolation: inputs.isolation } : {}),
 	};
@@ -1502,6 +1533,8 @@ export async function runCloudCodexToolSession(options: {
 	model: string;
 	/** Always supplied from admitted cloud identity; standalone component probes use current policy. */
 	reasoningEffort?: CloudRuntimeReasoningEffort;
+	/** The run's admitted tier; anything that does not supply one runs at standard speed. */
+	serviceTier?: CloudRuntimeServiceTier;
 	prompt: string;
 	/** Versioned host-owned laws only; never job text, file content or model input. */
 	runtimeInstructions?: string;
@@ -1536,6 +1569,7 @@ export async function runCloudCodexToolSession(options: {
 	const timeoutMs = options.timeoutMs;
 	const idleTimeoutMs = options.idleTimeoutMs;
 	const effort = options.reasoningEffort ?? CLOUD_RUNTIME_MODEL_POLICY.effort;
+	const serviceTier = options.serviceTier ?? "standard";
 	if (
 		process.platform === "win32" ||
 		(timeoutMs !== undefined && (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1)) ||
@@ -1550,7 +1584,8 @@ export async function runCloudCodexToolSession(options: {
 		!isAbsolute(options.command[0]) ||
 		Buffer.byteLength(options.prompt) > MAX_PROMPT_BYTES ||
 		Buffer.byteLength(options.runtimeInstructions ?? "") > 32 * 1024 ||
-		!isCloudRuntimeReasoningEffort(effort)
+		!isCloudRuntimeReasoningEffort(effort) ||
+		!isCloudRuntimeServiceTier(serviceTier)
 	)
 		throw new Error("Invalid native boundary input");
 	options.signal.throwIfAborted();
@@ -1560,6 +1595,7 @@ export async function runCloudCodexToolSession(options: {
 		command: options.command,
 		binarySha256: options.binarySha256,
 		effort,
+		serviceTier,
 		...(options.identityRoot ? { identityRoot: options.identityRoot } : {}),
 		...(options.isolation ? { isolation: options.isolation } : {}),
 	};

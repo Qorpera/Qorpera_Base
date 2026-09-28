@@ -18,6 +18,17 @@ export interface CompanyComputerScreenBrowserRegistry {
 	): Promise<unknown>;
 }
 
+/**
+ * The screen's grant is still current, but nobody entitled is present: the
+ * browser may stay open with its network paused. Not a refusal.
+ */
+export class CompanyComputerBrowserNetworkPausedError extends Error {
+	constructor() {
+		super("BROWSER_NETWORK_PAUSED");
+		this.name = "CompanyComputerBrowserNetworkPausedError";
+	}
+}
+
 /** Who asked the office service to start the browser process; recorded, never trusted as authority. */
 export type CompanyComputerScreenBrowserOpener = "agent" | "desktop";
 
@@ -31,8 +42,10 @@ export type CompanyComputerScreenBrowserOpener = "agent" | "desktop";
  * agent lease only a company-owned profile qualifies, and the dock only ever
  * opens a company-owned profile. With nobody present SQL tolerates a check (never
  * an open) for at most a minute since the last unfenced presence, so a viewer's
- * network blip does not close a member's browser; after that the relay's next
- * check is refused and the browser closes.
+ * network blip does not close a member's browser. After that a company-owned
+ * profile is `idle`: the window stays on the desktop, like any app between
+ * runs, while its egress relay carries nothing until somebody entitled is back
+ * (`CompanyComputerBrowserNetworkPausedError`). Any other refusal closes it.
  *
  * This adds no path around the existing checks. An agent action still passes
  * the run's own `CloudCompanyComputerBrowserControl`, member input still passes
@@ -60,7 +73,7 @@ export class CloudCompanyComputerScreenBrowserControl implements CompanyComputer
 		value: CompanyComputerScreenBinding,
 		opener: CompanyComputerScreenBrowserOpener | null,
 		signal: AbortSignal,
-	): Promise<CompanyComputerBrowserGrant> {
+	): Promise<{ grant: CompanyComputerBrowserGrant; idle: boolean }> {
 		const binding = structuredClone(value);
 		assertCompanyComputerScreenBinding(binding, binding);
 		assertCompanyComputerScope(binding, this.#scope);
@@ -88,7 +101,8 @@ export class CloudCompanyComputerScreenBrowserControl implements CompanyComputer
 			Array.isArray(result) ||
 			Object.keys(result).sort().join() !== "grant,state,validForMs" ||
 			!("state" in result) ||
-			result.state !== "authorized" ||
+			// SQL answers `idle` only to a check, never to an open.
+			(result.state !== "authorized" && (result.state !== "idle" || opener !== null)) ||
 			!("validForMs" in result) ||
 			!Number.isSafeInteger(result.validForMs) ||
 			(result.validForMs as number) < 1 ||
@@ -110,16 +124,19 @@ export class CloudCompanyComputerScreenBrowserControl implements CompanyComputer
 			grant.version < 1
 		)
 			throw new Error("BROWSER_GRANT_UNCONFIRMED");
-		return Object.freeze({ profileId: grant.profileId, grantId: grant.grantId, version: grant.version });
+		return {
+			grant: Object.freeze({ profileId: grant.profileId, grantId: grant.grantId, version: grant.version }),
+			idle: result.state === "idle",
+		};
 	}
 
 	/** The grant to start the browser process with. SQL records who was present. */
-	open(
+	async open(
 		binding: CompanyComputerScreenBinding,
 		opener: CompanyComputerScreenBrowserOpener,
 		signal: AbortSignal,
 	): Promise<CompanyComputerBrowserGrant> {
-		return this.#grant(binding, opener, signal);
+		return (await this.#grant(binding, opener, signal)).grant;
 	}
 
 	async assertGranted(
@@ -136,13 +153,14 @@ export class CloudCompanyComputerScreenBrowserControl implements CompanyComputer
 			grant.version < 1
 		)
 			throw new Error("INVALID_BROWSER_GRANT");
-		const current = await this.#grant(binding, null, signal);
+		const { grant: current, idle } = await this.#grant(binding, null, signal);
 		if (
 			current.profileId !== grant.profileId ||
 			current.grantId !== grant.grantId ||
 			current.version !== grant.version
 		)
 			throw new Error("BROWSER_GRANT_UNCONFIRMED");
+		if (idle) throw new CompanyComputerBrowserNetworkPausedError();
 	}
 }
 

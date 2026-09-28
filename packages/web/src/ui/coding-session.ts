@@ -1,15 +1,15 @@
-/* A coding session in the thread, in the shape of a bot-to-bot handoff line:
- * a centered chip, "Mark started a coding session with you in ✳ Claude Code",
- * with the agent's figure and the harness mark, and the live status under it
- * ("Fix the delay after send · Working · 4 min · 3 files changed"). The chip
- * opens the session as its own thread (coding-session-thread.ts); Show unfolds
- * it in place: the session's own steps, the harness's voice, the owner's input
- * and the pull request. Everything here is a projection of the kernel's session
- * view and event stream; nothing comes from the agent's prose.
+/* A coding session: in the thread, one centered line where the agent started it,
+ * "Started a coding session in (mark) Codex", the way a message to a coworker
+ * shows; the line opens the session as its own thread (coding-session-thread.ts).
+ * While the session runs, the thread's header carries it beside the agent: the
+ * agent's figure wearing the harness mark, moving as the agent's own figure does.
+ * The session's thread shows its own steps, the harness's voice, the owner's
+ * input and the pull request. Everything here is a projection of the kernel's
+ * session view and event stream; nothing comes from the agent's prose.
  *
- * The element persists per session across renders of the thread and follows
- * its stream itself: a short poll while the session works, a slower one while
- * it waits or after it finished (a follow-up starts it again). */
+ * The session's thread follows its stream itself: a short poll while the session
+ * works, a slower one while it waits or after it finished (a follow-up starts it
+ * again). */
 
 import { describeError } from "../cloud/client.ts";
 import {
@@ -23,6 +23,7 @@ import {
 import type { HostedStaffAgent, JsonValue } from "../cloud/types.ts";
 import { agentFigure } from "./avatar.ts";
 import { button, h, replace } from "./dom.ts";
+import type { Activity } from "./figure-motion.ts";
 import { t } from "./preferences.ts";
 
 export const HARNESS_NAMES: Record<CodingHarness, string> = { codex: "Codex", "claude-code": "Claude Code" };
@@ -52,62 +53,12 @@ function cap(text: string): string {
 	return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
-/** One piece of the caption: plain words, the agent's name, or the harness (drawn with its mark). */
-export type CodingCaptionPart = { kind: "text" | "agent" | "harness"; text: string };
-
-/** The caption sentence for the phase, with {agent}, {owner} and {harness} marks.
- * The viewer's own sessions say "you" (names.owner is "you" then). */
-function captionSentence(session: CodingSession, viewer: boolean): string {
-	switch (session.phase) {
-		case "awaiting_input":
-			return viewer
-				? t("{agent}'s coding session with you in {harness} needs your answer")
-				: t("{agent}'s coding session with {owner} in {harness} needs an answer from {owner}");
-		case "completed":
-			if (session.pullRequest)
-				return viewer
-					? t("{agent}'s coding session with you in {harness} opened a draft PR")
-					: t("{agent}'s coding session with {owner} in {harness} opened a draft PR");
-			return viewer
-				? t("{agent}'s coding session with you in {harness} finished")
-				: t("{agent}'s coding session with {owner} in {harness} finished");
-		case "failed":
-			return viewer
-				? t("{agent}'s coding session with you in {harness} failed")
-				: t("{agent}'s coding session with {owner} in {harness} failed");
-		case "cancelled":
-			return viewer
-				? t("{agent}'s coding session with you in {harness} was cancelled")
-				: t("{agent}'s coding session with {owner} in {harness} was cancelled");
-		default:
-			return viewer
-				? t("{agent} started a coding session with you in {harness}")
-				: t("{agent} started a coding session with {owner} in {harness}");
-	}
-}
-
-/** The caption, in pieces: who started what, with whom, where. Once the session
- * asked something or settled, the caption says so. The title is not part of it;
- * it stands in the status line and the head. */
-export function codingSessionCaptionParts(session: CodingSession, names: CodingSessionNames): CodingCaptionPart[] {
-	// The sentence is cut at its marks, so the agent and the harness are drawn on their own.
-	return captionSentence(session, names.ownerIsViewer)
-		.split(/(\{agent\}|\{harness\})/)
-		.filter(Boolean)
-		.map(
-			(piece): CodingCaptionPart =>
-				piece === "{agent}"
-					? { kind: "agent", text: names.agent }
-					: piece === "{harness}"
-						? { kind: "harness", text: HARNESS_NAMES[session.harness] }
-						: { kind: "text", text: piece.replaceAll("{owner}", names.owner) },
-		);
-}
-
-export function codingSessionCaption(session: CodingSession, names: CodingSessionNames): string {
-	return codingSessionCaptionParts(session, names)
-		.map((part) => part.text)
-		.join("");
+/** The thread's line, in pieces around the harness, which is drawn with its mark
+ * wherever the language puts it. The agent is the thread's own, so it is not named,
+ * as in "Messaged Nova". */
+export function codingSessionLine(harness: CodingHarness): { before: string; name: string; after: string } {
+	const [before = "", after = ""] = t("Started a coding session in {harness}").split("{harness}");
+	return { before, name: HARNESS_NAMES[harness], after };
 }
 
 export function fmtDuration(ms: number): string {
@@ -180,21 +131,14 @@ export interface CodingSessionApi {
 	delegate(workerId: string, clientRequestId: string): Promise<void>;
 }
 
+/** The session, unfolded, as the body of its own thread (the thread view adds header and footer). */
 export interface CodingSessionElementOptions {
-	/** "line": the chip in the thread, unfolding in place. "thread": the session as
-	 * its own thread (always unfolded, no chip; the thread view adds header and footer). */
-	mode?: "line" | "thread";
-	/** Open the session as its own thread (the chip's click). */
-	open?: () => void;
-	agent: HostedStaffAgent | undefined;
 	/** Read at every render with the current session: names follow the roster and the owner. */
 	names: (session: CodingSession) => CodingSessionNames;
 	/** Whether the signed-in member owns the session (the kernel says; the listing repeats it). */
 	viewerOwns: (session: CodingSession) => boolean;
 	api: CodingSessionApi;
 	signal: AbortSignal;
-	/** The element changed height or content; the thread may re-pin. */
-	changed?: () => void;
 	/** Put a sentence in the composer, e.g. "Ask Mark to review". */
 	askAgent?: (text: string) => void;
 }
@@ -216,16 +160,34 @@ function options(value: JsonValue): string[] {
 		: [];
 }
 
-const CLAUDE_GLYPH = '<path d="M12 2l1.8 5.4L19 9l-5.2 1.6L12 16l-1.8-5.4L5 9l5.2-1.6z" fill="currentColor"/>';
-const CODEX_GLYPH =
-	'<path d="M5 7l6 5-6 5" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/><path d="M12 19h7" stroke="currentColor" stroke-width="3.2" stroke-linecap="round"/>';
+/* The makers' own marks: OpenAI's for Codex (the ChatGPT mark, as on the Connections
+ * card) and the Claude spark for Claude Code. Drawn in currentColor; the stylesheet
+ * gives the Claude spark its own orange. */
+const HARNESS_MARKS: Record<CodingHarness, { viewBox: string; path: string }> = {
+	codex: {
+		viewBox: "146.694 227.042 267.198 264.812",
+		path: "M249.176 323.434V298.276C249.176 296.158 249.971 294.569 251.825 293.509L302.406 264.381C309.29 260.409 317.5 258.555 325.973 258.555C357.75 258.555 377.877 283.185 377.877 309.399C377.877 311.253 377.877 313.371 377.611 315.49L325.178 284.771C322.001 282.919 318.822 282.919 315.645 284.771L249.176 323.434ZM367.283 421.415V361.301C367.283 357.592 365.694 354.945 362.516 353.092L296.048 314.43L317.763 301.982C319.617 300.925 321.206 300.925 323.058 301.982L373.639 331.112C388.205 339.586 398.003 357.592 398.003 375.069C398.003 395.195 386.087 413.733 367.283 421.412V421.415ZM233.553 368.452L211.838 355.742C209.986 354.684 209.19 353.095 209.19 350.975V292.718C209.19 264.383 230.905 242.932 260.301 242.932C271.423 242.932 281.748 246.641 290.49 253.26L238.321 283.449C235.146 285.303 233.555 287.951 233.555 291.659V368.455L233.553 368.452ZM280.292 395.462L249.176 377.985V340.913L280.292 323.436L311.407 340.913V377.985L280.292 395.462ZM300.286 475.968C289.163 475.968 278.837 472.259 270.097 465.64L322.264 435.449C325.441 433.597 327.03 430.949 327.03 427.239V350.445L349.011 363.155C350.865 364.213 351.66 365.802 351.66 367.922V426.179C351.66 454.514 329.679 475.965 300.286 475.965V475.968ZM237.525 416.915L186.944 387.785C172.378 379.31 162.582 361.305 162.582 343.827C162.582 323.436 174.763 305.164 193.563 297.485V357.861C193.563 361.571 195.154 364.217 198.33 366.071L264.535 404.467L242.82 416.915C240.967 417.972 239.377 417.972 237.525 416.915ZM234.614 460.343C204.689 460.343 182.71 437.833 182.71 410.028C182.71 407.91 182.976 405.792 183.238 403.672L235.405 433.863C238.582 435.715 241.763 435.715 244.938 433.863L311.407 395.466V420.622C311.407 422.742 310.612 424.331 308.758 425.389L258.179 454.519C251.293 458.491 243.083 460.343 234.611 460.343H234.614ZM300.286 491.854C332.329 491.854 359.073 469.082 365.167 438.892C394.825 431.211 413.892 403.406 413.892 375.073C413.892 356.535 405.948 338.529 391.648 325.552C392.972 319.991 393.766 314.43 393.766 308.87C393.766 271.003 363.048 242.666 327.562 242.666C320.413 242.666 313.528 243.723 306.644 246.109C294.725 234.457 278.307 227.042 260.301 227.042C228.258 227.042 201.513 249.815 195.42 280.004C165.761 287.685 146.694 315.49 146.694 343.824C146.694 362.362 154.638 380.368 168.938 393.344C167.613 398.906 166.819 404.467 166.819 410.027C166.819 447.894 197.538 476.231 233.024 476.231C240.172 476.231 247.058 475.173 253.943 472.788C265.859 484.441 282.278 491.854 300.286 491.854Z",
+	},
+	"claude-code": {
+		viewBox: "0 0 24 24",
+		path: "m4.7144 15.9555 4.7174-2.6471.079-.2307-.079-.1275h-.2307l-.7893-.0486-2.6956-.0729-2.3375-.0971-2.2646-.1214-.5707-.1215-.5343-.7042.0546-.3522.4797-.3218.686.0608 1.5179.1032 2.2767.1578 1.6514.0972 2.4468.255h.3886l.0546-.1579-.1336-.0971-.1032-.0972L6.973 9.8356l-2.55-1.6879-1.3356-.9714-.7225-.4918-.3643-.4614-.1578-1.0078.6557-.7225.8803.0607.2246.0607.8925.686 1.9064 1.4754 2.4893 1.8336.3643.3035.1457-.1032.0182-.0728-.164-.2733-1.3539-2.4467-1.445-2.4893-.6435-1.032-.17-.6194c-.0607-.255-.1032-.4674-.1032-.7285L6.287.1335 6.6997 0l.9957.1336.419.3642.6192 1.4147 1.0018 2.2282 1.5543 3.0296.4553.8985.2429.8318.091.255h.1579v-.1457l.1275-1.706.2368-2.0947.2307-2.6957.0789-.7589.3764-.9107.7468-.4918.5828.2793.4797.686-.0668.4433-.2853 1.8517-.5586 2.9021-.3643 1.9429h.2125l.2429-.2429.9835-1.3053 1.6514-2.0643.7286-.8196.85-.9046.5464-.4311h1.0321l.759 1.1293-.34 1.1657-1.0625 1.3478-.8804 1.1414-1.2628 1.7-.7893 1.36.0729.1093.1882-.0183 2.8535-.607 1.5421-.2794 1.8396-.3157.8318.3886.091.3946-.3278.8075-1.967.4857-2.3072.4614-3.4364.8136-.0425.0304.0486.0607 1.5482.1457.6618.0364h1.621l3.0175.2247.7892.522.4736.6376-.079.4857-1.2142.6193-1.6393-.3886-3.825-.9107-1.3113-.3279h-.1822v.1093l1.0929 1.0686 2.0035 1.8092 2.5075 2.3314.1275.5768-.3218.4554-.34-.0486-2.2039-1.6575-.85-.7468-1.9246-1.621h-.1275v.17l.4432.6496 2.3436 3.5214.1214 1.0807-.17.3521-.6071.2125-.6679-.1214-1.3721-1.9246L14.38 17.959l-1.1414-1.9428-.1397.079-.674 7.2552-.3156.3703-.7286.2793-.6071-.4614-.3218-.7468.3218-1.4753.3886-1.9246.3157-1.53.2853-1.9004.17-.6314-.0121-.0425-.1397.0182-1.4328 1.9672-2.1796 2.9446-1.7243 1.8456-.4128.164-.7164-.3704.0667-.6618.4008-.5889 2.386-3.0357 1.4389-1.882.929-1.0868-.0062-.1579h-.0546l-6.3385 4.1164-1.1293.1457-.4857-.4554.0608-.7467.2307-.2429 1.9064-1.3114Z",
+	},
+};
 
-/** The harness mark the owner's avatar wears: Codex's prompt, Claude's spark. */
+/** The harness's mark on its own, for a line of text. */
+export function harnessMark(harness: CodingHarness, size: number): SVGSVGElement {
+	const mark = HARNESS_MARKS[harness];
+	const svg = svgEl(`<path d="${mark.path}" fill="currentColor"/>`, size, `coding-mark coding-mark-${harness}`);
+	svg.setAttribute("viewBox", mark.viewBox);
+	return svg;
+}
+
+/** The harness's mark on a disc: the badge a figure wears, or the harness's own avatar. */
 export function harnessBadge(harness: CodingHarness): HTMLElement {
 	return h(
 		"span",
 		{ class: `coding-badge coding-badge-${harness}`, title: HARNESS_NAMES[harness] },
-		svgEl(harness === "claude-code" ? CLAUDE_GLYPH : CODEX_GLYPH, 7),
+		harnessMark(harness, 8),
 	);
 }
 
@@ -264,8 +226,6 @@ export class CodingSessionElement {
 	#session: CodingSession;
 	#events: CodingSessionEvent[] = [];
 	#cursor = 0;
-	/** Undefined until the member chose: a question the viewer must answer opens the body by itself. */
-	#expanded: boolean | undefined;
 	#showAll = false;
 	#busy = false;
 	/** Why the last answer or delegation was refused. */
@@ -308,10 +268,11 @@ export class CodingSessionElement {
 	update(session: CodingSession): void {
 		if (this.disposed) return;
 		const newer = session.updatedAt.localeCompare(this.#session.updatedAt) >= 0;
+		const moved = session.phase !== this.#session.phase;
 		if (newer) this.#session = { ...session, isOwner: session.isOwner ?? this.#session.isOwner };
 		this.#render();
 		// A phase the poll did not see yet (an answer landed, the executor took it) shortens the wait.
-		if (newer && session.phase !== this.#session.phase) void this.refresh();
+		if (newer && moved) void this.refresh();
 	}
 
 	/** Reads the events after the cursor and the current view; reschedules itself. */
@@ -373,23 +334,9 @@ export class CodingSessionElement {
 		if (!document.hidden) void this.refresh();
 	}
 
-	#toggle(): void {
-		this.#expanded = !this.#isExpanded();
-		this.#render();
-		this.#options.changed?.();
-	}
-
-	#isExpanded(): boolean {
-		if (this.#options.mode === "thread") return true;
-		if (this.#expanded !== undefined) return this.#expanded;
-		return this.#session.phase === "awaiting_input" && this.#options.viewerOwns(this.#session);
-	}
-
 	async #send(text: string): Promise<void> {
 		const value = text.trim();
 		if (!value || this.#busy || this.disposed) return;
-		// The member is in the session now: it stays open through the answer and what follows.
-		this.#expanded = true;
 		this.#requestId ??= crypto.randomUUID();
 		this.#busy = true;
 		this.#error = undefined;
@@ -409,7 +356,6 @@ export class CodingSessionElement {
 
 	async #delegate(): Promise<void> {
 		if (this.#busy || this.disposed) return;
-		this.#expanded = true;
 		this.#requestId ??= crypto.randomUUID();
 		this.#busy = true;
 		this.#error = undefined;
@@ -431,13 +377,11 @@ export class CodingSessionElement {
 		const session = this.#session;
 		const names = this.#options.names(session);
 		const owns = this.#options.viewerOwns(session);
-		const expanded = this.#isExpanded();
 		const status = codingSessionStatus(session, names);
 		const key = JSON.stringify([
 			session,
 			names,
 			owns,
-			expanded,
 			this.#showAll,
 			this.#busy,
 			this.#error,
@@ -449,69 +393,18 @@ export class CodingSessionElement {
 		this.#renderedKey = key;
 		this.el.dataset.phase = session.phase;
 		this.el.dataset.tone = status.tone;
-		this.el.classList.toggle("coding-session-expanded", expanded);
-		this.el.classList.toggle("coding-session-thread", this.#options.mode === "thread");
-		const caption = codingSessionCaption(session, names);
-		this.el.setAttribute("aria-label", caption);
-		const toggle = button(expanded ? t("Hide") : t("Show"), () => this.#toggle(), { small: true });
-		toggle.className = "coding-link";
-		toggle.setAttribute("aria-expanded", String(expanded));
-		const statusLine = (withTitle: boolean) =>
-			h(
-				"div",
-				{ class: `coding-status coding-tone-${status.tone}`, role: "status" },
-				h("span", { class: `coding-dot coding-dot-${status.tone}`, "aria-hidden": "true" }),
-				withTitle ? h("span", { class: "coding-status-title" }, session.title) : null,
-				withTitle ? h("span", { class: "coding-dot-sep", "aria-hidden": "true" }, "·") : null,
-				h("span", { class: "coding-status-text" }, status.text),
-				this.#options.mode === "thread" ? null : h("span", { class: "coding-dot-sep", "aria-hidden": "true" }, "·"),
-				this.#options.mode === "thread" ? null : toggle,
-			);
-		if (this.#options.mode === "thread") {
-			replace(
-				this.el,
-				this.#renderHead(names),
-				this.#renderBody(names),
-				session.pullRequest ? this.#renderPullRequest(names) : null,
-				owns ? this.#renderInput(names) : this.#renderLock(names),
-				statusLine(false),
-			);
-			return;
-		}
-		const chip = h(
-			"button",
-			{
-				type: "button",
-				class: "coding-chip",
-				title: this.#options.open ? t("Open the session as its own thread") : caption,
-				"aria-label": caption,
-				onclick: () => (this.#options.open ? this.#options.open() : this.#toggle()),
-			},
-			agentFigure(this.#options.agent, names.agent, { size: 22 }),
-			h(
-				"span",
-				{ class: "coding-chip-text" },
-				...codingSessionCaptionParts(session, names).map((part) =>
-					part.kind === "harness"
-						? h("span", { class: "coding-harness" }, harnessBadge(session.harness), part.text)
-						: part.kind === "agent"
-							? h("span", { class: "coding-agent" }, part.text)
-							: part.text,
-				),
-			),
-		);
-		if (!expanded) {
-			replace(this.el, chip, statusLine(true));
-			return;
-		}
 		replace(
 			this.el,
-			chip,
 			this.#renderHead(names),
 			this.#renderBody(names),
 			session.pullRequest ? this.#renderPullRequest(names) : null,
 			owns ? this.#renderInput(names) : this.#renderLock(names),
-			statusLine(false),
+			h(
+				"div",
+				{ class: `coding-status coding-tone-${status.tone}`, role: "status" },
+				h("span", { class: `coding-dot coding-dot-${status.tone}`, "aria-hidden": "true" }),
+				h("span", { class: "coding-status-text" }, status.text),
+			),
 		);
 	}
 
@@ -559,7 +452,6 @@ export class CodingSessionElement {
 							() => {
 								this.#showAll = true;
 								this.#render();
-								this.#options.changed?.();
 							},
 							{ small: true },
 						),
@@ -607,11 +499,7 @@ export class CodingSessionElement {
 				return h(
 					"div",
 					{ class: "coding-row coding-row-voice" },
-					h(
-						"span",
-						{ class: `coding-voice coding-badge-${this.#session.harness}`, title: harness },
-						harnessBadge(this.#session.harness),
-					),
+					h("span", { class: "coding-voice", title: harness }, harnessBadge(this.#session.harness)),
 					h("div", { class: "coding-voice-text" }, ...body.split(/\n{2,}/).map((part) => h("p", null, part))),
 				);
 			}
@@ -888,5 +776,55 @@ export class CodingSessionElement {
 				}),
 			),
 		);
+	}
+}
+
+/** How a session's figure moves in the header, in the agents' own vocabulary:
+ * working while it works, waiting while it asks, still while it waits for a computer. */
+export function codingSessionActivity(phase: CodingSession["phase"]): Activity {
+	if (phase === "awaiting_input") return "Waiting";
+	if (phase === "queued" || codingSessionSettled(phase)) return "Idle";
+	return "Working";
+}
+
+/** A session that is still going, in the thread's header beside the agent: the
+ * agent's figure wearing the harness mark, with its own clock so it does not move
+ * in step with the agent. Hover or focus unfolds the session's title; a click
+ * opens the session as its own thread. */
+export class CodingSessionSlot {
+	readonly el: HTMLButtonElement;
+	readonly #avatar = h("span", { class: "coding-slot-avatar" });
+	readonly #name = h("span", { class: "coding-slot-name" });
+	#figureKey = "";
+
+	constructor(workerId: string, open: (opener: HTMLElement) => void) {
+		this.el = h(
+			"button",
+			{ type: "button", class: "coding-slot", dataset: { workerId }, onclick: () => open(this.el) },
+			this.#avatar,
+			this.#name,
+		) as HTMLButtonElement;
+	}
+
+	update(session: CodingSession, agent: HostedStaffAgent | undefined, names: CodingSessionNames): void {
+		const activity = codingSessionActivity(session.phase);
+		const figureKey = JSON.stringify([activity, session.harness, agent?.id, agent?.appearance, agent?.templateId]);
+		if (figureKey !== this.#figureKey) {
+			this.#figureKey = figureKey;
+			// The button's own title names the session; the badge's would cover it.
+			const badge = harnessBadge(session.harness);
+			badge.removeAttribute("title");
+			replace(
+				this.#avatar,
+				agentFigure(agent, names.agent, { size: 22, activity, identity: `coding:${session.workerId}` }),
+				badge,
+			);
+		}
+		const status = codingSessionStatus(session, names);
+		const label = `${session.title} · ${status.text}`;
+		if (this.#name.textContent !== session.title) this.#name.textContent = session.title;
+		this.el.title = label;
+		this.el.setAttribute("aria-label", t("{label}. Open the session", { label }));
+		this.el.dataset.tone = status.tone;
 	}
 }
