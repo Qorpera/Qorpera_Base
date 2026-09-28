@@ -7,6 +7,14 @@ import {
 	parseCodingSessions,
 } from "./coding-session.ts";
 import { CompanyFoundingApi, type FoundingTableEntry } from "./company-founding.ts";
+import {
+	type ComputerHourOffer,
+	listComputerHourOffers,
+	type MyComputerPlan,
+	openComputerBillingPortal,
+	readMyComputerPlan,
+	startComputerCheckout,
+} from "./computer-billing.ts";
 import { type CompanyComputerHours, readCompanyComputerHours } from "./computer-hours.ts";
 import {
 	isMemberPictureName,
@@ -124,6 +132,26 @@ export class CloudApi {
 	/** The company's computer hours this month, measured (not charged yet). */
 	getCompanyComputerHours(profileId: string): Promise<CompanyComputerHours> {
 		return readCompanyComputerHours(this.cloud, requiredUuid(profileId, "Profile id"));
+	}
+
+	/** The plans and packs of hours this member can buy. */
+	listComputerHourOffers(): Promise<ComputerHourOffer[]> {
+		return listComputerHourOffers(this.cloud);
+	}
+
+	/** The member's own plan: its period, its hours and what each company used of them. */
+	getMyComputerPlan(): Promise<MyComputerPlan> {
+		return readMyComputerPlan(this.cloud);
+	}
+
+	/** Stripe's checkout page for a plan, or for a pack of hours for a company (founders only). */
+	startComputerCheckout(itemKey: string, profileId?: string): Promise<string> {
+		return startComputerCheckout(this.cloud, itemKey, profileId ? requiredUuid(profileId, "Profile id") : undefined);
+	}
+
+	/** Stripe's billing page for the member's cards, invoices and plan. */
+	openComputerBillingPortal(): Promise<string> {
+		return openComputerBillingPortal(this.cloud);
 	}
 
 	listIncomingInvitations(): Promise<HostedIncomingProfileInvitation[]> {

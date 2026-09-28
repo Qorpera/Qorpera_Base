@@ -160,9 +160,11 @@ describe("what runs inside a member's coding machine", () => {
 		const m = await machine();
 		const long = `echo ${"é".repeat(400)}`;
 		const s = await m.session({
+			// The observer names the first commands by id: the long one's id sorts first, so it is always named.
 			commands: Array.from({ length: CODING_GUEST_OBSERVED_COMMANDS + 3 }, (_, index) => ({
 				turn: 1,
 				command: index === 0 ? long : `sleep ${index}`,
+				...(index === 0 ? { id: "00000000-0000-4000-8000-000000000000" } : {}),
 			})),
 		});
 		m.setUnits(s.ids.map((id) => `${s.layout.unitPrefix}${id}.service loaded active running x`).join("\n"));

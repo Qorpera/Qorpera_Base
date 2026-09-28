@@ -13,6 +13,16 @@ const MAX_CREDENTIAL_BYTES = 16 * 1024;
 const TOKEN = /^[A-Za-z0-9_-]{43}$/;
 const SHA256 = /^[0-9a-f]{64}$/;
 
+/** An optional credential: absent means the feature stays off; any other failure stops the helper. */
+async function readOptionalCredential(directory: string, name: string): Promise<string | undefined> {
+	try {
+		return await readCredential(directory, name);
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException | undefined)?.code === "ENOENT") return undefined;
+		throw error;
+	}
+}
+
 async function readCredential(directory: string, name: string): Promise<string> {
 	if (!isAbsolute(directory) || !/^[a-z][a-z0-9-]+$/.test(name))
 		throw new Error("Login helper credential path is invalid");
@@ -105,6 +115,17 @@ export async function runModelLoginHelperMain(environment: NodeJS.ProcessEnv = p
 		throw new Error("Login helper configuration is invalid");
 	const config = value as Record<string, unknown>;
 	const keys = ["schema", "socketPath", "codexPath", "codexSha256", "temporaryRoot", "isolationEntryPoint"];
+	// Optional: how many members' sign-ins run at once on this host, and per company. The shared vault
+	// (Vault By Default) serves every new company from one helper and needs more than the defaults (6, 2).
+	for (const optional of ["signInLimit", "signInCompanyLimit"])
+		if (Object.hasOwn(config, optional)) keys.push(optional);
+	const limit = (name: string, fallback: number): number => {
+		const configured = config[name];
+		if (configured === undefined) return fallback;
+		if (typeof configured !== "number" || !Number.isSafeInteger(configured) || configured < 1 || configured > 64)
+			throw new Error("Login helper configuration is invalid");
+		return configured;
+	};
 	if (
 		Object.keys(config).sort().join() !== [...keys].sort().join() ||
 		config.schema !== "qorpera.model-login-helper/v1" ||
@@ -132,6 +153,11 @@ export async function runModelLoginHelperMain(environment: NodeJS.ProcessEnv = p
 	};
 	const token = await readCredential(directory, "qorpera-model-login-helper-token");
 	if (!TOKEN.test(token)) throw new Error("Login helper token is invalid");
+	// On a shared vault host (Vault By Default): the vault's own token, so the company brokers on the host
+	// never see its members' sign-ins, nor it theirs.
+	const vaultToken = await readOptionalCredential(directory, "qorpera-model-login-helper-vault-token");
+	if (vaultToken !== undefined && (!TOKEN.test(vaultToken) || vaultToken === token))
+		throw new Error("Login helper vault token is invalid");
 	const temporaryRoot = absolute(config.temporaryRoot, "Login helper temporary root");
 	const isolation = { entryPoint: isolationEntryPoint };
 	// Before serving anything: the pinned Codex answers inside the sandbox, under this unit.
@@ -142,16 +168,22 @@ export async function runModelLoginHelperMain(environment: NodeJS.ProcessEnv = p
 	// A member's sign-in runs the same official `codex login --device-auth` driver a node uses,
 	// inside the same isolation, with the pinned binary checked before each of its launches and
 	// its scratch under this helper's private runtime directory.
+	const signInLimit = limit("signInLimit", 6);
+	const signInCompanyLimit = limit("signInCompanyLimit", 2);
+	if (signInCompanyLimit > signInLimit) throw new Error("Login helper configuration is invalid");
 	const signIns = new CodexSignIns({
 		driver: new OfficialCliNativeHarnessDriver(codexPath, "/nonexistent/claude", isolation, {
 			scratchParent: temporaryRoot,
 			beforeLaunch,
 		}),
 		temporaryRoot,
+		limit: signInLimit,
+		companyLimit: signInCompanyLimit,
 	});
 	const service = new ModelLoginHelperService({
 		socketPath: absolute(config.socketPath, "Login helper socket"),
 		token,
+		...(vaultToken === undefined ? {} : { vaultToken }),
 		renewer: new CodexLoginRenewer({ codexPath, temporaryRoot, isolation, beforeLaunch }),
 		signIns,
 	});

@@ -1,0 +1,62 @@
+[Unit]
+Description=Qorpera shared vault (the cloud secret broker for every company created after its start)
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=3
+
+[Service]
+Type=exec
+# Its own user: a company broker's process cannot read this unit's credentials (the master key).
+User=qorpera-shared-vault
+Group=qorpera-shared-vault
+# The login helper's socket is reached through its group.
+SupplementaryGroups=qorpera-login-helper
+# Config v3 names the principal. The two secrets were made on node 1 by shared-vault-secrets.py; the
+# database login, runtime token, connector clients and coding executor token are the company brokers'
+# own, copied on the host. Node 2 takes those six from node 1 host to host. The login helper client
+# file (the vault's own helper token, made by shared-vault-secrets.py helper-token) is each host's own.
+# Root-only files, all of them; a missing one stops the unit.
+LoadCredential=qorpera-cloud-secret-config:/etc/qorpera-shared-vault/config.json
+LoadCredential=qorpera-cloud-secret-principal:/etc/qorpera-shared-vault/principal-secret
+LoadCredential=qorpera-cloud-secret-master-keys:/etc/qorpera-shared-vault/master-keys.json
+LoadCredential=qorpera-cloud-secret-database-url:/etc/qorpera-shared-vault/database-url
+LoadCredential=qorpera-cloud-secret-database-ca:/etc/qorpera-secret-broker/supabase-prod-ca-2021.crt
+LoadCredential=qorpera-cloud-secret-runtime:/etc/qorpera-shared-vault/runtime
+LoadCredential=qorpera-cloud-secret-connectors:/etc/qorpera-shared-vault/connectors.json
+LoadCredential=qorpera-cloud-secret-coding-executor:/etc/qorpera-shared-vault/coding-executor
+LoadCredential=qorpera-cloud-secret-login-helper:/etc/qorpera-shared-vault/login-helper.json
+ExecStart=/usr/bin/node /opt/qorpera-secret-broker/qorpera-cloud-secret-broker-service.mjs
+Restart=on-failure
+RestartSec=10
+# A login renewal once asked runs to its budget (35 s) and then saves on its own deadline (up to three
+# 15 s tries); a stop waits for it, or the new login is lost and the member has to sign in again.
+TimeoutStopSec=90
+UMask=0077
+# A crash leaves no memory image holding keys.
+LimitCORE=0
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectProc=invisible
+ProcSubset=pid
+LockPersonality=yes
+RestrictNamespaces=yes
+CapabilityBoundingSet=
+RestrictSUIDSGID=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+# Every company's calls and background passes run in this one process.
+MemoryMax=768M
+TasksMax=64
+CPUQuota=200%
+
+[Install]
+WantedBy=multi-user.target

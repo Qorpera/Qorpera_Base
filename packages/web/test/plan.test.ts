@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import type { PlanPaymentsState } from "../src/app/plan-payments.ts";
 import { PLAN_OFFERS, planName, renderPlan } from "../src/app/views/plan.ts";
 import { file } from "./fixtures.ts";
 
@@ -233,7 +234,9 @@ describe("Plan & usage", () => {
 	});
 
 	it("sells Basis as computer hours, not a computer per agent", () => {
-		expect(PLAN_OFFERS[0]?.includes).toContain("74 computer hours a month");
+		renderPlan(container, { loaded: true, entitlement: entitlement("freemium") }, undefined);
+		const basis = container.querySelector('[data-plan="basis"] .settings-plan-includes')!;
+		expect([...basis.querySelectorAll("li")].map((li) => li.textContent)[1]).toBe("74 computer hours a month");
 		expect(PLAN_OFFERS.flatMap((offer) => offer.includes).join(" ")).not.toContain("worker computer");
 	});
 
@@ -280,5 +283,287 @@ describe("Plan & usage", () => {
 		expect(card.querySelector("strong")?.textContent).toBe("41,5 t brugt");
 		expect(card.textContent).toContain("Company A · Målt, endnu ikke opkrævet");
 		expect(card.querySelector(".settings-hours-kinds")?.textContent).toBe("Agentkørsler 41,5 t");
+	});
+});
+
+describe("Plan & usage with payments", () => {
+	const P = "00000000-0000-4000-8000-000000000001";
+	const Q = "00000000-0000-4000-8000-000000000002";
+	const offer = (itemKey: string, kind: "plan" | "credits", priceMinor: number, hours: number, available = true) => ({
+		itemKey,
+		kind,
+		name: itemKey,
+		priceMinor,
+		currency: "dkk" as const,
+		hours,
+		available,
+	});
+	const OFFERS = [
+		offer("basis", "plan", 18_500, 74),
+		offer("standard", "plan", 63_000, 286),
+		offer("hours_20", "credits", 7_000, 20),
+		offer("hours_100", "credits", 35_000, 100),
+		offer("hours_500", "credits", 175_000, 500, false),
+	];
+	const hours = {
+		profileId: P,
+		month: "2026-09",
+		timeZone: "Europe/Copenhagen",
+		usedSeconds: 7_200,
+		byKind: { companyMachines: 7_200, agentMachines: 0, codingMachines: 0, runs: 0 },
+		awakeNow: { companyMachines: 0, agentMachines: 0, codingMachines: 0, runs: 0 },
+		meteredUntil: "2026-09-28T18:00:00Z",
+	};
+	const usage = (founder?: boolean) => ({
+		companyName: "Company A",
+		file,
+		loading: false,
+		retry() {},
+		hours: { value: hours, loading: false },
+		profileId: P,
+		founder,
+	});
+	function payments(state: Partial<PlanPaymentsState> = {}) {
+		const calls: string[] = [];
+		return {
+			calls,
+			view: {
+				state: { offers: OFFERS, loaded: true, ...state } as PlanPaymentsState,
+				checkout: (itemKey: string, profileId?: string) => calls.push(`checkout ${itemKey} ${profileId ?? "-"}`),
+				portal: () => calls.push("portal"),
+				companyName: (profileId: string) => (profileId === P ? "Company A" : undefined),
+			},
+		};
+	}
+
+	it("sells the open plans through Stripe's checkout and keeps Dedicated coming soon", () => {
+		const { calls, view } = payments({ plan: { mode: "dry_run", plan: null, hours: null } });
+		renderPlan(container, { loaded: true, entitlement: entitlement("freemium") }, undefined, { payments: view });
+		buttons()
+			.find((button) => button.textContent === "Upgrade")!
+			.click();
+		const grid = container.querySelector<HTMLElement>(".settings-plan-grid")!;
+		expect([...grid.querySelectorAll("button")].map((button) => [button.textContent, button.disabled])).toEqual([
+			["Choose Basis", false],
+			["Choose Standard", false],
+			["Coming soon", true],
+		]);
+		grid.querySelector<HTMLButtonElement>("button")!.click();
+		expect(calls).toEqual(["checkout basis -"]);
+		expect(container.querySelector(".settings-group .settings-help")?.textContent).toBe(
+			"Prices are ex. VAT. You pay on Stripe's secure page. Test mode: nothing is charged.",
+		);
+		// While a Stripe page opens, every buy button waits.
+		renderPlan(container, { loaded: true, entitlement: entitlement("freemium") }, undefined, {
+			payments: payments({ opening: "basis" }).view,
+		});
+		expect(
+			[...container.querySelectorAll(".settings-plan-grid button")].map((button) => [
+				button.textContent,
+				(button as HTMLButtonElement).disabled,
+			]),
+		).toEqual([
+			["Opening…", true],
+			["Choose Standard", true],
+			["Coming soon", true],
+		]);
+		// Nothing for sale: the page reads as before payments.
+		renderPlan(container, { loaded: true, entitlement: entitlement("freemium") }, undefined, {
+			payments: payments({ offers: OFFERS.map((item) => ({ ...item, available: false })) }).view,
+		});
+		expect(
+			[...container.querySelectorAll(".settings-plan-grid button")].every(
+				(button) => button.textContent === "Coming soon",
+			),
+		).toBe(true);
+		expect(text()).toContain("Plan changes are not open yet.");
+		expect(buttons().find((button) => button.textContent === "Payments and invoices")).toBeUndefined();
+	});
+
+	it("shows a paid plan, its hours per company, and Stripe's billing page", () => {
+		const { calls, view } = payments({
+			plan: {
+				mode: "live",
+				plan: {
+					itemKey: "standard",
+					status: "active",
+					periodStart: "2026-09-10T00:00:00Z",
+					periodEnd: "2026-10-10T00:00:00Z",
+					cancelAtPeriodEnd: false,
+				},
+				hours: {
+					grantedSeconds: 286 * 3600,
+					companies: [
+						{ profileId: P, seconds: 36_000 },
+						{ profileId: Q, seconds: 1_800 },
+					],
+				},
+			},
+		});
+		renderPlan(container, { loaded: true, entitlement: entitlement("freemium") }, undefined, { payments: view });
+		expect(container.querySelector(".settings-plan strong")?.textContent).toBe("Standard");
+		expect(container.querySelector(".settings-plan small:not(.settings-eyebrow)")?.textContent).toBe(
+			"Renews 10 Oct 2026",
+		);
+		expect(container.querySelector(".settings-hours strong")?.textContent).toBe("10.5 h used of 286 h");
+		expect(container.querySelector(".settings-hours .settings-hours-kinds")?.textContent).toBe(
+			"Company A 10 h · Other companies 0.5 h",
+		);
+		expect(container.querySelector(".settings-period")?.textContent).toBe("Resets 10 Oct 2026");
+		expect(text()).toContain("630 kr/month · ex. VAT");
+		expect(text()).toContain("Next payment10 Oct 2026");
+		expect(text()).toContain("Payment methodOn Stripe's billing page");
+		buttons()
+			.find((button) => button.textContent === "Payments and invoices")!
+			.click();
+		// Switching plans happens on Stripe's billing page too.
+		buttons()
+			.find((button) => button.textContent === "Change plan")!
+			.click();
+		const grid = container.querySelector<HTMLElement>(".settings-plan-grid")!;
+		expect([...grid.querySelectorAll("button")].map((button) => button.textContent)).toEqual([
+			"Switch to Basis",
+			"Current plan",
+			"Coming soon",
+		]);
+		grid.querySelector<HTMLButtonElement>("button")!.click();
+		expect(calls).toEqual(["portal", "portal"]);
+
+		const ending = payments({
+			plan: {
+				...view.state.plan!,
+				plan: { itemKey: "basis", status: "active", periodEnd: "2026-10-10T00:00:00Z", cancelAtPeriodEnd: true },
+			},
+		}).view;
+		renderPlan(container, { loaded: true, entitlement: entitlement("freemium") }, undefined, { payments: ending });
+		expect(container.querySelector(".settings-plan small:not(.settings-eyebrow)")?.textContent).toBe(
+			"Ends 10 Oct 2026",
+		);
+		expect(text()).toContain("Next paymentNone scheduled");
+		const failed = payments({
+			plan: {
+				...view.state.plan!,
+				plan: { itemKey: "basis", status: "past_due", cancelAtPeriodEnd: false },
+			},
+		}).view;
+		renderPlan(container, { loaded: true, entitlement: entitlement("freemium") }, undefined, { payments: failed });
+		expect(container.querySelector(".settings-plan small:not(.settings-eyebrow)")?.textContent).toBe(
+			"Payment failed. Update your card under Payments and invoices.",
+		);
+		// Before live payments a (test) plan shows no hours: members see only measured hours.
+		const testing = payments({ plan: { ...view.state.plan!, mode: "dry_run", hours: null } }).view;
+		renderPlan(container, { loaded: true, entitlement: entitlement("freemium") }, undefined, { payments: testing });
+		expect(container.querySelector(".settings-plan strong")?.textContent).toBe("Standard");
+		expect(container.querySelector(".settings-plan")?.textContent).toContain("Test mode: nothing is charged.");
+		expect(container.querySelector(".settings-hours strong")?.textContent).toBe("Counted once plans open");
+		expect(container.querySelector(".settings-hours .settings-hours-kinds")).toBeNull();
+	});
+
+	it("lets founders buy hours for the company, and tells everyone else they are never charged", () => {
+		const { calls, view } = payments();
+		renderPlan(container, { loaded: true, entitlement: entitlement("basis") }, usage(true), { payments: view });
+		const card = container.querySelector<HTMLElement>(".settings-company-hours")!;
+		const buy = [...card.querySelectorAll("button")].find((button) => button.textContent === "Buy hours")!;
+		const packs = card.querySelector<HTMLElement>(".settings-hours-packs")!;
+		expect(packs.hidden).toBe(true);
+		buy.click();
+		expect(packs.hidden).toBe(false);
+		expect(buy.getAttribute("aria-expanded")).toBe("true");
+		// The 500-hour pack is not for sale here.
+		expect([...packs.querySelectorAll("button")].map((button) => button.textContent)).toEqual([
+			"20 h · 70 kr",
+			"100 h · 350 kr",
+		]);
+		expect(packs.textContent).toContain("For Company A, valid for 12 months. Prices are ex. VAT.");
+		packs.querySelector<HTMLButtonElement>("button")!.click();
+		expect(calls).toEqual([`checkout hours_20 ${P}`]);
+		// The list stays open across a re-render.
+		renderPlan(container, { loaded: true, entitlement: entitlement("basis") }, usage(true), { payments: view });
+		expect(container.querySelector<HTMLElement>(".settings-hours-packs")?.hidden).toBe(false);
+
+		renderPlan(container, { loaded: true, entitlement: entitlement("basis") }, usage(false), { payments: view });
+		expect(container.querySelector(".settings-hours-packs")).toBeNull();
+		expect(container.querySelector(".settings-company-hours")?.textContent).toContain(
+			"Computer hours are paid by the founders. You are never charged.",
+		);
+		// Role not known yet: neither.
+		renderPlan(container, { loaded: true, entitlement: entitlement("basis") }, usage(undefined), { payments: view });
+		expect(container.querySelector(".settings-hours-packs")).toBeNull();
+		expect(text()).not.toContain("paid by the founders");
+	});
+
+	it("shows the cloud catalog's prices and hours, which are what Stripe charges", () => {
+		const catalog = payments({
+			offers: [offer("basis", "plan", 19_900, 80), offer("standard", "plan", 63_000, 286, false)],
+		}).view;
+		renderPlan(container, { loaded: true, entitlement: entitlement("basis") }, undefined, { payments: catalog });
+		expect(container.querySelector('[data-plan="basis"] .settings-plan-price strong')?.textContent).toBe("199 kr");
+		expect(container.querySelector('[data-plan="basis"] .settings-plan-includes')?.textContent).toContain(
+			"80 computer hours a month",
+		);
+		expect(text()).toContain("199 kr/month · ex. VAT");
+		expect(container.querySelector(".settings-hours small:not(.settings-eyebrow)")?.textContent).toBe(
+			"80 h a month with Basis",
+		);
+		// Without the catalog (a cloud before payments), the prices qorpera.com shows.
+		renderPlan(container, { loaded: true, entitlement: entitlement("basis") }, undefined);
+		expect(container.querySelector('[data-plan="basis"] .settings-plan-price strong')?.textContent).toBe("185 kr");
+	});
+
+	it("reads a paused plan, a plan without hours yet, and small uses honestly", () => {
+		const live = (plan: object, hours: object) =>
+			payments({ plan: { mode: "live", plan: { cancelAtPeriodEnd: false, ...plan }, hours } as never }).view;
+		renderPlan(container, { loaded: true, entitlement: entitlement("freemium") }, undefined, {
+			payments: live(
+				{ itemKey: "basis", status: "paused", periodEnd: "2026-10-10T00:00:00Z" },
+				{
+					grantedSeconds: 0,
+					companies: [],
+				},
+			),
+		});
+		expect(container.querySelector(".settings-plan small:not(.settings-eyebrow)")?.textContent).toBe("Paused");
+		// No hours granted yet: no total, no meter.
+		expect(container.querySelector(".settings-hours strong")?.textContent).toBe("0 h used");
+		expect(container.querySelector(".settings-hours progress")).toBeNull();
+		renderPlan(container, { loaded: true, entitlement: entitlement("freemium") }, undefined, {
+			payments: live(
+				{ itemKey: "basis", status: "active", periodEnd: "2026-10-10T00:00:00Z" },
+				{
+					grantedSeconds: 74 * 3600,
+					companies: [
+						{ profileId: P, seconds: 120 },
+						{ profileId: Q, seconds: 100 },
+					],
+				},
+			),
+		});
+		// A few seconds would read "0 h": they are summed with the unnamed ones instead.
+		expect(container.querySelector(".settings-hours .settings-hours-kinds")?.textContent).toBe(
+			"Other companies 0.1 h",
+		);
+	});
+
+	it("marks test purchases, and says calmly that there are no payments yet", () => {
+		const testing = payments({ plan: { mode: "dry_run", plan: null, hours: null }, info: "No payments yet." }).view;
+		renderPlan(container, { loaded: true, entitlement: entitlement("basis") }, usage(true), { payments: testing });
+		expect(container.querySelector(".settings-hours-packs")?.textContent).toContain("Test mode: nothing is charged.");
+		expect(container.querySelector(".notice-neutral")?.textContent).toBe("No payments yet.");
+		expect(container.querySelector(".notice-danger")).toBeNull();
+	});
+
+	it("thanks the member back from Stripe and shows a refusal", () => {
+		renderPlan(container, { loaded: true, entitlement: entitlement("basis") }, undefined, {
+			payments: payments({ returned: "done" }).view,
+		});
+		expect(container.querySelector(".notice-ok")?.textContent).toBe(
+			"Thank you. Your hours are added as soon as Stripe confirms the payment.",
+		);
+		renderPlan(container, { loaded: true, entitlement: entitlement("basis") }, undefined, {
+			payments: payments({ error: "Only the company's founders can buy computer hours." }).view,
+		});
+		expect(container.querySelector(".notice-danger")?.textContent).toBe(
+			"Only the company's founders can buy computer hours.",
+		);
 	});
 });
