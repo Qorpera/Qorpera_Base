@@ -1053,21 +1053,35 @@ function record(value: unknown, label: string): Record<string, unknown> {
 	return value as Record<string, unknown>;
 }
 
+/** Keys JavaScript objects treat specially. Copied with `output[key] = …`, a
+ * key `__proto__` sets the copy's prototype instead of adding an entry, so a
+ * device of that name would vanish from Object.keys, JSON and every digest
+ * (the node inventory's above all). LXD's own name rule allows it, so an LXD
+ * map carrying such a key is refused and the read fails closed. Records stay
+ * plain objects, not Object.create(null): callers compare them with
+ * isDeepStrictEqual, which tells the two apart. Object.fromEntries builds
+ * them without ever running the `__proto__` setter. */
+const RESERVED_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+/** LXD's device name rule (validate.IsDeviceName): 1-63 letters, digits and
+ * `/ . - : _`, not starting with a full stop. */
+const DEVICE_NAME = /^(?!\.)[A-Za-z0-9/.:_-]{1,63}$/;
+
+function plainEntries(value: unknown, label: string): [string, unknown][] {
+	const entries = Object.entries(record(value, label));
+	if (entries.some(([key]) => RESERVED_KEYS.has(key))) throw new Error(`${label} is invalid`);
+	return entries;
+}
+
 function stringRecord(value: unknown, label: string): Record<string, string> {
-	const input = record(value, label);
-	const output: Record<string, string> = {};
-	for (const [key, entry] of Object.entries(input)) {
-		if (typeof entry !== "string") throw new Error(`${label} is invalid`);
-		output[key] = entry;
-	}
-	return output;
+	const entries = plainEntries(value, label);
+	if (entries.some(([, entry]) => typeof entry !== "string")) throw new Error(`${label} is invalid`);
+	return Object.fromEntries(entries) as Record<string, string>;
 }
 
 function devices(value: unknown): Record<string, Readonly<Record<string, string>>> {
-	const input = record(value, "LXD instance devices");
-	const output: Record<string, Readonly<Record<string, string>>> = {};
-	for (const [name, device] of Object.entries(input)) output[name] = stringRecord(device, "LXD instance device");
-	return output;
+	const entries = plainEntries(value, "LXD instance devices");
+	if (entries.some(([name]) => !DEVICE_NAME.test(name))) throw new Error("LXD instance devices is invalid");
+	return Object.fromEntries(entries.map(([name, device]) => [name, stringRecord(device, "LXD instance device")]));
 }
 
 function strings(value: unknown, label: string): string[] {
@@ -1107,13 +1121,17 @@ function instanceState(value: unknown): LxdInstanceStateRecord {
 	}
 	// A stopped VM has no network map. Preserve its status so readiness can
 	// recognize shutdown instead of treating every poll as a malformed response.
+	// Interface names come from inside the guest; a hidden `__proto__` one
+	// would slip past lxdGuestIpv4's one-interface-per-MAC check.
 	const networkInput =
-		input.status === "Stopped" && input.network === null ? {} : record(input.network, "LXD instance network state");
+		input.status === "Stopped" && input.network === null
+			? []
+			: plainEntries(input.network, "LXD instance network state");
 	const network: Record<
 		string,
 		{ hwaddr?: string; addresses: readonly { family: string; address: string; scope: string }[] }
 	> = {};
-	for (const [name, rawInterface] of Object.entries(networkInput)) {
+	for (const [name, rawInterface] of networkInput) {
 		const networkInterface = record(rawInterface, "LXD instance network interface");
 		if (!Array.isArray(networkInterface.addresses)) throw new Error("LXD instance network addresses are invalid");
 		const addresses = networkInterface.addresses.map((rawAddress) => {

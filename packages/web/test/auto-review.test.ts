@@ -11,7 +11,7 @@ import {
 	type HostedReviewRule,
 	type WebReviewRules,
 } from "../src/cloud/review-rules.ts";
-import { renderActionReviewCard, renderAuthorizationCard } from "../src/ui/authorization-card.ts";
+import { readableFileName, renderActionReviewCard, renderAuthorizationCard } from "../src/ui/authorization-card.ts";
 import { id, settle, timestamp } from "./fixtures.ts";
 
 const data = {
@@ -67,18 +67,30 @@ describe("approval card facts", () => {
 
 describe("the approval card", () => {
 	const card = actionReviewCard(structuredClone(data) as never)! as ActionReviewCard;
+	/** Any action but sending an email, which wears the email card. */
+	const issue: ActionReviewCard = {
+		...card,
+		title: "Open a GitHub issue",
+		target: "qorpera/web",
+		details: [],
+		tool: "github_create_issue",
+		arguments: '{"input":{"repository":"qorpera/web"}}',
+	};
 	const names = (userId: string) => (userId === id(1) ? "Jonas" : "Anna");
 
 	it("gives the member it waits for Deny, Allow once and Always allow with the rule to edit", () => {
 		const answer = vi.fn();
-		const el = renderActionReviewCard(card, timestamp, undefined, { answer, memberName: names });
+		const el = renderActionReviewCard(issue, undefined, { answer, memberName: names });
 		expect(el.dataset.decisionState).toBe("pending");
 		expect(el.textContent).toContain("Company rule: sending any email outside the company");
 		expect(el.textContent).toContain("Personal rule: paying for anything");
 		expect(el.textContent).toContain("It moves money.");
-		expect(el.querySelector(".review-call")?.textContent).toBe(
-			'gmail_send_message({"input":{"to":"bob@acme.test"}})',
-		);
+		// No technical fold: the card says what the action does, never the call.
+		expect(el.querySelector("details, pre, .review-call")).toBeNull();
+		expect(el.textContent).not.toContain("github_create_issue");
+		// No time of the request; the answer closes the card.
+		expect(el.querySelector(".decision-attribution")).toBeNull();
+		expect(el.lastElementChild?.classList.contains("review-answer")).toBe(true);
 		const buttons = [...el.querySelectorAll<HTMLButtonElement>(".review-answer > .decision-actions button")];
 		expect(buttons.map((button) => button.textContent)).toEqual(["Deny", "Always allow…", "Allow once"]);
 		buttons[2]!.click();
@@ -97,20 +109,19 @@ describe("the approval card", () => {
 	});
 
 	it("shows everyone else who it waits for, with no controls", () => {
-		const el = renderActionReviewCard(card, timestamp, undefined, { memberName: names });
+		const el = renderActionReviewCard(card, undefined, { memberName: names });
 		expect(el.querySelector("button")).toBeNull();
 		expect(el.querySelector(".review-waiting")?.textContent).toBe("Waiting for an owner or admin to approve.");
 		const personal = renderActionReviewCard(
 			{ ...card, approverScope: "member", approverUserId: id(2), approverName: "Anna" },
-			timestamp,
 			undefined,
 			{ memberName: names },
 		);
 		expect(personal.querySelector(".review-waiting")?.textContent).toBe("Waiting for Anna to approve.");
 		// A lost answer is news only to whoever answers the card.
-		const failed = renderActionReviewCard(card, timestamp, undefined, { memberName: names, answerFailed: true });
+		const failed = renderActionReviewCard(card, undefined, { memberName: names, answerFailed: true });
 		expect(failed.querySelector(".review-failed")).toBeNull();
-		const retry = renderActionReviewCard(card, timestamp, undefined, {
+		const retry = renderActionReviewCard(card, undefined, {
 			answer: vi.fn(),
 			memberName: names,
 			answerFailed: true,
@@ -131,10 +142,199 @@ describe("the approval card", () => {
 		expect(el.textContent).not.toContain("Only an owner or admin");
 	});
 
+	it("leads with the action and the change itself", () => {
+		const el = renderActionReviewCard(
+			{
+				...issue,
+				details: [
+					["title", "Sign-up fails on Safari"],
+					["body", "Steps: open the page on iOS 15."],
+					["count", "3"],
+				],
+			},
+			undefined,
+			{ answer: vi.fn(), memberName: names },
+		);
+		expect(el.querySelector(".review-headline")?.textContent).toBe("Open a GitHub issue");
+		expect(el.querySelector(".review-target")?.textContent).toBe("qorpera/web");
+		expect(el.querySelector(".review-name")?.textContent).toBe("Sign-up fails on Safari");
+		expect(el.querySelector(".review-quote")?.textContent).toBe("Steps: open the page on iOS 15.");
+		expect(el.querySelector(".decision-facts")?.textContent).toBe("count3");
+	});
+
+	it("shows every recipient and the whole text from the exact call, not the shortened facts", () => {
+		const long = `${"Line one.\n".repeat(80)}The end.`;
+		const el = renderActionReviewCard(
+			{
+				...card,
+				details: [
+					["subject", "Short"],
+					["body", "Line one. Line one. …"],
+				],
+				arguments: JSON.stringify({
+					input: { to: ["anna@nordlys.dk"], cc: ["rival@example.com"], subject: "Launch", body: long },
+				}),
+			},
+			undefined,
+			{ answer: vi.fn(), memberName: names },
+		);
+		const rows = [...el.querySelectorAll(".email-draft-row")].map((row) => row.textContent);
+		expect(rows).toEqual(["Toanna@nordlys.dk", "Ccrival@example.com", "SubjectLaunch"]);
+		expect(el.querySelector(".review-email-body")?.textContent).toBe(long);
+		const unreadable = renderActionReviewCard(
+			{ ...card, arguments: "not json", details: [["body", "Fallback text"]] },
+			undefined,
+			{ answer: vi.fn(), memberName: names },
+		);
+		expect(unreadable.querySelector(".review-email-body")?.textContent).toBe("Fallback text");
+		expect(unreadable.querySelector(".email-draft-row")?.textContent).toBe("Tobob@acme.test");
+	});
+
+	it("shows an email to send as the thread's email card, where sending is allowing", () => {
+		const answer = vi.fn();
+		const el = renderActionReviewCard(
+			{
+				...card,
+				details: [
+					["subject", "Meeting moved"],
+					["body", "Tuesday 10:00 instead."],
+				],
+			},
+			undefined,
+			{ answer, memberName: names },
+		);
+		expect(el.classList.contains("email-draft-card")).toBe(true);
+		expect(el.querySelector(".email-draft-heading h3")?.textContent).toBe("New email");
+		const rows = [...el.querySelectorAll(".email-draft-row")].map((row) => row.textContent);
+		expect(rows).toEqual(["Tobob@acme.test", "SubjectMeeting moved"]);
+		expect(el.querySelector(".review-email-body")?.textContent).toBe("Tuesday 10:00 instead.");
+		// Read-only: the email itself has no fields to edit, and there is no technical fold.
+		expect(el.querySelector(".email-draft-panel :is(input, textarea)")).toBeNull();
+		expect(el.querySelector("details, .review-call")).toBeNull();
+		const buttons = [...el.querySelectorAll<HTMLButtonElement>(".email-draft-actions button")];
+		expect(buttons.map((button) => button.textContent)).toEqual(["Send email", "Don't send", "Always allow…"]);
+		buttons[0]!.click();
+		expect(answer).toHaveBeenLastCalledWith("allow_once");
+		buttons[1]!.click();
+		expect(answer).toHaveBeenLastCalledWith("deny");
+		const waiting = renderActionReviewCard(card, undefined, { memberName: names });
+		expect(waiting.querySelector(".email-draft-status")).toBeNull();
+		expect(waiting.querySelector(".review-waiting")?.textContent).toBe("Waiting for an owner or admin to approve.");
+	});
+
+	it("names a Company File deletion as people say it, never by its path", () => {
+		const el = renderActionReviewCard(
+			{
+				...card,
+				title: "Delete from the Company File",
+				target: "work/old-offer.md",
+				summary: "It deletes work/old-offer.md, which the request did not name.",
+				details: [],
+				tool: "company_delete",
+				arguments: '{"path":"work/old-offer.md"}',
+			},
+			undefined,
+			{ answer: vi.fn(), memberName: names },
+		);
+		expect(el.querySelector(".review-headline")?.textContent).toBe("Delete “Old offer”");
+		expect(el.textContent).not.toContain("work/old-offer.md");
+		expect(el.querySelector(".review-why p")?.textContent).toBe(
+			"It deletes “Old offer”, which the request did not name.",
+		);
+		const quoted = renderActionReviewCard(
+			{
+				...card,
+				target: "work/old-offer.md",
+				tool: "company_delete",
+				summary: 'It deletes "/work/old-offer.md" without being asked.',
+			},
+			undefined,
+			{ answer: vi.fn(), memberName: names },
+		);
+		expect(quoted.querySelector(".review-why p")?.textContent).toBe("It deletes “Old offer” without being asked.");
+		const odd = (target: string, summary: string) =>
+			renderActionReviewCard({ ...card, target, tool: "company_delete", summary }, undefined, {
+				memberName: names,
+			}).querySelector(".review-why p")?.textContent;
+		expect(odd("/", "It deletes everything.")).toBe("It deletes everything.");
+		expect(odd("work/p$'x.md", "It deletes work/p$'x.md today.")).toBe("It deletes “P$'x” today.");
+	});
+
+	it("reads a file name the way people say it", () => {
+		expect(readableFileName("work/old-offer.md")).toBe("Old offer");
+		expect(readableFileName("work/2026-09-28-standup.md")).toBe("2026-09-28 standup");
+		expect(readableFileName("work/2026.09")).toBe("2026.09");
+		expect(readableFileName("notes/Møde 10.30")).toBe("Møde 10.30");
+		expect(readableFileName("apps/iOS-plan.md")).toBe("iOS plan");
+		expect(readableFileName("work/reports/")).toBe("Reports");
+		expect(readableFileName(".env")).toBe(".env");
+	});
+
+	it("says a name once when the target already says it, and quotes a worker's task", () => {
+		const el = renderActionReviewCard(
+			{
+				...card,
+				title: "Create a Drive file",
+				tool: "google_drive_create_file",
+				target: "Q3 plan",
+				details: [
+					["name", "Q3 plan"],
+					["task", "Draft the plan from the board memo."],
+				],
+			},
+			undefined,
+			{ answer: vi.fn(), memberName: names },
+		);
+		expect(el.textContent?.split("Q3 plan").length).toBe(2);
+		expect(el.querySelector(".review-quote")?.textContent).toBe("Draft the plan from the board memo.");
+	});
+
+	it("shows markup in an action as text", () => {
+		const email = renderActionReviewCard(
+			{ ...card, target: "<img src=x onerror=alert(3)>", details: [["body", "<script>alert(4)</script>"]] },
+			undefined,
+			{ answer: vi.fn(), memberName: names },
+		);
+		expect(email.querySelector("img, script")).toBeNull();
+		const el = renderActionReviewCard(
+			{
+				...issue,
+				target: '<img src=x onerror="alert(1)">',
+				details: [
+					["subject", "<b>bold</b>"],
+					["body", "<script>alert(2)</script>"],
+				],
+			},
+			undefined,
+			{ answer: vi.fn(), memberName: names },
+		);
+		expect(el.querySelector("img, b, script")).toBeNull();
+		expect(el.querySelector(".review-quote")?.textContent).toBe("<script>alert(2)</script>");
+	});
+
+	it("folds an answered card to one line naming what was decided", () => {
+		const el = renderActionReviewCard(
+			{ ...card, title: "Delete from the Company File", target: "work/old-offer.md", tool: "company_delete" },
+			{ decision: "approved", answer: { answer: "allow_once" }, answeredBy: id(1) },
+			{ answer: vi.fn(), memberName: names },
+		);
+		expect(el.classList.contains("is-folded")).toBe(true);
+		expect(el.textContent).toBe("Allowed once by Jonas. Delete “Old offer”");
+		expect(el.querySelector(".review-quote, .review-why, button")).toBeNull();
+	});
+
+	it("names who or what an answered action reached", () => {
+		const el = renderActionReviewCard(
+			card,
+			{ decision: "declined", answer: { answer: "deny" }, answeredBy: id(2) },
+			{ memberName: names },
+		);
+		expect(el.querySelector(".review-folded-what")?.textContent).toBe("Send an email · bob@acme.test");
+	});
+
 	it("shows the answer once given", () => {
 		const allowed = renderActionReviewCard(
 			card,
-			timestamp,
 			{ entry: { data: { decision: "approved", answer: { answer: "always_allow" }, answeredBy: id(1) } } },
 			{ answer: vi.fn(), memberName: names },
 		);
@@ -143,7 +343,6 @@ describe("the approval card", () => {
 		expect(allowed.querySelector(".review-outcome")?.textContent).toBe("Always allowed by Jonas.");
 		const declined = renderActionReviewCard(
 			card,
-			timestamp,
 			{ decision: "declined", answer: { answer: "deny" }, answeredBy: id(2) },
 			{ memberName: names },
 		);

@@ -1,7 +1,7 @@
 import type { NativeExecutionConnections } from "@qorpera/cloud-client/cloud-native-subscription-control";
 import type { CloudApi } from "../cloud/api.ts";
 import { CloudRpcError, describeError } from "../cloud/client.ts";
-import type { CodingSession, CodingSessionRead } from "../cloud/coding-session.ts";
+import { type CodingSession, type CodingSessionRead, compareCodingSessions } from "../cloud/coding-session.ts";
 import {
 	type EmailDraftAction,
 	EmailDraftClient,
@@ -43,6 +43,7 @@ import type {
 	PendingSessionInput,
 } from "../cloud/types.ts";
 import { attachmentProblemText } from "../ui/attachments.ts";
+import { isGroupChat } from "../ui/group-chat.ts";
 import type { MentionTarget } from "../ui/mentions.ts";
 import { t } from "../ui/preferences.ts";
 import { RoomDrafts } from "./room-drafts.ts";
@@ -88,7 +89,9 @@ const RECOVERY_RETRY_MS = 5_000;
  * called … already exists"). A network or server failure never shows its text. */
 function sidebarRefusal(error: unknown, request: SidebarRequest): string {
 	if (error instanceof CloudRpcError) {
-		const shared = ["create_section", "rename_section", "delete_section", "move_agent"].includes(request.action);
+		const shared = ["create_section", "rename_section", "delete_section", "move_agent", "move_room"].includes(
+			request.action,
+		);
 		if (error.code === "42501" && shared)
 			return t("Only owners, admins and contributors can change the company's sections.");
 		const own = ["23505", "P0002", "54000", "22023"].includes(error.code ?? "");
@@ -243,7 +246,7 @@ function newerCodingSessions(
 	const byWorker = new Map((known ?? []).map((session) => [session.workerId, session]));
 	return listed.map((session) => {
 		const current = byWorker.get(session.workerId);
-		return current && Date.parse(current.updatedAt) > Date.parse(session.updatedAt)
+		return current && compareCodingSessions(current, session) > 0
 			? { ...current, isOwner: session.isOwner ?? current.isOwner }
 			: session;
 	});
@@ -302,6 +305,10 @@ export class CompanyController {
 	#sidebarRealtime: RealtimeSubscription | undefined;
 	/** Sidebar changes sent and not yet answered; each answer carries the whole sidebar. */
 	#sidebarPending = 0;
+	/** What a send's own read found about group chat images, before the sidebar had said. */
+	#groupChatImagesRead: boolean | undefined;
+	/** The group chats of the last sessions list, kept until the list is replaced. */
+	#groupRooms: { sessions: HostedSession[]; rooms: Map<string, HostedSession> } | undefined;
 	#sidebarWrites: Promise<unknown> = Promise.resolve();
 	#poll: ReturnType<typeof setInterval> | undefined;
 	#openSessionId: string | undefined;
@@ -586,13 +593,61 @@ export class CompanyController {
 		}
 	}
 
-	/** The agents the sidebar arranges, in roster order: active, never the Co-Founder. */
+	/** What the sidebar arranges, in roster order: the active agents but the Co-Founder, then,
+	 * where the cloud places them, the open group chats oldest first (as the cloud orders them). */
 	sidebarRoster(): string[] {
 		const cofounder = this.cofounderId();
-		return this.store
+		const agents = this.store
 			.get()
 			.staff.filter((agent) => agent.employmentStatus === "active" && agent.id !== cofounder)
 			.map((agent) => agent.id);
+		return this.store.get().sidebar?.groupChats ? [...agents, ...this.groupChatRooms().keys()] : agents;
+	}
+
+	/** The open group chats by room id, oldest first (by their conversations, as the cloud
+	 * orders them), each with its conversation. Read-only: it is kept until the sessions change. */
+	groupChatRooms(): ReadonlyMap<string, HostedSession> {
+		const sessions = this.store.get().sessions;
+		if (this.#groupRooms?.sessions === sessions) return this.#groupRooms.rooms;
+		const rooms = new Map<string, HostedSession>();
+		const chats = sessions
+			.filter((session) => session.status === "open" && isGroupChat(session))
+			.sort(
+				(a, b) =>
+					Date.parse(a.createdAt) - Date.parse(b.createdAt) ||
+					(a.sessionId < b.sessionId ? -1 : a.sessionId > b.sessionId ? 1 : 0),
+			);
+		for (const session of chats) {
+			const roomId = String(session.executionScope?.roomId).toLowerCase();
+			if (UUID_PATTERN.test(roomId) && !rooms.has(roomId)) rooms.set(roomId, session);
+		}
+		this.#groupRooms = { sessions, rooms };
+		return rooms;
+	}
+
+	/** Whether this cloud takes images in group chats: the migration that places group
+	 * chats in the sidebar (20260928030000) lifted the text-only rule too. Undefined until
+	 * the sidebar has been read; a cloud without the sidebar predates it. */
+	groupChatImages(): boolean | undefined {
+		const state = this.store.get();
+		if (state.sidebarUnavailable) return false;
+		return state.sidebar ? state.sidebar.groupChats === true : this.#groupChatImagesRead;
+	}
+
+	/** The same answer, read from the cloud now when the sidebar has not given it yet. The
+	 * read's own answer counts, whatever other sidebar reads are in flight. */
+	async #groupChatImagesNow(): Promise<boolean | undefined> {
+		const known = this.groupChatImages();
+		if (known !== undefined) return known;
+		try {
+			const sidebar = await this.#api.readCompanySidebar(this.profile.profileId);
+			this.#groupChatImagesRead = sidebar.groupChats === true;
+			// The rail takes the sidebar through its usual path, with its live updates.
+			void this.refreshSidebar();
+		} catch (error) {
+			if (error instanceof CloudRpcError && error.missing) this.#groupChatImagesRead = false;
+		}
+		return this.groupChatImages();
 	}
 
 	cofounderId(): string | undefined {
@@ -605,9 +660,15 @@ export class CompanyController {
 
 	/** Draws a sidebar change at once and sends it; changes go one at a time, in order.
 	 * A refusal puts back what the cloud has and says why. */
-	async changeSidebar(request: SidebarRequest): Promise<boolean> {
+	async changeSidebar(change: SidebarRequest): Promise<boolean> {
 		const current = this.store.get();
 		if (this.#stopped || !current.sidebar || current.sidebarUnavailable) return false;
+		// Where the cloud places group chats, pin rows and section orders name them too; a
+		// request without the flag is taken as one from a page that predates them.
+		const request: SidebarRequest =
+			current.sidebar.groupChats && (change.action === "set_pins" || change.action === "move_agent")
+				? { ...change, groupChats: true }
+				: change;
 		this.store.set({
 			sidebar: applySidebarRequest(current.sidebar, request, this.sidebarRoster()),
 			railError: undefined,
@@ -1249,13 +1310,19 @@ export class CompanyController {
 		this.#mergeCodingSession(sessionId, await this.#api.delegateCodingSession(workerId, clientRequestId));
 	}
 
+	async archiveCodingSession(sessionId: string, workerId: string, clientRequestId: string): Promise<void> {
+		this.#mergeCodingSession(sessionId, await this.#api.archiveCodingSession(workerId, clientRequestId));
+	}
+
 	#mergeCodingSession(sessionId: string, session: CodingSession): void {
 		const store = this.conversations.get(sessionId);
 		if (!store) return;
 		const current = store.get().codingSessions ?? [];
 		const merged = current.some((item) => item.workerId === session.workerId)
 			? current.map((item) =>
-					item.workerId === session.workerId ? { ...session, isOwner: session.isOwner ?? item.isOwner } : item,
+					item.workerId === session.workerId && compareCodingSessions(session, item) >= 0
+						? { ...session, isOwner: session.isOwner ?? item.isOwner }
+						: item,
 				)
 			: [...current, session];
 		store.set({ codingSessions: merged });
@@ -1329,10 +1396,12 @@ export class CompanyController {
 		if (typeof scope.roomId !== "string" || !UUID_PATTERN.test(scope.roomId))
 			throw new Error(t("The team room conversation is unavailable."));
 		// An agent thread is a room the kernel bound to one agent; a team room has no single agent.
+		const agentThread = isAgentThreadSession(session);
 		return Object.freeze({
 			roomId: scope.roomId,
 			environmentId: session.environmentId,
-			agentThread: isAgentThreadSession(session),
+			agentThread,
+			images: agentThread || this.groupChatImages() === true,
 		});
 	}
 
@@ -1614,6 +1683,20 @@ export class CompanyController {
 			});
 			return false;
 		}
+		// Images wait until the cloud is known to take them in a group chat: read the sidebar
+		// now if it has not been read (it says so), and ask for another try if it cannot be.
+		const session = this.store.get().sessions.find((item) => item.sessionId === sessionId);
+		if (files.length && isGroupChat(session) && this.groupChatImages() === undefined) {
+			const images = await this.#groupChatImagesNow();
+			if (this.#stopped || viewSignal?.aborted) return false;
+			// An edit while the cloud was asked is a new message: this send stops, the edit stays.
+			const now = store.get();
+			if (now.sending || now.draft !== text || !sameFiles(now.attachments ?? [])) return false;
+			if (images === undefined) {
+				store.set({ sendError: t("Could not check whether this group chat takes images. Try again.") });
+				return false;
+			}
+		}
 		let roomTarget: RoomMessageTarget | undefined;
 		try {
 			const observed = this.roomTargetFor(sessionId);
@@ -1624,8 +1707,10 @@ export class CompanyController {
 				observed?.agentThread !== roomTarget?.agentThread
 			)
 				throw new Error(t("The conversation destination changed. Refresh before starting a new request."));
-			if (roomTarget && !roomTarget.agentThread && files.length)
+			if (roomTarget && !roomTarget.images && files.length)
 				throw new Error(t("Images are not supported in team rooms. Use Company File."));
+			// A room post carries text; the cloud refuses images alone.
+			if (roomTarget && !trimmed) throw new Error(t("Add a message to send with the images."));
 		} catch (error) {
 			store.set({ sendError: describeError(error), draft: text });
 			return false;

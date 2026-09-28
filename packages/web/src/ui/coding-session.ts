@@ -3,9 +3,11 @@
  * shows; the line opens the session as its own thread (coding-session-thread.ts).
  * While the session runs, the thread's header carries it beside the agent: the
  * agent's figure wearing the harness mark, moving as the agent's own figure does.
- * The session's thread shows its own steps, the harness's voice, the owner's
- * input and the pull request. Everything here is a projection of the kernel's
- * session view and event stream; nothing comes from the agent's prose.
+ * The session's thread reads like a conversation: the harness on the left (its
+ * steps, its voice, its questions, the pull request), the owner's and the agent's
+ * input on the right, and the composer pinned under it. Everything here is a
+ * projection of the kernel's session view and event stream; nothing comes from
+ * the agent's prose.
  *
  * The session's thread follows its stream itself: a short poll while the session
  * works, a slower one while it waits or after it finished (a follow-up starts it
@@ -17,14 +19,26 @@ import {
 	type CodingSession,
 	type CodingSessionEvent,
 	type CodingSessionRead,
+	codingSessionGoing,
 	codingSessionSettled,
 	codingSessionTakesInput,
+	compareCodingSessions,
 } from "../cloud/coding-session.ts";
 import type { HostedStaffAgent, JsonValue } from "../cloud/types.ts";
 import { agentFigure } from "./avatar.ts";
-import { button, h, replace } from "./dom.ts";
+import {
+	conversationTimestampLabel,
+	conversationTimestampTitle,
+	needsConversationTimestamp,
+	parseConversationTimestamp,
+} from "./conversation-timestamps.ts";
+import { button, fmtTime, h, icon, replace } from "./dom.ts";
 import type { Activity } from "./figure-motion.ts";
+import { matchesKey } from "./keys.ts";
+import { markdownBubbles } from "./markdown.ts";
 import { t } from "./preferences.ts";
+import { quietScroll } from "./quiet-scroll.ts";
+import { uiScale } from "./scale.ts";
 
 export const HARNESS_NAMES: Record<CodingHarness, string> = { codex: "Codex", "claude-code": "Claude Code" };
 
@@ -41,16 +55,17 @@ const POLL_WORKING_MS = 2_500;
 const POLL_WAITING_MS = 6_000;
 const POLL_SETTLED_MS = 30_000;
 const POLL_HIDDEN_MS = 20_000;
-/** Steps shown in full when the session is expanded; older ones fold into one line. */
+/** Steps shown in the transcript; older ones fold into one line at its top, when there are at least a few. */
 const RECENT_EVENTS = 10;
+const FOLD_AT_LEAST = 3;
+/** The cloud's page of events per read (api.ts readCodingSession); a full page means more wait. */
+const READ_PAGE = 200;
+/** What the owner was writing to a session, kept while the app is open so going back does not lose it. */
+const drafts = new Map<string, string>();
 
 /** qorpera/coding/<worker uuid> reads as qorpera/coding/7f3a… */
 export function shortBranch(branch: string): string {
 	return branch.replace(/^(qorpera\/coding\/[0-9a-f]{4})[0-9a-f-]{32,}$/, "$1…");
-}
-
-function cap(text: string): string {
-	return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
 /** The thread's line, in pieces around the harness, which is drawn with its mark
@@ -70,13 +85,31 @@ export function fmtDuration(ms: number): string {
 	return rest ? t("{hours} h {minutes} min", { hours, minutes: rest }) : t("{hours} h", { hours });
 }
 
-/** The live status line: the state, how long, the last step, the diff size. */
+/** Where a session is between its turns: on its machine with what it left running, or its machine asleep.
+ * Nothing when neither is known (a session from before sessions stood by). */
+export function codingSessionStandby(
+	session: Pick<CodingSession, "attached" | "runningCommands" | "machineAsleep">,
+): string | undefined {
+	if (session.attached && session.runningCommands > 0)
+		return session.runningCommands === 1
+			? t("running 1 command")
+			: t("running {count} commands", { count: session.runningCommands });
+	if (session.attached) return t("standing by");
+	if (session.machineAsleep) return t("asleep");
+	return undefined;
+}
+
+/** The live status line: the state, how long, the last step, the diff size; between turns, whether the session
+ * stands by on its machine, runs something there, or sleeps. */
 export function codingSessionStatus(
 	session: CodingSession,
 	names: CodingSessionNames,
 	now = Date.now(),
 ): { text: string; tone: CodingSessionTone } {
+	if (session.archivedAt) return { text: t("Archived · files kept"), tone: "idle" };
 	const since = (iso: string | undefined) => (iso ? fmtDuration(now - Date.parse(iso)) : undefined);
+	const standby = codingSessionStandby(session);
+	const running = session.attached && session.runningCommands > 0 ? standby : undefined;
 	const files =
 		session.filesChanged > 0
 			? session.filesChanged === 1
@@ -99,11 +132,16 @@ export function codingSessionStatus(
 		case "awaiting_input": {
 			const paused = since(session.updatedAt);
 			return {
-				text: names.ownerIsViewer
-					? t("Needs you · your answer is recorded in this thread")
-					: paused
-						? t("Needs {name} · paused {duration}", { name: names.owner, duration: paused })
-						: t("Needs {name} · paused now", { name: names.owner }),
+				text: [
+					names.ownerIsViewer
+						? t("Needs you · your answer is recorded in this thread")
+						: paused
+							? t("Needs {name} · paused {duration}", { name: names.owner, duration: paused })
+							: t("Needs {name} · paused now", { name: names.owner }),
+					running,
+				]
+					.filter(Boolean)
+					.join(" · "),
 				tone: "attention",
 			};
 		}
@@ -113,15 +151,20 @@ export function codingSessionStatus(
 			return { text: [t("Opening the pull request"), files].filter(Boolean).join(" · "), tone: "working" };
 		case "completed":
 			return {
-				text: session.pullRequest
-					? t("Draft PR ready · session kept for follow-ups")
-					: t("Finished · session kept for follow-ups"),
+				text: standby
+					? [session.pullRequest ? t("Draft PR ready") : t("Finished"), standby].join(" · ")
+					: session.pullRequest
+						? t("Draft PR ready · session kept for follow-ups")
+						: t("Finished · session kept for follow-ups"),
 				tone: "done",
 			};
 		case "failed":
-			return { text: t("Failed · workspace kept"), tone: "failed" };
+			return { text: standby ? [t("Failed"), standby].join(" · ") : t("Failed · workspace kept"), tone: "failed" };
 		case "cancelled":
-			return { text: t("Cancelled · workspace kept"), tone: "idle" };
+			return {
+				text: standby ? [t("Cancelled"), standby].join(" · ") : t("Cancelled · workspace kept"),
+				tone: "idle",
+			};
 	}
 }
 
@@ -129,10 +172,14 @@ export interface CodingSessionApi {
 	read(workerId: string, afterEvent: number): Promise<CodingSessionRead>;
 	answer(workerId: string, text: string, clientRequestId: string): Promise<void>;
 	delegate(workerId: string, clientRequestId: string): Promise<void>;
+	archive(workerId: string, clientRequestId: string): Promise<void>;
 }
 
-/** The session, unfolded, as the body of its own thread (the thread view adds header and footer). */
+/** The session as the body of its own thread (the thread view adds the header): the transcript, and under it
+ * the status line and the composer, or for everyone but the owner the lock line. */
 export interface CodingSessionElementOptions {
+	/** The agent that started the session; its figure marks its own input in the transcript. */
+	agent?: HostedStaffAgent;
 	/** Read at every render with the current session: names follow the roster and the owner. */
 	names: (session: CodingSession) => CodingSessionNames;
 	/** Whether the signed-in member owns the session (the kernel says; the listing repeats it). */
@@ -219,10 +266,43 @@ function checkTone(status: string): CodingSessionTone {
 	return "working";
 }
 
+/** Who a turn in the transcript belongs to: the harness on the left; on the right the viewer's own
+ * input, or the agent's and another member's. */
+type CodingSide = "harness" | "mine" | "steer";
+
+function lastOf(events: CodingSessionEvent[], kind: CodingSessionEvent["kind"]): CodingSessionEvent | undefined {
+	for (let index = events.length - 1; index >= 0; index--) if (events[index]!.kind === kind) return events[index];
+	return undefined;
+}
+
+/** How far from the bottom the reader may be and still follow new steps, in design pixels. */
+const STICK_DISTANCE = 48;
+
 export class CodingSessionElement {
 	readonly el: HTMLElement;
 	readonly #options: CodingSessionElementOptions;
 	readonly #lifetime = new AbortController();
+	/** The transcript's scroller; the footer under it stays put, as a conversation's composer does. */
+	readonly #log = h("div", { class: "coding-log", tabindex: "-1", "aria-label": t("Session transcript") });
+	readonly #body = h("div", { class: "coding-body" });
+	readonly #footer = h("footer", { class: "coding-footer" });
+	readonly #status = h("div", { class: "coding-status" });
+	readonly #statusDot = h("span", { "aria-hidden": "true" });
+	readonly #statusText = h("span", { class: "coding-status-text" });
+	/** Made once, so a redraw of the status line never takes the focus from it. */
+	readonly #archiveButton: HTMLButtonElement;
+	/** Read out when the phase or the session's place changes (standing by, running, asleep, archived), not at
+	 * every step the visible status line shows. */
+	readonly #announce = h("span", { class: "visually-hidden", role: "status" });
+	#announced = "";
+	readonly #extras = h("div", { class: "coding-extras", hidden: true });
+	readonly #field: HTMLTextAreaElement;
+	readonly #sendButton: HTMLButtonElement;
+	readonly #shell: HTMLElement;
+	readonly #talk: HTMLElement;
+	readonly #lock = h("div", { class: "coding-talk coding-talk-locked" });
+	readonly #refreshFade: () => void;
+	#sizes: ResizeObserver | undefined;
 	#session: CodingSession;
 	#events: CodingSessionEvent[] = [];
 	#cursor = 0;
@@ -232,26 +312,112 @@ export class CodingSessionElement {
 	#error: string | undefined;
 	/** Why the stream cannot be read, shown only while nothing is known yet. */
 	#readError: string | undefined;
-	#requestId: string | undefined;
-	#draft = "";
+	/** Per action, the request id kept for a retry after a refusal. */
+	readonly #requestIds = new Map<"answer" | "delegate" | "archive", string>();
 	#poll: ReturnType<typeof setTimeout> | undefined;
 	#request: AbortController | undefined;
 	#refreshing: Promise<void> | undefined;
-	#renderedKey = "";
+	#transcriptKey = "";
+	#footerKey = "";
+	/** Whether new steps keep the latest in view: until the reader scrolls up to read older ones. */
+	#stickToBottom = true;
+	/** Where the last pin put the scroller, so its own scroll event is not read as the reader's. */
+	#pinnedTop = -1;
+	/** The first step shown under the fold, fixed once the stream is caught up so new steps do not shift it. */
+	#foldFrom: number | undefined;
+	/** Whether the last read returned less than a page, so every event there is has been read. */
+	#caughtUp = false;
+	#draftSized = false;
 
 	constructor(session: CodingSession, options: CodingSessionElementOptions) {
 		this.#session = session;
 		this.#options = options;
-		this.el = h("section", {
-			class: "coding-session",
-			dataset: { workerId: session.workerId, phase: session.phase },
-			"aria-label": t("Coding session"),
+		this.#field = h("textarea", {
+			class: "composer-input coding-field-input",
+			rows: 1,
+			oninput: () => {
+				if (this.#field.value) drafts.set(this.#session.workerId, this.#field.value);
+				else drafts.delete(this.#session.workerId);
+				this.#autosize();
+				this.#syncSend();
+			},
+			onkeydown: (event: KeyboardEvent) => {
+				if (matchesKey(event, "accept") && !event.shiftKey && !event.isComposing) {
+					event.preventDefault();
+					void this.#send(this.#field.value, true);
+				}
+			},
 		});
+		this.#sendButton = h(
+			"button",
+			{
+				type: "button",
+				class: "composer-send coding-send",
+				onclick: () => void this.#send(this.#field.value, true),
+			},
+			icon("send"),
+		);
+		this.#field.value = drafts.get(session.workerId) ?? "";
+		this.#shell = h("div", { class: "composer-shell coding-composer" }, this.#field, this.#sendButton);
+		this.#talk = h("div", { class: "coding-talk" }, this.#shell);
+		this.#archiveButton = h(
+			"button",
+			{
+				type: "button",
+				class: "btn btn-small coding-archive",
+				title: t(
+					"Stops what it runs and takes it off its machine. Its files are kept, and a new message reopens it.",
+				),
+				onclick: () => void this.#archive(),
+			},
+			t("Archive"),
+		);
+		this.#status.append(this.#statusDot, this.#statusText, this.#archiveButton);
+		this.#log.append(this.#body);
+		this.#footer.append(this.#announce, this.#status, this.#extras);
+		this.el = h(
+			"section",
+			{
+				class: "coding-session",
+				dataset: { workerId: session.workerId, phase: session.phase },
+				"aria-label": t("Coding session"),
+			},
+			this.#log,
+			this.#footer,
+		);
+		this.#refreshFade = quietScroll(this.#log);
+		this.#log.addEventListener(
+			"scroll",
+			() => {
+				const { scrollTop, scrollHeight, clientHeight } = this.#log;
+				if (this.#stickToBottom && scrollTop === this.#pinnedTop) {
+					this.#pinnedTop = -1;
+					return;
+				}
+				this.#stickToBottom = scrollHeight - scrollTop - clientHeight < STICK_DISTANCE * uiScale();
+			},
+			{ signal: this.#lifetime.signal },
+		);
+		// The log keeps the latest in view when it grows (a step, a card) or shrinks (the footer grew).
+		if (typeof ResizeObserver !== "undefined") {
+			this.#sizes = new ResizeObserver(() => {
+				// A kept draft gets its height once the field is laid out, in the next frame: resizing inside this
+				// callback would resize the observed log again within the same delivery.
+				if (!this.#draftSized && this.#field.isConnected && this.#field.value) {
+					this.#draftSized = true;
+					requestAnimationFrame(() => this.#autosize());
+				}
+				this.#pinToBottom();
+			});
+			this.#sizes.observe(this.#log);
+			this.#sizes.observe(this.#body);
+		}
 		if (options.signal.aborted) this.dispose();
 		else
 			options.signal.addEventListener("abort", () => this.dispose(), { once: true, signal: this.#lifetime.signal });
 		document.addEventListener("visibilitychange", () => this.#onVisibility(), { signal: this.#lifetime.signal });
 		window.addEventListener("focus", () => void this.refresh(), { signal: this.#lifetime.signal });
+		window.addEventListener("resize", () => this.#autosize(), { signal: this.#lifetime.signal });
 		this.#render();
 		void this.refresh();
 	}
@@ -264,10 +430,10 @@ export class CodingSessionElement {
 		return this.#lifetime.signal.aborted;
 	}
 
-	/** A fresh listing from the thread's own reads; the element keeps the newer of the two. */
+	/** A fresh listing from the conversation's own reads; the element keeps the newer of the two. */
 	update(session: CodingSession): void {
 		if (this.disposed) return;
-		const newer = session.updatedAt.localeCompare(this.#session.updatedAt) >= 0;
+		const newer = compareCodingSessions(session, this.#session) >= 0;
 		const moved = session.phase !== this.#session.phase;
 		if (newer) this.#session = { ...session, isOwner: session.isOwner ?? this.#session.isOwner };
 		this.#render();
@@ -283,9 +449,12 @@ export class CodingSessionElement {
 		const request = new AbortController();
 		this.#request = request;
 		this.#refreshing = (async () => {
+			let more = false;
 			try {
 				const read = await this.#options.api.read(this.#session.workerId, this.#cursor);
 				if (request.signal.aborted || this.disposed) return;
+				more = read.events.length >= READ_PAGE;
+				this.#caughtUp = !more;
 				const known = new Set(this.#events.map((event) => event.id));
 				for (const event of read.events) if (!known.has(event.id)) this.#events.push(event);
 				this.#events.sort((a, b) => a.id - b.id);
@@ -301,17 +470,29 @@ export class CodingSessionElement {
 				this.#refreshing = undefined;
 				if (!this.disposed) {
 					this.#render();
-					this.#schedule();
+					// A full page: the rest is read at once, so a long session does not open in its middle.
+					if (more) {
+						clearTimeout(this.#poll);
+						this.#poll = setTimeout(() => void this.refresh(), 0);
+					} else this.#schedule();
 				}
 			}
 		})();
 		return this.#refreshing;
 	}
 
+	/** Put the caret in the composer, when the viewer may type now. */
+	focusComposer(): boolean {
+		if (!this.#talk.isConnected || !codingSessionTakesInput(this.#session)) return false;
+		this.#field.focus();
+		return true;
+	}
+
 	dispose(): void {
 		if (this.disposed) return;
 		this.#lifetime.abort();
 		this.#request?.abort();
+		this.#sizes?.disconnect();
 		clearTimeout(this.#poll);
 	}
 
@@ -322,7 +503,7 @@ export class CodingSessionElement {
 		const wait =
 			typeof document !== "undefined" && document.hidden
 				? POLL_HIDDEN_MS
-				: codingSessionSettled(phase)
+				: !codingSessionGoing(this.#session)
 					? POLL_SETTLED_MS
 					: phase === "awaiting_input"
 						? POLL_WAITING_MS
@@ -334,91 +515,461 @@ export class CodingSessionElement {
 		if (!document.hidden) void this.refresh();
 	}
 
-	async #send(text: string): Promise<void> {
+	/** Sends an answer or a follow-up. `typed` says the text is the composer's, which then empties. */
+	async #send(text: string, typed = false): Promise<void> {
 		const value = text.trim();
-		if (!value || this.#busy || this.disposed) return;
-		this.#requestId ??= crypto.randomUUID();
-		this.#busy = true;
-		this.#error = undefined;
-		this.#render();
-		try {
-			await this.#options.api.answer(this.#session.workerId, value, this.#requestId);
-			this.#requestId = undefined;
-			this.#draft = "";
-		} catch (error) {
-			this.#error = describeError(error);
-		} finally {
-			this.#busy = false;
-		}
-		this.#render();
-		await this.refresh();
+		if (!value || this.#busy || this.disposed || !codingSessionTakesInput(this.#session)) return;
+		await this.#act(
+			"answer",
+			(requestId) => this.#options.api.answer(this.#session.workerId, value, requestId),
+			typed
+				? () => {
+						this.#field.value = "";
+						drafts.delete(this.#session.workerId);
+						this.#autosize();
+					}
+				: undefined,
+		);
 	}
 
 	async #delegate(): Promise<void> {
 		if (this.#busy || this.disposed) return;
-		this.#requestId ??= crypto.randomUUID();
+		await this.#act("delegate", (requestId) => this.#options.api.delegate(this.#session.workerId, requestId));
+	}
+
+	/** The owner closes the session: what it runs stops, it leaves its machine, its files stay. */
+	async #archive(): Promise<void> {
+		if (this.#busy || this.disposed || this.#session.archivedAt) return;
+		await this.#act("archive", (requestId) => this.#options.api.archive(this.#session.workerId, requestId));
+	}
+
+	/** One answer, delegation or archive under one request id, kept for a retry of the same action after a
+	 * refusal. The controls stay busy until the session has been read again after it, so a second click cannot
+	 * send it twice. */
+	async #act(
+		action: "answer" | "delegate" | "archive",
+		call: (requestId: string) => Promise<void>,
+		sent?: () => void,
+	): Promise<void> {
+		const requestId = this.#requestIds.get(action) ?? crypto.randomUUID();
+		this.#requestIds.set(action, requestId);
 		this.#busy = true;
 		this.#error = undefined;
+		this.#stickToBottom = true;
 		this.#render();
 		try {
-			await this.#options.api.delegate(this.#session.workerId, this.#requestId);
-			this.#requestId = undefined;
+			await call(requestId);
+			this.#requestIds.delete(action);
+			sent?.();
 		} catch (error) {
 			this.#error = describeError(error);
-		} finally {
-			this.#busy = false;
 		}
-		this.#render();
+		// A read already on its way may predate the answer; the one after it does not.
+		await this.#refreshing;
 		await this.refresh();
+		this.#busy = false;
+		this.#render();
 	}
 
 	#render(): void {
 		if (this.disposed) return;
 		const session = this.#session;
 		const names = this.#options.names(session);
-		const owns = this.#options.viewerOwns(session);
 		const status = codingSessionStatus(session, names);
-		const key = JSON.stringify([
-			session,
-			names,
-			owns,
-			this.#showAll,
-			this.#busy,
-			this.#error,
-			this.#readError,
-			this.#events.length,
-			status.text,
-		]);
-		if (key === this.#renderedKey) return;
-		this.#renderedKey = key;
 		this.el.dataset.phase = session.phase;
 		this.el.dataset.tone = status.tone;
-		replace(
-			this.el,
-			this.#renderHead(names),
-			this.#renderBody(names),
-			session.pullRequest ? this.#renderPullRequest(names) : null,
-			owns ? this.#renderInput(names) : this.#renderLock(names),
-			h(
-				"div",
-				{ class: `coding-status coding-tone-${status.tone}`, role: "status" },
-				h("span", { class: `coding-dot coding-dot-${status.tone}`, "aria-hidden": "true" }),
-				h("span", { class: "coding-status-text" }, status.text),
-			),
-		);
+		const active = document.activeElement;
+		const focused = active instanceof HTMLElement && this.el.contains(active) ? active : undefined;
+		this.#renderTranscript(names);
+		this.#renderFooter(names, status);
+		// A redraw that took, hid or disabled the focused control (a choice just used, the fold, Archive once the
+		// session is archived, the send button while the answer is on its way) keeps the focus in the session, not
+		// on the page's body, so Escape still reaches the thread: the field for the send button, else the log
+		// (where a phone opens no keyboard).
+		if (focused && (!focused.isConnected || focused.matches(":disabled") || focused.closest("[hidden]")))
+			(focused === this.#sendButton ? this.#field : this.#log).focus({ preventScroll: true });
+		this.#pinToBottom();
 	}
 
-	#renderHead(names: CodingSessionNames): HTMLElement {
+	/** The question the session waits on now: the last one asked in its current turn. An older question (the
+	 * listing may say "asks" before the new question is read) is never answered from here. */
+	#liveQuestion(): CodingSessionEvent | undefined {
+		if (this.#session.phase !== "awaiting_input") return undefined;
+		const question = lastOf(this.#events, "needs_input");
+		return question?.sequence === this.#session.sequence ? question : undefined;
+	}
+
+	/** Shows the latest step unless the reader has scrolled up to read older ones. */
+	#pinToBottom(): void {
+		if (this.disposed || !this.#stickToBottom) return;
+		const before = this.#log.scrollTop;
+		this.#log.scrollTop = this.#log.scrollHeight;
+		const after = this.#log.scrollTop;
+		if (after !== before) this.#pinnedTop = after;
+		this.#refreshFade();
+	}
+
+	/* ---- the transcript ---------------------------------------------------------------------------------- */
+
+	#renderTranscript(names: CodingSessionNames): void {
 		const session = this.#session;
-		const meta = [
-			session.repository.name,
-			shortBranch(session.branch),
+		const key = JSON.stringify([
+			this.#events.length,
+			this.#showAll,
+			this.#readError,
+			names,
+			Boolean(this.#options.askAgent),
+			this.#options.agent?.id,
+			this.#options.agent?.appearance,
+			session.title,
+			session.harness,
+			session.repository,
+			session.branch,
 			session.model,
-			t("managed by {name}", { name: names.agent }),
-		].filter(Boolean);
+			session.phase === "queued",
+			this.#liveQuestion()?.id,
+			session.pullRequest,
+			session.checks,
+			session.artifacts.length,
+			session.filesChanged,
+		]);
+		if (key === this.#transcriptKey) return;
+		this.#transcriptKey = key;
+		const harness = HARNESS_NAMES[session.harness];
+		const events = this.#events.filter((event) => event.kind !== "phase");
+		// The fold hides all but the latest steps, and only when that is worth a line. Its edge is set once the stream
+		// is caught up and stays put: new steps join the end, never pushing shown ones under the fold (a session
+		// watched from its start folds nothing).
+		const edge =
+			this.#foldFrom ??
+			(events.length >= RECENT_EVENTS + FOLD_AT_LEAST ? events[events.length - RECENT_EVENTS]?.id : undefined);
+		if (this.#caughtUp) this.#foldFrom ??= edge ?? 0;
+		const shown = this.#showAll || edge === undefined ? events : events.filter((event) => event.id >= edge);
+		const folded = events.length - shown.length;
+		const live = this.#liveQuestion();
+		// The card stands where the pull request was last published; earlier publishes are a line. A publish folded
+		// away (or never read) leaves the card at the top of what is shown.
+		const cardAt = session.pullRequest ? lastOf(events, "published")?.id : undefined;
+		const cardFirst = Boolean(session.pullRequest) && !shown.some((event) => event.id === cardAt);
+		// The harness's closing summary often repeats what it just said in the same turn; it is said once.
+		let lastSaid = "";
+		const nodes: HTMLElement[] = [];
+		let turn: { side: CodingSide; author: string; body: HTMLElement } | undefined;
+		let steps: HTMLElement | undefined;
+		let previous: Date | undefined;
+		/** The current event's time, until it draws something: a skipped event leaves no day or time break. */
+		let pending: Date | undefined;
+		const drawn = () => {
+			if (!pending) return;
+			if (needsConversationTimestamp(pending, previous)) {
+				nodes.push(
+					h(
+						"time",
+						{
+							class: "conversation-timestamp",
+							datetime: pending.toISOString(),
+							title: conversationTimestampTitle(pending),
+						},
+						conversationTimestampLabel(pending),
+					),
+				);
+				turn = undefined;
+				steps = undefined;
+			}
+			previous = pending;
+			pending = undefined;
+		};
+		const open = (side: CodingSide, author: string, figure = false): HTMLElement => {
+			drawn();
+			if (turn && turn.side === side && turn.author === author) return turn.body;
+			const body = h(
+				"div",
+				{ class: "coding-turn-body" },
+				side === "mine" ? null : h("div", { class: "message-author" }, author),
+			);
+			nodes.push(
+				h(
+					"div",
+					{ class: side === "mine" ? "coding-turn coding-turn-mine mine" : `coding-turn coding-turn-${side}` },
+					side === "harness"
+						? h("span", { class: "coding-avatar", "aria-hidden": "true" }, harnessBadge(session.harness))
+						: figure
+							? h(
+									"span",
+									{ class: "coding-avatar", "aria-hidden": "true" },
+									agentFigure(this.#options.agent, names.agent, { size: 28 }),
+								)
+							: null,
+					body,
+				),
+			);
+			turn = { side, author, body };
+			steps = undefined;
+			return body;
+		};
+		const step = (row: HTMLElement) => {
+			const body = open("harness", harness);
+			if (!steps) {
+				steps = h("div", { class: "coding-steps" });
+				body.append(steps);
+			}
+			steps.append(row);
+		};
+		const say = (side: CodingSide, author: string, figure: boolean, ...children: HTMLElement[]) => {
+			open(side, author, figure).append(...children);
+			steps = undefined;
+		};
+		const note = (node: HTMLElement) => {
+			drawn();
+			nodes.push(node);
+			turn = undefined;
+			steps = undefined;
+		};
+		// The card goes under the first shown step's time break, not above it.
+		let cardDue = cardFirst;
+		for (const event of shown) {
+			pending = parseConversationTimestamp(event.at);
+			if (cardDue) {
+				cardDue = false;
+				say("harness", harness, false, this.#renderPullRequest(names));
+			}
+			const when = fmtTime(event.at);
+			switch (event.kind) {
+				case "step": {
+					// Archived, reopened, or taken off its machine: the session's place, not the harness speaking.
+					const place = this.#placeNote(event, names);
+					if (place) {
+						lastSaid = "";
+						note(h("div", { class: "conversation-note coding-note", role: "note" }, place));
+						break;
+					}
+					const title = text(event.body, "text", "title", "command", "summary") ?? t("Step");
+					const status = text(event.body, "status");
+					step(
+						h(
+							"div",
+							{ class: "coding-row coding-row-step" },
+							svgEl(STEP_GLYPH, 14, "coding-glyph"),
+							h(
+								"div",
+								null,
+								title,
+								status
+									? h("span", { class: `coding-step-status coding-tone-${checkTone(status)}` }, ` ${status}`)
+									: null,
+							),
+						),
+					);
+					break;
+				}
+				case "text": {
+					const body = text(event.body, "text", "summary") ?? "";
+					if (!body) break;
+					lastSaid = body.trim();
+					say(
+						"harness",
+						harness,
+						false,
+						...markdownBubbles(body).map((prose) =>
+							h("div", { class: "bubble coding-bubble", title: `${harness} · ${when}` }, prose),
+						),
+					);
+					break;
+				}
+				case "needs_input": {
+					const question =
+						text(event.body, "needs", "question") ?? this.#session.needs ?? t("The session has a question.");
+					lastSaid = question.trim();
+					say(
+						"harness",
+						harness,
+						false,
+						h(
+							"div",
+							{
+								class:
+									live?.id === event.id
+										? "bubble coding-question coding-question-live"
+										: "bubble coding-question",
+								title: `${harness} · ${when}`,
+							},
+							h("div", { class: "text" }, question),
+						),
+					);
+					break;
+				}
+				case "input": {
+					const value = text(event.body, "text") ?? "";
+					const bubble = h("div", { class: "bubble", title: when }, h("div", { class: "text" }, value));
+					lastSaid = "";
+					if (event.actor === "agent") say("steer", names.agent, true, bubble);
+					else if (names.ownerIsViewer) say("mine", t("You"), false, bubble);
+					else say("steer", names.owner, false, bubble);
+					break;
+				}
+				case "delegated":
+					lastSaid = "";
+					note(
+						h(
+							"div",
+							{ class: "conversation-note coding-note", role: "note" },
+							names.ownerIsViewer
+								? t("You left it to {agent}", { agent: names.agent })
+								: t("{owner} left it to {agent}", { owner: names.owner, agent: names.agent }),
+						),
+					);
+					break;
+				case "published": {
+					if (event.id === cardAt) {
+						say("harness", harness, false, this.#renderPullRequest(names));
+						break;
+					}
+					const url = text(event.body, "url");
+					const number =
+						typeof event.body === "object" && event.body && !Array.isArray(event.body)
+							? event.body.number
+							: undefined;
+					const label =
+						typeof number === "number" ? t("Draft PR #{number} opened", { number }) : t("Draft PR opened");
+					step(
+						h(
+							"div",
+							{ class: "coding-row coding-row-step" },
+							svgEl(PR_GLYPH, 14, "coding-glyph"),
+							url
+								? h("a", { href: url, target: "_blank", rel: "noopener noreferrer" }, label)
+								: h("div", null, label),
+						),
+					);
+					break;
+				}
+				case "finished": {
+					const summary = text(event.body, "summary");
+					if (!summary || summary.trim() === lastSaid) break;
+					step(
+						h(
+							"div",
+							{ class: "coding-row coding-row-step coding-row-done" },
+							svgEl(CHECK_GLYPH, 14, "coding-glyph coding-tone-done"),
+							h("div", null, summary),
+						),
+					);
+					break;
+				}
+				case "failed": {
+					const reason = text(event.body, "reason", "summary");
+					note(
+						h(
+							"div",
+							{ class: "conversation-note coding-note coding-row-error", role: "note" },
+							reason === "executor-lease-expired"
+								? t(
+										"The computer running this session stopped answering. The workspace is kept; a follow-up starts it again.",
+									)
+								: reason
+									? t("Failed: {reason}", { reason })
+									: t("Failed"),
+						),
+					);
+					break;
+				}
+				default:
+					break;
+			}
+		}
+		if (cardDue) say("harness", harness, false, this.#renderPullRequest(names));
+		const quiet = !nodes.length && !this.#readError;
+		replace(
+			this.#body,
+			folded
+				? h(
+						"div",
+						{ class: "coding-row coding-row-fold" },
+						button(
+							t("{count} earlier steps", { count: folded }),
+							() => {
+								// Reading older steps: the view stays where it is, unless it all fits and so is at the bottom.
+								this.#showAll = true;
+								this.#stickToBottom = false;
+								this.#render();
+								const { scrollTop, scrollHeight, clientHeight } = this.#log;
+								this.#stickToBottom = scrollHeight - scrollTop - clientHeight < STICK_DISTANCE * uiScale();
+							},
+							{ small: true },
+						),
+					)
+				: null,
+			...nodes,
+			quiet
+				? h(
+						"div",
+						{ class: "coding-row coding-row-quiet" },
+						session.phase === "queued"
+							? t("Waiting for a computer to start the session.")
+							: t("Nothing reported yet."),
+					)
+				: null,
+			this.#readError && !nodes.length
+				? h("div", { class: "coding-row coding-row-error", role: "alert" }, this.#readError)
+				: null,
+		);
+		const intro = this.#log.firstElementChild === this.#body ? undefined : this.#log.firstElementChild;
+		const next = this.#renderIntro();
+		if (intro) intro.replaceWith(next);
+		else this.#log.prepend(next);
+	}
+
+	/** A step that says where the session is: archived (by whom), reopened, or taken off its machine and what that
+	 * stopped. Undefined for the harness's and the executor's working steps. */
+	#placeNote(event: CodingSessionEvent, names: CodingSessionNames): string | undefined {
+		const body = event.body;
+		if (typeof body !== "object" || body === null || Array.isArray(body)) return undefined;
+		if (event.actor === "kernel" && body.archived === true) {
+			const by = body.by;
+			if (by === "agent") return t("{agent} archived the session", { agent: names.agent });
+			if (by === "kernel") return t("Archived after a long quiet time");
+			return names.ownerIsViewer
+				? t("You archived the session")
+				: t("{owner} archived the session", { owner: names.owner });
+		}
+		if (event.actor === "kernel" && body.reopened === true) return t("Reopened");
+		if (event.actor !== "executor" || !Array.isArray(body.stopped)) return undefined;
+		// At most 32 are named; the rest are counted.
+		const count =
+			body.stopped.length +
+			(typeof body.moreStopped === "number" && body.moreStopped > 0 ? Math.floor(body.moreStopped) : 0);
+		const reason =
+			body.reason === "SLEEP"
+				? t("The machine went to sleep")
+				: body.reason === "RETIRED"
+					? t("The machine was replaced with a newer one")
+					: body.reason === "EXPIRED"
+						? t("The session lost its machine")
+						: body.reason === "OWNER_LEFT"
+							? t("The owner is no longer a member")
+							: body.reason === "REPOSITORY_WITHDRAWN"
+								? t("{agent} no longer has the repository", { agent: names.agent })
+								: body.reason === "EXECUTOR_DISABLED"
+									? t("Coding is turned off here")
+									: undefined;
+		const stopped = count
+			? count === 1
+				? t("1 command stopped")
+				: t("{count} commands stopped", { count })
+			: undefined;
+		return [reason, stopped].filter(Boolean).join(" · ") || undefined;
+	}
+
+	/** The top of the transcript: the harness, the task and where it works. */
+	#renderIntro(): HTMLElement {
+		const session = this.#session;
+		const meta = [session.repository.name, shortBranch(session.branch), session.model].filter(Boolean) as string[];
+		const mark = harnessBadge(session.harness);
+		mark.removeAttribute("title");
 		return h(
 			"div",
-			{ class: "coding-head" },
+			{ class: "coding-intro" },
+			h("span", { class: "coding-intro-mark", "aria-hidden": "true" }, mark),
 			h("div", { class: "coding-title" }, session.title),
 			h(
 				"div",
@@ -429,159 +980,6 @@ export class CodingSessionElement {
 				]),
 			),
 		);
-	}
-
-	#renderBody(names: CodingSessionNames): HTMLElement {
-		const events = this.#events.filter((event) => event.kind !== "phase");
-		const folded = !this.#showAll && events.length > RECENT_EVENTS ? events.length - RECENT_EVENTS : 0;
-		const shown = folded ? events.slice(folded) : events;
-		const rows = shown
-			.map((event) => this.#renderEvent(event, names))
-			.filter((row): row is HTMLElement => Boolean(row));
-		return h(
-			"div",
-			{ class: "coding-body" },
-			folded
-				? h(
-						"div",
-						{ class: "coding-row coding-row-fold" },
-						button(
-							folded === 1
-								? t("{count} earlier step", { count: folded })
-								: t("{count} earlier steps", { count: folded }),
-							() => {
-								this.#showAll = true;
-								this.#render();
-							},
-							{ small: true },
-						),
-					)
-				: null,
-			...rows,
-			!rows.length && !this.#readError
-				? h(
-						"div",
-						{ class: "coding-row coding-row-quiet" },
-						this.#session.phase === "queued"
-							? t("Waiting for a computer to start the session.")
-							: t("Nothing reported yet."),
-					)
-				: null,
-			this.#readError && !rows.length
-				? h("div", { class: "coding-row coding-row-error", role: "alert" }, this.#readError)
-				: null,
-		);
-	}
-
-	#renderEvent(event: CodingSessionEvent, names: CodingSessionNames): HTMLElement | undefined {
-		const harness = HARNESS_NAMES[this.#session.harness];
-		switch (event.kind) {
-			case "step": {
-				const title = text(event.body, "text", "title", "command", "summary") ?? t("Step");
-				const status = text(event.body, "status");
-				return h(
-					"div",
-					{ class: "coding-row coding-row-step" },
-					svgEl(STEP_GLYPH, 14, "coding-glyph"),
-					h(
-						"div",
-						null,
-						title,
-						status
-							? h("span", { class: `coding-step-status coding-tone-${checkTone(status)}` }, ` ${status}`)
-							: null,
-					),
-				);
-			}
-			case "text": {
-				const body = text(event.body, "text", "summary") ?? "";
-				if (!body) return undefined;
-				return h(
-					"div",
-					{ class: "coding-row coding-row-voice" },
-					h("span", { class: "coding-voice", title: harness }, harnessBadge(this.#session.harness)),
-					h("div", { class: "coding-voice-text" }, ...body.split(/\n{2,}/).map((part) => h("p", null, part))),
-				);
-			}
-			case "needs_input": {
-				const question =
-					text(event.body, "needs", "question") ?? this.#session.needs ?? t("The session has a question.");
-				return h(
-					"div",
-					{ class: "coding-row coding-row-question" },
-					h(
-						"div",
-						{ class: "coding-question" },
-						h(
-							"div",
-							{ class: "coding-question-from" },
-							harnessBadge(this.#session.harness),
-							t("{harness} asks", { harness }),
-						),
-						h("div", null, question),
-					),
-				);
-			}
-			case "input": {
-				const who = event.actor === "agent" ? names.agent : names.ownerIsViewer ? t("You") : names.owner;
-				return h(
-					"div",
-					{ class: "coding-row coding-row-input" },
-					h("span", { class: "coding-who" }, who),
-					h("div", null, text(event.body, "text") ?? ""),
-				);
-			}
-			case "delegated":
-				return h(
-					"div",
-					{ class: "coding-row coding-row-quiet" },
-					names.ownerIsViewer
-						? t("You left it to {agent}", { agent: names.agent })
-						: t("{owner} left it to {agent}", { owner: names.owner, agent: names.agent }),
-				);
-			case "published": {
-				const url = text(event.body, "url");
-				const number =
-					typeof event.body === "object" && event.body && !Array.isArray(event.body)
-						? event.body.number
-						: undefined;
-				const label =
-					typeof number === "number" ? t("Draft PR #{number} opened", { number }) : t("Draft PR opened");
-				return h(
-					"div",
-					{ class: "coding-row coding-row-step" },
-					svgEl(PR_GLYPH, 14, "coding-glyph"),
-					url ? h("a", { href: url, target: "_blank", rel: "noopener noreferrer" }, label) : h("div", null, label),
-				);
-			}
-			case "finished": {
-				const summary = text(event.body, "summary");
-				return summary
-					? h(
-							"div",
-							{ class: "coding-row coding-row-step" },
-							svgEl(CHECK_GLYPH, 14, "coding-glyph coding-tone-done"),
-							h("div", null, summary),
-						)
-					: undefined;
-			}
-			case "failed": {
-				const reason = text(event.body, "reason", "summary");
-				return h(
-					"div",
-					{ class: "coding-row coding-row-error", role: "alert" },
-					reason === "executor-lease-expired"
-						? t(
-								"The computer running this session stopped answering. The workspace is kept; a follow-up starts it again.",
-							)
-						: reason
-							? t("Failed: {reason}", { reason })
-							: t("Failed"),
-				);
-			}
-			default:
-				return undefined;
-		}
 	}
 
 	#renderPullRequest(names: CodingSessionNames): HTMLElement {
@@ -610,8 +1008,8 @@ export class CodingSessionElement {
 			{ class: "coding-pr" },
 			h(
 				"div",
-				{ class: "coding-pr-card" },
-				svgEl(PR_GLYPH, 22, "coding-pr-glyph"),
+				{ class: "coding-pr-head" },
+				svgEl(PR_GLYPH, 20, "coding-pr-glyph"),
 				h(
 					"div",
 					{ class: "coding-pr-body" },
@@ -622,25 +1020,25 @@ export class CodingSessionElement {
 						h("span", { class: "coding-pr-number" }, ` #${pr.number}`),
 					),
 					h("div", { class: "coding-pr-meta" }, meta.join(" · ")),
-					session.checks.length
-						? h(
-								"div",
-								{ class: "coding-checks" },
-								...session.checks.map((check) =>
-									h(
-										"div",
-										{ class: "coding-check" },
-										h("span", {
-											class: `coding-dot coding-dot-${checkTone(check.status)}`,
-											"aria-hidden": "true",
-										}),
-										h("span", null, `${check.name} · ${check.status}`),
-									),
-								),
-							)
-						: null,
 				),
 			),
+			session.checks.length
+				? h(
+						"div",
+						{ class: "coding-checks" },
+						...session.checks.map((check) =>
+							h(
+								"div",
+								{ class: "coding-check" },
+								h("span", {
+									class: `coding-dot coding-dot-${checkTone(check.status)}`,
+									"aria-hidden": "true",
+								}),
+								h("span", null, `${check.name} · ${check.status}`),
+							),
+						),
+					)
+				: null,
 			h(
 				"div",
 				{ class: "coding-actions" },
@@ -677,60 +1075,49 @@ export class CodingSessionElement {
 		);
 	}
 
-	#renderInput(names: CodingSessionNames): HTMLElement {
+	/* ---- the footer: status, the question's choices, the composer ---------------------------------------- */
+
+	#renderFooter(names: CodingSessionNames, status: { text: string; tone: CodingSessionTone }): void {
 		const session = this.#session;
+		const owns = this.#options.viewerOwns(session);
 		const harness = HARNESS_NAMES[session.harness];
 		const takesInput = codingSessionTakesInput(session);
-		const asking = session.phase === "awaiting_input";
-		const question = asking ? [...this.#events].reverse().find((event) => event.kind === "needs_input") : undefined;
+		const archived = Boolean(session.archivedAt);
+		// An archived session that was asking waits for nothing: a message reopens it.
+		const asking = session.phase === "awaiting_input" && !archived;
+		const question = this.#liveQuestion();
 		const choices = question ? options(question.body) : [];
-		const field = h("input", {
-			type: "text",
-			class: "coding-field-input",
-			"aria-label": asking ? t("Answer the session") : t("Follow up on the session"),
-			placeholder: asking
-				? choices.length
-					? t("Or answer in your own words")
-					: t("Answer the session")
-				: takesInput
-					? t("Follow up on this session")
-					: t("The session is working"),
-			value: this.#draft,
-			disabled: !takesInput || this.#busy,
-			oninput: (event: Event) => {
-				this.#draft = (event.target as HTMLInputElement).value;
-			},
-			onkeydown: (event: KeyboardEvent) => {
-				if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
-					event.preventDefault();
-					void this.#send(this.#draft);
-				}
-			},
-		});
-		const send = button(
-			this.#busy ? t("Sending…") : asking ? t("Answer") : t("Send"),
-			() => void this.#send(this.#draft),
-			{
-				small: true,
-				primary: true,
-				disabled: !takesInput || this.#busy,
-			},
-		);
-		send.classList.add("coding-send");
-		const hint = asking
-			? t("Your answer goes to {harness} and is recorded in this thread.", { harness })
-			: takesInput
-				? t("A follow-up starts the session again on the same branch. Uses your {harness} plan.", { harness })
-				: session.phase === "queued"
-					? t("You can talk to the session once it starts. Uses your {harness} plan.", { harness })
-					: t(
-							"The session is working; you can answer when it asks or follow up when it is done. Uses your {harness} plan.",
-							{ harness },
-						);
-		return h(
-			"div",
-			{ class: "coding-talk" },
-			choices.length
+		// The status text carries whether the session stands by, runs something or sleeps, where it is shown.
+		const key = JSON.stringify([status, owns, harness, takesInput, asking, choices, this.#busy, this.#error, names]);
+		if (key === this.#footerKey) return;
+		this.#footerKey = key;
+		this.#status.className = `coding-status coding-tone-${status.tone}`;
+		// Read out when the phase or the session's place changes, as far as the status line shows it: between
+		// turns where it is, while it asks what it runs, while it works nothing.
+		const running = session.attached && session.runningCommands > 0 ? session.runningCommands : 0;
+		const announced = JSON.stringify([
+			session.phase,
+			archived,
+			archived
+				? undefined
+				: codingSessionSettled(session.phase)
+					? codingSessionStandby(session)
+					: asking
+						? running
+						: undefined,
+		]);
+		if (this.#announced !== announced) {
+			this.#announced = announced;
+			this.#announce.textContent = status.text;
+		}
+		this.#statusDot.className = `coding-dot coding-dot-${status.tone}`;
+		this.#statusText.textContent = status.text;
+		// Offered once the cloud keeps sessions standing by, and so can archive one.
+		this.#archiveButton.hidden = !owns || archived || !session.standby;
+		this.#archiveButton.disabled = this.#busy;
+		replace(
+			this.#extras,
+			owns && asking
 				? h(
 						"div",
 						{ class: "coding-options" },
@@ -738,52 +1125,87 @@ export class CodingSessionElement {
 							button(choice, () => void this.#send(choice), {
 								small: true,
 								primary: index === 0,
-								disabled: this.#busy,
+								disabled: this.#busy || !takesInput,
 							}),
 						),
-					)
-				: null,
-			asking
-				? h(
-						"div",
-						{ class: "coding-options" },
 						button(t("Let {name} decide", { name: names.agent }), () => void this.#delegate(), {
 							small: true,
 							disabled: this.#busy,
 						}),
 					)
 				: null,
-			h("div", { class: "coding-field" }, field, send),
-			this.#error ? h("div", { class: "coding-hint coding-row-error", role: "alert" }, this.#error) : null,
-			h("div", { class: "coding-hint" }, hint),
+			owns && this.#error ? h("div", { class: "coding-row-error", role: "alert" }, this.#error) : null,
 		);
+		this.#extras.hidden = !this.#extras.childElementCount;
+		if (!owns) {
+			this.#talk.remove();
+			replace(
+				this.#lock,
+				svgEl(LOCK_GLYPH, 12, "coding-glyph"),
+				h(
+					"span",
+					null,
+					t("Only {owner} can write to this session. Steer it through {agent}.", {
+						owner: names.owner,
+						agent: names.agent,
+					}),
+				),
+			);
+			if (!this.#lock.isConnected) this.#footer.append(this.#lock);
+			return;
+		}
+		this.#lock.remove();
+		if (this.#talk.parentElement !== this.#footer) this.#footer.append(this.#talk);
+		const placeholder = asking
+			? choices.length
+				? t("Or answer in your own words")
+				: t("Answer {harness}", { harness })
+			: takesInput
+				? archived
+					? t("Send a message to reopen this session")
+					: t("Follow up on this session")
+				: session.phase === "queued"
+					? t("The session has not started yet")
+					: t("{harness} is working", { harness });
+		this.#field.placeholder = placeholder;
+		this.#field.setAttribute("aria-label", asking ? t("Answer the session") : t("Follow up on the session"));
+		// Read-only, never disabled, until the session takes input and while an answer is on its way: a disabled
+		// field would drop the caret, and with it the thread's Escape.
+		this.#field.readOnly = !takesInput || this.#busy;
+		this.#field.setAttribute("aria-disabled", String(!takesInput));
+		const label = asking ? t("Answer") : t("Send");
+		this.#sendButton.setAttribute("aria-label", label);
+		this.#sendButton.title = label;
+		this.#syncSend();
 	}
 
-	#renderLock(names: CodingSessionNames): HTMLElement {
-		const harness = HARNESS_NAMES[this.#session.harness];
-		return h(
-			"div",
-			{ class: "coding-talk coding-talk-locked" },
-			h(
-				"div",
-				{ class: "coding-hint" },
-				svgEl(LOCK_GLYPH, 12, "coding-glyph"),
-				t("Only {owner} can type here. Everyone else steers through {agent}. Uses {ownerName}'s {harness} plan.", {
-					owner: names.owner,
-					agent: names.agent,
-					ownerName: cap(names.owner),
-					harness,
-				}),
-			),
-		);
+	#syncSend(): void {
+		this.#sendButton.disabled = !codingSessionTakesInput(this.#session) || this.#busy || !this.#field.value.trim();
+	}
+
+	/** One line tall until the draft wraps, then the shell opens up to the stylesheet's tallest draft (its
+	 * max-height clamps the field), as the conversation's composer does. Sizes only, no computed style. */
+	#autosize(): void {
+		const field = this.#field;
+		this.#shell.classList.remove("is-expanded");
+		field.style.height = "";
+		field.style.overflowY = "";
+		if (!field.value) return;
+		// At its one-line height the field overflows once the draft wraps; a pixel of rounding is not a line.
+		const overflows = () => field.scrollHeight > field.clientHeight + 1;
+		if (!overflows()) return;
+		this.#shell.classList.add("is-expanded");
+		field.style.height = "auto";
+		field.style.height = `${field.scrollHeight}px`;
+		field.style.overflowY = overflows() ? "auto" : "hidden";
 	}
 }
 
 /** How a session's figure moves in the header, in the agents' own vocabulary:
- * working while it works, waiting while it asks, still while it waits for a computer. */
-export function codingSessionActivity(phase: CodingSession["phase"]): Activity {
-	if (phase === "awaiting_input") return "Waiting";
-	if (phase === "queued" || codingSessionSettled(phase)) return "Idle";
+ * working while it works, waiting while it asks, still while it waits for a computer or is archived. */
+export function codingSessionActivity(session: Pick<CodingSession, "phase" | "archivedAt">): Activity {
+	if (session.phase === "queued" || !codingSessionGoing(session)) return "Idle";
+	if (session.phase === "awaiting_input") return "Waiting";
 	return "Working";
 }
 
@@ -807,7 +1229,7 @@ export class CodingSessionSlot {
 	}
 
 	update(session: CodingSession, agent: HostedStaffAgent | undefined, names: CodingSessionNames): void {
-		const activity = codingSessionActivity(session.phase);
+		const activity = codingSessionActivity(session);
 		const figureKey = JSON.stringify([activity, session.harness, agent?.id, agent?.appearance, agent?.templateId]);
 		if (figureKey !== this.#figureKey) {
 			this.#figureKey = figureKey;

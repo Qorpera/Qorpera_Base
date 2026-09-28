@@ -9,6 +9,9 @@ export const CONVERSATION: Record<string, string> = {
 
 	// The thread and the composer (app/views/conversation.ts)
 	"Attach files": "Vedhæft filer",
+	Skills: "Færdigheder",
+	"No skills yet. Agents save skills as they learn how the company works.":
+		"Ingen færdigheder endnu. Agenter gemmer færdigheder, efterhånden som de lærer, hvordan virksomheden arbejder.",
 	"Chat settings and more": "Chatindstillinger og mere",
 	"Images are not supported in group chats. Use Company File.":
 		"Billeder understøttes ikke i gruppechats. Brug Virksomhedsfilen.",
@@ -89,6 +92,10 @@ export const CONVERSATION: Record<string, string> = {
 	"Your model account needs to be connected again.": "Din modelkonto skal forbindes igen.",
 	"No computer could be started for this run. The problem is on Qorpera's side.":
 		"Der kunne ikke startes en computer til denne kørsel. Fejlen ligger hos Qorpera.",
+	"The computer running this run stopped answering. The problem is on Qorpera's side.":
+		"Computeren bag kørslen holdt op med at svare. Fejlen ligger hos Qorpera.",
+	"One of the run's steps got no answer in time. The problem is on Qorpera's side.":
+		"Et af kørslens trin fik ikke svar i tide. Fejlen ligger hos Qorpera.",
 	"The run took too long and was stopped.": "Kørslen tog for lang tid og blev stoppet.",
 	"The run started, but one of its steps was refused. The problem is on Qorpera's side.":
 		"Kørslen startede, men et af dens trin blev afvist. Fejlen ligger hos Qorpera.",
@@ -111,6 +118,9 @@ export const CONVERSATION: Record<string, string> = {
 	"{speed} speed, uses more of your plan": "{speed} hastighed, bruger mere af dit abonnement",
 	"Faster replies": "Hurtigere svar",
 	"Only this conversation. Applies from your next message.": "Kun denne samtale. Gælder fra din næste besked.",
+	"Each agent's own": "Hver agents egen",
+	"Every agent in this group chat. Applies from your next message.":
+		"Alle agenter i denne gruppechat. Gælder fra din næste besked.",
 	"The model is unavailable. Refresh to try again.": "Modellen er ikke tilgængelig. Opdater for at prøve igen.",
 	"The change could not be confirmed. Refresh the model before sending.":
 		"Ændringen kunne ikke bekræftes. Opdater modellen, før du sender.",
@@ -286,9 +296,9 @@ export const CONVERSATION: Record<string, string> = {
 	"Personal rule: {rule}": "Personlig regel: {rule}",
 	"Always allow when an agent wants to": "Tillad altid, når en agent vil",
 	"Save rule and allow": "Gem regel og tillad",
-	Waiting: "Venter",
-	Allowed: "Tilladt",
-	"Exact action": "Præcis handling",
+	"Don't send": "Send ikke",
+	Bcc: "Bcc",
+	"Delete “{name}”": "Slet “{name}”",
 	Deny: "Afvis",
 	"Always allow…": "Tillad altid…",
 	"Allow once": "Tillad én gang",

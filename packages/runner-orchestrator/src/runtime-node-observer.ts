@@ -9,6 +9,7 @@ import {
 	type RuntimeNodeInventoryPolicy,
 	reconcileRuntimeNodeInventory,
 } from "./runtime-node-inventory.ts";
+import { readNodeReleaseImages } from "./runtime-node-releases.ts";
 
 export type RuntimeNodeObserverMethod =
 	| "qorpera_runtime_node_inventory_context"
@@ -34,16 +35,22 @@ export class RuntimeNodeInventoryObserver {
 	readonly #registry: RuntimeNodeObserverRegistry;
 	readonly #lxd: LxdHostInventoryClient;
 	readonly #host: typeof physicalHost;
+	readonly #releases: () => Promise<ReadonlySet<string>>;
 	#pending = false;
 	constructor(
 		policy: RuntimeNodeInventoryPolicy,
 		registry: RuntimeNodeObserverRegistry,
-		ports?: { lxd?: LxdHostInventoryClient; host?: typeof physicalHost },
+		ports?: {
+			lxd?: LxdHostInventoryClient;
+			host?: typeof physicalHost;
+			releases?: () => Promise<ReadonlySet<string>>;
+		},
 	) {
 		this.#policy = parseRuntimeNodeInventoryPolicy(policy);
 		this.#registry = registry;
 		this.#lxd = ports?.lxd ?? new LxdUnixClient(this.#policy.host.socketPath);
 		this.#host = ports?.host ?? physicalHost;
+		this.#releases = ports?.releases ?? (() => readNodeReleaseImages());
 	}
 	async observe(caller: AbortSignal): Promise<{ state: "ready" | "unavailable"; observationId: string }> {
 		caller.throwIfAborted();
@@ -80,7 +87,12 @@ export class RuntimeNodeInventoryObserver {
 				const inventory = await this.#lxd.inspectHostInventory(signal);
 				const after = await this.#host(this.#policy, signal);
 				if (!isDeepStrictEqual(before, after)) throw new Error("NODE_OBSERVER_HOST_CHANGED");
-				const reconciled = reconcileRuntimeNodeInventory(inventory, context);
+				// Only an entry listed by role needs the node's signed releases.
+				const released = this.#policy.infrastructure.some((i) => i.role)
+					? await this.#releases()
+					: new Set<string>();
+				signal.throwIfAborted();
+				const reconciled = reconcileRuntimeNodeInventory(inventory, context, released);
 				observation.state = reconciled.state;
 				method = "qorpera_observe_runtime_node_inventory";
 				args = {
