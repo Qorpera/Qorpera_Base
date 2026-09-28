@@ -39,26 +39,36 @@ Founder approval: 28 September 2026, page "Logins in the Vault"
   version, keyId}`), `origin sign_in|renewal`.
 - No table privileges for anyone; the broker role executes three functions:
   - `qorpera_issue_model_login(authority, capability, binding, knownVersion, allowRenewal)`: checks the
-    run's exact native lease read-only (`qorpera_model_login_run_binding`: lease active and unexpired,
-    job still leased to that runner and assignment, identity active and not fenced, capsule active).
-    Past half the pass life and with `allowRenewal`, the first caller takes the lock
-    (`update … where renewal_until is null or < now()`). Returns the envelope, or `unchanged` when the
-    host already holds the current version and no renewal was granted.
+    run with `qorpera_model_login_run_binding`, the native lease validator's own conditions read
+    without locks (exact binding; job leased and unexpired; assignment accepted and unexpired; lease
+    live; sponsor and compute available; connection, version, capsule and policy active; identity
+    and runner at the current epoch; company not paused). Past half the pass life and with
+    `allowRenewal`, the first caller takes the lock (`update … where renewal_until is null or < now()`
+    and the backoff after failures has passed: 1, 2, 4 ... minutes, at most an hour). Returns the
+    envelope, or `unchanged` when the host already holds the current version and no renewal was
+    granted.
   - `qorpera_commit_model_login_renewal(…, token, baseVersion, keyId, envelope, sha, issuedAt, expiresAt)`:
-    compare-and-swap on `(current_version = base, renewal_token = token, renewal_until >= now())`,
-    under the authority's current key.
-  - `qorpera_release_model_login_renewal(…, token, permanent, reason)`: gives the lock back; a
-    permanent failure sets `needs_sign_in`.
+    compare-and-swap on `(current_version = base, renewal_token = token, the new pass ends later)`
+    under the authority's current key. A token is written anew each time the lock is taken, so a
+    matching token proves nobody took the lock over, even after it lapsed. A repeat after a lost
+    answer finds its own version (same digest) and succeeds.
+  - `qorpera_release_model_login_renewal(…, token, permanent, reason)`: gives the lock back and
+    records the failure time; a permanent failure sets `needs_sign_in` (a revoked login stays
+    revoked).
 - Locks: the login row only, for one short statement. No company row, fence or authority row is
-  locked (the run's host keeps validating its lease with the company fence every 15 s, as today).
+  locked for update (a saved version's foreign key takes a key-share lock on its authority); the
+  run's host keeps validating its lease with the company fence every 15 s, as today.
 
 ## The broker (change 1)
 
-- `CloudModelLoginVault` (`packages/runtime/src/cloud-model-login-vault.ts`): opens the envelope,
-  strips `tokens.refresh_token` for the run (`accessOnlyCodexLogin`), and when it holds the lock runs
-  the renewer, checks the result (same `account_id`, later pass), seals version `base + 1` and commits
-  (three tries). A refused renewal releases the lock as permanent; an unsaved renewal releases it and
-  this run keeps the new pass. The run always keeps a pass that has not ended.
+- `CloudModelLoginVault` (`packages/runtime/src/cloud-model-login-vault.ts`): opens the envelope and
+  builds the run's copy from the login's known fields only, with an empty renewal token
+  (`accessOnlyCodexLogin`; a stored login with unknown fields is refused). When it holds the lock it
+  first checks it can seal under the lock's key, gives the renewer at most 35 s, checks the result
+  (same `account_id`, later pass), seals version `base + 1` and saves it with up to three tries on
+  its own 15 s deadline. Every way out gives the lock back: refused or unsaved (the old renewal token
+  is spent) as permanent, anything else as transient. The run always keeps the newest pass it has
+  that has not ended.
 - `POST /v1/model-logins?company=<profile>` under the runtime token, body
   `{schema: "qorpera.model-login-request/v1", binding, knownVersion}`, answer
   `{schema: "qorpera.model-login/v1", version, accessExpiresAt, authJson | null}`, never cached,
@@ -94,9 +104,9 @@ Founder approval: 28 September 2026, page "Logins in the Vault"
 | Node dies mid-run | Nothing lost; the pass ends by itself; the run is retried elsewhere. |
 | Helper dies before asking the provider | The lock expires after 5 minutes; the next caller renews. |
 | Helper dies after the provider answered, before the commit | The stored renewal token is used up; the next renewal is refused and the login asks for a new sign-in. Passes already handed out work until they end. |
-| Commit fails three times | Lock released as `renewal_unsaved`; this run keeps the new pass; the next renewal is refused as above. |
+| Commit fails three times | Lock released as `renewal_unsaved`, permanent: the login asks for a new sign-in; this run keeps the new pass. |
 | One broker copy down | The other node's copy serves runs (the vault runs on both nodes from change 3). |
-| Provider refuses a renewal | `needs_sign_in`; new runs on the login stop with that reason. |
+| Provider refuses a renewal | `needs_sign_in`; new runs on the login stop. Today every refusal of the route is the same 403; change 3 lets the host tell "sign in again" from an outage. |
 | Member signs out or leaves | The pointer capsule and lease checks refuse at once; running work is stopped by the existing checks. |
 
 ## Moving and retiring

@@ -17,6 +17,10 @@ const SHA = /^[0-9a-f]{64}$/;
 const KEY_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const JWT = /^[A-Za-z0-9_-]+\.([A-Za-z0-9_-]+)\.[A-Za-z0-9_-]*$/;
 const MAX_AUTH_JSON_BYTES = 32 * 1024;
+/** The renewer gets at most this long, inside the broker route's minute. */
+const RENEWAL_BUDGET_MS = 35_000;
+/** Saving a renewed version or giving the lock back gets its own deadline. */
+const SAVE_DEADLINE_MS = 15_000;
 /** The one envelope field that holds a login. */
 export const MODEL_LOGIN_FIELD = "codex_auth_json";
 const BINDING_KEYS = [
@@ -150,12 +154,21 @@ function jwtClaims(token: string): Record<string, unknown> {
 	return record(JSON.parse(Buffer.from(matched[1] as string, "base64url").toString("utf8")), "Codex access token");
 }
 
+/** The only fields a stored login may carry (Codex 0.155.1 `auth.json` for a ChatGPT login);
+ * anything else, such as an agent identity record, is refused rather than handed on. */
+const LOGIN_FIELDS = new Set(["auth_mode", "OPENAI_API_KEY", "tokens", "last_refresh"]);
+const TOKEN_FIELDS = new Set(["id_token", "access_token", "refresh_token", "account_id"]);
+
 /** Reads a stored Codex ChatGPT login. Its pass times come from the access token itself. */
 export function parseCodexLogin(text: string): CodexLogin {
 	if (Buffer.byteLength(text, "utf8") > MAX_AUTH_JSON_BYTES) throw new Error("Codex login is too large");
 	const login = record(JSON.parse(text), "Codex login");
 	const tokens = record(login.tokens, "Codex login tokens");
 	if (
+		Object.keys(login).some((key) => !LOGIN_FIELDS.has(key)) ||
+		Object.keys(tokens).some((key) => !TOKEN_FIELDS.has(key)) ||
+		(login.auth_mode !== undefined && login.auth_mode !== "chatgpt") ||
+		(login.last_refresh !== undefined && typeof login.last_refresh !== "string") ||
 		typeof tokens.access_token !== "string" ||
 		typeof tokens.refresh_token !== "string" ||
 		tokens.refresh_token.length < 1 ||
@@ -180,12 +193,31 @@ export function parseCodexLogin(text: string): CodexLogin {
 	});
 }
 
-/** The copy a run receives: the same login without its renewal token. Codex then uses the
- * pass and, near its end, re-reads the file (which the host keeps fresh) instead of renewing. */
+/** The copy a run receives: the login's known fields with an empty renewal token. Codex then
+ * uses the pass and, near its end, re-reads the file (which the host keeps fresh) instead of
+ * renewing. */
 export function accessOnlyCodexLogin(text: string): string {
-	const login = record(JSON.parse(text), "Codex login");
-	const tokens = record(login.tokens, "Codex login tokens");
-	return `${JSON.stringify({ ...login, tokens: { ...tokens, refresh_token: "" } }, null, 2)}\n`;
+	parseCodexLogin(text);
+	const login = JSON.parse(text) as {
+		auth_mode?: string;
+		tokens: { id_token: string; access_token: string; account_id: string };
+		last_refresh?: string;
+	};
+	return `${JSON.stringify(
+		{
+			...(login.auth_mode === undefined ? {} : { auth_mode: login.auth_mode }),
+			OPENAI_API_KEY: null,
+			tokens: {
+				id_token: login.tokens.id_token,
+				access_token: login.tokens.access_token,
+				refresh_token: "",
+				account_id: login.tokens.account_id,
+			},
+			...(login.last_refresh === undefined ? {} : { last_refresh: login.last_refresh }),
+		},
+		null,
+		2,
+	)}\n`;
 }
 
 function parseIssue(value: unknown, binding: ModelLoginRunBinding, knownVersion: number | null): IssueResult {
@@ -272,7 +304,13 @@ export class CloudModelLoginVault {
 				authJson: null,
 			};
 		}
-		const current = await this.#open(issue, issue.version, issue.envelope);
+		let current: CodexLogin;
+		try {
+			current = await this.#open(issue, issue.version, issue.envelope);
+		} catch (error) {
+			if (issue.renewal) await this.#release(issue, issue.renewal, false, "login_unreadable");
+			throw error;
+		}
 		const renewed = issue.renewal ? await this.#renew(issue, issue.renewal, current, signal) : undefined;
 		const login = renewed?.login ?? current;
 		if (Date.parse(login.accessExpiresAt) <= Date.now()) throw new Error("Model login pass has ended");
@@ -297,9 +335,9 @@ export class CloudModelLoginVault {
 		});
 	}
 
-	/** Renews under the lock this call holds. A failed renewal gives the lock back (a refused one
-	 * also marks the login for a new sign-in, which stops later runs); this run keeps the
-	 * current pass while it lasts. */
+	/** Renews under the lock this call holds. Every way out gives the lock back: a refused
+	 * renewal, or one the provider made but the vault could not save (its old renewal token is
+	 * spent), also marks the login for a new sign-in. This run keeps the newest pass it has. */
 	async #renew(
 		issue: IssueResult,
 		renewal: NonNullable<IssueResult["renewal"]>,
@@ -307,15 +345,20 @@ export class CloudModelLoginVault {
 		signal: AbortSignal,
 	): Promise<{ login: CodexLogin; version: number } | undefined> {
 		const renewer = this.#renewer;
+		// A key the broker cannot seal with would strand a renewal the provider already made.
+		if (!renewer || !this.#keys.has(renewal.keyId)) {
+			await this.#release(issue, renewal, false, renewer ? "renewal_key_unavailable" : "renewer_unavailable");
+			return undefined;
+		}
 		let result: ModelLoginRenewal;
 		try {
-			if (!renewer) throw new Error("Model login renewer is unavailable");
-			result = await renewer.renew(current.text, signal);
+			// The renewer's budget leaves room to save within the caller's minute.
+			result = await renewer.renew(current.text, AbortSignal.any([signal, AbortSignal.timeout(RENEWAL_BUDGET_MS)]));
 		} catch {
 			result = { outcome: "transient", reason: "renewer_failed" };
 		}
 		if (result.outcome !== "renewed") {
-			await this.#release(issue, renewal, result.outcome === "refused", result.reason, signal);
+			await this.#release(issue, renewal, result.outcome === "refused", result.reason);
 			return undefined;
 		}
 		let renewed: CodexLogin;
@@ -327,44 +370,49 @@ export class CloudModelLoginVault {
 			)
 				throw new Error("Renewed login is not a newer pass of the same account");
 		} catch {
-			await this.#release(issue, renewal, false, "renewal_invalid", signal);
+			await this.#release(issue, renewal, false, "renewal_invalid");
 			return undefined;
 		}
 		const next = renewal.baseVersion + 1;
-		const envelope = this.#keys.seal(
-			{ [MODEL_LOGIN_FIELD]: renewed.text },
-			envelopeIdentity(issue, next, renewal.keyId),
-		);
-		// The provider has already retired the old renewal token: saving this version is the only
-		// copy of the new one, so a lost database answer is retried before giving up. If it is
-		// still not saved, this run keeps the new pass; the next renewal then fails and asks for
-		// a new sign-in.
-		for (let attempt = 0; attempt < 3; attempt += 1) {
-			try {
-				const saved = record(
-					await this.#authority.commitModelLoginRenewal(
-						{
-							loginId: issue.loginId,
-							token: renewal.token,
-							baseVersion: renewal.baseVersion,
-							keyId: renewal.keyId,
-							encryptedEnvelope: envelope,
-							envelopeSha256: createHash("sha256").update(envelope).digest("hex"),
-							accessIssuedAt: renewed.accessIssuedAt,
-							accessExpiresAt: renewed.accessExpiresAt,
-						},
-						signal,
-					),
-					"Model login renewal",
-				);
-				if (saved.schema !== "qorpera.model-login-renewal/v1" || saved.version !== next)
-					throw new Error("Model login renewal was not saved");
-				return { login: renewed, version: next };
-			} catch {
-				if (signal.aborted) break;
+		// The provider has already spent the old renewal token: this version is the only copy of
+		// the new one. Saving has its own deadline, apart from the caller's, and a repeated save
+		// after a lost answer finds its version saved. If it is still not saved, this run keeps
+		// the new pass and the login asks for a new sign-in.
+		try {
+			const envelope = this.#keys.seal(
+				{ [MODEL_LOGIN_FIELD]: renewed.text },
+				envelopeIdentity(issue, next, renewal.keyId),
+			);
+			const envelopeSha256 = createHash("sha256").update(envelope).digest("hex");
+			for (let attempt = 0; attempt < 3; attempt += 1) {
+				try {
+					const saved = record(
+						await this.#authority.commitModelLoginRenewal(
+							{
+								loginId: issue.loginId,
+								token: renewal.token,
+								baseVersion: renewal.baseVersion,
+								keyId: renewal.keyId,
+								encryptedEnvelope: envelope,
+								envelopeSha256,
+								accessIssuedAt: renewed.accessIssuedAt,
+								accessExpiresAt: renewed.accessExpiresAt,
+							},
+							AbortSignal.timeout(SAVE_DEADLINE_MS),
+						),
+						"Model login renewal",
+					);
+					if (saved.schema !== "qorpera.model-login-renewal/v1" || saved.version !== next)
+						throw new Error("Model login renewal was not saved");
+					return { login: renewed, version: next };
+				} catch {
+					// Try again: the database answer may have been lost after the save.
+				}
 			}
+		} catch {
+			// Sealing failed: fall through to give the lock back.
 		}
-		await this.#release(issue, renewal, false, "renewal_unsaved", signal);
+		await this.#release(issue, renewal, true, "renewal_unsaved");
 		return { login: renewed, version: renewal.baseVersion };
 	}
 
@@ -373,7 +421,6 @@ export class CloudModelLoginVault {
 		renewal: NonNullable<IssueResult["renewal"]>,
 		permanent: boolean,
 		reason: string,
-		signal: AbortSignal,
 	): Promise<void> {
 		await this.#authority
 			.releaseModelLoginRenewal(
@@ -383,7 +430,7 @@ export class CloudModelLoginVault {
 					permanent,
 					reason: /^[a-z][a-z0-9_]{0,63}$/.test(reason) ? reason : "renewal_failed",
 				},
-				signal,
+				AbortSignal.timeout(SAVE_DEADLINE_MS),
 			)
 			.catch(() => undefined);
 	}

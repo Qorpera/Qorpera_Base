@@ -83,8 +83,18 @@ begin
 		'69000000-0000-4000-8000-000000000050',p_token,p_permanent,'provider_refused') ->> 'released';
 exception when others then return sqlstate || ':' || sqlerrm;
 end $$;
+create function pg_temp.commit_raw(p_token uuid, p_base bigint, p_key text, p_envelope_base64 text, p_sha text,
+	p_issued timestamptz, p_expires timestamptz)
+returns text language plpgsql as $$
+begin
+	perform public.qorpera_commit_model_login_renewal('69000000-0000-4000-8000-000000000040',repeat('c',64),
+		'69000000-0000-4000-8000-000000000050',p_token,p_base,p_key,p_envelope_base64,p_sha,p_issued,p_expires);
+	return 'committed';
+exception when others then return sqlstate || ':' || sqlerrm;
+end $$;
 grant execute on function pg_temp.expect(text,text,text), pg_temp.issue(uuid,text,jsonb,bigint,boolean),
-	pg_temp.commit_renewal(text,uuid,bigint,bytea), pg_temp.release_renewal(uuid,boolean) to qorpera_secret_broker;
+	pg_temp.commit_renewal(text,uuid,bigint,bytea), pg_temp.release_renewal(uuid,boolean),
+	pg_temp.commit_raw(uuid,bigint,text,text,text,timestamptz,timestamptz) to qorpera_secret_broker;
 
 -- Only the broker's own login may call; the service role and members may not.
 set role service_role;
@@ -168,7 +178,10 @@ select pg_temp.expect(pg_temp.commit_renewal(repeat('c',64),
 	'committed','the lock holder saves version 2');
 select pg_temp.expect(pg_temp.commit_renewal(repeat('c',64),
 	(current_setting('qorpera_test.vault_renewal')::jsonb ->> 'token')::uuid,1,'envelope-v2b'::bytea),
-	'40001:model login renewal lock is not held','the same lock cannot save twice');
+	'40001:model login renewal lock is not held','the same lock cannot save a second, different login');
+select pg_temp.expect(pg_temp.commit_renewal(repeat('c',64),
+	(current_setting('qorpera_test.vault_renewal')::jsonb ->> 'token')::uuid,1,'envelope-v2'::bytea),
+	'committed','repeating the save after a lost answer finds it saved');
 -- A host that knew version 1 now gets version 2.
 select pg_temp.issue('69000000-0000-4000-8000-000000000040',repeat('c',64),
 	current_setting('qorpera_test.vault_binding')::jsonb,1,true);
@@ -183,20 +196,30 @@ do $$ begin
 		raise exception 'the renewal did not leave exactly two versions and a free lock'; end if;
 end $$;
 
--- A failed renewal gives the lock back; a permanent failure asks for a new sign-in and the
--- login stops being handed out.
+-- A failed renewal gives the lock back. The next try waits (1, 2, 4 ... minutes); a
+-- permanent failure asks for a new sign-in and the login stops being handed out.
 update public.qorpera_model_logins set access_issued_at = clock_timestamp() - interval '6 days',
 	access_expires_at = clock_timestamp() + interval '4 days'
 where id = '69000000-0000-4000-8000-000000000050';
 set local session authorization qorpera_secret_broker;
 select pg_temp.issue('69000000-0000-4000-8000-000000000040',repeat('c',64),
 	current_setting('qorpera_test.vault_binding')::jsonb,2,true);
+select pg_temp.expect(pg_temp.release_renewal('69000000-0000-4000-8000-0000000000ee',false),'false',
+	'another caller cannot give the lock back');
 select pg_temp.expect(pg_temp.release_renewal(
 	(current_setting('qorpera_test.vault_issue')::jsonb #>> '{renewal,token}')::uuid,false),'true','a transient failure');
 select pg_temp.issue('69000000-0000-4000-8000-000000000040',repeat('c',64),
 	current_setting('qorpera_test.vault_binding')::jsonb,2,true);
+select pg_temp.expect((current_setting('qorpera_test.vault_issue')::jsonb -> 'renewal' is not null)::text,'false',
+	'no second try within a minute of a failure');
+reset session authorization;
+update public.qorpera_model_logins set renewal_failed_at = clock_timestamp() - interval '2 minutes'
+where id = '69000000-0000-4000-8000-000000000050';
+set local session authorization qorpera_secret_broker;
+select pg_temp.issue('69000000-0000-4000-8000-000000000040',repeat('c',64),
+	current_setting('qorpera_test.vault_binding')::jsonb,2,true);
 select pg_temp.expect((current_setting('qorpera_test.vault_issue')::jsonb -> 'renewal' is not null)::text,'true',
-	'the next caller may try again');
+	'a later caller may try again');
 select pg_temp.expect(pg_temp.release_renewal(
 	(current_setting('qorpera_test.vault_issue')::jsonb #>> '{renewal,token}')::uuid,true),'true','a permanent failure');
 select pg_temp.expect(pg_temp.issue('69000000-0000-4000-8000-000000000040',repeat('c',64),
@@ -204,14 +227,116 @@ select pg_temp.expect(pg_temp.issue('69000000-0000-4000-8000-000000000040',repea
 	'55000:model login needs a new sign-in','a login that needs a new sign-in is not handed out');
 reset session authorization;
 
--- A released lease no longer reaches the login.
-update public.qorpera_model_logins set status = 'active' where id = '69000000-0000-4000-8000-000000000050';
+-- A lapsed lock taken over by another caller: the old holder can neither save nor give it
+-- back, the new holder saves. A lapsed lock nobody took is still its holder's to save.
+update public.qorpera_model_logins set status = 'active', renewal_failures = 0, renewal_failed_at = null,
+	access_issued_at = clock_timestamp() - interval '6 days', access_expires_at = clock_timestamp() + interval '4 days'
+where id = '69000000-0000-4000-8000-000000000050';
+set local session authorization qorpera_secret_broker;
+select pg_temp.issue('69000000-0000-4000-8000-000000000040',repeat('c',64),
+	current_setting('qorpera_test.vault_binding')::jsonb,2,true);
+select set_config('qorpera_test.old_token',current_setting('qorpera_test.vault_issue')::jsonb #>> '{renewal,token}',false);
+reset session authorization;
+update public.qorpera_model_logins set renewal_until = clock_timestamp() - interval '1 second'
+where id = '69000000-0000-4000-8000-000000000050';
+set local session authorization qorpera_secret_broker;
+select pg_temp.issue('69000000-0000-4000-8000-000000000040',repeat('c',64),
+	current_setting('qorpera_test.vault_binding')::jsonb,2,true);
+select set_config('qorpera_test.new_token',current_setting('qorpera_test.vault_issue')::jsonb #>> '{renewal,token}',false);
+select pg_temp.expect((current_setting('qorpera_test.new_token') <> current_setting('qorpera_test.old_token'))::text,'true',
+	'a lapsed lock is taken with a new token');
+select pg_temp.expect(pg_temp.commit_renewal(repeat('c',64),current_setting('qorpera_test.old_token')::uuid,2,'envelope-v3-old'::bytea),
+	'40001:model login renewal lock is not held','the old holder cannot save');
+select pg_temp.expect(pg_temp.release_renewal(current_setting('qorpera_test.old_token')::uuid,false),'false',
+	'the old holder cannot give the lock back');
+reset session authorization;
+update public.qorpera_model_logins set renewal_until = clock_timestamp() - interval '1 second'
+where id = '69000000-0000-4000-8000-000000000050';
+set local session authorization qorpera_secret_broker;
+select pg_temp.expect(pg_temp.commit_renewal(repeat('c',64),current_setting('qorpera_test.new_token')::uuid,2,'envelope-v3'::bytea),
+	'committed','a lapsed lock nobody took is still its holder''s to save');
+
+-- A save must name the current key, match its digest, keep sane times and bring a later pass.
+reset session authorization;
+update public.qorpera_model_logins set access_issued_at = clock_timestamp() - interval '6 days',
+	access_expires_at = clock_timestamp() + interval '4 days'
+where id = '69000000-0000-4000-8000-000000000050';
+set local session authorization qorpera_secret_broker;
+select pg_temp.issue('69000000-0000-4000-8000-000000000040',repeat('c',64),
+	current_setting('qorpera_test.vault_binding')::jsonb,3,true);
+select set_config('qorpera_test.token',current_setting('qorpera_test.vault_issue')::jsonb #>> '{renewal,token}',false);
+select pg_temp.expect(pg_temp.commit_raw(current_setting('qorpera_test.token')::uuid,3,'other-kek-1',
+	encode('envelope-v4'::bytea,'base64'),encode(sha256('envelope-v4'::bytea),'hex'),clock_timestamp(),clock_timestamp() + interval '10 days'),
+	'22023:model login renewal is invalid','another key');
+select pg_temp.expect(pg_temp.commit_raw(current_setting('qorpera_test.token')::uuid,3,'company-kek-1',
+	encode('envelope-v4'::bytea,'base64'),repeat('0',64),clock_timestamp(),clock_timestamp() + interval '10 days'),
+	'22023:model login renewal is invalid','a digest that does not match');
+select pg_temp.expect(pg_temp.commit_raw(current_setting('qorpera_test.token')::uuid,3,'company-kek-1',
+	encode('envelope-v4'::bytea,'base64'),encode(sha256('envelope-v4'::bytea),'hex'),clock_timestamp(),clock_timestamp() - interval '1 second'),
+	'22023:model login renewal is invalid','a pass that has already ended');
+select pg_temp.expect(pg_temp.commit_raw(current_setting('qorpera_test.token')::uuid,3,'company-kek-1',
+	encode('envelope-v4'::bytea,'base64'),encode(sha256('envelope-v4'::bytea),'hex'),clock_timestamp() + interval '1 hour',clock_timestamp() + interval '10 days'),
+	'22023:model login renewal is invalid','a pass issued in the future');
+select pg_temp.expect(pg_temp.commit_raw(current_setting('qorpera_test.token')::uuid,3,'company-kek-1',
+	encode('envelope-v4'::bytea,'base64'),encode(sha256('envelope-v4'::bytea),'hex'),clock_timestamp(),clock_timestamp() + interval '1 day'),
+	'40001:model login renewal lock is not held','a pass that ends sooner than the current one');
+reset session authorization;
+
+-- The run check matches the lease validator: a paused company, an expired job lease or
+-- assignment, a disabled identity, a revoked capsule or a released lease gets no login.
+update public.qorpera_model_logins set renewal_token = null, renewal_until = null
+where id = '69000000-0000-4000-8000-000000000050';
+create function pg_temp.refused(p_label text) returns void language plpgsql as $$
+begin
+	perform pg_temp.expect(pg_temp.issue('69000000-0000-4000-8000-000000000040',repeat('c',64),
+		current_setting('qorpera_test.vault_binding')::jsonb,null,false),
+		'42501:model login run binding is unavailable',p_label);
+end $$;
+grant execute on function pg_temp.refused(text) to qorpera_secret_broker;
+savepoint paused;
+insert into public.qorpera_company_execution_pauses(profile_id,paused_by_user_id)
+values ('16000000-0000-4000-8000-000000000010','16000000-0000-4000-8000-000000000001');
+set local session authorization qorpera_secret_broker;
+select pg_temp.refused('a paused company');
+reset session authorization;
+rollback to savepoint paused;
+savepoint job_expired;
+update public.qorpera_runner_jobs set lease_expires_at = clock_timestamp() - interval '1 second'
+where id = (current_setting('qorpera_test.vault_binding')::jsonb ->> 'jobId')::uuid;
+set local session authorization qorpera_secret_broker;
+select pg_temp.refused('an expired job lease');
+reset session authorization;
+rollback to savepoint job_expired;
+savepoint assignment_expired;
+update public.qorpera_runner_assignments set expires_at = clock_timestamp() - interval '1 second'
+where id = (current_setting('qorpera_test.vault_binding')::jsonb ->> 'assignmentId')::uuid;
+set local session authorization qorpera_secret_broker;
+select pg_temp.refused('an expired assignment');
+reset session authorization;
+rollback to savepoint assignment_expired;
+savepoint identity_disabled;
+update public.qorpera_member_compute_identities set status = 'disabled'
+where id = (current_setting('qorpera_test.vault_binding')::jsonb ->> 'computeIdentityId')::uuid;
+set local session authorization qorpera_secret_broker;
+select pg_temp.refused('a disabled identity');
+reset session authorization;
+rollback to savepoint identity_disabled;
+savepoint capsule_revoked;
+update public.qorpera_native_credential_capsules set status = 'revoked', revoked_at = clock_timestamp()
+where id = (current_setting('qorpera_test.vault_binding')::jsonb ->> 'credentialCapsuleId')::uuid;
+set local session authorization qorpera_secret_broker;
+select pg_temp.refused('a revoked capsule');
+reset session authorization;
+rollback to savepoint capsule_revoked;
+-- Still handed out with nothing changed.
+set local session authorization qorpera_secret_broker;
+select pg_temp.expect(pg_temp.issue('69000000-0000-4000-8000-000000000040',repeat('c',64),
+	current_setting('qorpera_test.vault_binding')::jsonb,null,false),'issued','the unchanged run still gets its login');
+reset session authorization;
 update public.qorpera_native_provider_connection_leases set status = 'released', released_at = clock_timestamp()
 where id = (current_setting('qorpera_test.vault_binding')::jsonb ->> 'leaseId')::uuid;
 set local session authorization qorpera_secret_broker;
-select pg_temp.expect(pg_temp.issue('69000000-0000-4000-8000-000000000040',repeat('c',64),
-	current_setting('qorpera_test.vault_binding')::jsonb,null,false),
-	'42501:model login run binding is unavailable','a released lease');
+select pg_temp.refused('a released lease');
 reset session authorization;
 
 rollback;

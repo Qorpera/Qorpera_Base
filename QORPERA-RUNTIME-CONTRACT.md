@@ -3068,14 +3068,18 @@ which makes nodes symmetric for every member. Design:
 2. **One renewer.** Only the vault renews a login, one renewal at a time per
    login, with the unmodified official harness in a locked-down helper beside
    the broker. A renewal is saved only by the holder of that login's renewal
-   lock, on exactly the version it renewed from. The lock is one row of that
-   login; no company, fence or authority row is locked, and nothing is held
-   while the helper talks to the provider. A provider that refuses a renewal
-   marks the login for a new sign-in.
-3. **What a run gets.** The vault hands a login only to a run whose native
-   lease is live, as exactly bound (lease, run, job, runner, assignment,
-   capsule, compute identity). The run receives a copy without the renewal
-   token. Its host keeps that copy fresh from the vault during the run, the
+   lock, on exactly the version it renewed from, and only for a later pass.
+   The lock is one row of that login; no company, fence or authority row is
+   locked for update, and nothing is held while the helper talks to the
+   provider. After a failed renewal the next try waits (1, 2, 4 ... minutes, at
+   most an hour). A renewal the provider refuses, or one it made that the
+   vault could not save, marks the login for a new sign-in.
+3. **What a run gets.** The vault hands a login only to a run the native
+   lease validator would accept: exactly bound (lease, run, job, runner,
+   assignment, capsule, compute identity), job and assignment live, sponsor,
+   connection and capsule active, identity not fenced, company not paused. The
+   vault reads these without locks. The run receives a copy of the login's
+   known fields without the renewal token. Its host keeps that copy fresh from the vault during the run, the
    harness picks the fresh copy up by itself, and the run never writes a login
    back. A lost node loses only passes that end by themselves.
 4. **Sign-in and usage checks.** The member's official sign-in runs in the
@@ -3087,8 +3091,8 @@ which makes nodes symmetric for every member. Design:
 6. **Who a login serves.** A member's login powers only work that member
    started or owns. The vault enforces this when handing out a login once the
    "who pays" work has landed (follow-up work paid by the member who started
-   it, a company API account for work no member started); until then it
-   records mismatches.
+   it, a company API account for work no member started). From change 3 until
+   then, it records mismatches without refusing.
 7. **Claude logins stay out.** Anthropic subscription logins are not kept in
    the vault until Anthropic confirms it in writing.
 8. **Superseded, per login.** For a login kept in the vault: the 2026-09-16

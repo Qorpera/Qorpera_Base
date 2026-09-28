@@ -7,8 +7,9 @@
 -- shape; the run's host asks the broker for its login instead of opening a capsule.
 --
 -- One writer per login: only the broker renews a login, holding a renewal lock that is one
--- row of qorpera_model_logins. Nothing else is locked: no company row, no fence, no
--- authority row. Runs never write a login back. Nothing uses this yet (changes 2 and 3).
+-- row of qorpera_model_logins. Nothing else is locked for update: no company row, no fence,
+-- no authority row (a saved version's foreign key takes only a key-share lock on its
+-- authority). Runs never write a login back. Nothing uses this yet (changes 2 and 3).
 
 create table public.qorpera_model_logins (
 	id uuid primary key,
@@ -27,12 +28,14 @@ create table public.qorpera_model_logins (
 	renewal_until timestamptz,
 	renewal_failures integer not null default 0 check (renewal_failures >= 0),
 	last_renewal_failure text check (last_renewal_failure is null or last_renewal_failure ~ '^[a-z][a-z0-9_]{0,63}$'),
+	renewal_failed_at timestamptz,
 	created_at timestamptz not null default statement_timestamp(),
 	updated_at timestamptz not null default statement_timestamp(),
 	check (access_expires_at > access_issued_at),
 	check ((renewal_token is null) = (renewal_until is null))
 );
 
+-- Change 3's placement asks whether an identity's login is in the vault.
 create index qorpera_model_logins_identity on public.qorpera_model_logins(compute_identity_id) where status = 'active';
 
 create table public.qorpera_model_login_versions (
@@ -76,15 +79,20 @@ begin
 end
 $$;
 
--- A run may receive its login only while its native lease is live, exactly as bound: the
--- lease, run, job, runner, assignment, pointer capsule and compute identity all match; the
--- job is still leased to that runner and assignment; the identity is active and not fenced.
--- Read-only on purpose: the run's host keeps validating its lease (with the company fence)
--- every 15 s, so the vault takes no company lock here.
+-- A run may receive its login only while the native lease validator would accept it: the
+-- same conditions as qorpera_validate_native_provider_execution_lease (exact binding, job
+-- leased and unexpired, assignment accepted and unexpired, lease live, sponsor and compute
+-- available, connection, version, capsule and policy active, identity active and not fenced
+-- on run and runner, company not paused), read without locks. The run's host keeps
+-- validating its lease with the company fence every 15 s, so the vault takes no lock here.
 create function public.qorpera_model_login_run_binding(p_binding jsonb)
 returns public.qorpera_native_provider_connection_leases
 language plpgsql stable security definer set search_path = '' as $$
-declare v_lease public.qorpera_native_provider_connection_leases%rowtype;
+declare
+	v_run public.qorpera_execution_runs%rowtype;
+	v_job public.qorpera_runner_jobs%rowtype;
+	v_lease public.qorpera_native_provider_connection_leases%rowtype;
+	v_now timestamptz := clock_timestamp();
 begin
 	if jsonb_typeof(p_binding) is distinct from 'object'
 		or (select array_agg(key order by key) from jsonb_object_keys(p_binding) as key)
@@ -96,26 +104,63 @@ begin
 		) then
 		raise exception 'model login run binding is invalid' using errcode = '22023';
 	end if;
-	select lease.* into v_lease
-	from public.qorpera_native_provider_connection_leases as lease
-	join public.qorpera_runner_jobs as job on job.id = lease.job_id
-	join public.qorpera_execution_runs as run on run.id = lease.run_id and run.job_id = job.id
-	join public.qorpera_member_compute_identities as identity on identity.id = lease.compute_identity_id
-	join public.qorpera_native_credential_capsules as capsule on capsule.id = lease.credential_capsule_id
+	select run.* into v_run from public.qorpera_execution_runs as run
+	where run.id = (p_binding ->> 'runId')::uuid and run.job_id = (p_binding ->> 'jobId')::uuid;
+	select job.* into v_job from public.qorpera_runner_jobs as job
+	where job.id = (p_binding ->> 'jobId')::uuid and job.run_id = (p_binding ->> 'runId')::uuid;
+	select lease.* into v_lease from public.qorpera_native_provider_connection_leases as lease
 	where lease.id = (p_binding ->> 'leaseId')::uuid
-		and lease.run_id = (p_binding ->> 'runId')::uuid
-		and lease.job_id = (p_binding ->> 'jobId')::uuid
+		and lease.run_id = (p_binding ->> 'runId')::uuid and lease.job_id = (p_binding ->> 'jobId')::uuid
 		and lease.runner_id = (p_binding ->> 'runnerId')::uuid
 		and lease.assignment_id = (p_binding ->> 'assignmentId')::uuid
 		and lease.credential_capsule_id = (p_binding ->> 'credentialCapsuleId')::uuid
-		and lease.compute_identity_id = (p_binding ->> 'computeIdentityId')::uuid
-		and lease.status = 'active' and lease.expires_at > clock_timestamp()
-		and job.runner_id = lease.runner_id and job.client_lease_id = lease.assignment_id
-		and run.compute_identity_id = identity.id and run.profile_id = identity.profile_id
-		and identity.status = 'active' and identity.recovery_pending_id is null
-		and run.compute_recovery_epoch = identity.recovery_epoch
-		and capsule.status = 'active' and capsule.compute_identity_id = identity.id;
-	if v_lease.id is null then
+		and lease.compute_identity_id = (p_binding ->> 'computeIdentityId')::uuid;
+	if v_run.id is null or v_job.id is null or v_lease.id is null
+		or v_job.status <> 'leased' or v_job.runner_id <> v_lease.runner_id
+		or v_job.client_lease_id <> v_lease.assignment_id
+		or v_job.lease_expires_at <= v_now
+		or v_lease.status <> 'active' or v_lease.expires_at <= v_now
+		or v_run.compute_identity_id is distinct from v_lease.compute_identity_id
+		or public.qorpera_company_execution_paused(v_run.profile_id)
+		or not public.qorpera_execution_sponsor_available(v_run)
+		or not public.qorpera_execution_compute_available(v_run)
+		or not exists (
+			select 1 from public.qorpera_runners as runner
+			join public.qorpera_member_compute_identities as identity on identity.id = runner.compute_identity_id
+			where runner.id = v_lease.runner_id and runner.compute_identity_id = v_lease.compute_identity_id
+				and runner.compute_recovery_epoch = identity.recovery_epoch
+		)
+		or not exists (
+			select 1
+			from public.qorpera_runner_assignments as assignment
+			join public.qorpera_execution_sponsor_versions as sponsor
+				on sponsor.binding_id = v_run.sponsor_binding_id and sponsor.version = v_run.sponsor_version
+			join public.qorpera_provider_connections as connection on connection.id = sponsor.provider_connection_id
+			join public.qorpera_provider_connection_versions as version
+				on version.connection_id = sponsor.provider_connection_id
+				and version.version = sponsor.provider_connection_version
+			join public.qorpera_native_credential_capsules as capsule on capsule.id = version.credential_capsule_id
+			join public.qorpera_member_compute_identities as identity on identity.id = v_run.compute_identity_id
+			join public.qorpera_provider_execution_policies as policy
+				on policy.provider = connection.provider
+				and policy.authentication_mode = 'native_subscription'
+				and policy.native_harness = version.native_harness
+			where assignment.id = v_lease.assignment_id
+				and assignment.run_id = v_run.id and assignment.job_id = v_job.id
+				and assignment.runner_id = v_lease.runner_id
+				and assignment.status = 'accepted' and assignment.expires_at > v_now
+				and sponsor.provider_connection_id = v_lease.provider_connection_id
+				and sponsor.provider_connection_version = v_lease.provider_connection_version
+				and connection.provider = 'openai' and connection.status = 'active'
+				and version.authentication_mode = 'native_subscription'
+				and version.native_harness = 'codex-cli'
+				and version.authorization_state = 'active'
+				and capsule.id = v_lease.credential_capsule_id and capsule.status = 'active'
+				and capsule.compute_identity_id = v_lease.compute_identity_id
+				and identity.status = 'active' and identity.profile_id = v_run.profile_id
+				and policy.implementation_status = 'supported'
+				and policy.enablement_status = 'enabled'
+		) then
 		raise exception 'model login run binding is unavailable' using errcode = '42501';
 	end if;
 	return v_lease;
@@ -124,7 +169,9 @@ $$;
 
 -- Hands a live run its login: the current version's envelope (the broker strips the renewal
 -- token before the run sees it). With p_allow_renewal, a login past half its pass life
--- takes this login's renewal lock for the caller, unless another renewal holds it. With
+-- takes this login's renewal lock for the caller, unless another renewal holds it or the
+-- last failed renewal is too recent (1, 2, 4 ... minutes after each failure in a row, at
+-- most an hour). With
 -- p_known_version equal to the current version and no renewal granted, no envelope is
 -- returned (a run's host polling for a newer pass).
 create function public.qorpera_issue_model_login(
@@ -135,7 +182,7 @@ create function public.qorpera_issue_model_login(
 	p_allow_renewal boolean
 )
 returns jsonb
-language plpgsql security definer set search_path = '' set lock_timeout = '5s' set statement_timeout = '10s' as $$
+language plpgsql security definer set search_path = '' set lock_timeout = '5s' as $$
 declare
 	v_authority public.qorpera_cloud_secret_broker_authorities%rowtype;
 	v_lease public.qorpera_native_provider_connection_leases%rowtype;
@@ -165,6 +212,8 @@ begin
 			last_issued_at = v_now, updated_at = v_now
 		where id = v_login.id and current_version = v_login.current_version and status = 'active'
 			and (renewal_until is null or renewal_until < v_now)
+			and (renewal_failed_at is null or renewal_failed_at <= v_now
+				- least(interval '1 minute' * power(2, least(renewal_failures, 7) - 1), interval '1 hour'))
 		returning renewal_token into v_renewal;
 	end if;
 	if v_renewal is null and (v_login.last_issued_at is null or v_login.last_issued_at < v_now - interval '1 minute') then
@@ -204,8 +253,10 @@ begin
 end
 $$;
 
--- Saves a renewed login as the next version, only while this caller still holds the
--- renewal lock taken on exactly the version it renewed from.
+-- Saves a renewed login as the next version, only by the holder of the renewal lock taken on
+-- exactly the version it renewed from (a lock token is written anew each time the lock is
+-- taken, so a matching token proves nobody took it over, even after it lapsed), and only
+-- for a later pass. A repeated call after a lost answer finds its own version saved.
 create function public.qorpera_commit_model_login_renewal(
 	p_broker_authority_id uuid,
 	p_broker_capability_sha256 text,
@@ -219,7 +270,7 @@ create function public.qorpera_commit_model_login_renewal(
 	p_access_expires_at timestamptz
 )
 returns jsonb
-language plpgsql security definer set search_path = '' set lock_timeout = '5s' set statement_timeout = '10s' as $$
+language plpgsql security definer set search_path = '' set lock_timeout = '5s' as $$
 declare
 	v_authority public.qorpera_cloud_secret_broker_authorities%rowtype;
 	v_envelope bytea;
@@ -243,12 +294,23 @@ begin
 		or encode(extensions.digest(v_envelope, 'sha256'), 'hex') <> p_envelope_sha256 then
 		raise exception 'model login renewal is invalid' using errcode = '22023';
 	end if;
+	if exists (
+		select 1 from public.qorpera_model_logins as login
+		join public.qorpera_model_login_versions as version
+			on version.login_id = login.id and version.version = login.current_version
+		where login.id = p_login_id and login.broker_authority_id = v_authority.id
+			and login.current_version = p_base_version + 1 and version.envelope_sha256 = p_envelope_sha256
+	) then
+		return jsonb_build_object('schema', 'qorpera.model-login-renewal/v1', 'loginId', p_login_id,
+			'version', p_base_version + 1);
+	end if;
 	update public.qorpera_model_logins
 	set current_version = p_base_version + 1, access_issued_at = p_access_issued_at,
 		access_expires_at = p_access_expires_at, renewal_token = null, renewal_until = null,
-		renewal_failures = 0, last_renewal_failure = null, updated_at = v_now
+		renewal_failures = 0, last_renewal_failure = null, renewal_failed_at = null, updated_at = v_now
 	where id = p_login_id and broker_authority_id = v_authority.id and status = 'active'
-		and current_version = p_base_version and renewal_token = p_renewal_token and renewal_until >= v_now
+		and current_version = p_base_version and renewal_token = p_renewal_token
+		and access_expires_at < p_access_expires_at
 	returning current_version into v_version;
 	if v_version is null then
 		raise exception 'model login renewal lock is not held' using errcode = '40001';
@@ -274,7 +336,7 @@ create function public.qorpera_release_model_login_renewal(
 	p_reason text
 )
 returns jsonb
-language plpgsql security definer set search_path = '' set lock_timeout = '5s' set statement_timeout = '10s' as $$
+language plpgsql security definer set search_path = '' set lock_timeout = '5s' as $$
 declare
 	v_authority public.qorpera_cloud_secret_broker_authorities%rowtype;
 	v_status text;
@@ -285,10 +347,10 @@ begin
 		raise exception 'model login renewal release is invalid' using errcode = '22023';
 	end if;
 	update public.qorpera_model_logins
-	set status = case when p_permanent then 'needs_sign_in' else status end,
+	set status = case when p_permanent and status = 'active' then 'needs_sign_in' else status end,
 		renewal_token = null, renewal_until = null,
 		renewal_failures = renewal_failures + 1, last_renewal_failure = p_reason,
-		updated_at = clock_timestamp()
+		renewal_failed_at = clock_timestamp(), updated_at = clock_timestamp()
 	where id = p_login_id and broker_authority_id = v_authority.id and renewal_token = p_renewal_token
 	returning status into v_status;
 	return jsonb_build_object('schema', 'qorpera.model-login-renewal-release/v1', 'loginId', p_login_id,
