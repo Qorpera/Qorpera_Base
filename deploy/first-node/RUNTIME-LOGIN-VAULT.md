@@ -77,15 +77,46 @@ Founder approval: 28 September 2026, page "Logins in the Vault"
 
 ## The helper (change 2)
 
-- A separate unit beside each broker (the broker unit's `RestrictNamespaces=yes`, `MemoryMax=256M`,
-  `TasksMax=32` cannot host Codex). It runs the pinned official Codex release binary (unmodified,
-  single static binary, SHA-256 pinned) per operation in a private tmpfs `CODEX_HOME`, with the
-  existing bubblewrap launcher and an egress relay limited to `auth.openai.com` and `chatgpt.com`.
-- Operations: sign-in (`codex login --device-auth`, the same prompt scraping as today), renewal
-  (`app-server` + `account/read {refreshToken: true}`, success = `auth.json` changed), usage (the
-  existing `wham/usage` read with the pass, from the vault, no machine).
-- Sign-in keeps the web client unchanged: the vault answers the node login gateway's `/login`
-  protocol, and the gateway chooser returns the vault for companies switched to the vault.
+A separate service beside each broker, `qorpera-model-login-helper` (the broker unit's
+`RestrictNamespaces=yes`, `MemoryMax=256M` and `TasksMax=32` cannot host Codex). It holds no key,
+no database login and no service key; it sees a login only for one operation and keeps nothing.
+
+- **Part A, renewal** (`cloud-model-login-renewal.ts`, `cloud-model-login-helper.ts`,
+  `cloud-model-login-helper-main.ts`): the broker posts the full login to the helper's Unix socket
+  (`/run/qorpera-model-login-helper/helper.sock`, mode 0660, group `qorpera-login-helper`, plus a
+  bearer token). The helper writes it into a fresh private `CODEX_HOME` under its runtime
+  directory (memory, not disk), starts the pinned official Codex as `codex app-server` in the
+  existing bubblewrap launcher (egress only to `auth.openai.com` and `chatgpt.com`), sends
+  `initialize` and `account/read {refreshToken: true}`, and wipes the home. A changed `auth.json` is
+  the renewed login. Otherwise Codex's own error line decides: 401, `refresh_token_reused|expired|
+  invalidated` or a 400 `invalid_grant` is refused (the login needs a new sign-in), anything else is
+  retried later. At most 4 renewals run at once; 45 s per renewal.
+- **Part B, sign-in and usage** (next): sign-in (`codex login --device-auth`, the same prompt
+  scraping as today) answering the node login gateway's `/login` protocol so the web client is
+  unchanged, and usage reads (the existing `wham/usage` call with the pass, from the vault, no
+  machine).
+
+### Installing the helper (operator, per vault host)
+
+1. Codex: the official release `codex-x86_64-unknown-linux-musl.tar.gz` of `rust-v0.155.1`
+   (SHA-256 of the archive `a0ef8b2debc3bf747e07b1a039354de31300ac0dcc2276498ba281470b5d9115`).
+   Verify, extract the single binary to `/opt/qorpera-model-login-helper/codex`, root-owned 0555,
+   and record its own SHA-256 for the configuration. The helper refuses to start on any other
+   bytes or on a path that is not root-owned.
+2. Isolation: the same root-owned `bwrap`, `node` and isolation entry point the native host uses
+   (`/opt/qorpera-runner/qorpera-native-isolation-child.mjs`), and unprivileged user namespaces.
+3. `npm run pack:model-login-helper -- --out <dir>`; install `qorpera-model-login-helper.mjs` to
+   `/opt/qorpera-model-login-helper/` and the unit; create the `qorpera-login-helper` user and group.
+4. `/etc/qorpera-model-login-helper/config.json`:
+   `{"schema": "qorpera.model-login-helper/v1", "socketPath": "/run/qorpera-model-login-helper/helper.sock",
+   "codexPath": "/opt/qorpera-model-login-helper/codex", "codexSha256": "<binary sha256>",
+   "temporaryRoot": "/run/qorpera-model-login-helper", "isolationEntryPoint":
+   "/opt/qorpera-runner/qorpera-native-isolation-child.mjs"}` and `/etc/qorpera-model-login-helper/token`
+   (43 base64url characters, distinct from every broker token).
+5. Broker drop-in: `SupplementaryGroups=qorpera-login-helper` and
+   `LoadCredential=qorpera-cloud-secret-login-helper:/etc/qorpera-secret-broker/login-helper.json`
+   with `{"schema": "qorpera.model-login-helper-client/v1", "socketPath": "/run/qorpera-model-login-helper/helper.sock",
+   "token": "<the helper token>"}`. Without that credential the broker never asks for a renewal lock.
 
 ## Runs (change 3, migration `20260928161000`)
 

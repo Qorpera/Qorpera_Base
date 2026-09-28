@@ -57,11 +57,13 @@ jobs:
 
       # The observation vocabulary check reads migration and TypeScript source
       # only (no database, no network): a name on one side only is dropped live.
-      - name: Packaged host pins, ephemeral runner package, the guard and the observation vocabulary
+      - name: Packaged host pins, service packages, the guard and the observation vocabulary
         run: >-
           node --test
           scripts/generate-cloud-runtime-bundle.test.mjs
           scripts/package-ephemeral-runner.test.mjs
+          scripts/package-cloud-secret-broker.test.mjs
+          scripts/package-model-login-helper.test.mjs
           scripts/check-release-train-derived-files.test.mjs
           scripts/check-runtime-observation-vocabulary.test.mjs
 
