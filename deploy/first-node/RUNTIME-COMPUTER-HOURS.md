@@ -213,40 +213,83 @@ every draw count from then, in live records.
 
 ## Payments (build step 4)
 
-- A new Edge Function `computer-billing`:
-  - `POST /checkout` (member JWT): a plan (`mode=subscription`, the member for themselves) or
-    credits (`mode=payment`, founders only, for their company);
-  - `POST /portal` (member JWT): Stripe's billing page, with plan switching on. Upgrades use
-    proration behavior `always_invoice`, so the pro-rata charge is invoiced at once and, once
-    paid, adds the new plan's extra hours pro rata. Downgrades are scheduled for the period end.
-    (To verify against Stripe's portal configuration when step 4 is built.);
-  - `POST /webhook`: Stripe's messages.
-- Webhook, patterns kept from #326:
-  - verify the raw body's HMAC signature (tolerance 5 minutes, several signatures);
-  - store each event once by id and body hash;
-  - take a short lease, re-read the subscription, invoice or payment from Stripe, and apply the
-    result in one transaction.
-  - A new plan and new credits add hours only on `invoice.paid` or a succeeded payment; returning
-    from checkout adds nothing. A renewal's hours arrive at the period start (no gap between
-    months) and are withdrawn if its invoice finally fails.
-  - Unknown or unsupported events are stored as `needs_review` and still answered 2xx (#326
-    answered 5xx, so Stripe would retry for days and then disable the endpoint).
-- Refunds remove the unused hours of their purchase. A dispute freezes only its purchase.
+Migration `20260929110000_runtime_computer_hours_payments` (4a) and the Edge Function
+`supabase/functions/computer-billing` (4b). Stripe API version pinned to `2026-08-26.dahlia` in
+every request.
+
+- The database's one billing door is `qorpera_computer_billing(key, method, args)`: service_role
+  may call it, but only with a billing key whose SHA-256 is enrolled in
+  `qorpera_computer_hour_billing_keys` (nodes hold the service role key and must not be able to add
+  paid hours). Writing methods take `qorpera_computer_hour_lock_billing()` first. Paid Stripe facts
+  become sources; test-mode payments, and any payment before the live switch, make dry-run
+  sources only.
+- The catalog (`qorpera_computer_hour_catalog`) holds Basis (185 kr, 74 h a month), Standard (630
+  kr, 286 h) and credit packs of 20, 100 and 500 hours at 3.50 kr an hour, all excluding VAT, with
+  a Stripe price id per mode that an operator sets. Dedicated is not sold.
+- The Edge Function `computer-billing`:
+  - `POST /checkout` (member JWT) `{itemKey, profileId?}`: a plan (`mode=subscription`, for the
+    member; a member with a plan changes it on the billing page) or credits (`mode=payment`,
+    founders only, for their company). It creates the member's Stripe customer once, re-checks
+    Stripe's price against the catalog (active, DKK, amount, tax-exclusive, monthly or one-off),
+    and starts Checkout with Stripe Tax, address and CVR/VAT number collection, the member's saved
+    cards offered, and an idempotency key per checkout.
+  - `POST /portal` (member JWT): Stripe's billing page for card changes, invoices, cancelling at
+    the period end and switching between Basis and Standard.
+  - `POST /webhook`: Stripe's events, signature checked (five-minute window, several
+    signatures), recorded once by id and body hash, then re-read from Stripe:
+    - `invoice.paid` with `subscription_create`: the first period, from the plan line's service
+      period (`lines.data[].period`, `pricing.price_details.price`);
+    - `invoice.created` with `subscription_cycle`: a renewal's period at its start, before payment
+      (also on `invoice.paid`, idempotent);
+    - `invoice.paid` with `subscription_update`: an upgrade's extra hours, pro rata from the paid
+      time, as an extra period row;
+    - `customer.subscription.*`: the subscription's state (item-level current period); a
+      subscription that ends `unpaid`, `canceled` or deleted with an unpaid renewal, and
+      `invoice.marked_uncollectible`, withdraw that renewal's unused hours;
+    - `checkout.session.completed` / `async_payment_succeeded` for a paid one-off checkout:
+      credits for twelve months;
+    - `charge.refunded`: that purchase withdrawn; `charge.dispute.created` / `closed`: frozen,
+      then unfrozen (won) or withdrawn (lost).
+  - Everything else, or anything it cannot use, is recorded (`ignored` or `needs_review`) and
+    answered 2xx; only a passing failure (Stripe or the database unreachable, or the billing key
+    refused) answers 5xx, and Stripe retries. Returning from Checkout adds nothing.
 - Hours arrive as new source rows (a period whose start has come, a credit) or an unfreeze, so
-  what the company owes is repaid at once (step 3's trigger). A period recorded ahead of its start,
-  an upgrade that raises a period's hours, and a member made founder repay owed time at the
-  company's next use instead; the webhook writes periods at their start and upgrades as an extra
-  period row for the rest of the period, so the common paths repay at once. Webhook writes run
-  under READ COMMITTED and take `qorpera_computer_hour_lock_billing()` before anything else,
-  including any `SELECT ... FOR UPDATE` on a source (a statement trigger on the sources table
-  also takes it, but only once a write starts).
-- The plan catalog lives in the database with each Stripe price id; checkout re-verifies the price.
-  Prices exclude VAT. Stripe Tax adds Danish VAT, or reverse charge for EU buyers with a VAT id;
-  checkout collects the address and an optional CVR/VAT number.
-- Secrets: the Stripe secret key and the webhook signing secret are Supabase secrets, set by Jonas.
-  The functions that add paid hours need a billing key held only by this Edge Function, because
-  nodes hold the service role key.
-- Test mode first. Jonas sets the live keys; the coordinator switches payments on.
+  what the company owes is repaid at once (step 3's trigger). A member made founder repays owed
+  time at the company's next use instead. Webhook writes run under READ COMMITTED through the
+  billing door, which takes the billing lock first.
+- Refunds remove the unused hours of their purchase. A dispute freezes only its purchase.
+
+### Setting up Stripe (Jonas; test mode first)
+
+1. A Stripe account for Qorpera in test mode (a sandbox). Account default API version:
+   `2026-08-26.dahlia`.
+2. Stripe Tax on: head office address in Denmark and the Danish VAT registration.
+3. Five prices, each tax-exclusive (`tax_behavior=exclusive`, which cannot be changed later): two
+   products for the plans, each with one monthly DKK price (Basis 185, Standard 630), and one-off
+   DKK prices for 20, 100 and 500 hours (70, 350, 1750). Send the five `price_...` ids (not
+   secret); an operator writes them into the catalog.
+4. Customer portal (Settings → Billing → Customer portal): switching between the Basis and
+   Standard products, "invoice immediately" for prorations, downgrades at the period end (check
+   in the sandbox that Standard → Basis waits for the period end; if not, downgrades apply at
+   once without proration), cancel at the period end, payment method update, invoice history.
+   Optionally send the configuration id (`bpc_...`).
+5. Failed payments (Settings → Billing → Subscriptions and emails): after the last retry, cancel
+   the subscription. Receipts and invoice emails on.
+6. After the coordinator deploys `computer-billing`: a webhook endpoint at
+   `https://<project>.supabase.co/functions/v1/computer-billing/webhook`, API version
+   `2026-08-26.dahlia`, events `checkout.session.completed`,
+   `checkout.session.async_payment_succeeded`, `invoice.created`, `invoice.paid`,
+   `invoice.marked_uncollectible`, `customer.subscription.created`,
+   `customer.subscription.updated`, `customer.subscription.deleted`, `charge.refunded`,
+   `charge.dispute.created`, `charge.dispute.closed`.
+7. Supabase secrets (Jonas sets them; no session reads them): `QORPERA_STRIPE_SECRET_KEY`
+   (`sk_test_...`), `QORPERA_STRIPE_WEBHOOK_SECRET` (`whsec_...`), `QORPERA_COMPUTER_BILLING_KEY`
+   (a random secret of at least 32 characters), `QORPERA_BILLING_RETURN_URL`
+   (`https://app.qorpera.com/`), `QORPERA_WEB_ORIGINS` (`["https://app.qorpera.com"]`) and
+   optionally `QORPERA_STRIPE_PORTAL_CONFIGURATION`. The coordinator enrolls the SHA-256 of the
+   billing key.
+
+Live keys come later, with the live switch (step 7).
 
 ## Email (build step 5)
 
