@@ -57,7 +57,7 @@ profile RPCs; RLS is the second read boundary.
   prefix) as `{user_id, email, display_name, self}`, or `null` when no
   account holds it. `qorpera_send_friend_request` uses the same rule, so an
   address that finds nobody cannot be sent a request. Migration
-  `20260927171000_friend_account_lookup`.
+  `20260928031000_friend_account_lookup`.
 - `qorpera_is_current_member_picture(p_object_name)` — whether an object is
   the caller's current picture; the bucket's delete policy refuses it until
   another picture (or none) has replaced it. It shares a per-folder lock with

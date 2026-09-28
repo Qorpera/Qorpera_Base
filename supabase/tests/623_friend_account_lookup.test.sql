@@ -1,4 +1,4 @@
--- The Friends search (20260927171000): an address finds a person only when an
+-- The Friends search (20260928031000): an address finds a person only when an
 -- account has confirmed it, the whole address and nothing less. A friend
 -- request follows the same rule.
 begin;
