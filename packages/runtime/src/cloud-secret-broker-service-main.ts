@@ -7,6 +7,7 @@ import { Pool } from "pg";
 import { composeCloudConnectorService, parseCloudConnectorServiceConfig } from "./cloud-connector-service.ts";
 import { ModelLoginHelperClient } from "./cloud-model-login-helper.ts";
 import { CloudModelLoginVault } from "./cloud-model-login-vault.ts";
+import { CloudModelLoginSignIns } from "./cloud-model-login-vault-sign-in.ts";
 import {
 	CloudSecretBroker,
 	type CloudSecretConnectorAdapter,
@@ -267,19 +268,22 @@ export async function runCloudSecretBrokerServiceMain(
 			keyring,
 			adapters: [...adapters, ...(connectors?.adapters ?? [])],
 		});
+		const helper = loginHelper ? new ModelLoginHelperClient(loginHelper) : undefined;
 		const service = new HttpCloudSecretBrokerService(broker, runtimeToken, {
 			host: "127.0.0.1",
 			port: config.port as number,
 			memberOrigins,
 			...(connectors ? { oauth: connectors.oauth } : {}),
 			...(codingExecutorToken ? { codingExecutorToken } : {}),
-			// Model logins in the vault (Stateless Compute step 1). The helper renews; without it a
-			// login is handed out as stored and nothing renews it.
+			// Model logins in the vault (Stateless Compute step 1). The helper renews and runs a
+			// member's sign-in; without it a login is handed out as stored, nothing renews it, and
+			// the sign-in route answers 404.
 			modelLogins: new CloudModelLoginVault({
 				authority,
 				keyring,
-				...(loginHelper ? { renewer: new ModelLoginHelperClient(loginHelper) } : {}),
+				...(helper ? { renewer: helper } : {}),
 			}),
+			...(helper ? { modelLoginSignIns: new CloudModelLoginSignIns({ authority, keyring, helper }) } : {}),
 		});
 		const stop = new AbortController();
 		const shutdown = (): void => stop.abort();

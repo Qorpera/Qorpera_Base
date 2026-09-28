@@ -5,6 +5,8 @@ import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ModelLoginHelperService } from "./cloud-model-login-helper.ts";
 import { CodexLoginRenewer } from "./cloud-model-login-renewal.ts";
+import { CodexSignIns } from "./cloud-model-login-sign-in.ts";
+import { OfficialCliNativeHarnessDriver } from "./cloud-native-provider-host.ts";
 import { systemdCredentialMetadataIsSafe } from "./systemd-credential.ts";
 
 const MAX_CREDENTIAL_BYTES = 16 * 1024;
@@ -130,15 +132,24 @@ export async function runModelLoginHelperMain(environment: NodeJS.ProcessEnv = p
 	};
 	const token = await readCredential(directory, "qorpera-model-login-helper-token");
 	if (!TOKEN.test(token)) throw new Error("Login helper token is invalid");
+	const temporaryRoot = absolute(config.temporaryRoot, "Login helper temporary root");
+	// A member's sign-in runs the same official `codex login --device-auth` driver a node uses,
+	// inside the same isolation, with the pinned binary checked before each launch.
+	const signIns = new CodexSignIns({
+		driver: new OfficialCliNativeHarnessDriver(codexPath, "/nonexistent/claude", { entryPoint: isolationEntryPoint }),
+		temporaryRoot,
+		beforeLaunch,
+	});
 	const service = new ModelLoginHelperService({
 		socketPath: absolute(config.socketPath, "Login helper socket"),
 		token,
 		renewer: new CodexLoginRenewer({
 			codexPath,
-			temporaryRoot: absolute(config.temporaryRoot, "Login helper temporary root"),
+			temporaryRoot,
 			isolation: { entryPoint: isolationEntryPoint },
 			beforeLaunch,
 		}),
+		signIns,
 	});
 	const shutdown = (): void => stop.abort();
 	process.once("SIGINT", shutdown);
@@ -153,6 +164,7 @@ export async function runModelLoginHelperMain(environment: NodeJS.ProcessEnv = p
 		process.removeListener("SIGINT", shutdown);
 		process.removeListener("SIGTERM", shutdown);
 		await service.close();
+		await signIns.close();
 	}
 }
 
