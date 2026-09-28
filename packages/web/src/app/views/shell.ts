@@ -475,14 +475,20 @@ function statusDisc(look: AgentLook, className: string): HTMLElement | null {
 /** The tooltip. Any state also goes into the link's name, which the compact rail
  * needs: it hides the text beside the figure and the disc says nothing aloud. */
 function railLabel(
-	agent: Pick<HostedStaffAgent, "displayName" | "role">,
+	agent: Pick<HostedStaffAgent, "displayName" | "role"> & { mentioned?: boolean },
 	look: AgentLook,
 ): { title: string; "aria-label"?: string } {
 	// AGENT_LOOK keeps the English words; they are translated where they are drawn.
 	const words = look.note ?? look.line;
 	const state = words ? t(words) : undefined;
-	const label = [agent.displayName, agent.role, state].filter(Boolean).join(" · ");
-	return state ? { title: label, "aria-label": label } : { title: label };
+	const mention = agent.mentioned ? t("You were mentioned") : undefined;
+	const label = [agent.displayName, agent.role, state, mention].filter(Boolean).join(" · ");
+	return state || mention ? { title: label, "aria-label": label } : { title: label };
+}
+
+/** "@" on a conversation where someone mentioned this member and they have not looked yet. */
+function mentionBadge(mentioned: boolean | undefined): HTMLElement | null {
+	return mentioned ? h("span", { class: "rail-mention", "aria-hidden": "true" }, "@") : null;
 }
 
 /* Each rail row is built from its model alone, and the model is also what decides
@@ -490,6 +496,8 @@ function railLabel(
  * Which row is current is set in place instead, since it changes with every navigation. */
 interface AgentModel extends Pick<HostedStaffAgent, "id" | "displayName" | "role" | "templateId" | "appearance"> {
 	state: AgentState;
+	/** Someone mentioned this member in the agent's thread and they have not looked yet. */
+	mentioned: boolean;
 }
 interface SessionModel {
 	title: string;
@@ -497,6 +505,7 @@ interface SessionModel {
 	kind: "Group chat" | "company";
 	agents: HostedStaffAgent[];
 	selected: boolean;
+	mentioned: boolean;
 }
 function cofounderCard(model: AgentModel, href: string): HTMLElement {
 	const look = AGENT_LOOK[model.state];
@@ -508,6 +517,7 @@ function cofounderCard(model: AgentModel, href: string): HTMLElement {
 			{ class: "cofounder-stand" },
 			agentFigure(model, model.displayName, { size: 82, activity: look.figure }),
 			statusDisc(look, "cofounder-status"),
+			mentionBadge(model.mentioned),
 		),
 		h("strong", null, model.displayName),
 	);
@@ -524,6 +534,7 @@ function pinCard(model: AgentModel, href: string): HTMLElement {
 			{ class: "rail-pin-stand" },
 			agentFigure(model, model.displayName, { size: 52, activity: look.figure }),
 			statusDisc(look, "rail-row-status"),
+			mentionBadge(model.mentioned),
 		),
 		h("strong", { class: "rail-pin-name" }, model.displayName),
 	);
@@ -545,6 +556,7 @@ function agentRow(model: AgentModel, href: string): HTMLElement {
 			{ class: "rail-row-stand" },
 			agentFigure(model, model.displayName, { size: 50, activity: look.figure }),
 			statusDisc(look, "rail-row-status"),
+			mentionBadge(model.mentioned),
 		),
 		h(
 			"span",
@@ -561,7 +573,9 @@ function sessionRow(model: SessionModel, href: string): HTMLElement {
 		{
 			class: model.kind === "Group chat" ? "rail-row rail-row-group" : "rail-row",
 			href,
-			title: [model.title, model.subtitle].filter(Boolean).join(" · "),
+			title: [model.title, model.subtitle, model.mentioned ? t("You were mentioned") : ""]
+				.filter(Boolean)
+				.join(" · "),
 		},
 		h(
 			"span",
@@ -569,6 +583,7 @@ function sessionRow(model: SessionModel, href: string): HTMLElement {
 			model.kind === "Group chat"
 				? groupChatAvatar(model.agents, { width: 60, height: 55, selected: model.selected })
 				: h("span", { class: "avatar small" }, model.title.slice(0, 1).toUpperCase()),
+			mentionBadge(model.mentioned),
 		),
 		h("span", { class: "rail-row-copy" }, h("strong", null, model.title), h("small", null, model.subtitle)),
 	);
@@ -633,6 +648,7 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 		else entry.element.removeAttribute("aria-current");
 		return entry.element;
 	};
+	const mentionedIn = (sessionId: string | undefined) => Boolean(sessionId && state.mentions?.[sessionId]);
 	const agentModel = (agent: HostedStaffAgent): AgentModel => {
 		return {
 			id: agent.id,
@@ -642,6 +658,11 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 			appearance: agent.appearance,
 			// State is part of the cache key, including idle/failed transitions with the same figure and role.
 			state: company.agentState(agent.id),
+			mentioned: mentionedIn(
+				agent.id === cofounder?.id && cofounderSessionId
+					? cofounderSessionId
+					: company.primarySessionFor(agent.id)?.sessionId,
+			),
 		};
 	};
 	const cofounderElement =
@@ -763,6 +784,7 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 						kind: isGroupChat(session) ? ("Group chat" as const) : ("company" as const),
 						agents: company.groupAgents(session.sessionId),
 						selected: activeSessionId === session.sessionId,
+						mentioned: mentionedIn(session.sessionId),
 					},
 					activeSessionId === session.sessionId,
 					sessionRow,

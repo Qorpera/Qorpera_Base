@@ -16,6 +16,7 @@ import {
 	parseMemberPictureObjects,
 	parseMemberPictures,
 } from "./member-pictures.ts";
+import { listMemberMentions, type MemberMentions, markMentionsSeen } from "./mentions.ts";
 import { type HostedCompanyOrganization, parseHostedCompanyOrganization } from "./organization.ts";
 import { collectPages, type PageCursor } from "./pagination.ts";
 import {
@@ -280,6 +281,15 @@ export class CloudApi {
 		return this.cloud
 			.rpc("qorpera_company_organization_json", { p_profile_id: requiredUuid(profileId, "Profile id") })
 			.then(parseHostedCompanyOrganization);
+	}
+
+	/** The conversations where the signed-in member was mentioned and has not looked yet. */
+	listMemberMentions(profileId: string): Promise<MemberMentions[]> {
+		return listMemberMentions(this.cloud, requiredUuid(profileId, "Profile id"));
+	}
+
+	markMentionsSeen(sessionId: string): Promise<void> {
+		return markMentionsSeen(this.cloud, requiredUuid(sessionId, "Session id"));
 	}
 
 	/** Sections are the company's; pins and hidden agents are the signed-in member's. */
