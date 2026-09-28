@@ -24,9 +24,11 @@ refer to.
 > - Stateless Compute: nodes are to become interchangeable. Live since v144
 >   for runs whose login is in the vault (contract, "2026-09-28 amendment:
 >   model logins live in the vault").
-> - Computers get internet and long-running shells: contract text in draft
->   #409 (item 2), build in draft #411.
-> - Coding sessions stand by between turns: #409 (item 3), build in #430.
+> - Computers get internet and long-running shells: contract, "2026-09-28
+>   amendment: compute for agents" (#409 item 2, ratified), build in draft
+>   #411.
+> - Coding sessions stand by between turns: the same amendment (#409 item 3),
+>   build in #430.
 >
 > The section [Decided on 28 September 2026](#decided-on-28-september-2026)
 > records the result. Where it differs from a later section, it governs, and
@@ -95,22 +97,25 @@ Computer) hosts up to six computers.
 | Run box (section 4) | the run's authority | the run |
 | Company machine: one mount for each computer's desktop, and one for each `computer_shell` command (section 5) | the company-wide view: paths whose covering resource is the root `company_shared` resource, plus `rules/` read-only | the desktop's mount: the computer's holder (the run holding it, or a member who took it over); a shell command's mount: the run that started that command |
 | Coding machine, one mount per attached session (section 6) | the coding agent ∩ the session owner, `agents/**` and `rules/**` read-only | the session |
-| Test machine, one mount per machine | the company-wide view, as on a company machine (open question 5, settled with #419) | the agent whose command made the change; changes made with no command running go to the machine's starter |
+| Test machine, one mount per machine | the company-wide view, as on a company machine (open question 5, settled by the compute amendment, item 4) | the agent whose command made the change; changes made with no command running go to the machine's starter |
 
 - A company machine never shows a narrower folder, even to an agent that
   may read it. Its computers are not walls between agents (section 12). Such
   folders are worked on from the agent's own run box. A test machine follows
-  the same rule, since any agent of the company may use it (#419).
+  the same rule, since any agent of the company may use it (compute
+  amendment, item 4).
 - On a test machine, `/company` is mounted only when the starter's
   authority covers the company-wide view. Its one view is opened by the
   starter's run, holds the lease and sets what can be seen. Any agent whose
   authority covers that view may run commands there, as on a computer.
-  - Changes made while commands run are published at each command's end.
-    They are credited to that command's agent and requester, taken from
-    #419's command records on the node. When commands overlap, each of their
-    receipts lists the others.
-  - Changes made while no command runs go to the machine's starter, at the
-    next command end or at stop.
+  - The view's pending changes are published at each command's end, and
+    while a command runs each time its output is read (compute amendment,
+    item 4: "when it ends (and while it runs, item 2)"). Changes made while
+    commands run are credited to those commands' agents and requesters, taken
+    from #419's command records on the node. When commands overlap, each of
+    their receipts lists the others.
+  - Changes made while no command runs are credited to the machine's starter,
+    at the next publish or at stop.
   - Reads made while commands run are recorded in the read set of every run
     with a command running at the time. Reads made while none runs are
     recorded on the starter's view.
@@ -129,9 +134,11 @@ Computer) hosts up to six computers.
     for the same member, and the agent is told.
   - Reads are recorded on the view, and that next run inherits them in its
     read set (the answer to C1b-3's question 4 on #432).
-- A test machine has internet, so its commands are outside effects and pass
-  the automatic review, like a computer's shell. The contract text for this
-  is proposed in #419, item 3.
+- A test machine has internet. Once `/company` is mounted on it, starting a
+  command and typing into one are outside effects and pass the automatic
+  review, like a computer's shell; a worker's commands pass under its
+  agent's rules (compute amendment, item 4, ratified). Until then a machine
+  has no company folder and its commands are not reviewed.
 
 ### What a crash loses (founder decision 3)
 
@@ -177,7 +184,7 @@ live before the next:
 | 3 | Writes: boundaries, change sets, reports, conflicts, reviewed units, `apply_patch`; streamed binary writes and the folder service's upload binding; restore in the web app (from old step 4; the file history view is core slice C4). A write spike first, including two machines on two nodes editing the same file | C1b–C1d, C2, C3 | the five `company_*` tools, for folder-v2 companies |
 | 4 | Company machines: a new office image with the folder program, a mount for each desktop and each shell command, desktop folders in `/company`, saves after a quiet period, shell commands per command and reviewed. Unblocks the scale-out switch (#414) | step 3; #411 in the same image | the Company File part of `computer_transfer`; work files in the scratch area |
 | 5 | Coding machines: one mount per attached session, code areas (section 6), a final publish before sleep and archive | step 3; coding standby (#430) | the private repository folder, its seed and export chain, the 64 MiB bundle |
-| 6 | Test machines: one view per machine, publishing at command end | step 3; test machines (#419, Rebuild Map C4) | `/mnt/repository` and copies to the machine's disk |
+| 6 | Test machines: one view per machine, publishing at command end and while a command runs (section 2) | step 3; test machines (#419, Rebuild Map C4) | `/mnt/repository` and copies to the machine's disk |
 
 Steps 4, 5 and 6 do not depend on each other. Milestone M3 of the Rebuild Map
 is reached when two machines on two nodes edit the same folder live and
@@ -342,6 +349,12 @@ desktop-terminal command. `computer_shell` sessions follow the run-box rule.
 (Amended 2026-09-28: each `computer_shell` command has its own mount and
 publishes when it ends and each time its output is read; it may outlive its
 run, and its last publish comes when its processes end; section 5.)
+
+**On a test machine**, the view's pending changes publish the same way: when
+a command ends, and each time a running command's output is read (amended
+2026-09-28: compute amendment, items 2 and 4). Changes made while no command
+runs are published at the next publish or at stop, credited to the
+machine's starter.
 
 **Never published:**
 - a file still open for writing by any process (it waits for a later
@@ -647,8 +660,8 @@ browser profiles and caches. The rest is kept off it:
 - The 15-second stop is replaced by long-running sessions like the run
   box's.
 - It keeps the automatic review: since the compute amendment (#409, item 2)
-  it has internet, so its commands are outside effects (amended 2026-09-28;
-  this answers open question 2).
+  it has internet, so starting a command and typing into one are outside
+  effects (amended 2026-09-28; this closes open question 2).
 
 **Many machines.** A company's Company Computers all mount the same folder.
 A save on one appears on the others within about a second.
@@ -937,9 +950,14 @@ publish. Mount file modes are a convenience, not the boundary.
 **Untrusted content.** File content is data. The run box has no network, so
 its mount opens no new way out of the company. (Amended 2026-09-28: a
 computer's shell and a test machine have internet, so company data read there
-can leave, as #409 item 2 (draft) and #419 item 3 (proposed) accept. Their
-commands are outside effects and pass the automatic review.) The existing
-exits are connectors and the browser (both reviewed), and coding machines,
+can leave, as the compute amendment accepts (contract, "2026-09-28
+amendment: compute for agents", items 2 and 4, ratified). On a computer, a
+firewall blocks private and special ranges, the machine itself and the other
+computers; it is not a security boundary between agents. A test machine
+reaches the internet but no private network, the NAS, the nodes or the
+control plane. Starting a command and typing into one are outside effects
+and pass the automatic review; on a test machine, once `/company` is
+mounted.) The existing exits are connectors and the browser (both reviewed), and coding machines,
 whose sessions keep open network and are not reviewed.
 With the mount, company data a coding session reads can leave through that
 network. The founder accepted this on 27 September so that coding agents can
@@ -1094,16 +1112,18 @@ folder that fits. This wording ships ahead of the mount, in PR #366.
    27 September). A cheap mitigation that keeps coding working would be to
    limit coding machines to the sites coding needs: GitHub, package
    registries and the model providers. Not decided.
-2. **Company Computer shell review.** Answered by #409 item 2 (draft,
-   2026-09-28): a computer's shell has internet, so it keeps the automatic
-   review.
+2. **Company Computer shell review.** Closed: it keeps the automatic review.
+   The compute amendment (#409 item 2, ratified 2026-09-28) gives a
+   computer's shell a network, so starting a command and typing into one are
+   outside effects.
 3. **Internet in the run box.** Founder decision 7 leaves this for later. If
    it opens, shell commands become outside effects and pass review.
 4. **Large files.** Files over 256 MiB.
-5. **Test machines used by several agents.** Settled with #419 on
-   2026-09-28: any agent of the company may use a test machine, so it shows
-   the company-wide view, like a company machine. Saves are attributed per
-   command end to the command's agent, with overlapping commands listed;
-   changes made with no command running go to the machine's starter at the
-   next command end or at stop. Under root this attribution is best effort,
-   and it can never widen the view.
+5. **Test machines used by several agents.** Settled by the compute
+   amendment, item 4 (ratified 2026-09-28): any agent of the company may use
+   a test machine, so it shows the company-wide view, like a company machine.
+   Saves publish at each command's end and each time a running command's
+   output is read, credited to the commands' agents, with overlapping
+   commands listed; changes made with no command running go to the machine's
+   starter at the next publish or at stop. Under root this attribution is
+   best effort, and it can never widen the view.

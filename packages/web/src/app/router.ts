@@ -8,12 +8,16 @@ export type CompanySection = "home" | "chat" | "staff" | "file" | "snapshot" | "
 export type Route =
 	| { name: "hub" }
 	| { name: "account" }
+	/** A founding table: a company row whose founders have not pressed Start yet. */
+	| { name: "found"; profileId: string }
 	| { name: "company"; profileId: string; section: CompanySection; id?: string };
 
 export function parseRoute(hash: string): Route {
 	const parts = hash.replace(/^#\/?/, "").split("/").filter(Boolean);
 	if (parts.length === 0) return { name: "hub" };
 	if (parts[0] === "account") return { name: "account" };
+	if (parts[0] === "found" && parts[1] && UUID.test(parts[1]))
+		return { name: "found", profileId: parts[1].toLowerCase() };
 	if (parts[0] === "c" && parts[1] && UUID.test(parts[1])) {
 		const profileId = parts[1].toLowerCase();
 		const section = parts[2];
@@ -36,6 +40,8 @@ export function routeHash(route: Route): string {
 			return "#/";
 		case "account":
 			return "#/account";
+		case "found":
+			return `#/found/${route.profileId}`;
 		case "company":
 			if (route.section === "home") return `#/c/${route.profileId}`;
 			return route.id

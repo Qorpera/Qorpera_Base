@@ -313,7 +313,12 @@ select pg_temp.usage_expect(pg_temp.usage_call($q$select public.qorpera_describe
 	encode(sha256('refresh-three'::bytea),'hex'))::text$q$),
 	'42501:model login account refresh is unavailable','an expired refresh');
 reset session authorization;
--- So is a member who may no longer refresh.
+-- So is a member who may no longer refresh. (The requester is the founder; the last founder
+-- cannot step down while others remain, so a second founder joins first.)
+insert into auth.users(id,email) values ('69300000-0000-4000-8000-0000000000f1','usage-cofounder@example.test');
+insert into public.qorpera_profile_members(profile_id,user_id,email,display_name,role)
+values (current_setting('qorpera_test.usage_company')::uuid,'69300000-0000-4000-8000-0000000000f1',
+	'usage-cofounder@example.test','Co-founder','owner');
 update public.qorpera_profile_members set role = 'viewer'
 where profile_id = current_setting('qorpera_test.usage_company')::uuid
 	and user_id = (select requested_by_user_id from public.qorpera_native_account_refresh_requests

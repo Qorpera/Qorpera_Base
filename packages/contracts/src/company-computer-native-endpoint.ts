@@ -24,7 +24,7 @@ const PLACEHOLDER_PROBE = "00000000-0000-4000-8000-000000000000";
 /** A native route names one Company Computer (`/office/<id>/native`), or every
  * computer of the company (`/office/{companyComputerId}/native`): a company can
  * run several, and a run reaches the one its screen is on (migration
- * 20260929010100). A company route's transport token is accepted by every
+ * 20260928237200). A company route's transport token is accepted by every
  * computer of that company; tool authority still comes from the run, the office
  * descriptor and effect-time grants. */
 export function parseCompanyComputerNativeRoute(value: string): {
