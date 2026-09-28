@@ -38,8 +38,9 @@ Chosen on the page (recommended option each time):
 Carried over, not a new founder decision: while any founder of a company has the internal account
 entitlement (`qorpera_account_entitlements.plan_key = 'internal'`), the company is complimentary.
 Its time is measured and paid by a `complimentary` source naming the first internal founder in the
-founder list; it is never charged and never waits. Founder plans are billing records, never new `plan_key` values: the entitlement
-table keeps only `freemium` and `internal`, and the client refuses other keys.
+founder list; it is never charged and never waits. Founder plans are billing records, never new
+`plan_key` values: the entitlement table keeps only `freemium` and `internal`, and the client
+refuses other keys.
 
 ## What counts
 
@@ -64,7 +65,9 @@ table keeps only `freemium` and `internal`, and the client refuses other keys.
   proposal reviews included. Run allocations and `native` demands are never read, so a fresh-VM run
   and a run on the shared execution host cost the same, and a late-closed allocation (for example a
   lost reserve reply on the fast host) never extends a run.
-- Coding turns are not execution runs; their commands count through the coding machine.
+- A coding turn's model run is an execution run (a worker-dispatch wake admitted by
+  `qorpera_begin_coding_turn`) and counts like any other run; the turn's commands count through
+  the coding machine.
 - `qorpera_runtime_computer_history` stays an operator estimate from observations. Billing uses
   only the meter.
 
@@ -247,14 +250,19 @@ draws are discarded, and free hours, owed time and every draw count from then.
   reason "out of computer hours" through the system path that ends a runner attempt, with no
   automatic retry. The job's `last_error` carries a stable code for it, and the web's failed-run
   card (`packages/web/src/ui/run-failure.ts`) learns to show it as "Out of computer hours" rather
-  than an internal error or a usage limit. It is not a member's Stop: no routine is paused and no
+  than an internal error or a usage limit; it matches the code before the card strips
+  `[code=...]` tags. It is not a member's Stop: no routine is paused and no
   worker cancelled. Its machines, always-on ones included, are stopped with their disks kept. A
   coding turn cut off then ends "out of computer hours", and its machine's running commands end
   as when it sleeps. An in-house worker whose run is ended reports "out of computer hours" to its
   parent instead of the generic "ended without reporting a result".
 - A new coding turn waits like other new work, whether a run starts it or the session's owner
-  answers the session directly (`qorpera_answer_coding_session`, which opens a turn with no run);
-  the hook list includes that path, and the waiting reason shows in the session's thread.
+  answers the session directly (`qorpera_answer_coding_session`, which opens the turn without a
+  run). The hook list covers `qorpera_coding_session_queue` and the turn's own run at
+  `qorpera_begin_coding_turn`: a refusal there must defer the session
+  (`qorpera_defer_coding_session`, a new waitable reason in the executor host) rather than fail
+  it, and the waiting reason shows in the session's thread. At the hour, a cut-off turn's run is
+  ended before its machine is stopped.
 - It ships switched off, in its own release, with a 30-minute database watch after the cut. It is
   switched on together with live payments and hour notices.
 

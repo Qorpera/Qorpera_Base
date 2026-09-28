@@ -3639,8 +3639,8 @@ owner role. Model use is not billed here: it follows the 2026-09-28 amendment
      to the end of that attempt, at the standard size, whether it runs in a
      slot of a shared execution host or in a machine of its own. A run costs
      the same wherever it is placed. A retry is a new attempt; the wait
-     between attempts counts nothing. Coding turns are not runs: their
-     commands count through the coding machine.
+     between attempts counts nothing. A coding turn's model run is a run like
+     any other; the turn's commands count through the coding machine.
    - Nothing else: sign-in machines (they serve one member's model login),
      shared execution hosts themselves, build machines, warm spares and every
      other platform machine count nothing.
@@ -3704,11 +3704,11 @@ owner role. Model use is not billed here: it follows the 2026-09-28 amendment
      as failed with the stated reason "out of computer hours", shown in their
      conversations and never retried by themselves, and its machines are
      stopped with their disks kept, always-on machines included. A coding turn
-     cut off then ends "out of computer hours", and its machine's running
+     cut off then ends failed with the same reason, and its machine's running
      commands end as when it sleeps. A worker whose run is ended reports "out
      of computer hours" to its parent. Nothing else changes: no routine is
-     paused and no worker is cancelled beyond that; their next work waits for
-     hours like any other.
+     paused and no worker is cancelled; their next work waits for hours like
+     any other.
    - Time used while the company has no hours is owed. Owed time is paid in
      the order of item 4 from the next hours that arrive (free hours, then
      founders' plans evenly, then credits). Owed time of a deleted company is
