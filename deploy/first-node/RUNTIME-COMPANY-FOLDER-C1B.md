@@ -481,8 +481,8 @@ moment of its check:
 
 Coding and worker runs arrive with the agent wakes.
 
-Built in `20260928240000_folder_core_authority.sql`, with tests 634 and 635.
-It sorts after v145's activation (20260928236500) and S2's 20260928230000
+Built in `20260928249000_folder_core_authority.sql`, with tests 634 and 635.
+It sorts after v146's activation (20260928244000) and S2's 20260928230000
 and 20260928231000, whose rules for who pays it ports (§4).
 
 ### 1. Authority changes go through the clock
@@ -734,7 +734,7 @@ journal check after the clock (§1), and the commit is retried.
 worker completion. They are ported from `qorpera_wake_authorized`'s agent
 branch as S2 left it (20260928230000 "the member who started the work pays",
 20260928231000 "a member's pinned login follows them"), without its locks. The
-migration sorts after both (20260928240000):
+migration sorts after both (20260928249000):
 
 | Check | Rows locked |
 | --- | --- |
