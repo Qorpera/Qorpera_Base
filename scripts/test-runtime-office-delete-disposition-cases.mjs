@@ -216,7 +216,8 @@ export async function testOfficeResetChain({stop,attestation,scope,binding,servi
   `update public.qorpera_runtime_office_resets set custody_sha256=repeat('9',64);`,
   `update public.qorpera_runtime_office_activations set superseded_at=clock_timestamp();`,
   `update public.qorpera_runtime_office_screens set drain_pending=true,drain_id=extensions.gen_random_uuid(),drain_acknowledged_at=null;`,
-  `update public.qorpera_profile_members set role='contributor' where user_id='${document.operator.principalId}';`
+  // The last founder cannot step down (20260929030000): a second founder joins first.
+  `insert into auth.users(id,email) values ('30000000-0000-4000-8000-0000000000f4','disposition-cofounder@example.test');insert into public.qorpera_profile_members(profile_id,user_id,email,display_name,role) select profile_id,'30000000-0000-4000-8000-0000000000f4','disposition-cofounder@example.test','Co-founder','owner' from public.qorpera_profile_members where user_id='${document.operator.principalId}' and role='owner';update public.qorpera_profile_members set role='contributor' where user_id='${document.operator.principalId}';`
  ])await deny(`begin;reset role;${mutation}${owner}${dispose()}rollback;`,owner);
  const futureName=readdirSync(new URL('../supabase/migrations/',import.meta.url)).filter(name=>/runtime_bundle_activation_v\d+\.sql$/.test(name)).sort((l,r)=>Number(/_v(\d+)\.sql$/.exec(l)[1])-Number(/_v(\d+)\.sql$/.exec(r)[1])).at(-1);
  const futureBundle=readFileSync(new URL('../supabase/migrations/'+futureName,import.meta.url),'utf8');
