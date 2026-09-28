@@ -301,12 +301,18 @@ closes the conversation; a restore reopens both, with the same conversation.
 | `connected_at` | yes | UTC instant |
 | body | no | what the account is for, written by the company |
 
-- **Settings:** written only by the platform, inside the vault's own transaction (core §3 step
-  4). Any other change to them is refused.
+- **Settings:** written only by the platform (the vault's writer, core C3). A member or an agent
+  may change the body only, and never creates or deletes the file.
 - **Body:** company-authored.
 - **Authority:** the vault and the operation grants stay in charge (contract 5.6).
-- **Deleting:** refused while the vault record is active, whether `connected` or `broken`.
-  Disconnecting removes the file.
+- **Database rules:** the id is a company-owned vault row (`qorpera_cloud_secrets`) of this
+  company and environment, and never changes. A platform write matches that row: it is active and
+  its connector is the `service`. One file holds one account. A file saved before this slice is not
+  trusted as the saved version until the platform writes it (the index points at its path).
+- **Deleting:** only the platform deletes the file, and only once the vault record is revoked
+  (refused while it is active, whether `connected` or `broken`). Disconnecting removes the file; the
+  writer treats a file already missing as done.
+- **Moving:** within `connections/` the index follows; out of it is a kind change (refused).
 - Not reviewed.
 
 ### `rules/<name>.md`
@@ -502,7 +508,7 @@ of the body, for readers that should not reach the storage server.
 | agent | `qorpera_profile_staff` (folder columns `folder_environment_id`, `folder_path`: the stored path of its `agent.md`, `folder_path_version`, `folder_commit_id`, `folder_retired_at`) | name, role, instructions (charter), colour (`native` when none), figure, status; the Co-Founder's `template_id = 'co-founder'` and its `qorpera_company_cofounders` row (no formation) | lifecycle (setup), execution authority. `hire_overlay`, `reasoning_policy` and `startup_instructions` stay null on folder-v2 rows (the source-complete check ties them to the snapshot-v1 source columns), so the file's `model` and `effort` stay in the parse until the runtime reads them (F2-1b) |
 | sections | sidebar sections and placements (+ #370's room placements) | section order, members in order | member pins and hidden |
 | group | `qorpera_company_rooms` (folder columns as the roster's, with no bound agent), room members | name, subtitle, purpose copy, members, open or closed | conversation, drafts, mentions, session model |
-| connection | `qorpera_cloud_secrets` descriptor columns | path, path version, purpose copy | secret versions, grants, audit |
+| connection | new `qorpera_folder_connection_index`, one row per account keyed by the vault row's id (its own table, so a connection save never writes or locks a vault row) | path, path version, purpose copy | the vault row, secret versions, grants, audit |
 | rule | `qorpera_review_rules` (company scope) | outcome, `when_text` copy | personal rules, review records |
 | routine | `qorpera_cloud_routines`, `_versions` | owner from the folder, title, trigger, timezone, ends, runs, quiet with its zone, effort, reply, status, conclusion, intent copy | schedule cursors, occurrences, retries, sponsor, `pause_reason`, `authorization_failures`, `origin` (who created it, from the first commit) |
 | todo | `qorpera_runtime_agent_todos` | owner from the folder, title, status, requester, detail copy | — |
@@ -629,7 +635,7 @@ on a unit that `decide` passed.
 | --- | --- | --- |
 | before tx (TS) | `parseCompanyStateFile(path, text)` | Each structured path of a unit gets an entry in `structured: [{path, kind, text, parse, parserVersion}]`, or `[{path, kind, problems}]` without the text when refused. A `new_folder` lists every structured file inside it. SQL re-hashes each parsed file's text against its file hash. |
 | any | `qorpera_structured_path_kind(path)` | The pattern table, on the key. |
-| 4, plan | `qorpera_folder_structured_targets(p_environment_id uuid, p_actor jsonb, p_units jsonb) returns table(rank smallint, tbl text, key text, mode text)` | Takes no locks. Returns the rows to lock, each with its rank and mode: index rows by parse id, index rows by path prefix for a subtree unit as of its `asOfSeq`, referenced member rows (`people`, `requested_by`, `connected_by`: rank 1, KEY SHARE), and unique claims (`key` is a uuid as text, or a claim key). Rows of F1's tables (members, execution authorities, resources, grants) are merged into F1's own pass at their rank, the stronger mode winning. |
+| 4, plan | `qorpera_folder_structured_targets(p_environment_id uuid, p_actor jsonb, p_units jsonb) returns table(rank smallint, tbl text, key text, mode text)` | Takes no locks. Returns the rows to lock, each with its rank and mode: index rows by parse id, index rows by path prefix for a subtree unit as of its `asOfSeq`, referenced member rows that an index row depends on (rank 1, KEY SHARE; none so far: `people` and `connected_by` are read without a lock, since no index row depends on them), and unique claims (`key` is a uuid as text, or a claim key). Rows of F1's tables (members, execution authorities, resources, grants) are merged into F1's own pass at their rank, the stronger mode winning. |
 | 4, lock | `qorpera_folder_structured_lock(p_environment_id uuid, p_targets jsonb, p_from_rank smallint, p_to_rank smallint) returns void` | Locks F2's tables through a closed list, in key order. F1 calls it for ranks 2, 4–5 and 8–9, between its own ranks 1, 3, 6 and 7. |
 | 7, per unit | `qorpera_folder_structured_decide(p_environment_id uuid, p_actor jsonb, p_commit_id uuid, p_unit_no integer, p_unit jsonb, p_eff_path text, p_eff_to text) returns jsonb` | Runs after F1's own checks, on the effective (stored) paths. Covers the path checks, the database rules, the dependency rule and the 5.6 refusals, and returns `{ok, reason, problems}`. It reads the index as the earlier units of the commit left it. |
 | 7, review | `qorpera_folder_structured_review_class(p_environment_id uuid, p_actor jsonb, p_unit jsonb, p_eff_path text, p_eff_to text) returns text` | Returns plain, delegation or deletion, from the base parse (the current entry's path version) and the new one. The TS proposal before the transaction applies the units in the same order, so both sides agree. |
@@ -678,7 +684,10 @@ claims by kind then key (F2). All nine come before paths, objects, admission and
    - `group.md` to rooms, room members and the conversation; `sections.md` to the sidebar's
      sections and placements;
    - the member RPC's section actions refused for `folder-v2`.
-4. **F2-3** connections (the vault writes the file).
+4. **F2-3** connections (migration 20260929140000): the parse's shape, the rules and the index
+   table. The vault's writer is core C3's; the vault's SQL cannot create file bytes, so it stages
+   the text through the object gateway first, or C2's queue writes the file after the vault
+   commits.
 5. **F2-4** rules (the reviewer reads the rule index).
 6. **F2-5** todos and worker files.
 7. **F2-6** routines, last because the scheduler, schedule positions and decisions are the
