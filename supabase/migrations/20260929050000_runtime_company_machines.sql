@@ -912,12 +912,32 @@ $$;
 -- ---------------------------------------------------------------------------
 -- 7. Executor authority
 -- ---------------------------------------------------------------------------
+-- One lock order everywhere: the company's GC fence (an agent's machine tools
+-- take it first, in their run's authority check), the company's machines lock,
+-- the machine, its placement, the allocation, the node. A path that needs the
+-- fence takes it before anything else; a path that never takes it may start
+-- lower down. Internal.
+create function public.qorpera_company_machine_placement_fence(p_placement_id uuid)
+returns void language plpgsql security definer set search_path = '' as $$
+begin
+	perform public.qorpera_lock_profile_gc_fence(placement.profile_id) from public.qorpera_company_machine_placements placement
+	where placement.id = p_placement_id;
+end
+$$;
+
+-- The admission pass's fence: a short wait, never a stall of the node's whole
+-- pass behind one long holder (a longer hold raises lock_not_available and the
+-- pass tries that company again next time). Internal.
+create function public.qorpera_company_machine_fence_briefly(p_profile_id uuid)
+returns void language plpgsql security definer set search_path = '' set lock_timeout = '2s' as $$
+begin
+	perform public.qorpera_lock_profile_gc_fence(p_profile_id);
+end
+$$;
+
 -- Custody of a placement belongs to the executor of its node. Internal: locks
--- the company's fence, then the machine, then the placement, and checks the
--- executor's exact binding text. One lock order everywhere: the company's GC
--- fence (an agent's machine tools take it first, in their run's authority
--- check), the company's machines lock, the machine, its placement, the
--- allocation, the node.
+-- the machine, then the placement, and checks the executor's exact binding text.
+-- A caller that goes on to take the company's fence takes it first.
 create function public.qorpera_company_machine_custody(p_placement_id uuid, p_owner text, p_binding_text text, p_machine_id_sha256 text)
 returns public.qorpera_company_machine_placements language plpgsql security definer set search_path = '' as $$
 declare v_placement public.qorpera_company_machine_placements%rowtype;
@@ -925,8 +945,6 @@ begin
 	if auth.role() is distinct from 'service_role' or p_placement_id is null or octet_length(coalesce(p_binding_text,'')) not between 2 and 16384
 		or coalesce(p_owner,'') !~ '^[A-Za-z0-9_.:-]{1,120}$' or coalesce(p_machine_id_sha256,'') !~ '^[0-9a-f]{64}$' then
 		raise exception 'Machine custody required' using errcode = '42501'; end if;
-	perform public.qorpera_lock_profile_gc_fence(placement.profile_id) from public.qorpera_company_machine_placements placement
-	where placement.id = p_placement_id;
 	perform 1 from public.qorpera_company_machines machine join public.qorpera_company_machine_placements placement
 		on placement.machine_id = machine.id where placement.id = p_placement_id for update of machine;
 	select * into v_placement from public.qorpera_company_machine_placements where id = p_placement_id for update;
@@ -1025,9 +1043,8 @@ begin
 							and volume.machine_id_sha256 = p_machine_id_sha256)))
 			order by machine.wanted_at, machine.id limit p_limit loop
 			begin
-				-- The company's fence first, without waiting (see custody for the one order).
-				perform 1 from public.qorpera_profiles where id = v_machine.profile_id for update nowait;
-				perform public.qorpera_lock_profile_gc_fence(v_machine.profile_id);
+				-- The company's fence first (the one order), waiting briefly at most.
+				perform public.qorpera_company_machine_fence_briefly(v_machine.profile_id);
 				if not pg_try_advisory_xact_lock(hashtextextended('qorpera.company-machines:' || v_machine.profile_id::text, 0)) then
 					raise sqlstate 'P0F04'; end if;
 				select * into v_machine from public.qorpera_company_machines where id = v_machine.id for update nowait;
@@ -1123,6 +1140,8 @@ declare v_placement public.qorpera_company_machine_placements%rowtype; v_machine
 	v_node public.qorpera_runtime_nodes%rowtype; v_reservation jsonb;
 begin
 	if p_intent is null or p_intent not in ('run','stop','delete') then raise exception 'Machine custody input invalid' using errcode = '22023'; end if;
+	-- run re-reserves its room, which takes the company's fence: first, then.
+	if p_intent = 'run' then perform public.qorpera_company_machine_placement_fence(p_placement_id); end if;
 	v_placement := public.qorpera_company_machine_custody(p_placement_id, p_owner, p_binding_text, p_machine_id_sha256);
 	if v_placement.removed_at is not null then raise exception 'Machine placement was removed' using errcode = '42501'; end if;
 	select * into strict v_machine from public.qorpera_company_machines where id = v_placement.machine_id;
@@ -1210,6 +1229,7 @@ returns jsonb language plpgsql security definer set search_path = '' as $$
 declare v_placement public.qorpera_company_machine_placements%rowtype; v_machine public.qorpera_company_machines%rowtype;
 	v_demand public.qorpera_runtime_node_demands%rowtype;
 begin
+	perform public.qorpera_company_machine_placement_fence(p_placement_id);
 	v_placement := public.qorpera_company_machine_custody(p_placement_id, p_owner, p_binding_text, p_machine_id_sha256);
 	if v_placement.removed_at is not null then raise exception 'Machine placement was removed' using errcode = '42501'; end if;
 	select * into strict v_machine from public.qorpera_company_machines where id = v_placement.machine_id;
@@ -1243,6 +1263,7 @@ returns jsonb language plpgsql security definer set search_path = '' as $$
 declare v_placement public.qorpera_company_machine_placements%rowtype; v_machine public.qorpera_company_machines%rowtype;
 	v_allocation public.qorpera_runtime_machine_allocations%rowtype;
 begin
+	perform public.qorpera_company_machine_placement_fence(p_placement_id);
 	v_placement := public.qorpera_company_machine_custody(p_placement_id, p_owner, p_binding_text, p_machine_id_sha256);
 	select * into strict v_machine from public.qorpera_company_machines where id = v_placement.machine_id;
 	if v_placement.removed_at is null then
@@ -1281,7 +1302,7 @@ begin
 	if not exists (select 1 from public.qorpera_machine_executors where owner = p_owner and machine_id_sha256 = p_machine_id_sha256 and not enabled) then
 		raise exception 'Disable the machine executor first' using errcode = '55000'; end if;
 	-- One give-up at a time: it takes several companies' locks. Each company's fence first, in id
-	-- order, then per placement its machines lock, machine and placement (the one order: see custody).
+	-- order, then per placement its machines lock, machine and placement (the one order, above placement_fence).
 	perform pg_advisory_xact_lock(hashtextextended('qorpera.company-machines:abandon', 0));
 	for v_profile in select distinct placement.profile_id from public.qorpera_company_machine_placements placement
 		where placement.owner = p_owner and placement.machine_id_sha256 = p_machine_id_sha256 and placement.removed_at is null order by 1 loop
@@ -1684,6 +1705,8 @@ revoke all on function public.qorpera_configure_machine_executor(text, text, boo
 	public.qorpera_close_company_machine(public.qorpera_company_machines),
 	public.qorpera_authorize_machine_command(jsonb, jsonb, text, uuid, text, jsonb),
 	public.qorpera_company_machine_custody(uuid, text, text, text),
+	public.qorpera_company_machine_placement_fence(uuid),
+	public.qorpera_company_machine_fence_briefly(uuid),
 	public.qorpera_list_executor_machines(text, text),
 	public.qorpera_admit_executor_machines(text, text, integer),
 	public.qorpera_authorize_executor_machine(uuid, text, text, text, text),
