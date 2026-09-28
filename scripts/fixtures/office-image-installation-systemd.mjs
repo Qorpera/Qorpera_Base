@@ -13,8 +13,7 @@ const prop=(name,key)=>ctl('show',name,'--property='+key,'--value');
 const exists=async p=>!!await lstat(p).catch(e=>{if(e.code==='ENOENT')return undefined;throw e;});
 const cases=[];const check=name=>{cases.push(name);console.log('PASS '+name);};
 await mkdir(root,{mode:0o755});await cp('/fixture/package',pkg,{recursive:true});await chmod(pkg,0o755);
-// A copy keeps each file's owner: the invoking user on a Linux Docker host (Docker Desktop shows
-// mounted files as root). The installer requires root-owned staging, so every file is chowned.
+// A copy keeps the bind source's owner (the host user on Linux); the installer needs root-owned staging.
 const manifest=await readFile(pkg+'/manifest.json');const artifacts=JSON.parse(manifest).artifacts;
 for(const a of artifacts){await chown(pkg+'/'+a.file,0,0);await chmod(pkg+'/'+a.file,0o444);}await chown(pkg+'/manifest.json',0,0);await chmod(pkg+'/manifest.json',0o444);
 const measured=JSON.parse(ok('/usr/bin/node',[exe,'--measure-dependencies']));

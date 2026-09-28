@@ -10,9 +10,6 @@ const repository = resolve(import.meta.dirname, "..");
 const image = process.env.QORPERA_OFFICE_SYSTEMD_TEST_IMAGE;
 if (process.argv.length !== 2 || !image || !/^(?:[^\s]+@)?sha256:[0-9a-f]{64}$/.test(image))
 	throw new Error("Select a prepared, digest-pinned local office/systemd image with QORPERA_OFFICE_SYSTEMD_TEST_IMAGE");
-// Package as a root build would: Ubuntu's default user umask 0002 leaves files group-writable,
-// and the installers refuse those as unprotected. Docker Desktop shows every mounted file as root 0644.
-process.umask(0o022);
 const temporary = await mkdtemp(join(tmpdir(), "qorpera-office-image-systemd-"));
 const command = (file, args) => {
 	const result = spawnSync(file, args, { cwd: repository, encoding: "utf8", timeout: 60000 });

@@ -83,7 +83,10 @@ The same Dockerfile builds on Docker Desktop. On a Linux Docker host the suites 
 Desktop in four ways, all handled in the scripts: the containers run without AppArmor (the trade-off
 is in `scripts/fixtures/systemd-container.mjs`), the fixture sees the host's AppArmor as disabled because
 the container cannot load profiles, staged packages are chowned to root because a copy keeps the
-invoking user's owner, and the suites package with umask 022 instead of Ubuntu's user default 0002.
+invoking user's owner, and the observer and office provider fixtures reset their package folder's mode,
+which follows the host umask (Ubuntu's user default is 0002). Without AppArmor, root in these
+containers can change the host kernel's settings: run them here or on a developer's Docker, never on
+a node that hosts companies.
 
 ## Proof (2026-09-28, VM enrolled at node 2 version 23)
 

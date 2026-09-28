@@ -9,9 +9,6 @@ import {SYSTEMD_CONTAINER_SECURITY,systemdContainerBoot} from "./fixtures/system
 const repository=resolve(import.meta.dirname,".."),image=process.env.QORPERA_OFFICE_SYSTEMD_TEST_IMAGE;
 const restart = process.argv.length===3 && process.argv[2]==='--restart';
 if((process.argv.length!==2&&!restart)||!image||!/^(?:[^\s]+@)?sha256:[0-9a-f]{64}$/.test(image))throw new Error("Select a prepared digest-pinned QORPERA_OFFICE_SYSTEMD_TEST_IMAGE and optional --restart");
-// Package as a root build would: Ubuntu's default user umask 0002 leaves files group-writable,
-// and the installers refuse those as unprotected. Docker Desktop shows every mounted file as root 0644.
-process.umask(0o022);
 const temp=await mkdtemp(join(tmpdir(),"qorpera-office-stop-systemd-"));
 const command=(file,args)=>{const result=spawnSync(file,args,{cwd:repository,encoding:"utf8",timeout:60000});assert.equal(result.status,0,result.stderr);return result.stdout.trim();};
 let container;

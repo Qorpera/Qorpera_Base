@@ -15,8 +15,7 @@ const property=(name,key)=>ctl('show',name,'--property='+key,'--value');
 const idle=()=>{for(const name of [unit,prep]){assert.equal(property(name,'ActiveState'),'inactive');assert.equal(property(name,'InvocationID'),'');assert.equal(property(name,'MainPID'),'0');}};
 const root='/run/qorpera-office-preparation',base='/opt/qorpera-office',pkg='/run/office-boot-sql-package';
 await cp('/fixture/package',pkg,{recursive:true});await chmod(pkg,0o755);
-// A copy keeps each file's owner: the invoking user on a Linux Docker host (Docker Desktop shows
-// mounted files as root). The installer requires root-owned staging, so every file is chowned.
+// A copy keeps the bind source's owner (the host user on Linux); the installer needs root-owned staging.
 const manifest=await readFile(pkg+'/manifest.json');
 for(const artifact of JSON.parse(manifest).artifacts){await chown(pkg+'/'+artifact.file,0,0);await chmod(pkg+'/'+artifact.file,0o444);}
 await chown(pkg+'/manifest.json',0,0);await chmod(pkg+'/manifest.json',0o444);

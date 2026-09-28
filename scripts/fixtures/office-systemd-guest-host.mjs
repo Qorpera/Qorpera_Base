@@ -12,9 +12,6 @@ import {SYSTEMD_CONTAINER_SECURITY,systemdContainerBoot} from './systemd-contain
  * exec pipe; the provider still uses its real Unix HTTP transport and journals. */
 export async function openOfficeSystemdGuest(repository,image,{retainedBoot=false}={}){
  assert(typeof image==='string'&&/^(?:[^\s]+@)?sha256:[0-9a-f]{64}$/.test(image),'Select digest-pinned QORPERA_OFFICE_SYSTEMD_TEST_IMAGE');
- // Package as a root build would: Ubuntu's default user umask 0002 leaves files group-writable,
- // and the installers refuse those as unprotected. Docker Desktop shows every mounted file as root 0644.
- process.umask(0o022);
  const temp=await mkdtemp(join(tmpdir(),'qorpera-office-sql-systemd-'));
  const command=(file,args)=>{const r=spawnSync(file,args,{cwd:repository,encoding:'utf8',timeout:120000,maxBuffer:4*1024**2});assert.equal(r.status,0,r.stderr);return r.stdout.trim();};
  let container,child,lines;const pending=new Map();let sequence=0;const volume=basename(temp)+'-workbench';let volumeCreated=false;
