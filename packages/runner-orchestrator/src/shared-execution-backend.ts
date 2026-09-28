@@ -1581,9 +1581,18 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 		const answer: unknown = await response.json();
 		if (!Array.isArray(answer) || answer.some((id) => typeof id !== "string" || !runnerIds.includes(id)))
 			throw new Error("Ended runners answer is invalid");
+		const failures: unknown[] = [];
 		for (const journal of waiting) {
-			if (answer.includes(journal.runner.runnerId)) await this.#retire(journal.acquisitionId, "revoked", signal);
+			if (!answer.includes(journal.runner.runnerId)) continue;
+			try {
+				await this.#retire(journal.acquisitionId, "revoked", signal);
+			} catch (error) {
+				if (signal?.aborted) throw error;
+				failures.push(error);
+			}
 		}
+		if (failures.length === 1) throw failures[0];
+		if (failures.length > 1) throw new AggregateError(failures, "Retiring several ended runners failed");
 	}
 
 	async #rpc(name: string, body: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {

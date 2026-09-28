@@ -1176,14 +1176,25 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 				waiting.push(current);
 		}
 		this.#endedRunnersCheckedAt = Date.now();
-		if (waiting.length === 0) return;
+		// The database answers at most 512 ids per call.
+		const asked = waiting.slice(0, 512);
+		if (asked.length === 0) return;
 		const ended = await this.#endedRunners(
-			waiting.map((journal) => journal.runner.runnerId),
+			asked.map((journal) => journal.runner.runnerId),
 			signal,
 		);
-		for (const journal of waiting) {
-			if (ended.has(journal.runner.runnerId)) await this.#stopJournal(journal, "revoked", signal);
+		const failures: unknown[] = [];
+		for (const journal of asked) {
+			if (!ended.has(journal.runner.runnerId)) continue;
+			try {
+				await this.#stopJournal(journal, "revoked", signal);
+			} catch (error) {
+				if (signal?.aborted) throw error;
+				failures.push(error);
+			}
 		}
+		if (failures.length === 1) throw failures[0];
+		if (failures.length > 1) throw new AggregateError(failures, "Retiring several ended runners failed");
 	}
 
 	async #endedRunners(runnerIds: readonly string[], signal?: AbortSignal): Promise<ReadonlySet<string>> {

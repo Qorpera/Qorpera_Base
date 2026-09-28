@@ -30,8 +30,33 @@ begin
 		raise exception 'An oversized query was answered';
 	exception when invalid_parameter_value then null;
 	end;
+	begin
+		perform pg_temp.ended(null);
+		raise exception 'A null query was answered';
+	exception when invalid_parameter_value then null;
+	end;
+	perform pg_temp.path_claims('authenticated', '30000000-0000-4000-8000-000000000001');
+	begin
+		perform pg_temp.ended(array[pg_temp.runner()]);
+		raise exception 'A member asked about runners';
+	exception when insufficient_privilege then null;
+	end;
+	perform pg_temp.path_claims('service_role');
 end
 $$;
+
+-- A member's Stop cancels the job: reported two minutes after its cancellation.
+savepoint cancelled;
+select pg_temp.path_claims('authenticated', '30000000-0000-4000-8000-000000000001');
+select public.qorpera_terminalize_runner_attempt((current_setting('qorpera_test.wake_binding')::jsonb ->> 'jobId')::uuid,
+	'cancelled', 'Stopped by the member', false);
+select pg_temp.path_claims('service_role');
+select pg_temp.wake_assert(pg_temp.ended(array[pg_temp.runner()]) = '[]'::jsonb, 'A job just cancelled waits two minutes');
+update public.qorpera_runner_jobs set cancelled_at = statement_timestamp() - interval '3 minutes'
+where id = (current_setting('qorpera_test.wake_binding')::jsonb ->> 'jobId')::uuid;
+select pg_temp.wake_assert(pg_temp.ended(array[pg_temp.runner()]) = jsonb_build_array(pg_temp.runner()),
+	'A runner whose job was cancelled two minutes ago is reported');
+rollback to cancelled;
 
 -- The job ends: not yet reported within two minutes, then reported.
 select public.qorpera_terminalize_runner_attempt((current_setting('qorpera_test.wake_binding')::jsonb ->> 'jobId')::uuid,

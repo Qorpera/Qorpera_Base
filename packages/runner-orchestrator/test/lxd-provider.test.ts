@@ -1315,6 +1315,9 @@ describe("LXD cloud runner provider", () => {
 				: f.fetchImplementation(input, init),
 		) as typeof fetch;
 		await new LxdCloudRunnerProviderBackend(config(f.stateRoot), f.lxd, f.guest, fetcher).reconcile();
+		expect(
+			vi.mocked(fetcher).mock.calls.filter(([url]) => String(url).includes("qorpera_runtime_ended_runners")),
+		).toHaveLength(1);
 		expect(f.lxd.deleteCalls).toEqual([]);
 		expect(await journal()).toMatchObject({ physicalState: "registered" });
 	});
