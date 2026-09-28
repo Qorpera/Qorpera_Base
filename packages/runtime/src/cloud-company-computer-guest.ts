@@ -623,6 +623,7 @@ export class CompanyComputerGuestAutomation {
 						"OFFICE_SHELL_SESSION_ENDED",
 						"OFFICE_SHELL_INPUT_ENDED",
 						"OFFICE_SHELL_RESTARTING",
+						"OFFICE_SHELL_STARTING",
 					].includes(error.message)
 				)
 					throw new CompanyComputerActionFailedError(error);

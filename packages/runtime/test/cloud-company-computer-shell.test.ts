@@ -88,7 +88,7 @@ describe("an agent's long-running Company Computer shell", () => {
 
 	it("keeps a command running past its wait, with no time limit, until it ends or is stopped", async () => {
 		const f = fixture();
-		const running = await f.start("echo started; sleep 0.4; echo later", 50);
+		const running = await f.start("echo started; sleep 2; echo later", 1000);
 		expect(running).toMatchObject({ state: "running", output: "started\n" });
 		expect(running.exitCode).toBeUndefined();
 		expect(f.shell.busy).toBe(true);
@@ -222,6 +222,71 @@ function scripted(pid = 4242) {
 	shells.push(shell);
 	return { shell, emit: (event: CompanyComputerShellHostEvent) => emit(event), sent };
 }
+
+describe("a shell that is slow to start", () => {
+	const signal = new AbortController().signal;
+	function slow() {
+		let emit: (event: CompanyComputerShellHostEvent) => void = () => undefined;
+		const sent: { t: string; id: string }[] = [];
+		const launch: { resolve(): void; reject(error: Error): void } = {
+			resolve: () => undefined,
+			reject: () => undefined,
+		};
+		const shell = new CompanyComputerLinuxShell(
+			(onEvent, lifetime) =>
+				new Promise((resolve, reject) => {
+					// Like the real launcher, closing the shell ends a start still in progress.
+					lifetime.addEventListener("abort", () => reject(new Error("OFFICE_SHELL_CLOSED")), { once: true });
+					emit = onEvent;
+					launch.resolve = () =>
+						resolve({
+							send: (request) => void sent.push(request as { t: string; id: string }),
+							exited: new Promise<void>(() => undefined),
+							stop: async () => undefined,
+							pid: 601,
+						});
+					launch.reject = reject;
+				}),
+		);
+		shells.push(shell);
+		return { shell, launch, sent, emit: (event: CompanyComputerShellHostEvent) => emit(event) };
+	}
+
+	it("answers at once and sends the command when the shell is ready", async () => {
+		const f = slow();
+		const { sessionId } = await f.shell.start({ key: "a", command: "npm ci", signal });
+		expect(await f.shell.result({ sessionId, waitMs: 0, signal })).toMatchObject({ state: "running", output: "" });
+		expect(f.shell.busy).toBe(true);
+		await expect(f.shell.write({ sessionId, text: "y\n", endInput: false, signal })).rejects.toThrow(
+			"OFFICE_SHELL_STARTING",
+		);
+		f.launch.resolve();
+		await vi.waitFor(() => expect(f.sent).toEqual([{ t: "start", id: sessionId, command: "npm ci" }]));
+		expect(f.shell.namespacePid).toBe(601);
+	});
+
+	it("never sends a command stopped while its shell starts", async () => {
+		const f = slow();
+		const { sessionId } = await f.shell.start({ key: "a", command: "rm -rf build", signal });
+		await f.shell.stop({ sessionId, signal });
+		expect((await f.shell.result({ sessionId, waitMs: 0, signal })).state).toBe("stopped");
+		f.launch.resolve();
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		expect(f.sent).toEqual([]);
+	});
+
+	it("ends its commands with the reason when the shell cannot start, and the next start tries again", async () => {
+		const f = slow();
+		const { sessionId } = await f.shell.start({ key: "a", command: "make", signal });
+		f.launch.reject(new Error("OFFICE_PROCESS_GATE_TIMEOUT"));
+		const ended = await f.shell.result({ sessionId, waitMs: 5000, signal });
+		expect(ended).toMatchObject({ state: "stopped" });
+		expect(ended.note).toMatch(/could not start \(OFFICE_PROCESS_GATE_TIMEOUT\)/);
+		expect(f.shell.busy).toBe(false);
+		await f.shell.start({ key: "b", command: "make", signal });
+		expect(f.shell.busy).toBe(true);
+	});
+});
 
 describe("what a shell namespace reports is untrusted", () => {
 	const signal = new AbortController().signal;

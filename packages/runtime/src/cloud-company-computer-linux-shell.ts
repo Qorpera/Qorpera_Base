@@ -131,10 +131,12 @@ export class CompanyComputerLinuxShell implements CompanyComputerGuestShell {
 	readonly #keys = new Map<string, string>();
 	readonly #stop = new AbortController();
 	#environment?: Promise<CompanyComputerShellEnvironment>;
+	/** The current namespace once its start has finished; commands are sent to it. */
+	#ready?: CompanyComputerShellEnvironment;
 	/** The running namespace's outermost process, once its start has finished. */
 	#pid?: number;
-	/** Why the machine is ending a namespace, for the commands that end with it. */
-	#relieving?: { environment: Promise<CompanyComputerShellEnvironment>; note: string };
+	/** Why a namespace is ending (the machine relieving pressure, or a failed start), for the commands that end with it. */
+	#endNote?: { environment: Promise<CompanyComputerShellEnvironment>; note: string };
 	#processes = 0;
 	#closing?: Promise<void>;
 
@@ -215,9 +217,10 @@ export class CompanyComputerLinuxShell implements CompanyComputerGuestShell {
 	/** The namespace ended: every command in it has ended with it. */
 	#ended(environment: Promise<CompanyComputerShellEnvironment>): void {
 		if (this.#environment !== environment) return;
-		const note = this.#relieving?.environment === environment ? this.#relieving.note : undefined;
-		if (note !== undefined) this.#relieving = undefined;
+		const note = this.#endNote?.environment === environment ? this.#endNote.note : undefined;
+		if (note !== undefined) this.#endNote = undefined;
 		this.#environment = undefined;
+		this.#ready = undefined;
 		this.#pid = undefined;
 		this.#processes = 0;
 		for (const session of this.#sessions.values())
@@ -228,7 +231,13 @@ export class CompanyComputerLinuxShell implements CompanyComputerGuestShell {
 			}
 	}
 
-	#open(signal: AbortSignal): Promise<CompanyComputerShellEnvironment> {
+	/**
+	 * The namespace, started once for the commands that need it. Its start
+	 * belongs to the shell, not to any call: on a busy machine it may take
+	 * longer than a call may wait, so commands queue until it is ready, and a
+	 * start that fails ends them with the reason.
+	 */
+	#open(): Promise<CompanyComputerShellEnvironment> {
 		this.#stop.signal.throwIfAborted();
 		if (this.#environment) return this.#environment;
 		const environment: Promise<CompanyComputerShellEnvironment> = this.#launch(
@@ -238,16 +247,27 @@ export class CompanyComputerLinuxShell implements CompanyComputerGuestShell {
 		this.#environment = environment;
 		environment.then(
 			(opened) => {
-				if (this.#environment === environment) this.#pid = opened.pid;
+				if (this.#environment === environment) {
+					this.#ready = opened;
+					this.#pid = opened.pid;
+				}
+				// Everything in it was stopped while it was starting.
+				else void opened.stop().catch(() => undefined);
 				void opened.exited.then(
 					() => this.#ended(environment),
 					() => this.#ended(environment),
 				);
 			},
-			() => this.#ended(environment),
+			(error: unknown) => {
+				if (this.#endNote?.environment !== environment)
+					this.#endNote = {
+						environment,
+						note: `The shell could not start (${error instanceof Error ? error.message : "unknown error"}); start the command again.`,
+					};
+				this.#ended(environment);
+			},
 		);
-		// Longer than the launcher's own bounded steps, so its typed outcome arrives first.
-		return cloudToolRequest(() => environment, signal, 20000);
+		return environment;
 	}
 
 	#session(sessionId: string): Session {
@@ -315,22 +335,22 @@ export class CompanyComputerLinuxShell implements CompanyComputerGuestShell {
 		};
 	}
 
-	/** The namespace a running command lives in; never a fresh one. */
-	async #current(session: Session): Promise<CompanyComputerShellEnvironment> {
-		const current = this.#environment;
-		if (!current || (session.state !== "starting" && session.state !== "running"))
+	/** The ready namespace a live command runs in; never a fresh one. */
+	#current(session: Session): CompanyComputerShellEnvironment {
+		if (!this.#environment || (session.state !== "starting" && session.state !== "running"))
 			throw new Error("OFFICE_SHELL_SESSION_ENDED");
-		return current;
+		if (!this.#ready) throw new Error("OFFICE_SHELL_STARTING");
+		return this.#ready;
 	}
 
 	async start(input: Parameters<CompanyComputerGuestShell["start"]>[0]): Promise<{ sessionId: string }> {
 		const known = this.#keys.get(input.key);
 		if (known && this.#sessions.has(known)) return { sessionId: known };
 		// A command must not land in a shell the machine is ending; the next start opens a fresh one.
-		if (this.#environment && this.#relieving?.environment === this.#environment)
+		if (this.#environment && this.#endNote?.environment === this.#environment)
 			throw new Error("OFFICE_SHELL_RESTARTING");
-		const environment = await this.#open(input.signal);
 		input.signal.throwIfAborted();
+		const environment = this.#open();
 		const session: Session = {
 			id: randomUUID(),
 			command: input.command,
@@ -346,7 +366,14 @@ export class CompanyComputerLinuxShell implements CompanyComputerGuestShell {
 		};
 		this.#sessions.set(session.id, session);
 		this.#keys.set(input.key, session.id);
-		environment.send({ t: "start", id: session.id, command: input.command });
+		// Sent once the shell is ready; a command stopped before that never runs.
+		void environment.then(
+			(opened) => {
+				if (this.#ready === opened && session.state === "starting" && !session.stopRequested)
+					opened.send({ t: "start", id: session.id, command: input.command });
+			},
+			() => undefined,
+		);
 		return { sessionId: session.id };
 	}
 
@@ -363,7 +390,7 @@ export class CompanyComputerLinuxShell implements CompanyComputerGuestShell {
 	async write(input: Parameters<CompanyComputerGuestShell["write"]>[0]): Promise<{ sessionId: string }> {
 		const session = this.#session(input.sessionId);
 		if (session.inputEnded) throw new Error("OFFICE_SHELL_INPUT_ENDED");
-		const environment = await this.#current(session);
+		const environment = this.#current(session);
 		input.signal.throwIfAborted();
 		session.inputEnded = input.endInput;
 		environment.send({
@@ -383,8 +410,9 @@ export class CompanyComputerLinuxShell implements CompanyComputerGuestShell {
 				(s) => s.state === "starting" || s.state === "running",
 			).length;
 			const current = this.#environment;
+			const opened = this.#ready;
 			if (current) {
-				const opened = await current.catch(() => undefined);
+				// A shell still starting is let go of now and stopped once its start finishes.
 				await opened?.stop();
 				this.#ended(current);
 			}
@@ -393,8 +421,14 @@ export class CompanyComputerLinuxShell implements CompanyComputerGuestShell {
 		const session = this.#session(input.sessionId);
 		if (session.state === "starting" || session.state === "running") {
 			session.stopRequested = true;
-			// The group gets SIGTERM, then SIGKILL two seconds later.
-			(await this.#current(session)).send({ t: "stop", id: session.id });
+			if (this.#ready && this.#environment) {
+				// The group gets SIGTERM, then SIGKILL two seconds later.
+				this.#ready.send({ t: "stop", id: session.id });
+			} else {
+				// Its shell is still starting: it will never be sent.
+				session.state = "stopped";
+				this.#wake(session);
+			}
 		}
 		return { sessionId: session.id };
 	}
@@ -437,12 +471,12 @@ export class CompanyComputerLinuxShell implements CompanyComputerGuestShell {
 	 */
 	async relieve(note: string): Promise<void> {
 		const current = this.#environment;
-		if (!current) return;
-		const opened = await current.catch(() => undefined);
+		const opened = this.#ready;
+		if (!current || !opened) return;
 		// Tracked until its stop is confirmed: an unconfirmed stop stays busy and weighed.
 		// The note stays until this namespace ends, even if that is after a stop that timed out.
-		this.#relieving = { environment: current, note };
-		await opened?.stop();
+		this.#endNote = { environment: current, note };
+		await opened.stop();
 		this.#ended(current);
 	}
 
@@ -699,7 +733,8 @@ export function createCompanyComputerLinuxShellLauncher(options: {
 		});
 		try {
 			await launched.started;
-			await cloudToolRequest(() => hostReady, lifetime, 4000);
+			// Nobody waits on this with a call's deadline: commands queue until it is ready.
+			await cloudToolRequest(() => hostReady, lifetime, 15000);
 		} catch (error) {
 			try {
 				await stop();

@@ -98,13 +98,33 @@ try {
 	const read = (sessionId: string, waitMs = 10000) => shell!.result({ sessionId, waitMs, signal });
 	const run = async (command: string, waitMs = 10000) =>
 		read((await shell!.start({ key: randomUUID(), command, signal })).sessionId, waitMs);
+	/** Reads until the command has ended; a busy test machine can be slow to deliver its exit. */
+	const settled = async (sessionId: string, first: Awaited<ReturnType<typeof read>>) => {
+		let result = first;
+		for (let attempt = 0; result.state === "running" && attempt < 6; attempt++) {
+			const next = await read(sessionId, 10000);
+			result = { ...next, output: result.output + next.output };
+		}
+		return result;
+	};
+	/** Reads until the command has printed `text`; a busy test machine starts programs slowly. */
+	const printed = async (sessionId: string, output: string, text: string) => {
+		for (let attempt = 0; !output.includes(text) && attempt < 15; attempt++)
+			output += (await read(sessionId, 2000)).output;
+		return output;
+	};
 	const stop = async (sessionId: string) => {
 		await shell!.stop({ sessionId, signal });
-		return read(sessionId, 4000);
+		return settled(sessionId, await read(sessionId, 4000));
 	};
 	const done = async (command: string) => {
-		const result = await run(command);
-		assert.equal(result.state, "exited", `${command}: ${result.output}`);
+		// The shell starts in the background; on a busy machine the first reply may come first.
+		let result = await run(command);
+		for (let attempt = 0; result.state === "running" && attempt < 6; attempt++) {
+			const next = await read(result.sessionId, 10000);
+			result = { ...next, output: result.output + next.output };
+		}
+		assert.equal(result.state, "exited", `${command}: ${result.output} ${result.note ?? ""}`);
 		assert.equal(result.exitCode, 0, `${command}: ${result.output}`);
 		return result.output;
 	};
@@ -168,16 +188,23 @@ printf isolated`),
 		"curl -sS --max-time 5 --noproxy '*' http://93.184.216.34/",
 		`curl -sS --max-time 5 http://127.0.0.1:${canaryPort}/`,
 	]) {
-		const direct = await run(command);
+		const started = await run(command);
+		const direct = await settled(started.sessionId, started);
 		assert.notEqual(direct.exitCode, 0, direct.output);
 	}
 	assert.equal(dialled.length, 2);
 	if (await exists("/usr/bin/ssh")) {
-		const ssh = await run(
-			"ssh -v -o BatchMode=yes -o StrictHostKeyChecking=no -o ConnectTimeout=5 git@code.example.com true 2>&1 | grep -m1 'Executing proxy command'",
+		// The stand-in host is not an SSH server: ssh fails after the relay dialled port 22.
+		let ssh = await run(
+			"ssh -v -o BatchMode=yes -o StrictHostKeyChecking=no -o ConnectTimeout=20 git@code.example.com true > /tmp/ssh.log 2>&1; grep -m1 'Executing proxy command' /tmp/ssh.log",
+			15000,
 		);
+		for (let attempt = 0; ssh.state === "running" && attempt < 4; attempt++) {
+			const next = await read(ssh.sessionId, 10000);
+			ssh = { ...next, output: ssh.output + next.output };
+		}
 		assert.match(ssh.output, /office-browser-child\.mjs --connect code\.example\.com 22/);
-		await until(() => dialled.includes("93.184.216.34:22"), "ssh through the relay");
+		assert.ok(dialled.includes("93.184.216.34:22"), dialled.join(","));
 	}
 
 	// Commands share the shell's localhost: a server from one is reachable from the next.
@@ -186,7 +213,7 @@ printf isolated`),
 		3000,
 	);
 	assert.equal(server.state, "running", server.output);
-	assert.equal(server.output.trim(), "listening");
+	assert.equal((await printed(server.sessionId, server.output, "listening")).trim(), "listening");
 	assert.equal(await done("curl -sS --max-time 5 http://localhost:8000/"), "local-ok");
 	assert.equal((await stop(server.sessionId)).state, "stopped");
 
@@ -194,7 +221,7 @@ printf isolated`),
 	const asking = await run('read -r answer; echo "got:$answer"', 200);
 	assert.equal(asking.state, "running");
 	await shell.write({ sessionId: asking.sessionId, text: "yes\n", endInput: false, signal });
-	const answered = await read(asking.sessionId, 5000);
+	const answered = await settled(asking.sessionId, await read(asking.sessionId, 5000));
 	assert.equal(answered.output, "got:yes\n");
 
 	// The screen's display, as before.
@@ -203,15 +230,16 @@ printf isolated`),
 	// No 15-second stop: this runs for 17 seconds and finishes.
 	const long = await run("sleep 17; echo survived", 1000);
 	assert.equal(long.state, "running");
-	let finished = await read(long.sessionId, 15000);
-	if (finished.state === "running") finished = await read(long.sessionId, 10000);
+	const finished = await settled(long.sessionId, await read(long.sessionId, 15000));
 	assert.equal(finished.state, "exited");
 	assert.equal(finished.output, "survived\n");
 
 	// Output past the kept tail is dropped, never fatal.
-	const flood = await run("head -c 3000000 /dev/zero | tr '\\0' z; echo; echo END");
+	const flooding = await run("head -c 3000000 /dev/zero | tr '\\0' z; echo; echo END");
+	const flood = await settled(flooding.sessionId, flooding);
 	assert.equal(flood.state, "exited");
-	assert.match(flood.output, /^\[\d+ earlier bytes not kept\]\n/);
+	// However its replies fell, some of the 3 MB was older than the kept 1 MiB.
+	assert.match(flood.output, /\[\d+ earlier bytes not kept\]\n/);
 	assert.match(flood.output, /END\n$/);
 
 	// Stop ends the command's whole process group.
@@ -237,6 +265,8 @@ printf isolated`),
 		5000,
 	);
 	assert.equal(hog.state, "running", hog.output);
+	// Measured once it holds the memory; a busy machine starts it slowly.
+	assert.match(await printed(hog.sessionId, hog.output, "holding"), /holding/);
 	const pid = shell.namespacePid;
 	assert.ok(pid);
 	const usage = (await readCompanyComputerShellUsage([pid])).get(pid)!;
@@ -244,7 +274,7 @@ printf isolated`),
 	assert.ok(usage.tasks >= 3, JSON.stringify(usage));
 	const guard = new CompanyComputerShellPressureGuard({ shells: () => [shell!], intervalMs: 500 });
 	try {
-		const stopped = await read(hog.sessionId, 10000);
+		const stopped = await settled(hog.sessionId, await read(hog.sessionId, 10000));
 		assert.equal(stopped.state, "stopped");
 		assert.match(stopped.note ?? "", /running out of memory/);
 	} finally {
