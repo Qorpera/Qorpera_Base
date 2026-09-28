@@ -1,5 +1,6 @@
+import { CloudRpcError } from "../../cloud/client.ts";
 import type { HostedMachine, MachineState, WebMachines } from "../../cloud/machines.ts";
-import { button, fmtTime, h, replace } from "../../ui/dom.ts";
+import { button, confirmDialog, fmtTime, h, notice, replace } from "../../ui/dom.ts";
 import { phrase, t } from "../../ui/preferences.ts";
 import { listSkeleton } from "../../ui/skeleton.ts";
 
@@ -8,7 +9,8 @@ import { listSkeleton } from "../../ui/skeleton.ts";
  * tests, builds and long jobs. A machine is the company's, so every member
  * sees all of them with what they are for, their size, their state and their
  * recent commands, and may stop, wake or delete any of them. The list is read
- * again while machines change state; nothing here starts a new machine.
+ * again while machines change state (and, slower, while commands run), only
+ * while this tab is shown; nothing here starts a new machine.
  */
 
 const STATE_TEXT: Record<MachineState, string> = {
@@ -27,17 +29,26 @@ const COMMAND_TEXT: Record<HostedMachine["commands"][number]["state"], string> =
 	cancelled: phrase("stopped"),
 	lost: phrase("stopped with the machine"),
 };
-/** States that change by themselves soon: the list is read again while any is shown. */
+/** States that change by themselves soon: the list is read again every few seconds while any is shown. */
 const MOVING: readonly MachineState[] = ["waiting", "starting", "stopping", "deleting"];
 
 export class MachinesView {
-	readonly el = h("section", { class: "settings-group machines" });
+	readonly el = h("section", { class: "machines" });
 	readonly #client: Pick<WebMachines, "list" | "change">;
 	readonly #lifetime = new AbortController();
 	#machines: HostedMachine[] | undefined;
+	/** A failed read; the next good read clears it. */
 	#error: string | undefined;
-	#working: string | undefined;
+	/** A refused change; it stays until the member acts again. */
+	#refused: string | undefined;
+	#missing = false;
+	readonly #working = new Set<string>();
 	#timer: ReturnType<typeof setTimeout> | undefined;
+	/** Every read carries the generation it started in; an older answer is dropped. */
+	#generation = 0;
+	#drawn = "";
+	/** A keyboard's place while its button is disabled: it goes back once the button is usable. */
+	#focusKey: string | undefined;
 
 	constructor(client: Pick<WebMachines, "list" | "change">, signal: AbortSignal) {
 		this.#client = client;
@@ -45,6 +56,11 @@ export class MachinesView {
 		else signal.addEventListener("abort", () => this.dispose(), { once: true, signal: this.#lifetime.signal });
 		this.#draw();
 		void this.#read();
+	}
+
+	/** Settings shows this tab again: read now (reading pauses while another tab is shown). */
+	shown(): void {
+		if (!this.#lifetime.signal.aborted && !this.#missing) void this.#read();
 	}
 
 	dispose(): void {
@@ -56,73 +72,151 @@ export class MachinesView {
 
 	async #read(): Promise<void> {
 		clearTimeout(this.#timer);
+		this.#timer = undefined;
+		const generation = ++this.#generation;
 		try {
 			const machines = await this.#client.list();
-			if (this.#lifetime.signal.aborted) return;
+			if (this.#lifetime.signal.aborted || generation !== this.#generation) return;
 			this.#machines = machines;
 			this.#error = undefined;
-		} catch {
-			if (this.#lifetime.signal.aborted) return;
-			this.#error = t("The company's machines could not be read.");
+		} catch (error) {
+			if (this.#lifetime.signal.aborted || generation !== this.#generation) return;
+			// Before the machines migration is on this cloud there is nothing to read.
+			if (error instanceof CloudRpcError && error.missing) this.#missing = true;
+			else this.#error = t("The company's machines could not be read.");
 		}
 		this.#draw();
-		const moving = this.#machines?.some((machine) => MOVING.includes(machine.state) || machine.commandsRunning > 0);
-		this.#timer = setTimeout(() => void this.#read(), moving ? 5000 : 30000);
+		if (this.#missing) return;
+		const moving = this.#machines?.some((machine) => MOVING.includes(machine.state));
+		const commands = this.#machines?.some((machine) => machine.commandsRunning > 0);
+		if (moving || commands)
+			this.#timer = setTimeout(
+				() => {
+					// Hidden behind another Settings tab: wait until it is shown again.
+					if (this.el.isConnected) void this.#read();
+				},
+				moving ? 5000 : 30000,
+			);
 	}
 
 	async #change(machine: HostedMachine, action: "start" | "stop" | "delete"): Promise<void> {
-		if (
-			action === "delete" &&
-			!confirm(t("Delete {name} and its disk? This cannot be undone.", { name: machine.name }))
-		)
-			return;
-		this.#working = machine.machineId;
+		const confirmed =
+			action === "delete"
+				? await confirmDialog(
+						t("Delete {name} and its disk? This cannot be undone.", { name: machine.name }),
+						t("Delete"),
+						true,
+						undefined,
+						this.#lifetime.signal,
+					)
+				: action === "stop" && machine.commandsRunning > 0
+					? await confirmDialog(
+							machine.commandsRunning === 1
+								? t("Stop {name}? Its running command stops with it.", { name: machine.name })
+								: t("Stop {name}? Its {count} running commands stop with it.", {
+										name: machine.name,
+										count: machine.commandsRunning,
+									}),
+							t("Stop"),
+							false,
+							undefined,
+							this.#lifetime.signal,
+						)
+					: true;
+		if (!confirmed || this.#lifetime.signal.aborted) return;
+		this.#working.add(machine.machineId);
+		this.#refused = undefined;
 		this.#draw();
+		let failed = false;
 		try {
 			await this.#client.change(machine.machineId, action);
 		} catch {
-			if (!this.#lifetime.signal.aborted)
-				this.#error = t("{name} could not be changed. Try again.", { name: machine.name });
+			failed = true;
 		} finally {
-			this.#working = undefined;
+			this.#working.delete(machine.machineId);
 		}
+		if (this.#lifetime.signal.aborted) return;
+		// Said after the read that follows, which would otherwise clear it.
+		if (failed) this.#refused = t("{name} could not be changed. Try again.", { name: machine.name });
 		await this.#read();
 	}
 
 	#draw(): void {
 		if (this.#lifetime.signal.aborted) return;
+		if (this.#missing) {
+			replace(
+				this.el,
+				h("h1", null, t("Machines")),
+				notice("neutral", t("Machines are not available on this cloud yet.")),
+			);
+			return;
+		}
 		const machines = this.#machines;
+		const key = JSON.stringify([machines, this.#error, this.#refused, [...this.#working]]);
+		if (key === this.#drawn) return;
+		this.#drawn = key;
+		// A keyboard on a button stays on it through a redraw, and returns to it when it is usable again.
+		const focusKey =
+			(this.el.contains(document.activeElement)
+				? (document.activeElement as HTMLElement).dataset.focusKey
+				: undefined) ?? this.#focusKey;
 		replace(
 			this.el,
-			h("h2", null, t("Machines")),
+			h("h1", null, t("Machines")),
 			h(
-				"p",
-				{ class: "settings-hint" },
-				t(
-					"Virtual machines your agents start for tests, builds and long jobs. They belong to the company: anyone here can stop, wake or delete them.",
+				"section",
+				{ class: "settings-group machines-list" },
+				h(
+					"p",
+					{ class: "muted" },
+					t(
+						"Virtual machines your agents start for tests, builds and long jobs. They belong to the company: anyone here can stop, wake or delete them.",
+					),
 				),
+				this.#refused ? notice("danger", this.#refused) : null,
+				this.#error
+					? h(
+							"p",
+							{ class: "muted", role: "status" },
+							this.#error,
+							" ",
+							button(t("Try again"), () => void this.#read(), { small: true }),
+						)
+					: null,
+				machines === undefined && !this.#error ? listSkeleton(t("Loading machines")) : null,
+				machines?.length === 0 ? h("p", { class: "muted" }, t("No machines yet.")) : null,
+				...(machines ?? []).map((machine) => this.#card(machine)),
 			),
-			this.#error ? h("p", { class: "settings-error", role: "alert" }, this.#error) : null,
-			machines === undefined && !this.#error ? listSkeleton(t("Loading machines")) : null,
-			machines?.length === 0 ? h("p", { class: "settings-hint" }, t("No machines yet.")) : null,
-			...(machines ?? []).map((machine) => this.#card(machine)),
 		);
+		if (focusKey) {
+			const target = [...this.el.querySelectorAll<HTMLButtonElement>("[data-focus-key]")].find(
+				(item) => item.dataset.focusKey === focusKey,
+			);
+			this.#focusKey = target?.disabled ? focusKey : undefined;
+			if (target && !target.disabled) target.focus();
+		}
 	}
 
 	#card(machine: HostedMachine): HTMLElement {
-		const busy = this.#working === machine.machineId;
+		const busy = this.#working.has(machine.machineId);
+		const action = (label: string, what: "start" | "stop" | "delete", aria: string, danger = false) => {
+			const control = button(label, () => void this.#change(machine, what), {
+				small: true,
+				danger,
+				disabled: busy,
+			});
+			control.setAttribute("aria-label", aria);
+			control.dataset.focusKey = `${what}:${machine.machineId}`;
+			return control;
+		};
 		const actions =
 			machine.state === "deleted" || machine.state === "deleting"
 				? []
 				: [
 						machine.state === "stopped" || machine.state === "stopping"
-							? button(t("Wake"), () => void this.#change(machine, "start"), { small: true, disabled: busy })
-							: button(t("Stop"), () => void this.#change(machine, "stop"), { small: true, disabled: busy }),
-						button(t("Delete"), () => void this.#change(machine, "delete"), {
-							small: true,
-							danger: true,
-							disabled: busy,
-						}),
+							? action(t("Wake"), "start", t("Wake {name}", { name: machine.name }))
+							: action(t("Stop"), "stop", t("Stop {name}", { name: machine.name })),
+						action(t("Delete"), "delete", t("Delete {name}", { name: machine.name }), true),
 					];
 		const state =
 			machine.state === "waiting" && machine.queuePosition !== null

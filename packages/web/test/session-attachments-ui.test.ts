@@ -204,7 +204,10 @@ describe("actual product conversation attachments", () => {
 		button(f.root, "Preview Image attachment").click();
 		await vi.waitFor(() => expect(document.querySelector("dialog img")).not.toBeNull());
 		expect(f.requests()).toHaveLength(3);
-		expect(f.cloud.rpc).not.toHaveBeenCalled();
+		// Only the thread's own read of its machines reaches the SDK; no attachment does.
+		expect(vi.mocked(f.cloud.rpc).mock.calls.filter(([name]) => name !== "qorpera_list_session_machines")).toEqual(
+			[],
+		);
 	});
 	it("retains files and the exact input ID after a lost sponsored response without replaying automatically", async () => {
 		const f = await setup(),

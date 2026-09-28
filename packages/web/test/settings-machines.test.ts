@@ -124,22 +124,92 @@ describe("company machines in settings", () => {
 			list: vi.fn(async () => parseMachines({ schema: "qorpera.company-machines/v1", machines: [machine()] })),
 			change: vi.fn(async () => {}),
 		};
-		const confirm = vi.spyOn(window, "confirm").mockReturnValueOnce(false).mockReturnValueOnce(true);
 		view = new MachinesView(client, new AbortController().signal);
+		document.body.append(view.el);
 		await settle();
 		const remove = () => [...view!.el.querySelectorAll("button")].find((button) => button.textContent === "Delete")!;
+		const answer = (label: string) =>
+			[...document.querySelectorAll<HTMLButtonElement>(".modal-actions button")]
+				.find((button) => button.textContent === label)!
+				.click();
 		remove().click();
+		await settle();
+		expect(document.querySelector(".modal")?.textContent).toContain("Delete build-a and its disk?");
+		answer("Cancel");
 		await settle();
 		expect(client.change).not.toHaveBeenCalled();
 		remove().click();
 		await settle();
-		expect(confirm).toHaveBeenCalledTimes(2);
+		answer("Delete");
+		await settle();
 		expect(client.change).toHaveBeenCalledWith(id(71), "delete");
 		client.list.mockRejectedValueOnce(new Error("offline"));
 		view.dispose();
 		view = new MachinesView(client, new AbortController().signal);
 		await settle();
 		expect(view.el.textContent).toContain("The company's machines could not be read.");
+	});
+
+	it("shows a refused change after the list is read again, until the member acts again", async () => {
+		const client = {
+			list: vi.fn(async () =>
+				parseMachines({ schema: "qorpera.company-machines/v1", machines: [machine({ commandsRunning: 0 })] }),
+			),
+			change: vi.fn(async (): Promise<void> => {
+				throw new Error("Company is unavailable");
+			}),
+		};
+		view = new MachinesView(client, new AbortController().signal);
+		document.body.append(view.el);
+		await settle();
+		const stop = () => [...view!.el.querySelectorAll("button")].find((button) => button.textContent === "Stop")!;
+		stop().focus();
+		stop().click();
+		await settle();
+		expect(client.change).toHaveBeenCalledWith(id(71), "stop");
+		expect(view.el.querySelector("[role=alert]")?.textContent).toBe("build-a could not be changed. Try again.");
+		// The keyboard stays on the button through the redraw.
+		expect(document.activeElement?.textContent).toBe("Stop");
+		client.change.mockResolvedValueOnce(undefined);
+		stop().click();
+		await settle();
+		expect(view.el.querySelector("[role=alert]")).toBeNull();
+	});
+
+	it("reads again only while something moves or runs, never behind another tab, and not after dispose", async () => {
+		vi.useFakeTimers();
+		try {
+			let machines = [machine({ state: "starting", commandsRunning: 0, commands: [] })];
+			const client = {
+				list: vi.fn(async () => parseMachines({ schema: "qorpera.company-machines/v1", machines })),
+				change: vi.fn(async () => {}),
+			};
+			view = new MachinesView(client, new AbortController().signal);
+			document.body.append(view.el);
+			await vi.advanceTimersByTimeAsync(0);
+			await vi.advanceTimersByTimeAsync(5000);
+			expect(client.list).toHaveBeenCalledTimes(2);
+			machines = [machine({ state: "stopped", commandsRunning: 0, commands: [] })];
+			await vi.advanceTimersByTimeAsync(5000);
+			await vi.advanceTimersByTimeAsync(120000);
+			expect(client.list).toHaveBeenCalledTimes(3);
+			// Shown again after another tab: read now; a running command is read again every 30 s.
+			machines = [machine({ state: "running", commandsRunning: 1 })];
+			view.shown();
+			await vi.advanceTimersByTimeAsync(0);
+			expect(client.list).toHaveBeenCalledTimes(4);
+			await vi.advanceTimersByTimeAsync(30000);
+			expect(client.list).toHaveBeenCalledTimes(5);
+			view.el.remove();
+			await vi.advanceTimersByTimeAsync(60000);
+			expect(client.list).toHaveBeenCalledTimes(5);
+			view.dispose();
+			view.shown();
+			await vi.advanceTimersByTimeAsync(60000);
+			expect(client.list).toHaveBeenCalledTimes(5);
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	it("shows a conversation's machines in its header, opens the list, and reads again only while one moves", async () => {
@@ -150,7 +220,7 @@ describe("company machines in settings", () => {
 				machine({ machineId: id(74), name: "gone", state: "deleted" }),
 			];
 			const read = vi.fn(async () =>
-				parseSessionMachines({ schema: "qorpera.session-machines/v1", sessionId: id(40), machines }),
+				parseSessionMachines({ schema: "qorpera.session-machines/v1", sessionId: id(40), machines }, id(40)),
 			);
 			const open = vi.fn();
 			const card = new ThreadMachines(read, open, new AbortController().signal);

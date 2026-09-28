@@ -48,12 +48,12 @@ async function setup(f = fixture()) {
 	await draw();
 	return { ...f, root };
 }
-/** The SDK RPCs Settings made, besides General's rules list (its only one until Connections opens). */
+/** The SDK RPCs Settings made, besides General's rules list (its only one until Connections opens) and an
+ * open conversation's read of its machines for the header (Settings never reads that one). */
 function sdkRpcs(f: { cloud: Cloud }): string[] {
 	return vi
 		.mocked(f.cloud.rpc)
 		.mock.calls.map(([name]) => name)
-		// An open conversation reads its machines for the header; settings never do.
 		.filter((name) => name !== "qorpera_list_review_rules" && name !== "qorpera_list_session_machines");
 }
 function click(root: Element, selector: string) {

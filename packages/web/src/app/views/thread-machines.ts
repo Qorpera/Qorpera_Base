@@ -4,10 +4,11 @@ import { phrase, t } from "../../ui/preferences.ts";
 
 /**
  * The machines an agent started from this conversation, beside the agent in
- * the thread's header: one small card each, with its name and what it is
- * doing. A click opens Settings → Machines, where a member can stop, wake or
- * delete it. The thread reads them when the agent's run changes, and again
- * every few seconds only while one is starting, stopping or running a command.
+ * the thread's header: one small card each (at most three, then "+N"), with
+ * its name and what it is doing. A click opens Settings → Machines, where a
+ * member can stop, wake or delete it. The thread reads them when the agent's
+ * run changes (in a group chat, when a message arrives), and again every few
+ * seconds only while one is waiting, starting, stopping or being deleted.
  */
 
 const STATE_TEXT: Record<MachineState, string> = {
@@ -21,6 +22,7 @@ const STATE_TEXT: Record<MachineState, string> = {
 };
 const MOVING: readonly MachineState[] = ["waiting", "starting", "stopping", "deleting"];
 const POLL_MS = 10000;
+const SHOWN = 3;
 
 export class ThreadMachines {
 	readonly el = h("div", { class: "thread-machines", role: "group", hidden: true });
@@ -70,25 +72,21 @@ export class ThreadMachines {
 					this.refresh();
 					return;
 				}
-				if (this.#machines.some((machine) => MOVING.includes(machine.state) || machine.commandsRunning > 0))
+				if (this.#machines.some((machine) => MOVING.includes(machine.state)))
 					this.#timer = setTimeout(() => this.refresh(), POLL_MS);
 			});
 	}
 
 	#draw(): void {
 		const key = JSON.stringify(
-			this.#machines.map((machine) => [
-				machine.machineId,
-				machine.state,
-				machine.queuePosition,
-				machine.commandsRunning,
-			]),
+			this.#machines.map((machine) => [machine.machineId, machine.name, machine.state, machine.queuePosition]),
 		);
 		if (key === this.#drawn) return;
 		this.#drawn = key;
+		const more = this.#machines.length - SHOWN;
 		replace(
 			this.el,
-			...this.#machines.map((machine) => {
+			...this.#machines.slice(0, more > 0 ? SHOWN : undefined).map((machine) => {
 				const state =
 					machine.state === "waiting" && machine.queuePosition !== null
 						? t("Waiting for room, number {position} in line", { position: machine.queuePosition })
@@ -108,6 +106,18 @@ export class ThreadMachines {
 					h("span", { class: "thread-machine-name" }, machine.name),
 				);
 			}),
+			more > 0
+				? h(
+						"button",
+						{
+							type: "button",
+							class: "thread-machine thread-machine-more",
+							"aria-label": t("{count} more machines. Open the company's machines", { count: more }),
+							onclick: () => this.#open(),
+						},
+						`+${more}`,
+					)
+				: null,
 		);
 		this.el.hidden = this.#machines.length === 0;
 	}

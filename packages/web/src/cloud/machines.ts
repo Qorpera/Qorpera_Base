@@ -84,6 +84,7 @@ export function parseMachine(value: unknown): HostedMachine {
 	const state = text(machine.state, "Machine state") as MachineState;
 	if (!STATES.includes(state)) throw new Error("Machine state is invalid.");
 	const startedBy = object(machine.startedBy, "Machine starter");
+	if (machine.lifetime !== "task" && machine.lifetime !== "always-on") throw new Error("Machine lifetime is invalid.");
 	const repository = machine.repository ? object(machine.repository, "Machine repository") : null;
 	return {
 		machineId: text(machine.machineId, "Machine id"),
@@ -93,7 +94,7 @@ export function parseMachine(value: unknown): HostedMachine {
 		cpus: count(machine.cpus, "Machine size"),
 		memoryGiB: count(machine.memoryGiB, "Machine size"),
 		diskGiB: count(machine.diskGiB, "Machine size"),
-		lifetime: machine.lifetime === "always-on" ? "always-on" : "task",
+		lifetime: machine.lifetime,
 		startedBy: {
 			staffAgentId: text(startedBy.staffAgentId, "Machine starter"),
 			name: typeof startedBy.name === "string" ? startedBy.name : null,
@@ -113,9 +114,9 @@ export function parseMachines(value: unknown): HostedMachine[] {
 	return body.machines.map(parseMachine);
 }
 
-export function parseSessionMachines(value: unknown): HostedMachine[] {
+export function parseSessionMachines(value: unknown, sessionId: string): HostedMachine[] {
 	const body = object(value, "Machines");
-	if (body.schema !== "qorpera.session-machines/v1" || !Array.isArray(body.machines))
+	if (body.schema !== "qorpera.session-machines/v1" || body.sessionId !== sessionId || !Array.isArray(body.machines))
 		throw new Error("Machines are invalid.");
 	return body.machines.map(parseMachine);
 }
@@ -124,7 +125,7 @@ export function createWebMachines(cloud: Pick<Cloud, "rpc">, profileId: string):
 	return {
 		list: async () => parseMachines(await cloud.rpc("qorpera_list_company_machines", { p_profile_id: profileId })),
 		session: async (sessionId) =>
-			parseSessionMachines(await cloud.rpc("qorpera_list_session_machines", { p_session_id: sessionId })),
+			parseSessionMachines(await cloud.rpc("qorpera_list_session_machines", { p_session_id: sessionId }), sessionId),
 		change: async (machineId, action) => {
 			await cloud.rpc("qorpera_member_manage_company_machine", {
 				p_profile_id: profileId,

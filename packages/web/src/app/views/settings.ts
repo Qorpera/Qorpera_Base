@@ -345,12 +345,14 @@ export class SettingsView {
 		else if (tab === "friends") this.#drawFriends();
 		else if (tab === "company") this.#drawCompany();
 		else if (this.#company) {
-			if (tab === "machines" && !this.#machines) {
-				this.#machines = new MachinesView(
-					createWebMachines(this.#api.cloud, this.#company.profile.profileId),
-					AbortSignal.any([this.#companyLifetime.signal, this.#lifetime.signal]),
-				);
-				this.#panels.set(tab, h("div", null, this.#machines.el));
+			if (tab === "machines") {
+				if (!this.#machines) {
+					this.#machines = new MachinesView(
+						createWebMachines(this.#api.cloud, this.#company.profile.profileId),
+						AbortSignal.any([this.#companyLifetime.signal, this.#lifetime.signal]),
+					);
+					this.#panels.set(tab, h("div", null, this.#machines.el));
+				} else this.#machines.shown();
 			}
 			if (tab === "connections") {
 				if (!this.#connections) {
@@ -519,7 +521,7 @@ export class SettingsView {
 		this.#file = undefined;
 		this.#fileLoading = false;
 		this.#fileError = undefined;
-		for (const tab of ["company", "connections"] as const) this.#panels.delete(tab);
+		for (const tab of ["company", "connections", "machines"] as const) this.#panels.delete(tab);
 		if (company) {
 			this.#unsubscribe = company.store.subscribe(() => {
 				if (company.store.get().accessLost) {

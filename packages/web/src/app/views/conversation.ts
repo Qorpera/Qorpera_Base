@@ -86,6 +86,8 @@ export class ConversationView {
 	#working = false;
 	#agentState: AgentState = "idle";
 	#activityKey = "";
+	/** When the machines beside the agent are read again: its run changes (in a group chat, a message arrives). */
+	#machinesKey = "";
 	readonly #composerWrap: HTMLElement;
 	/** Where the composer will stand while the company still opens. */
 	#composerPlaceholder: HTMLElement | undefined;
@@ -1076,7 +1078,12 @@ export class ConversationView {
 		if (activityKey !== this.#activityKey) {
 			this.#activityKey = activityKey;
 			void this.#run?.refresh();
-			// A run that starts or ends may have started, used or stopped a machine.
+		}
+		// A run that starts or ends may have started, used or stopped a machine; a group chat's
+		// runs are not watched one by one, so there a new message is the sign.
+		const machinesKey = room ? `room:${conversation.projection.items.length}` : activityKey;
+		if (machinesKey !== this.#machinesKey) {
+			this.#machinesKey = machinesKey;
 			this.#machines?.refresh();
 		}
 		this.#agentState = room ? "idle" : this.#company.agentState(session?.staffAgentId);
