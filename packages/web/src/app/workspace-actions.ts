@@ -29,6 +29,8 @@ export interface WorkspaceActions {
 		draft: GroupChatDraft,
 		signal: AbortSignal,
 	) => Promise<void>;
+	/** Deletes the group chat for everyone. */
+	deleteGroup?: (sessionId: string, roomId: string, signal: AbortSignal) => Promise<void>;
 	/** Company notices (all company computers in use). The conversation shows them above its composer. */
 	notificationHost?: HTMLElement;
 	computer?: WebCompanyComputer;
