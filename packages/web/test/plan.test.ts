@@ -181,6 +181,61 @@ describe("Plan & usage", () => {
 		expect(container.querySelector(".notice")?.textContent).toContain("Entitlement offline");
 	});
 
+	it("shows the open company's measured computer hours this month and what they were used on", () => {
+		const hours = {
+			profileId: "00000000-0000-4000-8000-000000000001",
+			month: "2026-09",
+			timeZone: "Europe/Copenhagen",
+			usedSeconds: 149_400,
+			byKind: { companyMachines: 79_200, agentMachines: 0, codingMachines: 10_800, runs: 52_200 },
+			awakeNow: { companyMachines: 1, agentMachines: 0, codingMachines: 0, runs: 2 },
+			meteredUntil: "2026-09-28T18:00:00Z",
+		};
+		const usage = { companyName: "Company A", file, loading: false, retry() {} };
+		renderPlan(
+			container,
+			{ loaded: true, entitlement: entitlement("basis") },
+			{ ...usage, hours: { value: hours, loading: false } },
+		);
+		const card = container.querySelector(".settings-company-hours")!;
+		expect(card.querySelector(".settings-eyebrow")?.textContent).toBe("Computer hours this month");
+		expect(card.querySelector("strong")?.textContent).toBe("41.5 h used");
+		expect(card.textContent).toContain("Company A · Measured, not charged yet");
+		expect(card.querySelector(".settings-hours-kinds")?.textContent).toBe(
+			"Company machines 22 h · Agent runs 14.5 h · Coding machines 3 h",
+		);
+		// The plan's own allowance is a separate card, still waiting for plans.
+		expect(container.querySelector(".settings-hours .settings-eyebrow")?.textContent).toBe(
+			"Computer hours in your plan",
+		);
+		renderPlan(
+			container,
+			{ loaded: true, entitlement: entitlement("basis") },
+			{ ...usage, hours: { loading: true } },
+		);
+		expect(container.querySelector(".settings-company-hours strong")?.textContent).toBe("Loading…");
+		renderPlan(
+			container,
+			{ loaded: true, entitlement: entitlement("basis") },
+			{ ...usage, hours: { loading: false, missing: true } },
+		);
+		expect(container.querySelector(".settings-company-hours strong")?.textContent).toBe("Not measured yet");
+		expect(container.querySelector(".settings-company-hours .settings-hours-kinds")).toBeNull();
+		renderPlan(
+			container,
+			{ loaded: true, entitlement: entitlement("basis") },
+			{ ...usage, hours: { loading: false, error: "Offline" } },
+		);
+		expect(container.querySelector(".settings-company-hours strong")?.textContent).toBe("Offline");
+		renderPlan(container, { loaded: true, entitlement: entitlement("basis") }, undefined);
+		expect(container.querySelector(".settings-company-hours")).toBeNull();
+	});
+
+	it("sells Basis as computer hours, not a computer per agent", () => {
+		expect(PLAN_OFFERS[0]?.includes).toContain("74 computer hours a month");
+		expect(PLAN_OFFERS.flatMap((offer) => offer.includes).join(" ")).not.toContain("worker computer");
+	});
+
 	it("writes hours, storage and dates in Danish when the interface is Danish", () => {
 		localStorage.setItem("qorpera.web.language", "da");
 		renderPlan(
@@ -198,5 +253,31 @@ describe("Plan & usage", () => {
 			/^1\.0 GiB brugt af /,
 		);
 		expect(container.querySelector(".settings-plan-discount")?.textContent).toBe("Ca. 37% rabat på forbrug");
+		renderPlan(
+			container,
+			{ loaded: true, entitlement: entitlement("basis") },
+			{
+				companyName: "Company A",
+				file,
+				loading: false,
+				retry() {},
+				hours: {
+					loading: false,
+					value: {
+						profileId: "00000000-0000-4000-8000-000000000001",
+						month: "2026-09",
+						timeZone: "Europe/Copenhagen",
+						usedSeconds: 149_400,
+						byKind: { companyMachines: 0, agentMachines: 0, codingMachines: 0, runs: 149_400 },
+						awakeNow: { companyMachines: 0, agentMachines: 0, codingMachines: 0, runs: 0 },
+						meteredUntil: "2026-09-28T18:00:00Z",
+					},
+				},
+			},
+		);
+		const card = container.querySelector(".settings-company-hours")!;
+		expect(card.querySelector("strong")?.textContent).toBe("41,5 t brugt");
+		expect(card.textContent).toContain("Company A · Målt, endnu ikke opkrævet");
+		expect(card.querySelector(".settings-hours-kinds")?.textContent).toBe("Agentkørsler 41,5 t");
 	});
 });

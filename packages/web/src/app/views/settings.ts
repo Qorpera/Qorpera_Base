@@ -1,5 +1,6 @@
 import type { CloudApi } from "../../cloud/api.ts";
-import { describeError } from "../../cloud/client.ts";
+import { CloudRpcError, describeError } from "../../cloud/client.ts";
+import type { CompanyComputerHours } from "../../cloud/computer-hours.ts";
 import { createWebConnectors } from "../../cloud/connectors.ts";
 import { createWebNativeSubscription } from "../../cloud/native-subscription.ts";
 import { createWebReviewRules } from "../../cloud/review-rules.ts";
@@ -117,6 +118,10 @@ export class SettingsView {
 	#file: HostedCompanyFile | undefined;
 	#fileLoading = false;
 	#fileError: string | undefined;
+	#hours: CompanyComputerHours | undefined;
+	#hoursLoading = false;
+	#hoursMissing = false;
+	#hoursError: string | undefined;
 
 	constructor(
 		api: CloudApi,
@@ -440,7 +445,7 @@ export class SettingsView {
 		}
 	}
 
-	/** The plan is the account's; the usage shown is the open company's storage. */
+	/** The plan is the account's; the usage shown is the open company's computer hours and storage. */
 	#plan(): void {
 		if (this.#lifetime.signal.aborted) return;
 		let panel = this.#panels.get("plan");
@@ -451,6 +456,15 @@ export class SettingsView {
 		const company = this.#company;
 		if (this.#tab === "plan" && company && !this.#file && !this.#fileLoading && !this.#fileError)
 			void this.#loadFile();
+		if (
+			this.#tab === "plan" &&
+			company &&
+			!this.#hours &&
+			!this.#hoursLoading &&
+			!this.#hoursMissing &&
+			!this.#hoursError
+		)
+			void this.#loadHours();
 		renderPlan(
 			panel,
 			this.#account,
@@ -461,6 +475,12 @@ export class SettingsView {
 						loading: this.#fileLoading,
 						error: this.#fileError,
 						retry: () => void this.#loadFile(true),
+						hours: {
+							value: this.#hours,
+							loading: this.#hoursLoading || (!this.#hours && !this.#hoursMissing && !this.#hoursError),
+							missing: this.#hoursMissing,
+							error: this.#hoursError,
+						},
 					}
 				: undefined,
 		);
@@ -499,6 +519,10 @@ export class SettingsView {
 		this.#file = undefined;
 		this.#fileLoading = false;
 		this.#fileError = undefined;
+		this.#hours = undefined;
+		this.#hoursLoading = false;
+		this.#hoursMissing = false;
+		this.#hoursError = undefined;
 		for (const tab of ["company", "connections"] as const) this.#panels.delete(tab);
 		if (company) {
 			this.#unsubscribe = company.store.subscribe(() => {
@@ -612,6 +636,29 @@ export class SettingsView {
 				},
 			},
 		);
+	}
+
+	/** This month's computer hours of the open company. A cloud without the meter shows "Not measured yet". */
+	async #loadHours(): Promise<void> {
+		const company = this.#company;
+		if (!company || this.#hoursLoading) return;
+		const signal = this.#companyLifetime.signal;
+		this.#hoursLoading = true;
+		try {
+			const hours = await this.#api.getCompanyComputerHours(company.profile.profileId);
+			if (signal.aborted || this.#lifetime.signal.aborted) return;
+			this.#hours = hours;
+			this.#hoursError = undefined;
+		} catch (error) {
+			if (signal.aborted || this.#lifetime.signal.aborted) return;
+			if (error instanceof CloudRpcError && error.missing) this.#hoursMissing = true;
+			else this.#hoursError = describeError(error);
+		} finally {
+			if (!signal.aborted && !this.#lifetime.signal.aborted) {
+				this.#hoursLoading = false;
+				if (this.#panels.has("plan")) this.#plan();
+			}
+		}
 	}
 
 	/** `redraw` (a retry) repaints at once so the Retry button disables while the load runs. */
