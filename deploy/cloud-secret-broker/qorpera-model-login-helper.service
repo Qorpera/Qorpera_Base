@@ -48,9 +48,11 @@ AmbientCapabilities=
 # auth.openai.com and chatgpt.com only.
 RestrictNamespaces=user mnt pid net ipc uts cgroup
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
-MemoryMax=1G
+# Sized for 4 renewals and 6 sign-ins at once (each an isolated Codex); measure on the vault
+# host during the first real sign-in and renewal. Running out stops the whole unit.
+MemoryMax=2G
 MemorySwapMax=0
-TasksMax=256
+TasksMax=512
 CPUQuota=100%
 LockPersonality=yes
 RestrictSUIDSGID=yes

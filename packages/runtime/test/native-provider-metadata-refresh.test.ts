@@ -341,6 +341,39 @@ describe("native provider account metadata refresh", () => {
 		});
 	});
 
+	it("lists a login kept by the vault beside node logins and rejects other references", async () => {
+		const vaultLogin = {
+			connection_id: account.connectionId,
+			connection_version: account.connectionVersion + 1,
+			credential_capsule_id: "70000000-0000-4000-8000-000000000060",
+			encrypted_capsule_reference: "model-login/70000000-0000-4000-8000-000000000050",
+			native_harness: account.nativeHarness,
+		};
+		let rows: unknown[] = [
+			{
+				connection_id: account.connectionId,
+				connection_version: account.connectionVersion,
+				credential_capsule_id: account.capsuleId,
+				encrypted_capsule_reference: account.encryptedCapsuleReference,
+				native_harness: account.nativeHarness,
+			},
+			vaultLogin,
+		];
+		const fetcher: typeof fetch = async () => new Response(JSON.stringify(rows));
+		const control = new SupabaseNativeProviderControlPlane("https://example.supabase.co", "test-key", fetcher, {
+			computeIdentityId: identity,
+			epoch: 4,
+		});
+		expect((await control.listAccountRefreshes(identity)).map((entry) => entry.encryptedCapsuleReference)).toEqual([
+			account.encryptedCapsuleReference,
+			"model-login/70000000-0000-4000-8000-000000000050",
+		]);
+		for (const reference of ["model-login/not-a-login", "vault/70000000-0000-4000-8000-000000000050"]) {
+			rows = [{ ...vaultLogin, encrypted_capsule_reference: reference }];
+			await expect(control.listAccountRefreshes(identity)).rejects.toThrow("capsule reference is invalid");
+		}
+	});
+
 	it("rejects another identity before contacting the control plane", async () => {
 		const fetcher = vi.fn();
 		const control = new SupabaseNativeProviderControlPlane("https://example.supabase.co", "test-key", fetcher, {
