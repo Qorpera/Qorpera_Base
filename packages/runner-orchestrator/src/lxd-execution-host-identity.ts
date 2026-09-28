@@ -5,7 +5,7 @@ import {
 	executionHostIdentityOf,
 	parseExecutionHostIdentityVolumes,
 } from "./execution-host-identity.ts";
-import type { LxdInstanceDeviceUpdateClient, LxdStorageVolumeRecord } from "./lxd-client.ts";
+import type { LxdInstanceDeviceUpdateClient, LxdInstanceRecord, LxdStorageVolumeRecord } from "./lxd-client.ts";
 
 const NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/;
 /** A concurrent change to the host (another attach, an operator) fails the
@@ -28,8 +28,9 @@ export interface LxdExecutionHost {
  * member's first run after a new login or a recovery here finds their login
  * without an operator. Attaching is additive and idempotent: an identity
  * already attached in exactly that shape is left alone, a device of that name
- * in any other shape is reported as refused and never replaced (the others
- * are still attached), and nothing is detached.
+ * in any other shape is reported as refused and never replaced, and nothing is
+ * detached. Each missing identity is its own change, so one volume LXD cannot
+ * hot-plug never holds up the others.
  * LXD hot-plugs the device into the running VM (a stopped one gets it at its
  * next start); the host's execution service waits for the mount itself.
  */
@@ -51,47 +52,76 @@ export class LxdExecutionHostIdentities {
 		return this.#client.listCustomStorageVolumes(this.host.project, this.volumes.pool, signal);
 	}
 
-	/** Attaches the identities the host lacks, in one change. Returns the ones
-	 * this call attached (none when all were already there) and the ones whose
-	 * device name the host already uses for something else. */
+	/** Attaches the identities the host lacks. Returns the ones this call
+	 * attached, the ones whose device name the host already uses for something
+	 * else, and the ones whose attach failed (with the last failure). A host
+	 * that cannot be read, or is not a virtual machine, throws. */
 	async attach(
 		computeIdentityIds: readonly string[],
 		signal: AbortSignal,
-	): Promise<{ attached: string[]; refused: string[] }> {
+	): Promise<{ attached: string[]; refused: string[]; failed: string[]; failure?: string }> {
 		const wanted = [...new Set(computeIdentityIds)].sort().map((id) => ({
 			id,
 			...executionHostIdentityDevice(this.volumes, id),
 		}));
-		if (!wanted.length) return { attached: [], refused: [] };
-		for (let attempt = 1; ; attempt++) {
-			let attached: string[] = [],
-				refused: string[] = [];
+		const result: { attached: string[]; refused: string[]; failed: string[]; failure?: string } = {
+			attached: [],
+			refused: [],
+			failed: [],
+		};
+		if (!wanted.length) return result;
+		const instance = await this.#client.getInstance(this.host.project, this.host.instance, signal);
+		if (!instance) throw new Error("Execution host is missing");
+		if (instance.type !== "virtual-machine") throw new Error("Execution host is not a virtual machine");
+		for (const identity of wanted) {
+			const outcome = this.#state(instance, identity.id, identity.name);
+			if (outcome === "refused") result.refused.push(identity.id);
+			if (outcome !== "missing") continue;
 			try {
-				await this.#client.updateInstanceDevices(
+				if ((await this.#attachOne(identity, signal)) === "attached") result.attached.push(identity.id);
+			} catch (error) {
+				signal.throwIfAborted();
+				if (error instanceof ExecutionHostRefusal) result.refused.push(identity.id);
+				else {
+					result.failed.push(identity.id);
+					result.failure = error instanceof Error ? error.message : "unknown";
+				}
+			}
+		}
+		return result;
+	}
+
+	#state(instance: LxdInstanceRecord, id: string, name: string): "missing" | "present" | "refused" {
+		const local = instance.devices[name],
+			expanded = instance.expandedDevices[name];
+		if (!local && !expanded) return "missing";
+		return executionHostIdentityOf(this.volumes, name, local) === id &&
+			executionHostIdentityOf(this.volumes, name, expanded) === id
+			? "present"
+			: "refused";
+	}
+
+	/** One conditional write, decided on its own read of the host; a
+	 * concurrent change makes it decide again from a fresh read. */
+	async #attachOne(
+		identity: { id: string; name: string; device: Readonly<Record<string, string>> },
+		signal: AbortSignal,
+	): Promise<"attached" | "present"> {
+		for (let attempt = 1; ; attempt++) {
+			try {
+				const written = await this.#client.updateInstanceDevices(
 					this.host.project,
 					this.host.instance,
 					(instance) => {
 						if (instance.type !== "virtual-machine")
 							throw new ExecutionHostRefusal("Execution host is not a virtual machine");
-						const missing = wanted.filter(
-							({ name }) => !instance.devices[name] && !instance.expandedDevices[name],
-						);
-						refused = wanted
-							.filter(
-								({ id, name }) =>
-									(instance.devices[name] || instance.expandedDevices[name]) &&
-									(executionHostIdentityOf(this.volumes, name, instance.devices[name]) !== id ||
-										executionHostIdentityOf(this.volumes, name, instance.expandedDevices[name]) !== id),
-							)
-							.map(({ id }) => id);
-						attached = missing.map(({ id }) => id);
-						return missing.length
-							? { ...instance.devices, ...Object.fromEntries(missing.map(({ name, device }) => [name, device])) }
-							: undefined;
+						const state = this.#state(instance, identity.id, identity.name);
+						if (state === "refused") throw new ExecutionHostRefusal(`Device ${identity.name} is not this volume`);
+						return state === "missing" ? { ...instance.devices, [identity.name]: identity.device } : undefined;
 					},
 					signal,
 				);
-				return { attached, refused };
+				return written ? "attached" : "present";
 			} catch (error) {
 				signal.throwIfAborted();
 				if (error instanceof ExecutionHostRefusal || attempt >= WRITE_ATTEMPTS) throw error;

@@ -350,9 +350,12 @@ describe("shared execution host identity devices (2026-09-27)", () => {
 		});
 		f.context.headroomCpuMillis = 8000;
 		f.context.headroomMemoryBytes = 16 * 1024 ** 3;
+		if (declared) f.context.acceptedIdentities = [];
+		/** The login gateway's attach, after this node reserved the identity's login machine. */
 		const attach = (id: string, device = executionHostIdentityDevice(volumes, id).device) => {
 			i.devices[`identity-${id}`] = { ...device };
 			i.expandedDevices[`identity-${id}`] = { ...device };
+			f.context.acceptedIdentities?.push(id);
 		};
 		return { ...f, i, attach };
 	}
@@ -369,6 +372,29 @@ describe("shared execution host identity devices (2026-09-27)", () => {
 		expect(after.entries[4].identities).toEqual([...ids].sort());
 		// Only the declared entry reports identities; every other entry keeps its shape.
 		expect(after.entries.slice(0, 4).every((e) => !Object.hasOwn(e, "identities"))).toBe(true);
+	});
+	it("an attached identity this node never reserved a login machine for makes the node unavailable, named in its receipt", () => {
+		const f = execHost(),
+			[kept, foreign] = [randomUUID(), randomUUID()];
+		f.attach(kept);
+		f.attach(foreign);
+		f.context.acceptedIdentities = [kept];
+		const result = reconcileRuntimeNodeInventory(f.inventory, f.context);
+		expect(result.state).toBe("unavailable");
+		expect(result.entries[4]).toMatchObject({
+			reason: "INSTANCE_AUTHORITY_DIFFERS",
+			identities: [kept, foreign].sort(),
+		});
+		// A context without the accepted set accepts nothing.
+		delete f.context.acceptedIdentities;
+		expect(reconcileRuntimeNodeInventory(f.inventory, f.context).state).toBe("unavailable");
+		for (const accepted of [["../x"], [kept.toUpperCase()], [1], "all"]) {
+			const context = {
+				...structuredClone(f.context),
+				acceptedIdentities: accepted,
+			} as unknown as RuntimeNodeInventoryContext;
+			expect(() => reconcileRuntimeNodeInventory(f.inventory, context)).toThrow("INVALID_NODE_INVENTORY_CONTEXT");
+		}
 	});
 	it("without the declaration an attach is still a change of enrollment, as before", () => {
 		const f = execHost(false);

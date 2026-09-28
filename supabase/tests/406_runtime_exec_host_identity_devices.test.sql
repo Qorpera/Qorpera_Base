@@ -116,12 +116,16 @@ select public.qorpera_enroll_runtime_node_inventory(pg_temp.policy(2,jsonb_build
 select pg_temp.observe(1,'ready',null);
 select pg_temp.observe(2,'ready',pg_temp.entry(repeat('a',64),null));
 select pg_temp.ok(pg_temp.ready(1) and pg_temp.ready(2),'Both nodes ready before the cut');
+select pg_temp.ok(not public.qorpera_runtime_node_inventory_context(pg_temp.node(n)) ? 'acceptedIdentities',
+	'A node without an identity host gets the context it always got') from generate_series(1,2) n;
 select pg_temp.fails($q$select pg_temp.observe(2,'ready',pg_temp.entry(repeat('a',64),'[]'))$q$,
 	'Node inventory reports identity devices its policy does not declare');
 
 -- The cut: the operator declares the exec host an identity host with the new-rule digest.
 select public.qorpera_replace_runtime_node_inventory(pg_temp.policy(2,jsonb_build_array(pg_temp.exec_entry(repeat('b',64),true))),
 	encode(extensions.digest(pg_temp.policy(2,jsonb_build_array(pg_temp.exec_entry(repeat('a',64),false)))::text,'sha256'),'hex'));
+select pg_temp.ok(public.qorpera_runtime_node_inventory_context(pg_temp.node(2)) -> 'acceptedIdentities' = '[]',
+	'The identity host context names the accepted identities: none yet');
 select pg_temp.observe(2,'ready',pg_temp.entry(repeat('b',64),'[]'));
 select pg_temp.ok(pg_temp.ready(2),'An identity host with no identity devices is ready');
 -- An old observer (no identities) against the declaring policy never reads ready.
@@ -137,6 +141,11 @@ select pg_temp.ok(pg_temp.login('40600000-0000-4000-8000-000000000004','40600000
 reset role;
 select pg_temp.claims('service_role');
 set local role service_role;
+
+select pg_temp.ok(public.qorpera_runtime_node_inventory_context(pg_temp.node(2)) -> 'acceptedIdentities'
+	= '["40600000-0000-4000-8000-0000000000a1"]','Node 2 accepts exactly the identity it reserved a login machine for');
+select pg_temp.ok(not public.qorpera_runtime_node_inventory_context(pg_temp.node(1)) ? 'acceptedIdentities',
+	'Node 1 (no identity host) is unchanged by its login machine');
 
 -- The digest is unchanged by the attach; the reported identity is this node's own login.
 select pg_temp.observe(2,'ready',pg_temp.entry(repeat('b',64),'["40600000-0000-4000-8000-0000000000a1"]'));
@@ -175,6 +184,16 @@ select pg_temp.fails(format('select pg_temp.observe(2,%L,%L::jsonb)','unavailabl
 select pg_temp.fails(format('select pg_temp.observe(2,%L,%L::jsonb)','unavailable',
 	pg_temp.entry(repeat('b',64),'[]') || jsonb_build_object('identities',(select jsonb_agg(extensions.gen_random_uuid()) from generate_series(1,4097)))),
 	'Invalid node inventory entry');
+
+-- The login ends: its machine and node demand are released, as after every completed sign-in. Still accepted.
+reset role;
+update public.qorpera_runtime_machine_allocations set released_at = clock_timestamp() where id = '40600000-0000-4000-8000-0000000000c1';
+update public.qorpera_runtime_node_demands set released_at = clock_timestamp() where allocation_id = '40600000-0000-4000-8000-0000000000c1';
+select pg_temp.claims('service_role');
+set local role service_role;
+select pg_temp.observe(2,'ready',pg_temp.entry(repeat('b',64),'["40600000-0000-4000-8000-0000000000a1"]'));
+select pg_temp.ok(pg_temp.ready(2),'A released login machine still accepts its identity');
+reset role;
 
 -- A member who leaves keeps the node ready: the identity is retired, its volume still mounted until an operator detaches it.
 reset role;

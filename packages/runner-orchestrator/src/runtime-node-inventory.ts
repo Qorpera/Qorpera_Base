@@ -133,9 +133,23 @@ export interface RuntimeNodeInventoryContext {
 	headroomCpuMillis: number;
 	headroomMemoryBytes: number;
 	allocations: RuntimeNodeInventoryAllocation[];
+	/** Only when the policy declares an identity host: every identity this node
+	 * reserved a login or account-refresh machine for, which is when its login
+	 * gateway creates the identity's volume. The host may mount no other. */
+	acceptedIdentities?: string[];
 }
 export function parseRuntimeNodeInventoryContext(value: unknown): RuntimeNodeInventoryContext {
-	const c = record(value, "policy,nodeVersion,contextSha256,headroomCpuMillis,headroomMemoryBytes,allocations");
+	const hosting = !!value && typeof value === "object" && Object.hasOwn(value, "acceptedIdentities");
+	const c = record(
+		value,
+		`policy,nodeVersion,contextSha256,headroomCpuMillis,headroomMemoryBytes,allocations${hosting ? ",acceptedIdentities" : ""}`,
+	);
+	if (
+		hosting &&
+		(!Array.isArray(c.acceptedIdentities) ||
+			c.acceptedIdentities.some((id) => typeof id !== "string" || !UUID.test(id)))
+	)
+		throw new Error("INVALID_NODE_INVENTORY_CONTEXT");
 	if (!Array.isArray(c.allocations) || c.allocations.length > 4096) throw new Error("INVALID_NODE_INVENTORY_CONTEXT");
 	const allocations = c.allocations.map((value) => {
 		const a = record(
@@ -173,6 +187,7 @@ export function parseRuntimeNodeInventoryContext(value: unknown): RuntimeNodeInv
 		headroomCpuMillis: integer(c.headroomCpuMillis, MAX_CPU, 0),
 		headroomMemoryBytes: integer(c.headroomMemoryBytes, MAX_MEMORY, 0),
 		allocations,
+		...(hosting ? { acceptedIdentities: [...(c.acceptedIdentities as string[])] } : {}),
 	};
 }
 export type RuntimeNodePhysicalState = "starting" | "running" | "stopping" | "suspended" | "failed" | "unavailable";
@@ -334,7 +349,8 @@ function allocation(
 }
 export function reconcileRuntimeNodeInventory(inventory: LxdHostInventory, context: RuntimeNodeInventoryContext) {
 	const c = parseRuntimeNodeInventoryContext(context),
-		p = c.policy;
+		p = c.policy,
+		accepted = new Set(c.acceptedIdentities);
 	if (
 		!isDeepStrictEqual(inventory.server, {
 			project: "default",
@@ -390,6 +406,7 @@ export function reconcileRuntimeNodeInventory(inventory: LxdHostInventory, conte
 					...resources,
 					...(infra.identityVolumes ? { identityVolumes: infra.identityVolumes } : {}),
 				}) &&
+				(identities ?? []).every((id) => accepted.has(id)) &&
 				!Object.keys(i.expandedConfig).some(
 					(k) => k.startsWith("user.qorpera.") && k !== "user.qorpera.management_vm",
 				)

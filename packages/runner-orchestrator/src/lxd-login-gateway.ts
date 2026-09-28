@@ -546,10 +546,12 @@ export class LxdNativeLoginGateway {
 	 * journal accepts no further event, so scans read it once per process, not on every
 	 * pass (23 Sep 2026: 1 084 of them kept node 1's provider busy on one core), and
 	 * reconcile archives it once it is old. */
-	readonly #released = new Map<string, { computeIdentityId: string; releasedAt: number }>();
+	readonly #released = new Map<string, { computeIdentityId: string; releasedAt: number; placed: boolean }>();
 	/** The node's shared execution host, when it has one: every identity volume
 	 * this gateway creates is attached to it (lxd-execution-host-identity.ts). */
 	readonly #executionHost?: LxdExecutionHostIdentities;
+	/** Last execution-host problem logged, so a lasting one is logged once a minute, not every pass. */
+	#executionHostLogged = { text: "", at: 0 };
 
 	constructor(
 		config: LxdNativeLoginGatewayConfig,
@@ -769,10 +771,7 @@ export class LxdNativeLoginGateway {
 		// execution host: attach it now, before the login machine. A failure or a
 		// slow hot-plug (bounded here) never fails or stalls the login; the
 		// reconcile sweep attaches it on a later pass.
-		await this.#attachToExecutionHost(
-			[login.computeIdentityId],
-			AbortSignal.any([signal, AbortSignal.timeout(EXECUTION_HOST_ATTACH_MS)]),
-		);
+		await this.#attachToExecutionHost([login.computeIdentityId], signal, EXECUTION_HOST_ATTACH_MS);
 		signal.throwIfAborted();
 		let instance = await this.#lxd.getInstance(binding.policy.project, plan.request.name, signal);
 		const created = await journal.observe("create", signal);
@@ -1014,7 +1013,7 @@ export class LxdNativeLoginGateway {
 				const journal = await LxdLoginJournal.open(this.#config.stateRoot, name, this.#lxd);
 				const state = await journal.state();
 				if (state.releasedAt) {
-					this.#remember(name, journal, state.releasedAt);
+					this.#remember(name, journal, state.releasedAt, state.nodeId !== null);
 					continue;
 				}
 				if (journal.binding.computeIdentityId !== login.computeIdentityId) continue;
@@ -1032,6 +1031,8 @@ export class LxdNativeLoginGateway {
 		await this.#prepareRoot();
 		let scanned = 0,
 			unconfirmed = 0;
+		/** Identities this node reserved a login machine for (their journal records the placement). */
+		const placed = new Set<string>();
 		for (const name of (await readdir(this.#config.stateRoot)).sort()) {
 			signal.throwIfAborted();
 			if (name === JOURNAL_ARCHIVE) continue;
@@ -1044,8 +1045,11 @@ export class LxdNativeLoginGateway {
 				let released = this.#released.get(name);
 				if (!released) {
 					const journal = await LxdLoginJournal.open(this.#config.stateRoot, name, this.#lxd);
+					let wasPlaced = false;
 					const releasedAt = await this.#exclusive(journal.binding.computeIdentityId, async () => {
 						const state = await journal.state();
+						wasPlaced = state.nodeId !== null;
+						if (wasPlaced) placed.add(journal.binding.computeIdentityId);
 						if (state.releasedAt) return state.releasedAt;
 						if (!(await this.#retireOrphan(journal, signal))) {
 							const description = await this.#machineDescription(journal.binding, signal);
@@ -1056,8 +1060,9 @@ export class LxdNativeLoginGateway {
 						return (await journal.state()).releasedAt;
 					});
 					if (!releasedAt) continue;
-					released = this.#remember(name, journal, releasedAt);
+					released = this.#remember(name, journal, releasedAt, wasPlaced);
 				}
+				if (released.placed) placed.add(released.computeIdentityId);
 				if (Date.now() - released.releasedAt >= (this.#config.releasedJournalRetentionMs ?? 24 * 60 * 60_000))
 					await this.#exclusive(released.computeIdentityId, () => this.#archive(name));
 			} catch {
@@ -1065,44 +1070,55 @@ export class LxdNativeLoginGateway {
 				unconfirmed++;
 			}
 		}
-		if (this.#executionHost && !(await this.#sweepExecutionHost(signal))) unconfirmed++;
+		await this.#sweepExecutionHost(placed, signal);
 		return { scanned, unconfirmed };
 	}
 
-	async #attachToExecutionHost(computeIdentityIds: readonly string[], signal: AbortSignal): Promise<boolean> {
-		if (!this.#executionHost) return true;
+	async #attachToExecutionHost(
+		computeIdentityIds: readonly string[],
+		signal: AbortSignal,
+		timeoutMs?: number,
+	): Promise<void> {
+		const host = this.#executionHost;
+		if (!host || !computeIdentityIds.length) return;
 		try {
-			const { attached, refused } = await this.#executionHost.attach(computeIdentityIds, signal);
+			const { attached, refused, failed, failure } = await host.attach(
+				computeIdentityIds,
+				timeoutMs === undefined ? signal : AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]),
+			);
 			for (const id of attached)
-				console.error(
-					`LXD native login attached Compute Identity ${id} to execution host ${this.#executionHost.host.instance}`,
+				console.error(`LXD native login attached Compute Identity ${id} to execution host ${host.host.instance}`);
+			if (refused.length)
+				this.#logExecutionHost(
+					`LXD native login refused to attach Compute Identity ${refused.join(", ")}: execution host ${host.host.instance} has another device of that name`,
 				);
-			for (const id of refused)
-				console.error(
-					`LXD native login refused to attach Compute Identity ${id}: execution host ${this.#executionHost.host.instance} has another device named identity-${id}`,
+			if (failed.length)
+				this.#logExecutionHost(
+					`LXD native login could not attach Compute Identity ${failed.join(", ")} to execution host ${host.host.instance}: ${failure ?? "unknown"}`,
 				);
-			return refused.length === 0;
 		} catch (error) {
 			if (!signal.aborted)
-				console.error(
-					`LXD native login could not attach Compute Identity ${computeIdentityIds.join(", ")} to execution host ${this.#executionHost.host.instance}: ${error instanceof Error ? error.message : "unknown"}`,
+				this.#logExecutionHost(
+					`LXD native login could not attach Compute Identity ${computeIdentityIds.join(", ")} to execution host ${host.host.instance}: ${error instanceof Error ? error.message : "unknown"}`,
 				);
-			return false;
 		}
 	}
 
-	/** Every identity volume this gateway created (exact name, markers and size,
-	 * as #assertIdentityVolumeAuthority) is attached to the execution host.
-	 * Catches an attach that failed during a login and volumes from before the
-	 * host attached them itself. Nothing is ever detached. */
-	async #sweepExecutionHost(signal: AbortSignal): Promise<boolean> {
-		if (!this.#executionHost) return true;
+	/** Every identity volume this gateway created that the execution host lacks
+	 * is attached: a volume of exactly its name, markers and size
+	 * (#assertIdentityVolumeAuthority), for an identity whose login machine this
+	 * node reserved (a journal here records the placement), which is what the
+	 * node inventory accepts. Catches an attach that failed during a sign-in.
+	 * Nothing is ever detached. */
+	async #sweepExecutionHost(placed: ReadonlySet<string>, signal: AbortSignal): Promise<void> {
+		const host = this.#executionHost;
+		if (!host || !placed.size) return;
 		let ids: string[];
 		try {
 			const prefix = this.#config.identityVolumePrefix;
-			ids = (await this.#executionHost.volumeCandidates(signal)).flatMap((volume) => {
+			ids = (await host.volumeCandidates(signal)).flatMap((volume) => {
 				const id = volume.name.startsWith(prefix) ? volume.name.slice(prefix.length) : "";
-				if (!LOGIN_UUID.test(id)) return [];
+				if (!LOGIN_UUID.test(id) || !placed.has(id)) return [];
 				try {
 					this.#assertIdentityVolumeAuthority(volume, id);
 					return [id];
@@ -1112,16 +1128,27 @@ export class LxdNativeLoginGateway {
 			});
 		} catch (error) {
 			signal.throwIfAborted();
-			console.error(
-				`LXD native login could not list identity volumes for execution host ${this.#executionHost.host.instance}: ${error instanceof Error ? error.message : "unknown"}`,
+			this.#logExecutionHost(
+				`LXD native login could not list identity volumes for execution host ${host.host.instance}: ${error instanceof Error ? error.message : "unknown"}`,
 			);
-			return false;
+			return;
 		}
-		return this.#attachToExecutionHost(ids, signal);
+		await this.#attachToExecutionHost(ids, signal);
 	}
 
-	#remember(name: string, journal: LxdLoginJournal, releasedAt: string) {
-		const released = { computeIdentityId: journal.binding.computeIdentityId, releasedAt: Date.parse(releasedAt) };
+	#logExecutionHost(text: string): void {
+		const now = Date.now();
+		if (text === this.#executionHostLogged.text && now - this.#executionHostLogged.at < 60_000) return;
+		this.#executionHostLogged = { text, at: now };
+		console.error(text);
+	}
+
+	#remember(name: string, journal: LxdLoginJournal, releasedAt: string, placed: boolean) {
+		const released = {
+			computeIdentityId: journal.binding.computeIdentityId,
+			releasedAt: Date.parse(releasedAt),
+			placed,
+		};
 		this.#released.set(name, released);
 		return released;
 	}

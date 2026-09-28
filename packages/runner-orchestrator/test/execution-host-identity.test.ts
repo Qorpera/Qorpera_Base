@@ -166,7 +166,7 @@ describe("login gateway attaching identity volumes to the execution host", () =>
 	it("hot-plugs exactly the identity device, keeps every other device, and is idempotent", async () => {
 		const { fake, host: exec } = host(),
 			id = randomUUID();
-		expect(await exec.attach([id], signal())).toEqual({ attached: [id], refused: [] });
+		expect(await exec.attach([id], signal())).toEqual({ attached: [id], refused: [], failed: [] });
 		expect(fake.writes).toEqual([
 			{
 				root: { type: "disk", path: "/", pool: "qorpera-vm" },
@@ -178,15 +178,15 @@ describe("login gateway attaching identity volumes to the execution host", () =>
 				},
 			},
 		]);
-		expect(await exec.attach([id], signal())).toEqual({ attached: [], refused: [] });
+		expect(await exec.attach([id], signal())).toEqual({ attached: [], refused: [], failed: [] });
 		expect(fake.writes).toHaveLength(1);
 	});
-	it("attaches several missing identities in one change and leaves attached ones alone", async () => {
+	it("attaches each missing identity in its own change and leaves attached ones alone", async () => {
 		const { fake, host: exec } = host(),
 			[a, b, c] = [randomUUID(), randomUUID(), randomUUID()].sort();
 		await exec.attach([b], signal());
-		expect(await exec.attach([c, a, b, a], signal())).toEqual({ attached: [a, c], refused: [] });
-		expect(fake.writes).toHaveLength(2);
+		expect(await exec.attach([c, a, b, a], signal())).toEqual({ attached: [a, c], refused: [], failed: [] });
+		expect(fake.writes).toHaveLength(3);
 		expect(Object.keys(fake.instance.devices).sort()).toEqual([
 			`identity-${a}`,
 			`identity-${b}`,
@@ -200,7 +200,7 @@ describe("login gateway attaching identity volumes to the execution host", () =>
 		fake.instance.devices[`identity-${a}`] = { type: "disk", source: "/", path: `/var/lib/qorpera/identities/${a}` };
 		fake.instance.expandedDevices[`identity-${a}`] = fake.instance.devices[`identity-${a}`];
 		fake.instance.expandedDevices[`identity-${b}`] = executionHostIdentityDevice(volumes, b).device;
-		expect(await exec.attach([a, b, c], signal())).toEqual({ attached: [c], refused: [a, b].sort() });
+		expect(await exec.attach([a, b, c], signal())).toEqual({ attached: [c], refused: [a, b].sort(), failed: [] });
 		expect(fake.instance.devices[`identity-${a}`]).toEqual({
 			type: "disk",
 			source: "/",
@@ -218,14 +218,26 @@ describe("login gateway attaching identity volumes to the execution host", () =>
 			};
 			fake.instance.expandedDevices = { ...fake.instance.expandedDevices, ...fake.instance.devices };
 		};
-		expect(await exec.attach([a, b], signal())).toEqual({ attached: [a], refused: [] });
+		expect(await exec.attach([a, b], signal())).toEqual({ attached: [a], refused: [], failed: [] });
 		expect(Object.keys(fake.instance.devices).sort()).toEqual([`identity-${a}`, `identity-${b}`, "root"].sort());
 	});
-	it("gives up after three failed writes and reports the failure", async () => {
-		const { fake, host: exec } = host();
-		fake.failures = [new Error("LXD: busy"), new Error("LXD: busy"), new Error("LXD: busy")];
-		await expect(exec.attach([randomUUID()], signal())).rejects.toThrow("LXD: busy");
-		expect(fake.writes).toHaveLength(0);
+	it("gives up on an identity after three failed writes, reports it, and still attaches the others", async () => {
+		const { fake, host: exec } = host(),
+			[a, b] = [randomUUID(), randomUUID()].sort();
+		fake.failures = [
+			new Error("LXD: no hotplug slot"),
+			new Error("LXD: no hotplug slot"),
+			new Error("LXD: no hotplug slot"),
+		];
+		expect(await exec.attach([b, a], signal())).toEqual({
+			attached: [b],
+			refused: [],
+			failed: [a],
+			failure: "LXD: no hotplug slot",
+		});
+		expect(Object.keys(fake.instance.devices).sort()).toEqual([`identity-${b}`, "root"]);
+		// The next pass tries the failed one again.
+		expect(await exec.attach([b, a], signal())).toEqual({ attached: [a], refused: [], failed: [] });
 	});
 	it("refuses a host that is not a virtual machine and invalid identities before touching LXD", async () => {
 		const { fake, host: exec } = host();

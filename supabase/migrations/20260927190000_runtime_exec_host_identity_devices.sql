@@ -13,20 +13,20 @@
 -- {pool, sourcePrefix} (virtual machines only). For such an entry the node
 -- observer leaves devices of exactly the identity shape out of the digest and
 -- reports their identities, sorted and distinct, as the entry's `identities`.
--- Everything else about the entry stays exact. The registry accepts a reported
--- identity only when this node reserved a login (or account refresh) machine
--- for it: the login gateway creates an identity volume only after that
--- reservation, so the check admits exactly the volumes the gateway can have
+-- Everything else about the entry stays exact.
+--
+-- Accepted identities: those this node reserved a login (or account refresh)
+-- machine for. The login gateway creates an identity volume only right after
+-- that reservation, so this admits exactly the volumes the gateway can have
 -- made. It does not depend on the identity's current home or status, so a
--- recovery in progress or a retired member never takes the node out. An
--- identity report the policy does not declare is refused outright; an
--- unexplained identity makes the node unavailable, like any other difference.
--- Policies without identityVolumes and observers that send no `identities`
--- behave exactly as before.
-
--- The check looks up login machines by identity; only login rows carry one.
-create index qorpera_runtime_login_identity_allocations on public.qorpera_runtime_machine_allocations(login_compute_identity_id)
- where login_compute_identity_id is not null;
+-- recovery in progress or a retired member never takes the node out. For a
+-- node whose policy declares an identity host, the inventory context carries
+-- the accepted set (`acceptedIdentities`), so the observer itself publishes the
+-- node unavailable, with a receipt naming the identity, when anything else is
+-- attached; the registry checks the same set again. An identity report the
+-- policy does not declare is refused outright. Policies without
+-- identityVolumes get the same context as before, and observers that send no
+-- `identities` behave exactly as before.
 
 do $guard$ begin
 	if encode(extensions.digest(pg_get_functiondef('public.qorpera_enroll_runtime_node_inventory(jsonb)'::regprocedure), 'sha256'), 'hex') <> 'b6237b539b6547073c48494d63deb9c82d53f4113c864b47be9dd7b4fe1aeb9b' then
@@ -180,10 +180,7 @@ begin
     or v_expected-'identityVolumes'<>(v_item-array['state','allocation','category','reason','identities']) then v_ready:=false;
    -- An identity device mounts a volume only this node's login gateway creates, right after this
    -- node reserved a login or account-refresh machine for that identity. Nothing else is accepted.
-   elsif v_item ? 'identities' and exists(select 1 from jsonb_array_elements_text(v_item->'identities') x(id)
-    where not exists(select 1 from public.qorpera_runtime_machine_allocations a
-     join public.qorpera_runtime_node_demands d on d.allocation_id=a.id
-     where a.login_compute_identity_id=x.id::uuid and d.node_id=v_id and d.provider_kind='login' and d.reserved_at is not null)) then
+   elsif v_item ? 'identities' and not ((v_item->'identities') <@ coalesce(v_context->'acceptedIdentities','[]'::jsonb)) then
     v_ready:=false;
    end if;
   else
@@ -202,5 +199,43 @@ begin
  insert into public.qorpera_runtime_node_inventory_receipts(node_id,observation_id,node_version,policy_sha256,context_sha256,inventory)
  values(v_id,v_observation,(v_context->>'nodeVersion')::bigint,v_policy_hash,p_context_sha256,p_inventory);
  return v_result;
+end
+$function$;
+
+do $guard$ begin
+	if encode(extensions.digest(pg_get_functiondef('public.qorpera_runtime_node_inventory_context(uuid)'::regprocedure), 'sha256'), 'hex') <> 'f343f7545ad7d8dbdcf19620a822a5b50b306d1a38d2e5b550ba79776e608cc7' then
+		raise exception 'Reviewed function definition changed: qorpera_runtime_node_inventory_context';
+	end if;
+end $guard$;
+
+CREATE OR REPLACE FUNCTION public.qorpera_runtime_node_inventory_context(p_node_id uuid)
+ RETURNS jsonb
+ LANGUAGE plpgsql
+ SECURITY DEFINER
+ SET search_path TO ''
+AS $function$
+declare v_node public.qorpera_runtime_nodes%rowtype; v_policy jsonb; v_context jsonb;
+begin
+ if auth.role() is distinct from 'service_role' or p_node_id is null then raise exception 'Node observer authority required' using errcode='42501'; end if;
+ -- Node only: never acquire a profile/allocation lock in this direction.
+ select * into v_node from public.qorpera_runtime_nodes where id=p_node_id for share;
+ select policy into v_policy from public.qorpera_runtime_node_inventory_policies where node_id=p_node_id;
+ if v_node.id is null or v_policy is null then raise exception 'Node inventory policy not enrolled' using errcode='42501'; end if;
+ v_context:=jsonb_build_object('policy',v_policy,'nodeVersion',v_node.version,'headroomCpuMillis',v_node.headroom_cpu_millis,
+  'headroomMemoryBytes',v_node.headroom_memory_bytes,'allocations',coalesce((select jsonb_agg(jsonb_build_object(
+   'allocationId',d.allocation_id,'providerKind',d.provider_kind,'providerId',d.provider_id,'policySha256',d.policy_sha256,
+   'instanceSha256',a.instance_sha256,'cpuMillis',d.cpu_millis,'memoryBytes',d.memory_bytes,'physical',b.binding) order by d.allocation_id)
+   from public.qorpera_runtime_node_demands d join public.qorpera_runtime_machine_allocations a on a.id=d.allocation_id
+   left join public.qorpera_runtime_node_instance_bindings b on b.allocation_id=d.allocation_id
+   where d.node_id=p_node_id and d.reserved_at is not null and d.released_at is null),'[]'::jsonb));
+ -- A node with a shared execution host: the identities its host may mount (every identity this node
+ -- ever reserved a login or account-refresh machine for). Other nodes' context is unchanged.
+ if exists(select 1 from jsonb_array_elements(v_policy->'infrastructure') i where i ? 'identityVolumes') then
+  v_context:=v_context||jsonb_build_object('acceptedIdentities',(select coalesce(jsonb_agg(s.id order by s.id::text collate "C"),'[]'::jsonb)
+   from (select distinct a.login_compute_identity_id id from public.qorpera_runtime_node_demands d
+    join public.qorpera_runtime_machine_allocations a on a.id=d.allocation_id
+    where d.node_id=p_node_id and d.provider_kind='login' and d.reserved_at is not null) s));
+ end if;
+ return v_context||jsonb_build_object('contextSha256',encode(extensions.digest(v_context::text,'sha256'),'hex'));
 end
 $function$;

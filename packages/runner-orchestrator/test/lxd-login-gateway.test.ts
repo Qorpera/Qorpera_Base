@@ -1484,12 +1484,25 @@ describe("LXD native login gateway and the node's shared execution host", () => 
 		await gateway.reconcile(new AbortController().signal);
 		expect(fake.attaches).toHaveLength(1);
 	});
-	it("never fails a login over the attach; the reconcile sweep attaches only this gateway's identity volumes", async () => {
+	const marked = (name: string, id: string, extra: Record<string, string> = {}): LxdStorageVolumeRecord => ({
+		name,
+		type: "custom",
+		contentType: "filesystem",
+		description: `Qorpera Compute Identity ${id}`,
+		config: {
+			size: "32GiB",
+			"user.qorpera.schema": "qorpera.compute-identity-volume/v1",
+			"user.qorpera.compute_identity_id": id,
+			"user.qorpera.provider_adapter": "lxd",
+			...extra,
+		},
+	});
+	const awaitingMember = () =>
+		fetchBoundary([{ status: "awaiting_member", interactionUrl: "https://provider.example/device", userCode: null }]);
+	it("never fails a login over the attach; the sweep attaches only volumes of logins this node placed", async () => {
 		const root = await stateRoot(),
 			lxd = new FakeLxd(),
-			boundary = fetchBoundary([
-				{ status: "awaiting_member", interactionUrl: "https://provider.example/device", userCode: null },
-			]),
+			boundary = awaitingMember(),
 			{ fake, identities } = execHost(lxd);
 		fake.failures = 3;
 		const errors = vi.spyOn(console, "error").mockImplementation(() => undefined);
@@ -1502,59 +1515,83 @@ describe("LXD native login gateway and the node's shared execution host", () => 
 			expect(errors.mock.calls.flat().join("\n")).toContain(
 				`could not attach Compute Identity ${computeIdentityId}`,
 			);
-			// Volumes the gateway did not make, or that drifted, stay off the host.
-			const other = "30000000-0000-4000-8000-0000000000aa";
-			const marked = (name: string, id: string, extra: Record<string, string> = {}): LxdStorageVolumeRecord => ({
-				name,
-				type: "custom",
-				contentType: "filesystem",
-				description: `Qorpera Compute Identity ${id}`,
-				config: {
-					size: "32GiB",
-					"user.qorpera.schema": "qorpera.compute-identity-volume/v1",
-					"user.qorpera.compute_identity_id": id,
-					"user.qorpera.provider_adapter": "lxd",
-					...extra,
-				},
-			});
+			// Well-formed identity volumes of logins this node never placed stay off the host,
+			// as do volumes that are not exactly an identity volume.
 			fake.volumes = [
-				marked(`identity-${other}`, other),
-				marked("identity-30000000-0000-4000-8000-0000000000bb", "30000000-0000-4000-8000-0000000000bb", {
-					"user.qorpera.provider_adapter": "other-node",
-				}),
-				marked("identity-30000000-0000-4000-8000-0000000000cc", "30000000-0000-4000-8000-0000000000dd"),
-				marked("identity-30000000-0000-4000-8000-0000000000ee", "30000000-0000-4000-8000-0000000000ee", {
-					size: "1TiB",
-				}),
-				{
-					...marked("identity-30000000-0000-4000-8000-0000000000ff", "30000000-0000-4000-8000-0000000000ff"),
-					contentType: "block",
-				},
+				marked("identity-30000000-0000-4000-8000-0000000000aa", "30000000-0000-4000-8000-0000000000aa"),
 				marked("identity-../../etc", "../../etc"),
 				marked("recovery-30000000-0000-4000-8000-0000000000ab", "30000000-0000-4000-8000-0000000000ab"),
 			];
 			expect((await gateway.reconcile(new AbortController().signal)).unconfirmed).toBe(0);
 			expect(fake.attaches).toHaveLength(1);
-			expect(Object.keys(fake.devices).sort()).toEqual([
-				`identity-${computeIdentityId}`,
-				`identity-${other}`,
-				"root",
-			]);
-			expect(fake.devices[`identity-${other}`]).toEqual(identityDevice(other));
+			expect(Object.keys(fake.devices).sort()).toEqual([`identity-${computeIdentityId}`, "root"]);
+			expect(fake.devices[`identity-${computeIdentityId}`]).toEqual(identityDevice(computeIdentityId));
 		} finally {
 			errors.mockRestore();
 		}
 	});
-	it("counts a sweep that cannot reach the host as unconfirmed and keeps the rest of the reconcile", async () => {
+	it.each([
+		["another adapter", { "user.qorpera.provider_adapter": "other-node" }],
+		["another identity marker", { "user.qorpera.compute_identity_id": "30000000-0000-4000-8000-0000000000dd" }],
+		["another size", { size: "1TiB" }],
+		["a block volume", null],
+	])("the sweep leaves a placed login's volume with %s off the host", async (_label, drift) => {
 		const root = await stateRoot(),
 			lxd = new FakeLxd(),
-			boundary = fetchBoundary([]),
 			{ fake, identities } = execHost(lxd);
+		fake.failures = 3;
+		const errors = vi.spyOn(console, "error").mockImplementation(() => undefined);
+		try {
+			const gateway = new LxdNativeLoginGateway(config(root), lxd, awaitingMember().fetchImplementation, identities);
+			expect((await gateway.handle(loginRequest())).status).toBe(200);
+			if (!lxd.volume) throw new Error("expected the login's volume");
+			lxd.volume =
+				drift === null
+					? { ...lxd.volume, contentType: "block" }
+					: { ...lxd.volume, config: { ...lxd.volume.config, ...drift } };
+			await gateway.reconcile(new AbortController().signal);
+			expect(fake.attaches).toHaveLength(0);
+		} finally {
+			errors.mockRestore();
+		}
+	});
+	it("the sweep leaves an identity's volume off the host when its login here was never placed", async () => {
+		const root = await stateRoot(),
+			lxd = new FakeLxd(),
+			boundary = awaitingMember(),
+			{ fake, identities } = execHost(lxd);
+		boundary.control.nodeRefusal = "NODE_CAPACITY_EXHAUSTED";
+		const errors = vi.spyOn(console, "error").mockImplementation(() => undefined);
+		try {
+			const gateway = new LxdNativeLoginGateway(config(root), lxd, boundary.fetchImplementation, identities);
+			expect((await gateway.handle(loginRequest())).status).toBe(503);
+			expect(lxd.createVolumeCalls).toHaveLength(0);
+			fake.volumes = [marked(`identity-${computeIdentityId}`, computeIdentityId)];
+			await gateway.reconcile(new AbortController().signal);
+			expect(fake.attaches).toHaveLength(0);
+		} finally {
+			errors.mockRestore();
+		}
+	});
+	it("logs a sweep that cannot list volumes once a minute and keeps the reconcile going", async () => {
+		const root = await stateRoot(),
+			lxd = new FakeLxd(),
+			{ fake, identities } = execHost(lxd);
+		const gateway = new LxdNativeLoginGateway(config(root), lxd, awaitingMember().fetchImplementation, identities);
+		await gateway.handle(loginRequest());
 		fake.listCustomStorageVolumes = async () => {
 			throw new Error("LXD: not found");
 		};
-		const gateway = new LxdNativeLoginGateway(config(root), lxd, boundary.fetchImplementation, identities);
-		expect(await gateway.reconcile(new AbortController().signal)).toEqual({ scanned: 0, unconfirmed: 1 });
+		const errors = vi.spyOn(console, "error").mockImplementation(() => undefined);
+		try {
+			expect(await gateway.reconcile(new AbortController().signal)).toEqual({ scanned: 1, unconfirmed: 0 });
+			expect(await gateway.reconcile(new AbortController().signal)).toEqual({ scanned: 1, unconfirmed: 0 });
+			expect(
+				errors.mock.calls.flat().filter((line) => String(line).includes("could not list identity volumes")),
+			).toHaveLength(1);
+		} finally {
+			errors.mockRestore();
+		}
 	});
 	it.each([
 		[
