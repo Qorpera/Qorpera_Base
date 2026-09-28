@@ -167,7 +167,7 @@ no database login and no service key; it sees a login only for one operation and
     (`qorpera_complete_model_login_account_refresh`). A login that cannot be read is unknown usage;
     the refresh still settles. The pass is never renewed here, only display metadata leaves the
     vault, and the envelopes are wiped. No helper and no machine is involved.
-- **Part D, idle renewal** (migration `20260928234000`, `cloud-model-login-upkeep.ts`; founder
+- **Part D, idle renewal** (migration `20260928236000`, `cloud-model-login-upkeep.ts`; founder
   decision 2026-09-28): the vault renews idle logins itself, so a login nobody used does not lapse
   before its next run and runs rarely wait for a renewal at start.
   - Every 5 minutes (the first pass 30 s plus a random part of 5 minutes after start, so brokers
