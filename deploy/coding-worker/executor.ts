@@ -323,7 +323,7 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 				try {
 					for (const outcome of await machineHost.pass(stop.signal))
 						if (outcome.state === "failed") console.error(JSON.stringify({ event: "company-machine-error", ...outcome }));
-						else if (outcome.state === "done" && outcome.step !== "commands")
+						else if ((outcome.state === "done" && outcome.step !== "commands") || (outcome.state === "not-now" && outcome.code))
 							console.log(JSON.stringify({ event: "company-machine", ...outcome }));
 				} catch (error) {
 					if (!stop.signal.aborted) console.error(JSON.stringify({ event: "company-machine-error", code: errorCode(error) }));

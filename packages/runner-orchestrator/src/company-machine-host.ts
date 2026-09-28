@@ -10,6 +10,7 @@ import {
 	parseCloudCodingNasPolicy,
 	parseCloudMachineCommandReceipt,
 } from "@qorpera/contracts";
+import { CodingControlBusy } from "./coding-executor.ts";
 import { type CodingMachineIntent, reconcileCodingMachine } from "./coding-machine.ts";
 import { type CodingNasStorage, createCodingNasStorage } from "./coding-storage.ts";
 import {
@@ -255,7 +256,10 @@ export class LxdCompanyMachineHost {
 			try {
 				return await this.#authorize(e, intent, checked);
 			} catch (error) {
-				if (errorCode(error).startsWith("COMPANY_MACHINE_REFUSED:")) refused = true;
+				// Refused, or the company's locks busy past SQL's short wait: no new run authority this
+				// pass, but a machine that already runs keeps its lease (see #step).
+				if (errorCode(error).startsWith("COMPANY_MACHINE_REFUSED:") || error instanceof CodingControlBusy)
+					refused = true;
 				throw error;
 			}
 		};
@@ -542,13 +546,22 @@ export class LxdCompanyMachineHost {
 							await this.#recordError(e, stage(outcome.step), null, signal);
 						return outcome;
 					} catch (error) {
-						const failed = errorCode(error);
 						const step: CompanyMachineOutcome["step"] =
 							e.released || (e.removeDue && !e.reserved)
 								? "delete"
 								: (e.stopDue || e.sleepDue) && e.reserved
 									? "stop"
 									: "start";
+						// The company's locks were busy past SQL's short wait (lock_not_available): no fault
+						// of the machine's, and nothing to show; the next pass tries again.
+						if (error instanceof CodingControlBusy)
+							return {
+								placementId: e.placementId,
+								step,
+								state: "not-now" as const,
+								code: "CODING_CONTROL_BUSY",
+							};
+						const failed = errorCode(error);
 						await this.#recordError(e, stage(step), failed, signal);
 						return { placementId: e.placementId, step, state: "failed" as const, code: failed };
 					}
