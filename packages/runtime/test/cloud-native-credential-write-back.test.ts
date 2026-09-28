@@ -271,3 +271,19 @@ it("retries one failed read of the stored login before saving a renewal", async 
 	expect(shared.store.puts).toBe(1);
 	expect(await shared.storedAccessToken()).toBe("renewed");
 });
+
+it("saves a renewal when the stored login was re-encrypted but not changed", async () => {
+	const shared = await sharedStore("original");
+	const h = await host(shared.capsules);
+	h.setHarness(async (root) => {
+		// Another host reseals the same login: new bytes, same credentials.
+		const same = await temporary("qorpera-write-back-same-");
+		await mkdir(join(same, "codex"), { recursive: true, mode: 0o700 });
+		await writeFile(join(same, "codex", "auth.json"), JSON.stringify({ access_token: "original" }), { mode: 0o600 });
+		shared.store.bytes = await sealNativeCredentialCapsule(same, key, capsuleId);
+		await renew(root, "renewed");
+	});
+	await h.host.execute(request());
+	expect(shared.store.puts).toBe(1);
+	expect(await shared.storedAccessToken()).toBe("renewed");
+});
