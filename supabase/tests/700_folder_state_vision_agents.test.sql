@@ -18,20 +18,21 @@ select set_config('request.jwt.claims', '{"role":"service_role"}', true) \g /dev
 select public.qorpera_folder_enable('70000000-0000-4000-8000-000000000020') \g /dev/null
 
 -- Verified bytes for a text, as the object gateway leaves them.
-create function pg_temp.stage(p_text text) returns jsonb language plpgsql security definer as $$
+create function pg_temp.stage(p_text text, p_profile uuid default '70000000-0000-4000-8000-000000000010')
+returns jsonb language plpgsql security definer as $$
 declare v_hash text := encode(extensions.digest(convert_to(p_text,'utf8'),'sha256'),'hex'); v_manifest text; v_manifest_hash text;
 begin
 	insert into storage.objects(bucket_id,name,metadata)
-	values ('qorpera-profile-objects','70000000-0000-4000-8000-000000000010/' || v_hash,
+	values ('qorpera-profile-objects',p_profile::text || '/' || v_hash,
 		jsonb_build_object('size',octet_length(p_text))) on conflict do nothing;
 	v_manifest := jsonb_build_object('schema','qorpera.cloud-file-manifest/v1','fileSha256',v_hash,
 		'bytes',octet_length(p_text),'mediaType','application/octet-stream','chunks',case when p_text = '' then '[]'::jsonb
 		else jsonb_build_array(jsonb_build_object('sha256',v_hash,'bytes',octet_length(p_text))) end)::text;
 	v_manifest_hash := encode(extensions.digest(convert_to(v_manifest,'utf8'),'sha256'),'hex');
 	insert into storage.objects(bucket_id,name,metadata)
-	values ('qorpera-profile-objects','70000000-0000-4000-8000-000000000010/' || v_manifest_hash,
+	values ('qorpera-profile-objects',p_profile::text || '/' || v_manifest_hash,
 		jsonb_build_object('size',octet_length(v_manifest))) on conflict do nothing;
-	perform public.qorpera_verify_company_path_file('70000000-0000-4000-8000-000000000010',v_manifest);
+	perform public.qorpera_verify_company_path_file(p_profile,v_manifest);
 	return jsonb_build_object('manifestSha256',v_manifest_hash,'fileSha256',v_hash,'bytes',octet_length(p_text),
 		'mediaType','text/markdown','executable',false);
 end $$;
@@ -337,6 +338,88 @@ begin
 		if public.qorpera_structured_path_kind(t.key) is distinct from t.kind then
 			raise exception 'Key % expected kind %, got %', t.key, t.kind, public.qorpera_structured_path_kind(t.key); end if;
 	end loop;
+end $$;
+
+-- 8. Lock targets: the roster row at rank 2, and the agent's thread room at rank 4 (FOR UPDATE) when its name or
+-- status changes or it retires, since the roster's thread trigger takes that room after the paths otherwise.
+do $$
+declare nora constant uuid := '70000000-0000-4000-8000-0000000000a1'; env constant uuid := '70000000-0000-4000-8000-000000000020';
+	room uuid; t jsonb;
+begin
+	select id into room from public.qorpera_company_rooms where profile_id = '70000000-0000-4000-8000-000000000010'
+		and bound_staff_agent_id = nora;
+	if room is null then raise exception 'A hire gets its thread room from the roster trigger'; end if;
+	select jsonb_agg(to_jsonb(x)) into t from public.qorpera_folder_structured_targets(env, pg_temp.owner(), jsonb_build_array(
+		pg_temp.write('agents/nora-back/agent.md', 'agent', pg_temp.agent_text(nora, 'Nora New'), pg_temp.agent_parse(nora, 'Nora New'),
+			pg_temp.version('agents/nora-back/agent.md')))) x;
+	if not t @> jsonb_build_array(jsonb_build_object('rank', 2, 'tbl', 'qorpera_profile_staff', 'mode', 'nokeyupdate',
+			'key', '70000000-0000-4000-8000-000000000010:' || nora))
+		or not t @> jsonb_build_array(jsonb_build_object('rank', 4, 'tbl', 'qorpera_company_rooms', 'key', room::text, 'mode', 'update')) then
+		raise exception 'A rename locks the roster row and the thread room: %', t; end if;
+	select jsonb_agg(to_jsonb(x)) into t from public.qorpera_folder_structured_targets(env, pg_temp.owner(), jsonb_build_array(
+		pg_temp.write('agents/nora-back/agent.md', 'agent', pg_temp.agent_text(nora, 'Nora Skov'), pg_temp.agent_parse(nora, 'Nora Skov'),
+			pg_temp.version('agents/nora-back/agent.md')))) x;
+	if t @> '[{"tbl":"qorpera_company_rooms"}]' then raise exception 'An edit that keeps name and status leaves the room: %', t; end if;
+	select jsonb_agg(to_jsonb(x)) into t from public.qorpera_folder_structured_targets(env, pg_temp.owner(), jsonb_build_array(
+		jsonb_build_object('op','delete','path','agents/nora-back','expectedVersion',pg_temp.version('agents/nora-back'),'asOfSeq',pg_temp.seq()))) x;
+	if not t @> jsonb_build_array(jsonb_build_object('rank', 4, 'tbl', 'qorpera_company_rooms', 'key', room::text, 'mode', 'update')) then
+		raise exception 'Retiring an active agent locks its thread room: %', t; end if;
+end $$;
+
+-- 9. A roster row removed outside its folder (the legacy roster delete) is refused, and never repointed.
+do $$
+declare r jsonb; gone constant uuid := '70000000-0000-4000-8000-0000000000a4';
+begin
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'gone-0001', jsonb_build_array(pg_temp.hire('gone', gone, 'Gone'))), 1, 'saved');
+	update public.qorpera_profile_staff set deleted_at = clock_timestamp(), deleted_by_user_id = '70000000-0000-4000-8000-000000000001'
+	where profile_id = '70000000-0000-4000-8000-000000000010' and staff_agent_id = gone;
+	r := pg_temp.commit(pg_temp.owner(), 'gone-0002', jsonb_build_array(pg_temp.write('agents/gone/agent.md', 'agent',
+		pg_temp.agent_text(gone, 'Gone Again'), pg_temp.agent_parse(gone, 'Gone Again'), pg_temp.version('agents/gone/agent.md'))));
+	perform pg_temp.expect(r, 1, 'refused', 'structured_rule');
+	r := pg_temp.commit(pg_temp.owner(), 'gone-0003', jsonb_build_array(jsonb_build_object('op','move','from','agents/gone','to','agents/gone-2',
+		'expectedVersion',pg_temp.version('agents/gone'),'asOfSeq',pg_temp.seq())));
+	perform pg_temp.expect(r, 1, 'saved');
+	if (pg_temp.staff(gone)).folder_path <> 'agents/gone/agent.md' then raise exception 'A removed row is never repointed'; end if;
+end $$;
+
+-- 10. Instructions without control characters (tabs kept), and a Co-Founder rename within agents/.
+do $$
+declare r jsonb; nora constant uuid := '70000000-0000-4000-8000-0000000000a1'; cofounder constant uuid := '70000000-0000-4000-8000-0000000000c0';
+	bad text := format(E'---\nid: %s\nname: Nora\nrole: Sales\nkind: agent\nstatus: active\n---\nSell\u0007.\n', nora);
+begin
+	r := pg_temp.commit(pg_temp.owner(), 'control-0001', jsonb_build_array(pg_temp.write('agents/nora-back/agent.md', 'agent', bad,
+		pg_temp.agent_parse(nora, 'Nora') || jsonb_build_object('instructions', E'Sell\u0007.'), pg_temp.version('agents/nora-back/agent.md'))));
+	perform pg_temp.expect(r, 1, 'refused', 'structured_invalid');
+	r := pg_temp.commit(pg_temp.owner(), 'cofounder-rename-0001', jsonb_build_array(jsonb_build_object('op','move','from','agents/co-founder',
+		'to','agents/founder','expectedVersion',pg_temp.version('agents/co-founder'),'asOfSeq',pg_temp.seq())));
+	perform pg_temp.expect(r, 1, 'saved');
+	if (pg_temp.staff(cofounder)).folder_path <> 'agents/founder/agent.md' then raise exception 'The Co-Founder can be renamed'; end if;
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'cofounder-rename-0002', jsonb_build_array(jsonb_build_object('op','delete',
+		'path','agents/founder','expectedVersion',pg_temp.version('agents/founder'),'asOfSeq',pg_temp.seq()))), 1, 'refused', 'cofounder');
+end $$;
+
+-- 11. Before any Co-Founder is recorded, the creation commit may seed one, never two, and one id belongs to one folder.
+do $$
+declare r jsonb; a text; env2 constant uuid := '70000000-0000-4000-8000-000000000021';
+begin
+	insert into public.qorpera_profiles(id,name,created_by_user_id)
+	values ('70000000-0000-4000-8000-000000000011','Second','70000000-0000-4000-8000-000000000001');
+	insert into public.qorpera_profile_members(profile_id,user_id,email,display_name,role)
+	values ('70000000-0000-4000-8000-000000000011','70000000-0000-4000-8000-000000000001','state-owner@example.test','Owner','owner');
+	insert into public.qorpera_company_environments(id,profile_id,name,contract_version,created_by_user_id)
+	values (env2,'70000000-0000-4000-8000-000000000011','Environment',1,'70000000-0000-4000-8000-000000000001');
+	perform public.qorpera_folder_enable(env2);
+	a := pg_temp.agent_text('70000000-0000-4000-8000-0000000000b1', 'One', 'co-founder');
+	r := public.qorpera_folder_commit(env2, '{"kind":"platform"}', 'twins-0001', jsonb_build_array(jsonb_build_object('op','new_folder',
+		'path','agents','contents',jsonb_build_array(
+			jsonb_build_object('path','a','kind','folder'), jsonb_build_object('path','b','kind','folder'),
+			jsonb_build_object('path','a/agent.md','kind','file','file',pg_temp.stage(a, '70000000-0000-4000-8000-000000000011')),
+			jsonb_build_object('path','b/agent.md','kind','file','file',pg_temp.stage(a, '70000000-0000-4000-8000-000000000011'))),
+		'structured',jsonb_build_array(
+			pg_temp.entry('agents/a/agent.md','agent',a,pg_temp.agent_parse('70000000-0000-4000-8000-0000000000b1','One','co-founder')),
+			pg_temp.entry('agents/b/agent.md','agent',a,pg_temp.agent_parse('70000000-0000-4000-8000-0000000000b1','One','co-founder'))))));
+	if r -> 'units' -> 0 ->> 'reason' is distinct from 'structured_rule' then
+		raise exception 'Two agent.md files with one id in one unit are refused: %', r; end if;
 end $$;
 
 rollback;

@@ -922,6 +922,8 @@ function agent(split: Split, fields: Fields, problems: Problems): AgentFile | nu
 	const model = fields.choice("model", false, AGENT_MODELS);
 	const effort = fields.choice("effort", false, COMPANY_STATE_EFFORTS);
 	const instructions = body(split, problems, "the agent's instructions", true, 32768);
+	if (instructions !== null && /[\u0001-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(instructions))
+		problems.add("body", split.bodyLine, null, "the agent's instructions hold a control character; remove it");
 	fields.close("an agent");
 	if (problems.list.length || !id || !name || !role || !agentKind || !status || instructions === null) return null;
 	return { kind: "agent", id, name, role, agentKind, status, colour, figure, model, effort, instructions };

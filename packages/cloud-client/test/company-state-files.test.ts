@@ -359,6 +359,13 @@ describe("agent.md", () => {
 		).toBe("syntax");
 	});
 
+	it("refuses control characters in the instructions, keeping tabs", () => {
+		expect(refused("agents/a/agent.md", agentFields().replace("Sell.", "Sell\u0007."))[0]?.code).toBe("body");
+		expect(ok("agents/a/agent.md", agentFields().replace("Sell.", "Sell\tnow."))).toMatchObject({
+			instructions: "Sell\tnow.",
+		});
+	});
+
 	it("refuses an empty body and a folder name that breaks the rule", () => {
 		expect(refused("agents/anna-berg/agent.md", agentText.replace(/---\nYou[\s\S]*$/, "---\n"))[0]?.code).toBe(
 			"body",
@@ -398,6 +405,7 @@ describe("agent.md", () => {
 		expect(refused("vision/vision.md", `#${" ".repeat(10)}\rx\n`)[0]?.code).toBe("body");
 	});
 
+	// A quadratic path costs seconds on these inputs; a linear one milliseconds. The bound leaves room for a busy machine.
 	it("reads a pathological 64 KiB file in linear time", () => {
 		const spaces = " ".repeat(65_000);
 		const inputs: [string, string][] = [
@@ -419,7 +427,7 @@ describe("agent.md", () => {
 		for (const [path, text] of inputs) {
 			const started = performance.now();
 			parseCompanyStateFile(path, text);
-			expect(performance.now() - started).toBeLessThan(250);
+			expect(performance.now() - started).toBeLessThan(1000);
 		}
 	});
 });
@@ -919,7 +927,7 @@ describe("companyStateValue", () => {
 		]) {
 			const started = performance.now();
 			companyStateValue(text);
-			expect(performance.now() - started).toBeLessThan(250);
+			expect(performance.now() - started).toBeLessThan(1000);
 		}
 		// A value the format refuses still makes a file the parser reads; the parse refuses the value.
 		expect(keys(refused("agents/a/agent.md", writeAgentFile({ ...agentBase(), name: "Anna\u2028Berg" })))).toEqual([

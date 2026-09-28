@@ -13,8 +13,13 @@
 -- * agents/<handle>/agent.md -> qorpera_profile_staff (the roster), with the Co-Founder record written by the
 --   creation commit;
 -- * the review class of hires and of archiving or reactivating an agent.
--- The other kinds (sections, group chats, connections, rules, todos, workers, routines) are recognised, their
--- parse is checked for shape and stored, and their indexes come with their own slices (F2-2 to F2-6). Follow-ups
+-- The other kinds (sections, group chats, connections, rules, todos, workers, routines) are recognised, their path
+-- is checked, their text re-hashed and their parse stored with its kind checked; their shape checks and indexes
+-- come with their own slices (F2-2 to F2-6).
+--
+-- The trust boundary: the parse comes from the shared TS parser (parseCompanyStateFile) in trusted writers (the
+-- runtime, the object gateway, the folder service); SQL re-hashes the text and re-checks the parse's shape and
+-- limits, but does not re-derive the parse from the text. The rebuild's drift check re-parses stored bytes. Follow-ups
 -- that converge after the commit (a hire's first run, an archive's paused routines and removed execution access)
 -- need C2's queue and come with it.
 
@@ -37,7 +42,7 @@ create table public.qorpera_folder_company_index (
 	updated_at timestamptz not null default clock_timestamp()
 );
 alter table public.qorpera_folder_company_index enable row level security;
-revoke all on public.qorpera_folder_company_index from public, anon, authenticated;
+revoke all on public.qorpera_folder_company_index from public, anon, authenticated, service_role;
 grant select on public.qorpera_folder_company_index to service_role;
 
 -- 3. The roster as the index of agent.md ----------------------------------------------------------------------
@@ -91,6 +96,7 @@ $$;
 create function public.qorpera_structured_folder_names(p_key text)
 returns text[] language sql immutable parallel safe set search_path = '' as $$
 	select case
+		when p_key = 'agents/groups' then array[]::text[]
 		when p_key ~ '^agents/groups/[^/]+$' then array['3:a group chat''s folder']
 		when p_key ~ '^agents/(groups|sections\.md)(/|$)' then null
 		when p_key ~ '^agents/[^/]+$' then array['2:an agent''s folder']
@@ -198,7 +204,8 @@ begin
 			v_bad := array_append(v_bad, 'effort'); end if;
 		if jsonb_typeof(p_parse -> 'instructions') is distinct from 'string'
 			or octet_length(p_parse ->> 'instructions') not between 1 and 32768
-			or (p_parse ->> 'instructions') <> btrim(p_parse ->> 'instructions', E' \t\n\r') then
+			or (p_parse ->> 'instructions') <> btrim(p_parse ->> 'instructions', E' \t\n\r')
+			or (p_parse ->> 'instructions') ~ '[\x01-\x08\x0b\x0c\x0e-\x1f\x7f]' then
 			v_bad := array_append(v_bad, 'instructions'); end if;
 	end if;
 	if cardinality(v_bad) = 0 then return '[]'::jsonb; end if;
@@ -214,13 +221,16 @@ returns boolean language sql immutable set search_path = '' as $$
 	select p_key = any (array['vision','vision/vision.md','agents','agents/sections.md','agents/groups','connections','skills','rules'])
 $$;
 
--- The unit's structured entry for one path (matched by key), or null.
-create function public.qorpera_company_state_entry(p_unit jsonb, p_key text)
+-- The unit's structured entries by key, built once per unit (a new folder may carry thousands of files). The
+-- first entry for a key wins.
+create function public.qorpera_company_state_entries(p_unit jsonb)
 returns jsonb language sql immutable set search_path = '' as $$
-	select e.value from jsonb_array_elements(case when jsonb_typeof(p_unit -> 'structured') = 'array'
-		then p_unit -> 'structured' else '[]'::jsonb end) e
-	where jsonb_typeof(e.value) = 'object' and public.qorpera_folder_key(e.value ->> 'path') = p_key
-	limit 1
+	select coalesce(jsonb_object_agg(k.key, k.value), '{}'::jsonb)
+	from (select distinct on (public.qorpera_folder_key(e.value ->> 'path')) public.qorpera_folder_key(e.value ->> 'path') as key, e.value
+		from jsonb_array_elements(case when jsonb_typeof(p_unit -> 'structured') = 'array' then p_unit -> 'structured'
+			else '[]'::jsonb end) with ordinality as e(value, ord)
+		where jsonb_typeof(e.value) = 'object' and jsonb_typeof(e.value -> 'path') = 'string'
+		order by public.qorpera_folder_key(e.value ->> 'path'), e.ord) k
 $$;
 
 -- The files a unit writes, as stored: (stored path, key, file object). A write is its own path; a new folder's
@@ -247,13 +257,12 @@ $$;
 -- The checked parse of one structured file a unit writes: {ok, kind, parse, problems}. The entry must carry the
 -- file's text, whose hash is the file's own, and a parse of the path's kind with the right shape; a writer that
 -- could not read the file sends its problems instead.
-create function public.qorpera_company_state_checked(p_unit jsonb, p_path text, p_key text, p_file jsonb)
+create function public.qorpera_company_state_checked(p_entry jsonb, p_path text, p_key text, p_file jsonb)
 returns jsonb language plpgsql immutable set search_path = '' as $$
-declare v_kind text := public.qorpera_structured_path_kind(p_key); v_entry jsonb; v_problems jsonb;
+declare v_kind text := public.qorpera_structured_path_kind(p_key); v_entry jsonb := p_entry; v_problems jsonb;
 begin
 	v_problems := public.qorpera_company_state_path_problems(p_path, false);
 	if jsonb_array_length(v_problems) > 0 then return jsonb_build_object('ok', false, 'problems', v_problems); end if;
-	v_entry := public.qorpera_company_state_entry(p_unit, p_key);
 	if v_entry is null or v_entry ->> 'kind' is distinct from v_kind then
 		return jsonb_build_object('ok', false, 'problems', jsonb_build_array(public.qorpera_company_state_problem('front_matter', null, null,
 			'the platform could not read this file; save it again')));
@@ -280,33 +289,53 @@ end $$;
 
 -- Rank 2: the roster rows this change set rewrites (FOR NO KEY UPDATE): an agent.md's id, and the rows of agents
 -- under a folder that is deleted or moved (read from the index with no lock; the path locks that follow and the
--- subtree's asOfSeq rule refuse a subtree that changed meanwhile).
+-- subtree's asOfSeq rule refuse a subtree that changed meanwhile). Rank 4: the agent's thread room, FOR UPDATE,
+-- when its name or status changes or it retires: the roster's thread trigger (qorpera_ensure_agent_thread_internal)
+-- takes that room FOR UPDATE, and a run of that room holds it FOR KEY SHARE at rank 4 before its paths, so the
+-- trigger must not be the first to take it after the paths.
 create or replace function public.qorpera_folder_structured_targets(p_environment_id uuid, p_actor jsonb, p_units jsonb)
 returns table(rank smallint, tbl text, key text, mode text) language plpgsql stable set search_path = '' as $$
-declare v_profile uuid; v_unit jsonb; v_op text; v_key text; v_id text;
+declare v_profile uuid; v_unit jsonb; v_op text; v_key text; v_entry jsonb; v_staff record; v_room uuid;
 begin
 	select profile_id into v_profile from public.qorpera_company_files where environment_id = p_environment_id;
 	if v_profile is null then return; end if;
 	for v_unit in select value from jsonb_array_elements(p_units) loop
 		v_op := v_unit ->> 'op';
 		if v_op in ('write','new_folder') then
-			for v_id in select e.value -> 'parse' ->> 'id' from jsonb_array_elements(case when jsonb_typeof(v_unit -> 'structured') = 'array'
+			for v_entry in select e.value from jsonb_array_elements(case when jsonb_typeof(v_unit -> 'structured') = 'array'
 					then v_unit -> 'structured' else '[]'::jsonb end) e
 				where e.value ->> 'kind' = 'agent' and coalesce(e.value -> 'parse' ->> 'id', '') ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
 			loop
-				rank := 2; tbl := 'qorpera_profile_staff'; key := v_profile::text || ':' || v_id; mode := 'nokeyupdate';
+				rank := 2; tbl := 'qorpera_profile_staff'; key := v_profile::text || ':' || (v_entry -> 'parse' ->> 'id'); mode := 'nokeyupdate';
 				return next;
+				select s.display_name, s.employment_status, s.folder_retired_at into v_staff from public.qorpera_profile_staff s
+				where s.profile_id = v_profile and s.staff_agent_id = (v_entry -> 'parse' ->> 'id')::uuid;
+				if found and (v_staff.display_name is distinct from v_entry -> 'parse' ->> 'name'
+					or v_staff.employment_status is distinct from v_entry -> 'parse' ->> 'status' or v_staff.folder_retired_at is not null) then
+					for v_room in select r.id from public.qorpera_company_rooms r
+						where r.profile_id = v_profile and r.bound_staff_agent_id = (v_entry -> 'parse' ->> 'id')::uuid loop
+						rank := 4; tbl := 'qorpera_company_rooms'; key := v_room::text; mode := 'update';
+						return next;
+					end loop;
+				end if;
 			end loop;
 		elsif v_op in ('delete','move') then
 			v_key := public.qorpera_folder_key(case when v_op = 'move' then v_unit ->> 'from' else v_unit ->> 'path' end);
 			if v_key like 'agents/%' then
-				for v_id in select s.staff_agent_id::text from public.qorpera_profile_staff s
-					where s.folder_environment_id = p_environment_id and s.folder_path is not null
+				for v_staff in select s.staff_agent_id, s.employment_status from public.qorpera_profile_staff s
+					where s.folder_environment_id = p_environment_id and s.folder_path is not null and s.deleted_at is null
 						and (public.qorpera_folder_key(s.folder_path) = v_key
 							or public.qorpera_folder_key(s.folder_path) like public.qorpera_folder_under(v_key))
 				loop
-					rank := 2; tbl := 'qorpera_profile_staff'; key := v_profile::text || ':' || v_id; mode := 'nokeyupdate';
+					rank := 2; tbl := 'qorpera_profile_staff'; key := v_profile::text || ':' || v_staff.staff_agent_id::text; mode := 'nokeyupdate';
 					return next;
+					if v_op = 'delete' and v_staff.employment_status = 'active' then
+						for v_room in select r.id from public.qorpera_company_rooms r
+							where r.profile_id = v_profile and r.bound_staff_agent_id = v_staff.staff_agent_id loop
+							rank := 4; tbl := 'qorpera_company_rooms'; key := v_room::text; mode := 'update';
+							return next;
+						end loop;
+					end if;
 				end loop;
 			end if;
 		end if;
@@ -371,10 +400,13 @@ begin
 	select v.structured -> 'parse' into v_base
 	from public.qorpera_folder_entries e join public.qorpera_folder_path_versions v on v.version = e.version
 	where e.environment_id = p_environment_id and e.key_sha256 = extensions.digest(p_key, 'sha256') and e.kind = 'file';
-	select s.folder_path, s.folder_retired_at into v_other from public.qorpera_profile_staff s
+	select s.folder_path, s.folder_retired_at, s.deleted_at into v_other from public.qorpera_profile_staff s
 	where s.profile_id = p_profile_id and s.staff_agent_id = v_id;
 	if v_base is not null and v_base ->> 'id' is distinct from p_parse ->> 'id' then
 		v_problem := 'id never changes; it is ' || (v_base ->> 'id');
+	elsif found and v_other.deleted_at is not null then
+		-- Removed outside its folder (the legacy roster delete); its row is frozen for good.
+		v_problem := 'this agent was removed outside the company folder; give this agent a new id';
 	elsif found and v_other.folder_path is null then
 		v_problem := 'this id belongs to an agent outside the company folder';
 	elsif found and v_other.folder_retired_at is null
@@ -399,6 +431,7 @@ returns jsonb language plpgsql stable security definer set search_path = '' as $
 declare
 	v_op text := p_unit ->> 'op'; v_profile uuid; v_key text; v_row public.qorpera_folder_entries%rowtype;
 	v_file record; v_checked jsonb; v_rule jsonb; v_problems jsonb; v_cofounder_path text; v_content jsonb;
+	v_entries jsonb; v_ids text[] := '{}'; v_cofounders integer := 0;
 begin
 	select profile_id into v_profile from public.qorpera_company_files where environment_id = p_environment_id;
 	v_key := public.qorpera_folder_key(p_eff_path);
@@ -446,12 +479,19 @@ begin
 				return jsonb_build_object('ok', false, 'reason', 'structured_invalid', 'problems', v_problems); end if;
 		end loop;
 	end if;
+	v_entries := public.qorpera_company_state_entries(p_unit);
 	for v_file in select * from public.qorpera_company_state_unit_files(p_unit, p_eff_path) loop
 		if public.qorpera_structured_path_kind(v_file.key) is null then continue; end if;
-		v_checked := public.qorpera_company_state_checked(p_unit, v_file.path, v_file.key, v_file.file);
+		v_checked := public.qorpera_company_state_checked(v_entries -> v_file.key, v_file.path, v_file.key, v_file.file);
 		if not (v_checked ->> 'ok')::boolean then
 			return jsonb_build_object('ok', false, 'reason', 'structured_invalid', 'problems', v_checked -> 'problems'); end if;
 		if v_checked ->> 'kind' = 'agent' then
+			-- One id per agent, and one Co-Founder, within the unit too.
+			if (v_checked -> 'parse' ->> 'id') = any (v_ids) or (v_checked -> 'parse' ->> 'agentKind' = 'co-founder' and v_cofounders > 0) then
+				return jsonb_build_object('ok', false, 'reason', 'structured_rule', 'problems', jsonb_build_array(
+					public.qorpera_company_state_problem('value', null, null, 'two agent.md files in one change carry the same id or kind'))); end if;
+			v_ids := array_append(v_ids, v_checked -> 'parse' ->> 'id');
+			if v_checked -> 'parse' ->> 'agentKind' = 'co-founder' then v_cofounders := v_cofounders + 1; end if;
 			v_rule := public.qorpera_company_state_agent_rules(p_environment_id, v_profile, p_actor, v_file.path, v_file.key,
 				v_checked -> 'parse');
 			if v_rule is not null then return v_rule; end if;
@@ -468,7 +508,7 @@ end $$;
 create or replace function public.qorpera_folder_structured_review_class(p_environment_id uuid, p_actor jsonb, p_unit jsonb,
 	p_eff_path text, p_eff_to text)
 returns text language plpgsql stable security definer set search_path = '' as $$
-declare v_file record; v_kind text; v_base jsonb; v_entry jsonb;
+declare v_file record; v_kind text; v_base jsonb; v_entry jsonb; v_entries jsonb := public.qorpera_company_state_entries(p_unit);
 begin
 	for v_file in select * from public.qorpera_company_state_unit_files(p_unit, p_eff_path) loop
 		v_kind := public.qorpera_structured_path_kind(v_file.key);
@@ -476,7 +516,7 @@ begin
 		select v.structured -> 'parse' into v_base
 		from public.qorpera_folder_entries e join public.qorpera_folder_path_versions v on v.version = e.version
 		where e.environment_id = p_environment_id and e.key_sha256 = extensions.digest(v_file.key, 'sha256') and e.kind = 'file';
-		v_entry := public.qorpera_company_state_entry(p_unit, v_file.key);
+		v_entry := v_entries -> v_file.key;
 		if v_kind = 'agent' and (v_base is null
 			or v_base ->> 'status' is distinct from v_entry -> 'parse' ->> 'status') then return 'delegation'; end if;
 		if v_kind = 'group' and v_base is null then return 'delegation'; end if;
@@ -541,7 +581,7 @@ create or replace function public.qorpera_folder_structured_apply(p_environment_
 returns void language plpgsql security definer set search_path = '' as $$
 declare
 	v_op text := p_unit ->> 'op'; v_profile uuid; v_user uuid; v_file record; v_kind text; v_entry jsonb; v_version uuid;
-	v_key text; v_staff record; v_new_path text; v_actor jsonb;
+	v_key text; v_staff record; v_new_path text; v_actor jsonb; v_entries jsonb;
 begin
 	select profile_id into v_profile from public.qorpera_company_files where environment_id = p_environment_id;
 	select jsonb_build_object('kind', c.actor_kind, 'requesterUserId', c.requester_id) into v_actor
@@ -550,10 +590,11 @@ begin
 		when 'member' then jsonb_build_object('kind', 'member', 'userId', v_actor ->> 'requesterUserId') else v_actor end);
 
 	if v_op in ('write','new_folder') then
+		v_entries := public.qorpera_company_state_entries(p_unit);
 		for v_file in select * from public.qorpera_company_state_unit_files(p_unit, p_eff_path) loop
 			v_kind := public.qorpera_structured_path_kind(v_file.key);
 			if v_kind is null then continue; end if;
-			v_entry := public.qorpera_company_state_entry(p_unit, v_file.key);
+			v_entry := v_entries -> v_file.key;
 			update public.qorpera_folder_path_versions set structured = jsonb_build_object('kind', v_kind, 'parse', v_entry -> 'parse',
 				'parserVersion', v_entry -> 'parserVersion')
 			where commit_id = p_commit_id and unit_no = p_unit_no and key_sha256 = extensions.digest(v_file.key, 'sha256')
@@ -582,6 +623,7 @@ begin
 		v_key := public.qorpera_folder_key(p_eff_path);
 		for v_staff in select s.staff_agent_id, s.folder_path from public.qorpera_profile_staff s
 			where s.profile_id = v_profile and s.folder_environment_id = p_environment_id and s.folder_retired_at is null
+				and s.deleted_at is null
 				and (public.qorpera_folder_key(s.folder_path) = v_key
 					or public.qorpera_folder_key(s.folder_path) like public.qorpera_folder_under(v_key))
 		loop
@@ -591,7 +633,8 @@ begin
 				and key_sha256 = extensions.digest(public.qorpera_folder_key(v_new_path), 'sha256');
 			if v_version is null then raise exception 'A moved agent.md has no version in its commit' using errcode = 'XX000'; end if;
 			update public.qorpera_profile_staff set folder_path = (select e.path from public.qorpera_folder_entries e
-					where e.environment_id = p_environment_id and e.version = v_version),
+					where e.environment_id = p_environment_id
+						and e.key_sha256 = extensions.digest(public.qorpera_folder_key(v_new_path), 'sha256')),
 				folder_path_version = v_version, folder_commit_id = p_commit_id, version = version + 1,
 				updated_at = greatest(clock_timestamp(), created_at), updated_by_user_id = v_user
 			where profile_id = v_profile and staff_agent_id = v_staff.staff_agent_id;
@@ -605,6 +648,7 @@ begin
 		v_key := public.qorpera_folder_key(p_eff_path);
 		for v_staff in select s.staff_agent_id, s.employment_status from public.qorpera_profile_staff s
 			where s.profile_id = v_profile and s.folder_environment_id = p_environment_id and s.folder_retired_at is null
+				and s.deleted_at is null
 				and (public.qorpera_folder_key(s.folder_path) = v_key
 					or public.qorpera_folder_key(s.folder_path) like public.qorpera_folder_under(v_key))
 		loop
@@ -627,7 +671,7 @@ returns void language plpgsql stable security definer set search_path = '' as $$
 begin
 	if exists (select 1 from public.qorpera_profile_staff s
 		where s.folder_environment_id = p_environment_id and s.folder_commit_id = p_commit_id and s.folder_retired_at is null
-			and not exists (select 1 from public.qorpera_folder_entries e where e.environment_id = p_environment_id
+			and s.deleted_at is null and not exists (select 1 from public.qorpera_folder_entries e where e.environment_id = p_environment_id
 				and e.key_sha256 = extensions.digest(public.qorpera_folder_key(s.folder_path), 'sha256')
 				and e.version = s.folder_path_version and e.path = s.folder_path))
 		or exists (select 1 from public.qorpera_folder_company_index i
@@ -640,17 +684,17 @@ end $$;
 
 -- 12. Grants ----------------------------------------------------------------------------------------------------
 
-revoke all on function public.qorpera_structured_path_kind(text) from public, anon, authenticated;
-revoke all on function public.qorpera_structured_folder_names(text) from public, anon, authenticated;
-revoke all on function public.qorpera_company_state_problem(text, integer, text, text) from public, anon, authenticated;
-revoke all on function public.qorpera_company_state_path_problems(text, boolean) from public, anon, authenticated;
-revoke all on function public.qorpera_company_state_one_line(jsonb, integer, integer, boolean) from public, anon, authenticated;
-revoke all on function public.qorpera_company_state_parse_problems(text, jsonb) from public, anon, authenticated;
-revoke all on function public.qorpera_company_state_seeded(text) from public, anon, authenticated;
-revoke all on function public.qorpera_company_state_entry(jsonb, text) from public, anon, authenticated;
-revoke all on function public.qorpera_company_state_unit_files(jsonb, text) from public, anon, authenticated;
-revoke all on function public.qorpera_company_state_actor_user(uuid, jsonb) from public, anon, authenticated;
-revoke all on function public.qorpera_company_state_checked(jsonb, text, text, jsonb) from public, anon, authenticated;
-revoke all on function public.qorpera_company_state_carried(uuid, text, text, text, public.qorpera_folder_entries) from public, anon, authenticated;
-revoke all on function public.qorpera_company_state_agent_rules(uuid, uuid, jsonb, text, text, jsonb) from public, anon, authenticated;
-revoke all on function public.qorpera_company_state_index_agent(uuid, uuid, uuid, uuid, text, uuid, jsonb, jsonb) from public, anon, authenticated;
+revoke all on function public.qorpera_structured_path_kind(text) from public, anon, authenticated, service_role;
+revoke all on function public.qorpera_structured_folder_names(text) from public, anon, authenticated, service_role;
+revoke all on function public.qorpera_company_state_problem(text, integer, text, text) from public, anon, authenticated, service_role;
+revoke all on function public.qorpera_company_state_path_problems(text, boolean) from public, anon, authenticated, service_role;
+revoke all on function public.qorpera_company_state_one_line(jsonb, integer, integer, boolean) from public, anon, authenticated, service_role;
+revoke all on function public.qorpera_company_state_parse_problems(text, jsonb) from public, anon, authenticated, service_role;
+revoke all on function public.qorpera_company_state_seeded(text) from public, anon, authenticated, service_role;
+revoke all on function public.qorpera_company_state_entries(jsonb) from public, anon, authenticated, service_role;
+revoke all on function public.qorpera_company_state_unit_files(jsonb, text) from public, anon, authenticated, service_role;
+revoke all on function public.qorpera_company_state_actor_user(uuid, jsonb) from public, anon, authenticated, service_role;
+revoke all on function public.qorpera_company_state_checked(jsonb, text, text, jsonb) from public, anon, authenticated, service_role;
+revoke all on function public.qorpera_company_state_carried(uuid, text, text, text, public.qorpera_folder_entries) from public, anon, authenticated, service_role;
+revoke all on function public.qorpera_company_state_agent_rules(uuid, uuid, jsonb, text, text, jsonb) from public, anon, authenticated, service_role;
+revoke all on function public.qorpera_company_state_index_agent(uuid, uuid, uuid, uuid, text, uuid, jsonb, jsonb) from public, anon, authenticated, service_role;

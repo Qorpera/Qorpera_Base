@@ -536,8 +536,10 @@ end $$;
 
 -- The hook's targets at the commit's own ranks go into the commit's passes, never dropped: a member row at rank 1 is
 -- locked with the commit's own (633 H shows the commit waiting for it); a table the commit does not own at its
--- ranks, and a malformed target, are defects (XX000). The stub comes back at the end of the block.
+-- ranks, and a malformed target, are defects (XX000). The hook's current definition (F2's since 20260929020000) comes
+-- back at the end of the block.
 do $$
+declare v_saved text := pg_get_functiondef('public.qorpera_folder_structured_targets(uuid,jsonb,jsonb)'::regprocedure);
 begin
 	create or replace function public.qorpera_folder_structured_targets(p_environment_id uuid, p_actor jsonb, p_units jsonb)
 	returns table(rank smallint, tbl text, key text, mode text) language sql stable set search_path = '' as $f$
@@ -557,10 +559,7 @@ begin
 		'key', '63200000-0000-4000-8000-000000000010:63200000-0000-4000-8000-000000000003', 'mode', 'exclusive'))::text, true);
 	perform pg_temp.raises(format('select pg_temp.commit(%L, %L, %L)', pg_temp.member(2), 'targets-bad-3', '[{"op":"mkdir","path":"targets-bad"}]'), 'XX000');
 	-- (A hook's targets carry no 'required' flag in F2's signature; the hook checks the rows it relies on in decide.)
-	create or replace function public.qorpera_folder_structured_targets(p_environment_id uuid, p_actor jsonb, p_units jsonb)
-	returns table(rank smallint, tbl text, key text, mode text) language sql stable set search_path = '' as $f$
-		select null::smallint, null::text, null::text, null::text where false
-	$f$;
+	execute v_saved;
 end $$;
 
 -- Folder invariants, and no claim outlives its transaction.
