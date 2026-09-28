@@ -305,11 +305,13 @@ closes the conversation; a restore reopens both, with the same conversation.
   may change the body only, and never creates or deletes the file.
 - **Body:** company-authored.
 - **Authority:** the vault and the operation grants stay in charge (contract 5.6).
-- **Database rules:** the id is a vault row (`qorpera_cloud_secrets`) of this company and never
-  changes. A platform write matches that row: it is active and its connector is the `service`. One
-  file holds one account.
-- **Deleting:** refused while the vault record is active, whether `connected` or `broken`, for the
-  platform too. Disconnecting removes the file.
+- **Database rules:** the id is a company-owned vault row (`qorpera_cloud_secrets`) of this
+  company and environment, and never changes. A platform write matches that row: it is active and
+  its connector is the `service`. One file holds one account. A file saved before this slice is not
+  trusted as the saved version until the platform writes it (the index points at its path).
+- **Deleting:** only the platform deletes the file, and only once the vault record is revoked
+  (refused while it is active, whether `connected` or `broken`). Disconnecting removes the file; the
+  writer treats a file already missing as done.
 - **Moving:** within `connections/` the index follows; out of it is a kind change (refused).
 - Not reviewed.
 
@@ -633,7 +635,7 @@ on a unit that `decide` passed.
 | --- | --- | --- |
 | before tx (TS) | `parseCompanyStateFile(path, text)` | Each structured path of a unit gets an entry in `structured: [{path, kind, text, parse, parserVersion}]`, or `[{path, kind, problems}]` without the text when refused. A `new_folder` lists every structured file inside it. SQL re-hashes each parsed file's text against its file hash. |
 | any | `qorpera_structured_path_kind(path)` | The pattern table, on the key. |
-| 4, plan | `qorpera_folder_structured_targets(p_environment_id uuid, p_actor jsonb, p_units jsonb) returns table(rank smallint, tbl text, key text, mode text)` | Takes no locks. Returns the rows to lock, each with its rank and mode: index rows by parse id, index rows by path prefix for a subtree unit as of its `asOfSeq`, referenced member rows (`people`, `requested_by`, `connected_by`: rank 1, KEY SHARE), and unique claims (`key` is a uuid as text, or a claim key). Rows of F1's tables (members, execution authorities, resources, grants) are merged into F1's own pass at their rank, the stronger mode winning. |
+| 4, plan | `qorpera_folder_structured_targets(p_environment_id uuid, p_actor jsonb, p_units jsonb) returns table(rank smallint, tbl text, key text, mode text)` | Takes no locks. Returns the rows to lock, each with its rank and mode: index rows by parse id, index rows by path prefix for a subtree unit as of its `asOfSeq`, referenced member rows that an index row depends on (rank 1, KEY SHARE; none so far: `people` and `connected_by` are read without a lock, since no index row depends on them), and unique claims (`key` is a uuid as text, or a claim key). Rows of F1's tables (members, execution authorities, resources, grants) are merged into F1's own pass at their rank, the stronger mode winning. |
 | 4, lock | `qorpera_folder_structured_lock(p_environment_id uuid, p_targets jsonb, p_from_rank smallint, p_to_rank smallint) returns void` | Locks F2's tables through a closed list, in key order. F1 calls it for ranks 2, 4–5 and 8–9, between its own ranks 1, 3, 6 and 7. |
 | 7, per unit | `qorpera_folder_structured_decide(p_environment_id uuid, p_actor jsonb, p_commit_id uuid, p_unit_no integer, p_unit jsonb, p_eff_path text, p_eff_to text) returns jsonb` | Runs after F1's own checks, on the effective (stored) paths. Covers the path checks, the database rules, the dependency rule and the 5.6 refusals, and returns `{ok, reason, problems}`. It reads the index as the earlier units of the commit left it. |
 | 7, review | `qorpera_folder_structured_review_class(p_environment_id uuid, p_actor jsonb, p_unit jsonb, p_eff_path text, p_eff_to text) returns text` | Returns plain, delegation or deletion, from the base parse (the current entry's path version) and the new one. The TS proposal before the transaction applies the units in the same order, so both sides agree. |

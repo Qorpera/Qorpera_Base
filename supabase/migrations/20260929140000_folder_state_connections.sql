@@ -23,7 +23,9 @@
 create table public.qorpera_folder_connection_index (
 	secret_id uuid primary key,
 	environment_id uuid not null references public.qorpera_folder_clocks(environment_id) on delete cascade,
-	profile_id uuid not null references public.qorpera_profiles(id) on delete cascade,
+	-- No foreign key to qorpera_profiles: its KEY SHARE would come in apply, after the paths, where the company row
+	-- must never be taken (doc §4). The rows go with the company through the environment's folder clock.
+	profile_id uuid not null,
 	folder_path text collate "C" not null,
 	folder_path_version uuid not null,
 	commit_id uuid not null,
@@ -141,7 +143,7 @@ begin
 		if coalesce(p_parse ->> 'connectedBy', '') !~ c_uuid then v_bad := array_append(v_bad, 'connectedBy'); end if;
 		-- The parser's canonical instant: seconds always, a fraction without trailing zeros, UTC.
 		if jsonb_typeof(p_parse -> 'connectedAt') is distinct from 'string'
-			or (p_parse ->> 'connectedAt') !~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]{0,5}[1-9])?Z$' then
+			or (p_parse ->> 'connectedAt') !~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](\.[0-9]{0,5}[1-9])?Z$' then
 			v_bad := array_append(v_bad, 'connectedAt');
 		else
 			begin
@@ -189,9 +191,9 @@ end $$;
 
 -- 3. The rules of a connection file -----------------------------------------------------------------------------------
 
--- One connections/<name>.md (§2): the id never changes and is a vault row of this company; only the platform (the
--- vault's writer) creates the file or changes its settings, and then they match the vault's row; a member or an agent
--- changes the body only; one file holds one account.
+-- One connections/<name>.md (§2): the id never changes and is a company-owned vault row of this company and
+-- environment; only the platform (the vault's writer) creates the file or changes its settings, and then they match
+-- the vault's row; a member or an agent changes the body only; one file holds one account.
 create function public.qorpera_company_state_connection_rules(p_environment_id uuid, p_profile_id uuid, p_actor jsonb,
 	p_key text, p_parse jsonb)
 returns jsonb language plpgsql stable set search_path = '' as $$
@@ -199,14 +201,19 @@ declare
 	v_base jsonb := public.qorpera_company_state_base(p_environment_id, p_key); v_secret record; v_index record;
 	v_problem text;
 begin
-	-- A parse stored before its kind's shape was checked (F2-1 alone) is not trusted.
-	if v_base is not null and jsonb_array_length(public.qorpera_company_state_parse_problems('connection', v_base)) > 0 then
+	-- The saved version is trusted only when the index points at this path for its account: a file saved before this
+	-- slice (F2-1 or F2-2 alone) was never checked, so a member could have written it.
+	if v_base is not null and (jsonb_array_length(public.qorpera_company_state_parse_problems('connection', v_base)) > 0
+		or not exists (select 1 from public.qorpera_folder_connection_index i
+			where i.secret_id = (v_base ->> 'id')::uuid and i.environment_id = p_environment_id and i.retired_at is null
+				and public.qorpera_folder_key(i.folder_path) = p_key)) then
 		v_base := null; end if;
-	select s.id, s.profile_id, s.connector_id, s.status into v_secret
+	select s.id, s.profile_id, s.environment_id, s.owner_kind, s.connector_id, s.status into v_secret
 	from public.qorpera_cloud_secrets s where s.id = (p_parse ->> 'id')::uuid;
 	if v_base is not null and v_base ->> 'id' is distinct from p_parse ->> 'id' then
 		v_problem := 'id never changes; it is ' || (v_base ->> 'id');
-	elsif v_secret.id is null or v_secret.profile_id is distinct from p_profile_id then
+	elsif v_secret.id is null or v_secret.profile_id is distinct from p_profile_id
+		or v_secret.environment_id is distinct from p_environment_id or v_secret.owner_kind is distinct from 'company' then
 		v_problem := 'no connected account of this company has the id ' || (p_parse ->> 'id');
 	elsif p_actor ->> 'kind' is distinct from 'platform' and (v_base is null or (v_base - 'purpose') <> (p_parse - 'purpose')) then
 		v_problem := 'the settings of a connection are the platform''s; change only the text below them';
@@ -270,15 +277,16 @@ begin
 		-- An agent.md or group.md never goes alone: its folder is deleted or moved instead.
 		if v_row.kind = 'file' and public.qorpera_structured_path_kind(v_key) in ('agent','group') then
 			return jsonb_build_object('ok', false, 'reason', 'lone_structured_file'); end if;
-		-- A connection's file stays while the vault holds the account; disconnecting removes it.
+		-- A connection's file goes only when the platform removes it after a disconnect.
 		if v_op = 'delete' and v_row.kind = 'file' and public.qorpera_structured_path_kind(v_key) = 'connection'
-			and exists (select 1 from public.qorpera_folder_connection_index i
-				join public.qorpera_cloud_secrets s on s.id = i.secret_id
-				where i.environment_id = p_environment_id and i.retired_at is null
-					and public.qorpera_folder_key(i.folder_path) = v_key and s.status = 'active') then
+			and (p_actor ->> 'kind' is distinct from 'platform'
+				or exists (select 1 from public.qorpera_folder_connection_index i
+					join public.qorpera_cloud_secrets s on s.id = i.secret_id
+					where i.environment_id = p_environment_id and i.retired_at is null
+						and public.qorpera_folder_key(i.folder_path) = v_key and s.status = 'active')) then
 			return jsonb_build_object('ok', false, 'reason', 'structured_rule', 'problems', jsonb_build_array(
 				public.qorpera_company_state_problem('value', null, null,
-					'this account is still connected; disconnect it in Settings and its file goes with it'))); end if;
+					'a connection''s file goes when its account is disconnected in Settings'))); end if;
 		if v_op = 'move' then return public.qorpera_company_state_carried(p_environment_id, v_op, v_key, p_eff_to, v_row); end if;
 		return jsonb_build_object('ok', true);
 	end if;

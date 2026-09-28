@@ -13,7 +13,8 @@ insert into public.qorpera_profile_members(profile_id,user_id,email,display_name
 	('70400000-0000-4000-8000-000000000010','70400000-0000-4000-8000-000000000002','conn-member@example.test','Member','contributor'),
 	('70400000-0000-4000-8000-000000000011','70400000-0000-4000-8000-000000000001','conn-owner@example.test','Owner','owner');
 insert into public.qorpera_company_environments(id,profile_id,name,contract_version,created_by_user_id) values
-	('70400000-0000-4000-8000-000000000020','70400000-0000-4000-8000-000000000010','Environment',1,'70400000-0000-4000-8000-000000000001'), ('70400000-0000-4000-8000-000000000021','70400000-0000-4000-8000-000000000011','Environment',1,'70400000-0000-4000-8000-000000000001');
+	('70400000-0000-4000-8000-000000000020','70400000-0000-4000-8000-000000000010','Environment',1,'70400000-0000-4000-8000-000000000001'), ('70400000-0000-4000-8000-000000000021','70400000-0000-4000-8000-000000000011','Environment',1,'70400000-0000-4000-8000-000000000001'),
+	('70400000-0000-4000-8000-000000000022','70400000-0000-4000-8000-000000000010','Second environment',1,'70400000-0000-4000-8000-000000000001');
 insert into public.qorpera_cloud_secret_broker_authorities(id,profile_id,service_origin,key_id,capability_sha256) values
 	('70400000-0000-4000-8000-0000000000d1','70400000-0000-4000-8000-000000000010','https://broker.example.test','key-1',repeat('1',64)),
 	('70400000-0000-4000-8000-0000000000d2','70400000-0000-4000-8000-000000000011','https://broker.example.test','key-2',repeat('2',64));
@@ -23,7 +24,11 @@ insert into public.qorpera_cloud_secrets(id,profile_id,environment_id,broker_aut
 	('70400000-0000-4000-8000-0000000000e2','70400000-0000-4000-8000-000000000010','70400000-0000-4000-8000-000000000020','70400000-0000-4000-8000-0000000000d1','company','github','primary','GitHub account','active',1,'70400000-0000-4000-8000-000000000001',null,null,'nordlys',true),
 	('70400000-0000-4000-8000-0000000000e3','70400000-0000-4000-8000-000000000010','70400000-0000-4000-8000-000000000020','70400000-0000-4000-8000-0000000000d1','company','google_drive','primary','Drive account','revoked',1,'70400000-0000-4000-8000-000000000001',
 		statement_timestamp(),'70400000-0000-4000-8000-000000000001','drive@nordlys.test',true),
-	('70400000-0000-4000-8000-0000000000e4','70400000-0000-4000-8000-000000000011','70400000-0000-4000-8000-000000000021','70400000-0000-4000-8000-0000000000d2','company','gmail','primary','Gmail account','active',1,'70400000-0000-4000-8000-000000000001',null,null,'x@other.test',true);
+	('70400000-0000-4000-8000-0000000000e4','70400000-0000-4000-8000-000000000011','70400000-0000-4000-8000-000000000021','70400000-0000-4000-8000-0000000000d2','company','gmail','primary','Gmail account','active',1,'70400000-0000-4000-8000-000000000001',null,null,'x@other.test',true),
+	('70400000-0000-4000-8000-0000000000e5','70400000-0000-4000-8000-000000000010','70400000-0000-4000-8000-000000000022','70400000-0000-4000-8000-0000000000d1','company','gmail','primary','Gmail account','active',1,'70400000-0000-4000-8000-000000000001',null,null,'e3@nordlys.test',true);
+insert into public.qorpera_cloud_secrets(id,profile_id,environment_id,broker_authority_id,owner_kind,owner_user_id,connector_id,secret_name,
+	purpose,status,current_version,created_by_user_id,account_label) values
+	('70400000-0000-4000-8000-0000000000e6','70400000-0000-4000-8000-000000000010','70400000-0000-4000-8000-000000000020','70400000-0000-4000-8000-0000000000d1','member','70400000-0000-4000-8000-000000000001','gmail','mine','My Gmail','active',1,'70400000-0000-4000-8000-000000000001','owner@nordlys.test');
 
 select set_config('request.jwt.claims', '{"role":"service_role"}', true) \g /dev/null
 select public.qorpera_folder_enable('70400000-0000-4000-8000-000000000020') \g /dev/null
@@ -123,10 +128,13 @@ create function pg_temp.idx(p_id uuid) returns public.qorpera_folder_connection_
 	select * from public.qorpera_folder_connection_index where secret_id = p_id
 $$;
 create function pg_temp.refused(p_result jsonb, p_unit integer default 1) returns boolean language sql as $$
-	select p_result -> 'units' -> (p_unit - 1) ->> 'outcome' = 'refused' and p_result -> 'units' -> (p_unit - 1) ->> 'reason' = 'structured_rule'
+	select coalesce(p_result -> 'units' -> (p_unit - 1) ->> 'outcome' = 'refused'
+		and p_result -> 'units' -> (p_unit - 1) ->> 'reason' = 'structured_rule', false)
 $$;
 
 -- 1. The company, and the platform writing its first connection file ---------------------------------------------------
+
+select set_config('qorpera_test.vault_xmin', (select xmin::text from public.qorpera_cloud_secrets where id = '70400000-0000-4000-8000-0000000000e1'), true) \g /dev/null
 
 do $$
 declare r jsonb; i integer; x public.qorpera_folder_connection_index;
@@ -144,9 +152,7 @@ begin
 	if x.secret_id is null or x.folder_path is distinct from 'connections/hello.md' or x.purpose is distinct from ''
 		or x.folder_path_version is distinct from pg_temp.version('connections/hello.md') or x.retired_at is not null then
 		raise exception 'The platform''s connection file is indexed: %', to_jsonb(x); end if;
-	if (select status from public.qorpera_cloud_secrets where id = '70400000-0000-4000-8000-0000000000e1') is distinct from 'active'
-		or (select updated_at from public.qorpera_cloud_secrets where id = '70400000-0000-4000-8000-0000000000e1') is distinct from
-			(select created_at from public.qorpera_cloud_secrets where id = '70400000-0000-4000-8000-0000000000e1') then
+	if (select xmin::text from public.qorpera_cloud_secrets where id = '70400000-0000-4000-8000-0000000000e1') is distinct from current_setting('qorpera_test.vault_xmin') then
 		raise exception 'A save never writes the vault row'; end if;
 end $$;
 
@@ -193,6 +199,20 @@ begin
 		pg_temp.conn('code', '70400000-0000-4000-8000-0000000000e2', 'github', 'nordlys'), pg_temp.conn('code-two', '70400000-0000-4000-8000-0000000000e2', 'github', 'nordlys')));
 	perform pg_temp.expect(r, 1, 'saved');
 	if not pg_temp.refused(r, 2) then raise exception 'One file per account, across units too: %', r; end if;
+	-- An account of the company's other environment, or a member's own account, gets no company file.
+	if not pg_temp.refused(pg_temp.commit(pg_temp.platform(), 'vault-0007', jsonb_build_array(
+		pg_temp.conn('elsewhere', '70400000-0000-4000-8000-0000000000e5', 'gmail', 'e3@nordlys.test')))) then
+		raise exception 'An account of another environment is refused'; end if;
+	if not pg_temp.refused(pg_temp.commit(pg_temp.platform(), 'vault-0008', jsonb_build_array(
+		pg_temp.conn('mine', '70400000-0000-4000-8000-0000000000e6', 'gmail', 'owner@nordlys.test')))) then
+		raise exception 'A member''s own account gets no company file'; end if;
+	-- The shape: a clock past 23:59:59 and an action listed twice are not a connection.
+	perform pg_temp.expect(pg_temp.commit(pg_temp.platform(), 'vault-0009', jsonb_build_array(pg_temp.write('connections/code.md', 'connection',
+		pg_temp.conn_text('70400000-0000-4000-8000-0000000000e2', 'github', 'nordlys') || '  ', pg_temp.conn_parse('70400000-0000-4000-8000-0000000000e2', 'github', 'nordlys') || '{"connectedAt":"2026-09-28T24:00:00Z"}',
+		pg_temp.version('connections/code.md')))), 1, 'refused', 'structured_invalid');
+	perform pg_temp.expect(pg_temp.commit(pg_temp.platform(), 'vault-0010', jsonb_build_array(pg_temp.write('connections/code.md', 'connection',
+		pg_temp.conn_text('70400000-0000-4000-8000-0000000000e2', 'github', 'nordlys') || '   ', pg_temp.conn_parse('70400000-0000-4000-8000-0000000000e2', 'github', 'nordlys') || '{"actions":["send_message","send_message"]}',
+		pg_temp.version('connections/code.md')))), 1, 'refused', 'structured_invalid');
 	-- The shape: an unknown status is not a connection.
 	r := pg_temp.commit(pg_temp.platform(), 'vault-0006', jsonb_build_array(pg_temp.write('connections/code.md', 'connection',
 		pg_temp.conn_text('70400000-0000-4000-8000-0000000000e2', 'github', 'nordlys') || ' ', pg_temp.conn_parse('70400000-0000-4000-8000-0000000000e2', 'github', 'nordlys') || '{"status":"up"}',
@@ -217,15 +237,43 @@ begin
 	perform pg_temp.expect(pg_temp.commit(pg_temp.member(), 'move-0002', jsonb_build_array(jsonb_build_object('op','move',
 		'from','connections/support.md','to','support.md','expectedVersion',pg_temp.version('connections/support.md')))), 1, 'refused', 'kind_change');
 	-- Deleting is refused while the account is connected, for the platform too.
-	if not pg_temp.refused(pg_temp.commit(pg_temp.member(), 'delete-0001', jsonb_build_array(jsonb_build_object('op','delete',
+	if not pg_temp.refused(pg_temp.commit(pg_temp.platform(), 'delete-0001', jsonb_build_array(jsonb_build_object('op','delete',
 		'path','connections/support.md','expectedVersion',pg_temp.version('connections/support.md'))))) then
 		raise exception 'A connected account''s file stays'; end if;
-	-- Disconnected: the platform removes the file, and the index row retires.
+	-- Disconnected: a member still does not delete it; the platform removes the file, and the index row retires.
 	update public.qorpera_cloud_secrets set status = 'revoked', revoked_at = statement_timestamp(), revoked_by_user_id = '70400000-0000-4000-8000-000000000001'
 	where id = '70400000-0000-4000-8000-0000000000e1';
+	if not pg_temp.refused(pg_temp.commit(pg_temp.member(), 'delete-0003', jsonb_build_array(jsonb_build_object('op','delete',
+		'path','connections/support.md','expectedVersion',pg_temp.version('connections/support.md'))))) then
+		raise exception 'Only the platform removes a connection''s file'; end if;
 	perform pg_temp.expect(pg_temp.commit(pg_temp.platform(), 'delete-0002', jsonb_build_array(jsonb_build_object('op','delete',
 		'path','connections/support.md','expectedVersion',pg_temp.version('connections/support.md')))), 1, 'saved');
 	if (pg_temp.idx('70400000-0000-4000-8000-0000000000e1')).retired_at is null then raise exception 'Removing the file retires its index row'; end if;
+end $$;
+
+-- 5. A file saved before this slice is not trusted; two files for one account in one unit ---------------------------------
+
+do $$
+declare r jsonb;
+begin
+	-- As if connections/code.md had been saved before F2-3 (no index row points at it): a member's edit is a new file.
+	delete from public.qorpera_folder_connection_index where secret_id = '70400000-0000-4000-8000-0000000000e2';
+	if not pg_temp.refused(pg_temp.commit(pg_temp.member(), 'old-0001', jsonb_build_array(
+		pg_temp.conn('code', '70400000-0000-4000-8000-0000000000e2', 'github', 'nordlys', 'Code.')))) then
+		raise exception 'An unindexed file is not the saved version'; end if;
+	-- And it never blocks the platform's real file for that account.
+	perform pg_temp.expect(pg_temp.commit(pg_temp.platform(), 'old-0002', jsonb_build_array(
+		pg_temp.conn('github', '70400000-0000-4000-8000-0000000000e2', 'github', 'nordlys'))), 1, 'saved');
+	-- The other company's creation commit: one new folder carrying two files for one account.
+	perform public.qorpera_folder_enable('70400000-0000-4000-8000-000000000021');
+	r := public.qorpera_folder_commit('70400000-0000-4000-8000-000000000021', pg_temp.platform(), 'pair-0001', jsonb_build_array(jsonb_build_object('op','new_folder',
+		'path','connections','contents',jsonb_build_array(
+			jsonb_build_object('path','a.md','kind','file','file',pg_temp.stage(pg_temp.conn_text('70400000-0000-4000-8000-0000000000e4', 'gmail', 'x@other.test'), '70400000-0000-4000-8000-000000000011')),
+			jsonb_build_object('path','b.md','kind','file','file',pg_temp.stage(pg_temp.conn_text('70400000-0000-4000-8000-0000000000e4', 'gmail', 'x@other.test'), '70400000-0000-4000-8000-000000000011'))),
+		'structured',jsonb_build_array(
+			pg_temp.entry('connections/a.md','connection',pg_temp.conn_text('70400000-0000-4000-8000-0000000000e4', 'gmail', 'x@other.test'),pg_temp.conn_parse('70400000-0000-4000-8000-0000000000e4', 'gmail', 'x@other.test')),
+			pg_temp.entry('connections/b.md','connection',pg_temp.conn_text('70400000-0000-4000-8000-0000000000e4', 'gmail', 'x@other.test'),pg_temp.conn_parse('70400000-0000-4000-8000-0000000000e4', 'gmail', 'x@other.test'))))));
+	if not pg_temp.refused(r) then raise exception 'Two files for one account in one unit are refused: %', r; end if;
 end $$;
 
 rollback;
