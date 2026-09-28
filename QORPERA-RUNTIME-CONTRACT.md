@@ -3613,12 +3613,14 @@ hosts, login machines, the proposal-review guest or one-run runner machines.
 Founder decisions of 28 September 2026: those recorded when draft PR #326 was
 closed, and the eight choices on the "Computer Hours" page, approved as
 recommended. They define the billing of machine time, which section 22 left to
-a separate launch responsibility, and they amend section 19 ("Minimum
-operational observability"), section 20, section 21 and section 22. Words as in
-the amendment "compute for agents": a *computer* is one agent's screen, a
-*machine* is a virtual machine, and a *run box* is where one run executes.
-Model use is not billed here: it follows the 2026-09-28 amendment "the member
-who started the work pays" (section 17). Design:
+a separate launch responsibility, and they amend 7.4, section 12, section 19
+("Minimum operational observability"), section 20, section 21, section 22 and
+the 2026-09-28 amendment "compute for agents". Words as in that amendment: a
+*computer* is one agent's screen and a *machine* is a virtual machine. A *run
+box* is where one run executes: a slot on a shared execution host (the
+2026-09-22 amendment) or a machine of its own. A *founder* is a member with the
+owner role. Model use is not billed here: it follows the 2026-09-28 amendment
+"the member who started the work pays" (section 17). Design:
 `deploy/first-node/RUNTIME-COMPUTER-HOURS.md`.
 
 1. **What is billed.** Qorpera bills machine time, named *computer hours*.
@@ -3631,63 +3633,84 @@ who started the work pays" (section 17). Design:
    disk.
 2. **What counts.**
    - Company machines, agents' machines (item 4 of "compute for agents") and
-     coding machines, while awake, at their reserved size.
-   - Run boxes: each run from its start to its end, at the standard size,
-     whether it runs in a place on a shared execution host or in a machine of
-     its own. A run costs the same wherever it is placed; the shared execution
-     host itself does not count.
+     coding machines (including the retiring per-session coding machines),
+     while awake, at their reserved size.
+   - Run boxes: every run, review runs included, from its runner's acceptance
+     to the end of that attempt, at the standard size, whether it runs in a
+     slot of a shared execution host or in a machine of its own. A run costs
+     the same wherever it is placed. A retry is a new attempt; the wait
+     between attempts counts nothing. Coding turns are not runs: their
+     commands count through the coding machine.
    - Nothing else: sign-in machines (they serve one member's model login),
-     build machines, warm spares, parked capacity and every other platform
-     machine count nothing.
+     shared execution hosts themselves, build machines, warm spares and every
+     other platform machine count nothing.
 3. **Measured from central records.** Machine time MUST come from records the
    database keeps by its own clock: the machine allocation ledger, an
-   append-only power log written at every wake, sleep and release, and each
-   run's start and end. No node keeps billing state, billing keys or billing
-   journals, and what a machine costs never depends on the node it runs on.
-   - The node inventory observations are a check, never a clock: an
-     observation that shows a machine stopped, failed or gone ends its charge
-     from that observation, and no observation starts a charge. When a node
-     stops reporting, its machines count for at most five more minutes, and
-     count again only once a report shows them running.
-   - Time is counted to the second, with no minimum per start. Totals are
-     rounded up once, on the running total, so counting more often never adds
-     to a bill.
+   append-only power log written at every wake, sleep and release, and the
+   start and end of each run's runner assignment. No node keeps billing state,
+   billing keys or billing journals, and what a machine costs never depends on
+   the node it runs on.
+   - The node inventory observations are a check on the power log. A report
+     that shows a machine stopped, failed or gone pauses its charge, and so
+     does a node that publishes no report for five minutes. A later report
+     that shows the machine running resumes the charge. A report never starts
+     a charge for a machine the power log shows asleep or released.
+   - Time is counted to the second, with no minimum per start. Each company's
+     running total of standard seconds is rounded up to whole seconds once, so
+     counting more often never adds to a bill.
+   - The operator query of computer history estimates running hours from
+     observations; billing uses only this meter.
 4. **Who pays, in order.** Each second of machine time is paid from the first
    source that has hours left:
    1. the company's five free computer hours, once per company and first for
       every company, whether or not a founder already pays;
-   2. its founders' plans. The founders are the members with the owner role.
-      Their plans are shared evenly between the founders who still have hours
-      in their current plan period. A plan's hours serve every company in
-      which its holder is a founder, and they end with the plan period;
-   3. the company's purchased credits, which last twelve months from purchase.
+   2. its founders' plans, shared evenly between the founders who still have
+      hours in their current plan period. A plan's hours serve every company
+      in which its holder is a founder, and they end with the plan period;
+   3. the company's purchased credits, oldest first, each lasting twelve
+      months from its purchase.
 
    The billing records say which source paid for each second. A founder who
    leaves, steps down or is removed stops paying for the company at that
-   moment.
-5. **Contributors are never billed.** A member who is not a founder is never
-   billed personally for machine time: neither their plan nor their card pays
-   for a company's machines. Their work uses the company's hours like anyone
-   else's. They see how many hours the company has left, not who paid.
-6. **No payment before Start.** Founding a company never asks for a payment or
-   a card.
-7. **At zero.** When no source has hours left:
-   - No machine of the company starts or wakes, and no run of the company
-     starts. New work waits in line with a stated reason that its agents and
-     members see, and starts by itself, in order, when hours arrive.
-   - Work that is already running may finish for at most one hour. Then its
-     machine is stopped with its disk kept.
-   - Time used past zero is owed and is paid first from the next hours that
-     arrive.
-   - Waiting for hours is the only limit on machine time. There is still no
-     cap on a run's length or tools (7.4).
+   moment; what their plan already paid stays paid. A company the operator
+   marks complimentary (today: a company with a founder on an internal
+   account) is measured but never charged and never waits for hours.
+5. **Members who are not founders are never billed.** Admins, contributors
+   and viewers are never billed personally for machine time: neither their
+   plan nor their card pays for a company's machines. Their work uses the
+   company's hours like anyone else's. They see how many hours the company has
+   left, not who paid.
+6. **No payment to found a company.** Founding a company, up to and including
+   the start of its first work, never asks for a payment or a card.
+7. **At zero.** A company's hours left are what its sources hold minus what
+   it owes. While it has none:
+   - No machine of the company starts or wakes, no run of the company
+     starts, and agents' requests for machines wait. The work waits before a
+     run is created, with a stated reason that its agents and members see,
+     and starts by itself, in order, once the company has hours left again.
+     Waiting for hours never fails work by age: 7.4's one-day failure of a
+     queued run does not apply to it.
+   - Work already running may finish for at most one hour. Then its runs are
+     stopped as by a member's Stop, and its machines are stopped with their
+     disks kept; an always-on machine included.
+   - Time used while the company has no hours is owed. Owed time is paid in
+     the order of item 4 from the next hours that arrive (free hours, then
+     founders' plans evenly, then credits). Owed time of a deleted company is
+     written off.
+   - Besides the room on the nodes, waiting for hours is the only limit on
+     machine time. There is still no cap on a run's length or tools (7.4)
+     while the company has hours.
 8. **Payments.** Founder plans are monthly subscriptions, and company credits
    are one-off purchases made by a founder. Both are paid on the payment
    provider's own checkout page; Qorpera never receives or stores card data.
-   - Only a paid invoice or payment adds paid hours. Returning from the
+   - A new plan and new credits add hours only once paid. Returning from the
      checkout page adds nothing.
-   - A plan's hours for a new period arrive when the period starts. They are
-     withdrawn, unused, only if that period's payment finally fails.
+   - A plan's renewal is the one exception: its hours for the new period
+     arrive when the period starts, before its invoice is paid. If that
+     payment finally fails, the period's unused hours are withdrawn and its
+     used hours are forgiven; nobody else pays for them.
+   - An upgrade adds the difference between the two plans' hours at once; a
+     downgrade applies from the next period.
    - A refund removes the unused hours of its purchase. A dispute freezes only
      that purchase, never the company.
    - Prices exclude VAT. The catalog (plans, hours, credit price and packs)
@@ -3697,22 +3720,34 @@ who started the work pays" (section 17). Design:
      machines are priced.
 9. **Records.** Plan, usage and billing records are Qorpera's own records.
    They live in the database (5.6), never in the company folder, and agents
-   cannot write them. They do not depend on the company's row, and they are
-   kept for bookkeeping after a company is deleted.
+   cannot write them. They carry no cascading link to the company or to a
+   member's account, and they are kept for bookkeeping after a company or an
+   account is deleted.
 10. **Email.** The payment provider sends receipts and invoices to the member
     who paid. Qorpera sends hour notices (hours running low, out of hours, a
-    monthly summary) to the members whose hours are being used: the founders
-    whose plans pay, the buyers of the credits in use, or every founder while
-    the company uses its free hours. "Out of hours" also goes to every
-    founder. Contributors get no billing email.
+    monthly summary) only to founders: those whose plans pay, those who
+    bought the credits in use, or every founder while the company uses its
+    free hours. "Out of hours" also goes to every founder. Admins,
+    contributors and viewers get no billing email.
 11. **What this replaces.**
+    - 7.4: "a company starts as many computers as the nodes have room for" and
+      "machines an agent starts are bounded only by the room on the nodes"
+      read with item 7: they also wait while the company has no hours. The
+      one-day failure of a queued run does not apply to work waiting for
+      hours, and a run stopped after the hour at zero ends as if a member
+      stopped it.
+    - Section 12, its note on additional machines, and "compute for agents"
+      items 1 and 4: a machine that could start or wake also waits while the
+      company has no hours; at zero an always-on machine is stopped after the
+      hour like any other.
     - Section 19, "Minimum operational observability": "count running
       computer-hours once per computer" reads "once per machine", measured as
       in item 1 (changed in place).
     - Section 20: the row "Computer hours come from central records" (added).
-    - Section 21: in item 27, "computer-hours" is machine time and "computer"
-      the machine (changed in place); item 31 is added, and the deferred Azure
-      gate becomes item 32.
+    - Section 21: its opening paragraph now names items 1–31 and item 32
+      (changed in place); in item 27, "computer-hours" is machine time and
+      "computer" the machine (changed in place); item 31 is added, and the
+      deferred Azure gate becomes item 32.
     - Section 22: billing of machine time is defined here. Operating the
       payment provider account and tax registration remain launch
       responsibilities (changed in place).
@@ -3720,9 +3755,11 @@ who started the work pays" (section 17). Design:
       payment gate on founding are not part of this contract.
 12. **Order.** Measure first, charge later, each step shippable alone: the
     measured hours shown to members; the billing records with their sources
-    and order, charging nothing; payments in the provider's test mode; hour
-    notices; the zero rule of item 7 in a release of its own; then live
-    payments. Acceptance is section 21 item 31.
+    and order as a dry run; payments in the provider's test mode; hour
+    notices; the zero rule of item 7, built switched off. Live payments and
+    the zero rule are switched on together. Free hours, owed time and every
+    draw count from that moment; dry-run draws before it are discarded.
+    Acceptance is section 21 item 31.
 
 ## 20. Enforcement matrix
 
@@ -3773,8 +3810,8 @@ who started the work pays" (section 17). Design:
 > vision the Co-Founder writes.
 
 The runtime launch gate passes only when a deployed environment proves the
-mandatory items 1–30 without manual database repair or a hidden desktop
-executor. Item 31 is a separate post-build enablement gate and is not required
+mandatory items 1–31 without manual database repair or a hidden desktop
+executor. Item 32 is a separate post-build enablement gate and is not required
 while Azure backup/overflow remains disabled.
 
 1. One always-on cloud Company File remains readable and mutable through its
@@ -3881,11 +3918,11 @@ while Azure backup/overflow remains disabled.
     central records, and a machine that stops, sleeps or crashes stops
     counting. A new company starts without a payment and uses its five free
     hours first. Founders' plans pay before the company's credits, shared
-    evenly between the founders with hours left, and no contributor's plan or
-    card is ever used. Only a paid invoice or payment adds hours. At zero no
-    machine starts or wakes and new work waits with its reason; running work
-    ends within one hour, and waiting work starts by itself when a founder
-    adds hours.
+    evenly between the founders with hours left, and the plan or card of a
+    member who is not a founder is never used. A new plan or new
+    credits add hours only once paid. At zero no machine starts or wakes and
+    new work waits with its reason; running work ends within one hour, and
+    waiting work starts by itself once the company has hours left again.
 32. **Deferred post-build enablement gate, not a launch prerequisite:** before
     Azure backup/overflow is enabled, demand beyond local capacity is attributable
     to Azure placements and rented allocation intervals. The view distinguishes
@@ -3906,11 +3943,11 @@ company and durable cloud coworkers that work over it with a real mouth, real wa
 path authority, real tools, a shared office, governed memory, routines, and
 workers.
 
-Product quality, provider policy, operational reliability, payment operations,
-support, and security-response readiness remain separate launch
-responsibilities. Billing of machine time is defined by the 2026-09-28
-amendment "computer hours" (section 19). This contract defines the
-agent-runtime bar; it does not waive those gates.
+Product quality, provider policy, operational reliability, operating the
+payment provider account, tax registration, support, and security-response
+readiness remain separate launch responsibilities. Billing of machine time is
+defined by the 2026-09-28 amendment "computer hours" (section 19). This
+contract defines the agent-runtime bar; it does not waive those gates.
 
 ## 23. Failure model
 
