@@ -52,6 +52,49 @@ describe("member Company Computer transport", () => {
 			await expect(f.client.catalog(new AbortController().signal)).rejects.toThrow();
 		},
 	);
+	it("finds the computer that shows an agent's screen, and falls back on an older backend", async () => {
+		const f = fixture(),
+			signal = new AbortController().signal;
+		const placed = {
+			companyId: id(1),
+			environmentId: id(2),
+			staffAgentId: id(5),
+			canManage: false,
+			computers: 2,
+			placement: "starting",
+			computer: { scope: { ...scope, companyComputerId: id(7) }, number: 2, waiting: "room" },
+		};
+		f.fetch.mockResolvedValueOnce(Response.json(placed));
+		expect(await f.client.agentComputer(id(5), signal)).toEqual({
+			canManage: false,
+			computers: 2,
+			placement: "starting",
+			computer: placed.computer,
+		});
+		expect(f.fetch.mock.calls[0][0]).toBe("https://control.test/rest/v1/rpc/qorpera_member_agent_office");
+		expect(JSON.parse(f.fetch.mock.calls[0][1]!.body as string)).toEqual({
+			p_environment_id: id(2),
+			p_staff_agent_id: id(5),
+		});
+		f.fetch.mockResolvedValueOnce(Response.json({ ...placed, placement: "new", computer: null }));
+		expect((await f.client.agentComputer(id(5), signal))?.computer).toBeNull();
+		f.fetch.mockResolvedValueOnce(Response.json({ code: "PGRST202" }, { status: 404 }));
+		expect(await f.client.agentComputer(id(5), signal)).toBeUndefined();
+		f.fetch.mockResolvedValueOnce(new Response(null, { status: 500 }));
+		await expect(f.client.agentComputer(id(5), signal)).rejects.toThrow();
+		for (const bad of [
+			{ ...placed, staffAgentId: id(6) },
+			{ ...placed, placement: "elsewhere" },
+			{ ...placed, computer: { ...placed.computer, number: 0 } },
+			{ ...placed, computer: { ...placed.computer, waiting: "later" } },
+			{ ...placed, computer: { ...placed.computer, scope: { ...scope, companyId: id(9) } } },
+			{ ...placed, extra: true },
+		]) {
+			f.fetch.mockResolvedValueOnce(Response.json(bad));
+			await expect(f.client.agentComputer(id(5), signal)).rejects.toThrow();
+		}
+		await expect(f.client.agentComputer("not-an-id", signal)).rejects.toThrow();
+	});
 	it("pages exact ordered staff without granting access", async () => {
 		const f = fixture();
 		f.data.staff = Array.from({ length: 50 }, (_, n) => ({ staffAgentId: id(n + 10), name: `Agent ${n}` }));

@@ -186,6 +186,7 @@ export const WORKSPACE: Record<string, string> = {
 	"Connecting…": "Forbinder…",
 	"Close computer": "Luk computer",
 	"{name} · Computer": "{name} · Computer",
+	"{name} · Computer {number}": "{name} · Computer {number}",
 	"Agent computer": "Agentens computer",
 	"Drag to move, drag an edge to resize. When focused, arrow keys move it and plus or minus resize it.":
 		"Træk for at flytte, træk i en kant for at ændre størrelse. Med fokus flytter piletasterne den, og plus eller minus ændrer størrelsen.",
@@ -208,6 +209,11 @@ export const WORKSPACE: Record<string, string> = {
 	"The computer is private right now. Shared viewing returns when that ends.":
 		"Computeren er privat lige nu. Delt visning kommer tilbage, når det slutter.",
 	"The computer could not be reached. Try again.": "Computeren kunne ikke nås. Prøv igen.",
+	"Every computer is in use. An owner or admin can add another one.":
+		"Alle computere er i brug. En ejer eller administrator kan tilføje en mere.",
+	"Setting up another computer. This can take a while.": "Sætter en computer mere op. Det kan tage et stykke tid.",
+	"Waiting for room on our servers. It starts as soon as there is room.":
+		"Venter på plads på vores servere. Den starter, så snart der er plads.",
 
 	// app/views/feedback.ts
 	"+ Bug": "+ Fejl",

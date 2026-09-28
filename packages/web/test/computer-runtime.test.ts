@@ -78,8 +78,14 @@ function setup(overrides: Record<string, unknown> = {}, memberRole: typeof profi
 	const fetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
 		const method = String(input).split("/").at(-1)!;
 		expect(init?.redirect).toBe("error");
+		// A backend without several computers per company: the panel falls back to the catalog.
+		if (method === "qorpera_member_agent_office" && !(method in replies))
+			return Response.json({ code: "PGRST202" }, { status: 404 });
 		if (!(method in replies)) throw new Error("Unexpected network request");
-		return Response.json(replies[method]);
+		const reply = replies[method];
+		return Response.json(
+			typeof reply === "function" ? reply(JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>) : reply,
+		);
 	});
 	vi.stubGlobal("fetch", fetch);
 	const computer = new WebCompanyComputer(f.cloud, { ...profileA, role: memberRole }, userA.id, stop.signal, () => {});
@@ -125,6 +131,113 @@ function spyViewer(close = vi.fn(async () => {})) {
 	return vi.spyOn(viewer, "openComputerViewer").mockReturnValue({ close });
 }
 
+describe("several computers per company", () => {
+	const scope2 = { ...scope, companyComputerId: id(40), logicalComputerId: id(41) };
+	const binding2 = { ...binding, ...scope2, screenId: id(42) };
+	const placed = (computer: unknown, overrides: Record<string, unknown> = {}) => ({
+		companyId: profileA.profileId,
+		environmentId: profileA.environmentId,
+		staffAgentId: staff.id,
+		canManage: true,
+		computers: 2,
+		placement: "screen",
+		computer,
+		...overrides,
+	});
+	const sameScope = (body: Record<string, unknown>, value: typeof scope) =>
+		JSON.stringify(body.p_scope) === JSON.stringify(value);
+	it("opens the agent's screen on the computer it is on, named by number", async () => {
+		const f = setup({
+				qorpera_member_agent_office: placed({ scope: scope2, number: 2, waiting: null }),
+				qorpera_runtime_office_start_status: { ...start, scope: scope2 },
+				qorpera_runtime_office_member_status: {
+					...status,
+					scope: scope2,
+					screens: [{ ...status.screens[0], binding: binding2 }],
+				},
+			}),
+			open = spyViewer();
+		await opened(f.computer);
+		expect(open).toHaveBeenCalledExactlyOnceWith(
+			expect.objectContaining({ binding: binding2, title: `${staff.displayName} · Computer 2` }),
+		);
+		expect(methods(f)).toEqual([
+			"qorpera_member_agent_office",
+			"qorpera_runtime_office_start_status",
+			"qorpera_runtime_office_member_status",
+		]);
+		for (const [, init] of f.fetch.mock.calls.slice(1))
+			expect(JSON.parse(String(init?.body)).p_scope).toEqual(scope2);
+	});
+	it("keeps the plain title while the company has one computer", async () => {
+		const f = setup({ qorpera_member_agent_office: placed({ scope, number: 1, waiting: null }, { computers: 1 }) }),
+			open = spyViewer();
+		await opened(f.computer);
+		expect(open).toHaveBeenCalledExactlyOnceWith(
+			expect.objectContaining({ binding, title: `${staff.displayName} · Computer` }),
+		);
+	});
+	it("follows the agent to its other computer instead of opening a second screen", async () => {
+		let asked = 0;
+		const f = setup({
+				qorpera_member_agent_office: () =>
+					asked++ === 0
+						? placed({ scope, number: 1, waiting: null }, { placement: "room" })
+						: placed({ scope: scope2, number: 2, waiting: null }),
+				qorpera_runtime_office_start_status: (body: Record<string, unknown>) => ({
+					...start,
+					scope: sameScope(body, scope) ? scope : scope2,
+				}),
+				qorpera_runtime_office_member_status: (body: Record<string, unknown>) =>
+					sameScope(body, scope)
+						? { ...status, screens: [] }
+						: { ...status, scope: scope2, screens: [{ ...status.screens[0], binding: binding2 }] },
+				qorpera_open_runtime_office_screen: { state: "refused", reason: "AGENT_ON_OTHER_COMPUTER" },
+			}),
+			open = spyViewer();
+		await opened(f.computer);
+		await settle();
+		await settle();
+		expect(open).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ binding: binding2 }));
+		expect(methods(f)).toEqual([
+			"qorpera_member_agent_office",
+			"qorpera_runtime_office_start_status",
+			"qorpera_runtime_office_member_status",
+			"qorpera_open_runtime_office_screen",
+			"qorpera_member_agent_office",
+			"qorpera_runtime_office_start_status",
+			"qorpera_runtime_office_member_status",
+		]);
+	});
+	it("says why a new computer is not up yet", async () => {
+		const f = setup({
+			qorpera_member_agent_office: placed({ scope: scope2, number: 2, waiting: "room" }, { placement: "starting" }),
+			qorpera_runtime_office_start_status: {
+				...start,
+				scope: scope2,
+				officeState: "provisioning",
+				intent: { ...intent, companyComputerId: scope2.companyComputerId },
+			},
+		});
+		const p = await opened(f.computer);
+		expect(statusLine(p)).toBe("Starting the computer…");
+		await poll();
+		await poll();
+		await poll();
+		expect(statusLine(p)).toBe("Waiting for room on our servers. It starts as soon as there is room.");
+		expect(methods(f).some((method) => START_WRITES.test(`/${method}`))).toBe(false);
+	});
+	it("tells a member without owner rights that every computer is in use", async () => {
+		const f = setup({
+			qorpera_member_agent_office: placed(null, { placement: "new", canManage: false }),
+		});
+		const p = await opened(f.computer);
+		expect(statusLine(p)).toBe("Every computer is in use. An owner or admin can add another one.");
+		expect(action(p.el, "Try again").hidden).toBe(false);
+		expect(methods(f)).toEqual(["qorpera_member_agent_office"]);
+	});
+});
+
 describe("automatic computer popover", () => {
 	it("shows loading immediately and opens the agent screen without a second action", async () => {
 		const f = setup(),
@@ -139,6 +252,7 @@ describe("automatic computer popover", () => {
 		expect(p.el.tabIndex).toBe(0);
 		await settle();
 		await settle();
+		await settle();
 		expect(open).toHaveBeenCalledExactlyOnceWith(
 			expect.objectContaining({
 				binding,
@@ -149,6 +263,7 @@ describe("automatic computer popover", () => {
 			}),
 		);
 		expect(methods(f)).toEqual([
+			"qorpera_member_agent_office",
 			"qorpera_member_office_catalog",
 			"qorpera_runtime_office_start_status",
 			"qorpera_runtime_office_member_status",
@@ -179,6 +294,7 @@ describe("automatic computer popover", () => {
 			p = panel(f.computer);
 		await settle();
 		await settle();
+		await settle();
 		expect(open).toHaveBeenCalledOnce();
 		const close = vi.fn();
 		p.detach();
@@ -198,7 +314,7 @@ describe("automatic computer popover", () => {
 		const f = setup({ qorpera_member_office_catalog: { ...catalog, scope: null } });
 		const p = await opened(f.computer);
 		expect(statusLine(p)).toBe("This company has no computer yet.");
-		expect(methods(f)).toEqual(["qorpera_member_office_catalog"]);
+		expect(methods(f)).toEqual(["qorpera_member_agent_office", "qorpera_member_office_catalog"]);
 		expect(p.el.textContent).not.toContain("Open computer");
 	});
 	it("offers retry after a failed read and opens automatically after retry succeeds", async () => {
@@ -215,6 +331,7 @@ describe("automatic computer popover", () => {
 		retry.click();
 		expect(document.activeElement).toBe(p.el);
 		retry.click();
+		await settle();
 		await settle();
 		await settle();
 		expect(open).toHaveBeenCalledTimes(1);

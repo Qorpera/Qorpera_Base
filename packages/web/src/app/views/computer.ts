@@ -1,3 +1,4 @@
+import type { CompanyComputerScope } from "@qorpera/cloud-client/cloud-company-computer-contract";
 import type { WebCompanyComputer } from "../../cloud/computer.ts";
 import type { HostedStaffAgent } from "../../cloud/types.ts";
 import { attachComputerDrag } from "../../ui/computer-drag.ts";
@@ -37,11 +38,15 @@ export class ComputerPanel {
 	/** Takes back the idle wakes this panel asked for and never used. */
 	#withdrawWakes: () => void = () => {};
 	#title: string;
+	#name: string;
+	/** Which of the company's computers shows the screen, once the company has more than one. */
+	#number: number | undefined;
 	#busy = false;
 
 	constructor(agent: HostedStaffAgent, computer?: WebCompanyComputer, parentSignal?: AbortSignal) {
 		this.agentId = agent.id;
-		this.#title = t("{name} · Computer", { name: agent.displayName });
+		this.#name = agent.displayName;
+		this.#title = this.#titleText();
 		const signal = AbortSignal.any([this.#stop.signal, ...(parentSignal ? [parentSignal] : [])]);
 		this.#views = new ComputerViewHost(signal);
 		this.el = h(
@@ -128,18 +133,62 @@ export class ComputerPanel {
 			for (const wake of wakes.values()) void wake.sent.then(wake.withdraw).catch(() => undefined);
 			wakes.clear();
 		};
-		const open = async () => {
-			const catalog = await computer.client.catalog(signal);
+		/** A state the member can only wait out: it stays on screen with a way to ask again. */
+		const blocked = (text: string) => {
+			unavailable(text);
+			this.#retry.hidden = false;
+		};
+		/** The computer that shows this agent's screen. A company can run several; a
+		 * backend that predates that has one, the catalog's. */
+		const locate = async () => {
+			const placed = await computer.client.agentComputer(agent.id, signal);
 			signal.throwIfAborted();
-			const { scope, canManage } = catalog;
-			if (!scope) {
-				unavailable(t("This company has no computer yet."));
-				return;
+			if (placed === undefined) {
+				const catalog = await computer.client.catalog(signal);
+				signal.throwIfAborted();
+				if (!catalog.scope) {
+					unavailable(t("This company has no computer yet."));
+					return undefined;
+				}
+				return { scope: catalog.scope, canManage: catalog.canManage, number: 1, computers: 1 };
 			}
+			if (!placed.computer) {
+				if (placed.computers === 0) unavailable(t("This company has no computer yet."));
+				else if (placed.placement === "new")
+					blocked(t("Every computer is in use. An owner or admin can add another one."));
+				else blocked(t("The computer is not ready yet."));
+				return undefined;
+			}
+			return {
+				scope: placed.computer.scope,
+				canManage: placed.canManage,
+				number: placed.computer.number,
+				computers: placed.computers,
+			};
+		};
+		/** Why a started computer is not up yet, when the backend can say. */
+		const waitingText = async (scope: CompanyComputerScope, until: AbortSignal) => {
+			const placed = await computer.client.agentComputer(agent.id, until).catch(() => undefined);
+			until.throwIfAborted();
+			if (placed?.computer?.scope.companyComputerId !== scope.companyComputerId) return undefined;
+			return placed.computer.waiting === "setup"
+				? t("Setting up another computer. This can take a while.")
+				: placed.computer.waiting === "room"
+					? t("Waiting for room on our servers. It starts as soon as there is room.")
+					: undefined;
+		};
+		/** Resolves to "moved" when the agent's screen is on another computer than the one asked. */
+		const open = async (): Promise<"moved" | undefined> => {
+			const located = await locate();
+			if (!located) return;
+			const { scope, canManage } = located;
+			this.#number = located.computers > 1 ? located.number : undefined;
+			this.#title = this.#titleText();
+			this.#applyTitle();
 			const startClient = computer.client.start(scope);
 			const ensureActive = async (until: AbortSignal, expectedGeneration?: number): Promise<boolean> => {
 				let requestedKey: string | undefined;
-				for (;;) {
+				for (let pass = 0; ; pass++) {
 					const start = await startClient.status(until);
 					until.throwIfAborted();
 					if (expectedGeneration !== undefined && start.computerGeneration !== expectedGeneration)
@@ -185,7 +234,12 @@ export class ComputerPanel {
 							});
 							until.throwIfAborted();
 						}
-						this.#status.textContent = t("Starting the computer…");
+						// A new computer can wait for its server first; say so instead of "starting" for minutes.
+						const reason =
+							start.officeState === "provisioning" && pass % 4 === 3
+								? await waitingText(scope, until)
+								: undefined;
+						this.#status.textContent = reason ?? t("Starting the computer…");
 					}
 					await wait(3000, until);
 				}
@@ -260,6 +314,7 @@ export class ComputerPanel {
 						const opened = await views.openScreen(agent.id, signal);
 						signal.throwIfAborted();
 						if (opened.state === "refused") {
+							if (opened.reason === "AGENT_ON_OTHER_COMPUTER") return "moved";
 							const text =
 								opened.reason === "SCREEN_CAPACITY_EXHAUSTED"
 									? t("All screens on this computer are in use. Try again when one is free.")
@@ -294,7 +349,11 @@ export class ComputerPanel {
 			this.#spinner.hidden = false;
 			this.#status.textContent = t("Connecting…");
 			try {
-				await open();
+				// An agent that moved between computers is followed a few times, never in a loop.
+				for (let moves = 0; (await open()) === "moved" && moves < 3; moves++) {
+					signal.throwIfAborted();
+					this.#status.textContent = t("Connecting…");
+				}
 			} catch {
 				if (!signal.aborted) {
 					unavailable(t("The computer could not be reached. Try again."));
@@ -315,10 +374,17 @@ export class ComputerPanel {
 
 	/** The agent was renamed: the viewer keeps its connection and only its title follows. */
 	retitle(displayName: string): void {
-		const title = t("{name} · Computer", { name: displayName });
+		this.#name = displayName;
+		const title = this.#titleText();
 		if (title === this.#title) return;
 		this.#title = title;
 		this.#applyTitle();
+	}
+
+	#titleText(): string {
+		return this.#number === undefined
+			? t("{name} · Computer", { name: this.#name })
+			: t("{name} · Computer {number}", { name: this.#name, number: String(this.#number) });
 	}
 
 	#applyTitle(): void {
