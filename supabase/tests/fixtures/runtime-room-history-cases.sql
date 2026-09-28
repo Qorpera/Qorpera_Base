@@ -87,7 +87,7 @@ begin
  perform pg_temp.wake_assert((select value->'staff_speaker'=speaker from jsonb_array_elements(public.qorpera_read_session_events(session_id)) where value->>'event_id'=event_id::text),
   'Staff rename cannot relabel historical output');
  perform pg_temp.wake_error(format('update public.qorpera_session_event_speakers set display_name=%L where event_id=%L','Forged',event_id),'42501');
- -- The last founder cannot leave while others remain (20260929030000): a second founder joins first.
+ -- The last founder cannot leave while others remain (20260928248100): a second founder joins first.
  insert into auth.users(id,email) values ('30000000-0000-4000-8000-0000000000f5','history-cofounder@example.test');
  insert into public.qorpera_profile_members(profile_id,user_id,email,display_name,role)
  values (base.profile_id,'30000000-0000-4000-8000-0000000000f5','history-cofounder@example.test','Co-founder','owner');
