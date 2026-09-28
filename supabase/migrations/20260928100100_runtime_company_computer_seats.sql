@@ -21,9 +21,9 @@
 --    screen    its screen in use on a running computer;
 --    room      a running computer with a free screen: the one the agent used
 --              last, then the lowest number, so extra computers can idle off;
+--    stopped   a computer that is off after its idle time: wake it;
 --    starting  a computer that is already starting, waking or coming back from
---              a host reboot (never start a second one for the same burst);
---    stopped   a computer that is off after its idle time;
+--              a host reboot: wait for it;
 --    unstarted a computer that was added but never started;
 --    new       every computer is running and full: add one;
 --    denied    the agent's computer access is revoked on every computer;
@@ -35,9 +35,9 @@
 --    prepared for it separately (deploy/office-fleet), and until then its start
 --    waits like any start.
 --
--- 3. Idle. A computer other than the company's first stays on for the runs of
---    agents that are placed on it, not for every run of the company. The first
---    computer keeps today's rule.
+-- 3. Idle. A computer stays on for the runs of agents placed on it, not for
+--    every run of the company: only work on that machine keeps it awake. With
+--    one computer (or the switch off) every run is placed on it, as before.
 --
 -- 4. A switch. Until the runtime can reach several computers of a company
 --    (native company routes), placement keeps to the company's first computer
@@ -225,18 +225,6 @@ begin
 			o.computer_number
 		limit 1;
 	if found then return jsonb_build_object('decision', 'room', 'officeId', v_office.id); end if;
-	-- starting
-	select o.* into v_office from public.qorpera_runtime_offices o
-		join public.qorpera_runtime_office_access a on a.office_id = o.id and a.staff_agent_id = p_staff_agent_id and a.state = 'active'
-		where o.environment_id = p_environment_id and o.profile_id = p_profile_id
-			and ((o.state in ('provisioning', 'recovering') and exists(select 1 from public.qorpera_runtime_office_start_intents i
-					where i.office_id = o.id and i.computer_generation = o.generation and i.state <> 'cancelled'))
-				or (o.state = 'maintenance' and public.qorpera_runtime_office_maintenance(o) ->> 'reason' = 'idle'
-					and public.qorpera_runtime_office_maintenance(o) ->> 'state' = 'resumed')
-				or (o.state = 'maintenance' and public.qorpera_runtime_office_maintenance(o) ->> 'reason' is distinct from 'idle'
-					and public.qorpera_runtime_office_maintenance(o) is not null))
-		order by o.computer_number limit 1;
-	if found then return jsonb_build_object('decision', 'starting', 'officeId', v_office.id); end if;
 	-- stopped
 	select o.* into v_office from public.qorpera_runtime_offices o
 		join public.qorpera_runtime_office_access a on a.office_id = o.id and a.staff_agent_id = p_staff_agent_id and a.state = 'active'
@@ -249,6 +237,18 @@ begin
 			o.computer_number
 		limit 1;
 	if found then return jsonb_build_object('decision', 'stopped', 'officeId', v_office.id); end if;
+	-- starting
+	select o.* into v_office from public.qorpera_runtime_offices o
+		join public.qorpera_runtime_office_access a on a.office_id = o.id and a.staff_agent_id = p_staff_agent_id and a.state = 'active'
+		where o.environment_id = p_environment_id and o.profile_id = p_profile_id
+			and ((o.state in ('provisioning', 'recovering') and exists(select 1 from public.qorpera_runtime_office_start_intents i
+					where i.office_id = o.id and i.computer_generation = o.generation and i.state <> 'cancelled'))
+				or (o.state = 'maintenance' and public.qorpera_runtime_office_maintenance(o) ->> 'reason' = 'idle'
+					and public.qorpera_runtime_office_maintenance(o) ->> 'state' = 'resumed')
+				or (o.state = 'maintenance' and public.qorpera_runtime_office_maintenance(o) ->> 'reason' is distinct from 'idle'
+					and public.qorpera_runtime_office_maintenance(o) is not null))
+		order by o.computer_number limit 1;
+	if found then return jsonb_build_object('decision', 'starting', 'officeId', v_office.id); end if;
 	-- unstarted
 	select o.* into v_office from public.qorpera_runtime_offices o
 		join public.qorpera_runtime_office_access a on a.office_id = o.id and a.staff_agent_id = p_staff_agent_id and a.state = 'active'
@@ -558,10 +558,9 @@ begin
 end
 $patch$;
 
--- Idle: the company's first computer keeps today's rule (every authorized
--- run of the company is demand). Another computer counts only the runs of
--- agents placed on it, so an extra computer really turns off. Patched in
--- place, so other patches of this function commute with it.
+-- Idle: an authorized run keeps awake only the computer its agent is placed
+-- on. With one computer (or the switch off) that is every run of the company,
+-- as before. Patched in place, so other patches of this function commute.
 do $patch$
 declare
 	v_definition text := pg_get_functiondef('public.qorpera_runtime_office_has_demand(public.qorpera_runtime_offices)'::regprocedure);
@@ -570,11 +569,9 @@ declare
 begin
 	v_old := $old$			and e.deadline_at>clock_timestamp() and g.state='active' and s.employment_status='active' and s.version>=e.staff_version)$old$;
 	v_new := $new$			and e.deadline_at>clock_timestamp() and g.state='active' and s.employment_status='active' and s.version>=e.staff_version
-			-- Several computers per company (20260928100100): the first keeps every run,
-			-- another only the runs of agents placed on it.
-			and (p_office.computer_number=(select min(o.computer_number) from public.qorpera_runtime_offices o
-					where o.environment_id=p_office.environment_id and o.state<>'retired')
-				or public.qorpera_runtime_office_placement(e.profile_id,e.environment_id,e.staff_agent_id)->>'officeId'=p_office.id::text))$new$;
+			-- Several computers per company (20260928100100): only the computer the
+			-- run's agent is placed on.
+			and public.qorpera_runtime_office_placement(e.profile_id,e.environment_id,e.staff_agent_id)->>'officeId'=p_office.id::text)$new$;
 	if (length(v_definition) - length(replace(v_definition, v_old, ''))) / length(v_old) <> 1 then
 		raise exception 'Office demand run clause differs'; end if;
 	execute replace(v_definition, v_old, v_new);

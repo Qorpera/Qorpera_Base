@@ -1,5 +1,11 @@
 # Several Company Computers per company
 
+**Words.** In product text (contract amendment 2026-09-28, "compute for
+agents"), a *computer* is what an agent opens (a screen here) and a *machine*
+is the VM that hosts up to six of them (a Company Computer, `office` in code).
+This page uses the code's words: "computer" is the machine, "screen" is the
+computer.
+
 A company can run more than one Company Computer. An agent gets a screen on
 whichever computer has room; when every running computer is full, the company
 gets another one. Contract section 12 and the 2026-09-16 amendment already
@@ -47,9 +53,10 @@ environment.
   1. `screen`: the agent's screen in use on a running computer;
   2. `room`: a running computer with a free seat, the one the agent used last
      first, then the lowest number, so extra computers can go idle;
-  3. `starting`: a computer already starting, waking, or back from a host
-     reboot. A burst of demand never starts two computers;
-  4. `stopped`: a computer that is off after its idle time (agent's last first);
+  3. `stopped`: a computer that is off after its idle time, woken (agent's
+     last first);
+  4. `starting`: a computer already starting, waking, or back from a host
+     reboot. A burst of demand never adds two computers;
   5. `unstarted`: a computer that was added but never started;
   6. `new`: every computer is running and full;
   7. `denied`: the agent's computer access is revoked on every computer; no
@@ -63,10 +70,11 @@ environment.
   on `new` adds the next computer under the company fence and the seat lock.
   `qorpera_native_office_start` locks every computer of the company in one
   order before reading the descriptor.
-- **Idle.** Computer 1 keeps today's rule: every authorized run of the company
-  keeps it on (patched in place, so other patches of the idle check commute). Another computer stays on only for runs of agents placed on it,
-  besides its own leases, viewers, resources, start waiters and activation
-  wakes. Stopped computers already give their node CPU and memory back
+- **Idle.** A computer stays on only for its own leases, viewers, resources,
+  start waiters and activation wakes, and the runs of agents placed on it
+  (patched in place, so other patches of the idle check commute). With one
+  computer, or the switch off, every run is placed on computer 1, as before.
+  Stopped computers already give their node CPU and memory back
   (`20260923060000`, bundle v82).
 - `qorpera_runtime_office_setup_queue()` (service role) lists computers that
   need a host: started ones waiting for `setup` or `room`, and added ones not
