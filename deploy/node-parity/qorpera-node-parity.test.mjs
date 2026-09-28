@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { CLASS_SCHEMA, compareSetups, labelForms, normalizeSetup } from "./qorpera-node-parity.mjs";
+import { CLASS_SCHEMA, compareSetups, labelForms, neutral, normalizeSetup } from "./qorpera-node-parity.mjs";
 
 function raw(label, n, change = () => {}) {
 	const observed = {
@@ -61,12 +61,39 @@ function raw(label, n, change = () => {}) {
 }
 const klass = { schema: CLASS_SCHEMA, mayDiffer: [], onlyOn: {} };
 
-test("node label spellings", () => {
-	assert.deepEqual(labelForms("company41-node-02").sort(), ["company41-node-02", "company41-node-2", "company41-node02", "company41-node2"]);
-	// Longest first, so a longer spelling is never half-replaced by a shorter one.
-	assert.equal(labelForms("company41-node-02")[0].length, "company41-node-02".length);
-	assert.deepEqual(labelForms("node02").sort(), ["node-02", "node-2", "node02", "node2"]);
+test("node label spellings: the full label and its node token", () => {
+	assert.deepEqual(labelForms("company41-node-02").sort(), [
+		"company41-node-02",
+		"node-02",
+		"node-2",
+		"node02",
+		"node2",
+	]);
+	assert.equal(labelForms("company41-node-02")[0], "company41-node-02");
 	assert.throws(() => labelForms("../x"), /INVALID_NODE_LABEL/);
+});
+
+test("the README's full label neutralises the short names nodes use", () => {
+	const forms = labelForms("company41-node-01");
+	assert.equal(
+		neutral("qorpera-exec-node01 coding-node-01 /srv/office-fleet-a1-node01 company41-node-01", forms),
+		"qorpera-exec-<node> coding-<node> /srv/office-fleet-a1-<node> <node>",
+	);
+});
+
+test("no match inside a longer name: node1 is not node10, subnode1 is not node1", () => {
+	const forms = labelForms("node1");
+	assert.equal(neutral("x-node12 y-node1 subnode1 node1-a", forms), "x-node12 y-<node> subnode1 <node>-a");
+});
+
+test("two names that become one refuse the collection", () => {
+	assert.throws(
+		() =>
+			raw("node01", 1, (o) => {
+				o.units.push({ unit: "qorpera-w-node1.service", active: "active" }, { unit: "qorpera-w-node01.service", active: "active" });
+			}),
+		/NODE_SETUP_NAME_COLLISION: unit qorpera-w-<node>.service/,
+	);
 });
 
 test("two nodes set up the same way compare equal, their own names neutralised", () => {
@@ -141,7 +168,55 @@ test("the class allows planned differences and node-only items", () => {
 	assert.equal(flipped.identical, false);
 });
 
+test("build machines are left out; sizes come from the expanded configuration", () => {
+	const b = raw("node02", 2, (o) => {
+		o.instances.push({
+			project: "qn25b2",
+			name: "qorpera-image-build-1",
+			type: "virtual-machine",
+			status: "Running",
+			config: { "user.qorpera.image_builder": "true" },
+		});
+		o.instances[0].config = {};
+		o.instances[0].expanded_config = { "limits.cpu": "8", "limits.memory": "16GiB" };
+	});
+	assert.deepEqual(compareSetups(klass, raw("node01", 1), b).differences, []);
+});
+
 test("refuses malformed input", () => {
 	assert.throws(() => compareSetups({ schema: "x" }, raw("node01", 1), raw("node02", 2)), /INVALID_PARITY_CLASS/);
+	assert.throws(() => compareSetups({ schema: CLASS_SCHEMA, onlyOn: { node01: "x" } }, raw("node01", 1), raw("node02", 2)), /INVALID_PARITY_CLASS/);
 	assert.throws(() => compareSetups(klass, { schema: "x" }, raw("node02", 2)), /INVALID_NODE_SETUP/);
+	assert.throws(() => compareSetups(klass, raw("node01", 1), raw("node01", 1)), /SAME_NODE_TWICE/);
+});
+
+test("a project with none of the compared keys still shows", () => {
+	const a = raw("node01", 1, (o) => o.projects.push({ name: "qorpera-build", config: {} }));
+	const result = compareSetups(klass, a, raw("node02", 2));
+	assert.deepEqual(result.differences.map((d) => d.path), ["lxd › projects › qorpera-build › exists"]);
+});
+
+test("the command line: 0 same, 1 differ, 2 error, and an error prints no command output", async () => {
+	const { mkdtemp, writeFile } = await import("node:fs/promises");
+	const { tmpdir } = await import("node:os");
+	const { join } = await import("node:path");
+	const { spawnSync } = await import("node:child_process");
+	const dir = await mkdtemp(join(tmpdir(), "parity-"));
+	const write = async (name, value) => {
+		await writeFile(join(dir, name), JSON.stringify(value));
+		return join(dir, name);
+	};
+	const tool = new URL("./qorpera-node-parity.mjs", import.meta.url).pathname;
+	const [c, a, b, d] = await Promise.all([
+		write("class.json", klass),
+		write("a.json", raw("node01", 1)),
+		write("b.json", raw("node02", 2)),
+		write("d.json", raw("node02", 2, (o) => o.units.shift())),
+	]);
+	assert.equal(spawnSync("node", [tool, "compare", c, a, b]).status, 0);
+	assert.equal(spawnSync("node", [tool, "compare", c, a, d]).status, 1);
+	const bad = spawnSync("node", [tool, "compare", await write("bad.json", { schema: "x" }), a, b], { encoding: "utf8" });
+	assert.equal(bad.status, 2);
+	assert.match(bad.stderr, /INVALID_PARITY_CLASS/);
+	assert.equal(spawnSync("node", [tool, "compare", join(dir, "missing.json"), a, b]).status, 2);
 });
