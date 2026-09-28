@@ -197,11 +197,13 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 		});
 		// Layout version 2 keeps the company's sign-ins in the company root, which a
 		// later generation carries over; version 1 offices keep them beside the profiles.
+		// Each computer of the company writes its own file there and reads the others'.
 		this.#logins = new CompanyComputerBrowserLogins({
 			path:
 				this.#options.layout.companyRoot !== undefined
 					? join(this.#options.layout.companyRoot, "browser-logins.json")
 					: join(this.#options.layout.browserProfilesRoot, "company-logins.json"),
+			computerId: this.#options.scope.companyComputerId,
 		});
 		this.#desktop = new CompanyComputerLinuxDesktopLauncher({
 			...this.#options,
