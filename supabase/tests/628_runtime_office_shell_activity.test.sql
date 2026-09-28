@@ -23,6 +23,35 @@ where id=(current_setting('qorpera_test.office')::jsonb->>'companyComputerId')::
 select pg_temp.path_claims('service_role');
 set local role service_role;
 select set_config('qorpera_test.office_lease',(pg_temp.office_call('acquire')->'lease')::text,true);
+reset role;
+-- 20260929070200 through the real operation check, while the agent holds its
+-- screen: every shell action the tool sends is authorized, a wrong one refused.
+create function pg_temp.shell_authorize(p_arguments jsonb) returns jsonb language sql as $$
+	select public.qorpera_native_office_operation(current_setting('qorpera_test.wake_binding')::jsonb,
+		current_setting('qorpera_test.office_scope')::jsonb,current_setting('qorpera_test.office_lease')::jsonb,
+		jsonb_build_object('schema','qorpera.cloud-tool-operation/v2',
+			'principals',(public.qorpera_describe_native_tool_authority(current_setting('qorpera_test.wake_binding')::jsonb)->'identity')
+				-array['assignmentId','runnerId','leaseId','sponsorVersion','providerConnectionId','providerConnectionVersion'],
+			'operation',jsonb_build_object('tool','computer_shell','toolVersion','qorpera.company-computer-tools/v2',
+				'logicalOperationKey','shell-'||coalesce(p_arguments->>'action','legacy'),'requiresCompanyRevision',false,'arguments',p_arguments,
+				'target',jsonb_build_object('realm','company_computer','binding',current_setting('qorpera_test.office_lease')::jsonb->'binding',
+					'resources',public.qorpera_native_office_descriptor(current_setting('qorpera_test.wake_binding')::jsonb)->'resources')))::text,
+		'authorize')
+$$;
+select pg_temp.path_claims('service_role');
+set local role service_role;
+-- A run works only after acknowledging its wake.
+select pg_temp.wake_public_send(current_setting('qorpera_test.wake_binding')::jsonb,'progress');
+select pg_temp.wake_assert(pg_temp.shell_authorize(arguments)='{"state":"authorized"}'::jsonb,'authorized: '||arguments::text)
+from unnest(array[
+	'{"kind":"shell","action":"start","command":"npm run build","waitMs":10000}',
+	'{"kind":"shell","action":"read","sessionId":"00000000-0000-4000-8000-0000000000a1","waitMs":5000}',
+	'{"kind":"shell","action":"write","sessionId":"00000000-0000-4000-8000-0000000000a1","text":"y\n","endInput":true,"waitMs":1000}',
+	'{"kind":"shell","action":"stop"}',
+	'{"kind":"shell","action":"list"}',
+	'{"kind":"shell","command":"ls","timeoutMs":1000}']::jsonb[]) as arguments;
+select pg_temp.wake_error($q$select pg_temp.shell_authorize('{"kind":"shell","action":"start","command":"ls","waitMs":20000}')$q$,
+	'22023','Invalid office shell operation');
 select pg_temp.office_call('release',current_setting('qorpera_test.office_lease')::jsonb);
 reset role;
 select set_config('qorpera_test.screen',current_setting('qorpera_test.office_lease')::jsonb#>>'{binding,screenId}',true);
@@ -108,6 +137,45 @@ reset role;
 select pg_temp.wake_assert(pg_temp.seat(),'a running command keeps the seat');
 update public.qorpera_runtime_office_shell_activity set busy_until=clock_timestamp()-interval '1 second';
 select pg_temp.wake_assert(not pg_temp.seat(),'a stale report keeps no seat');
+
+-- 20260929070200: the office's operation check takes every shell action the
+-- tool sends, and the 15-second form of older bundles, and nothing else.
+create function pg_temp.shell_ok(p_arguments text) returns boolean language sql as $$
+	select public.qorpera_valid_office_shell_action(p_arguments::jsonb)
+$$;
+select pg_temp.wake_assert(pg_temp.shell_ok('{"kind":"shell","action":"start","command":"npm run build","waitMs":10000}')
+	and pg_temp.shell_ok('{"kind":"shell","action":"start","command":"sleep 3600","waitMs":0}')
+	and pg_temp.shell_ok('{"kind":"shell","action":"start","command":"x","waitMs":15000}')
+	and pg_temp.shell_ok('{"kind":"shell","action":"read","sessionId":"00000000-0000-4000-8000-0000000000a1","waitMs":5000}')
+	and pg_temp.shell_ok('{"kind":"shell","action":"write","sessionId":"00000000-0000-4000-8000-0000000000a1","text":"y\n","endInput":false,"waitMs":1000}')
+	and pg_temp.shell_ok('{"kind":"shell","action":"write","sessionId":"00000000-0000-4000-8000-0000000000a1","text":"","endInput":true,"waitMs":1000}')
+	and pg_temp.shell_ok('{"kind":"shell","action":"stop"}')
+	and pg_temp.shell_ok('{"kind":"shell","action":"stop","sessionId":"00000000-0000-4000-8000-0000000000a1"}')
+	and pg_temp.shell_ok('{"kind":"shell","action":"list"}')
+	and pg_temp.shell_ok('{"kind":"shell","command":"ls","timeoutMs":15000}'),
+	'every shell action the tool sends, and the older form, is valid');
+select pg_temp.wake_assert(not pg_temp.shell_ok(bad),'invalid shell arguments: '||bad) from unnest(array[
+	'{"kind":"shell","action":"start","command":"ls"}',
+	'{"kind":"shell","action":"start","command":"ls","waitMs":15001}',
+	'{"kind":"shell","action":"start","command":"ls","waitMs":1.5}',
+	'{"kind":"shell","action":"start","command":"ls","waitMs":"100"}',
+	'{"kind":"shell","action":"start","command":"ls","waitMs":-1}',
+	'{"kind":"shell","action":"start","command":"   ","waitMs":0}',
+	'{"kind":"shell","action":"start","command":"ls","waitMs":0,"timeoutMs":1000}',
+	'{"kind":"shell","action":"read","sessionId":"not-a-command","waitMs":0}',
+	'{"kind":"shell","action":"read","sessionId":"00000000-0000-4000-8000-0000000000a1"}',
+	'{"kind":"shell","action":"write","sessionId":"00000000-0000-4000-8000-0000000000a1","text":"","endInput":false,"waitMs":0}',
+	'{"kind":"shell","action":"write","sessionId":"00000000-0000-4000-8000-0000000000a1","text":"y","endInput":"true","waitMs":0}',
+	'{"kind":"shell","action":"stop","sessionId":"00000000-0000-4000-8000-0000000000a1","waitMs":0}',
+	'{"kind":"shell","action":"list","waitMs":0}',
+	'{"kind":"shell","action":"kill"}',
+	'{"kind":"shell","command":"ls","timeoutMs":0}',
+	'{"kind":"shell","command":"ls","timeoutMs":16000}',
+	'{"kind":"shell","command":"ls","timeoutMs":1000,"waitMs":0}',
+	'{"kind":"browser","action":"list"}']) as bad;
+select pg_temp.wake_assert(not pg_temp.shell_ok(jsonb_build_object('kind','shell','action','start','command',repeat('x',16385),'waitMs',0)::text),
+	'a command over 16 KiB is invalid');
+
 
 -- The operator pauses the company: a report records nothing and tells the
 -- office, which stops every shell.
