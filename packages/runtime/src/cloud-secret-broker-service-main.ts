@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { Pool } from "pg";
 import { composeCloudConnectorService, parseCloudConnectorServiceConfig } from "./cloud-connector-service.ts";
 import { ModelLoginHelperClient } from "./cloud-model-login-helper.ts";
+import { CloudModelLoginUpkeep } from "./cloud-model-login-upkeep.ts";
 import { CloudModelLoginVault } from "./cloud-model-login-vault.ts";
 import { CloudModelLoginSignIns } from "./cloud-model-login-vault-sign-in.ts";
 import { CloudModelLoginUsage } from "./cloud-model-login-vault-usage.ts";
@@ -272,20 +273,23 @@ export async function runCloudSecretBrokerServiceMain(
 		const helper = loginHelper ? new ModelLoginHelperClient(loginHelper) : undefined;
 		// Members' sign-ins to the vault: the broker collects finished ones in the background.
 		const signIns = helper ? new CloudModelLoginSignIns({ authority, keyring, helper }) : undefined;
+		// Model logins in the vault (Stateless Compute step 1). The helper renews and runs a
+		// member's sign-in; without it a login is handed out as stored, nothing renews it, and
+		// the sign-in route answers 404.
+		const modelLogins = new CloudModelLoginVault({
+			authority,
+			keyring,
+			...(helper ? { renewer: helper } : {}),
+		});
+		// The vault's upkeep: it renews idle logins itself (only with the helper).
+		const upkeep = new CloudModelLoginUpkeep({ vault: modelLogins });
 		const service = new HttpCloudSecretBrokerService(broker, runtimeToken, {
 			host: "127.0.0.1",
 			port: config.port as number,
 			memberOrigins,
 			...(connectors ? { oauth: connectors.oauth } : {}),
 			...(codingExecutorToken ? { codingExecutorToken } : {}),
-			// Model logins in the vault (Stateless Compute step 1). The helper renews and runs a
-			// member's sign-in; without it a login is handed out as stored, nothing renews it, and
-			// the sign-in route answers 404.
-			modelLogins: new CloudModelLoginVault({
-				authority,
-				keyring,
-				...(helper ? { renewer: helper } : {}),
-			}),
+			modelLogins,
 			...(signIns ? { modelLoginSignIns: signIns } : {}),
 			// Usage of vault logins needs no helper: the broker reads it with the pass.
 			modelLoginUsage: new CloudModelLoginUsage({ authority, keyring }),
@@ -297,6 +301,7 @@ export async function runCloudSecretBrokerServiceMain(
 		try {
 			await service.start();
 			signIns?.start();
+			upkeep.start();
 			await new Promise<void>((resolveWait) => {
 				if (stop.signal.aborted) resolveWait();
 				else stop.signal.addEventListener("abort", () => resolveWait(), { once: true });
@@ -304,8 +309,9 @@ export async function runCloudSecretBrokerServiceMain(
 		} finally {
 			process.removeListener("SIGINT", shutdown);
 			process.removeListener("SIGTERM", shutdown);
-			await signIns?.close();
-			await service.close();
+			// All at once: the server stops taking requests while a renewal in flight finishes, so a
+			// stop stays within the unit's 90 s.
+			await Promise.all([upkeep.close(), signIns?.close(), service.close()]);
 		}
 	} finally {
 		await pool.end();
