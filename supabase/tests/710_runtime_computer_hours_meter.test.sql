@@ -274,6 +274,12 @@ select pg_temp.hours_unmanaged('115 minutes', 'starting');
 select pg_temp.hours_unmanaged('118 minutes', 'running');
 select pg_temp.wake_assert(usage.coding_machine_seconds = 420, 'B+110..112 and B+115..120: ' || row_to_json(usage)::text)
 from pg_temp.hours_pass2('120 minutes') usage;
+-- The node goes silent after B+118 and the machine sleeps at B+125: the silence counts first.
+select public.qorpera_computer_hour_record('71000000-0000-4000-8000-0000000000f2', 'coding_machine',
+	'71000000-0000-4000-8000-000000000303', '71000000-0000-4000-8000-000000000010', 'asleep', null, pg_temp.hours_b('125 minutes'));
+select pg_temp.wake_assert(usage.coding_machine_seconds = 180,
+	'B+120..123, five minutes after the last report, not up to the sleep: ' || row_to_json(usage)::text)
+from pg_temp.hours_pass2('130 minutes') usage;
 
 -- 4. Members read their company's month.
 select set_config('qorpera_test.hours_month', coalesce(sum(standard_seconds), 0)::text, true)

@@ -415,12 +415,13 @@ begin
 		select * into strict v_node from public.qorpera_computer_hour_nodes where node_id = v_node_id for update;
 		v_last := v_node.last_inventory_at;
 		-- Reports older than every machine counted on the node are never read: the read position
-		-- moves up to a minute before the oldest of them (observed_at is the node's clock, accepted
-		-- at most a minute behind the database's).
+		-- moves up to six minutes before the oldest of them, enough to know whether the node was
+		-- reporting when it woke (five minutes of silence) with a minute to spare (observed_at is
+		-- the node's clock, accepted at most a minute behind the database's).
 		select least(
 			(select min(subject.awake_since) from public.qorpera_computer_hour_subjects subject where subject.node_id = v_node_id),
 			(select min(log.at) from public.qorpera_computer_hour_log log where log.id = any(v_ids) and log.node_id = v_node_id)
-		) - interval '1 minute' into v_from;
+		) - interval '6 minutes' into v_from;
 		if v_node.cursor_observed_at < v_from then
 			v_node.cursor_observed_at := v_from;
 			v_node.cursor_observation_id := '00000000-0000-0000-0000-000000000000';
@@ -440,8 +441,25 @@ begin
 				on inventory.node_id = observation.node_id and inventory.observation_id = observation.observation_id
 			where observation.node_id = v_node_id
 				and (observation.observed_at, observation.observation_id) > (v_node.cursor_observed_at, v_node.cursor_observation_id)
-			order by 2, 1, 3
+			order by 2, 1, 3, 4, 5
 		loop
+			-- A silence of more than five minutes before this event, a transition or a report: the
+			-- node's machines stopped counting five minutes after its last report.
+			if v_event.event_at > v_last + interval '5 minutes' then
+				for v_subject in
+					select * from public.qorpera_computer_hour_subjects
+					where node_id = v_node_id and ended_at is null and paused_at is null
+						and awake_since <= v_event.event_at
+					order by subject_id
+					for update
+				loop
+					v_end := greatest(v_subject.counted_until, v_last + interval '5 minutes');
+					v_totals := public.qorpera_computer_hour_add(v_totals, v_subject, v_subject.counted_until, v_end);
+					update public.qorpera_computer_hour_subjects
+					set counted_until = v_end, paused_at = v_end, pause_reason = 'node_silent'
+					where subject_id = v_subject.subject_id;
+				end loop;
+			end if;
 			if v_event.source = 0 then
 				select * into strict v_log from public.qorpera_computer_hour_log where id = v_event.log_id;
 				select * into v_subject from public.qorpera_computer_hour_subjects where subject_id = v_log.subject_id for update;
@@ -472,22 +490,6 @@ begin
 					where subject_id = v_log.subject_id;
 				end if;
 			else
-				-- A silence of more than five minutes before this report.
-				if v_event.event_at > v_last + interval '5 minutes' then
-					for v_subject in
-						select * from public.qorpera_computer_hour_subjects
-						where node_id = v_node_id and ended_at is null and paused_at is null
-							and awake_since <= v_event.event_at
-						order by subject_id
-						for update
-					loop
-						v_end := greatest(v_subject.counted_until, v_last + interval '5 minutes');
-						v_totals := public.qorpera_computer_hour_add(v_totals, v_subject, v_subject.counted_until, v_end);
-						update public.qorpera_computer_hour_subjects
-						set counted_until = v_end, paused_at = v_end, pause_reason = 'node_silent'
-						where subject_id = v_subject.subject_id;
-					end loop;
-				end if;
 				for v_subject in
 					select * from public.qorpera_computer_hour_subjects
 					where node_id = v_node_id and ended_at is null and awake_since <= v_event.event_at
