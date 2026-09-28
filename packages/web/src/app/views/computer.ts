@@ -1,3 +1,4 @@
+import type { CompanyComputerScope } from "@qorpera/cloud-client/cloud-company-computer-contract";
 import type { WebCompanyComputer } from "../../cloud/computer.ts";
 import type { HostedStaffAgent } from "../../cloud/types.ts";
 import { attachComputerDrag } from "../../ui/computer-drag.ts";
@@ -5,6 +6,9 @@ import { ComputerViewHost } from "../../ui/computer-view-host.ts";
 import { h, replace } from "../../ui/dom.ts";
 import { matchesKey } from "../../ui/keys.ts";
 import { t } from "../../ui/preferences.ts";
+
+/** Thrown inside the open flow when the agent's screen belongs on another computer. */
+const MOVED = Symbol("moved");
 
 /**
  * Opening the thread's computer is the explicit intent to start and watch it.
@@ -37,11 +41,15 @@ export class ComputerPanel {
 	/** Takes back the idle wakes this panel asked for and never used. */
 	#withdrawWakes: () => void = () => {};
 	#title: string;
+	#name: string;
+	/** Which of the company's computers shows the screen, once the company has more than one. */
+	#number: number | undefined;
 	#busy = false;
 
 	constructor(agent: HostedStaffAgent, computer?: WebCompanyComputer, parentSignal?: AbortSignal) {
 		this.agentId = agent.id;
-		this.#title = t("{name} · Computer", { name: agent.displayName });
+		this.#name = agent.displayName;
+		this.#title = this.#titleText();
 		const signal = AbortSignal.any([this.#stop.signal, ...(parentSignal ? [parentSignal] : [])]);
 		this.#views = new ComputerViewHost(signal);
 		this.el = h(
@@ -128,18 +136,88 @@ export class ComputerPanel {
 			for (const wake of wakes.values()) void wake.sent.then(wake.withdraw).catch(() => undefined);
 			wakes.clear();
 		};
-		const open = async () => {
-			const catalog = await computer.client.catalog(signal);
+		/** A state the member can only wait out: it stays on screen with a way to ask again. */
+		const blocked = (text: string) => {
+			unavailable(text);
+			this.#retry.hidden = false;
+		};
+		/** A backend that predates several computers per company answered once: stop asking. */
+		let single = false;
+		/** The computer that shows this agent's screen. A company can run several; a
+		 * backend that predates that has one, the catalog's. */
+		const locate = async () => {
+			const placed = single ? undefined : await computer.client.agentComputer(agent.id, signal);
 			signal.throwIfAborted();
-			const { scope, canManage } = catalog;
-			if (!scope) {
-				unavailable(t("This company has no computer yet."));
-				return;
+			if (placed === undefined) {
+				single = true;
+				const catalog = await computer.client.catalog(signal);
+				signal.throwIfAborted();
+				if (!catalog.scope) {
+					unavailable(t("This company has no machine yet."));
+					return undefined;
+				}
+				return { scope: catalog.scope, canManage: catalog.canManage, number: 1, computers: 1 };
 			}
+			if (!placed.computer) {
+				if (placed.computers === 0) unavailable(t("This company has no machine yet."));
+				else if (placed.placement === "denied")
+					unavailable(t("{name} does not have access to the computer.", { name: agent.displayName }));
+				else if (placed.placement === "new")
+					blocked(t("All computers are in use. An owner or admin can start another machine."));
+				else blocked(t("The machine is not ready yet."));
+				return undefined;
+			}
+			return {
+				scope: placed.computer.scope,
+				canManage: placed.canManage,
+				number: placed.computer.number,
+				computers: placed.computers,
+				waiting: placed.computer.waiting,
+			};
+		};
+		const waitingLine = (waiting: "setup" | "room" | null | undefined, number: number) =>
+			waiting === "setup"
+				? number > 1
+					? t("Setting up another machine. This can take a while.")
+					: t("Setting up the machine. This can take a while.")
+				: waiting === "room"
+					? t("Waiting for room on our servers. It starts as soon as there is room.")
+					: undefined;
+		/** While a computer starts: why it is not up yet, or that the agent now has
+		 * room on another computer (then the panel moves there). */
+		const recheck = async (scope: CompanyComputerScope, number: number, until: AbortSignal) => {
+			if (single) return undefined;
+			const placed = await computer.client.agentComputer(agent.id, until).catch(() => undefined);
+			until.throwIfAborted();
+			if (!placed?.computer) return undefined;
+			if (placed.computer.scope.companyComputerId !== scope.companyComputerId)
+				return placed.placement === "screen" || placed.placement === "room" ? MOVED : undefined;
+			return waitingLine(placed.computer.waiting, number);
+		};
+		/** Resolves to "moved" when the agent's screen is (or should now be) on another computer. */
+		const open = async (): Promise<"moved" | undefined> => {
+			const located = await locate();
+			if (!located) return;
+			const { scope, canManage } = located;
+			try {
+				return await openOn(located, scope, canManage);
+			} catch (error) {
+				if (error !== MOVED) throw error;
+				return "moved";
+			}
+		};
+		const openOn = async (
+			located: NonNullable<Awaited<ReturnType<typeof locate>>>,
+			scope: CompanyComputerScope,
+			canManage: boolean,
+		): Promise<"moved" | undefined> => {
+			this.#number = located.computers > 1 ? located.number : undefined;
+			this.#title = this.#titleText();
+			this.#applyTitle();
 			const startClient = computer.client.start(scope);
 			const ensureActive = async (until: AbortSignal, expectedGeneration?: number): Promise<boolean> => {
 				let requestedKey: string | undefined;
-				for (;;) {
+				for (let pass = 0; ; pass++) {
 					const start = await startClient.status(until);
 					until.throwIfAborted();
 					if (expectedGeneration !== undefined && start.computerGeneration !== expectedGeneration)
@@ -149,15 +227,18 @@ export class ComputerPanel {
 					const cycle = idle ? `idle:${start.maintenance!.transitionId}` : "start";
 					const key = `${scope.companyId}:${scope.environmentId}:${scope.companyComputerId}:${scope.logicalComputerId}:${start.computerGeneration}:${cycle}`;
 					if (start.officeState === "maintenance" && !idle) {
-						this.#status.textContent = t("The computer is restarting. It comes back on its own.");
+						this.#status.textContent = t("The machine is restarting. It comes back on its own.");
 					} else if (start.officeState === "retired") {
-						unavailable(t("This computer has been retired."));
+						unavailable(t("This machine has been retired."));
 						return false;
 					} else if (!canManage && !idle) {
-						this.#status.textContent = t("The computer is off. An owner or admin can start it.");
+						// Not ours to start; the agent may still get room on another machine meanwhile.
+						if (pass > 0 && pass % 4 === 0 && (await recheck(scope, located.number, until)) === MOVED)
+							throw MOVED;
+						this.#status.textContent = t("The machine is off. An owner or admin can start it.");
 					} else if (idle && !computer.canRequestWake) {
 						this.#status.textContent = t(
-							"You have read-only access. A company member with write access can wake the computer.",
+							"You have read-only access. A company member with write access can wake the machine.",
 						);
 					} else {
 						if ((!start.intent || idle) && requestedKey !== key) {
@@ -185,7 +266,17 @@ export class ComputerPanel {
 							});
 							until.throwIfAborted();
 						}
-						this.#status.textContent = t("Starting the computer…");
+						// A new computer can wait for its server first; say so instead of "starting" for minutes.
+						const reason =
+							start.officeState !== "provisioning"
+								? undefined
+								: pass === 0
+									? waitingLine(located.waiting, located.number)
+									: pass % 4 === 0
+										? await recheck(scope, located.number, until)
+										: this.#status.textContent;
+						if (reason === MOVED) throw MOVED;
+						this.#status.textContent = reason ?? t("Starting the machine…");
 					}
 					await wait(3000, until);
 				}
@@ -195,7 +286,7 @@ export class ComputerPanel {
 			try {
 				views = computer.views(scope);
 			} catch {
-				unavailable(t("Screen viewing is not set up here."));
+				unavailable(t("Computer viewing is not set up here."));
 				return;
 			}
 			this.#status.textContent = t("Connecting…");
@@ -204,7 +295,7 @@ export class ComputerPanel {
 				const status = await views.status(signal);
 				signal.throwIfAborted();
 				if (status.state === "retired") {
-					unavailable(t("This computer has been retired."));
+					unavailable(t("This machine has been retired."));
 					return;
 				}
 				if (status.state !== "active") {
@@ -260,16 +351,17 @@ export class ComputerPanel {
 						const opened = await views.openScreen(agent.id, signal);
 						signal.throwIfAborted();
 						if (opened.state === "refused") {
+							if (opened.reason === "AGENT_ON_OTHER_COMPUTER") throw MOVED;
 							const text =
 								opened.reason === "SCREEN_CAPACITY_EXHAUSTED"
-									? t("All screens on this computer are in use. Try again when one is free.")
+									? t("All computers on this machine are in use. Try again when one is free.")
 									: opened.reason === "AGENT_HAS_NO_COMPUTER_ACCESS"
 										? t("{name} does not have access to the computer.", { name: agent.displayName })
 										: opened.reason === "SCREEN_OCCUPIED"
-											? t("{name}'s screen is being handed over. It opens here in a moment.", {
+											? t("{name}'s computer is being handed over. It opens here in a moment.", {
 													name: agent.displayName,
 												})
-											: t("The computer is not ready yet.");
+											: t("The machine is not ready yet.");
 							if (opened.reason !== "SCREEN_OCCUPIED" && opened.reason !== "COMPUTER_NOT_ACTIVE") {
 								unavailable(text);
 								return;
@@ -279,9 +371,7 @@ export class ComputerPanel {
 						} else continue;
 					}
 				} else {
-					this.#status.textContent = t(
-						"The computer is private right now. Shared viewing returns when that ends.",
-					);
+					this.#status.textContent = t("The machine is private right now. Shared viewing returns when that ends.");
 				}
 				await wait(3000, signal);
 			}
@@ -294,7 +384,19 @@ export class ComputerPanel {
 			this.#spinner.hidden = false;
 			this.#status.textContent = t("Connecting…");
 			try {
-				await open();
+				// An agent that moved between computers is followed a few times, never in a loop.
+				for (let moves = 0; ; moves++) {
+					if ((await open()) !== "moved") break;
+					// The computer it left needs no wake from this panel any more.
+					this.#withdrawWakes();
+					if (moves >= 2) {
+						unavailable(t("The machine is not ready yet."));
+						this.#retry.hidden = false;
+						break;
+					}
+					this.#status.textContent = t("Connecting…");
+					await wait(1000, signal);
+				}
 			} catch {
 				if (!signal.aborted) {
 					unavailable(t("The computer could not be reached. Try again."));
@@ -315,10 +417,17 @@ export class ComputerPanel {
 
 	/** The agent was renamed: the viewer keeps its connection and only its title follows. */
 	retitle(displayName: string): void {
-		const title = t("{name} · Computer", { name: displayName });
+		this.#name = displayName;
+		const title = this.#titleText();
 		if (title === this.#title) return;
 		this.#title = title;
 		this.#applyTitle();
+	}
+
+	#titleText(): string {
+		return this.#number === undefined
+			? t("{name} · Computer", { name: this.#name })
+			: t("{name} · Computer · Machine {number}", { name: this.#name, number: String(this.#number) });
 	}
 
 	#applyTitle(): void {
