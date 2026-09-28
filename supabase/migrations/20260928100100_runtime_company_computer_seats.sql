@@ -633,9 +633,8 @@ grant execute on function public.qorpera_member_agent_office(uuid, uuid) to auth
 -- Operators: computers that need a host. A started computer with no provider
 -- yet waits for its host to be prepared ('setup') or for room ('room'); an
 -- added computer that nobody started yet is listed too, so a spare can be set
--- up ahead. `template` is the company's computer that already has a provider:
--- the host documents of the new one are planned from it
--- (qorpera-office-next-computer, deploy/office-fleet/README.md).
+-- up ahead. Nothing here names a node: which node runs a computer is the fleet
+-- placement's decision (any node with room).
 create function public.qorpera_runtime_office_setup_queue()
 returns jsonb
 language sql
@@ -650,14 +649,7 @@ as $$
 			'logicalComputerId', o.logical_computer_id, 'computerNumber', o.computer_number,
 			'computerGeneration', o.generation, 'intentId', i.id, 'requestedAt', i.created_at,
 			'waiting', case when i.id is null then 'unstarted' else public.qorpera_runtime_office_start_wait(o) end,
-			'template', (select jsonb_build_object('companyComputerId', t.id, 'computerNumber', t.computer_number,
-					'providerId', p.provider_id, 'policySha256', p.policy_sha256,
-					'nodeId', (select n.node_id from public.qorpera_runtime_node_providers n
-						where n.provider_kind = 'office' and n.provider_id = p.provider_id::text and n.policy_sha256 = p.policy_sha256))
-				from public.qorpera_runtime_offices t
-				join public.qorpera_runtime_office_providers p on p.office_id = t.id and p.computer_generation = t.generation
-				where t.environment_id = o.environment_id and t.id <> o.id and t.state <> 'retired'
-				order by t.computer_number limit 1)) as item
+			'imageSha256', o.image_sha256, 'bootstrapSha256', o.bootstrap_sha256, 'maxScreens', o.max_screens) as item
 		from public.qorpera_runtime_offices o
 		left join public.qorpera_runtime_office_start_intents i
 			on i.office_id = o.id and i.computer_generation = o.generation and i.state <> 'cancelled'

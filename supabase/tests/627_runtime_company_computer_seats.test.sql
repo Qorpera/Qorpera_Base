@@ -94,7 +94,8 @@ select set_config('qorpera_test.queue',public.qorpera_runtime_office_setup_queue
 reset role;
 select pg_temp.wake_assert(exists(select 1 from jsonb_array_elements(current_setting('qorpera_test.queue')::jsonb) q
 	where q->>'companyComputerId'=current_setting('qorpera_test.office2') and q->>'waiting'='setup'
-	and q->>'computerNumber'='2' and q->'intentId' is not null),'operators see computer 2 waiting for its host');
+	and q->>'computerNumber'='2' and q->'intentId' is not null and q->>'maxScreens'='2' and not q ? 'template'),
+	'operators see computer 2 waiting for its host, with no node named');
 select pg_temp.wake_assert(pg_temp.place('30000000-0000-4000-8000-000000000032')
 	=jsonb_build_object('decision','starting','officeId',(pg_temp.office(2)).id),'Carol waits for computer 2 to start');
 

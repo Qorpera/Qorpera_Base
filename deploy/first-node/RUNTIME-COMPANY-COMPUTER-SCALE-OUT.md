@@ -82,8 +82,9 @@ environment.
   (`20260923060000`, bundle v82).
 - `qorpera_runtime_office_setup_queue()` (service role) lists computers that
   need a host: started ones waiting for `setup` or `room`, and added ones not
-  started yet (`unstarted`), each with the company computer whose host
-  documents to copy (`template`: provider, policy, node).
+  started yet (`unstarted`), with the image, bootstrap and screen count each
+  needs. It names no node: which node runs a computer is the fleet placement's
+  decision (Stateless Compute, 28 September: any node with room).
 - `qorpera_member_agent_office(environment, agent)` tells the web which
   computer shows an agent's screen, its number, how many computers the company
   has, and why a started computer is not up yet (`setup`: no prepared host has
@@ -125,10 +126,12 @@ computers.
 
 ## What it does not do yet
 
-- **Hosts.** Adding a computer records demand; a host must still be prepared
-  for it (see `deploy/office-fleet/README.md`). Until then its start waits
-  (`waiting: setup`). Planning the host documents of a company's next computer
-  from its first is a separate change (`qorpera-office-next-computer`).
+- **Hosts.** Adding a computer records demand; a node must still offer it
+  (see `deploy/office-fleet/README.md`). Until then its start waits
+  (`waiting: setup`). Nodes are to be identical and a computer is to start on
+  any node with room (Stateless Compute, 28 September); that work belongs to
+  the "Identical nodes and placement for every machine" session. Copying another
+  computer's node-specific setup is not the way.
 - **Runs reaching computer 2.** A native job reaches one configured office URL.
   Company routes (`/office/{companyComputerId}/native`) are a separate runtime
   change; the switch above stays off until it is live.
