@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { type FileHandle, lstat, mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { type FileHandle, lstat, mkdir, mkdtemp, readdir, realpath, rm, statfs, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import type { Duplex } from "node:stream";
 import {
@@ -13,6 +13,7 @@ import type {
 	CompanyComputerShellListResult,
 } from "./cloud-company-computer-guest.ts";
 import { assertCompanyComputerGuestLayout, type CompanyComputerGuestLayout } from "./cloud-company-computer-layout.ts";
+import { CompanyComputerActionFailedError, companyComputerActionCheck } from "./cloud-company-computer-leases.ts";
 import {
 	assertCompanyComputerImageArtifact,
 	assertCompanyComputerLinuxHost,
@@ -20,6 +21,7 @@ import {
 	type CompanyComputerCommandLimits,
 	companyComputerLinuxSandboxArgs,
 	openCompanyComputerLinuxDirectory,
+	readCompanyComputerLinuxMetadata,
 } from "./cloud-company-computer-linux-host.ts";
 import { spawnCompanyComputerLinuxProcess } from "./cloud-company-computer-linux-process.ts";
 import { companyComputerScreenDisplay } from "./cloud-company-computer-screens.ts";
@@ -43,6 +45,8 @@ import { cloudToolRequest } from "./cloud-native-tool-authority.ts";
 export const COMPANY_COMPUTER_SHELL_KEPT_OUTPUT = 1024 * 1024;
 /** Output one reply shows; the native reply envelope is 48 KiB including JSON escaping. */
 export const COMPANY_COMPUTER_SHELL_REPLY_OUTPUT = 16 * 1024;
+/** Each shell's private /tmp, memory-backed like the service's other scratch space. */
+export const COMPANY_COMPUTER_SHELL_TMP_BYTES = 512 * 1024 * 1024;
 /** Finished commands remembered for a later read or list. */
 const FINISHED_KEPT = 64;
 const LISTED = 40;
@@ -68,6 +72,8 @@ interface Session {
 	exitCode?: number;
 	signal?: string;
 	stopRequested: boolean;
+	/** Why the machine ended it, when neither the command nor the agent did. */
+	note?: string;
 	inputEnded: boolean;
 	chunks: Buffer[];
 	/** Absolute byte offsets: the first kept byte, the total, and what replies have shown. */
@@ -83,6 +89,8 @@ export interface CompanyComputerShellEnvironment {
 	/** Settles when the namespace has exited and been reaped. */
 	readonly exited: Promise<void>;
 	stop(): Promise<void>;
+	/** The namespace's outermost process, for memory and task accounting from outside it. */
+	readonly pid?: number;
 }
 
 export type CompanyComputerShellEnvironmentLauncher = (
@@ -98,6 +106,15 @@ function alignStart(bytes: Buffer, index: number): number {
 function alignEnd(bytes: Buffer, index: number): number {
 	while (index > 0 && (bytes[index] & 0xc0) === 0x80) index--;
 	return index;
+}
+
+/** Where a trailing, still incomplete UTF-8 character starts, or the length when there is none. */
+function completeEnd(bytes: Buffer): number {
+	const start = alignEnd(bytes, bytes.length - 1);
+	if (start < 0 || start >= bytes.length) return bytes.length;
+	const lead = bytes[start];
+	const needed = lead >= 0xf0 ? 4 : lead >= 0xe0 ? 3 : lead >= 0xc0 ? 2 : 1;
+	return bytes.length - start < needed ? start : bytes.length;
 }
 
 function decode(bytes: Buffer): string {
@@ -192,13 +209,14 @@ export class CompanyComputerLinuxShell implements CompanyComputerGuestShell {
 	}
 
 	/** The namespace ended: every command in it has ended with it. */
-	#ended(environment: Promise<CompanyComputerShellEnvironment>): void {
+	#ended(environment: Promise<CompanyComputerShellEnvironment>, note?: string): void {
 		if (this.#environment !== environment) return;
 		this.#environment = undefined;
 		this.#processes = 0;
 		for (const session of this.#sessions.values())
 			if (session.state === "starting" || session.state === "running") {
 				session.state = "stopped";
+				if (note) session.note = note;
 				this.#wake(session);
 			}
 	}
@@ -255,8 +273,10 @@ export class CompanyComputerLinuxShell implements CompanyComputerGuestShell {
 	#result(session: Session): CompanyComputerShellCommandResult {
 		const from = Math.max(session.readTo, session.keptFrom);
 		const dropped = from - session.readTo;
-		const bytes = Buffer.concat(session.chunks).subarray(from - session.keptFrom);
-		session.readTo = session.total;
+		let bytes = Buffer.concat(session.chunks).subarray(from - session.keptFrom);
+		// A character split between two chunks waits for its rest while the command runs.
+		if (session.state === "starting" || session.state === "running") bytes = bytes.subarray(0, completeEnd(bytes));
+		session.readTo = from + bytes.length;
 		let output = "";
 		let cut = 0;
 		for (let budget = COMPANY_COMPUTER_SHELL_REPLY_OUTPUT; ; budget = Math.floor(budget / 2)) {
@@ -281,6 +301,7 @@ export class CompanyComputerLinuxShell implements CompanyComputerGuestShell {
 			...(session.signal === undefined ? {} : { signal: session.signal }),
 			output,
 			...(dropped + cut ? { skippedBytes: dropped + cut } : {}),
+			...(session.note === undefined ? {} : { note: session.note }),
 		};
 	}
 
@@ -366,18 +387,43 @@ export class CompanyComputerLinuxShell implements CompanyComputerGuestShell {
 	}
 
 	list(): CompanyComputerShellListResult {
-		const commands = [...this.#sessions.values()]
-			.reverse()
-			.slice(0, LISTED)
-			.map((session) => ({
+		const commands: CompanyComputerShellListResult["commands"] = [];
+		let bytes = 0;
+		for (const session of [...this.#sessions.values()].reverse().slice(0, LISTED)) {
+			// A preview: one line, no control characters, so every entry stays small in JSON.
+			const preview = session.command.replace(/[\x00-\x1f\x7f]+/g, " ").trim();
+			const entry = {
 				sessionId: session.id,
-				command: session.command.length > 200 ? `${session.command.slice(0, 200)}…` : session.command,
+				command: preview.length > 120 ? `${preview.slice(0, 120)}…` : preview,
 				state: session.state === "starting" ? ("running" as const) : session.state,
 				...(session.exitCode === undefined ? {} : { exitCode: session.exitCode }),
 				startedAt: session.startedAt,
 				unreadBytes: session.total - Math.max(session.readTo, session.keptFrom),
-			}));
+			};
+			bytes += Buffer.byteLength(JSON.stringify(entry));
+			if (bytes > COMPANY_COMPUTER_SHELL_REPLY_OUTPUT) break;
+			commands.push(entry);
+		}
 		return { commands, processes: this.#environment ? this.#processes : 0 };
+	}
+
+	/** Whether a namespace is up, and its outermost process for accounting. */
+	async namespacePid(): Promise<number | undefined> {
+		const current = this.#environment;
+		return current ? (await current.catch(() => undefined))?.pid : undefined;
+	}
+
+	/**
+	 * The machine is about to run out of memory or tasks: everything in this
+	 * shell ends, with the reason on each command, and the next start opens a
+	 * fresh one. A storage-safety stop, taken before the kernel's own.
+	 */
+	async relieve(note: string): Promise<void> {
+		const current = this.#environment;
+		if (!current) return;
+		const opened = await current.catch(() => undefined);
+		this.#ended(current, note);
+		await opened?.stop();
 	}
 
 	/** Ends every process in the shell and the namespace itself. A timeout is never success. */
@@ -404,6 +450,7 @@ export class CompanyComputerLinuxShell implements CompanyComputerGuestShell {
  * and the desktop home read-write, the screen's X socket, a read-only image.
  * Its only way out is a broker relay that dials public addresses; browser
  * profiles, sign-ins, service credentials and the NAS are not mounted.
+ * Its processes are the machine's first choice when memory runs out.
  */
 export function createCompanyComputerLinuxShellLauncher(options: {
 	binding: CompanyComputerScreenBinding;
@@ -432,42 +479,48 @@ export function createCompanyComputerLinuxShellLauncher(options: {
 	if (options.timeZone !== undefined && !/^[A-Za-z0-9_+-]+(?:\/[A-Za-z0-9_+-]+)*$/.test(options.timeZone))
 		throw new Error("INVALID_OFFICE_TIME_ZONE");
 	return async (onEvent, lifetime) => {
-		if (process.platform !== "linux" || !process.getuid?.() || !process.geteuid?.())
-			throw new Error("UNPRIVILEGED_LINUX_OFFICE_REQUIRED");
-		lifetime.throwIfAborted();
-		await cloudToolRequest((checked) => options.boundary.assertReady(binding, checked), lifetime);
-		await assertCompanyComputerLinuxHost(options.limits, lifetime);
-		for (const path of [
-			"/usr/bin/bwrap",
-			"/usr/bin/tini",
-			"/usr/bin/bash",
-			"/usr/bin/node",
-			COMPANY_COMPUTER_NAMESPACE_CHILD,
-		])
-			await assertCompanyComputerImageArtifact(path);
-		await assertCompanyComputerImageArtifact("/usr", true);
-		const xSocket = options.xSocket();
-		const socket = await lstat(xSocket);
-		const socketParent = await lstat(dirname(xSocket));
-		if (
-			!socket.isSocket() ||
-			socket.uid !== process.getuid?.() ||
-			(await realpath(xSocket)) !== xSocket ||
-			!socketParent.isDirectory() ||
-			socketParent.uid !== process.getuid?.() ||
-			(socketParent.mode & 0o077) !== 0
-		)
-			throw new Error("OFFICE_X_SOCKET_UNAVAILABLE");
 		const files: FileHandle[] = [];
 		let temporary: string | undefined;
 		let relay: Awaited<ReturnType<typeof startCompanyComputerShellEgress>> | undefined;
-		let owned = false;
 		const release = async (): Promise<void> => {
 			await relay?.close().catch(() => undefined);
 			await Promise.all(files.map((file) => file.close().catch(() => undefined)));
 			if (temporary) await rm(temporary, { recursive: true, force: true });
 		};
+		// A start that failed before its namespace existed left nothing running:
+		// the action failed as its own and the screen is not drained for it (the
+		// gate checks its authority again). The same holds once a started
+		// namespace is confirmed gone; one that is not stays an unknown outcome.
+		let launched: ReturnType<typeof spawnCompanyComputerLinuxProcess>;
 		try {
+			if (process.platform !== "linux" || !process.getuid?.() || !process.geteuid?.())
+				throw new Error("UNPRIVILEGED_LINUX_OFFICE_REQUIRED");
+			lifetime.throwIfAborted();
+			await companyComputerActionCheck(
+				cloudToolRequest((checked) => options.boundary.assertReady(binding, checked), lifetime),
+			);
+			await assertCompanyComputerLinuxHost(options.limits, lifetime);
+			for (const path of [
+				"/usr/bin/bwrap",
+				"/usr/bin/tini",
+				"/usr/bin/bash",
+				"/usr/bin/node",
+				COMPANY_COMPUTER_NAMESPACE_CHILD,
+			])
+				await assertCompanyComputerImageArtifact(path);
+			await assertCompanyComputerImageArtifact("/usr", true);
+			const xSocket = options.xSocket();
+			const socket = await lstat(xSocket);
+			const socketParent = await lstat(dirname(xSocket));
+			if (
+				!socket.isSocket() ||
+				socket.uid !== process.getuid?.() ||
+				(await realpath(xSocket)) !== xSocket ||
+				!socketParent.isDirectory() ||
+				socketParent.uid !== process.getuid?.() ||
+				(socketParent.mode & 0o077) !== 0
+			)
+				throw new Error("OFFICE_X_SOCKET_UNAVAILABLE");
 			files.push(await openCompanyComputerLinuxDirectory(layout.workbenchRoot, false));
 			files.push(await openCompanyComputerLinuxDirectory(layout.desktopHome, true));
 			await assertCompanyComputerWorkbenchMount(files[0], options.workbenchMount, [
@@ -497,8 +550,9 @@ export function createCompanyComputerLinuxShellLauncher(options: {
 				},
 			);
 			const args = [
-				// Package builds unpack into /tmp; tmpfs pages are only used when written.
-				...companyComputerLinuxSandboxArgs(1024 * 1024 * 1024),
+				// Package builds unpack into /tmp; tmpfs pages are only used when written,
+				// and they are memory: the pressure guard counts them.
+				...companyComputerLinuxSandboxArgs(COMPANY_COMPUTER_SHELL_TMP_BYTES),
 				"--bind-fd",
 				"5",
 				layout.workbenchRoot,
@@ -545,78 +599,229 @@ export function createCompanyComputerLinuxShellLauncher(options: {
 				args.push("--setenv", name, value);
 			args.push("--chdir", companyComputerShellWorkingDirectory(layout), "--remount-ro", "/");
 			lifetime.throwIfAborted();
-			const launched = spawnCompanyComputerLinuxProcess({
+			launched = spawnCompanyComputerLinuxProcess({
 				args,
 				files,
 				stdin: "ignore",
 				pipeCount: 2,
-				command: ["/usr/bin/node", COMPANY_COMPUTER_NAMESPACE_CHILD, "--shell-host"],
+				// The machine's out-of-memory choice falls on the shell before the
+				// service, the desktops and the browsers; commands inherit it.
+				command: [
+					"/usr/bin/bash",
+					"--noprofile",
+					"--norc",
+					"-c",
+					`printf 1000 > /proc/self/oom_score_adj || exit 1; exec /usr/bin/node ${COMPANY_COMPUTER_NAMESPACE_CHILD} --shell-host`,
+					"qorpera-shell-host",
+				],
 			});
-			owned = true;
-			const { child } = launched;
-			const exited = new Promise<void>((finished, failed) => {
-				child.once("close", () => void release().then(finished, failed));
-			});
-			void exited.catch(() => undefined);
-			const stop = (): Promise<void> => {
-				launched.stop();
-				return cloudToolRequest(() => exited, new AbortController().signal, 10000);
-			};
-			const kill = (): void => void stop().catch(() => undefined);
-			lifetime.addEventListener("abort", kill, { once: true });
-			void exited.finally(() => lifetime.removeEventListener("abort", kill));
-			let logs = 0;
-			for (const stream of [child.stdout!, child.stderr!])
-				stream.on("data", (bytes: Buffer) => {
-					logs += bytes.length;
-					if (logs > 1024 * 1024) kill();
-				});
-			const toHost = child.stdio[3] as Duplex;
-			const fromHost = child.stdio[4] as Duplex;
-			toHost.on("error", () => undefined);
-			fromHost.on("error", kill);
-			let ready: () => void = () => undefined;
-			const hostReady = new Promise<void>((resolveReady) => {
-				ready = resolveReady;
-			});
-			let buffer = "";
-			fromHost.setEncoding("utf8");
-			fromHost.on("data", (text: string) => {
-				buffer += text;
-				let newline = buffer.indexOf("\n");
-				while (newline >= 0) {
-					const line = buffer.slice(0, newline);
-					buffer = buffer.slice(newline + 1);
-					let event: CompanyComputerShellHostEvent | undefined;
-					try {
-						event = parseCompanyComputerShellHostEvent(line);
-					} catch {
-						event = undefined;
-					}
-					if (event?.t === "ready") ready();
-					if (event) onEvent(event);
-					newline = buffer.indexOf("\n");
-				}
-				// Anything in the namespace can write here; an endless line ends the shell.
-				if (buffer.length > COMPANY_COMPUTER_SHELL_LINE_LIMIT) kill();
-			});
-			try {
-				await launched.started;
-				await cloudToolRequest(() => hostReady, lifetime, 10000);
-			} catch (error) {
-				await stop().catch(() => undefined);
-				throw error;
-			}
-			return {
-				send: (request) => {
-					if (!toHost.destroyed) toHost.write(`${JSON.stringify(request)}\n`);
-				},
-				exited,
-				stop,
-			};
 		} catch (error) {
-			if (!owned) await release();
-			throw error;
+			await release();
+			throw new CompanyComputerActionFailedError(error);
 		}
+		const { child } = launched;
+		const exited = new Promise<void>((finished, failed) => {
+			child.once("close", () => void release().then(finished, failed));
+		});
+		void exited.catch(() => undefined);
+		const stop = (): Promise<void> => {
+			launched.stop();
+			return cloudToolRequest(() => exited, new AbortController().signal, 10000);
+		};
+		const kill = (): void => void stop().catch(() => undefined);
+		lifetime.addEventListener("abort", kill, { once: true });
+		void exited.finally(() => lifetime.removeEventListener("abort", kill));
+		let logs = 0;
+		for (const stream of [child.stdout!, child.stderr!])
+			stream.on("data", (bytes: Buffer) => {
+				logs += bytes.length;
+				if (logs > 1024 * 1024) kill();
+			});
+		const toHost = child.stdio[3] as Duplex;
+		const fromHost = child.stdio[4] as Duplex;
+		toHost.on("error", () => undefined);
+		fromHost.on("error", kill);
+		let ready: () => void = () => undefined;
+		let gone: (error: Error) => void = () => undefined;
+		const hostReady = new Promise<void>((resolveReady, rejectReady) => {
+			ready = resolveReady;
+			gone = rejectReady;
+		});
+		void hostReady.catch(() => undefined);
+		// An entry file without the shell host (an older image revision) exits at once.
+		child.once("close", () => gone(new Error("OFFICE_SHELL_HOST_EXITED")));
+		let buffer = "";
+		let overflowed = false;
+		fromHost.setEncoding("utf8");
+		fromHost.on("data", (text: string) => {
+			if (overflowed) return;
+			buffer += text;
+			let newline = buffer.indexOf("\n");
+			while (newline >= 0) {
+				const line = buffer.slice(0, newline);
+				buffer = buffer.slice(newline + 1);
+				let event: CompanyComputerShellHostEvent | undefined;
+				try {
+					event = parseCompanyComputerShellHostEvent(line);
+				} catch {
+					event = undefined;
+				}
+				if (event?.t === "ready") ready();
+				if (event) onEvent(event);
+				newline = buffer.indexOf("\n");
+			}
+			// Anything in the namespace can write here; an endless line ends the shell.
+			if (buffer.length > COMPANY_COMPUTER_SHELL_LINE_LIMIT) {
+				overflowed = true;
+				buffer = "";
+				kill();
+			}
+		});
+		try {
+			await launched.started;
+			await cloudToolRequest(() => hostReady, lifetime, 10000);
+		} catch (error) {
+			try {
+				await stop();
+			} catch (drain) {
+				throw new Error("OFFICE_SHELL_DRAIN_UNCONFIRMED", { cause: new AggregateError([error, drain]) });
+			}
+			throw new CompanyComputerActionFailedError(error);
+		}
+		return {
+			send: (request) => {
+				if (!toHost.destroyed) toHost.write(`${JSON.stringify(request)}\n`);
+			},
+			exited,
+			stop,
+			...(child.pid === undefined ? {} : { pid: child.pid }),
+		};
 	};
+}
+
+/** Memory a shell holds (its processes' resident memory and its /tmp) and its tasks. */
+export interface CompanyComputerShellUsage {
+	memoryBytes: number;
+	tasks: number;
+}
+
+/**
+ * One shell's usage, read from outside its namespace: every process under its
+ * Bubblewrap monitor, and the /tmp they see. A process that exits meanwhile
+ * counts as nothing.
+ */
+export async function readCompanyComputerShellUsage(rootPid: number): Promise<CompanyComputerShellUsage> {
+	const children = new Map<number, number[]>();
+	for (const name of await readdir("/proc")) {
+		if (!/^[0-9]+$/.test(name)) continue;
+		const stat = await readCompanyComputerLinuxMetadata(`/proc/${name}/stat`, 4096).catch(() => "");
+		// The command name may hold spaces and parentheses; the parent follows the last ")".
+		const parent = Number(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[1]);
+		if (Number.isSafeInteger(parent)) children.set(parent, [...(children.get(parent) ?? []), Number(name)]);
+	}
+	const usage = { memoryBytes: 0, tasks: 0 };
+	const pending = [rootPid];
+	let inside: number | undefined;
+	while (pending.length) {
+		const pid = pending.pop()!;
+		pending.push(...(children.get(pid) ?? []));
+		if (pid !== rootPid) inside ??= pid;
+		const status = await readCompanyComputerLinuxMetadata(`/proc/${pid}/status`, 65536).catch(() => "");
+		usage.memoryBytes += Number(/^VmRSS:\s+([0-9]+) kB$/m.exec(status)?.[1] ?? 0) * 1024;
+		usage.tasks += Number(/^Threads:\s+([0-9]+)$/m.exec(status)?.[1] ?? 0);
+	}
+	if (inside !== undefined) {
+		const tmp = await statfs(`/proc/${inside}/root/tmp`).catch(() => undefined);
+		if (tmp) usage.memoryBytes += (tmp.blocks - tmp.bfree) * tmp.bsize;
+	}
+	return usage;
+}
+
+/** What the office's cgroup holds that the kernel cannot reclaim without swap, and its tasks. */
+export async function readCompanyComputerShellPressure(): Promise<{
+	memoryBytes: number;
+	memoryMax: number;
+	tasks: number;
+	tasksMax: number;
+}> {
+	const cgroup = /^0::(\/[^\n]*)\n?$/.exec(await readCompanyComputerLinuxMetadata("/proc/self/cgroup", 4096));
+	if (!cgroup || resolve(cgroup[1]) !== cgroup[1]) throw new Error("OFFICE_CGROUP_V2_REQUIRED");
+	const root = `/sys/fs/cgroup${cgroup[1] === "/" ? "" : cgroup[1]}`;
+	const read = (name: string) => readCompanyComputerLinuxMetadata(`${root}/${name}`, 65536);
+	const stat = await read("memory.stat");
+	const field = (name: string): number => Number(new RegExp(`^${name} ([0-9]+)$`, "m").exec(stat)?.[1] ?? 0);
+	const limit = (value: string): number => (value.trim() === "max" ? Number.MAX_SAFE_INTEGER : Number(value.trim()));
+	return {
+		memoryBytes: field("anon") + field("shmem"),
+		memoryMax: limit(await read("memory.max")),
+		tasks: Number((await read("pids.current")).trim()),
+		tasksMax: limit(await read("pids.max")),
+	};
+}
+
+/**
+ * Memory safety, not a work limit. The shells share the office service's
+ * memory and task limits with the service itself, every desktop and every
+ * browser, and the kernel's out-of-memory stop would end the whole service.
+ * When what cannot be reclaimed nears the memory limit, or tasks near their
+ * limit, the shell holding the most ends first, with the reason on each of
+ * its commands. Checks run while any shell is up.
+ */
+export class CompanyComputerShellPressureGuard {
+	readonly #shells: () => CompanyComputerLinuxShell[];
+	readonly #pressure: typeof readCompanyComputerShellPressure;
+	readonly #usage: typeof readCompanyComputerShellUsage;
+	readonly #timer: ReturnType<typeof setInterval>;
+	#checking = false;
+
+	constructor(options: {
+		shells: () => CompanyComputerLinuxShell[];
+		intervalMs?: number;
+		pressure?: typeof readCompanyComputerShellPressure;
+		usage?: typeof readCompanyComputerShellUsage;
+	}) {
+		this.#shells = options.shells;
+		this.#pressure = options.pressure ?? readCompanyComputerShellPressure;
+		this.#usage = options.usage ?? readCompanyComputerShellUsage;
+		this.#timer = setInterval(() => {
+			if (this.#checking) return;
+			this.#checking = true;
+			void this.check()
+				.catch(() => undefined)
+				.finally(() => {
+					this.#checking = false;
+				});
+		}, options.intervalMs ?? 2000);
+		this.#timer.unref?.();
+	}
+
+	/** One check; returns the shell it ended, if any. */
+	async check(): Promise<CompanyComputerLinuxShell | undefined> {
+		const open: { shell: CompanyComputerLinuxShell; pid: number }[] = [];
+		for (const shell of this.#shells()) {
+			const pid = await shell.namespacePid();
+			if (pid !== undefined) open.push({ shell, pid });
+		}
+		if (!open.length) return undefined;
+		const pressure = await this.#pressure();
+		const memory = pressure.memoryBytes > pressure.memoryMax - Math.max(256 * 1024 * 1024, pressure.memoryMax / 8);
+		const tasks = pressure.tasks > pressure.tasksMax - Math.max(32, Math.floor(pressure.tasksMax / 8));
+		if (!memory && !tasks) return undefined;
+		let heaviest: { shell: CompanyComputerLinuxShell; weight: number } | undefined;
+		for (const { shell, pid } of open) {
+			const usage = await this.#usage(pid);
+			const weight = memory ? usage.memoryBytes : usage.tasks;
+			if (!heaviest || weight > heaviest.weight) heaviest = { shell, weight };
+		}
+		await heaviest?.shell.relieve(
+			memory
+				? "Stopped because the machine was running out of memory; this shell used the most."
+				: "Stopped because the machine was running out of processes; this shell had the most.",
+		);
+		return heaviest?.shell;
+	}
+
+	close(): void {
+		clearInterval(this.#timer);
+	}
 }

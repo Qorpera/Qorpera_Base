@@ -359,6 +359,7 @@ describe("model-facing cloud computer tools (adapter tests, not native cloud acc
 			{ kind: "shell", action: "start", command: "npm test", waitMs: 10_000 },
 			{ kind: "json", value: { sessionId: computerId(90) } },
 			expect.any(AbortSignal),
+			expect.any(Number),
 		]);
 		waited.resolve({ kind: "json", value: { sessionId: computerId(90), state: "running", output: "" } });
 		await expect(reply).resolves.toEqual({
@@ -484,7 +485,7 @@ describe("model-facing cloud computer tools (adapter tests, not native cloud acc
 			sessionId: id,
 			text: "y\n",
 			endInput: false,
-			waitMs: 10_000,
+			waitMs: 1_000,
 		});
 		expect(
 			parseCompanyComputerAction({ kind: "shell", action: "write", sessionId: id, text: "", endInput: true }),
@@ -494,7 +495,7 @@ describe("model-facing cloud computer tools (adapter tests, not native cloud acc
 			sessionId: id,
 			text: "",
 			endInput: true,
-			waitMs: 10_000,
+			waitMs: 1_000,
 		});
 		expect(parseCompanyComputerAction({ kind: "shell", action: "stop", sessionId: id })).toEqual({
 			kind: "shell",

@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { lstat, mkdir, realpath } from "node:fs/promises";
 import { join, relative } from "node:path";
+import { performance } from "node:perf_hooks";
 import {
 	assertCompanyComputerScreenBinding,
 	COMPANY_COMPUTER_UUID,
@@ -267,6 +268,8 @@ export interface CompanyComputerShellCommandResult {
 	output: string;
 	/** Output bytes this reply does not show: older than the kept tail, or cut from the middle. */
 	skippedBytes?: number;
+	/** Why the machine stopped it, when neither the command nor the agent did. */
+	note?: string;
 }
 
 export interface CompanyComputerShellListResult {
@@ -727,6 +730,8 @@ export class CompanyComputerGuestAutomation {
 		value: CompanyComputerAction,
 		content: CompanyComputerToolContent,
 		signal: AbortSignal,
+		/** `performance.now()` by which the reply must be on its way back to the run. */
+		replyBy: number,
 	): Promise<CompanyComputerToolContent> {
 		const action = parseCompanyComputerAction(value);
 		if (action.kind !== "shell" || action.action === undefined || action.action === "list" || !this.#shell)
@@ -735,8 +740,12 @@ export class CompanyComputerGuestAutomation {
 		if (typeof started?.sessionId !== "string") return content;
 		const result = await this.#shell.result({
 			sessionId: started.sessionId,
-			// A stop sends SIGTERM, then SIGKILL two seconds later.
-			waitMs: action.action === "stop" ? 4000 : action.waitMs,
+			// A stop sends SIGTERM, then SIGKILL two seconds later. A cold screen's
+			// start may have used part of the call's deadline: the wait gets the rest.
+			waitMs: Math.max(
+				0,
+				Math.min(action.action === "stop" ? 4000 : action.waitMs, Math.floor(replyBy - performance.now())),
+			),
 			signal,
 		});
 		return { kind: "json", value: result as unknown as JsonValue };

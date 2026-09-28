@@ -74,6 +74,9 @@ vi.mock("../src/cloud-company-computer-linux-shell.ts", () => ({
 	createCompanyComputerLinuxShellLauncher: () => async () => {
 		throw new Error("NO_FIXTURE_SHELL_NAMESPACE");
 	},
+	CompanyComputerShellPressureGuard: class {
+		close() {}
+	},
 	CompanyComputerLinuxShell: class {
 		busy = false;
 		start = vi.fn(async () => ({ sessionId: "00000000-0000-4000-8000-0000000000a1" }));

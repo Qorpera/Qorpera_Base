@@ -44,6 +44,7 @@ import type { CompanyComputerCommandLimits } from "./cloud-company-computer-linu
 import { startCompanyComputerLinuxPrivateSurface } from "./cloud-company-computer-linux-private-surface.ts";
 import {
 	CompanyComputerLinuxShell,
+	CompanyComputerShellPressureGuard,
 	createCompanyComputerLinuxShellLauncher,
 } from "./cloud-company-computer-linux-shell.ts";
 import { parseCompanyComputerNativeDescriptor } from "./cloud-company-computer-native-client.ts";
@@ -186,6 +187,8 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 	/** Whether the last shell activity report named a busy screen. */
 	#shellBusy = false;
 	readonly #shellActivity: ReturnType<typeof setInterval>;
+	/** Ends the heaviest shell before the machine runs out of memory or tasks. */
+	readonly #shellPressure: CompanyComputerShellPressureGuard;
 
 	constructor(options: CompanyComputerLinuxGuestOptions) {
 		assertCompanyComputerScope(options.scope, options.scope);
@@ -223,6 +226,9 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 		});
 		this.#shellActivity = setInterval(() => void this.#reportShellActivity(), 30000);
 		this.#shellActivity.unref?.();
+		this.#shellPressure = new CompanyComputerShellPressureGuard({
+			shells: () => [...this.#screens.values()].flatMap((screen) => (screen.shell ? [screen.shell] : [])),
+		});
 	}
 
 	/**
@@ -784,9 +790,9 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 					});
 					return automation.perform(action, currentLease, { ...context, signal: checked }, operation);
 				},
-				settle: (action, content, requestSignal) =>
+				settle: (action, content, requestSignal, replyBy) =>
 					automation
-						? automation.settle(action, content, AbortSignal.any([signal, requestSignal]))
+						? automation.settle(action, content, AbortSignal.any([signal, requestSignal]), replyBy)
 						: Promise.resolve(content),
 			},
 		});
@@ -1044,12 +1050,13 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 				this.#closePrivate(),
 				...sessions.map((session) => session.close()),
 			]);
-			// Commands still running in the screen's shell end with the screen, once
-			// its runs have let go of it.
-			if (screen?.shell) results.push(...(await Promise.allSettled([screen.shell.close()])));
-			// The screen's browser ends with the screen: after its runs have let go,
-			// before the desktop it draws on stops.
-			if (screen) results.push(...(await Promise.allSettled([this.#closeBrowser(screen)])));
+			// The screen's shell, with the commands still running in it, and its
+			// browser end with the screen: after its runs have let go, before the
+			// desktop they draw on stops. Side by side, within the drain's budget.
+			if (screen)
+				results.push(
+					...(await Promise.allSettled([this.#closeBrowser(screen), screen.shell?.close() ?? Promise.resolve()])),
+				);
 			if (screen) {
 				await screen.opening.catch(() => undefined);
 				try {
@@ -1073,6 +1080,7 @@ export class CompanyComputerLinuxGuest implements CompanyComputerServiceGuest {
 	close(): Promise<void> {
 		this.#stop.abort();
 		clearInterval(this.#shellActivity);
+		this.#shellPressure.close();
 		this.#closing ??= Promise.resolve().then(() =>
 			cloudToolRequest(
 				async () => {

@@ -1,3 +1,4 @@
+import { performance } from "node:perf_hooks";
 import { isDeepStrictEqual } from "node:util";
 import {
 	assertCompanyComputerLease,
@@ -22,6 +23,9 @@ import {
 	type CompanyComputerCloudEndpoint,
 	parseCompanyComputerToolArguments,
 } from "./cloud-company-computer-tools.ts";
+
+/** From the start of a guest action to its reply: the native call's 25 seconds minus transport margin. */
+export const COMPANY_COMPUTER_REPLY_BUDGET_MS = 19_000;
 
 /**
  * Adapt the existing Step 2 effect check here. It must validate live run,
@@ -181,6 +185,9 @@ export class CompanyComputerGuestEndpoint implements CompanyComputerCloudEndpoin
 		}
 		const receipt = { receiptId: context.receiptId, idempotencyKey: context.idempotencyKey };
 		const effect = { operation, identity, lease, receipt };
+		// Both ends of the native call give it 25 seconds; keep the rest for the
+		// work before this point and the way back.
+		const replyBy = performance.now() + COMPANY_COMPUTER_REPLY_BUDGET_MS;
 		const resourceSignal = await this.#effects.begin(structuredClone(effect), context.signal);
 		const result = await this.#gate
 			.perform({
@@ -239,6 +246,6 @@ export class CompanyComputerGuestEndpoint implements CompanyComputerCloudEndpoin
 			throw error;
 		});
 		// Outside the gate and after the resource drained: waiting stops nothing.
-		return this.#automation.settle ? this.#automation.settle(action, result, context.signal) : result;
+		return this.#automation.settle ? this.#automation.settle(action, result, context.signal, replyBy) : result;
 	}
 }

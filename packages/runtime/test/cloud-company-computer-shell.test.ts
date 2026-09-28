@@ -3,8 +3,10 @@ import {
 	COMPANY_COMPUTER_SHELL_KEPT_OUTPUT,
 	CompanyComputerLinuxShell,
 	type CompanyComputerShellEnvironmentLauncher,
+	CompanyComputerShellPressureGuard,
 } from "@qorpera/runtime/cloud-company-computer-linux-shell";
 import {
+	type CompanyComputerShellHostEvent,
 	parseCompanyComputerShellHostEvent,
 	runCompanyComputerShellHost,
 } from "@qorpera/runtime/cloud-company-computer-shell-host";
@@ -202,5 +204,143 @@ describe("an agent's long-running Company Computer shell", () => {
 		await f.shell.close();
 		expect((await f.read(sleeper.sessionId, 0)).state).toBe("stopped");
 		await expect(f.start("echo after")).rejects.toThrow();
+	});
+});
+
+/** A namespace that is only a script of events: what anything inside a shell could send. */
+function scripted() {
+	let emit: (event: CompanyComputerShellHostEvent) => void = () => undefined;
+	const sent: unknown[] = [];
+	const ended: { resolve: () => void } = { resolve: () => undefined };
+	const exited = new Promise<void>((resolve) => {
+		ended.resolve = resolve;
+	});
+	const shell = new CompanyComputerLinuxShell(async (onEvent) => {
+		emit = onEvent;
+		return { send: (request) => void sent.push(request), exited, stop: async () => ended.resolve(), pid: 4242 };
+	});
+	shells.push(shell);
+	return { shell, emit: (event: CompanyComputerShellHostEvent) => emit(event), sent };
+}
+
+describe("what a shell namespace reports is untrusted", () => {
+	const signal = new AbortController().signal;
+
+	it("ignores ids it never issued, output after an exit and a start never confirmed", async () => {
+		const f = scripted();
+		const { sessionId } = await f.shell.start({ key: "k", command: "true", signal });
+		f.emit({ t: "out", id: "00000000-0000-4000-8000-000000000099", data: Buffer.from("forged").toString("base64") });
+		f.emit({ t: "exit", id: "00000000-0000-4000-8000-000000000099", code: 0, signal: null });
+		f.emit({ t: "out", id: sessionId, data: Buffer.from("real\n").toString("base64") });
+		f.emit({ t: "exit", id: sessionId, code: 0, signal: null });
+		f.emit({ t: "out", id: sessionId, data: Buffer.from("late").toString("base64") });
+		f.emit({ t: "exit", id: sessionId, code: 9, signal: null });
+		expect(await f.shell.result({ sessionId, waitMs: 0, signal })).toEqual({
+			sessionId,
+			state: "exited",
+			exitCode: 0,
+			output: "real\n",
+		});
+		expect(f.shell.known("00000000-0000-4000-8000-000000000099")).toBe(false);
+	});
+
+	it.each([
+		'{"t":"out","id":"00000000-0000-4000-8000-000000000001","data":"not base64!"}',
+		'{"t":"exit","id":"00000000-0000-4000-8000-000000000001","code":256,"signal":null}',
+		'{"t":"exit","id":"00000000-0000-4000-8000-000000000001","code":null,"signal":"KILL"}',
+		'{"t":"procs","count":-1}',
+		'{"t":"started","id":"../etc"}',
+		'{"t":"ready","extra":1}',
+		`{"t":"out","id":"00000000-0000-4000-8000-000000000001","data":"${"A".repeat(90004)}"}`,
+		`${" ".repeat(262145)}`,
+	])("refuses a malformed or oversized event: %#", (line) => {
+		expect(() => parseCompanyComputerShellHostEvent(line)).toThrow();
+	});
+
+	it("keeps a character split between two chunks whole, and bounds the list whatever the commands hold", async () => {
+		const f = scripted();
+		const { sessionId } = await f.shell.start({ key: "k", command: `echo ${"\u0007".repeat(500)}`, signal });
+		f.emit({ t: "started", id: sessionId });
+		const euro = Buffer.from("€");
+		f.emit({
+			t: "out",
+			id: sessionId,
+			data: Buffer.concat([Buffer.from("price "), euro.subarray(0, 1)]).toString("base64"),
+		});
+		expect((await f.shell.result({ sessionId, waitMs: 0, signal })).output).toBe("price ");
+		f.emit({ t: "out", id: sessionId, data: euro.subarray(1).toString("base64") });
+		expect((await f.shell.result({ sessionId, waitMs: 0, signal })).output).toBe("€");
+		for (let index = 0; index < 60; index++)
+			await f.shell.start({ key: `k${index}`, command: `printf '${"\u0001".repeat(4000)}'`, signal });
+		const listed = f.shell.list();
+		expect(listed.commands.length).toBeGreaterThan(0);
+		expect(Buffer.byteLength(JSON.stringify(listed))).toBeLessThanOrEqual(20 * 1024);
+		expect(listed.commands.every((entry) => !/[\x00-\x1f]/.test(entry.command))).toBe(true);
+	});
+});
+
+describe("the machine's memory and task safety", () => {
+	const signal = new AbortController().signal;
+	const pressure =
+		(memoryBytes: number, tasks = 10) =>
+		async () => ({
+			memoryBytes,
+			memoryMax: 4 * 1024 ** 3,
+			tasks,
+			tasksMax: 512,
+		});
+
+	it("does nothing without pressure, then ends only the shell holding the most, with the reason", async () => {
+		const light = scripted();
+		const heavy = scripted();
+		const idle = scripted();
+		const lightStart = await light.shell.start({ key: "a", command: "sleep 600", signal });
+		const heavyStart = await heavy.shell.start({ key: "b", command: "npm run build", signal });
+		const usage = vi.fn(async (_pid: number) => ({ memoryBytes: 0, tasks: 0 }));
+		usage.mockResolvedValueOnce({ memoryBytes: 100 * 1024 ** 2, tasks: 5 });
+		usage.mockResolvedValueOnce({ memoryBytes: 2 * 1024 ** 3, tasks: 40 });
+		const calm = new CompanyComputerShellPressureGuard({
+			shells: () => [light.shell, heavy.shell, idle.shell],
+			intervalMs: 3_600_000,
+			pressure: pressure(2 * 1024 ** 3),
+			usage,
+		});
+		expect(await calm.check()).toBeUndefined();
+		calm.close();
+		const guard = new CompanyComputerShellPressureGuard({
+			shells: () => [light.shell, heavy.shell, idle.shell],
+			intervalMs: 3_600_000,
+			pressure: pressure(3.8 * 1024 ** 3),
+			usage,
+		});
+		expect(await guard.check()).toBe(heavy.shell);
+		guard.close();
+		// The idle shell has no namespace, so it is never weighed.
+		expect(usage).toHaveBeenCalledTimes(2);
+		expect(usage.mock.calls.map(([pid]) => pid)).toEqual([4242, 4242]);
+		expect(await heavy.shell.result({ sessionId: heavyStart.sessionId, waitMs: 0, signal })).toMatchObject({
+			state: "stopped",
+			note: "Stopped because the machine was running out of memory; this shell used the most.",
+		});
+		expect((await light.shell.result({ sessionId: lightStart.sessionId, waitMs: 0, signal })).state).toBe("running");
+	});
+
+	it("weighs tasks when the machine runs out of processes", async () => {
+		const few = scripted();
+		const many = scripted();
+		await few.shell.start({ key: "a", command: "sleep 600", signal });
+		const { sessionId } = await many.shell.start({ key: "b", command: "make -j64", signal });
+		const usage = vi.fn(async (_pid: number) => ({ memoryBytes: 0, tasks: 0 }));
+		usage.mockResolvedValueOnce({ memoryBytes: 3 * 1024 ** 3, tasks: 3 });
+		usage.mockResolvedValueOnce({ memoryBytes: 10, tasks: 300 });
+		const guard = new CompanyComputerShellPressureGuard({
+			shells: () => [few.shell, many.shell],
+			intervalMs: 3_600_000,
+			pressure: pressure(0, 480),
+			usage,
+		});
+		expect(await guard.check()).toBe(many.shell);
+		guard.close();
+		expect((await many.shell.result({ sessionId, waitMs: 0, signal })).note).toMatch(/running out of processes/);
 	});
 });

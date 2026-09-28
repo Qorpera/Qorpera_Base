@@ -64,6 +64,7 @@ select pg_temp.wake_error('select pg_temp.report(array[''30000000-0000-4000-8000
 	'Office shell activity screen differs');
 select pg_temp.wake_error('select pg_temp.report(null)','22023');
 select pg_temp.wake_error('select pg_temp.report(array[null::uuid])','22023');
+select pg_temp.wake_error('select pg_temp.report(array(select (pg_temp.busy())[1] from generate_series(1,65)))','22023');
 reset role;
 select pg_temp.wake_assert(pg_temp.demand(),'a fresh report keeps the computer on');
 select pg_temp.wake_assert((select busy_until between clock_timestamp()+interval '80 seconds' and clock_timestamp()+interval '100 seconds'

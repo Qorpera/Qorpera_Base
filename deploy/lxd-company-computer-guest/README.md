@@ -250,7 +250,9 @@ The owned startup placeholder also changes `office-browser-child.mjs`; include
 that entry together with the service and three desktop scripts in the guest-code
 revision. The dock matches the browser window with or without the new class.
 
-**Shell and Terminal internet (2026-09-28).** `office-browser-child.mjs` is the
+**Shell and Terminal internet (2026-09-28).** A computer (an agent's screen)
+has a long-running shell and a Terminal with internet; the machine (this VM)
+hosts the computers. `office-browser-child.mjs` is the
 image's one namespace entry file, so it also carries the long-running shell's
 init (`--shell-host`), the desktop's loopback proxy (`--network-proxy`) and the
 SSH connector (`--connect`). The service passes `http_proxy`/`HTTPS_PROXY` and

@@ -8,7 +8,9 @@ import { createConnection, createServer } from "node:net";
 import { setTimeout as delay } from "node:timers/promises";
 import {
 	CompanyComputerLinuxShell,
+	CompanyComputerShellPressureGuard,
 	createCompanyComputerLinuxShellLauncher,
+	readCompanyComputerShellUsage,
 } from "../../src/cloud-company-computer-linux-shell.ts";
 import { parseRecoveryDirectoryMount } from "../../src/cloud-identity-recovery-filesystems.ts";
 import { computerBinding } from "./company-computer.ts";
@@ -128,6 +130,10 @@ if unshare --user --map-root-user true 2>/dev/null; then exit 20; fi
 if touch /usr/office-write-canary 2>/dev/null; then exit 21; fi
 getent hosts localhost >/dev/null
 id -un >/dev/null
+# Only standard input, output and error, and the descriptor ls opens itself.
+test "$(ls /proc/self/fd | tr '\\n' ' ')" = "0 1 2 3 "
+# The machine's first choice when memory runs out.
+test "$(cat /proc/self/oom_score_adj)" = 1000
 printf isolated`),
 		"isolated",
 	);
@@ -223,6 +229,28 @@ printf isolated`),
 	assert.deepEqual(await shell.stop({ signal }), { stopped: 0 });
 	assert.equal(shell.busy, false);
 	assert.equal(await done("echo fresh"), "fresh\n");
+
+	// Memory safety: nearing the machine's limit, the guard ends the shell
+	// holding the most, before the kernel's own stop would end the service.
+	const hog = await run(
+		"node -e \"globalThis.b=Buffer.alloc(700*1024*1024,1);console.log('holding');setInterval(()=>{},1000)\"",
+		5000,
+	);
+	assert.equal(hog.state, "running", hog.output);
+	const pid = await shell.namespacePid();
+	assert.ok(pid);
+	const usage = await readCompanyComputerShellUsage(pid);
+	assert.ok(usage.memoryBytes > 600 * 1024 * 1024, JSON.stringify(usage));
+	assert.ok(usage.tasks >= 3, JSON.stringify(usage));
+	const guard = new CompanyComputerShellPressureGuard({ shells: () => [shell!], intervalMs: 500 });
+	try {
+		const stopped = await read(hog.sessionId, 10000);
+		assert.equal(stopped.state, "stopped");
+		assert.match(stopped.note ?? "", /running out of memory/);
+	} finally {
+		guard.close();
+	}
+	assert.equal(await done("echo after-pressure"), "after-pressure\n");
 
 	// Closing the screen ends everything and reaps the namespace.
 	await run("nohup sleep 300 >/dev/null 2>&1 &", 200);
