@@ -69,11 +69,14 @@ Override the target with `QORPERA_TEST_MACHINE`, `QORPERA_TEST_MACHINE_JUMP` and
 
 The `scripts/*-systemd.mjs` suites boot systemd as PID 1 in a disposable container and take a
 digest-pinned local image in `QORPERA_OFFICE_SYSTEMD_TEST_IMAGE`: Ubuntu 26.04 with systemd, its Node 22
-package and the executables the office image installer measures. Build it on the test machine
-(about 90 s cold) and use the image ID the build prints. Every build prints a new ID, even from cache.
-The tag keeps the current build out of the weekly prune of dangling images.
+package and the executables the office image installer measures. The test machine keeps one as
+`qorpera-systemd-test:local`; look up its ID and pass that. Build only when the tag is missing or the
+Dockerfile changed (about 90 s cold). Every build gets a new ID, even fully cached, and moves the tag;
+Docker then deletes the image the tag pointed to, so another session's run that still uses the old ID
+fails with "No such image" (happened 2026-09-28).
 
 ```sh
+node scripts/run-on-node.mjs --no-install -- docker image inspect --format '{{.Id}}' qorpera-systemd-test:local
 node scripts/run-on-node.mjs --no-install -- sh -c 'docker build -q -t qorpera-systemd-test:local - < scripts/fixtures/systemd-test-image.Dockerfile'
 node scripts/run-on-node.mjs --env QORPERA_OFFICE_SYSTEMD_TEST_IMAGE=sha256:<id> scripts/test-office-image-installation-systemd.mjs
 node scripts/run-on-node.mjs --env QORPERA_OFFICE_SYSTEMD_TEST_IMAGE=sha256:<id> scripts/test-office-service-stop-systemd.mjs -- --restart
@@ -97,4 +100,4 @@ a node that hosts companies.
 | `test-office-storage-inventory-linux.mjs` | Passed. `npm ci` 30 s with a cold cache, suite 1.1 s |
 | Docker | Rootful Docker 29.8.1 runs `hello-world` as `tester` |
 | Nested KVM | `/dev/kvm` present, all 6 vCPUs show `svm`, `kvm_amd` loaded, `KVM_GET_API_VERSION` 12 and `KVM_CREATE_VM` succeed (the check from `deploy/first-node/verify-azure-step2-pilot-kvm.sh`). A 1 vCPU / 1 GiB Ubuntu 26.04 VM inside it answers `lxc exec` 25.8 s after launch; `systemctl is-system-running --wait` returns at 32.3 s |
-| `scripts/*-systemd.mjs` | On master 65472c537 the office image suite stopped with "Disposable systemd manager did not start". At 9a13bb289 with the image built as above (`sha256:0e595c04…`), all six suites pass, plus `QORPERA_OFFICE_FIXTURE_LAYOUT_VERSION=2`, `--later-boot` and `--restart`. Suites 10 to 61 s, whole runs 17 to 89 s, three runs at a time. The office image and observer suites also pass on Docker Desktop (arm64) with the same Dockerfile |
+| `scripts/*-systemd.mjs` | On master 65472c537 the office image suite stopped with "Disposable systemd manager did not start". At f9fc107f9 with images built as above, all six suites pass, plus `QORPERA_OFFICE_FIXTURE_LAYOUT_VERSION=2`, `--later-boot`, `--restart` and `test-runtime-office-start.mjs --boot-successor-systemd`. Suites 10 to 82 s, three runs at a time. At dc327a4ca the office image and observer suites also passed on Docker Desktop (arm64) with the same Dockerfile |
