@@ -10,7 +10,7 @@ and ends on one bundle.
 
 | Needed | Why |
 |---|---|
-| Identical nodes change 1 (`20260928180000`) | The serving switch and `qorpera_runtime_node_drain_status` |
+| Identical nodes change 1 (`20260928180700`) | The serving switch and `qorpera_runtime_node_drain_status` |
 | Identical nodes change 4 (`20260928182000`) | Orchestrator bundle declarations and `qorpera_runtime_bundle_roll_status` |
 | Logins in the vault change 3 (`20260928180600`), and **every active login moved into the vault** | Member runs are no longer pinned to the node holding the login's disk. A login still on a node disk ties its runs to that node: while that node is empty or on the other bundle, they cannot run. |
 | Identical nodes changes 3 and 5 | A fast host on both nodes, and runs placed on either node, with fast hosts declared for another bundle left out of the placement |
