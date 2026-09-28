@@ -796,12 +796,24 @@ with one owner". It is the one place a save that outlives a turn can be
 checked and attributed.
 
 - **Table.** `qorpera_folder_views`:
-  - kind: run box, company-machine computer, coding session, or test machine;
+  - kind: `run_box`, `computer_desktop`, `computer_shell_command`,
+    `coding_session` or `test_machine` (F3, #445). A company machine has one
+    view for each computer's desktop and one for each `computer_shell`
+    command, opened at command start in the command's own mount namespace
+    and closed when the command and its background processes end;
   - the agent, and the member it acts for;
   - the run that opened it;
   - the computer's screen, generation and epoch, or the coding session's
     worker and attachment;
-  - the pass's hash, state, `lease_until`, and the time it was last renewed.
+  - `node_id`, `machine_id` and `unsaved_since`, for S3's drain read, which
+    counts all five kinds;
+  - the pass: 32 random bytes, base64url, stored as `pass_sha256`; the node
+    checks the calling vsock CID against the view's machine;
+  - state, `lease_until` (120 s, renewed every 40 s) and the time it was last
+    renewed.
+- **The view actor** is `{kind: 'view', viewId, pass}`. It joins read, list,
+  the feed (C1f) and the commit, and the commit's authority check after the
+  clock (C1b-2 §1).
 - **Lock order: the job, then the view**, both in step 2.
   - A view opened by a run is ended by every path that ends the run's job:
     job first, then view, the same order as a commit.
@@ -816,24 +828,26 @@ checked and attributed.
   with snapshot-v1, so the change is a branch on the company's core.
 - **Authority.**
   - A run box acts as its run.
-  - A computer acts in the company-wide view and within its holder's own
-    authority. The company-wide view is the paths whose covering resource is
-    the root, plus `rules/`, which every agent reads.
+  - A computer's desktop acts in the company-wide view and within its
+    holder's own authority; a shell command's view in the company-wide view,
+    owned by the run that started the command. The company-wide view is the
+    paths whose covering resource is the root, plus `rules/` read-only.
+    Per-command views change attribution, never authority.
   - A coding session acts as agent ∩ member, with `agents/**` and `rules/**`
-    read-only.
-  - A test machine acts as the agent that started it, for that run's
-    requesting member: today's rule always needs a member
-    (20260828019850:82-84).
+    read-only. The member is the session's owner (F3, #432).
+  - A test machine shows the company-wide view (#419, #445). Its one view is
+    owned by the starter's run: the lease, and what is visible. Publishes are
+    credited per command, to that command's agent and requester, from #419's
+    command records on the node; changes made while no command runs go to
+    the starter. Reads made while commands run go into the read set of every
+    run with a command running at the time. The agent is root there, so the
+    credit is best effort: it can misname the saver, never widen the view.
 - **Saves after a turn.** They are attributed to the view's agent and member.
   A unit that needs review waits until the agent's next turn (F3 page,
   "Programs that outlive a turn").
-- **Open questions for F3:**
-  - the pass format;
-  - which member a coding session acts for (owner or requester; the
-    who-pays work makes them the same);
-  - how often views are renewed;
-  - whose member authority applies to a computer or shell view after its run
-    ends.
+- **After its run ends,** a desktop or shell-command view acts for the
+  member of its last holder (F3, #432). Its reads are recorded on the view,
+  and the agent's next run for that member inherits them in its read set.
 
 ## Not in C1b
 
