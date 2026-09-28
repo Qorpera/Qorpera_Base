@@ -936,7 +936,9 @@ The commit, with a view actor (core §3):
 1. the operation key, scoped to the view;
 2. for a view with a live run, the job `KEY SHARE`; then the view row
    `KEY SHARE`; then the folder fence `KEY SHARE` and the pause re-read;
-3. ranks 1 to 9 as for any commit (C1b-1, F2's hook);
+3. ranks 1 to 9 as for any commit (C1b-1, F2's hook). A view with an anchor
+   other than the job adds the company row (`qorpera_profiles`, `KEY SHARE`)
+   at rank 2, where F2's hook already puts it for roster saves;
 4. **rank 9b: the anchor**, `FOR SHARE` (§3);
 5. rank 10 (the read set), paths, objects, admission, and the clock with
    its authority check (C1b-2 §1).
@@ -949,8 +951,18 @@ The anchor comes after the ranks on purpose:
 - Coding attach and test-machine placement also take the company row before
   their session or machine rows (family B).
 
-Taking the anchor after rank 2 keeps "company row before the anchor" in
-every path.
+- #419's test machines hold the company's GC fence (the profile row
+  `FOR UPDATE`) and then take the machine and its placement (the machines
+  session, 2026-09-29). Its order is fence, advisory lock, machine,
+  placement, allocation, node.
+- Implicit locks count: inserting a row that references the company takes
+  the company row `KEY SHARE` through its foreign key.
+
+So every save by a view with such an anchor takes the company row
+`KEY SHARE` at rank 2, before the anchor, whether or not its units write a
+row that references the company. Later foreign-key locks on the company row
+then find it already held. "Company row before the anchor" then holds in
+every path. C1c's company row at rank 0 would subsume this.
 
 Renewal takes the view `FOR NO KEY UPDATE`, which never waits for a commit's
 `KEY SHARE`. Closing takes it `FOR UPDATE`, which waits out commits in
