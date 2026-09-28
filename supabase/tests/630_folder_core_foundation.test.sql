@@ -385,6 +385,18 @@ begin
 	if pg_temp.read('ld/nf') -> 'entry' ->> 'kind' is distinct from 'folder' or (pg_temp.read('ld/nf/k.txt') ->> 'found')::boolean is not true then
 		raise exception 'Copy then new folder under the copy must leave the folder and its file'; end if;
 
+	-- A rename after an edit in one change set (write agents/x/agent.md, then move agents/x): the subtree
+	-- move's asOfSeq does not count this change set's own write as unseen. Kept on purpose (structured files, C2).
+	r := pg_temp.commit(pg_temp.member(2), 'r2-rename-setup', jsonb_build_array(jsonb_build_object('op','mkdir','path','rnx'),
+		jsonb_build_object('op','write','path','rnx/agent.md','file',a)));
+	perform pg_temp.expect(r, 2, 'saved');
+	r := pg_temp.commit(pg_temp.member(2), 'r2-edit-then-rename', jsonb_build_array(
+		jsonb_build_object('op','write','path','rnx/agent.md','expectedVersion',pg_temp.read('rnx/agent.md') -> 'entry' ->> 'version','file',b),
+		jsonb_build_object('op','move','from','rnx','to','rny','expectedVersion',pg_temp.read('rnx') -> 'entry' ->> 'version','asOfSeq',pg_temp.seq())));
+	perform pg_temp.expect(r, 1, 'saved'); perform pg_temp.expect(r, 2, 'saved');
+	if pg_temp.read('rny/agent.md') -> 'entry' ->> 'fileSha256' is distinct from b ->> 'fileSha256' then
+		raise exception 'An edit then a rename must carry the edit: %', pg_temp.read('rny/agent.md'); end if;
+
 	-- New-folder contents take their folder's spelling, whatever case a deeper path uses.
 	r := pg_temp.commit(pg_temp.member(2), 'r2-new-folder-spelling', jsonb_build_array(jsonb_build_object('op','new_folder','path','nfs',
 		'contents',jsonb_build_array(jsonb_build_object('path','sub/f.txt','kind','file','file',a),

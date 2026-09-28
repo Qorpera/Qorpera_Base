@@ -305,8 +305,13 @@ is never upgraded. The steps:
      only advisory.
 5. **Paths.** Every row this change set locks is taken in one global
    ancestors-first order by `key_text` (refined in C1a, 2026-09-28).
-   - Targets and sources are taken `FOR UPDATE`; a copy's source is taken
-     `FOR KEY SHARE`.
+   - Targets and sources are taken `FOR UPDATE`, a copy's source included
+     (C1a review round 2): writers below it hold it `FOR KEY SHARE`, so the
+     subtree cannot change between the checks and the copy.
+   - A unit that creates a key lands on this change set's claim for it, or
+     inserts the key outright when an earlier unit of the same change set
+     removed it. Every apply counts the rows it placed and raises on a
+     mismatch, so a lost write fails loudly.
    - **Every ancestor** of every target and source is taken `FOR KEY SHARE`,
      not just the parent.
    - Any absent row, target or ancestor, is claimed first by inserting a
@@ -389,7 +394,8 @@ The write-side cost of a commit grows only with its own units.
 Each unit reports one of:
 - saved;
 - conflict;
-- refused (a rule of 5.6, or a structured file that fails its schema);
+- refused (a rule of 5.6, a structured file that fails its schema, or a
+  path the unit would store past the 4096-byte limit, `too_long`);
 - denied (authority, or a reviewed unit without its review);
 - waiting for review (its review record is a pending ask, and the unit is
   parked as a proposal);
