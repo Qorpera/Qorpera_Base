@@ -364,6 +364,9 @@ Prerequisites on each host: the broker build and the CA file
 reinstalled from this build **first** (an older helper refuses a config with the new limit keys and a
 vault token, and stops for every broker on the host); a host without a helper installs it as in
 "Installing the helper" above, its own token included (`helper-token` refuses on a host without one).
+Reinstalling node 1's helper restarts it: renewals in flight finish (its stop waits up to 40 s), but a
+member in the middle of a sign-in has to start again, so pick a moment with none pending (no
+`qorpera_native_provider_login_sessions` row with status `pending` and `expires_at` in the future).
 
 Node 1:
 
@@ -421,29 +424,34 @@ Node 1:
     login or a secret.
 
 Node 2 baseline (before its standby steps). In September 2026 the company brokers and the login helper
-run on node 1 only, so node 2 first gets the rest of a vault host, from the same release as node 1:
+run on node 1 only, so node 2 first gets the rest of a vault host, from the same release as node 1. Each
+command runs as a plain argv (no shell needed):
 
 1. Accounts: `qorpera-login-helper` and `qorpera-shared-vault` system users and groups (no home, no login
    shell).
-2. Codex: copy node 1's `/opt/qorpera-model-login-helper/codex` host to host (no new download), check its
-   SHA-256 equals node 1's helper config `codexSha256`, and install it root-owned 0555 at the same path.
-3. Isolation: root-owned `/usr/bin/bwrap` and `/usr/bin/node` (the version node 1 runs), and unprivileged
-   user namespaces allowed for bubblewrap as on node 1. The helper checks all of this at start.
-4. The helper from the release (`node scripts/package-model-login-helper.mjs --out <dir>`, its
+2. Folders: `install -d -o root -g root -m 0755 /opt/qorpera-model-login-helper` (the helper's user must
+   enter it) and `install -d -o root -g root -m 0700 /etc/qorpera-model-login-helper`.
+3. Codex: copy node 1's `/opt/qorpera-model-login-helper/codex` host to host (no new download; the binary
+   is public and its hash is the check, so any copy path will do), check its SHA-256 equals node 1's helper
+   config `codexSha256`, and install it root-owned 0555 at the same path.
+4. Isolation: root-owned `/usr/bin/bwrap` (0.8 or later) and `/usr/bin/node` (the version node 1 runs),
+   and unprivileged user namespaces allowed for bubblewrap as on node 1. The helper checks bubblewrap,
+   the namespaces, Codex and its own files at start; it does not check the Node version.
+5. The helper from the release (`node scripts/package-model-login-helper.mjs --out <dir>`, its
    `manifest.json` lists each file's SHA-256): `qorpera-model-login-helper.mjs` and
    `qorpera-native-isolation-child.mjs` to `/opt/qorpera-model-login-helper/` (root, 0444), the unit to
    `/etc/systemd/system/`.
-5. The helper's config: node 1's `config.json` as is (same paths, same `codexSha256`), and a token of its
-   own for company brokers, made on the host and never shown, although no company broker runs there (the
-   helper requires one):
-   `umask 077; python3 -c 'import base64, os; print(base64.urlsafe_b64encode(os.urandom(32)).rstrip(b"=").decode())' > /etc/qorpera-model-login-helper/token`.
-6. Start the helper: it logs `Model login helper: sandbox self-check ok (…)` or stops visibly.
-7. The broker package from the release: `qorpera-cloud-secret-broker-service.mjs` to
+6. The helper's config: node 1's `config.json` as is (same paths, same `codexSha256`), and a token of its
+   own for company brokers, made on the host, never shown and never over an existing file, although no
+   company broker runs there (the helper requires one):
+   `python3 -I -c 'import base64, os; fd = os.open("/etc/qorpera-model-login-helper/token", os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o400); os.write(fd, base64.urlsafe_b64encode(os.urandom(32)).rstrip(b"=") + b"\n"); os.close(fd)'`.
+7. `systemctl daemon-reload`, `systemctl enable --now qorpera-model-login-helper` (enabled: after a
+   reboot without it, node 2's vault copy would count every idle renewal it tries as failed, which delays
+   those logins' renewals on both nodes). It logs `Model login helper: sandbox self-check ok (…)` or stops
+   visibly. The self-check does not reach OpenAI: watch node 2's first renewal after its vault starts.
+8. The broker package from the release: `qorpera-cloud-secret-broker-service.mjs` to
    `/opt/qorpera-secret-broker/` (root, 0444), `shared-vault-secrets.py` beside it (root, 0500), and the CA
    to `/etc/qorpera-secret-broker/supabase-prod-ca-2021.crt` (root, 0444).
-
-On node 1, reinstalling the helper restarts it: renewals in flight finish (its stop waits up to 40 s), but a
-member in the middle of a sign-in has to start again, so pick a moment with no sign-in pending.
 
 Node 2 (warm standby), between node 1's steps 6 and 8:
 
