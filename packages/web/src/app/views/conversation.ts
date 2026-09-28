@@ -39,6 +39,7 @@ import { ReceivedAttachments } from "../../ui/received-attachments.ts";
 import { runFailureCard, runFailureInterrupted, runFailureReason } from "../../ui/run-failure.ts";
 import { uiScale } from "../../ui/scale.ts";
 import { composerSkeleton, messagesSkeleton, threadIdentitySkeleton } from "../../ui/skeleton.ts";
+import { SkillMentions } from "../../ui/skill-mentions.ts";
 import { type AgentState, answersInteraction, type CompanyController, type ConversationState } from "../company.ts";
 import type { WorkspaceActions } from "../workspace-actions.ts";
 import { AgentDetails } from "./agent-details.ts";
@@ -73,6 +74,8 @@ export class ConversationView {
 	readonly #messages = h("div", { class: "messages", role: "log", "aria-live": "polite" });
 	readonly #status = h("div", { class: "thread-status" });
 	readonly #composer: HTMLTextAreaElement;
+	/** "/" in the composer: the conversation's skills, and their names in blue. */
+	readonly #skills: SkillMentions;
 	readonly #send: HTMLButtonElement;
 	#stopMode = false;
 	#cannotSend = true;
@@ -190,6 +193,7 @@ export class ConversationView {
 			placeholder: t("Message…"),
 			"aria-label": t("Message"),
 			onkeydown: (event: KeyboardEvent) => {
+				if (this.#skills.keydown(event)) return;
 				if (matchesKey(event, "accept") && !event.shiftKey) {
 					event.preventDefault();
 					this.#submit();
@@ -200,6 +204,22 @@ export class ConversationView {
 				company.conversation(sessionId).set({ draft: this.#composer.value });
 			},
 		});
+		const skills = actions.skills;
+		this.#skills = new SkillMentions(
+			this.#composer,
+			skills
+				? (signal) => {
+						// An agent's own thread offers its own skills too; a group chat, the company's.
+						const session = company.store.get().sessions.find((item) => item.sessionId === sessionId);
+						return skills(this.#isRoom ? null : (session?.staffAgentId ?? null), signal);
+					}
+				: undefined,
+			this.#lifetime.signal,
+			() => {
+				const session = company.store.get().sessions.find((item) => item.sessionId === sessionId);
+				return company.staffById(session?.staffAgentId)?.displayName;
+			},
+		);
 		this.#send = h(
 			"button",
 			{
@@ -308,11 +328,12 @@ export class ConversationView {
 			"div",
 			{ class: "composer-shell" },
 			this.#attachments.el,
-			this.#composer,
+			this.#skills.field,
 			this.#more,
 			this.#send,
 			fileInput,
 			this.#menu,
+			this.#skills.menu,
 		);
 		this.#composerShell.addEventListener("paste", (event) => {
 			if (this.#composer.disabled) return;
@@ -826,6 +847,7 @@ export class ConversationView {
 		if (this.#composer.value !== (conversation.draft ?? "")) {
 			this.#composer.value = conversation.draft ?? "";
 			this.#autosize();
+			this.#skills.sync();
 		}
 	}
 

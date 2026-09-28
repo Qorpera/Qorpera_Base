@@ -12,6 +12,7 @@ import { createWebSessionAttachments } from "../cloud/session-attachments.ts";
 import { createWebSessionInputWriter } from "../cloud/session-input.ts";
 import { createWebSessionModel } from "../cloud/session-model.ts";
 import { createWebSessionRunControl } from "../cloud/session-run-control.ts";
+import { loadSkillSuggestions } from "../cloud/skills.ts";
 import type { HostedProfile } from "../cloud/types.ts";
 import { button, h, notice, replace } from "../ui/dom.ts";
 import { isPhoneLayout } from "../ui/layout.ts";
@@ -786,6 +787,21 @@ export function mountApplication(
 						route.id ?? "",
 						{
 							sendMessage: (id, text, signal) => controller.sendPrompt(id, text, signal),
+							// Read with the member's own Company File access, as the Company File page reads.
+							skills: async (agentId, signal) => {
+								checkConversationAccess();
+								const team = controller.store.get().team;
+								if (!team?.capabilities.read) throw new Error(t("Conversation access changed."));
+								const files = await new WebCompanyFiles(
+									cloud,
+									controller.profile,
+									controller.userId,
+									team.role,
+									signal,
+									checkConversationAccess,
+								).files();
+								return loadSkillSuggestions(files, agentId, signal);
+							},
 							sessionModel: createWebSessionModel(
 								cloud,
 								controller.userId,

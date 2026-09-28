@@ -9,6 +9,9 @@ export const CONVERSATION: Record<string, string> = {
 
 	// The thread and the composer (app/views/conversation.ts)
 	"Attach files": "Vedhæft filer",
+	Skills: "Færdigheder",
+	"No skills yet. Agents save skills as they learn how the company works.":
+		"Ingen færdigheder endnu. Agenter gemmer færdigheder, efterhånden som de lærer, hvordan virksomheden arbejder.",
 	"Chat settings and more": "Chatindstillinger og mere",
 	"Images are not supported in group chats. Use Company File.":
 		"Billeder understøttes ikke i gruppechats. Brug Virksomhedsfilen.",
