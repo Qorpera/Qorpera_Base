@@ -11,6 +11,7 @@ const artifacts = [];
 for (const [entry, file] of [
 	["lxd-office-fleet-cli.ts", "qorpera-office-fleet.cjs"],
 	["lxd-office-fleet-installation-cli.ts", "qorpera-office-fleet-install.cjs"],
+	["lxd-office-fleet-next-computer-cli.ts", "qorpera-office-next-computer.cjs"],
 ]) {
 	await build({ entryPoints: [`packages/runner-orchestrator/src/${entry}`], outfile: resolve(output, file), bundle: true,
 		platform: "node", format: "cjs", target: "node22.19", legalComments: "none", logLevel: "silent" });

@@ -111,6 +111,103 @@ mount fencing, boot configuration or activation checks. Repeated calls and
 lost replies retain the exact selected allocation. A missing selected journal
 fails closed; it cannot manufacture a replacement or switch hosts.
 
+## A company's next computer
+
+A company can run several Company Computers (migrations `20260928100000` and
+`20260928100100`; `deploy/first-node/RUNTIME-COMPANY-COMPUTER-SCALE-OUT.md`).
+When every running computer of a company is full, the database adds the next
+one; it waits until a host offers it. `qorpera_runtime_office_setup_queue()`
+(service role) lists every computer that needs a host, why it waits (`setup`,
+`room`, or `unstarted` for a spare nobody started yet) and the company's
+computer to copy (`template`).
+
+The next computer copies the company's computer already on that host: the same
+image and provenance, company account (workbench uid/gid), project, network,
+pool, size, registry endpoint and provider credential. Only these are new:
+provider id, computer identity, NAS scratch area and its mount, journal
+directory, host ports, mux routes and the fleet units. Two computers never
+share a scratch area: the single-writer rule of the workbench holds.
+
+The scratch area is the machine's workbench. It holds only tool settings,
+caches, browser history and temporary files, never company files. Company files
+live only in the one company folder on the NAS, which every machine reads and
+writes directly (contract 5.6; 2026-09-27 amendment: the workbench holds no
+work files).
+
+**Before a company runs a second machine:** the company folder must be mounted
+on its company machines. Today it is not (`canonicalMount: false`): an agent's
+files sit in the scratch area and reach the company folder only through
+`computer_transfer`, so a file made on machine 1 would not be visible on
+machine 2. The scale-out switch (`qorpera_runtime_office_scale_out`) stays off
+until that mount is live and every runtime can reach any machine of a company
+(company native routes). Preparing a spare ahead is fine.
+
+1. Write a request: the service document of the company's computer on this
+   host (the template), the service documents of every other office on this
+   host (of any company: list them from the host's office units, for example
+   `systemctl list-units 'qorpera-*office*'`; a missed office skips its checks), the new computer from the queue (with its image and
+   bootstrap digests) and a new provider UUID, and the host choices:
+
+   ```json
+   {
+     "template": { "servicePath": "/etc/qorpera/offices/<first>/service.json" },
+     "others": ["/etc/qorpera/offices/<other office>/service.json"],
+     "office": {
+       "providerId": "<new uuid>",
+       "companyId": "<from the queue>",
+       "environmentId": "<from the queue>",
+       "companyComputerId": "<from the queue>",
+       "logicalComputerId": "<from the queue>",
+       "computerGeneration": 1,
+       "imageSha256": "<from the queue>",
+       "bootstrapSha256": "<from the queue>"
+     },
+     "host": {
+       "nodeId": "<enrolled node uuid>",
+       "configRoot": "/etc/qorpera/offices/<companyComputerId>",
+       "workbench": { "mountPoint": "/srv/qorpera-workbench/<companyComputerId>", "source": "<template NAS>:/volume1/qorpera-runtime-workbench/<companyComputerId>" },
+       "journalPath": "<template journal mount>/<companyComputerId>",
+       "ports": { "viewer": 18545, "native": 18546 }
+     }
+   }
+   ```
+
+2. Run `node qorpera-office-next-computer.cjs /absolute/request.json` from the
+   fleet package. It reads each service document and the policy and
+   passthrough it names, and the template's lifecycle plan for its guest
+   layout. It prints a plan: the new `policy.json`, `service.json`,
+   `passthrough.json` and `fleet.json` (exact bytes and digests), the provider
+   enrollment (with CPU and memory, which cannot be changed later), the
+   lifecycle plan's adoption input and paths, and the remaining root steps. It
+   writes nothing and mints nothing. It refuses a template of another company
+   or on another image than the queued computer, and anything another office on the host already
+   uses: provider, computer, NAS scratch area (also nested ones), mount, journal,
+   document folder or port. Errors print a fixed code only.
+3. Follow the plan's steps as root. Credentials are the dangerous part: the new
+   computer gets its own TLS certificate and key, guest registry credential
+   and objects token. Its native token is the company route's token when the
+   company uses a company route (see
+   `deploy/first-node/native-office-routes.md`), otherwise a new token with its
+   own route entry. Never copy the template's TLS key: the mux pins one
+   certificate per computer.
+4. At review, the lifecycle plan carries the provider's intent and
+   observation, the printed adoption input (an empty folder: nothing carried
+   over or quarantined, the template's layout), the writer fence and the
+   service bootstrap.
+5. Before members use it, bring the computer to the template's office software
+   revision: the image may lack guest-code fixes the template got later.
+
+A computer that nobody has started yet can be set up the same way in advance
+(a spare). Its fleet units wait for a start intent; it holds no node capacity
+until placement reserves it.
+
+Native routes: a company route
+(`https://<front>/office/{companyComputerId}/native`) lets a run reach
+whichever computer holds its screen; every computer of that company must then
+accept the route's transport token. The browser sign-in store is kept in step
+only between computers that see the same company directory; until that
+directory is shared between them, each computer keeps its own sign-ins.
+
 ## Acceptance and rollback
 
 For a physical acceptance test, register a new office in a new environment
