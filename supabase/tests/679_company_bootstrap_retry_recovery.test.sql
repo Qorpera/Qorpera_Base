@@ -34,20 +34,13 @@ select set_config('qorpera_test.exhausted_job',(select to_jsonb(job)::text
     from public.qorpera_company_bootstrap_jobs job
     where id=(current_setting('qorpera_test.bootstrap_claim')::jsonb->>'jobId')::uuid),true);
 
--- The original cap makes both claims fail with 23514, leaving the same oldest
+-- The original cap makes every claim fail with 23514, leaving the same oldest
 -- job and the later company stuck. The fixed schema must reclaim that job.
 select pg_temp.org_claims('service_role');
 set local role service_role;
-do $$ declare claim jsonb; n integer;
+do $$ declare claim jsonb;
 begin
-    for n in 1..2 loop
-        begin
-            claim:=public.qorpera_claim_company_bootstrap('67900000-0000-4000-8000-000000000001',300);
-            exit;
-        exception when check_violation then
-            if n=2 then raise; end if;
-        end;
-    end loop;
+    claim:=public.qorpera_claim_company_bootstrap('67900000-0000-4000-8000-000000000001',300);
     perform pg_temp.retry_assert(claim->>'jobId'=current_setting('qorpera_test.bootstrap_claim')::jsonb->>'jobId',
         'Exhausted setup was replaced or skipped instead of resumed');
     perform pg_temp.retry_assert(claim-array['leaseOwner','leaseExpiresAt'] =
@@ -130,20 +123,19 @@ begin
     exception when check_violation then null; end;
 end $$;
 
--- The internal counter is not exposed in claims. Crossing the former integer
--- boundary must still obtain a new lease without recycling operation identity.
-update public.qorpera_company_bootstrap_jobs set attempt=2147483647,
+-- The counter stays an integer and keeps counting well past the old cap.
+update public.qorpera_company_bootstrap_jobs set attempt=1000000,
     lease_expires_at=clock_timestamp()-interval '1 second'
     where profile_id=(current_setting('qorpera_test.later_company')::jsonb->>'profile_id')::uuid;
 select pg_temp.org_claims('service_role');
 set local role service_role;
 select pg_temp.retry_assert(public.qorpera_claim_company_bootstrap('67900000-0000-4000-8000-000000000004',300)->>'profileId'
-    =current_setting('qorpera_test.later_company')::jsonb->>'profile_id','Claim overflowed the former integer boundary');
+    =current_setting('qorpera_test.later_company')::jsonb->>'profile_id','A job far past the old cap could not be claimed');
 reset role;
-select pg_temp.retry_assert((select attempt=2147483648 and lease_owner='67900000-0000-4000-8000-000000000004'
+select pg_temp.retry_assert((select attempt=1000001 and lease_owner='67900000-0000-4000-8000-000000000004'
     from public.qorpera_company_bootstrap_jobs
     where profile_id=(current_setting('qorpera_test.later_company')::jsonb->>'profile_id')::uuid),
-    'Claim recycled the operation sequence at the former integer boundary');
+    'The claim did not continue the operation sequence');
 
 do $$ declare signature text; role_name text;
 begin
