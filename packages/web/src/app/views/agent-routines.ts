@@ -16,8 +16,9 @@ import {
 import type { WebRoutines } from "../../cloud/routines.ts";
 import type { HostedStaffAgent } from "../../cloud/types.ts";
 import { dialogPageHeader } from "../../ui/dialog.ts";
-import { badge, button, fmtTime, h, icon, replace } from "../../ui/dom.ts";
-import { phrase, presentationTimeZone, t } from "../../ui/preferences.ts";
+import { button, fmtTime, h, icon, replace } from "../../ui/dom.ts";
+import { phrase, presentationLocale, presentationTimeZone, t } from "../../ui/preferences.ts";
+import { uiScale } from "../../ui/scale.ts";
 import type { CompanyController } from "../company.ts";
 import type { WorkspaceActions } from "../workspace-actions.ts";
 import { effortName } from "./composer-models.ts";
@@ -114,6 +115,47 @@ function controlLabel(control: Element): string {
 	return control.getAttribute("aria-label") ?? control.textContent ?? "";
 }
 
+/** A clock time such as "08:48" as the viewer's language writes it: "8:48 AM", "08.48". */
+function clockTime(localTime: string): string {
+	const [hour, minute] = localTime.split(":").map(Number);
+	return new Date(Date.UTC(2000, 0, 1, hour!, minute!)).toLocaleTimeString(presentationLocale(), {
+		hour: "numeric",
+		minute: "2-digit",
+		timeZone: "UTC",
+	});
+}
+
+/** When a trigger runs, in few words: "Weekdays at 8:48 AM". A weekly time is on
+ * the routine's own clock; the caller says which zone that is. */
+function whenWords(trigger: CloudRoutineTrigger): string {
+	if (!("localTime" in trigger)) return describeCloudRoutineTrigger(trigger, t);
+	const days = new Set(trigger.weekdays),
+		time = clockTime(trigger.localTime);
+	if (days.size === 7) return t("Every day at {time}", { time });
+	if (days.size === 5 && !days.has("saturday") && !days.has("sunday")) return t("Weekdays at {time}", { time });
+	if (days.size === 2 && days.has("saturday") && days.has("sunday")) return t("Weekends at {time}", { time });
+	return t("{days} at {time}", {
+		days: CLOUD_ROUTINE_WEEKDAYS.filter((day) => days.has(day))
+			.map((day) => cloudRoutineWeekdayName(day, t))
+			.join(", "),
+		time,
+	});
+}
+
+/** A trigger in few words, naming a weekly time's zone when it is not the viewer's own. */
+function whenShort(trigger: CloudRoutineTrigger): string {
+	const words = whenWords(trigger);
+	return "localTime" in trigger && trigger.timeZone !== presentationTimeZone()
+		? `${words} (${trigger.timeZone})`
+		: words;
+}
+
+/** Fades the prompt's edges where more of it lies above or below. */
+function markOverflow(prompt: HTMLElement): void {
+	prompt.toggleAttribute("data-above", prompt.scrollTop > 0);
+	prompt.toggleAttribute("data-below", prompt.scrollTop + prompt.clientHeight < prompt.scrollHeight - 1);
+}
+
 /** The clock a zone shows at an instant, to the minute, written as a UTC time value. */
 function wallClock(instant: number, timeZone: string): number {
 	const parts = Object.fromEntries(
@@ -172,6 +214,26 @@ export class AgentRoutines {
 	/** Until the first read answers, an empty list means "not known yet". */
 	#loaded = false;
 	#message = "";
+	/** The one routine whose card is open. */
+	#open: string | undefined;
+	/** Switches the member moved, shown where they were moved until a list read
+	 * after the change comes back; a change that failed moves its switch back. */
+	readonly #flipped = new Map<string, boolean>();
+	/** The routine whose switch is being changed now. */
+	#moving: string | undefined;
+	/** Counts switch changes, so a read that went out before one does not undo it. */
+	#changes = 0;
+	/** Numbers each list read, so an answer older than one already shown is dropped. */
+	#reads = 0;
+	#shown = 0;
+	/** Stops waiting for the last opened card to finish growing. */
+	#opening: AbortController | undefined;
+	readonly #prompts =
+		typeof ResizeObserver === "function"
+			? new ResizeObserver((entries) => {
+					for (const entry of entries) markOverflow(entry.target as HTMLElement);
+				})
+			: undefined;
 	/** `back` leaves the list for the page this one was opened from. */
 	constructor(
 		agent: () => HostedStaffAgent,
@@ -183,6 +245,7 @@ export class AgentRoutines {
 		this.#access = access;
 		this.#signal = signal;
 		this.#back = back;
+		signal.addEventListener("abort", () => this.#prompts?.disconnect(), { once: true });
 		this.#list();
 		if (access) void this.#refresh();
 	}
@@ -193,16 +256,21 @@ export class AgentRoutines {
 	async #refresh(): Promise<void> {
 		const access = this.#access;
 		if (!access || this.#signal.aborted) return;
+		const read = ++this.#reads;
+		// A read that went out before a switch was moved may predate the change.
+		const changes = this.#changes;
 		try {
 			const [routines, runs] = await Promise.all([access.routines.list(), access.routines.runs()]);
-			if (this.#signal.aborted) return;
+			if (this.#signal.aborted || read < this.#shown) return;
+			this.#shown = read;
 			this.#routines = routines.filter(
 				(item) => item.staffAgentId === this.#agent().id && item.status !== "retired",
 			);
 			this.#runs = runs;
+			if (changes === this.#changes && !this.#busy) this.#flipped.clear();
 			this.#message = "";
 		} catch {
-			if (this.#signal.aborted) return;
+			if (this.#signal.aborted || read < this.#shown) return;
 			this.#message = t("Routines could not be read. Refresh to try again.");
 		}
 		this.#loaded = true;
@@ -216,55 +284,9 @@ export class AgentRoutines {
 		const create = manage
 			? button([icon("plus"), t("New routine")], () => void this.#edit(undefined), { disabled: this.#busy })
 			: null;
-		const rows = this.#routines.map((routine) => {
-			const last = this.#runs.find((run) => run.routineId === routine.routineId);
-			// A dynamic routine has one next run at a time, chosen by its agent after each run.
-			const dynamic = routine.triggers.some((trigger) => trigger.kind === "once");
-			const ended = routine.status === "expired" || routine.status === "concluded";
-			return h(
-				"article",
-				{ class: "routine-row" },
-				h(
-					"div",
-					{ class: "routine-row-copy" },
-					h("strong", null, routine.title),
-					h("span", null, routine.triggers.map((trigger) => describeCloudRoutineTrigger(trigger, t)).join("; ")),
-					routine.status === "concluded" && routine.conclusion
-						? h("small", null, t("Done: {reason}", { reason: routine.conclusion }))
-						: null,
-					routine.status === "active" && routine.nextRunAt
-						? h("small", null, t("Next run: {time}", { time: fmtTime(routine.nextRunAt) }))
-						: null,
-					dynamic && routine.status === "active"
-						? h("small", null, t("Runs until {name} decides it is done", { name: this.#agent().displayName }))
-						: null,
-					h("small", null, last ? t("Last run: {run}", { run: runLabel(last) }) : t("Has not run yet")),
-				),
-				routine.status === "active"
-					? badge(t("Active"), "ok")
-					: routine.status === "concluded"
-						? badge(t("Done"))
-						: routine.status === "expired"
-							? badge(t("Ended"))
-							: badge(t("Paused"), "warn"),
-				// An ended routine is read-only: a member save keeps its end (its expiry or run
-				// limit), so neither Edit nor Resume could start it again. Its agent can. The
-				// editor has no shape for a dynamic routine: its agent changes it.
-				manage && !ended
-					? h(
-							"div",
-							{ class: "routine-row-actions" },
-							!dynamic && editorShape(routine)
-								? button(t("Edit"), () => void this.#edit(routine), { small: true, disabled: this.#busy })
-								: null,
-							button(routine.status === "active" ? t("Pause") : t("Resume"), () => void this.#toggle(routine), {
-								small: true,
-								disabled: this.#busy,
-							}),
-						)
-					: null,
-			);
-		});
+		// The open instruction keeps its place through a redraw.
+		const scrolled = this.#cardFor(this.#open)?.querySelector(".routine-card-prompt")?.scrollTop ?? 0;
+		const cards = this.#routines.map((routine) => this.#card(routine, manage));
 		replace(
 			this.el,
 			dialogPageHeader(
@@ -274,9 +296,9 @@ export class AgentRoutines {
 				t("Recurring work, on a schedule or when something happens."),
 			),
 			this.#message ? h("p", { class: "surface-status", role: "status" }, this.#message) : null,
-			rows.length
+			cards.length
 				? [
-						h("div", { class: "routine-list" }, ...rows),
+						h("div", { class: "routine-list" }, ...cards),
 						create ? h("div", { class: "routine-list-footer" }, create) : null,
 					]
 				: access && !this.#loaded
@@ -295,7 +317,239 @@ export class AgentRoutines {
 							create,
 						),
 		);
+		const kept = this.#cardFor(this.#open)?.querySelector(".routine-card-prompt");
+		if (kept) kept.scrollTop = scrolled;
+		this.#prompts?.disconnect();
+		for (const prompt of this.el.querySelectorAll<HTMLElement>(".routine-card-prompt")) {
+			markOverflow(prompt);
+			this.#prompts?.observe(prompt);
+		}
 		this.#refocus(focused);
+	}
+	/** One routine as a card: its name, when it runs and a switch that pauses it.
+	 * Opened, the instruction reads beside the facts and Edit appears by the switch. */
+	#card(routine: CloudRoutine, manage: boolean): HTMLElement {
+		const id = routine.routineId;
+		const open = this.#open === id;
+		const last = this.#runs.find((run) => run.routineId === id);
+		// A dynamic routine has one next run at a time, chosen by its agent after each run.
+		const dynamic = routine.triggers.some((trigger) => trigger.kind === "once");
+		const ended = routine.status === "expired" || routine.status === "concluded";
+		// A concluded routine plans no more runs; its agent's reason says why.
+		const concluded = routine.status === "concluded" ? routine.conclusion : null;
+		const fact = (label: string, ...value: (Node | string | null)[]) =>
+			h("div", { class: "routine-card-fact" }, h("dt", null, label), h("dd", null, ...value));
+		const lever = h("button", {
+			type: "button",
+			role: "switch",
+			class: "routine-switch",
+			"aria-label": routine.title,
+			onclick: () => void this.#toggle(routine),
+		});
+		this.#setLever(lever, routine, manage);
+		const edit = button(t("Edit"), () => void this.#edit(routine), { small: true, disabled: this.#busy });
+		edit.classList.add("routine-card-edit");
+		return h(
+			"article",
+			{ class: open ? "routine-card is-open" : "routine-card", dataset: { routineId: id } },
+			h(
+				"div",
+				{
+					class: "routine-card-head",
+					// The head's own room around its controls opens the card too.
+					onclick: (event: MouseEvent) => {
+						if (!(event.target as Element).closest("button")) this.#expand(id);
+					},
+				},
+				h(
+					"button",
+					{
+						type: "button",
+						class: "routine-card-summary",
+						"aria-expanded": String(open),
+						"aria-controls": `routine-${id}`,
+						onclick: () => this.#expand(id),
+					},
+					h("strong", null, routine.title),
+					h("span", null, concluded ?? routine.triggers.map(whenShort).join("; ")),
+				),
+				// An ended routine is read-only: a member save keeps its end (its expiry or run
+				// limit), so neither Edit nor Resume could start it again. Its agent can. The
+				// editor has no shape for a dynamic routine: its agent changes it.
+				manage && !ended && !dynamic && editorShape(routine) ? edit : null,
+				ended
+					? h("span", { class: "routine-card-state" }, routine.status === "concluded" ? t("Done") : t("Ended"))
+					: lever,
+			),
+			h(
+				"div",
+				{ class: "routine-card-body", id: `routine-${id}`, inert: !open },
+				h(
+					"div",
+					{ class: "routine-card-clip" },
+					h(
+						"div",
+						{ class: "routine-card-inner" },
+						h(
+							"section",
+							{ class: "routine-card-instruction" },
+							h("h3", null, t("Instruction")),
+							h(
+								"div",
+								{
+									class: "routine-card-prompt",
+									role: "region",
+									tabindex: "0",
+									"aria-label": t("Instruction"),
+									onscroll: (event: Event) => markOverflow(event.currentTarget as HTMLElement),
+								},
+								routine.prompt,
+							),
+						),
+						h(
+							"dl",
+							{ class: "routine-card-facts" },
+							routine.status === "concluded"
+								? null
+								: fact(
+										t("When to run"),
+										h(
+											"span",
+											{ class: "routine-card-when" },
+											icon("clock"),
+											h(
+												"span",
+												null,
+												...routine.triggers.map((trigger) =>
+													h(
+														"span",
+														{ class: "routine-card-trigger" },
+														whenWords(trigger),
+														"localTime" in trigger ? h("small", null, trigger.timeZone) : null,
+													),
+												),
+												dynamic && routine.status === "active"
+													? h(
+															"small",
+															null,
+															t("Runs until {name} decides it is done", {
+																name: this.#agent().displayName,
+															}),
+														)
+													: null,
+											),
+										),
+									),
+							routine.status === "active" && routine.nextRunAt
+								? fact(t("Next run"), fmtTime(routine.nextRunAt))
+								: null,
+							concluded ? fact(t("Done"), concluded) : null,
+							fact(t("Last run"), last ? runLabel(last) : t("Has not run yet")),
+						),
+					),
+				),
+			),
+		);
+	}
+	/** Opens one card and closes the one that was open, in place. */
+	#expand(id: string): void {
+		const previous = this.#cardFor(this.#open);
+		this.#open = this.#open === id ? undefined : id;
+		const card = this.#cardFor(this.#open);
+		for (const item of [previous, card]) {
+			if (!item) continue;
+			const open = item === card;
+			item.classList.toggle("is-open", open);
+			item.querySelector(".routine-card-summary")?.setAttribute("aria-expanded", String(open));
+			item.querySelector(".routine-card-body")?.toggleAttribute("inert", !open);
+		}
+		this.#opening?.abort();
+		if (!card) return;
+		this.#reveal(card, previous);
+		// The page cannot scroll past its end while the card is still growing, so a
+		// card near the end is brought the rest of the way once it is open.
+		const body = card.querySelector<HTMLElement>(".routine-card-body");
+		if (!body || window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return;
+		const opening = new AbortController();
+		this.#opening = opening;
+		body.addEventListener(
+			"transitionend",
+			(event) => {
+				if (event.target !== body || event.propertyName !== "grid-template-rows") return;
+				opening.abort();
+				if (this.#open === id && card.isConnected) this.#reveal(card, undefined);
+			},
+			{ signal: opening.signal },
+		);
+	}
+	/** A switch as the routine stands, or where the member moved it. While one
+	 * switch moves, the others wait. */
+	#setLever(lever: HTMLElement, routine: CloudRoutine, manage: boolean): void {
+		const id = routine.routineId;
+		const on = this.#runsNow(routine);
+		lever.setAttribute("aria-checked", String(on));
+		lever.title = manage
+			? on
+				? t("Pause routine")
+				: t("Resume routine")
+			: t("Only owners and admins can pause or resume routines.");
+		if (this.#moving === id) lever.setAttribute("aria-busy", "true");
+		else lever.removeAttribute("aria-busy");
+		lever.classList.toggle("is-locked", !manage);
+		if (!manage || (this.#busy && this.#moving !== id)) lever.setAttribute("aria-disabled", "true");
+		else lever.removeAttribute("aria-disabled");
+	}
+	/** Whether a routine runs, as the member sees it: where its switch was moved,
+	 * else the last read. An editor save keeps this, not the state it opened with. */
+	#runsNow(routine: CloudRoutine): boolean {
+		const id = routine.routineId;
+		return (
+			this.#flipped.get(id) ?? (this.#routines.find((item) => item.routineId === id) ?? routine).status === "active"
+		);
+	}
+	/** Brings the switches and buttons up to date in place, so a moved switch slides
+	 * instead of being drawn anew in its new place. */
+	#setControls(): void {
+		const manage = this.#access?.canManage() === true;
+		for (const lever of this.el.querySelectorAll<HTMLElement>(".routine-switch")) {
+			const routine = this.#routines.find(
+				(item) => item.routineId === lever.closest<HTMLElement>(".routine-card")?.dataset.routineId,
+			);
+			if (routine) this.#setLever(lever, routine, manage);
+		}
+		for (const control of this.el.querySelectorAll<HTMLButtonElement>(
+			".routine-card-edit, .routine-list-footer .btn",
+		))
+			control.disabled = this.#busy;
+		if (!this.#message) this.el.querySelector(":scope > .surface-status")?.remove();
+	}
+	#cardFor(id: string | undefined): HTMLElement | undefined {
+		return id
+			? [...this.el.querySelectorAll<HTMLElement>(".routine-card")].find((item) => item.dataset.routineId === id)
+			: undefined;
+	}
+	/** Scrolls the page so the opening card will be seen whole, between the heading
+	 * and the bottom edge, as it opens (a closing card above it gives its room back). */
+	#reveal(card: HTMLElement, closing: HTMLElement | undefined): void {
+		const scroller = this.el.parentElement,
+			header = this.el.querySelector(".dialog-page-header");
+		const clip = card.querySelector(".routine-card-clip"),
+			inner = card.querySelector(".routine-card-inner");
+		if (!scroller || !header || !clip || !inner || typeof scroller.scrollBy !== "function") return;
+		const scale = uiScale();
+		const box = card.getBoundingClientRect();
+		const given =
+			closing && closing.compareDocumentPosition(card) & Node.DOCUMENT_POSITION_FOLLOWING
+				? (closing.querySelector(".routine-card-clip")?.getBoundingClientRect().height ?? 0)
+				: 0;
+		const top = box.top - given,
+			bottom = top + box.height - clip.getBoundingClientRect().height + inner.getBoundingClientRect().height;
+		const above = header.getBoundingClientRect().bottom + 8 * scale,
+			below = scroller.getBoundingClientRect().bottom - 12 * scale;
+		const by = bottom > below ? Math.min(bottom - below, top - above) : top < above ? top - above : 0;
+		if (Math.abs(by) < 1) return;
+		const still = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true;
+		scroller.scrollBy({ top: by, behavior: still ? "auto" : "smooth" });
 	}
 	/** The focused control as its label and place among controls that share it,
 	 * so a redrawn list can put focus back where it was. */
@@ -313,7 +567,9 @@ export class AgentRoutines {
 		(same[index] ?? same[0] ?? this.#controls(t("Back to agent details"))[0])?.focus({ preventScroll: true });
 	}
 	#controls(label: string): HTMLElement[] {
-		return [...this.el.querySelectorAll<HTMLElement>("button")].filter((item) => controlLabel(item) === label);
+		return [...this.el.querySelectorAll<HTMLElement>("button, .routine-card-prompt")].filter(
+			(item) => controlLabel(item) === label,
+		);
 	}
 	async #loadAccounts(): Promise<boolean> {
 		try {
@@ -335,28 +591,43 @@ export class AgentRoutines {
 	}
 	async #toggle(routine: CloudRoutine): Promise<void> {
 		if (this.#busy || !this.#access?.canManage()) return;
+		const id = routine.routineId;
+		// Where the switch stood: a failed change puts it back there, even if that was a
+		// place it was moved to whose change no read has confirmed yet.
+		const previous = this.#flipped.get(id);
+		const enabled = !this.#runsNow(routine);
 		this.#busy = true;
-		this.#message = routine.status === "active" ? t("Pausing…") : t("Resuming…");
-		this.#list();
+		this.#moving = id;
+		this.#changes += 1;
+		// The switch moves at once and stays there until a list read after the change.
+		this.#flipped.set(id, enabled);
+		this.#message = "";
+		this.#setControls();
+		let failure = "";
 		try {
-			if (!(await this.#loadAccounts())) return;
-			await this.#access.routines.setEnabled(
-				routine,
-				this.#accounts[0],
-				routine.status !== "active",
-				crypto.randomUUID(),
-			);
-			this.#message = "";
+			if (await this.#loadAccounts())
+				await this.#access.routines.setEnabled(routine, this.#accounts[0], enabled, crypto.randomUUID());
+			else failure = this.#message;
 		} catch {
-			if (!this.#signal.aborted)
-				this.#message = this.#accounts.length
-					? t("The routine could not be changed. Try again.")
-					: t(
-							"Connect a model account in Settings first; a routine runs on the account of the member who last saved it.",
-						);
+			failure = this.#accounts.length
+				? t("The routine could not be changed. Try again.")
+				: t(
+						"Connect a model account in Settings first; a routine runs on the account of the member who last saved it.",
+					);
 		} finally {
 			this.#busy = false;
-			if (!this.#signal.aborted) await this.#refresh();
+			this.#moving = undefined;
+			if (failure && previous === undefined) this.#flipped.delete(id);
+			else if (failure) this.#flipped.set(id, previous!);
+			if (!this.#signal.aborted) {
+				this.#setControls();
+				await this.#refresh();
+				// The read clears the line; a failed change keeps saying why.
+				if (failure && !this.#signal.aborted && !this.#editing) {
+					this.#message = failure;
+					this.#list();
+				}
+			}
 		}
 	}
 	async #edit(routine: CloudRoutine | undefined): Promise<void> {
@@ -589,7 +860,7 @@ export class AgentRoutines {
 						prompt: prompt.value.trim(),
 						trigger: built,
 						effort,
-						enabled: routine ? routine.status === "active" : true,
+						enabled: routine ? this.#runsNow(routine) : true,
 					},
 					chosenAccount,
 					saveId,

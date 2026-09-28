@@ -65,7 +65,13 @@ describe("profile feedback", () => {
 		f.root.querySelector<HTMLButtonElement>('[data-account-action="settings"]')!.click();
 		expect(f.root.querySelector(".settings-feedback")).toBeNull();
 		expect(f.root.querySelector(".settings-dialog")?.textContent).not.toContain("Share feedback");
-		expect(f.cloud.rpc).not.toHaveBeenCalled();
+		// General's only RPC is the chosen company's rules list.
+		expect(
+			vi
+				.mocked(f.cloud.rpc)
+				.mock.calls.map(([name]) => name)
+				.filter((name) => name !== "qorpera_list_review_rules"),
+		).toEqual([]);
 	});
 	it("requires details, permits deselecting a category, and submits through the account feedback RPC only", async () => {
 		const f = await open();

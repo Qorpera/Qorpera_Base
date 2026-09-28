@@ -7,6 +7,14 @@ coding machines mount the folder too and keep repositories and worktrees in
 it, is part of that amendment. This document is the design those decisions
 refer to.
 
+> **Note, 2026-09-27 (evening).** The contract's company folder layout (section
+> 5.6 and the layout amendment in section 19) fixes the folder's seeded tree,
+> makes everything approved by default (no path needs a member's approval),
+> and moves per-folder trees ahead of writes through the mount (section 9).
+> The automatic review of deletes, moves and delegation is unchanged. Where
+> this design speaks of protected paths producing proposals, none are
+> configured by default.
+
 ## Goal
 
 The Company File is the company's whole folder: its full digital state, not
@@ -213,10 +221,16 @@ All clean units of a boundary land in one revision and one head move.
   work is overwritten (no last-writer-wins). The run's version is kept as an
   immutable object on the run's receipt. It is shown read-only in the box
   under `~/conflicts/` and can be restored from the receipt after the run.
-- **Protected.** The unit becomes a proposal and waits for a member.
-- **Delete or move of an ordinary path.** All such units of the boundary go
-  to the automatic review together, as one reviewed action that lists them
-  all (2026-09-25 amendment). The folder service asks the harness host of the
+- **Protected.** The unit becomes a proposal and waits for a member. Since
+  2026-09-27 no path is protected by default; the one standing case is a hire
+  by an agent whose own authority is restricted (contract 5.6, 14.1).
+- **Delete or move of an ordinary path, or a delegation unit.** All such units
+  of the boundary go to the automatic review together, as one reviewed action
+  that lists them all (2026-09-25 amendment). Since 2026-09-27 (contract 5.6)
+  delegation units are: a new agent folder, an agent's archive or
+  reactivation, a new `group.md`, and any change to a routine file except the
+  routine run's own end-of-run decision, which is reviewed only when it
+  changes the routine's instructions or title. The folder service asks the harness host of the
   run that made the change; a Company Computer reaches it through that screen
   holder's run.
   - **Allow:** the units land with the clean ones.
@@ -245,9 +259,20 @@ These refusals happen as a file is opened or named:
 - a path the authority may read but not write is mounted read-only
   (`EACCES`);
 - adapter-only prefixes are refused: `.qorpera`, `.git`, `trail`, `inbox`,
-  `credentials`, `secrets`, any `node_modules`, `agents/*/instructions.md`,
-  and `departments/*/repository` and `departments/*/worktrees`. Code areas
-  are the exception (section 6);
+  `credentials`, `secrets` and any `node_modules`. Code areas are the
+  exception (section 6). (Amended 2026-09-27: `agents/*/instructions.md` and
+  the retired `departments/*` prefixes are no longer refused; an agent's
+  instructions are its `agents/<agent-name>/agent.md`, contract 5.6);
+- deleting or moving a seeded folder or file is refused (`EPERM`): `vision/`,
+  `vision/vision.md`, `agents/`, `agents/sections.md`, `agents/groups/`,
+  `connections/`, `skills/` and `rules/`; the Co-Founder's folder and its
+  `agent.md` cannot be deleted (contract 5.6);
+- deleting an `agent.md` or a `group.md` on its own is refused (`EPERM`); the
+  folder is deleted instead (contract 5.6);
+- moving an agent's folder out of `agents/` or into `agents/groups/`, or a
+  group's folder out of `agents/groups/`, is refused (`EPERM`) (contract 5.6);
+- `rules/` is mounted read-only for agents (`EACCES`); only owners and admins
+  write it (contract 5.6);
 - names the Company File forbids are refused (`EINVAL`; under `code/`, git's
   rules apply instead, section 6): control characters,
   `:`, `%`, `\`, a trailing dot or space, device names with or without an
@@ -352,7 +377,8 @@ Long output keeps its head and tail, and the full output is saved in the
 run's home.
 
 **Review.** The box has no network, so its commands stay inside the company
-and run at once. Only deletes and moves are reviewed (section 2).
+and run at once. Only deletes, moves and delegation units are reviewed
+(section 2, contract 5.6).
 
 **Before writes are built.** Until build step 5 the mount is read-only.
 Agents search and read through the shell and still write with today's tools.
@@ -430,7 +456,9 @@ virtiofs device. `COMMAND-GUEST.md` is amended when this is built.
 **Review.** Coding sessions are not reviewed (2026-09-25 amendment, item 2).
 Their deletes and moves, in `code/` and elsewhere, therefore apply without
 the automatic review, and nothing a coding session does is ever partly
-parked.
+parked. Because of that, a coding session's mount shows `agents/` and
+`rules/` read-only (contract 5.6): it cannot hire, create a group chat,
+touch routines or rules, or archive an agent.
 
 **What the session's own NAS folders keep:** the per-session cache (see
 below) and custody.
@@ -621,7 +649,7 @@ stays usable, and the platform flags the branch.
 
 A repository adds its tracked files and its `.git` files. This repository
 alone is about 9,500 entries before any worktree. Code areas therefore come
-after per-folder trees and the lifted caps (build step 8). Pack files over
+after per-folder trees and the lifted caps (build step 4 since 2026-09-27). Pack files over
 256 MiB need open question 4.
 
 ## 7. Server work (SQL and gateway)
@@ -690,7 +718,18 @@ Everything runs on the release train, and every PR gets an independent review.
 Reading comes first, so agents can search the whole company early. Writing
 keeps using today's tools until step 5.
 
+Amended 2026-09-27 (contract, company folder layout amendment): per-folder
+trees move from step 8 into step 4. One head per company would make writes
+through the mount conflict constantly, so the storage core changes before any
+machine writes through the folder. Removing the company-wide lock for reads
+moves into step 1, because steps 1–3 ship whole-company reads. The
+structured-file saves, index updates and seeded-folder refusals of contract
+5.6, and the clean reset of today's test companies, join step 4, before any
+writes through the mount. Decision 6's automatic review of deletes and moves
+is unchanged.
+
 1. **Server, reading side.**
+   - Reads stop taking a company-wide lock (moved here on 2026-09-27).
    - A run-authorized listing of a whole subtree.
    - Byte-range reads.
    - The feed.
@@ -706,14 +745,27 @@ keeps using today's tools until step 5.
    and the capacity decision. First live acceptance: an agent searches the
    whole company.
 4. **Server, writing side.**
+   - Per-folder trees and a version per file, lifting the manifest and entry
+     caps (moved here from step 8).
+   - Structured-file saves with their index update; the refusals for seeded
+     folders, `rules/`, a lone `agent.md` or `group.md`, and agent or group
+     folders moved out of place; and review by path for delegation units on
+     every write path, including today's Company File tools (contract 5.6).
+   - A clean reset instead of a migration (founder decision, 28 September
+     2026): today's companies' data is deleted, their company state and
+     indexes are cleared from Supabase, the company folder is set up on the
+     NAS, and the layout is proven on new companies. The exact scope is
+     confirmed with the founder before anything is deleted (contract, layout
+     amendment).
    - Change sets and units.
    - Move and rename.
    - Streamed binary writes.
-   - The delete policy of decision 6, with parked units.
+   - The delete policy of decision 6, with parked units; seeded folders are
+     refused.
    - Restore, plus a file history view in the web app.
    - The upload binding.
 5. **Writes through the mount.** Boundaries, reports, conflicts, proposals,
-   reviewed deletes and moves, and `apply_patch`.
+   reviewed deletes, moves and delegation units, and `apply_patch`.
 6. **Company Computer mount.**
    - Per-desktop attribution.
    - Memory-backed caches.
@@ -725,9 +777,10 @@ keeps using today's tools until step 5.
      spike).
    - `/company` bound in every command unit.
    - Company data read, written and searched from coding sessions.
-   - Coding sessions' changes skip review.
+   - Coding sessions' changes skip review; `agents/` and `rules/` are
+     read-only in them.
    - The repository stays in the session's private workspace until step 9.
-8. **Per-folder trees**, and lifting the manifest and entry caps.
+8. *(Moved into step 4 on 2026-09-27.)*
 9. **Code areas.**
    - The layout `code/<owner>/<name>/`, with `repo.git`, `main` and
      `worktrees/<workerId>`.
@@ -749,8 +802,9 @@ keeps using today's tools until step 5.
   - a Python script that writes 200 CSV files.
 - **Conflict.** Two agents edit the same file. The second gets a conflict
   report, and its version is kept on its receipt.
-- **Protected.** A write under `finance/` becomes a proposal, and the mount
-  shows the live content.
+- **Protected.** Once a company configures a protected path (none is
+  configured by default since 2026-09-27), a write under it becomes a
+  proposal, and the mount shows the live content.
 - **Company Computer.**
   - The file manager shows the same folder.
   - LibreOffice saves a document into it, and the lock file is never
