@@ -318,7 +318,7 @@ begin
 			and status = 'active' and current_version = p_base_version and renewal_token = p_renewal_token) then
 			raise exception 'model login renewal is not a later pass' using errcode = '22023';
 		end if;
-		raise exception 'model login renewal lock is not held' using errcode = '40001';
+		raise exception 'model login renewal lock is not held' using errcode = '55000';
 	end if;
 	insert into public.qorpera_model_login_versions(
 		login_id, version, broker_authority_id, key_id, encrypted_envelope, envelope_sha256, origin,

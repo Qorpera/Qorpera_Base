@@ -280,7 +280,7 @@ export const WORKSPACE: Record<string, string> = {
 	"Only owners, admins and contributors can change the company's sections.":
 		"Kun ejere, administratorer og bidragydere kan ændre virksomhedens sektioner.",
 	"The sidebar could not be changed. Try again.": "Sidepanelet kunne ikke ændres. Prøv igen.",
-	"Pinned agents": "Fastgjorte agenter",
+	Pinned: "Fastgjorte",
 	"Drop here to pin": "Slip her for at fastgøre",
 	Unassigned: "Uden sektion",
 	"New section": "Ny sektion",
@@ -293,8 +293,8 @@ export const WORKSPACE: Record<string, string> = {
 	"Copy conversation ID": "Kopiér samtale-id",
 	"The conversation ID could not be copied.": "Samtale-id’et kunne ikke kopieres.",
 	"Show in sidebar": "Vis i sidepanelet",
-	"Hidden agents": "Skjulte agenter",
-	"Hidden agents: {count}": "Skjulte agenter: {count}",
+	Hidden: "Skjulte",
+	"Hidden: {count}": "Skjulte: {count}",
 	"Hide from sidebar": "Skjul fra sidepanelet",
 	Delete: "Slet",
 	"Rename agent": "Omdøb agent",
@@ -306,8 +306,15 @@ export const WORKSPACE: Record<string, string> = {
 	"{name} could not be deleted.": "{name} kunne ikke slettes.",
 	"Rename section": "Omdøb sektion",
 	"Delete section": "Slet sektion",
-	"Delete the section {name}? Its agents move to Unassigned, for everyone in the company.":
-		"Slet sektionen {name}? Dens agenter flyttes til Uden sektion for alle i virksomheden.",
+	"Delete the section {name}? Its agents and group chats move to Unassigned, for everyone in the company.":
+		"Slet sektionen {name}? Dens agenter og gruppechats flyttes til Uden sektion for alle i virksomheden.",
+	"Rename group chat": "Omdøb gruppechat",
+	"{name} could not be renamed. Update its participants in the group details first.":
+		"{name} kunne ikke omdøbes. Opdater først deltagerne i gruppens detaljer.",
+	"Group chat name": "Gruppechattens navn",
+	"Delete {name}? The group chat is removed for everyone. This cannot be undone.":
+		"Slet {name}? Gruppechatten fjernes for alle. Det kan ikke fortrydes.",
+	"The group chat could not be deleted.": "Gruppechatten kunne ikke slettes.",
 	Sidebar: "Sidepanel",
 	"{name} actions": "Handlinger for {name}",
 	Section: "Sektion",

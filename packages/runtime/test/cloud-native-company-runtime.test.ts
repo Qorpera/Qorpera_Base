@@ -767,10 +767,13 @@ it.each([
 				"organize_sidebar",
 				"add_review_rule",
 				"read_context",
+				"read_skill",
 				"recall_memory",
+				"search_skills",
 				"send_coworker_message",
 				"send_message",
 				"update_memory",
+				"update_skill",
 			].sort(),
 		);
 		expect(evidence.threadParameters.runtimeWorkspaceRoots).toEqual([]);
@@ -796,6 +799,15 @@ it.each([
 		expect(Object.keys(prompt).at(-1)).toBe("hireOverlay");
 		// Open work is counted, not listed: the list stays behind manage_todo and manage_worker.
 		expect(prompt.openWork).toEqual({ todos: { open: 40, blocked: 2 }, workers: { active: 5, blocked: 1 } });
+		// Contract 15.2: the skill catalog sits before the notebook and the job; both libraries are empty here.
+		expect(Object.keys(prompt).slice(-3)).toEqual(["skills", "memory", "hireOverlay"]);
+		expect(prompt.skills).toMatchObject({
+			schema: "qorpera.agent-skills/v1",
+			trust: "guidance_not_authority",
+			available: true,
+			own: { path: `agents/${f.context.identity.staffAgentId}/skills`, skills: [], moreSkills: 0 },
+			company: { path: "skills", descriptions: "included", skills: [], moreSkills: 0 },
+		});
 		expect(prompt).not.toHaveProperty("jobSpecification");
 		expect(prompt.currentInputs[0].authorUserId).toBe(f.context.identity.requesterUserId);
 		expect(prompt.history[0].kind).toBe("historical_data");
@@ -1209,8 +1221,10 @@ it("runs a background worker blank: reading tools and its report, no mouth, no c
 		"company_list",
 		"company_read",
 		"read_context",
+		"read_skill",
 		"recall_memory",
 		"report_work",
+		"search_skills",
 	]);
 	expect(evidence.threadParameters.developerInstructions).toContain("# This wake: you are a background worker");
 	expect(evidence.threadParameters.developerInstructions).toContain("# Before you stop\nCall report_work once");
@@ -1218,6 +1232,8 @@ it("runs a background worker blank: reading tools and its report, no mouth, no c
 	expect(JSON.parse(evidence.turnParameters.input[0].text)).not.toHaveProperty("openWork");
 	expect(f.pathCall.mock.calls.map(([method]) => method)).not.toContain("qorpera_describe_agent_open_work");
 	expect(evidence.threadParameters.developerInstructions).not.toContain("# Standing work");
+	// A read-only worker follows skills but writes none, so it gets no guidance on keeping them.
+	expect(evidence.threadParameters.developerInstructions).not.toContain("# Skills");
 	expect(evidence.threadParameters.developerInstructions).not.toContain("# This wake: a message from a coworker");
 });
 
