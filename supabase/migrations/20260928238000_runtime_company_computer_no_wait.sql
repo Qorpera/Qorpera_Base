@@ -2,7 +2,7 @@
 -- starts another one (Jonas, 28 September 2026: "if a machine is full, the
 -- agent always should start a new one, not wait").
 --
--- 20260929010100 added at most one new machine at a time. Every agent that
+-- 20260928237200 added at most one new machine at a time. Every agent that
 -- found the running machines full was placed on the one machine that was
 -- starting, however many agents there were, and those that did not fit on it
 -- waited again for the next. A sleeping machine was woken even when its node
@@ -46,7 +46,7 @@
 -- Switched off, nothing changes: the company has one machine, seats are taken
 -- first come as before, and held seats are not counted.
 
--- Each rewrite below replaces a definition from 20260929010100 exactly; a
+-- Each rewrite below replaces a definition from 20260928237200 exactly; a
 -- changed definition stops the migration instead of being overwritten.
 do $guard$
 begin
@@ -56,7 +56,7 @@ begin
 		or encode(sha256(convert_to((select prosrc from pg_proc
 			where oid = 'public.qorpera_runtime_office_seats_taken(uuid,uuid)'::regprocedure), 'UTF8')), 'hex')
 			<> 'c4caa6d3e6ffdb3feff9b8f0f2a394af33ed0101860dd87852b7151ad6fb5c62' then
-		raise exception 'Office placement differs from 20260929010100';
+		raise exception 'Office placement differs from 20260928237200';
 	end if;
 end
 $guard$;
@@ -373,7 +373,7 @@ begin
 	select * into v_office from public.qorpera_runtime_offices
 		where id=(v_descriptor#>>'{scope,companyComputerId}')::uuid for update;$old$;
 	v_new := $new$	-- The machine this start names stays placed for its agent while it can be
-	-- started (20260929020000).
+	-- started (20260928238000).
 	begin
 		perform set_config('qorpera.office_start_target',(v_authority#>>'{identity,staffAgentId}')||':'||
 			coalesce(p_envelope::jsonb#>>'{operation,target,scope,companyComputerId}',''),true);
@@ -398,7 +398,7 @@ revoke all on function public.qorpera_runtime_office_start_stuck(public.qorpera_
 
 -- The runtime authority functions have private owners in production: the
 -- owners of the functions that call the placement helpers must be able to run
--- the new ones too (as 20260929010100 grants the others).
+-- the new ones too (as 20260928237200 grants the others).
 do $grant$
 declare v_owner name;
 begin

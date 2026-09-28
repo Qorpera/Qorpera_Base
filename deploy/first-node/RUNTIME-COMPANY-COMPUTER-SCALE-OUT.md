@@ -50,7 +50,7 @@ environment.
   the agent's screen on another running computer is in use is refused
   (`SCREEN_OCCUPIED` for runs, `AGENT_ON_OTHER_COMPUTER` for members).
 - **No waiting for a seat** (Jonas, 28 September: "if a machine is full, the
-  agent always should start a new one, not wait"; `20260929020000`). An agent
+  agent always should start a new one, not wait"; `20260928238000`). An agent
   waiting for a computer holds a seat on it: its start waiter on the
   computer's current generation, while it waits (its request's run did not
   fail) and, once woken, until its woken run ends (the clauses `has_demand`
