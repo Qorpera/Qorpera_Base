@@ -87,11 +87,18 @@ environment.
   agent's computer when every one is full adds the next one, as an agent can.
 
 **Switch.** `qorpera_runtime_office_scale_out` (one row, off by default) keeps
-placement on each company's first computer, exactly as before (with seats),
-until every runtime can reach any of a company's computers: an old runtime
-refuses a computer other than its one configured office and would fail the
-run. The release that ships company native routes, with the routes
-configured, turns it on:
+placement on each company's first computer, exactly as before (with seats).
+It stays off until both hold:
+
+- every runtime can reach any of a company's computers: an old runtime refuses
+  a computer other than its one configured office and would fail the run
+  (company native routes, configured);
+- the company folder is mounted on company computers. Today it is not
+  (`canonicalMount: false`): an agent's files sit in the computer's scratch
+  area and reach the company folder only through `computer_transfer`, so a file
+  made on computer 1 would not be visible on computer 2.
+
+Then:
 `update public.qorpera_runtime_office_scale_out set enabled = true, changed_at = clock_timestamp();`
 
 The new helpers are granted to the owners of the functions that call them
@@ -101,6 +108,16 @@ Lock order: company GC fence, then the environment's seat lock
 (`qorpera_lock_runtime_office_seats`, a transaction advisory lock), then
 computer rows. Taking a seat takes the seat lock before the computer row;
 adding a computer takes the fence first.
+
+## Scratch area and company files
+
+Each computer has its own scratch area on the NAS (the contract's
+workbench): tool settings, caches, browser history and temporary files, never
+company files, one writer each. Company files live only in the one company
+folder on the NAS, which every computer reads and writes directly (contract
+5.6; 2026-09-27 amendment: the workbench holds no work files). The company's
+browser sign-ins live in a company directory shared by the company's
+computers.
 
 ## What it does not do yet
 

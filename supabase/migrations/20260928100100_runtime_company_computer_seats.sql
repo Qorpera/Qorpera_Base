@@ -39,10 +39,12 @@
 --    every run of the company: only work on that machine keeps it awake. With
 --    one computer (or the switch off) every run is placed on it, as before.
 --
--- 4. A switch. Until the runtime can reach several computers of a company
---    (native company routes), placement keeps to the company's first computer
---    exactly as before, with seats. The release that ships those runtimes turns
---    qorpera_runtime_office_scale_out on.
+-- 4. A switch. Placement keeps to the company's first computer exactly as
+--    before, with seats, until (a) every runtime can reach any computer of a
+--    company (native company routes) and (b) the company folder is mounted on
+--    company computers, so a file made on one is there on the others (today
+--    files reach the company folder only through computer_transfer). Then
+--    qorpera_runtime_office_scale_out is turned on.
 --
 -- Lock order: company GC fence, then the environment's seat lock, then computer
 -- rows. Taking a seat (native acquire, a member opening a screen) takes the
@@ -57,7 +59,7 @@ insert into public.qorpera_runtime_office_scale_out(singleton, enabled) values (
 alter table public.qorpera_runtime_office_scale_out enable row level security;
 revoke all on public.qorpera_runtime_office_scale_out from public, anon, authenticated, service_role;
 comment on table public.qorpera_runtime_office_scale_out is
-	'On once every runtime can reach any of a company''s computers (company native routes); until then placement keeps to computer 1.';
+	'On once every runtime can reach any of a company''s computers (company native routes) and the company folder is mounted on company computers; until then placement keeps to computer 1.';
 
 create function public.qorpera_runtime_office_scale_out_enabled()
 returns boolean
