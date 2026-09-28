@@ -132,8 +132,8 @@ No reserve, release, suspend or observe function is copied or patched.
   created it at the v147 cut, 2026-09-28). The extension and the job live outside the migrations,
   so a database built by replaying them has neither: enable the extension and schedule the job
   again there. The cron job runs as the function's owner; EXECUTE is otherwise granted only to
-  service_role, and the body has no role check of its own. A concurrent call returns `busy` (advisory lock), and a call within the
-  same half minute returns `current`.
+  service_role, and the body has no role check of its own. A concurrent call returns `busy`
+  (advisory lock), and a call within the same half minute returns `current`.
 - Each pass counts up to 30 seconds ago, so late reports and transitions of that time have arrived.
 - `qorpera_computer_hour_subjects` holds the machines and runs not yet fully counted; a finished one
   is deleted once counted. The log keeps the history.
@@ -312,8 +312,8 @@ Jonas:
    renewal (`invoice.created` with `billing_reason=subscription_cycle`). If Stripe cannot
    schedule it (the plans are two products), leave plan switching off in the portal (upgrades
    too) and tell the billing session: members then cancel and choose the other plan, and a
-   downgrade that took effect at once would only go to review. Optionally send the
-   configuration id (`bpc_...`).
+   downgrade that took effect at once would only go to review. To use a portal configuration
+   other than the default, set its id (`bpc_...`) as a secret in step 8.
 5. Failed payments (Settings → Billing → Subscriptions and emails): after the last retry, cancel
    the subscription. Receipts and invoice emails on.
 6. A webhook endpoint (the address is fixed, so before or after the deploy) at
@@ -330,15 +330,16 @@ Jonas:
    K=$(openssl rand -hex 32); printf %s "$K" | pbcopy; printf %s "$K" | shasum -a 256 | cut -d' ' -f1; unset K
    ```
 
-   Paste the clipboard as the secret `QORPERA_COMPUTER_BILLING_KEY`, then send the printed hash
-   to the coordinator (a hash is not secret), or enroll it yourself (coordinator step 2). For a
+   Paste the clipboard as the secret `QORPERA_COMPUTER_BILLING_KEY`, then clear the clipboard
+   (`pbcopy </dev/null`) and send the printed hash to the coordinator (a hash is not secret), or
+   enroll it yourself (coordinator step 2). For a
    key that already exists, `read -rs K; printf %s "$K" | shasum -a 256 | cut -d' ' -f1; unset K`
    prints its hash: paste the key, press Enter, nothing is echoed.
 8. The other Supabase function secrets: `QORPERA_STRIPE_SECRET_KEY` (`sk_test_...`),
    `QORPERA_STRIPE_WEBHOOK_SECRET` (`whsec_...`, from step 6), `QORPERA_BILLING_RETURN_URL`
    (`https://app.qorpera.com/#/account`), `QORPERA_WEB_ORIGINS` (`["https://app.qorpera.com"]`)
    and optionally `QORPERA_STRIPE_PORTAL_CONFIGURATION`.
-9. Name the accounts that may buy in test mode (for example a second account of his). To see
+9. Name the accounts that may buy in test mode (for example a second account of Jonas's). To see
    plans and credits being drawn, a tester founds a test company with no founder on an internal
    account (a company with an internal founder is complimentary and never draws).
 
@@ -347,7 +348,8 @@ Coordinator (nothing secret):
 1. Deploy the function: `supabase functions deploy computer-billing`.
 2. Enroll the billing key's hash from Jonas:
    `insert into public.qorpera_computer_hour_billing_keys (key_sha256) values ('<hash>')`.
-3. Write the five test price ids into `qorpera_computer_hour_catalog.stripe_price_test`.
+3. Write the five test price ids into `qorpera_computer_hour_catalog.stripe_price_test`, by
+   `item_key`: `basis`, `standard`, `hours_20`, `hours_100`, `hours_500`.
 4. Enroll the test accounts: `insert into public.qorpera_computer_hour_testers (user_id, note)
    values ('<user id>', '<who>')`.
 
@@ -408,7 +410,8 @@ Live keys come later, with the live switch (build step 7).
 
 - The company card, seen by every member: hours used this month, by kind; from the live switch
   also by source, and hours left. From the live switch, founders also see each founder's share
-  and a "Buy hours" button (before it, only enrolled testers see it, in Stripe's test mode).
+  and a "Buy hours" button (before it, only founders who are enrolled testers see it, in Stripe's
+  test mode).
 - Your plan, seen only by you: plan, hours used per company, reset date, "Change plan" and
   "Payments and invoices" (Stripe's billing page).
 - Admins, contributors and viewers see the company's hours without names or cards: "Computer
