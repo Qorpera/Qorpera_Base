@@ -107,25 +107,32 @@ reset role;
 savepoint setup_founder;
 insert into auth.users(id,email) values ('31000000-0000-4000-8000-0000000000f1','org-cofounder@example.test');
 insert into public.qorpera_profile_members(profile_id,user_id,email,display_name,role)
-values ('31000000-0000-4000-8000-000000000010','31000000-0000-4000-8000-0000000000f1','org-cofounder@example.test','Co-founder','owner');
+values ((current_setting('qorpera_test.org_company')::jsonb ->> 'profile_id')::uuid,'31000000-0000-4000-8000-0000000000f1',
+	'org-cofounder@example.test','Co-founder','owner');
+do $$
+begin
+	if not exists (select 1 from public.qorpera_company_bootstrap_jobs
+		where profile_id = (current_setting('qorpera_test.org_company')::jsonb ->> 'profile_id')::uuid
+			and created_by_user_id = '31000000-0000-4000-8000-000000000001' and state = 'queued') then
+		raise exception 'the fixture company has no queued setup for its creator';
+	end if;
+end
+$$;
 select pg_temp.org_claims('authenticated','31000000-0000-4000-8000-000000000001');
 set local role authenticated;
 do $$
+declare v_profile uuid := (current_setting('qorpera_test.org_company')::jsonb ->> 'profile_id')::uuid;
 begin
-	if not exists (select 1 from public.qorpera_company_bootstrap_jobs where profile_id = '31000000-0000-4000-8000-000000000010'
-		and created_by_user_id = '31000000-0000-4000-8000-000000000001' and state = 'queued') then
-		raise exception 'the fixture company has no queued setup for its creator';
-	end if;
-	if public.qorpera_profile_team_info('31000000-0000-4000-8000-000000000010') #> '{capabilities,leave}' <> 'false' then
+	if public.qorpera_profile_team_info(v_profile) #> '{capabilities,leave}' <> 'false' then
 		raise exception 'the team page offers leave while setup runs for this founder';
 	end if;
 	begin
-		perform public.qorpera_leave_hosted_profile('31000000-0000-4000-8000-000000000010');
+		perform public.qorpera_leave_hosted_profile(v_profile);
 		raise exception 'the founder left while company setup ran for them';
 	exception when insufficient_privilege then null;
 	end;
 	begin
-		perform public.qorpera_update_profile_member_role('31000000-0000-4000-8000-000000000010',
+		perform public.qorpera_update_profile_member_role(v_profile,
 			'31000000-0000-4000-8000-000000000001','admin');
 		raise exception 'the founder stepped down while company setup ran for them';
 	exception when insufficient_privilege then null;
