@@ -232,6 +232,9 @@ export class ComputerPanel {
 						unavailable(t("This machine has been retired."));
 						return false;
 					} else if (!canManage && !idle) {
+						// Not ours to start; the agent may still get room on another machine meanwhile.
+						if (pass > 0 && pass % 4 === 0 && (await recheck(scope, located.number, until)) === MOVED)
+							throw MOVED;
 						this.#status.textContent = t("The machine is off. An owner or admin can start it.");
 					} else if (idle && !computer.canRequestWake) {
 						this.#status.textContent = t(

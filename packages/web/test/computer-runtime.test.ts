@@ -250,6 +250,23 @@ describe("several computers per company", () => {
 		for (let n = 0; n < 12 && !open.mock.calls.length; n++) await poll();
 		expect(open).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ binding }));
 	});
+	it("moves a member without owner rights to a machine that gets room", async () => {
+		let asked = 0;
+		const f = setup({
+				qorpera_member_agent_office: () =>
+					asked++ < 2
+						? placed({ scope: scope2, number: 2, waiting: null }, { placement: "unstarted", canManage: false })
+						: placed({ scope, number: 1, waiting: null }, { placement: "room", canManage: false }),
+				qorpera_runtime_office_start_status: (body: Record<string, unknown>) =>
+					sameScope(body, scope) ? start : { ...start, scope: scope2, officeState: "provisioning", intent: null },
+			}),
+			open = spyViewer();
+		const p = await opened(f.computer);
+		expect(statusLine(p)).toBe("The machine is off. An owner or admin can start it.");
+		for (let n = 0; n < 12 && !open.mock.calls.length; n++) await poll();
+		expect(open).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ binding }));
+		expect(methods(f).some((method) => START_WRITES.test(`/${method}`))).toBe(false);
+	});
 	it("says it sets up the computer, not another one, for a company's first", async () => {
 		const f = setup({
 			qorpera_member_agent_office: placed(
