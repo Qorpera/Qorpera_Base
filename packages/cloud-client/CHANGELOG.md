@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Removed
+
+- `NativeSubscriptionControl.approveSessionTurnSponsorship` and its input type: a member can no longer ask another member to pay for a turn. `requestSessionTurn` refuses the `sponsorship_request` mode before any call; turn provenance still reads it on older requests.
+
 ### Added
 
 - Added `cloud-agent-folder`: `cloudAgentFolder(agent)`, the one resolver of an agent's folder in the company folder (contract 5.6), `agents/<staffAgentId>` until agents have named folders with an `agent.md` index.

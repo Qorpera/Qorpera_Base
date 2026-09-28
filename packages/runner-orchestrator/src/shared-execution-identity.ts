@@ -43,6 +43,10 @@ export type SharedExecutionIdentityAuthority = (
 	signal: AbortSignal,
 ) => Promise<SharedExecutionIdentityState>;
 
+/** Whether an identity's login is kept by the vault (Stateless Compute step 1): then no volume,
+ * key or epoch file exists for it on this host, and its run asks the vault for its login. */
+export type SharedExecutionLoginCustody = (computeIdentityId: string, signal: AbortSignal) => Promise<boolean>;
+
 function record(value: unknown, label: string): Record<string, unknown> {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} is invalid`);
 	return value as Record<string, unknown>;
@@ -90,6 +94,49 @@ export function supabaseSharedExecutionIdentityAuthority(
 			throw new Error(`Native identity authority rejected the run (${response.status})`);
 		}
 		return parseSharedExecutionIdentityState(await response.json());
+	};
+}
+
+export function supabaseSharedExecutionLoginCustody(
+	supabaseUrl: string,
+	serviceKey: string,
+	fetchImplementation: ServiceHttpFetch = fetch,
+): SharedExecutionLoginCustody {
+	const base = new URL(supabaseUrl);
+	if (
+		base.protocol !== "https:" ||
+		base.pathname !== "/" ||
+		base.username ||
+		base.password ||
+		base.search ||
+		base.hash
+	)
+		throw new Error("Native identity authority requires an HTTPS origin");
+	return async (computeIdentityId, signal) => {
+		if (!UUID_PATTERN.test(computeIdentityId)) throw new Error("Compute Identity id is invalid");
+		const response = await fetchImplementation(
+			new URL("/rest/v1/rpc/qorpera_compute_identity_login_in_vault", base),
+			{
+				method: "POST",
+				redirect: "error",
+				headers: { ...supabaseServiceHeaders(serviceKey), "content-type": "application/json" },
+				body: JSON.stringify({ p_compute_identity_id: computeIdentityId }),
+				signal: AbortSignal.any([signal, AbortSignal.timeout(10_000)]),
+			},
+		);
+		// A database without the check (this build reached the node before its migration)
+		// answers 404: the login is then on a node, as before.
+		if (response.status === 404) {
+			void response.body?.cancel().catch(() => undefined);
+			return false;
+		}
+		if (!response.ok) {
+			void response.body?.cancel().catch(() => undefined);
+			throw new Error(`Native identity custody is unavailable (${response.status})`);
+		}
+		const answer: unknown = await response.json();
+		if (typeof answer !== "boolean") throw new Error("Native identity custody is invalid");
+		return answer;
 	};
 }
 

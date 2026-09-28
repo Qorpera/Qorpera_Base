@@ -75,8 +75,6 @@ function transport() {
 					status: "queued",
 					sponsor_mode: args.p_sponsor_mode,
 				};
-			case "qorpera_approve_session_turn_sponsorship":
-				return { turn_request_id: requestId, status: "queued" };
 			case "qorpera_list_member_native_execution_connections":
 				return { compute_identity: null, connections: [] };
 			case "qorpera_list_compute_identities":
@@ -198,6 +196,19 @@ describe("native subscription product control", () => {
 			p_compute_identity_id: identityId,
 			p_worker_class: "managed_sandbox",
 		});
+	});
+
+	it("refuses to ask another member to pay for a turn before any cloud call", async () => {
+		const { calls, client } = transport();
+		await expect(
+			client.requestSessionTurn({
+				sessionId,
+				body: { schema: "qorpera.session-prompt/v1", text: "Please pay for my turn.", images: [] },
+				sponsorMode: "sponsorship_request",
+				requestedSponsorUserId: "00000000-0000-4000-8000-0000000000aa",
+			}),
+		).rejects.toThrow("A turn is paid by the member who sends it or by a company account");
+		expect(calls).toEqual([]);
 	});
 
 	it("creates explicit company sponsorship without relabeling it as a member connection", async () => {
