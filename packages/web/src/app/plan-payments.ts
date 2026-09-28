@@ -12,6 +12,8 @@ export interface PlanPaymentsState {
 	/** The item key (or "portal") whose Stripe page is opening. */
 	opening?: string;
 	error?: string;
+	/** A note, not an error (no payments to show on Stripe's billing page yet). */
+	info?: string;
 	/** Back from Stripe's checkout page. */
 	returned?: "done";
 }
@@ -46,6 +48,8 @@ export function takeCheckoutReturn(): "done" | "cancelled" | undefined {
 
 /** Stripe confirms a payment a moment after the member is back: the plan is read again once. */
 const RETURN_REFRESH_MS = 5000;
+/** A Stripe page that did not open (the member stayed when the browser asked, say) frees the buttons again. */
+const OPENING_RESET_MS = 10_000;
 
 export class PlanPayments {
 	readonly #api: CloudApi;
@@ -54,6 +58,7 @@ export class PlanPayments {
 	#loading = false;
 	#disposed = false;
 	#refresh: ReturnType<typeof setTimeout> | undefined;
+	#openingReset: ReturnType<typeof setTimeout> | undefined;
 
 	constructor(api: CloudApi, changed: () => void, returned?: "done") {
 		this.#api = api;
@@ -76,6 +81,7 @@ export class PlanPayments {
 	dispose(): void {
 		this.#disposed = true;
 		if (this.#refresh) clearTimeout(this.#refresh);
+		if (this.#openingReset) clearTimeout(this.#openingReset);
 	}
 
 	#set(next: Partial<PlanPaymentsState>): void {
@@ -119,14 +125,26 @@ export class PlanPayments {
 
 	#open(key: string, page: () => Promise<string>): void {
 		if (this.#state.opening) return;
-		this.#set({ opening: key, error: undefined, returned: undefined });
-		void page()
+		this.#set({ opening: key, error: undefined, info: undefined, returned: undefined });
+		void Promise.resolve()
+			.then(page)
 			.then((url) => {
 				if (this.#disposed) return;
-				// Coming back with the browser's Back button shows this page again, ready.
-				window.addEventListener("pageshow", () => this.#set({ opening: undefined }), { once: true });
+				// Coming back with the browser's Back button shows this page again, ready; so does
+				// a navigation that never happened.
+				const ready = () => {
+					if (this.#openingReset) clearTimeout(this.#openingReset);
+					this.#openingReset = undefined;
+					if (this.#state.opening === key) this.#set({ opening: undefined });
+				};
+				window.addEventListener("pageshow", ready, { once: true });
+				this.#openingReset = setTimeout(ready, OPENING_RESET_MS);
 				location.assign(url);
 			})
-			.catch((error: unknown) => this.#set({ opening: undefined, error: refusalText(error) }));
+			.catch((error: unknown) =>
+				error instanceof ComputerBillingError && error.refusal === "no_customer"
+					? this.#set({ opening: undefined, info: refusalText(error) })
+					: this.#set({ opening: undefined, error: refusalText(error) }),
+			);
 	}
 }

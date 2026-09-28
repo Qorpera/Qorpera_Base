@@ -229,6 +229,9 @@ export function mountApplication(
 	auth.store.subscribe(() => {
 		const userId = auth.userId;
 		if (userId !== accountUserId) {
+			// A return from Stripe belongs to the member who paid, not to whoever signs in next;
+			// the first sign-in of the page (back from Stripe) keeps it.
+			if (accountUserId !== undefined) checkoutReturn = undefined;
 			closeSettings(false);
 			closeFeedback(false);
 			accountUserId = userId;
@@ -514,6 +517,12 @@ export function mountApplication(
 		}
 		if (!root!.contains(frame)) replace(root!, frame);
 		const route: Route = currentRoute();
+		// The account page's payments live while it shows: its notices go with it, and a failed
+		// read is tried again on the next visit.
+		if (route.name !== "account" && accountPayments) {
+			accountPayments.dispose();
+			accountPayments = undefined;
+		}
 		frame.classList.toggle(
 			"has-thread",
 			route.name === "company" && (route.section === "chat" || route.section === "new"),

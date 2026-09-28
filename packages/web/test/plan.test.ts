@@ -234,7 +234,9 @@ describe("Plan & usage", () => {
 	});
 
 	it("sells Basis as computer hours, not a computer per agent", () => {
-		expect(PLAN_OFFERS[0]?.includes).toContain("74 computer hours a month");
+		renderPlan(container, { loaded: true, entitlement: entitlement("freemium") }, undefined);
+		const basis = container.querySelector('[data-plan="basis"] .settings-plan-includes')!;
+		expect([...basis.querySelectorAll("li")].map((li) => li.textContent)[1]).toBe("74 computer hours a month");
 		expect(PLAN_OFFERS.flatMap((offer) => offer.includes).join(" ")).not.toContain("worker computer");
 	});
 
@@ -420,7 +422,7 @@ describe("Plan & usage with payments", () => {
 			.click();
 		const grid = container.querySelector<HTMLElement>(".settings-plan-grid")!;
 		expect([...grid.querySelectorAll("button")].map((button) => button.textContent)).toEqual([
-			"Switch plan",
+			"Switch to Basis",
 			"Current plan",
 			"Coming soon",
 		]);
@@ -487,6 +489,66 @@ describe("Plan & usage with payments", () => {
 		renderPlan(container, { loaded: true, entitlement: entitlement("basis") }, usage(undefined), { payments: view });
 		expect(container.querySelector(".settings-hours-packs")).toBeNull();
 		expect(text()).not.toContain("paid by the founders");
+	});
+
+	it("shows the cloud catalog's prices and hours, which are what Stripe charges", () => {
+		const catalog = payments({
+			offers: [offer("basis", "plan", 19_900, 80), offer("standard", "plan", 63_000, 286, false)],
+		}).view;
+		renderPlan(container, { loaded: true, entitlement: entitlement("basis") }, undefined, { payments: catalog });
+		expect(container.querySelector('[data-plan="basis"] .settings-plan-price strong')?.textContent).toBe("199 kr");
+		expect(container.querySelector('[data-plan="basis"] .settings-plan-includes')?.textContent).toContain(
+			"80 computer hours a month",
+		);
+		expect(text()).toContain("199 kr/month · ex. VAT");
+		expect(container.querySelector(".settings-hours small:not(.settings-eyebrow)")?.textContent).toBe(
+			"80 h a month with Basis",
+		);
+		// Without the catalog (a cloud before payments), the prices qorpera.com shows.
+		renderPlan(container, { loaded: true, entitlement: entitlement("basis") }, undefined);
+		expect(container.querySelector('[data-plan="basis"] .settings-plan-price strong')?.textContent).toBe("185 kr");
+	});
+
+	it("reads a paused plan, a plan without hours yet, and small uses honestly", () => {
+		const live = (plan: object, hours: object) =>
+			payments({ plan: { mode: "live", plan: { cancelAtPeriodEnd: false, ...plan }, hours } as never }).view;
+		renderPlan(container, { loaded: true, entitlement: entitlement("freemium") }, undefined, {
+			payments: live(
+				{ itemKey: "basis", status: "paused", periodEnd: "2026-10-10T00:00:00Z" },
+				{
+					grantedSeconds: 0,
+					companies: [],
+				},
+			),
+		});
+		expect(container.querySelector(".settings-plan small:not(.settings-eyebrow)")?.textContent).toBe("Paused");
+		// No hours granted yet: no total, no meter.
+		expect(container.querySelector(".settings-hours strong")?.textContent).toBe("0 h used");
+		expect(container.querySelector(".settings-hours progress")).toBeNull();
+		renderPlan(container, { loaded: true, entitlement: entitlement("freemium") }, undefined, {
+			payments: live(
+				{ itemKey: "basis", status: "active", periodEnd: "2026-10-10T00:00:00Z" },
+				{
+					grantedSeconds: 74 * 3600,
+					companies: [
+						{ profileId: P, seconds: 120 },
+						{ profileId: Q, seconds: 100 },
+					],
+				},
+			),
+		});
+		// A few seconds would read "0 h": they are summed with the unnamed ones instead.
+		expect(container.querySelector(".settings-hours .settings-hours-kinds")?.textContent).toBe(
+			"Other companies 0.1 h",
+		);
+	});
+
+	it("marks test purchases, and says calmly that there are no payments yet", () => {
+		const testing = payments({ plan: { mode: "dry_run", plan: null, hours: null }, info: "No payments yet." }).view;
+		renderPlan(container, { loaded: true, entitlement: entitlement("basis") }, usage(true), { payments: testing });
+		expect(container.querySelector(".settings-hours-packs")?.textContent).toContain("Test mode: nothing is charged.");
+		expect(container.querySelector(".notice-neutral")?.textContent).toBe("No payments yet.");
+		expect(container.querySelector(".notice-danger")).toBeNull();
 	});
 
 	it("thanks the member back from Stripe and shows a refusal", () => {

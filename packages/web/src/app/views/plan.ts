@@ -21,6 +21,8 @@ export interface PlanOffer {
 	includes: string[];
 	/** Computer hours a month; undefined means a computer all month. */
 	includedHours?: number;
+	/** Where "{hours} computer hours a month" goes in `includes`, read from the cloud's catalog when it has the plan. */
+	hoursLineAt?: number;
 }
 
 export const PLAN_OFFERS: PlanOffer[] = [
@@ -31,11 +33,11 @@ export const PLAN_OFFERS: PlanOffer[] = [
 		tagline: phrase("For the daily work."),
 		includes: [
 			phrase("100 GB storage included"),
-			phrase("74 computer hours a month"),
 			phrase("Connect from computer and phone"),
 			phrase("Work in the cloud while your computer is off"),
 		],
 		includedHours: 74,
+		hoursLineAt: 1,
 	},
 	{
 		key: "standard",
@@ -204,6 +206,7 @@ function companyHoursCard(
 					"small",
 					null,
 					uiText("For {company}, valid for 12 months. Prices are ex. VAT.", { company: usage.companyName }),
+					payments?.state.plan?.mode === "dry_run" ? [" ", uiText("Test mode: nothing is charged.")] : null,
 				),
 			)
 		: null;
@@ -259,6 +262,7 @@ function paidPlanDetail(plan: PaidPlan): Node {
 	if (plan.status === "past_due" || plan.status === "unpaid")
 		return uiText("Payment failed. Update your card under Payments and invoices.");
 	if (plan.status === "incomplete") return uiText("Waiting for the first payment");
+	if (plan.status === "paused") return uiText("Paused");
 	if (!plan.periodEnd) return uiText("Paid through Stripe");
 	return plan.cancelAtPeriodEnd
 		? uiText("Ends {date}", { date: dateText(plan.periodEnd) })
@@ -276,7 +280,8 @@ function billingRow(label: Node, value: Node | string, action?: Node | null): HT
 }
 
 /** "Company A 10 h · Other companies 0.5 h": this period's hours by company, largest first;
- * companies this page cannot name are summed, and left out under three minutes. */
+ * companies this page cannot name, or with under three minutes (which would read "0 h"), are
+ * summed, and left out under three minutes. */
 function hoursPerCompany(
 	companies: { profileId: string; seconds: number }[],
 	companyName: ((profileId: string) => string | undefined) | undefined,
@@ -285,7 +290,7 @@ function hoursPerCompany(
 	const named: string[] = [];
 	for (const item of companies) {
 		const company = companyName?.(item.profileId);
-		if (company) named.push(`${company} ${hoursText(item.seconds / 3600)}`);
+		if (company && item.seconds >= 180) named.push(`${company} ${hoursText(item.seconds / 3600)}`);
 		else others += item.seconds;
 	}
 	if (others >= 180) named.push(`${t("Other companies")} ${hoursText(others / 3600)}`);
@@ -309,8 +314,27 @@ export function renderPlan(
 	const planKey = paid?.itemKey ?? entitlement?.planKey;
 	const offer = PLAN_OFFERS.find((item) => item.key === planKey);
 	const trial = !paid && planKey !== undefined && isTrial(planKey);
-	const forSale = (key: string) =>
-		payments?.state.offers.find((item) => item.itemKey === key && item.kind === "plan" && item.available);
+	// The cloud's catalog is the price list: a plan it has is shown at its price and hours, which are
+	// what Stripe charges; without it, the prices qorpera.com shows.
+	const catalog = (key: string) => payments?.state.offers.find((item) => item.itemKey === key && item.kind === "plan");
+	const forSale = (key: string) => (catalog(key)?.available ? catalog(key) : undefined);
+	const priceOf = (item: PlanOffer) => {
+		const listed = catalog(item.key);
+		return listed ? listed.priceMinor / 100 : item.monthlyKr;
+	};
+	const hoursOf = (item: PlanOffer) => catalog(item.key)?.hours ?? item.includedHours;
+	const testMode = payments?.state.plan?.mode === "dry_run";
+	const includesOf = (item: PlanOffer): Node[] => {
+		const lines: Node[] = item.includes.map((line) => uiText(line));
+		const planHours = hoursOf(item);
+		if (item.hoursLineAt !== undefined && planHours !== undefined)
+			lines.splice(
+				item.hoursLineAt,
+				0,
+				uiText("{hours} computer hours a month", { hours: new Intl.NumberFormat(locale()).format(planHours) }),
+			);
+		return lines;
+	};
 	const selling = PLAN_OFFERS.some((item) => forSale(item.key));
 	// A plan key this client does not know is shown as sent, untranslated.
 	const name =
@@ -343,10 +367,11 @@ export function renderPlan(
 		if (item.key === planKey) return button(uiText("Current plan"), () => {}, { disabled: true });
 		if (payments && forSale(item.key)) {
 			const choose = paid
-				? button(opening === "portal" ? uiText("Opening…") : uiText("Switch plan"), () => payments.portal(), {
-						primary: true,
-						disabled: opening !== undefined,
-					})
+				? button(
+						opening === "portal" ? uiText("Opening…") : uiText("Switch to {plan}", { plan: t(item.name) }),
+						() => payments.portal(),
+						{ primary: true, disabled: opening !== undefined },
+					)
 				: button(
 						opening === item.key ? uiText("Opening…") : uiText("Choose {plan}", { plan: t(item.name) }),
 						() => payments.checkout(item.key),
@@ -371,10 +396,10 @@ export function renderPlan(
 					h("h3", null, uiText(item.name)),
 					item.key === planKey ? h("span", { class: "settings-plan-current" }, uiText("Current plan")) : null,
 				),
-				h("p", { class: "settings-plan-price" }, h("strong", null, priceKr(item.monthlyKr)), uiText("/month")),
+				h("p", { class: "settings-plan-price" }, h("strong", null, priceKr(priceOf(item))), uiText("/month")),
 				h("p", { class: "settings-plan-tagline" }, uiText(item.tagline)),
 				item.includesLabel ? h("p", { class: "settings-plan-includes-label" }, uiText(item.includesLabel)) : null,
-				h("ul", { class: "settings-plan-includes" }, ...item.includes.map((line) => h("li", null, uiText(line)))),
+				h("ul", { class: "settings-plan-includes" }, ...includesOf(item).map((line) => h("li", null, line))),
 				item.usageDiscount
 					? h(
 							"p",
@@ -392,7 +417,7 @@ export function renderPlan(
 		...(selling
 			? [
 					uiText("Prices are ex. VAT. You pay on Stripe's secure page."),
-					payments?.state.plan?.mode === "dry_run" ? [" ", uiText("Test mode: nothing is charged.")] : [],
+					testMode ? [" ", uiText("Test mode: nothing is charged.")] : [],
 				]
 			: [
 					uiText("Plan changes are not open yet."),
@@ -424,7 +449,9 @@ export function renderPlan(
 			}
 		: billing.computerHours;
 	const perCompany = mine ? hoursPerCompany(mine.companies, payments?.companyName) : "";
-	const hoursIncluded = hours?.included ?? offer?.includedHours;
+	// A paid plan's own hours, as granted (none yet: no total); otherwise the plan's hours a month.
+	const hoursIncluded = mine ? hours?.included : (hours?.included ?? (offer ? hoursOf(offer) : undefined));
+	const planHours = offer ? hoursOf(offer) : undefined;
 	const hoursValue = hours
 		? hoursIncluded
 			? uiText("{used} used of {total}", { used: hoursText(hours.used), total: hoursText(hoursIncluded) })
@@ -432,13 +459,13 @@ export function renderPlan(
 		: uiText("Counted once plans open");
 	const hoursDetail = trial
 		? uiText("Included in your free trial")
-		: offer && offer.includedHours === undefined
+		: offer && planHours === undefined
 			? uiText("Your own computer, all month")
-			: hoursIncluded
-				? offer
-					? uiText("{hours} a month with {plan}", { hours: hoursText(hoursIncluded), plan: t(offer.name) })
-					: uiText("{hours} a month", { hours: hoursText(hoursIncluded) })
-				: null;
+			: offer && planHours
+				? uiText("{hours} a month with {plan}", { hours: hoursText(planHours), plan: t(offer.name) })
+				: hoursIncluded
+					? uiText("{hours} a month", { hours: hoursText(hoursIncluded) })
+					: null;
 	const storage = usage ? storageSummary(usage.file, usage.error) : undefined;
 	const retry = usage?.error ? button(uiText("Retry"), usage.retry, { small: true, disabled: usage.loading }) : null;
 	if (retry) retry.dataset.focus = "retry";
@@ -472,6 +499,7 @@ export function renderPlan(
 				? notice("ok", uiText("Thank you. Your hours are added as soon as Stripe confirms the payment."))
 				: null,
 			payments?.state.error ? notice("danger", payments.state.error) : null,
+			payments?.state.info ? notice("neutral", payments.state.info) : null,
 			h(
 				"section",
 				{ class: "settings-group" },
@@ -485,6 +513,7 @@ export function renderPlan(
 						h("small", { class: "settings-eyebrow" }, uiText("Current plan")),
 						h("strong", null, name),
 						detail ? h("small", null, detail) : null,
+						paid && testMode ? h("small", null, uiText("Test mode: nothing is charged.")) : null,
 					),
 					toggle,
 				),
@@ -546,7 +575,7 @@ export function renderPlan(
 							? trial || planKey === "internal"
 								? uiText("Free")
 								: offer
-									? h("span", null, priceKr(offer.monthlyKr), uiText("/month"), " · ", uiText("ex. VAT"))
+									? h("span", null, priceKr(priceOf(offer)), uiText("/month"), " · ", uiText("ex. VAT"))
 									: uiText("Not available yet")
 							: "",
 					),

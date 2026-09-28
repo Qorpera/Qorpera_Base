@@ -69,13 +69,13 @@ const TABS = [
 ] as const;
 export type SettingsTab = (typeof TABS)[number]["id"];
 
-/** A settings session owns its async work; the conversation stays mounted below it. */
 /** Founders (owners) pay a company's computer hours; undefined until the member's role is known. */
 function founderOf(company: CompanyController): boolean | undefined {
 	const role = company.store.get().team?.role;
 	return role === undefined ? undefined : role === "owner";
 }
 
+/** A settings session owns its async work; the conversation stays mounted below it. */
 export class SettingsView {
 	readonly el: HTMLElement;
 	readonly #api: CloudApi;

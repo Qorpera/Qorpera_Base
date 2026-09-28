@@ -147,7 +147,8 @@ async function stripePage(cloud: Cloud, route: "checkout" | "portal", body: obje
 	}
 	if (!response.ok || typeof fields.url !== "string") throw new ComputerBillingError("unavailable");
 	const url = new URL(fields.url);
-	if (url.protocol !== "https:" || url.hostname !== host) throw new ComputerBillingError("unavailable");
+	// Stripe's own origin exactly (a Stripe custom domain would need a change here).
+	if (url.origin !== `https://${host}`) throw new ComputerBillingError("unavailable");
 	return url.href;
 }
 

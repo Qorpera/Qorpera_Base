@@ -87,7 +87,7 @@ export const SETTINGS: Record<string, string> = {
 	"Everything in Basis, plus": "Alt i Basis, plus",
 	"Everything in Standard, plus": "Alt i Standard, plus",
 	"100 GB storage included": "100 GB lagerplads inkluderet",
-	"74 computer hours a month": "74 computertimer om måneden",
+	"{hours} computer hours a month": "{hours} computertimer om måneden",
 	"Connect from computer and phone": "Forbind til computer og mobil",
 	"Work in the cloud while your computer is off": "Arbejd i skyen, selvom computeren er slukket",
 	"250 GB storage included": "250 GB lagerplads inkluderet",
@@ -137,7 +137,8 @@ export const SETTINGS: Record<string, string> = {
 	"No invoices yet": "Ingen fakturaer endnu",
 	// Payments through Stripe (app/views/plan.ts, app/plan-payments.ts)
 	"Choose {plan}": "Vælg {plan}",
-	"Switch plan": "Skift abonnement",
+	"Switch to {plan}": "Skift til {plan}",
+	Paused: "Sat på pause",
 	"Opening…": "Åbner…",
 	"Prices are ex. VAT. You pay on Stripe's secure page.": "Priserne er ekskl. moms. Du betaler på Stripes sikre side.",
 	"Test mode: nothing is charged.": "Testtilstand: intet bliver opkrævet.",
