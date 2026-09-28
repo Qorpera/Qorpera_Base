@@ -1343,7 +1343,10 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			(value.state !== "detached" && value.state !== "unchanged")
 		)
 			throw new Error("CODING_HOST_DETACH_RECORD_UNCONFIRMED");
-		if (this.#attachments.get(workerId)?.token === token) this.#attachments.delete(workerId);
+		if (this.#attachments.get(workerId)?.token === token) {
+			this.#attachments.delete(workerId);
+			this.#attachSerials.delete(workerId);
+		}
 		this.#samples.delete(workerId);
 	}
 
@@ -1546,8 +1549,13 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			this.#released.push({ machineId: machine.machineId, workerId, step, state, code });
 		const work = (async () => {
 			if (again) {
-				await this.#attachSession(again.claim, again.machine, again.storage, again, again.scope, signal);
-				report("done", "REATTACHED");
+				// Only while that turn is still prepared here: an ended turn's lease is never opened again.
+				const attached = await this.#leaseTask(workerId, async () => {
+					if (this.#prepared.get(workerId) !== again) return false;
+					await this.#attachSessionNow(again.claim, again.machine, again.storage, again, again.scope, signal);
+					return true;
+				});
+				if (attached) report("done", "REATTACHED");
 				return;
 			}
 			await this.#takeOff(
