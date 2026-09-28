@@ -16,12 +16,15 @@ export function record(value: unknown, label: string): Record<string, unknown> {
 export function canonical(value: unknown): unknown {
 	if (Array.isArray(value)) return value.map((entry) => canonical(entry));
 	if (!value || typeof value !== "object") return value;
-	const output: Record<string, unknown> = {};
-	for (const key of Object.keys(value).sort()) {
-		const entry = (value as Record<string, unknown>)[key];
-		if (entry !== undefined) output[key] = canonical(entry);
-	}
-	return output;
+	// Object.fromEntries keeps a `__proto__` key as an entry. Assigning it
+	// would set the copy's prototype and drop the key from every comparison.
+	const input = value as Record<string, unknown>;
+	return Object.fromEntries(
+		Object.keys(input)
+			.sort()
+			.filter((key) => input[key] !== undefined)
+			.map((key) => [key, canonical(input[key])]),
+	);
 }
 
 export function sha256(value: string): string {
