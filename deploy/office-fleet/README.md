@@ -144,7 +144,8 @@ until that mount is live and every runtime can reach any machine of a company
 
 1. Write a request: the service document of the company's computer on this
    host (the template), the service documents of every other office on this
-   host (of any company), the new computer from the queue (with its image and
+   host (of any company: list them from the host's office units, for example
+   `systemctl list-units 'qorpera-*office*'`; a missed office skips its checks), the new computer from the queue (with its image and
    bootstrap digests) and a new provider UUID, and the host choices:
 
    ```json
@@ -153,6 +154,8 @@ until that mount is live and every runtime can reach any machine of a company
      "others": ["/etc/qorpera/offices/<other office>/service.json"],
      "office": {
        "providerId": "<new uuid>",
+       "companyId": "<from the queue>",
+       "environmentId": "<from the queue>",
        "companyComputerId": "<from the queue>",
        "logicalComputerId": "<from the queue>",
        "computerGeneration": 1,
@@ -176,8 +179,8 @@ until that mount is live and every runtime can reach any machine of a company
    `passthrough.json` and `fleet.json` (exact bytes and digests), the provider
    enrollment (with CPU and memory, which cannot be changed later), the
    lifecycle plan's adoption input and paths, and the remaining root steps. It
-   writes nothing and mints nothing. It refuses a template on another image
-   than the queued computer, and anything another office on the host already
+   writes nothing and mints nothing. It refuses a template of another company
+   or on another image than the queued computer, and anything another office on the host already
    uses: provider, computer, NAS scratch area (also nested ones), mount, journal,
    document folder or port. Errors print a fixed code only.
 3. Follow the plan's steps as root. Credentials are the dangerous part: the new

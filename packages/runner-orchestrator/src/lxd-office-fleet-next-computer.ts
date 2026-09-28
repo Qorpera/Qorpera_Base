@@ -33,6 +33,8 @@ export interface OfficeNextComputerInput {
 	/** The new computer, from `qorpera_runtime_office_setup_queue`, and a new provider id. */
 	office: {
 		providerId: string;
+		companyId: string;
+		environmentId: string;
 		companyComputerId: string;
 		logicalComputerId: string;
 		computerGeneration: number;
@@ -137,6 +139,8 @@ export function planOfficeNextComputer(input: OfficeNextComputerInput): OfficeNe
 	const everyOffice = [template, ...input.others.map(installed)];
 	const office = officeRecord(input.office, [
 		"providerId",
+		"companyId",
+		"environmentId",
 		"companyComputerId",
 		"logicalComputerId",
 		"computerGeneration",
@@ -167,6 +171,13 @@ export function planOfficeNextComputer(input: OfficeNextComputerInput): OfficeNe
 		(host.layout !== 1 && host.layout !== 2)
 	)
 		refuse("OFFICE_NEXT_COMPUTER_IDENTITY_INVALID");
+	// The template must be this company's own computer: another company's office
+	// on the same image would only fail at the fleet offer, after the enrollment.
+	if (
+		office.companyId !== template.policy.guest.companyId ||
+		office.environmentId !== template.policy.guest.environmentId
+	)
+		refuse("OFFICE_NEXT_COMPUTER_TEMPLATE_OTHER_COMPANY");
 	// The database copies image and bootstrap from the company's newest computer:
 	// a template on another image would only fail at the fleet offer, after setup.
 	if (

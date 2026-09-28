@@ -63,6 +63,8 @@ function input(): OfficeNextComputerInput {
 		],
 		office: {
 			providerId: "77777777-7777-4777-8777-777777777777",
+			companyId: f.policy.guest.companyId,
+			environmentId: f.policy.guest.environmentId,
 			companyComputerId: "88888888-8888-4888-8888-888888888888",
 			logicalComputerId: "99999999-9999-4999-8999-999999999999",
 			computerGeneration: 1,
@@ -99,6 +101,13 @@ const refusals: [string, string, Change][] = [
 		"OFFICE_NEXT_COMPUTER_IDENTITY_TAKEN",
 		(v) => {
 			v.office.companyComputerId = "14141414-1414-4141-8141-141414141414";
+		},
+	],
+	[
+		"another company's office as the template",
+		"OFFICE_NEXT_COMPUTER_TEMPLATE_OTHER_COMPANY",
+		(v) => {
+			v.office.companyId = "13131313-1313-4131-8131-131313131313";
 		},
 	],
 	[
