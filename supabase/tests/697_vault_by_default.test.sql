@@ -3,7 +3,8 @@
 -- origin and key id, the capability hash the broker derived) and its switch to vault sign-in. A company
 -- created before (or at) the principal's start time, a company that has a vault (a retired one too), a repeat
 -- with another capability, another company's capability and another principal are refused; a repeat never
--- switches a company back on; the existing broker guard accepts the registered company.
+-- switches a company back on; the existing broker guard accepts the registered company; registration runs at
+-- read committed only.
 begin;
 
 create function pg_temp.vbd_expect(p_actual text, p_expected text, p_label text)
@@ -22,7 +23,8 @@ exception when others then return sqlstate || ':' || sqlerrm;
 end $$;
 grant execute on function pg_temp.vbd_expect(text,text,text), pg_temp.vbd_call(text) to qorpera_secret_broker;
 
--- Companies: one before the principal's start time, two after, and one after that already has its own vault.
+-- Companies: one before the principal's start time, one exactly at it, two after, one after that already has
+-- its own vault, and one after whose vault was retired.
 insert into auth.users(id,email) values ('69700000-0000-4000-8000-000000000001','vault-default-owner@example.test');
 insert into public.qorpera_profiles(id,name,created_by_user_id,created_at) values
 	('69700000-0000-4000-8000-000000000010','Before the shared vault','69700000-0000-4000-8000-000000000001','2099-01-01 00:00:00+00'),
@@ -148,4 +150,16 @@ select pg_temp.vbd_expect(pg_temp.vbd_call($q$select public.qorpera_broker_princ
 	'42501:cloud secret broker principal is unavailable', 'a retired principal lists nothing');
 reset session authorization;
 
+rollback;
+
+-- 9. Registration runs at read committed only: its race handling re-reads the other copy's committed row.
+begin isolation level repeatable read;
+set local session authorization qorpera_secret_broker;
+do $$
+begin
+	perform public.qorpera_register_company_with_broker_principal('69700000-0000-4000-8000-000000000050', repeat('a',64),
+		'69700000-0000-4000-8000-000000000012', repeat('7',64));
+	raise exception 'registration ran outside read committed';
+exception when sqlstate '25000' then null;
+end $$;
 rollback;
