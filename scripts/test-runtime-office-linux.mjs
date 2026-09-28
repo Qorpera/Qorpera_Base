@@ -106,7 +106,8 @@ const controls = {
 	"test-firewall down": [plumber, ["--down"]],
 	"test-firewall up": [plumber, ["--up"]],
 };
-const server = createServer((socket) => {
+// Like systemd's accepted socket: a client that has finished sending still gets its answer.
+const server = createServer({ allowHalfOpen: true }, (socket) => {
 	let first = "";
 	socket.setEncoding("utf8");
 	const request = (text) => {
