@@ -2,9 +2,11 @@
  * same rule from the text (qorpera_room_text_mentions, 20260928010000): an agent
  * named in a group chat answers, the others stay quiet; a member named is told.
  * The rule, shared with the SQL: "@" at the start or after a space or an opening
- * bracket or quote, then the name (any case), then the end or a space or
- * punctuation. Longer names win: "@Bo Jensen" names Bo Jensen, not Bo. Everyone
- * who shares a name named is named. */
+ * bracket or quote, then the name, then the end or a space or punctuation. Letters
+ * A-Z match in either case and every Unicode space counts as a space (mentionFold,
+ * qorpera_mention_fold), so both sides read the same whatever the locale. Longer
+ * names win: "@Bo Jensen" names Bo Jensen, not Bo. Everyone who shares a name
+ * named is named. */
 
 export interface MentionTarget {
 	kind: "member" | "agent";
@@ -18,26 +20,37 @@ export interface Mention {
 	end: number;
 }
 
-const BEFORE = /[\s(["'“‘]/u;
-const AFTER = /[\s.,!?;:)\]}"'”’]/u;
+const BEFORE = /[ \t\n\r\f\v(["'“‘]/;
+const AFTER = /[ \t\n\r\f\v.,!?;:)\]}"'”’]/;
+const SPACES = /[\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]/g;
+const EDGES = /^[ \t\n\r\f\v]+|[ \t\n\r\f\v]+$/g;
+
+/** Text as the rule reads it: A-Z in lower case, every Unicode space a plain space, the length
+ * unchanged (qorpera_mention_fold). Other letters keep their case; names go in as written. */
+export function mentionFold(text: string): string {
+	return text.replace(/[A-Z]/g, (letter) => letter.toLowerCase()).replace(SPACES, " ");
+}
 
 /** Every mention in a text, in order. */
 export function findMentions(text: string, targets: readonly MentionTarget[]): Mention[] {
-	const lower = text.toLowerCase();
+	const folded = mentionFold(text);
 	// Which name took each letter: a shorter name cannot use them, the same name can.
 	const taken = new Array<string | undefined>(text.length).fill(undefined);
 	const found: Mention[] = [];
-	const byLength = [...targets].filter((target) => target.name.trim()).sort((a, b) => b.name.length - a.name.length);
-	for (const target of byLength) {
-		const needle = `@${target.name.toLowerCase()}`;
+	const named = targets
+		.map((target) => ({ target, name: mentionFold(target.name).replace(EDGES, "") }))
+		.filter((item) => item.name)
+		.sort((a, b) => b.name.length - a.name.length);
+	for (const { target, name } of named) {
+		const needle = `@${name}`;
 		let from = 0;
 		for (;;) {
-			const start = lower.indexOf(needle, from);
+			const start = folded.indexOf(needle, from);
 			if (start < 0) break;
 			from = start + 1;
 			const end = start + needle.length;
-			const before = start === 0 || BEFORE.test(text[start - 1]!);
-			const after = end === text.length || AFTER.test(text[end]!);
+			const before = start === 0 || BEFORE.test(folded[start - 1]!);
+			const after = end === folded.length || AFTER.test(folded[end]!);
 			if (!before || !after || taken.slice(start, end).some((name) => name !== undefined && name !== needle))
 				continue;
 			taken.fill(needle, start, end);

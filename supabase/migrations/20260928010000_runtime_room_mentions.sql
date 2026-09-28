@@ -10,9 +10,11 @@
 -- names and to show who will answer (packages/web/src/ui/mentions.ts).
 --
 -- The rule: "@" at the start or after a space, an opening bracket or a quote; then
--- a room member's name, in any case; then the end, a space or punctuation. Longer
--- names are read first and take their letters, so "@Bo Jensen" names Bo Jensen
--- and not Bo. Everyone who shares a name named is named.
+-- a room member's name; then the end, a space or punctuation. Letters A-Z match in
+-- either case and every Unicode space counts as a space (qorpera_mention_fold), the
+-- same whatever the database's locale, as in the web. Longer names are read first
+-- and take their letters, so "@Bo Jensen" names Bo Jensen and not Bo. Everyone who
+-- shares a name named is named.
 
 create table public.qorpera_room_mentions (
 	input_id uuid not null references public.qorpera_session_inputs(id) on delete cascade,
@@ -31,12 +33,23 @@ create index qorpera_room_mentions_unseen on public.qorpera_room_mentions (princ
 alter table public.qorpera_room_mentions enable row level security;
 revoke all on public.qorpera_room_mentions from public, anon, authenticated, service_role;
 
+-- Text as the rule reads it: A-Z in lower case, every Unicode space a plain space, the
+-- length unchanged. Other letters keep their case: the web inserts names as written.
+create function public.qorpera_mention_fold(p_text text)
+returns text language sql immutable set search_path = '' as $$
+	select translate(
+		translate(coalesce(p_text, ''), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'),
+		E'\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000\ufeff',
+		repeat(' ', 19))
+$$;
+revoke all on function public.qorpera_mention_fold(text) from public, anon, authenticated, service_role;
+
 -- Who a text names among the room's active members and agents.
 create function public.qorpera_room_text_mentions(p_room_id uuid, p_text text)
 returns table (principal_kind text, principal_id uuid)
 language plpgsql stable security definer set search_path = '' as $$
 declare
-	v_text text := lower(coalesce(p_text, ''));
+	v_text text := public.qorpera_mention_fold(p_text);
 	v_candidate record;
 	v_pattern text;
 	v_name text;
@@ -45,14 +58,16 @@ begin
 	if strpos(v_text, '@') = 0 then return; end if;
 	for v_candidate in
 		select candidate.kind, candidate.id, candidate.name from (
-			select 'staff_agent'::text as kind, member.principal_id as id, lower(btrim(staff.display_name)) as name
+			select 'staff_agent'::text as kind, member.principal_id as id,
+				btrim(public.qorpera_mention_fold(staff.display_name), E' \t\n\r\f\v') as name
 			from public.qorpera_company_room_members member
 			join public.qorpera_company_rooms room on room.id = member.room_id
 			join public.qorpera_profile_staff staff on staff.profile_id = room.profile_id
 				and staff.staff_agent_id = member.principal_id and staff.employment_status = 'active'
 			where member.room_id = p_room_id and member.principal_kind = 'staff_agent' and member.status = 'active'
 			union all
-			select 'member'::text, member.principal_id, lower(btrim(profile_member.display_name))
+			select 'member'::text, member.principal_id,
+				btrim(public.qorpera_mention_fold(profile_member.display_name), E' \t\n\r\f\v')
 			from public.qorpera_company_room_members member
 			join public.qorpera_company_rooms room on room.id = member.room_id
 			join public.qorpera_profile_members profile_member on profile_member.profile_id = room.profile_id
@@ -63,13 +78,14 @@ begin
 		order by char_length(candidate.name) desc, candidate.name, candidate.kind, candidate.id
 	loop
 		if v_candidate.name is distinct from v_name then
-			-- The last name's letters are taken: a shorter name inside it does not match there.
-			if v_named then v_text := regexp_replace(v_text, v_pattern, '\1 \2', 'g'); end if;
+			-- The last name's letters are taken: a shorter name inside it does not match there. The
+			-- boundaries are looked at, not taken, so a name written twice in a row goes twice.
+			if v_named then v_text := regexp_replace(v_text, v_pattern, ' ', 'g'); end if;
 			v_name := v_candidate.name;
 			-- Every character that is not a letter, digit or space is escaped to stand for itself.
-			v_pattern := '(^|[[:space:](\["''“‘])@'
+			v_pattern := '(^|(?<=[ \t\n\r\f\v(\["''“‘]))@'
 				|| regexp_replace(v_candidate.name, '([^[:alnum:][:space:]])', '\\\1', 'g')
-				|| '($|[[:space:].,!?;:)\]}"''”’])';
+				|| '(?=$|[ \t\n\r\f\v.,!?;:)\]}"''”’])';
 			v_named := v_text ~ v_pattern;
 		end if;
 		if v_named then

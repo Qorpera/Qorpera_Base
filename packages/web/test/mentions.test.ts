@@ -25,6 +25,23 @@ describe("the mention rule", () => {
 		expect(names("x@Bo")).toEqual([]);
 	});
 
+	it("reads text as the cloud does: A-Z in either case, every Unicode space a space, lengths kept", () => {
+		const names = (text: string) => findMentions(text, [bo, boJensen]).map((mention) => mention.target.id);
+		expect(names("Hej\u00a0@Bo can you check")).toEqual(["a"]);
+		expect(names("İstanbul @BO can you check")).toEqual(["a"]);
+		expect(names("@Bo Jensen @Bo Jensen, the invoices")).toEqual(["b", "b"]);
+		const parts = mentionParts("İstanbul @Bo!", [bo]);
+		expect(parts.map((part) => (typeof part === "string" ? part : `[${part.target.name}]`))).toEqual([
+			"İstanbul ",
+			"[Bo]",
+			"!",
+		]);
+		// Other letters keep their case, as in the cloud: the picker puts names in as written.
+		expect(findMentions("@øystein", [{ kind: "member", id: "f", name: "Øystein" }])).toEqual([]);
+		expect(findMentions("@ØYSTEIN", [{ kind: "member", id: "f", name: "Øystein" }])).toHaveLength(1);
+		expect(findMentions("@Øystein", [{ kind: "member", id: "f", name: "Øystein" }])).toHaveLength(1);
+	});
+
 	it("reads the longer name first, and everyone who shares a name", () => {
 		expect(findMentions("@Bo Jensen, and @Bo", [bo, boJensen]).map((mention) => mention.target.id)).toEqual([
 			"b",

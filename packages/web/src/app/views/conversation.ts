@@ -786,6 +786,7 @@ export class ConversationView {
 			),
 		);
 		this.#mentionPicker.hidden = false;
+		this.#composer.setAttribute("aria-autocomplete", "list");
 		this.#composer.setAttribute("aria-controls", this.#mentionPicker.id);
 		this.#composer.setAttribute("aria-activedescendant", optionId(mention.active));
 	}
@@ -795,7 +796,8 @@ export class ConversationView {
 		this.#mention = undefined;
 		this.#mentionPicker.hidden = true;
 		replace(this.#mentionPicker);
-		this.#composer.removeAttribute("aria-activedescendant");
+		for (const name of ["aria-activedescendant", "aria-controls", "aria-autocomplete"])
+			this.#composer.removeAttribute(name);
 	}
 
 	/** Keys while names are shown: arrows choose, Enter or Tab puts the name in, Escape closes. */

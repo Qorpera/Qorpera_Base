@@ -79,6 +79,10 @@ begin
 		'The author naming themself records nothing');
 	perform pg_temp.wake_assert(pg_temp.mention_post('@Agent are you there?') = v_both,
 		'An agent that is not in the room is not named, so every agent in it wakes');
+	perform pg_temp.wake_assert(pg_temp.mention_post('Hej' || chr(160) || '@Bob can you check') = v_bob,
+		'A no-break space before "@" is a space, as in the web');
+	perform pg_temp.wake_assert(pg_temp.mention_post('İstanbul @BOB can you check') = v_bob,
+		'Other letters before a name change nothing; A-Z match in either case');
 end
 $$;
 
@@ -91,6 +95,8 @@ begin
 		'The longer name is read and the shorter one inside it is not');
 	perform pg_temp.wake_assert(pg_temp.mention_post('@Bob, the invoices') = array['30000000-0000-4000-8000-000000000031']::uuid[],
 		'The shorter name alone is still read');
+	perform pg_temp.wake_assert(pg_temp.mention_post('@Bob Jensen @Bob Jensen, the invoices')
+		= array['30000000-0000-4000-8000-000000000032']::uuid[], 'A longer name written twice in a row never names the shorter one');
 end
 $$;
 rollback to longer_name;
