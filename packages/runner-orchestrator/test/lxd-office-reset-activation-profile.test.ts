@@ -1,4 +1,5 @@
 import { rm } from "node:fs/promises";
+import { setTimeout as delay } from "node:timers/promises";
 import { afterEach, expect, it, vi } from "vitest";
 import { installOfficeLifecycleTiming } from "../../../scripts/acceptance/office-lifecycle-timing.ts";
 import { projectOfficeResetTiming } from "../../../scripts/acceptance/office-lifecycle-timing-evidence.mjs";
@@ -16,7 +17,11 @@ it("refuses composed measurement after the original physical lease expires", asy
 	const f = await officeResetActivationProfile(roots);
 	await f.prepare();
 	const submits = f.f.submit.mock.calls.length;
-	f.arm();
+	f.arm(async (stage, signal) => {
+		// Explicitly stall this negative case past its original five-second
+		// physical lease; fixed transport latency alone can finish on a fast host.
+		if (stage === "package:exec:invocation") await delay(6000, undefined, { signal });
+	});
 	try {
 		let failure: unknown;
 		try {
@@ -36,6 +41,9 @@ it("refuses composed measurement after the original physical lease expires", asy
 		const measurement = f.profile().stages.find((stage) => stage.stage === "stage:measurement");
 		expect(measurement).toMatchObject({ aborted: true });
 		expect(measurement?.gateRemainingMs).toBeLessThanOrEqual(0);
+		const invocation = f.profile().stages.find((stage) => stage.stage === "package:exec:invocation");
+		expect(invocation).toMatchObject({ aborted: true });
+		expect(invocation?.gateRemainingMs).toBeLessThanOrEqual(0);
 		// The lease can expire during I/O or between commands. In either case
 		// measurement must have progressed into package work before refusing.
 		expect(f.profile().stages.some((stage) => stage.stage === "package:exec:probe" && !stage.aborted)).toBe(true);

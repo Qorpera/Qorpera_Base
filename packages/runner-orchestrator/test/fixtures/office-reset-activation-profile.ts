@@ -34,7 +34,7 @@ export async function officeResetActivationProfile(roots: string[]) {
 	let outstanding = 0;
 	let peak = 0;
 	let completion: CompanyComputerResetServiceStartCompletion | undefined;
-	let onStage: ((stage: string) => void) | undefined;
+	let onStage: ((stage: string, signal: AbortSignal) => void | Promise<void>) | undefined;
 	let delayScale: 1 | 0.25 = 1;
 	const stages: Stage[] = [];
 	const counts: Record<string, number> = {};
@@ -54,7 +54,7 @@ export async function officeResetActivationProfile(roots: string[]) {
 		outstanding++;
 		peak = Math.max(peak, outstanding);
 		try {
-			if (active) onStage?.(stage);
+			if (active) await onStage?.(stage, signal);
 			signal.throwIfAborted();
 			if (active && milliseconds) await delay(Math.ceil(milliseconds * delayScale), undefined, { signal });
 			const value = await run();
@@ -211,7 +211,7 @@ export async function officeResetActivationProfile(roots: string[]) {
 			for (let count = 0; count < 10 && f.registry.state.phase !== "prepared"; count++) await run();
 			expect(f.registry.state.phase).toBe("prepared");
 		},
-		arm(stageCallback?: (stage: string) => void, scale: 1 | 0.25 = 1) {
+		arm(stageCallback?: (stage: string, signal: AbortSignal) => void | Promise<void>, scale: 1 | 0.25 = 1) {
 			active = true;
 			started = performance.now();
 			gateDeadline = null;
