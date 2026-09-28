@@ -3678,8 +3678,9 @@ owner role. Model use is not billed here: it follows the 2026-09-28 amendment
    accounts and are not a new founder decision: while any founder of a
    company has the internal account entitlement (`qorpera_account_entitlements`,
    plan `internal`), its machine time is measured and recorded as paid by a
-   complimentary source naming that founder. It is never charged and never
-   waits for hours.
+   complimentary source naming the first such founder in the founder list,
+   instead of the order above; its free hours stay unused. It is never
+   charged and never waits for hours.
 5. **Members who are not founders are never billed.** Admins, contributors
    and viewers are never billed personally for machine time: neither their
    plan nor their card pays for a company's machines. Their work uses the
@@ -3689,18 +3690,22 @@ owner role. Model use is not billed here: it follows the 2026-09-28 amendment
    the start of its first work, never asks for a payment or a card.
 7. **At zero.** A company's hours left are what its sources hold minus what
    it owes. While it has none:
-   - No machine of the company starts or wakes, no run of the company is
-     created, and agents' requests for machines wait. The work waits before a
+   - No machine of the company starts or wakes (a run created before the
+     company ran out keeps its run box), no run of the company is created,
+     and agents' requests for machines wait. A coding turn starts only from a
+     run, so it waits with that run. The work waits before a
      run is created, with a stated reason that its agents and members see,
      and starts by itself, in the order it arrived, once the company has hours
      left again. Waiting for hours never fails work by age: 7.4's one-day
      failure of a queued run does not apply to it. A run created before the
      company ran out is running work.
    - Work already running may finish for at most one hour. Then its runs end
-     with the stated reason "out of computer hours", and its machines are
-     stopped with their disks kept, always-on machines included. Nothing else
-     changes: no routine is paused and no worker is cancelled; their next work
-     waits for hours like any other.
+     as failed with the stated reason "out of computer hours", shown in their
+     conversations and never retried by themselves, and its machines are
+     stopped with their disks kept, always-on machines included; a coding
+     machine's running commands end as when it sleeps. Nothing else changes:
+     no routine is paused and no worker is cancelled; their next work waits
+     for hours like any other.
    - Time used while the company has no hours is owed. Owed time is paid in
      the order of item 4 from the next hours that arrive (free hours, then
      founders' plans evenly, then credits). Owed time of a deleted company is
