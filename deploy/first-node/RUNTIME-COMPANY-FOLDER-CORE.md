@@ -303,8 +303,8 @@ is never upgraded. The steps:
    2. staff, opened by the company's profile row `FOR KEY SHARE` (never stronger) in every save
       whose hook writes a roster row. A roster write ends in a company operation: the operation
       clock, then a foreign key to `qorpera_profiles`. The thread trigger's session update is
-      another one. Posting takes the profile row `FOR UPDATE` (gc fence) before the room and the
-      clock, so the save takes the profile row first too (F2-1, #461; test 701);
+      another one. Until C1c, posting takes the profile row `FOR UPDATE` (gc fence) before the room
+      and the clock, so the save takes the profile row first too (F2-1, #461; test 701);
    3. execution authorities;
    4. rooms, then room members;
    5. the other index rows (sections, routines with their schedule cursors,

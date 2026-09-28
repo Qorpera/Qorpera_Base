@@ -373,6 +373,24 @@ begin
 		or not t @> jsonb_build_array(jsonb_build_object('rank', 2, 'tbl', 'qorpera_profiles', 'key', '70000000-0000-4000-8000-000000000010',
 			'mode', 'keyshare')) then
 		raise exception 'Retiring an active agent locks the company row and its thread room: %', t; end if;
+	-- A folder move, and deleting an archived agent's folder, touch no room but still write the roster row, so they
+	-- take the company row too.
+	select jsonb_agg(to_jsonb(x)) into t from public.qorpera_folder_structured_targets(env, pg_temp.owner(), jsonb_build_array(
+		jsonb_build_object('op','move','from','agents/nora-back','to','agents/nora-new'))) x;
+	if t @> '[{"tbl":"qorpera_company_rooms"}]' or not t @> jsonb_build_array(jsonb_build_object('rank', 2, 'tbl', 'qorpera_profiles',
+			'key', '70000000-0000-4000-8000-000000000010', 'mode', 'keyshare')) then
+		raise exception 'A folder move takes the company row and no room: %', t; end if;
+	begin
+		update public.qorpera_profile_staff set employment_status = 'archived'
+		where profile_id = '70000000-0000-4000-8000-000000000010' and staff_agent_id = nora;
+		select jsonb_agg(to_jsonb(x)) into t from public.qorpera_folder_structured_targets(env, pg_temp.owner(), jsonb_build_array(
+			jsonb_build_object('op','delete','path','agents/nora-back'))) x;
+		if t @> '[{"tbl":"qorpera_company_rooms"}]' or not t @> jsonb_build_array(jsonb_build_object('rank', 2, 'tbl', 'qorpera_profiles',
+				'key', '70000000-0000-4000-8000-000000000010', 'mode', 'keyshare')) then
+			raise exception 'Deleting an archived agent takes the company row and no room: %', t; end if;
+		raise exception 'undo' using errcode = 'QTF99';
+	exception when sqlstate 'QTF99' then null;
+	end;
 	-- The company row is never locked more strongly than KEY SHARE.
 	begin
 		perform public.qorpera_folder_structured_lock(env, jsonb_build_array(jsonb_build_object('rank', 2,

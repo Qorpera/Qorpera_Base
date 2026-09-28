@@ -515,8 +515,12 @@ of the body, for readers that should not reach the storage server.
     paths. Test 701 races a rename and an instructions edit against posting.
 - `targets` reads the roster with no lock. A legacy roster write (`qorpera_put_profile_staff`)
   between `targets` and the rank-2 lock can still make the trigger take the room after the paths.
-  That save can then deadlock with a run of that room, or with posting (40P01; one side retries, no
-  data is wrong). This ends when C1c stops legacy writes to folder-v2 rows (§9).
+  That save can then deadlock with a run of that room (40P01; one side retries, no data is wrong).
+  This ends when C1c stops legacy writes to folder-v2 rows (§9).
+- The member RPCs of #462 (remove, change role, leave) take the company row before the member's row,
+  while a save takes its member row at rank 1 and the company row at rank 2. So a membership change
+  of the saving member can deadlock with that member's roster save (40P01; the save retries). This
+  ends when F1 takes the company row before the members (a rank 0), which fits posting and #462.
 - A row removed outside its folder (`deleted_at`, the legacy roster delete): `decide` refuses an
   edit of its `agent.md`; moving or deleting its folder is saved and leaves the row alone.
 - **Rebuild:** a job lists every structured path, reads the bytes and parses them with the
