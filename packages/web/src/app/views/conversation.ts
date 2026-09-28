@@ -833,13 +833,19 @@ export class ConversationView {
 	}
 
 	#chooseMention(index: number): void {
-		const mention = this.#mention;
-		const option = mention?.options[index];
-		if (!mention || !option) return;
+		const option = this.#mention?.options[index];
+		if (!option) return;
 		const value = this.#composer.value;
+		// The text may have changed under the list (a teammate's words): read where the name starts now.
+		const end = this.#composer.selectionStart;
+		const query = this.#composer.selectionEnd === end ? mentionQuery(value, end) : undefined;
+		if (!query) {
+			this.#closeMention();
+			return;
+		}
 		const name = `@${option.name} `;
-		this.#composer.value = value.slice(0, mention.start) + name + value.slice(mention.end);
-		const caret = mention.start + name.length;
+		this.#composer.value = value.slice(0, query.start) + name + value.slice(end);
+		const caret = query.start + name.length;
 		this.#composer.focus();
 		this.#composer.setSelectionRange(caret, caret);
 		this.#closeMention();
@@ -1024,6 +1030,9 @@ export class ConversationView {
 			this.#autosize();
 		}
 		if (this.#composer.disabled) this.#closeMention();
+		// A teammate's words can land in this composer (shared drafts) while names are shown:
+		// where the name being typed now starts is read again, or the names close.
+		else if (this.#mention && document.activeElement === this.#composer) this.#updateMention();
 		this.#renderMentionNote();
 		this.#sharedDrafts.update();
 	}

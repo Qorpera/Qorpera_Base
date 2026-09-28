@@ -195,6 +195,28 @@ describe("mentions in a group chat", () => {
 		expect(s.note().hidden).toBe(true);
 	});
 
+	it("puts the name where it is now typed when a teammate's words arrive while names are shown", async () => {
+		const s = await setup();
+		s.type("Hej @b");
+		expect(s.options()).toEqual(["BoAgent"]);
+		// Shared drafts put a teammate's words in without an input event, then set the draft.
+		s.composer.value = "Kære alle, Hej @b";
+		s.composer.setSelectionRange(17, 17);
+		s.company.conversation(session.sessionId).set({ draft: "Kære alle, Hej @b" });
+		await settle();
+		s.key("Enter");
+		expect(s.composer.value).toBe("Kære alle, Hej @Bo ");
+		// The name being typed was removed by the teammate: the names close, nothing is put in.
+		s.type("Hej @b");
+		s.composer.value = "Hej ";
+		s.composer.setSelectionRange(4, 4);
+		s.company.conversation(session.sessionId).set({ draft: "Hej " });
+		await settle();
+		expect(s.picker().hidden).toBe(true);
+		s.key("Enter");
+		expect(s.composer.value).toBe("Hej ");
+	});
+
 	it("closes the names on Escape without sending, and Enter sends once they are closed", async () => {
 		const s = await setup();
 		s.type("@so");
