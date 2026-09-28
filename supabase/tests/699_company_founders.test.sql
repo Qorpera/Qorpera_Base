@@ -1,5 +1,5 @@
 -- @fixture 300_runtime_wake_bus.test.sql until "-- END WAKE FIXTURE"
--- Several founders per company (20260929030000): founders make founders, step down on their own
+-- Several founders per company (20260928248100): founders make founders, step down on their own
 -- and remove other members but never a fellow founder; admins keep their powers; the last founder
 -- stays while others remain; only the last member deletes. The fixture company has the owner
 -- (…001, its creator), a contributor (…002) and a viewer (…003), with agents and their threads.

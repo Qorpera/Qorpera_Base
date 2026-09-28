@@ -26,11 +26,18 @@ insert into public.qorpera_profile_staff(profile_id, staff_agent_id, display_nam
 
 select set_config('request.jwt.claims', '{"role":"service_role"}', true) \g /dev/null
 select public.qorpera_folder_enable('63200000-0000-4000-8000-000000000020') \g /dev/null
+-- The runs' sponsor: a company login, which pays for any member's work (20260928230000).
 set local session_replication_role = replica;
+insert into public.qorpera_provider_connections(id, profile_id, client_connection_id, provider, created_by_user_id)
+values ('63200000-0000-4000-8000-0000000000b3', '63200000-0000-4000-8000-000000000010', extensions.gen_random_uuid(), 'openai',
+	'63200000-0000-4000-8000-000000000001');
+insert into public.qorpera_execution_sponsor_bindings(id, profile_id, client_binding_id, created_by_user_id)
+values ('63200000-0000-4000-8000-0000000000b1', '63200000-0000-4000-8000-000000000010', extensions.gen_random_uuid(),
+	'63200000-0000-4000-8000-000000000001');
 insert into public.qorpera_execution_sponsor_versions(binding_id, version, sponsor_kind, provider_connection_id, provider_connection_version,
 	created_by_user_id)
-values ('63200000-0000-4000-8000-0000000000b1', 1, 'member_connection', '63200000-0000-4000-8000-0000000000b3', 1,
-	'63200000-0000-4000-8000-000000000002');
+values ('63200000-0000-4000-8000-0000000000b1', 1, 'company_service_account', '63200000-0000-4000-8000-0000000000b3', 1,
+	'63200000-0000-4000-8000-000000000001');
 set local session_replication_role = origin;
 
 create function pg_temp.stage(p_text text) returns jsonb language plpgsql security definer as $$
@@ -231,7 +238,8 @@ end $$;
 
 -- The run check refuses, with nothing applied: a job not leased, expired or re-claimed; staff archived; the
 -- requester gone; compute under recovery. A routine run saves while active or expired while active, and not once
--- paused or concluded by another run. Agent wakes and file-change routine wakes wait for C1b-2 (0A000).
+-- paused or concluded by another run. An agent wake with no execution authority and no parent run refuses (634 covers
+-- agent wakes); file-change routine wakes wait for C4 (0A000).
 do $$
 declare v jsonb; v_seq bigint; v_routine uuid; r jsonb;
 	c_member constant uuid := '63200000-0000-4000-8000-000000000002';
@@ -286,7 +294,7 @@ begin
 		concluded_at = clock_timestamp(), conclusion = ''Done.'' where id = %L', extensions.gen_random_uuid(), v_routine));
 	perform pg_temp.raises(format('select pg_temp.commit(%L, %L, %L)', v, 'routine-concluded-other', c_mkdir), '42501');
 
-	perform pg_temp.raises(format('select pg_temp.commit(%L, %L, %L)', pg_temp.run('agent', c_member), 'agent-wake', c_mkdir), '0A000');
+	perform pg_temp.raises(format('select pg_temp.commit(%L, %L, %L)', pg_temp.run('agent', c_member), 'agent-wake', c_mkdir), '42501');
 	perform pg_temp.raises(format('select pg_temp.commit(%L, %L, %L)',
 		pg_temp.run('routine', c_member, 'company', pg_temp.routine(c_member), 1, 'company-file'), 'file-routine-wake', c_mkdir), '0A000');
 

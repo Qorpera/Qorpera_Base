@@ -509,6 +509,51 @@ describe("account and route ownership", () => {
 		expect(api.listFriends).toHaveBeenCalledTimes(2);
 	});
 
+	it("opens the account page back from Stripe, thanks the member once and reads the plan again", async () => {
+		history.replaceState(null, "", "/#/account?checkout=done");
+		const f = fixture();
+		const offers = vi.spyOn(f.api, "listComputerHourOffers").mockResolvedValue([]);
+		const plan = vi.spyOn(f.api, "getMyComputerPlan").mockResolvedValue({ mode: "dry_run", plan: null, hours: null });
+		const root = document.createElement("div");
+		document.body.append(root);
+		dispose = mountApplication(root, f.cloud, f.api);
+		await draw();
+		// The return is read and removed before routing: the account page, not the hub.
+		expect(location.hash).toBe("#/account");
+		expect(root.textContent).toContain("Account A private plan");
+		const thanks = "Thank you. Your hours are added as soon as Stripe confirms the payment.";
+		expect(root.querySelector(".notice-ok")?.textContent).toBe(thanks);
+		expect(offers).toHaveBeenCalledTimes(1);
+		await vi.advanceTimersByTimeAsync(5000);
+		await draw();
+		expect(plan).toHaveBeenCalledTimes(2);
+		// Leaving the page takes the notice with it; the next visit reads afresh.
+		location.hash = "#/";
+		await draw();
+		location.hash = "#/account";
+		await draw();
+		expect(root.textContent).toContain("Account A private plan");
+		expect(root.textContent).not.toContain(thanks);
+		// Once on arrival, once in the refresh, once on the new visit.
+		expect(offers).toHaveBeenCalledTimes(3);
+	});
+
+	it("keeps a return from Stripe for the member who paid, not the next one", async () => {
+		const thanks = "Thank you. Your hours are added as soon as Stripe confirms the payment.";
+		const { api, auth, root } = mounted("#/?checkout=done");
+		vi.spyOn(api, "listComputerHourOffers").mockResolvedValue([]);
+		vi.spyOn(api, "getMyComputerPlan").mockResolvedValue({ mode: "dry_run", plan: null, hours: null });
+		await draw();
+		expect(location.hash).toBe("#/");
+		vi.mocked(api.listProfiles).mockResolvedValue([profileB]);
+		auth(userB);
+		await draw();
+		location.hash = "#/account";
+		await draw();
+		expect(root.textContent).toContain("Plan & usage");
+		expect(root.textContent).not.toContain(thanks);
+	});
+
 	it.each(["#/friends", "#/invitations"])("sends the retired %s page to the company hub", async (hash) => {
 		const f = mounted(hash);
 		await draw();

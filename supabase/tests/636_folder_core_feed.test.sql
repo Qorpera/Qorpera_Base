@@ -105,11 +105,9 @@ begin
 	v_secret := (pg_temp.read('locked/secret.txt') -> 'entry' ->> 'version')::uuid;
 	perform pg_temp.expect(pg_temp.commit(pg_temp.platform(), 'feed-key-6', jsonb_build_array(jsonb_build_object('op','move',
 		'from','locked/secret.txt','to','notes/secret.txt','expectedVersion',v_secret))), 1, 'saved');
-	-- C1b writes authority rows. Here one goes in by hand, in one transaction: the journal row, then the clock.
-	insert into public.qorpera_folder_journal(environment_id, seq, kind)
-	select environment_id, last_seq + 1, 'authority' from public.qorpera_folder_clocks
-	where environment_id = '63000000-0000-4000-8000-000000000020';
-	update public.qorpera_folder_clocks set last_seq = last_seq + 1 where environment_id = '63000000-0000-4000-8000-000000000020';
+	-- An authority row, as C1b-2's mutators write it: a new narrower resource takes the clock and journals the change.
+	perform public.qorpera_folder_set_resource('63000000-0000-4000-8000-000000000020', pg_temp.platform(), 'feedzone', 'subtree',
+		'company_shared', 'normal');
 	v_file := (pg_temp.read('papers/a.txt') -> 'entry' ->> 'version')::uuid;
 	perform pg_temp.expect(pg_temp.commit(pg_temp.member(1), 'feed-key-8', jsonb_build_array(jsonb_build_object('op','delete',
 		'path','papers/a.txt','expectedVersion',v_file))), 1, 'saved');

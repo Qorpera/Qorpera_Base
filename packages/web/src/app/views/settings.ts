@@ -10,6 +10,7 @@ import { button, h, icon, notice, replace } from "../../ui/dom.ts";
 import { phrase, t, uiText } from "../../ui/preferences.ts";
 import type { AuthController } from "../auth.ts";
 import { CompanyController } from "../company.ts";
+import { PlanPayments } from "../plan-payments.ts";
 import { currentRoute } from "../router.ts";
 import { type AccountViewState, renderAccount } from "./account.ts";
 import { renderAppearance } from "./appearance.ts";
@@ -68,6 +69,12 @@ const TABS = [
 ] as const;
 export type SettingsTab = (typeof TABS)[number]["id"];
 
+/** Founders (owners) pay a company's computer hours; undefined until the member's role is known. */
+function founderOf(company: CompanyController): boolean | undefined {
+	const role = company.store.get().team?.role;
+	return role === undefined ? undefined : role === "owner";
+}
+
 /** A settings session owns its async work; the conversation stays mounted below it. */
 export class SettingsView {
 	readonly el: HTMLElement;
@@ -120,6 +127,9 @@ export class SettingsView {
 	#hoursMissing = false;
 	/** Set once a lookup failed: the hours are not asked again until the company changes. */
 	#hoursFailed = false;
+	/** Offers, the member's own plan, and Stripe's pages; loaded when Plan & usage first shows. */
+	readonly #payments: PlanPayments;
+	#planFounder: boolean | undefined;
 
 	constructor(
 		api: CloudApi,
@@ -138,6 +148,9 @@ export class SettingsView {
 		this.#close = close;
 		this.#companyRemoved = companyRemoved;
 		this.#borrowedCompany = company;
+		this.#payments = new PlanPayments(api, () => {
+			if (!this.#lifetime.signal.aborted && this.#panels.has("plan")) this.#plan();
+		});
 		const route = currentRoute();
 		this.#overCompany = Boolean(company) || route.name === "company";
 		const search = this.#search;
@@ -293,6 +306,7 @@ export class SettingsView {
 		this.#services?.dispose();
 		this.#rules?.dispose();
 		this.#friends.dispose();
+		this.#payments.dispose();
 		if (this.#ownsCompany) this.#company?.stop();
 		this.el.remove();
 	}
@@ -449,6 +463,8 @@ export class SettingsView {
 		const company = this.#company;
 		if (this.#tab === "plan" && company && !this.#file && !this.#fileLoading && !this.#fileError)
 			void this.#loadFile();
+		if (this.#tab === "plan") this.#payments.load();
+		this.#planFounder = company ? founderOf(company) : undefined;
 		if (
 			this.#tab === "plan" &&
 			company &&
@@ -474,8 +490,18 @@ export class SettingsView {
 							missing: this.#hoursMissing,
 							failed: this.#hoursFailed,
 						},
+						profileId: company.profile.profileId,
+						founder: this.#planFounder,
 					}
 				: undefined,
+			{
+				payments: {
+					state: this.#payments.state,
+					checkout: (itemKey, profileId) => this.#payments.checkout(itemKey, profileId),
+					portal: () => this.#payments.portal(),
+					companyName: (profileId) => this.#profiles.find((item) => item.profileId === profileId)?.profileName,
+				},
+			},
 		);
 	}
 
@@ -526,6 +552,8 @@ export class SettingsView {
 				this.#services?.update();
 				this.#rules?.update();
 				this.#drawCompany();
+				// "Buy hours" is for founders: the plan tab follows the member's role once the team loads.
+				if (this.#panels.has("plan") && founderOf(company) !== this.#planFounder) this.#plan();
 			});
 			if (owned) void company.start();
 		}

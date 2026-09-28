@@ -144,9 +144,9 @@ begin
 	perform dblink_exec('srace_post', 'rollback');
 	select r into v from dblink_get_result('srace_save') as t(r jsonb);
 	perform * from dblink_get_result('srace_save') as t(r jsonb);
-	if v -> 'units' -> 0 ->> 'outcome' <> 'saved' then raise exception 'The rename saves once posting is done: %', v; end if;
+	if v -> 'units' -> 0 ->> 'outcome' is distinct from 'saved' then raise exception 'The rename saves once posting is done: %', v; end if;
 	if (select display_name from public.qorpera_profile_staff where profile_id = '70100000-0000-4000-8000-000000000010'
-		and staff_agent_id = '70100000-0000-4000-8000-0000000000a1') <> 'Nora Skov' then
+		and staff_agent_id = '70100000-0000-4000-8000-0000000000a1') is distinct from 'Nora Skov' then
 		raise exception 'The rename reaches the roster'; end if;
 end $$;
 
@@ -171,9 +171,9 @@ begin
 	perform dblink_exec('srace_post', 'rollback');
 	select r into v from dblink_get_result('srace_save') as t(r jsonb);
 	perform * from dblink_get_result('srace_save') as t(r jsonb);
-	if v -> 'units' -> 0 ->> 'outcome' <> 'saved' then raise exception 'The edit saves once posting is done: %', v; end if;
+	if v -> 'units' -> 0 ->> 'outcome' is distinct from 'saved' then raise exception 'The edit saves once posting is done: %', v; end if;
 	if (select charter from public.qorpera_profile_staff where profile_id = '70100000-0000-4000-8000-000000000010'
-		and staff_agent_id = '70100000-0000-4000-8000-0000000000a1') <> 'Sell more.' then
+		and staff_agent_id = '70100000-0000-4000-8000-0000000000a1') is distinct from 'Sell more.' then
 		raise exception 'The edit reaches the roster'; end if;
 end $$;
 
@@ -199,7 +199,7 @@ begin
 	perform dblink_exec('srace_hold', 'rollback');
 	select r into v from dblink_get_result('srace_save') as t(r jsonb);
 	perform * from dblink_get_result('srace_save') as t(r jsonb);
-	if v -> 'units' -> 0 ->> 'outcome' <> 'saved' then raise exception 'The rename saves before the post: %', v; end if;
+	if v -> 'units' -> 0 ->> 'outcome' is distinct from 'saved' then raise exception 'The rename saves before the post: %', v; end if;
 	perform * from dblink_get_result('srace_post') as t(x text);
 	perform * from dblink_get_result('srace_post') as t(x text);
 	-- The post goes on to the room and the clock at once.
@@ -209,7 +209,7 @@ begin
 		where profile_id = '70100000-0000-4000-8000-000000000010' for update nowait$q$) as t(x integer);
 	perform dblink_exec('srace_post', 'rollback');
 	if (select display_name from public.qorpera_profile_staff where profile_id = '70100000-0000-4000-8000-000000000010'
-		and staff_agent_id = '70100000-0000-4000-8000-0000000000a1') <> 'Nora Dahl' then
+		and staff_agent_id = '70100000-0000-4000-8000-0000000000a1') is distinct from 'Nora Dahl' then
 		raise exception 'The rename back reaches the roster'; end if;
 end $$;
 
