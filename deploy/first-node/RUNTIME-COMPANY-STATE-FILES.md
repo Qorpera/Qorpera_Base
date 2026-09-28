@@ -228,14 +228,20 @@ No settings block.
   section, an id line before the first section, and an uppercase id.
 
 **Database rules:**
-- Every id the save adds is an agent or a group chat of this company (**pending decision 1**:
-  group chats are listed too, as #370 allows).
+- Every id the save adds is an agent (not retired) or an open group chat of this company
+  (**pending decision 1**: group chats are listed too, as #370 allows).
 - An id already in the saved version is never refused, even if its agent is gone or its group
-  chat is closed. The index skips it, so an old line never blocks a save.
+  chat is closed, so an old line never blocks a save. The index keeps its place, which the sidebar
+  hides until a restore brings the agent or chat back where the file says.
 - The Co-Founder is refused.
+- Section names are unique ignoring case, and an id is listed once in the whole file (the parse's
+  shape; the parser refuses both).
 
-Agents and group chats not listed are Unassigned, in roster order. Today's placement positions
-for Unassigned are not kept. Pins and hidden agents stay member settings in the database. Not
+**Index:** sections in file order, matched to today's rows by name ignoring case, so a section
+keeps its id when only its case changes. A section's agents and group chats share one order, as the
+sidebar draws them. An id with no agent or chat at all is skipped. Agents and group chats not
+listed are Unassigned, in roster order. Today's
+placement positions for Unassigned are not kept. Pins and hidden agents stay member settings in the database. Not
 reviewed. Deleting or moving the file is refused (seeded).
 
 The platform seeds:
@@ -259,10 +265,22 @@ Each line is an id. The words after it are only for reading.
 
 **Database rules:**
 - Only the ids a save adds are checked: they must exist and be active. An agent that is later
-  archived, or a person who leaves, never blocks a later save of the file. The index skips
-  them.
+  archived, or a person who leaves, never blocks a later save of the file. The index keeps them
+  listed as written: wakes check the agent's status and access checks the person's membership, so
+  a reactivated agent or a returning member is back without another save.
+- A restore has no saved version at its path, so it is compared with the chat's last file: the
+  same file restores even after one of its agents was archived or a person left.
 - An agent's change may add to `people` only the member its run works for (today's
   `create_group_chat` rule), because adding a person lets them read the conversation.
+- The id never changes, and belongs to this folder's chat only: never to an agent, an agent's
+  thread, a snapshot-v1 chat (or its `chat-<id>` key) or another folder's open chat. One change set
+  carries it once. An agent never takes a conversation's id either, since `sections.md` lists both
+  kinds by id.
+
+**Index:** a new `group.md` opens a room (`chat-<id>`, no bound agent) and its conversation. An
+edit sets the name, subtitle and purpose, and the conversation's title. Members follow the two
+lists: anyone left out is `removed` at that version. Deleting the folder archives the room and
+closes the conversation; a restore reopens both, with the same conversation.
 
 **Review:** a new `group.md` is delegation.
 
@@ -483,7 +501,7 @@ of the body, for readers that should not reach the storage server.
 | vision | new `qorpera_folder_company_index` row | name, vision version, `vision_seeded`; `qorpera_profiles.name` is copied by the follow-up queue | — |
 | agent | `qorpera_profile_staff` (folder columns `folder_environment_id`, `folder_path`: the stored path of its `agent.md`, `folder_path_version`, `folder_commit_id`, `folder_retired_at`) | name, role, instructions (charter), colour (`native` when none), figure, status; the Co-Founder's `template_id = 'co-founder'` and its `qorpera_company_cofounders` row (no formation) | lifecycle (setup), execution authority. `hire_overlay`, `reasoning_policy` and `startup_instructions` stay null on folder-v2 rows (the source-complete check ties them to the snapshot-v1 source columns), so the file's `model` and `effort` stay in the parse until the runtime reads them (F2-1b) |
 | sections | sidebar sections and placements (+ #370's room placements) | section order, members in order | member pins and hidden |
-| group | `qorpera_company_rooms`, room members | name, subtitle, purpose copy, members | conversation, drafts, mentions, session model |
+| group | `qorpera_company_rooms` (folder columns as the roster's, with no bound agent), room members | name, subtitle, purpose copy, members, open or closed | conversation, drafts, mentions, session model |
 | connection | `qorpera_cloud_secrets` descriptor columns | path, path version, purpose copy | secret versions, grants, audit |
 | rule | `qorpera_review_rules` (company scope) | outcome, `when_text` copy | personal rules, review records |
 | routine | `qorpera_cloud_routines`, `_versions` | owner from the folder, title, trigger, timezone, ends, runs, quiet with its zone, effort, reply, status, conclusion, intent copy | schedule cursors, occurrences, retries, sponsor, `pause_reason`, `authorization_failures`, `origin` (who created it, from the first commit) |
@@ -513,6 +531,22 @@ of the body, for readers that should not reach the storage server.
   - So `targets` returns the company row at rank 2 (`keyshare`, first within the rank) with every
     roster row, and the room at rank 4 (`update`) for a rename, archive or retire, all before the
     paths. Test 701 races a rename and an instructions edit against posting.
+  - A `group.md` write takes the company row the same way: a new chat's room and conversation,
+    and a conversation's title or status, are company operations too. A `sections.md` write takes
+    it too: its rows reference the company row by foreign key, and one order keeps it simple. An existing
+    chat's room is taken at rank 4 `FOR NO KEY UPDATE`: posting's `FOR SHARE` waits for it, a run's
+    `FOR KEY SHARE` does not. Deleting or moving a folder takes the rooms of the chats in it. Test
+    703 races a chat rename against posting.
+  - Known, not F2's: the email-draft finish (agent threads only) locks the thread's session and
+    then the gc fence, the other way round from posting, so it can lose a deadlock to an agent
+    rename (found in F2-1's review). Its owner should take the gc fence first. It never reaches a
+    group chat: claiming a draft is refused outside agent threads.
+  - A `group.md` or `sections.md` parse stored under F2-1 alone was only kind-checked. A malformed
+    one is not trusted as a base; a well-formed one is. F2-1 and F2-2 ship in one release, so no
+    folder-v2 company (only an operator makes one before C5) saves such a file in between.
+  - The sidebar tables take no lock of their own: `agents/sections.md`'s path lock orders their only
+    writer. The member RPC's section and move actions refuse for `folder-v2` companies (55000), and
+    the sidebar's revision row is not bumped; the web reads the folder feed (C4).
 - `targets` reads the roster with no lock. A legacy roster write (`qorpera_put_profile_staff`)
   between `targets` and the rank-2 lock can still make the trigger take the room after the paths.
   That save can then deadlock with a run of that room (40P01; one side retries, no data is wrong).
@@ -638,8 +672,12 @@ claims by kind then key (F2). All nine come before paths, objects, admission and
 
    **F2-1b** follows: the follow-ups on C2's queue, the context composer reading the vision and
    `agent.md`, and the agent-folder helper for memory and skills.
-3. **F2-2** group chats and sections (replaces #370's tables and `organize_sidebar` for new
-   companies).
+3. **F2-2** group chats and sections (migration 20260929100000; for new companies it replaces
+   #370's writes and `organize_sidebar`):
+   - the rooms table's folder columns, and the parse shape and database rules of both kinds;
+   - `group.md` to rooms, room members and the conversation; `sections.md` to the sidebar's
+     sections and placements;
+   - the member RPC's section actions refused for `folder-v2`.
 4. **F2-3** connections (the vault writes the file).
 5. **F2-4** rules (the reviewer reads the rule index).
 6. **F2-5** todos and worker files.
