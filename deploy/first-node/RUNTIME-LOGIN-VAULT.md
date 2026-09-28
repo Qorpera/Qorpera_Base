@@ -287,7 +287,7 @@ no database login and no service key; it sees a login only for one operation and
 - Each login moves by signing in again (test company first; company Qorpera after the "who pays"
   work and the founder's go), then the member's old node account is removed: the identity counts
   as in the vault only once no node login of it is active. The old path serves a login until then.
-  The vault switches it off by itself (founder decision 2026-09-28, migration `20260929080000`),
+  The vault switches it off by itself (founder decision 2026-09-28, migration `20260928243500`),
   in its upkeep pass every 5 minutes:
   - The broker records the ChatGPT account of each vault login it keeps
     (`qorpera_model_logins_without_account`, `qorpera_record_model_login_account`: sha256 of
