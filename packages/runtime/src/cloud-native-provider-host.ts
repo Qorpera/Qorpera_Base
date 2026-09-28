@@ -1,7 +1,7 @@
 import { type ChildProcessByStdio, type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from "node:crypto";
 import { constants, type Stats } from "node:fs";
-import { chmod, lstat, mkdir, mkdtemp, open, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, open, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { Readable } from "node:stream";
@@ -17,6 +17,7 @@ import {
 	type CloudAgentSendInput,
 	type CloudAgentSendReceipt,
 } from "./cloud-agent-mouth.ts";
+import type { ModelLoginIssue, ModelLoginIssueRequest, ModelLoginRunBinding } from "./cloud-model-login-vault.ts";
 import { nativeRuntimeFailureMetadata } from "./cloud-native-failure.ts";
 import { launchIsolatedNativeProcess, type NativeIsolationConfiguration } from "./cloud-native-isolation.ts";
 import type { CloudInteractionRequestInput, CloudInteractionRequestReceipt } from "./cloud-thread-interactions.ts";
@@ -34,6 +35,10 @@ const MAX_CAPSULE_FILES = 4096;
 const MAX_HARNESS_OUTPUT_BYTES = 16 * 1024 * 1024;
 const MAX_PROMPT_BYTES = 16 * 1024 * 1024;
 const EXECUTION_AUTHORITY_RECHECK_MS = 15_000;
+/** A run whose login is in the vault asks it for a newer pass this often. */
+const MODEL_LOGIN_RECHECK_MS = 60_000;
+/** A capsule reference that names a login kept by the vault (Stateless Compute step 1). */
+const MODEL_LOGIN_REFERENCE = /^model-login\/[0-9a-f-]{36}$/;
 const PROVIDER_DEFAULT_MODEL = "provider-default";
 const CODEX_CREDENTIAL_PATHS: ReadonlySet<string> = new Set(["codex/auth.json"]);
 
@@ -188,16 +193,38 @@ async function pruneToCredentialFiles(
 	return kept;
 }
 
+/** The run host's client of the vault's model logins (`POST /v1/model-logins`). */
+export interface NativeModelLoginClient {
+	issue(request: ModelLoginIssueRequest, signal: AbortSignal): Promise<ModelLoginIssue>;
+}
+
+/** Puts a login copy from the vault in the run's Codex home in one step: Codex, which re-reads
+ * the file before it would renew, sees the old copy or the new one, never half of either. */
+async function writeModelLogin(root: string, authJson: string): Promise<void> {
+	const codexHome = join(root, "codex");
+	await mkdir(codexHome, { recursive: true, mode: 0o700 });
+	const staged = join(codexHome, `.auth.json.${randomUUID()}`);
+	try {
+		await writeFile(staged, authJson, { mode: 0o600, flag: "wx" });
+		await rename(staged, join(codexHome, "auth.json"));
+	} catch (error) {
+		await rm(staged, { force: true });
+		throw error;
+	}
+}
+
 interface WarmCredentialRoot {
 	key: string;
 	root: string;
 	durable: ReadonlySet<string>;
 	/** The stored capsule bytes this root was opened from or last saved as: reused only while
-	 * the store still holds them. */
-	sealed: Uint8Array;
+	 * the store still holds them. Absent for a login kept by the vault. */
+	sealed?: Uint8Array;
 	/** The credential digest of that stored login. A change to the kept root after it (a spare
 	 * harness renewing between runs) is the next run's change to save. */
-	digest: string;
+	digest?: string;
+	/** For a login kept by the vault: the version this root holds. */
+	vaultVersion?: number;
 	timer: ReturnType<typeof setTimeout>;
 }
 
@@ -1196,7 +1223,9 @@ export class NativeProviderHost {
 	readonly #capsules: NativeCredentialCapsuleStore;
 	readonly #harness: NativeHarnessDriver;
 	readonly #cloudRuntime?: NativeCloudExecutionDriver;
-	readonly #masterKey: string;
+	readonly #masterKey: string | undefined;
+	readonly #modelLogins: NativeModelLoginClient | undefined;
+	readonly #modelLoginRecheckMs: number;
 	readonly #backupIdentityKey?: (request: NativeProviderLoginRequest) => Promise<void>;
 	readonly #computeIdentityId: string;
 	readonly #temporaryRoot: string;
@@ -1211,7 +1240,12 @@ export class NativeProviderHost {
 		capsules: NativeCredentialCapsuleStore;
 		harness: NativeHarnessDriver;
 		cloudRuntime?: NativeCloudExecutionDriver;
-		masterKey: string;
+		/** The identity's capsule key. Absent when the identity's login is kept by the vault. */
+		masterKey?: string;
+		/** The vault's model logins, for runs whose capsule names a vault login. */
+		modelLogins?: NativeModelLoginClient;
+		/** How often a run asks the vault for a newer pass (default one minute). */
+		modelLoginRecheckMs?: number;
 		computeIdentityId: string;
 		temporaryRoot?: string;
 		backupIdentityKey?: (request: NativeProviderLoginRequest) => Promise<void>;
@@ -1222,7 +1256,9 @@ export class NativeProviderHost {
 		 */
 		warmIdleMs?: number;
 	}) {
-		capsuleKey(options.masterKey);
+		if (options.masterKey !== undefined) capsuleKey(options.masterKey);
+		if (options.masterKey === undefined && options.modelLogins === undefined)
+			throw new Error("Native provider host needs a capsule key or the login vault");
 		if (
 			options.warmIdleMs !== undefined &&
 			(!Number.isSafeInteger(options.warmIdleMs) || options.warmIdleMs < 1 || options.warmIdleMs > 5 * 60_000)
@@ -1235,9 +1271,17 @@ export class NativeProviderHost {
 		this.#harness = options.harness;
 		this.#cloudRuntime = options.cloudRuntime;
 		this.#masterKey = options.masterKey;
+		this.#modelLogins = options.modelLogins;
+		this.#modelLoginRecheckMs = options.modelLoginRecheckMs ?? MODEL_LOGIN_RECHECK_MS;
 		this.#backupIdentityKey = options.backupIdentityKey;
 		this.#computeIdentityId = options.computeIdentityId;
 		this.#temporaryRoot = resolve(options.temporaryRoot ?? tmpdir());
+	}
+
+	/** The identity's capsule key; a host serving only vault logins has none. */
+	#capsuleKey(): string {
+		if (this.#masterKey === undefined) throw new Error("Native credential key is unavailable");
+		return this.#masterKey;
 	}
 
 	/** Takes the warm root for this key; a warm root for another key is wiped. */
@@ -1328,6 +1372,8 @@ export class NativeProviderHost {
 		for (const account of accounts.slice(0, 64)) {
 			if (refreshSignal.aborted) break;
 			if (account.nativeHarness !== "codex-cli") continue;
+			// A login kept by the vault is read there (Stateless Compute step 1), never on a node.
+			if (MODEL_LOGIN_REFERENCE.test(account.encryptedCapsuleReference) || this.#masterKey === undefined) continue;
 			let root: string | undefined;
 			try {
 				const accountSignal = AbortSignal.any([refreshSignal, AbortSignal.timeout(15_000)]);
@@ -1337,7 +1383,7 @@ export class NativeProviderHost {
 				await openNativeCredentialCapsule(
 					capsule,
 					root,
-					this.#masterKey,
+					this.#capsuleKey(),
 					account.capsuleId,
 					CODEX_CREDENTIAL_PATHS,
 				);
@@ -1505,6 +1551,12 @@ export class NativeProviderHost {
 		// back only when it changed it, and only while the store still holds that login.
 		let openedCapsule: Uint8Array | undefined;
 		let openedCredentialDigest: string | undefined;
+		// A login kept by the vault (Stateless Compute step 1): the run holds a copy without its
+		// renewal token, keeps it fresh from the vault, and never saves a login back.
+		const vaultLogin = MODEL_LOGIN_REFERENCE.test(authority.encryptedCapsuleReference);
+		let vaultVersion: number | undefined;
+		const vaultStop = new AbortController();
+		let vaultRefresh: Promise<void> | undefined;
 		let harnessStarted = false;
 		// Warm conversations: the capsule root this host kept from its previous company run, reused
 		// only while the stored capsule is byte for byte the one that root was opened from or
@@ -1531,32 +1583,82 @@ export class NativeProviderHost {
 			const warm = await this.#takeWarm(warmKey);
 			// A kept root belongs to this run from here: every failure path below wipes it.
 			root = warm?.root;
-			stage = "credential-download";
-			const capsule = await this.#capsules.get(authority.encryptedCapsuleReference, executionAbort.signal);
-			if (warm && Buffer.from(capsule).equals(Buffer.from(warm.sealed))) {
-				durableCredentialPaths = warm.durable;
-				openedCredentialDigest = warm.digest;
-			} else {
-				if (warm) {
+			if (vaultLogin) {
+				const modelLogins = this.#modelLogins;
+				if (!modelLogins || request.runtime !== "company-path-v1")
+					throw new Error("Native login vault is unavailable");
+				stage = "credential-download";
+				const binding: ModelLoginRunBinding = {
+					leaseId: authority.leaseId,
+					runId: authority.runId,
+					jobId: request.job.jobId,
+					runnerId: authority.runnerId,
+					assignmentId: authority.assignmentId,
+					credentialCapsuleId: authority.credentialCapsuleId,
+					computeIdentityId: authority.computeIdentityId,
+				};
+				const kept = warm?.vaultVersion;
+				const login = await modelLogins.issue({ binding, knownVersion: kept ?? null }, executionAbort.signal);
+				if (warm && kept === undefined) {
 					root = undefined;
 					await this.#wipeRoot(warm.root);
 				}
 				stage = "temporary-workspace";
-				root = await mkdtemp(join(this.#temporaryRoot, `qorpera-native-run-${authority.runId}-`));
+				root ??= await mkdtemp(join(this.#temporaryRoot, `qorpera-native-run-${authority.runId}-`));
 				stage = "credential-opening";
-				await openNativeCredentialCapsule(
-					capsule,
-					root,
-					this.#masterKey,
-					authority.credentialCapsuleId,
-					request.runtime === "company-path-v1" ? CODEX_CREDENTIAL_PATHS : undefined,
-				);
-				durableCredentialPaths = new Set((await collectCapsuleFiles(root)).files.map((file) => file.path));
+				if (login.authJson !== null) await writeModelLogin(root, login.authJson);
+				else if (kept !== login.version) throw new Error("Native login vault returned no login");
+				vaultVersion = login.version;
+				durableCredentialPaths = CODEX_CREDENTIAL_PATHS;
+				// The pass ends by itself; ask the vault for a newer one while the run goes on. Codex
+				// re-reads its login file before it would renew, and never renews without a token.
+				const runRoot = root;
+				const refreshSignal = AbortSignal.any([executionAbort.signal, vaultStop.signal]);
+				vaultRefresh = (async () => {
+					while (await waitFor(this.#modelLoginRecheckMs, refreshSignal)) {
+						try {
+							const next = await modelLogins.issue(
+								{ binding, knownVersion: vaultVersion ?? null },
+								refreshSignal,
+							);
+							if (next.authJson !== null && next.version !== vaultVersion) {
+								await writeModelLogin(runRoot, next.authJson);
+								vaultVersion = next.version;
+							}
+						} catch {
+							// The current pass stays in place; the next check tries again.
+						}
+					}
+				})();
+			} else {
+				stage = "credential-download";
+				const capsule = await this.#capsules.get(authority.encryptedCapsuleReference, executionAbort.signal);
+				if (warm?.sealed && Buffer.from(capsule).equals(Buffer.from(warm.sealed))) {
+					durableCredentialPaths = warm.durable;
+					openedCredentialDigest = warm.digest;
+				} else {
+					if (warm) {
+						root = undefined;
+						await this.#wipeRoot(warm.root);
+					}
+					stage = "temporary-workspace";
+					root = await mkdtemp(join(this.#temporaryRoot, `qorpera-native-run-${authority.runId}-`));
+					stage = "credential-opening";
+					await openNativeCredentialCapsule(
+						capsule,
+						root,
+						this.#capsuleKey(),
+						authority.credentialCapsuleId,
+						request.runtime === "company-path-v1" ? CODEX_CREDENTIAL_PATHS : undefined,
+					);
+					durableCredentialPaths = new Set((await collectCapsuleFiles(root)).files.map((file) => file.path));
+				}
+				if (!root || !durableCredentialPaths) throw new Error("Native credential root is unavailable");
+				stage = "credential-opening";
+				openedCredentialDigest ??= await credentialFilesDigest(root, durableCredentialPaths);
+				openedCapsule = capsule;
 			}
 			if (!root || !durableCredentialPaths) throw new Error("Native credential root is unavailable");
-			stage = "credential-opening";
-			openedCredentialDigest ??= await credentialFilesDigest(root, durableCredentialPaths);
-			openedCapsule = capsule;
 			let result: { providerSessionId?: string };
 			let delivery: { messageCount: number; finalMessageId: string | null };
 			if (request.runtime === "company-path-v1") {
@@ -1620,6 +1722,20 @@ export class NativeProviderHost {
 			// a run that did not change its login saves nothing, and a changed login is
 			// saved only while the store still holds the login this run started from.
 			// That check and the upload are two requests, not one atomic write.
+			vaultStop.abort();
+			await vaultRefresh;
+			if (vaultLogin && root && harnessStarted) {
+				// Nothing is saved back; the run's authority is still rechecked at its end, as for a
+				// capsule login.
+				stage = "completion-authority-validation";
+				try {
+					executionAbort.signal.throwIfAborted();
+					await this.#controlPlane.validateExecution(request, executionAbort.signal);
+					executionAbort.signal.throwIfAborted();
+				} catch (error) {
+					failure ??= new Error(`Native provider execution ${stage} stage failed`, { cause: error });
+				}
+			}
 			if (root && durableCredentialPaths && harnessStarted && openedCapsule && openedCredentialDigest) {
 				stage = "completion-authority-validation";
 				try {
@@ -1631,7 +1747,7 @@ export class NativeProviderHost {
 							? undefined
 							: await sealNativeCredentialCapsule(
 									root,
-									this.#masterKey,
+									this.#capsuleKey(),
 									authority.credentialCapsuleId,
 									durableCredentialPaths,
 								);
@@ -1649,7 +1765,7 @@ export class NativeProviderHost {
 							.catch(() => this.#capsules.get(authority.encryptedCapsuleReference, executionAbort.signal));
 						const storedDigest = storedCredentialDigest(
 							stored,
-							this.#masterKey,
+							this.#capsuleKey(),
 							authority.credentialCapsuleId,
 							durableCredentialPaths,
 						);
@@ -1696,9 +1812,8 @@ export class NativeProviderHost {
 					warmKey &&
 					this.#warmIdleMs !== undefined &&
 					!failure &&
-					sealedCapsule &&
-					sealedCredentialDigest &&
-					durableCredentialPaths
+					durableCredentialPaths &&
+					((sealedCapsule && sealedCredentialDigest) || vaultVersion !== undefined)
 				) {
 					try {
 						// Only the capsule's own credential files stay; the next harness starts auth-only.
@@ -1715,8 +1830,9 @@ export class NativeProviderHost {
 							key: warmKey,
 							root: keptRoot,
 							durable: durableCredentialPaths,
-							sealed: sealedCapsule,
-							digest: sealedCredentialDigest,
+							...(vaultVersion !== undefined
+								? { vaultVersion }
+								: { sealed: sealedCapsule, digest: sealedCredentialDigest }),
 							timer,
 						};
 						kept = true;
@@ -1753,7 +1869,7 @@ export class NativeProviderHost {
 			stage = "credential-sealing";
 			const capsule = await sealNativeCredentialCapsule(
 				state.root,
-				this.#masterKey,
+				this.#capsuleKey(),
 				capsuleId,
 				state.request.nativeHarness === "codex-cli" ? CODEX_CREDENTIAL_PATHS : undefined,
 			);

@@ -3097,7 +3097,10 @@ which makes nodes symmetric for every member. Design:
    vault. Neither boots a machine on a node.
 5. **Placement.** A run whose login is in the vault is placed like any other
    work, on the eligible node with the most free capacity. The identity home
-   rule does not apply to it.
+   rule does not apply to it, and any orchestrator may claim it. An identity
+   counts as in the vault only while every active login of it is a vault
+   login. The machine that runs it mounts no identity volume and holds no
+   login key.
 6. **Who a login serves.** A member's login powers only work that member
    started or owns. The vault enforces this when handing out a login once the
    "who pays" work has landed (follow-up work paid by the member who started
