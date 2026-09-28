@@ -289,8 +289,9 @@ every request.
   `qorpera_company_deleting`) adds no credit: a guard on the sources refuses it (migration
   `20260929170000`), so the Stripe event goes to review and an operator refunds the payment. A
   repeated delivery of a payment already credited stays a no-op. Known limit: the guard does not
-  lock the company, so a deletion requested in the same instant can let one credit through, which
-  the purge leaves unused. Starting a pack checkout for a company being deleted is not refused at
+  lock the company, so a deletion requested in the same instant can let one credit through. That
+  payment is not sent to review: an operator finds it as a credit whose company is in
+  `qorpera_company_deletions`, and refunds it. Starting a pack checkout for a company being deleted is not refused at
   the start (company delete hides the company from its members at once).
 - Known limits, for review rather than code: a failed renewal is found through the subscription's
   latest invoice; a partial refund withdraws the whole purchase, and a failed refund
