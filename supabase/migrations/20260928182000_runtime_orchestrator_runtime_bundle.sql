@@ -104,7 +104,7 @@ begin
 	if auth.role() is distinct from 'service_role' then raise exception 'Operator access required' using errcode = '42501'; end if;
 	select * into strict v_active from public.qorpera_active_runtime_bundle where singleton;
 	with work as (
-		-- Queued: nobody holds it yet. Running: claimed by an orchestrator, leased or running.
+		-- Queued: nobody holds it yet. Running: claimed by an orchestrator, or leased.
 		select run.runtime_bundle_sha256 sha,
 			count(*) filter (where job.status = 'queued' and not claimed.held) queued,
 			count(*) filter (where job.status = 'leased' or claimed.held) running
@@ -149,11 +149,15 @@ begin
 	left join public.qorpera_runtime_bundles bundle on bundle.sha256 = shas.sha and bundle.bundle_key = 'qorpera.cloud-runtime'
 	left join work on work.sha = shas.sha
 	left join inputs on inputs.sha = shas.sha;
-	-- Live orchestrators that declare nothing claim every bundle, but their hosts run only one and
-	-- refuse the rest: during a roll every live orchestrator should be declared.
+	-- Orchestrators that declare nothing claim every bundle, but their hosts run only one and refuse the
+	-- rest: during a roll every orchestrator that may claim should be declared. `undeclared` ignores the
+	-- heartbeat (a rebuilt host left stopped claims at its first call); `undeclaredLive` is its live part.
 	return jsonb_build_object('schema', 'qorpera.runtime-bundle-roll-status/v1', 'activeVersion',
 		(select version from public.qorpera_runtime_bundles where id = v_active.runtime_bundle_id),
 		'activeSha256', v_active.runtime_bundle_sha256, 'bundles', v_bundles,
+		'undeclared', (select coalesce(jsonb_agg(orchestrator.id order by orchestrator.id), '[]'::jsonb)
+			from public.qorpera_runner_orchestrators orchestrator
+			where orchestrator.status = 'active' and orchestrator.runtime_bundle_sha256 is null),
 		'undeclaredLive', (select coalesce(jsonb_agg(orchestrator.id order by orchestrator.id), '[]'::jsonb)
 			from public.qorpera_runner_orchestrators orchestrator
 			where orchestrator.status = 'active' and orchestrator.runtime_bundle_sha256 is null
