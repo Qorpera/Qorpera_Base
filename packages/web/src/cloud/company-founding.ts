@@ -1,7 +1,7 @@
 import type { Cloud } from "./client.ts";
 import { array, boundedInteger, CloudShapeError, nonEmptyString, oneOf, record, timestamp, uuid } from "./parse.ts";
 
-/* The founding table (migration 20260929040000): friends take seats, write their roles, connect
+/* The founding table (migration 20260928248200): friends take seats, write their roles, connect
  * their own ChatGPT account and press Ready; one Start makes every founder at the table an owner.
  * The server decides everything; the client never grants ownership or starts an agent itself. */
 

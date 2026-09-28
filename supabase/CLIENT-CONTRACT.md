@@ -37,7 +37,7 @@ sign-in, OTP, OAuth providers, and authorization-code exchange
 (`viewer`, `contributor`, `admin`, `owner`) are cloud state read through the
 profile RPCs; RLS is the second read boundary.
 
-Founders (2026-09-28, migration 20260929030000): every member with the role
+Founders (2026-09-28, migration 20260928248100): every member with the role
 `owner` is a founder, and a company may have several. Clients name the role
 "founder".
 - `qorpera_update_profile_member_role`: a founder may make a member `owner`.
@@ -398,7 +398,7 @@ Founders (2026-09-28, migration 20260929030000): every member with the role
 - `qorpera_session_profile_id`
 - `qorpera_update_profile_member_role`
 
-### Founding lobby (20260929040000_company_founding_lobby)
+### Founding lobby (20260928248200_company_founding_lobby)
 
 A founding team starts one company together. The table is a company row with
 its members; nothing else exists until Start (no Company File, Co-Founder or
@@ -486,6 +486,23 @@ wake), so no agent runs and nothing is charged before it.
   ago). Any member of the company, viewers included; anyone else gets 42501.
   A client shows "Not measured yet" while the function is missing (PGRST202).
 
+- 20260929110000_runtime_computer_hours_payments:
+  `qorpera_list_computer_hour_offers()` → `qorpera.computer-hour-offers/v1`:
+  `items` (`itemKey`, `kind` `plan` | `credits`, `name`, `priceMinor` in
+  øre excluding VAT, `currency` `dkk`, `hours`: a plan's hours a month or a
+  pack's hours, `available`: whether it is on sale to this member now; credits
+  still need a founder of the company, and a member who already has a plan
+  changes it on Stripe's billing page, both of which checkout checks). Before live
+  payments only test accounts an operator enrolled see anything available, in
+  Stripe's test mode; a client shows an item that is not available as not for
+  sale. Any signed-in member.
+  `qorpera_read_my_computer_plan()` → `qorpera.my-computer-plan/v1`: `mode`
+  (`dry_run` until live payments), `plan` (null, or `itemKey`, `status`,
+  `periodStart`, `periodEnd`, `cancelAtPeriodEnd`) and `hours` (null until
+  live payments, since members see only measured hours before then; then
+  `grantedSeconds` this period and `companies` (`profileId`, `seconds` this
+  period paid by the plan)). The signed-in member's own plan only.
+
 ## 3. Realtime
 
 - `qorpera-profile-{profileId}` — durable-lane invalidation hints for a profile
@@ -547,6 +564,18 @@ machine.
 - `native-provider-login` — a member starts the provider-native login handoff
   (Codex / Claude) that runs in an isolated cloud login VM; the client only
   hands the member the link and shows status.
+- `computer-billing` (20260929110000) — computer hours payments. The web app
+  calls `POST /functions/v1/computer-billing/checkout` with the member's
+  bearer token and `{itemKey, profileId?}` (`profileId` for credits, which
+  only a founder of that company may buy) and gets `{url}` (Stripe Checkout)
+  or `409 {refused: "not_a_founder" | "has_plan" | "item_unavailable"}`;
+  `POST .../portal` returns `{url}` (Stripe's billing page) or
+  `409 {refused: "no_customer"}`. Only origins in `QORPERA_WEB_ORIGINS` may
+  call; every answer from these two routes, errors too, carries the CORS
+  headers. `/webhook` is Stripe's alone. Stripe returns the member to
+  `QORPERA_BILLING_RETURN_URL` (`https://app.qorpera.com/#/account`) with
+  `?checkout=done` or `?checkout=cancelled` after the hash; hours arrive with
+  Stripe's webhook, not with the return.
 - `profile-invitation-email`, `company-file-verifier`, `artifact-gc-worker`,
   `runner-control`, `runner-broker`, `runner-orchestrator` — service or
   runner authority only. Clients never call them.

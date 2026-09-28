@@ -270,6 +270,40 @@ no database login and no service key; it sees a login only for one operation and
   image carry this change. Before that, `qorpera_compute_identity_login_in_vault` is false for every
   identity and nothing changes.
 
+## Vault by default for new companies (founder decisions 2026-09-28)
+
+Every company created after the shared vault starts serves from it by itself: no hand-made authority, key
+or switch. Existing companies keep their own brokers (or none) and are switched one by one as before.
+Picks: one shared vault; each company's capability and key derived from the vault's own secrets (nothing
+new stored); new companies only; node 1 serves, node 2 stands ready with the same secrets.
+
+- **Part 1, database** (migration `20260929130000`): `qorpera_cloud_secret_broker_principals` is the
+  shared vault's identity (service origin, the key id its companies get, a capability hash, and the time
+  after which the companies it registers were created). Broker role only:
+  - `qorpera_broker_principal_companies`: the principal's key id, the companies it serves (authorities
+    with its `principal_id`) and, at most 50 at a time, the companies created after its start time that
+    have no authority at all. The served list is not paged: about 1 MB at 8,000 companies, fine until then.
+  - `qorpera_register_company_with_broker_principal`: creates the company's authority row (the
+    principal's origin and key id, the capability hash the broker derived for the company, `principal_id`)
+    and its row in `qorpera_model_login_sign_in_companies`. A repeat with the same capability, by either
+    copy of the shared vault and at the same moment too, answers the same authority and changes nothing
+    (an operator's later switch-off stays). Another capability, another principal, a company created at or
+    before the start time, or a company with a vault of its own (retired included) is refused (`23505` or
+    `42501`); a capability hash that names another company's authority is refused with `22023`. It runs at
+    read committed only (`25000` otherwise): its race handling re-reads the other copy's committed row.
+  - Every existing broker function then serves the company unchanged: each call names the company's own
+    authority and capability. Locks: the new authority row and the switch row, plus the key-share locks
+    their foreign keys take on the company's profile row and the principal row (a registration waits at
+    most 2 s behind a lock on the company's profile).
+  - An operator creates the principal once (`insert` with the capability hash and the start time). One
+    principal is active at a time; a second with an overlapping start time is harmless (the two race to
+    register each new company and the loser is refused) but serves no purpose. Retiring a principal stops
+    its vault; its companies' authorities stay active until each is retired too.
+- **Part 2, the broker** (next change): one process serves many companies; the company comes from each
+  request's path or query; per-company capability and key derived from the vault's secrets.
+- **Part 3, deploy** (next change): the shared broker's unit and secrets, and a default route on both
+  fronts for any company without a map line of its own; node 2 as a warm standby.
+
 ## Failure cases
 
 | Case | Result |
