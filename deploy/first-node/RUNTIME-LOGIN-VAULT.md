@@ -299,8 +299,36 @@ new stored); new companies only; node 1 serves, node 2 stands ready with the sam
     principal is active at a time; a second with an overlapping start time is harmless (the two race to
     register each new company and the loser is refused) but serves no purpose. Retiring a principal stops
     its vault; its companies' authorities stay active until each is retired too.
-- **Part 2, the broker** (next change): one process serves many companies; the company comes from each
-  request's path or query; per-company capability and key derived from the vault's secrets.
+- **Part 2, the broker** (`cloud-secret-broker-shared.ts`): config `qorpera.cloud-secret-broker-service/v3`
+  names the principal (`principalId`, `port`, optional `memberOrigins`) and loads two credentials instead
+  of one company's capability and keyring: `qorpera-cloud-secret-principal` (32 random bytes, base64url)
+  and `qorpera-cloud-secret-master-keys` (`{"schema":"qorpera.cloud-secret-master-keys/v1","keys":[{"keyId":
+  "<the principal's key id>","keyBase64url":"<32 bytes>"}]}`). The runtime token, database login, CA,
+  login helper, connectors and coding executor credentials are the same as a one-company broker's.
+  - Capabilities: the principal's is HMAC-SHA256(principal secret, `qorpera.broker-principal/v1`), a
+    company's HMAC-SHA256(principal secret, `qorpera.broker-authority/v1:<company>`), both base64url
+    (`sharedBrokerCapability`); the database holds only their sha256. Keys: a company's wrapping key is
+    HKDF-SHA256(master key, salt `qorpera.company-kek/v1`, info `<company>`). Both copies of the vault
+    derive the same ones, and nothing new is stored.
+  - Every 10 s it registers the companies the principal lists and serves every registered company with
+    its own broker, login vault, sign-ins and usage on that company's authority. It registers only while
+    it holds the principal's key (registering switches a company to vault sign-in), and it serves a
+    company only while it can derive that company's key. A company it does not know yet (created a moment
+    ago) is looked up again at most every 2 s; a request that arrives while a refresh runs (the first one
+    after a start included) waits for it. A refused registration logs one fixed line.
+  - Each request's company comes from the path (sign-in, account refresh) or the `?company=` every
+    client adds; a company it does not serve gets 404. Every database call still names the company's
+    own authority and capability.
+  - Background work per company: finished sign-ins every 2 s for a company whose member is signing in
+    (20 minutes after the member's last poll) and every 30 s for all; each company's upkeep pass
+    (accounts, switch-off, idle renewals) in turn every 5 minutes. The database pool has 8 connections.
+    A stop ends the company pass in hand after its current renewal and save, inside the unit's 90 s.
+  - A member's sign-in marks its company for frequent collection only once the database accepted it.
+  - Connector sign-ins: one set of flows for all companies (256 started, 256 back from the provider), at
+    most 32 per company across both; a confirm routed to one company refuses another company's flow
+    before anything is exchanged.
+  - One-company brokers (config v2) are unchanged, except that the 32-per-company share of connector
+    sign-ins applies to them too.
 - **Part 3, deploy** (next change): the shared broker's unit and secrets, and a default route on both
   fronts for any company without a map line of its own; node 2 as a warm standby.
 
