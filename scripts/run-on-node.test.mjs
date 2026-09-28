@@ -4,7 +4,16 @@ import { mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, symlinkSync, wri
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import test from "node:test";
-import { includeRules, parseArgs, shellQuote, suiteCommand, workingTreeFiles } from "./run-on-node.mjs";
+import {
+	includeRules,
+	parseArgs,
+	pruneScript,
+	secretLooking,
+	shellQuote,
+	suiteCommand,
+	treeDigest,
+	workingTreeFiles,
+} from "./run-on-node.mjs";
 
 test("suites map to their commands", () => {
 	assert.deepEqual(suiteCommand("hosted-db"), ["npm", "run", "test:hosted-db"]);
@@ -33,11 +42,24 @@ test("options, install default and extra arguments", () => {
 		"hello-world",
 	]);
 	assert.equal(parseArgs(["--install", "hosted-db"]).install, true);
+	assert.equal(parseArgs(["--allow-secrets", "hosted-db"]).allowSecrets, true);
 	assert.throws(() => parseArgs(["hosted-db", "extra"]), /after --/);
 	assert.throws(() => parseArgs(["--env", "1BAD=x", "hosted-db"]), /Invalid --env/);
 	assert.throws(() => parseArgs(["--bogus", "hosted-db"]), /Unknown option/);
 	assert.throws(() => parseArgs(["--"]), /Usage/);
 	assert.throws(() => parseArgs([]), /Usage/);
+});
+
+test("npm suites pass their arguments to the script, not to npm", () => {
+	assert.deepEqual(parseArgs(["npm:test:scripts", "--", "--test-name-pattern=foo"]).command, [
+		"npm",
+		"run",
+		"test:scripts",
+		"--",
+		"--test-name-pattern=foo",
+	]);
+	assert.deepEqual(parseArgs(["hosted-db", "--", "--x"]).command, ["npm", "run", "test:hosted-db", "--", "--x"]);
+	assert.deepEqual(parseArgs(["npm:test:scripts"]).command, ["npm", "run", "test:scripts"]);
 });
 
 test("shell quoting survives a round trip through bash", () => {
@@ -53,6 +75,31 @@ test("include rules are anchored and refuse wildcard names", () => {
 	assert.throws(() => includeRules(["a\nb"]), /wildcard/);
 });
 
+test("untracked files that look like secrets are named", () => {
+	assert.deepEqual(
+		secretLooking([
+			".env.local",
+			"apps/x/.env",
+			"certs/server.pem",
+			"deploy/id_ed25519",
+			"passwords.private.json",
+			".npmrc",
+			"src/cloud-secret-broker.ts",
+			"scripts/new-test.mjs",
+		]),
+		[".env.local", "apps/x/.env", "certs/server.pem", "deploy/id_ed25519", "passwords.private.json", ".npmrc"],
+	);
+});
+
+test("cleanup prunes runs by the UTC time in their name, never by mtime", () => {
+	const script = pruneScript();
+	assert.match(script, /date -u -d '-1 day' \+%Y%m%dT%H%M%S/);
+	assert.match(script, /\$\{n%%-\*\}" < "\$cutoff"/);
+	assert.doesNotMatch(script, /-mmin|-mtime \+1\b/);
+	assert.match(script, /sudo -n rm -rf/);
+	assert.equal(spawnSync("bash", ["-n", "-c", script]).status, 0);
+});
+
 function files(root) {
 	const out = [];
 	const walk = (dir) => {
@@ -66,7 +113,7 @@ function files(root) {
 	return out.sort();
 }
 
-test("the copied tree is exactly what git sees, uncommitted changes included", () => {
+test("the copied tree is exactly what git sees, and the digest covers untracked contents", () => {
 	const temporary = mkdtempSync(join(tmpdir(), "run-on-node-test-"));
 	try {
 		const repo = join(temporary, "repo");
@@ -86,15 +133,20 @@ test("the copied tree is exactly what git sees, uncommitted changes included", (
 		rmSync(join(repo, "src/deleted.ts"));
 		symlinkSync("deep/tracked.ts", join(repo, "src/link.ts"));
 
-		const listed = workingTreeFiles(repo).sort();
-		assert.deepEqual(listed, [".gitignore", "src/deep/tracked.ts", "src/link.ts", "src/new-untracked.ts"]);
+		const listed = workingTreeFiles(repo);
+		assert.deepEqual(listed.files, [".gitignore", "src/deep/tracked.ts", "src/link.ts", "src/new-untracked.ts"]);
+		assert.deepEqual(listed.untracked.sort(), ["src/link.ts", "src/new-untracked.ts"]);
+
+		const before = treeDigest(repo, listed.files);
+		writeFileSync(join(repo, "src/new-untracked.ts"), "changed\n");
+		assert.notEqual(treeDigest(repo, listed.files), before);
 
 		const rules = join(temporary, "rules");
-		writeFileSync(rules, `${includeRules(listed).join("\n")}\n+ */\n- *\n`);
+		writeFileSync(rules, `${includeRules(listed.files).join("\n")}\n+ */\n- *\n`);
 		const destination = join(temporary, "copy");
 		const rsync = spawnSync("rsync", ["-a", "--prune-empty-dirs", `--filter=merge ${rules}`, `${repo}/`, `${destination}/`]);
 		assert.equal(rsync.status, 0, rsync.stderr?.toString());
-		assert.deepEqual(files(destination), listed);
+		assert.deepEqual(files(destination), listed.files);
 	} finally {
 		rmSync(temporary, { recursive: true, force: true });
 	}
