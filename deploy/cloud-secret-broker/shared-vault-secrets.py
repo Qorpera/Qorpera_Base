@@ -7,7 +7,12 @@ secret passes through the operator's machine: only hashes and "match"/"mismatch"
                          root-only files, never over existing ones; print the principal's capability hash
                          (for its database row), the key id and the fingerprints.
   fingerprint            any node: print the fingerprints of the files it holds, and their one digest.
-  ticket                 node 2: make a one-time ticket as a root-only file; print only its sha256.
+  helper-token           each node: make the shared vault's own login helper token, as the helper's credential
+                         and as the vault's helper client file, both root-only; print nothing secret. The
+                         company brokers on the host keep the helper's other token and never see the
+                         vault's members' sign-ins.
+  ticket                 node 2: make a one-time ticket as a root-only file (replacing an unused one); print
+                         only its sha256.
   serve --bind IP --peer IP --port P --ticket-sha256 H [--ttl S]
                          node 1: hand the standby everything it needs, once, over the hosts' private
                          (WireGuard) network, to the peer that presents the ticket: both secrets and the
@@ -17,6 +22,9 @@ secret passes through the operator's machine: only hashes and "match"/"mismatch"
   fetch --source IP --port P --expect DIGEST
                          node 2: fetch with its ticket (used up either way), check the files against node 1's
                          digest before writing anything, and only then write them as root-only files.
+
+Every write is staged under a temporary name and renamed into place only when all of it is written, so a
+failed step leaves nothing behind and can simply be run again.
 
 A fingerprint is HMAC-SHA256 of a fixed label under the file's content: it names a secret without revealing
 it. The principal's capability is base64url(HMAC-SHA256(principal secret, "qorpera.broker-principal/v1")),
@@ -39,6 +47,12 @@ DEFAULT_ROOT = "/etc/qorpera-shared-vault"
 PRINCIPAL = "principal-secret"
 MASTER_KEYS = "master-keys.json"
 TICKET = "fetch-ticket"
+HELPER_CLIENT = "login-helper.json"
+DEFAULT_HELPER_ROOT = "/etc/qorpera-model-login-helper"
+HELPER_TOKEN = "vault-token"
+DEFAULT_HELPER_SOCKET = "/run/qorpera-model-login-helper/helper.sock"
+# A connection gets this long to send its request; the hand-over answers node 2's address only.
+REQUEST_TIMEOUT_S = 5
 # The other private files the shared vault's unit loads, the same on both hosts (the login helper's client
 # file is each host's own and never moves).
 PASSED_ON = ("database-url", "runtime", "connectors.json", "coding-executor")
@@ -93,6 +107,47 @@ def write_new(path: pathlib.Path, content: bytes) -> None:
         handle.write(content)
         handle.flush()
         os.fsync(handle.fileno())
+
+
+def refuse_existing(root: pathlib.Path, names) -> None:
+    for name in names:
+        if (root / name).exists() or (root / name).is_symlink():
+            raise SystemExit("The shared vault's files exist already; nothing was changed")
+
+
+def write_all(root: pathlib.Path, files: dict) -> None:
+    """Writes every file under a temporary name first and renames them into place only when all are
+    written; on any failure it removes what it wrote, so the step can simply be run again."""
+    refuse_existing(root, files)
+    staged = []
+    placed = []
+    try:
+        for name, content in files.items():
+            temporary = root / (".incoming-" + name)
+            if temporary.exists() or temporary.is_symlink():
+                temporary.unlink()
+            write_new(temporary, content)
+            staged.append(temporary)
+        for name in files:
+            refuse_existing(root, [name])
+            os.rename(root / (".incoming-" + name), root / name)
+            placed.append(root / name)
+        directory = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    except BaseException:
+        for path in staged + placed:
+            if path.exists() or path.is_symlink():
+                path.unlink()
+        raise
+
+
+def remove(root: pathlib.Path, names) -> None:
+    for name in names:
+        if (root / name).exists() or (root / name).is_symlink():
+            (root / name).unlink()
 
 
 def read_file(path: pathlib.Path) -> bytes:
@@ -157,17 +212,37 @@ def generate(args: argparse.Namespace) -> dict:
         raise SystemExit("The key id is malformed")
     root = root_of(args.root)
     make_root(root)
-    for name in (PRINCIPAL, MASTER_KEYS):
-        if (root / name).exists() or (root / name).is_symlink():
-            raise SystemExit("The shared vault's secrets exist already; nothing was changed")
-    write_new(root / MASTER_KEYS, master_keys(args.key_id, os.urandom(32)))
-    write_new(root / PRINCIPAL, (b64url(os.urandom(32)) + "\n").encode("ascii"))
+    write_all(root, {MASTER_KEYS: master_keys(args.key_id, os.urandom(32)), PRINCIPAL: (b64url(os.urandom(32)) + "\n").encode("ascii")})
     return {"passed": True, **describe(held(root, False))}
+
+
+def helper_token(args: argparse.Namespace) -> dict:
+    root = root_of(args.root)
+    helper_root = root_of(args.helper_root)
+    socket_path = pathlib.Path(args.socket_path)
+    if not socket_path.is_absolute() or str(socket_path) != os.path.normpath(str(socket_path)):
+        raise SystemExit("The helper socket path must be absolute")
+    make_root(root)
+    if not helper_root.is_dir():
+        raise SystemExit("The login helper is not installed on this host")
+    refuse_existing(root, [HELPER_CLIENT])
+    refuse_existing(helper_root, [HELPER_TOKEN])
+    value = b64url(os.urandom(32))
+    client = {"schema": "qorpera.model-login-helper-client/v1", "socketPath": str(socket_path), "token": value}
+    write_all(helper_root, {HELPER_TOKEN: (value + "\n").encode("ascii")})
+    try:
+        write_all(root, {HELPER_CLIENT: (json.dumps(client) + "\n").encode("ascii")})
+    except BaseException:
+        remove(helper_root, [HELPER_TOKEN])
+        raise
+    return {"passed": True, "helperToken": "written", "helperClient": "written"}
 
 
 def ticket(args: argparse.Namespace) -> dict:
     root = root_of(args.root)
     make_root(root)
+    # An unused ticket from a run that stopped early is node 2's own: replace it.
+    remove(root, [TICKET])
     value = b64url(os.urandom(32))
     write_new(root / TICKET, value.encode("ascii"))
     return {"passed": True, "ticketSha256": hashlib.sha256(value.encode("ascii")).hexdigest()}
@@ -185,6 +260,8 @@ def serve(args: argparse.Namespace) -> dict:
     state = {"served": False}
 
     class Handler(http.server.BaseHTTPRequestHandler):
+        timeout = REQUEST_TIMEOUT_S
+
         def do_GET(self) -> None:
             header = self.headers.get("Authorization", "")
             presented = header[len("Bearer ") :] if header.startswith("Bearer ") else ""
@@ -196,18 +273,24 @@ def serve(args: argparse.Namespace) -> dict:
             ):
                 self.send_error(404)
                 return
+            # Used up before anything is sent: a failed write does not leave the ticket working.
+            state["served"] = True
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", "no-store")
             self.end_headers()
             self.wfile.write(body)
-            state["served"] = True
 
         def log_message(self, *_: object) -> None:
             pass
 
-    server = http.server.HTTPServer((args.bind, args.port), Handler)
+    class Server(http.server.HTTPServer):
+        def verify_request(self, request, client_address) -> bool:
+            # Any other address is closed before a byte of it is read.
+            return client_address[0] == args.peer
+
+    server = Server((args.bind, args.port), Handler)
     # Everything is read and the port is bound: serve as nobody.
     if os.geteuid() == 0:
         os.setgroups([])
@@ -225,12 +308,6 @@ def serve(args: argparse.Namespace) -> dict:
 
 def fetch(args: argparse.Namespace) -> dict:
     root = root_of(args.root)
-    if not DIGEST.fullmatch(args.expect):
-        raise SystemExit("The expected digest is malformed")
-    names = (PRINCIPAL, MASTER_KEYS, *PASSED_ON)
-    for name in names:
-        if (root / name).exists() or (root / name).is_symlink():
-            raise SystemExit("The shared vault's files exist already; nothing was changed")
     ticket_path = root / TICKET
     try:
         presented = read_file(ticket_path).decode("ascii")
@@ -238,6 +315,10 @@ def fetch(args: argparse.Namespace) -> dict:
         # One use, whatever happens next.
         if ticket_path.exists() or ticket_path.is_symlink():
             ticket_path.unlink()
+    if not DIGEST.fullmatch(args.expect):
+        raise SystemExit("The expected digest is malformed")
+    names = (PRINCIPAL, MASTER_KEYS, *PASSED_ON)
+    refuse_existing(root, names)
     if not SECRET.fullmatch(presented):
         raise SystemExit("The ticket is malformed")
     connection = http.client.HTTPConnection(args.source, args.port, timeout=15)
@@ -268,10 +349,11 @@ def fetch(args: argparse.Namespace) -> dict:
     if not hmac.compare_digest(summary["fingerprintsSha256"], args.expect):
         return {"passed": False, "match": "mismatch"}
     make_root(root)
-    for name in names:
-        write_new(root / name, files[name])
+    write_all(root, {name: files[name] for name in names})
     written = describe(held(root, True))
     if written["fingerprintsSha256"] != args.expect:
+        # What arrived matched but what landed does not: take it all back.
+        remove(root, names)
         return {"passed": False, "match": "mismatch"}
     return {"passed": True, "match": "match", **written}
 
@@ -284,6 +366,9 @@ def main() -> None:
     make.add_argument("--key-id", required=True)
     commands.add_parser("fingerprint")
     commands.add_parser("ticket")
+    helper = commands.add_parser("helper-token")
+    helper.add_argument("--helper-root", default=DEFAULT_HELPER_ROOT)
+    helper.add_argument("--socket-path", default=DEFAULT_HELPER_SOCKET)
     give = commands.add_parser("serve")
     give.add_argument("--bind", required=True)
     give.add_argument("--peer", required=True)
@@ -301,6 +386,8 @@ def main() -> None:
         result = {"passed": True, **describe(held(root_of(args.root), False))}
     elif args.command == "ticket":
         result = ticket(args)
+    elif args.command == "helper-token":
+        result = helper_token(args)
     elif args.command == "serve":
         result = serve(args)
     else:

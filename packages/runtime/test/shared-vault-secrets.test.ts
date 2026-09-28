@@ -1,6 +1,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { sharedBrokerCapability } from "@qorpera/runtime/cloud-secret-broker";
@@ -147,10 +148,26 @@ it("hands the standby its files once, on a ticket that never leaves it, checked 
 	expect(await first.exited).toBe(0);
 	await expect(stat(join(nodeTwo, "principal-secret"))).rejects.toThrow();
 	await expect(stat(join(nodeTwo, "fetch-ticket"))).rejects.toThrow();
-	// A fresh ticket, and node 1's own digest: the files arrive, owner-only, and match.
+	// A file already there: refused before asking, nothing written, and the ticket used up all the same.
+	run(["--root", nodeTwo, "ticket"]);
+	await writeFile(join(nodeTwo, "runtime"), "left over\n", { mode: 0o400 });
+	expect(
+		run(["--root", nodeTwo, "fetch", "--source", "127.0.0.1", "--port", "1", "--expect", made.fingerprintsSha256])
+			.status,
+	).not.toBe(0);
+	await expect(stat(join(nodeTwo, "fetch-ticket"))).rejects.toThrow();
+	await expect(stat(join(nodeTwo, "principal-secret"))).rejects.toThrow();
+	await rm(join(nodeTwo, "runtime"));
+	// An unused ticket is replaced by a new one.
+	const unused = JSON.parse(run(["--root", nodeTwo, "ticket"]).stdout) as { ticketSha256: string };
+	// A fresh ticket, and node 1's own digest: the files arrive, owner-only, and match, although a silent
+	// connection came first (it is closed after 5 s, well inside the fetch's own 15 s).
 	const again = JSON.parse(run(["--root", nodeTwo, "ticket"]).stdout) as { ticketSha256: string };
+	expect(again.ticketSha256).not.toBe(unused.ticketSha256);
 	const second = serveOnce(again.ticketSha256);
 	await new Promise((resolveWait) => setTimeout(resolveWait, 700));
+	const silent = connect({ host: "127.0.0.1", port: second.port });
+	await new Promise((resolveConnect) => silent.once("connect", resolveConnect));
 	const fetched = run([
 		"--root",
 		nodeTwo,
@@ -162,6 +179,7 @@ it("hands the standby its files once, on a ticket that never leaves it, checked 
 		"--expect",
 		made.fingerprintsSha256,
 	]);
+	silent.destroy();
 	expect(fetched.status).toBe(0);
 	expect(JSON.parse(fetched.stdout)).toEqual({ ...made, match: "match" });
 	expect(await second.exited).toBe(0);
@@ -184,4 +202,68 @@ it("hands the standby its files once, on a ticket that never leaves it, checked 
 		run(["--root", nodeTwo, "fetch", "--source", "127.0.0.1", "--port", "1", "--expect", made.fingerprintsSha256])
 			.status,
 	).not.toBe(0);
+	// Another address gets nothing: node 1 closes it before reading, and stops at its deadline.
+	const nodeThree = await root();
+	const other = JSON.parse(run(["--root", nodeThree, "ticket"]).stdout) as { ticketSha256: string };
+	const port = 40_000 + Math.floor(Math.random() * 20_000);
+	const elsewhere = spawn(
+		"python3",
+		[
+			tool,
+			"--root",
+			nodeOne,
+			"serve",
+			"--bind",
+			"127.0.0.1",
+			"--peer",
+			"127.0.0.2",
+			"--port",
+			String(port),
+			"--ticket-sha256",
+			other.ticketSha256,
+			"--ttl",
+			"3",
+		],
+		{ stdio: ["ignore", "pipe", "pipe"] },
+	);
+	const stopped = new Promise<number | null>((resolveExit) => elsewhere.once("exit", resolveExit));
+	await new Promise((resolveWait) => setTimeout(resolveWait, 700));
+	const refusedElsewhere = run([
+		"--root",
+		nodeThree,
+		"fetch",
+		"--source",
+		"127.0.0.1",
+		"--port",
+		String(port),
+		"--expect",
+		made.fingerprintsSha256,
+	]);
+	expect(refusedElsewhere.status).not.toBe(0);
+	await expect(stat(join(nodeThree, "principal-secret"))).rejects.toThrow();
+	expect(await stopped).not.toBe(0);
+}, 30_000);
+
+it("gives the shared vault its own login helper token, written on the host and never printed", async () => {
+	const vault = await root();
+	const helperRoot = join(vault, "..", "helper");
+	// Without the helper installed, nothing is written.
+	expect(run(["--root", vault, "helper-token", "--helper-root", helperRoot]).status).not.toBe(0);
+	await expect(stat(join(vault, "login-helper.json"))).rejects.toThrow();
+	await mkdir(helperRoot, { mode: 0o700 });
+	const made = run(["--root", vault, "helper-token", "--helper-root", helperRoot]);
+	expect(made.status).toBe(0);
+	const token = (await readFile(join(helperRoot, "vault-token"), "utf8")).trim();
+	expect(token).toMatch(/^[A-Za-z0-9_-]{43}$/);
+	expect(made.stdout).not.toContain(token);
+	expect(JSON.parse(await readFile(join(vault, "login-helper.json"), "utf8"))).toEqual({
+		schema: "qorpera.model-login-helper-client/v1",
+		socketPath: "/run/qorpera-model-login-helper/helper.sock",
+		token,
+	});
+	expect((await stat(join(helperRoot, "vault-token"))).mode & 0o777).toBe(0o400);
+	expect((await stat(join(vault, "login-helper.json"))).mode & 0o777).toBe(0o400);
+	// Never over an existing one.
+	expect(run(["--root", vault, "helper-token", "--helper-root", helperRoot]).status).not.toBe(0);
+	expect((await readFile(join(helperRoot, "vault-token"), "utf8")).trim()).toBe(token);
 });

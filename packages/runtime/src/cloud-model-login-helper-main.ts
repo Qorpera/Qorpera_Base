@@ -13,6 +13,16 @@ const MAX_CREDENTIAL_BYTES = 16 * 1024;
 const TOKEN = /^[A-Za-z0-9_-]{43}$/;
 const SHA256 = /^[0-9a-f]{64}$/;
 
+/** An optional credential: absent means the feature stays off; any other failure stops the helper. */
+async function readOptionalCredential(directory: string, name: string): Promise<string | undefined> {
+	try {
+		return await readCredential(directory, name);
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException | undefined)?.code === "ENOENT") return undefined;
+		throw error;
+	}
+}
+
 async function readCredential(directory: string, name: string): Promise<string> {
 	if (!isAbsolute(directory) || !/^[a-z][a-z0-9-]+$/.test(name))
 		throw new Error("Login helper credential path is invalid");
@@ -143,6 +153,11 @@ export async function runModelLoginHelperMain(environment: NodeJS.ProcessEnv = p
 	};
 	const token = await readCredential(directory, "qorpera-model-login-helper-token");
 	if (!TOKEN.test(token)) throw new Error("Login helper token is invalid");
+	// On a shared vault host (Vault By Default): the vault's own token, so the company brokers on the host
+	// never see its members' sign-ins, nor it theirs.
+	const vaultToken = await readOptionalCredential(directory, "qorpera-model-login-helper-vault-token");
+	if (vaultToken !== undefined && (!TOKEN.test(vaultToken) || vaultToken === token))
+		throw new Error("Login helper vault token is invalid");
 	const temporaryRoot = absolute(config.temporaryRoot, "Login helper temporary root");
 	const isolation = { entryPoint: isolationEntryPoint };
 	// Before serving anything: the pinned Codex answers inside the sandbox, under this unit.
@@ -168,6 +183,7 @@ export async function runModelLoginHelperMain(environment: NodeJS.ProcessEnv = p
 	const service = new ModelLoginHelperService({
 		socketPath: absolute(config.socketPath, "Login helper socket"),
 		token,
+		...(vaultToken === undefined ? {} : { vaultToken }),
 		renewer: new CodexLoginRenewer({ codexPath, temporaryRoot, isolation, beforeLaunch }),
 		signIns,
 	});

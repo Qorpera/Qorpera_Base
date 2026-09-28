@@ -154,18 +154,32 @@ function parseRenewal(value: unknown): ModelLoginRenewal {
 	throw new Error("Login helper answer is invalid");
 }
 
+/** How long the helper remembers who began a sign-in: longer than a sign-in lives (15 minutes) plus
+ * the time its finished login is kept (5 minutes). */
+const SIGN_IN_OWNER_MS = 30 * 60_000;
+
+type HelperClient = "brokers" | "vault";
+
 export class ModelLoginHelperService {
 	readonly #socketPath: string;
 	readonly #token: string;
+	readonly #vaultToken: string | undefined;
 	readonly #renewer: ModelLoginRenewer;
 	readonly #signIns: ModelLoginSignInHelper | undefined;
 	readonly #concurrency: number;
+	/** Who began each sign-in, and until when that is remembered: a sign-in (and the login it ends with)
+	 * is answered only to the client that began it. */
+	readonly #owners = new Map<string, { client: HelperClient; until: number }>();
 	#running = 0;
 	#server?: Server;
 
 	constructor(options: {
 		socketPath: string;
+		/** The company brokers' token on this host. */
 		token: string;
+		/** The shared vault's own token (Vault By Default): the company brokers cannot see its sign-ins,
+		 * nor it theirs. */
+		vaultToken?: string;
 		renewer: ModelLoginRenewer;
 		signIns?: ModelLoginSignInHelper;
 		concurrency?: number;
@@ -173,8 +187,11 @@ export class ModelLoginHelperService {
 		if (!isAbsolute(options.socketPath) || resolve(options.socketPath) !== options.socketPath)
 			throw new Error("Login helper socket path must be absolute");
 		if (!TOKEN.test(options.token)) throw new Error("Login helper token is invalid");
+		if (options.vaultToken !== undefined && (!TOKEN.test(options.vaultToken) || options.vaultToken === options.token))
+			throw new Error("Login helper token is invalid");
 		this.#socketPath = options.socketPath;
 		this.#token = options.token;
+		this.#vaultToken = options.vaultToken;
 		this.#renewer = options.renewer;
 		this.#signIns = options.signIns;
 		this.#concurrency = options.concurrency ?? 4;
@@ -220,14 +237,31 @@ export class ModelLoginHelperService {
 		await rm(this.#socketPath, { force: true });
 	}
 
+	#client(authorization: string | undefined): HelperClient | undefined {
+		// Both compared every time, so the answer's timing does not tell which token was near.
+		const broker = tokenMatches(this.#token, authorization);
+		const vault = this.#vaultToken !== undefined && tokenMatches(this.#vaultToken, authorization);
+		return broker ? "brokers" : vault ? "vault" : undefined;
+	}
+
+	/** Whether the client may see this sign-in: it began it, or nobody did (the helper then knows it no more
+	 * than the caller does). */
+	#owns(signInId: string, client: HelperClient): boolean {
+		const now = Date.now();
+		for (const [id, owner] of this.#owners) if (owner.until <= now) this.#owners.delete(id);
+		const owner = this.#owners.get(signInId);
+		return owner === undefined || owner.client === client;
+	}
+
 	async #handle(request: IncomingMessage): Promise<{ status: number; body: Record<string, unknown> }> {
 		const signIns = this.#signIns;
 		const signInRoutes = ["/v1/sign-in", "/v1/sign-in/read", "/v1/sign-in/completed", "/v1/sign-in/finish"];
+		const client = this.#client(request.headers.authorization);
 		if (
 			request.method !== "POST" ||
 			!(request.url === "/v1/renew" || (signIns && signInRoutes.includes(request.url ?? ""))) ||
 			request.headers["content-type"] !== "application/json" ||
-			!tokenMatches(this.#token, request.headers.authorization)
+			client === undefined
 		)
 			return { status: 404, body: { schema: "qorpera.model-login-helper-error/v1", error: "not_found" } };
 		if (signIns && request.url !== "/v1/renew") {
@@ -259,12 +293,18 @@ export class ModelLoginHelperService {
 						capabilitySha256: input.capabilitySha256 as string,
 						expiresAt: input.expiresAt as string,
 					};
+					// Another client's sign-in: refused, as a binding of another company is.
+					if (!this.#owns(binding.signInId, client)) throw new Error("Sign-in belongs to another client");
 					const state = await signIns.beginSignIn(binding, signal);
+					this.#owners.set(binding.signInId, { client, until: Date.now() + SIGN_IN_OWNER_MS });
 					return { status: 200, body: { schema: "qorpera.model-login-sign-in/v1", ...state } };
 				}
 				const target = { signInId: input.signInId as string, companyId: input.companyId as string };
 				if (request.url === "/v1/sign-in/read") {
-					const state = await signIns.readSignIn(target, signal);
+					// Another client's sign-in reads as one the helper does not know.
+					const state = this.#owns(target.signInId, client)
+						? await signIns.readSignIn(target, signal)
+						: { status: "unknown" as const };
 					return { status: 200, body: { schema: "qorpera.model-login-sign-in/v1", ...state } };
 				}
 				if (request.url === "/v1/sign-in/completed") {
@@ -273,13 +313,16 @@ export class ModelLoginHelperService {
 						status: 200,
 						body: {
 							schema: "qorpera.model-login-sign-in-completed/v1",
-							signIns: finished.map((entry) => ({
-								signInId: entry.signInId,
-								capabilitySha256: entry.capabilitySha256,
-							})),
+							signIns: finished
+								.filter((entry) => this.#owns(entry.signInId, client))
+								.map((entry) => ({
+									signInId: entry.signInId,
+									capabilitySha256: entry.capabilitySha256,
+								})),
 						},
 					};
 				}
+				if (!this.#owns(target.signInId, client)) throw new Error("Sign-in belongs to another client");
 				await signIns.finishSignIn(target, signal);
 				return {
 					status: 200,

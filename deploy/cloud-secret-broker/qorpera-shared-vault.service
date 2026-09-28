@@ -7,12 +7,16 @@ StartLimitBurst=3
 
 [Service]
 Type=exec
-User=qorpera-secret-broker
-Group=qorpera-secret-broker
+# Its own user: a company broker's process cannot read this unit's credentials (the master key).
+User=qorpera-shared-vault
+Group=qorpera-shared-vault
+# The login helper's socket is reached through its group.
+SupplementaryGroups=qorpera-login-helper
 # Config v3 names the principal. The two secrets were made on node 1 by shared-vault-secrets.py; the
 # database login, runtime token, connector clients and coding executor token are the company brokers'
-# own, copied on the host. Node 2 takes all six from node 1 host to host. Root-only files, all of them.
-# The login helper's client file is each host's own, in a drop-in (RUNTIME-LOGIN-VAULT.md).
+# own, copied on the host. Node 2 takes those six from node 1 host to host. The login helper client
+# file (the vault's own helper token, made by shared-vault-secrets.py helper-token) is each host's own.
+# Root-only files, all of them; a missing one stops the unit.
 LoadCredential=qorpera-cloud-secret-config:/etc/qorpera-shared-vault/config.json
 LoadCredential=qorpera-cloud-secret-principal:/etc/qorpera-shared-vault/principal-secret
 LoadCredential=qorpera-cloud-secret-master-keys:/etc/qorpera-shared-vault/master-keys.json
@@ -21,6 +25,7 @@ LoadCredential=qorpera-cloud-secret-database-ca:/etc/qorpera-secret-broker/supab
 LoadCredential=qorpera-cloud-secret-runtime:/etc/qorpera-shared-vault/runtime
 LoadCredential=qorpera-cloud-secret-connectors:/etc/qorpera-shared-vault/connectors.json
 LoadCredential=qorpera-cloud-secret-coding-executor:/etc/qorpera-shared-vault/coding-executor
+LoadCredential=qorpera-cloud-secret-login-helper:/etc/qorpera-shared-vault/login-helper.json
 ExecStart=/usr/bin/node /opt/qorpera-secret-broker/qorpera-cloud-secret-broker-service.mjs
 Restart=on-failure
 RestartSec=10
@@ -28,6 +33,8 @@ RestartSec=10
 # 15 s tries); a stop waits for it, or the new login is lost and the member has to sign in again.
 TimeoutStopSec=90
 UMask=0077
+# A crash leaves no memory image holding keys.
+LimitCORE=0
 NoNewPrivileges=yes
 PrivateTmp=yes
 PrivateDevices=yes

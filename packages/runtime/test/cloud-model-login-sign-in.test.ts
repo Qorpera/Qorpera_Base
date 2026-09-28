@@ -261,3 +261,51 @@ it("serves sign-ins over the helper socket to the broker only", async () => {
 		new ModelLoginHelperClient({ socketPath: plainSocket, token }).beginSignIn(signIn, signal()),
 	).rejects.toThrow();
 });
+
+it("answers a sign-in only to the client that began it: the shared vault and the company brokers stay apart", async () => {
+	const directory = await temporary("qorpera-sign-in-clients-");
+	const socketPath = join(directory, "helper.sock");
+	const token = randomBytes(32).toString("base64url");
+	const vaultToken = randomBytes(32).toString("base64url");
+	const brokers = binding();
+	const vaults = { ...binding(), companyId: brokers.companyId };
+	const fake: ModelLoginSignInHelper = {
+		beginSignIn: vi.fn(async () => ({ status: "awaiting_member" as const, userCode: "ABCD-12345" })),
+		readSignIn: vi.fn(async () => ({ status: "completed" as const, authJson: '{"tokens":{}}' })),
+		listCompletedSignIns: vi.fn(async () => [
+			{ signInId: brokers.signInId, capabilitySha256: brokers.capabilitySha256 },
+			{ signInId: vaults.signInId, capabilitySha256: vaults.capabilitySha256 },
+		]),
+		finishSignIn: vi.fn(async () => undefined),
+	};
+	expect(
+		() =>
+			new ModelLoginHelperService({ socketPath, token, vaultToken: token, renewer: { renew: vi.fn() }, signIns: fake }),
+	).toThrow("Login helper token is invalid");
+	const service = new ModelLoginHelperService({ socketPath, token, vaultToken, renewer: { renew: vi.fn() }, signIns: fake });
+	await service.start();
+	closers.push(() => service.close());
+	const broker = new ModelLoginHelperClient({ socketPath, token });
+	const vault = new ModelLoginHelperClient({ socketPath, token: vaultToken });
+	await broker.beginSignIn(brokers, signal());
+	await vault.beginSignIn(vaults, signal());
+	const own = (entry: { signInId: string }) => ({ signInId: entry.signInId, companyId: entry.companyId });
+	// Each sees only its own finished sign-ins, and reads the other's as unknown.
+	await expect(broker.listCompletedSignIns({ companyId: brokers.companyId }, signal())).resolves.toEqual([
+		{ signInId: brokers.signInId, capabilitySha256: brokers.capabilitySha256 },
+	]);
+	await expect(vault.listCompletedSignIns({ companyId: brokers.companyId }, signal())).resolves.toEqual([
+		{ signInId: vaults.signInId, capabilitySha256: vaults.capabilitySha256 },
+	]);
+	await expect(vault.readSignIn(own(brokers), signal())).resolves.toEqual({ status: "unknown" });
+	await expect(broker.readSignIn(own(vaults), signal())).resolves.toMatchObject({ status: "unknown" });
+	expect(fake.readSignIn).not.toHaveBeenCalled();
+	await expect(vault.readSignIn(own(vaults), signal())).resolves.toMatchObject({ status: "completed" });
+	// Nor can one begin or finish the other's.
+	await expect(vault.beginSignIn(brokers, signal())).rejects.toThrow();
+	await expect(broker.finishSignIn(own(vaults), signal())).rejects.toThrow();
+	expect(fake.beginSignIn).toHaveBeenCalledTimes(2);
+	expect(fake.finishSignIn).not.toHaveBeenCalled();
+	await vault.finishSignIn(own(vaults), signal());
+	expect(fake.finishSignIn).toHaveBeenCalledOnce();
+});
