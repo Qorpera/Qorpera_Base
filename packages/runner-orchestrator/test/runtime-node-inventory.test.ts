@@ -113,6 +113,11 @@ function fixture() {
 	};
 	return { policy, context, inventory, host };
 }
+/** An own key named like this, as JSON.parse makes one. A plain assignment of
+ * `__proto__` would set the object's prototype instead. */
+function ownKey<T>(target: Record<string, T>, key: string, value: T) {
+	Object.defineProperty(target, key, { value, enumerable: true, writable: true, configurable: true });
+}
 describe("complete host inventory reconciliation", () => {
 	it.each(["uuid", "project", "name", "configuration"])("blocks replacement of an observed physical %s", (fault) => {
 		const f = fixture(),
@@ -189,6 +194,27 @@ describe("complete host inventory reconciliation", () => {
 		const before = runtimeNodeInstanceConfigurationSha256(legacy);
 		legacy.devices[`data-${worker}`] = { type: "disk", source: "/srv/coding/data", path: "/workspace/x" };
 		expect(runtimeNodeInstanceConfigurationSha256(legacy)).not.toBe(before);
+	});
+	// The LXD client refuses such a device (lxd-host-inventory.test.ts). Should a
+	// record still carry one as its own key, the digests count it like any other.
+	it.each([0, 3])("counts a host-path disk named __proto__ in a machine's digest (instance %s)", (index) => {
+		const f = fixture(),
+			i = f.inventory.instances[index];
+		if (index === 3)
+			i.config["user.qorpera.schema"] = i.expandedConfig["user.qorpera.schema"] = "qorpera.lxd-coding-machine/v1";
+		f.context.allocations[index].physical = {
+			project: i.project,
+			name: i.name,
+			physicalId: i.config["volatile.uuid"],
+			configurationSha256: runtimeNodeInstanceConfigurationSha256(i),
+		};
+		expect(reconcileRuntimeNodeInventory(f.inventory, f.context).state).toBe("ready");
+		for (const devices of [i.devices, i.expandedDevices])
+			ownKey(devices, "__proto__", { type: "disk", source: "/", path: "/host", required: "true" });
+		expect(Object.keys(i.expandedDevices)).toEqual(["__proto__"]);
+		const result = reconcileRuntimeNodeInventory(f.inventory, f.context);
+		expect(result.entries[index].reason).toBe("INSTANCE_AUTHORITY_DIFFERS");
+		expect(result.state).toBe("unavailable");
 	});
 	it("matches all three physical provider types with exact ledger costs across projects", () => {
 		const f = fixture(),
@@ -455,6 +481,16 @@ describe("shared execution host identity devices (2026-09-27)", () => {
 			change(g.i);
 			expect(reconcileRuntimeNodeInventory(g.inventory, g.context).state).toBe("unavailable");
 		}
+	});
+	it("a device named __proto__ is neither an identity nor left out of the digest", () => {
+		const f = execHost();
+		f.attach(randomUUID());
+		expect(reconcileRuntimeNodeInventory(f.inventory, f.context).state).toBe("ready");
+		for (const devices of [f.i.devices, f.i.expandedDevices])
+			ownKey(devices, "__proto__", { type: "disk", source: "/var/lib/lxd", path: "/host" });
+		const result = reconcileRuntimeNodeInventory(f.inventory, f.context);
+		expect(result.state).toBe("unavailable");
+		expect(result.entries[4]).toMatchObject({ reason: "INSTANCE_AUTHORITY_DIFFERS" });
 	});
 	it("declares identity volumes only for a virtual machine, with exactly pool and source prefix", () => {
 		const f = execHost();
@@ -978,6 +1014,18 @@ describe("image build space (identical nodes, 2026-09-28)", () => {
 			"a GPU",
 			(i) => {
 				i.expandedDevices.g = { type: "gpu" };
+			},
+		],
+		[
+			"a host path disk named __proto__",
+			(i) => {
+				ownKey(i.expandedDevices, "__proto__", { type: "disk", source: "/", path: "/host" });
+			},
+		],
+		[
+			"a configuration key named __proto__",
+			(i) => {
+				ownKey(i.expandedConfig, "__proto__", "true");
 			},
 		],
 	])("refuses a build machine with %s", (_, change) => {
