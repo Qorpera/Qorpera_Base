@@ -64,6 +64,8 @@ function fixture(options: {
 	unchanged?: boolean;
 	envelopeSha256?: string;
 	change?: (answer: Record<string, unknown>) => Record<string, unknown>;
+	/** The idle take hands over this login (else no login is due). */
+	idle?: boolean;
 }) {
 	const keyId = "company-kek-1";
 	const wrappingKey = randomBytes(32);
@@ -117,6 +119,23 @@ function fixture(options: {
 			released: true,
 			status: "active",
 		})),
+		takeIdleModelLoginRenewal: vi.fn(async () => {
+			if (!options.idle) return { schema: "qorpera.model-login-idle-renewal/v1", renewal: null };
+			const answer: Record<string, unknown> = {
+				schema: "qorpera.model-login-idle-renewal/v1",
+				loginId,
+				companyId,
+				computeIdentityId: run.computeIdentityId,
+				version: 3,
+				keyId,
+				encryptedEnvelopeBase64: Buffer.from(envelope).toString("base64"),
+				envelopeSha256: options.envelopeSha256 ?? createHash("sha256").update(envelope).digest("hex"),
+				accessIssuedAt: stored.accessIssuedAt,
+				accessExpiresAt: stored.accessExpiresAt,
+				renewal: { token: renewalToken, baseVersion: 3, keyId },
+			};
+			return options.change ? options.change(answer) : answer;
+		}),
 	};
 	return { authority, keyring, wrappingKey, run, loginId, companyId, identity, renewalToken };
 }
@@ -380,6 +399,124 @@ it("refuses an answer for another identity, a renewal of another version, or an 
 			);
 		else expect(f.authority.releaseModelLoginRenewal).not.toHaveBeenCalled();
 	}
+});
+
+it("renews an idle login under the lock it takes and saves the next version for that login", async () => {
+	const stored = codexLogin({ ageSeconds: 500_000, lifeSeconds: 864_000, refresh: "rt-old" });
+	const renewed = codexLogin({ ageSeconds: 0, lifeSeconds: 864_000, refresh: "rt-new" });
+	const f = fixture({ stored, idle: true });
+	const renewer: ModelLoginRenewer = {
+		renew: vi.fn(async () => ({ outcome: "renewed" as const, authJson: renewed })),
+	};
+	const vault = new CloudModelLoginVault({ authority: f.authority, keyring: f.keyring, renewer });
+	await expect(vault.renewIdle(new AbortController().signal)).resolves.toBe("renewed");
+	expect(renewer.renew).toHaveBeenCalledWith(stored, expect.any(AbortSignal));
+	expect(f.authority.issueModelLogin).not.toHaveBeenCalled();
+	const commit = vi.mocked(f.authority.commitModelLoginRenewal).mock.calls[0]?.[0] as {
+		loginId: string;
+		token: string;
+		baseVersion: number;
+		encryptedEnvelope: Uint8Array;
+		accessExpiresAt: string;
+	};
+	expect(commit).toMatchObject({
+		loginId: f.loginId,
+		token: f.renewalToken,
+		baseVersion: 3,
+		accessExpiresAt: parseCodexLogin(renewed).accessExpiresAt,
+	});
+	await expect(
+		withCloudSecretFields(commit.encryptedEnvelope, f.wrappingKey, { ...f.identity, version: 4 }, async (fields) =>
+			tokens(fields[MODEL_LOGIN_FIELD] as string),
+		),
+	).resolves.toMatchObject({ refresh_token: "rt-new" });
+	expect(f.authority.releaseModelLoginRenewal).not.toHaveBeenCalled();
+});
+
+it("takes no idle login when none is due or without a renewer", async () => {
+	const stored = codexLogin({ ageSeconds: 60, lifeSeconds: 864_000, refresh: "rt" });
+	const renewer: ModelLoginRenewer = { renew: vi.fn() };
+	const due = fixture({ stored });
+	await expect(
+		new CloudModelLoginVault({ authority: due.authority, keyring: due.keyring, renewer }).renewIdle(
+			new AbortController().signal,
+		),
+	).resolves.toBe("none");
+	expect(due.authority.takeIdleModelLoginRenewal).toHaveBeenCalledTimes(1);
+	const bare = fixture({ stored, idle: true });
+	await expect(
+		new CloudModelLoginVault({ authority: bare.authority, keyring: bare.keyring }).renewIdle(
+			new AbortController().signal,
+		),
+	).resolves.toBe("none");
+	expect(bare.authority.takeIdleModelLoginRenewal).not.toHaveBeenCalled();
+	expect(renewer.renew).not.toHaveBeenCalled();
+});
+
+it("gives an idle login's lock back when the renewal is refused, fails or the answer is unreadable", async () => {
+	const stored = codexLogin({ ageSeconds: 500_000, lifeSeconds: 864_000, refresh: "rt-old" });
+	const refused = fixture({ stored, idle: true });
+	const refusing: ModelLoginRenewer = {
+		renew: vi.fn(async () => ({ outcome: "refused" as const, reason: "refresh_token_reused" })),
+	};
+	await expect(
+		new CloudModelLoginVault({ authority: refused.authority, keyring: refused.keyring, renewer: refusing }).renewIdle(
+			new AbortController().signal,
+		),
+	).resolves.toBe("failed");
+	expect(refused.authority.releaseModelLoginRenewal).toHaveBeenCalledWith(
+		{
+			loginId: refused.loginId,
+			token: refused.renewalToken,
+			baseVersion: 3,
+			permanent: true,
+			reason: "refresh_token_reused",
+		},
+		expect.any(AbortSignal),
+	);
+	expect(refused.authority.commitModelLoginRenewal).not.toHaveBeenCalled();
+
+	const renewer: ModelLoginRenewer = { renew: vi.fn() };
+	const tampered = fixture({ stored, idle: true, envelopeSha256: "0".repeat(64) });
+	await expect(
+		new CloudModelLoginVault({ authority: tampered.authority, keyring: tampered.keyring, renewer }).renewIdle(
+			new AbortController().signal,
+		),
+	).rejects.toThrow("Model login envelope is invalid");
+	expect(tampered.authority.releaseModelLoginRenewal).toHaveBeenCalledWith(
+		{
+			loginId: tampered.loginId,
+			token: tampered.renewalToken,
+			baseVersion: 3,
+			permanent: false,
+			reason: "issue_unreadable",
+		},
+		expect.any(AbortSignal),
+	);
+
+	const otherVersion = fixture({
+		stored,
+		idle: true,
+		change: (answer) => ({ ...answer, renewal: { ...(answer.renewal as object), baseVersion: 2 } }),
+	});
+	await expect(
+		new CloudModelLoginVault({ authority: otherVersion.authority, keyring: otherVersion.keyring, renewer }).renewIdle(
+			new AbortController().signal,
+		),
+	).rejects.toThrow("Model login renewal is invalid");
+
+	// A login sealed for another login id cannot be opened: the lock goes back, nothing is renewed.
+	const unreadable = fixture({ stored, idle: true, change: (answer) => ({ ...answer, loginId: randomUUID() }) });
+	await expect(
+		new CloudModelLoginVault({ authority: unreadable.authority, keyring: unreadable.keyring, renewer }).renewIdle(
+			new AbortController().signal,
+		),
+	).resolves.toBe("failed");
+	expect(vi.mocked(unreadable.authority.releaseModelLoginRenewal).mock.calls[0]?.[0]).toMatchObject({
+		permanent: false,
+		reason: "login_unreadable",
+	});
+	expect(renewer.renew).not.toHaveBeenCalled();
 });
 
 it("serves the route only with the runtime token, uncached, and the client reads it", async () => {
