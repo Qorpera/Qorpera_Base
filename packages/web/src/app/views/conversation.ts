@@ -39,7 +39,7 @@ import { ReceivedAttachments } from "../../ui/received-attachments.ts";
 import { runFailureCard, runFailureInterrupted, runFailureReason } from "../../ui/run-failure.ts";
 import { uiScale } from "../../ui/scale.ts";
 import { composerSkeleton, messagesSkeleton, threadIdentitySkeleton } from "../../ui/skeleton.ts";
-import { SkillMentions } from "../../ui/skill-mentions.ts";
+import { markSkillNames, SkillMentions } from "../../ui/skill-mentions.ts";
 import { type AgentState, answersInteraction, type CompanyController, type ConversationState } from "../company.ts";
 import type { WorkspaceActions } from "../workspace-actions.ts";
 import { AgentDetails } from "./agent-details.ts";
@@ -205,26 +205,27 @@ export class ConversationView {
 			},
 		});
 		const skills = actions.skills;
-		this.#skills = new SkillMentions(
-			this.#composer,
-			skills
+		this.#skills = new SkillMentions(this.#composer, {
+			load: skills
 				? (signal) => {
 						// An agent's own thread offers its own skills too; a group chat, the company's.
 						const session = company.store.get().sessions.find((item) => item.sessionId === sessionId);
 						return skills(this.#isRoom ? null : (session?.staffAgentId ?? null), signal);
 					}
 				: undefined,
-			this.#lifetime.signal,
-			() => {
+			signal: this.#lifetime.signal,
+			ownerName: () => {
 				const session = company.store.get().sessions.find((item) => item.sessionId === sessionId);
 				return company.staffById(session?.staffAgentId)?.displayName;
 			},
 			// The skills take the "···" menu's place above the field; the two never stand together.
 			// (Opening "···" moves focus off the field, which closes the skills.)
-			() => {
+			opened: () => {
 				if (!this.#menu.hidden) this.#setMenu(false, false);
 			},
-		);
+			// Messages already written mark the names of skills once the list is known.
+			listed: () => this.#markSkills(),
+		});
 		this.#send = h(
 			"button",
 			{
@@ -558,6 +559,14 @@ export class ConversationView {
 		this.#composerShell.style.height = `${this.#composer.getBoundingClientRect().height + frame + this.#attachments.el.getBoundingClientRect().height}px`;
 		// A new size can show or hide the field's scrollbar, which moves where its lines wrap.
 		this.#skills.sync();
+	}
+
+	/** Written messages show skill names as the composer does. Only message text is marked:
+	 * markSkillNames leaves code and links alone, and marked text is not marked twice. */
+	#markSkills(): void {
+		const names = this.#skills.names();
+		if (!names.size) return;
+		for (const bubble of this.#messages.querySelectorAll(".message .bubble")) markSkillNames(bubble, names);
 	}
 
 	#setMenu(open: boolean, restoreFocus = true): void {
@@ -1321,6 +1330,8 @@ export class ConversationView {
 				cursor = node.nextSibling;
 			}
 		}
+		this.#markSkills();
+		for (const item of items) if (item.kind === "member" || item.kind === "agent") this.#skills.want(item.text);
 		// A keyboard user reading the row keeps it through a state change or a new message.
 		if (rowFocus) this.#messages.querySelector<HTMLElement>(".thread-activity")?.focus({ preventScroll: true });
 		// An approval card keeps the keyboard through a redraw: the Always allow editor a member is

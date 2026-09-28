@@ -9,7 +9,8 @@ import { CompanyController } from "../src/app/company.ts";
 import { ConversationView } from "../src/app/views/conversation.ts";
 import type { WorkspaceActions } from "../src/app/workspace-actions.ts";
 import { loadSkillSuggestions, SkillLists, type SkillSuggestion } from "../src/cloud/skills.ts";
-import { fixture, id, profileA, session, settle, staff, team, userA } from "./fixtures.ts";
+import type { TranscriptItem } from "../src/cloud/transcript.ts";
+import { fixture, id, profileA, session, settle, staff, team, timestamp, userA } from "./fixtures.ts";
 
 const SKILLS: SkillSuggestion[] = [
 	{ name: "triage", description: "Sort new tickets by urgency.", scope: "agent" },
@@ -33,11 +34,18 @@ afterEach(() => {
 	localStorage.clear();
 });
 
-function setup(actions: WorkspaceActions = {}, draft?: string) {
+function setup(actions: WorkspaceActions = {}, draft?: string, items: TranscriptItem[] = []) {
 	const f = fixture();
 	const company = new CompanyController(f.api, profileA, userA.id);
 	company.store.set({ team, staff: [staff], sessions: [{ ...session, staffAgentId: staff.id }], loading: false });
 	if (draft !== undefined) company.conversation(session.sessionId).set({ draft });
+	// Messages the test places stay: the thread's own read of the transcript never lands.
+	if (items.length) vi.mocked(f.api.readSessionEvents).mockReturnValue(new Promise(() => {}));
+	if (items.length)
+		company.conversation(session.sessionId).set({
+			loading: false,
+			projection: { items, hiddenCount: 0, lastSequence: items.length },
+		});
 	const view = new ConversationView(company, session.sessionId, actions);
 	document.body.append(view.el);
 	dispose = () => {
@@ -330,6 +338,68 @@ describe("calling a skill from the composer", () => {
 		await settle();
 		expect(f.menu.hidden).toBe(false);
 		expect(other.hidden).toBe(true);
+	});
+
+	it("marks skill names in written messages, never in code or links, once the list is known", async () => {
+		let answer!: (skills: SkillSuggestion[]) => void;
+		const skills = vi.fn(
+			() =>
+				new Promise<SkillSuggestion[]>((resolve) => {
+					answer = resolve;
+				}),
+		);
+		const items: TranscriptItem[] = [
+			{
+				kind: "member",
+				id: id(84),
+				sequence: 1,
+				authorUserId: userA.id,
+				text: "Please run /monthly-vat-report and /nope today",
+				attachmentCount: 0,
+				createdAt: timestamp,
+			},
+			{
+				kind: "agent",
+				id: id(85),
+				sequence: 2,
+				text: "Done with /monthly-vat-report. Next time call `/triage` or see [/triage](https://example.invalid) or /triage.",
+				attachmentCount: 0,
+				phase: "final",
+				createdAt: timestamp,
+				authorUserId: userA.id,
+			},
+		];
+		const f = setup({ skills }, undefined, items);
+		await settle();
+		// Written messages that may name a skill read the list without a "/" being typed.
+		expect(skills).toHaveBeenCalledOnce();
+		expect(f.view.el.querySelectorAll(".message-skill")).toHaveLength(0);
+		answer(SKILLS);
+		await settle();
+		const marked = (selector: string) =>
+			[...f.view.el.querySelectorAll(`${selector} .message-skill`)].map((span) => span.textContent);
+		expect(marked(".mine .bubble")).toEqual(["/monthly-vat-report"]);
+		expect(marked(".from-agent .bubble")).toEqual(["/monthly-vat-report", "/triage"]);
+		expect(f.view.el.querySelector(".from-agent code")?.textContent).toBe("/triage");
+		expect(f.view.el.querySelector(".from-agent a .message-skill")).toBeNull();
+		// The message text itself is unchanged, only marked.
+		expect(f.view.el.querySelector(".mine .bubble")?.textContent).toBe(
+			"Please run /monthly-vat-report and /nope today",
+		);
+		// A redraw marks the new nodes again, once.
+		f.company.conversation(session.sessionId).set({
+			projection: {
+				items: [
+					...items,
+					{ ...items[0]!, id: id(86), sequence: 3, text: "And /customer-refund." },
+				] as TranscriptItem[],
+				hiddenCount: 0,
+				lastSequence: 3,
+			},
+		});
+		await settle();
+		expect(marked(".mine .bubble")).toEqual(["/monthly-vat-report", "/customer-refund"]);
+		expect(skills).toHaveBeenCalledOnce();
 	});
 
 	it("leaves the composer as it was without a skills adapter", () => {

@@ -23,6 +23,47 @@ let menus = 0;
 
 export type SkillLoader = (signal: AbortSignal) => Promise<readonly SkillSuggestion[]>;
 
+export interface SkillMentionOptions {
+	/** Reads the conversation's skills; without it the composer offers none and colours nothing. */
+	readonly load: SkillLoader | undefined;
+	/** The view's lifetime: listeners end with it, and a list that lands after it is ignored. */
+	readonly signal: AbortSignal;
+	/** The conversation's agent, who labels its own skills. */
+	readonly ownerName: () => string | undefined;
+	/** The menu opened (so the composer's other menu can close). */
+	readonly opened?: () => void;
+	/** A new list of skills arrived (so written messages can mark their names). */
+	readonly listed?: () => void;
+}
+
+/** Marks the names of known skills in rendered message text: whole "/name" words in text
+ * outside code and links become spans. Running it again over text it marked changes nothing. */
+export function markSkillNames(root: ParentNode, names: ReadonlySet<string>): void {
+	if (!names.size) return;
+	const texts: Text[] = [];
+	const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+		acceptNode: (node) =>
+			node.parentElement?.closest("code, pre, a, kbd, .message-skill")
+				? NodeFilter.FILTER_REJECT
+				: NodeFilter.FILTER_ACCEPT,
+	});
+	for (let node = walker.nextNode(); node; node = walker.nextNode()) texts.push(node as Text);
+	for (const text of texts) {
+		const value = text.data;
+		const parts: (Node | string)[] = [];
+		let last = 0;
+		for (const match of value.matchAll(TOKEN)) {
+			const [, before = "", name = ""] = match;
+			if (!names.has(name)) continue;
+			const start = match.index + before.length;
+			const end = start + name.length + 1;
+			parts.push(value.slice(last, start), h("span", { class: "message-skill" }, value.slice(start, end)));
+			last = end;
+		}
+		if (parts.length) text.replaceWith(...parts, value.slice(last));
+	}
+}
+
 interface Ranked {
 	readonly skill: SkillSuggestion;
 	/** 0 the name starts with the query, 1 the name contains it, 2 only the description does. */
@@ -46,6 +87,7 @@ export class SkillMentions {
 	readonly #signal: AbortSignal;
 	readonly #ownerName: () => string | undefined;
 	readonly #opened: () => void;
+	readonly #listed: () => void;
 	#skills: readonly SkillSuggestion[] | undefined;
 	#loadedAt = 0;
 	#failedAt = Number.NEGATIVE_INFINITY;
@@ -61,18 +103,14 @@ export class SkillMentions {
 	/** What the menu shows now: the same list and query draw nothing new. */
 	#drawn: { skills: readonly SkillSuggestion[] | undefined; query: string; loading: boolean } | undefined;
 
-	constructor(
-		input: HTMLTextAreaElement,
-		load: SkillLoader | undefined,
-		signal: AbortSignal,
-		ownerName: () => string | undefined,
-		opened: () => void = () => {},
-	) {
+	constructor(input: HTMLTextAreaElement, options: SkillMentionOptions) {
+		const { load, signal } = options;
 		this.#input = input;
 		this.#load = load;
 		this.#signal = signal;
-		this.#ownerName = ownerName;
-		this.#opened = opened;
+		this.#ownerName = options.ownerName;
+		this.#opened = options.opened ?? (() => {});
+		this.#listed = options.listed ?? (() => {});
 		this.#highlight = h("div", { class: "composer-highlight", "aria-hidden": "true" });
 		this.field = h("div", { class: "composer-field" }, this.#highlight, input);
 		const id = `skill-menu-${++menus}`;
@@ -108,7 +146,7 @@ export class SkillMentions {
 	sync(): void {
 		if (!this.#load) return;
 		const text = this.#input.value;
-		const known = new Set(this.#skills?.map((skill) => skill.name));
+		const known = this.names();
 		const parts: (Node | string)[] = [];
 		let last = 0;
 		for (const match of text.matchAll(TOKEN)) {
@@ -132,6 +170,17 @@ export class SkillMentions {
 		// The field's scrollbar, when a long draft shows one, narrows its text; the copy follows.
 		this.#highlight.style.right = `${this.#input.offsetWidth - this.#input.clientWidth}px`;
 		this.#highlight.scrollTop = this.#input.scrollTop;
+	}
+
+	/** The names of the skills known now: empty until the list is first read. */
+	names(): ReadonlySet<string> {
+		return new Set(this.#skills?.map((skill) => skill.name));
+	}
+
+	/** Reads the list when text elsewhere (a written message) may name a skill; a list that is
+	 * fresh, being read or failed a moment ago is left as it is. */
+	want(text: string): void {
+		if (MAY_NAME_SKILL.test(text)) void this.#fetch();
 	}
 
 	/** Moves through the open menu, picks or closes it. True when the key was the menu's. */
@@ -190,8 +239,10 @@ export class SkillMentions {
 			.then(() => load(this.#signal))
 			.then(
 				(skills) => {
+					const changed = skills !== this.#skills;
 					this.#skills = skills;
 					this.#loadedAt = Date.now();
+					if (changed && !this.#signal.aborted) this.#listed();
 				},
 				() => {
 					this.#failedAt = Date.now();
