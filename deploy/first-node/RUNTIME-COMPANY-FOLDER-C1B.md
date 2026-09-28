@@ -92,7 +92,7 @@ C1a's commit already requires. "Plain" means a plain read. The pause lives in
 | --- | --- | --- | --- |
 | 0 | a replay: the operation key, if it exists | plain | a stored outcome is returned at once, even while paused |
 | 0 | the pause | plain | paused (55000). An effect refuses before it locks anything, so stop never queues behind new effects |
-| 1 | the operation key | claim | – |
+| 1 | the operation key | claim | a concurrent claim that commits first makes this a replay |
 | 2 | the job, by `jobId` and `runId` | `FOR KEY SHARE` | not `leased`; another runner or assignment; `lease_expires_at <= clock_timestamp()` (42501) |
 | 2 | the run | plain | another environment; `source_kind = 'proposal_review'`; past its deadline; its compute is unavailable (`qorpera_execution_compute_available`: the identity is active, no recovery is pending, the epochs match, and the logical computer is active and has the job's capability) (42501) |
 | 3 | the folder fence | `FOR KEY SHARE`, then re-read the pause | paused (55000) |
@@ -105,7 +105,9 @@ C1a's commit already requires. "Plain" means a plain read. The pause lives in
 **The run's wake.** It is found by `qorpera_wake_occurrences.run_id`, which is
 unique.
 - **Every kind:** when the wake names a session, the session is open, in this
-  company, and bound to this agent (20260920030500:61-67).
+  company, and bound to this agent, with today's variants carried over: a
+  room session binds through the room, and a routine run's session follows
+  the routine audience rule (20260920030500:61-67; 20260922170000:277-280).
 - **By kind:**
 
   | Kind | Checks | Rows locked |
@@ -168,13 +170,19 @@ resolver:
     not `member_private` or is the requester's own, and the agent is allowed;
   - any other audience: refused. Runs are only `company` or `member_private`
     (20260828019300:142).
-- **A worker** (`workerAccess` set) follows today's worker rule
-  (20260922170000:180-199; notebook layer 20260924020000:23-27):
+- **An in-house worker** (`workerAccess` set and `sessionKind =
+  'in_house'`) follows today's worker rule (20260922170000:180-199; notebook
+  layer 20260924020000:23-27):
   - with `access = 'read'` it writes nothing. Its todo's `brief.md` and
     `results.md` are platform-only on folder-v2 (#421 doc §2);
   - with `access = 'write'` it writes as its agent.
-- **A coding session** has `agents` and `rules`, and everything below them,
-  read-only (contract 5.6). The rule applies to each unit's `from` and `to`
+
+  A coding worker's `access` is always `read` (dispatch forces it,
+  20260922230000:376-378). There it describes the dispatch's sources, not
+  folder writes, so the worker rule does not apply to coding sessions.
+- **A coding session** writes as agent ∩ member, with `agents` and `rules`,
+  and everything below them, read-only (contract 5.6). The rule refuses
+  writes only, so a coding session can still copy a file out of `agents/`. The rule applies to each unit's `from` and `to`
   paths, the two folders themselves included. Until C2, `decide` is a stub,
   so this rule is what refuses a coding session deleting a seeded folder.
 - **A subtree unit** checks the same boundaries as C1a
@@ -198,7 +206,8 @@ resolver:
   - Default agent grants target only the root (20260926035000:158-165), so
     nothing else grants agents write on `rules/`.
   - F2's `rules_owner_only` reason is unreachable, because the resource
-    refuses first, as `denied`.
+    refuses first, as `denied`. So is `coding_session_read_only`: the coding
+    rule refuses first.
 - **Members' private folders.** They stay implicit, as today and as in C1a.
 - **The code rules** (notebook, worker and todo, hiring) follow the agent's
   folder by id, which needs the `agent.md` index. They come with C2.
@@ -214,7 +223,8 @@ resources.
   (C1a).
 - Core §2 promised a unique index on the folder key. The shared unique key
   folds ASCII only, and snapshot-v1 rows may already collide, so a plain
-  unique index cannot be added to the shared table. The tie rule plus C1b-2's
+  unique index is not added to the shared table. (One on a trigger-set,
+  folder-v2-only key could be; the tie rule, which fails closed, is enough.) The tie rule plus C1b-2's
   mutators, which refuse to create a tie, take its place. Core §2 is updated
   to say so.
 - `qorpera_folder_member_keys_allowed` still scans the company's resources
@@ -243,8 +253,8 @@ resources.
 - `actor_kind = 'staff_agent'` and `actor_id` = the agent; the requester;
   `run_id`; `causal_wake_id`;
 - `audience` (the existing jsonb): `{kind, userId}`;
-- the provider connection and the runtime bundle (existing columns), from the
-  run;
+- the provider connection, from the run's sponsor version, and the runtime
+  bundle, from the run (existing columns);
 - `approver_user_id` (existing): the answering member of an answered `ask`.
 
 New columns:
@@ -362,8 +372,9 @@ of 2026-09-28 07:07Z), and calls them from the commit:
 - **Keys.** A uuid table's key is the uuid as text. Keys with no single uuid
   are encoded:
   - staff: `profile_id:staff_agent_id`;
-  - room members: `room_id:principal_kind:principal_id`, which sorts by room,
-    then kind, then id: today's order (20260920030500:48-51).
+  - room members: `room_id:principal_kind:principal_id`. Sorted with
+    `collate "C"`, this orders by room, then kind, then id, which is today's
+    order (20260920030500:52).
 
   F2's claim keys keep F2's encoding.
 
@@ -401,8 +412,10 @@ of 2026-09-28 07:07Z), and calls them from the commit:
     - an admin writes through the member path;
     - an agent reads it after its root grant is revoked, and cannot write
       it;
-  - a read-access worker writes nothing, and a write-access worker writes
-    as its agent;
+  - a read-access in-house worker writes nothing, and a write-access one
+    writes as its agent;
+  - a coding session saves under `code/` and on an ordinary shared path, is
+    denied under `agents` and `rules`, and can copy a file out of `agents/`;
   - the coding rule on `agents` and `rules` themselves, and below them, as a
     `from` and as a `to`.
 - **Operation keys:**

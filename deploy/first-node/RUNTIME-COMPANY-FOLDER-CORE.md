@@ -152,8 +152,8 @@ All tables are keyed by company environment.
     (`qorpera_folder_path_resource`). When two resources share one folder key
     (possible while the shared unique key folds ASCII only), the path has no
     covering resource and only the platform reaches it. C1b-2's folder
-    resource mutators refuse to create a tie. A unique index on the folder
-    key cannot be added to the shared table, because snapshot-v1 rows may
+    resource mutators refuse to create a tie. A plain unique index on the
+    folder key is not added to the shared table, because snapshot-v1 rows may
     already collide (C1B §3). Lookups use an expression index on
     `(environment_id, qorpera_folder_key(path))`. `snapshot-v1` keeps today's key.
   - **After a PostgreSQL major upgrade**, the Unicode tables behind
