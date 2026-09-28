@@ -36,8 +36,10 @@ environment.
   is full when `max_screens` of its screens are in use. Before, an agent that
   had ever used a computer kept a screen row there for good and rows were
   capped at `max_screens`, so a computer was full after six different agents
-  had ever used it. Rows now go up to display 32; past that the screen unused
-  for longest changes hands with a new generation and epoch.
+  had ever used it. Rows stay capped at `max_screens` (the guest keeps a
+  desktop for every open row); once every display number has a row, the screen
+  unused for longest changes hands, closed with a new generation and epoch, so
+  the guest closes the previous agent's desktop.
 - **One computer per agent at a time.** Taking a seat on one computer while
   the agent's screen on another running computer is in use is refused
   (`SCREEN_OCCUPIED` for runs, `AGENT_ON_OTHER_COMPUTER` for members).
@@ -76,6 +78,17 @@ environment.
   offered it; `room`: prepared hosts have no room). An owner or admin opening an
   agent's computer when every one is full adds the next one, as an agent can.
 
+**Switch.** `qorpera_runtime_office_scale_out` (one row, off by default) keeps
+placement on each company's first computer, exactly as before (with seats),
+until every runtime can reach any of a company's computers: an old runtime
+refuses a computer other than its one configured office and would fail the
+run. The release that ships company native routes, with the routes
+configured, turns it on:
+`update public.qorpera_runtime_office_scale_out set enabled = true, changed_at = clock_timestamp();`
+
+The new helpers are granted to the owners of the functions that call them
+(runtime authority functions have private owners in production).
+
 Lock order: company GC fence, then the environment's seat lock
 (`qorpera_lock_runtime_office_seats`, a transaction advisory lock), then
 computer rows. Taking a seat takes the seat lock before the computer row;
@@ -87,10 +100,9 @@ adding a computer takes the fence first.
   for it (see `deploy/office-fleet/README.md`). Until then its start waits
   (`waiting: setup`). Planning the host documents of a company's next computer
   from its first is a separate change (`qorpera-office-next-computer`).
-- **Runs reaching computer 2.** A native job reaches one configured office URL
-  and the routes file allows one route per company environment. Several routes
-  per company are a separate runtime change; until it lands, only computer 1
-  can serve agent runs.
+- **Runs reaching computer 2.** A native job reaches one configured office URL.
+  Company routes (`/office/{companyComputerId}/native`) are a separate runtime
+  change; the switch above stays off until it is live.
 - **Continuing elsewhere.** An agent waiting for a new computer continues when
   that computer activates, not when a seat frees on another computer
   meanwhile. A new message to the agent places it again at once.
@@ -104,4 +116,4 @@ adding a computer takes the fence first.
 registry, access, native authority and member RPCs (guest readiness is
 synthetic): seats and the lifetime-cap fix, adding computer 2 once, the wait
 reason, one computer per agent for members and runs, idle demand per computer,
-the start descriptor adding computer 3, and seat hand-over past display 32.
+the start descriptor adding computer 3, the switch, revoked access, and seat hand-over.

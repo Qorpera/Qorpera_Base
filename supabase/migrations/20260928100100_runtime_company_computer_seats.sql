@@ -10,10 +10,12 @@
 --    or drives it, a drain or takeover is pending, agent resources on it have
 --    not drained, or it was opened or touched in the last two minutes (the
 --    moment between a member opening it and the viewer connecting). A computer
---    is full when max_screens of its screens are in use. Rows are no longer
---    limited to max_screens: an agent gets a row on the lowest free display
---    number up to 32, and past that the screen unused for longest changes
---    hands. An agent works on one computer at a time.
+--    is full when max_screens of its screens are in use. Rows stay limited to
+--    max_screens (the guest keeps a desktop for every open row): an agent
+--    without a row gets a free display number, and once every number has a
+--    row the screen unused for longest changes hands; closing it makes the
+--    guest close the previous agent's desktop. An agent works on one computer
+--    at a time.
 --
 -- 2. Placement. qorpera_runtime_office_placement picks, for one agent:
 --    screen    its screen in use on a running computer;
@@ -37,9 +39,35 @@
 --    agents that are placed on it, not for every run of the company. The first
 --    computer keeps today's rule.
 --
+-- 4. A switch. Until the runtime can reach several computers of a company
+--    (native company routes), placement keeps to the company's first computer
+--    exactly as before, with seats. The release that ships those runtimes turns
+--    qorpera_runtime_office_scale_out on.
+--
 -- Lock order: company GC fence, then the environment's seat lock, then computer
 -- rows. Taking a seat (native acquire, a member opening a screen) takes the
 -- seat lock before the computer row; adding a computer takes the fence first.
+
+create table public.qorpera_runtime_office_scale_out (
+	singleton boolean primary key default true check (singleton),
+	enabled boolean not null default false,
+	changed_at timestamptz not null default clock_timestamp()
+);
+insert into public.qorpera_runtime_office_scale_out(singleton, enabled) values (true, false);
+alter table public.qorpera_runtime_office_scale_out enable row level security;
+revoke all on public.qorpera_runtime_office_scale_out from public, anon, authenticated, service_role;
+comment on table public.qorpera_runtime_office_scale_out is
+	'On once every runtime can reach any of a company''s computers (company native routes); until then placement keeps to computer 1.';
+
+create function public.qorpera_runtime_office_scale_out_enabled()
+returns boolean
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+	select coalesce((select enabled from public.qorpera_runtime_office_scale_out where singleton), false)
+$$;
 
 create function public.qorpera_lock_runtime_office_seats(p_environment_id uuid)
 returns void
@@ -118,7 +146,7 @@ set search_path = ''
 as $$
 declare v_screen public.qorpera_runtime_office_screens%rowtype; v_ordinal integer;
 begin
-	select slot into v_ordinal from generate_series(1, 32) slot
+	select slot into v_ordinal from generate_series(1, p_office.max_screens) slot
 		where not exists(select 1 from public.qorpera_runtime_office_screens where office_id = p_office.id and ordinal = slot)
 		order by slot limit 1;
 	if v_ordinal is not null then
@@ -127,7 +155,8 @@ begin
 		return v_screen;
 	end if;
 	-- Every display number has a row: the screen unused for longest changes hands.
-	-- A new generation and epoch fence everything bound to its previous agent.
+	-- Closed with a new generation and epoch: the guest closes the previous agent's
+	-- desktop, and everything bound to it is fenced.
 	select s.* into v_screen from public.qorpera_runtime_office_screens s
 		where s.office_id = p_office.id and not public.qorpera_runtime_office_screen_in_use(s)
 		order by s.touched_at, s.ordinal limit 1 for update;
@@ -158,6 +187,25 @@ begin
 				and a.state = 'active'
 			where o.environment_id = p_environment_id and o.profile_id = p_profile_id and o.state <> 'retired') then
 		return '{"decision":"denied"}'::jsonb;
+	end if;
+	if not public.qorpera_runtime_office_scale_out_enabled() then
+		-- Only the company's first computer, as before several computers: screen
+		-- tools while it runs (a full computer refuses at the seat), otherwise start it.
+		select o.* into v_office from public.qorpera_runtime_offices o
+			where o.environment_id = p_environment_id and o.profile_id = p_profile_id and o.state <> 'retired'
+			order by o.computer_number limit 1;
+		if not found then return '{"decision":"none"}'::jsonb; end if;
+		return jsonb_build_object('officeId', v_office.id, 'decision', case
+			when v_office.state = 'active' then
+				case when exists(select 1 from public.qorpera_runtime_office_screens s where s.office_id = v_office.id
+					and s.staff_agent_id = p_staff_agent_id and public.qorpera_runtime_office_screen_in_use(s)) then 'screen' else 'room' end
+			when v_office.state in ('provisioning', 'recovering') and exists(select 1 from public.qorpera_runtime_office_start_intents i
+				where i.office_id = v_office.id and i.computer_generation = v_office.generation and i.state <> 'cancelled') then 'starting'
+			when v_office.state in ('provisioning', 'recovering') then 'unstarted'
+			when public.qorpera_runtime_office_idle_pending(v_office) then
+				case when public.qorpera_runtime_office_maintenance(v_office) ->> 'state' = 'resumed' then 'starting' else 'stopped' end
+			when v_office.state = 'maintenance' and public.qorpera_runtime_office_maintenance(v_office) is not null then 'starting'
+			else 'none' end);
 	end if;
 	-- screen
 	select o.* into v_office from public.qorpera_runtime_offices o
@@ -204,7 +252,7 @@ begin
 	-- unstarted
 	select o.* into v_office from public.qorpera_runtime_offices o
 		join public.qorpera_runtime_office_access a on a.office_id = o.id and a.staff_agent_id = p_staff_agent_id and a.state = 'active'
-		where o.environment_id = p_environment_id and o.profile_id = p_profile_id and o.state = 'provisioning'
+		where o.environment_id = p_environment_id and o.profile_id = p_profile_id and o.state in ('provisioning', 'recovering')
 			and not exists(select 1 from public.qorpera_runtime_office_start_intents i
 				where i.office_id = o.id and i.computer_generation = o.generation)
 		order by o.computer_number limit 1;
@@ -245,7 +293,8 @@ as $$
 		else 'setup' end
 $$;
 
-revoke all on function public.qorpera_lock_runtime_office_seats(uuid),
+revoke all on function public.qorpera_runtime_office_scale_out_enabled(),
+	public.qorpera_lock_runtime_office_seats(uuid),
 	public.qorpera_runtime_office_screen_in_use(public.qorpera_runtime_office_screens),
 	public.qorpera_runtime_office_seats_taken(uuid, uuid),
 	public.qorpera_runtime_office_has_seat(public.qorpera_runtime_offices, uuid),
@@ -617,3 +666,35 @@ as $$
 $$;
 revoke all on function public.qorpera_runtime_office_setup_queue() from public, anon, authenticated, service_role;
 grant execute on function public.qorpera_runtime_office_setup_queue() to service_role;
+
+-- The runtime authority functions have private owners in production: the
+-- owners of the functions that call the new helpers must be able to run them.
+do $grant$
+declare v_owner name;
+begin
+	for v_owner in select distinct pg_get_userbyid(proowner) from pg_proc where oid = any(array[
+		'public.qorpera_native_office_descriptor(jsonb)'::regprocedure,
+		'public.qorpera_native_office_start_descriptor(jsonb,boolean)'::regprocedure,
+		'public.qorpera_native_office_start(jsonb,text,text,uuid,text)'::regprocedure,
+		'public.qorpera_native_office_screen(jsonb,jsonb,text,jsonb)'::regprocedure,
+		'public.qorpera_native_office_screen_v1(jsonb,jsonb,text,jsonb)'::regprocedure,
+		'public.qorpera_runtime_office_has_demand(public.qorpera_runtime_offices)'::regprocedure,
+		'public.qorpera_open_runtime_office_screen(jsonb,uuid)'::regprocedure,
+		'public.qorpera_member_agent_office(uuid,uuid)'::regprocedure,
+		'public.qorpera_runtime_office_setup_queue()'::regprocedure
+	]) loop
+		if v_owner in ('anon', 'authenticated', 'service_role', 'qorpera_secret_broker') then
+			raise exception 'Office seat function has an API owner'; end if;
+		execute format('grant execute on function public.qorpera_runtime_office_scale_out_enabled(),
+			public.qorpera_lock_runtime_office_seats(uuid),
+			public.qorpera_runtime_office_screen_in_use(public.qorpera_runtime_office_screens),
+			public.qorpera_runtime_office_seats_taken(uuid, uuid),
+			public.qorpera_runtime_office_has_seat(public.qorpera_runtime_offices, uuid),
+			public.qorpera_runtime_office_agent_elsewhere(public.qorpera_runtime_offices, uuid),
+			public.qorpera_runtime_office_take_seat(public.qorpera_runtime_offices, uuid),
+			public.qorpera_runtime_office_placement(uuid, uuid, uuid),
+			public.qorpera_runtime_office_start_wait(public.qorpera_runtime_offices),
+			public.qorpera_add_runtime_office_computer(uuid, text, uuid, uuid, uuid) to %I', v_owner);
+	end loop;
+end
+$grant$;

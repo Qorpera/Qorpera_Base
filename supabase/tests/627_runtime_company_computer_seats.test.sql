@@ -47,6 +47,14 @@ select pg_temp.wake_assert(pg_temp.open(pg_temp.scope(1),'30000000-0000-4000-800
 	'with both seats in use Carol gets none');
 select pg_temp.wake_assert(pg_temp.place('30000000-0000-4000-8000-000000000031')
 	=jsonb_build_object('decision','screen','officeId',(pg_temp.office(1)).id),'Bob is placed on his screen');
+-- Switched off (as it ships until the runtime reaches several computers): computer 1 only, as before.
+select pg_temp.wake_assert(pg_temp.place('30000000-0000-4000-8000-000000000032')
+	=jsonb_build_object('decision','room','officeId',(pg_temp.office(1)).id),
+	'switched off, Carol is offered computer 1 even when it is full, as before');
+select pg_temp.wake_assert(pg_temp.agent_office('30000000-0000-4000-8000-000000000032')->>'placement'='room'
+	and (select count(*)=1 from public.qorpera_runtime_offices where environment_id='30000000-0000-4000-8000-000000000020'),
+	'switched off, nobody adds a computer');
+update public.qorpera_runtime_office_scale_out set enabled=true;
 select pg_temp.wake_assert(pg_temp.place('30000000-0000-4000-8000-000000000032')='{"decision":"new"}'::jsonb,
 	'every running computer is full: Carol needs another computer');
 
@@ -90,16 +98,23 @@ select pg_temp.wake_assert(exists(select 1 from jsonb_array_elements(current_set
 select pg_temp.wake_assert(pg_temp.place('30000000-0000-4000-8000-000000000032')
 	=jsonb_build_object('decision','starting','officeId',(pg_temp.office(2)).id),'Carol waits for computer 2 to start');
 
--- 3. A seat nobody uses is free: Bob's seat ages, Carol gets computer 1 on display 3.
+-- 3. A seat nobody uses is free: Bob's seat ages and changes hands to Carol.
 select pg_temp.age('30000000-0000-4000-8000-000000000031');
 select pg_temp.wake_assert(pg_temp.place('30000000-0000-4000-8000-000000000032')
 	=jsonb_build_object('decision','room','officeId',(pg_temp.office(1)).id),'a free seat on a running computer comes first');
+select set_config('qorpera_test.bob_row',(select row_to_json(s)::text from public.qorpera_runtime_office_screens s
+	where office_id=(pg_temp.office(1)).id and staff_agent_id='30000000-0000-4000-8000-000000000031'),true);
 select set_config('qorpera_test.carol_screen',pg_temp.open(pg_temp.scope(1),'30000000-0000-4000-8000-000000000032')::text,true);
 select pg_temp.wake_assert(current_setting('qorpera_test.carol_screen')::jsonb->>'state'='open'
-	and current_setting('qorpera_test.carol_screen')::jsonb->>'screenOrdinal'='3',
-	'Carol gets a screen on display 3: rows are no longer limited to max_screens');
+	and current_setting('qorpera_test.carol_screen')::jsonb->>'screenId'=current_setting('qorpera_test.bob_row')::jsonb->>'id'
+	and (select staff_agent_id='30000000-0000-4000-8000-000000000032' and power='open'
+		and generation>(current_setting('qorpera_test.bob_row')::jsonb->>'generation')::bigint
+		and epoch>(current_setting('qorpera_test.bob_row')::jsonb->>'epoch')::bigint
+		from public.qorpera_runtime_office_screens where id=(current_setting('qorpera_test.bob_row')::jsonb->>'id')::uuid)
+	and (select count(*)=2 from public.qorpera_runtime_office_screens where office_id=(pg_temp.office(1)).id),
+	'Carol takes over Bob''s unused screen with a new generation: never more rows than screens');
 select pg_temp.wake_assert(pg_temp.open(pg_temp.scope(1),'30000000-0000-4000-8000-000000000031')->>'reason'='SCREEN_CAPACITY_EXHAUSTED',
-	'Bob''s old row does not give him a seat back while two are in use');
+	'Bob gets no seat back while two are in use');
 
 -- 4. One computer per agent. Computer 2 is up (synthetic readiness); Bob opens there.
 delete from public.qorpera_runtime_office_start_intents where office_id=(pg_temp.office(2)).id;
@@ -189,34 +204,10 @@ select pg_temp.wake_assert(current_setting('qorpera_test.denied')::jsonb->>'plac
 	and (select count(*)=3 from public.qorpera_runtime_offices where environment_id='30000000-0000-4000-8000-000000000020'),
 	'an owner opening Carol''s computer adds nothing');
 
--- 7. Display numbers run out at 32: the screen unused for longest changes hands.
-update public.qorpera_runtime_offices set max_screens=32 where id=(pg_temp.office(1)).id;
-insert into public.qorpera_profile_staff(profile_id,staff_agent_id,display_name,role,charter,appearance_color,appearance_shape,
-	employment_status,lifecycle_state,model_provider,model_id,created_at,updated_at,updated_by_user_id)
-select profile_id,('30000000-0000-4000-8001-' || lpad(n::text,12,'0'))::uuid,'Agent ' || n,role,charter,appearance_color,appearance_shape,
-	employment_status,lifecycle_state,model_provider,model_id,created_at,updated_at,updated_by_user_id
-from public.qorpera_profile_staff,generate_series(1,30) n where staff_agent_id='30000000-0000-4000-8000-000000000030';
-update public.qorpera_runtime_office_screens set touched_at=clock_timestamp()-interval '10 minutes' where office_id=(pg_temp.office(1)).id;
-do $$
-declare n integer;
-begin
-	for n in 1..28 loop
-		if pg_temp.open(pg_temp.scope(1),('30000000-0000-4000-8001-' || lpad(n::text,12,'0'))::uuid)->>'state' is distinct from 'open' then
-			raise exception 'agent % should get a screen',n; end if;
-		update public.qorpera_runtime_office_screens set touched_at=clock_timestamp()-interval '5 minutes'+n*interval '1 second'
-		where staff_agent_id=('30000000-0000-4000-8001-' || lpad(n::text,12,'0'))::uuid;
-	end loop;
-end $$;
-select pg_temp.wake_assert((select count(*)=32 from public.qorpera_runtime_office_screens where office_id=(pg_temp.office(1)).id),
-	'computer 1 has a row on every display number');
-select set_config('qorpera_test.oldest',(select row_to_json(s)::text from public.qorpera_runtime_office_screens s
-	where office_id=(pg_temp.office(1)).id order by touched_at,ordinal limit 1),true);
-select set_config('qorpera_test.reassigned',pg_temp.open(pg_temp.scope(1),'30000000-0000-4000-8001-000000000030')::text,true);
-select pg_temp.wake_assert(current_setting('qorpera_test.reassigned')::jsonb->>'screenId'=current_setting('qorpera_test.oldest')::jsonb->>'id'
-	and (select staff_agent_id='30000000-0000-4000-8001-000000000030' and power='open'
-		and generation>(current_setting('qorpera_test.oldest')::jsonb->>'generation')::bigint
-		from public.qorpera_runtime_office_screens where id=(current_setting('qorpera_test.oldest')::jsonb->>'id')::uuid)
-	and (select count(*)=32 from public.qorpera_runtime_office_screens where office_id=(pg_temp.office(1)).id),
-	'the 33rd agent takes over the screen unused for longest, with a new generation');
+-- 7. A computer never holds more screen rows than screens: the guest keeps a desktop for each.
+select pg_temp.wake_assert(not exists(select 1 from public.qorpera_runtime_office_screens s
+	join public.qorpera_runtime_offices o on o.id=s.office_id
+	where o.environment_id='30000000-0000-4000-8000-000000000020' group by o.id,o.max_screens having count(*)>o.max_screens),
+	'no computer has more screen rows than screens');
 
 rollback;
