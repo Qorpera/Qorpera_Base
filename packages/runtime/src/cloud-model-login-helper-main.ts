@@ -4,7 +4,7 @@ import { lstat, open, realpath } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ModelLoginHelperService } from "./cloud-model-login-helper.ts";
-import { CodexLoginRenewer } from "./cloud-model-login-renewal.ts";
+import { CodexLoginRenewer, codexSelfCheck } from "./cloud-model-login-renewal.ts";
 import { CodexSignIns } from "./cloud-model-login-sign-in.ts";
 import { OfficialCliNativeHarnessDriver } from "./cloud-native-provider-host.ts";
 import { systemdCredentialMetadataIsSafe } from "./systemd-credential.ts";
@@ -133,22 +133,26 @@ export async function runModelLoginHelperMain(environment: NodeJS.ProcessEnv = p
 	const token = await readCredential(directory, "qorpera-model-login-helper-token");
 	if (!TOKEN.test(token)) throw new Error("Login helper token is invalid");
 	const temporaryRoot = absolute(config.temporaryRoot, "Login helper temporary root");
+	const isolation = { entryPoint: isolationEntryPoint };
+	// Before serving anything: the pinned Codex answers inside the sandbox, under this unit.
+	// A failure stops the helper, visibly, instead of failing each member's sign-in.
+	await beforeLaunch();
+	const version = await codexSelfCheck({ codexPath, temporaryRoot, isolation });
+	console.error(`Model login helper: sandbox self-check ok (${version}).`);
 	// A member's sign-in runs the same official `codex login --device-auth` driver a node uses,
-	// inside the same isolation, with the pinned binary checked before each launch.
+	// inside the same isolation, with the pinned binary checked before each of its launches and
+	// its scratch under this helper's private runtime directory.
 	const signIns = new CodexSignIns({
-		driver: new OfficialCliNativeHarnessDriver(codexPath, "/nonexistent/claude", { entryPoint: isolationEntryPoint }),
+		driver: new OfficialCliNativeHarnessDriver(codexPath, "/nonexistent/claude", isolation, {
+			scratchParent: temporaryRoot,
+			beforeLaunch,
+		}),
 		temporaryRoot,
-		beforeLaunch,
 	});
 	const service = new ModelLoginHelperService({
 		socketPath: absolute(config.socketPath, "Login helper socket"),
 		token,
-		renewer: new CodexLoginRenewer({
-			codexPath,
-			temporaryRoot,
-			isolation: { entryPoint: isolationEntryPoint },
-			beforeLaunch,
-		}),
+		renewer: new CodexLoginRenewer({ codexPath, temporaryRoot, isolation, beforeLaunch }),
 		signIns,
 	});
 	const shutdown = (): void => stop.abort();

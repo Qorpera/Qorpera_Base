@@ -3,7 +3,11 @@ import { chmod, rm } from "node:fs/promises";
 import { createServer, request as httpRequest, type IncomingMessage, type Server } from "node:http";
 import { isAbsolute, resolve } from "node:path";
 import { CODEX_RENEWAL_BUDGET_MS } from "./cloud-model-login-budget.ts";
-import type { ModelLoginSignInHelper, ModelLoginSignInState } from "./cloud-model-login-sign-in.ts";
+import type {
+	ModelLoginSignInBinding,
+	ModelLoginSignInHelper,
+	ModelLoginSignInState,
+} from "./cloud-model-login-sign-in.ts";
 import type { ModelLoginRenewal, ModelLoginRenewer } from "./cloud-model-login-vault.ts";
 
 /**
@@ -26,8 +30,9 @@ const HELPER_ANSWER_MS = CODEX_RENEWAL_BUDGET_MS + 3_000;
 const CLIENT_WAIT_MS = HELPER_ANSWER_MS + 2_000;
 /** A sign-in answer waits at most this long for Codex's link and code; the broker's caller (the
  * member's browser, through the edge function's 30 s budget) asks again. */
-const SIGN_IN_ANSWER_MS = 15_000;
+const SIGN_IN_ANSWER_MS = 12_000;
 const SIGN_IN_CLIENT_WAIT_MS = SIGN_IN_ANSWER_MS + 3_000;
+const SHA256 = /^[0-9a-f]{64}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 function tokenMatches(expected: string, authorization: string | undefined): boolean {
@@ -67,33 +72,26 @@ function parseRenewalRequest(value: unknown): string {
 	return input.authJson;
 }
 
-function parseSignInRequest(value: unknown): { signInId: string; expiresAt: string } {
+function signInRequest(value: unknown, schema: string, keys: readonly string[]): Record<string, unknown> {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Login helper request is invalid");
 	const input = value as Record<string, unknown>;
-	if (
-		Object.keys(input).sort().join() !== "expiresAt,schema,signInId" ||
-		input.schema !== "qorpera.model-login-sign-in-request/v1" ||
-		typeof input.signInId !== "string" ||
-		!UUID.test(input.signInId) ||
-		typeof input.expiresAt !== "string" ||
-		!Number.isFinite(Date.parse(input.expiresAt))
-	)
+	if (Object.keys(input).sort().join() !== [...keys, "schema"].sort().join() || input.schema !== schema)
 		throw new Error("Login helper request is invalid");
-	return { signInId: input.signInId, expiresAt: input.expiresAt };
+	for (const key of keys) {
+		const text = input[key];
+		if (
+			typeof text !== "string" ||
+			((key === "signInId" || key === "companyId" || key === "computeIdentityId") && !UUID.test(text)) ||
+			(key === "capabilitySha256" && !SHA256.test(text)) ||
+			(key === "expiresAt" && !Number.isFinite(Date.parse(text)))
+		)
+			throw new Error("Login helper request is invalid");
+	}
+	return input;
 }
 
-function parseSignInFinish(value: unknown): string {
-	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Login helper request is invalid");
-	const input = value as Record<string, unknown>;
-	if (
-		Object.keys(input).sort().join() !== "schema,signInId" ||
-		input.schema !== "qorpera.model-login-sign-in-finish/v1" ||
-		typeof input.signInId !== "string" ||
-		!UUID.test(input.signInId)
-	)
-		throw new Error("Login helper request is invalid");
-	return input.signInId;
-}
+const BINDING_KEYS = ["signInId", "companyId", "computeIdentityId", "capabilitySha256", "expiresAt"] as const;
+const SIGN_IN_KEYS = ["signInId", "companyId"] as const;
 
 function optionalText(value: unknown, maximum: number): string | undefined {
 	if (value === undefined) return undefined;
@@ -102,12 +100,13 @@ function optionalText(value: unknown, maximum: number): string | undefined {
 	return value;
 }
 
-function parseSignInState(value: unknown): ModelLoginSignInState {
+function parseSignInState(value: unknown, allowUnknown = false): ModelLoginSignInState {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Login helper answer is invalid");
 	const input = value as Record<string, unknown>;
 	if (input.schema !== "qorpera.model-login-sign-in/v1") throw new Error("Login helper answer is invalid");
 	const keys = Object.keys(input).filter((key) => key !== "schema" && key !== "status");
 	if (input.status === "preparing" && keys.length === 0) return { status: "preparing" };
+	if (input.status === "unknown" && keys.length === 0 && allowUnknown) return { status: "unknown" } as never;
 	if (input.status === "awaiting_member" && keys.every((key) => key === "interactionUrl" || key === "userCode")) {
 		const interactionUrl = optionalText(input.interactionUrl, 2048);
 		const userCode = optionalText(input.userCode, 64);
@@ -223,42 +222,72 @@ export class ModelLoginHelperService {
 
 	async #handle(request: IncomingMessage): Promise<{ status: number; body: Record<string, unknown> }> {
 		const signIns = this.#signIns;
+		const signInRoutes = ["/v1/sign-in", "/v1/sign-in/read", "/v1/sign-in/completed", "/v1/sign-in/finish"];
 		if (
 			request.method !== "POST" ||
-			!(
-				request.url === "/v1/renew" ||
-				(signIns && (request.url === "/v1/sign-in" || request.url === "/v1/sign-in/finish"))
-			) ||
+			!(request.url === "/v1/renew" || (signIns && signInRoutes.includes(request.url ?? ""))) ||
 			request.headers["content-type"] !== "application/json" ||
 			!tokenMatches(this.#token, request.headers.authorization)
 		)
 			return { status: 404, body: { schema: "qorpera.model-login-helper-error/v1", error: "not_found" } };
-		if (signIns && request.url === "/v1/sign-in") {
-			let signIn: { signInId: string; expiresAt: string };
+		if (signIns && request.url !== "/v1/renew") {
+			let input: Record<string, unknown>;
 			try {
-				signIn = parseSignInRequest(await readBody(request));
+				const body = await readBody(request);
+				input =
+					request.url === "/v1/sign-in"
+						? signInRequest(body, "qorpera.model-login-sign-in-request/v1", BINDING_KEYS)
+						: request.url === "/v1/sign-in/completed"
+							? signInRequest(body, "qorpera.model-login-sign-in-list/v1", ["companyId"])
+							: signInRequest(
+									body,
+									request.url === "/v1/sign-in/read"
+										? "qorpera.model-login-sign-in-read/v1"
+										: "qorpera.model-login-sign-in-finish/v1",
+									SIGN_IN_KEYS,
+								);
 			} catch {
 				return { status: 400, body: { schema: "qorpera.model-login-helper-error/v1", error: "invalid" } };
 			}
+			const signal = AbortSignal.timeout(SIGN_IN_ANSWER_MS);
 			try {
-				const state = await signIns.beginSignIn(signIn, AbortSignal.timeout(SIGN_IN_ANSWER_MS));
-				return { status: 200, body: { schema: "qorpera.model-login-sign-in/v1", ...state } };
-			} catch {
+				if (request.url === "/v1/sign-in") {
+					const binding: ModelLoginSignInBinding = {
+						signInId: input.signInId as string,
+						companyId: input.companyId as string,
+						computeIdentityId: input.computeIdentityId as string,
+						capabilitySha256: input.capabilitySha256 as string,
+						expiresAt: input.expiresAt as string,
+					};
+					const state = await signIns.beginSignIn(binding, signal);
+					return { status: 200, body: { schema: "qorpera.model-login-sign-in/v1", ...state } };
+				}
+				const target = { signInId: input.signInId as string, companyId: input.companyId as string };
+				if (request.url === "/v1/sign-in/read") {
+					const state = await signIns.readSignIn(target, signal);
+					return { status: 200, body: { schema: "qorpera.model-login-sign-in/v1", ...state } };
+				}
+				if (request.url === "/v1/sign-in/completed") {
+					const finished = await signIns.listCompletedSignIns({ companyId: input.companyId as string }, signal);
+					return {
+						status: 200,
+						body: {
+							schema: "qorpera.model-login-sign-in-completed/v1",
+							signIns: finished.map((entry) => ({
+								signInId: entry.signInId,
+								capabilitySha256: entry.capabilitySha256,
+							})),
+						},
+					};
+				}
+				await signIns.finishSignIn(target, signal);
 				return {
 					status: 200,
-					body: { schema: "qorpera.model-login-sign-in/v1", status: "failed", reason: "helper_failed" },
+					body: { schema: "qorpera.model-login-sign-in-finished/v1", signInId: target.signInId },
 				};
-			}
-		}
-		if (signIns && request.url === "/v1/sign-in/finish") {
-			let signInId: string;
-			try {
-				signInId = parseSignInFinish(await readBody(request));
 			} catch {
-				return { status: 400, body: { schema: "qorpera.model-login-helper-error/v1", error: "invalid" } };
+				return { status: 409, body: { schema: "qorpera.model-login-helper-error/v1", error: "refused" } };
 			}
-			await signIns.finishSignIn(signInId, AbortSignal.timeout(10_000)).catch(() => undefined);
-			return { status: 200, body: { schema: "qorpera.model-login-sign-in-finished/v1", signInId } };
 		}
 		let authJson: string;
 		try {
@@ -309,22 +338,68 @@ export class ModelLoginHelperClient implements ModelLoginRenewer, ModelLoginSign
 		);
 	}
 
-	beginSignIn(request: { signInId: string; expiresAt: string }, signal: AbortSignal): Promise<ModelLoginSignInState> {
+	beginSignIn(binding: ModelLoginSignInBinding, signal: AbortSignal): Promise<ModelLoginSignInState> {
 		return this.#post(
 			"/v1/sign-in",
-			{ schema: "qorpera.model-login-sign-in-request/v1", signInId: request.signInId, expiresAt: request.expiresAt },
-			parseSignInState,
+			{ schema: "qorpera.model-login-sign-in-request/v1", ...binding },
+			(value) => parseSignInState(value),
 			AbortSignal.any([signal, AbortSignal.timeout(SIGN_IN_CLIENT_WAIT_MS)]),
 		);
 	}
 
-	async finishSignIn(signInId: string, signal: AbortSignal): Promise<void> {
-		await this.#post(
-			"/v1/sign-in/finish",
-			{ schema: "qorpera.model-login-sign-in-finish/v1", signInId },
+	readSignIn(
+		request: { signInId: string; companyId: string },
+		signal: AbortSignal,
+	): Promise<ModelLoginSignInState | { readonly status: "unknown" }> {
+		return this.#post(
+			"/v1/sign-in/read",
+			{ schema: "qorpera.model-login-sign-in-read/v1", signInId: request.signInId, companyId: request.companyId },
+			(value) => parseSignInState(value, true),
+			AbortSignal.any([signal, AbortSignal.timeout(10_000)]),
+		);
+	}
+
+	listCompletedSignIns(
+		request: { companyId: string },
+		signal: AbortSignal,
+	): Promise<ReadonlyArray<{ signInId: string; capabilitySha256: string }>> {
+		return this.#post(
+			"/v1/sign-in/completed",
+			{ schema: "qorpera.model-login-sign-in-list/v1", companyId: request.companyId },
 			(value) => {
 				const input = value as Record<string, unknown> | null;
-				if (input?.schema !== "qorpera.model-login-sign-in-finished/v1" || input.signInId !== signInId)
+				if (
+					input?.schema !== "qorpera.model-login-sign-in-completed/v1" ||
+					!Array.isArray(input.signIns) ||
+					input.signIns.length > 64 ||
+					Object.keys(input).length !== 2
+				)
+					throw new Error("Login helper answer is invalid");
+				return input.signIns.map((entry: unknown) => {
+					const item = entry as Record<string, unknown> | null;
+					if (
+						!item ||
+						Object.keys(item).sort().join() !== "capabilitySha256,signInId" ||
+						typeof item.signInId !== "string" ||
+						!UUID.test(item.signInId) ||
+						typeof item.capabilitySha256 !== "string" ||
+						!SHA256.test(item.capabilitySha256)
+					)
+						throw new Error("Login helper answer is invalid");
+					return { signInId: item.signInId, capabilitySha256: item.capabilitySha256 };
+				});
+			},
+			AbortSignal.any([signal, AbortSignal.timeout(10_000)]),
+		);
+	}
+
+	async finishSignIn(request: { signInId: string; companyId: string }, signal: AbortSignal): Promise<void> {
+		await this.#post(
+			"/v1/sign-in/finish",
+			{ schema: "qorpera.model-login-sign-in-finish/v1", signInId: request.signInId, companyId: request.companyId },
+			(value) => {
+				const input = value as Record<string, unknown> | null;
+				if (input?.schema !== "qorpera.model-login-sign-in-finished/v1" || input.signInId !== request.signInId)
 					throw new Error("Login helper answer is invalid");
 				return undefined;
 			},

@@ -350,6 +350,7 @@ it("uses only the static broker-role SQL calls and binds downstream idempotency"
 		{ loginId: randomUUID(), token: randomUUID(), baseVersion: 3, permanent: true, reason: "refresh_token_reused" },
 		new AbortController().signal,
 	);
+	await authority.modelLoginBrokerCompany(new AbortController().signal);
 	const signInId = randomUUID();
 	await authority.describeModelLoginSignIn(
 		{ loginId: signInId, capabilitySha256: "a".repeat(64) },
@@ -378,12 +379,14 @@ it("uses only the static broker-role SQL calls and binds downstream idempotency"
 		"select public.qorpera_issue_model_login($1::uuid,$2::text,$3::jsonb,$4::bigint,$5::boolean) as result",
 		"select public.qorpera_commit_model_login_renewal($1::uuid,$2::text,$3::uuid,$4::uuid,$5::bigint,$6::text,$7::text,$8::text,$9::timestamptz,$10::timestamptz) as result",
 		"select public.qorpera_release_model_login_renewal($1::uuid,$2::text,$3::uuid,$4::uuid,$5::bigint,$6::boolean,$7::text) as result",
+		"select public.qorpera_model_login_broker_company($1::uuid,$2::text) as result",
 		"select public.qorpera_describe_model_login_sign_in($1::uuid,$2::text,$3::uuid,$4::text) as result",
 		"select public.qorpera_complete_model_login_sign_in($1::uuid,$2::text,$3::uuid,$4::text,$5::uuid,$6::text,$7::text,$8::text,$9::timestamptz,$10::timestamptz,$11::text,$12::text) as result",
 	]);
-	expect(queries[7]?.values.slice(2)).toEqual([signInId, "a".repeat(64)]);
-	expect(queries[8]?.values[6]).toBe(Buffer.from("signed-in").toString("base64"));
-	expect(queries[8]?.values.slice(10)).toEqual([null, "member@example.test"]);
+	expect(queries[7]?.values).toHaveLength(2);
+	expect(queries[8]?.values.slice(2)).toEqual([signInId, "a".repeat(64)]);
+	expect(queries[9]?.values[6]).toBe(Buffer.from("signed-in").toString("base64"));
+	expect(queries[9]?.values.slice(10)).toEqual([null, "member@example.test"]);
 	expect(queries[4]?.values.slice(2)).toEqual([JSON.stringify(loginBinding), 3, true]);
 	expect(queries[5]?.values[6]).toBe(Buffer.from("encrypted").toString("base64"));
 	expect(queries[3]?.values.slice(2)).toEqual([

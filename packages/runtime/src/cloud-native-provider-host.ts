@@ -856,11 +856,28 @@ export class OfficialCliNativeHarnessDriver implements NativeHarnessDriver {
 	readonly #codexPath: string;
 	readonly #claudePath: string;
 	readonly #isolation: NativeIsolationConfiguration | undefined;
+	readonly #scratchParent: string | undefined;
+	readonly #beforeLaunch: (() => Promise<void>) | undefined;
 
-	constructor(codexPath = "codex", claudePath = "claude", isolation?: NativeIsolationConfiguration) {
+	constructor(
+		codexPath = "codex",
+		claudePath = "claude",
+		isolation?: NativeIsolationConfiguration,
+		options: {
+			/** Where an isolated sign-in's scratch lives (default: the system temporary directory).
+			 * The isolation launcher needs a path at least three levels deep. */
+			scratchParent?: string;
+			/** Checked before every launch (the vault's helper re-checks its pinned binary). */
+			beforeLaunch?: () => Promise<void>;
+		} = {},
+	) {
 		this.#codexPath = codexPath;
 		this.#claudePath = claudePath;
 		this.#isolation = isolation ? Object.freeze({ ...isolation }) : undefined;
+		if (options.scratchParent !== undefined)
+			requiredAbsolutePath(options.scratchParent, "Native sign-in scratch parent");
+		this.#scratchParent = options.scratchParent;
+		this.#beforeLaunch = options.beforeLaunch;
 	}
 
 	async #loginProcess(
@@ -871,6 +888,8 @@ export class OfficialCliNativeHarnessDriver implements NativeHarnessDriver {
 		signal: AbortSignal,
 	): Promise<{ child: NativeHarnessChild; close(): Promise<void> }> {
 		signal.throwIfAborted();
+		await this.#beforeLaunch?.();
+		signal.throwIfAborted();
 		if (!this.#isolation) {
 			const child = spawn(command, args, {
 				cwd: root,
@@ -880,7 +899,7 @@ export class OfficialCliNativeHarnessDriver implements NativeHarnessDriver {
 			});
 			return { child, close: () => terminateChild(child) };
 		}
-		const scratchRoot = await mkdtemp(join(tmpdir(), "qorpera-native-auth-"));
+		const scratchRoot = await mkdtemp(join(this.#scratchParent ?? tmpdir(), "qorpera-native-auth-"));
 		try {
 			for (const name of ["workspace", "home", "config", "data", "cache"])
 				await mkdir(join(scratchRoot, name), { mode: 0o700 });

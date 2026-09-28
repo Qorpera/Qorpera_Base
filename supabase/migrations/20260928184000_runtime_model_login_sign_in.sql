@@ -6,7 +6,8 @@
 -- pointer capsule 'model-login/<login id>', the vault login and its version 1, and the
 -- connection version that points at the pointer capsule. No node key exists for such a login,
 -- so the recovery backup a node sign-in needs does not apply to it. Claude sign-ins and
--- companies not switched keep the node path unchanged. Usage checks move in a later change.
+-- companies not switched keep the node path unchanged. A company can be switched only once
+-- runs take their login from the vault (change 3). Usage checks move in a later change.
 
 -- The sign-in that created a vault login. It is the evidence the recovery pin reads.
 alter table public.qorpera_model_logins
@@ -30,6 +31,10 @@ begin
 		raise exception 'model login sign-in switch requires service authority' using errcode = '42501';
 	end if;
 	if p_enabled then
+		-- A vault login is usable only once runs take their login from the vault (change 3).
+		if to_regprocedure('public.qorpera_compute_identity_login_in_vault(uuid)') is null then
+			raise exception 'vault login runs are not installed' using errcode = '55000';
+		end if;
 		if not exists (select 1 from public.qorpera_cloud_secret_broker_authorities
 			where profile_id = p_profile_id and status = 'active') then
 			raise exception 'company has no active cloud secret broker' using errcode = '55000';
@@ -95,6 +100,18 @@ begin
 			|| E'\tend if;\n'
 			|| v_anchor);
 	end if;
+end
+$$;
+
+-- The company a broker serves, so it can collect its finished sign-ins from the helper.
+create function public.qorpera_model_login_broker_company(
+	p_broker_authority_id uuid,
+	p_broker_capability_sha256 text
+)
+returns uuid
+language plpgsql security definer set search_path = '' as $$
+begin
+	return (public.qorpera_model_login_authority(p_broker_authority_id, p_broker_capability_sha256)).profile_id;
 end
 $$;
 
@@ -315,10 +332,12 @@ end
 $$;
 
 revoke all on function
+	public.qorpera_model_login_broker_company(uuid, text),
 	public.qorpera_describe_model_login_sign_in(uuid, text, uuid, text),
 	public.qorpera_complete_model_login_sign_in(uuid, text, uuid, text, uuid, text, text, text, timestamptz, timestamptz, text, text)
 	from public, anon, authenticated, service_role;
 grant execute on function
+	public.qorpera_model_login_broker_company(uuid, text),
 	public.qorpera_describe_model_login_sign_in(uuid, text, uuid, text),
 	public.qorpera_complete_model_login_sign_in(uuid, text, uuid, text, uuid, text, text, text, timestamptz, timestamptz, text, text)
 	to qorpera_secret_broker;

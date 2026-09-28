@@ -1,5 +1,5 @@
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
-import type { ModelLoginSignInHelper } from "./cloud-model-login-sign-in.ts";
+import type { ModelLoginSignInHelper, ModelLoginSignInState } from "./cloud-model-login-sign-in.ts";
 import { MODEL_LOGIN_FIELD, parseCodexLogin } from "./cloud-model-login-vault.ts";
 import type { CloudSecretKeyring } from "./cloud-secret-crypto.ts";
 
@@ -70,6 +70,8 @@ export interface ModelLoginSignInAuthority {
 		},
 		signal: AbortSignal,
 	): Promise<unknown>;
+	/** The company this broker serves (its authority's company). */
+	modelLoginBrokerCompany(signal: AbortSignal): Promise<unknown>;
 }
 
 /** The answer the web client reads, exactly as a node's login gateway gives it. */
@@ -198,18 +200,66 @@ export class CloudModelLoginSignIns {
 	readonly #authority: ModelLoginSignInAuthority;
 	readonly #keys: CloudSecretKeyring;
 	readonly #helper: ModelLoginSignInHelper;
+	readonly #collectEveryMs: number;
+	readonly #inFlight = new Set<string>();
+	#company: string | undefined;
+	#collector: ReturnType<typeof setTimeout> | undefined;
+	#collecting: Promise<void> | undefined;
+	#stopped = true;
 
 	constructor(options: {
 		authority: ModelLoginSignInAuthority;
 		keyring: CloudSecretKeyring;
 		helper: ModelLoginSignInHelper;
+		/** How often finished sign-ins are collected from the helper. */
+		collectEveryMs?: number;
 	}) {
 		this.#authority = options.authority;
 		this.#keys = options.keyring;
 		this.#helper = options.helper;
+		this.#collectEveryMs = options.collectEveryMs ?? 2000;
 	}
 
-	/** One poll of a member's sign-in: its state, and its completion once Codex has the login. */
+	/** Collects finished sign-ins in the background: the web client stops asking once it shows
+	 * the link and code, and a broker that restarted still finds the sign-ins its helper holds. */
+	start(): void {
+		if (!this.#stopped) return;
+		this.#stopped = false;
+		const loop = (): void => {
+			if (this.#stopped) return;
+			this.#collecting = this.collect().finally(() => {
+				this.#collecting = undefined;
+				if (!this.#stopped) this.#collector = setTimeout(loop, this.#collectEveryMs);
+			});
+		};
+		loop();
+	}
+
+	async close(): Promise<void> {
+		this.#stopped = true;
+		clearTimeout(this.#collector);
+		await this.#collecting;
+	}
+
+	/** One collection pass: completes every finished sign-in of this broker's company. */
+	async collect(): Promise<void> {
+		try {
+			this.#company ??= uuid(
+				await this.#authority.modelLoginBrokerCompany(AbortSignal.timeout(SAVE_DEADLINE_MS)),
+				"Vault broker company",
+			);
+			const finished = await this.#helper.listCompletedSignIns(
+				{ companyId: this.#company },
+				AbortSignal.timeout(SAVE_DEADLINE_MS),
+			);
+			for (const signIn of finished)
+				await this.#complete(this.#company, signIn.signInId, signIn.capabilitySha256).catch(() => false);
+		} catch {
+			// The next pass tries again.
+		}
+	}
+
+	/** One poll of a member's sign-in: its state while the member is signing in. */
 	async signIn(
 		request: { companyId: string; capability: string; body: unknown },
 		signal: AbortSignal,
@@ -217,11 +267,9 @@ export class CloudModelLoginSignIns {
 		if (!TOKEN.test(request.capability)) throw new Error("Vault sign-in capability is invalid");
 		const login = parseRequest(request.body, request.capability);
 		const capabilitySha256 = createHash("sha256").update(request.capability).digest("hex");
-		const describe = async (): Promise<SignInDescription> =>
-			parseDescription(
-				await this.#authority.describeModelLoginSignIn({ loginId: login.loginId, capabilitySha256 }, signal),
-			);
-		const description = await describe();
+		const description = parseDescription(
+			await this.#authority.describeModelLoginSignIn({ loginId: login.loginId, capabilitySha256 }, signal),
+		);
 		if (
 			description.loginId !== login.loginId ||
 			description.companyId !== request.companyId.toLowerCase() ||
@@ -233,55 +281,115 @@ export class CloudModelLoginSignIns {
 			Date.parse(description.expiresAt) !== login.expiresAt
 		)
 			throw new Error("Vault sign-in request crossed its authority");
-		if (description.status === "completed") return answer(login.loginId, "completed");
-		if (description.status !== "pending") throw new Error("Vault sign-in has ended");
-		const state = await this.#helper.beginSignIn(
-			{ signInId: login.loginId, expiresAt: description.expiresAt },
-			signal,
-		);
+		const target = { signInId: login.loginId, companyId: description.companyId };
+		if (description.status !== "pending") {
+			await this.#helper.finishSignIn(target, AbortSignal.timeout(10_000)).catch(() => undefined);
+			if (description.status === "completed") return answer(login.loginId, "completed");
+			throw new Error("Vault sign-in has ended");
+		}
+		let state: ModelLoginSignInState;
+		try {
+			state = await this.#helper.beginSignIn(
+				{
+					signInId: login.loginId,
+					companyId: description.companyId,
+					computeIdentityId: description.computeIdentityId,
+					capabilitySha256,
+					expiresAt: description.expiresAt,
+				},
+				signal,
+			);
+		} catch {
+			// A slow or restarting helper: the web client asks again, as with a node that is starting.
+			return answer(login.loginId, "preparing");
+		}
 		if (state.status === "preparing") return answer(login.loginId, "preparing");
 		if (state.status === "awaiting_member") return answer(login.loginId, "awaiting_member", state);
 		if (state.status === "failed") {
-			await this.#helper.finishSignIn(login.loginId, AbortSignal.timeout(10_000)).catch(() => undefined);
+			await this.#helper.finishSignIn(target, AbortSignal.timeout(10_000)).catch(() => undefined);
 			throw new Error("Vault sign-in failed");
 		}
-		// Codex has the login: seal it as version 1 and complete the sign-in.
-		const codex = parseCodexLogin(state.authJson);
-		if (!this.#keys.has(description.keyId)) throw new Error("The vault does not hold the company's key");
-		const modelLoginId = randomUUID();
-		const envelope = this.#keys.seal(
-			{ [MODEL_LOGIN_FIELD]: codex.text },
-			{
-				companyId: description.companyId,
-				environmentId: description.computeIdentityId,
-				secretId: modelLoginId,
-				version: 1,
-				keyId: description.keyId,
-			},
+		// Codex has the login already: complete it now rather than at the next collection.
+		return answer(
+			login.loginId,
+			(await this.#complete(description.companyId, login.loginId, capabilitySha256)) ? "completed" : "preparing",
 		);
-		try {
-			await this.#authority.completeModelLoginSignIn(
-				{
-					loginId: login.loginId,
-					capabilitySha256,
-					modelLoginId,
-					keyId: description.keyId,
-					encryptedEnvelope: envelope,
-					envelopeSha256: createHash("sha256").update(envelope).digest("hex"),
-					accessIssuedAt: codex.accessIssuedAt,
-					accessExpiresAt: codex.accessExpiresAt,
-					providerAccountReference: state.providerAccountReference ?? null,
-					providerAccountEmail: state.providerAccountEmail ?? null,
-				},
-				AbortSignal.timeout(SAVE_DEADLINE_MS),
+	}
+
+	/** Seals a finished sign-in's login as version 1 and completes it in the database. True when
+	 * the sign-in is complete; the helper's copy is ended once the sign-in is settled either way. */
+	async #complete(companyId: string, signInId: string, capabilitySha256: string): Promise<boolean> {
+		if (this.#inFlight.has(signInId)) return false;
+		this.#inFlight.add(signInId);
+		const target = { signInId, companyId };
+		const finish = () => this.#helper.finishSignIn(target, AbortSignal.timeout(10_000)).catch(() => undefined);
+		const describe = async (): Promise<SignInDescription> =>
+			parseDescription(
+				await this.#authority.describeModelLoginSignIn(
+					{ loginId: signInId, capabilitySha256 },
+					AbortSignal.timeout(SAVE_DEADLINE_MS),
+				),
 			);
-		} catch (error) {
-			// Another poll completed it first, or this completion's answer was lost.
-			if ((await describe().catch(() => undefined))?.status !== "completed") throw error;
+		try {
+			const description = await describe();
+			if (description.companyId !== companyId || description.loginId !== signInId) return false;
+			if (description.status !== "pending") {
+				await finish();
+				return description.status === "completed";
+			}
+			const state = await this.#helper.readSignIn(target, AbortSignal.timeout(10_000));
+			if (state.status === "failed") await finish();
+			if (state.status !== "completed") return false;
+			let codex: ReturnType<typeof parseCodexLogin>;
+			try {
+				codex = parseCodexLogin(state.authJson);
+			} catch (error) {
+				// Not a login the vault can keep: nothing holds it any longer.
+				await finish();
+				throw error;
+			}
+			if (!this.#keys.has(description.keyId)) {
+				await finish();
+				throw new Error("The vault does not hold the company's key");
+			}
+			const modelLoginId = randomUUID();
+			const envelope = this.#keys.seal(
+				{ [MODEL_LOGIN_FIELD]: codex.text },
+				{
+					companyId: description.companyId,
+					environmentId: description.computeIdentityId,
+					secretId: modelLoginId,
+					version: 1,
+					keyId: description.keyId,
+				},
+			);
+			try {
+				await this.#authority.completeModelLoginSignIn(
+					{
+						loginId: signInId,
+						capabilitySha256,
+						modelLoginId,
+						keyId: description.keyId,
+						encryptedEnvelope: envelope,
+						envelopeSha256: createHash("sha256").update(envelope).digest("hex"),
+						accessIssuedAt: codex.accessIssuedAt,
+						accessExpiresAt: codex.accessExpiresAt,
+						providerAccountReference: state.providerAccountReference ?? null,
+						providerAccountEmail: state.providerAccountEmail ?? null,
+					},
+					AbortSignal.timeout(SAVE_DEADLINE_MS),
+				);
+			} catch {
+				// The answer may have been lost after the save: the database decides. Otherwise the
+				// helper keeps the login and the next collection tries again.
+				if ((await describe().catch(() => undefined))?.status !== "completed") return false;
+			} finally {
+				envelope.fill(0);
+			}
+			await finish();
+			return true;
 		} finally {
-			envelope.fill(0);
+			this.#inFlight.delete(signInId);
 		}
-		await this.#helper.finishSignIn(login.loginId, AbortSignal.timeout(10_000)).catch(() => undefined);
-		return answer(login.loginId, "completed");
 	}
 }

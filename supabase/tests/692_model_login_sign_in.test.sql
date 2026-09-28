@@ -111,6 +111,27 @@ begin
 		raise exception 'Vault sign-in companies are exposed'; end if;
 end $$;
 
+-- Change 3's vault check: the switch needs it. A database without it (this change alone)
+-- refuses the switch; the test then stands one in for the rest of this transaction.
+do $$
+begin
+	if to_regprocedure('public.qorpera_compute_identity_login_in_vault(uuid)') is null then
+		perform set_config('qorpera_test.sign_in_stub', 'yes', false);
+	end if;
+end $$;
+set role service_role;
+select pg_temp.sign_in_expect(case when current_setting('qorpera_test.sign_in_stub', true) = 'yes'
+	then pg_temp.sign_in_switch(true) else '55000:vault login runs are not installed' end,
+	'55000:vault login runs are not installed','the switch waits for vault login runs');
+reset role;
+do $$
+begin
+	if current_setting('qorpera_test.sign_in_stub', true) = 'yes' then
+		create function public.qorpera_compute_identity_login_in_vault(p_compute_identity_id uuid)
+		returns boolean language sql stable as 'select false';
+	end if;
+end $$;
+
 -- Before the switch: the chooser keeps the node path and the broker sees nothing.
 set role service_role;
 select pg_temp.sign_in_expect(case when pg_temp.sign_in_choose('sign-in-one') ->> 'reason' = 'MODEL_LOGIN_VAULT'
@@ -144,6 +165,8 @@ reset role;
 set local session authorization qorpera_secret_broker;
 select pg_temp.sign_in_expect(pg_temp.sign_in_describe('69200000-0000-4000-8000-000000000040',repeat('c',64),
 	'69200000-0000-4000-8000-000000000101','sign-in-one'),'pending','the broker reads a pending sign-in');
+select pg_temp.sign_in_expect(public.qorpera_model_login_broker_company('69200000-0000-4000-8000-000000000040',
+	repeat('c',64))::text, current_setting('qorpera_test.sign_in_company'),'the broker knows its company');
 select pg_temp.sign_in_expect(pg_temp.sign_in_describe('69200000-0000-4000-8000-000000000040',repeat('c',64),
 	'69200000-0000-4000-8000-000000000101','sign-in-two'),
 	'42501:model login sign-in is unavailable','another sign-in''s capability');

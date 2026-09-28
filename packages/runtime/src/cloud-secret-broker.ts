@@ -1115,6 +1115,14 @@ export class PostgresCloudSecretBrokerAuthority
 		);
 	}
 
+	modelLoginBrokerCompany(signal: AbortSignal): Promise<unknown> {
+		return this.#rpc(
+			"select public.qorpera_model_login_broker_company($1::uuid,$2::text) as result",
+			[this.#brokerAuthorityId, this.#brokerCapabilitySha256],
+			signal,
+		);
+	}
+
 	completeModelLoginSignIn(
 		completion: Parameters<ModelLoginSignInAuthority["completeModelLoginSignIn"]>[0],
 		signal: AbortSignal,

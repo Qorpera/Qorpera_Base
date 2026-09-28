@@ -96,37 +96,47 @@ no database login and no service key; it sees a login only for one operation and
   Budgets nest: Codex 25 s, helper answer 28 s, broker wait 30 s, vault renewal 35 s; once asked, a
   renewal runs to its budget whatever the member's request does, because only it can save the new
   login. Stopping the unit lets renewals in flight finish (`KillMode=mixed`, 40 s).
-- **Part B, sign-in** (migration `20260928162000`, `cloud-model-login-sign-in.ts`,
+- **Part B, sign-in** (migration `20260928184000`, `cloud-model-login-sign-in.ts`,
   `cloud-model-login-vault-sign-in.ts`): a member signs in to the vault; the web client is unchanged.
   - An operator switches a company with `qorpera_set_model_login_sign_in(company, true)` (service
-    role; the company needs an active broker authority). The login gateway chooser then answers a
-    pending Codex sign-in of that company with `<broker service origin>/v1/model-logins/<company>/`
-    (reason `MODEL_LOGIN_VAULT`); Claude sign-ins and unswitched companies keep the node path.
+    role). It refuses until runs take their login from the vault (change 3's
+    `qorpera_compute_identity_login_in_vault` exists) and while the company has no active broker
+    authority. The login gateway chooser then answers a pending Codex sign-in of that company with
+    `<broker service origin>/v1/model-logins/<company>/` (reason `MODEL_LOGIN_VAULT`); Claude
+    sign-ins and unswitched companies keep the node path.
   - The web client's edge function posts its unchanged `qorpera.native-provider-login/v1` request to
     `<that base>login`, with the sign-in's capability as bearer. The broker asks the database
     (`qorpera_describe_model_login_sign_in`, broker role) for the pending sign-in that capability
     names, checks the request against it field by field (login, connection, identity and its owner,
-    expiry, the capability in the body), and asks the helper to start or report the sign-in.
+    expiry, the capability in the body), and asks the helper to start or report the sign-in. A slow
+    helper is answered as `preparing`; a sign-in that is no longer pending ends the helper's copy.
   - The helper runs the same `codex login --device-auth` driver a node uses
-    (`OfficialCliNativeHarnessDriver`, in the same isolation, pinned binary checked first) in a
-    private home and keeps it while the member finishes in the browser: at most 8 at once, each
-    ended at the sign-in's expiry (at most 15 minutes). The answer is the node gateway's
+    (`OfficialCliNativeHarnessDriver`, in the same isolation, its scratch under the helper's runtime
+    directory, the pinned binary checked before each launch) in a private home. A sign-in is bound
+    to its company, identity and capability digest; a newer sign-in of the same identity ends the
+    older one; at most 8 run at once, 3 per company. Codex stops after 10 minutes at the latest;
+    its home is wiped as soon as it stops. The answer is the node gateway's
     `qorpera.native-provider-login-result/v1`: `preparing`, `awaiting_member` with the link and code,
-    or `completed`. Codex's home is wiped as soon as Codex stops; the finished login stays in the
-    helper's memory until the broker reads it (at most 2 minutes).
-  - Once Codex has the login the broker checks it has known fields only, seals it under the
-    company's broker key as version 1 of a new vault login, and completes the sign-in in one
-    transaction (`qorpera_complete_model_login_sign_in`, broker role): the pointer capsule
-    `model-login/<login id>`, the vault login with `sign_in_session_id`, its version 1 (`sign_in`),
-    and the connection version pointing at the pointer capsule, recorded exactly as a node sign-in
-    records it. The recovery pin still fences a recovering identity, but asks no node key backup of
-    a sign-in that created a vault login. A repeat after a lost answer finds its own login.
+    or `completed`.
+  - The web client stops asking once it shows the link and code, so the broker collects finished
+    sign-ins itself: every 2 s it lists its company's finished sign-ins at the helper
+    (`qorpera_model_login_broker_company` names the company), checks the login has known fields
+    only, seals it under the company's broker key as version 1 of a new vault login, completes the
+    sign-in in one transaction (`qorpera_complete_model_login_sign_in`, broker role: the pointer
+    capsule `model-login/<login id>`, the vault login with `sign_in_session_id`, its version 1
+    (`sign_in`), and the connection version pointing at the pointer capsule, recorded exactly as a
+    node sign-in records it), then ends the helper's copy. A broker that restarted finds finished
+    sign-ins on its first pass; the helper keeps a finished login at most 5 minutes. The recovery
+    pin still fences a recovering identity, but asks no node key backup of a sign-in that created a
+    vault login. A repeat after a lost answer finds its own login.
   - Deploy: the broker's public front must route `POST /v1/model-logins/<company>/login` to that
     company's broker by path (the edge function adds no query). The helper must run beside the
-    broker (without it the route answers 404).
+    broker (without it the route answers 404). A helper restart ends sign-ins in flight; the member
+    signs in again.
 - **Part C, usage** (next): usage reads for vault logins in the vault (the existing `wham/usage`
   call with the pass, no machine), and the account refresh chooser sending those identities to the
-  vault. Until then a node's usage check lists vault logins and skips them.
+  vault. Until then (with change 3) a node's usage check lists vault logins and skips them; switch
+  no company before Part C lands.
 
 ### Installing the helper (operator, per vault host)
 
@@ -151,10 +161,16 @@ no database login and no service key; it sees a login only for one operation and
    `LoadCredential=qorpera-cloud-secret-login-helper:/etc/qorpera-secret-broker/login-helper.json`
    with `{"schema": "qorpera.model-login-helper-client/v1", "socketPath": "/run/qorpera-model-login-helper/helper.sock",
    "token": "<the helper token>"}`. Without that credential the broker never asks for a renewal lock.
-6. Before rollout, prove one real renewal on the vault host (a test login): the unit's system-call
-   filter and the sandbox are only proven there. A renewal that cannot start Codex records
-   `codex_launch_failed`, and a binary changed since start records `codex_changed` and restarts the
-   helper.
+6. Start the helper. Before it serves anything it runs the pinned Codex with `--version` inside the
+   sandbox, under the real unit, and logs `Model login helper: sandbox self-check ok (<version>)`;
+   a failure stops the unit visibly (binary pin, bubblewrap, the isolation child and the unit's
+   system-call filter). Egress is not part of that check.
+7. Before any login moves, prove one real sign-in and one real renewal through the product: switch
+   the test company, a member signs in from the web client, and the vault login is renewed once
+   (after half its pass life, or on demand). Nobody handles a login by hand. Measure the unit's
+   memory and task use during that sign-in (its limits were sized for renewals). A renewal that
+   cannot start Codex records `codex_launch_failed`, and a binary changed since start records
+   `codex_changed` and restarts the helper.
 
 ## Runs (change 3, migration `20260928161000`)
 

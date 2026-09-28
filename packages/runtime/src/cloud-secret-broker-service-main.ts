@@ -269,6 +269,8 @@ export async function runCloudSecretBrokerServiceMain(
 			adapters: [...adapters, ...(connectors?.adapters ?? [])],
 		});
 		const helper = loginHelper ? new ModelLoginHelperClient(loginHelper) : undefined;
+		// Members' sign-ins to the vault: the broker collects finished ones in the background.
+		const signIns = helper ? new CloudModelLoginSignIns({ authority, keyring, helper }) : undefined;
 		const service = new HttpCloudSecretBrokerService(broker, runtimeToken, {
 			host: "127.0.0.1",
 			port: config.port as number,
@@ -283,7 +285,7 @@ export async function runCloudSecretBrokerServiceMain(
 				keyring,
 				...(helper ? { renewer: helper } : {}),
 			}),
-			...(helper ? { modelLoginSignIns: new CloudModelLoginSignIns({ authority, keyring, helper }) } : {}),
+			...(signIns ? { modelLoginSignIns: signIns } : {}),
 		});
 		const stop = new AbortController();
 		const shutdown = (): void => stop.abort();
@@ -291,6 +293,7 @@ export async function runCloudSecretBrokerServiceMain(
 		process.once("SIGTERM", shutdown);
 		try {
 			await service.start();
+			signIns?.start();
 			await new Promise<void>((resolveWait) => {
 				if (stop.signal.aborted) resolveWait();
 				else stop.signal.addEventListener("abort", () => resolveWait(), { once: true });
@@ -298,6 +301,7 @@ export async function runCloudSecretBrokerServiceMain(
 		} finally {
 			process.removeListener("SIGINT", shutdown);
 			process.removeListener("SIGTERM", shutdown);
+			await signIns?.close();
 			await service.close();
 		}
 	} finally {
