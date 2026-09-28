@@ -143,7 +143,10 @@ last week, parked warm hosts included. The start is 4 slots of 2 vCPU / 4 GiB ea
   - it prints the infrastructure entry to enroll;
   - if a step after `lxc init` fails, it deletes the VM it made. An orchestrator row it
     registered stays: nothing runs behind it, but the bundle roll status lists it as undeclared
-    until it is revoked.
+    until it is revoked. There is no function for that; revoke it the way da49750d was revoked in
+    v142. A revoked id can never be registered again, so the next attempt needs a new id.
+  - the staged `QORPERA_SHARED_EXECUTION_HOST_ID` must equal `EXEC_VM`, so a staging folder
+    copied from another node is refused;
 
 ### Node 1, in this order (coordinator)
 

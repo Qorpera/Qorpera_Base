@@ -66,11 +66,17 @@ if lxc info "${VM}" --project "${PROJECT}" >/dev/null 2>&1; then
 	echo "${VM} already exists in ${PROJECT}; use rebuild-exec-host.sh." >&2
 	exit 1
 fi
-# The run profile is part of the host's inventory digest; the observer refuses an
-# infrastructure entry with any user.qorpera.* key.
 for file in rebuild-exec-host.sh exec-host-inventory-digest.py; do
 	[[ -f ${HERE}/${file} ]] || { echo "${HERE}/${file} is missing." >&2; exit 1; }
 done
+# A staging folder copied from another node would name that node's host.
+staged_host=$(sed -n 's/^QORPERA_SHARED_EXECUTION_HOST_ID=//p' "${EXEC_STAGING}/shared-execution.env" 2>/dev/null || true)
+if [[ ${staged_host} != "${VM}" ]]; then
+	echo "${EXEC_STAGING}/shared-execution.env must set QORPERA_SHARED_EXECUTION_HOST_ID=${VM} (it says '${staged_host}')." >&2
+	exit 1
+fi
+# The run profile is part of the host's inventory digest; the observer refuses an
+# infrastructure entry with any user.qorpera.* key.
 profile_keys=$(lxc query "/1.0/profiles/${EXEC_PROFILE}?project=${PROJECT}" \
 	| python3 -c 'import json,sys; print(sum(k.startswith("user.qorpera.") for k in json.load(sys.stdin)["config"]))')
 if [[ ${profile_keys} != 0 ]]; then
@@ -91,10 +97,15 @@ cleanup() {
 	fi
 }
 trap cleanup EXIT
-lxc init "${FINGERPRINT}" "${VM}" --project "${PROJECT}" --vm \
+if ! lxc init "${FINGERPRINT}" "${VM}" --project "${PROJECT}" --vm \
 	-p "${EXEC_PROFILE}" -s "${EXEC_POOL}" \
 	-c "limits.cpu=${CPU}" -c "limits.memory=${MEMORY_GIB}GiB" -c boot.mode=uefi-secureboot \
-	-d root,size=80GiB
+	-d root,size=80GiB; then
+	if lxc info "${VM}" --project "${PROJECT}" >/dev/null 2>&1; then
+		echo "lxc init failed, but ${VM} exists now; inspect it and delete it by hand if this run made it." >&2
+	fi
+	exit 1
+fi
 # Only a VM this run made is ever deleted: an init that fails (the name exists) deletes nothing.
 created=1
 lxc config device add "${VM}" eth0 nic "network=${EXEC_NETWORK}" name=eth0 \
@@ -108,9 +119,9 @@ EXEC_FRESH=1 bash "${HERE}/rebuild-exec-host.sh" "${FINGERPRINT}"
 echo "Inventory entry for this node's policy (enroll it, then write the observer configuration):"
 digest=$(lxc query "/1.0/instances/${VM}?project=${PROJECT}" | python3 "${HERE}/exec-host-inventory-digest.py" \
 	| python3 -c 'import json,sys; print(json.load(sys.stdin)["configurationSha256"])')
-[[ ${digest} =~ ^[0-9a-f]{64}$ ]]
+[[ ${digest} =~ ^[0-9a-f]{64}$ ]] || { echo "Could not compute the host's inventory digest." >&2; exit 1; }
 uuid=$(lxc config get "${VM}" volatile.uuid --project "${PROJECT}")
-[[ ${uuid} =~ ^[0-9a-f-]{36}$ ]]
+[[ ${uuid} =~ ^[0-9a-f-]{36}$ ]] || { echo "Could not read the host's physical id." >&2; exit 1; }
 printf '{"project":"%s","name":"%s","physicalId":"%s","type":"virtual-machine","configurationSha256":"%s","cpuMillis":%d,"memoryBytes":%d}\n' \
 	"${PROJECT}" "${VM}" "${uuid}" "${digest}" $((CPU * 1000)) $((MEMORY_GIB * 1024 * 1024 * 1024))
 created=

@@ -58,6 +58,9 @@ PACKAGE="${EXEC_PACKAGE}"
 STAGING="${EXEC_STAGING}"
 SLOTS="${EXEC_SLOTS}"
 BUNDLE="${EXEC_RUNTIME_BUNDLE_SHA256:-}"
+for name in VM PROJECT; do
+	[[ ${!name} =~ ^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$ ]] || { echo "EXEC_${name} is not an LXD name." >&2; exit 1; }
+done
 FRESH="${EXEC_FRESH:-}"
 if [[ ! ${SLOTS} =~ ^[1-9][0-9]?$ ]] || ((SLOTS > 64)); then
 	echo "EXEC_SLOTS must be 1-64." >&2
@@ -169,7 +172,15 @@ registered=$(curl -sS -X POST "${supabase_url}/rest/v1/rpc/qorpera_register_runn
 	-d "{\"p_orchestrator_id\":\"${orchestrator_id}\",\"p_display_name\":\"shared-execution ${VM}\",\"p_provider_adapter\":\"${adapter}\",\"p_control_token_sha256\":\"${control_sha256}\",\"p_control_token_seconds\":86400}")
 [[ ${registered} == *'"status": "active"'* || ${registered} == *'"status":"active"'* ]] || { unset service_key; echo "Orchestrator registration failed" >&2; exit 1; }
 unset service_key
-sed -i "s|^QORPERA_RUNNER_ORCHESTRATOR_CONTROL_TOKEN=.*|QORPERA_RUNNER_ORCHESTRATOR_CONTROL_TOKEN=${control_token}|" "${STAGING}/runner-orchestrator.env"
+# The token goes through the environment, never a command line (/proc/*/cmdline is world-readable).
+CONTROL_TOKEN="${control_token}" python3 -c 'import os,re,sys
+path = sys.argv[1]
+text = open(path, newline="").read()
+line = "QORPERA_RUNNER_ORCHESTRATOR_CONTROL_TOKEN=" + os.environ["CONTROL_TOKEN"]
+text, count = re.subn(r"(?m)^QORPERA_RUNNER_ORCHESTRATOR_CONTROL_TOKEN=.*$", lambda _: line, text, count=1)
+if count != 1:
+    sys.exit("no control token line")
+open(path, "w", newline="").write(text)' "${STAGING}/runner-orchestrator.env"
 unset control_token
 push "${STAGING}/runner-orchestrator.env" /etc/qorpera/runner-orchestrator.env 0600
 for name in "${STAGING}"/credentials/*; do
@@ -188,7 +199,7 @@ if [[ -n ${BUNDLE} ]]; then
 	service_key=$(tr -d '\n' < "${STAGING}/credentials/qorpera-supabase-service-key")
 	declared=$(curl -sS -X POST "${supabase_url}/rest/v1/rpc/qorpera_declare_runner_orchestrator_bundle" \
 		-K <(printf 'header = "apikey: %s"\nheader = "Authorization: Bearer %s"\nheader = "Content-Type: application/json"\n' "${service_key}" "${service_key}") \
-		-d "{\"p_orchestrator_id\":\"${orchestrator_id}\",\"p_runtime_bundle_sha256\":\"${BUNDLE}\"}")
+		-d "{\"p_orchestrator_id\":\"${orchestrator_id}\",\"p_runtime_bundle_sha256\":\"${BUNDLE}\"}") || declared="(no reply from the database)"
 	unset service_key
 	declared_bundle=$(printf '%s' "${declared}" | python3 -c 'import json,sys
 try:
@@ -196,9 +207,8 @@ try:
 except Exception:
     print("")')
 	if [[ ${declared_bundle} != "${BUNDLE}" ]]; then
-		echo "image=${FINGERPRINT} fence=${fence} slots=${SLOTS} bundle=any service=${status} healthz=${health} orchestrator=stopped"
-		echo "The host is set up, but the bundle declaration failed; the orchestrator claims any bundle until it is declared: $(printf '%s' "${declared}" | head -c 300)" >&2
-		exit 1
+		declaration_failed=$(printf '%s' "${declared}" | head -c 300)
+		BUNDLE=
 	fi
 fi
 echo "image=${FINGERPRINT} fence=${fence} slots=${SLOTS} bundle=${BUNDLE:-any} service=${status} healthz=${health} orchestrator=stopped"
@@ -207,3 +217,7 @@ if [[ -z ${FRESH} ]]; then
 	echo "policy entry declares identityVolumes: lxc query '/1.0/instances/${VM}?project=${PROJECT}' | exec-host-inventory-digest.py --pool <pool> --source-prefix <prefix>"
 fi
 echo "Start the orchestrator when the cut is live: lxc exec ${VM} --project ${PROJECT} -- systemctl enable --now qorpera-runner-orchestrator.service"
+if [[ -n ${declaration_failed:-} ]]; then
+	echo "The host is set up, but the bundle declaration failed; the orchestrator claims any bundle until it is declared: ${declaration_failed}" >&2
+	exit 1
+fi
