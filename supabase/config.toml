@@ -40,3 +40,8 @@ verify_jwt = false
 # gateway. OPTIONS carries no JWT; no service-role authority is added.
 [functions.member-company-gateway]
 verify_jwt = false
+
+# Computer hours payments: /checkout and /portal check the member's JWT themselves, and /webhook
+# carries Stripe's signature instead of a JWT.
+[functions.computer-billing]
+verify_jwt = false

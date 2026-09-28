@@ -45,8 +45,8 @@ begin
 	reset role;
 	if v_run.audience_kind <> 'member_private' or v_run.audience_user_id <> v_run.requested_by_user_id then
 		raise exception 'Upgrade fixture must retain an admitted private audience'; end if;
-	update public.qorpera_profile_members set role = 'admin' where user_id = v_run.requested_by_user_id;
 	update public.qorpera_profile_members set role = 'owner' where user_id = '29000000-0000-4000-8000-000000000002';
+	update public.qorpera_profile_members set role = 'admin' where user_id = v_run.requested_by_user_id;
 	perform set_config('request.jwt.claims',jsonb_build_object('role','authenticated','sub',v_run.requested_by_user_id)::text,true);
 	set local role authenticated;
 	perform public.qorpera_cancel_session_run(v_run.session_id,v_run.id);

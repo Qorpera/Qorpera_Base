@@ -38,6 +38,10 @@ select pg_temp.wake_error($q$select public.qorpera_reserve_runtime_node_machine(
 
 savepoint membership_revoked;
 reset role;
+-- The last founder cannot leave while others remain (20260928248100): a second founder joins first.
+insert into auth.users(id,email) values ('30000000-0000-4000-8000-0000000000f3','capacity-cofounder@example.test');
+insert into public.qorpera_profile_members(profile_id,user_id,email,display_name,role) values
+	('30000000-0000-4000-8000-000000000010','30000000-0000-4000-8000-0000000000f3','capacity-cofounder@example.test','Co-founder','owner');
 delete from public.qorpera_profile_members where profile_id='30000000-0000-4000-8000-000000000010' and user_id='30000000-0000-4000-8000-000000000001';
 set local role service_role;
 select pg_temp.wake_error('select pg_temp.login_machine_reserve()','42501');
