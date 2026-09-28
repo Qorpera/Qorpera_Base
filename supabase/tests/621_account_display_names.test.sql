@@ -2,10 +2,10 @@
 -- service, then verify names through the real authenticated read surfaces.
 begin;
 
-insert into auth.users (id, email, raw_user_meta_data)
+insert into auth.users (id, email, email_confirmed_at, raw_user_meta_data)
 values
-	('96210000-0000-4000-8000-00000000000a', 'name-owner@example.test', '{"name":"Provider Name","full_name":"Original Name"}'),
-	('96210000-0000-4000-8000-00000000000b', 'name-friend@example.test', '{"name":"Friend Provider"}');
+	('96210000-0000-4000-8000-00000000000a', 'name-owner@example.test', statement_timestamp(), '{"name":"Provider Name","full_name":"Original Name"}'),
+	('96210000-0000-4000-8000-00000000000b', 'name-friend@example.test', statement_timestamp(), '{"name":"Friend Provider"}');
 
 select set_config('request.jwt.claims', '{"sub":"96210000-0000-4000-8000-00000000000a","email":"name-owner@example.test","role":"authenticated","user_metadata":{"full_name":"Old JWT Name"}}', true);
 set local role authenticated;
