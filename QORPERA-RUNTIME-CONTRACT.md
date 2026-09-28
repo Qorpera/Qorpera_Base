@@ -1087,8 +1087,9 @@ capacity work after it.
 > our own nodes with room, and their files are the company folder. Each
 > machine has its own scratch: this section's workbench is not shared between
 > machines and never holds company work. An additional machine is no longer
-> optional: once every run can reach any machine of its company and company
-> machines work in the company folder, it starts when every computer on the
+> optional: once every run can reach any machine of its company, company
+> machines work in the company folder and a new machine is set up
+> automatically on a node with room, it starts when every computer on the
 > company's machines is taken and no stopped or starting machine can give one.
 > Computers are seats that free up. A computer's shell, terminal and desktop
 > have their own network to the internet, and commands have no fixed time
@@ -3345,9 +3346,8 @@ hosts, login machines, the proposal-review guest or one-run runner machines.
   - the browser sign-in store lives beside the profiles on the workbench and
     in a machine generation's company root (2026-09-17 amendments "the
     company browser" and "kept company state");
-  - an agent waiting for a new company machine waits for that machine, even
-    if a computer frees on another machine meanwhile; a new message to the
-    agent places it again at once.
+  - an agent waiting for a machine is not woken when a computer frees on
+    another machine; it takes one only if it runs again first.
 
 1. **More than one company machine per company.** Section 12's additional
    machine is no longer optional, and it is accepted as Order 4 capacity work.
@@ -3356,21 +3356,51 @@ hosts, login machines, the proposal-review guest or one-run runner machines.
      generation, allocation, provider, idle cycle, computers and browser
      profiles, and its own scratch, journal, ports and credentials (its own
      TLS certificate and key, guest registry credential and objects token).
+   - A seat is free when no computer is in use on it and no other agent holds
+     it. A machine is full when its computers in use and the seats agents hold
+     fill it.
    - An agent that needs a computer gets one in this order: its own open
-     computer; a free computer on a running company machine; a stopped
-     machine, woken; a machine that is already starting; a new machine for
-     the same company environment. An owner or admin who opens an agent's
-     computer follows the same order. A burst of demand adds at most one new
-     machine at a time. A machine in maintenance for another reason is waited
-     for, never replaced. An agent holds a computer on one company machine at
-     a time.
+     computer, or a seat it holds on a running machine; a free computer on a
+     running company machine; a seat it holds on a machine that is not up
+     yet; a free seat on a machine that is starting, waking, back from a host
+     reboot, added but not started, or asleep; a new machine for the same
+     company environment. An owner or admin who opens an agent's computer
+     follows the same order. An agent holds a computer on one company machine
+     at a time; a seat it holds elsewhere lapses while it has a computer in
+     use.
+   - **No waiting for a seat** (founder, 28 September: "if a machine is full,
+     the agent always should start a new one, not wait"). An agent never
+     waits for a seat on a full machine; it goes on down the order, and a new
+     machine starts when no machine has a free seat. A burst of demand starts
+     as many machines as it needs.
+     - An agent waiting for a machine holds a seat on it while it waits and,
+       once woken, until its woken run ends. Seats on one machine go first
+       come; when starts in flight ask for more seats than a machine has, the
+       latest are placed again when they run.
+     - It is woken when that machine is up. If it runs again before then and
+       a computer is free on a running machine, it takes that one, and its
+       hold lapses.
+     - One start request stays on the machine it named when the agent called
+       it, from authorization to its end, while that machine can still be
+       started.
+     - A sleeping or waking machine whose node cannot take it now is passed
+       over when another node has room for a new machine. When no node has
+       room, it is woken and waits for room.
+     - A machine in maintenance for an update or reset, or whose start was
+       cancelled, is passed over; it is used again once it is back.
+     - When no node has set up a started machine for 30 minutes, the agents
+       waiting for it stop holding its seats, so a broken setup does not add
+       machine after machine. The 30 minutes may be tuned without a new
+       founder decision.
    - A new machine is set up automatically on any node with room, with no
      operator step. It uses the same image, bootstrap and number of computers
      as the company's newest machine, and is set up from the node's own
      settings, which are the same on every node, never by copying another
      machine's node-specific setup. Operators see every machine waiting for a
      node, and why (no node has set it up yet, or no room).
-   - A computer is a seat. It is in use only while it has a live lease or a
+   - A computer is a seat. Besides being in use, a seat can be held by an
+     agent waiting for its machine, or woken and still running ("No waiting
+     for a seat" above). It is in use only while it has a live lease or a
      live viewer, is being taken over or drained, still has resources the
      agent started there that have not drained, has a command running in its
      shell, or was opened less than about two minutes ago. A desktop left open
@@ -3384,8 +3414,8 @@ hosts, login machines, the proposal-review guest or one-run runner machines.
      new machine keeps every refusal.
    - There is no count of machines per company. When no node has room, the
      request waits, and the agent and members see why. How long a request may
-     wait, and in which order waiting requests are served, are not decided
-     yet (founder, 28 September). 7.4's rule that a queued run fails after a
+     wait, and in which order machines waiting for room get it, are not
+     decided yet (founder, 28 September). 7.4's rule that a queued run fails after a
      day applies to runner jobs, not to these requests.
    - Each machine powers off by its own idle rule. Only use of that machine
      keeps it awake: its computers in use, its viewers, requests and runs
@@ -3395,13 +3425,17 @@ hosts, login machines, the proposal-review guest or one-run runner machines.
      its descriptor and effect-time grants. A run that cannot reach its
      machine continues without computer tools; it does not fail.
    - Several machines per company are turned on only once every run can reach
-     any machine of its company and company machines work in the company
-     folder. Until then a company runs one machine, so an agent never loses
-     sight of its files by moving to another machine.
+     any machine of its company, company machines work in the company folder,
+     and a new machine is set up automatically on a node with room. Until
+     then a company runs one machine, so an agent never loses sight of its
+     files by moving to another machine.
    - Acceptance (Order 4): a seventh agent gets a computer on a
      second machine of the same company, set up and started with no operator
      step; a seat another agent left idle changes hands after its desktop is
-     closed; each machine powers off on its own.
+     closed; each machine powers off on its own;
+     a burst of more agents than one machine seats starts enough machines at
+     once, and none waits on a full machine; a sleeping machine on a full
+     node is passed over for a new machine on a node with room.
 2. **Computers have internet, and their shell runs as long as the work
    needs.** The first build gave the shell no network, stopped every command
    after 15 seconds, and failed a command whose output passed 16 KiB. Those
