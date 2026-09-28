@@ -23,10 +23,18 @@
 # before the node can take work again: from `lxc init` until then the node's
 # observer sees an instance its policy does not list and publishes the node
 # unavailable, so the node takes no new work. The orchestrator inside the host
-# stays stopped until the operator starts it. If any step fails, the script
-# deletes the VM it made (nothing ran in it); a registered orchestrator row is
-# left, harmless without a heartbeat.
+# stays stopped until the operator starts it. If any step after `lxc init`
+# fails, the script deletes the VM it made (nothing ran in it). An orchestrator
+# row it registered stays: nothing runs behind it, so it claims nothing, but the
+# bundle roll status lists it as undeclared until the operator revokes it.
+#
+# The staged runner-orchestrator.env must name a NEW orchestrator id. Reusing
+# another host's id re-registers that orchestrator here and takes it over.
 set -euo pipefail
+# Modes of rebuild-exec-host.sh are set here for its own calls only, never
+# inherited from the caller's shell.
+unset EXEC_PREFLIGHT_ONLY EXEC_FRESH
+HERE="$(cd "$(dirname "$0")" && pwd)"
 
 FINGERPRINT="${1:-}"
 if [[ ! ${FINGERPRINT} =~ ^[0-9a-f]{64}$ ]]; then
@@ -59,6 +67,9 @@ if lxc info "${VM}" --project "${PROJECT}" >/dev/null 2>&1; then
 fi
 # The run profile is part of the host's inventory digest; the observer refuses an
 # infrastructure entry with any user.qorpera.* key.
+for file in rebuild-exec-host.sh exec-host-inventory-digest.py; do
+	[[ -f ${HERE}/${file} ]] || { echo "${HERE}/${file} is missing." >&2; exit 1; }
+done
 profile_keys=$(lxc query "/1.0/profiles/${EXEC_PROFILE}?project=${PROJECT}" \
 	| python3 -c 'import json,sys; print(sum(k.startswith("user.qorpera.") for k in json.load(sys.stdin)["config"]))')
 if [[ ${profile_keys} != 0 ]]; then
@@ -66,7 +77,7 @@ if [[ ${profile_keys} != 0 ]]; then
 	exit 1
 fi
 # Every input the install needs is checked before anything is created.
-EXEC_PREFLIGHT_ONLY=1 "$(dirname "$0")/rebuild-exec-host.sh" "${FINGERPRINT}"
+EXEC_PREFLIGHT_ONLY=1 bash "${HERE}/rebuild-exec-host.sh" "${FINGERPRINT}"
 CPU=$((SLOTS * SLOT_CPU))
 MEMORY_GIB=$((SLOTS * SLOT_GIB))
 
@@ -79,21 +90,22 @@ cleanup() {
 	fi
 }
 trap cleanup EXIT
-created=1
 lxc init "${FINGERPRINT}" "${VM}" --project "${PROJECT}" --vm \
 	-p "${EXEC_PROFILE}" -s "${EXEC_POOL}" \
 	-c "limits.cpu=${CPU}" -c "limits.memory=${MEMORY_GIB}GiB" -c boot.mode=uefi-secureboot \
 	-d root,size=80GiB
+# Only a VM this run made is ever deleted: an init that fails (the name exists) deletes nothing.
+created=1
 lxc config device add "${VM}" eth0 nic "network=${EXEC_NETWORK}" name=eth0 \
 	security.ipv4_filtering=true security.ipv6_filtering=true \
 	security.mac_filtering=true security.port_isolation=true --project "${PROJECT}" >/dev/null
 
 # The same install, configuration and orchestrator registration as every rebuild,
 # without the stop, sandbox check and rebuild a new host has no use for.
-EXEC_FRESH=1 "$(dirname "$0")/rebuild-exec-host.sh" "${FINGERPRINT}"
+EXEC_FRESH=1 bash "${HERE}/rebuild-exec-host.sh" "${FINGERPRINT}"
 
 echo "Inventory entry for this node's policy (enroll it, then write the observer configuration):"
-digest=$(lxc query "/1.0/instances/${VM}?project=${PROJECT}" | python3 "$(dirname "$0")/exec-host-inventory-digest.py" \
+digest=$(lxc query "/1.0/instances/${VM}?project=${PROJECT}" | python3 "${HERE}/exec-host-inventory-digest.py" \
 	| python3 -c 'import json,sys; print(json.load(sys.stdin)["configurationSha256"])')
 [[ ${digest} =~ ^[0-9a-f]{64}$ ]]
 uuid=$(lxc config get "${VM}" volatile.uuid --project "${PROJECT}")

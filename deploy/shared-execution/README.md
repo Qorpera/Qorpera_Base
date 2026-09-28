@@ -137,8 +137,9 @@ last week, parked warm hosts included. The start is 4 slots of 2 vCPU / 4 GiB ea
   - it installs through `rebuild-exec-host.sh` in its new-host mode (`EXEC_FRESH=1`: nothing to
     stop, check or rebuild);
   - it prints the infrastructure entry to enroll;
-  - if a step fails, it deletes the VM it made. A registered orchestrator row may stay behind; it
-    has no heartbeat, so nothing places runs on it.
+  - if a step after `lxc init` fails, it deletes the VM it made. An orchestrator row it
+    registered stays: nothing runs behind it, but the bundle roll status lists it as undeclared
+    until it is revoked.
 
 ### Node 1, in this order (coordinator)
 
@@ -157,8 +158,9 @@ last week, parked warm hosts included. The start is 4 slots of 2 vCPU / 4 GiB ea
      (`QORPERA_RUNNER_PROVIDER_ADAPTER`), `QORPERA_SHARED_EXECUTION_HOST_ID=qorpera-exec-node01`,
      node 1's `QORPERA_RUNNER_NODE_ID`, `QORPERA_SHARED_EXECUTION_SLOTS=4` (the example says 16)
      and `QORPERA_SHARED_EXECUTION_WARM_IDLE_MS=300000`;
-   - `runner-orchestrator.env` for a new orchestrator id, with a
-     `QORPERA_RUNNER_ORCHESTRATOR_CONTROL_TOKEN=` line for the script to fill;
+   - `runner-orchestrator.env` for a **new** orchestrator id, with a
+     `QORPERA_RUNNER_ORCHESTRATOR_CONTROL_TOKEN=` line for the script to fill. Never copy node 2's
+     id: registering it here would take over node 2's orchestrator;
    - the credentials, as for node 2.
 
    Node 1's LXD provider must **not** set `QORPERA_LXD_EXECUTION_HOST_INSTANCE`/`_PROJECT`. With

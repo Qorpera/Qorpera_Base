@@ -26,7 +26,9 @@
 #   EXEC_PREFLIGHT_ONLY=1  check the inputs, change nothing, exit
 #   EXEC_FRESH=1     set only by create-exec-host.sh: the host was just created
 #                    from this image and never started, so there is nothing to
-#                    stop, check or rebuild
+#                    stop, check or rebuild. The script checks that the VM is
+#                    stopped, from this image and without identity devices; it
+#                    cannot tell that it never ran, so never set it by hand.
 # The orchestrator inside the host is left stopped: start it when the cut is live.
 # `lxc rebuild` replaces the root disk only: the instance keeps its devices,
 # the Compute Identity devices (identity-<uuid>) the login gateway attached
