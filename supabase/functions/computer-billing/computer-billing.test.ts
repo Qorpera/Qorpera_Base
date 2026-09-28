@@ -198,6 +198,16 @@ describe("Stripe webhook", () => {
 		assert.equal(finished(f)?.outcome, "applied");
 	});
 
+	it("sends a pack paid for a deleted company to review, for a refund", async () => {
+		const f = fixture(
+			{ "/v1/checkout/sessions/cs_9": { id: "cs_9", mode: "payment", payment_status: "paid", payment_intent: "pi_9" } },
+			{ credits_paid: () => new BillingStoreError("22023", "Billing: credits for a company that no longer exists") },
+		);
+		assert.equal((await webhook(f, event("checkout.session.completed", { id: "cs_9" }))).status, 200);
+		assert.equal(finished(f)?.outcome, "needs_review");
+		assert.match(String(finished(f)?.detail), /no longer exists/);
+	});
+
 	it("leaves plan checkouts and unpaid checkouts to later events", async () => {
 		const f = fixture({ "/v1/checkout/sessions/cs_2": { id: "cs_2", mode: "subscription", payment_status: "paid" } });
 		await webhook(f, event("checkout.session.completed", { id: "cs_2" }));
@@ -514,6 +524,8 @@ describe("Checkout and the billing page", () => {
 		assert.equal(session?.form["automatic_tax[enabled]"], "true");
 		assert.equal(session?.form["customer_update[address]"], "auto");
 		assert.equal(session?.form["payment_intent_data[metadata][qorpera_profile_id]"], COMPANY);
+		// A pack's page closes after an hour.
+		assert.equal(session?.form.expires_at, String(NOW + 3600));
 		assert.equal(session?.form.success_url, "https://app.qorpera.com/#/account?checkout=done");
 		assert.equal(session?.form.cancel_url, "https://app.qorpera.com/#/account?checkout=cancelled");
 		assert.ok(!("ui_mode" in (session?.form ?? {})));
@@ -547,6 +559,7 @@ describe("Checkout and the billing page", () => {
 		);
 		assert.equal((await handleComputerBilling(post("checkout", { itemKey: "basis" }), f.deps)).status, 200);
 		assert.equal(f.posts[0]?.form.mode, "subscription");
+		assert.ok(!("expires_at" in (f.posts[0]?.form ?? {})));
 		assert.equal(f.posts[0]?.form["subscription_data[metadata][qorpera_item_key]"], "basis");
 		const changed = fixture(
 			{

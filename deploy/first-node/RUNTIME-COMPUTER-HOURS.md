@@ -238,7 +238,8 @@ every request.
     founders only, for their company). It creates the member's Stripe customer once, re-checks
     Stripe's price against the catalog (active, DKK, amount, tax-exclusive, monthly or one-off),
     and starts Checkout with Stripe Tax, address and CVR/VAT number collection, the member's saved
-    cards offered, and an idempotency key per checkout.
+    cards offered, and an idempotency key per checkout. A pack's checkout page closes after an
+    hour (Stripe's default is 24), since it is bought for one company.
   - `POST /portal` (member JWT): Stripe's billing page for card changes, invoices, cancelling at
     the period end and switching between Basis and Standard.
   - `POST /webhook`: Stripe's events, signature checked (five-minute window, several
@@ -284,6 +285,14 @@ every request.
   time at the company's next use instead. Webhook writes run under READ COMMITTED through the
   billing door, which takes the billing lock before it writes sources.
 - Refunds remove the unused hours of their purchase. A dispute freezes only its purchase.
+- A pack paid for a company that is gone or being deleted (company delete's
+  `qorpera_company_deleting`) adds no credit: a guard on the sources refuses it (migration
+  `20260929170000`), so the Stripe event goes to review and an operator refunds the payment. A
+  repeated delivery of a payment already credited stays a no-op. Known limit: the guard does not
+  lock the company, so a deletion requested in the same instant can let one credit through. That
+  payment is not sent to review: an operator finds it as a credit whose company is in
+  `qorpera_company_deletions`, and refunds it. Starting a pack checkout for a company being deleted is not refused at
+  the start (company delete hides the company from its members at once).
 - Known limits, for review rather than code: a failed renewal is found through the subscription's
   latest invoice; a partial refund withdraws the whole purchase, and a failed refund
   (`refund.failed`) does not give it back; two open tabs can start two subscriptions (the member
