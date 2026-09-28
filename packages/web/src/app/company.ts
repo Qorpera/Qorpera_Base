@@ -1249,6 +1249,10 @@ export class CompanyController {
 		this.#mergeCodingSession(sessionId, await this.#api.delegateCodingSession(workerId, clientRequestId));
 	}
 
+	async archiveCodingSession(sessionId: string, workerId: string, clientRequestId: string): Promise<void> {
+		this.#mergeCodingSession(sessionId, await this.#api.archiveCodingSession(workerId, clientRequestId));
+	}
+
 	#mergeCodingSession(sessionId: string, session: CodingSession): void {
 		const store = this.conversations.get(sessionId);
 		if (!store) return;

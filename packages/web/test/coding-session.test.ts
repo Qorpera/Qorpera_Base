@@ -16,6 +16,7 @@ import {
 	CodingSessionSlot,
 	codingSessionActivity,
 	codingSessionLine,
+	codingSessionStandby,
 	codingSessionStatus,
 	fmtDuration,
 	harnessBadge,
@@ -51,6 +52,9 @@ function codingSession(overrides: Partial<CodingSession> = {}): CodingSession {
 		createdAt: "2026-09-22T09:59:00Z",
 		sessionId: CONVERSATION,
 		isOwner: true,
+		attached: false,
+		runningCommands: 0,
+		machineAsleep: false,
 		...overrides,
 	};
 }
@@ -130,6 +134,28 @@ describe("the captions the kernel state produces", () => {
 			text: "Failed · workspace kept",
 			tone: "failed",
 		});
+		// Between turns: where the session is, instead of the generic "kept".
+		const done = { phase: "completed" as const, pullRequest: { url: "https://x.invalid/pull/1", number: 1 } };
+		expect(codingSessionStatus(codingSession({ ...done, attached: true }), owner, NOW).text).toBe(
+			"Draft PR ready · standing by",
+		);
+		expect(codingSessionStatus(codingSession({ ...done, attached: true, runningCommands: 2 }), owner, NOW).text).toBe(
+			"Draft PR ready · running 2 commands",
+		);
+		expect(codingSessionStatus(codingSession({ ...done, machineAsleep: true }), owner, NOW).text).toBe(
+			"Draft PR ready · asleep",
+		);
+		expect(
+			codingSessionStatus(codingSession({ phase: "awaiting_input", attached: true, runningCommands: 1 }), owner, NOW)
+				.text,
+		).toBe("Needs you · your answer is recorded in this thread · running 1 command");
+		expect(codingSessionStatus(codingSession({ phase: "failed", attached: true }), owner, NOW).text).toBe(
+			"Failed · standing by",
+		);
+		expect(
+			codingSessionStatus(codingSession({ phase: "cancelled", archivedAt: "2026-09-22T10:04:00Z" }), owner, NOW),
+		).toEqual({ text: "Archived · files kept", tone: "idle" });
+		expect(codingSessionStandby(codingSession({ attached: false, runningCommands: 3 }))).toBeUndefined();
 		expect(fmtDuration(30_000)).toBe("less than a minute");
 		expect(fmtDuration(65 * 60_000)).toBe("1 h 5 min");
 		expect(shortBranch(`qorpera/coding/${WORKER}`)).toBe("qorpera/coding/1111…");
@@ -139,7 +165,11 @@ describe("the captions the kernel state produces", () => {
 		expect(codingSessionTakesInput(codingSession())).toBe(false);
 		expect(codingSessionTakesInput(codingSession({ phase: "awaiting_input" }))).toBe(true);
 		expect(codingSessionTakesInput(codingSession({ phase: "completed" }))).toBe(true);
-		expect(codingSessionTakesInput(codingSession({ phase: "cancelled", sequence: 64 }))).toBe(false);
+		// Any number of turns; an archived session takes a message, which reopens it.
+		expect(codingSessionTakesInput(codingSession({ phase: "cancelled", sequence: 65 }))).toBe(true);
+		expect(codingSessionTakesInput(codingSession({ phase: "cancelled", archivedAt: "2026-09-22T10:04:00Z" }))).toBe(
+			true,
+		);
 	});
 });
 
@@ -209,6 +239,26 @@ describe("the kernel's shapes", () => {
 		expect(() => parseCodingSession({ ...wire, phase: "sleeping" })).toThrow();
 		expect(() => parseCodingSession({ ...wire, harness: "cursor" })).toThrow();
 	});
+
+	it("reads where the session is between turns, and any number of turns", () => {
+		expect(parseCodingSession(wire)).toMatchObject({ attached: false, runningCommands: 0, machineAsleep: false });
+		const standing = parseCodingSession({
+			...wire,
+			sequence: 120,
+			attached: true,
+			runningCommands: 2,
+			busyAt: wire.updatedAt,
+			machineAsleep: false,
+			archivedAt: null,
+			archivedBy: null,
+		});
+		expect(standing).toMatchObject({ sequence: 120, attached: true, runningCommands: 2, busyAt: wire.updatedAt });
+		expect(standing.archivedAt).toBeUndefined();
+		expect(
+			parseCodingSession({ ...wire, archivedAt: wire.updatedAt, archivedBy: "agent", machineAsleep: true }),
+		).toMatchObject({ archivedAt: wire.updatedAt, archivedBy: "agent", machineAsleep: true });
+		expect(parseCodingSession({ ...wire, runningCommands: -1 }).runningCommands).toBe(0);
+	});
 });
 
 describe("the element in the thread", () => {
@@ -246,16 +296,17 @@ describe("the element in the thread", () => {
 		);
 		const answer = vi.fn(async (_workerId: string, _text: string, _clientRequestId: string): Promise<void> => {});
 		const delegate = vi.fn(async (_workerId: string, _clientRequestId: string): Promise<void> => {});
+		const archive = vi.fn(async (_workerId: string, _clientRequestId: string): Promise<void> => {});
 		const names = options.viewer === "other" ? other : owner;
 		const element = new CodingSessionElement(session, {
 			names: () => names,
 			viewerOwns: () => options.viewer !== "other",
-			api: { read, answer, delegate },
+			api: { read, answer, delegate, archive },
 			signal: disposeAll.signal,
 			askAgent: options.askAgent,
 		});
 		document.body.append(element.el);
-		return { element, read, answer, delegate, state };
+		return { element, read, answer, delegate, archive, state };
 	}
 	const settle = async () => {
 		for (let i = 0; i < 20; i++) await Promise.resolve();
@@ -567,12 +618,85 @@ describe("the element in the thread", () => {
 		]);
 	});
 
-	it("says when a session takes no more messages", async () => {
-		const { element } = mount(codingSession({ phase: "completed", workerState: "succeeded", sequence: 64 }));
+	it("takes a follow-up past any turn, and a message reopens an archived session", async () => {
+		const { element } = mount(codingSession({ phase: "completed", workerState: "succeeded", sequence: 70 }));
 		await settle();
 		const field = element.el.querySelector<HTMLTextAreaElement>(".coding-field-input")!;
-		expect(field.getAttribute("aria-disabled")).toBe("true");
-		expect(field.placeholder).toBe("This session takes no more messages");
+		expect(field.getAttribute("aria-disabled")).toBe("false");
+		expect(field.placeholder).toBe("Follow up on this session");
+		element.dispose();
+		element.el.remove();
+		const archived = mount(
+			codingSession({ phase: "cancelled", workerState: "cancelled", archivedAt: "2026-09-22T10:04:00Z" }),
+		);
+		await settle();
+		const again = archived.element.el.querySelector<HTMLTextAreaElement>(".coding-field-input")!;
+		expect(again.getAttribute("aria-disabled")).toBe("false");
+		expect(again.placeholder).toBe("Send a message to reopen this session");
+		// Archived already: no second Archive.
+		expect(archived.element.el.querySelector(".coding-archive")).toBeNull();
+	});
+
+	it("lets the owner archive the session under one request id, and reads it again after", async () => {
+		const { element, archive, read, state } = mount(
+			codingSession({ phase: "completed", workerState: "succeeded", attached: true, runningCommands: 1 }),
+		);
+		await settle();
+		expect(element.el.querySelector(".coding-status-text")?.textContent).toBe("Finished · running 1 command");
+		const reads = read.mock.calls.length;
+		archive.mockImplementationOnce(async () => {
+			state.session = codingSession({
+				phase: "completed",
+				workerState: "succeeded",
+				archivedAt: "2026-09-22T10:04:00Z",
+				archivedBy: "member",
+				updatedAt: "2026-09-22T10:04:00Z",
+			});
+		});
+		element.el.querySelector<HTMLButtonElement>(".coding-archive")!.click();
+		await settle();
+		expect(archive).toHaveBeenCalledTimes(1);
+		expect(archive.mock.calls[0]?.[0]).toBe(WORKER);
+		expect(read.mock.calls.length).toBeGreaterThan(reads);
+		expect(element.el.querySelector(".coding-status-text")?.textContent).toBe("Archived · files kept");
+		expect(element.el.querySelector(".coding-archive")).toBeNull();
+		// Read out once, now that it changed.
+		expect(element.el.querySelector(".coding-footer [role=status]")?.textContent).toBe("Archived · files kept");
+	});
+
+	it("offers Archive to the owner only", async () => {
+		const { element } = mount(codingSession({ phase: "completed", workerState: "succeeded" }), { viewer: "other" });
+		await settle();
+		expect(element.el.querySelector(".coding-archive")).toBeNull();
+	});
+
+	it("tells where the session went as notes, not as the harness speaking", async () => {
+		const { element } = mount(codingSession({ phase: "completed", workerState: "succeeded" }), {
+			events: [
+				event(1, "step", { text: "Prepared the repository at abc1234" }, "executor"),
+				event(
+					2,
+					"step",
+					{
+						text: "The machine went to sleep; 1 command was stopped",
+						reason: "SLEEP",
+						stopped: [{ commandId: id(5), turn: 1, command: "npm run dev" }],
+					},
+					"executor",
+				),
+				event(3, "step", { text: "Archived", archived: true, by: "agent" }, "kernel"),
+				event(4, "step", { text: "Reopened", reopened: true }, "kernel"),
+			],
+		});
+		await settle();
+		const notes = [...element.el.querySelectorAll(".coding-note")].map((note) => note.textContent);
+		expect(notes).toEqual([
+			"The computer went to sleep · 1 command stopped",
+			"Mark archived the session",
+			"Reopened",
+		]);
+		// The working step stays the harness's.
+		expect(element.el.querySelector(".coding-steps")?.textContent).toContain("Prepared the repository at abc1234");
 	});
 
 	it("keeps a draft when the session is left and opened again", async () => {
@@ -684,7 +808,7 @@ describe("the element in the thread", () => {
 		// A new phase from the listing reads the stream at once, not at the next poll.
 		await settle();
 		expect(read).toHaveBeenCalledTimes(reads + 1);
-		expect(element.el.querySelector(".coding-status")?.textContent).toBe(
+		expect(element.el.querySelector(".coding-status-text")?.textContent).toBe(
 			"Needs you · your answer is recorded in this thread",
 		);
 	});

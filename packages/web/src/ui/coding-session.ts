@@ -83,13 +83,31 @@ export function fmtDuration(ms: number): string {
 	return rest ? t("{hours} h {minutes} min", { hours, minutes: rest }) : t("{hours} h", { hours });
 }
 
-/** The live status line: the state, how long, the last step, the diff size. */
+/** Where a session is between its turns: on its computer with what it left running, or its computer asleep.
+ * Nothing when neither is known (a session from before sessions stood by). */
+export function codingSessionStandby(
+	session: Pick<CodingSession, "attached" | "runningCommands" | "machineAsleep">,
+): string | undefined {
+	if (session.attached && session.runningCommands > 0)
+		return session.runningCommands === 1
+			? t("running 1 command")
+			: t("running {count} commands", { count: session.runningCommands });
+	if (session.attached) return t("standing by");
+	if (session.machineAsleep) return t("asleep");
+	return undefined;
+}
+
+/** The live status line: the state, how long, the last step, the diff size; between turns, whether the session
+ * stands by on its computer, runs something there, or sleeps. */
 export function codingSessionStatus(
 	session: CodingSession,
 	names: CodingSessionNames,
 	now = Date.now(),
 ): { text: string; tone: CodingSessionTone } {
+	if (session.archivedAt) return { text: t("Archived · files kept"), tone: "idle" };
 	const since = (iso: string | undefined) => (iso ? fmtDuration(now - Date.parse(iso)) : undefined);
+	const standby = codingSessionStandby(session);
+	const running = session.attached && session.runningCommands > 0 ? standby : undefined;
 	const files =
 		session.filesChanged > 0
 			? session.filesChanged === 1
@@ -112,11 +130,16 @@ export function codingSessionStatus(
 		case "awaiting_input": {
 			const paused = since(session.updatedAt);
 			return {
-				text: names.ownerIsViewer
-					? t("Needs you · your answer is recorded in this thread")
-					: paused
-						? t("Needs {name} · paused {duration}", { name: names.owner, duration: paused })
-						: t("Needs {name} · paused now", { name: names.owner }),
+				text: [
+					names.ownerIsViewer
+						? t("Needs you · your answer is recorded in this thread")
+						: paused
+							? t("Needs {name} · paused {duration}", { name: names.owner, duration: paused })
+							: t("Needs {name} · paused now", { name: names.owner }),
+					running,
+				]
+					.filter(Boolean)
+					.join(" · "),
 				tone: "attention",
 			};
 		}
@@ -126,15 +149,20 @@ export function codingSessionStatus(
 			return { text: [t("Opening the pull request"), files].filter(Boolean).join(" · "), tone: "working" };
 		case "completed":
 			return {
-				text: session.pullRequest
-					? t("Draft PR ready · session kept for follow-ups")
-					: t("Finished · session kept for follow-ups"),
+				text: standby
+					? [session.pullRequest ? t("Draft PR ready") : t("Finished"), standby].join(" · ")
+					: session.pullRequest
+						? t("Draft PR ready · session kept for follow-ups")
+						: t("Finished · session kept for follow-ups"),
 				tone: "done",
 			};
 		case "failed":
-			return { text: t("Failed · workspace kept"), tone: "failed" };
+			return { text: standby ? [t("Failed"), standby].join(" · ") : t("Failed · workspace kept"), tone: "failed" };
 		case "cancelled":
-			return { text: t("Cancelled · workspace kept"), tone: "idle" };
+			return {
+				text: standby ? [t("Cancelled"), standby].join(" · ") : t("Cancelled · workspace kept"),
+				tone: "idle",
+			};
 	}
 }
 
@@ -142,6 +170,7 @@ export interface CodingSessionApi {
 	read(workerId: string, afterEvent: number): Promise<CodingSessionRead>;
 	answer(workerId: string, text: string, clientRequestId: string): Promise<void>;
 	delegate(workerId: string, clientRequestId: string): Promise<void>;
+	archive(workerId: string, clientRequestId: string): Promise<void>;
 }
 
 /** The session as the body of its own thread (the thread view adds the header): the transcript, and under it
@@ -256,9 +285,10 @@ export class CodingSessionElement {
 	readonly #body = h("div", { class: "coding-body" });
 	readonly #footer = h("footer", { class: "coding-footer" });
 	readonly #status = h("div", { class: "coding-status" });
-	/** Read out when the phase changes, not at every step the visible status line shows. */
+	/** Read out when the phase or the session's place changes (standing by, running, asleep, archived), not at
+	 * every step the visible status line shows. */
 	readonly #announce = h("span", { class: "visually-hidden", role: "status" });
-	#announcedPhase = "";
+	#announced = "";
 	readonly #extras = h("div", { class: "coding-extras", hidden: true });
 	readonly #field: HTMLTextAreaElement;
 	readonly #sendButton: HTMLButtonElement;
@@ -486,6 +516,12 @@ export class CodingSessionElement {
 		await this.#act((requestId) => this.#options.api.delegate(this.#session.workerId, requestId));
 	}
 
+	/** The owner closes the session: what it runs stops, it leaves its computer, its files stay. */
+	async #archive(): Promise<void> {
+		if (this.#busy || this.disposed || this.#session.archivedAt) return;
+		await this.#act((requestId) => this.#options.api.archive(this.#session.workerId, requestId));
+	}
+
 	/** One answer or delegation under one request id, kept for a retry after a refusal. The controls stay busy
 	 * until the session has been read again after it, so a second click cannot send it twice. */
 	async #act(call: (requestId: string) => Promise<void>, sent?: () => void): Promise<void> {
@@ -672,6 +708,13 @@ export class CodingSessionElement {
 			const when = fmtTime(event.at);
 			switch (event.kind) {
 				case "step": {
+					// Archived, reopened, or taken off its computer: the session's place, not the harness speaking.
+					const place = this.#placeNote(event, names);
+					if (place) {
+						lastSaid = "";
+						note(h("div", { class: "conversation-note coding-note", role: "note" }, place));
+						break;
+					}
 					const title = text(event.body, "text", "title", "command", "summary") ?? t("Step");
 					const status = text(event.body, "status");
 					step(
@@ -848,6 +891,44 @@ export class CodingSessionElement {
 		else this.#log.prepend(next);
 	}
 
+	/** A step that says where the session is: archived (by whom), reopened, or taken off its computer and what that
+	 * stopped. Undefined for the harness's and the executor's working steps. */
+	#placeNote(event: CodingSessionEvent, names: CodingSessionNames): string | undefined {
+		const body = event.body;
+		if (typeof body !== "object" || body === null || Array.isArray(body)) return undefined;
+		if (body.archived === true) {
+			const by = body.by;
+			if (by === "agent") return t("{agent} archived the session", { agent: names.agent });
+			if (by === "kernel") return t("Archived after a long quiet time");
+			return names.ownerIsViewer
+				? t("You archived the session")
+				: t("{owner} archived the session", { owner: names.owner });
+		}
+		if (body.reopened === true) return t("Reopened");
+		if (event.actor !== "executor" || !Array.isArray(body.stopped)) return undefined;
+		const count = body.stopped.length;
+		const reason =
+			body.reason === "SLEEP"
+				? t("The computer went to sleep")
+				: body.reason === "RETIRED"
+					? t("The computer was replaced with a newer one")
+					: body.reason === "EXPIRED"
+						? t("The session lost its computer")
+						: body.reason === "OWNER_LEFT"
+							? t("The owner is no longer a member")
+							: body.reason === "REPOSITORY_WITHDRAWN"
+								? t("{agent} no longer has the repository", { agent: names.agent })
+								: body.reason === "EXECUTOR_DISABLED"
+									? t("Coding is turned off here")
+									: undefined;
+		const stopped = count
+			? count === 1
+				? t("1 command stopped")
+				: t("{count} commands stopped", { count })
+			: undefined;
+		return [reason, stopped].filter(Boolean).join(" · ") || undefined;
+	}
+
 	/** The top of the transcript: the harness, the task and where it works. */
 	#renderIntro(): HTMLElement {
 		const session = this.#session;
@@ -973,18 +1054,49 @@ export class CodingSessionElement {
 		const asking = session.phase === "awaiting_input";
 		const question = this.#liveQuestion();
 		const choices = question ? options(question.body) : [];
-		const key = JSON.stringify([status, owns, harness, takesInput, asking, choices, this.#busy, this.#error, names]);
+		const archived = Boolean(session.archivedAt);
+		const key = JSON.stringify([
+			status,
+			owns,
+			harness,
+			takesInput,
+			asking,
+			choices,
+			this.#busy,
+			this.#error,
+			names,
+			archived,
+			session.attached,
+			session.runningCommands,
+			session.machineAsleep,
+		]);
 		if (key === this.#footerKey) return;
 		this.#footerKey = key;
 		this.#status.className = `coding-status coding-tone-${status.tone}`;
-		if (this.#announcedPhase !== session.phase) {
-			this.#announcedPhase = session.phase;
+		const announced = JSON.stringify([session.phase, archived, codingSessionStandby(session)]);
+		if (this.#announced !== announced) {
+			this.#announced = announced;
 			this.#announce.textContent = status.text;
 		}
 		replace(
 			this.#status,
 			h("span", { class: `coding-dot coding-dot-${status.tone}`, "aria-hidden": "true" }),
 			h("span", { class: "coding-status-text" }, status.text),
+			owns && !archived
+				? h(
+						"button",
+						{
+							type: "button",
+							class: "btn btn-small coding-archive",
+							disabled: this.#busy,
+							title: t(
+								"Stops what it runs and takes it off its computer. Its files are kept, and a new message reopens it.",
+							),
+							onclick: () => void this.#archive(),
+						},
+						t("Archive"),
+					)
+				: null,
 		);
 		replace(
 			this.#extras,
@@ -1027,18 +1139,17 @@ export class CodingSessionElement {
 		}
 		this.#lock.remove();
 		if (this.#talk.parentElement !== this.#footer) this.#footer.append(this.#talk);
-		const placeholder =
-			!takesInput && (asking || codingSessionSettled(session.phase))
-				? t("This session takes no more messages")
-				: asking
-					? choices.length
-						? t("Or answer in your own words")
-						: t("Answer {harness}", { harness })
-					: takesInput
-						? t("Follow up on this session")
-						: session.phase === "queued"
-							? t("The session has not started yet")
-							: t("{harness} is working", { harness });
+		const placeholder = asking
+			? choices.length
+				? t("Or answer in your own words")
+				: t("Answer {harness}", { harness })
+			: takesInput
+				? archived
+					? t("Send a message to reopen this session")
+					: t("Follow up on this session")
+				: session.phase === "queued"
+					? t("The session has not started yet")
+					: t("{harness} is working", { harness });
 		this.#field.placeholder = placeholder;
 		this.#field.setAttribute("aria-label", asking ? t("Answer the session") : t("Follow up on the session"));
 		// Read-only, never disabled, until the session takes input and while an answer is on its way: a disabled

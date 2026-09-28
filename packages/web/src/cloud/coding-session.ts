@@ -87,6 +87,17 @@ export interface CodingSession {
 	sessionId?: string;
 	/** Whether the signed-in member owns the session (only the listing says). */
 	isOwner?: boolean;
+	/** Archived: taken off its computer, files kept; a new message reopens it. */
+	archivedAt?: string;
+	archivedBy?: "member" | "agent" | "kernel";
+	/** On its awake computer between turns (standing by), with what it left running. */
+	attached: boolean;
+	/** Commands still running at the last look, while attached. */
+	runningCommands: number;
+	/** When its commands last used the processor. */
+	busyAt?: string;
+	/** Its computer is asleep: programs stopped, files kept, the next message wakes it. */
+	machineAsleep: boolean;
 }
 
 export interface CodingSessionEvent {
@@ -109,10 +120,11 @@ export function codingSessionSettled(phase: CodingSessionPhase): boolean {
 	return phase === "completed" || phase === "failed" || phase === "cancelled";
 }
 
-/** Whether the owner may type into the session now: it asked, or it is done. The
- * kernel refuses input while a turn is running. */
-export function codingSessionTakesInput(session: Pick<CodingSession, "phase" | "sequence">): boolean {
-	return (session.phase === "awaiting_input" || codingSessionSettled(session.phase)) && session.sequence < 64;
+/** Whether the owner may type into the session now: it asked, or it is done (an
+ * archived session too: the message reopens it). The kernel refuses input while
+ * a turn is running. A session takes any number of turns. */
+export function codingSessionTakesInput(session: Pick<CodingSession, "phase">): boolean {
+	return session.phase === "awaiting_input" || codingSessionSettled(session.phase);
 }
 
 function optionalString(value: unknown, maximum = 32 * 1024): string | undefined {
@@ -169,7 +181,7 @@ export function parseCodingSession(value: unknown): CodingSession {
 		harness: oneOf(item.harness, CODING_HARNESSES, "Coding session harness"),
 		repository: parseRepository(item.repository),
 		branch: nonEmptyString(item.branch, "Coding session branch", 250),
-		sequence: boundedInteger(item.sequence, "Coding session sequence", 1, 64),
+		sequence: boundedInteger(item.sequence, "Coding session sequence", 1, Number.MAX_SAFE_INTEGER),
 		workerState: nonEmptyString(item.workerState, "Coding session worker state", 32),
 		phase: oneOf(item.phase, CODING_SESSION_PHASES, "Coding session phase"),
 		filesChanged: typeof item.filesChanged === "number" && item.filesChanged >= 0 ? Math.floor(item.filesChanged) : 0,
@@ -177,7 +189,19 @@ export function parseCodingSession(value: unknown): CodingSession {
 		artifacts: Array.isArray(item.artifacts) ? item.artifacts.map(jsonValue) : [],
 		updatedAt: timestamp(item.updatedAt, "Coding session updated at"),
 		createdAt: timestamp(item.createdAt ?? item.updatedAt, "Coding session created at"),
+		attached: item.attached === true,
+		runningCommands:
+			typeof item.runningCommands === "number" && item.runningCommands > 0 ? Math.floor(item.runningCommands) : 0,
+		machineAsleep: item.machineAsleep === true,
 	};
+	const archivedAt = optionalTimestamp(item.archivedAt, "Coding session archived at");
+	if (archivedAt) {
+		session.archivedAt = archivedAt;
+		if (item.archivedBy === "member" || item.archivedBy === "agent" || item.archivedBy === "kernel")
+			session.archivedBy = item.archivedBy;
+	}
+	const busyAt = optionalTimestamp(item.busyAt, "Coding session busy at");
+	if (busyAt) session.busyAt = busyAt;
 	const model = optionalString(item.model, 96);
 	if (model) session.model = model;
 	const baseSha = optionalString(item.baseSha, 40);
@@ -209,7 +233,7 @@ export function parseCodingSessionEvent(value: unknown): CodingSessionEvent {
 	const item = record(value, "Coding session event");
 	return {
 		id: boundedInteger(item.id, "Coding session event id", 1, Number.MAX_SAFE_INTEGER),
-		sequence: boundedInteger(item.sequence, "Coding session event sequence", 1, 64),
+		sequence: boundedInteger(item.sequence, "Coding session event sequence", 1, Number.MAX_SAFE_INTEGER),
 		kind: oneOf(item.kind, CODING_SESSION_EVENT_KINDS, "Coding session event kind"),
 		actor: oneOf(item.actor, CODING_SESSION_ACTORS, "Coding session event actor"),
 		body: jsonValue(item.body ?? {}),

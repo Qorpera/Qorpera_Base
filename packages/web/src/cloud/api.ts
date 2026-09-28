@@ -500,6 +500,16 @@ export class CloudApi {
 			.then(parseCodingSession);
 	}
 
+	/** The owner archives a session: what it runs stops and it leaves its computer; its files stay. */
+	archiveCodingSession(workerId: string, clientRequestId: string): Promise<CodingSession> {
+		return this.cloud
+			.rpc("qorpera_archive_coding_session", {
+				p_worker_id: requiredUuid(workerId, "Coding session id"),
+				p_client_request_id: requiredUuid(clientRequestId, "Client request id"),
+			})
+			.then(parseCodingSession);
+	}
+
 	listSessionInputs(sessionId: string, afterPosition = 0, limit = 100): Promise<PendingSessionInputPage> {
 		return this.cloud
 			.rpc("qorpera_list_session_inputs", {
