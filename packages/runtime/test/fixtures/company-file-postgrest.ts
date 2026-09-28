@@ -39,7 +39,10 @@ function status(code: string): number {
  * (qorpera_native_company_file_write) checks its source, then takes the same
  * check, prepare or commit (20260908003200). A deletion leaves a
  * tombstone that keeps a version, as qorpera_publish_company_path does, so
- * recreating the path must name it. Authority is not modelled.
+ * recreating the path must name it. A path marked protected is proposed,
+ * never applied: check and prepare answer "protected" and commit records a
+ * proposal receipt, as the commit does for a path that needs approval
+ * (20260828019850). Authority is not modelled.
  */
 export function companyFilePostgrest() {
 	const { binding, authority } = nativeToolAuthorityFixture();
@@ -61,6 +64,7 @@ export function companyFilePostgrest() {
 	const entries = new Map<string, { version: string; entry: CloudCompanyTreeEntry | null }>();
 	const receipts = new Map<string, unknown>();
 	const exports = new Map<string, CompanyComputerFileExportAsset>();
+	const protectedPaths = new Set<string>();
 	let head = randomUUID();
 	/** Every RPC as it crossed HTTP, with the status PostgREST answered. */
 	const requests: { method: string; path: string | null; status: number }[] = [];
@@ -208,11 +212,12 @@ export function companyFilePostgrest() {
 		if (method === "qorpera_check_company_path_mutation") {
 			if (receipt) return { state: "completed", result: receipt };
 			stale(plan);
-			return { state: "ready" };
+			return { state: protectedPaths.has(plan.path) ? "protected" : "ready" };
 		}
 		if (method === "qorpera_prepare_company_path_mutation") {
 			if (receipt) return { state: "completed", result: receipt };
 			stale(plan);
+			if (protectedPaths.has(plan.path)) return { state: "protected" };
 			return {
 				state: "ready",
 				snapshotId: head,
@@ -222,6 +227,20 @@ export function companyFilePostgrest() {
 		if (method === "qorpera_commit_company_path_mutation") {
 			if (receipt) return receipt;
 			stale(plan);
+			if (protectedPaths.has(plan.path)) {
+				const proposal = {
+					schema: "qorpera.company-path-result/v1",
+					state: "proposed",
+					operationKey: plan.operationKey,
+					path: plan.path,
+					version: plan.expectedVersion,
+					snapshotId: null,
+					receiptId: randomUUID(),
+					proposalId: randomUUID(),
+				};
+				receipts.set(plan.operationKey, proposal);
+				return proposal;
+			}
 			if (args.p_expected_head !== head) throw new FakeSqlError("PT409", "Company File head changed");
 			const version = randomUUID();
 			entries.set(plan.path, { version, entry: plan.entry });
@@ -285,5 +304,7 @@ export function companyFilePostgrest() {
 		directory,
 		text,
 		moveHead,
+		/** Writes to this path need a member's approval from now on. */
+		protect: (path: string) => protectedPaths.add(path),
 	};
 }

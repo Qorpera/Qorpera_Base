@@ -19,7 +19,8 @@ export const COMPANY_FORMATION_STAGES = [
 ] as const;
 export const COMPANY_FORMATION_STATUSES = ["active", "paused", "completed"] as const;
 
-const FORMATION_PATH_KEY = "organization/formation.json";
+/** Where bootstrap writes it; the Company File compares paths by their case-folded key. */
+export const COMPANY_FORMATION_PATH = "organization/formation.json";
 const FIELDS = ["schema", "formationId", "cofounderStaffAgentId", "state", "status", "revision"] as const;
 
 type CompanyFormationStage = (typeof COMPANY_FORMATION_STAGES)[number];
@@ -34,11 +35,21 @@ type CompanyFormationDocument = {
 
 /** The same key qorpera_company_path_key compares: organization/Formation.json is this file too. */
 export function isCompanyFormationPath(path: string): boolean {
-	return path.normalize("NFKC").toUpperCase().toLowerCase().normalize("NFKC") === FORMATION_PATH_KEY;
+	return path.normalize("NFKC").toUpperCase().toLowerCase().normalize("NFKC") === COMPANY_FORMATION_PATH;
 }
 
 function stage(value: unknown): value is CompanyFormationStage {
 	return typeof value === "string" && (COMPANY_FORMATION_STAGES as readonly string[]).includes(value);
+}
+
+/** A UUID as PostgreSQL's uuid input reads it: any case, optional braces and hyphens. */
+function uuid(value: unknown): string | null {
+	if (typeof value !== "string") return null;
+	const digits = value
+		.replace(/^\{(.*)\}$/, "$1")
+		.replaceAll("-", "")
+		.toLowerCase();
+	return /^[0-9a-f]{32}$/.test(digits) ? digits : null;
 }
 
 function status(value: unknown): value is CompanyFormationStatus {
@@ -56,7 +67,7 @@ function recorded(text: string): CompanyFormationDocument | null {
 	const document = value as Record<string, unknown>;
 	if (
 		document.schema !== COMPANY_FORMATION_SCHEMA ||
-		typeof document.formationId !== "string" ||
+		uuid(document.formationId) === null ||
 		typeof document.cofounderStaffAgentId !== "string" ||
 		!stage(document.state) ||
 		!status(document.status) ||
@@ -91,7 +102,12 @@ export function companyFormationWriteRefusal(currentText: string, nextText: stri
 	if (Object.keys(document).length !== FIELDS.length || !FIELDS.every((field) => Object.hasOwn(document, field)))
 		return refuse(`it must have exactly the fields ${FIELDS.join(", ")}`);
 	if (document.schema !== COMPANY_FORMATION_SCHEMA) return refuse("the schema changed");
-	if (document.formationId !== current.formationId || document.cofounderStaffAgentId !== current.cofounderStaffAgentId)
+	// formationId is read as a uuid; cofounderStaffAgentId must also be written in lower-case canonical form.
+	if (
+		uuid(document.formationId) === null ||
+		uuid(document.formationId) !== uuid(current.formationId) ||
+		document.cofounderStaffAgentId !== current.cofounderStaffAgentId
+	)
 		return refuse("formationId and cofounderStaffAgentId must stay unchanged");
 	if (document.revision !== current.revision + 1) return refuse(`revision must be ${current.revision + 1}`);
 	if (document.state !== current.state && document.state !== next)

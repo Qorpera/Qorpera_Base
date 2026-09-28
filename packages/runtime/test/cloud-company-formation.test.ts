@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import {
+	COMPANY_FORMATION_PATH,
 	COMPANY_FORMATION_SCHEMA,
 	COMPANY_FORMATION_STAGES,
 	COMPANY_FORMATION_STATUSES,
@@ -49,6 +50,9 @@ describe("company formation keys", () => {
 		expect(cofounder).toContain("never skipping a stage or going back");
 		expect(cofounder).toContain("exactly one more than the file's");
 		expect(cofounder).toContain("once completed it stays completed");
+		expect(cofounder).toContain(
+			"Each write is a proposal the founder approves, and the file keeps its stage until then",
+		);
 		expect(cofounder).toContain("stages that are your private map and are never named to the founder");
 		expect(cofounder).toContain("Never name these keys to the founder either.");
 		const employee = cloudRuntimeHireBehavior("employee");
@@ -56,8 +60,9 @@ describe("company formation keys", () => {
 			expect(employee).not.toContain(key);
 	});
 
+	// The gateway then reads the file where bootstrap wrote it, COMPANY_FORMATION_PATH.
 	it("recognises the formation file under the Company File's case-folded key only", () => {
-		expect(isCompanyFormationPath("organization/formation.json")).toBe(true);
+		expect(isCompanyFormationPath(COMPANY_FORMATION_PATH)).toBe(true);
 		expect(isCompanyFormationPath("Organization/Formation.JSON")).toBe(true);
 		expect(isCompanyFormationPath("organization/formation.json.bak")).toBe(false);
 		expect(isCompanyFormationPath("notes/organization/formation.json")).toBe(false);
@@ -75,6 +80,31 @@ describe("company formation write rule", () => {
 		expect(
 			companyFormationWriteRefusal(document("operating", "completed", 7), document("operating", "completed", 8)),
 		).toBeNull();
+	});
+
+	it("reads formationId as PostgreSQL reads a uuid, and cofounderStaffAgentId only in its canonical form", () => {
+		const ids = {
+			formationId: "abcdef01-2345-4678-89ab-cdef01234567",
+			cofounderStaffAgentId: "fedcba98-7654-4321-8fed-cba987654321",
+		};
+		const current = document("research", "active", 3, ids);
+		for (const spelling of [
+			ids.formationId.toUpperCase(),
+			`{${ids.formationId}}`,
+			ids.formationId.replaceAll("-", ""),
+		])
+			expect(
+				companyFormationWriteRefusal(current, document("research", "active", 4, { ...ids, formationId: spelling })),
+			).toBeNull();
+		// The projection requires the Co-Founder's id in lower-case canonical form.
+		for (const changed of [
+			{ ...ids, cofounderStaffAgentId: ids.cofounderStaffAgentId.toUpperCase() },
+			{ ...ids, formationId: "not-a-uuid" },
+			{ ...ids, formationId: formationId },
+		])
+			expect(companyFormationWriteRefusal(current, document("research", "active", 4, changed))).toMatch(
+				/^formationId and cofounderStaffAgentId must stay unchanged\. /,
+			);
 	});
 
 	it("names the stage the file is at and the one allowed next", () => {
