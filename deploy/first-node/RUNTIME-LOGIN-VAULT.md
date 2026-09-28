@@ -1,0 +1,290 @@
+# Model logins in the vault (Stateless Compute step 1)
+
+Founder approval: 28 September 2026, page "Logins in the Vault"
+(https://claude.ai/artifact/TWG18JBqjkLvkyY3PiaYdv). Contract: section 19, 2026-09-28 amendment
+"model logins live in the vault". This file is the technical design; the page is the plain one.
+
+## Before (v141)
+
+- A login is `codex/auth.json` sealed as a capsule (`QNC1 | nonce | tag | AES-256-GCM`, AAD
+  `qorpera.native-credential-capsule/v1:<capsuleId>`) under a per-identity 32-byte master key, in the
+  Supabase Storage bucket `qorpera-native-compute-capsules`.
+- The master key is the pin: it lives on the LXD volume `phql-a1-identity-<uuid>` of one node,
+  escrowed to the company's recovery authority. The identity home is derived from completed
+  login/refresh allocations at the current recovery epoch (`qorpera_runtime_identity_home_allocation`)
+  and used by the claim predicate and the native branch of `qorpera_runtime_node_placement_decide`.
+- Every run resealed and uploaded the capsule (last writer wins). PR 0 (#412) saves only a changed
+  login, only while the store still holds the login the run started from.
+
+## Codex facts the design relies on (rust-v0.155.1)
+
+- `AuthManager::auth()` renews proactively only when the access JWT `exp` is within 5 minutes
+  (else when `last_refresh` is older than 8 days); a failed proactive renewal keeps the cached auth.
+- `refresh_token()` first re-reads `auth.json` and uses it if it changed (same account); the 401
+  recovery path does the same. So a host that writes a fresh copy into the run's Codex home before
+  the last 5 minutes means Codex never renews.
+- Refresh tokens are single use (`refresh_token_reused`).
+- `account/read {refreshToken: true}` forces a renewal through the normal flow.
+- `account/login/start` `chatgptAuthTokens` is marked "FOR OPENAI INTERNAL USE ONLY - DO NOT USE"
+  and is not used. `use_agent_identity` (writes into `auth.json`) is off by default and stays off.
+
+## Storage and the renewal lock (change 1, migration `20260928160000`)
+
+- `qorpera_model_logins`: one row per vault login, bound 1:1 to a pointer capsule row
+  (`credential_capsule_id`, reference `model-login/<login id>`), the company's broker authority,
+  `status active|needs_sign_in|revoked`, `current_version`, the current pass's issue and end times
+  (read by the broker from the access JWT; not secret), `renewal_token`/`renewal_until`.
+- `qorpera_model_login_versions`: immutable envelopes (`sealCloudSecretFields`, one field
+  `codex_auth_json`, identity `{companyId, environmentId: computeIdentityId, secretId: loginId,
+  version, keyId}`), `origin sign_in|renewal`.
+- No table privileges for anyone; the broker role executes three functions:
+  - `qorpera_issue_model_login(authority, capability, binding, knownVersion, allowRenewal)`: checks the
+    run with `qorpera_model_login_run_binding`, the native lease validator's own conditions read
+    without company-wide locks (exact binding; job leased and unexpired; assignment accepted and unexpired; lease
+    live; sponsor and compute available; connection, version, capsule and policy active; identity
+    and runner at the current epoch; company not paused). Past half the pass life and with
+    `allowRenewal`, the first caller takes the lock (`update … where renewal_until is null or < now()`
+    and the backoff after failures has passed: 1, 2, 4 ... minutes, at most an hour). Returns the
+    envelope, or `unchanged` when the host already holds the current version and no renewal was
+    granted.
+  - `qorpera_commit_model_login_renewal(…, token, baseVersion, keyId, envelope, sha, issuedAt, expiresAt)`:
+    compare-and-swap on `(current_version = base, renewal_token = token, the new pass ends later)`
+    under the authority's current key. A token is written anew each time the lock is taken, so a
+    matching token proves nobody took the lock over, even after it lapsed. A repeat after a lost
+    answer finds its own version (same digest) and succeeds.
+  - `qorpera_release_model_login_renewal(…, token, baseVersion, permanent, reason)`: gives the lock
+    back and records the failure time; a permanent failure sets `needs_sign_in` only while the login
+    is still at `baseVersion` (a newer version, such as a fresh sign-in, is never marked; a revoked
+    login stays revoked).
+- Locks: the login row only, for one short statement. No company row, fence or authority row is
+  locked for update (a saved version's foreign key takes a key-share lock on its authority). A run
+  no member started takes, like the lease validator, a share lock on its member's connection row.
+  The run's host keeps validating its lease with the company fence every 15 s, as today.
+
+## The broker (change 1)
+
+- `CloudModelLoginVault` (`packages/runtime/src/cloud-model-login-vault.ts`): opens the envelope and
+  builds the run's copy from the login's known fields only, with an empty renewal token
+  (`accessOnlyCodexLogin`; a stored login with unknown fields is refused). When it holds the lock it
+  first checks it can seal under the lock's key, gives the renewer at most 35 s, checks the result
+  (same `account_id`, later pass), seals version `base + 1` and saves it with up to three tries on
+  its own 15 s deadline. Every way out gives the lock back: refused or unsaved (the old renewal token
+  is spent) as permanent, anything else as transient. The run always keeps the newest pass it has
+  that has not ended.
+- `POST /v1/model-logins?company=<profile>` under the runtime token, body
+  `{schema: "qorpera.model-login-request/v1", binding, knownVersion}`, answer
+  `{schema: "qorpera.model-login/v1", version, accessExpiresAt, authJson | null}`, never cached,
+  no CORS. Client: `issueModelLogin` in `cloud-secret-broker-http.ts`.
+- Change 1 ships with no renewer, so the broker never asks for the lock.
+
+## The helper (change 2)
+
+A separate service beside each broker, `qorpera-model-login-helper` (the broker unit's
+`RestrictNamespaces=yes`, `MemoryMax=256M` and `TasksMax=32` cannot host Codex). It holds no key,
+no database login and no service key; it sees a login only for one operation and keeps nothing.
+
+- **Part A, renewal** (`cloud-model-login-renewal.ts`, `cloud-model-login-helper.ts`,
+  `cloud-model-login-helper-main.ts`): the broker posts the full login to the helper's Unix socket
+  (`/run/qorpera-model-login-helper/helper.sock`, mode 0660, group `qorpera-login-helper`, plus a
+  bearer token). The helper writes it into a fresh private `CODEX_HOME` under its runtime
+  directory (memory, not disk), starts the pinned official Codex as `codex app-server` in the
+  existing bubblewrap launcher (egress only to `auth.openai.com` and `chatgpt.com`), sends
+  `initialize` and `account/read {refreshToken: true}`, and wipes the home. A changed `auth.json` is
+  the renewed login. Otherwise Codex's own error line decides: 401, `refresh_token_reused|expired|
+  invalidated` (from the JSON body, any case, as Codex reads it) or a 400 `invalid_grant` is refused
+  (the login needs a new sign-in), anything else is retried later. At most 4 renewals run at once.
+  Budgets nest: Codex 25 s, helper answer 28 s, broker wait 30 s, vault renewal 35 s; once asked, a
+  renewal runs to its budget whatever the member's request does, because only it can save the new
+  login. Stopping the unit lets renewals in flight finish (`KillMode=mixed`, 40 s).
+- **Part B, sign-in** (migration `20260928184000`, `cloud-model-login-sign-in.ts`,
+  `cloud-model-login-vault-sign-in.ts`): a member signs in to the vault; the web client is unchanged.
+  - An operator switches a company with `qorpera_set_model_login_sign_in(company, true)` (service
+    role). It refuses until runs take their login from the vault (change 3's
+    `qorpera_compute_identity_login_in_vault` exists) and the vault reads usage (Part C's
+    `qorpera_describe_model_login_account_refresh` exists), and while the company has no active
+    broker authority. Switch a company only after change 3 and Part C are live on every node. The login gateway chooser then answers a pending Codex sign-in of that company with
+    `<broker service origin>/v1/model-logins/<company>/` (reason `MODEL_LOGIN_VAULT`); Claude
+    sign-ins and unswitched companies keep the node path.
+  - The web client's edge function posts its unchanged `qorpera.native-provider-login/v1` request to
+    `<that base>login`, with the sign-in's capability as bearer. The broker asks the database
+    (`qorpera_describe_model_login_sign_in`, broker role) for the pending sign-in that capability
+    names, checks the request against it field by field (login, connection, identity and its owner,
+    expiry, the capability in the body), and asks the helper to start or report the sign-in. A slow
+    helper is answered as `preparing`; a sign-in that is no longer pending ends the helper's copy.
+  - The helper runs the same `codex login --device-auth` driver a node uses
+    (`OfficialCliNativeHarnessDriver`, in the same isolation, its scratch under the helper's runtime
+    directory, the pinned binary checked before each launch) in a private home. A sign-in is bound
+    to its company, identity and capability digest; a newer sign-in of the same identity ends the
+    older one (also when two members share a company identity: the second sign-in ends the first);
+    at most 6 run at once, 2 per company. The binding is a consistency check: the brokers on one
+    host share the helper's token (one broker per host today; give each its own token before a
+    helper serves several companies). Codex stops after 10 minutes at the latest;
+    its home is wiped as soon as it stops. The answer is the node gateway's
+    `qorpera.native-provider-login-result/v1`: `preparing`, `awaiting_member` with the link and code,
+    or `completed`.
+  - The web client stops asking once it shows the link and code, so the broker collects finished
+    sign-ins itself: every 2 s it lists its company's finished sign-ins at the helper
+    (`qorpera_model_login_broker_company` names the company), checks the login has known fields
+    only, seals it under the company's broker key as version 1 of a new vault login, completes the
+    sign-in in one transaction (`qorpera_complete_model_login_sign_in`, broker role: the pointer
+    capsule `model-login/<login id>`, the vault login with `sign_in_session_id`, its version 1
+    (`sign_in`), and the connection version pointing at the pointer capsule, recorded exactly as a
+    node sign-in records it), then ends the helper's copy. A broker that restarted finds finished
+    sign-ins on its first pass; the helper keeps a finished login at most 5 minutes, and ends it
+    after three refused lookups (`42501` or `22023`, or an answer it cannot read: the company was
+    switched back or its broker authority changed meanwhile). An outage or a timeout neither counts
+    nor resets the count; a successful lookup resets it. A node may still create the identity's key
+    later: a vault login never counts as a login sealed under a node key. An ended
+    sign-in is never started again by a late poll. The recovery
+    pin still fences a recovering identity, but asks no node key backup of a sign-in that created a
+    vault login. A repeat after a lost answer finds its own login.
+  - Deploy: the broker's public front must route `POST /v1/model-logins/<company>/login` and
+    `POST /v1/model-logins/<company>/account-refresh` to that company's broker by path (the edge
+    function adds no query). The helper must run beside the
+    broker (without it the route answers 404). A helper restart ends sign-ins in flight; the member
+    signs in again.
+- **Part C, usage** (migration `20260928185000`, `cloud-model-login-vault-usage.ts`): the vault reads
+  the usage of the logins it keeps; the web client is unchanged.
+  - The account refresh chooser answers a refresh of an identity whose Codex usage is the vault's
+    (`qorpera_model_login_usage_in_vault`: it has a vault login behind an active pointer, in any
+    state, and no Codex login a node would read, by the node's own list rule) with `<broker service origin>/v1/model-logins/
+    <company>/` (reason `MODEL_LOGIN_VAULT`) when the company has an active broker, whether or not
+    it still takes new sign-ins in the vault. A Claude login stays on a node and does not count
+    (nodes read Codex usage only); a vault login that needs a new sign-in reads nothing there and
+    boots no machine. An identity still moving (a Codex login on a node beside its vault login)
+    keeps the node path, which reads its node logins and skips the vault ones. The edge function
+    posts its unchanged `qorpera.native-account-refresh/v1` to `<base>account-refresh` with the
+    refresh's capability.
+  - The broker reads the refresh (`qorpera_describe_model_login_account_refresh`, broker role) with
+    the node route's checks (live, the member still owns the identity with a role that may
+    refresh, the broker's own company), and while it is pending the current version of up to 8
+    active vault logins of that identity that the latest version of an active connection uses
+    (never read first, then the longest unread). It opens
+    them all at once, reads each one's usage with the pass (the node's own `wham/usage` reader,
+    8 s each, inside the route's 25 s), records the display metadata (email, account identity
+    digest, usage) for that connection version with the node record's checks
+    (`qorpera_record_model_login_account_metadata`), and completes the refresh
+    (`qorpera_complete_model_login_account_refresh`). A login that cannot be read is unknown usage;
+    the refresh still settles. The pass is never renewed here, only display metadata leaves the
+    vault, and the envelopes are wiped. No helper and no machine is involved.
+- **Part D, idle renewal** (migration `20260928236000`, `cloud-model-login-upkeep.ts`; founder
+  decision 2026-09-28): the vault renews idle logins itself, so a login nobody used does not lapse
+  before its next run and runs rarely wait for a renewal at start.
+  - Every 5 minutes (the first pass 30 s plus a random part of 5 minutes after start, so brokers
+    sharing a helper do not all renew at once) a broker with a helper takes, one login at a time,
+    the renewal lock of its company's most urgent login past half its pass
+    (`qorpera_take_idle_model_login_renewal`, broker role). The conditions are a run's: active, no
+    renewal running (or a lapsed one), the failure back-off passed. The login's pointer must be
+    active and used by an active version of an active connection: a login the member disconnected,
+    or whose connection was disabled or revoked (the member left), is not renewed and lapses.
+  - It renews through the helper exactly as a run's renewal does and saves or gives back the lock
+    with the same commit and release; at most 12 logins per pass. A refusal marks the login
+    `needs_sign_in` days before its next run would have found out.
+  - Locks: the login row only, by one conditional update (`qorpera_model_login_take_idle_lock`, which
+    re-checks a run's lock conditions on the row itself). The taking marks nothing as used.
+  - Deploy: reinstall the broker unit from this build. `TimeoutStopSec=90` lets a stop wait for a
+    renewal in flight (35 s, then its save), where 15 s could lose the new login.
+
+### Installing the helper (operator, per vault host)
+
+1. Codex: the official release `codex-x86_64-unknown-linux-musl.tar.gz` of `rust-v0.155.1`
+   (SHA-256 of the archive `a0ef8b2debc3bf747e07b1a039354de31300ac0dcc2276498ba281470b5d9115`).
+   Verify, extract the single binary to `/opt/qorpera-model-login-helper/codex`, root-owned 0555,
+   and record its own SHA-256 for the configuration. The helper refuses to start on any other
+   bytes or on a path that is not root-owned.
+2. Isolation: root-owned `/usr/bin/bwrap` and `/usr/bin/node`, and unprivileged user namespaces.
+   The helper checks these, its isolation entry point and the Codex binary at start and refuses to
+   run on a bad install.
+3. `npm run pack:model-login-helper -- --out <dir>`; install `qorpera-model-login-helper.mjs` and
+   `qorpera-native-isolation-child.mjs` (shipped with the helper) to `/opt/qorpera-model-login-helper/`,
+   root-owned 0444, and the unit; create the `qorpera-login-helper` user and group.
+4. `/etc/qorpera-model-login-helper/config.json`:
+   `{"schema": "qorpera.model-login-helper/v1", "socketPath": "/run/qorpera-model-login-helper/helper.sock",
+   "codexPath": "/opt/qorpera-model-login-helper/codex", "codexSha256": "<binary sha256>",
+   "temporaryRoot": "/run/qorpera-model-login-helper", "isolationEntryPoint":
+   "/opt/qorpera-model-login-helper/qorpera-native-isolation-child.mjs"}` and `/etc/qorpera-model-login-helper/token`
+   (43 base64url characters, distinct from every broker token).
+5. Broker drop-in: `SupplementaryGroups=qorpera-login-helper` and
+   `LoadCredential=qorpera-cloud-secret-login-helper:/etc/qorpera-secret-broker/login-helper.json`
+   with `{"schema": "qorpera.model-login-helper-client/v1", "socketPath": "/run/qorpera-model-login-helper/helper.sock",
+   "token": "<the helper token>"}`. Without that credential the broker never asks for a renewal lock.
+6. Start the helper. Before it serves anything it runs the pinned Codex with `--version` inside the
+   sandbox, under the real unit, and logs `Model login helper: sandbox self-check ok (<version>)`;
+   a failure stops the unit visibly (binary pin, bubblewrap, the isolation child and the unit's
+   system-call filter). Egress is not part of that check.
+7. Before any login moves, prove one real sign-in and one real renewal through the product: switch
+   the test company, a member signs in from the web client, and the vault login is renewed once
+   (after half its pass life, or on demand). Nobody handles a login by hand. Measure the unit's
+   memory, task and CPU use during that sign-in: its limits are sized for 4 renewals and 6
+   sign-ins but not yet measured, and `CPUQuota=100%` is shared by every Codex it runs (a renewal
+   has 25 s). Re-run this step whenever the sign-in driver, the isolation launcher or the unit
+   changes. A renewal that
+   cannot start Codex records `codex_launch_failed`, and a binary changed since start records
+   `codex_changed` and restarts the helper.
+
+## Runs (change 3, migration `20260928180600`)
+
+- An identity's login is in the vault when it has an active vault login behind an active pointer
+  capsule `model-login/<login id>` and no other active capsule (one that still needs a node key):
+  `qorpera_compute_identity_login_in_vault(identity)`, service role only, stable, no locks.
+- Claim: `qorpera_claim_runner_job_for_orchestrator`'s identity-home predicate gains
+  `or qorpera_compute_identity_login_in_vault(run.compute_identity_id)` as its last arm (asked only
+  for a run whose home is elsewhere), so any orchestrator may claim such a run. Placement: the native identity-home branch of `qorpera_runtime_node_placement_decide`
+  is skipped for such an identity, so it falls through to the least-loaded choice. Both patches are
+  anchor-checked (exactly one match). The identity runtime state keeps its exact shape (older nodes
+  parse it with a fixed field list).
+- The native host: a run whose authority names a `model-login/` capsule asks `POST /v1/model-logins`
+  (binding = its lease, run, job, runner, assignment, capsule and identity) instead of opening a
+  capsule, refuses a copy that carries a renewal token, writes the copy as `codex/auth.json` in the
+  run's private root (staged beside the Codex home, which must hold `auth.json` alone, then renamed
+  into it), asks again every minute with the version it holds, and swaps the file whenever the vault
+  answers with a copy. It never uploads a login; the lease is still validated at the start, every
+  15 s and at the end. A warm root keeps its vault version and asks for the current one at the next
+  run. The account usage list accepts vault logins and the host skips them (the vault reads usage,
+  change 2C).
+- Host start-up (`cloud-native-provider-service-main.ts`): `QORPERA_NATIVE_LOGIN_CUSTODY=vault` means
+  no capsule key, no epoch file and no key backup. The key credential must be empty; the host starts
+  only when the identity is not fenced and the cloud confirms the vault custody, and needs the
+  company runtime and the broker address.
+- Node 2 (shared execution service): at acquire the service asks the vault custody check. For a
+  vault identity it attaches no identity volume and hands the run host empty key and epoch credential
+  files with `QORPERA_NATIVE_LOGIN_CUSTODY=vault`; a warm slot is reused only for the same custody.
+- Node 1 (one-run VMs): the custody is decided once per acquisition and sealed into the journal
+  (`lxd.loginCustody`) and the bootstrap digest. A vault guest has no `compute-identity` device (a
+  guest that gains one is refused as drifted) and no identity volume is created. The bootstrap
+  carries `company_runtime.login_custody = "vault"` and the host environment line; the guest's
+  start-up refuses a mounted identity volume or any identity material, checks the identity is not
+  fenced, and writes empty key and epoch credential sources for the unchanged host unit. The guest
+  bootstrap unit no longer has a mount condition on the identity path (it would skip the bootstrap
+  silently); the bootstrap requires the mount for a node login itself.
+- Deploy order: free. A database without the check answers 404, and the orchestrator, exec host and
+  LXD provider then keep the node path, as before.
+- Activation: move no login into the vault until every node's orchestrator, exec host and guest
+  image carry this change. Before that, `qorpera_compute_identity_login_in_vault` is false for every
+  identity and nothing changes.
+
+## Failure cases
+
+| Case | Result |
+|---|---|
+| Node dies mid-run | Nothing lost; the pass ends by itself; the run is retried elsewhere. |
+| Helper dies before asking the provider | The lock expires after 5 minutes; the next caller renews. |
+| Helper dies after the provider answered, before the commit | The stored renewal token is used up; the next renewal is refused and the login asks for a new sign-in. Passes already handed out work until they end. |
+| Commit fails three times | Lock released as `renewal_unsaved`, permanent: the login asks for a new sign-in; this run keeps the new pass. |
+| One broker copy down | The other node's copy serves runs (the vault must run on both nodes before any login moves). |
+| Provider refuses a renewal | `needs_sign_in`; the vault refuses new runs on the login (they fail at the credential download) until the member signs in again (change 2B). Runs already going keep their pass until it ends. |
+| Member signs out or leaves | The pointer capsule and lease checks refuse at once; running work is stopped by the existing checks. |
+
+## Moving and retiring
+
+- Each login moves by signing in again (test company first; company Qorpera after the "who pays"
+  work and the founder's go), then the member's old node account is removed: the identity counts
+  as in the vault only once no node login of it is active. The old path serves a login until then.
+  Removing it is by hand in Settings for now. Switching it off by itself when the vault login is the
+  same ChatGPT account (founder decision 2026-09-28) comes in a later change. It waits for the "who
+  pays" work to make routines and coding sessions follow the member's live login: a revoked
+  connection's pinned routines, coding workers and queued wakes stop today.
+- After every active login has run from the vault for a week, retire in separate changes: the home
+  rule in placement and claim, exec-host identity devices and inventory `identityVolumes`, the login
+  and refresh machines for Codex, login key backups and recovery, then the volumes (renamed
+  `retired-identity-<uuid>`, deleted after 14 days).

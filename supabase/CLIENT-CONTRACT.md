@@ -39,10 +39,10 @@ profile RPCs; RLS is the second read boundary.
 
 ## 2. Member-callable RPCs (security-definer, granted to `authenticated`)
 
-163 functions, grouped for navigation. Signatures: see the migration that defines each.
+164 functions, grouped for navigation. Signatures: see the migration that defines each.
 
 
-### Members, presence, friends, feedback (17)
+### Members, presence, friends, feedback (18)
 
 - `qorpera_can_read_member_picture(p_object_name)` — the picture bucket's
   read policy: anything in your own folder, and another account's current
@@ -52,6 +52,12 @@ profile RPCs; RLS is the second read boundary.
   sent reveals nothing until it is accepted).
 - `qorpera_clear_member_picture` — back to initials; returns
   `previous_object_name`, which the caller deletes from storage.
+- `qorpera_find_account_by_email(p_email)` — the Friends search: the account
+  whose confirmed address is exactly `p_email` (case-insensitive, never a
+  prefix) as `{user_id, email, display_name, self}`, or `null` when no
+  account holds it. `qorpera_send_friend_request` uses the same rule, so an
+  address that finds nobody cannot be sent a request. Migration
+  `20260928031000_friend_account_lookup`.
 - `qorpera_is_current_member_picture(p_object_name)` — whether an object is
   the caller's current picture; the bucket's delete policy refuses it until
   another picture (or none) has replaced it. It shares a per-folder lock with
@@ -201,6 +207,25 @@ profile RPCs; RLS is the second read boundary.
   number of sections (at most 40 until bundle v95). The Co-Founder is never
   placed, pinned or hidden. Agents change the same shared sections through the
   runtime tool `organize_sidebar` (`qorpera_manage_agent_sidebar`, runner only).
+- Group chats (migration `20260928030000`, no bundle): a group chat (an active
+  room that is not an agent's thread, with an open conversation) is placed,
+  pinned and hidden like an agent, named by `roomId` where an agent is named by
+  `staffAgentId`. The read adds `roomPlacements` (`roomId`, `sectionId` or
+  null, `position`); agents and group chats share one order per section, and
+  `pinned` (at most 24 in all) and `hidden` list both kinds of id. Requests:
+  `move_room {roomId, sectionId|null, order?, unpin?}` (owner/admin/
+  contributor), `create_section` with `roomId`, and `set_hidden {roomId,
+  hidden}`. A client that places group chats sends `groupChats: true` on
+  `set_pins` and `move_agent`: its pin row and orders name group chats too.
+  Without it the request is taken as one from an older page: its pin row keeps
+  the member's pinned group chats (after the agents it names), and each of a
+  section's group chats stays after the agent it followed (first if it led; last
+  if the order leaves that agent out). A client sees `roomPlacements`
+  only where the cloud has this migration. The agent tool still lists and moves
+  agents only.
+- The same migration: `qorpera_get_session_model` reports `model_id` null for a
+  group chat's conversation while no model was chosen (each agent runs its
+  own), and a group chat's post takes images like an agent thread's.
 
 ### Auto-review rules and approvals (4) — bundle v130
 
@@ -261,7 +286,7 @@ profile RPCs; RLS is the second read boundary.
 - `qorpera_answer_interaction` (2026-09-22, bundle v75): answers a typed card
   the agent raised in the thread. See "Thread interactions" under §6.
 - `qorpera_append_session_input`
-- `qorpera_approve_session_turn_sponsorship`
+- `qorpera_approve_session_turn_sponsorship` (refuses since 2026-09-28: a member's login pays only for that member's own work)
 - `qorpera_claim_wake_v2`
 - `qorpera_close_shared_session`
 - `qorpera_complete_session_turn_v2`

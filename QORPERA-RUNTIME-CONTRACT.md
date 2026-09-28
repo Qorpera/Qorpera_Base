@@ -1570,14 +1570,69 @@ versioning, and deletion.
 
 ### 15.2 Skills
 
-The turn receives a skill catalog, not every skill body. A skill description
-states when to use it. The body is loaded on demand and its version is recorded
-in the run.
+Amended 2026-09-27. A skill is a reusable procedure an agent loads when a task
+calls for it. Skills use the `SKILL.md` shape that Grok Bots, Claude and Codex
+share, so a skill written elsewhere is imported by copying its folder: a folder
+named for the skill holds `SKILL.md`, whose YAML front matter gives `name` and
+`description` (what the skill does and when to use it) and whose Markdown body
+holds the steps. Supporting files such as templates or scripts may sit beside
+it. A name is lowercase words joined by hyphens, at most 64 characters.
 
-Platform-owned skills are read-only runtime-bundle assets. Company and agent
-skills are Company File playbooks with explicit paths, owners, permissions,
-and mutation rules. A skill is not a place to hide member credentials, private
-channel names, or runtime authority.
+Two libraries, both ordinary versioned Company File objects:
+
+| Library | Path | Who writes it |
+| --- | --- | --- |
+| company | `skills/<name>/SKILL.md` | members and agents under the usual path authority; a protected path proposes |
+| agent (own) | `agents/<agent-name>/skills/<name>/SKILL.md` in the agent's folder (5.6) | the agent itself, and members, under the usual path authority |
+
+Skill files have no path rule of their own. Every reader and writer finds an
+agent's folder through one resolver (`cloudAgentFolder`). Until agents live in
+named folders with an `agent.md` and its index, that folder is
+`agents/<staffAgentId>`, and only the resolver changes when they do.
+
+A flat `skills/<name>.md` is read as a skill too; a new skill is always a
+folder. An agent's own skill wins over a company skill of the same name.
+
+The turn receives a catalog, not the bodies (9.1). Every turn composes a
+`skills` block beside memory: the agent's own skills with their descriptions
+(at most 24), and the company library, described while it holds at most 16
+skills and named (up to 200) once it has grown. Composition reads through the
+trusted lane, beside the notebook, and never blocks a run: a library that
+cannot be listed is marked unavailable while the other still composes, and
+only when neither can is the block unavailable. A skill file that cannot guide
+the agent yet is named with its problem (`no_description`, `unreadable`,
+`no_access`).
+
+Tools:
+
+- `read_skill` (`name`, optional `scope` agent or company, `offset`,
+  `version`) loads a body on demand in pages that fit one tool result, with
+  the exact version it read; the first page names the supporting files, and a
+  later page asked for with an older version answers `changed`.
+- `search_skills` (optional `query`, `scope` agent, company or all, `limit`
+  1–50, `offset`) ranks names and descriptions by shared words, falls back to a
+  substring match, and pages its results.
+- `update_skill` (`action` create, update or delete; `name`; `scope`, default
+  agent; `version`; `description`; `body`) writes through the mutation gateway
+  with the exact expected version (5.2). Update and delete name the version the
+  agent read (from `read_skill` or its last receipt): when the skill changed
+  since, nothing is saved (`changed`), so no edit is overwritten unseen. A write
+  that lost a race to another change in the company is redone from a fresh
+  read while the skill itself is unchanged. An update keeps the rest of the
+  file, including front-matter keys it does not own. A new skill in a protected
+  library first proposes its folder; a delete is proposal-gated like every
+  delete. A refusal, a folder that vanished and a lost race are typed receipts
+  that saved nothing, never an unconfirmed outcome.
+
+Every run reads and searches skills. Only a company-audience run gets
+`update_skill`, so a member's private conversation never feeds a shared
+library; a worker gets it only when its dispatch allows Company File writes. Skills are guidance: the catalog and every
+body are untrusted data, a skill grants nothing and never overrides
+instructions or a current source, and it is not a place to hide member
+credentials, private channel names, or runtime authority. Facts about the
+company belong in the Company File and what an agent learned about people in
+its notebook. Platform-owned, read-only skills shipped in the runtime bundle
+are not built yet.
 
 Plugins, connectors, and skills are separate:
 
@@ -1835,6 +1890,33 @@ distinguish quota exhaustion (switch) from transient rate limiting (retry)
 and provider outage (wait or fail over). Agents MAY later configure model and
 sponsor routing for routines, workers, and teammate questions through
 versioned policy objects.
+
+2026-09-28 amendment: the member who started the work pays. A member's own
+model login pays only for work that member started: their turns and room
+posts, and everything that follows from them — coworker messages, workers
+and their reports, reviews of a change, a computer that finished starting,
+coding sessions, and routines an agent sets up for them. The kernel already
+carries that member as the run's requester; the payer for follow-up work is
+the requester's own login with room left (the parent run's first), else a
+company account whose kind can run, else the requester's own used-up login
+(whose run then meets the usage-limit handoff), else nothing, and the work
+does not start. Claude logins never pay for agent work. An agent's standing
+execution authority names a company account only; it never pays with a
+member's login. A coding session runs for the member who asked, on their
+account; the model cannot name another member. A member cannot ask another
+member to pay for a turn. Every run is checked where it is created and where
+a handoff moves it: a member-connection sponsor must be owned by the run's
+requester; a company sponsor serves any member. Unattended use stays granted
+by default (2026-09-19/20 amendment, item 2) and covers only the owner's own
+work. A company account is a company-owned account added by an owner or
+admin; it pays only once its kind of account can run. The company OpenAI API
+account, and its use by the usage-limit handoff and for work no member
+started, follow in a later change. When a member signs in again, the control
+plane may move the bindings that pay with their old login to their new one,
+as a new version of each binding with the same owner and kind; routine wakes
+and coding turns then take the binding's newest same-owner version that can
+pay, so a routine or coding session keeps working after the member's old
+ChatGPT login is switched off. Claude logins are never moved.
 
 ## 18. Short constitution
 
@@ -2306,7 +2388,8 @@ removal; until it is removed it MUST NOT be reachable from any member client.
   and MUST NOT repeat them into a shared thread. §14.2's separate one-to-one
   Co-Founder conversation no longer exists: the Co-Founder's thread is shared.
 - **Images.** An agent thread accepts the same attachments as an agent
-  session did; team rooms stay text-only.
+  session did. Team rooms (group chats) accept the same since 2026-09-27
+  (migration `20260928030000`); before, they were text-only.
 - **The thread outlives edits of its agent (added 2026-09-19).** A wake or
   room delivery is admitted at the agent's current version and MAY use a
   session that records an earlier version of the same agent. This holds for
@@ -2501,11 +2584,21 @@ pin. Any mismatch, revocation or recovery-epoch change ends the warm sandbox.
 The Codex process and its provider connection MAY be reused across those
 runs; each run starts a new provider thread.
 
+> **Amended 2026-09-28** (founder's approval of "Logins in the Vault", its
+> quick fix). A run saves the capsule back only when the run changed the
+> login, and only while the store still holds the login the run started from;
+> otherwise the newer stored login is kept. Several runs may use one login at
+> once and a renewal token works once, so saving after every run let an older
+> copy undo a renewal. Stateless Compute step 1 later removes saving from runs
+> entirely.
+
 Implementation notes (not part of the ratified text): the warm host reuses a
-kept capsule root only while the stored capsule is byte for byte the one it
-uploaded last; otherwise it wipes the root and opens the stored capsule
-afresh. When a run ends, everything but the capsule's own credential files is
-removed from the kept root. A spare Codex process started for the next run
+kept capsule root only while the stored capsule is byte for byte the one that
+root was opened from or last saved as; otherwise it wipes the root and opens
+the stored capsule afresh. A change to the kept root between runs (a spare
+renewing its login) counts as the next run's change. When a run ends,
+everything but the capsule's own credential files is removed from the kept
+root. A spare Codex process started for the next run
 completes its handshake before that run exists and accepts no thread, turn,
 tool call or provider request until the run is bound; its own state files in
 the Codex home are removed before any other process starts there, and no two
@@ -3050,6 +3143,66 @@ them.
 - Items 20 and 22–25 and item 30 describe withdrawn models. They are rewritten
   together with the section 19 checkpoint and the section 20 matrix once the
   reset and build step 4 have landed.
+
+### 2026-09-28 amendment: model logins live in the vault
+
+Founder decisions of 28 September 2026 on the "Logins in the Vault" page
+(Stateless Compute, step 1). This is the later amendment the 2026-09-22 shared
+execution amendment names: login custody moves into the cloud secret broker,
+which makes nodes symmetric for every member. Design:
+`deploy/first-node/RUNTIME-LOGIN-VAULT.md`.
+
+1. **Where a login lives.** A member's model login (the official harness's
+   login, Codex `auth.json`) is a secret like any other (5.6, 11.5). The
+   company's broker keeps it as immutable versions, each envelope-encrypted
+   under the company's broker key. A node keeps no login, no login key and no
+   login volume. A connection version reaches its login through a credential
+   capsule row that names the vault login (`model-login/<id>`).
+2. **One renewer.** Only the vault renews a login, one renewal at a time per
+   login, with the unmodified official harness in a locked-down helper beside
+   the broker. A renewal is saved only by the holder of that login's renewal
+   lock, on exactly the version it renewed from, and only for a later pass.
+   The lock is one row of that login; no company, fence or authority row is
+   locked for update, and nothing is held while the helper talks to the
+   provider. After a failed renewal the next try waits (1, 2, 4 ... minutes, at
+   most an hour). A renewal the provider refuses, or one it made that the
+   vault could not save, marks the login for a new sign-in.
+3. **What a run gets.** The vault hands a login only to a run the native
+   lease validator would accept: exactly bound (lease, run, job, runner,
+   assignment, capsule, compute identity), job and assignment live, sponsor,
+   connection and capsule active, identity not fenced, company not paused. The
+   vault reads these without company-wide locks. The run receives a copy of
+   the login's known fields without the renewal token. Its host keeps that copy fresh from the vault during the run, the
+   harness picks the fresh copy up by itself, and the run never writes a login
+   back. A lost node loses only passes that end by themselves.
+4. **Sign-in and usage checks.** The member's official sign-in runs in the
+   vault helper and is stored as version 1. Usage checks read the pass in the
+   vault. Neither boots a machine on a node.
+5. **Placement.** A run whose login is in the vault is placed like any other
+   work, on the eligible node with the most free capacity. The identity home
+   rule does not apply to it, and any orchestrator may claim it. An identity
+   counts as in the vault only while every active login of it is a vault
+   login. The machine that runs it mounts no identity volume and holds no
+   login key.
+6. **Who a login serves.** A member's login powers only work that member
+   started or owns. The vault enforces this when handing out a login once the
+   "who pays" work has landed (follow-up work paid by the member who started
+   it, a company API account for work no member started). Until then a vault
+   login serves exactly the runs its node login served.
+7. **Claude logins stay out.** Anthropic subscription logins are not kept in
+   the vault until Anthropic confirms it in writing.
+8. **Superseded, per login.** For a login kept in the vault: the 2026-09-16
+   rule "Runs follow the member's identity home", the 2026-09-17 identity
+   recovery inside a member login, the login custody paragraph of the
+   2026-09-22 shared execution amendment, and the capsule lines of the
+   2026-09-27 warm conversations amendment. Logins not yet moved keep the old
+   path until they are.
+9. **Order.** (1) vault storage, (2) sign-in and usage in the vault helper,
+   (3) runs use the vault and placement ignores the home rule for them. Then
+   each login moves by signing in again, the test company first; company
+   Qorpera after the "who pays" work and the founder's go. The node login
+   volumes, home rules, sign-in and refresh machines and login recovery are
+   retired once every active login has run from the vault for a week.
 
 ## 20. Enforcement matrix
 

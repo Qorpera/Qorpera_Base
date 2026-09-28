@@ -197,15 +197,6 @@ export interface RequestSponsoredSessionTurnInput {
 	reviewerStaffIds?: readonly string[];
 }
 
-export interface ApproveSessionTurnSponsorshipInput {
-	turnRequestId: string;
-	sponsorBindingId: string;
-	sponsorVersion: number;
-	computeIdentityId: string;
-	logicalComputerId?: string;
-	workerClass?: CloudWorkerClass;
-}
-
 type NativeControlRpc =
 	| "qorpera_upsert_member_compute_identity"
 	| "qorpera_upsert_scoped_compute_identity"
@@ -213,7 +204,6 @@ type NativeControlRpc =
 	| "qorpera_create_member_execution_sponsor"
 	| "qorpera_create_execution_sponsor_binding"
 	| "qorpera_request_session_turn_v2"
-	| "qorpera_approve_session_turn_sponsorship"
 	| "qorpera_list_member_native_execution_connections"
 	| "qorpera_list_compute_identities"
 	| "qorpera_list_session_turn_requests"
@@ -582,6 +572,9 @@ export class NativeSubscriptionControlPlane {
 	}
 
 	async requestSessionTurn(input: RequestSponsoredSessionTurnInput): Promise<SessionTurnRequestResult> {
+		// A member's login pays only for that member's own work (2026-09-28): nobody is asked to pay.
+		if (input.sponsorMode === "sponsorship_request")
+			throw new Error("A turn is paid by the member who sends it or by a company account");
 		const value = record(
 			await this.#transport.rpc("qorpera_request_session_turn_v2", {
 				p_session_id: input.sessionId,
@@ -609,24 +602,6 @@ export class NativeSubscriptionControlPlane {
 			status: parseTurnStatus(value.status),
 			sponsorMode: parseSponsorMode(value.sponsor_mode),
 		};
-	}
-
-	async approveSessionTurnSponsorship(
-		input: ApproveSessionTurnSponsorshipInput,
-	): Promise<{ turnRequestId: string; status: "queued" }> {
-		const value = record(
-			await this.#transport.rpc("qorpera_approve_session_turn_sponsorship", {
-				p_turn_request_id: input.turnRequestId,
-				p_sponsor_binding_id: input.sponsorBindingId,
-				p_sponsor_version: input.sponsorVersion,
-				p_compute_identity_id: input.computeIdentityId,
-				p_logical_computer_id: nullable(input.logicalComputerId),
-				p_worker_class: input.workerClass ?? "managed_sandbox",
-			}),
-			"turn sponsorship approval",
-		);
-		if (value.status !== "queued") throw new Error("Native subscription control returned invalid sponsorship status");
-		return { turnRequestId: uuid(value.turn_request_id, "turn request id"), status: "queued" };
 	}
 
 	async listConnections(profileId: string): Promise<NativeExecutionConnections> {
