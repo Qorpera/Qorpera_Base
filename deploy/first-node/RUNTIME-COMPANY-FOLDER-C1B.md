@@ -43,7 +43,7 @@ the core design assumed, this page says so and records the choice.
 | Slice | Contents | Needed by |
 | --- | --- | --- |
 | **C1b-1** | Run actors in commit, read and list. Operation keys per run. Attribution. The folder pause. Explicit bases: `rules/` and the indexed resource resolver. Review classes and review enforcement. The structured-file hook's call sites and inert stubs. | F2 (hook, review class, session kind, causal wake), F3 step 2 and step 3 |
-| **C1b-2** | Authority revisions on resources and grants, the folder resource and grant mutators, authority journal rows. Read sets and read records, and the recheck that effects call. Agent wakes (their parent's read check). | F3 step 2 ("the run's records stay a handful of rows"), every effect in C1c |
+| **C1b-2** | Authority changes ordered through the clock (commits no longer lock covering resources), revisions, the folder resource and grant mutators, authority journal rows. Read receipts, read sets and read records, and the recheck that effects call. Agent wakes (their parent's read check), coding and worker runs. | F3 step 2 ("the run's records stay a handful of rows"), every effect in C1c |
 | **C1b-3** | Mount views: the authority row for a mount that outlives a turn. Company-machine computers, coding sessions, test machines, and the shell box after its run ends. Designed with F3. | F3 steps 4–6 |
 
 Each slice is its own PR with its own independent review. C1b-1 comes first.
@@ -470,45 +470,207 @@ first, by folder key) and grants.
   - resolver edge cases (exact against subtree, ties, private folders) by
     result, not by raw EXPLAIN.
 
-## C1b-2 (outline; its own design review)
+## C1b-2
 
-- **Revisions.** Resources gain `authority_revision` (structural: a policy
-  change, or a narrower resource inserted under it, which bumps the covering
-  parent). Grants gain `revision`, bumped on narrowing or revocation.
-  - Principal changes that narrow with no resource or grant write are
-    checked directly at effect time: grant `expires_at`, staff archive,
-    member role and removal.
-  - Every change writes an authority journal row (`kind = 'authority'`) with
-    what changed.
-- **Mutators.** Folder-v2 resource and grant functions take `FOR NO KEY
-  UPDATE` on the rows they change, and on the covering parent when they
-  narrow, at ranks 6 and 7. They replace the old mutators, which reach
-  folder-v2 only through `qorpera_company_path_actor` and refuse there.
-  - They refuse to create a resource that ties another's folder key.
-  - **Narrowing must not starve.** Every commit holds its covering resources
-    `FOR SHARE`, usually the root. PostgreSQL grants new shared lockers while
-    an exclusive one waits. So narrowing goes in two phases, like stop:
-    1. commit an intent that effects read before they lock;
-    2. then take the rows.
-- **Read sets.** `qorpera_folder_run_reads`, keyed by (run, covering
-  resource, agent grant), with the oldest unchecked revisions,
-  `least(recorded, observed)`. Written by run reads and listings.
-- **Read records.** `qorpera_folder_run_read_records`, one row per release
-  (the runtime releases per model request) and covering resource. Each holds
-  a sorted list of (path, version, content hash, range or page) and the
-  output digest.
-- **The recheck.** `qorpera_folder_run_reads_current(run)`, for effects:
-  - `FOR SHARE` on the read set's resource and grant rows, merged into the
-    commit's rank-6 and rank-7 passes (one order, no second lock);
-  - compare the revisions;
-  - on a change, re-resolve only the paths under the changed prefix, from the
-    read records;
-  - re-stamp as a compare-and-set.
-- **Agent wakes.** Their check becomes the parent run's read set, rechecked
-  for the recipient agent. Coding and worker runs arrive with them.
-- **`company-file` routine wakes** get their path-authority check here.
-- **Measure in C1e:** a member's Stop takes the job `FOR UPDATE`, and can wait
-  behind overlapping commits of one run.
+C1b-2 adds the three things that make an agent's authority hold past the
+moment of its check:
+- authority changes that are ordered with every commit;
+- read sets, so a read never carries past a narrowing or revocation;
+- agent wakes, whose check needs the parent run's reads.
+
+Coding and worker runs arrive with the agent wakes.
+
+### 1. Authority changes go through the clock
+
+**What changed from core §4.** Core §4 had commits and effects hold their
+covering resources and grants `FOR SHARE`, and a narrowing take them `FOR NO
+KEY UPDATE`. PostgreSQL grants a new shared locker even while an exclusive one
+waits (C1b-1 design review, finding 7). So a steady stream of commits and
+effects on the root resource, which covers almost everything, could make a
+revocation wait forever. C1b-2 orders authority changes through the clock
+instead.
+
+- **Every authority change takes the clock.** A folder-v2 resource or grant
+  change (§2):
+  1. locks the rows it changes `FOR NO KEY UPDATE`, and the covering parent
+     when it narrows, at ranks 6 and 7;
+  2. bumps their revisions;
+  3. takes the company clock last, and writes a journal row of kind
+     `authority` that names what changed.
+
+  Its seq orders it with every change set, as core §2 already intends for
+  the journal.
+- **A commit checks the authority journal after its own clock.**
+  - At its start, the commit reads `last_seq` with a plain read (`as_of`).
+  - Right after its own clock increment, while it holds the clock, it looks
+    for an `authority` row after `as_of`.
+    - If one exists, an authority change committed while this change set was
+      being decided. The commit raises 55P03, and the caller retries with
+      fresh authority.
+    - A change still in flight cannot commit before this one, because it
+      needs the clock this commit holds. So it is ordered after, and journal
+      order is authority order.
+- **Commits no longer lock covering resources.** Rank 6 keeps only the hook's
+  targets, if any, and authority is read with plain reads. C1b-1's `FOR
+  SHARE` on covering resources goes away, and with it the starvation.
+- **Effects that take no clock** (sends, model requests, wakes across agents;
+  they are wired in C1c) compare revisions with plain reads (§3).
+  - A change that commits just after the compare is ordered after the
+    effect: the effect ran under authority that was valid when it ran.
+- **Principal changes that write no resource or grant stay effect-time
+  checks:** member role and removal, staff archive, grant expiry by time.
+  C1b-1 already checks them.
+
+**Revisions.**
+- `qorpera_company_path_resources.authority_revision bigint not null default
+  1`: the structural revision. It is bumped when the resource's scope, policy
+  or match changes, when it is revoked, and when a narrower resource is
+  inserted under it (the parent's).
+- `qorpera_company_path_grants.revision bigint not null default 1`: bumped
+  when the grant narrows (fewer permissions, an earlier expiry) or is revoked.
+- **Folder mutators never bump `version`.** It is the key grants are stored
+  under, and bumping it would drop every explicit grant. Revisions carry the
+  change instead.
+
+### 2. Folder resource and grant mutators
+
+Folder-v2 companies get their own mutators. The old ones reach folder-v2 only
+through `qorpera_company_path_actor`, which refuses there.
+
+| Function | Who | Changes |
+| --- | --- | --- |
+| `qorpera_folder_set_resource(env, actor, path, match, scope, owner, policy)` | owners and admins; a member for their own `members/<id>/private` | creates or changes a resource; refuses a folder-key tie; a new narrower resource bumps its covering parent |
+| `qorpera_folder_grant(env, actor, resource_id, principal_kind, principal_id, permissions, expires_at)` | owners and admins | inserts a grant at the resource's current `version`; a narrower grant for the same principal bumps the old one |
+| `qorpera_folder_revoke(env, actor, resource_id or grant_id)` | owners and admins | sets `revoked_at`, bumps the revision |
+
+- **Order.** Each takes the member KEY SHARE (rank 1), then its resource
+  rows (rank 6: the changed one and, when narrowing, the covering parent,
+  ancestors first), then grants (rank 7), then the clock. It writes one
+  journal row per change.
+- **Seeded bases.** The root and `rules/` already exist (C1a, C1b-1). The code
+  rules (notebook, worker and todo, hiring) follow agent folders by id and
+  come with C2.
+
+### 3. Read receipts, read sets and read records
+
+**Reads stay pure.** `read` and `list` write nothing and lock nothing, as in
+C1b-1. For a run, each entry they return carries the authority it was read
+under, as a receipt:
+
+```
+authority: {resourceId, resourceRevision, grantId, grantRevision}
+```
+
+`grantId` is the agent's grant that allowed the read. It is null when the
+agent's permission came from a scope rule, such as `rules/`.
+
+**A release records them.** Whoever releases output to the model calls:
+
+```
+qorpera_folder_record_release(env, run actor, release_id, reads, output_sha256)
+```
+
+The caller is the runtime, per model request (C3). For the shell box, the
+folder service reports the command's reads to the runtime, which releases
+them at command end.
+
+The call:
+1. runs the run check (job KEY SHARE), because recording is a run effect;
+2. compares each read's receipt with the current revisions. Where one
+   changed, it re-resolves that path for the run now, and refuses the whole
+   release (42501) if any path is no longer readable;
+3. upserts the run's read-set rows, one per (resource, grant), keeping
+   `least(recorded, receipt)`;
+4. inserts one read-record row per (release, resource). The row holds the
+   sorted reads (path, version, content hash, range or page) with their
+   receipts, plus the output digest.
+
+A release id is used once: a replay returns the stored result.
+
+**Tables.**
+- `qorpera_folder_run_reads (run_id, resource_id, grant_id, resource_revision,
+  grant_revision)`: the read set, a few rows per run.
+- `qorpera_folder_run_read_records (run_id, release_id, resource_id, reads,
+  output_sha256, created_at)`: written once.
+- Neither has a foreign key to runs, like the operation keys.
+
+**The recheck.** `qorpera_folder_run_reads_current(env, profile, run actor)`,
+for effects:
+- It compares each read-set row's recorded revisions with the current ones,
+  using plain reads.
+- If they match, the effect goes ahead.
+- If one changed, it re-resolves, for the run's current authority, only the
+  paths in the run's read records under that resource. It refuses (42501) if
+  any is no longer readable.
+- Only after a successful re-resolution does it re-stamp the row, as a
+  compare-and-set on the value it read. If another release lowered the value
+  meanwhile, the re-stamp does nothing, and the next effect re-resolves again.
+
+**The run commit calls the recheck** at step 4, after the rank locks and
+before the paths. A narrowing that commits after the recheck is caught by the
+authority journal check after the clock (§1), and the commit retries.
+
+### 4. Agent wakes, coding and worker runs
+
+**Accepted wakes.** Agent wakes from coworker messages, worker dispatch and
+worker completion. They are ported from `qorpera_wake_authorized`'s agent
+branch, without its locks:
+
+| Check | Rows locked |
+| --- | --- |
+| The execution authority matches the wake's sponsor, standing version and logical computer. Or, for coding worker dispatch, the worker is coding, its owner is a member, and the owner's sponsor matches | the execution authority, rank 3, `KEY SHARE`, required (the coding variant: none) |
+| The parent run is in this company and environment, and its agent is the actor | none (plain) |
+| **The parent's reads:** every path in the parent run's read records is readable for this run's requester and agent, with the company-audience rule (no `member_private`, both principals read) | none (plain) |
+| Ancestry: `qorpera_coworker_wake_ancestry` or `qorpera_worker_wake_ancestry`, which are plain reads | none |
+| Worker-completion session variant (20260922170000:277-280) | none |
+
+- **The parent's reads, before C3.** Parents have read records only once C3
+  gives agents real reads. Until then, a parent with no read records passes
+  this check vacuously. That is exact, since it read nothing through the
+  folder core.
+- **Coding runs** (worker species `coding`) get session kind `coding`: the
+  coding rule, and never reviewed. **In-house worker runs** get the access
+  rule. Both rules are already in C1b-1 and tested there.
+- **Still refused (0A000):**
+  - office-activation and machine-event wakes, which come with C1b-3
+    (computers and machines): the waiter check locks the profile row;
+  - routine wakes from a file change, which come with C4 (file events from
+    the journal).
+- **Coworker message counters** (hop count, 20 per pair per hour) belong to
+  the send path, which C1c branches.
+
+### 5. Tests (C1b-2)
+
+- **Authority through the clock:**
+  - a commit whose authority changed mid-flight retries (55P03). A dblink
+    race: hold a commit before its clock, commit a revoke, and the commit
+    then raises.
+  - a revoke in flight while a commit holds the clock is ordered after it.
+  - a stream of commits does not starve a revoke: commits no longer lock
+    resources.
+- **Mutators:**
+  - owner, admin and member-private rules;
+  - a tie refused;
+  - revisions bumped; the parent bumped by a narrower insert;
+  - one journal row each, with no `version` change;
+  - explicit grants survive.
+- **Read receipts and releases:**
+  - a run's read returns receipts, and a release records them;
+  - a replayed release id returns the stored result;
+  - a release after a revoke re-resolves and refuses;
+  - `least()` keeps the oldest revision.
+- **The recheck:** unchanged passes; a changed resource re-resolves its paths
+  and passes or refuses; the compare-and-set re-stamp.
+- **Agent wakes:**
+  - a coworker run saves;
+  - an execution authority re-pointed makes it refuse;
+  - a parent's unreadable read record refuses;
+  - worker dispatch and completion;
+  - a coding run writes `code/` and is refused under `agents/`, with no
+    review;
+  - an in-house read-only worker writes nothing.
+- **Still refused:** office activation, machine events and file-change
+  routine wakes (0A000).
 
 ## C1b-3 (outline; designed with F3)
 
