@@ -1135,7 +1135,15 @@ describe("settings session lifecycle", () => {
 			const roles = [...f.root.querySelectorAll<HTMLOptionElement>(".company-person select option")].map(
 				(option) => option.value,
 			);
-			const result = { text: exit.textContent, disabled: exit.disabled, stepDown: stepDown !== undefined, roles };
+			const next = exit.nextElementSibling;
+			const hint = next?.classList.contains("notice") ? next.textContent : null;
+			const result = {
+				text: exit.textContent,
+				disabled: exit.disabled,
+				hint,
+				stepDown: stepDown !== undefined,
+				roles,
+			};
 			dispose?.();
 			document.body.replaceChildren();
 			return result;
@@ -1149,6 +1157,7 @@ describe("settings session lifecycle", () => {
 		).toEqual({
 			text: "Leave company",
 			disabled: true,
+			hint: "Make someone else a founder before you leave.",
 			stepDown: false,
 			roles: ["viewer", "contributor", "admin", "owner"],
 		});
@@ -1158,11 +1167,24 @@ describe("settings session lifecycle", () => {
 				member(userA.id, "owner"),
 				member(userB.id, "owner"),
 			]),
-		).toEqual({ text: "Leave company", disabled: false, stepDown: true, roles: [] });
+		).toEqual({ text: "Leave company", disabled: false, hint: null, stepDown: true, roles: [] });
+		// While company setup runs for this founder, neither, even with a co-founder.
+		expect(
+			await exitFor({ manageFounders: true, leave: false, deleteCompany: false }, [
+				member(userA.id, "owner"),
+				member(userB.id, "owner"),
+			]),
+		).toEqual({
+			text: "Leave company",
+			disabled: true,
+			hint: "Company setup must finish before you can leave.",
+			stepDown: false,
+			roles: [],
+		});
 		// The last member deletes.
 		expect(
 			await exitFor({ manageFounders: true, leave: false, deleteCompany: true }, [member(userA.id, "owner")]),
-		).toEqual({ text: "Delete company", disabled: false, stepDown: false, roles: [] });
+		).toEqual({ text: "Delete company", disabled: false, hint: null, stepDown: false, roles: [] });
 	});
 
 	it.each(["delete", "leave"])("closes settings and refreshes the hub after %s", async (action) => {

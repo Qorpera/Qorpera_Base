@@ -164,6 +164,8 @@ end
 $$;
 select pg_temp.refused($q$select public.qorpera_leave_hosted_profile('30000000-0000-4000-8000-000000000910')$q$,
 	'the last member left instead of deleting');
+select pg_temp.refused($q$select public.qorpera_update_profile_member_role('30000000-0000-4000-8000-000000000910',
+	'30000000-0000-4000-8000-000000000901','admin')$q$, 'the only member stepped down and left the company without a founder');
 select public.qorpera_delete_hosted_profile('30000000-0000-4000-8000-000000000910');
 reset role;
 do $$

@@ -88,6 +88,7 @@ export function renderTeam(
 			: null,
 	);
 	let exit: HTMLButtonElement | null = null;
+	let exitHint: string | null = null;
 	if (!team) {
 		if (state.accessLost) content.append(notice("danger", t("Your access to this company was revoked.")));
 		else if (!state.error) content.append(listSkeleton(t("Loading team")));
@@ -375,6 +376,11 @@ export function renderTeam(
 		// cloud without several founders sends neither flag: its one owner deletes, others leave.
 		const deleting = team.capabilities.deleteCompany ?? team.role === "owner";
 		const canLeave = deleting || (team.capabilities.leave ?? team.role !== "owner");
+		// Only a founder is kept: as the last founder, or while company setup runs for them.
+		if (!canLeave)
+			exitHint = team.members.some((member) => member.role === "owner" && member.userId !== company.userId)
+				? t("Company setup must finish before you can leave.")
+				: t("Make someone else a founder before you leave.");
 		exit = button(
 			deleting ? t("Delete company") : t("Leave company"),
 			() =>
@@ -405,7 +411,7 @@ export function renderTeam(
 			{
 				danger: true,
 				disabled: !canLeave,
-				...(canLeave ? {} : { title: t("Make someone else a founder before you leave.") }),
+				...(exitHint ? { title: exitHint } : {}),
 			},
 		);
 		exit.classList.add("company-exit");
@@ -413,7 +419,11 @@ export function renderTeam(
 	// The button is rebuilt on every company update; keep keyboard focus on it.
 	const previousExit = (options.exit ?? container).querySelector(".company-exit");
 	const exitFocused = previousExit !== null && previousExit === document.activeElement;
-	const exitError = feedback.exitError ? notice("danger", feedback.exitError) : null;
+	const exitError = feedback.exitError
+		? notice("danger", feedback.exitError)
+		: exitHint
+			? notice("neutral", exitHint)
+			: null;
 	if (options.exit) replace(options.exit, exit, exitError);
 	else for (const part of [exit, exitError]) if (part) content.append(part);
 	replace(container, content);

@@ -102,6 +102,39 @@ select set_config('qorpera_test.org_company',public.qorpera_create_cloud_company
 	'31000000-0000-4000-8000-000000000010','Organization kernel fixture',2)::text,true);
 reset role;
 
+-- Company setup runs for the founder who created the company: while it runs, that founder neither
+-- leaves nor steps down, even with a co-founder, and the team page does not offer it (20260929030000).
+savepoint setup_founder;
+insert into auth.users(id,email) values ('31000000-0000-4000-8000-0000000000f1','org-cofounder@example.test');
+insert into public.qorpera_profile_members(profile_id,user_id,email,display_name,role)
+values ('31000000-0000-4000-8000-000000000010','31000000-0000-4000-8000-0000000000f1','org-cofounder@example.test','Co-founder','owner');
+select pg_temp.org_claims('authenticated','31000000-0000-4000-8000-000000000001');
+set local role authenticated;
+do $$
+begin
+	if not exists (select 1 from public.qorpera_company_bootstrap_jobs where profile_id = '31000000-0000-4000-8000-000000000010'
+		and created_by_user_id = '31000000-0000-4000-8000-000000000001' and state = 'queued') then
+		raise exception 'the fixture company has no queued setup for its creator';
+	end if;
+	if public.qorpera_profile_team_info('31000000-0000-4000-8000-000000000010') #> '{capabilities,leave}' <> 'false' then
+		raise exception 'the team page offers leave while setup runs for this founder';
+	end if;
+	begin
+		perform public.qorpera_leave_hosted_profile('31000000-0000-4000-8000-000000000010');
+		raise exception 'the founder left while company setup ran for them';
+	exception when insufficient_privilege then null;
+	end;
+	begin
+		perform public.qorpera_update_profile_member_role('31000000-0000-4000-8000-000000000010',
+			'31000000-0000-4000-8000-000000000001','admin');
+		raise exception 'the founder stepped down while company setup ran for them';
+	exception when insufficient_privilege then null;
+	end;
+end
+$$;
+reset role;
+rollback to savepoint setup_founder;
+
 -- The company is not visible or runnable until the cloud bootstrap worker has
 -- uploaded and atomically finalized the canonical organization tree.
 select pg_temp.org_claims('service_role');
