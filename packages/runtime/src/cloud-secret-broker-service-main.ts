@@ -309,9 +309,9 @@ export async function runCloudSecretBrokerServiceMain(
 		} finally {
 			process.removeListener("SIGINT", shutdown);
 			process.removeListener("SIGTERM", shutdown);
-			await upkeep.close();
-			await signIns?.close();
-			await service.close();
+			// All at once: the server stops taking requests while a renewal in flight finishes, so a
+			// stop stays within the unit's 90 s.
+			await Promise.all([upkeep.close(), signIns?.close(), service.close()]);
 		}
 	} finally {
 		await pool.end();

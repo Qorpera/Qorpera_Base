@@ -283,3 +283,24 @@ select set_config('qorpera_test.upkeep_lock', coalesce(public.qorpera_model_logi
 select pg_temp.upkeep_expect((select renewal_token::text from public.qorpera_model_logins
 	where id = '69400000-0000-4000-8000-0000000000f1'), current_setting('qorpera_test.upkeep_lock'),
 	'a free, due login gets a new token');
+
+-- Logins in their back-off are no candidates at all: four of them, more urgent than a due login, do
+-- not keep it waiting (the take tries at most four candidates a call).
+update public.qorpera_model_logins set renewal_token = null, renewal_until = null
+where id = '69400000-0000-4000-8000-0000000000f1';
+do $$
+declare v_index integer;
+begin
+	for v_index in 1..4 loop
+		perform pg_temp.upkeep_login(('69400000-0000-4000-8000-0000000001' || lpad(v_index::text, 2, '0'))::uuid,
+			('69400000-0000-4000-8000-0000000002' || lpad(v_index::text, 2, '0'))::uuid,
+			('69400000-0000-4000-8000-0000000003' || lpad(v_index::text, 2, '0'))::uuid,
+			'69400000-0000-4000-8000-000000000040', interval '9 days', interval '12 hours');
+	end loop;
+	update public.qorpera_model_logins set renewal_failures = 1, renewal_failed_at = clock_timestamp()
+	where id::text like '69400000-0000-4000-8000-0000000001%';
+end $$;
+set local session authorization qorpera_secret_broker;
+select pg_temp.upkeep_expect(pg_temp.upkeep_taken(), '69400000-0000-4000-8000-0000000000f1',
+	'a due login is taken past four more urgent logins in their back-off');
+reset session authorization;
