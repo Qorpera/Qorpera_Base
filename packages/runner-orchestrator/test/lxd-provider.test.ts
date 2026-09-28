@@ -253,13 +253,15 @@ function config(stateRoot: string): LxdCloudRunnerProviderConfig {
 function fetchProvisioner(
 	requests: Array<{ url: string; body: Record<string, unknown> }>,
 	expectedWork: CloudRunnerWork = work(),
-	loginInVault = false,
+	loginInVault: boolean | "missing" = false,
 ): typeof fetch {
 	return vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
 		expect(init?.redirect).toBe("error");
 		const url = String(input);
 		if (url.includes("qorpera_compute_identity_login_in_vault")) {
 			expect(JSON.parse(String(init?.body))).toEqual({ p_compute_identity_id: expectedWork.computeIdentityId });
+			// A database before migration 20260928161000 has no such function.
+			if (loginInVault === "missing") return Response.json({ code: "PGRST202" }, { status: 404 });
 			return Response.json(loginInVault);
 		}
 		if (url.includes("qorpera_reserve_runtime_node_machine"))
@@ -1854,6 +1856,22 @@ describe("LXD cloud runner provider", () => {
 		expect(lxd.createVolumeCalls).toHaveLength(1);
 		await restarted.deliver(runner, delivery(work()));
 		await restarted.stop(runner, "idle");
+	});
+
+	it("keeps the node login path when the database has no vault custody check yet", async () => {
+		const directory = await root();
+		const settings = governedConfig(join(directory, "state"));
+		const lxd = new FakeLxd();
+		const backend = new LxdCloudRunnerProviderBackend(
+			settings,
+			lxd,
+			new FakeGuest(),
+			fetchProvisioner([], work(), "missing"),
+		);
+		await backend.acquire(runId, work(), new AbortController().signal);
+		expect(Object.keys(lxd.createCalls[0]?.devices ?? {})).toContain("compute-identity");
+		const journal = JSON.parse(await readFile(join(settings.stateRoot, runId, "journal.json"), "utf-8"));
+		expect(journal.lxd.loginCustody).toBeUndefined();
 	});
 
 	it("refuses a vault login guest that gained an identity device", async () => {

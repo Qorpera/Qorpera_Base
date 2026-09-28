@@ -26,13 +26,14 @@ begin
 		raise exception 'Vault custody check must be stable'; end if;
 end $$;
 
--- The claim and the chooser each carry the check exactly once, at the identity-home rule.
+-- The claim and the chooser each carry the check exactly once, at the identity-home rule (the
+-- claim asks it last, only for a run whose home is elsewhere).
 do $$
 declare v_claim text := pg_get_functiondef('public.qorpera_claim_runner_job_for_orchestrator(uuid,uuid,integer)'::regprocedure);
 	v_decide text := pg_get_functiondef('public.qorpera_runtime_node_placement_decide(uuid,text,text,uuid)'::regprocedure);
 begin
 	if (select count(*) from regexp_matches(v_claim,
-		'run\.compute_identity_id is null\s+or public\.qorpera_compute_identity_login_in_vault\(run\.compute_identity_id\)\s+or not exists \(', 'g')) <> 1
+		'and home\.provider_adapter = v_adapter\s+\)\s+or public\.qorpera_compute_identity_login_in_vault\(run\.compute_identity_id\)\)\s+order by job\.created_at', 'g')) <> 1
 		or (select count(*) from regexp_matches(v_claim, 'qorpera_compute_identity_login_in_vault', 'g')) <> 1 then
 		raise exception 'Claim does not skip the home rule for vault logins exactly once'; end if;
 	if (select count(*) from regexp_matches(v_decide,

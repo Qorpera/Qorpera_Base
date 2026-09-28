@@ -207,6 +207,20 @@ it("fails a vault run without the vault or when the vault refuses, and keeps no 
 	).toThrow("capsule key or the login vault");
 });
 
+it("refuses a vault copy that carries a renewal token and starts no harness", async () => {
+	const harness = vi.fn(async () => undefined);
+	const f = await fixture({
+		issue: async () => ({
+			...login(1, "pass-1"),
+			authJson: `${JSON.stringify({ tokens: { access_token: "pass-1", refresh_token: "renewal-secret" } })}\n`,
+		}),
+		harness,
+	});
+	await expect(f.host.execute(request())).rejects.toThrow();
+	expect(harness).not.toHaveBeenCalled();
+	expect(await readdir(f.temporaryRoot)).toEqual([]);
+});
+
 it("leaves the usage check of a vault login to the vault", async () => {
 	const f = await fixture({ issue: async () => login(1, "pass-1") });
 	const listAccountRefreshes = vi.fn(async () => [

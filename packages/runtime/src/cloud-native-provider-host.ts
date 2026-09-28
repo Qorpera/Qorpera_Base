@@ -198,12 +198,32 @@ export interface NativeModelLoginClient {
 	issue(request: ModelLoginIssueRequest, signal: AbortSignal): Promise<ModelLoginIssue>;
 }
 
+/** A run's copy of a vault login never carries the renewal token: only the vault renews. */
+function assertAccessOnlyModelLogin(authJson: string): void {
+	let login: unknown;
+	try {
+		login = JSON.parse(authJson);
+	} catch {
+		throw new Error("Native login vault returned an invalid login");
+	}
+	if (!login || typeof login !== "object" || Array.isArray(login))
+		throw new Error("Native login vault returned an invalid login");
+	const tokens = (login as { tokens?: unknown }).tokens;
+	if (tokens === undefined || tokens === null) return;
+	if (typeof tokens !== "object" || Array.isArray(tokens))
+		throw new Error("Native login vault returned an invalid login");
+	const renewal = (tokens as { refresh_token?: unknown }).refresh_token;
+	if (renewal !== undefined && renewal !== "") throw new Error("Native login vault handed a run a renewal token");
+}
+
 /** Puts a login copy from the vault in the run's Codex home in one step: Codex, which re-reads
- * the file before it would renew, sees the old copy or the new one, never half of either. */
+ * the file before it would renew, sees the old copy or the new one, never half of either. The
+ * copy is staged beside the Codex home, not in it, which must hold `auth.json` alone. */
 async function writeModelLogin(root: string, authJson: string): Promise<void> {
+	assertAccessOnlyModelLogin(authJson);
 	const codexHome = join(root, "codex");
 	await mkdir(codexHome, { recursive: true, mode: 0o700 });
-	const staged = join(codexHome, `.auth.json.${randomUUID()}`);
+	const staged = join(root, `.model-login.${randomUUID()}`);
 	try {
 		await writeFile(staged, authJson, { mode: 0o600, flag: "wx" });
 		await rename(staged, join(codexHome, "auth.json"));
@@ -1621,7 +1641,10 @@ export class NativeProviderHost {
 								{ binding, knownVersion: vaultVersion ?? null },
 								refreshSignal,
 							);
-							if (next.authJson !== null && next.version !== vaultVersion) {
+							// A copy comes back whenever the vault opened the login for this call: a newer
+							// version, or the same version after a renewal attempt (a pass it renewed but
+							// could not save keeps the old number). Writing it again is harmless.
+							if (next.authJson !== null) {
 								await writeModelLogin(runRoot, next.authJson);
 								vaultVersion = next.version;
 							}

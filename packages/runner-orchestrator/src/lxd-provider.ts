@@ -2074,13 +2074,32 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 		return current.capacityReleased === true || this.#releasedCapacity.has(current.acquisitionId);
 	}
 
-	/** Stateless Compute step 1: whether the vault, not a node volume, keeps this identity's login. */
+	/** Stateless Compute step 1: whether the vault, not a node volume, keeps this identity's login.
+	 * A database without the check (this build reached a node before its migration) answers 404:
+	 * the login is then on a node, as before. */
 	async #identityLoginInVault(computeIdentityId: string, signal?: AbortSignal): Promise<boolean> {
-		const answer = await this.#rpc(
-			"qorpera_compute_identity_login_in_vault",
-			{ p_compute_identity_id: computeIdentityId },
-			signal,
+		const response = await this.#fetch(
+			new URL("/rest/v1/rpc/qorpera_compute_identity_login_in_vault", this.#config.supabaseUrl),
+			{
+				method: "POST",
+				redirect: "error",
+				headers: {
+					...supabaseServiceHeaders(this.#config.supabaseServiceKey),
+					"content-type": "application/json",
+				},
+				body: JSON.stringify({ p_compute_identity_id: computeIdentityId }),
+				signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(30_000)]) : AbortSignal.timeout(30_000),
+			},
 		);
+		if (response.status === 404) {
+			void response.body?.cancel().catch(() => undefined);
+			return false;
+		}
+		if (!response.ok) {
+			void response.body?.cancel().catch(() => undefined);
+			throw new Error(`Native identity login custody is unavailable (${response.status})`);
+		}
+		const answer: unknown = await response.json();
 		if (typeof answer !== "boolean") throw new Error("Native identity login custody is invalid");
 		return answer;
 	}
