@@ -15,6 +15,7 @@ import {
 	createHttpCompanyComputerSessionFactory,
 	HttpCompanyComputerNativeEndpoint,
 	parseCompanyComputerNativeDescriptor,
+	parseCompanyComputerNativeRoute,
 	parseCompanyComputerNativeUrl,
 } from "@qorpera/runtime/cloud-company-computer-native-client";
 import {
@@ -323,6 +324,24 @@ describe("native runtime to office transport (real TLS, synthetic SQL and guest 
 			expect(f.physicalClose).toHaveBeenCalledOnce();
 		},
 	);
+	it("reaches the computer the run is placed on through a company route", async () => {
+		const f = await fixture();
+		const route = f.url.replace(f.scope.companyComputerId, "{companyComputerId}");
+		expect(route).not.toBe(f.url);
+		const control = { beginToolOperation: vi.fn(), completeToolOperation: vi.fn() };
+		const factory = createHttpCompanyComputerSessionFactory({ url: route, token: f.token, registry: f.registry });
+		const session = await factory(f.run, new CloudNativeToolOperations(f.run, control));
+		if (!session) throw new Error("Missing admitted office session");
+		cleanups.push(session.close);
+		expect(session.tools.map((tool) => tool.name)).toContain("computer_screen");
+		await session.close();
+		// A one-computer route still refuses every other computer.
+		const other = f.url.replace(f.scope.companyComputerId, randomUUID());
+		const pinned = createHttpCompanyComputerSessionFactory({ url: other, token: f.token, registry: f.registry });
+		await expect(pinned(f.run, new CloudNativeToolOperations(f.run, control))).rejects.toThrow(
+			"OFFICE_NATIVE_CONFIGURATION_DIFFERS",
+		);
+	});
 	it("omits office tools for unavailable offices and never queries office metadata for private runs", async () => {
 		const f = await fixture({ unavailable: true });
 		const control = { beginToolOperation: vi.fn(), completeToolOperation: vi.fn() };
@@ -652,5 +671,19 @@ describe("native runtime to office transport (real TLS, synthetic SQL and guest 
 			f.url.replace("/native", "/other"),
 		])
 			expect(() => parseCompanyComputerNativeUrl(value)).toThrow();
+		const route = f.url.replace(f.scope.companyComputerId, "{companyComputerId}");
+		expect(parseCompanyComputerNativeRoute(route).companyComputerId).toBeNull();
+		expect(parseCompanyComputerNativeRoute(route).urlFor(f.scope.companyComputerId)).toBe(f.url);
+		expect(() => parseCompanyComputerNativeRoute(route).urlFor("../../admin")).toThrow();
+		expect(parseCompanyComputerNativeRoute(f.url).companyComputerId).toBe(f.scope.companyComputerId);
+		for (const value of [
+			route.replace("https:", "http:"),
+			`${route}?token=bad`,
+			route.replace("/native", "/other"),
+			`${route}/{companyComputerId}`,
+			route.replace("/office/{companyComputerId}", "/{companyComputerId}"),
+			route.replace("{companyComputerId}", "x{companyComputerId}"),
+		])
+			expect(() => parseCompanyComputerNativeRoute(value)).toThrow();
 	});
 });

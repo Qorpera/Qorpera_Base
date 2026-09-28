@@ -227,6 +227,23 @@ describe("native office startup without a running guest", () => {
 		f.descriptor.scope.companyComputerId = randomUUID();
 		await expect(f.factory(f.run, f.operations)).rejects.toThrow("OFFICE_NATIVE_CONFIGURATION_DIFFERS");
 	});
+	it("offers startup of any of the company's computers through a company route", async () => {
+		const f = await fixture();
+		f.descriptor.scope.companyComputerId = randomUUID();
+		const factory = createHttpCompanyComputerSessionFactory({
+			url: "https://office.qorpera.test/office/{companyComputerId}/native",
+			token: randomBytes(32).toString("base64url"),
+			registry: new HttpCloudCompanyComputerRegistry({
+				supabaseUrl: "https://registry.qorpera.test",
+				serviceRoleKey: "synthetic-service-key",
+				fetch: f.sql,
+			}),
+			fetch: f.guest,
+		});
+		const session = await factory(f.run, f.operations);
+		expect(session?.tools.map((tool) => tool.name)).toEqual(["computer_start"]);
+		await session?.close();
+	});
 	it("publishes a closed input schema without model-selectable scope or paths", async () => {
 		const f = await fixture();
 		expect(f.tool.inputSchema.additionalProperties).toBe(false);

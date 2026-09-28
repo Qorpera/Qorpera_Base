@@ -9,7 +9,7 @@ import { createHttpCloudCodingCommandGateway, parseCloudCodingCommandUrl } from 
 import { HttpCloudCodingControl } from "./cloud-coding-control.ts";
 import {
 	createHttpCompanyComputerSessionFactory,
-	parseCompanyComputerNativeUrl,
+	parseCompanyComputerNativeRoute,
 } from "./cloud-company-computer-native-client.ts";
 import { HttpCloudCompanyComputerRegistry } from "./cloud-company-computer-registry-http.ts";
 import { HttpCloudCompanyPathControl } from "./cloud-company-path-control.ts";
@@ -163,7 +163,7 @@ export function nativeCompanyComputerConfiguration(environment: NodeJS.ProcessEn
 	if (environment.QORPERA_COMPANY_COMPUTER_URL === undefined) return undefined;
 	if (environment.QORPERA_NATIVE_RUNTIME !== "company-path-v1")
 		throw new Error("Company Computer requires the cloud-native Company File runtime");
-	return { url: parseCompanyComputerNativeUrl(required(environment, "QORPERA_COMPANY_COMPUTER_URL")).url };
+	return { url: parseCompanyComputerNativeRoute(required(environment, "QORPERA_COMPANY_COMPUTER_URL")).url };
 }
 
 /** The coding command gateway (the executor's HTTPS origin) is deployment
