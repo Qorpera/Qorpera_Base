@@ -165,7 +165,7 @@ describe("starting a conversation on first send", () => {
 			expect.any(AbortSignal),
 			[],
 			expect.objectContaining({ sponsorBindingId: id(100) }),
-			{ roomId: document.roomId, environmentId: profileA.environmentId, agentThread: false },
+			{ roomId: document.roomId, environmentId: profileA.environmentId, agentThread: false, images: false },
 		);
 		expect(f.company.conversation(session.sessionId, false).get().draft).toBe("");
 	});

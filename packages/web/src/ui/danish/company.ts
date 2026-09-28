@@ -127,6 +127,9 @@ export const COMPANY: Record<string, string> = {
 		"Den tidligere besked kan allerede være modtaget. Vælg {action}, før du sender ændret tekst eller billeder.",
 	"The conversation destination changed. Refresh before starting a new request.":
 		"Samtalens modtager er ændret. Opdater, før du starter en ny anmodning.",
+	"Add a message to send with the images.": "Skriv en besked, der kan sendes med billederne.",
+	"Could not check whether this group chat takes images. Try again.":
+		"Det kunne ikke tjekkes, om denne gruppechat tager imod billeder. Prøv igen.",
 	"Images are not supported in team rooms. Use Company File.":
 		"Billeder understøttes ikke i teamrum. Brug Virksomhedsfilen.",
 	"Select an active model account before sending.": "Vælg en aktiv modelkonto, før du sender.",
