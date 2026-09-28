@@ -111,6 +111,13 @@ const refusals: [string, string, Change][] = [
 		},
 	],
 	[
+		"another environment's office as the template",
+		"OFFICE_NEXT_COMPUTER_TEMPLATE_OTHER_COMPANY",
+		(v) => {
+			v.office.environmentId = "16161616-1616-4161-8161-161616161616";
+		},
+	],
+	[
 		"another image",
 		"OFFICE_NEXT_COMPUTER_IMAGE_DIFFERS",
 		(v) => {
