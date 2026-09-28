@@ -49,6 +49,18 @@ for (const unit of units) {
 		bytes: bytes.length,
 	});
 }
+// The node proof (deploy/machine/prove-machine-node.ts) is packaged beside it for
+// the operator; it is never installed in the image.
+await build({
+	entryPoints: ["deploy/machine/prove-machine-node.ts"],
+	outfile: resolve(output, "prove-machine-node.mjs"),
+	bundle: true,
+	platform: "node",
+	format: "esm",
+	target: "node22.19",
+	legalComments: "none",
+	logLevel: "silent",
+});
 const manifest = `${JSON.stringify({ schema: "qorpera.machine-guest-package/v1", artifacts, installationPerformed: false }, null, 2)}\n`;
 await writeFile(resolve(output, "manifest.json"), manifest, { mode: 0o600 });
 console.log(JSON.stringify({ output, helperSha256: artifacts[0].sha256, bytes: helper.length }));
