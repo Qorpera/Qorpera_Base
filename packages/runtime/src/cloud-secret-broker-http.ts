@@ -13,6 +13,7 @@ import {
 	type ModelLoginIssueRequest,
 	parseModelLoginRunBinding,
 } from "./cloud-model-login-vault.ts";
+import type { CloudModelLoginSignIns } from "./cloud-model-login-vault-sign-in.ts";
 import { parseCloudNativeToolBinding } from "./cloud-native-tool-authority.ts";
 import { type CloudToolContent, cloudToolJsonText } from "./cloud-native-tool-boundary.ts";
 import {
@@ -381,6 +382,10 @@ export interface HttpCloudSecretBrokerServiceOptions {
 	 * run its login under the runtime token and the database's check of the run's exact native
 	 * lease. Absent means the route answers 404. */
 	readonly modelLogins?: CloudModelLoginVault;
+	/** A member's sign-in to the vault (Stateless Compute step 1, change 2B):
+	 * `/v1/model-logins/<company>/login` under the sign-in's own capability. Absent means the
+	 * route answers 404. */
+	readonly modelLoginSignIns?: CloudModelLoginSignIns;
 }
 
 /**
@@ -399,6 +404,7 @@ export class HttpCloudSecretBrokerService {
 	readonly #oauth: CloudConnectorOAuthFlows | undefined;
 	readonly #codingExecutorToken: string | undefined;
 	readonly #modelLogins: CloudModelLoginVault | undefined;
+	readonly #modelLoginSignIns: CloudModelLoginSignIns | undefined;
 	#server?: Server;
 
 	constructor(
@@ -433,6 +439,7 @@ export class HttpCloudSecretBrokerService {
 		this.#oauth = options.oauth;
 		this.#codingExecutorToken = options.codingExecutorToken;
 		this.#modelLogins = options.modelLogins;
+		this.#modelLoginSignIns = options.modelLoginSignIns;
 	}
 
 	async start(): Promise<number> {
@@ -467,6 +474,7 @@ export class HttpCloudSecretBrokerService {
 		const emailDraft = /^\/v1\/email-drafts\/([0-9a-f-]{36})$/i.exec(path);
 		const oauthStart = /^\/v1\/oauth\/([0-9a-f-]{36})\/start$/i.exec(path);
 		const oauthConfirm = /^\/v1\/oauth\/([0-9a-f-]{36})\/confirm$/i.exec(path);
+		const signIn = /^\/v1\/model-logins\/([0-9a-f-]{36})\/login$/i.exec(path);
 		const memberRoute = Boolean(
 			(capture && UUID.test(capture[1])) ||
 				(emailDraft && UUID.test(emailDraft[1])) ||
@@ -609,6 +617,26 @@ export class HttpCloudSecretBrokerService {
 					AbortSignal.timeout(35_000),
 				);
 				response(reply, 200, result as unknown as JsonValue);
+				return;
+			}
+			// A member's sign-in to the vault (Stateless Compute step 1, change 2B). The login
+			// gateway chooser names `<origin>/v1/model-logins/<company>/`; the web client's edge
+			// function posts its unchanged sign-in request there, server to server, with the
+			// sign-in's capability as bearer (never the runtime token). The database decides
+			// whether that capability names a pending sign-in of this broker's company.
+			if (signIn && UUID.test(signIn[1]) && this.#modelLoginSignIns !== undefined) {
+				const authorization = request.headers.authorization;
+				if (typeof authorization !== "string" || !authorization.startsWith("Bearer "))
+					throw new Error("Vault sign-in capability is missing");
+				const answer = await this.#modelLoginSignIns.signIn(
+					{
+						companyId: signIn[1],
+						capability: authorization.slice("Bearer ".length),
+						body: await readRequest(request),
+					},
+					AbortSignal.timeout(25_000),
+				);
+				response(reply, 200, { ...answer });
 				return;
 			}
 			// A live run's model login, without its renewal token (Stateless Compute step 1). The

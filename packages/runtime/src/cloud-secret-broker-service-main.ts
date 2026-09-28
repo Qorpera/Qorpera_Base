@@ -7,6 +7,7 @@ import { Pool } from "pg";
 import { composeCloudConnectorService, parseCloudConnectorServiceConfig } from "./cloud-connector-service.ts";
 import { ModelLoginHelperClient } from "./cloud-model-login-helper.ts";
 import { CloudModelLoginVault } from "./cloud-model-login-vault.ts";
+import { CloudModelLoginSignIns } from "./cloud-model-login-vault-sign-in.ts";
 import {
 	CloudSecretBroker,
 	type CloudSecretConnectorAdapter,
@@ -267,19 +268,24 @@ export async function runCloudSecretBrokerServiceMain(
 			keyring,
 			adapters: [...adapters, ...(connectors?.adapters ?? [])],
 		});
+		const helper = loginHelper ? new ModelLoginHelperClient(loginHelper) : undefined;
+		// Members' sign-ins to the vault: the broker collects finished ones in the background.
+		const signIns = helper ? new CloudModelLoginSignIns({ authority, keyring, helper }) : undefined;
 		const service = new HttpCloudSecretBrokerService(broker, runtimeToken, {
 			host: "127.0.0.1",
 			port: config.port as number,
 			memberOrigins,
 			...(connectors ? { oauth: connectors.oauth } : {}),
 			...(codingExecutorToken ? { codingExecutorToken } : {}),
-			// Model logins in the vault (Stateless Compute step 1). The helper renews; without it a
-			// login is handed out as stored and nothing renews it.
+			// Model logins in the vault (Stateless Compute step 1). The helper renews and runs a
+			// member's sign-in; without it a login is handed out as stored, nothing renews it, and
+			// the sign-in route answers 404.
 			modelLogins: new CloudModelLoginVault({
 				authority,
 				keyring,
-				...(loginHelper ? { renewer: new ModelLoginHelperClient(loginHelper) } : {}),
+				...(helper ? { renewer: helper } : {}),
 			}),
+			...(signIns ? { modelLoginSignIns: signIns } : {}),
 		});
 		const stop = new AbortController();
 		const shutdown = (): void => stop.abort();
@@ -287,6 +293,7 @@ export async function runCloudSecretBrokerServiceMain(
 		process.once("SIGTERM", shutdown);
 		try {
 			await service.start();
+			signIns?.start();
 			await new Promise<void>((resolveWait) => {
 				if (stop.signal.aborted) resolveWait();
 				else stop.signal.addEventListener("abort", () => resolveWait(), { once: true });
@@ -294,6 +301,7 @@ export async function runCloudSecretBrokerServiceMain(
 		} finally {
 			process.removeListener("SIGINT", shutdown);
 			process.removeListener("SIGTERM", shutdown);
+			await signIns?.close();
 			await service.close();
 		}
 	} finally {

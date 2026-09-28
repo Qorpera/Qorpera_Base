@@ -6,6 +6,7 @@ import {
 } from "@qorpera/cloud-client/cloud-request";
 import { type CloudCodingRepository, type JsonValue, parseCloudCodingRepository } from "@qorpera/contracts";
 import type { ModelLoginAuthority, ModelLoginRunBinding } from "./cloud-model-login-vault.ts";
+import type { ModelLoginSignInAuthority } from "./cloud-model-login-vault-sign-in.ts";
 import type { CloudNativeToolBinding } from "./cloud-native-tool-authority.ts";
 import type { CloudToolContent } from "./cloud-native-tool-boundary.ts";
 import { cloudToolJsonText } from "./cloud-native-tool-boundary.ts";
@@ -943,7 +944,9 @@ export class SupabaseCloudSecretBrokerAuthority implements CloudSecretBrokerAuth
  * authorization, handing a live run its model login and saving or giving back
  * one renewal); it has no table privileges and never holds a Supabase service
  * key. */
-export class PostgresCloudSecretBrokerAuthority implements CloudSecretBrokerAuthority, ModelLoginAuthority {
+export class PostgresCloudSecretBrokerAuthority
+	implements CloudSecretBrokerAuthority, ModelLoginAuthority, ModelLoginSignInAuthority
+{
 	readonly #database: CloudSecretPostgresClient;
 	readonly #brokerAuthorityId: string;
 	readonly #brokerCapabilitySha256: string;
@@ -1096,6 +1099,49 @@ export class PostgresCloudSecretBrokerAuthority implements CloudSecretBrokerAuth
 				release.baseVersion,
 				release.permanent,
 				release.reason,
+			],
+			signal,
+		);
+	}
+
+	describeModelLoginSignIn(
+		request: Parameters<ModelLoginSignInAuthority["describeModelLoginSignIn"]>[0],
+		signal: AbortSignal,
+	): Promise<unknown> {
+		return this.#rpc(
+			"select public.qorpera_describe_model_login_sign_in($1::uuid,$2::text,$3::uuid,$4::text) as result",
+			[this.#brokerAuthorityId, this.#brokerCapabilitySha256, request.loginId, request.capabilitySha256],
+			signal,
+		);
+	}
+
+	modelLoginBrokerCompany(signal: AbortSignal): Promise<unknown> {
+		return this.#rpc(
+			"select public.qorpera_model_login_broker_company($1::uuid,$2::text) as result",
+			[this.#brokerAuthorityId, this.#brokerCapabilitySha256],
+			signal,
+		);
+	}
+
+	completeModelLoginSignIn(
+		completion: Parameters<ModelLoginSignInAuthority["completeModelLoginSignIn"]>[0],
+		signal: AbortSignal,
+	): Promise<unknown> {
+		return this.#rpc(
+			"select public.qorpera_complete_model_login_sign_in($1::uuid,$2::text,$3::uuid,$4::text,$5::uuid,$6::text,$7::text,$8::text,$9::timestamptz,$10::timestamptz,$11::text,$12::text) as result",
+			[
+				this.#brokerAuthorityId,
+				this.#brokerCapabilitySha256,
+				completion.loginId,
+				completion.capabilitySha256,
+				completion.modelLoginId,
+				completion.keyId,
+				Buffer.from(completion.encryptedEnvelope).toString("base64"),
+				completion.envelopeSha256,
+				completion.accessIssuedAt,
+				completion.accessExpiresAt,
+				completion.providerAccountReference,
+				completion.providerAccountEmail,
 			],
 			signal,
 		);
