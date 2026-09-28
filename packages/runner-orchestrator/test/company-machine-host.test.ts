@@ -501,6 +501,27 @@ describe("company machine host", () => {
 		expect(f.methods()).not.toContain("qorpera_record_company_machine_error");
 		f.busy.clear();
 		expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "start", state: "done" }]);
+		// A running machine keeps its lease and its commands are still watched while run authority is busy.
+		Object.assign(f.entry, { runningAt: new Date().toISOString(), bootId: f.boot, commands: [id(7)] });
+		f.busy.add("qorpera_authorize_executor_machine");
+		f.observe({
+			ended: [{ commandId: id(7), state: "succeeded", exitCode: 0, outputTail: "ok" }],
+			cpu: { busyTicks: 0, totalTicks: 0 },
+		});
+		expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "commands", state: "done" }]);
+		expect(f.client.execInstance.mock.calls.slice(-2).map((call) => call[2][3])).toEqual([
+			"refresh-lease",
+			"observe",
+		]);
+		// A later step that finds the company busy says so, and still records no fault.
+		f.busy.add("qorpera_record_company_machine_commands");
+		expect(await f.host.pass(f.signal)).toEqual([
+			{ placementId: id(6), step: "start", state: "not-now", code: "CODING_CONTROL_BUSY" },
+		]);
+		// Only the start's success cleared the machine's error; nothing was ever recorded as one.
+		expect(
+			f.calls.filter((call) => call.method === "qorpera_record_company_machine_error" && call.args.p_code !== null),
+		).toEqual([]);
 	});
 
 	it("treats a guest that does not answer yet as starting", async () => {
