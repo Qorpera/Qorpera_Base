@@ -79,7 +79,7 @@ export const WORKSPACE: Record<string, string> = {
 	"live updates degraded": "liveopdateringer virker ikke helt",
 
 	// app/views/hub.ts
-	owner: "ejer",
+	founder: "stifter",
 	admin: "administrator",
 	contributor: "bidragyder",
 	viewer: "læser",

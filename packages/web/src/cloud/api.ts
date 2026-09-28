@@ -6,6 +6,7 @@ import {
 	parseCodingSessionRead,
 	parseCodingSessions,
 } from "./coding-session.ts";
+import { type CompanyComputerHours, readCompanyComputerHours } from "./computer-hours.ts";
 import {
 	isMemberPictureName,
 	MEMBER_PICTURE_BUCKET,
@@ -117,6 +118,11 @@ export class CloudApi {
 
 	getAccountEntitlement(): Promise<HostedAccountEntitlement> {
 		return this.cloud.rpc("qorpera_get_account_entitlement").then(parseAccountEntitlement);
+	}
+
+	/** The company's computer hours this month, measured (not charged yet). */
+	getCompanyComputerHours(profileId: string): Promise<CompanyComputerHours> {
+		return readCompanyComputerHours(this.cloud, requiredUuid(profileId, "Profile id"));
 	}
 
 	listIncomingInvitations(): Promise<HostedIncomingProfileInvitation[]> {
