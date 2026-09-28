@@ -111,11 +111,13 @@ begin
 		raise exception 'Vault sign-in companies are exposed'; end if;
 end $$;
 
--- Change 3's vault check: the switch needs it. A database without it (this change alone)
--- refuses the switch; the test then stands one in for the rest of this transaction.
+-- Change 3's vault check and change 2C's usage read: the switch needs both. A database without
+-- them (this change alone) refuses the switch; the test then stands them in for the rest of this
+-- transaction.
 do $$
 begin
-	if to_regprocedure('public.qorpera_compute_identity_login_in_vault(uuid)') is null then
+	if to_regprocedure('public.qorpera_compute_identity_login_in_vault(uuid)') is null
+		or to_regprocedure('public.qorpera_describe_model_login_account_refresh(uuid,text,uuid,text)') is null then
 		perform set_config('qorpera_test.sign_in_stub', 'yes', false);
 	end if;
 end $$;
@@ -126,9 +128,13 @@ select pg_temp.sign_in_expect(case when current_setting('qorpera_test.sign_in_st
 reset role;
 do $$
 begin
-	if current_setting('qorpera_test.sign_in_stub', true) = 'yes' then
+	if to_regprocedure('public.qorpera_compute_identity_login_in_vault(uuid)') is null then
 		create function public.qorpera_compute_identity_login_in_vault(p_compute_identity_id uuid)
 		returns boolean language sql stable as 'select false';
+	end if;
+	if to_regprocedure('public.qorpera_describe_model_login_account_refresh(uuid,text,uuid,text)') is null then
+		create function public.qorpera_describe_model_login_account_refresh(uuid, text, uuid, text)
+		returns jsonb language sql stable as 'select null::jsonb';
 	end if;
 end $$;
 
@@ -258,5 +264,35 @@ select pg_temp.sign_in_expect(pg_temp.sign_in_complete('69200000-0000-4000-8000-
 	'69200000-0000-4000-8000-000000000250','envelope-two'::bytea),
 	'55000:model login sign-in is unavailable','a sign-in after the switch back');
 reset session authorization;
+
+
+-- A member who signed in to the vault first may still sign in on a node later: a vault login
+-- was never sealed under a node key, so it does not stop the node from creating one.
+do $$
+declare v_identity public.qorpera_member_compute_identities%rowtype;
+begin
+	select identity.* into v_identity from public.qorpera_member_compute_identities identity
+	where identity.status = 'active' and identity.recovery_epoch = 0 and identity.recovery_pending_id is null
+		and not exists (select 1 from public.qorpera_native_credential_capsules capsule where capsule.compute_identity_id = identity.id)
+		and not exists (select 1 from public.qorpera_identity_key_backups backup where backup.compute_identity_id = identity.id)
+	order by identity.created_at limit 1;
+	if v_identity.id is null then raise exception 'fixture has no identity without a login'; end if;
+	if (public.qorpera_identity_recovery_runtime_state(v_identity.id) ->> 'canInitialize')::boolean is not true then
+		raise exception 'fixture identity cannot initialize'; end if;
+	insert into public.qorpera_native_credential_capsules(id,profile_id,compute_identity_id,ownership_kind,owner_user_id,
+		owner_scope_key,provider,native_harness,encrypted_capsule_reference,attestation_policy_sha256,created_by_user_id)
+	values ('69200000-0000-4000-8000-000000000360',v_identity.profile_id,v_identity.id,v_identity.ownership_kind,
+		v_identity.owner_user_id,v_identity.owner_scope_key,'openai','codex-cli',
+		'model-login/69200000-0000-4000-8000-000000000350',repeat('a',64),'16000000-0000-4000-8000-000000000001');
+	if (public.qorpera_identity_recovery_runtime_state(v_identity.id) ->> 'canInitialize')::boolean is not true then
+		raise exception 'a vault login stopped a node from creating the identity key'; end if;
+	insert into public.qorpera_native_credential_capsules(id,profile_id,compute_identity_id,ownership_kind,owner_user_id,
+		owner_scope_key,provider,native_harness,encrypted_capsule_reference,attestation_policy_sha256,created_by_user_id)
+	values ('69200000-0000-4000-8000-000000000361',v_identity.profile_id,v_identity.id,v_identity.ownership_kind,
+		v_identity.owner_user_id,v_identity.owner_scope_key,'openai','codex-cli',
+		'native-capsule/69200000-0000-4000-8000-000000000361',repeat('a',64),'16000000-0000-4000-8000-000000000001');
+	if (public.qorpera_identity_recovery_runtime_state(v_identity.id) ->> 'canInitialize')::boolean is not false then
+		raise exception 'a node login no longer protects its key'; end if;
+end $$;
 
 rollback;

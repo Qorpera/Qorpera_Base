@@ -100,8 +100,9 @@ no database login and no service key; it sees a login only for one operation and
   `cloud-model-login-vault-sign-in.ts`): a member signs in to the vault; the web client is unchanged.
   - An operator switches a company with `qorpera_set_model_login_sign_in(company, true)` (service
     role). It refuses until runs take their login from the vault (change 3's
-    `qorpera_compute_identity_login_in_vault` exists) and while the company has no active broker
-    authority. The login gateway chooser then answers a pending Codex sign-in of that company with
+    `qorpera_compute_identity_login_in_vault` exists) and the vault reads usage (Part C's
+    `qorpera_describe_model_login_account_refresh` exists), and while the company has no active
+    broker authority. Switch a company only after change 3 and Part C are live on every node. The login gateway chooser then answers a pending Codex sign-in of that company with
     `<broker service origin>/v1/model-logins/<company>/` (reason `MODEL_LOGIN_VAULT`); Claude
     sign-ins and unswitched companies keep the node path.
   - The web client's edge function posts its unchanged `qorpera.native-provider-login/v1` request to
@@ -130,7 +131,10 @@ no database login and no service key; it sees a login only for one operation and
     (`sign_in`), and the connection version pointing at the pointer capsule, recorded exactly as a
     node sign-in records it), then ends the helper's copy. A broker that restarted finds finished
     sign-ins on its first pass; the helper keeps a finished login at most 5 minutes, and ends it
-    after three refused lookups in a row (the company was switched back meanwhile). An ended
+    after three refused lookups (`42501` or `22023`, or an answer it cannot read: the company was
+    switched back or its broker authority changed meanwhile). An outage or a timeout neither counts
+    nor resets the count; a successful lookup resets it. A node may still create the identity's key
+    later: a vault login never counts as a login sealed under a node key. An ended
     sign-in is never started again by a late poll. The recovery
     pin still fences a recovering identity, but asks no node key backup of a sign-in that created a
     vault login. A repeat after a lost answer finds its own login.
@@ -194,7 +198,10 @@ no database login and no service key; it sees a login only for one operation and
 7. Before any login moves, prove one real sign-in and one real renewal through the product: switch
    the test company, a member signs in from the web client, and the vault login is renewed once
    (after half its pass life, or on demand). Nobody handles a login by hand. Measure the unit's
-   memory and task use during that sign-in (its limits were sized for renewals). A renewal that
+   memory, task and CPU use during that sign-in: its limits are sized for 4 renewals and 6
+   sign-ins but not yet measured, and `CPUQuota=100%` is shared by every Codex it runs (a renewal
+   has 25 s). Re-run this step whenever the sign-in driver, the isolation launcher or the unit
+   changes. A renewal that
    cannot start Codex records `codex_launch_failed`, and a binary changed since start records
    `codex_changed` and restarts the helper.
 
