@@ -304,20 +304,24 @@ is never upgraded. The steps:
      authorization after these locks. The check before the transaction was
      only advisory.
 5. **Paths.** Every row this change set locks is taken in one global
-   ancestors-first order by `key_text`. That covers targets, sources, parents,
-   claims and subtree members.
-   - Existing targets and sources are taken `FOR UPDATE`, and parent folders
-     `FOR SHARE`.
-   - Absent targets are claimed in the same order, by inserting a claim row
-     with `ON CONFLICT DO NOTHING`, then locking it.
-   - A subtree is expanded in place. At its root's place in the order, the
-     root is locked `FOR UPDATE`, then its descendants top-down, each folder's
-     children listed only after the folder is held. Every descendant sorts
-     right after its root, so the global order holds. A grandchild created
-     under the subtree cannot escape it.
+   ancestors-first order by `key_text` (refined in C1a, 2026-09-28).
+   - Targets and sources are taken `FOR UPDATE`; a copy's source is taken
+     `FOR KEY SHARE`.
+   - **Every ancestor** of every target and source is taken `FOR KEY SHARE`,
+     not just the parent.
+   - Any absent row, target or ancestor, is claimed first by inserting a
+     claim row with `ON CONFLICT DO NOTHING`, then locked. A second
+     transaction then waits on the claim instead of missing it.
+   - Because every write holds all its ancestors, a subtree unit locks only
+     its root. While the root is held `FOR UPDATE`, nothing inside the subtree
+     can change and nothing can be created under a claimed target. So a
+     grandchild cannot escape, and no descendant has to be locked one by one.
+   - No update ever changes a row's key: a move deletes and re-inserts. A
+     READ COMMITTED locking read that follows an update chain keeps its lock on
+     the row's new version, which would sit at a key out of order and deadlock.
    - A missing parent is refused (PT424) unless an earlier unit of the same
      change set creates it.
-   - The parent's written spelling is re-read after its lock.
+   - A new name takes its existing parent's written spelling.
 6. **Objects.** Every object a unit newly references (writes, copies, conflict
    copies) is taken `FOR KEY SHARE`, manifest and chunks, sorted by hash. A
    row that is absent or marked deleting is refused (§8). A move references
@@ -773,7 +777,7 @@ GC is the largest correctness risk of the design, so it gets its own tests:
 | Admission row | not present | every wake-inserting or wake-admitting transaction `FOR NO KEY UPDATE`, last before the clock; multi-company loops one company per transaction |
 | Job row | `FOR UPDATE`, which also serializes a run's own reads | commits and effects `FOR KEY SHARE`; renewal `FOR NO KEY UPDATE`; lease-ending changes `FOR UPDATE`; reads never |
 | Members, staff, rooms, index rows, resources, grants, vault rows, unique claims | various, unordered | once, in the order of §3 step 4: `FOR NO KEY UPDATE` for rows rewritten, `FOR KEY SHARE` for rows referenced |
-| Entry rows | the one path, after the head | every row of the change set, ancestors first; absent targets claimed in order; subtrees expanded in place |
+| Entry rows | the one path, after the head | targets and sources, plus every ancestor `FOR KEY SHARE`, in one ancestors-first order; absent rows claimed in order; a subtree unit locks only its root; no update changes a key |
 | Clock | none | last, from the increment to the end of the commit |
 
 **No exclusive lock on the profile row.** Effects insert rows whose foreign

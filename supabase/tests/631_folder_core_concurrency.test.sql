@@ -72,12 +72,32 @@ end $$;
 select pg_temp.commit('race-setup-1', jsonb_build_array(
 	jsonb_build_object('op','write','path','a.txt','file',current_setting('qorpera_test.race_one')::jsonb),
 	jsonb_build_object('op','mkdir','path','dir'), jsonb_build_object('op','mkdir','path','dir2'),
-	jsonb_build_object('op','mkdir','path','dir3')));
+	jsonb_build_object('op','mkdir','path','dir3'),
+	jsonb_build_object('op','mkdir','path','msrc'),
+	jsonb_build_object('op','write','path','msrc/x','file',current_setting('qorpera_test.race_one')::jsonb),
+	jsonb_build_object('op','write','path','mzzz.txt','file',current_setting('qorpera_test.race_one')::jsonb),
+	jsonb_build_object('op','mkdir','path','csrc'),
+	jsonb_build_object('op','write','path','csrc/x','file',current_setting('qorpera_test.race_one')::jsonb),
+	jsonb_build_object('op','write','path','czzz.txt','file',current_setting('qorpera_test.race_one')::jsonb)));
 
-select dblink_connect('race_one', 'dbname=qorpera_test');
-select dblink_connect('race_two', 'dbname=qorpera_test');
+select dblink_connect(name, 'dbname=qorpera_test') from unnest(array['race_zero','race_one','race_two']) name;
 select dblink_exec(name, $q$set request.jwt.claims = '{"role":"service_role"}'$q$)
-from unnest(array['race_one','race_two']) name;
+from unnest(array['race_zero','race_one','race_two']) name;
+select set_config('qorpera_test.pid_' || name, pid::text, false)
+from unnest(array['race_zero','race_one','race_two']) name, lateral dblink(name, 'select pg_backend_pid()') as t(pid integer);
+
+-- True once p_waiter is blocked by p_holder (a real lock wait, not just a slow query), within 5 s.
+create function pg_temp.waits_for(p_waiter text, p_holder text) returns boolean language plpgsql as $$
+declare v_until timestamptz := clock_timestamp() + interval '5 seconds';
+begin
+	loop
+		if current_setting('qorpera_test.pid_' || p_holder)::integer = any (pg_blocking_pids(current_setting('qorpera_test.pid_' || p_waiter)::integer)) then
+			return true; end if;
+		exit when clock_timestamp() > v_until;
+		perform pg_sleep(0.02);
+	end loop;
+	return false;
+end $$;
 
 -- A. Disjoint paths never wait: one connection holds a.txt; another commits b.txt at once.
 do $$
@@ -103,7 +123,7 @@ begin
 		'path','a.txt','expectedVersion',v,'file',current_setting('qorpera_test.race_two')::jsonb)))) as t(r jsonb);
 	perform dblink_send_query('race_two', pg_temp.sql_commit('race-b-2', jsonb_build_array(jsonb_build_object('op','write',
 		'path','a.txt','expectedVersion',v,'file',current_setting('qorpera_test.race_one')::jsonb))));
-	if not pg_temp.still_busy('race_two', 1) then raise exception 'A write to a locked path did not wait'; end if;
+	if not pg_temp.waits_for('race_two', 'race_one') then raise exception 'A write to a locked path did not wait'; end if;
 	perform dblink_exec('race_one', 'commit');
 	r := pg_temp.one(pg_temp.result('race_two'));
 	if r ->> 'outcome' <> 'conflict' or r ->> 'reason' <> 'version_changed' then raise exception 'Same-path race: %', r; end if;
@@ -118,7 +138,7 @@ begin
 		'path','new.txt','file',current_setting('qorpera_test.race_one')::jsonb)))) as t(r jsonb);
 	perform dblink_send_query('race_two', pg_temp.sql_commit('race-c-2', jsonb_build_array(jsonb_build_object('op','write',
 		'path','new.txt','file',current_setting('qorpera_test.race_two')::jsonb))));
-	if not pg_temp.still_busy('race_two', 1) then raise exception 'A second creator did not wait for the claim'; end if;
+	if not pg_temp.waits_for('race_two', 'race_one') then raise exception 'A second creator did not wait for the claim'; end if;
 	perform dblink_exec('race_one', 'commit');
 	r := pg_temp.one(pg_temp.result('race_two'));
 	if r ->> 'outcome' <> 'conflict' or r ->> 'reason' <> 'exists' then raise exception 'Absent-path race: %', r; end if;
@@ -133,7 +153,7 @@ begin
 		'path','dir','expectedVersion',pg_temp.version('dir'),'asOfSeq',pg_temp.seq())))) as t(r jsonb);
 	perform dblink_send_query('race_two', pg_temp.sql_commit('race-d-2', jsonb_build_array(jsonb_build_object('op','write',
 		'path','dir/f.txt','file',current_setting('qorpera_test.race_one')::jsonb))));
-	if not pg_temp.still_busy('race_two', 1) then raise exception 'A create inside a folder being deleted did not wait'; end if;
+	if not pg_temp.waits_for('race_two', 'race_one') then raise exception 'A create inside a folder being deleted did not wait'; end if;
 	perform dblink_exec('race_one', 'commit');
 	r := pg_temp.one(pg_temp.result('race_two'));
 	if r ->> 'outcome' <> 'refused' or r ->> 'reason' <> 'parent_missing' then raise exception 'Delete-then-create race: %', r; end if;
@@ -148,7 +168,7 @@ begin
 		'path','dir2/f.txt','file',current_setting('qorpera_test.race_one')::jsonb)))) as t(r jsonb);
 	perform dblink_send_query('race_two', pg_temp.sql_commit('race-e-2', jsonb_build_array(jsonb_build_object('op','delete',
 		'path','dir2','expectedVersion',v,'asOfSeq',s))));
-	if not pg_temp.still_busy('race_two', 1) then raise exception 'A subtree delete did not wait for a create inside'; end if;
+	if not pg_temp.waits_for('race_two', 'race_one') then raise exception 'A subtree delete did not wait for a create inside'; end if;
 	perform dblink_exec('race_one', 'commit');
 	r := pg_temp.one(pg_temp.result('race_two'));
 	if r ->> 'outcome' <> 'conflict' or r ->> 'reason' <> 'unseen_change' then raise exception 'Create-then-delete race: %', r; end if;
@@ -186,5 +206,37 @@ begin
 	if exists (select 1 from public.qorpera_folder_entries where kind = 'claim') then raise exception 'A claim outlived a race'; end if;
 end $$;
 
-select dblink_disconnect('race_one');
-select dblink_disconnect('race_two');
+-- H. Review round 1: a move (and a copy) into dst held up behind another lock, while a second change set
+-- writes under dst and in the source. Every write holds its ancestors, so the second waits at dst instead
+-- of claiming a key under it; both finish, with no deadlock.
+do $$
+declare v_op text; r1 jsonb; r2 jsonb; v_source_outcome text;
+begin
+	foreach v_op in array array['move','copy'] loop
+		perform dblink_exec('race_zero', 'begin');
+		perform * from dblink('race_zero', format($q$select 1 from public.qorpera_folder_entries
+			where environment_id = '63100000-0000-4000-8000-000000000020' and key_text = %L for update$q$,
+			left(v_op, 1) || 'zzz.txt')) as t(x integer);
+		perform dblink_send_query('race_one', pg_temp.sql_commit('race-h1-' || v_op, jsonb_build_array(
+			case when v_op = 'move' then jsonb_build_object('op','move','from','msrc','to','mdst','expectedVersion',pg_temp.version('msrc'),
+				'asOfSeq',pg_temp.seq()) else jsonb_build_object('op','copy','from','csrc','to','cdst') end,
+			jsonb_build_object('op','write','path',left(v_op, 1) || 'zzz.txt','expectedVersion',pg_temp.version(left(v_op, 1) || 'zzz.txt'),
+				'file',current_setting('qorpera_test.race_two')::jsonb))));
+		if not pg_temp.waits_for('race_one', 'race_zero') then raise exception '% did not wait behind the held file', v_op; end if;
+		perform dblink_send_query('race_two', pg_temp.sql_commit('race-h2-' || v_op, jsonb_build_array(
+			jsonb_build_object('op','write','path',left(v_op, 1) || 'dst/x','file',current_setting('qorpera_test.race_two')::jsonb),
+			jsonb_build_object('op','write','path',left(v_op, 1) || 'src/x','expectedVersion',pg_temp.version(left(v_op, 1) || 'src/x'),
+				'file',current_setting('qorpera_test.race_two')::jsonb))));
+		if not pg_temp.waits_for('race_two', 'race_one') then raise exception 'A write under dst did not wait for the % target', v_op; end if;
+		perform dblink_exec('race_zero', 'rollback');
+		if pg_temp.still_busy('race_one', 5) or pg_temp.still_busy('race_two', 5) then raise exception '% race stalled', v_op; end if;
+		r1 := pg_temp.result('race_one'); r2 := pg_temp.result('race_two');
+		v_source_outcome := case when v_op = 'move' then 'conflict' else 'saved' end;
+		if r1 -> 'units' -> 0 ->> 'outcome' <> 'saved' or r1 -> 'units' -> 1 ->> 'outcome' <> 'saved'
+			or r2 -> 'units' -> 0 ->> 'reason' <> 'exists'
+			or r2 -> 'units' -> 1 ->> 'outcome' <> v_source_outcome then
+			raise exception '% race outcomes: % %', v_op, r1, r2; end if;
+	end loop;
+end $$;
+
+select dblink_disconnect(name) from unnest(array['race_zero','race_one','race_two']) name;

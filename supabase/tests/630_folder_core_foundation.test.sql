@@ -248,6 +248,75 @@ begin
 	if jsonb_array_length(l -> 'entries') <> 4 then raise exception 'A subtree listing shows every descendant: %', l; end if;
 end $$;
 
+-- Review round 1: authority over every path a subtree unit touches, reserved names below the root, the stored
+-- spelling (never the request's) when moving, a new name taking its parent's spelling, failures as outcomes,
+-- and a move followed by a write under its target in one change set.
+do $$
+declare r jsonb; a jsonb := pg_temp.stage('alpha'); v text;
+begin
+	-- Another member neither copies, moves nor deletes a folder holding member 2's private folder.
+	r := pg_temp.commit(pg_temp.member(4), 'r1-copy-private', '[{"op":"copy","from":"members/63000000-0000-4000-8000-000000000002","to":"stolen"}]');
+	perform pg_temp.expect(r, 1, 'denied', 'denied');
+	v := pg_temp.read('members') -> 'entry' ->> 'version';
+	r := pg_temp.commit(pg_temp.member(4), 'r1-move-private', jsonb_build_array(jsonb_build_object('op','move','from','members',
+		'to','members-open','expectedVersion',v,'asOfSeq',pg_temp.seq())));
+	perform pg_temp.expect(r, 1, 'denied', 'denied');
+	r := pg_temp.commit(pg_temp.member(4), 'r1-delete-private', jsonb_build_array(jsonb_build_object('op','delete','path','members',
+		'expectedVersion',v,'asOfSeq',pg_temp.seq())));
+	perform pg_temp.expect(r, 1, 'denied', 'denied');
+	if (pg_temp.read('members/63000000-0000-4000-8000-000000000002/private/note.txt') ->> 'found')::boolean is not true then
+		raise exception 'A denied subtree unit must change nothing'; end if;
+	-- Member 2 may share their own private file.
+	r := pg_temp.commit(pg_temp.member(2), 'r1-copy-own', '[{"op":"copy","from":"members/63000000-0000-4000-8000-000000000002/private/note.txt","to":"shared-note.txt"}]');
+	perform pg_temp.expect(r, 1, 'saved');
+
+	-- Reserved names below the root: git's files leave code/ neither by copy nor inside a new folder.
+	r := pg_temp.commit('{"kind":"platform"}', 'r1-copy-git', '[{"op":"copy","from":"code/repo","to":"repo-copy"}]');
+	perform pg_temp.expect(r, 1, 'refused', 'reserved');
+	r := pg_temp.commit('{"kind":"platform"}', 'r1-new-folder-cache', jsonb_build_array(jsonb_build_object('op','new_folder',
+		'path','cachey','contents',jsonb_build_array(jsonb_build_object('path','node_modules','kind','folder')))));
+	perform pg_temp.expect(r, 1, 'refused', 'reserved');
+
+	-- A request may spell a path in another normalization; the move rebuilds from the stored spelling.
+	r := pg_temp.commit(pg_temp.member(2), 'r1-files', jsonb_build_array(jsonb_build_object('op','mkdir','path','files'),
+		jsonb_build_object('op','write','path','files/a.txt','file',a)));
+	perform pg_temp.expect(r, 2, 'saved');
+	r := pg_temp.commit(pg_temp.member(2), 'r1-ligature-move', jsonb_build_array(jsonb_build_object('op','move','from',
+		U&'\FB01les','to','docs2','expectedVersion',pg_temp.read('files') -> 'entry' ->> 'version','asOfSeq',pg_temp.seq())));
+	perform pg_temp.expect(r, 1, 'saved');
+	if (pg_temp.read('docs2/a.txt') ->> 'found')::boolean is not true or exists (select 1 from public.qorpera_folder_entries
+		where environment_id = '63000000-0000-4000-8000-000000000020' and key_text like 'docss%') then
+		raise exception 'A move must rebuild paths from the stored spelling'; end if;
+
+	-- A new name takes its existing parent's spelling.
+	r := pg_temp.commit(pg_temp.member(2), 'r1-parent-spelling', jsonb_build_array(jsonb_build_object('op','write','path','DOCS/spelled.txt','file',a)));
+	if pg_temp.expect(r, 1, 'saved') ->> 'path' <> 'docs/spelled.txt' or pg_temp.read('docs/spelled.txt') -> 'entry' ->> 'path' <> 'docs/spelled.txt' then
+		raise exception 'A new name must take its parent''s spelling: %', r; end if;
+
+	-- Malformed contents are outcomes, not exceptions.
+	r := pg_temp.commit(pg_temp.member(2), 'r1-dup-contents', jsonb_build_array(jsonb_build_object('op','new_folder','path','dups',
+		'contents',jsonb_build_array(jsonb_build_object('path','a','kind','folder'),jsonb_build_object('path','A','kind','folder')))));
+	perform pg_temp.expect(r, 1, 'refused', 'invalid');
+	r := pg_temp.commit(pg_temp.member(2), 'r1-bad-media', jsonb_build_array(jsonb_build_object('op','new_folder','path','media',
+		'contents',jsonb_build_array(jsonb_build_object('path','x.txt','kind','file','file',a || '{"mediaType":"Not A Type"}'::jsonb)))));
+	perform pg_temp.expect(r, 1, 'refused', 'invalid');
+
+	-- A move, then a write under its target, in one change set: the write finds the moved file.
+	r := pg_temp.commit(pg_temp.member(2), 'r1-mv-setup', jsonb_build_array(jsonb_build_object('op','mkdir','path','mv-a'),
+		jsonb_build_object('op','write','path','mv-a/x.txt','file',a)));
+	perform pg_temp.expect(r, 2, 'saved');
+	r := pg_temp.commit(pg_temp.member(2), 'r1-mv-then-write', jsonb_build_array(jsonb_build_object('op','move','from','mv-a','to','mv-b',
+		'expectedVersion',pg_temp.read('mv-a') -> 'entry' ->> 'version','asOfSeq',pg_temp.seq()),
+		jsonb_build_object('op','write','path','mv-b/x.txt','file',a)));
+	perform pg_temp.expect(r, 1, 'saved'); perform pg_temp.expect(r, 2, 'conflict', 'exists');
+
+	begin
+		perform public.qorpera_folder_read('63000000-0000-4000-8000-000000000021', '{"kind":"platform"}', 'docs');
+		raise exception 'A read of a snapshot-v1 company must be refused';
+	exception when insufficient_privilege then null;
+	end;
+end $$;
+
 -- Operation keys: a replay returns the stored outcomes; a reused key for another change set is refused.
 -- Agent actors arrive with C1b/C1c. No claim outlives its transaction.
 do $$
