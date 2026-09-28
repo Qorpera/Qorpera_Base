@@ -760,8 +760,8 @@ declare v_ids uuid[]; v_policy jsonb := (select policy from public.qorpera_machi
 begin
 	select array_agg(id order by id) into v_ids from public.qorpera_company_machine_placements
 	where owner = 'mx-b' and removed_at is null;
-	perform pg_temp.wake_assert(cardinality(v_ids) >= 1 and exists (select 1 from public.qorpera_runtime_machine_allocations
-		where id = any(v_ids) and released_at is null), 'Node b still holds a placement');
+	perform pg_temp.wake_assert(cardinality(v_ids) >= 2 and exists (select 1 from public.qorpera_runtime_machine_allocations
+		where id = any(v_ids) and released_at is null), 'Node b still holds placements to give up together');
 	perform pg_temp.wake_error($sql$select public.qorpera_abandon_machine_executor('mx-b',repeat('d',64))$sql$,'55000',
 		'Disable the machine executor first');
 	perform public.qorpera_configure_machine_executor('mx-b',repeat('d',64),false,v_policy,322122547200);
