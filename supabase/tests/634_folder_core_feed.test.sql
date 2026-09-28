@@ -276,8 +276,9 @@ begin
 		raise exception 'Clock privileges are wrong'; end if;
 	if exists (select 1 from pg_catalog.pg_publication_tables where tablename = 'qorpera_folder_clocks') then
 		raise exception 'The clock must not be published'; end if;
-	if not (select relrowsecurity from pg_catalog.pg_class where oid = 'public.qorpera_folder_clocks'::regclass) then
-		raise exception 'The clock lost row-level security'; end if;
+	if not (select relrowsecurity from pg_catalog.pg_class where oid = 'public.qorpera_folder_clocks'::regclass)
+		or exists (select 1 from pg_catalog.pg_policy where polrelid = 'public.qorpera_folder_clocks'::regclass) then
+		raise exception 'The clock must keep row-level security with no policy'; end if;
 	-- STABLE: every statement the feed runs itself shares the calling query's snapshot.
 	if (select provolatile from pg_catalog.pg_proc
 		where oid = 'public.qorpera_folder_feed(uuid,jsonb,bigint,integer,jsonb)'::regprocedure) <> 's' then

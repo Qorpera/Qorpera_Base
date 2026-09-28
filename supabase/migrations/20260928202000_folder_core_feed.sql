@@ -159,10 +159,10 @@ end $$;
 
 -- The node's folder service learns that something changed by reading last_seq for the companies it serves
 -- (one indexed read per node and interval), then asks the feed what. service_role only; RLS stays on with no
--- policy, which service_role bypasses. The clock is not added to the Realtime publication: Realtime sends
--- every subscriber whose role may not select a published table an "unauthorized" event for each change
--- (realtime.apply_rls), which would show any client the timing of every folder-v2 commit. Members' and
--- clients' own hints arrive with C4.
+-- policy, which service_role bypasses. The clock is not added to the Realtime publication: as we read
+-- realtime.apply_rls (not tried on a Supabase project), it sends every subscriber whose role may not select
+-- a published table an "Error 401: Unauthorized" event for each change, which would show any client the
+-- timing of every folder-v2 commit. Members' and clients' own hints arrive with C4.
 grant select on public.qorpera_folder_clocks to service_role;
 
 -- 4. Grants ---------------------------------------------------------------------------------------------

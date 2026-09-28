@@ -714,9 +714,10 @@ check reports drift.
     current version's `updatedAt` is its entry's, as read and list report it;
     a superseded version carries none.
   - The clock is service_role's to poll: `select` on `qorpera_folder_clocks`.
-    It is not published to Realtime, because Realtime sends every subscriber
-    that may not select a published table an "unauthorized" event per change,
-    which would show any client the timing of every commit. Members' and
+    It is not published to Realtime: as we read `realtime.apply_rls`,
+    Realtime sends every subscriber that may not select a published table an
+    "unauthorized" event per change, which would show any client the timing
+    of every commit. Members' and
     clients' own hints come with C4.
 - **Wakes.**
   - Listener cursors hold `processed_seq`. The drain reads a batch of journal
@@ -735,7 +736,8 @@ check reports drift.
   4,096 revisions) becomes a comparison of sequence numbers. No substrate
   version is created per commit.
 - **Clients.**
-  - The clock row is the Realtime hint, and the hints are coalesced.
+  - The clock row is the hint: the node's folder service polls it (C1f), and
+    C4 gives members and clients a hint of their own. Hints are coalesced.
     `last_seq` reveals only that something changed.
   - On a hint, the web client asks the feed what changed instead of listing
     everything again.
@@ -984,7 +986,7 @@ and the machine-side session F3, on #408):
 | Slice | Contents | Owner |
 | --- | --- | --- |
 | C1a | the flag; the tables; the change-set commit for members and the platform; reads and listings (with each entry's version time); today's object and artifact GC skipping `folder-v2` | storage core |
-| C1f | `qorpera_folder_feed` (the paths each change set touched, filtered by read authority, with `asOfSeq`) and a service-only Realtime clock hint, so the read-only mount can follow changes before C4 | F3, reviewed by the storage core |
+| C1f | `qorpera_folder_feed` (the paths each change set touched, filtered by read authority, with `asOfSeq`) and the clock polled by service_role, so the read-only mount can follow changes before C4 | F3, reviewed by the storage core |
 | C1b | run actors (job, lease, fence, causal wake, session kind, requester), computer holders (the company-wide view plus the holder's own authority) and coding sessions (agent ∩ member, `agents/**` and `rules/**` read-only); authority revisions; read sets and records; explicit resources and bases; review classification in SQL; the call sites and inert stubs of the §5 hook that F2 fills | storage core |
 | C1c | the actor's `folder-v2` branch and the per-caller decisions; the raw `/v1/profile-objects` fallback refusing `folder-v2`; the activation checks | a separate session |
 | C1d | GC G1–G4; upload intents; the object gateway's put and remove; a `folder-v2` byte check that never locks the profile row; the storage usage row and the quota trigger | a separate session |
@@ -1009,7 +1011,7 @@ For `folder-v2` companies:
 ### C4. Journal consumers and clients
 
 - The wake drain works on sequence numbers, and the pin becomes `companySeq`.
-- The feed and the Realtime hint.
+- The members' and clients' hint (the feed itself is C1f).
 - The observability views.
 - The web client's file page, history view and editors (rules, sections,
   agent details, routines, group chats) branch on the core flag, and write

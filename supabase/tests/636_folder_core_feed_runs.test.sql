@@ -25,7 +25,7 @@ declare
 	c_member constant uuid := '63200000-0000-4000-8000-000000000002';
 	c_private constant text := 'members/63200000-0000-4000-8000-000000000002/private';
 	c_other constant text := 'members/63200000-0000-4000-8000-000000000004/private';
-	v_all text[]; v_run jsonb; v_private_run jsonb; v_seen text[]; v_path text; v_limit integer;
+	v_all text[]; v_run jsonb; v_private_run jsonb; v_actor jsonb; v_seen text[]; v_path text; v_limit integer;
 begin
 	insert into public.qorpera_company_path_resources(environment_id,path,path_match,scope,owner_user_id,policy,created_by_user_id)
 	values ('63200000-0000-4000-8000-000000000020', c_private, 'subtree', 'member_private', c_member, 'normal', c_member),
@@ -47,12 +47,12 @@ begin
 	-- A company conversation's run and a member-private one each see exactly what they may read.
 	v_run := pg_temp.run('human', c_member);
 	v_private_run := pg_temp.run('human', c_member, 'member_private');
-	foreach v_run in array array[v_run, v_private_run] loop
+	foreach v_actor in array array[v_run, v_private_run] loop
 		foreach v_limit in array array[1000, 2, 1] loop
-			v_seen := pg_temp.feed_paths(v_run, v_limit);
+			v_seen := pg_temp.feed_paths(v_actor, v_limit);
 			foreach v_path in array v_all loop
-				if (v_path = any (v_seen)) <> (pg_temp.read(v_path, v_run) ->> 'found')::boolean then
-					raise exception 'A run''s feed and its reads disagree on % (%): %', v_path, v_run, v_seen; end if;
+				if (v_path = any (v_seen)) <> (pg_temp.read(v_path, v_actor) ->> 'found')::boolean then
+					raise exception 'A run''s feed and its reads disagree on % (%): %', v_path, v_actor, v_seen; end if;
 			end loop;
 			if exists (select 1 from unnest(v_seen) p where p like c_other || '%') then
 				raise exception 'A run saw another member''s private folder: %', v_seen; end if;
