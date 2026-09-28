@@ -237,9 +237,9 @@ printf isolated`),
 		5000,
 	);
 	assert.equal(hog.state, "running", hog.output);
-	const pid = await shell.namespacePid();
+	const pid = shell.namespacePid;
 	assert.ok(pid);
-	const usage = await readCompanyComputerShellUsage(pid);
+	const usage = (await readCompanyComputerShellUsage([pid])).get(pid)!;
 	assert.ok(usage.memoryBytes > 600 * 1024 * 1024, JSON.stringify(usage));
 	assert.ok(usage.tasks >= 3, JSON.stringify(usage));
 	const guard = new CompanyComputerShellPressureGuard({ shells: () => [shell!], intervalMs: 500 });

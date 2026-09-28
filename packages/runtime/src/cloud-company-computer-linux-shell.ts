@@ -131,6 +131,10 @@ export class CompanyComputerLinuxShell implements CompanyComputerGuestShell {
 	readonly #keys = new Map<string, string>();
 	readonly #stop = new AbortController();
 	#environment?: Promise<CompanyComputerShellEnvironment>;
+	/** The running namespace's outermost process, once its start has finished. */
+	#pid?: number;
+	/** Why the machine is ending a namespace, for the commands that end with it. */
+	#relieving?: { environment: Promise<CompanyComputerShellEnvironment>; note: string };
 	#processes = 0;
 	#closing?: Promise<void>;
 
@@ -209,9 +213,11 @@ export class CompanyComputerLinuxShell implements CompanyComputerGuestShell {
 	}
 
 	/** The namespace ended: every command in it has ended with it. */
-	#ended(environment: Promise<CompanyComputerShellEnvironment>, note?: string): void {
+	#ended(environment: Promise<CompanyComputerShellEnvironment>): void {
 		if (this.#environment !== environment) return;
+		const note = this.#relieving?.environment === environment ? this.#relieving.note : undefined;
 		this.#environment = undefined;
+		this.#pid = undefined;
 		this.#processes = 0;
 		for (const session of this.#sessions.values())
 			if (session.state === "starting" || session.state === "running") {
@@ -230,14 +236,17 @@ export class CompanyComputerLinuxShell implements CompanyComputerGuestShell {
 		);
 		this.#environment = environment;
 		environment.then(
-			(opened) =>
+			(opened) => {
+				if (this.#environment === environment) this.#pid = opened.pid;
 				void opened.exited.then(
 					() => this.#ended(environment),
 					() => this.#ended(environment),
-				),
+				);
+			},
 			() => this.#ended(environment),
 		);
-		return cloudToolRequest(() => environment, signal, 15000);
+		// Longer than the launcher's own bounded steps, so its typed outcome arrives first.
+		return cloudToolRequest(() => environment, signal, 20000);
 	}
 
 	#session(sessionId: string): Session {
@@ -404,13 +413,17 @@ export class CompanyComputerLinuxShell implements CompanyComputerGuestShell {
 			if (bytes > COMPANY_COMPUTER_SHELL_REPLY_OUTPUT) break;
 			commands.push(entry);
 		}
-		return { commands, processes: this.#environment ? this.#processes : 0 };
+		const omitted = this.#sessions.size - commands.length;
+		return {
+			commands,
+			...(omitted ? { omittedCommands: omitted } : {}),
+			processes: this.#environment ? this.#processes : 0,
+		};
 	}
 
-	/** Whether a namespace is up, and its outermost process for accounting. */
-	async namespacePid(): Promise<number | undefined> {
-		const current = this.#environment;
-		return current ? (await current.catch(() => undefined))?.pid : undefined;
+	/** The running namespace's outermost process, for accounting; none while it starts or after it ended. */
+	get namespacePid(): number | undefined {
+		return this.#pid;
 	}
 
 	/**
@@ -422,8 +435,14 @@ export class CompanyComputerLinuxShell implements CompanyComputerGuestShell {
 		const current = this.#environment;
 		if (!current) return;
 		const opened = await current.catch(() => undefined);
-		this.#ended(current, note);
-		await opened?.stop();
+		// Tracked until its stop is confirmed: an unconfirmed stop stays busy and weighed.
+		this.#relieving = { environment: current, note };
+		try {
+			await opened?.stop();
+			this.#ended(current);
+		} finally {
+			if (this.#relieving?.environment === current) this.#relieving = undefined;
+		}
 	}
 
 	/** Ends every process in the shell and the namespace itself. A timeout is never success. */
@@ -679,7 +698,7 @@ export function createCompanyComputerLinuxShellLauncher(options: {
 		});
 		try {
 			await launched.started;
-			await cloudToolRequest(() => hostReady, lifetime, 10000);
+			await cloudToolRequest(() => hostReady, lifetime, 4000);
 		} catch (error) {
 			try {
 				await stop();
@@ -699,18 +718,22 @@ export function createCompanyComputerLinuxShellLauncher(options: {
 	};
 }
 
-/** Memory a shell holds (its processes' resident memory and its /tmp) and its tasks. */
+/** Memory a shell holds (its processes' private memory and its /tmp) and its tasks. */
 export interface CompanyComputerShellUsage {
 	memoryBytes: number;
 	tasks: number;
 }
 
 /**
- * One shell's usage, read from outside its namespace: every process under its
- * Bubblewrap monitor, and the /tmp they see. A process that exits meanwhile
- * counts as nothing.
+ * Each shell's usage, read from outside its namespace in one pass over /proc:
+ * every process under its Bubblewrap monitor (anonymous resident memory and
+ * threads), and the /tmp they see. The measure matches the pressure below:
+ * memory the kernel cannot reclaim without swap. A process that exits
+ * meanwhile counts as nothing.
  */
-export async function readCompanyComputerShellUsage(rootPid: number): Promise<CompanyComputerShellUsage> {
+export async function readCompanyComputerShellUsage(
+	rootPids: readonly number[],
+): Promise<Map<number, CompanyComputerShellUsage>> {
 	const children = new Map<number, number[]>();
 	for (const name of await readdir("/proc")) {
 		if (!/^[0-9]+$/.test(name)) continue;
@@ -719,25 +742,33 @@ export async function readCompanyComputerShellUsage(rootPid: number): Promise<Co
 		const parent = Number(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[1]);
 		if (Number.isSafeInteger(parent)) children.set(parent, [...(children.get(parent) ?? []), Number(name)]);
 	}
-	const usage = { memoryBytes: 0, tasks: 0 };
-	const pending = [rootPid];
-	let inside: number | undefined;
-	while (pending.length) {
-		const pid = pending.pop()!;
-		pending.push(...(children.get(pid) ?? []));
-		if (pid !== rootPid) inside ??= pid;
-		const status = await readCompanyComputerLinuxMetadata(`/proc/${pid}/status`, 65536).catch(() => "");
-		usage.memoryBytes += Number(/^VmRSS:\s+([0-9]+) kB$/m.exec(status)?.[1] ?? 0) * 1024;
-		usage.tasks += Number(/^Threads:\s+([0-9]+)$/m.exec(status)?.[1] ?? 0);
+	const usages = new Map<number, CompanyComputerShellUsage>();
+	for (const rootPid of rootPids) {
+		const usage = { memoryBytes: 0, tasks: 0 };
+		const pending = [rootPid];
+		let inside: number | undefined;
+		while (pending.length) {
+			const pid = pending.pop()!;
+			pending.push(...(children.get(pid) ?? []));
+			if (pid !== rootPid) inside ??= pid;
+			const status = await readCompanyComputerLinuxMetadata(`/proc/${pid}/status`, 65536).catch(() => "");
+			usage.memoryBytes += Number(/^RssAnon:\s+([0-9]+) kB$/m.exec(status)?.[1] ?? 0) * 1024;
+			usage.tasks += Number(/^Threads:\s+([0-9]+)$/m.exec(status)?.[1] ?? 0);
+		}
+		if (inside !== undefined) {
+			const tmp = await statfs(`/proc/${inside}/root/tmp`).catch(() => undefined);
+			if (tmp) usage.memoryBytes += (tmp.blocks - tmp.bfree) * tmp.bsize;
+		}
+		usages.set(rootPid, usage);
 	}
-	if (inside !== undefined) {
-		const tmp = await statfs(`/proc/${inside}/root/tmp`).catch(() => undefined);
-		if (tmp) usage.memoryBytes += (tmp.blocks - tmp.bfree) * tmp.bsize;
-	}
-	return usage;
+	return usages;
 }
 
-/** What the office's cgroup holds that the kernel cannot reclaim without swap, and its tasks. */
+/**
+ * What the office's cgroup holds that the kernel cannot reclaim without swap
+ * (anonymous memory and tmpfs; kernel memory such as slab and page tables is
+ * left out), and its tasks.
+ */
 export async function readCompanyComputerShellPressure(): Promise<{
 	memoryBytes: number;
 	memoryMax: number;
@@ -762,10 +793,12 @@ export async function readCompanyComputerShellPressure(): Promise<{
 /**
  * Memory safety, not a work limit. The shells share the office service's
  * memory and task limits with the service itself, every desktop and every
- * browser, and the kernel's out-of-memory stop would end the whole service.
- * When what cannot be reclaimed nears the memory limit, or tasks near their
- * limit, the shell holding the most ends first, with the reason on each of
- * its commands. Checks run while any shell is up.
+ * browser, and the kernel's out-of-memory stop would end the whole service
+ * (the unit keeps systemd's default OOMPolicy). When what cannot be
+ * reclaimed nears the memory limit, or tasks near their limit, the shell
+ * holding the most ends first, with the reason on each of its commands. Only
+ * a shell that is a real part of the excess ends: pressure from browsers or
+ * desktops never costs an agent a small shell. Checks run while any shell is up.
  */
 export class CompanyComputerShellPressureGuard {
 	readonly #shells: () => CompanyComputerLinuxShell[];
@@ -797,28 +830,36 @@ export class CompanyComputerShellPressureGuard {
 
 	/** One check; returns the shell it ended, if any. */
 	async check(): Promise<CompanyComputerLinuxShell | undefined> {
-		const open: { shell: CompanyComputerLinuxShell; pid: number }[] = [];
-		for (const shell of this.#shells()) {
-			const pid = await shell.namespacePid();
-			if (pid !== undefined) open.push({ shell, pid });
-		}
+		const open = this.#shells().flatMap((shell) => {
+			const pid = shell.namespacePid;
+			return pid === undefined ? [] : [{ shell, pid }];
+		});
 		if (!open.length) return undefined;
 		const pressure = await this.#pressure();
-		const memory = pressure.memoryBytes > pressure.memoryMax - Math.max(256 * 1024 * 1024, pressure.memoryMax / 8);
-		const tasks = pressure.tasks > pressure.tasksMax - Math.max(32, Math.floor(pressure.tasksMax / 8));
-		if (!memory && !tasks) return undefined;
+		const memoryExcess =
+			pressure.memoryBytes - (pressure.memoryMax - Math.max(256 * 1024 * 1024, pressure.memoryMax / 8));
+		const taskExcess = pressure.tasks - (pressure.tasksMax - Math.max(32, Math.floor(pressure.tasksMax / 8)));
+		const memory = memoryExcess > 0;
+		if (!memory && taskExcess <= 0) return undefined;
+		const usages = await this.#usage(open.map(({ pid }) => pid));
 		let heaviest: { shell: CompanyComputerLinuxShell; weight: number } | undefined;
 		for (const { shell, pid } of open) {
-			const usage = await this.#usage(pid);
+			const usage = usages.get(pid) ?? { memoryBytes: 0, tasks: 0 };
 			const weight = memory ? usage.memoryBytes : usage.tasks;
 			if (!heaviest || weight > heaviest.weight) heaviest = { shell, weight };
 		}
-		await heaviest?.shell.relieve(
+		// Ending a shell must relieve the pressure: it holds at least the excess,
+		// or a sixteenth of the whole limit.
+		const floor = memory
+			? Math.max(memoryExcess, pressure.memoryMax / 16)
+			: Math.max(taskExcess, pressure.tasksMax / 16);
+		if (!heaviest || heaviest.weight < floor) return undefined;
+		await heaviest.shell.relieve(
 			memory
 				? "Stopped because the machine was running out of memory; this shell used the most."
 				: "Stopped because the machine was running out of processes; this shell had the most.",
 		);
-		return heaviest?.shell;
+		return heaviest.shell;
 	}
 
 	close(): void {

@@ -208,7 +208,7 @@ describe("an agent's long-running Company Computer shell", () => {
 });
 
 /** A namespace that is only a script of events: what anything inside a shell could send. */
-function scripted() {
+function scripted(pid = 4242) {
 	let emit: (event: CompanyComputerShellHostEvent) => void = () => undefined;
 	const sent: unknown[] = [];
 	const ended: { resolve: () => void } = { resolve: () => undefined };
@@ -217,7 +217,7 @@ function scripted() {
 	});
 	const shell = new CompanyComputerLinuxShell(async (onEvent) => {
 		emit = onEvent;
-		return { send: (request) => void sent.push(request), exited, stop: async () => ended.resolve(), pid: 4242 };
+		return { send: (request) => void sent.push(request), exited, stop: async () => ended.resolve(), pid };
 	});
 	shells.push(shell);
 	return { shell, emit: (event: CompanyComputerShellHostEvent) => emit(event), sent };
@@ -281,43 +281,50 @@ describe("what a shell namespace reports is untrusted", () => {
 
 describe("the machine's memory and task safety", () => {
 	const signal = new AbortController().signal;
+	const GiB = 1024 ** 3;
 	const pressure =
 		(memoryBytes: number, tasks = 10) =>
 		async () => ({
 			memoryBytes,
-			memoryMax: 4 * 1024 ** 3,
+			memoryMax: 4 * GiB,
 			tasks,
 			tasksMax: 512,
 		});
+	const usage = (entries: Record<number, { memoryBytes: number; tasks: number }>) =>
+		vi.fn(
+			async (pids: readonly number[]) =>
+				new Map(pids.map((pid) => [pid, entries[pid] ?? { memoryBytes: 0, tasks: 0 }])),
+		);
 
 	it("does nothing without pressure, then ends only the shell holding the most, with the reason", async () => {
-		const light = scripted();
-		const heavy = scripted();
-		const idle = scripted();
+		const light = scripted(101);
+		const heavy = scripted(102);
+		const idle = scripted(103);
 		const lightStart = await light.shell.start({ key: "a", command: "sleep 600", signal });
 		const heavyStart = await heavy.shell.start({ key: "b", command: "npm run build", signal });
-		const usage = vi.fn(async (_pid: number) => ({ memoryBytes: 0, tasks: 0 }));
-		usage.mockResolvedValueOnce({ memoryBytes: 100 * 1024 ** 2, tasks: 5 });
-		usage.mockResolvedValueOnce({ memoryBytes: 2 * 1024 ** 3, tasks: 40 });
+		const measured = usage({
+			101: { memoryBytes: 100 * 1024 ** 2, tasks: 5 },
+			102: { memoryBytes: 2 * GiB, tasks: 40 },
+		});
 		const calm = new CompanyComputerShellPressureGuard({
 			shells: () => [light.shell, heavy.shell, idle.shell],
 			intervalMs: 3_600_000,
-			pressure: pressure(2 * 1024 ** 3),
-			usage,
+			pressure: pressure(2 * GiB),
+			usage: measured,
 		});
 		expect(await calm.check()).toBeUndefined();
 		calm.close();
+		expect(measured).not.toHaveBeenCalled();
 		const guard = new CompanyComputerShellPressureGuard({
 			shells: () => [light.shell, heavy.shell, idle.shell],
 			intervalMs: 3_600_000,
-			pressure: pressure(3.8 * 1024 ** 3),
-			usage,
+			pressure: pressure(3.8 * GiB),
+			usage: measured,
 		});
 		expect(await guard.check()).toBe(heavy.shell);
 		guard.close();
-		// The idle shell has no namespace, so it is never weighed.
-		expect(usage).toHaveBeenCalledTimes(2);
-		expect(usage.mock.calls.map(([pid]) => pid)).toEqual([4242, 4242]);
+		// One pass for all open shells; the idle shell has no namespace and is never weighed.
+		expect(measured.mock.calls).toEqual([[[101, 102]]]);
 		expect(await heavy.shell.result({ sessionId: heavyStart.sessionId, waitMs: 0, signal })).toMatchObject({
 			state: "stopped",
 			note: "Stopped because the machine was running out of memory; this shell used the most.",
@@ -325,19 +332,31 @@ describe("the machine's memory and task safety", () => {
 		expect((await light.shell.result({ sessionId: lightStart.sessionId, waitMs: 0, signal })).state).toBe("running");
 	});
 
+	it("never ends a small shell for pressure that comes from elsewhere", async () => {
+		const small = scripted(201);
+		const { sessionId } = await small.shell.start({ key: "a", command: "npm run dev", signal });
+		const guard = new CompanyComputerShellPressureGuard({
+			shells: () => [small.shell],
+			intervalMs: 3_600_000,
+			// Browsers and desktops hold the memory and the tasks; the shell holds 50 MB and 12 tasks.
+			pressure: async () => ({ memoryBytes: 3.9 * GiB, memoryMax: 4 * GiB, tasks: 500, tasksMax: 512 }),
+			usage: usage({ 201: { memoryBytes: 50 * 1024 ** 2, tasks: 12 } }),
+		});
+		expect(await guard.check()).toBeUndefined();
+		guard.close();
+		expect((await small.shell.result({ sessionId, waitMs: 0, signal })).state).toBe("running");
+	});
+
 	it("weighs tasks when the machine runs out of processes", async () => {
-		const few = scripted();
-		const many = scripted();
+		const few = scripted(301);
+		const many = scripted(302);
 		await few.shell.start({ key: "a", command: "sleep 600", signal });
 		const { sessionId } = await many.shell.start({ key: "b", command: "make -j64", signal });
-		const usage = vi.fn(async (_pid: number) => ({ memoryBytes: 0, tasks: 0 }));
-		usage.mockResolvedValueOnce({ memoryBytes: 3 * 1024 ** 3, tasks: 3 });
-		usage.mockResolvedValueOnce({ memoryBytes: 10, tasks: 300 });
 		const guard = new CompanyComputerShellPressureGuard({
 			shells: () => [few.shell, many.shell],
 			intervalMs: 3_600_000,
 			pressure: pressure(0, 480),
-			usage,
+			usage: usage({ 301: { memoryBytes: 3 * GiB, tasks: 3 }, 302: { memoryBytes: 10, tasks: 300 } }),
 		});
 		expect(await guard.check()).toBe(many.shell);
 		guard.close();

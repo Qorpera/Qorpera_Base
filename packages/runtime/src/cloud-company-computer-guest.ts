@@ -281,6 +281,8 @@ export interface CompanyComputerShellListResult {
 		startedAt: string;
 		unreadBytes: number;
 	}[];
+	/** Older commands the list leaves out to stay small; `list` shows the newest first. */
+	omittedCommands?: number;
 	/** Processes running in the shell, including ones a command left behind. */
 	processes: number;
 }
