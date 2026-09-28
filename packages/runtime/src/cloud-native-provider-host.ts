@@ -1168,6 +1168,8 @@ export class OfficialCliNativeHarnessDriver implements NativeHarnessDriver {
 			// Its own process group, which is stopped with it.
 			detached: process.platform !== "win32",
 		});
+		// On exit, not close: a leftover that kept the harness's output open would delay close.
+		child.once("exit", () => stopHarnessProcessGroup(child));
 		const capture = collectChildOutput(child);
 		const abort = (): void => {
 			void terminateChild(child);

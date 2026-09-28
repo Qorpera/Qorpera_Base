@@ -32,7 +32,8 @@ const LEFTOVER_WRITER = [
 	"const [directory, pidFile] = process.argv.slice(1);",
 	"fs.mkdirSync(directory, { recursive: true });",
 	'fs.writeFileSync(path.join(directory, "object-0"), "x");',
-	"fs.writeFileSync(pidFile, String(process.pid));",
+	'fs.writeFileSync(pidFile + ".tmp", String(process.pid));',
+	'fs.renameSync(pidFile + ".tmp", pidFile);',
 	"const until = Date.now() + 10_000;",
 	"let count = 1;",
 	"setInterval(() => {",
@@ -100,12 +101,15 @@ it.skipIf(process.platform === "win32")(
 		const company = await temporaryRoot("qorpera-harness-leftovers-company-");
 		const pidFile = await fakeCodex(company, { leaveWriter: true });
 		await expect(execute(identity, company)).resolves.toEqual({ providerSessionId: "leftover-thread" });
-		writers.push(Number(await readFile(pidFile, "utf-8")));
+		const writer = Number(await readFile(pidFile, "utf-8"));
+		expect(Number.isSafeInteger(writer) && writer > 0 && writer !== process.pid).toBe(true);
+		writers.push(writer);
 		const clone = join(identity, "codex", ".tmp", "plugins-clone-x", ".git");
 		await new Promise((resolveWait) => setTimeout(resolveWait, 50));
 		const written = (await readdir(clone)).length;
 		await new Promise((resolveWait) => setTimeout(resolveWait, 200));
 		expect((await readdir(clone)).length).toBe(written);
+		writers.splice(writers.indexOf(writer), 1);
 		// The plain removal that raced the leftover writer (ENOTEMPTY on the clone's .git).
 		await rm(identity, { recursive: true, force: true });
 		await expect(lstat(identity)).rejects.toMatchObject({ code: "ENOENT" });
