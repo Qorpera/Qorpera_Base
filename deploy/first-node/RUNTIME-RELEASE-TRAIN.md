@@ -81,6 +81,14 @@ live cuts.
    newer master.
 5. Merge, then cut live from the merged master commit.
 
+## Rolls or pauses
+
+Each release PR states `Rollout: rolls` or `Rollout: pauses — <reason>`, and the exact-head
+review checks it. A release rolls when every migration in it is safe for runs of the previous
+bundle, which finish on the other node while the first one is updated. The rules, prerequisites
+and procedure are in `RUNTIME-ROLLING-UPDATE.md`. Until its prerequisites are live, every cut
+pauses as before.
+
 ## How CI tells a release branch apart
 
 Each workflow sets `QORPERA_ENFORCE_RUNTIME_BUNDLE` to `1` only when
