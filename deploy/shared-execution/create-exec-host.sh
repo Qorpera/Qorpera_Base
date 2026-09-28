@@ -102,7 +102,7 @@ if ! lxc init "${FINGERPRINT}" "${VM}" --project "${PROJECT}" --vm \
 	-c "limits.cpu=${CPU}" -c "limits.memory=${MEMORY_GIB}GiB" -c boot.mode=uefi-secureboot \
 	-d root,size=80GiB; then
 	if lxc info "${VM}" --project "${PROJECT}" >/dev/null 2>&1; then
-		echo "lxc init failed, but ${VM} exists now; inspect it and delete it by hand if this run made it." >&2
+		echo "lxc init failed, and ${VM} exists. The check before init found no ${VM}, so this run most likely made it; inspect it and delete it by hand." >&2
 	fi
 	exit 1
 fi

@@ -87,7 +87,7 @@ for name in QORPERA_SUPABASE_URL QORPERA_RUNNER_PROVIDER_ADAPTER QORPERA_NATIVE_
 	grep -q "^${name}=" "${STAGING}/shared-execution.env" || { echo "${STAGING}/shared-execution.env has no ${name} line." >&2; exit 1; }
 done
 for name in QORPERA_RUNNER_ORCHESTRATOR_ID QORPERA_RUNNER_ORCHESTRATOR_CONTROL_TOKEN; do
-	grep -q "^${name}=" "${STAGING}/runner-orchestrator.env" || { echo "${STAGING}/runner-orchestrator.env has no ${name} line." >&2; exit 1; }
+	[[ $(grep -c "^${name}=" "${STAGING}/runner-orchestrator.env") == 1 ]] || { echo "${STAGING}/runner-orchestrator.env must have exactly one ${name} line." >&2; exit 1; }
 done
 lxc image info "${FINGERPRINT}" --project "${PROJECT}" >/dev/null
 if [[ -n ${EXEC_PREFLIGHT_ONLY:-} ]]; then
@@ -173,14 +173,22 @@ registered=$(curl -sS -X POST "${supabase_url}/rest/v1/rpc/qorpera_register_runn
 [[ ${registered} == *'"status": "active"'* || ${registered} == *'"status":"active"'* ]] || { unset service_key; echo "Orchestrator registration failed" >&2; exit 1; }
 unset service_key
 # The token goes through the environment, never a command line (/proc/*/cmdline is world-readable).
+# Written to a temporary file and renamed, so a failed write never leaves an empty file.
 CONTROL_TOKEN="${control_token}" python3 -c 'import os,re,sys
 path = sys.argv[1]
-text = open(path, newline="").read()
+with open(path, newline="") as f:
+    text = f.read()
 line = "QORPERA_RUNNER_ORCHESTRATOR_CONTROL_TOKEN=" + os.environ["CONTROL_TOKEN"]
-text, count = re.subn(r"(?m)^QORPERA_RUNNER_ORCHESTRATOR_CONTROL_TOKEN=.*$", lambda _: line, text, count=1)
+text, count = re.subn(r"(?m)^QORPERA_RUNNER_ORCHESTRATOR_CONTROL_TOKEN=.*$", lambda _: line, text)
 if count != 1:
-    sys.exit("no control token line")
-open(path, "w", newline="").write(text)' "${STAGING}/runner-orchestrator.env"
+    sys.exit("expected exactly one control token line")
+temporary = path + ".new"
+fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, os.stat(path).st_mode & 0o7777)
+with os.fdopen(fd, "w", newline="") as f:
+    f.write(text)
+    f.flush()
+    os.fsync(f.fileno())
+os.replace(temporary, path)' "${STAGING}/runner-orchestrator.env"
 unset control_token
 push "${STAGING}/runner-orchestrator.env" /etc/qorpera/runner-orchestrator.env 0600
 for name in "${STAGING}"/credentials/*; do
@@ -207,7 +215,8 @@ try:
 except Exception:
     print("")')
 	if [[ ${declared_bundle} != "${BUNDLE}" ]]; then
-		declaration_failed=$(printf '%s' "${declared}" | head -c 300)
+		declaration_failed=1
+		declaration_reply=$(printf '%s' "${declared:-(empty reply)}" | head -c 300)
 		BUNDLE=
 	fi
 fi
@@ -219,6 +228,6 @@ if [[ -z ${FRESH} ]]; then
 fi
 echo "Start the orchestrator when the cut is live: lxc exec ${VM} --project ${PROJECT} -- systemctl enable --now qorpera-runner-orchestrator.service"
 if [[ -n ${declaration_failed:-} ]]; then
-	echo "The host is set up, but the bundle declaration failed; the orchestrator claims any bundle until it is declared: ${declaration_failed}" >&2
+	echo "The host is set up, but the bundle declaration failed; the orchestrator claims any bundle until it is declared: ${declaration_reply}" >&2
 	exit 1
 fi
