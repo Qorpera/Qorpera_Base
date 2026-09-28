@@ -380,9 +380,22 @@ Live keys come later, with the live switch (build step 7).
 
 ## Zero (build step 6; built switched off)
 
-- The check is `qorpera_company_computer_hours_left(p_profile_id)` (step 3): more than zero, or
-  null for a complimentary company.
-- A complimentary company always passes.
+- The check is `qorpera_company_at_zero(p_profile_id, at)` (migration `20260929200000`). It is true
+  only when the rule is switched on (`qorpera_computer_hour_billing.zero_rule_since`, null until the
+  live switch) and `qorpera_company_computer_hours_left(p_profile_id)` (step 3) is zero or less.
+  That value is null for a complimentary company, which always passes. A founder's live
+  subscription (`active` or `past_due`) whose recorded period ended in the last 30 minutes counts
+  as still paying: Stripe's renewal invoice can trail the period's end by minutes.
+- Build step 6a (migration `20260929200000`, runs only):
+  - wakes stay queued with `blocked_reason = 'Waiting for computer hours'`;
+  - member messages, turn requests and proposal reviews are not picked (checked again after the
+    admission lock) and stay queued;
+  - members see the wait through `waitingForHours` in `qorpera_read_company_computer_hours`;
+  - the two direct enqueue calls (legacy clients) are refused (55000);
+  - a BEFORE INSERT trigger on `qorpera_execution_runs` stops any path that did not check.
+
+  Machines not starting or waking (6b), the finishing window, the zero "out of hours" notice and
+  the renewal-gap handling for machines (6c), and the web (6d) follow.
 - It is checked before a run is created (not at claim or placement: a run waiting there is
   invisible to members) and at each machine kind's own start or wake step. A run created before
   the company ran out is running work. The hook list is agreed with the nodes (S3), machines,
