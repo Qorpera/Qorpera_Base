@@ -129,8 +129,10 @@ are secrets: they never enter the company folder.
   (see `deploy/office-fleet/README.md`). Until then its start waits
   (`waiting: setup`). Nodes are to be identical and a computer is to start on
   any node with room (Stateless Compute, 28 September); that work belongs to
-  the "Identical nodes and placement for every machine" session. Copying another
-  computer's node-specific setup is not the way.
+  the "Identical nodes and placement for every machine" session. Jonas (28
+  September): automatic setup of a company's next computer is in scope now; it
+  is built there, on any node with room, consuming the setup queue above.
+  Copying another computer's node-specific setup is not the way.
 - **Runs reaching computer 2.** A native job reaches one configured office URL.
   Company routes (`/office/{companyComputerId}/native`) are a separate runtime
   change; the switch above stays off until it is live.
