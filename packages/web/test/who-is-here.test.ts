@@ -119,6 +119,37 @@ describe("who is here now", () => {
 		expect(s.here().title).toBe("Sofie Lund, Mads Holm, Anna Berg, and Peter Nørgaard are here");
 	});
 
+	it("joins once however often the team is read, and says nothing after the company stopped", async () => {
+		const s = await setup();
+		await s.company.refreshTeam();
+		await s.company.refreshTeam();
+		expect(s.join).toHaveBeenCalledTimes(1);
+		s.company.stop();
+		const calls = s.handle.setOpenThread.mock.calls.length;
+		visibility = "hidden";
+		document.dispatchEvent(new Event("visibilitychange"));
+		s.company.setOpenSession(session.sessionId);
+		expect(s.handle.setOpenThread).toHaveBeenCalledTimes(calls);
+	});
+
+	it("draws a renamed member's face anew", async () => {
+		const s = await setup();
+		await s.publish([tab(userB.id, session.sessionId)]);
+		const before = s.faces()[0];
+		expect(before?.textContent).toBe("SL");
+		s.company.store.set({
+			team: {
+				...s.company.store.get().team!,
+				members: members.map((member) =>
+					member.userId === userB.id ? { ...member, displayName: "Anna Holt" } : member,
+				),
+			},
+		});
+		await settle();
+		expect(s.faces()[0]).not.toBe(before);
+		expect(s.faces()[0]?.textContent).toBe("AH");
+	});
+
 	it("says it shows no conversation while the tab is hidden or the conversation closed", async () => {
 		const s = await setup();
 		visibility = "hidden";

@@ -3,6 +3,12 @@ import type { HostedPresenceIdentity, HostedPrimaryDatabase, QorperaHostedPrimar
 import { PresenceSignatures } from "./presence-signatures.ts";
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+/** A tab's identity is looked up again after this long: a member who left the company
+ * stops resolving within it, and routine syncs (every agent's file presence re-tracks
+ * every 10 s on this topic) cost no lookup. */
+const IDENTITY_TTL_MS = 60_000;
+/** A sync whose identity lookup failed is tried again after this long. */
+const SYNC_RETRY_MS = 3_000;
 
 function broadcastBytes(
 	profileId: string,
@@ -94,7 +100,21 @@ export class SupabaseCloudPresenceTransport {
 		let stopped = false;
 		let channel: RealtimeChannel | undefined;
 		let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+		let syncRetryTimer: ReturnType<typeof setTimeout> | undefined;
 		let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
+		const identities = new Map<string, { identity: HostedPresenceIdentity; at: number }>();
+		// Members are reported the first time, then only when who is where changed.
+		let reported: string | undefined;
+		const report = (members: PresenceMember[]): void => {
+			const key = JSON.stringify(
+				members
+					.map((member) => [member.clientId, member.userId, member.name, member.staffAgentId])
+					.sort((a, b) => String(a[0]).localeCompare(String(b[0]))),
+			);
+			if (key === reported) return;
+			reported = key;
+			onMembers(members);
+		};
 		let reconnectAttempts = 0;
 		const clientId = crypto.randomUUID();
 		const signatures = new PresenceSignatures();
@@ -144,13 +164,20 @@ export class SupabaseCloudPresenceTransport {
 		};
 		const resolveIdentities = async (clientIds: string[]): Promise<Map<string, HostedPresenceIdentity>> => {
 			const requested = [...new Set(clientIds)].filter((id) => UUID_PATTERN.test(id));
-			const identities = new Map<string, HostedPresenceIdentity>();
-			if (requested.length) {
-				for (const identity of await this.#primary.listPresenceDevices(profileId, requested)) {
-					identities.set(identity.clientId, identity);
+			const resolved = new Map<string, HostedPresenceIdentity>();
+			const now = Date.now();
+			const unknown = requested.filter((id) => {
+				const known = identities.get(id);
+				if (known && now - known.at < IDENTITY_TTL_MS) resolved.set(id, known.identity);
+				return !resolved.has(id);
+			});
+			if (unknown.length) {
+				for (const identity of await this.#primary.listPresenceDevices(profileId, unknown)) {
+					identities.set(identity.clientId, { identity, at: now });
+					resolved.set(identity.clientId, identity);
 				}
 			}
-			return identities;
+			return resolved;
 		};
 		const broadcastMemberEvent = (
 			source: RealtimeChannel,
@@ -211,7 +238,7 @@ export class SupabaseCloudPresenceTransport {
 		const scheduleReconnect = (failed: RealtimeChannel, detail: string): void => {
 			if (stopped || failed !== channel || reconnectTimer) return;
 			subscribed = false;
-			onMembers([]);
+			report([]);
 			onHealth?.({ phase: "degraded", error: detail });
 			console.error(`presence channel degraded: ${detail}`);
 			channel = undefined;
@@ -244,8 +271,10 @@ export class SupabaseCloudPresenceTransport {
 						config: { private: true, presence: { key: clientId }, broadcast: { self: false } },
 					});
 					channel = next;
-					next.on("presence", { event: "sync" }, () => {
+					const syncMembers = (): void => {
 						if (next !== channel) return;
+						clearTimeout(syncRetryTimer);
+						syncRetryTimer = undefined;
 						const generation = ++presenceGeneration;
 						const state = next.presenceState<{
 							staff_agent_id?: unknown;
@@ -311,10 +340,19 @@ export class SupabaseCloudPresenceTransport {
 								for (const member of newest.values()) {
 									lastPresenceSequence.set(member.clientId, member.sequence);
 								}
-								onMembers([...newest.values()].map(({ sequence: _sequence, ...member }) => member));
+								report([...newest.values()].map(({ sequence: _sequence, ...member }) => member));
 							})
-							.catch(() => undefined);
-					});
+							.catch(() => {
+								// The lookup failed: try this sync again unless a newer one came.
+								if (next !== channel || stopped || generation !== presenceGeneration) return;
+								syncRetryTimer = setTimeout(() => {
+									syncRetryTimer = undefined;
+									if (generation === presenceGeneration) syncMembers();
+								}, SYNC_RETRY_MS);
+								if (typeof syncRetryTimer === "object") syncRetryTimer.unref?.();
+							});
+					};
+					next.on("presence", { event: "sync" }, syncMembers);
 					next.on("broadcast", { event: "typing" }, ({ payload }) => {
 						broadcastMemberEvent(next, payload, "typing", (data, identity) => {
 							onTyping({
@@ -391,14 +429,17 @@ export class SupabaseCloudPresenceTransport {
 				subscribed = false;
 				if (reconnectTimer) clearTimeout(reconnectTimer);
 				reconnectTimer = undefined;
+				clearTimeout(syncRetryTimer);
+				syncRetryTimer = undefined;
 				if (heartbeatTimer) clearInterval(heartbeatTimer);
 				heartbeatTimer = undefined;
 				const active = channel;
 				channel = undefined;
+				// Leave first: others stop seeing this tab at once, and the topic is free again.
+				if (active) await this.#client.removeChannel(active);
 				await registration?.catch(() => undefined);
 				await this.#primary.unregisterPresenceDevice(profileId, clientId).catch(() => undefined);
-				if (active) await this.#client.removeChannel(active);
-				onMembers([]);
+				report([]);
 				onHealth?.({ phase: "stopped" });
 			},
 		};

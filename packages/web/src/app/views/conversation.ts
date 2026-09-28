@@ -906,16 +906,17 @@ export class ConversationView {
 		const label = here.length === 1 ? t("{name} is here", { name: names }) : t("{names} are here", { names });
 		this.#here.setAttribute("aria-label", label);
 		this.#here.title = label;
-		// Faces already shown stay put; a new one grows in.
+		// Faces already shown stay put (a renamed member's is drawn anew); a new one grows in.
 		const kept = new Map(
 			[...this.#here.querySelectorAll<HTMLElement>(".person-avatar[data-user]")].map((face) => [
-				face.dataset.user,
+				`${face.dataset.user}:${face.dataset.name}`,
 				face,
 			]),
 		);
 		const faces = here.slice(0, 3).map((member) => {
-			const face = kept.get(member.userId) ?? personAvatar(member.name, member.userId);
+			const face = kept.get(`${member.userId}:${member.name}`) ?? personAvatar(member.name, member.userId);
 			face.dataset.user = member.userId;
+			face.dataset.name = member.name;
 			return face;
 		});
 		const desired: Element[] = [...faces];
