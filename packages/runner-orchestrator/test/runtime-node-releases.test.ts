@@ -75,6 +75,9 @@ describe("images the node's signed releases pin (identical nodes, change 6)", ()
 		await n.release(4, "4".repeat(64));
 		await rm(join(n.releases, "4", "release.json"));
 		expect(spawnSync("mkfifo", [join(n.releases, "4", "release.json")]).status).toBe(0);
+		await n.release(5, "5".repeat(64));
+		await rm(join(n.releases, "5", "release.sig"));
+		expect(spawnSync("mkfifo", [join(n.releases, "5", "release.sig")]).status).toBe(0);
 		expect(await readNodeReleaseImages(n.releases, n.keyPath)).toEqual(new Set(["3".repeat(64)]));
 	});
 	it("only the newest 16 revisions count", async () => {

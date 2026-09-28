@@ -56,9 +56,12 @@ so it needs no pause.
 0. **Read-only checks.**
    - The node agent runs on the node (phase B, live on both nodes since 2026-09-23), with the
      release key installed.
-   - The observer's account can read the key and the releases, whatever drop-ins the live unit has:
-     `sudo -u qorpera-node-observer test -r /etc/qorpera-node/keys/release.pem` and the same for
-     `/opt/qorpera-node/current/release.json` and `release.sig`.
+   - The observer's account can read the key and list and read the releases:
+     `sudo -u qorpera-node-observer test -r /etc/qorpera-node/keys/release.pem`, the same for
+     `/opt/qorpera-node/current/release.json` and `release.sig`, and
+     `sudo -u qorpera-node-observer ls /opt/qorpera-node/releases`. This does not see a sandbox
+     that a drop-in on the live unit may add (`systemctl cat qorpera-node-observer` shows them);
+     step 5's check is the final proof.
    - The fast host's current image is pinned by a release on the node: compare the host's
      `volatile.base_image` with the provider role's `QORPERA_LXD_IMAGE_FINGERPRINT` in
      `/opt/qorpera-node/current/release.json`.
@@ -97,7 +100,7 @@ so it needs no pause.
 - **Prove it at the first rebuild.** That a rebuild changes only `image.*` and `volatile.*` keys
   follows from how LXD rebuilds an instance, but no receipt records it yet. Compute the host's
   `--role execution-host` digest right before and right after the first rebuild; they must be
-  equal. If they differ, re-enrol as before and report it.
+  equal. If they differ, re-enrol with the new `--role execution-host` digest and report it.
 - The receipt's digest no longer covers the image; the observer checks it on the node. To see which
   image the host runs, read its `volatile.base_image`.
 - The older image-builder planning tools (`scripts/node-builder-inventory-plan.mjs`, before build
