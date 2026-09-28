@@ -213,8 +213,9 @@ owner and contributor (PR #315 comment; receipts in the takeover workspace,
    `action_review` before any v130 runner reports it).
 2. Runner image with the v130 guest provider host; providers restart.
 3. Activation v130; resume.
-4. Web (Rules tab, live approval cards) after v130 is live; before that the
-   web shows no controls the kernel refuses.
+4. Web (Rules tab, live approval cards; web #360 later moved the rules to the
+   bottom of Settings → General) after v130 is live; before that the web shows
+   no controls the kernel refuses.
 
 ## Measured before building (2026-09-25, local 0.155 alpha app-server)
 
