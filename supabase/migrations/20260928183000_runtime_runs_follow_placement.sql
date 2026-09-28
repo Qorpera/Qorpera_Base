@@ -148,7 +148,7 @@ $$;
 
 -- Did this orchestrator refuse this run's job in the last 15 s? (Its own refusal can be hidden when
 -- another orchestrator's refusal made everyone wait; the released claim still says it.) The 15 s is the
--- capacity wait of qorpera_release_runner_job_claim (20260928180000); keep the two equal.
+-- capacity wait of qorpera_release_runner_job_claim (20260928180700); keep the two equal.
 create function public.qorpera_runtime_refused_recently(p_run_id uuid, p_orchestrator_id uuid)
 returns boolean
 language sql

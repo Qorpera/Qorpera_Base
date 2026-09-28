@@ -109,7 +109,7 @@ rollback to savepoint refused;
 select set_config('qorpera_test.fp_claim',pg_temp.fp_claim('64300000-0000-4000-8000-0000000000a2')::text,true);
 select pg_temp.fp_refuse('64300000-0000-4000-8000-0000000000a2',current_setting('qorpera_test.fp_claim')::jsonb,'NODE_CAPACITY_EXHAUSTED');
 select pg_temp.wake_assert(pg_temp.fp_claim('64300000-0000-4000-8000-0000000000a2') = 'null'::jsonb,'The overflow waits out its own refusal');
--- Both fast hosts full inside one wait (everyone waits, 20260928180000): the overflow still may.
+-- Both fast hosts full inside one wait (everyone waits, 20260928180700): the overflow still may.
 rollback to savepoint refused;
 select set_config('qorpera_test.fp_claim',pg_temp.fp_claim('30000000-0000-4000-8000-000000000092')::text,true);
 select pg_temp.fp_refuse('30000000-0000-4000-8000-000000000092',current_setting('qorpera_test.fp_claim')::jsonb,'SANDBOX_CAPACITY_EXHAUSTED');

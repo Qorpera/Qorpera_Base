@@ -147,7 +147,7 @@ migration can go in any cut without a pause.
 It is stacked on three changes:
 - logins in the vault change 3 (`20260928180600`, #427), whose `qorpera_compute_identity_login_in_vault`
   frees a run from the login's home node;
-- change 1 (`20260928180000`, #424);
+- change 1 (`20260928180700`, #424);
 - change 4 (`20260928182000`, #429).
 
 It sorts after change 4 because it reads its bundle declarations.
@@ -200,7 +200,7 @@ It sorts after change 4 because it reads its bundle declarations.
 
 ### Rollout (coordinator)
 
-1. **Order.** Apply after `20260928180000`, `20260928180600` and `20260928182000` (dry run first).
+1. **Order.** Apply after `20260928180600`, `20260928180700` and `20260928182000` (dry run first).
    - The index is built first, under `lock_timeout 10s`. It holds a short write lock on
      `qorpera_execution_runs` (about 0.25 s per 300k rows).
    - The orchestrator table is altered last, so claims wait only for the rest of the transaction.
