@@ -15,6 +15,7 @@
 export const STRIPE_API_VERSION = "2026-08-26.dahlia";
 const SIGNATURE_TOLERANCE_SECONDS = 300;
 const STRIPE_TIMEOUT_MS = 20_000;
+const CREDIT_CHECKOUT_SECONDS = 3600;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 type Json = Record<string, unknown>;
@@ -294,7 +295,13 @@ async function startCheckout(
 		form[`metadata[${key}]`] = value;
 		form[`${nested}[metadata][${key}]`] = value;
 	}
-	if (kind === "credits") form["invoice_creation[enabled]"] = "true";
+	if (kind === "credits") {
+		form["invoice_creation[enabled]"] = "true";
+		// A pack is bought for one company: its page closes after an hour (Stripe's default is 24),
+		// so a company deleted meanwhile is rarely paid for; one that is still gets review and a refund.
+		const now = deps.options.nowSeconds?.() ?? Math.floor(Date.now() / 1000);
+		form.expires_at = String(now + CREDIT_CHECKOUT_SECONDS);
+	}
 	const session = await deps.stripe.post("/v1/checkout/sessions", form, `qorpera-checkout-${checkoutId}`);
 	const sessionId = string(session.id);
 	const url = string(session.url);

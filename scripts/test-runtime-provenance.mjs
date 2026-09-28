@@ -18,6 +18,13 @@ const authorityPsql = psql.map((value) => value === "qorpera_test" ? "qorpera_up
 const literal = (value) => `'${String(value).replaceAll("'", "''")}'`;
 const json = (value) => `${literal(JSON.stringify(value))}::jsonb`;
 const claims = `set local "request.jwt.claims" = '{"role":"service_role"}';`;
+// Split-owner path helper grants, keyed by the migration that (re)creates the helper.
+const laterPathHelpers = new Map([
+	["20260920001000_", ["qorpera_agent_creatable_path_kind(text)", "qorpera_company_path_allowed(jsonb,text,text)"]],
+	["20260922170000_", ["qorpera_company_path_allowed(jsonb,text,text)"]],
+	["20260924020000_", ["qorpera_company_path_allowed(jsonb,text,text)"]],
+	["20260926035000_", ["qorpera_assert_agent_default_delegation(uuid,uuid)"]],
+]);
 
 function docker(args, input) {
 	const result = spawnSync("docker", args, { input, encoding: "utf8", maxBuffer: 32 * 1024 * 1024, timeout: 60_000 });
@@ -179,6 +186,18 @@ try {
 				alter function public.qorpera_company_retained_object_hashes(uuid) owner to runtime_retention_owner;
 				grant execute on function public.qorpera_company_additional_retained_object_hashes(uuid) to runtime_retention_owner;`);
 		}
+		// These later migrations (re)create a path helper, revoke PUBLIC execution and
+		// grant no other owner. Production keeps one owner (postgres) for every definer
+		// that calls them, so only the split path owner above needs the grant, given
+		// right after the migration that creates each one: a later re-creation that
+		// drops it again still fails here.
+		const pathHelpers = laterPathHelpers.get(migration.slice(0, 15));
+		if (pathHelpers) {
+			const grant = `grant execute on function ${pathHelpers.map((name) => `public.${name}`).join(",")} to runtime_path_owner;`;
+			sql(grant);
+			docker(upgradePsql, grant);
+			docker(authorityPsql, grant);
+		}
 	}
 	assert.equal(sql("select runtime_bundle_sha256 from public.qorpera_active_runtime_bundle;").trim(), bundle.sha256);
 	assert.deepEqual(JSON.parse(sql(`select bundle.manifest from public.qorpera_runtime_bundles bundle
@@ -210,7 +229,8 @@ try {
 		// below so a failed writer is never mistaken for a concurrency proof.
 		writer.catch(() => undefined);
 		let atBarrier = false;
-		for (let attempt = 0; attempt < 20 && !atBarrier; attempt++) {
+		// A loaded Docker host can take seconds to start the writer's psql.
+		for (let attempt = 0; attempt < 200 && !atBarrier; attempt++) {
 			atBarrier = sql("select exists(select 1 from pg_locks where locktype='advisory' and classid=18200 and objid=307 and granted);").trim() === "t";
 			if (!atBarrier) await new Promise((resolve) => setTimeout(resolve, 50));
 		}
