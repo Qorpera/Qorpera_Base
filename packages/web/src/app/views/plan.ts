@@ -1,7 +1,9 @@
+import type { ComputerHourOffer } from "../../cloud/computer-billing.ts";
 import type { CompanyComputerHours } from "../../cloud/computer-hours.ts";
 import type { HostedCompanyFile } from "../../cloud/types.ts";
 import { button, fmtBytes, h, notice, replace } from "../../ui/dom.ts";
 import { phrase, presentationLocale, t, uiText } from "../../ui/preferences.ts";
+import type { PlanPaymentsState } from "../plan-payments.ts";
 import type { AccountViewState } from "./account.ts";
 import { meter, storageSummary } from "./storage-summary.ts";
 
@@ -19,6 +21,8 @@ export interface PlanOffer {
 	includes: string[];
 	/** Computer hours a month; undefined means a computer all month. */
 	includedHours?: number;
+	/** Where "{hours} computer hours a month" goes in `includes`, read from the cloud's catalog when it has the plan. */
+	hoursLineAt?: number;
 }
 
 export const PLAN_OFFERS: PlanOffer[] = [
@@ -29,11 +33,11 @@ export const PLAN_OFFERS: PlanOffer[] = [
 		tagline: phrase("For the daily work."),
 		includes: [
 			phrase("100 GB storage included"),
-			phrase("74 computer hours a month"),
 			phrase("Connect from computer and phone"),
 			phrase("Work in the cloud while your computer is off"),
 		],
 		includedHours: 74,
+		hoursLineAt: 1,
 	},
 	{
 		key: "standard",
@@ -129,6 +133,19 @@ export interface PlanUsage {
 	error?: string;
 	retry: () => void;
 	hours?: CompanyHoursState;
+	/** The company, for buying hours for it. */
+	profileId?: string;
+	/** Founders pay the company's hours; undefined while the member's role is unknown. */
+	founder?: boolean;
+}
+
+/** Payments on Plan & usage: what can be bought, the member's plan, and the two Stripe pages. */
+export interface PlanPaymentsView {
+	readonly state: PlanPaymentsState;
+	checkout(itemKey: string, profileId?: string): void;
+	portal(): void;
+	/** A company's name for "hours used per company"; undefined for one this page does not know. */
+	companyName?(profileId: string): string | undefined;
 }
 
 const HOURS_BY_KIND = [
@@ -138,8 +155,19 @@ const HOURS_BY_KIND = [
 	["agentMachines", phrase("Agents' machines")],
 ] as const;
 
-/** The company's hours card: this month's use, and what it was used on. */
-function companyHoursCard(companyName: string, state: CompanyHoursState | undefined): HTMLElement | null {
+/** "20 h · 70 kr" for a pack of hours (prices in øre, ex. VAT). */
+function packText(offer: ComputerHourOffer): string {
+	return `${hoursText(offer.hours)} · ${priceKr(offer.priceMinor / 100)}`;
+}
+
+/** The company's hours card: this month's use, what it was used on, and (for
+ * founders, once payments are open) packs of hours to buy for the company. */
+function companyHoursCard(
+	usage: PlanUsage,
+	payments: PlanPaymentsView | undefined,
+	packsOpen: boolean,
+): HTMLElement | null {
+	const state = usage.hours;
 	if (!state) return null;
 	const value = state.value;
 	const used = value
@@ -155,6 +183,48 @@ function companyHoursCard(companyName: string, state: CompanyHoursState | undefi
 				([key, label]) => `${t(label)} ${hoursText(value.byKind[key] / 3600)}`,
 			)
 		: [];
+	const packs =
+		usage.founder && usage.profileId
+			? (payments?.state.offers ?? []).filter((offer) => offer.kind === "credits" && offer.available)
+			: [];
+	const opening = payments?.state.opening;
+	renders += 1;
+	const packList = packs.length
+		? h(
+				"div",
+				{ class: "settings-hours-packs", id: `settings-hours-packs-${renders}`, hidden: !packsOpen },
+				...packs.map((offer) => {
+					const pack = button(
+						opening === offer.itemKey ? uiText("Opening…") : packText(offer),
+						() => payments?.checkout(offer.itemKey, usage.profileId),
+						{ small: true, disabled: opening !== undefined },
+					);
+					pack.dataset.focus = `pack-${offer.itemKey}`;
+					return pack;
+				}),
+				h(
+					"small",
+					null,
+					uiText("For {company}, valid for 12 months. Prices are ex. VAT.", { company: usage.companyName }),
+					payments?.state.plan?.mode === "dry_run" ? [" ", uiText("Test mode: nothing is charged.")] : null,
+				),
+			)
+		: null;
+	const buy = packList
+		? button(
+				uiText("Buy hours"),
+				() => {
+					packList.hidden = !packList.hidden;
+					buy?.setAttribute("aria-expanded", String(!packList.hidden));
+				},
+				{ small: true },
+			)
+		: null;
+	if (buy && packList) {
+		buy.setAttribute("aria-expanded", String(packsOpen));
+		buy.setAttribute("aria-controls", packList.id);
+		buy.dataset.focus = "buy-hours";
+	}
 	return h(
 		"div",
 		{ class: "settings-card settings-usage settings-company-hours" },
@@ -163,9 +233,14 @@ function companyHoursCard(companyName: string, state: CompanyHoursState | undefi
 			{ class: "settings-copy" },
 			h("small", { class: "settings-eyebrow" }, uiText("Computer hours this month")),
 			h("strong", null, used),
-			h("small", null, companyName, " · ", uiText("Measured, not charged yet")),
+			h("small", null, usage.companyName, " · ", uiText("Measured, not charged yet")),
 			kinds.length ? h("small", { class: "settings-hours-kinds" }, kinds.join(" · ")) : null,
+			usage.founder === false
+				? h("small", null, uiText("Computer hours are paid by the founders. You are never charged."))
+				: null,
+			packList,
 		),
+		buy,
 	);
 }
 
@@ -177,6 +252,21 @@ export interface PlanBilling {
 	nextPaymentAt?: string;
 	paymentMethod?: string;
 	invoices?: { id: string; issuedAt: string; totalKr: number; href?: string }[];
+	payments?: PlanPaymentsView;
+}
+
+type PaidPlan = NonNullable<NonNullable<PlanPaymentsState["plan"]>["plan"]>;
+
+/** The line under a paid plan's name: when it renews or ends, or what is wrong with its payment. */
+function paidPlanDetail(plan: PaidPlan): Node {
+	if (plan.status === "past_due" || plan.status === "unpaid")
+		return uiText("Payment failed. Update your card under Payments and invoices.");
+	if (plan.status === "incomplete") return uiText("Waiting for the first payment");
+	if (plan.status === "paused") return uiText("Paused");
+	if (!plan.periodEnd) return uiText("Paid through Stripe");
+	return plan.cancelAtPeriodEnd
+		? uiText("Ends {date}", { date: dateText(plan.periodEnd) })
+		: uiText("Renews {date}", { date: dateText(plan.periodEnd) });
 }
 
 function billingRow(label: Node, value: Node | string, action?: Node | null): HTMLElement {
@@ -189,6 +279,24 @@ function billingRow(label: Node, value: Node | string, action?: Node | null): HT
 	);
 }
 
+/** "Company A 10 h · Other companies 0.5 h": this period's hours by company, largest first;
+ * companies this page cannot name, or with under three minutes (which would read "0 h"), are
+ * summed, and left out under three minutes. */
+function hoursPerCompany(
+	companies: { profileId: string; seconds: number }[],
+	companyName: ((profileId: string) => string | undefined) | undefined,
+): string {
+	let others = 0;
+	const named: string[] = [];
+	for (const item of companies) {
+		const company = companyName?.(item.profileId);
+		if (company && item.seconds >= 180) named.push(`${company} ${hoursText(item.seconds / 3600)}`);
+		else others += item.seconds;
+	}
+	if (others >= 180) named.push(`${t("Other companies")} ${hoursText(others / 3600)}`);
+	return named.join(" · ");
+}
+
 /** The account's plan and what it is using. Nothing here is per browser: the
  * plan comes from the account, the storage from the company Settings show. */
 export function renderPlan(
@@ -199,30 +307,81 @@ export function renderPlan(
 	options: { showError?: boolean } = {},
 ): void {
 	const entitlement = account.entitlement;
-	const planKey = entitlement?.planKey;
+	const payments = billing.payments;
+	const opening = payments?.state.opening;
+	// A plan paid through Stripe; otherwise the account's entitlement, as before payments.
+	const paid = payments?.state.plan?.plan ?? undefined;
+	const planKey = paid?.itemKey ?? entitlement?.planKey;
 	const offer = PLAN_OFFERS.find((item) => item.key === planKey);
-	const trial = planKey !== undefined && isTrial(planKey);
+	const trial = !paid && planKey !== undefined && isTrial(planKey);
+	// The cloud's catalog is the price list: a plan it has is shown at its price and hours, which are
+	// what Stripe charges; without it, the prices qorpera.com shows.
+	const catalog = (key: string) => payments?.state.offers.find((item) => item.itemKey === key && item.kind === "plan");
+	const forSale = (key: string) => (catalog(key)?.available ? catalog(key) : undefined);
+	const priceOf = (item: PlanOffer) => {
+		const listed = catalog(item.key);
+		return listed ? listed.priceMinor / 100 : item.monthlyKr;
+	};
+	const hoursOf = (item: PlanOffer) => catalog(item.key)?.hours ?? item.includedHours;
+	const testMode = payments?.state.plan?.mode === "dry_run";
+	const includesOf = (item: PlanOffer): Node[] => {
+		const lines: Node[] = item.includes.map((line) => uiText(line));
+		const planHours = hoursOf(item);
+		if (item.hoursLineAt !== undefined && planHours !== undefined)
+			lines.splice(
+				item.hoursLineAt,
+				0,
+				uiText("{hours} computer hours a month", { hours: new Intl.NumberFormat(locale()).format(planHours) }),
+			);
+		return lines;
+	};
+	const selling = PLAN_OFFERS.some((item) => forSale(item.key));
 	// A plan key this client does not know is shown as sent, untranslated.
-	const name = entitlement
-		? Object.hasOwn(PLAN_NAMES, entitlement.planKey)
-			? uiText(planName(entitlement.planKey))
-			: planName(entitlement.planKey)
-		: account.loaded
-			? uiText("Plan unavailable")
-			: uiText("Loading…");
-	const detail = entitlement
-		? entitlement.storageAllocationBytes !== undefined
-			? uiText("{size} company storage included", { size: fmtBytes(entitlement.storageAllocationBytes) })
-			: entitlement.planKey === "internal"
-				? uiText("No active subscription")
-				: uiText("Storage allocation unavailable")
-		: null;
+	const name =
+		planKey !== undefined
+			? Object.hasOwn(PLAN_NAMES, planKey)
+				? uiText(planName(planKey))
+				: planName(planKey)
+			: account.loaded
+				? uiText("Plan unavailable")
+				: uiText("Loading…");
+	const detail = paid
+		? paidPlanDetail(paid)
+		: entitlement
+			? entitlement.storageAllocationBytes !== undefined
+				? uiText("{size} company storage included", { size: fmtBytes(entitlement.storageAllocationBytes) })
+				: entitlement.planKey === "internal"
+					? uiText("No active subscription")
+					: uiText("Storage allocation unavailable")
+			: null;
 	// The plan grid stays open across re-renders (storage arriving, a retry),
 	// and the control that had focus keeps it.
 	const plansOpen = container.querySelector<HTMLElement>(".settings-plan-grid")?.hidden === false;
+	const packsOpen = container.querySelector<HTMLElement>(".settings-hours-packs")?.hidden === false;
 	const focused = container.contains(document.activeElement)
 		? (document.activeElement as HTMLElement).dataset.focus
 		: undefined;
+	// A plan for sale starts Stripe's checkout; a member who pays already switches on
+	// Stripe's billing page. Anything not for sale says "Coming soon".
+	const planButton = (item: PlanOffer): HTMLButtonElement => {
+		if (item.key === planKey) return button(uiText("Current plan"), () => {}, { disabled: true });
+		if (payments && forSale(item.key)) {
+			const choose = paid
+				? button(
+						opening === "portal" ? uiText("Opening…") : uiText("Switch to {plan}", { plan: t(item.name) }),
+						() => payments.portal(),
+						{ primary: true, disabled: opening !== undefined },
+					)
+				: button(
+						opening === item.key ? uiText("Opening…") : uiText("Choose {plan}", { plan: t(item.name) }),
+						() => payments.checkout(item.key),
+						{ primary: true, disabled: opening !== undefined },
+					);
+			choose.dataset.focus = `plan-${item.key}`;
+			return choose;
+		}
+		return button(uiText("Coming soon"), () => {}, { primary: true, disabled: true });
+	};
 	renders += 1;
 	const grid = h(
 		"div",
@@ -237,10 +396,10 @@ export function renderPlan(
 					h("h3", null, uiText(item.name)),
 					item.key === planKey ? h("span", { class: "settings-plan-current" }, uiText("Current plan")) : null,
 				),
-				h("p", { class: "settings-plan-price" }, h("strong", null, priceKr(item.monthlyKr)), uiText("/month")),
+				h("p", { class: "settings-plan-price" }, h("strong", null, priceKr(priceOf(item))), uiText("/month")),
 				h("p", { class: "settings-plan-tagline" }, uiText(item.tagline)),
 				item.includesLabel ? h("p", { class: "settings-plan-includes-label" }, uiText(item.includesLabel)) : null,
-				h("ul", { class: "settings-plan-includes" }, ...item.includes.map((line) => h("li", null, uiText(line)))),
+				h("ul", { class: "settings-plan-includes" }, ...includesOf(item).map((line) => h("li", null, line))),
 				item.usageDiscount
 					? h(
 							"p",
@@ -248,36 +407,51 @@ export function renderPlan(
 							uiText("About {percent}% off usage", { percent: item.usageDiscount }),
 						)
 					: null,
-				// Plan changes are not open yet: the button says so, the help line explains.
-				button(item.key === planKey ? uiText("Current plan") : uiText("Coming soon"), () => {}, {
-					primary: item.key !== planKey,
-					disabled: true,
-				}),
+				planButton(item),
 			),
 		),
 	);
 	const help = h(
 		"p",
 		{ class: "settings-help", hidden: !plansOpen },
-		uiText("Plan changes are not open yet."),
-		" ",
-		uiText("Every plan starts with a free trial, no card needed. Prices are ex. VAT."),
+		...(selling
+			? [
+					uiText("Prices are ex. VAT. You pay on Stripe's secure page."),
+					testMode ? [" ", uiText("Test mode: nothing is charged.")] : [],
+				]
+			: [
+					uiText("Plan changes are not open yet."),
+					" ",
+					uiText("Every plan starts with a free trial, no card needed. Prices are ex. VAT."),
+				]),
 	);
-	const toggle = entitlement
-		? button(trial || entitlement.planKey === "internal" ? uiText("Upgrade") : uiText("Change plan"), () => {
-				grid.hidden = !grid.hidden;
-				help.hidden = grid.hidden;
-				toggle?.setAttribute("aria-expanded", String(!grid.hidden));
-				if (!grid.hidden) grid.querySelector<HTMLElement>("article")?.scrollIntoView?.({ block: "nearest" });
-			})
-		: null;
+	const toggle =
+		entitlement || paid
+			? button(trial || planKey === "internal" ? uiText("Upgrade") : uiText("Change plan"), () => {
+					grid.hidden = !grid.hidden;
+					help.hidden = grid.hidden;
+					toggle?.setAttribute("aria-expanded", String(!grid.hidden));
+					if (!grid.hidden) grid.querySelector<HTMLElement>("article")?.scrollIntoView?.({ block: "nearest" });
+				})
+			: null;
 	if (toggle) {
 		toggle.setAttribute("aria-expanded", String(plansOpen));
 		toggle.setAttribute("aria-controls", grid.id);
 		toggle.dataset.focus = "plans";
 	}
-	const hours = billing.computerHours;
-	const hoursIncluded = hours?.included ?? offer?.includedHours;
+	// A paid plan's hours, once members see them (live payments); before that, as before payments.
+	const mine = paid ? payments?.state.plan?.hours : undefined;
+	const hours = mine
+		? {
+				used: mine.companies.reduce((sum, item) => sum + item.seconds, 0) / 3600,
+				included: mine.grantedSeconds / 3600 || undefined,
+				periodEnd: paid?.periodEnd,
+			}
+		: billing.computerHours;
+	const perCompany = mine ? hoursPerCompany(mine.companies, payments?.companyName) : "";
+	// A paid plan's own hours, as granted (none yet: no total); otherwise the plan's hours a month.
+	const hoursIncluded = mine ? hours?.included : (hours?.included ?? (offer ? hoursOf(offer) : undefined));
+	const planHours = offer ? hoursOf(offer) : undefined;
 	const hoursValue = hours
 		? hoursIncluded
 			? uiText("{used} used of {total}", { used: hoursText(hours.used), total: hoursText(hoursIncluded) })
@@ -285,17 +459,35 @@ export function renderPlan(
 		: uiText("Counted once plans open");
 	const hoursDetail = trial
 		? uiText("Included in your free trial")
-		: offer && offer.includedHours === undefined
+		: offer && planHours === undefined
 			? uiText("Your own computer, all month")
-			: hoursIncluded
-				? offer
-					? uiText("{hours} a month with {plan}", { hours: hoursText(hoursIncluded), plan: t(offer.name) })
-					: uiText("{hours} a month", { hours: hoursText(hoursIncluded) })
-				: null;
+			: offer && planHours
+				? uiText("{hours} a month with {plan}", { hours: hoursText(planHours), plan: t(offer.name) })
+				: hoursIncluded
+					? uiText("{hours} a month", { hours: hoursText(hoursIncluded) })
+					: null;
 	const storage = usage ? storageSummary(usage.file, usage.error) : undefined;
 	const retry = usage?.error ? button(uiText("Retry"), usage.retry, { small: true, disabled: usage.loading }) : null;
 	if (retry) retry.dataset.focus = "retry";
 	const invoices = billing.invoices ?? [];
+	// Stripe's billing page holds the card, the invoices and plan changes of a member who has paid.
+	const portal =
+		payments && (paid || selling)
+			? button(
+					opening === "portal" ? uiText("Opening…") : uiText("Payments and invoices"),
+					() => payments.portal(),
+					{
+						small: true,
+						disabled: opening !== undefined,
+					},
+				)
+			: button(uiText("Coming soon"), () => {}, { small: true, disabled: true });
+	if (payments && (paid || selling)) portal.dataset.focus = "portal";
+	const nextPayment = paid
+		? paid.cancelAtPeriodEnd || !paid.periodEnd || (paid.status !== "active" && paid.status !== "trialing")
+			? uiText("None scheduled")
+			: dateText(paid.periodEnd)
+		: undefined;
 	replace(
 		container,
 		h(
@@ -303,6 +495,11 @@ export function renderPlan(
 			{ class: "page plan" },
 			h("h1", null, uiText("Plan & usage")),
 			account.error && options.showError !== false ? notice("danger", account.error) : null,
+			payments?.state.returned
+				? notice("ok", uiText("Thank you. Your hours are added as soon as Stripe confirms the payment."))
+				: null,
+			payments?.state.error ? notice("danger", payments.state.error) : null,
+			payments?.state.info ? notice("neutral", payments.state.info) : null,
 			h(
 				"section",
 				{ class: "settings-group" },
@@ -316,6 +513,7 @@ export function renderPlan(
 						h("small", { class: "settings-eyebrow" }, uiText("Current plan")),
 						h("strong", null, name),
 						detail ? h("small", null, detail) : null,
+						paid && testMode ? h("small", null, uiText("Test mode: nothing is charged.")) : null,
 					),
 					toggle,
 				),
@@ -335,6 +533,7 @@ export function renderPlan(
 						h("small", { class: "settings-eyebrow" }, uiText("Computer hours in your plan")),
 						h("strong", null, hoursValue),
 						hoursDetail ? h("small", null, hoursDetail) : null,
+						perCompany ? h("small", { class: "settings-hours-kinds" }, perCompany) : null,
 						// No bar until there is a measurement: an empty bar would read as zero use.
 						hours && hoursIncluded ? meter(hours.used, hoursIncluded, t("Computer hours used")) : null,
 					),
@@ -346,7 +545,7 @@ export function renderPlan(
 							)
 						: null,
 				),
-				usage ? companyHoursCard(usage.companyName, usage.hours) : null,
+				usage ? companyHoursCard(usage, payments, packsOpen) : null,
 				usage && storage
 					? h(
 							"div",
@@ -372,26 +571,28 @@ export function renderPlan(
 					{ class: "settings-card settings-billing" },
 					billingRow(
 						uiText("Price"),
-						entitlement
-							? trial || entitlement.planKey === "internal"
+						paid || entitlement
+							? trial || planKey === "internal"
 								? uiText("Free")
 								: offer
-									? h("span", null, priceKr(offer.monthlyKr), uiText("/month"), " · ", uiText("ex. VAT"))
+									? h("span", null, priceKr(priceOf(offer)), uiText("/month"), " · ", uiText("ex. VAT"))
 									: uiText("Not available yet")
 							: "",
 					),
 					billingRow(
 						uiText("Next payment"),
-						billing.nextPaymentAt
-							? dateText(billing.nextPaymentAt)
-							: trial
-								? uiText("None during your free trial")
-								: uiText("Not scheduled yet"),
+						nextPayment
+							? nextPayment
+							: billing.nextPaymentAt
+								? dateText(billing.nextPaymentAt)
+								: trial
+									? uiText("None during your free trial")
+									: uiText("Not scheduled yet"),
 					),
 					billingRow(
 						uiText("Payment method"),
-						billing.paymentMethod ?? uiText("No card on file"),
-						button(uiText("Coming soon"), () => {}, { small: true, disabled: true }),
+						paid ? uiText("On Stripe's billing page") : (billing.paymentMethod ?? uiText("No card on file")),
+						portal,
 					),
 					billingRow(
 						uiText("Invoices"),
@@ -410,7 +611,9 @@ export function renderPlan(
 										),
 									),
 								)
-							: uiText("No invoices yet"),
+							: paid
+								? uiText("On Stripe's billing page")
+								: uiText("No invoices yet"),
 					),
 				),
 			),
