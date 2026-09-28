@@ -689,6 +689,8 @@ describe("native provider host", () => {
 			"Native provider execution completion-authority-validation stage failed",
 		);
 
+		// The stored login is the original again, so this run's renewal is a change to save.
+		await capsules.put(reference, await sealNativeCredentialCapsule(identity, masterKey, capsuleId));
 		const uploadFailureHost = new NativeProviderHost({
 			controlPlane: {
 				describeLogin: vi.fn(),

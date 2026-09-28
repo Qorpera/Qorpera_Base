@@ -607,6 +607,12 @@ export async function sealNativeCredentialCapsule(
 	return Buffer.concat([Buffer.from("QNC1", "ascii"), nonce, tag, ciphertext]);
 }
 
+/** Digest of the credential files under `root`: tells whether a run changed its login. */
+async function credentialFilesDigest(root: string, durablePaths: ReadonlySet<string>): Promise<string> {
+	const archive = await collectCapsuleFiles(requiredAbsolutePath(root, "Credential capsule root"), durablePaths);
+	return createHash("sha256").update(JSON.stringify(archive.files)).digest("hex");
+}
+
 export async function openNativeCredentialCapsule(
 	bytes: Uint8Array,
 	root: string,
@@ -1468,6 +1474,10 @@ export class NativeProviderHost {
 		let root: string | undefined;
 		let durableCredentialPaths: ReadonlySet<string> | undefined;
 		let sealedCapsule: Uint8Array | undefined;
+		// The stored capsule this run opened and its credential files' digest: the run saves its
+		// login back only when it changed it, and only over the capsule it opened.
+		let openedCapsule: Uint8Array | undefined;
+		let openedCredentialDigest: string | undefined;
 		let harnessStarted = false;
 		// Warm conversations: the capsule root this host kept from its previous company run, reused
 		// only while the stored capsule is byte for byte the one this host uploaded last.
@@ -1514,7 +1524,10 @@ export class NativeProviderHost {
 				);
 				durableCredentialPaths = new Set((await collectCapsuleFiles(root)).files.map((file) => file.path));
 			}
-			if (!root) throw new Error("Native credential root is unavailable");
+			if (!root || !durableCredentialPaths) throw new Error("Native credential root is unavailable");
+			stage = "credential-opening";
+			openedCredentialDigest = await credentialFilesDigest(root, durableCredentialPaths);
+			openedCapsule = capsule;
 			let result: { providerSessionId?: string };
 			let delivery: { messageCount: number; finalMessageId: string | null };
 			if (request.runtime === "company-path-v1") {
@@ -1574,23 +1587,47 @@ export class NativeProviderHost {
 			// A provider may rotate its login token before a later request fails.
 			// Preserve only the original credential paths, never transient sessions,
 			// and recheck live authority immediately before replacing the capsule.
-			if (root && durableCredentialPaths && harnessStarted) {
+			// Several runs may use one login at once and a renewal token works once:
+			// a run that did not change its login saves nothing, and a changed login is
+			// saved only over the capsule this run opened, never over a newer one.
+			if (root && durableCredentialPaths && harnessStarted && openedCapsule && openedCredentialDigest) {
 				stage = "completion-authority-validation";
 				try {
 					executionAbort.signal.throwIfAborted();
 					stage = "credential-sealing";
-					const refreshedCapsule = await sealNativeCredentialCapsule(
-						root,
-						this.#masterKey,
-						authority.credentialCapsuleId,
-						durableCredentialPaths,
-					);
+					const refreshedCapsule =
+						(await credentialFilesDigest(root, durableCredentialPaths)) === openedCredentialDigest
+							? undefined
+							: await sealNativeCredentialCapsule(
+									root,
+									this.#masterKey,
+									authority.credentialCapsuleId,
+									durableCredentialPaths,
+								);
 					stage = "completion-authority-validation";
 					await this.#controlPlane.validateExecution(request, executionAbort.signal);
 					executionAbort.signal.throwIfAborted();
-					stage = "credential-upload";
-					await this.#capsules.put(authority.encryptedCapsuleReference, refreshedCapsule, executionAbort.signal);
-					sealedCapsule = refreshedCapsule;
+					if (!refreshedCapsule) {
+						// Unchanged: the store keeps the capsule this run opened.
+						sealedCapsule = openedCapsule;
+					} else {
+						stage = "credential-upload";
+						const stored = await this.#capsules.get(authority.encryptedCapsuleReference, executionAbort.signal);
+						if (Buffer.from(stored).equals(Buffer.from(openedCapsule))) {
+							await this.#capsules.put(
+								authority.encryptedCapsuleReference,
+								refreshedCapsule,
+								executionAbort.signal,
+							);
+							sealedCapsule = refreshedCapsule;
+						} else {
+							// Another run or a new sign-in saved a newer login meanwhile. Keep it; this
+							// run's copy is not kept warm either.
+							console.error(
+								`Native provider execution kept a newer stored login for run ${authority.runId}; this run's changed login was not saved`,
+							);
+						}
+					}
 				} catch (error) {
 					const reason = stage === "credential-sealing" ? ` (${credentialSealingFailure(error)})` : "";
 					failure ??= new Error(`Native provider execution ${stage} stage failed${reason}`, { cause: error });
