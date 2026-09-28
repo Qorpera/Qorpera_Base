@@ -151,7 +151,7 @@ Step 2 shows the measured hours in Plan & usage and charges nothing.
 
 ## Billing records (build step 3)
 
-Migration `20260929090000_runtime_computer_hours_ledger`. In the database (5.6: plan, usage and
+Migration `20260928248300_runtime_computer_hours_ledger`. In the database (5.6: plan, usage and
 billing), never in the company folder. No billing table has a cascading link to `qorpera_profiles`
 (`qorpera_delete_hosted_profile` hard-deletes it) or to `auth.users`; `profile_id` and `user_id`
 are plain columns kept for bookkeeping.

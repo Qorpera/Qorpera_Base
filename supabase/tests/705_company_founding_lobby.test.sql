@@ -1,4 +1,4 @@
--- The founding lobby (20260929040000): friends take seats at a table, each founder writes a role,
+-- The founding lobby (20260928248200): friends take seats at a table, each founder writes a role,
 -- connects their own ChatGPT login and presses Ready for the current table revision, and one
 -- repeat-safe Start makes every founder at the table an owner and hands the vision and the
 -- founders to C2's creation commit, with the launcher paying for the kickoff.
