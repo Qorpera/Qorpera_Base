@@ -10,6 +10,8 @@ import { cloudNativeToolOperationEnvelope } from "../../packages/runtime/src/clo
 export interface MachineCommandAuthority {
 	inputSha256: string;
 	machineId: string;
+	/** Where the machine runs now: its LXD instance on the executor's node. */
+	placementId: string;
 	machine: string;
 	executorOwner: string;
 	providerId: string;
@@ -33,8 +35,10 @@ export async function authorizeMachineCommand(
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("MACHINE_COMMAND_AUTHORITY_INVALID");
 	const result = value as Record<string, unknown>;
 	if (result.schema !== "qorpera.machine-command-authority/v1") throw new Error("MACHINE_COMMAND_AUTHORITY_INVALID");
-	if (result.state === "refused" && result.reason === "MACHINE_NOT_RUNNING") throw new CloudMachineCommandRefusal("MACHINE_NOT_RUNNING");
+	if (result.state === "refused" && (result.reason === "MACHINE_NOT_RUNNING" || result.reason === "MACHINE_COMMAND_ENDED"))
+		throw new CloudMachineCommandRefusal(result.reason);
 	if (result.state !== "authorized" || result.machineId !== request.scope.machineId || result.commandId !== request.input.commandId ||
+		typeof result.placementId !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(result.placementId) ||
 		typeof result.inputSha256 !== "string" || !/^[0-9a-f]{64}$/.test(result.inputSha256) ||
 		typeof result.operationKey !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,191}$/.test(result.operationKey) ||
 		typeof result.machine !== "string" || !/^[a-z0-9][a-z0-9-]{0,39}$/.test(result.machine) ||
@@ -54,6 +58,6 @@ export async function authorizeMachineCommand(
 		if (inputSha256 !== result.inputSha256 || inputSha256 !== request.input.inputSha256) throw new Error("MACHINE_COMMAND_INPUT_DIFFERS");
 	}
 	signal.throwIfAborted();
-	return { inputSha256: result.inputSha256, machineId: result.machineId as string, machine: result.machine,
+	return { inputSha256: result.inputSha256, machineId: result.machineId as string, placementId: result.placementId, machine: result.machine,
 		executorOwner: result.executorOwner, providerId: result.providerId };
 }

@@ -13,8 +13,11 @@ const SHA = /^[0-9a-f]{64}$/;
 const NAME = /^[a-z][a-z0-9-]{0,62}$/;
 const GiB = 1024 ** 3;
 
-/** One company machine (2026-09-28): the VM an agent started for a job, of the
- * size it asked for, from the node's reviewed machine image. SQL placed it
+/** One placement of a company machine (2026-09-28): the VM an agent started
+ * for a job, of the size it asked for, from the node's reviewed machine image.
+ * The machine is the company's record; this is where it runs now, disposable
+ * (Stateless Compute: a machine that wakes where there is no room starts
+ * fresh as a new placement elsewhere). SQL placed it
  * (qorpera_place_company_machine) on this executor's node and fixed this
  * binding; nothing in it is chosen by the model except the size and, when a
  * coding session's repository is attached, which session. No credential,
@@ -22,6 +25,8 @@ const GiB = 1024 ** 3;
 export interface LxdCompanyMachineBinding {
 	schema: "qorpera.lxd-company-machine/v1";
 	machineId: string;
+	/** The placement's id: its node allocation, LXD name and journal. */
+	placementId: string;
 	companyId: string;
 	environmentId: string;
 	providerId: string;
@@ -40,6 +45,7 @@ export interface LxdCompanyMachineBinding {
 export const COMPANY_MACHINE_KEYS = [
 	"schema",
 	"machineId",
+	"placementId",
 	"companyId",
 	"environmentId",
 	"providerId",
@@ -94,9 +100,9 @@ export function parseCompanyMachinePolicy(value: unknown): Readonly<CompanyMachi
 	) as unknown as CompanyMachinePolicy;
 }
 
-export function lxdCompanyMachineName(machineId: string): string {
-	if (!UUID.test(machineId)) throw new Error("INVALID_COMPANY_MACHINE_BINDING");
-	return `qorpera-machine-${machineId.replaceAll("-", "")}`;
+export function lxdCompanyMachineName(placementId: string): string {
+	if (!UUID.test(placementId)) throw new Error("INVALID_COMPANY_MACHINE_BINDING");
+	return `qorpera-machine-${placementId.replaceAll("-", "")}`;
 }
 
 /** Where the coding NAS of this node keeps sessions' folders: needed only to
@@ -139,7 +145,9 @@ export function lxdCompanyMachinePlan(
 		Array.isArray(value) ||
 		Object.keys(value).sort().join() !== [...COMPANY_MACHINE_KEYS].sort().join() ||
 		value.schema !== "qorpera.lxd-company-machine/v1" ||
-		![value.machineId, value.companyId, value.environmentId].every((id) => typeof id === "string" && UUID.test(id)) ||
+		![value.machineId, value.placementId, value.companyId, value.environmentId].every(
+			(id) => typeof id === "string" && UUID.test(id),
+		) ||
 		(value.repositoryWorkerId !== null &&
 			(typeof value.repositoryWorkerId !== "string" || !UUID.test(value.repositoryWorkerId))) ||
 		![value.cpus, value.memoryBytes, value.rootDiskBytes].every((n) => Number.isSafeInteger(n) && n > 0) ||
@@ -164,7 +172,7 @@ export function lxdCompanyMachinePlan(
 		text,
 		instanceSha256,
 		request: {
-			name: lxdCompanyMachineName(binding.machineId),
+			name: lxdCompanyMachineName(binding.placementId),
 			type: "virtual-machine",
 			profiles: [],
 			source: { type: "image", fingerprint: binding.imageFingerprint },
@@ -175,7 +183,8 @@ export function lxdCompanyMachinePlan(
 				"limits.memory": String(binding.memoryBytes),
 				"user.qorpera.schema": binding.schema,
 				"user.qorpera.machine_id": binding.machineId,
-				"user.qorpera.allocation_id": binding.machineId,
+				"user.qorpera.placement_id": binding.placementId,
+				"user.qorpera.allocation_id": binding.placementId,
 				"user.qorpera.company_id": binding.companyId,
 				"user.qorpera.environment_id": binding.environmentId,
 				"user.qorpera.provider_id": binding.providerId,
@@ -237,18 +246,19 @@ export function assertLxdCompanyMachineInstance(
 }
 
 /** The coding machine's journaled lifecycle (reconcileCodingMachine) for a
- * company machine: its own journal folder, request and instance check. */
+ * company machine's placement: its own journal folder, request and instance
+ * check. SQL's custody receipts name the placement. */
 export function lxdCompanyMachineJournalPlan(
 	value: LxdCompanyMachineBinding,
 	storage?: CompanyMachineRepositoryStorage,
 ): CodingMachineJournalPlan & { readonly text: string } {
 	const plan = lxdCompanyMachinePlan(value, storage);
 	return Object.freeze({
-		machineId: plan.binding.machineId,
+		machineId: plan.binding.placementId,
 		instanceSha256: plan.instanceSha256,
 		project: plan.binding.project,
 		name: plan.request.name,
-		journalName: plan.binding.machineId,
+		journalName: plan.binding.placementId,
 		binding: plan.binding,
 		request: plan.request,
 		text: plan.text,

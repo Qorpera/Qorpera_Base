@@ -23,6 +23,7 @@ function companyMachineBinding(overrides: Partial<LxdCompanyMachineBinding> = {}
 	return {
 		schema: "qorpera.lxd-company-machine/v1",
 		machineId: id(2),
+		placementId: id(5),
 		companyId: id(3),
 		environmentId: id(4),
 		providerId: "machine-node",
@@ -58,7 +59,7 @@ describe("company machine plan", () => {
 		const plan = lxdCompanyMachinePlan(companyMachineBinding());
 		// The same text supabase/tests/628 asserts for this binding.
 		expect(plan.text).toBe(
-			`{"schema":"qorpera.lxd-company-machine/v1","machineId":"${id(2)}","companyId":"${id(3)}","environmentId":"${id(4)}",` +
+			`{"schema":"qorpera.lxd-company-machine/v1","machineId":"${id(2)}","placementId":"${id(5)}","companyId":"${id(3)}","environmentId":"${id(4)}",` +
 				`"providerId":"machine-node","providerPolicySha256":"${"a".repeat(64)}","project":"machines","imageFingerprint":"${"b".repeat(64)}",` +
 				`"bootstrapSha256":"${"c".repeat(64)}","storagePool":"machines","network":"machine-net","cpus":8,"memoryBytes":34359738368,` +
 				`"rootDiskBytes":107374182400,"repositoryWorkerId":null}`,
@@ -70,10 +71,10 @@ describe("company machine plan", () => {
 		expect(lxdCompanyMachinePlan(shuffled).instanceSha256).toBe(plan.instanceSha256);
 	});
 
-	it("creates exactly the machine SQL placed: its size, its markers, its network and nothing else", () => {
+	it("creates exactly the placement SQL made: its size, its markers, its network and nothing else", () => {
 		const { request, instanceSha256 } = lxdCompanyMachinePlan(companyMachineBinding());
 		expect(request).toEqual({
-			name: "qorpera-machine-00000000000040008000000000000002",
+			name: "qorpera-machine-00000000000040008000000000000005",
 			type: "virtual-machine",
 			profiles: [],
 			source: { type: "image", fingerprint: "b".repeat(64) },
@@ -84,7 +85,8 @@ describe("company machine plan", () => {
 				"limits.memory": "34359738368",
 				"user.qorpera.schema": "qorpera.lxd-company-machine/v1",
 				"user.qorpera.machine_id": id(2),
-				"user.qorpera.allocation_id": id(2),
+				"user.qorpera.placement_id": id(5),
+				"user.qorpera.allocation_id": id(5),
 				"user.qorpera.company_id": id(3),
 				"user.qorpera.environment_id": id(4),
 				"user.qorpera.provider_id": "machine-node",
@@ -127,10 +129,23 @@ describe("company machine plan", () => {
 		{ network: "Bad Net" },
 		{ imageFingerprint: "x" },
 		{ repositoryWorkerId: "worker" },
+		{ placementId: "placement" },
 	])("refuses a binding outside its bounds: %o", (overrides) => {
 		expect(() =>
 			lxdCompanyMachinePlan(companyMachineBinding(overrides as Partial<LxdCompanyMachineBinding>), storage),
 		).toThrow("INVALID_COMPANY_MACHINE");
+	});
+
+	it("journals and receipts the placement, not the machine: a new placement is a new instance", () => {
+		const journal = lxdCompanyMachineJournalPlan(companyMachineBinding(), storage);
+		expect([journal.machineId, journal.journalName, journal.name]).toEqual([
+			id(5),
+			id(5),
+			"qorpera-machine-00000000000040008000000000000005",
+		]);
+		const moved = lxdCompanyMachineJournalPlan(companyMachineBinding({ placementId: id(6) }), storage);
+		expect(moved.instanceSha256).not.toBe(journal.instanceSha256);
+		expect(moved.name).not.toBe(journal.name);
 	});
 
 	it("refuses an instance anything was added to", () => {

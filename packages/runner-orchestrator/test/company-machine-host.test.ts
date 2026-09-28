@@ -41,6 +41,7 @@ function binding(): LxdCompanyMachineBinding {
 	return {
 		schema: "qorpera.lxd-company-machine/v1",
 		machineId: id(2),
+		placementId: id(6),
 		companyId: id(3),
 		environmentId: id(4),
 		...policy,
@@ -59,8 +60,10 @@ async function fixture() {
 	const plan = lxdCompanyMachinePlan(binding());
 	const boot = randomUUID();
 	const entry: CompanyMachineEntry & { schema: string } = {
-		schema: "qorpera.company-machine-state/v1",
+		schema: "qorpera.company-machine-state/v2",
 		machineId: id(2),
+		placementId: id(6),
+		retired: false,
 		binding: binding(),
 		bindingText: plan.text,
 		instanceSha256: plan.instanceSha256,
@@ -79,17 +82,22 @@ async function fixture() {
 	};
 	const calls: { method: string; args: Record<string, unknown> }[] = [];
 	const refusals = new Map<string, string>();
+	const admissions: unknown[] = [];
 	const control = {
 		call: vi.fn(async (method: string, args: Record<string, unknown>) => {
 			calls.push({ method, args });
-			if (method === "qorpera_admit_executor_machines") return [];
+			if (method === "qorpera_admit_executor_machines") {
+				const next = admissions.shift() ?? [];
+				if (next instanceof Error) throw next;
+				return next;
+			}
 			if (method === "qorpera_list_executor_machines") return [structuredClone(entry)];
 			if (method === "qorpera_authorize_executor_machine") {
 				const intent = args.p_intent as CodingMachineIntent;
 				if (refusals.has(intent)) return { state: "refused", reason: refusals.get(intent) };
 				return {
 					schema: "qorpera.coding-machine-admission/v1",
-					machineId: id(2),
+					machineId: id(6),
 					workerId: null,
 					instanceSha256: plan.instanceSha256,
 					intent,
@@ -201,6 +209,7 @@ async function fixture() {
 		entry,
 		calls,
 		refusals,
+		admissions,
 		client,
 		host,
 		signal,
@@ -216,7 +225,7 @@ async function fixture() {
 describe("company machine host", () => {
 	it("creates and starts a wanted machine, claims its boot for it and tells SQL it runs", async () => {
 		const f = await fixture();
-		expect(await f.host.pass(f.signal)).toEqual([{ machineId: id(2), step: "start", state: "done" }]);
+		expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "start", state: "done" }]);
 		expect(f.instance()?.status).toBe("Running");
 		expect(f.client.submitInstanceOperation.mock.calls.map((call) => call[1].action)).toEqual(["create", "start"]);
 		const execs = f.client.execInstance.mock.calls.map((call) => call[2].slice(3));
@@ -226,7 +235,7 @@ describe("company machine host", () => {
 		]);
 		const marked = f.calls.find((call) => call.method === "qorpera_mark_company_machine_running");
 		expect(marked?.args).toMatchObject({
-			p_machine_id: id(2),
+			p_placement_id: id(6),
 			p_owner: "mx-a",
 			p_binding_text: f.entry.bindingText,
 			p_boot_id: f.boot,
@@ -252,7 +261,7 @@ describe("company machine host", () => {
 			],
 			cpu: { busyTicks: 100, totalTicks: 1000 },
 		});
-		expect(await f.host.pass(f.signal)).toEqual([{ machineId: id(2), step: "commands", state: "done" }]);
+		expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "commands", state: "done" }]);
 		let recorded = f.calls.filter((call) => call.method === "qorpera_record_company_machine_commands").at(-1);
 		// A command SQL does not list is never reported; the first sample has nothing to compare with.
 		expect(recorded?.args).toMatchObject({
@@ -276,7 +285,7 @@ describe("company machine host", () => {
 		const f = await fixture();
 		await f.host.pass(f.signal);
 		Object.assign(f.entry, { sleepDue: true, runningAt: new Date().toISOString(), bootId: f.boot });
-		expect(await f.host.pass(f.signal)).toEqual([{ machineId: id(2), step: "stop", state: "done" }]);
+		expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "stop", state: "done" }]);
 		expect(f.instance()?.status).toBe("Stopped");
 		expect(f.client.submitInstanceOperation.mock.calls.at(-1)?.[1]).toMatchObject({ action: "stop", force: true });
 		// The guest's own programs are asked to stop and its disk synced first.
@@ -288,17 +297,52 @@ describe("company machine host", () => {
 		expect(f.methods()).toContain("qorpera_suspend_company_machine");
 	});
 
+	it("leaves an idle machine's programs alone when SQL says it is in use again", async () => {
+		const f = await fixture();
+		await f.host.pass(f.signal);
+		Object.assign(f.entry, { sleepDue: true, runningAt: new Date().toISOString(), bootId: f.boot });
+		f.refusals.set("stop", "MACHINE_IN_USE");
+		const execs = f.client.execInstance.mock.calls.length;
+		expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "stop", state: "not-now" }]);
+		expect(f.client.execInstance.mock.calls.length).toBe(execs);
+		expect(f.instance()?.status).toBe("Running");
+		expect(f.methods()).not.toContain("qorpera_suspend_company_machine");
+	});
+
+	it("admits one machine per call until none is left, and a failed admission never stops the pass", async () => {
+		const f = await fixture();
+		f.admissions.push([id(2)], [id(9)], []);
+		await f.host.pass(f.signal);
+		expect(f.methods().filter((method) => method === "qorpera_admit_executor_machines")).toHaveLength(3);
+		f.admissions.push(new Error("deadlock detected"));
+		Object.assign(f.entry, { runningAt: new Date().toISOString(), bootId: f.boot });
+		expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "commands", state: "done" }]);
+	});
+
+	it("deletes a retired placement (its machine moved on) and releases it", async () => {
+		const f = await fixture();
+		await f.host.pass(f.signal);
+		Object.assign(f.entry, { retired: true, desiredState: "deleted", stopDue: true, removeDue: true });
+		await f.host.pass(f.signal);
+		Object.assign(f.entry, { stopDue: false, reserved: false });
+		expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "release", state: "done" }]);
+		expect(f.instance()).toBeUndefined();
+		expect(f.calls.find((call) => call.method === "qorpera_release_company_machine")?.args).toMatchObject({
+			p_placement_id: id(6),
+		});
+	});
+
 	it("waits when SQL refuses the effect, and deletes an asleep machine before releasing it", async () => {
 		const f = await fixture();
 		f.refusals.set("run", "NODE_CAPACITY_EXHAUSTED");
-		expect(await f.host.pass(f.signal)).toEqual([{ machineId: id(2), step: "start", state: "not-now" }]);
+		expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "start", state: "not-now" }]);
 		expect(f.client.submitInstanceOperation).not.toHaveBeenCalled();
 		f.refusals.clear();
 		await f.host.pass(f.signal);
 		Object.assign(f.entry, { stopDue: true, desiredState: "deleted" });
 		await f.host.pass(f.signal);
 		Object.assign(f.entry, { stopDue: false, reserved: false, removeDue: true });
-		expect(await f.host.pass(f.signal)).toEqual([{ machineId: id(2), step: "release", state: "done" }]);
+		expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "release", state: "done" }]);
 		expect(f.instance()).toBeUndefined();
 		expect(f.client.submitInstanceOperation.mock.calls.map((call) => call[1].action)).toEqual([
 			"create",
@@ -318,7 +362,7 @@ describe("company machine host", () => {
 			mode: 0o444,
 		}));
 		expect(await f.host.pass(f.signal)).toEqual([
-			{ machineId: id(2), step: "start", state: "failed", code: "COMPANY_MACHINE_HELPER_DIFFERS" },
+			{ placementId: id(6), step: "start", state: "failed", code: "COMPANY_MACHINE_HELPER_DIFFERS" },
 		]);
 		expect(f.calls.find((call) => call.method === "qorpera_record_company_machine_error")?.args).toMatchObject({
 			p_stage: "start",
@@ -332,8 +376,8 @@ describe("company machine host", () => {
 		f.client.readInstanceFile.mockImplementationOnce(async () => {
 			throw new Error("LXD instance file unavailable");
 		});
-		expect(await f.host.pass(f.signal)).toEqual([{ machineId: id(2), step: "guest", state: "pending" }]);
-		expect(await f.host.pass(f.signal)).toEqual([{ machineId: id(2), step: "start", state: "done" }]);
+		expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "guest", state: "pending" }]);
+		expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "start", state: "done" }]);
 	});
 
 	it("refuses a listed binding that is not the one SQL hashed", async () => {
@@ -350,14 +394,14 @@ describe("company machine host", () => {
 		const f = await fixture();
 		const commandId = randomUUID();
 		const receipt = await f.host.command(
-			{ machineId: id(2), commandId, inputSha256: "e".repeat(64) },
+			{ machineId: id(2), placementId: id(6), commandId, inputSha256: "e".repeat(64) },
 			{ action: "start", commandId, inputSha256: "e".repeat(64), command: "npm test", timeoutMs: null },
 			f.signal,
 		);
 		expect(receipt).toMatchObject({ machineId: id(2), commandId, state: "running" });
 		expect(f.client.pushInstanceFile.mock.calls[0]).toEqual([
 			"machines",
-			"qorpera-machine-00000000000040008000000000000002",
+			"qorpera-machine-00000000000040008000000000000006",
 			`/var/lib/qorpera-machine/inbox/${commandId}.json`,
 			JSON.stringify({
 				schema: "qorpera.machine-command-request/v1",
@@ -373,7 +417,7 @@ describe("company machine host", () => {
 		expect(f.client.execInstance.mock.calls.at(-1)?.[2].slice(3)).toEqual(["start", commandId]);
 		await expect(
 			f.host.command(
-				{ machineId: id(2), commandId, inputSha256: "f".repeat(64) },
+				{ machineId: id(2), placementId: id(6), commandId, inputSha256: "f".repeat(64) },
 				{ action: "read", read: { commandId, tail: true, limit: 100 } },
 				f.signal,
 			),
@@ -386,5 +430,5 @@ describe("company machine host", () => {
 it("keeps company machine journals apart from coding machines'", async () => {
 	const f = await fixture();
 	await f.host.pass(f.signal);
-	await expect(mkdir(join(state.controlPath, "company-machines", id(2)))).rejects.toThrow(/EEXIST/);
+	await expect(mkdir(join(state.controlPath, "company-machines", id(6)))).rejects.toThrow(/EEXIST/);
 });

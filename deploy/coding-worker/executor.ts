@@ -201,7 +201,8 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 		owner: config.owner, providerId: config.vmPolicy.providerId, peers: config.commandPeers, control, credential,
 		...(machineHost ? {
 			executeLocal: (request, authority, signal) => machineHost.command(
-				{ machineId: authority.machineId, commandId: request.input.commandId, inputSha256: authority.inputSha256 },
+				{ machineId: authority.machineId, placementId: authority.placementId, commandId: request.input.commandId,
+					inputSha256: authority.inputSha256 },
 				request.action === "start" ? { action: "start", commandId: request.input.commandId, inputSha256: request.input.inputSha256,
 					command: request.input.command, timeoutMs: request.input.timeoutMs }
 					: request.action === "read" ? { action: "read", read: request.input } : { action: "cancel", commandId: request.input.commandId },

@@ -1,6 +1,8 @@
 import type { CloudMachineCommandReceipt } from "../../packages/contracts/src/cloud-machine.ts";
 import {
 	type CloudMachineCommandHttpRequest,
+	CloudMachineCommandRefusal,
+	cloudMachineCommandRefusal,
 	createHttpCloudMachineCommandGateway,
 } from "../../packages/runtime/src/cloud-machine-command-http.ts";
 import type { CodingCommandPeer } from "./command-routing.ts";
@@ -37,9 +39,15 @@ export class MachineCommandRouter {
 			url: peer.origin, token: await this.#options.credential(peer.tokenCredential), binding: request.binding, fetch: this.#options.fetch,
 		});
 		// No retry: an uncertain start remains uncertain. The receiving peer has
-		// its own credential, rechecks SQL and may only execute locally.
-		return request.action === "start" ? gateway.start(request.scope, request.input, signal) :
-			request.action === "read" ? gateway.read(request.scope, request.input, signal) :
-			gateway.cancel(request.scope, request.input.commandId, signal);
+		// its own credential, rechecks SQL and may only execute locally; its
+		// refusal reaches the agent as the same refusal.
+		try {
+			return await (request.action === "start" ? gateway.start(request.scope, request.input, signal) :
+				request.action === "read" ? gateway.read(request.scope, request.input, signal) :
+				gateway.cancel(request.scope, request.input.commandId, signal));
+		} catch (error) {
+			const refusal = cloudMachineCommandRefusal(error);
+			throw refusal ? new CloudMachineCommandRefusal(refusal) : error;
+		}
 	}
 }

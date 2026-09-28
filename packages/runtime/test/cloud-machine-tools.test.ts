@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import type { CloudCompanyPathControl } from "../src/cloud-company-path-gateway.ts";
-import type { CloudMachineCommandGateway } from "../src/cloud-machine-command-http.ts";
+import { type CloudMachineCommandGateway, CloudMachineCommandRefusal } from "../src/cloud-machine-command-http.ts";
 import { cloudMachineTools } from "../src/cloud-machine-tools.ts";
 import { CloudNativeToolBoundary } from "../src/cloud-native-tool-boundary.ts";
 import {
@@ -195,6 +195,29 @@ describe("machine tools", () => {
 				arguments: args,
 				target: { realm: "company_machine", machineId: f.listed[0].machineId },
 			});
+		} finally {
+			f.boundary.close();
+		}
+	});
+
+	it("answers an executor's refusal as a refused result: nothing started", async () => {
+		const f = fixture();
+		try {
+			f.gateway.start.mockRejectedValueOnce(new CloudMachineCommandRefusal("MACHINE_COMMAND_ENDED"));
+			const given = await f.boundary.invoke("r1", "qorpera", "machine_run", {
+				operationKey: "suite:1",
+				machine: "build-a",
+				command: "npm test",
+			});
+			expect(given.success).toBe(true);
+			expect(given.contentItems[0].text).toContain("MACHINE_COMMAND_ENDED");
+			f.gateway.start.mockRejectedValueOnce(new Error("MACHINE_NOT_RUNNING"));
+			const stopped = await f.boundary.invoke("r2", "qorpera", "machine_run", {
+				operationKey: "suite:2",
+				machine: "build-a",
+				command: "npm test",
+			});
+			expect(stopped.contentItems[0].text).toContain("MACHINE_NOT_RUNNING");
 		} finally {
 			f.boundary.close();
 		}
