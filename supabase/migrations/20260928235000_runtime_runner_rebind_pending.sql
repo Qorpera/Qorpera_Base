@@ -9,12 +9,17 @@
 -- already bound to other compute authority"). The same held for the first provider's own retry after
 -- it retired the refused acquisition: a new activation for the same pending runner was refused.
 --
--- Such a runner can hold no activation anywhere: every provider reserves a machine (an allocation row
--- naming the runner) before it starts one. So when no allocation has ever named it, provisioning gives
--- the pending runner to the caller, with the caller's provider adapter and activation, and records a
--- registration receipt for it. A runner with an allocation (a machine was reserved, and may hold its
--- activation), an active or revoked runner, or one of other compute authority is refused as before.
--- Only the runner's own row is locked (it already was); the allocation check reads its unique index.
+-- When no allocation has ever named the runner, provisioning gives the pending runner to the caller,
+-- with the caller's provider adapter and a new activation, and records a registration receipt for it.
+-- Activation needs a pending runner and its current activation digest (qorpera_activate_runner, under
+-- the runner row's lock), so the old activation can never activate it afterwards: at worst a start
+-- the old provider still made fails. The node providers (LXD and shared execution) reserve a machine
+-- before they hand an activation to anything that could use it, so for them a runner without an
+-- allocation is one no machine holds. A runner with an allocation (even a released one), an active or
+-- revoked runner, or one of other compute authority is refused as before. Locks: the run and job rows
+-- are read for share first, as before (a reservation locks the job row for update, so a rebind and a
+-- reservation of the same run never interleave), then the runner row for update; the allocation check
+-- reads its unique runner index; the receipt is written as the first registration's is.
 do $$
 declare
 	v_target regprocedure := 'public.qorpera_provision_execution_runner(uuid,uuid,text,text)'::regprocedure;
