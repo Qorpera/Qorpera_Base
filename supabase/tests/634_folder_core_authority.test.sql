@@ -229,10 +229,16 @@ begin
 	-- The same settings again change nothing and take no clock.
 	r := public.qorpera_folder_set_resource(c_env, pg_temp.member(1), 'teams/sales', 'subtree', 'company_shared', 'normal');
 	if r ->> 'seq' is not null then raise exception 'An unchanged resource journals nothing: %', r; end if;
-	-- An admin's policy change narrows and bumps the resource itself.
-	r := public.qorpera_folder_set_resource(c_env, pg_temp.member(5), 'Teams/Sales', 'subtree', 'company_shared', 'protected');
+	-- An admin's match change narrows, bumps the resource and, since paths move between them, its parent. The
+	-- resource keeps its spelling. The protected policy is refused until C2 enforces it.
+	r := public.qorpera_folder_set_resource(c_env, pg_temp.member(5), 'Teams/Sales', 'exact', 'company_shared', 'normal');
 	if (r ->> 'authorityRevision')::bigint <> 2 or (select (authority ->> 'narrowing')::boolean from public.qorpera_folder_journal
-		where environment_id = c_env and seq = (r ->> 'seq')::bigint) is not true then raise exception 'A policy change: %', r; end if;
+			where environment_id = c_env and seq = (r ->> 'seq')::bigint) is not true
+		or (select authority_revision from public.qorpera_company_path_resources where id = v_root.id) <> v_root.authority_revision + 2
+		or (select path from public.qorpera_company_path_resources where id = v_res) <> 'teams/sales' then
+		raise exception 'A match change: %', r; end if;
+	perform pg_temp.raises(format('select public.qorpera_folder_set_resource(%L, %L, %L, %L, %L, %L)', c_env, pg_temp.member(1),
+		'teams/sales', 'exact', 'company_shared', 'protected'), '0A000');
 	-- A contributor makes no shared resource.
 	perform pg_temp.raises(format('select public.qorpera_folder_set_resource(%L, %L, %L, %L, %L, %L)', c_env, pg_temp.member(2),
 		'teams/other', 'subtree', 'company_shared', 'normal'), '42501');
@@ -248,9 +254,9 @@ begin
 	perform pg_temp.raises(format('select public.qorpera_folder_set_resource(%L, %L, %L, %L, %L, %L)', c_env, pg_temp.member(1),
 		c_private || '/x', 'subtree', 'company_shared', 'normal'), '42501');
 	perform pg_temp.raises(format('select public.qorpera_folder_set_resource(%L, %L, %L, %L, %L, %L)', c_env, pg_temp.member(1),
-		c_private, 'subtree', 'member_private', 'protected'), '42501');
+		c_private, 'exact', 'member_private', 'normal'), '42501');
 	perform pg_temp.raises(format('select public.qorpera_folder_set_resource(%L, %L, %L, %L, %L, %L)', c_env, pg_temp.member(5),
-		c_private || '/y', 'subtree', 'member_private', 'protected'), '42501');
+		c_private || '/y', 'subtree', 'member_private', 'normal'), '42501');
 	perform pg_temp.raises(format('select public.qorpera_folder_set_resource(%L, %L, %L, %L, %L, %L)', c_env, pg_temp.member(2),
 		'elsewhere', 'subtree', 'member_private', 'normal'), '42501');
 	perform pg_temp.raises(format('select public.qorpera_folder_set_resource(%L, %L, %L, %L, %L, %L)', c_env, pg_temp.member(2),
@@ -291,7 +297,7 @@ begin
 		(c_env, 'ties/Øst', 'subtree', 'company_shared', 'normal', '63400000-0000-4000-8000-000000000001'),
 		(c_env, 'ties/øst', 'subtree', 'company_shared', 'normal', '63400000-0000-4000-8000-000000000001');
 	perform pg_temp.raises(format('select public.qorpera_folder_set_resource(%L, %L, %L, %L, %L, %L)', c_env, pg_temp.member(1),
-		'ties/ØST', 'subtree', 'company_shared', 'protected'), '23505');
+		'ties/ØST', 'exact', 'company_shared', 'normal'), '23505');
 end $$;
 
 
@@ -526,6 +532,86 @@ begin
 		'office-1', c_refused), '0A000');
 	if exists (select 1 from public.qorpera_folder_entries where environment_id = c_env and key_text = 'refused') then
 		raise exception 'A refused run applied a unit'; end if;
+end $$;
+
+
+-- A match change from exact to subtree moves paths from the parent to the resource: a run that read one under the
+-- parent is re-checked by its next recheck and its next release, and refused where it may no longer read.
+do $$
+declare
+	c_env constant uuid := '63400000-0000-4000-8000-000000000020'; c_profile constant uuid := '63400000-0000-4000-8000-000000000010';
+	v jsonb := pg_temp.run('63400000-0000-4000-8000-0000000000a1', 'human', '63400000-0000-4000-8000-000000000002'); e jsonb;
+begin
+	perform pg_temp.expect(pg_temp.commit('{"kind":"platform"}', 'finance-setup', jsonb_build_array(jsonb_build_object('op','mkdir','path','finance'),
+		jsonb_build_object('op','write','path','finance/q.txt','file',pg_temp.stage('ledger')))), 2, 'saved');
+	perform public.qorpera_folder_set_resource(c_env, pg_temp.member(1), 'finance', 'exact', 'company_shared', 'normal');
+	e := pg_temp.read('finance/q.txt', v) -> 'entry';
+	if e -> 'authority' ->> 'resourceId' <> (pg_temp.root()).id::text then raise exception 'An exact resource covers only itself: %', e; end if;
+	perform pg_temp.release(v, extensions.gen_random_uuid(), jsonb_build_array(e));
+	perform public.qorpera_folder_set_resource(c_env, pg_temp.member(1), 'finance', 'subtree', 'company_shared', 'normal');
+	if (pg_temp.read('finance/q.txt', v) ->> 'found')::boolean then raise exception 'The agent has no grant on finance/'; end if;
+	perform pg_temp.raises(format('select public.qorpera_folder_run_reads_current(%L, %L, %L)', c_env, c_profile, pg_temp.resolved(v)),
+		'42501');
+	perform pg_temp.raises(format('select pg_temp.release(%L, %L, %L)', v, extensions.gen_random_uuid(), jsonb_build_array(e)), '42501');
+end $$;
+
+
+-- The seeded root and rules/ are fixed: no resource at or under rules/, no change to it or the root, no revoke of
+-- either, no grant on rules/.
+do $$
+declare c_env constant uuid := '63400000-0000-4000-8000-000000000020'; v_rules uuid;
+begin
+	select id into v_rules from public.qorpera_company_path_resources where environment_id = c_env and path = 'rules';
+	perform pg_temp.raises(format('select public.qorpera_folder_set_resource(%L, %L, %L, %L, %L, %L)', c_env, pg_temp.member(1),
+		'rules', 'subtree', 'company_shared', 'normal'), '42501');
+	perform pg_temp.raises(format('select public.qorpera_folder_set_resource(%L, %L, %L, %L, %L, %L)', c_env, pg_temp.member(5),
+		'rules/tone.md', 'exact', 'company_shared', 'normal'), '42501');
+	perform pg_temp.raises(format('select public.qorpera_folder_set_resource(%L, %L, %L, %L, %L, %L)', c_env, pg_temp.member(1),
+		'Rules/Team', 'subtree', 'company_shared', 'normal'), '42501');
+	perform pg_temp.raises(format('select public.qorpera_folder_set_resource(%L, %L, %L, %L, %L, %L)', c_env, pg_temp.member(1),
+		'', 'subtree', 'company_shared', 'normal'), '22023');
+	perform pg_temp.raises(format('select public.qorpera_folder_revoke(%L, %L, %L)', c_env, pg_temp.member(1), v_rules), '42501');
+	perform pg_temp.raises(format('select public.qorpera_folder_grant(%L, %L, %L, %L, %L, %L)', c_env, pg_temp.member(1), v_rules,
+		'staff_agent', '63400000-0000-4000-8000-0000000000a1', array['read','write']), '42501');
+	if (select scope from public.qorpera_company_path_resources where id = v_rules) <> 'company_rules' then
+		raise exception 'rules/ keeps its scope'; end if;
+end $$;
+
+
+-- A receipt is the caller's word: an ancestor resource, a missing grant, or another agent's grant does not pass. Where
+-- the agent cannot read the path, the release refuses; where it can, the real pair is recorded. A forged row with
+-- no grant is re-resolved and retired by the recheck.
+do $$
+declare
+	c_env constant uuid := '63400000-0000-4000-8000-000000000020'; c_profile constant uuid := '63400000-0000-4000-8000-000000000010';
+	c_a constant uuid := '63400000-0000-4000-8000-0000000000a1'; c_b constant uuid := '63400000-0000-4000-8000-0000000000a2';
+	v jsonb := pg_temp.run('63400000-0000-4000-8000-0000000000a1', 'human', '63400000-0000-4000-8000-000000000002');
+	v_root public.qorpera_company_path_resources%rowtype := pg_temp.root(); v_vault uuid; v_gb uuid; v_ga uuid;
+begin
+	v_vault := public.qorpera_folder_set_resource(c_env, pg_temp.member(1), 'vault2', 'subtree', 'company_shared', 'normal') ->> 'resourceId';
+	v_gb := public.qorpera_folder_grant(c_env, pg_temp.member(1), v_vault, 'staff_agent', c_b, array['read']) ->> 'grantId';
+	perform pg_temp.expect(pg_temp.commit('{"kind":"platform"}', 'vault2-setup', jsonb_build_array(jsonb_build_object('op','mkdir','path','vault2'),
+		jsonb_build_object('op','write','path','vault2/x.txt','file',pg_temp.stage('vault')))), 2, 'saved');
+	v_root := pg_temp.root();
+	v_ga := (pg_temp.agent_grant(v_root.id, c_a)).id;
+	perform pg_temp.raises(format('select pg_temp.release(%L, %L, %L)', v, extensions.gen_random_uuid(), jsonb_build_array(jsonb_build_object(
+		'path', 'vault2/x.txt', 'authority', jsonb_build_object('resourceId', v_root.id, 'resourceRevision', v_root.authority_revision)))), '42501');
+	perform pg_temp.raises(format('select pg_temp.release(%L, %L, %L)', v, extensions.gen_random_uuid(), jsonb_build_array(jsonb_build_object(
+		'path', 'vault2/x.txt', 'authority', jsonb_build_object('resourceId', v_vault, 'resourceRevision', 1, 'grantId', v_gb,
+			'grantRevision', 1)))), '42501');
+	perform pg_temp.raises(format('select pg_temp.release(%L, %L, %L)', v, extensions.gen_random_uuid(), jsonb_build_array(jsonb_build_object(
+		'path', 'vault2/x.txt', 'authority', jsonb_build_object('resourceId', v_root.id, 'resourceRevision', v_root.authority_revision,
+			'grantId', v_ga, 'grantRevision', 1)))), '42501');
+	perform pg_temp.release(v, extensions.gen_random_uuid(), jsonb_build_array(jsonb_build_object('path', 'shared/a.txt',
+		'authority', jsonb_build_object('resourceId', v_root.id, 'resourceRevision', v_root.authority_revision))));
+	if exists (select 1 from pg_temp.reads(v) x where x.grant_id is null)
+		or not exists (select 1 from pg_temp.reads(v) x where x.resource_id = v_root.id and x.grant_id = v_ga) then
+		raise exception 'A forged receipt for a readable path records the real pair: %', (select jsonb_agg(to_jsonb(x)) from pg_temp.reads(v) x); end if;
+	perform public.qorpera_folder_write_read_set(c_env, (v ->> 'runId')::uuid, jsonb_build_array(jsonb_build_object('resourceId', v_root.id,
+		'grantId', null, 'resourceRevision', v_root.authority_revision, 'grantRevision', null)), null, null);
+	if public.qorpera_folder_run_reads_current(c_env, c_profile, pg_temp.resolved(v)) < 1
+		or exists (select 1 from pg_temp.reads(v) x where x.grant_id is null) then
+		raise exception 'A row with no grant outside rules/ is retired: %', (select jsonb_agg(to_jsonb(x)) from pg_temp.reads(v) x); end if;
 end $$;
 
 

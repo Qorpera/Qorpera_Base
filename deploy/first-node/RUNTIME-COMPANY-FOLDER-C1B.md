@@ -515,8 +515,11 @@ change waits at most a few commit tails in expectation.
   check.
   - At its start, before it decides any unit, the commit reads `last_seq`
     with a plain read (`as_of`) and records it on the commit row.
-  - Right after its own clock increment, while it holds the clock, it looks
-    for a narrowing `authority` row after `as_of`.
+  - It then locks the clock row (`FOR NO KEY UPDATE`) and, while it holds
+    it, looks for a narrowing `authority` row after `as_of`. It increments
+    the clock only when there is none, so a refused commit leaves no updater
+    on the clock row, which every commit holds `KEY SHARE` through its foreign
+    keys (implementation review r1, finding 5).
     - If one exists, a narrowing committed while this change set was being
       decided. The commit refuses with the QRC01 envelope (409, code
       `folder_authority_changed`). The caller retries with the same operation
@@ -567,14 +570,24 @@ consent (contract 4.3).
 | Resource | Create or change | Grant and revoke |
 | --- | --- | --- |
 | at or under a member's `members/<id>/private` | that member only, and only as `member_private` owned by them | that member only, and only to agents (`staff_agent` principals). A member-principal grant is refused |
+| the root and `rules/` (seeded) | nobody: they are fixed. No resource is made at or under `rules/` | no grant on `rules/` (its `company_rules` scope decides); neither is revoked |
 | any other | owners and admins; every scope but `member_private` has no owner | owners and admins |
+
+The `protected` policy is refused (0A000) until C2 enforces it; today no
+folder-v2 path reads `policy`.
 
 **The functions:**
 - `qorpera_folder_set_resource(env, actor, path, match, scope, policy)`
   creates or changes a resource, and its owner is always the actor for
-  `member_private`. What counts as narrowing:
+  `member_private`. A resource keeps its spelling. What counts as narrowing:
   - a new narrower resource bumps its covering parent;
+  - a change of match also bumps the covering parent, with the resource's
+    key as prefix: paths move between the parent and the resource
+    (implementation review r1, finding 1);
   - a change of match, scope or policy bumps the resource itself.
+
+  The covering parent is the nearest `subtree` resource at a proper ancestor
+  of the key, the root included (`qorpera_folder_parent_resource`).
 
   Clearing `revoked_at` (a revoked resource set again) is a widening.
 - `qorpera_folder_grant(env, actor, resource_id, principal_kind,
@@ -588,14 +601,17 @@ consent (contract 4.3).
 **Order.**
 1. The member actor, `KEY SHARE` (rank 1). A grant also locks its principal
    `KEY SHARE`: a member at rank 1, an agent at rank 2.
-2. The resource rows, `FOR NO KEY UPDATE` (rank 6): the changed one and, when
-   narrowing, the covering parent, ancestors first. A grant or revoke locks its
-   resource this way too, so changes to one resource and its grants take turns.
+2. The resource rows, `FOR NO KEY UPDATE` (rank 6): the covering parent,
+   then the changed one. When nothing covers the key (a tie above it), the
+   root instead, so two calls on one key always take turns. A grant or revoke
+   locks its resource this way too, so changes to one resource and its grants
+   take turns.
 3. The tie check, in a new statement after the parent lock. A resource that
    would share a folder key with another is refused, including one made while
-   this call waited for the parent (the first one wins). Then the parent
-   again: if a narrower resource now covers the path, it is the one a new
-   resource would narrow, and it is not locked. The call refuses with the QRC01
+   this call waited for the parent (the first one wins). Then, for a new
+   resource or a change of match, the parent again: if a narrower resource
+   now covers the key, its paths are the ones that move, and it is not
+   locked. The call refuses with the QRC01
    envelope (`folder_authority_changed`) and the caller retries.
 4. Grants (rank 7), read in a new statement after the resource lock, so a
    replacement sees the grant a concurrent one made.
@@ -632,15 +648,22 @@ them at command end.
 The call:
 1. runs the full run check: pause, job `KEY SHARE`, fence, pause re-read, the
    run's principals and its wake;
-2. for each (resource, grant) in the receipts, checks that:
-   - the receipt's resource still covers each of its paths. When the pair's
-     revisions are unchanged, a key-prefix test is enough: the parent bump
-     guarantees that nothing narrower was inserted;
+2. for each (resource, grant) in the receipts, checks that (a receipt is the
+   caller's word, so nothing else is taken from it; implementation review r1,
+   finding 3):
+   - the receipt's resource is each of its paths' covering resource now;
    - the revisions are unchanged;
-   - the grant is neither expired nor revoked.
+   - the grant is null only on `rules/`, whose scope lets agents read.
+     Otherwise it is a live, unexpired `read` grant of this run's agent on
+     this resource at its current `version`.
 
    Where any of that fails, it re-resolves those paths for the run now, and
-   refuses the whole release (42501) if any path is no longer readable;
+   refuses the whole release (42501) if any path is no longer readable. The
+   check and the new receipt are taken in one statement: the receipt reads
+   the statement's snapshot, and the check reads that one or a newer one (a
+   legacy helper it calls is volatile). So the receipt is never newer than
+   the check, and a narrowing between them shows as changed at the next
+   recheck (finding 4);
 3. writes the read set: for every (resource, grant) that covers a released
    path, it upserts one row keeping `least(recorded, observed)`. That is the
    receipt's pair when it passed, or the pair found by re-resolution when it
@@ -652,7 +675,9 @@ The call:
    their receipts, plus the output digest.
 
 A release id is used once. A replay with the same content returns the stored
-result; a replay with different content raises 22023.
+result; a replay with different content raises 22023. The id is claimed
+first, after the pause check, as a commit claims its operation key, so a
+concurrent release of the same id waits and then replays.
 
 **Tables.**
 - `qorpera_folder_run_reads (run_id, resource_id, grant_id, resource_revision,
@@ -670,7 +695,9 @@ actor)`, for effects:
 1. It reads each read-set row's current revisions, and whether its grant is
    expired, revoked or missing. It captures these values before doing
    anything else.
-2. A row passes when the revisions match and the grant is live.
+2. A row passes when the revisions match and the grant is live. A row with
+   no grant is right only on `rules/`; anywhere else it is treated as changed,
+   re-resolved and deleted.
 3. For a row that changed, it finds the key prefixes that changed:
    - a changed resource revision: from `qorpera_folder_authority_changes`
      (environment, resource, revision, prefix; indexed), for the revisions
@@ -682,6 +709,7 @@ actor)`, for effects:
    they were filed under.
    - An expired grant re-resolves every path the row covers.
    - It refuses (42501) if any path is no longer readable.
+   - Each path's check and its new receipt are taken in one statement.
 4. For every (resource, grant) that now covers a re-resolved path, it upserts
    a read-set row with the captured current revisions, keeping `least()`. So
    a narrower resource found now is watched from then on.
@@ -876,15 +904,21 @@ checked and attributed.
   until those paths take the job first.
 - **C1b-3** relaxes `qorpera_folder_commits_run_attribution`: a view's save
   after its turn has an agent actor and no live run.
-- **C1c: no savepoints around folder commits.** A stress run that wrapped
-  each commit in a PL/pgSQL exception block (a subtransaction) hit
-  PostgreSQL 17.6's internal error "new multixact has more than one updating
-  member" twice in about 2,000 commits, on the clock row every commit locks
-  `KEY SHARE` through its foreign keys and then updates. The same load with
-  plain calls, one transaction each, never did (four runs, about 4,500
-  operations). Callers retry a refused commit in a new transaction, as the
-  runtime does; C1c must not catch a commit's error inside the transaction
-  that goes on.
+- **Savepoints around folder commits.** A stress run that wrapped each
+  commit in a PL/pgSQL exception block hit PostgreSQL 17.6's internal error
+  "new multixact has more than one updating member". The cause (review r1,
+  finding 5): a commit refused by the authority check had already updated the
+  clock row, which every commit holds `KEY SHARE` through its foreign keys,
+  so each refusal left an aborted updater on it. The commit now increments the
+  clock only after the check passes. Callers should still retry a refused
+  commit in a new transaction, as the runtime does.
+- **C1e: authority-change latency.** Measured in review r1: a grant took
+  13 ms at p50, 108 ms at p95 and 343 ms at most while 16 clients committed
+  without pause (3.8 ms idle). C1e adds revoke latency to its pass criteria.
+  If the tail grows at 32 to 64 clients, point the folder tables' foreign
+  keys at a dedicated anchor row that is never locked exclusively, not at
+  `qorpera_company_files` (its upload quota trigger locks that row
+  `FOR UPDATE`).
 - **Runbook, after a PostgreSQL major upgrade** (or any change to
   `qorpera_folder_key`): besides recomputing stored keys (core §2), run
   `REINDEX INDEX qorpera_company_path_resources_folder_key`. An `update …

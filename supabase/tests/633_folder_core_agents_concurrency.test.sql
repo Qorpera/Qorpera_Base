@@ -98,7 +98,7 @@ begin
 	return v_state;
 end $$;
 
-select dblink_connect(name, 'dbname=qorpera_test') from unnest(array['arace_one','arace_two']) name;
+select dblink_connect(name, 'dbname=' || current_database()) from unnest(array['arace_one','arace_two']) name;
 select dblink_exec(name, $q$set request.jwt.claims = '{"role":"service_role"}'$q$) from unnest(array['arace_one','arace_two']) name;
 select set_config('qorpera_test.pid_' || name, pid::text, false)
 from unnest(array['arace_one','arace_two']) name, lateral dblink(name, 'select pg_backend_pid()') as t(pid integer);

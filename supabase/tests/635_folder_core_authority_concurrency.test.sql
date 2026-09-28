@@ -119,6 +119,13 @@ create function pg_temp.release(p_actor jsonb, p_path text) returns jsonb langua
 		repeat('0', 64))
 	from (select public.qorpera_folder_read('63500000-0000-4000-8000-000000000020', p_actor, p_path) -> 'entry' as e) x
 $$;
+create function pg_temp.result(p_conn text) returns jsonb language plpgsql as $$
+declare v jsonb;
+begin
+	select r into v from dblink_get_result(p_conn) as t(r jsonb);
+	perform * from dblink_get_result(p_conn) as t(r jsonb);
+	return v;
+end $$;
 -- Reads a sent statement's error (state and message) or 'ok', and drains the connection.
 create function pg_temp.outcome(p_conn text) returns text language plpgsql as $$
 declare v_state text := 'ok';
@@ -134,7 +141,7 @@ begin
 	return v_state;
 end $$;
 
-select dblink_connect(name, 'dbname=qorpera_test') from unnest(array['auth_one','auth_two','auth_three']) name;
+select dblink_connect(name, 'dbname=' || current_database()) from unnest(array['auth_one','auth_two','auth_three']) name;
 select dblink_exec(name, $q$set request.jwt.claims = '{"role":"service_role"}'$q$) from unnest(array['auth_one','auth_two','auth_three']) name;
 select set_config('qorpera_test.pid_' || name, pid::text, false)
 from unnest(array['auth_one','auth_two','auth_three']) name, lateral dblink(name, 'select pg_backend_pid()') as t(pid integer);
@@ -194,7 +201,7 @@ begin
 	perform dblink_send_query('auth_two', pg_temp.sql_commit(v, 'narrow-run-1', v_units));
 	if not pg_temp.waits_for('auth_two', 'auth_one') then raise exception 'The run commit did not reach rank 1'; end if;
 	perform dblink_send_query('auth_three', pg_temp.sql_mutate('set_resource', '63500000-0000-4000-8000-000000000020',
-		pg_temp.member(1)::text, 'depts/ops', 'subtree', 'company_shared', 'protected'));
+		pg_temp.member(1)::text, 'depts/ops', 'exact', 'company_shared', 'normal'));
 	if not pg_temp.finishes_unblocked('auth_three', 'auth_two') then raise exception 'A narrowing waited for a run commit in flight'; end if;
 	v_state := pg_temp.outcome('auth_three');
 	if v_state <> 'ok' then raise exception 'The narrowing: %', v_state; end if;
@@ -305,7 +312,7 @@ select public.qorpera_folder_grant('63500000-0000-4000-8000-000000000020', pg_te
 	'staff_agent', '63500000-0000-4000-8000-0000000000a1', array['read']);
 select pg_temp.release(pg_temp.actor('run_one'), 'misc/m.txt');
 select public.qorpera_folder_set_resource('63500000-0000-4000-8000-000000000020', pg_temp.member(1), 'depts/ops', 'subtree', 'company_shared', 'normal');
-select public.qorpera_folder_set_resource('63500000-0000-4000-8000-000000000020', pg_temp.member(1), 'misc', 'subtree', 'company_shared', 'protected');
+select public.qorpera_folder_set_resource('63500000-0000-4000-8000-000000000020', pg_temp.member(1), 'misc', 'exact', 'company_shared', 'normal');
 do $$
 declare v jsonb := pg_temp.actor('run_one'); v_state text; v_sql text;
 begin
@@ -381,6 +388,39 @@ begin
 		is distinct from '[["read"]]'::jsonb then
 		raise exception 'One live grant, the second: %', (select jsonb_agg(to_jsonb(g)) from public.qorpera_company_path_grants g
 			where g.resource_id = v_res); end if;
+end $$;
+
+-- I. Two private folders whose keys differ only in Unicode, where nothing covers them yet: the calls take turns on
+-- the root, and the second is refused as a tie.
+do $$
+declare v_state text; c_private constant text := 'members/63500000-0000-4000-8000-000000000002/private';
+begin
+	perform dblink_exec('auth_one', 'begin');
+	perform * from dblink('auth_one', pg_temp.sql_mutate('set_resource', '63500000-0000-4000-8000-000000000020', pg_temp.member(2)::text,
+		c_private || '/Østen', 'subtree', 'member_private', 'normal')) as t(r jsonb);
+	perform dblink_send_query('auth_two', pg_temp.sql_mutate('set_resource', '63500000-0000-4000-8000-000000000020',
+		pg_temp.member(2)::text, c_private || '/østen', 'subtree', 'member_private', 'normal'));
+	if not pg_temp.waits_for('auth_two', 'auth_one') then raise exception 'The second private folder did not wait'; end if;
+	perform dblink_exec('auth_one', 'commit');
+	v_state := pg_temp.outcome('auth_two');
+	if v_state not like '23505 %' then raise exception 'A concurrent private tie must be refused, got %', v_state; end if;
+end $$;
+
+-- J. Two releases with one id at once: the second waits for the first and then replays its result.
+do $$
+declare v jsonb := pg_temp.actor('run_one'); v_sql text; v_rel uuid := extensions.gen_random_uuid(); r jsonb;
+begin
+	v_sql := format('select public.qorpera_folder_record_release(%L, %L, %L, %L, %L)', '63500000-0000-4000-8000-000000000020', v, v_rel,
+		(select jsonb_build_array(jsonb_build_object('path', e ->> 'path', 'version', e ->> 'version', 'authority', e -> 'authority'))
+			from (select public.qorpera_folder_read('63500000-0000-4000-8000-000000000020', v, 'depts/ops/q.txt') -> 'entry' as e) x),
+		repeat('0', 64));
+	perform dblink_exec('auth_one', 'begin');
+	perform * from dblink('auth_one', v_sql) as t(r jsonb);
+	perform dblink_send_query('auth_two', v_sql);
+	if not pg_temp.waits_for('auth_two', 'auth_one') then raise exception 'The second release did not wait for the first'; end if;
+	perform dblink_exec('auth_one', 'commit');
+	r := pg_temp.result('auth_two');
+	if (r ->> 'replay')::boolean is not true then raise exception 'The second release replays: %', r; end if;
 end $$;
 
 select dblink_disconnect(name) from unnest(array['auth_one','auth_two','auth_three']) name;

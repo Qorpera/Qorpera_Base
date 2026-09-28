@@ -90,27 +90,52 @@ returns boolean language sql immutable set search_path = '' as $$
 		else p_role in ('owner','admin') end
 $$;
 
--- Creates or changes a resource. A new narrower resource bumps its covering parent's revision; a change bumps its own.
+-- The resource that covers a key's descendants from above: the nearest subtree resource at a proper ancestor (the
+-- root included). Null when that ancestor is a tie (core §2: a tie covers nothing).
+create function public.qorpera_folder_parent_resource(p_environment_id uuid, p_key text)
+returns public.qorpera_company_path_resources language plpgsql stable security definer set search_path = '' as $$
+declare v_resource public.qorpera_company_path_resources%rowtype;
+begin
+	if p_key = '' then return null; end if;
+	select r.* into v_resource from public.qorpera_company_path_resources r
+	where r.environment_id = p_environment_id and r.path_match = 'subtree'
+		and public.qorpera_folder_key(r.path) = any (array[''] || public.qorpera_folder_ancestors(p_key))
+	order by length(public.qorpera_folder_key(r.path)) desc, r.id limit 1;
+	if v_resource.id is not null and exists (select 1 from public.qorpera_company_path_resources r
+		where r.environment_id = p_environment_id and r.id <> v_resource.id
+			and public.qorpera_folder_key(r.path) = public.qorpera_folder_key(v_resource.path)) then
+		return null; end if;
+	return v_resource;
+end $$;
+
+-- Creates or changes a resource. A new resource, or a change of match, moves paths between the resource and its
+-- covering parent, so the parent's revision is bumped too; any change bumps the resource's own. The seeded root and
+-- rules/ are fixed. The protected policy is refused until C2 enforces it.
 create function public.qorpera_folder_set_resource(p_environment_id uuid, p_actor jsonb, p_path text, p_match text, p_scope text,
 	p_policy text)
 returns jsonb language plpgsql security definer set search_path = '' as $$
 declare
 	v_file public.qorpera_company_files%rowtype; v_role public.qorpera_profile_role; v_key text; v_user uuid;
 	v_parent public.qorpera_company_path_resources%rowtype; v_current public.qorpera_company_path_resources%rowtype;
-	v_changes jsonb := '[]'::jsonb; v_narrowing boolean := false; v_seq bigint;
+	v_changes jsonb := '[]'::jsonb; v_narrowing boolean := false; v_seq bigint; v_bump_parent boolean;
 begin
 	if auth.role() is distinct from 'service_role' then raise exception 'Folder core authority is required' using errcode = '42501'; end if;
 	if current_setting('transaction_isolation') <> 'read committed' then
 		raise exception 'Folder authority changes run at read committed' using errcode = '25000'; end if;
 	select * into v_file from public.qorpera_company_files where environment_id = p_environment_id;
 	if not found or v_file.core <> 'folder-v2' then raise exception 'Company folder is unavailable' using errcode = '42501'; end if;
-	if not public.qorpera_company_path_valid(p_path, true) or p_match not in ('exact','subtree')
-		or p_scope not in ('company_shared','member_private') or p_policy not in ('normal','protected')
-		or (p_path = '' and (p_match <> 'subtree' or p_scope <> 'company_shared')) then
+	if not public.qorpera_company_path_valid(p_path) or p_match not in ('exact','subtree')
+		or p_scope not in ('company_shared','member_private') or p_policy not in ('normal','protected') then
 		raise exception 'Company folder resource is invalid' using errcode = '22023'; end if;
+	if p_policy = 'protected' then
+		raise exception 'Protected resources arrive with C2' using errcode = '0A000'; end if;
 	v_role := public.qorpera_folder_mutator_role(v_file.profile_id, p_actor);
 	v_user := (p_actor ->> 'userId')::uuid;
 	v_key := public.qorpera_folder_key(p_path);
+	-- The seeded root and rules/ (contract 5.6: only owners and admins write rules/, and agents only read it) are
+	-- fixed: nothing is made at or under rules/, and neither changes.
+	if v_key = 'rules' or v_key like 'rules/%' then
+		raise exception 'The rules/ folder is fixed' using errcode = '42501'; end if;
 	-- A member's private folder is theirs: only they make or change resources in it, and only private ones.
 	-- At or under members/<id>/private: member_private owned by that member, made by that member only. member_private
 	-- nowhere else. Every other resource: owners and admins.
@@ -120,12 +145,16 @@ begin
 		or (p_scope = 'company_shared' and v_role not in ('owner','admin')) then
 		raise exception 'Company folder resource authorization is required' using errcode = '42501'; end if;
 
-	-- Rank 6, ancestors first: the covering parent (a new resource narrows it), then the resource itself.
-	v_parent := public.qorpera_folder_path_resource(p_environment_id, p_path);
+	-- Rank 6, ancestors first: the covering parent (or the root when nothing covers the key, so that two calls on one
+	-- key always take turns), then the resource itself.
+	v_parent := public.qorpera_folder_parent_resource(p_environment_id, v_key);
 	select * into v_current from public.qorpera_company_path_resources r
-	where r.environment_id = p_environment_id and public.qorpera_folder_key(r.path) = v_key;
-	if v_parent.id is not null and v_parent.id is distinct from v_current.id then
+	where r.environment_id = p_environment_id and public.qorpera_folder_key(r.path) = v_key
+	order by r.id limit 1;
+	if v_parent.id is not null then
 		perform 1 from public.qorpera_company_path_resources where id = v_parent.id for no key update;
+	else
+		perform 1 from public.qorpera_company_path_resources where environment_id = p_environment_id and path = '' for no key update;
 	end if;
 	if v_current.id is not null then
 		select * into v_current from public.qorpera_company_path_resources where id = v_current.id for no key update;
@@ -135,14 +164,15 @@ begin
 		raise exception 'Company folder resource authorization is required' using errcode = '42501';
 	end if;
 	-- The tie check, in a new statement after the parent lock: no two resources share a folder key. A resource made
-	-- under the same parent while this call waited for it is a tie too (the first one wins).
+	-- on this key while this call waited for the parent is a tie too (the first one wins).
 	if (select count(*) from public.qorpera_company_path_resources r
 		where r.environment_id = p_environment_id and public.qorpera_folder_key(r.path) = v_key)
 		> (v_current.id is not null)::integer then
 		raise exception 'Company folder resources tie on this path' using errcode = '23505'; end if;
-	-- The parent again: a narrower resource made over this path while this call waited is the one a new resource would
-	-- narrow, and it is not locked. Refused; the caller retries with fresh authority.
-	if v_current.id is null and (public.qorpera_folder_path_resource(p_environment_id, p_path)).id is distinct from v_parent.id then
+	-- The parent again: a narrower resource made over this key while this call waited is the one whose paths move,
+	-- and it is not locked. Refused; the caller retries with fresh authority.
+	v_bump_parent := v_current.id is null or v_current.path_match is distinct from p_match;
+	if v_bump_parent and (public.qorpera_folder_parent_resource(p_environment_id, v_key)).id is distinct from v_parent.id then
 		raise sqlstate 'PGRST' using message = jsonb_build_object('code', 'QRC01', 'message', 'Company folder authority changed',
 			'details', 'folder_authority_changed', 'hint', null)::text, detail = '{"status":409,"headers":{}}';
 	end if;
@@ -152,24 +182,27 @@ begin
 		values (p_environment_id, p_path, p_match, p_scope, case when p_scope = 'member_private' then v_user end, p_policy,
 			coalesce(v_user, v_file.created_by_user_id))
 		returning * into v_current;
-		if v_parent.id is not null then
-			update public.qorpera_company_path_resources set authority_revision = authority_revision + 1 where id = v_parent.id;
-			v_narrowing := true;
-			v_changes := jsonb_build_array(jsonb_build_object('resourceId', v_parent.id,
-				'revision', (select authority_revision from public.qorpera_company_path_resources where id = v_parent.id), 'prefix', v_key));
-		end if;
 	elsif (v_current.path_match, v_current.scope, v_current.owner_user_id, v_current.policy, v_current.revoked_at is not null)
 		is distinct from (p_match, p_scope, case when p_scope = 'member_private' then v_user end, p_policy, false) then
-		-- A change of match, scope, owner or policy narrows; setting a revoked resource again alone widens. The key
-		-- prefix is the resource's own.
+		-- A change of match, scope, owner or policy narrows; setting a revoked resource again alone widens. The resource
+		-- keeps its spelling: its folder key is the same.
 		v_narrowing := (v_current.path_match, v_current.scope, v_current.owner_user_id, v_current.policy)
 			is distinct from (p_match, p_scope, case when p_scope = 'member_private' then v_user end, p_policy);
-		update public.qorpera_company_path_resources set path = p_path, path_match = p_match, scope = p_scope,
+		update public.qorpera_company_path_resources set path_match = p_match, scope = p_scope,
 			owner_user_id = case when p_scope = 'member_private' then v_user end, policy = p_policy, revoked_at = null,
 			authority_revision = authority_revision + 1
 		where id = v_current.id returning * into v_current;
 		v_changes := jsonb_build_array(jsonb_build_object('resourceId', v_current.id, 'revision', v_current.authority_revision,
 			'prefix', v_key));
+	else
+		v_bump_parent := false;
+	end if;
+	-- Paths under the key moved between the parent and the resource: the parent's revision, with the key as prefix.
+	if v_bump_parent and v_parent.id is not null then
+		update public.qorpera_company_path_resources set authority_revision = authority_revision + 1 where id = v_parent.id;
+		v_narrowing := true;
+		v_changes := v_changes || jsonb_build_array(jsonb_build_object('resourceId', v_parent.id,
+			'revision', (select authority_revision from public.qorpera_company_path_resources where id = v_parent.id), 'prefix', v_key));
 	end if;
 	if v_changes <> '[]'::jsonb then
 		v_seq := public.qorpera_folder_authority_journal(p_environment_id, p_actor, v_narrowing, v_changes);
@@ -211,7 +244,9 @@ begin
 	where id = p_resource_id and environment_id = p_environment_id and revoked_at is null for no key update;
 	if not found or not public.qorpera_folder_may_manage(p_actor, v_role, v_resource)
 		-- A private folder is shared with agents only, never with another member (C1B-2 §2).
-		or (v_resource.scope = 'member_private' and p_principal_kind = 'member') then
+		or (v_resource.scope = 'member_private' and p_principal_kind = 'member')
+		-- rules/ takes no grants: its scope decides who reads and writes it.
+		or v_resource.scope = 'company_rules' then
 		raise exception 'Company folder grant authorization is required' using errcode = '42501'; end if;
 	-- Rank 7, in a new statement after the resource lock: the principal's live grant on this resource version, replaced.
 	select * into v_old from public.qorpera_company_path_grants
@@ -255,7 +290,8 @@ begin
 	if not found or not public.qorpera_folder_may_manage(p_actor, v_role, v_resource) then
 		raise exception 'Company folder revocation authorization is required' using errcode = '42501'; end if;
 	if p_grant_id is null then
-		if v_resource.path = '' then raise exception 'The root resource is never revoked' using errcode = '42501'; end if;
+		if v_resource.path = '' or v_resource.scope = 'company_rules' then
+			raise exception 'The seeded root and rules/ are never revoked' using errcode = '42501'; end if;
 		update public.qorpera_company_path_resources set revoked_at = coalesce(revoked_at, clock_timestamp()),
 			authority_revision = authority_revision + 1 where id = v_resource.id returning authority_revision into v_revision;
 		v_change := jsonb_build_object('resourceId', v_resource.id, 'revision', v_revision, 'prefix', public.qorpera_folder_key(v_resource.path));
@@ -490,7 +526,7 @@ create function public.qorpera_folder_record_release(p_environment_id uuid, p_ac
 returns jsonb language plpgsql security definer set search_path = '' as $$
 declare
 	v_file public.qorpera_company_files%rowtype; v_run uuid; v_content text; v_existing public.qorpera_folder_run_releases%rowtype;
-	v_actor jsonb; v_group record; v_read jsonb; v_receipt jsonb; v_pass boolean; v_upserts jsonb := '[]'::jsonb;
+	v_actor jsonb; v_group record; v_read jsonb; v_receipt jsonb; v_pass boolean; v_ok boolean; v_upserts jsonb := '[]'::jsonb;
 	v_filed jsonb := '[]'::jsonb; v_result jsonb;
 begin
 	if auth.role() is distinct from 'service_role' then raise exception 'Folder core authority is required' using errcode = '42501'; end if;
@@ -508,18 +544,31 @@ begin
 		raise exception 'Folder release is invalid' using errcode = '22023'; end if;
 	v_run := (p_actor ->> 'runId')::uuid;
 	v_content := encode(extensions.digest(convert_to(jsonb_build_array(p_reads, p_output_sha256)::text, 'utf8'), 'sha256'), 'hex');
-	-- A release id is used once: the same content replays, other content is refused.
+	-- A release id is used once: the same content replays, other content is refused. The id is claimed first, as a
+	-- commit claims its operation key: a concurrent release of the same id waits for this one and then replays.
 	select * into v_existing from public.qorpera_folder_run_releases where run_id = v_run and release_id = p_release_id;
-	if found then
+	if not found then
+		-- The pause, before the claim: stop never queues behind new effects (C1B §7). A replay is answered even so.
+		if exists (select 1 from public.qorpera_company_execution_pauses where profile_id = v_file.profile_id) then
+			raise exception 'Company execution is paused' using errcode = '55000'; end if;
+		insert into public.qorpera_folder_run_releases(run_id, release_id, environment_id, content_sha256, result)
+		values (v_run, p_release_id, p_environment_id, v_content, '{}'::jsonb) on conflict do nothing;
+		if not found then
+			select * into v_existing from public.qorpera_folder_run_releases where run_id = v_run and release_id = p_release_id;
+		end if;
+	end if;
+	if v_existing.run_id is not null then
 		if v_existing.content_sha256 <> v_content then
 			raise exception 'Release id was used for other reads' using errcode = '22023'; end if;
 		return v_existing.result || jsonb_build_object('replay', true);
 	end if;
 	v_actor := public.qorpera_folder_run_enter(p_environment_id, v_file.profile_id, p_actor);
 
-	-- Per (resource, grant) on the receipts: the pair passes when its revisions are unchanged, its grant is live, and
-	-- its resource still covers each path by key prefix (the parent bump guarantees nothing narrower was inserted).
-	-- Otherwise each of its paths is re-resolved now, and the release refuses if one is no longer readable.
+	-- Per (resource, grant) on the receipts, a pair passes when all of this holds now: the resource is each path's
+	-- covering resource, at the receipt's revision; the grant is null only on rules/ (whose scope lets agents read),
+	-- and otherwise is a live read grant of this run's agent on this resource version, at the receipt's revision. A
+	-- receipt is the caller's word, so nothing else is taken from it. Otherwise each of its paths is re-resolved
+	-- now, and the release refuses if one is no longer readable.
 	for v_group in
 		select (r -> 'authority' ->> 'resourceId')::uuid as resource_id, (r -> 'authority' ->> 'grantId')::uuid as grant_id,
 			(r -> 'authority' ->> 'resourceRevision')::bigint as rrev, (r -> 'authority' ->> 'grantRevision')::bigint as grev,
@@ -529,12 +578,13 @@ begin
 		select exists (select 1 from public.qorpera_company_path_resources res
 				where res.id = v_group.resource_id and res.environment_id = p_environment_id and res.authority_revision = v_group.rrev
 					and not exists (select 1 from jsonb_array_elements(v_group.reads) x
-						where not (public.qorpera_folder_key(x ->> 'path') = public.qorpera_folder_key(res.path)
-							or (res.path_match = 'subtree' and public.qorpera_folder_key_under(public.qorpera_folder_key(x ->> 'path'),
-								public.qorpera_folder_key(res.path))))))
-			and (v_group.grant_id is null or exists (select 1 from public.qorpera_company_path_grants g
-				where g.id = v_group.grant_id and g.revision = v_group.grev and g.revoked_at is null
-					and (g.expires_at is null or g.expires_at > clock_timestamp())))
+						where (public.qorpera_folder_path_resource(p_environment_id, x ->> 'path')).id is distinct from res.id)
+					and case when v_group.grant_id is null then res.scope = 'company_rules'
+						else exists (select 1 from public.qorpera_company_path_grants g
+							where g.id = v_group.grant_id and g.revision = v_group.grev and g.resource_id = res.id
+								and g.resource_version = res.version and g.principal_kind = 'staff_agent'
+								and g.principal_id = (v_actor ->> 'staffAgentId')::uuid and 'read' = any (g.permissions)
+								and g.revoked_at is null and (g.expires_at is null or g.expires_at > clock_timestamp())) end)
 		into v_pass;
 		if v_pass then
 			v_upserts := v_upserts || jsonb_build_array(jsonb_build_object('resourceId', v_group.resource_id, 'grantId', v_group.grant_id,
@@ -542,9 +592,13 @@ begin
 			v_filed := v_filed || v_group.reads;
 		else
 			for v_read in select value from jsonb_array_elements(v_group.reads) loop
-				if not public.qorpera_folder_actor_allowed(p_environment_id, v_file.profile_id, v_actor, v_read ->> 'path', 'read') then
-					raise exception 'A released read is no longer readable' using errcode = '42501'; end if;
-				v_receipt := public.qorpera_folder_read_receipt(p_environment_id, v_file.profile_id, v_actor, v_read ->> 'path');
+				-- The check and the receipt in one statement: the receipt reads the statement's snapshot, and the check
+				-- that or a newer one (a legacy helper it calls is volatile). The receipt is never newer than the check,
+				-- so a narrowing that commits in between shows as changed at the next recheck.
+				select public.qorpera_folder_actor_allowed(p_environment_id, v_file.profile_id, v_actor, v_read ->> 'path', 'read'),
+					public.qorpera_folder_read_receipt(p_environment_id, v_file.profile_id, v_actor, v_read ->> 'path')
+				into v_ok, v_receipt;
+				if not v_ok then raise exception 'A released read is no longer readable' using errcode = '42501'; end if;
 				v_upserts := v_upserts || jsonb_build_array(v_receipt);
 				v_filed := v_filed || jsonb_build_array(v_read || jsonb_build_object('authority', v_receipt));
 			end loop;
@@ -558,8 +612,7 @@ begin
 	from jsonb_array_elements(v_filed) f group by 4;
 	v_result := jsonb_build_object('schema','qorpera.folder-release/v1','releaseId',p_release_id,
 		'reads',jsonb_array_length(p_reads),'replay',false);
-	insert into public.qorpera_folder_run_releases(run_id, release_id, environment_id, content_sha256, result)
-	values (v_run, p_release_id, p_environment_id, v_content, v_result);
+	update public.qorpera_folder_run_releases set result = v_result where run_id = v_run and release_id = p_release_id;
 	return v_result;
 end $$;
 
@@ -570,10 +623,12 @@ returns integer language plpgsql security definer set search_path = '' as $$
 declare
 	v_run uuid := (p_actor ->> 'runId')::uuid; v_row record; v_prefixes text[]; v_path text; v_receipt jsonb;
 	v_upserts jsonb := '[]'::jsonb; v_restamps jsonb := '[]'::jsonb; v_deletes jsonb := '[]'::jsonb; v_changed integer := 0;
+	v_ok boolean;
 begin
 	for v_row in
 		select rr.resource_id, rr.grant_id, rr.resource_revision, rr.grant_revision,
 			r.id is not null as resource_exists, r.authority_revision as current_rrev, r.path as resource_path,
+			(rr.grant_id is null and r.scope is distinct from 'company_rules') as grant_missing,
 			g.revision as current_grev,
 			(g.id is not null and g.revoked_at is null and (g.expires_at is null or g.expires_at > clock_timestamp())) as grant_live
 		from public.qorpera_folder_run_reads rr
@@ -582,15 +637,17 @@ begin
 		where rr.run_id = v_run
 		order by rr.resource_id, rr.grant_id nulls first
 	loop
-		-- Captured now: current_rrev, current_grev, grant_live. A row passes when nothing moved and its grant lives.
-		if v_row.resource_exists and v_row.current_rrev = v_row.resource_revision
+		-- Captured now: current_rrev, current_grev, grant_live. A row passes when nothing moved and its grant lives. A
+		-- row with no grant is right only on rules/; anywhere else it is re-resolved and retired.
+		if v_row.resource_exists and v_row.current_rrev = v_row.resource_revision and not v_row.grant_missing
 			and (v_row.grant_id is null or (v_row.grant_live and v_row.current_grev = v_row.grant_revision)) then continue; end if;
 		v_changed := v_changed + 1;
 		-- Which paths to re-resolve: a changed or dead grant, or a vanished resource, covers everything under the
 		-- resource; a changed resource revision only the prefixes its changes name.
 		if not v_row.resource_exists then
 			v_prefixes := null;
-		elsif v_row.grant_id is not null and (not v_row.grant_live or v_row.current_grev is distinct from v_row.grant_revision) then
+		elsif v_row.grant_missing
+			or (v_row.grant_id is not null and (not v_row.grant_live or v_row.current_grev is distinct from v_row.grant_revision)) then
 			v_prefixes := array[public.qorpera_folder_key(v_row.resource_path)];
 		else
 			select array_agg(distinct c.prefix) into v_prefixes from public.qorpera_folder_authority_changes c
@@ -605,13 +662,15 @@ begin
 				or exists (select 1 from unnest(v_prefixes) p(prefix)
 					where public.qorpera_folder_key_under(public.qorpera_folder_key(x ->> 'path'), p.prefix)))
 		loop
-			if not public.qorpera_folder_actor_allowed(p_environment_id, p_profile_id, p_actor, v_path, 'read') then
-				raise exception 'A read is no longer readable' using errcode = '42501'; end if;
-			v_receipt := public.qorpera_folder_read_receipt(p_environment_id, p_profile_id, p_actor, v_path);
+			-- The check and the receipt in one statement: the receipt is never newer than the check (see record_release).
+			select public.qorpera_folder_actor_allowed(p_environment_id, p_profile_id, p_actor, v_path, 'read'),
+				public.qorpera_folder_read_receipt(p_environment_id, p_profile_id, p_actor, v_path)
+			into v_ok, v_receipt;
+			if not v_ok then raise exception 'A read is no longer readable' using errcode = '42501'; end if;
 			if v_receipt is not null then v_upserts := v_upserts || jsonb_build_array(v_receipt); end if;
 		end loop;
 		-- Re-stamp with the captured values, or retire a dead-grant or vanished row; both compare-and-set.
-		if not v_row.resource_exists or (v_row.grant_id is not null and not v_row.grant_live) then
+		if not v_row.resource_exists or v_row.grant_missing or (v_row.grant_id is not null and not v_row.grant_live) then
 			v_deletes := v_deletes || jsonb_build_array(jsonb_build_object('resourceId', v_row.resource_id, 'grantId', v_row.grant_id,
 				'recordedResourceRevision', v_row.resource_revision, 'recordedGrantRevision', v_row.grant_revision));
 		else
@@ -1293,8 +1352,9 @@ begin
 	perform public.qorpera_folder_structured_verify(p_environment_id, v_commit_id);
 
 	-- Step 11. The clock, last. Sequence order is commit order; an abort rolls the increment back.
-	update public.qorpera_folder_clocks set last_seq = last_seq + 1 where environment_id = p_environment_id
-	returning last_seq into v_seq;
+	-- The clock is locked first and incremented only once the authority check passed, so a refused commit leaves no
+	-- updater on the clock row, which every commit holds KEY SHARE through its foreign keys.
+	select last_seq + 1 into v_seq from public.qorpera_folder_clocks where environment_id = p_environment_id for no key update;
 	-- The authority check (C1B-2 §1): a narrowing journaled after this commit started deciding refuses it, and the
 	-- caller retries with the same operation key. A change still in flight waits for the clock this commit holds, and
 	-- so is ordered after it. The platform acts under no grant.
@@ -1304,6 +1364,7 @@ begin
 		raise sqlstate 'PGRST' using message = jsonb_build_object('code', 'QRC01', 'message', 'Company folder authority changed',
 			'details', 'folder_authority_changed', 'hint', null)::text, detail = '{"status":409,"headers":{}}';
 	end if;
+	update public.qorpera_folder_clocks set last_seq = v_seq where environment_id = p_environment_id;
 	update public.qorpera_folder_commits set seq = v_seq, units = v_outcomes, review_id = v_used_review, approver_user_id = v_approver
 	where id = v_commit_id;
 	insert into public.qorpera_folder_journal(environment_id, seq, kind, commit_id)
@@ -1317,6 +1378,7 @@ end $$;
 
 revoke all on function public.qorpera_folder_authority_journal(uuid, jsonb, boolean, jsonb),
 	public.qorpera_folder_mutator_role(uuid, jsonb),
+	public.qorpera_folder_parent_resource(uuid, text),
 	public.qorpera_folder_may_manage(jsonb, public.qorpera_profile_role, public.qorpera_company_path_resources),
 	public.qorpera_folder_agent_grant(public.qorpera_company_path_resources, uuid, text),
 	public.qorpera_folder_read_receipt(uuid, uuid, jsonb, text),
