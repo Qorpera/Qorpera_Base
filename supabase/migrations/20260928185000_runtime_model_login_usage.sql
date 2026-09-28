@@ -25,21 +25,29 @@ revoke all on function public.qorpera_model_login_vault_url(uuid) from public, a
 
 -- Whether an identity's Codex usage is read in the vault: it has a vault login behind an active
 -- pointer (in any state: one that needs a new sign-in reads nothing there, and boots no machine)
--- and no active Codex login on a node.
+-- and no Codex login a node would read (the node's own list: an active capsule that the latest,
+-- active, native version of an active OpenAI connection uses).
 create function public.qorpera_model_login_usage_in_vault(p_compute_identity_id uuid)
 returns boolean
 language sql stable security definer set search_path = '' as $$
 	select exists (
-			select 1 from public.qorpera_model_logins as vault
-			join public.qorpera_native_credential_capsules as capsule on capsule.id = vault.credential_capsule_id
-			where vault.compute_identity_id = p_compute_identity_id and capsule.status = 'active'
+			select 1 from public.qorpera_native_credential_capsules as capsule
+			join public.qorpera_model_logins as vault on vault.credential_capsule_id = capsule.id
+			where capsule.compute_identity_id = p_compute_identity_id and capsule.status = 'active'
 				and capsule.encrypted_capsule_reference = 'model-login/' || vault.id::text
+				and vault.compute_identity_id = p_compute_identity_id
 		)
 		and not exists (
 			select 1 from public.qorpera_native_credential_capsules as capsule
+			join public.qorpera_provider_connection_versions as version on version.credential_capsule_id = capsule.id
+			join public.qorpera_provider_connections as connection on connection.id = version.connection_id
 			where capsule.compute_identity_id = p_compute_identity_id and capsule.status = 'active'
-				and capsule.provider = 'openai' and capsule.native_harness = 'codex-cli'
 				and capsule.encrypted_capsule_reference !~ '^model-login/[0-9a-f-]{36}$'
+				and connection.status = 'active' and connection.provider = 'openai'
+				and version.authorization_state = 'active' and version.authentication_mode = 'native_subscription'
+				and version.native_harness = 'codex-cli'
+				and not exists (select 1 from public.qorpera_provider_connection_versions as newer
+					where newer.connection_id = version.connection_id and newer.version > version.version)
 		)
 $$;
 revoke all on function public.qorpera_model_login_usage_in_vault(uuid) from public, anon, authenticated, service_role;

@@ -88,6 +88,7 @@ reset role;
 do $$
 declare v_identity public.qorpera_member_compute_identities%rowtype;
 	v_connection uuid;
+	v_node_connection uuid;
 	v_version bigint;
 begin
 	select * into strict v_identity from public.qorpera_member_compute_identities
@@ -105,11 +106,17 @@ begin
 		envelope_sha256,origin,access_issued_at,access_expires_at)
 	values ('69300000-0000-4000-8000-000000000050',1,'69300000-0000-4000-8000-000000000040','company-kek-1','envelope-one'::bytea,
 		encode(sha256('envelope-one'::bytea),'hex'),'sign_in',clock_timestamp(),clock_timestamp() + interval '10 days');
-	select version.connection_id, version.version + 1 into v_connection, v_version
+	-- A sign-in makes a new connection (the web client's rule): the node login's connection stays.
+	select version.connection_id into v_node_connection
 	from public.qorpera_provider_connection_versions version
 	join public.qorpera_native_credential_capsules capsule on capsule.id = version.credential_capsule_id
 	where capsule.compute_identity_id = v_identity.id and capsule.provider = 'openai'
 	order by version.version desc limit 1;
+	insert into public.qorpera_provider_connections(profile_id, client_connection_id, owner_user_id, provider, created_by_user_id)
+	values (v_identity.profile_id, '69300000-0000-4000-8000-000000000080', v_identity.owner_user_id, 'openai',
+		v_identity.owner_user_id)
+	returning id into v_connection;
+	v_version := 1;
 	insert into public.qorpera_provider_connection_versions(connection_id,version,authentication_mode,native_harness,
 		secret_reference,provider_account_reference,provider_account_email,billing_source,consent_version,
 		consented_by_user_id,allow_autonomous,commercial_approval_reference,quota_policy,created_by_user_id,
@@ -118,9 +125,11 @@ begin
 		'qorpera-native-subscription-v1',v_identity.owner_user_id,false,previous.commercial_approval_reference,
 		previous.quota_policy,v_identity.owner_user_id,'69300000-0000-4000-8000-000000000060','active',previous.max_native_concurrency
 	from public.qorpera_provider_connection_versions previous
-	where previous.connection_id = v_connection and previous.version = v_version - 1;
+	where previous.connection_id = v_node_connection
+	order by previous.version desc limit 1;
 	perform set_config('qorpera_test.usage_connection', v_connection::text, false);
 	perform set_config('qorpera_test.usage_version', v_version::text, false);
+	perform set_config('qorpera_test.usage_node_connection', v_node_connection::text, false);
 end $$;
 
 -- Still moving: the member's node login is active beside the vault login, so the node reads it.
@@ -128,6 +137,16 @@ set role service_role;
 select pg_temp.usage_expect(case when pg_temp.usage_choose('refresh-one') ->> 'reason' = 'MODEL_LOGIN_VAULT'
 	then 'vault' else 'node' end, 'node', 'an identity still moving refreshes on a node');
 reset role;
+-- A node login a node would not read (its connection disabled) does not keep the vault login's
+-- usage on the node path.
+update public.qorpera_provider_connections set status = 'disabled'
+where id = current_setting('qorpera_test.usage_node_connection')::uuid;
+set role service_role;
+select pg_temp.usage_expect(pg_temp.usage_choose('refresh-one') ->> 'reason','MODEL_LOGIN_VAULT',
+	'a disabled node connection leaves the usage to the vault');
+reset role;
+update public.qorpera_provider_connections set status = 'active'
+where id = current_setting('qorpera_test.usage_node_connection')::uuid;
 -- Moved: the member's old node account is gone.
 update public.qorpera_native_credential_capsules set status = 'disabled'
 where compute_identity_id = current_setting('qorpera_test.usage_identity')::uuid

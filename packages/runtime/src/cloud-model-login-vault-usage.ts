@@ -123,8 +123,10 @@ function parseLogin(item: unknown): RefreshLogin {
 		envelope.byteLength < 1 ||
 		envelope.byteLength > 131_072 ||
 		createHash("sha256").update(envelope).digest("hex") !== login.envelopeSha256
-	)
+	) {
+		envelope.fill(0);
 		throw new Error("Vault account refresh login is invalid");
+	}
 	uuid(login.credentialCapsuleId, "Vault account refresh capsule");
 	return {
 		loginId: uuid(login.loginId, "Vault account refresh login id"),
@@ -150,6 +152,11 @@ function parseDescription(value: unknown): RefreshDescription {
 		!Array.isArray(input.logins)
 	)
 		throw new Error("Vault account refresh is invalid");
+	// The header first: no envelope is decoded for an answer that fails it.
+	const requestId = uuid(input.requestId, "Vault account refresh id");
+	const companyId = uuid(input.profileId, "Vault account refresh company");
+	const computeIdentityId = uuid(input.computeIdentityId, "Vault account refresh identity");
+	const requestedByUserId = uuid(input.requestedByUserId, "Vault account refresh member");
 	// Every envelope read so far is wiped if a later login is unreadable.
 	const read: RefreshLogin[] = [];
 	try {
@@ -159,10 +166,10 @@ function parseDescription(value: unknown): RefreshDescription {
 		throw error;
 	}
 	return {
-		requestId: uuid(input.requestId, "Vault account refresh id"),
-		companyId: uuid(input.profileId, "Vault account refresh company"),
-		computeIdentityId: uuid(input.computeIdentityId, "Vault account refresh identity"),
-		requestedByUserId: uuid(input.requestedByUserId, "Vault account refresh member"),
+		requestId,
+		companyId,
+		computeIdentityId,
+		requestedByUserId,
 		status: input.status === "pending" || input.status === "completed" ? input.status : "expired",
 		expiresAt: input.expiresAt,
 		// The database hands out at most this many; any more would wait for the next refresh.

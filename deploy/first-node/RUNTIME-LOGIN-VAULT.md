@@ -147,7 +147,7 @@ no database login and no service key; it sees a login only for one operation and
   the usage of the logins it keeps; the web client is unchanged.
   - The account refresh chooser answers a refresh of an identity whose Codex usage is the vault's
     (`qorpera_model_login_usage_in_vault`: it has a vault login behind an active pointer, in any
-    state, and no active Codex login on a node) with `<broker service origin>/v1/model-logins/
+    state, and no Codex login a node would read, by the node's own list rule) with `<broker service origin>/v1/model-logins/
     <company>/` (reason `MODEL_LOGIN_VAULT`) when the company has an active broker, whether or not
     it still takes new sign-ins in the vault. A Claude login stays on a node and does not count
     (nodes read Codex usage only); a vault login that needs a new sign-in reads nothing there and
