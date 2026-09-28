@@ -826,6 +826,7 @@ it("projects only native auth from a login capsule without materializing local c
 	await mkdir(join(f.identityRoot, "codex", "log"));
 	await writeFile(join(f.identityRoot, "codex", "log", "login.log"), "CAPSULE_LOG_MUST_NOT_LOAD\n");
 	let capsule = await sealNativeCredentialCapsule(f.identityRoot, masterKey, f.binding.credentialCapsuleId);
+	const original = capsule;
 	const put = vi.fn(async (_reference: string, bytes: Uint8Array) => {
 		capsule = bytes;
 	});
@@ -861,15 +862,14 @@ it("projects only native auth from a login capsule without materializing local c
 		final_message_id: f.deliveries.get("final")?.messageId,
 	});
 	expect(oldExecute).not.toHaveBeenCalled();
-	expect(put).toHaveBeenCalledTimes(1);
+	// The turn did not renew the login, so nothing is saved back: native sessions and logs
+	// created during this turn never become durable credentials.
+	expect(put).not.toHaveBeenCalled();
+	expect(capsule).toBe(original);
 	expect(Buffer.from(capsule).toString("utf8")).not.toContain("SYNTHETIC_NATIVE_SECRET");
 	const restored = join(root, "restored-capsule");
 	await mkdir(restored, { mode: 0o700 });
 	await openNativeCredentialCapsule(capsule, restored, masterKey, f.binding.credentialCapsuleId);
-	// Native sessions/logs created during this turn must not become durable
-	// credentials, including the unrelated files captured by the login process.
-	expect(await readdir(restored)).toEqual(["codex"]);
-	expect(await readdir(join(restored, "codex"))).toEqual(["auth.json"]);
 	expect(await readFile(join(restored, "codex", "auth.json"), "utf8")).toContain("SYNTHETIC_NATIVE_SECRET");
 	expect(await readFile(f.evidence, "utf8")).not.toMatch(/CAPSULE_CONFIG_MUST_NOT_LOAD|CAPSULE_LOG_MUST_NOT_LOAD/);
 	expect((await readdir(root)).some((path) => path.startsWith("qorpera-native-run-"))).toBe(false);
