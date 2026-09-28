@@ -557,13 +557,17 @@ consent (contract 4.3).
 
 | Resource | Create or change | Grant and revoke |
 | --- | --- | --- |
-| a member's `members/<id>/private` (`member_private`) | that member only | that member only, and only to their own agents (`staff_agent` principals). A member-principal grant is refused |
-| any other | owners and admins | owners and admins |
+| at or under a member's `members/<id>/private` | that member only, and only as `member_private` owned by them | that member only, and only to agents (`staff_agent` principals). A member-principal grant is refused |
+| any other | owners and admins; every scope but `member_private` has no owner | owners and admins |
 
 **The functions:**
-- `qorpera_folder_set_resource(env, actor, path, match, scope, owner, policy)`
-  creates or changes a resource. A new narrower resource bumps its covering
-  parent.
+- `qorpera_folder_set_resource(env, actor, path, match, scope, policy)`
+  creates or changes a resource, and its owner is always the actor for
+  `member_private`. What counts as narrowing:
+  - a new narrower resource bumps its covering parent;
+  - a change of match, scope or policy bumps the resource itself.
+
+  Clearing `revoked_at` (a revoked resource set again) is a widening.
 - `qorpera_folder_grant(env, actor, resource_id, principal_kind,
   principal_id, permissions, expires_at)` inserts a grant at the resource's
   current `version`. Grants add up, so a narrower grant *replaces* the
@@ -573,7 +577,8 @@ consent (contract 4.3).
   `revoked_at` and bumps the revision.
 
 **Order.**
-1. The member actor, `KEY SHARE` (rank 1).
+1. The member actor, `KEY SHARE` (rank 1). A grant also locks its principal
+   `KEY SHARE`: a member at rank 1, an agent at rank 2.
 2. The resource rows, `FOR NO KEY UPDATE` (rank 6): the changed one and, when
    narrowing, the covering parent, ancestors first.
 3. The tie check, in a new statement after the parent lock. A resource that
@@ -613,15 +618,18 @@ The call:
 1. runs the full run check: pause, job `KEY SHARE`, fence, pause re-read, the
    run's principals and its wake;
 2. for each (resource, grant) in the receipts, checks that:
-   - the receipt's resource still covers each of its paths;
+   - the receipt's resource still covers each of its paths. When the pair's
+     revisions are unchanged, a key-prefix test is enough: the parent bump
+     guarantees that nothing narrower was inserted;
    - the revisions are unchanged;
    - the grant is neither expired nor revoked.
 
    Where any of that fails, it re-resolves those paths for the run now, and
    refuses the whole release (42501) if any path is no longer readable;
 3. writes the read set: for every (resource, grant) that covers a released
-   path, found now or on the receipt, it upserts one row keeping
-   `least(recorded, observed)`. Rows are taken in `(resource_id, grant_id)`
+   path, it upserts one row keeping `least(recorded, observed)`. That is the
+   receipt's pair when it passed, or the pair found by re-resolution when it
+   did not. A stale receipt never recreates a dead row. Rows are taken in `(resource_id, grant_id)`
    order at rank 10, after rank 9, so a run's parallel effects never
    deadlock on them;
 4. inserts one read-record row per (release, resource). Each row holds the
@@ -633,7 +641,11 @@ result; a replay with different content raises 22023.
 
 **Tables.**
 - `qorpera_folder_run_reads (run_id, resource_id, grant_id, resource_revision,
-  grant_revision)`: the read set, a few rows per run.
+  grant_revision)`: the read set, a few rows per run. Keyed unique on (run,
+  resource, grant) with `NULLS NOT DISTINCT`, since `grant_id` may be null.
+- `qorpera_folder_authority_changes (environment_id, seq, resource_id,
+  grant_id, revision, prefix, narrowing)`: one row per change, next to its
+  journal row, indexed by (environment, resource, revision).
 - `qorpera_folder_run_read_records (run_id, release_id, resource_id, reads,
   output_sha256, created_at)`: written once.
 - Neither has a foreign key to runs, like the operation keys.
@@ -644,8 +656,12 @@ actor)`, for effects:
    expired, revoked or missing. It captures these values before doing
    anything else.
 2. A row passes when the revisions match and the grant is live.
-3. For a row that changed, it finds the key prefixes that changed, from the
-   authority rows after the recorded revision. It then re-resolves, for the
+3. For a row that changed, it finds the key prefixes that changed:
+   - a changed resource revision: from `qorpera_folder_authority_changes`
+     (environment, resource, revision, prefix; indexed), for the revisions
+     after the recorded one;
+   - a changed or dead grant: every path the row covers, which is also the
+     case for a grant that disappeared by cascade. It then re-resolves, for the
    run's current authority, only the paths under those prefixes. It looks the
    paths up by key across all of the run's read records, not by the resource
    they were filed under.
@@ -658,6 +674,10 @@ actor)`, for effects:
    writes the revisions captured in step 1, never values re-read afterwards.
    If another release lowered the row meanwhile, the re-stamp does nothing,
    and the next effect re-resolves again.
+   - A row whose grant is dead (expired, revoked or missing) is deleted by
+     compare-and-set instead, once its paths re-resolved under their current
+     authority. So an expired grant costs one re-resolution, not one per
+     effect.
 
 **The run commit calls the recheck** at step 4, after the rank locks and
 before the paths. A narrowing that commits after the recheck is caught by the
@@ -708,6 +728,9 @@ branch, without its locks:
   - A hook target at rank 6 in `FOR SHARE` is refused.
 - **Mutators:**
   - owners and admins on shared resources;
+  - an admin cannot create or change a resource at or under another member's
+    private folder (a `protected` policy there included);
+  - a concurrent tie between `Østen` and `østen` is refused once;
   - the private rules: an owner or admin cannot create, grant or revoke on
     another member's private folder; a member grant there is refused;
   - a tie refused after the parent lock;
@@ -724,6 +747,9 @@ branch, without its locks:
   - The A1 sequence: read under the root, a narrower resource and grant,
     recheck, revoke the narrower grant, recheck again. It refuses.
   - A grant that expired since the read refuses.
+  - An expired grant that was replaced re-resolves once, and its row is
+    deleted.
+  - A stale receipt for a dead pair does not recreate its row.
   - The B1 race: a narrowing between capture and re-stamp is not stamped as
     checked.
   - Concurrent re-stamps of one run do not deadlock.
