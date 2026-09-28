@@ -7,6 +7,7 @@ import {
 import { type CloudCodingRepository, type JsonValue, parseCloudCodingRepository } from "@qorpera/contracts";
 import type { ModelLoginAuthority, ModelLoginRunBinding } from "./cloud-model-login-vault.ts";
 import type { ModelLoginSignInAuthority } from "./cloud-model-login-vault-sign-in.ts";
+import type { ModelLoginUsageAuthority } from "./cloud-model-login-vault-usage.ts";
 import type { CloudNativeToolBinding } from "./cloud-native-tool-authority.ts";
 import type { CloudToolContent } from "./cloud-native-tool-boundary.ts";
 import { cloudToolJsonText } from "./cloud-native-tool-boundary.ts";
@@ -945,7 +946,7 @@ export class SupabaseCloudSecretBrokerAuthority implements CloudSecretBrokerAuth
  * one renewal); it has no table privileges and never holds a Supabase service
  * key. */
 export class PostgresCloudSecretBrokerAuthority
-	implements CloudSecretBrokerAuthority, ModelLoginAuthority, ModelLoginSignInAuthority
+	implements CloudSecretBrokerAuthority, ModelLoginAuthority, ModelLoginSignInAuthority, ModelLoginUsageAuthority
 {
 	readonly #database: CloudSecretPostgresClient;
 	readonly #brokerAuthorityId: string;
@@ -1143,6 +1144,50 @@ export class PostgresCloudSecretBrokerAuthority
 				completion.providerAccountReference,
 				completion.providerAccountEmail,
 			],
+			signal,
+		);
+	}
+
+	describeModelLoginAccountRefresh(
+		request: Parameters<ModelLoginUsageAuthority["describeModelLoginAccountRefresh"]>[0],
+		signal: AbortSignal,
+	): Promise<unknown> {
+		return this.#rpc(
+			"select public.qorpera_describe_model_login_account_refresh($1::uuid,$2::text,$3::uuid,$4::text) as result",
+			[this.#brokerAuthorityId, this.#brokerCapabilitySha256, request.requestId, request.capabilitySha256],
+			signal,
+		);
+	}
+
+	recordModelLoginAccountMetadata(
+		metadata: Parameters<ModelLoginUsageAuthority["recordModelLoginAccountMetadata"]>[0],
+		signal: AbortSignal,
+	): Promise<unknown> {
+		return this.#rpc(
+			"select public.qorpera_record_model_login_account_metadata($1::uuid,$2::text,$3::uuid,$4::text,$5::uuid,$6::uuid,$7::bigint,$8::text,$9::jsonb,$10::text) as result",
+			[
+				this.#brokerAuthorityId,
+				this.#brokerCapabilitySha256,
+				metadata.requestId,
+				metadata.capabilitySha256,
+				metadata.loginId,
+				metadata.connectionId,
+				metadata.connectionVersion,
+				metadata.providerAccountEmail,
+				metadata.providerAccountUsage === null ? null : JSON.stringify(metadata.providerAccountUsage),
+				metadata.providerAccountIdentity,
+			],
+			signal,
+		);
+	}
+
+	completeModelLoginAccountRefresh(
+		request: Parameters<ModelLoginUsageAuthority["completeModelLoginAccountRefresh"]>[0],
+		signal: AbortSignal,
+	): Promise<unknown> {
+		return this.#rpc(
+			"select public.qorpera_complete_model_login_account_refresh($1::uuid,$2::text,$3::uuid,$4::text) as result",
+			[this.#brokerAuthorityId, this.#brokerCapabilitySha256, request.requestId, request.capabilitySha256],
 			signal,
 		);
 	}

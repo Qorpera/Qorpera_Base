@@ -138,14 +138,35 @@ no database login and no service key; it sees a login only for one operation and
     sign-in is never started again by a late poll. The recovery
     pin still fences a recovering identity, but asks no node key backup of a sign-in that created a
     vault login. A repeat after a lost answer finds its own login.
-  - Deploy: the broker's public front must route `POST /v1/model-logins/<company>/login` to that
-    company's broker by path (the edge function adds no query). The helper must run beside the
+  - Deploy: the broker's public front must route `POST /v1/model-logins/<company>/login` and
+    `POST /v1/model-logins/<company>/account-refresh` to that company's broker by path (the edge
+    function adds no query). The helper must run beside the
     broker (without it the route answers 404). A helper restart ends sign-ins in flight; the member
     signs in again.
-- **Part C, usage** (next): usage reads for vault logins in the vault (the existing `wham/usage`
-  call with the pass, no machine), and the account refresh chooser sending those identities to the
-  vault. Until then (with change 3) a node's usage check lists vault logins and skips them; switch
-  no company before Part C lands.
+- **Part C, usage** (migration `20260928185000`, `cloud-model-login-vault-usage.ts`): the vault reads
+  the usage of the logins it keeps; the web client is unchanged.
+  - The account refresh chooser answers a refresh of an identity whose Codex usage is the vault's
+    (`qorpera_model_login_usage_in_vault`: it has a vault login behind an active pointer, in any
+    state, and no Codex login a node would read, by the node's own list rule) with `<broker service origin>/v1/model-logins/
+    <company>/` (reason `MODEL_LOGIN_VAULT`) when the company has an active broker, whether or not
+    it still takes new sign-ins in the vault. A Claude login stays on a node and does not count
+    (nodes read Codex usage only); a vault login that needs a new sign-in reads nothing there and
+    boots no machine. An identity still moving (a Codex login on a node beside its vault login)
+    keeps the node path, which reads its node logins and skips the vault ones. The edge function
+    posts its unchanged `qorpera.native-account-refresh/v1` to `<base>account-refresh` with the
+    refresh's capability.
+  - The broker reads the refresh (`qorpera_describe_model_login_account_refresh`, broker role) with
+    the node route's checks (live, the member still owns the identity with a role that may
+    refresh, the broker's own company), and while it is pending the current version of up to 8
+    active vault logins of that identity that the latest version of an active connection uses
+    (never read first, then the longest unread). It opens
+    them all at once, reads each one's usage with the pass (the node's own `wham/usage` reader,
+    8 s each, inside the route's 25 s), records the display metadata (email, account identity
+    digest, usage) for that connection version with the node record's checks
+    (`qorpera_record_model_login_account_metadata`), and completes the refresh
+    (`qorpera_complete_model_login_account_refresh`). A login that cannot be read is unknown usage;
+    the refresh still settles. The pass is never renewed here, only display metadata leaves the
+    vault, and the envelopes are wiped. No helper and no machine is involved.
 
 ### Installing the helper (operator, per vault host)
 

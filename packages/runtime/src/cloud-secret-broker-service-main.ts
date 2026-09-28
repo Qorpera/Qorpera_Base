@@ -8,6 +8,7 @@ import { composeCloudConnectorService, parseCloudConnectorServiceConfig } from "
 import { ModelLoginHelperClient } from "./cloud-model-login-helper.ts";
 import { CloudModelLoginVault } from "./cloud-model-login-vault.ts";
 import { CloudModelLoginSignIns } from "./cloud-model-login-vault-sign-in.ts";
+import { CloudModelLoginUsage } from "./cloud-model-login-vault-usage.ts";
 import {
 	CloudSecretBroker,
 	type CloudSecretConnectorAdapter,
@@ -286,6 +287,8 @@ export async function runCloudSecretBrokerServiceMain(
 				...(helper ? { renewer: helper } : {}),
 			}),
 			...(signIns ? { modelLoginSignIns: signIns } : {}),
+			// Usage of vault logins needs no helper: the broker reads it with the pass.
+			modelLoginUsage: new CloudModelLoginUsage({ authority, keyring }),
 		});
 		const stop = new AbortController();
 		const shutdown = (): void => stop.abort();
