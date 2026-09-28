@@ -114,6 +114,24 @@ as $$
 	select nullif(current_setting('realtime.topic', true), '')
 $$;
 
+-- Broadcast from the database, as the platform defines it: the row is the
+-- message, and a failure is only a warning to the caller.
+create function realtime.send(payload jsonb, event text, topic text, private boolean default true)
+returns void
+language plpgsql
+as $$
+begin
+	begin
+		execute format('set local realtime.topic to %L', topic);
+		insert into realtime.messages (payload, event, topic, private, extension)
+		values (payload, event, topic, private, 'broadcast');
+	exception
+		when others then
+			raise warning 'ErrorSendingBroadcastMessage: %', sqlerrm;
+	end;
+end
+$$;
+
 -- Reproduce the platform's default privilege posture so migration-level
 -- revokes and RLS policies are exercised the way production exercises them:
 -- schemas usable, tables and sequences default-granted (which the protected

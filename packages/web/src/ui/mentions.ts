@@ -1,0 +1,119 @@
+/* Mentions: "@" and a member's or agent's name in a message. The cloud reads the
+ * same rule from the text (qorpera_room_text_mentions, 20260928010000): an agent
+ * named in a group chat answers, the others stay quiet; a member named is told.
+ * The rule, shared with the SQL: "@" at the start or after a space or an opening
+ * bracket or quote, then the name, then the end or a space or punctuation. Letters
+ * A-Z match in either case and every Unicode space counts as a space (mentionFold,
+ * qorpera_mention_fold), so both sides read the same whatever the locale. Longer
+ * names win: "@Bo Jensen" names Bo Jensen, not Bo. Everyone who shares a name
+ * named is named. */
+
+export interface MentionTarget {
+	kind: "member" | "agent";
+	id: string;
+	name: string;
+}
+
+export interface Mention {
+	target: MentionTarget;
+	start: number;
+	end: number;
+}
+
+const BEFORE = /[ \t\n\r\f\v(["'“‘]/;
+const AFTER = /[ \t\n\r\f\v.,!?;:)\]}"'”’]/;
+const SPACES = /[\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]/g;
+const EDGES = /^[ \t\n\r\f\v]+|[ \t\n\r\f\v]+$/g;
+
+/** Text as the rule reads it: A-Z in lower case, every Unicode space a plain space, the length
+ * unchanged (qorpera_mention_fold). Other letters keep their case; names go in as written. */
+export function mentionFold(text: string): string {
+	return text.replace(/[A-Z]/g, (letter) => letter.toLowerCase()).replace(SPACES, " ");
+}
+
+/** Every mention in a text, in order. */
+export function findMentions(text: string, targets: readonly MentionTarget[]): Mention[] {
+	const folded = mentionFold(text);
+	// Which name took each letter: a shorter name cannot use them, the same name can.
+	const taken = new Array<string | undefined>(text.length).fill(undefined);
+	const found: Mention[] = [];
+	const named = targets
+		.map((target) => ({ target, name: mentionFold(target.name).replace(EDGES, "") }))
+		.filter((item) => item.name)
+		.sort((a, b) => b.name.length - a.name.length);
+	for (const { target, name } of named) {
+		const needle = `@${name}`;
+		let from = 0;
+		for (;;) {
+			const start = folded.indexOf(needle, from);
+			if (start < 0) break;
+			from = start + 1;
+			const end = start + needle.length;
+			const before = start === 0 || BEFORE.test(folded[start - 1]!);
+			const after = end === folded.length || AFTER.test(folded[end]!);
+			if (!before || !after || taken.slice(start, end).some((name) => name !== undefined && name !== needle))
+				continue;
+			taken.fill(needle, start, end);
+			found.push({ target, start, end });
+		}
+	}
+	return found.sort((a, b) => a.start - b.start);
+}
+
+/** One mention as shown: its letters once, and everyone they name (a shared name names several). */
+export interface MentionPart {
+	start: number;
+	end: number;
+	targets: MentionTarget[];
+}
+
+/** A text as plain parts and mentions, for showing a message. */
+export function mentionParts(text: string, targets: readonly MentionTarget[]): (string | MentionPart)[] {
+	const parts: (string | MentionPart)[] = [];
+	let at = 0;
+	for (const mention of findMentions(text, targets)) {
+		const last = parts[parts.length - 1];
+		if (typeof last === "object" && last.start === mention.start && last.end === mention.end) {
+			last.targets.push(mention.target);
+			continue;
+		}
+		if (mention.start > at) parts.push(text.slice(at, mention.start));
+		parts.push({ start: mention.start, end: mention.end, targets: [mention.target] });
+		at = mention.end;
+	}
+	if (at < text.length) parts.push(text.slice(at));
+	return parts;
+}
+
+/** The mention being typed at the caret: "Ask @so|" → { start: 4, query: "so" }. */
+export function mentionQuery(text: string, caret: number): { start: number; query: string } | undefined {
+	const before = text.slice(0, caret);
+	// One word, or two ("@Sofie L"); a space right after a name ends the mention.
+	const match = /(?:^|[\s(["'“‘])@([^\s@]{0,32}(?: [^\s@]{1,32})?)$/u.exec(before);
+	if (!match) return undefined;
+	const query = match[1]!;
+	return { start: caret - query.length - 1, query };
+}
+
+/** Letters as a keyboard without them types them: "Søren" is found by "so", "Æble" by "ae". */
+const PLAIN: Record<string, string> = { ø: "o", æ: "ae", ß: "ss", đ: "d", ł: "l", œ: "oe" };
+
+function fold(value: string): string {
+	return value
+		.toLowerCase()
+		.normalize("NFD")
+		.replace(/\p{M}/gu, "")
+		.replace(/[øæßđłœ]/g, (letter) => PLAIN[letter] ?? letter);
+}
+
+/** Who a query can mean: the start of the name or of any word in it, accents aside. Agents first. */
+export function matchTargets(query: string, targets: readonly MentionTarget[], limit = 6): MentionTarget[] {
+	const wanted = fold(query.trim());
+	return targets
+		.filter((target) => {
+			const name = fold(target.name);
+			return !wanted || name.startsWith(wanted) || name.split(/\s+/).some((word) => word.startsWith(wanted));
+		})
+		.sort((a, b) => (a.kind === b.kind ? a.name.localeCompare(b.name) : a.kind === "agent" ? -1 : 1))
+		.slice(0, limit);
+}

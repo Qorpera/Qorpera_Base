@@ -388,6 +388,8 @@ label > input, label > select { font-weight: 400; }
 /* Keep the tracks within the stand so larger group canvases overflow symmetrically. */
 .rail-row-stand { position: relative; display: grid; grid-template: minmax(0, 1fr) / minmax(0, 1fr); place-items: center; width: var(--rail-row-figure); height: var(--rail-row-figure); }
 .rail-row-status { position: absolute; z-index: 2; right: -2px; bottom: -2px; width: 15px; height: 15px; border-radius: 50%; background: var(--rail-status); border: 2px solid var(--rail); }
+/* "@": someone mentioned this member here and they have not looked yet. */
+.rail-mention { position: absolute; z-index: 2; top: -3px; right: -3px; display: grid; place-items: center; width: 18px; height: 18px; border-radius: 50%; background: var(--sidebar-selection); color: #fff; font-size: 11px; font-weight: 700; line-height: 1; box-shadow: 0 0 0 2px var(--rail); }
 .rail-row:hover .rail-row-status { border-color: var(--rail-hover); }
 .rail-row.active .rail-row-status { border-color: var(--rail-selection); }
 .cofounder-status.failed, .rail-row-status.failed { background: var(--rail-status-failed); }

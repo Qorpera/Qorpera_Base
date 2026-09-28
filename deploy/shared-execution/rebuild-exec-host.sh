@@ -15,6 +15,9 @@
 #                    with shared-execution.env, runner-orchestrator.env, credentials/
 #   EXEC_SLOTS       slot count                   (16)
 # The orchestrator inside the host is left stopped: start it when the cut is live.
+# `lxc rebuild` replaces the root disk only: the instance keeps its devices,
+# the Compute Identity devices (identity-<uuid>) the login gateway attached
+# included. The script refuses to finish if one went missing.
 set -euo pipefail
 
 FINGERPRINT="${1:-}"
@@ -40,6 +43,10 @@ done
 lxc image info "${FINGERPRINT}" --project "${PROJECT}" >/dev/null
 
 exec_in() { lxc exec "${VM}" --project "${PROJECT}" -- "$@"; }
+identity_devices() {
+	lxc query "/1.0/instances/${VM}?project=${PROJECT}" \
+		| python3 -c 'import json,sys; print("\n".join(sorted(k for k in json.load(sys.stdin)["devices"] if k.startswith("identity-"))))'
+}
 push() { lxc file push --project "${PROJECT}" --mode "$3" --uid 0 --gid 0 -p "$1" "${VM}$2"; }
 
 # No new run may be admitted from here on: the orchestrator goes first, then the
@@ -57,8 +64,17 @@ if [[ -n ${units} || -n ${journals} ]]; then
 	exit 1
 fi
 echo "  none."
+identities_before=$(identity_devices)
 lxc stop "${VM}" --project "${PROJECT}" || true
 lxc rebuild "${FINGERPRINT}" "${VM}" --project "${PROJECT}"
+# The login gateway may add identities meanwhile; none may be lost.
+lost=$(LC_ALL=C comm -23 <(printf '%s\n' "${identities_before}" | sed '/^$/d') <(identity_devices))
+if [[ -n ${lost} ]]; then
+	echo "The rebuild lost Compute Identity devices; re-attach them before starting:" >&2
+	printf '  %s\n' ${lost} >&2
+	exit 1
+fi
+echo "Kept $(printf '%s\n' "${identities_before}" | sed '/^$/d' | wc -l | tr -d ' ') Compute Identity devices."
 lxc start "${VM}" --project "${PROJECT}"
 for _ in $(seq 1 120); do
 	if exec_in true 2>/dev/null; then break; fi
@@ -107,4 +123,6 @@ sleep 2
 status=$(exec_in systemctl is-active qorpera-shared-execution.service)
 health=$(exec_in curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18450/healthz)
 echo "image=${FINGERPRINT} fence=${fence} service=${status} healthz=${health} orchestrator=stopped"
+echo "Re-enrol the node inventory digest (image.* keys changed); identity devices are not part of it when the"
+echo "policy entry declares identityVolumes: lxc query '/1.0/instances/${VM}?project=${PROJECT}' | exec-host-inventory-digest.py --pool <pool> --source-prefix <prefix>"
 echo "Start the orchestrator when the cut is live: lxc exec ${VM} --project ${PROJECT} -- systemctl enable --now qorpera-runner-orchestrator.service"

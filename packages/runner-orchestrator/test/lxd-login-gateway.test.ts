@@ -8,6 +8,7 @@ import type {
 	LxdClient,
 	LxdCreateInstanceRequest,
 	LxdCreateStorageVolumeRequest,
+	LxdInstanceDeviceUpdateClient,
 	LxdInstancePowerAction,
 	LxdInstanceRecord,
 	LxdInstanceStateRecord,
@@ -16,6 +17,7 @@ import type {
 	LxdStorageVolumeRecord,
 	LxdTrackedInstanceAction,
 } from "../src/lxd-client.ts";
+import { LxdExecutionHostIdentities } from "../src/lxd-execution-host-identity.ts";
 import {
 	HttpLxdNativeLoginGateway,
 	LxdNativeLoginGateway,
@@ -1393,5 +1395,227 @@ describe("LXD native login gateway", () => {
 		expect(response.status).toBe(503);
 		expect(lxd.createCalls).toHaveLength(1);
 		expect(boundary.requests.filter((request) => request.url.endsWith("/login"))).toHaveLength(1);
+	});
+});
+
+/** Node 2's shared execution host as its login gateway sees it: devices changed under one read. */
+class FakeExecHost implements LxdInstanceDeviceUpdateClient {
+	devices: Record<string, Record<string, string>> = { root: { type: "disk", path: "/", pool: "qorpera-vm" } };
+	volumes: LxdStorageVolumeRecord[] = [];
+	failures = 0;
+	attaches: Array<{ volumesCreated: number; loginMachines: number; devices: string[] }> = [];
+	readonly lxd: FakeLxd;
+	constructor(lxd: FakeLxd) {
+		this.lxd = lxd;
+	}
+	instance(): LxdInstanceRecord {
+		return {
+			name: "qorpera-exec-node02",
+			type: "virtual-machine",
+			status: "Running",
+			statusCode: 103,
+			config: {},
+			profiles: ["native25-job-a1"],
+			devices: structuredClone(this.devices),
+			expandedDevices: { ...structuredClone(this.devices), eth0: { type: "nic", network: "qorpera0" } },
+			expandedConfig: {},
+		};
+	}
+	async getInstance() {
+		return this.instance();
+	}
+	async updateInstanceDevices(
+		project: string,
+		_name: string,
+		update: (instance: LxdInstanceRecord) => Readonly<Record<string, Readonly<Record<string, string>>>> | undefined,
+	): Promise<boolean> {
+		expect(project).toBe("qorpera-runners");
+		const devices = update(this.instance());
+		if (!devices) return false;
+		if (this.failures-- > 0) throw new Error("LXD: instance is busy");
+		this.devices = structuredClone(devices) as Record<string, Record<string, string>>;
+		this.attaches.push({
+			volumesCreated: this.lxd.createVolumeCalls.length,
+			loginMachines: this.lxd.createCalls.length,
+			devices: Object.keys(devices).sort(),
+		});
+		return true;
+	}
+	async listCustomStorageVolumes(project: string, pool: string) {
+		expect([project, pool]).toEqual(["qorpera-runners", "qorpera-vm"]);
+		return structuredClone([...(this.lxd.volume ? [this.lxd.volume] : []), ...this.volumes]);
+	}
+}
+
+describe("LXD native login gateway and the node's shared execution host", () => {
+	const identityDevice = (id: string) => ({
+		type: "disk",
+		pool: "qorpera-vm",
+		source: `identity-${id}`,
+		path: `/var/lib/qorpera/identities/${id}`,
+	});
+	const execHost = (lxd: FakeLxd) => {
+		const fake = new FakeExecHost(lxd);
+		return {
+			fake,
+			identities: new LxdExecutionHostIdentities(
+				{ project: "qorpera-runners", instance: "qorpera-exec-node02" },
+				{ pool: "qorpera-vm", sourcePrefix: "identity-" },
+				fake,
+			),
+		};
+	};
+	it("attaches a new login's identity volume right after creating it, before the login machine", async () => {
+		const root = await stateRoot(),
+			lxd = new FakeLxd(),
+			boundary = fetchBoundary([
+				{ status: "awaiting_member", interactionUrl: "https://provider.example/device", userCode: null },
+			]),
+			{ fake, identities } = execHost(lxd);
+		const gateway = new LxdNativeLoginGateway(config(root), lxd, boundary.fetchImplementation, identities);
+		const response = await gateway.handle(loginRequest());
+		expect(await response.json()).toMatchObject({ status: "awaiting_member" });
+		expect(fake.attaches).toEqual([
+			{ volumesCreated: 1, loginMachines: 0, devices: [`identity-${computeIdentityId}`, "root"] },
+		]);
+		expect(fake.devices[`identity-${computeIdentityId}`]).toEqual(identityDevice(computeIdentityId));
+		// The same member's next post, a refresh or the sweep finds it attached and writes nothing.
+		await gateway.handle(loginRequest());
+		await gateway.reconcile(new AbortController().signal);
+		expect(fake.attaches).toHaveLength(1);
+	});
+	const marked = (name: string, id: string, extra: Record<string, string> = {}): LxdStorageVolumeRecord => ({
+		name,
+		type: "custom",
+		contentType: "filesystem",
+		description: `Qorpera Compute Identity ${id}`,
+		config: {
+			size: "32GiB",
+			"user.qorpera.schema": "qorpera.compute-identity-volume/v1",
+			"user.qorpera.compute_identity_id": id,
+			"user.qorpera.provider_adapter": "lxd",
+			...extra,
+		},
+	});
+	const awaitingMember = () =>
+		fetchBoundary([{ status: "awaiting_member", interactionUrl: "https://provider.example/device", userCode: null }]);
+	it("never fails a login over the attach; the sweep attaches only volumes of logins this node placed", async () => {
+		const root = await stateRoot(),
+			lxd = new FakeLxd(),
+			boundary = awaitingMember(),
+			{ fake, identities } = execHost(lxd);
+		fake.failures = 3;
+		const errors = vi.spyOn(console, "error").mockImplementation(() => undefined);
+		try {
+			const gateway = new LxdNativeLoginGateway(config(root), lxd, boundary.fetchImplementation, identities);
+			const response = await gateway.handle(loginRequest());
+			expect(response.status).toBe(200);
+			expect(await response.json()).toMatchObject({ status: "awaiting_member" });
+			expect(fake.attaches).toHaveLength(0);
+			expect(errors.mock.calls.flat().join("\n")).toContain(
+				`could not attach Compute Identity ${computeIdentityId}`,
+			);
+			// Well-formed identity volumes of logins this node never placed stay off the host,
+			// as do volumes that are not exactly an identity volume.
+			fake.volumes = [
+				marked("identity-30000000-0000-4000-8000-0000000000aa", "30000000-0000-4000-8000-0000000000aa"),
+				marked("identity-../../etc", "../../etc"),
+				marked("recovery-30000000-0000-4000-8000-0000000000ab", "30000000-0000-4000-8000-0000000000ab"),
+			];
+			expect((await gateway.reconcile(new AbortController().signal)).unconfirmed).toBe(0);
+			expect(fake.attaches).toHaveLength(1);
+			expect(Object.keys(fake.devices).sort()).toEqual([`identity-${computeIdentityId}`, "root"]);
+			expect(fake.devices[`identity-${computeIdentityId}`]).toEqual(identityDevice(computeIdentityId));
+		} finally {
+			errors.mockRestore();
+		}
+	});
+	it.each([
+		["another adapter", { "user.qorpera.provider_adapter": "other-node" }],
+		["another identity marker", { "user.qorpera.compute_identity_id": "30000000-0000-4000-8000-0000000000dd" }],
+		["another size", { size: "1TiB" }],
+		["a block volume", null],
+	])("the sweep leaves a placed login's volume with %s off the host", async (_label, drift) => {
+		const root = await stateRoot(),
+			lxd = new FakeLxd(),
+			{ fake, identities } = execHost(lxd);
+		fake.failures = 3;
+		const errors = vi.spyOn(console, "error").mockImplementation(() => undefined);
+		try {
+			const gateway = new LxdNativeLoginGateway(config(root), lxd, awaitingMember().fetchImplementation, identities);
+			expect((await gateway.handle(loginRequest())).status).toBe(200);
+			if (!lxd.volume) throw new Error("expected the login's volume");
+			lxd.volume =
+				drift === null
+					? { ...lxd.volume, contentType: "block" }
+					: { ...lxd.volume, config: { ...lxd.volume.config, ...drift } };
+			await gateway.reconcile(new AbortController().signal);
+			expect(fake.attaches).toHaveLength(0);
+		} finally {
+			errors.mockRestore();
+		}
+	});
+	it("the sweep leaves an identity's volume off the host when its login here was never placed", async () => {
+		const root = await stateRoot(),
+			lxd = new FakeLxd(),
+			boundary = awaitingMember(),
+			{ fake, identities } = execHost(lxd);
+		boundary.control.nodeRefusal = "NODE_CAPACITY_EXHAUSTED";
+		const errors = vi.spyOn(console, "error").mockImplementation(() => undefined);
+		try {
+			const gateway = new LxdNativeLoginGateway(config(root), lxd, boundary.fetchImplementation, identities);
+			expect((await gateway.handle(loginRequest())).status).toBe(503);
+			expect(lxd.createVolumeCalls).toHaveLength(0);
+			fake.volumes = [marked(`identity-${computeIdentityId}`, computeIdentityId)];
+			await gateway.reconcile(new AbortController().signal);
+			expect(fake.attaches).toHaveLength(0);
+		} finally {
+			errors.mockRestore();
+		}
+	});
+	it("logs a sweep that cannot list volumes once a minute and keeps the reconcile going", async () => {
+		const root = await stateRoot(),
+			lxd = new FakeLxd(),
+			{ fake, identities } = execHost(lxd);
+		const gateway = new LxdNativeLoginGateway(config(root), lxd, awaitingMember().fetchImplementation, identities);
+		await gateway.handle(loginRequest());
+		fake.listCustomStorageVolumes = async () => {
+			throw new Error("LXD: not found");
+		};
+		const errors = vi.spyOn(console, "error").mockImplementation(() => undefined);
+		try {
+			expect(await gateway.reconcile(new AbortController().signal)).toEqual({ scanned: 1, unconfirmed: 0 });
+			expect(await gateway.reconcile(new AbortController().signal)).toEqual({ scanned: 1, unconfirmed: 0 });
+			expect(
+				errors.mock.calls.flat().filter((line) => String(line).includes("could not list identity volumes")),
+			).toHaveLength(1);
+		} finally {
+			errors.mockRestore();
+		}
+	});
+	it.each([
+		[
+			"another project",
+			{ project: "qn25b2", instance: "qorpera-exec-node02" },
+			{ pool: "qorpera-vm", sourcePrefix: "identity-" },
+		],
+		["another pool", { project: "qorpera-runners", instance: "x" }, { pool: "default", sourcePrefix: "identity-" }],
+		[
+			"another prefix",
+			{ project: "qorpera-runners", instance: "x" },
+			{ pool: "qorpera-vm", sourcePrefix: "phql-a1-identity-" },
+		],
+	])("refuses an execution host that would mount volumes from %s", async (_label, host, volumes) => {
+		const root = await stateRoot(),
+			lxd = new FakeLxd();
+		expect(
+			() =>
+				new LxdNativeLoginGateway(
+					config(root),
+					lxd,
+					fetchBoundary([]).fetchImplementation,
+					new LxdExecutionHostIdentities(host, volumes, new FakeExecHost(lxd)),
+				),
+		).toThrow("Execution host must mount this gateway's own identity volumes");
 	});
 });

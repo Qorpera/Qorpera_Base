@@ -101,6 +101,8 @@
 :root[data-theme="dark"] .agent-figure-picker .figure-choice:hover:not(:disabled) { background: rgba(255, 255, 255, 0.07); }
 :root[data-theme="dark"] .agent-figure-picker .figure-choice[aria-checked="true"] { border-color: #6a6965; background: rgba(255, 255, 255, 0.1); box-shadow: 0 0 0 3px #323231, 0 0 0 4px #5a5957; }
 :root[data-theme="dark"] .agent-figure-picker .color-grid { border-top-color: rgba(255, 255, 255, 0.1); }
+/* A routine's switch when off: a soft grey knob, not a white one, on the dim track. */
+:root[data-theme="dark"] .routine-switch:not([aria-checked="true"])::after { background: #c4c3be; box-shadow: none; }
 @media (max-width: 760px) {
 	:root[data-theme="dark"] .frame.navigation-open .navigation-backdrop { background: rgba(0, 0, 0, 0.45); }
 }
@@ -111,6 +113,7 @@
 :root[data-theme="dark"] .mine .bubble { background: var(--composer-accent); color: var(--composer-on-accent); box-shadow: none; }
 :root[data-theme="dark"] .message-progress .bubble { color: #dedcd8; }
 :root[data-theme="dark"] .composer-shell { background: #242423; }
+:root[data-theme="dark"] .draft-panel { background: #242423; }
 :root[data-theme="dark"] .composer-shell.is-dragging { border-color: var(--composer-accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--composer-accent) 22%, transparent); }
 :root[data-theme="dark"] .composer-send:disabled { background: #353534; color: #71706c; }
 :root[data-theme="dark"] .composer-send:not(:disabled):hover { background: var(--composer-accent-hover); }
@@ -120,9 +123,16 @@
 :root[data-theme="dark"] .attachment-chip { background: #2c2c2b; }
 :root[data-theme="dark"] .attachment-remove { background: #3a3a38; box-shadow: 0 1px 4px rgb(0 0 0 / 40%); }
 :root[data-theme="dark"] .auth-card { border-color: var(--border); background: #262625; }
-:root[data-theme="dark"] .review-call { background: #1e1e1d; }
+:root[data-theme="dark"] .review-mark.is-approved { color: #5ed6a9; }
+:root[data-theme="dark"] .action-review-card.is-folded { border-color: transparent; background: none; }
 :root[data-theme="dark"] .review-rule-input { border-color: var(--border); background: #1e1e1d; }
-:root[data-theme="dark"] .settings-rule { background: #333332; }
+:root[data-theme="dark"] :is(.settings-rule-form, .settings-rule-table) input { border-color: rgba(255, 255, 255, 0.1); background: #333332; }
+:root[data-theme="dark"] :is(.settings-rule-form, .settings-rule-table) input::placeholder { color: #8f8e89; }
+:root[data-theme="dark"] :is(.settings-rule-form, .settings-rule-table) select { border-color: rgba(255, 255, 255, 0.12); background: #3a3a38; }
+:root[data-theme="dark"] :is(.settings-rule-table, .settings-rule-table th) { border-color: rgba(255, 255, 255, 0.1); }
+:root[data-theme="dark"] .settings-rule-table th { color: #9d9c97; }
+:root[data-theme="dark"] :is(.settings-rule-table tbody tr + tr, .settings-rule-table tbody tr + tr td) { border-color: rgba(255, 255, 255, 0.06); }
+:root[data-theme="dark"] .settings-rule-note { color: #a3a29d; }
 :root[data-theme="dark"] .received-file { border-color: var(--border); background: #262625; }
 :root[data-theme="dark"] .received-file:hover { background: #2e2e2d; }
 :root[data-theme="dark"] .received-file-visual { color: #8f8e89; }
@@ -224,7 +234,7 @@
 :root[data-theme="dark"] .coding-tone-done .coding-status-text, :root[data-theme="dark"] .coding-step-status.coding-tone-done, :root[data-theme="dark"] .coding-glyph.coding-tone-done { color: #5ed6a9; }
 :root[data-theme="dark"] .coding-badge-codex { background: #f4f3f0; color: #161615; }
 :root[data-theme="dark"] .coding-dot-working { background: #30d158; }
-:root[data-theme="dark"] .coding-question { background: #262624; }
+:root[data-theme="dark"] .coding-composer:has(.coding-field-input[aria-disabled="true"]) { background: var(--hover); }
 :root[data-theme="dark"] .service-card .service-agents, :root[data-theme="dark"] .service-token-form small { color: #a3a39e; }
 :root[data-theme="dark"] .service-outcome.is-ok { color: #8fc7b3; }
 :root[data-theme="dark"] .service-outcome.is-error { color: #ff8a4c; }
