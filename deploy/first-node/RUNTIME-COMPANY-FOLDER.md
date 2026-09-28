@@ -30,10 +30,11 @@ refer to.
 >
 > The section [Decided on 28 September 2026](#decided-on-28-september-2026)
 > records the result. Where it differs from a later section, it governs, and
-> the later sections carry "amended 2026-09-28" markers. The contract's
-> "build step 4" (section 19, the checkpoint, section 20 and launch
-> acceptance) means the
-> storage core's writing side (C1–C3) and the reset.
+> the later sections carry "amended 2026-09-28" markers.
+>
+> Where the contract says "build step 4", it means the storage core's
+> writing side (C1–C3) and the reset. This holds in section 19, the
+> checkpoint, section 20 and launch acceptance.
 
 ## Decided on 28 September 2026
 
@@ -91,7 +92,7 @@ Computer) hosts up to six computers.
 | Machine | View | Owner of saves |
 | --- | --- | --- |
 | Run box (section 4) | the run's authority | the run |
-| Company machine, two mounts per computer (section 5) | the company-wide view: paths whose covering resource is the root `company_shared` resource, plus `rules/` read-only | the desktop's mount: the computer's holder (the run holding it, or a member who took it over); the shell's mount: the run that held the computer when its shell started |
+| Company machine: one mount for each computer's desktop, and one for each `computer_shell` command (section 5) | the company-wide view: paths whose covering resource is the root `company_shared` resource, plus `rules/` read-only | the desktop's mount: the computer's holder (the run holding it, or a member who took it over); a shell command's mount: the run that started that command |
 | Coding machine, one mount per attached session (section 6) | the coding agent ∩ the session owner, `agents/**` and `rules/**` read-only | the session |
 | Test machine, one mount per machine | the agent that started it, for that run's requesting member (open question 5) | that agent |
 
@@ -102,7 +103,9 @@ Computer) hosts up to six computers.
   running command stays in use, and its desktop is closed before the seat
   changes hands. A member who takes over while an agent's command runs does
   not take over that command's saves: they stay the agent's.
-- A view stays open after its owner's run ends, while its programs run.
+- A view stays open after its owner's run ends while the programs it serves
+  run: a shell command's view until that command and its background
+  processes end, and a desktop's until the computer changes hands or closes.
   - Saves are attributed to the view's agent and to the member of its last
     holder.
   - A unit that needs the automatic review waits for that agent's next turn
@@ -155,7 +158,7 @@ live before the next:
 | 1 | Folder service on both nodes, and the folder program. A folder-v2 company made by an operator is mounted read-only on the execution host, outside any box | C1a, C1f, and C1c's activation checks before a folder-v2 company holds data in production (step 1 reads the NAS itself and never uses the byte routes C1c fences) | — |
 | 2 | Run box with `exec_command`/`write_stdin` over the read-only mount | step 1; C1b run actors and read records; C3 and C4, so a real run can exist on a folder-v2 company | — |
 | 3 | Writes: boundaries, change sets, reports, conflicts, reviewed units, `apply_patch`; streamed binary writes and the folder service's upload binding; restore in the web app (from old step 4; the file history view is core slice C4). A write spike first, including two machines on two nodes editing the same file | C1b–C1d, C2, C3 | the five `company_*` tools, for folder-v2 companies |
-| 4 | Company machines: a new office image with the folder program, two mounts per computer (desktop and shell), desktop folders in `/company`, saves after a quiet period, shell commands per command and reviewed. Unblocks the scale-out switch (#414) | step 3; #411 in the same image | the Company File part of `computer_transfer`; work files in the scratch area |
+| 4 | Company machines: a new office image with the folder program, a mount for each desktop and each shell command, desktop folders in `/company`, saves after a quiet period, shell commands per command and reviewed. Unblocks the scale-out switch (#414) | step 3; #411 in the same image | the Company File part of `computer_transfer`; work files in the scratch area |
 | 5 | Coding machines: one mount per attached session, code areas (section 6), a final publish before sleep and archive | step 3; coding standby (#430) | the private repository folder, its seed and export chain, the 64 MiB bundle |
 | 6 | Test machines: one view per machine, publishing at command end | step 3; test machines (#419, Rebuild Map C4) | `/mnt/repository` and copies to the machine's disk |
 
@@ -267,7 +270,8 @@ see [Decided on 28 September 2026](#decided-on-28-september-2026).)
   `allow_other` before the run box starts, and the box unit binds that mount.
   The slot unit itself stays unprivileged.
 - **On a company machine:** the folder program as a system unit with its own
-  memory budget, two mounts per computer (section 5).
+  memory budget: a mount for each computer's desktop and each shell command
+  (section 5).
 - **One-run LXD runner VMs** (the older lane) get no mount. The shared
   execution host is the run machine for this design, and the LXD guest
   bootstrap keeps refusing FUSE (`lxd-runner-bootstrap.ts:824`).
@@ -300,7 +304,7 @@ arrive on the feed: they reload the view and trigger the recheck in section 3.
 (`object-gateway/src/native-objects.ts`), and its check has no path. The
 folder service gets its own binding: run-scoped on an execution host, and
 scoped to the mount's view on a company machine (amended 2026-09-28: the
-desktop's holder, or the shell's run; section 5). The path is still checked at
+desktop's holder, or the run that started a shell command; section 5). The path is still checked at
 commit. Memory holds at most one partial chunk per open file.
 
 ## 2. Writes: change sets
@@ -391,7 +395,9 @@ All clean units of a boundary land in one commit with one sequence number
   routine run's own end-of-run decision, which is reviewed only when it
   changes the routine's instructions or title. The folder service asks the harness host of the
   run that made the change; a Company Computer reaches it through that screen
-  holder's run.
+  holder's run. (Amended 2026-09-28: through the owner of the mount that
+  saved, section 5: the holder's run for a desktop save, and the run that
+  started it for a `computer_shell` command.)
   - **Allow:** the units land with the clean ones.
   - **Deny:** they are restored in the mount and reported.
   - **Ask:** they are parked on the card and the other units land now. On
@@ -565,8 +571,8 @@ Agents search and read through the shell and still write with today's tools.
 
 **One view, company-wide.** Desktops on a Company Computer are workflow
 surfaces, not security boundaries (section 12). So every mount on the machine
-shows the same view: the company-wide view (amended 2026-09-28: two mounts per
-computer, for attribution; founder decision 2). That view is the paths whose
+shows the same view: the company-wide view (amended 2026-09-28: a mount per
+desktop and per shell command, for attribution; founder decision 2). That view is the paths whose
 covering resource is the root shared resource (`path=''`, subtree,
 company-wide), which the default agent grant targets
 (`20260926035000_company_agent_default_write_grants.sql`).
@@ -576,25 +582,28 @@ the holding run's authority covers the machine view; a run whose default
 grant was revoked or held back gets no Company Computer screen. Work on
 narrower paths runs in the run box.
 
-**Reads and writes are attributed per desktop.** (Amended 2026-09-28.) Each
-computer has two mounts, each a view with one owner, known by its pass and the
+**Reads and writes are attributed per desktop.** (Amended 2026-09-28.) Every
+mount on a computer is a view with one owner, known by its pass and the
 machine's vsock CID:
 - **The desktop's mount** is bound into the desktop session: the file manager,
   applications and the desktop terminal. Its owner is the computer's holder:
   the run holding that screen, or the member while a member has taken it
   over. A takeover switches the view's holder.
-- **The shell's mount** is bound into the `computer_shell` namespace (#411).
-  Its owner is the run that held the computer when that shell started. A
-  member's takeover does not change it, so an agent's running command keeps
-  saving as that agent.
+- **Each `computer_shell` command's mount** is bound into that command's own
+  mount namespace, inside the computer's shell namespace (#411). The network,
+  `/tmp` and the process table stay shared. Its owner is the run that started
+  the command, which #411 already records for each step. Later runs on the
+  same computer start commands with mounts of their own. A member's takeover
+  changes none of them. The view closes when the command and the background
+  processes it started have ended.
 
 Each mount's reads are recorded for its owner, and its changes are checked
-against and recorded for its owner. The upload binding and the report follow
-the same owner.
+against and recorded for its owner. The upload binding, the review and the
+report follow the same owner.
 
-When a screen passes to another run, later saves belong to the new holder. A
-computer with a running command stays in use, and its desktop is closed
-before the seat changes hands (#409, item 1).
+When a screen passes to another run, later desktop saves belong to the new
+holder. A computer with a running command stays in use, and its desktop is
+closed before the seat changes hands (#409, item 1).
 
 **The machine's own disk** holds only the system, installed applications,
 browser profiles and caches. The rest is kept off it:
@@ -1070,6 +1079,7 @@ folder that fits. This wording ships ahead of the mount, in PR #366.
    reconcile them, to settle with #419 before step 6:
    - only the starting agent uses a machine while `/company` is mounted; or
    - the executor mounts a view per `machine_run` command, owned by the run
-     that issued it, and runs one agent's commands at a time. Root inside
+     that issued it, and runs one run's commands at a time, so no two
+     requesters' authority meet on one machine. Root inside
      the machine cannot split one mount between agents, so attribution must
      come from the node, never from the guest.
