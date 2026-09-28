@@ -1,0 +1,5 @@
+{
+	"schema": "qorpera.node-parity-class/v1",
+	"mayDiffer": ["agent › roles"],
+	"onlyOn": {}
+}
