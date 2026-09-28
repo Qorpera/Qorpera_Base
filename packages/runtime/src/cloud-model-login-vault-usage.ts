@@ -106,8 +106,7 @@ function parseDescription(value: unknown): RefreshDescription {
 		!["pending", "completed", "expired", "cancelled"].includes(String(input.status)) ||
 		typeof input.expiresAt !== "string" ||
 		!Number.isFinite(Date.parse(input.expiresAt)) ||
-		!Array.isArray(input.logins) ||
-		input.logins.length > MAX_LOGINS
+		!Array.isArray(input.logins)
 	)
 		throw new Error("Vault account refresh is invalid");
 	return {
@@ -115,9 +114,10 @@ function parseDescription(value: unknown): RefreshDescription {
 		companyId: uuid(input.profileId, "Vault account refresh company"),
 		computeIdentityId: uuid(input.computeIdentityId, "Vault account refresh identity"),
 		requestedByUserId: uuid(input.requestedByUserId, "Vault account refresh member"),
-		status: input.status === "cancelled" ? "expired" : (input.status as RefreshDescription["status"]),
+		status: input.status === "pending" || input.status === "completed" ? input.status : "expired",
 		expiresAt: input.expiresAt,
-		logins: input.logins.map((item) => {
+		// The database hands out at most this many; any more would wait for the next refresh.
+		logins: input.logins.slice(0, MAX_LOGINS).map((item) => {
 			const login = record(
 				item,
 				[
@@ -187,74 +187,87 @@ export class CloudModelLoginUsage {
 				signal,
 			),
 		);
-		if (
-			description.requestId !== refresh.requestId ||
-			description.companyId !== request.companyId.toLowerCase() ||
-			description.computeIdentityId !== refresh.computeIdentityId ||
-			description.requestedByUserId !== refresh.requestedByUserId ||
-			Date.parse(description.expiresAt) !== Date.parse(refresh.expiresAt)
-		)
-			throw new Error("Vault account refresh crossed its authority");
 		const answer = (status: ModelLoginUsageAnswer["status"]): ModelLoginUsageAnswer => ({
 			schema: NATIVE_ACCOUNT_REFRESH_RESULT_SCHEMA,
 			request_id: refresh.requestId,
 			status,
 		});
-		if (description.status === "completed") return answer("completed");
-		if (description.status !== "pending") throw new Error("Vault account refresh has ended");
-		// Each login is read on its own: one that fails to open or answer is unknown usage.
-		for (const login of description.logins) {
-			try {
-				const metadata = await this.#keys.use(
-					login.envelope,
-					{
-						companyId: description.companyId,
-						environmentId: description.computeIdentityId,
-						secretId: login.loginId,
-						version: login.version,
-						keyId: login.keyId,
-					},
-					async (fields) => {
-						const text = fields[MODEL_LOGIN_FIELD];
-						if (typeof text !== "string" || Object.keys(fields).length !== 1)
-							throw new Error("Model login envelope is invalid");
-						const codex = parseCodexLogin(text);
-						return {
-							email: nativeProviderAccountEmail("codex-cli", codex.text) ?? null,
-							identity: nativeProviderAccountIdentity(codex.text) ?? null,
-							usage:
-								(await readNativeProviderAccountUsage(
-									codex.text,
-									AbortSignal.any([signal, AbortSignal.timeout(USAGE_DEADLINE_MS)]),
-									this.#fetch,
-								)) ?? null,
-						};
-					},
-				);
-				if (!metadata.email && !metadata.identity && !metadata.usage) continue;
-				await this.#authority.recordModelLoginAccountMetadata(
-					{
-						requestId: refresh.requestId,
-						capabilitySha256,
-						loginId: login.loginId,
-						connectionId: login.connectionId,
-						connectionVersion: login.connectionVersion,
-						providerAccountEmail: metadata.email,
-						providerAccountUsage: metadata.usage,
-						providerAccountIdentity: metadata.identity,
-					},
-					AbortSignal.timeout(SAVE_DEADLINE_MS),
-				);
-			} catch {
-				// Unknown usage for this login; the refresh still settles.
-			} finally {
-				login.envelope.fill(0);
-			}
+		try {
+			if (
+				description.requestId !== refresh.requestId ||
+				description.companyId !== request.companyId.toLowerCase() ||
+				description.computeIdentityId !== refresh.computeIdentityId ||
+				description.requestedByUserId !== refresh.requestedByUserId ||
+				Date.parse(description.expiresAt) !== Date.parse(refresh.expiresAt)
+			)
+				throw new Error("Vault account refresh crossed its authority");
+			if (description.status === "completed") return answer("completed");
+			if (description.status !== "pending") throw new Error("Vault account refresh has ended");
+			// Every login is read at once, each on its own deadline inside the route's: one that
+			// fails to open or answer is unknown usage, and the refresh still settles.
+			await Promise.all(
+				description.logins.map((login) => this.#read(description, refresh, capabilitySha256, login, signal)),
+			);
+		} finally {
+			for (const login of description.logins) login.envelope.fill(0);
 		}
 		await this.#authority.completeModelLoginAccountRefresh(
 			{ requestId: refresh.requestId, capabilitySha256 },
-			AbortSignal.timeout(SAVE_DEADLINE_MS),
+			AbortSignal.any([signal, AbortSignal.timeout(SAVE_DEADLINE_MS)]),
 		);
 		return answer("completed");
+	}
+
+	async #read(
+		description: RefreshDescription,
+		refresh: { requestId: string },
+		capabilitySha256: string,
+		login: RefreshLogin,
+		signal: AbortSignal,
+	): Promise<void> {
+		try {
+			const metadata = await this.#keys.use(
+				login.envelope,
+				{
+					companyId: description.companyId,
+					environmentId: description.computeIdentityId,
+					secretId: login.loginId,
+					version: login.version,
+					keyId: login.keyId,
+				},
+				async (fields) => {
+					const text = fields[MODEL_LOGIN_FIELD];
+					if (typeof text !== "string" || Object.keys(fields).length !== 1)
+						throw new Error("Model login envelope is invalid");
+					const codex = parseCodexLogin(text);
+					return {
+						email: nativeProviderAccountEmail("codex-cli", codex.text) ?? null,
+						identity: nativeProviderAccountIdentity(codex.text) ?? null,
+						usage:
+							(await readNativeProviderAccountUsage(
+								codex.text,
+								AbortSignal.any([signal, AbortSignal.timeout(USAGE_DEADLINE_MS)]),
+								this.#fetch,
+							)) ?? null,
+					};
+				},
+			);
+			if (!metadata.email && !metadata.identity && !metadata.usage) return;
+			await this.#authority.recordModelLoginAccountMetadata(
+				{
+					requestId: refresh.requestId,
+					capabilitySha256,
+					loginId: login.loginId,
+					connectionId: login.connectionId,
+					connectionVersion: login.connectionVersion,
+					providerAccountEmail: metadata.email,
+					providerAccountUsage: metadata.usage,
+					providerAccountIdentity: metadata.identity,
+				},
+				AbortSignal.any([signal, AbortSignal.timeout(SAVE_DEADLINE_MS)]),
+			);
+		} catch {
+			// Unknown usage for this login.
+		}
 	}
 }

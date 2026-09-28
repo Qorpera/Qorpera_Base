@@ -134,27 +134,31 @@ no database login and no service key; it sees a login only for one operation and
     sign-in is never started again by a late poll. The recovery
     pin still fences a recovering identity, but asks no node key backup of a sign-in that created a
     vault login. A repeat after a lost answer finds its own login.
-  - Deploy: the broker's public front must route `POST /v1/model-logins/<company>/login` to that
-    company's broker by path (the edge function adds no query). The helper must run beside the
+  - Deploy: the broker's public front must route `POST /v1/model-logins/<company>/login` and
+    `POST /v1/model-logins/<company>/account-refresh` to that company's broker by path (the edge
+    function adds no query). The helper must run beside the
     broker (without it the route answers 404). A helper restart ends sign-ins in flight; the member
     signs in again.
 - **Part C, usage** (migration `20260928185000`, `cloud-model-login-vault-usage.ts`): the vault reads
   the usage of the logins it keeps; the web client is unchanged.
-  - For a switched company, the account refresh chooser answers a refresh of an identity with an
-    active vault login with the same `<broker service origin>/v1/model-logins/<company>/` base
-    (reason `MODEL_LOGIN_VAULT`); the edge function posts its unchanged
+  - The account refresh chooser answers a refresh of an identity whose login is in the vault
+    (change 3's `qorpera_compute_identity_login_in_vault`: every active login of it is a live vault
+    login) with `<broker service origin>/v1/model-logins/<company>/` (reason `MODEL_LOGIN_VAULT`)
+    when the company has an active broker, whether or not it still takes new sign-ins in the vault.
+    An identity still moving (a node login active beside its vault login) keeps the node path,
+    which reads its node logins and skips the vault ones. The edge function posts its unchanged
     `qorpera.native-account-refresh/v1` to `<base>account-refresh` with the refresh's capability.
-  - The broker reads the refresh (`qorpera_describe_model_login_account_refresh`, broker role; the
-    refresh must belong to its company) with the current version of each vault login of that
-    identity that the latest version of an active connection uses, checks the request against it,
-    opens each login, reads its usage with the pass (the node's own `wham/usage` reader, 8 s each),
-    records the display metadata (email, account identity digest, usage) for that connection
-    version with the node record's checks (`qorpera_record_model_login_account_metadata`), and
-    completes the refresh (`qorpera_complete_model_login_account_refresh`). A login that cannot be
-    read is unknown usage; the refresh still settles. The pass is never renewed here, and nothing
-    but display metadata leaves the vault. No helper and no machine is involved.
-  - Identities without a vault login keep the node path; with change 3 a node's usage check lists
-    vault logins and skips them.
+  - The broker reads the refresh (`qorpera_describe_model_login_account_refresh`, broker role) with
+    the node route's checks (live, the member still owns the identity with a role that may
+    refresh, the broker's own company), and while it is pending the current version of up to 8
+    vault logins of that identity that the latest version of an active connection uses. It opens
+    them all at once, reads each one's usage with the pass (the node's own `wham/usage` reader,
+    8 s each, inside the route's 25 s), records the display metadata (email, account identity
+    digest, usage) for that connection version with the node record's checks
+    (`qorpera_record_model_login_account_metadata`), and completes the refresh
+    (`qorpera_complete_model_login_account_refresh`). A login that cannot be read is unknown usage;
+    the refresh still settles. The pass is never renewed here, only display metadata leaves the
+    vault, and the envelopes are wiped. No helper and no machine is involved.
 
 ### Installing the helper (operator, per vault host)
 

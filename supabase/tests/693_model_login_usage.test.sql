@@ -1,8 +1,10 @@
 -- @fixture 160_native_subscription_compute_identity.test.sql until "-- Exercise the Step 2 authority/receipt RPCs using this real admitted native run."
--- Stateless Compute step 1 (change 2C): the vault reads the usage of the logins it keeps. For a
--- switched company the account refresh chooser names its broker for an identity with a vault
--- login; the broker (only) reads the refresh and the current version of that login under the
--- refresh's capability, records its display metadata, and completes the refresh.
+-- Stateless Compute step 1 (change 2C): the vault reads the usage of the logins it keeps. The
+-- account refresh chooser names the company's broker for an identity whose login is in the vault
+-- (every active login of it is a vault login), whether or not the company still takes new
+-- sign-ins in the vault; an identity still moving (with a node login) keeps the node path. The
+-- broker (only) reads the refresh and the current version of that login under the refresh's
+-- capability, records its display metadata, and completes the refresh.
 reset role;
 select set_config('request.jwt.claims',
 	'{"sub":"00000000-0000-4000-8000-000000000000","role":"service_role"}',false);
@@ -119,10 +121,19 @@ begin
 	perform set_config('qorpera_test.usage_version', v_version::text, false);
 end $$;
 
+-- Still moving: the member's node login is active beside the vault login, so the node reads it.
+set role service_role;
+select pg_temp.usage_expect(case when pg_temp.usage_choose('refresh-one') ->> 'reason' = 'MODEL_LOGIN_VAULT'
+	then 'vault' else 'node' end, 'node', 'an identity still moving refreshes on a node');
+reset role;
+-- Moved: the member's old node account is gone.
+update public.qorpera_native_credential_capsules set status = 'disabled'
+where compute_identity_id = current_setting('qorpera_test.usage_identity')::uuid
+	and status = 'active' and encrypted_capsule_reference not like 'model-login/%';
 set role service_role;
 select pg_temp.usage_expect(pg_temp.usage_choose('refresh-one') ->> 'url',
 	'https://secrets.qorpera.test/v1/model-logins/' || current_setting('qorpera_test.usage_company') || '/',
-	'an identity with a vault login refreshes in its vault');
+	'an identity whose login is in the vault refreshes in its vault');
 reset role;
 
 set local session authorization qorpera_secret_broker;
@@ -183,18 +194,54 @@ begin
 		raise exception 'refresh is not completed'; end if;
 end $$;
 
--- Switched back: refreshes go to nodes again, and the broker can no longer read them.
+-- A completed refresh hands out no login any more.
+set local session authorization qorpera_secret_broker;
+select pg_temp.usage_expect(pg_temp.usage_call($q$select (public.qorpera_describe_model_login_account_refresh(
+	'69300000-0000-4000-8000-000000000040',repeat('c',64),'69300000-0000-4000-8000-000000000201',
+	encode(sha256('refresh-one'::bytea),'hex')) ->> 'logins')$q$),'[]','a completed refresh reads no login');
+reset session authorization;
+
+-- Two more refreshes of the same identity: a live one, and a completed one that has expired.
+insert into public.qorpera_native_account_refresh_requests(id,profile_id,client_request_id,compute_identity_id,
+	requested_by_user_id,capability_sha256,compute_recovery_epoch,status,created_at,expires_at,completed_at)
+select refresh.id, identity.profile_id, refresh.client_id, identity.id, identity.owner_user_id,
+	encode(sha256(refresh.secret::bytea),'hex'), identity.recovery_epoch, refresh.status, refresh.created,
+	refresh.expires, refresh.completed
+from public.qorpera_member_compute_identities identity,
+	(values ('69300000-0000-4000-8000-000000000301'::uuid,'69300000-0000-4000-8000-000000000302'::uuid,'refresh-two',
+		'pending', clock_timestamp(), clock_timestamp() + interval '5 minutes', null::timestamptz),
+		('69300000-0000-4000-8000-000000000401'::uuid,'69300000-0000-4000-8000-000000000402'::uuid,'refresh-three',
+		'completed', clock_timestamp() - interval '10 minutes', clock_timestamp() - interval '5 minutes',
+		clock_timestamp() - interval '9 minutes')) as refresh(id, client_id, secret, status, created, expires, completed)
+where identity.id = current_setting('qorpera_test.usage_identity')::uuid;
+
+-- New sign-ins switched back to nodes: the vault still reads the usage of the logins it keeps.
 set role service_role;
 select pg_temp.usage_expect(public.qorpera_set_model_login_sign_in(current_setting('qorpera_test.usage_company')::uuid, false)::text,
-	'false','the operator switches the company back');
-select pg_temp.usage_expect(case when pg_temp.usage_choose('refresh-one') ->> 'reason' = 'MODEL_LOGIN_VAULT'
-	then 'vault' else 'node' end, 'node', 'a switched-back company refreshes on a node');
+	'false','the operator switches new sign-ins back');
+select pg_temp.usage_expect(pg_temp.usage_choose('refresh-two') ->> 'reason','MODEL_LOGIN_VAULT',
+	'a vault login still refreshes in the vault');
 reset role;
 set local session authorization qorpera_secret_broker;
+select pg_temp.usage_expect(pg_temp.usage_call($q$select jsonb_array_length(public.qorpera_describe_model_login_account_refresh(
+	'69300000-0000-4000-8000-000000000040',repeat('c',64),'69300000-0000-4000-8000-000000000301',
+	encode(sha256('refresh-two'::bytea),'hex')) -> 'logins')::text$q$),'1','the broker still reads it');
+-- An expired refresh is refused like on a node.
 select pg_temp.usage_expect(pg_temp.usage_call($q$select public.qorpera_describe_model_login_account_refresh(
-	'69300000-0000-4000-8000-000000000040',repeat('c',64),'69300000-0000-4000-8000-000000000201',
-	encode(sha256('refresh-one'::bytea),'hex'))::text$q$),
-	'42501:model login account refresh is unavailable','a switched-back company''s broker');
+	'69300000-0000-4000-8000-000000000040',repeat('c',64),'69300000-0000-4000-8000-000000000401',
+	encode(sha256('refresh-three'::bytea),'hex'))::text$q$),
+	'42501:model login account refresh is unavailable','an expired refresh');
+reset session authorization;
+-- So is a member who may no longer refresh.
+update public.qorpera_profile_members set role = 'viewer'
+where profile_id = current_setting('qorpera_test.usage_company')::uuid
+	and user_id = (select requested_by_user_id from public.qorpera_native_account_refresh_requests
+		where id = '69300000-0000-4000-8000-000000000301');
+set local session authorization qorpera_secret_broker;
+select pg_temp.usage_expect(pg_temp.usage_call($q$select public.qorpera_describe_model_login_account_refresh(
+	'69300000-0000-4000-8000-000000000040',repeat('c',64),'69300000-0000-4000-8000-000000000301',
+	encode(sha256('refresh-two'::bytea),'hex'))::text$q$),
+	'42501:model login account refresh is unavailable','a member who may no longer refresh');
 reset session authorization;
 
 rollback;

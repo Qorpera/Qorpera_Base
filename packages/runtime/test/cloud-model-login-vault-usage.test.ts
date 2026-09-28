@@ -27,7 +27,7 @@ const LOGIN = `${JSON.stringify({
 })}\n`;
 const signal = () => new AbortController().signal;
 
-function world(options: { status?: string; keyId?: string } = {}) {
+function world(options: { status?: string; keyId?: string; logins?: number } = {}) {
 	const companyId = randomUUID();
 	const computeIdentityId = randomUUID();
 	const loginId = randomUUID();
@@ -38,11 +38,24 @@ function world(options: { status?: string; keyId?: string } = {}) {
 	const expiresAt = new Date(Date.now() + 5 * 60_000).toISOString();
 	const keyring = new CloudSecretKeyring({ "company-kek-1": randomBytes(32) });
 	keyrings.push(keyring);
-	const envelope = keyring.seal(
-		{ [MODEL_LOGIN_FIELD]: LOGIN },
-		{ companyId, environmentId: computeIdentityId, secretId: loginId, version: 3, keyId: "company-kek-1" },
-	);
 	const connectionId = randomUUID();
+	const logins = Array.from({ length: options.logins ?? 1 }, (_, index) => {
+		const id = index === 0 ? loginId : randomUUID();
+		const envelope = keyring.seal(
+			{ [MODEL_LOGIN_FIELD]: LOGIN },
+			{ companyId, environmentId: computeIdentityId, secretId: id, version: 3, keyId: "company-kek-1" },
+		);
+		return {
+			loginId: id,
+			version: 3,
+			keyId: options.keyId ?? "company-kek-1",
+			encryptedEnvelopeBase64: Buffer.from(envelope).toString("base64"),
+			envelopeSha256: createHash("sha256").update(envelope).digest("hex"),
+			connectionId: index === 0 ? connectionId : randomUUID(),
+			connectionVersion: 2,
+			credentialCapsuleId: randomUUID(),
+		};
+	});
 	const description = {
 		schema: "qorpera.model-login-account-refresh/v1",
 		requestId,
@@ -51,18 +64,7 @@ function world(options: { status?: string; keyId?: string } = {}) {
 		requestedByUserId: memberId,
 		status: options.status ?? "pending",
 		expiresAt,
-		logins: [
-			{
-				loginId,
-				version: 3,
-				keyId: options.keyId ?? "company-kek-1",
-				encryptedEnvelopeBase64: Buffer.from(envelope).toString("base64"),
-				envelopeSha256: createHash("sha256").update(envelope).digest("hex"),
-				connectionId,
-				connectionVersion: 2,
-				credentialCapsuleId: randomUUID(),
-			},
-		],
+		logins,
 	};
 	const authority = {
 		describeModelLoginAccountRefresh: vi.fn(async () => structuredClone(description)),
@@ -171,6 +173,28 @@ it("settles a refresh whose login cannot be read or answers nothing, and answers
 	).toBe("completed");
 	expect(done.usageFetch).not.toHaveBeenCalled();
 	expect(done.authority.completeModelLoginAccountRefresh).not.toHaveBeenCalled();
+});
+
+it("reads at most eight logins, all at once, and still settles", async () => {
+	const w = world({ logins: 9 });
+	let open = 0;
+	let most = 0;
+	w.usageFetch.mockImplementation(async () => {
+		open += 1;
+		most = Math.max(most, open);
+		await new Promise((resolveWait) => setTimeout(resolveWait, 20));
+		open -= 1;
+		return Response.json({ rate_limit: { primary_window: { used_percent: 1 } } });
+	});
+	const usage = new CloudModelLoginUsage({
+		authority: w.authority,
+		keyring: w.keyring,
+		fetch: w.usageFetch as typeof fetch,
+	});
+	expect((await usage.refresh(w.request, signal())).status).toBe("completed");
+	expect(w.usageFetch).toHaveBeenCalledTimes(8);
+	expect(most).toBe(8);
+	expect(w.authority.recordModelLoginAccountMetadata).toHaveBeenCalledTimes(8);
 });
 
 it("refuses a refresh that differs from the database's record or has ended, before reading any login", async () => {

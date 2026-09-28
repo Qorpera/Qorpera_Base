@@ -1,12 +1,25 @@
 -- Stateless Compute step 1, change 2C: the vault reads the usage of the logins it keeps.
 --
--- For a company switched to vault sign-in, the account refresh chooser sends a refresh of an
--- identity with a vault login to the company's broker (`<service origin>/v1/model-logins/
--- <company>/`), like a sign-in. The broker reads, under the refresh's own capability, the current
--- version of each vault login of that identity, reads its usage with the pass (the same
--- `wham/usage` call a node makes, no machine), records the display metadata for the
--- connection version that uses the login, and completes the refresh. Identities without a vault
--- login keep the node path unchanged.
+-- The account refresh chooser sends a refresh of an identity whose login is in the vault (change
+-- 3's rule: every active login of it is a live vault login) to its company's broker
+-- (`<service origin>/v1/model-logins/<company>/`), whether or not the company still takes new
+-- sign-ins in the vault. The broker reads, under the refresh's own capability, the current version
+-- of each vault login of that identity, reads its usage with the pass (the same `wham/usage` call
+-- a node makes, no machine), records the display metadata for the connection version that uses
+-- the login, and completes the refresh. An identity with any node login (one still moving) keeps
+-- the node path, which reads its node logins and skips its vault ones.
+
+-- The company's vault base, when it has an active broker.
+create function public.qorpera_model_login_vault_url(p_profile_id uuid)
+returns text
+language sql stable security definer set search_path = '' as $$
+	select rtrim(authority.service_origin, '/') || '/v1/model-logins/' || authority.profile_id::text || '/'
+	from public.qorpera_cloud_secret_broker_authorities as authority
+	where authority.profile_id = p_profile_id and authority.status = 'active'
+	order by authority.created_at desc, authority.id
+	limit 1
+$$;
+revoke all on function public.qorpera_model_login_vault_url(uuid) from public, anon, authenticated, service_role;
 
 do $$
 declare
@@ -15,18 +28,17 @@ declare
 	v_count integer;
 	v_anchor text;
 begin
-	-- The refresh chooser: an identity with a vault login of a switched company goes to its vault.
+	-- The refresh chooser: an identity whose login is in the vault goes to its company's vault.
 	v_target := 'public.qorpera_runtime_account_refresh_gateway_choose(text)'::regprocedure;
 	v_definition := pg_get_functiondef(v_target);
-	if position('qorpera_model_login_sign_in_url' in v_definition) = 0 then
+	if position('qorpera_model_login_vault_url' in v_definition) = 0 then
 		v_anchor := E'\tif v_session.id is not null then\n\t\tselect g.* into v_gateway from public.qorpera_runtime_account_refresh_machine_requests r';
 		v_count := (length(v_definition) - length(replace(v_definition, v_anchor, ''))) / length(v_anchor);
 		if v_count <> 1 then raise exception 'Account refresh chooser source differs (% matches)', v_count; end if;
 		execute replace(v_definition, v_anchor,
-			E'\tif v_session.id is not null and public.qorpera_model_login_sign_in_url(v_session.profile_id) is not null\n'
-			|| E'\t\tand exists (select 1 from public.qorpera_model_logins vault\n'
-			|| E'\t\t\twhere vault.compute_identity_id = v_session.compute_identity_id and vault.status = ''active'') then\n'
-			|| E'\t\treturn jsonb_build_object(''url'', public.qorpera_model_login_sign_in_url(v_session.profile_id),\n'
+			E'\tif v_session.id is not null and public.qorpera_compute_identity_login_in_vault(v_session.compute_identity_id)\n'
+			|| E'\t\tand public.qorpera_model_login_vault_url(v_session.profile_id) is not null then\n'
+			|| E'\t\treturn jsonb_build_object(''url'', public.qorpera_model_login_vault_url(v_session.profile_id),\n'
 			|| E'\t\t\t''providerId'', ''model-login-vault'', ''nodeId'', null, ''reason'', ''MODEL_LOGIN_VAULT'',\n'
 			|| E'\t\t\t''identityHomes'', to_jsonb(v_homes));\n'
 			|| E'\tend if;\n'
@@ -52,11 +64,19 @@ begin
 	if p_request_id is null or coalesce(p_capability_sha256, '') !~ '^[0-9a-f]{64}$' then
 		raise exception 'model login account refresh request is invalid' using errcode = '22023';
 	end if;
+	-- The node's own route checks: the refresh is live, and its member still owns the identity
+	-- with a role that may refresh.
 	select request.* into v_request from public.qorpera_native_account_refresh_requests as request
-	where request.id = p_request_id;
-	if v_request.id is null or v_request.capability_sha256 <> p_capability_sha256
-		or v_request.profile_id <> v_authority.profile_id
-		or public.qorpera_model_login_sign_in_url(v_request.profile_id) is null then
+	where request.id = p_request_id and request.capability_sha256 = p_capability_sha256
+		and request.expires_at > clock_timestamp() and request.status in ('pending', 'completed');
+	if v_request.id is null or v_request.profile_id <> v_authority.profile_id
+		or not exists (select 1 from public.qorpera_member_compute_identities as identity
+			join public.qorpera_profile_members as member
+				on member.profile_id = identity.profile_id and member.user_id = v_request.requested_by_user_id
+			where identity.id = v_request.compute_identity_id and identity.profile_id = v_request.profile_id
+				and identity.status = 'active' and identity.ownership_kind = 'member'
+				and identity.owner_user_id = v_request.requested_by_user_id
+				and member.role in ('owner', 'admin', 'contributor')) then
 		raise exception 'model login account refresh is unavailable' using errcode = '42501';
 	end if;
 	return v_request;
@@ -86,11 +106,11 @@ begin
 		'profileId', v_request.profile_id,
 		'computeIdentityId', v_request.compute_identity_id,
 		'requestedByUserId', v_request.requested_by_user_id,
-		'status', case when v_request.status = 'pending' and v_request.expires_at <= clock_timestamp()
-			then 'expired' else v_request.status end,
+		'status', v_request.status,
 		'expiresAt', v_request.expires_at,
-		'logins', coalesce((
-			select jsonb_agg(jsonb_build_object(
+		-- Only a pending refresh reads logins, at most 8 of them.
+		'logins', case when v_request.status <> 'pending' then '[]'::jsonb else coalesce((
+			select jsonb_agg(login order by login ->> 'loginId') from (select jsonb_build_object(
 				'loginId', vault.id,
 				'version', version.version,
 				'keyId', version.key_id,
@@ -99,7 +119,7 @@ begin
 				'connectionId', connection_version.connection_id,
 				'connectionVersion', connection_version.version,
 				'credentialCapsuleId', vault.credential_capsule_id
-			) order by vault.id)
+			) as login
 			from public.qorpera_model_logins as vault
 			join public.qorpera_native_credential_capsules as capsule
 				on capsule.id = vault.credential_capsule_id and capsule.status = 'active'
@@ -118,7 +138,9 @@ begin
 				and not exists (select 1 from public.qorpera_provider_connection_versions as newer
 					where newer.connection_id = connection_version.connection_id
 						and newer.version > connection_version.version)
-		), '[]'::jsonb)
+			order by vault.id
+			limit 8) as logins
+		), '[]'::jsonb) end
 	);
 end
 $$;
