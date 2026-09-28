@@ -323,12 +323,44 @@ it("uses only the static broker-role SQL calls and binds downstream idempotency"
 		repository: { host: "github.com" as const, owner: "Qorpera", name: "Qorpera_Base", baseBranch: "master" },
 	};
 	await authority.authorizeRepositoryCredential(repositoryRequest, new AbortController().signal);
+	const loginBinding = {
+		leaseId: randomUUID(),
+		runId: randomUUID(),
+		jobId: randomUUID(),
+		runnerId: randomUUID(),
+		assignmentId: randomUUID(),
+		credentialCapsuleId: randomUUID(),
+		computeIdentityId: randomUUID(),
+	};
+	await authority.issueModelLogin(loginBinding, 3, true, new AbortController().signal);
+	await authority.commitModelLoginRenewal(
+		{
+			loginId: randomUUID(),
+			token: randomUUID(),
+			baseVersion: 3,
+			keyId: "company-kek-1",
+			encryptedEnvelope: Buffer.from("encrypted"),
+			envelopeSha256: "f".repeat(64),
+			accessIssuedAt: "2026-09-28T00:00:00.000Z",
+			accessExpiresAt: "2026-10-08T00:00:00.000Z",
+		},
+		new AbortController().signal,
+	);
+	await authority.releaseModelLoginRenewal(
+		{ loginId: randomUUID(), token: randomUUID(), permanent: true, reason: "refresh_token_reused" },
+		new AbortController().signal,
+	);
 	expect(queries.map((query) => query.text)).toEqual([
 		"select public.qorpera_describe_cloud_secret_capture($1::uuid,$2::text,$3::uuid,$4::text) as result",
 		"select public.qorpera_complete_cloud_secret_capture($1::uuid,$2::text,$3::uuid,$4::text,$5::text,$6::text,$7::text) as result",
 		"select public.qorpera_authorize_cloud_secret_operation($1::uuid,$2::text,$3::jsonb,$4::uuid,$5::text,$6::text,$7::uuid,$8::text,$9::text,$10::bigint,$11::text,$12::text) as result",
 		"select public.qorpera_authorize_coding_repository_credential($1::uuid,$2::text,$3::uuid,$4::uuid,$5::text,$6::jsonb) as result",
+		"select public.qorpera_issue_model_login($1::uuid,$2::text,$3::jsonb,$4::bigint,$5::boolean) as result",
+		"select public.qorpera_commit_model_login_renewal($1::uuid,$2::text,$3::uuid,$4::uuid,$5::bigint,$6::text,$7::text,$8::text,$9::timestamptz,$10::timestamptz) as result",
+		"select public.qorpera_release_model_login_renewal($1::uuid,$2::text,$3::uuid,$4::uuid,$5::boolean,$6::text) as result",
 	]);
+	expect(queries[4]?.values.slice(2)).toEqual([JSON.stringify(loginBinding), 3, true]);
+	expect(queries[5]?.values[6]).toBe(Buffer.from("encrypted").toString("base64"));
 	expect(queries[3]?.values.slice(2)).toEqual([
 		repositoryRequest.workerId,
 		repositoryRequest.leaseToken,

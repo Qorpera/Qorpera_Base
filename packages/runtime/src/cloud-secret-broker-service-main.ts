@@ -5,6 +5,7 @@ import { basename, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Pool } from "pg";
 import { composeCloudConnectorService, parseCloudConnectorServiceConfig } from "./cloud-connector-service.ts";
+import { CloudModelLoginVault } from "./cloud-model-login-vault.ts";
 import {
 	CloudSecretBroker,
 	type CloudSecretConnectorAdapter,
@@ -250,6 +251,9 @@ export async function runCloudSecretBrokerServiceMain(
 			memberOrigins,
 			...(connectors ? { oauth: connectors.oauth } : {}),
 			...(codingExecutorToken ? { codingExecutorToken } : {}),
+			// Model logins in the vault (Stateless Compute step 1). No renewer yet: a login is
+			// handed out as stored and nothing renews it until the vault helper ships.
+			modelLogins: new CloudModelLoginVault({ authority, keyring }),
 		});
 		const stop = new AbortController();
 		const shutdown = (): void => stop.abort();
