@@ -1,5 +1,5 @@
 begin;
--- Node health retention plan (20260929135000). The seven-day retention delete at the end of
+-- Node health retention plan (20260928248935). The seven-day retention delete at the end of
 -- qorpera_observe_runtime_node_health now bounds the history index with now() and deletes by primary
 -- key from one selected array (observation_id = any(array(...))), so stale statistics can no longer
 -- turn it into a semi join that re-reads the node's history per row. Timing is not asserted (not

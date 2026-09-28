@@ -1,5 +1,5 @@
 -- @fixture 300_runtime_wake_bus.test.sql until "-- END WAKE FIXTURE"
--- Deleting a company that has used its agents (20260929120000). Before, qorpera_delete_hosted_profile
+-- Deleting a company that has used its agents (20260928248920). Before, qorpera_delete_hosted_profile
 -- failed with 23503 for any company with a run: runner assignments, claims, leases and events restrict
 -- their parents and have no link to the company. Here the fixture company finishes one real run that
 -- wrote a Company File note, keeps a second run working, has a routine, and is then deleted by its
