@@ -142,6 +142,17 @@ All tables are keyed by company environment.
     (file or folder); an opaque `version`; the id of the commit that wrote
     it; and, for files, the file manifest hash, the file hash, the size, the
     media type and the executable bit.
+  - **The folder key** is `qorpera_folder_key(path)`: NFKC, then case folding
+    by Unicode simple case mapping pinned to the built-in `pg_c_utf8`
+    collation, then NFKC again. The pin matters: a SQL function's case
+    mapping follows its argument's collation, and the stored path is
+    `collate "C"`, which folds ASCII only. Without it, a key generated from
+    `Økonomi` would differ from one computed from request text (C1a review
+    round 3). Resources are resolved by the same key
+    (`qorpera_folder_path_resource`). `snapshot-v1` keeps today's key.
+  - A key is at most 2,600 bytes: `key_text` sits in two btree indexes, whose
+    rows hold at most 2,704 bytes. A unit that would store a longer key, or
+    a path over 4,096 bytes, is refused as `too_long`.
   - A row may be a **claim**: a placeholder that §3 step 5 inserts for a path
     about to be created. A claim that does not become live is removed in the
     same transaction.
