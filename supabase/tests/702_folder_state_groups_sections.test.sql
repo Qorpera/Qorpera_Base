@@ -320,16 +320,17 @@ begin
 		pg_temp.sections(jsonb_build_object('kind','sections','sections',jsonb_build_array(
 			jsonb_build_object('name','Top','line',3,'members','[]'::jsonb), jsonb_build_object('name','TOP','line',5,'members','[]'::jsonb))))));
 	if pg_temp.rule(r, 1) <> 'structured_invalid' then raise exception 'Section names are unique ignoring case: %', r; end if;
-	-- An id already listed never blocks a save when its agent is gone: the index skips it.
+	-- An id already listed never blocks a save when its agent is gone: it keeps its place, which the sidebar hides.
 	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'sections-0006', jsonb_build_array(jsonb_build_object('op','delete',
 		'path','agents/vera','expectedVersion',pg_temp.version('agents/vera'),'asOfSeq',pg_temp.seq()))), 1, 'saved');
 	r := pg_temp.commit(pg_temp.owner(), 'sections-0007', jsonb_build_array(pg_temp.sections(jsonb_build_object('kind','sections','sections',
 		jsonb_build_array(jsonb_build_object('name','Ops','line',3,'members',jsonb_build_array(jsonb_build_object('id','70200000-0000-4000-8000-0000000000a3','line',4),
 			jsonb_build_object('id','70200000-0000-4000-8000-0000000000a1','line',5))))))));
 	perform pg_temp.expect(r, 1, 'saved');
-	if exists (select 1 from public.qorpera_company_sidebar_placements where staff_agent_id = '70200000-0000-4000-8000-0000000000a3')
-		or not exists (select 1 from public.qorpera_company_sidebar_placements where staff_agent_id = '70200000-0000-4000-8000-0000000000a1' and section_id = ops and position = 0) then
-		raise exception 'A retired agent is skipped'; end if;
+	if not exists (select 1 from public.qorpera_company_sidebar_placements where staff_agent_id = '70200000-0000-4000-8000-0000000000a3'
+			and section_id = ops and position = 0)
+		or not exists (select 1 from public.qorpera_company_sidebar_placements where staff_agent_id = '70200000-0000-4000-8000-0000000000a1' and section_id = ops and position = 1) then
+		raise exception 'A retired agent keeps its place'; end if;
 end $$;
 
 -- 8. Lock targets of group.md and sections.md -------------------------------------------------------------------------
@@ -366,6 +367,80 @@ begin
 	end;
 	reset role;
 	perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
+end $$;
+
+-- 10. Ids across kinds, legacy keys, places kept while away, restores as they were, pins and hiding -------------------
+
+do $$
+declare r jsonb; ops uuid;
+begin
+	-- An agent never takes a conversation's id; a chat never takes a snapshot-v1 chat's key.
+	r := pg_temp.commit(pg_temp.owner(), 'ids-0001', jsonb_build_array(pg_temp.hire('clash', '70200000-0000-4000-8000-0000000000b1', 'Clash')));
+	if pg_temp.rule(r, 1) <> 'structured_rule' then raise exception 'An agent cannot take a chat''s id: %', r; end if;
+	insert into public.qorpera_company_rooms(id, profile_id, environment_id, room_key, name, purpose, status, version, source_path,
+		source_path_version, source_snapshot_id, source_file_sha256, created_by_user_id)
+	values ('70200000-0000-4000-8000-0000000000b4', '70200000-0000-4000-8000-000000000010', '70200000-0000-4000-8000-000000000020', 'chat-70200000-0000-4000-8000-0000000000b3', 'Legacy', 'Old.', 'active', 1, 'organization/rooms/70200000-0000-4000-8000-0000000000b4.json',
+		extensions.gen_random_uuid(), extensions.gen_random_uuid(), repeat('c', 64), '70200000-0000-4000-8000-000000000001');
+	r := pg_temp.commit(pg_temp.owner(), 'ids-0002', jsonb_build_array(
+		pg_temp.new_group('legacy', '70200000-0000-4000-8000-0000000000b3', 'Legacy', array['70200000-0000-4000-8000-0000000000a1','70200000-0000-4000-8000-0000000000a2']::uuid[], null)));
+	if pg_temp.rule(r, 1) <> 'structured_rule' then raise exception 'A chat cannot take a legacy chat''s key: %', r; end if;
+	-- The case rule names itself.
+	r := pg_temp.commit(pg_temp.owner(), 'ids-0003', jsonb_build_array(
+		pg_temp.sections(jsonb_build_object('kind','sections','sections',jsonb_build_array(
+			jsonb_build_object('name','Top','line',3,'members','[]'::jsonb), jsonb_build_object('name','TOP','line',5,'members','[]'::jsonb))))));
+	if r -> 'units' -> 0 -> 'problems' -> 0 ->> 'message' not like '%case is ignored%' then
+		raise exception 'Names equal ignoring case are named as such: %', r; end if;
+
+	-- A crew chat and its place in a section; then its folder, and otto's, go.
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'away-0001', jsonb_build_array(
+		pg_temp.new_group('crew', '70200000-0000-4000-8000-0000000000b5', 'Crew', array['70200000-0000-4000-8000-0000000000a1','70200000-0000-4000-8000-0000000000a2']::uuid[], array['70200000-0000-4000-8000-000000000002']::uuid[]))), 1, 'saved');
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'away-0002', jsonb_build_array(pg_temp.sections(jsonb_build_object(
+		'kind','sections','sections',jsonb_build_array(jsonb_build_object('name','Ops','line',3,'members',jsonb_build_array(
+			jsonb_build_object('id','70200000-0000-4000-8000-0000000000a1','line',4), jsonb_build_object('id','70200000-0000-4000-8000-0000000000b5','line',5), jsonb_build_object('id','70200000-0000-4000-8000-0000000000a2','line',6)))))))),
+		1, 'saved');
+	select id into ops from public.qorpera_company_sidebar_sections where profile_id = '70200000-0000-4000-8000-000000000010' and lower(name) = 'ops';
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'away-0003', jsonb_build_array(
+		jsonb_build_object('op','delete','path','agents/groups/crew','expectedVersion',pg_temp.version('agents/groups/crew'),'asOfSeq',pg_temp.seq()),
+		jsonb_build_object('op','delete','path','agents/otto','expectedVersion',pg_temp.version('agents/otto'),'asOfSeq',pg_temp.seq()))), 2, 'saved');
+	-- sections.md saved again while they are away: their places stay (the sidebar hides them).
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'away-0004', jsonb_build_array(pg_temp.sections(jsonb_build_object(
+		'kind','sections','sections',jsonb_build_array(jsonb_build_object('name','Ops','line',3,'members',jsonb_build_array(
+			jsonb_build_object('id','70200000-0000-4000-8000-0000000000a1','line',4), jsonb_build_object('id','70200000-0000-4000-8000-0000000000b5','line',5), jsonb_build_object('id','70200000-0000-4000-8000-0000000000a2','line',6)))))))),
+		1, 'saved');
+	if not exists (select 1 from public.qorpera_company_sidebar_room_placements where room_id = '70200000-0000-4000-8000-0000000000b5' and section_id = ops and position = 1)
+		or not exists (select 1 from public.qorpera_company_sidebar_placements where staff_agent_id = '70200000-0000-4000-8000-0000000000a2' and section_id = ops and position = 2) then
+		raise exception 'An agent or chat that is away keeps its place'; end if;
+	-- Otto comes back archived, and the member leaves the company: the crew chat still restores as it was, and its
+	-- members stay as written.
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'away-0005', jsonb_build_array(
+		pg_temp.hire('otto', '70200000-0000-4000-8000-0000000000a2', 'Otto'))), 1, 'saved');
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'away-0006', jsonb_build_array(pg_temp.write('agents/otto/agent.md', 'agent',
+		pg_temp.agent_text('70200000-0000-4000-8000-0000000000a2', 'Otto', 'agent', 'archived'), pg_temp.agent_parse('70200000-0000-4000-8000-0000000000a2', 'Otto', 'agent', 'archived'),
+		pg_temp.version('agents/otto/agent.md')))), 1, 'saved');
+	delete from public.qorpera_profile_members where profile_id = '70200000-0000-4000-8000-000000000010' and user_id = '70200000-0000-4000-8000-000000000002';
+	perform pg_temp.expect(pg_temp.commit(pg_temp.owner(), 'away-0007', jsonb_build_array(
+		pg_temp.new_group('crew', '70200000-0000-4000-8000-0000000000b5', 'Crew', array['70200000-0000-4000-8000-0000000000a1','70200000-0000-4000-8000-0000000000a2']::uuid[], array['70200000-0000-4000-8000-000000000002']::uuid[]))), 1, 'saved');
+	if (pg_temp.room('70200000-0000-4000-8000-0000000000b5')).status <> 'active' or pg_temp.members('70200000-0000-4000-8000-0000000000b5') <> 'member:02,staff_agent:a1,staff_agent:a2' then
+		raise exception 'The crew chat restores as it was: % %', to_jsonb(pg_temp.room('70200000-0000-4000-8000-0000000000b5')), pg_temp.members('70200000-0000-4000-8000-0000000000b5'); end if;
+	-- A new id in the same file would still be checked.
+	r := pg_temp.commit(pg_temp.owner(), 'away-0008', jsonb_build_array(pg_temp.edit_group('crew',
+		pg_temp.group_parse('70200000-0000-4000-8000-0000000000b5', 'Crew', array['70200000-0000-4000-8000-0000000000a1','70200000-0000-4000-8000-0000000000a2']::uuid[], array['70200000-0000-4000-8000-000000000002','70200000-0000-4000-8000-000000000003']::uuid[]))));
+	if pg_temp.rule(r, 1) <> 'structured_rule' then raise exception 'A new person is still checked: %', r; end if;
+end $$;
+
+-- Pins and hidden agents stay member settings on folder-v2.
+do $$
+begin
+	perform set_config('request.jwt.claims', '{"role":"authenticated","sub":"70200000-0000-4000-8000-000000000001"}', true);
+	set local role authenticated;
+	perform public.qorpera_manage_company_sidebar('70200000-0000-4000-8000-000000000010', jsonb_build_object('action','set_hidden','staffAgentId','70200000-0000-4000-8000-0000000000a1','hidden',true));
+	perform public.qorpera_manage_company_sidebar('70200000-0000-4000-8000-000000000010', jsonb_build_object('action','set_pins','order',jsonb_build_array('70200000-0000-4000-8000-0000000000a1'),
+		'groupChats',true));
+	reset role;
+	perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
+	if not exists (select 1 from public.qorpera_member_sidebar_agents where profile_id = '70200000-0000-4000-8000-000000000010' and user_id = '70200000-0000-4000-8000-000000000001'
+		and staff_agent_id = '70200000-0000-4000-8000-0000000000a1') then
+		raise exception 'Pins and hiding work on folder-v2'; end if;
 end $$;
 
 rollback;

@@ -188,7 +188,7 @@ begin
 		where environment_id = '70300000-0000-4000-8000-000000000020' and key_text = 'agents/groups/launch/group.md' for update$q$) as t(x integer);
 	perform dblink_send_query('srace_save', current_setting('qorpera_test.state_rename_back'));
 	if not pg_temp.waits_for('srace_save', 'srace_hold') then raise exception 'The rename must wait on the held path'; end if;
-	-- The save now holds the company row KEY SHARE and the room FOR UPDATE.
+	-- The save now holds the company row KEY SHARE and the chat's room FOR NO KEY UPDATE.
 	perform dblink_exec('srace_post', 'begin');
 	perform dblink_send_query('srace_post', $q$select public.qorpera_lock_profile_gc_fence('70300000-0000-4000-8000-000000000010')::text$q$);
 	if not pg_temp.waits_for('srace_post', 'srace_save') then raise exception 'The post must wait for the save at the company row'; end if;

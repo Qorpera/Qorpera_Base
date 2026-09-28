@@ -117,10 +117,13 @@ begin
 							or jsonb_typeof(m -> 'id') <> 'string' or (m ->> 'id') !~ c_uuid
 							or jsonb_typeof(m -> 'line') <> 'number' or (m ->> 'line') !~ '^[1-9][0-9]{0,8}$')) then
 			v_bad := array_append(v_bad, 'sections');
-		-- Names are unique ignoring case (the index's unique key), and an id is listed once in the whole file.
+		-- Names are unique ignoring case as the database compares them (lower(), the index's unique key), which can
+		-- join two names the parser keeps apart; and an id is listed once in the whole file.
 		elsif (select count(distinct lower(s ->> 'name')) from jsonb_array_elements(p_parse -> 'sections') s)
-				<> jsonb_array_length(p_parse -> 'sections')
-			or (select count(*) <> count(distinct m ->> 'id') from jsonb_array_elements(p_parse -> 'sections') s,
+				<> jsonb_array_length(p_parse -> 'sections') then
+			return jsonb_build_array(public.qorpera_company_state_problem('value', null, null,
+				'two sections have the same name when case is ignored; rename one'));
+		elsif (select count(*) <> count(distinct m ->> 'id') from jsonb_array_elements(p_parse -> 'sections') s,
 				jsonb_array_elements(s -> 'members') m) then
 			v_bad := array_append(v_bad, 'sections');
 		end if;
@@ -171,19 +174,30 @@ $$;
 
 -- One group.md (contract 5.6, §2): the id never changes and belongs to this folder's chat only; the ids a save adds
 -- exist (agents active, people members); an agent's run may add only the member it works for, since adding a person
--- lets them read the conversation. Ids already in the saved version are never checked again.
+-- lets them read the conversation. Ids already in the saved version are never checked again. For a restore, whose
+-- path has no saved version, the saved version is the chat's last file, so a restore of the same file is no change.
 create function public.qorpera_company_state_group_rules(p_environment_id uuid, p_profile_id uuid, p_actor jsonb,
 	p_key text, p_parse jsonb)
 returns jsonb language plpgsql stable set search_path = '' as $$
 declare
 	v_id uuid := (p_parse ->> 'id')::uuid; v_base jsonb := public.qorpera_company_state_base(p_environment_id, p_key);
-	v_room public.qorpera_company_rooms%rowtype; v_exists boolean; v_problem text; v_added text[];
+	v_room public.qorpera_company_rooms%rowtype; v_exists boolean; v_problem text; v_added text[]; v_prev jsonb;
 begin
 	select * into v_room from public.qorpera_company_rooms where id = v_id;
 	v_exists := found;
+	v_prev := v_base;
+	if v_prev is null and v_exists and v_room.profile_id = p_profile_id and v_room.folder_path is not null then
+		select v.structured -> 'parse' into v_prev from public.qorpera_folder_path_versions v where v.version = v_room.folder_path_version;
+	end if;
+	-- A parse stored before its kind's shape was checked (F2-1 alone) is not trusted: every id counts as added.
+	if v_prev is not null and jsonb_array_length(public.qorpera_company_state_parse_problems('group', v_prev)) > 0 then
+		v_prev := null; end if;
 	if v_base is not null and v_base ->> 'id' is distinct from p_parse ->> 'id' then
 		v_problem := 'id never changes; it is ' || (v_base ->> 'id');
 	elsif v_exists and (v_room.profile_id <> p_profile_id or v_room.folder_path is null) then
+		v_problem := 'this id belongs to another conversation; give this group chat a new id';
+	elsif exists (select 1 from public.qorpera_company_rooms r where r.profile_id = p_profile_id and r.room_key = 'chat-' || v_id::text
+			and r.id <> v_id) then
 		v_problem := 'this id belongs to another conversation; give this group chat a new id';
 	elsif v_exists and v_room.folder_retired_at is null and public.qorpera_folder_key(v_room.folder_path) <> p_key then
 		v_problem := 'this id belongs to the group chat at ' || left(v_room.folder_path, 100) || '; give this group chat a new id';
@@ -192,7 +206,7 @@ begin
 	end if;
 	if v_problem is null then
 		select array_agg(a) into v_added from jsonb_array_elements_text(p_parse -> 'agents') a
-		where not coalesce(v_base -> 'agents', '[]'::jsonb) ? a
+		where not coalesce(v_prev -> 'agents', '[]'::jsonb) ? a
 			and not exists (select 1 from public.qorpera_profile_staff s where s.profile_id = p_profile_id and s.staff_agent_id = a::uuid
 				and s.employment_status = 'active' and s.folder_retired_at is null and s.deleted_at is null);
 		if v_added is not null then
@@ -201,7 +215,7 @@ begin
 	end if;
 	if v_problem is null then
 		select array_agg(a) into v_added from jsonb_array_elements_text(p_parse -> 'people') a
-		where not coalesce(v_base -> 'people', '[]'::jsonb) ? a
+		where not coalesce(v_prev -> 'people', '[]'::jsonb) ? a
 			and not exists (select 1 from public.qorpera_profile_members m where m.profile_id = p_profile_id and m.user_id = a::uuid);
 		if v_added is not null then
 			v_problem := 'no member of this company has the id ' || v_added[1];
@@ -209,7 +223,7 @@ begin
 	end if;
 	if v_problem is null and p_actor ->> 'kind' not in ('member','platform') then
 		select array_agg(a) into v_added from jsonb_array_elements_text(p_parse -> 'people') a
-		where not coalesce(v_base -> 'people', '[]'::jsonb) ? a and a is distinct from p_actor ->> 'requesterUserId';
+		where not coalesce(v_prev -> 'people', '[]'::jsonb) ? a and a is distinct from p_actor ->> 'requesterUserId';
 		if v_added is not null then
 			v_problem := 'an agent adds only the member it works for to a group chat';
 		end if;
@@ -220,13 +234,16 @@ begin
 end $$;
 
 -- agents/sections.md (§2): every id the save adds is an agent or an open group chat of this company; the Co-Founder
--- stands above the sections and is never listed. Ids already in the saved version are never refused: the index
--- skips an agent or chat that is gone.
+-- stands above the sections and is never listed. Ids already in the saved version are never refused: an agent or chat
+-- that is gone keeps its place, which the sidebar hides until a restore brings it back.
 create function public.qorpera_company_state_sections_rules(p_environment_id uuid, p_profile_id uuid, p_key text, p_parse jsonb)
 returns jsonb language plpgsql stable set search_path = '' as $$
 declare
 	v_base jsonb := public.qorpera_company_state_base(p_environment_id, p_key); v_old text[]; v_id text; v_problem text;
 begin
+	-- A parse stored before its kind's shape was checked (F2-1 alone) is not trusted: every id counts as added.
+	if v_base is not null and jsonb_array_length(public.qorpera_company_state_parse_problems('sections', v_base)) > 0 then
+		v_base := null; end if;
 	select coalesce(array_agg(m ->> 'id'), '{}') into v_old
 	from jsonb_array_elements(coalesce(v_base -> 'sections', '[]'::jsonb)) s, jsonb_array_elements(s -> 'members') m;
 	for v_id in select m ->> 'id' from jsonb_array_elements(p_parse -> 'sections') s, jsonb_array_elements(s -> 'members') m loop
@@ -403,6 +420,10 @@ begin
 			v_rule := public.qorpera_company_state_agent_rules(p_environment_id, v_profile, p_actor, v_file.path, v_file.key,
 				v_checked -> 'parse');
 			if v_rule is not null then return v_rule; end if;
+			-- An agent never takes a conversation's id: sections.md lists both kinds by id.
+			if exists (select 1 from public.qorpera_company_rooms r where r.id = (v_checked -> 'parse' ->> 'id')::uuid) then
+				return jsonb_build_object('ok', false, 'reason', 'structured_rule', 'problems', jsonb_build_array(
+					public.qorpera_company_state_problem('value', null, null, 'this id belongs to a conversation; give this agent a new id'))); end if;
 		elsif v_checked ->> 'kind' = 'group' then
 			-- One id per group chat within the unit too.
 			if (v_checked -> 'parse' ->> 'id') = any (v_groups) then
@@ -422,13 +443,16 @@ end $$;
 -- 6. The hook: apply -------------------------------------------------------------------------------------------------
 
 -- One group.md's room, from its checked parse. A new chat gets its room and conversation; an edit sets the room's
--- fields and pointer and reopens a retired chat; members follow the lists (anyone left out is removed, and a member
--- row that stays active is not written).
+-- fields and pointer and reopens a retired chat; members follow the lists as written (anyone left out is removed; a
+-- member row that stays active is not written). An agent that is archived, or a person who left the company, stays
+-- listed, as in the file: wakes and access check the agent's status and the person's membership, so a reactivated
+-- agent or a returning member is back without another save.
 create function public.qorpera_company_state_index_group(p_environment_id uuid, p_profile_id uuid, p_commit_id uuid,
 	p_user uuid, p_path text, p_version uuid, p_parse jsonb)
 returns void language plpgsql security definer set search_path = '' as $$
 declare
 	v_id uuid := (p_parse ->> 'id')::uuid; v_room public.qorpera_company_rooms%rowtype; v_session uuid; v_count bigint;
+	v_agents jsonb; v_people jsonb;
 begin
 	select * into v_room from public.qorpera_company_rooms where id = v_id;
 	if not found then
@@ -455,14 +479,16 @@ begin
 		update public.qorpera_shared_sessions set status = 'open', title = p_parse ->> 'name', updated_at = statement_timestamp()
 		where id = v_room.session_id and (status <> 'open' or title is distinct from p_parse ->> 'name');
 	end if;
+	v_agents := p_parse -> 'agents';
+	v_people := p_parse -> 'people';
 	update public.qorpera_company_room_members m set status = 'removed', removed_at = clock_timestamp(), source_path_version = p_version
 	where m.room_id = v_id and m.status = 'active'
-		and not ((m.principal_kind = 'staff_agent' and (p_parse -> 'agents') ? m.principal_id::text)
-			or (m.principal_kind = 'member' and (p_parse -> 'people') ? m.principal_id::text));
+		and not ((m.principal_kind = 'staff_agent' and v_agents ? m.principal_id::text)
+			or (m.principal_kind = 'member' and v_people ? m.principal_id::text));
 	insert into public.qorpera_company_room_members as m(room_id, principal_kind, principal_id, status, source_path_version)
 	select v_id, p.kind, p.id::uuid, 'active', p_version
-	from (select 'staff_agent' as kind, a as id from jsonb_array_elements_text(p_parse -> 'agents') a
-		union all select 'member', a from jsonb_array_elements_text(p_parse -> 'people') a) p
+	from (select 'staff_agent' as kind, a as id from jsonb_array_elements_text(v_agents) a
+		union all select 'member', a from jsonb_array_elements_text(v_people) a) p
 	on conflict (room_id, principal_kind, principal_id) do update set status = 'active', removed_at = null,
 		source_path_version = excluded.source_path_version
 	where m.status <> 'active';
@@ -470,8 +496,9 @@ end $$;
 
 -- agents/sections.md's sidebar, from its checked parse: sections in file order (matched to today's rows by name,
 -- ignoring case, so a section keeps its id), and each section's agents and group chats in file order, sharing one
--- order as the sidebar draws them. Listed ids that are gone are skipped; everything not listed is Unassigned, whose
--- positions are not kept.
+-- order as the sidebar draws them. A listed agent or chat that is gone (retired, closed) keeps its place, which the
+-- sidebar hides, so a restore brings it back where the file says; an id with no row is skipped. Everything not listed
+-- is Unassigned, whose positions are not kept.
 create function public.qorpera_company_state_index_sections(p_profile_id uuid, p_user uuid, p_parse jsonb)
 returns void language plpgsql security definer set search_path = '' as $$
 declare
@@ -496,7 +523,7 @@ begin
 		for v_member in select value from jsonb_array_elements(v_section -> 'members') loop
 			v_item := (v_member ->> 'id')::uuid;
 			if exists (select 1 from public.qorpera_profile_staff s where s.profile_id = p_profile_id and s.staff_agent_id = v_item
-					and s.deleted_at is null and s.folder_retired_at is null)
+					and s.deleted_at is null)
 				and not exists (select 1 from public.qorpera_company_cofounders c where c.profile_id = p_profile_id and c.staff_agent_id = v_item) then
 				insert into public.qorpera_company_sidebar_placements as p(profile_id, staff_agent_id, section_id, position, updated_by_user_id)
 				values (p_profile_id, v_item, v_id, v_slot, p_user)
@@ -506,7 +533,7 @@ begin
 				v_agents := array_append(v_agents, v_item);
 				v_slot := v_slot + 1;
 			elsif exists (select 1 from public.qorpera_company_rooms r where r.profile_id = p_profile_id and r.id = v_item
-					and r.bound_staff_agent_id is null and r.status = 'active') then
+					and r.bound_staff_agent_id is null) then
 				insert into public.qorpera_company_sidebar_room_placements as p(profile_id, room_id, section_id, position, updated_by_user_id)
 				values (p_profile_id, v_item, v_id, v_slot, p_user)
 				on conflict (profile_id, room_id) do update set section_id = excluded.section_id, position = excluded.position,
