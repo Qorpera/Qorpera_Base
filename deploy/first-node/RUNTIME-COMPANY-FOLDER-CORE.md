@@ -299,12 +299,16 @@ is never upgraded. The steps:
      `folder-v2` path (§9).
 4. **Principals, indexes, authority and uniques.** These are taken once, in
    one global order used everywhere:
+   0. the company's profile row, `FOR KEY SHARE` (never stronger), in every save whose hook writes a
+      roster row (C1b-3a; it was the head of rank 2 in F2-1). A roster write ends in a company
+      operation: the operation clock, then a foreign key to `qorpera_profiles`. The thread trigger's
+      session update is another one. Until C1c, posting takes the profile row `FOR UPDATE` (gc fence)
+      before the room and the clock, so the save takes the profile row first too (F2-1, #461; test
+      701). It comes before the members because #462's leave, remove and role change lock the
+      profile row and then the member (C1B "C1b-3: views" §4). The commit refuses
+      `qorpera_profiles` at any other rank;
    1. members;
-   2. staff, opened by the company's profile row `FOR KEY SHARE` (never stronger) in every save
-      whose hook writes a roster row. A roster write ends in a company operation: the operation
-      clock, then a foreign key to `qorpera_profiles`. The thread trigger's session update is
-      another one. Until C1c, posting takes the profile row `FOR UPDATE` (gc fence) before the room
-      and the clock, so the save takes the profile row first too (F2-1, #461; test 701);
+   2. staff;
    3. execution authorities;
    4. rooms, then room members;
    5. the other index rows (sections, routines with their schedule cursors,

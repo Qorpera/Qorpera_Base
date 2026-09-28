@@ -941,9 +941,9 @@ only legacy change is `screen_in_use`, §9).
 | Kind | Anchor | Valid while (the predicate) |
 | --- | --- | --- |
 | `run_box` | the job, `KEY SHARE`, taken at step 3 as for a run | the run actor checks pass, and the job still carries the view's `runner_id` and `client_lease_id` |
-| `computer_desktop` | the screen row, `FOR SHARE` | the view is the newest open view of its screen; the screen's `generation` is the view's; the screen is held by the view's holder, by nobody, or is in a drain still pending (the old holder's final publish); privacy is shared, unless this is the private member's view; the office's current activation is the view's; the agent's `qorpera_runtime_office_access` is active |
+| `computer_desktop` | the screen row, `FOR SHARE` | the view is the newest open view of its screen; the screen's `generation` is the view's; either the screen's drain is still pending (the old holder's final publish, whatever the privacy state), or the screen is held by the view's holder or by nobody and privacy is shared or this is the private member's view; the office's current activation is the view's; the agent's `qorpera_runtime_office_access` is active |
 | `coding_session` | the session row, `FOR SHARE` | the session carries the view's `attachment_token`, and `qorpera_coding_attachment_refusal` finds nothing (not archived, not expired, repository not withdrawn, executor enabled) |
-| `computer_shell_command` (C1b-3b) | the command row, `FOR SHARE` | the command has not ended (§5 has the end boundary), and the screen's `generation` and the office's allocation are unchanged |
+| `computer_shell_command` (C1b-3b) | the command row, `FOR SHARE` | the command has not ended (§8 has the end boundary), and the screen's `generation` and the office's current activation are unchanged |
 | `test_machine` (C1b-3b) | the machine row and its current placement, `FOR SHARE` | the placement and `boot_id` are the view's |
 
 **Desktops: the newest view wins.**
@@ -962,6 +962,11 @@ only legacy change is `screen_in_use`, §9).
   screen, when a takeover's drain is acknowledged, or when a member signs in
   privately, the predicate refuses before any new view opens. So a new
   holder's saves never go through the old holder's view.
+- **Another run acquiring the screen is not a drain**, so it has no end
+  boundary. Changes the old holder's programs left pending publish later
+  under the new holder's view. That is acceptable: a seat passes to another
+  run only when the old run no longer holds it, and #409 item 1 closes the
+  desktop before the seat changes hands.
 - A view ends when:
   - the office stops, powers off, resumes or reboots (a new activation);
   - the seat changes agent (`generation`);
@@ -992,9 +997,9 @@ The commit, with a view actor (core §3):
    hook asks for it;
 5. ranks 1 to 9, rank 10 (the read sets, §6), paths, objects, decide, apply
    and verify, as for any commit;
-6. **the anchor step**: one statement that locks the anchor `FOR SHARE` with
-   the predicate of §3, and refuses (rolling the commit back) when it finds
-   no row;
+6. **the anchor step**: lock the anchor `FOR SHARE`, then re-check the full
+   predicate of §3 in a new statement, and refuse (rolling the commit back)
+   when it fails;
 7. admission, and the clock with its authority check (C1b-2 §1).
 
 **Why the anchor comes last.**
@@ -1044,7 +1049,9 @@ by a machine.
     one: the lease's live run, the takeover member, or the private member
     signed in.
   - Order: the screen's older views `FOR UPDATE` (waiting out their last
-    save), then the anchor with its predicate, then the insert.
+    save), then the anchor `FOR SHARE`, then the predicate re-checked in a
+    new statement, then the insert. Open records the view's `activation_id`
+    (desktops and shell commands).
   - A run box's opener is the run actor, with the job `KEY SHARE` first.
 - **`qorpera_folder_view_renew(viewId, pass, unsaved_since)`** re-checks the
   predicate and the principals with plain reads, and extends the lease by
@@ -1063,7 +1070,10 @@ by a machine.
   run it also writes the run's read set. So a desktop program that read a
   file during a run is still rechecked when it saves after the run ends.
 - **A coding view's release, while one of its worker's turns is leased,
-  also writes that turn's run read set** (review round 2, finding 3).
+  also writes that turn's run read set** (review round 2, finding 3). The
+  release takes the turn's job `KEY SHARE`, as `run_enter` does, so the
+  turn's completion waits for releases in flight. The executor flushes the
+  session's releases before it completes the turn.
   - Coding views resolve detached, so without this, coding reads would reach
     no run's set.
   - The agent-wake parent check for the worker's completion (C1b-2 §4) reads
@@ -1171,11 +1181,22 @@ by a machine.
   condition to `screen_in_use`, so a seat with unsaved work is not
   recycled. `unsaved_since` is up to one renewal (40 s) stale; the folder
   service also renews early when a mount first gets unsaved changes.
-- **F2's roster targets** move to rank 0 (§4). The rank-0 lock is taken only
-  when a target asks for it, so every F2 apply path that inserts a row
-  referencing the company must declare the rank-0 target. C1b-3a adds a
-  test that runs each structured kind's save and checks that no company-row
-  lock appears after rank 0 (review round 2, finding 6).
+- **F2's roster targets** move to rank 0 (§4), in C1b-3a's migration:
+  - a text patch of `qorpera_folder_structured_targets` that requires exactly
+    its four rank-2 company-row sites;
+  - F2's tests that assert rank 2 (700, 702, 706) change in the same PR;
+  - the commit refuses `qorpera_profiles` at any rank but 0, so an old copy of
+    the function re-created later fails loudly instead of bringing back the
+    #462 deadlock;
+  - core §3 step 4 says rank 0.
+
+  The rank-0 lock is taken only when a target asks for it, so every F2 apply
+  path that inserts a row referencing the company must declare it. The one
+  undeclared insert found is a vision save's first
+  `qorpera_folder_company_index` row. In practice that is the platform's
+  creation commit, which takes no member lock; F2 declares rank 0 for vision
+  saves in a follow-up. C1b-3a's test checks each roster kind's lock order
+  (review round 2, finding 6).
 - **C1c** removes legacy company-row `FOR UPDATE` from folder-v2 paths before
   any view goes live, and resolves a run's commit against its own
   requester's removal.
