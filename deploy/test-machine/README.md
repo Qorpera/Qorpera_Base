@@ -70,10 +70,11 @@ Override the target with `QORPERA_TEST_MACHINE`, `QORPERA_TEST_MACHINE_JUMP` and
 The `scripts/*-systemd.mjs` suites boot systemd as PID 1 in a disposable container and take a
 digest-pinned local image in `QORPERA_OFFICE_SYSTEMD_TEST_IMAGE`: Ubuntu 26.04 with systemd, its Node 22
 package and the executables the office image installer measures. The test machine keeps one as
-`qorpera-systemd-test:local`; look up its ID and pass that. Build only when the tag is missing or the
-Dockerfile changed (about 90 s cold). Every build gets a new ID, even fully cached, and moves the tag;
-Docker then deletes the image the tag pointed to, so another session's run that still uses the old ID
-fails with "No such image" (happened 2026-09-28).
+`qorpera-systemd-test:local`; look up its ID and pass that. Build it only when the tag is missing
+(about 90 s cold). Every build gets a new ID, even fully cached, and Docker's containerd image store
+here deletes the image a moved tag pointed to, so another session's run that still uses the old ID
+fails with "No such image" (happened 2026-09-28). After a Dockerfile change, build under a new tag
+such as `qorpera-systemd-test:<commit>` and pass that ID.
 
 ```sh
 node scripts/run-on-node.mjs --no-install -- docker image inspect --format '{{.Id}}' qorpera-systemd-test:local

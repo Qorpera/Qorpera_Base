@@ -1,5 +1,6 @@
 # Disposable image for the scripts/*-systemd.mjs suites (QORPERA_OFFICE_SYSTEMD_TEST_IMAGE).
-# Build with no context, then pass the printed image ID (deploy/test-machine/README.md):
+# Build with no context and pass the printed image ID. On the test machine reuse the tagged image
+# instead; a rebuild deletes the one other sessions use (deploy/test-machine/README.md):
 #   docker build -q -t qorpera-systemd-test:local - < scripts/fixtures/systemd-test-image.Dockerfile
 # Ubuntu 26.04 as on the nodes and office guests. Its nodejs package was 22.22.1 when written, the
 # version production pins (deploy/first-node/bootstrap-azure-step2-pilot-lxd.sh). Package versions
