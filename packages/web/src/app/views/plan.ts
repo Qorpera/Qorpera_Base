@@ -1,3 +1,4 @@
+import type { CompanyComputerHours } from "../../cloud/computer-hours.ts";
 import type { HostedCompanyFile } from "../../cloud/types.ts";
 import { button, fmtBytes, h, notice, replace } from "../../ui/dom.ts";
 import { phrase, presentationLocale, t, uiText } from "../../ui/preferences.ts";
@@ -28,7 +29,7 @@ export const PLAN_OFFERS: PlanOffer[] = [
 		tagline: phrase("For the daily work."),
 		includes: [
 			phrase("100 GB storage included"),
-			phrase("A worker computer for every agent, 74 hours"),
+			phrase("74 computer hours a month"),
 			phrase("Connect from computer and phone"),
 			phrase("Work in the cloud while your computer is off"),
 		],
@@ -110,13 +111,62 @@ function dateText(iso: string): string {
 /** Ids must stay unique while the account page and the dialog both show a plan panel. */
 let renders = 0;
 
-/** Storage of the company Settings show, as the Company tab loads it. */
+/** The company's computer hours this month, as measured (nothing is charged yet). */
+export interface CompanyHoursState {
+	value?: CompanyComputerHours;
+	loading: boolean;
+	/** The cloud does not measure computer hours yet. */
+	missing?: boolean;
+	/** The lookup failed; the card says so instead of showing the raw error. */
+	failed?: boolean;
+}
+
+/** Storage and computer hours of the company Settings show, as the Company tab loads them. */
 export interface PlanUsage {
 	companyName: string;
 	file?: HostedCompanyFile;
 	loading: boolean;
 	error?: string;
 	retry: () => void;
+	hours?: CompanyHoursState;
+}
+
+const HOURS_BY_KIND = [
+	["companyMachines", phrase("Company machines")],
+	["runs", phrase("Agent runs")],
+	["codingMachines", phrase("Coding machines")],
+	["agentMachines", phrase("Agents' machines")],
+] as const;
+
+/** The company's hours card: this month's use, and what it was used on. */
+function companyHoursCard(companyName: string, state: CompanyHoursState | undefined): HTMLElement | null {
+	if (!state) return null;
+	const value = state.value;
+	const used = value
+		? uiText("{used} used", { used: hoursText(value.usedSeconds / 3600) })
+		: state.loading
+			? uiText("Loading…")
+			: state.failed
+				? uiText("Computer hours unavailable")
+				: uiText("Not measured yet");
+	// A kind under three minutes would read "0 h": left out, like a kind with none.
+	const kinds = value
+		? HOURS_BY_KIND.filter(([key]) => value.byKind[key] >= 180).map(
+				([key, label]) => `${t(label)} ${hoursText(value.byKind[key] / 3600)}`,
+			)
+		: [];
+	return h(
+		"div",
+		{ class: "settings-card settings-usage settings-company-hours" },
+		h(
+			"div",
+			{ class: "settings-copy" },
+			h("small", { class: "settings-eyebrow" }, uiText("Computer hours this month")),
+			h("strong", null, used),
+			h("small", null, companyName, " · ", uiText("Measured, not charged yet")),
+			kinds.length ? h("small", { class: "settings-hours-kinds" }, kinds.join(" · ")) : null,
+		),
+	);
 }
 
 /** Account-wide figures the cloud does not report yet. Every field is optional:
@@ -232,7 +282,7 @@ export function renderPlan(
 		? hoursIncluded
 			? uiText("{used} used of {total}", { used: hoursText(hours.used), total: hoursText(hoursIncluded) })
 			: uiText("{used} used", { used: hoursText(hours.used) })
-		: uiText("Not measured yet");
+		: uiText("Counted once plans open");
 	const hoursDetail = trial
 		? uiText("Included in your free trial")
 		: offer && offer.includedHours === undefined
@@ -282,7 +332,7 @@ export function renderPlan(
 					h(
 						"div",
 						{ class: "settings-copy" },
-						h("small", { class: "settings-eyebrow" }, uiText("Computer hours")),
+						h("small", { class: "settings-eyebrow" }, uiText("Computer hours in your plan")),
 						h("strong", null, hoursValue),
 						hoursDetail ? h("small", null, hoursDetail) : null,
 						// No bar until there is a measurement: an empty bar would read as zero use.
@@ -296,10 +346,11 @@ export function renderPlan(
 							)
 						: null,
 				),
+				usage ? companyHoursCard(usage.companyName, usage.hours) : null,
 				usage && storage
 					? h(
 							"div",
-							{ class: "settings-card settings-usage" },
+							{ class: "settings-card settings-usage settings-storage" },
 							h(
 								"div",
 								{ class: "settings-copy" },
