@@ -724,7 +724,7 @@ through the mount conflict constantly, so the storage core changes before any
 machine writes through the folder. Removing the company-wide lock for reads
 moves into step 1, because steps 1–3 ship whole-company reads. The
 structured-file saves, index updates and seeded-folder refusals of contract
-5.6, and the move of today's state into the layout, join step 4, before any
+5.6, and the clean reset of today's test companies, join step 4, before any
 writes through the mount. Decision 6's automatic review of deletes and moves
 is unchanged.
 
@@ -751,7 +751,12 @@ is unchanged.
      folders, `rules/`, a lone `agent.md` or `group.md`, and agent or group
      folders moved out of place; and review by path for delegation units on
      every write path, including today's Company File tools (contract 5.6).
-   - Today's state moved into the layout of contract 5.6.
+   - A clean reset instead of a migration (founder decision, 28 September
+     2026): today's companies' data is deleted, their company state and
+     indexes are cleared from Supabase, the company folder is set up on the
+     NAS, and the layout is proven on new companies. The exact scope is
+     confirmed with the founder before anything is deleted (contract, layout
+     amendment).
    - Change sets and units.
    - Move and rename.
    - Streamed binary writes.

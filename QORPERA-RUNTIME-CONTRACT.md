@@ -2508,7 +2508,7 @@ capsule root (the same member's credentials) is reused.
 
 > **Note, 2026-09-27.** Where this checkpoint describes company state as
 > database objects, it records the build before the company folder layout
-> (5.6). It is rewritten once that state has moved.
+> (5.6). It is rewritten once the reset and build step 4 have landed.
 
 The NAS-backed live Company File and native cloud runner path already exist.
 The signed v44 infrastructure proof includes a real attended cloud turn writing
@@ -2894,9 +2894,9 @@ A review of master at bundle v137 found three problems:
     ordinary folders for project work.
 
 The file formats in 5.6 are design that follows from these decisions, and so
-are the tools, computers and migration below. They may be refined without a
-new founder decision, as long as the decisions and the authority and review
-rules of 5.6 hold.
+are the tools, computers and state table below. They may be refined without a
+new founder decision, as long as the decisions, the authority and review rules
+of 5.6, and the clean reset below hold.
 
 **What this supersedes.** Where these passages conflict with 5.6, 5.6
 governs:
@@ -2941,7 +2941,7 @@ governs:
 edit tools once the mount is accepted, and through the Company File tools
 until then.
 
-- **Retired as their state moves into files** (or kept only as thin writers of
+- **Retired as their state becomes files** (or kept only as thin writers of
   the same files): `manage_routine`, `decide_routine`, `manage_todo`,
   `organize_sidebar`, `update_memory`, `recall_memory`, `update_skill`,
   `hire_agent` and `create_group_chat`.
@@ -2978,11 +2978,27 @@ carry a folder of many terabytes that many agents write at once.
 The build order in `deploy/first-node/RUNTIME-COMPANY-FOLDER.md` is reordered
 to match.
 
-**Moving today's state.** Each move publishes the new files and turns the old
-table into an index of them in the same step. The old path is then removed
-unless the row says otherwise.
+**A clean reset, not a migration.** Founder decision, 28 September 2026:
+every company that exists today is a test company, so its data is not moved
+into the new layout. When the company folder lands:
 
-| Today | Moves to |
+- the platform deletes today's companies' data;
+- it clears their company state and indexes from Supabase;
+- it sets up the company folder on the NAS; and
+- the layout is proven on new companies created for the test.
+
+The exact scope of the deletion is confirmed with the founder before it runs:
+which Supabase projects, tables and storage buckets, NAS paths, machine disks,
+and vault credentials (revoked at the provider). This decision plus that
+confirmation is the authorization to erase existing company data that section
+24.3 does not itself grant. One owner runs the reset, as 24.3 requires for a
+shared live change, and acceptance evidence (24.4) is kept.
+The storage core is rebuilt without carrying today's tables or paths forward.
+
+The table below records where each piece of today's state belongs in the new
+layout. It guides the new code; it is not a data migration.
+
+| Today | Belongs in |
 | --- | --- |
 | `organization/agents/<uuid>.json` and the agent roster rows | `agents/<agent-name>/agent.md` |
 | the Co-Founder mark | the platform's record of the seeded Co-Founder, shown as `kind: co-founder` |
@@ -2990,7 +3006,7 @@ unless the row says otherwise.
 | `agents/<uuid>/skills/` (from #387, if merged first) | `agents/<agent-name>/skills/` |
 | routine rows and versions | `agents/<agent-name>/routines/<routine>.md` |
 | `work/todos/<uuid>/` and the todo rows | `agents/<agent-name>/todos/`, with worker briefs and results beside each todo |
-| `organization/rooms/<uuid>.json` | `agents/groups/<group-name>/group.md`; a group without a name gets one before it moves |
+| `organization/rooms/<uuid>.json` | `agents/groups/<group-name>/group.md`; a group is named when it is created (5.6) |
 | agent-thread room rows | no file; the thread follows the agent's folder |
 | sidebar section and placement rows | `agents/sections.md` |
 | company review rule rows | `rules/<rule>.md` |
@@ -2998,8 +3014,8 @@ unless the row says otherwise.
 | connection records (non-secret fields) | `connections/<connection>.md` |
 | `organization/formation.json` and formation text | `vision/vision.md` |
 | the company name | the top of `vision/vision.md`; the database keeps an index copy |
-| `organization/projects/*.json` and project rows | stay where they are as ordinary files; the rows are dropped |
-| `organization/responsibilities/*.json` | stay where they are as ordinary files |
+| `organization/projects/*.json` and project rows | nothing; the new code stops writing them |
+| `organization/responsibilities/*.json` | nothing; the new code stops writing them |
 
 Time zone and language are account settings in the database, and runs receive
 them.
@@ -3013,13 +3029,14 @@ them.
   Co-Founder.
 - Items 20 and 22–25 and item 30 describe withdrawn models. They are rewritten
   together with the section 19 checkpoint and the section 20 matrix once the
-  state has moved.
+  reset and build step 4 have landed.
 
 ## 20. Enforcement matrix
 
 > **Note, 2026-09-27.** Rows naming responsibility objects, ceilings, a schema
 > registry, a todo store or a live mount describe the build before the company
-> folder layout (5.6). They are rewritten once that state has moved.
+> folder layout (5.6). They are rewritten once the reset and build step 4
+> have landed.
 
 | Requirement | Code owner | Model law |
 | --- | --- | --- |
