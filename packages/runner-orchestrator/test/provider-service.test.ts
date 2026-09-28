@@ -3,7 +3,7 @@ import { NODE_OBSERVATIONS_PATH, ProviderNodeObservability } from "../src/node-o
 import type { CloudRunnerAssignmentDelivery, CloudRunnerInstance, CloudRunnerWork } from "../src/orchestrator.ts";
 import { HttpCloudRunnerProviderAdapter } from "../src/provider-http.ts";
 import { type CloudRunnerProviderServiceBackend, HttpCloudRunnerProviderService } from "../src/provider-service.ts";
-import { ProviderRpcFailed, ProviderStepFailed } from "../src/provider-shared.ts";
+import { ProviderRpcFailed, ProviderStepFailed, providerRpcErrorCode } from "../src/provider-shared.ts";
 
 const token = "provider-service-token";
 const runnerId = "55555555-5555-4555-8555-555555555555";
@@ -485,6 +485,21 @@ describe("runner provider HTTP service", () => {
 		} finally {
 			log.mockRestore();
 		}
+	});
+	it("reads only a PostgREST error's code from a failed database answer", async () => {
+		const answer = (body: string) => new Response(body, { status: 500 });
+		expect(await providerRpcErrorCode(answer('{"code":"PGRSTX00","message":"PRIVATE"}'))).toBe("PGRSTX00");
+		expect(await providerRpcErrorCode(answer('{"code":"PGRST202"}'))).toBe("PGRST202");
+		expect(await providerRpcErrorCode(answer('{"code":"42501","details":"PRIVATE"}'))).toBe("42501");
+		for (const body of [
+			'{"code":"pgrstx00"}',
+			'{"code":"PGRSTXX0"}',
+			'{"code":"PRIVATE"}',
+			'{"code":42501}',
+			"<html>",
+			"",
+		])
+			expect(await providerRpcErrorCode(answer(body))).toBeUndefined();
 	});
 	it("logs the failed step and a database call's function, status and code, never the error text", async () => {
 		const provider = backend();
