@@ -481,9 +481,9 @@ moment of its check:
 
 Coding and worker runs arrive with the agent wakes.
 
-Built in `20260928233000_folder_core_authority.sql`, with tests 634 and 635.
-It sorts after S2's 20260928230000 and 20260928231000, whose rules for who
-pays it ports (§4).
+Built in `20260928240000_folder_core_authority.sql`, with tests 634 and 635.
+It sorts after v145's activation (20260928236500) and S2's 20260928230000
+and 20260928231000, whose rules for who pays it ports (§4).
 
 ### 1. Authority changes go through the clock
 
@@ -704,7 +704,7 @@ journal check after the clock (§1), and the commit is retried.
 worker completion. They are ported from `qorpera_wake_authorized`'s agent
 branch as S2 left it (20260928230000 "the member who started the work pays",
 20260928231000 "a member's pinned login follows them"), without its locks. The
-migration sorts after both (20260928233000):
+migration sorts after both (20260928240000):
 
 | Check | Rows locked |
 | --- | --- |
@@ -845,6 +845,12 @@ checked and attributed.
 - **Saves after a turn.** They are attributed to the view's agent and member.
   A unit that needs review waits until the agent's next turn (F3 page,
   "Programs that outlive a turn").
+- **The feed and receipts.** Feed pages (C1f) carry no receipts: for a run
+  or a view they only invalidate the folder service's cache. Nothing reaches
+  a model from feed data alone. A listing or read the folder service shows
+  comes from `qorpera_folder_list` or `qorpera_folder_read`, with their
+  receipts, or from a cache that holds those receipts, and the folder service
+  releases them with `qorpera_folder_record_release` (F3, #444).
 - **After its run ends,** a desktop or shell-command view acts for the
   member of its last holder (F3, #432). Its reads are recorded on the view,
   and the agent's next run for that member inherits them in its read set.
